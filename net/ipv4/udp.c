@@ -130,9 +130,6 @@ EXPORT_SYMBOL(sysctl_udp_wmem_min);
 atomic_t udp_memory_allocated;
 EXPORT_SYMBOL(udp_memory_allocated);
 
-/* Shared by v4/v6 udp. */
-int udp_port_rover;
-
 static int udp_v4_get_port(struct sock *sk, unsigned short snum)
 {
 	struct hlist_node *node;
@@ -140,47 +137,51 @@ static int udp_v4_get_port(struct sock *sk, unsigned short snum)
 	struct inet_sock *inet = inet_sk(sk);
 
 	write_lock_bh(&udp_hash_lock);
-	if (snum == 0) {
-		int best_size_so_far, best, result, i, low, high;
+	if (!snum) {
+		int i, low, high, remaining;
+		unsigned rover, best, best_size_so_far;
 
 		inet_get_local_port_range(&low, &high);
+		remaining = (high - low) + 1;
 
-		if (udp_port_rover > high ||
-		    udp_port_rover < low)
-			udp_port_rover = low;
-		best_size_so_far = 32767;
-		best = result = udp_port_rover;
-		for (i = 0; i < UDP_HTABLE_SIZE; i++, result++) {
+		best_size_so_far = UINT_MAX;
+		best = rover = net_random() % remaining + low;
+
+		/* 1st pass: look for empty (or shortest) hash chain */
+		for (i = 0; i < UDP_HTABLE_SIZE; i++) {
 			struct hlist_head *list;
-			int size;
+			int size = 0;
 
-			list = &udp_hash[result & (UDP_HTABLE_SIZE - 1)];
-			if (hlist_empty(list)) {
-				if (result > high)
-					result = low + ((result - low) &
-						 (UDP_HTABLE_SIZE - 1));
+			list = &udp_hash[rover & (UDP_HTABLE_SIZE - 1)];
+			if (hlist_empty(list))
 				goto gotit;
-			}
-			size = 0;
+
 			sk_for_each(sk2, node, list)
 				if (++size >= best_size_so_far)
 					goto next;
 			best_size_so_far = size;
-			best = result;
-		next:;
+			best = rover;
+		next:
+			/* fold back if end of range */
+			if (++rover > high)
+				rover = low + ((rover - low)
+				            & (UDP_HTABLE_SIZE - 1));
 		}
-		result = best;
-		for(i = 0; i < (1 << 16) / UDP_HTABLE_SIZE; i++, result += UDP_HTABLE_SIZE) {
-			if (result > high)
-				result = low + ((result - low) &
-					   (UDP_HTABLE_SIZE - 1));
-			if (!udp_lport_inuse(result))
-				break;
+		/* 2nd pass: find hole in shortest hash chain */
+		rover = best;
+		for (i = 0; i < (1 << 16) / UDP_HTABLE_SIZE; i++) {
+			if (!udp_lport_inuse(rover))
+				goto gotit;
+			rover += UDP_HTABLE_SIZE;
+			if (rover > high)
+				rover = low + ((rover - low)
+				            & (UDP_HTABLE_SIZE - 1));
 		}
-		if (i >= (1 << 16) / UDP_HTABLE_SIZE)
-			goto fail;
+		/* All ports in use! */
+		goto fail;
+
 gotit:
-		udp_port_rover = snum = result;
+		snum = rover;
 	} else {
 		sk_for_each(sk2, node,
 			    &udp_hash[snum & (UDP_HTABLE_SIZE - 1)]) {
@@ -1638,7 +1639,6 @@ EXPORT_SYMBOL(udp_disconnect);
 EXPORT_SYMBOL(udp_hash);
 EXPORT_SYMBOL(udp_hash_lock);
 EXPORT_SYMBOL(udp_ioctl);
-EXPORT_SYMBOL(udp_port_rover);
 EXPORT_SYMBOL(udp_prot);
 EXPORT_SYMBOL(udp_sendmsg);
 EXPORT_SYMBOL(udp_poll);

@@ -37,8 +37,6 @@
 extern struct hlist_head udp_hash[UDP_HTABLE_SIZE];
 extern rwlock_t udp_hash_lock;
 
-extern int udp_port_rover;
-
 static inline int udp_lport_inuse(u16 num)
 {
 	struct sock *sk;

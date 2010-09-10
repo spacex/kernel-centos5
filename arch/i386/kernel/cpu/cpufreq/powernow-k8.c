@@ -1421,12 +1421,8 @@ static int __cpuinit powernowk8_init(void)
 			supported_cpus++;
 	}
 
-#ifdef CONFIG_XEN
-	if (!is_initial_xendomain()) {
-		/* Xen PV domU's can't possibly do powersaving; bail */
-		return -EPERM;
-	}
-#endif
+	if (supported_cpus != num_online_cpus())
+		return -ENODEV;
 
 	/* AMD provides AGESA library modules for use in their BIOS. The
 	   default AGESA code creates the _PSD with the assumption the APICs
@@ -1442,7 +1438,7 @@ static int __cpuinit powernowk8_init(void)
 	   this way. */
 	if (preregister_acpi_perf == 1 && cpu_family == CPU_OPTERON) {
 		char * dmi_data = dmi_get_system_info(DMI_BIOS_VENDOR);
-		if (!strncmp(dmi_data, "Hewlett-Packard", 15)) {
+		if (dmi_data && !strncmp(dmi_data, "Hewlett-Packard", 15)) {
 #ifdef CONFIG_XEN
 	   		/* Disable cpufreq for HP AMD Opteron systems */
 			printk("%s: This BIOS is %s .... disabling cpufreq "
@@ -1461,34 +1457,29 @@ static int __cpuinit powernowk8_init(void)
 	tscsync = 0;
 #endif
 
-	if (supported_cpus == num_online_cpus()) {
-		if (tscsync) {
-			req_state = kzalloc(sizeof(int)*NR_CPUS, GFP_KERNEL);
-			if (!req_state) {
-				printk(KERN_ERR PFX "Unable to allocate memory!\n");
-				return -ENOMEM;
-			}
-			/* necessary for dual-cores (99=just a large number) */
-			for(i=0; i < num_possible_cpus(); i++)
-				req_state[i] = 99;
+	if (tscsync) {
+		req_state = kzalloc(sizeof(int)*NR_CPUS, GFP_KERNEL);
+		if (!req_state) {
+			printk(KERN_ERR PFX "Unable to allocate memory!\n");
+			return -ENOMEM;
 		}
-		if (powernow_k8_cpu_preinit_acpi())
-			printk(KERN_ERR PFX "Pre-initialization of ACPI failed"
-			       "\n");
-#ifdef CONFIG_SMP
-		printk(KERN_INFO PFX "Found %d %s "
-		       "processors (%d cpu cores) (" VERSION ")\n",
-		       supported_cpus/cpu_data[0].booted_cores,
-		       boot_cpu_data.x86_model_id, supported_cpus);
-#else
-		printk(KERN_INFO PFX "Found 1 %s "
-		       "processors (%d cpu cores) (" VERSION ")\n",
-		       boot_cpu_data.x86_model_id, supported_cpus);
-#endif
-		return cpufreq_register_driver(&cpufreq_amd64_driver);
+		/* necessary for dual-cores (99=just a large number) */
+		for(i=0; i < num_possible_cpus(); i++)
+			req_state[i] = 99;
 	}
-
-	return -ENODEV;
+	if (powernow_k8_cpu_preinit_acpi())
+		printk(KERN_ERR PFX "Pre-initialization of ACPI failed\n");
+#ifdef CONFIG_SMP
+	printk(KERN_INFO PFX "Found %d %s "
+	       "processors (%d cpu cores) (" VERSION ")\n",
+	       supported_cpus/cpu_data[0].booted_cores,
+	       boot_cpu_data.x86_model_id, supported_cpus);
+#else
+	printk(KERN_INFO PFX "Found 1 %s "
+	       "processors (%d cpu cores) (" VERSION ")\n",
+	       boot_cpu_data.x86_model_id, supported_cpus);
+#endif
+	return cpufreq_register_driver(&cpufreq_amd64_driver);
 }
 
 /* driver entry point for term */

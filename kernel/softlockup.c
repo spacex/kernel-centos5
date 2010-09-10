@@ -89,6 +89,12 @@ void softlockup_tick(struct pt_regs *regs)
 		return;
 	}
 
+	/* do not print during early bootup: */
+	if (unlikely(system_state != SYSTEM_RUNNING)) {
+		touch_softlockup_watchdog();
+		return;
+	}
+
 	now = jiffies;
 
 	/* Wake up the high-prio watchdog task every second: */

@@ -1762,7 +1762,11 @@ static int serial8250_startup(struct uart_port *port)
 	 */
 	serial_outp(up, UART_LCR, UART_LCR_WLEN8);
 
-	spin_lock_irqsave(&up->port.lock, flags);
+	if (is_real_interrupt(up->port.irq)) {
+		spin_lock_irqsave(&irq_lists[up->port.irq].lock, flags);
+		spin_lock(&up->port.lock);
+	} else
+		spin_lock_irqsave(&up->port.lock, flags);
 	if (up->port.flags & UPF_FOURPORT) {
 		if (!is_real_interrupt(up->port.irq))
 			up->port.mctrl |= TIOCM_OUT1;
@@ -1794,7 +1798,11 @@ static int serial8250_startup(struct uart_port *port)
 		up->bugs &= ~UART_BUG_TXEN;
 	}
 
-	spin_unlock_irqrestore(&up->port.lock, flags);
+	if (is_real_interrupt(up->port.irq)) {
+		spin_unlock(&up->port.lock);
+		spin_unlock_irqrestore(&irq_lists[up->port.irq].lock, flags);
+	} else
+		spin_unlock_irqrestore(&up->port.lock, flags);
 
 	/*
 	 * Finally, enable interrupts.  Note: Modem status interrupts

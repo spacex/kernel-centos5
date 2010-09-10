@@ -147,29 +147,29 @@ static ssize_t bonding_store_bonds(struct class *cls, const char *buffer, size_t
 						": Unable remove bond %s due to open references.\n",
 						ifname);
 					res = -EPERM;
-					goto out;
+					goto out_unlock;
 				}
 				printk(KERN_INFO DRV_NAME
 					": %s is being deleted...\n",
 					bond->dev->name);
 				bond_destroy(bond);
-				up_write(&bonding_rwsem);
-				rtnl_unlock();
-				goto out;
+				goto out_unlock;
 			}
 
 		printk(KERN_ERR DRV_NAME
 			": unable to delete non-existent bond %s\n", ifname);
 		res = -ENODEV;
-		up_write(&bonding_rwsem);
-		rtnl_unlock();
-		goto out;
+		goto out_unlock;
 	}
 
 err_no_cmd:
 	printk(KERN_ERR DRV_NAME
 		": no command found in bonding_masters. Use +ifname or -ifname.\n");
-	res = -EPERM;
+	return -EPERM;
+
+out_unlock:
+	up_write(&bonding_rwsem);
+	rtnl_unlock();
 
 	/* Always return either count or an error.  If you return 0, you'll
 	 * get called forever, which is bad.
@@ -254,8 +254,8 @@ static ssize_t bonding_store_slaves(struct class_device *cd, const char *buffer,
 		printk(KERN_ERR DRV_NAME
 		       ": %s: Unable to update slaves because interface is down.\n",
 		       bond->dev->name);
-		ret = -EPERM;
-		goto out;
+		/* early return before rtnl_lock() */
+		return -EPERM;
 	}
 
 	/* Note:  We can't hold bond->lock here, as bond_create grabs it. */
