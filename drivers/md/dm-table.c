@@ -880,6 +880,25 @@ struct dm_target *dm_table_find_target(struct dm_table *t, sector_t sector)
 	return &t->targets[(KEYS_PER_NODE * n) + k];
 }
 
+/*
+ * Some of our unrerlying devices provided a merge_bvec_fn.
+ *
+ * We can't call the device's merge_bvec_fn, so we must be conservative
+ * and not allow creating bio larger than one page.
+ */
+static int dm_max_one_bvec_entry(request_queue_t *q, struct bio *bio, struct bio_vec *biovec)
+{
+	/* If there was nothing in the bio, allow full page */
+	if (!bio->bi_vcnt)
+		return biovec->bv_len;
+
+	/* If there is just one page and we are appeding to it, allow it */
+	if (bio->bi_vcnt == 1 && biovec == &bio->bi_io_vec[0])
+		return biovec->bv_len;
+
+	return 0;
+}
+
 void dm_table_set_restrictions(struct dm_table *t, struct request_queue *q)
 {
 	/*
@@ -887,6 +906,8 @@ void dm_table_set_restrictions(struct dm_table *t, struct request_queue *q)
 	 * restrictions.
 	 */
 	blk_queue_max_sectors(q, t->limits.max_sectors);
+	if (t->limits.max_sectors <= PAGE_SIZE >> 9)
+		blk_queue_merge_bvec(q, dm_max_one_bvec_entry);
 	q->max_phys_segments = t->limits.max_phys_segments;
 	q->max_hw_segments = t->limits.max_hw_segments;
 	q->hardsect_size = t->limits.hardsect_size;
@@ -980,7 +1001,14 @@ int dm_table_any_congested(struct dm_table *t, int bdi_bits)
 	for (d = devices->next; d != devices; d = d->next) {
 		struct dm_dev *dd = list_entry(d, struct dm_dev, list);
 		request_queue_t *q = bdev_get_queue(dd->bdev);
-		r |= bdi_congested(&q->backing_dev_info, bdi_bits);
+		char b[BDEVNAME_SIZE];
+
+		if (likely(q))
+			r |= bdi_congested(&q->backing_dev_info, bdi_bits);
+		else
+			DMWARN("%s: any_congested: nonexistent device %s",
+				     dm_device_name(t->md),
+				     bdevname(dd->bdev, b));
 	}
 
 	return r;
@@ -994,8 +1022,16 @@ void dm_table_unplug_all(struct dm_table *t)
 		struct dm_dev *dd = list_entry(d, struct dm_dev, list);
 		request_queue_t *q = bdev_get_queue(dd->bdev);
 
-		if (q->unplug_fn)
-			q->unplug_fn(q);
+		if (likely(q)) {
+			if (q->unplug_fn)
+	                        q->unplug_fn(q);
+		}
+		else {
+			char b[BDEVNAME_SIZE];
+			DMWARN("%s: Cannot unplug nonexistent device %s",
+				     dm_device_name(t->md),
+				     bdevname(dd->bdev, b));
+		}
 	}
 }
 
@@ -1007,12 +1043,21 @@ int dm_table_flush_all(struct dm_table *t)
 	for (d = devices->next; d != devices; d = d->next) {
 		struct dm_dev *dd = list_entry(d, struct dm_dev, list);
 		request_queue_t *q = bdev_get_queue(dd->bdev);
-		int err;
+		int err = 0;
 
-		if (!q->issue_flush_fn)
-			err = -EOPNOTSUPP;
-		else
-			err = q->issue_flush_fn(q, dd->bdev->bd_disk, NULL);
+		if (likely(q)) {
+			if (!q->issue_flush_fn)
+				err = -EOPNOTSUPP;
+			else
+				err = q->issue_flush_fn(q, dd->bdev->bd_disk,
+					NULL);
+		}
+		else {
+			char b[BDEVNAME_SIZE];
+			DMWARN("%s: Cannot flush nonexistent device %s",
+                                     dm_device_name(t->md),
+                                     bdevname(dd->bdev, b));
+		}
 
 		if (!ret)
 			ret = err;

@@ -188,16 +188,6 @@ static int qla4xxx_validate_mac_address(struct scsi_qla_host *ha)
  **/
 static int qla4xxx_init_local_data(struct scsi_qla_host *ha)
 {
-	int i;
-
-	/* Initialize passthru PDU list */
-	for (i = 0; i < (MAX_PDU_ENTRIES - 1); i++)
-		ha->pdu_queue[i].Next = &ha->pdu_queue[i + 1];
-	ha->free_pdu_top = &ha->pdu_queue[0];
-	ha->free_pdu_bottom = &ha->pdu_queue[MAX_PDU_ENTRIES - 1];
-	ha->free_pdu_bottom->Next = NULL;
-	ha->pdu_active = 0;
-
 	/* Initilize aen queue */
 	ha->aen_q_count = MAX_AEN_ENTRIES;
 

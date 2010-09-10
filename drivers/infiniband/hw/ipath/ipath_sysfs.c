@@ -164,7 +164,6 @@ static ssize_t show_boardversion(struct device *dev,
 	return scnprintf(buf, PAGE_SIZE, "%s", dd->ipath_boardversion);
 }
 
-
 static ssize_t show_localbus_info(struct device *dev,
 			       struct device_attribute *attr,
 			       char *buf)
@@ -1088,13 +1087,13 @@ static DEVICE_ATTR(unit, S_IRUGO, show_unit, NULL);
 static DEVICE_ATTR(rx_pol_inv, S_IWUSR, NULL, store_rx_pol_inv);
 static DEVICE_ATTR(led_override, S_IWUSR, NULL, store_led_override);
 static DEVICE_ATTR(logged_errors, S_IRUGO, show_logged_errs, NULL);
+static DEVICE_ATTR(localbus_info, S_IRUGO, show_localbus_info, NULL);
 static DEVICE_ATTR(jint_max_packets, S_IWUSR | S_IRUGO,
 		   show_jint_max_packets, store_jint_max_packets);
 static DEVICE_ATTR(jint_idle_ticks, S_IWUSR | S_IRUGO,
 		   show_jint_idle_ticks, store_jint_idle_ticks);
 static DEVICE_ATTR(tempsense, S_IWUSR | S_IRUGO,
 		   show_tempsense, store_tempsense);
-static DEVICE_ATTR(localbus_info, S_IRUGO, show_localbus_info, NULL);
 
 static struct attribute *dev_attributes[] = {
 	&dev_attr_guid.attr,
@@ -1194,7 +1193,6 @@ void ipath_driver_remove_group(struct device_driver *drv)
 int ipath_device_create_group(struct device *dev, struct ipath_devdata *dd)
 {
 	int ret;
-	char unit[5];
 
 	ret = sysfs_create_group(&dev->kobj, &dev_attr_group);
 	if (ret)
@@ -1204,15 +1202,10 @@ int ipath_device_create_group(struct device *dev, struct ipath_devdata *dd)
 	if (ret)
 		goto bail_attrs;
 
-	snprintf(unit, sizeof(unit), "%02d", dd->ipath_unit);
-	ret = sysfs_create_link(&dev->driver->kobj, &dev->kobj, unit);
-	if (ret)
-		goto bail_counter;
-
 	if (dd->ipath_flags & IPATH_HAS_MULT_IB_SPEED) {
 		ret = device_create_file(dev, &dev_attr_jint_idle_ticks);
 		if (ret)
-			goto bail_unit;
+			goto bail_counter;
 		ret = device_create_file(dev, &dev_attr_jint_max_packets);
 		if (ret)
 			goto bail_idle;
@@ -1222,14 +1215,12 @@ int ipath_device_create_group(struct device *dev, struct ipath_devdata *dd)
 			goto bail_max;
 	}
 
-	goto bail;
+	return 0;
 
 bail_max:
 	device_remove_file(dev, &dev_attr_jint_max_packets);
 bail_idle:
 	device_remove_file(dev, &dev_attr_jint_idle_ticks);
-bail_unit:
-	sysfs_remove_link(&dev->driver->kobj, unit);
 bail_counter:
 	sysfs_remove_group(&dev->kobj, &dev_counter_attr_group);
 bail_attrs:
@@ -1240,11 +1231,6 @@ bail:
 
 void ipath_device_remove_group(struct device *dev, struct ipath_devdata *dd)
 {
-	char unit[5];
-
-	snprintf(unit, sizeof(unit), "%02d", dd->ipath_unit);
-	sysfs_remove_link(&dev->driver->kobj, unit);
-
 	sysfs_remove_group(&dev->kobj, &dev_counter_attr_group);
 
 	if (dd->ipath_flags & IPATH_HAS_MULT_IB_SPEED) {

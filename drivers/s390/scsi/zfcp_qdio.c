@@ -232,6 +232,27 @@ zfcp_qdio_handler_error_check(struct zfcp_adapter *adapter, unsigned int status,
 	return retval;
 }
 
+/* this needs to be called prior to updating the queue fill level */
+static void zfcp_qdio_account(struct zfcp_adapter *adapter)
+{
+	ktime_t now, _span;
+	struct timespec _now;
+	u64 span;
+	int free, used;
+
+	spin_lock(&adapter->qdio_stat_lock);
+	ktime_get_ts(&_now);
+	now = timespec_to_ktime(_now);
+	_span = ktime_sub(now, adapter->req_q_time);
+	span = (u64)ktime_to_ns(_span);
+	do_div(span, 1000);
+	free = atomic_read(&adapter->request_queue.free_count);
+	used = QDIO_MAX_BUFFERS_PER_Q - free;
+	adapter->req_q_util += used * span;
+	adapter->req_q_time = now;
+	spin_unlock(&adapter->qdio_stat_lock);
+}
+
 /*
  * function:    zfcp_qdio_request_handler
  *
@@ -271,6 +292,8 @@ zfcp_qdio_request_handler(struct ccw_device *ccw_device,
 	/* cleanup all SBALs being program-owned now */
 	zfcp_qdio_zero_sbals(queue->buffer, first_element, elements_processed);
 
+	zfcp_qdio_account(adapter);
+
 	/* increase free space in outbound queue */
 	atomic_add(elements_processed, &queue->free_count);
 	ZFCP_LOG_DEBUG("free_count=%d\n", atomic_read(&queue->free_count));
@@ -302,6 +325,8 @@ static void zfcp_qdio_reqid_check(struct zfcp_adapter *adapter,
 	atomic_dec(&adapter->reqs_active);
 	spin_unlock_irqrestore(&adapter->req_list_lock, flags);
 
+	fsf_req->qdio_inb_usage = atomic_read(
+					&adapter->response_queue.free_count);
 	/* finish the FSF request */
 	zfcp_fsf_req_complete(fsf_req);
 }
@@ -611,6 +636,7 @@ zfcp_qdio_sbals_from_segment(struct zfcp_fsf_req *fsf_req, unsigned long sbtype,
 	     addr += length, remaining -= length) {
 		/* get next free SBALE for new piece */
 		if (NULL == zfcp_qdio_sbale_next(fsf_req, sbtype)) {
+			atomic_inc(&fsf_req->adapter->qdio_outb_full);
 			/* no SBALE left, clean up and leave */
 			zfcp_qdio_sbals_wipe(fsf_req);
 			return -EINVAL;

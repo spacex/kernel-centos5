@@ -37,14 +37,14 @@
 #include "vnic_util.h"
 #include "vnic_main.h"
 #include "vnic_viport.h"
-#include "vnic_control.h"
-#include "vnic_config.h"
-#include "vnic_control_pkt.h"
 #include "vnic_stats.h"
+
+#define vnic_multicast_address(rsp2_address, index)           \
+	((rsp2_address)->list_address_ops[index].address[0] & 0x01)
 
 static void control_log_control_packet(struct vnic_control_packet *pkt);
 
-static inline char *control_ifcfg_name(struct control *control)
+char *control_ifcfg_name(struct control *control)
 {
 	if (!control)
 		return "nctl";
@@ -56,7 +56,7 @@ static inline char *control_ifcfg_name(struct control *control)
 		return "nppp";
 	if (!control->parent->parent->parent->config)
 		return "npppc";
-	return (control->parent->parent->parent->config->name);
+	return control->parent->parent->parent->config->name;
 }
 
 static void control_recv(struct control *control, struct recv_io *recv_io)
@@ -101,8 +101,9 @@ static void control_recv_complete(struct io *io)
 		case RSP_RECEIVED:
 		case REQ_COMPLETED:
 			CONTROL_ERROR("%s: Unexpected control"
-				      "response received: CMD = %d\n",
-				      control_ifcfg_name(control), c_hdr->pkt_cmd);
+					"response received: CMD = %d\n",
+					control_ifcfg_name(control),
+					c_hdr->pkt_cmd);
 			control_log_control_packet(pkt);
 			control->req_state = REQ_FAILED;
 			fail = 1;
@@ -111,7 +112,7 @@ static void control_recv_complete(struct io *io)
 		case REQ_SENT:
 			if (c_hdr->pkt_cmd != control->last_cmd
 				|| c_hdr->pkt_seq_num != control->seq_num) {
-				CONTROL_ERROR("%s: Incorrect Control Response"
+				CONTROL_ERROR("%s: Incorrect Control Response "
 					      "received\n",
 					      control_ifcfg_name(control));
 				CONTROL_ERROR("%s: Sent control request:\n",
@@ -286,7 +287,7 @@ static int control_send(struct control *control, struct send_io *send_io)
 		CONTROL_INFO("%s:Attempt to send in failed state."
 			     "New CMD: %d Last CMD: %d\n",
 			     control_ifcfg_name(control), pkt->hdr.pkt_cmd,
-			     control->last_cmd );
+			     control->last_cmd);
 		/* stay in REQ_FAILED state*/
 		break;
 	}
@@ -385,9 +386,9 @@ void control_process_async(struct control *control)
 			}
 		}
 		if ((pkt->hdr.pkt_cmd != CMD_REPORT_STATUS) ||
-		     pkt->cmd.report_status.is_fatal) {
+		     pkt->cmd.report_status.is_fatal)
 			viport_failure(control->parent);
-		}
+
 		control_recv(control, recv_io);
 		spin_lock_irqsave(&control->io_lock, flags);
 	}
@@ -406,9 +407,9 @@ void control_process_async(struct control *control)
 		control_log_control_packet(pkt);
 		if ((pkt->hdr.pkt_type != TYPE_ERR)
 		    || (pkt->hdr.pkt_cmd != CMD_REPORT_STATUS)
-		    || pkt->cmd.report_status.is_fatal) {
+		    || pkt->cmd.report_status.is_fatal)
 			viport_failure(control->parent);
-		}
+
 		control_recv(control, recv_io);
 		spin_lock_irqsave(&control->io_lock, flags);
 	}
@@ -417,7 +418,7 @@ void control_process_async(struct control *control)
 				      control->recv_dma, control->recv_len,
 				      DMA_FROM_DEVICE);
 
-	CONTROL_INFO("%s: done control_process_async\n",
+	CONTROL_FUNCTION("%s: done control_process_async\n",
 		     control_ifcfg_name(control));
 }
 
@@ -467,7 +468,7 @@ static struct recv_io *control_get_rsp(struct control *control)
 		break;
 	case REQ_COMPLETED:
 		recv_io = control->response;
-		if (!recv_io){
+		if (!recv_io) {
 			control->req_state = REQ_FAILED;
 			fail = 1;
 			break;
@@ -532,7 +533,8 @@ failure:
 static int control_chk_vnic_rsp_values(struct control *control,
 				       u16 *num_addrs,
 				       u8 num_data_paths,
-				       u8 num_lan_switches)
+				       u8 num_lan_switches,
+				       u32 *features)
 {
 
 	struct control_config		*config = control->config;
@@ -569,6 +571,14 @@ static int control_chk_vnic_rsp_values(struct control *control,
 		CONTROL_ERROR("%s: EIOC returned multiple lan switches\n",
 			      control_ifcfg_name(control));
 		goto failure;
+	}
+	CONTROL_ERROR("%s checking features %x ib_multicast:%d\n",
+			control_ifcfg_name(control),
+			*features, config->ib_multicast);
+	if ((*features & VNIC_FEAT_INBOUND_IB_MC) && !config->ib_multicast) {
+		/* disable multicast if it is not on in the cfg file, or
+		   if we turned it off because join failed */
+		*features &= ~VNIC_FEAT_INBOUND_IB_MC;
 	}
 
 	return 0;
@@ -610,7 +620,8 @@ int control_init_vnic_rsp(struct control *control, u32 *features,
 
 	if (control_chk_vnic_rsp_values(control, num_addrs,
 					num_data_paths,
-					num_lan_switches))
+					num_lan_switches,
+					features))
 		goto failure;
 
 	control->lan_switch.lan_switch_num =
@@ -721,14 +732,14 @@ static int check_recv_pool_config(struct vnic_recv_pool_config *src,
 				     "free_recv_pool_entries_per_update"))
 		goto failure;
 
-	if (!is_power_of2(be32_to_cpu(dst->num_recv_pool_entries))) {
+	if (!is_power_of_2(be32_to_cpu(dst->num_recv_pool_entries))) {
 		CONTROL_ERROR("num_recv_pool_entries (%d)"
 			      " must be power of 2\n",
 			      dst->num_recv_pool_entries);
 		goto failure;
 	}
 
-	if (!is_power_of2(be32_to_cpu(dst->
+	if (!is_power_of_2(be32_to_cpu(dst->
 				      free_recv_pool_entries_per_update))) {
 		CONTROL_ERROR("free_recv_pool_entries_per_update (%d)"
 			      " must be power of 2\n",
@@ -759,9 +770,9 @@ failure:
 	return -1;
 }
 
-int control_config_data_path_req(struct control * control, u64 path_id,
-				     struct vnic_recv_pool_config * host,
-				     struct vnic_recv_pool_config * eioc)
+int control_config_data_path_req(struct control *control, u64 path_id,
+				     struct vnic_recv_pool_config *host,
+				     struct vnic_recv_pool_config *eioc)
 {
 	struct send_io				*send_io;
 	struct vnic_control_packet		*pkt;
@@ -801,13 +812,13 @@ failure:
 	return -1;
 }
 
-int control_config_data_path_rsp(struct control * control,
-				 struct vnic_recv_pool_config * host,
-				 struct vnic_recv_pool_config * eioc,
-				 struct vnic_recv_pool_config * max_host,
-				 struct vnic_recv_pool_config * max_eioc,
-				 struct vnic_recv_pool_config * min_host,
-				 struct vnic_recv_pool_config * min_eioc)
+int control_config_data_path_rsp(struct control *control,
+				 struct vnic_recv_pool_config *host,
+				 struct vnic_recv_pool_config *eioc,
+				 struct vnic_recv_pool_config *max_host,
+				 struct vnic_recv_pool_config *max_eioc,
+				 struct vnic_recv_pool_config *min_host,
+				 struct vnic_recv_pool_config *min_eioc)
 {
 	struct recv_io				*recv_io;
 	struct vnic_control_packet		*pkt;
@@ -860,7 +871,7 @@ out:
 	return -1;
 }
 
-int control_exchange_pools_req(struct control * control, u64 addr, u32 rkey)
+int control_exchange_pools_req(struct control *control, u64 addr, u32 rkey)
 {
 	struct send_io			*send_io;
 	struct vnic_control_packet	*pkt;
@@ -895,8 +906,8 @@ failure:
 	return -1;
 }
 
-int control_exchange_pools_rsp(struct control * control, u64 * addr,
-			       u32 * rkey)
+int control_exchange_pools_rsp(struct control *control, u64 *addr,
+			       u32 *rkey)
 {
 	struct recv_io			*recv_io;
 	struct vnic_control_packet	*pkt;
@@ -942,7 +953,7 @@ out:
 	return -1;
 }
 
-int control_config_link_req(struct control * control, u16 flags, u16 mtu)
+int control_config_link_req(struct control *control, u16 flags, u16 mtu)
 {
 	struct send_io			*send_io;
 	struct vnic_cmd_config_link	*config_link_req;
@@ -997,8 +1008,7 @@ failure:
 	return -1;
 }
 
-int control_config_link_rsp(struct control * control, u16 * flags,
-				u16 * mtu)
+int control_config_link_rsp(struct control *control, u16 *flags, u16 *mtu)
 {
 	struct recv_io			*recv_io;
 	struct vnic_control_packet	*pkt;
@@ -1027,6 +1037,32 @@ int control_config_link_rsp(struct control * control, u16 * flags,
 
 	*mtu = be16_to_cpu(config_link_rsp->mtu_size);
 
+	if (control->parent->features_supported & VNIC_FEAT_INBOUND_IB_MC) {
+		/* featuresSupported might include INBOUND_IB_MC but
+		   MTU might cause it to be auto-disabled at embedded */
+		if (config_link_rsp->cmd_flags & VNIC_FLAG_ENABLE_MCAST_ALL) {
+			union ib_gid mgid = config_link_rsp->allmulti_mgid;
+			if (mgid.raw[0] != 0xff) {
+				CONTROL_ERROR("%s: invalid formatprefix "
+						VNIC_GID_FMT "\n",
+						control_ifcfg_name(control),
+						VNIC_GID_RAW_ARG(mgid.raw));
+			} else {
+				/* rather than issuing join here, which might
+				 * arrive at SM before EVIC creates the MC
+				 * group, postpone it.
+				 */
+				vnic_mc_join_setup(control->parent, &mgid);
+				CONTROL_ERROR("join setup for ALL_MULTI\n");
+			}
+		}
+		/* we don't want to leave mcast group if MCAST_ALL is disabled
+		 * because there are no doubt multicast addresses set and we
+		 * want to stay joined so we can get that traffic via the
+		 * mcast group.
+		 */
+	}
+
 	control_recv(control, recv_io);
 	ib_dma_sync_single_for_device(control->parent->config->ibdev,
 				      control->recv_dma, control->recv_len,
@@ -1049,7 +1085,7 @@ out:
  *           1: complete
  */
 int control_config_addrs_req(struct control *control,
-			     struct vnic_address_op *addrs, u16 num)
+			     struct vnic_address_op2 *addrs, u16 num)
 {
 	u16  i;
 	u8   j;
@@ -1057,6 +1093,7 @@ int control_config_addrs_req(struct control *control,
 	struct send_io				*send_io;
 	struct vnic_control_packet		*pkt;
 	struct vnic_cmd_config_addresses	*config_addrs_req;
+    struct vnic_cmd_config_addresses2   *config_addrs_req2;
 
 	CONTROL_FUNCTION("%s: control_config_addrs_req()\n",
 			 control_ifcfg_name(control));
@@ -1064,26 +1101,87 @@ int control_config_addrs_req(struct control *control,
 				   control->send_dma, control->send_len,
 				   DMA_TO_DEVICE);
 
-	send_io = control_init_hdr(control, CMD_CONFIG_ADDRESSES);
-	if (!send_io)
-		goto failure;
+	if (control->parent->features_supported & VNIC_FEAT_INBOUND_IB_MC) {
+		CONTROL_INFO("Sending CMD_CONFIG_ADDRESSES2 %lx MAX:%d "
+				"sizes:%d %d(off:%d) sizes2:%d %d %d"
+				"(off:%d - %d %d %d %d %d %d %d)\n", jiffies,
+				(int)MAX_CONFIG_ADDR_ENTRIES2,
+				(int)sizeof(struct vnic_cmd_config_addresses),
+			(int)sizeof(struct vnic_address_op),
+			(int)offsetof(struct vnic_cmd_config_addresses,
+							list_address_ops),
+			(int)sizeof(struct vnic_cmd_config_addresses2),
+			(int)sizeof(struct vnic_address_op2),
+			(int)sizeof(union ib_gid),
+			(int)offsetof(struct vnic_cmd_config_addresses2,
+							list_address_ops),
+			(int)offsetof(struct vnic_address_op2, index),
+			(int)offsetof(struct vnic_address_op2, operation),
+			(int)offsetof(struct vnic_address_op2, valid),
+			(int)offsetof(struct vnic_address_op2, address),
+			(int)offsetof(struct vnic_address_op2, vlan),
+			(int)offsetof(struct vnic_address_op2, reserved),
+			(int)offsetof(struct vnic_address_op2, mgid)
+			);
+		send_io = control_init_hdr(control, CMD_CONFIG_ADDRESSES2);
+		if (!send_io)
+			goto failure;
 
-	pkt = control_packet(send_io);
-	config_addrs_req = &pkt->cmd.config_addresses_req;
-	config_addrs_req->lan_switch_num =
-				control->lan_switch.lan_switch_num;
-	for (i = 0, j = 0; (i < num) && (j < 16); i++) {
-		if (!addrs[i].operation)
-			continue;
-		config_addrs_req->list_address_ops[j].index = cpu_to_be16(i);
-		config_addrs_req->list_address_ops[j].operation =
+		pkt = control_packet(send_io);
+		config_addrs_req2 = &pkt->cmd.config_addresses_req2;
+		memset(pkt->cmd.cmd_data, 0, VNIC_MAX_CONTROLDATASZ);
+		config_addrs_req2->lan_switch_num =
+			control->lan_switch.lan_switch_num;
+		for (i = 0, j = 0; (i < num) && (j < MAX_CONFIG_ADDR_ENTRIES2); i++) {
+			if (!addrs[i].operation)
+				continue;
+			config_addrs_req2->list_address_ops[j].index =
+								 cpu_to_be16(i);
+			config_addrs_req2->list_address_ops[j].operation =
 							VNIC_OP_SET_ENTRY;
-		config_addrs_req->list_address_ops[j].valid = addrs[i].valid;
-		memcpy(config_addrs_req->list_address_ops[j].address,
-		       addrs[i].address, ETH_ALEN);
-		config_addrs_req->list_address_ops[j].vlan = addrs[i].vlan;
-		addrs[i].operation = 0;
-		j++;
+			config_addrs_req2->list_address_ops[j].valid =
+								 addrs[i].valid;
+			memcpy(config_addrs_req2->list_address_ops[j].address,
+			       addrs[i].address, ETH_ALEN);
+			config_addrs_req2->list_address_ops[j].vlan =
+								 addrs[i].vlan;
+			addrs[i].operation = 0;
+			CONTROL_INFO("%s i=%d "
+				"addr[%d]=%02x:%02x:%02x:%02x:%02x:%02x "
+				"valid:%d\n", control_ifcfg_name(control), i, j,
+				addrs[i].address[0], addrs[i].address[1],
+				addrs[i].address[2], addrs[i].address[3],
+				addrs[i].address[4], addrs[i].address[5],
+				addrs[i].valid);
+			j++;
+		}
+		config_addrs_req2->num_address_ops = j;
+	} else {
+		send_io = control_init_hdr(control, CMD_CONFIG_ADDRESSES);
+		if (!send_io)
+			goto failure;
+
+		pkt = control_packet(send_io);
+		config_addrs_req = &pkt->cmd.config_addresses_req;
+		config_addrs_req->lan_switch_num =
+					control->lan_switch.lan_switch_num;
+		for (i = 0, j = 0; (i < num) && (j < 16); i++) {
+			if (!addrs[i].operation)
+				continue;
+			config_addrs_req->list_address_ops[j].index =
+								 cpu_to_be16(i);
+			config_addrs_req->list_address_ops[j].operation =
+							VNIC_OP_SET_ENTRY;
+			config_addrs_req->list_address_ops[j].valid =
+								 addrs[i].valid;
+			memcpy(config_addrs_req->list_address_ops[j].address,
+			       addrs[i].address, ETH_ALEN);
+			config_addrs_req->list_address_ops[j].vlan =
+								 addrs[i].vlan;
+			addrs[i].operation = 0;
+			j++;
+		}
+		config_addrs_req->num_address_ops = j;
 	}
 	for (; i < num; i++) {
 		if (addrs[i].operation) {
@@ -1091,7 +1189,6 @@ int control_config_addrs_req(struct control *control,
 			break;
 		}
 	}
-	config_addrs_req->num_address_ops = j;
 
 	control->last_cmd = pkt->hdr.pkt_cmd;
 	ib_dma_sync_single_for_device(control->parent->config->ibdev,
@@ -1108,11 +1205,112 @@ failure:
 	return -1;
 }
 
-int control_config_addrs_rsp(struct control * control)
+static int process_cmd_config_address2_rsp(struct control *control,
+					   struct vnic_control_packet *pkt,
+					   struct recv_io *recv_io)
+{
+	struct vnic_cmd_config_addresses2 *config_addrs_rsp2;
+	int idx, mcaddrs, nomgid;
+	union ib_gid mgid, rsp_mgid;
+
+	config_addrs_rsp2 = &pkt->cmd.config_addresses_rsp2;
+	CONTROL_INFO("%s rsp to CONFIG_ADDRESSES2\n",
+				 control_ifcfg_name(control));
+
+	for (idx = 0, mcaddrs = 0, nomgid = 1;
+			idx < config_addrs_rsp2->num_address_ops;
+				idx++) {
+		if (!config_addrs_rsp2->list_address_ops[idx].valid)
+			continue;
+
+		/* check if address is multicasts */
+		if (!vnic_multicast_address(config_addrs_rsp2, idx))
+			continue;
+
+		mcaddrs++;
+		mgid = config_addrs_rsp2->list_address_ops[idx].mgid;
+		CONTROL_INFO("%s: got mgid " VNIC_GID_FMT
+				" MCAST_MSG_SIZE:%d mtu:%d\n",
+				control_ifcfg_name(control),
+				VNIC_GID_RAW_ARG(mgid.raw),
+				(int)MCAST_MSG_SIZE,
+				control->parent->mtu);
+
+		/* Embedded should have turned off multicast
+		 * due to large MTU size; mgid had better be 0.
+		 */
+		if (control->parent->mtu > MCAST_MSG_SIZE) {
+			if ((mgid.global.subnet_prefix != 0) ||
+				(mgid.global.interface_id != 0)) {
+				CONTROL_ERROR("%s: invalid mgid; "
+						"expected 0 "
+						VNIC_GID_FMT "\n",
+						control_ifcfg_name(control),
+						VNIC_GID_RAW_ARG(mgid.raw));
+				}
+				continue;
+			}
+		if (mgid.raw[0] != 0xff) {
+			CONTROL_ERROR("%s: invalid formatprefix "
+					VNIC_GID_FMT "\n",
+					control_ifcfg_name(control),
+					VNIC_GID_RAW_ARG(mgid.raw));
+			continue;
+		}
+		nomgid = 0; /* got a valid mgid */
+
+		/* let's verify that all the mgids match this one */
+		for (; idx < config_addrs_rsp2->num_address_ops; idx++) {
+			if (!config_addrs_rsp2->list_address_ops[idx].valid)
+				continue;
+
+			/* check if address is multicasts */
+			if (!vnic_multicast_address(config_addrs_rsp2, idx))
+				continue;
+
+			rsp_mgid = config_addrs_rsp2->list_address_ops[idx].mgid;
+			if (memcmp(&mgid, &rsp_mgid, sizeof(union ib_gid)) == 0)
+				continue;
+
+			CONTROL_ERROR("%s: Multicast Group MGIDs not "
+					"unique; mgids: " VNIC_GID_FMT
+					 " " VNIC_GID_FMT "\n",
+					control_ifcfg_name(control),
+					VNIC_GID_RAW_ARG(mgid.raw),
+					VNIC_GID_RAW_ARG(rsp_mgid.raw));
+			return 1;
+		}
+
+		/* rather than issuing join here, which might arrive
+		 * at SM before EVIC creates the MC group, postpone it.
+		 */
+		vnic_mc_join_setup(control->parent, &mgid);
+
+		/* there is only one multicast group to join, so we're done. */
+		break;
+	}
+
+	/* we sent atleast one multicast address but got no MGID
+	 * back so, if it is not allmulti case, leave the group
+	 * we joined before. (for allmulti case we have to stay
+	 * joined)
+	 */
+	if ((config_addrs_rsp2->num_address_ops > 0) && (mcaddrs > 0) &&
+		nomgid && !(control->parent->flags & IFF_ALLMULTI)) {
+		CONTROL_INFO("numaddrops:%d mcadrs:%d nomgid:%d\n",
+			config_addrs_rsp2->num_address_ops,
+				mcaddrs > 0, nomgid);
+
+		vnic_mc_leave(control->parent);
+	}
+
+	return 0;
+}
+
+int control_config_addrs_rsp(struct control *control)
 {
 	struct recv_io *recv_io;
 	struct vnic_control_packet *pkt;
-	struct vnic_cmd_config_addresses *config_addrs_rsp;
 
 	CONTROL_FUNCTION("%s: control_config_addrs_rsp()\n",
 			 control_ifcfg_name(control));
@@ -1125,9 +1323,28 @@ int control_config_addrs_rsp(struct control * control)
 		goto out;
 
 	pkt = control_packet(recv_io);
-	if (pkt->hdr.pkt_cmd != CMD_CONFIG_ADDRESSES)
+	if ((pkt->hdr.pkt_cmd != CMD_CONFIG_ADDRESSES) &&
+		(pkt->hdr.pkt_cmd != CMD_CONFIG_ADDRESSES2))
 		goto failure;
-	config_addrs_rsp = &pkt->cmd.config_addresses_rsp;
+
+	if (((pkt->hdr.pkt_cmd == CMD_CONFIG_ADDRESSES2) &&
+	      !control->parent->features_supported & VNIC_FEAT_INBOUND_IB_MC) ||
+	      ((pkt->hdr.pkt_cmd == CMD_CONFIG_ADDRESSES) &&
+	       control->parent->features_supported & VNIC_FEAT_INBOUND_IB_MC)) {
+		CONTROL_ERROR("%s unexpected response pktCmd:%d flag:%x\n",
+				control_ifcfg_name(control), pkt->hdr.pkt_cmd,
+				control->parent->features_supported &
+				VNIC_FEAT_INBOUND_IB_MC);
+		goto failure;
+	}
+
+	if (pkt->hdr.pkt_cmd == CMD_CONFIG_ADDRESSES2) {
+		if (process_cmd_config_address2_rsp(control, pkt, recv_io))
+			goto failure;
+	} else {
+		struct vnic_cmd_config_addresses *config_addrs_rsp;
+		config_addrs_rsp = &pkt->cmd.config_addresses_rsp;
+	}
 
 	control_recv(control, recv_io);
 	ib_dma_sync_single_for_device(control->parent->config->ibdev,
@@ -1143,7 +1360,7 @@ out:
 	return -1;
 }
 
-int control_report_statistics_req(struct control * control)
+int control_report_statistics_req(struct control *control)
 {
 	struct send_io				*send_io;
 	struct vnic_control_packet		*pkt;
@@ -1176,8 +1393,8 @@ failure:
 	return -1;
 }
 
-int control_report_statistics_rsp(struct control * control,
-				  struct vnic_cmd_report_stats_rsp * stats)
+int control_report_statistics_rsp(struct control *control,
+				  struct vnic_cmd_report_stats_rsp *stats)
 {
 	struct recv_io				*recv_io;
 	struct vnic_control_packet		*pkt;
@@ -1237,7 +1454,7 @@ out:
 	return -1;
 }
 
-int control_reset_req(struct control * control)
+int control_reset_req(struct control *control)
 {
 	struct send_io			*send_io;
 	struct vnic_control_packet	*pkt;
@@ -1266,7 +1483,7 @@ failure:
 	return -1;
 }
 
-int control_reset_rsp(struct control * control)
+int control_reset_rsp(struct control *control)
 {
 	struct recv_io			*recv_io;
 	struct vnic_control_packet	*pkt;
@@ -1299,7 +1516,7 @@ out:
 	return -1;
 }
 
-int control_heartbeat_req(struct control * control, u32 hb_interval)
+int control_heartbeat_req(struct control *control, u32 hb_interval)
 {
 	struct send_io			*send_io;
 	struct vnic_control_packet	*pkt;
@@ -1331,7 +1548,7 @@ failure:
 	return -1;
 }
 
-int control_heartbeat_rsp(struct control * control)
+int control_heartbeat_rsp(struct control *control)
 {
 	struct recv_io			*recv_io;
 	struct vnic_control_packet	*pkt;
@@ -1367,9 +1584,9 @@ out:
 	return -1;
 }
 
-static int control_init_recv_ios(struct control * control,
-				 struct viport * viport,
-				 struct vnic_control_packet * pkt)
+static int control_init_recv_ios(struct control *control,
+				 struct viport *viport,
+				 struct vnic_control_packet *pkt)
 {
 	struct io		*io;
 	struct ib_device	*ibdev = viport->config->ibdev;
@@ -1413,7 +1630,7 @@ static int control_init_recv_ios(struct control * control,
 	return 0;
 unmap_recv:
 	ib_dma_unmap_single(control->parent->config->ibdev,
-			    control->recv_dma, control->send_len,
+			    control->recv_dma, control->recv_len,
 			    DMA_FROM_DEVICE);
 failure:
 	return -1;
@@ -1421,12 +1638,12 @@ failure:
 
 static int control_init_send_ios(struct control *control,
 				 struct viport *viport,
-				 struct vnic_control_packet * pkt)
+				 struct vnic_control_packet *pkt)
 {
-	struct io		* io;
+	struct io		*io;
 	struct ib_device	*ibdev = viport->config->ibdev;
 
-	control->send_io.virtual_addr = (u8*)pkt;
+	control->send_io.virtual_addr = (u8 *)pkt;
 	control->send_len = sizeof *pkt;
 	control->send_dma = ib_dma_map_single(ibdev, pkt,
 					      control->send_len,
@@ -1456,8 +1673,8 @@ failure:
 	return -1;
 }
 
-int control_init(struct control * control, struct viport * viport,
-		 struct control_config * config, struct ib_pd * pd)
+int control_init(struct control *control, struct viport *viport,
+		 struct control_config *config, struct ib_pd *pd)
 {
 	struct vnic_control_packet	*pkt;
 	unsigned int sz;
@@ -1469,6 +1686,8 @@ int control_init(struct control * control, struct viport * viport,
 	control->ib_conn.viport = viport;
 	control->ib_conn.ib_config = &config->ib_config;
 	control->ib_conn.state = IB_CONN_UNINITTED;
+	control->ib_conn.callback_thread = NULL;
+	control->ib_conn.callback_thread_end = 0;
 	control->req_state = REQ_INACTIVE;
 	control->last_cmd  = CMD_INVALID;
 	control->seq_num = 0;
@@ -1497,19 +1716,19 @@ int control_init(struct control * control, struct viport * viport,
 						 &control->ib_conn);
 	if (IS_ERR(control->ib_conn.cm_id)) {
 		CONTROL_ERROR("creating control CM ID failed\n");
-		goto destroy_conn;
+		goto destroy_mr;
 	}
 
 	sz = sizeof(struct recv_io) * config->num_recvs;
 	control->recv_ios = vmalloc(sz);
-	memset(control->recv_ios, 0, sz);
 
 	if (!control->recv_ios) {
 		CONTROL_ERROR("%s: failed allocating space for recv ios\n",
 			      control_ifcfg_name(control));
-		goto destroy_conn;
+		goto destroy_cm_id;
 	}
 
+	memset(control->recv_ios, 0, sz);
 	/*One send buffer and num_recvs recv buffers */
 	control->local_storage = kzalloc(sizeof *pkt *
 					 (config->num_recvs + 1),
@@ -1519,7 +1738,7 @@ int control_init(struct control * control, struct viport * viport,
 		CONTROL_ERROR("%s: failed allocating space"
 			      " for local storage\n",
 			      control_ifcfg_name(control));
-		goto destroy_conn;
+		goto free_recv_ios;
 	}
 
 	pkt = control->local_storage;
@@ -1537,8 +1756,13 @@ unmap_send:
 			    control->send_dma, control->send_len,
 			    DMA_TO_DEVICE);
 free_storage:
-	vfree(control->recv_ios);
 	kfree(control->local_storage);
+free_recv_ios:
+	vfree(control->recv_ios);
+destroy_cm_id:
+	ib_destroy_cm_id(control->ib_conn.cm_id);
+destroy_mr:
+	ib_dereg_mr(control->mr);
 destroy_conn:
 	ib_destroy_qp(control->ib_conn.qp);
 	ib_destroy_cq(control->ib_conn.cq);
@@ -1552,12 +1776,14 @@ void control_cleanup(struct control *control)
 			 control_ifcfg_name(control));
 
 	if (ib_send_cm_dreq(control->ib_conn.cm_id, NULL, 0))
-		printk(KERN_DEBUG "control CM DREQ sending failed\n");
+		CONTROL_ERROR("control CM DREQ sending failed\n");
 
+	control->ib_conn.state = IB_CONN_DISCONNECTED;
 	control_timer_stop(control);
 	control->req_state  = REQ_INACTIVE;
 	control->response   = NULL;
 	control->last_cmd   = CMD_INVALID;
+	vnic_completion_cleanup(&control->ib_conn);
 	ib_destroy_cm_id(control->ib_conn.cm_id);
 	ib_destroy_qp(control->ib_conn.qp);
 	ib_destroy_cq(control->ib_conn.cq);
@@ -1566,7 +1792,7 @@ void control_cleanup(struct control *control)
 			    control->send_dma, control->send_len,
 			    DMA_TO_DEVICE);
 	ib_dma_unmap_single(control->parent->config->ibdev,
-			    control->recv_dma, control->send_len,
+			    control->recv_dma, control->recv_len,
 			    DMA_FROM_DEVICE);
 	vfree(control->recv_ios);
 	kfree(control->local_storage);
@@ -1743,83 +1969,86 @@ static void control_log_config_link_pkt(struct vnic_control_packet *pkt)
 	}
 }
 
-static void control_log_config_addrs_pkt(struct vnic_control_packet *pkt)
+static void print_config_addr(struct vnic_address_op *list,
+				int num_address_ops, size_t mgidoff)
 {
-	int i;
+	int i = 0;
 
-	printk(KERN_INFO
-	       "               pkt_cmd = CMD_CONFIG_ADDRESSES\n");
-	printk(KERN_INFO
-	       "               pkt_seq_num = %u,"
-	       " pkt_retry_count = %u\n",
-	       pkt->hdr.pkt_seq_num,
-	       pkt->hdr.pkt_retry_count);
-	printk(KERN_INFO
-	       "               num_address_ops = %x,"
-	       " lan_switch_num = %d\n",
-	       pkt->cmd.config_addresses_req.num_address_ops,
-	       pkt->cmd.config_addresses_req.lan_switch_num);
-	for (i = 0; (i < pkt->cmd.config_addresses_req.num_address_ops)
-	     && (i < 16); i++) {
-		printk(KERN_INFO
-		       "               list_address_ops[%u].index"
-		       " = %u\n",
-		       i,
-		       be16_to_cpu(pkt->cmd.config_addresses_req.
-			      list_address_ops[i].index));
-		switch (pkt->cmd.config_addresses_req.
-		        list_address_ops[i].operation) {
+	while (i < num_address_ops && i < 16) {
+		printk(KERN_INFO "               list_address_ops[%u].index"
+				 " = %u\n", i, be16_to_cpu(list->index));
+		switch (list->operation) {
 		case VNIC_OP_GET_ENTRY:
-			printk(KERN_INFO
-			       "               list_address_ops[%u]."
-			       "operation = VNIC_OP_GET_ENTRY\n",
-			       i);
+			printk(KERN_INFO "               list_address_ops[%u]."
+					 "operation = VNIC_OP_GET_ENTRY\n", i);
 			break;
 		case VNIC_OP_SET_ENTRY:
-			printk(KERN_INFO
-			       "               list_address_ops[%u]."
-			       "operation = VNIC_OP_SET_ENTRY\n",
-			       i);
+			printk(KERN_INFO "               list_address_ops[%u]."
+					 "operation = VNIC_OP_SET_ENTRY\n", i);
 			break;
 		default:
-			printk(KERN_INFO
-			       "               list_address_ops[%u]."
-			       "operation = UNKNOWN(%d)\n",
-			       i,
-			       pkt->cmd.config_addresses_req.
-			       list_address_ops[i].operation);
+			printk(KERN_INFO "               list_address_ops[%u]."
+					 "operation = UNKNOWN(%d)\n", i,
+					 list->operation);
 			break;
 		}
-		printk(KERN_INFO
-		       "               list_address_ops[%u].valid"
-		       " = %u\n",
-		       i,
-		       pkt->cmd.config_addresses_req.
-		       list_address_ops[i].valid);
-		printk(KERN_INFO
-		       "               list_address_ops[%u].address"
-		       " = %02x:%02x:%02x:%02x:%02x:%02x\n",
-		       i,
-		       pkt->cmd.config_addresses_req.
-		       list_address_ops[i].address[0],
-		       pkt->cmd.config_addresses_req.
-		       list_address_ops[i].address[1],
-		       pkt->cmd.config_addresses_req.
-		       list_address_ops[i].address[2],
-		       pkt->cmd.config_addresses_req.
-		       list_address_ops[i].address[3],
-		       pkt->cmd.config_addresses_req.
-		       list_address_ops[i].address[4],
-		       pkt->cmd.config_addresses_req.
-		       list_address_ops[i].address[5]);
-		printk(KERN_INFO
-		       "               list_address_ops[%u].vlan"
-		       " = %u\n",
-		       i,
-		       be16_to_cpu(pkt->cmd.config_addresses_req.
-			      list_address_ops[i].vlan));
+		printk(KERN_INFO "               list_address_ops[%u].valid"
+				 " = %u\n", i, list->valid);
+		printk(KERN_INFO "               list_address_ops[%u].address"
+				 " = %02x:%02x:%02x:%02x:%02x:%02x\n", i,
+				 list->address[0], list->address[1],
+				 list->address[2], list->address[3],
+				 list->address[4], list->address[5]);
+		printk(KERN_INFO "               list_address_ops[%u].vlan"
+				 " = %u\n", i, be16_to_cpu(list->vlan));
+		if (mgidoff) {
+			printk(KERN_INFO
+				 "               list_address_ops[%u].mgid"
+				 " = " VNIC_GID_FMT "\n", i,
+				 VNIC_GID_RAW_ARG((char *)list + mgidoff));
+			list = (struct vnic_address_op *)
+			       ((char *)list + sizeof(struct vnic_address_op2));
+		} else
+			list = (struct vnic_address_op *)
+			       ((char *)list + sizeof(struct vnic_address_op));
+	i++;
 	}
+}
 
+static void control_log_config_addrs_pkt(struct vnic_control_packet *pkt,
+					u8 addresses2)
+{
+	struct vnic_address_op *list;
+	int no_address_ops;
+
+	if (addresses2)
+		printk(KERN_INFO
+			"               pkt_cmd = CMD_CONFIG_ADDRESSES2\n");
+	else
+		printk(KERN_INFO
+			"               pkt_cmd = CMD_CONFIG_ADDRESSES\n");
+	printk(KERN_INFO "               pkt_seq_num = %u,"
+			" pkt_retry_count = %u\n",
+			pkt->hdr.pkt_seq_num, pkt->hdr.pkt_retry_count);
+	if (addresses2) {
+		printk(KERN_INFO "               num_address_ops = %x,"
+				" lan_switch_num = %d\n",
+				pkt->cmd.config_addresses_req2.num_address_ops,
+				pkt->cmd.config_addresses_req2.lan_switch_num);
+		list = (struct vnic_address_op *)
+				pkt->cmd.config_addresses_req2.list_address_ops;
+		no_address_ops = pkt->cmd.config_addresses_req2.num_address_ops;
+		print_config_addr(list, no_address_ops,
+				offsetof(struct vnic_address_op2, mgid));
+	} else {
+		printk(KERN_INFO "               num_address_ops = %x,"
+				" lan_switch_num = %d\n",
+				pkt->cmd.config_addresses_req.num_address_ops,
+				pkt->cmd.config_addresses_req.lan_switch_num);
+		list = pkt->cmd.config_addresses_req.list_address_ops;
+		no_address_ops = pkt->cmd.config_addresses_req.num_address_ops;
+		print_config_addr(list, no_address_ops, 0);
+	}
 }
 
 static void control_log_exch_pools_pkt(struct vnic_control_packet *pkt)
@@ -1999,7 +2228,10 @@ static void control_log_control_packet(struct vnic_control_packet *pkt)
 		control_log_exch_pools_pkt(pkt);
 		break;
 	case CMD_CONFIG_ADDRESSES:
-		control_log_config_addrs_pkt(pkt);
+		control_log_config_addrs_pkt(pkt, 0);
+		break;
+	case CMD_CONFIG_ADDRESSES2:
+		control_log_config_addrs_pkt(pkt, 1);
 		break;
 	case CMD_CONFIG_LINK:
 		control_log_config_link_pkt(pkt);

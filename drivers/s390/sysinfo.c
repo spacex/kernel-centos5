@@ -3,117 +3,18 @@
  *
  *    Copyright (C) 2001 IBM Deutschland Entwicklung GmbH, IBM Corporation
  *    Author(s): Ulrich Weigand (Ulrich.Weigand@de.ibm.com)
+ *	         Martin Schwidefsky <schwidefsky@de.ibm.com>
  */
 
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include <linux/init.h>
+#include <linux/module.h>
 #include <asm/ebcdic.h>
-
-struct sysinfo_1_1_1 {
-	char reserved_0[32];
-	char manufacturer[16];
-	char type[4];
-	char reserved_1[12];
-	char model_capacity[16];
-	char sequence[16];
-	char plant[4];
-	char model[16];
-	char model_perm_cap[16];
-	char model_temp_cap[16];
-	char model_cap_rating[4];
-	char model_perm_cap_rating[4];
-	char model_temp_cap_rating[4];
-};
-
-struct sysinfo_1_2_1 {
-	char reserved_0[80];
-	char sequence[16];
-	char plant[4];
-	char reserved_1[2];
-	unsigned short cpu_address;
-};
-
-struct sysinfo_1_2_2 {
-	char format;
-	char reserved_0[1];
-	unsigned short acc_offset;
-	char reserved_1[24];
-	unsigned int secondary_capability;
-	unsigned int capability;
-	unsigned short cpus_total;
-	unsigned short cpus_configured;
-	unsigned short cpus_standby;
-	unsigned short cpus_reserved;
-	unsigned short adjustment[0];
-};
-
-struct sysinfo_1_2_2_extension {
-	unsigned int alt_capability;
-	unsigned short alt_adjustment[0];
-};
-
-struct sysinfo_2_2_1 {
-	char reserved_0[80];
-	char sequence[16];
-	char plant[4];
-	unsigned short cpu_id;
-	unsigned short cpu_address;
-};
-
-struct sysinfo_2_2_2 {
-	char reserved_0[32];
-	unsigned short lpar_number;
-	char reserved_1;
-	unsigned char characteristics;
-	unsigned short cpus_total;
-	unsigned short cpus_configured;
-	unsigned short cpus_standby;
-	unsigned short cpus_reserved;
-	char name[8];
-	unsigned int caf;
-	char reserved_2[16];
-	unsigned short cpus_dedicated;
-	unsigned short cpus_shared;
-};
-
-#define LPAR_CHAR_DEDICATED	(1 << 7)
-#define LPAR_CHAR_SHARED	(1 << 6)
-#define LPAR_CHAR_LIMITED	(1 << 5)
-
-struct sysinfo_3_2_2 {
-	char reserved_0[31];
-	unsigned char count;
-	struct {
-		char reserved_0[4];
-		unsigned short cpus_total;
-		unsigned short cpus_configured;
-		unsigned short cpus_standby;
-		unsigned short cpus_reserved;
-		char name[8];
-		unsigned int caf;
-		char cpi[16];
-		char reserved_1[24];
-
-	} vm[8];
-};
-
-int stsi(void *sysinfo, int fc, int sel1, int sel2)
-{
-	register int r0 asm("0") = (fc << 28) | sel1;
-	register int r1 asm("1") = sel2;
-
-	asm volatile(
-		"   stsi 0(%2)\n"
-		"0: jz   2f\n"
-		"1: lhi  %0,%3\n"
-		"2:\n"
-		EX_TABLE(0b,1b)
-		: "+d" (r0) : "d" (r1), "a" (sysinfo), "K" (-ENOSYS)
-		: "cc", "memory" );
-	return r0;
-}
+#include <asm/sysinfo.h>
+#include <asm/cpcmd.h>
 
 static inline int stsi_0(void)
 {
@@ -368,3 +269,152 @@ static __init int create_proc_sysinfo(void)
 
 __initcall(create_proc_sysinfo);
 
+int get_cpu_capability(unsigned int *capability)
+{
+	struct sysinfo_1_2_2 *info;
+	int rc;
+
+	info = (void *) get_zeroed_page(GFP_KERNEL);
+	if (!info)
+		return -ENOMEM;
+	rc = stsi(info, 1, 2, 2);
+	if (rc == -ENOSYS)
+		goto out;
+	rc = 0;
+	*capability = info->capability;
+out:
+	free_page((unsigned long) info);
+	return rc;
+}
+
+/*
+ * Service levels interface.
+ */
+
+static DECLARE_RWSEM(service_level_sem);
+static LIST_HEAD(service_level_list);
+
+int register_service_level(struct service_level *slr)
+{
+	struct service_level *ptr;
+
+	down_write(&service_level_sem);
+	list_for_each_entry(ptr, &service_level_list, list)
+		if (ptr == slr) {
+			up_write(&service_level_sem);
+			return -EEXIST;
+		}
+	list_add_tail(&slr->list, &service_level_list);
+	up_write(&service_level_sem);
+	return 0;
+}
+EXPORT_SYMBOL(register_service_level);
+
+int unregister_service_level(struct service_level *slr)
+{
+	struct service_level *ptr, *next;
+	int rc = -ENOENT;
+
+	down_write(&service_level_sem);
+	list_for_each_entry_safe(ptr, next, &service_level_list, list) {
+		if (ptr != slr)
+			continue;
+		list_del(&ptr->list);
+		rc = 0;
+		break;
+	}
+	up_write(&service_level_sem);
+	return rc;
+}
+EXPORT_SYMBOL(unregister_service_level);
+
+static void *service_level_start(struct seq_file *m, loff_t *pos)
+{
+	struct list_head *lh;
+	loff_t off = *pos;
+
+	down_read(&service_level_sem);
+	list_for_each(lh, &service_level_list)
+		if (off-- == 0)
+			return lh;
+	return NULL;
+}
+
+static void *service_level_next(struct seq_file *m, void *p, loff_t *pos)
+{
+	struct list_head *lh;
+
+	lh = ((struct list_head *) p)->next;
+	++*pos;
+	return lh == &service_level_list ? NULL : lh;
+}
+
+static void service_level_stop(struct seq_file *m, void *p)
+{
+	up_read(&service_level_sem);
+}
+
+static int service_level_show(struct seq_file *m, void *p)
+{
+	struct service_level *slr;
+
+	slr = list_entry(p, struct service_level, list);
+	slr->seq_print(m, slr);
+	return 0;
+}
+
+static struct seq_operations service_level_seq_ops = {
+	.start		= service_level_start,
+	.next		= service_level_next,
+	.stop		= service_level_stop,
+	.show		= service_level_show
+};
+
+static int service_level_open(struct inode *inode, struct file *file)
+{
+	return seq_open(file, &service_level_seq_ops);
+}
+
+static struct file_operations service_level_ops = {
+	.open           = service_level_open,
+	.read           = seq_read,
+	.llseek         = seq_lseek,
+	.release        = seq_release
+};
+
+static void service_level_vm_print(struct seq_file *m,
+				   struct service_level *slr)
+{
+	char *query_buffer, *str;
+
+	query_buffer = kmalloc(1024, GFP_KERNEL | GFP_DMA);
+	if (!query_buffer)
+		return;
+	cpcmd("QUERY CPLEVEL", query_buffer, 1024, NULL);
+	str = strchr(query_buffer, '\n');
+	if (str)
+		*str = 0;
+	seq_printf(m, "VM: %s\n", query_buffer);
+	kfree(query_buffer);
+}
+
+static struct service_level service_level_vm = {
+	.seq_print = service_level_vm_print
+};
+
+static struct proc_dir_entry *service_levels_entry = NULL;
+
+static __init int create_proc_service_level(void)
+{
+	service_levels_entry = create_proc_entry("service_levels", 0444,
+						 &proc_root);
+	if (service_levels_entry) {
+		service_levels_entry->proc_fops = &service_level_ops;
+		service_levels_entry->owner = THIS_MODULE;
+	}
+	if (MACHINE_IS_VM)
+		register_service_level(&service_level_vm);
+	return 0;
+}
+
+subsys_initcall(create_proc_service_level);

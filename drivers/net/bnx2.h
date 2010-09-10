@@ -1,6 +1,6 @@
 /* bnx2.h: Broadcom NX2 network driver.
  *
- * Copyright (c) 2004-2007 Broadcom Corporation
+ * Copyright (c) 2004-2009 Broadcom Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -361,6 +361,9 @@ struct l2_fhdr {
 #define BNX2_L2CTX_CTX_TYPE_CTX_BD_CHN_TYPE_VALUE	 (1<<28)
 
 #define BNX2_L2CTX_HOST_BDIDX				0x00000004
+#define BNX2_L2CTX_STATUSB_NUM_SHIFT			 16
+#define BNX2_L2CTX_STATUSB_NUM(sb_id)			 \
+	(((sb_id) > 0) ? (((sb_id) + 7) << BNX2_L2CTX_STATUSB_NUM_SHIFT) : 0)
 #define BNX2_L2CTX_HOST_BSEQ				0x00000008
 #define BNX2_L2CTX_NX_BSEQ				0x0000000c
 #define BNX2_L2CTX_NX_BDHADDR_HI			0x00000010
@@ -378,6 +381,9 @@ struct l2_fhdr {
  *  pci_config_l definition
  *  offset: 0000
  */
+#define BNX2_PCICFG_MSI_CONTROL				0x00000058
+#define BNX2_PCICFG_MSI_CONTROL_ENABLE			 (1L<<16)
+
 #define BNX2_PCICFG_MISC_CONFIG				0x00000068
 #define BNX2_PCICFG_MISC_CONFIG_TARGET_BYTE_SWAP	 (1L<<2)
 #define BNX2_PCICFG_MISC_CONFIG_TARGET_MB_WORD_SWAP	 (1L<<3)
@@ -4199,7 +4205,14 @@ struct l2_fhdr {
 
 #define BNX2_RBUF_CONFIG				0x0020000c
 #define BNX2_RBUF_CONFIG_XOFF_TRIP			 (0x3ffL<<0)
+#define BNX2_RBUF_CONFIG_XOFF_TRIP_VAL(mtu)		 \
+	((((mtu) - 1500) * 31 / 1000) + 54)
 #define BNX2_RBUF_CONFIG_XON_TRIP			 (0x3ffL<<16)
+#define BNX2_RBUF_CONFIG_XON_TRIP_VAL(mtu)		 \
+	((((mtu) - 1500) * 39 / 1000) + 66)
+#define BNX2_RBUF_CONFIG_VAL(mtu)			 \
+	(BNX2_RBUF_CONFIG_XOFF_TRIP_VAL(mtu) |		 \
+	(BNX2_RBUF_CONFIG_XON_TRIP_VAL(mtu) << 16))
 
 #define BNX2_RBUF_FW_BUF_ALLOC				0x00200010
 #define BNX2_RBUF_FW_BUF_ALLOC_VALUE			 (0x1ffL<<7)
@@ -4221,11 +4234,25 @@ struct l2_fhdr {
 
 #define BNX2_RBUF_CONFIG2				0x0020001c
 #define BNX2_RBUF_CONFIG2_MAC_DROP_TRIP			 (0x3ffL<<0)
+#define BNX2_RBUF_CONFIG2_MAC_DROP_TRIP_VAL(mtu)	 \
+	((((mtu) - 1500) * 4 / 1000) + 5)
 #define BNX2_RBUF_CONFIG2_MAC_KEEP_TRIP			 (0x3ffL<<16)
+#define BNX2_RBUF_CONFIG2_MAC_KEEP_TRIP_VAL(mtu)	 \
+	((((mtu) - 1500) * 2 / 100) + 30)
+#define BNX2_RBUF_CONFIG2_VAL(mtu)			 \
+	(BNX2_RBUF_CONFIG2_MAC_DROP_TRIP_VAL(mtu) |	 \
+	(BNX2_RBUF_CONFIG2_MAC_KEEP_TRIP_VAL(mtu) << 16))
 
 #define BNX2_RBUF_CONFIG3				0x00200020
 #define BNX2_RBUF_CONFIG3_CU_DROP_TRIP			 (0x3ffL<<0)
+#define BNX2_RBUF_CONFIG3_CU_DROP_TRIP_VAL(mtu)		 \
+	((((mtu) - 1500) * 12 / 1000) + 18)
 #define BNX2_RBUF_CONFIG3_CU_KEEP_TRIP			 (0x3ffL<<16)
+#define BNX2_RBUF_CONFIG3_CU_KEEP_TRIP_VAL(mtu)		 \
+	((((mtu) - 1500) * 2 / 100) + 30)
+#define BNX2_RBUF_CONFIG3_VAL(mtu)			 \
+	(BNX2_RBUF_CONFIG3_CU_DROP_TRIP_VAL(mtu) |	 \
+	(BNX2_RBUF_CONFIG3_CU_KEEP_TRIP_VAL(mtu) << 16))
 
 #define BNX2_RBUF_PKT_DATA				0x00208000
 #define BNX2_RBUF_CLIST_DATA				0x00210000
@@ -5876,6 +5903,7 @@ struct l2_fhdr {
 #define BNX2_RXP_FTQ_CTL_CUR_DEPTH			 (0x3ffL<<22)
 
 #define BNX2_RXP_SCRATCH				0x000e0000
+#define BNX2_RXP_SCRATCH_RXP_FLOOD			 0x000e0024
 #define BNX2_RXP_SCRATCH_RSS_TBL_SZ			 0x000e0038
 #define BNX2_RXP_SCRATCH_RSS_TBL			 0x000e003c
 #define BNX2_RXP_SCRATCH_RSS_TBL_MAX_ENTRIES		 128
@@ -6504,6 +6532,9 @@ struct l2_fhdr {
 #define RX_CID		0
 #define RX_RSS_CID	4
 #define RX_MAX_RSS_RINGS	7
+#define RX_MAX_RINGS		(RX_MAX_RSS_RINGS + 1)
+#define TX_MAX_TSS_RINGS	7
+#define TX_MAX_RINGS		(TX_MAX_TSS_RINGS + 1)
 
 #define MB_TX_CID_ADDR	MB_GET_CID_ADDR(TX_CID)
 #define MB_RX_CID_ADDR	MB_GET_CID_ADDR(RX_CID)
@@ -6589,9 +6620,9 @@ struct flash_spec {
 
 struct bnx2_irq {
 	irq_handler_t	handler;
-	u16		vector;
+	unsigned int	vector;
 	u8		requested;
-	char		name[16];
+	char		name[IFNAMSIZ + 2];
 };
 
 struct bnx2_tx_ring_info {
@@ -6643,6 +6674,11 @@ struct bnx2_napi {
 	u32 			last_status_idx;
 	u32			int_num;
 
+#ifdef BCM_CNIC
+	u32			cnic_tag;
+	int			cnic_present;
+#endif
+
 	struct bnx2_rx_ring_info	rx_ring;
 	struct bnx2_tx_ring_info	tx_ring;
 };
@@ -6693,12 +6729,17 @@ struct bnx2 {
 	int		tx_ring_size;
 	u32		tx_wake_thresh;
 
+#ifdef BCM_CNIC
+	struct cnic_ops		*cnic_ops;
+	void			*cnic_data;
+#endif
 	/* End of fields used in the performance code paths. */
 
-	char			*name;
+	unsigned int		current_interval;
+#define BNX2_TIMER_INTERVAL		HZ
+#define BNX2_SERDES_AN_TIMEOUT		(HZ / 3)
+#define BNX2_SERDES_FORCED_TIMEOUT	(HZ / 10)
 
-	int			timer_interval;
-	int			current_interval;
 	struct			timer_list timer;
 	struct work_struct	reset_task;
 	int			in_reset_task;
@@ -6814,9 +6855,6 @@ struct bnx2 {
 	u8			flow_ctrl;	/* actual flow ctrl settings */
 						/* may be different from     */
 						/* req_flow_ctrl if autoneg  */
-#define FLOW_CTRL_TX		1
-#define FLOW_CTRL_RX		2
-
 	u32			advertising;
 
 	u8			req_flow_ctrl;	/* flow ctrl advertisement */
@@ -6831,8 +6869,6 @@ struct bnx2 {
 #define PHY_LOOPBACK		2
 
 	u8			serdes_an_pending;
-#define SERDES_AN_TIMEOUT	(HZ / 3)
-#define SERDES_FORCED_TIMEOUT	(HZ / 10)
 
 	u8			mac_addr[8];
 
@@ -6858,6 +6894,13 @@ struct bnx2 {
 
 	u8			num_tx_rings;
 	u8			num_rx_rings;
+
+	u32			idle_chk_status_idx;
+
+#ifdef BCM_CNIC
+	struct cnic_eth_dev	cnic_eth_dev;
+#endif
+
 };
 
 #define REG_RD(bp, offset)					\
@@ -6933,14 +6976,14 @@ struct fw_info {
 /* This value (in milliseconds) determines the frequency of the driver
  * issuing the PULSE message code.  The firmware monitors this periodic
  * pulse to determine when to switch to an OS-absent mode. */
-#define DRV_PULSE_PERIOD_MS                 250
+#define BNX2_DRV_PULSE_PERIOD_MS                 250
 
 /* This value (in milliseconds) determines how long the driver should
  * wait for an acknowledgement from the firmware before timing out.  Once
  * the firmware has timed out, the driver will assume there is no firmware
  * running and there won't be any firmware-driver synchronization during a
  * driver reset. */
-#define FW_ACK_TIME_OUT_MS                  1000
+#define BNX2_FW_ACK_TIME_OUT_MS                  1000
 
 
 #define BNX2_DRV_RESET_SIGNATURE		0x00000000

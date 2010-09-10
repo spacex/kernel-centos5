@@ -493,6 +493,37 @@ config SND_HDA_POWER_SAVE_DEFAULT
 	  The default time-out value in seconds for HD-audio automatic
 	  power-save mode.  0 means to disable the power-save mode.
 
+config SND_HDA_HWDEP
+        bool "Build hwdep interface for HD-audio driver"
+        select SND_HWDEP
+        help
+          Say Y here to build a hwdep interface for HD-audio driver.
+          This interface can be used for out-of-band communication
+          with codecs for debugging purposes.
+
+config SND_HDA_RECONFIG
+        bool "Allow dynamic codec reconfiguration (EXPERIMENTAL)"
+        depends on SND_HDA_HWDEP && EXPERIMENTAL
+        help
+          Say Y here to enable the HD-audio codec re-configuration feature.
+          This adds the sysfs interfaces to allow user to clear the whole
+          codec configuration, change the codec setup, add extra verbs,
+          and re-configure the codec dynamically.
+
+config SND_HDA_INPUT_BEEP
+        bool "Support digital beep via input layer"
+        depends on INPUT=y || INPUT=SND_HDA_INTEL
+        help
+          Say Y here to build a digital beep interface for HD-audio
+          driver. This interface is used to generate digital beeps.
+
+config SND_HDA_GENERIC
+        bool "Enable generic HD-audio codec parser"
+        default y
+        help
+          Say Y here to enable the generic HD-audio codec parser
+          in snd-hda-intel driver.
+
 config SND_HDA_INTEL
 	tristate "Intel HD Audio"
 	depends on SND

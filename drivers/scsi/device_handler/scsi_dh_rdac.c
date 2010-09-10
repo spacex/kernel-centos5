@@ -27,6 +27,7 @@
 #include "../scsi_priv.h"
 
 #define RDAC_NAME "rdac"
+#define RDAC_RETRY_COUNT 3
 
 /*
  * LSI mode page stuff
@@ -390,6 +391,7 @@ static int check_ownership(struct scsi_device *sdev, struct rdac_dh_data *h)
 	struct c9_inquiry *inqp;
 
 	h->lun_state = RDAC_LUN_UNOWNED;
+	h->state = RDAC_STATE_ACTIVE;
 	err = submit_inquiry(sdev, 0xC9, sizeof(struct c9_inquiry), h);
 	if (err == SCSI_DH_OK) {
 		inqp = &h->inq.c9;
@@ -450,28 +452,40 @@ static int mode_select_handle_sense(struct scsi_device *sdev,
 				    unsigned char *sensebuf)
 {
 	struct scsi_sense_hdr sense_hdr;
-	int sense, err = SCSI_DH_IO, ret;
+	int err = SCSI_DH_IO, ret;
 
 	ret = scsi_normalize_sense(sensebuf, SCSI_SENSE_BUFFERSIZE, &sense_hdr);
 	if (!ret)
 		goto done;
 
 	err = SCSI_DH_OK;
-	sense = (sense_hdr.sense_key << 16) | (sense_hdr.asc << 8) |
-			sense_hdr.ascq;
-	/* If it is retryable failure, submit the c9 inquiry again */
-	if (sense == 0x59136 || sense == 0x68b02 || sense == 0xb8b02 ||
-			    sense == 0x62900) {
-		/* 0x59136    - Command lock contention
-		 * 0x[6b]8b02 - Quiesense in progress or achieved
-		 * 0x62900    - Power On, Reset, or Bus Device Reset
-		 */
+
+	switch (sense_hdr.sense_key) {
+	case NO_SENSE:
+	case ABORTED_COMMAND:
+	case UNIT_ATTENTION:
 		err = SCSI_DH_RETRY;
+		break;
+	case NOT_READY:
+		if (sense_hdr.asc == 0x04 && sense_hdr.ascq == 0x01)
+			/* LUN Not Ready and is in the Process of Becoming
+			 * Ready
+			 */
+			err = SCSI_DH_RETRY;
+		break;
+	case ILLEGAL_REQUEST:
+		if (sense_hdr.asc == 0x91 && sense_hdr.ascq == 0x36)
+			/*
+			 * Command Lock contention
+			 */
+			err = SCSI_DH_RETRY;
+		break;
+	default:
+		sdev_printk(KERN_INFO, sdev,
+			    "MODE_SELECT failed with sense %02x/%02x/%02x.\n",
+			    sense_hdr.sense_key, sense_hdr.asc, sense_hdr.ascq);
 	}
 
-	if (sense)
-		sdev_printk(KERN_INFO, sdev,
-			"MODE_SELECT failed with sense 0x%x.\n", sense);
 done:
 	return err;
 }
@@ -480,21 +494,27 @@ static int send_mode_select(struct scsi_device *sdev, struct rdac_dh_data *h)
 {
 	struct request *rq;
 	struct request_queue *q = sdev->request_queue;
-	int err = SCSI_DH_RES_TEMP_UNAVAIL;
+	int err, retry_cnt = RDAC_RETRY_COUNT;
 
+retry:
+	err = SCSI_DH_RES_TEMP_UNAVAIL;
 	rq = rdac_failover_get(sdev, h);
 	if (!rq)
 		goto done;
 
-	sdev_printk(KERN_INFO, sdev, "queueing MODE_SELECT command.\n");
+	sdev_printk(KERN_INFO, sdev, "%s MODE_SELECT command.\n",
+		(retry_cnt == RDAC_RETRY_COUNT) ? "queueing" : "retrying");
 
 	err = blk_execute_rq(q, NULL, rq, 1);
-	if (err != SCSI_DH_OK)
+	blk_put_request(rq);
+	if (err != SCSI_DH_OK) {
 		err = mode_select_handle_sense(sdev, h->sense);
+		if (err == SCSI_DH_RETRY && retry_cnt--)
+			goto retry;
+	}
 	if (err == SCSI_DH_OK)
 		h->state = RDAC_STATE_ACTIVE;
 
-	blk_put_request(rq);
 done:
 	return err;
 }
@@ -544,6 +564,12 @@ static int rdac_check_sense(struct scsi_device *sdev,
 	struct rdac_dh_data *h = get_rdac_data(sdev);
 	switch (sense_hdr->sense_key) {
 	case NOT_READY:
+		if (sense_hdr->asc == 0x04 && sense_hdr->ascq == 0x01)
+			/* LUN Not Ready - Logical Unit Not Ready and is in
+			* the process of becoming ready
+			* Just retry.
+			*/
+			return SCSI_MLQUEUE_DEVICE_BUSY2;
 		if (sense_hdr->asc == 0x04 && sense_hdr->ascq == 0x81)
 			/* LUN Not Ready - Storage firmware incompatible
 			 * Manual code synchonisation required.
@@ -555,6 +581,12 @@ static int rdac_check_sense(struct scsi_device *sdev,
 			/* LUN Not Ready - Quiescense in progress
 			 *
 			 * Just retry and wait.
+			 */
+			return SCSI_MLQUEUE_IMM_RETRY;
+		if (sense_hdr->asc == 0xA1  && sense_hdr->ascq == 0x02)
+			/* LUN Not Ready - Quiescense in progress
+			 * or has been achieved
+			 * Just retry.
 			 */
 			return SCSI_MLQUEUE_IMM_RETRY;
 		break;
@@ -572,6 +604,11 @@ static int rdac_check_sense(struct scsi_device *sdev,
 		if (sense_hdr->asc == 0x29 && sense_hdr->ascq == 0x00)
 			/*
 			 * Power On, Reset, or Bus Device Reset, just retry.
+			 */
+			return SCSI_MLQUEUE_IMM_RETRY;
+		if (sense_hdr->asc == 0x8b && sense_hdr->ascq == 0x02)
+			/*
+			 * Quiescence in progress , just retry.
 			 */
 			return SCSI_MLQUEUE_IMM_RETRY;
 		break;
@@ -595,6 +632,10 @@ const struct scsi_dh_devlist rdac_dev_list[] = {
 	{"STK", "OPENstorage D280"},
 	{"SUN", "CSM200_R"},
 	{"SUN", "LCSM100_F"},
+	{"DELL", "MD3000"},
+	{"DELL", "MD3000i"},
+	{"LSI", "INF-01-00"},
+	{"ENGENIO", "INF-01-00"},
 	{NULL, NULL},
 };
 

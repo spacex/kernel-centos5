@@ -330,6 +330,10 @@ static void ipath_reset_qp(struct ipath_qp *qp, enum ib_qp_type type)
 	qp->s_wqe = NULL;
 	qp->s_pkt_delay = 0;
 	qp->s_draining = 0;
+	qp->s_next_psn = 0;
+	qp->s_last_psn = 0;
+	qp->s_sending_psn = 0;
+	qp->s_sending_hpsn = 0;
 	qp->s_psn = 0;
 	qp->r_psn = 0;
 	qp->r_msn = 0;
@@ -348,6 +352,7 @@ static void ipath_reset_qp(struct ipath_qp *qp, enum ib_qp_type type)
 	qp->s_head = 0;
 	qp->s_tail = 0;
 	qp->s_cur = 0;
+	qp->s_acked = 0;
 	qp->s_last = 0;
 	qp->s_ssn = 1;
 	qp->s_lsn = 0;
@@ -358,6 +363,50 @@ static void ipath_reset_qp(struct ipath_qp *qp, enum ib_qp_type type)
 	if (qp->r_rq.wq) {
 		qp->r_rq.wq->head = 0;
 		qp->r_rq.wq->tail = 0;
+	}
+	qp->r_sge.num_sge = 0;
+}
+
+static void clear_mr_refs(struct ipath_qp *qp, int clr_sends)
+{
+	unsigned n;
+
+	while (qp->r_sge.num_sge) {
+		atomic_dec(&qp->r_sge.sge.mr->refcount);
+		if (--qp->r_sge.num_sge)
+			qp->r_sge.sge = *qp->r_sge.sg_list++;
+	}
+
+	if (clr_sends) {
+		while (qp->s_last != qp->s_head) {
+			struct ipath_swqe *wqe = get_swqe_ptr(qp, qp->s_last);
+			unsigned i;
+
+			for (i = 0; i < wqe->wr.num_sge; i++) {
+				struct ipath_sge *sge = &wqe->sg_list[i];
+
+				atomic_dec(&sge->mr->refcount);
+			}
+			if (++qp->s_last >= qp->s_size)
+				qp->s_last = 0;
+		}
+		if (qp->s_rdma_mr) {
+			atomic_dec(&qp->s_rdma_mr->refcount);
+			qp->s_rdma_mr = NULL;
+		}
+	}
+
+	if (qp->ibqp.qp_type != IB_QPT_RC)
+		return;
+
+	for (n = 0; n < ARRAY_SIZE(qp->s_ack_queue); n++) {
+		struct ipath_ack_entry *e = &qp->s_ack_queue[n];
+
+		if (e->opcode == IB_OPCODE_RC_RDMA_READ_REQUEST &&
+		    e->rdma_sge.mr) {
+			atomic_dec(&e->rdma_sge.mr->refcount);
+			e->rdma_sge.mr = NULL;
+		}
 	}
 }
 
@@ -393,6 +442,8 @@ int ipath_error_qp(struct ipath_qp *qp, enum ib_wc_status err)
 	/* Schedule the sending tasklet to drain the send work queue. */
 	if (qp->s_last != qp->s_head)
 		ipath_schedule_send(qp);
+
+	clear_mr_refs(qp, 0);
 
 	memset(&wc, 0, sizeof(wc));
 	wc.qp = &qp->ibqp;
@@ -521,8 +572,9 @@ int ipath_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 			tasklet_kill(&qp->s_task);
 			wait_event(qp->wait_dma, !atomic_read(&qp->s_dma_busy));
 			spin_lock_irq(&qp->s_lock);
+			clear_mr_refs(qp, 1);
+			ipath_reset_qp(qp, ibqp->qp_type);
 		}
-		ipath_reset_qp(qp, ibqp->qp_type);
 		break;
 
 	case IB_QPS_SQD:
@@ -552,8 +604,8 @@ int ipath_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 		qp->remote_qpn = attr->dest_qp_num;
 
 	if (attr_mask & IB_QP_SQ_PSN) {
-		qp->s_psn = qp->s_next_psn = attr->sq_psn;
-		qp->s_last_psn = qp->s_next_psn - 1;
+		qp->s_sending_psn = qp->s_psn = qp->s_next_psn = attr->sq_psn;
+		qp->s_sending_hpsn = qp->s_last_psn = qp->s_next_psn - 1;
 	}
 
 	if (attr_mask & IB_QP_RQ_PSN)
@@ -745,7 +797,13 @@ struct ib_qp *ipath_create_qp(struct ib_pd *ibpd,
 	struct ipath_swqe *swq = NULL;
 	struct ipath_ibdev *dev;
 	size_t sz;
+	size_t sg_list_sz;
 	struct ib_qp *ret;
+
+	if (init_attr->create_flags) {
+		ret = ERR_PTR(-EINVAL);
+		goto bail;
+	}
 
 	if (init_attr->cap.max_send_sge > ib_ipath_max_sges ||
 	    init_attr->cap.max_send_wr > ib_ipath_max_qp_wrs) {
@@ -784,27 +842,34 @@ struct ib_qp *ipath_create_qp(struct ib_pd *ibpd,
 			goto bail;
 		}
 		sz = sizeof(*qp);
+		sg_list_sz = 0;
 		if (init_attr->srq) {
 			struct ipath_srq *srq = to_isrq(init_attr->srq);
 
-			sz += sizeof(*qp->r_sg_list) *
-				srq->rq.max_sge;
-		} else
-			sz += sizeof(*qp->r_sg_list) *
-				init_attr->cap.max_recv_sge;
-		qp = kmalloc(sz, GFP_KERNEL);
+			if (srq->rq.max_sge > 1)
+				sg_list_sz = sizeof(*qp->r_sg_list) *
+					(srq->rq.max_sge - 1);
+		} else if (init_attr->cap.max_recv_sge > 1)
+			sg_list_sz = sizeof(*qp->r_sg_list) *
+				(init_attr->cap.max_recv_sge - 1);
+		qp = kzalloc(sz + sg_list_sz, GFP_KERNEL);
 		if (!qp) {
 			ret = ERR_PTR(-ENOMEM);
 			goto bail_swq;
 		}
-		if (init_attr->srq) {
+		if (sg_list_sz && (init_attr->qp_type == IB_QPT_UD ||
+		    init_attr->qp_type == IB_QPT_SMI ||
+		    init_attr->qp_type == IB_QPT_GSI)) {
+			qp->r_ud_sg_list = kmalloc(sg_list_sz, GFP_KERNEL);
+			if (!qp->r_ud_sg_list) {
+				ret = ERR_PTR(-ENOMEM);
+				goto bail_qp;
+			}
+		} else
+			qp->r_ud_sg_list = NULL;
+		if (init_attr->srq)
 			sz = 0;
-			qp->r_rq.size = 0;
-			qp->r_rq.max_sge = 0;
-			qp->r_rq.wq = NULL;
-			init_attr->cap.max_recv_wr = 0;
-			init_attr->cap.max_recv_sge = 0;
-		} else {
+		else {
 			qp->r_rq.size = init_attr->cap.max_recv_wr + 1;
 			qp->r_rq.max_sge = init_attr->cap.max_recv_sge;
 			sz = (sizeof(struct ib_sge) * qp->r_rq.max_sge) +
@@ -813,7 +878,7 @@ struct ib_qp *ipath_create_qp(struct ib_pd *ibpd,
 					      qp->r_rq.size * sz);
 			if (!qp->r_rq.wq) {
 				ret = ERR_PTR(-ENOMEM);
-				goto bail_qp;
+				goto bail_sg_list;
 			}
 			memset(qp->r_rq.wq, 0,
 			       sizeof(struct ipath_rwq) + qp->r_rq.size * sz);
@@ -837,18 +902,14 @@ struct ib_qp *ipath_create_qp(struct ib_pd *ibpd,
 		qp->s_max_sge = init_attr->cap.max_send_sge;
 		if (init_attr->sq_sig_type == IB_SIGNAL_REQ_WR)
 			qp->s_flags = IPATH_S_SIGNAL_REQ_WR;
-		else
-			qp->s_flags = 0;
 		dev = to_idev(ibpd->device);
 		err = ipath_alloc_qpn(&dev->qp_table, qp,
 				      init_attr->qp_type);
 		if (err) {
 			ret = ERR_PTR(err);
 			vfree(qp->r_rq.wq);
-			goto bail_qp;
+			goto bail_sg_list;
 		}
-		qp->ip = NULL;
-		qp->s_tx = NULL;
 		ipath_reset_qp(qp, init_attr->qp_type);
 		break;
 
@@ -922,6 +983,8 @@ bail_ip:
 		vfree(qp->r_rq.wq);
 	ipath_free_qp(&dev->qp_table, qp);
 	free_qpn(&dev->qp_table, qp->ibqp.qp_num);
+bail_sg_list:
+	kfree(qp->r_ud_sg_list);
 bail_qp:
 	kfree(qp);
 bail_swq:
@@ -965,6 +1028,10 @@ int ipath_destroy_qp(struct ib_qp *ibqp)
 	ipath_free_qp(&dev->qp_table, qp);
 
 	if (qp->s_tx) {
+		if (qp->s_tx->mr) {
+			atomic_dec(&qp->s_tx->mr->refcount);
+			qp->s_tx->mr = NULL;
+		}
 		atomic_dec(&qp->refcount);
 		if (qp->s_tx->txreq.flags & IPATH_SDMA_TXREQ_F_FREEBUF)
 			kfree(qp->s_tx->txreq.map_addr);
@@ -976,6 +1043,8 @@ int ipath_destroy_qp(struct ib_qp *ibqp)
 
 	wait_event(qp->wait, !atomic_read(&qp->refcount));
 
+	clear_mr_refs(qp, 1);
+
 	/* all user's cleaned up, mark it available */
 	free_qpn(&dev->qp_table, qp->ibqp.qp_num);
 	spin_lock(&dev->n_qps_lock);
@@ -986,6 +1055,7 @@ int ipath_destroy_qp(struct ib_qp *ibqp)
 		kref_put(&qp->ip->ref, ipath_release_mmap_info);
 	else
 		vfree(qp->r_rq.wq);
+	kfree(qp->r_ud_sg_list);
 	vfree(qp->s_wq);
 	kfree(qp);
 	return 0;
@@ -1048,12 +1118,4 @@ void ipath_get_credit(struct ipath_qp *qp, u32 aeth)
 		if (ipath_cmp24(credit, qp->s_lsn) > 0)
 			qp->s_lsn = credit;
 	}
-
-	/* Restart sending if it was blocked due to lack of credits. */
-	if ((qp->s_flags & IPATH_S_WAIT_SSN_CREDIT) &&
-	    qp->s_cur != qp->s_head &&
-	    (qp->s_lsn == (u32) -1 ||
-	     ipath_cmp24(get_swqe_ptr(qp, qp->s_cur)->ssn,
-			 qp->s_lsn + 1) <= 0))
-		ipath_schedule_send(qp);
 }

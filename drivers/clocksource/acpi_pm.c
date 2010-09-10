@@ -174,4 +174,11 @@ pm_good:
 	return clocksource_register(&clocksource_acpi_pm);
 }
 
+
+static int __init disable_pmtmr(char *str)
+{
+	pmtmr_ioport = 0;
+	return 1;
+}
+__setup("nopmtimer", disable_pmtmr);
 module_init(init_acpi_pm_clocksource);

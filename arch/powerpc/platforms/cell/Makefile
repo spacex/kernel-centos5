@@ -13,6 +13,8 @@ obj-$(CONFIG_CBE_CPUFREQ_SPU_GOVERNOR)    += cpufreq_spudemand.o
 obj-$(CONFIG_CBE_AXON_UTL)		+= axon_utl.o
 obj-$(CONFIG_CBE_AXON_PCI)		+= axon_pci-error.o
 
+obj-$(CONFIG_PPC_IBM_CELL_POWERBUTTON)	+= cbe_powerbutton.o
+
 ifeq ($(CONFIG_SMP),y)
 obj-$(CONFIG_PPC_CELL_NATIVE)		+= smp.o
 endif

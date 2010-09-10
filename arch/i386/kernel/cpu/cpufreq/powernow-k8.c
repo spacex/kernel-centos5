@@ -1469,6 +1469,7 @@ static int __cpuinit powernowk8_init(void)
 	}
 	if (powernow_k8_cpu_preinit_acpi())
 		printk(KERN_ERR PFX "Pre-initialization of ACPI failed\n");
+#ifndef CONFIG_XEN
 #ifdef CONFIG_SMP
 	printk(KERN_INFO PFX "Found %d %s "
 	       "processors (%d cpu cores) (" VERSION ")\n",
@@ -1478,6 +1479,10 @@ static int __cpuinit powernowk8_init(void)
 	printk(KERN_INFO PFX "Found 1 %s "
 	       "processors (%d cpu cores) (" VERSION ")\n",
 	       boot_cpu_data.x86_model_id, supported_cpus);
+#endif
+#else
+	printk(KERN_INFO PFX "Found %d virtualized processors\n",
+		supported_cpus);
 #endif
 	return cpufreq_register_driver(&cpufreq_amd64_driver);
 }
@@ -1500,8 +1505,8 @@ MODULE_LICENSE("GPL");
 late_initcall(powernowk8_init);
 module_exit(powernowk8_exit);
 
-module_param(tscsync, int, 0);
+module_param(tscsync, int, 0444);
 MODULE_PARM_DESC(tscsync, "enable tsc by synchronizing powernow-k8 changes");
-module_param(preregister_acpi_perf, int, 0);
+module_param(preregister_acpi_perf, int, 0444);
 MODULE_PARM_DESC(preregister_acpi_perf, "allow preregistering of performance"
 		 " related ACPI data");

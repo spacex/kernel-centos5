@@ -111,42 +111,8 @@ int 		mptscsih_suspend(struct pci_dev *pdev, pm_message_t state);
 int 		mptscsih_resume(struct pci_dev *pdev);
 #endif
 
-#define SNS_LEN(scp)	sizeof((scp)->sense_buffer)
+#define SNS_LEN(scp)   sizeof((scp)->sense_buffer)
 
-/*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
-/**
- *	mptscsih_add_chain - Place a chain SGE at address pAddr.
- *	@pAddr: virtual address for SGE
- *	@next: nextChainOffset value (u32's)
- *	@length: length of next SGL segment
- *	@dma_addr: Physical address
- *
- *	This routine places a MPT request frame back on the MPT adapter's
- *	FreeQ.
- */
-static inline void
-mptscsih_add_chain(char *pAddr, u8 next, u16 length, dma_addr_t dma_addr)
-{
-	if (sizeof(dma_addr_t) == sizeof(u64)) {
-		SGEChain64_t *pChain = (SGEChain64_t *) pAddr;
-		u32 tmp = dma_addr & 0xFFFFFFFF;
-
-		pChain->Length = cpu_to_le16(length);
-		pChain->Flags = MPI_SGE_FLAGS_CHAIN_ELEMENT | mpt_addr_size();
-
-		pChain->NextChainOffset = next;
-
-		pChain->Address.Low = cpu_to_le32(tmp);
-		tmp = (u32) ((u64)dma_addr >> 32);
-		pChain->Address.High = cpu_to_le32(tmp);
-	} else {
-		SGEChain32_t *pChain = (SGEChain32_t *) pAddr;
-		pChain->Length = cpu_to_le16(length);
-		pChain->Flags = MPI_SGE_FLAGS_CHAIN_ELEMENT | mpt_addr_size();
-		pChain->NextChainOffset = next;
-		pChain->Address = cpu_to_le32(dma_addr);
-	}
-} /* mptscsih_add_chain() */
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /*
@@ -249,12 +215,11 @@ mptscsih_AddSGE(MPT_ADAPTER *ioc, struct scsi_cmnd *SCpnt,
 		dsgprintk(ioc,printk(MYIOC_s_INFO_FMT "SG: non-SG for %p, len=%d\n",
 				ioc->name, SCpnt, SCpnt->request_bufflen));
 		ioc->add_sge((char *) &pReq->SGL,
-			0xD1000000|MPT_SGE_FLAGS_ADDRESSING|sgdir|SCpnt->request_bufflen,
+			0xD1000000|sgdir|SCpnt->request_bufflen,
 			SCpnt->SCp.dma_handle);
 
 		return SUCCESS;
 	}
-
 
 	/* Handle the SG case.
 	 */
@@ -270,10 +235,10 @@ mptscsih_AddSGE(MPT_ADAPTER *ioc, struct scsi_cmnd *SCpnt,
 	 */
 
 nextSGEset:
-	numSgeSlots = ((frm_sz - sgeOffset) / (sizeof(u32) + sizeof(dma_addr_t)) );
+	numSgeSlots = ((frm_sz - sgeOffset) / ioc->SGE_size);
 	numSgeThisFrame = (sges_left < numSgeSlots) ? sges_left : numSgeSlots;
 
-	sgflags = MPT_SGE_FLAGS_SIMPLE_ELEMENT | MPT_SGE_FLAGS_ADDRESSING | sgdir;
+	sgflags = MPT_SGE_FLAGS_SIMPLE_ELEMENT | sgdir;
 
 	/* Get first (num - 1) SG elements
 	 * Skip any SG entries with a length of 0
@@ -282,7 +247,7 @@ nextSGEset:
 	for (ii=0; ii < (numSgeThisFrame-1); ii++) {
 		thisxfer = sg_dma_len(sg);
 		if (thisxfer == 0) {
-			sg ++; /* Get next SG element from the OS */
+			sg++; /* Get next SG element from the OS */
 			sg_done++;
 			continue;
 		}
@@ -290,9 +255,9 @@ nextSGEset:
 		v2 = sg_dma_address(sg);
 		ioc->add_sge(psge, sgflags | thisxfer, v2);
 
-		sg++;		/* Get next SG element from the OS */
-		psge += (sizeof(u32) + sizeof(dma_addr_t));
-		sgeOffset += (sizeof(u32) + sizeof(dma_addr_t));
+		sg++;	/* Get next SG element from the OS */
+		psge += ioc->SGE_size;
+		sgeOffset += ioc->SGE_size;
 		sg_done++;
 	}
 
@@ -310,11 +275,7 @@ nextSGEset:
 
 		v2 = sg_dma_address(sg);
 		ioc->add_sge(psge, sgflags | thisxfer, v2);
-		/*
-		sg++;
-		psge += (sizeof(u32) + sizeof(dma_addr_t));
-		*/
-		sgeOffset += (sizeof(u32) + sizeof(dma_addr_t));
+		sgeOffset += ioc->SGE_size;
 		sg_done++;
 
 		if (chainSge) {
@@ -323,7 +284,8 @@ nextSGEset:
 			 * Update the chain element
 			 * Offset and Length fields.
 			 */
-			mptscsih_add_chain((char *)chainSge, 0, sgeOffset, ioc->ChainBufferDMA + chain_dma_off);
+			ioc->add_chain((char *)chainSge, 0, sgeOffset,
+				ioc->ChainBufferDMA + chain_dma_off);
 		} else {
 			/* The current buffer is the original MF
 			 * and there is no Chain buffer.
@@ -356,7 +318,7 @@ nextSGEset:
 		 * set properly).
 		 */
 		if (sg_done) {
-			u32 *ptmp = (u32 *) (psge - (sizeof(u32) + sizeof(dma_addr_t)));
+			u32 *ptmp = (u32 *) (psge - ioc->SGE_size);
 			sgflags = le32_to_cpu(*ptmp);
 			sgflags |= MPT_SGE_FLAGS_LAST_ELEMENT;
 			*ptmp = cpu_to_le32(sgflags);
@@ -370,8 +332,9 @@ nextSGEset:
 			 * Old chain element is now complete.
 			 */
 			u8 nextChain = (u8) (sgeOffset >> 2);
-			sgeOffset += (sizeof(u32) + sizeof(dma_addr_t));
-			mptscsih_add_chain((char *)chainSge, nextChain, sgeOffset, ioc->ChainBufferDMA + chain_dma_off);
+			sgeOffset += ioc->SGE_size;
+			ioc->add_chain((char *)chainSge, nextChain, sgeOffset,
+					 ioc->ChainBufferDMA + chain_dma_off);
 		} else {
 			/* The original MF buffer requires a chain buffer -
 			 * set the offset.
@@ -1464,7 +1427,8 @@ mptscsih_qcmd(struct scsi_cmnd *SCpnt, void (*done)(struct scsi_cmnd *))
 	if (datalen == 0) {
 		/* Add a NULL SGE */
 		ioc->add_sge((char *)&pScsiReq->SGL,
-			MPT_SGE_FLAGS_SSIMPLE_READ | 0, (dma_addr_t) -1);
+			MPT_SGE_FLAGS_SSIMPLE_READ | 0,
+			(dma_addr_t) -1);
 	} else {
 		/* Add a 32 or 64 bit SGE */
 		if (mptscsih_AddSGE(ioc, SCpnt, pScsiReq, my_idx) != SUCCESS)
@@ -1734,6 +1698,18 @@ mptscsih_IssueTaskMgmt(MPT_SCSI_HOST *hd, u8 type, u8 channel, u8 id, int lun, i
 	}
 
 	if(mptscsih_tm_wait_for_completion(hd, timeout) == FAILED) {
+		unsigned long flags;
+
+		spin_lock_irqsave(&ioc->FreeQlock, flags);
+		if(hd->tmPending == 0) {
+			spin_unlock_irqrestore(&ioc->FreeQlock, flags);
+			goto out_success;
+		}
+		__mpt_free_msg_frame(ioc, mf);
+		hd->tmPending = 0;
+		hd->tmState = TM_STATE_NONE;
+		spin_unlock_irqrestore(&ioc->FreeQlock, flags);
+
 		dfailprintk(ioc, printk(MYIOC_s_ERR_FMT "task management request TIMED OUT!"
 			" (hd %p, ioc %p, mf %p) \n", ioc->name, hd,
 			ioc, mf));
@@ -1742,8 +1718,10 @@ mptscsih_IssueTaskMgmt(MPT_SCSI_HOST *hd, u8 type, u8 channel, u8 id, int lun, i
 		retval = mpt_HardResetHandler(ioc, CAN_SLEEP);
 		dtmprintk(ioc, printk(MYIOC_s_DEBUG_FMT "rc=%d \n",
 			 ioc->name, retval));
-		goto fail_out;
+		return FAILED;
 	}
+
+ out_success:
 
 	/*
 	 * Handle success case, see if theres a non-zero ioc_status.
@@ -1775,10 +1753,9 @@ mptscsih_get_tm_timeout(MPT_ADAPTER *ioc)
 	case FC:
 		return 40;
 	case SAS:
-		return 10;
 	case SPI:
 	default:
-		return 2;
+		return 10;
 	}
 }
 
@@ -1861,6 +1838,9 @@ mptscsih_abort(struct scsi_cmnd * SCpnt)
 
 	if (hd->timeouts < -1)
 		hd->timeouts++;
+
+	if (mpt_fwfault_debug)
+		mpt_halt_firmware(ioc);
 
 	/* Most important!  Set TaskMsgContext to SCpnt's MsgContext!
 	 * (the IO to be ABORT'd)
@@ -2027,6 +2007,9 @@ mptscsih_host_reset(struct scsi_cmnd *SCpnt)
 		return FAILED;
 	}
 
+	/* make sure we have no outstanding commands at this stage */
+	mptscsih_flush_running_cmds(hd);
+
 	ioc = hd->ioc;
 	printk(MYIOC_s_INFO_FMT "attempting host reset! (sc=%p)\n",
 	    ioc->name, SCpnt);
@@ -2172,6 +2155,7 @@ mptscsih_taskmgmt_complete(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *m
 	u16			 iocstatus;
 	u8			 tmType;
 	u32			 termination_count;
+	int retval = 1;
 
 	dtmprintk(ioc, printk(MYIOC_s_DEBUG_FMT "TaskMgmt completed (mf=%p,mr=%p)\n",
 	    ioc->name, mf, mr));
@@ -2248,12 +2232,15 @@ mptscsih_taskmgmt_complete(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *m
 
  out:
 	spin_lock_irqsave(&ioc->FreeQlock, flags);
-	hd->tmPending = 0;
-	hd->tmState = TM_STATE_NONE;
+	if (hd->tmPending) {
+		hd->tmPending = 0;
+		hd->tmState = TM_STATE_NONE;
+	} else
+		retval = 0;	
 	hd->tm_iocstatus = iocstatus;
 	spin_unlock_irqrestore(&ioc->FreeQlock, flags);
 
-	return 1;
+	return retval;
 }
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
@@ -2469,12 +2456,6 @@ mptscsih_slave_configure(struct scsi_device *sdev)
 		    ioc->name, sdev->sdtr, sdev->wdtr,
 		    sdev->ppr, sdev->inquiry_len));
 
-	if (sdev->id > sh->max_id) {
-		/* error case, should never happen */
-		scsi_adjust_queue_depth(sdev, 0, 1);
-		goto slave_configure_exit;
-	}
-
 	vdevice->configured_lun = 1;
 	mptscsih_change_queue_depth(sdev, MPT_SCSI_CMD_PER_DEV_HIGH);
 
@@ -2487,8 +2468,6 @@ mptscsih_slave_configure(struct scsi_device *sdev)
 		    "negoFlags=%x, maxOffset=%x, SyncFactor=%x\n",
 		    ioc->name, vtarget->negoFlags, vtarget->maxOffset,
 		    vtarget->minSyncFactor));
-
-slave_configure_exit:
 
 	dsprintk(ioc, printk(MYIOC_s_DEBUG_FMT
 		"tagged %d, simple %d, ordered %d\n",

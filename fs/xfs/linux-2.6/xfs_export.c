@@ -17,14 +17,20 @@
  */
 #include "xfs.h"
 #include "xfs_types.h"
-#include "xfs_dmapi.h"
+#include "xfs_inum.h"
 #include "xfs_log.h"
 #include "xfs_trans.h"
 #include "xfs_sb.h"
+#include "xfs_ag.h"
+#include "xfs_dmapi.h"
 #include "xfs_mount.h"
 #include "xfs_export.h"
+#include "xfs_vnodeops.h"
+#include "xfs_bmap_btree.h"
+#include "xfs_inode.h"
+#include "xfs_vfsops.h"
 
-STATIC struct dentry dotdot = { .d_name.name = "..", .d_name.len = 2, };
+static struct xfs_name xfs_name_dotdot = {"..", 2};
 
 /*
  * XFS encodes and decodes the fileid portion of NFS filehandles
@@ -48,8 +54,8 @@ xfs_fs_decode_fh(
 		struct dentry	*de),
 	void			*context)
 {
-	xfs_fid2_t		ifid;
-	xfs_fid2_t		pfid;
+	xfs_fid_t		ifid;
+	xfs_fid_t		pfid;
 	void			*parent = NULL;
 	int			is64 = 0;
 	__u32			*p = fh;
@@ -96,14 +102,11 @@ xfs_fs_encode_fh(
 	int			len;
 	int			is64 = 0;
 #if XFS_BIG_INUMS
-	bhv_vfs_t		*vfs = vfs_from_sb(inode->i_sb);
-
-	if (!(vfs->vfs_flag & VFS_32BITINODES)) {
+	if (!(XFS_M(inode->i_sb)->m_flags & XFS_MOUNT_SMALL_INUMS)) {
 		/* filesystem may contain 64bit inode numbers */
 		is64 = XFS_FILEID_TYPE_64FLAG;
 	}
 #endif
-
 	/* Directories don't need their parent encoded, they have ".." */
 	if (S_ISDIR(inode->i_mode))
 	    connectable = 0;
@@ -135,23 +138,32 @@ xfs_fs_get_dentry(
 	struct super_block	*sb,
 	void			*data)
 {
-	bhv_vnode_t		*vp;
+	struct xfs_inode	*ip;
 	struct inode		*inode;
-	struct dentry		*result;
-	bhv_vfs_t		*vfsp = vfs_from_sb(sb);
+	xfs_fid_t       	*xfid = (struct xfs_fid *)data;
+	xfs_mount_t		*mp = XFS_M(sb);
 	int			error;
 
-	error = bhv_vfs_vget(vfsp, &vp, (fid_t *)data);
-	if (error || vp == NULL)
-		return ERR_PTR(-ESTALE) ;
+	/*
+	 * NFS can sometimes send requests for ino 0.  Fail them gracefully.
+	 */
+	if (xfid->fid_ino == 0)
+		return ERR_PTR(-ESTALE);
 
-	inode = vn_to_inode(vp);
-	result = d_alloc_anon(inode);
-        if (!result) {
-		iput(inode);
-		return ERR_PTR(-ENOMEM);
+	error = xfs_iget(mp, NULL, xfid->fid_ino, 0, XFS_ILOCK_SHARED, &ip, 0);
+	if (error)
+		return ERR_PTR(-error);
+	if (!ip)
+		return ERR_PTR(-EIO) ;
+
+	if (!ip->i_d.di_mode || ip->i_d.di_gen != xfid->fid_gen) {
+		xfs_iput_new(ip, XFS_ILOCK_SHARED);
+		return ERR_PTR(-ENOENT);
 	}
-	return result;
+
+	xfs_iunlock(ip, XFS_ILOCK_SHARED);
+	inode = VFS_I(ip);
+	return d_obtain_alias(inode);
 }
 
 STATIC struct dentry *
@@ -159,21 +171,14 @@ xfs_fs_get_parent(
 	struct dentry		*child)
 {
 	int			error;
-	bhv_vnode_t		*vp, *cvp;
-	struct dentry		*parent;
+	struct xfs_inode	*cip;
 
-	cvp = NULL;
-	vp = vn_from_inode(child->d_inode);
-	error = bhv_vop_lookup(vp, &dotdot, &cvp, 0, NULL, NULL);
+	cip = NULL;
+	error = xfs_lookup(XFS_I(child->d_inode), &xfs_name_dotdot, &cip, NULL);
 	if (unlikely(error))
 		return ERR_PTR(-error);
 
-	parent = d_alloc_anon(vn_to_inode(cvp));
-	if (unlikely(!parent)) {
-		VN_RELE(cvp);
-		return ERR_PTR(-ENOMEM);
-	}
-	return parent;
+	return d_obtain_alias(VFS_I(cip));
 }
 
 struct export_operations xfs_export_operations = {
@@ -182,3 +187,4 @@ struct export_operations xfs_export_operations = {
 	.get_parent		= xfs_fs_get_parent,
 	.get_dentry		= xfs_fs_get_dentry,
 };
+

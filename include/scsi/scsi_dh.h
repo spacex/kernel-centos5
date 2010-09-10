@@ -57,11 +57,12 @@ enum {
 	SCSI_DH_DRIVER_MAX,
 };
 
+extern void store_scsi_dh_data(struct scsi_device *, struct scsi_dh_data *);
+extern struct scsi_dh_data *retrieve_scsi_dh_data(struct scsi_device *);
+
 #if defined(CONFIG_SCSI_DH) || defined(CONFIG_SCSI_DH_MODULE)
 extern int scsi_dh_activate(struct request_queue *);
 extern int scsi_dh_handler_exist(const char *);
-extern void store_scsi_dh_data(struct scsi_device *, struct scsi_dh_data *);
-extern struct scsi_dh_data *retrieve_scsi_dh_data(struct scsi_device *);
 extern int scsi_dh_attach(struct request_queue *, const char *);
 extern void scsi_dh_detach(struct request_queue *);
 #else
@@ -72,14 +73,6 @@ static inline int scsi_dh_activate(struct request_queue *req)
 static inline int scsi_dh_handler_exist(const char *name)
 {
 	return 0;
-}
-static inline void store_scsi_dh_data(struct scsi_device *sdev,
-				struct scsi_dh_data *scsi_dh_data)
-{
-}
-static inline struct scsi_dh_data *retrieve_scsi_dh_data(struct scsi_device *sdev)
-{
-	return NULL;
 }
 static inline int scsi_dh_attach(struct request_queue *req, const char *name)
 {

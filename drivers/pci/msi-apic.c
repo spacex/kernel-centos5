@@ -4,28 +4,10 @@
 
 #include <linux/pci.h>
 #include <linux/irq.h>
+#include <linux/msidef.h>
 #include <asm/smp.h>
 
 #include "msi.h"
-
-/*
- * Shifts for APIC-based data
- */
-
-#define MSI_DATA_VECTOR_SHIFT		0
-#define	    MSI_DATA_VECTOR(v)		(((u8)v) << MSI_DATA_VECTOR_SHIFT)
-
-#define MSI_DATA_DELIVERY_SHIFT		8
-#define     MSI_DATA_DELIVERY_FIXED	(0 << MSI_DATA_DELIVERY_SHIFT)
-#define     MSI_DATA_DELIVERY_LOWPRI	(1 << MSI_DATA_DELIVERY_SHIFT)
-
-#define MSI_DATA_LEVEL_SHIFT		14
-#define     MSI_DATA_LEVEL_DEASSERT	(0 << MSI_DATA_LEVEL_SHIFT)
-#define     MSI_DATA_LEVEL_ASSERT	(1 << MSI_DATA_LEVEL_SHIFT)
-
-#define MSI_DATA_TRIGGER_SHIFT		15
-#define     MSI_DATA_TRIGGER_EDGE	(0 << MSI_DATA_TRIGGER_SHIFT)
-#define     MSI_DATA_TRIGGER_LEVEL	(1 << MSI_DATA_TRIGGER_SHIFT)
 
 /*
  * Shift/mask fields for APIC-based bus address

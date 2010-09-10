@@ -27,6 +27,11 @@ ip_ct_get_tuple(const struct iphdr *iph,
 		const struct ip_conntrack_protocol *protocol);
 
 extern int
+ip_ct_get_tuplepr(const struct sk_buff *skb,
+		  unsigned int nhoff,
+		  struct ip_conntrack_tuple *tuple);
+
+extern int
 ip_ct_invert_tuple(struct ip_conntrack_tuple *inverse,
 		   const struct ip_conntrack_tuple *orig,
 		   const struct ip_conntrack_protocol *protocol);

@@ -163,8 +163,10 @@ void __init pci_mmcfg_init(void)
 	if (!e820_all_mapped(pci_mmcfg_config[0].base_address,
 			pci_mmcfg_config[0].base_address + MMCONFIG_APER_MIN,
 			E820_RESERVED)) {
+#ifndef CONFIG_XEN
 		printk(KERN_ERR "PCI: BIOS Bug: MCFG area at %x is not E820-reserved\n",
 				pci_mmcfg_config[0].base_address);
+#endif
 		printk(KERN_ERR "PCI: Not using MMCONFIG.\n");
 		return;
 	}

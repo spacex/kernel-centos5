@@ -247,6 +247,13 @@ static int __init hpet_setup(char* str)
 
 __setup("hpet=", hpet_setup);
 
+static int __init disable_hpet(char *str)
+{
+	boot_hpet_disable = 1;
+	return 1;
+}
+__setup("nohpet", disable_hpet);
+
 #ifdef CONFIG_HPET_EMULATE_RTC
 /* HPET in LegacyReplacement Mode eats up RTC interrupt line. When, HPET
  * is enabled, we support RTC interrupt functionality in software.

@@ -277,6 +277,46 @@ static void ata_acpi_ap_notify(acpi_handle handle, u32 event, void *data)
 	ata_acpi_handle_hotplug(ap, NULL, event, 0);
 }
 
+static void ata_acpi_uevent(struct ata_port *ap, struct ata_device *dev,
+			    u32 event)
+{
+	struct kobject *kobj = NULL;
+	char event_string[20];
+	char *envp[] = { event_string, NULL };
+
+	if (dev) {
+		if (dev->sdev)
+			kobj = &dev->sdev->sdev_gendev.kobj;
+	} else
+		kobj = &ap->dev->kobj;
+
+	if (kobj) {
+		snprintf(event_string, 20, "BAY_EVENT=%d", event);
+		kobject_uevent_env(kobj, KOBJ_CHANGE, envp);
+	}
+}
+
+static void ata_acpi_ap_uevent(acpi_handle handle, u32 event, void *data)
+{
+	ata_acpi_uevent(data, NULL, event);
+}
+
+static void ata_acpi_dev_uevent(acpi_handle handle, u32 event, void *data)
+{
+	struct ata_device *dev = data;
+	ata_acpi_uevent(dev->link->ap, dev, event);
+}
+
+static struct acpi_dock_ops ata_acpi_dev_dock_ops = {
+	.handler = ata_acpi_dev_notify_dock,
+	.uevent = ata_acpi_dev_uevent,
+};
+
+static struct acpi_dock_ops ata_acpi_ap_dock_ops = {
+	.handler = ata_acpi_ap_notify_dock,
+	.uevent = ata_acpi_ap_uevent,
+};
+
 /**
  * ata_acpi_associate - associate ATA host with ACPI objects
  * @host: target ATA host
@@ -315,7 +355,7 @@ void ata_acpi_associate(struct ata_host *host)
 						    ata_acpi_ap_notify, ap);
 			/* we might be on a docking station */
 			register_hotplug_dock_device(ap->acpi_handle,
-					     ata_acpi_ap_notify_dock, ap);
+					     &ata_acpi_ap_dock_ops, ap);
 		}
 
 		for (j = 0; j < ata_link_max_devices(&ap->link); j++) {
@@ -327,7 +367,7 @@ void ata_acpi_associate(struct ata_host *host)
 						ata_acpi_dev_notify, dev);
 				/* we might be on a docking station */
 				register_hotplug_dock_device(dev->acpi_handle,
-					     ata_acpi_dev_notify_dock, dev);
+					     &ata_acpi_dev_dock_ops, dev);
 			}
 		}
 	}

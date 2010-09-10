@@ -33,17 +33,16 @@
 #include <linux/pci.h>
 #include "wc.h"
 
-static u32 old_pat_lo[NR_CPUS] = {0};
-static u32 old_pat_hi[NR_CPUS] = {0};
-static unsigned int wc_enabled = 0;
+#if defined(__i386__) || defined(__x86_64__)
 
 #define MLX4_PAT_MASK	(0xFFFFF8FF)
 #define MLX4_PAT_MOD	(0x00000100)
 #define MLX4_WC_FLAGS	(_PAGE_PWT)
-
-#if defined(__i386__) || defined(__x86_64__)
-
 #define X86_MSR_PAT_OFFSET  0x277
+
+static unsigned int wc_enabled = 0;
+static u32 old_pat_lo[NR_CPUS] = {0};
+static u32 old_pat_hi[NR_CPUS] = {0};
 
 /*  Returns non-zero if we have a chipset write-combining problem */
 static int have_wc_errata(void)
@@ -179,6 +178,33 @@ void mlx4_disable_wc(void)
 pgprot_t pgprot_wc(pgprot_t _prot)
 {
 	return wc_enabled ? __pgprot(pgprot_val(_prot) | MLX4_WC_FLAGS) :
+			    pgprot_noncached(_prot);
+}
+
+int mlx4_wc_enabled(void)
+{
+	return wc_enabled;
+}
+
+#elif defined(CONFIG_PPC64)
+
+static unsigned int wc_enabled = 0;
+
+int mlx4_enable_wc(void)
+{
+	wc_enabled = 1;
+	return 0;
+}
+
+void mlx4_disable_wc(void)
+{
+	wc_enabled = 0;
+}
+
+pgprot_t pgprot_wc(pgprot_t _prot)
+{
+	return wc_enabled ? __pgprot((pgprot_val(_prot) | _PAGE_NO_CACHE) &
+				     ~(pgprot_t)_PAGE_GUARDED) :
 			    pgprot_noncached(_prot);
 }
 

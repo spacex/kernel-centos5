@@ -221,7 +221,7 @@ EXPORT_SYMBOL_GPL(atomic_notifier_chain_unregister);
  *	of the last notifier function called.
  */
  
-int atomic_notifier_call_chain(struct atomic_notifier_head *nh,
+int __kprobes atomic_notifier_call_chain(struct atomic_notifier_head *nh,
 		unsigned long val, void *v)
 {
 	int ret;
@@ -1883,6 +1883,17 @@ out:
  *
  */
 
+static void accumulate_thread_rusage(struct task_struct *t, struct rusage *r,
+				     cputime_t *utimep, cputime_t *stimep)
+{
+	*utimep = cputime_add(*utimep, t->utime);
+	*stimep = cputime_add(*stimep, t->stime);
+	r->ru_nvcsw += t->nvcsw;
+	r->ru_nivcsw += t->nivcsw;
+	r->ru_minflt += t->min_flt;
+	r->ru_majflt += t->maj_flt;
+}
+
 static void k_getrusage(struct task_struct *p, int who, struct rusage *r)
 {
 	struct task_struct *t;
@@ -1891,6 +1902,11 @@ static void k_getrusage(struct task_struct *p, int who, struct rusage *r)
 
 	memset((char *) r, 0, sizeof *r);
 	utime = stime = cputime_zero;
+
+	if (who == RUSAGE_THREAD) {
+		accumulate_thread_rusage(p, r, &utime, &stime);
+		goto out;
+	}
 
 	rcu_read_lock();
 	if (!lock_task_sighand(p, &flags)) {
@@ -1920,12 +1936,7 @@ static void k_getrusage(struct task_struct *p, int who, struct rusage *r)
 			r->ru_majflt += p->signal->maj_flt;
 			t = p;
 			do {
-				utime = cputime_add(utime, t->utime);
-				stime = cputime_add(stime, t->stime);
-				r->ru_nvcsw += t->nvcsw;
-				r->ru_nivcsw += t->nivcsw;
-				r->ru_minflt += t->min_flt;
-				r->ru_majflt += t->maj_flt;
+				accumulate_thread_rusage(t, r, &utime, &stime);
 				t = next_thread(t);
 			} while (t != p);
 			break;
@@ -1937,6 +1948,7 @@ static void k_getrusage(struct task_struct *p, int who, struct rusage *r)
 	unlock_task_sighand(p, &flags);
 	rcu_read_unlock();
 
+out:
 	cputime_to_timeval(utime, &r->ru_utime);
 	cputime_to_timeval(stime, &r->ru_stime);
 }
@@ -1950,7 +1962,8 @@ int getrusage(struct task_struct *p, int who, struct rusage __user *ru)
 
 asmlinkage long sys_getrusage(int who, struct rusage __user *ru)
 {
-	if (who != RUSAGE_SELF && who != RUSAGE_CHILDREN)
+	if (who != RUSAGE_SELF && who != RUSAGE_CHILDREN &&
+	    who != RUSAGE_THREAD)
 		return -EINVAL;
 	return getrusage(current, who, ru);
 }

@@ -29,8 +29,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: device.c 1349 2004-12-16 21:09:43Z roland $
  */
 
 #include <linux/module.h>
@@ -41,6 +39,7 @@
 #include <linux/init.h>
 #include <linux/mutex.h>
 #include <linux/workqueue.h>
+#include <linux/mount.h>
 
 #include "core_priv.h"
 
@@ -180,9 +179,14 @@ static int end_port(struct ib_device *device)
  */
 struct ib_device *ib_alloc_device(size_t size)
 {
+	struct ib_device *ibdev;
+
 	BUG_ON(size < sizeof (struct ib_device));
 
-	return kzalloc(size, GFP_KERNEL);
+	ibdev = kzalloc(size, GFP_KERNEL);
+	if (ibdev)
+		mutex_init(&ibdev->sysfs_mutex);
+	return ibdev;
 }
 EXPORT_SYMBOL(ib_alloc_device);
 
@@ -313,9 +317,10 @@ int ib_register_device(struct ib_device *device)
 		goto out;
 	}
 
+	mutex_lock(&device->sysfs_mutex);
 	list_add_tail(&device->core_list, &device_list);
-
 	device->reg_state = IB_DEV_REGISTERED;
+	mutex_unlock(&device->sysfs_mutex);
 
 	{
 		struct ib_client *client;
@@ -361,7 +366,9 @@ void ib_unregister_device(struct ib_device *device)
 		kfree(context);
 	spin_unlock_irqrestore(&device->client_data_lock, flags);
 
+	mutex_lock(&device->sysfs_mutex);
 	device->reg_state = IB_DEV_UNREGISTERED;
+	mutex_unlock(&device->sysfs_mutex);
 }
 EXPORT_SYMBOL(ib_unregister_device);
 

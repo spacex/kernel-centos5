@@ -206,6 +206,7 @@ enum
 	VM_PAGECACHE=37,        /* favor reclaiming unmapped pagecache pages */
 	VM_MMAP_MIN_ADDR=38, 	/* amount of memory to protect from mmap */
 	VM_FLUSH_MMAP=39,       /* flush mmap()d pagecache pages */
+	VM_MAX_WRITEBACK_PAGES=40, /*maximum pages written per writeback loop */
 };
 
 

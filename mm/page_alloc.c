@@ -37,6 +37,7 @@
 #include <linux/vmalloc.h>
 #include <linux/mempolicy.h>
 #include <linux/stop_machine.h>
+#include <trace/mm.h>
 
 #include <asm/tlbflush.h>
 #include <asm/div64.h>
@@ -741,6 +742,7 @@ static void fastcall free_hot_cold_page(struct page *page, int cold)
 	if (free_pages_check(page))
 		return;
 
+	trace_mm_page_free(page);
 	kernel_map_pages(page, 1, 0);
 
 	pcp = &zone_pcp(zone, get_cpu())->pcp[cold];
@@ -830,6 +832,7 @@ again:
 	BUG_ON(bad_range(zone, page));
 	if (prep_new_page(page, order, gfp_flags))
 		goto again;
+	trace_mm_page_allocation(page, zone->free_pages);
 	return page;
 
 failed:
@@ -915,9 +918,8 @@ get_page_from_freelist(gfp_t gfp_mask, unsigned int order,
 		}
 
 		page = buffered_rmqueue(zonelist, *z, order, gfp_mask);
-		if (page) {
+		if (page) 
 			break;
-		}
 	} while (*(++z) != NULL);
 	return page;
 }
@@ -2138,7 +2140,7 @@ static void __meminit free_area_init_core(struct pglist_data *pgdat,
 		zone->nr_active = 0;
 		zone->nr_inactive = 0;
 		zap_zone_vm_stats(zone);
-		atomic_set(&zone->reclaim_in_progress, 0);
+		atomic_set(&zone->reclaim_in_progress, -1);
 		if (!size)
 			continue;
 

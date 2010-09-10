@@ -485,7 +485,7 @@ phys_pmd_init(pmd_t *pmd, unsigned long address, unsigned long end)
 		for (k = 0; k < PTRS_PER_PTE; pte++, k++, address += PTE_SIZE) {
 			if ((address >= end) ||
 			    ((address >> PAGE_SHIFT) >=
-			     xen_start_info->nr_pages)) { 
+			     min(end_pfn, xen_start_info->nr_pages))) {
 				__set_pte(pte, __pte(0)); 
 				continue;
 			}

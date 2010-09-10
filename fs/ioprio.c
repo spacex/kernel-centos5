@@ -26,7 +26,7 @@
 #include <linux/syscalls.h>
 #include <linux/security.h>
 
-static int set_task_ioprio(struct task_struct *task, int ioprio)
+int set_task_ioprio(struct task_struct *task, int ioprio)
 {
 	int err;
 	struct io_context *ioc;
@@ -53,6 +53,7 @@ static int set_task_ioprio(struct task_struct *task, int ioprio)
 	task_unlock(task);
 	return 0;
 }
+EXPORT_SYMBOL_GPL(set_task_ioprio);
 
 asmlinkage long sys_ioprio_set(int which, int who, int ioprio)
 {

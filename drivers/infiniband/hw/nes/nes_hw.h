@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2006 - 2008 NetEffect, Inc. All rights reserved.
+* Copyright (c) 2006 - 2009 Intel-NE, Inc.  All rights reserved.
 *
 * This software is available to you under a choice of one of two
 * licenses.  You may choose to be licensed under the terms of the GNU
@@ -33,11 +33,14 @@
 #ifndef __NES_HW_H
 #define __NES_HW_H
 
+#define NES_PHY_TYPE_CX4       1
 #define NES_PHY_TYPE_1G        2
 #define NES_PHY_TYPE_IRIS      3
 #define NES_PHY_TYPE_ARGUS     4
 #define NES_PHY_TYPE_PUMA_1G   5
 #define NES_PHY_TYPE_PUMA_10G  6
+#define NES_PHY_TYPE_GLADIUS   7
+#define NES_PHY_TYPE_SFP_D     8
 
 #define NES_MULTICAST_PF_MAX 8
 
@@ -58,6 +61,7 @@ enum pci_regs {
 	NES_CQ_ACK = 0x0034,
 	NES_WQE_ALLOC = 0x0040,
 	NES_CQE_ALLOC = 0x0044,
+	NES_AEQ_ALLOC = 0x0048
 };
 
 enum indexed_regs {
@@ -154,6 +158,7 @@ enum indexed_regs {
 	NES_IDX_ENDNODE0_NSTAT_TX_OCTETS_HI = 0x7004,
 	NES_IDX_ENDNODE0_NSTAT_TX_FRAMES_LO = 0x7008,
 	NES_IDX_ENDNODE0_NSTAT_TX_FRAMES_HI = 0x700c,
+	NES_IDX_WQM_CONFIG1 = 0x5004,
 	NES_IDX_CM_CONFIG = 0x5100,
 	NES_IDX_NIC_LOGPORT_TO_PHYPORT = 0x6000,
 	NES_IDX_NIC_PHYPORT_TO_USW = 0x6008,
@@ -533,10 +538,22 @@ enum nes_iwarp_sq_fmr_wqe_word_idx {
 	NES_IWARP_SQ_FMR_WQE_PBL_LENGTH_IDX = 14,
 };
 
+enum nes_iwarp_sq_fmr_opcodes {
+	NES_IWARP_SQ_FMR_WQE_ZERO_BASED			= (1<<6),
+	NES_IWARP_SQ_FMR_WQE_PAGE_SIZE_4K		= (0<<7),
+	NES_IWARP_SQ_FMR_WQE_PAGE_SIZE_2M		= (1<<7),
+	NES_IWARP_SQ_FMR_WQE_RIGHTS_ENABLE_LOCAL_READ	= (1<<16),
+	NES_IWARP_SQ_FMR_WQE_RIGHTS_ENABLE_LOCAL_WRITE 	= (1<<17),
+	NES_IWARP_SQ_FMR_WQE_RIGHTS_ENABLE_REMOTE_READ 	= (1<<18),
+	NES_IWARP_SQ_FMR_WQE_RIGHTS_ENABLE_REMOTE_WRITE = (1<<19),
+	NES_IWARP_SQ_FMR_WQE_RIGHTS_ENABLE_WINDOW_BIND 	= (1<<20),
+};
+
+#define NES_IWARP_SQ_FMR_WQE_MR_LENGTH_HIGH_MASK	0xFF;
+
 enum nes_iwarp_sq_locinv_wqe_word_idx {
 	NES_IWARP_SQ_LOCINV_WQE_INV_STAG_IDX = 6,
 };
-
 
 enum nes_iwarp_rq_wqe_word_idx {
 	NES_IWARP_RQ_WQE_TOTAL_PAYLOAD_IDX = 1,
@@ -871,7 +888,6 @@ struct nes_hw_nic {
 	u8 replenishing_rq;
 	u8 reserved;
 
-	spinlock_t sq_lock;
 	spinlock_t rq_lock;
 };
 
@@ -965,9 +981,10 @@ struct nes_arp_entry {
 #define DEFAULT_JUMBO_NES_QL_TARGET 40
 #define DEFAULT_JUMBO_NES_QL_HIGH   128
 #define NES_NIC_CQ_DOWNWARD_TREND   16
+#define NES_PFT_SIZE		    48
 
 struct nes_hw_tune_timer {
-    //u16 cq_count;
+    /* u16 cq_count; */
     u16 threshold_low;
     u16 threshold_target;
     u16 threshold_high;
@@ -984,8 +1001,8 @@ struct nes_hw_tune_timer {
 #define NES_TIMER_INT_LIMIT         2
 #define NES_TIMER_INT_LIMIT_DYNAMIC 10
 #define NES_TIMER_ENABLE_LIMIT      4
-#define NES_MAX_LINK_INTERRUPTS		128
-#define NES_MAX_LINK_CHECK		200
+#define NES_MAX_LINK_INTERRUPTS     128
+#define NES_MAX_LINK_CHECK          200
 
 struct nes_adapter {
 	u64              fw_ver;
@@ -1075,6 +1092,7 @@ struct nes_adapter {
 	u32 et_rx_max_coalesced_frames_high;
 	u32 et_rate_sample_interval;
 	u32 timer_int_limit;
+	u32 wqm_quanta;
 
 	/* Adapter base MAC address */
 	u32 mac_addr_low;
@@ -1090,12 +1108,14 @@ struct nes_adapter {
 	u16 pd_config_base[4];
 
 	u16 link_interrupt_count[4];
+	u8 crit_error_count[32];
 
 	/* the phy index for each port */
 	u8  phy_index[4];
 	u8  mac_sw_state[4];
 	u8  mac_link_down[4];
 	u8  phy_type[4];
+	u8  log_port;
 
 	/* PCI information */
 	unsigned int  devfn;
@@ -1109,6 +1129,7 @@ struct nes_adapter {
 	u8            virtwq;
 	u8            et_use_adaptive_rx_coalesce;
 	u8            adapter_fcn_count;
+	u8 pft_mcast_map[NES_PFT_SIZE];
 };
 
 struct nes_pbl {
@@ -1119,6 +1140,19 @@ struct nes_pbl {
 	u32              pbl_size;
 	struct list_head list;
 	/* TODO: need to add list for two level tables */
+};
+
+#define NES_4K_PBL_CHUNK_SIZE	4096
+
+struct nes_fast_mr_wqe_pbl {
+	u64		*kva;
+	dma_addr_t	paddr;
+};
+
+struct nes_ib_fast_reg_page_list {
+	struct ib_fast_reg_page_list	ibfrpl;
+	struct nes_fast_mr_wqe_pbl 	nes_wqe_pbl;
+	u64 				pbl;
 };
 
 struct nes_listener {
@@ -1136,7 +1170,6 @@ struct nes_ib_device;
 struct nes_vnic {
 	struct nes_ib_device *nesibdev;
 	u64 sq_full;
-	u64 sq_locked;
 	u64 tso_requests;
 	u64 segmented_tso_requests;
 	u64 linearized_skbs;
@@ -1167,7 +1200,7 @@ struct nes_vnic {
 	u32    mcrq_qp_id;
 	struct nes_ucontext *mcrq_ucontext;
 	struct nes_cqp_request* (*get_cqp_request)(struct nes_device *nesdev);
-	void (*post_cqp_request)(struct nes_device*, struct nes_cqp_request *, int);
+	void (*post_cqp_request)(struct nes_device*, struct nes_cqp_request *);
 	int (*mcrq_mcast_filter)( struct nes_vnic* nesvnic, __u8* dmi_addr );
 	struct net_device_stats netstats;
 	/* used to put the netdev on the adapters logical port list */

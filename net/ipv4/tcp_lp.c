@@ -164,7 +164,7 @@ static u32 tcp_lp_remote_hz_estimator(struct sock *sk)
 
  out:
 	/* record time for successful remote HZ calc */
-	if (rhz > 0)
+	if ((rhz >> 6) > 0)
 		lp->flag |= LP_VALID_RHZ;
 	else
 		lp->flag &= ~LP_VALID_RHZ;

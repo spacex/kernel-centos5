@@ -38,9 +38,6 @@
 
 #ifdef CONFIG_INFINIBAND_QLGC_VNIC_STATS
 
-extern struct attribute_group vnic_stats_attr_group;
-extern cycles_t recv_ref;
-
 static inline void vnic_connected_stats(struct vnic *vnic)
 {
 	if (vnic->statistics.conn_time == 0) {
@@ -57,7 +54,7 @@ static inline void vnic_connected_stats(struct vnic *vnic)
 
 }
 
-static inline void vnic_stop_xmit_stats(struct vnic * vnic)
+static inline void vnic_stop_xmit_stats(struct vnic *vnic)
 {
 	if (vnic->statistics.xmit_ref == 0)
 		vnic->statistics.xmit_ref = get_cycles();
@@ -75,8 +72,13 @@ static inline void vnic_restart_xmit_stats(struct vnic *vnic)
 
 static inline void vnic_recv_pkt_stats(struct vnic *vnic)
 {
-	vnic->statistics.recv_time += get_cycles() - recv_ref;
+	vnic->statistics.recv_time += get_cycles() - vnic_recv_ref;
 	vnic->statistics.recv_num++;
+}
+
+static inline void vnic_multicast_recv_pkt_stats(struct vnic *vnic)
+{
+	vnic->statistics.multicast_recv_num++;
 }
 
 static inline void vnic_pre_pkt_xmit_stats(cycles_t *time)
@@ -133,7 +135,7 @@ stats_out:
 	return -1;
 }
 
-static inline void vnic_cleanup_stats_files(struct vnic * vnic)
+static inline void vnic_cleanup_stats_files(struct vnic *vnic)
 {
 	sysfs_remove_group(&vnic->class_dev_info.class_dev.kobj,
 			   &vnic_stats_attr_group);
@@ -161,7 +163,7 @@ static inline void control_note_rsptime_stats(cycles_t *time)
 }
 
 static inline void control_update_rsptime_stats(struct control *control,
-					        cycles_t response_time)
+						cycles_t response_time)
 {
 	response_time -= control->statistics.request_time;
 	control->statistics.response_time += response_time;
@@ -174,7 +176,7 @@ static inline void control_update_rsptime_stats(struct control *control,
 
 }
 
-static inline void control_note_reqtime_stats(struct control * control)
+static inline void control_note_reqtime_stats(struct control *control)
 {
 	control->statistics.request_time = get_cycles();
 }
@@ -184,32 +186,32 @@ static inline void control_timeout_stats(struct control *control)
 	control->statistics.timeout_num++;
 }
 
-static inline void data_kickreq_stats(struct data * data)
+static inline void data_kickreq_stats(struct data *data)
 {
 	data->statistics.kick_reqs++;
 }
 
-static inline void data_no_xmitbuf_stats(struct data * data)
+static inline void data_no_xmitbuf_stats(struct data *data)
 {
 	data->statistics.no_xmit_bufs++;
 }
 
-static inline void data_xmits_stats(struct data * data)
+static inline void data_xmits_stats(struct data *data)
 {
 	data->statistics.xmit_num++;
 }
 
-static inline void data_recvs_stats(struct data * data)
+static inline void data_recvs_stats(struct data *data)
 {
 	data->statistics.recv_num++;
 }
 
 static inline void data_note_kickrcv_time(void)
 {
-	recv_ref = get_cycles();
+	vnic_recv_ref = get_cycles();
 }
 
-static inline void data_rcvkicks_stats(struct data * data)
+static inline void data_rcvkicks_stats(struct data *data)
 {
 	data->statistics.kick_recvs++;
 }
@@ -238,11 +240,11 @@ static inline void vnic_ib_comp_stats(struct vnic_ib_conn *ib_conn,
 
 }
 
-static inline void vnic_ib_io_stats(struct io * io,
+static inline void vnic_ib_io_stats(struct io *io,
 				    struct vnic_ib_conn *ib_conn,
 				    cycles_t comp_time)
 {
-	if (io->type == RECV)
+	if ((io->type == RECV) || (io->type == RECV_UD))
 		io->time = comp_time;
 	else if (io->type == RDMA) {
 		ib_conn->statistics.rdma_comp_time += comp_time - io->time;
@@ -312,7 +314,7 @@ static inline void vnic_connected_stats(struct vnic *vnic)
 	;
 }
 
-static inline void vnic_stop_xmit_stats(struct vnic * vnic)
+static inline void vnic_stop_xmit_stats(struct vnic *vnic)
 {
 	;
 }
@@ -323,6 +325,11 @@ static inline void vnic_restart_xmit_stats(struct vnic *vnic)
 }
 
 static inline void vnic_recv_pkt_stats(struct vnic *vnic)
+{
+	;
+}
+
+static inline void vnic_multicast_recv_pkt_stats(struct vnic *vnic)
 {
 	;
 }
@@ -348,7 +355,7 @@ static inline int vnic_setup_stats_files(struct vnic *vnic)
 	return 0;
 }
 
-static inline void vnic_cleanup_stats_files(struct vnic * vnic)
+static inline void vnic_cleanup_stats_files(struct vnic *vnic)
 {
 	;
 }
@@ -374,12 +381,12 @@ static inline void control_note_rsptime_stats(cycles_t *time)
 }
 
 static inline void control_update_rsptime_stats(struct control *control,
-					        cycles_t response_time)
+						cycles_t response_time)
 {
 	;
 }
 
-static inline void control_note_reqtime_stats(struct control * control)
+static inline void control_note_reqtime_stats(struct control *control)
 {
 	;
 }
@@ -389,22 +396,22 @@ static inline void control_timeout_stats(struct control *control)
 	;
 }
 
-static inline void data_kickreq_stats(struct data * data)
+static inline void data_kickreq_stats(struct data *data)
 {
 	;
 }
 
-static inline void data_no_xmitbuf_stats(struct data * data)
+static inline void data_no_xmitbuf_stats(struct data *data)
 {
 	;
 }
 
-static inline void data_xmits_stats(struct data * data)
+static inline void data_xmits_stats(struct data *data)
 {
 	;
 }
 
-static inline void data_recvs_stats(struct data * data)
+static inline void data_recvs_stats(struct data *data)
 {
 	;
 }
@@ -414,7 +421,7 @@ static inline void data_note_kickrcv_time(void)
 	;
 }
 
-static inline void data_rcvkicks_stats(struct data * data)
+static inline void data_rcvkicks_stats(struct data *data)
 {
 	;
 }
@@ -440,7 +447,7 @@ static inline void vnic_ib_comp_stats(struct vnic_ib_conn *ib_conn,
 	;
 }
 
-static inline void vnic_ib_io_stats(struct io * io,
+static inline void vnic_ib_io_stats(struct io *io,
 				    struct vnic_ib_conn *ib_conn,
 				    cycles_t comp_time)
 {

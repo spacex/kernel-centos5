@@ -51,7 +51,7 @@ struct netpath {
 	struct vnic		*parent;
 	struct viport		*viport;
 	size_t			path_idx;
-	u32			connect_time;
+	unsigned long		connect_time;
 	int			second_bias;
 	u8			is_primary_path;
 	u8 			delay_reconnect;

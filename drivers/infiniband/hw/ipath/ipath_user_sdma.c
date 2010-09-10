@@ -484,7 +484,8 @@ static int ipath_user_sdma_queue_pkts(const struct ipath_devdata *dd,
 			const unsigned long faddr =
 				(unsigned long) iov[idx].iov_base;
 
-			if (slen & 3 || faddr & 3 || !slen || slen > PAGE_SIZE) {
+			if (slen & 3 || faddr & 3 || !slen ||
+			    slen > PAGE_SIZE) {
 				ret = -EINVAL;
 				goto free_pbc;
 			}
@@ -550,6 +551,12 @@ free_list:
 	ipath_user_sdma_free_pkt_list(&dd->pcidev->dev, pq, list);
 done:
 	return ret;
+}
+
+static void ipath_user_sdma_set_complete_counter(struct ipath_user_sdma_queue *pq,
+						 u32 c)
+{
+	pq->sent_counter = c;
 }
 
 /* try to clean out queue -- needs pq->lock */
@@ -665,8 +672,8 @@ static inline __le64 ipath_sdma_make_first_desc0(__le64 descq)
 
 static inline __le64 ipath_sdma_make_last_desc0(__le64 descq)
 {
-					      /* last */  /* dma head */
-	return descq | __constant_cpu_to_le64(1ULL << 11 | 1ULL << 13);
+					      /* last */
+	return descq | __constant_cpu_to_le64(1ULL << 11);
 }
 
 static inline __le64 ipath_sdma_make_desc1(u64 addr)
@@ -705,6 +712,8 @@ static int ipath_user_sdma_push_pkts(struct ipath_devdata *dd,
 	int ret = 0;
 	unsigned long flags;
 	u16 tail;
+	u8 generation;
+	u64 descq_added;
 
 	if (list_empty(pktlist))
 		return 0;
@@ -713,6 +722,10 @@ static int ipath_user_sdma_push_pkts(struct ipath_devdata *dd,
 		return -ECOMM;
 
 	spin_lock_irqsave(&dd->ipath_sdma_lock, flags);
+
+	/* keep a copy for restoring purposes in case of problems */
+	generation = dd->ipath_sdma_generation;
+	descq_added = dd->ipath_sdma_descq_added;
 
 	if (unlikely(dd->ipath_sdma_status & IPATH_SDMA_ABORT_MASK)) {
 		ret = -ECOMM;
@@ -756,7 +769,7 @@ static int ipath_user_sdma_push_pkts(struct ipath_devdata *dd,
 		if (ofs >= IPATH_SMALLBUF_DWORDS) {
 			for (i = 0; i < pkt->naddr; i++) {
 				dd->ipath_sdma_descq[dtail].qw[0] |=
-					1ULL<<14;
+					__constant_cpu_to_le64(1ULL << 14);
 				if (++dtail == dd->ipath_sdma_descq_cnt)
 					dtail = 0;
 			}
@@ -777,6 +790,10 @@ unlock_check_tail:
 	}
 
 unlock:
+	if (unlikely(ret < 0)) {
+		dd->ipath_sdma_generation = generation;
+		dd->ipath_sdma_descq_added = descq_added;
+	}
 	spin_unlock_irqrestore(&dd->ipath_sdma_lock, flags);
 
 	return ret;
@@ -860,24 +877,9 @@ int ipath_user_sdma_make_progress(struct ipath_devdata *dd,
 	return ret;
 }
 
-int ipath_user_sdma_pkt_sent(const struct ipath_user_sdma_queue *pq,
-			     u32 counter)
-{
-	const u32 scounter = ipath_user_sdma_complete_counter(pq);
-	const s32 dcounter = scounter - counter;
-
-	return dcounter >= 0;
-}
-
 u32 ipath_user_sdma_complete_counter(const struct ipath_user_sdma_queue *pq)
 {
 	return pq->sent_counter;
-}
-
-void ipath_user_sdma_set_complete_counter(struct ipath_user_sdma_queue *pq,
-					  u32 c)
-{
-	pq->sent_counter = c;
 }
 
 u32 ipath_user_sdma_inflight_counter(struct ipath_user_sdma_queue *pq)

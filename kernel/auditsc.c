@@ -172,6 +172,11 @@ struct audit_aux_data_sockaddr {
 	char			a[0];
 };
 
+struct audit_aux_data_fd_pair {
+	struct	audit_aux_data d;
+	int	fd[2];
+};
+
 struct audit_aux_data_pids {
 	struct audit_aux_data	d;
 	pid_t			target_pid[AUDIT_AUX_PIDS];
@@ -251,7 +256,10 @@ static inline int open_arg(int flags, int mask)
 
 static int audit_match_perm(struct audit_context *ctx, int mask)
 {
-	unsigned n = ctx->major;
+	unsigned n;
+	if (unlikely(!ctx))
+		return 0;
+	n = ctx->major;
 	switch (audit_classify_syscall(ctx->arch, n)) {
 	case 0:	/* native */
 		if ((mask & AUDIT_PERM_WRITE) &&
@@ -292,6 +300,8 @@ static int audit_match_filetype(struct audit_context *ctx, int which)
 {
 	unsigned index = which & ~S_IFMT;
 	mode_t mode = which & S_IFMT;
+	if (unlikely(!ctx))
+		return 0;
 	if (index >= ctx->name_count)
 		return 0;
 	if (ctx->names[index].ino == -1)
@@ -605,15 +615,14 @@ static int audit_filter_rules(struct task_struct *tsk,
 			result = audit_match_perm(ctx, f->val);
 			break;
 		case AUDIT_FILETYPE:
-			if (ctx)
-				result = audit_match_filetype(ctx, f->val);
+			result = audit_match_filetype(ctx, f->val);
 			break;
 		}
 
 		if (!result)
 			return 0;
 	}
-	if (rule->filterkey)
+	if (rule->filterkey && ctx)
 		ctx->filterkey = kstrdup(rule->filterkey, GFP_ATOMIC);
 	switch (rule->action) {
 	case AUDIT_NEVER:    *state = AUDIT_DISABLED;	    break;
@@ -1008,7 +1017,7 @@ static int audit_log_single_execve_arg(struct audit_context *context,
 {
 	char arg_num_len_buf[12];
 	const char __user *tmp_p = p;
-	/* how many digits are in arg_num? 3 is the length of a=\n */
+	/* how many digits are in arg_num? 3 is the length of " a=" */
 	size_t arg_num_len = snprintf(arg_num_len_buf, 12, "%d", arg_num) + 3;
 	size_t len, len_left, to_send;
 	size_t max_execve_audit_len = MAX_EXECVE_AUDIT_LEN;
@@ -1094,7 +1103,7 @@ static int audit_log_single_execve_arg(struct audit_context *context,
 		 * so we can be sure nothing was lost.
 		 */
 		if ((i == 0) && (too_long))
-			audit_log_format(*ab, "a%d_len=%zu ", arg_num,
+			audit_log_format(*ab, " a%d_len=%zu", arg_num,
 					 has_cntl ? 2*len : len);
 
 		/*
@@ -1114,7 +1123,7 @@ static int audit_log_single_execve_arg(struct audit_context *context,
 		buf[to_send] = '\0';
 
 		/* actually log it */
-		audit_log_format(*ab, "a%d", arg_num);
+		audit_log_format(*ab, " a%d", arg_num);
 		if (too_long)
 			audit_log_format(*ab, "[%d]", i);
 		audit_log_format(*ab, "=");
@@ -1122,7 +1131,6 @@ static int audit_log_single_execve_arg(struct audit_context *context,
 			audit_log_hex(*ab, buf, to_send);
 		else
 			audit_log_format(*ab, "\"%s\"", buf);
-		audit_log_format(*ab, "\n");
 
 		p += to_send;
 		len_left -= to_send;
@@ -1150,7 +1158,7 @@ static void audit_log_execve_info(struct audit_context *context,
 
 	p = (const char __user *)axi->mm->arg_start;
 
-	audit_log_format(*ab, "argc=%d ", axi->argc);
+	audit_log_format(*ab, "argc=%d", axi->argc);
 
 	/*
 	 * we need some kernel buffer to hold the userspace args.  Just
@@ -1288,7 +1296,7 @@ static void audit_log_exit(struct audit_context *context, struct task_struct *ts
 		case AUDIT_IPC: {
 			struct audit_aux_data_ipcctl *axi = (void *)aux;
 			audit_log_format(ab, 
-				 "ouid=%u ogid=%u mode=%x",
+				 "ouid=%u ogid=%u mode=%#o",
 				 axi->uid, axi->gid, axi->mode);
 			if (axi->osid != 0) {
 				char *ctx = NULL;
@@ -1307,7 +1315,7 @@ static void audit_log_exit(struct audit_context *context, struct task_struct *ts
 		case AUDIT_IPC_SET_PERM: {
 			struct audit_aux_data_ipcctl *axi = (void *)aux;
 			audit_log_format(ab,
-				"qbytes=%lx ouid=%u ogid=%u mode=%x",
+				"qbytes=%lx ouid=%u ogid=%u mode=%#o",
 				axi->qbytes, axi->uid, axi->gid, axi->mode);
 			break; }
 
@@ -1329,6 +1337,11 @@ static void audit_log_exit(struct audit_context *context, struct task_struct *ts
 
 			audit_log_format(ab, "saddr=");
 			audit_log_hex(ab, axs->a, axs->len);
+			break; }
+
+		case AUDIT_FD_PAIR: {
+			struct audit_aux_data_fd_pair *axs = (void *)aux;
+			audit_log_format(ab, "fd0=%d fd1=%d", axs->fd[0], axs->fd[1]);
 			break; }
 
 		}
@@ -1635,7 +1648,7 @@ static inline void handle_one(const struct inode *inode)
 	if (likely(put_tree_ref(context, chunk)))
 		return;
 	if (unlikely(!grow_tree_refs(context))) {
-		printk(KERN_WARNING "out of memory, audit has lost a tree reference");
+		printk(KERN_WARNING "out of memory, audit has lost a tree reference\n");
 		audit_set_auditable(context);
 		audit_put_chunk(chunk);
 		unroll_tree_refs(context, p, count);
@@ -1693,7 +1706,7 @@ retry:
 		}
 		/* too bad */
 		printk(KERN_WARNING
-			"out of memory, audit has lost a tree reference");
+			"out of memory, audit has lost a tree reference\n");
 		unroll_tree_refs(context, p, count);
 		audit_set_auditable(context);
 		return;
@@ -1788,13 +1801,13 @@ static int audit_inc_name_count(struct audit_context *context,
 	if (context->name_count >= AUDIT_NAMES) {
 		if (inode)
 			printk(KERN_DEBUG "name_count maxed, losing inode data: "
-			       "dev=%02x:%02x, inode=%lu",
+			       "dev=%02x:%02x, inode=%lu\n",
 			       MAJOR(inode->i_sb->s_dev),
 			       MINOR(inode->i_sb->s_dev),
 			       inode->i_ino);
 
 		else
-			printk(KERN_DEBUG "name_count maxed, losing inode data");
+			printk(KERN_DEBUG "name_count maxed, losing inode data\n");
 		return 1;
 	}
 	context->name_count++;
@@ -2337,6 +2350,36 @@ int audit_socketcall(int nargs, unsigned long *args)
 }
 
 /**
+ * __audit_fd_pair - record audit data for pipe and socketpair
+ * @fd1: the first file descriptor
+ * @fd2: the second file descriptor
+ *
+ * Returns 0 for success or NULL context or < 0 on error.
+ */
+int __audit_fd_pair(int fd1, int fd2)
+{
+	struct audit_context *context = current->audit_context;
+	struct audit_aux_data_fd_pair *ax;
+
+	if (likely(!context)) {
+		return 0;
+	}
+
+	ax = kmalloc(sizeof(*ax), GFP_KERNEL);
+	if (!ax) {
+		return -ENOMEM;
+	}
+
+	ax->fd[0] = fd1;
+	ax->fd[1] = fd2;
+
+	ax->d.type = AUDIT_FD_PAIR;
+	ax->d.next = context->aux;
+	context->aux = (void *)ax;
+	return 0;
+}
+
+/**
  * audit_sockaddr - record audit data for sys_bind, sys_connect, sys_sendto
  * @len: data length in user space
  * @a: data address in kernel space
@@ -2428,7 +2471,7 @@ int __audit_signal_info(int sig, struct task_struct *t)
 		axp->d.next = ctx->aux_pids;
 		ctx->aux_pids = (void *)axp;
 	}
-	BUG_ON(axp->pid_count > AUDIT_AUX_PIDS);
+	BUG_ON(axp->pid_count >= AUDIT_AUX_PIDS);
 
 	axp->target_pid[axp->pid_count] = t->tgid;
 	axp->target_auid[axp->pid_count] = audit_get_loginuid(t->audit_context);

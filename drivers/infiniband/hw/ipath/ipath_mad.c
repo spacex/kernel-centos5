@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2007, 2008 QLogic Corporation. All rights reserved.
+ * Copyright (c) 2006, 2007, 2008, 2009 QLogic Corporation. All rights reserved.
  * Copyright (c) 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -111,9 +111,9 @@ static int recv_subn_get_nodeinfo(struct ib_smp *smp,
 	nip->revision = cpu_to_be32((majrev << 16) | minrev);
 	nip->local_port_num = port;
 	vendor = dd->ipath_vendorid;
-	nip->vendor_id[0] = 0;
-	nip->vendor_id[1] = vendor >> 8;
-	nip->vendor_id[2] = vendor;
+	nip->vendor_id[0] = IPATH_SRC_OUI_1;
+	nip->vendor_id[1] = IPATH_SRC_OUI_2;
+	nip->vendor_id[2] = IPATH_SRC_OUI_3;
 
 	return reply(smp);
 }
@@ -145,7 +145,6 @@ static int recv_subn_get_guidinfo(struct ib_smp *smp,
 
 	return reply(smp);
 }
-
 
 static void set_link_width_enabled(struct ipath_devdata *dd, u32 w)
 {
@@ -185,6 +184,7 @@ static int set_overrunthreshold(struct ipath_devdata *dd, unsigned n)
 			(u64) n << INFINIPATH_IBCC_OVERRUNTHRESHOLD_SHIFT;
 		ipath_write_kreg(dd, dd->ipath_kregs->kr_ibcctrl,
 				 dd->ipath_ibcctrl);
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_scratch, 0xfeedbeef);
 	}
 	return 0;
 }
@@ -217,6 +217,7 @@ static int set_phyerrthreshold(struct ipath_devdata *dd, unsigned n)
 			(u64) n << INFINIPATH_IBCC_PHYERRTHRESHOLD_SHIFT;
 		ipath_write_kreg(dd, dd->ipath_kregs->kr_ibcctrl,
 				 dd->ipath_ibcctrl);
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_scratch, 0xfeedbeef);
 	}
 	return 0;
 }
@@ -349,6 +350,7 @@ bail:
  */
 static int get_pkeys(struct ipath_devdata *dd, u16 * pkeys)
 {
+	/* always a kernel port, no locking needed */
 	struct ipath_portdata *pd = dd->ipath_pd[0];
 
 	memcpy(pkeys, pd->port_pkeys, sizeof(pd->port_pkeys));
@@ -402,6 +404,7 @@ static int set_linkdowndefaultstate(struct ipath_devdata *dd, int sleep)
 		dd->ipath_ibcctrl &= ~INFINIPATH_IBCC_LINKDOWNDEFAULTSTATE;
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_ibcctrl,
 			 dd->ipath_ibcctrl);
+	ipath_write_kreg(dd, dd->ipath_kregs->kr_scratch, 0xfeedbeef);
 	return 0;
 }
 
@@ -731,6 +734,7 @@ static int set_pkeys(struct ipath_devdata *dd, u16 *pkeys)
 	int i;
 	int changed = 0;
 
+	/* always a kernel port, no locking needed */
 	pd = dd->ipath_pd[0];
 
 	for (i = 0; i < ARRAY_SIZE(pd->port_pkeys); i++) {
@@ -756,6 +760,7 @@ static int set_pkeys(struct ipath_devdata *dd, u16 *pkeys)
 		pd->port_pkeys[i] = key;
 	}
 	if (changed) {
+		struct ib_event event;
 		u64 pkey;
 
 		pkey = (u64) dd->ipath_pkeys[0] |
@@ -766,6 +771,11 @@ static int set_pkeys(struct ipath_devdata *dd, u16 *pkeys)
 			   (unsigned long long) pkey);
 		ipath_write_kreg(dd, dd->ipath_kregs->kr_partitionkey,
 				 pkey);
+
+		event.event = IB_EVENT_PKEY_CHANGE;
+		event.device = &dd->verbs_dev->ibdev;
+		event.element.port_num = 1;
+		ib_dispatch_event(&event);
 	}
 	return 0;
 }
@@ -1398,7 +1408,8 @@ static int process_subn(struct ib_device *ibdev, int mad_flags,
 	}
 
 	/* Is the mkey in the process of expiring? */
-	if (dev->mkey_lease_timeout && jiffies >= dev->mkey_lease_timeout) {
+	if (dev->mkey_lease_timeout &&
+	    time_after_eq(jiffies, dev->mkey_lease_timeout)) {
 		/* Clear timeout and mkey protection field. */
 		dev->mkey_lease_timeout = 0;
 		dev->mkeyprot = 0;
@@ -1492,6 +1503,10 @@ static int process_subn(struct ib_device *ibdev, int mad_flags,
 			goto bail;
 		}
 
+	case IB_MGMT_METHOD_TRAP:
+	case IB_MGMT_METHOD_REPORT:
+	case IB_MGMT_METHOD_REPORT_RESP:
+	case IB_MGMT_METHOD_TRAP_REPRESS:
 	case IB_MGMT_METHOD_GET_RESP:
 		/*
 		 * The ib_mad module will call us to process responses

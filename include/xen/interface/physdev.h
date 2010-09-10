@@ -84,6 +84,17 @@ struct physdev_apic {
 typedef struct physdev_apic physdev_apic_t;
 DEFINE_XEN_GUEST_HANDLE(physdev_apic_t);
 
+#define PHYSDEVOP_manage_pci_add         15
+#define PHYSDEVOP_manage_pci_remove      16
+struct physdev_manage_pci {
+    /* IN */
+    uint8_t bus;
+    uint8_t devfn;
+};
+
+typedef struct physdev_manage_pci physdev_manage_pci_t;
+DEFINE_XEN_GUEST_HANDLE(physdev_manage_pci_t);
+
 /*
  * Allocate or free a physical upcall vector for the specified IRQ line.
  * @arg == pointer to physdev_irq structure.
@@ -98,6 +109,41 @@ struct physdev_irq {
 };
 typedef struct physdev_irq physdev_irq_t;
 DEFINE_XEN_GUEST_HANDLE(physdev_irq_t);
+ 
+#define MAP_PIRQ_TYPE_MSI               0x0
+#define MAP_PIRQ_TYPE_GSI               0x1
+#define MAP_PIRQ_TYPE_UNKNOWN           0x2
+
+#define PHYSDEVOP_map_pirq               13
+struct physdev_map_pirq {
+    domid_t domid;
+    /* IN */
+    int type;
+    /* IN */
+    int index;
+    /* IN or OUT */
+    int pirq;
+    /* IN */
+    int bus;
+    /* IN */
+    int devfn;
+    /* IN */
+    int entry_nr;
+    /* IN */
+    uint64_t table_base;
+};
+typedef struct physdev_map_pirq physdev_map_pirq_t;
+DEFINE_XEN_GUEST_HANDLE(physdev_map_pirq_t);
+
+#define PHYSDEVOP_unmap_pirq             14
+struct physdev_unmap_pirq {
+    domid_t domid;
+    /* IN */
+    int pirq;
+};
+
+typedef struct physdev_unmap_pirq physdev_unmap_pirq_t;
+DEFINE_XEN_GUEST_HANDLE(physdev_unmap_pirq_t);
 
 /*
  * Argument to physdev_op_compat() hypercall. Superceded by new physdev_op()
@@ -133,6 +179,7 @@ DEFINE_XEN_GUEST_HANDLE(physdev_op_t);
 #define PHYSDEVOP_APIC_READ              PHYSDEVOP_apic_read
 #define PHYSDEVOP_APIC_WRITE             PHYSDEVOP_apic_write
 #define PHYSDEVOP_ASSIGN_VECTOR          PHYSDEVOP_alloc_irq_vector
+#define PHYSDEVOP_FREE_VECTOR            PHYSDEVOP_free_irq_vector
 #define PHYSDEVOP_IRQ_NEEDS_UNMASK_NOTIFY XENIRQSTAT_needs_eoi
 #define PHYSDEVOP_IRQ_SHARED             XENIRQSTAT_shared
 

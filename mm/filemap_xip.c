@@ -13,8 +13,9 @@
 #include <linux/module.h>
 #include <linux/uio.h>
 #include <linux/rmap.h>
+#include <linux/mmu_notifier.h>
+#include <linux/uaccess.h>
 #include <asm/tlbflush.h>
-#include "filemap.h"
 
 /*
  * This is a file read routine for execute in place files, and uses
@@ -188,7 +189,7 @@ __xip_unmap (struct address_space * mapping,
 		if (pte) {
 			/* Nuke the page table entry. */
 			flush_cache_page(vma, address, pte_pfn(*pte));
-			pteval = ptep_clear_flush(vma, address, pte);
+			pteval = ptep_clear_flush_notify(vma, address, pte);
 			page_remove_rmap(page);
 			dec_mm_counter(mm, file_rss);
 			BUG_ON(pte_dirty(pteval));
@@ -286,20 +287,13 @@ __xip_file_write(struct file *filp, const char __user *buf,
 		unsigned long index;
 		unsigned long offset;
 		size_t copied;
+		char *kaddr;
 
 		offset = (pos & (PAGE_CACHE_SIZE -1)); /* Within page */
 		index = pos >> PAGE_CACHE_SHIFT;
 		bytes = PAGE_CACHE_SIZE - offset;
 		if (bytes > count)
 			bytes = count;
-
-		/*
-		 * Bring in the user page that we will copy from _first_.
-		 * Otherwise there's a nasty deadlock on copying from the
-		 * same page as we're writing to, without it being marked
-		 * up-to-date.
-		 */
-		fault_in_pages_readable(buf, bytes);
 
 		page = a_ops->get_xip_page(mapping,
 					   index*(PAGE_SIZE/512), 0);
@@ -317,8 +311,13 @@ __xip_file_write(struct file *filp, const char __user *buf,
 			break;
 		}
 
-		copied = filemap_copy_from_user(page, offset, buf, bytes);
+		fault_in_pages_readable(buf, bytes);
+		kaddr = kmap_atomic(page, KM_USER0);
+		copied = bytes -
+			__copy_from_user_inatomic_nocache(kaddr, buf, bytes);
+		kunmap_atomic(kaddr, KM_USER0);
 		flush_dcache_page(page);
+
 		if (likely(copied > 0)) {
 			status = copied;
 

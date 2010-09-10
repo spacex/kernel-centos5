@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2004-2008 Emulex.  All rights reserved.           *
+ * Copyright (C) 2004-2009 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -32,8 +32,11 @@
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_transport_fc.h>
 
+#include "lpfc_hw4.h"
 #include "lpfc_hw.h"
 #include "lpfc_sli.h"
+#include "lpfc_sli4.h"
+#include "lpfc_nl.h"
 #include "lpfc_disc.h"
 #include "lpfc_scsi.h"
 #include "lpfc.h"
@@ -211,7 +214,7 @@ lpfc_alloc_ct_rsp(struct lpfc_hba *phba, int cmdcode, struct ulp_bde64 *bpl,
 		else
 			list_add_tail(&mp->list, &mlist->list);
 
-		bpl->tus.f.bdeFlags = BUFF_USE_RCV;
+		bpl->tus.f.bdeFlags = BUFF_TYPE_BDE_64I;
 		/* build buffer ptr list for IOCB */
 		bpl->addrLow = le32_to_cpu(putPaddrLow(mp->phys) );
 		bpl->addrHigh = le32_to_cpu(putPaddrHigh(mp->phys) );
@@ -266,8 +269,6 @@ lpfc_gen_req(struct lpfc_vport *vport, struct lpfc_dmabuf *bmp,
 	     uint32_t tmo, uint8_t retry)
 {
 	struct lpfc_hba  *phba = vport->phba;
-	struct lpfc_sli  *psli = &phba->sli;
-	struct lpfc_sli_ring *pring = &psli->ring[LPFC_ELS_RING];
 	IOCB_t *icmd;
 	struct lpfc_iocbq *geniocb;
 	int rc;
@@ -282,7 +283,7 @@ lpfc_gen_req(struct lpfc_vport *vport, struct lpfc_dmabuf *bmp,
 	icmd->un.genreq64.bdl.ulpIoTag32 = 0;
 	icmd->un.genreq64.bdl.addrHigh = putPaddrHigh(bmp->phys);
 	icmd->un.genreq64.bdl.addrLow = putPaddrLow(bmp->phys);
-	icmd->un.genreq64.bdl.bdeFlags = BUFF_TYPE_BDL;
+	icmd->un.genreq64.bdl.bdeFlags = BUFF_TYPE_BLP_64;
 	icmd->un.genreq64.bdl.bdeSize = (num_entry * sizeof (struct ulp_bde64));
 
 	if (usr_flg)
@@ -330,7 +331,7 @@ lpfc_gen_req(struct lpfc_vport *vport, struct lpfc_dmabuf *bmp,
 	geniocb->drvrTimeout = icmd->ulpTimeout + LPFC_DRVR_TIMEOUT;
 	geniocb->vport = vport;
 	geniocb->retry = retry;
-	rc = lpfc_sli_issue_iocb(phba, pring, geniocb, 0);
+	rc = lpfc_sli_issue_iocb(phba, LPFC_ELS_RING, geniocb, 0);
 
 	if (rc == IOCB_ERROR) {
 		lpfc_sli_release_iocbq(phba, geniocb);
@@ -559,18 +560,25 @@ lpfc_cmpl_ct_cmd_gid_ft(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 		irsp->ulpStatus, irsp->un.ulpWord[4], vport->fc_ns_retry);
 
 	/* Don't bother processing response if vport is being torn down. */
-	if (vport->load_flag & FC_UNLOADING)
+	if (vport->load_flag & FC_UNLOADING) {
+		if (vport->fc_flag & FC_RSCN_MODE)
+			lpfc_els_flush_rscn(vport);
 		goto out;
+	}
 
 	if (lpfc_els_chk_latt(vport)) {
 		lpfc_printf_vlog(vport, KERN_INFO, LOG_DISCOVERY,
 				 "0216 Link event during NS query\n");
+		if (vport->fc_flag & FC_RSCN_MODE)
+			lpfc_els_flush_rscn(vport);
 		lpfc_vport_set_state(vport, FC_VPORT_FAILED);
 		goto out;
 	}
 	if (lpfc_error_lost_link(irsp)) {
 		lpfc_printf_vlog(vport, KERN_INFO, LOG_DISCOVERY,
 				 "0226 NS query failed due to link event\n");
+		if (vport->fc_flag & FC_RSCN_MODE)
+			lpfc_els_flush_rscn(vport);
 		goto out;
 	}
 	if (irsp->ulpStatus) {
@@ -586,6 +594,8 @@ lpfc_cmpl_ct_cmd_gid_ft(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 			if (rc == 0)
 				goto out;
 		}
+		if (vport->fc_flag & FC_RSCN_MODE)
+			lpfc_els_flush_rscn(vport);
 		lpfc_vport_set_state(vport, FC_VPORT_FAILED);
 		lpfc_printf_vlog(vport, KERN_ERR, LOG_ELS,
 				 "0257 GID_FT Query error: 0x%x 0x%x\n",
@@ -1566,6 +1576,9 @@ lpfc_fdmi_cmd(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp, int cmdcode)
 				case LA_8GHZ_LINK:
 					ae->un.PortSpeed = HBA_PORTSPEED_8GBIT;
 				break;
+				case LA_10GHZ_LINK:
+					ae->un.PortSpeed = HBA_PORTSPEED_10GBIT;
+				break;
 				default:
 					ae->un.PortSpeed =
 						HBA_PORTSPEED_UNKNOWN;
@@ -1717,8 +1730,10 @@ lpfc_decode_firmware_rev(struct lpfc_hba *phba, char *fwrevision, int flag)
 	uint32_t *ptr, str[4];
 	uint8_t *fwname;
 
-	if (vp->rev.rBit) {
-		if (psli->sli_flag & LPFC_SLI2_ACTIVE)
+	if (phba->sli_rev == LPFC_SLI_REV4)
+		sprintf(fwrevision, "%s", vp->rev.opFwName);
+	else if (vp->rev.rBit) {
+		if (psli->sli_flag & LPFC_SLI_ACTIVE)
 			rev = vp->rev.sli2FwRev;
 		else
 			rev = vp->rev.sli1FwRev;
@@ -1744,7 +1759,7 @@ lpfc_decode_firmware_rev(struct lpfc_hba *phba, char *fwrevision, int flag)
 		}
 		b4 = (rev & 0x0000000f);
 
-		if (psli->sli_flag & LPFC_SLI2_ACTIVE)
+		if (psli->sli_flag & LPFC_SLI_ACTIVE)
 			fwname = vp->rev.sli2FwName;
 		else
 			fwname = vp->rev.sli1FwName;

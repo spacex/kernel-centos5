@@ -215,7 +215,7 @@ void unregister_kretprobes(struct kretprobe **rps, int num);
 struct kretprobe_instance *get_free_rp_inst(struct kretprobe *rp);
 void add_rp_inst(struct kretprobe_instance *ri);
 void kprobe_flush_task(struct task_struct *tk);
-void recycle_rp_inst(struct kretprobe_instance *ri);
+void recycle_rp_inst(struct kretprobe_instance *ri, struct hlist_head *head);
 #else /* CONFIG_KPROBES */
 
 #define __kprobes	/**/

@@ -60,6 +60,29 @@ static struct page *split_large_page(unsigned long address, pgprot_t prot,
 	return base;
 } 
 
+/**
+ * clflush_cache_range - flush a cache range with clflush
+ * @addr:	virtual start address
+ * @size:	number of bytes to flush
+ *
+ * clflush is an unordered instruction which needs fencing with mfence
+ * to avoid ordering issues.
+ */
+void clflush_cache_range(void *vaddr, unsigned int size)
+{
+	void *vend = vaddr + size - 1;
+
+	mb();
+
+	for (; vaddr < vend; vaddr += boot_cpu_data.x86_clflush_size)
+		asm volatile("clflush (%0)" :: "r" (vaddr));
+	/*
+	 * Flush any possible final partial cacheline:
+	 */
+	asm volatile("clflush (%0)" :: "r" (vend));
+
+	mb();
+}
 
 static void flush_kernel_map(void *address) 
 {

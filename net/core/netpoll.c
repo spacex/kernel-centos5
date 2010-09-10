@@ -25,6 +25,7 @@
 #include <net/tcp.h>
 #include <net/udp.h>
 #include <asm/unaligned.h>
+#include <trace/napi.h>
 
 /*
  * We maintain a small pool of fully-sized skbs, to make sure the
@@ -135,21 +136,38 @@ static int checksum_udp(struct sk_buff *skb, struct udphdr *uh,
  * network adapter, forcing superfluous retries and possibly timeouts.
  * Thus, we set our budget to greater than 1.
  */
+
+static int poll_one_napi(struct netpoll_info *npinfo,
+			 struct net_device *dev, int budget)
+{
+	/* net_rx_action's ->poll() invocations and our's are
+	 * synchronized by this test which is only made while
+	 * holding the napi->poll_lock.
+	 */
+	if (!test_bit(__LINK_STATE_RX_SCHED, &dev->state))
+		return budget;
+
+	npinfo->rx_flags |= NETPOLL_RX_DROP;
+	atomic_inc(&trapped);
+
+	set_bit(__LINK_STATE_NETPOLL, &dev->state);
+	dev->poll(dev, &budget);
+	clear_bit(__LINK_STATE_NETPOLL, &dev->state);
+
+	atomic_dec(&trapped);
+	npinfo->rx_flags &= ~NETPOLL_RX_DROP;
+
+	return budget;
+}
+
 static void poll_napi(struct netpoll *np)
 {
 	struct netpoll_info *npinfo = np->dev->npinfo;
 	int budget = 16;
 
-	if (test_bit(__LINK_STATE_RX_SCHED, &np->dev->state) &&
-	    npinfo->poll_owner != smp_processor_id() &&
+	if (npinfo->poll_owner != smp_processor_id() &&
 	    spin_trylock(&npinfo->poll_lock)) {
-		npinfo->rx_flags |= NETPOLL_RX_DROP;
-		atomic_inc(&trapped);
-
-		np->dev->poll(np->dev, &budget);
-
-		atomic_dec(&trapped);
-		npinfo->rx_flags &= ~NETPOLL_RX_DROP;
+		budget = poll_one_napi(npinfo, np->dev, budget);
 		spin_unlock(&npinfo->poll_lock);
 	}
 }

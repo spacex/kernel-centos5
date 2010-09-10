@@ -794,8 +794,6 @@ void die_nmi (struct pt_regs *regs, const char *msg)
 		smp_processor_id(), regs->eip);
 	show_registers(regs);
 	console_silent();
-	spin_unlock(&nmi_print_lock);
-	bust_spinlocks(0);
 
 	/* If we are in kernel we are probably nested up pretty bad
 	 * and might aswell get out now while we still can.
@@ -804,6 +802,9 @@ void die_nmi (struct pt_regs *regs, const char *msg)
 		current->thread.trap_no = 2;
 		crash_kexec(regs);
 	}
+
+	bust_spinlocks(0);
+	spin_unlock(&nmi_print_lock);
 
 	do_exit(SIGSEGV);
 }

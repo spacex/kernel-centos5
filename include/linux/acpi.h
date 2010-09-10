@@ -384,6 +384,7 @@ enum acpi_table_id {
 	ACPI_HPET,
 	ACPI_MCFG,
 	ACPI_IVRS,
+	ACPI_DMAR,
 	ACPI_TABLE_COUNT
 };
 

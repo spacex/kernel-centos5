@@ -23,6 +23,8 @@
 
 #ifdef __KERNEL__
 
+#include <linux/net.h>
+
 #ifdef TUN_DEBUG
 #define DBG  if(tun->debug)printk
 #define DBG1 if(debug==2)printk
@@ -44,6 +46,9 @@ struct tun_struct {
 	struct net_device_stats	stats;
 
 	struct fasync_struct    *fasync;
+
+	struct sock		*sk;
+	struct socket		socket;
 
 	unsigned long if_flags;
 	u8 dev_addr[ETH_ALEN];
@@ -82,6 +87,8 @@ struct tun_struct {
 #define TUNGETFEATURES _IOR('T', 207, unsigned int)
 #define TUNSETOFFLOAD _IOW('T', 208, unsigned int)
 #define TUNGETIFF      _IOR('T', 210, unsigned int)
+#define TUNGETSNDBUF  _IOR('T', 211, int)
+#define TUNSETSNDBUF  _IOW('T', 212, int)
 
 /* TUNSETIFF ifr flags */
 #define IFF_TUN		0x0001

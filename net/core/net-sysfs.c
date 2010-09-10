@@ -446,6 +446,19 @@ static struct class net_class = {
  *	Delete sysfs entries but hold kobject reference until after all
  *	netdev references are gone.
  */
+int netdev_class_create_file(struct class_attribute *class_attr)
+{
+	return class_create_file(&net_class, class_attr);
+}
+
+void netdev_class_remove_file(struct class_attribute *class_attr)
+{
+	class_remove_file(&net_class, class_attr);
+}
+
+EXPORT_SYMBOL(netdev_class_create_file);
+EXPORT_SYMBOL(netdev_class_remove_file);
+
 void netdev_unregister_sysfs(struct net_device * net)
 {
 	struct class_device *dev = &(net->class_dev);

@@ -351,12 +351,8 @@ zfcp_erp_adisc(struct zfcp_port *port)
 		      adisc->nport_id);
 
 	retval = zfcp_fsf_send_els(send_els);
-	if (retval != 0) {
-		ZFCP_LOG_NORMAL("error: initiation of Send ELS failed for port "
-				"0x%08x on adapter %s\n", send_els->d_id,
-				zfcp_get_busid_by_adapter(adapter));
+	if (retval != 0)
 		goto freemem;
-	}
 
 	goto out;
 
@@ -397,15 +393,7 @@ zfcp_erp_adisc_handler(unsigned long data)
 
 	/* request rejected or timed out */
 	if (send_els->status != 0) {
-		ZFCP_LOG_NORMAL("ELS request rejected/timed out, "
-				"force physical port reopen "
-				"(adapter %s, port d_id=0x%08x)\n",
-				zfcp_get_busid_by_adapter(adapter), d_id);
-		if (zfcp_erp_port_forced_reopen(port, 0, 63, 0))
-			ZFCP_LOG_NORMAL("failed reopen of port "
-					"(adapter %s, wwpn=0x%016Lx)\n",
-					zfcp_get_busid_by_port(port),
-					port->wwpn);
+		zfcp_erp_port_forced_reopen(port, 0, 63, 0);
 		goto out;
 	}
 
@@ -459,16 +447,9 @@ zfcp_test_link(struct zfcp_port *port)
 	retval = zfcp_erp_adisc(port);
 	if (retval != 0 && retval != -EBUSY) {
 		zfcp_port_put(port);
-		ZFCP_LOG_NORMAL("reopen needed for port 0x%016Lx "
-				"on adapter %s\n ", port->wwpn,
-				zfcp_get_busid_by_port(port));
 		retval = zfcp_erp_port_forced_reopen(port, 0, 65, 0);
-		if (retval != 0) {
-			ZFCP_LOG_NORMAL("reopen of remote port 0x%016Lx "
-					"on adapter %s failed\n", port->wwpn,
-					zfcp_get_busid_by_port(port));
+		if (retval != 0)
 			retval = -EPERM;
-		}
 	}
 
 	return retval;
@@ -2985,6 +2966,7 @@ zfcp_erp_action_cleanup(int action, struct zfcp_adapter *adapter,
 	case ZFCP_ERP_ACTION_REOPEN_ADAPTER:
 		if (result != ZFCP_ERP_SUCCEEDED) {
 			struct zfcp_port *port;
+			unregister_service_level(&adapter->service_level);
 			list_for_each_entry(port, &adapter->port_list_head, list)
 				if (port->rport &&
 				    !atomic_test_mask(ZFCP_STATUS_PORT_WKA,
@@ -2992,7 +2974,8 @@ zfcp_erp_action_cleanup(int action, struct zfcp_adapter *adapter,
 					fc_remote_port_delete(port->rport);
 					port->rport = NULL;
 				}
-		}
+		} else
+			register_service_level(&adapter->service_level);
 		zfcp_adapter_put(adapter);
 		break;
 	default:

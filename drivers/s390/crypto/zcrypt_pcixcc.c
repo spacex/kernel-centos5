@@ -72,6 +72,7 @@ struct response_type {
 static struct ap_device_id zcrypt_pcixcc_ids[] = {
 	{ AP_DEVICE(AP_DEVICE_TYPE_PCIXCC) },
 	{ AP_DEVICE(AP_DEVICE_TYPE_CEX2C) },
+	{ AP_DEVICE(AP_DEVICE_TYPE_CEX2C2) },
 	{ /* end of list */ },
 };
 
@@ -93,6 +94,7 @@ static struct ap_driver zcrypt_pcixcc_driver = {
 	.remove = zcrypt_pcixcc_remove,
 	.receive = zcrypt_pcixcc_receive,
 	.ids = zcrypt_pcixcc_ids,
+	.request_timeout = PCIXCC_CLEANUP_TIME,
 };
 
 /**
@@ -735,18 +737,13 @@ static long zcrypt_pcixcc_modexpo(struct zcrypt_device *zdev,
 		goto out_free;
 	init_completion(&resp_type.work);
 	ap_queue_message(zdev->ap_dev, &ap_msg);
-	rc = wait_for_completion_interruptible_timeout(
-				&resp_type.work, PCIXCC_CLEANUP_TIME);
-	if (rc > 0)
+	rc = wait_for_completion_interruptible(&resp_type.work);
+	if (rc == 0)
 		rc = convert_response_ica(zdev, &ap_msg, mex->outputdata,
 					  mex->outputdatalength);
-	else {
-		/* Signal pending or message timed out. */
+	else
+		/* Signal pending. */
 		ap_cancel_message(zdev->ap_dev, &ap_msg);
-		if (rc == 0)
-			/* Message timed out. */
-			rc = -ETIME;
-	}
 out_free:
 	free_page((unsigned long) ap_msg.message);
 	return rc;
@@ -779,18 +776,13 @@ static long zcrypt_pcixcc_modexpo_crt(struct zcrypt_device *zdev,
 		goto out_free;
 	init_completion(&resp_type.work);
 	ap_queue_message(zdev->ap_dev, &ap_msg);
-	rc = wait_for_completion_interruptible_timeout(
-				&resp_type.work, PCIXCC_CLEANUP_TIME);
-	if (rc > 0)
+	rc = wait_for_completion_interruptible(&resp_type.work);
+	if (rc == 0)
 		rc = convert_response_ica(zdev, &ap_msg, crt->outputdata,
 					  crt->outputdatalength);
-	else {
-		/* Signal pending or message timed out. */
+	else
+		/* Signal pending. */
 		ap_cancel_message(zdev->ap_dev, &ap_msg);
-		if (rc == 0)
-			/* Message timed out. */
-			rc = -ETIME;
-	}
 out_free:
 	free_page((unsigned long) ap_msg.message);
 	return rc;
@@ -822,17 +814,12 @@ long zcrypt_pcixcc_send_cprb(struct zcrypt_device *zdev, struct ica_xcRB *xcRB)
 		goto out_free;
 	init_completion(&resp_type.work);
 	ap_queue_message(zdev->ap_dev, &ap_msg);
-	rc = wait_for_completion_interruptible_timeout(
-				&resp_type.work, PCIXCC_CLEANUP_TIME);
-	if (rc > 0)
+	rc = wait_for_completion_interruptible(&resp_type.work);
+	if (rc == 0)
 		rc = convert_response_xcrb(zdev, &ap_msg, xcRB);
-	else {
-		/* Signal pending or message timed out. */
+	else
+		/* Signal pending. */
 		ap_cancel_message(zdev->ap_dev, &ap_msg);
-		if (rc == 0)
-			/* Message timed out. */
-			rc = -ETIME;
-	}
 out_free:
 	memset(ap_msg.message, 0x0, ap_msg.length);
 	kfree(ap_msg.message);

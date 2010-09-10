@@ -607,6 +607,104 @@ out:
 	return rc;
 }
 
+/*
+ * This is a horrible function and I should be fired for proposing it on list
+ * but the real solution is a major filesystem mounting rewrite I did upstream
+ * that I just don't feel comfortable bringing it back to RHEL and would introduce
+ * compatibility problems in RHEL.
+ *
+ * NFS can reuse superblocks when mounting different shares.  This code checks
+ * if this superblock is already selinux initialized and if the selinux options
+ * passed to the mount command are the same.  Upstream we fail if we are given
+ * different selinux options, but for historical reasons we should continue to
+ * ignore the new mount options in RHEL.  Instead all this function is going to
+ * do is complain in dmesg that your mount will fail in RHEL6.
+ */
+static void nfs_check_sb_options(struct super_block *sb, void *data)
+{
+	struct nfs_mount_data *d = data;
+	struct superblock_security_struct *sbsec = sb->s_security;
+	static int sent = 0;
+
+	if (sent)
+		return;
+
+	/* no context= on sb and !data we are good to go. */
+	if ((sbsec->mntpoint_sid == SECINITSID_UNLABELED) &&
+	    (sbsec->behavior == SECURITY_FS_USE_GENFS) &&
+	    (!data))
+		return;
+
+	/* This ain't supposed to happen */
+	if (!data) {
+		sent = 1;
+		printk(KERN_WARNING "SELinux: inside nfs_check_sb_options with !data.  Please inform RH support.\n");
+		return;
+	}
+
+	/* do we know how to handle this mount data? If not, just go ahead */
+	if (d->version < NFS_MOUNT_VERSION ||
+	    d->version > NFS_MOUNT_VERSION + 50)
+		return;
+
+	/* common case, no context= option at all */
+	if ((sbsec->mntpoint_sid == SECINITSID_UNLABELED) &&
+	    (sbsec->behavior == SECURITY_FS_USE_GENFS) &&
+	    (!d->context[0]))
+		return;
+
+	/* less common but ok, both things had that same label */
+	if ((sbsec->behavior == SECURITY_FS_USE_MNTPOINT) &&
+	    (d->context[0])) {
+		char *context = &d->context[0];
+		int rc;
+		u32 sid;
+
+		rc = security_context_to_sid(context, strlen(context), &sid);
+		/* on error announce the error and pass to the full printk */
+		if (rc)
+			printk(KERN_WARNING "SELinux: the context=%s used on this mount is an invalid context.\n", context);
+		/* if the old and new sid are the same that's great! */
+		else if (sid == sbsec->mntpoint_sid)
+			return;
+	}
+
+	sent = 1;
+
+	printk(KERN_WARNING "SELinux: You have mounted the same NFS export with different context= options.\n");
+	printk(KERN_WARNING "SELinux: The options used on the first mount will be used for both mounts.\n");
+	printk(KERN_WARNING "SELinux: In RHEL6 or later the second mount will not be allowed at all.\n");
+	printk(KERN_WARNING "SELinux: You may wish to investigate the nosharecache NFS options in order to get\n");
+	printk(KERN_WARNING "SELinux:    separate superblocks (and thus separate SELinux options) for the\n");
+	printk(KERN_WARNING "SELinux:    NFS mount dev=%s if you REALLY need this functionality.\n", sb->s_id);
+
+	/* print context= about first mount */
+	if (sbsec->behavior == SECURITY_FS_USE_MNTPOINT) {
+		char *context;
+		u32 len;
+		int rc;
+
+		rc = security_sid_to_context(sbsec->mntpoint_sid, &context, &len);
+		if (!rc) {
+			printk(KERN_WARNING "SELinux: original mount had the context=%s\n", context);
+			kfree(context);
+		}
+	} else {
+		printk(KERN_WARNING "SELinux: original mount had no context= mount option.\n");
+	}
+
+	/* print context= about second mount */
+	if (d->context[0])
+		printk(KERN_WARNING "SELinux: new mount has the context=%s\n", &d->context[0]);
+	else
+		printk(KERN_WARNING "SELinux: new mount has no context= mount option.\n");
+
+	printk(KERN_WARNING "SELinux: This is the only time you will get this message even if this\n");
+	printk(KERN_WARNING "SELinux:    is not the only mount in this situation.\n");
+
+	return;
+}
+
 static int superblock_doinit(struct super_block *sb, void *data)
 {
 	struct superblock_security_struct *sbsec = sb->s_security;
@@ -615,8 +713,11 @@ static int superblock_doinit(struct super_block *sb, void *data)
 	int rc = 0;
 
 	down(&sbsec->sem);
-	if (sbsec->initialized)
+	if (sbsec->initialized) {
+		if (!strncmp("nfs", sb->s_type->name, 3))
+			nfs_check_sb_options(sb, data);
 		goto out;
+	}
 
 	if (!ss_initialized) {
 		/* Defer initialization until selinux_complete_init,

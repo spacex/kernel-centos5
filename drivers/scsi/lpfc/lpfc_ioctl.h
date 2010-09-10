@@ -23,21 +23,6 @@
 
 #define LPFC_MAX_EVENT 128
 
-/* Event definitions for RegisterForEvent */
-#define FC_REG_LINK_EVENT       0x1     /* Register for link up / down events */
-#define FC_REG_RSCN_EVENT       0x2     /* Register for RSCN events */
-#define FC_REG_CT_EVENT         0x4     /* Register for CT request events */
-#ifndef FC_REG_DUMP_EVENT
-#define FC_REG_DUMP_EVENT       0x10    /* Register for Dump events */
-#endif
-#ifndef FC_REG_TEMPERATURE_EVENT
-#define FC_REG_TEMPERATURE_EVENT	0x20    /* Register for temperature
-						   event */
-#endif
-
-#define FC_REG_EVENT_MASK       0xff    /* event mask */
-
-
 #define LPFC_CT                         0x42    /* Send CT passthru command */
 #define LPFC_HBA_RNID                   0x52    /* Send an RNID request */
 #define LPFC_HBA_REFRESHINFO            0x56    /* Do a refresh of the stats */
@@ -60,7 +45,7 @@
 struct DfcRevInfo {
 	uint32_t a_Major;
 	uint32_t a_Minor;
-} ;
+};
 
 #define LPFC_WWPN_TYPE		0
 #define LPFC_PORTID_TYPE	1

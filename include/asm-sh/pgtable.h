@@ -184,6 +184,7 @@ static inline int pte_young(pte_t pte){ return pte_val(pte) & _PAGE_ACCESSED; }
 static inline int pte_file(pte_t pte) { return pte_val(pte) & _PAGE_FILE; }
 static inline int pte_write(pte_t pte){ return pte_val(pte) & _PAGE_RW; }
 static inline int pte_not_present(pte_t pte){ return !(pte_val(pte) & _PAGE_PRESENT); }
+static inline int pte_special(pte_t pte) { return 0; }
 
 static inline pte_t pte_rdprotect(pte_t pte)	{ set_pte(&pte, __pte(pte_val(pte) & ~_PAGE_USER)); return pte; }
 static inline pte_t pte_exprotect(pte_t pte)	{ set_pte(&pte, __pte(pte_val(pte) & ~_PAGE_USER)); return pte; }
@@ -284,6 +285,8 @@ typedef pte_t *pte_addr_t;
 #define GET_PFN(pfn)			(pfn)
 
 struct mm_struct;
+
+static inline pte_t pte_mkspecial(pte_t pte) { return pte; }
 
 /*
  * No page table caches to initialise

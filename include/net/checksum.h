@@ -84,4 +84,22 @@ csum_block_sub(unsigned int csum, unsigned int csum2, int offset)
 	return csum_sub(csum, csum2);
 }
 
+static inline u32 csum_unfold(u16 n)
+{
+	return n;
+}
+
+static inline void csum_replace4(u16 *sum, u32 from, u32 to)
+{
+	u32 diff[] = { ~from, to };
+
+	*sum = csum_fold(csum_partial((unsigned char *)diff, sizeof(diff),
+				      ~csum_unfold(*sum)));
+}
+
+static inline void csum_replace2(u16 *sum, u16 from, u16 to)
+{
+	csum_replace4(sum, from, to);
+}
+
 #endif

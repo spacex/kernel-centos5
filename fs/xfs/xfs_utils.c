@@ -40,76 +40,6 @@
 #include "xfs_itable.h"
 #include "xfs_utils.h"
 
-/*
- * xfs_get_dir_entry is used to get a reference to an inode given
- * its parent directory inode and the name of the file.	 It does
- * not lock the child inode, and it unlocks the directory before
- * returning.  The directory's generation number is returned for
- * use by a later call to xfs_lock_dir_and_entry.
- */
-int
-xfs_get_dir_entry(
-	bhv_vname_t	*dentry,
-	xfs_inode_t	**ipp)
-{
-	bhv_vnode_t	*vp;
-
-	vp = VNAME_TO_VNODE(dentry);
-
-	*ipp = xfs_vtoi(vp);
-	if (!*ipp)
-		return XFS_ERROR(ENOENT);
-	VN_HOLD(vp);
-	return 0;
-}
-
-int
-xfs_dir_lookup_int(
-	bhv_desc_t	*dir_bdp,
-	uint		lock_mode,
-	bhv_vname_t	*dentry,
-	xfs_ino_t	*inum,
-	xfs_inode_t	**ipp)
-{
-	bhv_vnode_t	*dir_vp;
-	xfs_inode_t	*dp;
-	int		error;
-
-	dir_vp = BHV_TO_VNODE(dir_bdp);
-	vn_trace_entry(dir_vp, __FUNCTION__, (inst_t *)__return_address);
-
-	dp = XFS_BHVTOI(dir_bdp);
-
-	error = xfs_dir_lookup(NULL, dp, VNAME(dentry), VNAMELEN(dentry), inum);
-	if (!error) {
-		/*
-		 * Unlock the directory. We do this because we can't
-		 * hold the directory lock while doing the vn_get()
-		 * in xfs_iget().  Doing so could cause us to hold
-		 * a lock while waiting for the inode to finish
-		 * being inactive while it's waiting for a log
-		 * reservation in the inactive routine.
-		 */
-		xfs_iunlock(dp, lock_mode);
-		error = xfs_iget(dp->i_mount, NULL, *inum, 0, 0, ipp, 0);
-		xfs_ilock(dp, lock_mode);
-
-		if (error) {
-			*ipp = NULL;
-		} else if ((*ipp)->i_d.di_mode == 0) {
-			/*
-			 * The inode has been freed.  Something is
-			 * wrong so just get out of here.
-			 */
-			xfs_iunlock(dp, lock_mode);
-			xfs_iput_new(*ipp, 0);
-			*ipp = NULL;
-			xfs_ilock(dp, lock_mode);
-			error = XFS_ERROR(ENOENT);
-		}
-	}
-	return error;
-}
 
 /*
  * Allocates a new inode from disk and return a pointer to the
@@ -222,7 +152,7 @@ xfs_dir_ialloc(
 		}
 
 		ntp = xfs_trans_dup(tp);
-		code = xfs_trans_commit(tp, 0, NULL);
+		code = xfs_trans_commit(tp, 0);
 		tp = ntp;
 		if (committed != NULL) {
 			*committed = 1;
@@ -307,6 +237,7 @@ xfs_droplink(
 
 	ASSERT (ip->i_d.di_nlink > 0);
 	ip->i_d.di_nlink--;
+	drop_nlink(VFS_I(ip));
 	xfs_trans_log_inode(tp, ip, XFS_ILOG_CORE);
 
 	error = 0;
@@ -335,23 +266,22 @@ xfs_bump_ino_vers2(
 	xfs_inode_t	*ip)
 {
 	xfs_mount_t	*mp;
-	unsigned long		s;
 
-	ASSERT(ismrlocked (&ip->i_lock, MR_UPDATE));
+	ASSERT(xfs_isilocked(ip, XFS_ILOCK_EXCL));
 	ASSERT(ip->i_d.di_version == XFS_DINODE_VERSION_1);
 
 	ip->i_d.di_version = XFS_DINODE_VERSION_2;
 	ip->i_d.di_onlink = 0;
 	memset(&(ip->i_d.di_pad[0]), 0, sizeof(ip->i_d.di_pad));
 	mp = tp->t_mountp;
-	if (!XFS_SB_VERSION_HASNLINK(&mp->m_sb)) {
-		s = XFS_SB_LOCK(mp);
-		if (!XFS_SB_VERSION_HASNLINK(&mp->m_sb)) {
-			XFS_SB_VERSION_ADDNLINK(&mp->m_sb);
-			XFS_SB_UNLOCK(mp, s);
+	if (!xfs_sb_version_hasnlink(&mp->m_sb)) {
+		spin_lock(&mp->m_sb_lock);
+		if (!xfs_sb_version_hasnlink(&mp->m_sb)) {
+			xfs_sb_version_addnlink(&mp->m_sb);
+			spin_unlock(&mp->m_sb_lock);
 			xfs_mod_sb(tp, XFS_SB_VERSIONNUM);
 		} else {
-			XFS_SB_UNLOCK(mp, s);
+			spin_unlock(&mp->m_sb_lock);
 		}
 	}
 	/* Caller must log the inode */
@@ -371,6 +301,7 @@ xfs_bumplink(
 
 	ASSERT(ip->i_d.di_nlink > 0);
 	ip->i_d.di_nlink++;
+	inc_nlink(VFS_I(ip));
 	if ((ip->i_d.di_version == XFS_DINODE_VERSION_1) &&
 	    (ip->i_d.di_nlink > XFS_MAXLINK_1)) {
 		/*
@@ -420,7 +351,11 @@ xfs_truncate_file(
 	 * in a transaction.
 	 */
 	xfs_ilock(ip, XFS_IOLOCK_EXCL);
-	xfs_itruncate_start(ip, XFS_ITRUNC_DEFINITE, (xfs_fsize_t)0);
+	error = xfs_itruncate_start(ip, XFS_ITRUNC_DEFINITE, (xfs_fsize_t)0);
+	if (error) {
+		xfs_iunlock(ip, XFS_IOLOCK_EXCL);
+		return error;
+	}
 
 	tp = xfs_trans_alloc(mp, XFS_TRANS_TRUNCATE_FILE);
 	if ((error = xfs_trans_reserve(tp, 0, XFS_ITRUNCATE_LOG_RES(mp), 0,
@@ -460,8 +395,7 @@ xfs_truncate_file(
 				 XFS_TRANS_ABORT);
 	} else {
 		xfs_ichgtime(ip, XFS_ICHGTIME_MOD | XFS_ICHGTIME_CHG);
-		error = xfs_trans_commit(tp, XFS_TRANS_RELEASE_LOG_RES,
-					 NULL);
+		error = xfs_trans_commit(tp, XFS_TRANS_RELEASE_LOG_RES);
 	}
 	xfs_iunlock(ip, XFS_ILOCK_EXCL | XFS_IOLOCK_EXCL);
 

@@ -7,6 +7,7 @@
  * parsing is required.
  */
 
+#include <linux/types.h>
 
 /* associates an integer enumerator with a pattern string. */
 struct match_token {
@@ -29,5 +30,6 @@ int match_token(char *, match_table_t table, substring_t args[]);
 int match_int(substring_t *, int *result);
 int match_octal(substring_t *, int *result);
 int match_hex(substring_t *, int *result);
+size_t match_strlcpy(char *, const substring_t *, size_t);
 void match_strcpy(char *, substring_t *);
 char *match_strdup(substring_t *);

@@ -112,6 +112,14 @@ u64 ipath_snap_cntr(struct ipath_devdata *dd, ipath_creg creg)
 			dd->ipath_lastrpkts = val;
 		}
 		val64 = dd->ipath_rpkts;
+	} else if (creg == dd->ipath_cregs->cr_ibsymbolerrcnt) {
+		if (dd->ibdeltainprog)
+			val64 -= val64 - dd->ibsymsnap;
+		val64 -= dd->ibsymdelta;
+	} else if (creg == dd->ipath_cregs->cr_iblinkerrrecovcnt) {
+		if (dd->ibdeltainprog)
+			val64 -= val64 - dd->iblnkerrsnap;
+		val64 -= dd->iblnkerrdelta;
 	} else
 		val64 = (u64) val;
 
@@ -308,11 +316,12 @@ void ipath_get_faststats(unsigned long opaque)
 			 * level.
 			 */
 			if (iserr)
-				ipath_dbg("Re-enabling queue full errors (%s)\n",
-					  ebuf);
+				ipath_dbg(
+					"Re-enabling queue full errors (%s)\n",
+					ebuf);
 			else
 				ipath_cdbg(ERRPKT, "Re-enabling packet"
-						" problem interrupt (%s)\n", ebuf);
+					" problem interrupt (%s)\n", ebuf);
 		}
 
 		/* re-enable masked errors */

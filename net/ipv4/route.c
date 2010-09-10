@@ -133,6 +133,9 @@ static int ip_rt_min_pmtu		= 512 + 20 + 20;
 static int ip_rt_min_advmss		= 256;
 static int ip_rt_secret_interval	= 10 * 60 * HZ;
 static unsigned long rt_deadline;
+static int sysctl_rt_cache_rebuild_count = 4;
+static int current_rt_cache_rebuild_count = 0;
+static int rt_chain_length_max __read_mostly   = 20;
 
 #define RTprint(a...)	printk(KERN_DEBUG a)
 
@@ -152,6 +155,7 @@ static struct dst_entry *ipv4_negative_advice(struct dst_entry *dst);
 static void		 ipv4_link_failure(struct sk_buff *skb);
 static void		 ip_rt_update_pmtu(struct dst_entry *dst, u32 mtu);
 static int rt_garbage_collect(void);
+static void rt_emergency_hash_rebuild(void);
 
 
 static struct dst_ops ipv4_dst_ops = {
@@ -560,6 +564,20 @@ static inline u32 rt_score(struct rtable *rt)
 	return score;
 }
 
+static inline bool rt_caching(void)
+{
+	return current_rt_cache_rebuild_count <=
+		sysctl_rt_cache_rebuild_count;
+}
+
+static inline bool compare_hash_inputs(const struct flowi *fl1,
+                                       const struct flowi *fl2)
+{
+	return (__force u32)(((fl1->nl_u.ip4_u.daddr ^ fl2->nl_u.ip4_u.daddr) |
+		(fl1->nl_u.ip4_u.saddr ^ fl2->nl_u.ip4_u.saddr) |
+		(fl1->iif ^ fl2->iif)) == 0);
+}
+
 static inline int compare_keys(struct flowi *fl1, struct flowi *fl2)
 {
 	return memcmp(&fl1->nl_u.ip4_u, &fl2->nl_u.ip4_u, sizeof(fl1->nl_u.ip4_u)) == 0 &&
@@ -612,6 +630,16 @@ static struct rtable **rt_remove_balanced_route(struct rtable **chain_head,
 }
 #endif /* CONFIG_IP_ROUTE_MULTIPATH_CACHED */
 
+/*
+ * While freeing expired entries, we compute average chain length
+ * and standard deviation, using fixed-point arithmetic.
+ * This to have an estimation of rt_chain_length_max
+ *  rt_chain_length_max = max(elasticity, AVG + 4*SD)
+ * We use 3 bits for frational part, and 29 (or 61) for magnitude.
+ */
+
+#define FRACT_BITS 3
+#define ONE (1UL << FRACT_BITS)
 
 /* This runs via a timer and thus is always in BH context. */
 static void rt_check_expire(unsigned long dummy)
@@ -619,6 +647,8 @@ static void rt_check_expire(unsigned long dummy)
 	static unsigned int rover;
 	unsigned int i = rover, goal;
 	struct rtable *rth, **rthp;
+	unsigned long length = 0, samples = 0;
+	unsigned long sum = 0, sum2 = 0;
 	unsigned long now = jiffies;
 	u64 mult;
 
@@ -633,6 +663,8 @@ static void rt_check_expire(unsigned long dummy)
 		i = (i + 1) & rt_hash_mask;
 		rthp = &rt_hash_table[i].chain;
 
+		samples++;
+
 		if (*rthp == 0)
 			continue;
 		spin_lock(rt_hash_lock_addr(i));
@@ -642,11 +674,30 @@ static void rt_check_expire(unsigned long dummy)
 				if (time_before_eq(now, rth->u.dst.expires)) {
 					tmo >>= 1;
 					rthp = &rth->u.rt_next;
+					/*
+					 * Only bump our length if the hash
+					 * inputs on entries n and n+1 are not
+					 * the same, we only count entries on
+					 * a chain with equal hash inputs once
+					 * so that entries for different QOS
+					 * levels, and other non-hash input
+					 * attributes don't unfairly skew
+					 * the length computation
+					 */
+					if ((*rthp == NULL) ||
+					    !compare_hash_inputs(&(*rthp)->fl,
+								 &rth->fl))
+						length += ONE;
+
 					continue;
 				}
 			} else if (!rt_may_expire(rth, tmo, ip_rt_gc_timeout)) {
 				tmo >>= 1;
 				rthp = &rth->u.rt_next;
+				if ((*rthp == NULL) || 
+				   !compare_hash_inputs(&(*rthp)->fl,
+							&rth->fl))
+					length += ONE;
 				continue;
 			}
 
@@ -669,11 +720,20 @@ static void rt_check_expire(unsigned long dummy)
 #endif /* CONFIG_IP_ROUTE_MULTIPATH_CACHED */
 		}
 		spin_unlock(rt_hash_lock_addr(i));
-
+		sum += length;
+		sum2 += length*length;
 		/* Fallback loop breaker. */
 		if (time_after(jiffies, now))
 			break;
 	}
+	if (samples) {
+		unsigned long avg = sum / samples;
+		unsigned long sd = int_sqrt(sum2 / samples - avg*avg);
+		rt_chain_length_max = max_t(unsigned long,
+					ip_rt_gc_elasticity,
+					(avg + 4*sd) >> FRACT_BITS);
+	}
+
 	rover = i;
 	mod_timer(&rt_periodic_timer, jiffies + ip_rt_gc_interval);
 }
@@ -755,6 +815,26 @@ static void rt_secret_rebuild(unsigned long dummy)
 
 	rt_cache_flush(0);
 	mod_timer(&rt_secret_timer, now + ip_rt_secret_interval);
+}
+
+static void rt_secret_rebuild_oneshot(void)
+{
+	del_timer_sync(&rt_secret_timer);
+       rt_cache_flush(0);
+       if (ip_rt_secret_interval) {
+               rt_secret_timer.expires += ip_rt_secret_interval;
+               add_timer(&rt_secret_timer);
+       }
+}
+
+static void rt_emergency_hash_rebuild(void)
+{
+       if (net_ratelimit()) {
+               printk(KERN_WARNING "Route hash chain too long!\n");
+               printk(KERN_WARNING "Adjust your secret_interval!\n");
+       }
+
+       rt_secret_rebuild_oneshot();
 }
 
 /*
@@ -915,11 +995,13 @@ out:	return 0;
 static int rt_intern_hash(unsigned hash, struct rtable *rt, struct rtable **rp)
 {
 	struct rtable	*rth, **rthp;
+	struct rtable   *rthi;
 	unsigned long	now;
 	struct rtable *cand, **candp;
 	u32 		min_score;
 	int		chain_length;
 	int attempts = !in_softirq();
+
 
 restart:
 	chain_length = 0;
@@ -928,7 +1010,13 @@ restart:
 	candp = NULL;
 	now = jiffies;
 
+	if (!rt_caching()) {
+		rt_drop(rt);
+		return 0;
+	}
+
 	rthp = &rt_hash_table[hash].chain;
+	rthi = NULL;
 
 	spin_lock_bh(rt_hash_lock_addr(hash));
 	while ((rth = *rthp) != NULL) {
@@ -976,6 +1064,17 @@ restart:
 		chain_length++;
 
 		rthp = &rth->u.rt_next;
+
+		/*
+		 * check to see if the next entry in the chain
+		 * contains the same hash input values as rt.  If it does
+		 * This is where we will insert into the list, instead of
+		 * at the head.  This groups entries that differ by aspects not
+		 * relvant to the hash function together, which we use to adjust
+		 * our chain length
+		 */
+		if (*rthp && compare_hash_inputs(&(*rthp)->fl, &rt->fl))
+			rthi = rth;
 	}
 
 	if (cand) {
@@ -988,6 +1087,16 @@ restart:
 		if (chain_length > ip_rt_gc_elasticity) {
 			*candp = cand->u.rt_next;
 			rt_free(cand);
+		}
+	} else {
+		if (chain_length > rt_chain_length_max) {
+			current_rt_cache_rebuild_count++;
+			if (!rt_caching()) {
+				printk(KERN_WARNING "%s: %d rebuilds is over "
+				       "limit, route caching disabled\n",
+				rt->u.dst.dev->name, current_rt_cache_rebuild_count);
+			}
+			rt_emergency_hash_rebuild();
 		}
 	}
 
@@ -1026,7 +1135,11 @@ restart:
 		}
 	}
 
-	rt->u.rt_next = rt_hash_table[hash].chain;
+	if (rthi)
+		rt->u.rt_next = rthi->u.rt_next;
+	else
+		rt->u.rt_next = rt_hash_table[hash].chain;
+
 #if RT_CACHE_DEBUG >= 2
 	if (rt->u.rt_next) {
 		struct rtable *trt;
@@ -1037,7 +1150,11 @@ restart:
 		printk("\n");
 	}
 #endif
-	rt_hash_table[hash].chain = rt;
+	if (rthi)
+		rthi->u.rt_next = rt;
+	else
+		rt_hash_table[hash].chain = rt;
+
 	spin_unlock_bh(rt_hash_lock_addr(hash));
 	*rp = rt;
 	return 0;
@@ -1133,6 +1250,9 @@ void ip_rt_redirect(u32 old_gw, u32 daddr, u32 new_gw,
 
 	if (new_gw == old_gw || !IN_DEV_RX_REDIRECTS(in_dev)
 	    || MULTICAST(new_gw) || BADCLASS(new_gw) || ZERONET(new_gw))
+		goto reject_redirect;
+
+	if (!rt_caching())
 		goto reject_redirect;
 
 	if (!IN_DEV_SHARED_MEDIA(in_dev)) {
@@ -2098,6 +2218,9 @@ int ip_route_input(struct sk_buff *skb, u32 daddr, u32 saddr,
 	unsigned	hash;
 	int iif = dev->ifindex;
 
+	if (!rt_caching())
+		goto skip_cache;
+
 	tos &= IPTOS_RT_MASK;
 	hash = rt_hash_code(daddr, saddr ^ (iif << 5));
 
@@ -2124,6 +2247,7 @@ int ip_route_input(struct sk_buff *skb, u32 daddr, u32 saddr,
 	}
 	rcu_read_unlock();
 
+skip_cache:
 	/* Multicast recognition logic is moved from route cache to here.
 	   The problem was that too many Ethernet cards have broken/missing
 	   hardware multicast filters :-( As result the host on multicasting
@@ -2571,6 +2695,9 @@ int __ip_route_output_key(struct rtable **rp, const struct flowi *flp)
 	unsigned hash;
 	struct rtable *rth;
 
+	if (!rt_caching())
+		goto slow_output;
+
 	hash = rt_hash_code(flp->fl4_dst, flp->fl4_src ^ (flp->oif << 5));
 
 	rcu_read_lock_bh();
@@ -2608,6 +2735,7 @@ int __ip_route_output_key(struct rtable **rp, const struct flowi *flp)
 	}
 	rcu_read_unlock_bh();
 
+slow_output:
 	return ip_route_output_slow(rp, flp);
 }
 
@@ -2965,6 +3093,66 @@ static int ipv4_sysctl_rtcache_flush_strategy(ctl_table *table,
 	return 0;
 }
 
+static void rt_secret_reschedule(int old)
+{
+	int new = ip_rt_secret_interval;
+	int diff = new - old;
+	int deleted;
+
+	if (!diff)
+		return;
+
+	rtnl_lock();
+	deleted = del_timer_sync(&rt_secret_timer);
+
+	if (!new)
+		return;
+
+	if (deleted) {
+		long time = rt_secret_timer.expires - jiffies;
+
+		if (time <= 0 || (time += diff) <= 0)
+			time = 0;
+
+		rt_secret_timer.expires = time;
+	} else
+		rt_secret_timer.expires = new;
+
+	rt_secret_timer.expires += jiffies;
+	add_timer(&rt_secret_timer);
+	rtnl_unlock();
+}
+
+static int ipv4_sysctl_rt_secret_interval(ctl_table *ctl, int write,
+					  struct file *filp,
+					  void __user *buffer, size_t *lenp,
+					  loff_t *ppos)
+{
+	int old = ip_rt_secret_interval;
+	int ret = proc_dointvec_jiffies(ctl, write, filp, buffer, lenp, ppos);
+
+	rt_secret_reschedule(old);
+
+	return ret;
+}
+
+static int ipv4_sysctl_rt_secret_interval_strategy(ctl_table *table,
+						   void __user *oldval,
+						   size_t __user *oldlenp,
+						   void __user *newval,
+						   size_t newlen)
+{
+	int old = ip_rt_secret_interval;
+
+	int ret = sysctl_jiffies(table, NULL, 0, oldval, oldlenp,
+				 newval, newlen, NULL);
+
+	rt_secret_reschedule(old);
+
+	return ret;
+}
+
+#define CTL_UNNUMBERED -2
 ctl_table ipv4_route_table[] = {
         {
 		.ctl_name 	= NET_IPV4_ROUTE_FLUSH,
@@ -3126,8 +3314,16 @@ ctl_table ipv4_route_table[] = {
 		.data		= &ip_rt_secret_interval,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_jiffies,
-		.strategy	= &sysctl_jiffies,
+		.proc_handler	= &ipv4_sysctl_rt_secret_interval,
+		.strategy	= &ipv4_sysctl_rt_secret_interval_strategy,
+	},
+	{
+		.ctl_name	= CTL_UNNUMBERED,
+		.procname	= "rt_cache_rebuild_count",
+		.data		= &sysctl_rt_cache_rebuild_count,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
 	},
 	{ .ctl_name = 0 }
 };

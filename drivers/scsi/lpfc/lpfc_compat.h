@@ -99,3 +99,11 @@ lpfc_memcpy_from_slim( void *dest, void __iomem *src, unsigned int bytes)
 }
 
 #endif	/* __BIG_ENDIAN */
+
+#ifndef PTR_ALIGN
+#define PTR_ALIGN(p, a)((typeof(p))ALIGN((unsigned long)(p), (a)))
+#endif
+
+#ifndef DMA_BIT_MASK
+#define DMA_BIT_MASK(n) (((n) == 64) ? ~0ULL : ((1ULL<<(n))-1))
+#endif

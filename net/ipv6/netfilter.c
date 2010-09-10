@@ -53,6 +53,7 @@ EXPORT_SYMBOL(ip6_route_me_harder);
 struct ip6_rt_info {
 	struct in6_addr daddr;
 	struct in6_addr saddr;
+	u_int32_t mark;
 };
 
 static void nf_ip6_saveroute(const struct sk_buff *skb, struct nf_info *info)
@@ -64,6 +65,7 @@ static void nf_ip6_saveroute(const struct sk_buff *skb, struct nf_info *info)
 
 		rt_info->daddr = iph->daddr;
 		rt_info->saddr = iph->saddr;
+		rt_info->mark = skb->nfmark;
 	}
 }
 
@@ -74,7 +76,8 @@ static int nf_ip6_reroute(struct sk_buff **pskb, const struct nf_info *info)
 	if (info->hook == NF_IP6_LOCAL_OUT) {
 		struct ipv6hdr *iph = (*pskb)->nh.ipv6h;
 		if (!ipv6_addr_equal(&iph->daddr, &rt_info->daddr) ||
-		    !ipv6_addr_equal(&iph->saddr, &rt_info->saddr))
+		    !ipv6_addr_equal(&iph->saddr, &rt_info->saddr) ||
+		    (*pskb)->nfmark != rt_info->mark)
 			return ip6_route_me_harder(*pskb);
 	}
 	return 0;

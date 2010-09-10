@@ -203,12 +203,17 @@ static int pcifront_try_disconnect(struct pcifront_device *pdev)
 
 	prev_state = xenbus_read_driver_state(pdev->xdev->nodename);
 
-	if (prev_state < XenbusStateClosing)
-		err = xenbus_switch_state(pdev->xdev, XenbusStateClosing);
+	if (prev_state >= XenbusStateClosing)
+		goto out;
 
-	if (!err && prev_state == XenbusStateConnected)
+	if(prev_state == XenbusStateConnected) {
+		pcifront_free_roots(pdev);
 		pcifront_disconnect(pdev);
+	}
 
+	err = xenbus_switch_state(pdev->xdev, XenbusStateClosed);
+
+      out:
 	spin_unlock(&pdev->dev_lock);
 
 	return err;
@@ -220,24 +225,20 @@ static void pcifront_backend_changed(struct xenbus_device *xdev,
 	struct pcifront_device *pdev = xdev->dev.driver_data;
 
 	switch (be_state) {
-	case XenbusStateClosing:
-		dev_warn(&xdev->dev, "backend going away!\n");
-		pcifront_try_disconnect(pdev);
-		break;
-
 	case XenbusStateUnknown:
+	case XenbusStateInitialising:
+	case XenbusStateInitWait:
+	case XenbusStateInitialised:
 	case XenbusStateClosed:
-		dev_warn(&xdev->dev, "backend went away!\n");
-		pcifront_try_disconnect(pdev);
-
-		device_unregister(&pdev->xdev->dev);
 		break;
 
 	case XenbusStateConnected:
 		pcifront_try_connect(pdev);
 		break;
 
-	default:
+ 	case XenbusStateClosing:
+		dev_warn(&xdev->dev, "backend going away!\n");
+		pcifront_try_disconnect(pdev);
 		break;
 	}
 }

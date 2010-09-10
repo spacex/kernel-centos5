@@ -39,11 +39,11 @@
 #include <linux/vmalloc.h>
 #include <linux/pci.h>
 #include <linux/delay.h>
-#include <linux/swap.h>
 #include <rdma/ib_verbs.h>
 
 #include "ipath_kernel.h"
 #include "ipath_registers.h"
+#include "ipath_wc_pat.h"
 
 static void ipath_setup_ht_setextled(struct ipath_devdata *, u64, u64);
 
@@ -472,7 +472,6 @@ static const struct ipath_hwerror_msgs ipath_6110_hwerror_msgs[] = {
 	INFINIPATH_HWE_MSG(RXDSYNCMEMPARITYERR, "Rx Dsync"),
 	INFINIPATH_HWE_MSG(SERDESPLLFAILED, "SerDes PLL"),
 };
-
 
 #define TXE_PIO_PARITY ((INFINIPATH_HWE_TXEMEMPARITYERR_PIOBUF | \
 		        INFINIPATH_HWE_TXEMEMPARITYERR_PIOPBC) \
@@ -963,11 +962,28 @@ static void slave_or_pri_blk(struct ipath_devdata *dd, struct pci_dev *pdev,
 		}
 		dd->ipath_lbus_speed = speed;
 	}
+
 	snprintf(dd->ipath_lbus_info, sizeof(dd->ipath_lbus_info),
 		"HyperTransport,%uMHz,x%u\n",
 		dd->ipath_lbus_speed,
 		dd->ipath_lbus_width);
+}
 
+static int ipath_ht_intconfig(struct ipath_devdata *dd)
+{
+	int ret;
+
+	if (dd->ipath_intconfig) {
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_interruptconfig,
+				 dd->ipath_intconfig);	/* interrupt address */
+		ret = 0;
+	} else {
+		ipath_dev_err(dd, "No interrupts enabled, couldn't setup "
+			      "interrupt address\n");
+		ret = -EINVAL;
+	}
+
+	return ret;
 }
 
 static int set_int_handler(struct ipath_devdata *dd, struct pci_dev *pdev,
@@ -1010,6 +1026,7 @@ static int set_int_handler(struct ipath_devdata *dd, struct pci_dev *pdev,
 
 	/* can't program yet, so save for interrupt setup */
 	dd->ipath_intconfig = ihandler;
+	dd->ipath_irq = intvec;
 	/* keep going, so we find link control stuff also */
 
 	return ihandler != 0;
@@ -1482,25 +1499,6 @@ static void ipath_ht_quiet_serdes(struct ipath_devdata *dd)
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_serdesconfig0, val);
 }
 
-static int ipath_ht_intconfig(struct ipath_devdata *dd)
-{
-	int ret;
-
-	if (!dd->ipath_intconfig) {
-		ipath_dev_err(dd, "No interrupts enabled, couldn't setup "
-			      "interrupt address\n");
-		ret = 1;
-		goto bail;
-	}
-
-	ipath_write_kreg(dd, dd->ipath_kregs->kr_interruptconfig,
-			 dd->ipath_intconfig);	/* interrupt address */
-	ret = 0;
-
-bail:
-	return ret;
-}
-
 /**
  * ipath_pe_put_tid - write a TID in chip
  * @dd: the infinipath device
@@ -1654,8 +1652,12 @@ static int ipath_ht_early_init(struct ipath_devdata *dd)
 	 * these out on the wire.
 	 * Chip Errata bug 6610
 	 */
-	piobuf = (u32 __iomem *) (((char __iomem *)(dd->ipath_kregbase)) +
-				  dd->ipath_piobufbase);
+	if (ipath_wc_pat)
+		piobuf = (u32 __iomem *) dd->ipath_piobase;
+	else
+		piobuf = (u32 __iomem *)
+			(((char __iomem *)(dd->ipath_kregbase)) +
+			 dd->ipath_piobufbase);
 	pioincr = dd->ipath_palign / sizeof(*piobuf);
 	for (i = 0; i < dd->ipath_piobcnt2k; i++) {
 		/*
@@ -1715,6 +1717,13 @@ static int ipath_ht_get_base_info(struct ipath_portdata *pd, void *kbase)
 		kinfo->spi_runtime_flags |= IPATH_RUNTIME_RCVHDR_COPY;
 
 	return 0;
+}
+
+static void ipath_ht_free_irq(struct ipath_devdata *dd)
+{
+	free_irq(dd->ipath_irq, dd);
+	dd->ipath_irq = 0;
+	dd->ipath_intconfig = 0;
 }
 
 static struct ipath_message_header *
@@ -1944,6 +1953,7 @@ void ipath_init_iba6110_funcs(struct ipath_devdata *dd)
 	dd->ipath_f_cleanup = ipath_setup_ht_cleanup;
 	dd->ipath_f_setextled = ipath_setup_ht_setextled;
 	dd->ipath_f_get_base_info = ipath_ht_get_base_info;
+	dd->ipath_f_free_irq = ipath_ht_free_irq;
 	dd->ipath_f_tidtemplate = ipath_ht_tidtemplate;
 	dd->ipath_f_intr_fallback = ipath_ht_nointr_fallback;
 	dd->ipath_f_get_msgheader = ipath_ht_get_msgheader;

@@ -151,6 +151,9 @@ static struct crypto_larval *__crypto_register_alg(struct ncrypto_alg *alg)
 		if (q == alg)
 			goto err;
 
+		if (crypto_is_moribund(q))
+			continue;
+
 		if (crypto_is_larval(q)) {
 			if (!strcmp(alg->cra_driver_name, q->cra_driver_name))
 				goto err;
@@ -199,7 +202,7 @@ void crypto_alg_tested(const char *name, int err)
 
 	down_write(&ncrypto_alg_sem);
 	list_for_each_entry(q, &ncrypto_alg_list, cra_list) {
-		if (!crypto_is_larval(q))
+		if (crypto_is_moribund(q) || !crypto_is_larval(q))
 			continue;
 
 		test = (struct crypto_larval *)q;
@@ -212,6 +215,7 @@ void crypto_alg_tested(const char *name, int err)
 	goto unlock;
 
 found:
+	q->cra_flags |= NCRYPTO_ALG_DEAD;
 	alg = test->adult;
 	if (err || list_empty(&alg->cra_list))
 		goto complete;

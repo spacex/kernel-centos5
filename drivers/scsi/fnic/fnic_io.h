@@ -52,15 +52,16 @@ enum fnic_ioreq_state {
 };
 
 struct fnic_io_req {
-	struct host_sg_desc *sgl_list;	/* sgl list */
-	void  *sgl_list_alloc;          /* sgl list address used for free */
-	dma_addr_t  sense_buf_pa;	/* dma address for sense buffer*/
-	dma_addr_t  sgl_list_pa;	/* dma address for sgl list */
+	struct host_sg_desc *sgl_list; /* sgl list */
+	void *sgl_list_alloc; /* sgl list address used for free */
+	dma_addr_t sense_buf_pa; /* dma address for sense buffer*/
+	dma_addr_t sgl_list_pa;	/* dma address for sgl list */
 	u16 sgl_cnt;
-	u8 sgl_type;			/* device DMA descriptor list type */
-	u8 io_completed:1;		/* set to 1 when fw completes IO */
-	struct completion *abts_done;   /* completion for abts */
-	struct completion *dr_done;     /* completion for device reset */
+	u8 sgl_type; /* device DMA descriptor list type */
+	u8 io_completed:1; /* set to 1 when fw completes IO */
+	u32 port_id; /* remote port DID */
+	struct completion *abts_done; /* completion for abts */
+	struct completion *dr_done; /* completion for device reset */
 };
 
 #endif /* _FNIC_IO_H_ */

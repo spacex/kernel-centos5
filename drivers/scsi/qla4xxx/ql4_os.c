@@ -66,7 +66,9 @@ void qla4xxx_config_dma_addressing(struct scsi_qla_host *ha);
 /*
  * iSCSI template entry points
  */
-static int qla4xxx_tgt_dscvr(enum iscsi_tgt_dscvr type, uint32_t host_no,
+
+static int qla4xxx_tgt_dscvr(struct Scsi_Host *shost,
+			     enum iscsi_tgt_dscvr type,
 			     uint32_t enable, struct sockaddr *dst_addr);
 static int qla4xxx_conn_get_param(struct iscsi_cls_conn *conn,
 				  enum iscsi_param param, char *buf);
@@ -111,8 +113,6 @@ static struct iscsi_transport qla4xxx_iscsi_transport = {
 				  ISCSI_CONN_ADDRESS |
 				  ISCSI_TARGET_NAME |
 				  ISCSI_TPGT,
-	.sessiondata_size	= sizeof(struct ddb_entry),
-	.host_template		= &qla4xxx_driver_template,
 
 	.tgt_dscvr		= qla4xxx_tgt_dscvr,
 	.get_conn_param		= qla4xxx_conn_get_param,
@@ -150,7 +150,7 @@ int qla4xxx_conn_start(struct iscsi_cls_conn *conn)
 	DEBUG2(printk("scsi%ld: %s: index [%d] starting conn\n",
 		      ddb_entry->ha->host_no, __func__,
 		      ddb_entry->fw_ddb_index));
-	iscsi_unblock_session(session);
+	iscsi2_unblock_session(session);
 	return 0;
 }
 
@@ -166,7 +166,7 @@ static void qla4xxx_conn_stop(struct iscsi_cls_conn *conn, int flag)
 		      ddb_entry->ha->host_no, __func__,
 		      ddb_entry->fw_ddb_index));
 	if (flag == STOP_CONN_RECOVER)
-		iscsi_block_session(session);
+		iscsi2_block_session(session);
 	else
 		printk(KERN_ERR "iscsi: invalid stop flag %d\n", flag);
 }
@@ -218,20 +218,14 @@ static int qla4xxx_conn_get_param(struct iscsi_cls_conn *conn,
 	return len;
 }
 
-static int qla4xxx_tgt_dscvr(enum iscsi_tgt_dscvr type, uint32_t host_no,
+static int qla4xxx_tgt_dscvr(struct Scsi_Host *shost,
+			     enum iscsi_tgt_dscvr type,
 			     uint32_t enable, struct sockaddr *dst_addr)
 {
 	struct scsi_qla_host *ha;
-	struct Scsi_Host *shost;
 	struct sockaddr_in *addr;
 	struct sockaddr_in6 *addr6;
 	int ret = 0;
-
-	shost = scsi_host_lookup(host_no);
-	if (!shost) {
-		printk(KERN_ERR "Could not find host no %u\n", host_no);
-		return -ENODEV;
-	}
 
 	ha = (struct scsi_qla_host *) shost->hostdata;
 
@@ -257,7 +251,6 @@ static int qla4xxx_tgt_dscvr(enum iscsi_tgt_dscvr type, uint32_t host_no,
 		ret = -ENOSYS;
 	}
 
-	scsi_host_put(shost);
 	return ret;
 }
 
@@ -267,26 +260,25 @@ void qla4xxx_destroy_sess(struct ddb_entry *ddb_entry)
 		return;
 
 	if (ddb_entry->conn) {
-		iscsi_if_destroy_session_done(ddb_entry->conn);
-		iscsi_destroy_conn(ddb_entry->conn);
-		iscsi_remove_session(ddb_entry->sess);
+		iscsi2_destroy_conn(ddb_entry->conn);
+		iscsi2_remove_session(ddb_entry->sess);
 	}
-	iscsi_free_session(ddb_entry->sess);
+	iscsi2_free_session(ddb_entry->sess);
 }
 
 int qla4xxx_add_sess(struct ddb_entry *ddb_entry, int scan)
 {
 	int err;
 
-	err = iscsi_add_session(ddb_entry->sess, ddb_entry->fw_ddb_index);
+	err = iscsi2_add_session(ddb_entry->sess, ddb_entry->fw_ddb_index);
 	if (err) {
 		DEBUG2(printk(KERN_ERR "Could not add session.\n"));
 		return err;
 	}
 
-	ddb_entry->conn = iscsi_create_conn(ddb_entry->sess, 0);
+	ddb_entry->conn = iscsi2_create_conn(ddb_entry->sess, 0, 0);
 	if (!ddb_entry->conn) {
-		iscsi_remove_session(ddb_entry->sess);
+		iscsi2_remove_session(ddb_entry->sess);
 		DEBUG2(printk(KERN_ERR "Could not add connection.\n"));
 		return -ENOMEM;
 	}
@@ -296,7 +288,7 @@ int qla4xxx_add_sess(struct ddb_entry *ddb_entry, int scan)
 		scsi_scan_target(&ddb_entry->sess->dev, 0,
 				 ddb_entry->sess->target_id,
 				 SCAN_WILD_CARD, 0);
-	iscsi_if_create_session_done(ddb_entry->conn);
+	iscsi2_unblock_session(ddb_entry->sess);
 	return 0;
 }
 
@@ -305,7 +297,8 @@ struct ddb_entry *qla4xxx_alloc_sess(struct scsi_qla_host *ha)
 	struct ddb_entry *ddb_entry;
 	struct iscsi_cls_session *sess;
 
-	sess = iscsi_alloc_session(ha->host, &qla4xxx_iscsi_transport);
+	sess = iscsi2_alloc_session(ha->host, &qla4xxx_iscsi_transport,
+				    sizeof(*ddb_entry));
 	if (!sess)
 		return NULL;
 
@@ -896,18 +889,17 @@ static int qla4xxx_recover_adapter(struct scsi_qla_host *ha,
 	/* Flush any pending ddb changed AENs */
 	qla4xxx_process_aen(ha, FLUSH_DDB_CHANGED_AENS);
 
+	qla4xxx_flush_active_srbs(ha);
+
 	/* Reset the firmware.	If successful, function
 	 * returns with ISP interrupts enabled.
 	 */
-	if (status == QLA_SUCCESS) {
-		DEBUG2(printk(KERN_ERR "scsi%ld: %s - Performing soft reset..\n",
-			      ha->host_no, __func__));
-		qla4xxx_flush_active_srbs(ha);
-		if (ql4xxx_lock_drvr_wait(ha) == QLA_SUCCESS)
-			status = qla4xxx_soft_reset(ha);
-		else
-			status = QLA_ERROR;
-	}
+	DEBUG2(printk(KERN_ERR "scsi%ld: %s - Performing soft reset..\n",
+		      ha->host_no, __func__));
+	if (ql4xxx_lock_drvr_wait(ha) == QLA_SUCCESS)
+		status = qla4xxx_soft_reset(ha);
+	else
+		status = QLA_ERROR;
 
 	/* Flush any pending ddb changed AENs */
 	qla4xxx_process_aen(ha, FLUSH_DDB_CHANGED_AENS);
@@ -1554,11 +1546,9 @@ static int qla4xxx_eh_device_reset(struct scsi_cmnd *cmd)
 {
 	struct scsi_qla_host *ha = to_qla_host(cmd->device->host);
 	struct ddb_entry *ddb_entry = cmd->device->hostdata;
-	struct srb *sp;
 	int ret = FAILED, stat;
 
-	sp = (struct srb *) cmd->SCp.ptr;
-	if (!sp || !ddb_entry)
+	if (!ddb_entry)
 		return ret;
 
 	dev_info(&ha->pdev->dev,
@@ -1624,7 +1614,7 @@ static int qla4xxx_eh_host_reset(struct scsi_cmnd *cmd)
 	ha = (struct scsi_qla_host *) cmd->device->host->hostdata;
 
 	dev_info(&ha->pdev->dev,
-		   "scsi(%ld:%d:%d:%d): ADAPTER RESET ISSUED.\n", ha->host_no,
+		   "scsi(%ld:%d:%d:%d): HOST RESET ISSUED.\n", ha->host_no,
 		   cmd->device->channel, cmd->device->id, cmd->device->lun);
 
 	if (qla4xxx_wait_for_hba_online(ha) != QLA_SUCCESS) {
@@ -1699,7 +1689,7 @@ static int __init qla4xxx_module_init(void)
 		strcat(qla4xxx_version_str, "-debug");
 
 	qla4xxx_scsi_transport =
-		iscsi_register_transport(&qla4xxx_iscsi_transport);
+		iscsi2_register_transport(&qla4xxx_iscsi_transport);
 	if (!qla4xxx_scsi_transport){
 		ret = -ENODEV;
 		goto release_srb_cache;
@@ -1713,7 +1703,7 @@ static int __init qla4xxx_module_init(void)
 	printk(KERN_INFO "QLogic iSCSI HBA Driver\n");
 	return 0;
 unregister_transport:
-	iscsi_unregister_transport(&qla4xxx_iscsi_transport);
+	iscsi2_unregister_transport(&qla4xxx_iscsi_transport);
 release_srb_cache:
 	kmem_cache_destroy(srb_cachep);
 no_srp_cache:
@@ -1724,7 +1714,7 @@ static void __exit qla4xxx_module_exit(void)
 {
 	ql4_mod_unload = 1;
 	pci_unregister_driver(&qla4xxx_pci_driver);
-	iscsi_unregister_transport(&qla4xxx_iscsi_transport);
+	iscsi2_unregister_transport(&qla4xxx_iscsi_transport);
 	kmem_cache_destroy(srb_cachep);
 }
 

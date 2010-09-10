@@ -86,7 +86,7 @@ static cycle_t pit_read(void)
 	 * Previous attempts to handle these cases intelligently were
 	 * buggy, so we just do the simple thing now.
 	 */
-	if (count > old_count && jifs == old_jifs) {
+	if (count > old_count && (jifs - old_jifs) < tick_divider) {
 		count = old_count;
 	}
 	old_count = count;

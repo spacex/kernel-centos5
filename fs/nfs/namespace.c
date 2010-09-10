@@ -212,12 +212,7 @@ struct vfsmount *nfs_do_submount(const struct vfsmount *mnt_parent,
 		const struct dentry *dentry, struct nfs_fh *fh,
 		struct nfs_fattr *fattr)
 {
-	struct nfs_clone_mount mountdata = {
-		.sb = mnt_parent->mnt_sb,
-		.dentry = dentry,
-		.fh = fh,
-		.fattr = fattr,
-	};
+	struct nfs_clone_mount *mountdata = (struct nfs_clone_mount *) __get_free_page(GFP_USER);
 	struct vfsmount *mnt = ERR_PTR(-ENOMEM);
 	char *page = (char *) __get_free_page(GFP_USER);
 	char *devname;
@@ -227,13 +222,24 @@ struct vfsmount *nfs_do_submount(const struct vfsmount *mnt_parent,
 	dprintk("%s: submounting on %s/%s\n", __FUNCTION__,
 			dentry->d_parent->d_name.name,
 			dentry->d_name.name);
+
 	if (page == NULL)
 		goto out;
+	if (mountdata == NULL)
+		goto free_page;
+
+	mountdata->sb = mnt_parent->mnt_sb;
+	mountdata->dentry = dentry;
+	mountdata->fh = fh;
+	mountdata->fattr = fattr;
+
 	devname = nfs_devname(mnt_parent, dentry, page, PAGE_SIZE);
 	mnt = (struct vfsmount *)devname;
 	if (IS_ERR(devname))
-		goto free_page;
-	mnt = nfs_do_clone_mount(NFS_SB(mnt_parent->mnt_sb), devname, &mountdata);
+		goto free_mountdata;
+	mnt = nfs_do_clone_mount(NFS_SB(mnt_parent->mnt_sb), devname, mountdata);
+free_mountdata:
+	free_page((unsigned long)mountdata);
 free_page:
 	free_page((unsigned long)page);
 out:

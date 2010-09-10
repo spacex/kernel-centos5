@@ -80,6 +80,9 @@ static int udp_v6_get_port(struct sock *sk, unsigned short snum)
 		best_size_so_far = UINT_MAX;
 		best = rover = net_random() % remaining + low;
 
+		if (!udp_lport_inuse(rover))
+			goto gotit;
+
 		/* 1st pass: look for empty (or shortest) hash chain */
 		for (i = 0; i < UDP_HTABLE_SIZE; i++) {
 			int size = 0;
@@ -230,6 +233,8 @@ static int udpv6_recvmsg(struct kiocb *iocb, struct sock *sk,
   	struct sk_buff *skb;
 	size_t copied;
   	int err;
+	int peeked;
+	int is_udp4;
 
   	if (addr_len)
   		*addr_len=sizeof(struct sockaddr_in6);
@@ -238,7 +243,8 @@ static int udpv6_recvmsg(struct kiocb *iocb, struct sock *sk,
 		return ipv6_recv_error(sk, msg, len);
 
 try_again:
-	skb = skb_recv_datagram(sk, flags, noblock, &err);
+	skb = __skb_recv_datagram(sk, flags | (noblock ? MSG_DONTWAIT : 0),
+				  &peeked, &err);
 	if (!skb)
 		goto out;
 
@@ -247,6 +253,8 @@ try_again:
   		copied = len;
   		msg->msg_flags |= MSG_TRUNC;
   	}
+
+	is_udp4 = (skb->protocol == htons(ETH_P_IP));
 
 	if (skb->ip_summed==CHECKSUM_UNNECESSARY) {
 		err = skb_copy_datagram_iovec(skb, sizeof(struct udphdr), msg->msg_iov,
@@ -264,7 +272,12 @@ try_again:
 	if (err)
 		goto out_free;
 
-	UDP6_INC_STATS_USER(UDP_MIB_INDATAGRAMS);
+	if (!peeked) {
+		if (is_udp4)
+			UDP_INC_STATS_USER(UDP_MIB_INDATAGRAMS);
+		else
+			UDP6_INC_STATS_USER(UDP_MIB_INDATAGRAMS);
+	}
 
 	sock_recv_timestamp(msg, sk, skb);
 
@@ -278,7 +291,7 @@ try_again:
 		sin6->sin6_flowinfo = 0;
 		sin6->sin6_scope_id = 0;
 
-		if (skb->protocol == htons(ETH_P_IP))
+		if (is_udp4)
 			ipv6_addr_set(&sin6->sin6_addr, 0, 0,
 				      htonl(0xffff), skb->nh.iph->saddr);
 		else {
@@ -288,7 +301,7 @@ try_again:
 		}
 
 	}
-	if (skb->protocol == htons(ETH_P_IP)) {
+	if (is_udp4) {
 		if (inet->cmsg_flags)
 			ip_cmsg_recv(msg, skb);
 	} else {
@@ -313,7 +326,10 @@ csum_copy_err:
 	release_sock(sk);
 
 	if (flags & MSG_DONTWAIT) {
-		UDP6_INC_STATS_USER(UDP_MIB_INERRORS);
+		if (is_udp4)
+			UDP_INC_STATS_USER(UDP_MIB_INERRORS);
+		else
+			UDP6_INC_STATS_USER(UDP_MIB_INERRORS);
 		return -EAGAIN;
 	}
 	goto try_again;

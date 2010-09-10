@@ -667,7 +667,7 @@ struct vnic_dev *vnic_dev_register(struct vnic_dev *vdev,
 	void *priv, struct pci_dev *pdev, struct vnic_dev_bar *bar)
 {
 	if (!vdev) {
-		vdev = kzalloc(sizeof(struct vnic_dev), GFP_ATOMIC);
+		vdev = kzalloc(sizeof(struct vnic_dev), GFP_KERNEL);
 		if (!vdev)
 			return NULL;
 	}

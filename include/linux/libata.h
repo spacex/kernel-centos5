@@ -237,6 +237,7 @@ enum {
 	/* host set flags */
 	ATA_HOST_SIMPLEX	= (1 << 0),	/* Host is simplex, one DMA channel per host only */
 	ATA_HOST_STARTED	= (1 << 1),	/* Host started */
+	ATA_HOST_ATAPI_SPURIOUS_INT = (1 << 2),
 
 	/* bits 24:31 of host->flags are reserved for LLD specific flags */
 

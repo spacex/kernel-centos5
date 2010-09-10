@@ -25,8 +25,11 @@
 #include <scsi/scsi_tcq.h>
 #include <scsi/scsi_transport_fc.h>
 
+#include "lpfc_hw4.h"
 #include "lpfc_hw.h"
 #include "lpfc_sli.h"
+#include "lpfc_sli4.h"
+#include "lpfc_nl.h"
 #include "lpfc_disc.h"
 #include "lpfc.h"
 #include "lpfc_crtn.h"

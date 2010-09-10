@@ -141,7 +141,9 @@ struct workqueue_struct *sdp_workqueue;
 static struct list_head sock_list;
 static spinlock_t sock_list_lock;
 
-DEFINE_RWLOCK(device_removal_lock);
+static DEFINE_RWLOCK(device_removal_lock);
+
+static inline void sdp_start_dreq_wait_timeout(struct sdp_sock *ssk, int timeo);
 
 static inline unsigned int sdp_keepalive_time_when(const struct sdp_sock *ssk)
 {
@@ -240,8 +242,14 @@ static void sdp_destroy_qp(struct sdp_sock *ssk)
 
 	sdp_remove_large_sock(ssk);
 
-	kfree(ssk->rx_ring);
-	kfree(ssk->tx_ring);
+	if (ssk->rx_ring) {
+		kfree(ssk->rx_ring);
+		ssk->rx_ring = NULL;
+	}
+	if (ssk->tx_ring) {
+		kfree(ssk->tx_ring);
+		ssk->tx_ring = NULL;
+	}
 }
 
 
@@ -295,7 +303,7 @@ static void sdp_keepalive_timer(unsigned long data)
 
 out:
 	bh_unlock_sock(sk);
-	sock_put(sk);
+	sock_put(sk, SOCK_REF_BORN);
 }
 
 static void sdp_init_timer(struct sock *sk)
@@ -338,16 +346,13 @@ void sdp_reset_sk(struct sock *sk, int rc)
 	if (!(sk->sk_shutdown & RCV_SHUTDOWN) || !sk_stream_memory_free(sk))
 		sdp_set_error(sk, rc);
 
-	sdp_destroy_qp(ssk);
-
 	memset((void *)&ssk->id, 0, sizeof(*ssk) - offsetof(typeof(*ssk), id));
 
-	if (ssk->time_wait) {
-		sdp_dbg(sk, "%s: destroy in time wait state\n", __func__);
-		sdp_time_wait_destroy_sk(ssk);
-	}
-
 	sk->sk_state_change(sk);
+
+	/* Don't destroy socket before destroy work does its job */
+	sock_hold(sk, SOCK_REF_RESET);
+	queue_work(sdp_workqueue, &ssk->destroy_work);
 
 	read_unlock(&device_removal_lock);
 }
@@ -417,6 +422,12 @@ static void sdp_destruct(struct sock *sk)
 	struct sdp_sock *s, *t;
 
 	sdp_dbg(sk, "%s\n", __func__);
+	if (ssk->destructed_already) {
+		sdp_warn(sk, "redestructing sk!");
+		return;
+	}
+
+	ssk->destructed_already = 1;
 
 	sdp_remove_sock(ssk);
 	
@@ -436,27 +447,32 @@ done:
 	sdp_dbg(sk, "%s done\n", __func__);
 }
 
-static void sdp_send_active_reset(struct sock *sk, gfp_t priority)
+static void sdp_send_disconnect(struct sock *sk)
 {
-	sk->sk_prot->disconnect(sk, 0);
+	sock_hold(sk, SOCK_REF_DREQ_TO);
+	sdp_start_dreq_wait_timeout(sdp_sk(sk), SDP_FIN_WAIT_TIMEOUT);
+
+	sdp_sk(sk)->sdp_disconnect = 1;
+	sdp_post_sends(sdp_sk(sk), 0);
 }
 
 /*
  *	State processing on a close.
- *	TCP_ESTABLISHED -> TCP_FIN_WAIT1 -> TCP_FIN_WAIT2 -> TCP_CLOSE
+ *	TCP_ESTABLISHED -> TCP_FIN_WAIT1 -> TCP_CLOSE
  */
-
 static int sdp_close_state(struct sock *sk)
 {
-	if ((1 << sk->sk_state) & ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT))
+	switch (sk->sk_state) {
+	case TCP_ESTABLISHED:
+		sdp_exch_state(sk, TCPF_ESTABLISHED, TCP_FIN_WAIT1);
+		break;
+	case TCP_CLOSE_WAIT:
+		sdp_exch_state(sk, TCPF_CLOSE_WAIT, TCP_LAST_ACK);
+		break;
+	default:
 		return 0;
+	}
 
-	if (sk->sk_state == TCP_ESTABLISHED)
-		sk->sk_state = TCP_FIN_WAIT1;
-	else if (sk->sk_state == TCP_CLOSE_WAIT)
-		sk->sk_state = TCP_LAST_ACK;
-	else
-		return 0;
 	return 1;
 }
 
@@ -473,13 +489,22 @@ static void sdp_close(struct sock *sk, long timeout)
 	sdp_delete_keepalive_timer(sk);
 
 	sk->sk_shutdown = SHUTDOWN_MASK;
+
+	if ((1 << sk->sk_state) & (TCPF_TIME_WAIT | TCPF_CLOSE)) {
+		/* this could happen if socket was closed by a CM teardown
+		   and after that the user called close() */
+		goto out;
+	}
+
 	if (sk->sk_state == TCP_LISTEN || sk->sk_state == TCP_SYN_SENT) {
-		sdp_set_state(sk, TCP_CLOSE);
+		sdp_exch_state(sk, TCPF_LISTEN | TCPF_SYN_SENT, TCP_CLOSE);
 
 		/* Special case: stop listening.
 		   This is done by sdp_destruct. */
 		goto adjudge_to_death;
 	}
+
+	sock_hold(sk, SOCK_REF_CM_TW);
 
 	/*  We need to flush the recv. buffs.  We do this only on the
 	 *  descriptor close, not protocol-sourced closes, because the
@@ -501,27 +526,28 @@ static void sdp_close(struct sock *sk, long timeout)
 	 * the FTP client, wheee...  Note: timeout is always zero
 	 * in such a case.
 	 */
-	if (data_was_unread) {
+	if (data_was_unread ||
+		(sock_flag(sk, SOCK_LINGER) && !sk->sk_lingertime)) {
 		/* Unread data was tossed, zap the connection. */
 		NET_INC_STATS_USER(LINUX_MIB_TCPABORTONCLOSE);
-		sdp_set_state(sk, TCP_CLOSE);
-		sdp_send_active_reset(sk, GFP_KERNEL);
-	} else if (sock_flag(sk, SOCK_LINGER) && !sk->sk_lingertime) {
-		/* Check zero linger _after_ checking for unread data. */
+		sdp_exch_state(sk, TCPF_CLOSE_WAIT | TCPF_ESTABLISHED,
+			       TCP_TIME_WAIT);
+
+		/* Go into abortive close */
 		sk->sk_prot->disconnect(sk, 0);
-		NET_INC_STATS_USER(LINUX_MIB_TCPABORTONDATA);
 	} else if (sdp_close_state(sk)) {
 		/* We FIN if the application ate all the data before
 		 * zapping the connection.
 		 */
 
-		sdp_post_sends(sdp_sk(sk), 0);
+		sdp_send_disconnect(sk);
 	}
 
 	/* TODO: state should move to CLOSE or CLOSE_WAIT etc on disconnect.
 	   Since it currently doesn't, do it here to avoid blocking below. */
 	if (!sdp_sk(sk)->id)
-		sdp_set_state(sk, TCP_CLOSE);
+		sdp_exch_state(sk, TCPF_FIN_WAIT1 | TCPF_LAST_ACK |
+			       TCPF_CLOSE_WAIT, TCP_CLOSE);
 
 	sk_stream_wait_close(sk, timeout);
 
@@ -533,7 +559,6 @@ adjudge_to_death:
 	 */
 	lock_sock(sk);
 
-	sock_hold(sk);
 	sock_orphan(sk);
 
 	/*	This is a (useful) BSD violating of the RFC. There is a
@@ -549,35 +574,21 @@ adjudge_to_death:
 	 *	consume significant resources. Let's do it with special
 	 *	linger2	option.					--ANK
 	 */
-
-	if (sk->sk_state == TCP_FIN_WAIT2 &&
-		!sk->sk_send_head &&
-		sdp_sk(sk)->tx_head == sdp_sk(sk)->tx_tail) {
-		sk->sk_state = TCP_CLOSE;
-	}
-
-	if ((1 << sk->sk_state) & (TCPF_FIN_WAIT1 | TCPF_FIN_WAIT2)) {
-		sdp_sk(sk)->time_wait = 1;
+	if (sk->sk_state == TCP_FIN_WAIT1) {
 		/* TODO: liger2 unimplemented.
 		   We should wait 3.5 * rto. How do I know rto? */
 		/* TODO: tcp_fin_time to get timeout */
 		sdp_dbg(sk, "%s: entering time wait refcnt %d\n", __func__,
 			atomic_read(&sk->sk_refcnt));
 		atomic_inc(sk->sk_prot->orphan_count);
-		queue_delayed_work(sdp_workqueue, &sdp_sk(sk)->time_wait_work,
-				   TCP_FIN_TIMEOUT);
-		goto out;
 	}
 
 	/* TODO: limit number of orphaned sockets.
 	   TCP has sysctl_tcp_mem and sysctl_tcp_max_orphans */
-	sock_put(sk);
 
-	/* Otherwise, socket is reprieved until protocol close. */
 out:
-	sdp_dbg(sk, "%s: last socket put %d\n", __func__,
-		atomic_read(&sk->sk_refcnt));
 	release_sock(sk);
+
 	sk_common_release(sk);
 }
 
@@ -622,7 +633,7 @@ static int sdp_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 		return rc;
 	}
 
-	sk->sk_state = TCP_SYN_SENT;
+	sdp_exch_state(sk, TCPF_CLOSE, TCP_SYN_SENT);
 	return 0;
 }
 
@@ -635,13 +646,15 @@ static int sdp_disconnect(struct sock *sk, int flags)
 	struct rdma_cm_id *id;
 
 	sdp_dbg(sk, "%s\n", __func__);
-	if (ssk->id)
-		rc = rdma_disconnect(ssk->id);
 
-	if (old_state != TCP_LISTEN)
+	if (old_state != TCP_LISTEN) {
+		if (ssk->id)
+			rc = rdma_disconnect(ssk->id);
+
 		return rc;
+	}
 
-	sdp_set_state(sk, TCP_CLOSE);
+	sdp_exch_state(sk, TCPF_LISTEN, TCP_CLOSE);
 	id = ssk->id;
 	ssk->id = NULL;
 	release_sock(sk); /* release socket since locking semantics is parent
@@ -827,48 +840,86 @@ static int sdp_ioctl(struct sock *sk, int cmd, unsigned long arg)
 	return put_user(answ, (int __user *)arg); 
 }
 
+static inline void sdp_start_dreq_wait_timeout(struct sdp_sock *ssk, int timeo)
+{
+	sdp_dbg(&ssk->isk.sk, "Starting dreq wait timeout\n");
+
+	queue_delayed_work(sdp_workqueue, &ssk->dreq_wait_work, timeo);
+	ssk->dreq_wait_timeout = 1;
+}
+
+void sdp_cancel_dreq_wait_timeout(struct sdp_sock *ssk)
+{
+	if (!ssk->dreq_wait_timeout)
+		return;
+
+	sdp_dbg(&ssk->isk.sk, "cancelling dreq wait timeout\n");
+
+	ssk->dreq_wait_timeout = 0;
+	if (cancel_delayed_work(&ssk->dreq_wait_work)) {
+		/* The timeout hasn't reached - need to clean ref count */
+		sock_put(&ssk->isk.sk, SOCK_REF_DREQ_TO);
+	}
+
+	atomic_dec(ssk->isk.sk.sk_prot->orphan_count);
+}
+
 void sdp_destroy_work(struct work_struct *work)
 {
 	struct sdp_sock *ssk = container_of(work, struct sdp_sock, destroy_work);
 	struct sock *sk = &ssk->isk.sk;
 	sdp_dbg(sk, "%s: refcnt %d\n", __func__, atomic_read(&sk->sk_refcnt));
 
-	cancel_delayed_work(&sdp_sk(sk)->time_wait_work);
-	atomic_dec(sk->sk_prot->orphan_count);
+	sdp_cancel_dreq_wait_timeout(ssk);
 
-	sock_put(sk);
+	if (sk->sk_state == TCP_TIME_WAIT)
+		sock_put(sk, SOCK_REF_CM_TW);
+
+	/* In normal close current state is TCP_TIME_WAIT or TCP_CLOSE
+	   but if a CM connection is dropped below our legs state could
+	   be any state */
+	sdp_exch_state(sk, ~0, TCP_CLOSE);
+	sock_put(sk, SOCK_REF_RESET);
 }
 
-void sdp_time_wait_work(struct work_struct *work)
+void sdp_dreq_wait_timeout_work(struct work_struct *work)
 {
-	struct sdp_sock *ssk = container_of(work, struct sdp_sock, time_wait_work.work);
+	struct sdp_sock *ssk =
+		container_of(work, struct sdp_sock, dreq_wait_work.work);
 	struct sock *sk = &ssk->isk.sk;
-	lock_sock(sk);
-	sdp_dbg(sk, "%s\n", __func__);
 
-	if (!sdp_sk(sk)->time_wait) {
+	lock_sock(sk);
+
+	if (!sdp_sk(sk)->dreq_wait_timeout ||
+	    !((1 << sk->sk_state) & (TCPF_FIN_WAIT1 | TCPF_LAST_ACK))) {
 		release_sock(sk);
-		return;
+		goto out;
 	}
 
-	sdp_dbg(sk, "%s: refcnt %d\n", __func__, atomic_read(&sk->sk_refcnt));
+	sdp_warn(sk, "timed out waiting for FIN/DREQ. "
+		 "going into abortive close.\n");
 
-	sk->sk_state = TCP_CLOSE;
-	sdp_sk(sk)->time_wait = 0;
+	sdp_sk(sk)->dreq_wait_timeout = 0;
+
+	if (sk->sk_state == TCP_FIN_WAIT1)
+		atomic_dec(ssk->isk.sk.sk_prot->orphan_count);
+
+	sdp_exch_state(sk, TCPF_LAST_ACK | TCPF_FIN_WAIT1, TCP_TIME_WAIT);
+
 	release_sock(sk);
 
-	atomic_dec(sk->sk_prot->orphan_count);
-	sock_put(sk);
+	if (sdp_sk(sk)->id) {
+		rdma_disconnect(sdp_sk(sk)->id);
+	} else {
+		sdp_warn(sk, "NOT SENDING DREQ - no need to wait for timewait exit\n");
+		sock_put(sk, SOCK_REF_CM_TW);
+	}
+
+out:
+	sock_put(sk, SOCK_REF_DREQ_TO);
 }
 
-void sdp_time_wait_destroy_sk(struct sdp_sock *ssk)
-{
-	ssk->time_wait = 0;
-	ssk->isk.sk.sk_state = TCP_CLOSE;
-	queue_work(sdp_workqueue, &ssk->destroy_work);
-}
-
-static int sdp_init_sock(struct sock *sk)
+int sdp_init_sock(struct sock *sk)
 {
 	struct sdp_sock *ssk = sdp_sk(sk);
 
@@ -876,10 +927,18 @@ static int sdp_init_sock(struct sock *sk)
 
 	INIT_LIST_HEAD(&ssk->accept_queue);
 	INIT_LIST_HEAD(&ssk->backlog_queue);
-	INIT_DELAYED_WORK(&ssk->time_wait_work, sdp_time_wait_work);
+	INIT_DELAYED_WORK(&ssk->dreq_wait_work, sdp_dreq_wait_timeout_work);
 	INIT_WORK(&ssk->destroy_work, sdp_destroy_work);
 
 	sk->sk_route_caps |= NETIF_F_SG | NETIF_F_NO_CSUM;
+
+	ssk->rx_ring = NULL;
+	ssk->tx_ring = NULL;
+	ssk->sdp_disconnect = 0;
+	ssk->destructed_already = 0;
+	ssk->destruct_in_process = 0;
+	spin_lock_init(&ssk->lock);
+
 	return 0;
 }
 
@@ -891,15 +950,15 @@ static void sdp_shutdown(struct sock *sk, int how)
 	if (!(how & SEND_SHUTDOWN))
 		return;
 
-	if ((1 << sk->sk_state) & ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT))
+	/* If we've already sent a FIN, or it's a closed state, skip this. */
+	if (!((1 << sk->sk_state) &
+	    (TCPF_ESTABLISHED | TCPF_SYN_SENT |
+	     TCPF_SYN_RECV | TCPF_CLOSE_WAIT))) {
 		return;
+	}
 
-	if (sk->sk_state == TCP_ESTABLISHED)
-		sk->sk_state = TCP_FIN_WAIT1;
-	else if (sk->sk_state == TCP_CLOSE_WAIT)
-		sk->sk_state = TCP_LAST_ACK;
-	else
-		return;
+	if (!sdp_close_state(sk))
+	    return;
 
 	/*
 	 * Just turn off CORK here.
@@ -910,7 +969,7 @@ static void sdp_shutdown(struct sock *sk, int how)
 	if (ssk->nonagle & TCP_NAGLE_OFF)
 		ssk->nonagle |= TCP_NAGLE_PUSH;
 
-	sdp_post_sends(ssk, 0);
+	sdp_send_disconnect(sk);
 }
 
 static void sdp_mark_push(struct sdp_sock *ssk, struct sk_buff *skb)
@@ -1203,14 +1262,14 @@ static inline void skb_entail(struct sock *sk, struct sdp_sock *ssk,
 {
         skb_header_release(skb);
         __skb_queue_tail(&sk->sk_write_queue, skb);
-        sk_charge_skb(sk, skb);
+	sk_charge_skb(sk, skb);
         if (!sk->sk_send_head)
                 sk->sk_send_head = skb;
         if (ssk->nonagle & TCP_NAGLE_PUSH)
                 ssk->nonagle &= ~TCP_NAGLE_PUSH;
 }
 
-void sdp_push_one(struct sock *sk, unsigned int mss_now)
+static void sdp_push_one(struct sock *sk, unsigned int mss_now)
 {
 }
 
@@ -1255,14 +1314,14 @@ static struct bzcopy_state *sdp_bz_setup(struct sdp_sock *ssk,
 {
 	struct bzcopy_state *bz;
 	unsigned long addr;
-	int done_pages;
+	int done_pages = 0;
 	int thresh;
+	mm_segment_t cur_fs;
+
+	cur_fs = get_fs();
 
 	thresh = ssk->zcopy_thresh ? : sdp_zcopy_thresh;
-	if (thresh == 0 || len < thresh)
-		return NULL;
-
-	if (!can_do_mlock())
+	if (thresh == 0 || len < thresh || !capable(CAP_IPC_LOCK))
 		return NULL;
 
 	/*
@@ -1276,7 +1335,7 @@ static struct bzcopy_state *sdp_bz_setup(struct sdp_sock *ssk,
 
 	bz = kzalloc(sizeof(*bz), GFP_KERNEL);
 	if (!bz)
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 
 	addr = (unsigned long)base;
 
@@ -1289,34 +1348,41 @@ static struct bzcopy_state *sdp_bz_setup(struct sdp_sock *ssk,
 	bz->page_cnt   = PAGE_ALIGN(len + bz->cur_offset) >> PAGE_SHIFT;
 	bz->pages      = kcalloc(bz->page_cnt, sizeof(struct page *), GFP_KERNEL);
 
-	if (!bz->pages)
-		goto out_1;
-
-	down_write(&current->mm->mmap_sem);
-
-	if (!capable(CAP_IPC_LOCK))
-		goto out_2;
-
-	addr &= PAGE_MASK;
-
-	done_pages = get_user_pages(current, current->mm, addr, bz->page_cnt,
-				    0, 0, bz->pages, NULL);
-	if (unlikely(done_pages != bz->page_cnt)){
-		bz->page_cnt = done_pages;
-		goto out_2;
+	if (!bz->pages) {
+		kfree(bz);
+		return ERR_PTR(-ENOMEM);
 	}
 
-	up_write(&current->mm->mmap_sem);
+
+	addr &= PAGE_MASK;
+	if (segment_eq(cur_fs, KERNEL_DS)) {
+		for (done_pages = 0; done_pages < bz->page_cnt; done_pages++) {
+			bz->pages[done_pages] = virt_to_page(addr);
+			if (!bz->pages[done_pages])
+				break;
+			get_page(bz->pages[done_pages]);
+			addr += PAGE_SIZE;
+		}
+	} else {
+		if (current->mm) {
+			down_write(&current->mm->mmap_sem);
+			done_pages = get_user_pages(current, current->mm, addr,
+					bz->page_cnt, 0, 0, bz->pages, NULL);
+			up_write(&current->mm->mmap_sem);
+		}
+	}
+	if (unlikely(done_pages != bz->page_cnt)){
+		int i;
+		if (done_pages > 0) {
+			for (i = 0; i < done_pages; i++)
+				put_page(bz->pages[i]);
+		}
+		kfree(bz->pages);
+		kfree(bz);
+		bz = ERR_PTR(-EFAULT);
+	}
 
 	return bz;
-
-out_2:
-	up_write(&current->mm->mmap_sem);
-	kfree(bz->pages);
-out_1:
-	kfree(bz);
-
-	return NULL;
 }
 
 
@@ -1442,11 +1508,13 @@ static inline int sdp_bzcopy_get(struct sock *sk, struct sk_buff *skb,
 		if (!sk_stream_wmem_schedule(sk, copy))
 			return SDP_DO_WAIT_MEM;
 
+		get_page(bz->pages[bz->cur_page]);
 		skb_fill_page_desc(skb, skb_shinfo(skb)->nr_frags,
 				   bz->pages[bz->cur_page], bz->cur_offset,
 				   this_page);
 
 		BUG_ON(skb_shinfo(skb)->nr_frags >= MAX_SKB_FRAGS);
+		BUG_ON(bz->cur_offset > PAGE_SIZE);
 
 		bz->cur_offset += this_page;
 		if (bz->cur_offset == PAGE_SIZE) {
@@ -1454,11 +1522,6 @@ static inline int sdp_bzcopy_get(struct sock *sk, struct sk_buff *skb,
 			bz->cur_page++;
 
 			BUG_ON(bz->cur_page > bz->page_cnt);
-		} else {
-			BUG_ON(bz->cur_offset > PAGE_SIZE);
-
-			if (bz->cur_page != bz->page_cnt || left != this_page)
-				get_page(bz->pages[bz->cur_page]);
 		}
 
 		left -= this_page;
@@ -1576,7 +1639,7 @@ void sdp_bzcopy_write_space(struct sdp_sock *ssk)
 
 /* Like tcp_sendmsg */
 /* TODO: check locking */
-int sdp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
+static int sdp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		size_t size)
 {
 	struct iovec *iov;
@@ -1620,11 +1683,18 @@ int sdp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 
 		iov++;
 
-		/* Limiting the size_goal is required when using 64K pages*/
+		/* Limmiting the size_goal is reqired when using 64K pages*/
 		if (size_goal > SDP_MAX_PAYLOAD)
 			size_goal = SDP_MAX_PAYLOAD;
 
+		if (bz)
+			sdp_bz_cleanup(bz);
 		bz = sdp_bz_setup(ssk, from, seglen, size_goal);
+		if (IS_ERR(bz)) {
+			bz = NULL;
+			err = PTR_ERR(bz);
+			goto do_error;
+		}
 
 		while (seglen > 0) {
 			int copy;
@@ -1922,7 +1992,6 @@ static int sdp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			}
 		}
 		if (!(flags & MSG_TRUNC)) {
-			int err;
 			err = skb_copy_datagram_iovec(skb, offset,
 						      /* TODO: skip header? */
 						      msg->msg_iov, used);
@@ -1994,14 +2063,14 @@ static int sdp_listen(struct sock *sk, int backlog)
 		sdp_warn(sk, "rdma_listen failed: %d\n", rc);
 		sdp_set_error(sk, rc);
 	} else
-		sk->sk_state = TCP_LISTEN;
+		sdp_exch_state(sk, TCPF_CLOSE, TCP_LISTEN);
 	return rc;
 }
 
 /* We almost could use inet_listen, but that calls
    inet_csk_listen_start. Longer term we'll want to add
    a listen callback to struct proto, similiar to bind. */
-int sdp_inet_listen(struct socket *sock, int backlog)
+static int sdp_inet_listen(struct socket *sock, int backlog)
 {
 	struct sock *sk = sock->sk;
 	unsigned char old_state;
@@ -2174,6 +2243,8 @@ static int sdp_create_socket(struct socket *sock, int protocol)
 	sock_init_data(sock, sk);
 	sk->sk_protocol = 0x0 /* TODO: inherit tcp socket to use IPPROTO_TCP */;
 
+	memset((struct inet_sock *)sk + 1, 0,
+			sizeof(struct sdp_sock) - sizeof(struct inet_sock));
 	rc = sdp_init_sock(sk);
 	if (rc) {
 		sdp_warn(sk, "SDP: failed to init sock.\n");
@@ -2223,7 +2294,7 @@ static void *sdp_seq_start(struct seq_file *seq, loff_t *pos)
 	spin_lock_irq(&sock_list_lock);
 	start = sdp_get_idx(seq, *pos - 1);
 	if (start)
-		sock_hold((struct sock *)start);
+		sock_hold((struct sock *)start, SOCK_REF_SEQ);
 	spin_unlock_irq(&sock_list_lock);
 
 	return start;
@@ -2240,7 +2311,7 @@ static void *sdp_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 	else
 		next = sdp_get_idx(seq, *pos);
 	if (next)
-		sock_hold((struct sock *)next);
+		sock_hold((struct sock *)next, SOCK_REF_SEQ);
 	spin_unlock_irq(&sock_list_lock);
 
 	*pos += 1;
@@ -2271,7 +2342,7 @@ static int sdp_seq_show(struct seq_file *seq, void *v)
 	if (v == SEQ_START_TOKEN) {
 		seq_printf(seq, "%-*s\n", TMPSZ - 1,
 				"  sl  local_address rem_address        uid inode"
-				"   rx_queue tx_queue");
+				"   rx_queue tx_queue state");
 		goto out;
 	}
 
@@ -2286,13 +2357,13 @@ static int sdp_seq_show(struct seq_file *seq, void *v)
 	rx_queue = sdp_sk(sk)->rcv_nxt - sdp_sk(sk)->copied_seq;
 	tx_queue = sdp_sk(sk)->write_seq - sdp_sk(sk)->snd_una;
 
-	sprintf(tmpbuf, "%4d: %08X:%04X %08X:%04X %5d %lu	%08X:%08X",
+	sprintf(tmpbuf, "%4d: %08X:%04X %08X:%04X %5d %lu	%08X:%08X %X",
 		st->num, src, srcp, dest, destp, uid, inode,
-		rx_queue, tx_queue);
+		rx_queue, tx_queue, sk->sk_state);
 
 	seq_printf(seq, "%-*s\n", TMPSZ - 1, tmpbuf);
 
-	sock_put(sk);
+	sock_put(sk, SOCK_REF_SEQ);
 out:
 	return 0;
 }
@@ -2350,7 +2421,7 @@ static int __init sdp_proc_init(void)
 	sdp_seq_afinfo.seq_fops->llseek        = seq_lseek;
 	sdp_seq_afinfo.seq_fops->release       = seq_release_private;
 
-	p = proc_net_fops_create(sdp_seq_afinfo.name, S_IRUGO, sdp_seq_afinfo.seq_fops);
+ 	p = proc_net_fops_create(sdp_seq_afinfo.name, S_IRUGO, sdp_seq_afinfo.seq_fops);
 	if (p)
 		p->data = &sdp_seq_afinfo;
 	else
@@ -2411,13 +2482,31 @@ do_next:
 		}
 	}
 
+kill_socks:
 	list_for_each(p, &sock_list) {
 		ssk = list_entry(p, struct sdp_sock, sock_list);
-		if (ssk->ib_device == device) {
+
+		if (ssk->ib_device == device && !ssk->destruct_in_process) {
+			ssk->destruct_in_process = 1;
 			sk = &ssk->isk.sk;
+
+			sdp_cancel_dreq_wait_timeout(ssk);
+
+			spin_unlock_irq(&sock_list_lock);
 
 			sk->sk_shutdown |= RCV_SHUTDOWN;
 			sdp_reset(sk);
+			if ((1 << sk->sk_state) & 
+				(TCPF_FIN_WAIT1 | TCPF_CLOSE_WAIT |
+				 TCPF_LAST_ACK | TCPF_TIME_WAIT)) {
+				sock_put(sk, SOCK_REF_CM_TW);
+			}
+			
+			schedule();
+
+			spin_lock_irq(&sock_list_lock);
+
+			goto kill_socks;
 		}
 	}
 
@@ -2432,7 +2521,7 @@ static struct net_proto_family sdp_net_proto = {
 	.owner  = THIS_MODULE,
 };
 
-struct ib_client sdp_client = {
+static struct ib_client sdp_client = {
 	.name   = "sdp",
 	.add    = sdp_add_device,
 	.remove = sdp_remove_device

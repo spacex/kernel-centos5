@@ -62,6 +62,9 @@ struct cpuinfo_x86 {
 	int	x86_tlbsize;	/* number of 4K pages in DTLB/ITLB combined(in pages)*/
         __u8    x86_virt_bits, x86_phys_bits;
 	__u8	x86_max_cores;	/* cpuid returned max cores value */
+#ifndef __GENKSYMS__
+	__u8    x86_hyper_vendor;
+#endif
         __u32   x86_power; 	
 	__u32   extended_cpuid_level;	/* Max extended CPUID function supported */
 	unsigned long loops_per_jiffy;
@@ -86,6 +89,10 @@ struct cpuinfo_x86 {
 #define X86_VENDOR_TRANSMETA 7
 #define X86_VENDOR_NUM 8
 #define X86_VENDOR_UNKNOWN 0xff
+
+#define X86_HYPER_VENDOR_NONE  0
+#define X86_HYPER_VENDOR_VMWARE 1
+#define X86_HYPER_VENDOR_KVM 2
 
 #ifdef CONFIG_SMP
 extern struct cpuinfo_x86 cpu_data[];
@@ -137,6 +144,8 @@ extern unsigned short num_cache_leaves;
 #define X86_CR4_PCE		0x0100	/* enable performance counters at ipl 3 */
 #define X86_CR4_OSFXSR		0x0200	/* enable fast FPU save and restore */
 #define X86_CR4_OSXMMEXCPT	0x0400	/* enable unmasked SSE exceptions */
+#define X86_CR4_VMXE		0x2000	/* enable VMX virtualization */
+
 
 /*
  * Save the cr4 feature set we're using (ie

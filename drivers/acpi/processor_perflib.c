@@ -61,10 +61,21 @@ static DEFINE_MUTEX(performance_mutex);
  * policy is adjusted accordingly.
  */
 
+/* ignore_ppc:
+ * -1 > cpufreq low level drivers not initialized > _PSS, etc. not called yet
+ *       ignore _PPC
+ *  0 > cpufreq low level drivers initialized > consider _PPC values
+ *  1 > ignore _PPC totally > forced by user through boot param
+ */
+static int ignore_ppc = -1;
+module_param(ignore_ppc, int, 0644);
+MODULE_PARM_DESC(ignore_ppc, "If the frequency of your machine gets wrongly" \
+		 "limited by BIOS, this should help");
+
 #define PPC_REGISTERED   1
 #define PPC_IN_USE       2
 
-static int acpi_processor_ppc_status = 0;
+static int acpi_processor_ppc_status;
 
 static int acpi_processor_ppc_notifier(struct notifier_block *nb,
 				       unsigned long event, void *data)
@@ -72,6 +83,14 @@ static int acpi_processor_ppc_notifier(struct notifier_block *nb,
 	struct cpufreq_policy *policy = data;
 	struct acpi_processor *pr;
 	unsigned int ppc = 0;
+
+	if (event == CPUFREQ_START && ignore_ppc < 0) {
+		ignore_ppc = 0;
+		return 0;
+	}
+	
+	if (ignore_ppc)
+		return 0;
 
 	mutex_lock(&performance_mutex);
 
@@ -131,7 +150,13 @@ static int acpi_processor_get_platform_limit(struct acpi_processor *pr)
 
 int acpi_processor_ppc_has_changed(struct acpi_processor *pr)
 {
-	int ret = acpi_processor_get_platform_limit(pr);
+	int ret;
+	
+	if (ignore_ppc)
+		return 0;
+
+	ret = acpi_processor_get_platform_limit(pr);
+
 	if (ret < 0)
 		return (ret);
 	else
@@ -282,9 +307,15 @@ static int acpi_processor_get_performance_states(struct acpi_processor *pr)
 				  (u32) px->bus_master_latency,
 				  (u32) px->control, (u32) px->status));
 
-		if (!px->core_frequency) {
+		/*
+ 		 * Check that ACPI's u64 MHz will be valid as u32 KHz in cpufreq
+		 */
+		if (!px->core_frequency ||
+		    ((u32)(px->core_frequency * 1000) !=
+		     (px->core_frequency * 1000))) {
 			printk(KERN_ERR PREFIX
-				    "Invalid _PSS data: freq is zero\n");
+			       "Invalid BIOS _PSS frequency: 0x%llx MHz\n",
+			       px->core_frequency);
 			result = -EFAULT;
 			kfree(pr->performance->states);
 			goto end;
@@ -319,10 +350,6 @@ static int acpi_processor_get_performance_info(struct acpi_processor *pr)
 		return result;
 
 	result = acpi_processor_get_performance_states(pr);
-	if (result)
-		return result;
-
-	result = acpi_processor_get_platform_limit(pr);
 	if (result)
 		return result;
 
@@ -589,6 +616,14 @@ static int acpi_processor_get_psd(struct acpi_processor	*pr)
 		goto end;
 	}
 
+	if (pdomain->coord_type != DOMAIN_COORD_TYPE_SW_ALL &&
+	    pdomain->coord_type != DOMAIN_COORD_TYPE_SW_ANY &&
+	    pdomain->coord_type != DOMAIN_COORD_TYPE_HW_ALL) {
+		ACPI_DEBUG_PRINT((ACPI_DB_ERROR "Invalid _PSD:coord_type\n"));
+		result = -EFAULT;
+		goto end;
+	}
+
 end:
 	kfree(buffer.pointer);
 	return result;
@@ -608,9 +643,10 @@ int acpi_processor_preregister_performance(
 
 	mutex_lock(&performance_mutex);
 
-	retval = 0;
-
-	/* Call _PSD for all CPUs */
+	/*
+	 * Check if another driver has already registered, and abort before
+	 * changing pr->performance if it has. Check input data as well.
+	 */
 	for_each_possible_cpu(i) {
 		pr = processors[i];
 		if (!pr) {
@@ -620,13 +656,20 @@ int acpi_processor_preregister_performance(
 
 		if (pr->performance) {
 			retval = -EBUSY;
-			continue;
+			goto err_out;
 		}
 
 		if (!performance || !performance[i]) {
 			retval = -EINVAL;
-			continue;
+			goto err_out;
 		}
+	}
+
+	/* Call _PSD for all CPUs */
+	for_each_possible_cpu(i) {
+		pr = processors[i];
+		if (!pr)
+			continue;
 
 		pr->performance = performance[i];
 		cpu_set(i, pr->performance->shared_cpu_map);
@@ -642,26 +685,6 @@ int acpi_processor_preregister_performance(
 	 * Now that we have _PSD data from all CPUs, lets setup P-state 
 	 * domain info.
 	 */
-	for_each_possible_cpu(i) {
-		pr = processors[i];
-		if (!pr)
-			continue;
-
-		/* Basic validity check for domain info */
-		pdomain = &(pr->performance->domain_info);
-		if ((pdomain->revision != ACPI_PSD_REV0_REVISION) ||
-		    (pdomain->num_entries != ACPI_PSD_REV0_ENTRIES)) {
-			retval = -EINVAL;
-			goto err_ret;
-		}
-		if (pdomain->coord_type != DOMAIN_COORD_TYPE_SW_ALL &&
-		    pdomain->coord_type != DOMAIN_COORD_TYPE_SW_ANY &&
-		    pdomain->coord_type != DOMAIN_COORD_TYPE_HW_ALL) {
-			retval = -EINVAL;
-			goto err_ret;
-		}
-	}
-
 	cpus_clear(covered_cpus);
 	for_each_possible_cpu(i) {
 		pr = processors[i];
@@ -750,6 +773,7 @@ err_ret:
 		pr->performance = NULL; /* Will be set for real in register */
 	}
 
+err_out:
 	mutex_unlock(&performance_mutex);
 	return retval;
 }

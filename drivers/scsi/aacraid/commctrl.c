@@ -41,6 +41,7 @@
 #include <linux/kthread.h>
 #include <asm/semaphore.h>
 #include <asm/uaccess.h>
+#include <scsi/scsi_host.h>
 
 #include "aacraid.h"
 
@@ -89,14 +90,24 @@ static int ioctl_send_fib(struct aac_dev * dev, void __user *arg)
 	if (size < le16_to_cpu(kfib->header.SenderSize))
 		size = le16_to_cpu(kfib->header.SenderSize);
 	if (size > dev->max_fib_size) {
+		dma_addr_t daddr;
+
 		if (size > 2048) {
 			retval = -EINVAL;
 			goto cleanup;
 		}
+
+		kfib = pci_alloc_consistent(dev->pdev, size, &daddr);
+		if (!kfib) {
+			retval = -ENOMEM;
+			goto cleanup;
+		}
+
 		/* Highjack the hw_fib */
 		hw_fib = fibptr->hw_fib_va;
 		hw_fib_pa = fibptr->hw_fib_pa;
-		fibptr->hw_fib_va = kfib = pci_alloc_consistent(dev->pdev, size, &fibptr->hw_fib_pa);
+		fibptr->hw_fib_va = kfib;
+		fibptr->hw_fib_pa = daddr;
 		memset(((char *)kfib) + dev->max_fib_size, 0, size - dev->max_fib_size);
 		memcpy(kfib, hw_fib, dev->max_fib_size);
 	}
@@ -243,6 +254,7 @@ static int next_getadapter_fib(struct aac_dev * dev, void __user *arg)
 	 *	Search the list of AdapterFibContext addresses on the adapter
 	 *	to be sure this is a valid address
 	 */
+	spin_lock_irqsave(&dev->fib_lock, flags);
 	entry = dev->fib_list.next;
 	fibctx = NULL;
 
@@ -251,24 +263,25 @@ static int next_getadapter_fib(struct aac_dev * dev, void __user *arg)
 		/*
 		 *	Extract the AdapterFibContext from the Input parameters.
 		 */
-		if (fibctx->unique == f.fibctx) {   /* We found a winner */
+		if (fibctx->unique == f.fibctx) { /* We found a winner */
 			break;
 		}
 		entry = entry->next;
 		fibctx = NULL;
 	}
 	if (!fibctx) {
+		spin_unlock_irqrestore(&dev->fib_lock, flags);
 		dprintk ((KERN_INFO "Fib Context not found\n"));
 		return -EINVAL;
 	}
 
 	if((fibctx->type != FSAFS_NTC_GET_ADAPTER_FIB_CONTEXT) ||
 		 (fibctx->size != sizeof(struct aac_fib_context))) {
+		spin_unlock_irqrestore(&dev->fib_lock, flags);
 		dprintk ((KERN_INFO "Fib Context corrupt?\n"));
 		return -EINVAL;
 	}
 	status = 0;
-	spin_lock_irqsave(&dev->fib_lock, flags);
 	/*
 	 *	If there are no fibs to send back, then either wait or return
 	 *	-EAGAIN
@@ -414,8 +427,8 @@ static int close_getadapter_fib(struct aac_dev * dev, void __user *arg)
  *	@arg: ioctl arguments
  *
  *	This routine returns the driver version.
- *      Under Linux, there have been no version incompatibilities, so this is
- *      simple!
+ *	Under Linux, there have been no version incompatibilities, so this is
+ *	simple!
  */
 
 static int check_revision(struct aac_dev *dev, void __user *arg)
@@ -463,7 +476,7 @@ static int aac_send_raw_srb(struct aac_dev* dev, void __user * arg)
 	u32 data_dir;
 	void __user *sg_user[32];
 	void *sg_list[32];
-	u32   sg_indx = 0;
+	u32 sg_indx = 0;
 	u32 byte_count = 0;
 	u32 actual_fibsize64, actual_fibsize = 0;
 	int i;
@@ -517,11 +530,11 @@ static int aac_send_raw_srb(struct aac_dev* dev, void __user * arg)
 	// Fix up srb for endian and force some values
 
 	srbcmd->function = cpu_to_le32(SRBF_ExecuteScsi);	// Force this
-	srbcmd->channel  = cpu_to_le32(user_srbcmd->channel);
+	srbcmd->channel	 = cpu_to_le32(user_srbcmd->channel);
 	srbcmd->id	 = cpu_to_le32(user_srbcmd->id);
-	srbcmd->lun      = cpu_to_le32(user_srbcmd->lun);
-	srbcmd->timeout  = cpu_to_le32(user_srbcmd->timeout);
-	srbcmd->flags    = cpu_to_le32(flags);
+	srbcmd->lun	 = cpu_to_le32(user_srbcmd->lun);
+	srbcmd->timeout	 = cpu_to_le32(user_srbcmd->timeout);
+	srbcmd->flags	 = cpu_to_le32(flags);
 	srbcmd->retry_limit = 0; // Obsolete parameter
 	srbcmd->cdb_size = cpu_to_le32(user_srbcmd->cdb_size);
 	memcpy(srbcmd->cdb, user_srbcmd->cdb, sizeof(srbcmd->cdb));
@@ -579,6 +592,14 @@ static int aac_send_raw_srb(struct aac_dev* dev, void __user * arg)
 			for (i = 0; i < upsg->count; i++) {
 				u64 addr;
 				void* p;
+				if (upsg->sg[i].count >
+				    (dev->adapter_info.options &
+				     AAC_OPT_NEW_COMM) ?
+				      (dev->scsi_host_ptr->max_sectors << 9) :
+				      65536) {
+					rcode = -EINVAL;
+					goto cleanup;
+				}
 				/* Does this really need to be GFP_DMA? */
 				p = kmalloc(upsg->sg[i].count,GFP_KERNEL|__GFP_DMA);
 				if(!p) {
@@ -623,6 +644,14 @@ static int aac_send_raw_srb(struct aac_dev* dev, void __user * arg)
 			for (i = 0; i < usg->count; i++) {
 				u64 addr;
 				void* p;
+				if (usg->sg[i].count >
+				    (dev->adapter_info.options &
+				     AAC_OPT_NEW_COMM) ?
+				      (dev->scsi_host_ptr->max_sectors << 9) :
+				      65536) {
+					rcode = -EINVAL;
+					goto cleanup;
+				}
 				/* Does this really need to be GFP_DMA? */
 				p = kmalloc(usg->sg[i].count,GFP_KERNEL|__GFP_DMA);
 				if(!p) {
@@ -663,8 +692,16 @@ static int aac_send_raw_srb(struct aac_dev* dev, void __user * arg)
 		if (actual_fibsize64 == fibsize) {
 			struct user_sgmap64* usg = (struct user_sgmap64 *)upsg;
 			for (i = 0; i < upsg->count; i++) {
-				u64 addr;
+				ptrdiff_t addr;
 				void* p;
+				if (usg->sg[i].count >
+				    (dev->adapter_info.options &
+				     AAC_OPT_NEW_COMM) ?
+				      (dev->scsi_host_ptr->max_sectors << 9) :
+				      65536) {
+					rcode = -EINVAL;
+					goto cleanup;
+				}
 				/* Does this really need to be GFP_DMA? */
 				p = kmalloc(usg->sg[i].count,GFP_KERNEL|__GFP_DMA);
 				if(!p) {
@@ -696,6 +733,14 @@ static int aac_send_raw_srb(struct aac_dev* dev, void __user * arg)
 			for (i = 0; i < upsg->count; i++) {
 				dma_addr_t addr;
 				void* p;
+				if (upsg->sg[i].count >
+				    (dev->adapter_info.options &
+				     AAC_OPT_NEW_COMM) ?
+				      (dev->scsi_host_ptr->max_sectors << 9) :
+				      65536) {
+					rcode = -EINVAL;
+					goto cleanup;
+				}
 				p = kmalloc(upsg->sg[i].count, GFP_KERNEL);
 				if (!p) {
 					dprintk((KERN_DEBUG"aacraid: Could not allocate SG buffer - size = %d buffer number %d of %d\n",
@@ -786,9 +831,9 @@ static int aac_get_pci_info(struct aac_dev* dev, void __user *arg)
 	pci_info.bus = dev->pdev->bus->number;
 	pci_info.slot = PCI_SLOT(dev->pdev->devfn);
 
-       if (copy_to_user(arg, &pci_info, sizeof(struct aac_pci_info))) {
-	       dprintk((KERN_DEBUG "aacraid: Could not copy pci info\n"));
-	       return -EFAULT;
+	if (copy_to_user(arg, &pci_info, sizeof(struct aac_pci_info))) {
+		dprintk((KERN_DEBUG "aacraid: Could not copy pci info\n"));
+		return -EFAULT;
 	}
 	return 0;
 }

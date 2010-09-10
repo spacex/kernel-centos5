@@ -30,8 +30,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: sa_query.c 2811 2005-07-06 18:11:43Z halr $
  */
 
 #include <linux/module.h>
@@ -561,6 +559,8 @@ static void update_sm_ah(struct work_struct *work)
 	}
 
 	spin_lock_irq(&port->ah_lock);
+	if (port->sm_ah)
+		kref_put(&port->sm_ah->ref, free_sm_ah);
 	port->sm_ah = new_ah;
 	spin_unlock_irq(&port->ah_lock);
 
@@ -1188,6 +1188,7 @@ static void ib_sa_notice_resp(struct ib_sa_port *port,
 	struct ib_mad_send_buf *mad_buf;
 	struct ib_sa_mad *mad;
 	int ret;
+	unsigned long flags;
 
 	mad_buf = ib_create_send_mad(port->notice_agent, 1, 0, 0,
 				     IB_MGMT_SA_HDR, IB_MGMT_SA_DATA,
@@ -1199,11 +1200,16 @@ static void ib_sa_notice_resp(struct ib_sa_port *port,
 	memcpy(mad, mad_recv_wc->recv_buf.mad, sizeof *mad);
 	mad->mad_hdr.method = IB_MGMT_METHOD_REPORT_RESP;
 
-	spin_lock_irq(&port->ah_lock);
+	spin_lock_irqsave(&port->ah_lock, flags);
+	if (!port->sm_ah) {
+		spin_unlock_irqrestore(&port->ah_lock, flags);
+		ib_free_send_mad(mad_buf);
+		return;
+	}
 	kref_get(&port->sm_ah->ref);
 	mad_buf->context[0] = &port->sm_ah->ref;
 	mad_buf->ah = port->sm_ah->ah;
-	spin_unlock_irq(&port->ah_lock);
+	spin_unlock_irqrestore(&port->ah_lock, flags);
 
 	ret = ib_post_send_mad(mad_buf, NULL);
 	if (ret)
@@ -1392,7 +1398,8 @@ static void ib_sa_remove_one(struct ib_device *device)
 	for (i = 0; i <= sa_dev->end_port - sa_dev->start_port; ++i) {
 		ib_unregister_mad_agent(sa_dev->port[i].notice_agent);
 		ib_unregister_mad_agent(sa_dev->port[i].agent);
-		kref_put(&sa_dev->port[i].sm_ah->ref, free_sm_ah);
+		if (sa_dev->port[i].sm_ah)
+			kref_put(&sa_dev->port[i].sm_ah->ref, free_sm_ah);
 	}
 
 	kfree(sa_dev);

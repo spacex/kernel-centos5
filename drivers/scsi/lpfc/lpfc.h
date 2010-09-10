@@ -21,7 +21,16 @@
 
 #include <scsi/scsi_host.h>
 
+#define IS_ALIGNED(x, a)                (((x) & ((typeof(x))(a) - 1)) == 0)
+
 struct lpfc_sli2_slim;
+
+#define LPFC_PCI_DEV_LP		0x1
+#define LPFC_PCI_DEV_OC		0x2
+
+#define LPFC_SLI_REV2		2
+#define LPFC_SLI_REV3		3
+#define LPFC_SLI_REV4		4
 
 #define LPFC_MAX_TARGET		4096	/* max number of targets supported */
 #define LPFC_MAX_DISC_THREADS	64	/* max outstanding discovery els
@@ -40,6 +49,8 @@ struct lpfc_sli2_slim;
 #define LPFC_MIN_TGT_QDEPTH	100
 #define LPFC_MAX_TGT_QDEPTH	0xFFFF
 
+#define  LPFC_MAX_BUCKET_COUNT 20	/* Maximum no. of buckets for stat data
+					   collection. */
 /*
  * Following time intervals are used of adjusting SCSI device
  * queue depths when there are driver resource error or Firmware
@@ -54,6 +65,9 @@ struct lpfc_sli2_slim;
 #define LPFC_HB_MBOX_INTERVAL   5	/* Heart beat interval in seconds. */
 #define LPFC_HB_MBOX_TIMEOUT    30	/* Heart beat timeout  in seconds. */
 
+/* Error Attention event polling interval */
+#define LPFC_ERATT_POLL_INTERVAL	5 /* EATT poll interval in seconds */
+
 /* Define macros for 64 bit support */
 #define putPaddrLow(addr)    ((uint32_t) (0xffffffff & (u64)(addr)))
 #define putPaddrHigh(addr)   ((uint32_t) (0xffffffff & (((u64)(addr))>>32)))
@@ -64,6 +78,9 @@ struct lpfc_sli2_slim;
 #define FC_MAX_ADPTMSG		64
 
 #define MAX_HBAEVT	32
+
+/* Number of MSI-X vectors the driver uses */
+#define LPFC_MSIX_VECTORS	2
 
 /* lpfc wait event data ready flag */
 #define LPFC_DATA_READY		(1<<0)
@@ -88,9 +105,11 @@ struct lpfc_dma_pool {
 };
 
 struct hbq_dmabuf {
+	struct lpfc_dmabuf hbuf;
 	struct lpfc_dmabuf dbuf;
 	uint32_t size;
 	uint32_t tag;
+	struct lpfc_rcqe rcqe;
 };
 
 /* Priority bit.  Set value to exceed low water mark in lpfc_mem. */
@@ -254,6 +273,8 @@ struct lpfc_sysfs_mbox {
 	uint32_t              extoff;
 	struct lpfc_dmabuf *  txmit_buff;
 	struct lpfc_dmabuf *  rcv_buff;
+	uint64_t	      user_ptr;
+	unsigned long	      data_length;
 };
 #define MENLO_DID 0x0000FC0E
 
@@ -394,6 +415,9 @@ struct lpfc_vport {
 	enum discovery_state port_state;
 
 	uint16_t vpi;
+	uint16_t vfi;
+	uint8_t vfi_state;
+#define LPFC_VFI_REGISTERED	0x1
 
 	uint32_t fc_flag;	/* FC flags */
 /* Several of these flags are HBA centric and should be moved to
@@ -415,6 +439,7 @@ struct lpfc_vport {
 #define FC_BYPASSED_MODE        0x20000	 /* NPort is in bypassed mode */
 #define FC_VPORT_NEEDS_REG_VPI	0x80000  /* Needs to have its vpi registered */
 #define FC_RSCN_DEFERRED	0x100000 /* A deferred RSCN being processed */
+#define FC_VPORT_NEEDS_INIT_VPI 0x200000 /* Need to INIT_VPI before FDISC */
 
 	uint32_t ct_flags;
 #define FC_CT_RFF_ID		0x1	 /* RFF_ID accepted by switch */
@@ -506,13 +531,18 @@ struct lpfc_vport {
 
 	uint32_t dev_loss_tmo_changed;
 
-#ifdef CONFIG_LPFC_DEBUG_FS
+#ifdef CONFIG_SCSI_LPFC_DEBUG_FS
 	struct dentry *debug_disc_trc;
 	struct dentry *debug_nodelist;
 	struct dentry *vport_debugfs_root;
 	struct lpfc_debugfs_trc *disc_trc;
 	atomic_t disc_trc_cnt;
 #endif
+	uint8_t stat_data_enabled;
+	uint8_t stat_data_blocked;
+	struct list_head rcv_buffer_list;
+	uint32_t vport_flag;
+#define STATIC_VPORT	1
 };
 
 struct hbq_s {
@@ -548,8 +578,62 @@ enum intr_type_t {
 };
 
 struct lpfc_hba {
+	/* SCSI interface function jump table entries */
+	int (*lpfc_new_scsi_buf)
+		(struct lpfc_vport *, int);
+	struct lpfc_scsi_buf * (*lpfc_get_scsi_buf)
+		(struct lpfc_hba *);
+	int (*lpfc_scsi_prep_dma_buf)
+		(struct lpfc_hba *, struct lpfc_scsi_buf *);
+	void (*lpfc_scsi_unprep_dma_buf)
+		(struct lpfc_hba *, struct lpfc_scsi_buf *);
+	void (*lpfc_release_scsi_buf)
+		(struct lpfc_hba *, struct lpfc_scsi_buf *);
+	void (*lpfc_rampdown_queue_depth)
+		(struct lpfc_hba *);
+	void (*lpfc_scsi_prep_cmnd)
+		(struct lpfc_vport *, struct lpfc_scsi_buf *,
+		 struct lpfc_nodelist *);
+	/* IOCB interface function jump table entries */
+	int (*__lpfc_sli_issue_iocb)
+		(struct lpfc_hba *, uint32_t,
+		 struct lpfc_iocbq *, uint32_t);
+	void (*__lpfc_sli_release_iocbq)(struct lpfc_hba *,
+			 struct lpfc_iocbq *);
+	int (*lpfc_hba_down_post)(struct lpfc_hba *phba);
+
+
+	IOCB_t * (*lpfc_get_iocb_from_iocbq)
+		(struct lpfc_iocbq *);
+	void (*lpfc_scsi_cmd_iocb_cmpl)
+		(struct lpfc_hba *, struct lpfc_iocbq *, struct lpfc_iocbq *);
+
+	/* MBOX interface function jump table entries */
+	int (*lpfc_sli_issue_mbox)
+		(struct lpfc_hba *, LPFC_MBOXQ_t *, uint32_t);
+	/* Slow-path IOCB process function jump table entries */
+	void (*lpfc_sli_handle_slow_ring_event)
+		(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
+		 uint32_t mask);
+	/* INIT device interface function jump table entries */
+	int (*lpfc_sli_hbq_to_firmware)
+		(struct lpfc_hba *, uint32_t, struct hbq_dmabuf *);
+	int (*lpfc_sli_brdrestart)
+		(struct lpfc_hba *);
+	int (*lpfc_sli_brdready)
+		(struct lpfc_hba *, uint32_t);
+	void (*lpfc_handle_eratt)
+		(struct lpfc_hba *);
+	void (*lpfc_stop_port)
+		(struct lpfc_hba *);
+
+
+	/* SLI4 specific HBA data structure */
+	struct lpfc_sli4_hba sli4_hba;
+
 	struct lpfc_sli sli;
-	uint32_t sli_rev;		/* SLI2 or SLI3 */
+	uint8_t pci_dev_grp;	/* lpfc PCI dev group: 0x0, 0x1, 0x2,... */
+	uint32_t sli_rev;		/* SLI2, SLI3, or SLI4 */
 	uint32_t sli3_options;		/* Mask of enabled SLI3 options */
 #define LPFC_SLI3_ENABLED	 0x01
 #define LPFC_SLI3_HBQ_ENABLED	 0x02
@@ -568,8 +652,26 @@ struct lpfc_hba {
 
 	struct lpfc_sli2_slim *slim2p;
 	struct lpfc_dmabuf hbqslimp;
-
+	uint32_t hba_flag;	/* hba generic flags */
+#define HBA_ERATT_HANDLED	0x1 /* This flag is set when eratt handled */
+#define DEFER_ERATT		0x2 /* Deferred error attention in progress */
+#define HBA_FCOE_SUPPORT	0x4 /* HBA function supports FCOE */
+#define HBA_RECEIVE_BUFFER	0x8 /* Rcv buffer posted to worker thread */
+#define HBA_POST_RECEIVE_BUFFER 0x10 /* Rcv buffers need to be posted */
+#define FCP_XRI_ABORT_EVENT	0x20
+#define ELS_XRI_ABORT_EVENT	0x40
+#define ASYNC_EVENT		0x80
+#define LINK_DISABLED		0x100 /* Link disabled by user */
 	dma_addr_t slim2p_mapping;
+	uint32_t fcp_ring_in_use; /* When polling test if intr-hndlr active*/
+
+	MAILBOX_t *mbox;
+	uint32_t *inb_ha_copy;
+	uint32_t *inb_counter;
+	uint32_t inb_last_counter;
+	uint32_t ha_copy;
+	struct _PCB *pcb;
+	struct _IOCB *IOCBs;
 
 	uint16_t pci_cfg_value;
 
@@ -618,6 +720,9 @@ struct lpfc_hba {
 	uint32_t cfg_poll_tmo;
 	uint32_t cfg_use_msi;
 	uint32_t cfg_dev_loss_initiator;
+	uint32_t cfg_fcp_imax;
+	uint32_t cfg_fcp_wq_count;
+	uint32_t cfg_fcp_eq_count;
 	uint32_t cfg_sg_seg_cnt;
 	uint32_t cfg_sg_dma_buf_size;
 	uint64_t cfg_soft_wwnn;
@@ -626,6 +731,9 @@ struct lpfc_hba {
 	uint32_t cfg_enable_hba_reset;
 	uint32_t cfg_enable_hba_heartbeat;
 	uint32_t cfg_pci_max_read;
+	uint32_t cfg_hostmem_hgp;
+	uint32_t cfg_enable_fip;
+	uint32_t cfg_log_verbose;
 
 	lpfc_vpd_t vpd;		/* vital product data */
 
@@ -638,14 +746,17 @@ struct lpfc_hba {
 
 	wait_queue_head_t    work_waitq;
 	struct task_struct   *worker_thread;
-	long data_flags;
+	unsigned long data_flags;
 
 	uint32_t hbq_in_use;		/* HBQs in use flag */
-	struct list_head hbqbuf_in_list;  /* in-fly hbq buffer list */
+	struct list_head rb_pend_list;  /* Received buffers to be processed */
 	uint32_t hbq_count;	        /* Count of configured HBQs */
 	struct hbq_s hbqs[LPFC_MAX_HBQS]; /* local copy of hbq indicies  */
 
+	uint32_t fcp_qidx;		/* next work queue to post work to */
+
 	unsigned long pci_bar0_map;     /* Physical address for PCI BAR0 */
+	unsigned long pci_bar1_map;     /* Physical address for PCI BAR1 */
 	unsigned long pci_bar2_map;     /* Physical address for PCI BAR2 */
 	void __iomem *slim_memmap_p;	/* Kernel memory mapped address for
 					   PCI BAR0 */
@@ -682,6 +793,7 @@ struct lpfc_hba {
 	uint8_t soft_wwn_enable;
 
 	struct timer_list fcp_poll_timer;
+	struct timer_list eratt_poll;
 
 	/*
 	 * stat  counters
@@ -705,7 +817,9 @@ struct lpfc_hba {
 	/* pci_mem_pools */
 	struct pci_pool *lpfc_scsi_dma_buf_pool;
 	struct pci_pool *lpfc_mbuf_pool;
-	struct pci_pool *lpfc_hbq_pool;
+	struct pci_pool *lpfc_hrb_pool;	/* header receive buffer pool */
+	struct pci_pool *lpfc_drb_pool; /* data receive buffer pool */
+	struct pci_pool *lpfc_hbq_pool;	/* SLI3 hbq buffer pool */
 	struct lpfc_dma_pool lpfc_mbuf_safety_pool;
 
 	mempool_t *mbox_mem_pool;
@@ -713,7 +827,9 @@ struct lpfc_hba {
 
 	struct fc_host_statistics link_stats;
 	enum intr_type_t intr_type;
-	struct msix_entry msix_entries[1];
+	uint32_t intr_mode;
+#define LPFC_INTR_ERROR	0xFFFFFFFF
+	struct msix_entry msix_entries[LPFC_MSIX_VECTORS];
 	struct lpfcdfc_host *dfc_host;
 
 	struct list_head port_list;
@@ -721,6 +837,14 @@ struct lpfc_hba {
 	uint16_t max_vpi;		/* Maximum virtual nports */
 #define LPFC_MAX_VPI	0xFFFF		/* Max number of VPI supported */
 #define LPFC_INTR_VPI	100		/* Intermediate VPI supported */
+	uint16_t max_vports;            /*
+					 * For IOV HBAs max_vpi can change
+					 * after a reset. max_vports is max
+					 * number of vports present. This can
+					 * be greater than max_vpi.
+					 */
+	uint16_t vpi_base;
+	uint16_t vfi_base;
 	unsigned long *vpi_bmask;	/* vpi allocation table */
 
 	/* Data structure used by fabric iocb scheduler */
@@ -734,7 +858,7 @@ struct lpfc_hba {
 	unsigned long last_rsrc_error_time;
 	unsigned long last_ramp_down_time;
 	unsigned long last_ramp_up_time;
-#ifdef CONFIG_LPFC_DEBUG_FS
+#ifdef CONFIG_SCSI_LPFC_DEBUG_FS
 	struct dentry *hba_debugfs_root;
 	atomic_t debugfs_vport_count;
 	struct dentry *debug_hbqinfo;
@@ -766,6 +890,22 @@ struct lpfc_hba {
 	uint32_t buffer_tag_count;
 	int	wait_4_mlo_maint_flg;
 	wait_queue_head_t wait_4_mlo_m_q;
+	/* data structure used for latency data collection */
+#define LPFC_NO_BUCKET	   0
+#define LPFC_LINEAR_BUCKET 1
+#define LPFC_POWER2_BUCKET 2
+	uint8_t  bucket_type;
+	uint32_t bucket_base;
+	uint32_t bucket_step;
+
+/* Maximum number of events that can be outstanding at any time*/
+#define LPFC_MAX_EVT_COUNT 512
+	atomic_t fast_event_count;
+	struct lpfc_fcf fcf;
+	uint8_t fc_map[3];
+	uint8_t valid_vlan;
+	uint16_t vlan_id;
+	struct list_head fcf_conn_rec_list;
 };
 
 static inline struct Scsi_Host *
@@ -802,15 +942,24 @@ lpfc_worker_wake_up(struct lpfc_hba *phba)
 	return;
 }
 
-#define FC_REG_DUMP_EVENT		0x10	/* Register for Dump events */
-#define FC_REG_TEMPERATURE_EVENT	0x20    /* Register for temperature
-						   event */
+static inline void
+lpfc_sli_read_hs(struct lpfc_hba *phba)
+{
+	/*
+	 * There was a link/board error. Read the status register to retrieve
+	 * the error event and process it.
+	 */
+	phba->sli.slistat.err_attn_event++;
 
-struct temp_event {
-	uint32_t event_type;
-	uint32_t event_code;
-	uint32_t data;
-};
-#define LPFC_CRIT_TEMP		0x1
-#define LPFC_THRESHOLD_TEMP	0x2
-#define LPFC_NORMAL_TEMP	0x3
+	/* Save status info */
+	phba->work_hs = readl(phba->HSregaddr);
+	phba->work_status[0] = readl(phba->MBslimaddr + 0xa8);
+	phba->work_status[1] = readl(phba->MBslimaddr + 0xac);
+
+	/* Clear chip Host Attention error bit */
+	writel(HA_ERATT, phba->HAregaddr);
+	readl(phba->HAregaddr); /* flush */
+	phba->pport->stopped = 1;
+
+	return;
+}

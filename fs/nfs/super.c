@@ -562,7 +562,7 @@ static inline void nfs_initialise_sb(struct super_block *sb)
 
 	sb->s_magic = NFS_SUPER_MAGIC;
 
-	sb->s_flags |= MS_NO_LEASES;
+	sb->s_flags |= (MS_NO_LEASES|MS_HAS_NEW_AOPS);
 
 	/* We probably want something more informative here */
 	snprintf(sb->s_id, sizeof(sb->s_id),

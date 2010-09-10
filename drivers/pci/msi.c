@@ -984,16 +984,15 @@ void pci_disable_msi(struct pci_dev* dev)
 		return;
 	if (!dev)
 		return;
+	if (!dev->msi_enabled)
+		return;
 
 	pos = pci_find_capability(dev, PCI_CAP_ID_MSI);
-	if (!pos)
-		return;
-
-	pci_read_config_word(dev, msi_control_reg(pos), &control);
-	if (!(control & PCI_MSI_FLAGS_ENABLE))
-		return;
-
-	disable_msi_mode(dev, pos, PCI_CAP_ID_MSI);
+	if (pos) {
+		pci_read_config_word(dev, msi_control_reg(pos), &control);
+		if (control & PCI_MSI_FLAGS_ENABLE)
+			disable_msi_mode(dev, pos, PCI_CAP_ID_MSI);
+	}
 
 	spin_lock_irqsave(&msi_lock, flags);
 	entry = msi_desc[dev->irq];
@@ -1160,16 +1159,15 @@ void pci_disable_msix(struct pci_dev* dev)
 		return;
 	if (!dev)
 		return;
+	if (!dev->msix_enabled)
+		return;
 
 	pos = pci_find_capability(dev, PCI_CAP_ID_MSIX);
-	if (!pos)
-		return;
-
-	pci_read_config_word(dev, msi_control_reg(pos), &control);
-	if (!(control & PCI_MSIX_FLAGS_ENABLE))
-		return;
-
-	disable_msi_mode(dev, pos, PCI_CAP_ID_MSIX);
+	if (pos) {
+		pci_read_config_word(dev, msi_control_reg(pos), &control);
+		if (control & PCI_MSIX_FLAGS_ENABLE)
+			disable_msi_mode(dev, pos, PCI_CAP_ID_MSIX);
+	}
 
 	temp = dev->irq;
 	if (!msi_lookup_vector(dev, PCI_CAP_ID_MSIX)) {

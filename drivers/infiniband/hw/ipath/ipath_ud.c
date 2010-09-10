@@ -54,6 +54,7 @@ static void ipath_ud_loopback(struct ipath_qp *sqp, struct ipath_swqe *swqe)
 	unsigned long flags;
 	struct ipath_rq *rq;
 	struct ipath_srq *srq;
+	struct ipath_sge_state ssge;
 	struct ipath_sge_state rsge;
 	struct ipath_sge *sge;
 	struct ipath_rwq *wq;
@@ -69,8 +70,6 @@ static void ipath_ud_loopback(struct ipath_qp *sqp, struct ipath_swqe *swqe)
 		dev->n_pkt_drops++;
 		goto done;
 	}
-
-	rsge.sg_list = NULL;
 
 	/*
 	 * Check that the qkey matches (except for QP0, see 9.6.1.4.1).
@@ -96,7 +95,7 @@ static void ipath_ud_loopback(struct ipath_qp *sqp, struct ipath_swqe *swqe)
 
 	if (swqe->wr.opcode == IB_WR_SEND_WITH_IMM) {
 		wc.wc_flags = IB_WC_WITH_IMM;
-		wc.imm_data = swqe->wr.imm_data;
+		wc.ex.imm_data = swqe->wr.ex.imm_data;
 	}
 
 	/*
@@ -113,21 +112,6 @@ static void ipath_ud_loopback(struct ipath_qp *sqp, struct ipath_swqe *swqe)
 		srq = NULL;
 		handler = NULL;
 		rq = &qp->r_rq;
-	}
-
-	if (rq->max_sge > 1) {
-		/*
-		 * XXX We could use GFP_KERNEL if ipath_do_send()
-		 * was always called from the tasklet instead of
-		 * from ipath_post_send().
-		 */
-		rsge.sg_list = kmalloc((rq->max_sge - 1) *
-					sizeof(struct ipath_sge),
-				       GFP_ATOMIC);
-		if (!rsge.sg_list) {
-			dev->n_pkt_drops++;
-			goto drop;
-		}
 	}
 
 	/*
@@ -147,14 +131,21 @@ static void ipath_ud_loopback(struct ipath_qp *sqp, struct ipath_swqe *swqe)
 		goto drop;
 	}
 	wqe = get_rwqe_ptr(rq, tail);
-	if (!ipath_init_sge(qp, wqe, &rlen, &rsge)) {
+	rsge.sg_list = qp->r_ud_sg_list;
+	if (unlikely(!ipath_init_sge(qp, wqe, &rlen, &rsge))) {
 		spin_unlock_irqrestore(&rq->lock, flags);
 		dev->n_pkt_drops++;
 		goto drop;
 	}
 	/* Silently drop packets which are too big. */
-	if (wc.byte_len > rlen) {
+	if (unlikely(wc.byte_len > rlen)) {
+		unsigned i;
+
 		spin_unlock_irqrestore(&rq->lock, flags);
+		for (i = 0; i < rsge.num_sge; i++) {
+			sge = i ? &rsge.sg_list[i - 1] : &rsge.sge;
+			atomic_dec(&sge->mr->refcount);
+		}
 		dev->n_pkt_drops++;
 		goto drop;
 	}
@@ -192,11 +183,14 @@ static void ipath_ud_loopback(struct ipath_qp *sqp, struct ipath_swqe *swqe)
 
 	ah_attr = &to_iah(swqe->wr.wr.ud.ah)->attr;
 	if (ah_attr->ah_flags & IB_AH_GRH) {
-		ipath_copy_sge(&rsge, &ah_attr->grh, sizeof(struct ib_grh));
+		ipath_copy_sge(&rsge, &ah_attr->grh, sizeof(struct ib_grh), 1);
 		wc.wc_flags |= IB_WC_GRH;
 	} else
-		ipath_skip_sge(&rsge, sizeof(struct ib_grh));
-	sge = swqe->sg_list;
+		ipath_skip_sge(&rsge, sizeof(struct ib_grh), 1);
+	ssge.sg_list = swqe->sg_list + 1;
+	ssge.sge = *swqe->sg_list;
+	ssge.num_sge = swqe->wr.num_sge;
+	sge = &ssge.sge;
 	while (length) {
 		u32 len = sge->length;
 
@@ -205,14 +199,14 @@ static void ipath_ud_loopback(struct ipath_qp *sqp, struct ipath_swqe *swqe)
 		if (len > sge->sge_length)
 			len = sge->sge_length;
 		BUG_ON(len == 0);
-		ipath_copy_sge(&rsge, sge->vaddr, len);
+		ipath_copy_sge(&rsge, sge->vaddr, len, 1);
 		sge->vaddr += len;
 		sge->length -= len;
 		sge->sge_length -= len;
 		if (sge->sge_length == 0) {
-			if (--swqe->wr.num_sge)
-				sge++;
-		} else if (sge->length == 0 && sge->mr != NULL) {
+			if (--ssge.num_sge)
+				*sge = *ssge.sg_list++;
+		} else if (sge->length == 0 && sge->mr->lkey) {
 			if (++sge->n >= IPATH_SEGSZ) {
 				if (++sge->m >= sge->mr->mapsz)
 					break;
@@ -225,12 +219,17 @@ static void ipath_ud_loopback(struct ipath_qp *sqp, struct ipath_swqe *swqe)
 		}
 		length -= len;
 	}
+	while (rsge.num_sge) {
+		atomic_dec(&rsge.sge.mr->refcount);
+		if (--rsge.num_sge)
+			rsge.sge = *rsge.sg_list++;
+	}
 	wc.status = IB_WC_SUCCESS;
 	wc.opcode = IB_WC_RECV;
 	wc.qp = &qp->ibqp;
 	wc.src_qp = sqp->ibqp.qp_num;
-	/* XXX do we know which pkey matched? Only needed for GSI. */
-	wc.pkey_index = 0;
+	wc.pkey_index = qp->ibqp.qp_type == IB_QPT_GSI ?
+		swqe->wr.wr.ud.pkey_index : 0;
 	wc.slid = dev->dd->ipath_lid |
 		(ah_attr->src_path_bits &
 		 ((1 << dev->dd->ipath_lmc) - 1));
@@ -242,7 +241,6 @@ static void ipath_ud_loopback(struct ipath_qp *sqp, struct ipath_swqe *swqe)
 	ipath_cq_enter(to_icq(qp->ibqp.recv_cq), &wc,
 		       swqe->wr.send_flags & IB_SEND_SOLICITED);
 drop:
-	kfree(rsge.sg_list);
 	if (atomic_dec_and_test(&qp->refcount))
 		wake_up(&qp->wait);
 done:;
@@ -267,6 +265,7 @@ int ipath_make_ud_req(struct ipath_qp *qp)
 	u16 lrh0;
 	u16 lid;
 	int ret = 0;
+	int next_cur;
 
 	spin_lock_irqsave(&qp->s_lock, flags);
 
@@ -290,8 +289,9 @@ int ipath_make_ud_req(struct ipath_qp *qp)
 		goto bail;
 
 	wqe = get_swqe_ptr(qp, qp->s_cur);
-	if (++qp->s_cur >= qp->s_size)
-		qp->s_cur = 0;
+	next_cur = qp->s_cur + 1;
+	if (next_cur >= qp->s_size)
+		next_cur = 0;
 
 	/* Construct the header. */
 	ah_attr = &to_iah(wqe->wr.wr.ud.ah)->attr;
@@ -315,6 +315,7 @@ int ipath_make_ud_req(struct ipath_qp *qp)
 				qp->s_flags |= IPATH_S_WAIT_DMA;
 				goto bail;
 			}
+			qp->s_cur = next_cur;
 			spin_unlock_irqrestore(&qp->s_lock, flags);
 			ipath_ud_loopback(qp, wqe);
 			spin_lock_irqsave(&qp->s_lock, flags);
@@ -323,6 +324,7 @@ int ipath_make_ud_req(struct ipath_qp *qp)
 		}
 	}
 
+	qp->s_cur = next_cur;
 	extra_bytes = -wqe->length & 3;
 	nwords = (wqe->length + extra_bytes) >> 2;
 
@@ -355,7 +357,7 @@ int ipath_make_ud_req(struct ipath_qp *qp)
 	}
 	if (wqe->wr.opcode == IB_WR_SEND_WITH_IMM) {
 		qp->s_hdrwords++;
-		ohdr->u.ud.imm_data = wqe->wr.imm_data;
+		ohdr->u.ud.imm_data = wqe->wr.ex.imm_data;
 		bth0 = IB_OPCODE_UD_SEND_ONLY_WITH_IMMEDIATE << 24;
 	} else
 		bth0 = IB_OPCODE_UD_SEND_ONLY << 24;
@@ -377,7 +379,8 @@ int ipath_make_ud_req(struct ipath_qp *qp)
 		bth0 |= 1 << 23;
 	bth0 |= extra_bytes << 20;
 	bth0 |= qp->ibqp.qp_type == IB_QPT_SMI ? IPATH_DEFAULT_P_KEY :
-		ipath_get_pkey(dev->dd, qp->s_pkey_index);
+		ipath_get_pkey(dev->dd, qp->ibqp.qp_type == IB_QPT_GSI ?
+				wqe->wr.wr.ud.pkey_index : qp->s_pkey_index);
 	ohdr->bth[0] = cpu_to_be32(bth0);
 	/*
 	 * Use the multicast QP if the destination LID is a multicast LID.
@@ -404,6 +407,23 @@ bail:
 unlock:
 	spin_unlock_irqrestore(&qp->s_lock, flags);
 	return ret;
+}
+
+static unsigned ipath_lookup_pkey(struct ipath_devdata *dd, u16 pkey)
+{
+	unsigned i;
+
+	pkey &= 0x7fff;	/* remove limited/full membership bit */
+
+	for (i = 0; i < ARRAY_SIZE(dd->ipath_pd[0]->port_pkeys); ++i)
+		if ((dd->ipath_pd[0]->port_pkeys[i] & 0x7fff) == pkey)
+			return i;
+
+	/*
+	 * Should not get here, this means hardware failed to validate pkeys.
+	 * Punt and return index 0.
+	 */
+	return 0;
 }
 
 /**
@@ -493,14 +513,14 @@ void ipath_ud_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 	if (qp->ibqp.qp_num > 1 &&
 	    opcode == IB_OPCODE_UD_SEND_ONLY_WITH_IMMEDIATE) {
 		if (header_in_data) {
-			wc.imm_data = *(__be32 *) data;
+			wc.ex.imm_data = *(__be32 *) data;
 			data += sizeof(__be32);
 		} else
-			wc.imm_data = ohdr->u.ud.imm_data;
+			wc.ex.imm_data = ohdr->u.ud.imm_data;
 		wc.wc_flags = IB_WC_WITH_IMM;
 		hdrsize += sizeof(u32);
 	} else if (opcode == IB_OPCODE_UD_SEND_ONLY) {
-		wc.imm_data = 0;
+		wc.ex.imm_data = 0;
 		wc.wc_flags = 0;
 	} else {
 		dev->n_pkt_drops++;
@@ -559,12 +579,17 @@ void ipath_ud_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 	}
 	if (has_grh) {
 		ipath_copy_sge(&qp->r_sge, &hdr->u.l.grh,
-			       sizeof(struct ib_grh));
+			       sizeof(struct ib_grh), 1);
 		wc.wc_flags |= IB_WC_GRH;
 	} else
-		ipath_skip_sge(&qp->r_sge, sizeof(struct ib_grh));
+		ipath_skip_sge(&qp->r_sge, sizeof(struct ib_grh), 1);
 	ipath_copy_sge(&qp->r_sge, data,
-		       wc.byte_len - sizeof(struct ib_grh));
+		       wc.byte_len - sizeof(struct ib_grh), 1);
+	while (qp->r_sge.num_sge) {
+		atomic_dec(&qp->r_sge.sge.mr->refcount);
+		if (--qp->r_sge.num_sge)
+			qp->r_sge.sge = *qp->r_sge.sg_list++;
+	}
 	if (!test_and_clear_bit(IPATH_R_WRID_VALID, &qp->r_aflags))
 		goto bail;
 	wc.wr_id = qp->r_wr_id;
@@ -573,8 +598,8 @@ void ipath_ud_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 	wc.vendor_err = 0;
 	wc.qp = &qp->ibqp;
 	wc.src_qp = src_qp;
-	/* XXX do we know which pkey matched? Only needed for GSI. */
-	wc.pkey_index = 0;
+	wc.pkey_index = qp->ibqp.qp_type == IB_QPT_GSI ?
+		ipath_lookup_pkey(dev->dd, be32_to_cpu(ohdr->bth[0])) : 0;
 	wc.slid = be16_to_cpu(hdr->lrh[3]);
 	wc.sl = (be16_to_cpu(hdr->lrh[0]) >> 4) & 0xF;
 	dlid = be16_to_cpu(hdr->lrh[1]);

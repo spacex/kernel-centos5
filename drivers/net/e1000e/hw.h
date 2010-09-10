@@ -193,7 +193,11 @@ enum e1e_registers {
 	E1000_RXCSUM   = 0x05000, /* Rx Checksum Control - RW */
 	E1000_RFCTL    = 0x05008, /* Receive Filter Control */
 	E1000_MTA      = 0x05200, /* Multicast Table Array - RW Array */
-	E1000_RA       = 0x05400, /* Receive Address - RW Array */
+	E1000_RAL_BASE = 0x05400, /* Receive Address Low - RW */
+#define E1000_RAL(_n)   (E1000_RAL_BASE + ((_n) * 8))
+#define E1000_RA        (E1000_RAL(0))
+	E1000_RAH_BASE = 0x05404, /* Receive Address High - RW */
+#define E1000_RAH(_n)   (E1000_RAH_BASE + ((_n) * 8))
 	E1000_VFTA     = 0x05600, /* VLAN Filter Table Array - RW Array */
 	E1000_WUC      = 0x05800, /* Wakeup Control - RW */
 	E1000_WUFC     = 0x05808, /* Wakeup Filter Control - RW */
@@ -206,6 +210,7 @@ enum e1e_registers {
 	E1000_MANC2H    = 0x05860, /* Management Control To Host - RW */
 	E1000_SW_FW_SYNC = 0x05B5C, /* Software-Firmware Synchronization - RW */
 	E1000_GCR	= 0x05B00, /* PCI-Ex Control */
+	E1000_GCR2      = 0x05B64, /* PCI-Ex Control #2 */
 	E1000_FACTPS    = 0x05B30, /* Function Active and Power State to MNG */
 	E1000_SWSM      = 0x05B50, /* SW Semaphore */
 	E1000_FWSM      = 0x05B54, /* FW Semaphore */
@@ -338,6 +343,8 @@ enum e1e_registers {
 #define E1000_DEV_ID_82573E_IAMT		0x108C
 #define E1000_DEV_ID_82573L			0x109A
 #define E1000_DEV_ID_82574L			0x10D3
+#define E1000_DEV_ID_82574LA			0x10F6
+#define E1000_DEV_ID_82583V                     0x150C
 
 #define E1000_DEV_ID_80003ES2LAN_COPPER_DPT	0x1096
 #define E1000_DEV_ID_80003ES2LAN_SERDES_DPT	0x1098
@@ -365,6 +372,10 @@ enum e1e_registers {
 #define E1000_DEV_ID_ICH10_R_BM_V		0x10CE
 #define E1000_DEV_ID_ICH10_D_BM_LM		0x10DE
 #define E1000_DEV_ID_ICH10_D_BM_LF		0x10DF
+#define E1000_DEV_ID_PCH_M_HV_LM		0x10EA
+#define E1000_DEV_ID_PCH_M_HV_LC		0x10EB
+#define E1000_DEV_ID_PCH_D_HV_DM		0x10EF
+#define E1000_DEV_ID_PCH_D_HV_DC		0x10F0
 
 #define E1000_REVISION_4 4
 
@@ -375,10 +386,12 @@ enum e1000_mac_type {
 	e1000_82572,
 	e1000_82573,
 	e1000_82574,
+	e1000_82583,
 	e1000_80003es2lan,
 	e1000_ich8lan,
 	e1000_ich9lan,
 	e1000_ich10lan,
+	e1000_pchlan,
 };
 
 enum e1000_media_type {
@@ -413,6 +426,8 @@ enum e1000_phy_type {
 	e1000_phy_igp_3,
 	e1000_phy_ife,
 	e1000_phy_bm,
+	e1000_phy_82578,
+	e1000_phy_82577,
 };
 
 enum e1000_bus_width {
@@ -437,7 +452,7 @@ enum e1000_rev_polarity{
 	e1000_rev_polarity_undefined = 0xFF
 };
 
-enum e1000_fc_type {
+enum e1000_fc_mode {
 	e1000_fc_none = 0,
 	e1000_fc_rx_pause,
 	e1000_fc_tx_pause,
@@ -456,6 +471,13 @@ enum e1000_smart_speed {
 	e1000_smart_speed_default = 0,
 	e1000_smart_speed_on,
 	e1000_smart_speed_off
+};
+
+enum e1000_serdes_link_state {
+	e1000_serdes_link_down = 0,
+	e1000_serdes_link_autoneg_progress,
+	e1000_serdes_link_autoneg_complete,
+	e1000_serdes_link_forced_up
 };
 
 /* Receive Descriptor */
@@ -709,6 +731,7 @@ struct e1000_host_mng_command_info {
 
 /* Function pointers and static data for the MAC. */
 struct e1000_mac_operations {
+	s32  (*id_led_init)(struct e1000_hw *);
 	bool (*check_mng_mode)(struct e1000_hw *);
 	s32  (*check_for_link)(struct e1000_hw *);
 	s32  (*cleanup_led)(struct e1000_hw *);
@@ -722,11 +745,13 @@ struct e1000_mac_operations {
 	s32  (*init_hw)(struct e1000_hw *);
 	s32  (*setup_link)(struct e1000_hw *);
 	s32  (*setup_physical_interface)(struct e1000_hw *);
+	s32  (*setup_led)(struct e1000_hw *);
 };
 
 /* Function pointers for the PHY. */
 struct e1000_phy_operations {
 	s32  (*acquire_phy)(struct e1000_hw *);
+	s32  (*check_polarity)(struct e1000_hw *);
 	s32  (*check_reset_block)(struct e1000_hw *);
 	s32  (*commit_phy)(struct e1000_hw *);
 	s32  (*force_speed_duplex)(struct e1000_hw *);
@@ -739,6 +764,7 @@ struct e1000_phy_operations {
 	s32  (*set_d0_lplu_state)(struct e1000_hw *, bool);
 	s32  (*set_d3_lplu_state)(struct e1000_hw *, bool);
 	s32  (*write_phy_reg)(struct e1000_hw *, u32, u16);
+	s32  (*cfg_on_link_up)(struct e1000_hw *);
 };
 
 /* Function pointers for the NVM. */
@@ -785,6 +811,7 @@ struct e1000_mac_info {
 	bool in_ifs_mode;
 	bool serdes_has_link;
 	bool tx_pkt_filtering;
+	enum e1000_serdes_link_state serdes_link_state;
 };
 
 struct e1000_phy_info {
@@ -849,8 +876,8 @@ struct e1000_fc_info {
 	u16 pause_time;          /* Flow control pause timer */
 	bool send_xon;           /* Flow control send XON */
 	bool strict_ieee;        /* Strict IEEE mode */
-	enum e1000_fc_type type; /* Type of flow control */
-	enum e1000_fc_type original_type;
+	enum e1000_fc_mode current_mode; /* FC mode in effect */
+	enum e1000_fc_mode requested_mode; /* FC mode requested by caller */
 };
 
 struct e1000_dev_spec_82571 {

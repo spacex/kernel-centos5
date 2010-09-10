@@ -239,6 +239,7 @@
 #include <linux/spinlock.h>
 #include <linux/percpu.h>
 #include <linux/cryptohash.h>
+#include <linux/fips.h>
 
 #include <asm/processor.h>
 #include <asm/uaccess.h>
@@ -406,6 +407,7 @@ struct entropy_store {
 	unsigned add_ptr;
 	int entropy_count;
 	int input_rotate;
+	__u8 *last_data;
 };
 
 static __u32 input_pool_data[INPUT_POOL_WORDS];
@@ -806,12 +808,21 @@ static ssize_t extract_entropy(struct entropy_store *r, void * buf,
 {
 	ssize_t ret = 0, i;
 	__u8 tmp[EXTRACT_SIZE];
+	unsigned long flags;
 
 	xfer_secondary_pool(r, nbytes);
 	nbytes = account(r, nbytes, min, reserved);
 
 	while (nbytes) {
 		extract_buf(r, tmp);
+
+		if (r->last_data) {
+			spin_lock_irqsave(&r->lock, flags);
+			if (!memcmp(tmp, r->last_data, EXTRACT_SIZE))
+				panic("Hardware RNG duplicated output!\n");
+			memcpy(r->last_data, tmp, EXTRACT_SIZE);
+			spin_unlock_irqrestore(&r->lock, flags);
+		}
 		i = min_t(int, nbytes, EXTRACT_SIZE);
 		memcpy(buf, tmp, i);
 		nbytes -= i;
@@ -896,6 +907,13 @@ static void init_std_data(struct entropy_store *r)
 	add_entropy_words(r, (__u32 *)&tv, sizeof(tv)/4);
 	add_entropy_words(r, (__u32 *)&system_utsname,
 			  sizeof(system_utsname)/4);
+
+	/* Enable continuous test in fips mode */
+	if (fips_enabled) {
+		r->last_data = kmalloc(EXTRACT_SIZE, GFP_KERNEL);
+		if (!r->last_data)
+			panic("RNG self test failed to init!\n");
+	}
 }
 
 static int __init rand_initialize(void)
@@ -1584,6 +1602,7 @@ u32 secure_ipv4_port_ephemeral(__u32 saddr, __u32 daddr, __u16 dport)
 
 	return half_md4_transform(hash, keyptr->secret);
 }
+EXPORT_SYMBOL_GPL(secure_ipv4_port_ephemeral);
 
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
 u32 secure_ipv6_port_ephemeral(const __u32 *saddr, const __u32 *daddr, __u16 dport)

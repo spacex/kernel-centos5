@@ -15,18 +15,14 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-#include <linux/kernel.h>
-#include <linux/string.h>
+#include <linux/mempool.h>
 #include <linux/errno.h>
-#include <linux/types.h>
 #include <linux/init.h>
 #include <linux/workqueue.h>
 #include <linux/pci.h>
 #include <linux/scatterlist.h>
 #include <linux/skbuff.h>
-#include <linux/interrupt.h>
 #include <linux/spinlock.h>
-#include <linux/kthread.h>
 #include <linux/if_ether.h>
 #include <linux/if_vlan.h>
 #include <linux/delay.h>
@@ -34,8 +30,6 @@
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_device.h>
 #include <scsi/scsi_cmnd.h>
-#include <scsi/scsi_transport.h>
-#include <scsi/scsi_transport_fc.h>
 #include <scsi/scsi_tcq.h>
 #include <scsi/fc/fc_els.h>
 #include <scsi/fc/fc_fcoe.h>
@@ -45,13 +39,12 @@
 #include "fnic.h"
 #include "fnic_tag_map.h"
 
-static int fnic_scsi_debug;
-
-#define FNIC_DEBUG_SCSI(fmt...)			\
-	do {					\
-		if (fnic_scsi_debug)		\
-			FNIC_DBG(fmt);		\
-	} while (0)
+const char *fnic_state_str[] = {
+	[FNIC_IN_FC_MODE] =           "FNIC_IN_FC_MODE",
+	[FNIC_IN_FC_TRANS_ETH_MODE] = "FNIC_IN_FC_TRANS_ETH_MODE",
+	[FNIC_IN_ETH_MODE] =          "FNIC_IN_ETH_MODE",
+	[FNIC_IN_ETH_TRANS_FC_MODE] = "FNIC_IN_ETH_TRANS_FC_MODE",
+};
 
 static const char *fnic_ioreq_state_str[] = {
 	[FNIC_IOREQ_CMD_PENDING] = "FNIC_IOREQ_CMD_PENDING",
@@ -82,6 +75,31 @@ static const char *fcpio_status_str[] =  {
 	[FCPIO_LUNMAP_CHNG_PEND] = "FCPIO_LUNHMAP_CHNG_PEND",
 };
 
+const char *fnic_state_to_str(unsigned int state)
+{
+	if (state >= ARRAY_SIZE(fnic_state_str) || !fnic_state_str[state])
+		return "unknown";
+
+	return fnic_state_str[state];
+}
+
+static const char *fnic_ioreq_state_to_str(unsigned int state)
+{
+	if (state >= ARRAY_SIZE(fnic_ioreq_state_str) ||
+	    !fnic_ioreq_state_str[state])
+		return "unknown";
+
+	return fnic_ioreq_state_str[state];
+}
+
+static const char *fnic_fcpio_status_to_str(unsigned int status)
+{
+	if (status >= ARRAY_SIZE(fcpio_status_str) || !fcpio_status_str[status])
+		return "unknown";
+
+	return fcpio_status_str[status];
+}
+
 static void fnic_cleanup_io(struct fnic *fnic, int exclude_id);
 
 static inline spinlock_t *fnic_io_lock_hash(struct fnic *fnic,
@@ -105,6 +123,10 @@ static void fnic_release_ioreq_buf(struct fnic *fnic,
 				 sizeof(io_req->sgl_list[0]) * io_req->sgl_cnt,
 				 PCI_DMA_TODEVICE);
 	scsi_dma_unmap(sc);
+	if (!scsi_sg_count(sc) && scsi_bufflen(sc))
+		pci_unmap_single(fnic->pdev, io_req->sgl_list[0].addr,
+				 scsi_bufflen(sc), sc->sc_data_direction);
+
 	if (io_req->sgl_cnt)
 		mempool_free(io_req->sgl_list_alloc,
 			     fnic->io_sgl_pool[io_req->sgl_type]);
@@ -120,7 +142,8 @@ static int free_wq_copy_descs(struct fnic *fnic, struct vnic_wq_copy *wq)
 	if (!fnic->fw_ack_recd[0])
 		return 1;
 
-	/* Update desc_available count based on number of freed descriptors
+	/*
+	 * Update desc_available count based on number of freed descriptors
 	 * Account for wraparound
 	 */
 	if (wq->to_clean_index <= fnic->fw_ack_index[0])
@@ -131,7 +154,8 @@ static int free_wq_copy_descs(struct fnic *fnic, struct vnic_wq_copy *wq)
 					- wq->to_clean_index
 					+ fnic->fw_ack_index[0] + 1);
 
-	/* just bump clean index to ack_index+1 accounting for wraparound
+	/*
+	 * just bump clean index to ack_index+1 accounting for wraparound
 	 * this will essentially free up all descriptors between
 	 * to_clean_index and fw_ack_index, both inclusive
 	 */
@@ -167,10 +191,11 @@ int fnic_fw_reset_handler(struct fnic *fnic)
 	spin_unlock_irqrestore(&fnic->wq_copy_lock[0], flags);
 
 	if (!ret)
-		FNIC_DEBUG_SCSI(DFX "Issued fw reset\n", fnic->fnic_no);
+		FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host,
+			      "Issued fw reset\n");
 	else
-		FNIC_DEBUG_SCSI(DFX "Failed to issue fw reset\n",
-				fnic->fnic_no);
+		FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host,
+			      "Failed to issue fw reset\n");
 	return ret;
 }
 
@@ -201,30 +226,20 @@ int fnic_flogi_reg_handler(struct fnic *fnic)
 	else
 		memcpy(gw_mac, fnic->dest_addr, ETH_ALEN);
 
-	fnic_queue_wq_copy_desc_flogi_reg(
-		wq,
-		SCSI_NO_TAG,		/* host request id */
-		FCPIO_FLOGI_REG_GW_DEST,/* gw address mode */
-		fnic->s_id,		/* FC source id */
-		gw_mac			/* gateway mac */
-		);
+	fnic_queue_wq_copy_desc_flogi_reg(wq, SCSI_NO_TAG,
+					  FCPIO_FLOGI_REG_GW_DEST,
+					  fnic->s_id,
+					  gw_mac);
 
 flogi_reg_ioreq_end:
 	spin_unlock_irqrestore(&fnic->wq_copy_lock[0], flags);
 
 	if (!ret)
-		FNIC_DEBUG_SCSI(DFX "flog reg issued\n", fnic->fnic_no);
+		FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host,
+			      "flog reg issued\n");
 
 	return ret;
 }
-
-static inline struct scatterlist *sg_next(struct scatterlist *sg)
-{
-	return sg + 1;
-}
-
-#define for_each_sg(sglist, sg, nr, __i)        \
-	for (__i = 0, sg = (sglist); __i < (nr); __i++, sg = sg_next(sg))
 
 /*
  * fnic_queue_wq_copy_desc
@@ -261,14 +276,22 @@ static inline int fnic_queue_wq_copy_desc(struct fnic *fnic,
 			desc++;
 		}
 
-		/* Get the physical address of the SGL that is passed
-		   to device */
+	} else if (scsi_bufflen(sc)) {
+		io_req->sgl_list[0].addr =
+			cpu_to_le64(pci_map_single(
+					    fnic->pdev, scsi_sglist(sc),
+					    scsi_bufflen(sc),
+					    sc->sc_data_direction));
+		io_req->sgl_list[0].len = cpu_to_le32(scsi_bufflen(sc));
+		io_req->sgl_list[0]._resvd = 0;
+	}
+
+	if (io_req->sgl_cnt)
 		io_req->sgl_list_pa = pci_map_single
 			(fnic->pdev,
 			 io_req->sgl_list,
-			 sizeof(io_req->sgl_list[0]) * sg_count,
+			 sizeof(io_req->sgl_list[0]) * io_req->sgl_cnt,
 			 PCI_DMA_TODEVICE);
-	}
 
 	io_req->sense_buf_pa = pci_map_single(fnic->pdev,
 					      sc->sense_buffer,
@@ -305,26 +328,18 @@ static inline int fnic_queue_wq_copy_desc(struct fnic *fnic,
 	    (rp->flags & FC_RP_FLAGS_RETRY))
 		exch_flags |= FCPIO_ICMND_SRFLAG_RETRY;
 
-	fnic_queue_wq_copy_desc_icmnd_16(
-		wq,
-		scsi_cmd_get_tag(sc),		/* IO req id */
-		0,	                        /* lun map id */
-		exch_flags,	                /* exch flags */
-		io_req->sgl_cnt,	        /* SGL count */
-		SCSI_SENSE_BUFFERSIZE,		/* Sense len */
-		io_req->sgl_list_pa,		/* ptr to sgl list */
-		io_req->sense_buf_pa,	        /* Sense buff */
-		0,				/* scsi cmd ref, always 0 */
-		pri_tag,			/* scsi pri and tag */
-		flags,				/* command flags */
-		sc->cmnd,		        /* CDB */
-		scsi_bufflen(sc),		/* data buf len */
-		fc_lun.scsi_lun,	        /* FCP 8 byte lun */
-		rport->port_id,		        /* D_ID */
-		rport->maxframe_size,	        /* max frame size */
-		rp->r_a_tov,		        /* R_A_TOV */
-		rp->e_d_tov		        /* E_D_TOV */
-		);
+	fnic_queue_wq_copy_desc_icmnd_16(wq, scsi_cmd_get_tag(sc),
+					 0, exch_flags, io_req->sgl_cnt,
+					 SCSI_SENSE_BUFFERSIZE,
+					 io_req->sgl_list_pa,
+					 io_req->sense_buf_pa,
+					 0, /* scsi cmd ref, always 0 */
+					 pri_tag, /* scsi pri and tag */
+					 flags,	/* command flags */
+					 sc->cmnd, scsi_bufflen(sc),
+					 fc_lun.scsi_lun, io_req->port_id,
+					 rport->maxframe_size, rp->r_a_tov,
+					 rp->e_d_tov);
 
 	spin_unlock_irqrestore(&fnic->wq_copy_lock[0], intr_flags);
 	return 0;
@@ -345,6 +360,7 @@ int fnic_queuecommand(struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
 	int ret;
 	u32 sg_count;
 	unsigned long flags;
+	unsigned long ptr;
 	int tag;
 
 	rport = starget_to_rport(scsi_target(sc->device));
@@ -356,10 +372,11 @@ int fnic_queuecommand(struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
 	}
 
 	lp = shost_priv(sc->device->host);
-	if (lp->state != LPORT_ST_READY || !(lp->link_status & FC_LINK_UP))
+	if (lp->state != LPORT_ST_READY || !(lp->link_up))
 		return SCSI_MLQUEUE_HOST_BUSY;
 
-	/* Release host lock, use driver resource specific locks from here.
+	/*
+	 * Release host lock, use driver resource specific locks from here.
 	 * Don't re-enable interrupts in case they were disabled prior to the
 	 * caller disabling them.
 	 */
@@ -385,18 +402,20 @@ int fnic_queuecommand(struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
 	/* Map the data buffer */
 	sg_count = scsi_dma_map(sc);
 	if (sg_count < 0) {
-		scsi_host_end_tag(sc->device->host, sc);
 		mempool_free(io_req, fnic->io_req_pool);
+		scsi_host_end_tag(sc->device->host, sc);
 		goto out;
 	}
 
 	/* Determine the type of scatter/gather list we need */
 	io_req->sgl_cnt = sg_count;
+	if (!sg_count && scsi_bufflen(sc))
+		io_req->sgl_cnt = 1;
 	io_req->sgl_type = FNIC_SGL_CACHE_DFLT;
 	if (sg_count > FNIC_DFLT_SG_DESC_CNT)
 		io_req->sgl_type = FNIC_SGL_CACHE_MAX;
 
-	if (sg_count) {
+	if (io_req->sgl_cnt) {
 		io_req->sgl_list =
 			mempool_alloc(fnic->io_sgl_pool[io_req->sgl_type],
 				      GFP_ATOMIC | GFP_DMA);
@@ -407,21 +426,20 @@ int fnic_queuecommand(struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
 			mempool_free(io_req, fnic->io_req_pool);
 			goto out;
 		}
+
 		/* Cache sgl list allocated address before alignment */
 		io_req->sgl_list_alloc = io_req->sgl_list;
-		{
-			u_long ptr = (u_long) io_req->sgl_list;
-
-			if (ptr % FNIC_SG_DESC_ALIGN) {
-				io_req->sgl_list = (struct host_sg_desc *)
-					(((u_long) ptr + FNIC_SG_DESC_ALIGN - 1)
-					 & ~(FNIC_SG_DESC_ALIGN - 1));
-			}
+		ptr = (unsigned long) io_req->sgl_list;
+		if (ptr % FNIC_SG_DESC_ALIGN) {
+			io_req->sgl_list = (struct host_sg_desc *)
+				(((unsigned long) ptr
+				  + FNIC_SG_DESC_ALIGN - 1)
+				 & ~(FNIC_SG_DESC_ALIGN - 1));
 		}
-
 	}
 
 	/* initialize rest of io_req */
+	io_req->port_id = rport->port_id;
 	CMD_STATE(sc) = FNIC_IOREQ_CMD_PENDING;
 	CMD_SP(sc) = (char *)io_req;
 	sc->scsi_done = done;
@@ -430,7 +448,8 @@ int fnic_queuecommand(struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
 	wq = &fnic->wq_copy[0];
 	ret = fnic_queue_wq_copy_desc(fnic, wq, io_req, sc, sg_count);
 	if (ret) {
-		/* In case another thread cancelled the request,
+		/*
+		 * In case another thread cancelled the request,
 		 * refetch the pointer under the lock.
 		 */
 		spinlock_t *io_lock = fnic_io_lock_hash(fnic, sc);
@@ -480,16 +499,18 @@ static int fnic_fcpio_fw_reset_cmpl_handler(struct fnic *fnic,
 	if (fnic->state == FNIC_IN_FC_TRANS_ETH_MODE) {
 		/* Check status of reset completion */
 		if (!hdr_status) {
-			FNIC_DEBUG_SCSI(DFX "reset cmpl success\n",
-					fnic->fnic_no);
+			FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host,
+				      "reset cmpl success\n");
 			/* Ready to send flogi out */
 			fnic->state = FNIC_IN_ETH_MODE;
 		} else {
-			FNIC_DEBUG_SCSI(DFX "fnic fw_reset : failed %s\n",
-					fnic->fnic_no,
-					fcpio_status_str[hdr_status]);
+			FNIC_SCSI_DBG(KERN_DEBUG,
+				      fnic->lport->host,
+				      "fnic fw_reset : failed %s\n",
+				      fnic_fcpio_status_to_str(hdr_status));
 
-			/* Unable to change to eth mode, cannot send out flogi
+			/*
+			 * Unable to change to eth mode, cannot send out flogi
 			 * Change state to fc mode, so that subsequent Flogi
 			 * requests from libFC will cause more attempts to
 			 * reset the firmware. Free the cached flogi
@@ -498,28 +519,26 @@ static int fnic_fcpio_fw_reset_cmpl_handler(struct fnic *fnic,
 			ret = -1;
 		}
 	} else {
-		FNIC_DEBUG_SCSI(DFX "Unexpected state %s while processing"
-				" reset cmpl\n", fnic->fnic_no,
-				fnic_state_str[fnic->state]);
+		FNIC_SCSI_DBG(KERN_DEBUG,
+			      fnic->lport->host,
+			      "Unexpected state %s while processing"
+			      " reset cmpl\n", fnic_state_to_str(fnic->state));
 		ret = -1;
 	}
-
-	/* Thread issuing host reset blocks till firmware reset is complete */
-	if (fnic->reset_wait)
-		complete(fnic->reset_wait);
 
 	/* Thread removing device blocks till firmware reset is complete */
 	if (fnic->remove_wait)
 		complete(fnic->remove_wait);
 
-	/* If fnic is in host reset or being removed, or fw reset failed
+	/*
+	 * If fnic is being removed, or fw reset failed
 	 * free the flogi frame. Else, send it out
 	 */
-	if (fnic->remove_wait || fnic->reset_wait || ret) {
+	if (fnic->remove_wait || ret) {
 		fnic->flogi_oxid = FC_XID_UNKNOWN;
 		spin_unlock_irqrestore(&fnic->fnic_lock, flags);
 		if (flogi)
-			fnic_fc_frame_free_irq(flogi);
+			dev_kfree_skb_irq(fp_skb(flogi));
 		goto reset_cmpl_handler_end;
 	}
 
@@ -542,11 +561,10 @@ static int fnic_fcpio_flogi_reg_cmpl_handler(struct fnic *fnic,
 	u8 type;
 	u8 hdr_status;
 	struct fcpio_tag tag;
-	struct fnic_event *event;
-	u8 list_was_empty;
 	int ret = 0;
 	struct fc_frame *flogi_resp = NULL;
 	unsigned long flags;
+	struct sk_buff *skb;
 
 	fcpio_header_dec(&desc->hdr, &type, &hdr_status, &tag);
 
@@ -560,54 +578,45 @@ static int fnic_fcpio_flogi_reg_cmpl_handler(struct fnic *fnic,
 
 		/* Check flogi registration completion status */
 		if (!hdr_status) {
-			FNIC_DEBUG_SCSI(DFX "flog reg succeeded\n",
-					fnic->fnic_no);
+			FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host,
+				      "flog reg succeeded\n");
 			fnic->state = FNIC_IN_FC_MODE;
 		} else {
-			FNIC_DEBUG_SCSI(DFX "fnic flogi reg :failed %s\n",
-					fnic->fnic_no,
-					fcpio_status_str[hdr_status]);
+			FNIC_SCSI_DBG(KERN_DEBUG,
+				      fnic->lport->host,
+				      "fnic flogi reg :failed %s\n",
+				      fnic_fcpio_status_to_str(hdr_status));
 			fnic->state = FNIC_IN_ETH_MODE;
 			ret = -1;
 		}
 	} else {
-		FNIC_DEBUG_SCSI(DFX "Unexpected fnic state %s while"
-				" processing flogi reg completion\n",
-				fnic->fnic_no, fnic_state_str[fnic->state]);
+		FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host,
+			      "Unexpected fnic state %s while"
+			      " processing flogi reg completion\n",
+			      fnic_state_to_str(fnic->state));
 		ret = -1;
 	}
 
-	spin_unlock_irqrestore(&fnic->fnic_lock, flags);
-
 	/* Successful flogi reg cmpl, pass frame to LibFC */
 	if (!ret && flogi_resp) {
-		event = kmem_cache_alloc(fnic_ev_cache, GFP_ATOMIC);
-
-		if (!event) {
-			fnic_fc_frame_free_irq(flogi_resp);
-			ret = -1;
+		if (fnic->stop_rx_link_events) {
+			spin_unlock_irqrestore(&fnic->fnic_lock, flags);
 			goto reg_cmpl_handler_end;
 		}
-
-		memset(event, 0, sizeof(struct fnic_event));
-
-		/* initialize the event structure */
-		event->fp = flogi_resp;
+		skb = (struct sk_buff *)flogi_resp;
+		/* Use fr_flags to indicate whether flogi resp or not */
+		fr_flags(flogi_resp) = 1;
 		fr_dev(flogi_resp) = fnic->lport;
-		event->fnic = fnic;
-		event->ev_type = EV_TYPE_FRAME;
-		event->is_flogi_resp_frame = 1;
+		spin_unlock_irqrestore(&fnic->fnic_lock, flags);
 
-		/* insert it into event queue */
-		spin_lock_irqsave(&fnic_eventlist_lock, flags);
-		list_was_empty = list_empty(&fnic_eventlist);
-		list_add_tail(&event->list, &fnic_eventlist);
-		spin_unlock_irqrestore(&fnic_eventlist_lock, flags);
-		if (list_was_empty)
-			wake_up_process(fnic_thread);
-	} else
+		skb_queue_tail(&fnic->frame_queue, skb);
+		queue_work(fnic_event_queue, &fnic->frame_work);
+
+	} else {
+		spin_unlock_irqrestore(&fnic->fnic_lock, flags);
 		if (flogi_resp)
-			fnic_fc_frame_free_irq(flogi_resp);
+			dev_kfree_skb_irq(fp_skb(flogi_resp));
+	}
 
 reg_cmpl_handler_end:
 	return ret;
@@ -632,7 +641,8 @@ static inline int is_ack_index_in_range(struct vnic_wq_copy *wq,
 }
 
 
-/* Mark that ack received and store the Ack index. If there are multiple
+/*
+ * Mark that ack received and store the Ack index. If there are multiple
  * acks received before Tx thread cleans it up, the latest value will be
  * used which is correct behavior. This state should be in the copy Wq
  * instead of in the fnic
@@ -698,12 +708,13 @@ static void fnic_fcpio_icmnd_cmpl_handler(struct fnic *fnic,
 	/* firmware completed the io */
 	io_req->io_completed = 1;
 
-	/* if SCSI-ML has already issued abort on this command,
+	/*
+	 *  if SCSI-ML has already issued abort on this command,
 	 * ignore completion of the IO. The abts path will clean it up
 	 */
 	if (CMD_STATE(sc) == FNIC_IOREQ_ABTS_PENDING) {
 		spin_unlock_irqrestore(io_lock, flags);
-		goto icmnd_cmpl_handler_end;
+		return;
 	}
 
 	/* Mark the IO as complete */
@@ -714,31 +725,17 @@ static void fnic_fcpio_icmnd_cmpl_handler(struct fnic *fnic,
 	switch (hdr_status) {
 	case FCPIO_SUCCESS:
 		sc->result = (DID_OK << 16) | icmnd_cmpl->scsi_status;
-
 		xfer_len = scsi_bufflen(sc);
-		if (icmnd_cmpl->flags & FCPIO_ICMND_CMPL_RESID_UNDER) {
-			scsi_set_resid(sc, icmnd_cmpl->residual);
-			xfer_len -= icmnd_cmpl->residual;
-			if (icmnd_cmpl->scsi_status) {
-				sc->result = (DID_ERROR << 16) |
-					     icmnd_cmpl->scsi_status;
-				xfer_len = 0;
-			}
-		}
-		if (icmnd_cmpl->flags & FCPIO_ICMND_CMPL_RESID_OVER) {
-			scsi_set_resid(sc, icmnd_cmpl->residual);
-			sc->result = (DID_ERROR << 16) |
-				icmnd_cmpl->scsi_status;
-			xfer_len = 0;
-		}
+		scsi_set_resid(sc, icmnd_cmpl->residual);
 
-		/* If queue_full, then try to reduce queue depth for all
-		 * LUNS on the target. Note, this should be accompanied
+		if (icmnd_cmpl->flags & FCPIO_ICMND_CMPL_RESID_UNDER)
+			xfer_len -= icmnd_cmpl->residual;
+
+		/*
+		 * If queue_full, then try to reduce queue depth for all
+		 * LUNS on the target. Todo: this should be accompanied
 		 * by a periodic queue_depth rampup based on successful
-		 * IO completion. Currently, however, LibFC does not have
-		 * state to keep track of when a remote port was last ramped
-		 * up. Once we keep track of that state in libFC, we can
-		 * ramp up the queue_depth in driver
+		 * IO completion.
 		 */
 		if (icmnd_cmpl->scsi_status == QUEUE_FULL) {
 			struct scsi_device *t_sdev;
@@ -754,13 +751,15 @@ static void fnic_fcpio_icmnd_cmpl_handler(struct fnic *fnic,
 						 t_sdev->queue_depth - 1);
 					if (qd == -1)
 						qd = t_sdev->host->cmd_per_lun;
-					printk(KERN_INFO DFX "scsi[%d:%d:%d:%d"
-					       "] queue full detected, new"
-					       " depth = %d\n", fnic->fnic_no,
-					       t_sdev->host->host_no,
-					       t_sdev->channel, t_sdev->id,
-					       t_sdev->lun,
-					       t_sdev->queue_depth);
+					shost_printk(KERN_INFO,
+						     fnic->lport->host,
+						     "scsi[%d:%d:%d:%d"
+						     "] queue full detected,"
+						     "new depth = %d\n",
+						     t_sdev->host->host_no,
+						     t_sdev->channel,
+						     t_sdev->id, t_sdev->lun,
+						     t_sdev->queue_depth);
 				}
 			}
 		}
@@ -771,7 +770,7 @@ static void fnic_fcpio_icmnd_cmpl_handler(struct fnic *fnic,
 		break;
 
 	case FCPIO_ABORTED:          /* request was aborted */
-		sc->result = (DID_ABORT << 16) | icmnd_cmpl->scsi_status;
+		sc->result = (DID_ERROR << 16) | icmnd_cmpl->scsi_status;
 		break;
 
 	case FCPIO_DATA_CNT_MISMATCH: /* recv/sent more/less data than exp. */
@@ -790,8 +789,8 @@ static void fnic_fcpio_icmnd_cmpl_handler(struct fnic *fnic,
 	case FCPIO_MSS_INVALID:      /* request was aborted due to mss error */
 	case FCPIO_FW_ERR:           /* request was terminated due fw error */
 	default:
-		printk(KERN_ERR DFX "hdr status = %s\n", fnic->fnic_no,
-		       fcpio_status_str[hdr_status]);
+		shost_printk(KERN_ERR, fnic->lport->host, "hdr status = %s\n",
+			     fnic_fcpio_status_to_str(hdr_status));
 		sc->result = (DID_ERROR << 16) | icmnd_cmpl->scsi_status;
 		break;
 	}
@@ -819,12 +818,9 @@ static void fnic_fcpio_icmnd_cmpl_handler(struct fnic *fnic,
 	if (sc->scsi_done)
 		sc->scsi_done(sc);
 
-icmnd_cmpl_handler_end:
-	return;
 }
 
 /* fnic_fcpio_itmf_cmpl_handler
- *
  * Routine to handle itmf completions
  */
 static void fnic_fcpio_itmf_cmpl_handler(struct fnic *fnic,
@@ -861,31 +857,61 @@ static void fnic_fcpio_itmf_cmpl_handler(struct fnic *fnic,
 
 	if (id & FNIC_TAG_ABORT) {
 		/* Completion of abort cmd */
-
+		if (CMD_STATE(sc) != FNIC_IOREQ_ABTS_PENDING) {
+			/* This is a late completion. Ignore it */
+			spin_unlock_irqrestore(io_lock, flags);
+			return;
+		}
 		CMD_STATE(sc) = FNIC_IOREQ_ABTS_COMPLETE;
 		CMD_ABTS_STATUS(sc) = hdr_status;
 
-		FNIC_DEBUG_SCSI(DFX "abts cmpl recd. id %d status %s\n",
-				fnic->fnic_no, (int)(id & FNIC_TAG_MASK),
-				fcpio_status_str[hdr_status]);
-		if (io_req->abts_done)
+		FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host,
+			      "abts cmpl recd. id %d status %s\n",
+			      (int)(id & FNIC_TAG_MASK),
+			      fnic_fcpio_status_to_str(hdr_status));
+
+		/*
+		 * If scsi_eh thread is blocked waiting for abts to complete,
+		 * signal completion to it. IO will be cleaned in the thread
+		 * else clean it in this context
+		 */
+		if (io_req->abts_done) {
 			complete(io_req->abts_done);
+			spin_unlock_irqrestore(io_lock, flags);
+		} else {
+			FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host,
+				      "abts cmpl, completing IO\n");
+			CMD_SP(sc) = NULL;
+			sc->result = (DID_ERROR << 16);
+			scsi_host_end_tag(sc->device->host, sc);
+
+			spin_unlock_irqrestore(io_lock, flags);
+
+			fnic_release_ioreq_buf(fnic, io_req, sc);
+			mempool_free(io_req, fnic->io_req_pool);
+			if (sc->scsi_done)
+				sc->scsi_done(sc);
+		}
 
 	} else if (id & FNIC_TAG_DEV_RST) {
 		/* Completion of device reset */
 		CMD_LR_STATUS(sc) = hdr_status;
 		CMD_STATE(sc) = FNIC_IOREQ_CMD_COMPLETE;
-		FNIC_DEBUG_SCSI(DFX "dev reset cmpl recd. id %d status %s\n",
-				fnic->fnic_no, (int)(id & FNIC_TAG_MASK),
-				fcpio_status_str[hdr_status]);
+		FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host,
+			      "dev reset cmpl recd. id %d status %s\n",
+			      (int)(id & FNIC_TAG_MASK),
+			      fnic_fcpio_status_to_str(hdr_status));
 		if (io_req->dr_done)
 			complete(io_req->dr_done);
+		spin_unlock_irqrestore(io_lock, flags);
 
-	} else
-		printk(KERN_ERR DFX "Unexpected itmf io state %s tag %x\n",
-		       fnic->fnic_no, fnic_ioreq_state_str[CMD_STATE(sc)], id);
-	
-	spin_unlock_irqrestore(io_lock, flags);
+	} else {
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "Unexpected itmf io state %s tag %x\n",
+			     fnic_ioreq_state_to_str(CMD_STATE(sc)), id);
+		spin_unlock_irqrestore(io_lock, flags);
+	}
+
 }
 
 /*
@@ -921,8 +947,9 @@ static int fnic_fcpio_cmpl_handler(struct vnic_dev *vdev,
 		break;
 
 	default:
-		FNIC_DEBUG_SCSI(DFX "firmware completion type %d\n",
-				fnic->fnic_no, desc->hdr.type);
+		FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host,
+			      "firmware completion type %d\n",
+			      desc->hdr.type);
 		break;
 	}
 
@@ -978,7 +1005,8 @@ static void fnic_cleanup_io(struct fnic *fnic, int exclude_id)
 
 		spin_unlock_irqrestore(io_lock, flags);
 
-		/* If there is a scsi_cmnd associated with this io_req, then
+		/*
+		 * If there is a scsi_cmnd associated with this io_req, then
 		 * free the corresponding state
 		 */
 		fnic_release_ioreq_buf(fnic, io_req, sc);
@@ -986,9 +1014,9 @@ static void fnic_cleanup_io(struct fnic *fnic, int exclude_id)
 
 cleanup_scsi_cmd:
 		sc->result = DID_TRANSPORT_DISRUPTED << 16;
-		FNIC_DEBUG_SCSI(DFX "fnic_cleanup_io:"
-				" DID_TRANSPORT_DISRUPTED\n", fnic->fnic_no);
-		
+		FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host, "fnic_cleanup_io:"
+			      " DID_TRANSPORT_DISRUPTED\n");
+
 		/* Complete the command to SCSI */
 		if (sc->scsi_done)
 			sc->scsi_done(sc);
@@ -1039,8 +1067,8 @@ void fnic_wq_copy_cleanup_handler(struct vnic_wq_copy *wq,
 
 wq_copy_cleanup_scsi_cmd:
 	sc->result = DID_NO_CONNECT << 16;
-	FNIC_DEBUG_SCSI(DFX "wq_copy_cleanup_handler:"
-			" DID_NO_CONNECT\n", fnic->fnic_no);
+	FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host, "wq_copy_cleanup_handler:"
+		      " DID_NO_CONNECT\n");
 
 	if (sc->scsi_done)
 		sc->scsi_done(sc);
@@ -1048,7 +1076,7 @@ wq_copy_cleanup_scsi_cmd:
 
 static inline int fnic_queue_abort_io_req(struct fnic *fnic, int tag,
 					  u32 task_req, u8 *fc_lun,
-					  struct fc_rport *rport)
+					  struct fnic_io_req *io_req)
 {
 	struct vnic_wq_copy *wq = &fnic->wq_copy[0];
 	unsigned long flags;
@@ -1062,20 +1090,172 @@ static inline int fnic_queue_abort_io_req(struct fnic *fnic, int tag,
 		spin_unlock_irqrestore(&fnic->wq_copy_lock[0], flags);
 		return 1;
 	}
-	fnic_queue_wq_copy_desc_itmf(
-		wq,
-		tag | FNIC_TAG_ABORT,	/* host request id */
-		0,                      /* lun map id */
-		task_req,               /* task mgmt type */
-		tag,			/* id for aborted IO */
-		fc_lun,                 /* FCP lun addr */
-		rport->port_id,	        /* d_id */
-		fnic->config.ra_tov,    /* RATOV in msecs */
-		fnic->config.ed_tov     /* EDTOV in msecs */
-		);
+	fnic_queue_wq_copy_desc_itmf(wq, tag | FNIC_TAG_ABORT,
+				     0, task_req, tag, fc_lun, io_req->port_id,
+				     fnic->config.ra_tov, fnic->config.ed_tov);
 
 	spin_unlock_irqrestore(&fnic->wq_copy_lock[0], flags);
 	return 0;
+}
+
+void fnic_rport_exch_reset(struct fnic *fnic, u32 port_id)
+{
+	int tag;
+	struct fnic_io_req *io_req;
+	spinlock_t *io_lock;
+	unsigned long flags;
+	struct scsi_cmnd *sc;
+	struct scsi_lun fc_lun;
+	enum fnic_ioreq_state old_ioreq_state;
+
+	FNIC_SCSI_DBG(KERN_DEBUG,
+		      fnic->lport->host,
+		      "fnic_rport_reset_exch called portid 0x%06x\n",
+		      port_id);
+
+	if (fnic->in_remove)
+		return;
+
+	for (tag = 0; tag < FNIC_MAX_IO_REQ; tag++) {
+		sc = scsi_host_find_tag(fnic->lport->host, tag);
+		if (!sc)
+			continue;
+
+		io_lock = fnic_io_lock_hash(fnic, sc);
+		spin_lock_irqsave(io_lock, flags);
+
+		io_req = (struct fnic_io_req *)CMD_SP(sc);
+
+		if (!io_req || io_req->port_id != port_id) {
+			spin_unlock_irqrestore(io_lock, flags);
+			continue;
+		}
+
+		/*
+		 * Found IO that is still pending with firmware and
+		 * belongs to rport that went away
+		 */
+		if (CMD_STATE(sc) == FNIC_IOREQ_ABTS_PENDING) {
+			spin_unlock_irqrestore(io_lock, flags);
+			continue;
+		}
+		old_ioreq_state = CMD_STATE(sc);
+		CMD_STATE(sc) = FNIC_IOREQ_ABTS_PENDING;
+		CMD_ABTS_STATUS(sc) = FCPIO_INVALID_CODE;
+
+		BUG_ON(io_req->abts_done);
+
+		FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host,
+			      "fnic_rport_reset_exch: Issuing abts\n");
+
+		spin_unlock_irqrestore(io_lock, flags);
+
+		/* Now queue the abort command to firmware */
+		int_to_scsilun(sc->device->lun, &fc_lun);
+
+		if (fnic_queue_abort_io_req(fnic, tag,
+					    FCPIO_ITMF_ABT_TASK_TERM,
+					    fc_lun.scsi_lun, io_req)) {
+			/*
+			 * Revert the cmd state back to old state, if
+			 * it hasnt changed in between. This cmd will get
+			 * aborted later by scsi_eh, or cleaned up during
+			 * lun reset
+			 */
+			io_lock = fnic_io_lock_hash(fnic, sc);
+
+			spin_lock_irqsave(io_lock, flags);
+			if (CMD_STATE(sc) == FNIC_IOREQ_ABTS_PENDING)
+				CMD_STATE(sc) = old_ioreq_state;
+			spin_unlock_irqrestore(io_lock, flags);
+		}
+	}
+
+}
+
+void fnic_terminate_rport_io(struct fc_rport *rport)
+{
+	int tag;
+	struct fnic_io_req *io_req;
+	spinlock_t *io_lock;
+	unsigned long flags;
+	struct scsi_cmnd *sc;
+	struct scsi_lun fc_lun;
+	struct fc_rport_libfc_priv *rdata = rport->dd_data;
+	struct fc_lport *lport = rdata->local_port;
+	struct fnic *fnic = lport_priv(lport);
+	struct fc_rport *cmd_rport;
+	enum fnic_ioreq_state old_ioreq_state;
+
+	FNIC_SCSI_DBG(KERN_DEBUG,
+		      fnic->lport->host, "fnic_terminate_rport_io called"
+		      " wwpn 0x%llx, wwnn0x%llx, portid 0x%06x\n",
+		      rport->port_name, rport->node_name,
+		      rport->port_id);
+
+	if (fnic->in_remove)
+		return;
+
+	for (tag = 0; tag < FNIC_MAX_IO_REQ; tag++) {
+		sc = scsi_host_find_tag(fnic->lport->host, tag);
+		if (!sc)
+			continue;
+
+		cmd_rport = starget_to_rport(scsi_target(sc->device));
+		if (rport != cmd_rport)
+			continue;
+
+		io_lock = fnic_io_lock_hash(fnic, sc);
+		spin_lock_irqsave(io_lock, flags);
+
+		io_req = (struct fnic_io_req *)CMD_SP(sc);
+
+		if (!io_req || rport != cmd_rport) {
+			spin_unlock_irqrestore(io_lock, flags);
+			continue;
+		}
+
+		/*
+		 * Found IO that is still pending with firmware and
+		 * belongs to rport that went away
+		 */
+		if (CMD_STATE(sc) == FNIC_IOREQ_ABTS_PENDING) {
+			spin_unlock_irqrestore(io_lock, flags);
+			continue;
+		}
+		old_ioreq_state = CMD_STATE(sc);
+		CMD_STATE(sc) = FNIC_IOREQ_ABTS_PENDING;
+		CMD_ABTS_STATUS(sc) = FCPIO_INVALID_CODE;
+
+		BUG_ON(io_req->abts_done);
+
+		FNIC_SCSI_DBG(KERN_DEBUG,
+			      fnic->lport->host,
+			      "fnic_terminate_rport_io: Issuing abts\n");
+
+		spin_unlock_irqrestore(io_lock, flags);
+
+		/* Now queue the abort command to firmware */
+		int_to_scsilun(sc->device->lun, &fc_lun);
+
+		if (fnic_queue_abort_io_req(fnic, tag,
+					    FCPIO_ITMF_ABT_TASK_TERM,
+					    fc_lun.scsi_lun, io_req)) {
+			/*
+			 * Revert the cmd state back to old state, if
+			 * it hasnt changed in between. This cmd will get
+			 * aborted later by scsi_eh, or cleaned up during
+			 * lun reset
+			 */
+			io_lock = fnic_io_lock_hash(fnic, sc);
+
+			spin_lock_irqsave(io_lock, flags);
+			if (CMD_STATE(sc) == FNIC_IOREQ_ABTS_PENDING)
+				CMD_STATE(sc) = old_ioreq_state;
+			spin_unlock_irqrestore(io_lock, flags);
+		}
+	}
+
 }
 
 static void fnic_block_error_handler(struct scsi_cmnd *sc)
@@ -1092,14 +1272,12 @@ static void fnic_block_error_handler(struct scsi_cmnd *sc)
 	}
 	spin_unlock_irqrestore(shost->host_lock, flags);
 
-	return;
 }
 
 /*
  * This function is exported to SCSI for sending abort cmnds.
  * A SCSI IO is represented by a io_req in the driver.
  * The ioreq is linked to the SCSI Cmd, thus a link with the ULP's IO.
- *
  */
 int fnic_abort_cmd(struct scsi_cmnd *sc)
 {
@@ -1121,12 +1299,13 @@ int fnic_abort_cmd(struct scsi_cmnd *sc)
 	lp = shost_priv(sc->device->host);
 
 	fnic = lport_priv(lp);
-	FNIC_DEBUG_SCSI(DFX "Abort Cmd called FCID 0x%x, LUN 0x%x TAG %d\n",
-			fnic->fnic_no,
-			(starget_to_rport(scsi_target(sc->device)))->port_id,
-			sc->device->lun, scsi_cmd_get_tag(sc));
+	FNIC_SCSI_DBG(KERN_DEBUG,
+		      fnic->lport->host,
+		      "Abort Cmd called FCID 0x%x, LUN 0x%x TAG %d\n",
+		      (starget_to_rport(scsi_target(sc->device)))->port_id,
+		      sc->device->lun, scsi_cmd_get_tag(sc));
 
-	if (lp->state != LPORT_ST_READY || !(lp->link_status & FC_LINK_UP)) {
+	if (lp->state != LPORT_ST_READY || !(lp->link_up)) {
 		ret = FAILED;
 		goto fnic_abort_cmd_end;
 	}
@@ -1146,24 +1325,30 @@ int fnic_abort_cmd(struct scsi_cmnd *sc)
 	io_lock = fnic_io_lock_hash(fnic, sc);
 	spin_lock_irqsave(io_lock, flags);
 	io_req = (struct fnic_io_req *)CMD_SP(sc);
-
 	if (!io_req) {
 		spin_unlock_irqrestore(io_lock, flags);
 		goto fnic_abort_cmd_end;
 	}
 
-	/* Command is still pending, need to abort it
+	io_req->abts_done = &tm_done;
+
+	if (CMD_STATE(sc) == FNIC_IOREQ_ABTS_PENDING) {
+		spin_unlock_irqrestore(io_lock, flags);
+		goto wait_pending;
+	}
+	/*
+	 * Command is still pending, need to abort it
 	 * If the firmware completes the command after this point,
 	 * the completion wont be done till mid-layer, since abort
 	 * has already started.
 	 */
 	CMD_STATE(sc) = FNIC_IOREQ_ABTS_PENDING;
-
-	io_req->abts_done = &tm_done;
+	CMD_ABTS_STATUS(sc) = FCPIO_INVALID_CODE;
 
 	spin_unlock_irqrestore(io_lock, flags);
 
-	/* Check readiness of the remote port. If the path to remote
+	/*
+	 * Check readiness of the remote port. If the path to remote
 	 * port is up, then send abts to the remote port to terminate
 	 * the IO. Else, just locally terminate the IO in the firmware
 	 */
@@ -1177,7 +1362,7 @@ int fnic_abort_cmd(struct scsi_cmnd *sc)
 	int_to_scsilun(sc->device->lun, &fc_lun);
 
 	if (fnic_queue_abort_io_req(fnic, scsi_cmd_get_tag(sc), task_req,
-				    fc_lun.scsi_lun, rport)) {
+				    fc_lun.scsi_lun, io_req)) {
 		spin_lock_irqsave(io_lock, flags);
 		io_req = (struct fnic_io_req *)CMD_SP(sc);
 		if (io_req)
@@ -1187,10 +1372,12 @@ int fnic_abort_cmd(struct scsi_cmnd *sc)
 		goto fnic_abort_cmd_end;
 	}
 
-	/* We queued an abort IO, wait for its completion.
+	/*
+	 * We queued an abort IO, wait for its completion.
 	 * Once the firmware completes the abort command, it will
 	 * wake up this thread.
 	 */
+ wait_pending:
 	wait_for_completion_timeout(&tm_done,
 				    msecs_to_jiffies
 				    (2 * fnic->config.ra_tov +
@@ -1214,7 +1401,8 @@ int fnic_abort_cmd(struct scsi_cmnd *sc)
 		goto fnic_abort_cmd_end;
 	}
 
-	/* firmware completed the abort, check the status,
+	/*
+	 * firmware completed the abort, check the status,
 	 * free the io_req irrespective of failure or success
 	 */
 	if (CMD_ABTS_STATUS(sc) != FCPIO_SUCCESS)
@@ -1229,17 +1417,18 @@ int fnic_abort_cmd(struct scsi_cmnd *sc)
 	mempool_free(io_req, fnic->io_req_pool);
 
 fnic_abort_cmd_end:
-	FNIC_DEBUG_SCSI(DFX "Returning from abort cmd %s\n",
-			fnic->fnic_no, (ret == SUCCESS) ?
-			"SUCCESS" : "FAILED");
+	FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host,
+		      "Returning from abort cmd %s\n",
+		      (ret == SUCCESS) ?
+		      "SUCCESS" : "FAILED");
 	return ret;
 }
 
 static inline int fnic_queue_dr_io_req(struct fnic *fnic,
-				       struct scsi_cmnd *sc)
+				       struct scsi_cmnd *sc,
+				       struct fnic_io_req *io_req)
 {
 	struct vnic_wq_copy *wq = &fnic->wq_copy[0];
-	struct fc_rport *rport;
 	struct scsi_lun fc_lun;
 	int ret = 0;
 	unsigned long intr_flags;
@@ -1256,19 +1445,12 @@ static inline int fnic_queue_dr_io_req(struct fnic *fnic,
 
 	/* fill in the lun info */
 	int_to_scsilun(sc->device->lun, &fc_lun);
-	rport = starget_to_rport(scsi_target(sc->device));
 
-	fnic_queue_wq_copy_desc_itmf(
-		wq,
-		scsi_cmd_get_tag(sc) | FNIC_TAG_DEV_RST, /* host request id */
-		0,                      /* lun map id */
-		FCPIO_ITMF_LUN_RESET,   /* logical unit reset task mgmt */
-		SCSI_NO_TAG,		/* id not specified */
-		fc_lun.scsi_lun,        /* FCP 8 byte lun addr */
-		rport->port_id,		/* d_id */
-		fnic->config.ra_tov,    /* RATOV in msecs */
-		fnic->config.ed_tov     /* EDTOV in msecs */
-		);
+	fnic_queue_wq_copy_desc_itmf(wq,
+				     scsi_cmd_get_tag(sc) | FNIC_TAG_DEV_RST,
+				     0, FCPIO_ITMF_LUN_RESET, SCSI_NO_TAG,
+				     fc_lun.scsi_lun, io_req->port_id,
+				     fnic->config.ra_tov, fnic->config.ed_tov);
 
 lr_io_req_end:
 	spin_unlock_irqrestore(&fnic->wq_copy_lock[0], intr_flags);
@@ -1298,7 +1480,8 @@ static int fnic_clean_pending_aborts(struct fnic *fnic,
 
 	for (tag = 0; tag < FNIC_MAX_IO_REQ; tag++) {
 		sc = scsi_host_find_tag(fnic->lport->host, tag);
-		/* ignore this lun reset cmd or cmds that do not belong to
+		/*
+		 * ignore this lun reset cmd or cmds that do not belong to
 		 * this lun
 		 */
 		if (!sc || sc == lr_sc || sc->device != lun_dev)
@@ -1314,13 +1497,17 @@ static int fnic_clean_pending_aborts(struct fnic *fnic,
 			continue;
 		}
 
-		/* Found IO that is still pending with firmware and
+		/*
+		 * Found IO that is still pending with firmware and
 		 * belongs to the LUN that we are resetting
 		 */
-		FNIC_DEBUG_SCSI(DFX "Found IO in %s on lun\n",
-				fnic->fnic_no,
-				fnic_ioreq_state_str[CMD_STATE(sc)]);
+		FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host,
+			      "Found IO in %s on lun\n",
+			      fnic_ioreq_state_to_str(CMD_STATE(sc)));
 
+		BUG_ON(CMD_STATE(sc) != FNIC_IOREQ_ABTS_PENDING);
+
+		CMD_ABTS_STATUS(sc) = FCPIO_INVALID_CODE;
 		io_req->abts_done = &tm_done;
 		spin_unlock_irqrestore(io_lock, flags);
 
@@ -1330,7 +1517,7 @@ static int fnic_clean_pending_aborts(struct fnic *fnic,
 
 		if (fnic_queue_abort_io_req(fnic, tag,
 					    FCPIO_ITMF_ABT_TASK_TERM,
-					    fc_lun.scsi_lun, rport)) {
+					    fc_lun.scsi_lun, io_req)) {
 			spin_lock_irqsave(io_lock, flags);
 			io_req = (struct fnic_io_req *)CMD_SP(sc);
 			if (io_req)
@@ -1373,7 +1560,8 @@ clean_pending_aborts_end:
 	return ret;
 }
 
-/* SCSI Eh thread issues a Lun Reset when one or more commands on a LUN
+/*
+ * SCSI Eh thread issues a Lun Reset when one or more commands on a LUN
  * fail to get aborted. It calls driver's eh_device_reset with a SCSI command
  * on the LUN.
  */
@@ -1397,13 +1585,14 @@ int fnic_device_reset(struct scsi_cmnd *sc)
 	lp = shost_priv(sc->device->host);
 
 	fnic = lport_priv(lp);
-	FNIC_DEBUG_SCSI(DFX "Device reset called FCID 0x%x, LUN 0x%x\n",
-			fnic->fnic_no,
-			(starget_to_rport(scsi_target(sc->device)))->port_id,
-			sc->device->lun);
+	FNIC_SCSI_DBG(KERN_DEBUG,
+		      fnic->lport->host,
+		      "Device reset called FCID 0x%x, LUN 0x%x\n",
+		      (starget_to_rport(scsi_target(sc->device)))->port_id,
+		      sc->device->lun);
 
 
-	if (lp->state != LPORT_ST_READY || !(lp->link_status & FC_LINK_UP))
+	if (lp->state != LPORT_ST_READY || !(lp->link_up))
 		goto fnic_device_reset_end;
 
 	/* Check if remote port up */
@@ -1433,26 +1622,27 @@ int fnic_device_reset(struct scsi_cmnd *sc)
 			goto fnic_device_reset_end;
 		}
 		memset(io_req, 0, sizeof(*io_req));
-		CMD_STATE(sc) = FNIC_IOREQ_CMD_PENDING;
+		io_req->port_id = rport->port_id;
 		CMD_SP(sc) = (char *)io_req;
 	}
 	io_req->dr_done = &tm_done;
+	CMD_STATE(sc) = FNIC_IOREQ_CMD_PENDING;
 	CMD_LR_STATUS(sc) = FCPIO_INVALID_CODE;
 	spin_unlock_irqrestore(io_lock, flags);
 
-	FNIC_DEBUG_SCSI(DFX "TAG %d\n", fnic->fnic_no, scsi_cmd_get_tag(sc));
+	FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host, "TAG %d\n",
+		      scsi_cmd_get_tag(sc));
 
-	/* issue the device reset
-	 * if enqueue failed, let io_req remain allocated and attached
-	 * to SCSI cmd, it will get freed during higher levels of EH
+	/*
+	 * issue the device reset, if enqueue failed, clean up the ioreq
+	 * and break assoc with scsi cmd
 	 */
-	if (fnic_queue_dr_io_req(fnic, sc)) {
+	if (fnic_queue_dr_io_req(fnic, sc, io_req)) {
 		spin_lock_irqsave(io_lock, flags);
 		io_req = (struct fnic_io_req *)CMD_SP(sc);
 		if (io_req)
 			io_req->dr_done = NULL;
-		spin_unlock_irqrestore(io_lock, flags);
-		goto fnic_device_reset_end;
+		goto fnic_device_reset_clean;
 	}
 
 	/*
@@ -1473,56 +1663,67 @@ int fnic_device_reset(struct scsi_cmnd *sc)
 	status = CMD_LR_STATUS(sc);
 	spin_unlock_irqrestore(io_lock, flags);
 
-	/* If lun reset not completed, bail out with failed. io_req
+	/*
+	 * If lun reset not completed, bail out with failed. io_req
 	 * gets cleaned up during higher levels of EH
 	 */
 	if (status == FCPIO_INVALID_CODE) {
-		FNIC_DEBUG_SCSI(DFX "Device reset timed out\n",
-				fnic->fnic_no);
+		FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host,
+			      "Device reset timed out\n");
 		goto fnic_device_reset_end;
 	}
 
-	/* Completed, but not successful */
+	/* Completed, but not successful, clean up the io_req, return fail */
 	if (status != FCPIO_SUCCESS) {
-		FNIC_DEBUG_SCSI(DFX "Device reset completed - failed\n",
-				fnic->fnic_no);
-		goto fnic_device_reset_end;
+		spin_lock_irqsave(io_lock, flags);
+		FNIC_SCSI_DBG(KERN_DEBUG,
+			      fnic->lport->host,
+			      "Device reset completed - failed\n");
+		io_req = (struct fnic_io_req *)CMD_SP(sc);
+		goto fnic_device_reset_clean;
 	}
 
-	/* Clean up any aborts on this lun that have still not
+	/*
+	 * Clean up any aborts on this lun that have still not
 	 * completed. If any of these fail, then LUN reset fails.
 	 * clean_pending_aborts cleans all cmds on this lun except
-	 * the lun reset cmd. If all cmds get cleaned, then clean
-	 * lun reset, otherswise fail lun reset, and higher levels
-	 * of EH will kick in
+	 * the lun reset cmd. If all cmds get cleaned, the lun reset
+	 * succeeds
 	 */
 	if (fnic_clean_pending_aborts(fnic, sc)) {
-		FNIC_DEBUG_SCSI(DFX "Device reset failed"
-				" since could not abort all IOs\n",
-				fnic->fnic_no);
-		goto fnic_device_reset_end;
+		spin_lock_irqsave(io_lock, flags);
+		io_req = (struct fnic_io_req *)CMD_SP(sc);
+		FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host,
+			      "Device reset failed"
+			      " since could not abort all IOs\n");
+		goto fnic_device_reset_clean;
 	}
 
 	/* Clean lun reset command */
 	spin_lock_irqsave(io_lock, flags);
 	io_req = (struct fnic_io_req *)CMD_SP(sc);
-	CMD_SP(sc) = NULL;
-	scsi_host_end_tag(sc->device->host, sc);
+	if (io_req)
+		/* Completed, and successful */
+		ret = SUCCESS;
+
+fnic_device_reset_clean:
+	if (io_req) {
+		CMD_SP(sc) = NULL;
+		scsi_host_end_tag(sc->device->host, sc);
+	}
+
 	spin_unlock_irqrestore(io_lock, flags);
 
-	if (!io_req)
-		goto fnic_device_reset_end;
-
-	fnic_release_ioreq_buf(fnic, io_req, sc);
-	mempool_free(io_req, fnic->io_req_pool);
-
-	/* Completed, and successful */
-	ret = SUCCESS;
+	if (io_req) {
+		fnic_release_ioreq_buf(fnic, io_req, sc);
+		mempool_free(io_req, fnic->io_req_pool);
+	}
 
 fnic_device_reset_end:
-	FNIC_DEBUG_SCSI(DFX "Returning from device reset %s\n",
-			fnic->fnic_no, (ret == SUCCESS) ?
-			"SUCCESS" : "FAILED");
+	FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host,
+		      "Returning from device reset %s\n",
+		      (ret == SUCCESS) ?
+		      "SUCCESS" : "FAILED");
 	return ret;
 }
 
@@ -1536,22 +1737,26 @@ int fnic_reset(struct Scsi_Host *shost)
 	lp = shost_priv(shost);
 	fnic = lport_priv(lp);
 
-	FNIC_DEBUG_SCSI(DFX "fnic_reset called\n", fnic->fnic_no);
+	FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host,
+		      "fnic_reset called\n");
 
-	/* Reset local port, this will clean up libFC exchanges,
+	/*
+	 * Reset local port, this will clean up libFC exchanges,
 	 * reset remote port sessions, and if link is up, begin flogi
 	 */
 	if (lp->tt.lport_reset(lp))
 		ret = FAILED;
 
-	FNIC_DEBUG_SCSI(DFX "Returning from fnic reset %s\n",
-			fnic->fnic_no, (ret == SUCCESS) ?
-			"SUCCESS" : "FAILED");
+	FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host,
+		      "Returning from fnic reset %s\n",
+		      (ret == SUCCESS) ?
+		      "SUCCESS" : "FAILED");
 
 	return ret;
 }
 
-/* SCSI Error handling calls driver's eh_host_reset if all prior
+/*
+ * SCSI Error handling calls driver's eh_host_reset if all prior
  * error handling levels return FAILED. If host reset completes
  * successfully, and if link is up, then Fabric login begins.
  *
@@ -1572,13 +1777,12 @@ int fnic_host_reset(struct scsi_cmnd *sc)
 	 * successful, so before returning to scsi, fabric should be up
 	 */
 	ret = fnic_reset(shost);
-
 	if (ret == SUCCESS) {
 		wait_host_tmo = jiffies + FNIC_HOST_RESET_SETTLE_TIME * HZ;
 		ret = FAILED;
 		while (time_before(jiffies, wait_host_tmo)) {
 			if ((lp->state == LPORT_ST_READY) &&
-			    (lp->link_status & FC_LINK_UP)) {
+			    (lp->link_up)) {
 				ret = SUCCESS;
 				break;
 			}
@@ -1603,7 +1807,6 @@ void fnic_scsi_abort_io(struct fc_lport *lp)
 	/* Issue firmware reset for fnic, wait for reset to complete */
 	spin_lock_irqsave(&fnic->fnic_lock, flags);
 	fnic->remove_wait = &remove_wait;
-	fnic->in_remove = 1;
 	old_state = fnic->state;
 	fnic->state = FNIC_IN_FC_TRANS_ETH_MODE;
 	vnic_dev_del_addr(fnic->vdev, fnic->data_src_addr);
@@ -1616,7 +1819,7 @@ void fnic_scsi_abort_io(struct fc_lport *lp)
 			fnic->state = old_state;
 		fnic->remove_wait = NULL;
 		spin_unlock_irqrestore(&fnic->fnic_lock, flags);
-		goto abort_io_end;
+		return;
 	}
 
 	/* Wait for firmware reset to complete */
@@ -1625,13 +1828,12 @@ void fnic_scsi_abort_io(struct fc_lport *lp)
 
 	spin_lock_irqsave(&fnic->fnic_lock, flags);
 	fnic->remove_wait = NULL;
-	FNIC_DEBUG_SCSI(DFX "fnic_scsi_abort_io %s\n", fnic->fnic_no,
-			(fnic->state == FNIC_IN_ETH_MODE) ?
-			"SUCCESS" : "FAILED");
+	FNIC_SCSI_DBG(KERN_DEBUG, fnic->lport->host,
+		      "fnic_scsi_abort_io %s\n",
+		      (fnic->state == FNIC_IN_ETH_MODE) ?
+		      "SUCCESS" : "FAILED");
 	spin_unlock_irqrestore(&fnic->fnic_lock, flags);
 
-abort_io_end:
-	return;
 }
 
 /*
@@ -1656,5 +1858,37 @@ void fnic_scsi_cleanup(struct fc_lport *lp)
 			fnic->state = old_state;
 		spin_unlock_irqrestore(&fnic->fnic_lock, flags);
 	}
+
+}
+
+void fnic_empty_scsi_cleanup(struct fc_lport *lp)
+{
+}
+
+void fnic_exch_mgr_reset(struct fc_lport *lp, u32 sid, u32 did)
+{
+	struct fnic *fnic = lport_priv(lp);
+
+	/* Non-zero sid, nothing to do */
+	if (sid)
+		goto call_fc_exch_mgr_reset;
+
+	if (did) {
+		fnic_rport_exch_reset(fnic, did);
+		goto call_fc_exch_mgr_reset;
+	}
+
+	/*
+	 * sid = 0, did = 0
+	 * link down or device being removed
+	 */
+	if (!fnic->in_remove)
+		fnic_scsi_cleanup(lp);
+	else
+		fnic_scsi_abort_io(lp);
+
+	/* call libFC exch mgr reset to reset its exchanges */
+call_fc_exch_mgr_reset:
+	fc_exch_mgr_reset(lp, sid, did);
 
 }

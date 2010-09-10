@@ -64,7 +64,11 @@ struct cpuinfo_x86 {
 	char	fdiv_bug;
 	char	f00f_bug;
 	char	coma_bug;
+#ifdef __GENKSYMS__
 	char	pad0;
+#else
+	__u8    x86_hyper_vendor;
+#endif
 	int	x86_power;
 	unsigned long loops_per_jiffy;
 #ifdef CONFIG_SMP
@@ -90,6 +94,10 @@ struct cpuinfo_x86 {
 #define X86_VENDOR_NSC 8
 #define X86_VENDOR_NUM 9
 #define X86_VENDOR_UNKNOWN 0xff
+
+#define X86_HYPER_VENDOR_NONE  0
+#define X86_HYPER_VENDOR_VMWARE 1
+#define X86_HYPER_VENDOR_KVM 2
 
 /*
  * capabilities of CPUs

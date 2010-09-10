@@ -51,6 +51,26 @@ config UNIX98_PTY_COUNT
 	  When not in use, each additional set of 256 PTYs occupy
 	  approximately 8 KB of kernel memory on 32-bit architectures.
 
+config RAW_DRIVER
+       tristate "RAW driver (/dev/raw/rawN) (OBSOLETE)"
+       help
+        The raw driver permits block devices to be bound to /dev/raw/rawN.
+        Once bound, I/O against /dev/raw/rawN uses efficient zero-copy I/O.
+        See the raw(8) manpage for more details.
+
+        The raw driver is deprecated and may be removed from 2.7
+        kernels. Applications should simply open the device (eg /dev/hda1)
+        with the O_DIRECT flag.
+
+config MAX_RAW_DEVS
+       int "Maximum number of RAW devices to support (1-8192)"
+       depends on RAW_DRIVER
+       default "256"
+       help
+        The maximum number of RAW devices that are supported.
+        Default is 256. Increase this number in case you need lots of
+        raw devices.
+
 config HANGCHECK_TIMER
 	tristate "Hangcheck timer"
 	help
@@ -61,6 +81,24 @@ config HANGCHECK_TIMER
 source "drivers/char/watchdog/Kconfig"
 
 comment "S/390 character device drivers"
+
+config HVC_DRIVER
+	bool
+	help
+	  Users of pSeries machines that want to utilize the hvc console front-end
+	  module for their backend console driver should select this option.
+	  It will automatically be selected if one of the back-end console drivers
+	  is selected.
+
+config HVC_IUCV
+	bool "Support for z/VM IUCV hypervisor console (VM only)"
+	depends on S390
+	select HVC_DRIVER
+	select IUCV
+	default y
+	help
+	  This driver provides a Hypervisor console (HVC) back-end to access
+	  a Linux (console) terminal using z/VM IUCV communication.
 
 config TN3270
 	tristate "Support for locally attached 3270 terminals"
@@ -103,13 +141,8 @@ config CCW_CONSOLE
  	depends on TN3215_CONSOLE || TN3270_CONSOLE
  	default y
  
-config SCLP
-	bool
-	default y
-
 config SCLP_TTY
 	bool "Support for SCLP line mode terminal"
-	depends on SCLP
 	help
 	  Include support for IBM SCLP line-mode terminals.
 
@@ -122,7 +155,6 @@ config SCLP_CONSOLE
 
 config SCLP_VT220_TTY
 	bool "Support for SCLP VT220-compatible terminal"
-	depends on SCLP
 	help
 	  Include support for an IBM SCLP VT220-compatible terminal.
 
@@ -135,7 +167,6 @@ config SCLP_VT220_CONSOLE
 
 config SCLP_CPI
 	tristate "Control-Program Identification"
-	depends on SCLP
 	help
 	  This option enables the hardware console interface for system
 	  identification. This is commonly used for workload management and

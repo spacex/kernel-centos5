@@ -44,6 +44,16 @@ unsigned long end_pfn_map;
 unsigned long end_user_pfn = MAXMEM>>PAGE_SHIFT;  
 
 extern struct resource code_resource, data_resource;
+ 
+#ifdef CONFIG_XEN
+extern struct e820map machine_e820;
+
+/*
+ * This is controlled by a boot flag processed in file
+ *   `arch/i386/quirks-xen.c'
+ */
+extern int pci_pt_e820_access_enabled;
+#endif
 
 /* Check for some hardcoded bad areas that early boot is not allowed to touch */ 
 static inline int bad_addr(unsigned long *addrp, unsigned long size)
@@ -124,9 +134,18 @@ e820_any_mapped(unsigned long start, unsigned long end, unsigned type)
  */
 int __init e820_all_mapped(unsigned long start, unsigned long end, unsigned type)
 {
-	int i;
-	for (i = 0; i < e820.nr_map; i++) {
-		struct e820entry *ei = &e820.map[i];
+	int i, nrmap;
+	struct e820entry *ei;
+
+	nrmap = e820.nr_map;
+	ei = &e820.map[0];
+#ifdef	CONFIG_XEN
+	if (pci_pt_e820_access_enabled) {
+		nrmap = machine_e820.nr_map;
+		ei = &machine_e820.map[0];
+	}
+#endif
+	for (i = 0; i < nrmap; i++, ei++) {
 		if (type && ei->type != type)
 			continue;
 		/* is the region (part) in overlap with the current region ?*/

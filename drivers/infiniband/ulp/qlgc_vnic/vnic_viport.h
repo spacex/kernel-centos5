@@ -35,6 +35,7 @@
 
 #include "vnic_control.h"
 #include "vnic_data.h"
+#include "vnic_multicast.h"
 
 enum viport_state {
 	VIPORT_DISCONNECTED	= 0,
@@ -90,10 +91,12 @@ enum {
 #define current_mac_address	mac_addresses[UNICAST_ADDR].address
 
 enum {
-	NEED_STATS           = 0x00000001,
-	NEED_ADDRESS_CONFIG  = 0x00000002,
-	NEED_LINK_CONFIG     = 0x00000004,
-	MCAST_OVERFLOW       = 0x00000008
+	NEED_STATS           	= 0x00000001,
+	NEED_ADDRESS_CONFIG  	= 0x00000002,
+	NEED_LINK_CONFIG     	= 0x00000004,
+	MCAST_OVERFLOW       	= 0x00000008,
+	NEED_MCAST_COMPLETION	= 0x00000010,
+	NEED_MCAST_JOIN      	= 0x00000020
 };
 
 struct viport {
@@ -109,12 +112,12 @@ struct viport {
 	enum link_state			link_state;
 	struct vnic_cmd_report_stats_rsp stats;
 	wait_queue_head_t		stats_queue;
-	u32				last_stats_time;
+	unsigned long			last_stats_time;
 	u32				features_supported;
 	u8				hw_mac_address[ETH_ALEN];
 	u16				default_vlan;
 	u16				num_mac_addresses;
-	struct vnic_address_op		*mac_addresses;
+	struct vnic_address_op2		*mac_addresses;
 	u32				updates;
 	u16				flags;
 	u16				new_flags;
@@ -127,6 +130,12 @@ struct viport {
 	wait_queue_head_t		disconnect_queue;
 	int				timer_active;
 	struct timer_list		timer;
+	u32 				retry_duration;
+	u32 				total_retry_duration;
+	atomic_t			reference_count;
+	wait_queue_head_t		reference_queue;
+	struct mc_info	mc_info;
+	struct mc_data	mc_data;
 };
 
 int  viport_start(void);
@@ -136,7 +145,6 @@ struct viport *viport_allocate(struct viport_config *config);
 void viport_free(struct viport *viport);
 
 void viport_connect(struct viport *viport, int delay);
-void viport_disconnect(struct viport *viport);
 
 void viport_set_link(struct viport *viport, u16 flags, u16 mtu);
 void viport_get_stats(struct viport *viport,
@@ -146,7 +154,7 @@ void viport_kick(struct viport *viport);
 
 void viport_failure(struct viport *viport);
 
-int viport_set_unicast(struct viport *viport, u8 * address);
+int viport_set_unicast(struct viport *viport, u8 *address);
 int viport_set_multicast(struct viport *viport,
 			 struct dev_mc_list *mc_list,
 			 int mc_count);

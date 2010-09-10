@@ -1019,6 +1019,11 @@ static int __cpuinit do_boot_cpu(int apicid, int cpu)
 	/* mark "stuck" area as not stuck */
 	*((volatile unsigned long *)trampoline_base) = 0;
 
+	/*
+	 * Cleanup possible dangling ends...
+	 */
+	smpboot_restore_warm_reset_vector();
+
 	return boot_error;
 }
 
@@ -1257,11 +1262,6 @@ static void __init smp_boot_cpus(unsigned int max_cpus)
 		else
 			++kicked;
 	}
-
-	/*
-	 * Cleanup possible dangling ends...
-	 */
-	smpboot_restore_warm_reset_vector();
 
 	/*
 	 * Allow the user to impress friends.

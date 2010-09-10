@@ -28,8 +28,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: ib_pack.h 1349 2004-12-16 21:09:43Z roland $
  */
 
 #ifndef IB_PACK_H
@@ -241,5 +239,8 @@ int ib_ud_header_pack(struct ib_ud_header *header,
 
 int ib_ud_header_unpack(void                *buf,
 			struct ib_ud_header *header);
+
+int ib_lrh_header_pack(struct ib_unpacked_lrh *lrh, void *buf);
+int ib_lrh_header_unpack(void *buf, struct ib_unpacked_lrh *lrh);
 
 #endif /* IB_PACK_H */

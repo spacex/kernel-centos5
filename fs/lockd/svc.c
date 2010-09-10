@@ -59,6 +59,9 @@ unsigned long			nlmsvc_timeout;
 static DECLARE_COMPLETION(lockd_start_done);
 static DECLARE_WAIT_QUEUE_HEAD(lockd_exit);
 
+/* RLIM_NOFILE defaults to 1024. That seems like a reasonable default here. */
+static unsigned int		nlm_max_connections = 1024;
+
 /*
  * These can be set at insmod time (useful for NFS as root filesystem),
  * and also changed through the sysctl interface.  -- Jamie Lokier, Aug 2003
@@ -78,6 +81,8 @@ static const int		nlm_port_min = 0, nlm_port_max = 65535;
 
 static struct ctl_table_header * nlm_sysctl_table;
 
+static struct timer_list	nlm_grace_period_timer;
+
 static unsigned long set_grace_period(void)
 {
 	unsigned long grace_period;
@@ -92,7 +97,7 @@ static unsigned long set_grace_period(void)
 	return grace_period + jiffies;
 }
 
-static inline void clear_grace_period(void)
+static inline void clear_grace_period(unsigned long not_used)
 {
 	nlmsvc_grace_period = 0;
 }
@@ -138,6 +143,12 @@ lockd(struct svc_rqst *rqstp)
 
 	grace_period_expire = set_grace_period();
 
+	init_timer(&nlm_grace_period_timer);
+	nlm_grace_period_timer.function = clear_grace_period;
+	nlm_grace_period_timer.expires = grace_period_expire;
+
+	add_timer(&nlm_grace_period_timer);
+
 	/*
 	 * The main request loop. We don't terminate until the last
 	 * NFS mount or NFS daemon has gone away, and we've been sent a
@@ -146,11 +157,16 @@ lockd(struct svc_rqst *rqstp)
 	while ((nlmsvc_users || !signalled()) && nlmsvc_pid == current->pid) {
 		long timeout = MAX_SCHEDULE_TIMEOUT;
 
+		/* update sv_maxconn if it has changed */
+		rqstp->rq_server->sv_maxconn = nlm_max_connections;
+
 		if (signalled()) {
 			flush_signals(current);
 			if (nlmsvc_ops) {
 				nlmsvc_invalidate_all();
 				grace_period_expire = set_grace_period();
+				mod_timer(&nlm_grace_period_timer,
+					grace_period_expire);
 			}
 		}
 
@@ -160,10 +176,8 @@ lockd(struct svc_rqst *rqstp)
 		 * (Theoretically, there shouldn't even be blocked locks
 		 * during grace period).
 		 */
-		if (!nlmsvc_grace_period) {
+		if (!nlmsvc_grace_period)
 			timeout = nlmsvc_retry_blocked();
-		} else if (time_before(grace_period_expire, jiffies))
-			clear_grace_period();
 
 		/*
 		 * Find a socket with data available and call its
@@ -187,6 +201,8 @@ lockd(struct svc_rqst *rqstp)
 	}
 
 	flush_signals(current);
+
+	del_timer(&nlm_grace_period_timer);
 
 	/*
 	 * Check whether there's a new lockd process before
@@ -504,6 +520,7 @@ module_param_call(nlm_udpport, param_set_port, param_get_int,
 		  &nlm_udpport, 0644);
 module_param_call(nlm_tcpport, param_set_port, param_get_int,
 		  &nlm_tcpport, 0644);
+module_param(nlm_max_connections, uint, 0644);
 
 /*
  * Initialising and terminating the module.

@@ -192,6 +192,8 @@ page_get_storage_key(unsigned long addr)
 
 /* to align the pointer to the (next) page boundary */
 #define PAGE_ALIGN(addr)        (((addr)+PAGE_SIZE-1)&PAGE_MASK)
+#define PFN_UP(x)		(((x) + PAGE_SIZE-1) >> PAGE_SHIFT)
+#define PFN_DOWN(x)		((x) >> PAGE_SHIFT)
 
 #define __PAGE_OFFSET           0x0UL
 #define PAGE_OFFSET             0x0UL

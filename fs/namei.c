@@ -1014,24 +1014,26 @@ return_err:
  */
 int fastcall link_path_walk(const char *name, struct nameidata *nd)
 {
-	struct nameidata save = *nd;
+	struct dentry *saved_dentry = nd->dentry;
+	struct vfsmount *saved_mnt = nd->mnt;
 	int result;
 
 	/* make sure the stuff we saved doesn't go away */
-	dget(save.dentry);
-	mntget(save.mnt);
+	dget(saved_dentry);
+	mntget(saved_mnt);
 
 	result = __link_path_walk(name, nd);
 	if (result == -ESTALE) {
-		*nd = save;
+		nd->dentry = saved_dentry;
+		nd->mnt = saved_mnt;
 		dget(nd->dentry);
 		mntget(nd->mnt);
 		nd->flags |= LOOKUP_REVAL;
 		result = __link_path_walk(name, nd);
 	}
 
-	dput(save.dentry);
-	mntput(save.mnt);
+	dput(saved_dentry);
+	mntput(saved_mnt);
 
 	return result;
 }
@@ -2110,6 +2112,7 @@ int vfs_unlink(struct inode *dir, struct dentry *dentry)
 
 	/* We don't d_delete() NFS sillyrenamed files--they still exist. */
 	if (!error && !(dentry->d_flags & DCACHE_NFSFS_RENAMED)) {
+		fsnotify_link_count(dentry->d_inode);
 		d_delete(dentry);
 	}
 
@@ -2279,7 +2282,7 @@ int vfs_link(struct dentry *old_dentry, struct inode *dir, struct dentry *new_de
 	error = dir->i_op->link(old_dentry, dir, new_dentry);
 	mutex_unlock(&old_dentry->d_inode->i_mutex);
 	if (!error)
-		fsnotify_create(dir, new_dentry);
+		fsnotify_link(dir, old_dentry->d_inode, new_dentry);
 	return error;
 }
 
@@ -2683,57 +2686,40 @@ void page_put_link(struct dentry *dentry, struct nameidata *nd, void *cookie)
 	}
 }
 
+/*
+ * The nofs argument instructs pagecache_write_begin to pass AOP_FLAG_NOFS
+ */
 int __page_symlink(struct inode *inode, const char *symname, int len,
 		gfp_t gfp_mask)
 {
 	struct address_space *mapping = inode->i_mapping;
 	struct page *page;
-	int err = -ENOMEM;
+	void *fsdata;
+	int err;
 	char *kaddr;
+	unsigned int flags = AOP_FLAG_UNINTERRUPTIBLE;
+	if (!(gfp_mask & __GFP_FS))
+		flags |= AOP_FLAG_NOFS;
 
 retry:
-	page = find_or_create_page(mapping, 0, gfp_mask);
-	if (!page)
-		goto fail;
-	err = mapping->a_ops->prepare_write(NULL, page, 0, len-1);
-	if (err == AOP_TRUNCATED_PAGE) {
-		page_cache_release(page);
-		goto retry;
-	}
+	err = pagecache_write_begin(NULL, mapping, 0, len-1,
+				flags, &page, &fsdata);
 	if (err)
-		goto fail_map;
+		goto fail;
+
 	kaddr = kmap_atomic(page, KM_USER0);
 	memcpy(kaddr, symname, len-1);
 	kunmap_atomic(kaddr, KM_USER0);
-	err = mapping->a_ops->commit_write(NULL, page, 0, len-1);
-	if (err == AOP_TRUNCATED_PAGE) {
-		page_cache_release(page);
-		goto retry;
-	}
-	if (err)
-		goto fail_map;
-	/*
-	 * Notice that we are _not_ going to block here - end of page is
-	 * unmapped, so this will only try to map the rest of page, see
-	 * that it is unmapped (typically even will not look into inode -
-	 * ->i_size will be enough for everything) and zero it out.
-	 * OTOH it's obviously correct and should make the page up-to-date.
-	 */
-	if (!PageUptodate(page)) {
-		err = mapping->a_ops->readpage(NULL, page);
-		if (err != AOP_TRUNCATED_PAGE)
-			wait_on_page_locked(page);
-	} else {
-		unlock_page(page);
-	}
-	page_cache_release(page);
+
+	err = pagecache_write_end(NULL, mapping, 0, len-1, len-1,
+							page, fsdata);
 	if (err < 0)
 		goto fail;
+	if (err < len-1)
+		goto retry;
+
 	mark_inode_dirty(inode);
 	return 0;
-fail_map:
-	unlock_page(page);
-	page_cache_release(page);
 fail:
 	return err;
 }

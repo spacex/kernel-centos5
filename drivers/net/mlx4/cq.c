@@ -2,7 +2,7 @@
  * Copyright (c) 2004, 2005 Topspin Communications.  All rights reserved.
  * Copyright (c) 2005 Sun Microsystems, Inc. All rights reserved.
  * Copyright (c) 2005, 2006, 2007 Cisco Systems, Inc. All rights reserved.
- * Copyright (c) 2005 Mellanox Technologies. All rights reserved.
+ * Copyright (c) 2005, 2006, 2007, 2008 Mellanox Technologies. All rights reserved.
  * Copyright (c) 2004 Voltaire, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -42,6 +42,27 @@
 
 #include "mlx4.h"
 #include "icm.h"
+
+struct mlx4_cq_context {
+	__be32			flags;
+	u16			reserved1[3];
+	__be16			page_offset;
+	__be32			logsize_usrpage;
+	__be16			cq_period;
+	__be16			cq_max_count;
+	u8			reserved2[3];
+	u8			comp_eqn;
+	u8			log_page_size;
+	u8			reserved3[2];
+	u8			mtt_base_addr_h;
+	__be32			mtt_base_addr_l;
+	__be32			last_notified_index;
+	__be32			solicit_producer_index;
+	__be32			consumer_index;
+	__be32			producer_index;
+	u32			reserved4[2];
+	__be64			db_rec_addr;
+};
 
 #define MLX4_CQ_STATUS_OK		( 0 << 28)
 #define MLX4_CQ_STATUS_OVERFLOW		( 9 << 28)
@@ -114,8 +135,77 @@ static int mlx4_HW2SW_CQ(struct mlx4_dev *dev, struct mlx4_cmd_mailbox *mailbox,
 			    MLX4_CMD_TIME_CLASS_A);
 }
 
+int mlx4_cq_modify(struct mlx4_dev *dev, struct mlx4_cq *cq,
+		   u16 count, u16 period)
+{
+	struct mlx4_cmd_mailbox *mailbox;
+	struct mlx4_cq_context *cq_context;
+	int err;
+
+	mailbox = mlx4_alloc_cmd_mailbox(dev);
+	if (IS_ERR(mailbox))
+		return PTR_ERR(mailbox);
+
+	cq_context = mailbox->buf;
+	memset(cq_context, 0, sizeof *cq_context);
+
+	cq_context->cq_max_count = cpu_to_be16(count);
+	cq_context->cq_period    = cpu_to_be16(period);
+
+	err = mlx4_MODIFY_CQ(dev, mailbox, cq->cqn, 1);
+
+	mlx4_free_cmd_mailbox(dev, mailbox);
+	return err;
+}
+EXPORT_SYMBOL_GPL(mlx4_cq_modify);
+
+int mlx4_cq_resize(struct mlx4_dev *dev, struct mlx4_cq *cq,
+		   int entries, struct mlx4_mtt *mtt)
+{
+	struct mlx4_cmd_mailbox *mailbox;
+	struct mlx4_cq_context *cq_context;
+	u64 mtt_addr;
+	int err;
+
+	mailbox = mlx4_alloc_cmd_mailbox(dev);
+	if (IS_ERR(mailbox))
+		return PTR_ERR(mailbox);
+
+	cq_context = mailbox->buf;
+	memset(cq_context, 0, sizeof *cq_context);
+
+	cq_context->logsize_usrpage = cpu_to_be32(ilog2(entries) << 24);
+	cq_context->log_page_size   = mtt->page_shift - 12;
+	mtt_addr = mlx4_mtt_addr(dev, mtt);
+	cq_context->mtt_base_addr_h = mtt_addr >> 32;
+	cq_context->mtt_base_addr_l = cpu_to_be32(mtt_addr & 0xffffffff);
+
+	err = mlx4_MODIFY_CQ(dev, mailbox, cq->cqn, 0);
+
+	mlx4_free_cmd_mailbox(dev, mailbox);
+	return err;
+}
+EXPORT_SYMBOL_GPL(mlx4_cq_resize);
+
+static int mlx4_find_least_loaded_vector(struct mlx4_priv *priv)
+{
+	int i;
+	int index = 0;
+	int min = priv->eq_table.eq[MLX4_EQ_COMP_CPU0].load;
+
+	for (i = 1; i < priv->dev.caps.num_comp_vectors; i++) {
+		if (priv->eq_table.eq[MLX4_EQ_COMP_CPU0 + i].load < min) {
+			index = i;
+			min = priv->eq_table.eq[MLX4_EQ_COMP_CPU0 + i].load;
+		}
+	}
+
+	return index;
+}
+
 int mlx4_cq_alloc(struct mlx4_dev *dev, int nent, struct mlx4_mtt *mtt,
-		  struct mlx4_uar *uar, u64 db_rec, struct mlx4_cq *cq)
+		  struct mlx4_uar *uar, u64 db_rec, struct mlx4_cq *cq,
+		  unsigned vector, int collapsed)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
 	struct mlx4_cq_table *cq_table = &priv->cq_table;
@@ -151,8 +241,19 @@ int mlx4_cq_alloc(struct mlx4_dev *dev, int nent, struct mlx4_mtt *mtt,
 	cq_context = mailbox->buf;
 	memset(cq_context, 0, sizeof *cq_context);
 
+	cq_context->flags	    = cpu_to_be32(!!collapsed << 18);
 	cq_context->logsize_usrpage = cpu_to_be32((ilog2(nent) << 24) | uar->index);
-	cq_context->comp_eqn        = priv->eq_table.eq[MLX4_EQ_COMP].eqn;
+
+	if (vector == MLX4_LEAST_ATTACHED_VECTOR)
+		vector = mlx4_find_least_loaded_vector(priv);
+	else if (vector >= dev->caps.num_comp_vectors) {
+		err = -EINVAL;
+		goto err_radix;
+	}
+
+	cq->comp_eq_idx		    = MLX4_EQ_COMP_CPU0 + vector;
+	cq_context->comp_eqn	    = priv->eq_table.eq[MLX4_EQ_COMP_CPU0 +
+							vector].eqn;
 	cq_context->log_page_size   = mtt->page_shift - MLX4_ICM_PAGE_SHIFT;
 
 	mtt_addr = mlx4_mtt_addr(dev, mtt);
@@ -165,6 +266,7 @@ int mlx4_cq_alloc(struct mlx4_dev *dev, int nent, struct mlx4_mtt *mtt,
 	if (err)
 		goto err_radix;
 
+	priv->eq_table.eq[cq->comp_eq_idx].load++;
 	cq->cons_index = 0;
 	cq->arm_sn     = 1;
 	cq->uar        = uar;
@@ -191,24 +293,6 @@ err_out:
 }
 EXPORT_SYMBOL_GPL(mlx4_cq_alloc);
 
-int mlx4_cq_modify(struct mlx4_dev *dev, struct mlx4_cq *cq,
-		   struct mlx4_cq_context *context, int modify)
-{
-	struct mlx4_cmd_mailbox *mailbox;
-	int err;
-
-	mailbox = mlx4_alloc_cmd_mailbox(dev);
-	if (IS_ERR(mailbox))
-		return PTR_ERR(mailbox);
-
-	memcpy(mailbox->buf, context, sizeof *context);
-	err = mlx4_MODIFY_CQ(dev, mailbox, cq->cqn, modify);
-
-	mlx4_free_cmd_mailbox(dev, mailbox);
-	return err;
-}
-EXPORT_SYMBOL_GPL(mlx4_cq_modify);
-
 void mlx4_cq_free(struct mlx4_dev *dev, struct mlx4_cq *cq)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
@@ -219,7 +303,8 @@ void mlx4_cq_free(struct mlx4_dev *dev, struct mlx4_cq *cq)
 	if (err)
 		mlx4_warn(dev, "HW2SW_CQ failed (%d) for CQN %06x\n", err, cq->cqn);
 
-	synchronize_irq(priv->eq_table.eq[MLX4_EQ_COMP].irq);
+	synchronize_irq(priv->eq_table.eq[cq->comp_eq_idx].irq);
+	priv->eq_table.eq[cq->comp_eq_idx].load--;
 
 	spin_lock_irq(&cq_table->lock);
 	radix_tree_delete(&cq_table->tree, cq->cqn);
@@ -243,7 +328,7 @@ int mlx4_init_cq_table(struct mlx4_dev *dev)
 	INIT_RADIX_TREE(&cq_table->tree, GFP_ATOMIC);
 
 	err = mlx4_bitmap_init(&cq_table->bitmap, dev->caps.num_cqs,
-			       dev->caps.num_cqs - 1, dev->caps.reserved_cqs);
+			       dev->caps.num_cqs - 1, dev->caps.reserved_cqs, 0);
 	if (err)
 		return err;
 

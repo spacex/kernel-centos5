@@ -36,6 +36,10 @@ struct xenkbd_info
 	struct xenbus_device *xbdev;
 };
 
+static int abs_pointer;
+module_param(abs_pointer, bool, 0);
+MODULE_PARM_DESC(abs_pointer, "Enable absolute pointer mode");
+
 static int xenkbd_remove(struct xenbus_device *);
 static int xenkbd_connect_backend(struct xenbus_device *, struct xenkbd_info *);
 static void xenkbd_disconnect_backend(struct xenkbd_info *);
@@ -240,15 +244,17 @@ static void xenkbd_backend_changed(struct xenbus_device *dev,
 
 	case XenbusStateInitWait:
 	InitWait:
-		ret = xenbus_scanf(XBT_NIL, info->xbdev->otherend,
-				   "feature-abs-pointer", "%d", &val);
-		if (ret < 0)
-			val = 0;
-		if (val) {
-			ret = xenbus_printf(XBT_NIL, info->xbdev->nodename,
-					    "request-abs-pointer", "1");
-			if (ret)
-				; /* FIXME */
+		if (abs_pointer) {
+			ret = xenbus_scanf(XBT_NIL, info->xbdev->otherend,
+					   "feature-abs-pointer", "%d", &val);
+			if (ret < 0)
+				val = 0;
+			if (val) {
+				ret = xenbus_printf(XBT_NIL, info->xbdev->nodename,
+						    "request-abs-pointer", "1");
+				if (ret)
+					; /* FIXME */
+			}
 		}
 		xenbus_switch_state(dev, XenbusStateConnected);
 		break;

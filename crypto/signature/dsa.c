@@ -96,3 +96,4 @@ int DSA_verify(const MPI datahash, const MPI sig[], const MPI pkey[])
 	mpi_free(v);
 	return rc;
 } /* end DSA_verify() */
+EXPORT_SYMBOL_GPL(DSA_verify);

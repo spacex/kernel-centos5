@@ -15,7 +15,6 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-#include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/types.h>
 #include <linux/pci.h>
@@ -43,8 +42,9 @@ int fnic_get_vnic_config(struct fnic *fnic)
 				    offsetof(struct vnic_fc_config, m), \
 				    sizeof(c->m), &c->m); \
 		if (err) { \
-			printk(KERN_ERR PFX "Error getting %s, %d\n", #m, \
-			       err); \
+			shost_printk(KERN_ERR, fnic->lport->host, \
+				     "Error getting %s, %d\n", #m, \
+				     err); \
 			return err; \
 		} \
 	} while (0);
@@ -143,34 +143,45 @@ int fnic_get_vnic_config(struct fnic *fnic)
 	c->intr_timer = min_t(u16, VNIC_INTR_TIMER_MAX, c->intr_timer);
 	c->intr_timer_type = c->intr_timer_type;
 
-	printk(KERN_INFO PFX "vNIC MAC addr %02x:%02x:%02x:%02x:%02x:%02x "
-		"wq/wq_copy/rq %d/%d/%d\n",
-		fnic->mac_addr[0], fnic->mac_addr[1], fnic->mac_addr[2],
-		fnic->mac_addr[3], fnic->mac_addr[4], fnic->mac_addr[5],
-		c->wq_enet_desc_count, c->wq_copy_desc_count, c->rq_desc_count);
-	printk(KERN_INFO PFX "vNIC node wwn %llx port wwn %llx\n",
-		c->node_wwn, c->port_wwn);
-	printk(KERN_INFO PFX "vNIC ed_tov %d ra_tov %d\n",
-		c->ed_tov, c->ra_tov);
-	printk(KERN_INFO PFX "vNIC mtu %d intr timer %d\n",
-		c->maxdatafieldsize, c->intr_timer);
-	printk(KERN_INFO PFX "vNIC flags 0x%x luns per tgt %d\n",
-	       c->flags, c->luns_per_tgt);
-	printk(KERN_INFO PFX "vNIC flogi_retries %d flogi timeout %d\n",
-	       c->flogi_retries, c->flogi_timeout);
-	printk(KERN_INFO PFX "vNIC plogi retries %d plogi timeout %d\n",
-	       c->plogi_retries, c->plogi_timeout);
-	printk(KERN_INFO PFX "vNIC io throttle count %d link dn timeout %d\n",
-	       c->io_throttle_count, c->link_down_timeout);
-	printk(KERN_INFO PFX "vNIC port dn io retries %d port dn timeout %d\n",
-	       c->port_down_io_retries, c->port_down_timeout);
+	shost_printk(KERN_INFO, fnic->lport->host,
+		     "vNIC MAC addr %02x:%02x:%02x:%02x:%02x:%02x "
+		     "wq/wq_copy/rq %d/%d/%d\n",
+		     fnic->mac_addr[0], fnic->mac_addr[1], fnic->mac_addr[2],
+		     fnic->mac_addr[3], fnic->mac_addr[4], fnic->mac_addr[5],
+		     c->wq_enet_desc_count, c->wq_copy_desc_count,
+		     c->rq_desc_count);
+	shost_printk(KERN_INFO, fnic->lport->host,
+		     "vNIC node wwn %llx port wwn %llx\n",
+		     c->node_wwn, c->port_wwn);
+	shost_printk(KERN_INFO, fnic->lport->host,
+		     "vNIC ed_tov %d ra_tov %d\n",
+		     c->ed_tov, c->ra_tov);
+	shost_printk(KERN_INFO, fnic->lport->host,
+		     "vNIC mtu %d intr timer %d\n",
+		     c->maxdatafieldsize, c->intr_timer);
+	shost_printk(KERN_INFO, fnic->lport->host,
+		     "vNIC flags 0x%x luns per tgt %d\n",
+		     c->flags, c->luns_per_tgt);
+	shost_printk(KERN_INFO, fnic->lport->host,
+		     "vNIC flogi_retries %d flogi timeout %d\n",
+		     c->flogi_retries, c->flogi_timeout);
+	shost_printk(KERN_INFO, fnic->lport->host,
+		     "vNIC plogi retries %d plogi timeout %d\n",
+		     c->plogi_retries, c->plogi_timeout);
+	shost_printk(KERN_INFO, fnic->lport->host,
+		     "vNIC io throttle count %d link dn timeout %d\n",
+		     c->io_throttle_count, c->link_down_timeout);
+	shost_printk(KERN_INFO, fnic->lport->host,
+		     "vNIC port dn io retries %d port dn timeout %d\n",
+		     c->port_down_io_retries, c->port_down_timeout);
 
 	return 0;
 }
 
-int fnic_set_nic_cfg(struct fnic *fnic, u8 rss_default_cpu, u8 rss_hash_type,
-	u8 rss_hash_bits, u8 rss_base_cpu, u8 rss_enable, u8 tso_ipid_split_en,
-	u8 ig_vlan_strip_en)
+int fnic_set_nic_config(struct fnic *fnic, u8 rss_default_cpu,
+			u8 rss_hash_type,
+			u8 rss_hash_bits, u8 rss_base_cpu, u8 rss_enable,
+			u8 tso_ipid_split_en, u8 ig_vlan_strip_en)
 {
 	u64 a0, a1;
 	u32 nic_cfg;
@@ -230,15 +241,16 @@ int fnic_alloc_vnic_resources(struct fnic *fnic)
 
 	intr_mode = vnic_dev_get_intr_mode(fnic->vdev);
 
-	printk(KERN_INFO PFX "vNIC interrupt mode: %s\n",
-		intr_mode == VNIC_DEV_INTR_MODE_INTX ? "legacy PCI INTx" :
-		intr_mode == VNIC_DEV_INTR_MODE_MSI ? "MSI" :
-		intr_mode == VNIC_DEV_INTR_MODE_MSIX ? "MSI-X" : "unknown");
+	shost_printk(KERN_INFO, fnic->lport->host, "vNIC interrupt mode: %s\n",
+		     intr_mode == VNIC_DEV_INTR_MODE_INTX ? "legacy PCI INTx" :
+		     intr_mode == VNIC_DEV_INTR_MODE_MSI ? "MSI" :
+		     intr_mode == VNIC_DEV_INTR_MODE_MSIX ?
+		     "MSI-X" : "unknown");
 
-	printk(KERN_INFO PFX "vNIC resources avail: "
-	       "wq %d cp_wq %d raw_wq %d rq %d cq %d intr %d\n",
-	       fnic->wq_count, fnic->wq_copy_count, fnic->raw_wq_count,
-	       fnic->rq_count, fnic->cq_count, fnic->intr_count);
+	shost_printk(KERN_INFO, fnic->lport->host, "vNIC resources avail: "
+		     "wq %d cp_wq %d raw_wq %d rq %d cq %d intr %d\n",
+		     fnic->wq_count, fnic->wq_copy_count, fnic->raw_wq_count,
+		     fnic->rq_count, fnic->cq_count, fnic->intr_count);
 
 	/* Allocate Raw WQ used for FCS frames */
 	for (i = 0; i < fnic->raw_wq_count; i++) {
@@ -311,12 +323,14 @@ int fnic_alloc_vnic_resources(struct fnic *fnic)
 				RES_TYPE_INTR_PBA_LEGACY, 0);
 
 	if (!fnic->legacy_pba && intr_mode == VNIC_DEV_INTR_MODE_INTX) {
-		printk(KERN_ERR "Failed to hook legacy pba resource\n");
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "Failed to hook legacy pba resource\n");
 		err = -ENODEV;
 		goto err_out_cleanup;
 	}
 
-	/* Init RQ/WQ resources.
+	/*
+	 * Init RQ/WQ resources.
 	 *
 	 * RQ[0 to n-1] point to CQ[0 to n-1]
 	 * WQ[0 to m-1] point to CQ[n to n+m-1]
@@ -386,7 +400,8 @@ int fnic_alloc_vnic_resources(struct fnic *fnic)
 			0 /* cq_message_addr */);
 	}
 
-	/* Init INTR resources
+	/*
+	 * Init INTR resources
 	 *
 	 * mask_on_assertion is not used for INTx due to the level-
 	 * triggered nature of INTx
@@ -412,7 +427,8 @@ int fnic_alloc_vnic_resources(struct fnic *fnic)
 	/* init the stats memory by making the first call here */
 	err = vnic_dev_stats_dump(fnic->vdev, &fnic->stats);
 	if (err) {
-		printk(KERN_ERR "vnic_dev_stats_dump failed - x%x\n", err);
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "vnic_dev_stats_dump failed - x%x\n", err);
 		goto err_out_cleanup;
 	}
 

@@ -36,10 +36,8 @@
  */
 
 #include <linux/interrupt.h>
-#include <linux/vmalloc.h>
 #include <linux/pci.h>
 #include <linux/delay.h>
-#include <linux/swap.h>
 #include <rdma/ib_verbs.h>
 
 #include "ipath_kernel.h"
@@ -389,7 +387,6 @@ static const struct ipath_hwerror_msgs ipath_6120_hwerror_msgs[] = {
 	INFINIPATH_HWE_MSG(SERDESPLLFAILED, "SerDes PLL"),
 };
 
-
 #define TXE_PIO_PARITY ((INFINIPATH_HWE_TXEMEMPARITYERR_PIOBUF | \
 		        INFINIPATH_HWE_TXEMEMPARITYERR_PIOPBC) \
 		        << INFINIPATH_HWE_TXEMEMPARITYERR_SHIFT)
@@ -702,6 +699,10 @@ static void ipath_pe_init_hwerrors(struct ipath_devdata *dd)
 		 */
 		val &= ~INFINIPATH_HWE_PCIEBUSPARITYRADM;
 	}
+
+	/* avoid some intel cpu's speculative read freeze mode issue */
+	val &= ~(INFINIPATH_HWE_TXEMEMPARITYERR_PIOBUF
+	   << INFINIPATH_HWE_TXEMEMPARITYERR_SHIFT);
 	dd->ipath_hwerrmask = val;
 }
 
@@ -723,6 +724,12 @@ static int ipath_pe_bringup_serdes(struct ipath_devdata *dd)
 		ipath_write_kreg(dd, dd->ipath_kregs->kr_hwerrclear,
 				 INFINIPATH_HWE_SERDESPLLFAILED);
 	}
+
+	dd->ibdeltainprog = 1;
+	dd->ibsymsnap =
+	     ipath_read_creg32(dd, dd->ipath_cregs->cr_ibsymbolerrcnt);
+	dd->iblnkerrsnap =
+	     ipath_read_creg32(dd, dd->ipath_cregs->cr_iblinkerrrecovcnt);
 
 	val = ipath_read_kreg64(dd, dd->ipath_kregs->kr_serdesconfig0);
 	config1 = ipath_read_kreg64(dd, dd->ipath_kregs->kr_serdesconfig1);
@@ -813,6 +820,36 @@ static void ipath_pe_quiet_serdes(struct ipath_devdata *dd)
 {
 	u64 val = ipath_read_kreg64(dd, dd->ipath_kregs->kr_serdesconfig0);
 
+	if (dd->ibsymdelta || dd->iblnkerrdelta ||
+	    dd->ibdeltainprog) {
+		u64 diagc;
+		/* enable counter writes */
+		diagc = ipath_read_kreg64(dd, dd->ipath_kregs->kr_hwdiagctrl);
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_hwdiagctrl,
+				 diagc | INFINIPATH_DC_COUNTERWREN);
+
+		if (dd->ibsymdelta || dd->ibdeltainprog) {
+			val = ipath_read_creg32(dd,
+					dd->ipath_cregs->cr_ibsymbolerrcnt);
+			if (dd->ibdeltainprog)
+				val -= val - dd->ibsymsnap;
+			val -= dd->ibsymdelta;
+			ipath_write_creg(dd,
+				  dd->ipath_cregs->cr_ibsymbolerrcnt, val);
+		}
+		if (dd->iblnkerrdelta || dd->ibdeltainprog) {
+			val = ipath_read_creg32(dd,
+					dd->ipath_cregs->cr_iblinkerrrecovcnt);
+			if (dd->ibdeltainprog)
+				val -= val - dd->iblnkerrsnap;
+			val -= dd->iblnkerrdelta;
+			ipath_write_creg(dd,
+				   dd->ipath_cregs->cr_iblinkerrrecovcnt, val);
+	     }
+
+	     /* and disable counter writes */
+	     ipath_write_kreg(dd, dd->ipath_kregs->kr_hwdiagctrl, diagc);
+	}
 	val |= INFINIPATH_SERDC0_TXIDLE;
 	ipath_dbg("Setting TxIdleEn on serdes (config0 = %llx)\n",
 		  (unsigned long long) val);
@@ -911,7 +948,6 @@ static void ipath_setup_pe_cleanup(struct ipath_devdata *dd)
 	pci_disable_msi(dd->pcidev);
 }
 
-
 static void ipath_6120_pcie_params(struct ipath_devdata *dd)
 {
 	u16 linkstat, speed;
@@ -968,7 +1004,6 @@ bail:
 	return;
 }
 
-
 /**
  * ipath_setup_pe_config - setup PCIe config related stuff
  * @dd: the infinipath device
@@ -1000,6 +1035,7 @@ static int ipath_setup_pe_config(struct ipath_devdata *dd,
 		ipath_dev_err(dd, "pci_enable_msi failed: %d, "
 			      "interrupts may not work\n", ret);
 	/* continue even if it fails, we may still be OK... */
+	dd->ipath_irq = pdev->irq;
 
 	if ((pos = pci_find_capability(dd->pcidev, PCI_CAP_ID_MSI))) {
 		u16 control;
@@ -1484,13 +1520,17 @@ static int ipath_pe_early_init(struct ipath_devdata *dd)
 
 	/*
 	 * For openfabrics, we need to be able to handle an IB header of
-	 * 24 dwords.  HT chip has arbitrary sized receive buffers, so we
-	 * made them the same size as the PIO buffers.  This chip does not
-	 * handle arbitrary size buffers, so we need the header large enough
-	 * to handle largest IB header, but still have room for a 2KB MTU
-	 * standard IB packet.
+	 * at least 24 dwords.  This chip does not handle arbitrary size
+	 * buffers, so we need the header large enough to handle largest
+	 * IB header, but still have room for a 2KB MTU standard IB packet.
+	 * Additionally, some processor/memory controller combinations
+	 * benefit quite strongly from having the DMA'ed data be cacheline
+	 * aligned and a cacheline multiple, so we set the size to 32 dwords
+	 * (2 64-byte primary cachelines for pretty much all processors of
+	 * interest).  The alignment hurts nothing, other than using somewhat
+	 * more memory.
 	 */
-	dd->ipath_rcvhdrentsize = 24;
+	dd->ipath_rcvhdrentsize = 32;
 	dd->ipath_rcvhdrsize = IPATH_DFLT_RCVHDRSIZE;
 	dd->ipath_rhf_offset = 0;
 	dd->ipath_egrtidbase = (u64 __iomem *)
@@ -1553,6 +1593,12 @@ done:
 	kinfo->spi_runtime_flags |= IPATH_RUNTIME_PCIE |
 		IPATH_RUNTIME_FORCE_PIOAVAIL | IPATH_RUNTIME_PIO_REGSWAPPED;
 	return 0;
+}
+
+static void ipath_pe_free_irq(struct ipath_devdata *dd)
+{
+	free_irq(dd->ipath_irq, dd);
+	dd->ipath_irq = 0;
 }
 
 
@@ -1747,6 +1793,31 @@ static void ipath_pe_config_jint(struct ipath_devdata *dd, u16 a, u16 b)
 
 static int ipath_pe_ib_updown(struct ipath_devdata *dd, int ibup, u64 ibcs)
 {
+	if (ibup) {
+		if (dd->ibdeltainprog) {
+			dd->ibdeltainprog = 0;
+			dd->ibsymdelta +=
+				ipath_read_creg32(dd,
+				  dd->ipath_cregs->cr_ibsymbolerrcnt) -
+				dd->ibsymsnap;
+			dd->iblnkerrdelta +=
+				ipath_read_creg32(dd,
+				  dd->ipath_cregs->cr_iblinkerrrecovcnt) -
+				dd->iblnkerrsnap;
+		}
+	} else {
+		dd->ipath_lli_counter = 0;
+		if (!dd->ibdeltainprog) {
+			dd->ibdeltainprog = 1;
+			dd->ibsymsnap =
+				ipath_read_creg32(dd,
+				  dd->ipath_cregs->cr_ibsymbolerrcnt);
+			dd->iblnkerrsnap =
+				ipath_read_creg32(dd,
+				  dd->ipath_cregs->cr_iblinkerrrecovcnt);
+		}
+	}
+
 	ipath_setup_pe_setextled(dd, ipath_ib_linkstate(dd, ibcs),
 		ipath_ib_linktrstate(dd, ibcs));
 	return 0;
@@ -1780,6 +1851,7 @@ void ipath_init_iba6120_funcs(struct ipath_devdata *dd)
 	dd->ipath_f_cleanup = ipath_setup_pe_cleanup;
 	dd->ipath_f_setextled = ipath_setup_pe_setextled;
 	dd->ipath_f_get_base_info = ipath_pe_get_base_info;
+	dd->ipath_f_free_irq = ipath_pe_free_irq;
 	dd->ipath_f_tidtemplate = ipath_pe_tidtemplate;
 	dd->ipath_f_intr_fallback = ipath_pe_nointr_fallback;
 	dd->ipath_f_xgxs_reset = ipath_pe_xgxs_reset;
@@ -1795,3 +1867,4 @@ void ipath_init_iba6120_funcs(struct ipath_devdata *dd)
 	/* initialize chip-specific variables */
 	ipath_init_pe_variables(dd);
 }
+

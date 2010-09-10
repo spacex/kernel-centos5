@@ -35,6 +35,7 @@
 #include <rdma/ib_pack.h>
 #include <rdma/ib_smi.h>
 
+#include "ipath_kernel.h"
 #include "ipath_verbs.h"
 
 /* Fast memory region */
@@ -60,8 +61,15 @@ static inline struct ipath_fmr *to_ifmr(struct ib_fmr *ibfmr)
  */
 struct ib_mr *ipath_get_dma_mr(struct ib_pd *pd, int acc)
 {
+	struct ipath_ibdev *dev = to_idev(pd->device);
 	struct ipath_mr *mr;
 	struct ib_mr *ret;
+	unsigned long flags;
+
+	if (to_ipd(pd)->user) {
+		ret = ERR_PTR(-EPERM);
+		goto bail;
+	}
 
 	mr = kzalloc(sizeof *mr, GFP_KERNEL);
 	if (!mr) {
@@ -70,6 +78,13 @@ struct ib_mr *ipath_get_dma_mr(struct ib_pd *pd, int acc)
 	}
 
 	mr->mr.access_flags = acc;
+	atomic_set(&mr->mr.refcount, 0);
+
+	spin_lock_irqsave(&dev->lk_table.lock, flags);
+	if (!dev->dma_mr)
+		dev->dma_mr = &mr->mr;
+	spin_unlock_irqrestore(&dev->lk_table.lock, flags);
+
 	ret = &mr->ibmr;
 
 bail:
@@ -104,6 +119,7 @@ static struct ipath_mr *alloc_mr(int count,
 		goto bail;
 	mr->ibmr.rkey = mr->ibmr.lkey = mr->mr.lkey;
 
+	atomic_set(&mr->mr.refcount, 0);
 	goto done;
 
 bail:
@@ -195,7 +211,8 @@ struct ib_mr *ipath_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 		goto bail;
 	}
 
-	umem = ib_umem_get(pd->uobject->context, start, length, mr_access_flags);
+	umem = ib_umem_get(pd->uobject->context, start, length,
+			   mr_access_flags, 0);
 	if (IS_ERR(umem))
 		return (void *) umem;
 
@@ -257,9 +274,14 @@ bail:
 int ipath_dereg_mr(struct ib_mr *ibmr)
 {
 	struct ipath_mr *mr = to_imr(ibmr);
+	struct ipath_ibdev *dev = to_idev(ibmr->device);
+	int ret;
 	int i;
 
-	ipath_free_lkey(&to_idev(ibmr->device)->lk_table, ibmr->lkey);
+	ret = ipath_free_lkey(dev, &mr->mr);
+	if (ret)
+		return ret;
+
 	i = mr->mr.mapsz;
 	while (i) {
 		i--;
@@ -323,6 +345,7 @@ struct ib_fmr *ipath_alloc_fmr(struct ib_pd *pd, int mr_access_flags,
 	fmr->mr.max_segs = fmr_attr->max_pages;
 	fmr->page_shift = fmr_attr->page_shift;
 
+	atomic_set(&fmr->mr.refcount, 0);
 	ret = &fmr->ibfmr;
 	goto done;
 
@@ -355,6 +378,12 @@ int ipath_map_phys_fmr(struct ib_fmr *ibfmr, u64 * page_list,
 	int m, n, i;
 	u32 ps;
 	int ret;
+
+	if (atomic_read(&fmr->mr.refcount)) {
+		ipath_dbg("FMR modified when busy (LKEY %x cnt %u)\n",
+			  fmr->mr.lkey, atomic_read(&fmr->mr.refcount));
+		return -EBUSY;
+	}
 
 	if (list_len > fmr->mr.max_segs) {
 		ret = -EINVAL;
@@ -399,6 +428,10 @@ int ipath_unmap_fmr(struct list_head *fmr_list)
 	list_for_each_entry(fmr, fmr_list, ibfmr.list) {
 		rkt = &to_idev(fmr->ibfmr.device)->lk_table;
 		spin_lock_irqsave(&rkt->lock, flags);
+		if (atomic_read(&fmr->mr.refcount))
+			ipath_dbg("FMR busy (LKEY %x cnt %u)\n",
+				  fmr->mr.lkey, atomic_read(&fmr->mr.refcount));
+
 		fmr->mr.user_base = 0;
 		fmr->mr.iova = 0;
 		fmr->mr.length = 0;
@@ -416,9 +449,13 @@ int ipath_unmap_fmr(struct list_head *fmr_list)
 int ipath_dealloc_fmr(struct ib_fmr *ibfmr)
 {
 	struct ipath_fmr *fmr = to_ifmr(ibfmr);
+	int ret;
 	int i;
 
-	ipath_free_lkey(&to_idev(ibfmr->device)->lk_table, ibfmr->lkey);
+	ret = ipath_free_lkey(to_idev(ibfmr->device), &fmr->mr);
+	if (ret)
+		return ret;
+
 	i = fmr->mr.mapsz;
 	while (i)
 		kfree(fmr->mr.map[--i]);

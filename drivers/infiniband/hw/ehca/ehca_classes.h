@@ -168,10 +168,10 @@ struct ehca_qmap_entry {
 };
 
 struct ehca_queue_map {
-	struct ehca_qmap_entry *map; /* list of qmap entries */
-	unsigned int entries;        /* number of qmap entries */
-	unsigned int tail;           /* tail pointer */
-	unsigned int left_to_poll;   /* CQEs to poll before gen. flush CQEs */
+	struct ehca_qmap_entry *map;
+	unsigned int entries;
+	unsigned int tail;
+	unsigned int left_to_poll;
 	unsigned int next_wqe_idx;   /* Idx to first wqe to be flushed */
 };
 

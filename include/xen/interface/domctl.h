@@ -3,6 +3,24 @@
  * 
  * Domain management operations. For use by node control stack.
  * 
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ *
  * Copyright (c) 2002-2003, B Dragovic
  * Copyright (c) 2002-2006, K Fraser
  */
@@ -19,7 +37,7 @@
 #define XEN_DOMCTL_INTERFACE_VERSION 0x00000005
 
 struct xenctl_cpumap {
-    XEN_GUEST_HANDLE(uint8_t) bitmap;
+    XEN_GUEST_HANDLE_64(uint8_t) bitmap;
     uint32_t nr_cpus;
 };
 
@@ -32,6 +50,10 @@ struct xen_domctl_createdomain {
     /* IN parameters */
     uint32_t ssidref;
     xen_domain_handle_t handle;
+ /* Is this an HVM guest (as opposed to a PV guest)? */
+#define _XEN_DOMCTL_CDF_hvm_guest 0
+#define XEN_DOMCTL_CDF_hvm_guest  (1U<<_XEN_DOMCTL_CDF_hvm_guest)
+    uint32_t flags;
 };
 typedef struct xen_domctl_createdomain xen_domctl_createdomain_t;
 DEFINE_XEN_GUEST_HANDLE(xen_domctl_createdomain_t);
@@ -39,27 +61,43 @@ DEFINE_XEN_GUEST_HANDLE(xen_domctl_createdomain_t);
 #define XEN_DOMCTL_destroydomain      2
 #define XEN_DOMCTL_pausedomain        3
 #define XEN_DOMCTL_unpausedomain      4
+#define XEN_DOMCTL_resumedomain      27
 
 #define XEN_DOMCTL_getdomaininfo      5
 struct xen_domctl_getdomaininfo {
     /* OUT variables. */
     domid_t  domain;              /* Also echoed in domctl.domain */
-#define DOMFLAGS_DYING     (1<<0) /* Domain is scheduled to die.             */
-#define DOMFLAGS_SHUTDOWN  (1<<2) /* The guest OS has shut down.             */
-#define DOMFLAGS_PAUSED    (1<<3) /* Currently paused by control software.   */
-#define DOMFLAGS_BLOCKED   (1<<4) /* Currently blocked pending an event.     */
-#define DOMFLAGS_RUNNING   (1<<5) /* Domain is currently running.            */
-#define DOMFLAGS_CPUMASK      255 /* CPU to which this domain is bound.      */
-#define DOMFLAGS_CPUSHIFT       8
-#define DOMFLAGS_SHUTDOWNMASK 255 /* DOMFLAGS_SHUTDOWN guest-supplied code.  */
-#define DOMFLAGS_SHUTDOWNSHIFT 16
-    uint32_t flags;
-    uint64_t tot_pages;
-    uint64_t max_pages;
-    uint64_t shared_info_frame;  /* MFN of shared_info struct */
-    uint64_t cpu_time;
-    uint32_t nr_online_vcpus;     /* Number of VCPUs currently online. */
-    uint32_t max_vcpu_id;         /* Maximum VCPUID in use by this domain. */
+ /* Domain is scheduled to die. */
+#define _XEN_DOMINF_dying     0
+#define XEN_DOMINF_dying      (1U<<_XEN_DOMINF_dying)
+ /* Domain is an HVM guest (as opposed to a PV guest). */
+#define _XEN_DOMINF_hvm_guest 1
+#define XEN_DOMINF_hvm_guest  (1U<<_XEN_DOMINF_hvm_guest)
+ /* The guest OS has shut down. */
+#define _XEN_DOMINF_shutdown  2
+#define XEN_DOMINF_shutdown   (1U<<_XEN_DOMINF_shutdown)
+ /* Currently paused by control software. */
+#define _XEN_DOMINF_paused    3
+#define XEN_DOMINF_paused     (1U<<_XEN_DOMINF_paused)
+ /* Currently blocked pending an event.     */
+#define _XEN_DOMINF_blocked   4
+#define XEN_DOMINF_blocked    (1U<<_XEN_DOMINF_blocked)
+ /* Domain is currently running.            */
+#define _XEN_DOMINF_running   5
+#define XEN_DOMINF_running    (1U<<_XEN_DOMINF_running)
+ /* CPU to which this domain is bound.      */
+#define XEN_DOMINF_cpumask      255
+#define XEN_DOMINF_cpushift       8
+ /* XEN_DOMINF_shutdown guest-supplied code.  */
+#define XEN_DOMINF_shutdownmask 255
+#define XEN_DOMINF_shutdownshift 16
+    uint32_t flags;              /* XEN_DOMINF_* */
+    uint64_aligned_t tot_pages;
+    uint64_aligned_t max_pages;
+    uint64_aligned_t shared_info_frame; /* GMFN of shared_info struct */
+    uint64_aligned_t cpu_time;
+    uint32_t nr_online_vcpus;    /* Number of VCPUs currently online. */
+    uint32_t max_vcpu_id;        /* Maximum VCPUID in use by this domain. */
     uint32_t ssidref;
     xen_domain_handle_t handle;
 };
@@ -71,12 +109,12 @@ DEFINE_XEN_GUEST_HANDLE(xen_domctl_getdomaininfo_t);
 struct xen_domctl_getmemlist {
     /* IN variables. */
     /* Max entries to write to output buffer. */
-    uint64_t max_pfns;
+    uint64_aligned_t max_pfns;
     /* Start index in guest's page list. */
-    uint64_t start_pfn;
-    XEN_GUEST_HANDLE(xen_pfn_t) buffer;
+    uint64_aligned_t start_pfn;
+    XEN_GUEST_HANDLE_64(uint64_t) buffer;
     /* OUT variables. */
-    uint64_t num_pfns;
+    uint64_aligned_t num_pfns;
 };
 typedef struct xen_domctl_getmemlist xen_domctl_getmemlist_t;
 DEFINE_XEN_GUEST_HANDLE(xen_domctl_getmemlist_t);
@@ -85,19 +123,19 @@ DEFINE_XEN_GUEST_HANDLE(xen_domctl_getmemlist_t);
 #define XEN_DOMCTL_getpageframeinfo   7
 
 #define XEN_DOMCTL_PFINFO_LTAB_SHIFT 28
-#define XEN_DOMCTL_PFINFO_NOTAB   (0x0<<28)
-#define XEN_DOMCTL_PFINFO_L1TAB   (0x1<<28)
-#define XEN_DOMCTL_PFINFO_L2TAB   (0x2<<28)
-#define XEN_DOMCTL_PFINFO_L3TAB   (0x3<<28)
-#define XEN_DOMCTL_PFINFO_L4TAB   (0x4<<28)
-#define XEN_DOMCTL_PFINFO_LTABTYPE_MASK (0x7<<28)
-#define XEN_DOMCTL_PFINFO_LPINTAB (0x1<<31)
-#define XEN_DOMCTL_PFINFO_XTAB    (0xf<<28) /* invalid page */
-#define XEN_DOMCTL_PFINFO_LTAB_MASK (0xf<<28)
+#define XEN_DOMCTL_PFINFO_NOTAB   (0x0U<<28)
+#define XEN_DOMCTL_PFINFO_L1TAB   (0x1U<<28)
+#define XEN_DOMCTL_PFINFO_L2TAB   (0x2U<<28)
+#define XEN_DOMCTL_PFINFO_L3TAB   (0x3U<<28)
+#define XEN_DOMCTL_PFINFO_L4TAB   (0x4U<<28)
+#define XEN_DOMCTL_PFINFO_LTABTYPE_MASK (0x7U<<28)
+#define XEN_DOMCTL_PFINFO_LPINTAB (0x1U<<31)
+#define XEN_DOMCTL_PFINFO_XTAB    (0xfU<<28) /* invalid page */
+#define XEN_DOMCTL_PFINFO_LTAB_MASK (0xfU<<28)
 
 struct xen_domctl_getpageframeinfo {
     /* IN variables. */
-    uint64_t gmfn;        /* GMFN to query */
+    uint64_aligned_t gmfn; /* GMFN to query */
     /* OUT variables. */
     /* Is the page PINNED to a type? */
     uint32_t type;         /* see above type defs */
@@ -109,9 +147,9 @@ DEFINE_XEN_GUEST_HANDLE(xen_domctl_getpageframeinfo_t);
 #define XEN_DOMCTL_getpageframeinfo2  8
 struct xen_domctl_getpageframeinfo2 {
     /* IN variables. */
-    uint64_t num;
+    uint64_aligned_t num;
     /* IN/OUT variables. */
-    XEN_GUEST_HANDLE(ulong) array;
+    XEN_GUEST_HANDLE_64(uint32_t) array;
 };
 typedef struct xen_domctl_getpageframeinfo2 xen_domctl_getpageframeinfo2_t;
 DEFINE_XEN_GUEST_HANDLE(xen_domctl_getpageframeinfo2_t);
@@ -185,8 +223,8 @@ struct xen_domctl_shadow_op {
     uint32_t       mb;       /* Shadow memory allocation in MB */
 
     /* OP_PEEK / OP_CLEAN */
-    XEN_GUEST_HANDLE(ulong) dirty_bitmap;
-    uint64_t       pages;    /* Size of buffer. Updated with actual size. */
+    XEN_GUEST_HANDLE_64(uint8_t) dirty_bitmap;
+    uint64_aligned_t pages; /* Size of buffer. Updated with actual size. */
     struct xen_domctl_shadow_op_stats stats;
 };
 typedef struct xen_domctl_shadow_op xen_domctl_shadow_op_t;
@@ -196,7 +234,7 @@ DEFINE_XEN_GUEST_HANDLE(xen_domctl_shadow_op_t);
 #define XEN_DOMCTL_max_mem           11
 struct xen_domctl_max_mem {
     /* IN variables. */
-    uint64_t max_memkb;
+    uint64_aligned_t max_memkb;
 };
 typedef struct xen_domctl_max_mem xen_domctl_max_mem_t;
 DEFINE_XEN_GUEST_HANDLE(xen_domctl_max_mem_t);
@@ -206,7 +244,7 @@ DEFINE_XEN_GUEST_HANDLE(xen_domctl_max_mem_t);
 #define XEN_DOMCTL_getvcpucontext    13
 struct xen_domctl_vcpucontext {
     uint32_t              vcpu;                  /* IN */
-    XEN_GUEST_HANDLE(vcpu_guest_context_t) ctxt; /* IN/OUT */
+    XEN_GUEST_HANDLE_64(vcpu_guest_context_t) ctxt; /* IN/OUT */
 };
 typedef struct xen_domctl_vcpucontext xen_domctl_vcpucontext_t;
 DEFINE_XEN_GUEST_HANDLE(xen_domctl_vcpucontext_t);
@@ -220,7 +258,7 @@ struct xen_domctl_getvcpuinfo {
     uint8_t  online;                  /* currently online (not hotplugged)? */
     uint8_t  blocked;                 /* blocked waiting for an event? */
     uint8_t  running;                 /* currently scheduled on its CPU? */
-    uint64_t cpu_time;                /* total cpu time consumed (ns) */
+    uint64_aligned_t cpu_time;        /* total cpu time consumed (ns) */
     uint32_t cpu;                     /* current mapping   */
 };
 typedef struct xen_domctl_getvcpuinfo xen_domctl_getvcpuinfo_t;
@@ -258,9 +296,9 @@ struct xen_domctl_scheduler_op {
     uint32_t cmd;       /* XEN_DOMCTL_SCHEDOP_* */
     union {
         struct xen_domctl_sched_sedf {
-            uint64_t period;
-            uint64_t slice;
-            uint64_t latency;
+            uint64_aligned_t period;
+            uint64_aligned_t slice;
+            uint64_aligned_t latency;
             uint32_t extratime;
             uint32_t weight;
         } sedf;
@@ -301,9 +339,9 @@ DEFINE_XEN_GUEST_HANDLE(xen_domctl_irq_permission_t);
 
 #define XEN_DOMCTL_iomem_permission  20
 struct xen_domctl_iomem_permission {
-    uint64_t first_mfn;       /* first page (physical page number) in range */
-    uint64_t nr_mfns;         /* number of pages in range (>0) */
-    uint8_t  allow_access;    /* allow (!0) or deny (0) access to range? */
+    uint64_aligned_t first_mfn;/* first page (physical page number) in range */
+    uint64_aligned_t nr_mfns;  /* number of pages in range (>0) */
+    uint8_t  allow_access;     /* allow (!0) or deny (0) access to range? */
 };
 typedef struct xen_domctl_iomem_permission xen_domctl_iomem_permission_t;
 DEFINE_XEN_GUEST_HANDLE(xen_domctl_iomem_permission_t);
@@ -318,12 +356,14 @@ struct xen_domctl_ioport_permission {
 typedef struct xen_domctl_ioport_permission xen_domctl_ioport_permission_t;
 DEFINE_XEN_GUEST_HANDLE(xen_domctl_ioport_permission_t);
 
+
 #define XEN_DOMCTL_hypercall_init    22
 struct xen_domctl_hypercall_init {
-    uint64_t  gmfn;            /* GMFN to be initialised */
+    uint64_aligned_t  gmfn;           /* GMFN to be initialised */
 };
 typedef struct xen_domctl_hypercall_init xen_domctl_hypercall_init_t;
 DEFINE_XEN_GUEST_HANDLE(xen_domctl_hypercall_init_t);
+
 
 #define XEN_DOMCTL_arch_setup        23
 #define _XEN_DOMAINSETUP_hvm_guest 0
@@ -331,15 +371,16 @@ DEFINE_XEN_GUEST_HANDLE(xen_domctl_hypercall_init_t);
 #define _XEN_DOMAINSETUP_query 1 /* Get parameters (for save)  */
 #define XEN_DOMAINSETUP_query  (1UL<<_XEN_DOMAINSETUP_query)
 typedef struct xen_domctl_arch_setup {
-    uint64_t flags;      /* XEN_DOMAINSETUP_* */
+    uint64_aligned_t flags;  /* XEN_DOMAINSETUP_* */
 #ifdef __ia64__
-    uint64_t bp;            /* mpaddr of boot param area */
-    uint64_t maxmem;        /* Highest memory address for MDT.  */
-    uint64_t xsi_va;        /* Xen shared_info area virtual address.  */
-    uint32_t hypercall_imm; /* Break imm for Xen hypercalls.  */
+    uint64_aligned_t bp;     /* mpaddr of boot param area */
+    uint64_aligned_t maxmem; /* Highest memory address for MDT.  */
+    uint64_aligned_t xsi_va; /* Xen shared_info area virtual address.  */
+    uint32_t hypercall_imm;  /* Break imm for Xen hypercalls.  */
 #endif
 } xen_domctl_arch_setup_t;
 DEFINE_XEN_GUEST_HANDLE(xen_domctl_arch_setup_t);
+
 
 #define XEN_DOMCTL_settimeoffset     24
 struct xen_domctl_settimeoffset {
@@ -348,8 +389,34 @@ struct xen_domctl_settimeoffset {
 typedef struct xen_domctl_settimeoffset xen_domctl_settimeoffset_t;
 DEFINE_XEN_GUEST_HANDLE(xen_domctl_settimeoffset_t);
 
+ 
 #define XEN_DOMCTL_gethvmcontext     33
 #define XEN_DOMCTL_sethvmcontext     34
+typedef struct xen_domctl_hvmcontext {
+    uint32_t size; /* IN/OUT: size of buffer / bytes filled */
+    XEN_GUEST_HANDLE_64(uint8_t) buffer; /* IN/OUT: data, or call
+                                          * gethvmcontext with NULL
+                                          * buffer to get size
+                                          * req'd */
+} xen_domctl_hvmcontext_t;
+DEFINE_XEN_GUEST_HANDLE(xen_domctl_hvmcontext_t);
+
+
+#define XEN_DOMCTL_set_address_size  35
+#define XEN_DOMCTL_get_address_size  36
+typedef struct xen_domctl_address_size {
+    uint32_t size;
+} xen_domctl_address_size_t;
+DEFINE_XEN_GUEST_HANDLE(xen_domctl_address_size_t);
+
+
+#define XEN_DOMCTL_real_mode_area    26
+struct xen_domctl_real_mode_area {
+    uint32_t log; /* log2 of Real Mode Area size */
+};
+typedef struct xen_domctl_real_mode_area xen_domctl_real_mode_area_t;
+DEFINE_XEN_GUEST_HANDLE(xen_domctl_real_mode_area_t);
+
 
 #define XEN_DOMCTL_sendtrigger       28
 #define XEN_DOMCTL_SENDTRIGGER_NMI    0
@@ -362,6 +429,88 @@ struct xen_domctl_sendtrigger {
 typedef struct xen_domctl_sendtrigger xen_domctl_sendtrigger_t;
 DEFINE_XEN_GUEST_HANDLE(xen_domctl_sendtrigger_t);
 
+
+/* Assign PCI device to HVM guest. Sets up IOMMU structures. */
+#define XEN_DOMCTL_assign_device      37
+#define XEN_DOMCTL_test_assign_device 45
+#define XEN_DOMCTL_deassign_device 47
+struct xen_domctl_assign_device {
+    uint32_t  machine_bdf;   /* machine PCI ID of assigned device */
+};
+typedef struct xen_domctl_assign_device xen_domctl_assign_device_t;
+DEFINE_XEN_GUEST_HANDLE(xen_domctl_assign_device_t);
+
+/* Retrieve sibling devices infomation of machine_bdf */
+#define XEN_DOMCTL_get_device_group 50
+struct xen_domctl_get_device_group {
+    uint32_t  machine_bdf;      /* IN */
+    uint32_t  max_sdevs;        /* IN */
+    uint32_t  num_sdevs;        /* OUT */
+    XEN_GUEST_HANDLE_64(uint32_t)  sdev_array;   /* OUT */
+};
+typedef struct xen_domctl_get_device_group xen_domctl_get_device_group_t;
+DEFINE_XEN_GUEST_HANDLE(xen_domctl_get_device_group_t);
+
+
+/* Pass-through interrupts: bind real irq -> hvm devfn. */
+#define XEN_DOMCTL_bind_pt_irq       38
+#define XEN_DOMCTL_unbind_pt_irq     48
+typedef enum pt_irq_type_e {
+    PT_IRQ_TYPE_PCI,
+    PT_IRQ_TYPE_ISA,
+    PT_IRQ_TYPE_MSI,
+} pt_irq_type_t;
+struct xen_domctl_bind_pt_irq {
+    uint32_t machine_irq;
+    pt_irq_type_t irq_type;
+    uint32_t hvm_domid;
+
+    union {
+        struct {
+            uint8_t isa_irq;
+        } isa;
+        struct {
+            uint8_t bus;
+            uint8_t device;
+            uint8_t intx;
+        } pci;
+        struct {
+            uint8_t gvec;
+            uint32_t gflags;
+        } msi;
+    } u;
+};
+typedef struct xen_domctl_bind_pt_irq xen_domctl_bind_pt_irq_t;
+DEFINE_XEN_GUEST_HANDLE(xen_domctl_bind_pt_irq_t);
+
+
+/* Bind machine I/O address range -> HVM address range. */
+#define XEN_DOMCTL_memory_mapping    39
+#define DPCI_ADD_MAPPING         1
+#define DPCI_REMOVE_MAPPING      0
+struct xen_domctl_memory_mapping {
+    uint64_aligned_t first_gfn; /* first page (hvm guest phys page) in range */
+    uint64_aligned_t first_mfn; /* first page (machine page) in range */
+    uint64_aligned_t nr_mfns;   /* number of pages in range (>0) */
+    uint32_t add_mapping;       /* add or remove mapping */
+    uint32_t padding;           /* padding for 64-bit aligned structure */
+};
+typedef struct xen_domctl_memory_mapping xen_domctl_memory_mapping_t;
+DEFINE_XEN_GUEST_HANDLE(xen_domctl_memory_mapping_t);
+
+
+/* Bind machine I/O port range -> HVM I/O port range. */
+#define XEN_DOMCTL_ioport_mapping    40
+struct xen_domctl_ioport_mapping {
+    uint32_t first_gport;     /* first guest IO port*/
+    uint32_t first_mport;     /* first machine IO port */
+    uint32_t nr_ports;        /* size of port range */
+    uint32_t add_mapping;     /* add or remove mapping */
+};
+typedef struct xen_domctl_ioport_mapping xen_domctl_ioport_mapping_t;
+DEFINE_XEN_GUEST_HANDLE(xen_domctl_ioport_mapping_t);
+
+           
 struct xen_domctl {
     uint32_t cmd;
     uint32_t interface_version; /* XEN_DOMCTL_INTERFACE_VERSION */
@@ -387,7 +536,15 @@ struct xen_domctl {
         struct xen_domctl_hypercall_init    hypercall_init;
         struct xen_domctl_arch_setup        arch_setup;
         struct xen_domctl_settimeoffset     settimeoffset;
+        struct xen_domctl_real_mode_area    real_mode_area;
+        struct xen_domctl_hvmcontext        hvmcontext;
+        struct xen_domctl_address_size      address_size;
         struct xen_domctl_sendtrigger       sendtrigger;
+        struct xen_domctl_get_device_group  get_device_group;
+        struct xen_domctl_assign_device     assign_device;
+        struct xen_domctl_bind_pt_irq       bind_pt_irq;
+        struct xen_domctl_memory_mapping    memory_mapping;
+        struct xen_domctl_ioport_mapping    ioport_mapping;
         uint8_t                             pad[128];
     } u;
 };

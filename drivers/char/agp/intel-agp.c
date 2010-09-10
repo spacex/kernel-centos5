@@ -38,6 +38,8 @@
 #define PCI_DEVICE_ID_INTEL_Q45_IG          0x2E12
 #define PCI_DEVICE_ID_INTEL_G45_HB          0x2E20
 #define PCI_DEVICE_ID_INTEL_G45_IG          0x2E22
+#define PCI_DEVICE_ID_INTEL_G41_HB          0x2E30
+#define PCI_DEVICE_ID_INTEL_G41_IG          0x2E32
 
 /* cover 915 and 945 variants */
 #define IS_I915 (agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_E7221_HB || \
@@ -61,7 +63,8 @@
 #define IS_G4X (agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_IGD_E_HB || \
 		agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_Q45_HB || \
 		agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_G45_HB || \
-		agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_GM45_HB)
+		agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_GM45_HB || \
+		agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_G41_HB)
 
 /* Intel 815 register */
 #define INTEL_815_APCONT	0x51
@@ -995,6 +998,7 @@ static void intel_i965_get_gtt_range(int *gtt_offset, int *gtt_size)
 	case PCI_DEVICE_ID_INTEL_IGD_E_HB:
 	case PCI_DEVICE_ID_INTEL_Q45_HB:
 	case PCI_DEVICE_ID_INTEL_G45_HB:
+	case PCI_DEVICE_ID_INTEL_G41_HB:
 		*gtt_offset = *gtt_size = MB(2);
 		break;
 	default:
@@ -2102,6 +2106,13 @@ static int __devinit agp_intel_probe(struct pci_dev *pdev,
 		} else
 			bridge->driver = NULL;
 		break;
+	case PCI_DEVICE_ID_INTEL_G41_HB:
+		if (find_i830(PCI_DEVICE_ID_INTEL_G41_IG)) {
+			bridge->driver = &intel_i965_driver;
+			name = "G41";
+		} else
+			bridge->driver = NULL;
+		break;
 	default:
 		if (cap_ptr)
 			printk(KERN_WARNING PFX "Unsupported Intel chipset (device id: %04x)\n",
@@ -2271,6 +2282,7 @@ static struct pci_device_id agp_intel_pci_table[] = {
 	ID(PCI_DEVICE_ID_INTEL_IGD_E_HB),
 	ID(PCI_DEVICE_ID_INTEL_Q45_HB),
 	ID(PCI_DEVICE_ID_INTEL_G45_HB),
+	ID(PCI_DEVICE_ID_INTEL_G41_HB),
 	{ }
 };
 

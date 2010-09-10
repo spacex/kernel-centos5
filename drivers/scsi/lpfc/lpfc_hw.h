@@ -66,6 +66,9 @@
 
 #define BUF_SZ_4K		4096
 
+/* vendor ID used in SCSI netlink calls */
+#define LPFC_NL_VENDOR_ID (SCSI_NL_VID_TYPE_PCI | PCI_VENDOR_ID_EMULEX)
+
 /* Common Transport structures and definitions */
 
 union CtRevisionId {
@@ -468,6 +471,35 @@ struct serv_parm {	/* Structure is in Big Endian format */
 	struct class_parms cls3;
 	struct class_parms cls4;
 	uint8_t vendorVersion[16];
+};
+
+/*
+ * Virtual Fabric Tagging Header
+ */
+struct fc_vft_header {
+	 uint32_t word0;
+#define fc_vft_hdr_r_ctl_SHIFT		24
+#define fc_vft_hdr_r_ctl_MASK		0xFF
+#define fc_vft_hdr_r_ctl_WORD		word0
+#define fc_vft_hdr_ver_SHIFT		22
+#define fc_vft_hdr_ver_MASK		0x3
+#define fc_vft_hdr_ver_WORD		word0
+#define fc_vft_hdr_type_SHIFT		18
+#define fc_vft_hdr_type_MASK		0xF
+#define fc_vft_hdr_type_WORD		word0
+#define fc_vft_hdr_e_SHIFT		16
+#define fc_vft_hdr_e_MASK		0x1
+#define fc_vft_hdr_e_WORD		word0
+#define fc_vft_hdr_priority_SHIFT	13
+#define fc_vft_hdr_priority_MASK	0x7
+#define fc_vft_hdr_priority_WORD	word0
+#define fc_vft_hdr_vf_id_SHIFT		1
+#define fc_vft_hdr_vf_id_MASK		0xFFF
+#define fc_vft_hdr_vf_id_WORD		word0
+	uint32_t word1;
+#define fc_vft_hdr_hopct_SHIFT		24
+#define fc_vft_hdr_hopct_MASK		0xFF
+#define fc_vft_hdr_hopct_WORD		word1
 };
 
 /*
@@ -891,6 +923,12 @@ typedef struct _D_ID {		/* Structure is in Big Endian format */
 	} un;
 } D_ID;
 
+#define RSCN_ADDRESS_FORMAT_PORT	0x0
+#define RSCN_ADDRESS_FORMAT_AREA	0x1
+#define RSCN_ADDRESS_FORMAT_DOMAIN	0x2
+#define RSCN_ADDRESS_FORMAT_FABRIC	0x3
+#define RSCN_ADDRESS_FORMAT_MASK	0x3
+
 /*
  *  Structure to define all ELS Payload types
  */
@@ -1168,6 +1206,8 @@ typedef struct {
 #define PCI_DEVICE_ID_HORNET        0xfe05
 #define PCI_DEVICE_ID_ZEPHYR_SCSP   0xfe11
 #define PCI_DEVICE_ID_ZEPHYR_DCSP   0xfe12
+#define PCI_VENDOR_ID_SERVERENGINE  0x19a2
+#define PCI_DEVICE_ID_TIGERSHARK    0x0704
 
 #define JEDEC_ID_ADDRESS            0x0080001c
 #define FIREFLY_JEDEC_ID            0x1ACC
@@ -1228,6 +1268,18 @@ typedef struct {		/* FireFly BIU registers */
 #define HA_RXATT       0x00000008	/* Bit  3 */
 #define HA_RXMASK      0x0000000f
 
+#define HA_R0_CLR_MSK	(HA_R0RE_REQ | HA_R0CE_RSP | HA_R0ATT)
+#define HA_R1_CLR_MSK	(HA_R1RE_REQ | HA_R1CE_RSP | HA_R1ATT)
+#define HA_R2_CLR_MSK	(HA_R2RE_REQ | HA_R2CE_RSP | HA_R2ATT)
+#define HA_R3_CLR_MSK	(HA_R3RE_REQ | HA_R3CE_RSP | HA_R3ATT)
+
+#define HA_R0_POS	3
+#define HA_R1_POS	7
+#define HA_R2_POS	11
+#define HA_R3_POS	15
+#define HA_LE_POS	29
+#define HA_MB_POS	30
+#define HA_ER_POS	31
 /* Chip Attention Register */
 
 #define CA_REG_OFFSET  4	/* Byte offset from register base address */
@@ -1265,7 +1317,7 @@ typedef struct {		/* FireFly BIU registers */
 
 /* Host Control Register */
 
-#define HC_REG_OFFSET  12	/* Word offset from register base address */
+#define HC_REG_OFFSET  12	/* Byte offset from register base address */
 
 #define HC_MBINT_ENA   0x00000001	/* Bit  0 */
 #define HC_R0INT_ENA   0x00000002	/* Bit  1 */
@@ -1277,6 +1329,19 @@ typedef struct {		/* FireFly BIU registers */
 #define HC_INITFF      0x08000000	/* Bit 27 */
 #define HC_LAINT_ENA   0x20000000	/* Bit 29 */
 #define HC_ERINT_ENA   0x80000000	/* Bit 31 */
+
+/* Message Signaled Interrupt eXtension (MSI-X) message identifiers */
+#define MSIX_DFLT_ID	0
+#define MSIX_RNG0_ID	0
+#define MSIX_RNG1_ID	1
+#define MSIX_RNG2_ID	2
+#define MSIX_RNG3_ID	3
+
+#define MSIX_LINK_ID	4
+#define MSIX_MBOX_ID	5
+
+#define MSIX_SPARE0_ID	6
+#define MSIX_SPARE1_ID	7
 
 /* Mailbox Commands */
 #define MBX_SHUTDOWN        0x00	/* terminate testing */
@@ -1315,6 +1380,7 @@ typedef struct {		/* FireFly BIU registers */
 #define MBX_KILL_BOARD      0x24
 #define MBX_CONFIG_FARP     0x25
 #define MBX_BEACON          0x2A
+#define MBX_CONFIG_MSI      0x30
 #define MBX_HEARTBEAT       0x31
 #define MBX_WRITE_VPARMS    0x32
 #define MBX_ASYNCEVT_ENABLE 0x33
@@ -1322,6 +1388,8 @@ typedef struct {		/* FireFly BIU registers */
 #define MBX_READ_EVENT_LOG  0x38
 #define MBX_WRITE_EVENT_LOG 0x39
 
+#define MBX_PORT_CAPABILITIES 0x3B
+#define MBX_PORT_IOV_CONTROL 0x3C
 
 #define MBX_CONFIG_HBQ	    0x7C
 #define MBX_LOAD_AREA       0x81
@@ -1333,15 +1401,21 @@ typedef struct {		/* FireFly BIU registers */
 #define MBX_READ_LA64       0x95
 #define MBX_REG_VPI	    0x96
 #define MBX_UNREG_VPI	    0x97
-#define MBX_REG_VNPID	    0x96
-#define MBX_UNREG_VNPID	    0x97
 
 #define MBX_WRITE_WWN       0x98
 #define MBX_SET_DEBUG       0x99
 #define MBX_LOAD_EXP_ROM    0x9C
-
-#define MBX_MAX_CMDS        0x9D
+#define MBX_SLI4_CONFIG	    0x9B
+#define MBX_SLI4_REQ_FTRS   0x9D
+#define MBX_MAX_CMDS        0x9E
+#define MBX_RESUME_RPI      0x9E
 #define MBX_SLI2_CMD_MASK   0x80
+#define MBX_REG_VFI         0x9F
+#define MBX_REG_FCFI        0xA0
+#define MBX_UNREG_VFI       0xA1
+#define MBX_UNREG_FCFI	    0xA2
+#define MBX_INIT_VFI        0xA3
+#define MBX_INIT_VPI        0xA4
 
 /* IOCB Commands */
 
@@ -1458,6 +1532,7 @@ typedef struct {		/* FireFly BIU registers */
 #define MBXERR_DMA_ERROR            15
 #define MBXERR_ERROR                16
 #define MBXERR_UNKNOWN_CMD          18
+#define MBXERR_LINK_DOWN            0x33
 #define MBX_NOT_FINISHED           255
 
 #define MBX_BUSY                   0xffffff /* Attempted cmd to busy Mailbox */
@@ -1495,38 +1570,6 @@ struct ulp_bde {
 	uint32_t bdeReserved:4;
 #endif
 };
-
-struct ulp_bde64 {	/* SLI-2 */
-	union ULP_BDE_TUS {
-		uint32_t w;
-		struct {
-#ifdef __BIG_ENDIAN_BITFIELD
-			uint32_t bdeFlags:8;	/* BDE Flags 0 IS A SUPPORTED
-						   VALUE !! */
-			uint32_t bdeSize:24;	/* Size of buffer (in bytes) */
-#else	/*  __LITTLE_ENDIAN_BITFIELD */
-			uint32_t bdeSize:24;	/* Size of buffer (in bytes) */
-			uint32_t bdeFlags:8;	/* BDE Flags 0 IS A SUPPORTED
-						   VALUE !! */
-#endif
-
-#define BUFF_USE_RSVD       0x01	/* bdeFlags */
-#define BUFF_USE_INTRPT     0x02	/* Not Implemented with LP6000 */
-#define BUFF_USE_CMND       0x04	/* Optional, 1=cmd/rsp 0=data buffer */
-#define BUFF_USE_RCV        0x08	/*  "" "", 1=rcv buffer, 0=xmit
-					    buffer */
-#define BUFF_TYPE_32BIT     0x10	/*  "" "", 1=32 bit addr 0=64 bit
-					    addr */
-#define BUFF_TYPE_SPECIAL   0x20	/* Not Implemented with LP6000  */
-#define BUFF_TYPE_BDL       0x40	/* Optional,  may be set in BDL */
-#define BUFF_TYPE_INVALID   0x80	/*  ""  "" */
-		} f;
-	} tus;
-	uint32_t addrLow;
-	uint32_t addrHigh;
-};
-#define BDE64_SIZE_WORD 0
-#define BPL64_SIZE_WORD 0x40
 
 typedef struct ULP_BDL {	/* SLI-2 */
 #ifdef __BIG_ENDIAN_BITFIELD
@@ -2191,7 +2234,7 @@ typedef struct {
 	uint32_t rsvd3;
 	uint32_t rsvd4;
 	uint32_t rsvd5;
-	uint16_t rsvd6;
+	uint16_t vfi;
 	uint16_t vpi;
 #else	/*  __LITTLE_ENDIAN */
 	uint32_t rsvd1;
@@ -2201,7 +2244,7 @@ typedef struct {
 	uint32_t rsvd4;
 	uint32_t rsvd5;
 	uint16_t vpi;
-	uint16_t rsvd6;
+	uint16_t vfi;
 #endif
 } REG_VPI_VAR;
 
@@ -2369,7 +2412,7 @@ typedef struct {
 	uint32_t entry_index:16;
 #endif
 
-	uint32_t rsvd1;
+	uint32_t sli4_length;
 	uint32_t word_cnt;
 	uint32_t resp_offset;
 } DUMP_VAR;
@@ -2381,6 +2424,53 @@ typedef struct {
 #define  DMP_VPD_SIZE            0x400  /* maximum amount of VPD */
 #define  DMP_RSP_OFFSET          0x14   /* word 5 contains first word of rsp */
 #define  DMP_RSP_SIZE            0x6C   /* maximum of 27 words of rsp data */
+
+#define  DMP_REGION_VPORT	 0x16   /* VPort info region */
+#define  DMP_VPORT_REGION_SIZE	 0x200
+#define  DMP_MBOX_OFFSET_WORD	 0x5
+
+#define  DMP_REGION_23	 	 0x17   /* fcoe param  and port state region */
+#define  DMP_RGN23_SIZE	 	 0x400
+
+#define  WAKE_UP_PARMS_REGION_ID    4
+#define  WAKE_UP_PARMS_WORD_SIZE   15
+
+struct vport_rec {
+	uint8_t wwpn[8];
+	uint8_t wwnn[8];
+};
+
+#define VPORT_INFO_SIG 0x32324752
+#define VPORT_INFO_REV_MASK 0xff
+#define VPORT_INFO_REV 0x1
+#define MAX_STATIC_VPORT_COUNT 16
+struct static_vport_info {
+	uint32_t 		signature;
+	uint32_t		rev;
+	struct vport_rec 	vport_list[MAX_STATIC_VPORT_COUNT];
+	uint32_t		resvd[66];
+};
+
+/* Option rom version structure */
+struct prog_id {
+#ifdef __BIG_ENDIAN_BITFIELD
+	uint8_t  type;
+	uint8_t  id;
+	uint32_t ver:4;  /* Major Version */
+	uint32_t rev:4;  /* Revision */
+	uint32_t lev:2;  /* Level */
+	uint32_t dist:2; /* Dist Type */
+	uint32_t num:4;  /* number after dist type */
+#else /*  __LITTLE_ENDIAN_BITFIELD */
+	uint32_t num:4;  /* number after dist type */
+	uint32_t dist:2; /* Dist Type */
+	uint32_t lev:2;  /* Level */
+	uint32_t rev:4;  /* Revision */
+	uint32_t ver:4;  /* Major Version */
+	uint8_t  id;
+	uint8_t  type;
+#endif
+};
 
 /* Structure for MB Command UPDATE_CFG (0x1B) */
 
@@ -2656,6 +2746,40 @@ typedef struct {
 
 } CONFIG_PORT_VAR;
 
+/* Structure for MB Command CONFIG_MSI (0x30) */
+struct config_msi_var {
+#ifdef __BIG_ENDIAN_BITFIELD
+	uint32_t dfltMsgNum:8;	/* Default message number            */
+	uint32_t rsvd1:11;	/* Reserved                          */
+	uint32_t NID:5;		/* Number of secondary attention IDs */
+	uint32_t rsvd2:5;	/* Reserved                          */
+	uint32_t dfltPresent:1;	/* Default message number present    */
+	uint32_t addFlag:1;	/* Add association flag              */
+	uint32_t reportFlag:1;	/* Report association flag           */
+#else	/*  __LITTLE_ENDIAN_BITFIELD */
+	uint32_t reportFlag:1;	/* Report association flag           */
+	uint32_t addFlag:1;	/* Add association flag              */
+	uint32_t dfltPresent:1;	/* Default message number present    */
+	uint32_t rsvd2:5;	/* Reserved                          */
+	uint32_t NID:5;		/* Number of secondary attention IDs */
+	uint32_t rsvd1:11;	/* Reserved                          */
+	uint32_t dfltMsgNum:8;	/* Default message number            */
+#endif
+	uint32_t attentionConditions[2];
+	uint8_t  attentionId[16];
+	uint8_t  messageNumberByHA[64];
+	uint8_t  messageNumberByID[16];
+	uint32_t autoClearHA[2];
+#ifdef __BIG_ENDIAN_BITFIELD
+	uint32_t rsvd3:16;
+	uint32_t autoClearID:16;
+#else	/*  __LITTLE_ENDIAN_BITFIELD */
+	uint32_t autoClearID:16;
+	uint32_t rsvd3:16;
+#endif
+	uint32_t rsvd4;
+};
+
 /* SLI-2 Port Control Block */
 
 /* SLIM POINTER */
@@ -2784,6 +2908,7 @@ typedef union {
 	UNREG_VPI_VAR varUnregVpi;	/* cmd = 0x97 (UNREG_VPI) */
 	ASYNCEVT_ENABLE_VAR varCfgAsyncEvent; /*cmd = x33 (CONFIG_ASYNC) */
 	READ_EVENT_LOG_VAR varRdEventLog; /* cmd = 0x38 (READ_EVENT_LOG) */
+	struct config_msi_var varCfgMSI;/* cmd = x30 (CONFIG_MSI)     */
 } MAILVARIANTS;
 
 /*
@@ -2817,11 +2942,11 @@ struct sli3_pgp {
 	uint32_t hbq_get[16];
 };
 
-typedef union {
+union sli_var {
 	struct sli2_desc s2;
 	struct sli3_desc s3;
 	struct sli3_pgp  s3_pgp;
-} SLI_VAR;
+};
 
 typedef struct {
 #ifdef __BIG_ENDIAN_BITFIELD
@@ -2839,7 +2964,7 @@ typedef struct {
 #endif
 
 	MAILVARIANTS un;
-	SLI_VAR us;
+	union sli_var us;
 } MAILBOX_t;
 
 /*
@@ -3404,3 +3529,5 @@ lpfc_error_lost_link(IOCB_t *iocbp)
 #define MENLO_TIMEOUT 30
 #define SETVAR_MLOMNT 0x103107
 #define SETVAR_MLORST 0x103007
+
+#define BPL_ALIGN_SZ 8 /* 8 byte alignment for bpl and mbufs */

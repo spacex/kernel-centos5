@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2007 Emulex.  All rights reserved.                *
+ * Copyright (C) 2007-2009 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -34,8 +34,11 @@
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_transport_fc.h>
 
+#include "lpfc_hw4.h"
 #include "lpfc_hw.h"
 #include "lpfc_sli.h"
+#include "lpfc_sli4.h"
+#include "lpfc_nl.h"
 #include "lpfc_disc.h"
 #include "lpfc_scsi.h"
 #include "lpfc.h"
@@ -46,8 +49,9 @@
 #include "lpfc_compat.h"
 #include "lpfc_debugfs.h"
 
-#ifdef CONFIG_LPFC_DEBUG_FS
-/* debugfs interface
+#ifdef CONFIG_SCSI_LPFC_DEBUG_FS
+/*
+ * debugfs interface
  *
  * To access this interface the user should:
  * # mkdir /debug
@@ -87,7 +91,7 @@ module_param(lpfc_debugfs_max_slow_ring_trc, int, 0);
 MODULE_PARM_DESC(lpfc_debugfs_max_slow_ring_trc,
 	"Set debugfs slow ring trace depth");
 
-int lpfc_debugfs_mask_disc_trc;
+static int lpfc_debugfs_mask_disc_trc;
 module_param(lpfc_debugfs_mask_disc_trc, int, 0);
 MODULE_PARM_DESC(lpfc_debugfs_mask_disc_trc,
 	"Set debugfs discovery trace mask");
@@ -118,6 +122,25 @@ struct lpfc_debug {
 static atomic_t lpfc_debugfs_seq_trc_cnt = ATOMIC_INIT(0);
 static unsigned long lpfc_debugfs_start_time = 0L;
 
+/**
+ * lpfc_debugfs_disc_trc_data - Dump discovery logging to a buffer
+ * @vport: The vport to gather the log info from.
+ * @buf: The buffer to dump log into.
+ * @size: The maximum amount of data to process.
+ *
+ * Description:
+ * This routine gathers the lpfc discovery debugfs data from the @vport and
+ * dumps it to @buf up to @size number of bytes. It will start at the next entry
+ * in the log and process the log until the end of the buffer. Then it will
+ * gather from the beginning of the log and process until the current entry.
+ *
+ * Notes:
+ * Discovery logging will be disabled while while this routine dumps the log.
+ *
+ * Return Value:
+ * This routine returns the amount of bytes that were dumped into @buf and will
+ * not exceed @size.
+ **/
 static int
 lpfc_debugfs_disc_trc_data(struct lpfc_vport *vport, char *buf, int size)
 {
@@ -160,6 +183,25 @@ lpfc_debugfs_disc_trc_data(struct lpfc_vport *vport, char *buf, int size)
 	return len;
 }
 
+/**
+ * lpfc_debugfs_slow_ring_trc_data - Dump slow ring logging to a buffer
+ * @phba: The HBA to gather the log info from.
+ * @buf: The buffer to dump log into.
+ * @size: The maximum amount of data to process.
+ *
+ * Description:
+ * This routine gathers the lpfc slow ring debugfs data from the @phba and
+ * dumps it to @buf up to @size number of bytes. It will start at the next entry
+ * in the log and process the log until the end of the buffer. Then it will
+ * gather from the beginning of the log and process until the current entry.
+ *
+ * Notes:
+ * Slow ring logging will be disabled while while this routine dumps the log.
+ *
+ * Return Value:
+ * This routine returns the amount of bytes that were dumped into @buf and will
+ * not exceed @size.
+ **/
 static int
 lpfc_debugfs_slow_ring_trc_data(struct lpfc_hba *phba, char *buf, int size)
 {
@@ -204,6 +246,25 @@ lpfc_debugfs_slow_ring_trc_data(struct lpfc_hba *phba, char *buf, int size)
 
 static int lpfc_debugfs_last_hbq = -1;
 
+/**
+ * lpfc_debugfs_hbqinfo_data - Dump host buffer queue info to a buffer
+ * @phba: The HBA to gather host buffer info from.
+ * @buf: The buffer to dump log into.
+ * @size: The maximum amount of data to process.
+ *
+ * Description:
+ * This routine dumps the host buffer queue info from the @phba to @buf up to
+ * @size number of bytes. A header that describes the current hbq state will be
+ * dumped to @buf first and then info on each hbq entry will be dumped to @buf
+ * until @size bytes have been dumped or all the hbq info has been dumped.
+ *
+ * Notes:
+ * This routine will rotate through each configured HBQ each time called.
+ *
+ * Return Value:
+ * This routine returns the amount of bytes that were dumped into @buf and will
+ * not exceed @size.
+ **/
 static int
 lpfc_debugfs_hbqinfo_data(struct lpfc_hba *phba, char *buf, int size)
 {
@@ -216,6 +277,8 @@ lpfc_debugfs_hbqinfo_data(struct lpfc_hba *phba, char *buf, int size)
 	struct lpfc_dmabuf *d_buf;
 	struct hbq_dmabuf *hbq_buf;
 
+	if (phba->sli_rev != 3)
+		return 0;
 	cnt = LPFC_HBQINFO_SIZE;
 	spin_lock_irq(&phba->hbalock);
 
@@ -304,6 +367,24 @@ skipit:
 
 static int lpfc_debugfs_last_hba_slim_off;
 
+/**
+ * lpfc_debugfs_dumpHBASlim_data - Dump HBA SLIM info to a buffer
+ * @phba: The HBA to gather SLIM info from.
+ * @buf: The buffer to dump log into.
+ * @size: The maximum amount of data to process.
+ *
+ * Description:
+ * This routine dumps the current contents of HBA SLIM for the HBA associated
+ * with @phba to @buf up to @size bytes of data. This is the raw HBA SLIM data.
+ *
+ * Notes:
+ * This routine will only dump up to 1024 bytes of data each time called and
+ * should be called multiple times to dump the entire HBA SLIM.
+ *
+ * Return Value:
+ * This routine returns the amount of bytes that were dumped into @buf and will
+ * not exceed @size.
+ **/
 static int
 lpfc_debugfs_dumpHBASlim_data(struct lpfc_hba *phba, char *buf, int size)
 {
@@ -317,8 +398,7 @@ lpfc_debugfs_dumpHBASlim_data(struct lpfc_hba *phba, char *buf, int size)
 
 	len +=  snprintf(buf+len, size-len, "HBA SLIM\n");
 	lpfc_memcpy_from_slim(buffer,
-		((uint8_t *)phba->MBslimaddr) + lpfc_debugfs_last_hba_slim_off,
-		1024);
+		phba->MBslimaddr + lpfc_debugfs_last_hba_slim_off, 1024);
 
 	ptr = (uint32_t *)&buffer[0];
 	off = lpfc_debugfs_last_hba_slim_off;
@@ -343,6 +423,21 @@ lpfc_debugfs_dumpHBASlim_data(struct lpfc_hba *phba, char *buf, int size)
 	return len;
 }
 
+/**
+ * lpfc_debugfs_dumpHostSlim_data - Dump host SLIM info to a buffer
+ * @phba: The HBA to gather Host SLIM info from.
+ * @buf: The buffer to dump log into.
+ * @size: The maximum amount of data to process.
+ *
+ * Description:
+ * This routine dumps the current contents of host SLIM for the host associated
+ * with @phba to @buf up to @size bytes of data. The dump will contain the
+ * Mailbox, PCB, Rings, and Registers that are located in host memory.
+ *
+ * Return Value:
+ * This routine returns the amount of bytes that were dumped into @buf and will
+ * not exceed @size.
+ **/
 static int
 lpfc_debugfs_dumpHostSlim_data(struct lpfc_hba *phba, char *buf, int size)
 {
@@ -421,16 +516,34 @@ lpfc_debugfs_dumpHostSlim_data(struct lpfc_hba *phba, char *buf, int size)
 
 
 	ptr = (uint32_t *)&phba->slim2p->mbx.us.s3_pgp.hbq_get;
-	word0 = readl(phba->HAregaddr);
-	word1 = readl(phba->CAregaddr);
-	word2 = readl(phba->HSregaddr);
-	word3 = readl(phba->HCregaddr);
-	len +=  snprintf(buf+len, size-len, "HA:%08x CA:%08x HS:%08x HC:%08x\n",
-	word0, word1, word2, word3);
+
+	if (phba->sli_rev <= LPFC_SLI_REV3) {
+		word0 = readl(phba->HAregaddr);
+		word1 = readl(phba->CAregaddr);
+		word2 = readl(phba->HSregaddr);
+		word3 = readl(phba->HCregaddr);
+		len +=  snprintf(buf+len, size-len, "HA:%08x CA:%08x HS:%08x "
+				 "HC:%08x\n", word0, word1, word2, word3);
+	}
 	spin_unlock_irq(&phba->hbalock);
 	return len;
 }
 
+/**
+ * lpfc_debugfs_nodelist_data - Dump target node list to a buffer
+ * @vport: The vport to gather target node info from.
+ * @buf: The buffer to dump log into.
+ * @size: The maximum amount of data to process.
+ *
+ * Description:
+ * This routine dumps the current target node list associated with @vport to
+ * @buf up to @size bytes of data. Each node entry in the dump will contain a
+ * node state, DID, WWPN, WWNN, RPI, flags, type, and other useful fields.
+ *
+ * Return Value:
+ * This routine returns the amount of bytes that were dumped into @buf and will
+ * not exceed @size.
+ **/
 static int
 lpfc_debugfs_nodelist_data(struct lpfc_vport *vport, char *buf, int size)
 {
@@ -514,12 +627,27 @@ lpfc_debugfs_nodelist_data(struct lpfc_vport *vport, char *buf, int size)
 }
 #endif
 
-
+/**
+ * lpfc_debugfs_disc_trc - Store discovery trace log
+ * @vport: The vport to associate this trace string with for retrieval.
+ * @mask: Log entry classification.
+ * @fmt: Format string to be displayed when dumping the log.
+ * @data1: 1st data parameter to be applied to @fmt.
+ * @data2: 2nd data parameter to be applied to @fmt.
+ * @data3: 3rd data parameter to be applied to @fmt.
+ *
+ * Description:
+ * This routine is used by the driver code to add a debugfs log entry to the
+ * discovery trace buffer associated with @vport. Only entries with a @mask that
+ * match the current debugfs discovery mask will be saved. Entries that do not
+ * match will be thrown away. @fmt, @data1, @data2, and @data3 are used like
+ * printf when displaying the log.
+ **/
 inline void
 lpfc_debugfs_disc_trc(struct lpfc_vport *vport, int mask, char *fmt,
 	uint32_t data1, uint32_t data2, uint32_t data3)
 {
-#ifdef CONFIG_LPFC_DEBUG_FS
+#ifdef CONFIG_SCSI_LPFC_DEBUG_FS
 	struct lpfc_debugfs_trc *dtp;
 	int index;
 
@@ -543,11 +671,24 @@ lpfc_debugfs_disc_trc(struct lpfc_vport *vport, int mask, char *fmt,
 	return;
 }
 
+/**
+ * lpfc_debugfs_slow_ring_trc - Store slow ring trace log
+ * @phba: The phba to associate this trace string with for retrieval.
+ * @fmt: Format string to be displayed when dumping the log.
+ * @data1: 1st data parameter to be applied to @fmt.
+ * @data2: 2nd data parameter to be applied to @fmt.
+ * @data3: 3rd data parameter to be applied to @fmt.
+ *
+ * Description:
+ * This routine is used by the driver code to add a debugfs log entry to the
+ * discovery trace buffer associated with @vport. @fmt, @data1, @data2, and
+ * @data3 are used like printf when displaying the log.
+ **/
 inline void
 lpfc_debugfs_slow_ring_trc(struct lpfc_hba *phba, char *fmt,
 	uint32_t data1, uint32_t data2, uint32_t data3)
 {
-#ifdef CONFIG_LPFC_DEBUG_FS
+#ifdef CONFIG_SCSI_LPFC_DEBUG_FS
 	struct lpfc_debugfs_trc *dtp;
 	int index;
 
@@ -568,7 +709,22 @@ lpfc_debugfs_slow_ring_trc(struct lpfc_hba *phba, char *fmt,
 	return;
 }
 
-#ifdef CONFIG_LPFC_DEBUG_FS
+#ifdef CONFIG_SCSI_LPFC_DEBUG_FS
+/**
+ * lpfc_debugfs_disc_trc_open - Open the discovery trace log
+ * @inode: The inode pointer that contains a vport pointer.
+ * @file: The file pointer to attach the log output.
+ *
+ * Description:
+ * This routine is the entry point for the debugfs open file operation. It gets
+ * the vport from the i_private field in @inode, allocates the necessary buffer
+ * for the log, fills the buffer from the in-memory log for this vport, and then
+ * returns a pointer to that log in the private_data field in @file.
+ *
+ * Returns:
+ * This function returns zero if successful. On error it will return an negative
+ * error value.
+ **/
 static int
 lpfc_debugfs_disc_trc_open(struct inode *inode, struct file *file)
 {
@@ -604,6 +760,21 @@ out:
 	return rc;
 }
 
+/**
+ * lpfc_debugfs_slow_ring_trc_open - Open the Slow Ring trace log
+ * @inode: The inode pointer that contains a vport pointer.
+ * @file: The file pointer to attach the log output.
+ *
+ * Description:
+ * This routine is the entry point for the debugfs open file operation. It gets
+ * the vport from the i_private field in @inode, allocates the necessary buffer
+ * for the log, fills the buffer from the in-memory log for this vport, and then
+ * returns a pointer to that log in the private_data field in @file.
+ *
+ * Returns:
+ * This function returns zero if successful. On error it will return an negative
+ * error value.
+ **/
 static int
 lpfc_debugfs_slow_ring_trc_open(struct inode *inode, struct file *file)
 {
@@ -639,6 +810,21 @@ out:
 	return rc;
 }
 
+/**
+ * lpfc_debugfs_hbqinfo_open - Open the hbqinfo debugfs buffer
+ * @inode: The inode pointer that contains a vport pointer.
+ * @file: The file pointer to attach the log output.
+ *
+ * Description:
+ * This routine is the entry point for the debugfs open file operation. It gets
+ * the vport from the i_private field in @inode, allocates the necessary buffer
+ * for the log, fills the buffer from the in-memory log for this vport, and then
+ * returns a pointer to that log in the private_data field in @file.
+ *
+ * Returns:
+ * This function returns zero if successful. On error it will return an negative
+ * error value.
+ **/
 static int
 lpfc_debugfs_hbqinfo_open(struct inode *inode, struct file *file)
 {
@@ -666,6 +852,21 @@ out:
 	return rc;
 }
 
+/**
+ * lpfc_debugfs_dumpHBASlim_open - Open the Dump HBA SLIM debugfs buffer
+ * @inode: The inode pointer that contains a vport pointer.
+ * @file: The file pointer to attach the log output.
+ *
+ * Description:
+ * This routine is the entry point for the debugfs open file operation. It gets
+ * the vport from the i_private field in @inode, allocates the necessary buffer
+ * for the log, fills the buffer from the in-memory log for this vport, and then
+ * returns a pointer to that log in the private_data field in @file.
+ *
+ * Returns:
+ * This function returns zero if successful. On error it will return an negative
+ * error value.
+ **/
 static int
 lpfc_debugfs_dumpHBASlim_open(struct inode *inode, struct file *file)
 {
@@ -693,6 +894,21 @@ out:
 	return rc;
 }
 
+/**
+ * lpfc_debugfs_dumpHostSlim_open - Open the Dump Host SLIM debugfs buffer
+ * @inode: The inode pointer that contains a vport pointer.
+ * @file: The file pointer to attach the log output.
+ *
+ * Description:
+ * This routine is the entry point for the debugfs open file operation. It gets
+ * the vport from the i_private field in @inode, allocates the necessary buffer
+ * for the log, fills the buffer from the in-memory log for this vport, and then
+ * returns a pointer to that log in the private_data field in @file.
+ *
+ * Returns:
+ * This function returns zero if successful. On error it will return an negative
+ * error value.
+ **/
 static int
 lpfc_debugfs_dumpHostSlim_open(struct inode *inode, struct file *file)
 {
@@ -720,6 +936,21 @@ out:
 	return rc;
 }
 
+/**
+ * lpfc_debugfs_nodelist_open - Open the nodelist debugfs file
+ * @inode: The inode pointer that contains a vport pointer.
+ * @file: The file pointer to attach the log output.
+ *
+ * Description:
+ * This routine is the entry point for the debugfs open file operation. It gets
+ * the vport from the i_private field in @inode, allocates the necessary buffer
+ * for the log, fills the buffer from the in-memory log for this vport, and then
+ * returns a pointer to that log in the private_data field in @file.
+ *
+ * Returns:
+ * This function returns zero if successful. On error it will return an negative
+ * error value.
+ **/
 static int
 lpfc_debugfs_nodelist_open(struct inode *inode, struct file *file)
 {
@@ -747,6 +978,23 @@ out:
 	return rc;
 }
 
+/**
+ * lpfc_debugfs_lseek - Seek through a debugfs file
+ * @file: The file pointer to seek through.
+ * @off: The offset to seek to or the amount to seek by.
+ * @whence: Indicates how to seek.
+ *
+ * Description:
+ * This routine is the entry point for the debugfs lseek file operation. The
+ * @whence parameter indicates whether @off is the offset to directly seek to,
+ * or if it is a value to seek forward or reverse by. This function figures out
+ * what the new offset of the debugfs file will be and assigns that value to the
+ * f_pos field of @file.
+ *
+ * Returns:
+ * This function returns the new offset if successful and returns a negative
+ * error if unable to process the seek.
+ **/
 static loff_t
 lpfc_debugfs_lseek(struct file *file, loff_t off, int whence)
 {
@@ -768,6 +1016,22 @@ lpfc_debugfs_lseek(struct file *file, loff_t off, int whence)
 	return (pos < 0 || pos > debug->len) ? -EINVAL : (file->f_pos = pos);
 }
 
+/**
+ * lpfc_debugfs_read - Read a debugfs file
+ * @file: The file pointer to read from.
+ * @buf: The buffer to copy the data to.
+ * @nbytes: The number of bytes to read.
+ * @ppos: The position in the file to start reading from.
+ *
+ * Description:
+ * This routine reads data from from the buffer indicated in the private_data
+ * field of @file. It will start reading at @ppos and copy up to @nbytes of
+ * data to @buf.
+ *
+ * Returns:
+ * This function returns the amount of data that was read (this could be less
+ * than @nbytes if the end of the file was reached) or a negative error value.
+ **/
 static ssize_t
 lpfc_debugfs_read(struct file *file, char __user *buf,
 		  size_t nbytes, loff_t *ppos)
@@ -777,6 +1041,18 @@ lpfc_debugfs_read(struct file *file, char __user *buf,
 				       debug->len);
 }
 
+/**
+ * lpfc_debugfs_release - Release the buffer used to store debugfs file data
+ * @inode: The inode pointer that contains a vport pointer. (unused)
+ * @file: The file pointer that contains the buffer to release.
+ *
+ * Description:
+ * This routine frees the buffer that was allocated when the debugfs file was
+ * opened.
+ *
+ * Returns:
+ * This function returns zero.
+ **/
 static int
 lpfc_debugfs_release(struct inode *inode, struct file *file)
 {
@@ -846,10 +1122,20 @@ static struct dentry *lpfc_debugfs_root = NULL;
 static atomic_t lpfc_debugfs_hba_count;
 #endif
 
+/**
+ * lpfc_debugfs_initialize - Initialize debugfs for a vport
+ * @vport: The vport pointer to initialize.
+ *
+ * Description:
+ * When Debugfs is configured this routine sets up the lpfc debugfs file system.
+ * If not already created, this routine will create the lpfc directory, and
+ * lpfcX directory (for this HBA), and vportX directory for this vport. It will
+ * also create each file used to access lpfc specific debugfs information.
+ **/
 inline void
 lpfc_debugfs_initialize(struct lpfc_vport *vport)
 {
-#ifdef CONFIG_LPFC_DEBUG_FS
+#ifdef CONFIG_SCSI_LPFC_DEBUG_FS
 	struct lpfc_hba   *phba = vport->phba;
 	char name[64];
 	uint32_t num, i;
@@ -1034,11 +1320,21 @@ debug_failed:
 #endif
 }
 
-
+/**
+ * lpfc_debugfs_terminate -  Tear down debugfs infrastructure for this vport
+ * @vport: The vport pointer to remove from debugfs.
+ *
+ * Description:
+ * When Debugfs is configured this routine removes debugfs file system elements
+ * that are specific to this vport. It also checks to see if there are any
+ * users left for the debugfs directories associated with the HBA and driver. If
+ * this is the last user of the HBA directory or driver directory then it will
+ * remove those from the debugfs infrastructure as well.
+ **/
 inline void
 lpfc_debugfs_terminate(struct lpfc_vport *vport)
 {
-#ifdef CONFIG_LPFC_DEBUG_FS
+#ifdef CONFIG_SCSI_LPFC_DEBUG_FS
 	struct lpfc_hba   *phba = vport->phba;
 
 	if (vport->disc_trc) {

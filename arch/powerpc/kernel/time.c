@@ -669,6 +669,7 @@ void timer_interrupt(struct pt_regs * regs)
 			timer_check_rtc();
 		}
 		write_sequnlock(&xtime_lock);
+		leap_second_message();
 	}
 	
 	next_dec = tb_ticks_per_jiffy - ticks;

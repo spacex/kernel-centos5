@@ -508,13 +508,14 @@ struct xfrm_policy *xfrm_policy_bysel_ctx(int dir, struct xfrm_selector *sel,
 		if ((memcmp(sel, &pol->selector, sizeof(*sel)) == 0) &&
 		    (xfrm_sec_ctx_match(ctx, pol->security))) {
 			xfrm_pol_hold(pol);
-			if (delete)
+			if (delete) {
 				*err = security_xfrm_policy_delete(pol);
 				if (*err) {
 					write_unlock_bh(&xfrm_policy_lock);
 					return pol;
 				}
 				*p = pol->next;
+			}
 			break;
 		}
 	}
@@ -537,13 +538,14 @@ struct xfrm_policy *xfrm_policy_byid(int dir, u32 id, int delete, int *err)
 	for (p = &xfrm_policy_list[dir]; (pol=*p)!=NULL; p = &pol->next) {
 		if (pol->index == id) {
 			xfrm_pol_hold(pol);
-			if (delete)
+			if (delete) {
 				*err = security_xfrm_policy_delete(pol);
 				if (*err) {
 					write_unlock_bh(&xfrm_policy_lock);
 					return pol;
 				}
 				*p = pol->next;
+			}
 			break;
 		}
 	}

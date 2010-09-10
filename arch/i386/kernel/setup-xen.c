@@ -164,6 +164,12 @@ struct e820map e820;
 static void __init e820_setup_gap(struct e820entry *e820, int nr_map);
 #ifdef CONFIG_XEN
 struct e820map machine_e820;
+
+/*
+ * This is controlled by a boot flag processed in file
+ *   `arch/i386/quirks-xen.c'
+ */
+extern int pci_pt_e820_access_enabled;
 #endif
 
 extern void early_cpu_init(void);
@@ -755,6 +761,19 @@ int __init copy_e820_map(struct e820entry * biosmap, int nr_map)
 #endif
 		add_memory_region(start, size, type);
 	} while (biosmap++,--nr_map);
+#ifdef CONFIG_XEN_PRIVILEGED_GUEST
+	if (is_initial_xendomain()) {
+		struct xen_memory_map memmap;
+		int nr_map = e820.nr_map;
+
+		memmap.nr_entries = E820MAX;
+		set_xen_guest_handle(memmap.buffer, machine_e820.map);
+
+		if(HYPERVISOR_memory_op(XENMEM_machine_memory_map, &memmap))
+			BUG();
+		machine_e820.nr_map = memmap.nr_entries;
+	}
+#endif
 	return 0;
 }
 
@@ -1056,9 +1075,18 @@ e820_all_mapped(unsigned long s, unsigned long e, unsigned type)
 {
 	u64 start = s;
 	u64 end = e;
-	int i;
-	for (i = 0; i < e820.nr_map; i++) {
-		struct e820entry *ei = &e820.map[i];
+	int i, nrmap;
+	struct e820entry *ei;
+
+	nrmap = e820.nr_map;
+	ei = &e820.map[0];
+#ifdef	CONFIG_XEN
+	if (pci_pt_e820_access_enabled) {
+		nrmap = machine_e820.nr_map;
+		ei = &machine_e820.map[0];
+	}
+#endif
+	for (i = 0; i < nrmap; i++, ei++) {
 		if (type && ei->type != type)
 			continue;
 		/* is the region (part) in overlap with the current region ?*/
@@ -1433,18 +1461,10 @@ legacy_init_iomem_resources(struct resource *code_resource, struct resource *dat
 	struct e820entry *map = e820.map;
 	int nr_map = e820.nr_map;
 #ifdef CONFIG_XEN_PRIVILEGED_GUEST
-	struct xen_memory_map memmap;
 
+	nr_map = machine_e820.nr_map;
 	map = machine_e820.map;
-	memmap.nr_entries = E820MAX;
-
-	set_xen_guest_handle(memmap.buffer, map);
-
-	if(HYPERVISOR_memory_op(XENMEM_machine_memory_map, &memmap))
-		BUG();
-	machine_e820.nr_map = memmap.nr_entries;
-	nr_map = memmap.nr_entries;
-	e820_setup_gap(map, memmap.nr_entries);
+	e820_setup_gap(map, nr_map);
 #endif
 
 	probe_roms();
@@ -1602,6 +1622,7 @@ void __init setup_arch(char **cmdline_p)
 	int i, j, k, fpp;
 	struct physdev_set_iopl set_iopl;
 	unsigned long max_low_pfn;
+	unsigned long p2m_pages;
 
 	/* Force a quick death if the kernel panics (not domain 0). */
 	extern int panic_timeout;
@@ -1742,6 +1763,32 @@ void __init setup_arch(char **cmdline_p)
 	find_smp_config();
 #endif
 
+	p2m_pages = max_pfn;
+	if (xen_start_info->nr_pages > max_pfn) {
+		/*
+		 * the max_pfn was shrunk (probably by mem= or highmem=
+		 * kernel parameter); shrink reservation with the HV
+		 */
+		struct xen_memory_reservation reservation = {
+			.address_bits = 0,
+			.extent_order = 0,
+			.domid = DOMID_SELF
+		};
+		unsigned int difference;
+		int ret;
+
+		difference = xen_start_info->nr_pages - max_pfn;
+
+		set_xen_guest_handle(reservation.extent_start,
+				     ((unsigned long *)xen_start_info->mfn_list)+ max_pfn);
+		reservation.nr_extents = difference;
+		ret = HYPERVISOR_memory_op(XENMEM_decrease_reservation,
+					   &reservation);
+		BUG_ON  (ret != difference);
+	}
+	else if (max_pfn > xen_start_info->nr_pages)
+		p2m_pages = xen_start_info->nr_pages;
+
 	/* Make sure we have a correctly sized P->M table. */
 	if (!xen_feature(XENFEAT_auto_translated_physmap)) {
 		phys_to_machine_mapping = alloc_bootmem_low_pages(
@@ -1750,7 +1797,7 @@ void __init setup_arch(char **cmdline_p)
 		       max_pfn * sizeof(unsigned long));
 		memcpy(phys_to_machine_mapping,
 		       (unsigned long *)xen_start_info->mfn_list,
-		       xen_start_info->nr_pages * sizeof(unsigned long));
+		       p2m_pages * sizeof(unsigned long));
 		free_bootmem(
 		     __pa(xen_start_info->mfn_list),
 		     PFN_PHYS(PFN_UP(xen_start_info->nr_pages *

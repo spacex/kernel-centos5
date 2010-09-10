@@ -48,7 +48,7 @@ static void iwch_finish_mem_reg(struct iwch_mr *mhp, u32 stag)
 	mmid = stag >> 8;
 	mhp->ibmr.rkey = mhp->ibmr.lkey = stag;
 	insert_handle(mhp->rhp, &mhp->rhp->mmidr, mhp, mmid);
-	PDBG("%s mmid 0x%x mhp %p\n", __FUNCTION__, mmid, mhp);
+	PDBG("%s mmid 0x%x mhp %p\n", __func__, mmid, mhp);
 }
 
 int iwch_register_mem(struct iwch_dev *rhp, struct iwch_pd *php,
@@ -186,7 +186,7 @@ int build_phys_page_list(struct ib_phys_buf *buffer_list,
 			    ((u64) j << *shift));
 
 	PDBG("%s va 0x%llx mask 0x%llx shift %d len %lld pbl_size %d\n",
-	     __FUNCTION__, (unsigned long long) *iova_start,
+	     __func__, (unsigned long long) *iova_start,
 	     (unsigned long long) mask, *shift, (unsigned long long) *total_size,
 	     *npages);
 

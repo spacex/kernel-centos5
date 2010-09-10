@@ -18,6 +18,12 @@
 #ifndef _VNIC_NIC_H_
 #define _VNIC_NIC_H_
 
+/*
+ * These defines avoid symbol clash between fnic and enic (Cisco 10G Eth
+ * Driver) when both are built with CONFIG options =y
+ */
+#define vnic_set_nic_cfg fnic_set_nic_cfg
+
 #define NIC_CFG_RSS_DEFAULT_CPU_MASK_FIELD	0xffUL
 #define NIC_CFG_RSS_DEFAULT_CPU_SHIFT		0
 #define NIC_CFG_RSS_HASH_TYPE			(0xffUL << 8)

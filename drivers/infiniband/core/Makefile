@@ -8,14 +8,14 @@ obj-$(CONFIG_INFINIBAND_USER_ACCESS) +=	ib_uverbs.o ib_ucm.o \
 					$(user_access-y)
 
 ib_core-y :=			packer.o ud_header.o verbs.o sysfs.o \
-				device.o fmr_pool.o cache.o
+				device.o fmr_pool.o cache.o kobject_backport.o
 ib_core-$(CONFIG_INFINIBAND_USER_MEM) += umem.o
 
 ib_mad-y :=			mad.o smi.o agent.o mad_rmpp.o
 
 ib_sa-y :=			sa_query.o multicast.o notice.o local_sa.o
 
-ib_cm-y :=			cm.o
+ib_cm-y :=			cm.o kobject_backport.o
 
 iw_cm-y :=			iwcm.o
 
@@ -30,3 +30,4 @@ ib_umad-y :=			user_mad.o
 ib_ucm-y :=			ucm.o
 
 ib_uverbs-y :=			uverbs_main.o uverbs_cmd.o uverbs_marshall.o
+

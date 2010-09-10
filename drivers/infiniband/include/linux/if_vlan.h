@@ -14,4 +14,19 @@ static inline void vlan_group_set_device(struct vlan_group *vg, int vlan_id,
 	vg->vlan_devices[vlan_id] = dev;
 }
 
+#define vlan_dev_info(x) VLAN_DEV_INFO(x)
+
+static inline u16 vlan_dev_vlan_id(const struct net_device *dev)
+{
+	return vlan_dev_info(dev)->vlan_id;
+}
+
+#define vlan_dev_real_dev(netdev) (VLAN_DEV_INFO(netdev)->real_dev)
+#define vlan_dev_vlan_id(netdev) (VLAN_DEV_INFO(netdev)->vlan_id)
+
+static inline int is_vlan_dev(struct net_device *dev)
+{
+	return dev->priv_flags & IFF_802_1Q_VLAN;
+}
+
 #endif

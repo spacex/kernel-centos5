@@ -32,8 +32,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: mthca_cq.c 1369 2004-12-20 16:17:07Z roland $
  */
 
 #include <linux/hardirq.h>
@@ -119,8 +117,8 @@ struct mthca_cqe {
 	__be32 my_qpn;
 	__be32 my_ee;
 	__be32 rqpn;
-	u8	sl_ipok;
-	u8	g_mlpath;
+	u8     sl_ipok;
+	u8     g_mlpath;
 	__be16 rlid;
 	__be32 imm_etype_pkey_eec;
 	__be32 byte_cnt;
@@ -474,7 +472,7 @@ static void handle_error_cqe(struct mthca_dev *dev, struct mthca_cq *cq,
 	if (!(new_wqe & cpu_to_be32(0x3f)) || (!cqe->db_cnt && dbd))
 		return;
 
-	cqe->db_cnt   = cpu_to_be16(be16_to_cpu(cqe->db_cnt) - dbd);
+	be16_add_cpu(&cqe->db_cnt, -dbd);
 	cqe->wqe      = new_wqe;
 	cqe->syndrome = SYNDROME_WR_FLUSH_ERR;
 
@@ -621,13 +619,13 @@ static inline int mthca_poll_one(struct mthca_dev *dev,
 		case IB_OPCODE_SEND_LAST_WITH_IMMEDIATE:
 		case IB_OPCODE_SEND_ONLY_WITH_IMMEDIATE:
 			entry->wc_flags = IB_WC_WITH_IMM;
-			entry->imm_data = cqe->imm_etype_pkey_eec;
+			entry->ex.imm_data = cqe->imm_etype_pkey_eec;
 			entry->opcode = IB_WC_RECV;
 			break;
 		case IB_OPCODE_RDMA_WRITE_LAST_WITH_IMMEDIATE:
 		case IB_OPCODE_RDMA_WRITE_ONLY_WITH_IMMEDIATE:
 			entry->wc_flags = IB_WC_WITH_IMM;
-			entry->imm_data = cqe->imm_etype_pkey_eec;
+			entry->ex.imm_data = cqe->imm_etype_pkey_eec;
 			entry->opcode = IB_WC_RECV_RDMA_WITH_IMM;
 			break;
 		default:

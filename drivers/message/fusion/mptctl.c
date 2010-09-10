@@ -308,10 +308,11 @@ static void mptctl_timeout_expired (MPT_IOCTL *ioctl)
 {
 	int rc = 1;
 
-	dctlprintk(ioctl->ioc, printk(MYIOC_s_DEBUG_FMT ": Timeout Expired! Host %d\n",
-				ioctl->ioc->name, ioctl->ioc->id));
 	if (ioctl == NULL)
 		return;
+	dctlprintk(ioctl->ioc,
+		   printk(MYIOC_s_DEBUG_FMT ": Timeout Expired! Host %d\n",
+		   ioctl->ioc->name, ioctl->ioc->id));
 
 	ioctl->wait_done = 0;
 	if (ioctl->reset & MPTCTL_RESET_OK)
@@ -548,17 +549,15 @@ static int
 mptctl_fasync(int fd, struct file *filep, int mode)
 {
 	MPT_ADAPTER	*ioc;
+	int ret;
 
+	lock_kernel();
 	list_for_each_entry(ioc, &ioc_list, list)
 		ioc->aen_event_read_flag=0;
 
-	return fasync_helper(fd, filep, mode, &async_queue);
-}
-
-static int
-mptctl_release(struct inode *inode, struct file *filep)
-{
-	return fasync_helper(-1, filep, 0, &async_queue);
+	ret = fasync_helper(fd, filep, mode, &async_queue);
+	unlock_kernel();
+	return ret;
 }
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
@@ -592,8 +591,10 @@ __mptctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	iocnumX = khdr.iocnum & 0xFF;
 	if (((iocnum = mpt_verify_adapter(iocnumX, &iocp)) < 0) ||
 	    (iocp == NULL)) {
+#ifdef	DMPT_DEBUG_IOCTL
 		printk(KERN_DEBUG MYNAM "%s::mptctl_ioctl() @%d - ioc%d not found!\n",
 				__FILE__, __LINE__, iocnumX);
+#endif
 		return -ENODEV;
 	}
 
@@ -842,8 +843,9 @@ mptctl_do_fw_download(int ioc, char __user *ufwbuf, size_t fwlen)
 	 *	96		8
 	 *	64		4
 	 */
-	maxfrags = (iocp->req_sz - sizeof(MPIHeader_t) - sizeof(FWDownloadTCSGE_t))
-			/ (sizeof(dma_addr_t) + sizeof(u32));
+	maxfrags = (iocp->req_sz - sizeof(MPIHeader_t) -
+			sizeof(FWDownloadTCSGE_t))
+			/ iocp->SGE_size;
 	if (numfrags > maxfrags) {
 		ret = -EMLINK;
 		goto fwdl_out;
@@ -883,7 +885,7 @@ mptctl_do_fw_download(int ioc, char __user *ufwbuf, size_t fwlen)
 		}
 		sgIn++;
 		bl++;
-		sgOut += (sizeof(dma_addr_t) + sizeof(u32));
+		sgOut += iocp->SGE_size;
 	}
 
 	DBG_DUMP_FW_DOWNLOAD(iocp, (u32 *)mf, numfrags);
@@ -1004,7 +1006,7 @@ kbuf_alloc_2_sgl(int bytes, u32 sgdir, int sge_offset, int *frags,
 	 *
 	 */
 	sgl = sglbuf;
-	sg_spill = ((ioc->req_sz - sge_offset)/(sizeof(dma_addr_t) + sizeof(u32))) - 1;
+	sg_spill = ((ioc->req_sz - sge_offset)/ioc->SGE_size) - 1;
 	while (bytes_allocd < bytes) {
 		this_alloc = min(alloc_sz, bytes-bytes_allocd);
 		buflist[buflist_ent].len = this_alloc;
@@ -1025,8 +1027,9 @@ kbuf_alloc_2_sgl(int bytes, u32 sgdir, int sge_offset, int *frags,
 			dma_addr_t dma_addr;
 
 			bytes_allocd += this_alloc;
-			sgl->FlagsLength = (0x10000000|MPT_SGE_FLAGS_ADDRESSING|sgdir|this_alloc);
-			dma_addr = pci_map_single(ioc->pcidev, buflist[buflist_ent].kptr, this_alloc, dir);
+			sgl->FlagsLength = (0x10000000|sgdir|this_alloc);
+			dma_addr = pci_map_single(ioc->pcidev,
+				buflist[buflist_ent].kptr, this_alloc, dir);
 			sgl->Address = dma_addr;
 
 			fragcnt++;
@@ -1800,9 +1803,9 @@ mptctl_do_mpt_command (struct mpt_ioctl_command karg, void __user *mfPtr)
 	 */
 	sz = karg.dataSgeOffset * 4;
 	if (karg.dataInSize > 0)
-		sz += sizeof(dma_addr_t) + sizeof(u32);
+		sz += ioc->SGE_size;
 	if (karg.dataOutSize > 0)
-		sz += sizeof(dma_addr_t) + sizeof(u32);
+		sz += ioc->SGE_size;
 
 	if (sz > ioc->req_sz) {
 		printk(MYIOC_s_ERR_FMT "%s@%d::mptctl_do_mpt_command - "
@@ -2124,8 +2127,7 @@ mptctl_do_mpt_command (struct mpt_ioctl_command karg, void __user *mfPtr)
 			if (karg.dataInSize > 0) {
 				flagsLength = ( MPI_SGE_FLAGS_SIMPLE_ELEMENT |
 						MPI_SGE_FLAGS_END_OF_BUFFER |
-						MPI_SGE_FLAGS_DIRECTION |
-						mpt_addr_size() )
+						MPI_SGE_FLAGS_DIRECTION)
 						<< MPI_SGE_FLAGS_SHIFT;
 			} else {
 				flagsLength = MPT_SGE_FLAGS_SSIMPLE_WRITE;
@@ -2143,7 +2145,7 @@ mptctl_do_mpt_command (struct mpt_ioctl_command karg, void __user *mfPtr)
 				 * Copy to MF and to sglbuf
 				 */
 				ioc->add_sge(psge, flagsLength, dma_addr_out);
-				psge += (sizeof(u32) + sizeof(dma_addr_t));
+				psge += ioc->SGE_size;
 
 				/* Copy user data to kernel space.
 				 */
@@ -2702,7 +2704,6 @@ mptctl_hp_targetinfo(unsigned long arg)
 static const struct file_operations mptctl_fops = {
 	.owner =	THIS_MODULE,
 	.llseek =	no_llseek,
-	.release =	mptctl_release,
 	.fasync = 	mptctl_fasync,
 	.unlocked_ioctl = mptctl_ioctl,
 #ifdef CONFIG_COMPAT

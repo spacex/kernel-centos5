@@ -275,6 +275,8 @@ static int unregister_vlan_dev(struct net_device *real_dev,
 static int unregister_vlan_device(const char *vlan_IF_name)
 {
 	struct net_device *dev = NULL;
+	struct net_device *real_dev;
+	int undo_count;
 	int ret;
 
 
@@ -284,8 +286,14 @@ static int unregister_vlan_device(const char *vlan_IF_name)
 		if (dev->priv_flags & IFF_802_1Q_VLAN) {
 			rtnl_lock();
 
-			ret = unregister_vlan_dev(VLAN_DEV_INFO(dev)->real_dev,
+			real_dev = VLAN_DEV_INFO(dev)->real_dev;
+			ret = unregister_vlan_dev(real_dev,
 						  VLAN_DEV_INFO(dev)->vlan_id);
+
+			undo_count = VLAN_DEV_INFO(dev)->promisc_count * -1;
+			dev_set_promiscuity(real_dev, undo_count);
+			if (!(real_dev->flags & IFF_PROMISC))
+				real_dev->gflags &= ~IFF_PROMISC;
 
 			dev_put(dev);
 			unregister_netdevice(dev);

@@ -839,6 +839,7 @@ svc_tcp_accept(struct svc_sock *svsk)
 	struct socket	*newsock;
 	struct svc_sock	*newsvsk;
 	int		err, slen;
+	unsigned int	limit;
 
 	dprintk("svc: tcp_accept %p sock %p\n", svsk, sock);
 	if (!sock)
@@ -891,8 +892,11 @@ svc_tcp_accept(struct svc_sock *svsk)
 		goto failed;
 
 
-	/* make sure that we don't have too many active connections.
-	 * If we have, something must be dropped.
+	/* make sure that we don't have too many active connections. If we
+	 * have, something must be dropped. It's not clear what will happen if
+	 * we allow "too many" connections, but when dealing with
+	 * network-facing software, we have to code defensively. Here we do
+	 * that by imposing hard limits.
 	 *
 	 * There's no point in trying to do random drop here for
 	 * DoS prevention. The NFS clients does 1 reconnect in 15
@@ -901,17 +905,24 @@ svc_tcp_accept(struct svc_sock *svsk)
 	 * The only somewhat efficient mechanism would be if drop
 	 * old connections from the same IP first. But right now
 	 * we don't even record the client IP in svc_sock.
+	 *
+	 * single-threaded services that expect a lot of clients will probably
+	 * need to set sv_maxconn to override the default value which is based
+	 * on the number of threads
 	 */
-	if (serv->sv_tmpcnt > (serv->sv_nrthreads+3)*20) {
+	limit = serv->sv_maxconn ? serv->sv_maxconn :
+		(serv->sv_nrthreads+3) * 20;
+	if (serv->sv_tmpcnt > limit) {
 		struct svc_sock *svsk = NULL;
 		spin_lock_bh(&serv->sv_lock);
 		if (!list_empty(&serv->sv_tempsocks)) {
 			if (net_ratelimit()) {
 				/* Try to help the admin */
 				printk(KERN_NOTICE "%s: too many open TCP "
-					"sockets, consider increasing the "
-					"number of nfsd threads\n",
-						   serv->sv_name);
+					"connections, consider increasing %s\n",
+					serv->sv_name, serv->sv_maxconn ?
+					"the max number of connections." :
+					"the number of threads.");
 				printk(KERN_NOTICE "%s: last TCP connect from "
 					"%u.%u.%u.%u:%d\n",
 					serv->sv_name,

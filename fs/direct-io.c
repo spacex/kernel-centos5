@@ -27,6 +27,7 @@
 #include <linux/slab.h>
 #include <linux/highmem.h>
 #include <linux/pagemap.h>
+#include <linux/task_io_accounting_ops.h>
 #include <linux/bio.h>
 #include <linux/wait.h>
 #include <linux/err.h>
@@ -149,17 +150,11 @@ static int dio_refill_pages(struct dio *dio)
 	int nr_pages;
 
 	nr_pages = min(dio->total_pages - dio->curr_page, DIO_PAGES);
-	down_read(&current->mm->mmap_sem);
-	ret = get_user_pages(
-		current,			/* Task for fault acounting */
-		current->mm,			/* whose pages? */
+	ret = get_user_pages_fast(
 		dio->curr_user_address,		/* Where from? */
 		nr_pages,			/* How many pages? */
 		dio->rw == READ,		/* Write to memory? */
-		0,				/* force (?) */
-		&dio->pages[0],
-		NULL);				/* vmas */
-	up_read(&current->mm->mmap_sem);
+		&dio->pages[0]);		/* Put results here */
 
 	if (ret < 0 && dio->blocks_available && (dio->rw & WRITE)) {
 		struct page *page = ZERO_PAGE(dio->curr_user_address);
@@ -668,6 +663,13 @@ submit_page_section(struct dio *dio, struct page *page,
 		unsigned offset, unsigned len, sector_t blocknr)
 {
 	int ret = 0;
+
+	if (dio->rw & WRITE) {
+		/*
+		 * Read accounting is performed in submit_bio()
+		 */
+		task_io_account_write(len);
+	}
 
 	/*
 	 * Can we just grow the current page's presence in the dio?

@@ -720,7 +720,7 @@ static void __init do_basic_setup(void)
 	do_initcalls();
 }
 
-static int __initdata nosoftlockup;
+int __initdata nosoftlockup;
 
 static int __init nosoftlockup_setup(char *str)
 {

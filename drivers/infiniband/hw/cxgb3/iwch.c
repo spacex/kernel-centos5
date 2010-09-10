@@ -51,13 +51,15 @@ cxgb3_cpl_handler_func t3c_handlers[NUM_CPL_CMDS];
 
 static void open_rnic_dev(struct t3cdev *);
 static void close_rnic_dev(struct t3cdev *);
+static void iwch_err_handler(struct t3cdev *, u32, u32);
 
 struct cxgb3_client t3c_client = {
 	.name = "iw_cxgb3",
 	.add = open_rnic_dev,
 	.remove = close_rnic_dev,
 	.handlers = t3c_handlers,
-	.redirect = iwch_ep_redirect
+	.redirect = iwch_ep_redirect,
+	.err_handler = iwch_err_handler
 };
 
 static LIST_HEAD(dev_list);
@@ -65,24 +67,22 @@ static DEFINE_MUTEX(dev_mutex);
 
 static void rnic_init(struct iwch_dev *rnicp)
 {
-	PDBG("%s iwch_dev %p\n", __FUNCTION__,  rnicp);
+	PDBG("%s iwch_dev %p\n", __func__,  rnicp);
 	idr_init(&rnicp->cqidr);
 	idr_init(&rnicp->qpidr);
 	idr_init(&rnicp->mmidr);
 	spin_lock_init(&rnicp->lock);
 
-	rnicp->attr.vendor_id = 0x168;
-	rnicp->attr.vendor_part_id = 7;
 	rnicp->attr.max_qps = T3_MAX_NUM_QP - 32;
-	rnicp->attr.max_wrs = (1UL << 24) - 1;
+	rnicp->attr.max_wrs = T3_MAX_QP_DEPTH;
 	rnicp->attr.max_sge_per_wr = T3_MAX_SGE;
 	rnicp->attr.max_sge_per_rdma_write_wr = T3_MAX_SGE;
 	rnicp->attr.max_cqs = T3_MAX_NUM_CQ - 1;
-	rnicp->attr.max_cqes_per_cq = (1UL << 24) - 1;
+	rnicp->attr.max_cqes_per_cq = T3_MAX_CQ_DEPTH;
 	rnicp->attr.max_mem_regs = cxio_num_stags(&rnicp->rdev);
 	rnicp->attr.max_phys_buf_entries = T3_MAX_PBL_SIZE;
 	rnicp->attr.max_pds = T3_MAX_NUM_PD - 1;
-	rnicp->attr.mem_pgsizes_bitmask = 0x7FFF;	/* 4KB-128MB */
+	rnicp->attr.mem_pgsizes_bitmask = T3_PAGESIZE_MASK;
 	rnicp->attr.max_mr_size = T3_MAX_MR_SIZE;
 	rnicp->attr.can_resize_wq = 0;
 	rnicp->attr.max_rdma_reads_per_qp = 8;
@@ -107,7 +107,7 @@ static void open_rnic_dev(struct t3cdev *tdev)
 	struct iwch_dev *rnicp;
 	static int vers_printed;
 
-	PDBG("%s t3cdev %p\n", __FUNCTION__,  tdev);
+	PDBG("%s t3cdev %p\n", __func__,  tdev);
 	if (!vers_printed++)
 		printk(KERN_INFO MOD "Chelsio T3 RDMA Driver - version %s\n",
 		       DRV_VERSION);
@@ -145,7 +145,7 @@ static void open_rnic_dev(struct t3cdev *tdev)
 static void close_rnic_dev(struct t3cdev *tdev)
 {
 	struct iwch_dev *dev, *tmp;
-	PDBG("%s t3cdev %p\n", __FUNCTION__,  tdev);
+	PDBG("%s t3cdev %p\n", __func__,  tdev);
 	mutex_lock(&dev_mutex);
 	list_for_each_entry_safe(dev, tmp, &dev_list, entry) {
 		if (dev->rdev.t3cdev_p == tdev) {
@@ -160,6 +160,24 @@ static void close_rnic_dev(struct t3cdev *tdev)
 		}
 	}
 	mutex_unlock(&dev_mutex);
+}
+
+static void iwch_err_handler(struct t3cdev *tdev, u32 status, u32 error)
+{
+	struct cxio_rdev *rdev = tdev->ulp;
+	struct iwch_dev *rnicp = rdev_to_iwch_dev(rdev);
+	struct ib_event event;
+
+	if (status == OFFLOAD_STATUS_DOWN) {
+		rdev->flags = CXIO_ERROR_FATAL;
+
+		event.device = &rnicp->ibdev;
+		event.event  = IB_EVENT_DEVICE_FATAL;
+		event.element.port_num = 0;
+		ib_dispatch_event(&event);
+	}
+
+	return;
 }
 
 static int __init iwch_init_module(void)

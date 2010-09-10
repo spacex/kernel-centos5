@@ -12,6 +12,97 @@
 #include "ql4_inline.h"
 
 /**
+ * qla4xxx_copy_sense - copy sense data	into cmd sense buffer
+ * @ha: Pointer to host adapter structure.
+ * @sts_entry: Pointer to status entry structure.
+ * @srb: Pointer to srb structure.
+ **/
+static void qla4xxx_copy_sense(struct scsi_qla_host *ha,
+                               struct status_entry *sts_entry,
+                               struct srb *srb)
+{
+	struct scsi_cmnd *cmd = srb->cmd;
+	uint16_t sense_len;
+
+	memset(cmd->sense_buffer, 0, SCSI_SENSE_BUFFERSIZE);
+	sense_len = le16_to_cpu(sts_entry->senseDataByteCnt);
+	if (sense_len == 0)
+		return;
+
+	/* Save total available sense length,
+	 * not to exceed cmd's sense buffer size */
+	sense_len = min(sense_len, (uint16_t) SCSI_SENSE_BUFFERSIZE);
+	srb->req_sense_ptr = cmd->sense_buffer;
+	srb->req_sense_len = sense_len;
+
+	/* Copy sense from sts_entry pkt */
+	sense_len = min(sense_len, (uint16_t) IOCB_MAX_SENSEDATA_LEN);
+	memcpy(cmd->sense_buffer, sts_entry->senseData, sense_len);
+
+	DEBUG2(printk("scsi%ld:%d:%d:%d: %s: sense key = %x, "
+		"ASL = %02x, ASC/ASCQ = %02x/%02x\n", ha->host_no,
+		cmd->device->channel, cmd->device->id,
+		cmd->device->lun, __func__,
+		sts_entry->senseData[2] & 0x0f,
+		sts_entry->senseData[7],
+		sts_entry->senseData[12],
+		sts_entry->senseData[13]));
+
+	DEBUG5(qla4xxx_dump_buffer(cmd->sense_buffer, sense_len));
+	srb->flags |= SRB_GOT_SENSE;
+
+	/* Update srb, in case a sts_cont pkt follows */
+	srb->req_sense_ptr += sense_len;
+	srb->req_sense_len -= sense_len;
+	if (srb->req_sense_len != 0)
+		ha->status_srb = srb;
+	else
+		ha->status_srb = NULL;
+
+}
+
+/**
+ * qla4xxx_status_cont_entry() - Process a Status Continuations entry.
+ * @ha: SCSI driver HA context
+ * @sts_cont: Entry pointer
+ *
+ * Extended sense data.
+ */
+static void
+qla4xxx_status_cont_entry(struct scsi_qla_host *ha,
+			  struct status_cont_entry *sts_cont)
+{
+	struct srb *srb = ha->status_srb;
+	struct scsi_cmnd *cmd;
+	uint16_t sense_len;
+
+	if (srb == NULL)
+		return;
+
+	cmd = srb->cmd;
+	if (cmd == NULL) {
+		DEBUG2(printk("scsi%ld: %s: Cmd already returned back to OS "
+			"srb=%p srb->state:%d\n", ha->host_no, __func__, srb, srb->state));
+		ha->status_srb = NULL;
+		return;
+	}
+
+	/* Copy sense data. */
+	sense_len = min(srb->req_sense_len, (uint16_t) IOCB_MAX_EXT_SENSEDATA_LEN);
+	memcpy(srb->req_sense_ptr, sts_cont->extSenseData, sense_len);
+	DEBUG5(qla4xxx_dump_buffer(srb->req_sense_ptr, sense_len));
+
+	srb->req_sense_ptr += sense_len;
+	srb->req_sense_len -= sense_len;
+
+	/* Place command on done queue. */
+	if (srb->req_sense_len == 0) {
+		qla4xxx_srb_compl(ha, srb);
+		ha->status_srb = NULL;
+	}
+}
+
+/**
  * qla4xxx_status_entry - processes status IOCBs
  * @ha: Pointer to host adapter structure.
  * @sts_entry: Pointer to status entry structure.
@@ -24,7 +115,6 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 	struct srb *srb;
 	struct ddb_entry *ddb_entry;
 	uint32_t residual;
-	uint16_t sensebytecnt;
 
 	srb = qla4xxx_del_from_active_array(ha, le32_to_cpu(sts_entry->handle));
 	if (!srb) {
@@ -73,25 +163,7 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 			break;
 
 		/* Copy Sense Data into sense buffer. */
-		memset(cmd->sense_buffer, 0, sizeof(cmd->sense_buffer));
-
-		sensebytecnt = le16_to_cpu(sts_entry->senseDataByteCnt);
-		if (sensebytecnt == 0)
-			break;
-
-		memcpy(cmd->sense_buffer, sts_entry->senseData,
-		       min(sensebytecnt,
-			   (uint16_t) sizeof(cmd->sense_buffer)));
-
-		DEBUG2(printk("scsi%ld:%d:%d:%d: %s: sense key = %x, "
-			      "ASC/ASCQ = %02x/%02x\n", ha->host_no,
-			      cmd->device->channel, cmd->device->id,
-			      cmd->device->lun, __func__,
-			      sts_entry->senseData[2] & 0x0f,
-			      sts_entry->senseData[12],
-			      sts_entry->senseData[13]));
-
-		srb->flags |= SRB_GOT_SENSE;
+		qla4xxx_copy_sense(ha, sts_entry, srb);
 		break;
 
 	case SCS_INCOMPLETE:
@@ -136,10 +208,10 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 	case SCS_DATA_OVERRUN:
 		if ((sts_entry->iscsiFlags & ISCSI_FLAG_RESIDUAL_OVER) ||
 			(sts_entry->completionStatus == SCS_DATA_OVERRUN)) {
-			DEBUG2(printk("scsi%ld:%d:%d:%d: %s: " "Data overrun, "
-				      "residual = 0x%x\n", ha->host_no,
+			DEBUG2(printk("scsi%ld:%d:%d:%d: %s: "
+				      "Data overrun\n", ha->host_no,
 				      cmd->device->channel, cmd->device->id,
-				      cmd->device->lun, __func__, residual));
+				      cmd->device->lun, __func__));
 
 			cmd->result = DID_ERROR << 16;
 			break;
@@ -158,17 +230,7 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 				break;
 
 			/* Copy Sense Data into sense buffer. */
-			memset(cmd->sense_buffer, 0,
-			       sizeof(cmd->sense_buffer));
-
-			sensebytecnt =
-				le16_to_cpu(sts_entry->senseDataByteCnt);
-			if (sensebytecnt == 0)
-				break;
-
-			memcpy(cmd->sense_buffer, sts_entry->senseData,
-			       min(sensebytecnt,
-				   (uint16_t) sizeof(cmd->sense_buffer)));
+			qla4xxx_copy_sense(ha, sts_entry, srb);
 
 			DEBUG2(printk("scsi%ld:%d:%d:%d: %s: sense key = %x, "
 				      "ASC/ASCQ = %02x/%02x\n", ha->host_no,
@@ -224,6 +286,11 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 		 * send I/O to this device.  We should get a ddb
 		 * state change AEN soon.
 		 */
+		DEBUG2(printk(KERN_INFO "scsi%ld:%d:%d:%d: DEVICE_UNAVAILABLE "
+			      "or DEVICE_LOGGED_OUT\n",
+			      ha->host_no, cmd->device->channel,
+			      cmd->device->id, cmd->device->lun));
+
 		if (atomic_read(&ddb_entry->state) == DDB_STATE_ONLINE)
 			qla4xxx_mark_device_missing(ha, ddb_entry);
 
@@ -252,9 +319,10 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 
 status_entry_exit:
 
-	/* complete the request */
+	/* complete the request, if not waiting for status_continuation pkt */
 	srb->cc_stat = sts_entry->completionStatus;
-	qla4xxx_srb_compl(ha, srb);
+	if (ha->status_srb == NULL)
+		qla4xxx_srb_compl(ha, srb);
 }
 
 /**
@@ -289,10 +357,6 @@ static void qla4xxx_process_response_queue(struct scsi_qla_host * ha)
 		/* process entry */
 		switch (sts_entry->hdr.entryType) {
 		case ET_STATUS:
-			/*
-			 * Common status - Single completion posted in single
-			 * IOSB.
-			 */
 			qla4xxx_status_entry(ha, sts_entry);
 			break;
 
@@ -300,9 +364,8 @@ static void qla4xxx_process_response_queue(struct scsi_qla_host * ha)
 			break;
 
 		case ET_STATUS_CONTINUATION:
-			/* Just throw away the status continuation entries */
-			DEBUG2(printk("scsi%ld: %s: Status Continuation entry "
-				      "- ignoring\n", ha->host_no, __func__));
+			qla4xxx_status_cont_entry(ha,
+				(struct status_cont_entry *) sts_entry);
 			break;
 
 		case ET_COMMAND:
@@ -464,9 +527,9 @@ static void qla4xxx_isr_decode_mailbox(struct scsi_qla_host * ha,
 			mbox_stat2 = readl(&ha->reg->mailbox[2]);
 			mbox_stat3 = readl(&ha->reg->mailbox[3]);
 
-			if ((mbox_stat3 == 5) && (mbox_stat2 == 3)) 
+			if ((mbox_stat3 == 5) && (mbox_stat2 == 3))
 				set_bit(DPC_GET_DHCP_IP_ADDR, &ha->dpc_flags);
-			else if ((mbox_stat3 == 2) && (mbox_stat2 == 5)) 
+			else if ((mbox_stat3 == 2) && (mbox_stat2 == 5))
 				set_bit(DPC_RESET_HA, &ha->dpc_flags);
 			break;
 
@@ -686,7 +749,7 @@ irqreturn_t qla4xxx_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
  * @ha: pointer to host adapter structure.
  * @process_aen: type of AENs to process
  *
- * Processes specific types of Asynchronous Events generated by firmware. 
+ * Processes specific types of Asynchronous Events generated by firmware.
  * The type of AENs to process is specified by process_aen and can be
  *	PROCESS_ALL_AENS	 0
  *	FLUSH_DDB_CHANGED_AENS	 1

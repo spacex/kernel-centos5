@@ -4,6 +4,7 @@
 
 obj-y := evtchn.o gnttab.o features.o
 
+obj-$(CONFIG_PCI)		    += pci.o
 obj-$(CONFIG_PROC_FS)		+= xen_proc.o
 obj-$(CONFIG_SYSFS)		+= hypervisor_sysfs.o
 obj-$(CONFIG_HOTPLUG_CPU)	+= cpu_hotplug.o

@@ -160,6 +160,10 @@ struct key {
 	 */
 	union {
 		struct list_head	link;
+#ifndef __GENKSYMS__
+		unsigned long		x[2];
+		void			*p[2];
+#endif /* __GENKSYMS__ */
 	} type_data;
 
 	/* key data

@@ -47,7 +47,7 @@ struct rdma_dest {
 	struct list_head	list_ptrs;
 	struct sk_buff		*skb;
 	u8			*data;
-	struct viport_trailer	*trailer;
+	struct viport_trailer	*trailer __attribute__((aligned(32)));
 };
 
 struct buff_pool_entry {
@@ -120,6 +120,7 @@ struct data {
 	spinlock_t			xmit_buf_lock;
 	int				kick_timer_on;
 	int				connected;
+	u16				max_mtu;
 	struct timer_list		kick_timer;
 	struct completion		done;
 #ifdef CONFIG_INFINIBAND_QLGC_VNIC_STATS
@@ -137,6 +138,20 @@ struct data {
 #endif	/* CONFIG_INFINIBAND_QLGC_VNIC_STATS */
 };
 
+struct mc_data {
+    struct viport           *parent;
+    struct data_config      *config;
+    struct ib_mr            *mr;
+    struct vnic_ib_conn     ib_conn;
+
+    u32                     num_recvs;
+    u32                     skb_len;
+    spinlock_t              recv_lock;
+    int                     recv_len;
+    struct ud_recv_io      *recv_ios;
+    struct list_head        avail_recv_ios_list;
+};
+
 int data_init(struct data *data, struct viport *viport,
 	      struct data_config *config, struct ib_pd *pd);
 
@@ -150,27 +165,26 @@ void data_cleanup(struct data *data);
 
 #define data_is_connected(data)		\
 	(vnic_ib_conn_connected(&((data)->ib_conn)))
-#define data_path_id(data)		(data)->config->path_id
-#define data_eioc_pool(data)		&(data)->eioc_pool_parms
-#define data_host_pool(data)		&(data)->host_pool_parms
-#define data_eioc_pool_min(data)	&(data)->config->eioc_min
-#define data_host_pool_min(data)	&(data)->config->host_min
-#define data_eioc_pool_max(data)	&(data)->config->eioc_max
-#define data_host_pool_max(data)	&(data)->config->host_max
-#define data_local_pool_addr(data)	(data)->xmit_pool.rdma_addr
-#define data_local_pool_rkey(data)	(data)->xmit_pool.rdma_rkey
-#define data_remote_pool_addr(data)	&(data)->recv_pool.eioc_rdma_addr
-#define data_remote_pool_rkey(data)	&(data)->recv_pool.eioc_rdma_rkey
+#define data_path_id(data)		((data)->config->path_id)
+#define data_eioc_pool(data)		(&(data)->eioc_pool_parms)
+#define data_host_pool(data)		(&(data)->host_pool_parms)
+#define data_eioc_pool_min(data)	(&(data)->config->eioc_min)
+#define data_host_pool_min(data)	(&(data)->config->host_min)
+#define data_eioc_pool_max(data)	(&(data)->config->eioc_max)
+#define data_host_pool_max(data)	(&(data)->config->host_max)
+#define data_local_pool_addr(data)	((data)->xmit_pool.rdma_addr)
+#define data_local_pool_rkey(data)	((data)->xmit_pool.rdma_rkey)
+#define data_remote_pool_addr(data)	(&(data)->recv_pool.eioc_rdma_addr)
+#define data_remote_pool_rkey(data)	(&(data)->recv_pool.eioc_rdma_rkey)
 
-#define data_max_mtu(data)				\
-	MAX_PAYLOAD(min((data)->recv_pool.buffer_sz,	\
-	(data)->xmit_pool.buffer_sz)) - VLAN_ETH_HLEN
+#define data_max_mtu(data)		((data)->max_mtu)
+
 
 #define data_len(data, trailer)		be16_to_cpu(trailer->data_length)
 #define data_offset(data, trailer)					\
-	data->recv_pool.buffer_sz - sizeof(struct viport_trailer)	\
-	- ALIGN(data_len(data, trailer), VIPORT_TRAILER_ALIGNMENT)	\
-	+ trailer->data_alignment_offset
+	((data)->recv_pool.buffer_sz - sizeof(struct viport_trailer)	\
+	- ALIGN(data_len((data), (trailer)), VIPORT_TRAILER_ALIGNMENT)	\
+	+ (trailer->data_alignment_offset))
 
 /* the following macros manipulate ring buffer indexes.
  * the ring buffer size must be a power of 2.
@@ -178,5 +192,15 @@ void data_cleanup(struct data *data);
 #define ADD(index, increment, size)	(((index) + (increment))&((size) - 1))
 #define NEXT(index, size)		ADD(index, 1, size)
 #define INC(index, increment, size)	(index) = ADD(index, increment, size)
+
+/* this is max multicast msg embedded will send */
+#define MCAST_MSG_SIZE \
+		(2048 - sizeof(struct ib_grh) - sizeof(struct viport_trailer))
+
+int mc_data_init(struct mc_data *mc_data, struct viport *viport,
+	struct data_config *config,
+	struct ib_pd *pd);
+
+void vnic_mc_data_cleanup(struct mc_data *mc_data);
 
 #endif	/* VNIC_DATA_H_INCLUDED */

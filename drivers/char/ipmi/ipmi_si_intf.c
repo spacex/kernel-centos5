@@ -81,6 +81,12 @@
 #define SI_SHORT_TIMEOUT_USEC  250 /* .25ms when the SM request a
                                        short timeout */
 
+/* Bit for BMC global enables. */
+#define IPMI_BMC_RCV_MSG_INTR     0x01
+#define IPMI_BMC_EVT_MSG_INTR     0x02
+#define IPMI_BMC_EVT_MSG_BUFF     0x04
+#define IPMI_BMC_SYS_LOG          0x08
+
 enum si_intf_state {
 	SI_NORMAL,
 	SI_GETTING_FLAGS,
@@ -89,7 +95,9 @@ enum si_intf_state {
 	SI_CLEARING_FLAGS_THEN_SET_IRQ,
 	SI_GETTING_MESSAGES,
 	SI_ENABLE_INTERRUPTS1,
-	SI_ENABLE_INTERRUPTS2
+	SI_ENABLE_INTERRUPTS2,
+	SI_DISABLE_INTERRUPTS1,
+	SI_DISABLE_INTERRUPTS2
 	/* FIXME - add watchdog stuff. */
 };
 
@@ -105,10 +113,11 @@ static char *si_to_str[] = { "kcs", "smic", "bt" };
 
 #define DEVICE_NAME "ipmi_si"
 
-static struct device_driver ipmi_driver =
-{
-	.name = DEVICE_NAME,
-	.bus = &platform_bus_type
+static struct platform_driver ipmi_driver = {
+	.driver = {
+		.name = DEVICE_NAME,
+		.bus = &platform_bus_type
+	}
 };
 
 struct smi_info
@@ -338,6 +347,17 @@ static void start_enable_irq(struct smi_info *smi_info)
 	smi_info->si_state = SI_ENABLE_INTERRUPTS1;
 }
 
+static void start_disable_irq(struct smi_info *smi_info)
+{
+	unsigned char msg[2];
+
+	msg[0] = (IPMI_NETFN_APP_REQUEST << 2);
+	msg[1] = IPMI_GET_BMC_GLOBAL_ENABLES_CMD;
+
+	smi_info->handlers->start_transaction(smi_info->si_sm, msg, 2);
+	smi_info->si_state = SI_DISABLE_INTERRUPTS1;
+}
+
 static void start_clear_flags(struct smi_info *smi_info)
 {
 	unsigned char msg[3];
@@ -358,7 +378,7 @@ static void start_clear_flags(struct smi_info *smi_info)
 static inline void disable_si_irq(struct smi_info *smi_info)
 {
 	if ((smi_info->irq) && (!smi_info->interrupt_disabled)) {
-		disable_irq_nosync(smi_info->irq);
+		start_disable_irq(smi_info);
 		smi_info->interrupt_disabled = 1;
 	}
 }
@@ -366,7 +386,7 @@ static inline void disable_si_irq(struct smi_info *smi_info)
 static inline void enable_si_irq(struct smi_info *smi_info)
 {
 	if ((smi_info->irq) && (smi_info->interrupt_disabled)) {
-		enable_irq(smi_info->irq);
+		start_enable_irq(smi_info);
 		smi_info->interrupt_disabled = 0;
 	}
 }
@@ -588,7 +608,9 @@ static void handle_transaction_done(struct smi_info *smi_info)
 		} else {
 			msg[0] = (IPMI_NETFN_APP_REQUEST << 2);
 			msg[1] = IPMI_SET_BMC_GLOBAL_ENABLES_CMD;
-			msg[2] = msg[3] | 1; /* enable msg queue int */
+			msg[2] = (msg[3] |
+				  IPMI_BMC_RCV_MSG_INTR |
+				  IPMI_BMC_EVT_MSG_INTR);
 			smi_info->handlers->start_transaction(
 				smi_info->si_sm, msg, 3);
 			smi_info->si_state = SI_ENABLE_INTERRUPTS2;
@@ -606,6 +628,45 @@ static void handle_transaction_done(struct smi_info *smi_info)
 			printk(KERN_WARNING
 			       "ipmi_si: Could not enable interrupts"
 			       ", failed set, using polled mode.\n");
+		}
+		smi_info->si_state = SI_NORMAL;
+		break;
+	}
+
+	case SI_DISABLE_INTERRUPTS1:
+	{
+		unsigned char msg[4];
+
+		/* We got the flags from the SMI, now handle them. */
+		smi_info->handlers->get_result(smi_info->si_sm, msg, 4);
+		if (msg[2] != 0) {
+			printk(KERN_WARNING
+			       "ipmi_si: Could not disable interrupts"
+			       ", failed get.\n");
+			smi_info->si_state = SI_NORMAL;
+		} else {
+			msg[0] = (IPMI_NETFN_APP_REQUEST << 2);
+			msg[1] = IPMI_SET_BMC_GLOBAL_ENABLES_CMD;
+			msg[2] = (msg[3] &
+				  ~(IPMI_BMC_RCV_MSG_INTR |
+				    IPMI_BMC_EVT_MSG_INTR));
+			smi_info->handlers->start_transaction(
+				smi_info->si_sm, msg, 3);
+			smi_info->si_state = SI_DISABLE_INTERRUPTS2;
+		}
+		break;
+	}
+
+	case SI_DISABLE_INTERRUPTS2:
+	{
+		unsigned char msg[4];
+
+		/* We got the flags from the SMI, now handle them. */
+		smi_info->handlers->get_result(smi_info->si_sm, msg, 4);
+		if (msg[2] != 0) {
+			printk(KERN_WARNING
+			       "ipmi_si: Could not disable interrupts"
+			       ", failed set.\n");
 		}
 		smi_info->si_state = SI_NORMAL;
 		break;
@@ -661,9 +722,11 @@ static enum si_sm_result smi_event_handler(struct smi_info *smi_info,
 		si_sm_result = smi_info->handlers->event(smi_info->si_sm, 0);
 	}
 
-	/* We prefer handling attn over new messages. */
-	if (si_sm_result == SI_SM_ATTN)
-	{
+	/*
+	 * We prefer handling attn over new messages.  But don't do
+	 * this if there is not yet an upper layer to handle anything.
+	 */
+	if (likely(smi_info->intf) && si_sm_result == SI_SM_ATTN) {
 		unsigned char msg[2];
 
 		spin_lock(&smi_info->count_lock);
@@ -863,9 +926,6 @@ static void smi_timeout(unsigned long data)
 	struct timeval    t;
 #endif
 
-	if (atomic_read(&smi_info->stop_operation))
-		return;
-
 	spin_lock_irqsave(&(smi_info->si_lock), flags);
 #ifdef DEBUG_TIMING
 	do_gettimeofday(&t);
@@ -921,15 +981,11 @@ static irqreturn_t si_irq_handler(int irq, void *data, struct pt_regs *regs)
 	smi_info->interrupts++;
 	spin_unlock(&smi_info->count_lock);
 
-	if (atomic_read(&smi_info->stop_operation))
-		goto out;
-
 #ifdef DEBUG_TIMING
 	do_gettimeofday(&t);
 	printk("**Interrupt: %d.%9.9d\n", t.tv_sec, t.tv_usec);
 #endif
 	smi_event_handler(smi_info, 0);
- out:
 	spin_unlock_irqrestore(&(smi_info->si_lock), flags);
 	return IRQ_HANDLED;
 }
@@ -1022,19 +1078,19 @@ static char          *si_type[SI_MAX_PARMS];
 #define MAX_SI_TYPE_STR 30
 static char          si_type_str[MAX_SI_TYPE_STR];
 static unsigned long addrs[SI_MAX_PARMS];
-static int num_addrs;
+static unsigned int num_addrs;
 static unsigned int  ports[SI_MAX_PARMS];
-static int num_ports;
+static unsigned int num_ports;
 static int           irqs[SI_MAX_PARMS];
-static int num_irqs;
+static unsigned int num_irqs;
 static int           regspacings[SI_MAX_PARMS];
-static int num_regspacings;
+static unsigned int num_regspacings;
 static int           regsizes[SI_MAX_PARMS];
-static int num_regsizes;
+static unsigned int num_regsizes;
 static int           regshifts[SI_MAX_PARMS];
-static int num_regshifts;
+static unsigned int num_regshifts;
 static int slave_addrs[SI_MAX_PARMS];
-static int num_slave_addrs;
+static unsigned int num_slave_addrs;
 
 #define IPMI_IO_ADDR_SPACE  0
 #define IPMI_MEM_ADDR_SPACE 1
@@ -1056,12 +1112,12 @@ MODULE_PARM_DESC(type, "Defines the type of each interface, each"
 		 " interface separated by commas.  The types are 'kcs',"
 		 " 'smic', and 'bt'.  For example si_type=kcs,bt will set"
 		 " the first interface to kcs and the second to bt");
-module_param_array(addrs, long, &num_addrs, 0);
+module_param_array(addrs, ulong, &num_addrs, 0);
 MODULE_PARM_DESC(addrs, "Sets the memory address of each interface, the"
 		 " addresses separated by commas.  Only use if an interface"
 		 " is in memory.  Otherwise, set it to zero or leave"
 		 " it blank.");
-module_param_array(ports, int, &num_ports, 0);
+module_param_array(ports, uint, &num_ports, 0);
 MODULE_PARM_DESC(ports, "Sets the port address of each interface, the"
 		 " addresses separated by commas.  Only use if an interface"
 		 " is a port.  Otherwise, set it to zero or leave"
@@ -1121,7 +1177,7 @@ static int std_irq_setup(struct smi_info *info)
 	if (info->si_type == SI_BT) {
 		rv = request_irq(info->irq,
 				 si_bt_irq_handler,
-				 IRQF_DISABLED,
+				 IRQF_SHARED | IRQF_DISABLED,
 				 DEVICE_NAME,
 				 info);
 		if (!rv)
@@ -1131,7 +1187,7 @@ static int std_irq_setup(struct smi_info *info)
 	} else
 		rv = request_irq(info->irq,
 				 si_irq_handler,
-				 IRQF_DISABLED,
+				 IRQF_SHARED | IRQF_DISABLED,
 				 DEVICE_NAME,
 				 info);
 	if (rv) {
@@ -1711,15 +1767,11 @@ static u32 ipmi_acpi_gpe(void *context)
 	smi_info->interrupts++;
 	spin_unlock(&smi_info->count_lock);
 
-	if (atomic_read(&smi_info->stop_operation))
-		goto out;
-
 #ifdef DEBUG_TIMING
 	do_gettimeofday(&t);
 	printk("**ACPI_GPE: %d.%9.9d\n", t.tv_sec, t.tv_usec);
 #endif
 	smi_event_handler(smi_info, 0);
- out:
 	spin_unlock_irqrestore(&(smi_info->si_lock), flags);
 
 	return ACPI_INTERRUPT_HANDLED;
@@ -2748,7 +2800,7 @@ static int try_smi_init(struct smi_info *new_smi)
 			goto out_err;
 		}
 		new_smi->dev = &new_smi->pdev->dev;
-		new_smi->dev->driver = &ipmi_driver;
+		new_smi->dev->driver = &ipmi_driver.driver;
 
 		rv = platform_device_register(new_smi->pdev);
 		if (rv) {
@@ -2860,7 +2912,7 @@ static __devinit int init_ipmi_si(void)
 	initialized = 1;
 
 	/* Register the device drivers. */
-	rv = driver_register(&ipmi_driver);
+	rv = driver_register(&ipmi_driver.driver);
 	if (rv) {
 		printk(KERN_ERR
 		       "init_ipmi_si: Unable to register driver: %d\n",
@@ -2930,7 +2982,7 @@ static __devinit int init_ipmi_si(void)
 #ifdef CONFIG_PPC_OF
 		of_unregister_platform_driver(&ipmi_of_platform_driver);
 #endif
-		driver_unregister(&ipmi_driver);
+		driver_unregister(&ipmi_driver.driver);
 		printk("ipmi_si: Unable to find any System Interface(s)\n");
 		return -ENODEV;
 	} else {
@@ -2950,28 +3002,36 @@ static void cleanup_one_si(struct smi_info *to_clean)
 
 	list_del(&to_clean->link);
 
-	/* Tell the timer and interrupt handlers that we are shutting
-	   down. */
-	spin_lock_irqsave(&(to_clean->si_lock), flags);
-	spin_lock(&(to_clean->msg_lock));
-
+	/* Tell the driver that we are shutting down. */
 	atomic_inc(&to_clean->stop_operation);
 
+	/*
+	 * Make sure the timer and thread are stopped and will not run
+	 * again.
+	 */
+	wait_for_timer_and_thread(to_clean);
+	/*
+	 * Timeouts are stopped, now make sure the interrupts are off
+	 * for the device.  A little tricky with locks to make sure
+	 * there are no races.
+	 */
+	spin_lock_irqsave(&to_clean->si_lock, flags);
+	while (to_clean->curr_msg || (to_clean->si_state != SI_NORMAL)) {
+		spin_unlock_irqrestore(&to_clean->si_lock, flags);
+		poll(to_clean);
+		schedule_timeout_uninterruptible(1);
+		spin_lock_irqsave(&to_clean->si_lock, flags);
+	}
+	disable_si_irq(to_clean);
+	spin_unlock_irqrestore(&to_clean->si_lock, flags);
+	while (to_clean->curr_msg || (to_clean->si_state != SI_NORMAL)) {
+		poll(to_clean);
+		schedule_timeout_uninterruptible(1);
+	}
+
+	/* Clean up interrupts and make sure that everything is done. */
 	if (to_clean->irq_cleanup)
 		to_clean->irq_cleanup(to_clean);
-
-	spin_unlock(&(to_clean->msg_lock));
-	spin_unlock_irqrestore(&(to_clean->si_lock), flags);
-
-	/* Wait until we know that we are out of any interrupt
-	   handlers might have been running before we freed the
-	   interrupt. */
-	synchronize_sched();
-
-	wait_for_timer_and_thread(to_clean);
-
-	/* Interrupts and timeouts are stopped, now make sure the
-	   interface is in a clean state. */
 	while (to_clean->curr_msg || (to_clean->si_state != SI_NORMAL)) {
 		poll(to_clean);
 		schedule_timeout_uninterruptible(1);
@@ -3019,7 +3079,7 @@ static __exit void cleanup_ipmi_si(void)
 		cleanup_one_si(e);
 	mutex_unlock(&smi_infos_lock);
 
-	driver_unregister(&ipmi_driver);
+	driver_unregister(&ipmi_driver.driver);
 }
 module_exit(cleanup_ipmi_si);
 

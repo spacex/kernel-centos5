@@ -15,14 +15,9 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-#include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/errno.h>
-#include <linux/types.h>
-#include <linux/init.h>
 #include <linux/pci.h>
-#include <linux/skbuff.h>
-#include <linux/mempool.h>
 #include <linux/interrupt.h>
 #include <scsi/libfc.h>
 #include <scsi/fc_frame.h>
@@ -32,71 +27,49 @@
 #include "fnic_io.h"
 #include "fnic.h"
 
-static int fnic_isr_debug;
-
-#define FNIC_DEBUG_ISR(fmt...)			\
-	do {					\
-		if (fnic_isr_debug)		\
-			FNIC_DBG(fmt);		\
-	} while (0)
-
 static irqreturn_t fnic_isr_legacy(int irq, void *data, struct pt_regs *regs)
 {
-	struct fnic *fnic = (struct fnic *)data;
+	struct fnic *fnic = data;
 	u32 pba;
-	unsigned long  work_done = 0;
-	int i;
-
-	/* mask all interrupts*/
-	for (i = 0; i < fnic->intr_count; i++)
-		vnic_intr_mask(&fnic->intr[i]);
+	unsigned long work_done = 0;
 
 	pba = vnic_intr_legacy_pba(fnic->legacy_pba);
-	if (!pba) {
-		for (i = 0; i < fnic->intr_count; i++)
-			vnic_intr_unmask(&fnic->intr[i]);
-		return IRQ_NONE;	/* not our interrupt */
+	if (!pba)
+		return IRQ_NONE;
+
+	if (pba & (1 << FNIC_INTX_NOTIFY)) {
+		vnic_intr_return_all_credits(&fnic->intr[FNIC_INTX_NOTIFY]);
+		fnic_handle_link_event(fnic);
 	}
 
-	/* Check for notify */
-	if (pba & (1 << FNIC_INTX_NOTIFY))
-		fnic_notify_check(fnic);
-
-	/* Check for errors */
-	if (pba & (1 << FNIC_INTX_ERR))
+	if (pba & (1 << FNIC_INTX_ERR)) {
+		vnic_intr_return_all_credits(&fnic->intr[FNIC_INTX_ERR]);
 		fnic_log_q_error(fnic);
+	}
 
-	/* Check for data */
 	if (pba & (1 << FNIC_INTX_WQ_RQ_COPYWQ)) {
 		work_done += fnic_wq_copy_cmpl_handler(fnic, 8);
 		work_done += fnic_wq_cmpl_handler(fnic, 4);
 		work_done += fnic_rq_cmpl_handler(fnic, 4);
+
+		vnic_intr_return_credits(&fnic->intr[FNIC_INTX_WQ_RQ_COPYWQ],
+					 work_done,
+					 1 /* unmask intr */,
+					 1 /* reset intr timer */);
 	}
-
-	/*Now return the credit debt to HW.*/
-	vnic_intr_return_credits(&fnic->intr[FNIC_INTX_WQ_RQ_COPYWQ],
-				 work_done,
-				 1 /* unmask intr */,
-				 1 /* reset intr timer */);
-
-	/* unmask notification and error interrupts */
-	vnic_intr_unmask(&fnic->intr[FNIC_INTX_NOTIFY]);
-	vnic_intr_unmask(&fnic->intr[FNIC_INTX_ERR]);
 
 	return IRQ_HANDLED;
 }
 
 static irqreturn_t fnic_isr_msi(int irq, void *data, struct pt_regs *regs)
 {
-	struct fnic *fnic = (struct fnic *)data;
-	unsigned long  work_done = 0;
+	struct fnic *fnic = data;
+	unsigned long work_done = 0;
 
-	/* handle FCS frames and IOs */
 	work_done += fnic_wq_copy_cmpl_handler(fnic, 8);
 	work_done += fnic_wq_cmpl_handler(fnic, 4);
 	work_done += fnic_rq_cmpl_handler(fnic, 4);
 
-	/*Now return the credit debt to HW.*/
 	vnic_intr_return_credits(&fnic->intr[0],
 				 work_done,
 				 1 /* unmask intr */,
@@ -107,8 +80,8 @@ static irqreturn_t fnic_isr_msi(int irq, void *data, struct pt_regs *regs)
 
 static irqreturn_t fnic_isr_msix_rq(int irq, void *data, struct pt_regs *regs)
 {
-	struct fnic *fnic = (struct fnic *)data;
-	unsigned long  rq_work_done = 0;
+	struct fnic *fnic = data;
+	unsigned long rq_work_done = 0;
 
 	rq_work_done = fnic_rq_cmpl_handler(fnic, 4);
 	vnic_intr_return_credits(&fnic->intr[FNIC_MSIX_RQ],
@@ -121,8 +94,8 @@ static irqreturn_t fnic_isr_msix_rq(int irq, void *data, struct pt_regs *regs)
 
 static irqreturn_t fnic_isr_msix_wq(int irq, void *data, struct pt_regs *regs)
 {
-	struct fnic *fnic = (struct fnic *)data;
-	unsigned long  wq_work_done = 0;
+	struct fnic *fnic = data;
+	unsigned long wq_work_done = 0;
 
 	wq_work_done = fnic_wq_cmpl_handler(fnic, 4);
 	vnic_intr_return_credits(&fnic->intr[FNIC_MSIX_WQ],
@@ -135,8 +108,8 @@ static irqreturn_t fnic_isr_msix_wq(int irq, void *data, struct pt_regs *regs)
 static irqreturn_t fnic_isr_msix_wq_copy(int irq, void *data,
 					 struct pt_regs *regs)
 {
-	struct fnic *fnic = (struct fnic *)data;
-	unsigned long  wq_copy_work_done = 0;
+	struct fnic *fnic = data;
+	unsigned long wq_copy_work_done = 0;
 
 	wq_copy_work_done = fnic_wq_copy_cmpl_handler(fnic, 8);
 	vnic_intr_return_credits(&fnic->intr[FNIC_MSIX_WQ_COPY],
@@ -149,11 +122,11 @@ static irqreturn_t fnic_isr_msix_wq_copy(int irq, void *data,
 static irqreturn_t fnic_isr_msix_err_notify(int irq, void *data,
 					    struct pt_regs *regs)
 {
-	struct fnic *fnic = (struct fnic *)data;
+	struct fnic *fnic = data;
 
+	vnic_intr_return_all_credits(&fnic->intr[FNIC_MSIX_ERR_NOTIFY]);
 	fnic_log_q_error(fnic);
-	fnic_notify_check(fnic);
-	vnic_intr_unmask(&fnic->intr[FNIC_MSIX_ERR_NOTIFY]);
+	fnic_handle_link_event(fnic);
 
 	return IRQ_HANDLED;
 }
@@ -161,6 +134,7 @@ static irqreturn_t fnic_isr_msix_err_notify(int irq, void *data,
 void fnic_free_intr(struct fnic *fnic)
 {
 	int i;
+
 	switch (vnic_dev_get_intr_mode(fnic->vdev)) {
 	case VNIC_DEV_INTR_MODE_INTX:
 	case VNIC_DEV_INTR_MODE_MSI:
@@ -225,8 +199,9 @@ int fnic_request_intr(struct fnic *fnic)
 					  fnic->msix[i].devname,
 					  fnic->msix[i].devid);
 			if (err) {
-				printk(KERN_ERR PFX "MSIX: request_irq"
-				       " failed %d\n", err);
+				shost_printk(KERN_ERR, fnic->lport->host,
+					     "MSIX: request_irq"
+					     " failed %d\n", err);
 				fnic_free_intr(fnic);
 				break;
 			}
@@ -248,7 +223,8 @@ int fnic_set_intr_mode(struct fnic *fnic)
 	unsigned int o = ARRAY_SIZE(fnic->wq_copy);
 	unsigned int i;
 
-	/* Set interrupt mode (INTx, MSI, MSI-X) depending
+	/*
+	 * Set interrupt mode (INTx, MSI, MSI-X) depending
 	 * system capabilities.
 	 *
 	 * Try MSI-X first
@@ -275,15 +251,16 @@ int fnic_set_intr_mode(struct fnic *fnic)
 			fnic->intr_count = n + m + o + 1;
 			fnic->err_intr_offset = FNIC_MSIX_ERR_NOTIFY;
 
-			FNIC_DEBUG_ISR(PFX "Using MSI-X Interrupts\n");
+			FNIC_ISR_DBG(KERN_DEBUG, fnic->lport->host,
+				     "Using MSI-X Interrupts\n");
 			vnic_dev_set_intr_mode(fnic->vdev,
 					       VNIC_DEV_INTR_MODE_MSIX);
 			return 0;
 		}
 	}
 
-	/* Next try MSI
-	 *
+	/*
+	 * Next try MSI
 	 * We need 1 RQ, 1 WQ, 1 WQ_COPY, 3 CQs, and 1 INTR
 	 */
 	if (fnic->rq_count >= 1 &&
@@ -301,14 +278,15 @@ int fnic_set_intr_mode(struct fnic *fnic)
 		fnic->intr_count = 1;
 		fnic->err_intr_offset = 0;
 
-		FNIC_DEBUG_ISR(PFX "Using MSI Interrupts\n");
+		FNIC_ISR_DBG(KERN_DEBUG, fnic->lport->host,
+			     "Using MSI Interrupts\n");
 		vnic_dev_set_intr_mode(fnic->vdev, VNIC_DEV_INTR_MODE_MSI);
 
 		return 0;
 	}
 
-	/* Next try INTx
-	 *
+	/*
+	 * Next try INTx
 	 * We need 1 RQ, 1 WQ, 1 WQ_COPY, 3 CQs, and 3 INTRs
 	 * 1 INTR is used for all 3 queues, 1 INTR for queue errors
 	 * 1 INTR for notification area
@@ -326,7 +304,8 @@ int fnic_set_intr_mode(struct fnic *fnic)
 		fnic->cq_count = 3;
 		fnic->intr_count = 3;
 
-		FNIC_DEBUG_ISR(PFX "Using Legacy Interrupts\n");
+		FNIC_ISR_DBG(KERN_DEBUG, fnic->lport->host,
+			     "Using Legacy Interrupts\n");
 		vnic_dev_set_intr_mode(fnic->vdev, VNIC_DEV_INTR_MODE_INTX);
 
 		return 0;

@@ -27,32 +27,37 @@
 int qla4xxx_get_req_pkt(struct scsi_qla_host *ha,
 			struct queue_entry **queue_entry)
 {
-	uint16_t request_in;
-	uint8_t status = QLA_SUCCESS;
+	uint8_t	  status = QLA_ERROR;
+	uint16_t  cnt;
+	uint16_t  req_cnt = 1;
 
-	*queue_entry = ha->request_ptr;
-
-	/* get the latest request_in and request_out index */
-	request_in = ha->request_in;
-	ha->request_out = (uint16_t) le32_to_cpu(ha->shadow_regs->req_q_out);
-
-	/* Advance request queue pointer and check for queue full */
-	if (request_in == (REQUEST_QUEUE_DEPTH - 1)) {
-		request_in = 0;
-		ha->request_ptr = ha->request_ring;
-	} else {
-		request_in++;
-		ha->request_ptr++;
+	/* Calculate number of free request entries. */
+	if ((req_cnt + 2) >= ha->req_q_count) {
+		cnt = (uint16_t) le32_to_cpu(ha->shadow_regs->req_q_out);
+		if (ha->request_in < cnt) {
+			ha->req_q_count = cnt - ha->request_in;
+		}
+		else {
+			ha->req_q_count = REQUEST_QUEUE_DEPTH -
+				(ha->request_in - cnt);
+		}
 	}
 
-	/* request queue is full, try again later */
-	if ((ha->iocb_cnt + 1) >= ha->iocb_hiwat) {
-		/* restore request pointer */
-		ha->request_ptr = *queue_entry;
-		status = QLA_ERROR;
-	} else {
-		ha->request_in = request_in;
+	/* Check if room for request in request ring. */
+	if ((req_cnt + 2) < ha->req_q_count) {
+		*queue_entry = ha->request_ptr;
 		memset(*queue_entry, 0, sizeof(**queue_entry));
+
+		/* Advance request queue pointer */
+		ha->request_in++;
+		if (ha->request_in == REQUEST_QUEUE_DEPTH ) {
+			ha->request_in = 0;
+			ha->request_ptr = ha->request_ring;
+		} else {
+			ha->request_ptr++;
+		}
+		ha->req_q_count -= req_cnt;
+		status = QLA_SUCCESS;
 	}
 
 	return status;
@@ -98,135 +103,6 @@ int qla4xxx_send_marker_iocb(struct scsi_qla_host *ha,
 
 exit_send_marker:
 	spin_unlock_irqrestore(&ha->hardware_lock, flags);
-	return status;
-}
-
-struct pdu_entry * qla4xxx_get_pdu(struct scsi_qla_host * ha, uint32_t length)
-{
-	struct pdu_entry *pdu;
-	struct pdu_entry *free_pdu_top;
-	struct pdu_entry *free_pdu_bottom;
-	uint16_t pdu_active;
-
-	if (ha->free_pdu_top == NULL)
-		return NULL;
-
-	/* Save current state */
-	free_pdu_top = ha->free_pdu_top;
-	free_pdu_bottom = ha->free_pdu_bottom;
-	pdu_active = ha->pdu_active + 1;
-
-	/* get next available pdu */
-	pdu = free_pdu_top;
-	free_pdu_top = pdu->Next;
-	if (free_pdu_top == NULL)
-		free_pdu_bottom = NULL;
-
-	/* round up to nearest page */
-	length = (length + (PAGE_SIZE - 1)) & ~(PAGE_SIZE - 1);
-
-	/* Allocate pdu buffer PDU */
-	pdu->Buff = dma_alloc_coherent(&ha->pdev->dev, length, &pdu->DmaBuff,
-				       GFP_KERNEL);
-	if (pdu->Buff == NULL)
-		return NULL;
-
-	memset(pdu->Buff, 0, length);
-
-	/* Fill in remainder of PDU */
-	pdu->BuffLen = length;
-	pdu->SendBuffLen = 0;
-	pdu->RecvBuffLen = 0;
-	pdu->Next = NULL;
-	ha->free_pdu_top = free_pdu_top;
-	ha->free_pdu_bottom = free_pdu_bottom;
-	ha->pdu_active = pdu_active;
-	return pdu;
-}
-
-void qla4xxx_free_pdu(struct scsi_qla_host * ha, struct pdu_entry * pdu)
-{
-	if (ha->free_pdu_bottom == NULL) {
-		ha->free_pdu_top = pdu;
-		ha->free_pdu_bottom = pdu;
-	} else {
-		ha->free_pdu_bottom->Next = pdu;
-		ha->free_pdu_bottom = pdu;
-	}
-	dma_free_coherent(&ha->pdev->dev, pdu->BuffLen, pdu->Buff,
-			  pdu->DmaBuff);
-	ha->pdu_active--;
-
-	/* Clear PDU */
-	pdu->Buff = NULL;
-	pdu->BuffLen = 0;
-	pdu->SendBuffLen = 0;
-	pdu->RecvBuffLen = 0;
-	pdu->Next = NULL;
-	pdu->DmaBuff = 0;
-}
-
-/**
- * qla4xxx_send_passthru0_iocb - issues pass-thru iocb to HBA
- * @ha: Pointer to host adapter structure.
- * @fw_ddb_index: firmware ddb index
- * @connection_id: firmware connection id
- * @pdu_dma_data: dma base address of pdu
- * @send_len: send length
- * @recv_len: receive length
- * @control_flags: iocb control flags
- * @handle: iocb handle
- *
- * This routine issues a passthru0 IOCB.
- * hardware_lock acquired upon entry, interrupt context
- **/
-int qla4_spt0_iocb(struct scsi_qla_host * ha,
-		   uint16_t fw_ddb_index,
-		   uint16_t connection_id,
-		   dma_addr_t pdu_dma_data, uint32_t send_len,
-		   uint32_t recv_len, uint16_t control_flags,
-		   uint32_t handle)
-{
-	struct passthru0 *passthru_entry;
-	uint8_t status = QLA_SUCCESS;
-
-	/* Get pointer to the queue entry for the marker */
-	if (qla4xxx_get_req_pkt(ha, (struct queue_entry **) &passthru_entry) !=
-	    QLA_SUCCESS) {
-		status = QLA_ERROR;
-		goto exit_send_pt0;
-	}
-
-	/* Fill in the request queue */
-	passthru_entry->hdr.entryType = ET_PASSTHRU0;
-	passthru_entry->hdr.entryCount = 1;
-	passthru_entry->handle = cpu_to_le32(handle);
-	passthru_entry->target = cpu_to_le16(fw_ddb_index);
-	passthru_entry->connectionID = cpu_to_le16(connection_id);
-	passthru_entry->timeout = __constant_cpu_to_le16(PT_DEFAULT_TIMEOUT);
-	if (send_len) {
-		control_flags |= PT_FLAG_SEND_BUFFER;
-		passthru_entry->outDataSeg64.base.addrHigh =
-			cpu_to_le32(MSDW(pdu_dma_data));
-		passthru_entry->outDataSeg64.base.addrLow =
-			cpu_to_le32(LSDW(pdu_dma_data));
-		passthru_entry->outDataSeg64.count = cpu_to_le32(send_len);
-	}
-	if (recv_len) {
-		passthru_entry->inDataSeg64.base.addrHigh =
-			cpu_to_le32(MSDW(pdu_dma_data));
-		passthru_entry->inDataSeg64.base.addrLow =
-			cpu_to_le32(LSDW(pdu_dma_data));
-		passthru_entry->inDataSeg64.count = cpu_to_le32(recv_len);
-	}
-	passthru_entry->controlFlags = cpu_to_le16(control_flags);
-	wmb();
-
-	/* Tell ISP it's got a new I/O request */
-	writel(ha->request_in, &ha->reg->req_q_in);
-	readl(&ha->reg->req_q_in);
-
-exit_send_pt0:
 	return status;
 }
 

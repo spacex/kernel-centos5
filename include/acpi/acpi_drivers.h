@@ -113,12 +113,17 @@ extern int acpi_specific_hotkey_enabled;
 /*--------------------------------------------------------------------------
                                   Dock Station
   -------------------------------------------------------------------------- */
+struct acpi_dock_ops {
+	acpi_notify_handler handler;
+	acpi_notify_handler uevent;
+};
+
 #if defined(CONFIG_ACPI_DOCK) || defined(CONFIG_ACPI_DOCK_MODULE)
 extern int is_dock_device(acpi_handle handle);
 extern int register_dock_notifier(struct notifier_block *nb);
 extern void unregister_dock_notifier(struct notifier_block *nb);
 extern int register_hotplug_dock_device(acpi_handle handle,
-	acpi_notify_handler handler, void *context);
+	struct acpi_dock_ops *ops, void *context);
 extern void unregister_hotplug_dock_device(acpi_handle handle);
 #else
 #define is_dock_device(h)			(0)

@@ -82,6 +82,7 @@ struct nlm_wait;
  */
 #define NLMCLNT_OHSIZE		(sizeof(system_utsname.nodename)+10)
 struct nlm_rqst {
+	atomic_t		a_count;
 	unsigned int		a_flags;	/* initial RPC task flags */
 	struct nlm_host *	a_host;		/* host handle */
 	struct nlm_args		a_args;		/* arguments */

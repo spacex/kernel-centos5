@@ -1267,13 +1267,18 @@ mptspi_dv_renegotiate(struct _MPT_SCSI_HOST *hd)
 static int
 mptspi_ioc_reset(MPT_ADAPTER *ioc, int reset_phase)
 {
-	struct _MPT_SCSI_HOST *hd = shost_priv(ioc->sh);
 	int rc;
 
 	rc = mptscsih_ioc_reset(ioc, reset_phase);
 
-	if (reset_phase == MPT_IOC_POST_RESET)
+	/* only try to do a renegotiation if we're properly set up
+	 * if we get an ioc fault on bringup, ioc->sh will be NULL */
+	if (reset_phase == MPT_IOC_POST_RESET &&
+	    ioc->sh) {
+		struct _MPT_SCSI_HOST *hd = shost_priv(ioc->sh);
+
 		mptspi_dv_renegotiate(hd);
+	}
 
 	return rc;
 }
@@ -1418,17 +1423,15 @@ mptspi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	 * A slightly different algorithm is required for
 	 * 64bit SGEs.
 	 */
-	scale = ioc->req_sz/(sizeof(dma_addr_t) + sizeof(u32));
-	if (sizeof(dma_addr_t) == sizeof(u64)) {
+	scale = ioc->req_sz/ioc->SGE_size;
+	if (ioc->sg_addr_size == sizeof(u64)) {
 		numSGE = (scale - 1) *
 		  (ioc->facts.MaxChainDepth-1) + scale +
-		  (ioc->req_sz - 60) / (sizeof(dma_addr_t) +
-		  sizeof(u32));
+		  (ioc->req_sz - 60) / ioc->SGE_size;
 	} else {
 		numSGE = 1 + (scale - 1) *
 		  (ioc->facts.MaxChainDepth-1) + scale +
-		  (ioc->req_sz - 64) / (sizeof(dma_addr_t) +
-		  sizeof(u32));
+		  (ioc->req_sz - 64) / ioc->SGE_size;
 	}
 
 	if (numSGE < sh->sg_tablesize) {

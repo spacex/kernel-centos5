@@ -140,6 +140,9 @@ struct pci_dev {
 	u8		hdr_type;	/* PCI header type (`multi' flag masked out) */
 	u8		rom_base_reg;	/* which config register controls the ROM */
 	u8		pin;  		/* which interrupt pin this device uses */
+#ifndef __GENKSYMS__
+	u8		pcie_type;	/* PCI-E device/port type */
+#endif
 
 	struct pci_driver *driver;	/* which driver has allocated this device */
 	u64		dma_mask;	/* Mask of the bits of bus address this
@@ -181,7 +184,12 @@ struct pci_dev {
 	unsigned int 	msi_enabled:1;
 	unsigned int	msix_enabled:1;
 #ifndef __GENKSYMS__
+	unsigned int	ari_enabled:1;	/* ARI forwarding */
 	unsigned int	is_managed:1;
+	unsigned int	is_physfn:1;
+	unsigned int	is_virtfn:1;
+	unsigned int	is_pcie:1;
+	unsigned int	fndmntl_rst_rqd:1; /* Dev requires fundamental reset */
 #endif
 
 	u32		saved_config_space[16]; /* config space saved at suspend time */
@@ -191,6 +199,15 @@ struct pci_dev {
 	struct bin_attribute *res_attr[DEVICE_COUNT_RESOURCE]; /* sysfs file for resources */
 #ifndef __GENKSYMS__
 	u8              revision;       /* PCI revision, low byte of class word */
+#ifdef CONFIG_PCI_IOV
+	union {
+		struct pci_sriov *sriov;	/* SR-IOV capability related */
+		struct pci_dev *physfn;	/* the PF this VF is associated with */
+	};
+#endif
+#ifdef CONFIG_DMAR
+	void *iommu; /* hook for IOMMU specific extension */
+#endif
 #endif
 };
 
@@ -239,6 +256,8 @@ static inline void pci_remove_saved_cap(struct pci_cap_saved_state *cap)
 #define PCI_ROM_RESOURCE	6
 #define PCI_BRIDGE_RESOURCES	7
 #define PCI_NUM_RESOURCES	11
+#define PCI_IOV_RESOURCES	12
+#define PCI_IOV_RESOURCE_END	(PCI_IOV_RESOURCES + PCI_SRIOV_NUM_BARS - 1)
 
 #ifndef PCI_BUS_NUM_RESOURCES
 #define PCI_BUS_NUM_RESOURCES	8
@@ -304,10 +323,17 @@ struct pci_raw_ops {
 
 extern struct pci_raw_ops *raw_pci_ops;
 
+#ifdef CONFIG_64BIT
 struct pci_bus_region {
 	unsigned long start;
 	unsigned long end;
 };
+#else
+struct pci_bus_region {
+	resource_size_t start;
+	resource_size_t end;
+};
+#endif
 
 struct pci_dynids {
 	spinlock_t lock;            /* protects list, index */
@@ -545,6 +571,8 @@ static inline int pci_is_managed(struct pci_dev *pdev)
 
 int pci_enable_device(struct pci_dev *dev);
 int pci_enable_device_bars(struct pci_dev *dev, int mask);
+int pci_enable_device_io(struct pci_dev *dev);
+int pci_enable_device_mem(struct pci_dev *dev);
 void pci_disable_device(struct pci_dev *dev);
 void pci_set_master(struct pci_dev *dev);
 int pci_set_pcie_reset_state(struct pci_dev *dev, enum pcie_reset_state state);
@@ -559,10 +587,13 @@ int pcix_get_max_mmrbc(struct pci_dev *dev);
 int pcix_get_mmrbc(struct pci_dev *dev);
 int pcix_set_mmrbc(struct pci_dev *dev, int mmrbc);
 int pcie_set_readrq(struct pci_dev *dev, int rq);
+int pci_reset_function(struct pci_dev *dev);
+int pci_execute_reset_function(struct pci_dev *dev);
 void pci_update_resource(struct pci_dev *dev, struct resource *res, int resno);
 int pci_assign_resource(struct pci_dev *dev, int i);
 int pci_assign_resource_fixed(struct pci_dev *dev, int i);
 void pci_restore_bars(struct pci_dev *dev);
+int pci_select_bars(struct pci_dev *dev, unsigned long flags);
 
 /* ROM control related routines */
 void __iomem __must_check *pci_map_rom(struct pci_dev *pdev, size_t *size);
@@ -591,6 +622,8 @@ int pci_request_regions(struct pci_dev *, const char *);
 void pci_release_regions(struct pci_dev *);
 int pci_request_region(struct pci_dev *, int, const char *);
 void pci_release_region(struct pci_dev *, int);
+int pci_request_selected_regions(struct pci_dev *, int, const char *);
+void pci_release_selected_regions(struct pci_dev *, int);
 
 /* drivers/pci/bus.c */
 int pci_bus_alloc_resource(struct pci_bus *bus, struct resource *res,
@@ -658,6 +691,10 @@ static inline int pci_enable_msix(struct pci_dev* dev,
 static inline void pci_disable_msix(struct pci_dev *dev) {}
 static inline void msi_remove_pci_irq_vectors(struct pci_dev *dev) {}
 static inline void pci_restore_msi_state(struct pci_dev *dev) {}
+#ifdef CONFIG_XEN
+#define register_msi_get_owner(func) 0
+#define unregister_msi_get_owner(func) 0
+#endif
 #else
 extern void pci_scan_msi_device(struct pci_dev *dev);
 extern int pci_enable_msi(struct pci_dev *dev);
@@ -667,6 +704,10 @@ extern int pci_enable_msix(struct pci_dev* dev,
 extern void pci_disable_msix(struct pci_dev *dev);
 extern void msi_remove_pci_irq_vectors(struct pci_dev *dev);
 extern void pci_restore_msi_state(struct pci_dev *dev);
+#ifdef CONFIG_XEN
+extern int register_msi_get_owner(int (*func)(struct pci_dev *dev));
+extern int unregister_msi_get_owner(int (*func)(struct pci_dev *dev));
+#endif
 #endif
 
 #ifndef CONFIG_EEH
@@ -864,6 +905,19 @@ extern int pci_pci_problems;
 #define PCIPCI_VIAETBF		8
 #define PCIPCI_VSFX		16
 #define PCIPCI_ALIMAGIK		32
+
+#ifdef CONFIG_PCI_IOV
+extern int pci_enable_sriov(struct pci_dev *dev, int nr_virtfn);
+extern void pci_disable_sriov(struct pci_dev *dev);
+#else
+static inline int pci_enable_sriov(struct pci_dev *dev, int nr_virtfn)
+{
+	return -ENODEV;
+}
+static inline void pci_disable_sriov(struct pci_dev *dev)
+{
+}
+#endif
 
 #endif /* __KERNEL__ */
 #endif /* LINUX_PCI_H */

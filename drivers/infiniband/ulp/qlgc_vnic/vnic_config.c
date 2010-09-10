@@ -35,23 +35,12 @@
 #include <linux/utsname.h>
 #include <linux/if_vlan.h>
 
-#include <rdma/ib_cache.h>
-
 #include "vnic_util.h"
 #include "vnic_config.h"
 #include "vnic_trailer.h"
+#include "vnic_main.h"
 
-#define	SST_AGN		0x10ULL
-#define	SST_OUI		0x00066AULL
-
-enum {
-	CONTROL_PATH_ID	= 0x0,
-	DATA_PATH_ID	= 0x1
-};
-
-#define IOC_NUMBER(GUID)	(((GUID) >> 32) & 0xFF)
-
-static u16 max_mtu = MAX_MTU;
+u16 vnic_max_mtu = MAX_MTU;
 
 static u32 default_no_path_timeout = DEFAULT_NO_PATH_TIMEOUT;
 static u32 sa_path_rec_get_timeout = SA_PATH_REC_GET_TIMEOUT;
@@ -64,8 +53,10 @@ static int use_rx_csum = VNIC_USE_RX_CSUM;
 static int use_tx_csum = VNIC_USE_TX_CSUM;
 
 static u32 control_response_timeout = CONTROL_RSP_TIMEOUT;
-module_param(max_mtu, ushort, 0444);
-MODULE_PARM_DESC(max_mtu, "Maximum MTU size (1500-9500). Default is 9500");
+static u32 completion_limit = DEFAULT_COMPLETION_LIMIT;
+
+module_param(vnic_max_mtu, ushort, 0444);
+MODULE_PARM_DESC(vnic_max_mtu, "Maximum MTU size (1500-9500). Default is 9500");
 
 module_param(default_prefer_primary, bool, 0444);
 MODULE_PARM_DESC(default_prefer_primary, "Determines if primary path is"
@@ -95,6 +86,10 @@ module_param(control_response_timeout, uint, 0444);
 MODULE_PARM_DESC(control_response_timeout, "Time out value in milliseconds"
 		 " to wait for response to control requests");
 
+module_param(completion_limit, uint, 0444);
+MODULE_PARM_DESC(completion_limit, "Maximum completions to process"
+		" in a single completion callback invocation. Default is 100"
+		" Minimum value is 10");
 
 static void config_control_defaults(struct control_config *control_config,
 				    struct path_param *params)
@@ -110,6 +105,9 @@ static void config_control_defaults(struct control_config *control_config,
 	control_config->ib_config.conn_data.path_id = 0;
 	control_config->ib_config.conn_data.vnic_instance = params->instance;
 	control_config->ib_config.conn_data.path_num = 0;
+	control_config->ib_config.conn_data.features_supported =
+			__constant_cpu_to_be32((u32) (VNIC_FEAT_IGNORE_VLAN |
+						      VNIC_FEAT_RDMA_IMMED));
 	dot = strchr(init_utsname()->nodename, '.');
 
 	if (dot)
@@ -121,7 +119,23 @@ static void config_control_defaults(struct control_config *control_config,
 		len = VNIC_MAX_NODENAME_LEN;
 
 	memcpy(control_config->ib_config.conn_data.nodename,
-	       init_utsname()->nodename, len);
+			init_utsname()->nodename, len);
+
+	if (params->ib_multicast == 1)
+		control_config->ib_multicast = 1;
+	else if (params->ib_multicast == 0)
+		control_config->ib_multicast = 0;
+	else {
+		/* parameter is not set - enable it by default */
+		control_config->ib_multicast = 1;
+		CONFIG_ERROR ("IOCGUID=%llx INSTANCE=%d IB_MULTICAST defaulted"
+			      " to TRUE\n", be64_to_cpu(params->ioc_guid),
+			      (char)params->instance);
+	}
+
+	if (control_config->ib_multicast)
+		control_config->ib_config.conn_data.features_supported |=
+			__constant_cpu_to_be32(VNIC_FEAT_INBOUND_IB_MC);
 
 	control_config->ib_config.retry_count = RETRY_COUNT;
 	control_config->ib_config.rnr_retry_count = RETRY_COUNT;
@@ -132,6 +146,7 @@ static void config_control_defaults(struct control_config *control_config,
 	control_config->ib_config.num_sends    = 1;
 	control_config->ib_config.recv_scatter = 1;
 	control_config->ib_config.send_gather  = 1;
+	control_config->ib_config.completion_limit = completion_limit;
 
 	control_config->num_recvs = control_config->ib_config.num_recvs;
 
@@ -177,6 +192,7 @@ static void config_data_defaults(struct data_config *data_config,
 
 	data_config->ib_config.recv_scatter = 1; /* not configurable */
 	data_config->ib_config.send_gather = 2;	 /* not configurable */
+	data_config->ib_config.completion_limit = completion_limit;
 
 	data_config->num_recvs = data_config->ib_config.num_recvs;
 	data_config->path_id = data_config->ib_config.conn_data.path_id;
@@ -187,7 +203,7 @@ static void config_data_defaults(struct data_config *data_config,
 	data_config->host_min.size_recv_pool_entry =
 			cpu_to_be32(BUFFER_SIZE(VLAN_ETH_HLEN + MIN_MTU));
 	data_config->host_max.size_recv_pool_entry =
-			cpu_to_be32(BUFFER_SIZE(VLAN_ETH_HLEN + max_mtu));
+			cpu_to_be32(BUFFER_SIZE(VLAN_ETH_HLEN + vnic_max_mtu));
 	data_config->eioc_min.size_recv_pool_entry =
 			cpu_to_be32(BUFFER_SIZE(VLAN_ETH_HLEN + MIN_MTU));
 	data_config->eioc_max.size_recv_pool_entry =
@@ -242,11 +258,11 @@ static void config_path_info_defaults(struct viport_config *config,
 				      struct path_param *params)
 {
 	int i;
-	ib_get_cached_gid(config->ibdev, config->port, 0,
+	ib_query_gid(config->ibdev, config->port, 0,
 			  &config->path_info.path.sgid);
-	for (i = 0; i < 16; i++) {
+	for (i = 0; i < 16; i++)
 		config->path_info.path.dgid.raw[i] = params->dgid[i];
-	}
+
 	config->path_info.path.pkey = params->pkey;
 	config->path_info.path.numb_path = 1;
 	config->sa_path_rec_get_timeout = sa_path_rec_get_timeout;
@@ -263,10 +279,12 @@ static void config_viport_defaults(struct viport_config *config,
 	config->hb_interval = msecs_to_jiffies(VIPORT_HEARTBEAT_INTERVAL);
 	config->hb_timeout = VIPORT_HEARTBEAT_TIMEOUT * 1000;
 				/*hb_timeout needs to be in usec*/
+	strcpy(config->ioc_string, params->ioc_string);
 	config_path_info_defaults(config, params);
 
 	config_control_defaults(&config->control_config, params);
 	config_data_defaults(&config->data_config, params);
+	config->path_info.path.service_id = config->control_config.ib_config.service_id;
 }
 
 static void config_vnic_defaults(struct vnic_config *config)
@@ -328,8 +346,8 @@ char *config_viport_name(struct viport_config *config)
 
 int config_start(void)
 {
-	max_mtu = min_t(u16, max_mtu, MAX_MTU);
-	max_mtu = max_t(u16, max_mtu, MIN_MTU);
+	vnic_max_mtu = min_t(u16, vnic_max_mtu, MAX_MTU);
+	vnic_max_mtu = max_t(u16, vnic_max_mtu, MIN_MTU);
 
 	sa_path_rec_get_timeout = min_t(u32, sa_path_rec_get_timeout,
 					MAX_SA_TIMEOUT);
@@ -337,10 +355,13 @@ int config_start(void)
 					MIN_SA_TIMEOUT);
 
 	control_response_timeout = min_t(u32, control_response_timeout,
-					 MIN_CONTROL_RSP_TIMEOUT);
+					 MAX_CONTROL_RSP_TIMEOUT);
 
 	control_response_timeout = max_t(u32, control_response_timeout,
-					 MAX_CONTROL_RSP_TIMEOUT);
+					 MIN_CONTROL_RSP_TIMEOUT);
+
+	completion_limit	 = max_t(u32, completion_limit,
+					 MIN_COMPLETION_LIMIT);
 
 	if (!default_no_path_timeout)
 		default_no_path_timeout = DEFAULT_NO_PATH_TIMEOUT;

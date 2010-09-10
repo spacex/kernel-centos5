@@ -45,15 +45,17 @@
 #define T3_CTRL_QP_SIZE_LOG2  8
 #define T3_CTRL_CQ_ID    0
 
-/* TBD */
 #define T3_MAX_NUM_RI (1<<15)
 #define T3_MAX_NUM_QP (1<<15)
 #define T3_MAX_NUM_CQ (1<<15)
 #define T3_MAX_NUM_PD (1<<15)
 #define T3_MAX_PBL_SIZE 256
 #define T3_MAX_RQ_SIZE 1024
+#define T3_MAX_QP_DEPTH (T3_MAX_RQ_SIZE-1)
+#define T3_MAX_CQ_DEPTH 8192
 #define T3_MAX_NUM_STAG (1<<15)
 #define T3_MAX_MR_SIZE 0x100000000ULL
+#define T3_PAGESIZE_MASK 0xffff000  /* 4KB-128MB */
 
 #define T3_STAG_UNSET 0xffffffff
 
@@ -106,7 +108,14 @@ struct cxio_rdev {
 	struct gen_pool *pbl_pool;
 	struct gen_pool *rqt_pool;
 	struct list_head entry;
+	u32	flags;
+#define	CXIO_ERROR_FATAL	1
 };
+
+static inline int cxio_fatal_error(struct cxio_rdev *rdev_p)
+{
+	return rdev_p->flags & CXIO_ERROR_FATAL;
+}
 
 static inline int cxio_num_stags(struct cxio_rdev *rdev_p)
 {
@@ -165,6 +174,7 @@ int cxio_reregister_phys_mem(struct cxio_rdev *rdev, u32 * stag, u32 pdid,
 int cxio_dereg_mem(struct cxio_rdev *rdev, u32 stag, u32 pbl_size,
 		   u32 pbl_addr);
 int cxio_allocate_window(struct cxio_rdev *rdev, u32 * stag, u32 pdid);
+int cxio_allocate_stag(struct cxio_rdev *rdev, u32 *stag, u32 pdid, u32 pbl_size, u32 pbl_addr);
 int cxio_deallocate_window(struct cxio_rdev *rdev, u32 stag);
 int cxio_rdma_init(struct cxio_rdev *rdev, struct t3_rdma_init_attr *attr);
 void cxio_register_ev_cb(cxio_hal_ev_callback_func_t ev_cb);
@@ -180,6 +190,7 @@ void cxio_count_scqes(struct t3_cq *cq, struct t3_wq *wq, int *count);
 void cxio_flush_hw_cq(struct t3_cq *cq);
 int cxio_poll_cq(struct t3_wq *wq, struct t3_cq *cq, struct t3_cqe *cqe,
 		     u8 *cqe_flushed, u64 *cookie, u32 *credit);
+int iwch_cxgb3_ofld_send(struct t3cdev *tdev, struct sk_buff *skb);
 
 #define MOD "iw_cxgb3: "
 #define PDBG(fmt, args...) pr_debug(MOD fmt, ## args)

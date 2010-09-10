@@ -430,9 +430,6 @@ qeth_dev_route6_show(struct device *dev, struct device_attribute *attr, char *bu
 	if (!card)
 		return -EINVAL;
 
-	if (!qeth_is_supported(card, IPA_IPV6))
-		return sprintf(buf, "%s\n", "n/a");
-
 	return qeth_dev_route_show(card, &card->options.route6, buf);
 }
 
@@ -443,13 +440,6 @@ qeth_dev_route6_store(struct device *dev, struct device_attribute *attr, const c
 
 	if (!card)
 		return -EINVAL;
-
-	if (!qeth_is_supported(card, IPA_IPV6)){
-		PRINT_WARN("IPv6 not supported for interface %s.\n"
-			   "Routing status no changed.\n",
-			   QETH_CARD_IFNAME(card));
-		return -ENOTSUPP;
-	}
 
 	return qeth_dev_route_store(card, &card->options.route6,
 			            QETH_PROT_IPV6, buf, count);

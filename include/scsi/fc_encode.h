@@ -20,6 +20,7 @@
 #ifndef _FC_ENCODE_H_
 #define _FC_ENCODE_H_
 #include <asm/unaligned.h>
+#include <scsi/fc_compat.h>
 
 struct fc_ns_rft {
 	struct fc_ns_fid fid;	/* port ID object */
@@ -103,11 +104,10 @@ static inline int fc_ct_fill(struct fc_lport *lport, struct fc_frame *fp,
 		hton24(ct->payload.rn.fr_fid.fp_fid,
 		       fc_host_port_id(lport->host));
 		ct->payload.rft.fts = lport->fcts;
-		put_unaligned(htonll(lport->wwpn), &ct->payload.rn.fr_wwn);
+		put_unaligned_be64(lport->wwpn, &ct->payload.rn.fr_wwn);
 		break;
 
 	default:
-		FC_DBG("Invalid op code %x \n", op);
 		return -EINVAL;
 	}
 	*r_ctl = FC_RCTL_DD_UNSOL_CTL;
@@ -129,8 +129,9 @@ static inline void fc_plogi_fill(struct fc_lport *lport, struct fc_frame *fp,
 	plogi = fc_frame_payload_get(fp, sizeof(*plogi));
 	memset(plogi, 0, sizeof(*plogi));
 	plogi->fl_cmd = (u8) op;
-	put_unaligned(htonll(lport->wwpn), &plogi->fl_wwpn);
-	put_unaligned(htonll(lport->wwnn), &plogi->fl_wwnn);
+	put_unaligned_be64(lport->wwpn, &plogi->fl_wwpn);
+	put_unaligned_be64(lport->wwnn, &plogi->fl_wwnn);
+
 	csp = &plogi->fl_csp;
 	csp->sp_hi_ver = 0x20;
 	csp->sp_lo_ver = 0x20;
@@ -160,8 +161,8 @@ static inline void fc_flogi_fill(struct fc_lport *lport, struct fc_frame *fp)
 	flogi = fc_frame_payload_get(fp, sizeof(*flogi));
 	memset(flogi, 0, sizeof(*flogi));
 	flogi->fl_cmd = (u8) ELS_FLOGI;
-	put_unaligned(htonll(lport->wwpn), &flogi->fl_wwpn);
-	put_unaligned(htonll(lport->wwnn), &flogi->fl_wwnn);
+	put_unaligned_be64(lport->wwpn, &flogi->fl_wwpn);
+	put_unaligned_be64(lport->wwnn, &flogi->fl_wwnn);
 	sp = &flogi->fl_csp;
 	sp->sp_hi_ver = 0x20;
 	sp->sp_lo_ver = 0x20;
@@ -297,7 +298,6 @@ static inline int fc_els_fill(struct fc_lport *lport, struct fc_rport *rport,
 		break;
 
 	default:
-		FC_DBG("Invalid op code %x \n", op);
 		return -EINVAL;
 	}
 

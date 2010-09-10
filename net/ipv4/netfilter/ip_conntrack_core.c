@@ -186,6 +186,28 @@ ip_ct_get_tuple(const struct iphdr *iph,
 }
 
 int
+ip_ct_get_tuplepr(const struct sk_buff *skb,
+		  unsigned int nhoff,
+		  struct ip_conntrack_tuple *tuple)
+{
+	struct ip_conntrack_protocol *proto;
+	u_int8_t protonum;
+	unsigned int dataoff;
+	const struct iphdr *iph;
+	struct iphdr _iph;
+
+	iph = skb_header_pointer(skb, nhoff, sizeof(_iph), &_iph);
+	if (iph == NULL)
+		return 0;
+	if (iph->frag_off & htons(IP_OFFSET))
+		return 0;
+	dataoff = nhoff + (iph->ihl << 2);
+	protonum = iph->protocol;
+	proto = ip_conntrack_proto_find_get(protonum);
+	return ip_ct_get_tuple(iph, skb, dataoff, tuple, proto);
+}
+
+int
 ip_ct_invert_tuple(struct ip_conntrack_tuple *inverse,
 		   const struct ip_conntrack_tuple *orig,
 		   const struct ip_conntrack_protocol *protocol)

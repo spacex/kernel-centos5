@@ -63,7 +63,8 @@ struct snd_sb8 {
 	struct snd_sb *chip;
 };
 
-static irqreturn_t snd_sb8_interrupt(int irq, void *dev_id)
+static irqreturn_t snd_sb8_interrupt(int irq, void *dev_id,
+				     struct pt_regs *regs)
 {
 	struct snd_sb *chip = dev_id;
 

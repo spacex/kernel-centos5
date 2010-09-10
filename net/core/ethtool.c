@@ -470,6 +470,9 @@ static int ethtool_set_rx_csum(struct net_device *dev, char __user *useraddr)
 	if (copy_from_user(&edata, useraddr, sizeof(edata)))
 		return -EFAULT;
 
+	if (!edata.data && dev->ethtool_ops->set_sg)
+		dev->features &= ~NETIF_F_GRO;
+
 	dev->ethtool_ops->set_rx_csum(dev, edata.data);
 	return 0;
 }
@@ -637,6 +640,34 @@ static int ethtool_set_gso(struct net_device *dev, char __user *useraddr)
 	return 0;
 }
 
+static int ethtool_get_gro(struct net_device *dev, char __user *useraddr)
+{
+	struct ethtool_value edata = { ETHTOOL_GGRO };
+
+	edata.data = dev->features & NETIF_F_GRO;
+	if (copy_to_user(useraddr, &edata, sizeof(edata)))
+		 return -EFAULT;
+	return 0;
+}
+
+static int ethtool_set_gro(struct net_device *dev, char __user *useraddr)
+{
+	struct ethtool_value edata;
+
+	if (copy_from_user(&edata, useraddr, sizeof(edata)))
+		return -EFAULT;
+
+	if (edata.data) {
+		if (!dev->ethtool_ops->get_rx_csum ||
+		    !dev->ethtool_ops->get_rx_csum(dev))
+			return -EINVAL;
+		dev->features |= NETIF_F_GRO;
+	} else
+		dev->features &= ~NETIF_F_GRO;
+
+	return 0;
+}
+
 static int ethtool_self_test(struct net_device *dev, char __user *useraddr)
 {
 	struct ethtool_test test;
@@ -769,9 +800,6 @@ static int ethtool_get_perm_addr(struct net_device *dev, void __user *useraddr)
 	u8 *data;
 	int ret;
 
-	if (!dev->ethtool_ops->get_perm_addr)
-		return -EOPNOTSUPP;
-
 	if (copy_from_user(&epaddr,useraddr,sizeof(epaddr)))
 		return -EFAULT;
 
@@ -779,9 +807,15 @@ static int ethtool_get_perm_addr(struct net_device *dev, void __user *useraddr)
 	if (!data)
 		return -ENOMEM;
 
-	ret = dev->ethtool_ops->get_perm_addr(dev,&epaddr,data);
+	if (dev->ethtool_ops->get_perm_addr)
+		ret = dev->ethtool_ops->get_perm_addr(dev,&epaddr,data);
+	else
+		/* keep old behavior for interfaces which have no MACADDR */
+		ret = (dev->addr_len == 0) ?  -EOPNOTSUPP :
+				ethtool_op_get_perm_addr(dev, &epaddr,data);
+
 	if (ret)
-		return ret;
+		goto out;
 
 	ret = -EFAULT;
 	if (copy_to_user(useraddr, &epaddr, sizeof(epaddr)))
@@ -933,6 +967,12 @@ int dev_ethtool(struct ifreq *ifr)
 		break;
 	case ETHTOOL_SGSO:
 		rc = ethtool_set_gso(dev, useraddr);
+		break;
+	case ETHTOOL_GGRO:
+		rc = ethtool_get_gro(dev, useraddr);
+		break;
+	case ETHTOOL_SGRO:
+		rc = ethtool_set_gro(dev, useraddr);
 		break;
 	default:
 		rc =  -EOPNOTSUPP;

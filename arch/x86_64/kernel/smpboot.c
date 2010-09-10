@@ -927,6 +927,19 @@ do_rest:
 		return -EIO;
 	}
 
+	/*
+	 * Install writable page 0 entry to set BIOS data area.
+	 */
+	local_flush_tlb();
+
+	/*
+	 * Paranoid:  Set warm reset code and vector here back
+	 * to default values.
+	 */
+	CMOS_WRITE(0, 0xf);
+
+	*((volatile long *) phys_to_virt(0x467)) = 0;
+
 	return 0;
 }
 

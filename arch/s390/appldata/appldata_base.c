@@ -538,13 +538,22 @@ void appldata_unregister_ops(struct appldata_ops *ops)
 static void
 appldata_online_cpu(int cpu)
 {
+	u64 per_cpu_interval;
+
 	init_virt_timer(&per_cpu(appldata_timer, cpu));
 	per_cpu(appldata_timer, cpu).function = appldata_timer_function;
 	per_cpu(appldata_timer, cpu).data = (unsigned long)
 		&appldata_work;
 	atomic_inc(&appldata_expire_count);
 	spin_lock(&appldata_timer_lock);
-	__appldata_vtimer_setup(APPLDATA_MOD_TIMER);
+	if (appldata_timer_active) {
+		per_cpu_interval = (u64) (appldata_interval * 1000 /
+					  num_online_cpus()) * TOD_MICRO;
+		per_cpu(appldata_timer, cpu).expires = per_cpu_interval;
+		smp_call_function_on(add_virt_timer_periodic,
+				     &per_cpu(appldata_timer, cpu), 0, 1, cpu);
+		__appldata_vtimer_setup(APPLDATA_MOD_TIMER);
+	}
 	spin_unlock(&appldata_timer_lock);
 }
 

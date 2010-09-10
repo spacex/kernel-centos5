@@ -19,6 +19,7 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+#include <linux/blktrace_api.h>
 #include "zfcp_ext.h"
 
 static int zfcp_fsf_exchange_config_data_handler(struct zfcp_fsf_req *);
@@ -1931,6 +1932,7 @@ zfcp_fsf_exchange_config_evaluate(struct zfcp_fsf_req *fsf_req, int xchg_ok)
 		fc_host_speed(shost) = bottom->fc_link_speed;
 		fc_host_supported_classes(shost) = FC_COS_CLASS2 | FC_COS_CLASS3;
 		adapter->hydra_version = bottom->adapter_type;
+		adapter->timer_ticks = bottom->timer_interval;
 		if (fc_host_permanent_port_name(shost) == -1)
 			fc_host_permanent_port_name(shost) =
 				fc_host_port_name(shost);
@@ -3734,6 +3736,36 @@ zfcp_fsf_send_fcp_command_handler(struct zfcp_fsf_req *fsf_req)
 	return retval;
 }
 
+#ifdef CONFIG_BLK_DEV_IO_TRACE
+static void zfcp_fsf_trace_latency(struct zfcp_fsf_req *fsf_req)
+{
+	struct fsf_qual_latency_info *meas;
+	struct scsi_cmnd *scsi_cmnd = (struct scsi_cmnd *)fsf_req->data;
+	struct request *req = scsi_cmnd->request;
+	struct zfcp_blk_drv_data trace;
+	int ticks = fsf_req->adapter->timer_ticks;
+
+	trace.flags = 0;
+	trace.magic = ZFCP_BLK_DRV_DATA_MAGIC;
+	if (fsf_req->adapter->adapter_features & FSF_FEATURE_MEASUREMENT_DATA) {
+		trace.flags |= ZFCP_BLK_LAT_VALID;
+		meas = &fsf_req->qtcb->prefix.prot_status_qual.latency_info;
+		trace.channel_lat = meas->channel_lat * ticks;
+		trace.fabric_lat = meas->fabric_lat * ticks;
+	}
+	if (fsf_req->status & ZFCP_STATUS_FSFREQ_ERROR)
+		trace.flags |= ZFCP_BLK_REQ_ERROR;
+	trace.inb_usage = fsf_req->qdio_inb_usage;
+	trace.outb_usage = fsf_req->qdio_outb_usage;
+
+	blk_add_driver_data(req->q, req, &trace, sizeof(trace));
+}
+#else
+static inline void zfcp_fsf_trace_latency(struct zfcp_fsf_req *fsf_req)
+{
+}
+#endif
+
 /*
  * function:    zfcp_fsf_send_fcp_command_task_handler
  *
@@ -3801,6 +3833,8 @@ zfcp_fsf_send_fcp_command_task_handler(struct zfcp_fsf_req *fsf_req)
 			      zfcp_get_fcp_sns_info_ptr(fcp_rsp_iu),
 			      fcp_rsp_iu->fcp_sns_len);
 	}
+
+	zfcp_fsf_trace_latency(fsf_req);
 
 	/* check FCP_RSP_INFO */
 	if (unlikely(fcp_rsp_iu->validity.bits.fcp_rsp_len_valid)) {
@@ -4358,10 +4392,14 @@ zfcp_fsf_req_sbal_get(struct zfcp_adapter *adapter, int req_flags,
 						       ZFCP_SBAL_TIMEOUT);
 		if (ret < 0)
 			return ret;
-		if (!ret)
+		if (!ret) {
+			atomic_inc(&adapter->qdio_outb_full);
 			return -EIO;
-        } else if (!zfcp_fsf_req_sbal_check(lock_flags, req_queue, 1))
+		}
+        } else if (!zfcp_fsf_req_sbal_check(lock_flags, req_queue, 1)) {
+		atomic_inc(&adapter->qdio_outb_full);
                 return -EIO;
+	}
 
         return 0;
 }
@@ -4530,6 +4568,7 @@ static int zfcp_fsf_req_send(struct zfcp_fsf_req *fsf_req)
 	req_queue->free_index %= QDIO_MAX_BUFFERS_PER_Q;  /* wrap if needed */
 	new_distance_from_int = zfcp_qdio_determine_pci(req_queue, fsf_req);
 
+	fsf_req->qdio_outb_usage = atomic_read(&req_queue->free_count);
 	fsf_req->issued = get_clock();
 
 	retval = do_QDIO(adapter->ccw_device,

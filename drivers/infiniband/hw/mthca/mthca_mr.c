@@ -29,8 +29,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: mthca_mr.c 1349 2004-12-16 21:09:43Z roland $
  */
 
 #include <linux/slab.h>
@@ -91,23 +89,26 @@ static u32 mthca_buddy_alloc(struct mthca_buddy *buddy, int order)
 
 	spin_lock(&buddy->lock);
 
-	for (o = order; o <= buddy->max_order; ++o) {
-		m = 1 << (buddy->max_order - o);
-		seg = find_first_bit(buddy->bits[o], m);
-		if (seg < m)
-			goto found;
-	}
+	for (o = order; o <= buddy->max_order; ++o)
+		if (buddy->num_free[o]) {
+			m = 1 << (buddy->max_order - o);
+			seg = find_first_bit(buddy->bits[o], m);
+			if (seg < m)
+				goto found;
+		}
 
 	spin_unlock(&buddy->lock);
 	return -1;
 
  found:
 	clear_bit(seg, buddy->bits[o]);
+	--buddy->num_free[o];
 
 	while (o > order) {
 		--o;
 		seg <<= 1;
 		set_bit(seg ^ 1, buddy->bits[o]);
+		++buddy->num_free[o];
 	}
 
 	spin_unlock(&buddy->lock);
@@ -125,11 +126,13 @@ static void mthca_buddy_free(struct mthca_buddy *buddy, u32 seg, int order)
 
 	while (test_bit(seg ^ 1, buddy->bits[order])) {
 		clear_bit(seg ^ 1, buddy->bits[order]);
+		--buddy->num_free[order];
 		seg >>= 1;
 		++order;
 	}
 
 	set_bit(seg, buddy->bits[order]);
+	++buddy->num_free[order];
 
 	spin_unlock(&buddy->lock);
 }
@@ -143,12 +146,17 @@ static int mthca_buddy_init(struct mthca_buddy *buddy, int max_order)
 
 	buddy->bits = kzalloc((buddy->max_order + 1) * sizeof (long *),
 			      GFP_KERNEL);
-	if (!buddy->bits)
+	buddy->num_free = kzalloc((buddy->max_order + 1) * sizeof (int *),
+				  GFP_KERNEL);
+	if (!buddy->bits || !buddy->num_free)
 		goto err_out;
 
 	for (i = 0; i <= buddy->max_order; ++i) {
-		s = BITS_TO_LONGS(1 << (buddy->max_order - i));
-		buddy->bits[i] = kmalloc(s * sizeof (long), GFP_KERNEL);
+		s = BITS_TO_LONGS(1 << (buddy->max_order - i)) * sizeof(long);
+		if(s > PAGE_SIZE)
+			buddy->bits[i] = (unsigned long *)__get_free_pages(GFP_KERNEL, get_order(s));
+		else 
+			buddy->bits[i] = kmalloc(s, GFP_KERNEL);
 		if (!buddy->bits[i])
 			goto err_out_free;
 		bitmap_zero(buddy->bits[i],
@@ -156,27 +164,39 @@ static int mthca_buddy_init(struct mthca_buddy *buddy, int max_order)
 	}
 
 	set_bit(0, buddy->bits[buddy->max_order]);
+	buddy->num_free[buddy->max_order] = 1;
 
 	return 0;
 
 err_out_free:
-	for (i = 0; i <= buddy->max_order; ++i)
-		kfree(buddy->bits[i]);
-
-	kfree(buddy->bits);
-
+	for (i = 0; i <= buddy->max_order; ++i){
+		s = BITS_TO_LONGS(1 << (buddy->max_order - i)) * sizeof(long);
+		if(s > PAGE_SIZE)
+			free_pages((unsigned long)buddy->bits[i], get_order(s));
+		else
+			kfree(buddy->bits[i]);
+	}
 err_out:
+	kfree(buddy->bits);
+	kfree(buddy->num_free);
+
 	return -ENOMEM;
 }
 
 static void mthca_buddy_cleanup(struct mthca_buddy *buddy)
 {
-	int i;
+	int i, s;
 
-	for (i = 0; i <= buddy->max_order; ++i)
-		kfree(buddy->bits[i]);
+	for (i = 0; i <= buddy->max_order; ++i){
+		s = BITS_TO_LONGS(1 << (buddy->max_order - i)) * sizeof(long);
+		if(s > PAGE_SIZE)
+			free_pages((unsigned long)buddy->bits[i], get_order(s));
+		else
+			kfree(buddy->bits[i]);
+	}
 
 	kfree(buddy->bits);
+	kfree(buddy->num_free);
 }
 
 static u32 mthca_alloc_mtt_range(struct mthca_dev *dev, int order,
@@ -212,7 +232,7 @@ static struct mthca_mtt *__mthca_alloc_mtt(struct mthca_dev *dev, int size,
 
 	mtt->buddy = buddy;
 	mtt->order = 0;
-	for (i = MTHCA_MTT_SEG_SIZE / 8; i < size; i <<= 1)
+	for (i = dev->limits.mtt_seg_size / 8; i < size; i <<= 1)
 		++mtt->order;
 
 	mtt->first_seg = mthca_alloc_mtt_range(dev, mtt->order, buddy);
@@ -259,7 +279,7 @@ static int __mthca_write_mtt(struct mthca_dev *dev, struct mthca_mtt *mtt,
 
 	while (list_len > 0) {
 		mtt_entry[0] = cpu_to_be64(dev->mr_table.mtt_base +
-					   mtt->first_seg * MTHCA_MTT_SEG_SIZE +
+					   mtt->first_seg * dev->limits.mtt_seg_size +
 					   start_index * 8);
 		mtt_entry[1] = 0;
 		for (i = 0; i < list_len && i < MTHCA_MAILBOX_SIZE / 8 - 2; ++i)
@@ -318,7 +338,7 @@ static void mthca_tavor_write_mtt_seg(struct mthca_dev *dev,
 	u64 __iomem *mtts;
 	int i;
 
-	mtts = dev->mr_table.tavor_fmr.mtt_base + mtt->first_seg * MTHCA_MTT_SEG_SIZE +
+	mtts = dev->mr_table.tavor_fmr.mtt_base + mtt->first_seg * dev->limits.mtt_seg_size +
 		start_index * sizeof (u64);
 	for (i = 0; i < list_len; ++i)
 		mthca_write64_raw(cpu_to_be64(buffer_list[i] | MTHCA_MTT_FLAG_PRESENT),
@@ -337,10 +357,10 @@ static void mthca_arbel_write_mtt_seg(struct mthca_dev *dev,
 	/* For Arbel, all MTTs must fit in the same page. */
 	BUG_ON(s / PAGE_SIZE != (s + list_len * sizeof(u64) - 1) / PAGE_SIZE);
 	/* Require full segments */
-	BUG_ON(s % MTHCA_MTT_SEG_SIZE);
+	BUG_ON(s % dev->limits.mtt_seg_size);
 
 	mtts = mthca_table_find(dev->mr_table.mtt_table, mtt->first_seg +
-				s / MTHCA_MTT_SEG_SIZE, &dma_handle);
+				s / dev->limits.mtt_seg_size, &dma_handle);
 
 	BUG_ON(!mtts);
 
@@ -471,7 +491,7 @@ int mthca_mr_alloc(struct mthca_dev *dev, u32 pd, int buffer_size_shift,
 	if (mr->mtt)
 		mpt_entry->mtt_seg =
 			cpu_to_be64(dev->mr_table.mtt_base +
-				    mr->mtt->first_seg * MTHCA_MTT_SEG_SIZE);
+				    mr->mtt->first_seg * dev->limits.mtt_seg_size);
 
 	if (0) {
 		mthca_dbg(dev, "Dumping MPT entry %08x:\n", mr->ibmr.lkey);
@@ -618,7 +638,7 @@ int mthca_fmr_alloc(struct mthca_dev *dev, u32 pd,
 		goto err_out_table;
 	}
 
-	mtt_seg = mr->mtt->first_seg * MTHCA_MTT_SEG_SIZE;
+	mtt_seg = mr->mtt->first_seg * dev->limits.mtt_seg_size;
 
 	if (mthca_is_memfree(dev)) {
 		mr->mem.arbel.mtts = mthca_table_find(dev->mr_table.mtt_table,
@@ -900,7 +920,7 @@ int mthca_init_mr_table(struct mthca_dev *dev)
 			 dev->mr_table.mtt_base);
 
 		dev->mr_table.tavor_fmr.mtt_base =
-			ioremap(addr, mtts * MTHCA_MTT_SEG_SIZE);
+			ioremap(addr, mtts * dev->limits.mtt_seg_size);
 		if (!dev->mr_table.tavor_fmr.mtt_base) {
 			mthca_warn(dev, "MTT ioremap for FMR failed.\n");
 			err = -ENOMEM;

@@ -93,17 +93,37 @@ bail:
  * @rkt: table from which to free the lkey
  * @lkey: lkey id to free
  */
-void ipath_free_lkey(struct ipath_lkey_table *rkt, u32 lkey)
+int ipath_free_lkey(struct ipath_ibdev *dev, struct ipath_mregion *mr)
 {
 	unsigned long flags;
+	u32 lkey = mr->lkey;
 	u32 r;
+	int ret;
 
-	if (lkey == 0)
-		return;
-	r = lkey >> (32 - ib_ipath_lkey_table_size);
-	spin_lock_irqsave(&rkt->lock, flags);
-	rkt->table[r] = NULL;
-	spin_unlock_irqrestore(&rkt->lock, flags);
+	spin_lock_irqsave(&dev->lk_table.lock, flags);
+	if (lkey == 0) {
+		if (dev->dma_mr) {
+			ret = atomic_read(&dev->dma_mr->refcount);
+			if (dev->dma_mr == mr) {
+				if (!ret)
+					dev->dma_mr = NULL;
+			} else
+				ret = 0;
+		} else
+			ret = 0;
+	} else {
+		r = lkey >> (32 - ib_ipath_lkey_table_size);
+		ret = atomic_read(&dev->lk_table.table[r]->refcount);
+		if (!ret)
+			dev->lk_table.table[r] = NULL;
+	}
+	spin_unlock_irqrestore(&dev->lk_table.lock, flags);
+
+	if (ret) {
+		ipath_dbg("MR busy (LKEY %x cnt %u)\n", lkey, ret);
+		ret = -EBUSY;
+	}
+	return ret;
 }
 
 /**
@@ -125,40 +145,41 @@ int ipath_lkey_ok(struct ipath_qp *qp, struct ipath_sge *isge,
 	struct ipath_mregion *mr;
 	unsigned n, m;
 	size_t off;
-	int ret;
+	int ret = 0;
+	unsigned long flags;
 
 	/*
 	 * We use LKEY == zero for kernel virtual addresses
 	 * (see ipath_get_dma_mr and ipath_dma.c).
 	 */
+	spin_lock_irqsave(&rkt->lock, flags);
 	if (sge->lkey == 0) {
 		struct ipath_pd *pd = to_ipd(qp->ibqp.pd);
+		struct ipath_ibdev *dev = to_idev(pd->ibpd.device);
 
-		if (pd->user) {
-			ret = 0;
+		if (pd->user)
 			goto bail;
-		}
-		isge->mr = NULL;
+		if (!dev->dma_mr)
+			goto bail;
+		atomic_inc(&dev->dma_mr->refcount);
+		isge->mr = dev->dma_mr;
 		isge->vaddr = (void *) sge->addr;
 		isge->length = sge->length;
 		isge->sge_length = sge->length;
-		ret = 1;
-		goto bail;
+		isge->m = 0;
+		isge->n = 0;
+		goto ok;
 	}
 	mr = rkt->table[(sge->lkey >> (32 - ib_ipath_lkey_table_size))];
 	if (unlikely(mr == NULL || mr->lkey != sge->lkey ||
-		     qp->ibqp.pd != mr->pd)) {
-		ret = 0;
+		     qp->ibqp.pd != mr->pd))
 		goto bail;
-	}
 
 	off = sge->addr - mr->user_base;
 	if (unlikely(sge->addr < mr->user_base ||
 		     off + sge->length > mr->length ||
-		     (mr->access_flags & acc) != acc)) {
-		ret = 0;
+		     (mr->access_flags & acc) != acc))
 		goto bail;
-	}
 
 	off += mr->offset;
 	m = 0;
@@ -171,16 +192,17 @@ int ipath_lkey_ok(struct ipath_qp *qp, struct ipath_sge *isge,
 			n = 0;
 		}
 	}
+	atomic_inc(&mr->refcount);
 	isge->mr = mr;
 	isge->vaddr = mr->map[m]->segs[n].vaddr + off;
 	isge->length = mr->map[m]->segs[n].length - off;
 	isge->sge_length = sge->length;
 	isge->m = m;
 	isge->n = n;
-
+ok:
 	ret = 1;
-
 bail:
+	spin_unlock_irqrestore(&rkt->lock, flags);
 	return ret;
 }
 
@@ -195,51 +217,49 @@ bail:
  *
  * Return 1 if successful, otherwise 0.
  */
-int ipath_rkey_ok(struct ipath_qp *qp, struct ipath_sge_state *ss,
+int ipath_rkey_ok(struct ipath_qp *qp, struct ipath_sge *sge,
 		  u32 len, u64 vaddr, u32 rkey, int acc)
 {
 	struct ipath_ibdev *dev = to_idev(qp->ibqp.device);
 	struct ipath_lkey_table *rkt = &dev->lk_table;
-	struct ipath_sge *sge = &ss->sge;
 	struct ipath_mregion *mr;
 	unsigned n, m;
 	size_t off;
-	int ret;
+	int ret = 0;
+	unsigned long flags;
 
 	/*
 	 * We use RKEY == zero for kernel virtual addresses
 	 * (see ipath_get_dma_mr and ipath_dma.c).
 	 */
+	spin_lock_irqsave(&rkt->lock, flags);
 	if (rkey == 0) {
 		struct ipath_pd *pd = to_ipd(qp->ibqp.pd);
+		struct ipath_ibdev *dev = to_idev(pd->ibpd.device);
 
-		if (pd->user) {
-			ret = 0;
+		if (pd->user)
 			goto bail;
-		}
-		sge->mr = NULL;
+		if (!dev->dma_mr)
+			goto bail;
+		atomic_inc(&dev->dma_mr->refcount);
+		sge->mr = dev->dma_mr;
 		sge->vaddr = (void *) vaddr;
 		sge->length = len;
 		sge->sge_length = len;
-		ss->sg_list = NULL;
-		ss->num_sge = 1;
-		ret = 1;
-		goto bail;
+		sge->m = 0;
+		sge->n = 0;
+		goto ok;
 	}
 
 	mr = rkt->table[(rkey >> (32 - ib_ipath_lkey_table_size))];
 	if (unlikely(mr == NULL || mr->lkey != rkey ||
-		     qp->ibqp.pd != mr->pd)) {
-		ret = 0;
+		     qp->ibqp.pd != mr->pd))
 		goto bail;
-	}
 
 	off = vaddr - mr->iova;
 	if (unlikely(vaddr < mr->iova || off + len > mr->length ||
-		     (mr->access_flags & acc) == 0)) {
-		ret = 0;
+		     (mr->access_flags & acc) == 0))
 		goto bail;
-	}
 
 	off += mr->offset;
 	m = 0;
@@ -252,17 +272,16 @@ int ipath_rkey_ok(struct ipath_qp *qp, struct ipath_sge_state *ss,
 			n = 0;
 		}
 	}
+	atomic_inc(&mr->refcount);
 	sge->mr = mr;
 	sge->vaddr = mr->map[m]->segs[n].vaddr + off;
 	sge->length = mr->map[m]->segs[n].length - off;
 	sge->sge_length = len;
 	sge->m = m;
 	sge->n = n;
-	ss->sg_list = NULL;
-	ss->num_sge = 1;
-
+ok:
 	ret = 1;
-
 bail:
+	spin_unlock_irqrestore(&rkt->lock, flags);
 	return ret;
 }

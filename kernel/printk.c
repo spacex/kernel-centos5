@@ -35,6 +35,9 @@
 #include <linux/syscalls.h>
 
 #include <asm/uaccess.h>
+#ifndef __GENKSYMS__
+#include <linux/kexec.h>
+#endif
 
 #define __LOG_BUF_LEN	(1 << CONFIG_LOG_BUF_SHIFT)
 
@@ -124,6 +127,14 @@ static char __log_buf[__LOG_BUF_LEN];
 static char *log_buf = __log_buf;
 static int log_buf_len = __LOG_BUF_LEN;
 static unsigned long logged_chars; /* Number of chars produced since last read+clear operation */
+
+void log_buf_kexec_setup(void)
+{
+	SYMBOL(log_buf);
+	SYMBOL(log_end);
+	SYMBOL(log_buf_len);
+	SYMBOL(logged_chars);
+}
 
 static int __init log_buf_len_setup(char *str)
 {

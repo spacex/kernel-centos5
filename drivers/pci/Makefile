@@ -14,6 +14,9 @@ obj-$(CONFIG_HOTPLUG) += hotplug.o
 # Build the PCI Hotplug drivers if we were asked to
 obj-$(CONFIG_HOTPLUG_PCI) += hotplug/
 
+# Build Intel IOMMU support
+obj-$(CONFIG_DMAR) += dmar.o iova.o intel-iommu.o
+
 #
 # Some architectures use the generic PCI setup functions
 #
@@ -46,6 +49,17 @@ ifndef CONFIG_X86
 obj-y += syscall.o
 endif
 
+ifndef CONFIG_XEN
+obj-$(CONFIG_PCI_STUB) += pci-stub.o
+endif
+
 ifeq ($(CONFIG_PCI_DEBUG),y)
 EXTRA_CFLAGS += -DDEBUG
 endif
+
+ifdef CONFIG_XEN
+include $(srctree)/scripts/Makefile.xen
+obj-y := $(call cherrypickxen, $(obj-y))
+endif
+
+obj-$(CONFIG_PCI_IOV) += iov.o

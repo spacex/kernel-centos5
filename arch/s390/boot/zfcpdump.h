@@ -12,7 +12,7 @@
 #include <signal.h>
 #include <stdint.h>
 
-#define ZFCPDUMP_VERSION "2.0"
+#define ZFCPDUMP_VERSION "2.1"
 
 #define PRINT_TRACE(x...) \
 	do { \
@@ -76,6 +76,9 @@ struct globals {
 #define PROC_CMDLINE	"/proc/cmdline"
 #define PROC_MISC	"/proc/misc"
 #define DEV_ZCORE	"/sys/kernel/debug/zcore/mem"
+#define DEV_ZCORE_MAP	"/sys/kernel/debug/zcore/memmap"
+#define DEV_ZCORE_REIPL	"/sys/kernel/debug/zcore/reipl"
+#define REIPL		"1"
 #define DEV_SCSI	"/dev/sda"
 #define DUMP_DIR	"/mnt"
 
@@ -145,6 +148,7 @@ struct globals {
 #define DUMP_DH_END		0x4   /* end marker on a full dump        */
 
 #define PAGE_SIZE		4096
+#define CHUNK_INFO_SIZE		34  /* 2 16-byte char, each followed by blank */
 
 /*
  * This is the header dumped at the top of every valid crash dump.
@@ -208,6 +212,12 @@ struct dump_page {
 	__u32 size;    /* the size of this dump page */
 	__u32 flags;   /* flags (DUMP_COMPRESSED, DUMP_RAW or DUMP_END) */
 } __attribute__((packed));
+
+struct mem_chunk {
+	__u64 addr;    /* the start address of this memory chunk */
+	__u64 size;    /* the length of this memory chunk */
+	struct mem_chunk *next; /* pointer to next memory chunk */
+};
 
 /* Compression function */
 typedef int (*compress_fn_t)(const unsigned char *old, __u32 old_size,

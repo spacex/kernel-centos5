@@ -32,7 +32,8 @@ struct dma_mapping_ops swiotlb_dma_ops = {
 void pci_swiotlb_init(void)
 {
 	/* don't initialize swiotlb if iommu=off (no_iommu=1) */
-	if (!iommu_detected && !no_iommu && end_pfn > MAX_DMA32_PFN)
+	if ((!iommu_detected && !no_iommu && end_pfn > MAX_DMA32_PFN) ||
+		iommu_pass_through)
 	       swiotlb = 1;
 	if (swiotlb_force)
 		swiotlb = 1;

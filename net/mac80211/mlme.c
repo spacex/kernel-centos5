@@ -1003,8 +1003,8 @@ static void ieee80211_associated(struct net_device *dev,
 				sta_info_unlink(&sta);
 			} else
 				ieee80211_send_probe_req(dev, ifsta->bssid,
-							 local->scan_ssid,
-							 local->scan_ssid_len);
+							 ifsta->ssid,
+							 ifsta->ssid_len);
 			ifsta->flags ^= IEEE80211_STA_PROBEREQ_POLL;
 		} else {
 			ifsta->flags &= ~IEEE80211_STA_PROBEREQ_POLL;
@@ -3868,13 +3868,15 @@ void ieee80211_scan_completed(struct ieee80211_hw *hw)
 	rcu_read_unlock();
 
 done:
-	sdata = IEEE80211_DEV_TO_SUB_IF(dev);
-	if (sdata->vif.type == IEEE80211_IF_TYPE_IBSS) {
-		struct ieee80211_if_sta *ifsta = &sdata->u.sta;
-		if (!(ifsta->flags & IEEE80211_STA_BSSID_SET) ||
-		    (!ifsta->state == IEEE80211_IBSS_JOINED &&
-		    !ieee80211_sta_active_ibss(dev)))
-			ieee80211_sta_find_ibss(dev, ifsta);
+	if (dev) {
+		sdata = IEEE80211_DEV_TO_SUB_IF(dev);
+		if (sdata->vif.type == IEEE80211_IF_TYPE_IBSS) {
+			struct ieee80211_if_sta *ifsta = &sdata->u.sta;
+			if (!(ifsta->flags & IEEE80211_STA_BSSID_SET) ||
+			    (!ifsta->state == IEEE80211_IBSS_JOINED &&
+			     !ieee80211_sta_active_ibss(dev)))
+				ieee80211_sta_find_ibss(dev, ifsta);
+		}
 	}
 }
 EXPORT_SYMBOL(ieee80211_scan_completed);

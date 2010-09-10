@@ -238,18 +238,16 @@ static int inline is_ieee80211_device(struct net_device *dev,
 static ieee80211_tx_result
 ieee80211_tx_h_check_assoc(struct ieee80211_tx_data *tx)
 {
-#ifdef CONFIG_MAC80211_VERBOSE_DEBUG
 	struct sk_buff *skb = tx->skb;
 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
-#endif /* CONFIG_MAC80211_VERBOSE_DEBUG */
 	u32 sta_flags;
 
 	if (unlikely(tx->flags & IEEE80211_TX_INJECTED))
 		return TX_CONTINUE;
 
 	if (unlikely(tx->local->sta_sw_scanning) &&
-	    ((tx->fc & IEEE80211_FCTL_FTYPE) != IEEE80211_FTYPE_MGMT ||
-	     (tx->fc & IEEE80211_FCTL_STYPE) != IEEE80211_STYPE_PROBE_REQ))
+	    !ieee80211_is_probe_req(hdr->frame_control) &&
+	    !ieee80211_is_nullfunc(hdr->frame_control))
 		return TX_DROP;
 
 	if (tx->sdata->vif.type == IEEE80211_IF_TYPE_MESH_POINT)

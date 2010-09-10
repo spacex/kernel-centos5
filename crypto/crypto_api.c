@@ -247,7 +247,7 @@ struct ncrypto_alg *ncrypto_alg_mod_lookup(const char *name, u32 type, u32 mask)
 	struct ncrypto_alg *larval;
 	int ok;
 
-	if (!(mask & NCRYPTO_ALG_TESTED)) {
+	if (!((type | mask) & NCRYPTO_ALG_TESTED)) {
 		type |= NCRYPTO_ALG_TESTED;
 		mask |= NCRYPTO_ALG_TESTED;
 	}

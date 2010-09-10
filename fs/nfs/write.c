@@ -875,7 +875,7 @@ int nfs_updatepage(struct file *file, struct page *page,
 	 */
 	if (nfs_write_pageuptodate(page, inode) &&
 			inode->i_flock == NULL &&
-			!(file->f_mode & O_SYNC)) {
+			!(file->f_flags & O_SYNC)) {
 		loff_t end_offs = i_size_read(inode) - 1;
 		unsigned long end_index = end_offs >> PAGE_CACHE_SHIFT;
 

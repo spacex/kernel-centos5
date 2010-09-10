@@ -87,6 +87,7 @@ struct lock_class {
 
 	struct lockdep_subclass_key	*key;
 	unsigned int			subclass;
+	unsigned int			dep_gen_id;
 
 	/*
 	 * IRQ/softirq usage tracking bits:
@@ -283,6 +284,9 @@ extern void lock_acquire(struct lockdep_map *lock, unsigned int subclass,
 extern void lock_release(struct lockdep_map *lock, int nested,
 			 unsigned long ip);
 
+extern void lock_set_subclass(struct lockdep_map *lock, unsigned int subclass,
+			      unsigned long ip);
+
 # define INIT_LOCKDEP				.lockdep_recursion = 0,
 
 #else /* !LOCKDEP */
@@ -302,6 +306,7 @@ static inline int lockdep_internal(void)
 
 # define lock_acquire(l, s, t, r, c, i)		do { } while (0)
 # define lock_release(l, n, i)			do { } while (0)
+# define lock_set_subclass(l, s, i)		do { } while (0)
 # define lockdep_init()				do { } while (0)
 # define lockdep_info()				do { } while (0)
 # define lockdep_init_map(lock, name, key, sub)	do { (void)(key); } while (0)
@@ -421,6 +426,18 @@ extern void early_boot_irqs_on(void);
 # define rwsem_acquire(l, s, t, i)		do { } while (0)
 # define rwsem_acquire_read(l, s, t, i)		do { } while (0)
 # define rwsem_release(l, n, i)			do { } while (0)
+#endif
+
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+# ifdef CONFIG_PROVE_LOCKING
+#  define lock_map_acquire(l)		lock_acquire(l, 0, 0, 0, 2, _THIS_IP_)
+# else
+#  define lock_map_acquire(l)		lock_acquire(l, 0, 0, 0, 1, _THIS_IP_)
+# endif
+# define lock_map_release(l)			lock_release(l, 1, _THIS_IP_)
+#else
+# define lock_map_acquire(l)			do { } while (0)
+# define lock_map_release(l)			do { } while (0)
 #endif
 
 #endif /* __LINUX_LOCKDEP_H */

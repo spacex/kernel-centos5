@@ -22,6 +22,7 @@
 
 #include <linux/timer.h>
 #include <linux/if.h>
+#include <linux/percpu.h>
 
 #include <scsi/scsi_device.h>
 #include <scsi/scsi_host.h>
@@ -35,17 +36,74 @@
 
 #include <scsi/fc_frame.h>
 
-#define LIBFC_DEBUG
+#include <scsi/fc_compat.h>
 
-#ifdef LIBFC_DEBUG
-/* Log messages */
-#define FC_DBG(fmt, args...)						\
-	do {								\
-		printk(KERN_INFO "%s " fmt, __func__, ##args);		\
-	} while (0)
-#else
-#define FC_DBG(fmt, args...)
-#endif
+#define FC_LIBFC_LOGGING 0x01 /* General logging, not categorized */
+#define FC_LPORT_LOGGING 0x02 /* lport layer logging */
+#define FC_DISC_LOGGING  0x04 /* discovery layer logging */
+#define FC_RPORT_LOGGING 0x08 /* rport layer logging */
+#define FC_FCP_LOGGING   0x10 /* I/O path logging */
+#define FC_EM_LOGGING    0x20 /* Exchange Manager logging */
+#define FC_EXCH_LOGGING  0x40 /* Exchange/Sequence logging */
+#define FC_SCSI_LOGGING  0x80 /* SCSI logging (mostly error handling) */
+
+extern unsigned int fc_debug_logging;
+
+#define FC_CHECK_LOGGING(LEVEL, CMD)				\
+do {								\
+	if (unlikely(fc_debug_logging & LEVEL))			\
+		do {						\
+			CMD;					\
+		} while (0);					\
+} while (0);
+
+#define FC_LIBFC_DBG(fmt, args...)					\
+	FC_CHECK_LOGGING(FC_LIBFC_LOGGING,				\
+			 printk(KERN_INFO "libfc: " fmt, ##args);)
+
+#define FC_LPORT_DBG(lport, fmt, args...)				\
+	FC_CHECK_LOGGING(FC_LPORT_LOGGING,				\
+			 printk(KERN_INFO "lport: %6x: " fmt,		\
+				fc_host_port_id(lport->host), ##args);)
+
+#define FC_DISC_DBG(disc, fmt, args...)					\
+	FC_CHECK_LOGGING(FC_DISC_LOGGING,				\
+			 printk(KERN_INFO "disc: %6x: " fmt,		\
+				fc_host_port_id(disc->lport->host),	\
+				##args);)
+
+#define FC_RPORT_DBG(rport, fmt, args...)				\
+do {									\
+	struct fc_rport_libfc_priv *rdata = rport->dd_data;		\
+	struct fc_lport *lport = rdata->local_port;			\
+	FC_CHECK_LOGGING(FC_RPORT_LOGGING,				\
+			 printk(KERN_INFO "rport: %6x: %6x: " fmt,	\
+				fc_host_port_id(lport->host),		\
+				rport->port_id, ##args);)		\
+} while (0);
+
+#define FC_FCP_DBG(pkt, fmt, args...)					\
+	FC_CHECK_LOGGING(FC_FCP_LOGGING,				\
+			 printk(KERN_INFO "fcp: %6x: %6x: " fmt,	\
+				fc_host_port_id(pkt->lp->host),		\
+				pkt->rport->port_id, ##args);)
+
+#define FC_EM_DBG(em, fmt, args...)					\
+	FC_CHECK_LOGGING(FC_EM_LOGGING,					\
+			 printk(KERN_INFO "em: %6x: " fmt,		\
+				fc_host_port_id(em->lp->host),		\
+				##args);)
+
+#define FC_EXCH_DBG(exch, fmt, args...)					\
+	FC_CHECK_LOGGING(FC_EXCH_LOGGING,				\
+			 printk(KERN_INFO "exch: %6x: %4x: " fmt,	\
+				fc_host_port_id(exch->lp->host),	\
+				exch->xid, ##args);)
+
+#define FC_SCSI_DBG(lport, fmt, args...)				\
+	FC_CHECK_LOGGING(FC_SCSI_LOGGING,                               \
+			 printk(KERN_INFO "scsi: %6x: " fmt,		\
+				fc_host_port_id(lport->host), ##args);)
 
 /*
  * libfc error codes
@@ -70,9 +128,6 @@
 /*
  * FC HBA status
  */
-#define FC_PAUSE		    (1 << 1)
-#define FC_LINK_UP		    (1 << 0)
-
 enum fc_lport_state {
 	LPORT_ST_NONE = 0,
 	LPORT_ST_FLOGI,
@@ -89,14 +144,6 @@ enum fc_disc_event {
 	DISC_EV_NONE = 0,
 	DISC_EV_SUCCESS,
 	DISC_EV_FAILED
-};
-
-enum fc_lport_event {
-	RPORT_EV_NONE = 0,
-	RPORT_EV_CREATED,
-	RPORT_EV_FAILED,
-	RPORT_EV_STOP,
-	RPORT_EV_LOGO
 };
 
 enum fc_rport_state {
@@ -128,6 +175,19 @@ struct fc_disc_port {
 	struct work_struct	    rport_work;
 };
 
+enum fc_rport_event {
+	RPORT_EV_NONE = 0,
+	RPORT_EV_CREATED,
+	RPORT_EV_FAILED,
+	RPORT_EV_STOP,
+	RPORT_EV_LOGO
+};
+
+struct fc_rport_operations {
+	void (*event_callback)(struct fc_lport *, struct fc_rport *,
+			       enum fc_rport_event);
+};
+
 /**
  * struct fc_rport_libfc_priv - libfc internal information about a remote port
  * @local_port: Fibre Channel host port instance
@@ -142,24 +202,22 @@ struct fc_disc_port {
  * @event_callback: Callback for rport READY, FAILED or LOGO
  */
 struct fc_rport_libfc_priv {
-	struct fc_lport		*local_port;
-	enum fc_rport_state rp_state;
-	u16			flags;
+	struct fc_lport		   *local_port;
+	enum fc_rport_state        rp_state;
+	u16			   flags;
 	#define FC_RP_FLAGS_REC_SUPPORTED	(1 << 0)
 	#define FC_RP_FLAGS_RETRY		(1 << 1)
-	u16		max_seq;
-	unsigned int	retries;
-	unsigned int	e_d_tov;
-	unsigned int	r_a_tov;
-	enum fc_rport_trans_state trans_state;
-	struct mutex    rp_mutex;
-	struct work_struct	retry_work;
-	enum fc_lport_event     event;
-	void (*event_callback)(struct fc_lport *,
-			       struct fc_rport *,
-			       enum fc_lport_event);
-	struct list_head         peers;
-	struct work_struct       event_work;
+	u16		           max_seq;
+	unsigned int	           retries;
+	unsigned int	           e_d_tov;
+	unsigned int	           r_a_tov;
+	enum fc_rport_trans_state  trans_state;
+	struct mutex               rp_mutex;
+	struct delayed_work	   retry_work;
+	enum fc_rport_event        event;
+	struct fc_rport_operations *ops;
+	struct list_head           peers;
+	struct work_struct         event_work;
 };
 
 #define PRIV_TO_RPORT(x)						\
@@ -168,7 +226,6 @@ struct fc_rport_libfc_priv {
 	(struct fc_rport_libfc_priv *)((void *)x + sizeof(struct fc_rport));
 
 struct fc_rport *fc_rport_rogue_create(struct fc_disc_port *);
-void fc_rport_rogue_destroy(struct fc_rport *);
 
 static inline void fc_rport_set_name(struct fc_rport *rport, u64 wwpn, u64 wwnn)
 {
@@ -248,6 +305,7 @@ struct fc_fcp_pkt {
 	 */
 	struct fcp_cmnd cdb_cmd;
 	size_t		xfer_len;
+	u16		xfer_ddp;	/* this xfer is ddped */
 	u32		xfer_contig_end; /* offset of end of contiguous xfer */
 	u16		max_payload;	/* max payload size in bytes */
 
@@ -270,6 +328,15 @@ struct fc_fcp_pkt {
 	u8		recov_retry;	/* count of recovery retries */
 	struct fc_seq	*recov_seq;	/* sequence for REC or SRR */
 };
+/*
+ * FC_FCP HELPER FUNCTIONS
+ *****************************/
+static inline bool fc_fcp_is_read(const struct fc_fcp_pkt *fsp)
+{
+	if (fsp && fsp->cmd)
+		return fsp->cmd->sc_data_direction == DMA_FROM_DEVICE;
+	return false;
+}
 
 /*
  * Structure and function definitions for managing Fibre Channel Exchanges
@@ -298,11 +365,10 @@ struct fc_seq {
 /*
  * Exchange.
  *
- * Locking notes: The ex_lock protects changes to the following fields:
- *	esb_stat, f_ctl, seq.ssb_stat, seq.f_ctl.
+ * Locking notes: The ex_lock protects following items:
+ *	state, esb_stat, f_ctl, seq.ssb_stat
  *	seq_id
  *	sequence allocation
- *
  */
 struct fc_exch {
 	struct fc_exch_mgr *em;		/* exchange manager */
@@ -311,7 +377,7 @@ struct fc_exch {
 	struct list_head	ex_list;	/* free or busy list linkage */
 	spinlock_t	ex_lock;	/* lock covering exchange state */
 	atomic_t	ex_refcnt;	/* reference counter */
-	struct work_struct timeout_work; /* timer for upper level protocols */
+	struct delayed_work timeout_work; /* timer for upper level protocols */
 	struct fc_lport	*lp;		/* fc device instance */
 	u16		oxid;		/* originator's exchange ID */
 	u16		rxid;		/* responder's exchange ID */
@@ -340,31 +406,17 @@ struct fc_exch {
 
 struct libfc_function_template {
 
-	/**
-	 * Mandatory Fields
-	 *
-	 * These handlers must be implemented by the LLD.
-	 */
-
 	/*
 	 * Interface to send a FC frame
+	 *
+	 * STATUS: REQUIRED
 	 */
 	int (*frame_send)(struct fc_lport *lp, struct fc_frame *fp);
 
-	/**
-	 * Optional Fields
-	 *
-	 * The LLD may choose to implement any of the following handlers.
-	 * If LLD doesn't specify hander and leaves its pointer NULL then
-	 * the default libfc function will be used for that handler.
-	 */
-
-	/**
-	 * ELS/CT interfaces
-	 */
-
 	/*
-	 * elsct_send - sends ELS/CT frame
+	 * Interface to send ELS/CT frames
+	 *
+	 * STATUS: OPTIONAL
 	 */
 	struct fc_seq *(*elsct_send)(struct fc_lport *lport,
 				     struct fc_rport *rport,
@@ -374,9 +426,6 @@ struct libfc_function_template {
 					     struct fc_frame *fp,
 					     void *arg),
 				     void *arg, u32 timer_msec);
-	/**
-	 * Exhance Manager interfaces
-	 */
 
 	/*
 	 * Send the FC frame payload using a new exchange and sequence.
@@ -408,6 +457,8 @@ struct libfc_function_template {
 	 * timer_msec argument is specified. The timer is canceled when
 	 * it fires or when the exchange is done. The exchange timeout handler
 	 * is registered by EM layer.
+	 *
+	 * STATUS: OPTIONAL
 	 */
 	struct fc_seq *(*exch_seq_send)(struct fc_lport *lp,
 					struct fc_frame *fp,
@@ -419,14 +470,33 @@ struct libfc_function_template {
 					void *arg, unsigned int timer_msec);
 
 	/*
-	 * send a frame using existing sequence and exchange.
+	 * Sets up the DDP context for a given exchange id on the given
+	 * scatterlist if LLD supports DDP for large receive.
+	 *
+	 * STATUS: OPTIONAL
+	 */
+	int (*ddp_setup)(struct fc_lport *lp, u16 xid,
+			 struct scatterlist *sgl, unsigned int sgc);
+	/*
+	 * Completes the DDP transfer and returns the length of data DDPed
+	 * for the given exchange id.
+	 *
+	 * STATUS: OPTIONAL
+	 */
+	int (*ddp_done)(struct fc_lport *lp, u16 xid);
+	/*
+	 * Send a frame using an existing sequence and exchange.
+	 *
+	 * STATUS: OPTIONAL
 	 */
 	int (*seq_send)(struct fc_lport *lp, struct fc_seq *sp,
 			struct fc_frame *fp);
 
 	/*
-	 * Send ELS response using mainly infomation
-	 * in exchange and sequence in EM layer.
+	 * Send an ELS response using infomation from a previous
+	 * exchange and sequence.
+	 *
+	 * STATUS: OPTIONAL
 	 */
 	void (*seq_els_rsp_send)(struct fc_seq *sp, enum fc_els_cmd els_cmd,
 				 struct fc_seq_els_data *els_data);
@@ -438,6 +508,8 @@ struct libfc_function_template {
 	 * A timer_msec can be specified for abort timeout, if non-zero
 	 * timer_msec value is specified then exchange resp handler
 	 * will be called with timeout error if no response to abort.
+	 *
+	 * STATUS: OPTIONAL
 	 */
 	int (*seq_exch_abort)(const struct fc_seq *req_sp,
 			      unsigned int timer_msec);
@@ -445,6 +517,8 @@ struct libfc_function_template {
 	/*
 	 * Indicate that an exchange/sequence tuple is complete and the memory
 	 * allocated for the related objects may be freed.
+	 *
+	 * STATUS: OPTIONAL
 	 */
 	void (*exch_done)(struct fc_seq *sp);
 
@@ -452,6 +526,8 @@ struct libfc_function_template {
 	 * Assigns a EM and a free XID for an new exchange and then
 	 * allocates a new exchange and sequence pair.
 	 * The fp can be used to determine free XID.
+	 *
+	 * STATUS: OPTIONAL
 	 */
 	struct fc_exch *(*exch_get)(struct fc_lport *lp, struct fc_frame *fp);
 
@@ -459,12 +535,16 @@ struct libfc_function_template {
 	 * Release previously assigned XID by exch_get API.
 	 * The LLD may implement this if XID is assigned by LLD
 	 * in exch_get().
+	 *
+	 * STATUS: OPTIONAL
 	 */
 	void (*exch_put)(struct fc_lport *lp, struct fc_exch_mgr *mp,
 			 u16 ex_id);
 
 	/*
 	 * Start a new sequence on the same exchange/sequence tuple.
+	 *
+	 * STATUS: OPTIONAL
 	 */
 	struct fc_seq *(*seq_start_next)(struct fc_seq *sp);
 
@@ -472,26 +552,38 @@ struct libfc_function_template {
 	 * Reset an exchange manager, completing all sequences and exchanges.
 	 * If s_id is non-zero, reset only exchanges originating from that FID.
 	 * If d_id is non-zero, reset only exchanges sending to that FID.
+	 *
+	 * STATUS: OPTIONAL
 	 */
-	void (*exch_mgr_reset)(struct fc_exch_mgr *,
+	void (*exch_mgr_reset)(struct fc_lport *,
 			       u32 s_id, u32 d_id);
 
-	void (*rport_flush_queue)(void);
-	/**
-	 * Local Port interfaces
+	/*
+	 * Flush the rport work queue. Generally used before shutdown.
+	 *
+	 * STATUS: OPTIONAL
 	 */
+	void (*rport_flush_queue)(void);
 
 	/*
-	 * Receive a frame to a local port.
+	 * Receive a frame for a local port.
+	 *
+	 * STATUS: OPTIONAL
 	 */
 	void (*lport_recv)(struct fc_lport *lp, struct fc_seq *sp,
 			   struct fc_frame *fp);
 
+	/*
+	 * Reset the local port.
+	 *
+	 * STATUS: OPTIONAL
+	 */
 	int (*lport_reset)(struct fc_lport *);
 
-	/**
-	 * Remote Port interfaces
+	/*
+	 * Create a remote port
 	 */
+	struct fc_rport *(*rport_create)(struct fc_disc_port *);
 
 	/*
 	 * Initiates the RP state machine. It is called from the LP module.
@@ -501,26 +593,33 @@ struct libfc_function_template {
 	 * - PLOGI
 	 * - PRLI
 	 * - RTV
+	 *
+	 * STATUS: OPTIONAL
 	 */
 	int (*rport_login)(struct fc_rport *rport);
 
 	/*
 	 * Logoff, and remove the rport from the transport if
 	 * it had been added. This will send a LOGO to the target.
+	 *
+	 * STATUS: OPTIONAL
 	 */
 	int (*rport_logoff)(struct fc_rport *rport);
 
 	/*
 	 * Recieve a request from a remote port.
+	 *
+	 * STATUS: OPTIONAL
 	 */
 	void (*rport_recv_req)(struct fc_seq *, struct fc_frame *,
 			       struct fc_rport *);
 
-	struct fc_rport *(*rport_lookup)(const struct fc_lport *, u32);
-
-	/**
-	 * FCP interfaces
+	/*
+	 * lookup an rport by it's port ID.
+	 *
+	 * STATUS: OPTIONAL
 	 */
+	struct fc_rport *(*rport_lookup)(const struct fc_lport *, u32);
 
 	/*
 	 * Send a fcp cmd from fsp pkt.
@@ -528,30 +627,38 @@ struct libfc_function_template {
 	 *
 	 * The resp handler is called when FCP_RSP received.
 	 *
+	 * STATUS: OPTIONAL
 	 */
 	int (*fcp_cmd_send)(struct fc_lport *lp, struct fc_fcp_pkt *fsp,
 			    void (*resp)(struct fc_seq *, struct fc_frame *fp,
 					 void *arg));
 
 	/*
-	 * Used at least durring linkdown and reset
+	 * Cleanup the FCP layer, used durring link down and reset
+	 *
+	 * STATUS: OPTIONAL
 	 */
 	void (*fcp_cleanup)(struct fc_lport *lp);
 
 	/*
 	 * Abort all I/O on a local port
+	 *
+	 * STATUS: OPTIONAL
 	 */
 	void (*fcp_abort_io)(struct fc_lport *lp);
 
-	/**
-	 * Discovery interfaces
+	/*
+	 * Receive a request for the discovery layer.
+	 *
+	 * STATUS: OPTIONAL
 	 */
-
 	void (*disc_recv_req)(struct fc_seq *,
 			      struct fc_frame *, struct fc_lport *);
 
 	/*
 	 * Start discovery for a local port.
+	 *
+	 * STATUS: OPTIONAL
 	 */
 	void (*disc_start)(void (*disc_callback)(struct fc_lport *,
 						 enum fc_disc_event),
@@ -560,6 +667,8 @@ struct libfc_function_template {
 	/*
 	 * Stop discovery for a given lport. This will remove
 	 * all discovered rports
+	 *
+	 * STATUS: OPTIONAL
 	 */
 	void (*disc_stop) (struct fc_lport *);
 
@@ -567,11 +676,32 @@ struct libfc_function_template {
 	 * Stop discovery for a given lport. This will block
 	 * until all discovered rports are deleted from the
 	 * FC transport class
+	 *
+	 * STATUS: OPTIONAL
 	 */
 	void (*disc_stop_final) (struct fc_lport *);
 };
 
-struct fc_disc;
+/* information used by the discovery layer */
+struct fc_disc {
+	unsigned char		retry_count;
+	unsigned char		delay;
+	unsigned char		pending;
+	unsigned char		requested;
+	unsigned short		seq_count;
+	unsigned char		buf_len;
+	enum fc_disc_event	event;
+
+	void (*disc_callback)(struct fc_lport *,
+			      enum fc_disc_event);
+
+	struct list_head	 rports;
+	struct list_head	 rogue_rports;
+	struct fc_lport		*lport;
+	struct mutex		disc_mutex;
+	struct fc_gpn_ft_resp	partial_buf;	/* partial name buffer */
+	struct delayed_work	disc_work;
+};
 
 struct fc_lport {
 	struct list_head list;
@@ -581,17 +711,19 @@ struct fc_lport {
 	struct fc_exch_mgr	*emp;
 	struct fc_rport		*dns_rp;
 	struct fc_rport		*ptp_rp;
-	struct fc_disc          *disc;
 	void			*scsi_priv;
+	struct fc_disc          disc;
 
 	/* Operational Information */
 	struct libfc_function_template tt;
-	u16			link_status;
+	u8			link_up;
+	u8			qfull;
 	enum fc_lport_state	state;
 	unsigned long		boot_time;
 
 	struct fc_host_statistics host_stats;
-	struct fcoe_dev_stats	*dev_stats[NR_CPUS];
+	struct fcoe_dev_stats	*dev_stats;
+
 	u64			wwpn;
 	u64			wwnn;
 	u8			retry_count;
@@ -606,9 +738,11 @@ struct fc_lport {
 	unsigned int		e_d_tov;
 	unsigned int		r_a_tov;
 	u8			max_retry_count;
+	u8			max_rport_retry_count;
 	u16			link_speed;
 	u16			link_supported_speeds;
 	u16			lro_xid;	/* max xid for fcoe lro */
+	unsigned int		lso_max;	/* max large send size */
 	struct fc_ns_fts	fcts;	        /* FC-4 type masks */
 	struct fc_els_rnid_gen	rnid_gen;	/* RNID information */
 
@@ -616,18 +750,13 @@ struct fc_lport {
 	struct mutex lp_mutex;
 
 	/* Miscellaneous */
-	struct work_struct	retry_work;
-	struct work_struct	disc_work;
+	struct delayed_work	retry_work;
+	struct delayed_work	disc_work;
 };
 
-/**
+/*
  * FC_LPORT HELPER FUNCTIONS
  *****************************/
-static inline void *lport_priv(const struct fc_lport *lp)
-{
-	return (void *)(lp + 1);
-}
-
 static inline int fc_lport_test_ready(struct fc_lport *lp)
 {
 	return lp->state == LPORT_ST_READY;
@@ -651,8 +780,44 @@ static inline void fc_lport_state_enter(struct fc_lport *lp,
 	lp->state = state;
 }
 
+static inline int fc_lport_init_stats(struct fc_lport *lp)
+{
+	/* allocate per cpu stats block */
+	lp->dev_stats = alloc_percpu(struct fcoe_dev_stats);
+	if (!lp->dev_stats)
+		return -ENOMEM;
+	return 0;
+}
+
+static inline void fc_lport_free_stats(struct fc_lport *lp)
+{
+	free_percpu(lp->dev_stats);
+}
+
+static inline struct fcoe_dev_stats *fc_lport_get_stats(struct fc_lport *lp)
+{
+	return per_cpu_ptr(lp->dev_stats, smp_processor_id());
+}
+
+static inline void *lport_priv(const struct fc_lport *lp)
+{
+	return (void *)(lp + 1);
+}
 
 /**
+ * libfc_host_alloc() - Allocate a Scsi_Host with room for the fc_lport
+ * @sht: ptr to the scsi host templ
+ * @priv_size: size of private data after fc_lport
+ *
+ * Returns: ptr to Scsi_Host
+ */
+static inline struct Scsi_Host *
+libfc_host_alloc(struct scsi_host_template *sht, int priv_size)
+{
+	return scsi_host_alloc(sht, sizeof(struct fc_lport) + priv_size);
+}
+
+/*
  * LOCAL PORT LAYER
  *****************************/
 int fc_lport_init(struct fc_lport *lp);
@@ -687,12 +852,6 @@ void fc_linkup(struct fc_lport *);
 void fc_linkdown(struct fc_lport *);
 
 /*
- * Pause and unpause traffic.
- */
-void fc_pause(struct fc_lport *);
-void fc_unpause(struct fc_lport *);
-
-/*
  * Configure the local port.
  */
 int fc_lport_config(struct fc_lport *);
@@ -708,19 +867,19 @@ int fc_lport_reset(struct fc_lport *);
 int fc_set_mfs(struct fc_lport *lp, u32 mfs);
 
 
-/**
+/*
  * REMOTE PORT LAYER
  *****************************/
 int fc_rport_init(struct fc_lport *lp);
 void fc_rport_terminate_io(struct fc_rport *rp);
 
-/**
+/*
  * DISCOVERY LAYER
  *****************************/
 int fc_disc_init(struct fc_lport *lp);
 
 
-/**
+/*
  * SCSI LAYER
  *****************************/
 /*
@@ -781,7 +940,12 @@ int fc_change_queue_type(struct scsi_device *sdev, int tag_type);
  */
 void fc_fcp_destroy(struct fc_lport *);
 
-/**
+/*
+ * Set up direct-data placement for this I/O request
+ */
+void fc_fcp_ddp_setup(struct fc_fcp_pkt *fsp, u16 xid);
+
+/*
  * ELS/CT interface
  *****************************/
 /*
@@ -790,7 +954,7 @@ void fc_fcp_destroy(struct fc_lport *);
 int fc_elsct_init(struct fc_lport *lp);
 
 
-/**
+/*
  * EXCHANGE MANAGER LAYER
  *****************************/
 /*
@@ -899,7 +1063,7 @@ struct fc_seq *fc_seq_start_next(struct fc_seq *sp);
  * If s_id is non-zero, reset only exchanges originating from that FID.
  * If d_id is non-zero, reset only exchanges sending to that FID.
  */
-void fc_exch_mgr_reset(struct fc_exch_mgr *, u32 s_id, u32 d_id);
+void fc_exch_mgr_reset(struct fc_lport *, u32 s_id, u32 d_id);
 
 /*
  * Functions for fc_functions_template

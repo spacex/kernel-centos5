@@ -34,6 +34,7 @@
 #include <linux/cpu.h>
 #include <linux/syscalls.h>
 #include <linux/delay.h>
+#include <linux/timex.h>
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -740,6 +741,8 @@ long time_reftime;			/* time at last adjustment (s)	*/
 long time_adjust;
 long time_next_adjust;
 
+unsigned long leap_second = TIME_OK;
+
 /*
  * this routine handles the overflow of the microsecond field
  *
@@ -785,8 +788,7 @@ static void second_overflow(void)
 			time_interpolator_update(-NSEC_PER_SEC);
 			time_state = TIME_OOP;
 			clock_was_set();
-			printk(KERN_NOTICE "Clock: inserting leap second "
-					"23:59:60 UTC\n");
+			leap_second = TIME_INS;
 		}
 		break;
 	case TIME_DEL:
@@ -800,8 +802,7 @@ static void second_overflow(void)
 			time_interpolator_update(NSEC_PER_SEC);
 			time_state = TIME_WAIT;
 			clock_was_set();
-			printk(KERN_NOTICE "Clock: deleting leap second "
-					"23:59:59 UTC\n");
+			leap_second = TIME_DEL;
 		}
 		break;
 	case TIME_OOP:

@@ -433,6 +433,22 @@ enum features {
 	RTL_FEATURE_GMII	= (1 << 2),
 };
 
+struct rtl8169_counters {
+	__le64	tx_packets;
+	__le64	rx_packets;
+	__le64	tx_errors;
+	__le32	rx_errors;
+	__le16	rx_missed;
+	__le16	align_errors;
+	__le32	tx_one_collision;
+	__le32	tx_multi_collision;
+	__le64	rx_unicast;
+	__le64	rx_broadcast;
+	__le32	rx_multicast;
+	__le16	tx_aborted;
+	__le16	tx_underun;
+};
+
 struct rtl8169_private {
 	void __iomem *mmio_addr;	/* memory map physical address */
 	struct pci_dev *pci_dev;	/* Index of PCI device */
@@ -475,6 +491,7 @@ struct rtl8169_private {
 	unsigned features;
 
 	struct mii_if_info mii;
+	struct rtl8169_counters counters;
 };
 
 MODULE_AUTHOR("Realtek and the Linux r8169 crew <netdev@vger.kernel.org>");
@@ -1101,37 +1118,26 @@ static const char rtl8169_gstrings[][ETH_GSTRING_LEN] = {
 	"tx_underrun",
 };
 
-struct rtl8169_counters {
-	__le64	tx_packets;
-	__le64	rx_packets;
-	__le64	tx_errors;
-	__le32	rx_errors;
-	__le16	rx_missed;
-	__le16	align_errors;
-	__le32	tx_one_collision;
-	__le32	tx_multi_collision;
-	__le64	rx_unicast;
-	__le64	rx_broadcast;
-	__le32	rx_multicast;
-	__le16	tx_aborted;
-	__le16	tx_underun;
-};
-
 static int rtl8169_get_stats_count(struct net_device *dev)
 {
 	return ARRAY_SIZE(rtl8169_gstrings);
 }
 
-static void rtl8169_get_ethtool_stats(struct net_device *dev,
-				      struct ethtool_stats *stats, u64 *data)
+static void rtl8169_update_counters(struct net_device *dev)
 {
 	struct rtl8169_private *tp = netdev_priv(dev);
 	void __iomem *ioaddr = tp->mmio_addr;
 	struct rtl8169_counters *counters;
 	dma_addr_t paddr;
 	u32 cmd;
+	int wait = 1000;
 
-	ASSERT_RTNL();
+	/*
+	 * Some chips are unable to dump tally counters when the receiver
+	 * is disabled.
+	 */
+	if ((RTL_R8(ChipCmd) & CmdRxEnb) == 0)
+		return;
 
 	counters = pci_alloc_consistent(tp->pci_dev, sizeof(*counters), &paddr);
 	if (!counters)
@@ -1142,29 +1148,43 @@ static void rtl8169_get_ethtool_stats(struct net_device *dev,
 	RTL_W32(CounterAddrLow, cmd);
 	RTL_W32(CounterAddrLow, cmd | CounterDump);
 
-	while (RTL_R32(CounterAddrLow) & CounterDump) {
-		if (msleep_interruptible(1))
+	while (wait--) {
+		if ((RTL_R32(CounterAddrLow) & CounterDump) == 0) {
+			/* copy updated counters */
+			memcpy(&tp->counters, counters, sizeof(*counters));
 			break;
+		}
+		udelay(10);
 	}
 
 	RTL_W32(CounterAddrLow, 0);
 	RTL_W32(CounterAddrHigh, 0);
 
-	data[0] = le64_to_cpu(counters->tx_packets);
-	data[1] = le64_to_cpu(counters->rx_packets);
-	data[2] = le64_to_cpu(counters->tx_errors);
-	data[3] = le32_to_cpu(counters->rx_errors);
-	data[4] = le16_to_cpu(counters->rx_missed);
-	data[5] = le16_to_cpu(counters->align_errors);
-	data[6] = le32_to_cpu(counters->tx_one_collision);
-	data[7] = le32_to_cpu(counters->tx_multi_collision);
-	data[8] = le64_to_cpu(counters->rx_unicast);
-	data[9] = le64_to_cpu(counters->rx_broadcast);
-	data[10] = le32_to_cpu(counters->rx_multicast);
-	data[11] = le16_to_cpu(counters->tx_aborted);
-	data[12] = le16_to_cpu(counters->tx_underun);
-
 	pci_free_consistent(tp->pci_dev, sizeof(*counters), counters, paddr);
+}
+
+static void rtl8169_get_ethtool_stats(struct net_device *dev,
+				      struct ethtool_stats *stats, u64 *data)
+{
+	struct rtl8169_private *tp = netdev_priv(dev);
+
+	ASSERT_RTNL();
+
+	rtl8169_update_counters(dev);
+
+	data[0] = le64_to_cpu(tp->counters.tx_packets);
+	data[1] = le64_to_cpu(tp->counters.rx_packets);
+	data[2] = le64_to_cpu(tp->counters.tx_errors);
+	data[3] = le32_to_cpu(tp->counters.rx_errors);
+	data[4] = le16_to_cpu(tp->counters.rx_missed);
+	data[5] = le16_to_cpu(tp->counters.align_errors);
+	data[6] = le32_to_cpu(tp->counters.tx_one_collision);
+	data[7] = le32_to_cpu(tp->counters.tx_multi_collision);
+	data[8] = le64_to_cpu(tp->counters.rx_unicast);
+	data[9] = le64_to_cpu(tp->counters.rx_broadcast);
+	data[10] = le32_to_cpu(tp->counters.rx_multicast);
+	data[11] = le16_to_cpu(tp->counters.tx_aborted);
+	data[12] = le16_to_cpu(tp->counters.tx_underun);
 }
 
 static void rtl8169_get_strings(struct net_device *dev, u32 stringset, u8 *data)
@@ -1791,6 +1811,8 @@ static void rtl8169_init_phy(struct net_device *dev, struct rtl8169_private *tp)
 		printk(KERN_INFO PFX "%s: TBI auto-negotiating\n", dev->name);
 }
 
+#if 0 /* Temporarily disabled */
+
 static void rtl_rar_set(struct rtl8169_private *tp, u8 *addr)
 {
 	void __iomem *ioaddr = tp->mmio_addr;
@@ -1824,6 +1846,8 @@ static int rtl_set_mac_address(struct net_device *dev, void *p)
 
 	return 0;
 }
+
+#endif
 
 static int rtl8169_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 {
@@ -2027,8 +2051,7 @@ rtl8169_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (!tp->pcie_cap && netif_msg_probe(tp))
 		dev_info(&pdev->dev, "no PCI Express capability\n");
 
-	/* Unneeded ? Don't mess with Mrs. Murphy. */
-	rtl8169_irq_mask_and_ack(ioaddr);
+	RTL_W16(IntrMask, 0x0000);
 
 	/* Soft reset the chip. */
 	RTL_W8(ChipCmd, CmdReset);
@@ -2039,6 +2062,8 @@ rtl8169_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 			break;
 		msleep_interruptible(1);
 	}
+
+	RTL_W16(IntrStatus, 0xffff);
 
 	/* Identify chip attached to board */
 	rtl8169_get_mac_version(tp, ioaddr);
@@ -2101,7 +2126,9 @@ rtl8169_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	dev->irq = pdev->irq;
 	dev->base_addr = (unsigned long) ioaddr;
 	dev->change_mtu = rtl8169_change_mtu;
+#if 0 /* Temporarily disabled */
 	dev->set_mac_address = rtl_set_mac_address;
+#endif
 
 	dev->poll = rtl8169_poll;
 	dev->weight = R8169_NAPI_WEIGHT;
@@ -2649,8 +2676,6 @@ static void rtl_hw_start_8168(struct net_device *dev)
 	RTL_W32(TxConfig, (TX_DMA_BURST << TxDMAShift) |
 		(InterFrameGap << TxInterFrameGapShift));
 
-	RTL_W32(RxMissed, 0);
-
 	RTL_R8(IntrMask);
 
 	switch (tp->mac_version) {
@@ -2824,8 +2849,6 @@ static void rtl_hw_start_8101(struct net_device *dev)
 	RTL_W8(Cfg9346, Cfg9346_Lock);
 
 	RTL_R8(IntrMask);
-
-	RTL_W32(RxMissed, 0);
 
 	rtl_set_rx_mode(dev);
 
@@ -3605,6 +3628,17 @@ static int rtl8169_poll(struct net_device *dev, int *budget)
 	return (work_done >= work_to_do);
 }
 
+static void rtl8169_rx_missed(struct net_device *dev, void __iomem *ioaddr)
+{
+	struct rtl8169_private *tp = netdev_priv(dev);
+
+	if (tp->mac_version > RTL_GIGA_MAC_VER_06)
+		return;
+
+	tp->stats.rx_missed_errors += (RTL_R32(RxMissed) & 0xffffff);
+	RTL_W32(RxMissed, 0);
+}
+
 static void rtl8169_down(struct net_device *dev)
 {
 	struct rtl8169_private *tp = netdev_priv(dev);
@@ -3622,9 +3656,7 @@ core_down:
 
 	rtl8169_asic_down(ioaddr);
 
-	/* Update the error counts. */
-	tp->stats.rx_missed_errors += RTL_R32(RxMissed);
-	RTL_W32(RxMissed, 0);
+	rtl8169_rx_missed(dev, ioaddr);
 
 	spin_unlock_irq(&tp->lock);
 
@@ -3659,6 +3691,9 @@ static int rtl8169_close(struct net_device *dev)
 {
 	struct rtl8169_private *tp = netdev_priv(dev);
 	struct pci_dev *pdev = tp->pci_dev;
+
+	/* update counters before going down */
+	rtl8169_update_counters(dev);
 
 	rtl8169_down(dev);
 
@@ -3746,8 +3781,7 @@ static struct net_device_stats *rtl8169_get_stats(struct net_device *dev)
 
 	if (netif_running(dev)) {
 		spin_lock_irqsave(&tp->lock, flags);
-		tp->stats.rx_missed_errors += RTL_R32(RxMissed);
-		RTL_W32(RxMissed, 0);
+		rtl8169_rx_missed(dev, ioaddr);
 		spin_unlock_irqrestore(&tp->lock, flags);
 	}
 
@@ -3772,8 +3806,7 @@ static int rtl8169_suspend(struct pci_dev *pdev, pm_message_t state)
 
 	rtl8169_asic_down(ioaddr);
 
-	tp->stats.rx_missed_errors += RTL_R32(RxMissed);
-	RTL_W32(RxMissed, 0);
+	rtl8169_rx_missed(dev, ioaddr);
 
 	spin_unlock_irq(&tp->lock);
 

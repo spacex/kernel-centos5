@@ -410,3 +410,7 @@ EXPORT_SYMBOL(dma_async_memcpy_issue_pending);
 EXPORT_SYMBOL(dma_async_device_register);
 EXPORT_SYMBOL(dma_async_device_unregister);
 EXPORT_SYMBOL(dma_chan_cleanup);
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Intel Corporation");
+

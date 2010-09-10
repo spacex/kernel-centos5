@@ -45,12 +45,8 @@ int ipath_user_sdma_writev(struct ipath_devdata *dd,
 int ipath_user_sdma_make_progress(struct ipath_devdata *dd,
 				  struct ipath_user_sdma_queue *pq);
 
-int ipath_user_sdma_pkt_sent(const struct ipath_user_sdma_queue *pq,
-			     u32 counter);
 void ipath_user_sdma_queue_drain(struct ipath_devdata *dd,
 				 struct ipath_user_sdma_queue *pq);
 
 u32 ipath_user_sdma_complete_counter(const struct ipath_user_sdma_queue *pq);
-void ipath_user_sdma_set_complete_counter(struct ipath_user_sdma_queue *pq,
-					  u32 c);
 u32 ipath_user_sdma_inflight_counter(struct ipath_user_sdma_queue *pq);

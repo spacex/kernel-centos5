@@ -22,6 +22,7 @@
 #include <linux/types.h>
 #include <linux/list.h>
 #include <linux/string.h>
+#include <linux/fips.h>
 #include <asm/page.h>
 
 /*

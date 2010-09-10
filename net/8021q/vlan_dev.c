@@ -28,6 +28,7 @@
 #include <linux/skbuff.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
+#include <linux/netpoll.h>
 #include <net/datalink.h>
 #include <net/p8022.h>
 #include <net/arp.h>
@@ -679,18 +680,22 @@ int vlan_dev_set_mac_address(struct net_device *dev, void *addr_struct_p)
 	if (memcmp(VLAN_DEV_INFO(dev)->real_dev->dev_addr,
 		   dev->dev_addr,
 		   dev->addr_len) != 0) {
-		if (!(VLAN_DEV_INFO(dev)->real_dev->flags & IFF_PROMISC)) {
-			int flgs = VLAN_DEV_INFO(dev)->real_dev->flags;
+		int flgs = VLAN_DEV_INFO(dev)->real_dev->flags;
+		int gflgs = VLAN_DEV_INFO(dev)->real_dev->gflags;
 
-			/* Increment our in-use promiscuity counter */
-			dev_set_promiscuity(VLAN_DEV_INFO(dev)->real_dev, 1);
-
+		if (!(flgs & IFF_PROMISC)) {
 			/* Make PROMISC visible to the user. */
 			flgs |= IFF_PROMISC;
 			printk("VLAN (%s):  Setting underlying device (%s) to promiscious mode.\n",
 			       dev->name, VLAN_DEV_INFO(dev)->real_dev->name);
 			dev_change_flags(VLAN_DEV_INFO(dev)->real_dev, flgs);
+			if (!(gflgs & IFF_PROMISC))
+				VLAN_DEV_INFO(dev)->promisc_count++;
 		}
+
+		/* Increment our in-use promiscuity counter */
+		dev_set_promiscuity(VLAN_DEV_INFO(dev)->real_dev, 1);
+		VLAN_DEV_INFO(dev)->promisc_count++;
 	} else {
 		printk("VLAN (%s):  Underlying device (%s) has same MAC, not checking promiscious mode.\n",
 		       dev->name, VLAN_DEV_INFO(dev)->real_dev->name);
@@ -842,6 +847,7 @@ void vlan_dev_set_multicast_list(struct net_device *vlan_dev)
 			       vlan_dev->name, inc);
 			dev_set_promiscuity(real_dev, inc); /* found in dev.c */
 			VLAN_DEV_INFO(vlan_dev)->old_promiscuity = vlan_dev->promiscuity;
+			VLAN_DEV_INFO(vlan_dev)->promisc_count += inc;
 		}
 
 		inc = vlan_dev->allmulti - VLAN_DEV_INFO(vlan_dev)->old_allmulti;
@@ -889,3 +895,59 @@ void vlan_dev_set_multicast_list(struct net_device *vlan_dev)
 		vlan_copy_mc_list(vlan_dev->mc_list, VLAN_DEV_INFO(vlan_dev));
 	}
 }
+
+static int vlan_gro_common(struct napi_struct *napi, struct vlan_group *grp,
+			   unsigned int vlan_tci, struct sk_buff *skb)
+{
+	struct sk_buff *p;
+
+	if (skb_bond_should_drop(skb))
+		goto drop;
+
+	skb->dev = grp->vlan_devices[vlan_tci & VLAN_VID_MASK];
+
+	if (!skb->dev)
+		goto drop;
+
+	for (p = napi->gro_list; p; p = p->next) {
+		NAPI_GRO_CB(p)->same_flow =
+			p->dev == skb->dev && !compare_ether_header(
+				skb_mac_header(p), skb_gro_mac_header(skb));
+		NAPI_GRO_CB(p)->flush = 0;
+	}
+
+	return dev_gro_receive(napi, skb);
+
+drop:
+	return GRO_DROP;
+}
+
+int vlan_gro_receive(struct napi_struct *napi, struct vlan_group *grp,
+		     unsigned int vlan_tci, struct sk_buff *skb)
+{
+	if (netpoll_rx_on(skb))
+		return vlan_hwaccel_receive_skb(skb, grp, vlan_tci);
+
+	skb_gro_reset_offset(skb);
+
+	return napi_skb_finish(vlan_gro_common(napi, grp, vlan_tci, skb), skb);
+}
+EXPORT_SYMBOL(vlan_gro_receive);
+
+int vlan_gro_frags(struct napi_struct *napi, struct vlan_group *grp,
+		   unsigned int vlan_tci)
+{
+	struct sk_buff *skb = napi_frags_skb(napi);
+
+	if (!skb)
+		return NET_RX_DROP;
+
+	if (netpoll_rx_on(skb)) {
+		skb->protocol = eth_type_trans(skb, skb->dev);
+		return vlan_hwaccel_receive_skb(skb, grp, vlan_tci);
+	}
+
+	return napi_frags_finish(napi, skb,
+				 vlan_gro_common(napi, grp, vlan_tci, skb));
+}
+EXPORT_SYMBOL(vlan_gro_frags);

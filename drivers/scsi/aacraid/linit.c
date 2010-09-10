@@ -38,6 +38,7 @@
 #include <linux/moduleparam.h>
 #include <linux/pci.h>
 #include <linux/slab.h>
+#include <linux/smp_lock.h>
 #include <linux/spinlock.h>
 #include <linux/syscalls.h>
 #include <linux/delay.h>
@@ -86,7 +87,13 @@ char aac_driver_version[] = AAC_DRIVER_FULL_VERSION;
  *
  * Note: The last field is used to index into aac_drivers below.
  */
-static struct pci_device_id aac_pci_tbl[] = {
+#ifdef DECLARE_PCI_DEVICE_TABLE
+static DECLARE_PCI_DEVICE_TABLE(aac_pci_tbl) = {
+#elif defined(__devinitconst)
+static const struct pci_device_id aac_pci_tbl[] __devinitconst = {
+#else
+static const struct pci_device_id aac_pci_tbl[] __devinitdata = {
+#endif
 	{ 0x1028, 0x0001, 0x1028, 0x0001, 0, 0, 0 }, /* PERC 2/Si (Iguana/PERC2Si) */
 	{ 0x1028, 0x0002, 0x1028, 0x0002, 0, 0, 1 }, /* PERC 3/Di (Opal/PERC3Di) */
 	{ 0x1028, 0x0003, 0x1028, 0x0003, 0, 0, 2 }, /* PERC 3/Si (SlimFast/PERC3Si */
@@ -175,8 +182,8 @@ static struct aac_driver_ident aac_drivers[] = {
 	{ aac_rx_init, "percraid", "DELL    ", "PERCRAID        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* PERC 3/Di (Boxster/PERC3DiB) */
 	{ aac_rx_init, "aacraid",  "ADAPTEC ", "catapult        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* catapult */
 	{ aac_rx_init, "aacraid",  "ADAPTEC ", "tomcat          ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* tomcat */
-	{ aac_rx_init, "aacraid",  "ADAPTEC ", "Adaptec 2120S   ", 1, AAC_QUIRK_31BIT | AAC_QUIRK_34SG },		      /* Adaptec 2120S (Crusader) */
-	{ aac_rx_init, "aacraid",  "ADAPTEC ", "Adaptec 2200S   ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG },		      /* Adaptec 2200S (Vulcan) */
+	{ aac_rx_init, "aacraid",  "ADAPTEC ", "Adaptec 2120S   ", 1, AAC_QUIRK_31BIT | AAC_QUIRK_34SG },		       /* Adaptec 2120S (Crusader) */
+	{ aac_rx_init, "aacraid",  "ADAPTEC ", "Adaptec 2200S   ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG },		       /* Adaptec 2200S (Vulcan) */
 	{ aac_rx_init, "aacraid",  "ADAPTEC ", "Adaptec 2200S   ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* Adaptec 2200S (Vulcan-2m) */
 	{ aac_rx_init, "aacraid",  "Legend  ", "Legend S220     ", 1, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* Legend S220 (Legend Crusader) */
 	{ aac_rx_init, "aacraid",  "Legend  ", "Legend S230     ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* Legend S230 (Legend Vulcan) */
@@ -275,9 +282,9 @@ static const char *aac_info(struct Scsi_Host *shost)
 
 /**
  *	aac_get_driver_ident
- * 	@devtype: index into lookup table
+ *	@devtype: index into lookup table
  *
- * 	Returns a pointer to the entry in the driver lookup table.
+ *	Returns a pointer to the entry in the driver lookup table.
  */
 
 struct aac_driver_ident* aac_get_driver_ident(int devtype)
@@ -402,6 +409,8 @@ static int aac_biosparm(struct scsi_device *sdev, struct block_device *bdev,
 static int aac_slave_configure(struct scsi_device *sdev)
 {
 	struct aac_dev *aac = (struct aac_dev *)sdev->host->hostdata;
+	if (aac->jbod && (sdev->type == TYPE_DISK))
+		sdev->removable = 1;
 	if ((sdev->type == TYPE_DISK) &&
 			(sdev_channel(sdev) != CONTAINER_CHANNEL) &&
 			(!aac->jbod || sdev->inq_periph_qual) &&
@@ -449,9 +458,14 @@ static int aac_slave_configure(struct scsi_device *sdev)
 		else if (depth < 2)
 			depth = 2;
 		scsi_adjust_queue_depth(sdev, MSG_ORDERED_TAG, depth);
-		if (!(((struct aac_dev *)host->hostdata)->adapter_info.options &
+		if (sdev->request_queue) {
+			if (!(((struct aac_dev *)host->hostdata)->adapter_info.options &
 				AAC_OPT_NEW_COMM))
-			blk_queue_max_segment_size(sdev->request_queue, 65536);
+				blk_queue_max_segment_size(sdev->request_queue, 65536);
+			else
+				blk_queue_max_segment_size(sdev->request_queue,
+					host->max_sectors << 9);
+		}
 	} else
 		scsi_adjust_queue_depth(sdev, 0, 1);
 
@@ -497,13 +511,14 @@ static int aac_change_queue_depth(struct scsi_device *sdev, int depth)
 
 static ssize_t aac_show_raid_level(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	struct scsi_device * sdev = to_scsi_device(dev);
+	struct scsi_device *sdev = to_scsi_device(dev);
+	struct aac_dev *aac = (struct aac_dev *)(sdev->host->hostdata);
 	if (sdev_channel(sdev) != CONTAINER_CHANNEL)
 		return snprintf(buf, PAGE_SIZE, sdev->no_uld_attach
-		  ? "Hidden\n" : "JBOD");
+		  ? "Hidden\n" :
+		  ((aac->jbod && (sdev->type == TYPE_DISK)) ? "JBOD\n" : ""));
 	return snprintf(buf, PAGE_SIZE, "%s\n",
-	  get_container_type(((struct aac_dev *)(sdev->host->hostdata))
-	    ->fsa_dev[sdev_id(sdev)].type));
+	  get_container_type(aac->fsa_dev[sdev_id(sdev)].type));
 }
 
 static struct device_attribute aac_raid_level_attr = {
@@ -644,7 +659,7 @@ static int aac_eh_reset(struct scsi_cmnd* cmd)
 	   AAC_OPTION_MU_RESET) &&
 	  aac_check_reset &&
 	  ((aac_check_reset != 1) ||
-	   (aac->supplement_adapter_info.SupportedOptions2 &
+	   !(aac->supplement_adapter_info.SupportedOptions2 &
 	    AAC_OPTION_IGNORE_RESET)))
 		aac_reset_adapter(aac, 2); /* Bypass wait for command quiesce */
 	return SUCCESS; /* Cause an immediate retry of the command with a ten second delay after successful tur */
@@ -668,6 +683,7 @@ static int aac_cfg_open(struct inode *inode, struct file *file)
 	unsigned minor_number = iminor(inode);
 	int err = -ENODEV;
 
+	lock_kernel();  /* BKL pushdown: nothing else protects this list */
 	list_for_each_entry(aac, &aac_devices, entry) {
 		if (aac->id == minor_number) {
 			file->private_data = aac;
@@ -675,6 +691,7 @@ static int aac_cfg_open(struct inode *inode, struct file *file)
 			break;
 		}
 	}
+	unlock_kernel();
 
 	return err;
 }
@@ -762,15 +779,17 @@ static ssize_t aac_show_model(struct class_device *class_dev,
 {
 	struct aac_dev *dev = (struct aac_dev*)class_to_shost(class_dev)->hostdata;
 	int len;
-	struct scsi_inq scsi_inq;
-	char *cp;
 
-	setinqstr(dev, &scsi_inq, 255);
-	cp = &scsi_inq.pid[sizeof(scsi_inq.pid)-1];
-	while (*cp && *cp == ' ' && cp > scsi_inq.pid)
-		--cp;
-	len = snprintf(buf, PAGE_SIZE,
-	  "%.*s\n", (int)(cp - scsi_inq.pid) + 1, scsi_inq.pid);
+	if (dev->supplement_adapter_info.AdapterTypeText[0]) {
+		char * cp = dev->supplement_adapter_info.AdapterTypeText;
+		while (*cp && *cp != ' ')
+			++cp;
+		while (*cp == ' ')
+			++cp;
+		len = snprintf(buf, PAGE_SIZE, "%s\n", cp);
+	} else
+		len = snprintf(buf, PAGE_SIZE, "%s\n",
+		  aac_drivers[dev->cardtype].model);
 	return len;
 }
 
@@ -779,15 +798,17 @@ static ssize_t aac_show_vendor(struct class_device *class_dev,
 {
 	struct aac_dev *dev = (struct aac_dev*)class_to_shost(class_dev)->hostdata;
 	int len;
-	struct scsi_inq scsi_inq;
-	char *cp;
 
-	setinqstr(dev, &scsi_inq, 255);
-	cp = &scsi_inq.vid[sizeof(scsi_inq.vid)-1];
-	while (*cp && *cp == ' ' && cp > scsi_inq.vid)
-		--cp;
-	len = snprintf(buf, PAGE_SIZE,
-	  "%.*s\n", (int)(cp - scsi_inq.vid) + 1, scsi_inq.vid);
+	if (dev->supplement_adapter_info.AdapterTypeText[0]) {
+		char * cp = dev->supplement_adapter_info.AdapterTypeText;
+		while (*cp && *cp != ' ')
+			++cp;
+		len = snprintf(buf, PAGE_SIZE, "%.*s\n",
+		  (int)(cp - (char *)dev->supplement_adapter_info.AdapterTypeText),
+		  dev->supplement_adapter_info.AdapterTypeText);
+	} else
+		len = snprintf(buf, PAGE_SIZE, "%s\n",
+		  aac_drivers[dev->cardtype].vname);
 	return len;
 }
 
@@ -807,6 +828,12 @@ static ssize_t aac_show_flags(struct class_device *class_dev, char *buf)
 				"SAI_READ_CAPACITY_16\n");
 	if (dev->jbod)
 		len += snprintf(buf + len, PAGE_SIZE - len, "SUPPORTED_JBOD\n");
+	if (dev->supplement_adapter_info.SupportedOptions2 &
+		AAC_OPTION_POWER_MANAGEMENT)
+		len += snprintf(buf + len, PAGE_SIZE - len,
+				"SUPPORTED_POWER_MANAGEMENT\n");
+	if (dev->msi)
+		len += snprintf(buf + len, PAGE_SIZE - len, "PCI_HAS_MSI\n");
 	return len;
 }
 
@@ -859,8 +886,8 @@ ssize_t aac_show_serial_number(struct class_device *class_dev, char *buf)
 		  le32_to_cpu(dev->adapter_info.serial[0]));
 	if (len &&
 	  !memcmp(&dev->supplement_adapter_info.MfgPcbaSerialNo[
-	    sizeof(dev->supplement_adapter_info.MfgPcbaSerialNo)+2-len],
-	  buf, len))
+	    sizeof(dev->supplement_adapter_info.MfgPcbaSerialNo)-len],
+	  buf, len-1))
 		len = snprintf(buf, PAGE_SIZE, "%.*s\n",
 		  (int)sizeof(dev->supplement_adapter_info.MfgPcbaSerialNo),
 		  dev->supplement_adapter_info.MfgPcbaSerialNo);
@@ -991,7 +1018,6 @@ static struct class_device_attribute *aac_attrs[] = {
 	NULL
 };
 
-
 static struct file_operations aac_cfg_fops = {
 	.owner		= THIS_MODULE,
 	.ioctl		= aac_cfg_ioctl,
@@ -1003,32 +1029,32 @@ static struct file_operations aac_cfg_fops = {
 
 static struct scsi_host_template aac_driver_template = {
 	.module				= THIS_MODULE,
-	.name           		= "AAC",
+	.name				= "AAC",
 	.proc_name			= AAC_DRIVERNAME,
-	.info           		= aac_info,
-	.ioctl          		= aac_ioctl,
+	.info				= aac_info,
+	.ioctl				= aac_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl			= aac_compat_ioctl,
 #endif
-	.queuecommand   		= aac_queuecommand,
-	.bios_param     		= aac_biosparm,
+	.queuecommand			= aac_queuecommand,
+	.bios_param			= aac_biosparm,
 	.shost_attrs			= aac_attrs,
 	.slave_configure		= aac_slave_configure,
 	.change_queue_depth		= aac_change_queue_depth,
 	.sdev_attrs			= aac_dev_attrs,
 	.eh_abort_handler		= aac_eh_abort,
 	.eh_host_reset_handler		= aac_eh_reset,
-	.can_queue      		= AAC_NUM_IO_FIB,
-	.this_id        		= MAXIMUM_NUM_CONTAINERS,
-	.sg_tablesize   		= 16,
-	.max_sectors    		= 128,
+	.can_queue			= AAC_NUM_IO_FIB,
+	.this_id			= MAXIMUM_NUM_CONTAINERS,
+	.sg_tablesize			= 16,
+	.max_sectors			= 128,
 #if (AAC_NUM_IO_FIB > 256)
 	.cmd_per_lun			= 256,
 #else
-	.cmd_per_lun    		= AAC_NUM_IO_FIB,
+	.cmd_per_lun			= AAC_NUM_IO_FIB,
 #endif
 	.use_clustering			= ENABLE_CLUSTERING,
-	.emulated                       = 1,
+	.emulated			= 1,
 };
 
 static void __aac_shutdown(struct aac_dev * aac)
@@ -1038,6 +1064,8 @@ static void __aac_shutdown(struct aac_dev * aac)
 	aac_send_shutdown(aac);
 	aac_adapter_disable_int(aac);
 	free_irq(aac->pdev->irq, aac);
+	if (aac->msi)
+		pci_disable_msi(aac->pdev);
 }
 
 static int __devinit aac_probe_one(struct pci_dev *pdev,
@@ -1090,7 +1118,7 @@ static int __devinit aac_probe_one(struct pci_dev *pdev,
 	aac->pdev = pdev;
 	aac->name = aac_driver_template.name;
 	aac->id = shost->unique_id;
-	aac->cardtype =  index;
+	aac->cardtype = index;
 	INIT_LIST_HEAD(&aac->entry);
 
 	aac->fibs = kmalloc(sizeof(struct fib) * (shost->can_queue + AAC_NUM_MGT_FIB), GFP_KERNEL);
@@ -1130,31 +1158,29 @@ static int __devinit aac_probe_one(struct pci_dev *pdev,
 		goto out_deinit;
 
 	/*
- 	 * Lets override negotiations and drop the maximum SG limit to 34
- 	 */
+	 * Lets override negotiations and drop the maximum SG limit to 34
+	 */
 	if ((aac_drivers[index].quirks & AAC_QUIRK_34SG) &&
-			(aac->scsi_host_ptr->sg_tablesize > 34)) {
- 		aac->scsi_host_ptr->sg_tablesize = 34;
- 		aac->scsi_host_ptr->max_sectors
- 		  = (aac->scsi_host_ptr->sg_tablesize * 8) + 112;
- 	}
+			(shost->sg_tablesize > 34)) {
+		shost->sg_tablesize = 34;
+		shost->max_sectors = (shost->sg_tablesize * 8) + 112;
+	}
 
- 	if ((aac_drivers[index].quirks & AAC_QUIRK_17SG) &&
-			(aac->scsi_host_ptr->sg_tablesize > 17)) {
- 		aac->scsi_host_ptr->sg_tablesize = 17;
- 		aac->scsi_host_ptr->max_sectors
- 		  = (aac->scsi_host_ptr->sg_tablesize * 8) + 112;
- 	}
+	if ((aac_drivers[index].quirks & AAC_QUIRK_17SG) &&
+			(shost->sg_tablesize > 17)) {
+		shost->sg_tablesize = 17;
+		shost->max_sectors = (shost->sg_tablesize * 8) + 112;
+	}
 
 	/*
-	 * Firware printf works only with older firmware.
+	 * Firmware printf works only with older firmware.
 	 */
 	if (aac_drivers[index].quirks & AAC_QUIRK_34SG)
 		aac->printf_enabled = 1;
 	else
 		aac->printf_enabled = 0;
 
- 	/*
+	/*
 	 * max channel will be the physical channels plus 1 virtual channel
 	 * all containers are on the virtual channel 0 (CONTAINER_CHANNEL)
 	 * physical channels are address by their actual physical number+1
@@ -1249,7 +1275,7 @@ static struct pci_driver aac_pci_driver = {
 	.id_table	= aac_pci_tbl,
 	.probe		= aac_probe_one,
 	.remove		= __devexit_p(aac_remove_one),
-	.shutdown 	= aac_shutdown,
+	.shutdown	= aac_shutdown,
 };
 
 static int __init aac_init(void)
@@ -1266,7 +1292,7 @@ static int __init aac_init(void)
 	aac_cfg_major = register_chrdev( 0, "aac", &aac_cfg_fops);
 	if (aac_cfg_major < 0) {
 		printk(KERN_WARNING
-		       "aacraid: unable to register \"aac\" device.\n");
+			"aacraid: unable to register \"aac\" device.\n");
 	}
 
 	return 0;

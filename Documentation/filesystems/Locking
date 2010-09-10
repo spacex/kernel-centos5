@@ -106,6 +106,8 @@ prototypes:
 	int (*show_options)(struct seq_file *, struct vfsmount *);
 	ssize_t (*quota_read)(struct super_block *, int, char *, size_t, loff_t);
 	ssize_t (*quota_write)(struct super_block *, int, const char *, size_t, loff_t);
+	int (*freeze_fs) (struct super_block *);
+	int (*unfreeze_fs) (struct super_block *);
 
 locking rules:
 	All may block.
@@ -130,6 +132,8 @@ umount_begin:		yes	no	no
 show_options:		no				(vfsmount->sem)
 quota_read:		no	no	no		(see below)
 quota_write:		no	no	no		(see below)
+freeze_fs:		?
+unfreeze_fs:		?
 
 ->read_inode() is not a method - it's a callback used in iget().
 ->remount_fs() will have the s_umount lock if it's already mounted.
@@ -175,15 +179,18 @@ prototypes:
 locking rules:
 	All except set_page_dirty may block
 
-			BKL	PageLocked(page)
+			BKL	PageLocked(page)	i_sem
 writepage:		no	yes, unlocks (see below)
 readpage:		no	yes, unlocks
 sync_page:		no	maybe
 writepages:		no
 set_page_dirty		no	no
 readpages:		no
-prepare_write:		no	yes
-commit_write:		no	yes
+prepare_write:		no	yes			yes
+commit_write:		no	yes			yes
+write_begin:		no	locks the page		yes
+write_end:		no	yes, unlocks		yes
+perform_write:		no	n/a			yes
 bmap:			yes
 invalidatepage:		no	yes
 releasepage:		no	yes

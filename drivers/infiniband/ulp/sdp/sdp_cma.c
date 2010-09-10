@@ -94,7 +94,7 @@ static void sdp_qp_event_handler(struct ib_event *event, void *data)
 {
 }
 
-int sdp_init_qp(struct sock *sk, struct rdma_cm_id *id)
+static int sdp_init_qp(struct sock *sk, struct rdma_cm_id *id)
 {
 	struct ib_qp_init_attr qp_init_attr = {
 		.event_handler = sdp_qp_event_handler,
@@ -132,7 +132,7 @@ int sdp_init_qp(struct sock *sk, struct rdma_cm_id *id)
 	if (!sdp_sk(sk)->rx_ring) {
 		rc = -ENOMEM;
 		sdp_warn(sk, "Unable to allocate RX Ring size %zd.\n",
-			 sizeof *sdp_sk(sk)->rx_ring * SDP_TX_SIZE);
+			 sizeof *sdp_sk(sk)->rx_ring * SDP_RX_SIZE);
 		goto err_rx;
 	}
 
@@ -162,8 +162,6 @@ int sdp_init_qp(struct sock *sk, struct rdma_cm_id *id)
 		goto err_cq;
 	}
 
-	ib_req_notify_cq(cq, IB_CQ_NEXT_COMP);
-
         qp_init_attr.send_cq = qp_init_attr.recv_cq = cq;
 
 	rc = rdma_create_qp(id, pd, &qp_init_attr);
@@ -177,10 +175,6 @@ int sdp_init_qp(struct sock *sk, struct rdma_cm_id *id)
 
 	init_waitqueue_head(&sdp_sk(sk)->wq);
 
-	sdp_sk(sk)->recv_frags = 0;
-	sdp_sk(sk)->rcvbuf_scale = 1;
-	sdp_post_recvs(sdp_sk(sk));
-
 	sdp_dbg(sk, "%s done\n", __func__);
 	return 0;
 
@@ -192,13 +186,15 @@ err_mr:
 	ib_dealloc_pd(pd);
 err_pd:
 	kfree(sdp_sk(sk)->rx_ring);
+	sdp_sk(sk)->rx_ring = NULL;
 err_rx:
 	kfree(sdp_sk(sk)->tx_ring);
+	sdp_sk(sk)->tx_ring = NULL;
 err_tx:
 	return rc;
 }
 
-int sdp_connect_handler(struct sock *sk, struct rdma_cm_id *id,
+static int sdp_connect_handler(struct sock *sk, struct rdma_cm_id *id,
 		       	struct rdma_cm_event *event)
 {
 	struct sockaddr_in *dst_addr;
@@ -217,24 +213,23 @@ int sdp_connect_handler(struct sock *sk, struct rdma_cm_id *id,
 	if (!child)
 		return -ENOMEM;
 
-	sdp_add_sock(sdp_sk(child));
-	INIT_LIST_HEAD(&sdp_sk(child)->accept_queue);
-	INIT_LIST_HEAD(&sdp_sk(child)->backlog_queue);
-	INIT_DELAYED_WORK(&sdp_sk(child)->time_wait_work, sdp_time_wait_work);
-	INIT_WORK(&sdp_sk(child)->destroy_work, sdp_destroy_work);
+	sdp_init_sock(child);
 
 	dst_addr = (struct sockaddr_in *)&id->route.addr.dst_addr;
 	inet_sk(child)->dport = dst_addr->sin_port;
 	inet_sk(child)->daddr = dst_addr->sin_addr.s_addr;
 
 	bh_unlock_sock(child);
-	__sock_put(child);
+	__sock_put(child, SOCK_REF_CLONE);
 
 	rc = sdp_init_qp(child, id);
 	if (rc) {
-		sk_common_release(child);
+		sdp_sk(child)->destructed_already = 1;
+		sk_free(child);
 		return rc;
 	}
+
+	sdp_add_sock(sdp_sk(child));
 
 	sdp_sk(child)->max_bufs = sdp_sk(child)->bufs = ntohs(h->bsdh.bufs);
 	sdp_sk(child)->min_bufs = sdp_sk(child)->bufs / 4;
@@ -242,7 +237,7 @@ int sdp_connect_handler(struct sock *sk, struct rdma_cm_id *id,
 		sizeof(struct sdp_bsdh);
 	sdp_sk(child)->send_frags = PAGE_ALIGN(sdp_sk(child)->xmit_size_goal) /
 		PAGE_SIZE;
-	sdp_resize_buffers(sdp_sk(child), ntohl(h->desremrcvsz));
+	sdp_init_buffers(sdp_sk(child), ntohl(h->desremrcvsz));
 
 	sdp_dbg(child, "%s bufs %d xmit_size_goal %d send trigger %d\n",
 		__func__,
@@ -256,7 +251,7 @@ int sdp_connect_handler(struct sock *sk, struct rdma_cm_id *id,
 	list_add_tail(&sdp_sk(child)->backlog_queue, &sdp_sk(sk)->backlog_queue);
 	sdp_sk(child)->parent = sk;
 
-	child->sk_state = TCP_SYN_RECV;
+	sdp_exch_state(child, TCPF_LISTEN | TCPF_CLOSE, TCP_SYN_RECV);
 
 	/* child->sk_write_space(child); */
 	/* child->sk_data_ready(child, 0); */
@@ -272,7 +267,7 @@ static int sdp_response_handler(struct sock *sk, struct rdma_cm_id *id,
 	struct sockaddr_in *dst_addr;
 	sdp_dbg(sk, "%s\n", __func__);
 
-	sk->sk_state = TCP_ESTABLISHED;
+	sdp_exch_state(sk, TCPF_SYN_SENT, TCP_ESTABLISHED);
 
 	if (sock_flag(sk, SOCK_KEEPOPEN))
 		sdp_start_keepalive_timer(sk);
@@ -308,7 +303,7 @@ static int sdp_response_handler(struct sock *sk, struct rdma_cm_id *id,
 	return 0;
 }
 
-int sdp_connected_handler(struct sock *sk, struct rdma_cm_event *event)
+static int sdp_connected_handler(struct sock *sk, struct rdma_cm_event *event)
 {
 	struct sock *parent;
 	sdp_dbg(sk, "%s\n", __func__);
@@ -316,7 +311,7 @@ int sdp_connected_handler(struct sock *sk, struct rdma_cm_event *event)
 	parent = sdp_sk(sk)->parent;
 	BUG_ON(!parent);
 
-	sk->sk_state = TCP_ESTABLISHED;
+	sdp_exch_state(sk, TCPF_SYN_RECV, TCP_ESTABLISHED);
 
 	if (sock_flag(sk, SOCK_KEEPOPEN))
 		sdp_start_keepalive_timer(sk);
@@ -350,7 +345,7 @@ done:
 	return 0;
 }
 
-int sdp_disconnected_handler(struct sock *sk)
+static int sdp_disconnected_handler(struct sock *sk)
 {
 	struct sdp_sock *ssk = sdp_sk(sk);
 
@@ -420,6 +415,7 @@ int sdp_cma_handler(struct rdma_cm_id *id, struct rdma_cm_event *event)
 		hh.bsdh.len = htonl(sizeof(struct sdp_bsdh) + SDP_HH_SIZE);
 		hh.max_adverts = 1;
 		hh.majv_minv = SDP_MAJV_MINV;
+		sdp_init_buffers(sdp_sk(sk), rcvbuf_initial_size);
 		hh.localrcvsz = hh.desremrcvsz = htonl(sdp_sk(sk)->recv_frags *
 						       PAGE_SIZE + SDP_HEAD_SIZE);
 		hh.max_adverts = 0x1;
@@ -498,9 +494,32 @@ int sdp_cma_handler(struct rdma_cm_id *id, struct rdma_cm_event *event)
 			((struct sockaddr_in *)&id->route.addr.src_addr)->sin_addr.s_addr;
 		rc = sdp_connected_handler(sk, event);
 		break;
-	case RDMA_CM_EVENT_DISCONNECTED:
+	case RDMA_CM_EVENT_DISCONNECTED: /* This means DREQ/DREP received */
 		sdp_dbg(sk, "RDMA_CM_EVENT_DISCONNECTED\n");
+
+		if (sk->sk_state == TCP_LAST_ACK) {
+			sdp_cancel_dreq_wait_timeout(sdp_sk(sk));
+
+			sdp_exch_state(sk, TCPF_LAST_ACK, TCP_TIME_WAIT);
+
+			sdp_dbg(sk, "%s: waiting for Infiniband tear down\n",
+				__func__);
+		}
+
 		rdma_disconnect(id);
+
+		if (sk->sk_state != TCP_TIME_WAIT) {
+			if (sk->sk_state == TCP_CLOSE_WAIT) {
+				sdp_dbg(sk, "IB teardown while in TCP_CLOSE_WAIT "
+					    "taking reference to let close() finish the work\n");
+				sock_hold(sk, SOCK_REF_CM_TW);
+			}
+			sdp_set_error(sk, EPIPE);
+			rc = sdp_disconnected_handler(sk);
+		}
+		break;
+	case RDMA_CM_EVENT_TIMEWAIT_EXIT:
+		sdp_dbg(sk, "RDMA_CM_EVENT_TIMEWAIT_EXIT\n");
 		rc = sdp_disconnected_handler(sk);
 		break;
 	case RDMA_CM_EVENT_DEVICE_REMOVAL:

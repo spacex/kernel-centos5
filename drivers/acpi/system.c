@@ -26,9 +26,11 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/init.h>
+#include <linux/vmalloc.h>
 #include <asm/uaccess.h>
 
 #include <acpi/acpi_drivers.h>
+#include <acpi/actables.h>
 
 #define _COMPONENT		ACPI_SYSTEM_COMPONENT
 ACPI_MODULE_NAME("acpi_system")
@@ -76,17 +78,26 @@ acpi_system_read_dsdt(struct file *file,
 		      char __user * buffer, size_t count, loff_t * ppos)
 {
 	acpi_status status = AE_OK;
-	struct acpi_buffer dsdt = { ACPI_ALLOCATE_BUFFER, NULL };
+	struct acpi_table_header *tbl_ptr;
 	ssize_t res;
+	void *ptr;
 
-
-	status = acpi_get_table(ACPI_TABLE_ID_DSDT, 1, &dsdt);
+	status = acpi_tb_get_table_ptr(ACPI_TABLE_ID_DSDT, 1, &tbl_ptr);
 	if (ACPI_FAILURE(status))
 		return -ENODEV;
 
-	res = simple_read_from_buffer(buffer, count, ppos,
-				      dsdt.pointer, dsdt.length);
-	kfree(dsdt.pointer);
+	ptr = vmalloc(tbl_ptr->length);
+	if (!ptr)
+		return -ENOMEM;
+
+	ACPI_MEMSET(ptr, 0, tbl_ptr->length);
+
+	ACPI_MEMCPY(ACPI_CAST_PTR(void, ptr),
+		    ACPI_CAST_PTR(void, tbl_ptr), tbl_ptr->length);
+
+	res = simple_read_from_buffer(buffer, count, ppos, ptr,
+				      tbl_ptr->length);
+	vfree(ptr);
 
 	return res;
 }

@@ -30,8 +30,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: sysfs.c 1349 2004-12-16 21:09:43Z roland $
  */
 
 #include "core_priv.h"
@@ -96,7 +94,7 @@ static ssize_t state_show(struct ib_port *p, struct port_attribute *unused,
 			  char *buf)
 {
 	struct ib_port_attr attr;
-	ssize_t ret;
+	ssize_t ret = -ENODEV;
 
 	static const char *state_name[] = {
 		[IB_PORT_NOP]		= "NOP",
@@ -107,26 +105,33 @@ static ssize_t state_show(struct ib_port *p, struct port_attribute *unused,
 		[IB_PORT_ACTIVE_DEFER]	= "ACTIVE_DEFER"
 	};
 
-	ret = ib_query_port(p->ibdev, p->port_num, &attr);
-	if (ret)
-		return ret;
-
-	return sprintf(buf, "%d: %s\n", attr.state,
-		       attr.state >= 0 && attr.state < ARRAY_SIZE(state_name) ?
-		       state_name[attr.state] : "UNKNOWN");
+	mutex_lock(&p->ibdev->sysfs_mutex);
+	if (ibdev_is_alive(p->ibdev)) {
+		ret = ib_query_port(p->ibdev, p->port_num, &attr);
+		if (!ret)
+			ret = sprintf(buf, "%d: %s\n", attr.state,
+				      attr.state >= 0 &&
+				      attr.state < ARRAY_SIZE(state_name) ?
+				      state_name[attr.state] : "UNKNOWN");
+	}
+	mutex_unlock(&p->ibdev->sysfs_mutex);
+	return ret;
 }
 
 static ssize_t lid_show(struct ib_port *p, struct port_attribute *unused,
 			char *buf)
 {
 	struct ib_port_attr attr;
-	ssize_t ret;
+	ssize_t ret = -ENODEV;
 
-	ret = ib_query_port(p->ibdev, p->port_num, &attr);
-	if (ret)
-		return ret;
-
-	return sprintf(buf, "0x%x\n", attr.lid);
+	mutex_lock(&p->ibdev->sysfs_mutex);
+	if (ibdev_is_alive(p->ibdev)) {
+		ret = ib_query_port(p->ibdev, p->port_num, &attr);
+		if (!ret)
+			ret = sprintf(buf, "0x%x\n", attr.lid);
+	}
+	mutex_unlock(&p->ibdev->sysfs_mutex);
+	return ret;
 }
 
 static ssize_t lid_mask_count_show(struct ib_port *p,
@@ -134,52 +139,64 @@ static ssize_t lid_mask_count_show(struct ib_port *p,
 				   char *buf)
 {
 	struct ib_port_attr attr;
-	ssize_t ret;
+	ssize_t ret = -ENODEV;
 
-	ret = ib_query_port(p->ibdev, p->port_num, &attr);
-	if (ret)
-		return ret;
-
-	return sprintf(buf, "%d\n", attr.lmc);
+	mutex_lock(&p->ibdev->sysfs_mutex);
+	if (ibdev_is_alive(p->ibdev)) {
+		ret = ib_query_port(p->ibdev, p->port_num, &attr);
+		if (!ret)
+			ret = sprintf(buf, "%d\n", attr.lmc);
+	}
+	mutex_unlock(&p->ibdev->sysfs_mutex);
+	return ret;
 }
 
 static ssize_t sm_lid_show(struct ib_port *p, struct port_attribute *unused,
 			   char *buf)
 {
 	struct ib_port_attr attr;
-	ssize_t ret;
+	ssize_t ret = -ENODEV;
 
-	ret = ib_query_port(p->ibdev, p->port_num, &attr);
-	if (ret)
-		return ret;
-
-	return sprintf(buf, "0x%x\n", attr.sm_lid);
+	mutex_lock(&p->ibdev->sysfs_mutex);
+	if (ibdev_is_alive(p->ibdev)) {
+		ret = ib_query_port(p->ibdev, p->port_num, &attr);
+		if (!ret)
+			ret = sprintf(buf, "0x%x\n", attr.sm_lid);
+	}
+	mutex_unlock(&p->ibdev->sysfs_mutex);
+	return ret;
 }
 
 static ssize_t sm_sl_show(struct ib_port *p, struct port_attribute *unused,
 			  char *buf)
 {
 	struct ib_port_attr attr;
-	ssize_t ret;
+	ssize_t ret = -ENODEV;
 
-	ret = ib_query_port(p->ibdev, p->port_num, &attr);
-	if (ret)
-		return ret;
-
-	return sprintf(buf, "%d\n", attr.sm_sl);
+	mutex_lock(&p->ibdev->sysfs_mutex);
+	if (ibdev_is_alive(p->ibdev)) {
+		ret = ib_query_port(p->ibdev, p->port_num, &attr);
+		if (!ret)
+			ret = sprintf(buf, "%d\n", attr.sm_sl);
+	}
+	mutex_unlock(&p->ibdev->sysfs_mutex);
+	return ret;
 }
 
 static ssize_t cap_mask_show(struct ib_port *p, struct port_attribute *unused,
 			     char *buf)
 {
 	struct ib_port_attr attr;
-	ssize_t ret;
+	ssize_t ret = -ENODEV;
 
-	ret = ib_query_port(p->ibdev, p->port_num, &attr);
-	if (ret)
-		return ret;
-
-	return sprintf(buf, "0x%08x\n", attr.port_cap_flags);
+	mutex_lock(&p->ibdev->sysfs_mutex);
+	if (ibdev_is_alive(p->ibdev)) {
+		ret = ib_query_port(p->ibdev, p->port_num, &attr);
+		if (!ret)
+			ret = sprintf(buf, "0x%08x\n", attr.port_cap_flags);
+	}
+	mutex_unlock(&p->ibdev->sysfs_mutex);
+	return ret;
 }
 
 static ssize_t rate_show(struct ib_port *p, struct port_attribute *unused,
@@ -188,24 +205,33 @@ static ssize_t rate_show(struct ib_port *p, struct port_attribute *unused,
 	struct ib_port_attr attr;
 	char *speed = "";
 	int rate;
-	ssize_t ret;
+	ssize_t ret = -ENODEV;
 
-	ret = ib_query_port(p->ibdev, p->port_num, &attr);
-	if (ret)
-		return ret;
+	mutex_lock(&p->ibdev->sysfs_mutex);
+	if (ibdev_is_alive(p->ibdev)) {
+		ret = ib_query_port(p->ibdev, p->port_num, &attr);
+		if (!ret) {
+			switch (attr.active_speed) {
+			case 2: speed = " DDR"; break;
+			case 4: speed = " QDR"; break;
+			}
 
-	switch (attr.active_speed) {
-	case 2: speed = " DDR"; break;
-	case 4: speed = " QDR"; break;
+			rate = 25 * ib_width_enum_to_int(attr.active_width) *
+				attr.active_speed;
+			if (rate < 0) {
+				ret = -EINVAL;
+				goto out;
+			}
+
+			ret = sprintf(buf, "%d%s Gb/sec (%dX%s)\n",
+				      rate / 10, rate % 10 ? ".5" : "",
+				      ib_width_enum_to_int(attr.active_width),
+				      speed);
+		}
 	}
-
-	rate = 25 * ib_width_enum_to_int(attr.active_width) * attr.active_speed;
-	if (rate < 0)
-		return -EINVAL;
-
-	return sprintf(buf, "%d%s Gb/sec (%dX%s)\n",
-		       rate / 10, rate % 10 ? ".5" : "",
-		       ib_width_enum_to_int(attr.active_width), speed);
+out:
+	mutex_unlock(&p->ibdev->sysfs_mutex);
+	return ret;
 }
 
 static ssize_t phys_state_show(struct ib_port *p, struct port_attribute *unused,
@@ -213,22 +239,42 @@ static ssize_t phys_state_show(struct ib_port *p, struct port_attribute *unused,
 {
 	struct ib_port_attr attr;
 
-	ssize_t ret;
+	ssize_t ret = -ENODEV;
 
-	ret = ib_query_port(p->ibdev, p->port_num, &attr);
-	if (ret)
-		return ret;
-
-	switch (attr.phys_state) {
-	case 1:  return sprintf(buf, "1: Sleep\n");
-	case 2:  return sprintf(buf, "2: Polling\n");
-	case 3:  return sprintf(buf, "3: Disabled\n");
-	case 4:  return sprintf(buf, "4: PortConfigurationTraining\n");
-	case 5:  return sprintf(buf, "5: LinkUp\n");
-	case 6:  return sprintf(buf, "6: LinkErrorRecovery\n");
-	case 7:  return sprintf(buf, "7: Phy Test\n");
-	default: return sprintf(buf, "%d: <unknown>\n", attr.phys_state);
+	mutex_lock(&p->ibdev->sysfs_mutex);
+	if (ibdev_is_alive(p->ibdev)) {
+		ret = ib_query_port(p->ibdev, p->port_num, &attr);
+		if (!ret) {
+			switch (attr.phys_state) {
+			case 1:
+				ret = sprintf(buf, "1: Sleep\n");
+				break;
+			case 2:
+				ret = sprintf(buf, "2: Polling\n");
+				break;
+			case 3:
+				ret = sprintf(buf, "3: Disabled\n");
+				break;
+			case 4:
+				ret = sprintf(buf, "4: PortConfigurationTraining\n");
+				break;
+			case 5:
+				ret = sprintf(buf, "5: LinkUp\n");
+				break;
+			case 6:
+				ret = sprintf(buf, "6: LinkErrorRecovery\n");
+				break;
+			case 7:
+				ret = sprintf(buf, "7: Phy Test\n");
+				break;
+			default:
+				ret = sprintf(buf, "%d: <unknown>\n", attr.phys_state);
+				break;
+			}
+		}
 	}
+	mutex_unlock(&p->ibdev->sysfs_mutex);
+	return ret;
 }
 
 static PORT_ATTR_RO(state);
@@ -258,21 +304,24 @@ static ssize_t show_port_gid(struct ib_port *p, struct port_attribute *attr,
 	struct port_table_attribute *tab_attr =
 		container_of(attr, struct port_table_attribute, attr);
 	union ib_gid gid;
-	ssize_t ret;
+	ssize_t ret = -ENODEV;
 
-	ret = ib_query_gid(p->ibdev, p->port_num, tab_attr->index, &gid);
-	if (ret)
-		return ret;
-
-	return sprintf(buf, "%04x:%04x:%04x:%04x:%04x:%04x:%04x:%04x\n",
-		       be16_to_cpu(((__be16 *) gid.raw)[0]),
-		       be16_to_cpu(((__be16 *) gid.raw)[1]),
-		       be16_to_cpu(((__be16 *) gid.raw)[2]),
-		       be16_to_cpu(((__be16 *) gid.raw)[3]),
-		       be16_to_cpu(((__be16 *) gid.raw)[4]),
-		       be16_to_cpu(((__be16 *) gid.raw)[5]),
-		       be16_to_cpu(((__be16 *) gid.raw)[6]),
-		       be16_to_cpu(((__be16 *) gid.raw)[7]));
+	mutex_lock(&p->ibdev->sysfs_mutex);
+	if (ibdev_is_alive(p->ibdev)) {
+		ret = ib_query_gid(p->ibdev, p->port_num, tab_attr->index, &gid);
+		if (!ret)
+			ret = sprintf(buf, "%04x:%04x:%04x:%04x:%04x:%04x:%04x:%04x\n",
+				      be16_to_cpu(((__be16 *) gid.raw)[0]),
+				      be16_to_cpu(((__be16 *) gid.raw)[1]),
+				      be16_to_cpu(((__be16 *) gid.raw)[2]),
+				      be16_to_cpu(((__be16 *) gid.raw)[3]),
+				      be16_to_cpu(((__be16 *) gid.raw)[4]),
+				      be16_to_cpu(((__be16 *) gid.raw)[5]),
+				      be16_to_cpu(((__be16 *) gid.raw)[6]),
+				      be16_to_cpu(((__be16 *) gid.raw)[7]));
+	}
+	mutex_unlock(&p->ibdev->sysfs_mutex);
+	return ret;
 }
 
 static ssize_t show_port_pkey(struct ib_port *p, struct port_attribute *attr,
@@ -281,13 +330,16 @@ static ssize_t show_port_pkey(struct ib_port *p, struct port_attribute *attr,
 	struct port_table_attribute *tab_attr =
 		container_of(attr, struct port_table_attribute, attr);
 	u16 pkey;
-	ssize_t ret;
+	ssize_t ret = -ENODEV;
 
-	ret = ib_query_pkey(p->ibdev, p->port_num, tab_attr->index, &pkey);
-	if (ret)
-		return ret;
-
-	return sprintf(buf, "0x%04x\n", pkey);
+	mutex_lock(&p->ibdev->sysfs_mutex);
+	if (ibdev_is_alive(p->ibdev)) {
+		ret = ib_query_pkey(p->ibdev, p->port_num, tab_attr->index, &pkey);
+		if (!ret)
+			ret = sprintf(buf, "0x%04x\n", pkey);
+	}
+	mutex_unlock(&p->ibdev->sysfs_mutex);
+	return ret;
 }
 
 #define PORT_PMA_ATTR(_name, _counter, _width, _offset)			\
@@ -309,6 +361,12 @@ static ssize_t show_pma_counter(struct ib_port *p, struct port_attribute *attr,
 
 	if (!p->ibdev->process_mad)
 		return sprintf(buf, "N/A (no PMA)\n");
+
+	mutex_lock(&p->ibdev->sysfs_mutex);
+	if (!ibdev_is_alive(p->ibdev)) {
+		ret = -ENODEV;
+		goto out;
+	}
 
 	in_mad  = kzalloc(sizeof *in_mad, GFP_KERNEL);
 	out_mad = kmalloc(sizeof *out_mad, GFP_KERNEL);
@@ -356,7 +414,7 @@ static ssize_t show_pma_counter(struct ib_port *p, struct port_attribute *attr,
 out:
 	kfree(in_mad);
 	kfree(out_mad);
-
+	mutex_unlock(&p->ibdev->sysfs_mutex);
 	return ret;
 }
 
@@ -376,6 +434,12 @@ static PORT_PMA_ATTR(port_xmit_data		    , 12, 32, 192);
 static PORT_PMA_ATTR(port_rcv_data		    , 13, 32, 224);
 static PORT_PMA_ATTR(port_xmit_packets		    , 14, 32, 256);
 static PORT_PMA_ATTR(port_rcv_packets		    , 15, 32, 288);
+/*
+ * There is no bit allocated for port_xmit_wait in the CounterSelect field
+ * (IB spec). However, since this bit is ignored when reading
+ * (show_pma_counter), the _counter field of port_xmit_wait can be set to zero.
+ */
+static PORT_PMA_ATTR(port_xmit_wait		    ,  0, 32, 320);
 
 static struct attribute *pma_attrs[] = {
 	&port_pma_attr_symbol_error.attr.attr,
@@ -394,6 +458,7 @@ static struct attribute *pma_attrs[] = {
 	&port_pma_attr_port_rcv_data.attr.attr,
 	&port_pma_attr_port_xmit_packets.attr.attr,
 	&port_pma_attr_port_rcv_packets.attr.attr,
+	&port_pma_attr_port_xmit_wait.attr.attr,
 	NULL
 };
 
@@ -511,19 +576,10 @@ static int add_port(struct ib_device *device, int port_num)
 
 	p->ibdev      = device;
 	p->port_num   = port_num;
-	p->kobj.ktype = &port_type;
 
-	p->kobj.parent = kobject_get(&device->ports_parent);
-	if (!p->kobj.parent) {
-		ret = -EBUSY;
-		goto err;
-	}
-
-	ret = kobject_set_name(&p->kobj, "%d", port_num);
-	if (ret)
-		goto err_put;
-
-	ret = kobject_register(&p->kobj);
+	ret = kobject_init_and_add(&p->kobj, &port_type,
+				   kobject_get(device->ports_parent),
+				   "%d", port_num);
 	if (ret)
 		goto err_put;
 
@@ -552,6 +608,7 @@ static int add_port(struct ib_device *device, int port_num)
 
 	list_add_tail(&p->kobj.entry, &device->port_list);
 
+	kobject_uevent(&p->kobj, KOBJ_ADD);
 	return 0;
 
 err_free_pkey:
@@ -573,9 +630,7 @@ err_remove_pma:
 	sysfs_remove_group(&p->kobj, &pma_group);
 
 err_put:
-	kobject_put(&device->ports_parent);
-
-err:
+	kobject_put(device->ports_parent);
 	kfree(p);
 	return ret;
 }
@@ -600,20 +655,20 @@ static ssize_t show_sys_image_guid(struct class_device *cdev, char *buf)
 {
 	struct ib_device *dev = container_of(cdev, struct ib_device, class_dev);
 	struct ib_device_attr attr;
-	ssize_t ret;
+	ssize_t ret = -ENODEV;
 
-	if (!ibdev_is_alive(dev))
-		return -ENODEV;
-
-	ret = ib_query_device(dev, &attr);
-	if (ret)
-		return ret;
-
-	return sprintf(buf, "%04x:%04x:%04x:%04x\n",
-		       be16_to_cpu(((__be16 *) &attr.sys_image_guid)[0]),
-		       be16_to_cpu(((__be16 *) &attr.sys_image_guid)[1]),
-		       be16_to_cpu(((__be16 *) &attr.sys_image_guid)[2]),
-		       be16_to_cpu(((__be16 *) &attr.sys_image_guid)[3]));
+	mutex_lock(&dev->sysfs_mutex);
+	if (ibdev_is_alive(dev)) {
+		ret = ib_query_device(dev, &attr);
+		if (!ret)
+			ret = sprintf(buf, "%04x:%04x:%04x:%04x\n",
+				      be16_to_cpu(((__be16 *) &attr.sys_image_guid)[0]),
+				      be16_to_cpu(((__be16 *) &attr.sys_image_guid)[1]),
+				      be16_to_cpu(((__be16 *) &attr.sys_image_guid)[2]),
+				      be16_to_cpu(((__be16 *) &attr.sys_image_guid)[3]));
+	}
+	mutex_unlock(&dev->sysfs_mutex);
+	return ret;
 }
 
 static ssize_t show_node_guid(struct class_device *cdev, char *buf)
@@ -642,24 +697,26 @@ static ssize_t set_node_desc(struct class_device *cdev, const char *buf,
 {
 	struct ib_device *dev = container_of(cdev, struct ib_device, class_dev);
 	struct ib_device_modify desc = {};
-	int ret;
+	int ret = -ENODEV;
 
 	if (!dev->modify_device)
 		return -EIO;
 
 	memcpy(desc.node_desc, buf, min_t(int, count, 64));
-	ret = ib_modify_device(dev, IB_DEVICE_MODIFY_NODE_DESC, &desc);
-	if (ret)
-		return ret;
-
-	return count;
+	mutex_lock(&dev->sysfs_mutex);
+	if (ibdev_is_alive(dev)) {
+		ret = ib_modify_device(dev, IB_DEVICE_MODIFY_NODE_DESC, &desc);
+		if (!ret)
+			ret = count;
+	}
+	mutex_unlock(&dev->sysfs_mutex);
+	return ret;
 }
 
 static CLASS_DEVICE_ATTR(node_type, S_IRUGO, show_node_type, NULL);
 static CLASS_DEVICE_ATTR(sys_image_guid, S_IRUGO, show_sys_image_guid, NULL);
 static CLASS_DEVICE_ATTR(node_guid, S_IRUGO, show_node_guid, NULL);
-static CLASS_DEVICE_ATTR(node_desc, S_IRUGO | S_IWUSR, show_node_desc,
-			 set_node_desc);
+static CLASS_DEVICE_ATTR(node_desc, S_IRUGO | S_IWUSR, show_node_desc, set_node_desc);
 
 static struct class_device_attribute *ib_class_attributes[] = {
 	&class_device_attr_node_type,
@@ -672,6 +729,124 @@ static struct class ib_class = {
 	.name    = "infiniband",
 	.release = ib_device_release,
 	.uevent = ib_device_uevent,
+};
+
+/* Show a given an attribute in the statistics group */
+static ssize_t show_protocol_stat(struct class_device *cdev,
+			    char *buf,
+			    unsigned offset)
+{
+	struct ib_device *dev = container_of(cdev, struct ib_device, class_dev);
+	union rdma_protocol_stats stats;
+	ssize_t ret = -ENODEV;
+
+	mutex_lock(&dev->sysfs_mutex);
+	if (ibdev_is_alive(dev)) {
+		ret = dev->get_protocol_stats(dev, &stats);
+		if (!ret)
+			ret = sprintf(buf, "%llu\n",
+				      (unsigned long long)
+				      ((u64 *) &stats)[offset]);
+	}
+	mutex_unlock(&dev->sysfs_mutex);
+	return ret;
+}
+
+/* generate a read-only iwarp statistics attribute */
+#define IW_STATS_ENTRY(name)						\
+static ssize_t show_##name(struct class_device *cdev,			\
+			   char *buf)					\
+{									\
+	return show_protocol_stat(cdev, buf,			\
+				  offsetof(struct iw_protocol_stats, name) / \
+				  sizeof (u64));			\
+}									\
+static CLASS_DEVICE_ATTR(name, S_IRUGO, show_##name, NULL)
+
+IW_STATS_ENTRY(ipInReceives);
+IW_STATS_ENTRY(ipInHdrErrors);
+IW_STATS_ENTRY(ipInTooBigErrors);
+IW_STATS_ENTRY(ipInNoRoutes);
+IW_STATS_ENTRY(ipInAddrErrors);
+IW_STATS_ENTRY(ipInUnknownProtos);
+IW_STATS_ENTRY(ipInTruncatedPkts);
+IW_STATS_ENTRY(ipInDiscards);
+IW_STATS_ENTRY(ipInDelivers);
+IW_STATS_ENTRY(ipOutForwDatagrams);
+IW_STATS_ENTRY(ipOutRequests);
+IW_STATS_ENTRY(ipOutDiscards);
+IW_STATS_ENTRY(ipOutNoRoutes);
+IW_STATS_ENTRY(ipReasmTimeout);
+IW_STATS_ENTRY(ipReasmReqds);
+IW_STATS_ENTRY(ipReasmOKs);
+IW_STATS_ENTRY(ipReasmFails);
+IW_STATS_ENTRY(ipFragOKs);
+IW_STATS_ENTRY(ipFragFails);
+IW_STATS_ENTRY(ipFragCreates);
+IW_STATS_ENTRY(ipInMcastPkts);
+IW_STATS_ENTRY(ipOutMcastPkts);
+IW_STATS_ENTRY(ipInBcastPkts);
+IW_STATS_ENTRY(ipOutBcastPkts);
+IW_STATS_ENTRY(tcpRtoAlgorithm);
+IW_STATS_ENTRY(tcpRtoMin);
+IW_STATS_ENTRY(tcpRtoMax);
+IW_STATS_ENTRY(tcpMaxConn);
+IW_STATS_ENTRY(tcpActiveOpens);
+IW_STATS_ENTRY(tcpPassiveOpens);
+IW_STATS_ENTRY(tcpAttemptFails);
+IW_STATS_ENTRY(tcpEstabResets);
+IW_STATS_ENTRY(tcpCurrEstab);
+IW_STATS_ENTRY(tcpInSegs);
+IW_STATS_ENTRY(tcpOutSegs);
+IW_STATS_ENTRY(tcpRetransSegs);
+IW_STATS_ENTRY(tcpInErrs);
+IW_STATS_ENTRY(tcpOutRsts);
+
+static struct attribute *iw_proto_stats_attrs[] = {
+	&class_device_attr_ipInReceives.attr,
+	&class_device_attr_ipInHdrErrors.attr,
+	&class_device_attr_ipInTooBigErrors.attr,
+	&class_device_attr_ipInNoRoutes.attr,
+	&class_device_attr_ipInAddrErrors.attr,
+	&class_device_attr_ipInUnknownProtos.attr,
+	&class_device_attr_ipInTruncatedPkts.attr,
+	&class_device_attr_ipInDiscards.attr,
+	&class_device_attr_ipInDelivers.attr,
+	&class_device_attr_ipOutForwDatagrams.attr,
+	&class_device_attr_ipOutRequests.attr,
+	&class_device_attr_ipOutDiscards.attr,
+	&class_device_attr_ipOutNoRoutes.attr,
+	&class_device_attr_ipReasmTimeout.attr,
+	&class_device_attr_ipReasmReqds.attr,
+	&class_device_attr_ipReasmOKs.attr,
+	&class_device_attr_ipReasmFails.attr,
+	&class_device_attr_ipFragOKs.attr,
+	&class_device_attr_ipFragFails.attr,
+	&class_device_attr_ipFragCreates.attr,
+	&class_device_attr_ipInMcastPkts.attr,
+	&class_device_attr_ipOutMcastPkts.attr,
+	&class_device_attr_ipInBcastPkts.attr,
+	&class_device_attr_ipOutBcastPkts.attr,
+	&class_device_attr_tcpRtoAlgorithm.attr,
+	&class_device_attr_tcpRtoMin.attr,
+	&class_device_attr_tcpRtoMax.attr,
+	&class_device_attr_tcpMaxConn.attr,
+	&class_device_attr_tcpActiveOpens.attr,
+	&class_device_attr_tcpPassiveOpens.attr,
+	&class_device_attr_tcpAttemptFails.attr,
+	&class_device_attr_tcpEstabResets.attr,
+	&class_device_attr_tcpCurrEstab.attr,
+	&class_device_attr_tcpInSegs.attr,
+	&class_device_attr_tcpOutSegs.attr,
+	&class_device_attr_tcpRetransSegs.attr,
+	&class_device_attr_tcpInErrs.attr,
+	&class_device_attr_tcpOutRsts.attr,
+	NULL
+};
+
+static struct attribute_group iw_stats_group = {
+	.name	= "proto_stats",
+	.attrs	= iw_proto_stats_attrs,
 };
 
 int ib_device_register_sysfs(struct ib_device *device)
@@ -697,17 +872,12 @@ int ib_device_register_sysfs(struct ib_device *device)
 			goto err_unregister;
 	}
 
-	device->ports_parent.parent = kobject_get(&class_dev->kobj);
-	if (!device->ports_parent.parent) {
-		ret = -EBUSY;
-		goto err_unregister;
+	device->ports_parent = kobject_create_and_add("ports",
+					kobject_get(&class_dev->kobj));
+	if (!device->ports_parent) {
+		ret = -ENOMEM;
+		goto err_put;
 	}
-	ret = kobject_set_name(&device->ports_parent, "ports");
-	if (ret)
-		goto err_put;
-	ret = kobject_register(&device->ports_parent);
-	if (ret)
-		goto err_put;
 
 	if (device->node_type == RDMA_NODE_IB_SWITCH) {
 		ret = add_port(device, 0);
@@ -719,6 +889,12 @@ int ib_device_register_sysfs(struct ib_device *device)
 			if (ret)
 				goto err_put;
 		}
+	}
+
+	if (device->node_type == RDMA_NODE_RNIC && device->get_protocol_stats) {
+		ret = sysfs_create_group(&class_dev->kobj, &iw_stats_group);
+		if (ret)
+			goto err_put;
 	}
 
 	return 0;
@@ -738,7 +914,7 @@ err_put:
 		}
 	}
 
-	kobject_put(&class_dev->kobj);
+	kobject_unregister(&class_dev->kobj);
 
 err_unregister:
 	class_device_unregister(class_dev);
@@ -761,7 +937,9 @@ void ib_device_unregister_sysfs(struct ib_device *device)
 		kobject_unregister(p);
 	}
 
-	kobject_unregister(&device->ports_parent);
+	kobject_put(device->ports_parent);
+	/* WA for memory leak */
+	kfree(device->ports_parent);
 	class_device_unregister(&device->class_dev);
 }
 

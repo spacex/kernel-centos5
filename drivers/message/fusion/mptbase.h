@@ -76,8 +76,8 @@
 #define COPYRIGHT	"Copyright (c) 1999-2008 " MODULEAUTHOR
 #endif
 
-#define MPT_LINUX_VERSION_COMMON	"3.04.07"
-#define MPT_LINUX_PACKAGE_NAME		"@(#)mptlinux-3.04.07"
+#define MPT_LINUX_VERSION_COMMON	"3.04.07rh"
+#define MPT_LINUX_PACKAGE_NAME		"@(#)mptlinux-3.04.07rh"
 #define WHAT_MAGIC_STRING		"@" "(" "#" ")"
 
 #define show_mptmod_ver(s,ver)  \
@@ -134,7 +134,6 @@
 
 #define MPT_COALESCING_TIMEOUT		0x10
 
-#define MPT_DMA_35BIT_MASK		0x00000007ffffffffULL
 
 /*
  * SCSI transfer rate defines.
@@ -566,7 +565,9 @@ struct mptfc_rport_info
 	u8		flags;
 };
 
-typedef void (*MPT_ADD_SGE)(char *addr, u32 flagslength, dma_addr_t dma_addr);
+typedef void (*MPT_ADD_SGE)(void *pAddr, u32 flagslength, dma_addr_t dma_addr);
+typedef void (*MPT_ADD_CHAIN)(void *pAddr, u8 next, u16 length,
+		dma_addr_t dma_addr);
 
 /*
  *  Adapter Structure - pci_dev specific. Maximum: MPT_MAX_ADAPTERS
@@ -604,8 +605,10 @@ typedef struct _MPT_ADAPTER
 	int			 reply_depth;	/* Num Allocated reply frames */
 	int			 reply_sz;	/* Reply frame size */
 	int			 num_chain;	/* Number of chain buffers */
-	MPT_ADD_SGE		 add_sge;
-	u64			 dma_mask;
+	MPT_ADD_SGE              add_sge;       /* Pointer to add_sge
+						   function */
+	MPT_ADD_CHAIN		 add_chain;	/* Pointer to add_chain
+						   function */
 		/* Pool of buffers for chaining. ReqToChain
 		 * and ChainToChain track index of chain buffers.
 		 * ChainBuffer (DMA) virt/phys addresses.
@@ -638,6 +641,7 @@ typedef struct _MPT_ADAPTER
 	dma_addr_t		HostPageBuffer_dma;
 	int			 mtrr_reg;
 	struct pci_dev		*pcidev;	/* struct pci_dev pointer */
+	int			bars;		/* bitmask of BAR's that must be configured */
 	int			msi_enable;
 	u8			__iomem *memmap;	/* mmap address */
 	struct Scsi_Host	*sh;		/* Scsi Host pointer */
@@ -702,6 +706,7 @@ typedef struct _MPT_ADAPTER
 	struct mutex		 sas_discovery_mutex;
 	u8			 sas_discovery_runtime;
 	u8			 sas_discovery_ignore_events;
+	u8			 sas_discovery_quiesce_io;
 	int			 sas_index; /* index refrencing */
 	MPT_SAS_MGMT		 sas_mgmt;
 	struct work_struct	 sas_persist_task;
@@ -712,15 +717,18 @@ typedef struct _MPT_ADAPTER
 	u8			 fc_link_speed[2];
 	spinlock_t		 fc_rescan_work_lock;
 	struct work_struct	 fc_rescan_work;
-	char			 fc_rescan_work_q_name[KOBJ_NAME_LEN];
+	char			 fc_rescan_work_q_name[20];
 	struct workqueue_struct *fc_rescan_work_q;
 	struct scsi_cmnd	**ScsiLookup;
 	spinlock_t		  scsi_lookup_lock;
-
-	char			 reset_work_q_name[KOBJ_NAME_LEN];
+	u64			dma_mask;
+	char			 reset_work_q_name[20];
 	struct workqueue_struct *reset_work_q;
 	struct work_struct	 fault_reset_work;
 	spinlock_t		 fault_reset_work_lock;
+
+	u8			sg_addr_size;
+	u8			SGE_size;
 
 } MPT_ADAPTER;
 
@@ -758,13 +766,13 @@ typedef struct _mpt_sge {
 	dma_addr_t	Address;
 } MptSge_t;
 
-#define mpt_addr_size() \
-	((sizeof(dma_addr_t) == sizeof(u64)) ? MPI_SGE_FLAGS_64_BIT_ADDRESSING : \
-		MPI_SGE_FLAGS_32_BIT_ADDRESSING)
 
 #define mpt_msg_flags() \
 	((sizeof(dma_addr_t) == sizeof(u64)) ? MPI_SCSIIO_MSGFLGS_SENSE_WIDTH_64 : \
 		MPI_SCSIIO_MSGFLGS_SENSE_WIDTH_32)
+
+#define MPT_SGE_FLAGS_64_BIT_ADDRESSING \
+	(MPI_SGE_FLAGS_64_BIT_ADDRESSING << MPI_SGE_FLAGS_SHIFT)
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /*
@@ -911,9 +919,10 @@ extern void	 mpt_reset_deregister(u8 cb_idx);
 extern int	 mpt_device_driver_register(struct mpt_pci_driver * dd_cbfunc, u8 cb_idx);
 extern void	 mpt_device_driver_deregister(u8 cb_idx);
 extern MPT_FRAME_HDR	*mpt_get_msg_frame(u8 cb_idx, MPT_ADAPTER *ioc);
-extern void	 mpt_free_msg_frame(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf);
+extern void	 __mpt_free_msg_frame(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf);
 extern void	 mpt_put_msg_frame(u8 cb_idx, MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf);
 extern void	 mpt_put_msg_frame_hi_pri(u8 cb_idx, MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf);
+
 extern int	 mpt_send_handshake_request(u8 cb_idx, MPT_ADAPTER *ioc, int reqBytes, u32 *req, int sleepFlag);
 extern int	 mpt_verify_adapter(int iocid, MPT_ADAPTER **iocpp);
 extern u32	 mpt_GetIocState(MPT_ADAPTER *ioc, int cooked);
@@ -925,17 +934,27 @@ extern void	 mpt_free_fw_memory(MPT_ADAPTER *ioc);
 extern int	 mpt_findImVolumes(MPT_ADAPTER *ioc);
 extern int	 mptbase_sas_persist_operation(MPT_ADAPTER *ioc, u8 persist_opcode);
 extern int	 mpt_raid_phys_disk_pg0(MPT_ADAPTER *ioc, u8 phys_disk_num, pRaidPhysDiskPage0_t phys_disk);
+extern void     mpt_halt_firmware(MPT_ADAPTER *ioc);
+
+static inline void
+mpt_free_msg_frame(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf)
+{
+	unsigned long flags;
+	spin_lock_irqsave(&ioc->FreeQlock, flags);
+	__mpt_free_msg_frame(ioc, mf);
+	spin_unlock_irqrestore(&ioc->FreeQlock, flags);
+}
 
 /*
  *  Public data decl's...
  */
 extern struct list_head	  ioc_list;
-extern struct proc_dir_entry	*mpt_proc_root_dir;
+extern int mpt_fwfault_debug;
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 #endif		/* } __KERNEL__ */
 
-#if defined(__alpha__) || defined(__sparc_v9__) || defined(__ia64__) || defined(__x86_64__) || defined(__powerpc__)
+#ifdef CONFIG_64BIT
 #define CAST_U32_TO_PTR(x)	((void *)(u64)x)
 #define CAST_PTR_TO_U32(x)	((u32)(u64)x)
 #else
@@ -960,7 +979,6 @@ extern struct proc_dir_entry	*mpt_proc_root_dir;
 #define MPT_SGE_FLAGS_END_OF_BUFFER		(0x40000000)
 #define MPT_SGE_FLAGS_LOCAL_ADDRESS		(0x08000000)
 #define MPT_SGE_FLAGS_DIRECTION			(0x04000000)
-#define MPT_SGE_FLAGS_ADDRESSING		(mpt_addr_size() << MPI_SGE_FLAGS_SHIFT)
 #define MPT_SGE_FLAGS_END_OF_LIST		(0x01000000)
 
 #define MPT_SGE_FLAGS_TRANSACTION_ELEMENT	(0x00000000)
@@ -973,14 +991,12 @@ extern struct proc_dir_entry	*mpt_proc_root_dir;
 	 MPT_SGE_FLAGS_END_OF_BUFFER |	\
 	 MPT_SGE_FLAGS_END_OF_LIST |	\
 	 MPT_SGE_FLAGS_SIMPLE_ELEMENT |	\
-	 MPT_SGE_FLAGS_ADDRESSING | \
 	 MPT_TRANSFER_IOC_TO_HOST)
 #define MPT_SGE_FLAGS_SSIMPLE_WRITE \
 	(MPT_SGE_FLAGS_LAST_ELEMENT |	\
 	 MPT_SGE_FLAGS_END_OF_BUFFER |	\
 	 MPT_SGE_FLAGS_END_OF_LIST |	\
 	 MPT_SGE_FLAGS_SIMPLE_ELEMENT |	\
-	 MPT_SGE_FLAGS_ADDRESSING | \
 	 MPT_TRANSFER_HOST_TO_IOC)
 
 /*}-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/

@@ -108,7 +108,7 @@ spufs_setattr(struct dentry *dentry, struct iattr *attr)
 static int
 spufs_new_file(struct super_block *sb, struct dentry *dentry,
 		const struct file_operations *fops, int mode,
-		struct spu_context *ctx)
+		size_t size, struct spu_context *ctx)
 {
 	static struct inode_operations spufs_file_iops = {
 		.setattr = spufs_setattr,
@@ -124,6 +124,7 @@ spufs_new_file(struct super_block *sb, struct dentry *dentry,
 	ret = 0;
 	inode->i_op = &spufs_file_iops;
 	inode->i_fop = fops;
+	inode->i_size = size;
 	inode->i_private = SPUFS_I(inode)->i_ctx = get_spu_context(ctx);
 	d_add(dentry, inode);
 out:
@@ -176,8 +177,9 @@ static int spufs_rmdir(struct inode *parent, struct dentry *dir)
 	return simple_rmdir(parent, dir);
 }
 
-static int spufs_fill_dir(struct dentry *dir, struct tree_descr *files,
-			  int mode, struct spu_context *ctx)
+static int spufs_fill_dir(struct dentry *dir,
+		const struct spufs_tree_descr *files, int mode,
+		struct spu_context *ctx)
 {
 	struct dentry *dentry, *tmp;
 	int ret;
@@ -188,7 +190,7 @@ static int spufs_fill_dir(struct dentry *dir, struct tree_descr *files,
 		if (!dentry)
 			goto out;
 		ret = spufs_new_file(dir->d_sb, dentry, files->ops,
-					files->mode & mode, ctx);
+					files->mode & mode, files->size, ctx);
 		if (ret)
 			goto out;
 		files++;
@@ -478,6 +480,8 @@ spufs_create_context(struct inode *inode, struct dentry *dentry,
 	ret = spufs_context_open(dget(dentry), mntget(mnt));
 	if (ret < 0) {
 		WARN_ON(spufs_rmdir(inode, dentry));
+		if (affinity)
+			mutex_unlock(&gang->aff_mutex);
 		mutex_unlock(&inode->i_mutex);
 		spu_forget(SPUFS_I(dentry->d_inode)->i_ctx);
 		goto out;
@@ -729,6 +733,7 @@ spufs_create_root(struct super_block *sb, void *data)
 	inode->i_op = &simple_dir_inode_operations;
 	inode->i_fop = &simple_dir_operations;
 	SPUFS_I(inode)->i_ctx = NULL;
+	inc_nlink(inode);
 
 	ret = -EINVAL;
 	if (!spufs_parse_options(data, inode))

@@ -39,6 +39,7 @@
 #include <linux/pipe_fs_i.h>
 #include <linux/audit.h> /* for audit_free() */
 #include <linux/resource.h>
+#include <linux/task_io_accounting_ops.h>
 #include <trace/sched.h>
 
 #include <asm/uaccess.h>
@@ -111,6 +112,21 @@ static void __exit_signal(struct task_struct *tsk)
 		sig->maj_flt += tsk->maj_flt;
 		sig->nvcsw += tsk->nvcsw;
 		sig->nivcsw += tsk->nivcsw;
+		{
+			struct signal_struct_aux *aux;
+			aux = signal_aux(sig);
+			aux->rchar += tsk->rchar;
+			aux->wchar += tsk->wchar;
+			aux->syscr += tsk->syscr;
+			aux->syscw += tsk->syscw;
+#ifdef CONFIG_TASK_IO_ACCOUNTING
+			aux->ioac.read_bytes += task_aux(tsk)->ioac.read_bytes;
+			aux->ioac.write_bytes +=
+				task_aux(tsk)->ioac.write_bytes;
+			aux->ioac.cancelled_write_bytes +=
+				task_aux(tsk)->ioac.cancelled_write_bytes;
+#endif /* CONFIG_TASK_IO_ACCOUNTING */
+		}
 		sig->sched_time += tsk->sched_time;
 		sig = NULL; /* Marker for below. */
 	}
@@ -1167,6 +1183,26 @@ static int wait_task_zombie(struct task_struct *p, int noreap,
 			p->nvcsw + sig->nvcsw + sig->cnvcsw;
 		psig->cnivcsw +=
 			p->nivcsw + sig->nivcsw + sig->cnivcsw;
+		{
+			struct signal_struct_aux *aux, *paux;
+			aux = signal_aux(sig);
+			paux = signal_aux(psig);
+			paux->rchar += p->rchar + aux->rchar;
+			paux->wchar += p->wchar + aux->wchar;
+			paux->syscr += p->syscr + aux->syscr;
+			paux->syscw += p->syscw + aux->syscw;
+#ifdef CONFIG_TASK_IO_ACCOUNTING
+			paux->ioac.read_bytes +=
+				task_aux(p)->ioac.read_bytes +
+				aux->ioac.read_bytes;
+			paux->ioac.write_bytes +=
+				task_aux(p)->ioac.write_bytes +
+				aux->ioac.write_bytes;
+			paux->ioac.cancelled_write_bytes +=
+				task_aux(p)->ioac.cancelled_write_bytes +
+				aux->ioac.cancelled_write_bytes;
+#endif /* CONFIG_TASK_IO_ACCOUNTING */
+		}
 		spin_unlock_irq(&p->parent->sighand->siglock);
 	}
 

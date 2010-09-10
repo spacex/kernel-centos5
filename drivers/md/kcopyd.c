@@ -291,7 +291,8 @@ static int run_complete_job(struct kcopyd_job *job)
 	kcopyd_notify_fn fn = job->fn;
 	struct kcopyd_client *kc = job->kc;
 
-	kcopyd_put_pages(kc, job->pages);
+	if (job->pages)
+		kcopyd_put_pages(kc, job->pages);
 	mempool_free(job, kc->job_pool);
 	fn(read_err, write_err, context);
 
@@ -454,6 +455,7 @@ static void segment_complete(int read_err,
 	sector_t progress = 0;
 	sector_t count = 0;
 	struct kcopyd_job *job = (struct kcopyd_job *) context;
+	struct kcopyd_client *kc = job->kc;
 
 	down(&job->lock);
 
@@ -483,7 +485,7 @@ static void segment_complete(int read_err,
 
 	if (count) {
 		int i;
-		struct kcopyd_job *sub_job = mempool_alloc(job->kc->job_pool,
+		struct kcopyd_job *sub_job = mempool_alloc(kc->job_pool,
 							   GFP_NOIO);
 
 		*sub_job = *job;
@@ -502,13 +504,16 @@ static void segment_complete(int read_err,
 	} else if (atomic_dec_and_test(&job->sub_jobs)) {
 
 		/*
-		 * To avoid a race we must keep the job around
-		 * until after the notify function has completed.
-		 * Otherwise the client may try and stop the job
-		 * after we've completed.
+		 * Queue the completion callback to the kcopyd thread.
+		 *
+		 * Some callers assume that all the completions are called
+		 * from a single thread and don't race with each other.
+		 *
+		 * We must not call the callback directly here because this
+		 * code may not be executing in the thread.
 		 */
-		job->fn(read_err, write_err, job->context);
-		mempool_free(job, job->kc->job_pool);
+		push(&kc->complete_jobs, job);
+		wake(kc);
 	}
 }
 
@@ -520,6 +525,8 @@ static void segment_complete(int read_err,
 static void split_job(struct kcopyd_job *job)
 {
 	int i;
+
+	atomic_inc(&job->kc->nr_jobs);
 
 	atomic_set(&job->sub_jobs, SPLIT_COUNT);
 	for (i = 0; i < SPLIT_COUNT; i++)

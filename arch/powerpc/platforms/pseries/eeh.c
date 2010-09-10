@@ -128,59 +128,6 @@ static unsigned long slot_resets;
 /* --------------------------------------------------------------- */
 /* Below lies the EEH event infrastructure */
 
-int save_pcie_reg(struct pci_dev *dev)
-{
-	int pos, i = 0;
-	struct pci_cap_saved_state *save_state;
-	u16 *cap;
-
-	pos = pci_find_capability(dev, PCI_CAP_ID_EXP);
-	if (pos <= 0)
-		return 0;
-
-	save_state = pci_find_saved_cap(dev, PCI_CAP_ID_EXP);
-	if (save_state)
-		return 0;
-
-	save_state = kzalloc(sizeof(*save_state) + sizeof(u16) * 4, GFP_KERNEL);
-	if (!save_state) {
-		dev_err(&dev->dev, "Out of memory in save_pcie_reg\n");
-		return -ENOMEM;
-	}
-
-	cap = (u16 *)&save_state->data[0];
-
-	pci_read_config_word(dev, pos + PCI_EXP_DEVCTL, &cap[i++]);
-	pci_read_config_word(dev, pos + PCI_EXP_LNKCTL, &cap[i++]);
-	pci_read_config_word(dev, pos + PCI_EXP_SLTCTL, &cap[i++]);
-	pci_read_config_word(dev, pos + PCI_EXP_RTCTL, &cap[i++]);
-	save_state->cap_nr = PCI_CAP_ID_EXP;
-	pci_add_saved_cap(dev, save_state);
-
-	return 0;
-}
-
-void restore_pcie_reg(struct pci_dev *dev)
-{
-	int i = 0, pos;
-	struct pci_cap_saved_state *save_state;
-	u16 *cap;
-
-	save_state = pci_find_saved_cap(dev, PCI_CAP_ID_EXP);
-	pos = pci_find_capability(dev, PCI_CAP_ID_EXP);
-	if (!save_state || pos <= 0)
-		return;
-	cap = (u16 *)&save_state->data[0];
-
-	pci_write_config_word(dev, pos + PCI_EXP_DEVCTL, cap[i++]);
-	pci_write_config_word(dev, pos + PCI_EXP_LNKCTL, cap[i++]);
-	pci_write_config_word(dev, pos + PCI_EXP_SLTCTL, cap[i++]);
-	pci_write_config_word(dev, pos + PCI_EXP_RTCTL, cap[i++]);
-}
-
-EXPORT_SYMBOL_GPL(save_pcie_reg);
-EXPORT_SYMBOL_GPL(restore_pcie_reg);
-
 static void rtas_slot_error_detail(struct pci_dn *pdn, int severity,
                                    char *driver_log, size_t loglen)
 {
@@ -792,7 +739,15 @@ int pcibios_set_pcie_reset_state(struct pci_dev *dev, enum pcie_reset_state stat
 
 static void __rtas_set_slot_reset(struct pci_dn *pdn)
 {
-	rtas_pci_slot_reset (pdn, 1);
+	struct pci_dev *dev = pdn->pcidev;
+
+	/* Determine type of EEH reset required by device,
+	 * default hot reset or fundamental reset
+	 */
+	if (dev->fndmntl_rst_rqd)
+		rtas_pci_slot_reset(pdn, 3);
+	else
+		rtas_pci_slot_reset(pdn, 1);
 
 	/* The PCI bus requires that the reset be held high for at least
 	 * a 100 milliseconds. We wait a bit longer 'just in case'.  */

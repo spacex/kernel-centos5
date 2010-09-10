@@ -58,7 +58,7 @@
 #define MPT_DEBUG_FC			0x00080000
 #define MPT_DEBUG_SAS			0x00100000
 #define MPT_DEBUG_SAS_WIDE		0x00200000
-#define MPT_DEBUG_36GB_MEM		0x00400000
+#define MPT_DEBUG_36GB_MEM              0x00400000
 
 /*
  * CONFIG_FUSION_LOGGING - enabled in Kconfig

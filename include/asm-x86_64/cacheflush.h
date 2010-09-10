@@ -27,6 +27,8 @@ void global_flush_tlb(void);
 int change_page_attr(struct page *page, int numpages, pgprot_t prot);
 int change_page_attr_addr(unsigned long addr, int numpages, pgprot_t prot);
 
+void clflush_cache_range(void *addr, unsigned int size);
+
 #ifdef CONFIG_DEBUG_RODATA
 void mark_rodata_ro(void);
 #endif

@@ -38,39 +38,19 @@
 #include <linux/mlx4/device.h>
 #include <linux/mlx4/doorbell.h>
 
-struct mlx4_cq_context {
-	__be32			flags;
-	u16			reserved1[3];
-	__be16			page_offset;
-	__be32			logsize_usrpage;
-	u16			cq_period;
-	u16			cq_max_count;
-	u8			reserved4[3];
-	u8			comp_eqn;
-	u8			log_page_size;
-	u8			reserved5[2];
-	u8			mtt_base_addr_h;
-	__be32			mtt_base_addr_l;
-	__be32			last_notified_index;
-	__be32			solicit_producer_index;
-	__be32			consumer_index;
-	__be32			producer_index;
-	u32			reserved6[2];
-	__be64			db_rec_addr;
-};
-
 struct mlx4_cqe {
-	__be32			my_qpn;
+	__be32			vlan_my_qpn;
 	__be32			immed_rss_invalid;
 	__be32			g_mlpath_rqpn;
-	u8			sl;
-	u8			reserved1;
+	__be16			sl_vid;
 	__be16			rlid;
-	__be32			ipoib_status;
+	__be16			status;
+	u8			ipv6_ext_mask;
+	u8			badfcs_enc;
 	__be32			byte_cnt;
 	__be16			wqe_index;
 	__be16			checksum;
-	u8			reserved2[3];
+	u8			reserved[3];
 	u8			owner_sr_opcode;
 };
 
@@ -82,6 +62,11 @@ struct mlx4_err_cqe {
 	u8			syndrome;
 	u8			reserved2[3];
 	u8			owner_sr_opcode;
+};
+
+enum {
+	MLX4_CQE_VLAN_PRESENT_MASK	= 1 << 29,
+	MLX4_CQE_QPN_MASK		= 0xffffff,
 };
 
 enum {
@@ -104,6 +89,22 @@ enum {
 	MLX4_CQE_SYNDROME_TRANSPORT_RETRY_EXC_ERR	= 0x15,
 	MLX4_CQE_SYNDROME_RNR_RETRY_EXC_ERR		= 0x16,
 	MLX4_CQE_SYNDROME_REMOTE_ABORTED_ERR		= 0x22,
+};
+
+enum {
+	MLX4_CQE_STATUS_IPV4		= 1 << 6,
+	MLX4_CQE_STATUS_IPV4F		= 1 << 7,
+	MLX4_CQE_STATUS_IPV6		= 1 << 8,
+	MLX4_CQE_STATUS_IPV4OPT		= 1 << 9,
+	MLX4_CQE_STATUS_TCP		= 1 << 10,
+	MLX4_CQE_STATUS_UDP		= 1 << 11,
+	MLX4_CQE_STATUS_IPOK		= 1 << 12,
+};
+
+enum {
+	MLX4_CQE_LLC                     = 1,
+	MLX4_CQE_SNAP                    = 1 << 1,
+	MLX4_CQE_BAD_FCS                 = 1 << 4,
 };
 
 static inline void mlx4_cq_arm(struct mlx4_cq *cq, u32 cmd,
@@ -141,8 +142,9 @@ enum {
 	MLX4_CQ_DB_REQ_NOT		= 2 << 24
 };
 
-
 int mlx4_cq_modify(struct mlx4_dev *dev, struct mlx4_cq *cq,
-		   struct mlx4_cq_context *context, int resize);
+		   u16 count, u16 period);
+int mlx4_cq_resize(struct mlx4_dev *dev, struct mlx4_cq *cq,
+		   int entries, struct mlx4_mtt *mtt);
 
 #endif /* MLX4_CQ_H */

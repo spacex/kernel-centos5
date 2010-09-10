@@ -35,6 +35,7 @@
 #include <linux/hash.h>
 #include <linux/suspend.h>
 #include <linux/buffer_head.h>
+#include <linux/task_io_accounting_ops.h>
 #include <linux/bio.h>
 #include <linux/notifier.h>
 #include <linux/cpu.h>
@@ -210,10 +211,25 @@ int fsync_bdev(struct block_device *bdev)
  * happen on bdev until thaw_bdev() is called.
  * If a superblock is found on this device, we take the s_umount semaphore
  * on it to make sure nobody unmounts until the snapshot creation is done.
+ * The reference counter (bd_fsfreeze_count) guarantees that only the last
+ * unfreeze process can unfreeze the frozen filesystem actually when multiple
+ * freeze requests arrive simultaneously. It counts up in freeze_bdev() and
+ * count down in thaw_bdev(). When it becomes 0, thaw_bdev() will unfreeze
+ * actually.
  */
 struct super_block *freeze_bdev(struct block_device *bdev)
 {
 	struct super_block *sb;
+	int error = 0;
+
+	mutex_lock(&bdev->bd_fsfreeze_mutex);
+	if (bdev->bd_fsfreeze_count > 0) {
+		bdev->bd_fsfreeze_count++;
+		sb = get_super(bdev);
+		mutex_unlock(&bdev->bd_fsfreeze_mutex);
+		return sb;
+	}
+	bdev->bd_fsfreeze_count++;
 
 	down(&bdev->bd_mount_sem);
 	sb = get_super(bdev);
@@ -228,14 +244,62 @@ struct super_block *freeze_bdev(struct block_device *bdev)
 
 		sync_blockdev(sb->s_bdev);
 
-		if (sb->s_op->write_super_lockfs)
+		if ((sb->s_type->fs_flags & FS_HAS_FREEZE) &&
+		    sb->s_op->freeze_fs) {
+			error = sb->s_op->freeze_fs(sb);
+			if (error) {
+				printk(KERN_ERR
+					"VFS:Filesystem freeze failed\n");
+				sb->s_frozen = SB_UNFROZEN;
+				drop_super(sb);
+				up(&bdev->bd_mount_sem);
+				bdev->bd_fsfreeze_count--;
+				mutex_unlock(&bdev->bd_fsfreeze_mutex);
+				return ERR_PTR(error);
+			}
+		} else if (sb->s_op->write_super_lockfs)
 			sb->s_op->write_super_lockfs(sb);
 	}
 
 	sync_blockdev(bdev);
+	mutex_unlock(&bdev->bd_fsfreeze_mutex);
+
 	return sb;	/* thaw_bdev releases s->s_umount and bd_mount_sem */
 }
 EXPORT_SYMBOL(freeze_bdev);
+
+void do_thaw_all(unsigned long unused)
+{
+	struct super_block *sb;
+	char b[BDEVNAME_SIZE];
+
+	spin_lock(&sb_lock);
+restart:
+	list_for_each_entry(sb, &super_blocks, s_list) {
+		sb->s_count++;
+		spin_unlock(&sb_lock);
+		down_read(&sb->s_umount);
+		while (sb->s_bdev && !__thaw_bdev(sb->s_bdev, sb))
+			printk(KERN_WARNING "Emergency Thaw on %s\n",
+			       bdevname(sb->s_bdev, b));
+		up_read(&sb->s_umount);
+		spin_lock(&sb_lock);
+		if (__put_super_and_need_restart(sb))
+			goto restart;
+	}
+	spin_unlock(&sb_lock);
+	printk(KERN_WARNING "Emergency Thaw complete\n");
+}
+
+/**
+ * emergency_thaw_all -- forcibly thaw every frozen filesystem
+ *
+ * Used for emergency unfreeze of all filesystems via SysRq
+ */
+void emergency_thaw_all(void)
+{
+	pdflush_operation(do_thaw_all, 0);
+}
 
 /**
  * thaw_bdev  -- unlock filesystem
@@ -246,18 +310,53 @@ EXPORT_SYMBOL(freeze_bdev);
  */
 void thaw_bdev(struct block_device *bdev, struct super_block *sb)
 {
+	__thaw_bdev(bdev, sb);
+}
+
+int __thaw_bdev(struct block_device *bdev, struct super_block *sb)
+{
+	int error = 0;
+
+	mutex_lock(&bdev->bd_fsfreeze_mutex);
+	if (!bdev->bd_fsfreeze_count) {
+		mutex_unlock(&bdev->bd_fsfreeze_mutex);
+		return -EINVAL;
+	}
+
+	bdev->bd_fsfreeze_count--;
+	if (bdev->bd_fsfreeze_count > 0) {
+		if (sb)
+			drop_super(sb);
+		mutex_unlock(&bdev->bd_fsfreeze_mutex);
+		return 0;
+	}
+
 	if (sb) {
 		BUG_ON(sb->s_bdev != bdev);
-
-		if (sb->s_op->unlockfs)
-			sb->s_op->unlockfs(sb);
-		sb->s_frozen = SB_UNFROZEN;
-		smp_wmb();
-		wake_up(&sb->s_wait_unfrozen);
+		if (!(sb->s_flags & MS_RDONLY)) {
+			if ((sb->s_type->fs_flags & FS_HAS_FREEZE) &&
+			    sb->s_op->unfreeze_fs) {
+				error = sb->s_op->unfreeze_fs(sb);
+				if (error) {
+					printk(KERN_ERR
+						"VFS:Filesystem thaw failed\n");
+					sb->s_frozen = SB_FREEZE_TRANS;
+					bdev->bd_fsfreeze_count++;
+					mutex_unlock(&bdev->bd_fsfreeze_mutex);
+					return error;
+				}
+			} else if (sb->s_op->unlockfs)
+				sb->s_op->unlockfs(sb);
+			sb->s_frozen = SB_UNFROZEN;
+			smp_wmb();
+			wake_up(&sb->s_wait_unfrozen);
+		}
 		drop_super(sb);
 	}
 
 	up(&bdev->bd_mount_sem);
+	mutex_unlock(&bdev->bd_fsfreeze_mutex);
+	return 0;
 }
 EXPORT_SYMBOL(thaw_bdev);
 
@@ -861,8 +960,10 @@ int __set_page_dirty_buffers(struct page *page)
 	if (!TestSetPageDirty(page)) {
 		write_lock_irq(&mapping->tree_lock);
 		if (page->mapping) {	/* Race with truncate? */
-			if (mapping_cap_account_dirty(mapping))
+			if (mapping_cap_account_dirty(mapping)) {
 				__inc_zone_page_state(page, NR_FILE_DIRTY);
+				task_io_account_write(PAGE_CACHE_SIZE);
+			}
 			radix_tree_tag_set(&mapping->page_tree,
 						page_index(page),
 						PAGECACHE_TAG_DIRTY);
@@ -1554,6 +1655,7 @@ void invalidate_bh_lrus(void)
 {
 	on_each_cpu(invalidate_bh_lru, NULL, 1, 1);
 }
+EXPORT_SYMBOL_GPL(invalidate_bh_lrus);
 
 void set_bh_page(struct buffer_head *bh,
 		struct page *page, unsigned long offset)
@@ -1937,6 +2039,48 @@ recover:
 	goto done;
 }
 
+/*
+ * If a page has any new buffers, zero them out here, and mark them uptodate
+ * and dirty so they'll be written out (in order to prevent uninitialised
+ * block data from leaking). And clear the new bit.
+ */
+void page_zero_new_buffers(struct page *page, unsigned from, unsigned to)
+{
+	unsigned int block_start, block_end;
+	struct buffer_head *head, *bh;
+
+	BUG_ON(!PageLocked(page));
+	if (!page_has_buffers(page))
+		return;
+
+	bh = head = page_buffers(page);
+	block_start = 0;
+	do {
+		block_end = block_start + bh->b_size;
+
+		if (buffer_new(bh)) {
+			if (block_end > from && block_start < to) {
+				if (!PageUptodate(page)) {
+					unsigned start, size;
+
+					start = max(from, block_start);
+					size = min(to, block_end) - start;
+
+					zero_user(page, start, size);
+					set_buffer_uptodate(bh);
+				}
+
+				clear_buffer_new(bh);
+				mark_buffer_dirty(bh);
+			}
+		}
+
+		block_start = block_end;
+		bh = bh->b_this_page;
+	} while (bh != head);
+}
+EXPORT_SYMBOL(page_zero_new_buffers);
+
 static int __block_prepare_write(struct inode *inode, struct page *page,
 		unsigned from, unsigned to, get_block_t *get_block)
 {
@@ -2019,42 +2163,8 @@ static int __block_prepare_write(struct inode *inode, struct page *page,
 		if (!buffer_uptodate(*wait_bh))
 			err = -EIO;
 	}
-	if (!err) {
-		bh = head;
-		do {
-			if (buffer_new(bh))
-				clear_buffer_new(bh);
-		} while ((bh = bh->b_this_page) != head);
-		return 0;
-	}
-	/* Error case: */
-	/*
-	 * Zero out any newly allocated blocks to avoid exposing stale
-	 * data.  If BH_New is set, we know that the block was newly
-	 * allocated in the above loop.
-	 */
-	bh = head;
-	block_start = 0;
-	do {
-		block_end = block_start+blocksize;
-		if (block_end <= from)
-			goto next_bh;
-		if (block_start >= to)
-			break;
-		if (buffer_new(bh)) {
-			void *kaddr;
-
-			clear_buffer_new(bh);
-			kaddr = kmap_atomic(page, KM_USER0);
-			memset(kaddr+block_start, 0, bh->b_size);
-			kunmap_atomic(kaddr, KM_USER0);
-			set_buffer_uptodate(bh);
-			mark_buffer_dirty(bh);
-		}
-next_bh:
-		block_start = block_end;
-		bh = bh->b_this_page;
-	} while (bh != head);
+	if (unlikely(err))
+		page_zero_new_buffers(page, from, to);
 	return err;
 }
 
@@ -2079,6 +2189,7 @@ static int __block_commit_write(struct inode *inode, struct page *page,
 			set_buffer_uptodate(bh);
 			mark_buffer_dirty(bh);
 		}
+		clear_buffer_new(bh);
 	}
 
 	/*
@@ -2091,6 +2202,130 @@ static int __block_commit_write(struct inode *inode, struct page *page,
 		SetPageUptodate(page);
 	return 0;
 }
+
+/*
+ * block_write_begin takes care of the basic task of block allocation and
+ * bringing partial write blocks uptodate first.
+ *
+ * If *pagep is not NULL, then block_write_begin uses the locked page
+ * at *pagep rather than allocating its own. In this case, the page will
+ * not be unlocked or deallocated on failure.
+ */
+int block_write_begin(struct file *file, struct address_space *mapping,
+			loff_t pos, unsigned len, unsigned flags,
+			struct page **pagep, void **fsdata,
+			get_block_t *get_block)
+{
+	struct inode *inode = mapping->host;
+	int status = 0;
+	struct page *page;
+	pgoff_t index;
+	unsigned start, end;
+	int ownpage = 0;
+
+	index = pos >> PAGE_CACHE_SHIFT;
+	start = pos & (PAGE_CACHE_SIZE - 1);
+	end = start + len;
+
+	page = *pagep;
+	if (page == NULL) {
+		ownpage = 1;
+		page = grab_cache_page_write_begin(mapping, index, flags);
+		if (!page) {
+			status = -ENOMEM;
+			goto out;
+		}
+		*pagep = page;
+	} else
+		BUG_ON(!PageLocked(page));
+
+	status = __block_prepare_write(inode, page, start, end, get_block);
+	if (unlikely(status)) {
+		ClearPageUptodate(page);
+
+		if (ownpage) {
+			unlock_page(page);
+			page_cache_release(page);
+			*pagep = NULL;
+
+			/*
+			 * prepare_write() may have instantiated a few blocks
+			 * outside i_size.  Trim these off again. Don't need
+			 * i_size_read because we hold i_mutex.
+			 */
+			if (pos + len > inode->i_size)
+				vmtruncate(inode, inode->i_size);
+		}
+		goto out;
+	}
+
+out:
+	return status;
+}
+EXPORT_SYMBOL(block_write_begin);
+
+int block_write_end(struct file *file, struct address_space *mapping,
+			loff_t pos, unsigned len, unsigned copied,
+			struct page *page, void *fsdata)
+{
+	struct inode *inode = mapping->host;
+	unsigned start;
+
+	start = pos & (PAGE_CACHE_SIZE - 1);
+
+	if (unlikely(copied < len)) {
+		/*
+		 * The buffers that were written will now be uptodate, so we
+		 * don't have to worry about a readpage reading them and
+		 * overwriting a partial write. However if we have encountered
+		 * a short write and only partially written into a buffer, it
+		 * will not be marked uptodate, so a readpage might come in and
+		 * destroy our partial write.
+		 *
+		 * Do the simplest thing, and just treat any short write to a
+		 * non uptodate page as a zero-length write, and force the
+		 * caller to redo the whole thing.
+		 */
+		if (!PageUptodate(page))
+			copied = 0;
+
+		page_zero_new_buffers(page, start+copied, start+len);
+	}
+	flush_dcache_page(page);
+
+	/* This could be a short (even 0-length) commit */
+	__block_commit_write(inode, page, start, start+copied);
+
+	return copied;
+}
+EXPORT_SYMBOL(block_write_end);
+
+int generic_write_end(struct file *file, struct address_space *mapping,
+			loff_t pos, unsigned len, unsigned copied,
+			struct page *page, void *fsdata)
+{
+	struct inode *inode = mapping->host;
+
+	copied = block_write_end(file, mapping, pos, len, copied, page, fsdata);
+
+	/*
+	 * No need to use i_size_read() here, the i_size
+	 * cannot change under us because we hold i_mutex.
+	 *
+	 * But it's important to update i_size while still holding page lock:
+	 * page writeout could otherwise come in and zero beyond i_size.
+	 */
+	if (pos+copied > inode->i_size) {
+		i_size_write(inode, pos+copied);
+		mark_inode_dirty(inode);
+	}
+
+	unlock_page(page);
+	page_cache_release(page);
+
+	return copied;
+}
+EXPORT_SYMBOL(generic_write_end);
 
 /*
  * Generic "read page" function for block devices that have the normal
@@ -2190,14 +2425,14 @@ int block_read_full_page(struct page *page, get_block_t *get_block)
 }
 
 /* utility function for filesystems that need to do work on expanding
- * truncates.  Uses prepare/commit_write to allow the filesystem to
+ * truncates.  Uses filesystem pagecache writes to allow the filesystem to
  * deal with the hole.  
  */
-static int __generic_cont_expand(struct inode *inode, loff_t size,
-				 pgoff_t index, unsigned int offset)
+int generic_cont_expand_simple(struct inode *inode, loff_t size)
 {
 	struct address_space *mapping = inode->i_mapping;
 	struct page *page;
+	void *fsdata;
 	unsigned long limit;
 	int err;
 
@@ -2210,60 +2445,134 @@ static int __generic_cont_expand(struct inode *inode, loff_t size,
 	if (size > inode->i_sb->s_maxbytes)
 		goto out;
 
-	err = -ENOMEM;
-	page = grab_cache_page(mapping, index);
-	if (!page)
+	err = pagecache_write_begin(NULL, mapping, size, 0,
+				AOP_FLAG_UNINTERRUPTIBLE|AOP_FLAG_CONT_EXPAND,
+				&page, &fsdata);
+	if (err)
 		goto out;
-	err = mapping->a_ops->prepare_write(NULL, page, offset, offset);
-	if (err) {
-		/*
-		 * ->prepare_write() may have instantiated a few blocks
-		 * outside i_size.  Trim these off again.
-		 */
-		unlock_page(page);
-		page_cache_release(page);
-		vmtruncate(inode, inode->i_size);
-		goto out;
-	}
 
-	err = mapping->a_ops->commit_write(NULL, page, offset, offset);
+	err = pagecache_write_end(NULL, mapping, size, 0, 0, page, fsdata);
+	BUG_ON(err > 0);
 
-	unlock_page(page);
-	page_cache_release(page);
-	if (err > 0)
-		err = 0;
 out:
 	return err;
 }
 
 int generic_cont_expand(struct inode *inode, loff_t size)
 {
-	pgoff_t index;
 	unsigned int offset;
 
 	offset = (size & (PAGE_CACHE_SIZE - 1)); /* Within page */
 
 	/* ugh.  in prepare/commit_write, if from==to==start of block, we
-	** skip the prepare.  make sure we never send an offset for the start
-	** of a block
-	*/
+	 * skip the prepare.  make sure we never send an offset for the start
+	 * of a block
+	 * XXX: actually, this should be handled in those filesystems by
+	 * checking for the AOP_FLAG_CONT_EXPAND flag.
+	 */
 	if ((offset & (inode->i_sb->s_blocksize - 1)) == 0) {
 		/* caller must handle this extra byte. */
-		offset++;
+		size++;
 	}
-	index = size >> PAGE_CACHE_SHIFT;
-
-	return __generic_cont_expand(inode, size, index, offset);
+	return generic_cont_expand_simple(inode, size);
 }
 
-int generic_cont_expand_simple(struct inode *inode, loff_t size)
+int cont_expand_zero(struct file *file, struct address_space *mapping,
+			loff_t pos, loff_t *bytes)
 {
-	loff_t pos = size - 1;
-	pgoff_t index = pos >> PAGE_CACHE_SHIFT;
-	unsigned int offset = (pos & (PAGE_CACHE_SIZE - 1)) + 1;
+	struct inode *inode = mapping->host;
+	unsigned blocksize = 1 << inode->i_blkbits;
+	struct page *page;
+	void *fsdata;
+	pgoff_t index, curidx;
+	loff_t curpos;
+	unsigned zerofrom, offset, len;
+	int err = 0;
 
-	/* prepare/commit_write can handle even if from==to==start of block. */
-	return __generic_cont_expand(inode, size, index, offset);
+	index = pos >> PAGE_CACHE_SHIFT;
+	offset = pos & ~PAGE_CACHE_MASK;
+
+	while (index > (curidx = (curpos = *bytes)>>PAGE_CACHE_SHIFT)) {
+		zerofrom = curpos & ~PAGE_CACHE_MASK;
+		if (zerofrom & (blocksize-1)) {
+			*bytes |= (blocksize-1);
+			(*bytes)++;
+		}
+		len = PAGE_CACHE_SIZE - zerofrom;
+
+		err = pagecache_write_begin(file, mapping, curpos, len,
+						AOP_FLAG_UNINTERRUPTIBLE,
+						&page, &fsdata);
+		if (err)
+			goto out;
+		zero_user(page, zerofrom, len);
+		err = pagecache_write_end(file, mapping, curpos, len, len,
+						page, fsdata);
+		if (err < 0)
+			goto out;
+		BUG_ON(err != len);
+		err = 0;
+	}
+
+	/* page covers the boundary, find the boundary offset */
+	if (index == curidx) {
+		zerofrom = curpos & ~PAGE_CACHE_MASK;
+		/* if we will expand the thing last block will be filled */
+		if (offset <= zerofrom) {
+			goto out;
+		}
+		if (zerofrom & (blocksize-1)) {
+			*bytes |= (blocksize-1);
+			(*bytes)++;
+		}
+		len = offset - zerofrom;
+
+		err = pagecache_write_begin(file, mapping, curpos, len,
+						AOP_FLAG_UNINTERRUPTIBLE,
+						&page, &fsdata);
+		if (err)
+			goto out;
+		zero_user(page, zerofrom, len);
+		err = pagecache_write_end(file, mapping, curpos, len, len,
+						page, fsdata);
+		if (err < 0)
+			goto out;
+		BUG_ON(err != len);
+		err = 0;
+	}
+out:
+	return err;
+}
+
+/*
+ * For moronic filesystems that do not allow holes in file.
+ * We may have to extend the file.
+ */
+int cont_write_begin(struct file *file, struct address_space *mapping,
+			loff_t pos, unsigned len, unsigned flags,
+			struct page **pagep, void **fsdata,
+			get_block_t *get_block, loff_t *bytes)
+{
+	struct inode *inode = mapping->host;
+	unsigned blocksize = 1 << inode->i_blkbits;
+	unsigned zerofrom;
+	int err;
+
+	err = cont_expand_zero(file, mapping, pos, bytes);
+	if (err)
+		goto out;
+
+	zerofrom = *bytes & ~PAGE_CACHE_MASK;
+	if (pos+len > *bytes && zerofrom & (blocksize-1)) {
+		*bytes |= (blocksize-1);
+		(*bytes)++;
+	}
+
+	*pagep = NULL;
+	err = block_write_begin(file, mapping, pos, len,
+				flags, pagep, fsdata, get_block);
+out:
+	return err;
 }
 
 /*
@@ -2367,6 +2676,53 @@ int block_commit_write(struct page *page, unsigned from, unsigned to)
 	struct inode *inode = page->mapping->host;
 	__block_commit_write(inode,page,from,to);
 	return 0;
+}
+
+/*
+ * block_page_mkwrite() is not allowed to change the file size as it gets
+ * called from a page fault handler when a page is first dirtied. Hence we must
+ * be careful to check for EOF conditions here. We set the page up correctly
+ * for a written page which means we get ENOSPC checking when writing into
+ * holes and correct delalloc and unwritten extent mapping on filesystems that
+ * support these features.
+ *
+ * We are not allowed to take the i_mutex here so we have to play games to
+ * protect against truncate races as the page could now be beyond EOF.  Because
+ * vmtruncate() writes the inode size before removing pages, once we have the
+ * page lock we can determine safely if the page is beyond EOF. If it is not
+ * beyond EOF, then the page is guaranteed safe against truncation until we
+ * unlock the page.
+ */
+int
+block_page_mkwrite(struct vm_area_struct *vma, struct page *page,
+		   get_block_t get_block)
+{
+	struct inode *inode = vma->vm_file->f_dentry->d_inode;
+	unsigned long end;
+	loff_t size;
+	int ret = -EINVAL;
+
+	lock_page(page);
+	size = i_size_read(inode);
+	if ((page->mapping != inode->i_mapping) ||
+	    (page_offset(page) > size)) {
+		/* page got truncated out from underneath us */
+		goto out_unlock;
+	}
+
+	/* page is wholly or partially inside EOF */
+	if (((page->index + 1) << PAGE_CACHE_SHIFT) > size)
+		end = size & ~PAGE_CACHE_MASK;
+	else
+		end = PAGE_CACHE_SIZE;
+
+	ret = block_prepare_write(page, 0, end, get_block);
+	if (!ret)
+		ret = block_commit_write(page, 0, end);
+
+out_unlock:
+	unlock_page(page);
+	return ret;
 }
 
 int generic_commit_write(struct file *file, struct page *page,
@@ -3035,8 +3391,13 @@ int try_to_free_buffers(struct page *page)
 		 * could encounter a non-uptodate page, which is unresolvable.
 		 * This only applies in the rare case where try_to_free_buffers
 		 * succeeds but the page is not freed.
+		 *
+		 * Also, during truncate, discard_buffer will have marked all
+		 * the page's buffers clean.  We discover that here and clean
+		 * the page also.
 		 */
-		clear_page_dirty(page);
+		if (test_clear_page_dirty(page))
+			task_io_account_cancelled_write(PAGE_CACHE_SIZE);
 	}
 out:
 	if (buffers_to_free) {
@@ -3248,11 +3609,13 @@ EXPORT_SYMBOL(__brelse);
 EXPORT_SYMBOL(__wait_on_buffer);
 EXPORT_SYMBOL(block_commit_write);
 EXPORT_SYMBOL(block_prepare_write);
+EXPORT_SYMBOL(block_page_mkwrite);
 EXPORT_SYMBOL(block_read_full_page);
 EXPORT_SYMBOL(block_sync_page);
 EXPORT_SYMBOL(block_truncate_page);
 EXPORT_SYMBOL(block_write_full_page);
 EXPORT_SYMBOL(cont_prepare_write);
+EXPORT_SYMBOL(cont_write_begin);
 EXPORT_SYMBOL(end_buffer_read_sync);
 EXPORT_SYMBOL(end_buffer_write_sync);
 EXPORT_SYMBOL(file_fsync);

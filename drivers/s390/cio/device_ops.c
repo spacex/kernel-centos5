@@ -542,7 +542,7 @@ ccw_device_stlck(struct ccw_device *cdev)
 		return -ENOMEM;
 	}
 	spin_lock_irqsave(&sch->lock, flags);
-	ret = cio_enable_subchannel(sch, 3);
+	ret = cio_enable_subchannel(sch);
 	if (ret)
 		goto out_unlock;
 	/*

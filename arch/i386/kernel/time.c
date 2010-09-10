@@ -199,6 +199,8 @@ irqreturn_t timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 		smp_send_timer_broadcast_ipi(regs);
 #endif
 
+	leap_second_message();
+
 	return IRQ_HANDLED;
 }
 

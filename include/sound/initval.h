@@ -53,7 +53,8 @@
 #ifdef SNDRV_LEGACY_FIND_FREE_IRQ
 #include <linux/interrupt.h>
 
-static irqreturn_t snd_legacy_empty_irq_handler(int irq, void *dev_id)
+static irqreturn_t snd_legacy_empty_irq_handler(int irq, void *dev_id,
+						struct pt_regs *regs)
 {
 	return IRQ_HANDLED;
 }

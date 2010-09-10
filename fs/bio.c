@@ -27,6 +27,7 @@
 #include <linux/workqueue.h>
 #include <linux/blktrace_api.h>
 #include <scsi/sg.h>		/* for struct sg_iovec */
+#include <trace/block.h>
 
 #define BIO_POOL_SIZE 256
 
@@ -256,11 +257,13 @@ inline int bio_hw_segments(request_queue_t *q, struct bio *bio)
  */
 void __bio_clone(struct bio *bio, struct bio *bio_src)
 {
-	request_queue_t *q = bdev_get_queue(bio_src->bi_bdev);
-
 	memcpy(bio->bi_io_vec, bio_src->bi_io_vec,
 		bio_src->bi_max_vecs * sizeof(struct bio_vec));
 
+	/*
+	 * most users will be overriding ->bi_bdev with a new target,
+	 * so we don't set nor calculate new physical/hw segment counts here
+	 */
 	bio->bi_sector = bio_src->bi_sector;
 	bio->bi_bdev = bio_src->bi_bdev;
 	bio->bi_flags |= 1 << BIO_CLONED;
@@ -268,8 +271,6 @@ void __bio_clone(struct bio *bio, struct bio *bio_src)
 	bio->bi_vcnt = bio_src->bi_vcnt;
 	bio->bi_size = bio_src->bi_size;
 	bio->bi_idx = bio_src->bi_idx;
-	bio_phys_segments(q, bio);
-	bio_hw_segments(q, bio);
 }
 
 /**
@@ -648,12 +649,8 @@ static struct bio *__bio_map_user_iov(request_queue_t *q,
 		const int local_nr_pages = end - start;
 		const int page_limit = cur_page + local_nr_pages;
 		
-		down_read(&current->mm->mmap_sem);
-		ret = get_user_pages(current, current->mm, uaddr,
-				     local_nr_pages,
-				     write_to_vm, 0, &pages[cur_page], NULL);
-		up_read(&current->mm->mmap_sem);
-
+		ret = get_user_pages_fast(uaddr, local_nr_pages,
+				write_to_vm, &pages[cur_page]);
 		if (ret < local_nr_pages) {
 			ret = -EFAULT;
 			goto out_unmap;
@@ -1095,7 +1092,7 @@ struct bio_pair *bio_split(struct bio *bi, mempool_t *pool, int first_sectors)
 	if (!bp)
 		return bp;
 
-	blk_add_trace_pdu_int(bdev_get_queue(bi->bi_bdev), BLK_TA_SPLIT, bi,
+	trace_block_split(bdev_get_queue(bi->bi_bdev), bi,
 				bi->bi_sector + first_sectors);
 
 	BUG_ON(bi->bi_vcnt != 1);

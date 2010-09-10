@@ -44,16 +44,22 @@ enum mlx4_dev_event {
 	MLX4_DEV_EVENT_PORT_REINIT,
 };
 
+enum mlx4_query_reply {
+	MLX4_QUERY_NOT_MINE	= -1,
+	MLX4_QUERY_MINE_NOPORT 	= 0
+};
+
 struct mlx4_interface {
 	void *			(*add)	 (struct mlx4_dev *dev);
 	void			(*remove)(struct mlx4_dev *dev, void *context);
 	void			(*event) (struct mlx4_dev *dev, void *context,
-					  enum mlx4_dev_event event, int subtype,
-					  int port);
+					  enum mlx4_dev_event event, int port);
+	enum mlx4_query_reply	(*query) (void *context, void *);
 	struct list_head	list;
 };
 
 int mlx4_register_interface(struct mlx4_interface *intf);
 void mlx4_unregister_interface(struct mlx4_interface *intf);
+struct mlx4_dev *mlx4_query_interface(void *, int *port);
 
 #endif /* MLX4_DRIVER_H */

@@ -65,8 +65,10 @@ qla2x00_initialize_adapter(scsi_qla_host_t *ha)
 
 	/* Clear adapter flags. */
 	ha->flags.online = 0;
+	ha->flags.chip_reset_done = 0;
 	ha->flags.reset_active = 0;
 	ha->flags.pci_channel_io_perm_failure = 0;
+	ha->flags.eeh_busy = 0;
 	atomic_set(&ha->loop_down_timer, LOOP_DOWN_TIME);
 	atomic_set(&ha->loop_state, LOOP_DOWN);
 	ha->device_flags = DFLG_NO_CABLE;
@@ -138,6 +140,7 @@ qla2x00_initialize_adapter(scsi_qla_host_t *ha)
 	}
 
 	rval = qla2x00_init_rings(ha);
+	ha->flags.chip_reset_done = 1;
 
 	if (rval == QLA_SUCCESS && IS_QLA84XX(ha)) {
 		/* Issue verify 84xx FW IOCB to complete 84xx initialization */
@@ -287,6 +290,7 @@ qla24xx_pci_config(scsi_qla_host_t *ha)
 	uint32_t d;
 	unsigned long flags = 0;
 	struct device_reg_24xx __iomem *reg = &ha->iobase->isp24;
+	int pcix_cmd_reg, pcie_dctl_reg;
 
 	pci_set_master(ha->pdev);
 	ret = pci_set_mwi(ha->pdev);
@@ -299,12 +303,28 @@ qla24xx_pci_config(scsi_qla_host_t *ha)
 	pci_write_config_byte(ha->pdev, PCI_LATENCY_TIMER, 0x80);
 
 	/* PCI-X -- adjust Maximum Memory Read Byte Count (2048). */
-	if (pci_find_capability(ha->pdev, PCI_CAP_ID_PCIX))
-		pcix_set_mmrbc(ha->pdev, 2048);
+	pcix_cmd_reg = pci_find_capability(ha->pdev, PCI_CAP_ID_PCIX);
+	if (pcix_cmd_reg) {
+		uint16_t pcix_cmd;
+
+		pcix_cmd_reg += PCI_X_CMD;
+		pci_read_config_word(ha->pdev, pcix_cmd_reg, &pcix_cmd);
+		pcix_cmd &= ~PCI_X_CMD_MAX_READ;
+		pcix_cmd |= 0x0008;
+		pci_write_config_word(ha->pdev, pcix_cmd_reg, pcix_cmd);
+	}
 
 	/* PCIe -- adjust Maximum Read Request Size (2048). */
-	if (pci_find_capability(ha->pdev, PCI_CAP_ID_EXP))
-		pcie_set_readrq(ha->pdev, 2048);
+	pcie_dctl_reg = pci_find_capability(ha->pdev, PCI_CAP_ID_EXP);
+	if (pcie_dctl_reg) {
+		uint16_t pcie_dctl;
+
+		pcie_dctl_reg += PCI_EXP_DEVCTL;
+		pci_read_config_word(ha->pdev, pcie_dctl_reg, &pcie_dctl);
+		pcie_dctl &= ~PCI_EXP_DEVCTL_READRQ;
+		pcie_dctl |= 0x4000;
+		pci_write_config_word(ha->pdev, pcie_dctl_reg, pcie_dctl);
+	}
 
 	/* Reset expansion ROM address decode enable */
 	pci_read_config_dword(ha->pdev, PCI_ROM_ADDRESS, &d);
@@ -332,6 +352,7 @@ qla25xx_pci_config(scsi_qla_host_t *ha)
 {
 	uint16_t w, mwi;
 	uint32_t d;
+	int pcie_dctl_reg;
 
 	pci_set_master(ha->pdev);
 	mwi = 0;
@@ -344,8 +365,16 @@ qla25xx_pci_config(scsi_qla_host_t *ha)
 	pci_write_config_word(ha->pdev, PCI_COMMAND, w);
 
 	/* PCIe -- adjust Maximum Read Request Size (2048). */
-	if (pci_find_capability(ha->pdev, PCI_CAP_ID_EXP))
-		pcie_set_readrq(ha->pdev, 2048);
+	pcie_dctl_reg = pci_find_capability(ha->pdev, PCI_CAP_ID_EXP);
+	if (pcie_dctl_reg) {
+		uint16_t pcie_dctl;
+
+		pcie_dctl_reg += PCI_EXP_DEVCTL;
+		pci_read_config_word(ha->pdev, pcie_dctl_reg, &pcie_dctl);
+		pcie_dctl &= ~PCI_EXP_DEVCTL_READRQ;
+		pcie_dctl |= 0x4000;
+		pci_write_config_word(ha->pdev, pcie_dctl_reg, pcie_dctl);
+	}
 
 	/* Reset expansion ROM address decode enable */
 	pci_read_config_dword(ha->pdev, PCI_ROM_ADDRESS, &d);
@@ -401,6 +430,9 @@ qla2x00_reset_chip(scsi_qla_host_t *ha)
 	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 	uint32_t	cnt;
 	uint16_t	cmd;
+
+	if (unlikely(pci_channel_offline(ha->pdev)))
+		return;
 
 	ha->isp_ops->disable_intrs(ha);
 
@@ -602,6 +634,11 @@ qla24xx_reset_risc(scsi_qla_host_t *ha)
 void
 qla24xx_reset_chip(scsi_qla_host_t *ha)
 {
+	if (pci_channel_offline(ha->pdev) &&
+	    ha->flags.pci_channel_io_perm_failure) {
+		return;
+	}
+
 	ha->isp_ops->disable_intrs(ha);
 
 	/* Perform RISC reset. */
@@ -745,9 +782,6 @@ qla24xx_chip_diag(scsi_qla_host_t *ha)
 {
 	int rval;
 
-	/* Perform RISC reset. */
-	qla24xx_reset_risc(ha);
-
 	ha->fw_transfer_size = REQUEST_ENTRY_SIZE * 1024;
 
 	rval = qla2x00_mbx_reg_test(ha);
@@ -788,9 +822,12 @@ qla2x00_alloc_fw_dump(scsi_qla_host_t *ha)
 		mem_size = (ha->fw_memory_size - 0x11000 + 1) *
 		    sizeof(uint16_t);
 	} else if (IS_FWI2_CAPABLE(ha)) {
-		fixed_size = IS_QLA25XX(ha) ?
-		    offsetof(struct qla25xx_fw_dump, ext_mem):
-		    offsetof(struct qla24xx_fw_dump, ext_mem);
+                if (IS_QLA81XX(ha))
+                        fixed_size = offsetof(struct qla81xx_fw_dump, ext_mem);
+                else if (IS_QLA25XX(ha))
+                        fixed_size = offsetof(struct qla25xx_fw_dump, ext_mem);
+                else
+                        fixed_size = offsetof(struct qla24xx_fw_dump, ext_mem);
 		mem_size = (ha->fw_memory_size - 0x100000 + 1) *
 		    sizeof(uint32_t);
 
@@ -886,8 +923,8 @@ qla2x00_resize_request_q(scsi_qla_host_t *ha)
 		return;
 
 	/* Retrieve IOCB counts available to the firmware. */
-	rval = qla2x00_get_resource_cnts(ha, NULL, NULL, NULL, &fw_iocb_cnt,
-	    &ha->max_npiv_vports);
+	rval = qla2x00_get_resource_cnts(ha, NULL, &ha->fw_xcb_count, NULL,
+	    &fw_iocb_cnt, &ha->max_npiv_vports);
 	if (rval)
 		return;
 	/* No point in continuing if current settings are sufficient. */
@@ -920,6 +957,77 @@ qla2x00_resize_request_q(scsi_qla_host_t *ha)
 	ha->request_dma = request_dma;
 }
 
+static int
+qla81xx_mpi_sync(scsi_qla_host_t *ha)
+{
+#define MPS_MASK	0xef
+	int rval;
+	uint16_t dc;
+	uint32_t dw;
+
+	if (!IS_QLA81XX(ha))
+		return QLA_SUCCESS;
+
+	rval = qla2x00_write_ram_word(ha, 0x7c00, 1);
+	if (rval != QLA_SUCCESS) {
+		DEBUG2(qla_printk(KERN_WARNING, ha,
+		    "Sync-MPI: Unable to acquire semaphore.\n"));
+		goto done;
+	}
+
+	pci_read_config_word(ha->pdev, 0x54, &dc);
+	rval = qla2x00_read_ram_word(ha, 0x7a15, &dw);
+	if (rval != QLA_SUCCESS) {
+		DEBUG2(qla_printk(KERN_WARNING, ha,
+		    "Sync-MPI: Unable to read sync.\n"));
+		goto done_release;
+	}
+
+	DEBUG17(qla_printk(KERN_WARNING, ha,
+	    "mpi_sync rd: dc: %02x dw:%x\n", dc, dw));
+
+	dc &= MPS_MASK;
+	if (dc == (dw & MPS_MASK))
+		goto done_release;
+
+	dw &= ~MPS_MASK;
+	dw |= dc;
+
+	DEBUG17(qla_printk(KERN_WARNING, ha,
+	    "mpi_sync wr: dc: %02x dw:%x\n", dc, dw));
+
+	rval = qla2x00_write_ram_word(ha, 0x7a15, dw);
+	if (rval != QLA_SUCCESS) {
+		DEBUG2(qla_printk(KERN_WARNING, ha,
+		    "Sync-MPI: Unable to gain sync.\n"));
+	}
+
+done_release:
+	rval = qla2x00_write_ram_word(ha, 0x7c00, 0);
+	if (rval != QLA_SUCCESS) {
+		DEBUG2(qla_printk(KERN_WARNING, ha,
+		    "Sync-MPI: Unable to release semaphore.\n"));
+	}
+
+done:
+
+#ifdef QL_DEBUG_LEVEL_17
+	{
+		uint8_t b;
+		uint32_t i;
+
+		printk("mpi_sync: ");
+		for (i = 0; i < 256; i++) {
+			pci_read_config_byte(ha->pdev, i, &b);
+			printk("%s%02x", (i%16) ? " " : "\n", b);
+		}
+		printk("\n");
+	}
+#endif
+
+	return rval;
+}
+
 /**
  * qla2x00_setup_chip() - Load and start RISC firmware.
  * @ha: HA context
@@ -930,7 +1038,10 @@ static int
 qla2x00_setup_chip(scsi_qla_host_t *ha)
 {
 	int rval;
+	uint16_t fw_major_version;
 	uint32_t srisc_address = 0;
+
+	qla81xx_mpi_sync(ha);
 
 	/* Load firmware sequences */
 	rval = ha->isp_ops->load_risc(ha, &srisc_address);
@@ -946,16 +1057,22 @@ qla2x00_setup_chip(scsi_qla_host_t *ha)
 
 			rval = qla2x00_execute_fw(ha, srisc_address);
 			/* Retrieve firmware information. */
-			if (rval == QLA_SUCCESS && ha->fw_major_version == 0) {
-				qla2x00_get_fw_version(ha,
+			if (rval == QLA_SUCCESS) {
+				fw_major_version = ha->fw_major_version;
+			
+				rval = qla2x00_get_fw_version(ha,
 				    &ha->fw_major_version,
 				    &ha->fw_minor_version,
 				    &ha->fw_subminor_version,
-				    &ha->fw_attributes, &ha->fw_memory_size);
-				qla2x00_resize_request_q(ha);
+				    &ha->fw_attributes, &ha->fw_memory_size,
+				    ha->mpi_version, &ha->mpi_capabilities,
+				    ha->phy_version);
+				if (rval != QLA_SUCCESS)
+					goto setup_failed;
+
 				ha->flags.npiv_supported = 0;
 				if ((IS_QLA24XX_TYPE(ha) || IS_QLA25XX(ha) ||
-				    IS_QLA84XX(ha)) &&
+				    IS_QLA84XX(ha) || IS_QLA81XX(ha)) &&
 				    (ha->fw_attributes & BIT_2)) {
 					ha->flags.npiv_supported = 1;
 					if ((!ha->max_npiv_vports) ||
@@ -965,8 +1082,12 @@ qla2x00_setup_chip(scsi_qla_host_t *ha)
 						    MIN_MULTI_ID_FABRIC - 1;
 				}
 
-				if (ql2xallocfwdump)
-					qla2x00_alloc_fw_dump(ha);
+				if (fw_major_version == 0) {
+					qla2x00_resize_request_q(ha);
+
+					if (ql2xallocfwdump)
+						qla2x00_alloc_fw_dump(ha);
+				}
 			}
 		} else {
 			DEBUG2(printk(KERN_INFO
@@ -975,6 +1096,22 @@ qla2x00_setup_chip(scsi_qla_host_t *ha)
 		}
 	}
 
+	if (rval == QLA_SUCCESS && IS_FAC_REQUIRED(ha)) {
+                uint32_t size;
+
+                rval = qla81xx_fac_get_sector_size(ha, &size);
+                if (rval == QLA_SUCCESS) {
+                        ha->flags.fac_supported = 1;
+                        ha->fdt_block_size = size << 2;
+                } else {
+                        qla_printk(KERN_ERR, ha,
+                            "Unsupported FAC firmware (%d.%02d.%02d).\n",
+                            ha->fw_major_version, ha->fw_minor_version,
+                            ha->fw_subminor_version);
+                }
+        }
+
+setup_failed:
 	if (rval) {
 		DEBUG2_3(printk("scsi(%ld): Setup chip **** FAILED ****.\n",
 		    ha->host_no));
@@ -1206,7 +1343,11 @@ qla2x00_init_rings(scsi_qla_host_t *ha)
 		mid_init_cb->count = cpu_to_le16(ha->max_npiv_vports);	
 	}
 
-	mid_init_cb->options = __constant_cpu_to_le16(BIT_1);
+	if (IS_FWI2_CAPABLE(ha)) {
+		mid_init_cb->options = __constant_cpu_to_le16(BIT_1);
+		mid_init_cb->init_cb.execution_throttle =
+		    cpu_to_le16(ha->fw_xcb_count);
+	}
 
 	rval = qla2x00_init_firmware(ha, ha->init_cb_size);
 	if (rval) {
@@ -1233,7 +1374,7 @@ qla2x00_fw_ready(scsi_qla_host_t *ha)
 	unsigned long	wtime, mtime, cs84xx_time;
 	uint16_t	min_wait;	/* Minimum wait time if loop is down */
 	uint16_t	wait_time;	/* Wait time if loop is coming ready */
-	uint16_t	state[3];
+	uint16_t	state[5];
 
 	rval = QLA_SUCCESS;
 
@@ -1331,8 +1472,9 @@ qla2x00_fw_ready(scsi_qla_host_t *ha)
 		    ha->host_no, state[0], jiffies));
 	} while (1);
 
-	DEBUG(printk("scsi(%ld): fw_state=%x curr time=%lx.\n",
-	    ha->host_no, state[0], jiffies));
+	DEBUG(printk("scsi(%ld): fw_state=%x (%x, %x, %x, %x) curr time=%lx.\n",
+	    ha->host_no, state[0], state[1], state[2], state[3], state[4],
+	    jiffies));
 
 	if (rval) {
 		DEBUG2_3(printk("scsi(%ld): Firmware ready **** FAILED ****.\n",
@@ -1463,6 +1605,7 @@ qla2x00_set_model_info(scsi_qla_host_t *ha, uint8_t *model, size_t len, char *de
 {
 	char *st, *en;
 	uint16_t index;
+	int use_tbl = !IS_QLA25XX(ha) && !IS_QLA81XX(ha);
 
 	if (memcmp(model, BINZERO, len) != 0) {
 		strncpy(ha->model_number, model, len);
@@ -1475,20 +1618,30 @@ qla2x00_set_model_info(scsi_qla_host_t *ha, uint8_t *model, size_t len, char *de
 		}
 
 		index = (ha->pdev->subsystem_device & 0xff);
-		if (ha->pdev->subsystem_vendor == PCI_VENDOR_ID_QLOGIC &&
+		if (use_tbl &&
+		    ha->pdev->subsystem_vendor == PCI_VENDOR_ID_QLOGIC &&
 		    index < QLA_MODEL_NAMES)
-			ha->model_desc = qla2x00_model_name[index * 2 + 1];
+			strncpy(ha->model_desc,
+                            qla2x00_model_name[index * 2 + 1],
+                            sizeof(ha->model_desc) - 1);
 	} else {
 		index = (ha->pdev->subsystem_device & 0xff);
-		if (ha->pdev->subsystem_vendor == PCI_VENDOR_ID_QLOGIC &&
+		if (use_tbl &&
+		    ha->pdev->subsystem_vendor == PCI_VENDOR_ID_QLOGIC &&
 		    index < QLA_MODEL_NAMES) {
 			strcpy(ha->model_number,
 			    qla2x00_model_name[index * 2]);
-			ha->model_desc = qla2x00_model_name[index * 2 + 1];
+			strncpy(ha->model_desc,
+                            qla2x00_model_name[index * 2 + 1],
+                            sizeof(ha->model_desc) - 1);
 		} else {
 			strcpy(ha->model_number, def);
 		}
 	}
+
+	if (IS_FWI2_CAPABLE(ha))
+		qla2xxx_get_vpd_field(ha, "\x82", ha->model_desc,
+		    sizeof(ha->model_desc));
 }
 
 /*
@@ -2113,9 +2266,10 @@ static void
 qla2x00_iidma_fcport(scsi_qla_host_t *ha, fc_port_t *fcport)
 {
 #define LS_UNKNOWN      2
-	static char *link_speeds[5] = { "1", "2", "?", "4", "8" };
+	static char *link_speeds[] = { "1", "2", "?", "4", "8", "10"};
+	char *link_speed;
 	int rval;
-	uint16_t mb[6];
+	uint16_t mb[4];
 
 	if (!IS_IIDMA_CAPABLE(ha))
 		return;
@@ -2135,10 +2289,15 @@ qla2x00_iidma_fcport(scsi_qla_host_t *ha, fc_port_t *fcport)
 		    fcport->port_name[6], fcport->port_name[7], rval,
 		    fcport->fp_speed, mb[0], mb[1]));
 	} else {
+		link_speed = link_speeds[LS_UNKNOWN];
+		if (fcport->fp_speed < 5)
+			link_speed = link_speeds[fcport->fp_speed];
+		else if (fcport->fp_speed == 0x13)
+			link_speed = link_speeds[5];
 		DEBUG2(qla_printk(KERN_INFO, ha,
 		    "iIDMA adjusted to %s GB/s on "
 		    "%02x%02x%02x%02x%02x%02x%02x%02x.\n",
-		    link_speeds[fcport->fp_speed], fcport->port_name[0],
+		    link_speed, fcport->port_name[0],
 		    fcport->port_name[1], fcport->port_name[2],
 		    fcport->port_name[3], fcport->port_name[4],
 		    fcport->port_name[5], fcport->port_name[6],
@@ -2179,9 +2338,6 @@ qla2x00_reg_remote_port(scsi_qla_host_t *ha, fc_port_t *fcport)
 		rport_ids.roles |= FC_RPORT_ROLE_FCP_TARGET;
 	fc_remote_port_rolechg(rport, rport_ids.roles);
 
-	if (rport->scsi_target_id != -1 &&
-	    rport->scsi_target_id < ha->host->max_id)
-		fcport->os_target_id = rport->scsi_target_id;
 }
 
 /*
@@ -3164,13 +3320,12 @@ int
 qla2x00_abort_isp(scsi_qla_host_t *ha)
 {
 	int rval;
-	unsigned long flags = 0;
-	uint16_t       cnt;
-	srb_t          *sp;
 	uint8_t        status = 0;
+	scsi_qla_host_t *vha;
 
 	if (ha->flags.online) {
 		ha->flags.online = 0;
+		ha->flags.chip_reset_done = 0;
 		clear_bit(ISP_ABORT_NEEDED, &ha->dpc_flags);
 		ha->qla_stats.total_isp_aborts++;
 
@@ -3188,19 +3343,8 @@ qla2x00_abort_isp(scsi_qla_host_t *ha)
 				    LOOP_DOWN_TIME);
 		}
 
-		spin_lock_irqsave(&ha->hardware_lock, flags);
 		/* Requeue all commands in outstanding command list. */
-		for (cnt = 1; cnt < MAX_OUTSTANDING_COMMANDS; cnt++) {
-			sp = ha->outstanding_cmds[cnt];
-			if (sp) {
-				ha->outstanding_cmds[cnt] = NULL;
-				sp->flags = 0;
-				sp->cmd->result = DID_RESET << 16;
-				sp->cmd->host_scribble = (unsigned char *)NULL;
-				qla2x00_sp_compl(ha, sp);
-			}
-		}
-		spin_unlock_irqrestore(&ha->hardware_lock, flags);
+		qla2x00_abort_all_cmds(ha, DID_RESET << 16);
 
 		if (pci_channel_offline(ha->pdev) &&
 		    ha->flags.pci_channel_io_perm_failure) {
@@ -3283,6 +3427,12 @@ isp_return:
 		qla_printk(KERN_INFO, ha,
 			"qla2x00_abort_isp: **** FAILED ****\n");
 	} else {
+
+		list_for_each_entry(vha, &ha->vp_list, vp_list) {
+			if (vha->vp_idx)
+				qla2x00_vp_abort_isp(vha);
+		}
+
 		DEBUG(printk(KERN_INFO
 				"qla2x00_abort_isp(%ld): exiting.\n",
 				ha->host_no));
@@ -3334,10 +3484,10 @@ qla2x00_restart_isp(scsi_qla_host_t *ha)
 
 			status = qla2x00_setup_chip(ha);
 
-			spin_lock_irqsave(&ha->hardware_lock, flags);
 
-			if (!IS_QLA24XX(ha) && !IS_QLA54XX(ha) &&
-			    !IS_QLA25XX(ha)) {
+			if (!IS_FWI2_CAPABLE(ha) && !IS_QLA2100(ha) &&
+			    !IS_QLA2200(ha)) {
+				spin_lock_irqsave(&ha->hardware_lock, flags);
 				/* Enable proper parity */
 				if (IS_QLA2300(ha))
 					/* SRAM parity */
@@ -3351,15 +3501,16 @@ qla2x00_restart_isp(scsi_qla_host_t *ha)
 					WRT_REG_WORD(&reg->hccr,
 					    (HCCR_ENABLE_PARITY + 0x7));
 				RD_REG_WORD(&reg->hccr);
+				spin_unlock_irqrestore(&ha->hardware_lock,
+				    flags);
 			}
-
-			spin_unlock_irqrestore(&ha->hardware_lock, flags);
 		}
 	}
 
  done:
 	if (!status && !(status = qla2x00_init_rings(ha))) {
 		clear_bit(RESET_MARKER_NEEDED, &ha->dpc_flags);
+		ha->flags.chip_reset_done = 1;
 		if (!(status = qla2x00_fw_ready(ha))) {
 			DEBUG(printk("%s(): Start configure loop, "
 			    "status = %d\n", __func__, status));
@@ -3629,11 +3780,11 @@ qla24xx_nvram_config(scsi_qla_host_t *ha)
 }
 
 static int
-qla24xx_load_risc_flash(scsi_qla_host_t *ha, uint32_t *srisc_addr)
+qla24xx_load_risc_flash(scsi_qla_host_t *ha, uint32_t *srisc_addr,
+    uint32_t faddr)
 {
 	int	rval;
 	int	segments, fragment;
-	uint32_t faddr;
 	uint32_t *dcode, dlen;
 	uint32_t risc_addr;
 	uint32_t risc_size;
@@ -3642,7 +3793,6 @@ qla24xx_load_risc_flash(scsi_qla_host_t *ha, uint32_t *srisc_addr)
 	rval = QLA_SUCCESS;
 
 	segments = FA_RISC_CODE_SEGMENTS;
-	faddr = ha->flt_region_fw;
 	dcode = (uint32_t *)ha->request_ring;
 	*srisc_addr = 0;
 
@@ -3813,7 +3963,7 @@ fail_fw_integrity:
 }
 
 int
-qla24xx_load_risc(scsi_qla_host_t *ha, uint32_t *srisc_addr)
+qla24xx_load_risc_blob(scsi_qla_host_t *ha, uint32_t *srisc_addr)
 {
 	int	rval;
 	int	segments, fragment;
@@ -3831,10 +3981,7 @@ qla24xx_load_risc(scsi_qla_host_t *ha, uint32_t *srisc_addr)
 		qla_printk(KERN_ERR, ha, "Firmware images can be retrieved "
 		    "from: " QLA_FW_URL ".\n");
 
-		/* Try to load RISC code from flash. */
-		qla_printk(KERN_ERR, ha, "Attempting to load (potentially "
-		    "outdated) firmware from flash.\n");
-		return qla24xx_load_risc_flash(ha, srisc_addr);
+		return QLA_FUNCTION_FAILED;
 	}
 
 	rval = QLA_SUCCESS;
@@ -3921,6 +4068,47 @@ fail_fw_integrity:
 	return QLA_FUNCTION_FAILED;
 }
 
+int
+qla24xx_load_risc(scsi_qla_host_t *ha, uint32_t *srisc_addr)
+{
+	int rval;
+
+        /*
+         * FW Load priority:
+         * 1) Firmware via request-firmware interface (.bin file with driver).
+         * 2) Firmware residing in flash.
+         */
+        rval = qla24xx_load_risc_blob(ha, srisc_addr);
+        if (rval == QLA_SUCCESS)
+                return rval;
+
+        return qla24xx_load_risc_flash(ha, srisc_addr, ha->flt_region_fw);
+}
+
+int
+qla81xx_load_risc(scsi_qla_host_t *ha, uint32_t *srisc_addr)
+{
+        int rval;
+
+        /*
+         * FW Load priority:
+         * 1) Operational firmware residing in flash.
+         * 2) Golden firmware residing in flash.
+         */
+        rval = qla24xx_load_risc_flash(ha, srisc_addr, ha->flt_region_fw);
+        if (rval == QLA_SUCCESS || !ha->flt_region_gold_fw)
+                return rval;
+
+	qla_printk(KERN_ERR, ha, "FW: Attempting to fallback to golden firmware...\n");
+	rval = qla24xx_load_risc_flash(ha, srisc_addr,
+			ha->flt_region_gold_fw);
+	if (rval == QLA_SUCCESS)
+		ha->flags.running_gold_fw = 1; 
+	else
+		qla_printk(KERN_ERR, ha, "FW: Please update operational firmware...\n");
+	return rval;
+}
+
 void
 qla2x00_try_to_stop_firmware(scsi_qla_host_t *ha)
 {
@@ -3934,9 +4122,10 @@ qla2x00_try_to_stop_firmware(scsi_qla_host_t *ha)
 		return;
 
 	ret = qla2x00_stop_firmware(ha);
-	for (retries = 5; ret != QLA_SUCCESS && retries ; retries--) {
-		qla2x00_reset_chip(ha);
-		if (qla2x00_chip_diag(ha) != QLA_SUCCESS)
+	for (retries = 5; ret != QLA_SUCCESS && ret != QLA_FUNCTION_TIMEOUT &&
+	    ret != QLA_INVALID_COMMAND && retries ; retries--) {
+		ha->isp_ops->reset_chip(ha);
+		if (ha->isp_ops->chip_diag(ha) != QLA_SUCCESS)
 			continue;
 		if (qla2x00_setup_chip(ha) != QLA_SUCCESS)
 			continue;
@@ -4051,4 +4240,217 @@ qla84xx_init_chip(scsi_qla_host_t *ha)
 
 	return rval != QLA_SUCCESS || status[0] ? QLA_FUNCTION_FAILED:
 	    QLA_SUCCESS;
+}
+
+/* 81XX Support **************************************************************/
+
+int
+qla81xx_nvram_config(scsi_qla_host_t *ha)
+{
+	int   rval;
+	struct init_cb_81xx *icb;
+	struct nvram_81xx *nv;
+	uint32_t *dptr;
+	uint8_t  *dptr1, *dptr2;
+	uint32_t chksum;
+	uint16_t cnt;
+
+	rval = QLA_SUCCESS;
+	icb = (struct init_cb_81xx *)ha->init_cb;
+	nv = ha->nvram;
+
+	/* Determine NVRAM starting address. */
+	ha->nvram_size = sizeof(struct nvram_81xx);
+	ha->vpd_size = FA_NVRAM_VPD_SIZE;
+
+	/* Get VPD data into cache */
+	ha->vpd = ha->nvram + VPD_OFFSET;
+	ha->isp_ops->read_optrom(ha, (uint8_t *)ha->vpd,
+	    ha->flt_region_vpd << 2, ha->vpd_size);
+
+	/* Get NVRAM data into cache and calculate checksum. */
+	ha->isp_ops->read_optrom(ha, ha->nvram, ha->flt_region_nvram << 2,
+	    ha->nvram_size);
+	dptr = (uint32_t *)nv;
+	for (cnt = 0, chksum = 0; cnt < ha->nvram_size >> 2; cnt++)
+		chksum += le32_to_cpu(*dptr++);
+
+	DEBUG5(printk("scsi(%ld): Contents of NVRAM\n", ha->host_no));
+	DEBUG5(qla2x00_dump_buffer((uint8_t *)nv, ha->nvram_size));
+
+	/* Bad NVRAM data, set defaults parameters. */
+	if (chksum || nv->id[0] != 'I' || nv->id[1] != 'S' || nv->id[2] != 'P'
+	    || nv->id[3] != ' ' ||
+	    nv->nvram_version < __constant_cpu_to_le16(ICB_VERSION)) {
+		/* Reset NVRAM data. */
+		qla_printk(KERN_WARNING, ha, "Inconsistent NVRAM detected: "
+		    "checksum=0x%x id=%c version=0x%x.\n", chksum, nv->id[0],
+		    le16_to_cpu(nv->nvram_version));
+		return QLA_FUNCTION_FAILED;
+	}
+
+	/* Reset Initialization control block */
+	memset(icb, 0, sizeof(struct init_cb_81xx));
+
+	/* Copy 1st segment. */
+	dptr1 = (uint8_t *)icb;
+	dptr2 = (uint8_t *)&nv->version;
+	cnt = (uint8_t *)&icb->response_q_inpointer - (uint8_t *)&icb->version;
+	while (cnt--)
+		*dptr1++ = *dptr2++;
+
+	icb->login_retry_count = nv->login_retry_count;
+
+	/* Copy 2nd segment. */
+	dptr1 = (uint8_t *)&icb->interrupt_delay_timer;
+	dptr2 = (uint8_t *)&nv->interrupt_delay_timer;
+	cnt = (uint8_t *)&icb->reserved_5 -
+	    (uint8_t *)&icb->interrupt_delay_timer;
+	while (cnt--)
+		*dptr1++ = *dptr2++;
+
+	memcpy(icb->enode_mac, nv->enode_mac, sizeof(icb->enode_mac));
+	/* Some boards (with valid NVRAMs) still have NULL enode_mac!! */
+	if (!memcmp(icb->enode_mac, "\0\0\0\0\0\0", sizeof(icb->enode_mac))) {
+		icb->enode_mac[0] = 0x00;
+		icb->enode_mac[1] = 0x02;
+		icb->enode_mac[2] = 0x03;
+		icb->enode_mac[3] = 0x04;
+		icb->enode_mac[4] = 0x05;
+		icb->enode_mac[5] = 0x06 + PCI_FUNC(ha->pdev->devfn);
+	}
+
+	/* Use extended-initialization control block. */
+	memcpy(ha->ex_init_cb, &nv->ex_version, sizeof(*ha->ex_init_cb));
+
+	/*
+	 * Setup driver NVRAM options.
+	 */
+	qla2x00_set_model_info(ha, nv->model_name, sizeof(nv->model_name),
+	    "QLE81XX");
+
+	/* Use alternate WWN? */
+	if (nv->host_p & __constant_cpu_to_le32(BIT_15)) {
+		memcpy(icb->node_name, nv->alternate_node_name, WWN_SIZE);
+		memcpy(icb->port_name, nv->alternate_port_name, WWN_SIZE);
+	}
+
+	/* Prepare nodename */
+	if ((icb->firmware_options_1 & __constant_cpu_to_le32(BIT_14)) == 0) {
+		/*
+		 * Firmware will apply the following mask if the nodename was
+		 * not provided.
+		 */
+		memcpy(icb->node_name, icb->port_name, WWN_SIZE);
+		icb->node_name[0] &= 0xF0;
+	}
+
+	/* Set host adapter parameters. */
+	ha->flags.disable_risc_code_load = 0;
+	ha->flags.enable_lip_reset = 0;
+	ha->flags.enable_lip_full_login =
+	    le32_to_cpu(nv->host_p) & BIT_10 ? 1: 0;
+	ha->flags.enable_target_reset =
+	    le32_to_cpu(nv->host_p) & BIT_11 ? 1: 0;
+	ha->flags.enable_led_scheme = 0;
+	ha->flags.disable_serdes = le32_to_cpu(nv->host_p) & BIT_5 ? 1: 0;
+
+	ha->operating_mode = (le32_to_cpu(icb->firmware_options_2) &
+	    (BIT_6 | BIT_5 | BIT_4)) >> 4;
+
+	/* save HBA serial number */
+	ha->serial0 = icb->port_name[5];
+	ha->serial1 = icb->port_name[6];
+	ha->serial2 = icb->port_name[7];
+	ha->node_name = icb->node_name;
+	ha->port_name = icb->port_name;
+
+	icb->execution_throttle = __constant_cpu_to_le16(0xFFFF);
+
+	ha->retry_count = le16_to_cpu(nv->login_retry_count);
+
+	/* Set minimum login_timeout to 4 seconds. */
+	if (le16_to_cpu(nv->login_timeout) < ql2xlogintimeout)
+		nv->login_timeout = cpu_to_le16(ql2xlogintimeout);
+	if (le16_to_cpu(nv->login_timeout) < 4)
+		nv->login_timeout = __constant_cpu_to_le16(4);
+	ha->login_timeout = le16_to_cpu(nv->login_timeout);
+	icb->login_timeout = nv->login_timeout;
+
+	/* Set minimum RATOV to 100 tenths of a second. */
+	ha->r_a_tov = 100;
+
+	ha->loop_reset_delay = nv->reset_delay;
+
+	/* Link Down Timeout = 0:
+	 *
+	 * 	When Port Down timer expires we will start returning
+	 *	I/O's to OS with "DID_NO_CONNECT".
+	 *
+	 * Link Down Timeout != 0:
+	 *
+	 *	 The driver waits for the link to come up after link down
+	 *	 before returning I/Os to OS with "DID_NO_CONNECT".
+	 */
+	if (le16_to_cpu(nv->link_down_timeout) == 0) {
+		ha->loop_down_abort_time =
+		    (LOOP_DOWN_TIME - LOOP_DOWN_TIMEOUT);
+	} else {
+		ha->link_down_timeout =	le16_to_cpu(nv->link_down_timeout);
+		ha->loop_down_abort_time =
+		    (LOOP_DOWN_TIME - ha->link_down_timeout);
+	}
+
+	/* Need enough time to try and get the port back. */
+	ha->port_down_retry_count = le16_to_cpu(nv->port_down_retry_count);
+	if (qlport_down_retry)
+		ha->port_down_retry_count = qlport_down_retry;
+
+	/* Set login_retry_count */
+	ha->login_retry_count  = le16_to_cpu(nv->login_retry_count);
+	if (ha->port_down_retry_count ==
+	    le16_to_cpu(nv->port_down_retry_count) &&
+	    ha->port_down_retry_count > 3)
+		ha->login_retry_count = ha->port_down_retry_count;
+	else if (ha->port_down_retry_count > (int)ha->login_retry_count)
+		ha->login_retry_count = ha->port_down_retry_count;
+	if (ql2xloginretrycount)
+		ha->login_retry_count = ql2xloginretrycount;
+
+	/* Enable ZIO. */
+	if (!ha->flags.init_done) {
+		ha->zio_mode = le32_to_cpu(icb->firmware_options_2) &
+		    (BIT_3 | BIT_2 | BIT_1 | BIT_0);
+		ha->zio_timer = le16_to_cpu(icb->interrupt_delay_timer) ?
+		    le16_to_cpu(icb->interrupt_delay_timer): 2;
+	}
+	icb->firmware_options_2 &= __constant_cpu_to_le32(
+	    ~(BIT_3 | BIT_2 | BIT_1 | BIT_0));
+	ha->flags.process_response_queue = 0;
+	if (ha->zio_mode != QLA_ZIO_DISABLED) {
+		ha->zio_mode = QLA_ZIO_MODE_6;
+
+		DEBUG2(printk("scsi(%ld): ZIO mode %d enabled; timer delay "
+		    "(%d us).\n", ha->host_no, ha->zio_mode,
+		    ha->zio_timer * 100));
+		qla_printk(KERN_INFO, ha,
+		    "ZIO mode %d enabled; timer delay (%d us).\n",
+		    ha->zio_mode, ha->zio_timer * 100);
+
+		icb->firmware_options_2 |= cpu_to_le32(
+		    (uint32_t)ha->zio_mode);
+		icb->interrupt_delay_timer = cpu_to_le16(ha->zio_timer);
+		ha->flags.process_response_queue = 1;
+	}
+
+	if (rval) {
+		DEBUG2_3(printk(KERN_WARNING
+		    "scsi(%ld): NVRAM configuration failed!\n", ha->host_no));
+	}
+	return (rval);
+}
+
+void
+qla81xx_update_fw_options(scsi_qla_host_t *ha)
+{
 }

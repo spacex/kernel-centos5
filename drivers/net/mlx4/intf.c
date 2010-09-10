@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2006, 2007 Cisco Systems, Inc. All rights reserved.
+ * Copyright (c) 2007, 2008 Mellanox Technologies. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -29,8 +30,6 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-
-#include <linux/mlx4/driver.h>
 
 #include "mlx4.h"
 
@@ -113,8 +112,37 @@ void mlx4_unregister_interface(struct mlx4_interface *intf)
 }
 EXPORT_SYMBOL_GPL(mlx4_unregister_interface);
 
-void mlx4_dispatch_event(struct mlx4_dev *dev, enum mlx4_event type,
-			 int subtype, int port)
+struct mlx4_dev *mlx4_query_interface(void *int_dev, int *port)
+{
+	struct mlx4_priv *priv;
+	struct mlx4_device_context *dev_ctx;
+	enum mlx4_query_reply r;
+	unsigned long flags;
+
+	mutex_lock(&intf_mutex);
+
+	list_for_each_entry(priv, &dev_list, dev_list) {
+		spin_lock_irqsave(&priv->ctx_lock, flags);
+		list_for_each_entry(dev_ctx, &priv->ctx_list, list) {
+			if (!dev_ctx->intf->query)
+				continue;
+			r = dev_ctx->intf->query(dev_ctx->context, int_dev);
+			if (r != MLX4_QUERY_NOT_MINE) {
+				*port = r;
+				spin_unlock_irqrestore(&priv->ctx_lock, flags);
+				mutex_unlock(&intf_mutex);
+				return &priv->dev;
+			}
+		}
+		spin_unlock_irqrestore(&priv->ctx_lock, flags);
+	}
+
+	mutex_unlock(&intf_mutex);
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(mlx4_query_interface);
+
+void mlx4_dispatch_event(struct mlx4_dev *dev, enum mlx4_dev_event type, int port)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
 	struct mlx4_device_context *dev_ctx;
@@ -124,8 +152,7 @@ void mlx4_dispatch_event(struct mlx4_dev *dev, enum mlx4_event type,
 
 	list_for_each_entry(dev_ctx, &priv->ctx_list, list)
 		if (dev_ctx->intf->event)
-			dev_ctx->intf->event(dev, dev_ctx->context, type,
-					     subtype, port);
+			dev_ctx->intf->event(dev, dev_ctx->context, type, port);
 
 	spin_unlock_irqrestore(&priv->ctx_lock, flags);
 }
@@ -144,6 +171,8 @@ int mlx4_register_device(struct mlx4_dev *dev)
 	mutex_unlock(&intf_mutex);
 	mlx4_start_catas_poll(dev);
 
+	mlx4_start_sense(dev);
+
 	return 0;
 }
 
@@ -151,6 +180,8 @@ void mlx4_unregister_device(struct mlx4_dev *dev)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
 	struct mlx4_interface *intf;
+
+	mlx4_stop_sense(dev);
 
 	mlx4_stop_catas_poll(dev);
 	mutex_lock(&intf_mutex);

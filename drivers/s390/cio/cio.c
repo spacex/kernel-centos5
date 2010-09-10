@@ -21,8 +21,11 @@
 #include <asm/delay.h>
 #include <asm/irq.h>
 #include <asm/chpid.h>
+#include <asm/airq.h>
+#include <asm/isc.h>
+#include <asm/setup.h>
+#include <asm/ipl.h>
 
-#include "airq.h"
 #include "cio.h"
 #include "css.h"
 #include "chsc.h"
@@ -405,7 +408,7 @@ cio_modify (struct subchannel *sch)
  * Enable subchannel.
  */
 int
-cio_enable_subchannel (struct subchannel *sch, unsigned int isc)
+cio_enable_subchannel(struct subchannel *sch)
 {
 	char dbf_txt[15];
 	int ccode;
@@ -421,7 +424,7 @@ cio_enable_subchannel (struct subchannel *sch, unsigned int isc)
 
 	for (retry = 5, ret = 0; retry > 0; retry--) {
 		sch->schib.pmcw.ena = 1;
-		sch->schib.pmcw.isc = isc;
+		sch->schib.pmcw.isc = sch->isc;
 		sch->schib.pmcw.intparm = (__u32)(unsigned long)sch;
 		ret = cio_modify(sch);
 		if (ret == -ENODEV)
@@ -466,25 +469,16 @@ cio_disable_subchannel (struct subchannel *sch)
 	if (ccode == 3)		/* Not operational. */
 		return -ENODEV;
 
-	if (sch->schib.scsw.actl != 0)
-		/*
-		 * the disable function must not be called while there are
-		 *  requests pending for completion !
-		 */
-		return -EBUSY;
-
 	for (retry = 5, ret = 0; retry > 0; retry--) {
 		sch->schib.pmcw.ena = 0;
 		ret = cio_modify(sch);
 		if (ret == -ENODEV)
 			break;
-		if (ret == -EBUSY)
-			/*
-			 * The subchannel is busy or status pending.
-			 * We'll disable when the next interrupt was delivered
-			 * via the state machine.
-			 */
-			break;
+		if (ret == -EBUSY) {
+			struct irb irb;
+			if (tsch(sch->schid, &irb) != 0)
+				break;
+		}
 		if (ret == 0) {
 			stsch (sch->schid, &sch->schib);
 			if (!sch->schib.pmcw.ena)
@@ -570,10 +564,13 @@ cio_validate_subchannel (struct subchannel *sch, struct subchannel_id schid)
 			      sch->schib.pmcw.dev, sch->schid.ssid);
 		return -ENODEV;
 	}
-	if (cio_is_console(sch->schid))
+	if (cio_is_console(sch->schid)) {
 		sch->opm = 0xff;
-	else
+		sch->isc = CONSOLE_ISC;
+	} else {
 		sch->opm = chp_get_sch_opm(sch);
+		sch->isc = IO_SCH_ISC;
+	}
 	sch->lpm = sch->schib.pmcw.pam & sch->opm;
 
 	CIO_DEBUG(KERN_INFO, 0,
@@ -585,13 +582,11 @@ cio_validate_subchannel (struct subchannel *sch, struct subchannel_id schid)
 
 	/*
 	 * We now have to initially ...
-	 *  ... set "interruption subclass"
 	 *  ... enable "concurrent sense"
 	 *  ... enable "multipath mode" if more than one
 	 *	  CHPID is available. This is done regardless
 	 *	  whether multiple paths are available for us.
 	 */
-	sch->schib.pmcw.isc = 3;	/* could be smth. else */
 	sch->schib.pmcw.csense = 1;	/* concurrent sense */
 	sch->schib.pmcw.ena = 0;
 	if ((sch->lpm & (sch->lpm - 1)) != 0)
@@ -632,7 +627,7 @@ do_IRQ (struct pt_regs *regs)
 		 */
 		if (tpi_info->adapter_IO == 1 &&
 		    tpi_info->int_type == IO_INTERRUPT_TYPE) {
-			do_adapter_IO();
+			do_adapter_IO(tpi_info->isc);
 			continue;
 		}
 		sch = (struct subchannel *)(unsigned long)tpi_info->intparm;
@@ -680,9 +675,9 @@ wait_cons_dev (void)
 	if (!console_subchannel_in_use)
 		return;
 
-	/* disable all but isc 7 (console device) */
+	/* disable all but the console isc */
 	__ctl_store (save_cr6, 6, 6);
-	cr6 = 0x01000000;
+	cr6 = 1UL << (31 - CONSOLE_ISC);
 	__ctl_load (cr6, 6, 6);
 
 	do {
@@ -763,14 +758,15 @@ cio_probe_console(void)
 	}
 
 	/*
-	 * enable console I/O-interrupt subclass 7
+	 * enable console I/O-interrupt subclass
 	 */
-	ctl_set_bit(6, 24);
-	console_subchannel.schib.pmcw.isc = 7;
+	isc_register(CONSOLE_ISC);
+	console_subchannel.schib.pmcw.isc = CONSOLE_ISC;
 	console_subchannel.schib.pmcw.intparm =
 		(__u32)(unsigned long)&console_subchannel;
 	ret = cio_modify(&console_subchannel);
 	if (ret) {
+		isc_unregister(CONSOLE_ISC);
 		console_subchannel_in_use = 0;
 		return ERR_PTR(ret);
 	}
@@ -782,7 +778,7 @@ cio_release_console(void)
 {
 	console_subchannel.schib.pmcw.intparm = 0;
 	cio_modify(&console_subchannel);
-	ctl_clear_bit(6, 24);
+	isc_unregister(CONSOLE_ISC);
 	console_subchannel_in_use = 0;
 }
 
@@ -910,3 +906,24 @@ void reipl_ccw_dev(struct ccw_dev_id *devid)
 	cio_reset_channel_paths();
 	do_reipl_asm(*((__u32*)&schid));
 }
+
+int __init cio_get_iplinfo(struct cio_iplinfo *iplinfo)
+{
+	struct subchannel_id schid;
+	struct schib schib;
+
+	schid = *(struct subchannel_id *)__LC_SUBCHANNEL_ID;
+	if (!schid.one)
+		return -ENODEV;
+	if (stsch(schid, &schib))
+		return -ENODEV;
+	if (schib.pmcw.st != SUBCHANNEL_TYPE_IO)
+		return -ENODEV;
+	if (!schib.pmcw.dnv)
+		return -ENODEV;
+	iplinfo->devno = schib.pmcw.dev;
+	iplinfo->is_qdio = schib.pmcw.qf;
+	return 0;
+}
+
+extern struct schib ipl_schib;

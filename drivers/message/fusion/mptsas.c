@@ -1008,6 +1008,8 @@ mptsas_slave_alloc(struct scsi_device *sdev)
 static int
 mptsas_qcmd(struct scsi_cmnd *SCpnt, void (*done)(struct scsi_cmnd *))
 {
+	MPT_SCSI_HOST	*hd;
+	MPT_ADAPTER	*ioc;
 	VirtDevice	*vdevice = SCpnt->device->hostdata;
 
 	if (!vdevice || !vdevice->vtarget || vdevice->vtarget->deleted) {
@@ -1015,6 +1017,12 @@ mptsas_qcmd(struct scsi_cmnd *SCpnt, void (*done)(struct scsi_cmnd *))
 		done(SCpnt);
 		return 0;
 	}
+
+	hd = shost_priv(SCpnt->device->host);
+	ioc = hd->ioc;
+
+	if (ioc->sas_discovery_quiesce_io)
+		return SCSI_MLQUEUE_HOST_BUSY;
 
 //	scsi_print_command(SCpnt);
 
@@ -1586,7 +1594,6 @@ mptsas_sas_expander_pg0(MPT_ADAPTER *ioc, struct mptsas_portinfo *port_info,
 	error = mpt_config(ioc, &cfg);
 	if (error)
 		goto out_free_consistent;
-
 
 	if (!buffer->NumPhys) {
 		error = -ENODEV;
@@ -2878,6 +2885,7 @@ mptsas_send_discovery_event(MPT_ADAPTER *ioc,
 	EVENT_DATA_SAS_DISCOVERY *discovery_data)
 {
 	struct mptsas_discovery_event *ev;
+	u32 discovery_status;
 
 	/*
 	 * DiscoveryStatus
@@ -2886,7 +2894,9 @@ mptsas_send_discovery_event(MPT_ADAPTER *ioc,
 	 * kicks off discovery, and return to zero
 	 * once its completed.
 	 */
-	if (discovery_data->DiscoveryStatus)
+	discovery_status = le32_to_cpu(discovery_data->DiscoveryStatus);
+	ioc->sas_discovery_quiesce_io = discovery_status ? 1 : 0;
+	if (discovery_status)
 		return;
 
 	ev = kzalloc(sizeof(*ev), GFP_ATOMIC);
@@ -3056,12 +3066,10 @@ mptsas_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	/* set 16 byte cdb's */
 	sh->max_cmd_len = 16;
 
-	sh->max_id = ioc->pfacts[0].PortSCSIID;
+	sh->max_id = -1;
 	sh->max_lun = max_lun;
 
 	sh->transportt = mptsas_transport_template;
-
-	sh->this_id = ioc->pfacts[0].PortSCSIID;
 
 	/* Required entry.
 	 */
@@ -3082,17 +3090,15 @@ mptsas_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	 * A slightly different algorithm is required for
 	 * 64bit SGEs.
 	 */
-	scale = ioc->req_sz/(sizeof(dma_addr_t) + sizeof(u32));
-	if (sizeof(dma_addr_t) == sizeof(u64)) {
+	scale = ioc->req_sz/ioc->SGE_size;
+	if (ioc->sg_addr_size == sizeof(u64)) {
 		numSGE = (scale - 1) *
 		  (ioc->facts.MaxChainDepth-1) + scale +
-		  (ioc->req_sz - 60) / (sizeof(dma_addr_t) +
-		  sizeof(u32));
+		  (ioc->req_sz - 60) / ioc->SGE_size;
 	} else {
 		numSGE = 1 + (scale - 1) *
 		  (ioc->facts.MaxChainDepth-1) + scale +
-		  (ioc->req_sz - 64) / (sizeof(dma_addr_t) +
-		  sizeof(u32));
+		  (ioc->req_sz - 64) / ioc->SGE_size;
 	}
 
 	if (numSGE < sh->sg_tablesize) {
@@ -3172,11 +3178,21 @@ mptsas_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	return error;
 }
 
+void
+mptsas_shutdown(struct pci_dev *pdev)
+{
+	MPT_ADAPTER *ioc = pci_get_drvdata(pdev);
+
+	ioc->sas_discovery_quiesce_io = 0;
+}
+
 static void __devexit mptsas_remove(struct pci_dev *pdev)
 {
 	MPT_ADAPTER *ioc = pci_get_drvdata(pdev);
 	struct mptsas_portinfo *p, *n;
 	int i;
+
+	mptsas_shutdown(pdev);
 
 	ioc->sas_discovery_ignore_events = 1;
 	sas_remove_host(ioc->sh);
@@ -3215,7 +3231,7 @@ static struct pci_driver mptsas_driver = {
 	.id_table	= mptsas_pci_table,
 	.probe		= mptsas_probe,
 	.remove		= __devexit_p(mptsas_remove),
-	.shutdown	= mptscsih_shutdown,
+	.shutdown	= mptsas_shutdown,
 #ifdef CONFIG_PM
 	.suspend	= mptscsih_suspend,
 	.resume		= mptscsih_resume,

@@ -26,16 +26,26 @@ static inline cycles_t get_cycles (void)
 	return ret;
 }
 
+/*
+ * Stop RDTSC speculation. This is needed when you need to use RDTSC
+ * (or get_cycles or vread that possibly accesses the TSC) in a defined
+ * code region.
+ */
+static inline void rdtsc_barrier(void)
+{
+	alternative(ASM_NOP3, "mfence", X86_FEATURE_MFENCE_RDTSC);
+	alternative(ASM_NOP3, "lfence", X86_FEATURE_LFENCE_RDTSC);
+}
+
 /* Like get_cycles, but make sure the CPU is synchronized. */
 static __always_inline cycles_t get_cycles_sync(void)
 {
 	unsigned long long ret;
-	unsigned eax;
-	/* Don't do an additional sync on CPUs where we know
-	   RDTSC is already synchronous. */
-	alternative_io("cpuid", ASM_NOP2, X86_FEATURE_SYNC_RDTSC,
-			  "=a" (eax), "0" (1) : "ebx","ecx","edx","memory");
+
+	rdtsc_barrier();
 	rdtscll(ret);
+	rdtsc_barrier();
+
 	return ret;
 }
 

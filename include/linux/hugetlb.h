@@ -61,8 +61,11 @@ void hugetlb_free_pgd_range(struct mmu_gather **tlb, unsigned long addr,
  * If the arch doesn't supply something else, assume that hugepage
  * size aligned regions are ok without further preparation.
  */
-static inline int prepare_hugepage_range(unsigned long addr, unsigned long len)
+static inline int prepare_hugepage_range(unsigned long addr, unsigned long len,
+						pgoff_t pgoff)
 {
+	if (pgoff & (~HPAGE_MASK >> PAGE_SHIFT))
+		return -EINVAL;
 	if (len & ~HPAGE_MASK)
 		return -EINVAL;
 	if (addr & ~HPAGE_MASK)
@@ -70,7 +73,8 @@ static inline int prepare_hugepage_range(unsigned long addr, unsigned long len)
 	return 0;
 }
 #else
-int prepare_hugepage_range(unsigned long addr, unsigned long len);
+int prepare_hugepage_range(unsigned long addr, unsigned long len,
+						pgoff_t pgoff);
 #endif
 
 #ifndef ARCH_HAS_HUGE_PTE_TYPE
@@ -130,7 +134,7 @@ static inline unsigned long hugetlb_total_pages(void)
 #define hugetlb_report_meminfo(buf)		0
 #define hugetlb_report_node_meminfo(n, buf)	0
 #define follow_huge_pmd(mm, addr, pmd, write)	NULL
-#define prepare_hugepage_range(addr, len)	(-EINVAL)
+#define prepare_hugepage_range(addr,len,pgoff)	(-EINVAL)
 #define pmd_huge(x)	0
 #define is_hugepage_only_range(mm, addr, len)	0
 #define hugetlb_free_pgd_range(tlb, addr, end, floor, ceiling) ({BUG(); 0; })

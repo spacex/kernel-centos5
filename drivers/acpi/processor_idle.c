@@ -436,6 +436,9 @@ static void acpi_processor_idle(void)
 	if ((cx->type != ACPI_STATE_C1) && (sleep_ticks > 0))
 		cx->time += sleep_ticks;
 
+	if (sleep_ticks != 0xFFFFFFFF && sleep_ticks < 0)
+		sleep_ticks = 0;
+
 	next_state = pr->power.state;
 
 #ifdef CONFIG_HOTPLUG_CPU
@@ -475,6 +478,9 @@ static void acpi_processor_idle(void)
 					goto end;
 				}
 			}
+		} else {
+			if (cx->promotion.count > 0)
+				cx->promotion.count--;
 		}
 	}
 
@@ -492,6 +498,9 @@ static void acpi_processor_idle(void)
 				next_state = cx->demotion.state;
 				goto end;
 			}
+		} else {
+			if (cx->demotion.count > 0)
+				cx->demotion.count--;
 		}
 	}
 
@@ -559,7 +568,7 @@ static int acpi_processor_set_power_policy(struct acpi_processor *pr)
 		if (lower) {
 			cx->demotion.state = lower;
 			cx->demotion.threshold.ticks = cx->latency_ticks;
-			cx->demotion.threshold.count = 1;
+			cx->demotion.threshold.count = 2;
 			if (cx->type == ACPI_STATE_C3)
 				cx->demotion.threshold.bm = bm_history;
 		}

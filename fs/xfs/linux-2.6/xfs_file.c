@@ -36,17 +36,17 @@
 #include "xfs_inode.h"
 #include "xfs_error.h"
 #include "xfs_rw.h"
+#ifdef CONFIG_COMPAT
 #include "xfs_ioctl32.h"
+#endif
+#include "xfs_vnodeops.h"
 
 #include <linux/dcache.h>
 #include <linux/smp_lock.h>
 
 static struct vm_operations_struct xfs_file_vm_ops;
-#ifdef CONFIG_XFS_DMAPI
-static struct vm_operations_struct xfs_dmapi_file_vm_ops;
-#endif
 
-STATIC inline ssize_t
+STATIC_INLINE ssize_t
 __xfs_file_read(
 	struct kiocb		*iocb,
 	char			__user *buf,
@@ -56,12 +56,11 @@ __xfs_file_read(
 {
 	struct iovec		iov = {buf, count};
 	struct file		*file = iocb->ki_filp;
-	bhv_vnode_t		*vp = vn_from_inode(file->f_dentry->d_inode);
 
 	BUG_ON(iocb->ki_pos != pos);
 	if (unlikely(file->f_flags & O_DIRECT))
 		ioflags |= IO_ISDIRECT;
-	return bhv_vop_read(vp, iocb, &iov, 1, &iocb->ki_pos, ioflags, NULL);
+	return xfs_read(XFS_I(file->f_dentry->d_inode), iocb, &iov, 1, &iocb->ki_pos, ioflags);
 }
 
 STATIC ssize_t
@@ -84,23 +83,22 @@ xfs_file_aio_read_invis(
 	return __xfs_file_read(iocb, buf, IO_ISAIO|IO_INVIS, count, pos);
 }
 
-STATIC inline ssize_t
+STATIC_INLINE ssize_t
 __xfs_file_write(
-	struct kiocb	*iocb,
-	const char	__user *buf,
-	int		ioflags,
-	size_t		count,
-	loff_t		pos)
+	struct kiocb		*iocb,
+	const char		__user *buf,
+	int			ioflags,
+	size_t			count,
+	loff_t			pos)
 {
 	struct iovec	iov = {(void __user *)buf, count};
 	struct file	*file = iocb->ki_filp;
-	struct inode	*inode = file->f_mapping->host;
-	bhv_vnode_t	*vp = vn_from_inode(inode);
 
 	BUG_ON(iocb->ki_pos != pos);
 	if (unlikely(file->f_flags & O_DIRECT))
 		ioflags |= IO_ISDIRECT;
-	return bhv_vop_write(vp, iocb, &iov, 1, &iocb->ki_pos, ioflags, NULL);
+	return xfs_write(XFS_I(file->f_mapping->host), iocb, &iov, 1,
+				&iocb->ki_pos, ioflags);
 }
 
 STATIC ssize_t
@@ -123,16 +121,14 @@ xfs_file_aio_write_invis(
 	return __xfs_file_write(iocb, buf, IO_ISAIO|IO_INVIS, count, pos);
 }
 
-STATIC inline ssize_t
+STATIC_INLINE ssize_t
 __xfs_file_readv(
 	struct file		*file,
-	const struct iovec 	*iov,
+	const struct iovec	*iov,
 	int			ioflags,
 	unsigned long		nr_segs,
 	loff_t			*ppos)
 {
-	struct inode	*inode = file->f_mapping->host;
-	bhv_vnode_t	*vp = vn_from_inode(inode);
 	struct kiocb	kiocb;
 	ssize_t		rval;
 
@@ -141,8 +137,8 @@ __xfs_file_readv(
 
 	if (unlikely(file->f_flags & O_DIRECT))
 		ioflags |= IO_ISDIRECT;
-	rval = bhv_vop_read(vp, &kiocb, iov, nr_segs,
-				&kiocb.ki_pos, ioflags, NULL);
+	rval = xfs_read(XFS_I(file->f_dentry->d_inode), &kiocb, iov,
+			nr_segs, &kiocb.ki_pos, ioflags);
 
 	*ppos = kiocb.ki_pos;
 	return rval;
@@ -151,33 +147,21 @@ __xfs_file_readv(
 STATIC ssize_t
 xfs_file_readv(
 	struct file		*file,
-	const struct iovec 	*iov,
+	const struct iovec	*iov,
 	unsigned long		nr_segs,
 	loff_t			*ppos)
 {
 	return __xfs_file_readv(file, iov, 0, nr_segs, ppos);
 }
 
-STATIC ssize_t
-xfs_file_readv_invis(
-	struct file		*file,
-	const struct iovec 	*iov,
-	unsigned long		nr_segs,
-	loff_t			*ppos)
-{
-	return __xfs_file_readv(file, iov, IO_INVIS, nr_segs, ppos);
-}
-
-STATIC inline ssize_t
+STATIC_INLINE ssize_t
 __xfs_file_writev(
 	struct file		*file,
-	const struct iovec 	*iov,
+	const struct iovec	*iov,
 	int			ioflags,
 	unsigned long		nr_segs,
 	loff_t			*ppos)
 {
-	struct inode	*inode = file->f_mapping->host;
-	bhv_vnode_t	*vp = vn_from_inode(inode);
 	struct kiocb	kiocb;
 	ssize_t		rval;
 
@@ -186,8 +170,8 @@ __xfs_file_writev(
 	if (unlikely(file->f_flags & O_DIRECT))
 		ioflags |= IO_ISDIRECT;
 
-	rval = bhv_vop_write(vp, &kiocb, iov, nr_segs,
-				 &kiocb.ki_pos, ioflags, NULL);
+	rval = xfs_write(XFS_I(file->f_mapping->host), &kiocb, iov, nr_segs,
+			 &kiocb.ki_pos, ioflags);
 
 	*ppos = kiocb.ki_pos;
 	return rval;
@@ -196,21 +180,54 @@ __xfs_file_writev(
 STATIC ssize_t
 xfs_file_writev(
 	struct file		*file,
-	const struct iovec 	*iov,
+	const struct iovec	*iov,
 	unsigned long		nr_segs,
 	loff_t			*ppos)
 {
 	return __xfs_file_writev(file, iov, 0, nr_segs, ppos);
 }
 
-STATIC ssize_t
-xfs_file_writev_invis(
-	struct file		*file,
-	const struct iovec 	*iov,
-	unsigned long		nr_segs,
-	loff_t			*ppos)
+ssize_t
+xfs_sendfile(
+	struct xfs_inode	*xip,
+	struct file		*filp,
+	loff_t			*offset,
+	int			ioflags,
+	size_t			count,
+	read_actor_t		actor,
+	void			*target,
+	cred_t			*credp)
 {
-	return __xfs_file_writev(file, iov, IO_INVIS, nr_segs, ppos);
+	xfs_mount_t		*mp = xip->i_mount;
+	ssize_t			ret;
+
+	XFS_STATS_INC(xs_read_calls);
+	if (XFS_FORCED_SHUTDOWN(mp))
+		return -EIO;
+
+	xfs_ilock(xip, XFS_IOLOCK_SHARED);
+
+	if (DM_EVENT_ENABLED(xip, DM_EVENT_READ) &&
+	    (!(ioflags & IO_INVIS))) {
+		int locktype = XFS_IOLOCK_SHARED;
+		int error;
+
+		error = XFS_SEND_DATA(mp, DM_EVENT_READ, xip,
+				      *offset, count,
+				      FILP_DELAY_FLAG(filp), &locktype);
+		if (error) {
+			xfs_iunlock(xip, XFS_IOLOCK_SHARED);
+			return -error;
+		}
+	}
+	xfs_rw_enter_trace(XFS_SENDFILE_ENTER, xip,
+		   (void *)(unsigned long)target, count, *offset, ioflags);
+	ret = generic_file_sendfile(filp, offset, count, actor, target);
+	if (ret > 0)
+		XFS_STATS_ADD(xs_read_bytes, ret);
+
+	xfs_iunlock(xip, XFS_IOLOCK_SHARED);
+	return ret;
 }
 
 STATIC ssize_t
@@ -221,8 +238,8 @@ xfs_file_sendfile(
 	read_actor_t		actor,
 	void			*target)
 {
-	return bhv_vop_sendfile(vn_from_inode(filp->f_dentry->d_inode),
-				filp, pos, 0, count, actor, target, NULL);
+	return xfs_sendfile(XFS_I(filp->f_dentry->d_inode), filp, pos, 0,
+			    count, actor, target, NULL);
 }
 
 STATIC ssize_t
@@ -233,8 +250,8 @@ xfs_file_sendfile_invis(
 	read_actor_t		actor,
 	void			*target)
 {
-	return bhv_vop_sendfile(vn_from_inode(filp->f_dentry->d_inode),
-				filp, pos, IO_INVIS, count, actor, target, NULL);
+	return xfs_sendfile(XFS_I(filp->f_dentry->d_inode), filp, pos, IO_INVIS,
+			    count, actor, target, NULL);
 }
 
 STATIC ssize_t
@@ -245,8 +262,8 @@ xfs_file_splice_read(
 	size_t			len,
 	unsigned int		flags)
 {
-	return bhv_vop_splice_read(vn_from_inode(infilp->f_dentry->d_inode),
-				   infilp, ppos, pipe, len, flags, 0, NULL);
+	return xfs_splice_read(XFS_I(infilp->f_dentry->d_inode),
+				   infilp, ppos, pipe, len, flags, 0);
 }
 
 STATIC ssize_t
@@ -257,9 +274,8 @@ xfs_file_splice_read_invis(
 	size_t			len,
 	unsigned int		flags)
 {
-	return bhv_vop_splice_read(vn_from_inode(infilp->f_dentry->d_inode),
-				   infilp, ppos, pipe, len, flags, IO_INVIS,
-				   NULL);
+	return xfs_splice_read(XFS_I(infilp->f_dentry->d_inode),
+				   infilp, ppos, pipe, len, flags, IO_INVIS);
 }
 
 STATIC ssize_t
@@ -270,8 +286,8 @@ xfs_file_splice_write(
 	size_t			len,
 	unsigned int		flags)
 {
-	return bhv_vop_splice_write(vn_from_inode(outfilp->f_dentry->d_inode),
-				    pipe, outfilp, ppos, len, flags, 0, NULL);
+	return xfs_splice_write(XFS_I(outfilp->f_dentry->d_inode),
+				    pipe, outfilp, ppos, len, flags, 0);
 }
 
 STATIC ssize_t
@@ -282,9 +298,8 @@ xfs_file_splice_write_invis(
 	size_t			len,
 	unsigned int		flags)
 {
-	return bhv_vop_splice_write(vn_from_inode(outfilp->f_dentry->d_inode),
-				    pipe, outfilp, ppos, len, flags, IO_INVIS,
-				    NULL);
+	return xfs_splice_write(XFS_I(outfilp->f_dentry->d_inode),
+				    pipe, outfilp, ppos, len, flags, IO_INVIS);
 }
 
 STATIC int
@@ -294,16 +309,7 @@ xfs_file_open(
 {
 	if (!(filp->f_flags & O_LARGEFILE) && i_size_read(inode) > MAX_NON_LFS)
 		return -EFBIG;
-	return -bhv_vop_open(vn_from_inode(inode), NULL);
-}
-
-STATIC int
-xfs_file_close(
-	struct file	*filp,
-	fl_owner_t	id)
-{
-	return -bhv_vop_close(vn_from_inode(filp->f_dentry->d_inode), 0,
-				file_count(filp) > 1 ? L_FALSE : L_TRUE, NULL);
+	return -xfs_open(XFS_I(inode));
 }
 
 STATIC int
@@ -311,45 +317,110 @@ xfs_file_release(
 	struct inode	*inode,
 	struct file	*filp)
 {
-	bhv_vnode_t	*vp = vn_from_inode(inode);
-
-	if (vp)
-		return -bhv_vop_release(vp);
-	return 0;
+	return -xfs_release(XFS_I(inode));
 }
 
+/*
+ * We ignore the datasync flag here because a datasync is effectively
+ * identical to an fsync. That is, datasync implies that we need to write
+ * only the metadata needed to be able to access the data that is written
+ * if we crash after the call completes. Hence if we are writing beyond
+ * EOF we have to log the inode size change as well, which makes it a
+ * full fsync. If we don't write beyond EOF, the inode core will be
+ * clean in memory and so we don't need to log the inode, just like
+ * fsync.
+ */
 STATIC int
 xfs_file_fsync(
 	struct file	*filp,
 	struct dentry	*dentry,
 	int		datasync)
 {
-	bhv_vnode_t	*vp = vn_from_inode(dentry->d_inode);
-	int		flags = FSYNC_WAIT;
-
-	if (datasync)
-		flags |= FSYNC_DATA;
-	if (VN_TRUNC(vp))
-		VUNTRUNCATE(vp);
-	return -bhv_vop_fsync(vp, flags, NULL, (xfs_off_t)0, (xfs_off_t)-1);
+	xfs_iflags_clear(XFS_I(dentry->d_inode), XFS_ITRUNCATED);
+	return -xfs_fsync(XFS_I(dentry->d_inode));
 }
 
-#ifdef CONFIG_XFS_DMAPI
-STATIC struct page *
-xfs_vm_nopage(
-	struct vm_area_struct	*area,
-	unsigned long		address,
-	int			*type)
+/*
+ * Unfortunately we can't just use the clean and simple readdir implementation
+ * below, because nfs might call back into ->lookup from the filldir callback
+ * and that will deadlock the low-level btree code.
+ *
+ * Hopefully we'll find a better workaround that allows to use the optimal
+ * version at least for local readdirs for 2.6.25.
+ */
+#if 0
+STATIC int
+xfs_file_readdir(
+	struct file	*filp,
+	void		*dirent,
+	filldir_t	filldir)
 {
-	struct inode	*inode = area->vm_file->f_dentry->d_inode;
-	bhv_vnode_t	*vp = vn_from_inode(inode);
+	struct inode	*inode = filp->f_dentry->d_inode;
+	xfs_inode_t	*ip = XFS_I(inode);
+	int		error;
+	size_t		bufsize;
 
-	ASSERT_ALWAYS(vp->v_vfsp->vfs_flag & VFS_DMI);
-	if (XFS_SEND_MMAP(XFS_VFSTOM(vp->v_vfsp), area, 0))
-		return NULL;
-	return filemap_nopage(area, address, type);
+	/*
+	 * The Linux API doesn't pass down the total size of the buffer
+	 * we read into down to the filesystem.  With the filldir concept
+	 * it's not needed for correct information, but the XFS dir2 leaf
+	 * code wants an estimate of the buffer size to calculate it's
+	 * readahead window and size the buffers used for mapping to
+	 * physical blocks.
+	 *
+	 * Try to give it an estimate that's good enough, maybe at some
+	 * point we can change the ->readdir prototype to include the
+	 * buffer size.
+	 */
+	bufsize = (size_t)min_t(loff_t, PAGE_SIZE, inode->i_size);
+
+	error = xfs_readdir(ip, dirent, bufsize,
+				(xfs_off_t *)&filp->f_pos, filldir);
+	if (error)
+		return -error;
+	return 0;
 }
-#endif /* CONFIG_XFS_DMAPI */
+#else
+
+struct hack_dirent {
+	u64		ino;
+	loff_t		offset;
+	int		namlen;
+	unsigned int	d_type;
+	char		name[];
+};
+
+struct hack_callback {
+	char		*dirent;
+	size_t		len;
+	size_t		used;
+};
+
+STATIC int
+xfs_hack_filldir(
+	void		*__buf,
+	const char	*name,
+	int		namlen,
+	loff_t		offset,
+	u64		ino,
+	unsigned int	d_type)
+{
+	struct hack_callback *buf = __buf;
+	struct hack_dirent *de = (struct hack_dirent *)(buf->dirent + buf->used);
+	unsigned int reclen;
+
+	reclen = ALIGN(sizeof(struct hack_dirent) + namlen, sizeof(u64));
+	if (buf->used + reclen > buf->len)
+		return -EINVAL;
+
+	de->namlen = namlen;
+	de->offset = offset;
+	de->ino = ino;
+	de->d_type = d_type;
+	memcpy(de->name, name, namlen);
+	buf->used += reclen;
+	return 0;
+}
 
 STATIC int
 xfs_file_readdir(
@@ -357,75 +428,77 @@ xfs_file_readdir(
 	void		*dirent,
 	filldir_t	filldir)
 {
-	int		error = 0;
-	bhv_vnode_t	*vp = vn_from_inode(filp->f_dentry->d_inode);
-	uio_t		uio;
-	iovec_t		iov;
+	struct inode	*inode = filp->f_dentry->d_inode;
+	xfs_inode_t	*ip = XFS_I(inode);
+	struct hack_callback buf;
+	struct hack_dirent *de;
+	int		error;
+	loff_t		size;
 	int		eof = 0;
-	caddr_t		read_buf;
-	int		namelen, size = 0;
-	size_t		rlen = PAGE_CACHE_SIZE;
-	xfs_off_t	start_offset, curr_offset;
-	xfs_dirent_t	*dbp = NULL;
+	xfs_off_t       start_offset, curr_offset, offset;
 
-	/* Try fairly hard to get memory */
+	/*
+	 * Try fairly hard to get memory
+	 */
+	buf.len = PAGE_CACHE_SIZE;
 	do {
-		if ((read_buf = (caddr_t)kmalloc(rlen, GFP_KERNEL)))
+		buf.dirent = kmalloc(buf.len, GFP_KERNEL);
+		if (buf.dirent)
 			break;
-		rlen >>= 1;
-	} while (rlen >= 1024);
+		buf.len >>= 1;
+	} while (buf.len >= 1024);
 
-	if (read_buf == NULL)
+	if (!buf.dirent)
 		return -ENOMEM;
 
-	uio.uio_iov = &iov;
-	uio.uio_segflg = UIO_SYSSPACE;
 	curr_offset = filp->f_pos;
-	if (filp->f_pos != 0x7fffffff)
-		uio.uio_offset = filp->f_pos;
+	if (curr_offset == 0x7fffffff)
+		offset = 0xffffffff;
 	else
-		uio.uio_offset = 0xffffffff;
+		offset = filp->f_pos;
 
 	while (!eof) {
-		uio.uio_resid = iov.iov_len = rlen;
-		iov.iov_base = read_buf;
-		uio.uio_iovcnt = 1;
+		unsigned int reclen;
 
-		start_offset = uio.uio_offset;
+		start_offset = offset;
 
-		error = bhv_vop_readdir(vp, &uio, NULL, &eof);
-		if ((uio.uio_offset == start_offset) || error) {
+		buf.used = 0;
+		error = -xfs_readdir(ip, &buf, buf.len, &offset,
+				     xfs_hack_filldir);
+		if (error || offset == start_offset) {
 			size = 0;
 			break;
 		}
 
-		size = rlen - uio.uio_resid;
-		dbp = (xfs_dirent_t *)read_buf;
+		size = buf.used;
+		de = (struct hack_dirent *)buf.dirent;
 		while (size > 0) {
-			namelen = strlen(dbp->d_name);
-
-			if (filldir(dirent, dbp->d_name, namelen,
-					(loff_t) curr_offset & 0x7fffffff,
-					(ino_t) dbp->d_ino,
-					DT_UNKNOWN)) {
+			curr_offset = de->offset /* & 0x7fffffff */;
+			if (filldir(dirent, de->name, de->namlen,
+					curr_offset & 0x7fffffff,
+					de->ino, de->d_type)) {
 				goto done;
 			}
-			size -= dbp->d_reclen;
-			curr_offset = (loff_t)dbp->d_off /* & 0x7fffffff */;
-			dbp = (xfs_dirent_t *)((char *)dbp + dbp->d_reclen);
+
+			reclen = ALIGN(sizeof(struct hack_dirent) + de->namlen,
+				       sizeof(u64));
+			size -= reclen;
+			de = (struct hack_dirent *)((char *)de + reclen);
 		}
 	}
-done:
+
+ done:
 	if (!error) {
 		if (size == 0)
-			filp->f_pos = uio.uio_offset & 0x7fffffff;
-		else if (dbp)
+			filp->f_pos = offset & 0x7fffffff;
+		else if (de)
 			filp->f_pos = curr_offset;
 	}
 
-	kfree(read_buf);
-	return -error;
+	kfree(buf.dirent);
+	return error;
 }
+#endif
 
 STATIC int
 xfs_file_mmap(
@@ -433,11 +506,6 @@ xfs_file_mmap(
 	struct vm_area_struct *vma)
 {
 	vma->vm_ops = &xfs_file_vm_ops;
-
-#ifdef CONFIG_XFS_DMAPI
-	if (vn_from_inode(filp->f_dentry->d_inode)->v_vfsp->vfs_flag & VFS_DMI)
-		vma->vm_ops = &xfs_dmapi_file_vm_ops;
-#endif /* CONFIG_XFS_DMAPI */
 
 	file_accessed(filp);
 	return 0;
@@ -451,10 +519,9 @@ xfs_file_ioctl(
 {
 	int		error;
 	struct inode	*inode = filp->f_dentry->d_inode;
-	bhv_vnode_t	*vp = vn_from_inode(inode);
 
-	error = bhv_vop_ioctl(vp, inode, filp, 0, cmd, (void __user *)p);
-	VMODIFY(vp);
+	error = xfs_ioctl(XFS_I(inode), filp, 0, cmd, (void __user *)p);
+	xfs_iflags_set(XFS_I(inode), XFS_IMODIFIED);
 
 	/* NOTE:  some of the ioctl's return positive #'s as a
 	 *	  byte count indicating success, such as
@@ -473,10 +540,9 @@ xfs_file_ioctl_invis(
 {
 	int		error;
 	struct inode	*inode = filp->f_dentry->d_inode;
-	bhv_vnode_t	*vp = vn_from_inode(inode);
 
-	error = bhv_vop_ioctl(vp, inode, filp, IO_INVIS, cmd, (void __user *)p);
-	VMODIFY(vp);
+	error = xfs_ioctl(XFS_I(inode), filp, IO_INVIS, cmd, (void __user *)p);
+	xfs_iflags_set(XFS_I(inode), XFS_IMODIFIED);
 
 	/* NOTE:  some of the ioctl's return positive #'s as a
 	 *	  byte count indicating success, such as
@@ -487,54 +553,19 @@ xfs_file_ioctl_invis(
 	return error;
 }
 
-#ifdef CONFIG_XFS_DMAPI
-#ifdef HAVE_VMOP_MPROTECT
-STATIC int
-xfs_vm_mprotect(
-	struct vm_area_struct *vma,
-	unsigned int	newflags)
-{
-	bhv_vnode_t	*vp = vn_from_inode(vma->vm_file->f_dentry->d_inode);
-	int		error = 0;
-
-	if (vp->v_vfsp->vfs_flag & VFS_DMI) {
-		if ((vma->vm_flags & VM_MAYSHARE) &&
-		    (newflags & VM_WRITE) && !(vma->vm_flags & VM_WRITE)) {
-			xfs_mount_t	*mp = XFS_VFSTOM(vp->v_vfsp);
-
-			error = XFS_SEND_MMAP(mp, vma, VM_WRITE);
-		    }
-	}
-	return error;
-}
-#endif /* HAVE_VMOP_MPROTECT */
-#endif /* CONFIG_XFS_DMAPI */
-
-#ifdef HAVE_FOP_OPEN_EXEC
-/* If the user is attempting to execute a file that is offline then
- * we have to trigger a DMAPI READ event before the file is marked as busy
- * otherwise the invisible I/O will not be able to write to the file to bring
- * it back online.
+/*
+ * mmap()d file has taken write protection fault and is being made
+ * writable. We can set the page state up correctly for a writable
+ * page, which means we can do correct delalloc accounting (ENOSPC
+ * checking!) and unwritten extent mapping.
  */
 STATIC int
-xfs_file_open_exec(
-	struct inode	*inode)
+xfs_vm_page_mkwrite(
+	struct vm_area_struct	*vma,
+	struct page		*page)
 {
-	bhv_vnode_t	*vp = vn_from_inode(inode);
-
-	if (unlikely(vp->v_vfsp->vfs_flag & VFS_DMI)) {
-		xfs_mount_t	*mp = XFS_VFSTOM(vp->v_vfsp);
-		xfs_inode_t	*ip = xfs_vtoi(vp);
-
-		if (!ip)
-			return -EINVAL;
-		if (DM_EVENT_ENABLED(vp->v_vfsp, ip, DM_EVENT_READ))
-			return -XFS_SEND_DATA(mp, DM_EVENT_READ, vp,
-					       0, 0, 0, NULL);
-	}
-	return 0;
+	return block_page_mkwrite(vma, page, xfs_get_blocks);
 }
-#endif /* HAVE_FOP_OPEN_EXEC */
 
 const struct file_operations xfs_file_operations = {
 	.llseek		= generic_file_llseek,
@@ -544,16 +575,15 @@ const struct file_operations xfs_file_operations = {
 	.writev		= xfs_file_writev,
 	.aio_read	= xfs_file_aio_read,
 	.aio_write	= xfs_file_aio_write,
-	.sendfile	= xfs_file_sendfile,
 	.splice_read	= xfs_file_splice_read,
 	.splice_write	= xfs_file_splice_write,
+	.sendfile	= xfs_file_sendfile,
 	.unlocked_ioctl	= xfs_file_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl	= xfs_file_compat_ioctl,
 #endif
 	.mmap		= xfs_file_mmap,
 	.open		= xfs_file_open,
-	.flush		= xfs_file_close,
 	.release	= xfs_file_release,
 	.fsync		= xfs_file_fsync,
 #ifdef HAVE_FOP_OPEN_EXEC
@@ -565,20 +595,17 @@ const struct file_operations xfs_invis_file_operations = {
 	.llseek		= generic_file_llseek,
 	.read		= do_sync_read,
 	.write		= do_sync_write,
-	.readv		= xfs_file_readv_invis,
-	.writev		= xfs_file_writev_invis,
 	.aio_read	= xfs_file_aio_read_invis,
 	.aio_write	= xfs_file_aio_write_invis,
-	.sendfile	= xfs_file_sendfile_invis,
 	.splice_read	= xfs_file_splice_read_invis,
 	.splice_write	= xfs_file_splice_write_invis,
+	.sendfile	= xfs_file_sendfile_invis,
 	.unlocked_ioctl	= xfs_file_ioctl_invis,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl	= xfs_file_compat_invis_ioctl,
 #endif
 	.mmap		= xfs_file_mmap,
 	.open		= xfs_file_open,
-	.flush		= xfs_file_close,
 	.release	= xfs_file_release,
 	.fsync		= xfs_file_fsync,
 };
@@ -587,6 +614,7 @@ const struct file_operations xfs_invis_file_operations = {
 const struct file_operations xfs_dir_file_operations = {
 	.read		= generic_read_dir,
 	.readdir	= xfs_file_readdir,
+	.llseek		= generic_file_llseek,
 	.unlocked_ioctl	= xfs_file_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl	= xfs_file_compat_ioctl,
@@ -597,14 +625,5 @@ const struct file_operations xfs_dir_file_operations = {
 static struct vm_operations_struct xfs_file_vm_ops = {
 	.nopage		= filemap_nopage,
 	.populate	= filemap_populate,
+	.page_mkwrite	= xfs_vm_page_mkwrite,
 };
-
-#ifdef CONFIG_XFS_DMAPI
-static struct vm_operations_struct xfs_dmapi_file_vm_ops = {
-	.nopage		= xfs_vm_nopage,
-	.populate	= filemap_populate,
-#ifdef HAVE_VMOP_MPROTECT
-	.mprotect	= xfs_vm_mprotect,
-#endif
-};
-#endif /* CONFIG_XFS_DMAPI */

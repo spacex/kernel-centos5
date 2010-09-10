@@ -33,6 +33,10 @@ config STACKTRACE_SUPPORT
 	depends on !X86_64_XEN
 	default y
 
+config HAVE_GET_USER_PAGES_FAST
+	def_bool y
+	depends on !X86_64_XEN
+
 config SEMAPHORE_SLEEPERS
 	bool
 	default y
@@ -683,6 +687,50 @@ config XEN_PCIDEV_FE_DEBUG
 	  Enables some debug statements within the PCI Frontend.
 
 source "drivers/virtio/Kconfig"
+
+config IOMMU_API
+	def_bool (AMD_IOMMU || DMAR)
+
+config DMAR
+	bool "Support for DMA Remapping Devices (EXPERIMENTAL)"
+	depends on X86_64 && PCI_MSI && ACPI && EXPERIMENTAL && !XEN
+	help
+	  DMA remapping (DMAR) devices support enables independent address
+	  translations for Direct Memory Access (DMA) from devices.
+	  These DMA remapping devices are reported via ACPI tables
+	  and include PCI device scope covered by these DMA
+	  remapping devices.
+
+config DMAR_DEFAULT_ON
+	def_bool n
+	prompt "Enable DMA Remapping Devices by default"
+	depends on DMAR
+	help
+	  Selecting this option will enable a DMAR device at boot time if
+	  one is found. If this option is not selected, DMAR support can
+	  be enabled by passing intel_iommu=on to the kernel. It is
+	  recommended you say N here while the DMAR code remains
+	  experimental.
+
+config DMAR_GFX_WA
+	def_bool y
+	prompt "Support for Graphics workaround"
+	depends on DMAR
+	help
+	 Current Graphics drivers tend to use physical address
+	 for DMA and avoid using DMA APIs. Setting this config
+	 option permits the IOMMU driver to set a unity map for
+	 all the OS-visible memory. Hence the driver can continue
+	 to use physical addresses for DMA.
+
+config DMAR_FLOPPY_WA
+	def_bool y
+	depends on DMAR
+	help
+	 Floppy disk drivers are know to bypass DMA API calls
+	 thereby failing to work when IOMMU is enabled. This
+	 workaround will setup a 1:1 mapping for the first
+	 16M to make floppy (an ISA device) work.
 
 source "drivers/pci/pcie/Kconfig"
 

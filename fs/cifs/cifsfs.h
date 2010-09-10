@@ -54,13 +54,8 @@ static inline void i_size_write(struct inode *inode, loff_t size)
 #endif
 
 extern struct file_system_type cifs_fs_type;
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 20)
-extern const struct address_space_operations cifs_addr_ops;
-extern const struct address_space_operations cifs_addr_ops_smallbuf;
-#else
-extern struct address_space_operations cifs_addr_ops;
-extern struct address_space_operations cifs_addr_ops_smallbuf;
-#endif
+extern struct address_space_operations_ext cifs_addr_ops;
+extern struct address_space_operations_ext cifs_addr_ops_smallbuf;
 
 /* Functions related to super block operations */
 /* extern const struct super_operations cifs_super_ops;*/
@@ -87,7 +82,7 @@ extern int cifs_create(struct inode *, struct dentry *, int);
 extern struct dentry * cifs_lookup(struct inode *, struct dentry *);
 extern int cifs_mknod(struct inode *, struct dentry *, int, int);
 #endif
-extern int cifs_unlink(struct inode *, struct dentry *);
+extern int cifs_unlink(struct inode *dir, struct dentry *dentry);
 extern int cifs_hardlink(struct dentry *, struct inode *, struct dentry *);
 extern int cifs_mkdir(struct inode *, struct dentry *, int);
 extern int cifs_rmdir(struct inode *, struct dentry *);
@@ -139,7 +134,6 @@ extern struct file_operations cifs_dir_ops;
 #endif
 extern int cifs_dir_open(struct inode *inode, struct file *file);
 extern int cifs_readdir(struct file *file, void *direntry, filldir_t filldir);
-extern int cifs_dir_notify(struct file *, unsigned long arg);
 
 /* Functions related to dir entries */
 extern struct dentry_operations cifs_dentry_ops;
@@ -170,5 +164,5 @@ extern int cifs_ioctl(struct inode *inode, struct file *filep,
 extern struct export_operations cifs_export_ops;
 #endif /* EXPERIMENTAL */
 
-#define CIFS_VERSION   "1.54RH"
+#define CIFS_VERSION   "1.57RH"
 #endif				/* _CIFSFS_H */

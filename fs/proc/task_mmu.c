@@ -123,6 +123,25 @@ static void pad_len_spaces(struct seq_file *m, int len)
 	seq_printf(m, "%*c", len, ' ');
 }
 
+/*
+ * Proportional Set Size(PSS): my share of RSS.
+ *
+ * PSS of a process is the count of pages it has in memory, where each
+ * page is divided by the number of processes sharing it.  So if a
+ * process has 1000 pages all to itself, and 1000 shared with one other
+ * process, its PSS will be 1500.
+ *
+ * To keep (accumulated) division errors low, we adopt a 64bit
+ * fixed-point pss counter to minimize division errors. So (pss >>
+ * PSS_SHIFT) would be the real byte count.
+ *
+ * A shift of 12 before division means (assuming 4K page size):
+ *      - 1M 3-user-pages add up to 8KB errors;
+ *      - supports mapcount up to 2^24, or 16M;
+ *      - supports PSS up to 2^52 bytes, or 4PB.
+ */
+#define PSS_SHIFT 12
+
 struct mem_size_stats
 {
 	unsigned long resident;
@@ -131,6 +150,7 @@ struct mem_size_stats
 	unsigned long private_clean;
 	unsigned long private_dirty;
 	unsigned long swap;
+	u64 pss;
 };
 
 __attribute__((weak)) const char *arch_vma_name(struct vm_area_struct *vma)
@@ -216,14 +236,16 @@ static int show_map_internal(struct seq_file *m, void *v, struct mem_size_stats 
 			   "Shared_Dirty:  %8lu kB\n"
 			   "Private_Clean: %8lu kB\n"
 			   "Private_Dirty: %8lu kB\n"
-			   "Swap: %8lu kB\n",
+			   "Swap:          %8lu kB\n"
+			   "Pss:           %8lu kB\n", 
 			   (vma->vm_end - vma->vm_start) >> 10,
 			   mss->resident >> 10,
 			   mss->shared_clean  >> 10,
 			   mss->shared_dirty  >> 10,
 			   mss->private_clean >> 10,
 			   mss->private_dirty >> 10,
-			   mss->swap >> 10);
+			   mss->swap >> 10,
+			   (unsigned long)(mss->pss >> (10 + PSS_SHIFT)));
 
 	if (m->count < m->size)  /* vma is copied successfully */
 		m->version = (vma != get_gate_vma(task))? vma->vm_start: 0;
@@ -242,6 +264,7 @@ static void smaps_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 	pte_t *pte, ptent;
 	spinlock_t *ptl;
 	struct page *page;
+	int mapcount;
 
 	pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
 	do {
@@ -261,16 +284,19 @@ static void smaps_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 		if (!page)
 			continue;
 
-		if (page_mapcount(page) >= 2) {
+		mapcount = page_mapcount(page);
+		if (mapcount >= 2) {
 			if (pte_dirty(ptent))
 				mss->shared_dirty += PAGE_SIZE;
 			else
 				mss->shared_clean += PAGE_SIZE;
+			mss->pss += (PAGE_SIZE << PSS_SHIFT) / mapcount;
 		} else {
 			if (pte_dirty(ptent))
 				mss->private_dirty += PAGE_SIZE;
 			else
 				mss->private_clean += PAGE_SIZE;
+			mss->pss += (PAGE_SIZE << PSS_SHIFT);
 		}
 	} while (pte++, addr += PAGE_SIZE, addr != end);
 	pte_unmap_unlock(pte - 1, ptl);

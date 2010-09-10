@@ -57,17 +57,15 @@ struct ib_umem_chunk {
 	struct list_head	list;
 	int                     nents;
 	int                     nmap;
+	struct dma_attrs	attrs;
 	struct scatterlist      page_list[0];
 };
 
 #ifdef CONFIG_INFINIBAND_USER_MEM
 
 struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
-			    size_t size, int access);
-struct ib_umem *ib_umem_get_dmasync(struct ib_ucontext *context, unsigned long addr,
-			    size_t size, int access);
+			    size_t size, int access, int dmasync);
 void ib_umem_release(struct ib_umem *umem);
-void ib_umem_release_dmasync(struct ib_umem *umem);
 int ib_umem_page_count(struct ib_umem *umem);
 
 #else /* CONFIG_INFINIBAND_USER_MEM */
@@ -76,16 +74,10 @@ int ib_umem_page_count(struct ib_umem *umem);
 
 static inline struct ib_umem *ib_umem_get(struct ib_ucontext *context,
 					  unsigned long addr, size_t size,
-					  int access) {
-	return ERR_PTR(-EINVAL);
-}
-static inline struct ib_umem *ib_umem_get_dmasync(struct ib_ucontext *context,
-					  unsigned long addr, size_t size,
-					  int access) {
+					  int access, int dmasync) {
 	return ERR_PTR(-EINVAL);
 }
 static inline void ib_umem_release(struct ib_umem *umem) { }
-static inline void ib_umem_release_dmasync(struct ib_umem *umem) { }
 static inline int ib_umem_page_count(struct ib_umem *umem) { return 0; }
 
 #endif /* CONFIG_INFINIBAND_USER_MEM */

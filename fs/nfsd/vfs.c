@@ -54,6 +54,7 @@
 #include <linux/nfsd_idmap.h>
 #include <linux/security.h>
 #endif /* CONFIG_NFSD_V4 */
+#include <linux/jhash.h>
 
 #include <asm/uaccess.h>
 
@@ -81,10 +82,18 @@ struct raparms {
 	dev_t			p_dev;
 	int			p_set;
 	struct file_ra_state	p_ra;
+	unsigned int		p_hindex;
 };
 
-static struct raparms *		raparml;
-static struct raparms *		raparm_cache;
+struct raparm_hbucket {
+	struct raparms		*pb_head;
+	spinlock_t		pb_lock;
+} ____cacheline_aligned_in_smp;
+
+#define RAPARM_HASH_BITS	4
+#define RAPARM_HASH_SIZE	(1<<RAPARM_HASH_BITS)
+#define RAPARM_HASH_MASK	(RAPARM_HASH_SIZE-1)
+static struct raparm_hbucket	raparm_hash[RAPARM_HASH_SIZE];
 
 /* 
  * Called from nfsd_lookup and encode_dirent. Check if we have crossed 
@@ -453,13 +462,11 @@ nfsd4_set_nfs4_acl(struct svc_rqst *rqstp, struct svc_fh *fhp,
 	} else if (error < 0)
 		goto out_nfserr;
 
-	if (pacl) {
-		error = set_nfsv4_acl_one(dentry, pacl, POSIX_ACL_XATTR_ACCESS);
-		if (error < 0)
-			goto out_nfserr;
-	}
+	error = set_nfsv4_acl_one(dentry, pacl, POSIX_ACL_XATTR_ACCESS);
+	if (error < 0)
+		goto out_nfserr;
 
-	if (dpacl) {
+	if (S_ISDIR(inode->i_mode)) {
 		error = set_nfsv4_acl_one(dentry, dpacl, POSIX_ACL_XATTR_DEFAULT);
 		if (error < 0)
 			goto out_nfserr;
@@ -759,16 +766,20 @@ nfsd_sync_dir(struct dentry *dp)
  * Obtain the readahead parameters for the file
  * specified by (dev, ino).
  */
-static DEFINE_SPINLOCK(ra_lock);
 
 static inline struct raparms *
 nfsd_get_raparms(dev_t dev, ino_t ino)
 {
 	struct raparms	*ra, **rap, **frap = NULL;
 	int depth = 0;
+	unsigned int hash;
+	struct raparm_hbucket *rab;
 
-	spin_lock(&ra_lock);
-	for (rap = &raparm_cache; (ra = *rap); rap = &ra->p_next) {
+	hash = jhash_2words(dev, ino, 0xfeedbeef) & RAPARM_HASH_MASK;
+	rab = &raparm_hash[hash];
+
+	spin_lock(&rab->pb_lock);
+	for (rap = &rab->pb_head; (ra = *rap); rap = &ra->p_next) {
 		if (ra->p_ino == ino && ra->p_dev == dev)
 			goto found;
 		depth++;
@@ -777,7 +788,7 @@ nfsd_get_raparms(dev_t dev, ino_t ino)
 	}
 	depth = nfsdstats.ra_size*11/10;
 	if (!frap) {	
-		spin_unlock(&ra_lock);
+		spin_unlock(&rab->pb_lock);
 		return NULL;
 	}
 	rap = frap;
@@ -785,15 +796,16 @@ nfsd_get_raparms(dev_t dev, ino_t ino)
 	ra->p_dev = dev;
 	ra->p_ino = ino;
 	ra->p_set = 0;
+	ra->p_hindex = hash;
 found:
-	if (rap != &raparm_cache) {
+	if (rap != &rab->pb_head) {
 		*rap = ra->p_next;
-		ra->p_next   = raparm_cache;
-		raparm_cache = ra;
+		ra->p_next   = rab->pb_head;
+		rab->pb_head = ra;
 	}
 	ra->p_count++;
 	nfsdstats.ra_depth[depth*10/nfsdstats.ra_size]++;
-	spin_unlock(&ra_lock);
+	spin_unlock(&rab->pb_lock);
 	return ra;
 }
 
@@ -865,11 +877,12 @@ nfsd_vfs_read(struct svc_rqst *rqstp, struct svc_fh *fhp, struct file *file,
 
 	/* Write back readahead params */
 	if (ra) {
-		spin_lock(&ra_lock);
+		struct raparm_hbucket *rab = &raparm_hash[ra->p_hindex];
+		spin_lock(&rab->pb_lock);
 		ra->p_ra = file->f_ra;
 		ra->p_set = 1;
 		ra->p_count--;
-		spin_unlock(&ra_lock);
+		spin_unlock(&rab->pb_lock);
 	}
 
 	if (err >= 0) {
@@ -1838,11 +1851,20 @@ nfsd_permission(struct svc_rqst *rqstp, struct svc_export *exp,
 void
 nfsd_racache_shutdown(void)
 {
-	if (!raparm_cache)
-		return;
+	struct raparms *raparm, *last_raparm;
+	unsigned int i;
+
 	dprintk("nfsd: freeing readahead buffers.\n");
-	kfree(raparml);
-	raparm_cache = raparml = NULL;
+
+	for (i = 0; i < RAPARM_HASH_SIZE; i++) {
+		raparm = raparm_hash[i].pb_head;
+		while(raparm) {
+			last_raparm = raparm;
+			raparm = raparm->p_next;
+			kfree(last_raparm);
+		}
+		raparm_hash[i].pb_head = NULL;
+	}
 }
 /*
  * Initialize readahead param cache
@@ -1851,26 +1873,40 @@ int
 nfsd_racache_init(int cache_size)
 {
 	int	i;
+	int	j = 0;
+	int	nperbucket;
+	struct raparms **raparm = NULL;
 
-	if (raparm_cache)
+
+	if (raparm_hash[0].pb_head)
 		return 0;
-	raparml = kmalloc(sizeof(struct raparms) * cache_size, GFP_KERNEL);
+	nperbucket = DIV_ROUND_UP(cache_size, RAPARM_HASH_SIZE);
+	if (nperbucket < 2)
+		nperbucket = 2;
+	cache_size = nperbucket * RAPARM_HASH_SIZE;
 
-	if (raparml != NULL) {
-		dprintk("nfsd: allocating %d readahead buffers.\n",
-			cache_size);
-		memset(raparml, 0, sizeof(struct raparms) * cache_size);
-		for (i = 0; i < cache_size - 1; i++) {
-			raparml[i].p_next = raparml + i + 1;
+	dprintk("nfsd: allocating %d readahead buffers.\n", cache_size);
+
+	for (i = 0; i < RAPARM_HASH_SIZE; i++) {
+		spin_lock_init(&raparm_hash[i].pb_lock);
+
+		raparm = &raparm_hash[i].pb_head;
+		for (j = 0; j < nperbucket; j++) {
+			*raparm = kzalloc(sizeof(struct raparms), GFP_KERNEL);
+			if (!*raparm)
+				goto out_nomem;
+			raparm = &(*raparm)->p_next;
 		}
-		raparm_cache = raparml;
-	} else {
-		printk(KERN_WARNING
-		       "nfsd: Could not allocate memory read-ahead cache.\n");
-		return -ENOMEM;
+		*raparm = NULL;
 	}
+
 	nfsdstats.ra_size = cache_size;
 	return 0;
+
+out_nomem:
+	dprintk("nfsd: kmalloc failed, freeing readahead buffers\n");
+	nfsd_racache_shutdown();
+	return -ENOMEM;
 }
 
 #if defined(CONFIG_NFSD_V2_ACL) || defined(CONFIG_NFSD_V3_ACL)

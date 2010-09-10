@@ -29,15 +29,10 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: iser_verbs.c 7051 2006-05-10 12:29:11Z ogerlitz $
  */
-#include <asm/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/smp_lock.h>
 #include <linux/delay.h>
-#include <linux/version.h>
 
 #include "iscsi_iser.h"
 
@@ -107,7 +102,7 @@ pd_err:
 }
 
 /**
- * iser_free_device_ib_res - destory/dealloc/dereg the DMA MR,
+ * iser_free_device_ib_res - destroy/dealloc/dereg the DMA MR,
  * CQ and PD created with the device associated with the adapator.
  */
 static void iser_free_device_ib_res(struct iser_device *device)
@@ -156,8 +151,8 @@ static int iser_create_ib_conn_res(struct iser_conn *ib_conn)
 	params.max_pages_per_fmr = ISCSI_ISER_SG_TABLESIZE + 1;
 	/* make the pool size twice the max number of SCSI commands *
 	 * the ML is expected to queue, watermark for unmap at 50%  */
-	params.pool_size	 = ISCSI_XMIT_CMDS_MAX * 2;
-	params.dirty_watermark	 = ISCSI_XMIT_CMDS_MAX;
+	params.pool_size	 = ISCSI_DEF_XMIT_CMDS_MAX * 2;
+	params.dirty_watermark	 = ISCSI_DEF_XMIT_CMDS_MAX;
 	params.cache		 = 0;
 	params.flush_function	 = NULL;
 	params.access		 = (IB_ACCESS_LOCAL_WRITE  |
@@ -239,36 +234,32 @@ static int iser_free_ib_conn_res(struct iser_conn *ib_conn)
 static
 struct iser_device *iser_device_find_by_ib_device(struct rdma_cm_id *cma_id)
 {
-	struct list_head    *p_list;
-	struct iser_device  *device = NULL;
+	struct iser_device *device;
 
 	mutex_lock(&ig.device_list_mutex);
 
-	p_list = ig.device_list.next;
-	while (p_list != &ig.device_list) {
-		device = list_entry(p_list, struct iser_device, ig_list);
+	list_for_each_entry(device, &ig.device_list, ig_list)
 		/* find if there's a match using the node GUID */
 		if (device->ib_device->node_guid == cma_id->device->node_guid)
-			break;
-	}
+			goto inc_refcnt;
 
-	if (device == NULL) {
-		device = kzalloc(sizeof *device, GFP_KERNEL);
-		if (device == NULL)
-			goto out;
-		/* assign this device to the device */
-		device->ib_device = cma_id->device;
-		/* init the device and link it into ig device list */
-		if (iser_create_device_ib_res(device)) {
-			kfree(device);
-			device = NULL;
-			goto out;
-		}
-		list_add(&device->ig_list, &ig.device_list);
+	device = kzalloc(sizeof *device, GFP_KERNEL);
+	if (device == NULL)
+		goto out;
+
+	/* assign this device to the device */
+	device->ib_device = cma_id->device;
+	/* init the device and link it into ig device list */
+	if (iser_create_device_ib_res(device)) {
+		kfree(device);
+		device = NULL;
+		goto out;
 	}
-out:
-	BUG_ON(device == NULL);
+	list_add(&device->ig_list, &ig.device_list);
+
+inc_refcnt:
 	device->refcount++;
+out:
 	mutex_unlock(&ig.device_list_mutex);
 	return device;
 }
@@ -312,6 +303,40 @@ static int iser_conn_state_comp_exch(struct iser_conn *ib_conn,
 }
 
 /**
+ * Frees all conn objects and deallocs conn descriptor
+ */
+static void iser_conn_release(struct iser_conn *ib_conn)
+{
+	struct iser_device  *device = ib_conn->device;
+
+	BUG_ON(ib_conn->state != ISER_CONN_DOWN);
+
+	mutex_lock(&ig.connlist_mutex);
+	list_del(&ib_conn->conn_list);
+	mutex_unlock(&ig.connlist_mutex);
+
+	iser_free_ib_conn_res(ib_conn);
+	ib_conn->device = NULL;
+	/* on EVENT_ADDR_ERROR there's no device yet for this conn */
+	if (device != NULL)
+		iser_device_try_release(device);
+	if (ib_conn->iser_conn)
+		ib_conn->iser_conn->ib_conn = NULL;
+	iscsi2_destroy_endpoint(ib_conn->ep);
+}
+
+void iser_conn_get(struct iser_conn *ib_conn)
+{
+	atomic_inc(&ib_conn->refcount);
+}
+
+void iser_conn_put(struct iser_conn *ib_conn)
+{
+	if (atomic_dec_and_test(&ib_conn->refcount))
+		iser_conn_release(ib_conn);
+}
+
+/**
  * triggers start of the disconnect procedures and wait for them to be done
  */
 void iser_conn_terminate(struct iser_conn *ib_conn)
@@ -332,7 +357,7 @@ void iser_conn_terminate(struct iser_conn *ib_conn)
 	wait_event_interruptible(ib_conn->wait,
 				 ib_conn->state == ISER_CONN_DOWN);
 
-	iser_conn_release(ib_conn);
+	iser_conn_put(ib_conn);
 }
 
 static void iser_connect_error(struct rdma_cm_id *cma_id)
@@ -351,6 +376,12 @@ static void iser_addr_handler(struct rdma_cm_id *cma_id)
 	int    ret;
 
 	device = iser_device_find_by_ib_device(cma_id);
+	if (!device) {
+		iser_err("device lookup/creation failed\n");
+		iser_connect_error(cma_id);
+		return;
+	}
+
 	ib_conn = (struct iser_conn *)cma_id->context;
 	ib_conn->device = device;
 
@@ -359,7 +390,6 @@ static void iser_addr_handler(struct rdma_cm_id *cma_id)
 		iser_err("resolve route failed: %d\n", ret);
 		iser_connect_error(cma_id);
 	}
-	return;
 }
 
 static void iser_route_handler(struct rdma_cm_id *cma_id)
@@ -370,13 +400,6 @@ static void iser_route_handler(struct rdma_cm_id *cma_id)
 	ret = iser_create_ib_conn_res((struct iser_conn *)cma_id->context);
 	if (ret)
 		goto failure;
-
-	iser_dbg("path.mtu is %d setting it to %d\n",
-		 cma_id->route.path_rec->mtu, IB_MTU_1024);
-
-	/* we must set the MTU to 1024 as this is what the target is assuming */
-	if (cma_id->route.path_rec->mtu > IB_MTU_1024)
-		cma_id->route.path_rec->mtu = IB_MTU_1024;
 
 	memset(&conn_param, 0, sizeof conn_param);
 	conn_param.responder_resources = 4;
@@ -415,7 +438,7 @@ static void iser_disconnected_handler(struct rdma_cm_id *cma_id)
 	 * terminated asynchronously from the iSCSI layer's perspective.  */
 	if (iser_conn_state_comp_exch(ib_conn, ISER_CONN_UP,
 				      ISER_CONN_TERMINATING))
-		iscsi_conn_failure(ib_conn->iser_conn->iscsi_conn,
+		iscsi2_conn_failure(ib_conn->iser_conn->iscsi_conn,
 				   ISCSI_ERR_CONN_FAILED);
 
 	/* Complete the termination process if no posts are pending */
@@ -451,39 +474,27 @@ static int iser_cma_handler(struct rdma_cm_id *cma_id, struct rdma_cm_event *eve
 		iser_connect_error(cma_id);
 		break;
 	case RDMA_CM_EVENT_DISCONNECTED:
+	case RDMA_CM_EVENT_DEVICE_REMOVAL:
+	case RDMA_CM_EVENT_ADDR_CHANGE:
 		iser_disconnected_handler(cma_id);
 		break;
-	case RDMA_CM_EVENT_DEVICE_REMOVAL:
-		BUG();
-		break;
-	case RDMA_CM_EVENT_CONNECT_RESPONSE:
-		BUG();
-		break;
-	case RDMA_CM_EVENT_CONNECT_REQUEST:
 	default:
+		iser_err("Unexpected RDMA CM event (%d)\n", event->event);
 		break;
 	}
 	return ret;
 }
 
-int iser_conn_init(struct iser_conn **ibconn)
+void iser_conn_init(struct iser_conn *ib_conn)
 {
-	struct iser_conn *ib_conn;
-
-	ib_conn = kzalloc(sizeof *ib_conn, GFP_KERNEL);
-	if (!ib_conn) {
-		iser_err("can't alloc memory for struct iser_conn\n");
-		return -ENOMEM;
-	}
 	ib_conn->state = ISER_CONN_INIT;
 	init_waitqueue_head(&ib_conn->wait);
 	atomic_set(&ib_conn->post_recv_buf_count, 0);
 	atomic_set(&ib_conn->post_send_buf_count, 0);
+	atomic_set(&ib_conn->unexpected_pdu_count, 0);
+	atomic_set(&ib_conn->refcount, 1);
 	INIT_LIST_HEAD(&ib_conn->conn_list);
 	spin_lock_init(&ib_conn->lock);
-
-	*ibconn = ib_conn;
-	return 0;
 }
 
  /**
@@ -498,14 +509,14 @@ int iser_connect(struct iser_conn   *ib_conn,
 	struct sockaddr *src, *dst;
 	int err = 0;
 
-	sprintf(ib_conn->name,"%d.%d.%d.%d:%d",
-		NIPQUAD(dst_addr->sin_addr.s_addr), dst_addr->sin_port);
+	sprintf(ib_conn->name, "%pI4:%d",
+		&dst_addr->sin_addr.s_addr, dst_addr->sin_port);
 
 	/* the device is known only --after-- address resolution */
 	ib_conn->device = NULL;
 
-	iser_err("connecting to: %d.%d.%d.%d, port 0x%x\n",
-		 NIPQUAD(dst_addr->sin_addr), dst_addr->sin_port);
+	iser_err("connecting to: %pI4, port 0x%x\n",
+		 &dst_addr->sin_addr, dst_addr->sin_port);
 
 	ib_conn->state = ISER_CONN_PENDING;
 
@@ -549,30 +560,6 @@ connect_failure:
 	iser_conn_release(ib_conn);
 	return err;
 }
-
-/**
- * Frees all conn objects and deallocs conn descriptor
- */
-void iser_conn_release(struct iser_conn *ib_conn)
-{
-	struct iser_device  *device = ib_conn->device;
-
-	BUG_ON(ib_conn->state != ISER_CONN_DOWN);
-
-	mutex_lock(&ig.connlist_mutex);
-	list_del(&ib_conn->conn_list);
-	mutex_unlock(&ig.connlist_mutex);
-
-	iser_free_ib_conn_res(ib_conn);
-	ib_conn->device = NULL;
-	/* on EVENT_ADDR_ERROR there's no device yet for this conn */
-	if (device != NULL)
-		iser_device_try_release(device);
-	if (ib_conn->iser_conn)
-		ib_conn->iser_conn->ib_conn = NULL;
-	kfree(ib_conn);
-}
-
 
 /**
  * iser_reg_page_vec - Register physical memory
@@ -773,17 +760,17 @@ static void iser_handle_comp_error(struct iser_desc *desc)
 		/* getting here when the state is UP means that the conn is *
 		 * being terminated asynchronously from the iSCSI layer's   *
 		 * perspective.                                             */
-	        if (iser_conn_state_comp_exch(ib_conn, ISER_CONN_UP,
-        	                              ISER_CONN_TERMINATING))
-                	iscsi_conn_failure(ib_conn->iser_conn->iscsi_conn,
-                        	                ISCSI_ERR_CONN_FAILED);
+		if (iser_conn_state_comp_exch(ib_conn, ISER_CONN_UP,
+		    ISER_CONN_TERMINATING))
+			iscsi2_conn_failure(ib_conn->iser_conn->iscsi_conn,
+					   ISCSI_ERR_CONN_FAILED);
 
-	        /* complete the termination process if disconnect event was        *
-		 * delivered. note there are no more non completed posts to the QP */
-	        if (ib_conn->disc_evt_flag) {
-        	        ib_conn->state = ISER_CONN_DOWN;
-                	wake_up_interruptible(&ib_conn->wait);
-	        }
+		/* complete the termination process if disconnect event was delivered *
+		 * note there are no more non completed posts to the QP               */
+		if (ib_conn->disc_evt_flag) {
+			ib_conn->state = ISER_CONN_DOWN;
+			wake_up_interruptible(&ib_conn->wait);
+		}
 	}
 }
 

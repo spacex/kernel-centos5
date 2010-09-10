@@ -117,12 +117,19 @@
 #include <linux/dmaengine.h>
 #include <linux/err.h>
 #include <linux/ctype.h>
+#include <trace/napi.h>
 
 #ifdef CONFIG_XEN
 #include <net/ip.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
 #endif
+
+/* Instead of increasing this, you should create a hash table. */
+#define MAX_GRO_SKBS 8
+
+/* This should be increased if a protocol with a bigger head is added. */
+#define GRO_MAX_HEAD (MAX_HEADER + 128)
 
 /*
  *	The list of packet types we will receive (as opposed to discard)
@@ -155,11 +162,27 @@
 static DEFINE_SPINLOCK(ptype_lock);
 static struct list_head ptype_base[16];	/* 16 way hashed list */
 static struct list_head ptype_all;		/* Taps */
+static struct list_head gro_ptype_base[16];
 
 #ifdef CONFIG_NET_DMA
-static struct dma_client *net_dma_client;
-static unsigned int net_dma_count;
-static spinlock_t net_dma_event_lock;
+struct net_dma {
+	struct dma_client client;
+	spinlock_t lock;
+	cpumask_t channel_mask;
+	struct dma_chan *channels[NR_CPUS];
+};
+
+static enum dma_state_client
+  netdev_dma_event(struct dma_client *client, struct dma_chan *chan,
+	enum dma_state state);
+
+static struct net_dma net_dma = {
+	.client = {
+		.event_callback_v3 = netdev_dma_event,
+	},
+};
+
+
 #endif
 
 /*
@@ -337,6 +360,44 @@ void dev_remove_pack(struct packet_type *pt)
 	
 	synchronize_net();
 }
+
+void dev_add_pack_gro(struct gro_packet_type *pt)
+{
+	int hash;
+
+	spin_lock_bh(&ptype_lock);
+	if (pt->type != htons(ETH_P_ALL)) {
+		hash = ntohs(pt->type) & 15;
+		list_add_rcu(&pt->list, &gro_ptype_base[hash]);
+	}
+	spin_unlock_bh(&ptype_lock);
+}
+EXPORT_SYMBOL(dev_add_pack_gro);
+
+void dev_remove_pack_gro(struct gro_packet_type *pt)
+{
+	struct list_head *head;
+	struct gro_packet_type *pt1;
+
+	BUG_ON(pt->type == htons(ETH_P_ALL));
+
+	spin_lock_bh(&ptype_lock);
+
+	head = &gro_ptype_base[ntohs(pt->type) & 15];
+
+	list_for_each_entry(pt1, head, list) {
+		if (pt == pt1) {
+			list_del_rcu(&pt->list);
+			goto out;
+		}
+	}
+
+	printk(KERN_WARNING "dev_remove_pack_gro: %p not found.\n", pt);
+out:
+	spin_unlock_bh(&ptype_lock);
+	synchronize_net();
+}
+EXPORT_SYMBOL(dev_remove_pack_gro);
 
 /******************************************************************************
 
@@ -796,6 +857,12 @@ void netdev_state_change(struct net_device *dev)
 	}
 }
 
+void netdev_bonding_change(struct net_device *dev)
+{
+	call_netdevice_notifiers(NETDEV_BONDING_FAILOVER, dev);
+}
+EXPORT_SYMBOL(netdev_bonding_change);
+
 /**
  *	dev_load 	- load a network module
  *	@name: name of interface
@@ -1223,8 +1290,6 @@ struct sk_buff *skb_gso_segment(struct sk_buff *skb, int features)
 	int type = skb->protocol;
 	int err;
 
-	BUG_ON(skb_shinfo(skb)->frag_list);
-
 	skb->mac.raw = skb->data;
 	skb->mac_len = skb->nh.raw - skb->data;
 	__skb_pull(skb, skb->mac_len);
@@ -1403,9 +1468,11 @@ inline int skb_checksum_setup(struct sk_buff *skb)
 	if (skb->proto_csum_blank) {
 		if (skb->protocol != htons(ETH_P_IP))
 			goto out;
-		skb->h.raw = (unsigned char *)skb->nh.iph + 4*skb->nh.iph->ihl;
-		if (skb->h.raw >= skb->tail)
+		if (skb->data < skb->nh.raw + sizeof(*skb->nh.iph) &&
+		    !pskb_may_pull(skb, skb->nh.raw + sizeof(*skb->nh.iph) -
+					skb->data))
 			goto out;
+		skb->h.raw = (unsigned char *)skb->nh.iph + 4*skb->nh.iph->ihl;
 		switch (skb->nh.iph->protocol) {
 		case IPPROTO_TCP:
 			skb->csum = offsetof(struct tcphdr, check);
@@ -1420,7 +1487,8 @@ inline int skb_checksum_setup(struct sk_buff *skb)
 				       " %d packet", skb->nh.iph->protocol);
 			goto out;
 		}
-		if ((skb->h.raw + skb->csum + 2) > skb->tail)
+		if (skb->data < skb->h.raw + skb->csum + 2 &&
+		    !pskb_may_pull(skb, skb->h.raw + skb->csum + 2 - skb->data))
 			goto out;
 		skb->ip_summed = CHECKSUM_HW;
 		skb->proto_csum_blank = 0;
@@ -1883,6 +1951,8 @@ ncls:
 	if (handle_bridge(&skb, &pt_prev, &ret, orig_dev))
 		goto out;
 
+	skb_orphan(skb);
+
 	type = skb->protocol;
 	list_for_each_entry_rcu(ptype, &ptype_base[ntohs(type)&15], list) {
 		if (ptype->type == type &&
@@ -1908,6 +1978,312 @@ out:
 	rcu_read_unlock();
 	return ret;
 }
+
+static int napi_gro_complete(struct sk_buff *skb)
+{
+	struct gro_packet_type *ptype;
+	__be16 type = skb->protocol;
+	struct list_head *head = &gro_ptype_base[ntohs(type) & 15];
+	int err = -ENOENT;
+
+	if (NAPI_GRO_CB(skb)->count == 1) {
+		skb_shinfo(skb)->gso_size = 0;
+		goto out;
+	}
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(ptype, head, list) {
+		if (ptype->type != type || ptype->dev || !ptype->gro_complete)
+			continue;
+
+		err = ptype->gro_complete(skb);
+		break;
+	}
+	rcu_read_unlock();
+
+	if (err) {
+		WARN_ON(&ptype->list == head);
+		kfree_skb(skb);
+		return NET_RX_SUCCESS;
+	}
+
+out:
+	return netif_receive_skb(skb);
+}
+
+void napi_gro_flush(struct napi_struct *napi)
+{
+	struct sk_buff *skb, *next;
+
+	for (skb = napi->gro_list; skb; skb = next) {
+		next = skb->next;
+		skb->next = NULL;
+		napi_gro_complete(skb);
+	}
+
+	napi->gro_count = 0;
+	napi->gro_list = NULL;
+}
+EXPORT_SYMBOL(napi_gro_flush);
+
+int dev_gro_receive(struct napi_struct *napi, struct sk_buff *skb)
+{
+	struct sk_buff **pp = NULL;
+	struct gro_packet_type *ptype;
+	__be16 type = skb->protocol;
+	struct list_head *head = &gro_ptype_base[ntohs(type) & 15];
+	int same_flow;
+	int mac_len;
+	int ret;
+
+	if (!(skb->dev->features & NETIF_F_GRO))
+		goto normal;
+
+	if (skb_is_gso(skb) || skb_shinfo(skb)->frag_list)
+		goto normal;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(ptype, head, list) {
+		if (ptype->type != type || ptype->dev || !ptype->gro_receive)
+			continue;
+
+		skb_set_network_header(skb, skb_gro_offset(skb));
+		mac_len = skb->nh.raw - skb->mac.raw;
+		skb->mac_len = mac_len;
+		NAPI_GRO_CB(skb)->same_flow = 0;
+		NAPI_GRO_CB(skb)->flush = 0;
+		NAPI_GRO_CB(skb)->free = 0;
+
+		pp = ptype->gro_receive(&napi->gro_list, skb);
+		break;
+	}
+	rcu_read_unlock();
+
+	if (&ptype->list == head)
+		goto normal;
+
+	same_flow = NAPI_GRO_CB(skb)->same_flow;
+	ret = NAPI_GRO_CB(skb)->free ? GRO_MERGED_FREE : GRO_MERGED;
+
+	if (pp) {
+		struct sk_buff *nskb = *pp;
+
+		*pp = nskb->next;
+		nskb->next = NULL;
+		napi_gro_complete(nskb);
+		napi->gro_count--;
+	}
+
+	if (same_flow)
+		goto ok;
+
+	if (NAPI_GRO_CB(skb)->flush || napi->gro_count >= MAX_GRO_SKBS)
+		goto normal;
+
+	napi->gro_count++;
+	NAPI_GRO_CB(skb)->count = 1;
+	skb_shinfo(skb)->gso_size = skb_gro_len(skb);
+	skb->next = napi->gro_list;
+	napi->gro_list = skb;
+	ret = GRO_HELD;
+
+pull:
+	if (skb_headlen(skb) < skb_gro_offset(skb)) {
+		int grow = skb_gro_offset(skb) - skb_headlen(skb);
+
+		BUG_ON(skb->end - skb->tail < grow);
+
+		memcpy(skb_tail_pointer(skb), NAPI_GRO_CB(skb)->frag0, grow);
+
+		skb->tail += grow;
+		skb->data_len -= grow;
+
+		skb_shinfo(skb)->frags[0].page_offset += grow;
+		skb_shinfo(skb)->frags[0].size -= grow;
+
+		if (unlikely(!skb_shinfo(skb)->frags[0].size)) {
+			put_page(skb_shinfo(skb)->frags[0].page);
+			memmove(skb_shinfo(skb)->frags,
+				skb_shinfo(skb)->frags + 1,
+				--skb_shinfo(skb)->nr_frags);
+		}
+	}
+
+ok:
+	return ret;
+
+normal:
+	ret = GRO_NORMAL;
+	goto pull;
+}
+EXPORT_SYMBOL(dev_gro_receive);
+
+static int __napi_gro_receive(struct napi_struct *napi, struct sk_buff *skb)
+{
+	struct sk_buff *p;
+
+	if (netpoll_rx_on(skb))
+		return GRO_NORMAL;
+
+	for (p = napi->gro_list; p; p = p->next) {
+		NAPI_GRO_CB(p)->same_flow = (p->dev == skb->dev)
+			&& !compare_ether_header(skb_mac_header(p),
+						 skb_gro_mac_header(skb));
+		NAPI_GRO_CB(p)->flush = 0;
+	}
+
+	return dev_gro_receive(napi, skb);
+}
+
+int napi_skb_finish(int ret, struct sk_buff *skb)
+{
+	int err = NET_RX_SUCCESS;
+
+	switch (ret) {
+	case GRO_NORMAL:
+		return netif_receive_skb(skb);
+
+	case GRO_DROP:
+		err = NET_RX_DROP;
+		/* fall through */
+
+	case GRO_MERGED_FREE:
+		kfree_skb(skb);
+		break;
+	}
+
+	return err;
+}
+EXPORT_SYMBOL(napi_skb_finish);
+
+void skb_gro_reset_offset(struct sk_buff *skb)
+{
+	NAPI_GRO_CB(skb)->data_offset = 0;
+	NAPI_GRO_CB(skb)->frag0 = NULL;
+	NAPI_GRO_CB(skb)->frag0_len = 0;
+
+	if (skb->mac.raw == skb->tail &&
+	    !PageHighMem(skb_shinfo(skb)->frags[0].page)) {
+		NAPI_GRO_CB(skb)->frag0 =
+			page_address(skb_shinfo(skb)->frags[0].page) +
+			skb_shinfo(skb)->frags[0].page_offset;
+		NAPI_GRO_CB(skb)->frag0_len = skb_shinfo(skb)->frags[0].size;
+	}
+}
+EXPORT_SYMBOL(skb_gro_reset_offset);
+
+int napi_gro_receive(struct napi_struct *napi, struct sk_buff *skb)
+{
+	skb_gro_reset_offset(skb);
+
+	return napi_skb_finish(__napi_gro_receive(napi, skb), skb);
+}
+EXPORT_SYMBOL(napi_gro_receive);
+
+void napi_reuse_skb(struct napi_struct *napi, struct sk_buff *skb)
+{
+	__skb_pull(skb, skb_headlen(skb));
+	skb_reserve(skb, NET_IP_ALIGN - skb_headroom(skb));
+
+	napi->skb = skb;
+}
+EXPORT_SYMBOL(napi_reuse_skb);
+
+struct sk_buff *napi_get_frags(struct napi_struct *napi)
+{
+	struct net_device *dev = napi->dev;
+	struct sk_buff *skb = napi->skb;
+
+	if (!skb) {
+		skb = netdev_alloc_skb(dev, GRO_MAX_HEAD + NET_IP_ALIGN);
+		if (!skb)
+			goto out;
+
+		skb_reserve(skb, NET_IP_ALIGN);
+
+		napi->skb = skb;
+	}
+
+out:
+	return skb;
+}
+EXPORT_SYMBOL(napi_get_frags);
+
+int napi_frags_finish(struct napi_struct *napi, struct sk_buff *skb, int ret)
+{
+	int err = NET_RX_SUCCESS;
+
+	switch (ret) {
+	case GRO_NORMAL:
+	case GRO_HELD:
+		skb->protocol = eth_type_trans(skb, napi->dev);
+
+		if (ret == GRO_NORMAL)
+			return netif_receive_skb(skb);
+
+		skb_gro_pull(skb, -ETH_HLEN);
+		break;
+
+	case GRO_DROP:
+		err = NET_RX_DROP;
+		/* fall through */
+
+	case GRO_MERGED_FREE:
+		napi_reuse_skb(napi, skb);
+		break;
+	}
+
+	return err;
+}
+EXPORT_SYMBOL(napi_frags_finish);
+
+struct sk_buff *napi_frags_skb(struct napi_struct *napi)
+{
+	struct sk_buff *skb = napi->skb;
+	struct ethhdr *eth;
+	unsigned int hlen;
+	unsigned int off;
+
+	napi->skb = NULL;
+
+	skb_reset_mac_header(skb);
+	skb_gro_reset_offset(skb);
+
+	off = skb_gro_offset(skb);
+	hlen = off + sizeof(*eth);
+	eth = skb_gro_header_fast(skb, off);
+	if (skb_gro_header_hard(skb, hlen)) {
+		eth = skb_gro_header_slow(skb, hlen, off);
+		if (unlikely(!eth)) {
+			napi_reuse_skb(napi, skb);
+			skb = NULL;
+			goto out;
+		}
+	}
+
+	skb_gro_pull(skb, sizeof(*eth));
+
+	/*
+	 * This works because the only protocols we care about don't require
+	 * special handling.  We'll fix it up properly at the end.
+	 */
+	skb->protocol = eth->h_proto;
+
+out:
+	return skb;
+}
+EXPORT_SYMBOL(napi_frags_skb);
+
+int napi_gro_frags(struct napi_struct *napi)
+{
+	struct sk_buff *skb = napi_frags_skb(napi);
+
+	if (!skb)
+		return NET_RX_DROP;
+
+	return napi_frags_finish(napi, skb, __napi_gro_receive(napi, skb));
+}
+EXPORT_SYMBOL(napi_gro_frags);
 
 static int process_backlog(struct net_device *backlog_dev, int *budget)
 {
@@ -1962,11 +2338,12 @@ static void net_rx_action(struct softirq_action *h)
 	unsigned long start_time = jiffies;
 	int budget = netdev_budget;
 	void *have;
-
 	local_irq_disable();
 
 	while (!list_empty(&queue->poll_list)) {
 		struct net_device *dev;
+		int poll_result = 0;
+		int called_poll = 0;
 
 		if (budget <= 0 || jiffies - start_time > 1)
 			goto softnet_break;
@@ -1977,19 +2354,36 @@ static void net_rx_action(struct softirq_action *h)
 				 struct net_device, poll_list);
 		have = netpoll_poll_lock(dev);
 
-		if (dev->quota <= 0 || dev->poll(dev, &budget)) {
+		/* Before calling poll we need to make sure the device
+		 * has actually been scheduled.  When using netpoll, all
+		 * the necessary work may have already been done for us
+		 * before we could get the poll_lock, so just skip
+		 * polling on this device if it has. */
+		if (test_bit(__LINK_STATE_RX_SCHED, &dev->state)) {
+			called_poll = 1;
+			poll_result = dev->poll(dev, &budget);
+		}
+
+		/* Reset quota for the device whether we called poll or
+		 * not.  If we don't do this quota may be as small as
+		 * -weight if netpoll already polled the device for us
+		 * and we skipped it based on the conditional above. */
+		if (dev->quota < 0)
+			dev->quota += dev->weight;
+		else
+			dev->quota = dev->weight;
+
+		if (poll_result) {
 			netpoll_poll_unlock(have);
 			local_irq_disable();
 			list_move_tail(&dev->poll_list, &queue->poll_list);
-			if (dev->quota < 0)
-				dev->quota += dev->weight;
-			else
-				dev->quota = dev->weight;
 		} else {
 			netpoll_poll_unlock(have);
 			dev_put(dev);
 			local_irq_disable();
 		}
+		if (called_poll)
+			trace_napi_poll(dev);
 	}
 out:
 #ifdef CONFIG_NET_DMA
@@ -1997,12 +2391,13 @@ out:
 	 * There may not be any more sk_buffs coming right now, so push
 	 * any pending DMA copies to hardware
 	 */
-	if (net_dma_client) {
-		struct dma_chan *chan;
-		rcu_read_lock();
-		list_for_each_entry_rcu(chan, &net_dma_client->channels, client_node)
-			dma_async_memcpy_issue_pending(chan);
-		rcu_read_unlock();
+	if (!cpus_empty(net_dma.channel_mask)) {
+		int chan_idx;
+		for_each_cpu_mask(chan_idx, net_dma.channel_mask) {
+			struct dma_chan *chan = net_dma.channels[chan_idx];
+			if (chan)
+				dma_async_memcpy_issue_pending_v3(chan);
+		}
 	}
 #endif
 	local_irq_enable();
@@ -2913,6 +3308,46 @@ static inline void net_set_todo(struct net_device *dev)
 	spin_unlock(&net_todo_list_lock);
 }
 
+unsigned long netdev_fix_features(unsigned long features, const char *name)
+{
+	/* Fix illegal SG+CSUM combinations. */
+	if ((features & NETIF_F_SG) &&
+	    !(features & NETIF_F_ALL_CSUM)) {
+		if (name)
+			printk(KERN_NOTICE "%s: Dropping NETIF_F_SG since no "
+			       "checksum feature.\n", name);
+		features &= ~NETIF_F_SG;
+	}
+
+	/* TSO requires that SG is present as well. */
+	if ((features & NETIF_F_TSO) && !(features & NETIF_F_SG)) {
+		if (name)
+			printk(KERN_NOTICE "%s: Dropping NETIF_F_TSO since no "
+			       "SG feature.\n", name);
+		features &= ~NETIF_F_TSO;
+	}
+
+	if (features & NETIF_F_UFO) {
+		if (!(features & NETIF_F_GEN_CSUM)) {
+			if (name)
+				printk(KERN_ERR "%s: Dropping NETIF_F_UFO "
+				       "since no NETIF_F_HW_CSUM feature.\n",
+				       name);
+			features &= ~NETIF_F_UFO;
+		}
+
+		if (!(features & NETIF_F_SG)) {
+			if (name)
+				printk(KERN_ERR "%s: Dropping NETIF_F_UFO "
+				       "since no NETIF_F_SG feature.\n", name);
+			features &= ~NETIF_F_UFO;
+		}
+	}
+
+	return features;
+}
+EXPORT_SYMBOL(netdev_fix_features);
+
 /**
  *	register_netdevice	- register a network device
  *	@dev: device to register
@@ -2985,37 +3420,9 @@ int register_netdevice(struct net_device *dev)
 			ret = -EEXIST;
  			goto out_err;
 		}
- 	}
-
-	/* Fix illegal SG+CSUM combinations. */
-	if ((dev->features & NETIF_F_SG) &&
-	    !(dev->features & NETIF_F_ALL_CSUM)) {
-		printk(KERN_NOTICE "%s: Dropping NETIF_F_SG since no checksum feature.\n",
-		       dev->name);
-		dev->features &= ~NETIF_F_SG;
 	}
 
-	/* TSO requires that SG is present as well. */
-	if ((dev->features & NETIF_F_TSO) &&
-	    !(dev->features & NETIF_F_SG)) {
-		printk(KERN_NOTICE "%s: Dropping NETIF_F_TSO since no SG feature.\n",
-		       dev->name);
-		dev->features &= ~NETIF_F_TSO;
-	}
-	if (dev->features & NETIF_F_UFO) {
-		if (!(dev->features & NETIF_F_HW_CSUM)) {
-			printk(KERN_ERR "%s: Dropping NETIF_F_UFO since no "
-					"NETIF_F_HW_CSUM feature.\n",
-							dev->name);
-			dev->features &= ~NETIF_F_UFO;
-		}
-		if (!(dev->features & NETIF_F_SG)) {
-			printk(KERN_ERR "%s: Dropping NETIF_F_UFO since no "
-					"NETIF_F_SG feature.\n",
-					dev->name);
-			dev->features &= ~NETIF_F_UFO;
-		}
-	}
+	dev->features = netdev_fix_features(dev->features, dev->name);
 
 	/*
 	 *	nil rebuild_header routine,
@@ -3469,12 +3876,12 @@ static int dev_cpu_callback(struct notifier_block *nfb,
  * This is called when the number of channels allocated to the net_dma_client
  * changes.  The net_dma_client tries to have one DMA channel per CPU.
  */
-static void net_dma_rebalance(void)
+static void net_dma_rebalance(struct net_dma *net_dma)
 {
-	unsigned int cpu, i, n;
+	unsigned int cpu, i, n, chan_idx;
 	struct dma_chan *chan;
 
-	if (net_dma_count == 0) {
+	if (cpus_empty(net_dma->channel_mask)) {
 		for_each_online_cpu(cpu)
 			rcu_assign_pointer(per_cpu(softnet_data, cpu).net_dma, NULL);
 		return;
@@ -3483,10 +3890,12 @@ static void net_dma_rebalance(void)
 	i = 0;
 	cpu = first_cpu(cpu_online_map);
 
-	rcu_read_lock();
-	list_for_each_entry(chan, &net_dma_client->channels, client_node) {
-		n = ((num_online_cpus() / net_dma_count)
-		   + (i < (num_online_cpus() % net_dma_count) ? 1 : 0));
+	for_each_cpu_mask(chan_idx, net_dma->channel_mask) {
+		chan = net_dma->channels[chan_idx];
+
+		n = ((num_online_cpus() / cpus_weight(net_dma->channel_mask))
+		      + (i < (num_online_cpus() %
+		      cpus_weight(net_dma->channel_mask)) ? 1 : 0));
 
 		while(n) {
 			per_cpu(softnet_data, cpu).net_dma = chan;
@@ -3495,7 +3904,6 @@ static void net_dma_rebalance(void)
 		}
 		i++;
 	}
-	rcu_read_unlock();
 }
 
 /**
@@ -3504,23 +3912,54 @@ static void net_dma_rebalance(void)
  * @chan: DMA channel for the event
  * @event: event type
  */
-static void netdev_dma_event(struct dma_client *client, struct dma_chan *chan,
-	enum dma_event event)
+static enum dma_state_client
+    netdev_dma_event(struct dma_client *client, struct dma_chan *chan,
+	enum dma_state state)
 {
-	spin_lock(&net_dma_event_lock);
-	switch (event) {
-	case DMA_RESOURCE_ADDED:
-		net_dma_count++;
-		net_dma_rebalance();
+	int i, found = 0, pos = -1;
+	struct net_dma *net_dma =
+		container_of(client, struct net_dma, client);
+	enum dma_state_client ack = DMA_DUP; /* default: take no action */
+
+	spin_lock(&net_dma->lock);
+	switch (state) {
+	case DMA_STATE_RESOURCE_AVAILABLE:
+		for (i = 0; i < NR_CPUS; i++)
+			if (net_dma->channels[i] == chan) {
+				found = 1;
+				break;
+			} else if (net_dma->channels[i] == NULL && pos < 0)
+				pos = i;
+
+			if (!found && pos >= 0) {
+				ack = DMA_ACK;
+				net_dma->channels[pos] = chan;
+				cpu_set(pos, net_dma->channel_mask);
+				net_dma_rebalance(net_dma);
+			}
+
 		break;
-	case DMA_RESOURCE_REMOVED:
-		net_dma_count--;
-		net_dma_rebalance();
+	case DMA_STATE_RESOURCE_REMOVED:
+		for (i = 0; i < NR_CPUS; i++)
+		if (net_dma->channels[i] == chan) {
+			found = 1;
+			pos = i;
+			break;
+		}
+
+		if (found) {
+			ack = DMA_ACK;
+			cpu_clear(pos, net_dma->channel_mask);
+			net_dma->channels[i] = NULL;
+			net_dma_rebalance(net_dma);
+		}
 		break;
 	default:
 		break;
 	}
-	spin_unlock(&net_dma_event_lock);
+	spin_unlock(&net_dma->lock);
+
+	return(ack);
 }
 
 /**
@@ -3528,12 +3967,10 @@ static void netdev_dma_event(struct dma_client *client, struct dma_chan *chan,
  */
 static int __init netdev_dma_register(void)
 {
-	spin_lock_init(&net_dma_event_lock);
-	net_dma_client = dma_async_client_register(netdev_dma_event);
-	if (net_dma_client == NULL)
-		return -ENOMEM;
-
-	dma_async_client_chan_request(net_dma_client, num_online_cpus());
+	spin_lock_init(&net_dma.lock);
+	dma_cap_set(DMA_MEMCPY, net_dma.client.cap_mask);
+	dma_async_client_register_v3(&net_dma.client);
+	dma_async_client_chan_request_v3(&net_dma.client);
 	return 0;
 }
 
@@ -3549,48 +3986,45 @@ static int __init netdev_dma_register(void) { return -ENODEV; }
  */
 
 /**
- *	netdev_compute_feature - compute conjunction of two feature sets
- *	@all: first feature set
- *	@one: second feature set
+ *	netdev_increment_features - increment feature set by one
+ *	@all: current feature set
+ *	@one: new feature set
+ *	@mask: mask feature set
  *
  *	Computes a new feature set after adding a device with feature set
- *	@one to the master device with current feature set @all.  Returns
- *	the new feature set.
+ *	@one to the master device with current feature set @all.  Will not
+ *	enable anything that is off in @mask. Returns the new feature set.
  */
-int netdev_compute_features(unsigned long all, unsigned long one)
+unsigned long netdev_increment_features(unsigned long all, unsigned long one,
+					unsigned long mask)
 {
-        /* if device needs checksumming, downgrade to hw checksumming */
-	if (all & NETIF_F_NO_CSUM && !(one & NETIF_F_NO_CSUM))
-		all ^= NETIF_F_NO_CSUM | NETIF_F_HW_CSUM;
+        /* If device needs checksumming, downgrade to it. */
+        if (all & NETIF_F_NO_CSUM && !(one & NETIF_F_NO_CSUM))
+		all ^= NETIF_F_NO_CSUM | (one & NETIF_F_ALL_CSUM);
+	else if (mask & NETIF_F_ALL_CSUM) {
+		/* If one device supports v4/v6 checksumming, set for all. */
+		if (one & (NETIF_F_IP_CSUM) &&
+		    !(all & NETIF_F_GEN_CSUM)) {
+			all &= ~NETIF_F_ALL_CSUM;
+			all |= one & (NETIF_F_IP_CSUM);
+		}
 
-        /* if device can't do all checksum, downgrade to ipv4/ipv6 */
-	if (all & NETIF_F_HW_CSUM && !(one & NETIF_F_HW_CSUM))
-		all ^= NETIF_F_HW_CSUM | NETIF_F_IP_CSUM;
+		/* If one device supports hw checksumming, set for all. */
+		if (one & NETIF_F_GEN_CSUM && !(all & NETIF_F_GEN_CSUM)) {
+			all &= ~NETIF_F_ALL_CSUM;
+			all |= NETIF_F_HW_CSUM;
+		}
+	}
 
-	if (one & NETIF_F_GSO)
-		one |= NETIF_F_GSO_SOFTWARE;
-	one |= NETIF_F_GSO;
+	one |= NETIF_F_ALL_CSUM;
 
-	/*
-	 * If even one device supports a GSO protocol with software fallback,
-	 * enable it for all.
-	 */
-	all |= one & NETIF_F_GSO_SOFTWARE;
-
-        /* If even one device supports robust GSO, enable it for all. */
-	if (one & NETIF_F_GSO_ROBUST)
-		all |= NETIF_F_GSO_ROBUST;
-
-	all &= one | NETIF_F_LLTX;
-
-	if (!(all & NETIF_F_ALL_CSUM))
-		all &= ~NETIF_F_SG;
-	if (!(all & NETIF_F_SG))
-		all &= ~NETIF_F_GSO_MASK;
+	one |= all & NETIF_F_ONE_FOR_ALL;
+	all &= one | NETIF_F_LLTX | NETIF_F_GSO;
+	all |= one & mask & NETIF_F_ONE_FOR_ALL;
 
 	return all;
 }
-EXPORT_SYMBOL(netdev_compute_features);
+EXPORT_SYMBOL(netdev_increment_features);
 
 /*
  *       This is called single threaded during boot, so no need
@@ -3611,8 +4045,10 @@ static int __init net_dev_init(void)
 		goto out;
 
 	INIT_LIST_HEAD(&ptype_all);
-	for (i = 0; i < 16; i++) 
+	for (i = 0; i < 16; i++) {
 		INIT_LIST_HEAD(&ptype_base[i]);
+		INIT_LIST_HEAD(&gro_ptype_base[i]);
+	}
 
 	for (i = 0; i < ARRAY_SIZE(dev_name_head); i++)
 		INIT_HLIST_HEAD(&dev_name_head[i]);

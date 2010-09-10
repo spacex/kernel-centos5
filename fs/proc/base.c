@@ -188,6 +188,10 @@ enum pid_directory_inos {
 	PROC_TID_OOM_ADJUST,
 	PROC_TGID_LIMITS,
 	PROC_TID_LIMITS,
+#ifdef CONFIG_TASK_IO_ACCOUNTING
+	PROC_TGID_IO,
+	PROC_TID_IO,
+#endif
 	/* Add new entries before this */
 	PROC_TID_FD_DIR = 0x8000,	/* 0x8000-0xffff */
 };
@@ -251,6 +255,9 @@ static struct pid_entry tgid_base_stuff[] = {
 	E(PROC_TGID_COREDUMP_FILTER, "coredump_filter",
 	  S_IFREG|S_IRUGO|S_IWUSR),
 #endif
+#ifdef CONFIG_TASK_IO_ACCOUNTING
+	E(PROC_TGID_IO,             "io",  S_IFREG|S_IRUGO),
+#endif
 
 	{0,0,NULL,0}
 };
@@ -295,6 +302,9 @@ static struct pid_entry tid_base_stuff[] = {
 	E(PROC_TID_LOGINUID, "loginuid", S_IFREG|S_IWUSR|S_IRUGO),
 #endif
 	E(PROC_TID_LIMITS, "limits", S_IFREG|S_IRUSR),
+#ifdef CONFIG_TASK_IO_ACCOUNTING
+	E(PROC_TID_IO,         "io",      S_IFREG|S_IRUGO),
+#endif
 
 	{0,0,NULL,0}
 };
@@ -580,9 +590,83 @@ static int proc_oom_score(struct task_struct *task, char *buffer)
 	struct timespec uptime;
 
 	do_posix_clock_monotonic_gettime(&uptime);
+	read_lock(&tasklist_lock);
 	points = badness(task, uptime.tv_sec);
+	read_unlock(&tasklist_lock);
 	return sprintf(buffer, "%lu\n", points);
 }
+
+#ifdef CONFIG_TASK_IO_ACCOUNTING
+static int do_io_accounting(struct task_struct *task, char *buffer, int whole)
+{
+	u64 rchar, wchar, syscr, syscw;
+	struct task_io_accounting ioac;
+
+	rchar = task->rchar;
+	wchar = task->wchar;
+	syscr = task->syscr;
+	syscw = task->syscw;
+	memcpy(&ioac, &(task_aux(task)->ioac), sizeof(ioac));
+
+	if (whole) {
+		unsigned long flags;
+
+		if (lock_task_sighand(task, &flags)) {
+			struct signal_struct_aux *sigaux;
+			struct task_struct *t = task;
+
+			sigaux = signal_aux(task->signal);
+
+			rchar += sigaux->rchar;
+			wchar += sigaux->wchar;
+			syscr += sigaux->syscr;
+			syscw += sigaux->syscw;
+
+			ioac.read_bytes += sigaux->ioac.read_bytes;
+			ioac.write_bytes += sigaux->ioac.write_bytes;
+			ioac.cancelled_write_bytes +=
+					sigaux->ioac.cancelled_write_bytes;
+
+			while_each_thread(task, t) {
+				rchar += t->rchar;
+				wchar += t->wchar;
+				syscr += t->syscr;
+				syscw += t->syscw;
+
+				ioac.read_bytes += task_aux(t)->ioac.read_bytes;
+				ioac.write_bytes +=
+					task_aux(t)->ioac.write_bytes;
+				ioac.cancelled_write_bytes +=
+					task_aux(t)->ioac.cancelled_write_bytes;
+			}
+			unlock_task_sighand(task, &flags);
+		}
+	}
+
+	return sprintf(buffer,
+			"rchar: %llu\n"
+			"wchar: %llu\n"
+			"syscr: %llu\n"
+			"syscw: %llu\n"
+			"read_bytes: %llu\n"
+			"write_bytes: %llu\n"
+			"cancelled_write_bytes: %llu\n",
+			rchar, wchar, syscr, syscw,
+			ioac.read_bytes, ioac.write_bytes,
+			ioac.cancelled_write_bytes);
+}
+
+static int proc_tid_io_accounting(struct task_struct *task, char *buffer)
+{
+	return do_io_accounting(task, buffer, 0);
+}
+
+static int proc_tgid_io_accounting(struct task_struct *task, char *buffer)
+{
+	return do_io_accounting(task, buffer, 1);
+}
+#endif /* CONFIG_TASK_IO_ACCOUNTING */
+
 
 /************************************************************************/
 /*                       Here the fs part begins                        */
@@ -2043,6 +2127,16 @@ static struct dentry *proc_pident_lookup(struct inode *dir,
 #if defined(USE_ELF_CORE_DUMP) && defined(CONFIG_ELF_CORE)
 		case PROC_TGID_COREDUMP_FILTER:
 			inode->i_fop = &proc_coredump_filter_operations;
+			break;
+#endif
+#ifdef CONFIG_TASK_IO_ACCOUNTING
+		case PROC_TGID_IO:
+			inode->i_fop = &proc_info_file_operations;
+			ei->op.proc_read = proc_tgid_io_accounting;
+			break;
+		case PROC_TID_IO:
+			inode->i_fop = &proc_info_file_operations;
+			ei->op.proc_read = proc_tid_io_accounting;
 			break;
 #endif
 		default:

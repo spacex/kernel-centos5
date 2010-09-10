@@ -177,11 +177,13 @@ static inline unsigned int cpuid_edx(unsigned int op)
 #define _EFER_LME 8  /* Long mode enable */
 #define _EFER_LMA 10 /* Long mode active (read-only) */
 #define _EFER_NX 11  /* No execute enable */
+#define _EFER_SVME 12 /* Enable virtualization */
 
 #define EFER_SCE (1<<_EFER_SCE)
 #define EFER_LME (1<<_EFER_LME)
 #define EFER_LMA (1<<_EFER_LMA)
 #define EFER_NX (1<<_EFER_NX)
+#define EFER_SVME (1<<_EFER_SVME)
 
 /* Intel MSRs. Some also available on other CPUs */
 #define MSR_IA32_TSC		0x10
@@ -410,5 +412,12 @@ static inline unsigned int cpuid_edx(unsigned int op)
 #define MSR_P4_TC_ESCR1 		0x3c5
 #define MSR_P4_U2L_ESCR0 		0x3b0
 #define MSR_P4_U2L_ESCR1 		0x3b1
+
+
+/* AMD-V MSRs */
+
+#define MSR_VM_CR                       0xc0010114
+#define MSR_VM_IGNNE                    0xc0010115
+#define MSR_VM_HSAVE_PA                 0xc0010117
 
 #endif

@@ -274,7 +274,8 @@ int ip_fib_check_default(u32 gw, struct net_device *dev)
 
 void rtmsg_fib(int event, u32 key, struct fib_alias *fa,
 	       int z, u32 tb_id,
-	       struct nlmsghdr *n, struct netlink_skb_parms *req)
+	       struct nlmsghdr *n, struct netlink_skb_parms *req,
+	       unsigned int nlm_flags)
 {
 	struct sk_buff *skb;
 	u32 pid = req ? req->pid : n->nlmsg_pid;
@@ -287,7 +288,7 @@ void rtmsg_fib(int event, u32 key, struct fib_alias *fa,
 	if (fib_dump_info(skb, pid, n->nlmsg_seq, event, tb_id,
 			  fa->fa_type, fa->fa_scope, &key, z,
 			  fa->fa_tos,
-			  fa->fa_info, 0) < 0) {
+			  fa->fa_info, nlm_flags) < 0) {
 		kfree_skb(skb);
 		return;
 	}

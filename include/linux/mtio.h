@@ -338,6 +338,7 @@ struct mtftcmd {
 #define MT_ST_SCSI2LOGICAL      0x800
 #define MT_ST_SYSV              0x1000
 #define MT_ST_NOWAIT            0x2000
+#define MT_ST_SILI		0x4000
 
 /* The mode parameters to be controlled. Parameter chosen with bits 20-28 */
 #define MT_ST_CLEAR_DEFAULT	0xfffff

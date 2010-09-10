@@ -343,6 +343,9 @@ void delete_partition(struct gendisk *disk, int part)
 		return;
 	if (!p->nr_sects)
 		return;
+	rcu_assign_pointer(disk->part[part-1], NULL);
+	synchronize_rcu();
+
 	disk->part[part-1] = NULL;
 	p->start_sect = 0;
 	p->nr_sects = 0;

@@ -418,24 +418,6 @@ start:
 .gotr:
 	l     %r10,.tbl			# EBCDIC to ASCII table
 	tr    0(240,%r8),0(%r10)
-	stidp __LC_CPUID		# Are we running on VM maybe
-	cli   __LC_CPUID,0xff
-	bnz   .test
-	.long 0x83300060		# diag 3,0,x'0060' - storage size
-	b     .done
-.test:
-	mvc   0x68(8),.pgmnw		# set up pgm check handler
-	l     %r2,.fourmeg
-	lr    %r3,%r2
-	bctr  %r3,%r0			# 4M-1
-.loop:  iske  %r0,%r3
-	ar    %r3,%r2
-.pgmx:
-	sr    %r3,%r2
-	la    %r3,1(%r3)
-.done:
-        l     %r1,.memsize
-	st    %r3,ARCH_OFFSET(%r1)
 	slr   %r0,%r0
 	st    %r0,INITRD_SIZE+ARCH_OFFSET-PARMAREA(%r11)
 	st    %r0,INITRD_START+ARCH_OFFSET-PARMAREA(%r11)
@@ -443,9 +425,6 @@ start:
 .tbl:	.long _ebcasc			# translate table
 .cmd:	.long COMMAND_LINE		# address of command line buffer
 .parm:	.long PARMAREA
-.memsize: .long memory_size
-.fourmeg: .long 0x00400000      	# 4M
-.pgmnw:	.long 0x00080000,.pgmx
 .lowcase:
 	.byte 0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07 
 	.byte 0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f
@@ -480,65 +459,6 @@ start:
 	.byte 0xa8,0xa9,0xea,0xeb,0xec,0xed,0xee,0xef	# yz
 	.byte 0xf0,0xf1,0xf2,0xf3,0xf4,0xf5,0xf6,0xf7 
 	.byte 0xf8,0xf9,0xfa,0xfb,0xfc,0xfd,0xfe,0xff
-
-.macro GET_IPL_DEVICE
-.Lget_ipl_device:
-	l     %r1,0xb8			# get sid
-	sll   %r1,15			# test if subchannel is enabled
-	srl   %r1,31
-	ltr   %r1,%r1
-	bz    2f-.LPG1(%r13)		# subchannel disabled
-	l     %r1,0xb8
-	la    %r5,.Lipl_schib-.LPG1(%r13)
-	stsch 0(%r5)		        # get schib of subchannel
-	bnz   2f-.LPG1(%r13)		# schib not available
-	tm    5(%r5),0x01		# devno valid?
-	bno   2f-.LPG1(%r13)
-	la    %r6,ipl_parameter_flags-.LPG1(%r13)
-	oi    3(%r6),0x01		# set flag
-	la    %r2,ipl_devno-.LPG1(%r13)
-	mvc   0(2,%r2),6(%r5)		# store devno
-	tm    4(%r5),0x80		# qdio capable device?
-	bno   2f-.LPG1(%r13)
-	oi    3(%r6),0x02		# set flag
-
-	# copy ipl parameters
-
-	lhi   %r0,4096
-	l     %r2,20(%r0)		# get address of parameter list
-	lhi   %r3,IPL_PARMBLOCK_ORIGIN
-	st    %r3,20(%r0)
-	lhi   %r4,1
-	cr    %r2,%r3			# start parameters < destination ?
-	jl    0f
-	lhi   %r1,1			# copy direction is upwards
-	j     1f
-0:	lhi   %r1,-1			# copy direction is downwards
-	ar    %r2,%r0
-	ar    %r3,%r0
-	ar    %r2,%r1
-	ar    %r3,%r1
-1:	mvc   0(1,%r3),0(%r2)		# finally copy ipl parameters
-	ar    %r3,%r1
-	ar    %r2,%r1
-	sr    %r0,%r4
-	jne   1b
-	b     2f-.LPG1(%r13)
-
-	.align 4
-.Lipl_schib:
-	.rept 13
-	.long 0
-	.endr
-
-	.globl ipl_parameter_flags
-ipl_parameter_flags:
-	.long 0
-	.globl ipl_devno
-ipl_devno:
-	.word 0
-2:
-.endm
 
 #ifdef CONFIG_64BIT
 #include "head64.S"

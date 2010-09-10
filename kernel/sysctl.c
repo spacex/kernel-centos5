@@ -78,6 +78,7 @@ extern int sysctl_drop_caches;
 extern int percpu_pagelist_fraction;
 extern int compat_log;
 extern int flush_mmap_pages;
+extern int max_writeback_pages;
 
 #if defined(CONFIG_X86_LOCAL_APIC) && defined(CONFIG_X86)
 extern int proc_unknown_nmi_panic(ctl_table *, int, struct file *,
@@ -1125,6 +1126,16 @@ static ctl_table vm_table[] = {
 		.procname	= "flush_mmap_pages",
 		.data		= &flush_mmap_pages,
 		.maxlen		= sizeof(flush_mmap_pages),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+		.strategy	= &sysctl_intvec,
+		.extra1		= &zero,
+	},
+	{
+		.ctl_name	= VM_MAX_WRITEBACK_PAGES,
+		.procname	= "max_writeback_pages",
+		.data		= &max_writeback_pages,
+		.maxlen		= sizeof(max_writeback_pages),
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec,
 		.strategy	= &sysctl_intvec,

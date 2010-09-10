@@ -78,4 +78,9 @@ source "drivers/rtc/Kconfig"
 
 source "drivers/dma/Kconfig"
 
+source "drivers/dca/Kconfig"
+
+source "drivers/dma_v3/Kconfig"
+
+source "drivers/uio/Kconfig"
 endmenu

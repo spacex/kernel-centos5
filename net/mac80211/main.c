@@ -533,8 +533,10 @@ static int ieee80211_stop(struct net_device *dev)
 		/* fall through */
 	default:
 		if (local->scan_dev == sdata->dev) {
-			if (!local->ops->hw_scan)
-				cancel_rearming_delayed_work(&local->scan_work);
+			if (!local->ops->hw_scan) {
+				cancel_delayed_work(&local->scan_work);
+				flush_workqueue(local->hw.workqueue);
+			}
 			/*
 			 * The software scan can no longer run now, so we can
 			 * clear out the scan_dev reference. However, the

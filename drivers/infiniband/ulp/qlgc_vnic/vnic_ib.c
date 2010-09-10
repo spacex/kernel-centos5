@@ -34,9 +34,9 @@
 #include <linux/random.h>
 #include <linux/netdevice.h>
 #include <linux/list.h>
-#include <rdma/ib_cache.h>
 
 #include "vnic_util.h"
+#include "vnic_data.h"
 #include "vnic_config.h"
 #include "vnic_ib.h"
 #include "vnic_viport.h"
@@ -44,11 +44,15 @@
 #include "vnic_main.h"
 #include "vnic_stats.h"
 
-static int vnic_ib_inited = 0;
-extern struct list_head vnic_list;
-
+static int vnic_ib_inited;
 static void vnic_add_one(struct ib_device *device);
 static void vnic_remove_one(struct ib_device *device);
+static int vnic_defer_completion(void *ptr);
+
+static int vnic_ib_mc_init_qp(struct mc_data *mc_data,
+		struct vnic_ib_config *config,
+		struct ib_pd *pd,
+		struct viport_config *viport_config);
 
 static struct ib_client vnic_client = {
 	.name = "vnic",
@@ -56,14 +60,87 @@ static struct ib_client vnic_client = {
 	.remove = vnic_remove_one
 };
 
-static struct ib_sa_client vnic_sa_client;
+struct ib_sa_client vnic_sa_client;
 
-static CLASS_DEVICE_ATTR(create_primary, S_IWUSR, NULL,
-			 vnic_create_primary);
-static CLASS_DEVICE_ATTR(create_secondary, S_IWUSR, NULL,
-			 vnic_create_secondary);
+int vnic_ib_init(void)
+{
+	int ret = -1;
 
-static CLASS_DEVICE_ATTR(delete_vnic, S_IWUSR, NULL, vnic_delete);
+	IB_FUNCTION("vnic_ib_init()\n");
+
+	/* class has to be registered before
+	 * calling ib_register_client() because, that call
+	 * will trigger vnic_add_port() which will register
+	 * class_device for the port with the parent class
+	 * as vnic_class
+	 */
+	ret = class_register(&vnic_class);
+	if (ret) {
+		printk(KERN_ERR PFX "couldn't register class"
+		       " infiniband_qlgc_vnic; error %d", ret);
+		goto out;
+	}
+
+	ib_sa_register_client(&vnic_sa_client);
+	ret = ib_register_client(&vnic_client);
+	if (ret) {
+		printk(KERN_ERR PFX "couldn't register IB client;"
+		       " error %d", ret);
+		goto err_ib_reg;
+	}
+
+ 	interface_cdev.class_dev.class = &vnic_class;
+ 	snprintf(interface_cdev.class_dev.class_id,
+		 BUS_ID_SIZE, "interfaces");
+ 	init_completion(&interface_cdev.released);
+  	ret = class_device_register(&interface_cdev.class_dev);
+	if (ret) {
+		printk(KERN_ERR PFX "couldn't register class interfaces;"
+		       " error %d", ret);
+		goto err_class_dev;
+	}
+ 	ret = class_device_create_file(&interface_cdev.class_dev,
+ 				       &class_device_attr_delete_vnic);
+	if (ret) {
+		printk(KERN_ERR PFX "couldn't create class file"
+		       " 'delete_vnic'; error %d", ret);
+		goto err_class_file;
+	}
+
+	ret = class_device_create_file(&interface_cdev.class_dev,
+					&class_device_attr_force_failover);
+	if (ret) {
+		printk(KERN_ERR PFX "couldn't create class file"
+		       " 'force_failover'; error %d", ret);
+		goto err_force_failover_file;
+	}
+
+	ret = class_device_create_file(&interface_cdev.class_dev,
+					&class_device_attr_unfailover);
+	if (ret) {
+		printk(KERN_ERR PFX "couldn't create class file"
+		       " 'unfailover'; error %d", ret);
+		goto err_unfailover_file;
+	}
+	vnic_ib_inited = 1;
+
+	return ret;
+err_unfailover_file:
+	class_device_remove_file(&interface_cdev.class_dev,
+				 &class_device_attr_force_failover);
+err_force_failover_file:
+	class_device_remove_file(&interface_cdev.class_dev,
+				 &class_device_attr_delete_vnic);
+err_class_file:
+	class_device_unregister(&interface_cdev.class_dev);
+err_class_dev:
+	ib_unregister_client(&vnic_client);
+err_ib_reg:
+	ib_sa_unregister_client(&vnic_sa_client);
+	class_unregister(&vnic_class);
+out:
+	return ret;
+}
 
 static struct vnic_ib_port *vnic_add_port(struct vnic_ib_device *device,
 					  u8 port_num)
@@ -83,14 +160,15 @@ static struct vnic_ib_port *vnic_add_port(struct vnic_ib_device *device,
 	snprintf(port->cdev_info.class_dev.class_id, BUS_ID_SIZE,
 		 "vnic-%s-%d", device->dev->name, port_num);
 
-	if (class_device_register(&port->cdev_info.class_dev))
+ 	if (class_device_register(&port->cdev_info.class_dev))
 		goto free_port;
 
-	if (class_device_create_file(&port->cdev_info.class_dev,
-				     &class_device_attr_create_primary))
+ 	if (class_device_create_file(&port->cdev_info.class_dev,
+ 				     &class_device_attr_create_primary))
 		goto err_class;
-	if (class_device_create_file(&port->cdev_info.class_dev,
-				     &class_device_attr_create_secondary))
+
+ 	if (class_device_create_file(&port->cdev_info.class_dev,
+ 				     &class_device_attr_create_secondary))
 		goto err_class;
 
 	return port;
@@ -143,6 +221,11 @@ static void vnic_remove_one(struct ib_device *device)
 	vnic_dev = ib_get_client_data(device, &vnic_client);
 	list_for_each_entry_safe(port, tmp_port,
 				 &vnic_dev->port_list, list) {
+
+		class_device_remove_file(&port->cdev_info.class_dev,
+				&class_device_attr_create_primary);
+		class_device_remove_file(&port->cdev_info.class_dev,
+				&class_device_attr_create_secondary);
 		class_device_unregister(&port->cdev_info.class_dev);
 		/*
 		 * wait for sysfs entries to go away, so that no new vnics
@@ -156,8 +239,8 @@ static void vnic_remove_one(struct ib_device *device)
 
 	/* TODO Only those vnic interfaces associated with
 	 * the HCA whose remove event is called should be freed
-         * Currently all the vnic interfaces are freeed
-         */
+	 * Currently all the vnic interfaces are freed
+	 */
 
 	while (!list_empty(&vnic_list)) {
 		struct vnic *vnic =
@@ -170,74 +253,21 @@ static void vnic_remove_one(struct ib_device *device)
 
 }
 
-int vnic_ib_init(void)
-{
-	int ret = -1;
-
-	IB_FUNCTION("vnic_ib_init()\n");
-
-	/* class has to be registered before
-	 * calling ib_register_client() because, that call
-	 * will trigger vnic_add_port() which will register
-	 * class_device for the port with the parent class
-	 * as vnic_class
-	 */
-	ret = class_register(&vnic_class);
-	if (ret) {
-		printk(KERN_ERR PFX "couldn't register class"
-		       " infiniband_vnic; error %d", ret);
-		goto out;
-	}
-
-	ib_sa_register_client(&vnic_sa_client);
-	ret = ib_register_client(&vnic_client);
-	if (ret) {
-		printk(KERN_ERR PFX "couldn't register IB client;"
-		       " error %d", ret);
-		goto err_ib_reg;
-	}
-
-	interface_cdev.class_dev.class = &vnic_class;
-	snprintf(interface_cdev.class_dev.class_id,
-		 BUS_ID_SIZE, "interfaces");
-	init_completion(&interface_cdev.released);
-	ret = class_device_register(&interface_cdev.class_dev);
-	if (ret) {
-		printk(KERN_ERR PFX "couldn't register class interfaces;"
-		       " error %d", ret);
-		goto err_class_dev;
-	}
-	ret = class_device_create_file(&interface_cdev.class_dev,
-				       &class_device_attr_delete_vnic);
-	if (ret) {
-		printk(KERN_ERR PFX "couldn't create class file"
-		       " 'delete_vnic'; error %d", ret);
-		goto err_class_file;
-	}
-
-	vnic_ib_inited = 1;
-
-	return ret;
-err_class_file:
-	class_device_unregister(&interface_cdev.class_dev);
-err_class_dev:
-	ib_unregister_client(&vnic_client);
-err_ib_reg:
-	ib_sa_unregister_client(&vnic_sa_client);
-	class_unregister(&vnic_class);
-out:
-	return ret;
-}
-
 void vnic_ib_cleanup(void)
 {
 	IB_FUNCTION("vnic_ib_cleanup()\n");
 
 	if (!vnic_ib_inited)
 		return;
+	class_device_remove_file(&interface_cdev.class_dev,
+				&class_device_attr_unfailover);
+	class_device_remove_file(&interface_cdev.class_dev,
+				&class_device_attr_force_failover);
+	class_device_remove_file(&interface_cdev.class_dev,
+				&class_device_attr_delete_vnic);
 
-	class_device_unregister(&interface_cdev.class_dev);
-	wait_for_completion(&interface_cdev.released);
+ 	class_device_unregister(&interface_cdev.class_dev);
+ 	wait_for_completion(&interface_cdev.released);
 
 	ib_unregister_client(&vnic_client);
 	ib_sa_unregister_client(&vnic_sa_client);
@@ -250,13 +280,14 @@ static void vnic_path_rec_completion(int status,
 {
 	struct vnic_ib_path_info *p = context;
 	p->status = status;
+	IB_INFO("Service level for VNIC is %d\n", pathrec->sl);
 	if (!status)
 		p->path = *pathrec;
 
 	complete(&p->done);
 }
 
-int vnic_ib_get_path(struct netpath *netpath, struct vnic * vnic)
+int vnic_ib_get_path(struct netpath *netpath, struct vnic *vnic)
 {
 	struct viport_config *config = netpath->viport->config;
 	int ret = 0;
@@ -269,9 +300,10 @@ int vnic_ib_get_path(struct netpath *netpath, struct vnic * vnic)
 					    config->ibdev,
 					    config->port,
 					    &config->path_info.path,
-					    IB_SA_PATH_REC_DGID      |
-					    IB_SA_PATH_REC_SGID      |
-					    IB_SA_PATH_REC_NUMB_PATH |
+					    IB_SA_PATH_REC_SERVICE_ID	|
+					    IB_SA_PATH_REC_DGID     	|
+					    IB_SA_PATH_REC_SGID      	|
+					    IB_SA_PATH_REC_NUMB_PATH 	|
 					    IB_SA_PATH_REC_PKEY,
 					    config->sa_path_rec_get_timeout,
 					    GFP_KERNEL,
@@ -282,15 +314,15 @@ int vnic_ib_get_path(struct netpath *netpath, struct vnic * vnic)
 	if (config->path_info.path_query_id < 0) {
 		IB_ERROR("SA path record query failed; error %d\n",
 			 config->path_info.path_query_id);
-		ret= config->path_info.path_query_id;
+		ret = config->path_info.path_query_id;
 		goto out;
 	}
 
 	wait_for_completion(&config->path_info.done);
 
 	if (config->path_info.status < 0) {
-		printk(KERN_WARNING PFX "path record query failed for dgid "
-		       "%04x:%04x:%04x:%04x:%04x:%04x:%04x:%04x\n",
+		printk(KERN_WARNING PFX "connection not available to dgid "
+		       "%04x:%04x:%04x:%04x:%04x:%04x:%04x:%04x",
 		       (int)be16_to_cpu(*(__be16 *) &config->path_info.path.
 					dgid.raw[0]),
 		       (int)be16_to_cpu(*(__be16 *) &config->path_info.path.
@@ -309,14 +341,11 @@ int vnic_ib_get_path(struct netpath *netpath, struct vnic * vnic)
 					dgid.raw[14]));
 
 		if (config->path_info.status == -ETIMEDOUT)
-			printk(KERN_WARNING PFX
-			       "reason: path record query timed out\n");
+			printk(KERN_INFO " path query timed out\n");
 		else if (config->path_info.status == -EIO)
-			printk(KERN_WARNING PFX
-			       "reason: error in sending path record query\n");
+			printk(KERN_INFO " path query sending error\n");
 		else
-			printk(KERN_WARNING PFX "reason: error %d in sending"
-			       " path record query\n",
+			printk(KERN_INFO " error %d\n",
 			       config->path_info.status);
 
 		ret = config->path_info.status;
@@ -328,6 +357,31 @@ out:
 	return ret;
 }
 
+static inline void vnic_ib_handle_completions(struct ib_wc *wc,
+					      struct vnic_ib_conn *ib_conn,
+					      u32 *comp_num,
+					      cycles_t *comp_time)
+{
+	struct io *io;
+
+	io = (struct io *)(wc->wr_id);
+	vnic_ib_comp_stats(ib_conn, comp_num);
+	if (wc->status) {
+		IB_INFO("completion error  wc.status %d"
+			 " wc.opcode %d vendor err 0x%x\n",
+			  wc->status, wc->opcode, wc->vendor_err);
+	} else if (io) {
+		vnic_ib_io_stats(io, ib_conn, *comp_time);
+		if (io->type == RECV_UD) {
+			struct ud_recv_io *recv_io =
+				container_of(io, struct ud_recv_io, io);
+			recv_io->len = wc->byte_len;
+		}
+		if (io->routine)
+			(*io->routine) (io);
+	}
+}
+
 static void ib_qp_event(struct ib_event *event, void *context)
 {
 	IB_ERROR("QP event %d\n", event->event);
@@ -335,36 +389,69 @@ static void ib_qp_event(struct ib_event *event, void *context)
 
 static void vnic_ib_completion(struct ib_cq *cq, void *ptr)
 {
-	struct ib_wc wc;
-	struct io *io;
 	struct vnic_ib_conn *ib_conn = ptr;
-	cycles_t           comp_time;
-	u32              comp_num = 0;
+	unsigned long	 flags;
+	int compl_received;
+	struct ib_wc wc;
+	cycles_t  comp_time;
+	u32  comp_num = 0;
 
-	vnic_ib_note_comptime_stats(&comp_time);
-	vnic_ib_callback_stats(ib_conn);
+	/* for multicast, cm_id is NULL, so skip that test */
+	if (ib_conn->cm_id &&
+	    (ib_conn->state != IB_CONN_CONNECTED))
+		return;
 
-	ib_req_notify_cq(cq, IB_CQ_NEXT_COMP);
-	while (ib_poll_cq(cq, 1, &wc) > 0) {
-		io = (struct io *)(wc.wr_id);
-		vnic_ib_comp_stats(ib_conn, &comp_num);
-		if (wc.status) {
-#if 0
-			IB_ERROR("completion error  wc.status %d"
-				 " wc.opcode %d vendor err 0x%x\n",
-				 wc.status, wc.opcode, wc.vendor_err);
-#endif
-		} else if (io) {
-			vnic_ib_io_stats(io, ib_conn, comp_time);
-			if (io->routine)
-				(*io->routine) (io);
+	/* Check if completion processing is taking place in thread
+	 * If not then process completions in this handler,
+	 * else set compl_received if not set, to indicate that
+	 * there are more completions to process in thread.
+	 */
+
+	spin_lock_irqsave(&ib_conn->compl_received_lock, flags);
+	compl_received = ib_conn->compl_received;
+	spin_unlock_irqrestore(&ib_conn->compl_received_lock, flags);
+
+	if (ib_conn->in_thread || compl_received) {
+		if (!compl_received) {
+			spin_lock_irqsave(&ib_conn->compl_received_lock, flags);
+			ib_conn->compl_received = 1;
+			spin_unlock_irqrestore(&ib_conn->compl_received_lock,
+									flags);
 		}
+		wake_up(&(ib_conn->callback_wait_queue));
+	} else {
+		vnic_ib_note_comptime_stats(&comp_time);
+		vnic_ib_callback_stats(ib_conn);
+		ib_req_notify_cq(cq, IB_CQ_NEXT_COMP);
+		while (ib_poll_cq(cq, 1, &wc) > 0) {
+			vnic_ib_handle_completions(&wc, ib_conn, &comp_num,
+								 &comp_time);
+			if (ib_conn->cm_id &&
+				 ib_conn->state != IB_CONN_CONNECTED)
+				break;
+
+			/* If we get more completions than the completion limit
+			 * defer completion to the thread
+			 */
+			if ((!ib_conn->in_thread) &&
+			    (comp_num >= ib_conn->ib_config->completion_limit)) {
+				ib_conn->in_thread = 1;
+				spin_lock_irqsave(
+					&ib_conn->compl_received_lock, flags);
+				ib_conn->compl_received = 1;
+				spin_unlock_irqrestore(
+					&ib_conn->compl_received_lock, flags);
+				wake_up(&(ib_conn->callback_wait_queue));
+				break;
+			}
+
+		}
+		vnic_ib_maxio_stats(ib_conn, comp_num);
 	}
-	vnic_ib_maxio_stats(ib_conn, comp_num);
 }
 
-static int vnic_ib_mod_qp_to_rts(struct ib_cm_id * cm_id,
-			     struct vnic_ib_conn * ib_conn)
+static int vnic_ib_mod_qp_to_rts(struct ib_cm_id *cm_id,
+			     struct vnic_ib_conn *ib_conn)
 {
 	int attr_mask = 0;
 	int ret;
@@ -376,25 +463,30 @@ static int vnic_ib_mod_qp_to_rts(struct ib_cm_id * cm_id,
 
 	qp_attr->qp_state = IB_QPS_RTR;
 
-	if ((ret = ib_cm_init_qp_attr(cm_id, qp_attr, &attr_mask)))
+	ret = ib_cm_init_qp_attr(cm_id, qp_attr, &attr_mask);
+	if (ret)
 		goto out;
 
-	if((ret = ib_modify_qp(ib_conn->qp, qp_attr, attr_mask)))
+	ret = ib_modify_qp(ib_conn->qp, qp_attr, attr_mask);
+	if (ret)
 		goto out;
 
 	IB_INFO("QP RTR\n");
 
 	qp_attr->qp_state = IB_QPS_RTS;
 
-	if((ret = ib_cm_init_qp_attr(cm_id, qp_attr, &attr_mask)))
+	ret = ib_cm_init_qp_attr(cm_id, qp_attr, &attr_mask);
+	if (ret)
 		goto out;
 
-	if((ret=ib_modify_qp(ib_conn->qp, qp_attr, attr_mask)))
+	ret = ib_modify_qp(ib_conn->qp, qp_attr, attr_mask);
+	if (ret)
 		goto out;
 
 	IB_INFO("QP RTS\n");
 
-	if((ret = ib_send_cm_rtu(cm_id, NULL, 0)))
+	ret = ib_send_cm_rtu(cm_id, NULL, 0);
+	if (ret)
 		goto out;
 out:
 	kfree(qp_attr);
@@ -406,7 +498,6 @@ int vnic_ib_cm_handler(struct ib_cm_id *cm_id, struct ib_cm_event *event)
 	struct vnic_ib_conn *ib_conn = cm_id->context;
 	struct viport *viport = ib_conn->viport;
 	int err = 0;
-	int disconn = 0;
 
 	switch (event->event) {
 	case IB_CM_REQ_ERROR:
@@ -425,7 +516,7 @@ int vnic_ib_cm_handler(struct ib_cm_id *cm_id, struct ib_cm_event *event)
 		}
 		break;
 	case IB_CM_REJ_RECEIVED:
-		printk(KERN_ERR PFX "CM rejected control connection \n");
+		printk(KERN_ERR PFX " CM rejected control connection\n");
 		if (event->param.rej_rcvd.reason ==
 		    IB_CM_REJ_INVALID_SERVICE_ID)
 			printk(KERN_ERR "reason: invalid service ID. "
@@ -435,7 +526,7 @@ int vnic_ib_cm_handler(struct ib_cm_id *cm_id, struct ib_cm_event *event)
 			       event->param.rej_rcvd.reason);
 
 		err = 1;
-		disconn = 1;
+		viport->retry = 1;
 		break;
 	case IB_CM_MRA_RECEIVED:
 		IB_INFO("CM MRA received\n");
@@ -456,9 +547,6 @@ int vnic_ib_cm_handler(struct ib_cm_id *cm_id, struct ib_cm_event *event)
 		break;
 
 	}
-
-	if (disconn)
-		viport->disconnect = 1;
 
 	if (err) {
 		ib_conn->state = IB_CONN_DISCONNECTED;
@@ -530,10 +618,10 @@ int vnic_ib_cm_connect(struct vnic_ib_conn *ib_conn)
 	return ret;
 }
 
-static int vnic_ib_init_qp(struct vnic_ib_conn * ib_conn,
+static int vnic_ib_init_qp(struct vnic_ib_conn *ib_conn,
 			   struct vnic_ib_config *config,
 			   struct ib_pd	*pd,
-			   struct viport_config * viport_config)
+			   struct viport_config *viport_config)
 {
 	struct ib_qp_init_attr	*init_attr;
 	struct ib_qp_attr	*attr;
@@ -567,13 +655,11 @@ static int vnic_ib_init_qp(struct vnic_ib_conn * ib_conn,
 		goto destroy_qp;
 	}
 
-	ret = ib_find_cached_pkey(viport_config->ibdev,
-				  viport_config->port,
-				  be16_to_cpu(viport_config->path_info.path.
-					      pkey),
-				  &attr->pkey_index);
+	ret = ib_find_pkey(viport_config->ibdev, viport_config->port,
+			  be16_to_cpu(viport_config->path_info.path.pkey),
+			  &attr->pkey_index);
 	if (ret) {
-		printk(KERN_WARNING PFX "ib_find_cached_pkey() failed; "
+		printk(KERN_WARNING PFX "ib_find_pkey() failed; "
 		       "error %d\n", ret);
 		goto freeattr;
 	}
@@ -620,31 +706,51 @@ int vnic_ib_conn_init(struct vnic_ib_conn *ib_conn, struct viport *viport,
 	}
 
 	ib_conn->cq = ib_create_cq(viport_config->ibdev, vnic_ib_completion,
+#ifdef BUILD_FOR_OFED_1_2
+				   NULL, ib_conn, cq_size);
+#else
 				   NULL, ib_conn, cq_size, 0);
+#endif
 	if (IS_ERR(ib_conn->cq)) {
 		IB_ERROR("could not create CQ\n");
 		goto out;
 	}
 
+	IB_INFO("cq created %p %d\n", ib_conn->cq, cq_size);
 	ib_req_notify_cq(ib_conn->cq, IB_CQ_NEXT_COMP);
+	init_waitqueue_head(&(ib_conn->callback_wait_queue));
+	init_completion(&(ib_conn->callback_thread_exit));
+
+	spin_lock_init(&ib_conn->compl_received_lock);
+
+	ib_conn->callback_thread = kthread_run(vnic_defer_completion, ib_conn,
+						"qlgc_vnic_def_compl");
+	if (IS_ERR(ib_conn->callback_thread)) {
+		IB_ERROR("Could not create vnic_callback_thread;"
+			" error %d\n", (int) PTR_ERR(ib_conn->callback_thread));
+		ib_conn->callback_thread = NULL;
+		goto destroy_cq;
+	}
 
 	ret = vnic_ib_init_qp(ib_conn, config, pd, viport_config);
 
-	if(ret)
-		goto destroy_cq;
+	if (ret)
+		goto destroy_thread;
 
-	ib_conn->conn_lock  = SPIN_LOCK_UNLOCKED;
+	spin_lock_init(&ib_conn->conn_lock);
 	ib_conn->state = IB_CONN_INITTED;
 
 	return ret;
 
+destroy_thread:
+	vnic_completion_cleanup(ib_conn);
 destroy_cq:
 	ib_destroy_cq(ib_conn->cq);
 out:
 	return ret;
 }
 
-int vnic_ib_post_recv(struct vnic_ib_conn * ib_conn, struct io * io)
+int vnic_ib_post_recv(struct vnic_ib_conn *ib_conn, struct io *io)
 {
 	cycles_t		post_time;
 	struct ib_recv_wr	*bad_wr;
@@ -656,14 +762,17 @@ int vnic_ib_post_recv(struct vnic_ib_conn * ib_conn, struct io * io)
 	spin_lock_irqsave(&ib_conn->conn_lock, flags);
 
 	if (!vnic_ib_conn_initted(ib_conn) &&
-	    !vnic_ib_conn_connected(ib_conn))
-		return -EINVAL;
+	    !vnic_ib_conn_connected(ib_conn)) {
+		ret = -EINVAL;
+		goto out;
+	}
 
 	vnic_ib_pre_rcvpost_stats(ib_conn, io, &post_time);
 	io->type = RECV;
 	ret = ib_post_recv(ib_conn->qp, &io->rwr, &bad_wr);
 	if (ret) {
 		IB_ERROR("error in posting rcv wr; error %d\n", ret);
+		ib_conn->state = IB_CONN_ERRORED;
 		goto out;
 	}
 
@@ -674,7 +783,7 @@ out:
 
 }
 
-int vnic_ib_post_send(struct vnic_ib_conn * ib_conn, struct io * io)
+int vnic_ib_post_send(struct vnic_ib_conn *ib_conn, struct io *io)
 {
 	cycles_t		post_time;
 	unsigned long		flags;
@@ -699,11 +808,270 @@ int vnic_ib_post_send(struct vnic_ib_conn * ib_conn, struct io * io)
 	ret = ib_post_send(ib_conn->qp, &io->swr, &bad_wr);
 	if (ret) {
 		IB_ERROR("error in posting send wr; error %d\n", ret);
+		ib_conn->state = IB_CONN_ERRORED;
 		goto out;
 	}
 
 	vnic_ib_post_sendpost_stats(ib_conn, io, post_time);
 out:
 	spin_unlock_irqrestore(&ib_conn->conn_lock, flags);
+	return ret;
+}
+
+static int vnic_defer_completion(void *ptr)
+{
+	struct vnic_ib_conn *ib_conn = ptr;
+	struct ib_wc wc;
+	struct ib_cq *cq = ib_conn->cq;
+	cycles_t 	 comp_time;
+	u32              comp_num = 0;
+	unsigned long	flags;
+
+	while (!ib_conn->callback_thread_end) {
+		wait_event_interruptible(ib_conn->callback_wait_queue,
+					 ib_conn->compl_received ||
+					 ib_conn->callback_thread_end);
+		ib_conn->in_thread = 1;
+		spin_lock_irqsave(&ib_conn->compl_received_lock, flags);
+		ib_conn->compl_received = 0;
+		spin_unlock_irqrestore(&ib_conn->compl_received_lock, flags);
+		if (ib_conn->cm_id &&
+		    ib_conn->state != IB_CONN_CONNECTED)
+			goto out_thread;
+
+		vnic_ib_note_comptime_stats(&comp_time);
+		vnic_ib_callback_stats(ib_conn);
+		ib_req_notify_cq(cq, IB_CQ_NEXT_COMP);
+		while (ib_poll_cq(cq, 1, &wc) > 0) {
+			vnic_ib_handle_completions(&wc, ib_conn, &comp_num,
+								 &comp_time);
+			if (ib_conn->cm_id &&
+				 ib_conn->state != IB_CONN_CONNECTED)
+				break;
+		}
+		vnic_ib_maxio_stats(ib_conn, comp_num);
+out_thread:
+		ib_conn->in_thread = 0;
+	}
+	complete_and_exit(&(ib_conn->callback_thread_exit), 0);
+	return 0;
+}
+
+void vnic_completion_cleanup(struct vnic_ib_conn *ib_conn)
+{
+	if (ib_conn->callback_thread) {
+		ib_conn->callback_thread_end = 1;
+		wake_up(&(ib_conn->callback_wait_queue));
+		wait_for_completion(&(ib_conn->callback_thread_exit));
+		ib_conn->callback_thread = NULL;
+	}
+}
+
+int vnic_ib_mc_init(struct mc_data *mc_data, struct viport *viport,
+		      struct ib_pd *pd, struct vnic_ib_config *config)
+{
+	struct viport_config	*viport_config = viport->config;
+	int		ret = -1;
+	unsigned int	cq_size = config->num_recvs; /* recvs only */
+
+	IB_FUNCTION("vnic_ib_mc_init\n");
+
+	mc_data->ib_conn.cq = ib_create_cq(viport_config->ibdev, vnic_ib_completion,
+#ifdef BUILD_FOR_OFED_1_2
+				   NULL, &mc_data->ib_conn, cq_size);
+#else
+				   NULL, &mc_data->ib_conn, cq_size, 0);
+#endif
+	if (IS_ERR(mc_data->ib_conn.cq)) {
+		IB_ERROR("ib_create_cq failed\n");
+		goto out;
+	}
+	IB_INFO("mc cq created %p %d\n", mc_data->ib_conn.cq, cq_size);
+
+	ret = ib_req_notify_cq(mc_data->ib_conn.cq, IB_CQ_NEXT_COMP);
+	if (ret) {
+		IB_ERROR("ib_req_notify_cq failed %x \n", ret);
+		goto destroy_cq;
+	}
+
+	init_waitqueue_head(&(mc_data->ib_conn.callback_wait_queue));
+	init_completion(&(mc_data->ib_conn.callback_thread_exit));
+
+	spin_lock_init(&mc_data->ib_conn.compl_received_lock);
+	mc_data->ib_conn.callback_thread = kthread_run(vnic_defer_completion,
+							&mc_data->ib_conn,
+							"qlgc_vnic_mc_def_compl");
+	if (IS_ERR(mc_data->ib_conn.callback_thread)) {
+		IB_ERROR("Could not create vnic_callback_thread for MULTICAST;"
+			" error %d\n",
+			(int) PTR_ERR(mc_data->ib_conn.callback_thread));
+		mc_data->ib_conn.callback_thread = NULL;
+		goto destroy_cq;
+	}
+	IB_INFO("callback_thread created\n");
+
+	ret = vnic_ib_mc_init_qp(mc_data, config, pd, viport_config);
+	if (ret)
+		goto destroy_thread;
+
+	spin_lock_init(&mc_data->ib_conn.conn_lock);
+	mc_data->ib_conn.state = IB_CONN_INITTED; /* stays in this state */
+
+	return ret;
+
+destroy_thread:
+	vnic_completion_cleanup(&mc_data->ib_conn);
+destroy_cq:
+	ib_destroy_cq(mc_data->ib_conn.cq);
+	mc_data->ib_conn.cq = (struct ib_cq *)ERR_PTR(-EINVAL);
+out:
+	return ret;
+}
+
+static int vnic_ib_mc_init_qp(struct mc_data *mc_data,
+			   struct vnic_ib_config *config,
+			   struct ib_pd	*pd,
+			   struct viport_config *viport_config)
+{
+	struct ib_qp_init_attr	*init_attr;
+	struct ib_qp_attr	*qp_attr;
+	int			ret;
+
+	IB_FUNCTION("vnic_ib_mc_init_qp\n");
+
+	if (!mc_data->ib_conn.cq) {
+		IB_ERROR("cq is null\n");
+		return -ENOMEM;
+	}
+
+	init_attr = kzalloc(sizeof *init_attr, GFP_KERNEL);
+	if (!init_attr) {
+		IB_ERROR("failed to alloc init_attr\n");
+		return -ENOMEM;
+	}
+
+	init_attr->cap.max_recv_wr	= config->num_recvs;
+	init_attr->cap.max_send_wr	= 1;
+	init_attr->cap.max_recv_sge	= 2;
+	init_attr->cap.max_send_sge	= 1;
+
+	/* Completion for all work requests. */
+	init_attr->sq_sig_type		= IB_SIGNAL_ALL_WR;
+
+	init_attr->qp_type		= IB_QPT_UD;
+
+	init_attr->send_cq		= mc_data->ib_conn.cq;
+	init_attr->recv_cq		= mc_data->ib_conn.cq;
+
+	IB_INFO("creating qp %d \n", config->num_recvs);
+
+	mc_data->ib_conn.qp = ib_create_qp(pd, init_attr);
+
+	if (IS_ERR(mc_data->ib_conn.qp)) {
+		ret = -1;
+		IB_ERROR("could not create QP\n");
+		goto free_init_attr;
+	}
+
+	qp_attr = kzalloc(sizeof *qp_attr, GFP_KERNEL);
+	if (!qp_attr) {
+		ret = -ENOMEM;
+		goto destroy_qp;
+	}
+
+	qp_attr->qp_state	= IB_QPS_INIT;
+	qp_attr->port_num	= viport_config->port;
+	qp_attr->qkey 		= IOC_NUMBER(be64_to_cpu(viport_config->ioc_guid));
+	qp_attr->pkey_index	= 0;
+	/* cannot set access flags for UD qp
+	qp_attr->qp_access_flags	= IB_ACCESS_REMOTE_WRITE; */
+
+	IB_INFO("port_num:%d qkey:%d pkey:%d\n", qp_attr->port_num,
+			qp_attr->qkey, qp_attr->pkey_index);
+	ret = ib_modify_qp(mc_data->ib_conn.qp, qp_attr,
+			   IB_QP_STATE |
+			   IB_QP_PKEY_INDEX |
+			   IB_QP_QKEY |
+
+			/* cannot set this for UD
+			   IB_QP_ACCESS_FLAGS | */
+
+			   IB_QP_PORT);
+	if (ret) {
+		IB_ERROR("ib_modify_qp to INIT failed %d \n", ret);
+		goto free_qp_attr;
+	}
+
+	kfree(qp_attr);
+	kfree(init_attr);
+	return ret;
+
+free_qp_attr:
+	kfree(qp_attr);
+destroy_qp:
+	ib_destroy_qp(mc_data->ib_conn.qp);
+	mc_data->ib_conn.qp = ERR_PTR(-EINVAL);
+free_init_attr:
+	kfree(init_attr);
+	return ret;
+}
+
+int vnic_ib_mc_mod_qp_to_rts(struct ib_qp *qp)
+{
+	int ret;
+	struct ib_qp_attr *qp_attr = NULL;
+
+	IB_FUNCTION("vnic_ib_mc_mod_qp_to_rts\n");
+	qp_attr = kmalloc(sizeof *qp_attr, GFP_KERNEL);
+	if (!qp_attr)
+		return -ENOMEM;
+
+	memset(qp_attr, 0, sizeof *qp_attr);
+	qp_attr->qp_state = IB_QPS_RTR;
+
+	ret = ib_modify_qp(qp, qp_attr, IB_QP_STATE);
+	if (ret) {
+		IB_ERROR("ib_modify_qp to RTR failed %d\n", ret);
+		goto out;
+	}
+	IB_INFO("MC QP RTR\n");
+
+	memset(qp_attr, 0, sizeof *qp_attr);
+	qp_attr->qp_state = IB_QPS_RTS;
+	qp_attr->sq_psn = 0;
+
+	ret = ib_modify_qp(qp, qp_attr, IB_QP_STATE | IB_QP_SQ_PSN);
+	if (ret) {
+		IB_ERROR("ib_modify_qp to RTS failed %d\n", ret);
+		goto out;
+	}
+	IB_INFO("MC QP RTS\n");
+
+	kfree(qp_attr);
+	return 0;
+
+out:
+	kfree(qp_attr);
+	return -1;
+}
+
+int vnic_ib_mc_post_recv(struct mc_data *mc_data, struct io *io)
+{
+	cycles_t		post_time;
+	struct ib_recv_wr	*bad_wr;
+	int			ret = -1;
+
+	IB_FUNCTION("vnic_ib_mc_post_recv()\n");
+
+	vnic_ib_pre_rcvpost_stats(&mc_data->ib_conn, io, &post_time);
+	io->type = RECV_UD;
+	ret = ib_post_recv(mc_data->ib_conn.qp, &io->rwr, &bad_wr);
+	if (ret) {
+		IB_ERROR("error in posting rcv wr; error %d\n", ret);
+		goto out;
+	}
+	vnic_ib_post_rcvpost_stats(&mc_data->ib_conn, post_time);
+
+out:
 	return ret;
 }

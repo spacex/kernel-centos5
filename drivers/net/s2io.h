@@ -777,6 +777,17 @@ struct lro {
 	u8		saw_ts;
 };
 
+/* Network private statistics. */
+struct s2io_stats_buffer {
+
+	unsigned long   tx_packets;             /* packets transmitted    */
+	unsigned long   rx_errors;              /* bad packets received         */
+	unsigned long   tx_errors;              /* packet transmit problems     */
+	unsigned long   multicast;              /* multicast packets received   */
+	unsigned long   rx_length_errors;
+
+};
+
 /* Structure representing one instance of the NIC */
 struct s2io_nic {
 	int rxd_mode;
@@ -786,6 +797,7 @@ struct s2io_nic {
 	 */
 	int pkts_to_process;
 	struct net_device *dev;
+	struct s2io_stats_buffer stats_buffer;
 	struct mac_info mac_control;
 	struct config_param config;
 	struct pci_dev *pdev;

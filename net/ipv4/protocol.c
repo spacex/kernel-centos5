@@ -47,6 +47,7 @@
 #include <linux/igmp.h>
 
 struct net_protocol *inet_protos[MAX_INET_PROTOS];
+struct net_gro_protocol *inet_gro_protos[MAX_INET_PROTOS];
 static DEFINE_SPINLOCK(inet_proto_lock);
 
 /*
@@ -64,6 +65,24 @@ int inet_add_protocol(struct net_protocol *prot, unsigned char protocol)
 		ret = -1;
 	} else {
 		inet_protos[hash] = prot;
+		ret = 0;
+	}
+	spin_unlock_bh(&inet_proto_lock);
+
+	return ret;
+}
+
+int inet_add_gro_protocol(struct net_gro_protocol *prot, unsigned char protocol)
+{
+	int hash, ret;
+
+	hash = protocol & (MAX_INET_PROTOS - 1);
+
+	spin_lock_bh(&inet_proto_lock);
+	if (inet_gro_protos[hash]) {
+		ret = -1;
+	} else {
+		inet_gro_protos[hash] = prot;
 		ret = 0;
 	}
 	spin_unlock_bh(&inet_proto_lock);

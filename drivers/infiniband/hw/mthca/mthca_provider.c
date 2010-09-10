@@ -32,13 +32,13 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: mthca_provider.c 4859 2006-01-09 21:55:10Z roland $
  */
 
 #include <rdma/ib_smi.h>
 #include <rdma/ib_umem.h>
 #include <rdma/ib_user_verbs.h>
+
+#include <linux/sched.h>
 #include <linux/mm.h>
 
 #include "mthca_dev.h"
@@ -60,7 +60,7 @@ static int mthca_query_device(struct ib_device *ibdev,
 	struct ib_smp *in_mad  = NULL;
 	struct ib_smp *out_mad = NULL;
 	int err = -ENOMEM;
-	struct mthca_dev* mdev = to_mdev(ibdev);
+	struct mthca_dev *mdev = to_mdev(ibdev);
 
 	u8 status;
 
@@ -367,6 +367,8 @@ static struct ib_ucontext *mthca_alloc_ucontext(struct ib_device *ibdev,
 		return ERR_PTR(-EFAULT);
 	}
 
+	context->reg_mr_warned = 0;
+
 	return &context->ibucontext;
 }
 
@@ -539,6 +541,9 @@ static struct ib_qp *mthca_create_qp(struct ib_pd *pd,
 	struct mthca_create_qp ucmd;
 	struct mthca_qp *qp;
 	int err;
+
+	if (init_attr->create_flags)
+		return ERR_PTR(-EINVAL);
 
 	switch (init_attr->qp_type) {
 	case IB_QPT_RC:
@@ -1003,18 +1008,31 @@ static struct ib_mr *mthca_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 	struct mthca_dev *dev = to_mdev(pd->device);
 	struct ib_umem_chunk *chunk;
 	struct mthca_mr *mr;
+	struct mthca_reg_mr ucmd;
 	u64 *pages;
 	int shift, n, len;
 	int i, j, k;
 	int err = 0;
 	int write_mtt_size;
 
+	if (udata->inlen - sizeof (struct ib_uverbs_cmd_hdr) < sizeof ucmd) {
+		if (!to_mucontext(pd->uobject->context)->reg_mr_warned) {
+			mthca_warn(dev, "Process '%s' did not pass in MR attrs.\n",
+				   current->comm);
+			mthca_warn(dev, "  Update libmthca to fix this.\n");
+		}
+		++to_mucontext(pd->uobject->context)->reg_mr_warned;
+		ucmd.mr_attrs = 0;
+	} else if (ib_copy_from_udata(&ucmd, udata, sizeof ucmd))
+		return ERR_PTR(-EFAULT);
+
 	mr = kmalloc(sizeof *mr, GFP_KERNEL);
 	if (!mr)
 		return ERR_PTR(-ENOMEM);
 
-	mr->umem = ib_umem_get_dmasync(pd->uobject->context, start,
-					 length, acc);
+	mr->umem = ib_umem_get(pd->uobject->context, start, length, acc,
+			       ucmd.mr_attrs & MTHCA_MR_DMASYNC);
+
 	if (IS_ERR(mr->umem)) {
 		err = PTR_ERR(mr->umem);
 		goto err;
@@ -1081,7 +1099,7 @@ err_mtt:
 	mthca_free_mtt(dev, mr->mtt);
 
 err_umem:
-	ib_umem_release_dmasync(mr->umem);
+	ib_umem_release(mr->umem);
 
 err:
 	kfree(mr);
@@ -1094,7 +1112,7 @@ static int mthca_dereg_mr(struct ib_mr *mr)
 
 	mthca_free_mr(to_mdev(mr->device), mmr);
 	if (mmr->umem)
-		ib_umem_release_dmasync(mmr->umem);
+		ib_umem_release(mmr->umem);
 	kfree(mmr);
 
 	return 0;

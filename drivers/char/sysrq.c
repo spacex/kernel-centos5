@@ -268,6 +268,17 @@ static struct sysrq_key_op sysrq_moom_op = {
 	.action_msg	= "Manual OOM execution",
 };
 
+static void sysrq_handle_thaw(int key, struct tty_struct *tty)
+{
+	emergency_thaw_all();
+}
+static struct sysrq_key_op sysrq_thaw_op = {
+	.handler	= sysrq_handle_thaw,
+	.help_msg	= "thaw-filesystems(J)",
+	.action_msg	= "Emergency Thaw of all frozen filesystems",
+	.enable_mask	= SYSRQ_ENABLE_SIGNAL,
+};
+
 static void sysrq_handle_kill(int key, struct pt_regs *pt_regs,
 			      struct tty_struct *tty)
 {
@@ -319,9 +330,9 @@ static struct sysrq_key_op *sysrq_key_table[36] = {
 	&sysrq_term_op,			/* e */
 	&sysrq_moom_op,			/* f */
 	NULL,				/* g */
-	NULL,				/* h */
+	NULL,				/* h - reserved for help */
 	&sysrq_kill_op,			/* i */
-	NULL,				/* j */
+	&sysrq_thaw_op,			/* j */
 	&sysrq_SAK_op,			/* k */
 	NULL,				/* l */
 	&sysrq_showmem_op,		/* m */

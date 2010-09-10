@@ -35,6 +35,7 @@
 #include <linux/kallsyms.h>
 #include <linux/efi.h>
 #include <linux/acpi.h>
+#include <linux/delay.h>
 #ifdef CONFIG_ACPI
 #include <acpi/achware.h>	/* for PM timer frequency */
 #include <acpi/acpi_bus.h>
@@ -47,6 +48,7 @@
 #include <asm/hpet.h>
 #include <asm/sections.h>
 #include <asm/nmi.h>
+#include <asm/generic-hypervisor.h>
 #include <linux/cpufreq.h>
 #include <linux/hpet.h>
 #ifdef CONFIG_X86_LOCAL_APIC
@@ -95,6 +97,10 @@ volatile unsigned long __jiffies __section_jiffies = INITIAL_JIFFIES;
 unsigned long __wall_jiffies __section_wall_jiffies = INITIAL_JIFFIES;
 struct timespec __xtime __section_xtime;
 struct timezone __sys_tz __section_sys_tz;
+
+/* -1=>disabled, 0=>autoconfigure, 1=>enabled */
+int timekeeping_use_tsc;
+static cycles_t cycles_per_tick, cycles_accounted_limit;
 
 /*
  * do_gettimeoffset() returns nanoseconds since last timer interrupt was
@@ -326,6 +332,27 @@ unsigned long long monotonic_clock(void)
 }
 EXPORT_SYMBOL(monotonic_clock);
 
+static void do_timer_jiffy(struct pt_regs *regs)
+{
+	do_timer(regs);
+#ifndef CONFIG_SMP
+	update_process_times(user_mode(regs), regs);
+#endif
+
+	/*
+	 * In the SMP case we use the local APIC timer interrupt to do the profiling,
+	 * except when we simulate SMP mode on a uniprocessor system, in that case we
+	 * have to call the local interrupt handler.
+	 */
+
+#ifndef CONFIG_X86_LOCAL_APIC
+	profile_tick(CPU_PROFILING, regs);
+#else
+	if (!using_apic_timer)
+		smp_local_timer_interrupt(regs);
+#endif
+}
+
 static noinline void handle_lost_ticks(int lost, struct pt_regs *regs)
 {
 	static long lost_count;
@@ -363,20 +390,10 @@ static noinline void handle_lost_ticks(int lost, struct pt_regs *regs)
 #endif
 }
 
-void main_timer_handler(struct pt_regs *regs)
+static void do_timer_account_lost_ticks(struct pt_regs *regs)
 {
-	static unsigned long rtc_update = 0;
 	unsigned long tsc;
 	int delay = 0, offset = 0, lost = 0, i;
-
-/*
- * Here we are in the timer irq handler. We have irqs locally disabled (so we
- * don't need spin_lock_irqsave()) but we don't know if the timer_bh is running
- * on the other CPU, so we need a lock. We also need to lock the vsyscall
- * variables, because both do_timer() and us change them -arca+vojtech
- */
-
-	write_seqlock(&xtime_lock);
 
 	if (vxtime.hpet_address)
 		offset = hpet_readl(HPET_COUNTER);
@@ -448,29 +465,62 @@ void main_timer_handler(struct pt_regs *regs)
 		jiffies += (u64)lost - (tick_divider - 1);
 	}
 
+	/* Do the timer stuff */
+	for (i = 0; i < tick_divider; i++)
+		do_timer_jiffy(regs);
+}
+
 /*
- * Do the timer stuff.
+ * Measure time based on the TSC, rather than counting interrupts.
+ */
+static void do_timer_tsc_timekeeping(struct pt_regs *regs)
+{
+	int i;
+	cycles_t tsc, tsc_accounted, tsc_not_accounted;
+
+	tsc = get_cycles_sync();
+	tsc_accounted = vxtime.last_tsc;
+
+	if (unlikely(tsc < tsc_accounted))
+		return;
+
+	tsc_not_accounted = tsc - tsc_accounted;
+
+	if (tsc_not_accounted > cycles_accounted_limit) {
+		/* Be extra safe and limit the loop below. */
+		tsc_accounted += tsc_not_accounted - cycles_accounted_limit;
+		tsc_not_accounted = cycles_accounted_limit;
+	}
+
+	while (tsc_not_accounted >= cycles_per_tick) {
+		for (i = 0; i < tick_divider; i++)
+			do_timer_jiffy(regs);
+		tsc_not_accounted -= cycles_per_tick;
+		tsc_accounted += cycles_per_tick;
+	}
+
+	monotonic_base += ((tsc_accounted - vxtime.last_tsc) *
+					1000000 / cpu_khz);
+	vxtime.last_tsc = tsc_accounted;
+}
+
+void main_timer_handler(struct pt_regs *regs)
+{
+	static unsigned long rtc_update = 0;
+
+/*
+ * Here we are in the timer irq handler. We have irqs locally disabled (so we
+ * don't need spin_lock_irqsave()) but we don't know if the timer_bh is running
+ * on the other CPU, so we need a lock. We also need to lock the vsyscall
+ * variables, because both do_timer() and us change them -arca+vojtech
  */
 
-	for (i = 0; i < tick_divider; i++) {
-		do_timer(regs);
-#ifndef CONFIG_SMP
-		update_process_times(user_mode(regs), regs);
-#endif
+	write_seqlock(&xtime_lock);
 
-	/*
-	 * In the SMP case we use the local APIC timer interrupt to do the profiling,
-	 * except when we simulate SMP mode on a uniprocessor system, in that case we
-	 * have to call the local interrupt handler.
-	 */
-
-#ifndef CONFIG_X86_LOCAL_APIC
-		profile_tick(CPU_PROFILING, regs);
-#else
-		if (!using_apic_timer)
-			smp_local_timer_interrupt(regs);
-#endif
-	}
+	if (timekeeping_use_tsc > 0)
+		do_timer_tsc_timekeeping(regs);
+	else
+		do_timer_account_lost_ticks(regs);
 
 /*
  * If we have an externally synchronized Linux clock, then update CMOS clock
@@ -487,6 +537,8 @@ void main_timer_handler(struct pt_regs *regs)
 	}
  
 	write_sequnlock(&xtime_lock);
+
+	leap_second_message();
 }
 
 static irqreturn_t timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
@@ -596,32 +648,49 @@ static unsigned long get_cmos_time(void)
 #define TICK_COUNT 100000000
 static unsigned int __init tsc_calibrate_cpu_khz(void)
 {
-       int tsc_start, tsc_now;
-       int no_ctr_free;
-       unsigned long evntsel3 = 0, pmc3 = 0, pmc_now = 0;
-       unsigned long flags;
+	int tsc_start, tsc_now;
+	int i, no_ctr_free;
+	unsigned long evntsel3 = 0, pmc3 = 0, pmc_now = 0;
+	unsigned long flags;
 
-       rdmsrl(MSR_K7_EVNTSEL3, evntsel3);
-       wrmsrl(MSR_K7_EVNTSEL3, 0);
-       rdmsrl(MSR_K7_PERFCTR3, pmc3);
-       local_irq_save(flags);
-       /* start meauring cycles, incrementing from 0 */
-       wrmsrl(MSR_K7_PERFCTR3, 0);
-       wrmsrl(MSR_K7_EVNTSEL3, 1 << 22 | 3 << 16 | 0x76);
-       rdtscl(tsc_start);
-       do {
-               rdmsrl(MSR_K7_PERFCTR3, pmc_now);
-               tsc_now = get_cycles_sync();
-       } while ((tsc_now - tsc_start) < TICK_COUNT);
+	for (i = 0; i < 4; i++)
+		if (avail_to_resrv_perfctr_nmi_bit(i))
+			break;
+	no_ctr_free = (i == 4);
+	if (no_ctr_free) {
+		/* It is possible that cpu_khz will still be calculated
+		   correctly.  Upstream WARN's here. */
+		panic("AMD no free perfctr.  cpu_khz calibration incorrect.... reboot system");
+		i = 3;
+		rdmsrl(MSR_K7_EVNTSEL3, evntsel3);
+		wrmsrl(MSR_K7_EVNTSEL3, 0);
+		rdmsrl(MSR_K7_PERFCTR3, pmc3);
+	} else {
+		reserve_perfctr_nmi(MSR_K7_PERFCTR0 + i);
+		reserve_evntsel_nmi(MSR_K7_EVNTSEL0 + i);
+	}
+	local_irq_save(flags);
+	/* start measuring cycles, incrementing from 0 */
+	wrmsrl(MSR_K7_PERFCTR0 + i, 0);
+	wrmsrl(MSR_K7_EVNTSEL0 + i, 1 << 22 | 3 << 16 | 0x76);
+	rdtscl(tsc_start);
+	do {
+		rdmsrl(MSR_K7_PERFCTR0 + i, pmc_now);
+		tsc_now = get_cycles();
+	} while ((tsc_now - tsc_start) < TICK_COUNT);
 
-       local_irq_restore(flags);
-       wrmsrl(MSR_K7_EVNTSEL3, 0);
-       wrmsrl(MSR_K7_PERFCTR3, pmc3);
-       wrmsrl(MSR_K7_EVNTSEL3, evntsel3);
+	local_irq_restore(flags);
+	if (no_ctr_free) {
+		wrmsrl(MSR_K7_EVNTSEL3, 0);
+		wrmsrl(MSR_K7_PERFCTR3, pmc3);
+		wrmsrl(MSR_K7_EVNTSEL3, evntsel3);
+	} else {
+		release_perfctr_nmi(MSR_K7_PERFCTR0 + i);
+		release_evntsel_nmi(MSR_K7_EVNTSEL0 + i);
+	}
 
-       return pmc_now * tsc_khz / (tsc_now - tsc_start);
+	return pmc_now * tsc_khz / (tsc_now - tsc_start);
 }
-
 #ifdef CONFIG_CPU_FREQ
 
 /* Frequency scaling support. Adjust the TSC based timer when the cpu frequency
@@ -968,6 +1037,8 @@ time_cpu_notifier(struct notifier_block *nb, unsigned long action, void *hcpu)
 
 void __init time_init(void)
 {
+	unsigned int hypervisor_khz;
+
 	if (nohpet)
 		vxtime.hpet_address = 0;
 
@@ -1005,6 +1076,28 @@ void __init time_init(void)
 		boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
 		boot_cpu_data.x86 == 16)
 		cpu_khz = tsc_calibrate_cpu_khz();
+
+	/* Should we get tsc_khz from the hypervisor? */
+	hypervisor_khz = get_hypervisor_tsc_freq();
+	if (hypervisor_khz) {
+		tsc_khz = hypervisor_khz;
+		cpu_khz = tsc_khz;
+	}
+
+	lpj_fine = ((unsigned long)tsc_khz * 1000)/HZ;
+
+	/* Keep time based on the TSC rather than by counting interrupts. */
+	if (timekeeping_use_tsc > 0) {
+		cycles_per_tick = (cpu_khz * 1000) / REAL_HZ;
+		/*
+		 * The maximum cycles we will account per
+		 * timer interrupt is 10 minutes.
+		 */
+		cycles_accounted_limit = cycles_per_tick * REAL_HZ * 60 * 10;
+		tick_nsec = NSEC_PER_SEC / HZ;
+		printk(KERN_INFO
+			"time.c: Using tsc for timekeeping HZ %d\n", HZ);
+	}
 
 	vxtime.mode = VXTIME_TSC;
 	vxtime.quot = (NSEC_PER_SEC << NS_SCALE) / vxtime_hz;
@@ -1068,7 +1161,10 @@ void time_init_gtod(void)
 	else
 		vgetcpu_mode = VGETCPU_LSL;
 
-	if (vxtime.hpet_address && notsc) {
+	if (timekeeping_use_tsc > 0) {
+		timetype = "TSC Timekeeping";
+		vxtime.mode = VXTIME_TSC;
+	} else if (vxtime.hpet_address && notsc) {
 		timetype = hpet_use_timer ? "HPET" : "PIT/HPET";
 		if (hpet_use_timer)
 			vxtime.last = hpet_readl(HPET_T0_CMP) - hpet_tick_real;
@@ -1096,10 +1192,10 @@ void time_init_gtod(void)
 	printk(KERN_INFO "time.c: Detected %d.%03d MHz processor.\n", 
 		cpu_khz / 1000, cpu_khz % 1000);
 	vxtime.quot = (NSEC_PER_SEC << NS_SCALE) / vxtime_hz;
-	vxtime.tsc_quot = (NSEC_PER_MSEC << NS_SCALE) / cpu_khz;
+	vxtime.tsc_quot = (NSEC_PER_MSEC << NS_SCALE) / tsc_khz;
 	vxtime.last_tsc = get_cycles_sync();
 
-	set_cyc2ns_scale(cpu_khz);
+	set_cyc2ns_scale(tsc_khz);
 }
 
 __setup("report_lost_ticks", time_setup);
@@ -1426,6 +1522,29 @@ int __init notsc_setup(char *s)
 }
 
 __setup("notsc", notsc_setup);
+
+static int __init boot_override_clock(char *str)
+{
+	/* For x86, only have hpet, pmtmr, tsc */
+	if (!strcmp(str, "hpet")) {
+		pmtmr_ioport = 0;
+		notsc = 1;
+	} else if (!strcmp(str, "pmtmr") || !strcmp(str, "pmtimer")) {
+		nohpet = 1;
+		notsc = 1;
+	} else if (!strcmp(str, "tsc")) {
+		nohpet = 1;
+		pmtmr_ioport = 0;
+	} else if (!strcmp(str, "tsccount")) {
+		timekeeping_use_tsc = 1;
+	} else if (!strcmp(str, "notsccount")) {
+		timekeeping_use_tsc = -1;
+	} else
+		printk(KERN_WARNING "%s is unknown clock source\n", str);
+
+	return 1;
+}
+__setup("clock=", boot_override_clock);
 
 #ifdef CONFIG_TICK_DIVIDER
 

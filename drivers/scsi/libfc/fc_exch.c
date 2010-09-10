@@ -33,20 +33,7 @@
 #include <scsi/libfc.h>
 #include <scsi/fc_encode.h>
 
-#define	  FC_DEF_R_A_TOV      (10 * 1000) /* resource allocation timeout */
-
-/*
- * fc_exch_debug can be set in debugger or at compile time to get more logs.
- */
-static int fc_exch_debug;
-
-#define FC_DEBUG_EXCH(fmt...)			\
-	do {					\
-		if (fc_exch_debug)		\
-			FC_DBG(fmt);		\
-	} while (0)
-
-static struct kmem_cache *fc_em_cachep;	/* cache for exchanges */
+static struct kmem_cache *fc_em_cachep;        /* cache for exchanges */
 
 /*
  * Structure and function definitions for managing Fibre Channel Exchanges
@@ -69,7 +56,8 @@ static struct kmem_cache *fc_em_cachep;	/* cache for exchanges */
  */
 struct fc_exch_mgr {
 	enum fc_class	class;		/* default class for sequences */
-	spinlock_t	em_lock;	/* exchange manager lock */
+	spinlock_t	em_lock;	/* exchange manager lock,
+					   must be taken before ex_lock */
 	u16		last_xid;	/* last allocated exchange ID */
 	u16		min_xid;	/* min exchange ID */
 	u16		max_xid;	/* max exchange ID */
@@ -180,6 +168,8 @@ static struct fc_seq *fc_seq_start_next_locked(struct fc_seq *sp);
  * sequence allocation and deallocation must be locked.
  *  - exchange refcnt can be done atomicly without locks.
  *  - sequence allocation must be locked by exch lock.
+ *  - If the em_lock and ex_lock must be taken at the same time, then the
+ *    em_lock must be taken before the ex_lock.
  */
 
 /*
@@ -281,7 +271,7 @@ static void fc_exch_release(struct fc_exch *ep)
 			ep->destructor(&ep->seq, ep->arg);
 		if (ep->lp->tt.exch_put)
 			ep->lp->tt.exch_put(ep->lp, mp, ep->xid);
-		WARN_ON(!ep->esb_stat & ESB_ST_COMPLETE);
+		WARN_ON(!(ep->esb_stat & ESB_ST_COMPLETE));
 		mempool_free(ep, mp->ep_pool);
 	}
 }
@@ -333,8 +323,8 @@ static inline void fc_exch_timer_set_locked(struct fc_exch *ep,
 	if (ep->state & (FC_EX_RST_CLEANUP | FC_EX_DONE))
 		return;
 
-	FC_DEBUG_EXCH("Exchange (%4x) timed out, notifying the upper layer\n",
-		      ep->xid);
+	FC_EXCH_DBG(ep, "Exchange timed out, notifying the upper layer\n");
+
 	if (schedule_delayed_work(&ep->timeout_work,
 				  msecs_to_jiffies(timer_msec)))
 		fc_exch_hold(ep);		/* hold for timer */
@@ -409,9 +399,10 @@ EXPORT_SYMBOL(fc_seq_exch_abort);
  * Exchange timeout - handle exchange timer expiration.
  * The timer will have been cancelled before this is called.
  */
-static void fc_exch_timeout(void *data)
+static void fc_exch_timeout(struct work_struct *work)
 {
-	struct fc_exch *ep = data;
+	struct fc_exch *ep = container_of(work, struct fc_exch,
+					  timeout_work.work);
 	struct fc_seq *sp = &ep->seq;
 	void (*resp)(struct fc_seq *, struct fc_frame *fp, void *arg);
 	void *arg;
@@ -488,7 +479,7 @@ static u16 fc_em_alloc_xid(struct fc_exch_mgr *mp, const struct fc_frame *fp)
 	struct fc_exch *ep = NULL;
 
 	if (mp->max_read) {
-		if (fc_frame_is_read(fp)) {
+		if (fc_fcp_is_read(fr_fsp(fp))) {
 			min = mp->min_xid;
 			max = mp->max_read;
 			plast = &mp->last_read;
@@ -544,7 +535,7 @@ struct fc_exch *fc_exch_alloc(struct fc_exch_mgr *mp,
 		/* alloc a new xid */
 		xid = fc_em_alloc_xid(mp, fp);
 		if (!xid) {
-			printk(KERN_ERR "fc_em_alloc_xid() failed\n");
+			printk(KERN_WARNING "libfc: Failed to allocate an exhange\n");
 			goto err;
 		}
 	}
@@ -573,7 +564,7 @@ struct fc_exch *fc_exch_alloc(struct fc_exch_mgr *mp,
 	ep->f_ctl = FC_FC_FIRST_SEQ;	/* next seq is first seq */
 	ep->rxid = FC_XID_UNKNOWN;
 	ep->class = mp->class;
-	INIT_WORK(&ep->timeout_work, fc_exch_timeout, ep);
+	INIT_DELAYED_WORK(&ep->timeout_work, fc_exch_timeout);
 out:
 	return ep;
 err:
@@ -624,7 +615,6 @@ static struct fc_exch *fc_exch_resp(struct fc_exch_mgr *mp, struct fc_frame *fp)
 {
 	struct fc_exch *ep;
 	struct fc_frame_header *fh;
-	u16 rxid;
 
 	ep = mp->lp->tt.exch_get(mp->lp, fp);
 	if (ep) {
@@ -651,18 +641,6 @@ static struct fc_exch *fc_exch_resp(struct fc_exch_mgr *mp, struct fc_frame *fp)
 		if ((ntoh24(fh->fh_f_ctl) & FC_FC_SEQ_INIT) == 0)
 			ep->esb_stat &= ~ESB_ST_SEQ_INIT;
 
-		/*
-		 * Set the responder ID in the frame header.
-		 * The old one should've been 0xffff.
-		 * If it isn't, don't assign one.
-		 * Incoming basic link service frames may specify
-		 * a referenced RX_ID.
-		 */
-		if (fh->fh_type != FC_TYPE_BLS) {
-			rxid = ntohs(fh->fh_rx_id);
-			WARN_ON(rxid != FC_XID_UNKNOWN);
-			fh->fh_rx_id = htons(ep->rxid);
-		}
 		fc_exch_hold(ep);	/* hold for caller */
 		spin_unlock_bh(&ep->ex_lock);	/* lock from exch_get */
 	}
@@ -674,8 +652,8 @@ static struct fc_exch *fc_exch_resp(struct fc_exch_mgr *mp, struct fc_frame *fp)
  * If fc_pf_rjt_reason is FC_RJT_NONE then this function will have a hold
  * on the ep that should be released by the caller.
  */
-static enum fc_pf_rjt_reason
-fc_seq_lookup_recip(struct fc_exch_mgr *mp, struct fc_frame *fp)
+static enum fc_pf_rjt_reason fc_seq_lookup_recip(struct fc_exch_mgr *mp,
+						 struct fc_frame *fp)
 {
 	struct fc_frame_header *fh = fc_frame_header_get(fp);
 	struct fc_exch *ep = NULL;
@@ -832,8 +810,8 @@ static struct fc_seq *fc_seq_start_next_locked(struct fc_seq *sp)
 	struct fc_exch *ep = fc_seq_exch(sp);
 
 	sp = fc_seq_alloc(ep, ep->seq_id++);
-	FC_DEBUG_EXCH("exch %4x f_ctl %6x seq %2x\n",
-		      ep->xid, ep->f_ctl, sp->id);
+	FC_EXCH_DBG(ep, "f_ctl %6x seq %2x\n",
+		    ep->f_ctl, sp->id);
 	return sp;
 }
 /*
@@ -913,7 +891,7 @@ void fc_seq_els_rsp_send(struct fc_seq *sp, enum fc_els_cmd els_cmd,
 		fc_exch_els_rec(sp, els_data->fp);
 		break;
 	default:
-		FC_DBG("Invalid ELS CMD:%x\n", els_cmd);
+		FC_EXCH_DBG(fc_seq_exch(sp), "Invalid ELS CMD:%x\n", els_cmd);
 	}
 }
 EXPORT_SYMBOL(fc_seq_els_rsp_send);
@@ -993,9 +971,9 @@ static void fc_seq_send_ack(struct fc_seq *sp, const struct fc_frame *rx_fp)
  * Send BLS Reject.
  * This is for rejecting BA_ABTS only.
  */
-static void
-fc_exch_send_ba_rjt(struct fc_frame *rx_fp, enum fc_ba_rjt_reason reason,
-		    enum fc_ba_rjt_explan explan)
+static void fc_exch_send_ba_rjt(struct fc_frame *rx_fp,
+				enum fc_ba_rjt_reason reason,
+				enum fc_ba_rjt_explan explan)
 {
 	struct fc_frame *fp;
 	struct fc_frame_header *rx_fh;
@@ -1093,7 +1071,7 @@ static void fc_exch_recv_abts(struct fc_exch *ep, struct fc_frame *rx_fp)
 		ap->ba_high_seq_cnt = fh->fh_seq_cnt;
 		ap->ba_low_seq_cnt = htons(sp->cnt);
 	}
-	sp = fc_seq_start_next(sp);
+	sp = fc_seq_start_next_locked(sp);
 	spin_unlock_bh(&ep->ex_lock);
 	fc_seq_send_last(sp, fp, FC_RCTL_BA_ACC, FC_TYPE_BLS);
 	fc_frame_free(rx_fp);
@@ -1146,7 +1124,7 @@ static void fc_exch_recv_req(struct fc_lport *lp, struct fc_exch_mgr *mp,
 			lp->tt.lport_recv(lp, sp, fp);
 		fc_exch_release(ep);	/* release from lookup */
 	} else {
-		FC_DEBUG_EXCH("exch/seq lookup failed: reject %x\n", reject);
+		FC_EM_DBG(mp, "exch/seq lookup failed: reject %x\n", reject);
 		fc_frame_free(fp);
 	}
 }
@@ -1250,10 +1228,10 @@ static void fc_exch_recv_resp(struct fc_exch_mgr *mp, struct fc_frame *fp)
 	sp = fc_seq_lookup_orig(mp, fp);	/* doesn't hold sequence */
 	if (!sp) {
 		atomic_inc(&mp->stats.xid_not_found);
-		FC_DEBUG_EXCH("seq lookup failed\n");
+		FC_EM_DBG(mp, "seq lookup failed\n");
 	} else {
 		atomic_inc(&mp->stats.non_bls_resp);
-		FC_DEBUG_EXCH("non-BLS response to sequence");
+		FC_EM_DBG(mp, "non-BLS response to sequence");
 	}
 	fc_frame_free(fp);
 }
@@ -1274,13 +1252,11 @@ static void fc_exch_abts_resp(struct fc_exch *ep, struct fc_frame *fp)
 	int rc = 1, has_rec = 0;
 
 	fh = fc_frame_header_get(fp);
-	FC_DEBUG_EXCH("exch: BLS rctl %x - %s\n",
-		      fh->fh_r_ctl, fc_exch_rctl_name(fh->fh_r_ctl));
+	FC_EXCH_DBG(ep, "exch: BLS rctl %x - %s\n", fh->fh_r_ctl,
+		    fc_exch_rctl_name(fh->fh_r_ctl));
 
-	if (cancel_delayed_work(&ep->timeout_work))
+	if (cancel_delayed_work_sync(&ep->timeout_work))
 		fc_exch_release(ep);	/* release from pending timer hold */
-	else
-		flush_scheduled_work();
 
 	spin_lock_bh(&ep->ex_lock);
 	switch (fh->fh_r_ctl) {
@@ -1369,9 +1345,9 @@ static void fc_exch_recv_bls(struct fc_exch_mgr *mp, struct fc_frame *fp)
 		case FC_RCTL_ACK_0:
 			break;
 		default:
-			FC_DEBUG_EXCH("BLS rctl %x - %s received",
-				      fh->fh_r_ctl,
-				      fc_exch_rctl_name(fh->fh_r_ctl));
+			FC_EXCH_DBG(ep, "BLS rctl %x - %s received",
+				    fh->fh_r_ctl,
+				    fc_exch_rctl_name(fh->fh_r_ctl));
 			break;
 		}
 		fc_frame_free(fp);
@@ -1479,10 +1455,11 @@ static void fc_exch_reset(struct fc_exch *ep)
  * If sid is non-zero, reset only exchanges we source from that FID.
  * If did is non-zero, reset only exchanges destined to that FID.
  */
-void fc_exch_mgr_reset(struct fc_exch_mgr *mp, u32 sid, u32 did)
+void fc_exch_mgr_reset(struct fc_lport *lp, u32 sid, u32 did)
 {
 	struct fc_exch *ep;
 	struct fc_exch *next;
+	struct fc_exch_mgr *mp = lp->emp;
 
 	spin_lock_bh(&mp->em_lock);
 restart:
@@ -1606,9 +1583,10 @@ static void fc_exch_rrq_resp(struct fc_seq *sp, struct fc_frame *fp, void *arg)
 	if (IS_ERR(fp)) {
 		int err = PTR_ERR(fp);
 
-		if (err == -FC_EX_CLOSED)
+		if (err == -FC_EX_CLOSED || err == -FC_EX_TIMEOUT)
 			goto cleanup;
-		FC_DBG("Cannot process RRQ, because of frame error %d\n", err);
+		FC_EXCH_DBG(aborted_ep, "Cannot process RRQ, "
+			    "frame error %d\n", err);
 		return;
 	}
 
@@ -1617,12 +1595,13 @@ static void fc_exch_rrq_resp(struct fc_seq *sp, struct fc_frame *fp, void *arg)
 
 	switch (op) {
 	case ELS_LS_RJT:
-		FC_DBG("LS_RJT for RRQ");
+		FC_EXCH_DBG(aborted_ep, "LS_RJT for RRQ");
 		/* fall through */
 	case ELS_LS_ACC:
 		goto cleanup;
 	default:
-		FC_DBG("unexpected response op %x for RRQ", op);
+		FC_EXCH_DBG(aborted_ep, "unexpected response op %x "
+			    "for RRQ", op);
 		return;
 	}
 
@@ -1749,8 +1728,8 @@ struct fc_exch_mgr *fc_exch_mgr_alloc(struct fc_lport *lp,
 	size_t len;
 
 	if (max_xid <= min_xid || min_xid == 0 || max_xid == FC_XID_UNKNOWN) {
-		FC_DBG("Invalid min_xid 0x:%x and max_xid 0x:%x\n",
-		       min_xid, max_xid);
+		FC_LPORT_DBG(lp, "Invalid min_xid 0x:%x and max_xid 0x:%x\n",
+			     min_xid, max_xid);
 		return NULL;
 	}
 
@@ -1854,6 +1833,8 @@ struct fc_seq *fc_exch_seq_send(struct fc_lport *lp,
 	fc_exch_setup_hdr(ep, fp, ep->f_ctl);
 	sp->cnt++;
 
+	fc_fcp_ddp_setup(fr_fsp(fp), ep->xid);
+
 	if (unlikely(lp->tt.frame_send(lp, fp)))
 		goto err;
 
@@ -1885,7 +1866,8 @@ void fc_exch_recv(struct fc_lport *lp, struct fc_exch_mgr *mp,
 
 	/* lport lock ? */
 	if (!lp || !mp || (lp->state == LPORT_ST_NONE)) {
-		FC_DBG("fc_lport or EM is not allocated and configured");
+		FC_LPORT_DBG(lp, "Receiving frames for an lport that "
+			     "has not been initialized correctly\n");
 		fc_frame_free(fp);
 		return;
 	}
@@ -1911,7 +1893,7 @@ void fc_exch_recv(struct fc_lport *lp, struct fc_exch_mgr *mp,
 			fc_exch_recv_req(lp, mp, fp);
 		break;
 	default:
-		FC_DBG("dropping invalid frame (eof %x)", fr_eof(fp));
+		FC_EM_DBG(mp, "dropping invalid frame (eof %x)", fr_eof(fp));
 		fc_frame_free(fp);
 		break;
 	}
@@ -1957,7 +1939,7 @@ EXPORT_SYMBOL(fc_exch_init);
 int fc_setup_exch_mgr(void)
 {
 	fc_em_cachep = kmem_cache_create("libfc_em", sizeof(struct fc_exch),
-					 0, SLAB_HWCACHE_ALIGN, NULL, NULL);
+					 0, SLAB_HWCACHE_ALIGN, NULL);
 	if (!fc_em_cachep)
 		return -ENOMEM;
 	return 0;

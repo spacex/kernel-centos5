@@ -19,6 +19,7 @@
 #include <linux/gfs2_ondisk.h>
 #include <linux/crc32.h>
 #include <linux/lm_interface.h>
+#include <linux/fiemap.h>
 #include <asm/uaccess.h>
 
 #include "gfs2.h"
@@ -31,12 +32,11 @@
 #include "glock.h"
 #include "inode.h"
 #include "meta_io.h"
-#include "ops_dentry.h"
-#include "ops_inode.h"
 #include "quota.h"
 #include "rgrp.h"
 #include "trans.h"
 #include "util.h"
+#include "super.h"
 
 /**
  * gfs2_create - Create a file
@@ -185,7 +185,7 @@ static int gfs2_link(struct dentry *old_dentry, struct inode *dir,
 	if (!dip->i_inode.i_nlink)
 		goto out_gunlock;
 	error = -EFBIG;
-	if (dip->i_di.di_entries == (u32)-1)
+	if (dip->i_entries == (u32)-1)
 		goto out_gunlock;
 	error = -EPERM;
 	if (IS_IMMUTABLE(inode) || IS_APPEND(inode))
@@ -371,7 +371,8 @@ static int gfs2_symlink(struct inode *dir, struct dentry *dentry,
 
 	ip = ghs[1].gh_gl->gl_object;
 
-	ip->i_di.di_size = size;
+	ip->i_disksize = size;
+	i_size_write(inode, size);
 
 	error = gfs2_meta_inode_buffer(ip, &dibh);
 
@@ -425,9 +426,9 @@ static int gfs2_mkdir(struct inode *dir, struct dentry *dentry, int mode)
 	ip = ghs[1].gh_gl->gl_object;
 
 	ip->i_inode.i_nlink = 2;
-	ip->i_di.di_size = sdp->sd_sb.sb_bsize - sizeof(struct gfs2_dinode);
-	ip->i_di.di_flags |= GFS2_DIF_JDATA;
-	ip->i_di.di_entries = 2;
+	ip->i_disksize = sdp->sd_sb.sb_bsize - sizeof(struct gfs2_dinode);
+	ip->i_diskflags |= GFS2_DIF_JDATA;
+	ip->i_entries = 2;
 
 	error = gfs2_meta_inode_buffer(ip, &dibh);
 
@@ -517,13 +518,13 @@ static int gfs2_rmdir(struct inode *dir, struct dentry *dentry)
 	if (error)
 		goto out_gunlock;
 
-	if (ip->i_di.di_entries < 2) {
+	if (ip->i_entries < 2) {
 		if (gfs2_consist_inode(ip))
 			gfs2_dinode_print(ip);
 		error = -EIO;
 		goto out_gunlock;
 	}
-	if (ip->i_di.di_entries > 2) {
+	if (ip->i_entries > 2) {
 		error = -ENOTEMPTY;
 		goto out_gunlock;
 	}
@@ -676,13 +677,13 @@ static int gfs2_rename(struct inode *odir, struct dentry *odentry,
 			goto out_gunlock;
 
 		if (S_ISDIR(nip->i_inode.i_mode)) {
-			if (nip->i_di.di_entries < 2) {
+			if (nip->i_entries < 2) {
 				if (gfs2_consist_inode(nip))
 					gfs2_dinode_print(nip);
 				error = -EIO;
 				goto out_gunlock;
 			}
-			if (nip->i_di.di_entries > 2) {
+			if (nip->i_entries > 2) {
 				error = -ENOTEMPTY;
 				goto out_gunlock;
 			}
@@ -708,7 +709,7 @@ static int gfs2_rename(struct inode *odir, struct dentry *odentry,
 				error = -EINVAL;
 				goto out_gunlock;
 			}
-			if (ndip->i_di.di_entries == (u32)-1) {
+			if (ndip->i_entries == (u32)-1) {
 				error = -EFBIG;
 				goto out_gunlock;
 			}
@@ -937,7 +938,7 @@ static int setattr_size(struct inode *inode, struct iattr *attr)
 	struct gfs2_sbd *sdp = GFS2_SB(inode);
 	int error;
 
-	if (attr->ia_size != ip->i_di.di_size) {
+	if (attr->ia_size != ip->i_disksize) {
 		error = gfs2_trans_begin(sdp, 0, sdp->sd_jdesc->jd_blocks);
 		if (error)
 			return error;
@@ -948,8 +949,8 @@ static int setattr_size(struct inode *inode, struct iattr *attr)
 	}
 
 	error = gfs2_truncatei(ip, attr->ia_size);
-	if (error && (inode->i_size != ip->i_di.di_size))
-		i_size_write(inode, ip->i_di.di_size);
+	if (error && (inode->i_size != ip->i_disksize))
+		i_size_write(inode, ip->i_disksize);
 
 	return error;
 }
@@ -1000,8 +1001,9 @@ static int setattr_chown(struct inode *inode, struct iattr *attr)
 	brelse(dibh);
 
 	if (ouid != NO_QUOTA_CHANGE || ogid != NO_QUOTA_CHANGE) {
-		gfs2_quota_change(ip, -ip->i_di.di_blocks, ouid, ogid);
-		gfs2_quota_change(ip, ip->i_di.di_blocks, nuid, ngid);
+		u64 blocks = gfs2_get_inode_blocks(&ip->i_inode);
+		gfs2_quota_change(ip, -blocks, ouid, ogid);
+		gfs2_quota_change(ip, blocks, nuid, ngid);
 	}
 
 out_end_trans:
@@ -1157,6 +1159,48 @@ static int gfs2_removexattr(struct dentry *dentry, const char *name)
 	return gfs2_ea_remove(GFS2_I(dentry->d_inode), &er);
 }
 
+static int gfs2_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
+		       u64 start, u64 len)
+{
+	struct gfs2_inode *ip = GFS2_I(inode);
+	struct gfs2_holder gh;
+	int ret;
+
+	ret = fiemap_check_flags(fieinfo, FIEMAP_FLAG_SYNC);
+	if (ret)
+		return ret;
+
+	mutex_lock(&inode->i_mutex);
+
+	ret = gfs2_glock_nq_init(ip->i_gl, LM_ST_SHARED, 0, &gh);
+	if (ret)
+		goto out;
+
+	if (gfs2_is_stuffed(ip)) {
+		u64 phys = ip->i_no_addr << inode->i_blkbits;
+		u64 size = i_size_read(inode);
+		u32 flags = FIEMAP_EXTENT_LAST|FIEMAP_EXTENT_NOT_ALIGNED|
+			    FIEMAP_EXTENT_DATA_INLINE;
+		phys += sizeof(struct gfs2_dinode);
+		phys += start;
+		if (start + len > size)
+			len = size - start;
+		if (start < size)
+			ret = fiemap_fill_next_extent(fieinfo, start, phys,
+						      len, flags);
+		if (ret == 1)
+			ret = 0;
+	} else {
+		ret = __generic_block_fiemap(inode, fieinfo, start, len,
+					     gfs2_block_map);
+	}
+
+	gfs2_glock_dq_uninit(&gh);
+out:
+	mutex_unlock(&inode->i_mutex);
+	return ret;
+}
+
 const struct inode_operations gfs2_file_iops = {
 	.permission = gfs2_permission,
 	.setattr = gfs2_setattr,
@@ -1165,6 +1209,7 @@ const struct inode_operations gfs2_file_iops = {
 	.getxattr = gfs2_getxattr,
 	.listxattr = gfs2_listxattr,
 	.removexattr = gfs2_removexattr,
+	.fiemap = gfs2_fiemap,
 };
 
 const struct inode_operations gfs2_dir_iops = {
@@ -1184,6 +1229,7 @@ const struct inode_operations gfs2_dir_iops = {
 	.getxattr = gfs2_getxattr,
 	.listxattr = gfs2_listxattr,
 	.removexattr = gfs2_removexattr,
+	.fiemap = gfs2_fiemap,
 };
 
 const struct inode_operations gfs2_symlink_iops = {
@@ -1196,5 +1242,6 @@ const struct inode_operations gfs2_symlink_iops = {
 	.getxattr = gfs2_getxattr,
 	.listxattr = gfs2_listxattr,
 	.removexattr = gfs2_removexattr,
+	.fiemap = gfs2_fiemap,
 };
 

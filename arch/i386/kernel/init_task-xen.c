@@ -12,7 +12,7 @@
 
 static struct fs_struct init_fs = INIT_FS;
 static struct files_struct init_files = INIT_FILES;
-static struct signal_struct init_signals = INIT_SIGNALS(init_signals);
+#include <linux/init_signals.h>
 static struct sighand_struct init_sighand = INIT_SIGHAND(init_sighand);
 
 #define swapper_pg_dir ((pgd_t *)NULL)

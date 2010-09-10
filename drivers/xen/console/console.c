@@ -189,8 +189,6 @@ static struct console kcons_info = {
 
 static int __init xen_console_init(void)
 {
-        int i;
-
 	if (!is_running_on_xen())
 		goto out;
 
@@ -237,17 +235,6 @@ static int __init xen_console_init(void)
 
 	register_console(&kcons_info);
 
-        /*
-         * If loglevel is low assume "quiet" arg and clear
-         * the screen to remove Hypervisor messages
-         * so that user startup prompts/messages
-         * can be seen clearly. Fixes BZ 466240.
-         */
-        if ((console_loglevel <  default_console_loglevel) &&
-            (screen_info.orig_video_mode == 3)) {
-                for (i = 0; i < screen_info.orig_video_lines; i++)
-                        printk(KERN_ERR "\n");
-        }
  out:
 	return 0;
 }

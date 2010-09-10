@@ -129,6 +129,9 @@ static __always_inline int can_boost(kprobe_opcode_t *opcodes)
 	kprobe_opcode_t opcode;
 	kprobe_opcode_t *orig_opcodes = opcodes;
 
+	if (search_exception_tables(opcodes))
+		return 0;	/* Page fault may occur on this address. */
+
 retry:
 	if (opcodes - orig_opcodes > __MAX_INSN_SIZE - 1)
 		return 0;
@@ -589,11 +592,12 @@ no_kprobe:
 fastcall void * __kprobes trampoline_handler(struct pt_regs *regs)
 {
         struct kretprobe_instance *ri = NULL;
-        struct hlist_head *head;
+	struct hlist_head *head, empty_rp;
         struct hlist_node *node, *tmp;
 	unsigned long flags, orig_ret_address = 0;
 	unsigned long trampoline_address =(unsigned long)&kretprobe_trampoline;
 
+	INIT_HLIST_HEAD(&empty_rp);
 	spin_lock_irqsave(&kretprobe_lock, flags);
         head = kretprobe_inst_table_head(current);
 	/* fixup rt_regs */
@@ -626,7 +630,7 @@ fastcall void * __kprobes trampoline_handler(struct pt_regs *regs)
 		}
 
 		orig_ret_address = (unsigned long)ri->ret_addr;
-		recycle_rp_inst(ri);
+		recycle_rp_inst(ri, &empty_rp);
 
 		if (orig_ret_address != trampoline_address)
 			/*
@@ -640,6 +644,11 @@ fastcall void * __kprobes trampoline_handler(struct pt_regs *regs)
 	BUG_ON(!orig_ret_address || (orig_ret_address == trampoline_address));
 
 	spin_unlock_irqrestore(&kretprobe_lock, flags);
+
+	hlist_for_each_entry_safe(ri, node, tmp, &empty_rp, hlist) {
+		hlist_del(&ri->hlist);
+		kfree(ri);
+	}
 
         return (void *)orig_ret_address;
 }

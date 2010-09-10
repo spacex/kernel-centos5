@@ -217,6 +217,7 @@ static int nfs_readpage_sync(struct nfs_open_context *ctx, struct inode *inode,
 	result = 0;
 
 	nfs_readpage_to_fscache(inode, page, 1);
+	nfs_readdata_free(rdata);
 	unlock_page(page);
 
 	return result;

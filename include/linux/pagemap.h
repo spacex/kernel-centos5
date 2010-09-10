@@ -18,6 +18,7 @@
  */
 #define	AS_EIO		(__GFP_BITS_SHIFT + 0)	/* IO error on async write */
 #define AS_ENOSPC	(__GFP_BITS_SHIFT + 1)	/* ENOSPC on async write */
+#define AS_MM_ALL_LOCKS	(__GFP_BITS_SHIFT + 2)	/* under mm_take_all_locks() */
 
 static inline gfp_t mapping_gfp_mask(struct address_space * mapping)
 {
@@ -54,15 +55,21 @@ void release_pages(struct page **pages, int nr, int cold);
 #ifdef CONFIG_NUMA
 extern struct page *page_cache_alloc(struct address_space *x);
 extern struct page *page_cache_alloc_cold(struct address_space *x);
+extern struct page *__page_cache_alloc(gfp_t gfp);
 #else
+static inline struct page *__page_cache_alloc(gfp_t gfp)
+{
+	return alloc_pages(gfp, 0);
+}
+
 static inline struct page *page_cache_alloc(struct address_space *x)
 {
-	return alloc_pages(mapping_gfp_mask(x), 0);
+	return __page_cache_alloc(mapping_gfp_mask(x));
 }
 
 static inline struct page *page_cache_alloc_cold(struct address_space *x)
 {
-	return alloc_pages(mapping_gfp_mask(x)|__GFP_COLD, 0);
+	return __page_cache_alloc(mapping_gfp_mask(x)|__GFP_COLD);
 }
 #endif
 
@@ -82,6 +89,9 @@ unsigned find_get_pages_contig(struct address_space *mapping, pgoff_t start,
 			       unsigned int nr_pages, struct page **pages);
 unsigned find_get_pages_tag(struct address_space *mapping, pgoff_t *index,
 			int tag, unsigned int nr_pages, struct page **pages);
+
+struct page *grab_cache_page_write_begin(struct address_space *mapping,
+			pgoff_t index, unsigned flags);
 
 /*
  * Returns locked page at given index in given cache, creating it if needed.
@@ -196,6 +206,9 @@ static inline int fault_in_pages_writeable(char __user *uaddr, int size)
 {
 	int ret;
 
+	if (unlikely(size == 0))
+		return 0;
+
 	/*
 	 * Writing zeroes into userspace here is OK, because we know that if
 	 * the zero gets there, we'll be overwriting it.
@@ -215,10 +228,13 @@ static inline int fault_in_pages_writeable(char __user *uaddr, int size)
 	return ret;
 }
 
-static inline void fault_in_pages_readable(const char __user *uaddr, int size)
+static inline int fault_in_pages_readable(const char __user *uaddr, int size)
 {
 	volatile char c;
 	int ret;
+
+	if (unlikely(size == 0))
+		return 0;
 
 	ret = __get_user(c, uaddr);
 	if (ret == 0) {
@@ -226,8 +242,9 @@ static inline void fault_in_pages_readable(const char __user *uaddr, int size)
 
 		if (((unsigned long)uaddr & PAGE_MASK) !=
 				((unsigned long)end & PAGE_MASK))
-		 	__get_user(c, end);
+		 	ret = __get_user(c, end);
 	}
+	return ret;
 }
 
 #endif /* _LINUX_PAGEMAP_H */

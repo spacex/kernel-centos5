@@ -60,6 +60,7 @@ config DUMMY
 config BONDING
 	tristate "Bonding driver support"
 	depends on INET
+	depends on IPV6 || IPV6=n
 	---help---
 	  Say 'Y' or 'M' if you wish to be able to 'bond' multiple Ethernet
 	  Channels together. This is called 'Etherchannel' by Cisco,
@@ -2005,6 +2006,27 @@ config IGB
 	  <file:Documentation/networking/net-modules.txt>.  The module
 	  will be called igb.
 
+config IGBVF
+       tristate "Intel(R) 82576 Virtual Function Ethernet support"
+       depends on PCI
+       ---help---
+         This driver supports Intel(R) 82576 virtual functions.  For more
+         information on how to identify your adapter, go to the Adapter &
+         Driver ID Guide at:
+
+         <http://support.intel.com/support/network/adapter/pro100/21397.htm>
+
+         For general information and support, go to the Intel support
+         website at:
+
+         <http://support.intel.com>
+
+         More specific information on configuring the driver is in
+         <file:Documentation/networking/e1000.txt>.
+
+         To compile this driver as a module, choose M here. The module
+         will be called igbvf.
+
 source "drivers/net/ixp2000/Kconfig"
 
 config MYRI_SBUS
@@ -2224,7 +2246,6 @@ config VIA_VELOCITY
 config TIGON3
 	tristate "Broadcom Tigon3 support"
 	depends on PCI
-	select PHYLIB
 	help
 	  This driver supports Broadcom Tigon3 based gigabit Ethernet cards.
 
@@ -2241,6 +2262,17 @@ config BNX2
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called bnx2.  This is recommended.
+
+config CNIC
+	tristate "Broadcom CNIC support"
+	depends on BNX2
+	depends on UIO
+	help
+	  This driver supports offload features of Broadcom NetXtremeII
+	  gigabit Ethernet cards.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called cnic.  This is recommended.
 
 config SPIDER_NET
 	tristate "Spider Gigabit Ethernet driver"
@@ -2359,7 +2391,6 @@ config CHELSIO_T1
 config CHELSIO_T3
         tristate "Chelsio Communications T3 10Gb Ethernet support"
         depends on PCI
-	select INET_LRO
 	---help---
           This driver supports Chelsio T3-based gigabit and 10Gb Ethernet
           adapters.
@@ -2387,7 +2418,8 @@ config EHEA
 
 config IXGBE
 	tristate "Intel(R) 10GbE PCI Express adapters support"
-	depends on PCI
+	depends on PCI && INET
+	select INET_LRO
 	---help---
 	  This driver supports Intel(R) 10GbE PCI Express family of
 	  adapters.  For more information on how to identify your adapter, go
@@ -2516,6 +2548,25 @@ config BNX2X
 	  To compile this driver as a module, choose M here: the module
 	  will be called bnx2x.  This is recommended.
 
+config MLX4_EN
+	tristate "Mellanox Technologies 10Gbit Ethernet support"
+	depends on PCI && INET
+	select MLX4_CORE
+	select INET_LRO
+	help
+	  This driver supports Mellanox Technologies ConnectX Ethernet
+	  devices.
+
+config QLGE
+       tristate "QLogic QLGE 10Gb Ethernet Driver Support"
+       depends on PCI
+       default m 	
+       ---help---
+         This driver supports QLogic ISP8XXX 10Gb Ethernet cards.
+
+         To compile this driver as a module, choose M here: the module
+         will be called qlge.
+
 config MLX4_CORE
 	tristate
 	depends on PCI
@@ -2530,6 +2581,8 @@ config MLX4_DEBUG
 	  mlx4_core driver.  The output can be turned on via the
 	  debug_level module parameter (which can also be set after
 	  the driver is loaded through sysfs).
+
+source "drivers/net/benet/Kconfig"
 
 endmenu
 

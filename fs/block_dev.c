@@ -270,6 +270,8 @@ static void init_once(void * foo, kmem_cache_t * cachep, unsigned long flags)
 		INIT_LIST_HEAD(&bdev->bd_holder_list);
 #endif
 		inode_init_once(&ei->vfs_inode);
+		/* Initialize mutex for freeze. */
+		mutex_init(&bdev->bd_fsfreeze_mutex);
 	}
 }
 

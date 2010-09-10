@@ -334,7 +334,6 @@ xlvbd_add(blkif_sector_t capacity, int vdevice, u16 vdisk_info,
 	struct block_device *bd;
 	int err = 0;
 	int major, minor;
-	extern void xendev_rem_add(struct xenbus_device *dev);
 
 	if ((vdevice>>EXT_SHIFT) > 1) {
 		/* this is above the extended range; something is wrong */
@@ -359,12 +358,6 @@ xlvbd_add(blkif_sector_t capacity, int vdevice, u16 vdisk_info,
 	err = xlvbd_alloc_gendisk(major, minor, capacity, vdevice, vdisk_info,
 				  sector_size, info);
 
-#ifdef CONFIG_XEN_PV_ON_HVM
-	/* tag these devices for removal; unconnected hd's */
-	if (err) {
-		xendev_rem_add(info->xbdev);
-	}
-#endif
 	bdput(bd);
 	return err;
 }

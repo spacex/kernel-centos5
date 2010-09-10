@@ -38,7 +38,7 @@
 #include "vnic_viport.h"
 #include "vnic_netpath.h"
 
-void vnic_npevent_timeout(unsigned long data)
+static void vnic_npevent_timeout(unsigned long data)
 {
 	struct netpath *netpath = (struct netpath *)data;
 

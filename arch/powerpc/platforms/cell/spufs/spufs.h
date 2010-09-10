@@ -227,8 +227,15 @@ struct spufs_inode_info {
 #define SPUFS_I(inode) \
 	container_of(inode, struct spufs_inode_info, vfs_inode)
 
-extern struct tree_descr spufs_dir_contents[];
-extern struct tree_descr spufs_dir_nosched_contents[];
+struct spufs_tree_descr {
+	const char *name;
+	const struct file_operations *ops;
+	int mode;
+	size_t size;
+};
+
+extern const struct spufs_tree_descr spufs_dir_contents[];
+extern const struct spufs_tree_descr spufs_dir_nosched_contents[];
 
 /* system call implementation */
 extern struct spufs_calls spufs_calls;
@@ -343,7 +350,7 @@ struct spufs_coredump_reader {
 	u64 (*get)(struct spu_context *ctx);
 	size_t size;
 };
-extern struct spufs_coredump_reader spufs_coredump_read[];
+extern const struct spufs_coredump_reader spufs_coredump_read[];
 extern int spufs_coredump_num_notes;
 
 extern int spu_init_csa(struct spu_state *csa);

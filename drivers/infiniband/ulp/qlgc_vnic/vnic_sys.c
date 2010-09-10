@@ -30,8 +30,8 @@
  * SOFTWARE.
  */
 
-#include <linux/parser.h>
 #include <linux/netdevice.h>
+#include <linux/parser.h>
 #include <linux/if.h>
 
 #include "vnic_util.h"
@@ -40,8 +40,6 @@
 #include "vnic_viport.h"
 #include "vnic_main.h"
 #include "vnic_stats.h"
-
-extern struct list_head vnic_list;
 
 /*
  * target eiocs are added by writing
@@ -59,6 +57,8 @@ enum {
 	VNIC_OPT_RXCSUM = 1 << 5,
 	VNIC_OPT_TXCSUM = 1 << 6,
 	VNIC_OPT_HEARTBEAT = 1 << 7,
+	VNIC_OPT_IOC_STRING = 1 << 8,
+	VNIC_OPT_IB_MULTICAST = 1 << 9,
 	VNIC_OPT_ALL = (VNIC_OPT_IOC_GUID |
 			VNIC_OPT_DGID | VNIC_OPT_NAME | VNIC_OPT_PKEY),
 };
@@ -72,6 +72,8 @@ static match_table_t vnic_opt_tokens = {
 	{VNIC_OPT_RXCSUM, "rx_csum=%s"},
 	{VNIC_OPT_TXCSUM, "tx_csum=%s"},
 	{VNIC_OPT_HEARTBEAT, "heartbeat=%d"},
+	{VNIC_OPT_IOC_STRING, "ioc_string=\"%s"},
+	{VNIC_OPT_IB_MULTICAST, "ib_multicast=%s"},
 	{VNIC_OPT_ERR, NULL}
 };
 
@@ -81,7 +83,6 @@ static void vnic_release_class_dev(struct class_device *class_dev)
 	    container_of(class_dev, struct class_dev_info, class_dev);
 
 	complete(&cdev_info->released);
-
 }
 
 struct class vnic_class = {
@@ -100,7 +101,7 @@ static int vnic_parse_options(const char *buf, struct path_param *param)
 	int opt_mask = 0;
 	int token;
 	int ret = -EINVAL;
-	int i;
+	int i, len;
 
 	options = kstrdup(buf, GFP_KERNEL);
 	if (!options)
@@ -170,7 +171,7 @@ static int vnic_parse_options(const char *buf, struct path_param *param)
 			if (token > 255 || token < 0) {
 				printk(KERN_WARNING PFX
 				       "instance parameter must be"
-				       " > 0 and <= 255\n");
+				       " >= 0 and <= 255\n");
 				goto out;
 			}
 
@@ -220,6 +221,42 @@ static int vnic_parse_options(const char *buf, struct path_param *param)
 				goto out;
 			}
 			param->heartbeat = token;
+			break;
+		case VNIC_OPT_IOC_STRING:
+			p = match_strdup(args);
+			len = strlen(p);
+			if (len > MAX_IOC_STRING_LEN) {
+				printk(KERN_WARNING PFX
+				       "ioc string parameter too long\n");
+				kfree(p);
+				goto out;
+			}
+			strcpy(param->ioc_string, p);
+			if (*(p + len - 1) != '\"') {
+				strcat(param->ioc_string, ",");
+				kfree(p);
+				p = strsep(&sep_opt, "\"");
+				strcat(param->ioc_string, p);
+				sep_opt++;
+			} else {
+				*(param->ioc_string + len - 1) = '\0';
+				kfree(p);
+			}
+			break;
+		case VNIC_OPT_IB_MULTICAST:
+			p = match_strdup(args);
+			if (!strncmp(p, "true", 4))
+				param->ib_multicast = 1;
+			else if (!strncmp(p, "false", 5))
+				param->ib_multicast = 0;
+			else {
+					printk(KERN_WARNING PFX
+					"bad ib_multicast parameter."
+					" must be 'true' or 'false'\n");
+				kfree(p);
+				goto out;
+			}
+			kfree(p);
 			break;
 		default:
 			printk(KERN_WARNING PFX
@@ -294,23 +331,27 @@ static ssize_t show_tx_csum(struct class_device *class_dev, char *buf)
 static CLASS_DEVICE_ATTR(tx_csum, S_IRUGO, show_tx_csum, NULL);
 
 static ssize_t show_current_path(struct class_device *class_dev, char *buf)
-{
-	struct class_dev_info *info =
-	    container_of(class_dev, struct class_dev_info, class_dev);
-	struct vnic *vnic = container_of(info, struct vnic, class_dev_info);
+ {
+ 	struct class_dev_info *info =
+ 	    container_of(class_dev, struct class_dev_info, class_dev);
+ 	struct vnic *vnic = container_of(info, struct vnic, class_dev_info);
+	unsigned long flags;
+	size_t length;
 
+	spin_lock_irqsave(&vnic->current_path_lock, flags);
 	if (vnic->current_path == &vnic->primary_path)
-		return sprintf(buf, "primary path\n");
+		length = sprintf(buf, "primary_path\n");
 	else if (vnic->current_path == &vnic->secondary_path)
-		return sprintf(buf, "secondary path\n");
+		length = sprintf(buf, "secondary path\n");
 	else
-		return sprintf(buf, "none\n");
-
+		length = sprintf(buf, "none\n");
+	spin_unlock_irqrestore(&vnic->current_path_lock, flags);
+	return length;
 }
 
 static CLASS_DEVICE_ATTR(current_path, S_IRUGO, show_current_path, NULL);
 
-static struct attribute * vnic_dev_attrs[] = {
+static struct attribute *vnic_dev_attrs[] = {
 	&class_device_attr_vnic_state.attr,
 	&class_device_attr_rx_csum.attr,
 	&class_device_attr_tx_csum.attr,
@@ -321,6 +362,25 @@ static struct attribute * vnic_dev_attrs[] = {
 struct attribute_group vnic_dev_attr_group = {
 	.attrs = vnic_dev_attrs,
 };
+
+static inline void print_dgid(u8 *dgid)
+{
+	int i;
+
+	for (i = 0; i < 16; i += 2)
+		printk("%04x", be16_to_cpu(*(__be16 *)&dgid[i]));
+}
+
+static inline int is_dgid_zero(u8 *dgid)
+{
+	int i;
+
+	for (i = 0; i < 16; i++) {
+		if (dgid[i] != 0)
+			return 1;
+	}
+	return 0;
+}
 
 static int create_netpath(struct netpath *npdest,
 			  struct path_param *p_params)
@@ -337,7 +397,8 @@ static int create_netpath(struct netpath *npdest,
 			viport_config = vnic->primary_path.viport->config;
 			if ((viport_config->ioc_guid == p_params->ioc_guid)
 			    && (viport_config->control_config.vnic_instance
-				== p_params->instance)) {
+				== p_params->instance)
+			    && (be64_to_cpu(p_params->ioc_guid))) {
 				SYS_ERROR("GUID %llx,"
 					  " INSTANCE %d already in use\n",
 					  be64_to_cpu(p_params->ioc_guid),
@@ -351,7 +412,8 @@ static int create_netpath(struct netpath *npdest,
 			viport_config = vnic->secondary_path.viport->config;
 			if ((viport_config->ioc_guid == p_params->ioc_guid)
 			    && (viport_config->control_config.vnic_instance
-				== p_params->instance)) {
+				== p_params->instance)
+			    && (be64_to_cpu(p_params->ioc_guid))) {
 				SYS_ERROR("GUID %llx,"
 					  " INSTANCE %d already in use\n",
 					  be64_to_cpu(p_params->ioc_guid),
@@ -396,13 +458,26 @@ static int create_netpath(struct netpath *npdest,
 	npdest->viport = viport;
 	viport->parent = npdest;
 	viport->vnic = npdest->parent;
-	viport_kick(viport);
-	vnic_disconnected(npdest->parent, npdest);
+
+	if (is_dgid_zero(p_params->dgid) &&  p_params->ioc_guid != 0
+	   &&  p_params->pkey != 0) {
+		viport_kick(viport);
+		vnic_disconnected(npdest->parent, npdest);
+	} else {
+		printk(KERN_WARNING "Specified parameters IOCGUID=%llx, "
+			"P_Key=%x, DGID=", be64_to_cpu(p_params->ioc_guid),
+			p_params->pkey);
+		print_dgid(p_params->dgid);
+		printk(" insufficient for establishing %s path for interface "
+			"%s. Hence, path will not be established.\n",
+			(npdest->second_bias ? "secondary" : "primary"),
+			p_params->name);
+	}
 out:
 	return ret;
 }
 
-struct vnic *create_vnic(struct path_param *param)
+static struct vnic *create_vnic(struct path_param *param)
 {
 	struct vnic_config *vnic_config;
 	struct vnic *vnic;
@@ -476,8 +551,62 @@ free_vnic_config:
 	return NULL;
 }
 
-ssize_t vnic_delete(struct class_device * class_dev,
-		    const char *buf, size_t count)
+static ssize_t vnic_sysfs_force_failover(struct class_device *class_dev,
+				  const char *buf, size_t count)
+{
+	struct vnic *vnic;
+	struct list_head *ptr;
+	int ret = -EINVAL;
+
+	if (count > IFNAMSIZ) {
+		printk(KERN_WARNING PFX "invalid vnic interface name\n");
+		return ret;
+	}
+
+	SYS_INFO("vnic_sysfs_force_failover: name = %s\n", buf);
+	list_for_each(ptr, &vnic_list) {
+		vnic = list_entry(ptr, struct vnic, list_ptrs);
+		if (!strcmp(vnic->config->name, buf)) {
+			vnic_force_failover(vnic);
+			return count;
+		}
+	}
+
+	printk(KERN_WARNING PFX "vnic interface '%s' does not exist\n", buf);
+	return ret;
+}
+
+CLASS_DEVICE_ATTR(force_failover, S_IWUSR, NULL, vnic_sysfs_force_failover);
+
+static ssize_t vnic_sysfs_unfailover(struct class_device *class_dev,
+			      const char *buf, size_t count)
+{
+	struct vnic *vnic;
+	struct list_head *ptr;
+	int ret = -EINVAL;
+
+	if (count > IFNAMSIZ) {
+		printk(KERN_WARNING PFX "invalid vnic interface name\n");
+		return ret;
+	}
+
+	SYS_INFO("vnic_sysfs_unfailover: name = %s\n", buf);
+	list_for_each(ptr, &vnic_list) {
+		vnic = list_entry(ptr, struct vnic, list_ptrs);
+		if (!strcmp(vnic->config->name, buf)) {
+			vnic_unfailover(vnic);
+			return count;
+		}
+	}
+
+	printk(KERN_WARNING PFX "vnic interface '%s' does not exist\n", buf);
+	return ret;
+}
+
+CLASS_DEVICE_ATTR(unfailover, S_IWUSR, NULL, vnic_sysfs_unfailover);
+
+static ssize_t vnic_delete(struct class_device *class_dev,
+			   const char *buf, size_t count)
 {
 	struct vnic *vnic;
 	struct list_head *ptr;
@@ -500,6 +629,8 @@ ssize_t vnic_delete(struct class_device * class_dev,
 	printk(KERN_WARNING PFX "vnic interface '%s' does not exist\n", buf);
 	return ret;
 }
+
+CLASS_DEVICE_ATTR(delete_vnic, S_IWUSR, NULL, vnic_delete);
 
 static ssize_t show_viport_state(struct class_device *class_dev, char *buf)
 {
@@ -625,10 +756,137 @@ static ssize_t show_heartbeat(struct class_device *class_dev, char *buf)
 
 static CLASS_DEVICE_ATTR(heartbeat, S_IRUGO, show_heartbeat, NULL);
 
-static struct attribute * vnic_path_attrs[] = {
+static ssize_t show_ioc_guid(struct class_device *class_dev, char *buf)
+{
+	struct class_dev_info *info =
+		container_of(class_dev, struct class_dev_info, class_dev);
+
+	struct netpath *path =
+		container_of(info, struct netpath, class_dev_info);
+
+	return sprintf(buf, "%llx\n",
+				__be64_to_cpu(path->viport->config->ioc_guid));
+}
+
+static CLASS_DEVICE_ATTR(ioc_guid, S_IRUGO, show_ioc_guid, NULL);
+
+static inline void get_dgid_string(u8 *dgid, char *buf)
+{
+	int i;
+	char holder[5];
+
+	for (i = 0; i < 16; i += 2) {
+		sprintf(holder, "%04x", be16_to_cpu(*(__be16 *)&dgid[i]));
+		strcat(buf, holder);
+	}
+
+	strcat(buf, "\n");
+}
+
+static ssize_t show_dgid(struct class_device *class_dev, char *buf)
+{
+	struct class_dev_info *info =
+		container_of(class_dev, struct class_dev_info, class_dev);
+
+	struct netpath *path =
+		container_of(info, struct netpath, class_dev_info);
+
+	get_dgid_string(path->viport->config->path_info.path.dgid.raw, buf);
+
+	return strlen(buf);
+}
+
+static CLASS_DEVICE_ATTR(dgid, S_IRUGO, show_dgid, NULL);
+
+static ssize_t show_pkey(struct class_device *class_dev, char *buf)
+{
+	struct class_dev_info *info =
+		container_of(class_dev, struct class_dev_info, class_dev);
+
+	struct netpath *path =
+		container_of(info, struct netpath, class_dev_info);
+
+	return sprintf(buf, "%x\n", path->viport->config->path_info.path.pkey);
+}
+
+static CLASS_DEVICE_ATTR(pkey, S_IRUGO, show_pkey, NULL);
+
+static ssize_t show_hca_info(struct class_device *class_dev, char *buf)
+{
+	struct class_dev_info *info =
+		container_of(class_dev, struct class_dev_info, class_dev);
+
+	struct netpath *path =
+		container_of(info, struct netpath, class_dev_info);
+
+	return sprintf(buf, "vnic-%s-%d\n", path->viport->config->ibdev->name,
+						path->viport->config->port);
+}
+
+static CLASS_DEVICE_ATTR(hca_info, S_IRUGO, show_hca_info, NULL);
+
+static ssize_t show_ioc_string(struct class_device *class_dev, char *buf)
+{
+	struct class_dev_info *info =
+		container_of(class_dev, struct class_dev_info, class_dev);
+
+	struct netpath *path =
+		container_of(info, struct netpath, class_dev_info);
+
+	return sprintf(buf, "%s\n", path->viport->config->ioc_string);
+}
+
+static  CLASS_DEVICE_ATTR(ioc_string, S_IRUGO, show_ioc_string, NULL);
+
+static ssize_t show_multicast_state(struct class_device *class_dev, char *buf)
+{
+	struct class_dev_info *info =
+		container_of(class_dev, struct class_dev_info, class_dev);
+
+	struct netpath *path =
+		container_of(info, struct netpath, class_dev_info);
+
+	if (!(path->viport->features_supported & VNIC_FEAT_INBOUND_IB_MC))
+		return sprintf(buf, "feature not enabled\n");
+
+	switch (path->viport->mc_info.state) {
+	case MCAST_STATE_INVALID:
+		return sprintf(buf, "state=Invalid\n");
+	case MCAST_STATE_JOINING:
+		return sprintf(buf, "state=Joining MGID:" VNIC_GID_FMT "\n",
+			VNIC_GID_RAW_ARG(path->viport->mc_info.mgid.raw));
+	case MCAST_STATE_ATTACHING:
+		return sprintf(buf, "state=Attaching MGID:" VNIC_GID_FMT
+			" MLID:%X\n",
+			VNIC_GID_RAW_ARG(path->viport->mc_info.mgid.raw),
+			path->viport->mc_info.mlid);
+	case MCAST_STATE_JOINED_ATTACHED:
+		return sprintf(buf,
+			"state=Joined & Attached MGID:" VNIC_GID_FMT
+			" MLID:%X\n",
+			VNIC_GID_RAW_ARG(path->viport->mc_info.mgid.raw),
+			path->viport->mc_info.mlid);
+	case MCAST_STATE_DETACHING:
+		return sprintf(buf, "state=Detaching MGID: " VNIC_GID_FMT "\n",
+			VNIC_GID_RAW_ARG(path->viport->mc_info.mgid.raw));
+	case MCAST_STATE_RETRIED:
+		return sprintf(buf, "state=Retries Exceeded\n");
+	}
+	return sprintf(buf, "invalid state\n");
+}
+
+static  CLASS_DEVICE_ATTR(multicast_state, S_IRUGO, show_multicast_state, NULL);
+
+static struct attribute *vnic_path_attrs[] = {
 	&class_device_attr_viport_state.attr,
 	&class_device_attr_link_state.attr,
 	&class_device_attr_heartbeat.attr,
+	&class_device_attr_ioc_guid.attr,
+	&class_device_attr_dgid.attr,
+	&class_device_attr_pkey.attr,
+	&class_device_attr_hca_info.attr,
+	&class_device_attr_ioc_string.attr,
+	&class_device_attr_multicast_state.attr,
 	NULL
 };
 
@@ -668,8 +926,133 @@ out:
 
 }
 
-ssize_t vnic_create_primary(struct class_device * class_dev,
-			    const char *buf, size_t count)
+static inline void update_dgids(u8 *old, u8 *new, char *vnic_name,
+				char *path_name)
+{
+	int i;
+
+	if (!memcmp(old, new, 16))
+		return;
+
+	printk(KERN_INFO PFX "Changing dgid from 0x");
+	print_dgid(old);
+	printk(" to 0x");
+	print_dgid(new);
+	printk(" for %s path of %s\n", path_name, vnic_name);
+	for (i = 0; i < 16; i++)
+		old[i] = new[i];
+}
+
+static inline void update_ioc_guids(struct path_param *params,
+				    struct netpath *path,
+				    char *vnic_name, char *path_name)
+{
+	u64 sid;
+
+	if (path->viport->config->ioc_guid == params->ioc_guid)
+		return;
+
+	printk(KERN_INFO PFX "Changing IOC GUID from 0x%llx to 0x%llx "
+			 "for %s path of %s\n",
+			 __be64_to_cpu(path->viport->config->ioc_guid),
+			 __be64_to_cpu(params->ioc_guid), path_name, vnic_name);
+
+	path->viport->config->ioc_guid = params->ioc_guid;
+
+	sid = (SST_AGN << 56) | (SST_OUI << 32) | (CONTROL_PATH_ID << 8)
+				| IOC_NUMBER(be64_to_cpu(params->ioc_guid));
+
+	path->viport->config->control_config.ib_config.service_id =
+							 cpu_to_be64(sid);
+
+	sid = (SST_AGN << 56) | (SST_OUI << 32) | (DATA_PATH_ID << 8)
+				| IOC_NUMBER(be64_to_cpu(params->ioc_guid));
+
+	path->viport->config->data_config.ib_config.service_id =
+							 cpu_to_be64(sid);
+}
+
+static inline void update_pkeys(__be16 *old, __be16 *new, char *vnic_name,
+				char *path_name)
+{
+	if (*old == *new)
+		return;
+
+	printk(KERN_INFO PFX "Changing P_Key from 0x%x to 0x%x "
+			 "for %s path of %s\n", *old, *new,
+			 path_name, vnic_name);
+	*old = *new;
+}
+
+static void update_ioc_strings(struct path_param *params, struct netpath *path,
+								char *path_name)
+{
+	if (!strcmp(params->ioc_string, path->viport->config->ioc_string))
+		return;
+
+	printk(KERN_INFO PFX "Changing ioc_string to %s for %s path of %s\n",
+				params->ioc_string, path_name, params->name);
+
+	strcpy(path->viport->config->ioc_string, params->ioc_string);
+}
+
+static void update_path_parameters(struct path_param *params,
+				   struct netpath *path)
+{
+	update_dgids(path->viport->config->path_info.path.dgid.raw,
+		params->dgid, params->name,
+		(path->second_bias ? "secondary" : "primary"));
+
+	update_ioc_guids(params, path, params->name,
+		(path->second_bias ? "secondary" : "primary"));
+
+	update_pkeys(&path->viport->config->path_info.path.pkey,
+		&params->pkey, params->name,
+		(path->second_bias ? "secondary" : "primary"));
+
+	update_ioc_strings(params, path,
+		(path->second_bias ? "secondary" : "primary"));
+}
+
+static ssize_t update_params_and_connect(struct path_param *params,
+					 struct netpath *path, size_t count)
+{
+	if (is_dgid_zero(params->dgid) && params->ioc_guid != 0 &&
+	    params->pkey != 0) {
+
+		if (!memcmp(path->viport->config->path_info.path.dgid.raw,
+			params->dgid, 16) &&
+		    params->ioc_guid == path->viport->config->ioc_guid &&
+		    params->pkey     == path->viport->config->path_info.path.pkey) {
+
+			printk(KERN_WARNING PFX "All of the dgid, ioc_guid and "
+						"pkeys are same as the existing"
+						" one. Not updating values.\n");
+			return -EINVAL;
+		} else {
+			if (path->viport->state == VIPORT_CONNECTED) {
+				printk(KERN_WARNING PFX "%s path of %s "
+					"interface is already in connected "
+					"state. Not updating values.\n",
+				(path->second_bias ? "Secondary" : "Primary"),
+				path->parent->config->name);
+				return -EINVAL;
+			} else {
+				update_path_parameters(params, path);
+				viport_kick(path->viport);
+				vnic_disconnected(path->parent, path);
+				return count;
+			}
+		}
+	} else {
+		printk(KERN_WARNING PFX "Either dgid, iocguid, pkey is zero. "
+					"No update.\n");
+		return -EINVAL;
+	}
+}
+
+static ssize_t vnic_create_primary(struct class_device *class_dev,
+				   const char *buf, size_t count)
 {
 	struct class_dev_info *cdev =
 	    container_of(class_dev, struct class_dev_info, class_dev);
@@ -679,16 +1062,29 @@ ssize_t vnic_create_primary(struct class_device * class_dev,
 	struct path_param param;
 	int ret = -EINVAL;
 	struct vnic *vnic;
+	struct list_head    *ptr;
 
 	param.instance = 0;
 	param.rx_csum = -1;
 	param.tx_csum = -1;
 	param.heartbeat = -1;
+	param.ib_multicast = -1;
+	*param.ioc_string = '\0';
 
 	ret = vnic_parse_options(buf, &param);
 
 	if (ret)
 		goto out;
+
+	list_for_each(ptr, &vnic_list) {
+		vnic = list_entry(ptr, struct vnic, list_ptrs);
+		if (!strcmp(vnic->config->name, param.name)) {
+			ret = update_params_and_connect(&param,
+							&vnic->primary_path,
+							count);
+			goto out;
+		}
+	 }
 
 	param.ibdev = target->dev->dev;
 	param.ibport = target;
@@ -723,8 +1119,10 @@ out:
 	return ret;
 }
 
-ssize_t vnic_create_secondary(struct class_device * class_dev,
-			      const char *buf, size_t count)
+CLASS_DEVICE_ATTR(create_primary, S_IWUSR, NULL, vnic_create_primary);
+
+static ssize_t vnic_create_secondary(struct class_device *class_dev,
+				     const char *buf, size_t count)
 {
 	struct class_dev_info *cdev =
 	    container_of(class_dev, struct class_dev_info, class_dev);
@@ -732,7 +1130,7 @@ ssize_t vnic_create_secondary(struct class_device * class_dev,
 	    container_of(cdev, struct vnic_ib_port, cdev_info);
 
 	struct path_param param;
-	struct vnic *vnic;
+	struct vnic *vnic = NULL;
 	int ret = -EINVAL;
 	struct list_head *ptr;
 	int found = 0;
@@ -741,6 +1139,8 @@ ssize_t vnic_create_secondary(struct class_device * class_dev,
 	param.rx_csum = -1;
 	param.tx_csum = -1;
 	param.heartbeat = -1;
+	param.ib_multicast = -1;
+	*param.ioc_string = '\0';
 
 	ret = vnic_parse_options(buf, &param);
 
@@ -750,6 +1150,12 @@ ssize_t vnic_create_secondary(struct class_device * class_dev,
 	list_for_each(ptr, &vnic_list) {
 		vnic = list_entry(ptr, struct vnic, list_ptrs);
 		if (!strncmp(vnic->config->name, param.name, IFNAMSIZ)) {
+			if (vnic->secondary_path.viport) {
+				ret = update_params_and_connect(&param,
+								&vnic->secondary_path,
+								count);
+				goto out;
+			}
 			found = 1;
 			break;
 		}
@@ -784,3 +1190,5 @@ free_vnic:
 out:
 	return ret;
 }
+
+CLASS_DEVICE_ATTR(create_secondary, S_IWUSR, NULL, vnic_create_secondary);

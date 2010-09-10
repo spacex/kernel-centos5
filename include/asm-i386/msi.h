@@ -7,9 +7,17 @@
 #define ASM_MSI_H
 
 #include <asm/desc.h>
+#ifndef CONFIG_XEN
 #include <mach_apic.h>
+#endif
 
+#ifndef CONFIG_XEN
 #define LAST_DEVICE_VECTOR	(FIRST_SYSTEM_VECTOR - 1)
+#else
+#define LAST_DYNAMIC_VECTOR 0xdf
+#define LAST_DEVICE_VECTOR	(LAST_DYNAMIC_VECTOR)
+#endif
+
 #define MSI_TARGET_CPU_SHIFT	12
 
 extern struct msi_ops msi_apic_ops;

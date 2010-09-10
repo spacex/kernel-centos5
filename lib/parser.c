@@ -182,6 +182,28 @@ int match_hex(substring_t *s, int *result)
 }
 
 /**
+ * match_strlcpy: - Copy the characters from a substring_t to a sized buffer
+ * @dest: where to copy to
+ * @src: &substring_t to copy
+ * @size: size of destination buffer
+ *
+ * Description: Copy the characters in &substring_t @src to the
+ * c-style string @dest.  Copy no more than @size - 1 characters, plus
+ * the terminating NUL.  Return length of @src.
+ */
+size_t match_strlcpy(char *dest, const substring_t *src, size_t size)
+{
+	size_t ret = src->to - src->from;
+
+	if (size) {
+		size_t len = ret >= size ? size - 1 : ret;
+		memcpy(dest, src->from, len);
+		dest[len] = '\0';
+	}
+	return ret;
+}
+
+/**
  * match_strcpy: - copies the characters from a substring_t to a string
  * @to: string to copy characters to.
  * @s: &substring_t to copy
@@ -216,5 +238,6 @@ EXPORT_SYMBOL(match_token);
 EXPORT_SYMBOL(match_int);
 EXPORT_SYMBOL(match_octal);
 EXPORT_SYMBOL(match_hex);
+EXPORT_SYMBOL(match_strlcpy);
 EXPORT_SYMBOL(match_strcpy);
 EXPORT_SYMBOL(match_strdup);

@@ -26,6 +26,7 @@
 #include <linux/key.h>
 #include <linux/binfmts.h>
 #include <linux/mman.h>
+#include <linux/mmu_notifier.h>
 #include <linux/fs.h>
 #include <linux/capability.h>
 #include <linux/cpu.h>
@@ -35,6 +36,7 @@
 #include <linux/syscalls.h>
 #include <linux/jiffies.h>
 #include <linux/futex.h>
+#include <linux/task_io_accounting_ops.h>
 #include <linux/rcupdate.h>
 #include <linux/tracehook.h>
 #include <linux/mount.h>
@@ -460,6 +462,7 @@ static struct mm_struct * mm_init(struct mm_struct * mm)
 
 	if (likely(!mm_alloc_pgd(mm))) {
 		mm->def_flags = 0;
+		mmu_notifier_mm_init(mm);
 		return mm;
 	}
 
@@ -496,6 +499,7 @@ void fastcall __mmdrop(struct mm_struct *mm)
 	free_mm_flags(mm);
 	mm_free_pgd(mm);
 	destroy_context(mm);
+	mmu_notifier_mm_destroy(mm);
 	free_mm(mm);
 }
 
@@ -571,16 +575,18 @@ void mm_release(struct task_struct *tsk, struct mm_struct *mm)
 		task_aux(tsk)->vfork_done = NULL;
 		complete(vfork_done);
 	}
-	if (tsk->clear_child_tid && atomic_read(&mm->mm_users) > 1) {
-		u32 __user * tidptr = tsk->clear_child_tid;
-		tsk->clear_child_tid = NULL;
 
-		/*
-		 * We don't check the error code - if userspace has
-		 * not set up a proper pointer then tough luck.
-		 */
-		put_user(0, tidptr);
-		sys_futex(tidptr, FUTEX_WAKE, 1, NULL, NULL, 0);
+	if (tsk->clear_child_tid) {
+		if (atomic_read(&mm->mm_users) > 1) {
+			/*
+			 * We don't check the error code - if userspace has
+			 * not set up a proper pointer then tough luck.
+			 */
+			put_user(0, tsk->clear_child_tid);
+			sys_futex(tsk->clear_child_tid, FUTEX_WAKE,
+					1, NULL, NULL, 0);
+		}
+		tsk->clear_child_tid = NULL;
 	}
 }
 
@@ -962,6 +968,8 @@ static inline int copy_signal(unsigned long clone_flags, struct task_struct * ts
 	if (!sig)
 		return -ENOMEM;
 
+	init_signal_aux(signal_aux(sig));
+
 	ret = copy_thread_group_keys(tsk);
 	if (ret < 0) {
 		kmem_cache_free(signal_cachep, sig);
@@ -1168,6 +1176,7 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 	p->wchar = 0;		/* I/O counter: bytes written */
 	p->syscr = 0;		/* I/O counter: read syscalls */
 	p->syscw = 0;		/* I/O counter: write syscalls */
+	task_io_accounting_init(p);
 	acct_clear_integrals(p);
 
  	p->it_virt_expires = cputime_zero;
@@ -1536,7 +1545,7 @@ void __init proc_caches_init(void)
 			SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_DESTROY_BY_RCU,
 			sighand_ctor, NULL);
 	signal_cachep = kmem_cache_create("signal_cache",
-			sizeof(struct signal_struct), 0,
+			sizeof(struct signal_with_aux_struct), 0,
 			SLAB_HWCACHE_ALIGN|SLAB_PANIC, NULL, NULL);
 	files_cachep = kmem_cache_create("files_cache", 
 			sizeof(struct files_struct), 0,

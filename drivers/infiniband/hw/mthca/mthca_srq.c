@@ -28,8 +28,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: mthca_srq.c 3047 2005-08-10 03:59:35Z roland $
  */
 
 #include <linux/slab.h>
@@ -513,15 +511,7 @@ int mthca_tavor_post_srq_recv(struct ib_srq *ibsrq, struct ib_recv_wr *wr,
 	first_ind = srq->first_free;
 
 	for (nreq = 0; wr; wr = wr->next) {
-		ind = srq->first_free;
-
-		if (unlikely(ind < 0)) {
-			mthca_err(dev, "SRQ %06x full\n", srq->srqn);
-			err = -ENOMEM;
-			*bad_wr = wr;
-			break;
-		}
-
+		ind       = srq->first_free;
 		wqe       = get_wqe(srq, ind);
 		next_ind  = *wqe_to_link(wqe);
 
@@ -617,15 +607,7 @@ int mthca_arbel_post_srq_recv(struct ib_srq *ibsrq, struct ib_recv_wr *wr,
 	spin_lock_irqsave(&srq->lock, flags);
 
 	for (nreq = 0; wr; ++nreq, wr = wr->next) {
-		ind = srq->first_free;
-
-		if (unlikely(ind < 0)) {
-			mthca_err(dev, "SRQ %06x full\n", srq->srqn);
-			err = -ENOMEM;
-			*bad_wr = wr;
-			break;
-		}
-
+		ind       = srq->first_free;
 		wqe       = get_wqe(srq, ind);
 		next_ind  = *wqe_to_link(wqe);
 

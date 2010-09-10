@@ -182,6 +182,7 @@ void timer_interrupt(struct pt_regs * regs)
 				last_rtc_update += 60;
 		}
 		write_sequnlock(&xtime_lock);
+		leap_second_message();
 	}
 	if ( !disarm_decr[smp_processor_id()] )
 		set_dec(next_dec);

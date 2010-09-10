@@ -684,7 +684,7 @@ static struct net_device_stats *enic_get_stats(struct net_device *netdev)
 	enic->net_stats.rx_bytes = stats->rx.rx_bytes_ok;
 	enic->net_stats.rx_errors = stats->rx.rx_errors;
 	enic->net_stats.multicast = stats->rx.rx_multicast_frames_ok;
-	enic->net_stats.rx_crc_errors = stats->rx.rx_crc_errors;
+	enic->net_stats.rx_crc_errors = enic->rq_bad_fcs;
 	enic->net_stats.rx_dropped = stats->rx.rx_no_bufs;
 
 	return &enic->net_stats;
@@ -929,12 +929,8 @@ static void enic_rq_indicate_buf(struct vnic_rq *rq,
 
 	if (packet_error) {
 
-		if (bytes_written > 0 && !fcs_ok) {
-			if (net_ratelimit())
-				printk(KERN_ERR PFX
-					"%s: packet error: bad FCS\n",
-					netdev->name);
-		}
+		if (bytes_written > 0 && !fcs_ok)
+			enic->rq_bad_fcs++;
 
 		dev_kfree_skb_any(skb);
 
@@ -1463,6 +1459,26 @@ static int enic_dev_soft_reset(struct enic *enic)
 	return err;
 }
 
+static int enic_set_niccfg(struct enic *enic)
+{
+	const u8 rss_default_cpu = 0;
+	const u8 rss_hash_type = 0;
+	const u8 rss_hash_bits = 0;
+	const u8 rss_base_cpu = 0;
+	const u8 rss_enable = 0;
+	const u8 tso_ipid_split_en = 0;
+	const u8 ig_vlan_strip_en = 1;
+
+	/* Enable VLAN tag stripping.  RSS not enabled (yet).
+	*/
+
+	return enic_set_nic_cfg(enic,
+		rss_default_cpu, rss_hash_type,
+		rss_hash_bits, rss_base_cpu,
+		rss_enable, tso_ipid_split_en,
+		ig_vlan_strip_en);
+}
+
 static void enic_reset(struct enic *enic)
 {
 	if (!netif_running(enic->netdev))
@@ -1476,8 +1492,10 @@ static void enic_reset(struct enic *enic)
 
 	enic_stop(enic->netdev);
 	enic_dev_soft_reset(enic);
+	vnic_dev_init(enic->vdev, 0);
 	enic_reset_mcaddrs(enic);
 	enic_init_vnic_resources(enic);
+	enic_set_niccfg(enic);
 	enic_open(enic->netdev);
 
 	rtnl_unlock();
@@ -1601,14 +1619,6 @@ static int __devinit enic_probe(struct pci_dev *pdev,
 	int using_dac = 0;
 	unsigned int i;
 	int err;
-
-	const u8 rss_default_cpu = 0;
-	const u8 rss_hash_type = 0;
-	const u8 rss_hash_bits = 0;
-	const u8 rss_base_cpu = 0;
-	const u8 rss_enable = 0;
-	const u8 tso_ipid_split_en = 0;
-	const u8 ig_vlan_strip_en = 1;
 
 	/* Allocate net device structure and initialize.  Private
 	 * instance data is initialized to zero.
@@ -1780,14 +1790,7 @@ static int __devinit enic_probe(struct pci_dev *pdev,
 
 	enic_init_vnic_resources(enic);
 
-	/* Enable VLAN tag stripping.  RSS not enabled (yet).
-	 */
-
-	err = enic_set_nic_cfg(enic,
-		rss_default_cpu, rss_hash_type,
-		rss_hash_bits, rss_base_cpu,
-		rss_enable, tso_ipid_split_en,
-		ig_vlan_strip_en);
+	err = enic_set_niccfg(enic);
 	if (err) {
 		printk(KERN_ERR PFX
 			"Failed to config nic, aborting.\n");
@@ -1856,7 +1859,6 @@ static int __devinit enic_probe(struct pci_dev *pdev,
 	if (using_dac)
 		netdev->features |= NETIF_F_HIGHDMA;
 
-
 	enic->csum_rx_enabled = ENIC_SETTING(enic, RXCSUM);
 
 	if (ENIC_SETTING(enic, LRO)) {
@@ -1869,7 +1871,6 @@ static int __devinit enic_probe(struct pci_dev *pdev,
 		enic->lro_mgr.ip_summed = CHECKSUM_COMPLETE;
 		enic->lro_mgr.ip_summed_aggr = CHECKSUM_UNNECESSARY;
 	}
-
 	err = register_netdev(netdev);
 	if (err) {
 		printk(KERN_ERR PFX

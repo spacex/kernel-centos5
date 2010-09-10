@@ -13,11 +13,11 @@ DEFINE_TRACE(deactivate_task,
 	TPPROTO(struct task_struct *p, struct rq *rq),
 	TPARGS(p, rq));
 DEFINE_TRACE(sched_wakeup,
-	TPPROTO(struct rq *rq, struct task_struct *p),
-	TPARGS(rq, p));
+	TPPROTO(struct rq *rq, struct task_struct *p, int success),
+	TPARGS(rq, p, success));
 DEFINE_TRACE(sched_wakeup_new,
-	TPPROTO(struct rq *rq, struct task_struct *p),
-	TPARGS(rq, p));
+	TPPROTO(struct rq *rq, struct task_struct *p, int success),
+	TPARGS(rq, p, success));
 DEFINE_TRACE(sched_switch,
 	TPPROTO(struct rq *rq, struct task_struct *prev,
 		struct task_struct *next),

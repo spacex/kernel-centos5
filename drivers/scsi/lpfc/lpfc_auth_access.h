@@ -20,17 +20,6 @@
 
 #define to_fc_internal(tmpl)	container_of(tmpl, struct fc_internal, t)
 
-/* scsi_nl_hdr->version value */
-#define SCSI_NL_VERSION				1
-
-/* scsi_nl_hdr->magic value */
-#define SCSI_NL_MAGIC				0xA1B2
-
-/* scsi_nl_hdr->transport value */
-#define SCSI_NL_TRANSPORT			0
-#define SCSI_NL_TRANSPORT_FC			1
-#define SCSI_NL_MAX_TRANSPORTS			2
-
 #define FC_NL_GROUP_CNT		0
 
 	/* Note: when specifying vendor_id to fc_host_post_vendor_event()

@@ -155,7 +155,7 @@ pci_setup_bridge(struct pci_bus *bus)
 {
 	struct pci_dev *bridge = bus->self;
 	struct pci_bus_region region;
-	u32 l, io_upper16;
+	u32 l, bu, lu, io_upper16;
 
 	DBG(KERN_INFO "PCI: Bridge: %s\n", pci_name(bridge));
 
@@ -205,12 +205,18 @@ pci_setup_bridge(struct pci_bus *bus)
 	pci_write_config_dword(bridge, PCI_PREF_LIMIT_UPPER32, 0);
 
 	/* Set up PREF base/limit. */
+	bu = lu = 0;
 	pcibios_resource_to_bus(bridge, &region, bus->resource[2]);
 	if (bus->resource[2]->flags & IORESOURCE_PREFETCH) {
 		l = (region.start >> 16) & 0xfff0;
 		l |= region.end & 0xfff00000;
-		DBG(KERN_INFO "  PREFETCH window: %08lx-%08lx\n",
-				region.start, region.end);
+#ifdef CONFIG_RESOURCES_64BIT
+		bu = region.start >> 32;
+		lu = region.end >> 32;
+#endif
+		DBG(KERN_INFO "  PREFETCH window 0x%016llx-0x%016llx\n",
+		    (unsigned long long)region.start,
+		    (unsigned long long)region.end);
 	}
 	else {
 		l = 0x0000fff0;
@@ -218,8 +224,9 @@ pci_setup_bridge(struct pci_bus *bus)
 	}
 	pci_write_config_dword(bridge, PCI_PREF_MEMORY_BASE, l);
 
-	/* Clear out the upper 32 bits of PREF base. */
-	pci_write_config_dword(bridge, PCI_PREF_BASE_UPPER32, 0);
+	/* Set the upper 32 bits of PREF base & limit. */
+	pci_write_config_dword(bridge, PCI_PREF_BASE_UPPER32, bu);
+	pci_write_config_dword(bridge, PCI_PREF_LIMIT_UPPER32, lu);
 
 	pci_write_config_word(bridge, PCI_BRIDGE_CONTROL, bus->bridge_ctl);
 }
@@ -337,8 +344,8 @@ static int __devinit
 pbus_size_mem(struct pci_bus *bus, unsigned long mask, unsigned long type)
 {
 	struct pci_dev *dev;
-	unsigned long min_align, align, size;
-	unsigned long aligns[12];	/* Alignments from 1Mb to 2Gb */
+	resource_size_t min_align, align, size;
+	resource_size_t aligns[12];	/* Alignments from 1Mb to 2Gb */
 	int order, max_order;
 	struct resource *b_res = find_free_bus_resource(bus, type);
 
@@ -354,7 +361,7 @@ pbus_size_mem(struct pci_bus *bus, unsigned long mask, unsigned long type)
 		
 		for (i = 0; i < PCI_NUM_RESOURCES; i++) {
 			struct resource *r = &dev->resource[i];
-			unsigned long r_size;
+			resource_size_t r_size;
 
 			if (r->parent || (r->flags & mask) != type)
 				continue;
@@ -364,10 +371,10 @@ pbus_size_mem(struct pci_bus *bus, unsigned long mask, unsigned long type)
 			order = __ffs(align) - 20;
 			if (order > 11) {
 				printk(KERN_WARNING "PCI: region %s/%d "
-				       "too large: %llx-%llx\n",
+				       "too large: %016llx-%016llx\n",
 					pci_name(dev), i,
-					(unsigned long long)r->start,
-					(unsigned long long)r->end);
+				       (unsigned long long)r->start,
+				       (unsigned long long)r->end);
 				r->flags = 0;
 				continue;
 			}
@@ -386,8 +393,11 @@ pbus_size_mem(struct pci_bus *bus, unsigned long mask, unsigned long type)
 	align = 0;
 	min_align = 0;
 	for (order = 0; order <= max_order; order++) {
-		unsigned long align1 = 1UL << (order + 20);
-
+#ifdef CONFIG_RESOURCES_64BIT
+		resource_size_t align1 = 1ULL << (order + 20);
+#else
+		resource_size_t align1 = 1U << (order + 20);
+#endif
 		if (!align)
 			min_align = align1;
 		else if (ROUND_UP(align + min_align, min_align) < align1)

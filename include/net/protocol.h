@@ -42,6 +42,12 @@ struct net_protocol {
 	int			no_policy;
 };
 
+struct net_gro_protocol {
+	struct sk_buff	      **(*gro_receive)(struct sk_buff **head,
+					       struct sk_buff *skb);
+	int			(*gro_complete)(struct sk_buff *skb);
+};
+
 #if defined(CONFIG_IPV6) || defined (CONFIG_IPV6_MODULE)
 struct inet6_protocol 
 {
@@ -57,6 +63,12 @@ struct inet6_protocol
 				       int features);
 
 	unsigned int	flags;	/* INET6_PROTO_xxx */
+};
+
+struct inet6_gro_protocol {
+	struct sk_buff	      **(*gro_receive)(struct sk_buff **head,
+					       struct sk_buff *skb);
+	int			(*gro_complete)(struct sk_buff *skb);
 };
 
 #define INET6_PROTO_NOPOLICY	0x1
@@ -89,18 +101,24 @@ struct inet_protosw {
 
 extern struct net_protocol *inet_protocol_base;
 extern struct net_protocol *inet_protos[MAX_INET_PROTOS];
+extern struct net_gro_protocol *inet_gro_protos[MAX_INET_PROTOS];
 
 #if defined(CONFIG_IPV6) || defined (CONFIG_IPV6_MODULE)
 extern struct inet6_protocol *inet6_protos[MAX_INET_PROTOS];
+extern struct inet6_gro_protocol *inet6_gro_protos[MAX_INET_PROTOS];
 #endif
 
 extern int	inet_add_protocol(struct net_protocol *prot, unsigned char num);
+extern int	inet_add_gro_protocol(struct net_gro_protocol *prot,
+				      unsigned char protocol);
 extern int	inet_del_protocol(struct net_protocol *prot, unsigned char num);
 extern void	inet_register_protosw(struct inet_protosw *p);
 extern void	inet_unregister_protosw(struct inet_protosw *p);
 
 #if defined(CONFIG_IPV6) || defined (CONFIG_IPV6_MODULE)
 extern int	inet6_add_protocol(struct inet6_protocol *prot, unsigned char num);
+extern int	inet6_add_gro_protocol(struct inet6_gro_protocol *prot,
+				       unsigned char num);
 extern int	inet6_del_protocol(struct inet6_protocol *prot, unsigned char num);
 extern void	inet6_register_protosw(struct inet_protosw *p);
 extern void	inet6_unregister_protosw(struct inet_protosw *p);

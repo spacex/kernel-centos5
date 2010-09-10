@@ -236,6 +236,11 @@ static inline pte_t pte_exprotect(pte_t pte)
 	return pte;
 }
 
+static inline int pte_special(pte_t pte)
+{
+	return 0;
+}
+
 static inline pte_t pte_mkclean(pte_t pte)
 {
 	pte_val(pte) &= ~_PAGE_DIRTY;
@@ -287,6 +292,11 @@ static inline pte_t pte_mkwrite(pte_t pte)
 static inline  int ptep_test_and_clear_dirty(struct vm_area_struct *vma, unsigned long addr, pte_t *ptep)
 {
 	return test_and_clear_bit(_PAGE_BIT_DIRTY, ptep);
+}
+
+static inline pte_t pte_mkspecial(pte_t pte)
+{
+	return pte;
 }
 
 static inline  int ptep_test_and_clear_young(struct vm_area_struct *vma, unsigned long addr, pte_t *ptep)

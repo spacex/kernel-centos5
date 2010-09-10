@@ -115,6 +115,7 @@
  */
 
 DEFINE_SNMP_STAT(struct udp_mib, udp_statistics) __read_mostly;
+EXPORT_SYMBOL(udp_statistics);
 
 struct hlist_head udp_hash[UDP_HTABLE_SIZE];
 DEFINE_RWLOCK(udp_hash_lock);
@@ -146,6 +147,9 @@ static int udp_v4_get_port(struct sock *sk, unsigned short snum)
 
 		best_size_so_far = UINT_MAX;
 		best = rover = net_random() % remaining + low;
+
+		if (!udp_lport_inuse(rover))
+			goto gotit;
 
 		/* 1st pass: look for empty (or shortest) hash chain */
 		for (i = 0; i < UDP_HTABLE_SIZE; i++) {
@@ -801,6 +805,7 @@ static int udp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
   	struct sockaddr_in *sin = (struct sockaddr_in *)msg->msg_name;
   	struct sk_buff *skb;
   	int copied, err;
+	int peeked;
 
 	/*
 	 *	Check any passed addresses
@@ -812,7 +817,8 @@ static int udp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		return ip_recv_error(sk, msg, len);
 
 try_again:
-	skb = skb_recv_datagram(sk, flags, noblock, &err);
+	skb = __skb_recv_datagram(sk, flags | (noblock ? MSG_DONTWAIT : 0),
+				  &peeked, &err);
 	if (!skb)
 		goto out;
   
@@ -840,7 +846,8 @@ try_again:
 	if (err)
 		goto out_free;
 
-	UDP_INC_STATS_USER(UDP_MIB_INDATAGRAMS);
+	if (!peeked)
+		UDP_INC_STATS_USER(UDP_MIB_INDATAGRAMS);
 
 	sock_recv_timestamp(msg, sk, skb);
 
@@ -1129,7 +1136,7 @@ static int udp_v4_mcast_deliver(struct sk_buff *skb, struct udphdr *uh,
 			sk = sknext;
 		} while(sknext);
 	} else
-		kfree_skb(skb);
+		consume_skb(skb);
 	read_unlock(&udp_hash_lock);
 	return 0;
 }

@@ -32,6 +32,7 @@
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/timer.h>
+#include <linux/ktime.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_tcq.h>
 #include <scsi/scsi_cmnd.h>
@@ -44,6 +45,7 @@
 #include <asm/qdio.h>
 #include <asm/debug.h>
 #include <asm/ebcdic.h>
+#include <asm/sysinfo.h>
 #include <linux/mempool.h>
 #include <linux/syscalls.h>
 #include <linux/ioctl.h>
@@ -925,6 +927,7 @@ struct zfcp_adapter {
 	u32			adapter_features;  /* FCP channel features */
 	u32			connection_features; /* host connection features */
         u32			hardware_version;  /* of FCP channel */
+	u16			timer_ticks;	   /* time int for a tick */
 	struct Scsi_Host	*scsi_host;	   /* Pointer to mid-layer */
 	struct list_head	port_list_head;	   /* remote port list */
 	struct list_head        port_remove_lh;    /* head of ports to be
@@ -977,6 +980,11 @@ struct zfcp_adapter {
 	struct fc_host_statistics *fc_stats;
 	struct fsf_qtcb_bottom_port *stats_reset_data;
 	unsigned long		stats_reset;
+	struct service_level	service_level;
+	ktime_t			req_q_time; /* time of last fill level change */
+	u64			req_q_util; /* for accounting */
+	spinlock_t		qdio_stat_lock;
+	atomic_t		qdio_outb_full;	/* queue full incidents */
 };
 
 /*
@@ -1058,6 +1066,8 @@ struct zfcp_fsf_req {
 						  from emergency pool */
 	unsigned long long     issued;         /* request sent time (STCK) */
 	struct zfcp_unit       *unit;
+	u16			qdio_outb_usage;/* usage of outbound queue */
+	u16			qdio_inb_usage;	/* usage of inbound queue */
 };
 
 typedef void zfcp_fsf_req_handler_t(struct zfcp_fsf_req*);

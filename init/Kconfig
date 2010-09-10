@@ -183,6 +183,14 @@ config TASK_DELAY_ACCT
 
 	  Say N if unsure.
 
+config TASK_IO_ACCOUNTING
+	bool "Enable per-task storage I/O accounting (EXPERIMENTAL)"
+	help
+	  Collect information on the number of bytes of storage I/O which this
+	  task has caused.
+
+	  Say N if unsure.
+
 config AUDIT
 	bool "Auditing support"
 	depends on NET
@@ -425,14 +433,6 @@ config MARKERS
 	help
 	  Place an empty function call at each marker site. Can be
 	  dynamically changed for a probe function.
-
-config TRACEPROBES
-	tristate "Compile generic tracing probes"
-	depends on MARKERS && TRACEPOINTS
-	help
-	  Compile generic tracing probes, which connect to the tracepoints when
-	  loaded and format the information collected by the tracepoints with
-	  the Markers.
 
 endmenu		# General setup
 

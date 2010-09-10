@@ -67,6 +67,7 @@ struct sched_param {
 #include <linux/fs_struct.h>
 #include <linux/compiler.h>
 #include <linux/completion.h>
+#include <linux/cpumask.h>
 #include <linux/pid.h>
 #include <linux/percpu.h>
 #include <linux/topology.h>
@@ -80,6 +81,7 @@ struct sched_param {
 #include <linux/resource.h>
 #include <linux/timer.h>
 #include <linux/hrtimer.h>
+#include <linux/task_io_accounting.h>
 
 #include <asm/processor.h>
 
@@ -321,7 +323,9 @@ typedef unsigned long mm_counter_t;
 #define MMF_DUMP_MAPPED_PRIVATE	2
 #define MMF_DUMP_MAPPED_SHARED	3
 #define MMF_DUMP_ELF_HEADERS	4
-#define MMF_DUMP_FILTER_BITS	5
+#define MMF_DUMP_HUGETLB_PRIVATE 5
+#define MMF_DUMP_HUGETLB_SHARED  6
+#define MMF_DUMP_FILTER_BITS	7
 #define MMF_DUMP_FILTER_MASK ((1 << MMF_DUMP_FILTER_BITS) - 1)
 #define MMF_DUMP_FILTER_DEFAULT \
 	((1 << MMF_DUMP_ANON_PRIVATE) | (1 << MMF_DUMP_ANON_SHARED))
@@ -385,6 +389,9 @@ struct mm_struct {
 	/* Token based thrashing protection. */
 	unsigned long swap_token_time;
 	char recent_pagein;
+#if defined(CONFIG_MMU_NOTIFIER) && !defined(__GENKSYMS__)
+	unsigned short mmu_notifier_idx;
+#endif
 
 	/* coredumping support */
 	int core_waiters;
@@ -514,6 +521,26 @@ struct signal_struct {
 #endif
 #endif
 };
+
+struct signal_struct_aux {
+	u64 rchar, wchar, syscr, syscw;
+	struct task_io_accounting ioac;
+};
+
+static inline void init_signal_aux(struct signal_struct_aux *aux)
+{
+	memset(aux, 0, sizeof(struct signal_struct_aux));
+}
+
+struct signal_with_aux_struct {
+	struct signal_struct		sig;
+	struct signal_struct_aux	aux;
+};
+
+static inline struct signal_struct_aux *signal_aux(struct signal_struct *sig)
+{
+	return &container_of(sig, struct signal_with_aux_struct, sig)->aux;
+}
 
 /* Context switch must be unlocked if interrupts are to be enabled */
 #ifdef __ARCH_WANT_INTERRUPTS_ON_CTXSW
@@ -827,6 +854,7 @@ struct prio_array;
 struct task_struct_aux {
 	struct completion *vfork_done;  /* for vfork() [displaced from task_struct] */
 	struct list_head  *scm_work_list; /*displaced from task_struct for abi compat*/
+	struct task_io_accounting ioac;
 };
 
 #define task_aux(tsk) ((tsk)->auxilliary)
@@ -1538,7 +1566,14 @@ static inline int signal_pending(struct task_struct *p)
 {
 	return unlikely(test_tsk_thread_flag(p,TIF_SIGPENDING));
 }
-  
+
+extern int FASTCALL(__fatal_signal_pending(struct task_struct *p));
+
+static inline int fatal_signal_pending(struct task_struct *p)
+{
+	return signal_pending(p) && __fatal_signal_pending(p);
+}
+
 static inline int need_resched(void)
 {
 	return unlikely(test_thread_flag(TIF_NEED_RESCHED));

@@ -35,6 +35,7 @@
 #define __LC_IO_NEW_PSW                 0x01f0
 #endif /* !__s390x__ */
 
+#define __LC_IPL_PARMBLOCK_PTR		0x014
 #define __LC_EXT_PARAMS                 0x080
 #define __LC_CPU_ADDRESS                0x084
 #define __LC_EXT_INT_CODE               0x086
@@ -108,7 +109,7 @@
 #endif /* __s390x__ */
 
 
-#define __LC_PANIC_MAGIC                0xE00
+#define __LC_DUMP_REIPL			0xE00
 #ifndef __s390x__
 #define __LC_PFAULT_INTPARM             0x080
 #define __LC_CPU_TIMER_SAVE_AREA        0x0D8
@@ -282,12 +283,14 @@ struct _lowcore
 	__u64        int_clock;                /* 0xc98 */
         __u8         pad11[0xe00-0xca0];       /* 0xca0 */
 
-        /* 0xe00 is used as indicator for dump tools */
-        /* whether the kernel died with panic() or not */
-        __u32        panic_magic;              /* 0xe00 */
+	/* 0xe00 contains the address of the IPL Parameter */
+	/* Information block. Dump tools need IPIB for IPL */
+	/* after dump.					   */
+	__u32	     ipib;		       /* 0xe00 */
+	__u32	     ipib_checksum;	       /* 0xe04 */
 
         /* Align to the top 1k of prefix area */
-	__u8         pad12[0x1000-0xe04];      /* 0xe04 */
+	__u8	     pad12[0x1000-0xe08];      /* 0xe08 */
 #else /* !__s390x__ */
         /* prefix area: defined by architecture */
 	__u32        ccw1[2];                  /* 0x000 */
@@ -373,11 +376,13 @@ struct _lowcore
 	__u64        int_clock;                /* 0xde8 */
         __u8         pad12[0xe00-0xdf0];       /* 0xdf0 */
 
-        /* 0xe00 is used as indicator for dump tools */
-        /* whether the kernel died with panic() or not */
-        __u32        panic_magic;              /* 0xe00 */
+	/* 0xe00 contains the address of the IPL Parameter */
+	/* Information block. Dump tools need IPIB for IPL */
+	/* after dump.					   */
+	__u64	     ipib;		       /* 0xe00 */
+	__u32	     ipib_checksum;	       /* 0xe08 */
 
-	__u8         pad13[0x1200-0xe04];      /* 0xe04 */
+	__u8         pad13[0x1200-0xe0c];      /* 0xe0c */
 
         /* System info area */ 
 
@@ -416,8 +421,6 @@ static inline __u32 store_prefix(void)
 	asm volatile("stpx %0" : "=m" (address));
 	return address;
 }
-
-#define __PANIC_MAGIC           0xDEADC0DE
 
 #endif
 

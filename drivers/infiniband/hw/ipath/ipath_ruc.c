@@ -142,6 +142,12 @@ int ipath_init_sge(struct ipath_qp *qp, struct ipath_rwqe *wqe,
 	goto bail;
 
 bad_lkey:
+	while (j) {
+		struct ipath_sge *sge = --j ? &ss->sg_list[j - 1] : &ss->sge;
+
+		atomic_dec(&sge->mr->refcount);
+	}
+	ss->num_sge = 0;
 	memset(&wc, 0, sizeof(wc));
 	wc.wr_id = wqe->wr_id;
 	wc.status = IB_WC_LOC_PROT_ERR;
@@ -157,7 +163,7 @@ bail:
 /**
  * ipath_get_rwqe - copy the next RWQE into the QP's RWQE
  * @qp: the QP
- * @wr_id_only: update wr_id only, not SGEs
+ * @wr_id_only: update qp->r_wr_id only, not qp->r_sge
  *
  * Return 0 if no RWQE is available, otherwise return 1.
  *
@@ -173,8 +179,6 @@ int ipath_get_rwqe(struct ipath_qp *qp, int wr_id_only)
 	void (*handler)(struct ib_event *, void *);
 	u32 tail;
 	int ret;
-
-	qp->r_sge.sg_list = qp->r_sg_list;
 
 	if (qp->ibqp.srq) {
 		srq = to_isrq(qp->ibqp.srq);
@@ -197,20 +201,29 @@ int ipath_get_rwqe(struct ipath_qp *qp, int wr_id_only)
 	/* Validate tail before using it since it is user writable. */
 	if (tail >= rq->size)
 		tail = 0;
-	do {
-		if (unlikely(tail == wq->head)) {
+	if (unlikely(tail == wq->head)) {
+		ret = 0;
+		goto unlock;
+	}
+	/* Make sure entry is read after head index is read. */
+	smp_rmb();
+	wqe = get_rwqe_ptr(rq, tail);
+	/*
+	 * Even though we update the tail index in memory, the verbs
+	 * consumer is not supposed to post more entries until a
+	 * completion is generated.
+	 */
+	if (++tail >= rq->size)
+		tail = 0;
+	wq->tail = tail;
+	if (!wr_id_only) {
+		qp->r_sge.sg_list = qp->r_sg_list;
+		if (!ipath_init_sge(qp, wqe, &qp->r_len, &qp->r_sge)) {
 			ret = 0;
 			goto unlock;
 		}
-		/* Make sure entry is read after head index is read. */
-		smp_rmb();
-		wqe = get_rwqe_ptr(rq, tail);
-		if (++tail >= rq->size)
-			tail = 0;
-	} while (!wr_id_only && !ipath_init_sge(qp, wqe, &qp->r_len,
-						&qp->r_sge));
+	}
 	qp->r_wr_id = wqe->wr_id;
-	wq->tail = tail;
 
 	ret = 1;
 	set_bit(IPATH_R_WRID_VALID, &qp->r_aflags);
@@ -268,6 +281,7 @@ static void ipath_ruc_loopback(struct ipath_qp *sqp)
 	u64 sdata;
 	atomic64_t *maddr;
 	enum ib_wc_status send_status;
+	int release;
 
 	/*
 	 * Note that we check the responder QP state after
@@ -325,6 +339,7 @@ again:
 	memset(&wc, 0, sizeof wc);
 	send_status = IB_WC_SUCCESS;
 
+	release = 1;
 	sqp->s_sge.sge = wqe->sg_list[0];
 	sqp->s_sge.sg_list = wqe->sg_list + 1;
 	sqp->s_sge.num_sge = wqe->wr.num_sge;
@@ -332,7 +347,7 @@ again:
 	switch (wqe->wr.opcode) {
 	case IB_WR_SEND_WITH_IMM:
 		wc.wc_flags = IB_WC_WITH_IMM;
-		wc.imm_data = wqe->wr.imm_data;
+		wc.ex.imm_data = wqe->wr.ex.imm_data;
 		/* FALLTHROUGH */
 	case IB_WR_SEND:
 		if (!ipath_get_rwqe(qp, 0))
@@ -343,7 +358,7 @@ again:
 		if (unlikely(!(qp->qp_access_flags & IB_ACCESS_REMOTE_WRITE)))
 			goto inv_err;
 		wc.wc_flags = IB_WC_WITH_IMM;
-		wc.imm_data = wqe->wr.imm_data;
+		wc.ex.imm_data = wqe->wr.ex.imm_data;
 		if (!ipath_get_rwqe(qp, 1))
 			goto rnr_nak;
 		/* FALLTHROUGH */
@@ -352,22 +367,27 @@ again:
 			goto inv_err;
 		if (wqe->length == 0)
 			break;
-		if (unlikely(!ipath_rkey_ok(qp, &qp->r_sge, wqe->length,
+		if (unlikely(!ipath_rkey_ok(qp, &qp->r_sge.sge, wqe->length,
 					    wqe->wr.wr.rdma.remote_addr,
 					    wqe->wr.wr.rdma.rkey,
 					    IB_ACCESS_REMOTE_WRITE)))
 			goto acc_err;
+		qp->r_sge.sg_list = NULL;
+		qp->r_sge.num_sge = 1;
 		qp->r_sge.total_len = wqe->length;
 		break;
 
 	case IB_WR_RDMA_READ:
 		if (unlikely(!(qp->qp_access_flags & IB_ACCESS_REMOTE_READ)))
 			goto inv_err;
-		if (unlikely(!ipath_rkey_ok(qp, &sqp->s_sge, wqe->length,
+		if (unlikely(!ipath_rkey_ok(qp, &sqp->s_sge.sge, wqe->length,
 					    wqe->wr.wr.rdma.remote_addr,
 					    wqe->wr.wr.rdma.rkey,
 					    IB_ACCESS_REMOTE_READ)))
 			goto acc_err;
+		release = 0;
+		sqp->s_sge.sg_list = NULL;
+		sqp->s_sge.num_sge = 1;
 		qp->r_sge.sge = wqe->sg_list[0];
 		qp->r_sge.sg_list = wqe->sg_list + 1;
 		qp->r_sge.num_sge = wqe->wr.num_sge;
@@ -378,7 +398,7 @@ again:
 	case IB_WR_ATOMIC_FETCH_AND_ADD:
 		if (unlikely(!(qp->qp_access_flags & IB_ACCESS_REMOTE_ATOMIC)))
 			goto inv_err;
-		if (unlikely(!ipath_rkey_ok(qp, &qp->r_sge, sizeof(u64),
+		if (unlikely(!ipath_rkey_ok(qp, &qp->r_sge.sge, sizeof(u64),
 					    wqe->wr.wr.atomic.remote_addr,
 					    wqe->wr.wr.atomic.rkey,
 					    IB_ACCESS_REMOTE_ATOMIC)))
@@ -391,6 +411,8 @@ again:
 			(u64) atomic64_add_return(sdata, maddr) - sdata :
 			(u64) cmpxchg((u64 *) qp->r_sge.sge.vaddr,
 				      sdata, wqe->wr.wr.atomic.swap);
+		atomic_dec(&qp->r_sge.sge.mr->refcount);
+		qp->r_sge.num_sge = 0;
 		goto send_comp;
 
 	default:
@@ -407,14 +429,16 @@ again:
 		if (len > sge->sge_length)
 			len = sge->sge_length;
 		BUG_ON(len == 0);
-		ipath_copy_sge(&qp->r_sge, sge->vaddr, len);
+		ipath_copy_sge(&qp->r_sge, sge->vaddr, len, release);
 		sge->vaddr += len;
 		sge->length -= len;
 		sge->sge_length -= len;
 		if (sge->sge_length == 0) {
+			if (!release)
+				atomic_dec(&sge->mr->refcount);
 			if (--sqp->s_sge.num_sge)
 				*sge = *sqp->s_sge.sg_list++;
-		} else if (sge->length == 0 && sge->mr != NULL) {
+		} else if (sge->length == 0 && sge->mr->lkey) {
 			if (++sge->n >= IPATH_SEGSZ) {
 				if (++sge->m >= sge->mr->mapsz)
 					break;
@@ -427,6 +451,12 @@ again:
 		}
 		sqp->s_len -= len;
 	}
+	if (release)
+		while (qp->r_sge.num_sge) {
+			atomic_dec(&qp->r_sge.sge.mr->refcount);
+			if (--qp->r_sge.num_sge)
+				qp->r_sge.sge = *qp->r_sge.sg_list++;
+		}
 
 	if (!test_and_clear_bit(IPATH_R_WRID_VALID, &qp->r_aflags))
 		goto send_comp;
@@ -621,7 +651,8 @@ void ipath_make_ruc_header(struct ipath_ibdev *dev, struct ipath_qp *qp,
 	qp->s_hdr.lrh[0] = cpu_to_be16(lrh0);
 	qp->s_hdr.lrh[1] = cpu_to_be16(qp->remote_ah_attr.dlid);
 	qp->s_hdr.lrh[2] = cpu_to_be16(qp->s_hdrwords + nwords + SIZE_OF_CRC);
-	qp->s_hdr.lrh[3] = cpu_to_be16(dev->dd->ipath_lid);
+	qp->s_hdr.lrh[3] = cpu_to_be16(dev->dd->ipath_lid |
+				       qp->remote_ah_attr.src_path_bits);
 	bth0 |= ipath_get_pkey(dev->dd, qp->s_pkey_index);
 	bth0 |= extra_bytes << 20;
 	ohdr->bth[0] = cpu_to_be32(bth0 | (1 << 22));
@@ -641,12 +672,14 @@ void ipath_do_send(unsigned long data)
 {
 	struct ipath_qp *qp = (struct ipath_qp *)data;
 	struct ipath_ibdev *dev = to_idev(qp->ibqp.device);
+	struct ipath_devdata *dd = dev->dd;
 	int (*make_req)(struct ipath_qp *qp);
 	unsigned long flags;
 
 	if ((qp->ibqp.qp_type == IB_QPT_RC ||
 	     qp->ibqp.qp_type == IB_QPT_UC) &&
-	    qp->remote_ah_attr.dlid == dev->dd->ipath_lid) {
+	    (qp->remote_ah_attr.dlid & ~((1 << dd->ipath_lmc) - 1)) ==
+	    dd->ipath_lid) {
 		ipath_ruc_loopback(qp);
 		goto bail;
 	}
@@ -701,10 +734,16 @@ void ipath_send_complete(struct ipath_qp *qp, struct ipath_swqe *wqe,
 			 enum ib_wc_status status)
 {
 	u32 old_last, last;
+	unsigned i;
 
 	if (!(ib_ipath_state_ops[qp->state] & IPATH_PROCESS_OR_FLUSH_SEND))
 		return;
 
+	for (i = 0; i < wqe->wr.num_sge; i++) {
+		struct ipath_sge *sge = &wqe->sg_list[i];
+
+		atomic_dec(&sge->mr->refcount);
+	}
 	/* See ch. 11.2.4.1 and 10.7.3.1 */
 	if (!(qp->s_flags & IPATH_S_SIGNAL_REQ_WR) ||
 	    (wqe->wr.send_flags & IB_SEND_SIGNALED) ||
@@ -726,6 +765,8 @@ void ipath_send_complete(struct ipath_qp *qp, struct ipath_swqe *wqe,
 	if (++last >= qp->s_size)
 		last = 0;
 	qp->s_last = last;
+	if (qp->s_acked == old_last)
+		qp->s_acked = last;
 	if (qp->s_cur == old_last)
 		qp->s_cur = last;
 	if (qp->s_tail == old_last)

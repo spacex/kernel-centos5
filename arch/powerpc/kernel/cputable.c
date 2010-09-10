@@ -275,6 +275,8 @@ static struct cpu_spec cpu_specs[] = {
 		.cpu_user_features	= COMMON_USER_POWER5_PLUS,
 		.icache_bsize		= 128,
 		.dcache_bsize		= 128,
+		.oprofile_cpu_type      = "ppc64/ibm-compat-v1",
+		.oprofile_type		= PPC_OPROFILE_POWER4,
 		.platform		= "power5+",
 	},
 	{	/* Power5++ */
@@ -318,6 +320,8 @@ static struct cpu_spec cpu_specs[] = {
 		.cpu_user_features	= COMMON_USER_POWER6,
 		.icache_bsize		= 128,
 		.dcache_bsize		= 128,
+		.oprofile_cpu_type      = "ppc64/ibm-compat-v1",
+		.oprofile_type		= PPC_OPROFILE_POWER4,
 		.platform		= "power6",
 	},
 	{	/* Cell Broadband Engine */
@@ -1196,6 +1200,8 @@ struct cpu_spec *identify_cpu(unsigned long offset, unsigned int pvr)
 			 * performance monitor fields.
 			 */
 			if (t->num_pmcs && !s->num_pmcs) {
+				t->pvr_mask = s->pvr_mask;
+				t->pvr_value = s->pvr_value;
 				t->cpu_name = s->cpu_name;
 				t->cpu_features = s->cpu_features;
 				t->cpu_user_features = s->cpu_user_features;
@@ -1203,6 +1209,23 @@ struct cpu_spec *identify_cpu(unsigned long offset, unsigned int pvr)
 				t->dcache_bsize = s->dcache_bsize;
 				t->cpu_setup = s->cpu_setup;
 				t->platform = s->platform;
+				/*
+				 * If we have passed through this logic once before and
+				 * have pulled the default case because the real PVR was
+				 * not found inside cpu_specs[], then we are possibly
+				 * running in compatibility mode. In that case, let the
+				 * oprofiler know which set of compatibility counters to
+				 * pull from by making sure the oprofile_cpu_type string
+				 * is set to that of compatibility mode. If the
+				 * oprofile_cpu_type already has a value, then we are
+				 * possibly overriding a real PVR with a logical one,
+				 * and, in that case, keep the current value for
+				 * oprofile_cpu_type.
+				 */
+				if (t->oprofile_cpu_type == NULL) {
+					t->oprofile_cpu_type = s->oprofile_cpu_type;
+					t->oprofile_type = s->oprofile_type;
+				}
 			} else
 				*t = *s;
 			*PTRRELOC(&cur_cpu_spec) = &the_cpu_spec;

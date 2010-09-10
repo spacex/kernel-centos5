@@ -19,7 +19,7 @@
 	CACHE(32768)
 	CACHE(65536)
 	CACHE(131072)
-#if (NR_CPUS > 512) || (MAX_NUMNODES > 256) || !defined(CONFIG_MMU)
+#if (NR_CPUS > 512) || (MAX_NUMNODES > 256) || defined(CONFIG_PPC_64K_PAGES) || !defined(CONFIG_MMU)
 	CACHE(262144)
 #endif
 #ifndef CONFIG_MMU

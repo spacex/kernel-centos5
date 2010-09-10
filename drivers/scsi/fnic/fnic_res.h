@@ -189,8 +189,9 @@ int fnic_get_vnic_config(struct fnic *);
 int fnic_alloc_vnic_resources(struct fnic *);
 void fnic_free_vnic_resources(struct fnic *);
 void fnic_get_res_counts(struct fnic *);
-int fnic_set_nic_cfg(struct fnic *fnic, u8 rss_default_cpu, u8 rss_hash_type,
-	u8 rss_hash_bits, u8 rss_base_cpu, u8 rss_enable, u8 tso_ipid_split_en,
-	u8 ig_vlan_strip_en);
+int fnic_set_nic_config(struct fnic *fnic, u8 rss_default_cpu,
+			u8 rss_hash_type, u8 rss_hash_bits, u8 rss_base_cpu,
+			u8 rss_enable, u8 tso_ipid_split_en,
+			u8 ig_vlan_strip_en);
 
 #endif /* _FNIC_RES_H_ */

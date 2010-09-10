@@ -515,10 +515,12 @@ int aac_fib_send(u16 command, struct fib *fibptr, unsigned long size,
 				}
 				udelay(5);
 			}
-		} else
-			(void)down_interruptible(&fibptr->event_wait);
+		} else if (down_interruptible(&fibptr->event_wait)) {
+			fibptr->done = 2;
+			up(&fibptr->event_wait);
+		}
 		spin_lock_irqsave(&fibptr->event_lock, flags);
-		if (fibptr->done == 0) {
+		if ((fibptr->done == 0) || (fibptr->done == 2)) {
 			fibptr->done = 2; /* Tell interrupt we aborted */
 			spin_unlock_irqrestore(&fibptr->event_lock, flags);
 			return -EINTR;
@@ -594,7 +596,7 @@ void aac_consumer_free(struct aac_dev * dev, struct aac_queue *q, u32 qid)
 	if (le32_to_cpu(*q->headers.consumer) >= q->entries)
 		*q->headers.consumer = cpu_to_le32(1);
 	else
-		*q->headers.consumer = cpu_to_le32(le32_to_cpu(*q->headers.consumer)+1);
+		le32_add_cpu(q->headers.consumer, 1);
 
 	if (wasfull) {
 		switch (qid) {
@@ -904,15 +906,22 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 		case AifEnAddJBOD:
 		case AifEnDeleteJBOD:
 			container = le32_to_cpu(((__le32 *)aifcmd->data)[1]);
-			if ((container >> 28))
+			if ((container >> 28)) {
+				container = (u32)-1;
 				break;
+			}
 			channel = (container >> 24) & 0xF;
-			if (channel >= dev->maximum_num_channels)
+			if (channel >= dev->maximum_num_channels) {
+				container = (u32)-1;
 				break;
+			}
 			id = container & 0xFFFF;
-			if (id >= dev->maximum_num_physicals)
+			if (id >= dev->maximum_num_physicals) {
+				container = (u32)-1;
 				break;
+			}
 			lun = (container >> 16) & 0xFF;
+			container = (u32)-1;
 			channel = aac_phys_to_logical(channel);
 			device_config_needed =
 			  (((__le32 *)aifcmd->data)[0] ==
@@ -931,13 +940,18 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 			case EM_DRIVE_REMOVAL:
 				container = le32_to_cpu(
 					((__le32 *)aifcmd->data)[2]);
-				if ((container >> 28))
+				if ((container >> 28)) {
+					container = (u32)-1;
 					break;
+				}
 				channel = (container >> 24) & 0xF;
-				if (channel >= dev->maximum_num_channels)
+				if (channel >= dev->maximum_num_channels) {
+					container = (u32)-1;
 					break;
+				}
 				id = container & 0xFFFF;
 				lun = (container >> 16) & 0xFF;
+				container = (u32)-1;
 				if (id >= dev->maximum_num_physicals) {
 					/* legacy dev_t ? */
 					if ((0x2000 <= id) || lun || channel ||
@@ -1023,9 +1037,10 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 		break;
 	}
 
+	container = 0;
+retry_next:
 	if (device_config_needed == NOTHING)
-	for (container = 0; container < dev->maximum_num_containers;
-	    ++container) {
+	for (; container < dev->maximum_num_containers; ++container) {
 		if ((dev->fsa_dev[container].config_waiting_on == 0) &&
 			(dev->fsa_dev[container].config_needed != NOTHING) &&
 			time_before(jiffies, dev->fsa_dev[container].config_waiting_stamp + AIF_SNIFF_TIMEOUT)) {
@@ -1108,6 +1123,11 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 	}
 	if (device_config_needed == ADD)
 		scsi_add_device(dev->scsi_host_ptr, channel, id, lun);
+	if (channel == CONTAINER_CHANNEL) {
+		container++;
+		device_config_needed = NOTHING;
+		goto retry_next;
+	}
 }
 
 static int _aac_reset_adapter(struct aac_dev *aac, int forced)
@@ -1458,7 +1478,7 @@ int aac_check_health(struct aac_dev * aac)
 
 	printk(KERN_ERR "%s: Host adapter BLINK LED 0x%x\n", aac->name, BlinkLED);
 
-	if (!aac_check_reset || ((aac_check_reset != 1) &&
+	if (!aac_check_reset || ((aac_check_reset == 1) &&
 		(aac->supplement_adapter_info.SupportedOptions2 &
 			AAC_OPTION_IGNORE_RESET)))
 		goto out;

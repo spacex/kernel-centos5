@@ -42,13 +42,10 @@ extern struct class vnic_class;
 extern struct class_dev_info interface_cdev;
 extern struct attribute_group vnic_dev_attr_group;
 extern struct attribute_group vnic_path_attr_group;
+extern struct class_device_attribute class_device_attr_create_primary;
+extern struct class_device_attribute class_device_attr_create_secondary;
+extern struct class_device_attribute class_device_attr_delete_vnic;
+extern struct class_device_attribute class_device_attr_force_failover;
+extern struct class_device_attribute class_device_attr_unfailover;
 
-extern ssize_t vnic_create_primary(struct class_device *class_dev,
-			   const char *buf, size_t count);
-
-extern ssize_t vnic_create_secondary(struct class_device *class_dev,
-			     const char *buf, size_t count);
-
-extern ssize_t vnic_delete(struct class_device *class_dev,
-			   const char *buf, size_t count);
 #endif	/*VNIC_SYS_H_INCLUDED*/

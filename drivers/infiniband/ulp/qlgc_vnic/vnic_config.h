@@ -40,6 +40,16 @@
 #include "vnic_control.h"
 #include "vnic_ib.h"
 
+#define SST_AGN         0x10ULL
+#define SST_OUI         0x00066AULL
+
+enum {
+	CONTROL_PATH_ID = 0x0,
+	DATA_PATH_ID    = 0x1
+};
+
+#define IOC_NUMBER(GUID)        (((GUID) >> 32) & 0xFF)
+
 enum {
 	VNIC_CLASS_SUBCLASS	= 0x2000066A,
 	VNIC_PROTOCOL		= 0,
@@ -100,9 +110,20 @@ enum {
 };
 
 enum {
-	CONTROL_RSP_TIMEOUT		= 1000,	/* 1 sec */
+	/* 5 sec increased for EVIC support for large number of
+	 * host connections
+	 */
+	CONTROL_RSP_TIMEOUT		= 5000,
 	MIN_CONTROL_RSP_TIMEOUT		= 1000,	/* 1  sec */
 	MAX_CONTROL_RSP_TIMEOUT		= 60000	/* 60 sec */
+};
+
+/* Maximum number of completions to be processed
+ * during a single completion callback invocation
+ */
+enum {
+	DEFAULT_COMPLETION_LIMIT 	= 100,
+	MIN_COMPLETION_LIMIT		= 10
 };
 
 /* infiniband connection parameters */
@@ -123,8 +144,12 @@ enum {
 #define VNIC_USE_TX_CSUM		1
 #define	DEFAULT_PREFER_PRIMARY		0
 
+/* As per IBTA specification, IOCString Maximum length can be 512 bits. */
+#define MAX_IOC_STRING_LEN 		(512/8)
+
 struct path_param {
 	__be64			ioc_guid;
+	u8			ioc_string[MAX_IOC_STRING_LEN+1];
 	u8			port;
 	u8			instance;
 	struct ib_device	*ibdev;
@@ -135,6 +160,7 @@ struct path_param {
 	int			rx_csum;
 	int			tx_csum;
 	int			heartbeat;
+	int			ib_multicast;
 };
 
 struct vnic_ib_config {
@@ -147,6 +173,7 @@ struct vnic_ib_config {
 	u32				num_recvs;
 	u32				recv_scatter;	/* 1 */
 	u32				send_gather;	/* 1 or 2 */
+	u32				completion_limit;
 };
 
 struct control_config {
@@ -156,6 +183,7 @@ struct control_config {
 	u16			max_address_entries;
 	u16			min_address_entries;
 	u32			rsp_timeout;
+	u32			ib_multicast;
 };
 
 struct data_config {
@@ -178,10 +206,11 @@ struct viport_config {
 	u32				sa_path_rec_get_timeout;
 	struct ib_device		*ibdev;
 	u32				port;
-	u32				stats_interval;
+	unsigned long			stats_interval;
 	u32				hb_interval;
 	u32				hb_timeout;
 	__be64				ioc_guid;
+	u8				ioc_string[MAX_IOC_STRING_LEN+1];
 	size_t				path_idx;
 };
 
@@ -196,7 +225,7 @@ struct viport_config {
 struct vnic_config {
 	struct vnic	*vnic;
 	char		name[IFNAMSIZ];
-	u32		no_path_timeout;
+	unsigned long	no_path_timeout;
 	u32 		primary_connect_timeout;
 	u32		primary_reconnect_timeout;
 	u32		primary_switch_timeout;

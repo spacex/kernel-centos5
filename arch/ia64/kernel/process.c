@@ -29,6 +29,7 @@
 #include <linux/efi.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
+#include <linux/utsname.h>
 
 #include <asm/cpu.h>
 #include <asm/delay.h>
@@ -108,8 +109,9 @@ show_regs (struct pt_regs *regs)
 
 	print_modules();
 	printk("\nPid: %d, CPU %d, comm: %20s\n", current->pid, smp_processor_id(), current->comm);
-	printk("psr : %016lx ifs : %016lx ip  : [<%016lx>]    %s\n",
-	       regs->cr_ipsr, regs->cr_ifs, ip, print_tainted());
+	printk("psr : %016lx ifs : %016lx ip  : [<%016lx>]    %s (%s)\n",
+	       regs->cr_ipsr, regs->cr_ifs, ip, print_tainted(),
+	       system_utsname.release);
 	print_symbol("ip is at %s\n", ip);
 	printk("unat: %016lx pfs : %016lx rsc : %016lx\n",
 	       regs->ar_unat, regs->ar_pfs, regs->ar_rsc);

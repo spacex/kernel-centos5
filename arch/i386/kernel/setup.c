@@ -63,6 +63,8 @@
 #include <setup_arch.h>
 #include <bios_ebda.h>
 
+#include <asm/generic-hypervisor.h>
+
 /* Forward Declaration. */
 void __init find_max_pfn(void);
 
@@ -688,6 +690,17 @@ int __init copy_e820_map(struct e820entry * biosmap, int nr_map)
 			return -1;
 
 		/*
+		 * Some BIOSes corrupt RAM in the 0 - 64k region.
+		 * Reserve this memory.
+		 */
+		if (type == E820_RAM) {
+			if (start < 0x10000ULL && end > 0x10000ULL) {
+				start = 0x10000ULL;
+				size = end - start;
+			}
+		}
+
+		/*
 		 * Some BIOSes claim RAM in the 640k - 1M region.
 		 * Not right. Fix it up.
 		 */
@@ -799,6 +812,7 @@ static void __init parse_cmdline_early (char ** cmdline_p)
 				unsigned long long start_at, mem_size;
  
 				mem_size = memparse(from+7, &from);
+				userdef=1;
 				if (*from == '@') {
 					start_at = memparse(from+1, &from);
 					add_memory_region(start_at, mem_size, E820_RAM);
@@ -808,10 +822,8 @@ static void __init parse_cmdline_early (char ** cmdline_p)
 				} else if (*from == '$') {
 					start_at = memparse(from+1, &from);
 					add_memory_region(start_at, mem_size, E820_RESERVED);
-				} else {
+				} else
 					limit_regions(mem_size);
-					userdef=1;
-				}
 			}
 		}
 
@@ -957,6 +969,10 @@ static void __init parse_cmdline_early (char ** cmdline_p)
 	*to = '\0';
 	*cmdline_p = command_line;
 	if (userdef) {
+		char nr = e820.nr_map;
+		if (sanitize_e820_map(e820.map, &nr) < 0)
+			printk("Invalid user supplied memory map\n");
+		e820.nr_map = nr;
 		printk(KERN_INFO "user-defined physical RAM map:\n");
 		print_memory_map("user");
 	}
@@ -1580,6 +1596,12 @@ void __init setup_arch(char **cmdline_p)
 	 */
 
 	dmi_scan_machine();
+
+	/*
+	 * VMware detection requires dmi to be available, so this
+	 * needs to be done after dmi_scan_machine, for the BP.
+	 */
+	init_hypervisor(&boot_cpu_data);
 
 #ifdef CONFIG_X86_GENERICARCH
 	generic_apic_probe(*cmdline_p);

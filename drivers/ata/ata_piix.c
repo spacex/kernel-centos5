@@ -1547,6 +1547,12 @@ static int __devinit piix_init_one(struct pci_dev *pdev,
 	}
 
 	pci_set_master(pdev);
+
+	/* ESB2 may generate DMA interrupts in PIO state */
+	if (pdev->vendor == PCI_VENDOR_ID_INTEL &&
+	    pdev->device == PCI_DEVICE_ID_INTEL_ESB2_18)
+		host->flags |= ATA_HOST_ATAPI_SPURIOUS_INT;
+
 	return ata_pci_sff_activate_host(host, ata_sff_interrupt, &piix_sht);
 }
 

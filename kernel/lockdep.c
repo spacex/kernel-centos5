@@ -387,6 +387,19 @@ unsigned int nr_process_chains;
 unsigned int max_lockdep_depth;
 unsigned int max_recursion_depth;
 
+static unsigned int lockdep_dependency_gen_id;
+
+static bool lockdep_dependency_visit(struct lock_class *source,
+				     unsigned int depth)
+{
+	if (!depth)
+		lockdep_dependency_gen_id++;
+	if (source->dep_gen_id == lockdep_dependency_gen_id)
+		return true;
+	source->dep_gen_id = lockdep_dependency_gen_id;
+	return false;
+}
+
 #ifdef CONFIG_DEBUG_LOCKDEP
 /*
  * We cannot printk in early bootup code. Not even early_printk()
@@ -571,6 +584,9 @@ static void print_lock_dependencies(struct lock_class *class, int depth)
 {
 	struct lock_list *entry;
 
+	if (lockdep_dependency_visit(class, depth))
+		return;
+
 	if (DEBUG_LOCKS_WARN_ON(depth >= 20))
 		return;
 
@@ -716,6 +732,67 @@ static int noinline print_infinite_recursion_bug(void)
 	return 0;
 }
 
+static unsigned long __lockdep_count_forward_deps(struct lock_class *class,
+					   unsigned int depth)
+{
+	struct lock_list *entry;
+	unsigned long ret = 1;
+
+	if (lockdep_dependency_visit(class, depth))
+		return 0;
+
+	/*
+	 * Recurse this class's dependency list:
+	 */
+	list_for_each_entry(entry, &class->locks_after, entry)
+		ret += __lockdep_count_forward_deps(entry->class, depth + 1);
+
+	return ret;
+}
+
+unsigned long lockdep_count_forward_deps(struct lock_class *class)
+{
+	unsigned long ret, flags;
+
+	local_irq_save(flags);
+	__raw_spin_lock(&hash_lock);
+	ret = __lockdep_count_forward_deps(class, 0);
+	__raw_spin_unlock(&hash_lock);
+	local_irq_restore(flags);
+
+	return ret;
+}
+
+static unsigned long __lockdep_count_backward_deps(struct lock_class *class,
+					    unsigned int depth)
+{
+	struct lock_list *entry;
+	unsigned long ret = 1;
+
+	if (lockdep_dependency_visit(class, depth))
+		return 0;
+	/*
+	 * Recurse this class's dependency list:
+	 */
+	list_for_each_entry(entry, &class->locks_before, entry)
+		ret += __lockdep_count_backward_deps(entry->class, depth + 1);
+
+	return ret;
+}
+
+unsigned long lockdep_count_backward_deps(struct lock_class *class)
+{
+	unsigned long ret, flags;
+
+	local_irq_save(flags);
+	__raw_spin_lock(&hash_lock);
+	ret = __lockdep_count_backward_deps(class, 0);
+	__raw_spin_unlock(&hash_lock);
+	local_irq_restore(flags);
+
+	return ret;
+}
+
 /*
  * Prove that the dependency graph starting at <entry> can not
  * lead to <target>. Print an error and return 0 if it does.
@@ -724,6 +801,9 @@ static noinline int
 check_noncircular(struct lock_class *source, unsigned int depth)
 {
 	struct lock_list *entry;
+
+	if (lockdep_dependency_visit(source, depth))
+		return 1;
 
 	debug_atomic_inc(&nr_cyclic_check_recursions);
 	if (depth > max_recursion_depth)
@@ -777,6 +857,9 @@ find_usage_forwards(struct lock_class *source, unsigned int depth)
 	struct lock_list *entry;
 	int ret;
 
+	if (lockdep_dependency_visit(source, depth))
+		return 1;
+
 	if (depth > max_recursion_depth)
 		max_recursion_depth = depth;
 	if (depth >= RECURSION_LIMIT)
@@ -815,6 +898,9 @@ find_usage_backwards(struct lock_class *source, unsigned int depth)
 {
 	struct lock_list *entry;
 	int ret;
+
+	if (lockdep_dependency_visit(source, depth))
+		return 1;
 
 	if (depth > max_recursion_depth)
 		max_recursion_depth = depth;
@@ -2380,6 +2466,55 @@ static int check_unlock(struct task_struct *curr, struct lockdep_map *lock,
 	return 1;
 }
 
+static int
+__lock_set_subclass(struct lockdep_map *lock,
+		    unsigned int subclass, unsigned long ip)
+{
+	struct task_struct *curr = current;
+	struct held_lock *hlock, *prev_hlock;
+	struct lock_class *class;
+	unsigned int depth;
+	int i;
+
+	depth = curr->lockdep_depth;
+	if (DEBUG_LOCKS_WARN_ON(!depth))
+		return 0;
+
+	prev_hlock = NULL;
+	for (i = depth-1; i >= 0; i--) {
+		hlock = curr->held_locks + i;
+		/*
+		 * We must not cross into another context:
+		 */
+		if (prev_hlock && prev_hlock->irq_context != hlock->irq_context)
+			break;
+		if (hlock->instance == lock)
+			goto found_it;
+		prev_hlock = hlock;
+	}
+	return print_unlock_inbalance_bug(curr, lock, ip);
+
+found_it:
+	class = register_lock_class(lock, subclass, 0);
+	hlock->class = class;
+
+	curr->lockdep_depth = i;
+	curr->curr_chain_key = hlock->prev_chain_key;
+
+	for (; i < depth; i++) {
+		hlock = curr->held_locks + i;
+		if (!__lock_acquire(hlock->instance,
+			hlock->class->subclass, hlock->trylock,
+				hlock->read, hlock->check, hlock->hardirqs_off,
+				hlock->acquire_ip))
+			return 0;
+	}
+
+	if (DEBUG_LOCKS_WARN_ON(curr->lockdep_depth != depth))
+		return 0;
+	return 1;
+}
+
 /*
  * Remove the lock to the list of currently held locks in a
  * potentially non-nested (out of order) manner. This is a
@@ -2542,6 +2677,26 @@ static void check_flags(unsigned long flags)
 		print_irqtrace_events(current);
 #endif
 }
+
+void
+lock_set_subclass(struct lockdep_map *lock,
+		  unsigned int subclass, unsigned long ip)
+{
+	unsigned long flags;
+
+	if (unlikely(current->lockdep_recursion))
+		return;
+
+	raw_local_irq_save(flags);
+	current->lockdep_recursion = 1;
+	check_flags(flags);
+	if (__lock_set_subclass(lock, subclass, ip))
+		check_chain_key(current);
+	current->lockdep_recursion = 0;
+	raw_local_irq_restore(flags);
+}
+
+EXPORT_SYMBOL_GPL(lock_set_subclass);
 
 /*
  * We are not always called with irqs disabled - do that here,

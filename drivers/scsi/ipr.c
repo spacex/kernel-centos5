@@ -7045,6 +7045,7 @@ static void ipr_pci_perm_failure(struct pci_dev *pdev)
 		ioa_cfg->sdt_state = ABORT_DUMP;
 	ioa_cfg->reset_retries = IPR_NUM_RESET_RELOAD_RETRIES;
 	ioa_cfg->in_ioa_bringdown = 1;
+	ioa_cfg->allow_cmds = 0;
 	ipr_initiate_ioa_reset(ioa_cfg, IPR_SHUTDOWN_NONE);
 	spin_unlock_irqrestore(ioa_cfg->host->host_lock, flags);
 }
@@ -7196,6 +7197,7 @@ static void ipr_free_all_resources(struct ipr_ioa_cfg *ioa_cfg)
 
 	ENTER;
 	free_irq(pdev->irq, ioa_cfg);
+	pci_disable_msi(pdev);
 	iounmap(ioa_cfg->hdw_dma_regs);
 	pci_release_regions(pdev);
 	ipr_free_mem(ioa_cfg);
@@ -7481,6 +7483,11 @@ static int __devinit ipr_probe_ioa(struct pci_dev *pdev,
 		goto out;
 	}
 
+	if (!(rc = pci_enable_msi(pdev)))
+		dev_info(&pdev->dev, "MSI enabled\n");
+	else if (ipr_debug)
+		dev_info(&pdev->dev, "Cannot enable MSI\n");
+
 	dev_info(&pdev->dev, "Found IOA with IRQ: %d\n", pdev->irq);
 
 	host = scsi_host_alloc(&driver_template, sizeof(*ioa_cfg));
@@ -7605,12 +7612,6 @@ static int __devinit ipr_probe_ioa(struct pci_dev *pdev,
 		goto cleanup_nolog;
 	}
 
-	if (dev_id->driver_data) {
-		ioa_cfg->needs_warm_reset = 1;
-		ioa_cfg->reset = ipr_reset_slot_reset;
-	} else
-		ioa_cfg->reset = ipr_reset_start_bist;
-
 	if ((dev_id->driver_data & IPR_USE_PCI_WARM_RESET) ||
 	    (dev_id->device == PCI_DEVICE_ID_IBM_OBSIDIAN_E && !ioa_cfg->revid)) {
 		ioa_cfg->needs_warm_reset = 1;
@@ -7635,6 +7636,7 @@ out_release_regions:
 out_scsi_host_put:
 	scsi_host_put(host);
 out_disable:
+	pci_disable_msi(pdev);
 	pci_disable_device(pdev);
 	goto out;
 }

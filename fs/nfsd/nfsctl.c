@@ -511,22 +511,29 @@ static ssize_t write_leasetime(struct file *file, char *buf, size_t size)
 	return strlen(buf);
 }
 
+extern char *nfs4_recoverydir(void);
+
 static ssize_t write_recoverydir(struct file *file, char *buf, size_t size)
 {
 	char *mesg = buf;
 	char *recdir;
 	int len, status;
 
-	if (size > PATH_MAX || buf[size-1] != '\n')
-		return -EINVAL;
-	buf[size-1] = 0;
+	if (size > 0) {
+		if (nfsd_serv)
+			return -EBUSY;
+		if (size > PATH_MAX || buf[size-1] != '\n')
+			return -EINVAL;
+		buf[size-1] = 0;
 
-	recdir = mesg;
-	len = qword_get(&mesg, recdir, size);
-	if (len <= 0)
-		return -EINVAL;
+		recdir = mesg;
+		len = qword_get(&mesg, recdir, size);
+		if (len <= 0)
+			return -EINVAL;
 
-	status = nfs4_reset_recoverydir(recdir);
+		status = nfs4_reset_recoverydir(recdir);
+	}
+	sprintf(buf, "%s\n", nfs4_recoverydir());
 	return strlen(buf);
 }
 #endif

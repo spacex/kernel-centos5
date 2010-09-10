@@ -3,6 +3,7 @@
 #
 
 obj-y	 := init.o fault.o ioremap.o extable.o pageattr.o mmap.o
+obj-$(CONFIG_HAVE_GET_USER_PAGES_FAST) += gup.o
 obj-$(CONFIG_HUGETLB_PAGE) += hugetlbpage.o
 obj-$(CONFIG_NUMA) += numa.o
 obj-$(CONFIG_K8_NUMA) += k8topology.o

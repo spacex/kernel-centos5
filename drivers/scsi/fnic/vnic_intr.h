@@ -21,6 +21,21 @@
 #include <linux/pci.h>
 #include "vnic_dev.h"
 
+/*
+ * These defines avoid symbol clash between fnic and enic (Cisco 10G Eth
+ * Driver) when both are built with CONFIG options =y
+ */
+#define vnic_intr_unmask fnic_intr_unmask
+#define vnic_intr_mask fnic_intr_mask
+#define vnic_intr_return_credits fnic_intr_return_credits
+#define vnic_intr_credits fnic_intr_credits
+#define vnic_intr_return_all_credits fnic_intr_return_all_credits
+#define vnic_intr_legacy_pba fnic_intr_legacy_pba
+#define vnic_intr_free fnic_intr_free
+#define vnic_intr_alloc fnic_intr_alloc
+#define vnic_intr_init fnic_intr_init
+#define vnic_intr_clean fnic_intr_clean
+
 #define VNIC_INTR_TIMER_MAX		0xffff
 
 #define VNIC_INTR_TIMER_TYPE_ABS	0
@@ -71,6 +86,20 @@ static inline void vnic_intr_return_credits(struct vnic_intr *intr,
 		(reset_timer ? (1 << VNIC_INTR_RESET_TIMER_SHIFT) : 0);
 
 	iowrite32(int_credit_return, &intr->ctrl->int_credit_return);
+}
+
+static inline unsigned int vnic_intr_credits(struct vnic_intr *intr)
+{
+	return ioread32(&intr->ctrl->int_credits);
+}
+
+static inline void vnic_intr_return_all_credits(struct vnic_intr *intr)
+{
+	unsigned int credits = vnic_intr_credits(intr);
+	int unmask = 1;
+	int reset_timer = 1;
+
+	vnic_intr_return_credits(intr, credits, unmask, reset_timer);
 }
 
 static inline u32 vnic_intr_legacy_pba(u32 __iomem *legacy_pba)

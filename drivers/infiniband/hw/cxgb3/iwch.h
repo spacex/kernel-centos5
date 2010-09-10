@@ -48,8 +48,6 @@ struct iwch_qp;
 struct iwch_mr;
 
 struct iwch_rnic_attributes {
-	u32 vendor_id;
-	u32 vendor_part_id;
 	u32 max_qps;
 	u32 max_wrs;				/* Max for any SQ/RQ */
 	u32 max_sge_per_wr;
@@ -119,6 +117,11 @@ static inline struct iwch_dev *to_iwch_dev(struct ib_device *ibdev)
 	return container_of(ibdev, struct iwch_dev, ibdev);
 }
 
+static inline struct iwch_dev *rdev_to_iwch_dev(struct cxio_rdev *rdev)
+{
+	return container_of(rdev, struct iwch_dev, rdev);
+}
+
 static inline int t3b_device(const struct iwch_dev *rhp)
 {
 	return rhp->rdev.t3cdev_p->type == T3B;
@@ -148,7 +151,7 @@ static inline int insert_handle(struct iwch_dev *rhp, struct idr *idr,
 				void *handle, u32 id)
 {
 	int ret;
-	u32 newid;
+	int newid;
 
 	do {
 		if (!idr_pre_get(idr, GFP_KERNEL)) {

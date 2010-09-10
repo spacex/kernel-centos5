@@ -25,8 +25,11 @@
 #include <scsi/scsi_tcq.h>
 #include <scsi/scsi_transport_fc.h>
 
+#include "lpfc_hw4.h"
 #include "lpfc_hw.h"
 #include "lpfc_sli.h"
+#include "lpfc_sli4.h"
+#include "lpfc_nl.h"
 #include "lpfc_disc.h"
 #include "lpfc.h"
 #include "lpfc_crtn.h"
@@ -115,7 +118,7 @@ lpfc_security_config(struct Scsi_Host *shost, int status, void *rsp)
 		auth_rsp->u.dhchap_security_config.auth_mode;
 	lpfc_printf_vlog(vport, KERN_INFO, LOG_SECURITY,
 		"1025 Received security config local_wwpn:"
-		 "%llX remote_wwpn:%llX \nmode:0x%x "
+		 "%llX remote_wwpn:%llX mode:0x%x "
 		 "hash(%d):%x:%x:%x:%x bidir:0x%x "
 		 "dh_group(%d):%x:%x:%x:%x:%x:%x:%x:%x "
 		 "reauth_interval:0x%x\n",
@@ -230,7 +233,7 @@ lpfc_reauth_node(unsigned long ptr)
 	struct lpfc_work_evt  *evtp = &ndlp->els_reauth_evt;
 
 	ndlp = (struct lpfc_nodelist *) ptr;
-	phba = ndlp->vport->phba;
+	phba = ndlp->phba;
 
 	spin_lock_irqsave(&phba->hbalock, flags);
 	if (!list_empty(&evtp->evt_listp)) {

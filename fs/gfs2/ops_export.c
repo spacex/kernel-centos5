@@ -21,8 +21,7 @@
 #include "glock.h"
 #include "glops.h"
 #include "inode.h"
-#include "ops_dentry.h"
-#include "ops_fstype.h"
+#include "super.h"
 #include "rgrp.h"
 #include "util.h"
 
@@ -42,7 +41,7 @@ static struct dentry *gfs2_decode_fh(struct super_block *sb,
 
 	memset(&parent, 0, sizeof(struct gfs2_inum));
 
-	switch (fh_len) {
+	switch (fh_type) {
 	case GFS2_LARGE_FH_SIZE:
 		parent.no_formal_ino = ((u64)be32_to_cpu(fh[4])) << 32;
 		parent.no_formal_ino |= be32_to_cpu(fh[5]);
@@ -258,7 +257,7 @@ static struct dentry *gfs2_get_dentry(struct super_block *sb, void *inum_obj)
 	}
 
 	error = -EIO;
-	if (GFS2_I(inode)->i_di.di_flags & GFS2_DIF_SYSTEM) {
+	if (GFS2_I(inode)->i_diskflags & GFS2_DIF_SYSTEM) {
 		iput(inode);
 		goto fail;
 	}
@@ -286,7 +285,7 @@ fail:
 	return ERR_PTR(error);
 }
 
-struct export_operations gfs2_export_ops = {
+const struct export_operations gfs2_export_ops = {
 	.decode_fh = gfs2_decode_fh,
 	.encode_fh = gfs2_encode_fh,
 	.get_name = gfs2_get_name,

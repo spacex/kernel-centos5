@@ -60,7 +60,6 @@
 #include "super.h"
 #include "trans.h"
 #include "inode.h"
-#include "ops_file.h"
 #include "ops_address.h"
 #include "util.h"
 
@@ -1018,7 +1017,7 @@ void gfs2_quota_change(struct gfs2_inode *ip, s64 change,
 
 	if (gfs2_assert_warn(GFS2_SB(&ip->i_inode), change))
 		return;
-	if (ip->i_di.di_flags & GFS2_DIF_SYSTEM)
+	if (ip->i_diskflags & GFS2_DIF_SYSTEM)
 		return;
 
 	for (x = 0; x < al->al_qd_num; x++) {
@@ -1105,15 +1104,15 @@ static void gfs2_quota_change_in(struct gfs2_quota_change_host *qc, const void *
 int gfs2_quota_init(struct gfs2_sbd *sdp)
 {
 	struct gfs2_inode *ip = GFS2_I(sdp->sd_qc_inode);
-	unsigned int blocks = ip->i_di.di_size >> sdp->sd_sb.sb_bsize_shift;
+	unsigned int blocks = ip->i_disksize >> sdp->sd_sb.sb_bsize_shift;
 	unsigned int x, slot = 0;
 	unsigned int found = 0;
 	u64 dblock;
 	u32 extlen = 0;
 	int error;
 
-	if (!ip->i_di.di_size || ip->i_di.di_size > (64 << 20) ||
-	    ip->i_di.di_size & (sdp->sd_sb.sb_bsize - 1)) {
+	if (!ip->i_disksize || ip->i_disksize > (64 << 20) ||
+	    ip->i_disksize & (sdp->sd_sb.sb_bsize - 1)) {
 		gfs2_consist_inode(ip);
 		return -EIO;
 	}

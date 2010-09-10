@@ -22,6 +22,7 @@
 #include <linux/hdreg.h>
 #include <linux/blktrace_api.h>
 #include <linux/smp_lock.h>
+#include <trace/block.h>
 
 #define DM_MSG_PREFIX "core"
 
@@ -474,9 +475,12 @@ static int __noflush_suspending(struct mapped_device *md)
 static void dec_pending(struct dm_io *io, int error)
 {
 	unsigned long flags;
+	int io_error;
+	struct bio *bio;
+	struct mapped_device *md = io->md;
 
 	/* Push-back supersedes any I/O errors */
-	if (error && !(io->error > 0 && __noflush_suspending(io->md)))
+	if (error && !(io->error > 0 && __noflush_suspending(md)))
 		io->error = error;
 
 	if (atomic_dec_and_test(&io->io_count)) {
@@ -487,26 +491,27 @@ static void dec_pending(struct dm_io *io, int error)
 			 * suspend queue merges the pushback list.
 			 */
 			spin_lock_irqsave(&io->md->pushback_lock, flags);
-			if (__noflush_suspending(io->md))
-				bio_list_add(&io->md->pushback, io->bio);
+			if (__noflush_suspending(md))
+				bio_list_add(&md->pushback, io->bio);
 			else
 				/* noflush suspend was interrupted. */
 				io->error = -EIO;
-			spin_unlock_irqrestore(&io->md->pushback_lock, flags);
+			spin_unlock_irqrestore(&md->pushback_lock, flags);
 		}
 
 		if (end_io_acct(io))
 			/* nudge anyone waiting on suspend queue */
-			wake_up(&io->md->wait);
+			wake_up(&md->wait);
 
-		if (io->error != DM_ENDIO_REQUEUE) {
-			blk_add_trace_bio(io->md->queue, io->bio,
-					  BLK_TA_COMPLETE);
+		io_error = io->error;
+		bio = io->bio;
 
-			bio_endio(io->bio, io->bio->bi_size, io->error);
+		free_io(md, io);
+
+		if (io_error != DM_ENDIO_REQUEUE) {
+			trace_block_bio_complete(md->queue, bio);
+			bio_endio(bio, bio->bi_size, io_error);
 		}
-
-		free_io(io->md, io);
 	}
 }
 
@@ -514,6 +519,7 @@ static int clone_endio(struct bio *bio, unsigned int done, int error)
 {
 	int r = 0;
 	struct target_io *tio = bio->bi_private;
+	struct dm_io *io = tio->io;
 	struct mapped_device *md = tio->io->md;
 	dm_endio_fn endio = tio->ti->type->end_io;
 
@@ -540,15 +546,14 @@ static int clone_endio(struct bio *bio, unsigned int done, int error)
 		}
 	}
 
-	dec_pending(tio->io, error);
-
 	/*
 	 * Store md for cleanup instead of tio which is about to get freed.
 	 */
 	bio->bi_private = md->bs;
 
-	bio_put(bio);
 	free_tio(md, tio);
+	bio_put(bio);
+	dec_pending(io, error);
 	return r;
 }
 
@@ -598,9 +603,9 @@ static void __map_bio(struct dm_target *ti, struct bio *clone,
 	if (r == DM_MAPIO_REMAPPED) {
 		/* the bio has been remapped so dispatch it */
 
-		blk_add_trace_remap(bdev_get_queue(clone->bi_bdev), clone,
-				    tio->io->bio->bi_bdev->bd_dev, sector,
-				    clone->bi_sector);
+		trace_block_remap(bdev_get_queue(clone->bi_bdev), clone,
+				    tio->io->bio->bi_bdev->bd_dev,
+				    clone->bi_sector, sector);
 
 		generic_make_request(clone);
 	} else if (r < 0 || r == DM_MAPIO_REQUEUE) {

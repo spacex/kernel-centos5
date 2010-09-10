@@ -35,9 +35,15 @@
 
 #include <linux/timex.h>
 #include <linux/netdevice.h>
+#include <linux/kthread.h>
 
 #include "vnic_config.h"
 #include "vnic_netpath.h"
+
+extern u16 vnic_max_mtu;
+extern struct list_head vnic_list;
+extern struct attribute_group vnic_stats_attr_group;
+extern cycles_t vnic_recv_ref;
 
 enum vnic_npevent_type {
 	VNIC_PRINP_CONNECTED	= 0,
@@ -45,13 +51,28 @@ enum vnic_npevent_type {
 	VNIC_PRINP_LINKUP	= 2,
 	VNIC_PRINP_LINKDOWN	= 3,
 	VNIC_PRINP_TIMEREXPIRED	= 4,
-	VNIC_SECNP_CONNECTED	= 5,
-	VNIC_SECNP_DISCONNECTED	= 6,
-	VNIC_SECNP_LINKUP	= 7,
-	VNIC_SECNP_LINKDOWN	= 8,
-	VNIC_SECNP_TIMEREXPIRED	= 9,
-	VNIC_NP_SETLINK		= 10,
-	VNIC_NP_FREEVNIC	= 11
+	VNIC_PRINP_SETLINK	= 5,
+
+	/* used to figure out PRI vs SEC types for dbg msg*/
+	VNIC_PRINP_LASTTYPE     = VNIC_PRINP_SETLINK,
+
+	VNIC_SECNP_CONNECTED	= 6,
+	VNIC_SECNP_DISCONNECTED	= 7,
+	VNIC_SECNP_LINKUP	= 8,
+	VNIC_SECNP_LINKDOWN	= 9,
+	VNIC_SECNP_TIMEREXPIRED	= 10,
+	VNIC_SECNP_SETLINK	= 11,
+
+	/* used to figure out PRI vs SEC types for dbg msg*/
+	VNIC_SECNP_LASTTYPE     = VNIC_SECNP_SETLINK,
+
+	VNIC_FORCE_FAILOVER	= 12,
+	VNIC_UNFAILOVER		= 13,
+	VNIC_NP_FREEVNIC	= 14,
+	/*
+	 * NOTE : If any new netpath event is being added, don't forget to
+	 * add corresponding netpath event string into vnic_main.c.
+	 */
 };
 
 struct vnic_npevent {
@@ -77,17 +98,18 @@ struct vnic {
 	struct netpath			*current_path;
 	struct netpath			primary_path;
 	struct netpath			secondary_path;
-	int				open;
 	int				carrier;
-	int				xmit_started;
+	int				forced_failover;
+	int				failed_over;
 	int				mac_set;
 	struct net_device_stats 	stats;
-	struct net_device		netdevice;
+	struct net_device		*netdevice;
 	struct class_dev_info		class_dev_info;
 	struct dev_mc_list		*mc_list;
 	int				mc_list_len;
 	int				mc_count;
 	spinlock_t			lock;
+	spinlock_t			current_path_lock;
 #ifdef CONFIG_INFINIBAND_QLGC_VNIC_STATS
 	struct {
 		cycles_t	start_time;
@@ -100,6 +122,7 @@ struct vnic {
 		u32		xmit_fail;
 		cycles_t	recv_time;
 		u32		recv_num;
+		u32		multicast_recv_num;
 		cycles_t	xmit_ref;	/* intermediate time */
 		cycles_t	xmit_off_time;
 		u32		xmit_off_num;
@@ -115,6 +138,9 @@ struct vnic *vnic_allocate(struct vnic_config *config);
 
 void vnic_free(struct vnic *vnic);
 
+void vnic_force_failover(struct vnic *vnic);
+void vnic_unfailover(struct vnic *vnic);
+
 void vnic_connected(struct vnic *vnic, struct netpath *netpath);
 void vnic_disconnected(struct vnic *vnic, struct netpath *netpath);
 
@@ -127,5 +153,4 @@ void vnic_restart_xmit(struct vnic *vnic, struct netpath *netpath);
 void vnic_recv_packet(struct vnic *vnic, struct netpath *netpath,
 		      struct sk_buff *skb);
 void vnic_npevent_cleanup(void);
-
 #endif	/* VNIC_MAIN_H_INCLUDED */

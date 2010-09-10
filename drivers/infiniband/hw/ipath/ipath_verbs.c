@@ -35,6 +35,7 @@
 #include <rdma/ib_user_verbs.h>
 #include <linux/io.h>
 #include <linux/utsname.h>
+#include <linux/rculist.h>
 
 #include "ipath_kernel.h"
 #include "ipath_verbs.h"
@@ -117,7 +118,7 @@ MODULE_PARM_DESC(max_srq_wrs, "Maximum number of SRQ WRs support");
 
 static unsigned int ib_ipath_disable_sma;
 module_param_named(disable_sma, ib_ipath_disable_sma, uint, S_IWUSR | S_IRUGO);
-MODULE_PARM_DESC(ib_ipath_disable_sma, "Disable the SMA");
+MODULE_PARM_DESC(disable_sma, "Disable the SMA");
 
 /*
  * Note that it is OK to post send work requests in the SQE and ERR
@@ -173,7 +174,8 @@ static __be64 sys_image_guid;
  * @data: the data to copy
  * @length: the length of the data
  */
-void ipath_copy_sge(struct ipath_sge_state *ss, void *data, u32 length)
+void ipath_copy_sge(struct ipath_sge_state *ss, void *data, u32 length,
+		    int release)
 {
 	struct ipath_sge *sge = &ss->sge;
 
@@ -193,9 +195,11 @@ void ipath_copy_sge(struct ipath_sge_state *ss, void *data, u32 length)
 		sge->length -= len;
 		sge->sge_length -= len;
 		if (sge->sge_length == 0) {
+			if (release)
+				atomic_dec(&sge->mr->refcount);
 			if (--ss->num_sge)
 				*sge = *ss->sg_list++;
-		} else if (sge->length == 0 && sge->mr != NULL) {
+		} else if (sge->length == 0 && sge->mr->lkey) {
 			if (++sge->n >= IPATH_SEGSZ) {
 				if (++sge->m >= sge->mr->mapsz)
 					break;
@@ -216,7 +220,7 @@ void ipath_copy_sge(struct ipath_sge_state *ss, void *data, u32 length)
  * @ss: the SGE state
  * @length: the number of bytes to skip
  */
-void ipath_skip_sge(struct ipath_sge_state *ss, u32 length)
+void ipath_skip_sge(struct ipath_sge_state *ss, u32 length, int release)
 {
 	struct ipath_sge *sge = &ss->sge;
 
@@ -232,9 +236,11 @@ void ipath_skip_sge(struct ipath_sge_state *ss, u32 length)
 		sge->length -= len;
 		sge->sge_length -= len;
 		if (sge->sge_length == 0) {
+			if (release)
+				atomic_dec(&sge->mr->refcount);
 			if (--ss->num_sge)
 				*sge = *ss->sg_list++;
-		} else if (sge->length == 0 && sge->mr != NULL) {
+		} else if (sge->length == 0 && sge->mr->lkey) {
 			if (++sge->n >= IPATH_SEGSZ) {
 				if (++sge->m >= sge->mr->mapsz)
 					break;
@@ -281,7 +287,7 @@ static u32 ipath_count_sge(struct ipath_sge_state *ss, u32 length)
 		if (sge.sge_length == 0) {
 			if (--num_sge)
 				sge = *sg_list++;
-		} else if (sge.length == 0 && sge.mr != NULL) {
+		} else if (sge.length == 0 && sge.mr->lkey) {
 			if (++sge.n >= IPATH_SEGSZ) {
 				if (++sge.m >= sge.mr->mapsz)
 					break;
@@ -320,7 +326,7 @@ static void ipath_copy_from_sge(void *data, struct ipath_sge_state *ss,
 		if (sge->sge_length == 0) {
 			if (--ss->num_sge)
 				*sge = *ss->sg_list++;
-		} else if (sge->length == 0 && sge->mr != NULL) {
+		} else if (sge->length == 0 && sge->mr->lkey) {
 			if (++sge->n >= IPATH_SEGSZ) {
 				if (++sge->m >= sge->mr->mapsz)
 					break;
@@ -350,8 +356,15 @@ static int ipath_post_one_send(struct ipath_qp *qp, struct ib_send_wr *wr)
 	int acc;
 	int ret;
 	unsigned long flags;
+	struct ipath_devdata *dd = to_idev(qp->ibqp.device)->dd;
 
 	spin_lock_irqsave(&qp->s_lock, flags);
+
+	if (qp->ibqp.qp_type != IB_QPT_SMI &&
+	    !(dd->ipath_flags & IPATH_LINKACTIVE)) {
+		ret = -ENETDOWN;
+		goto bail;
+	}
 
 	/* Check that state is OK to post send. */
 	if (unlikely(!(ib_ipath_state_ops[qp->state] & IPATH_POST_SEND_OK)))
@@ -398,10 +411,11 @@ static int ipath_post_one_send(struct ipath_qp *qp, struct ib_send_wr *wr)
 	wqe = get_swqe_ptr(qp, qp->s_head);
 	wqe->wr = *wr;
 	wqe->length = 0;
+	j = 0;
 	if (wr->num_sge) {
 		acc = wr->opcode >= IB_WR_RDMA_READ ?
 			IB_ACCESS_LOCAL_WRITE : 0;
-		for (i = 0, j = 0; i < wr->num_sge; i++) {
+		for (i = 0; i < wr->num_sge; i++) {
 			u32 length = wr->sg_list[i].length;
 			int ok;
 
@@ -410,7 +424,7 @@ static int ipath_post_one_send(struct ipath_qp *qp, struct ib_send_wr *wr)
 			ok = ipath_lkey_ok(qp, &wqe->sg_list[j],
 					   &wr->sg_list[i], acc);
 			if (!ok)
-				goto bail_inval;
+				goto bail_inval_free;
 			wqe->length += length;
 			j++;
 		}
@@ -419,15 +433,21 @@ static int ipath_post_one_send(struct ipath_qp *qp, struct ib_send_wr *wr)
 	if (qp->ibqp.qp_type == IB_QPT_UC ||
 	    qp->ibqp.qp_type == IB_QPT_RC) {
 		if (wqe->length > 0x80000000U)
-			goto bail_inval;
+			goto bail_inval_free;
 	} else if (wqe->length > to_idev(qp->ibqp.device)->dd->ipath_ibmtu)
-		goto bail_inval;
+		goto bail_inval_free;
 	wqe->ssn = qp->s_ssn++;
 	qp->s_head = next;
 
 	ret = 0;
 	goto bail;
 
+bail_inval_free:
+	while (j) {
+		struct ipath_sge *sge = &wqe->sg_list[--j];
+
+		atomic_dec(&sge->mr->refcount);
+	}
 bail_inval:
 	ret = -EINVAL;
 bail:
@@ -752,7 +772,7 @@ static void ipath_ib_timer(struct ipath_ibdev *dev)
 		resend = qp->timer_next;
 
 		spin_lock_irqsave(&qp->s_lock, flags);
-		if (qp->s_last != qp->s_tail &&
+		if (qp->s_acked != qp->s_tail &&
 		    ib_ipath_state_ops[qp->state] & IPATH_PROCESS_SEND_OK) {
 			dev->n_timeouts++;
 			ipath_restart_rc(qp, qp->s_last_psn + 1);
@@ -788,7 +808,7 @@ static void update_sge(struct ipath_sge_state *ss, u32 length)
 	if (sge->sge_length == 0) {
 		if (--ss->num_sge)
 			*sge = *ss->sg_list++;
-	} else if (sge->length == 0 && sge->mr != NULL) {
+	} else if (sge->length == 0 && sge->mr->lkey) {
 		if (++sge->n >= IPATH_SEGSZ) {
 			if (++sge->m >= sge->mr->mapsz)
 				return;
@@ -989,7 +1009,7 @@ unsigned ipath_ib_rate_to_mult(enum ib_rate rate)
 /*
  * Convert delay multiplier to IB rate
  */
-enum ib_rate ipath_mult_to_ib_rate(unsigned mult)
+static enum ib_rate ipath_mult_to_ib_rate(unsigned mult)
 {
 	switch (mult) {
 	case 8:  return IB_RATE_2_5_GBPS;
@@ -1031,7 +1051,7 @@ static void sdma_complete(void *cookie, int status)
 	struct ipath_verbs_txreq *tx = cookie;
 	struct ipath_qp *qp = tx->qp;
 	struct ipath_ibdev *dev = to_idev(qp->ibqp.device);
-	unsigned int flags;
+	unsigned long flags;
 	enum ib_wc_status ibs = status == IPATH_SDMA_TXREQ_S_OK ?
 		IB_WC_SUCCESS : IB_WC_WR_FLUSH_ERR;
 
@@ -1039,6 +1059,8 @@ static void sdma_complete(void *cookie, int status)
 		spin_lock_irqsave(&qp->s_lock, flags);
 		if (tx->wqe)
 			ipath_send_complete(qp, tx->wqe, ibs);
+		else if (qp->ibqp.qp_type == IB_QPT_RC)
+			ipath_rc_send_complete(qp, &tx->hdr.hdr);
 		if ((ib_ipath_state_ops[qp->state] & IPATH_FLUSH_SEND &&
 		     qp->s_last != qp->s_head) ||
 		    (qp->s_flags & IPATH_S_WAIT_DMA))
@@ -1049,19 +1071,29 @@ static void sdma_complete(void *cookie, int status)
 		spin_lock_irqsave(&qp->s_lock, flags);
 		ipath_send_complete(qp, tx->wqe, ibs);
 		spin_unlock_irqrestore(&qp->s_lock, flags);
+	} else if (qp->ibqp.qp_type == IB_QPT_RC) {
+		spin_lock_irqsave(&qp->s_lock, flags);
+		ipath_rc_send_complete(qp, &tx->hdr.hdr);
+		spin_unlock_irqrestore(&qp->s_lock, flags);
 	}
 
+	if (tx->mr) {
+		atomic_dec(&tx->mr->refcount);
+		tx->mr = NULL;
+	}
 	if (tx->txreq.flags & IPATH_SDMA_TXREQ_F_FREEBUF)
 		kfree(tx->txreq.map_addr);
 	put_txreq(dev, tx);
 
 	if (atomic_dec_and_test(&qp->refcount))
 		wake_up(&qp->wait);
+
+	ipath_ib_piobufavail(dev);
 }
 
 static void decrement_dma_busy(struct ipath_qp *qp)
 {
-	unsigned int flags;
+	unsigned long flags;
 
 	if (atomic_dec_and_test(&qp->s_dma_busy)) {
 		spin_lock_irqsave(&qp->s_lock, flags);
@@ -1138,6 +1170,9 @@ static int ipath_verbs_send_dma(struct ipath_qp *qp,
 	tx->qp = qp;
 	atomic_inc(&qp->refcount);
 	tx->wqe = qp->s_wqe;
+	tx->mr = qp->s_rdma_mr;
+	if (qp->s_rdma_mr)
+		qp->s_rdma_mr = NULL;
 	tx->txreq.callback = sdma_complete;
 	tx->txreq.callback_cookie = tx;
 	tx->txreq.flags = IPATH_SDMA_TXREQ_F_HEADTOHOST |
@@ -1190,9 +1225,10 @@ static int ipath_verbs_send_dma(struct ipath_qp *qp,
 	tx->txreq.map_addr = piobuf;
 	tx->txreq.flags |= IPATH_SDMA_TXREQ_F_FREEBUF;
 	tx->txreq.sg_count = 1;
+	memcpy(&tx->hdr.hdr, hdr, hdrwords << 2);
 
-	*piobuf++ = cpu_to_le32(plen);
-	*piobuf++ = cpu_to_le32(control);
+	*piobuf++ = (__force u32) cpu_to_le32(plen);
+	*piobuf++ = (__force u32) cpu_to_le32(control);
 	memcpy(piobuf, hdr, hdrwords << 2);
 	ipath_copy_from_sge(piobuf + hdrwords, ss, len);
 
@@ -1213,6 +1249,10 @@ static int ipath_verbs_send_dma(struct ipath_qp *qp,
 	goto bail;
 
 err_tx:
+	if (tx->mr) {
+		atomic_dec(&tx->mr->refcount);
+		tx->mr = NULL;
+	}
 	if (atomic_dec_and_test(&qp->refcount))
 		wake_up(&qp->wait);
 	put_txreq(dev, tx);
@@ -1231,7 +1271,7 @@ static int ipath_verbs_send_pio(struct ipath_qp *qp,
 	unsigned flush_wc;
 	u32 control;
 	int ret;
-	unsigned int flags;
+	unsigned long flags;
 
 	piobuf = ipath_getpiobuf(dd, plen, NULL);
 	if (unlikely(piobuf == NULL)) {
@@ -1302,9 +1342,17 @@ static int ipath_verbs_send_pio(struct ipath_qp *qp,
 	}
 	copy_io(piobuf, ss, len, flush_wc);
 done:
+	if (qp->s_rdma_mr) {
+		atomic_dec(&qp->s_rdma_mr->refcount);
+		qp->s_rdma_mr = NULL;
+	}
 	if (qp->s_wqe) {
 		spin_lock_irqsave(&qp->s_lock, flags);
 		ipath_send_complete(qp, qp->s_wqe, IB_WC_SUCCESS);
+		spin_unlock_irqrestore(&qp->s_lock, flags);
+	} else if (qp->ibqp.qp_type == IB_QPT_RC) {
+		spin_lock_irqsave(&qp->s_lock, flags);
+		ipath_rc_send_complete(qp, ibhdr);
 		spin_unlock_irqrestore(&qp->s_lock, flags);
 	}
 	ret = 0;
@@ -1505,9 +1553,11 @@ static int ipath_query_device(struct ib_device *ibdev,
 
 	props->device_cap_flags = IB_DEVICE_BAD_PKEY_CNTR |
 		IB_DEVICE_BAD_QKEY_CNTR | IB_DEVICE_SHUTDOWN_PORT |
-		IB_DEVICE_SYS_IMAGE_GUID;
+		IB_DEVICE_SYS_IMAGE_GUID | IB_DEVICE_RC_RNR_NAK_GEN |
+		IB_DEVICE_PORT_ACTIVE_EVENT | IB_DEVICE_SRQ_RESIZE;
 	props->page_size_cap = PAGE_SIZE;
-	props->vendor_id = dev->dd->ipath_vendorid;
+	props->vendor_id =
+		IPATH_SRC_OUI_1 << 16 | IPATH_SRC_OUI_2 << 8 | IPATH_SRC_OUI_3;
 	props->vendor_part_id = dev->dd->ipath_deviceid;
 	props->hw_ver = dev->dd->ipath_pcirev;
 
@@ -1853,7 +1903,7 @@ unsigned ipath_get_npkeys(struct ipath_devdata *dd)
 }
 
 /**
- * ipath_get_pkey - return the indexed PKEY from the port 0 PKEY table
+ * ipath_get_pkey - return the indexed PKEY from the port PKEY table
  * @dd: the infinipath device
  * @index: the PKEY index
  */
@@ -1861,6 +1911,7 @@ unsigned ipath_get_pkey(struct ipath_devdata *dd, unsigned index)
 {
 	unsigned ret;
 
+	/* always a kernel port, no locking needed */
 	if (index >= ARRAY_SIZE(dd->ipath_pd[0]->port_pkeys))
 		ret = 0;
 	else
@@ -2135,7 +2186,6 @@ int ipath_register_ib_device(struct ipath_devdata *dd)
 	dev->phys_port_cnt = 1;
 	dev->num_comp_vectors = 1;
 	dev->dma_device = &dd->pcidev->dev;
-	dev->class_dev.dev = dev->dma_device;
 	dev->query_device = ipath_query_device;
 	dev->modify_device = ipath_modify_device;
 	dev->query_port = ipath_query_port;
@@ -2228,6 +2278,8 @@ void ipath_unregister_ib_device(struct ipath_ibdev *dev)
 		ipath_dev_err(dev->dd, "piowait list not empty!\n");
 	if (!list_empty(&dev->rnrwait))
 		ipath_dev_err(dev->dd, "rnrwait list not empty!\n");
+	if (dev->dma_mr)
+		ipath_dev_err(dev->dd, "DMA MR not NULL!\n");
 	if (!ipath_mcast_tree_empty())
 		ipath_dev_err(dev->dd, "multicast table memory leak!\n");
 	/*
@@ -2274,10 +2326,12 @@ static ssize_t show_stats(struct class_device *cdev, char *buf)
 		container_of(cdev, struct ipath_ibdev, ibdev.class_dev);
 	int i;
 	int len;
+	struct ipath_qp_table *qpt;
+	unsigned long flags;
 
 	len = sprintf(buf,
 		      "RC resends  %d\n"
-		      "RC no QACK  %d\n"
+		      "RC QACKs    %d\n"
 		      "RC ACKs     %d\n"
 		      "RC SEQ NAKs %d\n"
 		      "RC RDMA seq %d\n"
@@ -2285,6 +2339,7 @@ static ssize_t show_stats(struct class_device *cdev, char *buf)
 		      "RC OTH NAKs %d\n"
 		      "RC timeouts %d\n"
 		      "RC RDMA dup %d\n"
+		      "RC DComp    %d\n"
 		      "piobuf wait %d\n"
 		      "unaligned   %d\n"
 		      "PKT drops   %d\n"
@@ -2292,7 +2347,8 @@ static ssize_t show_stats(struct class_device *cdev, char *buf)
 		      dev->n_rc_resends, dev->n_rc_qacks, dev->n_rc_acks,
 		      dev->n_seq_naks, dev->n_rdma_seq, dev->n_rnr_naks,
 		      dev->n_other_naks, dev->n_timeouts,
-		      dev->n_rdma_dup_busy, dev->n_piowait, dev->n_unaligned,
+		      dev->n_rdma_dup_busy, dev->n_rc_delayed_comp,
+		      dev->n_piowait, dev->n_unaligned,
 		      dev->n_pkt_drops, dev->n_wqe_errs);
 	for (i = 0; i < ARRAY_SIZE(dev->opstats); i++) {
 		const struct ipath_opcode_stats *si = &dev->opstats[i];
@@ -2303,6 +2359,33 @@ static ssize_t show_stats(struct class_device *cdev, char *buf)
 			       (unsigned long long) si->n_packets,
 			       (unsigned long long) si->n_bytes);
 	}
+	qpt = &dev->qp_table;
+	spin_lock_irqsave(&qpt->lock, flags);
+	for (i = 0; i < qpt->max; i++) {
+		struct ipath_qp *qp;
+		for (qp = qpt->table[i]; qp != NULL; qp = qp->next) {
+			if (qp->s_last == qp->s_acked &&
+			    qp->s_acked == qp->s_cur &&
+			    qp->s_cur == qp->s_tail &&
+			    qp->s_tail == qp->s_head)
+				continue;
+			if (len + 128 >= PAGE_SIZE)
+				break;
+			len += sprintf(buf + len,
+			    "QP%u %x %u PSN %x %x %x %x %x (%u %u %u %u %u)\n",
+				qp->ibqp.qp_num,
+				qp->s_flags,
+				atomic_read(&qp->s_dma_busy),
+				qp->s_last_psn,
+				qp->s_psn,
+				qp->s_next_psn,
+				qp->s_sending_psn,
+				qp->s_sending_hpsn,
+				qp->s_last, qp->s_acked, qp->s_cur,
+				qp->s_tail, qp->s_head);
+		}
+	}
+	spin_unlock_irqrestore(&qpt->lock, flags);
 	return len;
 }
 
@@ -2325,7 +2408,7 @@ static int ipath_verbs_register_sysfs(struct ib_device *dev)
 
 	for (i = 0; i < ARRAY_SIZE(ipath_class_attributes); ++i)
 		if (class_device_create_file(&dev->class_dev,
-					     ipath_class_attributes[i])) {
+					       ipath_class_attributes[i])) {
 			ret = 1;
 			goto bail;
 		}

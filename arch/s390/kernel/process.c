@@ -36,6 +36,7 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/notifier.h>
+#include <linux/utsname.h>
 
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
@@ -164,7 +165,11 @@ void show_regs(struct pt_regs *regs)
 {
 	struct task_struct *tsk = current;
 
-        printk("CPU:    %d    %s\n", task_thread_info(tsk)->cpu, print_tainted());
+        printk("CPU: %d %s %s %.*s\n",
+	       task_thread_info(tsk)->cpu, print_tainted(),
+	       system_utsname.release,
+	       (int)strcspn(system_utsname.version, " "),
+	       system_utsname.version);
         printk("Process %s (pid: %d, task: %p, ksp: %p)\n",
 	       current->comm, current->pid, (void *) tsk,
 	       (void *) tsk->thread.ksp);

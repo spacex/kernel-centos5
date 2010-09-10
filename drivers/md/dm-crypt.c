@@ -410,7 +410,8 @@ static void crypt_free_buffer_pages(struct crypt_config *cc,
  */
 static void dec_pending(struct crypt_io *io, int error)
 {
-	struct crypt_config *cc = (struct crypt_config *) io->target->private;
+	struct crypt_config *cc = io->target->private;
+	struct bio *base_bio = io->base_bio;
 
 	if (error < 0)
 		io->error = error;
@@ -418,9 +419,10 @@ static void dec_pending(struct crypt_io *io, int error)
 	if (!atomic_dec_and_test(&io->pending))
 		return;
 
-	bio_endio(io->base_bio, io->base_bio->bi_size, io->error);
-
+	error = io->error;
 	mempool_free(io, cc->io_pool);
+
+	bio_endio(base_bio, base_bio->bi_size, error);
 }
 
 /*

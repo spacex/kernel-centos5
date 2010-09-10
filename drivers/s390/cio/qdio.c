@@ -47,11 +47,11 @@
 
 #include <asm/debug.h>
 #include <asm/qdio.h>
+#include <asm/airq.h>
 
 #include "cio.h"
 #include "css.h"
 #include "device.h"
-#include "airq.h"
 #include "qdio.h"
 #include "ioasm.h"
 #include "chsc.h"
@@ -95,7 +95,7 @@ static debug_info_t *qdio_dbf_slsb_in;
 static volatile struct qdio_q *tiq_list=NULL; /* volatile as it could change
 						 during a while loop */
 static DEFINE_SPINLOCK(ttiq_list_lock);
-static int register_thinint_result;
+static void *tiqdio_ind;
 static void tiqdio_tl(unsigned long);
 static DECLARE_TASKLET(tiqdio_tasklet,tiqdio_tl,0);
 
@@ -396,7 +396,7 @@ qdio_get_indicator(void)
 {
 	int i;
 
-	for (i=1;i<INDICATORS_PER_CACHELINE;i++)
+	for (i = 0; i < INDICATORS_PER_CACHELINE; i++)
 		if (!indicator_used[i]) {
 			indicator_used[i]=1;
 			return indicators+i;
@@ -651,8 +651,10 @@ qdio_qebsm_get_inbound_buffer_frontier(struct qdio_q *q)
         struct qdio_irq *irq;
         unsigned char state;
         int tmp, ftc, count, cnt;
+#ifdef QDIO_USE_PROCESSING_STATE
+	int processed;
+#endif
         char dbf_text[15];
-
 
         irq = (struct qdio_irq *) q->irq_ptr;
         ftc = q->first_to_check;
@@ -694,6 +696,13 @@ qdio_qebsm_get_inbound_buffer_frontier(struct qdio_q *q)
 		cnt = 1;
 		tmp += set_slsb(q, &ftc,
 			       SLSB_P_INPUT_PROCESSING, &cnt);
+		if (atomic_read(&q->polling)) {
+			/* change previous SLSB_P_INPUT_PROCESSING slsb */
+			processed = (q->first_to_check + QDIO_MAX_BUFFERS_PER_Q - 1) &
+				(QDIO_MAX_BUFFERS_PER_Q - 1);
+			cnt = 1;
+			set_slsb(q, &processed, SLSB_P_INPUT_NOT_INIT, &cnt);
+		}
 		atomic_set(&q->polling, 1);
 #else
                 tmp = set_slsb(q, &ftc, SLSB_P_INPUT_NOT_INIT, &cnt);
@@ -1040,6 +1049,8 @@ qdio_get_inbound_buffer_frontier(struct qdio_q *q)
 #endif /* CONFIG_QDIO_DEBUG */
 #ifdef QDIO_USE_PROCESSING_STATE
 	int last_position=-1;
+	int processed;
+	int was_polling;
 #endif /* QDIO_USE_PROCESSING_STATE */
 
 	QDIO_DBF_TEXT4(0,trace,"getibfro");
@@ -1057,6 +1068,9 @@ qdio_get_inbound_buffer_frontier(struct qdio_q *q)
 	 */
 	first_not_to_check=f+qdio_min(atomic_read(&q->number_of_buffers_used),
 				      (QDIO_MAX_BUFFERS_PER_Q-1));
+#ifdef QDIO_USE_PROCESSING_STATE
+	was_polling = atomic_read(&q->polling);
+#endif
 
 	/* 
 	 * we don't use this one, as a PCI or we after a thin interrupt
@@ -1146,13 +1160,21 @@ check_next:
 		break;
 	}
 out:
-	q->first_to_check=f_mod_no;
 
 #ifdef QDIO_USE_PROCESSING_STATE
-	if (last_position>=0)
+	if (last_position>=0) {
 		set_slsb(q, &last_position, SLSB_P_INPUT_PROCESSING, &count);
+		if (was_polling) {
+			/* change previous SLSB_P_INPUT_PROCESSING slsb */
+			processed = (q->first_to_check + QDIO_MAX_BUFFERS_PER_Q - 1) &
+				(QDIO_MAX_BUFFERS_PER_Q - 1);
+			if (q->slsb.acc.val[processed] == SLSB_P_INPUT_PROCESSING)
+				set_slsb(q, &processed, SLSB_P_INPUT_NOT_INIT, &count);
+		}
+	}
 #endif /* QDIO_USE_PROCESSING_STATE */
 
+	q->first_to_check=f_mod_no;
 	QDIO_DBF_HEX4(0,trace,&q->first_to_check,sizeof(int));
 
 	return q->first_to_check;
@@ -1914,8 +1936,7 @@ qdio_fill_thresholds(struct qdio_irq *irq_ptr,
 	}
 }
 
-static int
-tiqdio_thinint_handler(void)
+static void tiqdio_thinint_handler(void *ind, void *drv_data)
 {
 	QDIO_DBF_TEXT4(0,trace,"thin_int");
 
@@ -1928,7 +1949,6 @@ tiqdio_thinint_handler(void)
 		tiqdio_clear_global_summary();
 
 	tiqdio_inbound_checks();
-	return 0;
 }
 
 static void
@@ -2441,7 +2461,7 @@ tiqdio_set_subchannel_ind(struct qdio_irq *irq_ptr, int reset_to_zero)
 		real_addr_dev_st_chg_ind=0;
 	} else {
 		real_addr_local_summary_bit=
-			virt_to_phys((volatile void *)indicators);
+			virt_to_phys((volatile void *)tiqdio_ind);
 		real_addr_dev_st_chg_ind=
 			virt_to_phys((volatile void *)irq_ptr->dev_st_chg_ind);
 	}
@@ -3721,23 +3741,27 @@ static void
 tiqdio_register_thinints(void)
 {
 	char dbf_text[20];
-	register_thinint_result=
-		s390_register_adapter_interrupt(&tiqdio_thinint_handler);
-	if (register_thinint_result) {
-		sprintf(dbf_text,"regthn%x",(register_thinint_result&0xff));
+
+	tiqdio_ind =
+		s390_register_adapter_interrupt(&tiqdio_thinint_handler, NULL,
+						TIQDIO_THININT_ISC);
+	if (IS_ERR(tiqdio_ind)) {
+		sprintf(dbf_text, "regthn%lx", PTR_ERR(tiqdio_ind));
 		QDIO_DBF_TEXT0(0,setup,dbf_text);
 		QDIO_PRINT_ERR("failed to register adapter handler " \
-			       "(rc=%i).\nAdapter interrupts might " \
+			       "(rc=%li).\nAdapter interrupts might " \
 			       "not work. Continuing.\n",
-			       register_thinint_result);
+			       PTR_ERR(tiqdio_ind));
+		tiqdio_ind = NULL;
 	}
 }
 
 static void
 tiqdio_unregister_thinints(void)
 {
-	if (!register_thinint_result)
-		s390_unregister_adapter_interrupt(&tiqdio_thinint_handler);
+	if (tiqdio_ind)
+		s390_unregister_adapter_interrupt(tiqdio_ind,
+						  TIQDIO_THININT_ISC);
 }
 
 static int
@@ -3749,8 +3773,8 @@ qdio_get_qdio_memory(void)
 	for (i=1;i<INDICATORS_PER_CACHELINE;i++)
 		indicator_used[i]=0;
 	indicators = kzalloc(sizeof(__u32)*(INDICATORS_PER_CACHELINE),
-				   GFP_KERNEL);
-       	if (!indicators)
+			     GFP_KERNEL);
+	if (!indicators)
 		return -ENOMEM;
 	return 0;
 }
@@ -3888,6 +3912,7 @@ init_QDIO(void)
 					    qdio_mempool_alloc,
 					    qdio_mempool_free, NULL);
 
+	isc_register(QDIO_AIRQ_ISC);
 	if (tiqdio_check_chsc_availability())
 		QDIO_PRINT_ERR("Not all CHSCs supported. Continuing.\n");
 
@@ -3900,6 +3925,7 @@ static void __exit
 cleanup_QDIO(void)
 {
 	tiqdio_unregister_thinints();
+	isc_unregister(QDIO_AIRQ_ISC);
 	qdio_remove_procfs_entry();
 	qdio_release_qdio_memory();
 	qdio_unregister_dbf_views();

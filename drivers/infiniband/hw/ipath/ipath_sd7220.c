@@ -47,7 +47,7 @@
  * various SerDes registers by IBC. It is not part of the normal kregs
  * map and is used in exactly one place, hence the #define below.
  */
-#define KR_IBSerDesMappTable (0x94000 / (sizeof (uint64_t)))
+#define KR_IBSerDesMappTable (0x94000 / (sizeof(uint64_t)))
 
 /*
  * Below used for sdnum parameter, selecting one of the two sections
@@ -93,7 +93,7 @@ void ipath_set_relock_poll(struct ipath_devdata *dd, int ibup);
 /*
  * Below keeps track of whether the "once per power-on" initialization has
  * been done, because uC code Version 1.32.17 or higher allows the uC to
- * be reset at will, and Automatic Equalization may requore it. So the
+ * be reset at will, and Automatic Equalization may require it. So the
  * state of the reset "pin", as reflected in was_reset parameter to
  * ipath_sd7220_init() is no longer valid. Instead, we check for the
  * actual uC code having been loaded.
@@ -137,10 +137,10 @@ bail:
 	return;
 }
 
-/* After a reset or other unusual event, the epb interface may need
+/*
+ * After a reset or other unusual event, the epb interface may need
  * to be re-synchronized, between the host and the uC.
- * returns <0 for failure
- * (which can only happen if we fail IBSD_RESYNC_TRIES times)
+ * returns <0 for failure to resync within IBSD_RESYNC_TRIES (not expected)
  */
 #define IBSD_RESYNC_TRIES 3
 #define IB_PGUDP(chn) (EPB_LOC((chn), 2, 1) | EPB_IB_QUAD0_CS)
@@ -301,12 +301,7 @@ static void ipath_sd_trimdone_monitor(struct ipath_devdata *dd,
 		ipath_cdbg(VERBOSE, "IBCS TRIMDONE set (%s)\n", where);
 	else
 		ipath_dev_err(dd, "IBCS TRIMDONE clear (%s)\n", where);
-	/*
-	* Do "dummy read/mod/wr" to get EPB in sane state after reset
-	* The default (and hopefully only, D6..0) value for MPREG6 is 0, and
-	* we want to set to 0x80. Since we can't trust read, or we wouldn't
-	* be doing this, hope for the best
-	*/
+
 	udelay(2);
 
 	ret = ipath_sd7220_reg_mod(dd, IB_7220_SERDES, IB_MPREG6, 0x80, 0x80);
@@ -370,12 +365,14 @@ int ipath_sd7220_init(struct ipath_devdata *dd, int was_reset)
 {
 	int ret = 1; /* default to failure */
 	int first_reset;
+	int val_stat;
 
 	if (!was_reset) {
 		/* entered with reset not asserted, we need to do it */
 		ipath_ibsd_reset(dd, 1);
 		ipath_sd_trimdone_monitor(dd, "Driver-reload");
 	}
+
 	/* Substitute our deduced value for was_reset */
 	ret = ipath_ibsd_ucode_loaded(dd);
 	if (ret < 0) {
@@ -383,88 +380,82 @@ int ipath_sd7220_init(struct ipath_devdata *dd, int was_reset)
 		goto done;
 	}
 	first_reset = !ret; /* First reset if IBSD uCode not yet loaded */
-	do {
+
+	/*
+	 * Alter some regs per vendor latest doc, reset-defaults
+	 * are not right for IB.
+	 */
+	ret = ipath_sd_early(dd);
+	if (ret < 0) {
+		ipath_dev_err(dd, "Failed to set IB SERDES early defaults\n");
+		ret = 1;
+		goto done;
+	}
+
+	/*
+	 * Set DAC manual trim IB.
+	 * We only do this once after chip has been reset (usually
+	 * same as once per system boot).
+	 */
+	if (first_reset) {
+		ret = ipath_sd_dactrim(dd);
+		if (ret < 0) {
+			ipath_dev_err(dd, "Failed IB SERDES DAC trim\n");
+			ret = 1;
+			goto done;
+		}
+	}
+
+	/*
+	 * Set various registers (DDS and RXEQ) that will be
+	 * controlled by IBC (in 1.2 mode) to reasonable preset values
+	 * Calling the "internal" version avoids the "check for needed"
+	 * and "trimdone monitor" that might be counter-productive.
+	 */
+	ret = ipath_internal_presets(dd);
+	if (ret < 0) {
+		ipath_dev_err(dd, "Failed to set IB SERDES presets\n");
+		ret = 1;
+		goto done;
+	}
+	ret = ipath_sd_trimself(dd, 0x80);
+	if (ret < 0) {
+		ipath_dev_err(dd, "Failed to set IB SERDES TRIMSELF\n");
+		ret = 1;
+		goto done;
+	}
+
+	/* Load image, then try to verify */
+	ret = 0;	/* Assume success */
+	if (first_reset) {
+		int vfy;
+		int trim_done;
+		ipath_dbg("SerDes uC was reset, reloading PRAM\n");
+		ret = ipath_sd7220_ib_load(dd);
+		if (ret < 0) {
+			ipath_dev_err(dd, "Failed to load IB SERDES image\n");
+			ret = 1;
+			goto done;
+		}
+
+		/* Loaded image, try to verify */
+		vfy = ipath_sd7220_ib_vfy(dd);
+		if (vfy != ret) {
+			ipath_dev_err(dd, "SERDES PRAM VFY failed\n");
+			ret = 1;
+			goto done;
+		}
 		/*
-		 * Alter some regs per vendor latest doc, reset-defaults
-		 * are not right for IB.
+		 * Loaded and verified. Almost good...
+		 * hold "success" in ret
 		 */
-		ret = ipath_sd_early(dd);
-		if (ret < 0) {
-			ipath_dev_err(dd,
-				"Failed to set IB SERDES early defaults\n");
-			ret = 1;
-			break;
-		}
-		/* Set DAC manual trim IB.
-		 * We only do this once after chip has been reset (usually
-		 * same as once per system boot).
-		 */
-		if (first_reset) {
-			ret = ipath_sd_dactrim(dd);
-			if (ret < 0) {
-				ipath_dev_err(dd,
-					 "Failed IB SERDES DAC trim\n");
-				ret = 1;
-				break;
-			}
-		}
-		/*
-		 * Set various registers (DDS and RXEQ) that will be
-		 * controlled by IBC (in 1.2 mode) to reasonable preset values
-		 * Calling the "internal" version avoids the "check for needed"
-		 * and "trimdone monitor" that might be counter-productive.
-		 */
-		ret = ipath_internal_presets(dd);
-		if (ret < 0) {
-			ipath_dev_err(dd, "Failed to set IB SERDES presets\n");
-			ret = 1;
-			break;
-		}
-		ret = ipath_sd_trimself(dd, 0x80);
-		if (ret < 0) {
-			ipath_dev_err(dd, "Failed to set IB SERDES TRIMSELF\n");
-			ret = 1;
-			break;
-		}
+		ret = 0;
 
-		/* Load image, then try to verify */
-		ret = 0;	/* Assume success */
-		if (first_reset) {
-			ipath_dbg("SerDes uC was reset, reloading PRAM\n");
-			ret = ipath_sd7220_ib_load(dd);
-			if (ret < 0) {
-				ipath_dev_err(dd,
-					"Failed to load IB SERDES image\n");
-				break;
-			} else {
-				/* Loaded image, try to verify */
-				int vfy;
-
-				vfy = ipath_sd7220_ib_vfy(dd);
-				if (vfy != ret) {
-					ipath_dev_err(dd,
-						"SERDES PRAM VFY failed\n");
-					ret = 1;
-				} else {
-					/*
-					 * Loaded and verified. Almost good...
-					 * hold "success" in ret
-					 */
-					ret = 0;
-				} /* end if verified */
-			} /* end if loaded */
-		} /* end if first_reset */
-	} while (0) ; /* do_while for goto-less bailing */
-
-	if (ret == 0 && first_reset) {
 		/*
 		 * Prev steps all worked, continue bringup
 		 * De-assert RESET to uC, only in first reset, to allow
 		 * trimming.
-		 */
-		int trim_done;
-
-		/*
+		 *
 		 * Since our default setup sets START_EQ1 to
 		 * PRESET, we need to clear that for this very first run.
 		 */
@@ -478,7 +469,7 @@ int ipath_sd7220_init(struct ipath_devdata *dd, int was_reset)
 		ipath_ibsd_reset(dd, 0);
 		/*
 		 * If this is not the first reset, trimdone should be set
-		 * already. We may need to check about this.
+		 * already.
 		 */
 		trim_done = ipath_sd_trimdone_poll(dd);
 		/*
@@ -493,25 +484,19 @@ int ipath_sd7220_init(struct ipath_devdata *dd, int was_reset)
 			ret = 1;
 			goto done;
 		}
-		/*
-		 * DEBUG: check each time we reset if trimdone bits have
-		 * gotten cleared, and re-set them.
-		 */
+
 		ipath_sd_trimdone_monitor(dd, "First-reset");
 		/* Remember so we do not re-do the load, dactrim, etc. */
 		dd->serdes_first_init_done = 1;
 	}
-	if (ret == 0) {
-		/*
-		 * setup for channel training and load values for
-		 * RxEq and DDS in tables used by IBC in IB1.2 mode
-		 */
-		int val_stat;
+	/*
+	 * Setup for channel training and load values for
+	 * RxEq and DDS in tables used by IBC in IB1.2 mode
+	 */
 
-		val_stat = ipath_sd_setvals(dd);
-		if (val_stat < 0)
-			ret = 1;
-	}
+	val_stat = ipath_sd_setvals(dd);
+	if (val_stat < 0)
+		ret = 1;
 done:
 	/* start relock timer regardless, but start at 1 second */
 	ipath_set_relock_poll(dd, -1);
@@ -573,9 +558,6 @@ static int epb_access(struct ipath_devdata *dd, int sdnum, int claim)
 		 */
 		u64 newval = 0;
 		ipath_write_kreg(dd, acc, newval);
-		/* WHAT IS APPROPRIATE DELAY? How do we handle
-		 * failures?
-		 */
 		/* First read after write is not trustworthy */
 		pollval = ipath_read_kreg32(dd, acc);
 		udelay(5);
@@ -587,7 +569,6 @@ static int epb_access(struct ipath_devdata *dd, int sdnum, int claim)
 		u64 pollval;
 		u64 newval = EPB_ACC_REQ | oct_sel;
 		ipath_write_kreg(dd, acc, newval);
-		/* WHAT IS APPROPRIATE DELAY? How do we handle failures? */
 		/* First read after write is not trustworthy */
 		pollval = ipath_read_kreg32(dd, acc);
 		udelay(5);
@@ -772,8 +753,8 @@ static int ipath_sd7220_ram_xfer(struct ipath_devdata *dd, int sdnum, u32 loc,
 	 * In future code, we may need to distinguish several address ranges,
 	 * and select various memories based on this. For now, just trim
 	 * "loc" (location including address and memory select) to
-	 *  "addr" (address within memory). we will only support PRAM
-	 *  The memory is 8KB.
+	 * "addr" (address within memory). we will only support PRAM
+	 * The memory is 8KB.
 	 */
 	addr = loc & 0x1FFF;
 	for (tries = EPB_TRANS_TRIES; tries; --tries) {
@@ -784,7 +765,6 @@ static int ipath_sd7220_ram_xfer(struct ipath_devdata *dd, int sdnum, u32 loc,
 	}
 
 	sofar = 0;
-	/* If failed to see ready, what error-handling? */
 	if (tries <= 0)
 		ipath_dbg("No initial RDY on EPB access request\n");
 	else {
@@ -908,10 +888,7 @@ int ipath_sd7220_prog_vfy(struct ipath_devdata *dd, int sdnum,
 	return errors ? -errors : sofar;
 }
 
-/*
- * Future driver may use IRQ to sequence SERDES and IBC bringup, but
- * for now we poll.
- */
+/* IRQ not set up at this point in init, so we poll. */
 #define IB_SERDES_TRIM_DONE (1ULL << 11)
 #define TRIM_TMO (30)
 
@@ -944,45 +921,15 @@ static int ipath_sd_trimdone_poll(struct ipath_devdata *dd)
 #define TX_FAST_ELT (9)
 
 /*
- * Set the "register patch" values for SERDES. These are referenced,
- * indirectly, by the contents of the SerDesDDSRXEQ[] array. Details
- * are beyond the scope of this document, but in essence, there are
- * two classes of registers that are "tweaked" during operation,
- * Driver DeEmphasis (DDS) and Receiver Equalization. The first
- * 'm' (currently 6) entries specify registers for DDS, and the next
- * 'n' (currently 15) entries specify registers for RxEQ. In operation,
- * the hardware traverses the list for each, forming an index into
- * IBSerDesMappTable[] in one of two ways:
- * DDS entries:
- * (0 << 8) | (dds_val) << 4) | (index)
- * RxEQ entries:
- * (1 << 8) | (rxeq_val << 6) | (0 << 5) | (index)
- *  Where (index) is the index in the SerDesDDSRXEQ[] array, and
- * dds_val (4 bits) or rxeq_val (2 bits) are based on conditions in
- * the SerDes and IBC.
- *
- * With the data coming from one place, and the addresses coming from
- * another, it can get confusing, but the _intent_ is to follow the
- * initialization sequence described in Infinband_REG_Prcedure_10_17_06.pdf.
- * This is somewhat complicated by the fact that although the doc
- * says "write these registers in this order", in fact the order
- * is not relevant (per the vendor). In an attempt to make it somewhat
- * easier on human maintainers, the table below is organized as 16
- * rows, corresponding to one of the rows in the vendor's table.
- * Each row has amplitude, Main_control, Post-curser, and Pre-curser values
- * for "full" (DDR) and "half" (SDR) rate. These are merged into an array
- * of six bytes, in the order they are actually to be stored, to the
- * Registers of element 9, Rges 0, 1, 9, 0xA, 6, 7, in that order
- *
- * Also, because the vendor specifies that the "Enable" bits are set in
- * every case, we do that in the macro. That way the values can be
- * visually compared with vendor docs.
+ * Set the "negotiation" values for SERDES. These are used by the IB1.2
+ * link negotiation. Macros below are attempt to keep the values a
+ * little more human-editable.
+ * First, values related to Drive De-emphasis Settings.
  */
 
 #define NUM_DDS_REGS 6
 #define DDS_REG_MAP 0x76A910 /* LSB-first list of regs (in elt 9) to mod */
 
-/* Ignore values from vendor. Use compromise values in all slots */
 #define DDS_VAL(amp_d, main_d, ipst_d, ipre_d, amp_s, main_s, ipst_s, ipre_s) \
 	{ { ((amp_d & 0x1F) << 1) | 1, ((amp_s & 0x1F) << 1) | 1, \
 	  (main_d << 3) | 4 | (ipre_d >> 2), \
@@ -1014,22 +961,11 @@ static struct dds_init {
 	DDS_VAL(28, 25,  6, 0, 21, 28,  3, 0),
 	DDS_VAL(27, 26,  5, 0, 19, 29,  2, 0),
 	DDS_VAL(25, 27,  4, 0, 17, 30,  1, 0)
-/*
- * Below is 17th value from vendor. IBC only handles 16 values, and uses
- * first one as default. The line below just documents what we would use.
- *	DDS_VAL(23, 28,  3, 0,  15, 31, 0, 0 )
- */
 };
 
 /*
- * Now the RXEQ section of the table. This is both simpler and
- * more complicated. Simpler because each "register store" has only
- * four valuess associated with it (only two bits of RxEqualization).
- * So, unlike the DDS values above, we simply enumerate all four
- * values across one "line", which corresponds to one register-write.
- * More complicated because there are several register-writes that do
- * not differ across RXEQ vals.
- * Values below are from Vendor doc dated 7May2007
+ * Next, values related to Receive Equalization.
+ * In comments, FDR (Full) is IB DDR, HDR (Half) is IB SDR
  */
 /* Hardware packs an element number and register address thus: */
 #define RXEQ_INIT_RDESC(elt, addr) (((elt) & 0xF) | ((addr) << 4))
@@ -1044,11 +980,6 @@ static struct dds_init {
 #define RXEQ_SDR_G1CNT_Z1CNT 0x11
 #define RXEQ_SDR_ZCNT 23
 
-/*
- * The values below (as opposed to what "was") were experimentally determined
- * to reduce IB Symbol errors, but currently all four "sets" are the same.
- * with more experimentation, we will derive a range.
- */
 static struct rxeq_init {
 	u16 rdesc;	/* in form used in SerDesDDSRXEQ */
 	u8  rdata[4];
@@ -1056,17 +987,17 @@ static struct rxeq_init {
 	/* Set Rcv Eq. to Preset node */
 	RXEQ_VAL_ALL(7, 0x27, 0x10),
 	/* Set DFELTHFDR/HDR thresholds */
-	RXEQ_VAL(7, 8,    0, 0, 0, 0), /* FDR, was 0, 1, 2, 3 */
+	RXEQ_VAL(7, 8,    0, 0, 0, 0), /* FDR */
 	RXEQ_VAL(7, 0x21, 0, 0, 0, 0), /* HDR */
 	/* Set TLTHFDR/HDR theshold */
-	RXEQ_VAL(7, 9,    2, 2, 2, 2), /* FDR, was 0, 2, 4, 6 */
-	RXEQ_VAL(7, 0x23, 2, 2, 2, 2), /* HDR, was  0, 1, 2, 3 */
+	RXEQ_VAL(7, 9,    2, 2, 2, 2), /* FDR */
+	RXEQ_VAL(7, 0x23, 2, 2, 2, 2), /* HDR */
 	/* Set Preamp setting 2 (ZFR/ZCNT) */
-	RXEQ_VAL(7, 0x1B, 12, 12, 12, 12), /* FDR, was 12, 16, 20, 24 */
-	RXEQ_VAL(7, 0x1C, 12, 12, 12, 12), /* HDR, was 12, 16, 20, 24 */
+	RXEQ_VAL(7, 0x1B, 12, 12, 12, 12), /* FDR */
+	RXEQ_VAL(7, 0x1C, 12, 12, 12, 12), /* HDR */
 	/* Set Preamp DC gain and Setting 1 (GFR/GHR) */
-	RXEQ_VAL(7, 0x1E, 0x10, 0x10, 0x10, 0x10), /* FDR, was 0x10, 0x11, 0x12, 0x14 */
-	RXEQ_VAL(7, 0x1F, 0x10, 0x10, 0x10, 0x10), /* HDR, was 0x10, 0x11, 0x12, 0x14 */
+	RXEQ_VAL(7, 0x1E, 0x10, 0x10, 0x10, 0x10), /* FDR */
+	RXEQ_VAL(7, 0x1F, 0x10, 0x10, 0x10, 0x10), /* HDR */
 	/* Toggle RELOCK (in VCDL_CTRL0) to lock to data */
 	RXEQ_VAL_ALL(6, 6, 0x20), /* Set D5 High */
 	RXEQ_VAL_ALL(6, 6, 0), /* Set D5 Low */
@@ -1171,13 +1102,13 @@ static int ibsd_sto_noisy(struct ipath_devdata *dd, int loc, int val, int mask)
 	return ret;
 }
 
-/* Repeat a "store" across all channels of the IB SerDes.
+/*
+ * Repeat a "store" across all channels of the IB SerDes.
  * Although nominally it inherits the "read value" of the last
  * channel it modified, the only really useful return is <0 for
  * failure, >= 0 for success. The parameter 'loc' is assumed to
  * be the location for the channel-0 copy of the register to
- * be modified. In future, we could use the "gang write" option
- * of EPB, as long as we do not read.
+ * be modified.
  */
 static int ibsd_mod_allchnls(struct ipath_devdata *dd, int loc, int val,
 	int mask)
@@ -1186,7 +1117,8 @@ static int ibsd_mod_allchnls(struct ipath_devdata *dd, int loc, int val,
 	int chnl;
 
 	if (loc & EPB_GLOBAL_WR) {
-		/* our caller has assured us that we can set all four
+		/*
+		 * Our caller has assured us that we can set all four
 		 * channels at once. Trust that. If mask is not 0xFF,
 		 * we will read the _specified_ channel for our starting
 		 * value.
@@ -1285,8 +1217,6 @@ static int set_rxeq_vals(struct ipath_devdata *dd, int vsel)
 /*
  * Set the default values (row 0) for DDR Driver Demphasis.
  * we do this initially and whenever we turn off IB-1.2
- * Vendor recommends non-default presets, depending on
- * cable length. Initial testing will assume 3 meter cables.
  * The "default" values for Rx equalization are also stored to
  * SerDes registers. Formerly (and still default), we used set 2.
  * For experimenting with cables and link-partners, we allow changing
@@ -1295,7 +1225,8 @@ static int set_rxeq_vals(struct ipath_devdata *dd, int vsel)
 static unsigned ipath_rxeq_set = 2;
 module_param_named(rxeq_default_set, ipath_rxeq_set, uint,
 	S_IWUSR | S_IRUGO);
-MODULE_PARM_DESC(rxeq_default_set, "Which set [0..3] of Rx Equalization values is default");
+MODULE_PARM_DESC(rxeq_default_set,
+	"Which set [0..3] of Rx Equalization values is default");
 
 static int ipath_internal_presets(struct ipath_devdata *dd)
 {
@@ -1337,44 +1268,33 @@ static int ipath_sd_early(struct ipath_devdata *dd)
 	int ret = -1; /* Default failed */
 	int chnl;
 
-	do {
-		for (chnl = 0; chnl < 4; ++chnl) {
-			ret = ibsd_sto_noisy(dd, RXHSCTRL0(chnl), 0xD4, 0xFF);
-			if (ret < 0)
-				break;
-		}
+	for (chnl = 0; chnl < 4; ++chnl) {
+		ret = ibsd_sto_noisy(dd, RXHSCTRL0(chnl), 0xD4, 0xFF);
 		if (ret < 0)
-			break;
-		for (chnl = 0; chnl < 4; ++chnl) {
-			ret = ibsd_sto_noisy(dd, VCDL_DAC2(chnl), 0x2D, 0xFF);
-			if (ret < 0)
-				break;
-		}
+			goto bail;
+	}
+	for (chnl = 0; chnl < 4; ++chnl) {
+		ret = ibsd_sto_noisy(dd, VCDL_DAC2(chnl), 0x2D, 0xFF);
 		if (ret < 0)
-			break;
-		/* more fine-tuning of what will be default */
-		for (chnl = 0; chnl < 4; ++chnl) {
-			ret = ibsd_sto_noisy(dd, VCDL_CTRL2(chnl), 3, 0xF);
-			if (ret < 0)
-				break;
-		}
+			goto bail;
+	}
+	/* more fine-tuning of what will be default */
+	for (chnl = 0; chnl < 4; ++chnl) {
+		ret = ibsd_sto_noisy(dd, VCDL_CTRL2(chnl), 3, 0xF);
 		if (ret < 0)
-			break;
-		for (chnl = 0; chnl < 4; ++chnl) {
-			ret = ibsd_sto_noisy(dd, START_EQ1(chnl), 0x10, 0xFF);
-			if (ret < 0)
-				break;
-		}
+			goto bail;
+	}
+	for (chnl = 0; chnl < 4; ++chnl) {
+		ret = ibsd_sto_noisy(dd, START_EQ1(chnl), 0x10, 0xFF);
 		if (ret < 0)
-			break;
-		for (chnl = 0; chnl < 4; ++chnl) {
-			ret = ibsd_sto_noisy(dd, START_EQ2(chnl), 0x30, 0xFF);
-			if (ret < 0)
-				break;
-		}
+			goto bail;
+	}
+	for (chnl = 0; chnl < 4; ++chnl) {
+		ret = ibsd_sto_noisy(dd, START_EQ2(chnl), 0x30, 0xFF);
 		if (ret < 0)
-			break;
-	} while (0);
+			goto bail;
+	}
+bail:
 	return ret;
 }
 
@@ -1387,42 +1307,32 @@ static int ipath_sd_dactrim(struct ipath_devdata *dd)
 	int ret = -1; /* Default failed */
 	int chnl;
 
-	do {
-		for (chnl = 0; chnl < 4; ++chnl) {
-			ret = ibsd_sto_noisy(dd, BACTRL(chnl), 0x40, 0xFF);
-			if (ret < 0)
-				break;
-		}
+	for (chnl = 0; chnl < 4; ++chnl) {
+		ret = ibsd_sto_noisy(dd, BACTRL(chnl), 0x40, 0xFF);
 		if (ret < 0)
-			break;
-		for (chnl = 0; chnl < 4; ++chnl) {
-			ret = ibsd_sto_noisy(dd, LDOUTCTRL1(chnl), 0x04, 0xFF);
-			if (ret < 0)
-				break;
-		}
+			goto bail;
+	}
+	for (chnl = 0; chnl < 4; ++chnl) {
+		ret = ibsd_sto_noisy(dd, LDOUTCTRL1(chnl), 0x04, 0xFF);
 		if (ret < 0)
-			break;
-		for (chnl = 0; chnl < 4; ++chnl) {
-			ret = ibsd_sto_noisy(dd, RXHSSTATUS(chnl), 0x04, 0xFF);
-			if (ret < 0)
-				break;
-		}
+			goto bail;
+	}
+	for (chnl = 0; chnl < 4; ++chnl) {
+		ret = ibsd_sto_noisy(dd, RXHSSTATUS(chnl), 0x04, 0xFF);
 		if (ret < 0)
-			break;
-		/*
-		 * delay for max possible number of steps, with slop.
-		 * Each step is about 4usec.
-		 */
-		udelay(415);
-		for (chnl = 0; chnl < 4; ++chnl) {
-			ret = ibsd_sto_noisy(dd, LDOUTCTRL1(chnl), 0x00, 0xFF);
-			if (ret < 0)
-				break;
-		}
+			goto bail;
+	}
+	/*
+	 * delay for max possible number of steps, with slop.
+	 * Each step is about 4usec.
+	 */
+	udelay(415);
+	for (chnl = 0; chnl < 4; ++chnl) {
+		ret = ibsd_sto_noisy(dd, LDOUTCTRL1(chnl), 0x00, 0xFF);
 		if (ret < 0)
-			break;
-	} while (0);
-
+			goto bail;
+	}
+bail:
 	return ret;
 }
 
@@ -1495,19 +1405,16 @@ static void ipath_run_relock(unsigned long opaque)
 	val = ipath_read_kreg64(dd, dd->ipath_kregs->kr_ibcstatus);
 	ltstate = ipath_ib_linktrstate(dd, val);
 
-	/* Below check was <= CFGDEBOUNCE, JBR requests change for test */
 	if (ltstate <= INFINIPATH_IBCS_LT_STATE_CFGWAITRMT
 		&& ltstate != INFINIPATH_IBCS_LT_STATE_LINKUP) {
 		int timeoff;
 		/* Not up yet. Try again, if allowed by module-param */
 		if (ipath_relock_by_timer) {
-			if (dd->ipath_flags & IPATH_IB_AUTONEG_INPROG) {
+			if (dd->ipath_flags & IPATH_IB_AUTONEG_INPROG)
 				ipath_cdbg(VERBOSE, "Skip RELOCK in AUTONEG\n");
-			} else if (!(dd->ipath_flags &
-					IPATH_IB_LINK_DISABLED)) {
+			else if (!(dd->ipath_flags & IPATH_IB_LINK_DISABLED)) {
 				ipath_cdbg(VERBOSE, "RELOCK\n");
 				ipath_toggle_rclkrls(dd);
-
 			}
 		}
 		/* re-set timer for next check */
@@ -1528,7 +1435,7 @@ void ipath_set_relock_poll(struct ipath_devdata *dd, int ibup)
 	struct ipath_relock *irp = &dd->ipath_relock_singleton;
 
 	if (ibup > 0) {
-		/* we are now up, so squelch timer */
+		/* we are now up, so relax timer to 1 second interval */
 		if (atomic_read(&irp->ipath_relock_timer_active))
 			mod_timer(&irp->ipath_relock_timer, jiffies + HZ);
 	} else {

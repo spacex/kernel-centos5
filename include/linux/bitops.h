@@ -60,4 +60,14 @@ static inline unsigned fls_long(unsigned long l)
 	return fls64(l);
 }
 
+static inline int __ffs64(u64 n)
+{
+#if BITS_PER_LONG == 32
+	u32 lsbits = (u32)n;
+	if (lsbits == 0)
+		return __ffs((unsigned long)(n >> 32)) + 32;
+#endif
+	return __ffs((unsigned long)n);
+}
+
 #endif

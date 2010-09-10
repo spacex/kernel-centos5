@@ -44,9 +44,12 @@ struct svc_serv {
 	char *			sv_name;	/* service name */
 #ifndef __GENKSYMS__
 	void			(*sv_shutdown)(struct svc_serv *serv);
-						/* Callback to use when last thread
-						 * exits.
+						/* Callback to use when last
+						 * thread exits.
 						 */
+	unsigned int		sv_maxconn;	/* max connections allowed or
+						 * '0' causing max to be based
+						 * on number of threads. */
 #endif
 };
 

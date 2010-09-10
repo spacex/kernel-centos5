@@ -29,8 +29,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: fmr_pool.c 2730 2005-06-28 16:43:03Z sean.hefty $
  */
 
 #include <linux/errno.h>
@@ -158,8 +156,7 @@ static void ib_fmr_batch_release(struct ib_fmr_pool *pool)
 #endif
 	}
 
-	list_splice(&pool->dirty_list, &unmap_list);
-	INIT_LIST_HEAD(&pool->dirty_list);
+	list_splice_init(&pool->dirty_list, &unmap_list);
 	pool->dirty_len = 0;
 
 	spin_unlock_irq(&pool->pool_lock);
@@ -182,8 +179,7 @@ static int ib_fmr_cleanup_thread(void *pool_ptr)
 	struct ib_fmr_pool *pool = pool_ptr;
 
 	do {
-		if (pool->dirty_len >= pool->dirty_watermark ||
-		    atomic_read(&pool->flush_ser) - atomic_read(&pool->req_ser) < 0) {
+		if (atomic_read(&pool->flush_ser) - atomic_read(&pool->req_ser) < 0) {
 			ib_fmr_batch_release(pool);
 
 			atomic_inc(&pool->flush_ser);
@@ -194,8 +190,7 @@ static int ib_fmr_cleanup_thread(void *pool_ptr)
 		}
 
 		set_current_state(TASK_INTERRUPTIBLE);
-		if (pool->dirty_len < pool->dirty_watermark &&
-		    atomic_read(&pool->flush_ser) - atomic_read(&pool->req_ser) >= 0 &&
+		if (atomic_read(&pool->flush_ser) - atomic_read(&pool->req_ser) >= 0 &&
 		    !kthread_should_stop())
 			schedule();
 		__set_current_state(TASK_RUNNING);
@@ -308,10 +303,13 @@ struct ib_fmr_pool *ib_create_fmr_pool(struct ib_pd             *pd,
 			.max_maps   = pool->max_remaps,
 			.page_shift = params->page_shift
 		};
+		int bytes_per_fmr = sizeof *fmr;
+
+		if (pool->cache_bucket)
+			bytes_per_fmr += params->max_pages_per_fmr * sizeof (u64);
 
 		for (i = 0; i < params->pool_size; ++i) {
-			fmr = kmalloc(sizeof *fmr + params->max_pages_per_fmr * sizeof (u64),
-				      GFP_KERNEL);
+			fmr = kmalloc(bytes_per_fmr, GFP_KERNEL);
 			if (!fmr) {
 				printk(KERN_WARNING PFX "failed to allocate fmr "
 				       "struct for FMR %d\n", i);
@@ -526,8 +524,10 @@ int ib_fmr_pool_unmap(struct ib_pool_fmr *fmr)
 			list_add_tail(&fmr->list, &pool->free_list);
 		} else {
 			list_add_tail(&fmr->list, &pool->dirty_list);
-			++pool->dirty_len;
-			wake_up_process(pool->thread);
+			if (++pool->dirty_len >= pool->dirty_watermark) {
+				atomic_inc(&pool->req_ser);
+				wake_up_process(pool->thread);
+			}
 		}
 	}
 

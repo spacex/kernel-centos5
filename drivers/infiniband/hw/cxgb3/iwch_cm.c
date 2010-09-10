@@ -116,9 +116,9 @@ static void connect_reply_upcall(struct iwch_ep *ep, int status);
 
 static void start_ep_timer(struct iwch_ep *ep)
 {
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 	if (timer_pending(&ep->timer)) {
-		PDBG("%s stopped / restarted timer ep %p\n", __FUNCTION__, ep);
+		PDBG("%s stopped / restarted timer ep %p\n", __func__, ep);
 		del_timer_sync(&ep->timer);
 	} else
 		get_ep(&ep->com);
@@ -130,15 +130,47 @@ static void start_ep_timer(struct iwch_ep *ep)
 
 static void stop_ep_timer(struct iwch_ep *ep)
 {
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 	if (!timer_pending(&ep->timer)) {
 		printk(KERN_ERR "%s timer stopped when its not running!  ep %p state %u\n",
-			__FUNCTION__, ep, ep->com.state);
+			__func__, ep, ep->com.state);
 		WARN_ON(1);
 		return;
 	}
 	del_timer_sync(&ep->timer);
 	put_ep(&ep->com);
+}
+
+int iwch_l2t_send(struct t3cdev *tdev, struct sk_buff *skb, struct l2t_entry *l2e)
+{
+	int	error = 0;
+	struct cxio_rdev *rdev;
+
+	rdev = (struct cxio_rdev *)tdev->ulp;
+	if (cxio_fatal_error(rdev)) {
+		kfree_skb(skb);
+		return -EIO;
+	}
+	error = l2t_send(tdev, skb, l2e);
+	if (error)
+		kfree_skb(skb);
+	return error;
+}
+
+int iwch_cxgb3_ofld_send(struct t3cdev *tdev, struct sk_buff *skb)
+{
+	int	error = 0;
+	struct cxio_rdev *rdev;
+
+	rdev = (struct cxio_rdev *)tdev->ulp;
+	if (cxio_fatal_error(rdev)) {
+		kfree_skb(skb);
+		return -EIO;
+	}
+	error = cxgb3_ofld_send(tdev, skb);
+	if (error)
+		kfree_skb(skb);
+	return error;
 }
 
 static void release_tid(struct t3cdev *tdev, u32 hwtid, struct sk_buff *skb)
@@ -152,7 +184,7 @@ static void release_tid(struct t3cdev *tdev, u32 hwtid, struct sk_buff *skb)
 	req->wr.wr_hi = htonl(V_WR_OP(FW_WROPCODE_FORWARD));
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_TID_RELEASE, hwtid));
 	skb->priority = CPL_PRIORITY_SETUP;
-	cxgb3_ofld_send(tdev, skb);
+	iwch_cxgb3_ofld_send(tdev, skb);
 	return;
 }
 
@@ -174,8 +206,7 @@ int iwch_quiesce_tid(struct iwch_ep *ep)
 	req->val = cpu_to_be64(1 << S_TCB_RX_QUIESCE);
 
 	skb->priority = CPL_PRIORITY_DATA;
-	cxgb3_ofld_send(ep->com.tdev, skb);
-	return 0;
+	return iwch_cxgb3_ofld_send(ep->com.tdev, skb);
 }
 
 int iwch_resume_tid(struct iwch_ep *ep)
@@ -196,13 +227,12 @@ int iwch_resume_tid(struct iwch_ep *ep)
 	req->val = 0;
 
 	skb->priority = CPL_PRIORITY_DATA;
-	cxgb3_ofld_send(ep->com.tdev, skb);
-	return 0;
+	return iwch_cxgb3_ofld_send(ep->com.tdev, skb);
 }
 
 static void set_emss(struct iwch_ep *ep, u16 opt)
 {
-	PDBG("%s ep %p opt %u\n", __FUNCTION__, ep, opt);
+	PDBG("%s ep %p opt %u\n", __func__, ep, opt);
 	ep->emss = T3C_DATA(ep->com.tdev)->mtus[G_TCPOPT_MSS(opt)] - 40;
 	if (G_TCPOPT_TSTAMP(opt))
 		ep->emss -= 12;
@@ -232,7 +262,7 @@ static void state_set(struct iwch_ep_common *epc, enum iwch_ep_state new)
 	unsigned long flags;
 
 	spin_lock_irqsave(&epc->lock, flags);
-	PDBG("%s - %s -> %s\n", __FUNCTION__, states[epc->state], states[new]);
+	PDBG("%s - %s -> %s\n", __func__, states[epc->state], states[new]);
 	__state_set(epc, new);
 	spin_unlock_irqrestore(&epc->lock, flags);
 	return;
@@ -248,24 +278,28 @@ static void *alloc_ep(int size, gfp_t gfp)
 		spin_lock_init(&epc->lock);
 		init_waitqueue_head(&epc->waitq);
 	}
-	PDBG("%s alloc ep %p\n", __FUNCTION__, epc);
+	PDBG("%s alloc ep %p\n", __func__, epc);
 	return epc;
 }
 
 void __free_ep(struct kref *kref)
 {
-	struct iwch_ep_common *epc;
-	epc = container_of(kref, struct iwch_ep_common, kref);
-	PDBG("%s ep %p state %s\n", __FUNCTION__, epc, states[state_read(epc)]);
-	kfree(epc);
+	struct iwch_ep *ep;
+	ep = container_of(container_of(kref, struct iwch_ep_common, kref),
+			  struct iwch_ep, com);
+	PDBG("%s ep %p state %s\n", __func__, ep, states[state_read(&ep->com)]);
+	if (ep->com.flags & RELEASE_RESOURCES) {
+		cxgb3_remove_tid(ep->com.tdev, (void *)ep, ep->hwtid);
+		dst_release(ep->dst);
+		l2t_release(L2DATA(ep->com.tdev), ep->l2t);
+	}
+	kfree(ep);
 }
 
 static void release_ep_resources(struct iwch_ep *ep)
 {
-	PDBG("%s ep %p tid %d\n", __FUNCTION__, ep, ep->hwtid);
-	cxgb3_remove_tid(ep->com.tdev, (void *)ep, ep->hwtid);
-	dst_release(ep->dst);
-	l2t_release(L2DATA(ep->com.tdev), ep->l2t);
+	PDBG("%s ep %p tid %d\n", __func__, ep, ep->hwtid);
+	ep->com.flags |= RELEASE_RESOURCES;
 	put_ep(&ep->com);
 }
 
@@ -345,7 +379,7 @@ static struct rtable *find_route(struct t3cdev *dev, __be32 local_ip,
 			  }
 	};
 
-	if (ip_route_output_flow(&rt, &fl, NULL, 0))
+	if (ip_route_output_flow(&init_net, &rt, &fl, NULL, 0))
 		return NULL;
 	return rt;
 }
@@ -361,7 +395,7 @@ static unsigned int find_best_mtu(const struct t3c_data *d, unsigned short mtu)
 
 static void arp_failure_discard(struct t3cdev *dev, struct sk_buff *skb)
 {
-	PDBG("%s t3cdev %p\n", __FUNCTION__, dev);
+	PDBG("%s t3cdev %p\n", __func__, dev);
 	kfree_skb(skb);
 }
 
@@ -382,9 +416,9 @@ static void abort_arp_failure(struct t3cdev *dev, struct sk_buff *skb)
 {
 	struct cpl_abort_req *req = cplhdr(skb);
 
-	PDBG("%s t3cdev %p\n", __FUNCTION__, dev);
+	PDBG("%s t3cdev %p\n", __func__, dev);
 	req->cmd = CPL_ABORT_NO_RST;
-	cxgb3_ofld_send(dev, skb);
+	iwch_cxgb3_ofld_send(dev, skb);
 }
 
 static int send_halfclose(struct iwch_ep *ep, gfp_t gfp)
@@ -392,10 +426,10 @@ static int send_halfclose(struct iwch_ep *ep, gfp_t gfp)
 	struct cpl_close_con_req *req;
 	struct sk_buff *skb;
 
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 	skb = get_skb(NULL, sizeof(*req), gfp);
 	if (!skb) {
-		printk(KERN_ERR MOD "%s - failed to alloc skb\n", __FUNCTION__);
+		printk(KERN_ERR MOD "%s - failed to alloc skb\n", __func__);
 		return -ENOMEM;
 	}
 	skb->priority = CPL_PRIORITY_DATA;
@@ -404,19 +438,18 @@ static int send_halfclose(struct iwch_ep *ep, gfp_t gfp)
 	req->wr.wr_hi = htonl(V_WR_OP(FW_WROPCODE_OFLD_CLOSE_CON));
 	req->wr.wr_lo = htonl(V_WR_TID(ep->hwtid));
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_CLOSE_CON_REQ, ep->hwtid));
-	l2t_send(ep->com.tdev, skb, ep->l2t);
-	return 0;
+	return iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
 }
 
 static int send_abort(struct iwch_ep *ep, struct sk_buff *skb, gfp_t gfp)
 {
 	struct cpl_abort_req *req;
 
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 	skb = get_skb(skb, sizeof(*req), gfp);
 	if (!skb) {
 		printk(KERN_ERR MOD "%s - failed to alloc skb.\n",
-		       __FUNCTION__);
+		       __func__);
 		return -ENOMEM;
 	}
 	skb->priority = CPL_PRIORITY_DATA;
@@ -426,8 +459,7 @@ static int send_abort(struct iwch_ep *ep, struct sk_buff *skb, gfp_t gfp)
 	req->wr.wr_lo = htonl(V_WR_TID(ep->hwtid));
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_ABORT_REQ, ep->hwtid));
 	req->cmd = CPL_ABORT_SEND_RST;
-	l2t_send(ep->com.tdev, skb, ep->l2t);
-	return 0;
+	return iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
 }
 
 static int send_connect(struct iwch_ep *ep)
@@ -438,12 +470,12 @@ static int send_connect(struct iwch_ep *ep)
 	unsigned int mtu_idx;
 	int wscale;
 
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 
 	skb = get_skb(NULL, sizeof(*req), GFP_KERNEL);
 	if (!skb) {
 		printk(KERN_ERR MOD "%s - failed to alloc skb.\n",
-		       __FUNCTION__);
+		       __func__);
 		return -ENOMEM;
 	}
 	mtu_idx = find_best_mtu(T3C_DATA(ep->com.tdev), dst_mtu(ep->dst));
@@ -471,8 +503,7 @@ static int send_connect(struct iwch_ep *ep)
 	req->opt0l = htonl(opt0l);
 	req->params = 0;
 	req->opt2 = htonl(opt2);
-	l2t_send(ep->com.tdev, skb, ep->l2t);
-	return 0;
+	return iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
 }
 
 static void send_mpa_req(struct iwch_ep *ep, struct sk_buff *skb)
@@ -482,7 +513,7 @@ static void send_mpa_req(struct iwch_ep *ep, struct sk_buff *skb)
 	struct mpa_message *mpa;
 	int len;
 
-	PDBG("%s ep %p pd_len %d\n", __FUNCTION__, ep, ep->plen);
+	PDBG("%s ep %p pd_len %d\n", __func__, ep, ep->plen);
 
 	BUG_ON(skb_cloned(skb));
 
@@ -529,7 +560,7 @@ static void send_mpa_req(struct iwch_ep *ep, struct sk_buff *skb)
 	req->sndseq = htonl(ep->snd_seq);
 	BUG_ON(ep->mpa_skb);
 	ep->mpa_skb = skb;
-	l2t_send(ep->com.tdev, skb, ep->l2t);
+	iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
 	start_ep_timer(ep);
 	state_set(&ep->com, MPA_REQ_SENT);
 	return;
@@ -542,13 +573,13 @@ static int send_mpa_reject(struct iwch_ep *ep, const void *pdata, u8 plen)
 	struct mpa_message *mpa;
 	struct sk_buff *skb;
 
-	PDBG("%s ep %p plen %d\n", __FUNCTION__, ep, plen);
+	PDBG("%s ep %p plen %d\n", __func__, ep, plen);
 
 	mpalen = sizeof(*mpa) + plen;
 
 	skb = get_skb(NULL, mpalen + sizeof(*req), GFP_KERNEL);
 	if (!skb) {
-		printk(KERN_ERR MOD "%s - cannot alloc skb!\n", __FUNCTION__);
+		printk(KERN_ERR MOD "%s - cannot alloc skb!\n", __func__);
 		return -ENOMEM;
 	}
 	skb_reserve(skb, sizeof(*req));
@@ -580,8 +611,7 @@ static int send_mpa_reject(struct iwch_ep *ep, const void *pdata, u8 plen)
 	req->sndseq = htonl(ep->snd_seq);
 	BUG_ON(ep->mpa_skb);
 	ep->mpa_skb = skb;
-	l2t_send(ep->com.tdev, skb, ep->l2t);
-	return 0;
+	return iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
 }
 
 static int send_mpa_reply(struct iwch_ep *ep, const void *pdata, u8 plen)
@@ -592,13 +622,13 @@ static int send_mpa_reply(struct iwch_ep *ep, const void *pdata, u8 plen)
 	int len;
 	struct sk_buff *skb;
 
-	PDBG("%s ep %p plen %d\n", __FUNCTION__, ep, plen);
+	PDBG("%s ep %p plen %d\n", __func__, ep, plen);
 
 	mpalen = sizeof(*mpa) + plen;
 
 	skb = get_skb(NULL, mpalen + sizeof(*req), GFP_KERNEL);
 	if (!skb) {
-		printk(KERN_ERR MOD "%s - cannot alloc skb!\n", __FUNCTION__);
+		printk(KERN_ERR MOD "%s - cannot alloc skb!\n", __func__);
 		return -ENOMEM;
 	}
 	skb->priority = CPL_PRIORITY_DATA;
@@ -632,8 +662,7 @@ static int send_mpa_reply(struct iwch_ep *ep, const void *pdata, u8 plen)
 	req->sndseq = htonl(ep->snd_seq);
 	ep->mpa_skb = skb;
 	state_set(&ep->com, MPA_REP_SENT);
-	l2t_send(ep->com.tdev, skb, ep->l2t);
-	return 0;
+	return iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
 }
 
 static int act_establish(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
@@ -642,7 +671,7 @@ static int act_establish(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	struct cpl_act_establish *req = cplhdr(skb);
 	unsigned int tid = GET_TID(req);
 
-	PDBG("%s ep %p tid %d\n", __FUNCTION__, ep, tid);
+	PDBG("%s ep %p tid %d\n", __func__, ep, tid);
 
 	dst_confirm(ep->dst);
 
@@ -675,7 +704,7 @@ static void close_complete_upcall(struct iwch_ep *ep)
 {
 	struct iw_cm_event event;
 
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 	memset(&event, 0, sizeof(event));
 	event.event = IW_CM_EVENT_CLOSE;
 	if (ep->com.cm_id) {
@@ -692,7 +721,7 @@ static void peer_close_upcall(struct iwch_ep *ep)
 {
 	struct iw_cm_event event;
 
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 	memset(&event, 0, sizeof(event));
 	event.event = IW_CM_EVENT_DISCONNECT;
 	if (ep->com.cm_id) {
@@ -706,7 +735,7 @@ static void peer_abort_upcall(struct iwch_ep *ep)
 {
 	struct iw_cm_event event;
 
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 	memset(&event, 0, sizeof(event));
 	event.event = IW_CM_EVENT_CLOSE;
 	event.status = -ECONNRESET;
@@ -724,7 +753,7 @@ static void connect_reply_upcall(struct iwch_ep *ep, int status)
 {
 	struct iw_cm_event event;
 
-	PDBG("%s ep %p status %d\n", __FUNCTION__, ep, status);
+	PDBG("%s ep %p status %d\n", __func__, ep, status);
 	memset(&event, 0, sizeof(event));
 	event.event = IW_CM_EVENT_CONNECT_REPLY;
 	event.status = status;
@@ -736,7 +765,7 @@ static void connect_reply_upcall(struct iwch_ep *ep, int status)
 		event.private_data = ep->mpa_pkt + sizeof(struct mpa_message);
 	}
 	if (ep->com.cm_id) {
-		PDBG("%s ep %p tid %d status %d\n", __FUNCTION__, ep,
+		PDBG("%s ep %p tid %d status %d\n", __func__, ep,
 		     ep->hwtid, status);
 		ep->com.cm_id->event_handler(ep->com.cm_id, &event);
 	}
@@ -751,7 +780,7 @@ static void connect_request_upcall(struct iwch_ep *ep)
 {
 	struct iw_cm_event event;
 
-	PDBG("%s ep %p tid %d\n", __FUNCTION__, ep, ep->hwtid);
+	PDBG("%s ep %p tid %d\n", __func__, ep, ep->hwtid);
 	memset(&event, 0, sizeof(event));
 	event.event = IW_CM_EVENT_CONNECT_REQUEST;
 	event.local_addr = ep->com.local_addr;
@@ -771,11 +800,11 @@ static void established_upcall(struct iwch_ep *ep)
 {
 	struct iw_cm_event event;
 
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 	memset(&event, 0, sizeof(event));
 	event.event = IW_CM_EVENT_ESTABLISHED;
 	if (ep->com.cm_id) {
-		PDBG("%s ep %p tid %d\n", __FUNCTION__, ep, ep->hwtid);
+		PDBG("%s ep %p tid %d\n", __func__, ep, ep->hwtid);
 		ep->com.cm_id->event_handler(ep->com.cm_id, &event);
 	}
 }
@@ -785,7 +814,7 @@ static int update_rx_credits(struct iwch_ep *ep, u32 credits)
 	struct cpl_rx_data_ack *req;
 	struct sk_buff *skb;
 
-	PDBG("%s ep %p credits %u\n", __FUNCTION__, ep, credits);
+	PDBG("%s ep %p credits %u\n", __func__, ep, credits);
 	skb = get_skb(NULL, sizeof(*req), GFP_KERNEL);
 	if (!skb) {
 		printk(KERN_ERR MOD "update_rx_credits - cannot alloc skb!\n");
@@ -797,7 +826,7 @@ static int update_rx_credits(struct iwch_ep *ep, u32 credits)
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_RX_DATA_ACK, ep->hwtid));
 	req->credit_dack = htonl(V_RX_CREDITS(credits) | V_RX_FORCE_ACK(1));
 	skb->priority = CPL_PRIORITY_ACK;
-	cxgb3_ofld_send(ep->com.tdev, skb);
+	iwch_cxgb3_ofld_send(ep->com.tdev, skb);
 	return credits;
 }
 
@@ -809,7 +838,7 @@ static void process_mpa_reply(struct iwch_ep *ep, struct sk_buff *skb)
 	enum iwch_qp_attr_mask mask;
 	int err;
 
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 
 	/*
 	 * Stop mpa timer.  If it expired, then the state has
@@ -897,7 +926,7 @@ static void process_mpa_reply(struct iwch_ep *ep, struct sk_buff *skb)
 	ep->mpa_attr.xmit_marker_enabled = mpa->flags & MPA_MARKERS ? 1 : 0;
 	ep->mpa_attr.version = mpa_rev;
 	PDBG("%s - crc_enabled=%d, recv_marker_enabled=%d, "
-	     "xmit_marker_enabled=%d, version=%d\n", __FUNCTION__,
+	     "xmit_marker_enabled=%d, version=%d\n", __func__,
 	     ep->mpa_attr.crc_enabled, ep->mpa_attr.recv_marker_enabled,
 	     ep->mpa_attr.xmit_marker_enabled, ep->mpa_attr.version);
 
@@ -934,7 +963,7 @@ static void process_mpa_request(struct iwch_ep *ep, struct sk_buff *skb)
 	struct mpa_message *mpa;
 	u16 plen;
 
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 
 	/*
 	 * Stop mpa timer.  If it expired, then the state has
@@ -954,7 +983,7 @@ static void process_mpa_request(struct iwch_ep *ep, struct sk_buff *skb)
 		return;
 	}
 
-	PDBG("%s enter (%s line %u)\n", __FUNCTION__, __FILE__, __LINE__);
+	PDBG("%s enter (%s line %u)\n", __func__, __FILE__, __LINE__);
 
 	/*
 	 * Copy the new data into our accumulation buffer.
@@ -969,7 +998,7 @@ static void process_mpa_request(struct iwch_ep *ep, struct sk_buff *skb)
 	 */
 	if (ep->mpa_pkt_len < sizeof(*mpa))
 		return;
-	PDBG("%s enter (%s line %u)\n", __FUNCTION__, __FILE__, __LINE__);
+	PDBG("%s enter (%s line %u)\n", __func__, __FILE__, __LINE__);
 	mpa = (struct mpa_message *) ep->mpa_pkt;
 
 	/*
@@ -1020,7 +1049,7 @@ static void process_mpa_request(struct iwch_ep *ep, struct sk_buff *skb)
 	ep->mpa_attr.xmit_marker_enabled = mpa->flags & MPA_MARKERS ? 1 : 0;
 	ep->mpa_attr.version = mpa_rev;
 	PDBG("%s - crc_enabled=%d, recv_marker_enabled=%d, "
-	     "xmit_marker_enabled=%d, version=%d\n", __FUNCTION__,
+	     "xmit_marker_enabled=%d, version=%d\n", __func__,
 	     ep->mpa_attr.crc_enabled, ep->mpa_attr.recv_marker_enabled,
 	     ep->mpa_attr.xmit_marker_enabled, ep->mpa_attr.version);
 
@@ -1037,7 +1066,7 @@ static int rx_data(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	struct cpl_rx_data *hdr = cplhdr(skb);
 	unsigned int dlen = ntohs(hdr->len);
 
-	PDBG("%s ep %p dlen %u\n", __FUNCTION__, ep, dlen);
+	PDBG("%s ep %p dlen %u\n", __func__, ep, dlen);
 
 	skb_pull(skb, sizeof(*hdr));
 	skb_trim(skb, dlen);
@@ -1057,7 +1086,7 @@ static int rx_data(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	default:
 		printk(KERN_ERR MOD "%s Unexpected streaming data."
 		       " ep %p state %d tid %d\n",
-		       __FUNCTION__, ep, state_read(&ep->com), ep->hwtid);
+		       __func__, ep, state_read(&ep->com), ep->hwtid);
 
 		/*
 		 * The ep will timeout and inform the ULP of the failure.
@@ -1083,11 +1112,11 @@ static int tx_ack(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	struct cpl_wr_ack *hdr = cplhdr(skb);
 	unsigned int credits = ntohs(hdr->credits);
 
-	PDBG("%s ep %p credits %u\n", __FUNCTION__, ep, credits);
+	PDBG("%s ep %p credits %u\n", __func__, ep, credits);
 
 	if (credits == 0) {
 		PDBG(KERN_ERR "%s 0 credit ack  ep %p state %u\n",
-			__FUNCTION__, ep, state_read(&ep->com));
+			__func__, ep, state_read(&ep->com));
 		return CPL_RET_BUF_DONE;
 	}
 
@@ -1095,21 +1124,21 @@ static int tx_ack(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	dst_confirm(ep->dst);
 	if (!ep->mpa_skb) {
 		PDBG("%s rdma_init wr_ack ep %p state %u\n",
-			__FUNCTION__, ep, state_read(&ep->com));
+			__func__, ep, state_read(&ep->com));
 		if (ep->mpa_attr.initiator) {
 			PDBG("%s initiator ep %p state %u\n",
-				__FUNCTION__, ep, state_read(&ep->com));
+				__func__, ep, state_read(&ep->com));
 			if (peer2peer)
 				iwch_post_zb_read(ep->com.qp);
 		} else {
 			PDBG("%s responder ep %p state %u\n",
-				__FUNCTION__, ep, state_read(&ep->com));
+				__func__, ep, state_read(&ep->com));
 			ep->com.rpl_done = 1;
 			wake_up(&ep->com.waitq);
 		}
 	} else {
 		PDBG("%s lsm ack ep %p state %u freeing skb\n",
-			__FUNCTION__, ep, state_read(&ep->com));
+			__func__, ep, state_read(&ep->com));
 		kfree_skb(ep->mpa_skb);
 		ep->mpa_skb = NULL;
 	}
@@ -1122,15 +1151,15 @@ static int abort_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	unsigned long flags;
 	int release = 0;
 
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 	BUG_ON(!ep);
 
 	/*
 	 * We get 2 abort replies from the HW.  The first one must
 	 * be ignored except for scribbling that we need one more.
 	 */
-	if (!(ep->flags & ABORT_REQ_IN_PROGRESS)) {
-		ep->flags |= ABORT_REQ_IN_PROGRESS;
+	if (!(ep->com.flags & ABORT_REQ_IN_PROGRESS)) {
+		ep->com.flags |= ABORT_REQ_IN_PROGRESS;
 		return CPL_RET_BUF_DONE;
 	}
 
@@ -1143,7 +1172,7 @@ static int abort_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 		break;
 	default:
 		printk(KERN_ERR "%s ep %p state %d\n",
-		     __FUNCTION__, ep, ep->com.state);
+		     __func__, ep, ep->com.state);
 		break;
 	}
 	spin_unlock_irqrestore(&ep->com.lock, flags);
@@ -1167,7 +1196,7 @@ static int act_open_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	struct iwch_ep *ep = ctx;
 	struct cpl_act_open_rpl *rpl = cplhdr(skb);
 
-	PDBG("%s ep %p status %u errno %d\n", __FUNCTION__, ep, rpl->status,
+	PDBG("%s ep %p status %u errno %d\n", __func__, ep, rpl->status,
 	     status2errno(rpl->status));
 	connect_reply_upcall(ep, status2errno(rpl->status));
 	state_set(&ep->com, DEAD);
@@ -1185,7 +1214,7 @@ static int listen_start(struct iwch_listen_ep *ep)
 	struct sk_buff *skb;
 	struct cpl_pass_open_req *req;
 
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 	skb = get_skb(NULL, sizeof(*req), GFP_KERNEL);
 	if (!skb) {
 		printk(KERN_ERR MOD "t3c_listen_start failed to alloc skb!\n");
@@ -1205,8 +1234,7 @@ static int listen_start(struct iwch_listen_ep *ep)
 	req->opt1 = htonl(V_CONN_POLICY(CPL_CONN_POLICY_ASK));
 
 	skb->priority = 1;
-	cxgb3_ofld_send(ep->com.tdev, skb);
-	return 0;
+	return iwch_cxgb3_ofld_send(ep->com.tdev, skb);
 }
 
 static int pass_open_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
@@ -1214,7 +1242,7 @@ static int pass_open_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	struct iwch_listen_ep *ep = ctx;
 	struct cpl_pass_open_rpl *rpl = cplhdr(skb);
 
-	PDBG("%s ep %p status %d error %d\n", __FUNCTION__, ep,
+	PDBG("%s ep %p status %d error %d\n", __func__, ep,
 	     rpl->status, status2errno(rpl->status));
 	ep->com.rpl_err = status2errno(rpl->status);
 	ep->com.rpl_done = 1;
@@ -1228,10 +1256,10 @@ static int listen_stop(struct iwch_listen_ep *ep)
 	struct sk_buff *skb;
 	struct cpl_close_listserv_req *req;
 
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 	skb = get_skb(NULL, sizeof(*req), GFP_KERNEL);
 	if (!skb) {
-		printk(KERN_ERR MOD "%s - failed to alloc skb\n", __FUNCTION__);
+		printk(KERN_ERR MOD "%s - failed to alloc skb\n", __func__);
 		return -ENOMEM;
 	}
 	req = (struct cpl_close_listserv_req *) skb_put(skb, sizeof(*req));
@@ -1239,8 +1267,7 @@ static int listen_stop(struct iwch_listen_ep *ep)
 	req->cpu_idx = 0;
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_CLOSE_LISTSRV_REQ, ep->stid));
 	skb->priority = 1;
-	cxgb3_ofld_send(ep->com.tdev, skb);
-	return 0;
+	return iwch_cxgb3_ofld_send(ep->com.tdev, skb);
 }
 
 static int close_listsrv_rpl(struct t3cdev *tdev, struct sk_buff *skb,
@@ -1249,7 +1276,7 @@ static int close_listsrv_rpl(struct t3cdev *tdev, struct sk_buff *skb,
 	struct iwch_listen_ep *ep = ctx;
 	struct cpl_close_listserv_rpl *rpl = cplhdr(skb);
 
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 	ep->com.rpl_err = status2errno(rpl->status);
 	ep->com.rpl_done = 1;
 	wake_up(&ep->com.waitq);
@@ -1263,7 +1290,7 @@ static void accept_cr(struct iwch_ep *ep, __be32 peer_ip, struct sk_buff *skb)
 	u32 opt0h, opt0l, opt2;
 	int wscale;
 
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 	BUG_ON(skb_cloned(skb));
 	skb_trim(skb, sizeof(*rpl));
 	skb_get(skb);
@@ -1288,7 +1315,7 @@ static void accept_cr(struct iwch_ep *ep, __be32 peer_ip, struct sk_buff *skb)
 	rpl->opt2 = htonl(opt2);
 	rpl->rsvd = rpl->opt2;	/* workaround for HW bug */
 	skb->priority = CPL_PRIORITY_SETUP;
-	l2t_send(ep->com.tdev, skb, ep->l2t);
+	iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
 
 	return;
 }
@@ -1296,7 +1323,7 @@ static void accept_cr(struct iwch_ep *ep, __be32 peer_ip, struct sk_buff *skb)
 static void reject_cr(struct t3cdev *tdev, u32 hwtid, __be32 peer_ip,
 		      struct sk_buff *skb)
 {
-	PDBG("%s t3cdev %p tid %u peer_ip %x\n", __FUNCTION__, tdev, hwtid,
+	PDBG("%s t3cdev %p tid %u peer_ip %x\n", __func__, tdev, hwtid,
 	     peer_ip);
 	BUG_ON(skb_cloned(skb));
 	skb_trim(skb, sizeof(struct cpl_tid_release));
@@ -1317,7 +1344,7 @@ static void reject_cr(struct t3cdev *tdev, u32 hwtid, __be32 peer_ip,
 		rpl->opt0l_status = htonl(CPL_PASS_OPEN_REJECT);
 		rpl->opt2 = 0;
 		rpl->rsvd = rpl->opt2;
-		cxgb3_ofld_send(tdev, skb);
+		iwch_cxgb3_ofld_send(tdev, skb);
 	}
 }
 
@@ -1331,11 +1358,11 @@ static int pass_accept_req(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	struct rtable *rt;
 	struct iff_mac tim;
 
-	PDBG("%s parent ep %p tid %u\n", __FUNCTION__, parent_ep, hwtid);
+	PDBG("%s parent ep %p tid %u\n", __func__, parent_ep, hwtid);
 
 	if (state_read(&parent_ep->com) != LISTEN) {
 		printk(KERN_ERR "%s - listening ep not in LISTEN\n",
-		       __FUNCTION__);
+		       __func__);
 		goto reject;
 	}
 
@@ -1347,7 +1374,7 @@ static int pass_accept_req(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	if (tdev->ctl(tdev, GET_IFF_FROM_MAC, &tim) < 0 || !tim.dev) {
 		printk(KERN_ERR
 			"%s bad dst mac %02x %02x %02x %02x %02x %02x\n",
-			__FUNCTION__,
+			__func__,
 			req->dst_mac[0],
 			req->dst_mac[1],
 			req->dst_mac[2],
@@ -1365,21 +1392,21 @@ static int pass_accept_req(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 			req->peer_port, G_PASS_OPEN_TOS(ntohl(req->tos_tid)));
 	if (!rt) {
 		printk(KERN_ERR MOD "%s - failed to find dst entry!\n",
-		       __FUNCTION__);
+		       __func__);
 		goto reject;
 	}
 	dst = &rt->u.dst;
 	l2t = t3_l2t_get(tdev, dst->neighbour, dst->neighbour->dev);
 	if (!l2t) {
 		printk(KERN_ERR MOD "%s - failed to allocate l2t entry!\n",
-		       __FUNCTION__);
+		       __func__);
 		dst_release(dst);
 		goto reject;
 	}
 	child_ep = alloc_ep(sizeof(*child_ep), GFP_KERNEL);
 	if (!child_ep) {
 		printk(KERN_ERR MOD "%s - failed to allocate ep entry!\n",
-		       __FUNCTION__);
+		       __func__);
 		l2t_release(L2DATA(tdev), l2t);
 		dst_release(dst);
 		goto reject;
@@ -1414,7 +1441,7 @@ static int pass_establish(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	struct iwch_ep *ep = ctx;
 	struct cpl_pass_establish *req = cplhdr(skb);
 
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 	ep->snd_seq = ntohl(req->snd_isn);
 	ep->rcv_seq = ntohl(req->rcv_isn);
 
@@ -1435,7 +1462,7 @@ static int peer_close(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	int disconnect = 1;
 	int release = 0;
 
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 	dst_confirm(ep->dst);
 
 	spin_lock_irqsave(&ep->com.lock, flags);
@@ -1526,7 +1553,7 @@ static int peer_abort(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	unsigned long flags;
 
 	if (is_neg_adv_abort(req->status)) {
-		PDBG("%s neg_adv_abort ep %p tid %d\n", __FUNCTION__, ep,
+		PDBG("%s neg_adv_abort ep %p tid %d\n", __func__, ep,
 		     ep->hwtid);
 		t3_l2t_send_event(ep->com.tdev, ep->l2t);
 		return CPL_RET_BUF_DONE;
@@ -1536,13 +1563,13 @@ static int peer_abort(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	 * We get 2 peer aborts from the HW.  The first one must
 	 * be ignored except for scribbling that we need one more.
 	 */
-	if (!(ep->flags & PEER_ABORT_IN_PROGRESS)) {
-		ep->flags |= PEER_ABORT_IN_PROGRESS;
+	if (!(ep->com.flags & PEER_ABORT_IN_PROGRESS)) {
+		ep->com.flags |= PEER_ABORT_IN_PROGRESS;
 		return CPL_RET_BUF_DONE;
 	}
 
 	spin_lock_irqsave(&ep->com.lock, flags);
-	PDBG("%s ep %p state %u\n", __FUNCTION__, ep, ep->com.state);
+	PDBG("%s ep %p state %u\n", __func__, ep, ep->com.state);
 	switch (ep->com.state) {
 	case CONNECTING:
 		break;
@@ -1581,14 +1608,14 @@ static int peer_abort(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 			if (ret)
 				printk(KERN_ERR MOD
 				       "%s - qp <- error failed!\n",
-				       __FUNCTION__);
+				       __func__);
 		}
 		peer_abort_upcall(ep);
 		break;
 	case ABORTING:
 		break;
 	case DEAD:
-		PDBG("%s PEER_ABORT IN DEAD STATE!!!!\n", __FUNCTION__);
+		PDBG("%s PEER_ABORT IN DEAD STATE!!!!\n", __func__);
 		spin_unlock_irqrestore(&ep->com.lock, flags);
 		return CPL_RET_BUF_DONE;
 	default:
@@ -1605,7 +1632,7 @@ static int peer_abort(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	rpl_skb = get_skb(skb, sizeof(*rpl), GFP_KERNEL);
 	if (!rpl_skb) {
 		printk(KERN_ERR MOD "%s - cannot allocate skb!\n",
-		       __FUNCTION__);
+		       __func__);
 		release = 1;
 		goto out;
 	}
@@ -1615,7 +1642,7 @@ static int peer_abort(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	rpl->wr.wr_lo = htonl(V_WR_TID(ep->hwtid));
 	OPCODE_TID(rpl) = htonl(MK_OPCODE_TID(CPL_ABORT_RPL, ep->hwtid));
 	rpl->cmd = CPL_ABORT_NO_RST;
-	cxgb3_ofld_send(ep->com.tdev, rpl_skb);
+	iwch_cxgb3_ofld_send(ep->com.tdev, rpl_skb);
 out:
 	if (release)
 		release_ep_resources(ep);
@@ -1629,7 +1656,7 @@ static int close_con_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	unsigned long flags;
 	int release = 0;
 
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 	BUG_ON(!ep);
 
 	/* The cm_id may be null if we failed to connect */
@@ -1680,9 +1707,12 @@ static int terminate(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 {
 	struct iwch_ep *ep = ctx;
 
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	if (state_read(&ep->com) != FPDU_MODE)
+		return CPL_RET_BUF_DONE;
+
+	PDBG("%s ep %p\n", __func__, ep);
 	skb_pull(skb, sizeof(struct cpl_rdma_terminate));
-	PDBG("%s saving %d bytes of term msg\n", __FUNCTION__, skb->len);
+	PDBG("%s saving %d bytes of term msg\n", __func__, skb->len);
 	skb_copy_from_linear_data(skb, ep->com.qp->attr.terminate_buffer,
 				  skb->len);
 	ep->com.qp->attr.terminate_msg_len = skb->len;
@@ -1695,13 +1725,13 @@ static int ec_status(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	struct cpl_rdma_ec_status *rep = cplhdr(skb);
 	struct iwch_ep *ep = ctx;
 
-	PDBG("%s ep %p tid %u status %d\n", __FUNCTION__, ep, ep->hwtid,
+	PDBG("%s ep %p tid %u status %d\n", __func__, ep, ep->hwtid,
 	     rep->status);
 	if (rep->status) {
 		struct iwch_qp_attributes attrs;
 
 		printk(KERN_ERR MOD "%s BAD CLOSE - Aborting tid %u\n",
-		       __FUNCTION__, ep->hwtid);
+		       __func__, ep->hwtid);
 		stop_ep_timer(ep);
 		attrs.next_state = IWCH_QP_STATE_ERROR;
 		iwch_modify_qp(ep->com.qp->rhp,
@@ -1717,10 +1747,10 @@ static void ep_timeout(unsigned long arg)
 	struct iwch_ep *ep = (struct iwch_ep *)arg;
 	struct iwch_qp_attributes attrs;
 	unsigned long flags;
-	int abort=1;
+	int abort = 1;
 
 	spin_lock_irqsave(&ep->com.lock, flags);
-	PDBG("%s ep %p tid %u state %d\n", __FUNCTION__, ep, ep->hwtid,
+	PDBG("%s ep %p tid %u state %d\n", __func__, ep, ep->hwtid,
 	     ep->com.state);
 	switch (ep->com.state) {
 	case MPA_REQ_SENT:
@@ -1742,9 +1772,9 @@ static void ep_timeout(unsigned long arg)
 		break;
 	default:
 		printk(KERN_ERR "%s unexpected state ep %p state %u\n",
-			__FUNCTION__, ep, ep->com.state);
+			__func__, ep, ep->com.state);
 		WARN_ON(1);
-		abort=0;
+		abort = 0;
 	}
 	spin_unlock_irqrestore(&ep->com.lock, flags);
 	if (abort)
@@ -1756,7 +1786,7 @@ int iwch_reject_cr(struct iw_cm_id *cm_id, const void *pdata, u8 pdata_len)
 {
 	int err;
 	struct iwch_ep *ep = to_ep(cm_id);
-	PDBG("%s ep %p tid %u\n", __FUNCTION__, ep, ep->hwtid);
+	PDBG("%s ep %p tid %u\n", __func__, ep, ep->hwtid);
 
 	if (state_read(&ep->com) == DEAD) {
 		put_ep(&ep->com);
@@ -1781,7 +1811,7 @@ int iwch_accept_cr(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 	struct iwch_dev *h = to_iwch_dev(cm_id->device);
 	struct iwch_qp *qp = get_qhp(h, conn_param->qpn);
 
-	PDBG("%s ep %p tid %u\n", __FUNCTION__, ep, ep->hwtid);
+	PDBG("%s ep %p tid %u\n", __func__, ep, ep->hwtid);
 	if (state_read(&ep->com) == DEAD)
 		return -ECONNRESET;
 
@@ -1802,7 +1832,11 @@ int iwch_accept_cr(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 	ep->com.rpl_err = 0;
 	ep->ird = conn_param->ird;
 	ep->ord = conn_param->ord;
-	PDBG("%s %d ird %d ord %d\n", __FUNCTION__, __LINE__, ep->ird, ep->ord);
+
+	if (peer2peer && ep->ird == 0)
+		ep->ird = 1;
+
+	PDBG("%s %d ird %d ord %d\n", __func__, __LINE__, ep->ird, ep->ord);
 
 	get_ep(&ep->com);
 
@@ -1855,7 +1889,7 @@ static int is_loopback_dst(struct iw_cm_id *cm_id)
 {
 	struct net_device *dev;
 
-	dev = ip_dev_find(cm_id->remote_addr.sin_addr.s_addr);
+	dev = ip_dev_find(&init_net, cm_id->remote_addr.sin_addr.s_addr);
 	if (!dev)
 		return 0;
 	dev_put(dev);
@@ -1876,7 +1910,7 @@ int iwch_connect(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 
 	ep = alloc_ep(sizeof(*ep), GFP_KERNEL);
 	if (!ep) {
-		printk(KERN_ERR MOD "%s - cannot alloc ep.\n", __FUNCTION__);
+		printk(KERN_ERR MOD "%s - cannot alloc ep.\n", __func__);
 		err = -ENOMEM;
 		goto out;
 	}
@@ -1887,13 +1921,17 @@ int iwch_connect(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 		       conn_param->private_data, ep->plen);
 	ep->ird = conn_param->ird;
 	ep->ord = conn_param->ord;
+
+	if (peer2peer && ep->ord == 0)
+		ep->ord = 1;
+
 	ep->com.tdev = h->rdev.t3cdev_p;
 
 	cm_id->add_ref(cm_id);
 	ep->com.cm_id = cm_id;
 	ep->com.qp = get_qhp(h, conn_param->qpn);
 	BUG_ON(!ep->com.qp);
-	PDBG("%s qpn 0x%x qp %p cm_id %p\n", __FUNCTION__, conn_param->qpn,
+	PDBG("%s qpn 0x%x qp %p cm_id %p\n", __func__, conn_param->qpn,
 	     ep->com.qp, cm_id);
 
 	/*
@@ -1901,7 +1939,7 @@ int iwch_connect(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 	 */
 	ep->atid = cxgb3_alloc_atid(h->rdev.t3cdev_p, &t3c_client, ep);
 	if (ep->atid == -1) {
-		printk(KERN_ERR MOD "%s - cannot alloc atid.\n", __FUNCTION__);
+		printk(KERN_ERR MOD "%s - cannot alloc atid.\n", __func__);
 		err = -ENOMEM;
 		goto fail2;
 	}
@@ -1913,7 +1951,7 @@ int iwch_connect(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 			cm_id->local_addr.sin_port,
 			cm_id->remote_addr.sin_port, IPTOS_LOWDELAY);
 	if (!rt) {
-		printk(KERN_ERR MOD "%s - cannot find route.\n", __FUNCTION__);
+		printk(KERN_ERR MOD "%s - cannot find route.\n", __func__);
 		err = -EHOSTUNREACH;
 		goto fail3;
 	}
@@ -1923,7 +1961,7 @@ int iwch_connect(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 	ep->l2t = t3_l2t_get(ep->com.tdev, ep->dst->neighbour,
 			     ep->dst->neighbour->dev);
 	if (!ep->l2t) {
-		printk(KERN_ERR MOD "%s - cannot alloc l2e.\n", __FUNCTION__);
+		printk(KERN_ERR MOD "%s - cannot alloc l2e.\n", __func__);
 		err = -ENOMEM;
 		goto fail4;
 	}
@@ -1960,11 +1998,11 @@ int iwch_create_listen(struct iw_cm_id *cm_id, int backlog)
 
 	ep = alloc_ep(sizeof(*ep), GFP_KERNEL);
 	if (!ep) {
-		printk(KERN_ERR MOD "%s - cannot alloc ep.\n", __FUNCTION__);
+		printk(KERN_ERR MOD "%s - cannot alloc ep.\n", __func__);
 		err = -ENOMEM;
 		goto fail1;
 	}
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 	ep->com.tdev = h->rdev.t3cdev_p;
 	cm_id->add_ref(cm_id);
 	ep->com.cm_id = cm_id;
@@ -1976,7 +2014,7 @@ int iwch_create_listen(struct iw_cm_id *cm_id, int backlog)
 	 */
 	ep->stid = cxgb3_alloc_stid(h->rdev.t3cdev_p, &t3c_client, ep);
 	if (ep->stid == -1) {
-		printk(KERN_ERR MOD "%s - cannot alloc atid.\n", __FUNCTION__);
+		printk(KERN_ERR MOD "%s - cannot alloc atid.\n", __func__);
 		err = -ENOMEM;
 		goto fail2;
 	}
@@ -2008,15 +2046,18 @@ int iwch_destroy_listen(struct iw_cm_id *cm_id)
 	int err;
 	struct iwch_listen_ep *ep = to_listen_ep(cm_id);
 
-	PDBG("%s ep %p\n", __FUNCTION__, ep);
+	PDBG("%s ep %p\n", __func__, ep);
 
 	might_sleep();
 	state_set(&ep->com, DEAD);
 	ep->com.rpl_done = 0;
 	ep->com.rpl_err = 0;
 	err = listen_stop(ep);
+	if (err)
+		goto done;
 	wait_event(ep->com.waitq, ep->com.rpl_done);
 	cxgb3_free_stid(ep->com.tdev, ep->stid);
+done:
 	err = ep->com.rpl_err;
 	cm_id->rem_ref(cm_id);
 	put_ep(&ep->com);
@@ -2028,12 +2069,22 @@ int iwch_ep_disconnect(struct iwch_ep *ep, int abrupt, gfp_t gfp)
 	int ret=0;
 	unsigned long flags;
 	int close = 0;
+	int fatal = 0;
+	struct t3cdev *tdev;
+	struct cxio_rdev *rdev;
 
 	spin_lock_irqsave(&ep->com.lock, flags);
 
-	PDBG("%s ep %p state %s, abrupt %d\n", __FUNCTION__, ep,
+	PDBG("%s ep %p state %s, abrupt %d\n", __func__, ep,
 	     states[ep->com.state], abrupt);
 
+	tdev = (struct t3cdev *)ep->com.tdev;
+	rdev = (struct cxio_rdev *)tdev->ulp;
+	if (cxio_fatal_error(rdev)) {
+		fatal = 1;
+		close_complete_upcall(ep);
+		ep->com.state = DEAD;
+	}
 	switch (ep->com.state) {
 	case MPA_REQ_WAIT:
 	case MPA_REQ_SENT:
@@ -2060,19 +2111,24 @@ int iwch_ep_disconnect(struct iwch_ep *ep, int abrupt, gfp_t gfp)
 	case ABORTING:
 	case DEAD:
 		PDBG("%s ignoring disconnect ep %p state %u\n",
-		     __FUNCTION__, ep, ep->com.state);
+		     __func__, ep, ep->com.state);
 		break;
 	default:
 		BUG();
 		break;
 	}
+
 	spin_unlock_irqrestore(&ep->com.lock, flags);
 	if (close) {
 		if (abrupt)
 			ret = send_abort(ep, NULL, gfp);
 		else
 			ret = send_halfclose(ep, gfp);
+		if (ret)
+			fatal = 1;
 	}
+	if (fatal)
+		release_ep_resources(ep);
 	return ret;
 }
 
@@ -2084,7 +2140,7 @@ int iwch_ep_redirect(void *ctx, struct dst_entry *old, struct dst_entry *new,
 	if (ep->dst != old)
 		return 0;
 
-	PDBG("%s ep %p redirect to dst %p l2t %p\n", __FUNCTION__, ep, new,
+	PDBG("%s ep %p redirect to dst %p l2t %p\n", __func__, ep, new,
 	     l2t);
 	dst_hold(new);
 	l2t_release(L2DATA(ep->com.tdev), ep->l2t);

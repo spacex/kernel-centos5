@@ -113,5 +113,7 @@ extern void argv_free(char **argv);
 }
 #endif
 
+extern bool sysfs_streq(const char *s1, const char *s2);
+
 #endif
 #endif /* _LINUX_STRING_H_ */

@@ -1263,7 +1263,9 @@ static int __init crash_save_vmcoreinfo_init(void)
 	OFFSET(list_head, next);
 	OFFSET(list_head, prev);
 	LENGTH(zone.free_area, MAX_ORDER);
-
+#ifdef CONFIG_PRINTK
+	log_buf_kexec_setup();
+#endif
 	arch_crash_save_vmcoreinfo();
 
 	return 0;

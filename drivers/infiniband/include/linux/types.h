@@ -4,5 +4,6 @@
 #include_next <linux/types.h>
 
 typedef __u16	__sum16;
+typedef __u32	__wsum;
 
 #endif

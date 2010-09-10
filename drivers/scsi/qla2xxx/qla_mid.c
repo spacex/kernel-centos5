@@ -218,43 +218,35 @@ qla24xx_configure_vp(scsi_qla_host_t *vha)
 void
 qla2x00_alert_all_vps(scsi_qla_host_t *ha, uint16_t *mb)
 {
-	int i, vp_idx_matched;
+	int i = 0;
 	scsi_qla_host_t *vha;
 
 	if (ha->parent)
 		return;
 
-	for_each_mapped_vp_idx(ha, i) {
-		vp_idx_matched = 0;
-
-		list_for_each_entry(vha, &ha->vp_list, vp_list) {
-			if (i == vha->vp_idx) {
-				vp_idx_matched = 1;
-				break;
-			}
-		}
-
-		if (vp_idx_matched) {
-			switch (mb[0]) {
-			case MBA_LIP_OCCURRED:
-			case MBA_LOOP_UP:
-			case MBA_LOOP_DOWN:
-			case MBA_LIP_RESET:
-			case MBA_POINT_TO_POINT:
-			case MBA_CHG_IN_CONNECTION:
-			case MBA_PORT_UPDATE:
-			case MBA_RSCN_UPDATE:
-				DEBUG15(printk("scsi(%ld)%s: Async_event for"
-				    " VP[%d], mb = 0x%x, vha=%p\n",
-				    vha->host_no, __func__,i, *mb, vha));
-				qla2x00_async_event(vha, mb);
-				break;
-			}
-		}
-	}
+        list_for_each_entry(vha, &ha->vp_list, vp_list) {
+                if (vha->vp_idx) {
+                        switch (mb[0]) {
+                        case MBA_LIP_OCCURRED:
+                        case MBA_LOOP_UP:
+                        case MBA_LOOP_DOWN:
+                        case MBA_LIP_RESET:
+                        case MBA_POINT_TO_POINT:
+                        case MBA_CHG_IN_CONNECTION:
+                        case MBA_PORT_UPDATE:
+                        case MBA_RSCN_UPDATE:
+                                DEBUG15(printk("scsi(%ld)%s: Async_event for"
+                                " VP[%d], mb = 0x%x, vha=%p\n",
+                                vha->host_no, __func__, i, *mb, vha));
+                                qla2x00_async_event(vha, mb);
+                                break;
+                        }
+                }
+                i++;
+        }
 }
 
-void
+int
 qla2x00_vp_abort_isp(scsi_qla_host_t *vha)
 {
 	/*
@@ -269,9 +261,16 @@ qla2x00_vp_abort_isp(scsi_qla_host_t *vha)
 			atomic_set(&vha->loop_down_timer, LOOP_DOWN_TIME);
 	}
 
+        /* To exclusively reset vport, we need to log it out first.
+	 * Note: this control_vp can fail if ISP reset is already issued, this
+	 * is expected, as the vp would be already logged out due to ISP reset.
+	 */
+        if (!test_bit(ABORT_ISP_ACTIVE, &vha->dpc_flags))
+                qla24xx_control_vp(vha, VCE_COMMAND_DISABLE_VPS_LOGO_ALL);
+
 	DEBUG15(printk("scsi(%ld): Scheduling enable of Vport %d...\n",
 	    vha->host_no, vha->vp_idx));
-	qla24xx_enable_vp(vha);
+	return qla24xx_enable_vp(vha);
 }
 
 static int
@@ -444,6 +443,11 @@ qla24xx_create_vhost(scsi_qla_host_t *ha, uint64_t fc_wwpn, uint64_t fc_wwnn)
 	u64_to_wwn(fc_wwpn, vha->port_name);
 	u64_to_wwn(fc_wwnn, vha->node_name);
 
+	INIT_LIST_HEAD(&vha->list);
+	INIT_LIST_HEAD(&vha->vp_list);
+	INIT_LIST_HEAD(&vha->fcports);
+	INIT_LIST_HEAD(&vha->vp_fcports);
+
 	vha->host = host;
 	vha->host_no = host->host_no;
 	vha->parent = ha;
@@ -460,10 +464,6 @@ qla24xx_create_vhost(scsi_qla_host_t *ha, uint64_t fc_wwpn, uint64_t fc_wwnn)
 	init_completion(&vha->mbx_cmd_comp);
 	complete(&vha->mbx_cmd_comp);
 	init_completion(&vha->mbx_intr_comp);
-
-	INIT_LIST_HEAD(&vha->list);
-	INIT_LIST_HEAD(&vha->fcports);
-	INIT_LIST_HEAD(&vha->vp_fcports);
 
 	vha->dpc_flags = 0L;
 	set_bit(REGISTER_FDMI_NEEDED, &vha->dpc_flags);

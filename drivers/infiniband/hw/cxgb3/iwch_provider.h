@@ -214,7 +214,7 @@ static inline struct iwch_mm_entry *remove_mmap(struct iwch_ucontext *ucontext,
 		if (mm->key == key && mm->len == len) {
 			list_del_init(&mm->entry);
 			spin_unlock(&ucontext->mmap_lock);
-			PDBG("%s key 0x%x addr 0x%llx len %d\n", __FUNCTION__,
+			PDBG("%s key 0x%x addr 0x%llx len %d\n", __func__,
 			     key, (unsigned long long) mm->addr, mm->len);
 			return mm;
 		}
@@ -227,7 +227,7 @@ static inline void insert_mmap(struct iwch_ucontext *ucontext,
 			       struct iwch_mm_entry *mm)
 {
 	spin_lock(&ucontext->mmap_lock);
-	PDBG("%s key 0x%x addr 0x%llx len %d\n", __FUNCTION__,
+	PDBG("%s key 0x%x addr 0x%llx len %d\n", __func__,
 	     mm->key, (unsigned long long) mm->addr, mm->len);
 	list_add_tail(&mm->entry, &ucontext->mmaps);
 	spin_unlock(&ucontext->mmap_lock);
@@ -293,15 +293,14 @@ static inline u32 iwch_ib_to_tpt_access(int acc)
 	return (acc & IB_ACCESS_REMOTE_WRITE ? TPT_REMOTE_WRITE : 0) |
 	       (acc & IB_ACCESS_REMOTE_READ ? TPT_REMOTE_READ : 0) |
 	       (acc & IB_ACCESS_LOCAL_WRITE ? TPT_LOCAL_WRITE : 0) |
+	       (acc & IB_ACCESS_MW_BIND ? TPT_MW_BIND : 0) |
 	       TPT_LOCAL_READ;
 }
 
-static inline u32 iwch_ib_to_mwbind_access(int acc)
+static inline u32 iwch_ib_to_tpt_bind_access(int acc)
 {
-	return (acc & IB_ACCESS_REMOTE_WRITE ? T3_MEM_ACCESS_REM_WRITE : 0) |
-	       (acc & IB_ACCESS_REMOTE_READ ? T3_MEM_ACCESS_REM_READ : 0) |
-	       (acc & IB_ACCESS_LOCAL_WRITE ? T3_MEM_ACCESS_LOCAL_WRITE : 0) |
-	       T3_MEM_ACCESS_LOCAL_READ;
+	return (acc & IB_ACCESS_REMOTE_WRITE ? TPT_REMOTE_WRITE : 0) |
+	       (acc & IB_ACCESS_REMOTE_READ ? TPT_REMOTE_READ : 0);
 }
 
 enum iwch_mmid_state {

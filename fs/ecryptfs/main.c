@@ -211,7 +211,7 @@ enum { ecryptfs_opt_sig, ecryptfs_opt_ecryptfs_sig,
        ecryptfs_opt_passthrough, ecryptfs_opt_xattr_metadata,
        ecryptfs_opt_encrypted_view, ecryptfs_opt_force_nfs,
        ecryptfs_opt_force_cifs, ecryptfs_opt_force_ecryptfs,
-       ecryptfs_opt_err };
+       ecryptfs_opt_unlink_sigs, ecryptfs_opt_err };
 
 static match_table_t tokens = {
 	{ecryptfs_opt_sig, "sig=%s"},
@@ -225,6 +225,7 @@ static match_table_t tokens = {
 	{ecryptfs_opt_force_nfs, "ecryptfs_force_nfs"},
 	{ecryptfs_opt_force_cifs, "ecryptfs_force_cifs"},
 	{ecryptfs_opt_force_ecryptfs, "ecryptfs_force_ecryptfs"},
+	{ecryptfs_opt_unlink_sigs, "ecryptfs_unlink_sigs"},
 	{ecryptfs_opt_err, NULL}
 };
 
@@ -363,6 +364,9 @@ static int ecryptfs_parse_options(struct super_block *sb, char *options)
 				ECRYPTFS_XATTR_METADATA_ENABLED;
 			mount_crypt_stat->flags |=
 				ECRYPTFS_ENCRYPTED_VIEW_ENABLED;
+			break;
+		case ecryptfs_opt_unlink_sigs:
+			mount_crypt_stat->flags |= ECRYPTFS_UNLINK_SIGS;
 			break;
 		case ecryptfs_opt_err:
 		default:

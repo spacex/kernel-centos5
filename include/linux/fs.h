@@ -92,7 +92,9 @@ extern int dir_notify_enable;
 #define FS_REQUIRES_DEV 1 
 #define FS_BINARY_MOUNTDATA 2
 #define HAVE_FALLOCATE
-#define FS_HAS_FALLOCATE 4
+#define FS_HAS_FALLOCATE 4    /* Safe to check for ->fallocate */
+#define FS_HAS_FIEMAP  8      /* Safe to check for ->fiemap */
+#define FS_HAS_FREEZE 16      /* Safe to check for ->freeze_fs etc */
 #define FS_REVAL_DOT	16384	/* Check the paths ".", ".." for staleness */
 #define FS_RENAME_DOES_D_MOVE	32768	/* FS will handle d_move()
 					 * during rename() internally.
@@ -125,6 +127,7 @@ extern int dir_notify_enable;
 #define MS_NO_LEASES	(1<<21)	/* fs does not support leases */
 #define MS_HAS_SETLEASE        (1<<22) /* fs supports setlease fop */
 #define MS_I_VERSION	(1<<23)	/* Update inode I_version field */
+#define MS_HAS_NEW_AOPS	(1<<24) /* fs supports new aops */
 #define MS_ACTIVE	(1<<30)
 #define MS_NOUSER	(1<<31)
 
@@ -189,6 +192,7 @@ extern int dir_notify_enable;
 #define IS_PRIVATE(inode)	((inode)->i_flags & S_PRIVATE)
 #define IS_NO_LEASES(inode)	__IS_FLG(inode, MS_NO_LEASES)
 #define IS_SETLEASE(inode)	__IS_FLG(inode, MS_HAS_SETLEASE)
+#define IS_NEWAOPS(inode)	__IS_FLG(inode, MS_HAS_NEW_AOPS)
 
 /* the read-only stuff doesn't really belong here, but any other place is
    probably as bad and I don't want to create yet another include file. */
@@ -227,11 +231,14 @@ extern int dir_notify_enable;
 #define BMAP_IOCTL 1		/* obsolete - kept for compatibility */
 #define FIBMAP	   _IO(0x00,1)	/* bmap access */
 #define FIGETBSZ   _IO(0x00,2)	/* get the block size used for bmap */
+#define FIFREEZE	_IOWR('X', 119, int)	/* Freeze */
+#define FITHAW		_IOWR('X', 120, int)	/* Thaw */
 
 #define	FS_IOC_GETFLAGS			_IOR('f', 1, long)
 #define	FS_IOC_SETFLAGS			_IOW('f', 2, long)
 #define	FS_IOC_GETVERSION		_IOR('v', 1, long)
 #define	FS_IOC_SETVERSION		_IOW('v', 2, long)
+#define FS_IOC_FIEMAP			_IOWR('f', 11, struct fiemap)
 #define FS_IOC32_GETFLAGS		_IOR('f', 1, int)
 #define FS_IOC32_SETFLAGS		_IOW('f', 2, int)
 #define FS_IOC32_GETVERSION		_IOR('v', 1, int)
@@ -289,6 +296,7 @@ extern int dir_notify_enable;
 #include <linux/init.h>
 #include <linux/sched.h>
 #include <linux/mutex.h>
+#include <linux/fiemap.h>
 
 #include <asm/atomic.h>
 #include <asm/semaphore.h>
@@ -397,6 +405,12 @@ enum positive_aop_returns {
 	AOP_TRUNCATED_PAGE	= 0x80001,
 };
 
+#define AOP_FLAG_UNINTERRUPTIBLE	0x0001 /* will not do a short write */
+#define AOP_FLAG_CONT_EXPAND		0x0002 /* called from cont_expand */
+#define AOP_FLAG_NOFS			0x0004 /* used by filesystem to direct
+						* helper code (eg buffer layer)
+						* to clear GFP_FS from alloc */
+
 /*
  * oh the beauties of C type declarations.
  */
@@ -413,6 +427,29 @@ struct iov_iter {
 
 size_t iov_iter_copy_from_user_atomic(struct page *page,
                 struct iov_iter *i, unsigned long offset, size_t bytes);
+size_t iov_iter_copy_from_user(struct page *page,
+		struct iov_iter *i, unsigned long offset, size_t bytes);
+void iov_iter_advance(struct iov_iter *i, size_t bytes);
+int iov_iter_fault_in_readable(struct iov_iter *i, size_t bytes);
+size_t iov_iter_single_seg_count(struct iov_iter *i);
+
+static inline void iov_iter_init(struct iov_iter *i,
+			const struct iovec *iov, unsigned long nr_segs,
+			size_t count, size_t written)
+{
+	i->iov = iov;
+	i->nr_segs = nr_segs;
+	i->iov_offset = 0;
+	i->count = count + written;
+
+	iov_iter_advance(i, written);
+}
+
+static inline size_t iov_iter_count(struct iov_iter *i)
+{
+	return i->count;
+}
+
 struct address_space_operations {
 	int (*writepage)(struct page *page, struct writeback_control *wbc);
 	int (*readpage)(struct file *, struct page *);
@@ -433,6 +470,7 @@ struct address_space_operations {
 	 */
 	int (*prepare_write)(struct file *, struct page *, unsigned, unsigned);
 	int (*commit_write)(struct file *, struct page *, unsigned, unsigned);
+
 	/* Unfortunately this kludge is needed for FIBMAP. Don't use it */
 	sector_t (*bmap)(struct address_space *, sector_t);
 	void (*invalidatepage) (struct page *, unsigned long);
@@ -445,6 +483,30 @@ struct address_space_operations {
 	int (*migratepage) (struct address_space *,
 			struct page *, struct page *);
 };
+
+struct address_space_operations_ext {
+	struct address_space_operations orig_aops;
+
+	/* if MS_HAS_NEW_AOPS is set then these are there */
+	int (*write_begin)(struct file *, struct address_space *mapping,
+				loff_t pos, unsigned len, unsigned flags,
+				struct page **pagep, void **fsdata);
+	int (*write_end)(struct file *, struct address_space *mapping,
+				loff_t pos, unsigned len, unsigned copied,
+				struct page *page, void *fsdata);
+};
+
+/*
+ * pagecache_write_begin/pagecache_write_end must be used by general code
+ * to write into the pagecache.
+ */
+int pagecache_write_begin(struct file *, struct address_space *mapping,
+				loff_t pos, unsigned len, unsigned flags,
+				struct page **pagep, void **fsdata);
+
+int pagecache_write_end(struct file *, struct address_space *mapping,
+				loff_t pos, unsigned len, unsigned copied,
+				struct page *page, void *fsdata);
 
 struct backing_dev_info;
 struct address_space {
@@ -499,6 +561,14 @@ struct block_device {
 	 * care to not mess up bd_private for that case.
 	 */
 	unsigned long		bd_private;
+
+	/* this isn't embedded in anything external, so should be safe */
+#ifndef __GENKSYMS__
+	/* The counter of freeze processes */
+	int			bd_fsfreeze_count;
+	/* Mutex for freeze */
+	struct mutex		bd_fsfreeze_mutex;
+#endif
 };
 
 /*
@@ -1036,6 +1106,20 @@ extern void dentry_unhash(struct dentry *dentry);
 extern int file_permission(struct file *, int);
 
 /*
+ * VFS FS_IOC_FIEMAP helper definitions.
+ */
+struct fiemap_extent_info {
+	unsigned int fi_flags;		/* Flags as passed from user */
+	unsigned int fi_extents_mapped;	/* Number of mapped extents */
+	unsigned int fi_extents_max;	/* Size of fiemap_extent array */
+	struct fiemap_extent *fi_extents_start; /* Start of fiemap_extent
+						 * array */
+};
+int fiemap_fill_next_extent(struct fiemap_extent_info *info, u64 logical,
+			    u64 phys, u64 len, u32 flags);
+int fiemap_check_flags(struct fiemap_extent_info *fieinfo, u32 fs_flags);
+
+/*
  * File types
  *
  * NOTE! These match bits 12..15 of stat.st_mode
@@ -1174,6 +1258,8 @@ struct inode_operations {
 #ifndef __GENKSYMS__
 	long (*fallocate)(struct inode *inode, int mode, loff_t offset,
 			  loff_t len);
+	int (*fiemap)(struct inode *, struct fiemap_extent_info *, u64 start,
+		      u64 len);
 #endif
 };
 
@@ -1216,6 +1302,10 @@ struct super_operations {
 
 	ssize_t (*quota_read)(struct super_block *, int, char *, size_t, loff_t);
 	ssize_t (*quota_write)(struct super_block *, int, const char *, size_t, loff_t);
+#ifndef __GENKSYMS__
+	int (*freeze_fs) (struct super_block *);
+	int (*unfreeze_fs) (struct super_block *);
+#endif
 };
 
 /* Inode state bits.  Protected by inode_lock. */
@@ -1803,6 +1893,8 @@ extern int generic_file_buffered_write_one_kernel_page(struct address_space *,
 						       pgoff_t, struct page *);
 extern ssize_t do_sync_read(struct file *filp, char __user *buf, size_t len, loff_t *ppos);
 extern ssize_t do_sync_write(struct file *filp, const char __user *buf, size_t len, loff_t *ppos);
+extern int generic_segment_checks(const struct iovec *iov,
+		unsigned long *nr_segs, size_t *count, int access_flags);
 ssize_t generic_file_write_nolock(struct file *file, const struct iovec *iov,
 				unsigned long nr_segs, loff_t *ppos);
 extern ssize_t generic_file_sendfile(struct file *, loff_t *, size_t, read_actor_t, void *);
@@ -1930,6 +2022,12 @@ extern int vfs_lstat_fd(int dfd, char __user *, struct kstat *);
 extern int vfs_fstat(unsigned int, struct kstat *);
 
 extern int vfs_ioctl(struct file *, unsigned int, unsigned int, unsigned long);
+extern int __generic_block_fiemap(struct inode *inode,
+				  struct fiemap_extent_info *fieinfo, u64 start,
+				  u64 len, get_block_t *get_block);
+extern int generic_block_fiemap(struct inode *inode,
+				struct fiemap_extent_info *fieinfo, u64 start,
+				u64 len, get_block_t *get_block);
 
 extern struct file_system_type *get_fs_type(const char *name);
 extern struct super_block *get_super(struct block_device *);
@@ -1953,6 +2051,12 @@ extern int simple_prepare_write(struct file *file, struct page *page,
 			unsigned offset, unsigned to);
 extern int simple_commit_write(struct file *file, struct page *page,
 				unsigned offset, unsigned to);
+extern int simple_write_begin(struct file *file, struct address_space *mapping,
+			loff_t pos, unsigned len, unsigned flags,
+			struct page **pagep, void **fsdata);
+extern int simple_write_end(struct file *file, struct address_space *mapping,
+			loff_t pos, unsigned len, unsigned copied,
+			struct page *page, void *fsdata);
 
 extern struct dentry *simple_lookup(struct inode *, struct dentry *, struct nameidata *);
 extern ssize_t generic_read_dir(struct file *, char __user *, size_t, loff_t *);

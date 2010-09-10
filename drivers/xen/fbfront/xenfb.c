@@ -119,12 +119,19 @@ static void xenfb_update_screen(struct xenfb_info *info)
 	mutex_lock(&info->mm_lock);
 
 	spin_lock_irqsave(&info->dirty_lock, flags);
-	y1 = info->y1;
-	y2 = info->y2;
-	x1 = info->x1;
-	x2 = info->x2;
-	info->x1 = info->y1 = INT_MAX;
-	info->x2 = info->y2 = 0;
+	if (info->dirty){
+		info->dirty = 0;
+		y1 = info->y1;
+		y2 = info->y2;
+		x1 = info->x1;
+		x2 = info->x2;
+		info->x1 = info->y1 = INT_MAX;
+		info->x2 = info->y2 = 0;
+	} else {
+		spin_unlock_irqrestore(&info->dirty_lock, flags);
+		mutex_unlock(&info->mm_lock);
+		return;
+	}
 	spin_unlock_irqrestore(&info->dirty_lock, flags);
 
 	list_for_each_entry(map, &info->mappings, link) {
@@ -150,10 +157,7 @@ static int xenfb_thread(void *data)
 	struct xenfb_info *info = data;
 
 	while (!kthread_should_stop()) {
-		if (info->dirty) {
-			info->dirty = 0;
-			xenfb_update_screen(info);
-		}
+		xenfb_update_screen(info);
 		wait_event_interruptible(info->wq,
 			kthread_should_stop() || info->dirty);
 		try_to_freeze();
@@ -479,15 +483,6 @@ static int __devinit xenfb_probe(struct xenbus_device *dev,
 	}
 	info->fb_info = fb_info;
 
-	/* FIXME should this be delayed until backend XenbusStateConnected? */
-	info->kthread = kthread_run(xenfb_thread, info, "xenfb thread");
-	if (IS_ERR(info->kthread)) {
-		ret = PTR_ERR(info->kthread);
-		info->kthread = NULL;
-		xenbus_dev_fatal(dev, ret, "register_framebuffer");
-		goto error;
-	}
-
 	ret = xenfb_connect_backend(dev, info);
 	if (ret < 0)
 		goto error;
@@ -649,6 +644,13 @@ static void xenfb_backend_changed(struct xenbus_device *dev,
 			val = 0;
 		if (val)
 			info->update_wanted = 1;
+
+		info->kthread = kthread_run(xenfb_thread, info, "xenfb thread");
+		if (IS_ERR(info->kthread)) {
+			info->kthread = NULL;
+			xenbus_dev_fatal(dev, PTR_ERR(info->kthread),
+					"xenfb_thread");
+		}
 		break;
 
 	case XenbusStateClosing:

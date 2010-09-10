@@ -32,8 +32,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: uverbs_main.c 2733 2005-06-28 19:14:34Z roland $
  */
 
 #include <linux/module.h>
@@ -352,7 +350,7 @@ static int ib_uverbs_event_close(struct inode *inode, struct file *filp)
 	struct ib_uverbs_event *entry, *tmp;
 
 	spin_lock_irq(&file->lock);
-	file->file = NULL;
+	file->is_closed = 1;
 	list_for_each_entry_safe(entry, tmp, &file->event_list, list) {
 		if (entry->counter)
 			list_del(&entry->obj_list);
@@ -390,7 +388,7 @@ void ib_uverbs_comp_handler(struct ib_cq *cq, void *cq_context)
 		return;
 
 	spin_lock_irqsave(&file->lock, flags);
-	if (!file->file) {
+	if (file->is_closed) {
 		spin_unlock_irqrestore(&file->lock, flags);
 		return;
 	}
@@ -423,7 +421,7 @@ static void ib_uverbs_async_handler(struct ib_uverbs_file *file,
 	unsigned long flags;
 
 	spin_lock_irqsave(&file->async_file->lock, flags);
-	if (!file->async_file->file) {
+	if (file->async_file->is_closed) {
 		spin_unlock_irqrestore(&file->async_file->lock, flags);
 		return;
 	}
@@ -509,6 +507,7 @@ struct file *ib_uverbs_alloc_event_file(struct ib_uverbs_file *uverbs_file,
 	ev_file->uverbs_file = uverbs_file;
 	ev_file->async_queue = NULL;
 	ev_file->is_async    = is_async;
+	ev_file->is_closed   = 0;
 
 	*fd = get_unused_fd();
 	if (*fd < 0) {
@@ -521,8 +520,6 @@ struct file *ib_uverbs_alloc_event_file(struct ib_uverbs_file *uverbs_file,
 		ret = -ENFILE;
 		goto err_fd;
 	}
-
-	ev_file->file      = filp;
 
 	/*
 	 * fops_get() can't fail here, because we're coming from a
@@ -616,6 +613,18 @@ static int ib_uverbs_mmap(struct file *filp, struct vm_area_struct *vma)
 		return file->device->ib_dev->mmap(file->ucontext, vma);
 }
 
+/*
+ * ib_uverbs_open() does not need the BKL:
+ *
+ *  - dev_table[] accesses are protected by map_lock, the
+ *    ib_uverbs_device structures are properly reference counted, and
+ *    everything else is purely local to the file being created, so
+ *    races against other open calls are not a problem;
+ *  - there is no ioctl method to race against;
+ *  - the device is added to dev_table[] as the last part of module
+ *    initialization, the open method will either immediately run
+ *    -ENXIO, or all required initialization will be done.
+ */
 static int ib_uverbs_open(struct inode *inode, struct file *filp)
 {
 	struct ib_uverbs_device *dev;
@@ -657,7 +666,6 @@ err_module:
 
 err:
 	kref_put(&dev->ref, ib_uverbs_release_dev);
-
 	return ret;
 }
 

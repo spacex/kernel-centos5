@@ -39,6 +39,7 @@
 #include "spufs.h"
 
 #define SPUFS_MMAP_4K (PAGE_SIZE == 0x1000)
+#define SPUFS_PS_MAP_SIZE	0x20000
 
 /* Simple attribute files */
 struct spufs_attr {
@@ -370,6 +371,9 @@ static unsigned long spufs_ps_nopfn(struct vm_area_struct *vma,
 	 */
 	get_spu_context(ctx);
 
+	if (fatal_signal_pending(current))
+		return VM_FAULT_SIGBUS;
+
 	/*
 	 * We have to wait for context to be loaded before we have
 	 * pages to hand out to the user, but we don't want to wait
@@ -533,16 +537,17 @@ spufs_regs_write(struct file *file, const char __user *buffer,
 	struct spu_lscsa *lscsa = ctx->csa.lscsa;
 	int ret;
 
-	size = min_t(ssize_t, sizeof lscsa->gprs - *pos, size);
-	if (size <= 0)
+	if (*pos >= sizeof(lscsa->gprs))
 		return -EFBIG;
+
+	size = min_t(ssize_t, sizeof(lscsa->gprs) - *pos, size);
 	*pos += size;
 
 	ret = spu_acquire_saved(ctx);
 	if (ret)
 		return ret;
 
-	ret = copy_from_user(lscsa->gprs + *pos - size,
+	ret = copy_from_user((char *)lscsa->gprs + *pos - size,
 			     buffer, size) ? -EFAULT : size;
 
 	spu_release_saved(ctx);
@@ -588,9 +593,10 @@ spufs_fpcr_write(struct file *file, const char __user * buffer,
 	struct spu_lscsa *lscsa = ctx->csa.lscsa;
 	int ret;
 
-	size = min_t(ssize_t, sizeof(lscsa->fpcr) - *pos, size);
-	if (size <= 0)
+	if (*pos >= sizeof(lscsa->fpcr))
 		return -EFBIG;
+
+	size = min_t(ssize_t, sizeof(lscsa->fpcr) - *pos, size);
 
 	ret = spu_acquire_saved(ctx);
 	if (ret)
@@ -2583,22 +2589,22 @@ void spu_switch_log_notify(struct spu *spu, struct spu_context *ctx,
 	wake_up(&ctx->switch_log->wait);
 }
 
-struct tree_descr spufs_dir_contents[] = {
+const struct spufs_tree_descr spufs_dir_contents[] = {
 	{ "capabilities", &spufs_caps_fops, 0444, },
-	{ "mem",  &spufs_mem_fops,  0666, },
-	{ "regs", &spufs_regs_fops,  0666, },
+	{ "mem",  &spufs_mem_fops,  0666, LS_SIZE, },
+	{ "regs", &spufs_regs_fops,  0666, sizeof(struct spu_reg128[128]), },
 	{ "mbox", &spufs_mbox_fops, 0444, },
 	{ "ibox", &spufs_ibox_fops, 0444, },
 	{ "wbox", &spufs_wbox_fops, 0222, },
-	{ "mbox_stat", &spufs_mbox_stat_fops, 0444, },
-	{ "ibox_stat", &spufs_ibox_stat_fops, 0444, },
-	{ "wbox_stat", &spufs_wbox_stat_fops, 0444, },
+	{ "mbox_stat", &spufs_mbox_stat_fops, 0444, sizeof(u32), },
+	{ "ibox_stat", &spufs_ibox_stat_fops, 0444, sizeof(u32), },
+	{ "wbox_stat", &spufs_wbox_stat_fops, 0444, sizeof(u32), },
 	{ "signal1", &spufs_signal1_fops, 0666, },
 	{ "signal2", &spufs_signal2_fops, 0666, },
 	{ "signal1_type", &spufs_signal1_type, 0666, },
 	{ "signal2_type", &spufs_signal2_type, 0666, },
 	{ "cntl", &spufs_cntl_fops,  0666, },
-	{ "fpcr", &spufs_fpcr_fops, 0666, },
+	{ "fpcr", &spufs_fpcr_fops, 0666, sizeof(struct spu_reg128), },
 	{ "lslr", &spufs_lslr_ops, 0444, },
 	{ "mfc", &spufs_mfc_fops, 0666, },
 	{ "mss", &spufs_mss_fops, 0666, },
@@ -2608,29 +2614,31 @@ struct tree_descr spufs_dir_contents[] = {
 	{ "decr_status", &spufs_decr_status_ops, 0666, },
 	{ "event_mask", &spufs_event_mask_ops, 0666, },
 	{ "event_status", &spufs_event_status_ops, 0444, },
-	{ "psmap", &spufs_psmap_fops, 0666, },
+	{ "psmap", &spufs_psmap_fops, 0666, SPUFS_PS_MAP_SIZE, },
 	{ "phys-id", &spufs_id_ops, 0666, },
 	{ "object-id", &spufs_object_id_ops, 0666, },
-	{ "mbox_info", &spufs_mbox_info_fops, 0444, },
-	{ "ibox_info", &spufs_ibox_info_fops, 0444, },
-	{ "wbox_info", &spufs_wbox_info_fops, 0444, },
-	{ "dma_info", &spufs_dma_info_fops, 0444, },
-	{ "proxydma_info", &spufs_proxydma_info_fops, 0444, },
+	{ "mbox_info", &spufs_mbox_info_fops, 0444, sizeof(u32), },
+	{ "ibox_info", &spufs_ibox_info_fops, 0444, sizeof(u32), },
+	{ "wbox_info", &spufs_wbox_info_fops, 0444, sizeof(u32), },
+	{ "dma_info", &spufs_dma_info_fops, 0444,
+		sizeof(struct spu_dma_info), },
+	{ "proxydma_info", &spufs_proxydma_info_fops, 0444,
+		sizeof(struct spu_proxydma_info)},
 	{ "tid", &spufs_tid_fops, 0444, },
 	{ "stat", &spufs_stat_fops, 0444, },
 	{ "switch_log", &spufs_switch_log_fops, 0444 },
 	{},
 };
 
-struct tree_descr spufs_dir_nosched_contents[] = {
+const struct spufs_tree_descr spufs_dir_nosched_contents[] = {
 	{ "capabilities", &spufs_caps_fops, 0444, },
-	{ "mem",  &spufs_mem_fops,  0666, },
+	{ "mem",  &spufs_mem_fops,  0666, LS_SIZE, },
 	{ "mbox", &spufs_mbox_fops, 0444, },
 	{ "ibox", &spufs_ibox_fops, 0444, },
 	{ "wbox", &spufs_wbox_fops, 0222, },
-	{ "mbox_stat", &spufs_mbox_stat_fops, 0444, },
-	{ "ibox_stat", &spufs_ibox_stat_fops, 0444, },
-	{ "wbox_stat", &spufs_wbox_stat_fops, 0444, },
+	{ "mbox_stat", &spufs_mbox_stat_fops, 0444, sizeof(u32), },
+	{ "ibox_stat", &spufs_ibox_stat_fops, 0444, sizeof(u32), },
+	{ "wbox_stat", &spufs_wbox_stat_fops, 0444, sizeof(u32), },
 	{ "signal1", &spufs_signal1_fops, 0666, },
 	{ "signal2", &spufs_signal2_fops, 0666, },
 	{ "signal1_type", &spufs_signal1_type, 0666, },
@@ -2639,7 +2647,7 @@ struct tree_descr spufs_dir_nosched_contents[] = {
 	{ "mfc", &spufs_mfc_fops, 0666, },
 	{ "cntl", &spufs_cntl_fops,  0666, },
 	{ "npc", &spufs_npc_ops, 0666, },
-	{ "psmap", &spufs_psmap_fops, 0666, },
+	{ "psmap", &spufs_psmap_fops, 0666, SPUFS_PS_MAP_SIZE, },
 	{ "phys-id", &spufs_id_ops, 0666, },
 	{ "object-id", &spufs_object_id_ops, 0666, },
 	{ "tid", &spufs_tid_fops, 0444, },
@@ -2647,7 +2655,7 @@ struct tree_descr spufs_dir_nosched_contents[] = {
 	{},
 };
 
-struct spufs_coredump_reader spufs_coredump_read[] = {
+const struct spufs_coredump_reader spufs_coredump_read[] = {
 	{ "regs", __spufs_regs_read, NULL, sizeof(struct spu_reg128[128])},
 	{ "fpcr", __spufs_fpcr_read, NULL, sizeof(struct spu_reg128) },
 	{ "lslr", NULL, spufs_lslr_get, 19 },

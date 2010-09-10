@@ -5,6 +5,7 @@
 #include <linux/smp.h>
 #include <linux/reboot.h>
 
+#include <asm/kexec.h>
 #include <asm/reg.h>
 #include <asm/io.h>
 #include <asm/prom.h>
@@ -112,12 +113,22 @@ static int __init cbe_ptcal_enable_on_node(int nid, int order)
 
 	area->nid = nid;
 	area->order = order;
-	area->pages = alloc_pages_node(area->nid, GFP_KERNEL, area->order);
+	area->pages = alloc_pages_thisnode(area->nid, GFP_KERNEL, area->order);
 
-	if (!area->pages)
+	if (!area->pages) {
+		printk(KERN_WARNING "%s: no page on node %d\n",
+			__FUNCTION__, area->nid);
 		goto out_free_area;
+	}
 
-	addr = __pa(page_address(area->pages));
+	/*
+	 * We move the ptcal area to the middle of the allocated
+	 * page, in order to avoid prefetches in memcpy and similar
+	 * functions stepping on it.
+	 */
+	addr = __pa(page_address(area->pages)) + (PAGE_SIZE >> 1);
+	printk(KERN_DEBUG "%s: enabling PTCAL on node %d address=0x%016lx\n",
+			__FUNCTION__, area->nid, addr);
 
 	ret = -EIO;
 	if (rtas_call(ptcal_start_tok, 3, 1, NULL, area->nid,

@@ -1211,6 +1211,8 @@ fn_trie_insert(struct fib_table *tb, struct rtmsg *r, struct kern_rta *rta,
 			fib_release_info(fi_drop);
 			if (state & FA_S_ACCESSED)
 				rt_cache_flush(-1);
+			rtmsg_fib(RTM_NEWROUTE, htonl(key), new_fa, plen,
+				  tb->tb_id, nlhdr, req, NLM_F_REPLACE);
 
 			goto succeeded;
 		}
@@ -1262,7 +1264,8 @@ fn_trie_insert(struct fib_table *tb, struct rtmsg *r, struct kern_rta *rta,
 			  (fa ? &fa->fa_list : fa_head));
 
 	rt_cache_flush(-1);
-	rtmsg_fib(RTM_NEWROUTE, htonl(key), new_fa, plen, tb->tb_id, nlhdr, req);
+	rtmsg_fib(RTM_NEWROUTE, htonl(key), new_fa, plen,
+		  tb->tb_id, nlhdr, req, 0);
 succeeded:
 	return 0;
 
@@ -1614,7 +1617,8 @@ fn_trie_delete(struct fib_table *tb, struct rtmsg *r, struct kern_rta *rta,
 		return -ESRCH;
 
 	fa = fa_to_delete;
-	rtmsg_fib(RTM_DELROUTE, htonl(key), fa, plen, tb->tb_id, nlhdr, req);
+	rtmsg_fib(RTM_DELROUTE, htonl(key), fa, plen,
+		  tb->tb_id, nlhdr, req, 0);
 
 	l = fib_find_node(t, key);
 	li = find_leaf_info(l, plen);

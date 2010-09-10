@@ -25,17 +25,6 @@
  */
 
 /*
- * The FCoE ethertype eventually goes in net/if_ether.h.
- */
-#ifndef ETH_P_FCOE
-#define	ETH_P_FCOE	0x8906		/* FCOE ether type */
-#endif
-
-#ifndef ETH_P_8021Q
-#define	ETH_P_8021Q	0x8100
-#endif
-
-/*
  * FC_FCOE_OUI hasn't been standardized yet.   XXX TBD.
  */
 #ifndef FC_FCOE_OUI
@@ -83,6 +72,18 @@ struct fcoe_crc_eof {
 	__u8		fcoe_eof;	/* EOF from RFC 3643 */
 	__u8		fcoe_resvd[3];	/* reserved - send zero and ignore */
 } __attribute__((packed));
+
+/*
+ * Minimum FCoE + FC header length
+ * 14 bytes FCoE header + 24 byte FC header = 38 bytes
+ */
+#define FCOE_HEADER_LEN 38
+
+/*
+ * Minimum FCoE frame size
+ * 14 bytes FCoE header + 24 byte FC header + 8 byte FCoE trailer = 46 bytes
+ */
+#define FCOE_MIN_FRAME 46
 
 /*
  * fc_fcoe_set_mac - Store OUI + DID into MAC address field.

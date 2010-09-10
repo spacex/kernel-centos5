@@ -35,7 +35,7 @@ void dlm_add_requestqueue(struct dlm_ls *ls, int nodeid, struct dlm_header *hd)
 	struct rq_entry *e;
 	int length = hd->h_length;
 
-	e = kmalloc(sizeof(struct rq_entry) + length, GFP_KERNEL);
+	e = kmalloc(sizeof(struct rq_entry) + length, ls->ls_allocation);
 	if (!e) {
 		log_print("dlm_add_requestqueue: out of memory len %d", length);
 		return;

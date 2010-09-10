@@ -978,7 +978,7 @@ static struct ib_sa_path_rec *get_next_path(struct ib_sa_attr_iter *iter,
 static void report_path(struct work_struct *work)
 {
 	struct sa_path_request *req;
-	
+
 	req = container_of(work, struct sa_path_request, work);
 	req->callback(0, &req->path_rec, req->context);
 	ib_sa_client_put(req->client);
@@ -1058,7 +1058,7 @@ int ib_sa_path_rec_get(struct ib_sa_client *client,
 	req->context = context;
 
 	ib_sa_client_get(client);
-	queue_work(sa_wq, &req->work);	
+	queue_work(sa_wq, &req->work);
 	*sa_query = ERR_PTR(-EEXIST);
 	return 0;
 

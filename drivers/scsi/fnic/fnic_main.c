@@ -16,19 +16,15 @@
  * SOFTWARE.
  */
 #include <linux/module.h>
-#include <linux/kernel.h>
+#include <linux/mempool.h>
 #include <linux/string.h>
 #include <linux/errno.h>
-#include <linux/types.h>
 #include <linux/init.h>
 #include <linux/pci.h>
 #include <linux/skbuff.h>
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>
-#include <linux/kthread.h>
-#include <asm/atomic.h>
-#include <scsi/scsi.h>
-#include <scsi/scsi_host.h>
+#include <linux/workqueue.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_device.h>
@@ -45,33 +41,22 @@
 #include "fnic_io.h"
 #include "fnic.h"
 #include "fnic_tag_map.h"
+#include "fnic_kcompat.h"
 
 #define PCI_DEVICE_ID_CISCO_FNIC	0x0045
 
-static int fnic_main_debug;
-
-#define FNIC_DEBUG_MAIN(fmt...)			\
-	do {					\
-		if (fnic_main_debug)		\
-			FNIC_DBG(fmt);		\
-	} while (0)
-
-/* timer to poll notification area for events. Used in case of MSI
- * interrupts being used by the device
- */
+/* Timer to poll notification area for events. Used for MSI interrupts */
 #define FNIC_NOTIFY_TIMER_PERIOD	(2 * HZ)
-
-/* Cache to pass events from ISR to fnic Thread */
-struct kmem_cache         *fnic_ev_cache;
 
 static struct kmem_cache *fnic_sgl_cache[FNIC_SGL_NUM_CACHES];
 static struct kmem_cache *fnic_io_req_cache;
-static atomic_t fnic_no;
+LIST_HEAD(fnic_list);
+DEFINE_SPINLOCK(fnic_list_lock);
 
 /* Supported devices by fnic module */
 static struct pci_device_id fnic_id_table[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_CISCO, PCI_DEVICE_ID_CISCO_FNIC) },
-	{ 0, }	/* end of table */
+	{ 0, }
 };
 
 MODULE_DESCRIPTION(DRV_DESCRIPTION);
@@ -81,11 +66,16 @@ MODULE_LICENSE("GPL v2");
 MODULE_VERSION(DRV_VERSION);
 MODULE_DEVICE_TABLE(pci, fnic_id_table);
 
-/* Exported to LibFC layer */
+unsigned int fnic_log_level;
+module_param(fnic_log_level, int, S_IRUGO|S_IWUSR);
+MODULE_PARM_DESC(fnic_log_level, "bit mask of fnic logging levels");
+
+
 static struct libfc_function_template fnic_transport_template = {
 	.frame_send = fnic_send,
-	.fcp_abort_io = fnic_scsi_abort_io,
-	.fcp_cleanup = fnic_scsi_cleanup
+	.fcp_abort_io = fnic_empty_scsi_cleanup,
+	.fcp_cleanup = fnic_empty_scsi_cleanup,
+	.exch_mgr_reset = fnic_exch_mgr_reset
 };
 
 static int fnic_slave_alloc(struct scsi_device *sdev)
@@ -157,13 +147,7 @@ static struct fc_function_template fnic_fc_functions = {
 	.issue_fc_host_lip = fnic_reset,
 	.get_fc_host_stats = fnic_get_stats,
 	.dd_fcrport_size = sizeof(struct fc_rport_libfc_priv),
-};
-
-const char *fnic_state_str[] = {
-	[FNIC_IN_FC_MODE] =           "FNIC_IN_FC_MODE",
-	[FNIC_IN_FC_TRANS_ETH_MODE] = "FNIC_IN_FC_TRANS_ETH_MODE",
-	[FNIC_IN_ETH_MODE] =          "FNIC_IN_ETH_MODE",
-	[FNIC_IN_ETH_TRANS_FC_MODE] = "FNIC_IN_ETH_TRANS_FC_MODE",
+	.terminate_rport_io = fnic_terminate_rport_io,
 };
 
 static void fnic_get_host_speed(struct Scsi_Host *shost)
@@ -201,8 +185,9 @@ static struct fc_host_statistics *fnic_get_stats(struct Scsi_Host *host)
 	spin_unlock_irqrestore(&fnic->fnic_lock, flags);
 
 	if (ret) {
-		FNIC_DEBUG_MAIN(DFX "fnic: Get vnic stats failed"
-				" 0x%x", fnic->fnic_no, ret);
+		FNIC_MAIN_DBG(KERN_DEBUG, fnic->lport->host,
+			      "fnic: Get vnic stats failed"
+			      " 0x%x", ret);
 		return stats;
 	}
 	vs = fnic->stats;
@@ -214,8 +199,8 @@ static struct fc_host_statistics *fnic_get_stats(struct Scsi_Host *host)
 	stats->dumped_frames = vs->tx.tx_drops + vs->rx.rx_drop;
 	stats->invalid_crc_count = vs->rx.rx_crc_errors;
 	stats->seconds_since_last_reset = (jiffies - lp->boot_time) / HZ;
-	stats->fcp_input_megabytes = fnic->fcp_input_bytes / 1000000;
-	stats->fcp_output_megabytes = fnic->fcp_output_bytes / 1000000;
+	stats->fcp_input_megabytes = div_u64(fnic->fcp_input_bytes, 1000000);
+	stats->fcp_output_megabytes = div_u64(fnic->fcp_output_bytes, 1000000);
 
 	return stats;
 }
@@ -228,69 +213,41 @@ void fnic_log_q_error(struct fnic *fnic)
 	for (i = 0; i < fnic->raw_wq_count; i++) {
 		error_status = ioread32(&fnic->wq[i].ctrl->error_status);
 		if (error_status)
-			printk(KERN_ERR DFX "WQ[%d] error_status"
-			       " %d\n", fnic->fnic_no, i, error_status);
+			shost_printk(KERN_ERR, fnic->lport->host,
+				     "WQ[%d] error_status"
+				     " %d\n", i, error_status);
 	}
 
 	for (i = 0; i < fnic->rq_count; i++) {
 		error_status = ioread32(&fnic->rq[i].ctrl->error_status);
 		if (error_status)
-			printk(KERN_ERR DFX "RQ[%d] error_status"
-			       " %d\n", fnic->fnic_no, i, error_status);
+			shost_printk(KERN_ERR, fnic->lport->host,
+				     "RQ[%d] error_status"
+				     " %d\n", i, error_status);
 	}
 
 	for (i = 0; i < fnic->wq_copy_count; i++) {
 		error_status = ioread32(&fnic->wq_copy[i].ctrl->error_status);
 		if (error_status)
-			printk(KERN_ERR DFX "CWQ[%d] error_status"
-			       " %d\n", fnic->fnic_no, i, error_status);
+			shost_printk(KERN_ERR, fnic->lport->host,
+				     "CWQ[%d] error_status"
+				     " %d\n", i, error_status);
 	}
 }
 
-static void fnic_handle_link_event(struct fnic *fnic)
+void fnic_handle_link_event(struct fnic *fnic)
 {
-	int link_status = vnic_dev_link_status(fnic->vdev);
-	struct fnic_event *event;
-	u8 list_was_empty;
 	unsigned long flags;
 
-	FNIC_DEBUG_MAIN(DFX "link %s\n", fnic->fnic_no,
-			(link_status ? "up" : "down"));
-
-	if (fnic->in_remove)
-		return;
-
-	event = kmem_cache_alloc(fnic_ev_cache, GFP_ATOMIC);
-	if (!event) {
-		FNIC_DEBUG_MAIN(DFX "Cannot allocate a event, "
-				"cannot indicate link event to FCS\n",
-				fnic->fnic_no);
+	spin_lock_irqsave(&fnic->fnic_lock, flags);
+	if (fnic->stop_rx_link_events) {
+		spin_unlock_irqrestore(&fnic->fnic_lock, flags);
 		return;
 	}
+	spin_unlock_irqrestore(&fnic->fnic_lock, flags);
 
-	/* Pass the event to thread */
-	memset(event, 0, sizeof(struct fnic_event));
-	event->fnic = fnic;
-	event->ev_type = EV_TYPE_LINK_UP;
-	if (!link_status) {
-		event->ev_type = EV_TYPE_LINK_DOWN;
-		fnic->lport->host_stats.link_failure_count++;
-	}
+	queue_work(fnic_event_queue, &fnic->link_work);
 
-	spin_lock_irqsave(&fnic_eventlist_lock, flags);
-	list_was_empty = list_empty(&fnic_eventlist);
-	list_add_tail(&event->list, &fnic_eventlist);
-	spin_unlock_irqrestore(&fnic_eventlist_lock, flags);
-
-	if (list_was_empty)
-		wake_up_process(fnic_thread);
-
-	return;
-}
-
-void fnic_notify_check(struct fnic *fnic)
-{
-	fnic_handle_link_event(fnic);
 }
 
 static int fnic_notify_set(struct fnic *fnic)
@@ -308,9 +265,10 @@ static int fnic_notify_set(struct fnic *fnic)
 		err = vnic_dev_notify_set(fnic->vdev, FNIC_MSIX_ERR_NOTIFY);
 		break;
 	default:
-		printk(KERN_ERR DFX "Interrupt mode should be set up"
-		       " before devcmd notify set %d\n", fnic->fnic_no,
-		       vnic_dev_get_intr_mode(fnic->vdev));
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "Interrupt mode should be set up"
+			     " before devcmd notify set %d\n",
+			     vnic_dev_get_intr_mode(fnic->vdev));
 		err = -1;
 		break;
 	}
@@ -322,14 +280,19 @@ static void fnic_notify_timer(unsigned long data)
 {
 	struct fnic *fnic = (struct fnic *)data;
 
-	fnic_notify_check(fnic);
-	mod_timer(&fnic->notify_timer, jiffies + FNIC_NOTIFY_TIMER_PERIOD);
+	fnic_handle_link_event(fnic);
+	mod_timer(&fnic->notify_timer,
+		  round_jiffies(jiffies + FNIC_NOTIFY_TIMER_PERIOD));
 }
 
 static void fnic_notify_timer_start(struct fnic *fnic)
 {
 	switch (vnic_dev_get_intr_mode(fnic->vdev)) {
 	case VNIC_DEV_INTR_MODE_MSI:
+		/*
+		 * Schedule first timeout immediately. The driver is
+		 * initiatialized and ready to look for link up notification
+		 */
 		mod_timer(&fnic->notify_timer, jiffies);
 		break;
 	default:
@@ -365,20 +328,6 @@ static int fnic_dev_wait(struct vnic_dev *vdev,
 	return -ETIMEDOUT;
 }
 
-static int fnic_dev_open(struct fnic *fnic)
-{
-	int err;
-
-	err = fnic_dev_wait(fnic->vdev, vnic_dev_open,
-			    vnic_dev_open_done, 0);
-	if (err)
-		printk(KERN_ERR DFX
-		       "vNIC device open failed, err %d.\n",
-		       fnic->fnic_no, err);
-
-	return err;
-}
-
 static int fnic_cleanup(struct fnic *fnic)
 {
 	unsigned int i;
@@ -386,8 +335,6 @@ static int fnic_cleanup(struct fnic *fnic)
 	unsigned long flags;
 	struct fc_frame *flogi = NULL;
 	struct fc_frame *flogi_resp = NULL;
-
-	del_timer_sync(&fnic->notify_timer);
 
 	vnic_dev_disable(fnic->vdev);
 	for (i = 0; i < fnic->intr_count; i++)
@@ -428,7 +375,8 @@ static int fnic_cleanup(struct fnic *fnic)
 	for (i = 0; i < fnic->intr_count; i++)
 		vnic_intr_clean(&fnic->intr[i]);
 
-	/* Remove cached flogi and flogi resp frames if any
+	/*
+	 * Remove cached flogi and flogi resp frames if any
 	 * These frames are not in any queue, and therefore queue
 	 * cleanup does not clean them. So clean them explicitly
 	 */
@@ -440,10 +388,10 @@ static int fnic_cleanup(struct fnic *fnic)
 	spin_unlock_irqrestore(&fnic->fnic_lock, flags);
 
 	if (flogi)
-		fnic_fc_frame_free(flogi);
+		dev_kfree_skb(fp_skb(flogi));
 
 	if (flogi_resp)
-		fnic_fc_frame_free(flogi_resp);
+		dev_kfree_skb(fp_skb(flogi_resp));
 
 	scsi_free_shared_tag_map(fnic->lport->host);
 
@@ -480,8 +428,10 @@ static int __devinit fnic_probe(struct pci_dev *pdev,
 	mempool_t *pool;
 	int err;
 	int i;
+	unsigned long flags;
 
-	/* Allocate SCSI Host and set up association between host,
+	/*
+	 * Allocate SCSI Host and set up association between host,
 	 * local port, and fnic
 	 */
 	host = scsi_host_alloc(&fnic_host_template,
@@ -496,16 +446,15 @@ static int __devinit fnic_probe(struct pci_dev *pdev,
 	fnic = lport_priv(lp);
 	fnic->lport = lp;
 
-	/* fnic number starts from 0 onwards */
-	fnic->fnic_no = atomic_add_return(1, &fnic_no);
 	snprintf(fnic->name, sizeof(fnic->name) - 1, "%s%d", DRV_NAME,
-		 fnic->fnic_no);
+		 host->host_no);
 
 	host->transportt = fnic_fc_transport;
 
 	err = scsi_init_shared_tag_map(host, FNIC_MAX_IO_REQ);
 	if (err) {
-		printk(KERN_ERR PFX "Unable to alloc shared tag map\n");
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "Unable to alloc shared tag map\n");
 		goto err_out_free_hba;
 	}
 
@@ -516,15 +465,15 @@ static int __devinit fnic_probe(struct pci_dev *pdev,
 
 	err = pci_enable_device(pdev);
 	if (err) {
-		printk(KERN_ERR DFX "Cannot enable PCI device, aborting.\n",
-		       fnic->fnic_no);
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "Cannot enable PCI device, aborting.\n");
 		goto err_out_free_tag_map;
 	}
 
 	err = pci_request_regions(pdev, DRV_NAME);
 	if (err) {
-		printk(KERN_ERR DFX "Cannot enable PCI resources, aborting\n",
-		       fnic->fnic_no);
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "Cannot enable PCI resources, aborting\n");
 		goto err_out_disable_device;
 	}
 
@@ -538,31 +487,32 @@ static int __devinit fnic_probe(struct pci_dev *pdev,
 	if (err) {
 		err = pci_set_dma_mask(pdev, DMA_32BIT_MASK);
 		if (err) {
-			printk(KERN_ERR DFX "No usable DMA configuration "
-			       "aborting\n", fnic->fnic_no);
+			shost_printk(KERN_ERR, fnic->lport->host,
+				     "No usable DMA configuration "
+				     "aborting\n");
 			goto err_out_release_regions;
 		}
 		err = pci_set_consistent_dma_mask(pdev, DMA_32BIT_MASK);
 		if (err) {
-			printk(KERN_ERR DFX "Unable to obtain 32-bit DMA "
-			       "for consistent allocations, aborting.\n",
-			       fnic->fnic_no);
+			shost_printk(KERN_ERR, fnic->lport->host,
+				     "Unable to obtain 32-bit DMA "
+				     "for consistent allocations, aborting.\n");
 			goto err_out_release_regions;
 		}
 	} else {
 		err = pci_set_consistent_dma_mask(pdev, DMA_40BIT_MASK);
 		if (err) {
-			printk(KERN_ERR DFX "Unable to obtain 40-bit DMA "
-			       "for consistent allocations, aborting.\n",
-			       fnic->fnic_no);
+			shost_printk(KERN_ERR, fnic->lport->host,
+				     "Unable to obtain 40-bit DMA "
+				     "for consistent allocations, aborting.\n");
 			goto err_out_release_regions;
 		}
 	}
 
 	/* Map vNIC resources from BAR0 */
 	if (!(pci_resource_flags(pdev, 0) & IORESOURCE_MEM)) {
-		printk(KERN_ERR DFX "BAR0 not memory-map'able, aborting.\n",
-		       fnic->fnic_no);
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "BAR0 not memory-map'able, aborting.\n");
 		err = -ENODEV;
 		goto err_out_release_regions;
 	}
@@ -572,46 +522,50 @@ static int __devinit fnic_probe(struct pci_dev *pdev,
 	fnic->bar0.len = pci_resource_len(pdev, 0);
 
 	if (!fnic->bar0.vaddr) {
-		printk(KERN_ERR DFX "Cannot memory-map BAR0 res hdr, "
-		       "aborting.\n", fnic->fnic_no);
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "Cannot memory-map BAR0 res hdr, "
+			     "aborting.\n");
 		err = -ENODEV;
 		goto err_out_release_regions;
 	}
 
 	fnic->vdev = vnic_dev_register(NULL, fnic, pdev, &fnic->bar0);
 	if (!fnic->vdev) {
-		printk(KERN_ERR DFX "vNIC registration failed, "
-		       "aborting.\n", fnic->fnic_no);
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "vNIC registration failed, "
+			     "aborting.\n");
 		err = -ENODEV;
 		goto err_out_iounmap;
 	}
 
-	err = fnic_dev_open(fnic);
+	err = fnic_dev_wait(fnic->vdev, vnic_dev_open,
+			    vnic_dev_open_done, 0);
 	if (err) {
-		printk(KERN_ERR DFX
-		       "vNIC dev open failed, aborting.\n", fnic->fnic_no);
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "vNIC dev open failed, aborting.\n");
 		goto err_out_vnic_unregister;
 	}
 
 	err = vnic_dev_init(fnic->vdev, 0);
 	if (err) {
-		printk(KERN_ERR DFX
-		       "vNIC dev init failed, aborting.\n", fnic->fnic_no);
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "vNIC dev init failed, aborting.\n");
 		goto err_out_dev_close;
 	}
 
 	err = vnic_dev_mac_addr(fnic->vdev, fnic->mac_addr);
 	if (err) {
-		printk(KERN_ERR DFX "vNIC get MAC addr failed \n",
-		       fnic->fnic_no);
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "vNIC get MAC addr failed \n");
 		goto err_out_dev_close;
 	}
 
 	/* Get vNIC configuration */
 	err = fnic_get_vnic_config(fnic);
 	if (err) {
-		printk(KERN_ERR DFX "Get vNIC configuration failed, "
-		       "aborting.\n", fnic->fnic_no);
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "Get vNIC configuration failed, "
+			     "aborting.\n");
 		goto err_out_dev_close;
 	}
 	host->max_lun = fnic->config.luns_per_tgt;
@@ -621,21 +575,24 @@ static int __devinit fnic_probe(struct pci_dev *pdev,
 
 	err = fnic_set_intr_mode(fnic);
 	if (err) {
-		printk(KERN_ERR DFX "Failed to set intr mode, "
-		  "aborting.\n", fnic->fnic_no);
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "Failed to set intr mode, "
+			     "aborting.\n");
 		goto err_out_dev_close;
 	}
 
 	err = fnic_request_intr(fnic);
 	if (err) {
-		printk(KERN_ERR DFX "Unable to request irq.\n", fnic->fnic_no);
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "Unable to request irq.\n");
 		goto err_out_clear_intr;
 	}
 
 	err = fnic_alloc_vnic_resources(fnic);
 	if (err) {
-		printk(KERN_ERR DFX "Failed to alloc vNIC resources, "
-		       "aborting.\n", fnic->fnic_no);
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "Failed to alloc vNIC resources, "
+			     "aborting.\n");
 		goto err_out_free_intr;
 	}
 
@@ -661,13 +618,13 @@ static int __devinit fnic_probe(struct pci_dev *pdev,
 		goto err_out_free_resources;
 
 	pool = mempool_create(2, fnic_alloc_slab_dma, mempool_free_slab,
-			      (void *)fnic_sgl_cache[FNIC_SGL_CACHE_DFLT]);
+			      fnic_sgl_cache[FNIC_SGL_CACHE_DFLT]);
 	if (!pool)
 		goto err_out_free_ioreq_pool;
 	fnic->io_sgl_pool[FNIC_SGL_CACHE_DFLT] = pool;
 
 	pool = mempool_create(2, fnic_alloc_slab_dma, mempool_free_slab,
-			      (void *)fnic_sgl_cache[FNIC_SGL_CACHE_MAX]);
+			      fnic_sgl_cache[FNIC_SGL_CACHE_MAX]);
 	if (!pool)
 		goto err_out_free_dflt_pool;
 	fnic->io_sgl_pool[FNIC_SGL_CACHE_MAX] = pool;
@@ -682,46 +639,46 @@ static int __devinit fnic_probe(struct pci_dev *pdev,
 	fnic->state = FNIC_IN_FC_MODE;
 
 	/* Enable hardware stripping of vlan header on ingress */
-	fnic_set_nic_cfg(fnic, 0, 0, 0, 0, 0, 0, 1);
+	fnic_set_nic_config(fnic, 0, 0, 0, 0, 0, 0, 1);
 
 	/* Setup notification buffer area */
 	err = fnic_notify_set(fnic);
 	if (err) {
-		printk(KERN_ERR DFX
-		       "Failed to alloc notify buffer, aborting.\n",
-		       fnic->fnic_no);
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "Failed to alloc notify buffer, aborting.\n");
 		goto err_out_free_max_pool;
 	}
 
 	/* Setup notify timer when using MSI interrupts */
-	setup_timer(&fnic->notify_timer,
-		    fnic_notify_timer, (unsigned long)fnic);
-
-	FNIC_DEBUG_MAIN(DFX "host no %d\n", fnic->fnic_no, host->host_no);
+	if (vnic_dev_get_intr_mode(fnic->vdev) == VNIC_DEV_INTR_MODE_MSI)
+		setup_timer(&fnic->notify_timer,
+			    fnic_notify_timer, (unsigned long)fnic);
 
 	/* allocate RQ buffers and post them to RQ*/
 	for (i = 0; i < fnic->rq_count; i++) {
 		err = vnic_rq_fill(&fnic->rq[i], fnic_alloc_rq_frame);
 		if (err) {
-			printk(KERN_ERR DFX "fnic_alloc_rq_frame can't alloc "
-			       "frame\n", fnic->fnic_no);
+			shost_printk(KERN_ERR, fnic->lport->host,
+				     "fnic_alloc_rq_frame can't alloc "
+				     "frame\n");
 			goto err_out_free_rq_buf;
 		}
 	}
 
-	/* Initialization done with PCI system, hardware, firmware.
+	/*
+	 * Initialization done with PCI system, hardware, firmware.
 	 * Add host to SCSI
 	 */
 	err = scsi_add_host(lp->host, &pdev->dev);
 	if (err) {
-		printk(KERN_ERR DFX "fnic: scsi_add_host failed...exiting\n",
-		       fnic->fnic_no);
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "fnic: scsi_add_host failed...exiting\n");
 		goto err_out_free_rq_buf;
 	}
 
 	/* Start local port initiatialization */
 
-	lp->link_status = 0;
+	lp->link_up = 0;
 	lp->tt = fnic_transport_template;
 
 	lp->emp = fc_exch_mgr_alloc(lp, FC_CLASS_3,
@@ -732,7 +689,8 @@ static int __devinit fnic_probe(struct pci_dev *pdev,
 		goto err_out_remove_scsi_host;
 	}
 
-	lp->max_retry_count = 3;
+	lp->max_retry_count = fnic->config.flogi_retries;
+	lp->max_rport_retry_count = fnic->config.plogi_retries;
 	lp->service_params = (FCP_SPPF_INIT_FCN | FCP_SPPF_RD_XRDY_DIS |
 			      FCP_SPPF_CONF_COMPL);
 	if (fnic->config.flags & VFCF_FCP_SEQ_LVL_ERR)
@@ -763,7 +721,15 @@ static int __devinit fnic_probe(struct pci_dev *pdev,
 	sprintf(fc_host_symbolic_name(lp->host),
 		DRV_NAME " v" DRV_VERSION " over %s", fnic->name);
 
-	/* Enable queues*/
+	spin_lock_irqsave(&fnic_list_lock, flags);
+	list_add_tail(&fnic->list, &fnic_list);
+	spin_unlock_irqrestore(&fnic_list_lock, flags);
+
+	INIT_WORK(&fnic->link_work, fnic_handle_link);
+	INIT_WORK(&fnic->frame_work, fnic_handle_frame);
+	skb_queue_head_init(&fnic->frame_queue);
+
+	/* Enable all queues */
 	for (i = 0; i < fnic->raw_wq_count; i++)
 		vnic_wq_enable(&fnic->wq[i]);
 	for (i = 0; i < fnic->rq_count; i++)
@@ -823,9 +789,54 @@ err_out:
 static void __devexit fnic_remove(struct pci_dev *pdev)
 {
 	struct fnic *fnic = pci_get_drvdata(pdev);
+	unsigned long flags;
+
+	/*
+	 * Mark state so that the workqueue thread stops forwarding
+	 * received frames and link events to the local port. ISR and
+	 * other threads that can queue work items will also stop
+	 * creating work items on the fnic workqueue
+	 */
+	spin_lock_irqsave(&fnic->fnic_lock, flags);
+	fnic->stop_rx_link_events = 1;
+	spin_unlock_irqrestore(&fnic->fnic_lock, flags);
+
+	if (vnic_dev_get_intr_mode(fnic->vdev) == VNIC_DEV_INTR_MODE_MSI)
+		del_timer_sync(&fnic->notify_timer);
+
+	/*
+	 * Flush the fnic event queue. After this call, there should
+	 * be no event queued for this fnic device in the workqueue
+	 */
+	flush_workqueue(fnic_event_queue);
+	skb_queue_purge(&fnic->frame_queue);
+
+	/*
+	 * Log off the fabric. This stops all remote ports, dns port,
+	 * logs off the fabric. This flushes all rport, disc, lport work
+	 * before returning
+	 */
+	fc_fabric_logoff(fnic->lport);
+
+	spin_lock_irqsave(&fnic->fnic_lock, flags);
+	fnic->in_remove = 1;
+	spin_unlock_irqrestore(&fnic->fnic_lock, flags);
 
 	fc_lport_destroy(fnic->lport);
+
+	/*
+	 * This stops the fnic device, masks all interrupts. Completed
+	 * CQ entries are drained. Posted WQ/RQ/Copy-WQ entries are
+	 * cleaned up
+	 */
 	fnic_cleanup(fnic);
+
+	BUG_ON(!skb_queue_empty(&fnic->frame_queue));
+
+	spin_lock_irqsave(&fnic_list_lock, flags);
+	list_del(&fnic->list);
+	spin_unlock_irqrestore(&fnic_list_lock, flags);
+
 	fc_remove_host(fnic->lport->host);
 	scsi_remove_host(fnic->lport->host);
 	fc_exch_mgr_free(fnic->lport->emp);
@@ -861,7 +872,7 @@ static int __init fnic_init_module(void)
 	fnic_sgl_cache[FNIC_SGL_CACHE_DFLT] = kmem_cache_create
 		("fnic_sgl_dflt", len + FNIC_SG_DESC_ALIGN, FNIC_SG_DESC_ALIGN,
 		 SLAB_HWCACHE_ALIGN | SLAB_CACHE_DMA,
-		 NULL, NULL);
+		 NULL);
 	if (!fnic_sgl_cache[FNIC_SGL_CACHE_DFLT]) {
 		printk(KERN_ERR PFX "failed to create fnic dflt sgl slab\n");
 		err = -ENOMEM;
@@ -873,52 +884,32 @@ static int __init fnic_init_module(void)
 	fnic_sgl_cache[FNIC_SGL_CACHE_MAX] = kmem_cache_create
 		("fnic_sgl_max", len + FNIC_SG_DESC_ALIGN, FNIC_SG_DESC_ALIGN,
 		 SLAB_HWCACHE_ALIGN | SLAB_CACHE_DMA,
-		 NULL, NULL);
+		 NULL);
 	if (!fnic_sgl_cache[FNIC_SGL_CACHE_MAX]) {
 		printk(KERN_ERR PFX "failed to create fnic max sgl slab\n");
 		err = -ENOMEM;
 		goto err_create_fnic_sgl_slab_max;
 	}
 
-	/* Create a cache of objects to wrap frames/events sent to openfc*/
-	len = sizeof(struct fnic_event);
-	fnic_ev_cache = kmem_cache_create("fnic_event", len,
-					  0, 0, NULL, NULL);
-	if (!fnic_ev_cache) {
-		printk(KERN_ERR PFX "failed to create fnic event slab\n");
-		err = -ENOMEM;
-		goto err_create_fnic_ev_slab;
-	}
-
 	/* Create a cache of io_req structs for use via mempool */
 	fnic_io_req_cache = kmem_cache_create("fnic_io_req",
 					      sizeof(struct fnic_io_req),
-					      0, SLAB_HWCACHE_ALIGN, NULL,
-					      NULL);
+					      0, SLAB_HWCACHE_ALIGN, NULL);
 	if (!fnic_io_req_cache) {
 		printk(KERN_ERR PFX "failed to create fnic io_req slab\n");
 		err = -ENOMEM;
 		goto err_create_fnic_ioreq_slab;
 	}
 
-	/* initialize the Inbound FC Events list spinlock */
-	spin_lock_init(&fnic_eventlist_lock);
-
-	/* Create a thread for handling FCS Events */
-	fnic_thread = kthread_create(fnic_fc_thread,
-				     NULL,
-				     "fnicthread");
-
-	if (!IS_ERR(fnic_thread)) {
-		wake_up_process(fnic_thread);
-	} else {
-		printk(KERN_ERR PFX "fnic thread create failed\n");
+	fnic_event_queue = create_singlethread_workqueue("fnic_event_wq");
+	if (!fnic_event_queue) {
+		printk(KERN_ERR PFX "fnic work queue create failed\n");
 		err = -ENOMEM;
-		goto err_create_fnic_thread;
+		goto err_create_fnic_workq;
 	}
 
-	/* initialize fnic_no to -1, the first device is numbered 0 */
-	atomic_set(&fnic_no, -1);
+	spin_lock_init(&fnic_list_lock);
+	INIT_LIST_HEAD(&fnic_list);
 
 	fnic_fc_transport = fc_attach_transport(&fnic_fc_functions);
 	if (!fnic_fc_transport) {
@@ -938,12 +929,10 @@ static int __init fnic_init_module(void)
 err_pci_register:
 	fc_release_transport(fnic_fc_transport);
 err_fc_transport:
-	kthread_stop(fnic_thread);
-err_create_fnic_thread:
+	destroy_workqueue(fnic_event_queue);
+err_create_fnic_workq:
 	kmem_cache_destroy(fnic_io_req_cache);
 err_create_fnic_ioreq_slab:
-	kmem_cache_destroy(fnic_ev_cache);
-err_create_fnic_ev_slab:
 	kmem_cache_destroy(fnic_sgl_cache[FNIC_SGL_CACHE_MAX]);
 err_create_fnic_sgl_slab_max:
 	kmem_cache_destroy(fnic_sgl_cache[FNIC_SGL_CACHE_DFLT]);
@@ -953,31 +942,11 @@ err_create_fnic_sgl_slab_dflt:
 
 static void __exit fnic_cleanup_module(void)
 {
-	struct fnic_event *event;
-	unsigned long flags;
-
 	pci_unregister_driver(&fnic_driver);
-
-	kthread_stop(fnic_thread);
-
-	/* Cleanup the Inbound FCS events list */
-	spin_lock_irqsave(&fnic_eventlist_lock, flags);
-	while (!list_empty(&fnic_eventlist)) {
-		event = list_first_entry(&fnic_eventlist,
-					 struct fnic_event, list);
-		list_del(&event->list);
-		if (event->fp)
-			fnic_fc_frame_free(event->fp);
-		kmem_cache_free(fnic_ev_cache, event);
-	}
-	spin_unlock_irqrestore(&fnic_eventlist_lock, flags);
-
-	/* release memory for all global caches */
-	kmem_cache_destroy(fnic_ev_cache);
+	destroy_workqueue(fnic_event_queue);
 	kmem_cache_destroy(fnic_sgl_cache[FNIC_SGL_CACHE_MAX]);
 	kmem_cache_destroy(fnic_sgl_cache[FNIC_SGL_CACHE_DFLT]);
 	kmem_cache_destroy(fnic_io_req_cache);
-
 	fc_release_transport(fnic_fc_transport);
 }
 

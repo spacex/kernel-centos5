@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2006, 2007 Cisco Systems.  All rights reserved.
+ * Copyright (c) 2007, 2008 Mellanox Technologies. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -63,29 +64,11 @@ extern int mlx4_ib_debug_level;
 #endif /* CONFIG_MLX4_DEBUG */
 
 enum {
-	MLX4_IB_DB_PER_PAGE	= PAGE_SIZE / 4
-};
-
-enum {
 	MLX4_IB_SQ_MIN_WQE_SHIFT = 6
 };
 
 #define MLX4_IB_SQ_HEADROOM(shift) ((2048 >> (shift)) + 1)
 #define MLX4_IB_SQ_MAX_SPARE (MLX4_IB_SQ_HEADROOM(MLX4_IB_SQ_MIN_WQE_SHIFT))
-
-struct mlx4_ib_db_pgdir;
-struct mlx4_ib_user_db_page;
-
-struct mlx4_ib_db {
-	__be32		       *db;
-	union {
-		struct mlx4_ib_db_pgdir	       *pgdir;
-		struct mlx4_ib_user_db_page    *user_page;
-	}			u;
-	dma_addr_t		dma;
-	int			index;
-	int			order;
-};
 
 struct mlx4_ib_ucontext {
 	struct ib_ucontext	ibucontext;
@@ -104,19 +87,33 @@ struct mlx4_ib_cq_buf {
 	struct mlx4_mtt		mtt;
 };
 
+struct mlx4_ib_cq_resize {
+	struct mlx4_ib_cq_buf	buf;
+	int			cqe;
+};
+
 struct mlx4_ib_cq {
 	struct ib_cq		ibcq;
 	struct mlx4_cq		mcq;
 	struct mlx4_ib_cq_buf	buf;
-	struct mlx4_ib_db	db;
+	struct mlx4_ib_cq_resize *resize_buf;
+	struct mlx4_db		db;
 	spinlock_t		lock;
+	struct mutex		resize_mutex;
 	struct ib_umem	       *umem;
+	struct ib_umem	       *resize_umem;
 };
 
 struct mlx4_ib_mr {
 	struct ib_mr		ibmr;
 	struct mlx4_mr		mmr;
 	struct ib_umem	       *umem;
+};
+
+struct mlx4_ib_fast_reg_page_list {
+	struct ib_fast_reg_page_list	ibfrpl;
+	u64				*mapped_page_list;
+	dma_addr_t			map;
 };
 
 struct mlx4_ib_fmr {
@@ -136,8 +133,9 @@ struct mlx4_ib_wq {
 	unsigned		tail;
 };
 
-enum qp_flags {
-	MLX4_QP_LSO = 1 << 0
+enum mlx4_ib_qp_flags {
+	MLX4_IB_QP_LSO				= 1 << 0,
+	MLX4_IB_QP_BLOCK_MULTICAST_LOOPBACK	= 1 << 1,
 };
 
 struct mlx4_ib_qp {
@@ -145,7 +143,7 @@ struct mlx4_ib_qp {
 	struct mlx4_qp		mqp;
 	struct mlx4_buf		buf;
 
-	struct mlx4_ib_db	db;
+	struct mlx4_db		db;
 	struct mlx4_ib_wq	rq;
 
 	u32			doorbell_qpn;
@@ -159,20 +157,20 @@ struct mlx4_ib_qp {
 	struct mlx4_mtt		mtt;
 	int			buf_size;
 	struct mutex		mutex;
+	u32			flags;
 	u8			port;
 	u8			alt_port;
 	u8			atomic_rd_en;
 	u8			resp_depth;
 	u8			sq_no_prefetch;
 	u8			state;
-	int			flags;
 };
 
 struct mlx4_ib_srq {
 	struct ib_srq		ibsrq;
 	struct mlx4_srq		msrq;
 	struct mlx4_buf		buf;
-	struct mlx4_ib_db	db;
+	struct mlx4_db		db;
 	u64		       *wrid;
 	spinlock_t		lock;
 	int			head;
@@ -191,10 +189,8 @@ struct mlx4_ib_ah {
 struct mlx4_ib_dev {
 	struct ib_device	ib_dev;
 	struct mlx4_dev	       *dev;
+	int			num_ports;
 	void __iomem	       *uar_map;
-
-	struct list_head	pgdir_list;
-	struct mutex		pgdir_mutex;
 
 	struct mlx4_uar		priv_uar;
 	u32			priv_pdn;
@@ -237,6 +233,11 @@ static inline struct mlx4_ib_mr *to_mmr(struct ib_mr *ibmr)
 	return container_of(ibmr, struct mlx4_ib_mr, ibmr);
 }
 
+static inline struct mlx4_ib_fast_reg_page_list *to_mfrpl(struct ib_fast_reg_page_list *ibfrpl)
+{
+	return container_of(ibfrpl, struct mlx4_ib_fast_reg_page_list, ibfrpl);
+}
+
 static inline struct mlx4_ib_fmr *to_mfmr(struct ib_fmr *ibfmr)
 {
 	return container_of(ibfmr, struct mlx4_ib_fmr, ibfmr);
@@ -266,11 +267,9 @@ static inline struct mlx4_ib_ah *to_mah(struct ib_ah *ibah)
 	return container_of(ibah, struct mlx4_ib_ah, ibah);
 }
 
-int mlx4_ib_db_alloc(struct mlx4_ib_dev *dev, struct mlx4_ib_db *db, int order);
-void mlx4_ib_db_free(struct mlx4_ib_dev *dev, struct mlx4_ib_db *db);
 int mlx4_ib_db_map_user(struct mlx4_ib_ucontext *context, unsigned long virt,
-			struct mlx4_ib_db *db);
-void mlx4_ib_db_unmap_user(struct mlx4_ib_ucontext *context, struct mlx4_ib_db *db);
+			struct mlx4_db *db);
+void mlx4_ib_db_unmap_user(struct mlx4_ib_ucontext *context, struct mlx4_db *db);
 
 struct ib_mr *mlx4_ib_get_dma_mr(struct ib_pd *pd, int acc);
 int mlx4_ib_umem_write_mtt(struct mlx4_ib_dev *dev, struct mlx4_mtt *mtt,
@@ -279,8 +278,14 @@ struct ib_mr *mlx4_ib_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 				  u64 virt_addr, int access_flags,
 				  struct ib_udata *udata);
 int mlx4_ib_dereg_mr(struct ib_mr *mr);
+struct ib_mr *mlx4_ib_alloc_fast_reg_mr(struct ib_pd *pd,
+					int max_page_list_len);
+struct ib_fast_reg_page_list *mlx4_ib_alloc_fast_reg_page_list(struct ib_device *ibdev,
+							       int page_list_len);
+void mlx4_ib_free_fast_reg_page_list(struct ib_fast_reg_page_list *page_list);
 
 int mlx4_ib_modify_cq(struct ib_cq *cq, u16 cq_count, u16 cq_period);
+int mlx4_ib_resize_cq(struct ib_cq *ibcq, int entries, struct ib_udata *udata);
 struct ib_cq *mlx4_ib_create_cq(struct ib_device *ibdev, int entries, int vector,
 				struct ib_ucontext *context,
 				struct ib_udata *udata);

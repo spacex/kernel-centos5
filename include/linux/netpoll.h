@@ -63,6 +63,13 @@ static inline int netpoll_rx(struct sk_buff *skb)
 	return ret;
 }
 
+static inline int netpoll_rx_on(struct sk_buff *skb)
+{
+	struct netpoll_info *npinfo = skb->dev->npinfo;
+
+	return npinfo && (npinfo->rx_np || npinfo->rx_flags);
+}
+
 static inline void *netpoll_poll_lock(struct net_device *dev)
 {
 	rcu_read_lock(); /* deal with race on ->npinfo */
@@ -87,6 +94,7 @@ static inline void netpoll_poll_unlock(void *have)
 
 #else
 #define netpoll_rx(a) 0
+#define netpoll_rx_on(a) 0
 #define netpoll_poll_lock(a) NULL
 #define netpoll_poll_unlock(a)
 #endif

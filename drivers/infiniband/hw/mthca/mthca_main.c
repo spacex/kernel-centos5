@@ -30,8 +30,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: mthca_main.c 1396 2004-12-28 04:10:27Z roland $
  */
 
 #include <linux/module.h>
@@ -45,6 +43,7 @@
 #include "mthca_cmd.h"
 #include "mthca_profile.h"
 #include "mthca_memfree.h"
+#include "mthca_wqe.h"
 
 MODULE_AUTHOR("Roland Dreier");
 MODULE_DESCRIPTION("Mellanox InfiniBand HCA low-level driver");
@@ -65,14 +64,9 @@ static int msi_x = 1;
 module_param(msi_x, int, 0444);
 MODULE_PARM_DESC(msi_x, "attempt to use MSI-X if nonzero");
 
-static int msi = 0;
-module_param(msi, int, 0444);
-MODULE_PARM_DESC(msi, "attempt to use MSI if nonzero (deprecated, use MSI-X instead)");
-
 #else /* CONFIG_PCI_MSI */
 
 #define msi_x (0)
-#define msi   (0)
 
 #endif /* CONFIG_PCI_MSI */
 
@@ -131,7 +125,11 @@ module_param_named(fmr_reserved_mtts, hca_profile.fmr_reserved_mtts, int, 0444);
 MODULE_PARM_DESC(fmr_reserved_mtts,
 		 "number of memory translation table segments reserved for FMR");
 
-static const char mthca_version[] __devinitdata =
+static int log_mtts_per_seg = ilog2(MTHCA_MTT_SEG_SIZE / 8);
+module_param_named(log_mtts_per_seg, log_mtts_per_seg, int, 0444);
+MODULE_PARM_DESC(log_mtts_per_seg, "Log2 number of MTT entries per segment (1-5)");
+
+static char mthca_version[] __devinitdata =
 	DRV_NAME ": Mellanox InfiniBand HCA driver v"
 	DRV_VERSION " (" DRV_RELDATE ")\n";
 
@@ -185,6 +183,7 @@ static int mthca_dev_lim(struct mthca_dev *mdev, struct mthca_dev_lim *dev_lim)
 	int err;
 	u8 status;
 
+	mdev->limits.mtt_seg_size = (1 << log_mtts_per_seg) * 8;
 	err = mthca_QUERY_DEV_LIM(mdev, dev_lim, &status);
 	if (err) {
 		mthca_err(mdev, "QUERY_DEV_LIM command failed, aborting.\n");
@@ -222,7 +221,18 @@ static int mthca_dev_lim(struct mthca_dev *mdev, struct mthca_dev_lim *dev_lim)
 	mdev->limits.gid_table_len  	= dev_lim->max_gids;
 	mdev->limits.pkey_table_len 	= dev_lim->max_pkeys;
 	mdev->limits.local_ca_ack_delay = dev_lim->local_ca_ack_delay;
-	mdev->limits.max_sg             = dev_lim->max_sg;
+	/*
+	 * Need to allow for worst case send WQE overhead and check
+	 * whether max_desc_sz imposes a lower limit than max_sg; UD
+	 * send has the biggest overhead.
+	 */
+	mdev->limits.max_sg		= min_t(int, dev_lim->max_sg,
+					      (dev_lim->max_desc_sz -
+					       sizeof (struct mthca_next_seg) -
+					       (mthca_is_memfree(mdev) ?
+						sizeof (struct mthca_arbel_ud_seg) :
+						sizeof (struct mthca_tavor_ud_seg))) /
+						sizeof (struct mthca_data_seg));
 	mdev->limits.max_wqes           = dev_lim->max_qp_sz;
 	mdev->limits.max_qp_init_rdma   = dev_lim->max_requester_per_qp;
 	mdev->limits.reserved_qps       = dev_lim->reserved_qps;
@@ -291,13 +301,14 @@ static int mthca_dev_lim(struct mthca_dev *mdev, struct mthca_dev_lim *dev_lim)
 
 	if (mthca_is_memfree(mdev))
 		if (dev_lim->flags & DEV_LIM_FLAG_IPOIB_CSUM)
-			mdev->device_cap_flags |= IB_DEVICE_IP_CSUM;
+			mdev->device_cap_flags |= IB_DEVICE_UD_IP_CSUM;
 
 	return 0;
 }
 
 static int mthca_init_tavor(struct mthca_dev *mdev)
 {
+	s64 size;
 	u8 status;
 	int err;
 	struct mthca_dev_lim        dev_lim;
@@ -350,9 +361,11 @@ static int mthca_init_tavor(struct mthca_dev *mdev)
 	if (mdev->mthca_flags & MTHCA_FLAG_SRQ)
 		profile.num_srq = dev_lim.max_srqs;
 
-	err = mthca_make_profile(mdev, &profile, &dev_lim, &init_hca);
-	if (err < 0)
+	size = mthca_make_profile(mdev, &profile, &dev_lim, &init_hca);
+	if (size < 0) {
+		err = size;
 		goto err_disable;
+	}
 
 	err = mthca_INIT_HCA(mdev, &init_hca, &status);
 	if (err) {
@@ -469,11 +482,11 @@ static int mthca_init_icm(struct mthca_dev *mdev,
 	}
 
 	/* CPU writes to non-reserved MTTs, while HCA might DMA to reserved mtts */
-	mdev->limits.reserved_mtts = ALIGN(mdev->limits.reserved_mtts * MTHCA_MTT_SEG_SIZE,
-					   dma_get_cache_alignment()) / MTHCA_MTT_SEG_SIZE;
+	mdev->limits.reserved_mtts = ALIGN(mdev->limits.reserved_mtts * mdev->limits.mtt_seg_size,
+					   dma_get_cache_alignment()) / mdev->limits.mtt_seg_size;
 
 	mdev->mr_table.mtt_table = mthca_alloc_icm_table(mdev, init_hca->mtt_base,
-							 MTHCA_MTT_SEG_SIZE,
+							 mdev->limits.mtt_seg_size,
 							 mdev->limits.num_mtt_segs,
 							 mdev->limits.reserved_mtts,
 							 1, 0);
@@ -631,7 +644,7 @@ static int mthca_init_arbel(struct mthca_dev *mdev)
 	struct mthca_dev_lim        dev_lim;
 	struct mthca_profile        profile;
 	struct mthca_init_hca_param init_hca;
-	u64 icm_size;
+	s64 icm_size;
 	u8 status;
 	int err;
 
@@ -679,7 +692,7 @@ static int mthca_init_arbel(struct mthca_dev *mdev)
 		profile.num_srq = dev_lim.max_srqs;
 
 	icm_size = mthca_make_profile(mdev, &profile, &dev_lim, &init_hca);
-	if ((int) icm_size < 0) {
+	if (icm_size < 0) {
 		err = icm_size;
 		goto err_stop_fw;
 	}
@@ -838,13 +851,11 @@ static int mthca_setup_hca(struct mthca_dev *dev)
 
 	err = mthca_NOP(dev, &status);
 	if (err || status) {
-		if (dev->mthca_flags & (MTHCA_FLAG_MSI | MTHCA_FLAG_MSI_X)) {
+		if (dev->mthca_flags & MTHCA_FLAG_MSI_X) {
 			mthca_warn(dev, "NOP command failed to generate interrupt "
 				   "(IRQ %d).\n",
-				   dev->mthca_flags & MTHCA_FLAG_MSI_X ?
-				   dev->eq_table.eq[MTHCA_EQ_CMD].msi_x_vector :
-				   dev->pdev->irq);
-			mthca_warn(dev, "Trying again with MSI/MSI-X disabled.\n");
+				   dev->eq_table.eq[MTHCA_EQ_CMD].msi_x_vector);
+			mthca_warn(dev, "Trying again with MSI-X disabled.\n");
 		} else {
 			mthca_err(dev, "NOP command failed to generate interrupt "
 				  "(IRQ %d), aborting.\n",
@@ -1027,7 +1038,7 @@ static struct {
 			   .flags     = 0 },
 	[ARBEL_COMPAT] = { .latest_fw = MTHCA_FW_VER(4, 8, 200),
 			   .flags     = MTHCA_FLAG_PCIE },
-	[ARBEL_NATIVE] = { .latest_fw = MTHCA_FW_VER(5, 2, 0),
+	[ARBEL_NATIVE] = { .latest_fw = MTHCA_FW_VER(5, 3, 0),
 			   .flags     = MTHCA_FLAG_MEMFREE |
 					MTHCA_FLAG_PCIE },
 	[SINAI]        = { .latest_fw = MTHCA_FW_VER(1, 2, 0),
@@ -1138,8 +1149,6 @@ static int __mthca_init_one(struct pci_dev *pdev, int hca_type)
 	if (err)
 		goto err_cmd;
 
-	mdev->ib_dev.flags = mdev->device_cap_flags;
-
 	if (mdev->fw_ver < mthca_hca_table[hca_type].latest_fw) {
 		mthca_warn(mdev, "HCA FW version %d.%d.%03d is old (%d.%d.%03d is current).\n",
 			   (int) (mdev->fw_ver >> 32), (int) (mdev->fw_ver >> 16) & 0xffff,
@@ -1152,29 +1161,12 @@ static int __mthca_init_one(struct pci_dev *pdev, int hca_type)
 
 	if (msi_x && !mthca_enable_msi_x(mdev))
 		mdev->mthca_flags |= MTHCA_FLAG_MSI_X;
-	else if (msi) {
-		static int warned;
-
-		if (!warned) {
-			printk(KERN_WARNING PFX "WARNING: MSI support will be "
-			       "removed from the ib_mthca driver in January 2008.\n");
-			printk(KERN_WARNING "    If you are using MSI and cannot "
-			       "switch to MSI-X, please tell "
-			       "<general@lists.openfabrics.org>.\n");
-			++warned;
-		}
-
-		if (!pci_enable_msi(pdev))
-			mdev->mthca_flags |= MTHCA_FLAG_MSI;
-	}
 
 	err = mthca_setup_hca(mdev);
-	if (err == -EBUSY && (mdev->mthca_flags & (MTHCA_FLAG_MSI | MTHCA_FLAG_MSI_X))) {
+	if (err == -EBUSY && (mdev->mthca_flags & MTHCA_FLAG_MSI_X)) {
 		if (mdev->mthca_flags & MTHCA_FLAG_MSI_X)
 			pci_disable_msix(pdev);
-		if (mdev->mthca_flags & MTHCA_FLAG_MSI)
-			pci_disable_msi(pdev);
-		mdev->mthca_flags &= ~(MTHCA_FLAG_MSI_X | MTHCA_FLAG_MSI);
+		mdev->mthca_flags &= ~MTHCA_FLAG_MSI_X;
 
 		err = mthca_setup_hca(mdev);
 	}
@@ -1216,8 +1208,6 @@ err_cleanup:
 err_close:
 	if (mdev->mthca_flags & MTHCA_FLAG_MSI_X)
 		pci_disable_msix(pdev);
-	if (mdev->mthca_flags & MTHCA_FLAG_MSI)
-		pci_disable_msi(pdev);
 
 	mthca_close_hca(mdev);
 
@@ -1270,8 +1260,6 @@ static void __mthca_remove_one(struct pci_dev *pdev)
 
 		if (mdev->mthca_flags & MTHCA_FLAG_MSI_X)
 			pci_disable_msix(pdev);
-		if (mdev->mthca_flags & MTHCA_FLAG_MSI)
-			pci_disable_msi(pdev);
 
 		ib_dealloc_device(&mdev->ib_dev);
 		mthca_release_regions(pdev, mdev->mthca_flags &
@@ -1401,6 +1389,12 @@ static void __init mthca_validate_profile(void)
 		hca_profile.fmr_reserved_mtts = hca_profile.num_mtt / 2;
 		printk(KERN_WARNING PFX "Corrected fmr_reserved_mtts to %d.\n",
 		       hca_profile.fmr_reserved_mtts);
+	}
+
+	if ((log_mtts_per_seg < 1) || (log_mtts_per_seg > 5)) {
+		printk(KERN_WARNING PFX "bad log_mtts_per_seg (%d). Using default - %d\n",
+		       log_mtts_per_seg, ilog2(MTHCA_MTT_SEG_SIZE / 8));
+		log_mtts_per_seg = ilog2(MTHCA_MTT_SEG_SIZE / 8);
 	}
 }
 

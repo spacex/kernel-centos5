@@ -17,12 +17,17 @@
 #include <linux/delay.h>
 #include <linux/elf.h>
 #include <linux/elfcore.h>
+#include <linux/pci.h>
 
 #include <asm/processor.h>
 #include <asm/hardirq.h>
 #include <asm/nmi.h>
 #include <asm/hw_irq.h>
 #include <asm/mach_apic.h>
+
+#ifndef CONFIG_XEN
+#include <asm/virtext.h>
+#endif
 
 /* This keeps a track of which one is crashing cpu. */
 static int crashing_cpu;
@@ -108,6 +113,16 @@ static int crash_nmi_callback(struct pt_regs *regs, int cpu)
 	local_irq_disable();
 
 	crash_save_this_cpu(regs, cpu);
+
+	/* Disable VMX or SVM if needed.
+	 *
+	 * We need to disable virtualization on all CPUs.
+	 * Having VMX or SVM enabled on any CPU may break rebooting
+	 * after the kdump kernel has finished its task.
+	 */
+	cpu_emergency_vmxoff();
+	cpu_emergency_svm_disable();
+
 	disable_local_APIC();
 	atomic_dec(&waiting_for_crash_ipi);
 	/* Assume hlt works */
@@ -159,6 +174,7 @@ static void nmi_shootdown_cpus(void)
 #endif
 #endif /* CONFIG_XEN */
 
+extern struct pci_dev *mcp55_rewrite;
 void machine_crash_shutdown(struct pt_regs *regs)
 {
 	/*
@@ -179,12 +195,38 @@ void machine_crash_shutdown(struct pt_regs *regs)
 #ifndef CONFIG_XEN
 	nmi_shootdown_cpus();
 
+	/* Booting kdump kernel with VMX or SVM enabled won't work,
+	 * because (among other limitations) we can't disable paging
+	 * with the virt flags.
+	 */
+	cpu_emergency_vmxoff();
+	cpu_emergency_svm_disable();
+
 	if(cpu_has_apic)
 		 disable_local_APIC();
 
 #if defined(CONFIG_X86_IO_APIC)
 	disable_IO_APIC();
 #endif
+	if (crashing_cpu && mcp55_rewrite) {
+		u32 cfg;
+		printk(KERN_CRIT "REWRITING MCP55 CFG REG\n");
+		/*
+		 * We have a mcp55 chip on board which has been 
+		 * flagged as only sending legacy interrupts
+		 * to the BSP, and we are crashing on an AP
+		 * This is obviously bad, and we need to 
+		 * fix it up.  To do this we write to the 
+		 * flagged device, to the register at offset 0x74
+		 * and we make sure that bit 2 and bit 15 are clear
+		 * This forces legacy interrupts to be broadcast
+		 * to all cpus
+		 */
+		pci_read_config_dword(mcp55_rewrite, 0x74, &cfg);
+		cfg &= ~((1 << 2) | (1 << 15));
+		printk(KERN_CRIT "CFG = %x\n", cfg);
+		pci_write_config_dword(mcp55_rewrite, 0x74, cfg);
+	}
 #endif /* CONFIG_XEN */
 	crash_save_self(regs);
 }

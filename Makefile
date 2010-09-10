@@ -3,7 +3,7 @@ PATCHLEVEL = 6
 SUBLEVEL = 18
 EXTRAVERSION = -prep
 RHEL_MAJOR = 5
-RHEL_MINOR = 3
+RHEL_MINOR = 4
 NAME=Avast! A bilge rat!
 
 # *DOCUMENTATION*
@@ -306,7 +306,7 @@ LINUXINCLUDE    := -Iinclude \
 CPPFLAGS        := -D__KERNEL__ $(LINUXINCLUDE)
 
 CFLAGS          := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
-                   -fno-strict-aliasing -fno-common -Wstrict-prototypes -Wundef -Werror-implicit-function-declaration
+                   -fno-strict-aliasing -fno-common -Wstrict-prototypes -Wundef -Werror-implicit-function-declaration -fno-delete-null-pointer-checks
 CFLAGS		+= $(call cc-option,-fwrapv)
 AFLAGS          := -D__ASSEMBLY__
 

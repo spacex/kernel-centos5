@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006 - 2008 NetEffect, Inc. All rights reserved.
+ * Copyright (c) 2006 - 2009 Intel-NE, Inc.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -540,11 +540,14 @@ struct nes_cqp_request *nes_get_cqp_request(struct nes_device *nesdev)
 
 	if (!list_empty(&nesdev->cqp_avail_reqs)) {
 		spin_lock_irqsave(&nesdev->cqp.lock, flags);
-		cqp_request = list_entry(nesdev->cqp_avail_reqs.next,
+		if (!list_empty(&nesdev->cqp_avail_reqs)) {
+			cqp_request = list_entry(nesdev->cqp_avail_reqs.next,
 				struct nes_cqp_request, list);
-		list_del_init(&cqp_request->list);
+			list_del_init(&cqp_request->list);
+		}
 		spin_unlock_irqrestore(&nesdev->cqp.lock, flags);
-	} else {
+	}
+	if (cqp_request == NULL) {
 		cqp_request = kzalloc(sizeof(struct nes_cqp_request), GFP_KERNEL);
 		if (cqp_request) {
 			cqp_request->dynamic = 1;
@@ -562,17 +565,41 @@ struct nes_cqp_request *nes_get_cqp_request(struct nes_device *nesdev)
 				cqp_request);
 	} else
 		printk(KERN_ERR PFX "%s: Could not allocated a CQP request.\n",
-			   __FUNCTION__);
+			   __func__);
 
 	return cqp_request;
 }
 
+void nes_free_cqp_request(struct nes_device *nesdev,
+			  struct nes_cqp_request *cqp_request)
+{
+	unsigned long flags;
+
+	nes_debug(NES_DBG_CQP, "CQP request %p (opcode 0x%02X) freed.\n",
+		  cqp_request,
+		  le32_to_cpu(cqp_request->cqp_wqe.wqe_words[NES_CQP_WQE_OPCODE_IDX]) & 0x3f);
+
+	if (cqp_request->dynamic) {
+		kfree(cqp_request);
+	} else {
+		spin_lock_irqsave(&nesdev->cqp.lock, flags);
+		list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
+		spin_unlock_irqrestore(&nesdev->cqp.lock, flags);
+	}
+}
+
+void nes_put_cqp_request(struct nes_device *nesdev,
+			 struct nes_cqp_request *cqp_request)
+{
+	if (atomic_dec_and_test(&cqp_request->refcount))
+		nes_free_cqp_request(nesdev, cqp_request);
+}
 
 /**
  * nes_post_cqp_request
  */
 void nes_post_cqp_request(struct nes_device *nesdev,
-		struct nes_cqp_request *cqp_request, int ring_doorbell)
+			  struct nes_cqp_request *cqp_request)
 {
 	struct nes_hw_cqp_wqe *cqp_wqe;
 	unsigned long flags;
@@ -600,10 +627,9 @@ void nes_post_cqp_request(struct nes_device *nesdev,
 				nesdev->cqp.sq_head, nesdev->cqp.sq_tail, nesdev->cqp.sq_size,
 				cqp_request->waiting, atomic_read(&cqp_request->refcount));
 		barrier();
-		if (ring_doorbell) {
-			/* Ring doorbell (1 WQEs) */
-			nes_write32(nesdev->regs+NES_WQE_ALLOC, 0x01800000 | nesdev->cqp.qp_id);
-		}
+
+		/* Ring doorbell (1 WQEs) */
+		nes_write32(nesdev->regs+NES_WQE_ALLOC, 0x01800000 | nesdev->cqp.qp_id);
 
 		barrier();
 	} else {
@@ -656,7 +682,9 @@ int nes_arp_table(struct nes_device *nesdev, u32 ip_addr, u8 *mac_addr, u32 acti
 
 	/* DELETE or RESOLVE */
 	if (arp_index == nesadapter->arp_table_size) {
-		nes_debug(NES_DBG_NETDEV, "mac address not in ARP table - cannot delete or resolve\n");
+		nes_debug(NES_DBG_NETDEV, "MAC for " NIPQUAD_FMT " not in ARP table - cannot %s\n",
+			  HIPQUAD(ip_addr),
+			  action == NES_ARP_RESOLVE ? "resolve" : "delete");
 		return -1;
 	}
 

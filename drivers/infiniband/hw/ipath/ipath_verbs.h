@@ -248,6 +248,7 @@ struct ipath_mregion {
 	int access_flags;
 	u32 max_segs;		/* number of ipath_segs in all the arrays */
 	u32 mapsz;		/* size of the map array */
+	atomic_t refcount;
 	struct ipath_segarray *map[0];	/* the segments */
 };
 
@@ -330,7 +331,6 @@ struct ipath_sge_state {
 	struct ipath_sge sge;   /* progress state for the current SGE */
 	u32 total_len;
 	u8 num_sge;
-	u8 static_rate;
 };
 
 /*
@@ -342,7 +342,7 @@ struct ipath_ack_entry {
 	u8 sent;
 	u32 psn;
 	union {
-		struct ipath_sge_state rdma_sge;
+		struct ipath_sge rdma_sge;
 		u64 atomic_data;
 	};
 };
@@ -371,6 +371,7 @@ struct ipath_qp {
 	struct ipath_mmap_info *ip;
 	struct ipath_sge_state *s_cur_sge;
 	struct ipath_verbs_txreq *s_tx;
+	struct ipath_mregion *s_rdma_mr;
 	struct ipath_sge_state s_sge;	/* current send request data */
 	struct ipath_ack_entry s_ack_queue[IPATH_MAX_RDMA_ATOMIC + 1];
 	struct ipath_sge_state s_ack_rdma_sge;
@@ -385,6 +386,8 @@ struct ipath_qp {
 	u32 s_rdma_read_len;	/* total length of s_rdma_read_sge */
 	u32 s_next_psn;		/* PSN for next request */
 	u32 s_last_psn;		/* last response PSN processed */
+	u32 s_sending_psn;	/* lowest PSN that is being sent */
+	u32 s_sending_hpsn;	/* highest PSN that is being sent */
 	u32 s_psn;		/* current packet sequence number */
 	u32 s_ack_rdma_psn;	/* PSN for sending RDMA read responses */
 	u32 s_ack_psn;		/* PSN for acking sends and RDMA writes */
@@ -420,6 +423,7 @@ struct ipath_qp {
 	u8 s_dmult;
 	u8 s_draining;
 	u8 timeout;		/* Timeout for this QP */
+	u16 s_rdma_ack_cnt;
 	enum ib_mtu path_mtu;
 	u32 remote_qpn;
 	u32 qkey;		/* QKEY for this QP (for UD or RD) */
@@ -427,11 +431,13 @@ struct ipath_qp {
 	u32 s_head;		/* new entries added here */
 	u32 s_tail;		/* next entry to process */
 	u32 s_cur;		/* current work queue entry */
-	u32 s_last;		/* last un-ACK'ed entry */
+	u32 s_acked;		/* last un-ACK'ed entry */
+	u32 s_last;		/* last completed entry */
 	u32 s_ssn;		/* SSN of tail entry */
 	u32 s_lsn;		/* limit sequence number (credit) */
 	struct ipath_swqe *s_wq;	/* send work queue */
 	struct ipath_swqe *s_wqe;
+	struct ipath_sge *r_ud_sg_list;
 	struct ipath_rq r_rq;		/* receive work queue */
 	struct ipath_sge r_sg_list[0];	/* verified SGEs */
 };
@@ -457,7 +463,7 @@ struct ipath_qp {
  * IPATH_S_WAITING - waiting for RNR timeout or send buffer available.
  * IPATH_S_WAIT_SSN_CREDIT - waiting for RC credits to process next SWQE
  * IPATH_S_WAIT_DMA - waiting for send DMA queue to drain before generating
- 		      next send completion entry not via send DMA.
+ *		      next send completion entry not via send DMA.
  */
 #define IPATH_S_SIGNAL_REQ_WR	0x01
 #define IPATH_S_FENCE_PENDING	0x02
@@ -538,6 +544,7 @@ struct ipath_ibdev {
 	struct list_head pending_mmaps;
 	spinlock_t mmap_offset_lock;
 	u32 mmap_offset;
+	struct ipath_mregion *dma_mr;
 	int ib_unit;		/* This is the device number */
 	u16 sm_lid;		/* in host order */
 	u8 sm_sl;
@@ -600,6 +607,7 @@ struct ipath_ibdev {
 	u32 n_rc_resends;
 	u32 n_rc_acks;
 	u32 n_rc_qacks;
+	u32 n_rc_delayed_comp;
 	u32 n_seq_naks;
 	u32 n_rdma_seq;
 	u32 n_rnr_naks;
@@ -647,6 +655,7 @@ struct ipath_verbs_txreq {
 	struct ipath_swqe       *wqe;
 	u32                      map_len;
 	u32                      len;
+	struct ipath_mregion	*mr;
 	struct ipath_sge_state  *ss;
 	struct ipath_pio_header  hdr;
 	struct ipath_sdma_txreq  txreq;
@@ -755,14 +764,13 @@ void ipath_get_credit(struct ipath_qp *qp, u32 aeth);
 
 unsigned ipath_ib_rate_to_mult(enum ib_rate rate);
 
-enum ib_rate ipath_mult_to_ib_rate(unsigned mult);
-
 int ipath_verbs_send(struct ipath_qp *qp, struct ipath_ib_header *hdr,
 		     u32 hdrwords, struct ipath_sge_state *ss, u32 len);
 
-void ipath_copy_sge(struct ipath_sge_state *ss, void *data, u32 length);
+void ipath_copy_sge(struct ipath_sge_state *ss, void *data, u32 length,
+		    int release);
 
-void ipath_skip_sge(struct ipath_sge_state *ss, u32 length);
+void ipath_skip_sge(struct ipath_sge_state *ss, u32 length, int release);
 
 void ipath_uc_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 		  int has_grh, void *data, u32 tlen, struct ipath_qp *qp);
@@ -771,6 +779,8 @@ void ipath_rc_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 		  int has_grh, void *data, u32 tlen, struct ipath_qp *qp);
 
 void ipath_restart_rc(struct ipath_qp *qp, u32 psn);
+
+void ipath_rc_send_complete(struct ipath_qp *qp, struct ipath_ib_header *hdr);
 
 void ipath_rc_error(struct ipath_qp *qp, enum ib_wc_status err);
 
@@ -782,12 +792,12 @@ void ipath_ud_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 int ipath_alloc_lkey(struct ipath_lkey_table *rkt,
 		     struct ipath_mregion *mr);
 
-void ipath_free_lkey(struct ipath_lkey_table *rkt, u32 lkey);
+int ipath_free_lkey(struct ipath_ibdev *dev, struct ipath_mregion *mr);
 
 int ipath_lkey_ok(struct ipath_qp *qp, struct ipath_sge *isge,
 		  struct ib_sge *sge, int acc);
 
-int ipath_rkey_ok(struct ipath_qp *qp, struct ipath_sge_state *ss,
+int ipath_rkey_ok(struct ipath_qp *qp, struct ipath_sge *sge,
 		  u32 len, u64 vaddr, u32 rkey, int acc);
 
 int ipath_post_srq_receive(struct ib_srq *ibsrq, struct ib_recv_wr *wr,

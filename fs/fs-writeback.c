@@ -236,6 +236,21 @@ __sync_single_inode(struct inode *inode, struct writeback_control *wbc)
 	return ret;
 }
 
+static bool inode_dirtied_after(struct inode *inode, unsigned long t)
+{
+	bool ret = time_after(inode->dirtied_when, t);
+#ifndef CONFIG_64BIT
+	/*
+	 * For inodes being constantly redirtied, dirtied_when can get stuck.
+	 * It _appears_ to be in the future, but is actually in distant past.
+	 * This test is necessary to prevent such wrapped-around relative times
+	 * from permanently stopping the whole pdflush writeback.
+	 */
+	ret = ret && time_before_eq(inode->dirtied_when, jiffies);
+#endif
+	return ret;
+}
+
 /*
  * Write out an inode's dirty pages.  Called under inode_lock.  Either the
  * caller has ref on the inode (either via __iget or via syscall against an fd)
@@ -350,13 +365,16 @@ sync_sb_inodes(struct super_block *sb, struct writeback_control *wbc)
 			continue;		/* blockdev has wrong queue */
 		}
 
-		/* Was this inode dirtied after sync_sb_inodes was called? */
-		if (time_after(inode->dirtied_when, start))
+		/*
+		 * Was this inode dirtied after sync_sb_inodes was called?
+		 * This keeps sync from extra jobs and livelock.
+		 */
+		if (inode_dirtied_after(inode, start))
 			break;
 
 		/* Was this inode dirtied too recently? */
-		if (wbc->older_than_this && time_after(inode->dirtied_when,
-						*wbc->older_than_this))
+		if (wbc->older_than_this &&
+		    inode_dirtied_after(inode, *wbc->older_than_this))
 			break;
 
 		/* Is another pdflush already flushing this queue? */

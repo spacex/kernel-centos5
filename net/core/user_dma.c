@@ -34,6 +34,7 @@
 #define NET_DMA_DEFAULT_COPYBREAK 4096
 
 int sysctl_tcp_dma_copybreak = NET_DMA_DEFAULT_COPYBREAK;
+EXPORT_SYMBOL(sysctl_tcp_dma_copybreak);
 
 /**
  *	dma_skb_copy_datagram_iovec - Copy a datagram to an iovec.
@@ -57,7 +58,7 @@ int dma_skb_copy_datagram_iovec(struct dma_chan *chan,
 	if (copy > 0) {
 		if (copy > len)
 			copy = len;
-		cookie = dma_memcpy_to_iovec(chan, to, pinned_list,
+		cookie = dma_memcpy_to_iovec_v3(chan, to, pinned_list,
 		                            skb->data + offset, copy);
 		if (cookie < 0)
 			goto fault;
@@ -82,7 +83,8 @@ int dma_skb_copy_datagram_iovec(struct dma_chan *chan,
 			if (copy > len)
 				copy = len;
 
-			cookie = dma_memcpy_pg_to_iovec(chan, to, pinned_list, page,
+			cookie = dma_memcpy_pg_to_iovec_v3(chan, to,
+					pinned_list, page,
 					frag->page_offset + offset - start, copy);
 			if (cookie < 0)
 				goto fault;

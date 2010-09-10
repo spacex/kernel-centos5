@@ -33,6 +33,7 @@
 #include <linux/compiler.h>
 #include <linux/delay.h>
 #include <linux/blktrace_api.h>
+#include <trace/block.h>
 
 #include <asm/uaccess.h>
 
@@ -338,7 +339,7 @@ void elv_insert(request_queue_t *q, struct request *rq, int where)
 	unsigned ordseq;
 	int unplug_it = 1;
 
-	blk_add_trace_rq(q, rq, BLK_TA_INSERT);
+	trace_block_rq_insert(q, rq);
 
 	rq->q = q;
 
@@ -512,7 +513,7 @@ struct request *elv_next_request(request_queue_t *q)
 			 * not be passed by new incoming requests
 			 */
 			rq->flags |= REQ_STARTED;
-			blk_add_trace_rq(q, rq, BLK_TA_ISSUE);
+			trace_block_rq_issue(q, rq);
 		}
 
 		if (!q->boundary_rq || q->boundary_rq == rq) {

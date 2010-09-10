@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2004 Topspin Communications.  All rights reserved.
  * Copyright (c) 2005, 2006, 2007 Cisco Systems, Inc. All rights reserved.
- * Copyright (c) 2005 Mellanox Technologies. All rights reserved.
+ * Copyright (c) 2005, 2006, 2007, 2008 Mellanox Technologies. All rights reserved.
  * Copyright (c) 2004 Voltaire, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -55,8 +55,7 @@ void mlx4_qp_event(struct mlx4_dev *dev, u32 qpn, int event_type)
 	spin_unlock(&qp_table->lock);
 
 	if (!qp) {
-		mlx4_warn(dev, "Async event %d for bogus QP %08x\n",
-			 event_type, qpn);
+		mlx4_warn(dev, "Async event for bogus QP %08x\n", qpn);
 		return;
 	}
 
@@ -148,19 +147,42 @@ int mlx4_qp_modify(struct mlx4_dev *dev, struct mlx4_mtt *mtt,
 }
 EXPORT_SYMBOL_GPL(mlx4_qp_modify);
 
-int mlx4_qp_alloc(struct mlx4_dev *dev, int sqpn, struct mlx4_qp *qp)
+int mlx4_qp_reserve_range(struct mlx4_dev *dev, int cnt, int align, int *base)
+{
+	struct mlx4_priv *priv = mlx4_priv(dev);
+	struct mlx4_qp_table *qp_table = &priv->qp_table;
+	int qpn;
+
+	qpn = mlx4_bitmap_alloc_range(&qp_table->bitmap, cnt, align);
+	if (qpn == -1)
+		return -ENOMEM;
+
+	*base = qpn;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mlx4_qp_reserve_range);
+
+void mlx4_qp_release_range(struct mlx4_dev *dev, int base_qpn, int cnt)
+{
+	struct mlx4_priv *priv = mlx4_priv(dev);
+	struct mlx4_qp_table *qp_table = &priv->qp_table;
+	if (base_qpn < dev->caps.sqp_start + 8)
+		return;
+
+	mlx4_bitmap_free_range(&qp_table->bitmap, base_qpn, cnt);
+}
+EXPORT_SYMBOL_GPL(mlx4_qp_release_range);
+
+int mlx4_qp_alloc(struct mlx4_dev *dev, int qpn, struct mlx4_qp *qp)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
 	struct mlx4_qp_table *qp_table = &priv->qp_table;
 	int err;
 
-	if (sqpn)
-		qp->qpn = sqpn;
-	else {
-		qp->qpn = mlx4_bitmap_alloc(&qp_table->bitmap);
-		if (qp->qpn == -1)
-			return -ENOMEM;
-	}
+	if (!qpn)
+		return -EINVAL;
+
+	qp->qpn = qpn;
 
 	err = mlx4_table_get(dev, &qp_table->qp_table, qp->qpn);
 	if (err)
@@ -209,9 +231,6 @@ err_put_qp:
 	mlx4_table_put(dev, &qp_table->qp_table, qp->qpn);
 
 err_out:
-	if (!sqpn)
-		mlx4_bitmap_free(&qp_table->bitmap, qp->qpn);
-
 	return err;
 }
 EXPORT_SYMBOL_GPL(mlx4_qp_alloc);
@@ -241,21 +260,21 @@ void mlx4_qp_free(struct mlx4_dev *dev, struct mlx4_qp *qp)
 	mlx4_table_put(dev, &qp_table->auxc_table, qp->qpn);
 	mlx4_table_put(dev, &qp_table->qp_table, qp->qpn);
 
-	if (qp->qpn >= dev->caps.sqp_start + 8)
-		mlx4_bitmap_free(&qp_table->bitmap, qp->qpn);
 }
 EXPORT_SYMBOL_GPL(mlx4_qp_free);
 
 static int mlx4_CONF_SPECIAL_QP(struct mlx4_dev *dev, u32 base_qpn)
 {
-	return mlx4_cmd(dev, 0, base_qpn, 0, MLX4_CMD_CONF_SPECIAL_QP,
-			MLX4_CMD_TIME_CLASS_B);
+	return mlx4_cmd(dev, 0, base_qpn,
+			(dev->caps.flags & MLX4_DEV_CAP_FLAG_RAW_ETY) ? 4 : 0,
+			MLX4_CMD_CONF_SPECIAL_QP, MLX4_CMD_TIME_CLASS_B);
 }
 
 int mlx4_init_qp_table(struct mlx4_dev *dev)
 {
 	struct mlx4_qp_table *qp_table = &mlx4_priv(dev)->qp_table;
 	int err;
+	int reserved_from_top = 0;
 
 	spin_lock_init(&qp_table->lock);
 	INIT_RADIX_TREE(&dev->qp_table_tree, GFP_ATOMIC);
@@ -265,9 +284,40 @@ int mlx4_init_qp_table(struct mlx4_dev *dev)
 	 * block of special QPs must be aligned to a multiple of 8, so
 	 * round up.
 	 */
-	dev->caps.sqp_start = ALIGN(dev->caps.reserved_qps, 8);
+	dev->caps.sqp_start =
+		ALIGN(dev->caps.reserved_qps_cnt[MLX4_QP_REGION_FW], 8);
+
+	{
+		int sort[MLX4_QP_REGION_COUNT];
+		int i, j, tmp;
+		int last_base = dev->caps.num_qps;
+
+		for (i = 1; i < MLX4_QP_REGION_COUNT; ++i)
+			sort[i] = i;
+
+		for (i = MLX4_QP_REGION_COUNT; i > 0; --i) {
+			for (j = 2; j < i; ++j) {
+				if (dev->caps.reserved_qps_cnt[sort[j]] >
+				    dev->caps.reserved_qps_cnt[sort[j - 1]]) {
+					tmp             = sort[j];
+					sort[j]         = sort[j - 1];
+					sort[j - 1]     = tmp;
+				}
+			}
+		}
+
+		for (i = 1; i < MLX4_QP_REGION_COUNT; ++i) {
+			last_base -= dev->caps.reserved_qps_cnt[sort[i]];
+			dev->caps.reserved_qps_base[sort[i]] = last_base;
+			reserved_from_top +=
+				dev->caps.reserved_qps_cnt[sort[i]];
+		}
+
+	}
+
 	err = mlx4_bitmap_init(&qp_table->bitmap, dev->caps.num_qps,
-			       (1 << 24) - 1, dev->caps.sqp_start + 8);
+			       (1 << 23) - 1, dev->caps.sqp_start + 8,
+			       reserved_from_top);
 	if (err)
 		return err;
 
@@ -279,6 +329,20 @@ void mlx4_cleanup_qp_table(struct mlx4_dev *dev)
 	mlx4_CONF_SPECIAL_QP(dev, 0);
 	mlx4_bitmap_cleanup(&mlx4_priv(dev)->qp_table.bitmap);
 }
+
+int mlx4_qp_get_region(struct mlx4_dev *dev,
+			enum qp_region region,
+			int *base_qpn, int *cnt)
+{
+	if ((region < 0) || (region >= MLX4_QP_REGION_COUNT))
+		return -EINVAL;
+
+	*base_qpn       = dev->caps.reserved_qps_base[region];
+	*cnt            = dev->caps.reserved_qps_cnt[region];
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mlx4_qp_get_region);
 
 int mlx4_qp_query(struct mlx4_dev *dev, struct mlx4_qp *qp,
 		  struct mlx4_qp_context *context)
@@ -300,3 +364,34 @@ int mlx4_qp_query(struct mlx4_dev *dev, struct mlx4_qp *qp,
 }
 EXPORT_SYMBOL_GPL(mlx4_qp_query);
 
+int mlx4_qp_to_ready(struct mlx4_dev *dev, struct mlx4_mtt *mtt,
+		     struct mlx4_qp_context *context,
+		     struct mlx4_qp *qp, enum mlx4_qp_state *qp_state)
+{
+	int err;
+	int i;
+	enum mlx4_qp_state states[] = {
+		MLX4_QP_STATE_RST,
+		MLX4_QP_STATE_INIT,
+		MLX4_QP_STATE_RTR,
+		MLX4_QP_STATE_RTS
+	};
+
+	for (i = 0; i < ARRAY_SIZE(states) - 1; i++) {
+		context->flags &= cpu_to_be32(~(0xf << 28));
+		context->flags |= cpu_to_be32(states[i + 1] << 28);
+		err = mlx4_qp_modify(dev, mtt, states[i], states[i + 1],
+				     context, 0, 0, qp);
+		if (err) {
+			mlx4_err(dev, "Failed to bring QP to state: "
+				 "%d with error: %d\n",
+				 states[i + 1], err);
+			return err;
+		}
+
+		*qp_state = states[i + 1];
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mlx4_qp_to_ready);

@@ -243,7 +243,6 @@ static char *ib_linkstate(struct ipath_devdata *dd, u64 ibcs)
 	return ret;
 }
 
-
 void signal_ib_event(struct ipath_devdata *dd, enum ib_event_type ev)
 {
 	struct ib_event event;
@@ -269,7 +268,8 @@ static void handle_e_ibstatuschanged(struct ipath_devdata *dd,
 	lastlstate = ipath_ib_linkstate(dd, dd->ipath_lastibcstat);
 	ltstate = ipath_ib_linktrstate(dd, ibcs); /* linktrainingtate */
 
-	/* Since going into a recovery state causes the link state to go
+	/*
+	 * Since going into a recovery state causes the link state to go
 	 * down and since recovery is transitory, it is better if we "miss"
 	 * ever seeing the link training state go into recovery (i.e.,
 	 * ignore this transition for link state special handling purposes)
@@ -328,12 +328,12 @@ static void handle_e_ibstatuschanged(struct ipath_devdata *dd,
 		 * Ignore cycling back and forth from Polling.Active to
 		 * Polling.Quiet while waiting for the other end of the link
 		 * to come up, except to try and decide if we are connected
-		 * to a live IB device or not.  We will * cycle back and
+		 * to a live IB device or not.  We will cycle back and
 		 * forth between them if no cable is plugged in, the other
 		 * device is powered off or disabled, etc.
 		 */
-		if (lastlts == INFINIPATH_IBCS_LT_STATE_POLLACTIVE
-		    || lastlts == INFINIPATH_IBCS_LT_STATE_POLLQUIET) {
+		if (lastlts == INFINIPATH_IBCS_LT_STATE_POLLACTIVE ||
+		    lastlts == INFINIPATH_IBCS_LT_STATE_POLLQUIET) {
 			if (!(dd->ipath_flags & IPATH_IB_AUTONEG_INPROG) &&
 			     (++dd->ipath_ibpollcnt == 40)) {
 				dd->ipath_flags |= IPATH_NOCABLE;
@@ -350,16 +350,16 @@ static void handle_e_ibstatuschanged(struct ipath_devdata *dd,
 	dd->ipath_ibpollcnt = 0; /* not poll*, now */
 	ipath_stats.sps_iblink++;
 
-	if (ibstate != init && dd->ipath_lastlinkrecov &&
-		ipath_linkrecovery) {
+	if (ibstate != init && dd->ipath_lastlinkrecov && ipath_linkrecovery) {
 		u64 linkrecov;
 		linkrecov = ipath_snap_cntr(dd,
 			dd->ipath_cregs->cr_iblinkerrrecovcnt);
 		if (linkrecov != dd->ipath_lastlinkrecov) {
 			ipath_dbg("IB linkrecov up %Lx (%s %s) recov %Lu\n",
-				ibcs, ib_linkstate(dd, ibcs),
+				(unsigned long long) ibcs,
+				ib_linkstate(dd, ibcs),
 				ipath_ibcstatus_str[ltstate],
-				linkrecov);
+				(unsigned long long) linkrecov);
 			/* and no more until active again */
 			dd->ipath_lastlinkrecov = 0;
 			ipath_set_linkstate(dd, IPATH_IB_LINKDOWN);
@@ -449,9 +449,8 @@ done:
 	return;
 }
 
-
 static void handle_supp_msgs(struct ipath_devdata *dd,
-	     unsigned supp_msgs, char *msg, u32 msgsz)
+			     unsigned supp_msgs, char *msg, u32 msgsz)
 {
 	/*
 	 * Print the message unless it's ibc status change only, which
@@ -461,8 +460,8 @@ static void handle_supp_msgs(struct ipath_devdata *dd,
 		int iserr;
 		ipath_err_t mask;
 		iserr = ipath_decode_err(dd, msg, msgsz,
-				dd->ipath_lasterror &
-				~INFINIPATH_E_IBSTATUSCHANGED);
+					 dd->ipath_lasterror &
+					 ~INFINIPATH_E_IBSTATUSCHANGED);
 
 		mask = INFINIPATH_E_RRCVEGRFULL | INFINIPATH_E_RRCVHDRFULL |
 			INFINIPATH_E_PKTERRS | INFINIPATH_E_SDMADISABLED;
@@ -550,13 +549,20 @@ static void handle_sdma_errors(struct ipath_devdata *dd, ipath_err_t errs)
 		ipath_cdbg(VERBOSE, "sdma tl 0x%lx hd 0x%lx status 0x%lx "
 			"lengen 0x%lx\n", tl, hd, status, lengen);
 	}
-
+	expected = test_bit(IPATH_SDMA_ABORTING, &dd->ipath_sdma_status);
+	ipath_dbg("%sxpected sdma error, sdma_status 0x%lx\n",
+		expected ?  "e" : "une", dd->ipath_sdma_status);
+	/*
+	 * we are in interrupt context (and only one interrupt vector),
+	 * so we won't get another interrupt and process the sdma state
+	 * change before the set_bit of SDMA_DISABLED.  We set DISABLED
+	 * here because there are cases where abort_task will not.
+	 */
+	if (!expected) /* must be prior to setting SDMA_DISABLED */
+		ipath_cancel_sends(dd, 1);
 	spin_lock_irqsave(&dd->ipath_sdma_lock, flags);
 	__set_bit(IPATH_SDMA_DISABLED, &dd->ipath_sdma_status);
-	expected = test_bit(IPATH_SDMA_ABORTING, &dd->ipath_sdma_status);
 	spin_unlock_irqrestore(&dd->ipath_sdma_lock, flags);
-	if (!expected)
-		ipath_cancel_sends(dd, 1);
 }
 
 static void handle_sdma_intr(struct ipath_devdata *dd, u64 istat)
@@ -571,13 +577,19 @@ static void handle_sdma_intr(struct ipath_devdata *dd, u64 istat)
 	if (istat & INFINIPATH_I_SDMADISABLED) {
 		expected = test_bit(IPATH_SDMA_ABORTING,
 			&dd->ipath_sdma_status);
-		ipath_dbg("%s SDmaDisabled intr\n",
-			expected ? "expected" : "unexpected");
+		ipath_dbg("%sxpected sdma disabled intr, sdma_status 0x%lx\n",
+			expected ?  "e" : "une", dd->ipath_sdma_status);
+		/*
+		 * we are in interrupt context (and only one interrupt vector),
+		 * so we won't get another interrupt and process the sdma state
+		 * change before the set_bit of SDMA_DISABLED.  We set DISABLED
+		 * here because there are cases where abort_task will not.
+		 */
+		if (!expected) /* must be prior to setting SDMA_DISABLED */
+			ipath_cancel_sends(dd, 1);
 		spin_lock_irqsave(&dd->ipath_sdma_lock, flags);
 		__set_bit(IPATH_SDMA_DISABLED, &dd->ipath_sdma_status);
 		spin_unlock_irqrestore(&dd->ipath_sdma_lock, flags);
-		if (!expected)
-			ipath_cancel_sends(dd, 1);
 		if (!test_bit(IPATH_SDMA_SHUTDOWN, &dd->ipath_sdma_status))
 			tasklet_hi_schedule(&dd->ipath_sdma_abort_task);
 	}
@@ -588,8 +600,10 @@ static int handle_hdrq_full(struct ipath_devdata *dd)
 	int chkerrpkts = 0;
 	u32 hd, tl;
 	u32 i;
+	unsigned long flags;
 
 	ipath_stats.sps_hdrqfull++;
+	spin_lock_irqsave(&dd->ipath_uctxt_lock, flags);
 	for (i = 0; i < dd->ipath_cfgports; i++) {
 		struct ipath_portdata *pd = dd->ipath_pd[i];
 
@@ -625,6 +639,7 @@ static int handle_hdrq_full(struct ipath_devdata *dd)
 			wake_up_interruptible(&pd->port_wait);
 		}
 	}
+	spin_unlock_irqrestore(&dd->ipath_uctxt_lock, flags);
 
 	return chkerrpkts;
 }
@@ -939,14 +954,14 @@ static noinline void ipath_bad_intr(struct ipath_devdata *dd, u32 *unexpectp)
 			 * linuxbios development work, and it may happen in
 			 * the future again.
 			 */
-			if (dd->pcidev && dd->pcidev->irq) {
+			if (dd->pcidev && dd->ipath_irq) {
 				ipath_dev_err(dd, "Now %u unexpected "
 					      "interrupts, unregistering "
 					      "interrupt handler\n",
 					      *unexpectp);
-				ipath_dbg("free_irq of irq %x\n",
-					  dd->pcidev->irq);
-				free_irq(dd->pcidev->irq, dd);
+				ipath_dbg("free_irq of irq %d\n",
+					  dd->ipath_irq);
+				dd->ipath_f_free_irq(dd);
 			}
 		}
 		if (ipath_read_ireg(dd, dd->ipath_kregs->kr_intmask)) {
@@ -982,7 +997,7 @@ static noinline void ipath_bad_regread(struct ipath_devdata *dd)
 		if (allbits == 2) {
 			ipath_dev_err(dd, "Still bad interrupt status, "
 				      "unregistering interrupt\n");
-			free_irq(dd->pcidev->irq, dd);
+			dd->ipath_f_free_irq(dd);
 		} else if (allbits > 2) {
 			if ((allbits % 10000) == 0)
 				printk(".");
@@ -1011,7 +1026,6 @@ set:
 	spin_unlock_irqrestore(&dd->ipath_sendctrl_lock, flags);
 }
 
-
 /*
  * Handle receive interrupts for user ports; this means a user
  * process was waiting for a packet to arrive, and didn't want
@@ -1022,6 +1036,7 @@ static void handle_urcv(struct ipath_devdata *dd, u64 istat)
 	u64 portr;
 	int i;
 	int rcvdint = 0;
+	unsigned long flags;
 
 	/*
 	 * test_and_clear_bit(IPATH_PORT_WAITING_RCV) and
@@ -1037,6 +1052,7 @@ static void handle_urcv(struct ipath_devdata *dd, u64 istat)
 		 dd->ipath_i_rcvavail_mask) |
 		((istat >> dd->ipath_i_rcvurg_shift) &
 		 dd->ipath_i_rcvurg_mask);
+	spin_lock_irqsave(&dd->ipath_uctxt_lock, flags);
 	for (i = 1; i < dd->ipath_cfgports; i++) {
 		struct ipath_portdata *pd = dd->ipath_pd[i];
 
@@ -1054,6 +1070,8 @@ static void handle_urcv(struct ipath_devdata *dd, u64 istat)
 			}
 		}
 	}
+	spin_unlock_irqrestore(&dd->ipath_uctxt_lock, flags);
+	
 	if (rcvdint) {
 		/* only want to take one interrupt, so turn off the rcv
 		 * interrupt for all the ports that we set the rcv_waiting
@@ -1121,9 +1139,11 @@ irqreturn_t ipath_intr(int irq, void *data)
 	if (unlikely(istat & ~dd->ipath_i_bitsextant))
 		ipath_dev_err(dd,
 			      "interrupt with unknown interrupts %Lx set\n",
+			      (unsigned long long)
 			      istat & ~dd->ipath_i_bitsextant);
 	else if (istat & ~INFINIPATH_I_ERROR) /* errors do own printing */
-		ipath_cdbg(VERBOSE, "intr stat=0x%Lx\n", istat);
+		ipath_cdbg(VERBOSE, "intr stat=0x%Lx\n",
+			(unsigned long long) istat);
 
 	if (istat & INFINIPATH_I_ERROR) {
 		ipath_stats.sps_errints++;
@@ -1131,7 +1151,8 @@ irqreturn_t ipath_intr(int irq, void *data)
 					  dd->ipath_kregs->kr_errorstatus);
 		if (!estat)
 			dev_info(&dd->pcidev->dev, "error interrupt (%Lx), "
-				 "but no error bits set!\n", istat);
+				 "but no error bits set!\n",
+				 (unsigned long long) istat);
 		else if (estat == -1LL)
 			/*
 			 * should we try clearing all, or hope next read
@@ -1238,17 +1259,14 @@ irqreturn_t ipath_intr(int irq, void *data)
 	 * waiting for receive are at the bottom.
 	 */
 	kportrbits = (1ULL << dd->ipath_i_rcvavail_shift) |
-		(1ULL << dd->ipath_i_rcvurg_shift) |
-		INFINIPATH_I_JINT;
+		(1ULL << dd->ipath_i_rcvurg_shift);
 	if (chk0rcv || (istat & kportrbits)) {
 		istat &= ~kportrbits;
 		ipath_kreceive(dd->ipath_pd[0]);
 	}
 
-	if (istat & ((dd->ipath_i_rcvavail_mask <<
-		      dd->ipath_i_rcvavail_shift)
-		     | (dd->ipath_i_rcvurg_mask <<
-			dd->ipath_i_rcvurg_shift)))
+	if (istat & ((dd->ipath_i_rcvavail_mask << dd->ipath_i_rcvavail_shift) |
+		     (dd->ipath_i_rcvurg_mask << dd->ipath_i_rcvurg_shift)))
 		handle_urcv(dd, istat);
 
 	if (istat & (INFINIPATH_I_SDMAINT | INFINIPATH_I_SDMADISABLED))

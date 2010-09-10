@@ -1033,7 +1033,6 @@ void sock_rfree(struct sk_buff *skb)
 {
 	struct sock *sk = skb->sk;
 
-	skb_truesize_check(skb);
 	atomic_sub(skb->truesize, &sk->sk_rmem_alloc);
 	sk_mem_uncharge(skb->sk, skb->truesize);
 }
@@ -1152,10 +1151,9 @@ static long sock_wait_for_wmem(struct sock * sk, long timeo)
  *	Generic send/receive buffer handlers
  */
 
-static struct sk_buff *sock_alloc_send_pskb(struct sock *sk,
-					    unsigned long header_len,
-					    unsigned long data_len,
-					    int noblock, int *errcode)
+struct sk_buff *sock_alloc_send_pskb(struct sock *sk, unsigned long header_len,
+				     unsigned long data_len, int noblock,
+				     int *errcode)
 {
 	struct sk_buff *skb;
 	gfp_t gfp_mask;
@@ -1235,8 +1233,9 @@ failure:
 	*errcode = err;
 	return NULL;
 }
+EXPORT_SYMBOL(sock_alloc_send_pskb);
 
-struct sk_buff *sock_alloc_send_skb(struct sock *sk, unsigned long size, 
+struct sk_buff *sock_alloc_send_skb(struct sock *sk, unsigned long size,
 				    int noblock, int *errcode)
 {
 	return sock_alloc_send_pskb(sk, size, 0, noblock, errcode);

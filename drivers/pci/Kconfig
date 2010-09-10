@@ -5,7 +5,6 @@ config PCI_MSI
 	bool "Message Signaled Interrupts (MSI and MSI-X)"
 	depends on PCI
 	depends on (X86_LOCAL_APIC && X86_IO_APIC) || IA64 || PPC64
-	depends on !XEN
 	help
 	   This allows device drivers to enable MSI (Message Signaled
 	   Interrupts).  Message Signaled Interrupts enable a device to
@@ -28,3 +27,21 @@ config PCI_DEBUG
 
 	  When in doubt, say N.
 
+config PCI_STUB
+	tristate "PCI Stub driver"
+	depends on PCI && !XEN
+	help
+	  Say Y or M here if you want be able to reserve a PCI device
+	  when it is going to be assigned to a guest operating system.
+
+	  When in doubt, say N.
+
+config PCI_IOV
+	bool "PCI IOV support"
+	depends on PCI
+	help
+	  I/O Virtualization is a PCI feature supported by some devices
+	  which allows them to create virtual devices which share their
+	  physical resources.
+
+	  If unsure, say N.

@@ -49,6 +49,11 @@ int module_verify(const Elf_Ehdr *hdr, size_t size)
 
 #ifdef CONFIG_MODULE_SIG
 	ret = module_verify_signature(&mvdata);
+#ifdef CONFIG_CRYPTO_FIPS
+	if (fips_enabled && (ret < 0))
+		panic("Module verification failed with error %d in FIPS mode\n",
+			ret);
+#endif
 #endif
 
  error:

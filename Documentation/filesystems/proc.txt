@@ -1363,6 +1363,13 @@ The interface  to  the  networking  parts  of  the  kernel  is  located  in
 /proc/sys/net. Table  2-3  shows all possible subdirectories. You may see only
 some of them, depending on your kernel's configuration.
 
+netdev_budget
+-------------
+
+Maximum number of packets taken from all interfaces in one polling cycle (NAPI
+poll). In one polling cycle interfaces which are registered to polling are
+probed in a round-robin manner. The limit of packets in one such probe can be
+set per-device via sysfs class/net/<device>/weight .
 
 Table 2-3: Subdirectories in /proc/sys/net 
 ..............................................................................
@@ -1980,9 +1987,16 @@ The following 4 memory types are supported:
   - (bit 1) anonymous shared memory
   - (bit 2) file-backed private memory
   - (bit 3) file-backed shared memory
+  - (bit 4) ELF header pages in file-backed private memory areas (it is
+	    effective only if the bit 2 is cleared)
+  - (bit 5) hugetlb private memory
+  - (bit 6) hugetlb shared memory
 
   Note that MMIO pages such as frame buffer are never dumped and vDSO pages
   are always dumped regardless of the bitmask status.
+
+  Note bit 0-4 doesn't effect any hugetlb memory. hugetlb memory are only
+  effected by bit 5-6.
 
 Default value of coredump_filter is 0x3; this means all anonymous memory
 segments are dumped.

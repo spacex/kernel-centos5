@@ -201,6 +201,10 @@ static int ipt_dnat_checkentry(const char *tablename,
 		printk("DNAT: multiple ranges no longer supported\n");
 		return 0;
 	}
+	if (mr->range[0].flags & IP_NAT_RANGE_PROTO_RANDOM) {
+		printk("DNAT: port randomization not supported\n");
+		return 0;
+	}
 	return 1;
 }
 
@@ -222,27 +226,6 @@ alloc_null_binding(struct ip_conntrack *conntrack,
 
 	DEBUGP("Allocating NULL binding for %p (%u.%u.%u.%u)\n", conntrack,
 	       NIPQUAD(ip));
-	return ip_nat_setup_info(conntrack, &range, hooknum);
-}
-
-unsigned int
-alloc_null_binding_confirmed(struct ip_conntrack *conntrack,
-                             struct ip_nat_info *info,
-                             unsigned int hooknum)
-{
-	u_int32_t ip
-		= (HOOK2MANIP(hooknum) == IP_NAT_MANIP_SRC
-		   ? conntrack->tuplehash[IP_CT_DIR_REPLY].tuple.dst.ip
-		   : conntrack->tuplehash[IP_CT_DIR_REPLY].tuple.src.ip);
-	u_int16_t all
-		= (HOOK2MANIP(hooknum) == IP_NAT_MANIP_SRC
-		   ? conntrack->tuplehash[IP_CT_DIR_REPLY].tuple.dst.u.all
-		   : conntrack->tuplehash[IP_CT_DIR_REPLY].tuple.src.u.all);
-	struct ip_nat_range range
-		= { IP_NAT_RANGE_MAP_IPS, ip, ip, { all }, { all } };
-
-	DEBUGP("Allocating NULL binding for confirmed %p (%u.%u.%u.%u)\n",
-	       conntrack, NIPQUAD(ip));
 	return ip_nat_setup_info(conntrack, &range, hooknum);
 }
 

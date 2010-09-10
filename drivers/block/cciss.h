@@ -12,6 +12,10 @@
 #define IO_OK		0
 #define IO_ERROR	1
 
+#define VENDOR_LEN	8
+#define MODEL_LEN	16
+#define REV_LEN		4
+
 struct ctlr_info;
 typedef struct ctlr_info ctlr_info_t;
 
@@ -32,13 +36,32 @@ typedef struct _drive_info_struct
 	int 	heads;
 	int	sectors;
 	int 	cylinders;
-	int	raid_level; /* set to -1 to indicate that
-			     * the drive is not in use/configured
-			    */
-	int	busy_configuring; /*This is set when the drive is being removed
-				   *to prevent it from being opened or it's queue
-				   *from being started.
-				  */
+	int	raid_level;	/* set to -1 to indicate that
+			 	 * the drive is not in use/configured
+				 */
+	/*
+	 * Warning: We should be using struct device dev here instead
+	 * of a pointer.  This struct is 616 bytes on an x86 system
+	 * and ctrl_info.dev uses CISS_MAX_LUN (512) drive_info_struct
+	 * elements or 308K each.  Kmalloc cannot allocate that much
+	 * memory so we use a pointer here instead (we really should
+	 * be using pointers to drive_info_structs in
+	 * ctrl_info.dev). Using a pointer here means that we cannot
+	 * use the container_of macro which creates problems with
+	 * sysfs (Noted later in the code).
+	 */
+	struct device *dev;
+	int	busy_configuring;	/* This is set when the drive is being
+				    	 * removed to prevent it from being
+					 * opened or it's queue from being
+					 * started.
+					 */
+	char	vendor[VENDOR_LEN + 1];
+	char	model[MODEL_LEN + 1];
+	char	rev[REV_LEN + 1];
+	BYTE	uid[16];	/* from inquiry page 0x83
+				 * not neccesarily NULL terminated
+				 */
 } drive_info_struct;
 
 #ifdef CONFIG_CISS_SCSI_TAPE
@@ -118,6 +141,9 @@ struct ctlr_info
 	struct sendcmd_reject_list scsi_rejects;
 #endif
 	unsigned char alive;
+	struct completion *rescan_wait;
+	struct task_struct *cciss_scan_thread;
+	struct device dev;
 };
 
 /*  Defining the diffent access_menthods */

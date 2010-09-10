@@ -245,6 +245,7 @@ static int show_partition(struct seq_file *part, void *v)
 	struct gendisk *sgp = v;
 	int n;
 	char buf[BDEVNAME_SIZE];
+	struct hd_struct *hd_part;
 
 	if (&sgp->kobj.entry == block_subsys.kset.list.next)
 		seq_puts(part, "major minor  #blocks  name\n\n");
@@ -262,14 +263,19 @@ static int show_partition(struct seq_file *part, void *v)
 		(unsigned long long)get_capacity(sgp) >> 1,
 		disk_name(sgp, 0, buf));
 	for (n = 0; n < sgp->minors - 1; n++) {
-		if (!sgp->part[n])
+		rcu_read_lock();
+		hd_part = rcu_dereference(sgp->part[n]);
+
+		if ((!hd_part) || (hd_part->nr_sects == 0)) {
+			rcu_read_unlock();
 			continue;
-		if (sgp->part[n]->nr_sects == 0)
-			continue;
+		}
 		seq_printf(part, "%4d  %4d %10llu %s\n",
 			sgp->major, n + 1 + sgp->first_minor,
-			(unsigned long long)sgp->part[n]->nr_sects >> 1 ,
+			(unsigned long long)hd_part->nr_sects >> 1 ,
 			disk_name(sgp, n + 1, buf));
+
+		rcu_read_unlock();
 	}
 
 	return 0;
@@ -579,10 +585,14 @@ static int diskstats_show(struct seq_file *s, void *v)
 
 	/* now show all non-0 size partitions of it */
 	for (n = 0; n < gp->minors - 1; n++) {
-		struct hd_struct *hd = gp->part[n];
+		struct hd_struct *hd;
 
-		if (!hd || !hd->nr_sects)
+		rcu_read_lock();
+		hd = rcu_dereference(gp->part[n]);
+		if (!hd || !hd->nr_sects) {
+			rcu_read_unlock();
 			continue;
+		}
 
 		preempt_disable();
 		part_round_stats(hd);
@@ -603,6 +613,7 @@ static int diskstats_show(struct seq_file *s, void *v)
 			   jiffies_to_msecs(part_stat_read(hd, io_ticks)),
 			   jiffies_to_msecs(part_stat_read(hd, time_in_queue))
 			);
+		rcu_read_unlock();
 	}
  
 	return 0;

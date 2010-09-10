@@ -312,6 +312,34 @@ int snd_unregister_device(int type, struct snd_card *card, int dev)
 
 EXPORT_SYMBOL(snd_unregister_device);
 
+int snd_add_device_sysfs_file(int type, struct snd_card *card, int dev,
+                              struct device_attribute *attr)
+{
+        int cardnum, minor, ret = -EINVAL;
+        struct device *d;
+	struct snd_minor *mptr;
+
+	cardnum = card ? card->number : -1;
+        mutex_lock(&sound_mutex);
+	for (minor = 0; minor < ARRAY_SIZE(snd_minors); ++minor)
+		if ((mptr = snd_minors[minor]) != NULL &&
+		    mptr->type == type &&
+		    mptr->card == cardnum &&
+		    mptr->device == dev)
+			break;
+	if (minor == ARRAY_SIZE(snd_minors)) {
+		mutex_unlock(&sound_mutex);
+		return -EINVAL;
+	}
+        if (minor >= 0 && (d = snd_minors[minor]->dev) != NULL)
+                ret = device_create_file(d, attr);
+        mutex_unlock(&sound_mutex);
+        return ret;
+
+}
+
+EXPORT_SYMBOL(snd_add_device_sysfs_file);
+
 #ifdef CONFIG_PROC_FS
 /*
  *  INFO PART

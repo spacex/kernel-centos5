@@ -77,7 +77,6 @@ int qla4xxx_reinitialize_ddb_list(struct scsi_qla_host * ha);
 int qla4xxx_process_ddb_changed(struct scsi_qla_host * ha,
 				uint32_t fw_ddb_index, uint32_t state);
 
-void qla4xxx_free_pdu(struct scsi_qla_host * ha, struct pdu_entry * pdu);
 int qla4xxx_mailbox_command(struct scsi_qla_host *ha, uint8_t inCount,
                             uint8_t outCount, uint32_t *mbx_cmd, uint32_t *mbx_sts);
 int qla4xxx_send_marker_iocb(struct scsi_qla_host *ha,

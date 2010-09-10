@@ -164,6 +164,8 @@ struct mirror_set {
 	struct mirror mirror[0];
 };
 
+static struct kmem_cache *_dm_raid1_read_record_cache;
+
 /*
  * Conversion fns
  */
@@ -682,14 +684,6 @@ struct bio_map_info {
 };
 
 static mempool_t *bio_map_info_pool = NULL;
-
-static void *bio_map_info_alloc(unsigned int gfp_mask, void *pool_data){
-	return kmalloc(sizeof(struct bio_map_info), gfp_mask);
-}
-
-static void bio_map_info_free(void *element, void *pool_data){
-	kfree(element);
-}
 
 /*
  * Every mirror should look like this one.
@@ -1888,22 +1882,43 @@ static int __init dm_mirror_init(void)
 {
 	int r;
 
-	bio_map_info_pool = mempool_create(100, bio_map_info_alloc,
-					   bio_map_info_free, NULL);
-	if (!bio_map_info_pool)
-		return -ENOMEM;
+	_dm_raid1_read_record_cache = kmem_cache_create("bio_map_info",
+				sizeof(struct bio_map_info), 0, 0, NULL, NULL);
+	if (!_dm_raid1_read_record_cache) {
+		r = -ENOMEM;
+		goto bad_cache;
+	}
+
+	bio_map_info_pool = mempool_create_slab_pool(100,
+						_dm_raid1_read_record_cache);
+	if (!bio_map_info_pool) {
+		r = -ENOMEM;
+		goto bad_mempool;
+	}
 
 	r = dm_register_target(&mirror_target);
-	if (r < 0)
+	if (r < 0) {
 		DMERR("%s: Failed to register mirror target",
 		      mirror_target.name);
+		goto bad_target;
+	}
 
+	return 0;
+
+bad_target:
+	mempool_destroy(bio_map_info_pool);
+bad_mempool:
+	kmem_cache_destroy(_dm_raid1_read_record_cache);
+bad_cache:
 	return r;
 }
 
 static void __exit dm_mirror_exit(void)
 {
 	int r;
+
+	mempool_destroy(bio_map_info_pool);
+	kmem_cache_destroy(_dm_raid1_read_record_cache);
 
 	r = dm_unregister_target(&mirror_target);
 	if (r < 0)

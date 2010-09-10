@@ -13,6 +13,7 @@
 #include <linux/module.h>
 #include <linux/blkdev.h>
 #include <linux/backing-dev.h>
+#include <linux/task_io_accounting_ops.h>
 #include <linux/pagevec.h>
 #include <linux/buffer_head.h>
 
@@ -153,22 +154,20 @@ int read_cache_pages(struct address_space *mapping, struct list_head *pages,
 			int (*filler)(void *, struct page *), void *data)
 {
 	struct page *page;
-	struct pagevec lru_pvec;
 	int ret = 0;
-
-	pagevec_init(&lru_pvec, 0);
 
 	while (!list_empty(pages)) {
 		page = list_to_page(pages);
 		list_del(&page->lru);
-		if (add_to_page_cache(page, mapping, page->index, GFP_KERNEL)) {
+		if (add_to_page_cache_lru(page, mapping,
+					page->index, GFP_KERNEL)) {
 			read_cache_pages_release_page(mapping, page);
 			continue;
 		}
+		page_cache_release(page);
+
 		ret = filler(data, page);
-		if (!pagevec_add(&lru_pvec, page))
-			__pagevec_lru_add(&lru_pvec);
-		if (ret) {
+		if (unlikely(ret)) {
 			while (!list_empty(pages)) {
 				struct page *victim;
 
@@ -178,8 +177,8 @@ int read_cache_pages(struct address_space *mapping, struct list_head *pages,
 			}
 			break;
 		}
+		task_io_account_read(PAGE_CACHE_SIZE);
 	}
-	pagevec_lru_add(&lru_pvec);
 	return ret;
 }
 
@@ -189,7 +188,6 @@ static int read_pages(struct address_space *mapping, struct file *filp,
 		struct list_head *pages, unsigned nr_pages)
 {
 	unsigned page_idx;
-	struct pagevec lru_pvec;
 	int ret;
 
 	if (mapping->a_ops->readpages) {
@@ -199,19 +197,15 @@ static int read_pages(struct address_space *mapping, struct file *filp,
 		goto out;
 	}
 
-	pagevec_init(&lru_pvec, 0);
 	for (page_idx = 0; page_idx < nr_pages; page_idx++) {
 		struct page *page = list_to_page(pages);
 		list_del(&page->lru);
-		if (!add_to_page_cache(page, mapping,
+		if (!add_to_page_cache_lru(page, mapping,
 					page->index, GFP_KERNEL)) {
 			mapping->a_ops->readpage(filp, page);
-			if (!pagevec_add(&lru_pvec, page))
-				__pagevec_lru_add(&lru_pvec);
-		} else
-			page_cache_release(page);
+		}
+		page_cache_release(page);
 	}
-	pagevec_lru_add(&lru_pvec);
 	ret = 0;
 out:
 	return ret;

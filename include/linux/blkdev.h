@@ -236,10 +236,11 @@ enum rq_flag_bits {
 	__REQ_PM_SHUTDOWN,	/* shutdown request */
 	__REQ_ORDERED_COLOR,	/* is before or after barrier */
 	__REQ_RW_SYNC,		/* request is sync (O_DIRECT) */
-	__REQ_NR_BITS,		/* stops here */
 	__REQ_FAILFAST_DEV,	/* no driver retries of device errors */
 	__REQ_FAILFAST_TRANSPORT, /* no driver retries of transport errors */
 	__REQ_FAILFAST_DRIVER,	/* no driver retries of driver errors */
+ 	__REQ_IO_STAT,		/* account I/O stat */
+	__REQ_NR_BITS,		/* stops here */
 };
 
 #define REQ_RW		(1 << __REQ_RW)
@@ -272,6 +273,7 @@ enum rq_flag_bits {
 #define REQ_PM_SHUTDOWN	(1 << __REQ_PM_SHUTDOWN)
 #define REQ_ORDERED_COLOR	(1 << __REQ_ORDERED_COLOR)
 #define REQ_RW_SYNC	(1 << __REQ_RW_SYNC)
+#define REQ_IO_STAT	(1 << __REQ_IO_STAT)
 
 /*
  * State information carried for REQ_PM_SUSPEND and REQ_PM_RESUME
@@ -450,6 +452,10 @@ struct request_queue
 #define QUEUE_FLAG_REENTER	6	/* Re-entrancy avoidance */
 #define QUEUE_FLAG_PLUGGED	7	/* queue is plugged */
 #define QUEUE_FLAG_ELVSWITCH	8	/* don't use elevator, just do FIFO */
+#define QUEUE_FLAG_IO_STAT     15	/* do IO stats */
+
+#define QUEUE_FLAG_DEFAULT     ((1 << QUEUE_FLAG_IO_STAT) |	\
+				(1 << QUEUE_FLAG_CLUSTER))
 
 enum {
 	/*
@@ -495,10 +501,17 @@ enum {
 #define blk_queue_tagged(q)	test_bit(QUEUE_FLAG_QUEUED, &(q)->queue_flags)
 #define blk_queue_stopped(q)	test_bit(QUEUE_FLAG_STOPPED, &(q)->queue_flags)
 #define blk_queue_flushing(q)	((q)->ordseq)
+#define blk_queue_io_stat(q)	test_bit(QUEUE_FLAG_IO_STAT, &(q)->queue_flags)
 
 #define blk_fs_request(rq)	((rq)->flags & REQ_CMD)
 #define blk_pc_request(rq)	((rq)->flags & REQ_BLOCK_PC)
 #define blk_rq_started(rq)	((rq)->flags & REQ_STARTED)
+#define blk_rq_io_stat(rq)	((rq)->flags & REQ_IO_STAT)
+
+static inline int blk_do_io_stat(struct request *rq)
+{
+	return rq->rq_disk && blk_rq_io_stat(rq);
+}
 
 #define blk_noretry_request(rq)	((rq)->flags & REQ_FAILFAST)
 #define blk_failfast_dev(rq)	((rq)->flags & REQ_FAILFAST_DEV)

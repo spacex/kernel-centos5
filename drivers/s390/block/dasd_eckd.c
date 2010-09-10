@@ -6,6 +6,8 @@
  *		    Martin Schwidefsky <schwidefsky@de.ibm.com>
  * Bugreports.to..: <Linux390@de.ibm.com>
  * (C) IBM Corporation, IBM Deutschland Entwicklung GmbH, 1999,2000
+ * EMC Symmetrix ioctl Copyright EMC Corporation, 2008
+ * Author.........: Nigel Hislop <hislop_nigel@emc.com>
  *
  */
 
@@ -805,6 +807,17 @@ dasd_eckd_check_characteristics(struct dasd_device *device)
 		    private->rdc_data.no_cyl,
 		    private->rdc_data.trk_per_cyl,
 		    private->rdc_data.sec_per_trk);
+	/*
+	 * Can't handle devices that have no proper cylinder or track
+	 * numbers, e.g. hyper PAV alias devices.
+	 */
+	if (!private->rdc_data.no_cyl || !private->rdc_data.trk_per_cyl) {
+		DEV_MESSAGE(KERN_WARNING, device, "%s",
+			    "Cannot online device that reports no cylinder or"
+			    " head information.");
+		return -EOPNOTSUPP;
+	}
+
 	return rc;
 }
 
@@ -1020,6 +1033,8 @@ dasd_eckd_format_device(struct dasd_device * device,
 	int rpt, cyl, head;
 	int cplength, datasize;
 	int i;
+	int intensity = 0;
+	int r0_perm;
 
 	private = (struct dasd_eckd_private *) device->private;
 	rpt = recs_per_track(&private->rdc_data, 0, fdata->blksize);
@@ -1051,9 +1066,18 @@ dasd_eckd_format_device(struct dasd_device * device,
 	 *   Bit 1: write home address, currently not supported
 	 *   Bit 2: invalidate tracks
 	 *   Bit 3: use OS/390 compatible disk layout (cdl)
+	 *   Bit 4: do not allow storage subsystem to modify record zero
 	 * Only some bit combinations do make sense.
 	 */
-	switch (fdata->intensity) {
+	if (fdata->intensity & 0x10) {
+		r0_perm = 0;
+		intensity = fdata->intensity & ~0x10;
+	} else {
+		r0_perm = 1;
+		intensity = fdata->intensity;
+	}
+
+	switch (intensity) {
 	case 0x00:	/* Normal format */
 	case 0x08:	/* Normal format, use cdl. */
 		cplength = 2 + rpt;
@@ -1078,7 +1102,7 @@ dasd_eckd_format_device(struct dasd_device * device,
 		break;
 	default:
 		DEV_MESSAGE(KERN_WARNING, device, "Invalid flags 0x%x.",
-			    fdata->intensity);
+			    intensity);
 		return ERR_PTR(-EINVAL);
 	}
 	/* Allocate the format ccw request. */
@@ -1090,11 +1114,14 @@ dasd_eckd_format_device(struct dasd_device * device,
 	data = fcp->data;
 	ccw = fcp->cpaddr;
 
-	switch (fdata->intensity & ~0x08) {
+	switch (intensity & ~0x08) {
 	case 0x00: /* Normal format. */
 		define_extent(ccw++, (struct DE_eckd_data *) data,
 			      fdata->start_unit, fdata->start_unit,
 			      DASD_ECKD_CCW_WRITE_CKD, device);
+		/* grant subsystem permission to format R0 */
+		if (r0_perm)
+			((struct DE_eckd_data *)data)->ga_extended |= 0x04;
 		data += sizeof(struct DE_eckd_data);
 		ccw[-1].flags |= CCW_FLAG_CC;
 		locate_record(ccw++, (struct LO_eckd_data *) data,
@@ -1128,7 +1155,7 @@ dasd_eckd_format_device(struct dasd_device * device,
 		data += sizeof(struct LO_eckd_data);
 		break;
 	}
-	if (fdata->intensity & 0x01) {	/* write record zero */
+	if (intensity & 0x01) {	/* write record zero */
 		ect = (struct eckd_count *) data;
 		data += sizeof(struct eckd_count);
 		ect->cyl = cyl;
@@ -1143,7 +1170,7 @@ dasd_eckd_format_device(struct dasd_device * device,
 		ccw->cda = (__u32)(addr_t) ect;
 		ccw++;
 	}
-	if ((fdata->intensity & ~0x08) & 0x04) {	/* erase track */
+	if ((intensity & ~0x08) & 0x04) {	/* erase track */
 		ect = (struct eckd_count *) data;
 		data += sizeof(struct eckd_count);
 		ect->cyl = cyl;
@@ -1166,14 +1193,14 @@ dasd_eckd_format_device(struct dasd_device * device,
 			ect->kl = 0;
 			ect->dl = fdata->blksize;
 			/* Check for special tracks 0-1 when formatting CDL */
-			if ((fdata->intensity & 0x08) &&
+			if ((intensity & 0x08) &&
 			    fdata->start_unit == 0) {
 				if (i < 3) {
 					ect->kl = 4;
 					ect->dl = sizes_trk0[i] - 4;
 				}
 			}
-			if ((fdata->intensity & 0x08) &&
+			if ((intensity & 0x08) &&
 			    fdata->start_unit == 1) {
 				ect->kl = 44;
 				ect->dl = LABEL_SIZE - 44;
@@ -1701,6 +1728,103 @@ dasd_eckd_set_attrib(struct dasd_device *device, void __user *argp)
 	return 0;
 }
 
+/*
+ * Issue syscall I/O to EMC Symmetrix array.
+ * CCWs are PSF and RSSD
+ */
+static int dasd_symm_io(struct dasd_device *device, void __user *argp)
+{
+	struct dasd_symmio_parms usrparm;
+	char *psf_data, *rssd_result;
+	struct dasd_ccw_req *cqr;
+	struct ccw1 *ccw;
+	int rc;
+
+	/* Copy parms from caller */
+	rc = -EFAULT;
+	if (copy_from_user(&usrparm, argp, sizeof(usrparm)))
+		goto out;
+#ifndef CONFIG_64BIT
+	/* Make sure pointers are sane even on 31 bit. */
+	if ((usrparm.psf_data >> 32) != 0 || (usrparm.rssd_result >> 32) != 0) {
+		rc = -EINVAL;
+		goto out;
+	}
+#endif
+	/* alloc I/O data area */
+	psf_data = kzalloc(usrparm.psf_data_len, GFP_KERNEL | GFP_DMA);
+	rssd_result = kzalloc(usrparm.rssd_result_len, GFP_KERNEL | GFP_DMA);
+	if (!psf_data || !rssd_result) {
+		rc = -ENOMEM;
+		goto out_free;
+	}
+
+	/* get syscall header from user space */
+	rc = -EFAULT;
+	if (copy_from_user(psf_data,
+			   (void __user *)(unsigned long) usrparm.psf_data,
+			   usrparm.psf_data_len))
+		goto out_free;
+
+	/* sanity check on syscall header */
+	if (psf_data[0] != 0x17 && psf_data[1] != 0xce) {
+		rc = -EINVAL;
+		goto out_free;
+	}
+
+	/* setup CCWs for PSF + RSSD */
+	cqr = dasd_smalloc_request("ECKD", 2 , 0, device);
+	if (IS_ERR(cqr)) {
+		DEV_MESSAGE(KERN_WARNING, device, "%s",
+			"Could not allocate initialization request");
+		rc = PTR_ERR(cqr);
+		goto out_free;
+	}
+
+	cqr->device = device;
+	cqr->retries = 3;
+	cqr->expires = 10 * HZ;
+	cqr->buildclk = get_clock();
+	cqr->status = DASD_CQR_FILLED;
+
+	/* Build the ccws */
+	ccw = cqr->cpaddr;
+
+	/* PSF ccw */
+	ccw->cmd_code = DASD_ECKD_CCW_PSF;
+	ccw->count = usrparm.psf_data_len;
+	ccw->flags |= CCW_FLAG_CC;
+	ccw->cda = (__u32)(addr_t) psf_data;
+
+	ccw++;
+
+	/* RSSD ccw  */
+	ccw->cmd_code = DASD_ECKD_CCW_RSSD;
+	ccw->count = usrparm.rssd_result_len;
+	ccw->flags = CCW_FLAG_SLI ;
+	ccw->cda = (__u32)(addr_t) rssd_result;
+
+	rc = dasd_sleep_on(cqr);
+	if (rc)
+		goto out_sfree;
+
+	rc = -EFAULT;
+	if (copy_to_user((void __user *)(unsigned long) usrparm.rssd_result,
+			   rssd_result, usrparm.rssd_result_len))
+		goto out_sfree;
+	rc = 0;
+
+out_sfree:
+	dasd_sfree_request(cqr, cqr->device);
+out_free:
+	kfree(rssd_result);
+	kfree(psf_data);
+out:
+	DBF_DEV_EVENT(DBF_WARNING, device, "Symmetrix ioctl: rc=%d", rc);
+	return rc;
+}
+
+
 static int
 dasd_eckd_ioctl(struct dasd_device *device, unsigned int cmd, void __user *argp)
 {
@@ -1717,6 +1841,8 @@ dasd_eckd_ioctl(struct dasd_device *device, unsigned int cmd, void __user *argp)
 		return dasd_eckd_reserve(device);
 	case BIODASDSLCK:
 		return dasd_eckd_steal_lock(device);
+	case BIODASDSYMMIO:
+		return dasd_symm_io(device, argp);
 	default:
 		return -ENOIOCTLCMD;
 	}

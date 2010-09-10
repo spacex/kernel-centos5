@@ -114,7 +114,7 @@ int ipath_make_uc_req(struct ipath_qp *qp)
 				qp->s_state =
 					OP(SEND_ONLY_WITH_IMMEDIATE);
 				/* Immediate data comes after the BTH */
-				ohdr->u.imm_data = wqe->wr.imm_data;
+				ohdr->u.imm_data = wqe->wr.ex.imm_data;
 				hwords += 1;
 			}
 			if (wqe->wr.send_flags & IB_SEND_SOLICITED)
@@ -143,7 +143,7 @@ int ipath_make_uc_req(struct ipath_qp *qp)
 				qp->s_state =
 					OP(RDMA_WRITE_ONLY_WITH_IMMEDIATE);
 				/* Immediate data comes after the RETH */
-				ohdr->u.rc.imm_data = wqe->wr.imm_data;
+				ohdr->u.rc.imm_data = wqe->wr.ex.imm_data;
 				hwords += 1;
 				if (wqe->wr.send_flags & IB_SEND_SOLICITED)
 					bth0 |= 1 << 23;
@@ -172,7 +172,7 @@ int ipath_make_uc_req(struct ipath_qp *qp)
 		else {
 			qp->s_state = OP(SEND_LAST_WITH_IMMEDIATE);
 			/* Immediate data comes after the BTH */
-			ohdr->u.imm_data = wqe->wr.imm_data;
+			ohdr->u.imm_data = wqe->wr.ex.imm_data;
 			hwords += 1;
 		}
 		if (wqe->wr.send_flags & IB_SEND_SOLICITED)
@@ -197,7 +197,7 @@ int ipath_make_uc_req(struct ipath_qp *qp)
 			qp->s_state =
 				OP(RDMA_WRITE_LAST_WITH_IMMEDIATE);
 			/* Immediate data comes after the BTH */
-			ohdr->u.imm_data = wqe->wr.imm_data;
+			ohdr->u.imm_data = wqe->wr.ex.imm_data;
 			hwords += 1;
 			if (wqe->wr.send_flags & IB_SEND_SOLICITED)
 				bth0 |= 1 << 23;
@@ -223,6 +223,26 @@ bail:
 unlock:
 	spin_unlock_irqrestore(&qp->s_lock, flags);
 	return ret;
+}
+
+static void fix_mr_refcount(struct ipath_qp *qp)
+{
+	unsigned i;
+
+	if (qp->r_sge.num_sge == qp->s_rdma_read_sge.num_sge)
+		return;
+	while (qp->r_sge.num_sge) {
+		atomic_dec(&qp->r_sge.sge.mr->refcount);
+		if (--qp->r_sge.num_sge)
+			qp->r_sge.sge = *qp->r_sge.sg_list++;
+	}
+	for (i = 0; i < qp->s_rdma_read_sge.num_sge; i++) {
+		struct ipath_sge *sge = i ?
+			&qp->s_rdma_read_sge.sg_list[i - 1] :
+			&qp->s_rdma_read_sge.sge;
+
+		atomic_inc(&sge->mr->refcount);
+	}
 }
 
 /**
@@ -293,6 +313,11 @@ void ipath_uc_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 		 */
 		qp->r_psn = psn;
 	inv:
+		while (qp->r_sge.num_sge) {
+			atomic_dec(&qp->r_sge.sge.mr->refcount);
+			if (--qp->r_sge.num_sge)
+				qp->r_sge.sge = *qp->r_sge.sg_list++;
+		}
 		qp->r_state = OP(SEND_LAST);
 		switch (opcode) {
 		case OP(SEND_FIRST):
@@ -348,13 +373,13 @@ void ipath_uc_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 	send_first:
 		if (qp->r_flags & IPATH_R_REUSE_SGE) {
 			qp->r_flags &= ~IPATH_R_REUSE_SGE;
+			fix_mr_refcount(qp);
 			qp->r_sge = qp->s_rdma_read_sge;
 		} else if (!ipath_get_rwqe(qp, 0)) {
 			dev->n_pkt_drops++;
 			goto done;
-		}
-		/* Save the WQE so we can reuse it in case of an error. */
-		qp->s_rdma_read_sge = qp->r_sge;
+		} else
+			qp->s_rdma_read_sge = qp->r_sge;
 		qp->r_rcv_len = 0;
 		if (opcode == OP(SEND_ONLY))
 			goto send_last;
@@ -374,17 +399,17 @@ void ipath_uc_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 			dev->n_pkt_drops++;
 			goto done;
 		}
-		ipath_copy_sge(&qp->r_sge, data, pmtu);
+		ipath_copy_sge(&qp->r_sge, data, pmtu, 1);
 		break;
 
 	case OP(SEND_LAST_WITH_IMMEDIATE):
 	send_last_imm:
 		if (header_in_data) {
-			wc.imm_data = *(__be32 *) data;
+			wc.ex.imm_data = *(__be32 *) data;
 			data += sizeof(__be32);
 		} else {
 			/* Immediate data comes after BTH */
-			wc.imm_data = ohdr->u.imm_data;
+			wc.ex.imm_data = ohdr->u.imm_data;
 		}
 		hdrsize += 4;
 		wc.wc_flags = IB_WC_WITH_IMM;
@@ -410,7 +435,12 @@ void ipath_uc_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 		}
 		wc.opcode = IB_WC_RECV;
 	last_imm:
-		ipath_copy_sge(&qp->r_sge, data, tlen);
+		ipath_copy_sge(&qp->r_sge, data, tlen, 1);
+		while (qp->r_sge.num_sge) {
+			atomic_dec(&qp->r_sge.sge.mr->refcount);
+			if (--qp->r_sge.num_sge)
+				qp->r_sge.sge = *qp->r_sge.sg_list++;
+		}
 		wc.wr_id = qp->r_wr_id;
 		wc.status = IB_WC_SUCCESS;
 		wc.qp = &qp->ibqp;
@@ -437,21 +467,23 @@ void ipath_uc_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 		hdrsize += sizeof(*reth);
 		qp->r_len = be32_to_cpu(reth->length);
 		qp->r_rcv_len = 0;
+		qp->r_sge.sg_list = NULL;
 		if (qp->r_len != 0) {
 			u32 rkey = be32_to_cpu(reth->rkey);
 			u64 vaddr = be64_to_cpu(reth->vaddr);
 			int ok;
 
 			/* Check rkey */
-			ok = ipath_rkey_ok(qp, &qp->r_sge, qp->r_len,
+			ok = ipath_rkey_ok(qp, &qp->r_sge.sge, qp->r_len,
 					   vaddr, rkey,
 					   IB_ACCESS_REMOTE_WRITE);
 			if (unlikely(!ok)) {
 				dev->n_pkt_drops++;
 				goto done;
 			}
+			qp->r_sge.num_sge = 1;
 		} else {
-			qp->r_sge.sg_list = NULL;
+			qp->r_sge.num_sge = 0;
 			qp->r_sge.sge.mr = NULL;
 			qp->r_sge.sge.vaddr = NULL;
 			qp->r_sge.sge.length = 0;
@@ -478,17 +510,17 @@ void ipath_uc_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 			dev->n_pkt_drops++;
 			goto done;
 		}
-		ipath_copy_sge(&qp->r_sge, data, pmtu);
+		ipath_copy_sge(&qp->r_sge, data, pmtu, 1);
 		break;
 
 	case OP(RDMA_WRITE_LAST_WITH_IMMEDIATE):
 	rdma_last_imm:
 		if (header_in_data) {
-			wc.imm_data = *(__be32 *) data;
+			wc.ex.imm_data = *(__be32 *) data;
 			data += sizeof(__be32);
 		} else {
 			/* Immediate data comes after BTH */
-			wc.imm_data = ohdr->u.imm_data;
+			wc.ex.imm_data = ohdr->u.imm_data;
 		}
 		hdrsize += 4;
 		wc.wc_flags = IB_WC_WITH_IMM;
@@ -533,7 +565,12 @@ void ipath_uc_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 			dev->n_pkt_drops++;
 			goto done;
 		}
-		ipath_copy_sge(&qp->r_sge, data, tlen);
+		ipath_copy_sge(&qp->r_sge, data, tlen, 1);
+		while (qp->r_sge.num_sge) {
+			atomic_dec(&qp->r_sge.sge.mr->refcount);
+			if (--qp->r_sge.num_sge)
+				qp->r_sge.sge = *qp->r_sge.sg_list++;
+		}
 		break;
 
 	default:

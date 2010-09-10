@@ -327,6 +327,10 @@ struct sk_buff {
 				*data,
 				*tail,
 				*end;
+	/* Extra stuff at the end to avoid breaking abi */
+#ifndef __GENKSYMS__
+	int			 peeked;
+#endif
 };
 
 #ifdef __KERNEL__
@@ -338,6 +342,7 @@ struct sk_buff {
 #include <asm/system.h>
 
 extern void kfree_skb(struct sk_buff *skb);
+extern void consume_skb(struct sk_buff *skb);
 extern void	       __kfree_skb(struct sk_buff *skb);
 extern struct sk_buff *__alloc_skb(unsigned int size,
 				   gfp_t priority, int fclone);
@@ -372,18 +377,13 @@ extern struct sk_buff *skb_copy_expand(const struct sk_buff *skb,
 				       int newheadroom, int newtailroom,
 				       gfp_t priority);
 extern int	       skb_pad(struct sk_buff *skb, int pad);
-#define dev_kfree_skb(a)	kfree_skb(a)
+#define dev_kfree_skb(a)	consume_skb(a)
+#define dev_consume_skb(a)	kfree_skb_clean(a)
 extern void	      skb_over_panic(struct sk_buff *skb, int len,
 				     void *here);
 extern void	      skb_under_panic(struct sk_buff *skb, int len,
 				      void *here);
 extern void	      skb_truesize_bug(struct sk_buff *skb);
-
-static inline void skb_truesize_check(struct sk_buff *skb)
-{
-	if (unlikely((int)skb->truesize < sizeof(struct sk_buff) + skb->len))
-		skb_truesize_bug(skb);
-}
 
 extern int skb_append_datato_frags(struct sock *sk, struct sk_buff *skb,
 			int getfrag(void *from, char *to, int offset,
@@ -1246,6 +1246,22 @@ static inline struct sk_buff *netdev_alloc_skb(struct net_device *dev,
 	return __netdev_alloc_skb(dev, length, GFP_ATOMIC);
 }
 
+static inline int __skb_cow(struct sk_buff *skb, unsigned int headroom,
+			    int cloned)
+{
+	int delta = 0;
+
+	if (headroom < NET_SKB_PAD)
+		headroom = NET_SKB_PAD;
+	if (headroom > skb_headroom(skb))
+		delta = headroom - skb_headroom(skb);
+
+	if (delta || cloned)
+		return pskb_expand_head(skb, ALIGN(delta, NET_SKB_PAD), 0,
+					GFP_ATOMIC);
+	return 0;
+}
+
 /**
  *	skb_cow - copy header of skb when it is required
  *	@skb: buffer to cow
@@ -1260,16 +1276,22 @@ static inline struct sk_buff *netdev_alloc_skb(struct net_device *dev,
  */
 static inline int skb_cow(struct sk_buff *skb, unsigned int headroom)
 {
-	int delta = (headroom > NET_SKB_PAD ? headroom : NET_SKB_PAD) -
-			skb_headroom(skb);
+	return __skb_cow(skb, headroom, skb_cloned(skb));
+}
 
-	if (delta < 0)
-		delta = 0;
-
-	if (delta || skb_cloned(skb))
-		return pskb_expand_head(skb, (delta + (NET_SKB_PAD-1)) &
-				~(NET_SKB_PAD-1), 0, GFP_ATOMIC);
-	return 0;
+/**
+ *	skb_cow_head - skb_cow but only making the head writable
+ *	@skb: buffer to cow
+ *	@headroom: needed headroom
+ *
+ *	This function is identical to skb_cow except that we replace the
+ *	skb_cloned check by skb_header_cloned.  It should be used when
+ *	you only need to push on some header and do not need to modify
+ *	the data.
+ */
+static inline int skb_cow_head(struct sk_buff *skb, unsigned int headroom)
+{
+	return __skb_cow(skb, headroom, skb_header_cloned(skb));
 }
 
 /**
@@ -1421,6 +1443,8 @@ static inline void kunmap_skb_frag(void *vaddr)
 		     skb = skb->prev)
 
 
+extern struct sk_buff *__skb_recv_datagram(struct sock *sk, unsigned flags,
+					   int *peeked, int *err);
 extern struct sk_buff *skb_recv_datagram(struct sock *sk, unsigned flags,
 					 int noblock, int *err);
 extern unsigned int    datagram_poll(struct file *file, struct socket *sock,
@@ -1431,6 +1455,10 @@ extern int	       skb_copy_datagram_iovec(const struct sk_buff *from,
 extern int	       skb_copy_and_csum_datagram_iovec(struct sk_buff *skb,
 							int hlen,
 							struct iovec *iov);
+extern int	       skb_copy_datagram_from_iovec(struct sk_buff *skb,
+						    int offset,
+						    struct iovec *from,
+						    int len);
 extern void	       skb_free_datagram(struct sock *sk, struct sk_buff *skb);
 extern void	       skb_kill_datagram(struct sock *sk, struct sk_buff *skb,
 					 unsigned int flags);
@@ -1605,6 +1633,25 @@ static inline void nf_reset(struct sk_buff *skb)
 #else /* CONFIG_NETFILTER */
 static inline void nf_reset(struct sk_buff *skb) {}
 #endif /* CONFIG_NETFILTER */
+
+/* Note: This doesn't put any conntrack and bridge info in dst. */
+static inline void __nf_copy(struct sk_buff *dst, const struct sk_buff *src)
+{
+#ifdef CONFIG_NETFILTER
+	dst->nfmark = src->nfmark;
+	dst->nfct = src->nfct;
+	nf_conntrack_get(src->nfct);
+	dst->nfctinfo = src->nfctinfo;
+#if defined(CONFIG_NF_CONNTRACK) || defined(CONFIG_NF_CONNTRACK_MODULE)
+	dst->nfct_reasm = src->nfct_reasm;
+	nf_conntrack_get_reasm(src->nfct_reasm);
+#endif
+#ifdef CONFIG_BRIDGE_NETFILTER
+	dst->nf_bridge  = src->nf_bridge;
+	nf_bridge_get(src->nf_bridge);
+#endif
+#endif /* CONFIG_NETFILTER */
+}
 
 #ifdef CONFIG_NETWORK_SECMARK
 static inline void skb_copy_secmark(struct sk_buff *to, const struct sk_buff *from)

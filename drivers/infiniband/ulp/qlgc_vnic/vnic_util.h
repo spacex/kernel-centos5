@@ -38,7 +38,6 @@
 #define VNIC_MAJORVERSION	1
 #define VNIC_MINORVERSION	1
 
-#define is_power_of2(value)	(((value) & ((value - 1))) == 0)
 #define ALIGN_DOWN(x, a)	((x)&(~((a)-1)))
 
 extern u32 vnic_debug;
@@ -49,34 +48,23 @@ enum {
 	DEBUG_IB_FSTATUS		= 0x00000004,
 	DEBUG_IB_ASSERTS		= 0x00000008,
 	DEBUG_CONTROL_INFO		= 0x00000010,
-	DEBUG_CONTROL_FUNCTION		= 0x00000020,
-	DEBUG_CONTROL_PACKET		= 0x00000040,
+	DEBUG_CONTROL_FUNCTION	= 0x00000020,
+	DEBUG_CONTROL_PACKET	= 0x00000040,
 	DEBUG_CONFIG_INFO		= 0x00000100,
 	DEBUG_DATA_INFO 		= 0x00001000,
 	DEBUG_DATA_FUNCTION		= 0x00002000,
 	DEBUG_NETPATH_INFO		= 0x00010000,
 	DEBUG_VIPORT_INFO		= 0x00100000,
-	DEBUG_VIPORT_FUNCTION		= 0x00200000,
+	DEBUG_VIPORT_FUNCTION	= 0x00200000,
 	DEBUG_LINK_STATE		= 0x00400000,
 	DEBUG_VNIC_INFO 		= 0x01000000,
 	DEBUG_VNIC_FUNCTION		= 0x02000000,
+	DEBUG_MCAST_INFO		= 0x04000000,
+	DEBUG_MCAST_FUNCTION	= 0x08000000,
 	DEBUG_SYS_INFO			= 0x10000000,
 	DEBUG_SYS_VERBOSE		= 0x40000000
 };
 
-#ifdef CONFIG_INFINIBAND_QLGC_VNIC_DEBUG
-#define PRINT(level, x, fmt, arg...)					\
-	printk(level "%s: %s: %s, line %d: " fmt,			\
-	       MODULE_NAME, x, __FILE__, __LINE__, ##arg)
-
-#define PRINT_CONDITIONAL(level, x, condition, fmt, arg...)		\
-	do {								\
-		if (condition)						\
-			printk(level "%s: %s: %s, line %d: " fmt,	\
-			       MODULE_NAME, x, __FILE__, __LINE__,	\
-			       ##arg);					\
-	} while(0)
-#else
 #define PRINT(level, x, fmt, arg...)					\
 	printk(level "%s: " fmt, MODULE_NAME, ##arg)
 
@@ -85,8 +73,7 @@ enum {
 		 if (condition)						\
 			printk(level "%s: %s: " fmt,			\
 			       MODULE_NAME, x, ##arg);			\
-	} while(0)
-#endif	/*CONFIG_INFINIBAND_QLGC_VNIC_DEBUG*/
+	} while (0)
 
 #define IB_PRINT(fmt, arg...)			\
 	PRINT(KERN_INFO, "IB", fmt, ##arg)
@@ -110,8 +97,8 @@ enum {
 		 if ((vnic_debug & DEBUG_IB_ASSERTS) && !(x))		\
 			panic("%s assertion failed, file:  %s,"		\
 				" line %d: ",				\
-				MODULE_NAME,__FILE__,__LINE__)		\
-	} while(0)
+				MODULE_NAME, __FILE__, __LINE__)	\
+	} while (0)
 
 #define CONTROL_PRINT(fmt, arg...)			\
 	PRINT(KERN_INFO, "CONTROL", fmt, ##arg)
@@ -126,15 +113,15 @@ enum {
 
 #define CONTROL_FUNCTION(fmt, arg...)					\
 	PRINT_CONDITIONAL(KERN_INFO,					\
-		          "CONTROL",					\
-			  (vnic_debug & DEBUG_CONTROL_FUNCTION),	\
-			  fmt, ##arg)
+			"CONTROL",					\
+			(vnic_debug & DEBUG_CONTROL_FUNCTION),		\
+			fmt, ##arg)
 
 #define CONTROL_PACKET(pkt)					\
 	do {							\
 		 if (vnic_debug & DEBUG_CONTROL_PACKET)		\
 			control_log_control_packet(pkt);	\
-	} while(0)
+	} while (0)
 
 #define CONFIG_PRINT(fmt, arg...)		\
 	PRINT(KERN_INFO, "CONFIG", fmt, ##arg)
@@ -163,6 +150,24 @@ enum {
 			  "DATA",				\
 			  (vnic_debug & DEBUG_DATA_FUNCTION),	\
 			  fmt, ##arg)
+
+
+#define MCAST_PRINT(fmt, arg...)        \
+    PRINT(KERN_INFO, "MCAST", fmt, ##arg)
+#define MCAST_ERROR(fmt, arg...)        \
+    PRINT(KERN_ERR, "MCAST", fmt, ##arg)
+
+#define MCAST_INFO(fmt, arg...)   	              		\
+	PRINT_CONDITIONAL(KERN_INFO,     			\
+			"MCAST",   				\
+			(vnic_debug & DEBUG_MCAST_INFO),	\
+			fmt, ##arg)
+
+#define MCAST_FUNCTION(fmt, arg...)				\
+	PRINT_CONDITIONAL(KERN_INFO,				\
+			"MCAST",				\
+			(vnic_debug & DEBUG_MCAST_FUNCTION), 	\
+			fmt, ##arg)
 
 #define NETPATH_PRINT(fmt, arg...)		\
 	PRINT(KERN_INFO, "NETPATH", fmt, ##arg)

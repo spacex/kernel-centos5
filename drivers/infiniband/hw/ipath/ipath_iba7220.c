@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2007, 2008 QLogic Corporation. All rights reserved.
+ * Copyright (c) 2006, 2007, 2008, 2009 QLogic Corporation. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -53,6 +53,15 @@ module_param_named(compat_ddr_negotiate, ipath_compat_ddr_negotiate, uint,
 			S_IWUSR | S_IRUGO);
 MODULE_PARM_DESC(compat_ddr_negotiate,
 		"Attempt pre-IBTA 1.2 DDR speed negotiation");
+
+static unsigned ipath_sdma_fetch_arb = 1;
+module_param_named(fetch_arb, ipath_sdma_fetch_arb, uint, S_IRUGO);
+MODULE_PARM_DESC(fetch_arb, "IBA7220: change SDMA descriptor arbitration");
+
+static int ipath_pcie_coalesce;
+module_param_named(pcie_coalesce, ipath_pcie_coalesce, int, S_IRUGO);
+MODULE_PARM_DESC(pcie_coalesce, "tune PCIe coalescing on some Intel chipsets");
+
 
 /*
  * This file contains almost all the chip-specific register information and
@@ -407,10 +416,6 @@ static const struct ipath_cregs ipath_7220_cregs = {
 	.cr_psxmitwaitcount = IPATH_CREG_OFFSET(PSXmitWaitCount),
 };
 
-/* kr_revision bits */
-#define INFINIPATH_R_EMULATORREV_MASK ((1ULL<<22) - 1)
-#define INFINIPATH_R_EMULATORREV_SHIFT 40
-
 /* kr_control bits */
 #define INFINIPATH_C_RESET (1U<<7)
 
@@ -528,9 +533,7 @@ static const struct ipath_cregs ipath_7220_cregs = {
 
 static char int_type[16] = "auto";
 module_param_string(interrupt_type, int_type, sizeof(int_type), 0444);
-MODULE_PARM_DESC(int_type, " interrupt_type=auto|force_msi|force_intx\n");
-
-static int ipath_special_trigger;
+MODULE_PARM_DESC(int_type, " interrupt_type=auto|force_msi|force_intx");
 
 /* packet rate matching delay; chip has support */
 static u8 rate_to_delay[2][2] = {
@@ -538,9 +541,6 @@ static u8 rate_to_delay[2][2] = {
 	{   8, 2 }, /* SDR */
 	{   4, 1 }  /* DDR */
 };
-
-module_param_named(special_trigger, ipath_special_trigger, int, S_IRUGO);
-MODULE_PARM_DESC(special_trigger, "Enable SpecialTrigger arm/launch");
 
 /* 7220 specific hardware errors... */
 static const struct ipath_hwerror_msgs ipath_7220_hwerror_msgs[] = {
@@ -857,17 +857,8 @@ static int ipath_7220_boardname(struct ipath_devdata *dd, char *name,
 			 boardrev);
 		break;
 	}
-	if (n) {
-		if (dd->ipath_revision & INFINIPATH_R_EMULATOR_MASK) {
-			unsigned rev =
-				(unsigned) ((dd->ipath_revision >>
-					INFINIPATH_R_EMULATORREV_SHIFT) &
-					INFINIPATH_R_EMULATORREV_MASK);
-
-			snprintf(name, namelen, "%s(%u)", n, rev);
-		} else
-			snprintf(name, namelen, "%s", n);
-	}
+	if (n)
+		snprintf(name, namelen, "%s", n);
 
 	if (dd->ipath_majrev != 5 || !dd->ipath_minrev ||
 		dd->ipath_minrev > 2) {
@@ -965,6 +956,12 @@ static int ipath_7220_bringup_serdes(struct ipath_devdata *dd)
 				 INFINIPATH_HWE_SERDESPLLFAILED);
 	}
 
+	dd->ibdeltainprog = 1;
+	dd->ibsymsnap =
+	     ipath_read_creg32(dd, dd->ipath_cregs->cr_ibsymbolerrcnt);
+	dd->iblnkerrsnap =
+	     ipath_read_creg32(dd, dd->ipath_cregs->cr_iblinkerrrecovcnt);
+
 	if (!dd->ipath_ibcddrctrl) {
 		/* not on re-init after reset */
 		dd->ipath_ibcddrctrl =
@@ -1010,8 +1007,10 @@ static int ipath_7220_bringup_serdes(struct ipath_devdata *dd)
 
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_ibcddrctrl,
 			dd->ipath_ibcddrctrl);
+	ipath_write_kreg(dd, dd->ipath_kregs->kr_scratch, 0xfeedbeef);
 
 	ipath_write_kreg(dd, IPATH_KREG_OFFSET(IBNCModeCtrl), 0Ull);
+	ipath_write_kreg(dd, dd->ipath_kregs->kr_scratch, 0xfeedbeef);
 
 	/* IBA7220 has SERDES MPU reset in D0 of what _was_ IBPLLCfg */
 	val = ipath_read_kreg64(dd, dd->ipath_kregs->kr_ibserdesctrl);
@@ -1046,7 +1045,7 @@ static int ipath_7220_bringup_serdes(struct ipath_devdata *dd)
 	ipath_cdbg(VERBOSE, "done: xgxs=%llx from %llx\n",
 		   (unsigned long long)
 		   ipath_read_kreg64(dd, dd->ipath_kregs->kr_xgxsconfig),
-		   prev_val);
+		   (unsigned long long) prev_val);
 
 	guid = be64_to_cpu(dd->ipath_guid);
 
@@ -1056,8 +1055,10 @@ static int ipath_7220_bringup_serdes(struct ipath_devdata *dd)
 		ipath_dbg("No GUID for heartbeat, faking %llx\n",
 			(unsigned long long)guid);
 	} else
-		ipath_cdbg(VERBOSE, "Wrote %llX to HRTBT_GUID\n", guid);
+		ipath_cdbg(VERBOSE, "Wrote %llX to HRTBT_GUID\n",
+			(unsigned long long) guid);
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_hrtbt_guid, guid);
+	ipath_write_kreg(dd, dd->ipath_kregs->kr_scratch, 0xfeedbeef);
 	return ret;
 }
 
@@ -1097,6 +1098,37 @@ static void ipath_7220_config_jint(struct ipath_devdata *dd,
 static void ipath_7220_quiet_serdes(struct ipath_devdata *dd)
 {
 	u64 val;
+	if (dd->ibsymdelta || dd->iblnkerrdelta ||
+	    dd->ibdeltainprog) {
+		u64 diagc;
+		/* enable counter writes */
+		diagc = ipath_read_kreg64(dd, dd->ipath_kregs->kr_hwdiagctrl);
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_hwdiagctrl,
+				 diagc | INFINIPATH_DC_COUNTERWREN);
+
+		if (dd->ibsymdelta || dd->ibdeltainprog) {
+			val = ipath_read_creg32(dd,
+					dd->ipath_cregs->cr_ibsymbolerrcnt);
+			if (dd->ibdeltainprog)
+				val -= val - dd->ibsymsnap;
+			val -= dd->ibsymdelta;
+			ipath_write_creg(dd,
+				  dd->ipath_cregs->cr_ibsymbolerrcnt, val);
+		}
+		if (dd->iblnkerrdelta || dd->ibdeltainprog) {
+			val = ipath_read_creg32(dd,
+					dd->ipath_cregs->cr_iblinkerrrecovcnt);
+			if (dd->ibdeltainprog)
+				val -= val - dd->iblnkerrsnap;
+			val -= dd->iblnkerrdelta;
+			ipath_write_creg(dd,
+				   dd->ipath_cregs->cr_iblinkerrrecovcnt, val);
+	     }
+
+	     /* and disable counter writes */
+	     ipath_write_kreg(dd, dd->ipath_kregs->kr_hwdiagctrl, diagc);
+	}
+
 	dd->ipath_flags &= ~IPATH_IB_AUTONEG_INPROG;
 	wake_up(&dd->ipath_autoneg_wait);
 	cancel_delayed_work(&dd->ipath_autoneg_work);
@@ -1221,16 +1253,23 @@ static int ipath_msi_enabled(struct pci_dev *pdev)
 
 /*
  * disable msi interrupt if enabled, and clear the flag.
- * flag is used primarily for the fallback to IntX, but
+ * flag is used primarily for the fallback to INTx, but
  * is also used in reinit after reset as a flag.
  */
 static void ipath_7220_nomsi(struct ipath_devdata *dd)
 {
 	dd->ipath_msi_lo = 0;
-#ifdef CONFIG_PCI_MSI
-	if (ipath_msi_enabled(dd->pcidev))
+
+	if (ipath_msi_enabled(dd->pcidev)) {
+		/*
+		 * free, but don't zero; later kernels require
+		 * it be freed before disable_msi, so the intx
+		 * setup has to request it again.
+		 */
+		 if (dd->ipath_irq)
+			free_irq(dd->ipath_irq, dd);
 		pci_disable_msi(dd->pcidev);
-#endif
+	}
 }
 
 /*
@@ -1246,6 +1285,90 @@ static void ipath_setup_7220_cleanup(struct ipath_devdata *dd)
 	ipath_7220_nomsi(dd);
 }
 
+/*
+ * Enable PCIe completion and data coalescing, on Intel 5x00 and 7300
+ * chipsets.   This is known to be unsafe for some revisions of some
+ * of these chipsets, with some BIOS settings, and enabling it on those
+ * systems may result in the system crashing, and/or data corruption.
+ */
+static void ipath_7220_tune_pcie_coalesce(struct ipath_devdata *dd)
+{
+	int r;
+	struct pci_dev *parent;
+	int ppos;
+	u16 devid;
+	u32 mask, bits, val;
+
+	if (!ipath_pcie_coalesce)
+		return;
+
+	/* Find out supported and configured values for parent (root) */
+	parent = dd->pcidev->bus->self;
+	if (parent->bus->parent) {
+		dev_info(&dd->pcidev->dev, "Parent not root\n");
+		return;
+	}
+	ppos = pci_find_capability(parent, PCI_CAP_ID_EXP);
+	if (!ppos) {
+		ipath_dbg("parent not PCIe root complex!?\n");
+		return;
+	}
+	if (parent->vendor != 0x8086) {
+		ipath_dbg("VendorID 0x%x isn't Intel, skip\n", parent->vendor);
+		return;
+	}
+
+	/*
+	 *  - bit 12: Max_rdcmp_Imt_EN: need to set to 1
+	 *  - bit 11: COALESCE_FORCE: need to set to 0
+	 *  - bit 10: COALESCE_EN: need to set to 1
+	 *  (but limitations on some on some chipsets)
+	 *
+	 *  On the Intel 5000, 5100, and 7300 chipsets, there is
+	 *  also: - bit 25:24: COALESCE_MODE, need to set to 0
+	 *  OLSON OLSON: 10,11,12 may need to be gated by maxpayload
+	 */
+	devid = parent->device;
+	if (devid >= 0x25e2 && devid <= 0x25fa) {
+		/* 5000 P/V/X/Z */
+		u8 rev;
+		pci_read_config_byte(parent, PCI_REVISION_ID, &rev);
+		if (rev <= 0xb2) {
+			bits = 1U << 10;
+			ipath_dbg("Old rev 5000* (0x%x), enable-only\n", rev);
+		} else
+			bits = 7U << 10;
+		mask = (3U << 24) | (7U << 10);
+	} else if (devid >= 0x65e2 && devid <= 0x65fa) {
+		/* 5100 */
+		bits = 1U << 10;
+		mask = (3U << 24) | (7U << 10);
+	} else if (devid >= 0x4021 && devid <= 0x402e) {
+		/* 5400 */
+		bits = 7U << 10;
+		mask = 7U << 10;
+	} else if (devid >= 0x3604 && devid <= 0x360a) {
+		/* 7300 */
+		bits = 7U << 10;
+		mask = (3U << 24) | (7U << 10);
+	} else {
+		/* not one of the chipsets that we know about */
+		ipath_dbg("DeviceID 0x%x isn't one we know, skip\n", devid);
+		return;
+	}
+	pci_read_config_dword(parent, 0x48, &val);
+	ipath_dbg("Read initial value 0x%x at 0x48, deviceid 0x%x\n",
+		val, devid);
+	val &= ~mask;
+	val |= bits;
+	r = pci_write_config_dword(parent, 0x48, val);
+	if (r)
+		ipath_dev_err(dd, "Unable to update deviceid 0x%x to val 0x%x"
+				" for PCIe coalescing\n", devid, val);
+	else
+		dev_info(&dd->pcidev->dev, "Updated deviceid 0x%x to val 0x%x"
+				" for PCIe coalescing\n", devid, val);
+}
 
 static void ipath_7220_pcie_params(struct ipath_devdata *dd, u32 boardrev)
 {
@@ -1305,6 +1428,8 @@ static void ipath_7220_pcie_params(struct ipath_devdata *dd, u32 boardrev)
 			"PCIe linkspeed %u is incorrect; "
 			"should be 1 (2500)!\n", speed);
 
+	ipath_7220_tune_pcie_coalesce(dd);
+
 bail:
 	/* fill in string, even on errors */
 	snprintf(dd->ipath_lbus_info, sizeof(dd->ipath_lbus_info),
@@ -1342,7 +1467,8 @@ static int ipath_setup_7220_config(struct ipath_devdata *dd,
 	u32 boardrev;
 
 	dd->ipath_msi_lo = 0;	/* used as a flag during reset processing */
-#ifdef CONFIG_PCI_MSI
+
+	pos = pci_find_capability(pdev, PCI_CAP_ID_MSI);
 	if (!strcmp(int_type, "force_msi") || !strcmp(int_type, "auto"))
 		ret = pci_enable_msi(pdev);
 	if (ret) {
@@ -1357,7 +1483,7 @@ static int ipath_setup_7220_config(struct ipath_devdata *dd,
 		if (!strcmp(int_type, "auto"))
 			ipath_dev_err(dd, "pci_enable_msi failed: %d, "
 				      "falling back to INTx\n", ret);
-	} else if ((pos = pci_find_capability(pdev, PCI_CAP_ID_MSI))) {
+	} else if (pos) {
 		u16 control;
 		pci_read_config_dword(pdev, pos + PCI_MSI_ADDRESS_LO,
 				      &dd->ipath_msi_lo);
@@ -1374,10 +1500,8 @@ static int ipath_setup_7220_config(struct ipath_devdata *dd,
 	} else
 		ipath_dev_err(dd, "Can't find MSI capability, "
 			      "can't save MSI settings for reset\n");
-#else
-	ipath_dbg("PCI_MSI not configured, using IntX interrupts\n");
-	ipath_enable_intx(pdev);
-#endif
+
+	dd->ipath_irq = pdev->irq;
 
 	/*
 	 * We save the cachelinesize also, although it doesn't
@@ -1397,7 +1521,7 @@ static int ipath_setup_7220_config(struct ipath_devdata *dd,
 
 	dd->ipath_flags |= IPATH_NODMA_RTAIL | IPATH_HAS_SEND_DMA |
 		IPATH_HAS_PBC_CNT | IPATH_HAS_THRESH_UPDATE;
-	dd->ipath_pioupd_thresh = 4U; /* set default update threshold */
+	dd->ipath_pioupd_thresh = 8U; /* set default update threshold */
 	return 0;
 }
 
@@ -1578,7 +1702,7 @@ static void ipath_init_7220_variables(struct ipath_devdata *dd)
 static int ipath_reinit_msi(struct ipath_devdata *dd)
 {
 	int ret = 0;
-#ifdef CONFIG_PCI_MSI
+
 	int pos;
 	u16 control;
 	if (!dd->ipath_msi_lo) /* Using intX, or init problem */
@@ -1612,10 +1736,10 @@ static int ipath_reinit_msi(struct ipath_devdata *dd)
 			      ((control & PCI_MSI_FLAGS_64BIT) ? 12 : 8),
 			      dd->ipath_msi_data);
 	ret = 1;
+
 bail:
-#endif
 	if (!ret) {
-		ipath_dbg("Using IntX, MSI disabled or not configured\n");
+		ipath_dbg("Using INTx, MSI disabled or not configured\n");
 		ipath_enable_intx(dd->pcidev);
 		ret = 1;
 	}
@@ -1727,7 +1851,7 @@ static void ipath_7220_put_tid(struct ipath_devdata *dd, u64 __iomem *tidptr,
 				 "not 2KB aligned!\n", pa);
 			return;
 		}
-		if (pa >= (1UL << IBA7220_TID_SZ_SHIFT)) {
+		if (chippa >= (1UL << IBA7220_TID_SZ_SHIFT)) {
 			ipath_dev_err(dd,
 				      "BUG: Physical page address 0x%lx "
 				      "larger than supported\n", pa);
@@ -1835,18 +1959,20 @@ static int ipath_7220_early_init(struct ipath_devdata *dd)
 		dd->ipath_control |= 1<<4;
 
 	dd->ipath_flags |= IPATH_4BYTE_TID;
-	if (ipath_special_trigger)
-		dd->ipath_flags |= IPATH_USE_SPCL_TRIG;
 
 	/*
 	 * For openfabrics, we need to be able to handle an IB header of
-	 * 24 dwords.  HT chip has arbitrary sized receive buffers, so we
-	 * made them the same size as the PIO buffers.  This chip does not
-	 * handle arbitrary size buffers, so we need the header large enough
-	 * to handle largest IB header, but still have room for a 2KB MTU
-	 * standard IB packet.
+	 * at least 24 dwords.  This chip does not handle arbitrary size
+	 * buffers, so we need the header large enough to handle largest
+	 * IB header, but still have room for a 2KB MTU standard IB packet.
+	 * Additionally, some processor/memory controller combinations
+	 * benefit quite strongly from having the DMA'ed data be cacheline
+	 * aligned and a cacheline multiple, so we set the size to 32 dwords
+	 * (2 64-byte primary cachelines for pretty much all processors of
+	 * interest).  The alignment hurts nothing, other than using somewhat
+	 * more memory.
 	 */
-	dd->ipath_rcvhdrentsize = 24;
+	dd->ipath_rcvhdrentsize = 32;
 	dd->ipath_rcvhdrsize = IPATH_DFLT_RCVHDRSIZE;
 	dd->ipath_rhf_offset =
 		dd->ipath_rcvhdrentsize - sizeof(u64) / sizeof(u32);
@@ -1918,10 +2044,13 @@ static int ipath_7220_get_base_info(struct ipath_portdata *pd, void *kbase)
 		IPATH_RUNTIME_PCIE | IPATH_RUNTIME_NODMA_RTAIL |
 		IPATH_RUNTIME_SDMA;
 
-	if (ipath_special_trigger)
-		kinfo->spi_runtime_flags |= IPATH_RUNTIME_SPECIAL_TRIGGER;
-
 	return 0;
+}
+
+static void ipath_7220_free_irq(struct ipath_devdata *dd)
+{
+	free_irq(dd->ipath_irq, dd);
+	dd->ipath_irq = 0;
 }
 
 static struct ipath_message_header *
@@ -1965,7 +2094,7 @@ static void ipath_7220_config_ports(struct ipath_devdata *dd, ushort cfgports)
 			 dd->ipath_rcvctrl);
 	dd->ipath_p0_rcvegrcnt = 2048; /* always */
 	if (dd->ipath_flags & IPATH_HAS_SEND_DMA)
-		dd->ipath_pioreserved = 3; /* kpiobufs used for PIO */
+		dd->ipath_pioreserved = 8; /* kpiobufs used for PIO */
 }
 
 
@@ -2127,6 +2256,7 @@ static int ipath_7220_set_ib_cfg(struct ipath_devdata *dd, int which, u32 val)
 	dd->ipath_ibcddrctrl |= (((u64) val & maskr) << lsb);
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_ibcddrctrl,
 			 dd->ipath_ibcddrctrl);
+	ipath_write_kreg(dd, dd->ipath_kregs->kr_scratch, 0xfeedbeef);
 	if (setforce)
 		dd->ipath_flags |= IPATH_IB_FORCE_NOTIFY;
 bail:
@@ -2143,14 +2273,25 @@ static void ipath_7220_read_counters(struct ipath_devdata *dd,
 		counters[i] = ipath_snap_cntr(dd, i);
 }
 
-/* if we are using MSI, try to fallback to IntX */
+/* if we are using MSI, try to fallback to INTx */
 static int ipath_7220_intr_fallback(struct ipath_devdata *dd)
 {
 	if (dd->ipath_msi_lo) {
 		dev_info(&dd->pcidev->dev, "MSI interrupt not detected,"
-			" trying IntX interrupts\n");
+			" trying INTx interrupts\n");
 		ipath_7220_nomsi(dd);
 		ipath_enable_intx(dd->pcidev);
+		/*
+		 * some newer kernels require free_irq before disable_msi,
+		 * and irq can be changed during disable and intx enable
+		 * and we need to therefore use the pcidev->irq value,
+		 * not our saved MSI value.
+		 */
+		dd->ipath_irq = dd->pcidev->irq;
+		if (request_irq(dd->ipath_irq, ipath_intr, IRQF_SHARED,
+			IPATH_DRV_NAME, dd))
+			ipath_dev_err(dd,
+				"Could not re-request_irq for INTx\n");
 		return 1;
 	}
 	return 0;
@@ -2203,12 +2344,6 @@ static void autoneg_send(struct ipath_devdata *dd,
 	ipath_flush_wc();
 	__iowrite32_copy(piobuf + 2, hdr, 7);
 	__iowrite32_copy(piobuf + 9, data, dcnt);
-	if (dd->ipath_flags & IPATH_USE_SPCL_TRIG) {
-		u32 spcl_off = (pnum > dd->ipath_piobcnt2k) ?
-			2047 : 1023;
-		ipath_flush_wc();
-		__raw_writel(0xaebecede, piobuf + spcl_off);
-	}
 	ipath_flush_wc();
 }
 
@@ -2230,18 +2365,18 @@ static void ipath_autoneg_send(struct ipath_devdata *dd, int which)
 		0xffffffff, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
 		0x40000001, 0x1388, 0x15e, /* rest 0's */
 		};
-	dcnt = sizeof(madpayload_start)/sizeof(madpayload_start[0]);
-	hcnt = sizeof(hdr)/sizeof(hdr[0]);
+	dcnt = ARRAY_SIZE(madpayload_start);
+	hcnt = ARRAY_SIZE(hdr);
 	if (!swapped) {
 		/* for maintainability, do it at runtime */
 		for (i = 0; i < hcnt; i++) {
-			dw = cpu_to_be32(hdr[i]);
+			dw = (__force u32) cpu_to_be32(hdr[i]);
 			hdr[i] = dw;
 		}
 		for (i = 0; i < dcnt; i++) {
-			dw = cpu_to_be32(madpayload_start[i]);
+			dw = (__force u32) cpu_to_be32(madpayload_start[i]);
 			madpayload_start[i] = dw;
-			dw = cpu_to_be32(madpayload_done[i]);
+			dw = (__force u32) cpu_to_be32(madpayload_done[i]);
 			madpayload_done[i] = dw;
 		}
 		swapped = 1;
@@ -2295,6 +2430,7 @@ static void set_speed_fast(struct ipath_devdata *dd, u32 speed)
 		IBA7220_IBC_WIDTH_SHIFT;
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_ibcddrctrl,
 			dd->ipath_ibcddrctrl);
+	ipath_write_kreg(dd, dd->ipath_kregs->kr_scratch, 0xfeedbeef);
 	ipath_cdbg(VERBOSE, "setup for IB speed (%x) done\n", speed);
 }
 
@@ -2314,6 +2450,7 @@ static void try_auto_neg(struct ipath_devdata *dd)
 	 */
 	ipath_write_kreg(dd, IPATH_KREG_OFFSET(IBNCModeCtrl),
 		0x3b9dc07);
+	ipath_write_kreg(dd, dd->ipath_kregs->kr_scratch, 0xfeedbeef);
 	dd->ipath_flags |= IPATH_IB_AUTONEG_INPROG;
 	ipath_autoneg_send(dd, 0);
 	set_speed_fast(dd, IPATH_IB_DDR);
@@ -2326,7 +2463,7 @@ static void try_auto_neg(struct ipath_devdata *dd)
 
 static int ipath_7220_ib_updown(struct ipath_devdata *dd, int ibup, u64 ibcs)
 {
-	int ret = 0;
+     int ret = 0, symadj = 0;
 	u32 ltstate = ipath_ib_linkstate(dd, ibcs);
 
 	dd->ipath_link_width_active =
@@ -2369,6 +2506,13 @@ static int ipath_7220_ib_updown(struct ipath_devdata *dd, int ibup, u64 ibcs)
 			ipath_dbg("DDR negotiation try, %u/%u\n",
 				dd->ipath_autoneg_tries,
 				IPATH_AUTONEG_TRIES);
+			if (!dd->ibdeltainprog) {
+				dd->ibdeltainprog = 1;
+				dd->ibsymsnap = ipath_read_creg32(dd,
+					dd->ipath_cregs->cr_ibsymbolerrcnt);
+				dd->iblnkerrsnap = ipath_read_creg32(dd,
+					dd->ipath_cregs->cr_iblinkerrrecovcnt);
+			}
 			try_auto_neg(dd);
 			ret = 1; /* no other IB status change processing */
 		} else if ((dd->ipath_flags & IPATH_IB_AUTONEG_INPROG)
@@ -2389,6 +2533,7 @@ static int ipath_7220_ib_updown(struct ipath_devdata *dd, int ibup, u64 ibcs)
 				set_speed_fast(dd,
 					dd->ipath_link_speed_enabled);
 				wake_up(&dd->ipath_autoneg_wait);
+				symadj = 1;
 			} else if (dd->ipath_flags & IPATH_IB_AUTONEG_FAILED) {
 				/*
 				 * clear autoneg failure flag, and do setup
@@ -2404,22 +2549,31 @@ static int ipath_7220_ib_updown(struct ipath_devdata *dd, int ibup, u64 ibcs)
 					IBA7220_IBC_IBTA_1_2_MASK;
 				ipath_write_kreg(dd,
 					IPATH_KREG_OFFSET(IBNCModeCtrl), 0);
+				ipath_write_kreg(dd,
+					dd->ipath_kregs->kr_scratch,
+					0xfeedbeef);
+				symadj = 1;
 			}
 		}
 		/*
-		 * if we are in 1X, and are in autoneg width, it
-		 * could be due to an xgxs problem, so if we haven't
+		 * if we are in 1X on rev1 only, and are in autoneg width,
+		 * it could be due to an xgxs problem, so if we haven't
 		 * already tried, try twice to get to 4X; if we
 		 * tried, and couldn't, report it, since it will
 		 * probably not be what is desired.
 		 */
-		if ((dd->ipath_link_width_enabled & (IB_WIDTH_1X |
+		if (dd->ipath_minrev == 1 &&
+		    (dd->ipath_link_width_enabled & (IB_WIDTH_1X |
 			IB_WIDTH_4X)) == (IB_WIDTH_1X | IB_WIDTH_4X)
 			&& dd->ipath_link_width_active == IB_WIDTH_1X
 			&& dd->ipath_x1_fix_tries < 3) {
-			if (++dd->ipath_x1_fix_tries == 3)
+		     if (++dd->ipath_x1_fix_tries == 3) {
 				dev_info(&dd->pcidev->dev,
 					"IB link is in 1X mode\n");
+				if (!(dd->ipath_flags &
+				      IPATH_IB_AUTONEG_INPROG))
+					symadj = 1;
+		     }
 			else {
 				ipath_cdbg(VERBOSE, "IB 1X in "
 					"auto-width, try %u to be "
@@ -2430,7 +2584,8 @@ static int ipath_7220_ib_updown(struct ipath_devdata *dd, int ibup, u64 ibcs)
 				dd->ipath_f_xgxs_reset(dd);
 				ret = 1; /* skip other processing */
 			}
-		}
+		} else if (!(dd->ipath_flags & IPATH_IB_AUTONEG_INPROG))
+			symadj = 1;
 
 		if (!ret) {
 			dd->delay_mult = rate_to_delay
@@ -2439,6 +2594,25 @@ static int ipath_7220_ib_updown(struct ipath_devdata *dd, int ibup, u64 ibcs)
 
 			ipath_set_relock_poll(dd, ibup);
 		}
+	}
+
+	if (symadj) {
+		if (dd->ibdeltainprog) {
+			dd->ibdeltainprog = 0;
+			dd->ibsymdelta += ipath_read_creg32(dd,
+				dd->ipath_cregs->cr_ibsymbolerrcnt) -
+				dd->ibsymsnap;
+			dd->iblnkerrdelta += ipath_read_creg32(dd,
+				dd->ipath_cregs->cr_iblinkerrrecovcnt) -
+				dd->iblnkerrsnap;
+		}
+	} else if (!ibup && !dd->ibdeltainprog
+		   && !(dd->ipath_flags & IPATH_IB_AUTONEG_INPROG)) {
+		dd->ibdeltainprog = 1;
+		dd->ibsymsnap =	ipath_read_creg32(dd,
+				     dd->ipath_cregs->cr_ibsymbolerrcnt);
+		dd->iblnkerrsnap = ipath_read_creg32(dd,
+				     dd->ipath_cregs->cr_iblinkerrrecovcnt);
 	}
 
 	if (!ret)
@@ -2507,7 +2681,7 @@ done:
 	if (dd->ipath_flags & IPATH_IB_AUTONEG_INPROG) {
 		ipath_dbg("Did not get to DDR INIT (%x) after %Lu msecs\n",
 			ipath_ib_state(dd, dd->ipath_lastibcstat),
-			jiffies_to_msecs(jiffies)-startms);
+			(unsigned long long) jiffies_to_msecs(jiffies)-startms);
 		dd->ipath_flags &= ~IPATH_IB_AUTONEG_INPROG;
 		if (dd->ipath_autoneg_tries == IPATH_AUTONEG_TRIES) {
 			dd->ipath_flags |= IPATH_IB_AUTONEG_FAILED;
@@ -2543,6 +2717,7 @@ void ipath_init_iba7220_funcs(struct ipath_devdata *dd)
 	dd->ipath_f_cleanup = ipath_setup_7220_cleanup;
 	dd->ipath_f_setextled = ipath_setup_7220_setextled;
 	dd->ipath_f_get_base_info = ipath_7220_get_base_info;
+	dd->ipath_f_free_irq = ipath_7220_free_irq;
 	dd->ipath_f_tidtemplate = ipath_7220_tidtemplate;
 	dd->ipath_f_intr_fallback = ipath_7220_intr_fallback;
 	dd->ipath_f_xgxs_reset = ipath_7220_xgxs_reset;

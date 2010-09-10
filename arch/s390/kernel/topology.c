@@ -17,6 +17,7 @@
 #include <linux/smp.h>
 #include <asm/delay.h>
 #include <asm/s390_ext.h>
+#include <asm/sysinfo.h>
 
 static DEFINE_MUTEX(smp_cpu_state_mutex);
 
@@ -55,6 +56,7 @@ struct core_info {
 	cpumask_t mask;
 };
 
+static int topology_enabled;
 static void topology_work_fn(void *data);
 static struct tl_info *tl_info;
 static struct core_info core_info;
@@ -220,6 +222,15 @@ static void topology_interrupt(struct pt_regs *regs, __u16 code)
 	schedule_work(&topology_work);
 }
 
+static int __init early_parse_topology(char *p)
+{
+	if (strncmp(p, "on", 2))
+		return 0;
+	topology_enabled = 1;
+	return 0;
+}
+early_param("topology", early_parse_topology);
+
 static int __init init_topology_update(void)
 {
 	int rc;
@@ -248,6 +259,8 @@ void __init s390_init_cpu_topology(void)
 	int i;
 
 	INIT_WORK(&topology_work, topology_work_fn, NULL);
+	if (!topology_enabled)
+		return;
 	if (stfle(&facility_bits, 1) <= 0)
 		return;
 	if (!(facility_bits & (1ULL << 52)))

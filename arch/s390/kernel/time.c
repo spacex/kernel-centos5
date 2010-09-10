@@ -220,6 +220,7 @@ void account_ticks(struct pt_regs *regs)
 	for (xticks = ticks; xticks > 0; xticks--)
 		do_timer(regs);
 #endif
+	leap_second_message();
 
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING
 	account_tick_vtime(current);

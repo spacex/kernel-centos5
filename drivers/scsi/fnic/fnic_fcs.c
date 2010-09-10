@@ -15,18 +15,14 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-#include <linux/kernel.h>
-#include <linux/string.h>
 #include <linux/errno.h>
-#include <linux/types.h>
-#include <linux/init.h>
 #include <linux/pci.h>
 #include <linux/skbuff.h>
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>
-#include <linux/kthread.h>
 #include <linux/if_ether.h>
 #include <linux/if_vlan.h>
+#include <linux/workqueue.h>
 #include <scsi/fc/fc_els.h>
 #include <scsi/fc/fc_fcoe.h>
 #include <scsi/fc_frame.h>
@@ -36,68 +32,93 @@
 #include "cq_enet_desc.h"
 #include "cq_exch_desc.h"
 
-static int fnic_fcs_debug;
+struct workqueue_struct *fnic_event_queue;
 
-#define FNIC_DEBUG_FCS(fmt...)			\
-	do {					\
-		if (fnic_fcs_debug)		\
-			FNIC_DBG(fmt);		\
-	} while (0)
-
-struct task_struct *fnic_thread;
-LIST_HEAD(fnic_eventlist);
-spinlock_t	fnic_eventlist_lock;
-
-/*
- * This thread polls a list for incoming FCS frames and events, and passes
- * them to LibFC for Processing.
- */
-int fnic_fc_thread(void *arg)
+void fnic_handle_link(void *work)
 {
-	struct fc_lport *lp;
-	struct fnic_event *event;
+	struct fnic *fnic = container_of(work, struct fnic, link_work);
 	unsigned long flags;
+	int old_link_status;
+	u32 old_link_down_cnt;
 
-	set_user_nice(current, -20);
-	while (!kthread_should_stop()) {
-		spin_lock_irqsave(&fnic_eventlist_lock, flags);
+	spin_lock_irqsave(&fnic->fnic_lock, flags);
 
-		if (!list_empty(&fnic_eventlist)) {
-			event = list_first_entry(&fnic_eventlist,
-						 struct fnic_event, list);
-			list_del(&event->list);
-			spin_unlock_irqrestore(&fnic_eventlist_lock, flags);
-
-			lp = event->fnic->lport;
-			if (event->ev_type == EV_TYPE_FRAME) {
-				if (event->is_flogi_resp_frame) {
-					struct fnic *fnic = event->fnic;
-
-					spin_lock_irqsave(&fnic->fnic_lock,
-							  flags);
-					vnic_dev_add_addr(fnic->vdev,
-							  fnic->data_src_addr);
-					spin_unlock_irqrestore
-					  (&fnic->fnic_lock, flags);
-				}
-				fc_exch_recv(lp, lp->emp, event->fp);
-			} else if (event->ev_type == EV_TYPE_LINK_UP)
-				fc_linkup(lp);
-			else if (event->ev_type == EV_TYPE_LINK_DOWN)
-				fc_linkdown(lp);
-
-			kmem_cache_free(fnic_ev_cache, event);
-
-		} else { /* no frame enqueued*/
-			set_current_state(TASK_INTERRUPTIBLE);
-			spin_unlock_irqrestore(&fnic_eventlist_lock, flags);
-			schedule();
-			set_current_state(TASK_RUNNING);
-		}
+	if (fnic->stop_rx_link_events) {
+		spin_unlock_irqrestore(&fnic->fnic_lock, flags);
+		return;
 	}
-	return 0;
+
+	old_link_down_cnt = fnic->link_down_cnt;
+	old_link_status = fnic->link_status;
+	fnic->link_status = vnic_dev_link_status(fnic->vdev);
+	fnic->link_down_cnt = vnic_dev_link_down_cnt(fnic->vdev);
+
+	if (old_link_status == fnic->link_status) {
+		if (!fnic->link_status)
+			/* DOWN -> DOWN */
+			spin_unlock_irqrestore(&fnic->fnic_lock, flags);
+		else {
+			if (old_link_down_cnt != fnic->link_down_cnt) {
+				/* UP -> DOWN -> UP */
+				fnic->lport->host_stats.link_failure_count++;
+				spin_unlock_irqrestore(&fnic->fnic_lock, flags);
+				FNIC_FCS_DBG(KERN_DEBUG, fnic->lport->host,
+					     "link down\n");
+				fc_linkdown(fnic->lport);
+				FNIC_FCS_DBG(KERN_DEBUG, fnic->lport->host,
+					     "link up\n");
+				fc_linkup(fnic->lport);
+			} else
+				/* UP -> UP */
+				spin_unlock_irqrestore(&fnic->fnic_lock, flags);
+		}
+	} else if (fnic->link_status) {
+		/* DOWN -> UP */
+		spin_unlock_irqrestore(&fnic->fnic_lock, flags);
+		FNIC_FCS_DBG(KERN_DEBUG, fnic->lport->host, "link up\n");
+		fc_linkup(fnic->lport);
+	} else {
+		/* UP -> DOWN */
+		fnic->lport->host_stats.link_failure_count++;
+		spin_unlock_irqrestore(&fnic->fnic_lock, flags);
+		FNIC_FCS_DBG(KERN_DEBUG, fnic->lport->host, "link down\n");
+		fc_linkdown(fnic->lport);
+	}
+
 }
 
+/*
+ * This function passes incoming fabric frames to libFC
+ */
+void fnic_handle_frame(void *work)
+{
+	struct fnic *fnic = container_of(work, struct fnic, frame_work);
+	struct fc_lport *lp = fnic->lport;
+	unsigned long flags;
+	struct sk_buff *skb;
+	struct fc_frame *fp;
+
+	while ((skb = skb_dequeue(&fnic->frame_queue))) {
+
+		spin_lock_irqsave(&fnic->fnic_lock, flags);
+		if (fnic->stop_rx_link_events) {
+			spin_unlock_irqrestore(&fnic->fnic_lock, flags);
+			dev_kfree_skb(skb);
+			return;
+		}
+		fp = (struct fc_frame *)skb;
+		/* if Flogi resp frame, register the address */
+		if (fr_flags(fp)) {
+			vnic_dev_add_addr(fnic->vdev,
+					  fnic->data_src_addr);
+			fr_flags(fp) = 0;
+		}
+		spin_unlock_irqrestore(&fnic->fnic_lock, flags);
+
+		fc_exch_recv(lp, lp->emp, fp);
+	}
+
+}
 
 static inline void fnic_import_rq_fc_frame(struct sk_buff *skb,
 					   u32 len, u8 sof, u8 eof)
@@ -164,16 +185,18 @@ static inline int fnic_handle_flogi_resp(struct fnic *fnic,
 
 	if (fnic->state == FNIC_IN_ETH_MODE) {
 
-		/* Check if oxid matches on taking the lock. A new Flogi
+		/*
+		 * Check if oxid matches on taking the lock. A new Flogi
 		 * issued by libFC might have changed the fnic cached oxid
 		 */
 		if (fnic->flogi_oxid != ntohs(fh->fh_ox_id)) {
-			FNIC_DEBUG_FCS(DFX "Flogi response oxid not"
-				       " matching cached oxid, dropping frame"
-				       "\n", fnic->fnic_no);
+			FNIC_FCS_DBG(KERN_DEBUG, fnic->lport->host,
+				     "Flogi response oxid not"
+				     " matching cached oxid, dropping frame"
+				     "\n");
 			ret = -1;
 			spin_unlock_irqrestore(&fnic->fnic_lock, flags);
-			fnic_fc_frame_free_irq(fp);
+			dev_kfree_skb_irq(fp_skb(fp));
 			goto handle_flogi_resp_end;
 		}
 
@@ -198,7 +221,8 @@ static inline int fnic_handle_flogi_resp(struct fnic *fnic,
 			memcpy(fnic->dest_addr, mac, ETH_ALEN);
 		}
 
-		/* Except for Flogi frame, all outbound frames from us have the
+		/*
+		 * Except for Flogi frame, all outbound frames from us have the
 		 * Eth Src address as FC_FCOE_OUI"our_sid". Flogi frame uses
 		 * the vnic MAC address as the Eth Src address
 		 */
@@ -211,12 +235,13 @@ static inline int fnic_handle_flogi_resp(struct fnic *fnic,
 		fnic->state = FNIC_IN_ETH_TRANS_FC_MODE;
 
 	} else {
-		FNIC_DEBUG_FCS(PFX "Unexpected fnic state %s while"
-			       " processing flogi resp\n",
-			       fnic_state_str[fnic->state]);
+		FNIC_FCS_DBG(KERN_DEBUG, fnic->lport->host,
+			     "Unexpected fnic state %s while"
+			     " processing flogi resp\n",
+			     fnic_state_to_str(fnic->state));
 		ret = -1;
 		spin_unlock_irqrestore(&fnic->fnic_lock, flags);
-		fnic_fc_frame_free_irq(fp);
+		dev_kfree_skb_irq(fp_skb(fp));
 		goto handle_flogi_resp_end;
 	}
 
@@ -224,9 +249,10 @@ static inline int fnic_handle_flogi_resp(struct fnic *fnic,
 
 	/* Drop older cached frame */
 	if (old_flogi_resp)
-		fnic_fc_frame_free_irq(old_flogi_resp);
+		dev_kfree_skb_irq(fp_skb(old_flogi_resp));
 
-	/* send flogi reg request to firmware, this will put the fnic in
+	/*
+	 * send flogi reg request to firmware, this will put the fnic in
 	 * in FC mode
 	 */
 	ret = fnic_flogi_reg_handler(fnic);
@@ -234,7 +260,8 @@ static inline int fnic_handle_flogi_resp(struct fnic *fnic,
 	if (ret < 0) {
 		int free_fp = 1;
 		spin_lock_irqsave(&fnic->fnic_lock, flags);
-		/* free the frame is some other thread is not
+		/*
+		 * free the frame is some other thread is not
 		 * pointing to it
 		 */
 		if (fnic->flogi_resp != fp)
@@ -246,7 +273,7 @@ static inline int fnic_handle_flogi_resp(struct fnic *fnic,
 			fnic->state = FNIC_IN_ETH_MODE;
 		spin_unlock_irqrestore(&fnic->fnic_lock, flags);
 		if (free_fp)
-			fnic_fc_frame_free_irq(fp);
+			dev_kfree_skb_irq(fp_skb(fp));
 	}
 
  handle_flogi_resp_end:
@@ -267,8 +294,7 @@ static inline int is_matching_flogi_resp_frame(struct fnic *fnic,
 	if (fnic->flogi_oxid == ntohs(fh->fh_ox_id) &&
 	    fh->fh_r_ctl == FC_RCTL_ELS_REP &&
 	    (f_ctl & (FC_FC_EX_CTX | FC_FC_SEQ_CTX)) == FC_FC_EX_CTX &&
-	    fh->fh_type == FC_TYPE_ELS &&
-	    fc_frame_payload_op(fp) == ELS_LS_ACC)
+	    fh->fh_type == FC_TYPE_ELS)
 		ret = 1;
 
 	return ret;
@@ -283,8 +309,6 @@ static void fnic_rq_cmpl_frame_recv(struct vnic_rq *rq, struct cq_desc
 	struct sk_buff *skb;
 	struct fc_frame *fp;
 	unsigned int eth_hdrs_stripped;
-	u8 list_was_empty;
-	struct fnic_event *event = NULL;
 	u8 type, color, eop, sop, ingress_port, vlan_stripped;
 	u8 fcoe = 0, fcoe_sof, fcoe_eof;
 	u8 fcoe_fc_crc_ok = 1, fcoe_enc_error = 0;
@@ -301,10 +325,7 @@ static void fnic_rq_cmpl_frame_recv(struct vnic_rq *rq, struct cq_desc
 
 	pci_unmap_single(fnic->pdev, buf->dma_addr, buf->len,
 			 PCI_DMA_FROMDEVICE);
-	/* get frame pointer*/
 	skb = buf->os_buf;
-
-	/* We will now reuse this rq_buf for another frame*/
 	buf->os_buf = NULL;
 
 	cq_desc_dec(cq_desc, &type, &color, &q_number, &completed_index);
@@ -334,17 +355,18 @@ static void fnic_rq_cmpl_frame_recv(struct vnic_rq *rq, struct cq_desc
 
 	} else {
 		/* wrong CQ type*/
-		printk(KERN_ERR DFX "fnic rq_cmpl wrong cq type x%x\n",
-		       fnic->fnic_no, type);
+		shost_printk(KERN_ERR, fnic->lport->host,
+			     "fnic rq_cmpl wrong cq type x%x\n", type);
 		goto drop;
 	}
 
 	if (!fcs_ok || packet_error || !fcoe_fc_crc_ok || fcoe_enc_error) {
-		FNIC_DEBUG_FCS(DFX "fnic rq_cmpl fcoe x%x fcsok x%x"
-			       " pkterr x%x fcoe_fc_crc_ok x%x, fcoe_enc_err"
-			       " x%x\n",
-			       fnic->fnic_no, fcoe, fcs_ok, packet_error,
-			       fcoe_fc_crc_ok, fcoe_enc_error);
+		FNIC_FCS_DBG(KERN_DEBUG, fnic->lport->host,
+			     "fnic rq_cmpl fcoe x%x fcsok x%x"
+			     " pkterr x%x fcoe_fc_crc_ok x%x, fcoe_enc_err"
+			     " x%x\n",
+			     fcoe, fcs_ok, packet_error,
+			     fcoe_fc_crc_ok, fcoe_enc_error);
 		goto drop;
 	}
 
@@ -355,43 +377,42 @@ static void fnic_rq_cmpl_frame_recv(struct vnic_rq *rq, struct cq_desc
 
 	fp = (struct fc_frame *)skb;
 
-	/* If frame is an ELS response that matches the cached FLOGI OX_ID,
-	 * issue flogi_reg_request copy wq request to firmware
+	/*
+	 * If frame is an ELS response that matches the cached FLOGI OX_ID,
+	 * and is accept, issue flogi_reg_request copy wq request to firmware
 	 * to register the S_ID and determine whether FC_OUI mode or GW mode.
 	 */
 	if (is_matching_flogi_resp_frame(fnic, fp)) {
 		if (!eth_hdrs_stripped) {
-			fnic_handle_flogi_resp(fnic, fp);
-			return;
+			if (fc_frame_payload_op(fp) == ELS_LS_ACC) {
+				fnic_handle_flogi_resp(fnic, fp);
+				return;
+			}
+			/*
+			 * Recd. Flogi reject. No point registering
+			 * with fw, but forward to libFC
+			 */
+			goto forward;
 		}
 		goto drop;
 	}
 	if (!eth_hdrs_stripped)
 		goto drop;
 
-	/* Queue the frame for receive thread */
-	event = kmem_cache_alloc(fnic_ev_cache, GFP_ATOMIC);
-	if (event == NULL) {
-		FNIC_DEBUG_FCS(DFX "Cannot allocate a event, "
-			       "dropping the FCS Rx frame\n", fnic->fnic_no);
+forward:
+	spin_lock_irqsave(&fnic->fnic_lock, flags);
+	if (fnic->stop_rx_link_events) {
+		spin_unlock_irqrestore(&fnic->fnic_lock, flags);
 		goto drop;
 	}
-
-	memset(event, 0, sizeof(struct fnic_event));
-
-	/* initialize the event structure*/
-	event->fp = fp;
+	/* Use fr_flags to indicate whether succ. flogi resp or not */
+	fr_flags(fp) = 0;
 	fr_dev(fp) = fnic->lport;
-	event->fnic = fnic;
-	event->ev_type = EV_TYPE_FRAME;
-	event->is_flogi_resp_frame = 0;
+	spin_unlock_irqrestore(&fnic->fnic_lock, flags);
 
-	spin_lock_irqsave(&fnic_eventlist_lock, flags);
-	list_was_empty = list_empty(&fnic_eventlist);
-	list_add_tail(&event->list, &fnic_eventlist);
-	spin_unlock_irqrestore(&fnic_eventlist_lock, flags);
-	if (list_was_empty)
-		wake_up_process(fnic_thread);
+	skb_queue_tail(&fnic->frame_queue, skb);
+	queue_work(fnic_event_queue, &fnic->frame_work);
+
 	return;
 drop:
 	dev_kfree_skb_irq(skb);
@@ -423,8 +444,9 @@ int fnic_rq_cmpl_handler(struct fnic *fnic, int rq_work_to_do)
 		if (cur_work_done) {
 			err = vnic_rq_fill(&fnic->rq[i], fnic_alloc_rq_frame);
 			if (err)
-				printk(KERN_ERR DFX "fnic_alloc_rq_frame"
-				       " cant alloc frame\n", fnic->fnic_no);
+				shost_printk(KERN_ERR, fnic->lport->host,
+					     "fnic_alloc_rq_frame cant alloc"
+					     " frame\n");
 		}
 		tot_rq_work_done += cur_work_done;
 	}
@@ -447,8 +469,8 @@ int fnic_alloc_rq_frame(struct vnic_rq *rq)
 	len = FC_FRAME_HEADROOM + FC_MAX_FRAME + FC_FRAME_TAILROOM;
 	skb = dev_alloc_skb(len);
 	if (!skb) {
-		FNIC_DEBUG_FCS(DFX "Unable to allocate RQ sk_buff\n",
-			       fnic->fnic_no);
+		FNIC_FCS_DBG(KERN_DEBUG, fnic->lport->host,
+			     "Unable to allocate RQ sk_buff\n");
 		return -ENOMEM;
 	}
 	skb_reset_mac_header(skb);
@@ -468,11 +490,10 @@ void fnic_free_rq_buf(struct vnic_rq *rq, struct vnic_rq_buf *buf)
 	pci_unmap_single(fnic->pdev, buf->dma_addr, buf->len,
 			 PCI_DMA_FROMDEVICE);
 
-	fnic_fc_frame_free(fp);
+	dev_kfree_skb(fp_skb(fp));
 	buf->os_buf = NULL;
 }
 
-/* returns 1 for flogi frame, 0 otherwise */
 static inline int is_flogi_frame(struct fc_frame_header *fh)
 {
 	return fh->fh_r_ctl == FC_RCTL_ELS_REQ && *(u8 *)(fh + 1) == ELS_FLOGI;
@@ -480,7 +501,6 @@ static inline int is_flogi_frame(struct fc_frame_header *fh)
 
 int fnic_send_frame(struct fnic *fnic, struct fc_frame *fp)
 {
-	/* for now just the first WQ for raw send */
 	struct vnic_wq *wq = &fnic->wq[0];
 	struct sk_buff *skb;
 	dma_addr_t pa;
@@ -514,16 +534,13 @@ int fnic_send_frame(struct fnic *fnic, struct fc_frame *fp)
 		fc_fcoe_set_mac(eth_hdr->h_dest, fh->fh_d_id);
 		memcpy(eth_hdr->h_source, fnic->mac_addr, ETH_ALEN);
 	} else {
-		/* insert dst addr */
 		if (fnic->fcoui_mode)
 			fc_fcoe_set_mac(eth_hdr->h_dest, fh->fh_d_id);
-		else /* gw addr */
+		else
 			memcpy(eth_hdr->h_dest, fnic->dest_addr, ETH_ALEN);
-		/* insert src addr */
 		memcpy(eth_hdr->h_source, fnic->data_src_addr, ETH_ALEN);
 	}
 
-	/* find total len to program the desc */
 	tot_len = skb->len;
 	BUG_ON(tot_len % 4);
 
@@ -532,10 +549,8 @@ int fnic_send_frame(struct fnic *fnic, struct fc_frame *fp)
 	if (FC_FCOE_VER)
 		FC_FCOE_ENCAPS_VER(fcoe_hdr, FC_FCOE_VER);
 
-	/* map the frame */
 	pa = pci_map_single(fnic->pdev, eth_hdr, tot_len, PCI_DMA_TODEVICE);
 
-	/* get the wq lock */
 	spin_lock_irqsave(&fnic->wq_lock[0], flags);
 
 	if (!vnic_wq_desc_avail(wq)) {
@@ -548,11 +563,10 @@ int fnic_send_frame(struct fnic *fnic, struct fc_frame *fp)
 	fnic_queue_wq_desc(wq, skb, pa, tot_len, fr_eof(fp),
 			   fnic->vlan_hw_insert, fnic->vlan_id, 1, 1, 1);
 fnic_send_frame_end:
-	/* release the wq lock */
 	spin_unlock_irqrestore(&fnic->wq_lock[0], flags);
 
 	if (ret)
-		fnic_fc_frame_free_any(fp);
+		dev_kfree_skb_any(fp_skb(fp));
 
 	return ret;
 }
@@ -572,7 +586,7 @@ int fnic_send(struct fc_lport *lp, struct fc_frame *fp)
 	struct fc_frame *old_flogi_resp = NULL;
 
 	if (fnic->in_remove) {
-		fnic_fc_frame_free(fp);
+		dev_kfree_skb(fp_skb(fp));
 		ret = -1;
 		goto fnic_send_end;
 	}
@@ -604,11 +618,11 @@ again:
 		spin_unlock_irqrestore(&fnic->fnic_lock, flags);
 
 		if (old_flogi) {
-			fnic_fc_frame_free(old_flogi);
+			dev_kfree_skb(fp_skb(old_flogi));
 			old_flogi = NULL;
 		}
 		if (old_flogi_resp) {
-			fnic_fc_frame_free(old_flogi_resp);
+			dev_kfree_skb(fp_skb(old_flogi_resp));
 			old_flogi_resp = NULL;
 		}
 
@@ -620,7 +634,7 @@ again:
 		if (ret) {
 			fnic->state = old_state;
 			spin_unlock_irqrestore(&fnic->fnic_lock, flags);
-			fnic_fc_frame_free(fp);
+			dev_kfree_skb(fp_skb(fp));
 			goto fnic_send_end;
 		}
 		old_flogi = fnic->flogi;
@@ -632,7 +646,8 @@ again:
 		break;
 
 	case FNIC_IN_FC_TRANS_ETH_MODE:
-		/* A reset is pending with the firmware. Store the flogi
+		/*
+		 * A reset is pending with the firmware. Store the flogi
 		 * and its oxid. The transition out of this state happens
 		 * only when Firmware completes the reset, either with
 		 * success or failed. If success, transition to
@@ -645,7 +660,8 @@ again:
 		break;
 
 	case FNIC_IN_ETH_MODE:
-		/* The fw/hw is already in eth mode. Store the oxid,
+		/*
+		 * The fw/hw is already in eth mode. Store the oxid,
 		 * and send the flogi frame out. The transition out of this
 		 * state happens only we receive flogi response from the
 		 * network, and the oxid matches the cached oxid when the
@@ -661,9 +677,9 @@ again:
 
 fnic_send_end:
 	if (old_flogi)
-		fnic_fc_frame_free(old_flogi);
+		dev_kfree_skb(fp_skb(old_flogi));
 	if (old_flogi_resp)
-		fnic_fc_frame_free(old_flogi_resp);
+		dev_kfree_skb(fp_skb(old_flogi_resp));
 	return ret;
 }
 
@@ -677,7 +693,7 @@ static void fnic_wq_complete_frame_send(struct vnic_wq *wq,
 
 	pci_unmap_single(fnic->pdev, buf->dma_addr,
 			 buf->len, PCI_DMA_TODEVICE);
-	fnic_fc_frame_free_irq(fp);
+	dev_kfree_skb_irq(fp_skb(fp));
 	buf->os_buf = NULL;
 }
 
@@ -721,6 +737,6 @@ void fnic_free_wq_buf(struct vnic_wq *wq, struct vnic_wq_buf *buf)
 	pci_unmap_single(fnic->pdev, buf->dma_addr,
 			 buf->len, PCI_DMA_TODEVICE);
 
-	fnic_fc_frame_free(fp);
+	dev_kfree_skb(fp_skb(fp));
 	buf->os_buf = NULL;
 }

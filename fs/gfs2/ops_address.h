@@ -14,6 +14,11 @@
 #include <linux/buffer_head.h>
 #include <linux/mm.h>
 
+extern struct file gfs2_internal_file_sentinel;
+extern int gfs2_internal_read(struct gfs2_inode *ip,
+                              struct file_ra_state *ra_state,
+                              char *buf, loff_t *pos, unsigned size);
+
 extern int gfs2_releasepage(struct page *page, gfp_t gfp_mask);
 extern void gfs2_set_aops(struct inode *inode);
 extern int gfs2_write_begin(struct file *file, struct address_space *mapping,

@@ -239,102 +239,11 @@ static inline void do_store_status(void)
  */
 void smp_send_stop(void)
 {
-        /* write magic number to zero page (absolute 0) */
-	lowcore_ptr[smp_processor_id()]->panic_magic = __PANIC_MAGIC;
-
 	/* stop other processors. */
 	do_send_stop();
 
 	/* store status of other processors. */
 	do_store_status();
-}
-
-/*
- * Reboot, halt and power_off routines for SMP.
- */
-
-static void do_machine_restart(void * __unused)
-{
-	int cpu;
-	static atomic_t cpuid = ATOMIC_INIT(-1);
-
-	if (atomic_cmpxchg(&cpuid, -1, smp_processor_id()) != -1)
-		signal_processor(smp_processor_id(), sigp_stop);
-
-	/* Wait for all other cpus to enter stopped state */
-	for_each_online_cpu(cpu) {
-		if (cpu == smp_processor_id())
-			continue;
-		while(!smp_cpu_not_running(cpu))
-			cpu_relax();
-	}
-
-	/* Store status of other cpus. */
-	do_store_status();
-
-	/*
-	 * Finally call reipl. Because we waited for all other
-	 * cpus to enter this function we know that they do
-	 * not hold any s390irq-locks (the cpus have been
-	 * interrupted by an external interrupt and s390irq
-	 * locks are always held disabled).
-	 */
-	do_reipl();
-}
-
-void machine_restart_smp(char * __unused) 
-{
-        on_each_cpu(do_machine_restart, NULL, 0, 0);
-}
-
-static void do_wait_for_stop(void)
-{
-	unsigned long cr[16];
-
-	__ctl_store(cr, 0, 15);
-	cr[0] &= ~0xffff;
-	cr[6] = 0;
-	__ctl_load(cr, 0, 15);
-	for (;;)
-		enabled_wait();
-}
-
-static void do_machine_halt(void * __unused)
-{
-	static atomic_t cpuid = ATOMIC_INIT(-1);
-
-	if (atomic_cmpxchg(&cpuid, -1, smp_processor_id()) == -1) {
-		smp_send_stop();
-		if (MACHINE_IS_VM && strlen(vmhalt_cmd) > 0)
-			cpcmd(vmhalt_cmd, NULL, 0, NULL);
-		signal_processor(smp_processor_id(),
-				 sigp_stop_and_store_status);
-	}
-	do_wait_for_stop();
-}
-
-void machine_halt_smp(void)
-{
-        on_each_cpu(do_machine_halt, NULL, 0, 0);
-}
-
-static void do_machine_power_off(void * __unused)
-{
-	static atomic_t cpuid = ATOMIC_INIT(-1);
-
-	if (atomic_cmpxchg(&cpuid, -1, smp_processor_id()) == -1) {
-		smp_send_stop();
-		if (MACHINE_IS_VM && strlen(vmpoff_cmd) > 0)
-			cpcmd(vmpoff_cmd, NULL, 0, NULL);
-		signal_processor(smp_processor_id(),
-				 sigp_stop_and_store_status);
-	}
-	do_wait_for_stop();
-}
-
-void machine_power_off_smp(void)
-{
-        on_each_cpu(do_machine_power_off, NULL, 0, 0);
 }
 
 /*
@@ -908,16 +817,56 @@ int setup_profiling_timer(unsigned int multiplier)
 
 static DEFINE_PER_CPU(struct cpu, cpu_devices);
 
+static ssize_t show_capability(struct sys_device *dev, char *buf)
+{
+	unsigned int capability;
+	int rc;
+
+	rc = get_cpu_capability(&capability);
+	if (rc)
+		return rc;
+	return sprintf(buf, "%u\n", capability);
+}
+static SYSDEV_ATTR(capability, 0444, show_capability, NULL);
+
+static int __cpuinit smp_cpu_notify(struct notifier_block *self,
+				    unsigned long action, void *hcpu)
+{
+	unsigned int cpu = (unsigned int)(long)hcpu;
+	struct cpu *c = &per_cpu(cpu_devices, cpu);
+	struct sys_device *s = &c->sysdev;
+
+	switch (action) {
+	case CPU_ONLINE:
+		if (sysdev_create_file(s, &attr_capability))
+			return NOTIFY_BAD;
+		break;
+	case CPU_DEAD:
+		sysdev_remove_file(s, &attr_capability);
+		break;
+	}
+	return NOTIFY_OK;
+}
+
+static struct notifier_block __cpuinitdata smp_cpu_nb = {
+	.notifier_call	= smp_cpu_notify,
+};
+
 static int __init topology_init(void)
 {
 	int cpu;
-	int ret;
+
+	register_cpu_notifier(&smp_cpu_nb);
 
 	for_each_possible_cpu(cpu) {
-		ret = register_cpu(&per_cpu(cpu_devices, cpu), cpu);
-		if (ret)
-			printk(KERN_WARNING "topology_init: register_cpu %d "
-			       "failed (%d)\n", cpu, ret);
+		struct cpu *c = &per_cpu(cpu_devices, cpu);
+		struct sys_device *s = &c->sysdev;
+
+		register_cpu(c, cpu);
+		if (!cpu_online(cpu))
+			continue;
+		s = &c->sysdev;
+		sysdev_create_file(s, &attr_capability);
 	}
 	return 0;
 }

@@ -75,6 +75,10 @@ int sysctl_ipv6_bindv6only;
 static struct list_head inetsw6[SOCK_MAX];
 static DEFINE_SPINLOCK(inetsw6_lock);
 
+static int disable_ipv6 = 0;
+module_param_named(disable, disable_ipv6, int, 0);
+MODULE_PARM_DESC(disable, "Disable IPv6 such that it is non-functional");
+
 static __inline__ struct ipv6_pinfo *inet6_sk_generic(struct sock *sk)
 {
 	const int offset = sk->sk_prot->obj_size - sizeof(struct ipv6_pinfo);
@@ -761,7 +765,7 @@ static int __init inet6_init(void)
 {
 	struct sk_buff *dummy_skb;
         struct list_head *r;
-	int err;
+	int err = 0;
 
 #ifdef MODULE
 #if 0 /* FIXME --RR */
@@ -777,6 +781,17 @@ static int __init inet6_init(void)
 		return -EINVAL;
 	}
 
+	/* Register the socket-side information for inet6_create.  */
+	for(r = &inetsw6[0]; r < &inetsw6[SOCK_MAX]; ++r)
+		INIT_LIST_HEAD(r);
+
+	if (disable_ipv6) {
+		printk(KERN_INFO
+		       "IPv6: Loaded, but administratively disabled, "
+		       "reboot required to enable\n");
+		goto out;
+	}
+
 	err = proto_register(&tcpv6_prot, 1);
 	if (err)
 		goto out;
@@ -789,10 +804,6 @@ static int __init inet6_init(void)
 	if (err)
 		goto out_unregister_udp_proto;
 
-
-	/* Register the socket-side information for inet6_create.  */
-	for(r = &inetsw6[0]; r < &inetsw6[SOCK_MAX]; ++r)
-		INIT_LIST_HEAD(r);
 
 	/* We MUST register RAW sockets before we create the ICMP6,
 	 * IGMP6, or NDISC control sockets.
@@ -915,6 +926,9 @@ module_init(inet6_init);
 
 static void __exit inet6_exit(void)
 {
+	if (disable_ipv6)
+		return;
+
 	/* First of all disallow new sockets creation. */
 	sock_unregister(PF_INET6);
 #ifdef CONFIG_PROC_FS

@@ -17,8 +17,8 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
-#ifndef ASM_X86__AMD_IOMMU_TYPES_H
-#define ASM_X86__AMD_IOMMU_TYPES_H
+#ifndef _ASM_X86_AMD_IOMMU_TYPES_H
+#define _ASM_X86_AMD_IOMMU_TYPES_H
 
 #include <linux/types.h>
 #include <linux/list.h>
@@ -31,16 +31,13 @@
 #define ALIAS_TABLE_ENTRY_SIZE		2
 #define RLOOKUP_TABLE_ENTRY_SIZE	(sizeof(void *))
 
-/* helper macros */
-#define LOW_U32(x) ((u32)(x))
-#define HIGH_U32(x) ((u32)((x) >> 32))
-
 /* Length of the MMIO region for the AMD IOMMU */
 #define MMIO_REGION_LENGTH       0x4000
 
 /* Capability offsets used by the driver */
 #define MMIO_CAP_HDR_OFFSET	0x00
 #define MMIO_RANGE_OFFSET	0x0c
+#define MMIO_MISC_OFFSET	0x10
 
 /* Masks, shifts and macros to parse the device range capability */
 #define MMIO_RANGE_LD_MASK	0xff000000
@@ -52,6 +49,7 @@
 #define MMIO_GET_LD(x)  (((x) & MMIO_RANGE_LD_MASK) >> MMIO_RANGE_LD_SHIFT)
 #define MMIO_GET_FD(x)  (((x) & MMIO_RANGE_FD_MASK) >> MMIO_RANGE_FD_SHIFT)
 #define MMIO_GET_BUS(x) (((x) & MMIO_RANGE_BUS_MASK) >> MMIO_RANGE_BUS_SHIFT)
+#define MMIO_MSI_NUM(x)	((x) & 0x1f)
 
 /* Flag masks for the AMD IOMMU exclusion range */
 #define MMIO_EXCL_ENABLE_MASK 0x01ULL
@@ -70,7 +68,27 @@
 #define MMIO_EVT_TAIL_OFFSET	0x2018
 #define MMIO_STATUS_OFFSET	0x2020
 
-#define IOMMU_STATUS_COMWAITINT_MASK	0x04
+/* MMIO status bits */
+#define MMIO_STATUS_COM_WAIT_INT_MASK	0x04
+
+/* event logging constants */
+#define EVENT_ENTRY_SIZE	0x10
+#define EVENT_TYPE_SHIFT	28
+#define EVENT_TYPE_MASK		0xf
+#define EVENT_TYPE_ILL_DEV	0x1
+#define EVENT_TYPE_IO_FAULT	0x2
+#define EVENT_TYPE_DEV_TAB_ERR	0x3
+#define EVENT_TYPE_PAGE_TAB_ERR	0x4
+#define EVENT_TYPE_ILL_CMD	0x5
+#define EVENT_TYPE_CMD_HARD_ERR	0x6
+#define EVENT_TYPE_IOTLB_INV_TO	0x7
+#define EVENT_TYPE_INV_DEV_REQ	0x8
+#define EVENT_DEVID_MASK	0xffff
+#define EVENT_DEVID_SHIFT	0
+#define EVENT_DOMID_MASK	0xffff
+#define EVENT_DOMID_SHIFT	0
+#define EVENT_FLAGS_MASK	0xfff
+#define EVENT_FLAGS_SHIFT	0x10
 
 /* feature control bits */
 #define CONTROL_IOMMU_EN        0x00ULL
@@ -103,6 +121,7 @@
 #define DEV_ENTRY_TRANSLATION   0x01
 #define DEV_ENTRY_IR            0x3d
 #define DEV_ENTRY_IW            0x3e
+#define DEV_ENTRY_NO_PAGE_FAULT	0x62
 #define DEV_ENTRY_EX            0x67
 #define DEV_ENTRY_SYSMGT1       0x68
 #define DEV_ENTRY_SYSMGT2       0x69
@@ -111,12 +130,18 @@
 #define DEV_ENTRY_NMI_PASS      0xba
 #define DEV_ENTRY_LINT0_PASS    0xbe
 #define DEV_ENTRY_LINT1_PASS    0xbf
+#define DEV_ENTRY_MODE_MASK	0x07
+#define DEV_ENTRY_MODE_SHIFT	0x09
 
 /* constants to configure the command buffer */
 #define CMD_BUFFER_SIZE    8192
 #define CMD_BUFFER_ENTRIES 512
 #define MMIO_CMD_SIZE_SHIFT 56
 #define MMIO_CMD_SIZE_512 (0x9ULL << MMIO_CMD_SIZE_SHIFT)
+
+/* constants for event buffer handling */
+#define EVT_BUFFER_SIZE		8192 /* 512 entries */
+#define EVT_LEN_MASK		(0x9ULL << 56)
 
 #define PAGE_MODE_1_LEVEL 0x01
 #define PAGE_MODE_2_LEVEL 0x02
@@ -136,6 +161,7 @@
 #define IOMMU_MAP_SIZE_L3 (1ULL << 39)
 
 #define IOMMU_PTE_P  (1ULL << 0)
+#define IOMMU_PTE_TV (1ULL << 1)
 #define IOMMU_PTE_U  (1ULL << 59)
 #define IOMMU_PTE_FC (1ULL << 60)
 #define IOMMU_PTE_IR (1ULL << 61)
@@ -161,16 +187,26 @@
 
 #define MAX_DOMAIN_ID 65536
 
+/* FIXME: move this macro to <linux/pci.h> */
+#define PCI_BUS(x) (((x) >> 8) & 0xff)
+
+/* Protection domain flags */
+#define PD_DMA_OPS_MASK		(1UL << 0) /* domain used for dma_ops */
+#define PD_DEFAULT_MASK		(1UL << 1) /* domain is a default dma_ops
+					      domain for an IOMMU */
+
 /*
  * This structure contains generic data for  IOMMU protection domains
  * independent of their use.
  */
 struct protection_domain {
-	spinlock_t lock; /* mostly used to lock the page table*/
-	u16 id;		 /* the domain id written to the device table */
-	int mode;	 /* paging mode (0-6 levels) */
-	u64 *pt_root;	 /* page table root pointer */
-	void *priv;	 /* private data */
+	spinlock_t lock;	/* mostly used to lock the page table*/
+	u16 id;			/* the domain id written to the device table */
+	int mode;		/* paging mode (0-6 levels) */
+	u64 *pt_root;		/* page table root pointer */
+	unsigned long flags;	/* flags to find out type of domain */
+	unsigned dev_cnt;	/* devices assigned to this domain */
+	void *priv;		/* private data */
 };
 
 /*
@@ -198,6 +234,15 @@ struct dma_ops_domain {
 	 * just calculate its address in constant time.
 	 */
 	u64 **pte_pages;
+
+	/* This will be set to true when TLB needs to be flushed */
+	bool need_flush;
+
+	/*
+	 * if this is a preallocated domain, keep the device for which it was
+	 * preallocated in this variable
+	 */
+	u16 target_dev;
 };
 
 /*
@@ -210,14 +255,11 @@ struct amd_iommu {
 	/* locks the accesses to the hardware */
 	spinlock_t lock;
 
-	/* device id of this IOMMU */
+	/* Pointer to PCI device of this IOMMU */
+	struct pci_dev *dev;
+
+	/* PCI Device ID */
 	u16 devid;
-	/*
-	 * Capability pointer. There could be more than one IOMMU per PCI
-	 * device function if there are more than one AMD IOMMU capability
-	 * pointers.
-	 */
-	u16 cap_ptr;
 
 	/* physical address of MMIO space */
 	u64 mmio_phys;
@@ -226,6 +268,16 @@ struct amd_iommu {
 
 	/* capabilities of that IOMMU read from ACPI */
 	u32 cap;
+
+	/*
+	 * Capability pointer. There could be more than one IOMMU per PCI
+	 * device function if there are more than one AMD IOMMU capability
+	 * pointers.
+	 */
+	u16 cap_ptr;
+
+	/* pci domain of this IOMMU */
+	u16 pci_seg;
 
 	/* first device this IOMMU handles. read from PCI */
 	u16 first_device;
@@ -242,8 +294,18 @@ struct amd_iommu {
 	/* size of command buffer */
 	u32 cmd_buf_size;
 
+	/* size of event buffer */
+	u32 evt_buf_size;
+	/* event buffer virtual address */
+	u8 *evt_buf;
+	/* MSI number for event interrupt */
+	u16 evt_msi_num;
+
+	/* true if interrupts for this IOMMU are already enabled */
+	bool int_enabled;
+
 	/* if one, we need to send a completion wait command */
-	int need_sync;
+	bool need_sync;
 
 	/* default dma_ops domain for that IOMMU */
 	struct dma_ops_domain *default_dom;
@@ -322,8 +384,22 @@ extern struct protection_domain **amd_iommu_pd_table;
 extern unsigned long *amd_iommu_pd_alloc_bitmap;
 
 /* will be 1 if device isolation is enabled */
-extern int amd_iommu_isolate;
+extern bool amd_iommu_isolate;
+
 extern int amd_iommu_enable;
+
+/*
+ * If true, the addresses will be flushed on unmap time, not when
+ * they are reused
+ */
+extern bool amd_iommu_unmap_flush;
+
+/* takes bus and device/function and returns the device id
+ * FIXME: should that be in generic PCI code? */
+static inline u16 calc_devid(u8 bus, u8 devfn)
+{
+	return (((u16)bus) << 8) | devfn;
+}
 
 /* takes a PCI device id and prints it out in a readable form */
 static inline void print_devid(u16 devid, int nl)
@@ -337,11 +413,32 @@ static inline void print_devid(u16 devid, int nl)
 		printk("\n");
 }
 
-/* takes bus and device/function and returns the device id
- * FIXME: should that be in generic PCI code? */
-static inline u16 calc_devid(u8 bus, u8 devfn)
-{
-	return (((u16)bus) << 8) | devfn;
-}
+#ifdef CONFIG_AMD_IOMMU_STATS
 
-#endif /* ASM_X86__AMD_IOMMU_TYPES_H */
+struct __iommu_counter {
+	char *name;
+	struct dentry *dent;
+	u64 value;
+};
+
+#define DECLARE_STATS_COUNTER(nm) \
+	static struct __iommu_counter nm = {	\
+		.name = #nm,			\
+	}
+
+#define INC_STATS_COUNTER(name)		name.value += 1
+#define ADD_STATS_COUNTER(name, x)	name.value += (x)
+#define SUB_STATS_COUNTER(name, x)	name.value -= (x)
+
+#else /* CONFIG_AMD_IOMMU_STATS */
+
+#define DECLARE_STATS_COUNTER(name)
+#define INC_STATS_COUNTER(name)
+#define ADD_STATS_COUNTER(name, x)
+#define SUB_STATS_COUNTER(name, x)
+
+static inline void amd_iommu_stats_init(void) { }
+
+#endif /* CONFIG_AMD_IOMMU_STATS */
+
+#endif /* _ASM_X86_AMD_IOMMU_TYPES_H */

@@ -6,6 +6,8 @@
 
 #define ETH_FCS_LEN               4
 
+#define PCIE_LINK_STATE_L0S	0
+
 static inline struct net_device *vlan_group_get_device(struct vlan_group *vg,
 						       int vlan_id)
 {
@@ -19,4 +21,3 @@ static inline void vlan_group_set_device(struct vlan_group *vg, int vlan_id,
 }
 
 #endif 
-

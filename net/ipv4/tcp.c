@@ -1147,7 +1147,8 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		    __get_cpu_var(softnet_data).net_dma) {
 			preempt_enable_no_resched();
 			tp->ucopy.pinned_list = 
-					dma_pin_iovec_pages(msg->msg_iov, len);
+					dma_pin_iovec_pages_v3(msg->msg_iov,
+							       len);
 		} else {
 			preempt_enable_no_resched();
 		}
@@ -1444,9 +1445,9 @@ skip_copy:
 	if (tp->ucopy.dma_chan) {
 		dma_cookie_t done, used;
 
-		dma_async_memcpy_issue_pending(tp->ucopy.dma_chan);
+		dma_async_memcpy_issue_pending_v3(tp->ucopy.dma_chan);
 
-		while (dma_async_memcpy_complete(tp->ucopy.dma_chan,
+		while (dma_async_memcpy_complete_v3(tp->ucopy.dma_chan,
 		                                 tp->ucopy.dma_cookie, &done,
 		                                 &used) == DMA_IN_PROGRESS) {
 			/* do partial cleanup of sk_async_wait_queue */
@@ -1464,7 +1465,7 @@ skip_copy:
 		tp->ucopy.dma_chan = NULL;
 	}
 	if (tp->ucopy.pinned_list) {
-		dma_unpin_iovec_pages(tp->ucopy.pinned_list);
+		dma_unpin_iovec_pages_v3(tp->ucopy.pinned_list);
 		tp->ucopy.pinned_list = NULL;
 	}
 #endif
@@ -2166,7 +2167,7 @@ struct sk_buff *tcp_tso_segment(struct sk_buff *skb, int features)
 	unsigned int seq;
 	unsigned int delta;
 	unsigned int oldlen;
-	unsigned int len;
+	unsigned int mss;
 
 	if (!pskb_may_pull(skb, sizeof(*th)))
 		goto out;
@@ -2182,10 +2183,13 @@ struct sk_buff *tcp_tso_segment(struct sk_buff *skb, int features)
 	oldlen = (u16)~skb->len;
 	__skb_pull(skb, thlen);
 
+	mss = skb_shinfo(skb)->gso_size;
+	if (unlikely(skb->len <= mss))
+		goto out;
+
 	if (skb_gso_ok(skb, features | NETIF_F_GSO_ROBUST)) {
 		/* Packet is from an untrusted source, reset gso_segs. */
 		int type = skb_shinfo(skb)->gso_type;
-		int mss;
 
 		if (unlikely(type &
 			     ~(SKB_GSO_TCPV4 |
@@ -2196,7 +2200,6 @@ struct sk_buff *tcp_tso_segment(struct sk_buff *skb, int features)
 			     !(type & (SKB_GSO_TCPV4 | SKB_GSO_TCPV6))))
 			goto out;
 
-		mss = skb_shinfo(skb)->gso_size;
 		skb_shinfo(skb)->gso_segs = (skb->len + mss - 1) / mss;
 
 		segs = NULL;
@@ -2207,8 +2210,7 @@ struct sk_buff *tcp_tso_segment(struct sk_buff *skb, int features)
 	if (IS_ERR(segs))
 		goto out;
 
-	len = skb_shinfo(skb)->gso_size;
-	delta = htonl(oldlen + (thlen + len));
+	delta = htonl(oldlen + (thlen + mss));
 
 	skb = segs;
 	th = skb->h.th;
@@ -2222,7 +2224,7 @@ struct sk_buff *tcp_tso_segment(struct sk_buff *skb, int features)
 			th->check = csum_fold(csum_partial(skb->h.raw, thlen,
 							   skb->csum));
 
-		seq += len;
+		seq += mss;
 		skb = skb->next;
 		th = skb->h.th;
 
@@ -2240,6 +2242,114 @@ out:
 	return segs;
 }
 EXPORT_SYMBOL(tcp_tso_segment);
+
+struct sk_buff **tcp_gro_receive(struct sk_buff **head, struct sk_buff *skb)
+{
+	struct sk_buff **pp = NULL;
+	struct sk_buff *p;
+	struct tcphdr *th;
+	struct tcphdr *th2;
+	unsigned int len;
+	unsigned int thlen;
+	unsigned int flags;
+	unsigned int mss = 1;
+	unsigned int hlen;
+	unsigned int off;
+	int flush = 1;
+	int i;
+
+	off = skb_gro_offset(skb);
+	hlen = off + sizeof(*th);
+	th = skb_gro_header_fast(skb, off);
+	if (skb_gro_header_hard(skb, hlen)) {
+		th = skb_gro_header_slow(skb, hlen, off);
+		if (unlikely(!th))
+			goto out;
+	}
+
+	thlen = th->doff * 4;
+	if (thlen < sizeof(*th))
+		goto out;
+
+	hlen = off + thlen;
+	if (skb_gro_header_hard(skb, hlen)) {
+		th = skb_gro_header_slow(skb, hlen, off);
+		if (unlikely(!th))
+			goto out;
+	}
+
+	skb_gro_pull(skb, thlen);
+
+	len = skb_gro_len(skb);
+	flags = tcp_flag_word(th);
+
+	for (; (p = *head); head = &p->next) {
+		if (!NAPI_GRO_CB(p)->same_flow)
+			continue;
+
+		th2 = tcp_hdr(p);
+
+		if (*(u32 *)&th->source ^ *(u32 *)&th2->source) {
+			NAPI_GRO_CB(p)->same_flow = 0;
+			continue;
+		}
+
+		goto found;
+	}
+
+	goto out_check_final;
+
+found:
+	flush = NAPI_GRO_CB(p)->flush;
+	flush |= flags & TCP_FLAG_CWR;
+	flush |= (flags ^ tcp_flag_word(th2)) &
+		  ~(TCP_FLAG_CWR | TCP_FLAG_FIN | TCP_FLAG_PSH);
+	flush |= th->ack_seq ^ th2->ack_seq;
+	for (i = sizeof(*th); i < thlen; i += 4)
+		flush |= *(u32 *)((u8 *)th + i) ^
+			 *(u32 *)((u8 *)th2 + i);
+
+	mss = skb_shinfo(p)->gso_size;
+
+	flush |= (len - 1) >= mss;
+	flush |= (ntohl(th2->seq) + skb_gro_len(p)) ^ ntohl(th->seq);
+
+	if (flush || skb_gro_receive(head, skb)) {
+		mss = 1;
+		goto out_check_final;
+	}
+
+	p = *head;
+	th2 = tcp_hdr(p);
+	tcp_flag_word(th2) |= flags & (TCP_FLAG_FIN | TCP_FLAG_PSH);
+
+out_check_final:
+	flush = len < mss;
+	flush |= flags & (TCP_FLAG_URG | TCP_FLAG_PSH | TCP_FLAG_RST |
+			  TCP_FLAG_SYN | TCP_FLAG_FIN);
+
+	if (p && (!NAPI_GRO_CB(skb)->same_flow || flush))
+		pp = head;
+
+out:
+	NAPI_GRO_CB(skb)->flush |= flush;
+
+	return pp;
+}
+EXPORT_SYMBOL(tcp_gro_receive);
+
+int tcp_gro_complete(struct sk_buff *skb)
+{
+	struct tcphdr *th = tcp_hdr(skb);
+
+	skb_shinfo(skb)->gso_segs = NAPI_GRO_CB(skb)->count;
+
+	if (th->cwr)
+		skb_shinfo(skb)->gso_type |= SKB_GSO_TCP_ECN;
+
+	return 0;
+}
+EXPORT_SYMBOL(tcp_gro_complete);
 
 extern void __skb_cb_too_small_for_tcp(int, int);
 extern struct tcp_congestion_ops tcp_reno;

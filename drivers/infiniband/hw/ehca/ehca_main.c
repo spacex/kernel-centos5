@@ -50,7 +50,7 @@
 #include "ehca_tools.h"
 #include "hcp_if.h"
 
-#define HCAD_VERSION "SVNEHCA_0026"
+#define HCAD_VERSION "SVNEHCA_0027"
 
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_AUTHOR("Christoph Raisch <raisch@de.ibm.com>");
@@ -923,6 +923,7 @@ static struct of_device_id ehca_device_table[] =
 	},
 	{},
 };
+MODULE_DEVICE_TABLE(of, ehca_device_table);
 
 static struct ibmebus_driver ehca_driver = {
 	.name     = "ehca",

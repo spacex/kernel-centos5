@@ -42,6 +42,14 @@ config CBE_RAS
 	bool "RAS features for bare metal Cell BE"
 	default y
 
+config PPC_IBM_CELL_POWERBUTTON
+	tristate "IBM Cell Blade power button"
+	depends on PPC_IBM_CELL_BLADE && PPC_PMI && INPUT_EVDEV
+	default y
+	help
+	  Support Powerbutton on IBM Cell blades.
+	  This will enable the powerbutton as an input device.
+
 config CBE_THERM
 	tristate "CBE thermal support"
 	default m

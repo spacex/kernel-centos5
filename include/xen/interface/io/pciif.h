@@ -16,6 +16,10 @@
 /* xen_pci_op commands */
 #define XEN_PCI_OP_conf_read    (0)
 #define XEN_PCI_OP_conf_write   (1)
+#define XEN_PCI_OP_enable_msi   (2)
+#define XEN_PCI_OP_enable_msix  (3)
+#define XEN_PCI_OP_disable_msi  (4)
+#define XEN_PCI_OP_disable_msix (5)
 
 /* xen_pci_op error numbers */
 #define XEN_PCI_ERR_success          (0)
@@ -25,6 +29,12 @@
 #define XEN_PCI_ERR_not_implemented (-4)
 /* XEN_PCI_ERR_op_failed - backend failed to complete the operation */
 #define XEN_PCI_ERR_op_failed       (-5)
+
+/*
+ * it should be PAGE_SIZE-sizeof(struct xen_pci_op))/sizeof(struct msix_entry))
+ * Should not exceed 128
+ */
+#define SH_INFO_MAX_VEC     128
 
 struct xen_pci_op {
 	/* IN: what action to perform: XEN_PCI_OP_* */
@@ -44,6 +54,11 @@ struct xen_pci_op {
 
 	/* IN/OUT: Contains the result after a READ or the value to WRITE */
 	uint32_t value;
+
+	/* IN: Contains extra infor for this operation */
+	uint32_t info;
+	/*IN:  param for msi-x */
+	struct msix_entry msix_entries[SH_INFO_MAX_VEC];
 };
 
 struct xen_pci_sharedinfo {

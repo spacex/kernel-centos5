@@ -55,6 +55,7 @@ static int aac_alloc_comm(struct aac_dev *dev, void **commaddr, unsigned long co
 	const unsigned long printfbufsiz = 256;
 	struct aac_init *init;
 	dma_addr_t phys;
+	unsigned long aac_max_hostphysmempages;
 
 	size = fibsize + sizeof(struct aac_init) + commsize + commalign + printfbufsiz;
 
@@ -91,13 +92,26 @@ static int aac_alloc_comm(struct aac_dev *dev, void **commaddr, unsigned long co
 	init->AdapterFibsPhysicalAddress = cpu_to_le32((u32)phys);
 	init->AdapterFibsSize = cpu_to_le32(fibsize);
 	init->AdapterFibAlign = cpu_to_le32(sizeof(struct hw_fib));
-	init->HostPhysMemPages = cpu_to_le32(AAC_MAX_HOSTPHYSMEMPAGES);
+	/*
+	 * number of 4k pages of host physical memory. The aacraid fw needs
+	 * this number to be less than 4gb worth of pages. New firmware doesn't
+	 * have any issues with the mapping system, but older Firmware did, and
+	 * had *troubles* dealing with the math overloading past 32 bits, thus
+	 * we must limit this field.
+	 */
+	aac_max_hostphysmempages = dma_get_required_mask(&dev->pdev->dev) >> 12;
+	if (aac_max_hostphysmempages < AAC_MAX_HOSTPHYSMEMPAGES)
+		init->HostPhysMemPages = cpu_to_le32(aac_max_hostphysmempages);
+	else
+		init->HostPhysMemPages = cpu_to_le32(AAC_MAX_HOSTPHYSMEMPAGES);
 
 	init->InitFlags = 0;
 	if (dev->comm_interface == AAC_COMM_MESSAGE) {
 		init->InitFlags = cpu_to_le32(INITFLAGS_NEW_COMM_SUPPORTED);
 		dprintk((KERN_WARNING"aacraid: New Comm Interface enabled\n"));
 	}
+	init->InitFlags |= cpu_to_le32(INITFLAGS_DRIVER_USES_UTC_TIME |
+				       INITFLAGS_DRIVER_SUPPORTS_PM);
 	init->MaxIoCommands = cpu_to_le32(dev->scsi_host_ptr->can_queue + AAC_NUM_MGT_FIB);
 	init->MaxIoSize = cpu_to_le32(dev->scsi_host_ptr->max_sectors << 9);
 	init->MaxFibSize = cpu_to_le32(dev->max_fib_size);

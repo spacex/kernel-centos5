@@ -246,6 +246,29 @@ config SCSI_ISCSI_ATTRS
 	  each attached iSCSI device to sysfs, say Y.
 	  Otherwise, say N.
 
+config SCSI_ISCSI1_ATTRS
+	tristate "iSCSI Transport Attributes"
+	depends on SCSI && NET
+	select SCSI_ISCSI_ATTRS
+	help
+	  v1 of the iSCSI attrs.
+
+	  If you wish to export transport-specific information about
+	  each attached iSCSI device to sysfs, say Y.
+	  Otherwise, say N.
+
+config SCSI_ISCSI2_ATTRS
+	tristate "iSCSI Transport Attributes v2"
+	depends on SCSI && NET
+	select SCSI_ISCSI_ATTRS
+	help
+	  v2 of the iSCSI attrs supports iSCSI offload cards such
+	  as Broadcom bnx2i and Chelsio cxgb3i.
+
+	  If you wish to export transport-specific information about
+	  each attached iSCSI device to sysfs, say Y.
+	  Otherwise, say N.
+
 config SCSI_SAS_ATTRS
 	tristate "SAS Transport Attributes"
 	depends on SCSI
@@ -266,12 +289,26 @@ config LIBFC
    ---help---
           Fibre Channel library module
 
+config LIBFCOE
+	tristate "LibFCoE module"
+	select LIBFC
+	---help---
+	  Library for Fibre Channel over Ethernet module
+
 config FCOE
 	tristate "FCoE module"
 	depends on SCSI && SCSI_FC_ATTRS
 	select LIBFC
+	select LIBFCOE
 	---help---
 	  Fibre Channel over Ethernet module
+
+config LIBISCSI1
+	tristate "iSCSI lib compat"
+	depends on SCSI && NET
+	select SCSI_ISCSI1_ATTRS
+	help
+	  v1 of the iSCSI library.
 
 config ISCSI_TCP
 	tristate "iSCSI Initiator over TCP/IP"
@@ -279,7 +316,7 @@ config ISCSI_TCP
 	select CRYPTO
 	select CRYPTO_MD5
 	select CRYPTO_CRC32C
-	select SCSI_ISCSI_ATTRS
+	select SCSI_ISCSI2_ATTRS
 	help
 	 The iSCSI Driver provides a host with the ability to access storage
 	 through an IP network. The driver uses the iSCSI protocol to transport
@@ -296,6 +333,10 @@ config ISCSI_TCP
 	 and sample configuration files can be found here:
 
 	 http://linux-iscsi.sf.net
+
+source "drivers/scsi/cxgb3i/Kconfig"
+
+source "drivers/scsi/bnx2i/Kconfig"
 
 config SGIWD93_SCSI
 	tristate "SGI WD93C93 SCSI Driver"
@@ -413,6 +454,14 @@ config SCSI_AACRAID
 	  To compile this driver as a module, choose M here: the module
 	  will be called aacraid.
 
+config SCSI_MVSAS
+	tristate "Marvell 88SE64xx SAS/SATA support"
+	depends on PCI && SCSI
+	select SCSI_SAS_LIBSAS
+	help
+	This driver supports Marvell 88SE64xx SAS/SATA PCI devices.
+	To compiler this driver as a module, choose M here: the module
+	will be called mvsas.
 
 source "drivers/scsi/aic7xxx/Kconfig.aic7xxx"
 
@@ -511,6 +560,7 @@ config SCSI_ARCMSR
 	  module will be called arcmsr (modprobe arcmsr).
 
 source "drivers/scsi/megaraid/Kconfig.megaraid"
+source "drivers/scsi/mpt2sas/Kconfig"
 
 config SCSI_HPTIOP
 	tristate "HighPoint RocketRAID 3xxx Controller support"
@@ -546,7 +596,7 @@ config SCSI_OMIT_FLASHPOINT
 
 config FCOE_FNIC
 	tristate "Cisco FNIC Driver"
-	depends PCI && X86_64
+	depends PCI && X86
 	select LIBFC
 	help
 	  This is support for the Cisco PCI-Express FCoE HBA.
@@ -823,6 +873,25 @@ config SCSI_IBMVSCSI
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called ibmvscsic.
+
+config SCSI_IBMVFC
+	tristate "IBM Virtual FC support"
+	depends on PPC_PSERIES && SCSI
+	select SCSI_FC_ATTRS
+	help
+	  This is the IBM POWER Virtual FC Client
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called ibmvfc.
+
+config SCSI_IBMVFC_TRACE
+	bool "enable driver internal trace"
+	depends on SCSI_IBMVFC
+	default y
+	help
+	  If you say Y here, the driver will trace all commands issued
+	  to the adapter. Performance impact is minimal. Trace can be
+	  dumped using /sys/class/scsi_host/hostXX/trace.
 
 config SCSI_INITIO
 	tristate "Initio 9100U(W) support"

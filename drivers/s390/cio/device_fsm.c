@@ -580,7 +580,7 @@ ccw_device_recognition(struct ccw_device *cdev)
 	    (cdev->private->state != DEV_STATE_BOXED))
 		return -EINVAL;
 	sch = to_subchannel(cdev->dev.parent);
-	ret = cio_enable_subchannel(sch, sch->schib.pmcw.isc);
+	ret = cio_enable_subchannel(sch);
 	if (ret != 0)
 		/* Couldn't enable the subchannel for i/o. Sick device. */
 		return ret;
@@ -690,7 +690,7 @@ ccw_device_online(struct ccw_device *cdev)
 	sch = to_subchannel(cdev->dev.parent);
 	if (css_init_done && !get_device(&cdev->dev))
 		return -ENODEV;
-	ret = cio_enable_subchannel(sch, sch->schib.pmcw.isc);
+	ret = cio_enable_subchannel(sch);
 	if (ret != 0) {
 		/* Couldn't enable the subchannel for i/o. Sick device. */
 		if (ret == -ENODEV)
@@ -802,8 +802,10 @@ static void ccw_device_generic_notoper(struct ccw_device *cdev,
 {
 	struct subchannel *sch;
 
-	cdev->private->state = DEV_STATE_NOT_OPER;
 	sch = to_subchannel(cdev->dev.parent);
+	ccw_device_set_timeout(cdev, 0);
+	cio_disable_subchannel(sch);
+	cdev->private->state = DEV_STATE_NOT_OPER;
 	css_schedule_eval(sch->schid);
 }
 
@@ -1113,7 +1115,7 @@ ccw_device_start_id(struct ccw_device *cdev, enum dev_event dev_event)
 	struct subchannel *sch;
 
 	sch = to_subchannel(cdev->dev.parent);
-	if (cio_enable_subchannel(sch, sch->schib.pmcw.isc) != 0)
+	if (cio_enable_subchannel(sch) != 0)
 		/* Couldn't enable the subchannel for i/o. Sick device. */
 		return;
 
@@ -1151,7 +1153,6 @@ device_trigger_reprobe(struct subchannel *sch)
 	 */
 	sch->lpm = sch->schib.pmcw.pam & sch->opm;
 	/* Re-set some bits in the pmcw that were lost. */
-	sch->schib.pmcw.isc = 3;
 	sch->schib.pmcw.csense = 1;
 	sch->schib.pmcw.ena = 0;
 	if ((sch->lpm & (sch->lpm - 1)) != 0)
@@ -1169,7 +1170,7 @@ ccw_device_offline_irq(struct ccw_device *cdev, enum dev_event dev_event)
 	sch = to_subchannel(cdev->dev.parent);
 	/*
 	 * An interrupt in state offline means a previous disable was not
-	 * successful. Try again.
+	 * successful - should not happen, but we try to disable again.
 	 */
 	cio_disable_subchannel(sch);
 }

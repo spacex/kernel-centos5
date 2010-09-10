@@ -7,6 +7,7 @@
 #include <linux/string.h>
 #include <linux/pci.h>
 #include <linux/module.h>
+#include <linux/dmar.h>
 #include <asm/io.h>
 #include <asm/proto.h>
 #include <asm/calgary.h>
@@ -159,6 +160,8 @@ dma_alloc_coherent(struct device *dev, size_t size, dma_addr_t *dma_handle,
 }
 EXPORT_SYMBOL(dma_alloc_coherent);
 
+extern int iommu_pass_through;
+
 /*
  * Unmap coherent memory.
  * The caller must ensure that the device has finished accessing the mapping.
@@ -270,6 +273,10 @@ __init int iommu_setup(char *p)
 #ifdef CONFIG_SWIOTLB
 	    if (!strncmp(p, "soft",4))
 		    swiotlb = 1;
+	    if (!strncmp(p, "pt", 2)) {
+		    iommu_pass_through = 1;
+		    return 1;
+	    }
 #endif
 
 #ifdef CONFIG_IOMMU
@@ -280,11 +287,6 @@ __init int iommu_setup(char *p)
 	    if (!strncmp(p, "calgary", 7))
 		    use_calgary = 1;
 #endif /* CONFIG_CALGARY_IOMMU */
-
-#ifdef CONFIG_AMD_IOMMU
-	    if (!strncmp(p, "amd", 3))
-		    amd_iommu_enable = 1;
-#endif /* CONFIG_AMD_IOMMU */
 
 	    p += strcspn(p, ",");
 	    if (*p == ',')
@@ -308,6 +310,10 @@ void __init pci_iommu_alloc(void)
 	detect_calgary();
 #endif
 
+#ifdef CONFIG_DMAR
+	detect_intel_iommu();
+#endif
+
 #ifdef CONFIG_AMD_IOMMU
 	amd_iommu_detect();
 #endif
@@ -321,6 +327,10 @@ static int __init pci_iommu_init(void)
 {
 #ifdef CONFIG_CALGARY_IOMMU
 	calgary_iommu_init();
+#endif
+
+#ifdef CONFIG_DMAR
+	intel_iommu_init();
 #endif
 
 #ifdef CONFIG_AMD_IOMMU

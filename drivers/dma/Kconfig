@@ -5,22 +5,10 @@
 menu "DMA Engine support"
 
 config DMA_ENGINE
-	bool "Support for DMA engines"
+	tristate "Support for DMA engines"
 	---help---
 	  DMA engines offload copy operations from the CPU to dedicated
 	  hardware, allowing the copies to happen asynchronously.
-
-comment "DMA Clients"
-
-config NET_DMA
-	bool "Network: TCP receive copy offload"
-	depends on DMA_ENGINE && NET
-	default y
-	---help---
-	  This enables the use of DMA engines in the network stack to
-	  offload receive copy-to-user operations, freeing CPU cycles.
-	  Since this is the main user of the DMA engine, it should be enabled;
-	  say Y here.
 
 comment "DMA Devices"
 

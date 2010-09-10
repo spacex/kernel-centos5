@@ -29,8 +29,14 @@
 #include <linux/mc146818rtc.h>
 #include <linux/acpi.h>
 #include <linux/sysdev.h>
+#include <linux/msi.h>
+#include <linux/msidef.h>
 #ifdef CONFIG_ACPI
 #include <acpi/acpi_bus.h>
+#endif
+#if defined (CONFIG_DMAR) || defined (CONFIG_INTR_REMAP)
+#include <linux/dmar.h>
+#include <linux/intel-iommu.h> /* DMAR_* defs for dmar_[write,read]_msi() */
 #endif
 
 #include <asm/io.h>
@@ -1615,8 +1621,8 @@ static void set_ioapic_affinity_vector (unsigned int vector,
 	set_native_irq_info(vector, cpu_mask);
 	set_ioapic_affinity_irq(irq, cpu_mask);
 }
-#endif // CONFIG_SMP
-#endif // CONFIG_PCI_MSI
+#endif /* CONFIG_SMP */
+#endif /* CONFIG_PCI_MSI */
 
 static int ioapic_retrigger(unsigned int irq)
 {
@@ -1625,6 +1631,132 @@ static int ioapic_retrigger(unsigned int irq)
 	return 1;
 }
 
+#if defined (CONFIG_DMAR) || defined (CONFIG_INTR_REMAP)
+void dmar_msi_write(int irq, struct msi_msg *msg)
+{
+	struct intel_iommu *iommu = get_irq_data(irq);
+	unsigned long flag;
+
+	spin_lock_irqsave(&iommu->register_lock, flag);
+	writel(msg->data, iommu->reg + DMAR_FEDATA_REG);
+	writel(msg->address_lo, iommu->reg + DMAR_FEADDR_REG);
+	writel(msg->address_hi, iommu->reg + DMAR_FEUADDR_REG);
+	/* Read a reg to force flush the post write */
+	readl(iommu->reg + DMAR_FEUADDR_REG);
+	spin_unlock_irqrestore(&iommu->register_lock, flag);
+}
+								
+void dmar_msi_read(int irq, struct msi_msg *msg)
+{
+	struct intel_iommu *iommu = get_irq_data(irq);
+	unsigned long flag;
+
+	spin_lock_irqsave(&iommu->register_lock, flag);
+	msg->data = readl(iommu->reg + DMAR_FEDATA_REG);
+	msg->address_lo = readl(iommu->reg + DMAR_FEADDR_REG);
+	msg->address_hi = readl(iommu->reg + DMAR_FEUADDR_REG);
+	spin_unlock_irqrestore(&iommu->register_lock, flag);
+}
+
+#ifdef CONFIG_SMP
+static void dmar_msi_set_affinity(unsigned int irq, cpumask_t mask)
+{
+	struct msi_msg msg;
+	unsigned int dest, vector;
+
+	dest = cpu_mask_to_apicid(mask);
+        if (dest == BAD_APICID)
+                return;
+
+	vector = assign_irq_vector(irq);
+	set_native_irq_info(vector, mask);
+
+	dmar_msi_read(irq, &msg);
+
+	msg.data &= ~MSI_DATA_VECTOR_MASK;
+	msg.data |= MSI_DATA_VECTOR(vector);
+	msg.address_lo &= ~MSI_ADDR_DEST_ID_MASK;
+	msg.address_lo |= MSI_ADDR_DEST_ID(dest);
+
+	dmar_msi_write(irq, &msg);
+}
+#endif /* CONFIG_SMP */
+
+int dmar_create_irq(void)
+{
+	int irq = assign_irq_vector(AUTO_ASSIGN);
+
+	set_intr_gate(irq, interrupt[irq]);
+
+	return irq;
+}
+
+void dmar_destroy_irq(unsigned int irq)
+{
+	/* will invoke msi release fcn which is set to msi mask fcn */
+	free_irq(irq, NULL);
+}
+
+/*
+ * MSI message composition
+ */
+static int msi_compose_msg(struct pci_dev *pdev, unsigned int irq, struct msi_msg *msg)
+{
+	int err=0;
+	unsigned dest;
+	int vector=irq; /* under rhel5, vector == irq num */
+
+	if (disable_apic)
+		return -ENXIO;
+
+	/* set to all CPUs */
+	dest = cpu_mask_to_apicid(TARGET_CPUS);
+
+	msg->address_hi = MSI_ADDR_BASE_HI;
+	msg->address_lo = MSI_ADDR_BASE_LO |
+			MSI_ADDR_DEST_MODE_PHYSICAL |
+			MSI_ADDR_REDIRECTION_CPU |
+			MSI_ADDR_DEST_ID(dest);
+
+	msg->data = MSI_DATA_TRIGGER_EDGE |
+			MSI_DATA_LEVEL_ASSERT |
+			MSI_DATA_DELIVERY_FIXED |
+			MSI_DATA_VECTOR(vector);
+
+	return err;
+}
+
+static void ack_lapic_irq (unsigned int irq);
+
+static struct hw_interrupt_type dmar_msi_type __read_mostly = {
+	.typename = "DMAR_MSI-edge",
+	.unmask		= dmar_msi_unmask,
+	.mask		= dmar_msi_mask,
+	.ack		= ack_lapic_irq, 
+	.end		= end_edge_ioapic,
+#ifdef CONFIG_SMP
+	.set_affinity = dmar_msi_set_affinity,
+#endif
+	.retrigger = ioapic_retrigger,
+};
+
+int arch_setup_dmar_msi(unsigned int irq)
+{
+	int ret;
+	struct msi_msg msg;
+
+	ret = msi_compose_msg(NULL, irq, &msg);
+	if (ret < 0)
+		return ret;
+
+	dmar_msi_write(irq, &msg);
+
+	set_irq_chip_and_handler(irq, &dmar_msi_type, handle_edge_irq);
+
+	return 0;
+}
+#endif /* CONFIG_DMAR */
+ 
 /*
  * Level and edge triggered IO-APIC interrupts need different handling,
  * so we use two separate IRQ descriptors. Edge triggered IRQs can be

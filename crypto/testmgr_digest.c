@@ -49,6 +49,7 @@ struct alg_test_desc {
 	const char *alg;
 	int (*test)(const struct alg_test_desc *desc, const char *driver,
 		    u32 type, u32 mask);
+	int fips_allowed;	/* set if alg is allowed in fips mode */
 
 	union {
 		struct hash_test_suite hash;
@@ -184,6 +185,7 @@ static const struct alg_test_desc digest_test_descs[] = {
 	}, {
 		.alg = "sha1",
 		.test = alg_test_digest,
+		.fips_allowed = 1,
 		.suite = {
 			.hash = {
 				.vecs = sha1_tv_template,
@@ -193,6 +195,7 @@ static const struct alg_test_desc digest_test_descs[] = {
 	}, {
 		.alg = "sha256",
 		.test = alg_test_digest,
+		.fips_allowed = 1,
 		.suite = {
 			.hash = {
 				.vecs = sha256_tv_template,
@@ -202,6 +205,7 @@ static const struct alg_test_desc digest_test_descs[] = {
 	}, {
 		.alg = "sha384",
 		.test = alg_test_digest,
+		.fips_allowed = 1,
 		.suite = {
 			.hash = {
 				.vecs = sha384_tv_template,
@@ -211,6 +215,7 @@ static const struct alg_test_desc digest_test_descs[] = {
 	}, {
 		.alg = "sha512",
 		.test = alg_test_digest,
+		.fips_allowed = 1,
 		.suite = {
 			.hash = {
 				.vecs = sha512_tv_template,
@@ -278,6 +283,7 @@ int digest_test(const char *driver, const char *alg)
 {
 	int start = 0;
 	int end = ARRAY_SIZE(digest_test_descs);
+	int rc;
 
 	while (start < end) {
 		int i = (start + end) / 2;
@@ -293,12 +299,21 @@ int digest_test(const char *driver, const char *alg)
 			continue;
 		}
 
-		return digest_test_descs[i].test(digest_test_descs + i, driver,
-						 0, 0);
+		if (fips_enabled && !digest_test_descs[i].fips_allowed)
+			goto non_fips_alg;
+
+		rc = digest_test_descs[i].test(digest_test_descs + i, driver,
+					       0, 0);
+		if (fips_enabled && rc)
+			panic("%s: %s alg test failed in fips mode!\n", driver, alg);
+
+		return rc;
 	}
 
 	printk(KERN_INFO "alg: No test for %s (%s)\n", alg, driver);
 	return 0;
+non_fips_alg:
+	return -EINVAL;
 }
 EXPORT_SYMBOL_GPL(digest_test);
 

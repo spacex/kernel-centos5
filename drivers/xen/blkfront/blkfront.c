@@ -144,10 +144,10 @@ static int blkfront_resume(struct xenbus_device *dev)
 
 	DPRINTK("blkfront_resume: %s\n", dev->nodename);
 
-	blkif_free(info, 1);
+	blkif_free(info, info->connected == BLKIF_STATE_CONNECTED);
 
 	err = talk_to_backend(dev, info);
-	if (!err)
+	if (info->connected == BLKIF_STATE_SUSPENDED && !err)
 		blkif_recover(info);
 
 	return err;
@@ -537,13 +537,11 @@ static int blkif_queue_request(struct request *req)
 	struct blkfront_info *info = req->rq_disk->private_data;
 	unsigned long buffer_mfn;
 	blkif_request_t *ring_req;
-	struct bio *bio;
-	struct bio_vec *bvec;
-	int idx;
 	unsigned long id;
 	unsigned int fsect, lsect;
-	int ref;
+	int i, ref;
 	grant_ref_t gref_head;
+	struct scatterlist *sg;
 
 	if (unlikely(info->connected != BLKIF_STATE_CONNECTED))
 		return 1;
@@ -569,35 +567,29 @@ static int blkif_queue_request(struct request *req)
 	ring_req->sector_number = (blkif_sector_t)req->sector;
 	ring_req->handle = info->handle;
 
-	ring_req->nr_segments = 0;
-	rq_for_each_bio (bio, req) {
-		bio_for_each_segment (bvec, bio, idx) {
-			BUG_ON(ring_req->nr_segments
-			       == BLKIF_MAX_SEGMENTS_PER_REQUEST);
-			buffer_mfn = page_to_phys(bvec->bv_page) >> PAGE_SHIFT;
-			fsect = bvec->bv_offset >> 9;
-			lsect = fsect + (bvec->bv_len >> 9) - 1;
-			/* install a grant reference. */
-			ref = gnttab_claim_grant_reference(&gref_head);
-			BUG_ON(ref == -ENOSPC);
+	ring_req->nr_segments = blk_rq_map_sg(req->q, req, info->sg);
+	BUG_ON(ring_req->nr_segments > BLKIF_MAX_SEGMENTS_PER_REQUEST);
 
-			gnttab_grant_foreign_access_ref(
-				ref,
-				info->xbdev->otherend_id,
-				buffer_mfn,
-				rq_data_dir(req) );
+	for (sg = info->sg, i = 0; i < (ring_req->nr_segments); i++, sg++) {
+		buffer_mfn = pfn_to_mfn(page_to_pfn(sg->page));
+		fsect = sg->offset >> 9;
+		lsect = fsect + (sg->length >> 9) - 1;
+		/* install a grant reference. */
+		ref = gnttab_claim_grant_reference(&gref_head);
+		BUG_ON(ref == -ENOSPC);
 
-			info->shadow[id].frame[ring_req->nr_segments] =
-				mfn_to_pfn(buffer_mfn);
+		gnttab_grant_foreign_access_ref(
+			ref,
+			info->xbdev->otherend_id,
+			buffer_mfn,
+			rq_data_dir(req) );
 
-			ring_req->seg[ring_req->nr_segments] =
+		info->shadow[id].frame[i] = mfn_to_pfn(buffer_mfn);
+		ring_req->seg[i] =
 				(struct blkif_request_segment) {
 					.gref       = ref,
 					.first_sect = fsect,
 					.last_sect  = lsect };
-
-			ring_req->nr_segments++;
-		}
 	}
 
 	info->ring.req_prod_pvt++;
@@ -860,21 +852,10 @@ static struct xenbus_driver blkfront = {
 
 static int __init xlblk_init(void)
 {
-	int rtn_val;
-#ifdef CONFIG_XEN_PV_ON_HVM
-	extern void xvd_dev_shutdown(void);
-#endif
-
 	if (!is_running_on_xen())
 		return -ENODEV;
 
-	rtn_val = xenbus_register_frontend(&blkfront);
-
-#ifdef CONFIG_XEN_PV_ON_HVM
-	/* remove any xvd's in xvd_rem_list after all dev's configured */
-	xvd_dev_shutdown();
-#endif
-	return rtn_val;
+	return xenbus_register_frontend(&blkfront);
 }
 module_init(xlblk_init);
 

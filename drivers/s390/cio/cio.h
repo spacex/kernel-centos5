@@ -2,6 +2,7 @@
 #define S390_CIO_H
 
 #include "schid.h"
+#include <asm/cio.h>
 #include <linux/mutex.h>
 #include <linux/device.h>
 
@@ -107,6 +108,7 @@ struct subchannel {
 	__u8 lpm;		/* logical path mask */
 	__u8 opm;               /* operational path mask */
 	struct schib schib;	/* subchannel information block */
+	int isc; /* desired interruption subclass */
 	struct orb orb;		/* operation request block */
 	struct ccw1 sense_ccw;	/* static ccw for sense command */
 	struct ssd_info ssd_info;	/* subchannel description */
@@ -120,7 +122,7 @@ struct subchannel {
 #define to_subchannel(n) container_of(n, struct subchannel, dev)
 
 extern int cio_validate_subchannel (struct subchannel *, struct subchannel_id);
-extern int cio_enable_subchannel (struct subchannel *, unsigned int);
+extern int cio_enable_subchannel (struct subchannel *);
 extern int cio_disable_subchannel (struct subchannel *);
 extern int cio_cancel (struct subchannel *);
 extern int cio_clear (struct subchannel *);
@@ -132,6 +134,8 @@ extern int cio_cancel (struct subchannel *);
 extern int cio_set_options (struct subchannel *, int);
 extern int cio_get_options (struct subchannel *);
 extern int cio_modify (struct subchannel *);
+
+void do_adapter_IO(u8 isc);
 
 /* Use with care. */
 #ifdef CONFIG_CCW_CONSOLE

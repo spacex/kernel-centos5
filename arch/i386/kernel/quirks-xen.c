@@ -4,6 +4,34 @@
 #include <linux/pci.h>
 #include <linux/irq.h>
 
+#ifdef PCI_PT_E820_ACCESS_DEFAULT_ON
+int pci_pt_e820_access_enabled = 1;
+#else
+int pci_pt_e820_access_enabled = 0;
+
+static int __init e820_access_setup(char *str)
+{
+
+	if (!str)
+		return -EINVAL;
+	while (*str) {
+		if (!strncmp(str, "on", 2)) {
+			pci_pt_e820_access_enabled = 1;
+			printk(KERN_INFO "pci_pt_e820_access: enabled\n");
+		} else if (!strncmp(str, "off", 3)) {
+			pci_pt_e820_access_enabled = 0;
+			printk(KERN_INFO "pci_pt_e820_access: disabled\n");
+		}
+
+		str += strcspn(str, ",");
+		while (*str == ',')
+			str++;
+	}
+	return 0;
+}	
+__setup("pci_pt_e820_access=", e820_access_setup);
+#endif
+
 #if defined(CONFIG_X86_IO_APIC) && (defined(CONFIG_SMP) || defined(CONFIG_XEN)) && defined(CONFIG_PCI)
 
 static void __devinit quirk_intel_irqbalance(struct pci_dev *dev)

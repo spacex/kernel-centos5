@@ -75,81 +75,6 @@ void show_mem(void)
 }
 
 /*
- * Associate a virtual page frame with a given physical page frame 
- * and protection flags for that frame.
- */ 
-static void set_pte_pfn(unsigned long vaddr, unsigned long pfn, pgprot_t flags)
-{
-	pgd_t *pgd;
-	pud_t *pud;
-	pmd_t *pmd;
-	pte_t *pte;
-
-	pgd = swapper_pg_dir + pgd_index(vaddr);
-	if (pgd_none(*pgd)) {
-		BUG();
-		return;
-	}
-	pud = pud_offset(pgd, vaddr);
-	if (pud_none(*pud)) {
-		BUG();
-		return;
-	}
-	pmd = pmd_offset(pud, vaddr);
-	if (pmd_none(*pmd)) {
-		BUG();
-		return;
-	}
-	pte = pte_offset_kernel(pmd, vaddr);
-	/* <pfn,flags> stored as-is, to permit clearing entries */
-	set_pte(pte, pfn_pte(pfn, flags));
-
-	/*
-	 * It's enough to flush this one mapping.
-	 * (PGE mappings get flushed as well)
-	 */
-	__flush_tlb_one(vaddr);
-}
-
-/*
- * Associate a virtual page frame with a given physical page frame 
- * and protection flags for that frame.
- */ 
-static void set_pte_pfn_ma(unsigned long vaddr, unsigned long pfn,
-			   pgprot_t flags)
-{
-	pgd_t *pgd;
-	pud_t *pud;
-	pmd_t *pmd;
-	pte_t *pte;
-
-	pgd = swapper_pg_dir + pgd_index(vaddr);
-	if (pgd_none(*pgd)) {
-		BUG();
-		return;
-	}
-	pud = pud_offset(pgd, vaddr);
-	if (pud_none(*pud)) {
-		BUG();
-		return;
-	}
-	pmd = pmd_offset(pud, vaddr);
-	if (pmd_none(*pmd)) {
-		BUG();
-		return;
-	}
-	pte = pte_offset_kernel(pmd, vaddr);
-	/* <pfn,flags> stored as-is, to permit clearing entries */
-	set_pte(pte, pfn_pte_ma(pfn, flags));
-
-	/*
-	 * It's enough to flush this one mapping.
-	 * (PGE mappings get flushed as well)
-	 */
-	__flush_tlb_one(vaddr);
-}
-
-/*
  * Associate a large virtual page frame with a given physical page frame 
  * and protection flags for that frame. pfn is for the base of the page,
  * vaddr is what the page gets mapped to - both must be properly aligned. 
@@ -191,6 +116,7 @@ EXPORT_SYMBOL(__FIXADDR_TOP);
 void __set_fixmap (enum fixed_addresses idx, maddr_t phys, pgprot_t flags)
 {
 	unsigned long address = __fix_to_virt(idx);
+	pte_t pte;
 
 	if (idx >= __end_of_fixed_addresses) {
 		BUG();
@@ -201,12 +127,15 @@ void __set_fixmap (enum fixed_addresses idx, maddr_t phys, pgprot_t flags)
 #ifdef CONFIG_X86_F00F_BUG
 	case FIX_F00F_IDT:
 #endif
-		set_pte_pfn(address, phys >> PAGE_SHIFT, flags);
+		pte = pfn_pte(phys >> PAGE_SHIFT, flags);
 		break;
 	default:
-		set_pte_pfn_ma(address, phys >> PAGE_SHIFT, flags);
+		pte = pfn_pte_ma(phys >> PAGE_SHIFT, flags);
 		break;
 	}
+	if (HYPERVISOR_update_va_mapping(address, pte,
+					 UVMF_INVLPG|UVMF_ALL))
+		BUG();
 	nr_fixmaps++;
 }
 

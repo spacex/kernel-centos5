@@ -32,7 +32,7 @@ typedef struct xfs_ioend {
 	unsigned int		io_type;	/* delalloc / unwritten */
 	int			io_error;	/* I/O error code */
 	atomic_t		io_remaining;	/* hold count */
-	struct bhv_vnode	*io_vnode;	/* file being written to */
+	struct inode		*io_inode;	/* file being written to */
 	struct buffer_head	*io_buffer_head;/* buffer linked list head */
 	struct buffer_head	*io_buffer_tail;/* buffer linked list tail */
 	size_t			io_size;	/* size of the extent */
@@ -40,7 +40,7 @@ typedef struct xfs_ioend {
 	struct work_struct	io_work;	/* xfsdatad work queue */
 } xfs_ioend_t;
 
-extern const struct address_space_operations xfs_address_space_operations;
+extern const struct address_space_operations_ext xfs_address_space_operations;
 extern int xfs_get_blocks(struct inode *, sector_t, struct buffer_head *, int);
 
 #endif /* __XFS_AOPS_H__ */

@@ -67,10 +67,10 @@
 #define VNIC_FNIC_PORT_DOWN_IO_RETRIES_MAX  255
 
 #define VNIC_FNIC_LUNS_PER_TARGET_MIN       1
-#define VNIC_FNIC_LUNS_PER_TARGET_MAX       256
+#define VNIC_FNIC_LUNS_PER_TARGET_MAX       1024
 
 /* Device-specific region: scsi configuration */
-struct vnic_scsi_config {
+struct vnic_fc_config {
 	u64 node_wwn;
 	u64 port_wwn;
 	u32 flags;

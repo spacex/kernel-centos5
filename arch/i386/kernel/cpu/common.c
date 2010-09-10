@@ -19,6 +19,8 @@
 #include <mach_apic.h>
 #endif
 
+#include <asm/generic-hypervisor.h>
+
 #include "cpu.h"
 
 DEFINE_PER_CPU(struct Xgt_desc_struct, cpu_gdt_descr);
@@ -456,6 +458,7 @@ void __cpuinit identify_cpu(struct cpuinfo_x86 *c)
 		printk(" %08lx", c->x86_capability[i]);
 	printk("\n");
 
+	init_hypervisor(c);
 	/*
 	 * On SMP, boot_cpu_data holds the common feature set between
 	 * all CPUs; so make sure that we indicate which features are

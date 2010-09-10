@@ -39,11 +39,13 @@
 #include <linux/highmem.h>
 #include <linux/io.h>
 #include <linux/jiffies.h>
+#include <linux/smp_lock.h>
 #include <asm/pgtable.h>
 
 #include "ipath_kernel.h"
 #include "ipath_common.h"
 #include "ipath_user_sdma.h"
+#include "ipath_wc_pat.h"
 
 static int ipath_open(struct inode *, struct file *);
 static int ipath_close(struct inode *, struct file *);
@@ -222,8 +224,13 @@ static int ipath_get_base_info(struct file *fp,
 			(unsigned long long) kinfo->spi_subport_rcvhdr_base);
 	}
 
-	kinfo->spi_pioindex = (kinfo->spi_piobufbase - dd->ipath_piobufbase) /
-		dd->ipath_palign;
+	/*
+	 * All user buffers are 2KB buffers.  If we ever support
+	 * giving 4KB buffers to user processes, this will need some
+	 * work.
+	 */
+	kinfo->spi_pioindex = (kinfo->spi_piobufbase -
+		(dd->ipath_piobufbase & 0xffffffff)) / dd->ipath_palign;
 	kinfo->spi_pioalign = dd->ipath_palign;
 
 	kinfo->spi_qpair = IPATH_KD_QP;
@@ -903,7 +910,7 @@ static int ipath_create_user_egr(struct ipath_portdata *pd)
 	chunk = pd->port_rcvegrbuf_chunks;
 	egrperchunk = pd->port_rcvegrbufs_perchunk;
 	size = pd->port_rcvegrbuf_size;
-	pd->port_rcvegrbuf = kmalloc(chunk * sizeof(pd->port_rcvegrbuf[0]),
+	pd->port_rcvegrbuf = kzalloc(chunk * sizeof(pd->port_rcvegrbuf[0]),
 				     GFP_KERNEL);
 	if (!pd->port_rcvegrbuf) {
 		ret = -ENOMEM;
@@ -1076,6 +1083,9 @@ static int mmap_piobufs(struct vm_area_struct *vma,
 	 */
 	vma->vm_flags &= ~VM_MAYREAD;
 	vma->vm_flags |= VM_DONTCOPY | VM_DONTEXPAND;
+
+	if (ipath_wc_pat)
+		vma->vm_page_prot = pgprot_wc(vma->vm_page_prot);
 
 	ret = io_remap_pfn_range(vma, vma->vm_start, phys >> PAGE_SHIFT,
 				 vma->vm_end - vma->vm_start,
@@ -1747,8 +1757,8 @@ recheck:
 			ipath_dbg("No ports available (none initialized "
 				  "and ready)\n");
 		} else {
-			if (prefunit > 0) {
-				/* if started above 0, retry from 0 */
+			if (prefunit != -1) {
+				/* if had prefunit, retry from 0 */
 				ipath_cdbg(PROC,
 					   "%s[%u] no ports on prefunit "
 					   "%d, clear and re-check\n",
@@ -1823,6 +1833,7 @@ done:
 static int ipath_open(struct inode *in, struct file *fp)
 {
 	/* The real work is performed later in ipath_assign_port() */
+	cycle_kernel_lock();
 	fp->private_data = kzalloc(sizeof(struct ipath_filedata), GFP_KERNEL);
 	return fp->private_data ? 0 : -ENOMEM;
 }
@@ -1981,7 +1992,12 @@ static int ipath_do_user_init(struct file *fp,
 	 * explictly set the in-memory tail copy to 0 beforehand, so we
 	 * don't have to wait to be sure the DMA update has happened
 	 * (chip resets head/tail to 0 on transition to enable).
+	 * The mutex ensures that the read value of dd->ipath_rcvctrl
+         * after the atomic set_bit is not stale, and avoids a race
+         * hazard with 2 processes attempting to enable (distinct)
+	 * ports simultaneously.
 	 */
+	mutex_lock(&ipath_mutex);
 	set_bit(dd->ipath_r_portenable_shift + pd->port_port,
 		&dd->ipath_rcvctrl);
 	if (!(dd->ipath_flags & IPATH_NODMA_RTAIL)) {
@@ -1993,6 +2009,7 @@ static int ipath_do_user_init(struct file *fp,
 	}
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_rcvctrl,
 			 dd->ipath_rcvctrl);
+	mutex_unlock(&ipath_mutex);
 	/* Notify any waiting slaves */
 	if (pd->port_subport_cnt) {
 		clear_bit(IPATH_PORT_MASTER_UNINIT, &pd->port_flag);
@@ -2047,7 +2064,9 @@ static int ipath_close(struct inode *in, struct file *fp)
 	struct ipath_filedata *fd;
 	struct ipath_portdata *pd;
 	struct ipath_devdata *dd;
+	unsigned long flags;
 	unsigned port;
+	pid_t pid;
 
 	ipath_cdbg(VERBOSE, "close on dev %lx, private data %p\n",
 		   (long)in->i_rdev, fp->private_data);
@@ -2079,14 +2098,13 @@ static int ipath_close(struct inode *in, struct file *fp)
 		mutex_unlock(&ipath_mutex);
 		goto bail;
 	}
+	/* early; no interrupt users after this */
+	spin_lock_irqsave(&dd->ipath_uctxt_lock, flags);
 	port = pd->port_port;
-
-	if (pd->port_hdrqfull) {
-		ipath_cdbg(PROC, "%s[%u] had %u rcvhdrqfull errors "
-			   "during run\n", pd->port_comm, pd->port_pid,
-			   pd->port_hdrqfull);
-		pd->port_hdrqfull = 0;
-	}
+	dd->ipath_pd[port] = NULL;
+	pid = pd->port_pid;
+	pd->port_pid = 0;
+	spin_unlock_irqrestore(&dd->ipath_uctxt_lock, flags);
 
 	if (pd->port_rcvwait_to || pd->port_piowait_to
 	    || pd->port_rcvnowait || pd->port_pionowait) {
@@ -2143,12 +2161,10 @@ static int ipath_close(struct inode *in, struct file *fp)
 			unlock_expected_tids(pd);
 		ipath_stats.sps_ports--;
 		ipath_cdbg(PROC, "%s[%u] closed port %u:%u\n",
-			   pd->port_comm, pd->port_pid,
+			   pd->port_comm, pid,
 			   dd->ipath_unit, port);
 	}
 
-	pd->port_pid = 0;
-	dd->ipath_pd[pd->port_port] = NULL; /* before releasing mutex */
 	mutex_unlock(&ipath_mutex);
 	ipath_free_pddata(dd, pd); /* after releasing the mutex */
 

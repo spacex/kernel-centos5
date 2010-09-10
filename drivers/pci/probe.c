@@ -135,12 +135,9 @@ static inline unsigned int pci_calc_resource_flags(unsigned int flags)
 	return IORESOURCE_MEM;
 }
 
-/*
- * Find the extent of a PCI decode..
- */
-static u32 pci_size(u32 base, u32 maxbase, u32 mask)
+static u64 pci_size(u64 base, u64 maxbase, u64 mask)
 {
-	u32 size = mask & maxbase;	/* Find the significant bits */
+	u64 size = mask & maxbase;	/* Find the significant bits */
 	if (!size)
 		return 0;
 
@@ -156,91 +153,139 @@ static u32 pci_size(u32 base, u32 maxbase, u32 mask)
 	return size;
 }
 
+static inline enum pci_bar_type decode_bar(struct resource *res, u32 bar)
+{
+	if ((bar & PCI_BASE_ADDRESS_SPACE) == PCI_BASE_ADDRESS_SPACE_IO) {
+		res->flags = bar & ~PCI_BASE_ADDRESS_IO_MASK;
+		return pci_bar_io;
+	}
+
+	res->flags = bar & ~PCI_BASE_ADDRESS_MEM_MASK;
+
+	if (res->flags & PCI_BASE_ADDRESS_MEM_TYPE_64)
+		return pci_bar_mem64;
+	return pci_bar_mem32;
+}
+
+/**
+ * pci_read_base - read a PCI BAR
+ * @dev: the PCI device
+ * @type: type of the BAR
+ * @res: resource buffer to be filled in
+ * @pos: BAR position in the config space
+ *
+ * Returns 1 if the BAR is 64-bit, or 0 if 32-bit.
+ */
+int __pci_read_base(struct pci_dev *dev, enum pci_bar_type type,
+			struct resource *res, unsigned int pos)
+{
+	u32 l, sz, mask;
+
+	mask = type ? ~PCI_ROM_ADDRESS_ENABLE : ~0;
+
+	res->name = pci_name(dev);
+
+	pci_read_config_dword(dev, pos, &l);
+	pci_write_config_dword(dev, pos, mask);
+	pci_read_config_dword(dev, pos, &sz);
+	pci_write_config_dword(dev, pos, l);
+
+	/*
+	 * All bits set in sz means the device isn't working properly.
+	 * If the BAR isn't implemented, all bits must be 0.  If it's a
+	 * memory BAR or a ROM, bit 0 must be clear; if it's an io BAR, bit
+	 * 1 must be clear.
+	 */
+	if (!sz || sz == 0xffffffff)
+		goto fail;
+
+	/*
+	 * I don't know how l can have all bits set.  Copied from old code.
+	 * Maybe it fixes a bug on some ancient platform.
+	 */
+	if (l == 0xffffffff)
+		l = 0;
+
+	if (type == pci_bar_unknown) {
+		type = decode_bar(res, l);
+		res->flags |= pci_calc_resource_flags(l);
+		if (type == pci_bar_io) {
+			l &= PCI_BASE_ADDRESS_IO_MASK;
+			mask = PCI_BASE_ADDRESS_IO_MASK & 0xffff;
+		} else {
+			l &= PCI_BASE_ADDRESS_MEM_MASK;
+			mask = (u32)PCI_BASE_ADDRESS_MEM_MASK;
+		}
+	} else {
+		res->flags |= (l & IORESOURCE_ROM_ENABLE);
+		l &= PCI_ROM_ADDRESS_MASK;
+		mask = (u32)PCI_ROM_ADDRESS_MASK;
+	}
+
+	if (type == pci_bar_mem64) {
+		u64 l64 = l;
+		u64 sz64 = sz;
+		u64 mask64 = mask | (u64)~0 << 32;
+
+		pci_read_config_dword(dev, pos + 4, &l);
+		pci_write_config_dword(dev, pos + 4, ~0);
+		pci_read_config_dword(dev, pos + 4, &sz);
+		pci_write_config_dword(dev, pos + 4, l);
+
+		l64 |= ((u64)l << 32);
+		sz64 |= ((u64)sz << 32);
+
+		sz64 = pci_size(l64, sz64, mask64);
+
+		if (!sz64)
+			goto fail;
+
+		if ((sizeof(resource_size_t) < 8) && (sz64 > 0x100000000ULL)) {
+			dev_err(&dev->dev, "can't handle 64-bit BAR\n");
+			goto fail;
+		} else if ((sizeof(resource_size_t) < 8) && l) {
+			/* Address above 32-bit boundary; disable the BAR */
+			pci_write_config_dword(dev, pos, 0);
+			pci_write_config_dword(dev, pos + 4, 0);
+			res->start = 0;
+			res->end = sz64;
+		} else {
+			res->start = l64;
+			res->end = l64 + sz64;
+		}
+	} else {
+		sz = pci_size(l, sz, mask);
+
+		if (!sz)
+			goto fail;
+
+		res->start = l;
+		res->end = l + sz;
+	}
+
+ out:
+	return (type == pci_bar_mem64) ? 1 : 0;
+ fail:
+	res->flags = 0;
+	goto out;
+}
+
 static void pci_read_bases(struct pci_dev *dev, unsigned int howmany, int rom)
 {
-	unsigned int pos, reg, next;
-	u32 l, sz;
-	struct resource *res;
+	unsigned int pos, reg;
 
-	for(pos=0; pos<howmany; pos = next) {
-		next = pos+1;
-		res = &dev->resource[pos];
-		res->name = pci_name(dev);
+	for (pos = 0; pos < howmany; pos++) {
+		struct resource *res = &dev->resource[pos];
 		reg = PCI_BASE_ADDRESS_0 + (pos << 2);
-		pci_read_config_dword(dev, reg, &l);
-		pci_write_config_dword(dev, reg, ~0);
-		pci_read_config_dword(dev, reg, &sz);
-		pci_write_config_dword(dev, reg, l);
-		if (!sz || sz == 0xffffffff)
-			continue;
-		if (l == 0xffffffff)
-			l = 0;
-		if ((l & PCI_BASE_ADDRESS_SPACE) == PCI_BASE_ADDRESS_SPACE_MEMORY) {
-			sz = pci_size(l, sz, (u32)PCI_BASE_ADDRESS_MEM_MASK);
-			if (!sz)
-				continue;
-			res->start = l & PCI_BASE_ADDRESS_MEM_MASK;
-			res->flags |= l & ~PCI_BASE_ADDRESS_MEM_MASK;
-		} else {
-			sz = pci_size(l, sz, PCI_BASE_ADDRESS_IO_MASK & 0xffff);
-			if (!sz)
-				continue;
-			res->start = l & PCI_BASE_ADDRESS_IO_MASK;
-			res->flags |= l & ~PCI_BASE_ADDRESS_IO_MASK;
-		}
-		res->end = res->start + (unsigned long) sz;
-		res->flags |= pci_calc_resource_flags(l);
-		if ((l & (PCI_BASE_ADDRESS_SPACE | PCI_BASE_ADDRESS_MEM_TYPE_MASK))
-		    == (PCI_BASE_ADDRESS_SPACE_MEMORY | PCI_BASE_ADDRESS_MEM_TYPE_64)) {
-			u32 szhi, lhi;
-			pci_read_config_dword(dev, reg+4, &lhi);
-			pci_write_config_dword(dev, reg+4, ~0);
-			pci_read_config_dword(dev, reg+4, &szhi);
-			pci_write_config_dword(dev, reg+4, lhi);
-			szhi = pci_size(lhi, szhi, 0xffffffff);
-			next++;
-#if BITS_PER_LONG == 64
-			res->start |= ((unsigned long) lhi) << 32;
-			res->end = res->start + sz;
-			if (szhi) {
-				/* This BAR needs > 4GB?  Wow. */
-				res->end |= (unsigned long)szhi<<32;
-			}
-#else
-			if (szhi) {
-				printk(KERN_ERR "PCI: Unable to handle 64-bit BAR for device %s\n", pci_name(dev));
-				res->start = 0;
-				res->flags = 0;
-			} else if (lhi) {
-				/* 64-bit wide address, treat as disabled */
-				pci_write_config_dword(dev, reg, l & ~(u32)PCI_BASE_ADDRESS_MEM_MASK);
-				pci_write_config_dword(dev, reg+4, 0);
-				res->start = 0;
-				res->end = sz;
-			}
-#endif
-		}
+		pos += __pci_read_base(dev, pci_bar_unknown, res, reg);
 	}
+
 	if (rom) {
+		struct resource *res = &dev->resource[PCI_ROM_RESOURCE];
 		dev->rom_base_reg = rom;
-		res = &dev->resource[PCI_ROM_RESOURCE];
-		res->name = pci_name(dev);
-		pci_read_config_dword(dev, rom, &l);
-		pci_write_config_dword(dev, rom, ~PCI_ROM_ADDRESS_ENABLE);
-		pci_read_config_dword(dev, rom, &sz);
-		pci_write_config_dword(dev, rom, l);
-		if (l == 0xffffffff)
-			l = 0;
-		if (sz && sz != 0xffffffff) {
-			sz = pci_size(l, sz, (u32)PCI_ROM_ADDRESS_MASK);
-			if (sz) {
-				res->flags = (l & IORESOURCE_ROM_ENABLE) |
-				  IORESOURCE_MEM | IORESOURCE_PREFETCH |
-				  IORESOURCE_READONLY | IORESOURCE_CACHEABLE;
-				res->start = l & PCI_ROM_ADDRESS_MASK;
-				res->end = res->start + (unsigned long) sz;
-			}
-		}
+		res->flags = IORESOURCE_MEM | IORESOURCE_PREFETCH |
+				IORESOURCE_READONLY | IORESOURCE_CACHEABLE;
+		__pci_read_base(dev, pci_bar_mem32, res, rom);
 	}
 }
 
@@ -359,12 +404,10 @@ pci_alloc_child_bus(struct pci_bus *parent, struct pci_dev *bridge, int busnr)
 	if (!child)
 		return NULL;
 
-	child->self = bridge;
 	child->parent = parent;
 	child->ops = parent->ops;
 	child->sysdata = parent->sysdata;
 	child->bus_flags = parent->bus_flags;
-	child->bridge = get_device(&bridge->dev);
 
 	child->class_dev.class = &pcibus_class;
 	sprintf(child->class_dev.class_id, "%04x:%02x", pci_domain_nr(child), busnr);
@@ -378,6 +421,12 @@ pci_alloc_child_bus(struct pci_bus *parent, struct pci_dev *bridge, int busnr)
 	child->number = child->secondary = busnr;
 	child->primary = parent->secondary;
 	child->subordinate = 0xff;
+
+	if (!bridge)
+		return child;
+
+	child->self = bridge;
+	child->bridge = get_device(&bridge->dev);
 
 	/* Set up default resource pointers and names.. */
 	for (i = 0; i < 4; i++) {
@@ -639,6 +688,19 @@ static void pci_read_irq(struct pci_dev *dev)
 	dev->irq = irq;
 }
 
+static void set_pcie_port_type(struct pci_dev *pdev)
+{
+	int pos;
+	u16 reg16;
+
+	pos = pci_find_capability(pdev, PCI_CAP_ID_EXP);
+	if (!pos)
+		return;
+	pdev->is_pcie = 1;
+	pci_read_config_word(pdev, pos + PCI_EXP_FLAGS, &reg16);
+	pdev->pcie_type = (reg16 & PCI_EXP_FLAGS_TYPE) >> 4;
+}
+
 /**
  * pci_setup_device - fill in class and map information of a device
  * @dev: the device structure to fill
@@ -646,12 +708,29 @@ static void pci_read_irq(struct pci_dev *dev)
  * Initialize the device structure with information about the device's 
  * vendor,class,memory and IO-space addresses,IRQ lines etc.
  * Called at initialisation of the PCI subsystem and by CardBus services.
- * Returns 0 on success and -1 if unknown type of device (not normal, bridge
- * or CardBus).
+ * Returns 0 on success and negative if unknown type of device (not normal,
+ * bridge or CardBus).
  */
-static int pci_setup_device(struct pci_dev * dev)
+int pci_setup_device(struct pci_dev * dev)
 {
 	u32 class;
+	u8 hdr_type;
+
+	if (pci_read_config_byte(dev, PCI_HEADER_TYPE, &hdr_type))
+		return -EIO;
+
+	dev->sysdata = dev->bus->sysdata;
+	dev->dev.parent = dev->bus->bridge;
+	dev->dev.bus = &pci_bus_type;
+	dev->hdr_type = hdr_type & 0x7f;
+	dev->multifunction = !!(hdr_type & 0x80);
+	dev->cfg_size = pci_cfg_space_size(dev);
+	dev->error_state = pci_channel_io_normal;
+	set_pcie_port_type(dev);
+
+	/* Assume 32-bit PCI; let 64-bit PCI cards (which are far rarer)
+	   set this higher, assuming the system even supports it.  */
+	dev->dma_mask = 0xffffffff;
 
 	sprintf(pci_name(dev), "%04x:%02x:%02x.%d", pci_domain_nr(dev->bus),
 		dev->bus->number, PCI_SLOT(dev->devfn), PCI_FUNC(dev->devfn));
@@ -705,7 +784,7 @@ static int pci_setup_device(struct pci_dev * dev)
 	default:				    /* unknown header */
 		printk(KERN_ERR "PCI: device %s has unknown header type %02x, ignoring.\n",
 			pci_name(dev), dev->hdr_type);
-		return -1;
+		return -EIO;
 
 	bad:
 		printk(KERN_ERR "PCI: %s: class %x doesn't match header type %02x. Ignoring class.\n",
@@ -729,6 +808,7 @@ static void pci_release_dev(struct device *dev)
 	struct pci_dev *pci_dev;
 
 	pci_dev = to_pci_dev(dev);
+	pci_iov_release(pci_dev);
 	kfree(pci_dev);
 }
 
@@ -784,7 +864,6 @@ pci_scan_device(struct pci_bus *bus, int devfn)
 {
 	struct pci_dev *dev;
 	u32 l;
-	u8 hdr_type;
 	int delay = 1;
 
 	if (pci_bus_read_config_dword(bus, devfn, PCI_VENDOR_ID, &l))
@@ -811,29 +890,16 @@ pci_scan_device(struct pci_bus *bus, int devfn)
 		}
 	}
 
-	if (pci_bus_read_config_byte(bus, devfn, PCI_HEADER_TYPE, &hdr_type))
-		return NULL;
-
 	dev = kzalloc(sizeof(struct pci_dev), GFP_KERNEL);
 	if (!dev)
 		return NULL;
 
 	dev->bus = bus;
-	dev->sysdata = bus->sysdata;
-	dev->dev.parent = bus->bridge;
-	dev->dev.bus = &pci_bus_type;
 	dev->devfn = devfn;
-	dev->hdr_type = hdr_type & 0x7f;
-	dev->multifunction = !!(hdr_type & 0x80);
 	dev->vendor = l & 0xffff;
 	dev->device = (l >> 16) & 0xffff;
-	dev->cfg_size = pci_cfg_space_size(dev);
-	dev->error_state = pci_channel_io_normal;
 
-	/* Assume 32-bit PCI; let 64-bit PCI cards (which are far rarer)
-	   set this higher, assuming the system even supports it.  */
-	dev->dma_mask = 0xffffffff;
-	if (pci_setup_device(dev) < 0) {
+	if (pci_setup_device(dev)) {
 		kfree(dev);
 		return NULL;
 	}
@@ -852,6 +918,12 @@ void __devinit pci_device_add(struct pci_dev *dev, struct pci_bus *bus)
 
 	/* Fix up broken headers */
 	pci_fixup_device(pci_fixup_header, dev);
+
+	/* Alternative Routing-ID Forwarding */
+	pci_enable_ari(dev);
+
+	/* Single Root I/O Virtualization */
+	pci_iov_init(dev);
 
 	/*
 	 * Add the device to our list of discovered devices
@@ -930,6 +1002,9 @@ unsigned int __devinit pci_scan_child_bus(struct pci_bus *bus)
 	/* Go find them, Rover! */
 	for (devfn = 0; devfn < 0x100; devfn += 8)
 		pci_scan_slot(bus, devfn);
+
+	/* Reserve buses for SR-IOV capability. */
+	max += pci_iov_bus_range(bus);
 
 	/*
 	 * After performing arch-dependent fixup of the bus, look behind

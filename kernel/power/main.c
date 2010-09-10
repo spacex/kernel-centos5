@@ -144,11 +144,15 @@ static void suspend_finish(suspend_state_t state)
 
 
 static const char * const pm_states[PM_SUSPEND_MAX] = {
+/* Xen cannot resume properly, so it should not report
+ * that it can suspend at all */
+#ifndef CONFIG_XEN
 	[PM_SUSPEND_STANDBY]	= "standby",
 	[PM_SUSPEND_MEM]	= "mem",
 #ifdef CONFIG_SOFTWARE_SUSPEND
 	[PM_SUSPEND_DISK]	= "disk",
 #endif
+#endif  /* CONFIG_XEN */
 };
 
 static inline int valid_state(suspend_state_t state)

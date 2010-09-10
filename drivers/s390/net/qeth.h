@@ -22,6 +22,7 @@
 #include <asm/qdio.h>
 #include <asm/ccwdev.h>
 #include <asm/ccwgroup.h>
+#include <asm/sysinfo.h>
 
 #include "qeth_mpc.h"
 
@@ -840,6 +841,7 @@ struct qeth_card {
 				unsigned char *);
 	struct qeth_osn_info osn_info;
 	atomic_t force_alloc_skb;
+	struct service_level qeth_service_level;
 };
 
 struct qeth_card_list_struct {

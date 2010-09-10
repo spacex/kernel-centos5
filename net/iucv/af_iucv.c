@@ -489,12 +489,30 @@ static int iucv_sock_connect(struct socket *sock, struct sockaddr *addr,
 	/* Create path. */
 	iucv->path = iucv_path_alloc(IUCV_QUEUELEN_DEFAULT,
 				     IPRMDATA, GFP_KERNEL);
+	if (!iucv->path) {
+		err = -ENOMEM;
+		goto done;
+	}
 	err = iucv_path_connect(iucv->path, &af_iucv_handler,
 				sa->siucv_user_id, NULL, user_data, sk);
 	if (err) {
 		iucv_path_free(iucv->path);
 		iucv->path = NULL;
-		err = -ECONNREFUSED;
+		switch (err) {
+		case 0x0b:	/* Target communicator is not logged on */
+			err = -ENETUNREACH;
+			break;
+		case 0x0d:	/* Max connections for this guest exceeded */
+		case 0x0e:	/* Max connections for target guest exceeded */
+			err = -EAGAIN;
+			break;
+		case 0x0f:	/* Missing IUCV authorization */
+			err = -EACCES;
+			break;
+		default:
+			err = -ECONNREFUSED;
+			break;
+		}
 		goto done;
 	}
 
@@ -507,6 +525,13 @@ static int iucv_sock_connect(struct socket *sock, struct sockaddr *addr,
 		release_sock(sk);
 		return -ECONNREFUSED;
 	}
+
+	if (err) {
+		iucv_path_sever(iucv->path, NULL);
+		iucv_path_free(iucv->path);
+		iucv->path = NULL;
+	}
+
 done:
 	release_sock(sk);
 	return err;
@@ -780,6 +805,8 @@ static int iucv_sock_recvmsg(struct kiocb *iocb, struct socket *sock,
 
 	target = sock_rcvlowat(sk, flags & MSG_WAITALL, len);
 
+	/* receive/dequeue next skb:
+	 * the function understands MSG_PEEK and, thus, does not dequeue skb */
 	skb = skb_recv_datagram(sk, flags, noblock, &err);
 	if (!skb) {
 		if (sk->sk_shutdown & RCV_SHUTDOWN)
@@ -827,9 +854,7 @@ static int iucv_sock_recvmsg(struct kiocb *iocb, struct socket *sock,
 				iucv_process_message_q(sk);
 			spin_unlock_bh(&iucv->message_q.lock);
 		}
-
-	} else
-		skb_queue_head(&sk->sk_receive_queue, skb);
+	}
 
 done:
 	return err ? : copied;
@@ -1011,12 +1036,14 @@ static int iucv_callback_connreq(struct iucv_path *path,
 	ASCEBC(user_data, sizeof(user_data));
 	if (sk->sk_state != IUCV_LISTEN) {
 		err = iucv_path_sever(path, user_data);
+		iucv_path_free(path);
 		goto fail;
 	}
 
 	/* Check for backlog size */
 	if (sk_acceptq_is_full(sk)) {
 		err = iucv_path_sever(path, user_data);
+		iucv_path_free(path);
 		goto fail;
 	}
 
@@ -1024,6 +1051,7 @@ static int iucv_callback_connreq(struct iucv_path *path,
 	nsk = iucv_sock_alloc(NULL, SOCK_STREAM, GFP_ATOMIC);
 	if (!nsk) {
 		err = iucv_path_sever(path, user_data);
+		iucv_path_free(path);
 		goto fail;
 	}
 
@@ -1047,6 +1075,8 @@ static int iucv_callback_connreq(struct iucv_path *path,
 	err = iucv_path_accept(path, &af_iucv_handler, nuser_data, nsk);
 	if (err) {
 		err = iucv_path_sever(path, user_data);
+		iucv_path_free(path);
+		iucv_sock_kill(nsk);
 		goto fail;
 	}
 
@@ -1080,6 +1110,8 @@ static void iucv_callback_rx(struct iucv_path *path, struct iucv_message *msg)
 	if (sk->sk_shutdown & RCV_SHUTDOWN)
 		return;
 
+	spin_lock(&iucv->message_q.lock);
+
 	if (!list_empty(&iucv->message_q.list) ||
 	    !skb_queue_empty(&iucv->backlog_skb_q))
 		goto save_message;
@@ -1093,19 +1125,19 @@ static void iucv_callback_rx(struct iucv_path *path, struct iucv_message *msg)
 	if (!skb)
 		goto save_message;
 
-	spin_lock(&iucv->message_q.lock);
 	iucv_process_message(sk, skb, path, msg);
-	spin_unlock(&iucv->message_q.lock);
-
-	return;
+	goto out_unlock;
 
 save_message:
 	save_msg = kzalloc(sizeof(struct sock_msg_q), GFP_ATOMIC | GFP_DMA);
+	if (!save_msg)
+		return;
 	save_msg->path = path;
 	save_msg->msg = *msg;
 
-	spin_lock(&iucv->message_q.lock);
 	list_add_tail(&save_msg->list, &iucv->message_q.list);
+
+out_unlock:
 	spin_unlock(&iucv->message_q.lock);
 }
 
@@ -1113,24 +1145,31 @@ static void iucv_callback_txdone(struct iucv_path *path,
 				 struct iucv_message *msg)
 {
 	struct sock *sk = path->private;
-	struct sk_buff *this;
+	struct sk_buff *this = NULL;
 	struct sk_buff_head *list = &iucv_sk(sk)->send_skb_q;
 	struct sk_buff *list_skb = list->next;
 	unsigned long flags;
 
-	if (list_skb) {
+	if (!skb_queue_empty(list)) {
 		spin_lock_irqsave(&list->lock, flags);
 
-		do {
-			this = list_skb;
+		while (list_skb != (struct sk_buff *)list) {
+			if (!memcmp(&msg->tag, list_skb->cb, 4)) {
+				this = list_skb;
+				break;
+			}
 			list_skb = list_skb->next;
-		} while (memcmp(&msg->tag, this->cb, 4) && list_skb);
+		}
+		if (this)
+			__skb_unlink(this, list);
 
 		spin_unlock_irqrestore(&list->lock, flags);
 
-		skb_unlink(this, &iucv_sk(sk)->send_skb_q);
-		kfree_skb(this);
+		if (this)
+			kfree_skb(this);
 	}
+	if (!this)
+		printk(KERN_ERR "AF_IUCV msg tag %u not found\n", msg->tag);
 
 	if (sk->sk_state == IUCV_CLOSING) {
 		if (skb_queue_empty(&iucv_sk(sk)->send_skb_q)) {

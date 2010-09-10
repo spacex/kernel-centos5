@@ -43,17 +43,19 @@ extern void pci_remove_legacy_files(struct pci_bus *bus);
 extern struct rw_semaphore pci_bus_sem;
 extern unsigned int pci_pm_d3_delay;
 
-#ifdef CONFIG_PCI_MSI
+#if defined(CONFIG_PCI_MSI) && defined(CONFIG_PM)
 void disable_msi_mode(struct pci_dev *dev, int pos, int type);
 void pci_no_msi(void);
 int pci_save_msi_state(struct pci_dev *dev);
 int pci_save_msix_state(struct pci_dev *dev);
+void pci_restore_msi_state(struct pci_dev *dev);
 void pci_restore_msix_state(struct pci_dev *dev);
 #else
 static inline void disable_msi_mode(struct pci_dev *dev, int pos, int type) { }
 static inline void pci_no_msi(void) { }
 static inline int pci_save_msi_state(struct pci_dev *dev) { return 0; }
 static inline int pci_save_msix_state(struct pci_dev *dev) { return 0; }
+static inline void pci_restore_msi_state(struct pci_dev *dev) {}
 static inline void pci_restore_msix_state(struct pci_dev *dev) {}
 #endif
 
@@ -90,3 +92,75 @@ pci_match_one_device(const struct pci_device_id *id, const struct pci_dev *dev)
 	return NULL;
 }
 
+enum pci_bar_type {
+	pci_bar_unknown,	/* Standard PCI BAR probe */
+	pci_bar_io,		/* An io port BAR */
+	pci_bar_mem32,		/* A 32-bit memory BAR */
+	pci_bar_mem64,		/* A 64-bit memory BAR */
+};
+
+extern int pci_setup_device(struct pci_dev *dev);
+extern int __pci_read_base(struct pci_dev *dev, enum pci_bar_type type,
+				struct resource *res, unsigned int reg);
+extern int pci_resource_bar(struct pci_dev *dev, int resno,
+			    enum pci_bar_type *type);
+extern void pci_enable_ari(struct pci_dev *dev);
+/**
+ * pci_ari_enabled - query ARI forwarding status
+ * @bus: the PCI bus
+ *
+ * Returns 1 if ARI forwarding is enabled, or 0 if not enabled;
+ */
+static inline int pci_ari_enabled(struct pci_bus *bus)
+{
+	return bus->self && bus->self->ari_enabled;
+}
+
+/* Single Root I/O Virtualization */
+struct pci_sriov {
+	int pos;		/* capability position */
+	u32 cap;		/* SR-IOV Capabilities */
+	u16 ctrl;		/* SR-IOV Control */
+	u16 total;		/* total VFs associated with the PF */
+	u16 initial;		/* initial VFs associated with the PF */
+	u16 nr_virtfn;		/* number of VFs available */
+	u16 offset;		/* first VF Routing ID offset */
+	u16 stride;		/* following VF stride */
+	u32 pgsz;		/* page size for BAR alignment */
+	u8 link;		/* Function Dependency Link */
+	struct pci_dev *dev;	/* lowest numbered PF */
+	struct pci_dev *self;	/* this PF */
+	struct mutex lock;	/* lock for VF bus */
+	struct resource res[PCI_SRIOV_NUM_BARS]; /* VF BAR resource */
+};
+
+#ifdef CONFIG_PCI_IOV
+extern int pci_iov_init(struct pci_dev *dev);
+extern void pci_iov_release(struct pci_dev *dev);
+extern int pci_iov_resource_bar(struct pci_dev *dev, int resno,
+				enum pci_bar_type *type);
+extern void pci_restore_iov_state(struct pci_dev *dev);
+extern int pci_iov_bus_range(struct pci_bus *bus);
+#else
+static inline int pci_iov_init(struct pci_dev *dev)
+{
+	return -ENODEV;
+}
+static inline void pci_iov_release(struct pci_dev *dev)
+
+{
+}
+static inline int pci_iov_resource_bar(struct pci_dev *dev, int resno,
+				       enum pci_bar_type *type)
+{
+	return 0;
+}
+static inline void pci_restore_iov_state(struct pci_dev *dev)
+{
+}
+static inline int pci_iov_bus_range(struct pci_bus *bus)
+{
+	return 0;
+}
+#endif /* CONFIG_PCI_IOV */
+struct pci_dev *pci_find_upstream_pcie_bridge(struct pci_dev *pdev);

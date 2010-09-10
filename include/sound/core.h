@@ -363,11 +363,18 @@ void snd_verbose_printd(const char *file, int line, const char *format, ...)
 	dump_stack();				\
 } while (0)
 
+#define snd_BUG_ON(cond)        WARN((cond), "BUG? (%s)\n", __stringify(cond))
+
 #else /* !CONFIG_SND_DEBUG */
 
 #define snd_printd(fmt, args...)	/* nothing */
 #define snd_assert(expr, args...)	(void)(expr)
 #define snd_BUG()			/* nothing */
+static inline int __snd_bug_on(int cond)
+{
+	return 0;
+}
+#define snd_BUG_ON(cond)        __snd_bug_on(0 && (cond))  /* always false */        
 
 #endif /* CONFIG_SND_DEBUG */
 
@@ -400,21 +407,33 @@ void snd_verbose_printd(const char *file, int line, const char *format, ...)
 struct snd_pci_quirk {
 	unsigned short subvendor;	/* PCI subvendor ID */
 	unsigned short subdevice;	/* PCI subdevice ID */
+	unsigned short subdevice_mask;	/* bitmask to match */
 	int value;			/* value */
 #ifdef CONFIG_SND_DEBUG_DETECT
 	const char *name;		/* name of the device (optional) */
 #endif
 };
 
-#define _SND_PCI_QUIRK_ID(vend,dev) \
-	.subvendor = (vend), .subdevice = (dev)
+#define _SND_PCI_QUIRK_ID_MASK(vend, mask, dev) \
+	.subvendor = (vend), .subdevice = (dev), .subdevice_mask = (mask)
+#define _SND_PCI_QUIRK_ID(vend, dev) \
+	_SND_PCI_QUIRK_ID_MASK(vend, 0xffff, dev)
 #define SND_PCI_QUIRK_ID(vend,dev) {_SND_PCI_QUIRK_ID(vend, dev)}
 #ifdef CONFIG_SND_DEBUG_DETECT
 #define SND_PCI_QUIRK(vend,dev,xname,val) \
 	{_SND_PCI_QUIRK_ID(vend, dev), .value = (val), .name = (xname)}
+#define SND_PCI_QUIRK_VENDOR(vend, xname, val)                  \
+        {_SND_PCI_QUIRK_ID_MASK(vend, 0, 0), .value = (val), .name = (xname)}
+#define SND_PCI_QUIRK_MASK(vend, mask, dev, xname, val)                 \
+	{_SND_PCI_QUIRK_ID_MASK(vend, mask, dev),                       \
+			.value = (val), .name = (xname)}
 #else
 #define SND_PCI_QUIRK(vend,dev,xname,val) \
 	{_SND_PCI_QUIRK_ID(vend, dev), .value = (val)}
+#define SND_PCI_QUIRK_MASK(vend, mask, dev, xname, val)                 \
+        {_SND_PCI_QUIRK_ID_MASK(vend, mask, dev), .value = (val)}
+#define SND_PCI_QUIRK_VENDOR(vend, xname, val)                  \
+	{_SND_PCI_QUIRK_ID_MASK(vend, 0, 0), .value = (val)}
 #endif
 
 const struct snd_pci_quirk *

@@ -24,6 +24,14 @@
  * also handles RSCN events and re-discovery if necessary.
  */
 
+/*
+ * DISC LOCKING
+ *
+ * The disc mutex is can be locked when acquiring rport locks, but may not
+ * be held when acquiring the lport lock. Refer to fc_lport.c for more
+ * details.
+ */
+
 #include <linux/timer.h>
 #include <linux/err.h>
 #include <asm/unaligned.h>
@@ -37,65 +45,66 @@
 
 #define	FC_DISC_DELAY		3
 
-static int fc_disc_debug;
-
-#define FC_DEBUG_DISC(fmt...)			\
-	do {					\
-		if (fc_disc_debug)		\
-			FC_DBG(fmt);		\
-	} while (0)
-
-struct fc_disc {
-	unsigned char		retry_count;
-	unsigned char		delay;
-	unsigned char		pending;
-	unsigned char		requested;
-	unsigned short		seq_count;
-	unsigned char		buf_len;
-	enum fc_disc_event	event;
-
-	void (*disc_callback)(struct fc_lport *,
-			      enum fc_disc_event);
-
-	struct list_head	 rports;
-	struct fc_lport		*lport;
-	struct mutex		disc_mutex;
-	struct fc_gpn_ft_resp	partial_buf;	/* partial name buffer */
-	struct work_struct	disc_work;
-};
-
 static void fc_disc_gpn_ft_req(struct fc_disc *);
 static void fc_disc_gpn_ft_resp(struct fc_seq *, struct fc_frame *, void *);
 static int fc_disc_new_target(struct fc_disc *, struct fc_rport *,
 			      struct fc_rport_identifiers *);
 static void fc_disc_del_target(struct fc_disc *, struct fc_rport *);
 static void fc_disc_done(struct fc_disc *);
-static void fc_disc_timeout(void *);
+static void fc_disc_timeout(struct work_struct *);
 static void fc_disc_single(struct fc_disc *, struct fc_disc_port *);
 static void fc_disc_restart(struct fc_disc *);
 
 /**
- * fc_disc_lookup_rport - lookup a remote port by port_id
+ * fc_disc_lookup_all_rports() - lookup both real and rogue ports by id
+ * @lport: Fibre Channel host port instance
+ * @port_id: remote port port_id to match
+ */
+struct fc_rport *fc_disc_lookup_all_rports(const struct fc_lport *lport,
+					   u32 port_id)
+{
+	const struct fc_disc *disc = &lport->disc;
+	struct fc_rport *rport, *found = NULL;
+	struct fc_rport_libfc_priv *rdata;
+
+	list_for_each_entry(rdata, &disc->rports, peers) {
+		rport = PRIV_TO_RPORT(rdata);
+		if (rport->port_id == port_id) {
+			found = rport;
+			goto out;
+		}
+	}
+
+	list_for_each_entry(rdata, &disc->rogue_rports, peers) {
+		rport = PRIV_TO_RPORT(rdata);
+		if (rport->port_id == port_id) {
+			found = rport;
+			goto out;
+		}
+	}
+
+out:
+	return found;
+}
+
+/**
+ * fc_disc_lookup_rport() - lookup a remote port by port_id
  * @lport: Fibre Channel host port instance
  * @port_id: remote port port_id to match
  */
 struct fc_rport *fc_disc_lookup_rport(const struct fc_lport *lport,
 				      u32 port_id)
 {
-	struct fc_disc *disc = lport->disc;
+	const struct fc_disc *disc = &lport->disc;
 	struct fc_rport *rport, *found = NULL;
 	struct fc_rport_libfc_priv *rdata;
 	int disc_found = 0;
-
-	if (!disc)
-		return NULL;
 
 	list_for_each_entry(rdata, &disc->rports, peers) {
 		rport = PRIV_TO_RPORT(rdata);
 		if (rport->port_id == port_id) {
 			disc_found = 1;
 			found = rport;
-			get_device(&found->dev);
 			break;
 		}
 	}
@@ -107,28 +116,7 @@ struct fc_rport *fc_disc_lookup_rport(const struct fc_lport *lport,
 }
 
 /**
- * fc_disc_alloc - Allocate a discovery work object
- * @lport: The FC lport associated with the discovery job
- */
-static inline struct fc_disc *fc_disc_alloc(struct fc_lport *lport)
-{
-	struct fc_disc *disc;
-
-	disc = kzalloc(sizeof(struct fc_disc), GFP_KERNEL);
-	INIT_WORK(&disc->disc_work, fc_disc_timeout, disc);
-	mutex_init(&disc->disc_mutex);
-	INIT_LIST_HEAD(&disc->rports);
-
-	disc->lport = lport;
-	lport->disc = disc;
-	disc->delay = FC_DISC_DELAY;
-	disc->event = DISC_EV_NONE;
-
-	return disc;
-}
-
-/**
- * fc_disc_stop_rports - delete all the remote ports associated with the lport
+ * fc_disc_stop_rports() - delete all the remote ports associated with the lport
  * @disc: The discovery job to stop rports on
  *
  * Locking Note: This function expects that the lport mutex is locked before
@@ -149,11 +137,16 @@ void fc_disc_stop_rports(struct fc_disc *disc)
 		lport->tt.rport_logoff(rport);
 	}
 
+	list_for_each_entry_safe(rdata, next, &disc->rogue_rports, peers) {
+		rport = PRIV_TO_RPORT(rdata);
+		lport->tt.rport_logoff(rport);
+	}
+
 	mutex_unlock(&disc->disc_mutex);
 }
 
 /**
- * fc_disc_rport_event - Event handler for rport events
+ * fc_disc_rport_callback() - Event handler for rport events
  * @lport: The lport which is receiving the event
  * @rport: The rport which the event has occured on
  * @event: The event that occured
@@ -161,33 +154,42 @@ void fc_disc_stop_rports(struct fc_disc *disc)
  * Locking Note: The rport lock should not be held when calling
  *		 this function.
  */
-static void fc_disc_rport_event(struct fc_lport *lport,
-				struct fc_rport *rport,
-				enum fc_lport_event event)
+static void fc_disc_rport_callback(struct fc_lport *lport,
+				   struct fc_rport *rport,
+				   enum fc_rport_event event)
 {
 	struct fc_rport_libfc_priv *rdata = rport->dd_data;
-	struct fc_disc *disc = lport->disc;
-	int found = 0;
+	struct fc_disc *disc = &lport->disc;
 
-	FC_DEBUG_DISC("Received a %d event for port (%6x)\n", event,
-		      rport->port_id);
+	FC_DISC_DBG(disc, "Received a %d event for port (%6x)\n", event,
+		    rport->port_id);
 
-	if (event == RPORT_EV_CREATED) {
+	switch (event) {
+	case RPORT_EV_CREATED:
 		if (disc) {
-			found = 1;
 			mutex_lock(&disc->disc_mutex);
 			list_add_tail(&rdata->peers, &disc->rports);
 			mutex_unlock(&disc->disc_mutex);
 		}
+		break;
+	case RPORT_EV_LOGO:
+	case RPORT_EV_FAILED:
+	case RPORT_EV_STOP:
+		mutex_lock(&disc->disc_mutex);
+		mutex_lock(&rdata->rp_mutex);
+		if (rdata->trans_state == FC_PORTSTATE_ROGUE)
+			list_del(&rdata->peers);
+		mutex_unlock(&rdata->rp_mutex);
+		mutex_unlock(&disc->disc_mutex);
+		break;
+	default:
+		break;
 	}
 
-	if (!found)
-		FC_DEBUG_DISC("The rport (%6x) is not maintained "
-			      "by the discovery layer\n", rport->port_id);
 }
 
 /**
- * fc_disc_recv_rscn_req - Handle Registered State Change Notification (RSCN)
+ * fc_disc_recv_rscn_req() - Handle Registered State Change Notification (RSCN)
  * @sp: Current sequence of the RSCN exchange
  * @fp: RSCN Frame
  * @lport: Fibre Channel host port instance
@@ -213,20 +215,29 @@ static void fc_disc_recv_rscn_req(struct fc_seq *sp, struct fc_frame *fp,
 
 	lport = disc->lport;
 
-	FC_DEBUG_DISC("Received an RSCN event on port (%6x)\n",
-		      fc_host_port_id(lport->host));
+	FC_DISC_DBG(disc, "Received an RSCN event\n");
 
+	/* make sure the frame contains an RSCN message */
 	rp = fc_frame_payload_get(fp, sizeof(*rp));
-
-	if (!rp || rp->rscn_page_len != sizeof(*pp))
+	if (!rp)
 		goto reject;
-
+	/* make sure the page length is as expected (4 bytes) */
+	if (rp->rscn_page_len != sizeof(*pp))
+		goto reject;
+	/* get the RSCN payload length */
 	len = ntohs(rp->rscn_plen);
 	if (len < sizeof(*rp))
 		goto reject;
+	/* make sure the frame contains the expected payload */
+	rp = fc_frame_payload_get(fp, len);
+	if (!rp)
+		goto reject;
+	/* payload must be a multiple of the RSCN page size */
 	len -= sizeof(*rp);
+	if (len % sizeof(*pp))
+		goto reject;
 
-	for (pp = (void *)(rp + 1); len; len -= sizeof(*pp), pp++) {
+	for (pp = (void *)(rp + 1); len > 0; len -= sizeof(*pp), pp++) {
 		ev_qual = pp->rscn_page_flags >> ELS_RSCN_EV_QUAL_BIT;
 		ev_qual &= ELS_RSCN_EV_QUAL_MASK;
 		fmt = pp->rscn_page_flags >> ELS_RSCN_ADDR_FMT_BIT;
@@ -237,8 +248,8 @@ static void fc_disc_recv_rscn_req(struct fc_seq *sp, struct fc_frame *fp,
 		 */
 		switch (fmt) {
 		case ELS_ADDR_FMT_PORT:
-			FC_DEBUG_DISC("Port address format for port (%6x)\n",
-				      ntoh24(pp->rscn_fid));
+			FC_DISC_DBG(disc, "Port address format for port "
+				    "(%6x)\n", ntoh24(pp->rscn_fid));
 			dp = kzalloc(sizeof(*dp), GFP_KERNEL);
 			if (!dp) {
 				redisc = 1;
@@ -255,25 +266,27 @@ static void fc_disc_recv_rscn_req(struct fc_seq *sp, struct fc_frame *fp,
 		case ELS_ADDR_FMT_DOM:
 		case ELS_ADDR_FMT_FAB:
 		default:
-			FC_DEBUG_DISC("Address format is (%d)\n", fmt);
+			FC_DISC_DBG(disc, "Address format is (%d)\n", fmt);
 			redisc = 1;
 			break;
 		}
 	}
 	lport->tt.seq_els_rsp_send(sp, ELS_LS_ACC, NULL);
 	if (redisc) {
-		FC_DEBUG_DISC("RSCN received: rediscovering\n");
+		FC_DISC_DBG(disc, "RSCN received: rediscovering\n");
 		fc_disc_restart(disc);
 	} else {
-		FC_DEBUG_DISC("RSCN received: not rediscovering. "
-			      "redisc %d state %d in_prog %d\n",
-			      redisc, lport->state, disc->pending);
+		FC_DISC_DBG(disc, "RSCN received: not rediscovering. "
+			    "redisc %d state %d in_prog %d\n",
+			    redisc, lport->state, disc->pending);
 		list_for_each_entry_safe(dp, next, &disc_ports, peers) {
 			list_del(&dp->peers);
-			rport = lport->tt.rport_lookup(lport, dp->ids.port_id);
+			rport = fc_disc_lookup_all_rports(lport,
+							  dp->ids.port_id);
 			if (rport) {
-				rdata = RPORT_TO_PRIV(rport);
-				list_del(&rdata->peers);
+				rdata = rport->dd_data;
+				if (rdata->trans_state != FC_PORTSTATE_ROGUE)
+					list_del(&rdata->peers);
 				lport->tt.rport_logoff(rport);
 			}
 			fc_disc_single(disc, dp);
@@ -282,6 +295,7 @@ static void fc_disc_recv_rscn_req(struct fc_seq *sp, struct fc_frame *fp,
 	fc_frame_free(fp);
 	return;
 reject:
+	FC_DISC_DBG(disc, "Received a bad RSCN frame\n");
 	rjt_data.fp = NULL;
 	rjt_data.reason = ELS_RJT_LOGIC;
 	rjt_data.explan = ELS_EXPL_NONE;
@@ -290,7 +304,7 @@ reject:
 }
 
 /**
- * fc_disc_recv_req - Handle incoming requests
+ * fc_disc_recv_req() - Handle incoming requests
  * @sp: Current sequence of the request exchange
  * @fp: The frame
  * @lport: The FC local port
@@ -303,13 +317,7 @@ static void fc_disc_recv_req(struct fc_seq *sp, struct fc_frame *fp,
 			     struct fc_lport *lport)
 {
 	u8 op;
-	struct fc_disc *disc = lport->disc;
-
-	if (!disc) {
-		FC_DBG("Received a request for an lport not managed "
-		       "by the discovery engine\n");
-		return;
-	}
+	struct fc_disc *disc = &lport->disc;
 
 	op = fc_frame_payload_op(fp);
 	switch (op) {
@@ -319,13 +327,14 @@ static void fc_disc_recv_req(struct fc_seq *sp, struct fc_frame *fp,
 		mutex_unlock(&disc->disc_mutex);
 		break;
 	default:
-		FC_DBG("Received an unsupported request. opcode (%x)\n", op);
+		FC_DISC_DBG(disc, "Received an unsupported request, "
+			    "the opcode is (%x)\n", op);
 		break;
 	}
 }
 
 /**
- * fc_disc_restart - Restart discovery
+ * fc_disc_restart() - Restart discovery
  * @lport: FC discovery context
  *
  * Locking Note: This function expects that the disc mutex
@@ -337,13 +346,16 @@ static void fc_disc_restart(struct fc_disc *disc)
 	struct fc_rport_libfc_priv *rdata, *next;
 	struct fc_lport *lport = disc->lport;
 
-	FC_DEBUG_DISC("Restarting discovery for port (%6x)\n",
-		      fc_host_port_id(lport->host));
+	FC_DISC_DBG(disc, "Restarting discovery\n");
 
 	list_for_each_entry_safe(rdata, next, &disc->rports, peers) {
 		rport = PRIV_TO_RPORT(rdata);
-		FC_DEBUG_DISC("list_del(%6x)\n", rport->port_id);
 		list_del(&rdata->peers);
+		lport->tt.rport_logoff(rport);
+	}
+
+	list_for_each_entry_safe(rdata, next, &disc->rogue_rports, peers) {
+		rport = PRIV_TO_RPORT(rdata);
 		lport->tt.rport_logoff(rport);
 	}
 
@@ -353,7 +365,7 @@ static void fc_disc_restart(struct fc_disc *disc)
 }
 
 /**
- * fc_disc_start - Fibre Channel Target discovery
+ * fc_disc_start() - Fibre Channel Target discovery
  * @lport: FC local port
  *
  * Returns non-zero if discovery cannot be started.
@@ -364,17 +376,7 @@ static void fc_disc_start(void (*disc_callback)(struct fc_lport *,
 {
 	struct fc_rport *rport;
 	struct fc_rport_identifiers ids;
-	struct fc_disc *disc = lport->disc;
-
-	if (!disc) {
-		FC_DEBUG_DISC("No existing discovery job, "
-			      "creating one for lport (%6x)\n",
-			      fc_host_port_id(lport->host));
-		disc = fc_disc_alloc(lport);
-	} else
-		FC_DEBUG_DISC("Found an existing discovery job "
-			      "for lport (%6x)\n",
-			      fc_host_port_id(lport->host));
+	struct fc_disc *disc = &lport->disc;
 
 	/*
 	 * At this point we may have a new disc job or an existing
@@ -419,8 +421,12 @@ static void fc_disc_start(void (*disc_callback)(struct fc_lport *,
 	mutex_unlock(&disc->disc_mutex);
 }
 
+static struct fc_rport_operations fc_disc_rport_ops = {
+	.event_callback = fc_disc_rport_callback,
+};
+
 /**
- * fc_disc_new_target - Handle new target found by discovery
+ * fc_disc_new_target() - Handle new target found by discovery
  * @lport: FC local port
  * @rport: The previous FC remote port (NULL if new remote port)
  * @ids: Identifiers for the new FC remote port
@@ -433,7 +439,7 @@ static int fc_disc_new_target(struct fc_disc *disc,
 			      struct fc_rport_identifiers *ids)
 {
 	struct fc_lport *lport = disc->lport;
-	struct fc_rport_libfc_priv *rp;
+	struct fc_rport_libfc_priv *rdata;
 	int error = 0;
 
 	if (rport && ids->port_name) {
@@ -467,15 +473,16 @@ static int fc_disc_new_target(struct fc_disc *disc,
 				dp.ids.port_name = ids->port_name;
 				dp.ids.node_name = ids->node_name;
 				dp.ids.roles = ids->roles;
-				rport = fc_rport_rogue_create(&dp);
+				rport = lport->tt.rport_create(&dp);
 			}
 			if (!rport)
 				error = -ENOMEM;
 		}
 		if (rport) {
-			rp = rport->dd_data;
-			rp->event_callback = fc_disc_rport_event;
-			rp->rp_state = RPORT_ST_INIT;
+			rdata = rport->dd_data;
+			rdata->ops = &fc_disc_rport_ops;
+			rdata->rp_state = RPORT_ST_INIT;
+			list_add_tail(&rdata->peers, &disc->rogue_rports);
 			lport->tt.rport_login(rport);
 		}
 	}
@@ -483,40 +490,47 @@ static int fc_disc_new_target(struct fc_disc *disc,
 }
 
 /**
- * fc_disc_del_target - Delete a target
+ * fc_disc_del_target() - Delete a target
  * @disc: FC discovery context
  * @rport: The remote port to be removed
  */
 static void fc_disc_del_target(struct fc_disc *disc, struct fc_rport *rport)
 {
 	struct fc_lport *lport = disc->lport;
-	struct fc_rport_libfc_priv *rdata = RPORT_TO_PRIV(rport);
+	struct fc_rport_libfc_priv *rdata = rport->dd_data;
 	list_del(&rdata->peers);
 	lport->tt.rport_logoff(rport);
 }
 
 /**
- * fc_disc_done - Discovery has been completed
+ * fc_disc_done() - Discovery has been completed
  * @disc: FC discovery context
+ * Locking Note: This function expects that the disc mutex is locked before
+ * it is called. The discovery callback is then made with the lock released,
+ * and the lock is re-taken before returning from this function
  */
 static void fc_disc_done(struct fc_disc *disc)
 {
 	struct fc_lport *lport = disc->lport;
+	enum fc_disc_event event;
 
-	FC_DEBUG_DISC("Discovery complete for port (%6x)\n",
-		      fc_host_port_id(lport->host));
+	FC_DISC_DBG(disc, "Discovery complete\n");
 
-	disc->disc_callback(lport, disc->event);
+	event = disc->event;
 	disc->event = DISC_EV_NONE;
 
 	if (disc->requested)
 		fc_disc_gpn_ft_req(disc);
 	else
 		disc->pending = 0;
+
+	mutex_unlock(&disc->disc_mutex);
+	disc->disc_callback(lport, event);
+	mutex_lock(&disc->disc_mutex);
 }
 
 /**
- * fc_disc_error - Handle error on dNS request
+ * fc_disc_error() - Handle error on dNS request
  * @disc: FC discovery context
  * @fp: The frame pointer
  */
@@ -524,10 +538,10 @@ static void fc_disc_error(struct fc_disc *disc, struct fc_frame *fp)
 {
 	struct fc_lport *lport = disc->lport;
 	unsigned long delay = 0;
-	if (fc_disc_debug)
-		FC_DBG("Error %ld, retries %d/%d\n",
-		       PTR_ERR(fp), disc->retry_count,
-		       FC_DISC_RETRY_LIMIT);
+
+	FC_DISC_DBG(disc, "Error %ld, retries %d/%d\n",
+		    PTR_ERR(fp), disc->retry_count,
+		    FC_DISC_RETRY_LIMIT);
 
 	if (!fp || PTR_ERR(fp) == -FC_EX_TIMEOUT) {
 		/*
@@ -556,7 +570,7 @@ static void fc_disc_error(struct fc_disc *disc, struct fc_frame *fp)
 }
 
 /**
- * fc_disc_gpn_ft_req - Send Get Port Names by FC-4 type (GPN_FT) request
+ * fc_disc_gpn_ft_req() - Send Get Port Names by FC-4 type (GPN_FT) request
  * @lport: FC discovery context
  *
  * Locking Note: This function expects that the disc_mutex is locked
@@ -590,7 +604,7 @@ err:
 }
 
 /**
- * fc_disc_gpn_ft_parse - Parse the list of IDs and names resulting from a request
+ * fc_disc_gpn_ft_parse() - Parse the list of IDs and names resulting from a request
  * @lport: Fibre Channel host port instance
  * @buf: GPN_FT response buffer
  * @len: size of response buffer
@@ -654,16 +668,18 @@ static int fc_disc_gpn_ft_parse(struct fc_disc *disc, void *buf, size_t len)
 
 		if ((dp.ids.port_id != fc_host_port_id(lport->host)) &&
 		    (dp.ids.port_name != lport->wwpn)) {
-			rport = fc_rport_rogue_create(&dp);
+			rport = lport->tt.rport_create(&dp);
 			if (rport) {
 				rdata = rport->dd_data;
-				rdata->event_callback = fc_disc_rport_event;
+				rdata->ops = &fc_disc_rport_ops;
 				rdata->local_port = lport;
+				list_add_tail(&rdata->peers,
+					      &disc->rogue_rports);
 				lport->tt.rport_login(rport);
 			} else
-				FC_DBG("Failed to allocate memory for "
-				       "the newly discovered port (%6x)\n",
-				       dp.ids.port_id);
+				printk(KERN_WARNING "libfc: Failed to allocate "
+				       "memory for the newly discovered port "
+				       "(%6x)\n", dp.ids.port_id);
 		}
 
 		if (np->fp_flags & FC_NS_FID_LAST) {
@@ -683,9 +699,8 @@ static int fc_disc_gpn_ft_parse(struct fc_disc *disc, void *buf, size_t len)
 	 */
 	if (error == 0 && len > 0 && len < sizeof(*np)) {
 		if (np != &disc->partial_buf) {
-			FC_DEBUG_DISC("Partial buffer remains "
-				      "for discovery by (%6x)\n",
-				      fc_host_port_id(lport->host));
+			FC_DISC_DBG(disc, "Partial buffer remains "
+				    "for discovery\n");
 			memcpy(&disc->partial_buf, np, len);
 		}
 		disc->buf_len = (unsigned char) len;
@@ -695,13 +710,17 @@ static int fc_disc_gpn_ft_parse(struct fc_disc *disc, void *buf, size_t len)
 	return error;
 }
 
-/*
+/**
+ * fc_disc_timeout() - Retry handler for the disc component
+ * @work: Structure holding disc obj that needs retry discovery
+ *
  * Handle retry of memory allocation for remote ports.
  */
-static void fc_disc_timeout(void *data)
+static void fc_disc_timeout(struct work_struct *work)
 {
-	struct fc_disc *disc = data;
-
+	struct fc_disc *disc = container_of(work,
+					    struct fc_disc,
+					    disc_work.work);
 	mutex_lock(&disc->disc_mutex);
 	if (disc->requested && !disc->pending)
 		fc_disc_gpn_ft_req(disc);
@@ -709,13 +728,13 @@ static void fc_disc_timeout(void *data)
 }
 
 /**
- * fc_disc_gpn_ft_resp - Handle a response frame from Get Port Names (GPN_FT)
+ * fc_disc_gpn_ft_resp() - Handle a response frame from Get Port Names (GPN_FT)
  * @sp: Current sequence of GPN_FT exchange
  * @fp: response frame
  * @lp_arg: Fibre Channel host port instance
  *
- * Locking Note: This function expects that the disc_mutex is locked
- *		 before it is called.
+ * Locking Note: This function is called without disc mutex held, and
+ *		 should do all its processing with the mutex held
  */
 static void fc_disc_gpn_ft_resp(struct fc_seq *sp, struct fc_frame *fp,
 				void *disc_arg)
@@ -728,11 +747,12 @@ static void fc_disc_gpn_ft_resp(struct fc_seq *sp, struct fc_frame *fp,
 	unsigned int len;
 	int error;
 
-	FC_DEBUG_DISC("Received a GPN_FT response on port (%6x)\n",
-		      fc_host_port_id(disc->lport->host));
+	mutex_lock(&disc->disc_mutex);
+	FC_DISC_DBG(disc, "Received a GPN_FT response\n");
 
 	if (IS_ERR(fp)) {
 		fc_disc_error(disc, fp);
+		mutex_unlock(&disc->disc_mutex);
 		return;
 	}
 
@@ -744,32 +764,30 @@ static void fc_disc_gpn_ft_resp(struct fc_seq *sp, struct fc_frame *fp,
 	    disc->seq_count == 0) {
 		cp = fc_frame_payload_get(fp, sizeof(*cp));
 		if (!cp) {
-			FC_DBG("GPN_FT response too short, len %d\n",
-			       fr_len(fp));
+			FC_DISC_DBG(disc, "GPN_FT response too short, len %d\n",
+				    fr_len(fp));
 		} else if (ntohs(cp->ct_cmd) == FC_FS_ACC) {
 
-			/*
-			 * Accepted.  Parse response.
-			 */
+			/* Accepted, parse the response. */
 			buf = cp + 1;
 			len -= sizeof(*cp);
 		} else if (ntohs(cp->ct_cmd) == FC_FS_RJT) {
-			FC_DBG("GPN_FT rejected reason %x exp %x "
-			       "(check zoning)\n", cp->ct_reason,
-			       cp->ct_explan);
+			FC_DISC_DBG(disc, "GPN_FT rejected reason %x exp %x "
+				    "(check zoning)\n", cp->ct_reason,
+				    cp->ct_explan);
 			disc->event = DISC_EV_FAILED;
 			fc_disc_done(disc);
 		} else {
-			FC_DBG("GPN_FT unexpected response code %x\n",
-			       ntohs(cp->ct_cmd));
+			FC_DISC_DBG(disc, "GPN_FT unexpected response code "
+				    "%x\n", ntohs(cp->ct_cmd));
 		}
 	} else if (fr_sof(fp) == FC_SOF_N3 &&
 		   seq_cnt == disc->seq_count) {
 		buf = fh + 1;
 	} else {
-		FC_DBG("GPN_FT unexpected frame - out of sequence? "
-		       "seq_cnt %x expected %x sof %x eof %x\n",
-		       seq_cnt, disc->seq_count, fr_sof(fp), fr_eof(fp));
+		FC_DISC_DBG(disc, "GPN_FT unexpected frame - out of sequence? "
+			    "seq_cnt %x expected %x sof %x eof %x\n",
+			    seq_cnt, disc->seq_count, fr_sof(fp), fr_eof(fp));
 	}
 	if (buf) {
 		error = fc_disc_gpn_ft_parse(disc, buf, len);
@@ -779,10 +797,12 @@ static void fc_disc_gpn_ft_resp(struct fc_seq *sp, struct fc_frame *fp,
 			disc->seq_count++;
 	}
 	fc_frame_free(fp);
+
+	mutex_unlock(&disc->disc_mutex);
 }
 
 /**
- * fc_disc_single - Discover the directory information for a single target
+ * fc_disc_single() - Discover the directory information for a single target
  * @lport: FC local port
  * @dp: The port to rediscover
  *
@@ -792,7 +812,6 @@ static void fc_disc_gpn_ft_resp(struct fc_seq *sp, struct fc_frame *fp,
 static void fc_disc_single(struct fc_disc *disc, struct fc_disc_port *dp)
 {
 	struct fc_lport *lport;
-	struct fc_rport *rport;
 	struct fc_rport *new_rport;
 	struct fc_rport_libfc_priv *rdata;
 
@@ -801,17 +820,12 @@ static void fc_disc_single(struct fc_disc *disc, struct fc_disc_port *dp)
 	if (dp->ids.port_id == fc_host_port_id(lport->host))
 		goto out;
 
-	rport = lport->tt.rport_lookup(lport, dp->ids.port_id);
-	if (rport) {
-		fc_disc_del_target(disc, rport);
-		put_device(&rport->dev); /* hold from lookup */
-	}
-
-	new_rport = fc_rport_rogue_create(dp);
+	new_rport = lport->tt.rport_create(dp);
 	if (new_rport) {
 		rdata = new_rport->dd_data;
-		rdata->event_callback = fc_disc_rport_event;
+		rdata->ops = &fc_disc_rport_ops;
 		kfree(dp);
+		list_add_tail(&rdata->peers, &disc->rogue_rports);
 		lport->tt.rport_login(new_rport);
 	}
 	return;
@@ -820,22 +834,21 @@ out:
 }
 
 /**
- * fc_disc_stop - Stop discovery for a given lport
+ * fc_disc_stop() - Stop discovery for a given lport
  * @lport: The lport that discovery should stop for
  */
 void fc_disc_stop(struct fc_lport *lport)
 {
-	struct fc_disc *disc = lport->disc;
+	struct fc_disc *disc = &lport->disc;
 
 	if (disc) {
-		if (!cancel_delayed_work(&disc->disc_work))
-			flush_scheduled_work();
+		cancel_delayed_work_sync(&disc->disc_work);
 		fc_disc_stop_rports(disc);
 	}
 }
 
 /**
- * fc_disc_stop_final - Stop discovery for a given lport
+ * fc_disc_stop_final() - Stop discovery for a given lport
  * @lport: The lport that discovery should stop for
  *
  * This function will block until discovery has been
@@ -848,11 +861,12 @@ void fc_disc_stop_final(struct fc_lport *lport)
 }
 
 /**
- * fc_disc_init - Initialize the discovery block
+ * fc_disc_init() - Initialize the discovery block
  * @lport: FC local port
  */
 int fc_disc_init(struct fc_lport *lport)
 {
+	struct fc_disc *disc;
 
 	if (!lport->tt.disc_start)
 		lport->tt.disc_start = fc_disc_start;
@@ -868,6 +882,16 @@ int fc_disc_init(struct fc_lport *lport)
 
 	if (!lport->tt.rport_lookup)
 		lport->tt.rport_lookup = fc_disc_lookup_rport;
+
+	disc = &lport->disc;
+	INIT_DELAYED_WORK(&disc->disc_work, fc_disc_timeout);
+	mutex_init(&disc->disc_mutex);
+	INIT_LIST_HEAD(&disc->rports);
+	INIT_LIST_HEAD(&disc->rogue_rports);
+
+	disc->lport = lport;
+	disc->delay = FC_DISC_DELAY;
+	disc->event = DISC_EV_NONE;
 
 	return 0;
 }

@@ -86,6 +86,7 @@
 #include <linux/kmod.h>
 #include <linux/audit.h>
 #include <linux/wireless.h>
+#include <trace/socket.h>
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -596,7 +597,9 @@ static inline int __sock_sendmsg(struct kiocb *iocb, struct socket *sock,
 	if (err)
 		return err;
 
-	return sock->ops->sendmsg(iocb, sock, msg, size);
+	err = sock->ops->sendmsg(iocb, sock, msg, size);
+	trace_socket_sendmsg(sock, msg, size, err);
+	return err;
 }
 
 int sock_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
@@ -647,7 +650,9 @@ static inline int __sock_recvmsg(struct kiocb *iocb, struct socket *sock,
 	if (err)
 		return err;
 
-	return sock->ops->recvmsg(iocb, sock, msg, size, flags);
+	err = sock->ops->recvmsg(iocb, sock, msg, size, flags);
+	trace_socket_recvmsg(sock, msg, size, flags, err);
+	return err;
 }
 
 int sock_recvmsg(struct socket *sock, struct msghdr *msg, 
@@ -693,7 +698,7 @@ static ssize_t sock_sendpage(struct file *file, struct page *page,
 			     int offset, size_t size, loff_t *ppos, int more)
 {
 	struct socket *sock;
-	int flags;
+	int flags, err;
 
 	sock = file->private_data;
 
@@ -701,7 +706,9 @@ static ssize_t sock_sendpage(struct file *file, struct page *page,
 	if (more)
 		flags |= MSG_MORE;
 
-	return kernel_sendpage(sock, page, offset, size, flags);
+	err = kernel_sendpage(sock, page, offset, size, flags);
+	trace_socket_sendpage(sock, page, offset, size, flags, err);
+	return err;
 }
 
 static struct sock_iocb *alloc_sock_iocb(struct kiocb *iocb,
@@ -1286,6 +1293,7 @@ asmlinkage long sys_socketpair(int family, int type, int protocol, int __user *u
 {
 	struct socket *sock1, *sock2;
 	int fd1, fd2, err;
+	struct file *newfile1, *newfile2;
 
 	/*
 	 * Obtain the first socket and check if the underlying protocol
@@ -1304,18 +1312,40 @@ asmlinkage long sys_socketpair(int family, int type, int protocol, int __user *u
 	if (err < 0) 
 		goto out_release_both;
 
-	fd1 = fd2 = -1;
-
-	err = sock_map_fd(sock1);
-	if (err < 0)
+	fd1 = sock_alloc_fd(&newfile1);
+	if (unlikely(fd1 < 0)) {
+		err = fd1;
 		goto out_release_both;
-	fd1 = err;
+	}
 
-	err = sock_map_fd(sock2);
-	if (err < 0)
-		goto out_close_1;
-	fd2 = err;
+	fd2 = sock_alloc_fd(&newfile2);
+	if (unlikely(fd2 < 0)) {
+		err = fd2;
+		put_filp(newfile1);
+		put_unused_fd(fd1);
+		goto out_release_both;
+	}
 
+	err = sock_attach_fd(sock1, newfile1);
+	if (unlikely(err < 0)) {
+		goto out_fd2;
+	}
+
+	err = sock_attach_fd(sock2, newfile2);
+	if (unlikely(err < 0)) {
+		fput(newfile1);
+		goto out_fd1;
+	}
+
+	err = audit_fd_pair(fd1, fd2);
+	if (err < 0) {
+		fput(newfile1);
+		fput(newfile2);
+		goto out_fd;
+	}
+
+	fd_install(fd1, newfile1);
+	fd_install(fd2, newfile2);
 	/* fd1 and fd2 may be already another descriptors.
 	 * Not kernel problem.
 	 */
@@ -1330,17 +1360,23 @@ asmlinkage long sys_socketpair(int family, int type, int protocol, int __user *u
 	sys_close(fd1);
 	return err;
 
-out_close_1:
-        sock_release(sock2);
-	sys_close(fd1);
-	return err;
-
 out_release_both:
         sock_release(sock2);
 out_release_1:
         sock_release(sock1);
 out:
 	return err;
+
+out_fd2:
+	put_filp(newfile1);
+	sock_release(sock1);
+out_fd1:
+	put_filp(newfile2);
+	sock_release(sock2);
+out_fd:
+	put_unused_fd(fd1);
+	put_unused_fd(fd2);
+	goto out;
 }
 
 

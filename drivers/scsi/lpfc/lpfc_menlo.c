@@ -29,8 +29,11 @@
 #include <scsi/scsi_tcq.h>
 #include <scsi/scsi_transport_fc.h>
 
+#include "lpfc_hw4.h"
 #include "lpfc_hw.h"
 #include "lpfc_sli.h"
+#include "lpfc_sli4.h"
+#include "lpfc_nl.h"
 #include "lpfc_disc.h"
 #include "lpfc_scsi.h"
 #include "lpfc.h"
@@ -129,7 +132,7 @@ lpfc_alloc_menlo_genrequest64(struct lpfc_hba * phba,
 	psli = &phba->sli;
 	pring = &psli->ring[LPFC_ELS_RING];
 
-	if (!(psli->sli_flag & LPFC_SLI2_ACTIVE)) {
+	if (!(psli->sli_flag & LPFC_SLI_ACTIVE)) {
 		rc = EACCES;
 		goto send_menlomgmt_cmd_exit;
 	}
@@ -222,7 +225,7 @@ lpfc_alloc_menlo_genrequest64(struct lpfc_hba * phba,
 	cmd->un.genreq64.bdl.ulpIoTag32 = 0;
 	cmd->un.genreq64.bdl.addrHigh = putPaddrHigh(sysfs_menlo->bmp->phys);
 	cmd->un.genreq64.bdl.addrLow = putPaddrLow(sysfs_menlo->bmp->phys);
-	cmd->un.genreq64.bdl.bdeFlags = BUFF_TYPE_BDL;
+	cmd->un.genreq64.bdl.bdeFlags = BUFF_TYPE_BLP_64;
 	cmd->un.genreq64.bdl.bdeSize =
 	    (sysfs_menlo->outdmp->flag + sysfs_menlo->indmp->flag)
 		* sizeof(struct ulp_bde64);
@@ -469,6 +472,9 @@ lpfc_menlo_write(struct lpfc_hba *phba,
 	uint32_t addr_high = 0;
 	uint32_t addr_low = 0;
 	int hdr_offset = sizeof(struct lpfc_sysfs_menlo_hdr);
+
+	if (phba->sli_rev >= LPFC_SLI_REV4)
+		return -EPERM;
 
 	if (off % 4 ||  count % 4 || (unsigned long)buf % 4)
 		return -EINVAL;
@@ -749,17 +755,16 @@ sysfs_menlo_issue_iocb_wait(struct lpfc_hba *phba,
 		struct lpfc_sysfs_menlo *sysfs_menlo)
 {
 	struct lpfc_sli *psli = NULL;
-	struct lpfc_sli_ring *pring = NULL;
 	int rc = 0;
 	IOCB_t *rsp = NULL;
 	struct lpfc_iocbq *cmdiocbq = NULL;
 
 	psli = &phba->sli;
-	pring = &psli->ring[LPFC_ELS_RING];
 	rsp = &req->rspiocbq->iocb;
 	cmdiocbq = req->cmdiocbq;
 
-	rc = lpfc_sli_issue_iocb_wait(phba, pring, req->cmdiocbq, req->rspiocbq,
+	rc = lpfc_sli_issue_iocb_wait(phba, LPFC_ELS_RING, req->cmdiocbq,
+			req->rspiocbq,
 			req->timeout);
 
 	if (rc == IOCB_TIMEDOUT) {
@@ -810,13 +815,11 @@ sysfs_menlo_issue_iocb(struct lpfc_hba *phba, struct lpfc_menlo_genreq64 *req,
 		struct lpfc_sysfs_menlo *sysfs_menlo)
 {
 	struct lpfc_sli *psli = NULL;
-	struct lpfc_sli_ring *pring = NULL;
 	int rc = 0;
 	IOCB_t *rsp = NULL;
 	struct lpfc_iocbq *cmdiocbq = NULL;
 
 	psli = &phba->sli;
-	pring = &psli->ring[LPFC_ELS_RING];
 	rsp = &req->rspiocbq->iocb;
 	cmdiocbq = req->cmdiocbq;
 	cmdiocbq->context2 = sysfs_menlo;
@@ -825,7 +828,7 @@ sysfs_menlo_issue_iocb(struct lpfc_hba *phba, struct lpfc_menlo_genreq64 *req,
 		"1257 lpfc_menlo_issue_iocb: handler set for %p\n",
 		cmdiocbq->context3);
 
-	rc = lpfc_sli_issue_iocb(phba, pring, req->cmdiocbq, 0);
+	rc = lpfc_sli_issue_iocb(phba, LPFC_ELS_RING, req->cmdiocbq, 0);
 
 	if (rc == IOCB_TIMEDOUT) {
 
@@ -887,6 +890,9 @@ lpfc_menlo_read(struct lpfc_hba *phba, char *buf, loff_t off, size_t count,
 	psli = &phba->sli;
 	pring = &psli->ring[LPFC_ELS_RING];
 
+	if (phba->sli_rev >= LPFC_SLI_REV4)
+		return -EPERM;
+
 	if (off > SYSFS_MENLO_ATTR_SIZE)
 		return -ERANGE;
 
@@ -904,7 +910,7 @@ lpfc_menlo_read(struct lpfc_hba *phba, char *buf, loff_t off, size_t count,
 	if (!sysfs_menlo)
 		return -EPERM;
 
-	if (!(psli->sli_flag & LPFC_SLI2_ACTIVE)) {
+	if (!(psli->sli_flag & LPFC_SLI_ACTIVE)) {
 		sysfs_menlo_idle(phba, sysfs_menlo);
 		lpfc_printf_log(phba, KERN_ERR, LOG_LIBDFC,
 			"1214 Can not issue FCoE cmd,"
@@ -1069,13 +1075,22 @@ lpfc_menlo_read(struct lpfc_hba *phba, char *buf, loff_t off, size_t count,
 	}
 	genreq->offset += count;
 
-
-	if (genreq->offset >= sysfs_menlo->cmdhdr.rspsize) {
+	if (genreq->offset >= (genreq->rspiocbq->iocb.un.ulpWord[0] &
+			       0x00ffffff)) {
 		lpfc_printf_log(phba, KERN_INFO, LOG_LIBDFC,
-			"1222 menlo_read: done off %d rc=%d"
-			" cnt %d rsp_code %x\n",
-			(int)off, rc, (int)count,*((uint32_t *)buf));
-		rc = count;
+			"1222 menlo_read: done off %d genoff:%d rspsz:%d "
+			"rc=%d cnt %d rsp_code %x Word0:%x\n",
+			(int)off, (int)genreq->offset,
+			sysfs_menlo->cmdhdr.rspsize, rc, (int)count,
+			*((uint32_t *)buf),
+			genreq->rspiocbq->iocb.un.ulpWord[0]);
+
+		if ((genreq->rspiocbq->iocb.un.ulpWord[0] & 0x00ffffff)
+		    < sysfs_menlo->cmdhdr.rspsize)
+			rc = (genreq->rspiocbq->iocb.un.ulpWord[0] & 0x00ffffff)
+				+ count - genreq->offset;
+		else
+			rc = count;
 		goto lpfc_menlo_read_err_exit;
 	}
 

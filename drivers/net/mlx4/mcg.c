@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2006, 2007 Cisco Systems, Inc.  All rights reserved.
+ * Copyright (c) 2007, 2008 Mellanox Technologies. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -37,6 +38,9 @@
 #include <linux/mlx4/cmd.h>
 
 #include "mlx4.h"
+
+#define MGM_QPN_MASK       0x00FFFFFF
+#define MGM_BLCK_LB_BIT    30
 
 struct mlx4_mgm {
 	__be32			next_gid_index;
@@ -153,7 +157,8 @@ static int find_mgm(struct mlx4_dev *dev,
 	return err;
 }
 
-int mlx4_multicast_attach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16])
+int mlx4_multicast_attach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16],
+			  int block_mcast_loopback)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
 	struct mlx4_cmd_mailbox *mailbox;
@@ -210,6 +215,7 @@ int mlx4_multicast_attach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16])
 
 	mgm->qp[members_count++] = cpu_to_be32((qp->qpn & MGM_QPN_MASK) |
 					       (!!mlx4_blck_lb << MGM_BLCK_LB_BIT));
+
 	mgm->members_count       = cpu_to_be32(members_count);
 
 	err = mlx4_WRITE_MCG(dev, index, mailbox);
@@ -359,8 +365,8 @@ int mlx4_init_mcg_table(struct mlx4_dev *dev)
 	struct mlx4_priv *priv = mlx4_priv(dev);
 	int err;
 
-	err = mlx4_bitmap_init(&priv->mcg_table.bitmap,
-			       dev->caps.num_amgms, dev->caps.num_amgms - 1, 0);
+	err = mlx4_bitmap_init(&priv->mcg_table.bitmap, dev->caps.num_amgms,
+			       dev->caps.num_amgms - 1, 0, 0);
 	if (err)
 		return err;
 

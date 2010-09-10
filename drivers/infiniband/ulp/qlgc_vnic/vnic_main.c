@@ -40,8 +40,6 @@
 #include <linux/list.h>
 #include <linux/completion.h>
 
-#include <rdma/ib_cache.h>
-
 #include "vnic_util.h"
 #include "vnic_main.h"
 #include "vnic_netpath.h"
@@ -49,30 +47,58 @@
 #include "vnic_ib.h"
 #include "vnic_stats.h"
 
-#define MODULEVERSION "0.6.1"
-#define MODULEDETAILS "QLogic Corp. Virtual NIC (VNIC) driver version " MODULEVERSION
+#define MODULEVERSION "1.3.0.0.4"
+#define MODULEDETAILS	\
+		"QLogic Corp. Virtual NIC (VNIC) driver version " MODULEVERSION
 
 MODULE_AUTHOR("QLogic Corp.");
 MODULE_DESCRIPTION(MODULEDETAILS);
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_SUPPORTED_DEVICE("QLogic Ethernet Virtual I/O Controller");
 
-u32 vnic_debug = 0;
+u32 vnic_debug;
 
 module_param(vnic_debug, uint, 0444);
 MODULE_PARM_DESC(vnic_debug, "Enable debug tracing if > 0");
 
 LIST_HEAD(vnic_list);
 
-const char driver[] = "qlgc_vnic";
+static DECLARE_WAIT_QUEUE_HEAD(vnic_npevent_queue);
+static LIST_HEAD(vnic_npevent_list);
+static DECLARE_COMPLETION(vnic_npevent_thread_exit);
+static spinlock_t vnic_npevent_list_lock;
+static struct task_struct *vnic_npevent_thread;
+static int vnic_npevent_thread_end;
 
-DECLARE_WAIT_QUEUE_HEAD(vnic_npevent_queue);
-LIST_HEAD(vnic_npevent_list);
-DECLARE_COMPLETION(vnic_npevent_thread_exit);
-spinlock_t vnic_npevent_list_lock = SPIN_LOCK_UNLOCKED;
-int vnic_npevent_thread = -1;
-int vnic_npevent_thread_end = 0;
+static const char *const vnic_npevent_str[] = {
+    "PRIMARY CONNECTED",
+    "PRIMARY DISCONNECTED",
+    "PRIMARY CARRIER",
+    "PRIMARY NO CARRIER",
+    "PRIMARY TIMER EXPIRED",
+    "PRIMARY SETLINK",
+    "SECONDARY CONNECTED",
+    "SECONDARY DISCONNECTED",
+    "SECONDARY CARRIER",
+    "SECONDARY NO CARRIER",
+    "SECONDARY TIMER EXPIRED",
+    "SECONDARY SETLINK",
+    "FORCED FAILOVER",
+    "UNFAILOVER",
+    "FREE VNIC",
+};
 
+void vnic_force_failover(struct vnic *vnic)
+{
+	VNIC_FUNCTION("vnic_force_failover()\n");
+	vnic_npevent_queue_evt(&vnic->primary_path, VNIC_FORCE_FAILOVER);
+}
+
+void vnic_unfailover(struct vnic *vnic)
+{
+	VNIC_FUNCTION("vnic_unfailover()\n");
+	vnic_npevent_queue_evt(&vnic->primary_path, VNIC_UNFAILOVER);
+}
 
 void vnic_connected(struct vnic *vnic, struct netpath *netpath)
 {
@@ -114,42 +140,49 @@ void vnic_link_down(struct vnic *vnic, struct netpath *netpath)
 
 void vnic_stop_xmit(struct vnic *vnic, struct netpath *netpath)
 {
+	unsigned long flags;
+
 	VNIC_FUNCTION("vnic_stop_xmit()\n");
+	spin_lock_irqsave(&vnic->current_path_lock, flags);
 	if (netpath == vnic->current_path) {
-		if (vnic->xmit_started) {
-			netif_stop_queue(&vnic->netdevice);
-			vnic->xmit_started = 0;
+		if (!netif_queue_stopped(vnic->netdevice)) {
+			netif_stop_queue(vnic->netdevice);
+			vnic->failed_over = 0;
 		}
 
 		vnic_stop_xmit_stats(vnic);
 	}
+	spin_unlock_irqrestore(&vnic->current_path_lock, flags);
 }
 
 void vnic_restart_xmit(struct vnic *vnic, struct netpath *netpath)
 {
+	unsigned long flags;
+
 	VNIC_FUNCTION("vnic_restart_xmit()\n");
+	spin_lock_irqsave(&vnic->current_path_lock, flags);
 	if (netpath == vnic->current_path) {
-		if (!vnic->xmit_started) {
-			netif_wake_queue(&vnic->netdevice);
-			vnic->xmit_started = 1;
-		}
+		if (netif_queue_stopped(vnic->netdevice))
+			netif_wake_queue(vnic->netdevice);
 
 		vnic_restart_xmit_stats(vnic);
 	}
+	spin_unlock_irqrestore(&vnic->current_path_lock, flags);
 }
 
 void vnic_recv_packet(struct vnic *vnic, struct netpath *netpath,
 		      struct sk_buff *skb)
 {
 	VNIC_FUNCTION("vnic_recv_packet()\n");
-	if ((netpath != vnic->current_path) || !vnic->open) {
+	if ((netpath != vnic->current_path) ||
+	    !netif_running(vnic->netdevice)) {
 		VNIC_INFO("tossing packet\n");
 		dev_kfree_skb(skb);
 		return;
 	}
 
-	vnic->netdevice.last_rx = jiffies;
-	skb->dev = &vnic->netdevice;
+	vnic->netdevice->last_rx = jiffies;
+	skb->dev = vnic->netdevice;
 	skb->protocol = eth_type_trans(skb, skb->dev);
 	if (!vnic->config->use_rx_csum)
 		skb->ip_summed = CHECKSUM_NONE;
@@ -161,13 +194,22 @@ static struct net_device_stats *vnic_get_stats(struct net_device *device)
 {
 	struct vnic *vnic;
 	struct netpath *np;
+	unsigned long flags;
 
 	VNIC_FUNCTION("vnic_get_stats()\n");
-	vnic = (struct vnic *)device->priv;
+	vnic = netdev_priv(device);
 
+	spin_lock_irqsave(&vnic->current_path_lock, flags);
 	np = vnic->current_path;
-	if (np && np->viport)
+	if (np && np->viport) {
+		atomic_inc(&np->viport->reference_count);
+		spin_unlock_irqrestore(&vnic->current_path_lock, flags);
 		viport_get_stats(np->viport, &vnic->stats);
+		atomic_dec(&np->viport->reference_count);
+		wake_up(&np->viport->reference_queue);
+	} else
+		spin_unlock_irqrestore(&vnic->current_path_lock, flags);
+
 	return &vnic->stats;
 }
 
@@ -176,12 +218,10 @@ static int vnic_open(struct net_device *device)
 	struct vnic *vnic;
 
 	VNIC_FUNCTION("vnic_open()\n");
-	vnic = (struct vnic *)device->priv;
+	vnic = netdev_priv(device);
 
-	vnic->open++;
-	vnic_npevent_queue_evt(&vnic->primary_path, VNIC_NP_SETLINK);
-	vnic->xmit_started = 1;
-	netif_start_queue(&vnic->netdevice);
+	vnic_npevent_queue_evt(&vnic->primary_path, VNIC_PRINP_SETLINK);
+	netif_start_queue(vnic->netdevice);
 
 	return 0;
 }
@@ -192,11 +232,9 @@ static int vnic_stop(struct net_device *device)
 	int ret = 0;
 
 	VNIC_FUNCTION("vnic_stop()\n");
-	vnic = (struct vnic *)device->priv;
+	vnic = netdev_priv(device);
 	netif_stop_queue(device);
-	vnic->xmit_started = 0;
-	vnic->open--;
-	vnic_npevent_queue_evt(&vnic->primary_path, VNIC_NP_SETLINK);
+	vnic_npevent_queue_evt(&vnic->primary_path, VNIC_PRINP_SETLINK);
 
 	return ret;
 }
@@ -210,7 +248,7 @@ static int vnic_hard_start_xmit(struct sk_buff *skb,
 	int	 ret = -1;
 
 	VNIC_FUNCTION("vnic_hard_start_xmit()\n");
-	vnic = (struct vnic *)device->priv;
+	vnic = netdev_priv(device);
 	np = vnic->current_path;
 
 	vnic_pre_pkt_xmit_stats(&xmit_time);
@@ -234,13 +272,28 @@ out:
 static void vnic_tx_timeout(struct net_device *device)
 {
 	struct vnic *vnic;
+	struct viport *viport = NULL;
+	unsigned long flags;
 
 	VNIC_FUNCTION("vnic_tx_timeout()\n");
-	vnic = (struct vnic *)device->priv;
+	vnic = netdev_priv(device);
 	device->trans_start = jiffies;
 
-	if (vnic->current_path->viport)
-		viport_failure(vnic->current_path->viport);
+	spin_lock_irqsave(&vnic->current_path_lock, flags);
+	if (vnic->current_path && vnic->current_path->viport) {
+		if (vnic->failed_over) {
+			if (vnic->current_path == &vnic->primary_path)
+				viport = vnic->secondary_path.viport;
+			else if (vnic->current_path == &vnic->secondary_path)
+				viport = vnic->primary_path.viport;
+		} else
+			viport = vnic->current_path->viport;
+
+		spin_unlock_irqrestore(&vnic->current_path_lock, flags);
+		if (viport)
+			viport_failure(viport);
+	} else
+		spin_unlock_irqrestore(&vnic->current_path_lock, flags);
 
 	VNIC_ERROR("vnic_tx_timeout\n");
 }
@@ -251,19 +304,9 @@ static void vnic_set_multicast_list(struct net_device *device)
 	unsigned long flags;
 
 	VNIC_FUNCTION("vnic_set_multicast_list()\n");
-	vnic = (struct vnic *)device->priv;
+	vnic = netdev_priv(device);
 
 	spin_lock_irqsave(&vnic->lock, flags);
-	/* the vnic_link_evt thread also needs to be able to access
-	 * mc_list. it is only safe to access the mc_list
-	 * in the netdevice from this call, so make a local
-	 * copy of it in the vnic. the mc_list is a linked
-	 * list, but my copy is an array where each element's
-	 * next pointer points to the next element. when I
-	 * reallocate the list, I always size it with 10
-	 * extra elements so I don't have to resize it as
-	 * often. I only downsize the list when it goes empty.
-	 */
 	if (device->mc_count == 0) {
 		if (vnic->mc_list_len) {
 			vnic->mc_list_len = vnic->mc_count = 0;
@@ -302,12 +345,16 @@ static void vnic_set_multicast_list(struct net_device *device)
 		viport_set_multicast(vnic->secondary_path.viport,
 				     vnic->mc_list, vnic->mc_count);
 
-	vnic_npevent_queue_evt(&vnic->primary_path, VNIC_NP_SETLINK);
+	vnic_npevent_queue_evt(&vnic->primary_path, VNIC_PRINP_SETLINK);
 	return;
 failure:
 	spin_unlock_irqrestore(&vnic->lock, flags);
 }
 
+/**
+ * Following set of functions queues up the events for EVIC and the
+ * kernel thread queuing up the event might return.
+ */
 static int vnic_set_mac_address(struct net_device *device, void *addr)
 {
 	struct vnic	*vnic;
@@ -316,7 +363,7 @@ static int vnic_set_mac_address(struct net_device *device, void *addr)
 	int		ret = -1;
 
 	VNIC_FUNCTION("vnic_set_mac_address()\n");
-	vnic = (struct vnic *)device->priv;
+	vnic = netdev_priv(device);
 
 	if (!is_valid_ether_addr(sockaddr->sa_data))
 		return -EADDRNOTAVAIL;
@@ -334,18 +381,10 @@ static int vnic_set_mac_address(struct net_device *device, void *addr)
 	if (ret)
 		return ret;
 
-	/* Ignore result of set unicast for secondary path viport.
-	 * Consider the operation a success if we are able to atleast
-	 * set the primary path viport address
-	 */
 	if (vnic->secondary_path.viport)
 		viport_set_unicast(vnic->secondary_path.viport, address);
 
 	vnic->mac_set = 1;
-	/* I'm assuming that this should work even if nothing is connected
-	 * at the moment.  note that this might return before the address has
-	 * actually been changed.
-	 */
 	return 0;
 }
 
@@ -357,7 +396,7 @@ static int vnic_change_mtu(struct net_device *device, int mtu)
 	int		sec_max_mtu;
 
 	VNIC_FUNCTION("vnic_change_mtu()\n");
-	vnic = (struct vnic *)device->priv;
+	vnic = netdev_priv(device);
 
 	if (vnic->primary_path.viport)
 		pri_max_mtu = viport_max_mtu(vnic->primary_path.viport);
@@ -372,8 +411,19 @@ static int vnic_change_mtu(struct net_device *device, int mtu)
 	if ((mtu < pri_max_mtu) && (mtu < sec_max_mtu)) {
 		device->mtu = mtu;
 		vnic_npevent_queue_evt(&vnic->primary_path,
-				       VNIC_NP_SETLINK);
-	}
+				       VNIC_PRINP_SETLINK);
+		vnic_npevent_queue_evt(&vnic->secondary_path,
+				       VNIC_SECNP_SETLINK);
+	} else if (pri_max_mtu < sec_max_mtu)
+		printk(KERN_WARNING PFX "%s: Maximum "
+					"supported MTU size is %d. "
+					"Cannot set MTU to %d\n",
+					vnic->config->name, pri_max_mtu, mtu);
+	else
+		printk(KERN_WARNING PFX "%s: Maximum "
+					"supported MTU size is %d. "
+					"Cannot set MTU to %d\n",
+					vnic->config->name, sec_max_mtu, mtu);
 
 	return ret;
 }
@@ -388,8 +438,8 @@ static int vnic_npevent_register(struct vnic *vnic, struct netpath *netpath)
 		 * connected.  MAC address will be set when the primary
 		 * connects.
 		 */
-		netpath_get_hw_addr(netpath, vnic->netdevice.dev_addr);
-		address = vnic->netdevice.dev_addr;
+		netpath_get_hw_addr(netpath, vnic->netdevice->dev_addr);
+		address = vnic->netdevice->dev_addr;
 
 		if (vnic->secondary_path.viport)
 			viport_set_unicast(vnic->secondary_path.viport,
@@ -397,11 +447,15 @@ static int vnic_npevent_register(struct vnic *vnic, struct netpath *netpath)
 
 		vnic->mac_set = 1;
 	}
-
-	ret = register_netdev(&vnic->netdevice);
+	ret = register_netdev(vnic->netdevice);
 	if (ret) {
-		printk(KERN_WARNING PFX "failed registering netdev "
-		       "error %d\n", ret);
+		printk(KERN_ERR PFX "%s failed registering netdev "
+			"error %d - calling viport_failure\n",
+			config_viport_name(vnic->primary_path.viport->config),
+				ret);
+		vnic_free(vnic);
+		printk(KERN_ERR PFX "%s DELETED : register_netdev failure\n",
+			config_viport_name(vnic->primary_path.viport->config));
 		return ret;
 	}
 
@@ -429,22 +483,6 @@ out:
 	spin_unlock_irqrestore(&vnic_npevent_list_lock, flags);
 }
 
-
-static const char *const vnic_npevent_str[] = {
-	"PRIMARY CONNECTED",
-	"PRIMARY DISCONNECTED",
-	"PRIMARY CARRIER",
-	"PRIMARY NO CARRIER",
-	"PRIMARY TIMER EXPIRED",
-	"SECONDARY CONNECTED",
-	"SECONDARY DISCONNECTED",
-	"SECONDARY CARRIER",
-	"SECONDARY NO CARRIER",
-	"SECONDARY TIMER EXPIRED",
-	"SETLINK",
-	"FREE VNIC",
-};
-
 static void update_path_and_reconnect(struct netpath *netpath,
 				      struct vnic *vnic)
 {
@@ -460,8 +498,8 @@ static void update_path_and_reconnect(struct netpath *netpath,
 	 * This prevents flooding connect requests to a path (or set
 	 * of paths) that aren't successfully connecting for some reason.
 	 */
-	if (jiffies > netpath->connect_time +
-		      vnic->config->no_path_timeout) {
+	if (time_after(jiffies,
+		(netpath->connect_time + vnic->config->no_path_timeout))) {
 		netpath->path_idx = config->path_idx;
 		netpath->connect_time = jiffies;
 		netpath->delay_reconnect = 0;
@@ -475,14 +513,29 @@ static void update_path_and_reconnect(struct netpath *netpath,
 	viport_connect(netpath->viport, delay);
 }
 
-static void vnic_set_uni_multicast(struct vnic * vnic,
-				   struct netpath * netpath)
+static inline void vnic_set_checksum_flag(struct vnic *vnic,
+					  struct netpath *target_path)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&vnic->current_path_lock, flags);
+	vnic->current_path = target_path;
+	vnic->failed_over = 1;
+	if (vnic->config->use_tx_csum &&
+	    netpath_can_tx_csum(vnic->current_path))
+		vnic->netdevice->features |= NETIF_F_IP_CSUM;
+
+	spin_unlock_irqrestore(&vnic->current_path_lock, flags);
+}
+
+static void vnic_set_uni_multicast(struct vnic *vnic,
+				   struct netpath *netpath)
 {
 	unsigned long	flags;
 	u8		*address;
 
 	if (vnic->mac_set) {
-		address = vnic->netdevice.dev_addr;
+		address = vnic->netdevice->dev_addr;
 
 		if (netpath->viport)
 			viport_set_unicast(netpath->viport, address);
@@ -498,8 +551,8 @@ static void vnic_set_uni_multicast(struct vnic * vnic,
 		if (!netpath->viport)
 			return;
 		viport_set_link(netpath->viport,
-				vnic->netdevice.flags & ~IFF_UP,
-				vnic->netdevice.mtu);
+				vnic->netdevice->flags & ~IFF_UP,
+				vnic->netdevice->mtu);
 	}
 }
 
@@ -522,14 +575,14 @@ static void vnic_set_netpath_timers(struct vnic *vnic,
 		/*nothing to do*/
 		break;
 	case NETPATH_TS_EXPIRED:
-		if (vnic->state == VNIC_UNINITIALIZED) {
+		if (vnic->state == VNIC_UNINITIALIZED)
 			vnic_npevent_register(vnic, netpath);
-		}
+
 		break;
 	}
 }
 
-static void vnic_check_primary_path_timer(struct vnic * vnic)
+static void vnic_check_primary_path_timer(struct vnic *vnic)
 {
 	switch (vnic->primary_path.timer_state) {
 	case NETPATH_TS_ACTIVE:
@@ -545,23 +598,58 @@ static void vnic_check_primary_path_timer(struct vnic * vnic)
 		       "%s: switching to primary path\n",
 		       vnic->config->name);
 
-		vnic->current_path = &vnic->primary_path;
-		if (vnic->config->use_tx_csum
-		    && netpath_can_tx_csum(vnic->
-					   current_path)) {
-			vnic->netdevice.features |=
-					    NETIF_F_IP_CSUM;
-		}
+		vnic_set_checksum_flag(vnic, &vnic->primary_path);
 		break;
 	}
 }
 
-static void vnic_carrier_loss(struct vnic * vnic,
+static void vnic_forced_failover(struct vnic *vnic)
+{
+	if (vnic->current_path == &vnic->primary_path) {
+		if (vnic->secondary_path.carrier &&
+		    vnic->secondary_path.timer_state !=	NETPATH_TS_ACTIVE) {
+			printk(KERN_INFO PFX "%s: Forced failover to "
+					     "secondary path.\n",
+					     vnic->config->name);
+			vnic->forced_failover = 1;
+			vnic_set_checksum_flag(vnic, &vnic->secondary_path);
+			if (vnic->config->prefer_primary)
+				printk(KERN_INFO "%s: To enable failback use "
+					"command - echo -n %s > "
+					"/sys/class/infiniband_qlgc_vnic/"
+					"interfaces/unfailover\n",
+					vnic->config->name, vnic->config->name);
+		} else
+			printk(KERN_INFO PFX "%s: Unable to force failover to "
+					     "secondary path.\n",
+					      vnic->config->name);
+	} else if (vnic->current_path == &vnic->secondary_path) {
+		if (vnic->primary_path.carrier &&
+		    vnic->primary_path.timer_state != NETPATH_TS_ACTIVE) {
+			printk(KERN_INFO PFX "%s: Forced failover to "
+					     "primary path.\n",
+					     vnic->config->name);
+			vnic->forced_failover = 1;
+			vnic_set_checksum_flag(vnic, &vnic->primary_path);
+			if (vnic->config->prefer_primary)
+				printk(KERN_INFO "%s: To enable failback use "
+					"command - echo -n %s > "
+					"/sys/class/infiniband_qlgc_vnic/"
+					"interfaces/unfailover\n",
+					vnic->config->name, vnic->config->name);
+		} else
+			printk(KERN_INFO PFX "%s: Unable to force failover to "
+					     "primary path.\n",
+					      vnic->config->name);
+	}
+}
+
+static void vnic_carrier_loss(struct vnic *vnic,
 			      struct netpath *last_path)
 {
 	if (vnic->primary_path.carrier) {
 		vnic->carrier = 1;
-		vnic->current_path = &vnic->primary_path;
+		vnic_set_checksum_flag(vnic, &vnic->primary_path);
 
 		if (last_path && last_path != vnic->current_path)
 			printk(KERN_INFO PFX
@@ -571,14 +659,10 @@ static void vnic_carrier_loss(struct vnic * vnic,
 			printk(KERN_INFO PFX "%s: using primary path\n",
 			       vnic->config->name);
 
-		if (vnic->config->use_tx_csum &&
-		    netpath_can_tx_csum(vnic->current_path))
-			vnic->netdevice.features |= NETIF_F_IP_CSUM;
-
 	} else if ((vnic->secondary_path.carrier) &&
 		   (vnic->secondary_path.timer_state != NETPATH_TS_ACTIVE)) {
 		vnic->carrier = 1;
-		vnic->current_path = &vnic->secondary_path;
+		vnic_set_checksum_flag(vnic, &vnic->secondary_path);
 
 		if (last_path && last_path != vnic->current_path)
 			printk(KERN_INFO PFX
@@ -588,18 +672,14 @@ static void vnic_carrier_loss(struct vnic * vnic,
 			printk(KERN_INFO PFX "%s: using secondary path\n",
 			       vnic->config->name);
 
-		if (vnic->config->use_tx_csum &&
-		    netpath_can_tx_csum(vnic->current_path))
-			vnic->netdevice.features |= NETIF_F_IP_CSUM;
-
 	}
 
 }
 
-static void vnic_handle_path_change(struct vnic * vnic,
+static void vnic_handle_path_change(struct vnic *vnic,
 				    struct netpath **path)
 {
-	struct netpath * last_path = *path;
+	struct netpath *last_path = *path;
 
 	if (!last_path) {
 		if (vnic->current_path == &vnic->primary_path)
@@ -611,18 +691,18 @@ static void vnic_handle_path_change(struct vnic * vnic,
 
 	if (vnic->current_path && vnic->current_path->viport)
 		viport_set_link(vnic->current_path->viport,
-				vnic->netdevice.flags,
-				vnic->netdevice.mtu);
+				vnic->netdevice->flags,
+				vnic->netdevice->mtu);
 
 	if (last_path->viport)
 		viport_set_link(last_path->viport,
-				 vnic->netdevice.flags &
-				 ~IFF_UP, vnic->netdevice.mtu);
+				 vnic->netdevice->flags &
+				 ~IFF_UP, vnic->netdevice->mtu);
 
 	vnic_restart_xmit(vnic, vnic->current_path);
 }
 
-static void vnic_report_path_change(struct vnic * vnic,
+static void vnic_report_path_change(struct vnic *vnic,
 				    struct netpath *last_path,
 				    int other_path_ok)
 {
@@ -666,15 +746,23 @@ static void vnic_report_path_change(struct vnic * vnic,
 	}
 }
 
-static void vnic_handle_free_vnic_evt(struct vnic * vnic)
+static void vnic_handle_free_vnic_evt(struct vnic *vnic)
 {
+	unsigned long flags;
+
+	if (!netif_queue_stopped(vnic->netdevice))
+		netif_stop_queue(vnic->netdevice);
+
 	netpath_timer_stop(&vnic->primary_path);
 	netpath_timer_stop(&vnic->secondary_path);
+	spin_lock_irqsave(&vnic->current_path_lock, flags);
 	vnic->current_path = NULL;
+	spin_unlock_irqrestore(&vnic->current_path_lock, flags);
 	netpath_free(&vnic->primary_path);
 	netpath_free(&vnic->secondary_path);
 	if (vnic->state == VNIC_REGISTERED)
-		unregister_netdev(&vnic->netdevice);
+		unregister_netdev(vnic->netdevice);
+
 	vnic_npevent_dequeue_all(vnic);
 	kfree(vnic->config);
 	if (vnic->mc_list_len) {
@@ -682,22 +770,31 @@ static void vnic_handle_free_vnic_evt(struct vnic * vnic)
 		kfree(vnic->mc_list);
 	}
 
-	sysfs_remove_group(&vnic->class_dev_info.class_dev.kobj,
-			   &vnic_dev_attr_group);
-	vnic_cleanup_stats_files(vnic);
-	class_device_unregister(&vnic->class_dev_info.class_dev);
-	wait_for_completion(&vnic->class_dev_info.released);
+ 	sysfs_remove_group(&vnic->class_dev_info.class_dev.kobj,
+  			   &vnic_dev_attr_group);
+  	vnic_cleanup_stats_files(vnic);
+  	class_device_unregister(&vnic->class_dev_info.class_dev);
+  	wait_for_completion(&vnic->class_dev_info.released);
+	free_netdev(vnic->netdevice);
 }
 
-static struct vnic * vnic_handle_npevent(struct vnic *vnic,
-					 enum vnic_npevent_type npevt_type)
+static struct vnic *vnic_handle_npevent(struct vnic *vnic,
+					enum vnic_npevent_type npevt_type,
+					int *failover_forced)
 {
 	struct netpath	*netpath;
+	const char *netpath_str;
+
+	if (npevt_type <= VNIC_PRINP_LASTTYPE)
+		netpath_str = netpath_to_string(vnic, &vnic->primary_path);
+	else if	(npevt_type <= VNIC_SECNP_LASTTYPE)
+		netpath_str = netpath_to_string(vnic, &vnic->secondary_path);
+	else
+		netpath_str = netpath_to_string(vnic, vnic->current_path);
 
 	VNIC_INFO("%s: processing %s, netpath=%s, carrier=%d\n",
 		  vnic->config->name, vnic_npevent_str[npevt_type],
-		  netpath_to_string(vnic, vnic->current_path),
-		  vnic->carrier);
+		  netpath_str, vnic->carrier);
 
 	switch (npevt_type) {
 	case VNIC_PRINP_CONNECTED:
@@ -756,18 +853,34 @@ static struct vnic * vnic_handle_npevent(struct vnic *vnic,
 		netpath->carrier = 0;
 		update_path_and_reconnect(netpath, vnic);
 		break;
-	case VNIC_NP_FREEVNIC:
-		vnic_handle_free_vnic_evt(vnic);
-		kfree(vnic);
-		vnic = NULL;
-		break;
-	case VNIC_NP_SETLINK:
+	case VNIC_PRINP_SETLINK:
 		netpath = vnic->current_path;
 		if (!netpath || !netpath->viport)
 			break;
 		viport_set_link(netpath->viport,
-				vnic->netdevice.flags,
-				vnic->netdevice.mtu);
+				vnic->netdevice->flags,
+				vnic->netdevice->mtu);
+		break;
+	case VNIC_SECNP_SETLINK:
+		netpath = &vnic->secondary_path;
+		if (!netpath || !netpath->viport)
+			break;
+		viport_set_link(netpath->viport,
+				vnic->netdevice->flags,
+				vnic->netdevice->mtu);
+		break;
+	case VNIC_FORCE_FAILOVER:
+		*failover_forced = 1;
+		break;
+	case VNIC_UNFAILOVER:
+		vnic->forced_failover = 0;
+		printk(KERN_INFO PFX "%s: Forced failover cleared.\n",
+			vnic->config->name);
+		break;
+
+	case VNIC_NP_FREEVNIC:
+		vnic_handle_free_vnic_evt(vnic);
+		vnic = NULL;
 		break;
 	}
 	return vnic;
@@ -781,8 +894,7 @@ static int vnic_npevent_statemachine(void *context)
 	int			last_carrier;
 	int			other_path_ok = 0;
 	struct netpath		*last_path;
-
-	daemonize("vnic_link_evt");
+	int			forced_failover;
 
 	while (!vnic_npevent_thread_end ||
 	       !list_empty(&vnic_npevent_list)) {
@@ -791,6 +903,7 @@ static int vnic_npevent_statemachine(void *context)
 		wait_event_interruptible(vnic_npevent_queue,
 					 !list_empty(&vnic_npevent_list)
 					 || vnic_npevent_thread_end);
+		forced_failover = 0;
 		spin_lock_irqsave(&vnic_npevent_list_lock, flags);
 		if (list_empty(&vnic_npevent_list)) {
 			spin_unlock_irqrestore(&vnic_npevent_list_lock,
@@ -801,8 +914,8 @@ static int vnic_npevent_statemachine(void *context)
 		}
 
 		vnic_link_evt = list_entry(vnic_npevent_list.next,
-					   struct vnic_npevent,
-					   list_ptrs);
+						 struct vnic_npevent,
+						 list_ptrs);
 		list_del(&vnic_link_evt->list_ptrs);
 		spin_unlock_irqrestore(&vnic_npevent_list_lock, flags);
 		vnic = vnic_link_evt->vnic;
@@ -814,7 +927,7 @@ static int vnic_npevent_statemachine(void *context)
 		else if (vnic->current_path == &vnic->primary_path)
 			other_path_ok = vnic->secondary_path.carrier;
 
-		vnic = vnic_handle_npevent(vnic, npevt_type);
+		vnic = vnic_handle_npevent(vnic, npevt_type, &forced_failover);
 
 		if (!vnic)
 			continue;
@@ -826,13 +939,16 @@ static int vnic_npevent_statemachine(void *context)
 		    !vnic->current_path->carrier) {
 			vnic->carrier = 0;
 			vnic->current_path = NULL;
-			vnic->netdevice.features &= ~NETIF_F_IP_CSUM;
+			vnic->netdevice->features &= ~NETIF_F_IP_CSUM;
 		}
 
 		if (!vnic->carrier)
 			vnic_carrier_loss(vnic, last_path);
+		else if (forced_failover)
+			vnic_forced_failover(vnic);
 		else if ((vnic->current_path != &vnic->primary_path) &&
 			 (vnic->config->prefer_primary) &&
+			 (!vnic->forced_failover) &&
 			 (vnic->primary_path.carrier))
 				vnic_check_primary_path_timer(vnic);
 
@@ -850,11 +966,11 @@ static int vnic_npevent_statemachine(void *context)
 		if (vnic->carrier != last_carrier) {
 			if (vnic->carrier) {
 				VNIC_INFO("netif_carrier_on\n");
-				netif_carrier_on(&vnic->netdevice);
+				netif_carrier_on(vnic->netdevice);
 				vnic_carrier_loss_stats(vnic);
 			} else {
 				VNIC_INFO("netif_carrier_off\n");
-				netif_carrier_off(&vnic->netdevice);
+				netif_carrier_off(vnic->netdevice);
 				vnic_disconn_stats(vnic);
 			}
 
@@ -889,7 +1005,7 @@ void vnic_npevent_dequeue_evt(struct netpath *netpath,
 {
 	unsigned long flags;
 	struct vnic_npevent *npevt, *tmp;
-	struct vnic * vnic = netpath->parent;
+	struct vnic *vnic = netpath->parent;
 
 	spin_lock_irqsave(&vnic_npevent_list_lock, flags);
 	if (list_empty(&vnic_npevent_list))
@@ -911,11 +1027,15 @@ static int vnic_npevent_start(void)
 {
 	VNIC_FUNCTION("vnic_npevent_start()\n");
 
-	if ((vnic_npevent_thread =
-	     kernel_thread(vnic_npevent_statemachine, NULL, 0)) < 0) {
+	spin_lock_init(&vnic_npevent_list_lock);
+	vnic_npevent_thread = kthread_run(vnic_npevent_statemachine, NULL,
+						"qlgc_vnic_npevent_s_m");
+	if (IS_ERR(vnic_npevent_thread)) {
 		printk(KERN_WARNING PFX "failed to create vnic npevent"
-		       " thread; error %d\n", vnic_npevent_thread);
-		return vnic_npevent_thread;
+		       " thread; error %d\n",
+			(int) PTR_ERR(vnic_npevent_thread));
+		vnic_npevent_thread = NULL;
+		return 1;
 	}
 
 	return 0;
@@ -923,37 +1043,23 @@ static int vnic_npevent_start(void)
 
 void vnic_npevent_cleanup(void)
 {
-	if (vnic_npevent_thread >= 0) {
+	if (vnic_npevent_thread) {
 		vnic_npevent_thread_end = 1;
 		wake_up(&vnic_npevent_queue);
 		wait_for_completion(&vnic_npevent_thread_exit);
-		vnic_npevent_thread = -1;
+		vnic_npevent_thread = NULL;
 	}
 }
 
-struct vnic *vnic_allocate(struct vnic_config *config)
+static void vnic_setup(struct net_device *device)
 {
-	struct vnic *vnic = NULL;
-	struct net_device *device;
-
-	VNIC_FUNCTION("vnic_allocate()\n");
-	vnic = kzalloc(sizeof *vnic, GFP_KERNEL);
-	if (!vnic) {
-		VNIC_ERROR("failed allocating vnic structure\n");
-		return NULL;
-	}
-
-	vnic->lock = SPIN_LOCK_UNLOCKED;
-	vnic_alloc_stats(vnic);
-	vnic->state = VNIC_UNINITIALIZED;
-	vnic->config = config;
-	device = &vnic->netdevice;
-
-	strcpy(device->name, config->name);
-
 	ether_setup(device);
 
-	device->priv			= (void *)vnic;
+	/* ether_setup is used to fill
+	 * device parameters for ethernet devices.
+	 * We override some of the parameters
+	 * which are specific to VNIC.
+	 */
 	device->get_stats		= vnic_get_stats;
 	device->open			= vnic_open;
 	device->stop			= vnic_stop;
@@ -964,11 +1070,34 @@ struct vnic *vnic_allocate(struct vnic_config *config)
 	device->change_mtu		= vnic_change_mtu;
 	device->watchdog_timeo 		= 10 * HZ;
 	device->features		= 0;
+}
+
+struct vnic *vnic_allocate(struct vnic_config *config)
+{
+	struct vnic *vnic = NULL;
+	struct net_device *netdev;
+
+	VNIC_FUNCTION("vnic_allocate()\n");
+	netdev = alloc_netdev((int) sizeof(*vnic), config->name, vnic_setup);
+	if (!netdev) {
+		VNIC_ERROR("failed allocating vnic structure\n");
+		return NULL;
+	}
+
+	vnic = netdev_priv(netdev);
+	vnic->netdevice = netdev;
+	spin_lock_init(&vnic->lock);
+	spin_lock_init(&vnic->current_path_lock);
+	vnic_alloc_stats(vnic);
+	vnic->state = VNIC_UNINITIALIZED;
+	vnic->config = config;
+
 
 	netpath_init(&vnic->primary_path, vnic, 0);
 	netpath_init(&vnic->secondary_path, vnic, 1);
 
 	vnic->current_path = NULL;
+	vnic->failed_over = 0;
 
 	list_add_tail(&vnic->list_ptrs, &vnic_list);
 
@@ -1005,22 +1134,26 @@ static int __init vnic_init(void)
 	VNIC_FUNCTION("vnic_init()\n");
 	VNIC_INIT("Initializing %s\n", MODULEDETAILS);
 
-	if ((ret=config_start())) {
+	ret = config_start();
+	if (ret) {
 		VNIC_ERROR("config_start failed\n");
 		goto failure;
 	}
 
-	if ((ret=vnic_ib_init())) {
+	ret = vnic_ib_init();
+	if (ret) {
 		VNIC_ERROR("ib_start failed\n");
 		goto failure;
 	}
 
-	if ((ret=viport_start())) {
+	ret = viport_start();
+	if (ret) {
 		VNIC_ERROR("viport_start failed\n");
 		goto failure;
 	}
 
-	if ((ret=vnic_npevent_start())) {
+	ret = vnic_npevent_start();
+	if (ret) {
 		VNIC_ERROR("vnic_npevent_start failed\n");
 		goto failure;
 	}

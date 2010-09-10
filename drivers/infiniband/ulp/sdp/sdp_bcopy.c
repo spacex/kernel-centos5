@@ -45,6 +45,10 @@ struct sdp_chrecvbuf {
 
 static int rcvbuf_scale = 0x10;
 
+int rcvbuf_initial_size = SDP_HEAD_SIZE;
+module_param_named(rcvbuf_initial_size, rcvbuf_initial_size, int, 0644);
+MODULE_PARM_DESC(rcvbuf_initial_size, "Receive buffer initial size in bytes.");
+
 module_param_named(rcvbuf_scale, rcvbuf_scale, int, 0644);
 MODULE_PARM_DESC(rcvbuf_scale, "Receive buffer size scale factor.");
 
@@ -96,13 +100,51 @@ void sdp_remove_large_sock(struct sdp_sock *ssk)
 	}
 }
 
-/* Like tcp_fin */
+/* Like tcp_fin - called when SDP_MID_DISCONNECT is received */
 static void sdp_fin(struct sock *sk)
 {
 	sdp_dbg(sk, "%s\n", __func__);
 
 	sk->sk_shutdown |= RCV_SHUTDOWN;
 	sock_set_flag(sk, SOCK_DONE);
+
+	switch (sk->sk_state) {
+	case TCP_SYN_RECV:
+	case TCP_ESTABLISHED:
+		sdp_exch_state(sk, TCPF_SYN_RECV | TCPF_ESTABLISHED,
+				TCP_CLOSE_WAIT);
+		break;
+
+	case TCP_FIN_WAIT1:
+		/* Received a reply FIN - start Infiniband tear down */
+		sdp_dbg(sk, "%s: Starting Infiniband tear down sending DREQ\n",
+				__func__);
+
+		sdp_cancel_dreq_wait_timeout(sdp_sk(sk));
+
+		sdp_exch_state(sk, TCPF_FIN_WAIT1, TCP_TIME_WAIT);
+
+		if (sdp_sk(sk)->id) {
+			rdma_disconnect(sdp_sk(sk)->id);
+		} else {
+			sdp_warn(sk, "%s: sdp_sk(sk)->id is NULL\n", __func__);
+			return;
+		}
+		break;
+	case TCP_TIME_WAIT:
+		/* This is a mutual close situation and we've got the DREQ from
+		   the peer before the SDP_MID_DISCONNECT */
+		break;
+	case TCP_CLOSE:
+		/* FIN arrived after IB teardown started - do nothing */
+		sdp_dbg(sk, "%s: fin in state %s\n",
+				__func__, sdp_state_str(sk->sk_state));
+		return;
+	default:
+		sdp_warn(sk, "%s: FIN in unexpected state. sk->sk_state=%d\n",
+				__func__, sk->sk_state);
+		break;
+	}
 
 
 	sk_stream_mem_reclaim(sk);
@@ -264,7 +306,7 @@ static void sdp_post_recv(struct sdp_sock *ssk)
 	skb_frag_t *frag;
 	struct sdp_bsdh *h;
 	int id = ssk->rx_head;
-	unsigned int gfp_page;
+	gfp_t gfp_page;
 
 	/* Now, allocate and repost recv */
 	/* TODO: allocate from cache */
@@ -288,7 +330,13 @@ static void sdp_post_recv(struct sdp_sock *ssk)
 		frag = &skb_shinfo(skb)->frags[i];
 		frag->page                = page;
 		frag->page_offset         = 0;
-		frag->size                =  min(PAGE_SIZE, SDP_MAX_PAYLOAD);
+
+		/* Bugzilla 1311 */
+		if ( sizeof(frag->size) < 4 )
+			frag->size = min(PAGE_SIZE, SDP_MAX_PAYLOAD);
+		else
+			frag->size = PAGE_SIZE;
+
 		++skb_shinfo(skb)->nr_frags;
 		skb->len += frag->size;
 		skb->data_len += frag->size;
@@ -338,9 +386,13 @@ static void sdp_post_recv(struct sdp_sock *ssk)
 
 void sdp_post_recvs(struct sdp_sock *ssk)
 {
+	struct sock *sk = &ssk->isk.sk;
 	int scale = ssk->rcvbuf_scale;
-	if (unlikely(!ssk->id))
+
+	if (unlikely(!ssk->id || ((1 << sk->sk_state) & 
+		(TCPF_CLOSE | TCPF_TIME_WAIT)))) {
 		return;
+	}
 
 	if (top_mem_usage &&
 	    (top_mem_usage * 0x100000) < atomic_read(&sdp_current_mem_usage) * PAGE_SIZE)
@@ -349,8 +401,7 @@ void sdp_post_recvs(struct sdp_sock *ssk)
 	while ((likely(ssk->rx_head - ssk->rx_tail < SDP_RX_SIZE) &&
 		(ssk->rx_head - ssk->rx_tail - SDP_MIN_BUFS) *
 		(SDP_HEAD_SIZE + ssk->recv_frags * PAGE_SIZE) +
-		ssk->rcv_nxt - ssk->copied_seq <
-		ssk->isk.sk.sk_rcvbuf * scale) ||
+		ssk->rcv_nxt - ssk->copied_seq < sk->sk_rcvbuf * scale) ||
 	       unlikely(ssk->rx_head - ssk->rx_tail < SDP_MIN_BUFS))
 		sdp_post_recv(ssk);
 }
@@ -389,7 +440,7 @@ static inline struct sk_buff *sdp_sock_queue_rcv_skb(struct sock *sk,
 {
 	int skb_len;
 	struct sdp_sock *ssk = sdp_sk(sk);
-	struct sk_buff *tail;
+	struct sk_buff *tail = NULL;
 
 	/* not needed since sk_rmem_alloc is not currently used
 	 * TODO - remove this?
@@ -457,7 +508,7 @@ void sdp_post_sends(struct sdp_sock *ssk, int nonagle)
 	/* TODO: nonagle? */
 	struct sk_buff *skb;
 	int c;
-	int gfp_page;
+	gfp_t gfp_page;
 
 	if (unlikely(!ssk->id)) {
 		if (ssk->isk.sk.sk_send_head) {
@@ -524,7 +575,9 @@ void sdp_post_sends(struct sdp_sock *ssk, int nonagle)
 
 	if (unlikely(c < ssk->rx_head - ssk->rx_tail) &&
 	    likely(ssk->bufs > 1) &&
-	    likely(ssk->tx_head - ssk->tx_tail < SDP_TX_SIZE)) {
+	    likely(ssk->tx_head - ssk->tx_tail < SDP_TX_SIZE) &&
+	    likely((1 << ssk->isk.sk.sk_state) &
+		    (TCPF_ESTABLISHED | TCPF_FIN_WAIT1))) {
 		skb = sk_stream_alloc_skb(&ssk->isk.sk,
 					  sizeof(struct sdp_bsdh),
 					  GFP_KERNEL);
@@ -533,27 +586,43 @@ void sdp_post_sends(struct sdp_sock *ssk, int nonagle)
 		sdp_post_send(ssk, skb, SDP_MID_DATA);
 	}
 
-	if (unlikely((1 << ssk->isk.sk.sk_state) &
-			(TCPF_FIN_WAIT1 | TCPF_LAST_ACK)) &&
+	if (unlikely(ssk->sdp_disconnect) &&
 		!ssk->isk.sk.sk_send_head &&
 		ssk->bufs > (ssk->remote_credits >= ssk->rx_head - ssk->rx_tail)) {
+		ssk->sdp_disconnect = 0;
 		skb = sk_stream_alloc_skb(&ssk->isk.sk,
 					  sizeof(struct sdp_bsdh),
 					  gfp_page);
 		/* FIXME */
 		BUG_ON(!skb);
 		sdp_post_send(ssk, skb, SDP_MID_DISCONN);
-		if (ssk->isk.sk.sk_state == TCP_FIN_WAIT1)
-			ssk->isk.sk.sk_state = TCP_FIN_WAIT2;
-		else
-			ssk->isk.sk.sk_state = TCP_CLOSING;
 	}
+}
+
+int sdp_init_buffers(struct sdp_sock *ssk, u32 new_size)
+{
+	ssk->recv_frags = PAGE_ALIGN(new_size - SDP_HEAD_SIZE) / PAGE_SIZE;
+	if (ssk->recv_frags > SDP_MAX_SEND_SKB_FRAGS)
+		ssk->recv_frags = SDP_MAX_SEND_SKB_FRAGS;
+	ssk->rcvbuf_scale = rcvbuf_scale;
+
+	sdp_post_recvs(ssk);
+
+	return 0;
 }
 
 int sdp_resize_buffers(struct sdp_sock *ssk, u32 new_size)
 {
+	skb_frag_t skb_frag;
 	u32 curr_size = SDP_HEAD_SIZE + ssk->recv_frags * PAGE_SIZE;
 	u32 max_size = SDP_HEAD_SIZE + SDP_MAX_SEND_SKB_FRAGS * PAGE_SIZE;
+
+	/* Bugzilla 1311, Kernels using smaller fragments must reject
+	 * re-size requests larger than 32k to prevent being sent
+	 * fragment larger than the receive buffer fragment.
+	 */
+	if ( (sizeof(skb_frag.size) < 4) && (max_size > 0x8000))
+		max_size = 0x8000;
 
 	if (new_size > curr_size && new_size <= max_size &&
 	    sdp_get_large_socket(ssk)) {
@@ -588,112 +657,166 @@ static void sdp_handle_resize_ack(struct sdp_sock *ssk, struct sdp_chrecvbuf *bu
 		ssk->sent_request = 0;
 }
 
-static void sdp_handle_wc(struct sdp_sock *ssk, struct ib_wc *wc)
+static int sdp_handle_recv_comp(struct sdp_sock *ssk, struct ib_wc *wc)
 {
+	struct sock *sk = &ssk->isk.sk;
+	int frags;
 	struct sk_buff *skb;
 	struct sdp_bsdh *h;
 	int pagesz, i;
 
-	if (wc->wr_id & SDP_OP_RECV) {
-		skb = sdp_recv_completion(ssk, wc->wr_id);
-		if (unlikely(!skb))
-			return;
+	skb = sdp_recv_completion(ssk, wc->wr_id);
+	if (unlikely(!skb))
+		return -1;
 
-		atomic_sub(SDP_MAX_SEND_SKB_FRAGS, &sdp_current_mem_usage);
+	atomic_sub(SDP_MAX_SEND_SKB_FRAGS, &sdp_current_mem_usage);
 
-		if (unlikely(wc->status)) {
-			if (wc->status != IB_WC_WR_FLUSH_ERR) {
-				sdp_dbg(&ssk->isk.sk,
-						"Recv completion with error. "
-						"Status %d\n", wc->status);
-				sdp_reset(&ssk->isk.sk);
-			}
-			__kfree_skb(skb);
-		} else {
-			int frags;
+	if (unlikely(wc->status)) {
+		if (wc->status != IB_WC_WR_FLUSH_ERR) {
+			sdp_dbg(sk, "Recv completion with error. Status %d\n",
+				wc->status);
+			sdp_reset(sk);
+		}
+		__kfree_skb(skb);
+		return 0;
+	}
 
-			sdp_dbg_data(&ssk->isk.sk,
-				     "Recv completion. ID %d Length %d\n",
-				     (int)wc->wr_id, wc->byte_len);
-			if (unlikely(wc->byte_len < sizeof(struct sdp_bsdh))) {
-				printk("SDP BUG! byte_len %d < %zd\n",
-				       wc->byte_len, sizeof(struct sdp_bsdh));
-				__kfree_skb(skb);
-				return;
-			}
-			skb->len = wc->byte_len;
-			if (likely(wc->byte_len > SDP_HEAD_SIZE))
-				skb->data_len = wc->byte_len - SDP_HEAD_SIZE;
-			else
-				skb->data_len = 0;
-			skb->data = skb->head;
+	sdp_dbg_data(sk, "Recv completion. ID %d Length %d\n",
+			(int)wc->wr_id, wc->byte_len);
+	if (unlikely(wc->byte_len < sizeof(struct sdp_bsdh))) {
+		printk(KERN_WARNING "SDP BUG! byte_len %d < %zd\n",
+				wc->byte_len, sizeof(struct sdp_bsdh));
+		__kfree_skb(skb);
+		return -1;
+	}
+	skb->len = wc->byte_len;
+	if (likely(wc->byte_len > SDP_HEAD_SIZE))
+		skb->data_len = wc->byte_len - SDP_HEAD_SIZE;
+	else
+		skb->data_len = 0;
+	skb->data = skb->head;
 #ifdef NET_SKBUFF_DATA_USES_OFFSET
-			skb->tail = skb_headlen(skb);
+	skb->tail = skb_headlen(skb);
 #else
-			skb->tail = skb->head + skb_headlen(skb);
+	skb->tail = skb->head + skb_headlen(skb);
 #endif
-			h = (struct sdp_bsdh *)skb->data;
-			skb_reset_transport_header(skb);
-			ssk->mseq_ack = ntohl(h->mseq);
-			if (ssk->mseq_ack != (int)wc->wr_id)
-				printk("SDP BUG! mseq %d != wrid %d\n",
-						ssk->mseq_ack, (int)wc->wr_id);
-			ssk->bufs = ntohl(h->mseq_ack) - ssk->tx_head + 1 +
-				ntohs(h->bufs);
+	h = (struct sdp_bsdh *)skb->data;
+	skb_reset_transport_header(skb);
+	ssk->mseq_ack = ntohl(h->mseq);
+	if (ssk->mseq_ack != (int)wc->wr_id)
+		printk(KERN_WARNING "SDP BUG! mseq %d != wrid %d\n",
+				ssk->mseq_ack, (int)wc->wr_id);
+	ssk->bufs = ntohl(h->mseq_ack) - ssk->tx_head + 1 +
+		ntohs(h->bufs);
 
-			frags = skb_shinfo(skb)->nr_frags;
-			pagesz = PAGE_ALIGN(skb->data_len);
-			skb_shinfo(skb)->nr_frags = pagesz / PAGE_SIZE;
+	frags = skb_shinfo(skb)->nr_frags;
+	pagesz = PAGE_ALIGN(skb->data_len);
+	skb_shinfo(skb)->nr_frags = pagesz / PAGE_SIZE;
 
-			for (i = skb_shinfo(skb)->nr_frags;
-			     i < frags; ++i) {
-				put_page(skb_shinfo(skb)->frags[i].page);
-				skb->truesize -= PAGE_SIZE;
-			}
+	for (i = skb_shinfo(skb)->nr_frags;
+			i < frags; ++i) {
+		put_page(skb_shinfo(skb)->frags[i].page);
+		skb->truesize -= PAGE_SIZE;
+	}
 
-			if (unlikely(h->flags & SDP_OOB_PEND))
-				sk_send_sigurg(&ssk->isk.sk);
+	if (unlikely(h->flags & SDP_OOB_PEND))
+		sk_send_sigurg(sk);
 
-			skb_pull(skb, sizeof(struct sdp_bsdh));
+	skb_pull(skb, sizeof(struct sdp_bsdh));
 
-			if (likely(h->mid == SDP_MID_DATA) &&
-			    likely(skb->len > 0)) {
-				int oob = h->flags & SDP_OOB_PRES;
-				skb = sdp_sock_queue_rcv_skb(&ssk->isk.sk, skb);
-				if (unlikely(oob))
-					sdp_urg(ssk, skb);
-			} else if (likely(h->mid == SDP_MID_DATA)) {
-				__kfree_skb(skb);
-			} else if (h->mid == SDP_MID_DISCONN) {
-				/* this will wake recvmsg */
-				sdp_sock_queue_rcv_skb(&ssk->isk.sk, skb);
-				sdp_fin(&ssk->isk.sk);
-			} else if (h->mid == SDP_MID_CHRCVBUF) {
-				sdp_handle_resize_request(ssk, (struct sdp_chrecvbuf *)skb->data);
-				__kfree_skb(skb);
-			} else if (h->mid == SDP_MID_CHRCVBUF_ACK) {
-				sdp_handle_resize_ack(ssk, (struct sdp_chrecvbuf *)skb->data);
-				__kfree_skb(skb);
-			} else {
-				/* TODO: Handle other messages */
-				printk("SDP: FIXME MID %d\n", h->mid);
-				__kfree_skb(skb);
-			}
+	switch (h->mid) {
+	case SDP_MID_DATA:
+		if (unlikely(skb->len <= 0)) {
+			__kfree_skb(skb);
+			break;
 		}
-	} else if (likely(wc->wr_id & SDP_OP_SEND)) {
-		skb = sdp_send_completion(ssk, wc->wr_id);
-		if (unlikely(!skb))
+
+		if (unlikely(sk->sk_shutdown & RCV_SHUTDOWN)) {
+			/* got data in RCV_SHUTDOWN */
+			if (sk->sk_state == TCP_FIN_WAIT1) {
+				/* go into abortive close */
+				sdp_exch_state(sk, TCPF_FIN_WAIT1,
+					       TCP_TIME_WAIT);
+
+				sk->sk_prot->disconnect(sk, 0);
+			}
+
+			__kfree_skb(skb);
+			break;
+		}
+		skb = sdp_sock_queue_rcv_skb(sk, skb);
+		if (unlikely(h->flags & SDP_OOB_PRES))
+			sdp_urg(ssk, skb);
+		break;
+	case SDP_MID_DISCONN:
+		__kfree_skb(skb);
+		sdp_fin(sk);
+		break;
+	case SDP_MID_CHRCVBUF:
+		sdp_handle_resize_request(ssk,
+			(struct sdp_chrecvbuf *)skb->data);
+		__kfree_skb(skb);
+		break;
+	case SDP_MID_CHRCVBUF_ACK:
+		sdp_handle_resize_ack(ssk, (struct sdp_chrecvbuf *)skb->data);
+		__kfree_skb(skb);
+		break;
+	default:
+		/* TODO: Handle other messages */
+		printk(KERN_WARNING "SDP: FIXME MID %d\n", h->mid);
+		__kfree_skb(skb);
+	}
+
+	return 0;
+}
+
+static int sdp_handle_send_comp(struct sdp_sock *ssk, struct ib_wc *wc)
+{
+	struct sk_buff *skb;
+	struct sdp_bsdh *h;
+
+	skb = sdp_send_completion(ssk, wc->wr_id);
+	if (unlikely(!skb))
+		return -1;
+
+	if (unlikely(wc->status)) {
+		if (wc->status != IB_WC_WR_FLUSH_ERR) {
+			struct sock *sk = &ssk->isk.sk;
+			sdp_dbg(sk, "Send completion with error. "
+				"Status %d\n", wc->status);
+			sdp_set_error(sk, -ECONNRESET);
+			wake_up(&ssk->wq);
+
+			queue_work(sdp_workqueue, &ssk->destroy_work);
+		}
+		goto out;
+	}
+
+	h = (struct sdp_bsdh *)skb->data;
+
+	if (likely(h->mid != SDP_MID_DISCONN))
+		goto out;
+
+	if ((1 << ssk->isk.sk.sk_state) & ~(TCPF_FIN_WAIT1 | TCPF_LAST_ACK)) {
+		sdp_dbg(&ssk->isk.sk,
+			"%s: sent DISCONNECT from unexpected state %d\n",
+			__func__, ssk->isk.sk.sk_state);
+	}
+
+out:
+	sk_stream_free_skb(&ssk->isk.sk, skb);
+
+	return 0;
+}
+
+static void sdp_handle_wc(struct sdp_sock *ssk, struct ib_wc *wc)
+{
+	if (wc->wr_id & SDP_OP_RECV) {
+		if (sdp_handle_recv_comp(ssk, wc))
 			return;
-		sk_stream_free_skb(&ssk->isk.sk, skb);
-		if (unlikely(wc->status)) {
-			if (wc->status != IB_WC_WR_FLUSH_ERR) {
-				sdp_dbg(&ssk->isk.sk,
-						"Send completion with error. "
-						"Status %d\n", wc->status);
-				sdp_set_error(&ssk->isk.sk, -ECONNRESET);
-				wake_up(&ssk->wq);
-			}
-		}
+	} else if (likely(wc->wr_id & SDP_OP_SEND)) {
+		if (sdp_handle_send_comp(ssk, wc))
+			return;
 	} else {
 		sdp_cnt(sdp_keepalive_probes_sent);
 
@@ -710,13 +833,6 @@ static void sdp_handle_wc(struct sdp_sock *ssk, struct ib_wc *wc)
 		wake_up(&ssk->wq);
 
 		return;
-	}
-
-	if (ssk->time_wait && !ssk->isk.sk.sk_send_head &&
-	    ssk->tx_head == ssk->tx_tail) {
-		sdp_dbg(&ssk->isk.sk, "%s: destroy in time wait state\n",
-			__func__);
-		sdp_time_wait_destroy_sk(ssk);
 	}
 }
 

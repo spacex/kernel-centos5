@@ -21,6 +21,7 @@
 #include <linux/writeback.h>
 #include <linux/init.h>
 #include <linux/backing-dev.h>
+#include <linux/task_io_accounting_ops.h>
 #include <linux/blkdev.h>
 #include <linux/mpage.h>
 #include <linux/percpu.h>
@@ -30,6 +31,7 @@
 #include <linux/cpu.h>
 #include <linux/syscalls.h>
 #include <linux/rmap.h>
+#include <trace/mm.h>
 
 /*
  * The maximum number of pages to writeout in a single bdflush/kupdate
@@ -39,6 +41,7 @@
  * the dirty each time it has written this many pages.
  */
 #define MAX_WRITEBACK_PAGES	1024
+int max_writeback_pages = MAX_WRITEBACK_PAGES;
 
 /*
  * After a CPU has dirtied this many pages, balance_dirty_pages_ratelimited
@@ -144,7 +147,9 @@ get_dirty_limits(long *pbackground, long *pdirty,
 					total_pages;
 
 	dirty_ratio = vm_dirty_ratio;
-	if (dirty_ratio > unmapped_ratio / 2)
+
+	/* if vm_dirty_ratio is 100 dont limit to 1/2 unmapped_ratio */
+	if ((dirty_ratio > unmapped_ratio / 2) && (dirty_ratio != 100))
 		dirty_ratio = unmapped_ratio / 2;
 
 	if (dirty_ratio < 5)
@@ -344,10 +349,10 @@ static void background_writeout(unsigned long _min_pages)
 				&& min_pages <= 0)
 			break;
 		wbc.encountered_congestion = 0;
-		wbc.nr_to_write = MAX_WRITEBACK_PAGES;
+		wbc.nr_to_write = max_writeback_pages;
 		wbc.pages_skipped = 0;
 		writeback_inodes(&wbc);
-		min_pages -= MAX_WRITEBACK_PAGES - wbc.nr_to_write;
+		min_pages -= max_writeback_pages - wbc.nr_to_write;
 		if (wbc.nr_to_write > 0 || wbc.pages_skipped > 0) {
 			/* Wrote less than expected */
 			blk_congestion_wait(WRITE, HZ/10);
@@ -355,6 +360,7 @@ static void background_writeout(unsigned long _min_pages)
 				break;
 		}
 	}
+	trace_mm_pdflush_bgwriteout(_min_pages);
 }
 
 /*
@@ -405,6 +411,8 @@ static void wb_kupdate(unsigned long arg)
 		.nonblocking	= 1,
 		.for_kupdate	= 1,
 		.range_cyclic	= 1,
+		.range_start	= 0,
+		.range_end 	= LLONG_MAX,
 	};
 
 	sync_supers();
@@ -415,9 +423,10 @@ static void wb_kupdate(unsigned long arg)
 	nr_to_write = global_page_state(NR_FILE_DIRTY) +
 			global_page_state(NR_UNSTABLE_NFS) +
 			(inodes_stat.nr_inodes - inodes_stat.nr_unused);
+	trace_mm_pdflush_kupdate(nr_to_write);
 	while (nr_to_write > 0) {
 		wbc.encountered_congestion = 0;
-		wbc.nr_to_write = MAX_WRITEBACK_PAGES;
+		wbc.nr_to_write = max_writeback_pages;
 		writeback_inodes(&wbc);
 		if (wbc.nr_to_write > 0) {
 			if (wbc.encountered_congestion)
@@ -425,7 +434,7 @@ static void wb_kupdate(unsigned long arg)
 			else
 				break;	/* All the old data is written */
 		}
-		nr_to_write -= MAX_WRITEBACK_PAGES - wbc.nr_to_write;
+		nr_to_write -= max_writeback_pages - wbc.nr_to_write;
 	}
 	if (time_before(next_jif, jiffies + HZ))
 		next_jif = jiffies + HZ;
@@ -634,9 +643,11 @@ int __set_page_dirty_nobuffers(struct page *page)
 			mapping2 = page_mapping(page);
 			if (mapping2) { /* Race with truncate? */
 				BUG_ON(mapping2 != mapping);
-				if (mapping_cap_account_dirty(mapping))
+				if (mapping_cap_account_dirty(mapping)) {
 					__inc_zone_page_state(page,
 								NR_FILE_DIRTY);
+					task_io_account_write(PAGE_CACHE_SIZE);
+				}
 				radix_tree_tag_set(&mapping->page_tree,
 					page_index(page), PAGECACHE_TAG_DIRTY);
 			}

@@ -31,7 +31,7 @@
 #include <scsi/scsi_device.h>
 #include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_transport.h>
-#include <scsi/scsi_transport_iscsi.h>
+#include <scsi/scsi_transport_iscsi2.h>
 
 
 #ifndef PCI_DEVICE_ID_QLOGIC_ISP4010
@@ -100,7 +100,6 @@
 #define MAX_SRBS		MAX_CMDS_TO_RISC
 #define MBOX_AEN_REG_COUNT	5
 #define MAX_INIT_RETRIES	5
-#define IOCB_HIWAT_CUSHION	16
 
 /*
  * Buffer sizes
@@ -186,6 +185,11 @@ struct srb {
 	uint16_t cc_stat;
 	u_long r_start;		/* Time we recieve a cmd from OS */
 	u_long u_start;		/* Time when we handed the cmd to F/W */
+
+	/* Used for extended sense / status continuation */
+	uint8_t *req_sense_ptr;
+	uint16_t req_sense_len;
+	uint16_t reserved2;
 };
 
 	/*
@@ -314,7 +318,7 @@ struct scsi_qla_host {
 #define DPC_GET_DHCP_IP_ADDR	     15 /* 0x00008000 */
 
 	uint16_t	iocb_cnt;
-	uint16_t	iocb_hiwat;
+	uint16_t	rsvd;
 
 	/* SRB cache. */
 #define SRB_MIN_REQ	128
@@ -329,8 +333,7 @@ struct scsi_qla_host {
 #define MIN_IOBASE_LEN		0x100
 
 	uint16_t req_q_count;
-	uint8_t marker_needed;
-	uint8_t rsvd1;
+	uint8_t rsvd1[2];
 
 	unsigned long host_no;
 
@@ -373,7 +376,7 @@ struct scsi_qla_host {
 	uint8_t alias[32];
 	uint8_t name_string[256];
 	uint8_t heartbeat_interval;
-	uint8_t rsvd;
+	uint8_t rsvd2;
 
 	/* --- From FlashSysInfo --- */
 	uint8_t my_mac[MAC_ADDR_LEN];
@@ -436,14 +439,15 @@ struct scsi_qla_host {
 	uint16_t aen_out;
 	struct aen aen_q[MAX_AEN_ENTRIES];
 
-	/* pdu variables */
-	uint16_t pdu_count;	/* Number of available aen_q entries */
-	uint16_t pdu_in;	/* Current indexes */
-	uint16_t pdu_out;
-	uint16_t pdu_active;
-	struct pdu_entry *free_pdu_top;
-	struct pdu_entry *free_pdu_bottom;
-	struct pdu_entry pdu_queue[MAX_PDU_ENTRIES];
+	/* Placeholder for original srb of status continuation */
+        struct srb *status_srb;
+
+        /* reserved fields */
+        uint8_t rsvd3[392];
+        void *rsvd4[97];
+#if (BITS_PER_LONG==64)
+        uint32_t rsvd5[32];
+#endif
 
 	/* This mutex protects several threads to do mailbox commands
 	 * concurrently.

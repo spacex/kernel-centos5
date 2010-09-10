@@ -596,6 +596,17 @@ static int __init copy_e820_map(struct e820entry * biosmap, int nr_map)
 			return -1;
 
 		/*
+		 * Some BIOSes corrupt RAM in the 0 - 64k region.
+		 * Reserve this memory.
+		 */
+		if (type == E820_RAM) {
+			if (start < 0x10000ULL && end > 0x10000ULL) {
+				start = 0x10000ULL;
+				size = end - start;
+			}
+		}
+
+		/*
 		 * Some BIOSes claim RAM in the 640k - 1M region.
 		 * Not right. Fix it up.
 		 * 

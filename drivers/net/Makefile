@@ -10,6 +10,7 @@ obj-$(CONFIG_E1000) += e1000/
 obj-$(CONFIG_E1000E) += e1000e/
 obj-$(CONFIG_IGB) += igb/
 obj-$(CONFIG_IBM_EMAC) += ibm_emac/
+obj-$(CONFIG_IGBVF) += igbvf/
 obj-$(CONFIG_IXGBE) += ixgbe/
 obj-$(CONFIG_IXGB) += ixgb/
 obj-$(CONFIG_CHELSIO_T1) += chelsio/
@@ -18,6 +19,7 @@ obj-$(CONFIG_EHEA) += ehea/
 obj-$(CONFIG_BONDING) += bonding/
 obj-$(CONFIG_GIANFAR) += gianfar_driver.o
 obj-$(CONFIG_ENIC) += enic/
+obj-$(CONFIG_BE2NET) += benet/
 
 gianfar_driver-objs := gianfar.o \
 		gianfar_ethtool.o \
@@ -67,6 +69,7 @@ obj-$(CONFIG_STNIC) += stnic.o 8390.o
 obj-$(CONFIG_FEALNX) += fealnx.o
 obj-$(CONFIG_TIGON3) += tg3.o
 obj-$(CONFIG_BNX2) += bnx2.o
+obj-$(CONFIG_CNIC) += cnic.o
 obj-$(CONFIG_BNX2X) += bnx2x.o
 bnx2x-objs := bnx2x_main.o bnx2x_link.o
 spidernet-y += spider_net.o spider_net_ethtool.o
@@ -122,6 +125,7 @@ obj-$(CONFIG_NE_H8300) += ne-h8300.o 8390.o
 
 obj-$(CONFIG_MV643XX_ETH) += mv643xx_eth.o
 obj-$(CONFIG_QLA3XXX) += qla3xxx.o
+obj-$(CONFIG_QLGE) += qlge/
 
 obj-$(CONFIG_PPP) += ppp_generic.o slhc.o
 obj-$(CONFIG_PPP_ASYNC) += ppp_async.o

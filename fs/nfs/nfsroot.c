@@ -123,7 +123,9 @@ enum {
 	Opt_soft, Opt_hard, Opt_intr,
 	Opt_nointr, Opt_posix, Opt_noposix, Opt_cto, Opt_nocto, Opt_ac, 
 	Opt_noac, Opt_lock, Opt_nolock, Opt_v2, Opt_v3, Opt_udp, Opt_tcp,
-	Opt_acl, Opt_noacl,
+	Opt_acl, Opt_noacl, Opt_lookupcache_all, Opt_lookupcache_positive,
+	Opt_lookupcache_none,
+	
 	/* Error token */
 	Opt_err
 };
@@ -160,6 +162,10 @@ static match_table_t __initdata tokens = {
 	{Opt_tcp, "tcp"},
 	{Opt_acl, "acl"},
 	{Opt_noacl, "noacl"},
+	{Opt_lookupcache_all, "lookupcache=all" },
+	{Opt_lookupcache_positive, "lookupcache=pos" },
+	{Opt_lookupcache_positive, "lookupcache=positive" },
+	{Opt_lookupcache_none, "lookupcache=none" },
 	{Opt_err, NULL}
 	
 };
@@ -273,6 +279,16 @@ static int __init root_nfs_parse(char *name, char *buf)
 				break;
 			case Opt_noacl:
 				nfs_data.flags |= NFS_MOUNT_NOACL;
+				break;
+			case Opt_lookupcache_all:
+				nfs_data.flags &= ~(NFS_MOUNT_LOOKUP_CACHE_NONEG|NFS_MOUNT_LOOKUP_CACHE_NONE);
+				break;
+			case Opt_lookupcache_positive:
+				nfs_data.flags &= ~NFS_MOUNT_LOOKUP_CACHE_NONE;
+				nfs_data.flags |= NFS_MOUNT_LOOKUP_CACHE_NONEG;
+				break;
+			case Opt_lookupcache_none:
+				nfs_data.flags |= NFS_MOUNT_LOOKUP_CACHE_NONEG|NFS_MOUNT_LOOKUP_CACHE_NONE;
 				break;
 			default:
 				printk(KERN_WARNING "Root-NFS: unknown "

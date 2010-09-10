@@ -13,6 +13,10 @@ obj-y	+=	rise.o
 obj-y	+=	nexgen.o
 obj-y	+=	umc.o
 
+ifndef CONFIG_XEN
+obj-y   +=      vmware.o hypervisor.o
+endif
+
 obj-$(CONFIG_X86_MCE)	+=	mcheck/
 
 obj-$(CONFIG_MTRR)	+= 	mtrr/

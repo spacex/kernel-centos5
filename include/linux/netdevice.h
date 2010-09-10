@@ -235,6 +235,7 @@ enum netdev_state_t
 	__LINK_STATE_LINKWATCH_PENDING,
 	__LINK_STATE_DORMANT,
 	__LINK_STATE_QDISC_RUNNING,
+	__LINK_STATE_NETPOLL
 };
 
 
@@ -249,6 +250,39 @@ struct netdev_boot_setup {
 #define NETDEV_BOOT_SETUP_MAX 8
 
 extern int __init netdev_boot_setup(char *str);
+
+struct napi_struct {
+	/* The poll_list must only be managed by the entity which
+	 * changes the state of the NAPI_STATE_SCHED bit.  This means
+	 * whoever atomically sets that bit can add this napi_struct
+	 * to the per-cpu poll_list, and whoever clears that bit
+	 * can remove from the list right before clearing the bit.
+	 */
+	struct list_head	poll_list;
+
+	unsigned long		state;
+	int			weight;
+	int			(*poll)(struct napi_struct *, int);
+#ifdef CONFIG_NETPOLL
+	spinlock_t		poll_lock;
+	int			poll_owner;
+#endif
+
+	unsigned int		gro_count;
+
+	struct net_device	*dev;
+	struct list_head	dev_list;
+	struct sk_buff		*gro_list;
+	struct sk_buff		*skb;
+};
+
+enum {
+	GRO_MERGED,
+	GRO_MERGED_FREE,
+	GRO_HELD,
+	GRO_NORMAL,
+	GRO_DROP,
+};
 
 /*
  *	The DEVICE structure.
@@ -312,6 +346,7 @@ struct net_device
 #define NETIF_F_VLAN_CHALLENGED	1024	/* Device cannot handle VLAN packets */
 #define NETIF_F_GSO		2048	/* Enable software GSO. */
 #define NETIF_F_LLTX		4096	/* LockLess TX */
+#define NETIF_F_GRO		16384	/* Generic receive offload */
 
 	/* Segmentation offload features */
 #define NETIF_F_GSO_SHIFT	16
@@ -327,6 +362,14 @@ struct net_device
 
 #define NETIF_F_GEN_CSUM	(NETIF_F_NO_CSUM | NETIF_F_HW_CSUM)
 #define NETIF_F_ALL_CSUM	(NETIF_F_IP_CSUM | NETIF_F_GEN_CSUM)
+
+	/*
+	 * If one device supports one of these features, then enable them
+	 * for all in netdev_increment_features.
+	 */
+#define NETIF_F_ONE_FOR_ALL	(NETIF_F_GSO_SOFTWARE | NETIF_F_GSO_ROBUST | \
+				 NETIF_F_SG | NETIF_F_HIGHDMA | \
+				 NETIF_F_FRAGLIST)
 
 	struct net_device	*next_sched;
 
@@ -578,6 +621,40 @@ static inline struct net_device_extended *dev_extended(struct net_device *dev)
  */
 #define SET_NETDEV_DEV(net, pdev)	((net)->class_dev.dev = (pdev))
 
+struct napi_gro_cb {
+	/* Virtual address of skb_shinfo(skb)->frags[0].page + offset. */
+	void *frag0;
+
+	/* Length of frag0. */
+	unsigned int frag0_len;
+
+	/* This indicates where we are processing relative to skb->data. */
+	int data_offset;
+
+	/* This is non-zero if the packet may be of the same flow. */
+	int same_flow;
+
+	/* This is non-zero if the packet cannot be merged with the new skb. */
+	int flush;
+
+	/* Number of segments aggregated. */
+	int count;
+
+	/* Free the skb? */
+	int free;
+};
+
+#define NAPI_GRO_CB(skb) ((struct napi_gro_cb *)(skb)->cb)
+
+struct gro_packet_type {
+	__be16			type;	/* This is really htons(ether_type). */
+	struct net_device	*dev;	/* NULL is wildcarded here	     */
+	struct sk_buff		**(*gro_receive)(struct sk_buff **head,
+					       struct sk_buff *skb);
+	int			(*gro_complete)(struct sk_buff *skb);
+	struct list_head	list;
+};
+
 struct packet_type {
 	__be16			type;	/* This is really htons(ether_type). */
 	struct net_device	*dev;	/* NULL is wildcarded here	     */
@@ -606,6 +683,8 @@ extern struct net_device *dev_getfirstbyhwtype(unsigned short type);
 extern void		dev_add_pack(struct packet_type *pt);
 extern void		dev_remove_pack(struct packet_type *pt);
 extern void		__dev_remove_pack(struct packet_type *pt);
+extern void		dev_add_pack_gro(struct gro_packet_type *pt);
+extern void		dev_remove_pack_gro(struct gro_packet_type *pt);
 
 extern struct net_device	*dev_get_by_flags(unsigned short flags,
 						  unsigned short mask);
@@ -628,6 +707,55 @@ extern int		dev_restart(struct net_device *dev);
 #ifdef CONFIG_NETPOLL_TRAP
 extern int		netpoll_trap(void);
 #endif
+
+extern int	       skb_gro_receive(struct sk_buff **head,
+				       struct sk_buff *skb);
+extern void	       skb_gro_reset_offset(struct sk_buff *skb);
+
+static inline unsigned int skb_gro_offset(const struct sk_buff *skb)
+{
+	return NAPI_GRO_CB(skb)->data_offset;
+}
+
+static inline unsigned int skb_gro_len(const struct sk_buff *skb)
+{
+	return skb->len - NAPI_GRO_CB(skb)->data_offset;
+}
+
+static inline void skb_gro_pull(struct sk_buff *skb, unsigned int len)
+{
+	NAPI_GRO_CB(skb)->data_offset += len;
+}
+
+static inline void *skb_gro_header_fast(struct sk_buff *skb,
+					unsigned int offset)
+{
+	return NAPI_GRO_CB(skb)->frag0 + offset;
+}
+
+static inline int skb_gro_header_hard(struct sk_buff *skb, unsigned int hlen)
+{
+	return NAPI_GRO_CB(skb)->frag0_len < hlen;
+}
+
+static inline void *skb_gro_header_slow(struct sk_buff *skb, unsigned int hlen,
+					unsigned int offset)
+{
+	NAPI_GRO_CB(skb)->frag0 = NULL;
+	NAPI_GRO_CB(skb)->frag0_len = 0;
+	return pskb_may_pull(skb, hlen) ? skb->data + offset : NULL;
+}
+
+static inline void *skb_gro_mac_header(struct sk_buff *skb)
+{
+	return NAPI_GRO_CB(skb)->frag0 ?: skb_mac_header(skb);
+}
+
+static inline void *skb_gro_network_header(struct sk_buff *skb)
+{
+	return (NAPI_GRO_CB(skb)->frag0 ?: skb->data) +
+	       skb_network_offset(skb);
+}
 
 typedef int gifconf_func_t(struct net_device * dev, char __user * bufptr, int len);
 extern int		register_gifconf(unsigned int family, gifconf_func_t * gifconf);
@@ -729,6 +857,26 @@ extern int		netif_rx(struct sk_buff *skb);
 extern int		netif_rx_ni(struct sk_buff *skb);
 #define HAVE_NETIF_RECEIVE_SKB 1
 extern int		netif_receive_skb(struct sk_buff *skb);
+extern void		napi_gro_flush(struct napi_struct *napi);
+extern int		dev_gro_receive(struct napi_struct *napi,
+					struct sk_buff *skb);
+extern int		napi_skb_finish(int ret, struct sk_buff *skb);
+extern int		napi_gro_receive(struct napi_struct *napi,
+					 struct sk_buff *skb);
+extern void		napi_reuse_skb(struct napi_struct *napi,
+				       struct sk_buff *skb);
+extern struct sk_buff *	napi_get_frags(struct napi_struct *napi);
+extern int		napi_frags_finish(struct napi_struct *napi,
+					  struct sk_buff *skb, int ret);
+extern struct sk_buff *	napi_frags_skb(struct napi_struct *napi);
+extern int		napi_gro_frags(struct napi_struct *napi);
+
+static inline void napi_free_frags(struct napi_struct *napi)
+{
+	kfree_skb(napi->skb);
+	napi->skb = NULL;
+}
+
 extern int		dev_valid_name(const char *name);
 extern int		dev_ioctl(unsigned int cmd, void __user *);
 extern int		dev_ethtool(struct ifreq *);
@@ -917,12 +1065,21 @@ static inline void netif_rx_complete(struct net_device *dev)
 {
 	unsigned long flags;
 
+	/* do not change poll list if called from netpoll */
+	if (test_bit(__LINK_STATE_NETPOLL, &dev->state))
+		return;
 	local_irq_save(flags);
 	BUG_ON(!test_bit(__LINK_STATE_RX_SCHED, &dev->state));
 	list_del(&dev->poll_list);
 	smp_mb__before_clear_bit();
 	clear_bit(__LINK_STATE_RX_SCHED, &dev->state);
 	local_irq_restore(flags);
+}
+
+static inline void napi_complete(struct napi_struct *n)
+{
+	napi_gro_flush(n);
+	netif_rx_complete(n->dev);
 }
 
 static inline void netif_poll_disable(struct net_device *dev)
@@ -942,6 +1099,9 @@ static inline void netif_poll_enable(struct net_device *dev)
  */
 static inline void __netif_rx_complete(struct net_device *dev)
 {
+	/* do not change poll list if called from netpoll */
+	if (test_bit(__LINK_STATE_NETPOLL, &dev->state))
+		return;
 	BUG_ON(!test_bit(__LINK_STATE_RX_SCHED, &dev->state));
 	list_del(&dev->poll_list);
 	smp_mb__before_clear_bit();
@@ -1004,6 +1164,7 @@ extern void		dev_mc_discard(struct net_device *dev);
 extern void		dev_set_promiscuity(struct net_device *dev, int inc);
 extern void		dev_set_allmulti(struct net_device *dev, int inc);
 extern void		netdev_state_change(struct net_device *dev);
+extern void		netdev_bonding_change(struct net_device *dev);
 extern void		netdev_features_change(struct net_device *dev);
 /* Load a device via the kmod */
 extern void		dev_load(const char *name);
@@ -1030,9 +1191,14 @@ extern void *dev_seq_next(struct seq_file *seq, void *v, loff_t *pos);
 extern void dev_seq_stop(struct seq_file *seq, void *v);
 #endif
 
+extern int netdev_class_create_file(struct class_attribute *class_attr);
+extern void netdev_class_remove_file(struct class_attribute *class_attr);
+
 extern void linkwatch_run_queue(void);
 
-extern int netdev_compute_features(unsigned long all, unsigned long one);
+unsigned long netdev_increment_features(unsigned long all, unsigned long one,
+					unsigned long mask);
+unsigned long netdev_fix_features(unsigned long features, const char *name);
 
 static inline int net_gso_ok(int features, int gso_type)
 {
@@ -1042,7 +1208,8 @@ static inline int net_gso_ok(int features, int gso_type)
 
 static inline int skb_gso_ok(struct sk_buff *skb, int features)
 {
-	return net_gso_ok(features, skb_shinfo(skb)->gso_type);
+	return net_gso_ok(features, skb_shinfo(skb)->gso_type) &&
+	       (!skb_shinfo(skb)->frag_list || (features & NETIF_F_FRAGLIST));
 }
 
 static inline int netif_needs_gso(struct net_device *dev, struct sk_buff *skb)
@@ -1061,22 +1228,26 @@ static inline int skb_bond_should_drop(struct sk_buff *skb)
 	struct net_device *dev = skb->dev;
 	struct net_device *master = dev->master;
 
-	if (master &&
-	    (dev->priv_flags & IFF_SLAVE_INACTIVE)) {
-		if ((dev->priv_flags & IFF_SLAVE_NEEDARP) &&
-		    skb->protocol == __constant_htons(ETH_P_ARP))
-			return 0;
+	if (master) {
+		if (master->priv_flags & IFF_MASTER_ARPMON)
+			dev->last_rx = jiffies;
 
-		if (master->priv_flags & IFF_MASTER_ALB) {
-			if (skb->pkt_type != PACKET_BROADCAST &&
-			    skb->pkt_type != PACKET_MULTICAST)
+		if (dev->priv_flags & IFF_SLAVE_INACTIVE) {
+			if ((dev->priv_flags & IFF_SLAVE_NEEDARP) &&
+			    skb->protocol == __constant_htons(ETH_P_ARP))
 				return 0;
-		}
-		if (master->priv_flags & IFF_MASTER_8023AD &&
-		    skb->protocol == __constant_htons(ETH_P_SLOW))
-			return 0;
 
-		return 1;
+			if (master->priv_flags & IFF_MASTER_ALB) {
+				if (skb->pkt_type != PACKET_BROADCAST &&
+				    skb->pkt_type != PACKET_MULTICAST)
+					return 0;
+			}
+			if (master->priv_flags & IFF_MASTER_8023AD &&
+			    skb->protocol == __constant_htons(ETH_P_SLOW))
+				return 0;
+
+			return 1;
+		}
 	}
 	return 0;
 }

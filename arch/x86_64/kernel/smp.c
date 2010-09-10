@@ -294,6 +294,7 @@ void smp_send_reschedule(int cpu)
 {
 	send_IPI_mask(cpumask_of_cpu(cpu), RESCHEDULE_VECTOR);
 }
+EXPORT_SYMBOL_GPL(smp_send_reschedule);
 
 /*
  * Structure and data for smp_call_function(). This is designed to minimise

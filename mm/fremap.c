@@ -15,6 +15,7 @@
 #include <linux/rmap.h>
 #include <linux/module.h>
 #include <linux/syscalls.h>
+#include <linux/mmu_notifier.h>
 
 #include <asm/mmu_context.h>
 #include <asm/cacheflush.h>
@@ -212,9 +213,11 @@ asmlinkage long sys_remap_file_pages(unsigned long start, unsigned long size,
 			spin_unlock(&mapping->i_mmap_lock);
 		}
 
+		mmu_notifier_invalidate_range_start(mm, start, start + size);
 		err = vma->vm_ops->populate(vma, start, size,
 					    vma->vm_page_prot,
 					    pgoff, flags & MAP_NONBLOCK);
+		mmu_notifier_invalidate_range_end(mm, start, start + size);
 
 		/*
 		 * We can't clear VM_NONLINEAR because we'd have to do

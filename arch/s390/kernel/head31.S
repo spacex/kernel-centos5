@@ -38,23 +38,25 @@ startup:basr	%r13,0			# get base
 startup_continue:
 	basr	%r13,0			# get base
 .LPG1:	mvi	__LC_AR_MODE_ID,0	# set ESA flag (mode 0)
-	GET_IPL_DEVICE
 	lctl	%c0,%c15,.Lctl-.LPG1(%r13) # load control registers
 	l	%r12,.Lparmaddr-.LPG1(%r13) # pointer to parameter area
 					# move IPL device to lowcore
 	mvc	__LC_IPLDEV(4),IPL_DEVICE-PARMAREA(%r12)
-
 #
-# clear bss memory
+# Setup stack
 #
-	l	%r2,.Lbss_bgn-.LPG1(%r13) # start of bss
-	l	%r3,.Lbss_end-.LPG1(%r13) # end of bss
-	sr	%r3,%r2			# length of bss
-	sr	%r4,%r4
-	sr	%r5,%r5			# set src,length and pad to zero
-	sr	%r0,%r0
-	mvcle	%r2,%r4,0		# clear mem
-	jo	.-4			# branch back, if not finish
+	l	%r15,.Linittu-.LPG1(%r13)
+	mvc	__LC_CURRENT(4),__TI_task(%r15)
+	ahi	%r15,1<<(PAGE_SHIFT+THREAD_ORDER) # init_task_union+THREAD_SIZE
+	st	%r15,__LC_KERNEL_STACK	# set end of kernel stack
+	ahi	%r15,-96
+	xc	__SF_BACKCHAIN(4,%r15),__SF_BACKCHAIN(%r15) # clear backchain
+#
+# Save ipl parameters, clear bss memory, initialize storage key for kernel pages,
+# and create a kernel NSS if the SAVESYS= parm is defined
+#
+	l	%r14,.Lstartup_init-.LPG1(%r13)
+	basr	%r14,%r14
 
 	l	%r2,.Lrcp-.LPG1(%r13)	# Read SCP forced command word
 .Lservicecall:
@@ -115,6 +117,10 @@ startup_continue:
 	b	.Lfchunk-.LPG1(%r13)
 
 	.align 4
+.Linittu:
+	.long	init_thread_union
+.Lstartup_init:
+	.long	startup_init
 .Lpmask:
 	.byte	0
 .align 8
@@ -142,18 +148,21 @@ startup_continue:
 	slr	%r4,%r4			# set start of chunk to zero
 	slr	%r5,%r5			# set end of chunk to zero
 	slr	%r6,%r6			# set access code to zero
-	la	%r10, MEMORY_CHUNKS	# number of chunks
+	la	%r10,MEMORY_CHUNKS	# number of chunks
 .Lloop:
 	tprot	0(%r5),0		# test protection of first byte
 	ipm	%r7
 	srl	%r7,28
 	clr	%r6,%r7			# compare cc with last access code
 	be	.Lsame-.LPG1(%r13)
-	b	.Lchkmem-.LPG1(%r13)
+	lhi	%r8,0			# no program checks
+	b	.Lsavchk-.LPG1(%r13)
 .Lsame:
 	ar	%r5,%r1			# add 128KB to end of chunk
 	bno	.Lloop-.LPG1(%r13)	# r1 < 0x80000000 -> loop
 .Lchkmem:				# > 2GB or tprot got a program check
+	lhi	%r8,1			# set program check flag
+.Lsavchk:
 	clr	%r4,%r5			# chunk size > 0?
 	be	.Lchkloop-.LPG1(%r13)
 	st	%r4,0(%r3)		# store start address of chunk
@@ -162,8 +171,6 @@ startup_continue:
 	st	%r0,4(%r3)		# store size of chunk
 	st	%r6,8(%r3)		# store type of chunk
 	la	%r3,12(%r3)
-	l	%r4,.Lmemsize-.LPG1(%r13)	 # address of variable memory_size
-	st	%r5,0(%r4)		# store last end to memory size
 	ahi	%r10,-1			# update chunk number
 .Lchkloop:
 	lr	%r6,%r7			# set access code to last cc
@@ -177,26 +184,19 @@ startup_continue:
 	je	.Ldonemem		# if not, leave
 	chi	%r10,0			# do we have chunks left?
 	je	.Ldonemem
+	chi	%r8,1			# program check ?
+	je	.Lpgmchk
+	lr	%r4,%r5			# potential new chunk
+	alr	%r5,%r1			# add 128KB to end of chunk
+	j	.Llpcnt
+.Lpgmchk:
 	alr	%r5,%r1			# add 128KB to end of chunk
 	lr	%r4,%r5			# potential new chunk
+.Llpcnt:
 	clr	%r5,%r9			# should we go on?
 	jl	.Lloop
 .Ldonemem:
 	l	%r12,.Lmflags-.LPG1(%r13) # get address of machine_flags
-#
-# find out if we are running under VM
-#
-	stidp	__LC_CPUID		# store cpuid
-	tm	__LC_CPUID,0xff		# running under VM ?
-	bno	.Lnovm-.LPG1(%r13)
-	oi	3(%r12),1		# set VM flag
-.Lnovm:
-	lh	%r0,__LC_CPUID+4	# get cpu version
-	chi	%r0,0x7490		# running on a P/390 ?
-	bne	.Lnop390-.LPG1(%r13)
-	oi	3(%r12),4		# set P/390 flag
-.Lnop390:
-
 #
 # find out if we have an IEEE fpu
 #
@@ -278,13 +278,18 @@ startup_continue:
 .Lpcmvpg:.long	0x00080000,0x80000000 + .Lchkmvpg
 .Lpcidte:.long	0x00080000,0x80000000 + .Lchkidte
 .Lpcdiag9c:.long 0x00080000,0x80000000 + .Lchkdiag9c
-.Lmemsize:.long memory_size
 .Lmchunk:.long	memory_chunk
 .Lmflags:.long	machine_flags
 .Lbss_bgn:  .long __bss_start
 .Lbss_end:  .long _end
 .Lparmaddr: .long PARMAREA
 .Lsccbaddr: .long .Lsccb
+	.globl	ipl_schib
+ipl_schib:
+	.rept	13
+	.long	0
+	.endr
+
 	.org	0x12000
 .globl s390_readinfo_sccb
 s390_readinfo_sccb:
@@ -316,16 +321,6 @@ s390_readinfo_sccb:
 	.globl	_stext
 _stext:	basr	%r13,0			# get base
 .LPG3:
-#
-# Setup stack
-#
-	l	%r15,.Linittu-.LPG3(%r13)
-	mvc	__LC_CURRENT(4),__TI_task(%r15)
-	ahi	%r15,1<<(PAGE_SHIFT+THREAD_ORDER) # init_task_union+THREAD_SIZE
-	st	%r15,__LC_KERNEL_STACK	# set end of kernel stack
-	ahi	%r15,-96
-	xc	__SF_BACKCHAIN(4,%r15),__SF_BACKCHAIN(%r15) # clear backchain
-
 # check control registers
 	stctl	%c0,%c15,0(%r15)
 	oi	2(%r15),0x40		# enable sigp emergency signal
@@ -344,6 +339,5 @@ _stext:	basr	%r13,0			# get base
 #
 	.align	8
 .Ldw:	.long	0x000a0000,0x00000000
-.Linittu:.long	init_thread_union
 .Lstart:.long	start_kernel
 .Laregs:.long	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0

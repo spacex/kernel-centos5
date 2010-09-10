@@ -29,8 +29,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: mthca_eq.c 1382 2004-12-24 02:21:02Z roland $
  */
 
 #include <linux/errno.h>
@@ -232,9 +230,9 @@ static inline struct mthca_eqe *get_eqe(struct mthca_eq *eq, u32 entry)
 	return eq->page_list[off / PAGE_SIZE].buf + off % PAGE_SIZE;
 }
 
-static inline struct mthca_eqe* next_eqe_sw(struct mthca_eq *eq)
+static inline struct mthca_eqe *next_eqe_sw(struct mthca_eq *eq)
 {
-	struct mthca_eqe* eqe;
+	struct mthca_eqe *eqe;
 	eqe = get_eqe(eq, eq->cons_index);
 	return (MTHCA_EQ_ENTRY_OWNER_HW & eqe->owner) ? NULL : eqe;
 }
@@ -827,8 +825,7 @@ int mthca_init_eq_table(struct mthca_dev *dev)
 	if (err)
 		goto err_out_free;
 
-	if (dev->mthca_flags & MTHCA_FLAG_MSI ||
-	    dev->mthca_flags & MTHCA_FLAG_MSI_X) {
+	if (dev->mthca_flags & MTHCA_FLAG_MSI_X) {
 		dev->eq_table.clr_mask = 0;
 	} else {
 		dev->eq_table.clr_mask =
@@ -839,8 +836,7 @@ int mthca_init_eq_table(struct mthca_dev *dev)
 
 	dev->eq_table.arm_mask = 0;
 
-	intr = (dev->mthca_flags & MTHCA_FLAG_MSI) ?
-		128 : dev->eq_table.inta_pin;
+	intr = dev->eq_table.inta_pin;
 
 	err = mthca_create_eq(dev, dev->limits.num_cqs + MTHCA_NUM_SPARE_EQE,
 			      (dev->mthca_flags & MTHCA_FLAG_MSI_X) ? 128 : intr,

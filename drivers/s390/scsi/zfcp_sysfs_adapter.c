@@ -242,6 +242,50 @@ static struct attribute_group zfcp_adapter_attr_group = {
 	.attrs = zfcp_adapter_attrs,
 };
 
+static ssize_t zfcp_sysfs_adapter_util_show(struct class_device *dev, char *buf)
+{
+	struct Scsi_Host *scsi_host = class_to_shost(dev);
+	struct fsf_qtcb_bottom_port *qtcb_port;
+	struct zfcp_adapter *adapter;
+	int retval;
+
+	adapter = (struct zfcp_adapter *) scsi_host->hostdata[0];
+	if (!(adapter->adapter_features & FSF_FEATURE_MEASUREMENT_DATA))
+		return -EOPNOTSUPP;
+
+	qtcb_port = kzalloc(sizeof(struct fsf_qtcb_bottom_port), GFP_KERNEL);
+	if (!qtcb_port)
+		return -ENOMEM;
+
+	retval = zfcp_fsf_exchange_port_data(NULL, adapter, qtcb_port);
+	if (!retval)
+		retval = sprintf(buf, "%u %u %u\n", qtcb_port->cp_util,
+				 qtcb_port->cb_util, qtcb_port->a_util);
+	kfree(qtcb_port);
+	return retval;
+}
+static CLASS_DEVICE_ATTR(utilization, S_IRUGO, zfcp_sysfs_adapter_util_show,
+			 NULL);
+
+static ssize_t zfcp_sysfs_adapter_q_full_show(struct class_device *dev,
+					      char *buf)
+{
+	struct Scsi_Host *scsi_host = class_to_shost(dev);
+	struct zfcp_adapter *adapter =
+		(struct zfcp_adapter *) scsi_host->hostdata[0];
+
+	return sprintf(buf, "%d %llu\n", atomic_read(&adapter->qdio_outb_full),
+		       (unsigned long long)adapter->req_q_util);
+}
+static CLASS_DEVICE_ATTR(queue_full, S_IRUGO, zfcp_sysfs_adapter_q_full_show,
+			 NULL);
+
+struct class_device_attribute *zfcp_sysfs_shost_attrs[] = {
+	&class_device_attr_utilization,
+	&class_device_attr_queue_full,
+	NULL
+};
+
 /**
  * zfcp_sysfs_create_adapter_files - create sysfs adapter files
  * @dev: pointer to belonging device

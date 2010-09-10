@@ -450,8 +450,9 @@ ebt_check_entry_size_and_hooks(struct ebt_entry *e,
 			return -EINVAL;
 		}
 		/* before we look at the struct, be sure it is not too big */
-		if ((char *)hook_entries[i] + sizeof(struct ebt_entries)
-		   > limit) {
+		if (i < NF_BR_NUMHOOKS &&
+		    (char *)hook_entries[i] + sizeof(struct ebt_entries)
+		    > limit) {
 			BUGPRINT("entries_size too small\n");
 			return -EINVAL;
 		}

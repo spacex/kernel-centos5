@@ -742,7 +742,6 @@ static inline void sk_mem_uncharge(struct sock *sk, int size)
 
 static inline void sk_wmem_free_skb(struct sock *sk, struct sk_buff *skb)
 {
-	skb_truesize_check(skb);
 	sock_set_flag(sk, SOCK_QUEUE_SHRUNK);
 	sk->sk_wmem_queued -= skb->truesize;
 	sk_mem_uncharge(sk, skb->truesize);
@@ -859,6 +858,11 @@ extern struct sk_buff 		*sock_alloc_send_skb(struct sock *sk,
 						     unsigned long size,
 						     int noblock,
 						     int *errcode);
+extern struct sk_buff 		*sock_alloc_send_pskb(struct sock *sk,
+						      unsigned long header_len,
+						      unsigned long data_len,
+						      int noblock,
+						      int *errcode);
 extern void *sock_kmalloc(struct sock *sk, int size,
 			  gfp_t priority);
 extern void sock_kfree_s(struct sock *sk, void *mem, int size);

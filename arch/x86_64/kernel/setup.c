@@ -66,6 +66,7 @@
 #include <asm/numa.h>
 #include <asm/sections.h>
 #include <asm/dmi.h>
+#include <asm/generic-hypervisor.h>
 
 /*
  * Machine setup..
@@ -567,6 +568,12 @@ void __init setup_arch(char **cmdline_p)
 
 	dmi_scan_machine();
 
+	/*
+	 * VMware detection requires dmi to be available, so this
+	 * needs to be done after dmi_scan_machine, for the BP.
+	 */
+	init_hypervisor(&boot_cpu_data);
+
 #ifdef CONFIG_ACPI
 	/*
 	 * Initialize the ACPI boot-time table parser (gets the RSDP and SDT).
@@ -907,6 +914,7 @@ static void __init init_amd(struct cpuinfo_x86 *c)
 	/* Family 10 doesn't support C states in MWAIT so don't use it */
 	if (c->x86 == 0x10 && !force_mwait)
 		clear_bit(X86_FEATURE_MWAIT, &c->x86_capability);
+	set_bit(X86_FEATURE_MFENCE_RDTSC, &c->x86_capability);
 }
 
 static void __cpuinit detect_ht(struct cpuinfo_x86 *c)
@@ -1033,10 +1041,7 @@ static void __cpuinit init_intel(struct cpuinfo_x86 *c)
 		set_bit(X86_FEATURE_NONSTOP_TSC, &c->x86_capability);
 	}
 
-	if (c->x86 == 15)
-		set_bit(X86_FEATURE_SYNC_RDTSC, &c->x86_capability);
-	else
-		clear_bit(X86_FEATURE_SYNC_RDTSC, &c->x86_capability);
+	set_bit(X86_FEATURE_LFENCE_RDTSC, &c->x86_capability);
  	c->x86_max_cores = intel_num_cpu_cores(c);
 
 	srat_detect_node();

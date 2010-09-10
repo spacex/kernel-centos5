@@ -34,6 +34,7 @@
 #define VNIC_CONTROL_PKT_H_INCLUDED
 
 #include <linux/utsname.h>
+#include <rdma/ib_verbs.h>
 
 #define VNIC_MAX_NODENAME_LEN	64
 
@@ -42,6 +43,8 @@ struct vnic_connection_data {
 	u8	vnic_instance;
 	u8	path_num;
 	u8	nodename[VNIC_MAX_NODENAME_LEN + 1];
+	u8  	reserved; /* for alignment */
+	__be32 	features_supported;
 };
 
 struct vnic_control_header {
@@ -72,7 +75,8 @@ enum {
 	CMD_CLEAR_STATISTICS	= 7,
 	CMD_REPORT_STATUS	= 8,
 	CMD_RESET		= 9,
-	CMD_HEARTBEAT		= 10
+	CMD_HEARTBEAT		= 10,
+	CMD_CONFIG_ADDRESSES2	= 11,
 };
 
 /* pkt_cmd CMD_INIT_VNIC, pkt_type TYPE_REQ data format */
@@ -119,7 +123,13 @@ enum {
 	VNIC_FEAT_FCS_PROPAGATE		= 0x0800,
 	VNIC_FEAT_PF_KICK		= 0x1000,
 	VNIC_FEAT_PF_FORCE_ROUTE	= 0x2000,
-	VNIC_FEAT_CHASH_OFFLOAD		= 0x4000
+	VNIC_FEAT_CHASH_OFFLOAD		= 0x4000,
+	/* host send with immediate data */
+	VNIC_FEAT_RDMA_IMMED		= 0x8000,
+	/* host ignore inbound PF_VLAN_INSERT flag */
+	VNIC_FEAT_IGNORE_VLAN		= 0x10000,
+	/* host supports IB multicast for inbound Ethernet mcast traffic */
+	VNIC_FEAT_INBOUND_IB_MC 	= 0x20000,
 };
 
 /* pkt_cmd CMD_CONFIG_DATA_PATH subdata format */
@@ -158,6 +168,17 @@ struct vnic_address_op {
 	__be16	vlan;
 };
 
+/* pkt_cmd CMD_CONFIG_ADDRESSES2 subdata format */
+struct vnic_address_op2 {
+	__be16	index;
+	u8	operation;
+	u8	valid;
+	u8	address[6];
+	__be16	vlan;
+	u32 reserved; /* for alignment */
+	union ib_gid mgid; /* valid in rsp only if both ends support mcast */
+};
+
 /* operation values */
 enum {
 	VNIC_OP_SET_ENTRY = 0x01,
@@ -171,6 +192,16 @@ struct vnic_cmd_config_addresses {
 	struct vnic_address_op	list_address_ops[1];
 };
 
+/* pkt_cmd CMD_CONFIG_ADDRESSES2 data format */
+struct vnic_cmd_config_addresses2 {
+	u8			num_address_ops;
+	u8			lan_switch_num;
+	u8			reserved1;
+	u8			reserved2;
+	u8			reserved3;
+	struct vnic_address_op2	list_address_ops[1];
+};
+
 /* CMD_CONFIG_LINK data format */
 struct vnic_cmd_config_link {
 	u8	cmd_flags;
@@ -178,6 +209,9 @@ struct vnic_cmd_config_link {
 	__be16	mtu_size;
 	__be16	default_vlan;
 	u8	hw_mac_address[6];
+	u32	reserved; /* for alignment */
+	/* valid in rsp only if both ends support mcast */
+	union ib_gid allmulti_mgid;
 };
 
 /* cmd_flags values */
@@ -275,7 +309,9 @@ struct vnic_control_packet {
 		struct vnic_cmd_exchange_pools		exchange_pools_req;
 		struct vnic_cmd_exchange_pools		exchange_pools_rsp;
 		struct vnic_cmd_config_addresses	config_addresses_req;
+		struct vnic_cmd_config_addresses2	config_addresses_req2;
 		struct vnic_cmd_config_addresses	config_addresses_rsp;
+		struct vnic_cmd_config_addresses2	config_addresses_rsp2;
 		struct vnic_cmd_config_link		config_link_req;
 		struct vnic_cmd_config_link		config_link_rsp;
 		struct vnic_cmd_report_stats_req	report_statistics_req;
@@ -289,5 +325,44 @@ struct vnic_control_packet {
 		char   cmd_data[VNIC_MAX_CONTROLDATASZ];
 	} cmd;
 };
+
+union ib_gid_cpu {
+	u8      raw[16];
+	struct {
+		u64  subnet_prefix;
+		u64  interface_id;
+	} global;
+};
+
+static inline void bswap_ib_gid(union ib_gid *mgid1, union ib_gid_cpu *mgid2)
+{
+    /* swap hi & low */
+    __be64 low = mgid1->global.subnet_prefix;
+    mgid2->global.subnet_prefix = be64_to_cpu(mgid1->global.interface_id);
+    mgid2->global.interface_id = be64_to_cpu(low);
+}
+
+#define VNIC_GID_FMT 	"%04x:%04x:%04x:%04x:%04x:%04x:%04x:%04x"
+
+#define VNIC_GID_RAW_ARG(gid) 	be16_to_cpu(*(__be16 *)&(gid)[0]),	\
+				be16_to_cpu(*(__be16 *)&(gid)[2]),	\
+				be16_to_cpu(*(__be16 *)&(gid)[4]),	\
+				be16_to_cpu(*(__be16 *)&(gid)[6]),	\
+				be16_to_cpu(*(__be16 *)&(gid)[8]),	\
+				be16_to_cpu(*(__be16 *)&(gid)[10]),	\
+				be16_to_cpu(*(__be16 *)&(gid)[12]),	\
+				be16_to_cpu(*(__be16 *)&(gid)[14])
+
+
+/* These defines are used to figure out how many address entries can be passed
+ * in config_addresses request.
+ */
+#define MAX_CONFIG_ADDR_ENTRIES \
+	((VNIC_MAX_CONTROLDATASZ - (sizeof(struct vnic_cmd_config_addresses) \
+	- sizeof(struct vnic_address_op)))/sizeof(struct vnic_address_op))
+#define MAX_CONFIG_ADDR_ENTRIES2 \
+	((VNIC_MAX_CONTROLDATASZ - (sizeof(struct vnic_cmd_config_addresses2) \
+	- sizeof(struct vnic_address_op2)))/sizeof(struct vnic_address_op2))
+
 
 #endif	/* VNIC_CONTROL_PKT_H_INCLUDED */

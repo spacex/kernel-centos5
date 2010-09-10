@@ -32,6 +32,7 @@
 #include <asm/of_device.h>
 
 #define PMI_TYPE_FREQ_CHANGE	0x01
+#define PMI_TYPE_POWER_BUTTON	0x02
 #define PMI_READ_TYPE		0
 #define PMI_READ_DATA0		1
 #define PMI_READ_DATA1		2

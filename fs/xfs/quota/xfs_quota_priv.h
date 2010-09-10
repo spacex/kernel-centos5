@@ -27,11 +27,6 @@
 /* Number of dquots that fit in to a dquot block */
 #define XFS_QM_DQPERBLK(mp)	((mp)->m_quotainfo->qi_dqperchunk)
 
-#define XFS_ISLOCKED_INODE(ip)		(ismrlocked(&(ip)->i_lock, \
-					    MR_UPDATE | MR_ACCESS) != 0)
-#define XFS_ISLOCKED_INODE_EXCL(ip)	(ismrlocked(&(ip)->i_lock, \
-					    MR_UPDATE) != 0)
-
 #define XFS_DQ_IS_ADDEDTO_TRX(t, d)	((d)->q_transp == (t))
 
 #define XFS_QI_MPLRECLAIMS(mp)	((mp)->m_quotainfo->qi_dqreclaims)
@@ -75,7 +70,6 @@ static inline int XQMISLCKD(struct xfs_dqhash *h)
 
 #define xfs_qm_freelist_lock(qm)	XQMLCK(&((qm)->qm_dqfreelist))
 #define xfs_qm_freelist_unlock(qm)	XQMUNLCK(&((qm)->qm_dqfreelist))
-#define XFS_QM_IS_FREELIST_LOCKED(qm)	XQMISLCKD(&((qm)->qm_dqfreelist))
 
 /*
  * Hash into a bucket in the dquot hash table, based on <mp, id>.
@@ -164,12 +158,8 @@ for ((dqp) = (qlist)->qh_next; (dqp) != (xfs_dquot_t *)(qlist); \
 #define XFS_IS_SUSER_DQUOT(dqp)		\
 	(!((dqp)->q_core.d_id))
 
-#define XFS_PURGE_INODE(ip)		\
-	IRELE(ip);
-
 #define DQFLAGTO_TYPESTR(d)	(((d)->dq_flags & XFS_DQ_USER) ? "USR" : \
 				 (((d)->dq_flags & XFS_DQ_GROUP) ? "GRP" : \
 				 (((d)->dq_flags & XFS_DQ_PROJ) ? "PRJ":"???")))
-#define DQFLAGTO_DIRTYSTR(d)	(XFS_DQ_IS_DIRTY(d) ? "DIRTY" : "NOTDIRTY")
 
 #endif	/* __XFS_QUOTA_PRIV_H__ */

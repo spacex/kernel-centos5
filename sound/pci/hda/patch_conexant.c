@@ -26,9 +26,10 @@
 #include <linux/slab.h>
 #include <linux/pci.h>
 #include <sound/core.h>
+#include <sound/jack.h>
+
 #include "hda_codec.h"
 #include "hda_local.h"
-#include "hda_patch.h"
 
 #define CXT_PIN_DIR_IN              0x00
 #define CXT_PIN_DIR_OUT             0x01
@@ -39,7 +40,20 @@
 #define CONEXANT_HP_EVENT	0x37
 #define CONEXANT_MIC_EVENT	0x38
 
+/* Conexant 5051 specific */
 
+#define CXT5051_SPDIF_OUT	0x1C
+#define CXT5051_PORTB_EVENT	0x38
+#define CXT5051_PORTC_EVENT	0x39
+
+
+struct conexant_jack {
+
+	hda_nid_t nid;
+	int type;
+	struct snd_jack *jack;
+
+};
 
 struct conexant_spec {
 
@@ -59,6 +73,7 @@ struct conexant_spec {
 					 */
 	unsigned int cur_eapd;
 	unsigned int hp_present;
+	unsigned int no_auto_mic;
 	unsigned int need_dac_fix;
 
 	/* capture */
@@ -85,10 +100,11 @@ struct conexant_spec {
 
 	unsigned int spdif_route;
 
+	/* jack detection */
+	struct snd_array jacks;
+
 	/* dynamic controls, init_verbs and input_mux */
 	struct auto_pin_cfg autocfg;
-	unsigned int num_kctl_alloc, num_kctl_used;
-	struct snd_kcontrol_new *kctl_alloc;
 	struct hda_input_mux private_imux;
 	hda_nid_t private_dac_nids[AUTO_CFG_MAX_OUTS];
 
@@ -333,6 +349,95 @@ static int conexant_mux_enum_put(struct snd_kcontrol *kcontrol,
 				     &spec->cur_mux[adc_idx]);
 }
 
+#ifdef CONFIG_SND_JACK
+static int conexant_add_jack(struct hda_codec *codec,
+		hda_nid_t nid, int type)
+{
+	struct conexant_spec *spec;
+	struct conexant_jack *jack;
+	const char *name;
+
+	spec = codec->spec;
+	snd_array_init(&spec->jacks, sizeof(*jack), 32);
+	jack = snd_array_new(&spec->jacks);
+	name = (type == SND_JACK_HEADPHONE) ? "Headphone" : "Mic" ;
+
+	if (!jack)
+		return -ENOMEM;
+
+	jack->nid = nid;
+	jack->type = type;
+
+	return snd_jack_new(codec->bus->card, name, type, &jack->jack);
+}
+
+static void conexant_report_jack(struct hda_codec *codec, hda_nid_t nid)
+{
+	struct conexant_spec *spec = codec->spec;
+	struct conexant_jack *jacks = spec->jacks.list;
+
+	if (jacks) {
+		int i;
+		for (i = 0; i < spec->jacks.used; i++) {
+			if (jacks->nid == nid) {
+				unsigned int present;
+				present = snd_hda_codec_read(codec, nid, 0,
+						AC_VERB_GET_PIN_SENSE, 0) &
+					AC_PINSENSE_PRESENCE;
+
+				present = (present) ? jacks->type : 0 ;
+
+				snd_jack_report(jacks->jack,
+						present);
+			}
+			jacks++;
+		}
+	}
+}
+
+static int conexant_init_jacks(struct hda_codec *codec)
+{
+	struct conexant_spec *spec = codec->spec;
+	int i;
+
+	for (i = 0; i < spec->num_init_verbs; i++) {
+		const struct hda_verb *hv;
+
+		hv = spec->init_verbs[i];
+		while (hv->nid) {
+			int err = 0;
+			switch (hv->param ^ AC_USRSP_EN) {
+			case CONEXANT_HP_EVENT:
+				err = conexant_add_jack(codec, hv->nid,
+						SND_JACK_HEADPHONE);
+				conexant_report_jack(codec, hv->nid);
+				break;
+			case CXT5051_PORTC_EVENT:
+			case CONEXANT_MIC_EVENT:
+				err = conexant_add_jack(codec, hv->nid,
+						SND_JACK_MICROPHONE);
+				conexant_report_jack(codec, hv->nid);
+				break;
+			}
+			if (err < 0)
+				return err;
+			++hv;
+		}
+	}
+	return 0;
+
+}
+#else
+static inline void conexant_report_jack(struct hda_codec *codec, hda_nid_t nid)
+{
+}
+
+static inline int conexant_init_jacks(struct hda_codec *codec)
+{
+	return 0;
+}
+#endif
+
 static int conexant_init(struct hda_codec *codec)
 {
 	struct conexant_spec *spec = codec->spec;
@@ -345,15 +450,16 @@ static int conexant_init(struct hda_codec *codec)
 
 static void conexant_free(struct hda_codec *codec)
 {
-        struct conexant_spec *spec = codec->spec;
-        unsigned int i;
-
-        if (spec->kctl_alloc) {
-                for (i = 0; i < spec->num_kctl_used; i++)
-                        kfree(spec->kctl_alloc[i].name);
-                kfree(spec->kctl_alloc);
-        }
-
+#ifdef CONFIG_SND_JACK
+	struct conexant_spec *spec = codec->spec;
+	if (spec->jacks.list) {
+		struct conexant_jack *jacks = spec->jacks.list;
+		int i;
+		for (i = 0; i < spec->jacks.used; i++)
+			snd_device_free(codec->bus->card, &jacks[i].jack);
+		snd_array_free(&spec->jacks);
+	}
+#endif
 	kfree(codec->spec);
 }
 
@@ -898,15 +1004,9 @@ static const char *cxt5045_models[CXT5045_MODELS] = {
 };
 
 static struct snd_pci_quirk cxt5045_cfg_tbl[] = {
-	SND_PCI_QUIRK(0x103c, 0x30a5, "HP", CXT5045_LAPTOP_HPSENSE),
-	SND_PCI_QUIRK(0x103c, 0x30b2, "HP DV Series", CXT5045_LAPTOP_HPSENSE),
-	SND_PCI_QUIRK(0x103c, 0x30b5, "HP DV2120", CXT5045_LAPTOP_HPSENSE),
-	SND_PCI_QUIRK(0x103c, 0x30b7, "HP DV6000Z", CXT5045_LAPTOP_HPSENSE),
-	SND_PCI_QUIRK(0x103c, 0x30bb, "HP DV8000", CXT5045_LAPTOP_HPSENSE),
-	SND_PCI_QUIRK(0x103c, 0x30cd, "HP DV Series", CXT5045_LAPTOP_HPSENSE),
-	SND_PCI_QUIRK(0x103c, 0x30cf, "HP DV9533EG", CXT5045_LAPTOP_HPSENSE),
 	SND_PCI_QUIRK(0x103c, 0x30d5, "HP 530", CXT5045_LAPTOP_HP530),
-	SND_PCI_QUIRK(0x103c, 0x30d9, "HP Spartan", CXT5045_LAPTOP_HPSENSE),
+	SND_PCI_QUIRK_MASK(0x103c, 0xff00, 0x3000, "HP DV Series",
+			   CXT5045_LAPTOP_HPSENSE),
 	SND_PCI_QUIRK(0x1179, 0xff31, "Toshiba P105", CXT5045_LAPTOP_MICSENSE),
 	SND_PCI_QUIRK(0x152d, 0x0753, "Benq R55E", CXT5045_BENQ),
 	SND_PCI_QUIRK(0x1734, 0x10ad, "Fujitsu Si1520", CXT5045_LAPTOP_MICSENSE),
@@ -916,8 +1016,8 @@ static struct snd_pci_quirk cxt5045_cfg_tbl[] = {
 	SND_PCI_QUIRK(0x1509, 0x1e40, "FIC", CXT5045_LAPTOP_HPMICSENSE),
 	SND_PCI_QUIRK(0x1509, 0x2f05, "FIC", CXT5045_LAPTOP_HPMICSENSE),
 	SND_PCI_QUIRK(0x1509, 0x2f06, "FIC", CXT5045_LAPTOP_HPMICSENSE),
-	SND_PCI_QUIRK(0x1631, 0xc106, "Packard Bell", CXT5045_LAPTOP_HPMICSENSE),
-	SND_PCI_QUIRK(0x1631, 0xc107, "Packard Bell", CXT5045_LAPTOP_HPMICSENSE),
+	SND_PCI_QUIRK_MASK(0x1631, 0xff00, 0xc100, "Packard Bell",
+			   CXT5045_LAPTOP_HPMICSENSE),
 	SND_PCI_QUIRK(0x8086, 0x2111, "Conexant Reference board", CXT5045_LAPTOP_HPSENSE),
 	{}
 };
@@ -1467,10 +1567,9 @@ static const char *cxt5047_models[CXT5047_MODELS] = {
 };
 
 static struct snd_pci_quirk cxt5047_cfg_tbl[] = {
-	SND_PCI_QUIRK(0x103c, 0x30a0, "HP DV1000", CXT5047_LAPTOP),
 	SND_PCI_QUIRK(0x103c, 0x30a5, "HP DV5200T/DV8000T", CXT5047_LAPTOP_HP),
-	SND_PCI_QUIRK(0x103c, 0x30b2, "HP DV2000T/DV3000T", CXT5047_LAPTOP),
-	SND_PCI_QUIRK(0x103c, 0x30b5, "HP DV2000Z", CXT5047_LAPTOP),
+	SND_PCI_QUIRK_MASK(0x103c, 0xff00, 0x3000, "HP DV Series",
+			   CXT5047_LAPTOP),
 	SND_PCI_QUIRK(0x1179, 0xff31, "Toshiba P100", CXT5047_LAPTOP_EAPD),
 	{}
 };
@@ -1539,9 +1638,6 @@ static int patch_cxt5047(struct hda_codec *codec)
 /* Conexant 5051 specific */
 static hda_nid_t cxt5051_dac_nids[1] = { 0x10 };
 static hda_nid_t cxt5051_adc_nids[2] = { 0x14, 0x15 };
-#define CXT5051_SPDIF_OUT	0x1C
-#define CXT5051_PORTB_EVENT	0x38
-#define CXT5051_PORTC_EVENT	0x39
 
 static struct hda_channel_mode cxt5051_modes[1] = {
 	{ 2, NULL },
@@ -1571,8 +1667,11 @@ static int cxt5051_hp_master_sw_put(struct snd_kcontrol *kcontrol,
 /* toggle input of built-in and mic jack appropriately */
 static void cxt5051_portb_automic(struct hda_codec *codec)
 {
+	struct conexant_spec *spec = codec->spec;
 	unsigned int present;
 
+	if (spec->no_auto_mic)
+		return;
 	present = snd_hda_codec_read(codec, 0x17, 0,
 				     AC_VERB_GET_PIN_SENSE, 0) &
 		AC_PINSENSE_PRESENCE;
@@ -1588,6 +1687,8 @@ static void cxt5051_portc_automic(struct hda_codec *codec)
 	unsigned int present;
 	hda_nid_t new_adc;
 
+	if (spec->no_auto_mic)
+		return;
 	present = snd_hda_codec_read(codec, 0x18, 0,
 				     AC_VERB_GET_PIN_SENSE, 0) &
 		AC_PINSENSE_PRESENCE;
@@ -1621,6 +1722,7 @@ static void cxt5051_hp_automute(struct hda_codec *codec)
 static void cxt5051_hp_unsol_event(struct hda_codec *codec,
 				   unsigned int res)
 {
+	int nid = (res & AC_UNSOL_RES_SUBTAG) >> 20;
 	switch (res >> 26) {
 	case CONEXANT_HP_EVENT:
 		cxt5051_hp_automute(codec);
@@ -1632,6 +1734,7 @@ static void cxt5051_hp_unsol_event(struct hda_codec *codec,
 		cxt5051_portc_automic(codec);
 		break;
 	}
+	conexant_report_jack(codec, nid);
 }
 
 static struct snd_kcontrol_new cxt5051_mixers[] = {
@@ -1659,6 +1762,22 @@ static struct snd_kcontrol_new cxt5051_hp_mixers[] = {
 	HDA_CODEC_MUTE("Internal Mic Switch", 0x14, 0x00, HDA_INPUT),
 	HDA_CODEC_VOLUME("External Mic Volume", 0x15, 0x00, HDA_INPUT),
 	HDA_CODEC_MUTE("External Mic Switch", 0x15, 0x00, HDA_INPUT),
+	HDA_CODEC_VOLUME("Master Playback Volume", 0x10, 0x00, HDA_OUTPUT),
+	{
+		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.name = "Master Playback Switch",
+		.info = cxt_eapd_info,
+		.get = cxt_eapd_get,
+		.put = cxt5051_hp_master_sw_put,
+		.private_value = 0x1a,
+	},
+
+	{}
+};
+
+static struct snd_kcontrol_new cxt5051_hp_dv6736_mixers[] = {
+	HDA_CODEC_VOLUME("Mic Volume", 0x14, 0x00, HDA_INPUT),
+	HDA_CODEC_MUTE("Mic Switch", 0x14, 0x00, HDA_INPUT),
 	HDA_CODEC_VOLUME("Master Playback Volume", 0x10, 0x00, HDA_OUTPUT),
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1702,10 +1821,71 @@ static struct hda_verb cxt5051_init_verbs[] = {
 	{ } /* end */
 };
 
+static struct hda_verb cxt5051_hp_dv6736_init_verbs[] = {
+	/* Line in, Mic */
+	{0x17, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0) | 0x03},
+	{0x17, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_VREF80},
+	{0x18, AC_VERB_SET_PIN_WIDGET_CONTROL, 0x0},
+	{0x1d, AC_VERB_SET_PIN_WIDGET_CONTROL, 0x0},
+	/* SPK  */
+	{0x1a, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_OUT},
+	{0x1a, AC_VERB_SET_CONNECT_SEL, 0x00},
+	/* HP, Amp  */
+	{0x16, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_HP},
+	{0x16, AC_VERB_SET_CONNECT_SEL, 0x00},
+	/* DAC1 */
+	{0x10, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE},
+	/* Record selector: Int mic */
+	{0x14, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(1) | 0x44},
+	{0x14, AC_VERB_SET_CONNECT_SEL, 0x1},
+	/* SPDIF route: PCM */
+	{0x1c, AC_VERB_SET_CONNECT_SEL, 0x0},
+	/* EAPD */
+	{0x1a, AC_VERB_SET_EAPD_BTLENABLE, 0x2}, /* default on */
+	{0x16, AC_VERB_SET_UNSOLICITED_ENABLE, AC_USRSP_EN|CONEXANT_HP_EVENT},
+	{0x17, AC_VERB_SET_UNSOLICITED_ENABLE, AC_USRSP_EN|CXT5051_PORTB_EVENT},
+	{ } /* end */
+};
+
+static struct hda_verb cxt5051_lenovo_x200_init_verbs[] = {
+	/* Line in, Mic */
+	{0x17, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0) | 0x03},
+	{0x17, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_VREF80},
+	{0x18, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0) | 0x03},
+	{0x18, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_VREF80},
+	{0x1d, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_IN},
+	{0x1d, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0) | 0x03},
+	/* SPK  */
+	{0x1a, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_OUT},
+	{0x1a, AC_VERB_SET_CONNECT_SEL, 0x00},
+	/* HP, Amp  */
+	{0x16, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_HP},
+	{0x16, AC_VERB_SET_CONNECT_SEL, 0x00},
+	/* Docking HP */
+	{0x19, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_HP},
+	{0x19, AC_VERB_SET_CONNECT_SEL, 0x00},
+	/* DAC1 */
+	{0x10, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE},
+	/* Record selector: Int mic */
+	{0x14, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0) | 0x44},
+	{0x14, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(1) | 0x44},
+	{0x15, AC_VERB_SET_AMP_GAIN_MUTE, AMP_IN_UNMUTE(0) | 0x44},
+	/* SPDIF route: PCM */
+	{0x1c, AC_VERB_SET_CONNECT_SEL, 0x0},
+	/* EAPD */
+	{0x1a, AC_VERB_SET_EAPD_BTLENABLE, 0x2}, /* default on */
+	{0x16, AC_VERB_SET_UNSOLICITED_ENABLE, AC_USRSP_EN|CONEXANT_HP_EVENT},
+	{0x17, AC_VERB_SET_UNSOLICITED_ENABLE, AC_USRSP_EN|CXT5051_PORTB_EVENT},
+	{0x18, AC_VERB_SET_UNSOLICITED_ENABLE, AC_USRSP_EN|CXT5051_PORTC_EVENT},
+	{0x19, AC_VERB_SET_UNSOLICITED_ENABLE, AC_USRSP_EN|CONEXANT_HP_EVENT},
+	{ } /* end */
+};
+
 /* initialize jack-sensing, too */
 static int cxt5051_init(struct hda_codec *codec)
 {
 	conexant_init(codec);
+	conexant_init_jacks(codec);
 	if (codec->patch_ops.unsol_event) {
 		cxt5051_hp_automute(codec);
 		cxt5051_portb_automic(codec);
@@ -1718,18 +1898,24 @@ static int cxt5051_init(struct hda_codec *codec)
 enum {
 	CXT5051_LAPTOP,	 /* Laptops w/ EAPD support */
 	CXT5051_HP,	/* no docking */
+	CXT5051_HP_DV6736,	/* HP without mic switch */
+	CXT5051_LENOVO_X200,	/* Lenovo X200 laptop */
 	CXT5051_MODELS
 };
 
 static const char *cxt5051_models[CXT5051_MODELS] = {
 	[CXT5051_LAPTOP]	= "laptop",
 	[CXT5051_HP]		= "hp",
+	[CXT5051_HP_DV6736]	= "hp-dv6736",
+	[CXT5051_LENOVO_X200]	= "lenovo-x200",
 };
 
 static struct snd_pci_quirk cxt5051_cfg_tbl[] = {
+	SND_PCI_QUIRK(0x103c, 0x30cf, "HP DV6736", CXT5051_HP_DV6736),
 	SND_PCI_QUIRK(0x14f1, 0x0101, "Conexant Reference board",
 		      CXT5051_LAPTOP),
 	SND_PCI_QUIRK(0x14f1, 0x5051, "HP Spartan 1.1", CXT5051_HP),
+	SND_PCI_QUIRK(0x17aa, 0x20f2, "Lenovo X200", CXT5051_LENOVO_X200),
 	{}
 };
 
@@ -1762,17 +1948,22 @@ static int patch_cxt5051(struct hda_codec *codec)
 	spec->cur_adc = 0;
 	spec->cur_adc_idx = 0;
 
+	codec->patch_ops.unsol_event = cxt5051_hp_unsol_event;
+
 	board_config = snd_hda_check_board_config(codec, CXT5051_MODELS,
 						  cxt5051_models,
 						  cxt5051_cfg_tbl);
 	switch (board_config) {
 	case CXT5051_HP:
-		codec->patch_ops.unsol_event = cxt5051_hp_unsol_event;
 		spec->mixers[0] = cxt5051_hp_mixers;
 		break;
-	default:
-	case CXT5051_LAPTOP:
-		codec->patch_ops.unsol_event = cxt5051_hp_unsol_event;
+	case CXT5051_HP_DV6736:
+		spec->init_verbs[0] = cxt5051_hp_dv6736_init_verbs;
+		spec->mixers[0] = cxt5051_hp_dv6736_mixers;
+		spec->no_auto_mic = 1;
+		break;
+	case CXT5051_LENOVO_X200:
+		spec->init_verbs[0] = cxt5051_lenovo_x200_init_verbs;
 		break;
 	}
 
@@ -1783,7 +1974,7 @@ static int patch_cxt5051(struct hda_codec *codec)
 /*
  */
 
-struct hda_codec_preset snd_hda_preset_conexant[] = {
+static struct hda_codec_preset snd_hda_preset_conexant[] = {
 	{ .id = 0x14f15045, .name = "CX20549 (Venice)",
 	  .patch = patch_cxt5045 },
 	{ .id = 0x14f15047, .name = "CX20551 (Waikiki)",
@@ -1792,3 +1983,32 @@ struct hda_codec_preset snd_hda_preset_conexant[] = {
 	  .patch = patch_cxt5051 },
 	{} /* terminator */
 };
+
+#if 0
+MODULE_ALIAS("snd-hda-codec-id:14f15045");
+MODULE_ALIAS("snd-hda-codec-id:14f15047");
+MODULE_ALIAS("snd-hda-codec-id:14f15051");
+
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Conexant HD-audio codec");
+#endif
+
+struct hda_codec_preset_list conexant_list = {
+	.preset = snd_hda_preset_conexant,
+	.owner = NULL,
+};
+
+#if 0
+static int __init patch_conexant_init(void)
+{
+	return snd_hda_add_codec_preset(&conexant_list);
+}
+
+static void __exit patch_conexant_exit(void)
+{
+	snd_hda_delete_codec_preset(&conexant_list);
+}
+
+module_init(patch_conexant_init)
+module_exit(patch_conexant_exit)
+#endif

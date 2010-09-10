@@ -30,8 +30,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: uverbs_mem.c 2743 2005-06-28 22:27:59Z roland $
  */
 
 #include <linux/mm.h>
@@ -101,21 +99,14 @@ static void dma_unmap_sg_ia64(struct ib_device *ibdev,
 
 #endif
 
-static void __ib_umem_release(struct ib_device *dev, struct ib_umem *umem, int dirty, int dmasync)
+static void __ib_umem_release(struct ib_device *dev, struct ib_umem *umem, int dirty)
 {
 	struct ib_umem_chunk *chunk, *tmp;
 	int i;
 
-	DEFINE_DMA_ATTRS(attrs);
-
-	if (dmasync)
-		dma_set_attr(DMA_ATTR_WRITE_BARRIER, &attrs);
-	else if (allow_weak_ordering)
-		dma_set_attr(DMA_ATTR_WEAK_ORDERING, &attrs);
-
 	list_for_each_entry_safe(chunk, tmp, &umem->chunk_list, list) {
 		ib_dma_unmap_sg_attrs(dev, chunk->page_list,
-				      chunk->nents, DMA_BIDIRECTIONAL, &attrs);
+				      chunk->nents, DMA_BIDIRECTIONAL, &chunk->attrs);
 		for (i = 0; i < chunk->nents; ++i) {
 			struct page *page = sg_page(&chunk->page_list[i]);
 
@@ -136,7 +127,7 @@ static void __ib_umem_release(struct ib_device *dev, struct ib_umem *umem, int d
  * @access: IB_ACCESS_xxx flags for memory being pinned
  * @dmasync: flush in-flight DMA when the memory region is written
  */
-static struct ib_umem *__ib_umem_get(struct ib_ucontext *context, unsigned long addr,
+struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
 			    size_t size, int access, int dmasync)
 {
 	struct ib_umem *umem;
@@ -214,7 +205,7 @@ static struct ib_umem *__ib_umem_get(struct ib_ucontext *context, unsigned long 
 	ret = 0;
 	while (npages) {
 		ret = get_user_pages(current, current->mm, cur_base,
-				     min_t(int, npages,
+				     min_t(unsigned long, npages,
 					   PAGE_SIZE / sizeof (struct page *)),
 				     1, !umem->writable, page_list, vma_list);
 
@@ -235,6 +226,7 @@ static struct ib_umem *__ib_umem_get(struct ib_ucontext *context, unsigned long 
 				goto out;
 			}
 
+			chunk->attrs = attrs;
 			chunk->nents = min_t(int, ret, IB_UMEM_MAX_PAGE_CHUNK);
 			sg_init_table(chunk->page_list, chunk->nents);
 			for (i = 0; i < chunk->nents; ++i) {
@@ -268,7 +260,7 @@ static struct ib_umem *__ib_umem_get(struct ib_ucontext *context, unsigned long 
 
 out:
 	if (ret < 0) {
-		__ib_umem_release(context->device, umem, 0, dmasync);
+		__ib_umem_release(context->device, umem, 0);
 		kfree(umem);
 	} else
 		current->mm->locked_vm = locked;
@@ -280,20 +272,7 @@ out:
 
 	return ret < 0 ? ERR_PTR(ret) : umem;
 }
-
-struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
-			    size_t size, int access)
-{
-	return __ib_umem_get(context, addr, size, access, 0);
-}
 EXPORT_SYMBOL(ib_umem_get);
-
-struct ib_umem *ib_umem_get_dmasync(struct ib_ucontext *context, unsigned long addr,
-			    size_t size, int access)
-{
-	return __ib_umem_get(context, addr, size, access, 1);
-}
-EXPORT_SYMBOL(ib_umem_get_dmasync);
 
 static void ib_umem_account(struct work_struct *work)
 {
@@ -310,13 +289,13 @@ static void ib_umem_account(struct work_struct *work)
  * ib_umem_release - release memory pinned with ib_umem_get
  * @umem: umem struct to release
  */
-static void ib_umem_release_attr(struct ib_umem *umem, int dmasync)
+void ib_umem_release(struct ib_umem *umem)
 {
 	struct ib_ucontext *context = umem->context;
 	struct mm_struct *mm;
 	unsigned long diff;
 
-	__ib_umem_release(umem->context->device, umem, 1, dmasync);
+	__ib_umem_release(umem->context->device, umem, 1);
 
 	mm = get_task_mm(current);
 	if (!mm) {
@@ -351,18 +330,7 @@ static void ib_umem_release_attr(struct ib_umem *umem, int dmasync)
 	mmput(mm);
 	kfree(umem);
 }
-
-void ib_umem_release(struct ib_umem *umem)
-{
-	return ib_umem_release_attr(umem, 0);
-}
 EXPORT_SYMBOL(ib_umem_release);
-
-void ib_umem_release_dmasync(struct ib_umem *umem)
-{
-	return ib_umem_release_attr(umem, 1);
-}
-EXPORT_SYMBOL(ib_umem_release_dmasync);
 
 int ib_umem_page_count(struct ib_umem *umem)
 {

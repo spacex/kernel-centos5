@@ -650,10 +650,11 @@ ptrace_induce_signal(struct task_struct *target,
 	if (!valid_signal(signr))
 		return -EIO;
 
-	if (state->syscall) {
+	if (state->syscall || sigismember(&target->blocked, signr)) {
 		/*
 		 * This is the traditional ptrace behavior when given
 		 * a signal to resume from a syscall tracing stop.
+		 * In addition, don't inject a blocked signal.
 		 */
 		send_sig(signr, target, 1);
 	}

@@ -31,7 +31,6 @@
  * SOFTWARE.
  */
 
-#include <linux/version.h>
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/mount.h>
@@ -238,8 +237,7 @@ static int create_device_files(struct super_block *sb,
 
 	snprintf(unit, sizeof unit, "%02d", dd->ipath_unit);
 	ret = create_file(unit, S_IFDIR|S_IRUGO|S_IXUGO, sb->s_root, &dir,
-			  (struct file_operations *) &simple_dir_operations,
-			  dd);
+			  &simple_dir_operations, dd);
 	if (ret) {
 		printk(KERN_ERR "create_file(%s) failed: %d\n", unit, ret);
 		goto bail;

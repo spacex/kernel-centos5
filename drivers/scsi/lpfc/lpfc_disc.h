@@ -39,6 +39,7 @@ enum lpfc_work_type {
 	LPFC_EVT_DEV_LOSS_DELAY,
 	LPFC_EVT_DEV_LOSS,
 	LPFC_EVT_REAUTH,
+	LPFC_EVT_FASTPATH_MGMT_EVT,
 };
 
 /* structure used to queue event to the discovery tasklet */
@@ -49,6 +50,24 @@ struct lpfc_work_evt {
 	enum lpfc_work_type   evt;
 };
 
+struct lpfc_scsi_check_condition_event;
+struct lpfc_scsi_varqueuedepth_event;
+struct lpfc_scsi_event_header;
+struct lpfc_fabric_event_header;
+struct lpfc_fcprdchkerr_event;
+
+/* structure used for sending events from fast path */
+struct lpfc_fast_path_event {
+	struct lpfc_work_evt work_evt;
+	struct lpfc_vport     *vport;
+	union {
+		struct lpfc_scsi_check_condition_event check_cond_evt;
+		struct lpfc_scsi_varqueuedepth_event queue_depth_evt;
+		struct lpfc_scsi_event_header scsi_evt;
+		struct lpfc_fabric_event_header fabric_evt;
+		struct lpfc_fcprdchkerr_event read_check_error;
+	} un;
+};
 
 struct lpfc_nodelist {
 	struct list_head nlp_listp;
@@ -84,6 +103,7 @@ struct lpfc_nodelist {
 	struct timer_list   nlp_delayfunc;	/* Used for delayed ELS cmds */
 	struct timer_list   nlp_reauth_tmr;	/* Used for re-authentication */
 	struct timer_list   nlp_initiator_tmr;	/* Used with dev_loss */
+	struct lpfc_hba *phba;
 	struct fc_rport *rport;			/* Corresponding FC transport
 						   port structure */
 	struct lpfc_vport *vport;
@@ -97,7 +117,8 @@ struct lpfc_nodelist {
 	atomic_t cmd_pending;
 	uint32_t cmd_qdepth;
 	unsigned long last_change_time;
-};
+	struct lpfc_scsicmd_bkt *lat_data;	/* Latency data */
+} ;
 
 /* Defines for nlp_flag (uint32) */
 #define NLP_PLOGI_SND      0x00000020	/* sent PLOGI request for this entry */
@@ -120,6 +141,7 @@ struct lpfc_nodelist {
 #define NLP_NODEV_REMOVE   0x08000000	/* Defer removal till discovery ends */
 #define NLP_TARGET_REMOVE  0x10000000   /* Target remove in process */
 #define NLP_SC_REQ         0x20000000	/* Target requires authentication */
+#define NLP_RPI_VALID      0x80000000	/* nlp_rpi is valid */
 
 /* ndlp usage management macros */
 #define NLP_CHK_NODE_ACT(ndlp)		(((ndlp)->nlp_usg_map \

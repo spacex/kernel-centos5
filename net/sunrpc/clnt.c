@@ -34,6 +34,7 @@
 #include <linux/sunrpc/rpc_pipe_fs.h>
 #include <linux/sunrpc/metrics.h>
 
+#include <trace/sunrpc.h>
 
 #define RPC_SLACK_SPACE		(1024)	/* total overkill */
 
@@ -843,6 +844,7 @@ call_bind_status(struct rpc_task *task)
 		return;
 	}
 
+	trace_rpc_bind_status(task);
 	switch (task->tk_status) {
 	case -EACCES:
 		dprintk("RPC: %4d remote rpcbind: RPC program/version unavailable\n",
@@ -917,6 +919,7 @@ call_connect_status(struct rpc_task *task)
 	/* Something failed: remote service port may have changed */
 	rpc_force_rebind(clnt);
 
+	trace_rpc_connect_status(task, status);
 	switch (status) {
 	case -ENOTCONN:
 	case -EAGAIN:
@@ -1008,6 +1011,7 @@ call_status(struct rpc_task *task)
 		return;
 	}
 
+	trace_rpc_call_status(task);
 	task->tk_status = 0;
 	switch(status) {
 	case -ETIMEDOUT:

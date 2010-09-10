@@ -736,6 +736,9 @@ static int cpufreq_add_dev (struct sys_device * sys_dev)
 		goto err_out;
 	}
 
+	blocking_notifier_call_chain(&cpufreq_policy_notifier_list,
+				     CPUFREQ_START, policy);
+
 #ifdef CONFIG_SMP
 	for_each_cpu_mask(j, policy->cpus) {
 		if (cpu == j)
@@ -886,7 +889,6 @@ static int __cpufreq_remove_dev (struct sys_device * sys_dev)
 		return -EINVAL;
 	}
 	cpufreq_cpu_data[cpu] = NULL;
-
 
 #ifdef CONFIG_SMP
 	/* if this isn't the CPU which is the parent of the kobj, we

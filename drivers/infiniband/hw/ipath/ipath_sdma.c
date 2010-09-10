@@ -131,74 +131,26 @@ int ipath_sdma_make_progress(struct ipath_devdata *dd)
 			dd->ipath_sdma_descq_head = 0;
 
 		if (txp && txp->next_descq_idx == dd->ipath_sdma_descq_head) {
-			/* move to notify list */
+			/* remove from active list */
+			list_del_init(&txp->list);
+			if (txp->callback)
+				(*txp->callback)(txp->callback_cookie,
+						 IPATH_SDMA_TXREQ_S_OK);
 			if (txp->flags & IPATH_SDMA_TXREQ_F_VL15)
 				vl15_watchdog_deq(dd);
-			list_move_tail(lp, &dd->ipath_sdma_notifylist);
 			if (!list_empty(&dd->ipath_sdma_activelist)) {
 				lp = dd->ipath_sdma_activelist.next;
 				txp = list_entry(lp, struct ipath_sdma_txreq,
 						 list);
 				start_idx = txp->start_idx;
-			} else {
-				lp = NULL;
+			} else
 				txp = NULL;
-			}
 		}
 		progress = 1;
 	}
 
-	if (progress)
-		tasklet_hi_schedule(&dd->ipath_sdma_notify_task);
-
 done:
 	return progress;
-}
-
-static void ipath_sdma_notify(struct ipath_devdata *dd, struct list_head *list)
-{
-	struct ipath_sdma_txreq *txp, *txp_next;
-
-	list_for_each_entry_safe(txp, txp_next, list, list) {
-		list_del_init(&txp->list);
-
-		if (txp->callback)
-			(*txp->callback)(txp->callback_cookie,
-					 txp->callback_status);
-	}
-}
-
-static void sdma_notify_taskbody(struct ipath_devdata *dd)
-{
-	unsigned long flags;
-	struct list_head list;
-
-	INIT_LIST_HEAD(&list);
-
-	spin_lock_irqsave(&dd->ipath_sdma_lock, flags);
-
-	list_splice_init(&dd->ipath_sdma_notifylist, &list);
-
-	spin_unlock_irqrestore(&dd->ipath_sdma_lock, flags);
-
-	ipath_sdma_notify(dd, &list);
-
-	/*
-	 * The IB verbs layer needs to see the callback before getting
-	 * the call to ipath_ib_piobufavail() because the callback
-	 * handles releasing resources the next send will need.
-	 * Otherwise, we could do these calls in
-	 * ipath_sdma_make_progress().
-	 */
-	ipath_ib_piobufavail(dd->verbs_dev);
-}
-
-static void sdma_notify_task(unsigned long opaque)
-{
-	struct ipath_devdata *dd = (struct ipath_devdata *)opaque;
-
-	if (!test_bit(IPATH_SDMA_SHUTDOWN, &dd->ipath_sdma_status))
-		sdma_notify_taskbody(dd);
 }
 
 static void dump_sdma_state(struct ipath_devdata *dd)
@@ -258,19 +210,14 @@ static void sdma_abort_task(unsigned long opaque)
 	if (status == IPATH_SDMA_ABORT_ABORTED) {
 		struct ipath_sdma_txreq *txp, *txpnext;
 		u64 hwstatus;
-		int notify = 0;
 
 		hwstatus = ipath_read_kreg64(dd,
 				dd->ipath_kregs->kr_senddmastatus);
 
-		if (/* ScoreBoardDrainInProg */
-		    test_bit(63, &hwstatus) ||
-		    /* AbortInProg */
-		    test_bit(62, &hwstatus) ||
-		    /* InternalSDmaEnable */
-		    test_bit(61, &hwstatus) ||
-		    /* ScbEmpty */
-		    !test_bit(30, &hwstatus)) {
+		if ((hwstatus & (IPATH_SDMA_STATUS_SCORE_BOARD_DRAIN_IN_PROG |
+				 IPATH_SDMA_STATUS_ABORT_IN_PROG	     |
+				 IPATH_SDMA_STATUS_INTERNAL_SDMA_ENABLE)) ||
+		    !(hwstatus & IPATH_SDMA_STATUS_SCB_EMPTY)) {
 			if (dd->ipath_sdma_reset_wait > 0) {
 				/* not done shutting down sdma */
 				--dd->ipath_sdma_reset_wait;
@@ -284,14 +231,13 @@ static void sdma_abort_task(unsigned long opaque)
 		/* dequeue all "sent" requests */
 		list_for_each_entry_safe(txp, txpnext,
 					 &dd->ipath_sdma_activelist, list) {
-			txp->callback_status = IPATH_SDMA_TXREQ_S_ABORTED;
+			list_del_init(&txp->list);
+			if (txp->callback)
+				(*txp->callback)(txp->callback_cookie,
+						 IPATH_SDMA_TXREQ_S_ABORTED);
 			if (txp->flags & IPATH_SDMA_TXREQ_F_VL15)
 				vl15_watchdog_deq(dd);
-			list_move_tail(&txp->list, &dd->ipath_sdma_notifylist);
-			notify = 1;
 		}
-		if (notify)
-			tasklet_hi_schedule(&dd->ipath_sdma_notify_task);
 
 		/* reset our notion of head and tail */
 		dd->ipath_sdma_descq_tail = 0;
@@ -345,7 +291,7 @@ resched:
 	 * state change
 	 */
 	if (jiffies > dd->ipath_sdma_abort_jiffies) {
-		ipath_dbg("looping with status 0x%016llx\n",
+		ipath_dbg("looping with status 0x%08lx\n",
 			  dd->ipath_sdma_status);
 		dd->ipath_sdma_abort_jiffies = jiffies + 5 * HZ;
 	}
@@ -484,10 +430,7 @@ int setup_sdma(struct ipath_devdata *dd)
 			 senddmabufmask[2]);
 
 	INIT_LIST_HEAD(&dd->ipath_sdma_activelist);
-	INIT_LIST_HEAD(&dd->ipath_sdma_notifylist);
 
-	tasklet_init(&dd->ipath_sdma_notify_task, sdma_notify_task,
-		     (unsigned long) dd);
 	tasklet_init(&dd->ipath_sdma_abort_task, sdma_abort_task,
 		     (unsigned long) dd);
 
@@ -524,7 +467,6 @@ void teardown_sdma(struct ipath_devdata *dd)
 	spin_unlock_irqrestore(&dd->ipath_sdma_lock, flags);
 
 	tasklet_kill(&dd->ipath_sdma_abort_task);
-	tasklet_kill(&dd->ipath_sdma_notify_task);
 
 	/* turn off sdma */
 	spin_lock_irqsave(&dd->ipath_sendctrl_lock, flags);
@@ -538,14 +480,14 @@ void teardown_sdma(struct ipath_devdata *dd)
 	/* dequeue all "sent" requests */
 	list_for_each_entry_safe(txp, txpnext, &dd->ipath_sdma_activelist,
 				 list) {
-		txp->callback_status = IPATH_SDMA_TXREQ_S_SHUTDOWN;
+		list_del_init(&txp->list);
+		if (txp->callback)
+			(*txp->callback)(txp->callback_cookie,
+					 IPATH_SDMA_TXREQ_S_SHUTDOWN);
 		if (txp->flags & IPATH_SDMA_TXREQ_F_VL15)
 			vl15_watchdog_deq(dd);
-		list_move_tail(&txp->list, &dd->ipath_sdma_notifylist);
 	}
 	spin_unlock_irqrestore(&dd->ipath_sdma_lock, flags);
-
-	sdma_notify_taskbody(dd);
 
 	del_timer_sync(&dd->ipath_sdma_vl15_timer);
 
@@ -615,7 +557,7 @@ void ipath_restart_sdma(struct ipath_devdata *dd)
 	}
 	spin_unlock_irqrestore(&dd->ipath_sdma_lock, flags);
 	if (!needed) {
-		ipath_dbg("invalid attempt to restart SDMA, status 0x%016llx\n",
+		ipath_dbg("invalid attempt to restart SDMA, status 0x%08lx\n",
 			dd->ipath_sdma_status);
 		goto bail;
 	}
@@ -702,10 +644,8 @@ retry:
 
 	addr = dma_map_single(&dd->pcidev->dev, tx->txreq.map_addr,
 			      tx->map_len, DMA_TO_DEVICE);
-	if (dma_mapping_error(addr)) {
-		ret = -EIO;
-		goto unlock;
-	}
+	if (dma_mapping_error(addr))
+		goto ioerr;
 
 	dwoffset = tx->map_len >> 2;
 	make_sdma_desc(dd, sdmadesc, (u64) addr, dwoffset, 0);
@@ -745,6 +685,8 @@ retry:
 		dw = (len + 3) >> 2;
 		addr = dma_map_single(&dd->pcidev->dev, sge->vaddr, dw << 2,
 				      DMA_TO_DEVICE);
+		if (dma_mapping_error(addr))
+			goto unmap;
 		make_sdma_desc(dd, sdmadesc, (u64) addr, dw, dwoffset);
 		/* SDmaUseLargeBuf has to be set in every descriptor */
 		if (tx->txreq.flags & IPATH_SDMA_TXREQ_F_USELARGEBUF)
@@ -765,7 +707,7 @@ retry:
 		if (sge->sge_length == 0) {
 			if (--ss->num_sge)
 				*sge = *ss->sg_list++;
-		} else if (sge->length == 0 && sge->mr != NULL) {
+		} else if (sge->length == 0 && sge->mr->lkey) {
 			if (++sge->n >= IPATH_SEGSZ) {
 				if (++sge->m >= sge->mr->mapsz)
 					break;
@@ -791,18 +733,28 @@ retry:
 		descqp[0] |= __constant_cpu_to_le64(1ULL << 15);
 	}
 
+	tx->txreq.next_descq_idx = tail;
+	dd->ipath_sdma_descq_tail = tail;
 	/* Commit writes to memory and advance the tail on the chip */
 	wmb();
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_senddmatail, tail);
 
-	tx->txreq.next_descq_idx = tail;
-	tx->txreq.callback_status = IPATH_SDMA_TXREQ_S_OK;
-	dd->ipath_sdma_descq_tail = tail;
 	dd->ipath_sdma_descq_added += tx->txreq.sg_count;
 	list_add_tail(&tx->txreq.list, &dd->ipath_sdma_activelist);
 	if (tx->txreq.flags & IPATH_SDMA_TXREQ_F_VL15)
 		vl15_watchdog_enq(dd);
+	goto unlock;
 
+unmap:
+	while (tail != dd->ipath_sdma_descq_tail) {
+		if (!tail)
+			tail = dd->ipath_sdma_descq_cnt - 1;
+		else
+			tail--;
+		unmap_desc(dd, tail);
+	}
+ioerr:
+	ret = -EIO;
 unlock:
 	spin_unlock_irqrestore(&dd->ipath_sdma_lock, flags);
 fail:

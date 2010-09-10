@@ -21,6 +21,16 @@
 #include "cq_desc.h"
 #include "vnic_dev.h"
 
+/*
+ * These defines avoid symbol clash between fnic and enic (Cisco 10G Eth
+ * Driver) when both are built with CONFIG options =y
+ */
+#define vnic_cq_service fnic_cq_service
+#define vnic_cq_free fnic_cq_free
+#define vnic_cq_alloc fnic_cq_alloc
+#define vnic_cq_init fnic_cq_init
+#define vnic_cq_clean fnic_cq_clean
+
 /* Completion queue control */
 struct vnic_cq_ctrl {
 	u64 ring_base;			/* 0x00 */

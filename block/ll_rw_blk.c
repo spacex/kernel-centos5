@@ -25,9 +25,11 @@
 #include <linux/slab.h>
 #include <linux/swap.h>
 #include <linux/writeback.h>
+#include <linux/task_io_accounting_ops.h>
 #include <linux/interrupt.h>
 #include <linux/cpu.h>
 #include <linux/blktrace_api.h>
+#include <trace/block.h>
 
 /*
  * for max sense size
@@ -1280,6 +1282,11 @@ static const char * const rq_flags[] = {
 	"REQ_PM_RESUME",
 	"REQ_PM_SHUTDOWN",
 	"REQ_ORDERED_COLOR",
+	"REQ_RW_SYNC",
+	"REQ_FAILFAST_DEV",
+	"REQ_FAILFAST_TRANSPORT",
+	"REQ_FAILFAST_DRIVER",
+	"REQ_IO_STAT",
 };
 
 void blk_dump_rq_flags(struct request *rq, char *msg)
@@ -1657,7 +1664,7 @@ void blk_plug_device(request_queue_t *q)
 
 	if (!test_and_set_bit(QUEUE_FLAG_PLUGGED, &q->queue_flags)) {
 		mod_timer(&q->unplug_timer, jiffies + q->unplug_delay);
-		blk_add_trace_generic(q, NULL, 0, BLK_TA_PLUG);
+		trace_block_plug(q);
 	}
 }
 
@@ -1725,9 +1732,7 @@ static void blk_backing_dev_unplug(struct backing_dev_info *bdi,
 	 * devices don't necessarily have an ->unplug_fn defined
 	 */
 	if (q->unplug_fn) {
-		blk_add_trace_pdu_int(q, BLK_TA_UNPLUG_IO, NULL,
-					q->rq.count[READ] + q->rq.count[WRITE]);
-
+		trace_block_unplug_io(q);
 		q->unplug_fn(q);
 	}
 }
@@ -1736,9 +1741,7 @@ static void blk_unplug_work(void *data)
 {
 	request_queue_t *q = data;
 
-	blk_add_trace_pdu_int(q, BLK_TA_UNPLUG_IO, NULL,
-				q->rq.count[READ] + q->rq.count[WRITE]);
-
+	trace_block_unplug_io(q);
 	q->unplug_fn(q);
 }
 
@@ -1746,9 +1749,7 @@ static void blk_unplug_timeout(unsigned long data)
 {
 	request_queue_t *q = (request_queue_t *)data;
 
-	blk_add_trace_pdu_int(q, BLK_TA_UNPLUG_TIMER, NULL,
-				q->rq.count[READ] + q->rq.count[WRITE]);
-
+	trace_block_unplug_timer(q);
 	kblockd_schedule_work(&q->unplug_work);
 }
 
@@ -2026,7 +2027,7 @@ blk_init_queue_node(request_fn_proc *rfn, spinlock_t *lock, int node_id)
 	q->merge_requests_fn	= ll_merge_requests_fn;
 	q->prep_rq_fn		= NULL;
 	q->unplug_fn		= generic_unplug_device;
-	q->queue_flags		= (1 << QUEUE_FLAG_CLUSTER);
+	q->queue_flags		= QUEUE_FLAG_DEFAULT;
 	q->queue_lock		= lock;
 
 	blk_queue_segment_boundary(q, BLK_SEG_BOUNDARY_MASK);
@@ -2072,7 +2073,7 @@ static inline void blk_free_request(request_queue_t *q, struct request *rq)
 }
 
 static inline struct request *
-blk_alloc_request(request_queue_t *q, int rw, struct bio *bio,
+blk_alloc_request(request_queue_t *q, int flags, struct bio *bio,
 		  int priv, gfp_t gfp_mask)
 {
 	struct request *rq = mempool_alloc(q->rq.rq_pool, gfp_mask);
@@ -2084,7 +2085,7 @@ blk_alloc_request(request_queue_t *q, int rw, struct bio *bio,
 	 * first three bits are identical in rq->flags and bio->bi_rw,
 	 * see bio.h and blkdev.h
 	 */
-	rq->flags = rw;
+	rq->flags = flags;
 
 	if (priv) {
 		if (unlikely(elv_set_request(q, rq, bio, gfp_mask))) {
@@ -2224,6 +2225,8 @@ static struct request *get_request(request_queue_t *q, int rw, struct bio *bio,
 	if (priv)
 		rl->elvpriv++;
 
+	if (blk_queue_io_stat(q))
+		rw |= REQ_IO_STAT;
 	spin_unlock_irq(q->queue_lock);
 
 	rq = blk_alloc_request(q, rw, bio, priv, gfp_mask);
@@ -2264,7 +2267,7 @@ rq_starved:
 	rq_init(q, rq);
 	rq->rl = rl;
 
-	blk_add_trace_generic(q, bio, rw, BLK_TA_GETRQ);
+	trace_block_getrq(q, bio, rw);
 out:
 	return rq;
 }
@@ -2293,7 +2296,7 @@ static struct request *get_request_wait(request_queue_t *q, int rw,
 		if (!rq) {
 			struct io_context *ioc;
 
-			blk_add_trace_generic(q, bio, rw, BLK_TA_SLEEPRQ);
+			trace_block_sleeprq(q, bio, rw);
 
 			__generic_unplug_device(q);
 			spin_unlock_irq(q->queue_lock);
@@ -2348,7 +2351,7 @@ EXPORT_SYMBOL(blk_get_request);
  */
 void blk_requeue_request(request_queue_t *q, struct request *rq)
 {
-	blk_add_trace_rq(q, rq, BLK_TA_REQUEUE);
+	trace_block_rq_requeue(q, rq);
 
 	if (blk_rq_tagged(rq))
 		blk_queue_end_tag(q, rq);
@@ -2680,7 +2683,7 @@ static void drive_stat_acct(struct request *rq, int nr_sectors, int new_io)
 {
 	int rw = rq_data_dir(rq);
 
-	if (!blk_fs_request(rq) || !rq->rq_disk)
+	if (!blk_fs_request(rq) || !blk_do_io_stat(rq))
 		return;
 
 	if (!new_io) {
@@ -2858,6 +2861,20 @@ long blk_congestion_wait(int rw, long timeout)
 
 EXPORT_SYMBOL(blk_congestion_wait);
 
+static void blk_account_io_merge(struct request *req)
+{
+	if (blk_do_io_stat(req)) {
+		struct hd_struct *part
+			= get_part(req->rq_disk, req->sector);
+		disk_round_stats(req->rq_disk);
+		req->rq_disk->in_flight--;
+		if (part) {
+			part_round_stats(part);
+			get_partstats(part)->in_flight--;
+		}
+	}
+}
+
 /*
  * Has to be called with the request spinlock acquired
  */
@@ -2903,16 +2920,10 @@ static int attempt_merge(request_queue_t *q, struct request *req,
 
 	elv_merge_requests(q, req, next);
 
-	if (req->rq_disk) {
-		struct hd_struct *part
-			= get_part(req->rq_disk, req->sector);
-		disk_round_stats(req->rq_disk);
-		req->rq_disk->in_flight--;
-		if (part) {
-			part_round_stats(part);
-			get_partstats(part)->in_flight--;
-		}
-	}
+	/*
+	 * 'next' is going away, so update stats accordingly
+	 */
+	blk_account_io_merge(next);
 
 	req->ioprio = ioprio_best(req->ioprio, next->ioprio);
 
@@ -3025,7 +3036,7 @@ static int __make_request(request_queue_t *q, struct bio *bio)
 			if (!q->back_merge_fn(q, req, bio))
 				break;
 
-			blk_add_trace_bio(q, bio, BLK_TA_BACKMERGE);
+			trace_block_bio_backmerge(q, bio);
 
 			req->biotail->bi_next = bio;
 			req->biotail = bio;
@@ -3042,7 +3053,7 @@ static int __make_request(request_queue_t *q, struct bio *bio)
 			if (!q->front_merge_fn(q, req, bio))
 				break;
 
-			blk_add_trace_bio(q, bio, BLK_TA_FRONTMERGE);
+			trace_block_bio_frontmerge(q, bio);
 
 			bio->bi_next = req->bio;
 			req->bio = bio;
@@ -3111,6 +3122,9 @@ static inline void blk_partition_remap(struct bio *bio)
 
 		bio->bi_sector += p->start_sect;
 		bio->bi_bdev = bdev->bd_contains;
+		trace_block_remap(bdev_get_queue(bdev), bio,
+				  bdev->bd_dev, bio->bi_sector,
+				  bio->bi_sector - p->start_sect);
 	}
 }
 
@@ -3220,10 +3234,10 @@ end_io:
 		blk_partition_remap(bio);
 
 		if (old_sector != -1)
-			blk_add_trace_remap(q, bio, old_dev, bio->bi_sector, 
+			trace_block_remap(q, bio, old_dev, bio->bi_sector,
 					    old_sector);
 
-		blk_add_trace_bio(q, bio, BLK_TA_QUEUE);
+		trace_block_bio_queue(q, bio);
 
 		old_sector = bio->bi_sector;
 		old_dev = bio->bi_bdev->bd_dev;
@@ -3266,10 +3280,12 @@ void submit_bio(int rw, struct bio *bio)
 	BIO_BUG_ON(!bio->bi_size);
 	BIO_BUG_ON(!bio->bi_io_vec);
 	bio->bi_rw |= rw;
-	if (rw & WRITE)
+	if (rw & WRITE) {
 		count_vm_events(PGPGOUT, count);
-	else
+	} else {
+		task_io_account_read(bio->bi_size);
 		count_vm_events(PGPGIN, count);
+	}
 
 	if (unlikely(block_dump)) {
 		char b[BDEVNAME_SIZE];
@@ -3356,13 +3372,50 @@ static void blk_recalc_rq_sectors(struct request *rq, int nsect)
 	}
 }
 
+static void blk_account_io_completion(struct request *req, unsigned int bytes)
+{
+	if (blk_fs_request(req) && blk_do_io_stat(req)) {
+		const int rw = rq_data_dir(req);
+		all_stat_add(req->rq_disk, sectors[rw],
+			     bytes >> 9, req->sector);
+
+	}
+}
+
+static void blk_account_io_done(struct request *req)
+{
+	if (!blk_do_io_stat(req))
+		return;
+
+	/*
+	 * Account IO completion.  bar_rq isn't accounted as a normal
+	 * IO on queueing nor completion.  Accounting the containing
+	 * request is enough.
+	 */
+	if (blk_fs_request(req) && req != &req->q->bar_rq) {
+		unsigned long duration = jiffies - req->start_time;
+		const int rw = rq_data_dir(req);
+		struct gendisk *disk = req->rq_disk;
+		struct hd_struct *part = get_part(disk, req->sector);
+
+		__all_stat_inc(disk, ios[rw], req->sector);
+		__all_stat_add(disk, ticks[rw], duration, req->sector);
+		disk_round_stats(disk);
+		disk->in_flight--;
+		if (part) {
+			part_round_stats(part);
+			get_partstats(part)->in_flight--;
+		}
+	}
+}
+
 static int __end_that_request_first(struct request *req, int uptodate,
 				    int nr_bytes)
 {
 	int total_bytes, bio_nbytes, error, next_idx = 0;
 	struct bio *bio;
 
-	blk_add_trace_rq(req->q, req, BLK_TA_COMPLETE);
+	trace_block_rq_complete(req->q, req);
 
 	/*
 	 * extend uptodate bool to allow < 0 value to be direct io error
@@ -3385,12 +3438,7 @@ static int __end_that_request_first(struct request *req, int uptodate,
 				(unsigned long long)req->sector);
 	}
 
-	if (blk_fs_request(req) && req->rq_disk) {
-		const int rw = rq_data_dir(req);
-
-		all_stat_add(req->rq_disk, sectors[rw],
-			     nr_bytes >> 9, req->sector);
-	}
+	blk_account_io_completion(req, nr_bytes);
 
 	total_bytes = bio_nbytes = 0;
 	while ((bio = req->bio) != NULL) {
@@ -3595,7 +3643,6 @@ EXPORT_SYMBOL(blk_complete_request);
  */
 void end_that_request_last(struct request *req, int uptodate)
 {
-	struct gendisk *disk = req->rq_disk;
 	int error;
 
 	/*
@@ -3608,25 +3655,8 @@ void end_that_request_last(struct request *req, int uptodate)
 	if (unlikely(laptop_mode) && blk_fs_request(req))
 		laptop_io_completion();
 
-	/*
-	 * Account IO completion.  bar_rq isn't accounted as a normal
-	 * IO on queueing nor completion.  Accounting the containing
-	 * request is enough.
-	 */
-	if (disk && blk_fs_request(req) && req != &req->q->bar_rq) {
-		unsigned long duration = jiffies - req->start_time;
-		const int rw = rq_data_dir(req);
-		struct hd_struct *part = get_part(disk, req->sector);
+	blk_account_io_done(req);
 
-		__all_stat_inc(disk, ios[rw], req->sector);
-		__all_stat_add(disk, ticks[rw], duration, req->sector);
-		disk_round_stats(disk);
-		disk->in_flight--;
-		if (part) {
-			part_round_stats(part);
-			get_partstats(part)->in_flight--;
-		}
-	}
 	if (req->end_io)
 		req->end_io(req, error);
 	else
@@ -3969,11 +3999,39 @@ static ssize_t queue_max_hw_sectors_show(struct request_queue *q, char *page)
 	return queue_var_show(max_hw_sectors_kb, (page));
 }
 
+static ssize_t queue_iostats_show(struct request_queue *q, char *page)
+{
+	return queue_var_show(blk_queue_io_stat(q), page);
+}
+
+static ssize_t queue_iostats_store(struct request_queue *q, const char *page,
+				   size_t count)
+{
+	unsigned long stats;
+	ssize_t ret = queue_var_store(&stats, page, count);
+
+	spin_lock_irq(q->queue_lock);
+	if (stats)
+		set_bit(QUEUE_FLAG_IO_STAT, &q->queue_flags);
+	else
+		clear_bit(QUEUE_FLAG_IO_STAT, &q->queue_flags);
+	spin_unlock_irq(q->queue_lock);
+
+	return ret;
+}
+
+
 
 static struct queue_sysfs_entry queue_requests_entry = {
 	.attr = {.name = "nr_requests", .mode = S_IRUGO | S_IWUSR },
 	.show = queue_requests_show,
 	.store = queue_requests_store,
+};
+
+static struct queue_sysfs_entry queue_iostats_entry = {
+	.attr = {.name = "iostats", .mode = S_IRUGO | S_IWUSR },
+	.show = queue_iostats_show,
+	.store = queue_iostats_store,
 };
 
 static struct queue_sysfs_entry queue_ra_entry = {
@@ -4005,6 +4063,7 @@ static struct attribute *default_attrs[] = {
 	&queue_max_hw_sectors_entry.attr,
 	&queue_max_sectors_entry.attr,
 	&queue_iosched_entry.attr,
+	&queue_iostats_entry.attr,
 	NULL,
 };
 

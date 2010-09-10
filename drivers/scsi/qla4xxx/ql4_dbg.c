@@ -182,21 +182,20 @@ void qla4xxx_dump_registers(struct scsi_qla_host *ha)
 
 void qla4xxx_dump_buffer(void *b, uint32_t size)
 {
-	uint32_t cnt;
-	uint8_t *c = b;
+        uint32_t cnt;
+        uint8_t *c = b;
 
-	printk(" 0   1	 2   3	 4   5	 6   7	 8   9	Ah  Bh	Ch  Dh	Eh  "
-	       "Fh\n");
-	printk("------------------------------------------------------------"
-	       "--\n");
-	for (cnt = 0; cnt < size; cnt++, c++) {
-		printk(KERN_DEBUG "%02x", *c);
-		if (!(cnt % 16))
-			printk(KERN_DEBUG "\n");
+        printk(" 0   1   2   3   4   5   6   7   8   9  Ah  Bh  Ch  Dh  Eh  "
+               "Fh\n");
+        printk("------------------------------------------------------------"
+               "--\n");
+        for (cnt = 0; cnt < size; c++) {
+                printk("%02x", *c);
+                if (!(++cnt % 16))
+                        printk("\n");
 
-		else
-			printk(KERN_DEBUG "  ");
-	}
-	if (cnt % 16)
-		printk(KERN_DEBUG "\n");
+                else
+                        printk("  ");
+        }
+        printk("\n");
 }

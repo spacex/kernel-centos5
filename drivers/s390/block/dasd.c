@@ -55,6 +55,7 @@ static void dasd_int_handler(struct ccw_device *, unsigned long, struct irb *);
 static int dasd_flush_ccw_queue(struct dasd_device *, int);
 static void dasd_tasklet(struct dasd_device *);
 static void do_kick_device(void *data);
+static void dasd_timeout_device(unsigned long);
 
 /*
  * SECTION: Operations on the device structure.
@@ -101,6 +102,8 @@ dasd_alloc_device(void)
 		     (unsigned long) device);
 	INIT_LIST_HEAD(&device->ccw_queue);
 	init_timer(&device->timer);
+	device->timer.function = dasd_timeout_device;
+	device->timer.data = (unsigned long) device;
 	INIT_WORK(&device->kick_work, do_kick_device, device);
 	device->state = DASD_STATE_NEW;
 	device->target = DASD_STATE_NEW;
@@ -185,7 +188,7 @@ dasd_state_known_to_basic(struct dasd_device * device)
 	device->debug_area = debug_register(device->cdev->dev.bus_id, 1, 2,
 					    8 * sizeof (long));
 	debug_register_view(device->debug_area, &debug_sprintf_view);
-	debug_set_level(device->debug_area, DBF_EMERG);
+	debug_set_level(device->debug_area, DBF_WARNING);
 	DBF_DEV_EVENT(DBF_EMERG, device, "%s", "debug area created");
 
 	device->state = DASD_STATE_BASIC;
@@ -855,19 +858,10 @@ dasd_timeout_device(unsigned long ptr)
 void
 dasd_set_timer(struct dasd_device *device, int expires)
 {
-	if (expires == 0) {
-		if (timer_pending(&device->timer))
-			del_timer(&device->timer);
-		return;
-	}
-	if (timer_pending(&device->timer)) {
-		if (mod_timer(&device->timer, jiffies + expires))
-			return;
-	}
-	device->timer.function = dasd_timeout_device;
-	device->timer.data = (unsigned long) device;
-	device->timer.expires = jiffies + expires;
-	add_timer(&device->timer);
+	if (expires == 0)
+		del_timer(&device->timer);
+	else
+		mod_timer(&device->timer, jiffies + expires);
 }
 
 /*
@@ -876,8 +870,7 @@ dasd_set_timer(struct dasd_device *device, int expires)
 void
 dasd_clear_timer(struct dasd_device *device)
 {
-	if (timer_pending(&device->timer))
-		del_timer(&device->timer);
+	del_timer(&device->timer);
 }
 
 static void
@@ -899,7 +892,7 @@ dasd_handle_killed_request(struct ccw_device *cdev, unsigned long intparm)
 
 	device = (struct dasd_device *) cqr->device;
 	if (device == NULL ||
-	    device != dasd_device_from_cdev(cdev) ||
+	    device != dasd_device_from_cdev_locked(cdev) ||
 	    strncmp(device->discipline->ebcname, (char *) &cqr->magic, 4)) {
 		MESSAGE(KERN_DEBUG, "invalid device in request: bus_id %s",
 			cdev->dev.bus_id);
@@ -975,7 +968,7 @@ dasd_int_handler(struct ccw_device *cdev, unsigned long intparm,
 	/* first of all check for state change pending interrupt */
 	mask = DEV_STAT_ATTENTION | DEV_STAT_DEV_END | DEV_STAT_UNIT_EXCEP;
 	if ((irb->scsw.dstat & mask) == mask) {
-		device = dasd_device_from_cdev(cdev);
+		device = dasd_device_from_cdev_locked(cdev);
 		if (!IS_ERR(device)) {
 			dasd_handle_state_change_pending(device);
 			dasd_put_device(device);
@@ -1656,7 +1649,6 @@ _dasd_term_running_cqr(struct dasd_device *device)
 int
 dasd_sleep_on_immediatly(struct dasd_ccw_req * cqr)
 {
-	wait_queue_head_t wait_q;
 	struct dasd_device *device;
 	int rc;
 
@@ -1668,9 +1660,8 @@ dasd_sleep_on_immediatly(struct dasd_ccw_req * cqr)
 		return rc;
 	}
 
-	init_waitqueue_head (&wait_q);
 	cqr->callback = dasd_wakeup_cb;
-	cqr->callback_data = (void *) &wait_q;
+	cqr->callback_data = (void *) &generic_waitq;
 	cqr->status = DASD_CQR_QUEUED;
 	list_add(&cqr->list, &device->ccw_queue);
 
@@ -2191,7 +2182,7 @@ dasd_init(void)
 		goto failed;
 	}
 	debug_register_view(dasd_debug_area, &debug_sprintf_view);
-	debug_set_level(dasd_debug_area, DBF_EMERG);
+	debug_set_level(dasd_debug_area, DBF_WARNING);
 
 	DBF_EVENT(DBF_EMERG, "%s", "debug area created");
 

@@ -101,6 +101,20 @@ extern void			ndisc_send_redirect(struct sk_buff *skb,
 
 extern int			ndisc_mc_map(struct in6_addr *addr, char *buf, struct net_device *dev, int dir);
 
+extern struct sk_buff		*ndisc_build_skb(struct net_device *dev,
+						 struct in6_addr *daddr,
+						 struct in6_addr *saddr,
+						 struct icmp6hdr *icmp6h,
+						 const struct in6_addr *target,
+						 int llinfo);
+
+extern void			ndisc_send_skb(struct sk_buff *skb,
+					       struct net_device *dev,
+					       struct neighbour *neigh,
+					       struct in6_addr *daddr,
+					       struct in6_addr *saddr,
+					       struct icmp6hdr *icmp6h);
+
 
 struct rt6_info *		dflt_rt_lookup(void);
 

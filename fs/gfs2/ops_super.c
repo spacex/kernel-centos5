@@ -28,8 +28,6 @@
 #include "inode.h"
 #include "lm.h"
 #include "log.h"
-#include "mount.h"
-#include "ops_super.h"
 #include "quota.h"
 #include "recovery.h"
 #include "rgrp.h"
@@ -41,6 +39,8 @@
 #include "eattr.h"
 #include "bmap.h"
 #include "meta_io.h"
+
+#define args_neq(a1, a2, x) ((a1)->ar_##x != (a2)->ar_##x)
 
 /**
  * gfs2_write_inode - Make sure the inode is stable on the disk
@@ -102,6 +102,7 @@ static int gfs2_make_fs_ro(struct gfs2_sbd *sdp)
 	struct gfs2_holder t_gh;
 	int error;
 
+	flush_workqueue(gfs2_delete_workqueue);
 	gfs2_quota_sync(sdp);
 	gfs2_statfs_sync(sdp);
 
@@ -144,8 +145,6 @@ static void gfs2_put_super(struct super_block *sb)
 	kthread_stop(sdp->sd_quotad_process);
 	kthread_stop(sdp->sd_logd_process);
 	kthread_stop(sdp->sd_recoverd_process);
-	while (sdp->sd_glockd_num--)
-		kthread_stop(sdp->sd_glockd_process[sdp->sd_glockd_num]);
 
 	if (!(sb->s_flags & MS_RDONLY)) {
 		error = gfs2_make_fs_ro(sdp);
@@ -214,18 +213,18 @@ static int gfs2_sync_fs(struct super_block *sb, int wait)
 }
 
 /**
- * gfs2_write_super_lockfs - prevent further writes to the filesystem
+ * gfs2_freeze - prevent further writes to the filesystem
  * @sb: the VFS structure for the filesystem
  *
  */
 
-static void gfs2_write_super_lockfs(struct super_block *sb)
+static int gfs2_freeze(struct super_block *sb)
 {
 	struct gfs2_sbd *sdp = sb->s_fs_info;
 	int error;
 
 	if (test_bit(SDF_SHUTDOWN, &sdp->sd_flags))
-		return;
+		return -EINVAL;
 
 	for (;;) {
 		error = gfs2_freeze_fs(sdp);
@@ -245,17 +244,19 @@ static void gfs2_write_super_lockfs(struct super_block *sb)
 		fs_err(sdp, "retrying...\n");
 		msleep(1000);
 	}
+	return 0;
 }
 
 /**
- * gfs2_unlockfs - reallow writes to the filesystem
+ * gfs2_unfreeze - reallow writes to the filesystem
  * @sb: the VFS structure for the filesystem
  *
  */
 
-static void gfs2_unlockfs(struct super_block *sb)
+static int gfs2_unfreeze(struct super_block *sb)
 {
 	gfs2_unfreeze_fs(sb->s_fs_info);
+	return 0;
 }
 
 /**
@@ -305,28 +306,47 @@ static int gfs2_statfs(struct dentry *dentry, struct kstatfs *buf)
 static int gfs2_remount_fs(struct super_block *sb, int *flags, char *data)
 {
 	struct gfs2_sbd *sdp = sb->s_fs_info;
+	struct gfs2_args args = sdp->sd_args; /* Default to current settings */
 	int error;
 
-	error = gfs2_mount_args(sdp, data, 1);
+	error = gfs2_mount_args(sdp, &args, data);
 	if (error)
 		return error;
 
+	/* Not allowed to change locking details */
+	if (strcmp(args.ar_lockproto, sdp->sd_args.ar_lockproto) ||
+	    strcmp(args.ar_locktable, sdp->sd_args.ar_locktable) ||
+	    strcmp(args.ar_hostdata, sdp->sd_args.ar_hostdata))
+		return -EINVAL;
+
+	/* Some flags must not be changed */
+	if (args_neq(&args, &sdp->sd_args, spectator) ||
+	    args_neq(&args, &sdp->sd_args, ignore_local_fs) ||
+	    args_neq(&args, &sdp->sd_args, localflocks) ||
+	    args_neq(&args, &sdp->sd_args, localcaching) ||
+	    args_neq(&args, &sdp->sd_args, meta))
+		return -EINVAL;
+
 	if (sdp->sd_args.ar_spectator)
 		*flags |= MS_RDONLY;
-	else {
-		if (*flags & MS_RDONLY) {
-			if (!(sb->s_flags & MS_RDONLY))
-				error = gfs2_make_fs_ro(sdp);
-		} else if (!(*flags & MS_RDONLY) &&
-			   (sb->s_flags & MS_RDONLY)) {
+
+	if ((sb->s_flags ^ *flags) & MS_RDONLY) {
+		if (*flags & MS_RDONLY)
+			error = gfs2_make_fs_ro(sdp);
+		else
 			error = gfs2_make_fs_rw(sdp);
-		}
+		if (error)
+			return error;
 	}
 
+	sdp->sd_args = args;
+	if (sdp->sd_args.ar_posix_acl)
+		sb->s_flags |= MS_POSIXACL;
+	else
+		sb->s_flags &= ~MS_POSIXACL;
         /* Indicate support for setlease fop */
         *flags |= MS_HAS_SETLEASE;
-
-	return error;
+	return 0;
 }
 
 /**
@@ -371,7 +391,6 @@ static void gfs2_clear_inode(struct inode *inode)
 	 */
 	if (test_bit(GIF_USER, &ip->i_flags)) {
 		ip->i_gl->gl_object = NULL;
-		gfs2_glock_schedule_for_reclaim(ip->i_gl);
 		gfs2_glock_put(ip->i_gl);
 		ip->i_gl = NULL;
 		if (ip->i_iopen_gh.gh_gl) {
@@ -424,8 +443,6 @@ static int gfs2_show_options(struct seq_file *s, struct vfsmount *mnt)
 		seq_printf(s, ",debug");
 	if (args->ar_upgrade)
 		seq_printf(s, ",upgrade");
-	if (args->ar_num_glockd != GFS2_GLOCKD_DEFAULT)
-		seq_printf(s, ",num_glockd=%u", args->ar_num_glockd);
 	if (args->ar_posix_acl)
 		seq_printf(s, ",acl");
 	if (args->ar_quota != GFS2_QUOTA_DEFAULT) {
@@ -497,13 +514,13 @@ static void gfs2_delete_inode(struct inode *inode)
 		goto out_truncate;
 
 	if (S_ISDIR(inode->i_mode) &&
-	    (ip->i_di.di_flags & GFS2_DIF_EXHASH)) {
+	    (ip->i_diskflags & GFS2_DIF_EXHASH)) {
 		error = gfs2_dir_exhash_dealloc(ip);
 		if (error)
 			goto out_unlock;
 	}
 
-	if (ip->i_di.di_eattr) {
+	if (ip->i_eattr) {
 		error = gfs2_ea_dealloc(ip);
 		if (error)
 			goto out_unlock;
@@ -566,8 +583,8 @@ const struct super_operations gfs2_super_ops = {
 	.put_super		= gfs2_put_super,
 	.write_super		= gfs2_write_super,
 	.sync_fs		= gfs2_sync_fs,
-	.write_super_lockfs 	= gfs2_write_super_lockfs,
-	.unlockfs		= gfs2_unlockfs,
+	.freeze_fs 		= gfs2_freeze,
+	.unfreeze_fs		= gfs2_unfreeze,
 	.statfs			= gfs2_statfs,
 	.remount_fs		= gfs2_remount_fs,
 	.clear_inode		= gfs2_clear_inode,

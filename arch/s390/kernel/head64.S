@@ -47,7 +47,7 @@ startup_continue:
 	tm	0xb9,0x01		# test if subchannel is enabled
 	jno	.nodump			# subchannel disabled
 	l	%r1,0xb8
-	la	%r5,.Lipl_schib-.LPG1(%r13)
+	la	%r5,ipl_schib-.LPG1(%r13)
 	stsch	0(%r5)			# get schib of subchannel
 	jne	.nodump			# schib not available
 	tm	5(%r5),0x01		# devno valid?
@@ -99,7 +99,6 @@ startup_continue:
 #endif /* CONFIG_ZFCPDUMP */
 	mvi	__LC_AR_MODE_ID,1	# set esame flag
 
-	GET_IPL_DEVICE
         lhi   %r1,1                      # mode 1 = esame
 	mvi   __LC_AR_MODE_ID,1		 # set esame flag
         slr   %r0,%r0                    # set cpuid to zero
@@ -111,15 +110,20 @@ startup_continue:
         mvc   __LC_IPLDEV(4),IPL_DEVICE+4-PARMAREA(%r12)
 
 #
-# clear bss memory
+# Setup stack
 #
-	larl  %r2,__bss_start           # start of bss segment
-        larl  %r3,_end                  # end of bss segment
-        sgr   %r3,%r2                   # length of bss
-        sgr   %r4,%r4                   #
-        sgr   %r5,%r5                   # set src,length and pad to zero
-        mvcle %r2,%r4,0                 # clear mem
-        jo    .-4                       # branch back, if not finish
+	larl	%r15,init_thread_union
+	lg	%r14,__TI_task(%r15)	# cache current in lowcore
+	stg	%r14,__LC_CURRENT
+	aghi	%r15,1<<(PAGE_SHIFT+THREAD_ORDER) # init_task_union + THREAD_SIZE
+	stg	%r15,__LC_KERNEL_STACK    # set end of kernel stack
+	aghi	%r15,-160
+	xc	__SF_BACKCHAIN(4,%r15),__SF_BACKCHAIN(%r15) # clear backchain
+#
+# Save ipl parameters, clear bss memory, initialize storage key for kernel pages,
+# and create a kernel NSS if the SAVESYS= parm is defined
+#
+	brasl	%r14,startup_init
 
 	l     %r2,.Lrcp-.LPG1(%r13)	# Read SCP forced command word
 .Lservicecall:
@@ -211,12 +215,15 @@ startup_continue:
 	srl   %r7,28
 	clr   %r6,%r7			 # compare cc with last access code
 	je    .Lsame
-	j     .Lchkmem
+	lghi  %r8,0			 # no program checks
+	j     .Lsavchk
 .Lsame:
 	algr  %r5,%r1			 # add 128KB to end of chunk
 					 # no need to check here,
 	brc   12,.Lloop			 # this is the same chunk
 .Lchkmem:				 # > 16EB or tprot got a program check
+	lghi  %r8,1			 # set program check flag
+.Lsavchk:
 	clgr  %r4,%r5			 # chunk size > 0?
 	je    .Lchkloop
 	stg   %r4,0(%r3)		 # store start address of chunk
@@ -225,8 +232,6 @@ startup_continue:
 	stg   %r0,8(%r3)		 # store size of chunk
 	st    %r6,20(%r3)		 # store type of chunk
 	la    %r3,24(%r3)
-	larl  %r8,memory_size
-	stg   %r5,0(%r8)                 # store memory size
 	ahi   %r10,-1			 # update chunk number
 .Lchkloop:
 	lr    %r6,%r7			 # set access code to last cc
@@ -245,26 +250,20 @@ startup_continue:
 	chi   %r10, 0			 # do we have chunks left?
 	je    .Ldonemem
 .Lhsaskip:
+	chi   %r8,1			 # program check ?
+	je    .Lpgmchk
+	lgr   %r4,%r5			 # potential new chunk
+	algr  %r5,%r1			 # add 128KB to end of chunk
+	j     .Llpcnt
+.Lpgmchk:
 	algr  %r5,%r1			 # add 128KB to end of chunk
 	lgr   %r4,%r5			 # potential new chunk
+.Llpcnt:
 	clgr  %r5,%r9			 # should we go on?
 	jl    .Lloop
 .Ldonemem:		
 
 	larl  %r12,machine_flags
-#
-# find out if we are running under VM
-#
-        stidp  __LC_CPUID               # store cpuid
-	tm     __LC_CPUID,0xff          # running under VM ?
-	bno    0f-.LPG1(%r13)
-        oi     7(%r12),1                # set VM flag
-0:      lh     %r0,__LC_CPUID+4         # get cpu version
-        chi    %r0,0x7490               # running on a P/390 ?
-        bne    1f-.LPG1(%r13)
-        oi     7(%r12),4                # set P/390 flag
-1:
-
 #
 # find out if we have the MVPG instruction
 #
@@ -358,6 +357,12 @@ startup_continue:
 .Lparmaddr:
 	.quad	PARMAREA
 
+	.globl	ipl_schib
+ipl_schib:
+	.rept	13
+	.long	0
+	.endr
+
 	.org	0x12000
 .globl s390_readinfo_sccb
 s390_readinfo_sccb:
@@ -389,24 +394,12 @@ s390_readinfo_sccb:
         .globl _stext
 _stext:	basr  %r13,0                    # get base
 .LPG3:
-#
-# Setup stack
-#
-	larl  %r15,init_thread_union
-	lg    %r14,__TI_task(%r15)      # cache current in lowcore
-	stg   %r14,__LC_CURRENT
-        aghi  %r15,1<<(PAGE_SHIFT+THREAD_ORDER) # init_task_union + THREAD_SIZE
-        stg   %r15,__LC_KERNEL_STACK    # set end of kernel stack
-        aghi  %r15,-160
-        xc    __SF_BACKCHAIN(4,%r15),__SF_BACKCHAIN(%r15) # clear backchain
-
 # check control registers
         stctg  %c0,%c15,0(%r15)
 	oi     6(%r15),0x40             # enable sigp emergency signal
 	oi     4(%r15),0x10             # switch on low address proctection
         lctlg  %c0,%c15,0(%r15)
 
-#
         lam    0,15,.Laregs-.LPG3(%r13) # load access regs needed by uaccess
         brasl  %r14,start_kernel        # go to C code
 #
@@ -414,7 +407,7 @@ _stext:	basr  %r13,0                    # get base
 #
         basr  %r13,0
 	lpswe .Ldw-.(%r13)           # load disabled wait psw
-#
+
             .align 8
 .Ldw:       .quad  0x0002000180000000,0x0000000000000000
 .Laregs:    .long  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0

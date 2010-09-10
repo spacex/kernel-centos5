@@ -12,7 +12,7 @@
  *----------------------------------------------------------------------------*/
 
 #ifndef AAC_DRIVER_BUILD
-# define AAC_DRIVER_BUILD 2455
+# define AAC_DRIVER_BUILD 2461
 #endif
 #define MAXIMUM_NUM_CONTAINERS	32
 
@@ -33,8 +33,8 @@
 #define CONTAINER_TO_ID(cont)		(cont)
 #define CONTAINER_TO_LUN(cont)		(0)
 
-#define aac_phys_to_logical(x)  (x+1)
-#define aac_logical_to_phys(x)  (x?x-1:0)
+#define aac_phys_to_logical(x)  ((x)+1)
+#define aac_logical_to_phys(x)  ((x)?(x)-1:0)
 
 /* #define AAC_DETAILED_STATUS_INFO */
 
@@ -423,6 +423,8 @@ struct aac_init
 	 */
 	__le32	InitFlags;	/* flags for supported features */
 #define INITFLAGS_NEW_COMM_SUPPORTED	0x00000001
+#define INITFLAGS_DRIVER_USES_UTC_TIME	0x00000010
+#define INITFLAGS_DRIVER_SUPPORTS_PM	0x00000020
 	__le32	MaxIoCommands;	/* max outstanding commands */
 	__le32	MaxIoSize;	/* largest I/O command */
 	__le32	MaxFibSize;	/* largest FIB to adapter */
@@ -862,12 +864,18 @@ struct aac_supplement_adapter_info
 	u8	MfgPcbaSerialNo[12];
 	u8	MfgWWNName[8];
 	__le32	SupportedOptions2;
-	__le32	ReservedGrowth[1];
+	__le32	StructExpansion;
+	/* StructExpansion == 1 */
+	__le32	FeatureBits3;
+	__le32	SupportedPerformanceModes;
+	__le32	ReservedForFutureGrowth[80];
 };
 #define AAC_FEATURE_FALCON	cpu_to_le32(0x00000010)
 #define AAC_FEATURE_JBOD	cpu_to_le32(0x08000000)
-#define AAC_OPTION_MU_RESET	cpu_to_le32(0x00000001)
-#define AAC_OPTION_IGNORE_RESET	cpu_to_le32(0x00000002)
+/* SupportedOptions2 */
+#define AAC_OPTION_MU_RESET		cpu_to_le32(0x00000001)
+#define AAC_OPTION_IGNORE_RESET		cpu_to_le32(0x00000002)
+#define AAC_OPTION_POWER_MANAGEMENT	cpu_to_le32(0x00000004)
 #define AAC_SIS_VERSION_V3	3
 #define AAC_SIS_SLOT_UNKNOWN	0xFF
 
@@ -1015,6 +1023,7 @@ struct aac_dev
 	u8			jbod;
 	u8			cache_protected;
 	u8			dac_support;
+	u8			needs_dac;
 	u8			raid_scsi_mode;
 	u8			comm_interface;
 #	define AAC_COMM_PRODUCER 0
@@ -1025,6 +1034,7 @@ struct aac_dev
 	u8			raw_io_64;
 	u8			printf_enabled;
 	u8			in_reset;
+	u8			msi;
 };
 
 #define aac_adapter_interrupt(dev) \
@@ -1146,6 +1156,7 @@ struct aac_dev
 #define		ST_DQUOT	69
 #define		ST_STALE	70
 #define		ST_REMOTE	71
+#define		ST_NOT_READY	72
 #define		ST_BADHANDLE	10001
 #define		ST_NOT_SYNC	10002
 #define		ST_BAD_COOKIE	10003
@@ -1265,6 +1276,18 @@ struct aac_synchronize_reply {
 	__le32		parm4;
 	__le32		parm5;
 	u8		data[16];
+};
+
+#define CT_POWER_MANAGEMENT	245
+#define CT_PM_START_UNIT	2
+#define CT_PM_STOP_UNIT		3
+#define CT_PM_UNIT_IMMEDIATE	1
+struct aac_power_management {
+	__le32		command;	/* VM_ContainerConfig */
+	__le32		type;		/* CT_POWER_MANAGEMENT */
+	__le32		sub;		/* CT_PM_* */
+	__le32		cid;
+	__le32		parm;		/* CT_PM_sub_* */
 };
 
 #define CT_PAUSE_IO    65
@@ -1534,6 +1557,7 @@ struct aac_mntent {
 #define FSCS_NOTCLEAN	0x0001  /* fsck is necessary before mounting */
 #define FSCS_READONLY	0x0002	/* possible result of broken mirror */
 #define FSCS_HIDDEN	0x0004	/* should be ignored - set during a clear */
+#define FSCS_NOT_READY	0x0008	/* Array spinning up to fulfil request */
 
 struct aac_query_mount {
 	__le32		command;
@@ -1866,13 +1890,6 @@ int aac_command_thread(void *data);
 int aac_close_fib_context(struct aac_dev * dev, struct aac_fib_context *fibctx);
 int aac_fib_adapter_complete(struct fib * fibptr, unsigned short size);
 struct aac_driver_ident* aac_get_driver_ident(int devtype);
-/* Local Structure to set SCSI inquiry data strings */
-struct scsi_inq {
-	char vid[8];         /* Vendor ID */
-	char pid[16];        /* Product ID */
-	char prl[4];         /* Product Revision Level */
-};
-void setinqstr(struct aac_dev *dev, void *data, int tindex);
 int aac_get_adapter_info(struct aac_dev* dev);
 int aac_send_shutdown(struct aac_dev *dev);
 int aac_probe_container(struct aac_dev *dev, int cid);
@@ -1887,6 +1904,7 @@ extern int startup_timeout;
 extern int aif_timeout;
 extern int expose_physicals;
 extern int aac_reset_devices;
+extern int aac_msi;
 extern int aac_commit;
 extern int update_interval;
 extern int check_interval;

@@ -11,8 +11,6 @@
  * Author(s): Michael Holzheu
  */
 
-//#define GZIP_SUPPORT
-
 #include <errno.h>
 #include <string.h>
 #include <dirent.h>
@@ -42,6 +40,7 @@ static struct globals g;
 static int parse_parameter(char *parameter)
 {
 	char *token;
+	char *end_ptr;
 
 	token = strtok(parameter, "=");
 	if (token == NULL)
@@ -72,7 +71,12 @@ static int parse_parameter(char *parameter)
 				  "specified\n", PARM_MEM);
 			return -1;
 		}
-		g.parm_mem = strtoll(mem_str, NULL, 0);
+		g.parm_mem = strtoll(mem_str, &end_ptr, 0);
+		if (*end_ptr != 0) {
+			PRINT_ERR("Invalid value for '%s' parameter "
+				  "specified\n", PARM_MEM);
+			return -1;
+		}
 	} else if (strcmp(token, PARM_COMP) == 0) {
 		/* Dump Compression */
 		g.parm_compress = strtok(NULL, "=");
@@ -243,6 +247,7 @@ static int read_file(const char *file, char *buf, int size)
 static int enable_zfcp_device(void)
 {
 	char command[1024], file[1024];
+	struct stat s;
 
 	/* device */
 	if (read_file(IPL_DEVNO, g.dump_devno, sizeof(g.dump_devno)))
@@ -255,9 +260,12 @@ static int enable_zfcp_device(void)
 	if (read_file(IPL_WWPN, g.dump_wwpn, sizeof(g.dump_wwpn)))
 		return -1;
 	sprintf(file, "/sys/bus/ccw/drivers/zfcp/%s/port_add", g.dump_devno);
-	sprintf(command, "%s\n", g.dump_wwpn);
-	if (write_to_file(file, command))
-		return -1;
+	/* The port_add attribute has been removed in recent kernels */
+	if (stat(file, &s) == 0) {
+		sprintf(command, "%s\n", g.dump_wwpn);
+		if (write_to_file(file, command))
+			return -1;
+	}
 
 	/* lun */
 	if (read_file(IPL_LUN, g.dump_lun, sizeof(g.dump_lun)))
@@ -328,7 +336,15 @@ static int umount_dump_device(void)
  */
 static void terminate(void)
 {
+	int fd;
+
 	sleep(WAIT_TIME_END); /* give the messages time to be displayed */
+	fd = open(DEV_ZCORE_REIPL, O_WRONLY, 0);
+	if (fd == -1)
+		goto no_reipl;
+	write(fd, REIPL, 1);
+	close(fd);
+no_reipl:
 	reboot(LINUX_REBOOT_CMD_POWER_OFF);
 }
 
@@ -661,9 +677,12 @@ static int create_dump(void)
 	struct dump_page dp;
 	char page_buf[DUMP_BUF_SIZE], buf[PAGE_SIZE], dpcpage[PAGE_SIZE];
 	char dump_name[1024];
-	__u64 mem_loc;
+	__u64 mem_loc, mem_count;
 	__u32 buf_loc = 0, dp_size, dp_flags;
-	int size, fin, fout;
+	int size, fin, fout, fmap, rc = 0;
+	char c_info[CHUNK_INFO_SIZE];
+	struct mem_chunk *chunk, *chunk_first = NULL, *chunk_prev = NULL;
+	char *end_ptr;
 
 	if (stat(g.dump_dir, &stat_buf) < 0) {
 		PRINT_ERR("Specified dump dir '%s' not found!\n", g.dump_dir);
@@ -686,11 +705,65 @@ static int create_dump(void)
 	else
 		return -1;
 
+	/* Open the memory map file - only available with kernel 2.6.25 or
+	* higher. If open fails, memory holes cannot be detected and only
+	* one single memory chunk is assumed */
+	fmap = open(DEV_ZCORE_MAP, O_RDONLY, 0);
+	if (fmap == -1) {
+		chunk_first = calloc(1, sizeof(struct mem_chunk));
+		if (chunk_first == NULL) {
+			PRINT_ERR("Could not allocate %d bytes of memory\n",
+				  (int) sizeof(struct mem_chunk));
+			return -1;
+		}
+		chunk_first->size = PARM_MEM_DFLT;
+	} else {
+	/* read information about memory chunks (start address and size) */
+		do {
+			if (read(fmap, c_info, sizeof(c_info)) != sizeof(c_info)) {
+				PRINT_ERR("read() memory map file '%s' "
+					  "failed!\n", DEV_ZCORE_MAP);
+				rc = -1;
+				goto failed_close_fmap;
+			}
+			chunk = calloc(1, sizeof(struct mem_chunk));
+			if (chunk == NULL) {
+				PRINT_ERR("Could not allocate %d bytes of "
+					  "memory\n",
+					  (int) sizeof(struct mem_chunk));
+				rc = -1;
+				goto failed_free_chunks;
+			}
+			chunk->size = strtoul(c_info + 17, &end_ptr, 16);
+			if (end_ptr != c_info + 33 || *end_ptr != ' ') {
+				PRINT_ERR("Invalid contents of memory map "
+					  "file '%s'!\n", DEV_ZCORE_MAP);
+				rc = -1;
+				goto failed_free_chunks;
+			}
+			if (chunk->size == 0)
+				break;
+			chunk->addr = strtoul(c_info, &end_ptr, 16);
+			if (end_ptr != c_info + 16 || *end_ptr != ' ') {
+				PRINT_ERR("Invalid contents of memory map "
+					  "file '%s'!\n", DEV_ZCORE_MAP);
+				rc = -1;
+				goto failed_free_chunks;
+			}
+			if (!chunk_first)
+				chunk_first = chunk;
+			else
+				chunk_prev->next = chunk;
+			chunk_prev = chunk;
+		} while (1);
+	}
+
 	/* try to open the source device */
 	fin = open(DEV_ZCORE, O_RDONLY, 0);
 	if (fin == -1) {
 		PRINT_ERR("open() source device '%s' failed!\n", DEV_ZCORE);
-		return -1;
+		rc = -1;
+		goto failed_free_chunks;
 	}
 
 	/* make the new filename */
@@ -698,6 +771,7 @@ static int create_dump(void)
 	fout = open(dump_name, DUMP_FLAGS, DUMP_MODE);
 	if (fout == -1) {
 		PRINT_ERR("open() of dump file \"%s\" failed!\n", dump_name);
+		rc = -1;
 		goto failed_close_fin;
 	}
 
@@ -708,10 +782,12 @@ static int create_dump(void)
 	if (lseek(fin, 0, SEEK_SET) < 0) {
 		PRINT_ERR("Cannot lseek() to get the dump header from the "
 			"dump file!\n");
+		rc = -1;
 		goto failed_close_fout;
 	}
 	if (read(fin, &s390_dh, sizeof(s390_dh)) != sizeof(s390_dh)) {
 		PRINT_ERR("Cannot read() dump header from dump file!\n");
+		rc = -1;
 		goto failed_close_fout;
 	}
 
@@ -742,21 +818,36 @@ static int create_dump(void)
 	memcpy(page_buf, &dh, sizeof(dh));
 	if (lseek(fout, 0L, SEEK_SET) < 0) {
 		PRINT_ERR("lseek() failed\n");
+		rc = -1;
 		goto failed_close_fout;
 	}
 	if (dump_write(fout, page_buf, DUMP_BUF_SIZE) != DUMP_BUF_SIZE) {
 		PRINT_ERR("Error: Write dump header failed\n");
+		rc = -1;
 		goto failed_close_fout;
 	}
 
 	/* write dump */
 
+	chunk = chunk_first;
 	mem_loc = 0;
+	mem_count = 0;
 	if (lseek(fin, DUMP_HEADER_SZ_S390SA, SEEK_SET) < 0) {
 		PRINT_ERR("lseek() failed\n");
+		rc = -1;
 		goto failed_close_fout;
 	}
-	while (mem_loc < dh.memory_size) {
+	while (mem_loc < dh.memory_end) {
+		if (mem_loc >= chunk->addr + chunk->size) {
+			chunk = chunk->next;
+			mem_loc = chunk->addr;
+			if (lseek(fin, DUMP_HEADER_SZ_S390SA + mem_loc,
+				  SEEK_SET) < 0) {
+				PRINT_ERR("lseek() failed\n");
+				rc = -1;
+				goto failed_close_fout;
+			}
+		}
 		if (read(fin, buf, PAGE_SIZE) != PAGE_SIZE) {
 			if (errno == EFAULT) {
 				/* probably memory hole. Skip page */
@@ -764,6 +855,7 @@ static int create_dump(void)
 				continue;
 			}
 			PRINT_PERR("read error\n");
+			rc = -1;
 			goto failed_close_fout;
 		}
 		memset(dpcpage, 0, PAGE_SIZE);
@@ -796,11 +888,13 @@ static int create_dump(void)
 		buf_loc += dp_size;
 		if (dump_write(fout, page_buf, buf_loc) != buf_loc) {
 			PRINT_ERR("write error\n");
+			rc = -1;
 			goto failed_close_fout;
 		}
 		buf_loc = 0;
 		mem_loc += PAGE_SIZE;
-		show_progress(mem_loc, dh.memory_size);
+		mem_count += PAGE_SIZE;
+		show_progress(mem_count, dh.memory_size);
 	}
 
 	/* write end marker */
@@ -809,15 +903,21 @@ static int create_dump(void)
 	dp.size    = DUMP_DH_END;
 	dp.flags   = 0x0;
 	dump_write(fout, &dp, sizeof(dp));
-	close(fin);
-	close(fout);
-	return 0;
 
 failed_close_fout:
 	close(fout);
 failed_close_fin:
 	close(fin);
-	return -1;
+failed_free_chunks:
+	chunk = chunk_first;
+	while (chunk) {
+		chunk_prev = chunk;
+		chunk = chunk->next;
+		free(chunk_prev);
+	}
+failed_close_fmap:
+	close(fmap);
+	return rc;
 }
 
 /*

@@ -36,7 +36,7 @@
 
 #include "vnic_main.h"
 
-cycles_t recv_ref;
+cycles_t vnic_recv_ref;
 
 /*
  * TODO: Statistics reporting for control path, data path,
@@ -170,6 +170,17 @@ static ssize_t show_recvs(struct class_device *class_dev, char *buf)
 
 static CLASS_DEVICE_ATTR(recvs, S_IRUGO, show_recvs, NULL);
 
+static ssize_t show_multicast_recvs(struct class_device *class_dev, char *buf)
+{
+	struct class_dev_info *info =
+		container_of(class_dev, struct class_dev_info, class_dev);
+	struct vnic *vnic = container_of(info, struct vnic, stat_info);
+
+	return sprintf(buf, "%d\n", vnic->statistics.multicast_recv_num);
+}
+
+static CLASS_DEVICE_ATTR(multicast_recvs, S_IRUGO, show_multicast_recvs, NULL);
+
 static ssize_t show_total_xmit_time(struct class_device *class_dev,
 				    char *buf)
 {
@@ -206,12 +217,13 @@ static ssize_t show_failed_xmits(struct class_device *class_dev, char *buf)
 
 static CLASS_DEVICE_ATTR(failed_xmits, S_IRUGO, show_failed_xmits, NULL);
 
-static struct attribute * vnic_stats_attrs[] = {
+static struct attribute *vnic_stats_attrs[] = {
 	&class_device_attr_lifetime.attr,
 	&class_device_attr_xmits.attr,
 	&class_device_attr_total_xmit_time.attr,
 	&class_device_attr_failed_xmits.attr,
 	&class_device_attr_recvs.attr,
+	&class_device_attr_multicast_recvs.attr,
 	&class_device_attr_total_recv_time.attr,
 	&class_device_attr_connection_time.attr,
 	&class_device_attr_disconnects.attr,

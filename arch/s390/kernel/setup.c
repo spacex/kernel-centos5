@@ -38,6 +38,7 @@
 #include <linux/device.h>
 #include <linux/notifier.h>
 #include <linux/topology.h>
+#include <linux/ctype.h>
 
 #include <asm/ipl.h>
 #include <asm/uaccess.h>
@@ -51,6 +52,7 @@
 #include <asm/ptrace.h>
 #include <asm/sections.h>
 #include <asm/cio.h>
+#include <asm/ebcdic.h>
 
 /*
  * Machine setup..
@@ -58,15 +60,11 @@
 unsigned int console_mode = 0;
 unsigned int console_devno = -1;
 unsigned int console_irq = -1;
-unsigned long memory_size = 0;
 unsigned long machine_flags = 0;
 unsigned long elf_hwcap = 0;
+
+struct mem_chunk memory_chunk[MEMORY_CHUNKS];
 char elf_platform[ELF_PLATFORM_SIZE];
-struct {
-	unsigned long addr, size, type;
-} memory_chunk[MEMORY_CHUNKS] = { { 0 } };
-#define CHUNK_READ_WRITE 0
-#define CHUNK_READ_ONLY 1
 volatile int __cpu_logical_map[NR_CPUS]; /* logical cpu to cpu address */
 unsigned long __initdata zholes_size[MAX_NR_ZONES];
 static unsigned long __initdata memory_end;
@@ -277,62 +275,221 @@ static void __init conmode_default(void)
 	}
 }
 
+/* Set up boot command line */
+static char __initdata s390_command_line[COMMAND_LINE_SIZE];
+
+static void __init setup_boot_command_line(void)
+{
+	char *parm = NULL;
+
+	/* copy arch command line */
+	strlcpy(s390_command_line, COMMAND_LINE, ARCH_COMMAND_LINE_SIZE);
+
+	/* append IPL PARM data to the boot command line */
+	if (MACHINE_IS_VM) {
+		parm = s390_command_line + strlen(s390_command_line);
+		*parm++ = ' ';
+		get_ipl_vmparm(parm);
+		if (parm[0] == '=')
+			memmove(s390_command_line, parm + 1, strlen(parm));
+	}
+}
+
 #if defined(CONFIG_ZFCPDUMP) || defined(CONFIG_ZFCPDUMP_MODULE)
 static void __init setup_zfcpdump(unsigned int console_devno)
 {
-	static char str[64];
+	static char str[41];
 
 	if (ipl_info.type != IPL_TYPE_FCP_DUMP)
 		return;
 	if (console_devno != -1)
-		sprintf(str, "cio_ignore=all,!0.0.%04x,!0.0.%04x",
+		sprintf(str, " cio_ignore=all,!0.0.%04x,!0.0.%04x",
 			ipl_info.data.fcp.dev_id.devno, console_devno);
 	else
-		sprintf(str, "cio_ignore=all,!0.0.%04x",
+		sprintf(str, " cio_ignore=all,!0.0.%04x",
 			ipl_info.data.fcp.dev_id.devno);
-	strcat(COMMAND_LINE, " ");
-	strcat(COMMAND_LINE, str);
+	strcat(s390_command_line, str);
 	console_loglevel = 2;
 }
 #else
 static inline void setup_zfcpdump(unsigned int console_devno) {}
 #endif /* CONFIG_ZFCPDUMP */
 
-#ifdef CONFIG_SMP
-extern void machine_restart_smp(char *);
-extern void machine_halt_smp(void);
-extern void machine_power_off_smp(void);
-
-void (*_machine_restart)(char *command) = machine_restart_smp;
-void (*_machine_halt)(void) = machine_halt_smp;
-void (*_machine_power_off)(void) = machine_power_off_smp;
-#else
 /*
- * Reboot, halt and power_off routines for non SMP.
- */
-static void do_machine_restart_nonsmp(char * __unused)
-{
-	do_reipl();
-}
+ * Create a Kernel NSS if the SAVESYS= parameter is defined
+*/
+#define DEFSYS_CMD_SIZE		128
+#define SAVESYS_CMD_SIZE	32
 
-static void do_machine_halt_nonsmp(void)
-{
-        if (MACHINE_IS_VM && strlen(vmhalt_cmd) > 0)
-                cpcmd(vmhalt_cmd, NULL, 0, NULL);
-        signal_processor(smp_processor_id(), sigp_stop_and_store_status);
-}
+char kernel_nss_name[NSS_NAME_SIZE + 1];
 
-static void do_machine_power_off_nonsmp(void)
-{
-        if (MACHINE_IS_VM && strlen(vmpoff_cmd) > 0)
-                cpcmd(vmpoff_cmd, NULL, 0, NULL);
-        signal_processor(smp_processor_id(), sigp_stop_and_store_status);
-}
+#ifdef CONFIG_SHARED_KERNEL
+int __init savesys_ipl_nss(char *cmd, const int cmdlen);
 
-void (*_machine_restart)(char *command) = do_machine_restart_nonsmp;
-void (*_machine_halt)(void) = do_machine_halt_nonsmp;
-void (*_machine_power_off)(void) = do_machine_power_off_nonsmp;
+asm(
+	"	.section .init.text,\"ax\",@progbits\n"
+	"	.align	4\n"
+	"	.type	savesys_ipl_nss, @function\n"
+	"savesys_ipl_nss:\n"
+#ifdef CONFIG_64BIT
+	"	stmg	6,15,48(15)\n"
+	"	lgr	14,3\n"
+	"	sam31\n"
+	"	diag	2,14,0x8\n"
+	"	sam64\n"
+	"	lgr	2,14\n"
+	"	lmg	6,15,48(15)\n"
+#else
+	"	stm	6,15,24(15)\n"
+	"	lr	14,3\n"
+	"	diag	2,14,0x8\n"
+	"	lr	2,14\n"
+	"	lm	6,15,24(15)\n"
 #endif
+	"	br	14\n"
+	"	.size	savesys_ipl_nss, .-savesys_ipl_nss\n");
+
+static __init void create_kernel_nss(void)
+{
+	unsigned int i, stext_pfn, eshared_pfn, end_pfn, min_size;
+#ifdef CONFIG_BLK_DEV_INITRD
+	unsigned int sinitrd_pfn, einitrd_pfn;
+#endif
+	int response;
+	size_t len;
+	char *savesys_ptr;
+	char upper_command_line[COMMAND_LINE_SIZE];
+	char defsys_cmd[DEFSYS_CMD_SIZE];
+	char savesys_cmd[SAVESYS_CMD_SIZE];
+
+	/* Do nothing if we are not running under VM */
+	if (!MACHINE_IS_VM)
+		return;
+
+	/* Convert s390_command_line to upper case */
+	for (i = 0; i < strlen(s390_command_line); i++)
+		upper_command_line[i] = toupper(s390_command_line[i]);
+
+	savesys_ptr = strstr(upper_command_line, "SAVESYS=");
+
+	if (!savesys_ptr)
+		return;
+
+	savesys_ptr += 8;    /* Point to the beginning of the NSS name */
+	for (i = 0; i < NSS_NAME_SIZE; i++) {
+		if (savesys_ptr[i] == ' ' || savesys_ptr[i] == '\0')
+			break;
+		kernel_nss_name[i] = savesys_ptr[i];
+	}
+
+	stext_pfn = PFN_DOWN(__pa(&_stext));
+	eshared_pfn = PFN_DOWN(__pa(&_eshared));
+	end_pfn = PFN_UP(__pa(&_end));
+	min_size = end_pfn << 2;
+
+	sprintf(defsys_cmd, "DEFSYS %s 00000-%.5X EW %.5X-%.5X SR %.5X-%.5X",
+		kernel_nss_name, stext_pfn - 1, stext_pfn, eshared_pfn - 1,
+		eshared_pfn, end_pfn);
+
+#ifdef CONFIG_BLK_DEV_INITRD
+	if (INITRD_START && INITRD_SIZE) {
+		sinitrd_pfn = PFN_DOWN(__pa(INITRD_START));
+		einitrd_pfn = PFN_UP(__pa(INITRD_START + INITRD_SIZE));
+		min_size = einitrd_pfn << 2;
+		sprintf(defsys_cmd, "%s EW %.5X-%.5X", defsys_cmd,
+		sinitrd_pfn, einitrd_pfn);
+	}
+#endif
+
+	sprintf(defsys_cmd, "%s EW MINSIZE=%.7iK PARMREGS=0-13",
+		defsys_cmd, min_size);
+	sprintf(savesys_cmd, "SAVESYS %s \n IPL %s",
+		kernel_nss_name, kernel_nss_name);
+
+	__cpcmd(defsys_cmd, NULL, 0, &response);
+
+	if (response != 0) {
+		kernel_nss_name[0] = '\0';
+		return;
+	}
+
+	len = strlen(savesys_cmd);
+	ASCEBC(savesys_cmd, len);
+	response = savesys_ipl_nss(savesys_cmd, len);
+
+	/* On success: response is equal to the command size,
+	 *	       max SAVESYS_CMD_SIZE
+	 * On error: response contains the numeric portion of cp error message.
+	 *	     for SAVESYS it will be >= 263
+	 */
+	if (response > SAVESYS_CMD_SIZE) {
+		kernel_nss_name[0] = '\0';
+		return;
+	}
+
+	/* re-setup boot command line with new ipl vm parms */
+	ipl_update_parameters();
+	setup_boot_command_line();
+
+	ipl_flags = IPL_NSS_VALID;
+}
+
+#else /* CONFIG_SHARED_KERNEL */
+
+static inline void create_kernel_nss(void) { }
+
+#endif /* CONFIG_SHARED_KERNEL */
+
+/*
+ * Clear bss memory
+ */
+static __init void clear_bss_section(void)
+{
+	memset(__bss_start, 0, __bss_stop - __bss_start);
+}
+
+/*
+ * Initialize storage key for kernel pages
+ */
+static __init void init_kernel_storage_key(void)
+{
+	unsigned long end_pfn, init_pfn;
+
+	end_pfn = PFN_UP(__pa(&_end));
+
+	for (init_pfn = 0 ; init_pfn < end_pfn; init_pfn++)
+		page_set_storage_key(init_pfn << PAGE_SHIFT, PAGE_DEFAULT_KEY);
+}
+
+static __init void detect_machine_type(void)
+{
+	struct cpuinfo_S390 *cpuinfo = &S390_lowcore.cpu_data;
+
+	asm volatile("stidp %0" : "=m" (S390_lowcore.cpu_data.cpu_id));
+
+	/* Running under z/VM ? */
+	if (cpuinfo->cpu_id.version == 0xff)
+		machine_flags |= 1;
+
+	/* Running on a P/390 ? */
+	if (cpuinfo->cpu_id.machine == 0x7490)
+		machine_flags |= 4;
+}
+
+/*
+ * Save ipl parameters, clear bss memory, initialize storage keys
+ * and create a kernel NSS at startup if the SAVESYS= parm is defined
+ */
+void __init startup_init(void)
+{
+	ipl_save_parameters();
+	clear_bss_section();
+	init_kernel_storage_key();
+	detect_machine_type();
+	ipl_update_parameters();
+	setup_boot_command_line();
+	create_kernel_nss();
+}
 
  /*
  * Reboot, halt and power_off stubs. They just call _machine_restart,
@@ -473,12 +630,13 @@ setup_lowcore(void)
 	}
 #endif
 	set_prefix((u32)(unsigned long) lc);
+	lowcore_ptr[0] = lc;
 }
 
 static void __init
 setup_resources(void)
 {
-	struct resource *res;
+	struct resource *res, *sub_res;
 	int i;
 
 	code_resource.start = (unsigned long) &_text;
@@ -503,9 +661,70 @@ setup_resources(void)
 		res->start = memory_chunk[i].addr;
 		res->end = memory_chunk[i].addr +  memory_chunk[i].size - 1;
 		request_resource(&iomem_resource, res);
-		request_resource(res, &code_resource);
-		request_resource(res, &data_resource);
+
+		if (code_resource.start >= res->start  &&
+			code_resource.start <= res->end &&
+			code_resource.end > res->end) {
+			sub_res = alloc_bootmem_low(sizeof(struct resource));
+			memcpy(sub_res, &code_resource,
+				sizeof(struct resource));
+			sub_res->end = res->end;
+			code_resource.start = res->end + 1;
+			request_resource(res, sub_res);
+		}
+
+		if (code_resource.start >= res->start &&
+			code_resource.start <= res->end &&
+			code_resource.end <= res->end)
+			request_resource(res, &code_resource);
+
+		if (data_resource.start >= res->start &&
+			data_resource.start <= res->end &&
+			data_resource.end > res->end) {
+			sub_res = alloc_bootmem_low(sizeof(struct resource));
+			memcpy(sub_res, &data_resource,
+				sizeof(struct resource));
+			sub_res->end = res->end;
+			data_resource.start = res->end + 1;
+			request_resource(res, sub_res);
+		}
+
+		if (data_resource.start >= res->start &&
+			data_resource.start <= res->end &&
+			data_resource.end <= res->end)
+			request_resource(res, &data_resource);
 	}
+}
+
+static void __init setup_memory_end(void)
+{
+	unsigned long real_size, memory_size;
+	unsigned long max_mem, max_phys;
+	int i;
+
+	memory_size = real_size = 0;
+	max_phys = VMALLOC_END - VMALLOC_MIN_SIZE;
+	memory_end &= PAGE_MASK;
+
+	max_mem = memory_end ? min(max_phys, memory_end) : max_phys;
+
+	for (i = 0; i < MEMORY_CHUNKS; i++) {
+		struct mem_chunk *chunk = &memory_chunk[i];
+
+		real_size = max(real_size, chunk->addr + chunk->size);
+		if (chunk->addr >= max_mem) {
+			memset(chunk, 0, sizeof(*chunk));
+			continue;
+		}
+		if (chunk->addr + chunk->size > max_mem)
+			chunk->size = max_mem - chunk->addr;
+		memory_size = max(memory_size, chunk->addr + chunk->size);
+	}
+	if (!memory_end)
+		memory_end = memory_size;
+	if (real_size > memory_end)
+		printk("More memory detected than supported. Unused: %luk\n",
+			(real_size - memory_end) >> 10);
 }
 
 unsigned long real_memory_size;
@@ -525,10 +744,6 @@ setup_memory(void)
 	 */
 	start_pfn = (__pa(&_end) + PAGE_SIZE - 1) >> PAGE_SHIFT;
 	end_pfn = max_pfn = memory_end >> PAGE_SHIFT;
-
-	/* Initialize storage key for kernel pages */
-	for (init_pfn = 0 ; init_pfn < start_pfn; init_pfn++)
-		page_set_storage_key(init_pfn << PAGE_SHIFT, PAGE_DEFAULT_KEY);
 
 	/*
 	 * Initialize the boot-time allocator (with low memory only):
@@ -595,32 +810,6 @@ setup_memory(void)
 		}
 	}
 #endif
-}
-
-static unsigned int __init stfl(void)
-{
-	asm volatile(
-		"	.insn	s,0xb2b10000,0(0)\n" /* stfl */
-		"0:\n"
-		EX_TABLE(0b,0b));
-	return S390_lowcore.stfl_fac_list;
-}
-
-static int __init __stfle(unsigned long long *list, int doublewords)
-{
-	typedef struct { unsigned long long _[doublewords]; } addrtype;
-	register unsigned long __nr asm("0") = doublewords - 1;
-
-	asm volatile(".insn s,0xb2b00000,%0" /* stfle */
-		     : "=m" (*(addrtype *) list), "+d" (__nr) : : "cc");
-	return __nr + 1;
-}
-
-int __init stfle(unsigned long long *list, int doublewords)
-{
-	if (!(stfl() & (1UL << 24)))
-		return -EOPNOTSUPP;
-	return __stfle(list, doublewords);
 }
 
 /*
@@ -707,6 +896,9 @@ static void __init setup_hwcaps(void)
 void __init
 setup_arch(char **cmdline_p)
 {
+	/* set up preferred console */
+	add_preferred_console("ttyS", 0, NULL);
+
         /*
          * print what head.S has found out about the machine
          */
@@ -723,11 +915,9 @@ setup_arch(char **cmdline_p)
 	       "We are running native (64 bit mode)\n");
 #endif /* CONFIG_64BIT */
 
-	/* Save unparsed command line copy for /proc/cmdline */
-	strlcpy(saved_command_line, COMMAND_LINE, COMMAND_LINE_SIZE);
-
-	*cmdline_p = COMMAND_LINE;
-	*(*cmdline_p + COMMAND_LINE_SIZE - 1) = '\0';
+	/* save unparsed s390_command_line for /proc/cmdline */
+	memcpy(saved_command_line, s390_command_line, COMMAND_LINE_SIZE);
+	*cmdline_p = s390_command_line;
 
         ROOT_DEV = Root_RAM0;
 
@@ -736,25 +926,10 @@ setup_arch(char **cmdline_p)
 	init_mm.end_data = (unsigned long) &_edata;
 	init_mm.brk = (unsigned long) &_end;
 
-	memory_end = memory_size;
-
 	parse_early_param();
 
-#ifndef CONFIG_64BIT
-	memory_end &= ~0x400000UL;
-
-        /*
-         * We need some free virtual space to be able to do vmalloc.
-         * On a machine with 2GB memory we make sure that we have at
-         * least 128 MB free space for vmalloc.
-         */
-        if (memory_end > 1920*1024*1024)
-                memory_end = 1920*1024*1024;
-#else /* CONFIG_64BIT */
-	memory_end &= ~0x200000UL;
-#endif /* CONFIG_64BIT */
-
-	setup_ipl_info();
+	setup_ipl();
+	setup_memory_end();
 #if defined(CONFIG_ZFCPDUMP) || defined(CONFIG_ZFCPDUMP_MODULE)
 	if (ipl_info.type == IPL_TYPE_FCP_DUMP) {
 		memory_end = ZFCPDUMP_HSA_SIZE;

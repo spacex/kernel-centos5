@@ -1838,6 +1838,41 @@ void tcp4_proc_exit(void)
 }
 #endif /* CONFIG_PROC_FS */
 
+struct sk_buff **tcp4_gro_receive(struct sk_buff **head, struct sk_buff *skb)
+{
+	struct iphdr *iph = skb_gro_network_header(skb);
+
+	switch (skb->ip_summed) {
+	case CHECKSUM_COMPLETE:
+		if (!tcp_v4_check(NULL, skb_gro_len(skb), iph->saddr,
+				  iph->daddr, skb->csum)) {
+			skb->ip_summed = CHECKSUM_UNNECESSARY;
+			break;
+		}
+
+		/* fall through */
+	case CHECKSUM_NONE:
+		NAPI_GRO_CB(skb)->flush = 1;
+		return NULL;
+	}
+
+	return tcp_gro_receive(head, skb);
+}
+EXPORT_SYMBOL(tcp4_gro_receive);
+
+int tcp4_gro_complete(struct sk_buff *skb)
+{
+	struct iphdr *iph = ip_hdr(skb);
+	struct tcphdr *th = tcp_hdr(skb);
+
+	th->check = ~tcp_v4_check(NULL, skb->len - skb_transport_offset(skb),
+				  iph->saddr, iph->daddr, 0);
+	skb_shinfo(skb)->gso_type = SKB_GSO_TCPV4;
+
+	return tcp_gro_complete(skb);
+}
+EXPORT_SYMBOL(tcp4_gro_complete);
+
 struct proto tcp_prot = {
 	.name			= "TCP",
 	.owner			= THIS_MODULE,

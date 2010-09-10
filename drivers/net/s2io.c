@@ -3446,9 +3446,9 @@ static void s2io_reset(struct s2io_nic * sp)
 		writeq(BIT(62), &bar0->txpic_int_reg);
 	}
 
-	/* Reset device statistics maintained by OS */
-	memset(&sp->stats, 0, sizeof (struct net_device_stats));
-	
+	/* Reset device statistics buffer */
+	memset(&sp->stats_buffer, 0, sizeof (struct s2io_stats_buffer));
+
 	up_cnt = sp->mac_control.stats_info->sw_stat.link_up_cnt;
 	down_cnt = sp->mac_control.stats_info->sw_stat.link_down_cnt;
 	up_time = sp->mac_control.stats_info->sw_stat.link_up_time;
@@ -4355,23 +4355,44 @@ static struct net_device_stats *s2io_get_stats(struct net_device *dev)
 	struct mac_info *mac_control;
 	struct config_param *config;
 
-
 	mac_control = &sp->mac_control;
 	config = &sp->config;
 
 	/* Configure Stats for immediate updt */
 	s2io_updt_stats(sp);
 
-	sp->stats.tx_packets =
-		le32_to_cpu(mac_control->stats_info->tmac_frms);
-	sp->stats.tx_errors =
-		le32_to_cpu(mac_control->stats_info->tmac_any_err_frms);
-	sp->stats.rx_errors =
-		le64_to_cpu(mac_control->stats_info->rmac_drop_frms);
-	sp->stats.multicast =
-		le32_to_cpu(mac_control->stats_info->rmac_vld_mcst_frms);
-	sp->stats.rx_length_errors =
-		le64_to_cpu(mac_control->stats_info->rmac_long_frms);
+	/* Calculate the changes in the device statistics since the last call, 
+	 * and add them to the statistics maintained by the OS.
+	 *
+	 * The amount of changes to be added equals to the distance between the 
+	 * s2io statistics buffer (which holds the device statistics when 
+	 * this function was previously called) towards the current values of the
+	 * device statistics.
+	 *
+	 * Normally the current device statistics are always greater or equal to 
+	 * the old statistics stored in the buffer, unless the 32bit device 
+	 * registers cycle back to zero due to overflow. This fact is taken into 
+	 * account for calculating the correct amount of increment to be added to 
+	 * the OS statistics.
+	 */
+
+#define UPDATE_STATS(FIELD, DEVFIELD) \
+{ \
+	u32 dev_stat = le32_to_cpu(mac_control->stats_info->DEVFIELD); \
+	if (dev_stat >= sp->stats_buffer.FIELD) \
+		sp->stats.FIELD += dev_stat - sp->stats_buffer.FIELD; \
+	else \
+		sp->stats.FIELD += ((u32) -1) - sp->stats_buffer.FIELD + dev_stat; \
+	sp->stats_buffer.FIELD = dev_stat; \
+}
+
+	UPDATE_STATS(tx_packets, tmac_frms);
+	UPDATE_STATS(tx_errors, tmac_any_err_frms);
+	UPDATE_STATS(rx_errors, rmac_drop_frms);
+	UPDATE_STATS(multicast, rmac_vld_mcst_frms);
+	UPDATE_STATS(rx_length_errors, rmac_long_frms);
+
+#undef UPDATE_STATS
 
 	return (&sp->stats);
 }

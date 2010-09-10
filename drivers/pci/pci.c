@@ -16,6 +16,7 @@
 #include <linux/module.h>
 #include <linux/spinlock.h>
 #include <linux/string.h>
+#include <linux/interrupt.h>
 #include <asm/dma.h>	/* isa_dma_bridge_buggy */
 #include "pci.h"
 
@@ -557,6 +558,59 @@ pci_power_t pci_choose_state(struct pci_dev *dev, pm_message_t state)
 
 EXPORT_SYMBOL(pci_choose_state);
 
+static int pci_save_pcie_state(struct pci_dev *dev)
+{
+	int pos, i = 0;
+	struct pci_cap_saved_state *save_state;
+	u16 *cap;
+
+	pos = pci_find_capability(dev, PCI_CAP_ID_EXP);
+	if (pos <= 0)
+		return 0;
+
+	save_state = pci_find_saved_cap(dev, PCI_CAP_ID_EXP);
+	if (!save_state) {
+		save_state = kzalloc(sizeof(*save_state) + sizeof(u16) * 7, GFP_KERNEL);
+		if (!save_state) {
+			printk(KERN_ERR "Out of memory in pci_save_pcie_state\n");
+			return -ENOMEM;
+		}
+		save_state->cap_nr = PCI_CAP_ID_EXP;
+		pci_add_saved_cap(dev, save_state);
+	}
+	cap = (u16 *)&save_state->data[0];
+
+	pci_read_config_word(dev, pos + PCI_EXP_DEVCTL, &cap[i++]);
+	pci_read_config_word(dev, pos + PCI_EXP_LNKCTL, &cap[i++]);
+	pci_read_config_word(dev, pos + PCI_EXP_SLTCTL, &cap[i++]);
+	pci_read_config_word(dev, pos + PCI_EXP_RTCTL, &cap[i++]);
+	pci_read_config_word(dev, pos + PCI_EXP_DEVCTL2, &cap[i++]);
+	pci_read_config_word(dev, pos + PCI_EXP_LNKCTL2, &cap[i++]);
+	pci_read_config_word(dev, pos + PCI_EXP_SLTCTL2, &cap[i++]);
+	return 0;
+}
+
+static void pci_restore_pcie_state(struct pci_dev *dev)
+{
+	int i = 0, pos;
+	struct pci_cap_saved_state *save_state;
+	u16 *cap;
+
+	save_state = pci_find_saved_cap(dev, PCI_CAP_ID_EXP);
+	pos = pci_find_capability(dev, PCI_CAP_ID_EXP);
+	if (!save_state || pos <= 0)
+		return;
+	cap = (u16 *)&save_state->data[0];
+
+	pci_write_config_word(dev, pos + PCI_EXP_DEVCTL, cap[i++]);
+	pci_write_config_word(dev, pos + PCI_EXP_LNKCTL, cap[i++]);
+	pci_write_config_word(dev, pos + PCI_EXP_SLTCTL, cap[i++]);
+	pci_write_config_word(dev, pos + PCI_EXP_RTCTL, cap[i++]);
+	pci_write_config_word(dev, pos + PCI_EXP_DEVCTL2, cap[i++]);
+	pci_write_config_word(dev, pos + PCI_EXP_LNKCTL2, cap[i++]);
+	pci_write_config_word(dev, pos + PCI_EXP_SLTCTL2, cap[i++]);
+}
+
 /**
  * pci_save_state - save the PCI configuration space of a device before suspending
  * @dev: - PCI device that we're dealing with
@@ -566,13 +620,14 @@ pci_save_state(struct pci_dev *dev)
 {
 	int i;
 
-	save_pcie_reg(dev);
 	/* XXX: 100% dword access ok here? */
 	for (i = 0; i < 16; i++)
 		pci_read_config_dword(dev, i * 4,&dev->saved_config_space[i]);
 	if ((i = pci_save_msi_state(dev)) != 0)
 		return i;
 	if ((i = pci_save_msix_state(dev)) != 0)
+		return i;
+	if ((i = pci_save_pcie_state(dev)) != 0)
 		return i;
 	return 0;
 }
@@ -586,6 +641,9 @@ pci_restore_state(struct pci_dev *dev)
 {
 	int i;
 	int val;
+
+	/* PCI Express register must be restored first */
+	pci_restore_pcie_state(dev);
 
 	/*
 	 * The Base Address register should be programmed before the command
@@ -602,9 +660,9 @@ pci_restore_state(struct pci_dev *dev)
 				dev->saved_config_space[i]);
 		}
 	}
-	restore_pcie_reg(dev);
 	pci_restore_msi_state(dev);
 	pci_restore_msix_state(dev);
+	pci_restore_iov_state(dev);
 	return 0;
 }
 
@@ -632,6 +690,62 @@ pci_enable_device_bars(struct pci_dev *dev, int bars)
 	return 0;
 }
 
+static int do_pci_enable_device(struct pci_dev *dev, int bars)
+{
+	int err;
+	err = pci_enable_device_bars(dev, bars);
+	if (err)
+		return err;
+	pci_fixup_device(pci_fixup_enable, dev);
+
+	return 0;
+}
+
+static int __pci_enable_device_flags(struct pci_dev *dev,
+				     resource_size_t flags)
+{
+	int err;
+	int i, bars = 0;
+
+	if (dev->is_enabled)
+		return 0;		/* already enabled */
+
+	for (i = 0; i < DEVICE_COUNT_RESOURCE; i++)
+		if (dev->resource[i].flags & flags)
+			bars |= (1 << i);
+
+	err = do_pci_enable_device(dev, bars);
+	if (err < 0)
+		dev->is_enabled = 0;
+	return err;
+}
+
+/**
+ * pci_enable_device_io - Initialize a device for use with IO space
+ * @dev: PCI device to be initialized
+ *
+ *  Initialize device before it's used by a driver. Ask low-level code
+ *  to enable I/O resources. Wake up the device if it was suspended.
+ *  Beware, this function can fail.
+ */
+int pci_enable_device_io(struct pci_dev *dev)
+{
+	return __pci_enable_device_flags(dev, IORESOURCE_IO);
+}
+
+/**
+ * pci_enable_device_mem - Initialize a device for use with Memory space
+ * @dev: PCI device to be initialized
+ *
+ *  Initialize device before it's used by a driver. Ask low-level code
+ *  to enable Memory resources. Wake up the device if it was suspended.
+ *  Beware, this function can fail.
+ */
+int pci_enable_device_mem(struct pci_dev *dev)
+{
+	return __pci_enable_device_flags(dev, IORESOURCE_MEM);
+}
+
 /**
  * pci_enable_device - Initialize device before it's used by a driver.
  * @dev: PCI device to be initialized
@@ -639,21 +753,14 @@ pci_enable_device_bars(struct pci_dev *dev, int bars)
  *  Initialize device before it's used by a driver. Ask low-level code
  *  to enable I/O and memory. Wake up the device if it was suspended.
  *  Beware, this function can fail.
+ *
+ *  Note we don't actually enable the device many times if we call
+ *  this function repeatedly.
  */
 int
 pci_enable_device(struct pci_dev *dev)
 {
-	int err;
-
-	if (dev->is_enabled)
-		return 0;
-
-	err = pci_enable_device_bars(dev, (1 << PCI_NUM_RESOURCES) - 1);
-	if (err)
-		return err;
-	pci_fixup_device(pci_fixup_enable, dev);
-	dev->is_enabled = 1;
-	return 0;
+	return __pci_enable_device_flags(dev, IORESOURCE_MEM | IORESOURCE_IO);
 }
 
 /*
@@ -879,6 +986,43 @@ int pci_enable_wake(struct pci_dev *dev, pci_power_t state, int enable)
 	return 0;
 }
 
+/**
+ * pci_enable_ari - enable ARI forwarding if hardware support it
+ * @dev: the PCI device
+ */
+void pci_enable_ari(struct pci_dev *dev)
+{
+	int pos;
+	u32 cap;
+	u16 ctrl;
+	struct pci_dev *bridge;
+
+	if (dev->devfn)
+		return;
+
+	pos = pci_find_ext_capability(dev, PCI_EXT_CAP_ID_ARI);
+	if (!pos)
+		return;
+
+	bridge = dev->bus->self;
+	if (!bridge)
+		return;
+
+	pos = pci_find_capability(bridge, PCI_CAP_ID_EXP);
+	if (!pos)
+		return;
+
+	pci_read_config_dword(bridge, pos + PCI_EXP_DEVCAP2, &cap);
+	if (!(cap & PCI_EXP_DEVCAP2_ARI))
+		return;
+
+	pci_read_config_word(bridge, pos + PCI_EXP_DEVCTL2, &ctrl);
+	ctrl |= PCI_EXP_DEVCTL2_ARI;
+	pci_write_config_word(bridge, pos + PCI_EXP_DEVCTL2, ctrl);
+
+	bridge->ari_enabled = 1;
+}
+
 int
 pci_get_interrupt_pin(struct pci_dev *dev, struct pci_dev **bridge)
 {
@@ -972,6 +1116,47 @@ err_out:
 	return -EBUSY;
 }
 
+/**
+ * pci_release_selected_regions - Release selected PCI I/O and memory resources
+ * @pdev: PCI device whose resources were previously reserved
+ * @bars: Bitmask of BARs to be released
+ *
+ * Release selected PCI I/O and memory resources previously reserved.
+ * Call this function only after all use of the PCI regions has ceased.
+ */
+void pci_release_selected_regions(struct pci_dev *pdev, int bars)
+{
+	int i;
+
+	for (i = 0; i < 6; i++)
+		if (bars & (1 << i))
+			pci_release_region(pdev, i);
+}
+
+/**
+ * pci_request_selected_regions - Reserve selected PCI I/O and memory resources
+ * @pdev: PCI device whose resources are to be reserved
+ * @bars: Bitmask of BARs to be requested
+ * @res_name: Name to be associated with resource
+ */
+int pci_request_selected_regions(struct pci_dev *pdev, int bars,
+				 const char *res_name)
+{
+	int i;
+
+	for (i = 0; i < 6; i++)
+		if (bars & (1 << i))
+			if(pci_request_region(pdev, i, res_name))
+				goto err_out;
+	return 0;
+
+err_out:
+	while(--i >= 0)
+		if (bars & (1 << i))
+			pci_release_region(pdev, i);
+
+	return -EBUSY;
+}
 
 /**
  *	pci_release_regions - Release reserved PCI I/O and memory resources
@@ -984,10 +1169,7 @@ err_out:
 
 void pci_release_regions(struct pci_dev *pdev)
 {
-	int i;
-	
-	for (i = 0; i < 6; i++)
-		pci_release_region(pdev, i);
+	pci_release_selected_regions(pdev, (1 << 6) - 1);
 }
 
 /**
@@ -1005,18 +1187,7 @@ void pci_release_regions(struct pci_dev *pdev)
  */
 int pci_request_regions(struct pci_dev *pdev, const char *res_name)
 {
-	int i;
-	
-	for (i = 0; i < 6; i++)
-		if(pci_request_region(pdev, i, res_name))
-			goto err_out;
-	return 0;
-
-err_out:
-	while(--i >= 0)
-		pci_release_region(pdev, i);
-		
-	return -EBUSY;
+	return pci_request_selected_regions(pdev, ((1 << 6) - 1), res_name);
 }
 
 /**
@@ -1212,6 +1383,158 @@ pci_set_consistent_dma_mask(struct pci_dev *dev, u64 mask)
 }
 #endif
 
+static int __pcie_flr(struct pci_dev *dev, int probe)
+{
+	u16 status;
+	u32 cap;
+	int exppos = pci_find_capability(dev, PCI_CAP_ID_EXP);
+
+	if (!exppos)
+		return -ENOTTY;
+	pci_read_config_dword(dev, exppos + PCI_EXP_DEVCAP, &cap);
+	if (!(cap & PCI_EXP_DEVCAP_FLR))
+		return -ENOTTY;
+
+	if (probe)
+		return 0;
+
+	pci_block_user_cfg_access(dev);
+
+	/* Wait for Transaction Pending bit clean */
+	msleep(100);
+	pci_read_config_word(dev, exppos + PCI_EXP_DEVSTA, &status);
+	if (status & PCI_EXP_DEVSTA_TRPND) {
+		dev_info(&dev->dev, "Busy after 100ms while trying to reset; "
+			"sleeping for 1 second\n");
+		ssleep(1);
+		pci_read_config_word(dev, exppos + PCI_EXP_DEVSTA, &status);
+		if (status & PCI_EXP_DEVSTA_TRPND)
+			dev_info(&dev->dev, "Still busy after 1s; "
+				"proceeding with reset anyway\n");
+	}
+
+	pci_write_config_word(dev, exppos + PCI_EXP_DEVCTL,
+				PCI_EXP_DEVCTL_BCR_FLR);
+	mdelay(100);
+
+	pci_unblock_user_cfg_access(dev);
+	return 0;
+}
+
+static int __pci_af_flr(struct pci_dev *dev, int probe)
+{
+	int cappos = pci_find_capability(dev, PCI_CAP_ID_AF);
+	u8 status;
+	u8 cap;
+
+	if (!cappos)
+		return -ENOTTY;
+	pci_read_config_byte(dev, cappos + PCI_AF_CAP, &cap);
+	if (!(cap & PCI_AF_CAP_TP) || !(cap & PCI_AF_CAP_FLR))
+		return -ENOTTY;
+
+	if (probe)
+		return 0;
+
+	pci_block_user_cfg_access(dev);
+
+	/* Wait for Transaction Pending bit clean */
+	msleep(100);
+	pci_read_config_byte(dev, cappos + PCI_AF_STATUS, &status);
+	if (status & PCI_AF_STATUS_TP) {
+		dev_info(&dev->dev, "Busy after 100ms while trying to"
+				" reset; sleeping for 1 second\n");
+		ssleep(1);
+		pci_read_config_byte(dev,
+				cappos + PCI_AF_STATUS, &status);
+		if (status & PCI_AF_STATUS_TP)
+			dev_info(&dev->dev, "Still busy after 1s; "
+					"proceeding with reset anyway\n");
+	}
+	pci_write_config_byte(dev, cappos + PCI_AF_CTRL, PCI_AF_CTRL_FLR);
+	mdelay(100);
+
+	pci_unblock_user_cfg_access(dev);
+	return 0;
+}
+
+static int __pci_reset_function(struct pci_dev *pdev, int probe)
+{
+	int res;
+
+	res = __pcie_flr(pdev, probe);
+	if (res != -ENOTTY)
+		return res;
+
+	res = __pci_af_flr(pdev, probe);
+	if (res != -ENOTTY)
+		return res;
+
+	return res;
+}
+
+/**
+ * pci_execute_reset_function() - Reset a PCI device function
+ * @dev: Device function to reset
+ *
+ * Some devices allow an individual function to be reset without affecting
+ * other functions in the same device.  The PCI device must be responsive
+ * to PCI config space in order to use this function.
+ *
+ * The device function is presumed to be unused when this function is called.
+ * Resetting the device will make the contents of PCI configuration space
+ * random, so any caller of this must be prepared to reinitialise the
+ * device including MSI, bus mastering, BARs, decoding IO and memory spaces,
+ * etc.
+ *
+ * Returns 0 if the device function was successfully reset or -ENOTTY if the
+ * device doesn't support resetting a single function.
+ */
+int pci_execute_reset_function(struct pci_dev *dev)
+{
+	return __pci_reset_function(dev, 0);
+}
+EXPORT_SYMBOL_GPL(pci_execute_reset_function);
+
+/**
+ * pci_reset_function() - quiesce and reset a PCI device function
+ * @dev: Device function to reset
+ *
+ * Some devices allow an individual function to be reset without affecting
+ * other functions in the same device.  The PCI device must be responsive
+ * to PCI config space in order to use this function.
+ *
+ * This function does not just reset the PCI portion of a device, but
+ * clears all the state associated with the device.  This function differs
+ * from pci_execute_reset_function in that it saves and restores device state
+ * over the reset.
+ *
+ * Returns 0 if the device function was successfully reset or -ENOTTY if the
+ * device doesn't support resetting a single function.
+ */
+int pci_reset_function(struct pci_dev *dev)
+{
+	int r = __pci_reset_function(dev, 1);
+
+	if (r < 0)
+		return r;
+
+	if (!dev->msi_enabled && !dev->msix_enabled && dev->irq != 0)
+		disable_irq(dev->irq);
+	pci_save_state(dev);
+
+	pci_write_config_word(dev, PCI_COMMAND, PCI_COMMAND_INTX_DISABLE);
+
+	r = pci_execute_reset_function(dev);
+
+	pci_restore_state(dev);
+	if (!dev->msi_enabled && !dev->msix_enabled && dev->irq != 0)
+		enable_irq(dev->irq);
+
+	return r;
+}
+EXPORT_SYMBOL_GPL(pci_reset_function);
+
 /**
  * pcix_get_max_mmrbc - get PCI-X maximum designed memory read byte count
  * @dev: PCI device to query
@@ -1376,6 +1699,51 @@ out:
 }
 EXPORT_SYMBOL(pcie_set_readrq);
 
+/**
+ * pci_select_bars - Make BAR mask from the type of resource
+ * @pdev: the PCI device for which BAR mask is made
+ * @flags: resource type mask to be selected
+ *
+ * This helper routine makes bar mask from the type of resource.
+ */
+int pci_select_bars(struct pci_dev *dev, unsigned long flags)
+{
+	int i, bars = 0;
+	for (i = 0; i < PCI_NUM_RESOURCES; i++)
+		if (pci_resource_flags(dev, i) & flags)
+			bars |= (1 << i);
+	return bars;
+}
+
+/**
+ * pci_resource_bar - get position of the BAR associated with a resource
+ * @dev: the PCI device
+ * @resno: the resource number
+ * @type: the BAR type to be filled in
+ *
+ * Returns BAR position in config space, or 0 if the BAR is invalid.
+ */
+int pci_resource_bar(struct pci_dev *dev, int resno, enum pci_bar_type *type)
+{
+	int reg;
+
+	if (resno < PCI_ROM_RESOURCE) {
+		*type = pci_bar_unknown;
+		return PCI_BASE_ADDRESS_0 + 4 * resno;
+	} else if (resno == PCI_ROM_RESOURCE) {
+		*type = pci_bar_mem32;
+		return dev->rom_base_reg;
+	} else if (resno > PCI_NUM_RESOURCES) {
+		/* device specific resource */
+		reg = pci_iov_resource_bar(dev, resno, type);
+		if (reg)
+			return reg;
+	}
+
+	dev_err(&dev->dev, "BAR: invalid resource #%d\n", resno);
+	return 0;
+}
+
 static int __devinit pci_init(void)
 {
 	struct pci_dev *dev = NULL;
@@ -1417,6 +1785,8 @@ EXPORT_SYMBOL(isa_bridge);
 
 EXPORT_SYMBOL_GPL(pci_restore_bars);
 EXPORT_SYMBOL(pci_enable_device_bars);
+EXPORT_SYMBOL(pci_enable_device_io);
+EXPORT_SYMBOL(pci_enable_device_mem);
 EXPORT_SYMBOL(pci_enable_device);
 EXPORT_SYMBOL(pcim_enable_device);
 EXPORT_SYMBOL(pcim_pin_device);
@@ -1427,6 +1797,8 @@ EXPORT_SYMBOL(pci_release_regions);
 EXPORT_SYMBOL(pci_request_regions);
 EXPORT_SYMBOL(pci_release_region);
 EXPORT_SYMBOL(pci_request_region);
+EXPORT_SYMBOL(pci_release_selected_regions);
+EXPORT_SYMBOL(pci_request_selected_regions);
 EXPORT_SYMBOL(pci_set_master);
 EXPORT_SYMBOL(pci_set_mwi);
 EXPORT_SYMBOL(pci_try_set_mwi);
@@ -1436,6 +1808,7 @@ EXPORT_SYMBOL(pci_set_dma_mask);
 EXPORT_SYMBOL(pci_set_consistent_dma_mask);
 EXPORT_SYMBOL(pci_assign_resource);
 EXPORT_SYMBOL(pci_find_parent_resource);
+EXPORT_SYMBOL(pci_select_bars);
 
 EXPORT_SYMBOL(pci_set_power_state);
 EXPORT_SYMBOL(pci_save_state);

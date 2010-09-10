@@ -93,6 +93,15 @@ static unsigned long frame_list[PAGE_SIZE / sizeof(unsigned long)];
 /* VM /proc information for memory */
 extern unsigned long totalram_pages;
 
+#ifndef MODULE
+extern unsigned long totalhigh_pages;
+#define inc_totalhigh_pages() (totalhigh_pages++)
+#define dec_totalhigh_pages() (totalhigh_pages--)
+#else
+#define inc_totalhigh_pages() ((void)0)
+#define dec_totalhigh_pages() ((void)0)
+#endif
+
 /* We may hit the hard limit in Xen. If we do then we remember it. */
 static unsigned long hard_limit;
 
@@ -137,6 +146,7 @@ static void balloon_append(struct page *page)
 	if (PageHighMem(page)) {
 		list_add_tail(PAGE_TO_LIST(page), &ballooned_pages);
 		balloon_high++;
+		dec_totalhigh_pages();
 	} else {
 		list_add(PAGE_TO_LIST(page), &ballooned_pages);
 		balloon_low++;
@@ -154,8 +164,10 @@ static struct page *balloon_retrieve(void)
 	page = LIST_TO_PAGE(ballooned_pages.next);
 	UNLIST_PAGE(page);
 
-	if (PageHighMem(page))
+	if (PageHighMem(page)) {
 		balloon_high--;
+		inc_totalhigh_pages();
+	}
 	else
 		balloon_low--;
 

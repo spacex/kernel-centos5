@@ -571,6 +571,7 @@ struct conn_event_log_entry {
  *************************************************************************/
 #define IOCB_MAX_CDB_LEN	    16	/* Bytes in a CBD */
 #define IOCB_MAX_SENSEDATA_LEN	    32	/* Bytes of sense data */
+#define IOCB_MAX_EXT_SENSEDATA_LEN  60  /* Bytes of extended sense data */
 
 /* IOCB header structure */
 struct qla4_header {
@@ -731,13 +732,10 @@ struct status_entry {
 
 };
 
-struct pdu_entry {
-	uint8_t *Buff;
-	uint32_t BuffLen;
-	uint32_t SendBuffLen;
-	uint32_t RecvBuffLen;
-	struct pdu_entry *Next;
-	dma_addr_t DmaBuff;
+/* Status Continuation entry */
+struct status_cont_entry {
+       struct qla4_header hdr; /* 00-03 */
+       uint8_t extSenseData[IOCB_MAX_EXT_SENSEDATA_LEN]; /* 04-63 */
 };
 
 struct passthru0 {

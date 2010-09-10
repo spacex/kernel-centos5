@@ -45,14 +45,15 @@
 #define PFX	"qlgc_vnic: "
 
 struct io;
-typedef void (comp_routine_t) (struct io * io);
+typedef void (comp_routine_t) (struct io *io);
 
 enum vnic_ib_conn_state {
 	IB_CONN_UNINITTED	= 0,
 	IB_CONN_INITTED		= 1,
 	IB_CONN_CONNECTING	= 2,
 	IB_CONN_CONNECTED	= 3,
-	IB_CONN_DISCONNECTED	= 4
+	IB_CONN_DISCONNECTED	= 4,
+	IB_CONN_ERRORED		= 5
 };
 
 struct vnic_ib_conn {
@@ -63,6 +64,13 @@ struct vnic_ib_conn {
 	struct ib_qp		*qp;
 	struct ib_cq		*cq;
 	struct ib_cm_id		*cm_id;
+	int 			callback_thread_end;
+	struct task_struct	*callback_thread;
+	wait_queue_head_t	callback_wait_queue;
+	u32 			in_thread;
+	u32 			compl_received;
+	struct completion 	callback_thread_exit;
+	spinlock_t		compl_received_lock;
 #ifdef CONFIG_INFINIBAND_QLGC_VNIC_STATS
 	struct {
 		cycles_t	connection_time;
@@ -114,7 +122,7 @@ struct io {
 #ifdef CONFIG_INFINIBAND_QLGC_VNIC_STATS
 	cycles_t		time;
 #endif	/* CONFIG_INFINIBAND_QLGC_VNIC_STATS */
-	enum {RECV, RDMA, SEND}	type;
+	enum {RECV, RDMA, SEND, RECV_UD}	type;
 };
 
 struct rdma_io {
@@ -142,11 +150,20 @@ struct recv_io {
 	u8		*virtual_addr;
 };
 
+struct ud_recv_io {
+	struct io	io;
+	u16 	len;
+	dma_addr_t		skb_data_dma;
+	struct ib_sge	list[2]; /* one for grh and other for rest of pkt. */
+	struct sk_buff 	*skb;
+};
+
 int	vnic_ib_init(void);
 void	vnic_ib_cleanup(void);
+void vnic_completion_cleanup(struct vnic_ib_conn *ib_conn);
 
 struct vnic;
-int vnic_ib_get_path(struct netpath *netpath, struct vnic * vnic);
+int vnic_ib_get_path(struct netpath *netpath, struct vnic *vnic);
 int vnic_ib_conn_init(struct vnic_ib_conn *ib_conn, struct viport *viport,
 		      struct ib_pd *pd, struct vnic_ib_config *config);
 
@@ -165,5 +182,26 @@ int vnic_ib_cm_handler(struct ib_cm_id *cm_id, struct ib_cm_event *event);
 	((ib_conn)->state == IB_CONN_CONNECTED)
 #define	vnic_ib_conn_disconnected(ib_conn)		\
 	((ib_conn)->state == IB_CONN_DISCONNECTED)
+
+#define MCAST_GROUP_INVALID 0x00 /* viport failed to join or left mc group */
+#define MCAST_GROUP_JOINING 0x01 /* wait for completion */
+#define MCAST_GROUP_JOINED  0x02 /* join process completed successfully */
+
+/* vnic_sa_client is used to register with sa once. It is needed to join and
+ * leave multicast groups.
+ */
+extern struct ib_sa_client vnic_sa_client;
+
+/* The following functions are using initialize and handle multicast
+ * components.
+ */
+struct mc_data; /* forward declaration */
+/* Initialize all necessary mc components */
+int vnic_ib_mc_init(struct mc_data *mc_data, struct viport *viport,
+			struct ib_pd *pd, struct vnic_ib_config *config);
+/* Put multicast qp in RTS */
+int vnic_ib_mc_mod_qp_to_rts(struct ib_qp *qp);
+/* Post multicast receive buffers */
+int vnic_ib_mc_post_recv(struct mc_data *mc_data, struct io *io);
 
 #endif	/* VNIC_IB_H_INCLUDED */

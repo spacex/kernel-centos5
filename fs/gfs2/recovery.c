@@ -14,6 +14,7 @@
 #include <linux/gfs2_ondisk.h>
 #include <linux/crc32.h>
 #include <linux/lm_interface.h>
+#include <linux/kthread.h>
 
 #include "gfs2.h"
 #include "incore.h"
@@ -581,7 +582,7 @@ fail:
  *
  */
 
-void gfs2_check_journals(struct gfs2_sbd *sdp)
+static void gfs2_check_journals(struct gfs2_sbd *sdp)
 {
 	struct gfs2_jdesc *jd;
 
@@ -593,5 +594,27 @@ void gfs2_check_journals(struct gfs2_sbd *sdp)
 		if (jd != sdp->sd_jdesc)
 			gfs2_recover_journal(jd);
 	}
+}
+
+/**
+ * gfs2_recoverd - Recover dead machine's journals
+ * @sdp: Pointer to GFS2 superblock
+ *
+ */
+
+int gfs2_recoverd(void *data)
+{
+	struct gfs2_sbd *sdp = data;
+	unsigned long t;
+
+	while (!kthread_should_stop()) {
+		gfs2_check_journals(sdp);
+		t = gfs2_tune_get(sdp,  gt_recoverd_secs) * HZ;
+		if (freezing(current))
+			refrigerator();
+		schedule_timeout_interruptible(t);
+	}
+
+	return 0;
 }
 

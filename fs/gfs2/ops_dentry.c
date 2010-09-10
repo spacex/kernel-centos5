@@ -20,7 +20,7 @@
 #include "incore.h"
 #include "dir.h"
 #include "glock.h"
-#include "ops_dentry.h"
+#include "super.h"
 #include "util.h"
 #include "inode.h"
 

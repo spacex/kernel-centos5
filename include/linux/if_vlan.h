@@ -112,6 +112,7 @@ struct vlan_dev_info {
                                            */
 	int old_allmulti;               /* similar to above. */
 	int old_promiscuity;            /* similar to above. */
+	int promisc_count;		/* our delta on real_devs promisc */
 	struct net_device *real_dev;    /* the underlying device/interface */
 	struct proc_dir_entry *dent;    /* Holds the proc data */
 	unsigned long cnt_inc_headroom_on_tx; /* How many times did we have to grow the skb on TX. */
@@ -212,6 +213,26 @@ static inline int vlan_hwaccel_receive_skb(struct sk_buff *skb,
 {
 	return __vlan_hwaccel_rx(skb, grp, vlan_tag, 1);
 }
+
+#if defined(CONFIG_VLAN_8021Q) || defined(CONFIG_VLAN_8021Q_MODULE)
+extern int vlan_gro_receive(struct napi_struct *napi, struct vlan_group *grp,
+			    unsigned int vlan_tci, struct sk_buff *skb);
+extern int vlan_gro_frags(struct napi_struct *napi, struct vlan_group *grp,
+			  unsigned int vlan_tci);
+#else
+static inline int vlan_gro_receive(struct napi_struct *napi,
+				   struct vlan_group *grp,
+				   unsigned int vlan_tci, struct sk_buff *skb)
+{
+	return NET_RX_DROP;
+}
+
+static inline int vlan_gro_frags(struct napi_struct *napi,
+				 struct vlan_group *grp, unsigned int vlan_tci)
+{
+	return NET_RX_DROP;
+}
+#endif
 
 /**
  * __vlan_put_tag - regular VLAN tag inserting

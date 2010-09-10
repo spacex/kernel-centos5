@@ -807,7 +807,7 @@ static void ata_pio_sector(struct ata_queued_cmd *qc)
 	qc->cursg_ofs += qc->sect_size;
 
 	if (qc->cursg_ofs == qc->cursg->length) {
-		qc->cursg = sg_next(qc->cursg);
+		qc->cursg = ata_qc_next_sg(qc->cursg, qc);
 		qc->cursg_ofs = 0;
 	}
 }
@@ -944,7 +944,7 @@ next_sg:
 	qc->cursg_ofs += count;
 
 	if (qc->cursg_ofs == sg->length) {
-		qc->cursg = sg_next(qc->cursg);
+		qc->cursg = ata_qc_next_sg(qc->cursg, qc);
 		qc->cursg_ofs = 0;
 	}
 
@@ -1267,6 +1267,16 @@ fsm_start:
 
 				if (status & (ATA_BUSY | ATA_DRQ))
 					qc->err_mask |= AC_ERR_HSM;
+
+				/* There are oddball controllers with
+				 * status register stuck at 0x7f and
+				 * lbal/m/h at zero which makes it
+				 * pass all other presence detection
+				 * mechanisms we have.  Set NODEV_HINT
+				 * for it.  Kernel bz#7241.
+				 */
+				if (status == 0x7f)
+					qc->err_mask |= AC_ERR_NODEV_HINT;
 
 				/* ata_pio_sectors() might change the
 				 * state to HSM_ST_LAST. so, the state
@@ -1651,6 +1661,8 @@ irqreturn_t ata_sff_interrupt(int irq, void *dev_instance, struct pt_regs *pt_re
 			if (qc && (!(qc->tf.flags & ATA_TFLAG_POLLING)) &&
 			    (qc->flags & ATA_QCFLAG_ACTIVE))
 				handled |= ata_sff_host_intr(ap, qc);
+			else if(unlikely(host->flags & ATA_HOST_ATAPI_SPURIOUS_INT))
+				ap->ops->sff_irq_clear(ap);
 		}
 	}
 

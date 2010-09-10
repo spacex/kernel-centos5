@@ -60,7 +60,7 @@ struct tracepoint {
 	{								\
 		static const char __tpstrtab_##name[]			\
 		__attribute__((section("__tracepoints_strings")))	\
-		= #name ":" #proto;					\
+		= #name;						\
 		static struct tracepoint __tracepoint_##name		\
 		__attribute__((section("__tracepoints"), aligned(8))) =	\
 		{ __tpstrtab_##name, 0, NULL };				\
@@ -70,13 +70,11 @@ struct tracepoint {
 	}								\
 	static inline int register_trace_##name(void (*probe)(proto))	\
 	{								\
-		return tracepoint_probe_register(#name ":" #proto,	\
-			(void *)probe);					\
+		return tracepoint_probe_register(#name, (void *)probe); \
 	}								\
-	static inline void unregister_trace_##name(void (*probe)(proto))\
+	static inline int unregister_trace_##name(void (*probe)(proto))\
 	{								\
-		tracepoint_probe_unregister(#name ":" #proto,		\
-			(void *)probe);					\
+		return tracepoint_probe_unregister(#name, (void *)probe);      \
 	}
 
 extern void tracepoint_update_probe_range(struct tracepoint *begin,
@@ -92,8 +90,10 @@ extern void tracepoint_update_probe_range(struct tracepoint *begin,
 	{								\
 		return -ENOSYS;						\
 	}								\
-	static inline void unregister_trace_##name(void (*probe)(proto))\
-	{ }
+	static inline int unregister_trace_##name(void (*probe)(proto))	\
+	{								\
+		return -ENOSYS;						\
+	}
 
 static inline void tracepoint_update_probe_range(struct tracepoint *begin,
 	struct tracepoint *end)
@@ -111,6 +111,10 @@ extern int tracepoint_probe_register(const char *name, void *probe);
  * Internal API, should not be used directly.
  */
 extern int tracepoint_probe_unregister(const char *name, void *probe);
+
+extern int tracepoint_probe_register_noupdate(const char *name, void *probe);
+extern int tracepoint_probe_unregister_noupdate(const char *name, void *probe);
+extern void tracepoint_probe_update_all(void);
 
 struct tracepoint_iter {
 	struct module *module;

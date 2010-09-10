@@ -173,16 +173,6 @@ static int __devinit assign_all_busses(struct dmi_system_id *d)
 }
 #endif
 
-#ifdef CONFIG_X86
-static int __devinit disable_pci_seg(struct dmi_system_id *d)
-{
-	pci_noseg = 1;
-	printk(KERN_INFO "%s detected: disabling PCI segments\n", d->ident);
-	return 0;
-}
-#endif
-
-
 static struct dmi_system_id __devinitdata pciprobe_dmi_table[] = {
 #ifdef __i386__
 /*
@@ -197,22 +187,6 @@ static struct dmi_system_id __devinitdata pciprobe_dmi_table[] = {
 		},
 	},
 #endif		/* __i386__ */
-#ifdef CONFIG_X86
-	{
-		.callback = disable_pci_seg,
-		.ident = "HP xw9300 Workstation",
-		.matches = {
-			DMI_MATCH(DMI_PRODUCT_NAME, "HP xw9300 Workstation"),
-		},
-	},
-	{
-		.callback = disable_pci_seg,
-		.ident = "HP xw9400 Workstation",
-		.matches = {
-			DMI_MATCH(DMI_PRODUCT_NAME, "HP xw9400 Workstation"),
-		},
-	},
-#endif
 	{
 		.callback = set_bf_sort,
 		.ident = "Dell PowerEdge 1950",
@@ -363,6 +337,15 @@ static struct dmi_system_id __devinitdata pciprobe_dmi_table[] = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "HP"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "ProLiant DL580 G5"),
+		},
+	},
+	{
+		.callback = set_bf_sort,
+		.ident = "HP ProLiant xw460c",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HP"),
+			DMI_MATCH(DMI_PRODUCT_NAME,
+				  "ProLiant xw460c Blade Workstation"),
 		},
 	},
 	{}

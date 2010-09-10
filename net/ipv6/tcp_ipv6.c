@@ -578,6 +578,40 @@ static int tcp_v6_gso_send_check(struct sk_buff *skb)
 	return 0;
 }
 
+static struct sk_buff **tcp6_gro_receive(struct sk_buff **head,
+					 struct sk_buff *skb)
+{
+	struct ipv6hdr *iph = skb_gro_network_header(skb);
+
+	switch (skb->ip_summed) {
+	case CHECKSUM_COMPLETE:
+		if (!tcp_v6_check(NULL, skb_gro_len(skb), &iph->saddr,
+				  &iph->daddr, skb->csum)) {
+			skb->ip_summed = CHECKSUM_UNNECESSARY;
+			break;
+		}
+
+		/* fall through */
+	case CHECKSUM_NONE:
+		NAPI_GRO_CB(skb)->flush = 1;
+		return NULL;
+	}
+
+	return tcp_gro_receive(head, skb);
+}
+
+static int tcp6_gro_complete(struct sk_buff *skb)
+{
+	struct ipv6hdr *iph = ipv6_hdr(skb);
+	struct tcphdr *th = tcp_hdr(skb);
+
+	th->check = ~tcp_v6_check(NULL, skb->len - skb_transport_offset(skb),
+				  &iph->saddr, &iph->daddr, 0);
+	skb_shinfo(skb)->gso_type = SKB_GSO_TCPV6;
+
+	return tcp_gro_complete(skb);
+}
+
 static void tcp_v6_send_reset(struct sk_buff *skb)
 {
 	struct tcphdr *th = skb->h.th, *t1; 
@@ -1638,6 +1672,11 @@ static struct inet6_protocol tcpv6_protocol = {
 	.flags		=	INET6_PROTO_NOPOLICY|INET6_PROTO_FINAL,
 };
 
+static struct inet6_gro_protocol tcpv6_gro_protocol = {
+	.gro_receive	=	tcp6_gro_receive,
+	.gro_complete	=	tcp6_gro_complete,
+};
+
 static struct inet_protosw tcpv6_protosw = {
 	.type		=	SOCK_STREAM,
 	.protocol	=	IPPROTO_TCP,
@@ -1654,6 +1693,8 @@ void __init tcpv6_init(void)
 	/* register inet6 protocol */
 	if (inet6_add_protocol(&tcpv6_protocol, IPPROTO_TCP) < 0)
 		printk(KERN_ERR "tcpv6_init: Could not register protocol\n");
+	if (inet6_add_gro_protocol(&tcpv6_gro_protocol, IPPROTO_TCP) < 0)
+		panic("tcpv6_init: Could not register protocol\n");
 	inet6_register_protosw(&tcpv6_protosw);
 
 	if (inet_csk_ctl_sock_create(&tcp6_socket, PF_INET6, SOCK_RAW,

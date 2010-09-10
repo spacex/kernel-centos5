@@ -14,8 +14,14 @@ extern struct pci_sysdata pci_default_sysdata;
 #ifdef CONFIG_PCI_DOMAINS
 static inline int pci_domain_nr(struct pci_bus *bus)
 {
-       struct pci_sysdata *sd = bus->sysdata;
-       return sd->domain;
+	struct pci_sysdata *sd = bus->sysdata;
+	if (!sd) {
+		/* Many systems call pci_scan_bus() which calls pci_domain_nr()
+		   with a NULL sysdata pointer.  It appears safe to return 0
+		   in these cases (ie, assume a single domain) */
+		return 0;
+	}
+	return sd->domain;
 }
 
 static inline int pci_proc_domain(struct pci_bus *bus)

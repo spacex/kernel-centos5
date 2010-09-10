@@ -165,10 +165,10 @@ small_smb_init(int smb_command, int wct, struct cifsTconInfo *tcon,
 		/* need to prevent multiple threads trying to
 		simultaneously reconnect the same SMB session */
 			down(&tcon->ses->sesSem);
-			if (tcon->ses->status == CifsNeedReconnect)
+			if (tcon->ses->need_reconnect)
 				rc = cifs_setup_session(0, tcon->ses,
 							nls_codepage);
-			if (!rc && (tcon->tidStatus == CifsNeedReconnect)) {
+			if (!rc && (tcon->need_reconnect)) {
 				mark_open_files_invalid(tcon);
 				rc = CIFSTCon(0, tcon->ses, tcon->treeName,
 					      tcon, nls_codepage);
@@ -320,10 +320,10 @@ smb_init(int smb_command, int wct, struct cifsTconInfo *tcon,
 		/* need to prevent multiple threads trying to
 		simultaneously reconnect the same SMB session */
 			down(&tcon->ses->sesSem);
-			if (tcon->ses->status == CifsNeedReconnect)
+			if (tcon->ses->need_reconnect)
 				rc = cifs_setup_session(0, tcon->ses,
 							nls_codepage);
-			if (!rc && (tcon->tidStatus == CifsNeedReconnect)) {
+			if (!rc && (tcon->need_reconnect)) {
 				mark_open_files_invalid(tcon);
 				rc = CIFSTCon(0, tcon->ses, tcon->treeName,
 					      tcon, nls_codepage);
@@ -511,14 +511,15 @@ CIFSSMBNegotiate(unsigned int xid, struct cifsSesInfo *ses)
 		server->maxReq = le16_to_cpu(rsp->MaxMpxCount);
 		server->maxBuf = min((__u32)le16_to_cpu(rsp->MaxBufSize),
 				(__u32)CIFSMaxBufSize + MAX_CIFS_HDR_SIZE);
+		server->max_vcs = le16_to_cpu(rsp->MaxNumberVcs);
 		GETU32(server->sessid) = le32_to_cpu(rsp->SessionKey);
 		/* even though we do not use raw we might as well set this
 		accurately, in case we ever find a need for it */
 		if ((le16_to_cpu(rsp->RawMode) & RAW_ENABLE) == RAW_ENABLE) {
-			server->maxRw = 0xFF00;
+			server->max_rw = 0xFF00;
 			server->capabilities = CAP_MPX_MODE | CAP_RAW_MODE;
 		} else {
-			server->maxRw = 0;/* we do not need to use raw anyway */
+			server->max_rw = 0;/* do not need to use raw anyway */
 			server->capabilities = CAP_MPX_MODE;
 		}
 		tmp = (__s16)le16_to_cpu(rsp->ServerTimeZone);
@@ -621,7 +622,7 @@ CIFSSMBNegotiate(unsigned int xid, struct cifsSesInfo *ses)
 	/* probably no need to store and check maxvcs */
 	server->maxBuf = min(le32_to_cpu(pSMBr->MaxBufferSize),
 			(__u32) CIFSMaxBufSize + MAX_CIFS_HDR_SIZE);
-	server->maxRw = le32_to_cpu(pSMBr->MaxRawSize);
+	server->max_rw = le32_to_cpu(pSMBr->MaxRawSize);
 	cFYI(DBG2, ("Max buf = %d", ses->server->maxBuf));
 	GETU32(ses->server->sessid) = le32_to_cpu(pSMBr->SessionKey);
 	server->capabilities = le32_to_cpu(pSMBr->Capabilities);
@@ -647,8 +648,9 @@ CIFSSMBNegotiate(unsigned int xid, struct cifsSesInfo *ses)
 			rc = -EIO;
 			goto neg_err_exit;
 		}
-
-		if (server->socketUseCount.counter > 1) {
+		read_lock(&cifs_tcp_ses_lock);
+		if (server->srv_count > 1) {
+			read_unlock(&cifs_tcp_ses_lock);
 			if (memcmp(server->server_GUID,
 				   pSMBr->u.extended_response.
 				   GUID, 16) != 0) {
@@ -657,9 +659,11 @@ CIFSSMBNegotiate(unsigned int xid, struct cifsSesInfo *ses)
 					pSMBr->u.extended_response.GUID,
 					16);
 			}
-		} else
+		} else {
+			read_unlock(&cifs_tcp_ses_lock);
 			memcpy(server->server_GUID,
 			       pSMBr->u.extended_response.GUID, 16);
+		}
 
 		if (count == 16) {
 			server->secType = RawNTLMSSP;
@@ -722,50 +726,31 @@ CIFSSMBTDis(const int xid, struct cifsTconInfo *tcon)
 	int rc = 0;
 
 	cFYI(1, ("In tree disconnect"));
+
+	/* BB: do we need to check this? These should never be NULL. */
+	if ((tcon->ses == NULL) || (tcon->ses->server == NULL))
+		return -EIO;
+
 	/*
-	 *  If last user of the connection and
-	 *  connection alive - disconnect it
-	 *  If this is the last connection on the server session disconnect it
-	 *  (and inside session disconnect we should check if tcp socket needs
-	 *  to be freed and kernel thread woken up).
+	 * No need to return error on this operation if tid invalidated and
+	 * closed on server already e.g. due to tcp session crashing. Also,
+	 * the tcon is no longer on the list, so no need to take lock before
+	 * checking this.
 	 */
-	if (tcon)
-		down(&tcon->tconSem);
-	else
-		return -EIO;
-
-	atomic_dec(&tcon->useCount);
-	if (atomic_read(&tcon->useCount) > 0) {
-		up(&tcon->tconSem);
-		return -EBUSY;
-	}
-
-	/* No need to return error on this operation if tid invalidated and
-	closed on server already e.g. due to tcp session crashing */
-	if (tcon->tidStatus == CifsNeedReconnect) {
-		up(&tcon->tconSem);
+	if (tcon->need_reconnect)
 		return 0;
-	}
 
-	if ((tcon->ses == NULL) || (tcon->ses->server == NULL)) {
-		up(&tcon->tconSem);
-		return -EIO;
-	}
 	rc = small_smb_init(SMB_COM_TREE_DISCONNECT, 0, tcon,
 			    (void **)&smb_buffer);
-	if (rc) {
-		up(&tcon->tconSem);
+	if (rc)
 		return rc;
-	}
 
 	rc = SendReceiveNoRsp(xid, tcon->ses, smb_buffer, 0);
 	if (rc)
 		cFYI(1, ("Tree disconnect failed %d", rc));
 
-	up(&tcon->tconSem);
-
 	/* No need to return error on this operation if tid invalidated and
-	closed on server already e.g. due to tcp session crashing */
+	   closed on server already e.g. due to tcp session crashing */
 	if (rc == -EAGAIN)
 		rc = 0;
 
@@ -779,43 +764,36 @@ CIFSSMBLogoff(const int xid, struct cifsSesInfo *ses)
 	int rc = 0;
 
 	cFYI(1, ("In SMBLogoff for session disconnect"));
-	if (ses)
-		down(&ses->sesSem);
-	else
+
+	/*
+	 * BB: do we need to check validity of ses and server? They should
+	 * always be valid since we have an active reference. If not, that
+	 * should probably be a BUG()
+	 */
+	if (!ses || !ses->server)
 		return -EIO;
 
-	atomic_dec(&ses->inUse);
-	if (atomic_read(&ses->inUse) > 0) {
-		up(&ses->sesSem);
-		return -EBUSY;
-	}
+	down(&ses->sesSem);
+	if (ses->need_reconnect)
+		goto session_already_dead; /* no need to send SMBlogoff if uid
+					      already closed due to reconnect */
 	rc = small_smb_init(SMB_COM_LOGOFF_ANDX, 2, NULL, (void **)&pSMB);
 	if (rc) {
 		up(&ses->sesSem);
 		return rc;
 	}
 
-	if (ses->server) {
-		pSMB->hdr.Mid = GetNextMid(ses->server);
+	pSMB->hdr.Mid = GetNextMid(ses->server);
 
-		if (ses->server->secMode &
+	if (ses->server->secMode &
 		   (SECMODE_SIGN_REQUIRED | SECMODE_SIGN_ENABLED))
 			pSMB->hdr.Flags2 |= SMBFLG2_SECURITY_SIGNATURE;
-	}
 
 	pSMB->hdr.Uid = ses->Suid;
 
 	pSMB->AndXCommand = 0xFF;
 	rc = SendReceiveNoRsp(xid, ses, (struct smb_hdr *) pSMB, 0);
-	if (ses->server) {
-		atomic_dec(&ses->server->socketUseCount);
-		if (atomic_read(&ses->server->socketUseCount) == 0) {
-			spin_lock(&GlobalMid_Lock);
-			ses->server->tcpStatus = CifsExiting;
-			spin_unlock(&GlobalMid_Lock);
-			rc = -ESHUTDOWN;
-		}
-	}
+session_already_dead:
 	up(&ses->sesSem);
 
 	/* if session dead then we do not need to do ulogoff,
@@ -1292,6 +1270,7 @@ OldOpenRetry:
 				cpu_to_le64(le32_to_cpu(pSMBr->EndOfFile));
 			pfile_info->EndOfFile = pfile_info->AllocationSize;
 			pfile_info->NumberOfLinks = cpu_to_le32(1);
+			pfile_info->DeletePending = 0;
 		}
 	}
 
@@ -1387,12 +1366,13 @@ openRetry:
 		if (cpu_to_le32(FILE_CREATE) == pSMBr->CreateAction)
 			*pOplock |= CIFS_CREATE_ACTION;
 		if (pfile_info) {
-		    memcpy((char *)pfile_info, (char *)&pSMBr->CreationTime,
-			36 /* CreationTime to Attributes */);
-		    /* the file_info buf is endian converted by caller */
-		    pfile_info->AllocationSize = pSMBr->AllocationSize;
-		    pfile_info->EndOfFile = pSMBr->EndOfFile;
-		    pfile_info->NumberOfLinks = cpu_to_le32(1);
+			memcpy((char *)pfile_info, (char *)&pSMBr->CreationTime,
+				36 /* CreationTime to Attributes */);
+			/* the file_info buf is endian converted by caller */
+			pfile_info->AllocationSize = pSMBr->AllocationSize;
+			pfile_info->EndOfFile = pSMBr->EndOfFile;
+			pfile_info->NumberOfLinks = cpu_to_le32(1);
+			pfile_info->DeletePending = 0;
 		}
 	}
 
@@ -1418,8 +1398,13 @@ CIFSSMBRead(const int xid, struct cifsTconInfo *tcon, const int netfid,
 	cFYI(1, ("Reading %d bytes on fid %d", count, netfid));
 	if (tcon->ses->capabilities & CAP_LARGE_FILES)
 		wct = 12;
-	else
+	else {
 		wct = 10; /* old style read */
+		if ((lseek >> 32) > 0)  {
+			/* can not handle this big offset for old */
+			return -EIO;
+		}
+	}
 
 	*nbytes = 0;
 	rc = small_smb_init(SMB_COM_READ_ANDX, wct, tcon, (void **) &pSMB);
@@ -1435,8 +1420,6 @@ CIFSSMBRead(const int xid, struct cifsTconInfo *tcon, const int netfid,
 	pSMB->OffsetLow = cpu_to_le32(lseek & 0xFFFFFFFF);
 	if (wct == 12)
 		pSMB->OffsetHigh = cpu_to_le32(lseek >> 32);
-	else if ((lseek >> 32) > 0) /* can not handle this big offset for old */
-		return -EIO;
 
 	pSMB->Remaining = 0;
 	pSMB->MaxCount = cpu_to_le16(count & 0xFFFF);
@@ -1523,8 +1506,13 @@ CIFSSMBWrite(const int xid, struct cifsTconInfo *tcon,
 
 	if (tcon->ses->capabilities & CAP_LARGE_FILES)
 		wct = 14;
-	else
+	else {
 		wct = 12;
+		if ((offset >> 32) > 0) {
+			/* can not handle big offset for old srv */
+			return -EIO;
+		}
+	}
 
 	rc = smb_init(SMB_COM_WRITE_ANDX, wct, tcon, (void **) &pSMB,
 		      (void **) &pSMBr);
@@ -1539,8 +1527,6 @@ CIFSSMBWrite(const int xid, struct cifsTconInfo *tcon,
 	pSMB->OffsetLow = cpu_to_le32(offset & 0xFFFFFFFF);
 	if (wct == 14)
 		pSMB->OffsetHigh = cpu_to_le32(offset >> 32);
-	else if ((offset >> 32) > 0) /* can not handle big offset for old srv */
-		return -EIO;
 
 	pSMB->Reserved = 0xFFFFFFFF;
 	pSMB->WriteMode = 0;
@@ -1562,7 +1548,7 @@ CIFSSMBWrite(const int xid, struct cifsTconInfo *tcon,
 	pSMB->DataOffset =
 		cpu_to_le16(offsetof(struct smb_com_write_req, Data) - 4);
 	if (buf)
-	    memcpy(pSMB->Data, buf, bytes_sent);
+		memcpy(pSMB->Data, buf, bytes_sent);
 	else if (ubuf) {
 		if (copy_from_user(pSMB->Data, ubuf, bytes_sent)) {
 			cifs_buf_release(pSMB);
@@ -1623,12 +1609,19 @@ CIFSSMBWrite2(const int xid, struct cifsTconInfo *tcon,
 	int smb_hdr_len;
 	int resp_buf_type = 0;
 
+	*nbytes = 0;
+
 	cFYI(1, ("write2 at %lld %d bytes", (long long)offset, count));
 
-	if (tcon->ses->capabilities & CAP_LARGE_FILES)
+	if (tcon->ses->capabilities & CAP_LARGE_FILES) {
 		wct = 14;
-	else
+	} else {
 		wct = 12;
+		if ((offset >> 32) > 0) {
+			/* can not handle big offset for old srv */
+			return -EIO;
+		}
+	}
 	rc = small_smb_init(SMB_COM_WRITE_ANDX, wct, tcon, (void **) &pSMB);
 	if (rc)
 		return rc;
@@ -1641,8 +1634,6 @@ CIFSSMBWrite2(const int xid, struct cifsTconInfo *tcon,
 	pSMB->OffsetLow = cpu_to_le32(offset & 0xFFFFFFFF);
 	if (wct == 14)
 		pSMB->OffsetHigh = cpu_to_le32(offset >> 32);
-	else if ((offset >> 32) > 0) /* can not handle big offset for old srv */
-		return -EIO;
 	pSMB->Reserved = 0xFFFFFFFF;
 	pSMB->WriteMode = 0;
 	pSMB->Remaining = 0;
@@ -1676,11 +1667,9 @@ CIFSSMBWrite2(const int xid, struct cifsTconInfo *tcon,
 	cifs_stats_inc(&tcon->num_writes);
 	if (rc) {
 		cFYI(1, ("Send error Write2 = %d", rc));
-		*nbytes = 0;
 	} else if (resp_buf_type == 0) {
 		/* presumably this can not happen, but best to be safe */
 		rc = -EIO;
-		*nbytes = 0;
 	} else {
 		WRITE_RSP *pSMBr = (WRITE_RSP *)iov[0].iov_base;
 		*nbytes = le16_to_cpu(pSMBr->CountHigh);
@@ -1866,10 +1855,6 @@ CIFSSMBPosixLock(const int xid, struct cifsTconInfo *tcon,
 			rc = -EIO;      /* bad smb */
 			goto plk_err_exit;
 		}
-		if (pLockData == NULL) {
-			rc = -EINVAL;
-			goto plk_err_exit;
-		}
 		data_offset = le16_to_cpu(pSMBr->t2.DataOffset);
 		data_count  = le16_to_cpu(pSMBr->t2.DataCount);
 		if (data_count < sizeof(struct cifs_posix_lock)) {
@@ -1927,6 +1912,27 @@ CIFSSMBClose(const int xid, struct cifsTconInfo *tcon, int smb_file_id)
 	/* Since session is dead, file will be closed on server already */
 	if (rc == -EAGAIN)
 		rc = 0;
+
+	return rc;
+}
+
+int
+CIFSSMBFlush(const int xid, struct cifsTconInfo *tcon, int smb_file_id)
+{
+	int rc = 0;
+	FLUSH_REQ *pSMB = NULL;
+	cFYI(1, ("In CIFSSMBFlush"));
+
+	rc = small_smb_init(SMB_COM_FLUSH, 1, tcon, (void **) &pSMB);
+	if (rc)
+		return rc;
+
+	pSMB->FileID = (__u16) smb_file_id;
+	pSMB->ByteCount = 0;
+	rc = SendReceiveNoRsp(xid, tcon->ses, (struct smb_hdr *) pSMB, 0);
+	cifs_stats_inc(&tcon->num_flushes);
+	if (rc)
+		cERROR(1, ("Send error in Flush = %d", rc));
 
 	return rc;
 }
@@ -2000,7 +2006,7 @@ renameRetry:
 }
 
 int CIFSSMBRenameOpenFile(const int xid, struct cifsTconInfo *pTcon,
-		int netfid, char *target_name,
+		int netfid, const char *target_name,
 		const struct nls_table *nls_codepage, int remap)
 {
 	struct smb_com_transaction2_sfi_req *pSMB  = NULL;
@@ -2054,7 +2060,7 @@ int CIFSSMBRenameOpenFile(const int xid, struct cifsTconInfo *pTcon,
 					remap);
 	}
 	rename_info->target_name_len = cpu_to_le32(2 * len_of_str);
-	count = 12 /* sizeof(struct set_file_rename) */ + (2 * len_of_str) + 2;
+	count = 12 /* sizeof(struct set_file_rename) */ + (2 * len_of_str);
 	byte_count += count;
 	pSMB->DataCount = cpu_to_le16(count);
 	pSMB->TotalDataCount = pSMB->DataCount;
@@ -2354,8 +2360,10 @@ winCreateHardLinkRetry:
 				     PATH_MAX, nls_codepage, remap);
 		name_len++;	/* trailing null */
 		name_len *= 2;
-		pSMB->OldFileName[name_len] = 0;	/* pad */
-		pSMB->OldFileName[name_len + 1] = 0x04;
+
+		/* protocol specifies ASCII buffer format (0x04) for unicode */
+		pSMB->OldFileName[name_len] = 0x04;
+		pSMB->OldFileName[name_len + 1] = 0x00; /* pad */
 		name_len2 =
 		    cifsConvertToUCS((__le16 *)&pSMB->OldFileName[name_len + 2],
 				     toName, PATH_MAX, nls_codepage, remap);
@@ -3590,6 +3598,8 @@ findFirstRetry:
 		/* BB remember to free buffer if error BB */
 		rc = validate_t2((struct smb_t2_rsp *)pSMBr);
 		if (rc == 0) {
+			unsigned int lnoff;
+
 			if (pSMBr->hdr.Flags2 & SMBFLG2_UNICODE)
 				psrch_inf->unicode = true;
 			else
@@ -3612,6 +3622,17 @@ findFirstRetry:
 					le16_to_cpu(parms->SearchCount);
 			psrch_inf->index_of_last_entry = 2 /* skip . and .. */ +
 				psrch_inf->entries_in_buffer;
+			lnoff = le16_to_cpu(parms->LastNameOffset);
+			if (tcon->ses->server->maxBuf - MAX_CIFS_HDR_SIZE <
+			      lnoff) {
+				cERROR(1, ("ignoring corrupt resume name"));
+				psrch_inf->last_entry = NULL;
+				return rc;
+			}
+
+			psrch_inf->last_entry = psrch_inf->srch_entries_start +
+							lnoff;
+
 			*pnetfid = parms->SearchHandle;
 		} else {
 			cifs_buf_release(pSMB);
@@ -3701,6 +3722,8 @@ int CIFSFindNext(const int xid, struct cifsTconInfo *tcon,
 		rc = validate_t2((struct smb_t2_rsp *)pSMBr);
 
 		if (rc == 0) {
+			unsigned int lnoff;
+
 			/* BB fixme add lock for file (srch_info) struct here */
 			if (pSMBr->hdr.Flags2 & SMBFLG2_UNICODE)
 				psrch_inf->unicode = true;
@@ -3727,6 +3750,16 @@ int CIFSFindNext(const int xid, struct cifsTconInfo *tcon,
 						le16_to_cpu(parms->SearchCount);
 			psrch_inf->index_of_last_entry +=
 				psrch_inf->entries_in_buffer;
+			lnoff = le16_to_cpu(parms->LastNameOffset);
+			if (tcon->ses->server->maxBuf - MAX_CIFS_HDR_SIZE <
+			      lnoff) {
+				cERROR(1, ("ignoring corrupt resume name"));
+				psrch_inf->last_entry = NULL;
+				return rc;
+			} else
+				psrch_inf->last_entry =
+					psrch_inf->srch_entries_start + lnoff;
+
 /*  cFYI(1,("fnxt2 entries in buf %d index_of_last %d",
 	    psrch_inf->entries_in_buffer, psrch_inf->index_of_last_entry)); */
 
@@ -3861,7 +3894,7 @@ GetInodeNumberRetry:
 			}
 			pfinfo = (struct file_internal_info *)
 				(data_offset + (char *) &pSMBr->hdr.Protocol);
-			*inode_number = pfinfo->UniqueId;
+			*inode_number = le64_to_cpu(pfinfo->UniqueId);
 		}
 	}
 GetInodeNumOut:
@@ -3881,7 +3914,8 @@ static int
 parse_DFS_referrals(TRANSACTION2_GET_DFS_REFER_RSP *pSMBr,
 		unsigned int *num_of_nodes,
 		struct dfs_info3_param **target_nodes,
-		const struct nls_table *nls_codepage)
+		const struct nls_table *nls_codepage, int remap,
+		const char *searchName)
 {
 	int i, rc = 0;
 	char *data_end;
@@ -3932,7 +3966,18 @@ parse_DFS_referrals(TRANSACTION2_GET_DFS_REFER_RSP *pSMBr,
 		struct dfs_info3_param *node = (*target_nodes)+i;
 
 		node->flags = le16_to_cpu(pSMBr->DFSFlags);
-		node->path_consumed = le16_to_cpu(pSMBr->PathConsumed);
+		if (is_unicode) {
+			__le16 *tmp = kmalloc(strlen(searchName)*2 + 2,
+						GFP_KERNEL);
+			cifsConvertToUCS((__le16 *) tmp, searchName,
+					PATH_MAX, nls_codepage, remap);
+			node->path_consumed = cifs_ucs2_bytes(tmp,
+					le16_to_cpu(pSMBr->PathConsumed),
+					nls_codepage);
+			kfree(tmp);
+		} else
+			node->path_consumed = le16_to_cpu(pSMBr->PathConsumed);
+
 		node->server_type = le16_to_cpu(ref->ServerType);
 		node->ref_flag = le16_to_cpu(ref->ReferralEntryFlags);
 
@@ -4065,7 +4110,8 @@ getDFSRetry:
 
 	/* parse returned result into more usable form */
 	rc = parse_DFS_referrals(pSMBr, num_of_nodes,
-				 target_nodes, nls_codepage);
+				 target_nodes, nls_codepage, remap,
+				 searchName);
 
 GetDFSRefExit:
 	cifs_buf_release(pSMB);
@@ -4864,6 +4910,61 @@ CIFSSMBSetFileInfo(const int xid, struct cifsTconInfo *tcon,
 	return rc;
 }
 
+int
+CIFSSMBSetFileDisposition(const int xid, struct cifsTconInfo *tcon,
+			  bool delete_file, __u16 fid, __u32 pid_of_opener)
+{
+	struct smb_com_transaction2_sfi_req *pSMB  = NULL;
+	char *data_offset;
+	int rc = 0;
+	__u16 params, param_offset, offset, byte_count, count;
+
+	cFYI(1, ("Set File Disposition (via SetFileInfo)"));
+	rc = small_smb_init(SMB_COM_TRANSACTION2, 15, tcon, (void **) &pSMB);
+
+	if (rc)
+		return rc;
+
+	pSMB->hdr.Pid = cpu_to_le16((__u16)pid_of_opener);
+	pSMB->hdr.PidHigh = cpu_to_le16((__u16)(pid_of_opener >> 16));
+
+	params = 6;
+	pSMB->MaxSetupCount = 0;
+	pSMB->Reserved = 0;
+	pSMB->Flags = 0;
+	pSMB->Timeout = 0;
+	pSMB->Reserved2 = 0;
+	param_offset = offsetof(struct smb_com_transaction2_sfi_req, Fid) - 4;
+	offset = param_offset + params;
+
+	data_offset = (char *) (&pSMB->hdr.Protocol) + offset;
+
+	count = 1;
+	pSMB->MaxParameterCount = cpu_to_le16(2);
+	/* BB find max SMB PDU from sess */
+	pSMB->MaxDataCount = cpu_to_le16(1000);
+	pSMB->SetupCount = 1;
+	pSMB->Reserved3 = 0;
+	pSMB->SubCommand = cpu_to_le16(TRANS2_SET_FILE_INFORMATION);
+	byte_count = 3 /* pad */  + params + count;
+	pSMB->DataCount = cpu_to_le16(count);
+	pSMB->ParameterCount = cpu_to_le16(params);
+	pSMB->TotalDataCount = pSMB->DataCount;
+	pSMB->TotalParameterCount = pSMB->ParameterCount;
+	pSMB->ParameterOffset = cpu_to_le16(param_offset);
+	pSMB->DataOffset = cpu_to_le16(offset);
+	pSMB->Fid = fid;
+	pSMB->InformationLevel = cpu_to_le16(SMB_SET_FILE_DISPOSITION_INFO);
+	pSMB->Reserved4 = 0;
+	pSMB->hdr.smb_buf_length += byte_count;
+	pSMB->ByteCount = cpu_to_le16(byte_count);
+	*data_offset = delete_file ? 1 : 0;
+	rc = SendReceiveNoRsp(xid, tcon->ses, (struct smb_hdr *) pSMB, 0);
+	if (rc)
+		cFYI(1, ("Send error in SetFileDisposition = %d", rc));
+
+	return rc;
+}
 
 int
 CIFSSMBSetPathInfo(const int xid, struct cifsTconInfo *tcon,

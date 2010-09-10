@@ -213,6 +213,7 @@
 #define FSF_FEATURE_HBAAPI_MANAGEMENT           0x00000010
 #define FSF_FEATURE_ELS_CT_CHAINED_SBALS        0x00000020
 #define FSF_FEATURE_UPDATE_ALERT		0x00000100
+#define FSF_FEATURE_MEASUREMENT_DATA		0x00000200
 
 /* host connection features */
 #define FSF_FEATURE_NPIV_MODE			0x00000001
@@ -322,11 +323,18 @@ struct fsf_link_down_info {
 	u8 vendor_specific_code;
 } __attribute__ ((packed));
 
+struct fsf_qual_latency_info {
+	u32 channel_lat;
+	u32 fabric_lat;
+	u8 res1[8];
+} __attribute__ ((packed));
+
 union fsf_prot_status_qual {
 	u64 doubleword[FSF_PROT_STATUS_QUAL_SIZE / sizeof(u64)];
 	struct fsf_qual_version_error   version_error;
 	struct fsf_qual_sequence_error  sequence_error;
 	struct fsf_link_down_info link_down_info;
+	struct fsf_qual_latency_info latency_info;
 } __attribute__ ((packed));
 
 struct fsf_qtcb_prefix {
@@ -427,7 +435,9 @@ struct fsf_qtcb_bottom_config {
 	u32 fc_link_speed;
 	u32 adapter_type;
 	u32 peer_d_id;
-	u8 res2[12];
+	u8 res1[2];
+	u16 timer_interval;
+	u8 res2[8];
 	u32 s_id;
 	struct fsf_nport_serv_param nport_serv_param;
 	u8 reserved_nport_serv_param[16];
@@ -469,7 +479,10 @@ struct fsf_qtcb_bottom_port {
 	u64 control_requests;
 	u64 input_mb;		/* where 1 MByte == 1.000.000 Bytes */
 	u64 output_mb;		/* where 1 MByte == 1.000.000 Bytes */
-	u8 res2[256];
+	u8 cp_util;
+	u8 cb_util;
+	u8 a_util;
+	u8 res2[253];
 } __attribute__ ((packed));
 
 union fsf_qtcb_bottom {
@@ -484,6 +497,18 @@ struct fsf_qtcb {
 	struct fsf_qtcb_header header;
 	union  fsf_qtcb_bottom bottom;
 	u8 log[FSF_QTCB_LOG_SIZE];
+} __attribute__ ((packed));
+
+struct zfcp_blk_drv_data {
+#define ZFCP_BLK_DRV_DATA_MAGIC			0x1
+	u32 magic;
+#define ZFCP_BLK_LAT_VALID			0x1
+#define ZFCP_BLK_REQ_ERROR			0x2
+	u16 flags;
+	u8 inb_usage;
+	u8 outb_usage;
+	u64 channel_lat;
+	u64 fabric_lat;
 } __attribute__ ((packed));
 
 #endif				/* FSF_H */

@@ -8,20 +8,59 @@
 #define _QLA_NLNK_H_
 
 #ifndef NETLINK_FCTRANSPORT
-#define NETLINK_FCTRANSPORT 20
+#define NETLINK_FCTRANSPORT	20
 #endif
 #define QL_FC_NL_GROUP_CNT	0
 
-#define FC_TRANSPORT_MSG		NLMSG_MIN_TYPE + 1
+#define NLMSG_MIN_TYPE		0x10	/* 0x10: reserved control messages */
+#define FC_TRANSPORT_MSG	NLMSG_MIN_TYPE + 1
+
+#define SCSI_NL_VERSION		1
+#define SCSI_NL_MAGIC		0xA1B2
 
 /* 
  * Transport Message Types
  */
 #define FC_NL_VNDR_SPECIFIC	0x8000
 
+#ifndef SOL_NETLINK
+#define SOL_NETLINK    270
+#endif
+
+#ifndef        FCH_EVT_LIP
+#define        FCH_EVT_LIP             0x1
+#endif
+
+#ifndef        FCH_EVT_LINKUP
+#define        FCH_EVT_LINKUP          0x2
+#endif
+
+#ifndef        FCH_EVT_LINKDOWN
+#define        FCH_EVT_LINKDOWN        0x3
+#endif
+
+#ifndef        FCH_EVT_LIPRESET
+#define        FCH_EVT_LIPRESET        0x4
+#endif
+
+#ifndef        FCH_EVT_RSCN
+#define        FCH_EVT_RSCN            0x5
+#endif
+
+
 /*
  * Structures
  */
+
+#ifndef SCSI_NETLINK_H
+struct scsi_nl_hdr {
+        uint8_t version;
+        uint8_t transport;
+        uint16_t magic;
+        uint16_t msgtype;
+        uint16_t msglen;
+} __attribute__((aligned(sizeof(uint64_t))));
+#endif
 
 struct qla84_mgmt_param {
 	union {
@@ -129,18 +168,77 @@ struct msg_update_fw {
 	uint8_t fw_bytes[0];
 };
 
+struct msg_loopback {
+	uint16_t options;
+	uint32_t tx_cnt;
+	uint32_t iter_cnt;
+	uint64_t tx_buf_address;
+	uint32_t tx_buf_len;
+	uint16_t reserved1[9];
+
+	uint64_t rx_buf_address;
+        uint32_t rx_buf_len;
+        uint16_t comp_stat;
+        uint16_t crc_err_cnt;
+        uint16_t disparity_err_cnt;
+        uint16_t frame_len_err_cnt;
+        uint32_t iter_cnt_last_err;
+        uint8_t  cmd_sent;
+        uint8_t  reserved;
+        uint16_t reserved2[7];
+
+	/*
+	 * offset, len, total_len are present to overcome the current limitation
+	 * of 128Kb xfer size. The data is sent in smaller chunks. Each chunk
+	 * specifies the byte "offset" where it fits in the data buffer. The
+	 * number of bytes in each chunk is specified in "len". "total_len"
+	 * is the total size of data. The first chunk should start at offset = 0.
+	 * When offset+len == total_len, the data is written.
+	 */
+	uint32_t offset;/* start offset */
+	uint32_t len;	/* num bytes in cur xfer */
+	uint32_t total_len; /* size of data in bytes */
+	uint8_t bytes[0];
+} __attribute__ ((packed));
+
+struct qla_scsi_addr {
+	uint16_t bus;
+	uint16_t target;
+} __attribute__ ((packed));
+
+struct qla_ext_dest_addr {
+	union {
+		uint8_t wwnn[8];
+		uint8_t wwpn[8];
+		uint8_t id[4];
+		struct qla_scsi_addr scsi_addr;
+	} dest_addr;
+	uint16_t dest_type;
+	uint16_t lun;
+	uint16_t padding[2];
+} __attribute__ ((packed));
+
+struct qla_port_param {
+	struct qla_ext_dest_addr fc_scsi_addr;
+	uint16_t mode;
+	uint16_t speed;
+} __attribute__ ((packed));
+
 struct qla_fc_msg {
 
 	uint64_t magic;
-#define QL_FC_NL_MAGIC	0x107784DDFCAB1FC1
+#define QL_FC_NL_MAGIC	0x107784DDFCAB1FC1ULL
 	uint16_t host_no;
 	uint16_t vmsg_datalen;
 
 	uint32_t cmd;
-#define QLA84_RESET	0x01
-#define QLA84_UPDATE_FW	0x02
-#define QLA84_MGMT_CMD	0x03
-#define QLFC_GET_AEN	0x04
+#define QLA84_RESET		0x01
+#define QLA84_UPDATE_FW		0x02
+#define QLA84_MGMT_CMD		0x03
+#define QLFC_GET_AEN		0x04
+#define QLFC_LOOPBACK_CMD	0x05
+#define QLFC_LOOPBACK_DATA	0x06
+#define QLFC_IIDMA		0x07
 
 	uint32_t error; /* interface or resource error holder*/
 
@@ -156,12 +254,16 @@ struct qla_fc_msg {
 
 			struct msg_update_fw qla84_update_fw;
 			struct qla84_msg_mgmt mgmt;
+			struct msg_loopback qla_loopback;
 		} utok;
 	
 		union {
 			struct qla84_msg_mgmt mgmt;
 			struct qlfc_aen_log aen_log;
+			struct msg_loopback qla_loopback;
 		} ktou;
+
+		struct qla_port_param port_param;
 	} u;
 } __attribute__ ((aligned (sizeof(uint64_t))));
 	

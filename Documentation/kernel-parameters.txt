@@ -227,11 +227,17 @@ running once the system is up.
 			See Documentation/scsi/aic79xx.txt.
 
         amd_iommu=      [HW, X86_64]
-			Pass parameter to the AMD IOMMU driver in the system
-			Note that enabling the driver is done by passing in iommu=
-			Enable use iommu="amd" 
-			isolate - enable device isolation (each device could get 
-			it's own protection domain
+			Pass parameters to the AMD IOMMU driver in the system.
+			Possible values are:
+			isolate - enable device isolation (each device, as far
+				  as possible, will get its own protection
+				  domain) [default]
+			share - put every device behind one IOMMU into the
+				same protection domain
+			fullflush - enable flushing of IO/TLB entries when
+				    they are unmapped. Otherwise they are
+				    flushed before they will be reused, which
+				    is a lot of faster
 
 	amd_iommu_size= [HW,X86-64]
 			Define the size of the aperture for the AMD IOMMU
@@ -363,7 +369,7 @@ running once the system is up.
 			Forces specified clocksource (if avaliable) to be used
 			when calculating gettimeofday(). If specified
 			clocksource is not avalible, it defaults to PIT.
-			Format: { pit | tsc | cyclone | pmtmr }
+			Format: { pit | tsc | cyclone | pmtmr | tsccount | notsccount }
 
 	disable_8254_timer
 	enable_8254_timer
@@ -712,6 +718,29 @@ running once the system is up.
 			Format: combined (default), ide, or libata
 
 	inttest=	[IA64]
+
+	intel_iommu=	[DMAR] Intel IOMMU driver (DMAR) option
+		on
+			Enable intel iommu driver.
+		off
+			Disable intel iommu driver.
+		igfx_off [Default Off]
+			By default, gfx is mapped as normal device. If a gfx
+			device has a dedicated DMAR unit, the DMAR unit is
+			bypassed by not enabling DMAR with this option. In
+			this case, gfx device will use physical address for
+			DMA.
+		forcedac [x86_64]
+			With this option iommu will not optimize to look
+			for io virtual address below 32 bit forcing dual
+			address cycle on pci bus for cards supporting greater
+			than 32 bit addressing. The default is to look
+			for translation below 32 bit and if not available
+			then look in the higher range.
+		strict [Default Off]
+			With this option on every unmap_single operation will
+			result in a hardware IOTLB flush operation as opposed
+			to batching them for performance.
 
 	io7=		[HW] IO7 for Marvel based alpha systems
 			See comment before marvel_specify_io7 in
@@ -1763,6 +1792,14 @@ running once the system is up.
 	tmscsim=	[HW,SCSI]
 			See comment before function dc390_setup() in
 			drivers/scsi/tmscsim.c.
+
+	topology=	[S390]
+			Format: {off | on}
+			Specify if the kernel should make use of the cpu
+			topology informations if the hardware supports these.
+			The scheduler will make use of these informations and
+			e.g. base its process migration decisions on it.
+			Default is off.
 
 	tp720=		[HW,PS2]
 

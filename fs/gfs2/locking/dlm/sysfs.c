@@ -187,10 +187,13 @@ static struct kobj_type gdlm_ktype = {
 	.sysfs_ops     = &gdlm_attr_ops,
 };
 
+static struct kset_uevent_ops gdlm_uevent_ops;
+
 static struct kset gdlm_kset = {
 	.subsys = &kernel_subsys,
 	.kobj   = {.name = "lock_dlm",},
 	.ktype  = &gdlm_ktype,
+	.uevent_ops = &gdlm_uevent_ops,
 };
 
 int gdlm_kobject_setup(struct gdlm_ls *ls, struct kobject *fskobj)
@@ -219,6 +222,24 @@ void gdlm_kobject_release(struct gdlm_ls *ls)
 	kobject_unregister(&ls->kobj);
 }
 
+static int gdlm_uevent(struct kset *kset, struct kobject *kobj, char **envp,
+		       int num_envp, char *buffer, int buffer_size)
+{
+	struct gdlm_ls *ls = container_of(kobj, struct gdlm_ls, kobj);
+	int index = 0;
+	int length= 0;
+	if (add_uevent_var(envp, num_envp, &index, buffer, buffer_size, &length, "LOCKTABLE=%s:%s", ls->clustername, ls->fsname))
+		return -ENOMEM;
+	if (add_uevent_var(envp, num_envp, &index, buffer, buffer_size, &length, "LOCKPROTO=lock_dlm"))
+		return -ENOMEM;
+	envp[index] = NULL;
+	return 0;
+}
+
+static struct kset_uevent_ops gdlm_uevent_ops = {
+	.uevent = gdlm_uevent,
+};
+
 int gdlm_sysfs_init(void)
 {
 	int error;
@@ -226,7 +247,7 @@ int gdlm_sysfs_init(void)
 	error = kset_register(&gdlm_kset);
 	if (error)
 		printk("lock_dlm: cannot register kset %d\n", error);
-
+	
 	return error;
 }
 

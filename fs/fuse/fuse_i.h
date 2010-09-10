@@ -1,10 +1,13 @@
 /*
   FUSE: Filesystem in Userspace
-  Copyright (C) 2001-2006  Miklos Szeredi <miklos@szeredi.hu>
+  Copyright (C) 2001-2008  Miklos Szeredi <miklos@szeredi.hu>
 
   This program can be distributed under the terms of the GNU GPL.
   See the file COPYING.
 */
+
+#ifndef _FS_FUSE_I_H
+#define _FS_FUSE_I_H
 
 #include <linux/fuse.h>
 #include <linux/fs.h>
@@ -60,6 +63,16 @@ struct fuse_inode {
 
 	/** Time in jiffies until the file attributes are valid */
 	u64 i_time;
+
+	/** The sticky bit in inode->i_mode may have been removed, so
+	    preserve the original mode */
+	mode_t orig_i_mode;
+
+	/** Version of last attribute change */
+	u64 attr_version;
+
+	/** Files usable in writepage.  Protected by fc->lock */
+	struct list_head write_files;
 };
 
 /** FUSE specific file data */
@@ -67,8 +80,17 @@ struct fuse_file {
 	/** Request reserved for flush and release */
 	struct fuse_req *reserved_req;
 
+	/** Kernel file handle guaranteed to be unique */
+	u64 kh;
+
 	/** File handle used by userspace */
 	u64 fh;
+
+	/** Refcount */
+	atomic_t count;
+
+	/** Entry on inode's write_files list */
+	struct list_head write_entry;
 };
 
 /** One input argument of a request */
@@ -196,10 +218,21 @@ struct fuse_req {
 	/** Data for asynchronous requests */
 	union {
 		struct fuse_forget_in forget_in;
-		struct fuse_release_in release_in;
+		struct {
+			struct fuse_release_in in;
+			struct vfsmount *vfsmount;
+			struct dentry *dentry;
+		} release;
 		struct fuse_init_in init_in;
 		struct fuse_init_out init_out;
-		struct fuse_read_in read_in;
+		struct {
+			struct fuse_read_in in;
+			u64 attr_ver;
+		} read;
+		struct {
+			struct fuse_write_in in;
+			struct fuse_write_out out;
+		} write;
 		struct fuse_lk_in lk_in;
 	} misc;
 
@@ -213,13 +246,7 @@ struct fuse_req {
 	unsigned page_offset;
 
 	/** File used in the request (or NULL) */
-	struct file *file;
-
-	/** vfsmount used in release */
-	struct vfsmount *vfsmount;
-
-	/** dentry used in release */
-	struct dentry *dentry;
+	struct fuse_file *ff;
 
 	/** Request completion callback */
 	void (*end)(struct fuse_conn *, struct fuse_req *);
@@ -238,6 +265,9 @@ struct fuse_req {
 struct fuse_conn {
 	/** Lock protecting accessess to  members of this structure */
 	spinlock_t lock;
+
+	/** Mutex protecting against directory alias creation */
+	struct mutex inst_mutex;
 
 	/** Refcount */
 	atomic_t count;
@@ -269,8 +299,17 @@ struct fuse_conn {
 	/** The list of requests under I/O */
 	struct list_head io;
 
+	/** The next unique kernel file handle */
+	u64 khctr;
+
 	/** Number of requests currently in the background */
 	unsigned num_background;
+
+	/** Number of background requests currently queued for userspace */
+	unsigned active_background;
+
+	/** The list of background requests set aside for later queuing */
+	struct list_head bg_queue;
 
 	/** Pending interrupts */
 	struct list_head interrupts;
@@ -283,6 +322,9 @@ struct fuse_conn {
 	/** waitq for blocked connection */
 	wait_queue_head_t blocked_waitq;
 
+	/** waitq for reserved requests */
+	wait_queue_head_t reserved_req_waitq;
+
 	/** The next unique request id */
 	u64 reqctr;
 
@@ -293,10 +335,16 @@ struct fuse_conn {
 	/** Connection failed (version mismatch).  Cannot race with
 	    setting other bitfields since it is only set once in INIT
 	    reply, before any other request, and never cleared */
-	unsigned conn_error : 1;
+	unsigned conn_error:1;
+
+	/** Connection successful.  Only set in INIT */
+	unsigned conn_init:1;
 
 	/** Do readpages asynchronously?  Only set in INIT */
-	unsigned async_read : 1;
+	unsigned async_read:1;
+
+	/** Do not send separate SETATTR request before open(O_TRUNC)  */
+	unsigned atomic_o_trunc:1;
 
 	/*
 	 * The following bitfields are only for optimization purposes
@@ -304,37 +352,40 @@ struct fuse_conn {
 	 */
 
 	/** Is fsync not implemented by fs? */
-	unsigned no_fsync : 1;
+	unsigned no_fsync:1;
 
 	/** Is fsyncdir not implemented by fs? */
-	unsigned no_fsyncdir : 1;
+	unsigned no_fsyncdir:1;
 
 	/** Is flush not implemented by fs? */
-	unsigned no_flush : 1;
+	unsigned no_flush:1;
 
 	/** Is setxattr not implemented by fs? */
-	unsigned no_setxattr : 1;
+	unsigned no_setxattr:1;
 
 	/** Is getxattr not implemented by fs? */
-	unsigned no_getxattr : 1;
+	unsigned no_getxattr:1;
 
 	/** Is listxattr not implemented by fs? */
-	unsigned no_listxattr : 1;
+	unsigned no_listxattr:1;
 
 	/** Is removexattr not implemented by fs? */
-	unsigned no_removexattr : 1;
+	unsigned no_removexattr:1;
 
 	/** Are file locking primitives not implemented by fs? */
-	unsigned no_lock : 1;
+	unsigned no_lock:1;
 
 	/** Is access not implemented by fs? */
-	unsigned no_access : 1;
+	unsigned no_access:1;
 
 	/** Is create not implemented by fs? */
-	unsigned no_create : 1;
+	unsigned no_create:1;
 
 	/** Is interrupt not implemented by fs? */
-	unsigned no_interrupt : 1;
+	unsigned no_interrupt:1;
+
+	/** Is bmap not implemented by fs? */
+	unsigned no_bmap:1;
 
 	/** The number of requests waiting for completion */
 	atomic_t num_waiting;
@@ -362,6 +413,12 @@ struct fuse_conn {
 
 	/** Key for lock owner ID scrambling */
 	u32 scramble_key[4];
+
+	/** Reserved request for the DESTROY message */
+	struct fuse_req *destroy_req;
+
+	/** Version counter for attribute changes */
+	u64 attr_version;
 };
 
 static inline struct fuse_conn *get_fuse_conn_super(struct super_block *sb)
@@ -390,14 +447,15 @@ extern const struct file_operations fuse_dev_operations;
 /**
  * Get a filled in inode
  */
-struct inode *fuse_iget(struct super_block *sb, unsigned long nodeid,
-			int generation, struct fuse_attr *attr);
+struct inode *fuse_iget(struct super_block *sb, u64 nodeid,
+			int generation, struct fuse_attr *attr,
+			u64 attr_valid, u64 attr_version);
 
 /**
  * Send FORGET command
  */
 void fuse_send_forget(struct fuse_conn *fc, struct fuse_req *req,
-		      unsigned long nodeid, u64 nlookup);
+		      u64 nodeid, u64 nlookup);
 
 /**
  * Initialize READ or READDIR request
@@ -410,14 +468,14 @@ void fuse_read_fill(struct fuse_req *req, struct file *file,
  */
 int fuse_open_common(struct inode *inode, struct file *file, int isdir);
 
-struct fuse_file *fuse_file_alloc(void);
+struct fuse_file *fuse_file_alloc(struct fuse_conn *fc);
 void fuse_file_free(struct fuse_file *ff);
 void fuse_finish_open(struct inode *inode, struct file *file,
 		      struct fuse_file *ff, struct fuse_open_out *outarg);
 
-/** */
-struct fuse_req *fuse_release_fill(struct fuse_file *ff, u64 nodeid, int flags,
-				   int opcode);
+/** Fill in ff->reserved_req with a RELEASE request */
+void fuse_release_fill(struct fuse_file *ff, u64 nodeid, int flags, int opcode);
+
 /**
  * Send RELEASE or RELEASEDIR request
  */
@@ -452,7 +510,8 @@ void fuse_init_symlink(struct inode *inode);
 /**
  * Change attributes of an inode
  */
-void fuse_change_attributes(struct inode *inode, struct fuse_attr *attr);
+void fuse_change_attributes(struct inode *inode, struct fuse_attr *attr,
+			    u64 attr_valid, u64 attr_version);
 
 /**
  * Initialize the client device
@@ -512,11 +571,6 @@ void request_send_background(struct fuse_conn *fc, struct fuse_req *req);
 void fuse_abort_conn(struct fuse_conn *fc);
 
 /**
- * Get the attributes of a file
- */
-int fuse_do_getattr(struct inode *inode);
-
-/**
  * Invalidate inode attributes
  */
 void fuse_invalidate_attr(struct inode *inode);
@@ -540,3 +594,23 @@ int fuse_ctl_add_conn(struct fuse_conn *fc);
  * Remove connection from control filesystem
  */
 void fuse_ctl_remove_conn(struct fuse_conn *fc);
+
+/**
+ * Is file type valid?
+ */
+int fuse_valid_type(int m);
+
+/**
+ * Is task allowed to perform filesystem operation?
+ */
+int fuse_allow_task(struct fuse_conn *fc, struct task_struct *task);
+
+u64 fuse_lock_owner_id(struct fuse_conn *fc, fl_owner_t id);
+
+int fuse_update_attributes(struct inode *inode, struct kstat *stat,
+			   struct file *file, bool *refreshed);
+
+u64 fuse_get_attr_version(struct fuse_conn *fc);
+
+#endif /* _FS_FUSE_I_H */
+

@@ -37,7 +37,6 @@
 #include "lm.h"
 #include "log.h"
 #include "meta_io.h"
-#include "ops_file.h"
 #include "ops_vm.h"
 #include "quota.h"
 #include "rgrp.h"
@@ -45,24 +44,6 @@
 #include "util.h"
 #include "eaops.h"
 #include "ops_address.h"
-
-static void iov_iter_advance(struct iov_iter *i, size_t bytes);
-static inline void iov_iter_init(struct iov_iter *i,
-                        const struct iovec *iov, unsigned long nr_segs,
-                        size_t count, size_t written)
-{
-        i->iov = iov;
-        i->nr_segs = nr_segs;
-        i->iov_offset = 0;
-        i->count = count + written;
-
-        iov_iter_advance(i, written);
-}
-
-static inline size_t iov_iter_count(struct iov_iter *i)
-{
-        return i->count;
-}
 
 /*
  * Most fields left uninitialised to catch anybody who tries to
@@ -227,17 +208,17 @@ static int gfs2_get_flags(struct file *filp, u32 __user *ptr)
 	if (error)
 		return error;
 
-	fsflags = fsflags_cvt(gfs2_to_fsflags, ip->i_di.di_flags);
+	fsflags = fsflags_cvt(gfs2_to_fsflags, ip->i_diskflags);
 	if (!S_ISDIR(inode->i_mode)) {
-		if (ip->i_di.di_flags & GFS2_DIF_JDATA)
+		if (ip->i_diskflags & GFS2_DIF_JDATA)
 			fsflags |= FS_JOURNAL_DATA_FL;
-		if (ip->i_di.di_flags & GFS2_DIF_DIRECTIO)
+		if (ip->i_diskflags & GFS2_DIF_DIRECTIO)
 			fsflags |= FS_DIRECTIO_FL;
 	}
 	if (put_user(fsflags, ptr))
 		error = -EFAULT;
 
-	gfs2_glock_dq_m(1, &gh);
+	gfs2_glock_dq(&gh);
 	gfs2_holder_uninit(&gh);
 	return error;
 }
@@ -245,17 +226,16 @@ static int gfs2_get_flags(struct file *filp, u32 __user *ptr)
 void gfs2_set_inode_flags(struct inode *inode)
 {
 	struct gfs2_inode *ip = GFS2_I(inode);
-	struct gfs2_dinode_host *di = &ip->i_di;
 	unsigned int flags = inode->i_flags;
 
 	flags &= ~(S_SYNC|S_APPEND|S_IMMUTABLE|S_NOATIME|S_DIRSYNC);
-	if (di->di_flags & GFS2_DIF_IMMUTABLE)
+	if (ip->i_diskflags & GFS2_DIF_IMMUTABLE)
 		flags |= S_IMMUTABLE;
-	if (di->di_flags & GFS2_DIF_APPENDONLY)
+	if (ip->i_diskflags & GFS2_DIF_APPENDONLY)
 		flags |= S_APPEND;
-	if (di->di_flags & GFS2_DIF_NOATIME)
+	if (ip->i_diskflags & GFS2_DIF_NOATIME)
 		flags |= S_NOATIME;
-	if (di->di_flags & GFS2_DIF_SYNC)
+	if (ip->i_diskflags & GFS2_DIF_SYNC)
 		flags |= S_SYNC;
 	inode->i_flags = flags;
 }
@@ -292,7 +272,7 @@ static int do_gfs2_set_flags(struct file *filp, u32 reqflags, u32 mask)
 	if (error)
 		return error;
 
-	flags = ip->i_di.di_flags;
+	flags = ip->i_diskflags;
 	new_flags = (flags & ~mask) | (reqflags & mask);
 	if ((new_flags ^ flags) == 0)
 		goto out;
@@ -331,7 +311,7 @@ static int do_gfs2_set_flags(struct file *filp, u32 reqflags, u32 mask)
 	if (error)
 		goto out_trans_end;
 	gfs2_trans_add_bh(ip->i_gl, bh, 1);
-	ip->i_di.di_flags = new_flags;
+	ip->i_diskflags = new_flags;
 	gfs2_dinode_out(ip, bh->b_data);
 	brelse(bh);
 	gfs2_set_inode_flags(inode);
@@ -371,6 +351,161 @@ static long gfs2_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	return -ENOTTY;
 }
 
+/**
+ * gfs2_allocate_page_backing - Use bmap to allocate blocks
+ * @page: The (locked) page to allocate backing for
+ *
+ * We try to allocate all the blocks required for the page in
+ * one go. This might fail for various reasons, so we keep
+ * trying until all the blocks to back this page are allocated.
+ * If some of the blocks are already allocated, thats ok too.
+ */
+
+static int gfs2_allocate_page_backing(struct page *page)
+{
+	struct inode *inode = page->mapping->host;
+	struct buffer_head bh;
+	unsigned long size = PAGE_CACHE_SIZE;
+	u64 lblock = page->index << (PAGE_CACHE_SHIFT - inode->i_blkbits);
+
+	do {
+		bh.b_state = 0;
+		bh.b_size = size;
+		gfs2_block_map(inode, lblock, &bh, 1);
+		if (!buffer_mapped(&bh))
+			return -EIO;
+		size -= bh.b_size;
+		lblock += (bh.b_size >> inode->i_blkbits);
+	} while(size > 0);
+	return 0;
+}
+
+/**
+ * gfs2_page_mkwrite - Make a shared, mmap()ed, page writable
+ * @vma: The virtual memory area
+ * @page: The page which is about to become writable
+ *
+ * When the page becomes writable, we need to ensure that we have
+ * blocks allocated on disk to back that page.
+ */
+
+static int gfs2_page_mkwrite(struct vm_area_struct *vma, struct page *page)
+{
+	struct inode *inode = vma->vm_file->f_dentry->d_inode;
+	struct gfs2_inode *ip = GFS2_I(inode);
+	struct gfs2_sbd *sdp = GFS2_SB(inode);
+	unsigned long last_index;
+	u64 pos = page->index << PAGE_CACHE_SHIFT;
+	unsigned int data_blocks, ind_blocks, rblocks;
+	int alloc_required = 0;
+	struct gfs2_holder gh;
+	struct gfs2_alloc *al;
+	int ret;
+
+	gfs2_holder_init(ip->i_gl, LM_ST_EXCLUSIVE, 0, &gh);
+	ret = gfs2_glock_nq(&gh);
+	if (ret)
+		goto out;
+
+	set_bit(GIF_SW_PAGED, &ip->i_flags);
+	ret = gfs2_write_alloc_required(ip, pos, PAGE_CACHE_SIZE, &alloc_required);
+	if (ret || !alloc_required)
+		goto out_unlock;
+
+	al = gfs2_alloc_get(ip);
+	if (al == NULL) {
+		ret = -ENOMEM;
+		goto out_unlock;
+	}
+	ret = gfs2_quota_lock(ip, NO_QUOTA_CHANGE, NO_QUOTA_CHANGE);
+	if (ret)
+		goto out_alloc_put;
+	ret = gfs2_quota_check(ip, ip->i_inode.i_uid, ip->i_inode.i_gid);
+	if (ret)
+		goto out_quota_unlock;
+	gfs2_write_calc_reserv(ip, PAGE_CACHE_SIZE, &data_blocks, &ind_blocks);
+	al->al_requested = data_blocks + ind_blocks;
+	ret = gfs2_inplace_reserve(ip);
+	if (ret)
+		goto out_quota_unlock;
+
+	rblocks = RES_DINODE + ind_blocks;
+	if (gfs2_is_jdata(ip))
+		rblocks += data_blocks ? data_blocks : 1;
+	if (ind_blocks || data_blocks)
+		rblocks += RES_STATFS + RES_QUOTA;
+	ret = gfs2_trans_begin(sdp, rblocks, 0);
+	if (ret)
+		goto out_trans_fail;
+
+	lock_page(page);
+	ret = -EINVAL;
+	last_index = ip->i_inode.i_size >> PAGE_CACHE_SHIFT;
+	if (page->index > last_index)
+		goto out_unlock_page;
+	ret = 0;
+	if (!PageUptodate(page) || page->mapping != ip->i_inode.i_mapping)
+		goto out_unlock_page;
+	if (gfs2_is_stuffed(ip)) {
+		ret = gfs2_unstuff_dinode(ip, page);
+		if (ret)
+			goto out_unlock_page;
+	}
+	ret = gfs2_allocate_page_backing(page);
+
+out_unlock_page:
+	unlock_page(page);
+	gfs2_trans_end(sdp);
+out_trans_fail:
+	gfs2_inplace_release(ip);
+out_quota_unlock:
+	gfs2_quota_unlock(ip);
+out_alloc_put:
+	gfs2_alloc_put(ip);
+out_unlock:
+	gfs2_glock_dq(&gh);
+out:
+	gfs2_holder_uninit(&gh);
+	return ret;
+}
+
+static int just_schedule(void *word)
+{
+	schedule();
+	return 0;
+}
+
+static void wait_on_invalidate(struct gfs2_glock *gl)
+{
+	might_sleep();
+	wait_on_bit(&gl->gl_flags, GLF_INVALIDATE_IN_PROGRESS, just_schedule,
+		    TASK_UNINTERRUPTIBLE);
+}
+
+static struct page *gfs2_nopage(struct vm_area_struct *area,
+				unsigned long address, int *type)
+{
+	struct file *file = area->vm_file;
+	struct inode *inode = file->f_mapping->host;
+	struct gfs2_inode *ip = GFS2_I(inode);
+	struct gfs2_glock *gl = ip->i_gl;
+	struct gfs2_sbd *sdp = gl->gl_sbd;
+
+	if (likely(file != &gfs2_internal_file_sentinel)) {
+		gfs2_glock_hold(gl);
+		if (likely(!test_bit(SDF_SHUTDOWN, &sdp->sd_flags)))
+			wait_on_invalidate(gl);
+		gfs2_glock_put(gl);
+	}
+
+	return filemap_nopage(area, address, type);
+}
+
+static struct vm_operations_struct gfs2_vm_ops = {
+	.nopage = gfs2_nopage,
+	.page_mkwrite = gfs2_page_mkwrite,
+};
+
 
 /**
  * gfs2_mmap -
@@ -393,14 +528,7 @@ static int gfs2_mmap(struct file *file, struct vm_area_struct *vma)
 		return error;
 	}
 
-	/* This is VM_MAYWRITE instead of VM_WRITE because a call
-	   to mprotect() can turn on VM_WRITE later. */
-
-	if ((vma->vm_flags & (VM_MAYSHARE | VM_MAYWRITE)) ==
-	    (VM_MAYSHARE | VM_MAYWRITE))
-		vma->vm_ops = &gfs2_vm_ops_sharewrite;
-	else
-		vma->vm_ops = &gfs2_vm_ops_private;
+	vma->vm_ops = &gfs2_vm_ops;
 
 	gfs2_glock_dq_uninit(&i_gh);
 
@@ -438,14 +566,14 @@ static int gfs2_open(struct inode *inode, struct file *file)
 			goto fail;
 
 		if (!(file->f_flags & O_LARGEFILE) &&
-		    ip->i_di.di_size > MAX_NON_LFS) {
+		    ip->i_disksize > MAX_NON_LFS) {
 			error = -EFBIG;
 			goto fail_gunlock;
 		}
 
 		/* Listen to the Direct I/O flag */
 
-		if (ip->i_di.di_flags & GFS2_DIF_DIRECTIO)
+		if (ip->i_diskflags & GFS2_DIF_DIRECTIO)
 			file->f_flags |= O_DIRECT;
 
 		gfs2_glock_dq_uninit(&i_gh);
@@ -671,53 +799,6 @@ static int gfs2_flock(struct file *file, int cmd, struct file_lock *fl)
 		return do_flock(file, cmd, fl);
 }
 
-/**
- * generic_file functions backported from upstream filemap.c:
- * In many cases I needed to change generic_* to gfs2_*
- */
-
-static unsigned long iov_iter_single_seg_count(struct iov_iter *i)
-{
-	const struct iovec *iov = i->iov;
-	if (i->nr_segs == 1)
-		return i->count;
-	else
-		return min(i->count, iov->iov_len - i->iov_offset);
-}
-
-static void iov_iter_advance(struct iov_iter *i, size_t bytes)
-{
-	BUG_ON(i->count < bytes);
-
-	if (likely(i->nr_segs == 1)) {
-		i->iov_offset += bytes;
-		i->count -= bytes;
-	} else {
-		const struct iovec *iov = i->iov;
-		size_t base = i->iov_offset;
-
-		/*
-		 * The !iov->iov_len check ensures we skip over unlikely
-		 * zero-length segments (without overruning the iovec).
-		 */
-		while (bytes || unlikely(i->count && !iov->iov_len)) {
-			int copy;
-
-			copy = min(bytes, iov->iov_len - base);
-			BUG_ON(!i->count || i->count < copy);
-			i->count -= copy;
-			bytes -= copy;
-			base += copy;
-			if (iov->iov_len == base) {
-				iov++;
-				base = 0;
-			}
-		}
-		i->iov = iov;
-		i->iov_offset = base;
-	}
-}
-
 static inline int gfs2_fault_in_pages_readable(const char __user *uaddr,
 					       int size)
 {
@@ -736,12 +817,6 @@ static inline int gfs2_fault_in_pages_readable(const char __user *uaddr,
                         ret = __get_user(c, end);
         }
         return ret;
-}
-static int iov_iter_fault_in_readable(struct iov_iter *i, size_t bytes)
-{
-	char __user *buf = i->iov->iov_base + i->iov_offset;
-	bytes = min(bytes, i->iov->iov_len - i->iov_offset);
-	return gfs2_fault_in_pages_readable(buf, bytes);
 }
 
 static ssize_t gfs2_perform_write(struct file *file,
@@ -876,44 +951,6 @@ gfs2_file_buffered_write(struct kiocb *iocb, const struct iovec *iov,
 		status = filemap_write_and_wait(mapping);
 
 	return written ? written : status;
-}
-
-/*
- * Performs necessary checks before doing a write
- * @iov:	io vector request
- * @nr_segs:	number of segments in the iovec
- * @count:	number of bytes to write
- * @access_flags: type of access: %VERIFY_READ or %VERIFY_WRITE
- *
- * Adjust number of segments and amount of bytes to write (nr_segs should be
- * properly initialized first). Returns appropriate error code that caller
- * should return or zero in case that write should be allowed.
- */
-static int generic_segment_checks(const struct iovec *iov,
-			unsigned long *nr_segs, size_t *count, int access_flags)
-{
-	unsigned long   seg;
-	size_t cnt = 0;
-	for (seg = 0; seg < *nr_segs; seg++) {
-		const struct iovec *iv = &iov[seg];
-
-		/*
-		 * If any segment has a negative length, or the cumulative
-		 * length ever wraps negative then return -EINVAL.
-		 */
-		cnt += iv->iov_len;
-		if (unlikely((ssize_t)(cnt|iv->iov_len) < 0))
-			return -EINVAL;
-		if (access_ok(access_flags, iv->iov_base, iv->iov_len))
-			continue;
-		if (seg == 0)
-			return -EFAULT;
-		*nr_segs = seg;
-		cnt -= iv->iov_len;	/* This segment is no good */
-		break;
-	}
-	*count = cnt;
-	return 0;
 }
 
 static ssize_t

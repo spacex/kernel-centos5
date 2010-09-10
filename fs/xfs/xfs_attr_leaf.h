@@ -30,7 +30,7 @@
 
 struct attrlist;
 struct attrlist_cursor_kern;
-struct attrnames;
+struct xfs_attr_list_context;
 struct xfs_dabuf;
 struct xfs_da_args;
 struct xfs_da_state;
@@ -130,6 +130,19 @@ typedef struct xfs_attr_leafblock {
 #define XFS_ATTR_INCOMPLETE	(1 << XFS_ATTR_INCOMPLETE_BIT)
 
 /*
+ * Conversion macros for converting namespace bits from argument flags
+ * to ondisk flags.
+ */
+#define XFS_ATTR_NSP_ARGS_MASK		(ATTR_ROOT | ATTR_SECURE)
+#define XFS_ATTR_NSP_ONDISK_MASK	(XFS_ATTR_ROOT | XFS_ATTR_SECURE)
+#define XFS_ATTR_NSP_ONDISK(flags)	((flags) & XFS_ATTR_NSP_ONDISK_MASK)
+#define XFS_ATTR_NSP_ARGS(flags)	((flags) & XFS_ATTR_NSP_ARGS_MASK)
+#define XFS_ATTR_NSP_ARGS_TO_ONDISK(x)	(((x) & ATTR_ROOT ? XFS_ATTR_ROOT : 0) |\
+					 ((x) & ATTR_SECURE ? XFS_ATTR_SECURE : 0))
+#define XFS_ATTR_NSP_ONDISK_TO_ARGS(x)	(((x) & XFS_ATTR_ROOT ? ATTR_ROOT : 0) |\
+					 ((x) & XFS_ATTR_SECURE ? ATTR_SECURE : 0))
+
+/*
  * Alignment for namelist and valuelist entries (since they are mixed
  * there can be only one alignment value)
  */
@@ -190,23 +203,6 @@ static inline int xfs_attr_leaf_entsize_local_max(int bsize)
 {
 	return (((bsize) >> 1) + ((bsize) >> 2));
 }
-
-
-/*========================================================================
- * Structure used to pass context around among the routines.
- *========================================================================*/
-
-typedef struct xfs_attr_list_context {
-	struct xfs_inode		*dp;	/* inode */
-	struct attrlist_cursor_kern	*cursor;/* position in list */
-	struct attrlist			*alist;	/* output buffer */
-	int				count;	/* num used entries */
-	int				dupcnt;	/* count dup hashvals seen */
-	int				bufsize;/* total buffer size */
-	int				firstu;	/* first used byte in buffer */
-	int				flags;	/* from VOP call */
-	int				resynch;/* T/F: resynch with cursor */
-} xfs_attr_list_context_t;
 
 /*
  * Used to keep a list of "remote value" extents when unlinking an inode.
@@ -278,6 +274,4 @@ int	xfs_attr_leaf_order(struct xfs_dabuf *leaf1_bp,
 				   struct xfs_dabuf *leaf2_bp);
 int	xfs_attr_leaf_newentsize(int namelen, int valuelen, int blocksize,
 					int *local);
-int	xfs_attr_rolltrans(struct xfs_trans **transp, struct xfs_inode *dp);
-
 #endif	/* __XFS_ATTR_LEAF_H__ */

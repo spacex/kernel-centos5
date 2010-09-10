@@ -46,6 +46,7 @@
 #include <linux/hdreg.h>
 #include <linux/blkdev.h>
 #include <linux/major.h>
+#include <linux/scatterlist.h>
 #include <asm/hypervisor.h>
 #include <xen/xenbus.h>
 #include <xen/gnttab.h>
@@ -117,6 +118,7 @@ struct blkfront_info
 	int connected;
 	int ring_ref;
 	blkif_front_ring_t ring;
+	struct scatterlist sg[BLKIF_MAX_SEGMENTS_PER_REQUEST];
 	unsigned int evtchn, irq;
 	struct xlbd_major_info *mi;
 	request_queue_t *rq;

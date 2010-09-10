@@ -11,10 +11,12 @@
 #include <linux/init.h>
 #include <linux/dmi.h>
 #include <linux/acpi.h>
+#include <linux/delay.h>
 #include <asm/delay.h>
 #include <asm/tsc.h>
 #include <asm/delay.h>
 #include <asm/io.h>
+#include <asm/generic-hypervisor.h>
 
 #include "mach_timer.h"
 
@@ -135,6 +137,14 @@ static unsigned long calculate_cpu_khz(void)
 	int i;
 	unsigned long flags;
 
+#ifndef CONFIG_XEN
+	tsc_khz = get_hypervisor_tsc_freq();
+	if (tsc_khz) {
+		printk(KERN_INFO "TSC: Frequency read from the hypervisor\n");
+		return tsc_khz;
+	}
+#endif
+
 	local_irq_save(flags);
 
 	/* run 3 times to ensure the cache is warm */
@@ -196,6 +206,8 @@ EXPORT_SYMBOL(recalibrate_cpu_khz);
 
 void tsc_init(void)
 {
+	u64 lpj;
+
 	if (!cpu_has_tsc || tsc_disable)
 		return;
 
@@ -210,6 +222,11 @@ void tsc_init(void)
 				(unsigned long)cpu_khz % 1000);
 
 	set_cyc2ns_scale(cpu_khz);
+
+	lpj = ((u64)tsc_khz * 1000);
+	do_div(lpj, HZ);
+	lpj_fine = lpj;
+
 	use_tsc_delay();
 }
 
@@ -256,13 +273,10 @@ time_cpufreq_notifier(struct notifier_block *nb, unsigned long val, void *data)
 {
 	struct cpufreq_freqs *freq = data;
 
-	if (val != CPUFREQ_RESUMECHANGE && val != CPUFREQ_SUSPENDCHANGE)
-		write_seqlock_irq(&xtime_lock);
-
 	if (!ref_freq) {
 		if (!freq->old){
 			ref_freq = freq->new;
-			goto end;
+			return 0;
 		}
 		ref_freq = freq->old;
 		loops_per_jiffy_ref = cpu_data[freq->cpu].loops_per_jiffy;
@@ -293,9 +307,6 @@ time_cpufreq_notifier(struct notifier_block *nb, unsigned long val, void *data)
 			}
 		}
 	}
-end:
-	if (val != CPUFREQ_RESUMECHANGE && val != CPUFREQ_SUSPENDCHANGE)
-		write_sequnlock_irq(&xtime_lock);
 
 	return 0;
 }
@@ -414,6 +425,9 @@ static void verify_tsc_freq(unsigned long unused)
 	u64 now_tsc, interval_tsc;
 	unsigned long now_jiffies, interval_jiffies;
 
+	/* TSC is reliable, no need to verify as it may have false positives */
+	if (boot_cpu_has(X86_FEATURE_TSC_RELIABLE))
+		return;
 
 	if (check_tsc_unstable())
 		return;
@@ -466,6 +480,10 @@ static __init int unsynchronized_tsc(void)
 #endif
  		return 0;
 	}
+
+	/* TSC is reliable, usually exported by hypervisors */
+	if (boot_cpu_has(X86_FEATURE_TSC_RELIABLE))
+		return 0;
 
 	/* assume multi socket systems are not synchronized: */
  	return num_possible_cpus() > 1;

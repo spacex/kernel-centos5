@@ -832,6 +832,8 @@ MODULE_AUTHOR("Intel Corporation");
 
 static int __init ioat_init_module(void)
 {
+	printk(KERN_ERR
+         "Intel I/O AT DMA Engine: to use I/O AT TCP receive copy offload on this kernel version load ioatdma_v3.ko module instead of ioatdma.ko\n");
 	/* it's currently unsafe to unload this module */
 	/* if forced, worst case is that rmmod hangs */
 	__unsafe(THIS_MODULE);

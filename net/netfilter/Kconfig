@@ -206,6 +206,17 @@ config NETFILTER_XT_TARGET_CONNSECMARK
 
 	  To compile it as a module, choose M here.  If unsure, say N.
 
+config NETFILTER_XT_TARGET_DSCP
+	tristate '"DSCP" target support'
+	depends on IP_NF_MANGLE || IP6_NF_MANGLE
+	help
+	  This option adds a `DSCP' target, which allows you to manipulate
+	  the IPv4/IPv6 header DSCP field (differentiated services codepoint).
+
+	  The DSCP field can have any value between 0x0 and 0x3f inclusive.
+
+	  To compile it as a module, choose M here.  If unsure, say N.
+
 config NETFILTER_XT_MATCH_COMMENT
 	tristate  '"comment" match support'
 	depends on NETFILTER_XTABLES
@@ -226,6 +237,13 @@ config NETFILTER_XT_MATCH_CONNBYTES
 
 	  If you want to compile it as a module, say M here and read
 	  <file:Documentation/modules.txt>.  If unsure, say `N'.
+
+config NETFILTER_XT_MATCH_CONNLIMIT
+	tristate '"connlimit" match support"'
+	depends on NETFILTER_XTABLES
+	---help---
+	  This match allows you to match against the number of parallel
+	  connections to a server per client IP address (or address block).
 
 config NETFILTER_XT_MATCH_CONNMARK
 	tristate  '"connmark" connection mark match support'

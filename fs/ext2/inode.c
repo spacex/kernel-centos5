@@ -31,6 +31,7 @@
 #include <linux/writeback.h>
 #include <linux/buffer_head.h>
 #include <linux/mpage.h>
+#include <linux/fiemap.h>
 #include "ext2.h"
 #include "acl.h"
 #include "xip.h"
@@ -623,6 +624,13 @@ changed:
 		partial--;
 	}
 	goto reread;
+}
+
+int ext2_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
+		u64 start, u64 len)
+{
+	return generic_block_fiemap(inode, fieinfo, start, len,
+				    ext2_get_block);
 }
 
 static int ext2_writepage(struct page *page, struct writeback_control *wbc)

@@ -59,9 +59,15 @@
 #include <linux/if_tun.h>
 #include <linux/crc32.h>
 #include <linux/virtio_net.h>
+#include <net/sock.h>
 
 #include <asm/system.h>
 #include <asm/uaccess.h>
+
+struct tun_sock {
+	struct sock		sk;
+	struct tun_struct	*tun;
+};
 
 #ifdef TUN_DEBUG
 static int debug;
@@ -71,6 +77,11 @@ static int debug;
 
 static LIST_HEAD(tun_dev_list);
 static struct ethtool_ops tun_ethtool_ops;
+
+static inline struct tun_sock *tun_sk(struct sock *sk)
+{
+	return container_of(sk, struct tun_sock, sk);
+}
 
 /* Net device open. */
 static int tun_net_open(struct net_device *dev)
@@ -223,10 +234,13 @@ static void tun_net_init(struct net_device *dev)
 static unsigned int tun_chr_poll(struct file *file, poll_table * wait)
 {  
 	struct tun_struct *tun = file->private_data;
-	unsigned int mask = POLLOUT | POLLWRNORM;
+	struct sock *sk;
+	unsigned int mask = 0;
 
 	if (!tun)
 		return -EBADFD;
+
+	sk = tun->sk;
 
 	DBG(KERN_INFO "%s: tun_chr_poll\n", tun->dev->name);
 
@@ -235,11 +249,45 @@ static unsigned int tun_chr_poll(struct file *file, poll_table * wait)
 	if (!skb_queue_empty(&tun->readq))
 		mask |= POLLIN | POLLRDNORM;
 
+	if (sock_writeable(sk) ||
+	    (!test_and_set_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags) &&
+	     sock_writeable(sk)))
+		mask |= POLLOUT | POLLWRNORM;
+
 	return mask;
 }
 
+/* prepad is the amount to reserve at front.  len is length after that.
+ * linear is a hint as to how much to copy (usually headers). */
+static inline struct sk_buff *tun_alloc_skb(struct tun_struct *tun,
+					    size_t prepad, size_t len,
+					    size_t linear, int noblock)
+{
+	struct sock *sk = tun->sk;
+	struct sk_buff *skb;
+	int err;
+
+	/* Under a page?  Don't bother with paged skb. */
+	if (prepad + len < PAGE_SIZE || !linear)
+		linear = len;
+
+	skb = sock_alloc_send_pskb(sk, prepad + linear, len - linear, noblock,
+				   &err);
+	if (!skb)
+		return ERR_PTR(err);
+
+	skb_reserve(skb, prepad);
+	skb_put(skb, linear);
+	skb->data_len = len - linear;
+	skb->len += len - linear;
+
+	return skb;
+}
+
 /* Get packet from user space buffer */
-static __inline__ ssize_t tun_get_user(struct tun_struct *tun, struct iovec *iv, size_t count)
+static __inline__ ssize_t tun_get_user(struct tun_struct *tun,
+				       struct iovec *iv, size_t count,
+				       int noblock)
 {
 	struct tun_pi pi = { 0, __constant_htons(ETH_P_IP) };
 	struct sk_buff *skb;
@@ -261,6 +309,10 @@ static __inline__ ssize_t tun_get_user(struct tun_struct *tun, struct iovec *iv,
 		if (memcpy_fromiovec((void *)&gso, iv, sizeof(gso)))
 			return -EFAULT;
 
+		if ((gso.flags & VIRTIO_NET_HDR_F_NEEDS_CSUM) &&
+		    gso.csum_start + gso.csum_offset + 2 > gso.hdr_len)
+			gso.hdr_len = gso.csum_start + gso.csum_offset + 2;
+
 		if (gso.hdr_len > len)
 			return -EINVAL;
 	}
@@ -268,19 +320,20 @@ static __inline__ ssize_t tun_get_user(struct tun_struct *tun, struct iovec *iv,
 	if ((tun->flags & TUN_TYPE_MASK) == TUN_TAP_DEV)
 		align = NET_IP_ALIGN;
  
-	if (!(skb = alloc_skb(len + align, GFP_KERNEL))) {
-		tun->stats.rx_dropped++;
-		return -ENOMEM;
+	skb = tun_alloc_skb(tun, align, len, gso.hdr_len, noblock);
+	if (IS_ERR(skb)) {
+		if (PTR_ERR(skb) != -EAGAIN)
+			tun->stats.rx_dropped++;
+		return PTR_ERR(skb);
 	}
 
-	if (align)
-		skb_reserve(skb, align);
-
-	skb_put(skb, len);
+	if (skb_copy_datagram_from_iovec(skb, 0, iv, len)) {
+		tun->stats.rx_dropped++;
+		kfree_skb(skb);
+		return -EFAULT;
+	}
 
 	if (gso.flags & VIRTIO_NET_HDR_F_NEEDS_CSUM) {
-		unsigned int csum = 0;
-
 		if (gso.csum_start + gso.csum_offset > len - 2) {
 			if (net_ratelimit())
 				printk(KERN_WARNING
@@ -291,34 +344,12 @@ static __inline__ ssize_t tun_get_user(struct tun_struct *tun, struct iovec *iv,
 			return -EINVAL;
 		}
 
-		if (memcpy_fromiovec(skb->data, iv, gso.csum_start)) {
-			tun->stats.rx_dropped++;
-			kfree_skb(skb);
-			return -EFAULT;
-		}
-
-		if (csum_partial_copy_fromiovecend(skb->data + gso.csum_start,
-						   iv, 0, len - gso.csum_start,
-						   &csum)) {
-			tun->stats.rx_dropped++;
-			kfree_skb(skb);
-			return -EFAULT;
-		}
-
-		*(u16 *)(skb->data + gso.csum_start + gso.csum_offset) =
-			csum_fold(csum);
-
+		skb->ip_summed = CHECKSUM_HW;
+		skb->csum = gso.csum_offset;
+		skb->h.raw = skb->data + gso.csum_start;
+		skb_checksum_help(skb, 0);
+	} else if (tun->flags & TUN_NOCHECKSUM)
 		skb->ip_summed = CHECKSUM_UNNECESSARY;
-	} else {
-		if (memcpy_fromiovec(skb->data, iv, len)) {
-			tun->stats.rx_dropped++;
-			kfree_skb(skb);
-			return -EFAULT;
-		}
-
-		if (tun->flags & TUN_NOCHECKSUM)
-			skb->ip_summed = CHECKSUM_UNNECESSARY;
-	}
 
 	skb->dev = tun->dev;
 	switch (tun->flags & TUN_TYPE_MASK) {
@@ -392,7 +423,8 @@ static ssize_t tun_chr_writev(struct file * file, const struct iovec *iv,
 
 	DBG(KERN_INFO "%s: tun_chr_write %ld\n", tun->dev->name, count);
 
-	return tun_get_user(tun, (struct iovec *) iv, iov_total(iv, count));
+	return tun_get_user(tun, (struct iovec *) iv, iov_total(iv, count),
+			    file->f_flags & O_NONBLOCK);
 }
 
 /* Write */
@@ -591,8 +623,37 @@ static struct tun_struct *tun_get_by_name(const char *name)
 	return NULL;
 }
 
+static void tun_sock_write_space(struct sock *sk)
+{
+	struct tun_struct *tun;
+
+	if (!sock_writeable(sk))
+		return;
+
+	if (!test_and_clear_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags))
+		return;
+
+	if (sk->sk_sleep && waitqueue_active(sk->sk_sleep))
+		wake_up_interruptible_sync(sk->sk_sleep);
+
+	tun = container_of(sk, struct tun_sock, sk)->tun;
+	kill_fasync(&tun->fasync, SIGIO, POLL_OUT);
+}
+
+static void tun_sock_destruct(struct sock *sk)
+{
+	dev_put(container_of(sk, struct tun_sock, sk)->tun->dev);
+}
+
+static struct proto tun_proto = {
+	.name		= "tun",
+	.owner		= THIS_MODULE,
+	.obj_size	= sizeof(struct tun_sock),
+};
+
 static int tun_set_iff(struct file *file, struct ifreq *ifr)
 {
+	struct sock *sk;
 	struct tun_struct *tun;
 	struct net_device *dev;
 	int err;
@@ -648,17 +709,33 @@ static int tun_set_iff(struct file *file, struct ifreq *ifr)
 		get_random_bytes(tun->dev_addr + sizeof(u16), 4);
 		memset(tun->chr_filter, 0, sizeof tun->chr_filter);
 
+		err = -ENOMEM;
+		sk = sk_alloc(AF_UNSPEC, GFP_KERNEL, &tun_proto, 1);
+		if (!sk)
+			goto err_free_dev;
+
+		/* This ref count is for tun->sk. */
+		dev_hold(dev);
+		sock_init_data(&tun->socket, sk);
+		sk->sk_write_space = tun_sock_write_space;
+		sk->sk_destruct = tun_sock_destruct;
+		sk->sk_sndbuf = INT_MAX;
+		sk->sk_sleep = &tun->read_wait;
+
+		tun->sk = sk;
+		container_of(sk, struct tun_sock, sk)->tun = tun;
+
 		tun_net_init(dev);
 
 		if (strchr(dev->name, '%')) {
 			err = dev_alloc_name(dev, dev->name);
 			if (err < 0)
-				goto err_free_dev;
+				goto err_free_sk;
 		}
 
 		err = register_netdevice(tun->dev);
 		if (err < 0)
-			goto err_free_dev;
+			goto err_free_sk;
 	
 		list_add(&tun->list, &tun_dev_list);
 	}
@@ -682,6 +759,8 @@ static int tun_set_iff(struct file *file, struct ifreq *ifr)
 	strcpy(ifr->ifr_name, tun->dev->name);
 	return 0;
 
+ err_free_sk:
+	sock_put(sk);
  err_free_dev:
 	free_netdev(dev);
  failed:
@@ -764,6 +843,7 @@ static int tun_chr_ioctl(struct inode *inode, struct file *file,
 	struct tun_struct *tun = file->private_data;
 	void __user* argp = (void __user*)arg;
 	struct ifreq ifr;
+	int sndbuf;
 	int ret;
 
 	if (cmd == TUNSETIFF || _IOC_TYPE(cmd) == 0x89)
@@ -919,6 +999,21 @@ static int tun_chr_ioctl(struct inode *inode, struct file *file,
 				(u8)ifr.ifr_hwaddr.sa_data[4], (u8)ifr.ifr_hwaddr.sa_data[5]);
 		return 0;
 
+	case TUNGETSNDBUF:
+		sndbuf = tun->sk->sk_sndbuf;
+		if (copy_to_user(argp, &sndbuf, sizeof(sndbuf)))
+			ret = -EFAULT;
+		break;
+
+	case TUNSETSNDBUF:
+		if (copy_from_user(&sndbuf, argp, sizeof(sndbuf))) {
+			ret = -EFAULT;
+			break;
+		}
+
+		tun->sk->sk_sndbuf = sndbuf;
+		break;
+
 	default:
 		return -EINVAL;
 	};
@@ -979,6 +1074,7 @@ static int tun_chr_close(struct inode *inode, struct file *file)
 
 	if (!(tun->flags & TUN_PERSIST)) {
 		list_del(&tun->list);
+		sock_put(tun->sk);
 		unregister_netdevice(tun->dev);
 	}
 

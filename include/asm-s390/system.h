@@ -12,10 +12,12 @@
 #define __ASM_SYSTEM_H
 
 #include <linux/kernel.h>
+#include <linux/errno.h>
 #include <asm/types.h>
 #include <asm/ptrace.h>
 #include <asm/setup.h>
 #include <asm/processor.h>
+#include <asm/lowcore.h>
 
 #ifdef __KERNEL__
 
@@ -434,8 +436,33 @@ __set_psw_mask(unsigned long mask)
 #define local_mcck_enable()  __set_psw_mask(PSW_KERNEL_BITS)
 #define local_mcck_disable() __set_psw_mask(PSW_KERNEL_BITS & ~PSW_MASK_MCHECK)
 
-int stsi(void *sysinfo, int fc, int sel1, int sel2);
-int stfle(unsigned long long *list, int doublewords);
+
+static inline unsigned int stfl(void)
+{
+	asm volatile(
+		"	.insn	s,0xb2b10000,0(0)\n" /* stfl */
+		"0:\n"
+		EX_TABLE(0b, 0b));
+	return S390_lowcore.stfl_fac_list;
+}
+
+static inline int __stfle(unsigned long long *list, int doublewords)
+{
+	typedef struct { unsigned long long _[doublewords]; } addrtype;
+	register unsigned long __nr asm("0") = doublewords - 1;
+
+	asm volatile(".insn s,0xb2b00000,%0" /* stfle */
+		     : "=m" (*(addrtype *) list), "+d" (__nr) : : "cc");
+	return __nr + 1;
+}
+
+static inline int stfle(unsigned long long *list, int doublewords)
+{
+	if (!(stfl() & (1UL << 24)))
+		return -EOPNOTSUPP;
+	return __stfle(list, doublewords);
+}
+
 
 #ifdef CONFIG_SMP
 
@@ -450,6 +477,22 @@ extern void smp_ctl_clear_bit(int cr, int bit);
 #define ctl_clear_bit(cr, bit) __ctl_clear_bit(cr, bit)
 
 #endif /* CONFIG_SMP */
+
+static inline u32 cksm(void *addr, unsigned long len)
+{
+	register unsigned long _addr asm("0") = (unsigned long) addr;
+	register unsigned long _len asm("1") = len;
+	unsigned long accu = 0;
+
+	asm volatile(
+		"0:\n"
+		"	cksm	%0,%1\n"
+		"	jnz	0b\n"
+		: "+d" (accu), "+d" (_addr), "+d" (_len)
+		:
+		: "cc", "memory");
+	return accu;
+}
 
 extern void (*_machine_restart)(char *command);
 extern void (*_machine_halt)(void);

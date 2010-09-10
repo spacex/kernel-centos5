@@ -288,7 +288,7 @@ static int nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
 {
 	struct nfs_server *server = NFS_SERVER(inode);
 	struct nfs_fattr fattr;
-	struct page *pages[NFSACL_MAXPAGES] = { };
+	struct page *pages[NFSACL_MAXPAGES];
 	struct nfs3_setaclargs args = {
 		.inode = inode,
 		.mask = NFS_ACL,
@@ -299,7 +299,7 @@ static int nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
 		.rpc_argp	= &args,
 		.rpc_resp	= &fattr,
 	};
-	int status, count;
+	int status;
 
 	status = -EOPNOTSUPP;
 	if (!nfs_server_capable(inode, NFS_CAP_ACLS))
@@ -315,6 +315,20 @@ static int nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
 	if (S_ISDIR(inode->i_mode)) {
 		args.mask |= NFS_DFACL;
 		args.acl_default = dfacl;
+		args.len = nfsacl_size(acl, dfacl);
+	} else
+		args.len = nfsacl_size(acl, NULL);
+
+	if (args.len > NFS_ACL_INLINE_BUFSIZE) {
+		unsigned int npages = 1 + ((args.len - 1) >> PAGE_SHIFT);
+
+		status = -ENOMEM;
+		do {
+			args.pages[args.npages] = alloc_page(GFP_KERNEL);
+			if (args.pages[args.npages] == NULL)
+				goto out_freepages;
+			args.npages++;
+		} while (args.npages < npages);
 	}
 
 	dprintk("NFS call setacl\n");
@@ -325,10 +339,6 @@ static int nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
 	NFS_I(inode)->cache_validity |= NFS_INO_INVALID_ACCESS;
 	spin_unlock(&inode->i_lock);
 	dprintk("NFS reply setacl: %d\n", status);
-
-	/* pages may have been allocated at the xdr layer. */
-	for (count = 0; count < NFSACL_MAXPAGES && args.pages[count]; count++)
-		__free_page(args.pages[count]);
 
 	switch (status) {
 		case 0:
@@ -342,6 +352,11 @@ static int nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
 			server->caps &= ~NFS_CAP_ACLS;
 		case -ENOTSUPP:
 			status = -EOPNOTSUPP;
+	}
+out_freepages:
+	while (args.npages != 0) {
+		args.npages--;
+		__free_page(args.pages[args.npages]);
 	}
 out:
 	return status;

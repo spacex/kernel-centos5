@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2007, 2008 QLogic Corporation. All rights reserved.
+ * Copyright (c) 2006, 2007, 2008, 2009 QLogic Corporation. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -39,6 +39,7 @@
 #include <linux/netdevice.h>
 #include <linux/vmalloc.h>
 
+#include "ipath_wc_pat.h"
 #include "ipath_kernel.h"
 #include "ipath_verbs.h"
 
@@ -82,11 +83,6 @@ static unsigned ipath_hol_timeout_ms = 13000;
 module_param_named(hol_timeout_ms, ipath_hol_timeout_ms, uint, S_IRUGO);
 MODULE_PARM_DESC(hol_timeout_ms,
 	"duration of user app suspension after link failure");
-
-unsigned ipath_sdma_fetch_arb = 1;
-EXPORT_SYMBOL_GPL(ipath_sdma_fetch_arb);
-module_param_named(fetch_arb, ipath_sdma_fetch_arb, uint, S_IRUGO);
-MODULE_PARM_DESC(fetch_arb, "IBA7220: change SDMA descriptor arbitration");
 
 unsigned ipath_linkrecovery = 1;
 module_param_named(linkrecovery, ipath_linkrecovery, uint, S_IWUSR | S_IRUGO);
@@ -160,23 +156,6 @@ static struct pci_driver ipath_driver = {
 	.id_table = ipath_pci_tbl,
 };
 
-static void ipath_check_status(struct work_struct *work)
-{
-	struct ipath_devdata *dd = container_of(work, struct ipath_devdata,
-						status_work.work);
-
-	/*
-	 * If we're in the NOCABLE state, try again in another minute.
-	 */
-	if (*dd->ipath_statusp & IPATH_STATUS_IB_NOCABLE) {
-		schedule_delayed_work(&dd->status_work, HZ * STATUS_TIMEOUT);
-		return;
-	}
-
-	if (!(*dd->ipath_statusp & IPATH_STATUS_IB_READY))
-		dev_info(&dd->pcidev->dev, "IB link is not ACTIVE\n");
-}
-
 static inline void read_bars(struct ipath_devdata *dd, struct pci_dev *dev,
 			     u32 *bar0, u32 *bar1)
 {
@@ -243,8 +222,6 @@ static struct ipath_devdata *ipath_alloc_devdata(struct pci_dev *pdev)
 
 	dd->pcidev = pdev;
 	pci_set_drvdata(pdev, dd);
-
-	INIT_DELAYED_WORK(&dd->status_work, ipath_check_status);
 
 	list_add(&dd->ipath_list, &ipath_dev_list);
 
@@ -378,8 +355,8 @@ static void ipath_verify_pioperf(struct ipath_devdata *dd)
 	 * length 0, no dwords actually sent, and mark as VL15
 	 * on chips where that may matter (due to IB flowcontrol)
 	 */
-	if ((dd->ipath_flags&IPATH_HAS_PBC_CNT))
-		writeq(0x80000000UL<<32, piobuf);
+	if ((dd->ipath_flags & IPATH_HAS_PBC_CNT))
+		writeq(1UL << 63, piobuf);
 	else
 		writeq(0, piobuf);
 	ipath_flush_wc();
@@ -560,7 +537,8 @@ static int __devinit ipath_init_one(struct pci_dev *pdev,
 #endif
 	case PCI_DEVICE_ID_INFINIPATH_7220:
 #ifndef CONFIG_PCI_MSI
-		ipath_dbg("CONFIG_PCI_MSI is not enabled, using IntX for unit %u\n", dd->ipath_unit);
+		ipath_dbg("CONFIG_PCI_MSI is not enabled, "
+			  "using INTx for unit %u\n", dd->ipath_unit);
 #endif
 		ipath_init_iba7220_funcs(dd);
 		break;
@@ -600,19 +578,19 @@ static int __devinit ipath_init_one(struct pci_dev *pdev,
 #else
 	dd->ipath_kregbase = ioremap_nocache(addr, len);
 #endif
-
 	if (!dd->ipath_kregbase) {
 		ipath_dbg("Unable to map io addr %llx to kvirt, failing\n",
 			  addr);
 		ret = -ENOMEM;
-		goto bail_iounmap;
+		goto bail_regions;
 	}
 	dd->ipath_kregend = (u64 __iomem *)
 		((void __iomem *)dd->ipath_kregbase + len);
 	dd->ipath_physaddr = addr;	/* used for io_remap, etc. */
 	/* for user mmap */
-	ipath_cdbg(VERBOSE, "mapped io addr %llx to kregbase %p\n",
-		   addr, dd->ipath_kregbase);
+	ipath_cdbg(VERBOSE, "mapped io addr %llx to kregbase %p, "
+		   "length %lu bytes\n",
+		   addr, dd->ipath_kregbase, (unsigned long) len);
 
 	if (dd->ipath_f_bus(dd, pdev))
 		ipath_dev_err(dd, "Failed to setup config space; "
@@ -624,15 +602,15 @@ static int __devinit ipath_init_one(struct pci_dev *pdev,
 	 * check 0 irq after we return from chip-specific bus setup, since
 	 * that can affect this due to setup
 	 */
-	if (!pdev->irq)
+	if (!dd->ipath_irq)
 		ipath_dev_err(dd, "irq is 0, BIOS error?  Interrupts won't "
 			      "work\n");
 	else {
-		ret = request_irq(pdev->irq, ipath_intr, IRQF_SHARED,
+		ret = request_irq(dd->ipath_irq, ipath_intr, IRQF_SHARED,
 				  IPATH_DRV_NAME, dd);
 		if (ret) {
 			ipath_dev_err(dd, "Couldn't setup irq handler, "
-				      "irq=%d: %d\n", pdev->irq, ret);
+				      "irq=%d: %d\n", dd->ipath_irq, ret);
 			goto bail_iounmap;
 		}
 	}
@@ -641,13 +619,15 @@ static int __devinit ipath_init_one(struct pci_dev *pdev,
 	if (ret)
 		goto bail_irqsetup;
 
-	ret = ipath_enable_wc(dd);
+	if (!ipath_wc_pat) {
+		ret = ipath_enable_wc(dd);
 
-	if (ret) {
-		ipath_dev_err(dd, "Write combining not enabled "
-			      "(err %d): performance may be poor\n",
-			      -ret);
-		ret = 0;
+		if (ret) {
+			ipath_dev_err(dd, "Write combining not enabled "
+				      "(err %d): performance may be poor\n",
+				      -ret);
+			ret = 0;
+		}
 	}
 
 	ipath_verify_pioperf(dd);
@@ -657,9 +637,6 @@ static int __devinit ipath_init_one(struct pci_dev *pdev,
 	ipath_user_add(dd);
 	ipath_diag_add(dd);
 	ipath_register_ib_device(dd);
-
-	/* Check that card status in STATUS_TIMEOUT seconds. */
-	schedule_delayed_work(&dd->status_work, HZ * STATUS_TIMEOUT);
 
 	goto bail;
 
@@ -686,6 +663,8 @@ bail:
 static void __devexit cleanup_device(struct ipath_devdata *dd)
 {
 	int port;
+	struct ipath_portdata **tmp;
+	unsigned long flags;
 
 	if (*dd->ipath_statusp & IPATH_STATUS_CHIP_PRESENT) {
 		/* can't do anything more with chip; needs re-init */
@@ -697,12 +676,15 @@ static void __devexit cleanup_device(struct ipath_devdata *dd)
 			 * re-init
 			 */
 			dd->ipath_kregbase = NULL;
+			dd->ipath_piobase = NULL;
+			dd->ipath_userbase = NULL;
 			dd->ipath_uregbase = 0;
 			dd->ipath_sregbase = 0;
 			dd->ipath_cregbase = 0;
 			dd->ipath_kregsize = 0;
 		}
-		ipath_disable_wc(dd);
+		if (!ipath_wc_pat)
+			ipath_disable_wc(dd);
 	}
 
 	if (dd->ipath_spectriggerhit)
@@ -767,20 +749,21 @@ static void __devexit cleanup_device(struct ipath_devdata *dd)
 
 	/*
 	 * free any resources still in use (usually just kernel ports)
-	 * at unload; we do for portcnt, not cfgports, because cfgports
-	 * could have changed while we were loaded.
+	 * at unload; we do for portcnt, because that's what we allocate.
+	 * We acquire lock to be really paranoid that ipath_pd isn't being
+	 * accessed from some interrupt-related code (that should not happen,
+	 * but best to be sure).
 	 */
+	spin_lock_irqsave(&dd->ipath_uctxt_lock, flags);
+	tmp = dd->ipath_pd;
+	dd->ipath_pd = NULL;
+	spin_unlock_irqrestore(&dd->ipath_uctxt_lock, flags);
 	for (port = 0; port < dd->ipath_portcnt; port++) {
-		struct ipath_portdata *pd = dd->ipath_pd[port];
-		dd->ipath_pd[port] = NULL;
+		struct ipath_portdata *pd = tmp[port];
+		tmp[port] = NULL; /* debugging paranoia */
 		ipath_free_pddata(dd, pd);
 	}
-	kfree(dd->ipath_pd);
-	/*
-	 * debuggability, in case some cleanup path tries to use it
-	 * after this
-	 */
-	dd->ipath_pd = NULL;
+	kfree(tmp);
 }
 
 static void __devexit ipath_remove_one(struct pci_dev *pdev)
@@ -795,7 +778,6 @@ static void __devexit ipath_remove_one(struct pci_dev *pdev)
 	 */
 	ipath_shutdown_device(dd);
 
-	cancel_delayed_work(&dd->status_work);
 	flush_scheduled_work();
 
 	if (dd->verbs_dev)
@@ -817,11 +799,10 @@ static void __devexit ipath_remove_one(struct pci_dev *pdev)
 	 * free up port 0 (kernel) rcvhdr, egr bufs, and eventually tid bufs
 	 * for all versions of the driver, if they were allocated
 	 */
-	if (pdev->irq) {
-		ipath_cdbg(VERBOSE,
-			   "unit %u free_irq of irq %x\n",
-			   dd->ipath_unit, pdev->irq);
-		free_irq(pdev->irq, dd);
+	if (dd->ipath_irq) {
+		ipath_cdbg(VERBOSE, "unit %u free irq %d\n",
+			   dd->ipath_unit, dd->ipath_irq);
+		dd->ipath_f_free_irq(dd);
 	} else
 		ipath_dbg("irq is 0, not doing free_irq "
 			  "for unit %u\n", dd->ipath_unit);
@@ -837,6 +818,17 @@ static void __devexit ipath_remove_one(struct pci_dev *pdev)
 
 	ipath_cdbg(VERBOSE, "Unmapping kregbase %p\n", dd->ipath_kregbase);
 	iounmap((volatile void __iomem *) dd->ipath_kregbase);
+	if (dd->ipath_piobase) {
+		ipath_cdbg(VERBOSE, "Unmapping piobase %p\n",
+			   dd->ipath_piobase);
+		iounmap((volatile void __iomem *) dd->ipath_piobase);
+	}
+	if (dd->ipath_userbase) {
+		ipath_cdbg(VERBOSE, "Unmapping userbase %p\n",
+			   dd->ipath_userbase);
+		iounmap((volatile void __iomem *) dd->ipath_userbase);
+	}
+
 	pci_release_regions(pdev);
 	ipath_cdbg(VERBOSE, "calling pci_disable_device\n");
 	pci_disable_device(pdev);
@@ -864,10 +856,10 @@ void ipath_disarm_piobufs(struct ipath_devdata *dd, unsigned first,
 			  unsigned cnt)
 {
 	unsigned i, last = first + cnt;
+	unsigned long flags;
 
 	ipath_cdbg(PKT, "disarm %u PIObufs first=%u\n", cnt, first);
 	for (i = first; i < last; i++) {
-		unsigned long flags;
 		spin_lock_irqsave(&dd->ipath_sendctrl_lock, flags);
 		/*
 		 * The disarm-related bits are write-only, so it
@@ -1129,7 +1121,7 @@ struct sk_buff *ipath_alloc_skb(struct ipath_devdata *dd,
 	 * key header.  In order to keep everything dword aligned,
 	 * we'll reserve 4 bytes.
 	 */
-	len = dd->ipath_ibmaxlen + 4;
+	len = dd->ipath_init_ibmaxlen + 4;
 
 	if (dd->ipath_flags & IPATH_4BYTE_TID) {
 		/* We need a 2KB multiple alignment, and there is no way
@@ -1286,7 +1278,7 @@ reloop:
 			 */
 			ipath_cdbg(ERRPKT, "Error Pkt, but no eflags! egrbuf"
 				  " %x, len %x hdrq+%x rhf: %Lx\n",
-				  etail, tlen, l,
+				  etail, tlen, l, (unsigned long long)
 				  le64_to_cpu(*(__le64 *) rhf_addr));
 			if (ipath_debug & __IPATH_ERRPKTDBG) {
 				u32 j, *d, dw = rsize-2;
@@ -1455,7 +1447,6 @@ static void ipath_update_pio_bufs(struct ipath_devdata *dd)
 	spin_unlock_irqrestore(&ipath_pioavail_lock, flags);
 }
 
-
 /*
  * used to force update of pioavailshadow if we can't get a pio buffer.
  * Needed primarily due to exitting freeze mode after recovering
@@ -1485,7 +1476,8 @@ static void ipath_reset_availshadow(struct ipath_devdata *dd)
 			0xaaaaaaaaaaaaaaaaULL); /* All BUSY bits in qword */
 		if (oldval != dd->ipath_pioavailshadow[i])
 			ipath_dbg("shadow[%d] was %Lx, now %lx\n",
-				i, oldval, dd->ipath_pioavailshadow[i]);
+				i, (unsigned long long) oldval,
+				dd->ipath_pioavailshadow[i]);
 	}
 	spin_unlock_irqrestore(&ipath_pioavail_lock, flags);
 }
@@ -1574,7 +1566,6 @@ static noinline void no_pio_bufs(struct ipath_devdata *dd)
 		ipath_reset_availshadow(dd);
 	}
 }
-
 
 /*
  * common code for normal driver pio buffer allocation, and reserved
@@ -1666,13 +1657,11 @@ rescan:
 	return buf;
 }
 
-
 /**
  * ipath_getpiobuf - find an available pio buffer
  * @dd: the infinipath device
  * @plen: the size of the PIO buffer needed in 32-bit words
  * @pbufnum: the buffer number is placed here
- * Searches the allocated driver range.
  */
 u32 __iomem *ipath_getpiobuf(struct ipath_devdata *dd, u32 plen, u32 *pbufnum)
 {
@@ -1925,7 +1914,7 @@ void ipath_cancel_sends(struct ipath_devdata *dd, int restore_sendctrl)
 	 */
 	if (dd->ipath_flags & IPATH_HAS_SEND_DMA) {
 		int skip_cancel;
-		u64 *statp = &dd->ipath_sdma_status;
+		unsigned long *statp = &dd->ipath_sdma_status;
 
 		spin_lock_irqsave(&dd->ipath_sdma_lock, flags);
 		skip_cancel =
@@ -1980,7 +1969,7 @@ void ipath_cancel_sends(struct ipath_devdata *dd, int restore_sendctrl)
 	    !test_bit(IPATH_SDMA_DISABLED, &dd->ipath_sdma_status) &&
 	    test_bit(IPATH_SDMA_RUNNING, &dd->ipath_sdma_status)) {
 		spin_lock_irqsave(&dd->ipath_sdma_lock, flags);
-	    	/* only wait so long for intr */
+		/* only wait so long for intr */
 		dd->ipath_sdma_abort_intr_timeout = jiffies + HZ;
 		dd->ipath_sdma_reset_wait = 200;
 		if (!test_bit(IPATH_SDMA_SHUTDOWN, &dd->ipath_sdma_status))
@@ -2014,13 +2003,6 @@ void ipath_force_pio_avail_update(struct ipath_devdata *dd)
 	spin_unlock_irqrestore(&dd->ipath_sendctrl_lock, flags);
 }
 
-
-/*
- * Formerly took parameter <which> in pre-shifted,
- * pre-merged form with LinkCmd and LinkInitCmd
- * together, and assuming the zero was NOP.
- * This is problematic for IBA7220.
- */
 static void ipath_set_ib_lstate(struct ipath_devdata *dd, int linkcmd,
 				int linitcmd)
 {
@@ -2031,6 +2013,7 @@ static void ipath_set_ib_lstate(struct ipath_devdata *dd, int linkcmd,
 		[INFINIPATH_IBCC_LINKCMD_ARMED] = "ARMED",
 		[INFINIPATH_IBCC_LINKCMD_ACTIVE] = "ACTIVE"
 	};
+
 	if (linitcmd == INFINIPATH_IBCC_LINKINITCMD_DISABLE) {
 		/*
 		 * If we are told to disable, note that so link-recovery
@@ -2041,9 +2024,9 @@ static void ipath_set_ib_lstate(struct ipath_devdata *dd, int linkcmd,
 		preempt_enable();
 	} else if (linitcmd) {
 		/*
-		 * Any other linkinitcmd will lead to LINKDOWN< and then
-		 * to INIT (if all is well), so clear flag to let ink-recovery
-		 * code attempt to bring us back up.
+		 * Any other linkinitcmd will lead to LINKDOWN and then
+		 * to INIT (if all is well), so clear flag to let
+		 * link-recovery code attempt to bring us back up.
 		 */
 		preempt_disable();
 		dd->ipath_flags &= ~IPATH_IB_LINK_DISABLED;
@@ -2134,6 +2117,7 @@ int ipath_set_linkstate(struct ipath_devdata *dd, u8 newstate)
 		dd->ipath_ibcctrl |= INFINIPATH_IBCC_LOOPBACK;
 		ipath_write_kreg(dd, dd->ipath_kregs->kr_ibcctrl,
 				 dd->ipath_ibcctrl);
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_scratch, 0xfeedbeef);
 
 		/* turn heartbeat off, as it causes loopback to fail */
 		dd->ipath_f_set_ib_cfg(dd, IPATH_IB_CFG_HRTBT,
@@ -2150,6 +2134,7 @@ int ipath_set_linkstate(struct ipath_devdata *dd, u8 newstate)
 		dd->ipath_ibcctrl &= ~INFINIPATH_IBCC_LOOPBACK;
 		ipath_write_kreg(dd, dd->ipath_kregs->kr_ibcctrl,
 				 dd->ipath_ibcctrl);
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_scratch, 0xfeedbeef);
 		/* don't wait */
 		ret = 0;
 		goto bail;
@@ -2251,6 +2236,7 @@ int ipath_set_mtu(struct ipath_devdata *dd, u16 arg)
 		dd->ipath_ibcctrl = ibc;
 		ipath_write_kreg(dd, dd->ipath_kregs->kr_ibcctrl,
 				 dd->ipath_ibcctrl);
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_scratch, 0xfeedbeef);
 		dd->ipath_f_tidtemplate(dd);
 	}
 
@@ -2458,10 +2444,6 @@ void ipath_shutdown_device(struct ipath_devdata *dd)
 		del_timer_sync(&dd->ipath_stats_timer);
 		dd->ipath_stats_timer_active = 0;
 	}
-	if (dd->ipath_link_timer_active) {
-		del_timer_sync(&dd->ipath_link_timer);
-		dd->ipath_link_timer_active = 0;
-	}
 	if (dd->ipath_intrchk_timer.data) {
 		del_timer_sync(&dd->ipath_intrchk_timer);
 		dd->ipath_intrchk_timer.data = 0;
@@ -2545,9 +2527,9 @@ void ipath_free_pddata(struct ipath_devdata *dd, struct ipath_portdata *pd)
 			   skbinfo);
 		for (e = 0; e < dd->ipath_p0_rcvegrcnt; e++)
 			if (skbinfo[e].skb) {
-				pci_unmap_single(dd->pcidev,
-					skbinfo[e].phys, dd->ipath_ibmaxlen,
-					PCI_DMA_FROMDEVICE);
+				pci_unmap_single(dd->pcidev, skbinfo[e].phys,
+						 dd->ipath_init_ibmaxlen,
+						 PCI_DMA_FROMDEVICE);
 				dev_kfree_skb(skbinfo[e].skb);
 			}
 		vfree(skbinfo);
@@ -2566,6 +2548,15 @@ static int __init infinipath_init(void)
 	if (ipath_debug & __IPATH_DBG)
 		printk(KERN_INFO DRIVER_LOAD_MSG "%s", ib_ipath_version);
 
+	if (ipath_wc_pat) {
+		if (ipath_enable_wc_pat() || !ipath_wc_pat_enabled()) {
+			printk(KERN_ERR IPATH_DRV_NAME
+			       ": WC PAT unavailable, fall-back to MTRR\n");
+			ipath_wc_pat = 0;
+		} else
+			ipath_dbg("WC PAT mechanism is enabled\n");
+	}
+
 	/*
 	 * These must be called before the driver is registered with
 	 * the PCI subsystem.
@@ -2574,7 +2565,7 @@ static int __init infinipath_init(void)
 	if (!idr_pre_get(&unit_table, GFP_KERNEL)) {
 		printk(KERN_ERR IPATH_DRV_NAME ": idr_pre_get() failed\n");
 		ret = -ENOMEM;
-		goto bail;
+		goto bail_wc_pat;
 	}
 
 	ret = pci_register_driver(&ipath_driver);
@@ -2609,6 +2600,10 @@ bail_pci:
 bail_unit:
 	idr_destroy(&unit_table);
 
+bail_wc_pat:
+	if (ipath_wc_pat)
+		ipath_disable_wc_pat();
+
 bail:
 	return ret;
 }
@@ -2623,6 +2618,11 @@ static void __exit infinipath_cleanup(void)
 	pci_unregister_driver(&ipath_driver);
 
 	idr_destroy(&unit_table);
+
+	if (ipath_wc_pat) {
+		ipath_disable_wc_pat();
+		ipath_dbg("WC PAT mechanism is disabled\n");
+	}
 }
 
 /**
@@ -2638,6 +2638,7 @@ int ipath_reset_device(int unit)
 {
 	int ret, i;
 	struct ipath_devdata *dd = ipath_lookup(unit);
+	unsigned long flags;
 
 	if (!dd) {
 		ret = -ENODEV;
@@ -2663,6 +2664,7 @@ int ipath_reset_device(int unit)
 		goto bail;
 	}
 
+	spin_lock_irqsave(&dd->ipath_uctxt_lock, flags);
 	if (dd->ipath_pd)
 		for (i = 1; i < dd->ipath_cfgports; i++) {
 			if (dd->ipath_pd[i] && dd->ipath_pd[i]->port_cnt) {
@@ -2675,6 +2677,7 @@ int ipath_reset_device(int unit)
 				goto bail;
 			}
 		}
+	spin_unlock_irqrestore(&dd->ipath_uctxt_lock, flags);
 
 	if (dd->ipath_flags & IPATH_HAS_SEND_DMA)
 		teardown_sdma(dd);
@@ -2704,18 +2707,24 @@ bail:
  * through the normal interfaces (i.e., everything other than diags
  * interface).  Returns number of signalled processes.
  */
-int ipath_signal_procs(struct ipath_devdata *dd, int sig)
+static int ipath_signal_procs(struct ipath_devdata *dd, int sig)
 {
 	int i, sub, any = 0;
 	pid_t pid;
-
+	unsigned long flags;
+	
 	if (!dd->ipath_pd)
 		return 0;
+
+	spin_lock_irqsave(&dd->ipath_uctxt_lock, flags);
 	for (i = 1; i < dd->ipath_cfgports; i++) {
-		if (!dd->ipath_pd[i] || !dd->ipath_pd[i]->port_cnt
-			 || !dd->ipath_pd[i]->port_pid)
+		if (!dd->ipath_pd[i] || !dd->ipath_pd[i]->port_cnt ||
+		    !dd->ipath_pd[i]->port_pid)
 			continue;
 		pid = dd->ipath_pd[i]->port_pid;
+		if (!pid)
+			continue;
+
 		dev_info(&dd->pcidev->dev, "context %d in use "
 			  "(PID %u), sending signal %d\n",
 			  i, pid, sig);
@@ -2732,6 +2741,7 @@ int ipath_signal_procs(struct ipath_devdata *dd, int sig)
 			any++;
 		}
 	}
+	spin_unlock_irqrestore(&dd->ipath_uctxt_lock, flags);
 	return any;
 }
 

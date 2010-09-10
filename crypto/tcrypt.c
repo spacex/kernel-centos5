@@ -51,6 +51,7 @@
 static unsigned int sec;
 
 static int mode;
+static int noexit;
 static char *tvmem[TVMEMSIZE];
 
 static char *check[] = {
@@ -423,7 +424,7 @@ out:
 	return ret;
 }
 
-static void test_crc32c(void)
+static int test_crc32c(void)
 {
 #define NUMVEC 6
 #define VECSIZE 40
@@ -448,7 +449,7 @@ static void test_crc32c(void)
 	tfm = crypto_alloc_tfm("crc32c", 0);
 	if (tfm == NULL) {
 		printk("failed to load transform for crc32c\n");
-		return;
+		return -ENOMEM;
 	}
 
 	crypto_digest_init(tfm);
@@ -519,6 +520,7 @@ static void test_crc32c(void)
 
 	crypto_free_tfm(tfm);
 	printk("crc32c test complete\n");
+	return pass - 1;
 }
 
 static void test_available(void)
@@ -536,169 +538,200 @@ static void test_available(void)
 
 static inline int tcrypt_test(const char *alg)
 {
-	return alg_test(alg, alg, 0, 0);
+	int ret;
+
+	ret = alg_test(alg, alg, 0, 0);
+	/* non-fips algs return -EINVAL in fips mode */
+	if (fips_enabled && ret == -EINVAL)
+		ret = 0;
+	return ret;
 }
 
 static inline int tcrypt_test_digest(const char *alg)
 {
-	return digest_test(alg, alg);
+	int ret;
+
+	ret = digest_test(alg, alg);
+	/* non-fips algs return -EINVAL in fips mode */
+	if (fips_enabled && ret == -EINVAL)
+		ret = 0;
+	return ret;
 }
 
-static void do_test(int m)
+static int do_test(int m)
 {
 	int i;
+	int ret = 0;
 
 	switch (m) {
 	case 0:
 		for (i = 1; i < 200; i++)
-			do_test(i);
+			ret += do_test(i);
 
 	case 1:
-		tcrypt_test_digest("md5");
+		ret += tcrypt_test_digest("md5");
 		break;
 
 	case 2:
-		tcrypt_test_digest("sha1");
+		ret += tcrypt_test_digest("sha1");
 		break;
 
 	case 3:
-		tcrypt_test("ecb(des)");
-		tcrypt_test("cbc(des)");
+		ret += tcrypt_test("ecb(des)");
+		ret += tcrypt_test("cbc(des)");
 		break;
 
 	case 4:
-		tcrypt_test("ecb(des3_ede)");
-		tcrypt_test("cbc(des3_ede)");
+		ret += tcrypt_test("ecb(des3_ede)");
+		ret += tcrypt_test("cbc(des3_ede)");
 		break;
 
 	case 5:
-		tcrypt_test_digest("md4");
+		ret += tcrypt_test_digest("md4");
 		break;
 
 	case 6:
-		tcrypt_test_digest("sha256");
+		ret += tcrypt_test_digest("sha256");
 		break;
 
 	case 7:
-		tcrypt_test("ecb(blowfish)");
-		tcrypt_test("cbc(blowfish)");
+		ret += tcrypt_test("ecb(blowfish)");
+		ret += tcrypt_test("cbc(blowfish)");
 		break;
 
 	case 8:
-		tcrypt_test("ecb(twofish)");
-		tcrypt_test("cbc(twofish)");
+		ret += tcrypt_test("ecb(twofish)");
+		ret += tcrypt_test("cbc(twofish)");
 		break;
 
 	case 9:
-		tcrypt_test("ecb(serpent)");
+		ret += tcrypt_test("ecb(serpent)");
 		break;
 
 	case 10:
-		tcrypt_test("ecb(aes)");
-		tcrypt_test("cbc(aes)");
-		tcrypt_test("rfc3686(ctr(aes))");
+		ret += tcrypt_test("ecb(aes)");
+		ret += tcrypt_test("cbc(aes)");
+		ret += tcrypt_test("ctr(aes)");
+		ret += tcrypt_test("rfc3686(ctr(aes))");
 		break;
 
 	case 11:
-		tcrypt_test_digest("sha384");
+		ret += tcrypt_test_digest("sha384");
 		break;
 
 	case 12:
-		tcrypt_test_digest("sha512");
+		ret += tcrypt_test_digest("sha512");
 		break;
 
 	case 13:
-		test_deflate();
+		ret += test_deflate();
 		break;
 
 	case 14:
-		tcrypt_test("ecb(cast5)");
+		ret += tcrypt_test("ecb(cast5)");
 		break;
 
 	case 15:
-		tcrypt_test("ecb(cast6)");
+		ret += tcrypt_test("ecb(cast6)");
 		break;
 
 	case 16:
-		tcrypt_test("ecb(arc4)");
+		ret += tcrypt_test("ecb(arc4)");
 		break;
 
 	case 17:
-		tcrypt_test_digest("michael_mic");
+		ret += tcrypt_test_digest("michael_mic");
 		break;
 
 	case 18:
-		test_crc32c();
+		ret += test_crc32c();
 		break;
 
 	case 19:
-		tcrypt_test("ecb(tea)");
+		ret += tcrypt_test("ecb(tea)");
 		break;
 
 	case 20:
-		tcrypt_test("ecb(xtea)");
+		ret += tcrypt_test("ecb(xtea)");
 		break;
 
 	case 21:
-		tcrypt_test("ecb(khazad)");
+		ret += tcrypt_test("ecb(khazad)");
 		break;
 
 	case 22:
-		tcrypt_test_digest("wp512");
+		ret += tcrypt_test_digest("wp512");
 		break;
 
 	case 23:
-		tcrypt_test_digest("wp384");
+		ret += tcrypt_test_digest("wp384");
 		break;
 
 	case 24:
-		tcrypt_test_digest("wp256");
+		ret += tcrypt_test_digest("wp256");
 		break;
 
 	case 25:
-		tcrypt_test("ecb(tnepres)");
+		ret += tcrypt_test("ecb(tnepres)");
 		break;
 
 	case 26:
-		tcrypt_test("ecb(anubis)");
-		tcrypt_test("cbc(anubis)");
+		ret += tcrypt_test("ecb(anubis)");
+		ret += tcrypt_test("cbc(anubis)");
 		break;
 
 	case 27:
-		tcrypt_test_digest("tgr192");
+		ret += tcrypt_test_digest("tgr192");
 		break;
 
 	case 28:
 
-		tcrypt_test_digest("tgr160");
+		ret += tcrypt_test_digest("tgr160");
 		break;
 
 	case 29:
-		tcrypt_test_digest("tgr128");
+		ret += tcrypt_test_digest("tgr128");
 		break;
-		
+
 	case 30:
-		tcrypt_test("ecb(xeta)");
+		ret += tcrypt_test("ecb(xeta)");
 		break;
 
 	case 37:
-		tcrypt_test("ccm(aes)");
+		ret += tcrypt_test("ccm(aes)");
+		break;
+
+	/* 38-44 exist upstream, stay consistent */
+	case 45:
+		ret += tcrypt_test("rfc4309(ccm(aes))");
 		break;
 
 	case 100:
-		tcrypt_test("hmac(md5)");
+		ret += tcrypt_test("hmac(md5)");
 		break;
 
 	case 101:
-		tcrypt_test("hmac(sha1)");
+		ret += tcrypt_test("hmac(sha1)");
 		break;
 
 	case 102:
-		tcrypt_test("hmac(sha256)");
+		ret += tcrypt_test("hmac(sha256)");
+		break;
+
+	case 103:
+		ret += tcrypt_test("hmac(sha384)");
+		break;
+
+	case 104:
+		ret += tcrypt_test("hmac(sha512)");
 		break;
 
 	case 106:
-		tcrypt_test("xcbc(aes)");
+		ret += tcrypt_test("xcbc(aes)");
+		break;
+
+	case 150:
+		ret += tcrypt_test("ansi_cprng");
 		break;
 
 	case 200:
@@ -818,6 +851,8 @@ static void do_test(int m)
 		test_available();
 		break;
 	}
+
+	return ret;
 }
 
 static int __init init(void)
@@ -831,15 +866,22 @@ static int __init init(void)
 			goto err_free_tv;
 	}
 
-	do_test(mode);
+	err = do_test(mode);
+	if (err) {
+		printk(KERN_ERR "tcrypt: one or more tests failed!\n");
+		goto err_free_tv;
+	}
 
-	/* We intentionaly return -EAGAIN to prevent keeping
-	 * the module. It does all its work from init()
-	 * and doesn't offer any runtime functionality 
+	/*
+	 * We intentionaly return -EAGAIN to prevent keeping the module,
+	 * unless it was loaded w/the noexit param set. It does all its
+	 * work from init() and doesn't offer any runtime functionality,
+	 * but in some cases, checking for a successful load is helpful.
 	 * => we don't need it in the memory, do we?
 	 *                                        -- mludvig
 	 */
-	err = -EAGAIN;
+	if (!noexit)
+		err = -EAGAIN;
 
 err_free_tv:
 	for (i = 0; i < TVMEMSIZE && tvmem[i]; i++)
@@ -861,6 +903,9 @@ module_param(mode, int, 0);
 module_param(sec, uint, 0);
 MODULE_PARM_DESC(sec, "Length in seconds of speed tests "
 		      "(defaults to zero which uses CPU cycles instead)");
+module_param(noexit, int, 0);
+MODULE_PARM_DESC(noexit, "Whether or not the module should simply exit "
+		 "after running tests. (default is to exit).");
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Quick & dirty crypto testing module");

@@ -84,7 +84,11 @@
  */
 static int max_id = 64;
 static int max_channel = 3;
-static int init_timeout = 5;
+static int init_timeout = 300;
+static int login_timeout = 60;
+static int info_timeout = 30;
+static int abort_timeout = 60;
+static int reset_timeout = 60;
 static int max_requests = IBMVSCSI_MAX_REQUESTS_DEFAULT;
 static int max_events = IBMVSCSI_MAX_REQUESTS_DEFAULT + 2;
 
@@ -877,7 +881,7 @@ static void send_mad_adapter_info(struct ibmvscsi_host_data *hostdata)
 	init_event_struct(evt_struct,
 			  adapter_info_rsp,
 			  VIOSRP_MAD_FORMAT,
-			  init_timeout);
+			  info_timeout);
 	
 	req = &evt_struct->iu.mad.adapter_info;
 	memset(req, 0x00, sizeof(*req));
@@ -896,7 +900,7 @@ static void send_mad_adapter_info(struct ibmvscsi_host_data *hostdata)
 	}
 	
 	spin_lock_irqsave(hostdata->host->host_lock, flags);
-	if (ibmvscsi_send_srp_event(evt_struct, hostdata, init_timeout * 2)) {
+	if (ibmvscsi_send_srp_event(evt_struct, hostdata, info_timeout * 2)) {
 		dev_err(hostdata->dev, "couldn't send ADAPTER_INFO_REQ!\n");
 		dma_unmap_single(hostdata->dev,
 				 addr,
@@ -972,7 +976,7 @@ static int send_srp_login(struct ibmvscsi_host_data *hostdata)
 	init_event_struct(evt_struct,
 			  login_rsp,
 			  VIOSRP_SRP_FORMAT,
-			  init_timeout);
+			  login_timeout);
 
 	login = &evt_struct->iu.srp.login_req;
 	memset(login, 0x00, sizeof(struct srp_login_req));
@@ -987,7 +991,7 @@ static int send_srp_login(struct ibmvscsi_host_data *hostdata)
 	 */
 	atomic_set(&hostdata->request_limit, 0);
 
-	rc = ibmvscsi_send_srp_event(evt_struct, hostdata, init_timeout * 2);
+	rc = ibmvscsi_send_srp_event(evt_struct, hostdata, login_timeout * 2);
 	spin_unlock_irqrestore(hostdata->host->host_lock, flags);
 	dev_info(hostdata->dev, "sent SRP login\n");
 	return rc;
@@ -1028,7 +1032,7 @@ static int ibmvscsi_eh_abort_handler(struct scsi_cmnd *cmd)
 	 * out the correct tag
 	 */
 	spin_lock_irqsave(hostdata->host->host_lock, flags);
-	wait_switch = jiffies + (init_timeout * HZ);
+	wait_switch = jiffies + (abort_timeout * HZ);
 	do {
 		found_evt = NULL;
 		list_for_each_entry(tmp_evt, &hostdata->sent, list) {
@@ -1053,7 +1057,7 @@ static int ibmvscsi_eh_abort_handler(struct scsi_cmnd *cmd)
 		init_event_struct(evt,
 				  sync_completion,
 				  VIOSRP_SRP_FORMAT,
-				  init_timeout);
+				  abort_timeout);
 
 		tsk_mgmt = &evt->iu.srp.tsk_mgmt;
 	
@@ -1067,7 +1071,8 @@ static int ibmvscsi_eh_abort_handler(struct scsi_cmnd *cmd)
 		evt->sync_srp = &srp_rsp;
 
 		init_completion(&evt->comp);
-		rsp_rc = ibmvscsi_send_srp_event(evt, hostdata, init_timeout * 2);
+		rsp_rc = ibmvscsi_send_srp_event(evt, hostdata,
+		                                 abort_timeout * 2);
 
 		if (rsp_rc != SCSI_MLQUEUE_HOST_BUSY)
 			break;
@@ -1163,7 +1168,7 @@ static int ibmvscsi_eh_device_reset_handler(struct scsi_cmnd *cmd)
 	unsigned long wait_switch = 0;
 
 	spin_lock_irqsave(hostdata->host->host_lock, flags);
-	wait_switch = jiffies + (init_timeout * HZ);
+	wait_switch = jiffies + (reset_timeout * HZ);
 	do {
 		evt = get_event_struct(&hostdata->pool);
 		if (evt == NULL) {
@@ -1176,7 +1181,7 @@ static int ibmvscsi_eh_device_reset_handler(struct scsi_cmnd *cmd)
 		init_event_struct(evt,
 				  sync_completion,
 				  VIOSRP_SRP_FORMAT,
-				  init_timeout);
+				  reset_timeout);
 
 		tsk_mgmt = &evt->iu.srp.tsk_mgmt;
 
@@ -1189,7 +1194,8 @@ static int ibmvscsi_eh_device_reset_handler(struct scsi_cmnd *cmd)
 		evt->sync_srp = &srp_rsp;
 
 		init_completion(&evt->comp);
-		rsp_rc = ibmvscsi_send_srp_event(evt, hostdata, init_timeout * 2);
+		rsp_rc = ibmvscsi_send_srp_event(evt, hostdata,
+		                                 reset_timeout * 2);
 
 		if (rsp_rc != SCSI_MLQUEUE_HOST_BUSY)
 			break;
@@ -1270,7 +1276,7 @@ static int ibmvscsi_eh_host_reset_handler(struct scsi_cmnd *cmd)
 
 	ibmvscsi_reset_host(hostdata);
 
-	for (wait_switch = jiffies + (init_timeout * HZ);
+	for (wait_switch = jiffies + (reset_timeout * HZ);
 	     time_before(jiffies, wait_switch) &&
 		     atomic_read(&hostdata->request_limit) < 2;) {
 
@@ -1421,7 +1427,7 @@ static int ibmvscsi_do_host_config(struct ibmvscsi_host_data *hostdata,
 	init_event_struct(evt_struct,
 			  sync_completion,
 			  VIOSRP_MAD_FORMAT,
-			  init_timeout);
+			  info_timeout);
 
 	host_config = &evt_struct->iu.mad.host_config;
 
@@ -1441,7 +1447,7 @@ static int ibmvscsi_do_host_config(struct ibmvscsi_host_data *hostdata,
 
 	init_completion(&evt_struct->comp);
 	spin_lock_irqsave(hostdata->host->host_lock, flags);
-	rc = ibmvscsi_send_srp_event(evt_struct, hostdata, init_timeout * 2);
+	rc = ibmvscsi_send_srp_event(evt_struct, hostdata, info_timeout * 2);
 	spin_unlock_irqrestore(hostdata->host->host_lock, flags);
 	if (rc == 0)
 		wait_for_completion(&evt_struct->comp);
@@ -1466,7 +1472,7 @@ static int ibmvscsi_slave_configure(struct scsi_device *sdev)
 	spin_lock_irqsave(shost->host_lock, lock_flags);
 	if(sdev->type == TYPE_DISK) {
 		sdev->allow_restart = 1;
-		sdev->timeout = 60 * HZ;
+		sdev->timeout = 120 * HZ;
 	}
 	scsi_adjust_queue_depth(sdev, 0, shost->cmd_per_lun);
 	spin_unlock_irqrestore(shost->host_lock, lock_flags);
@@ -1680,6 +1686,7 @@ static int ibmvscsi_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 	host->max_lun = 8;
 	host->max_id = max_id;
 	host->max_channel = max_channel;
+	host->max_cmd_len = 16;
 
 	if (scsi_add_host(hostdata->host, hostdata->dev))
 		goto add_host_failed;

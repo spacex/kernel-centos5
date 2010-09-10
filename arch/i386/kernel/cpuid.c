@@ -48,21 +48,42 @@ static struct class *cpuid_class;
 
 #ifdef CONFIG_SMP
 
+#ifdef CONFIG_X86_32
 struct cpuid_command {
 	int cpu;
 	u32 reg;
 	u32 *data;
 };
+#else
+struct cpuid_regs {
+	u32 cpu;
+	union {
+		struct {
+			u32 eax, ebx, ecx, edx;
+		};
+		u32 data[4];
+	};
+};
+#endif
 
 static void cpuid_smp_cpuid(void *cmd_block)
 {
+#ifdef CONFIG_X86_32
 	struct cpuid_command *cmd = (struct cpuid_command *)cmd_block;
 
 	if (cmd->cpu == smp_processor_id())
 		cpuid(cmd->reg, &cmd->data[0], &cmd->data[1], &cmd->data[2],
 		      &cmd->data[3]);
+#else	/* !CONFIG_X86_32 */
+	struct cpuid_regs *cmd = (struct cpuid_regs *)cmd_block;
+	
+	if (cmd->cpu == smp_processor_id())
+		cpuid_count(cmd->eax, cmd->ecx,
+			&cmd->eax, &cmd->ebx, &cmd->ecx, &cmd->edx);
+#endif	/* !CONFIG_X86_32 */
 }
 
+#ifdef CONFIG_X86_32
 static inline void do_cpuid(int cpu, u32 reg, u32 * data)
 {
 	struct cpuid_command cmd;
@@ -79,14 +100,35 @@ static inline void do_cpuid(int cpu, u32 reg, u32 * data)
 	}
 	preempt_enable();
 }
-#else				/* ! CONFIG_SMP */
+#else	/* !CONFIG_X86_32 */
+static inline void do_cpuid(struct cpuid_regs *cmd)
+{
+	preempt_disable();
+	if (cmd->cpu == smp_processor_id()) {
+		cpuid_count(cmd->eax, cmd->ecx,
+		    &cmd->eax, &cmd->ebx, &cmd->ecx, &cmd->edx);
+	} else 
+		smp_call_function(cpuid_smp_cpuid, cmd, 1, 1);
+	preempt_enable();
+}
+#endif	/* !CONFIG_X86_32 */
+			
+#else	/* !CONFIG_SMP */
 
+#ifdef CONFIG_X86_32
 static inline void do_cpuid(int cpu, u32 reg, u32 * data)
 {
 	cpuid(reg, &data[0], &data[1], &data[2], &data[3]);
 }
+#else	/* !CONFIG_X86_32 */
+static inline void do_cpuid(struct cpuid_regs *cmd)
+{
+	cpuid_count(cmd->eax, cmd->ecx,
+		&cmd->eax, &cmd->ebx, &cmd->ecx, &cmd->edx);
+}
+#endif	/* !CONFIG_X86_32 */
 
-#endif				/* ! CONFIG_SMP */
+#endif	/* !CONFIG_SMP */
 
 static loff_t cpuid_seek(struct file *file, loff_t offset, int orig)
 {
@@ -115,19 +157,39 @@ static ssize_t cpuid_read(struct file *file, char __user *buf,
 			  size_t count, loff_t * ppos)
 {
 	char __user *tmp = buf;
+
+#ifdef CONFIG_X86_32
 	u32 data[4];
 	u32 reg = *ppos;
+#else	/* !CONFIG_X86_32 */
+       u64 pos = *ppos;
+	struct cpuid_regs cmd;
+#endif	/* !CONFIG_X86_32 */
+
 	int cpu = iminor(file->f_dentry->d_inode);
 
 	if (count % 16)
 		return -EINVAL;	/* Invalid chunk size */
 
 	for (; count; count -= 16) {
+#ifdef CONFIG_X86_32
 		do_cpuid(cpu, reg, data);
 		if (copy_to_user(tmp, &data, 16))
+#else	/* !CONFIG_X86_32 */
+		cmd.eax = pos;
+		cmd.ecx = pos >> 32;
+		cmd.cpu = cpu;
+		do_cpuid(&cmd);
+		if (copy_to_user(tmp, &cmd.data, 16))
+#endif	/* !CONFIG_X86_32 */
 			return -EFAULT;
 		tmp += 16;
+#ifdef CONFIG_X86_32
 		*ppos = reg++;
+#else	/* !CONFIG_X86_32 */
+		*ppos = ++pos;
+#endif	/* !CONFIG_X86_32 */
+	
 	}
 
 	return tmp - buf;

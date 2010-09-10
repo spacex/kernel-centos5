@@ -261,6 +261,43 @@ qla2x00_mbx_completion(scsi_qla_host_t *ha, uint16_t mb0)
 	}
 }
 
+static void
+qla81xx_idc_event(scsi_qla_host_t *ha, uint16_t aen, uint16_t descr)
+{
+
+	int rval = 0;
+	scsi_qla_host_t *pha = to_qla_parent(ha);
+
+	static char *event[] =
+	    { "Complete", "Request Notification", "Time Extension" };
+	struct device_reg_24xx __iomem *reg24 = &pha->iobase->isp24;
+	uint16_t __iomem *wptr;
+	uint16_t cnt, timeout, mb[QLA_IDC_ACK_REGS];
+
+	/* Seed data -- mailbox1 -> mailbox7. */
+	wptr = (uint16_t __iomem *)&reg24->mailbox1;
+	for (cnt = 0; cnt < QLA_IDC_ACK_REGS; cnt++, wptr++)
+		mb[cnt] = RD_REG_WORD(wptr);
+
+	DEBUG2(printk("scsi(%ld): Inter-Driver Commucation %s -- "
+	    "%04x %04x %04x %04x %04x %04x %04x.\n", ha->host_no,
+	    event[aen & 0xff],
+	    mb[0], mb[1], mb[2], mb[3], mb[4], mb[5], mb[6]));
+
+	/* Acknowledgement needed? [Notify && non-zero timeout]. */
+	timeout = (descr >> 8) & 0xf;
+	if (aen != MBA_IDC_NOTIFY || !timeout)
+		return;
+
+	DEBUG2(printk("scsi(%ld): Inter-Driver Commucation %s -- "
+	     "ACK timeout=%d.\n", ha->host_no, event[aen & 0xff], timeout));
+
+	rval = qla2x00_post_idc_ack_work(ha, mb);
+	if (rval != QLA_SUCCESS)
+		qla_printk(KERN_WARNING, ha,
+				"IDC failed to post ACK.\n");
+}
+
 /**
  * qla2x00_async_event() - Process aynchronous events.
  * @ha: SCSI driver HA context
@@ -270,7 +307,8 @@ void
 qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 {
 #define LS_UNKNOWN	2
-	static char	*link_speeds[5] = { "1", "2", "?", "4", "8" };
+#define LS_10GB_INDEX	5
+	static char	*link_speeds[6] = { "1", "2", "?", "4", "8", "10"};
 	char		*link_speed;
 	uint16_t	handle_cnt;
 	uint16_t	cnt;
@@ -284,6 +322,8 @@ qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 
 	/* Setup to process RIO completion. */
 	handle_cnt = 0;
+	if (IS_QLA81XX(ha))
+		goto skip_rio;
 	switch (mb[0]) {
 	case MBA_SCSI_COMPLETION:
 		handles[0] = le32_to_cpu((uint32_t)((mb[2] << 16) | mb[1]));
@@ -335,7 +375,7 @@ qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 	default:
 		break;
 	}
-
+skip_rio:
 	switch (mb[0]) {
 	case MBA_SCSI_COMPLETION:	/* Fast Post */
 		if (!ha->flags.online)
@@ -427,6 +467,8 @@ qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 			link_speed = link_speeds[LS_UNKNOWN];
 			if (mb[1] < 5)
 				link_speed = link_speeds[mb[1]];
+			else if (mb[1] == PORT_SPEED_10GB)
+				link_speed = link_speeds[LS_10GB_INDEX];
 			ha->link_data_rate = mb[1];
 		}
 
@@ -435,34 +477,12 @@ qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 		qla_printk(KERN_INFO, ha, "LOOP UP detected (%s Gbps).\n",
 		    link_speed);
 
+		ha->current_topology = 0;
 		ha->flags.management_server_logged_in = 0;
 		break;
 
 	case MBA_LOOP_DOWN:		/* Loop Down Event */
-		DEBUG2(printk("scsi(%ld): Asynchronous LOOP DOWN (%x).\n",
-		    ha->host_no, mb[1]));
-		qla_printk(KERN_INFO, ha, "LOOP DOWN detected (%x).\n", mb[1]);
-		DEBUG2(printk("scsi(%ld): Asynchronous LOOP DOWN "
-			"(%x %x %x).\n", ha->host_no, mb[1], mb[2], mb[3]));
-		qla_printk(KERN_INFO, ha, "LOOP DOWN detected (%x %x %x).\n",
-			mb[1], mb[2], mb[3]);
-
-		if (atomic_read(&ha->loop_state) != LOOP_DOWN) {
-			atomic_set(&ha->loop_state, LOOP_DOWN);
-			atomic_set(&ha->loop_down_timer, LOOP_DOWN_TIME);
-			ha->device_flags |= DFLG_NO_CABLE;
-			qla2x00_mark_all_devices_lost(ha, 1);
-		}
-
-		if (ha->parent) {
-			atomic_set(&ha->vp_state, VP_FAILED);
-			atomic_set(&ha->vport_last_state,
-			    atomic_read(&ha->vport_state));
-			atomic_set(&ha->vport_state, FC_VPORT_FAILED);
-		}
-
-		ha->flags.management_server_logged_in = 0;
-		ha->link_data_rate = PORT_SPEED_UNKNOWN;
+		qla2x00_set_loop_down( ha, mb );
 		if (ql2xfdmienable)
 			set_bit(REGISTER_FDMI_NEEDED, &ha->dpc_flags);
 		break;
@@ -496,9 +516,12 @@ qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 		if (IS_QLA2100(ha))
 			break;
 
-		DEBUG2(printk("scsi(%ld): Asynchronous P2P MODE received.\n",
-		    ha->host_no));
-
+		if (IS_QLA81XX(ha))
+			DEBUG2(printk("scsi(%ld): DCBX Completed -- %04x %04x "
+			    "%04x\n", ha->host_no, mb[1], mb[2], mb[3]));
+		else
+			DEBUG2(printk("scsi(%ld): Asynchronous P2P MODE "
+			    "received.\n", ha->host_no));
 		/*
 		 * Until there's a transition from loop down to loop up, treat
 		 * this as loop down only.
@@ -557,6 +580,17 @@ qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 		break;
 
 	case MBA_PORT_UPDATE:		/* Port database update */
+                /* Only handle SCNs for our Vport index. */
+                if (mb[1] != 0xffff &&
+                    ha->vp_idx && ha->vp_idx != (mb[3] & 0xff))
+                        break;
+
+                /* Global event -- port logout or port unavailable. */
+                if (mb[1] == 0xffff && mb[2] == 0x7) {
+			qla2x00_set_loop_down( ha, mb );
+			break;
+                }
+
 		/*
 		 * If PORT UPDATE is global (recieved LIP_OCCURED/LIP_RESET
 		 * event etc. earlier indicating loop is down) then process
@@ -695,7 +729,27 @@ qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 			spin_unlock_irqrestore(&ha->cs84xx->access_lock, flags);
 		}
 		break;
+	case MBA_DCBX_START:
+		DEBUG2(printk("scsi(%ld): DCBX Started -- %04x %04x %04x\n",
+		    ha->host_no, mb[1], mb[2], mb[3]));
+		break;
+	case MBA_DCBX_PARAM_UPDATE:
+		DEBUG2(printk("scsi(%ld): DCBX Parameters Updated -- "
+		    "%04x %04x %04x\n", ha->host_no, mb[1], mb[2], mb[3]));
+		break;
+	case MBA_FCF_CONF_ERR:
+		DEBUG2(printk("scsi(%ld): FCF Configuration Error -- "
+		    "%04x %04x %04x\n", ha->host_no, mb[1], mb[2], mb[3]));
+		break;
+	case MBA_IDC_COMPLETE:
+	case MBA_IDC_NOTIFY:
+	case MBA_IDC_TIME_EXT:
+		 qla81xx_idc_event(ha, mb[0], mb[1]);
+		break;
 	}
+
+	if (!ha->vp_idx && ha->num_vhosts)
+                qla2x00_alert_all_vps(ha, mb);
 }
 
 static void
@@ -740,6 +794,9 @@ qla2x00_ramp_up_queue_depth(scsi_qla_host_t *ha, srb_t *sp)
 {
 	fc_port_t *fcport;
 	struct scsi_device *sdev;
+
+        if (!ql2xqfulltracking)
+                return;
 
 	sdev = sp->cmd->device;
 	if (sdev->queue_depth >= ha->max_q_depth)
@@ -859,7 +916,19 @@ qla2x00_process_response_queue(struct scsi_qla_host *ha)
 			qla2x00_status_cont_entry(ha, (sts_cont_entry_t *)pkt);
 			break;
 		case MS_IOCB_TYPE:
-			qla2x00_ms_entry(ha, (ms_iocb_entry_t *)pkt);
+			if (ha->outstanding_cmds[pkt->handle])
+				qla2x00_ms_entry(ha, (ms_iocb_entry_t *)pkt);
+			else {
+				if (ha->pass_thru_cmd_result)
+					qla_printk(KERN_INFO, ha,
+					    "Passthru cmd result on.\n");
+				if (!ha->pass_thru_cmd_in_process)
+					qla_printk(KERN_INFO, ha,
+					    "Passthru in process off.\n");
+
+				ha->pass_thru_cmd_result = 1;
+				complete(&ha->pass_thru_intr_comp);
+			}
 			break;
 		default:
 			/* Type Not Supported. */
@@ -1013,6 +1082,11 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 		}
 	}
 
+	/* Check for overrun. */
+	if (IS_FWI2_CAPABLE(ha) && comp_status == CS_COMPLETE &&
+	    scsi_status & SS_RESIDUAL_OVER)
+		comp_status = CS_DATA_OVERRUN;
+
 	/*
 	 * Based on Host and scsi status generate status code for Linux
 	 */
@@ -1052,6 +1126,8 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 			    scsi_status));
 
 			/* Adjust queue depth for all luns on the port. */
+			if (!ql2xqfulltracking)
+				break;
 			fcport->last_queue_full = jiffies;
 			starget_for_each_device(cp->device->sdev_target,
 			    fcport, qla2x00_adjust_sdev_qdepth_down);
@@ -1111,6 +1187,9 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 				 * Adjust queue depth for all luns on the
 				 * port.
 				 */
+				if (!ql2xqfulltracking)
+					break;
+
 				fcport->last_queue_full = jiffies;
 				starget_for_each_device(
 				    cp->device->sdev_target, fcport,
@@ -1157,7 +1236,7 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 					      cp->device->channel, cp->device->id,
 					      cp->device->lun, resid,
 					      scsi_bufflen(cp)));
-
+				scsi_set_resid(cp, resid);
 				cp->result = DID_ERROR << 16;
 				break;
 			}
@@ -1553,7 +1632,7 @@ qla2xxx_check_risc_status(scsi_qla_host_t *ha)
 	uint32_t cnt;
 	struct device_reg_24xx __iomem *reg = &ha->iobase->isp24;
 
-	if (!IS_QLA25XX(ha))
+	if (!IS_QLA25XX(ha) && !IS_QLA81XX(ha))
 		return;
 
 	rval = QLA_SUCCESS;
@@ -1624,6 +1703,9 @@ qla24xx_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 	reg = &ha->iobase->isp24;
 	status = 0;
 
+	if (unlikely(pci_channel_offline(ha->pdev)))
+		return IRQ_HANDLED;
+
 	spin_lock_irqsave(&ha->hardware_lock, flags);
 	for (iter = 50; iter--; ) {
 		stat = RD_REG_DWORD(&reg->host_status);
@@ -1673,6 +1755,13 @@ qla24xx_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 		RD_REG_DWORD_RELAXED(&reg->hccr);
 	}
 	spin_unlock_irqrestore(&ha->hardware_lock, flags);
+
+#ifdef QL_DEBUG_LEVEL_17
+	if (!irq && ha->flags.eeh_busy)
+		qla_printk(KERN_WARNING, ha,
+		    "isr: status %x, cmd_flags %lx, mbox_int %x, stat %x\n",
+		    status, ha->mbx_cmd_flags, ha->flags.mbox_int, stat);
+#endif
 
 	if (test_bit(MBX_INTR_WAIT, &ha->mbx_cmd_flags) &&
 	    (status & MBX_INTERRUPT) && ha->flags.mbox_int) {
@@ -1897,8 +1986,8 @@ qla2x00_request_irqs(scsi_qla_host_t *ha)
 	int ret;
 
 	/* If possible, enable MSI-X. */
-	if ((!IS_QLA2432(ha) && !IS_QLA2532(ha) && !IS_QLA8432(ha))
-	    || !ql2xenablemsix)
+	if ((!IS_QLA2432(ha) && !IS_QLA2532(ha) && !IS_QLA8432(ha)
+	    && !IS_QLA8001(ha)) || !ql2xenablemsix)
 		goto skip_msi;
 
 	if (IS_QLA2432(ha) && (ha->chip_revision < QLA_MSIX_CHIP_REV_24XX ||

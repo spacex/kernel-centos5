@@ -69,6 +69,9 @@
 #define X86_FEATURE_UP		(3*32+8) /* SMP kernel running on UP */
 #define X86_FEATURE_ARCH_PERFMON (3*32+9) /* Intel Architectural PerfMon */
 #define X86_FEATURE_IDA		(3*32+16) /* Intel Dynamic Acceleration */
+#define X86_FEATURE_MFENCE_RDTSC (3*32+17) /* Mfence synchronizes RDTSC */
+#define X86_FEATURE_LFENCE_RDTSC (3*32+18) /* Lfence synchronizes RDTSC */
+#define X86_FEATURE_TSC_RELIABLE (3*32+23) /* TSC is known to be reliable */
 #define X86_FEATURE_NONSTOP_TSC (3*32+24) /* TSC does not stop in C states */
 
 /* Intel-defined CPU features, CPUID level 0x00000001 (ecx), word 4 */
@@ -80,6 +83,8 @@
 #define X86_FEATURE_CID		(4*32+10) /* Context ID */
 #define X86_FEATURE_CX16	(4*32+13) /* CMPXCHG16B */
 #define X86_FEATURE_XTPR	(4*32+14) /* Send Task Priority Messages */
+#define X86_FEATURE_DCA		(4*32+18) /* Direct Cache Access */
+#define X86_FEATURE_HYPERVISOR	(4*32+31) /* Running on a hypervisor */
 
 /* VIA/Cyrix/Centaur-defined CPU features, CPUID level 0xC0000001, word 5 */
 #define X86_FEATURE_XSTORE	(5*32+ 2) /* on-CPU RNG present (xstore insn) */
@@ -119,5 +124,6 @@
 #define cpu_has_cyrix_arr      0
 #define cpu_has_centaur_mcr    0
 #define cpu_has_clflush	       boot_cpu_has(X86_FEATURE_CLFLSH)
+#define cpu_has_hypervisor	boot_cpu_has(X86_FEATURE_HYPERVISOR)
 
 #endif /* __ASM_X8664_CPUFEATURE_H */

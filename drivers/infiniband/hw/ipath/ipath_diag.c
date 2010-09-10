@@ -403,7 +403,7 @@ static ssize_t ipath_diagpkt_write(struct file *fp,
 		goto bail;
 	}
 	/*
-	 * - Want to skip check for l_state if using custom PBC,
+	 * Want to skip check for l_state if using custom PBC,
 	 * because we might be trying to force an SM packet out.
 	 * first-cut, skip _all_ state checking in that case.
 	 */
@@ -475,13 +475,6 @@ static ssize_t ipath_diagpkt_write(struct file *fp,
 		__raw_writel(tmpbuf[clen - 1], piobuf + clen + 1);
 	} else
 		__iowrite32_copy(piobuf + 2, tmpbuf, clen);
-
-	if (dd->ipath_flags & IPATH_USE_SPCL_TRIG) {
-		u32 spcl_off = (pbufn > dd->ipath_piobcnt2k) ?
-			2047 : 1023;
-		ipath_flush_wc();
-		__raw_writel(0xaebecede, piobuf + spcl_off);
-	}
 
 	ipath_flush_wc();
 

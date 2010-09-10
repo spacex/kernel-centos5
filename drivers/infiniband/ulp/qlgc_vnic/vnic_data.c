@@ -38,7 +38,6 @@
 #include "vnic_util.h"
 #include "vnic_viport.h"
 #include "vnic_main.h"
-#include "vnic_config.h"
 #include "vnic_data.h"
 #include "vnic_trailer.h"
 #include "vnic_stats.h"
@@ -46,20 +45,25 @@
 static void data_received_kick(struct io *io);
 static void data_xmit_complete(struct io *io);
 
-u32 min_rcv_skb = 60;
+static void mc_data_recv_routine(struct io *io);
+static void mc_data_post_recvs(struct mc_data *mc_data);
+static void mc_data_recv_to_skbuff(struct viport *viport, struct sk_buff *skb,
+	struct viport_trailer *trailer);
+
+static u32 min_rcv_skb = 60;
 module_param(min_rcv_skb, int, 0444);
 MODULE_PARM_DESC(min_rcv_skb, "Packets of size (in bytes) less than"
 		 " or equal this value will be copied during receive."
 		 " Default 60");
 
-u32 min_xmt_skb = 60;
+static u32 min_xmt_skb = 60;
 module_param(min_xmt_skb, int, 0444);
 MODULE_PARM_DESC(min_xmit_skb, "Packets of size (in bytes) less than"
 		 " or equal to this value will be copied during transmit."
 		 "Default 60");
 
-int data_init(struct data * data, struct viport * viport,
-	      struct data_config * config, struct ib_pd *pd)
+int data_init(struct data *data, struct viport *viport,
+	      struct data_config *config, struct ib_pd *pd)
 {
 	DATA_FUNCTION("data_init()\n");
 
@@ -68,6 +72,8 @@ int data_init(struct data * data, struct viport * viport,
 	data->ib_conn.viport = viport;
 	data->ib_conn.ib_config = &config->ib_config;
 	data->ib_conn.state = IB_CONN_UNINITTED;
+	data->ib_conn.callback_thread = NULL;
+	data->ib_conn.callback_thread_end = 0;
 
 	if ((min_xmt_skb < 60) || (min_xmt_skb > 9000)) {
 		DATA_ERROR("min_xmt_skb (%d) must be between 60 and 9000\n",
@@ -95,12 +101,15 @@ int data_init(struct data * data, struct viport * viport,
 
 	if (IS_ERR(data->ib_conn.cm_id)) {
 		DATA_ERROR("creating data CM ID failed\n");
-		goto destroy_conn;
+		goto dereg_mr;
 	}
 
 	return 0;
 
+dereg_mr:
+	ib_dereg_mr(data->mr);
 destroy_conn:
+	vnic_completion_cleanup(&data->ib_conn);
 	ib_destroy_qp(data->ib_conn.qp);
 	ib_destroy_cq(data->ib_conn.cq);
 failure:
@@ -110,6 +119,7 @@ failure:
 static void data_post_recvs(struct data *data)
 {
 	unsigned long flags;
+	int i = 0;
 
 	DATA_FUNCTION("data_post_recvs()\n");
 	spin_lock_irqsave(&data->recv_ios_lock, flags);
@@ -124,13 +134,15 @@ static void data_post_recvs(struct data *data)
 			viport_failure(data->parent);
 			return;
 		}
+		i++;
 		spin_lock_irqsave(&data->recv_ios_lock, flags);
 	}
 	spin_unlock_irqrestore(&data->recv_ios_lock, flags);
+	DATA_INFO("data posted %d %p\n", i, &data->recv_ios);
 }
 
-static void data_init_pool_work_reqs(struct data * data,
-				      struct recv_io * recv_io)
+static void data_init_pool_work_reqs(struct data *data,
+				      struct recv_io *recv_io)
 {
 	struct recv_pool	*recv_pool = &data->recv_pool;
 	struct xmit_pool	*xmit_pool = &data->xmit_pool;
@@ -197,7 +209,7 @@ static void data_init_pool_work_reqs(struct data * data,
 	xmit_pool->rdma_addr = xmit_pool->buf_pool_dma;
 }
 
-static void data_init_free_bufs_swrs(struct data * data)
+static void data_init_free_bufs_swrs(struct data *data)
 {
 	struct rdma_io		*rdma_io;
 	struct send_io		*send_io;
@@ -231,7 +243,7 @@ static void data_init_free_bufs_swrs(struct data * data)
 	send_io->io.type = SEND;
 }
 
-static int data_init_buf_pools(struct data * data)
+static int data_init_buf_pools(struct data *data)
 {
 	struct recv_pool	*recv_pool = &data->recv_pool;
 	struct xmit_pool	*xmit_pool = &data->xmit_pool;
@@ -318,7 +330,7 @@ failure:
 	return -1;
 }
 
-static void data_init_xmit_pool(struct data * data)
+static void data_init_xmit_pool(struct data *data)
 {
 	struct xmit_pool	*xmit_pool = &data->xmit_pool;
 
@@ -333,18 +345,23 @@ static void data_init_xmit_pool(struct data * data)
 	xmit_pool->num_xmit_bufs = xmit_pool->notify_bundle * 2;
 	xmit_pool->next_xmit_buf = 0;
 	xmit_pool->last_comp_buf = xmit_pool->num_xmit_bufs - 1;
+	/* This assumes that data_init_recv_pool has been called
+	 * before.
+	 */
+	data->max_mtu = MAX_PAYLOAD(min((data)->recv_pool.buffer_sz,
+				   (data)->xmit_pool.buffer_sz)) - VLAN_ETH_HLEN;
 
 	xmit_pool->kick_count = 0;
 	xmit_pool->kick_byte_count = 0;
 
 	xmit_pool->send_kicks =
 	  be32_to_cpu(data->
-		      eioc_pool_parms.num_recv_pool_entries_before_kick)
+			eioc_pool_parms.num_recv_pool_entries_before_kick)
 	  || be32_to_cpu(data->
-		      eioc_pool_parms.num_recv_pool_bytes_before_kick);
+			eioc_pool_parms.num_recv_pool_bytes_before_kick);
 	xmit_pool->kick_bundle =
 	    be32_to_cpu(data->
-		        eioc_pool_parms.num_recv_pool_entries_before_kick);
+			eioc_pool_parms.num_recv_pool_entries_before_kick);
 	xmit_pool->kick_byte_bundle =
 	    be32_to_cpu(data->
 			eioc_pool_parms.num_recv_pool_bytes_before_kick);
@@ -355,7 +372,7 @@ static void data_init_xmit_pool(struct data * data)
 	    BUFFER_SIZE(min_xmt_skb) * xmit_pool->num_xmit_bufs;
 }
 
-static void data_init_recv_pool(struct data * data)
+static void data_init_recv_pool(struct data *data)
 {
 	struct recv_pool	*recv_pool = &data->recv_pool;
 
@@ -380,15 +397,20 @@ static void data_init_recv_pool(struct data * data)
 	recv_pool->kick_on_free  = 0;
 }
 
-int data_connect(struct data * data)
+int data_connect(struct data *data)
 {
 	struct xmit_pool	*xmit_pool = &data->xmit_pool;
 	struct recv_pool	*recv_pool = &data->recv_pool;
-	struct recv_io		* recv_io;
+	struct recv_io		*recv_io;
 	unsigned int		sz;
 	struct viport		*viport = data->parent;
 
 	DATA_FUNCTION("data_connect()\n");
+
+	/* Do not interchange the order of the functions
+	 * called below as this will affect the MAX MTU
+	 * calculation
+	 */
 
 	data_init_recv_pool(data);
 	data_init_xmit_pool(data);
@@ -470,8 +492,9 @@ static void data_add_free_buffer(struct data *data, int index,
 	bpe = &pool->buf_pool[index];
 	bpe->rkey = cpu_to_be32(data->mr->rkey);
 	vaddr_dma = ib_dma_map_single(data->parent->config->ibdev,
-				      rdma_dest->data, pool->buffer_sz, DMA_FROM_DEVICE);
-        if (ib_dma_mapping_error(data->parent->config->ibdev, vaddr_dma)) {
+					rdma_dest->data, pool->buffer_sz,
+					DMA_FROM_DEVICE);
+	if (ib_dma_mapping_error(data->parent->config->ibdev, vaddr_dma)) {
 		DATA_ERROR("rdma_dest->data dma map error\n");
 		goto failure;
 	}
@@ -506,10 +529,8 @@ static void data_alloc_buffers(struct data *data, int initial_allocation)
 						GFP_KERNEL);
 			else
 				skb = dev_alloc_skb(pool->buffer_sz + 2);
-			if (!skb) {
-				DATA_ERROR("failed to alloc skb\n");
+			if (!skb)
 				break;
-			}
 			skb_reserve(skb, 2);
 			skb_put(skb, pool->buffer_sz);
 			rdma_dest->skb = skb;
@@ -570,9 +591,8 @@ static void data_send_free_recv_buffers(struct data *data)
 		next_increment = num_to_send + pool->sz_free_bundle;
 		if ((next_increment <= pool->num_free_bufs)
 		    && (pool->next_free_buf + next_increment <=
-			pool->eioc_pool_sz)) {
+			pool->eioc_pool_sz))
 			continue;
-		}
 
 		offset = pool->next_free_buf *
 				sizeof(struct buff_pool_entry);
@@ -586,7 +606,7 @@ static void data_send_free_recv_buffers(struct data *data)
 		    &data->free_bufs_io.io)) {
 			DATA_ERROR("failed to post send\n");
 			viport_failure(data->parent);
-			break;
+			return;
 		}
 		INC(pool->next_free_buf, num_to_send, pool->eioc_pool_sz);
 		pool->num_free_bufs -= num_to_send;
@@ -599,8 +619,27 @@ static void data_send_free_recv_buffers(struct data *data)
 			data_send_kick_message(data);
 	}
 	if (pool->num_posted_bufs == 0) {
-		DATA_ERROR("%s: unable to allocate receive buffers\n",
-			   config_viport_name(data->parent->config));
+		struct vnic *vnic = data->parent->vnic;
+		unsigned long flags;
+
+		spin_lock_irqsave(&vnic->current_path_lock, flags);
+		if (vnic->current_path == &vnic->primary_path) {
+			spin_unlock_irqrestore(&vnic->current_path_lock, flags);
+			DATA_ERROR("%s: primary path: "
+					"unable to allocate receive buffers\n",
+					vnic->config->name);
+		} else {
+			if (vnic->current_path == &vnic->secondary_path) {
+				spin_unlock_irqrestore(&vnic->current_path_lock,
+							flags);
+				DATA_ERROR("%s: secondary path: "
+					"unable to allocate receive buffers\n",
+					vnic->config->name);
+			} else
+				spin_unlock_irqrestore(&vnic->current_path_lock,
+							flags);
+		}
+		data->ib_conn.state = IB_CONN_ERRORED;
 		viport_failure(data->parent);
 	}
 }
@@ -628,6 +667,12 @@ void data_disconnect(struct data *data)
 		del_timer_sync(&data->kick_timer);
 		data->kick_timer_on = 0;
 	}
+
+	if (ib_send_cm_dreq(data->ib_conn.cm_id, NULL, 0))
+		DATA_ERROR("data CM DREQ sending failed\n");
+	data->ib_conn.state = IB_CONN_DISCONNECTED;
+
+	vnic_completion_cleanup(&data->ib_conn);
 
 	for (i = 0; i < xmit_pool->num_xmit_bufs; i++) {
 		if (xmit_pool->xmit_bufs[i].skb)
@@ -672,10 +717,14 @@ void data_disconnect(struct data *data)
 
 void data_cleanup(struct data *data)
 {
-	if (ib_send_cm_dreq(data->ib_conn.cm_id, NULL, 0))
-		printk(KERN_DEBUG "data CM DREQ sending failed\n");
-
 	ib_destroy_cm_id(data->ib_conn.cm_id);
+
+	/* Completion callback cleanup called again.
+	 * This is to cleanup the threads in case there is an
+	 * error before state LINK_DATACONNECT due to which
+	 * data_disconnect is not called.
+	 */
+	vnic_completion_cleanup(&data->ib_conn);
 	ib_destroy_qp(data->ib_conn.qp);
 	ib_destroy_cq(data->ib_conn.cq);
 	ib_dereg_mr(data->mr);
@@ -775,8 +824,8 @@ static void data_rdma_packet(struct data *data, struct buff_pool_entry *bpe,
 		swr->sg_list[0].lkey = data->mr->lkey;
 
 		skb_data_dma = ib_dma_map_single(viport->config->ibdev,
-					         skb->data, skb->len,
-					         DMA_TO_DEVICE);
+						skb->data, skb->len,
+						DMA_TO_DEVICE);
 
 		if (ib_dma_mapping_error(viport->config->ibdev, skb_data_dma)) {
 			DATA_ERROR("skb data dma map error\n");
@@ -803,6 +852,15 @@ static void data_rdma_packet(struct data *data, struct buff_pool_entry *bpe,
 	ib_dma_sync_single_for_device(data->parent->config->ibdev,
 				      xmit_pool->buf_pool_dma,
 				      xmit_pool->buf_pool_len, DMA_TO_DEVICE);
+
+	/* If VNIC_FEAT_RDMA_IMMED is supported then change the work request
+	 * opcode to IB_WR_RDMA_WRITE_WITH_IMM
+	 */
+
+	if (data->parent->features_supported & VNIC_FEAT_RDMA_IMMED) {
+		swr->ex.imm_data = 0;
+		swr->opcode = IB_WR_RDMA_WRITE_WITH_IMM;
+	}
 
 	data->xmit_pool.notify_count++;
 	if (data->xmit_pool.notify_count >= data->xmit_pool.notify_bundle) {
@@ -867,7 +925,7 @@ int data_xmit_packet(struct data *data, struct sk_buff *skb)
 	if (skb->sk)
 		trailer->connection_hash_and_valid = 0x40 |
 			 ((be16_to_cpu(inet_sk(skb->sk)->sport) +
-			   be16_to_cpu( inet_sk(skb->sk)->dport)) & 0x3f);
+			   be16_to_cpu(inet_sk(skb->sk)->dport)) & 0x3f);
 
 	trailer->connection_hash_and_valid |= CHV_VALID;
 
@@ -876,6 +934,7 @@ int data_xmit_packet(struct data *data, struct sk_buff *skb)
 		trailer->vlan = *(__be16 *) (skb->data + 14);
 		memmove(skb->data + 4, skb->data, 12);
 		skb_pull(skb, 4);
+		sz -= 4;
 		trailer->pkt_flags |= PF_VLAN_INSERT;
 	}
 	if (last)
@@ -926,7 +985,7 @@ int data_xmit_packet(struct data *data, struct sk_buff *skb)
 	return 0;
 }
 
-void data_check_xmit_buffers(struct data *data)
+static void data_check_xmit_buffers(struct data *data)
 {
 	struct xmit_pool *pool = &data->xmit_pool;
 	unsigned long flags;
@@ -1006,7 +1065,8 @@ static struct sk_buff *data_recv_to_skbuff(struct data *data,
 	else
 		skb->ip_summed = CHECKSUM_NONE;
 
-	if (trailer->pkt_flags & PF_VLAN_INSERT) {
+	if ((trailer->pkt_flags & PF_VLAN_INSERT) &&
+		!(data->parent->features_supported & VNIC_FEAT_IGNORE_VLAN)) {
 		u8 *rv;
 
 		rv = skb_push(skb, 4);
@@ -1063,8 +1123,9 @@ static int data_incoming_recv(struct data *data)
 				   DMA_TO_DEVICE);
 
 	bpe->valid = 0;
-	ib_dma_sync_single_for_device(data->parent->config->ibdev, pool->buf_pool_dma,
-				      pool->buf_pool_len, DMA_TO_DEVICE);
+	ib_dma_sync_single_for_device(data->parent->config->ibdev,
+					pool->buf_pool_dma, pool->buf_pool_len,
+					DMA_TO_DEVICE);
 
 	INC(pool->next_full_buf, 1, pool->eioc_pool_sz);
 	pool->num_posted_bufs--;
@@ -1117,4 +1178,315 @@ static void data_xmit_complete(struct io *io)
 	}
 
 	data_check_xmit_buffers(data);
+}
+
+static int mc_data_alloc_skb(struct ud_recv_io *recv_io, u32 len,
+				int initial_allocation)
+{
+	struct sk_buff *skb;
+	struct mc_data *mc_data = &recv_io->io.viport->mc_data;
+
+	DATA_FUNCTION("mc_data_alloc_skb\n");
+	if (initial_allocation)
+		skb = alloc_skb(len, GFP_KERNEL);
+	else
+		skb = dev_alloc_skb(len);
+	if (!skb) {
+		DATA_ERROR("failed to alloc MULTICAST skb\n");
+		return -1;
+	}
+	skb_put(skb, len);
+	recv_io->skb = skb;
+
+	recv_io->skb_data_dma = ib_dma_map_single(
+					recv_io->io.viport->config->ibdev,
+					skb->data, skb->len,
+					DMA_FROM_DEVICE);
+
+	if (ib_dma_mapping_error(recv_io->io.viport->config->ibdev,
+			recv_io->skb_data_dma)) {
+		DATA_ERROR("skb data dma map error\n");
+		dev_kfree_skb(skb);
+		return -1;
+	}
+
+	recv_io->list[0].addr = recv_io->skb_data_dma;
+	recv_io->list[0].length = sizeof(struct ib_grh);
+	recv_io->list[0].lkey = mc_data->mr->lkey;
+
+	recv_io->list[1].addr = recv_io->skb_data_dma + sizeof(struct ib_grh);
+	recv_io->list[1].length = len - sizeof(struct ib_grh);
+	recv_io->list[1].lkey = mc_data->mr->lkey;
+
+	recv_io->io.rwr.wr_id = (u64)&recv_io->io;
+	recv_io->io.rwr.sg_list = recv_io->list;
+	recv_io->io.rwr.num_sge = 2;
+	recv_io->io.rwr.next = NULL;
+
+	return 0;
+}
+
+static int mc_data_alloc_buffers(struct mc_data *mc_data)
+{
+	unsigned int i, num;
+	struct ud_recv_io *bufs = NULL, *recv_io;
+
+	DATA_FUNCTION("mc_data_alloc_buffers\n");
+	if (!mc_data->skb_len) {
+		unsigned int len;
+		/* align multicast msg buffer on viport_trailer boundary */
+		len = (MCAST_MSG_SIZE + VIPORT_TRAILER_ALIGNMENT - 1) &
+				(~((unsigned int)VIPORT_TRAILER_ALIGNMENT - 1));
+		/*
+		 * Add size of grh and trailer -
+		 * note, we don't need a + 4 for vlan because we have room in
+		 * netbuf for grh & trailer and we'll strip them both, so there
+		 * will be room enough to handle the 4 byte insertion for vlan.
+		 */
+		len +=	sizeof(struct ib_grh) +
+				sizeof(struct viport_trailer);
+		mc_data->skb_len = len;
+		DATA_INFO("mc_data->skb_len %d (sizes:%d %d)\n",
+					len, (int)sizeof(struct ib_grh),
+					(int)sizeof(struct viport_trailer));
+	}
+	mc_data->recv_len = sizeof(struct ud_recv_io) * mc_data->num_recvs;
+	bufs = kmalloc(mc_data->recv_len, GFP_KERNEL);
+	if (!bufs) {
+		DATA_ERROR("failed to allocate MULTICAST buffers size:%d\n",
+				mc_data->recv_len);
+		return -1;
+	}
+	DATA_INFO("allocated num_recvs:%d recv_len:%d \n",
+			mc_data->num_recvs, mc_data->recv_len);
+	for (num = 0; num < mc_data->num_recvs; num++) {
+		recv_io = &bufs[num];
+		recv_io->len = mc_data->skb_len;
+		recv_io->io.type = RECV_UD;
+		recv_io->io.viport = mc_data->parent;
+		recv_io->io.routine = mc_data_recv_routine;
+
+		if (mc_data_alloc_skb(recv_io, mc_data->skb_len, 1)) {
+			for (i = 0; i < num; i++) {
+				recv_io = &bufs[i];
+				ib_dma_unmap_single(recv_io->io.viport->config->ibdev,
+						    recv_io->skb_data_dma,
+						    recv_io->skb->len,
+						    DMA_FROM_DEVICE);
+				dev_kfree_skb(recv_io->skb);
+			}
+			kfree(bufs);
+			return -1;
+		}
+		list_add_tail(&recv_io->io.list_ptrs,
+						 &mc_data->avail_recv_ios_list);
+	}
+	mc_data->recv_ios = bufs;
+	return 0;
+}
+
+void vnic_mc_data_cleanup(struct mc_data *mc_data)
+{
+	unsigned int num;
+
+	DATA_FUNCTION("vnic_mc_data_cleanup()\n");
+	vnic_completion_cleanup(&mc_data->ib_conn);
+	if (!IS_ERR(mc_data->ib_conn.qp)) {
+		ib_destroy_qp(mc_data->ib_conn.qp);
+		mc_data->ib_conn.qp = (struct ib_qp *)ERR_PTR(-EINVAL);
+	}
+	if (!IS_ERR(mc_data->ib_conn.cq)) {
+		ib_destroy_cq(mc_data->ib_conn.cq);
+		mc_data->ib_conn.cq = (struct ib_cq *)ERR_PTR(-EINVAL);
+	}
+	if (mc_data->recv_ios) {
+		for (num = 0; num < mc_data->num_recvs; num++) {
+			if (mc_data->recv_ios[num].skb)
+				dev_kfree_skb(mc_data->recv_ios[num].skb);
+			mc_data->recv_ios[num].skb = NULL;
+		}
+		kfree(mc_data->recv_ios);
+		mc_data->recv_ios = (struct ud_recv_io *)NULL;
+	}
+	if (mc_data->mr) {
+		ib_dereg_mr(mc_data->mr);
+		mc_data->mr = (struct ib_mr *)NULL;
+	}
+	DATA_FUNCTION("vnic_mc_data_cleanup done\n");
+
+}
+
+int mc_data_init(struct mc_data *mc_data, struct viport *viport,
+	      struct data_config *config, struct ib_pd *pd)
+{
+	DATA_FUNCTION("mc_data_init()\n");
+
+	mc_data->num_recvs = viport->data.config->num_recvs;
+
+	INIT_LIST_HEAD(&mc_data->avail_recv_ios_list);
+	spin_lock_init(&mc_data->recv_lock);
+
+	mc_data->parent = viport;
+	mc_data->config = config;
+
+	mc_data->ib_conn.cm_id = NULL;
+	mc_data->ib_conn.viport = viport;
+	mc_data->ib_conn.ib_config = &config->ib_config;
+	mc_data->ib_conn.state = IB_CONN_UNINITTED;
+	mc_data->ib_conn.callback_thread = NULL;
+	mc_data->ib_conn.callback_thread_end = 0;
+
+	if (vnic_ib_mc_init(mc_data, viport, pd,
+			      &config->ib_config)) {
+		DATA_ERROR("vnic_ib_mc_init failed\n");
+		goto failure;
+	}
+	mc_data->mr = ib_get_dma_mr(pd,
+				 IB_ACCESS_LOCAL_WRITE |
+				 IB_ACCESS_REMOTE_WRITE);
+	if (IS_ERR(mc_data->mr)) {
+		DATA_ERROR("failed to register memory for"
+			   " mc_data connection\n");
+		goto destroy_conn;
+	}
+
+	if (mc_data_alloc_buffers(mc_data))
+		goto dereg_mr;
+
+	mc_data_post_recvs(mc_data);
+	if (vnic_ib_mc_mod_qp_to_rts(mc_data->ib_conn.qp))
+		goto dereg_mr;
+
+	return 0;
+
+dereg_mr:
+	ib_dereg_mr(mc_data->mr);
+	mc_data->mr = (struct ib_mr *)NULL;
+destroy_conn:
+	vnic_completion_cleanup(&mc_data->ib_conn);
+	ib_destroy_qp(mc_data->ib_conn.qp);
+	mc_data->ib_conn.qp = (struct ib_qp *)ERR_PTR(-EINVAL);
+	ib_destroy_cq(mc_data->ib_conn.cq);
+	mc_data->ib_conn.cq = (struct ib_cq *)ERR_PTR(-EINVAL);
+failure:
+	return -1;
+}
+
+static void mc_data_post_recvs(struct mc_data *mc_data)
+{
+	unsigned long flags;
+	int i = 0;
+	DATA_FUNCTION("mc_data_post_recvs\n");
+	spin_lock_irqsave(&mc_data->recv_lock, flags);
+	while (!list_empty(&mc_data->avail_recv_ios_list)) {
+		struct io *io = list_entry(mc_data->avail_recv_ios_list.next,
+				struct io, list_ptrs);
+		struct ud_recv_io *recv_io =
+					container_of(io, struct ud_recv_io, io);
+		list_del(&recv_io->io.list_ptrs);
+		spin_unlock_irqrestore(&mc_data->recv_lock, flags);
+		if (vnic_ib_mc_post_recv(mc_data, &recv_io->io)) {
+			viport_failure(mc_data->parent);
+			return;
+		}
+		spin_lock_irqsave(&mc_data->recv_lock, flags);
+		i++;
+	}
+	DATA_INFO("mcdata posted %d %p\n", i, &mc_data->avail_recv_ios_list);
+	spin_unlock_irqrestore(&mc_data->recv_lock, flags);
+}
+
+static void mc_data_recv_routine(struct io *io)
+{
+	struct sk_buff *skb;
+	struct ib_grh *grh;
+	struct viport_trailer *trailer;
+	struct mc_data *mc_data;
+	unsigned long flags;
+	struct ud_recv_io *recv_io = container_of(io, struct ud_recv_io, io);
+	union ib_gid_cpu sgid;
+
+	DATA_FUNCTION("mc_data_recv_routine\n");
+	skb = recv_io->skb;
+	grh = (struct ib_grh *)skb->data;
+	mc_data = &recv_io->io.viport->mc_data;
+
+	ib_dma_unmap_single(recv_io->io.viport->config->ibdev,
+			    recv_io->skb_data_dma, recv_io->skb->len,
+			    DMA_FROM_DEVICE);
+
+	/* first - check if we've got our own mc packet  */
+	/* convert sgid from host to cpu form before comparing */
+	bswap_ib_gid(&grh->sgid, &sgid);
+	if (cpu_to_be64(sgid.global.interface_id) ==
+		io->viport->config->path_info.path.sgid.global.interface_id) {
+		DATA_ERROR("dropping - our mc packet\n");
+		dev_kfree_skb(skb);
+	} else {
+		/* GRH is at head and trailer at end. Remove GRH from head.  */
+		trailer = (struct viport_trailer *)
+				(skb->data + recv_io->len -
+				 sizeof(struct viport_trailer));
+		skb_pull(skb, sizeof(struct ib_grh));
+		if (trailer->connection_hash_and_valid & CHV_VALID) {
+			mc_data_recv_to_skbuff(io->viport, skb, trailer);
+			vnic_recv_packet(io->viport->vnic, io->viport->parent,
+					skb);
+			vnic_multicast_recv_pkt_stats(io->viport->vnic);
+		} else {
+			DATA_ERROR("dropping - no CHV_VALID in HashAndValid\n");
+			dev_kfree_skb(skb);
+		}
+	}
+	recv_io->skb = NULL;
+	if (mc_data_alloc_skb(recv_io, mc_data->skb_len, 0))
+		return;
+
+	spin_lock_irqsave(&mc_data->recv_lock, flags);
+	list_add_tail(&recv_io->io.list_ptrs, &mc_data->avail_recv_ios_list);
+	spin_unlock_irqrestore(&mc_data->recv_lock, flags);
+	mc_data_post_recvs(mc_data);
+	return;
+}
+
+static void mc_data_recv_to_skbuff(struct viport *viport, struct sk_buff *skb,
+				   struct viport_trailer *trailer)
+{
+	u8 rx_chksum_flags = trailer->rx_chksum_flags;
+
+	/* drop alignment bytes at start */
+	skb_pull(skb, trailer->data_alignment_offset);
+	/* drop excess from end */
+	skb_trim(skb, __be16_to_cpu(trailer->data_length));
+
+	if ((rx_chksum_flags & RX_CHKSUM_FLAGS_LOOPBACK)
+	    || ((rx_chksum_flags & RX_CHKSUM_FLAGS_IP_CHECKSUM_SUCCEEDED)
+		&& ((rx_chksum_flags & RX_CHKSUM_FLAGS_TCP_CHECKSUM_SUCCEEDED)
+		    || (rx_chksum_flags &
+			RX_CHKSUM_FLAGS_UDP_CHECKSUM_SUCCEEDED))))
+		skb->ip_summed = CHECKSUM_UNNECESSARY;
+	else
+		skb->ip_summed = CHECKSUM_NONE;
+
+	if ((trailer->pkt_flags & PF_VLAN_INSERT) &&
+	    !(viport->features_supported & VNIC_FEAT_IGNORE_VLAN)) {
+		u8 *rv;
+
+		/* insert VLAN id between source & length */
+		DATA_INFO("VLAN adjustment\n");
+		rv = skb_push(skb, 4);
+		memmove(rv, rv + 4, 12);
+		*(__be16 *) (rv + 12) = __constant_cpu_to_be16(ETH_P_8021Q);
+		if (trailer->pkt_flags & PF_PVID_OVERRIDDEN)
+		/*
+		 *  Indicates VLAN is 0 but we keep the protocol id.
+		 */
+			*(__be16 *) (rv + 14) = trailer->vlan &
+					__constant_cpu_to_be16(0xF000);
+		else
+			*(__be16 *) (rv + 14) = trailer->vlan;
+		DATA_INFO("vlan:%x\n", *(int *)(rv+14));
+	}
+
+    return;
 }

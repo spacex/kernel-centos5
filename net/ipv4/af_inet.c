@@ -1189,6 +1189,110 @@ out:
 	return segs;
 }
 
+static struct sk_buff **inet_gro_receive(struct sk_buff **head,
+					 struct sk_buff *skb)
+{
+	struct net_gro_protocol *ops;
+	struct sk_buff **pp = NULL;
+	struct sk_buff *p;
+	struct iphdr *iph;
+	unsigned int hlen;
+	unsigned int off;
+	int flush = 1;
+	int proto;
+	int id;
+
+	off = skb_gro_offset(skb);
+	hlen = off + sizeof(*iph);
+	iph = skb_gro_header_fast(skb, off);
+	if (skb_gro_header_hard(skb, hlen)) {
+		iph = skb_gro_header_slow(skb, hlen, off);
+		if (unlikely(!iph))
+			goto out;
+	}
+
+	proto = iph->protocol & (MAX_INET_PROTOS - 1);
+
+	rcu_read_lock();
+	ops = rcu_dereference(inet_gro_protos[proto]);
+	if (!ops || !ops->gro_receive)
+		goto out_unlock;
+
+	if (*(u8 *)iph != 0x45)
+		goto out_unlock;
+
+	if (unlikely(ip_fast_csum((u8 *)iph, iph->ihl)))
+		goto out_unlock;
+
+	flush = ntohs(iph->tot_len) != skb_gro_len(skb) ||
+		iph->frag_off != htons(IP_DF);
+	id = ntohs(iph->id);
+
+	for (p = *head; p; p = p->next) {
+		struct iphdr *iph2;
+
+		if (!NAPI_GRO_CB(p)->same_flow)
+			continue;
+
+		iph2 = ip_hdr(p);
+
+		if ((iph->protocol ^ iph2->protocol) |
+		    (iph->tos ^ iph2->tos) |
+		    (iph->saddr ^ iph2->saddr) |
+		    (iph->daddr ^ iph2->daddr)) {
+			NAPI_GRO_CB(p)->same_flow = 0;
+			continue;
+		}
+
+		/* All fields must match except length and checksum. */
+		NAPI_GRO_CB(p)->flush |=
+			(iph->ttl ^ iph2->ttl) |
+			((u16)(ntohs(iph2->id) + NAPI_GRO_CB(p)->count) ^ id);
+
+		NAPI_GRO_CB(p)->flush |= flush;
+	}
+
+	NAPI_GRO_CB(skb)->flush |= flush;
+	skb_gro_pull(skb, sizeof(*iph));
+	skb_set_transport_header(skb, skb_gro_offset(skb));
+
+	pp = ops->gro_receive(head, skb);
+
+out_unlock:
+	rcu_read_unlock();
+
+out:
+	NAPI_GRO_CB(skb)->flush |= flush;
+
+	return pp;
+}
+
+static int inet_gro_complete(struct sk_buff *skb)
+{
+	struct net_gro_protocol *ops;
+	struct iphdr *iph = ip_hdr(skb);
+	int proto = iph->protocol & (MAX_INET_PROTOS - 1);
+	int err = -ENOSYS;
+	__be16 newlen = htons(skb->len - skb_network_offset(skb));
+
+	csum_replace2(&iph->check, iph->tot_len, newlen);
+	iph->tot_len = newlen;
+
+	rcu_read_lock();
+	ops = rcu_dereference(inet_gro_protos[proto]);
+	if (unlikely(!ops || !ops->gro_complete)) {
+		WARN_ON(1);
+		goto out_unlock;
+	}
+
+	err = ops->gro_complete(skb);
+
+out_unlock:
+	rcu_read_unlock();
+
+	return err;
+}
+
 #ifdef CONFIG_IP_MULTICAST
 static struct net_protocol igmp_protocol = {
 	.handler =	igmp_rcv,
@@ -1201,6 +1305,11 @@ static struct net_protocol tcp_protocol = {
 	.gso_send_check = tcp_v4_gso_send_check,
 	.gso_segment =	tcp_tso_segment,
 	.no_policy =	1,
+};
+
+static struct net_gro_protocol tcp_gro_protocol = {
+	.gro_receive =	tcp4_gro_receive,
+	.gro_complete =	tcp4_gro_complete,
 };
 
 static struct net_protocol udp_protocol = {
@@ -1253,6 +1362,12 @@ static struct packet_type ip_packet_type = {
 	.gso_segment = inet_gso_segment,
 };
 
+static struct gro_packet_type ip_gro_packet_type = {
+	.type = __constant_htons(ETH_P_IP),
+	.gro_receive = inet_gro_receive,
+	.gro_complete = inet_gro_complete,
+};
+
 static int __init inet_init(void)
 {
 	struct sk_buff *dummy_skb;
@@ -1292,6 +1407,8 @@ static int __init inet_init(void)
 	if (inet_add_protocol(&udp_protocol, IPPROTO_UDP) < 0)
 		printk(KERN_CRIT "inet_init: Cannot add UDP protocol\n");
 	if (inet_add_protocol(&tcp_protocol, IPPROTO_TCP) < 0)
+		printk(KERN_CRIT "inet_init: Cannot add TCP protocol\n");
+	if (inet_add_gro_protocol(&tcp_gro_protocol, IPPROTO_TCP) < 0)
 		printk(KERN_CRIT "inet_init: Cannot add TCP protocol\n");
 #ifdef CONFIG_IP_MULTICAST
 	if (inet_add_protocol(&igmp_protocol, IPPROTO_IGMP) < 0)
@@ -1349,6 +1466,7 @@ static int __init inet_init(void)
 	ipfrag_init();
 
 	dev_add_pack(&ip_packet_type);
+	dev_add_pack_gro(&ip_gro_packet_type);
 
 	rc = 0;
 out:

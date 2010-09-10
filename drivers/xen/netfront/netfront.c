@@ -599,14 +599,14 @@ static int network_open(struct net_device *dev)
 
 	memset(&np->stats, 0, sizeof(np->stats));
 
-	spin_lock(&np->rx_lock);
+	spin_lock_bh(&np->rx_lock);
 	if (netif_carrier_ok(dev)) {
 		network_alloc_rx_buffers(dev);
 		np->rx.sring->rsp_event = np->rx.rsp_cons + 1;
 		if (RING_HAS_UNCONSUMED_RESPONSES(&np->rx))
 			netif_rx_schedule(dev);
 	}
-	spin_unlock(&np->rx_lock);
+	spin_unlock_bh(&np->rx_lock);
 
 	netif_start_queue(dev);
 
@@ -1163,13 +1163,12 @@ static int xennet_get_responses(struct netfront_info *np,
 				struct page *page =
 					skb_shinfo(skb)->frags[0].page;
 				unsigned long pfn = page_to_pfn(page);
-				void *vaddr = page_address(page);
 
 				mcl = np->rx_mcl + pages_flipped;
 				mmu = np->rx_mmu + pages_flipped;
 
 				MULTI_update_va_mapping(mcl,
-							(unsigned long)vaddr,
+							(unsigned long)page_address(page),
 							pfn_pte_ma(mfn,
 								   PAGE_KERNEL),
 							0);
@@ -1304,7 +1303,7 @@ static int netif_poll(struct net_device *dev, int *pbudget)
 	int pages_flipped = 0;
 	int err;
 
-	spin_lock(&np->rx_lock);
+	spin_lock(&np->rx_lock); /* no need for spin_lock_bh() in ->poll() */
 
 	if (unlikely(!netif_carrier_ok(dev))) {
 		spin_unlock(&np->rx_lock);
@@ -1512,7 +1511,7 @@ static void netif_release_rx_bufs_flip(struct netfront_info *np)
 
 	skb_queue_head_init(&free_list);
 
-	spin_lock(&np->rx_lock);
+	spin_lock_bh(&np->rx_lock);
 
 	for (id = 0; id < NET_RX_RING_SIZE; id++) {
 		if ((ref = np->grant_rx_ref[id]) == GRANT_INVALID_REF) {
@@ -1539,9 +1538,9 @@ static void netif_release_rx_bufs_flip(struct netfront_info *np)
 			/* Remap the page. */
 			struct page *page = skb_shinfo(skb)->frags[0].page;
 			unsigned long pfn = page_to_pfn(page);
-			void *vaddr = page_address(page);
 
-			MULTI_update_va_mapping(mcl, (unsigned long)vaddr,
+			MULTI_update_va_mapping(mcl, 
+						(unsigned long)page_address(page),
 						pfn_pte_ma(mfn, PAGE_KERNEL),
 						0);
 
@@ -1579,7 +1578,7 @@ static void netif_release_rx_bufs_flip(struct netfront_info *np)
 	while ((skb = __skb_dequeue(&free_list)) != NULL)
 		dev_kfree_skb(skb);
 
-	spin_unlock(&np->rx_lock);
+	spin_unlock_bh(&np->rx_lock);
 }
 
 static void netif_release_rx_bufs_copy(struct netfront_info *np)
@@ -1730,8 +1729,8 @@ static int network_connect(struct net_device *dev)
 	IPRINTK("device %s has %sing receive path.\n",
 		dev->name, np->copying_receiver ? "copy" : "flipp");
 
+	spin_lock_bh(&np->rx_lock);
 	spin_lock_irq(&np->tx_lock);
-	spin_lock(&np->rx_lock);
 
 	/*
 	 * Recovery procedure:
@@ -1783,8 +1782,8 @@ static int network_connect(struct net_device *dev)
 	network_tx_buf_gc(dev);
 	network_alloc_rx_buffers(dev);
 
-	spin_unlock(&np->rx_lock);
 	spin_unlock_irq(&np->tx_lock);
+	spin_unlock_bh(&np->rx_lock);
 
 	return 0;
 }
@@ -1843,7 +1842,7 @@ static ssize_t store_rxbuf_min(struct class_device *cd,
 	if (target > RX_MAX_TARGET)
 		target = RX_MAX_TARGET;
 
-	spin_lock(&np->rx_lock);
+	spin_lock_bh(&np->rx_lock);
 	if (target > np->rx_max_target)
 		np->rx_max_target = target;
 	np->rx_min_target = target;
@@ -1852,7 +1851,7 @@ static ssize_t store_rxbuf_min(struct class_device *cd,
 
 	network_alloc_rx_buffers(netdev);
 
-	spin_unlock(&np->rx_lock);
+	spin_unlock_bh(&np->rx_lock);
 	return len;
 }
 
@@ -1886,7 +1885,7 @@ static ssize_t store_rxbuf_max(struct class_device *cd,
 	if (target > RX_MAX_TARGET)
 		target = RX_MAX_TARGET;
 
-	spin_lock(&np->rx_lock);
+	spin_lock_bh(&np->rx_lock);
 	if (target < np->rx_min_target)
 		np->rx_min_target = target;
 	np->rx_max_target = target;
@@ -1895,7 +1894,7 @@ static ssize_t store_rxbuf_max(struct class_device *cd,
 
 	network_alloc_rx_buffers(netdev);
 
-	spin_unlock(&np->rx_lock);
+	spin_unlock_bh(&np->rx_lock);
 	return len;
 }
 
@@ -2073,11 +2072,11 @@ netdev_notify(struct notifier_block *this, unsigned long event, void *ptr)
 static void netif_disconnect_backend(struct netfront_info *info)
 {
 	/* Stop old i/f to prevent errors whilst we rebuild the state. */
+	spin_lock_bh(&info->rx_lock);
 	spin_lock_irq(&info->tx_lock);
-	spin_lock(&info->rx_lock);
 	netif_carrier_off(info->netdev);
-	spin_unlock(&info->rx_lock);
 	spin_unlock_irq(&info->tx_lock);
+	spin_unlock_bh(&info->rx_lock);
 
 	if (info->irq)
 		unbind_from_irqhandler(info->irq, info->netdev);
@@ -2131,6 +2130,8 @@ static struct notifier_block notifier_netdev = {
 
 static int __init netif_init(void)
 {
+	int err;
+
 	if (!is_running_on_xen())
 		return -ENODEV;
 
@@ -2152,7 +2153,12 @@ static int __init netif_init(void)
 	(void)register_inetaddr_notifier(&notifier_inetdev);
 	(void)register_netdevice_notifier(&notifier_netdev);
 
-	return xenbus_register_frontend(&netfront);
+	err = xenbus_register_frontend(&netfront);
+	if (err) {
+		unregister_netdevice_notifier(&notifier_netdev);
+		unregister_inetaddr_notifier(&notifier_inetdev);
+	}
+	return err;
 }
 module_init(netif_init);
 
