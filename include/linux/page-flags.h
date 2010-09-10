@@ -86,7 +86,6 @@
 #define PG_reclaim		17	/* To be reclaimed asap */
 #define PG_nosave_free		18	/* Free, should not be written */
 #define PG_buddy		19	/* Page is free, on buddy lists */
-#define PG_gup			20	/* Page pin may be because of gup */
 #define PG_xpmem		27	/* Testing for xpmem. */
 
 /* PG_owner_priv_1 users should have descriptive aliases */
@@ -239,10 +238,6 @@
 #define PageCompound(page)	test_bit(PG_compound, &(page)->flags)
 #define __SetPageCompound(page)	__set_bit(PG_compound, &(page)->flags)
 #define __ClearPageCompound(page) __clear_bit(PG_compound, &(page)->flags)
-
-#define SetPageGUP(page)	set_bit(PG_gup, &(page)->flags)
-#define PageGUP(page)		test_bit(PG_gup, &(page)->flags)
-#define __ClearPageGUP(page)	__clear_bit(PG_gup, &(page)->flags)
 
 /*
  * PG_reclaim is used in combination with PG_compound to mark the

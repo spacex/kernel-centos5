@@ -154,7 +154,6 @@ static void bad_page(struct page *page)
 			1 << PG_slab    |
 			1 << PG_swapcache |
 			1 << PG_writeback |
-			1 << PG_gup |
 			1 << PG_buddy );
 	set_page_count(page, 0);
 	reset_page_mapcount(page);
@@ -401,8 +400,6 @@ static inline int free_pages_check(struct page *page)
 		bad_page(page);
 	if (PageDirty(page))
 		__ClearPageDirty(page);
-	if (PageGUP(page))
-		__ClearPageGUP(page);
 	/*
 	 * For now, we report if PG_reserved was found set, but do not
 	 * clear it, and do not free the page.  But we shall soon need
@@ -549,7 +546,6 @@ static int prep_new_page(struct page *page, int order, gfp_t gfp_flags)
 			1 << PG_swapcache |
 			1 << PG_writeback |
 			1 << PG_reserved |
-			1 << PG_gup |
 			1 << PG_buddy ))))
 		bad_page(page);
 

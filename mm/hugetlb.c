@@ -56,16 +56,6 @@ static void copy_huge_page(struct page *dst, struct page *src,
 	}
 }
 
-static void copy_huge_page_locked(struct page *dst, struct page *src,
-			   unsigned long addr)
-{
-	int i;
-
-	for (i = 0; i < HPAGE_SIZE/PAGE_SIZE; i++) {
-		copy_user_highpage(dst + i, src + i, addr + i*PAGE_SIZE);
-	}
-}
-
 static void enqueue_huge_page(struct page *page)
 {
 	int nid = page_to_nid(page);
@@ -367,25 +357,17 @@ static void set_huge_ptep_writable(struct vm_area_struct *vma,
 }
 
 
-static int hugetlb_cow(struct mm_struct *mm, struct vm_area_struct *vma,
-		       unsigned long address, pte_t *ptep, pte_t pte);
-
-static int hugetlb_cow_locked(struct mm_struct *mm, struct vm_area_struct *vma,
-		       unsigned long address, pte_t *ptep, pte_t pte);
-
 int copy_hugetlb_page_range(struct mm_struct *dst, struct mm_struct *src,
-			    struct vm_area_struct *dst_vma,
-			    struct vm_area_struct *src_vma)
+			    struct vm_area_struct *vma)
 {
-	pte_t *src_pte, *dst_pte, entry, orig_entry;
+	pte_t *src_pte, *dst_pte, entry;
 	struct page *ptepage;
 	unsigned long addr;
-	int cow, forcecow, oom;
+	int cow;
 
-	cow = (src_vma->vm_flags & (VM_SHARED | VM_MAYWRITE)) == VM_MAYWRITE;
+	cow = (vma->vm_flags & (VM_SHARED | VM_MAYWRITE)) == VM_MAYWRITE;
 
-	for (addr = src_vma->vm_start; addr < src_vma->vm_end;
-	     addr += HPAGE_SIZE) {
+	for (addr = vma->vm_start; addr < vma->vm_end; addr += HPAGE_SIZE) {
 		src_pte = huge_pte_offset(src, addr);
 		if (!src_pte)
 			continue;
@@ -395,43 +377,18 @@ int copy_hugetlb_page_range(struct mm_struct *dst, struct mm_struct *src,
 		/* if the page table is shared dont copy or take references */
 		if (dst_pte == src_pte)
 			continue;
-		oom = 0;
 		spin_lock(&dst->page_table_lock);
 		spin_lock(&src->page_table_lock);
-		orig_entry = entry = huge_ptep_get(src_pte);
-		if (!huge_pte_none(entry)) {
-			forcecow = 0;
+		if (!huge_pte_none(huge_ptep_get(src_pte))) {
+			if (cow)
+				huge_ptep_set_wrprotect(src, addr, src_pte);
+			entry = huge_ptep_get(src_pte);
 			ptepage = pte_page(entry);
 			get_page(ptepage);
-			if (cow && pte_write(entry)) {
-				if (PageGUP(ptepage))
-					forcecow = 1;
-				huge_ptep_set_wrprotect(src, addr,
-							src_pte);
-				entry = huge_ptep_get(src_pte);
-			}
 			set_huge_pte_at(dst, addr, dst_pte, entry);
-			if (forcecow) {
-				int cow_ret;
-				/* force atomic copy from parent to child */
-				flush_tlb_range(src_vma, addr, addr+HPAGE_SIZE);
-				cow_ret = hugetlb_cow_locked(dst, dst_vma, addr,
-						      dst_pte, entry);
-				/*
-				 * Shouldnt happen!!!
-				 */
-				BUG_ON(pte_pfn(huge_ptep_get(src_pte)) != pte_pfn(entry));
-				set_huge_pte_at(src, addr,
-						src_pte,
-						orig_entry);
-				if (cow_ret != VM_FAULT_MINOR)
-					oom = 1;
-			}
 		}
 		spin_unlock(&src->page_table_lock);
 		spin_unlock(&dst->page_table_lock);
-		if (oom)
-			goto nomem;
 	}
 	return 0;
 
@@ -491,7 +448,7 @@ void unmap_hugepage_range(struct vm_area_struct *vma, unsigned long start,
 }
 
 static int hugetlb_cow(struct mm_struct *mm, struct vm_area_struct *vma,
-		       unsigned long address, pte_t *ptep, pte_t pte)
+			unsigned long address, pte_t *ptep, pte_t pte)
 {
 	struct page *old_page, *new_page;
 	int avoidcopy;
@@ -517,46 +474,6 @@ static int hugetlb_cow(struct mm_struct *mm, struct vm_area_struct *vma,
 	spin_unlock(&mm->page_table_lock);
 	copy_huge_page(new_page, old_page, address);
 	spin_lock(&mm->page_table_lock);
-
-	ptep = huge_pte_offset(mm, address & HPAGE_MASK);
-	if (likely(pte_same(huge_ptep_get(ptep), pte))) {
-		/* Break COW */
-		huge_ptep_clear_flush(vma, address, ptep);
-		set_huge_pte_at(mm, address, ptep,
-				make_huge_pte(vma, new_page, 1));
-		/* Make the old page be freed below */
-		new_page = old_page;
-	}
-	page_cache_release(new_page);
-	page_cache_release(old_page);
-	return VM_FAULT_MINOR;
-}
-
-static int hugetlb_cow_locked(struct mm_struct *mm, struct vm_area_struct *vma,
-			unsigned long address, pte_t *ptep, pte_t pte)
-{
-	struct page *old_page, *new_page;
-	int avoidcopy;
-
-	old_page = pte_page(pte);
-
-	/* If no-one else is actually using this page, avoid the copy
-	 * and just make the page writable */
-	avoidcopy = (page_count(old_page) == 1);
-	if (avoidcopy) {
-		set_huge_ptep_writable(vma, address, ptep);
-		return VM_FAULT_MINOR;
-	}
-
-	page_cache_get(old_page);
-	new_page = alloc_huge_page(vma, address);
-
-	if (!new_page) {
-		page_cache_release(old_page);
-		return VM_FAULT_OOM;
-	}
-
-	copy_huge_page_locked(new_page, old_page, address);
 
 	ptep = huge_pte_offset(mm, address & HPAGE_MASK);
 	if (likely(pte_same(huge_ptep_get(ptep), pte))) {
@@ -732,8 +649,6 @@ int follow_hugetlb_page(struct mm_struct *mm, struct vm_area_struct *vma,
 same_page:
 		if (pages) {
 			get_page(page);
-			if (write && !PageGUP(page))
-				SetPageGUP(page);
 			pages[i] = page + pfn_offset;
 		}
 

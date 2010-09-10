@@ -791,8 +791,7 @@ void free_pgd_range(struct mmu_gather **tlb, unsigned long addr,
 void free_pgtables(struct mmu_gather **tlb, struct vm_area_struct *start_vma,
 		unsigned long floor, unsigned long ceiling);
 int copy_page_range(struct mm_struct *dst, struct mm_struct *src,
-		    struct vm_area_struct *dst_vma,
-		    struct vm_area_struct *src_vma);
+			struct vm_area_struct *vma);
 int zeromap_page_range(struct vm_area_struct *vma, unsigned long from,
 			unsigned long size, pgprot_t prot);
 void unmap_mapping_range(struct address_space *mapping,
