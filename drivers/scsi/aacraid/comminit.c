@@ -106,7 +106,7 @@ static int aac_alloc_comm(struct aac_dev *dev, void **commaddr, unsigned long co
 	 * Increment the base address by the amount already used
 	 */
 	base = base + fibsize + sizeof(struct aac_init);
-	phys = phys + (fibsize + sizeof(struct aac_init));
+	phys = (dma_addr_t)((ulong)phys + fibsize + sizeof(struct aac_init));
 	/*
 	 *	Align the beginning of Headers to commalign
 	 */

@@ -46,23 +46,16 @@
 
 #define SGE_RX_SM_BUF_SIZE 1536
 
-/*
- * If USE_RX_PAGE is defined, the small freelist populated with (partial)
- * pages instead of skbs. Pages are carved up into RX_PAGE_SIZE chunks (must
- * be a multiple of the host page size).
- */
-#define USE_RX_PAGE
-#define RX_PAGE_SIZE 2048
-
-/*
- * skb freelist packets are copied into a new skb (and the freelist one is 
- * reused) if their len is <= 
- */
 #define SGE_RX_COPY_THRES  256
+#define SGE_RX_PULL_LEN    128
 
 /*
- * Minimum number of freelist entries before we start dropping TUNNEL frames.
+ * Page chunk size for FL0 buffers if FL0 is to be populated with page chunks.
+ * It must be a divisor of PAGE_SIZE.  If set to 0 FL0 will use sk_buffs
+ * directly.
  */
+#define FL0_PG_CHUNK_SIZE  2048
+
 #define SGE_RX_DROP_THRES 16
 
 /*
@@ -86,7 +79,7 @@ enum {
 };
 
 struct tx_desc {
-	u64 flit[TX_DESC_FLITS];
+	__be64 flit[TX_DESC_FLITS];
 };
 
 struct rx_desc {
@@ -98,14 +91,18 @@ struct rx_desc {
 
 struct tx_sw_desc {		/* SW state per Tx descriptor */
 	struct sk_buff *skb;
+	u8 eop;       /* set if last descriptor for packet */
+	u8 addr_idx;  /* buffer index of first SGL entry in descriptor */
+	u8 fragidx;   /* first page fragment associated with descriptor */
+	s8 sflit;     /* start flit of first SGL entry in descriptor */
 };
 
-struct rx_sw_desc {		/* SW state per Rx descriptor */
+struct rx_sw_desc {                /* SW state per Rx descriptor */
 	union {
 		struct sk_buff *skb;
-		struct sge_fl_page page;
-	} t;
-	 DECLARE_PCI_UNMAP_ADDR(dma_addr);
+		struct fl_pg_chunk pg_chunk;
+	};
+	DECLARE_PCI_UNMAP_ADDR(dma_addr);
 };
 
 struct rsp_desc {		/* response queue descriptor */
@@ -114,13 +111,6 @@ struct rsp_desc {		/* response queue descriptor */
 	__be32 len_cq;
 	u8 imm_data[47];
 	u8 intr_gen;
-};
-
-struct unmap_info {		/* packet unmapping info, overlays skb->cb */
-	int sflit;		/* start flit of first SGL entry in Tx descriptor */
-	u16 fragidx;		/* first page fragment in current Tx descriptor */
-	u16 addr_idx;		/* buffer index of first SGL entry in descriptor */
-	u32 len;		/* mapped length of skb main body */
 };
 
 /*
@@ -184,6 +174,7 @@ static inline struct sge_qset *txq_to_qset(const struct sge_txq *q, int qidx)
 static inline void refill_rspq(struct adapter *adapter,
 			       const struct sge_rspq *q, unsigned int credits)
 {
+	rmb();
 	t3_write_reg(adapter, A_SG_RSPQ_CREDIT_RETURN,
 		     V_RSPQ(q->cntxt_id) | V_CREDITS(credits));
 }
@@ -216,32 +207,36 @@ static inline int need_skb_unmap(void)
  *
  *	Unmap the main body of an sk_buff and its page fragments, if any.
  *	Because of the fairly complicated structure of our SGLs and the desire
- *	to conserve space for metadata, we keep the information necessary to
- *	unmap an sk_buff partly in the sk_buff itself (in its cb), and partly
- *	in the Tx descriptors (the physical addresses of the various data
- *	buffers).  The send functions initialize the state in skb->cb so we
- *	can unmap the buffers held in the first Tx descriptor here, and we
- *	have enough information at this point to update the state for the next
- *	Tx descriptor.
+ *	to conserve space for metadata, the information necessary to unmap an
+ *	sk_buff is spread across the sk_buff itself (buffer lengths), the HW Tx
+ *	descriptors (the physical addresses of the various data buffers), and
+ *	the SW descriptor state (assorted indices).  The send functions
+ *	initialize the indices for the first packet descriptor so we can unmap
+ *	the buffers held in the first Tx descriptor here, and we have enough
+ *	information at this point to set the state for the next Tx descriptor.
+ *
+ *	Note that it is possible to clean up the first descriptor of a packet
+ *	before the send routines have written the next descriptors, but this
+ *	race does not cause any problem.  We just end up writing the unmapping
+ *	info for the descriptor first.
  */
 static inline void unmap_skb(struct sk_buff *skb, struct sge_txq *q,
 			     unsigned int cidx, struct pci_dev *pdev)
 {
 	const struct sg_ent *sgp;
-	struct unmap_info *ui = (struct unmap_info *)skb->cb;
-	int nfrags, frag_idx, curflit, j = ui->addr_idx;
+	struct tx_sw_desc *d = &q->sdesc[cidx];
+	int nfrags, frag_idx, curflit, j = d->addr_idx;
 
-	sgp = (struct sg_ent *)&q->desc[cidx].flit[ui->sflit];
+	sgp = (struct sg_ent *)&q->desc[cidx].flit[d->sflit];
+	frag_idx = d->fragidx;
 
-	if (ui->len) {
-		pci_unmap_single(pdev, be64_to_cpu(sgp->addr[0]), ui->len,
-				 PCI_DMA_TODEVICE);
-		ui->len = 0;	/* so we know for next descriptor for this skb */
+	if (frag_idx == 0 && skb_headlen(skb)) {
+		pci_unmap_single(pdev, be64_to_cpu(sgp->addr[0]),
+				 skb_headlen(skb), PCI_DMA_TODEVICE);
 		j = 1;
 	}
 
-	frag_idx = ui->fragidx;
-	curflit = ui->sflit + 1 + j;
+	curflit = d->sflit + 1 + j;
 	nfrags = skb_shinfo(skb)->nr_frags;
 
 	while (frag_idx < nfrags && curflit < WR_FLITS) {
@@ -257,10 +252,11 @@ static inline void unmap_skb(struct sk_buff *skb, struct sge_txq *q,
 		frag_idx++;
 	}
 
-	if (frag_idx < nfrags) {	/* SGL continues into next Tx descriptor */
-		ui->fragidx = frag_idx;
-		ui->addr_idx = j;
-		ui->sflit = curflit - WR_FLITS - j;	/* sflit can be -1 */
+	if (frag_idx < nfrags) {   /* SGL continues into next Tx descriptor */
+		d = cidx + 1 == q->size ? q->sdesc : d + 1;
+		d->fragidx = frag_idx;
+		d->addr_idx = j;
+		d->sflit = curflit - WR_FLITS - j; /* sflit can be -1 */
 	}
 }
 
@@ -288,7 +284,7 @@ static void free_tx_desc(struct adapter *adapter, struct sge_txq *q,
 		if (d->skb) {	/* an SGL is present */
 			if (need_unmap)
 				unmap_skb(d->skb, q, cidx, pdev);
-			if (d->skb->priority == cidx)
+			if (d->eop)
 				kfree_skb(d->skb);
 		}
 		++d;
@@ -351,27 +347,26 @@ static void free_rx_bufs(struct pci_dev *pdev, struct sge_fl *q)
 
 		pci_unmap_single(pdev, pci_unmap_addr(d, dma_addr),
 				 q->buf_size, PCI_DMA_FROMDEVICE);
-
-		if (q->buf_size != RX_PAGE_SIZE) {
-			kfree_skb(d->t.skb);
-			d->t.skb = NULL;
+		if (q->use_pages) {
+			put_page(d->pg_chunk.page);
+			d->pg_chunk.page = NULL;
 		} else {
-			if (d->t.page.frag.page)
-				put_page(d->t.page.frag.page);
-			d->t.page.frag.page = NULL;
+			kfree_skb(d->skb);
+			d->skb = NULL;
 		}
 		if (++cidx == q->size)
 			cidx = 0;
 	}
 
-	if (q->page.frag.page)
-		put_page(q->page.frag.page);
-	q->page.frag.page = NULL;
+	if (q->pg_chunk.page) {
+		__free_page(q->pg_chunk.page);
+		q->pg_chunk.page = NULL;
+	}
 }
 
 /**
  *	add_one_rx_buf - add a packet buffer to a free-buffer list
- *	@va: va of the buffer to add
+ *	@va:  buffer start VA
  *	@len: the buffer length
  *	@d: the HW Rx descriptor to write
  *	@sd: the SW Rx descriptor to write
@@ -381,7 +376,7 @@ static void free_rx_bufs(struct pci_dev *pdev, struct sge_fl *q)
  *	Add a buffer of the given length to the supplied HW and SW Rx
  *	descriptors.
  */
-static inline void add_one_rx_buf(unsigned char *va, unsigned int len,
+static inline void add_one_rx_buf(void *va, unsigned int len,
 				  struct rx_desc *d, struct rx_sw_desc *sd,
 				  unsigned int gen, struct pci_dev *pdev)
 {
@@ -397,6 +392,27 @@ static inline void add_one_rx_buf(unsigned char *va, unsigned int len,
 	d->gen2 = cpu_to_be32(V_FLD_GEN2(gen));
 }
 
+static int alloc_pg_chunk(struct sge_fl *q, struct rx_sw_desc *sd, gfp_t gfp)
+{
+	if (!q->pg_chunk.page) {
+		q->pg_chunk.page = alloc_page(gfp);
+		if (unlikely(!q->pg_chunk.page))
+			return -ENOMEM;
+		q->pg_chunk.va = page_address(q->pg_chunk.page);
+		q->pg_chunk.offset = 0;
+	}
+	sd->pg_chunk = q->pg_chunk;
+
+	q->pg_chunk.offset += q->buf_size;
+	if (q->pg_chunk.offset == PAGE_SIZE)
+		q->pg_chunk.page = NULL;
+	else {
+		q->pg_chunk.va += q->buf_size;
+		get_page(q->pg_chunk.page);
+	}
+	return 0;
+}
+
 /**
  *	refill_fl - refill an SGE free-buffer list
  *	@adapter: the adapter
@@ -410,49 +426,29 @@ static inline void add_one_rx_buf(unsigned char *va, unsigned int len,
  */
 static void refill_fl(struct adapter *adap, struct sge_fl *q, int n, gfp_t gfp)
 {
+	void *buf_start;
 	struct rx_sw_desc *sd = &q->sdesc[q->pidx];
 	struct rx_desc *d = &q->desc[q->pidx];
-	struct sge_fl_page *p = &q->page;
 
 	while (n--) {
-		unsigned char *va;
-
-		if (unlikely(q->buf_size != RX_PAGE_SIZE)) {
-			struct sk_buff *skb = alloc_skb(q->buf_size, gfp);
-
-			if (!skb) {
-				q->alloc_failed++;
+		if (q->use_pages) {
+			if (unlikely(alloc_pg_chunk(q, sd, gfp))) {
+nomem:				q->alloc_failed++;
 				break;
 			}
-			va = skb->data;
-			sd->t.skb = skb;
+			buf_start = sd->pg_chunk.va;
 		} else {
-			if (!p->frag.page) {
-				p->frag.page = alloc_pages(gfp, 0);
-				if (unlikely(!p->frag.page)) {
-					q->alloc_failed++;
-					break;
-				} else {
-					p->frag.size = RX_PAGE_SIZE;
-					p->frag.page_offset = 0;
-					p->va = page_address(p->frag.page);
-				}
-			}
+			struct sk_buff *skb = alloc_skb(q->buf_size, gfp);
 
-			memcpy(&sd->t, p, sizeof(*p));
-			va = p->va;
+			if (!skb)
+				goto nomem;
 
-			p->frag.page_offset += RX_PAGE_SIZE;
-			BUG_ON(p->frag.page_offset > PAGE_SIZE);
-			p->va += RX_PAGE_SIZE;
-			if (p->frag.page_offset == PAGE_SIZE)
-				p->frag.page = NULL;
-			else
-				get_page(p->frag.page);
+			sd->skb = skb;
+			buf_start = skb->data;
 		}
 
-		add_one_rx_buf(va, q->buf_size, d, sd, q->gen, adap->pdev);
-
+		add_one_rx_buf(buf_start, q->buf_size, d, sd, q->gen,
+			       adap->pdev);
 		d++;
 		sd++;
 		if (++q->pidx == q->size) {
@@ -463,7 +459,7 @@ static void refill_fl(struct adapter *adap, struct sge_fl *q, int n, gfp_t gfp)
 		}
 		q->credits++;
 	}
-
+	wmb();
 	t3_write_reg(adap, A_SG_KDOORBELL, V_EGRCNTX(q->cntxt_id));
 }
 
@@ -487,7 +483,7 @@ static void recycle_rx_buf(struct adapter *adap, struct sge_fl *q,
 	struct rx_desc *from = &q->desc[idx];
 	struct rx_desc *to = &q->desc[q->pidx];
 
-	memcpy(&q->sdesc[q->pidx], &q->sdesc[idx], sizeof(struct rx_sw_desc));
+	q->sdesc[q->pidx] = q->sdesc[idx];
 	to->addr_lo = from->addr_lo;	/* already big endian */
 	to->addr_hi = from->addr_hi;	/* likewise */
 	wmb();
@@ -551,7 +547,7 @@ static void *alloc_ring(struct pci_dev *pdev, size_t nelem, size_t elem_size,
  *	as HW contexts, packet buffers, and descriptor rings.  Traffic to the
  *	queue set must be quiesced prior to calling this.
  */
-void t3_free_qset(struct adapter *adapter, struct sge_qset *q)
+static void t3_free_qset(struct adapter *adapter, struct sge_qset *q)
 {
 	int i;
 	struct pci_dev *pdev = adapter->pdev;
@@ -647,6 +643,132 @@ static inline unsigned int flits_to_desc(unsigned int n)
 {
 	BUG_ON(n >= ARRAY_SIZE(flit_desc_map));
 	return flit_desc_map[n];
+}
+
+/**
+ *	get_packet - return the next ingress packet buffer from a free list
+ *	@adap: the adapter that received the packet
+ *	@fl: the SGE free list holding the packet
+ *	@len: the packet length including any SGE padding
+ *	@drop_thres: # of remaining buffers before we start dropping packets
+ *
+ *	Get the next packet from a free list and complete setup of the
+ *	sk_buff.  If the packet is small we make a copy and recycle the
+ *	original buffer, otherwise we use the original buffer itself.  If a
+ *	positive drop threshold is supplied packets are dropped and their
+ *	buffers recycled if (a) the number of remaining buffers is under the
+ *	threshold and the packet is too big to copy, or (b) the packet should
+ *	be copied but there is no memory for the copy.
+ */
+static struct sk_buff *get_packet(struct adapter *adap, struct sge_fl *fl,
+				  unsigned int len, unsigned int drop_thres)
+{
+	struct sk_buff *skb = NULL;
+	struct rx_sw_desc *sd = &fl->sdesc[fl->cidx];
+
+	prefetch(sd->skb->data);
+	fl->credits--;
+
+	if (len <= SGE_RX_COPY_THRES) {
+		skb = alloc_skb(len, GFP_ATOMIC);
+		if (likely(skb != NULL)) {
+			__skb_put(skb, len);
+			pci_dma_sync_single_for_cpu(adap->pdev,
+					    pci_unmap_addr(sd, dma_addr), len,
+					    PCI_DMA_FROMDEVICE);
+			memcpy(skb->data, sd->skb->data, len);
+			pci_dma_sync_single_for_device(adap->pdev,
+					    pci_unmap_addr(sd, dma_addr), len,
+					    PCI_DMA_FROMDEVICE);
+		} else if (!drop_thres)
+			goto use_orig_buf;
+recycle:
+		recycle_rx_buf(adap, fl, fl->cidx);
+		return skb;
+	}
+
+	if (unlikely(fl->credits < drop_thres))
+		goto recycle;
+
+use_orig_buf:
+	pci_unmap_single(adap->pdev, pci_unmap_addr(sd, dma_addr),
+			 fl->buf_size, PCI_DMA_FROMDEVICE);
+	skb = sd->skb;
+	skb_put(skb, len);
+	__refill_fl(adap, fl);
+	return skb;
+}
+
+/**
+ *	get_packet_pg - return the next ingress packet buffer from a free list
+ *	@adap: the adapter that received the packet
+ *	@fl: the SGE free list holding the packet
+ *	@len: the packet length including any SGE padding
+ *	@drop_thres: # of remaining buffers before we start dropping packets
+ *
+ *	Get the next packet from a free list populated with page chunks.
+ *	If the packet is small we make a copy and recycle the original buffer,
+ *	otherwise we attach the original buffer as a page fragment to a fresh
+ *	sk_buff.  If a positive drop threshold is supplied packets are dropped
+ *	and their buffers recycled if (a) the number of remaining buffers is
+ *	under the threshold and the packet is too big to copy, or (b) there's
+ *	no system memory.
+ *
+ * 	Note: this function is similar to @get_packet but deals with Rx buffers
+ * 	that are page chunks rather than sk_buffs.
+ */
+static struct sk_buff *get_packet_pg(struct adapter *adap, struct sge_fl *fl,
+				     unsigned int len, unsigned int drop_thres)
+{
+	struct sk_buff *skb = NULL;
+	struct rx_sw_desc *sd = &fl->sdesc[fl->cidx];
+
+	if (len <= SGE_RX_COPY_THRES) {
+		skb = alloc_skb(len, GFP_ATOMIC);
+		if (likely(skb != NULL)) {
+			__skb_put(skb, len);
+			pci_dma_sync_single_for_cpu(adap->pdev,
+					    pci_unmap_addr(sd, dma_addr), len,
+					    PCI_DMA_FROMDEVICE);
+			memcpy(skb->data, sd->pg_chunk.va, len);
+			pci_dma_sync_single_for_device(adap->pdev,
+					    pci_unmap_addr(sd, dma_addr), len,
+					    PCI_DMA_FROMDEVICE);
+		} else if (!drop_thres)
+			return NULL;
+recycle:
+		fl->credits--;
+		recycle_rx_buf(adap, fl, fl->cidx);
+		return skb;
+	}
+
+	if (unlikely(fl->credits <= drop_thres))
+		goto recycle;
+
+	skb = alloc_skb(SGE_RX_PULL_LEN, GFP_ATOMIC);
+	if (unlikely(!skb)) {
+		if (!drop_thres)
+			return NULL;
+		goto recycle;
+	}
+
+	pci_unmap_single(adap->pdev, pci_unmap_addr(sd, dma_addr),
+			 fl->buf_size, PCI_DMA_FROMDEVICE);
+	__skb_put(skb, SGE_RX_PULL_LEN);
+	memcpy(skb->data, sd->pg_chunk.va, SGE_RX_PULL_LEN);
+	skb_fill_page_desc(skb, 0, sd->pg_chunk.page,
+			   sd->pg_chunk.offset + SGE_RX_PULL_LEN,
+			   len - SGE_RX_PULL_LEN);
+	skb->len = len;
+	skb->data_len = len - SGE_RX_PULL_LEN;
+	skb->truesize += skb->data_len;
+
+	fl->credits--;
+	/*
+	 * We do not refill FLs here, we let the caller do it to overlap a
+	 * prefetch.
+	 */
+	return skb;
 }
 
 /**
@@ -788,23 +910,21 @@ static void write_wr_hdr_sgl(unsigned int ndesc, struct sk_buff *skb,
 			     const struct sge_txq *q,
 			     const struct sg_ent *sgl,
 			     unsigned int flits, unsigned int sgl_flits,
-			     unsigned int gen, unsigned int wr_hi,
-			     unsigned int wr_lo)
+			     unsigned int gen, __be32 wr_hi,
+			     __be32 wr_lo)
 {
 	struct work_request_hdr *wrp = (struct work_request_hdr *)d;
 	struct tx_sw_desc *sd = &q->sdesc[pidx];
 
 	sd->skb = skb;
 	if (need_skb_unmap()) {
-		struct unmap_info *ui = (struct unmap_info *)skb->cb;
-
-		ui->fragidx = 0;
-		ui->addr_idx = 0;
-		ui->sflit = flits;
+		sd->fragidx = 0;
+		sd->addr_idx = 0;
+		sd->sflit = flits;
 	}
 
 	if (likely(ndesc == 1)) {
-		skb->priority = pidx;
+		sd->eop = 1;
 		wrp->wr_hi = htonl(F_WR_SOP | F_WR_EOP | V_WR_DATATYPE(1) |
 				   V_WR_SGLSFLT(flits)) | wr_hi;
 		wmb();
@@ -832,6 +952,7 @@ static void write_wr_hdr_sgl(unsigned int ndesc, struct sk_buff *skb,
 
 			fp += avail;
 			d++;
+			sd->eop = 0;
 			sd++;
 			if (++pidx == q->size) {
 				pidx = 0;
@@ -850,7 +971,7 @@ static void write_wr_hdr_sgl(unsigned int ndesc, struct sk_buff *skb,
 			wr_gen2(d, gen);
 			flits = 1;
 		}
-		skb->priority = pidx;
+		sd->eop = 1;
 		wrp->wr_hi |= htonl(F_WR_EOP);
 		wmb();
 		wp->wr_lo = htonl(V_WR_LEN(WR_FLITS) | V_WR_GEN(ogen)) | wr_lo;
@@ -934,8 +1055,6 @@ static void write_tx_pkt_wr(struct adapter *adap, struct sk_buff *skb,
 
 	sgp = ndesc == 1 ? (struct sg_ent *)&d->flit[flits] : sgl;
 	sgl_flits = make_sgl(skb, sgp, skb->data, skb_headlen(skb), adap->pdev);
-	if (need_skb_unmap())
-		((struct unmap_info *)skb->cb)->len = skb_headlen(skb);
 
 	write_wr_hdr_sgl(ndesc, skb, d, pidx, q, sgl, flits, sgl_flits, gen,
 			 htonl(V_WR_OP(FW_WROPCODE_TUNNEL_TX_PKT) | compl),
@@ -953,7 +1072,7 @@ int t3_eth_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	unsigned int ndesc, pidx, credits, gen, compl;
 	const struct port_info *pi = netdev_priv(dev);
-	struct adapter *adap = dev->priv;
+	struct adapter *adap = pi->adapter;
 	struct sge_qset *qs = dev2qset(dev);
 	struct sge_txq *q = &qs->txq[TXQ_ETH];
 
@@ -1062,8 +1181,8 @@ int t3_eth_xmit(struct sk_buff *skb, struct net_device *dev)
  *
  *	Writes a packet as immediate data into a Tx descriptor.  The packet
  *	contains a work request at its beginning.  We must write the packet
- *	carefully so the SGE doesn't read accidentally before it's written in
- *	its entirety.
+ *	carefully so the SGE doesn't read it accidentally before it's written
+ *	in its entirety.
  */
 static inline void write_imm(struct tx_desc *d, struct sk_buff *skb,
 			     unsigned int len, unsigned int gen)
@@ -1071,7 +1190,11 @@ static inline void write_imm(struct tx_desc *d, struct sk_buff *skb,
 	struct work_request_hdr *from = (struct work_request_hdr *)skb->data;
 	struct work_request_hdr *to = (struct work_request_hdr *)d;
 
-	memcpy(&to[1], &from[1], len - sizeof(*from));
+	if (likely(!skb->data_len))
+		memcpy(&to[1], &from[1], len - sizeof(*from));
+	else
+		skb_copy_bits(skb, sizeof(*from), &to[1], len - sizeof(*from));
+
 	to->wr_hi = from->wr_hi | htonl(F_WR_SOP | F_WR_EOP |
 					V_WR_BCNTLFLT(len & 7));
 	wmb();
@@ -1141,7 +1264,7 @@ static inline void reclaim_completed_tx_imm(struct sge_txq *q)
 
 static inline int immediate(const struct sk_buff *skb)
 {
-	return skb->len <= WR_LEN && !skb->data_len;
+	return skb->len <= WR_LEN;
 }
 
 /**
@@ -1206,7 +1329,8 @@ static void restart_ctrlq(unsigned long data)
 	struct sk_buff *skb;
 	struct sge_qset *qs = (struct sge_qset *)data;
 	struct sge_txq *q = &qs->txq[TXQ_CTRL];
-	struct adapter *adap = qs->netdev->priv;
+	const struct port_info *pi = netdev_priv(qs->netdev);
+	struct adapter *adap = pi->adapter;
 
 	spin_lock(&q->lock);
       again:reclaim_completed_tx_imm(q);
@@ -1233,6 +1357,7 @@ static void restart_ctrlq(unsigned long data)
 	}
 
 	spin_unlock(&q->lock);
+	wmb();
 	t3_write_reg(adap, A_SG_KDOORBELL,
 		     F_SELEGRCNTX | V_EGRCNTX(q->cntxt_id));
 }
@@ -1242,7 +1367,12 @@ static void restart_ctrlq(unsigned long data)
  */
 int t3_mgmt_tx(struct adapter *adap, struct sk_buff *skb)
 {
-	return ctrl_xmit(adap, &adap->sge.qs[0].txq[TXQ_CTRL], skb);
+	int ret; 
+	local_bh_disable();
+	ret = ctrl_xmit(adap, &adap->sge.qs[0].txq[TXQ_CTRL], skb);
+	local_bh_enable();
+
+	return ret;
 }
 
 /**
@@ -1259,13 +1389,14 @@ static void deferred_unmap_destructor(struct sk_buff *skb)
 	const dma_addr_t *p;
 	const struct skb_shared_info *si;
 	const struct deferred_unmap_info *dui;
-	const struct unmap_info *ui = (struct unmap_info *)skb->cb;
 
 	dui = (struct deferred_unmap_info *)skb->head;
 	p = dui->addr;
 
-	if (ui->len)
-		pci_unmap_single(dui->pdev, *p++, ui->len, PCI_DMA_TODEVICE);
+	if (skb->tail - skb->h.raw)
+		pci_unmap_single(dui->pdev, *p++,
+				 skb->tail - skb->h.raw,
+				 PCI_DMA_TODEVICE);
 
 	si = skb_shinfo(skb);
 	for (i = 0; i < si->nr_frags; i++)
@@ -1328,7 +1459,6 @@ static void write_ofld_wr(struct adapter *adap, struct sk_buff *skb,
 	if (need_skb_unmap()) {
 		setup_deferred_unmapping(skb, adap->pdev, sgp, sgl_flits);
 		skb->destructor = deferred_unmap_destructor;
-		((struct unmap_info *)skb->cb)->len = skb->tail - skb->h.raw;
 	}
 
 	write_wr_hdr_sgl(ndesc, skb, d, pidx, q, sgl, flits, sgl_flits,
@@ -1344,12 +1474,13 @@ static void write_ofld_wr(struct adapter *adap, struct sk_buff *skb,
  */
 static inline unsigned int calc_tx_descs_ofld(const struct sk_buff *skb)
 {
-	unsigned int flits, cnt = skb_shinfo(skb)->nr_frags;
+	unsigned int flits, cnt;
 
-	if (skb->len <= WR_LEN && cnt == 0)
+	if (skb->len <= WR_LEN)
 		return 1;	/* packet fits as immediate data */
 
 	flits = (skb->h.raw - skb->data) / 8;	/* headers */
+	cnt = skb_shinfo(skb)->nr_frags;
 	if (skb->tail != skb->h.raw)
 		cnt++;
 	return flits_to_desc(flits + sgl_len(cnt));
@@ -1408,7 +1539,8 @@ static void restart_offloadq(unsigned long data)
 	struct sk_buff *skb;
 	struct sge_qset *qs = (struct sge_qset *)data;
 	struct sge_txq *q = &qs->txq[TXQ_OFLD];
-	struct adapter *adap = qs->netdev->priv;
+	const struct port_info *pi = netdev_priv(qs->netdev);
+	struct adapter *adap = pi->adapter;
 
 	spin_lock(&q->lock);
       again:reclaim_completed_tx(adap, q);
@@ -1448,6 +1580,7 @@ static void restart_offloadq(unsigned long data)
 	set_bit(TXQ_RUNNING, &q->flags);
 	set_bit(TXQ_LAST_PKT_DB, &q->flags);
 #endif
+	wmb();
 	t3_write_reg(adap, A_SG_KDOORBELL,
 		     F_SELEGRCNTX | V_EGRCNTX(q->cntxt_id));
 }
@@ -1552,7 +1685,8 @@ static inline void deliver_partial_bundle(struct t3cdev *tdev,
  */
 static int ofld_poll(struct net_device *dev, int *budget)
 {
-	struct adapter *adapter = dev->priv;
+	const struct port_info *pi = netdev_priv(dev);
+	struct adapter *adapter = pi->adapter;
 	struct sge_qset *qs = dev2qset(dev);
 	struct sge_rspq *q = &qs->rspq;
 	int work_done, limit = min(*budget, dev->quota), avail = limit;
@@ -1619,7 +1753,6 @@ static inline int rx_offload(struct t3cdev *tdev, struct sge_rspq *rq,
 			     struct sk_buff *skb, struct sk_buff *rx_gather[],
 			     unsigned int gather_idx)
 {
-	rq->offload_pkts++;
 	skb->mac.raw = skb->nh.raw = skb->h.raw = skb->data;
 
 	if (rq->polling) {
@@ -1685,8 +1818,8 @@ static void rx_eth(struct adapter *adap, struct sge_rspq *rq,
 
 	skb_pull(skb, sizeof(*p) + pad);
 	skb->dev = adap->port[p->iff];
-	skb->dev->last_rx = jiffies;
 	skb->protocol = eth_type_trans(skb, skb->dev);
+	skb->dev->last_rx = jiffies;
 	pi = netdev_priv(skb->dev);
 	if (pi->rx_csum_offload && p->csum_valid && p->csum == 0xffff &&
 	    !p->fragment) {
@@ -1708,85 +1841,6 @@ static void rx_eth(struct adapter *adap, struct sge_rspq *rq,
 		netif_receive_skb(skb);
 	else
 		netif_rx(skb);
-}
-
-#define SKB_DATA_SIZE 128
-
-static void skb_data_init(struct sk_buff *skb, struct sge_fl_page *p,
-			  unsigned int len)
-{
-	skb->len = len;
-	if (len <= SKB_DATA_SIZE) {
-		memcpy(skb->data, p->va, len);
-		skb->tail += len;
-		put_page(p->frag.page);
-	} else {
-		memcpy(skb->data, p->va, SKB_DATA_SIZE);
-		skb_shinfo(skb)->frags[0].page = p->frag.page;
-		skb_shinfo(skb)->frags[0].page_offset =
-		    p->frag.page_offset + SKB_DATA_SIZE;
-		skb_shinfo(skb)->frags[0].size = len - SKB_DATA_SIZE;
-		skb_shinfo(skb)->nr_frags = 1;
-		skb->data_len = len - SKB_DATA_SIZE;
-		skb->tail += SKB_DATA_SIZE;
-		skb->truesize += skb->data_len;
-	}
-}
-
-/**
-*      get_packet - return the next ingress packet buffer from a free list
-*      @adap: the adapter that received the packet
-*      @fl: the SGE free list holding the packet
-*      @len: the packet length including any SGE padding
-*      @drop_thres: # of remaining buffers before we start dropping packets
-*
-*      Get the next packet from a free list and complete setup of the
-*      sk_buff.  If the packet is small we make a copy and recycle the
-*      original buffer, otherwise we use the original buffer itself.  If a
-*      positive drop threshold is supplied packets are dropped and their
-*      buffers recycled if (a) the number of remaining buffers is under the
-*      threshold and the packet is too big to copy, or (b) the packet should
-*      be copied but there is no memory for the copy.
-*/
-static struct sk_buff *get_packet(struct adapter *adap, struct sge_fl *fl,
-				  unsigned int len, unsigned int drop_thres)
-{
-	struct sk_buff *skb = NULL;
-	struct rx_sw_desc *sd = &fl->sdesc[fl->cidx];
-
-	prefetch(sd->t.skb->data);
-
-	if (len <= SGE_RX_COPY_THRES) {
-		skb = alloc_skb(len, GFP_ATOMIC);
-		if (likely(skb != NULL)) {
-			struct rx_desc *d = &fl->desc[fl->cidx];
-			dma_addr_t mapping =
-			    (dma_addr_t)((u64) be32_to_cpu(d->addr_hi) << 32 |
-					 be32_to_cpu(d->addr_lo));
-
-			__skb_put(skb, len);
-			pci_dma_sync_single_for_cpu(adap->pdev, mapping, len,
-						    PCI_DMA_FROMDEVICE);
-			memcpy(skb->data, sd->t.skb->data, len);
-			pci_dma_sync_single_for_device(adap->pdev, mapping, len,
-						       PCI_DMA_FROMDEVICE);
-		} else if (!drop_thres)
-			goto use_orig_buf;
-recycle:
-		recycle_rx_buf(adap, fl, fl->cidx);
-		return skb;
-	}
-
-	if (unlikely(fl->credits < drop_thres))
-		goto recycle;
-
-use_orig_buf:
-	pci_unmap_single(adap->pdev, pci_unmap_addr(sd, dma_addr),
-			 fl->buf_size, PCI_DMA_FROMDEVICE);
-	skb = sd->t.skb;
-	skb_put(skb, len);
-	__refill_fl(adap, fl);
-	return skb;
 }
 
 /**
@@ -1930,7 +1984,7 @@ static int process_responses(struct adapter *adap, struct sge_qset *qs,
 		} else if (flags & F_RSPD_IMM_DATA_VALID) {
 			skb = get_imm_packet(r);
 			if (unlikely(!skb)) {
-			      no_mem:
+no_mem:
 				q->next_holdoff = NOMEM_INTR_DELAY;
 				q->nomem++;
 				/* consume one credit since we tried */
@@ -1940,53 +1994,29 @@ static int process_responses(struct adapter *adap, struct sge_qset *qs,
 			q->imm_data++;
 			ethpad = 0;
 		} else if ((len = ntohl(r->len_cq)) != 0) {
-			struct sge_fl *fl =
-			    (len & F_RSPD_FLQ) ? &qs->fl[1] : &qs->fl[0];
+			struct sge_fl *fl;
 
-			if (fl->buf_size == RX_PAGE_SIZE) {
-				struct rx_sw_desc *sd = &fl->sdesc[fl->cidx];
-				struct sge_fl_page *p = &sd->t.page;
+			fl = (len & F_RSPD_FLQ) ? &qs->fl[1] : &qs->fl[0];
+			if (fl->use_pages) {
+				void *addr = fl->sdesc[fl->cidx].pg_chunk.va;
 
-				prefetch(p->va);
-				prefetch(p->va + L1_CACHE_BYTES);
-
+				prefetch(addr);
+#if L1_CACHE_BYTES < 128
+				prefetch(addr + L1_CACHE_BYTES);
+#endif
 				__refill_fl(adap, fl);
 
-				pci_unmap_single(adap->pdev,
-						 pci_unmap_addr(sd, dma_addr),
-						 fl->buf_size,
-						 PCI_DMA_FROMDEVICE);
-
-				if (eth) {
-					if (unlikely(fl->credits <
-						     SGE_RX_DROP_THRES))
-						goto eth_recycle;
-
-					skb = alloc_skb(SKB_DATA_SIZE,
-							GFP_ATOMIC);
-					if (unlikely(!skb)) {
-eth_recycle:
-						q->rx_drops++;
-						recycle_rx_buf(adap, fl,
-							       fl->cidx);
-						goto eth_done;
-					}
-				} else {
-					skb = alloc_skb(SKB_DATA_SIZE,
-							GFP_ATOMIC);
-					if (unlikely(!skb))
-						goto no_mem;
-				}
-
-				skb_data_init(skb, p, G_RSPD_LEN(len));
-eth_done:
-				fl->credits--;
-				q->eth_pkts++;
-			} else {
-				fl->credits--;
+				skb = get_packet_pg(adap, fl, G_RSPD_LEN(len),
+						 eth ? SGE_RX_DROP_THRES : 0);
+			} else
 				skb = get_packet(adap, fl, G_RSPD_LEN(len),
 						 eth ? SGE_RX_DROP_THRES : 0);
-			}
+			if (unlikely(!skb)) {
+				if (!eth)
+					goto no_mem;
+				q->rx_drops++;
+			} else if (unlikely(r->rss_hdr.opcode == CPL_TRACE_PKT))
+				__skb_pull(skb, 2);
 
 			if (++fl->cidx == fl->size)
 				fl->cidx = 0;
@@ -2011,20 +2041,16 @@ eth_done:
 			q->credits = 0;
 		}
 
-		if (skb) {
-			/* Preserve the RSS info in csum & priority */
-			skb->csum = rss_hi;
-			skb->priority = rss_lo;
-
+		if (likely(skb != NULL)) {
 			if (eth)
 				rx_eth(adap, q, skb, ethpad);
 			else {
-				if (unlikely(r->rss_hdr.opcode ==
-					     CPL_TRACE_PKT))
-					__skb_pull(skb, ethpad);
-
-				ngathered = rx_offload(&adap->tdev, q,
-						       skb, offload_skbs,
+				q->offload_pkts++;
+				/* Preserve the RSS info in csum & priority */
+				skb->csum = rss_hi;
+				skb->priority = rss_lo;
+				ngathered = rx_offload(&adap->tdev, q, skb,
+						       offload_skbs,
 						       ngathered);
 			}
 		}
@@ -2059,7 +2085,8 @@ static inline int is_pure_response(const struct rsp_desc *r)
  */
 static int napi_rx_handler(struct net_device *dev, int *budget)
 {
-	struct adapter *adap = dev->priv;
+	const struct port_info *pi = netdev_priv(dev);
+	struct adapter *adap = pi->adapter;
 	struct sge_qset *qs = dev2qset(dev);
 	int effective_budget = min(*budget, dev->quota);
 
@@ -2189,7 +2216,8 @@ static inline int handle_responses(struct adapter *adap, struct sge_rspq *q)
 irqreturn_t t3_sge_intr_msix(int irq, void *cookie, struct pt_regs *regs)
 {
 	struct sge_qset *qs = cookie;
-	struct adapter *adap = qs->netdev->priv;
+	const struct port_info *pi = netdev_priv(qs->netdev);
+	struct adapter *adap = pi->adapter;
 	struct sge_rspq *q = &qs->rspq;
 
 	spin_lock(&q->lock);
@@ -2205,14 +2233,14 @@ irqreturn_t t3_sge_intr_msix(int irq, void *cookie, struct pt_regs *regs)
  * The MSI-X interrupt handler for an SGE response queue for the NAPI case
  * (i.e., response queue serviced by NAPI polling).
  */
-irqreturn_t t3_sge_intr_msix_napi(int irq, void *cookie, struct pt_regs *regs)
+static irqreturn_t t3_sge_intr_msix_napi(int irq, void *cookie, struct pt_regs *regs)
 {
 	struct sge_qset *qs = cookie;
-	struct adapter *adap = qs->netdev->priv;
+	const struct port_info *pi = netdev_priv(qs->netdev);
+	struct adapter *adap = pi->adapter;
 	struct sge_rspq *q = &qs->rspq;
 
 	spin_lock(&q->lock);
-	BUG_ON(napi_is_scheduled(qs->netdev));
 
 	if (handle_responses(adap, q) < 0)
 		q->unhandled_irqs++;
@@ -2274,7 +2302,7 @@ static int rspq_check_napi(struct net_device *dev, struct sge_rspq *q)
  * one SGE response queue per port in this mode and protect all response
  * queues with queue 0's lock.
  */
-irqreturn_t t3_intr_msi_napi(int irq, void *cookie, struct pt_regs *regs)
+static irqreturn_t t3_intr_msi_napi(int irq, void *cookie, struct pt_regs *regs)
 {
 	int new_packets;
 	struct adapter *adap = cookie;
@@ -2440,6 +2468,15 @@ intr_handler_t t3_intr_handler(struct adapter *adap, int polling, struct pt_regs
 	return t3_intr;
 }
 
+#define SGE_PARERR (F_CPPARITYERROR | F_OCPARITYERROR | F_RCPARITYERROR | \
+		    F_IRPARITYERROR | V_ITPARITYERROR(M_ITPARITYERROR) | \
+		    V_FLPARITYERROR(M_FLPARITYERROR) | F_LODRBPARITYERROR | \
+		    F_HIDRBPARITYERROR | F_LORCQPARITYERROR | \
+		    F_HIRCQPARITYERROR)
+#define SGE_FRAMINGERR (F_UC_REQ_FRAMINGERROR | F_R_REQ_FRAMINGERROR)
+#define SGE_FATALERR (SGE_PARERR | SGE_FRAMINGERR | F_RSPQCREDITOVERFOW | \
+		      F_RSPQDISABLED)
+
 /**
  *	t3_sge_err_intr_handler - SGE async event interrupt handler
  *	@adapter: the adapter
@@ -2449,6 +2486,13 @@ intr_handler_t t3_intr_handler(struct adapter *adap, int polling, struct pt_regs
 void t3_sge_err_intr_handler(struct adapter *adapter)
 {
 	unsigned int v, status = t3_read_reg(adapter, A_SG_INT_CAUSE);
+
+	if (status & SGE_PARERR)
+		CH_ALERT(adapter, "SGE parity error (0x%x)\n",
+			 status & SGE_PARERR);
+	if (status & SGE_FRAMINGERR)
+		CH_ALERT(adapter, "SGE framing error (0x%x)\n",
+			 status & SGE_FRAMINGERR);
 
 	if (status & F_RSPQCREDITOVERFOW)
 		CH_ALERT(adapter, "SGE response queue credit overflow\n");
@@ -2461,8 +2505,12 @@ void t3_sge_err_intr_handler(struct adapter *adapter)
 			 "(0x%x)\n", (v >> S_RSPQ0DISABLED) & 0xff);
 	}
 
+	if (status & (F_HIPIODRBDROPERR | F_LOPIODRBDROPERR))
+		CH_ALERT(adapter, "SGE dropped %s priority doorbell\n",
+			 status & F_HIPIODRBDROPERR ? "high" : "lo");
+
 	t3_write_reg(adapter, A_SG_INT_CAUSE, status);
-	if (status & (F_RSPQCREDITOVERFOW | F_RSPQDISABLED))
+	if (status &  SGE_FATALERR)
 		t3_fatal_err(adapter);
 }
 
@@ -2493,7 +2541,8 @@ static void sge_timer_cb(unsigned long data)
 {
 	spinlock_t *lock;
 	struct sge_qset *qs = (struct sge_qset *)data;
-	struct adapter *adap = qs->netdev->priv;
+	const struct port_info *pi = netdev_priv(qs->netdev);
+	struct adapter *adap = pi->adapter;
 
 	if (spin_trylock(&qs->txq[TXQ_ETH].lock)) {
 		reclaim_completed_tx(adap, &qs->txq[TXQ_ETH]);
@@ -2631,25 +2680,15 @@ int t3_sge_alloc_qset(struct adapter *adapter, unsigned int id, int nports,
 	q->txq[TXQ_ETH].stop_thres = nports *
 	    flits_to_desc(sgl_len(MAX_SKB_FRAGS + 1) + 3);
 
-	if (!is_offload(adapter)) {
-#ifdef USE_RX_PAGE
-		q->fl[0].buf_size = RX_PAGE_SIZE;
+#if FL0_PG_CHUNK_SIZE > 0
+	q->fl[0].buf_size = FL0_PG_CHUNK_SIZE;
 #else
-		q->fl[0].buf_size = SGE_RX_SM_BUF_SIZE + 2 +
-		    sizeof(struct cpl_rx_pkt);
+	q->fl[0].buf_size = SGE_RX_SM_BUF_SIZE + sizeof(struct cpl_rx_data);
 #endif
-		q->fl[1].buf_size = MAX_FRAME_SIZE + 2 +
-		    sizeof(struct cpl_rx_pkt);
-	} else {
-#ifdef USE_RX_PAGE
-		q->fl[0].buf_size = RX_PAGE_SIZE;
-#else
-		q->fl[0].buf_size = SGE_RX_SM_BUF_SIZE +
-		    sizeof(struct cpl_rx_data);
-#endif
-		q->fl[1].buf_size = (16 * 1024) -
-		    SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
-	}
+	q->fl[0].use_pages = FL0_PG_CHUNK_SIZE > 0;
+	q->fl[1].buf_size = is_offload(adapter) ?
+		(16 * 1024) - SKB_DATA_ALIGN(sizeof(struct skb_shared_info)) :
+		MAX_FRAME_SIZE + 2 + sizeof(struct cpl_rx_pkt);
 
 	spin_lock(&adapter->sge.reg_lock);
 
@@ -2793,7 +2832,7 @@ void t3_sge_init(struct adapter *adap, struct sge_params *p)
 	unsigned int ctrl, ups = ffs(pci_resource_len(adap->pdev, 2) >> 12);
 
 	ctrl = F_DROPPKT | V_PKTSHIFT(2) | F_FLMODE | F_AVOIDCQOVFL |
-	    F_CQCRDTCTRL |
+	    F_CQCRDTCTRL | F_CONGMODE | F_TNLFLMODE | F_FATLPERREN |
 	    V_HOSTPAGESIZE(PAGE_SHIFT - 11) | F_BIGENDIANINGRESS |
 	    V_USERSPACESIZE(ups ? ups - 1 : 0) | F_ISCSICOALESCING;
 #if SGE_NUM_GENBITS == 1
@@ -2802,7 +2841,6 @@ void t3_sge_init(struct adapter *adap, struct sge_params *p)
 	if (adap->params.rev > 0) {
 		if (!(adap->flags & (USING_MSIX | USING_MSI)))
 			ctrl |= F_ONEINTMULTQ | F_OPTONEINTMULTQ;
-		ctrl |= F_CQCRDTCTRL | F_AVOIDCQOVFL;
 	}
 	t3_write_reg(adap, A_SG_CONTROL, ctrl);
 	t3_write_reg(adap, A_SG_EGR_RCQ_DRB_THRSH, V_HIRCQDRBTHRSH(512) |
@@ -2810,7 +2848,8 @@ void t3_sge_init(struct adapter *adap, struct sge_params *p)
 	t3_write_reg(adap, A_SG_TIMER_TICK, core_ticks_per_usec(adap) / 10);
 	t3_write_reg(adap, A_SG_CMDQ_CREDIT_TH, V_THRESHOLD(32) |
 		     V_TIMEOUT(200 * core_ticks_per_usec(adap)));
-	t3_write_reg(adap, A_SG_HI_DRB_HI_THRSH, 1000);
+	t3_write_reg(adap, A_SG_HI_DRB_HI_THRSH,
+		     adap->params.rev < T3_REV_C ? 1000 : 500);
 	t3_write_reg(adap, A_SG_HI_DRB_LO_THRSH, 256);
 	t3_write_reg(adap, A_SG_LO_DRB_HI_THRSH, 1000);
 	t3_write_reg(adap, A_SG_LO_DRB_LO_THRSH, 256);

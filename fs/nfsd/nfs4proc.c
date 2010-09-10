@@ -54,6 +54,7 @@
 #include <linux/nfsd/state.h>
 #include <linux/nfsd/xdr4.h>
 #include <linux/nfs4_acl.h>
+#include <linux/sunrpc/gss_api.h>
 
 #define NFSDDBG_FACILITY		NFSDDBG_PROC
 
@@ -105,9 +106,16 @@ do_open_lookup(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nfsd4_o
 		status = nfsd_create_v3(rqstp, current_fh, open->op_fname.data,
 					open->op_fname.len, &open->op_iattr,
 					&resfh, open->op_createmode,
-					(u32 *)open->op_verf.data, &open->op_truncate);
-	}
-	else {
+					(u32 *)open->op_verf.data,
+					&open->op_truncate);
+
+		/* If we ever decide to use different attrs to store the
+		 * verifier in nfsd_create_v3, then we'll need to change this
+		 */
+		if (open->op_createmode == NFS4_CREATE_EXCLUSIVE && status == 0)
+			open->op_bmval[1] |= (FATTR4_WORD1_TIME_ACCESS |
+						FATTR4_WORD1_TIME_MODIFY);
+	} else {
 		status = nfsd_lookup(rqstp, current_fh,
 				     open->op_fname.data, open->op_fname.len, &resfh);
 		fh_unlock(current_fh);
@@ -286,8 +294,7 @@ nfsd4_putrootfh(struct svc_rqst *rqstp, struct svc_fh *current_fh)
 	int status;
 
 	fh_put(current_fh);
-	status = exp_pseudoroot(rqstp->rq_client, current_fh,
-			      &rqstp->rq_chandle);
+	status = exp_pseudoroot(rqstp, current_fh);
 	return status;
 }
 
@@ -463,8 +470,8 @@ nfsd4_lookupp(struct svc_rqst *rqstp, struct svc_fh *current_fh)
 	int ret;
 
 	fh_init(&tmp_fh, NFS4_FHSIZE);
-	if((ret = exp_pseudoroot(rqstp->rq_client, &tmp_fh,
-			      &rqstp->rq_chandle)) != 0)
+	ret = exp_pseudoroot(rqstp, &tmp_fh);
+	if (ret)
 		return ret;
 	if (tmp_fh.fh_dentry == current_fh->fh_dentry) {
 		fh_put(&tmp_fh);
@@ -589,6 +596,30 @@ nfsd4_rename(struct svc_rqst *rqstp, struct svc_fh *current_fh,
 	return status;
 }
 
+static __be32
+nfsd4_secinfo(struct svc_rqst *rqstp, struct svc_fh *current_fh,
+	      struct nfsd4_secinfo *secinfo)
+{
+	struct svc_fh resfh;
+	struct svc_export *exp;
+	struct dentry *dentry;
+	__be32 err;
+
+	fh_init(&resfh, NFS4_FHSIZE);
+	err = nfsd_lookup_dentry(rqstp, current_fh,
+				    secinfo->si_name, secinfo->si_namelen,
+				    &exp, &dentry);
+	if (err)
+		return err;
+	if (dentry->d_inode == NULL) {
+		exp_put(exp);
+		err = nfserr_noent;
+	} else
+		secinfo->si_exp = exp;
+	dput(dentry);
+	return err;
+}
+
 static inline int
 nfsd4_setattr(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nfsd4_setattr *setattr)
 {
@@ -692,7 +723,7 @@ nfsd4_verify(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nfsd4_ver
 	status = nfsd4_encode_fattr(current_fh, current_fh->fh_export,
 				    current_fh->fh_dentry, buf,
 				    &count, verify->ve_bmval,
-				    rqstp);
+				    rqstp, 0);
 
 	/* this means that nfsd4_encode_fattr() ran out of space */
 	if (status == nfserr_resource && count == 0)
@@ -910,6 +941,9 @@ nfsd4_proc_compound(struct svc_rqst *rqstp,
 			break;
 		case OP_SAVEFH:
 			op->status = nfsd4_savefh(current_fh, save_fh);
+			break;
+		case OP_SECINFO:
+			op->status = nfsd4_secinfo(rqstp, current_fh, &op->u.secinfo);
 			break;
 		case OP_SETATTR:
 			op->status = nfsd4_setattr(rqstp, current_fh, &op->u.setattr);

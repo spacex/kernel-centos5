@@ -98,4 +98,9 @@ static inline int cancel_delayed_work(struct work_struct *work)
 	return ret;
 }
 
+static inline int delayed_work_pending(struct work_struct *work)
+{
+	return test_bit(0, &work->pending);
+}
+
 #endif

@@ -127,9 +127,9 @@ extern void xen_set_eflag(unsigned long);	/* see xen_ia64_setreg */
 /* turning off interrupts can be paravirtualized simply by writing
  * to a memory-mapped virtual psr.i bit (implemented as a 16-bit bool) */
 #define xen_rsm_i()							\
-do {	xen_set_virtual_psr_i(0);					\
+{	xen_set_virtual_psr_i(0);					\
 	barrier();							\
-} while(0)
+}
 
 /* turning on interrupts is a bit more complicated.. write to the
  * memory-mapped virtual psr.i bit first (to avoid race condition),

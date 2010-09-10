@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004, 2005 Voltaire, Inc. All rights reserved.
+ * Copyright (c) 2004-2007 Voltaire, Inc. All rights reserved.
  * Copyright (c) 2005 Intel Corporation.  All rights reserved.
  * Copyright (c) 2005 Mellanox Technologies Ltd.  All rights reserved.
  *
@@ -31,7 +31,6 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: mad.c 5596 2006-03-03 01:00:07Z sean.hefty $
  */
 #include <linux/dma-mapping.h>
 #include <rdma/ib_cache.h>
@@ -65,8 +64,8 @@ static struct ib_mad_agent_private *find_mad_agent(
 static int ib_mad_post_receive_mads(struct ib_mad_qp_info *qp_info,
 				    struct ib_mad_private *mad);
 static void cancel_mads(struct ib_mad_agent_private *mad_agent_priv);
-static void timeout_sends(void *data);
-static void local_completions(void *data);
+static void timeout_sends(struct work_struct *work);
+static void local_completions(struct work_struct *work);
 static int add_nonoui_reg_req(struct ib_mad_reg_req *mad_reg_req,
 			      struct ib_mad_agent_private *agent_priv,
 			      u8 mgmt_class);
@@ -356,10 +355,9 @@ struct ib_mad_agent *ib_register_mad_agent(struct ib_device *device,
 	INIT_LIST_HEAD(&mad_agent_priv->wait_list);
 	INIT_LIST_HEAD(&mad_agent_priv->done_list);
 	INIT_LIST_HEAD(&mad_agent_priv->rmpp_list);
-	INIT_WORK(&mad_agent_priv->timed_work, timeout_sends, mad_agent_priv);
+	INIT_DELAYED_WORK(&mad_agent_priv->timed_work, timeout_sends);
 	INIT_LIST_HEAD(&mad_agent_priv->local_list);
-	INIT_WORK(&mad_agent_priv->local_work, local_completions,
-		   mad_agent_priv);
+	INIT_WORK(&mad_agent_priv->local_work, local_completions);
 	atomic_set(&mad_agent_priv->refcount, 1);
 	init_completion(&mad_agent_priv->comp);
 
@@ -669,7 +667,7 @@ static void build_smp_wc(struct ib_qp *qp,
 static int handle_outgoing_dr_smp(struct ib_mad_agent_private *mad_agent_priv,
 				  struct ib_mad_send_wr_private *mad_send_wr)
 {
-	int ret;
+	int ret = 0;
 	struct ib_smp *smp = mad_send_wr->send_buf.mad;
 	unsigned long flags;
 	struct ib_mad_local_private *local;
@@ -677,9 +675,14 @@ static int handle_outgoing_dr_smp(struct ib_mad_agent_private *mad_agent_priv,
 	struct ib_mad_port_private *port_priv;
 	struct ib_mad_agent_private *recv_mad_agent = NULL;
 	struct ib_device *device = mad_agent_priv->agent.device;
-	u8 port_num = mad_agent_priv->agent.port_num;
+	u8 port_num;
 	struct ib_wc mad_wc;
 	struct ib_send_wr *send_wr = &mad_send_wr->send_wr;
+
+	if (device->node_type == RDMA_NODE_IB_SWITCH)
+		port_num = send_wr->wr.ud.port_num;
+	else
+		port_num = mad_agent_priv->agent.port_num;
 
 	/*
 	 * Directed route handling starts if the initial LID routed part of
@@ -687,16 +690,19 @@ static int handle_outgoing_dr_smp(struct ib_mad_agent_private *mad_agent_priv,
 	 * If we are at the start of the LID routed part, don't update the
 	 * hop_ptr or hop_cnt.  See section 14.2.2, Vol 1 IB spec.
 	 */
-	if ((ib_get_smp_direction(smp) ? smp->dr_dlid : smp->dr_slid) ==
-	     IB_LID_PERMISSIVE &&
-	    !smi_handle_dr_smp_send(smp, device->node_type, port_num)) {
+	if ((ib_get_smp_direction(smp) ? smp->dr_dlid : smp->dr_slid) !=
+	     IB_LID_PERMISSIVE)
+		goto out;
+	if (smi_handle_dr_smp_send(smp, device->node_type, port_num) ==
+	     IB_SMI_DISCARD) {
 		ret = -EINVAL;
 		printk(KERN_ERR PFX "Invalid directed route\n");
 		goto out;
 	}
+
 	/* Check to post send on QP or process locally */
-	ret = smi_check_local_smp(smp, device);
-	if (!ret)
+	if (smi_check_local_smp(smp, device) == IB_SMI_DISCARD &&
+	    smi_check_local_returning_smp(smp, device) == IB_SMI_DISCARD)
 		goto out;
 
 	local = kmalloc(sizeof *local, GFP_ATOMIC);
@@ -747,8 +753,7 @@ static int handle_outgoing_dr_smp(struct ib_mad_agent_private *mad_agent_priv,
 		port_priv = ib_get_mad_port(mad_agent_priv->agent.device,
 					    mad_agent_priv->agent.port_num);
 		if (port_priv) {
-			mad_priv->mad.mad.mad_hdr.tid =
-				((struct ib_mad *)smp)->mad_hdr.tid;
+			memcpy(&mad_priv->mad.mad, smp, sizeof(struct ib_mad));
 			recv_mad_agent = find_mad_agent(port_priv,
 						        &mad_priv->mad.mad);
 		}
@@ -1837,14 +1842,10 @@ static void ib_mad_recv_done_handler(struct ib_mad_port_private *port_priv,
 {
 	struct ib_mad_qp_info *qp_info;
 	struct ib_mad_private_header *mad_priv_hdr;
-	struct ib_mad_private *recv, *response;
+	struct ib_mad_private *recv, *response = NULL;
 	struct ib_mad_list_head *mad_list;
 	struct ib_mad_agent_private *mad_agent;
-
-	response = kmem_cache_alloc(ib_mad_cache, GFP_KERNEL);
-	if (!response)
-		printk(KERN_ERR PFX "ib_mad_recv_done_handler no memory "
-		       "for response buffer\n");
+	int port_num;
 
 	mad_list = (struct ib_mad_list_head *)(unsigned long)wc->wr_id;
 	qp_info = mad_list->mad_queue->qp_info;
@@ -1873,21 +1874,56 @@ static void ib_mad_recv_done_handler(struct ib_mad_port_private *port_priv,
 	if (!validate_mad(&recv->mad.mad, qp_info->qp->qp_num))
 		goto out;
 
+	response = kmem_cache_alloc(ib_mad_cache, GFP_KERNEL);
+	if (!response) {
+		printk(KERN_ERR PFX "ib_mad_recv_done_handler no memory "
+		       "for response buffer\n");
+		goto out;
+	}
+
+	if (port_priv->device->node_type == RDMA_NODE_IB_SWITCH)
+		port_num = wc->port_num;
+	else
+		port_num = port_priv->port_num;
+
 	if (recv->mad.mad.mad_hdr.mgmt_class ==
 	    IB_MGMT_CLASS_SUBN_DIRECTED_ROUTE) {
-		if (!smi_handle_dr_smp_recv(&recv->mad.smp,
-					    port_priv->device->node_type,
-					    port_priv->port_num,
-					    port_priv->device->phys_port_cnt))
+		enum smi_forward_action retsmi;
+
+		if (smi_handle_dr_smp_recv(&recv->mad.smp,
+					   port_priv->device->node_type,
+					   port_num,
+					   port_priv->device->phys_port_cnt) ==
+					   IB_SMI_DISCARD)
 			goto out;
-		if (!smi_check_forward_dr_smp(&recv->mad.smp))
+
+		retsmi = smi_check_forward_dr_smp(&recv->mad.smp);
+		if (retsmi == IB_SMI_LOCAL)
 			goto local;
-		if (!smi_handle_dr_smp_send(&recv->mad.smp,
-					    port_priv->device->node_type,
-					    port_priv->port_num))
+
+		if (retsmi == IB_SMI_SEND) { /* don't forward */
+			if (smi_handle_dr_smp_send(&recv->mad.smp,
+						   port_priv->device->node_type,
+						   port_num) == IB_SMI_DISCARD)
+				goto out;
+
+			if (smi_check_local_smp(&recv->mad.smp, port_priv->device) == IB_SMI_DISCARD)
+				goto out;
+		} else if (port_priv->device->node_type == RDMA_NODE_IB_SWITCH) {
+			/* forward case for switches */
+			memcpy(response, recv, sizeof(*response));
+			response->header.recv_wc.wc = &response->header.wc;
+			response->header.recv_wc.recv_buf.mad = &response->mad.mad;
+			response->header.recv_wc.recv_buf.grh = &response->grh;
+
+			agent_send_response(&response->mad.mad,
+					    &response->grh, wc,
+					    port_priv->device,
+					    smi_get_fwd_port(&recv->mad.smp),
+					    qp_info->qp->qp_num);
+
 			goto out;
-		if (!smi_check_local_smp(&recv->mad.smp, port_priv->device))
-			goto out;
+		}
 	}
 
 local:
@@ -1916,7 +1952,7 @@ local:
 				agent_send_response(&response->mad.mad,
 						    &recv->grh, wc,
 						    port_priv->device,
-						    port_priv->port_num,
+						    port_num,
 						    qp_info->qp->qp_num);
 				goto out;
 			}
@@ -2200,12 +2236,12 @@ static void mad_error_handler(struct ib_mad_port_private *port_priv,
 /*
  * IB MAD completion callback
  */
-static void ib_mad_completion_handler(void *data)
+static void ib_mad_completion_handler(struct work_struct *work)
 {
 	struct ib_mad_port_private *port_priv;
 	struct ib_wc wc;
 
-	port_priv = (struct ib_mad_port_private *)data;
+	port_priv = container_of(work, struct ib_mad_port_private, work);
 	ib_req_notify_cq(port_priv->cq, IB_CQ_NEXT_COMP);
 
 	while (ib_poll_cq(port_priv->cq, 1, &wc) == 1) {
@@ -2326,7 +2362,7 @@ void ib_cancel_mad(struct ib_mad_agent *mad_agent,
 }
 EXPORT_SYMBOL(ib_cancel_mad);
 
-static void local_completions(void *data)
+static void local_completions(struct work_struct *work)
 {
 	struct ib_mad_agent_private *mad_agent_priv;
 	struct ib_mad_local_private *local;
@@ -2336,7 +2372,8 @@ static void local_completions(void *data)
 	struct ib_wc wc;
 	struct ib_mad_send_wc mad_send_wc;
 
-	mad_agent_priv = (struct ib_mad_agent_private *)data;
+	mad_agent_priv =
+		container_of(work, struct ib_mad_agent_private, local_work);
 
 	spin_lock_irqsave(&mad_agent_priv->lock, flags);
 	while (!list_empty(&mad_agent_priv->local_list)) {
@@ -2437,14 +2474,15 @@ static int retry_send(struct ib_mad_send_wr_private *mad_send_wr)
 	return ret;
 }
 
-static void timeout_sends(void *data)
+static void timeout_sends(struct work_struct *work)
 {
 	struct ib_mad_agent_private *mad_agent_priv;
 	struct ib_mad_send_wr_private *mad_send_wr;
 	struct ib_mad_send_wc mad_send_wc;
 	unsigned long flags, delay;
 
-	mad_agent_priv = (struct ib_mad_agent_private *)data;
+	mad_agent_priv = container_of(work, struct ib_mad_agent_private,
+				      timed_work.work);
 	mad_send_wc.vendor_err = 0;
 
 	spin_lock_irqsave(&mad_agent_priv->lock, flags);
@@ -2766,7 +2804,7 @@ static int ib_mad_port_open(struct ib_device *device,
 	cq_size = (IB_MAD_QP_SEND_SIZE + IB_MAD_QP_RECV_SIZE) * 2;
 	port_priv->cq = ib_create_cq(port_priv->device,
 				     ib_mad_thread_completion_handler,
-				     NULL, port_priv, cq_size);
+				     NULL, port_priv, cq_size, 0);
 	if (IS_ERR(port_priv->cq)) {
 		printk(KERN_ERR PFX "Couldn't create ib_mad CQ\n");
 		ret = PTR_ERR(port_priv->cq);
@@ -2800,7 +2838,7 @@ static int ib_mad_port_open(struct ib_device *device,
 		ret = -ENOMEM;
 		goto error8;
 	}
-	INIT_WORK(&port_priv->work, ib_mad_completion_handler, port_priv);
+	INIT_WORK(&port_priv->work, ib_mad_completion_handler);
 
 	spin_lock_irqsave(&ib_mad_port_list_lock, flags);
 	list_add_tail(&port_priv->port_list, &ib_mad_port_list);
@@ -2961,7 +2999,6 @@ static int __init ib_mad_init_module(void)
 					 sizeof(struct ib_mad_private),
 					 0,
 					 SLAB_HWCACHE_ALIGN,
-					 NULL,
 					 NULL);
 	if (!ib_mad_cache) {
 		printk(KERN_ERR PFX "Couldn't create ib_mad cache\n");

@@ -472,13 +472,13 @@ static int aac_rx_restart_adapter(struct aac_dev *dev, int bled)
 		else {
 			bled = aac_adapter_sync_cmd(dev, IOP_RESET_ALWAYS,
 			  0, 0, 0, 0, 0, 0, &var, NULL, NULL, NULL, NULL);
-			if (!bled && (var != 0x00000001))
+			if (!bled && (var != 0x00000001) && (var != 0x3803000F))
 				bled = -EINVAL;
 		}
 		if (bled && (bled != -ETIMEDOUT))
 			bled = aac_adapter_sync_cmd(dev, IOP_RESET,
 			  0, 0, 0, 0, 0, 0, &var, NULL, NULL, NULL, NULL);
-	
+
 		if (bled && (bled != -ETIMEDOUT))
 			return -EINVAL;
 	}
@@ -549,7 +549,9 @@ int _aac_rx_init(struct aac_dev *dev)
 	dev->OIMR = status = rx_readb (dev, MUnit.OIMR);
 	if ((((status & 0x0c) != 0x0c) || aac_reset_devices || reset_devices) &&
 	  !aac_rx_restart_adapter(dev, 0))
-		++restart;
+		/* Make sure the Hardware FIFO is empty */
+		while ((++restart < 512) &&
+		  (rx_readl(dev, MUnit.OutboundQueue) != 0xFFFFFFFFL));
 	/*
 	 *	Check to see if the board panic'd while booting.
 	 */
@@ -599,7 +601,7 @@ int _aac_rx_init(struct aac_dev *dev)
 		}
 		msleep(1);
 	}
-	if (restart)
+	if (restart && aac_commit)
 		aac_commit = 1;
 	/*
 	 *	Fill in the common function dispatch table.

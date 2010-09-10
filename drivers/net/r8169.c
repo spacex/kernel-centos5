@@ -150,11 +150,22 @@ static const int multicast_filter_limit = 32;
 #define RTL_R32(reg)		((unsigned long) readl (ioaddr + (reg)))
 
 enum mac_version {
-	RTL_GIGA_MAC_VER_B = 0x00,
-	/* RTL_GIGA_MAC_VER_C = 0x03, */
-	RTL_GIGA_MAC_VER_D = 0x01,
-	RTL_GIGA_MAC_VER_E = 0x02,
-	RTL_GIGA_MAC_VER_X = 0x04	/* Greater than RTL_GIGA_MAC_VER_E */
+	RTL_GIGA_MAC_VER_01 = 0x00,
+	RTL_GIGA_MAC_VER_02 = 0x01,
+	RTL_GIGA_MAC_VER_03 = 0x02,
+	RTL_GIGA_MAC_VER_04 = 0x03,
+	RTL_GIGA_MAC_VER_05 = 0x04,
+	RTL_GIGA_MAC_VER_06 = 0x06,
+	RTL_GIGA_MAC_VER_11 = 0x0b,
+	RTL_GIGA_MAC_VER_12 = 0x0c,
+	RTL_GIGA_MAC_VER_13 = 0x0d,
+	RTL_GIGA_MAC_VER_14 = 0x0e,
+	RTL_GIGA_MAC_VER_15 = 0x0f,
+	RTL_GIGA_MAC_VER_16 = 0x11,
+	RTL_GIGA_MAC_VER_17 = 0x10,
+	RTL_GIGA_MAC_VER_18 = 0x12,
+	RTL_GIGA_MAC_VER_19 = 0x13,
+	RTL_GIGA_MAC_VER_20 = 0x14
 };
 
 enum phy_version {
@@ -175,19 +186,50 @@ static const struct {
 	u8 mac_version;
 	u32 RxConfigMask;	/* Clears the bits supported by this chip */
 } rtl_chip_info[] = {
-	_R("RTL8169",		RTL_GIGA_MAC_VER_B, 0xff7e1880),
-	_R("RTL8169s/8110s",	RTL_GIGA_MAC_VER_D, 0xff7e1880),
-	_R("RTL8169s/8110s",	RTL_GIGA_MAC_VER_E, 0xff7e1880),
-	_R("RTL8169s/8110s",	RTL_GIGA_MAC_VER_X, 0xff7e1880),
+	_R("RTL8169",		RTL_GIGA_MAC_VER_01, 0xff7e1880),
+	_R("RTL8169s/8110s",	RTL_GIGA_MAC_VER_02, 0xff7e1880),
+	_R("RTL8169s/8110s",	RTL_GIGA_MAC_VER_03, 0xff7e1880),
+	_R("RTL8169sb/8110sb",	RTL_GIGA_MAC_VER_04, 0xff7e1880),
+	_R("RTL8169sc/8110sc",	RTL_GIGA_MAC_VER_05, 0xff7e1880),
+	_R("RTL8168b/8111b",	RTL_GIGA_MAC_VER_11, 0xff7e1880), // PCI-E
+	_R("RTL8168b/8111b",	RTL_GIGA_MAC_VER_12, 0xff7e1880), // PCI-E
+	_R("RTL8101e",		RTL_GIGA_MAC_VER_13, 0xff7e1880), // PCI-E 8139
+	_R("RTL8100e",		RTL_GIGA_MAC_VER_14, 0xff7e1880), // PCI-E 8139
+	_R("RTL8100e",		RTL_GIGA_MAC_VER_15, 0xff7e1880), // PCI-E 8139
+	_R("RTL8168b/8111b",	RTL_GIGA_MAC_VER_17, 0xff7e1880), // PCI-E
+	_R("RTL8101e",		RTL_GIGA_MAC_VER_16, 0xff7e1880), // PCI-E
+	_R("RTL8168cp/8111cp",	RTL_GIGA_MAC_VER_18, 0xff7e1880), // PCI-E
+	_R("RTL8168c/8111c",	RTL_GIGA_MAC_VER_19, 0xff7e1880), // PCI-E
+	_R("RTL8168c/8111c",	RTL_GIGA_MAC_VER_20, 0xff7e1880)  // PCI-E
 };
 #undef _R
 
+enum cfg_version {
+	RTL_CFG_0 = 0x00,
+	RTL_CFG_1,
+	RTL_CFG_2
+};
+
+static const struct {
+	unsigned int region;
+	unsigned int align;
+} rtl_cfg_info[] = {
+	[RTL_CFG_0] = { 1, NET_IP_ALIGN },
+	[RTL_CFG_1] = { 2, NET_IP_ALIGN },
+	[RTL_CFG_2] = { 2, 8 }
+};
+
 static struct pci_device_id rtl8169_pci_tbl[] = {
-	{ PCI_DEVICE(PCI_VENDOR_ID_REALTEK,	0x8169), },
-	{ PCI_DEVICE(PCI_VENDOR_ID_REALTEK,	0x8129), },
-	{ PCI_DEVICE(PCI_VENDOR_ID_DLINK,	0x4300), },
-	{ PCI_DEVICE(0x16ec,			0x0116), },
-	{ PCI_VENDOR_ID_LINKSYS,		0x1032, PCI_ANY_ID, 0x0024, },
+	{ PCI_DEVICE(PCI_VENDOR_ID_REALTEK,	0x8129), 0, 0, RTL_CFG_0 },
+	{ PCI_DEVICE(PCI_VENDOR_ID_REALTEK,	0x8136), 0, 0, RTL_CFG_2 },
+	{ PCI_DEVICE(PCI_VENDOR_ID_REALTEK,	0x8167), 0, 0, RTL_CFG_0 },
+	{ PCI_DEVICE(PCI_VENDOR_ID_REALTEK,	0x8168), 0, 0, RTL_CFG_2 },
+	{ PCI_DEVICE(PCI_VENDOR_ID_REALTEK,	0x8169), 0, 0, RTL_CFG_0 },
+	{ PCI_DEVICE(PCI_VENDOR_ID_DLINK,	0x4300), 0, 0, RTL_CFG_0 },
+	{ PCI_DEVICE(0x1259,			0xc107), 0, 0, RTL_CFG_0 },
+	{ PCI_DEVICE(0x16ec,			0x0116), 0, 0, RTL_CFG_0 },
+	{ PCI_VENDOR_ID_LINKSYS,		0x1032,
+		PCI_ANY_ID, 0x0024, 0, 0, RTL_CFG_0 },
 	{0,},
 };
 
@@ -257,10 +299,11 @@ enum RTL8169_register_content {
 	RxOK = 0x01,
 
 	/* RxStatusDesc */
-	RxRES = 0x00200000,
-	RxCRC = 0x00080000,
-	RxRUNT = 0x00100000,
-	RxRWT = 0x00400000,
+	RxFOVF	= (1 << 23),
+	RxRWT	= (1 << 22),
+	RxRES	= (1 << 21),
+	RxRUNT	= (1 << 20),
+	RxCRC	= (1 << 19),
 
 	/* ChipCmdBits */
 	CmdReset = 0x10,
@@ -325,30 +368,6 @@ enum RTL8169_register_content {
 	_10bps = 0x04,
 	LinkStatus = 0x02,
 	FullDup = 0x01,
-
-	/* GIGABIT_PHY_registers */
-	PHY_CTRL_REG = 0,
-	PHY_STAT_REG = 1,
-	PHY_AUTO_NEGO_REG = 4,
-	PHY_1000_CTRL_REG = 9,
-
-	/* GIGABIT_PHY_REG_BIT */
-	PHY_Restart_Auto_Nego = 0x0200,
-	PHY_Enable_Auto_Nego = 0x1000,
-
-	/* PHY_STAT_REG = 1 */
-	PHY_Auto_Neco_Comp = 0x0020,
-
-	/* PHY_AUTO_NEGO_REG = 4 */
-	PHY_Cap_10_Half = 0x0020,
-	PHY_Cap_10_Full = 0x0040,
-	PHY_Cap_100_Half = 0x0080,
-	PHY_Cap_100_Full = 0x0100,
-
-	/* PHY_1000_CTRL_REG = 9 */
-	PHY_Cap_1000_Full = 0x0200,
-
-	PHY_Cap_Null = 0x0,
 
 	/* _MediaType */
 	_10_Half = 0x01,
@@ -417,6 +436,7 @@ struct ring_info {
 struct rtl8169_private {
 	void __iomem *mmio_addr;	/* memory map physical address */
 	struct pci_dev *pci_dev;	/* Index of PCI device */
+	struct net_device *dev;
 	struct net_device_stats stats;	/* statistics of net device */
 	spinlock_t lock;		/* spin lock flag */
 	u32 msg_enable;
@@ -433,6 +453,7 @@ struct rtl8169_private {
 	dma_addr_t RxPhyAddr;
 	struct sk_buff *Rx_skbuff[NUM_RX_DESC];	/* Rx data buffers */
 	struct ring_info tx_skb[NUM_TX_DESC];	/* Tx data buffers */
+	unsigned align;
 	unsigned rx_buf_sz;
 	struct timer_list timer;
 	u16 cp_cmd;
@@ -490,11 +511,6 @@ static const u16 rtl8169_napi_event =
 static const unsigned int rtl8169_rx_config =
     (RX_FIFO_THRESH << RxCfgFIFOShift) | (RX_DMA_BURST << RxCfgDMAShift);
 
-#define PHY_Cap_10_Half_Or_Less PHY_Cap_10_Half
-#define PHY_Cap_10_Full_Or_Less PHY_Cap_10_Full | PHY_Cap_10_Half_Or_Less
-#define PHY_Cap_100_Half_Or_Less PHY_Cap_100_Half | PHY_Cap_10_Full_Or_Less
-#define PHY_Cap_100_Full_Or_Less PHY_Cap_100_Full | PHY_Cap_100_Half_Or_Less
-
 static void mdio_write(void __iomem *ioaddr, int RegAddr, int value)
 {
 	int i;
@@ -547,7 +563,7 @@ static unsigned int rtl8169_tbi_reset_pending(void __iomem *ioaddr)
 
 static unsigned int rtl8169_xmii_reset_pending(void __iomem *ioaddr)
 {
-	return mdio_read(ioaddr, 0) & 0x8000;
+	return mdio_read(ioaddr, MII_BMCR) & BMCR_RESET;
 }
 
 static unsigned int rtl8169_tbi_link_ok(void __iomem *ioaddr)
@@ -569,8 +585,8 @@ static void rtl8169_xmii_reset_enable(void __iomem *ioaddr)
 {
 	unsigned int val;
 
-	val = (mdio_read(ioaddr, PHY_CTRL_REG) | 0x8000) & 0xffff;
-	mdio_write(ioaddr, PHY_CTRL_REG, val);
+	mdio_write(ioaddr, MII_BMCR, BMCR_RESET);
+	val = mdio_read(ioaddr, MII_BMCR);
 }
 
 static void rtl8169_check_link_status(struct net_device *dev,
@@ -745,38 +761,66 @@ static int rtl8169_set_speed_xmii(struct net_device *dev,
 	void __iomem *ioaddr = tp->mmio_addr;
 	int auto_nego, giga_ctrl;
 
-	auto_nego = mdio_read(ioaddr, PHY_AUTO_NEGO_REG);
-	auto_nego &= ~(PHY_Cap_10_Half | PHY_Cap_10_Full |
-		       PHY_Cap_100_Half | PHY_Cap_100_Full);
-	giga_ctrl = mdio_read(ioaddr, PHY_1000_CTRL_REG);
-	giga_ctrl &= ~(PHY_Cap_1000_Full | PHY_Cap_Null);
+	auto_nego = mdio_read(ioaddr, MII_ADVERTISE);
+	auto_nego &= ~(ADVERTISE_10HALF | ADVERTISE_10FULL |
+		       ADVERTISE_100HALF | ADVERTISE_100FULL);
+	giga_ctrl = mdio_read(ioaddr, MII_CTRL1000);
+	giga_ctrl &= ~(ADVERTISE_1000FULL | ADVERTISE_1000HALF);
 
 	if (autoneg == AUTONEG_ENABLE) {
-		auto_nego |= (PHY_Cap_10_Half | PHY_Cap_10_Full |
-			      PHY_Cap_100_Half | PHY_Cap_100_Full);
-		giga_ctrl |= PHY_Cap_1000_Full;
+		auto_nego |= (ADVERTISE_10HALF | ADVERTISE_10FULL |
+			      ADVERTISE_100HALF | ADVERTISE_100FULL);
+		giga_ctrl |= ADVERTISE_1000FULL | ADVERTISE_1000HALF;
 	} else {
 		if (speed == SPEED_10)
-			auto_nego |= PHY_Cap_10_Half | PHY_Cap_10_Full;
+			auto_nego |= ADVERTISE_10HALF | ADVERTISE_10FULL;
 		else if (speed == SPEED_100)
-			auto_nego |= PHY_Cap_100_Half | PHY_Cap_100_Full;
+			auto_nego |= ADVERTISE_100HALF | ADVERTISE_100FULL;
 		else if (speed == SPEED_1000)
-			giga_ctrl |= PHY_Cap_1000_Full;
+			giga_ctrl |= ADVERTISE_1000FULL | ADVERTISE_1000HALF;
 
 		if (duplex == DUPLEX_HALF)
-			auto_nego &= ~(PHY_Cap_10_Full | PHY_Cap_100_Full);
+			auto_nego &= ~(ADVERTISE_10FULL | ADVERTISE_100FULL);
 
 		if (duplex == DUPLEX_FULL)
-			auto_nego &= ~(PHY_Cap_10_Half | PHY_Cap_100_Half);
+			auto_nego &= ~(ADVERTISE_10HALF | ADVERTISE_100HALF);
+
+		/* This tweak comes straight from Realtek's driver. */
+		if ((speed == SPEED_100) && (duplex == DUPLEX_HALF) &&
+		    ((tp->mac_version == RTL_GIGA_MAC_VER_13) ||
+		     (tp->mac_version == RTL_GIGA_MAC_VER_16))) {
+			auto_nego = ADVERTISE_100HALF | ADVERTISE_CSMA;
+		}
+	}
+
+	/* The 8100e/8101e do Fast Ethernet only. */
+	if ((tp->mac_version == RTL_GIGA_MAC_VER_13) ||
+	    (tp->mac_version == RTL_GIGA_MAC_VER_14) ||
+	    (tp->mac_version == RTL_GIGA_MAC_VER_15) ||
+	    (tp->mac_version == RTL_GIGA_MAC_VER_16)) {
+		if ((giga_ctrl & (ADVERTISE_1000FULL | ADVERTISE_1000HALF)) &&
+		    netif_msg_link(tp)) {
+			printk(KERN_INFO "%s: PHY does not support 1000Mbps.\n",
+			       dev->name);
+		}
+		giga_ctrl &= ~(ADVERTISE_1000FULL | ADVERTISE_1000HALF);
+	}
+
+	auto_nego |= ADVERTISE_PAUSE_CAP | ADVERTISE_PAUSE_ASYM;
+
+	if ((tp->mac_version == RTL_GIGA_MAC_VER_12) ||
+	    (tp->mac_version == RTL_GIGA_MAC_VER_17)) {
+		/* Vendor specific (0x1f) and reserved (0x0e) MII registers. */
+		mdio_write(ioaddr, 0x1f, 0x0000);
+		mdio_write(ioaddr, 0x0e, 0x0000);
 	}
 
 	tp->phy_auto_nego_reg = auto_nego;
 	tp->phy_1000_ctrl_reg = giga_ctrl;
 
-	mdio_write(ioaddr, PHY_AUTO_NEGO_REG, auto_nego);
-	mdio_write(ioaddr, PHY_1000_CTRL_REG, giga_ctrl);
-	mdio_write(ioaddr, PHY_CTRL_REG, PHY_Enable_Auto_Nego |
-					 PHY_Restart_Auto_Nego);
+	mdio_write(ioaddr, MII_ADVERTISE, auto_nego);
+	mdio_write(ioaddr, MII_CTRL1000, giga_ctrl);
+	mdio_write(ioaddr, MII_BMCR, BMCR_ANENABLE | BMCR_ANRESTART);
 	return 0;
 }
 
@@ -788,7 +832,7 @@ static int rtl8169_set_speed(struct net_device *dev,
 
 	ret = tp->set_speed(dev, autoneg, speed, duplex);
 
-	if (netif_running(dev) && (tp->phy_1000_ctrl_reg & PHY_Cap_1000_Full))
+	if (netif_running(dev) && (tp->phy_1000_ctrl_reg & ADVERTISE_1000FULL))
 		mod_timer(&tp->timer, jiffies + RTL8169_PHY_TIMEOUT);
 
 	return ret;
@@ -941,15 +985,15 @@ static void rtl8169_gset_xmii(struct net_device *dev, struct ethtool_cmd *cmd)
 	cmd->autoneg = 1;
 	cmd->advertising = ADVERTISED_TP | ADVERTISED_Autoneg;
 
-	if (tp->phy_auto_nego_reg & PHY_Cap_10_Half)
+	if (tp->phy_auto_nego_reg & ADVERTISE_10HALF)
 		cmd->advertising |= ADVERTISED_10baseT_Half;
-	if (tp->phy_auto_nego_reg & PHY_Cap_10_Full)
+	if (tp->phy_auto_nego_reg & ADVERTISE_10FULL)
 		cmd->advertising |= ADVERTISED_10baseT_Full;
-	if (tp->phy_auto_nego_reg & PHY_Cap_100_Half)
+	if (tp->phy_auto_nego_reg & ADVERTISE_100HALF)
 		cmd->advertising |= ADVERTISED_100baseT_Half;
-	if (tp->phy_auto_nego_reg & PHY_Cap_100_Full)
+	if (tp->phy_auto_nego_reg & ADVERTISE_100FULL)
 		cmd->advertising |= ADVERTISED_100baseT_Full;
-	if (tp->phy_1000_ctrl_reg & PHY_Cap_1000_Full)
+	if (tp->phy_1000_ctrl_reg & ADVERTISE_1000FULL)
 		cmd->advertising |= ADVERTISED_1000baseT_Full;
 
 	status = RTL_R8(PHYstatus);
@@ -960,6 +1004,11 @@ static void rtl8169_gset_xmii(struct net_device *dev, struct ethtool_cmd *cmd)
 		cmd->speed = SPEED_100;
 	else if (status & _10bps)
 		cmd->speed = SPEED_10;
+
+	if (status & TxFlowCtrl)
+		cmd->advertising |= ADVERTISED_Asym_Pause;
+	if (status & RxFlowCtrl)
+		cmd->advertising |= ADVERTISED_Pause;
 
 	cmd->duplex = ((status & _1000bpsF) || (status & FullDup)) ?
 		      DUPLEX_FULL : DUPLEX_HALF;
@@ -1138,41 +1187,56 @@ static void rtl8169_get_mac_version(struct rtl8169_private *tp, void __iomem *io
 {
 	const struct {
 		u32 mask;
+		u32 val;
 		int mac_version;
 	} mac_info[] = {
-		{ 0x1 << 28,	RTL_GIGA_MAC_VER_X },
-		{ 0x1 << 26,	RTL_GIGA_MAC_VER_E },
-		{ 0x1 << 23,	RTL_GIGA_MAC_VER_D }, 
-		{ 0x00000000,	RTL_GIGA_MAC_VER_B } /* Catch-all */
+		/* 8168B family. */
+		{ 0x7c800000, 0x3c800000,	RTL_GIGA_MAC_VER_18 },
+		{ 0x7cf00000, 0x3c000000,	RTL_GIGA_MAC_VER_19 },
+		{ 0x7cf00000, 0x3c200000,	RTL_GIGA_MAC_VER_20 },
+		{ 0x7c800000, 0x3c000000,	RTL_GIGA_MAC_VER_20 },
+
+		/* 8168B family. */
+		{ 0x7cf00000, 0x38000000,	RTL_GIGA_MAC_VER_12 },
+		{ 0x7cf00000, 0x38500000,	RTL_GIGA_MAC_VER_17 },
+		{ 0x7c800000, 0x38000000,	RTL_GIGA_MAC_VER_17 },
+		{ 0x7c800000, 0x30000000,	RTL_GIGA_MAC_VER_11 },
+
+		/* 8101 family. */
+		{ 0x7cf00000, 0x34000000,	RTL_GIGA_MAC_VER_13 },
+		{ 0x7cf00000, 0x34200000,	RTL_GIGA_MAC_VER_16 },
+		{ 0x7c800000, 0x34000000,	RTL_GIGA_MAC_VER_16 },
+		/* FIXME: where did these entries come from ? -- FR */
+		{ 0xfc800000, 0x38800000,	RTL_GIGA_MAC_VER_15 },
+		{ 0xfc800000, 0x30800000,	RTL_GIGA_MAC_VER_14 },
+
+		/* 8110 family. */
+		{ 0xfc800000, 0x98000000,	RTL_GIGA_MAC_VER_06 },
+		{ 0xfc800000, 0x18000000,	RTL_GIGA_MAC_VER_05 },
+		{ 0xfc800000, 0x10000000,	RTL_GIGA_MAC_VER_04 },
+		{ 0xfc800000, 0x04000000,	RTL_GIGA_MAC_VER_03 },
+		{ 0xfc800000, 0x00800000,	RTL_GIGA_MAC_VER_02 },
+		{ 0xfc800000, 0x00000000,	RTL_GIGA_MAC_VER_01 },
+
+		{ 0x00000000, 0x00000000,	RTL_GIGA_MAC_VER_01 }	/* Catch-all */
 	}, *p = mac_info;
 	u32 reg;
 
-	reg = RTL_R32(TxConfig) & 0x7c800000;
-	while ((reg & p->mask) != p->mask)
+	reg = RTL_R32(TxConfig);
+	while ((reg & p->mask) != p->val)
 		p++;
 	tp->mac_version = p->mac_version;
+
+	if (p->mask == 0x00000000) {
+		struct pci_dev *pdev = tp->pci_dev;
+
+		dev_info(&pdev->dev, "unknown MAC (%08x)\n", reg);
+	}
 }
 
 static void rtl8169_print_mac_version(struct rtl8169_private *tp)
 {
-	struct {
-		int version;
-		char *msg;
-	} mac_print[] = {
-		{ RTL_GIGA_MAC_VER_E, "RTL_GIGA_MAC_VER_E" },
-		{ RTL_GIGA_MAC_VER_D, "RTL_GIGA_MAC_VER_D" },
-		{ RTL_GIGA_MAC_VER_B, "RTL_GIGA_MAC_VER_B" },
-		{ 0, NULL }
-	}, *p;
-
-	for (p = mac_print; p->msg; p++) {
-		if (tp->mac_version == p->version) {
-			dprintk("mac_version == %s (%04d)\n", p->msg,
-				  p->version);
-			return;
-		}
-	}
-	dprintk("mac_version == Unknown\n");
+	dprintk("mac_version = 0x%02x\n", tp->mac_version);
 }
 
 static void rtl8169_get_phy_version(struct rtl8169_private *tp, void __iomem *ioaddr)
@@ -1189,7 +1253,7 @@ static void rtl8169_get_phy_version(struct rtl8169_private *tp, void __iomem *io
 	}, *p = phy_info;
 	u16 reg;
 
-	reg = mdio_read(ioaddr, 3) & 0xffff;
+	reg = mdio_read(ioaddr, MII_PHYSID2) & 0xffff;
 	while ((reg & p->mask) != p->set)
 		p++;
 	tp->phy_version = p->phy_version;
@@ -1257,7 +1321,7 @@ static void rtl8169_hw_phy_config(struct net_device *dev)
 	rtl8169_print_mac_version(tp);
 	rtl8169_print_phy_version(tp);
 
-	if (tp->mac_version <= RTL_GIGA_MAC_VER_B)
+	if (tp->mac_version <= RTL_GIGA_MAC_VER_01)
 		return;
 	if (tp->phy_version >= RTL_GIGA_PHY_VER_H)
 		return;
@@ -1267,12 +1331,7 @@ static void rtl8169_hw_phy_config(struct net_device *dev)
 
 	/* Shazam ! */
 
-	if (tp->mac_version == RTL_GIGA_MAC_VER_X) {
-		mdio_write(ioaddr, 31, 0x0001);
-		mdio_write(ioaddr,  9, 0x273a);
-		mdio_write(ioaddr, 14, 0x7bfb);
-		mdio_write(ioaddr, 27, 0x841e);
-
+	if (tp->mac_version == RTL_GIGA_MAC_VER_04) {
 		mdio_write(ioaddr, 31, 0x0002);
 		mdio_write(ioaddr,  1, 0x90d0);
 		mdio_write(ioaddr, 31, 0x0000);
@@ -1306,10 +1365,10 @@ static void rtl8169_phy_timer(unsigned long __opaque)
 	void __iomem *ioaddr = tp->mmio_addr;
 	unsigned long timeout = RTL8169_PHY_TIMEOUT;
 
-	assert(tp->mac_version > RTL_GIGA_MAC_VER_B);
+	assert(tp->mac_version > RTL_GIGA_MAC_VER_01);
 	assert(tp->phy_version < RTL_GIGA_PHY_VER_H);
 
-	if (!(tp->phy_1000_ctrl_reg & PHY_Cap_1000_Full))
+	if (!(tp->phy_1000_ctrl_reg & ADVERTISE_1000FULL))
 		return;
 
 	spin_lock_irq(&tp->lock);
@@ -1342,7 +1401,7 @@ static inline void rtl8169_delete_timer(struct net_device *dev)
 	struct rtl8169_private *tp = netdev_priv(dev);
 	struct timer_list *timer = &tp->timer;
 
-	if ((tp->mac_version <= RTL_GIGA_MAC_VER_B) ||
+	if ((tp->mac_version <= RTL_GIGA_MAC_VER_01) ||
 	    (tp->phy_version >= RTL_GIGA_PHY_VER_H))
 		return;
 
@@ -1354,15 +1413,11 @@ static inline void rtl8169_request_timer(struct net_device *dev)
 	struct rtl8169_private *tp = netdev_priv(dev);
 	struct timer_list *timer = &tp->timer;
 
-	if ((tp->mac_version <= RTL_GIGA_MAC_VER_B) ||
+	if ((tp->mac_version <= RTL_GIGA_MAC_VER_01) ||
 	    (tp->phy_version >= RTL_GIGA_PHY_VER_H))
 		return;
 
-	init_timer(timer);
-	timer->expires = jiffies + RTL8169_PHY_TIMEOUT;
-	timer->data = (unsigned long)(dev);
-	timer->function = rtl8169_phy_timer;
-	add_timer(timer);
+	mod_timer(timer, jiffies + RTL8169_PHY_TIMEOUT);
 }
 
 #ifdef CONFIG_NET_POLL_CONTROLLER
@@ -1391,28 +1446,111 @@ static void rtl8169_release_board(struct pci_dev *pdev, struct net_device *dev,
 	free_netdev(dev);
 }
 
-static int __devinit
-rtl8169_init_board(struct pci_dev *pdev, struct net_device **dev_out,
-		   void __iomem **ioaddr_out)
+static void rtl8169_phy_reset(struct net_device *dev,
+			      struct rtl8169_private *tp)
 {
-	void __iomem *ioaddr;
-	struct net_device *dev;
+	void __iomem *ioaddr = tp->mmio_addr;
+	int i;
+
+	tp->phy_reset_enable(ioaddr);
+	for (i = 0; i < 100; i++) {
+		if (!tp->phy_reset_pending(ioaddr))
+			return;
+		msleep(1);
+	}
+	if (netif_msg_link(tp))
+		printk(KERN_ERR "%s: PHY reset failed.\n", dev->name);
+}
+
+static void rtl8169_init_phy(struct net_device *dev, struct rtl8169_private *tp)
+{
+	void __iomem *ioaddr = tp->mmio_addr;
+	static int board_idx = -1;
+	u8 autoneg, duplex;
+	u16 speed;
+
+	board_idx++;
+
+	rtl8169_hw_phy_config(dev);
+
+	dprintk("Set MAC Reg C+CR Offset 0x82h = 0x01h\n");
+	RTL_W8(0x82, 0x01);
+
+	if (tp->mac_version < RTL_GIGA_MAC_VER_03) {
+		dprintk("Set PCI Latency=0x40\n");
+		pci_write_config_byte(tp->pci_dev, PCI_LATENCY_TIMER, 0x40);
+	}
+
+	if (tp->mac_version == RTL_GIGA_MAC_VER_02) {
+		dprintk("Set MAC Reg C+CR Offset 0x82h = 0x01h\n");
+		RTL_W8(0x82, 0x01);
+		dprintk("Set PHY Reg 0x0bh = 0x00h\n");
+		mdio_write(ioaddr, 0x0b, 0x0000); //w 0x0b 15 0 0
+	}
+
+	rtl8169_link_option(board_idx, &autoneg, &speed, &duplex);
+
+	rtl8169_phy_reset(dev, tp);
+
+	rtl8169_set_speed(dev, autoneg, speed, duplex);
+
+	if ((RTL_R8(PHYstatus) & TBI_Enable) && netif_msg_link(tp))
+		printk(KERN_INFO PFX "%s: TBI auto-negotiating\n", dev->name);
+}
+
+static int rtl8169_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
+{
+	struct rtl8169_private *tp = netdev_priv(dev);
+	struct mii_ioctl_data *data = if_mii(ifr);
+
+	if (!netif_running(dev))
+		return -ENODEV;
+
+	switch (cmd) {
+	case SIOCGMIIPHY:
+		data->phy_id = 32; /* Internal PHY */
+		return 0;
+
+	case SIOCGMIIREG:
+		data->val_out = mdio_read(tp->mmio_addr, data->reg_num & 0x1f);
+		return 0;
+
+	case SIOCSMIIREG:
+		if (!capable(CAP_NET_ADMIN))
+			return -EPERM;
+		mdio_write(tp->mmio_addr, data->reg_num & 0x1f, data->val_in);
+		return 0;
+	}
+	return -EOPNOTSUPP;
+}
+
+static int __devinit
+rtl8169_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
+{
+	const unsigned int region = rtl_cfg_info[ent->driver_data].region;
 	struct rtl8169_private *tp;
-	int rc = -ENOMEM, i, acpi_idle_state = 0, pm_cap;
+	struct net_device *dev;
+	void __iomem *ioaddr;
+	unsigned int pm_cap;
+	int i, rc;
 
-	assert(ioaddr_out != NULL);
+	if (netif_msg_drv(&debug)) {
+		printk(KERN_INFO "%s Gigabit Ethernet driver %s loaded\n",
+		       MODULENAME, RTL8169_VERSION);
+	}
 
-	/* dev zeroed in alloc_etherdev */
 	dev = alloc_etherdev(sizeof (*tp));
-	if (dev == NULL) {
+	if (!dev) {
 		if (netif_msg_drv(&debug))
 			dev_err(&pdev->dev, "unable to alloc new ethernet\n");
-		goto err_out;
+		rc = -ENOMEM;
+		goto out;
 	}
 
 	SET_MODULE_OWNER(dev);
 	SET_NETDEV_DEV(dev, &pdev->dev);
 	tp = netdev_priv(dev);
+	tp->dev = dev;
 	tp->msg_enable = netif_msg_init(debug.msg_enable, R8169_MSG_DEFAULT);
 
 	/* enable device (incl. PCI PM wakeup and hotplug setup) */
@@ -1420,17 +1558,17 @@ rtl8169_init_board(struct pci_dev *pdev, struct net_device **dev_out,
 	if (rc < 0) {
 		if (netif_msg_probe(tp))
 			dev_err(&pdev->dev, "enable failure\n");
-		goto err_out_free_dev;
+		goto err_out_free_dev_1;
 	}
 
 	rc = pci_set_mwi(pdev);
 	if (rc < 0)
-		goto err_out_disable;
+		goto err_out_disable_2;
 
 	/* save power state before pci_enable_device overwrites it */
 	pm_cap = pci_find_capability(pdev, PCI_CAP_ID_PM);
 	if (pm_cap) {
-		u16 pwr_command;
+		u16 pwr_command, acpi_idle_state;
 
 		pci_read_config_word(pdev, pm_cap + PCI_PM_CTRL, &pwr_command);
 		acpi_idle_state = pwr_command & PCI_PM_CTRL_STATE_MASK;
@@ -1441,27 +1579,28 @@ rtl8169_init_board(struct pci_dev *pdev, struct net_device **dev_out,
 	}
 
 	/* make sure PCI base addr 1 is MMIO */
-	if (!(pci_resource_flags(pdev, 1) & IORESOURCE_MEM)) {
+	if (!(pci_resource_flags(pdev, region) & IORESOURCE_MEM)) {
 		if (netif_msg_probe(tp))
 			dev_err(&pdev->dev,
-			       "region #1 not an MMIO resource, aborting\n");
+				"region #%d not an MMIO resource, aborting\n",
+				region);
 		rc = -ENODEV;
-		goto err_out_mwi;
+		goto err_out_mwi_3;
 	}
 	/* check for weird/broken PCI region reporting */
-	if (pci_resource_len(pdev, 1) < R8169_REGS_SIZE) {
+	if (pci_resource_len(pdev, region) < R8169_REGS_SIZE) {
 		if (netif_msg_probe(tp))
 			dev_err(&pdev->dev,
 			       "Invalid PCI region size(s), aborting\n");
 		rc = -ENODEV;
-		goto err_out_mwi;
+		goto err_out_mwi_3;
 	}
 
 	rc = pci_request_regions(pdev, MODULENAME);
 	if (rc < 0) {
 		if (netif_msg_probe(tp))
 			dev_err(&pdev->dev, "could not request regions.\n");
-		goto err_out_mwi;
+		goto err_out_mwi_3;
 	}
 
 	tp->cp_cmd = PCIMulRW | RxChkSum;
@@ -1476,19 +1615,19 @@ rtl8169_init_board(struct pci_dev *pdev, struct net_device **dev_out,
 			if (netif_msg_probe(tp))
 				dev_err(&pdev->dev,
 				       "DMA configuration failed.\n");
-			goto err_out_free_res;
+			goto err_out_free_res_4;
 		}
 	}
 
 	pci_set_master(pdev);
 
 	/* ioremap MMIO region */
-	ioaddr = ioremap(pci_resource_start(pdev, 1), R8169_REGS_SIZE);
-	if (ioaddr == NULL) {
+	ioaddr = ioremap(pci_resource_start(pdev, region), R8169_REGS_SIZE);
+	if (!ioaddr) {
 		if (netif_msg_probe(tp))
 			dev_err(&pdev->dev, "cannot remap MMIO, aborting\n");
 		rc = -EIO;
-		goto err_out_free_res;
+		goto err_out_free_res_4;
 	}
 
 	/* Unneeded ? Don't mess with Mrs. Murphy. */
@@ -1498,10 +1637,10 @@ rtl8169_init_board(struct pci_dev *pdev, struct net_device **dev_out,
 	RTL_W8(ChipCmd, CmdReset);
 
 	/* Check that the chip has finished the reset. */
-	for (i = 1000; i > 0; i--) {
+	for (i = 100; i > 0; i--) {
 		if ((RTL_R8(ChipCmd) & CmdReset) == 0)
 			break;
-		udelay(10);
+		msleep_interruptible(1);
 	}
 
 	/* Identify chip attached to board */
@@ -1531,56 +1670,6 @@ rtl8169_init_board(struct pci_dev *pdev, struct net_device **dev_out,
 	RTL_W8(Config5, RTL_R8(Config5) & PMEStatus);
 	RTL_W8(Cfg9346, Cfg9346_Lock);
 
-	*ioaddr_out = ioaddr;
-	*dev_out = dev;
-out:
-	return rc;
-
-err_out_free_res:
-	pci_release_regions(pdev);
-
-err_out_mwi:
-	pci_clear_mwi(pdev);
-
-err_out_disable:
-	pci_disable_device(pdev);
-
-err_out_free_dev:
-	free_netdev(dev);
-err_out:
-	*ioaddr_out = NULL;
-	*dev_out = NULL;
-	goto out;
-}
-
-static int __devinit
-rtl8169_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
-{
-	struct net_device *dev = NULL;
-	struct rtl8169_private *tp;
-	void __iomem *ioaddr = NULL;
-	static int board_idx = -1;
-	u8 autoneg, duplex;
-	u16 speed;
-	int i, rc;
-
-	assert(pdev != NULL);
-	assert(ent != NULL);
-
-	board_idx++;
-
-	if (netif_msg_drv(&debug)) {
-		printk(KERN_INFO "%s Gigabit Ethernet driver %s loaded\n",
-		       MODULENAME, RTL8169_VERSION);
-	}
-
-	rc = rtl8169_init_board(pdev, &dev, &ioaddr);
-	if (rc)
-		return rc;
-
-	tp = netdev_priv(dev);
-	assert(ioaddr != NULL);
-
 	if (RTL_R8(PHYstatus) & TBI_Enable) {
 		tp->set_speed = rtl8169_set_speed_tbi;
 		tp->get_settings = rtl8169_gset_tbi;
@@ -1588,13 +1677,15 @@ rtl8169_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 		tp->phy_reset_pending = rtl8169_tbi_reset_pending;
 		tp->link_ok = rtl8169_tbi_link_ok;
 
-		tp->phy_1000_ctrl_reg = PHY_Cap_1000_Full; /* Implied by TBI */
+		tp->phy_1000_ctrl_reg = ADVERTISE_1000FULL; /* Implied by TBI */
 	} else {
 		tp->set_speed = rtl8169_set_speed_xmii;
 		tp->get_settings = rtl8169_gset_xmii;
 		tp->phy_reset_enable = rtl8169_xmii_reset_enable;
 		tp->phy_reset_pending = rtl8169_xmii_reset_pending;
 		tp->link_ok = rtl8169_xmii_link_ok;
+
+		dev->do_ioctl = rtl8169_ioctl;
 	}
 
 	/* Get MAC address.  FIXME: read EEPROM */
@@ -1632,19 +1723,17 @@ rtl8169_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	tp->intr_mask = 0xffff;
 	tp->pci_dev = pdev;
 	tp->mmio_addr = ioaddr;
+	tp->align = rtl_cfg_info[ent->driver_data].align;
+
+	init_timer(&tp->timer);
+	tp->timer.data = (unsigned long) dev;
+	tp->timer.function = rtl8169_phy_timer;
 
 	spin_lock_init(&tp->lock);
 
 	rc = register_netdev(dev);
-	if (rc) {
-		rtl8169_release_board(pdev, dev, ioaddr);
-		return rc;
-	}
-
-	if (netif_msg_probe(tp)) {
-		printk(KERN_DEBUG "%s: Identified chip type is '%s'.\n",
-		       dev->name, rtl_chip_info[tp->chipset].name);
-	}
+	if (rc < 0)
+		goto err_out_unmap_5;
 
 	pci_set_drvdata(pdev, dev);
 
@@ -1653,38 +1742,28 @@ rtl8169_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 		       "%2.2x:%2.2x:%2.2x:%2.2x:%2.2x:%2.2x, "
 		       "IRQ %d\n",
 		       dev->name,
-		       rtl_chip_info[ent->driver_data].name,
+		       rtl_chip_info[tp->chipset].name,
 		       dev->base_addr,
 		       dev->dev_addr[0], dev->dev_addr[1],
 		       dev->dev_addr[2], dev->dev_addr[3],
 		       dev->dev_addr[4], dev->dev_addr[5], dev->irq);
 	}
 
-	rtl8169_hw_phy_config(dev);
+	rtl8169_init_phy(dev, tp);
 
-	dprintk("Set MAC Reg C+CR Offset 0x82h = 0x01h\n");
-	RTL_W8(0x82, 0x01);
-
-	if (tp->mac_version < RTL_GIGA_MAC_VER_E) {
-		dprintk("Set PCI Latency=0x40\n");
-		pci_write_config_byte(pdev, PCI_LATENCY_TIMER, 0x40);
-	}
-
-	if (tp->mac_version == RTL_GIGA_MAC_VER_D) {
-		dprintk("Set MAC Reg C+CR Offset 0x82h = 0x01h\n");
-		RTL_W8(0x82, 0x01);
-		dprintk("Set PHY Reg 0x0bh = 0x00h\n");
-		mdio_write(ioaddr, 0x0b, 0x0000); //w 0x0b 15 0 0
-	}
-
-	rtl8169_link_option(board_idx, &autoneg, &speed, &duplex);
-
-	rtl8169_set_speed(dev, autoneg, speed, duplex);
-	
-	if ((RTL_R8(PHYstatus) & TBI_Enable) && netif_msg_link(tp))
-		printk(KERN_INFO PFX "%s: TBI auto-negotiating\n", dev->name);
-
-	return 0;
+out:
+	return rc;
+err_out_unmap_5:
+	iounmap(ioaddr);
+err_out_free_res_4:
+	pci_release_regions(pdev);
+err_out_mwi_3:
+	pci_clear_mwi(pdev);
+err_out_disable_2:
+	pci_disable_device(pdev);
+err_out_free_dev_1:
+	free_netdev(dev);
+	goto out;
 }
 
 static void __devexit
@@ -1775,49 +1854,92 @@ static void rtl8169_hw_reset(void __iomem *ioaddr)
 	RTL_R8(ChipCmd);
 }
 
-static void
-rtl8169_hw_start(struct net_device *dev)
+static void rtl8169_set_rx_tx_config_registers(struct rtl8169_private *tp)
+{
+	void __iomem *ioaddr = tp->mmio_addr;
+	u32 cfg = rtl8169_rx_config;
+
+	cfg |= (RTL_R32(RxConfig) & rtl_chip_info[tp->chipset].RxConfigMask);
+	RTL_W32(RxConfig, cfg);
+
+	/* Set DMA burst size and Interframe Gap Time */
+	RTL_W32(TxConfig, (TX_DMA_BURST << TxDMAShift) |
+		(InterFrameGap << TxInterFrameGapShift));
+}
+
+static void rtl8169_hw_start(struct net_device *dev)
 {
 	struct rtl8169_private *tp = netdev_priv(dev);
 	void __iomem *ioaddr = tp->mmio_addr;
+	struct pci_dev *pdev = tp->pci_dev;
+	u16 cmd;
 	u32 i;
 
 	/* Soft reset the chip. */
 	RTL_W8(ChipCmd, CmdReset);
 
 	/* Check that the chip has finished the reset. */
-	for (i = 1000; i > 0; i--) {
+	for (i = 100; i > 0; i--) {
 		if ((RTL_R8(ChipCmd) & CmdReset) == 0)
 			break;
-		udelay(10);
+		msleep_interruptible(1);
 	}
 
+	if (tp->mac_version == RTL_GIGA_MAC_VER_05) {
+		RTL_W16(CPlusCmd, RTL_R16(CPlusCmd) | PCIMulRW);
+		pci_write_config_byte(pdev, PCI_CACHE_LINE_SIZE, 0x08);
+	}
+
+	if ((tp->mac_version == RTL_GIGA_MAC_VER_13) ||
+	    (tp->mac_version == RTL_GIGA_MAC_VER_16)) {
+		pci_write_config_word(pdev, 0x68, 0x00);
+		pci_write_config_word(pdev, 0x69, 0x08);
+	}
+
+	/* Undocumented stuff. */
+	if (tp->mac_version == RTL_GIGA_MAC_VER_05) {
+		/* Realtek's r1000_n.c driver uses '&& 0x01' here. Well... */
+		if ((RTL_R8(Config2) & 0x07) & 0x01)
+			RTL_W32(0x7c, 0x0007ffff);
+
+		RTL_W32(0x7c, 0x0007ff00);
+
+		pci_read_config_word(pdev, PCI_COMMAND, &cmd);
+		cmd = cmd & 0xef;
+		pci_write_config_word(pdev, PCI_COMMAND, cmd);
+ 	}
+
 	RTL_W8(Cfg9346, Cfg9346_Unlock);
-	RTL_W8(ChipCmd, CmdTxEnb | CmdRxEnb);
+	if ((tp->mac_version == RTL_GIGA_MAC_VER_01) ||
+	    (tp->mac_version == RTL_GIGA_MAC_VER_02) ||
+	    (tp->mac_version == RTL_GIGA_MAC_VER_03) ||
+	    (tp->mac_version == RTL_GIGA_MAC_VER_04))
+		RTL_W8(ChipCmd, CmdTxEnb | CmdRxEnb);
+
 	RTL_W8(EarlyTxThres, EarlyTxThld);
 
 	/* Low hurts. Let's disable the filtering. */
 	RTL_W16(RxMaxSize, 16383);
 
-	/* Set Rx Config register */
-	i = rtl8169_rx_config |
-		(RTL_R32(RxConfig) & rtl_chip_info[tp->chipset].RxConfigMask);
-	RTL_W32(RxConfig, i);
+	if ((tp->mac_version == RTL_GIGA_MAC_VER_01) ||
+	    (tp->mac_version == RTL_GIGA_MAC_VER_02) ||
+	    (tp->mac_version == RTL_GIGA_MAC_VER_03) ||
+	    (tp->mac_version == RTL_GIGA_MAC_VER_04))
+		rtl8169_set_rx_tx_config_registers(tp);
 
-	/* Set DMA burst size and Interframe Gap Time */
-	RTL_W32(TxConfig,
-		(TX_DMA_BURST << TxDMAShift) | (InterFrameGap <<
-						TxInterFrameGapShift));
-	tp->cp_cmd |= RTL_R16(CPlusCmd);
-	RTL_W16(CPlusCmd, tp->cp_cmd);
+	cmd = RTL_R16(CPlusCmd);
+	RTL_W16(CPlusCmd, cmd);
 
-	if ((tp->mac_version == RTL_GIGA_MAC_VER_D) ||
-	    (tp->mac_version == RTL_GIGA_MAC_VER_E)) {
+	tp->cp_cmd |= cmd | PCIMulRW;
+
+	if ((tp->mac_version == RTL_GIGA_MAC_VER_02) ||
+	    (tp->mac_version == RTL_GIGA_MAC_VER_03)) {
 		dprintk(KERN_INFO PFX "Set MAC Reg C+CR Offset 0xE0. "
 			"Bit-3 and bit-14 MUST be 1\n");
-		tp->cp_cmd |= (1 << 14) | PCIMulRW;
-		RTL_W16(CPlusCmd, tp->cp_cmd);
+		tp->cp_cmd |= (1 << 14);
 	}
+
+	RTL_W16(CPlusCmd, tp->cp_cmd);
 
 	/*
 	 * Undocumented corner. Supposedly:
@@ -1825,12 +1947,28 @@ rtl8169_hw_start(struct net_device *dev)
 	 */
 	RTL_W16(IntrMitigate, 0x0000);
 
-	RTL_W32(TxDescStartAddrLow, ((u64) tp->TxPhyAddr & DMA_32BIT_MASK));
+	/*
+	 * Magic spell: some iop3xx ARM board needs the TxDescAddrHigh
+	 * register to be written before TxDescAddrLow to work.
+	 * Switching from MMIO to I/O access fixes the issue as well.
+	 */
 	RTL_W32(TxDescStartAddrHigh, ((u64) tp->TxPhyAddr >> 32));
-	RTL_W32(RxDescAddrLow, ((u64) tp->RxPhyAddr & DMA_32BIT_MASK));
+	RTL_W32(TxDescStartAddrLow, ((u64) tp->TxPhyAddr & DMA_32BIT_MASK));
 	RTL_W32(RxDescAddrHigh, ((u64) tp->RxPhyAddr >> 32));
+	RTL_W32(RxDescAddrLow, ((u64) tp->RxPhyAddr & DMA_32BIT_MASK));
+
+	if ((tp->mac_version != RTL_GIGA_MAC_VER_01) &&
+	    (tp->mac_version != RTL_GIGA_MAC_VER_02) &&
+	    (tp->mac_version != RTL_GIGA_MAC_VER_03) &&
+	    (tp->mac_version != RTL_GIGA_MAC_VER_04)) {
+		RTL_W8(ChipCmd, CmdTxEnb | CmdRxEnb);
+		rtl8169_set_rx_tx_config_registers(tp);
+	}
+
 	RTL_W8(Cfg9346, Cfg9346_Lock);
-	udelay(10);
+
+	/* Initially a 10 us delay. Turned it into a PCI commit. - FR */
+	RTL_R8(IntrMask);
 
 	RTL_W32(RxMissed, 0);
 
@@ -1910,17 +2048,18 @@ static inline void rtl8169_map_to_asic(struct RxDesc *desc, dma_addr_t mapping,
 }
 
 static int rtl8169_alloc_rx_skb(struct pci_dev *pdev, struct sk_buff **sk_buff,
-				struct RxDesc *desc, int rx_buf_sz)
+				struct RxDesc *desc, int rx_buf_sz,
+				unsigned int align)
 {
 	struct sk_buff *skb;
 	dma_addr_t mapping;
 	int ret = 0;
 
-	skb = dev_alloc_skb(rx_buf_sz + NET_IP_ALIGN);
+	skb = dev_alloc_skb(rx_buf_sz + align);
 	if (!skb)
 		goto err_out;
 
-	skb_reserve(skb, NET_IP_ALIGN);
+	skb_reserve(skb, (align - 1) & (u32)skb->data);
 	*sk_buff = skb;
 
 	mapping = pci_map_single(pdev, skb->data, rx_buf_sz,
@@ -1961,7 +2100,8 @@ static u32 rtl8169_rx_fill(struct rtl8169_private *tp, struct net_device *dev,
 			continue;
 			
 		ret = rtl8169_alloc_rx_skb(tp->pci_dev, tp->Rx_skbuff + i,
-					   tp->RxDescArray + i, tp->rx_buf_sz);
+					   tp->RxDescArray + i, tp->rx_buf_sz,
+					   tp->align);
 		if (ret < 0)
 			break;
 	}
@@ -2190,7 +2330,7 @@ static int rtl8169_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	dma_addr_t mapping;
 	u32 status, len;
 	u32 opts1;
-	int ret = 0;
+	int ret = NETDEV_TX_OK;
 	
 	if (unlikely(TX_BUFFS_AVAIL(tp) < skb_shinfo(skb)->nr_frags)) {
 		if (netif_msg_drv(tp)) {
@@ -2255,7 +2395,7 @@ out:
 
 err_stop:
 	netif_stop_queue(dev);
-	ret = 1;
+	ret = NETDEV_TX_BUSY;
 err_update_stats:
 	tp->stats.tx_dropped++;
 	goto out;
@@ -2280,12 +2420,17 @@ static void rtl8169_pcierr_interrupt(struct net_device *dev)
 	/*
 	 * The recovery sequence below admits a very elaborated explanation:
 	 * - it seems to work;
-	 * - I did not see what else could be done.
+	 * - I did not see what else could be done;
+	 * - it makes iop3xx happy.
 	 *
 	 * Feel free to adjust to your needs.
 	 */
-	pci_write_config_word(pdev, PCI_COMMAND,
-			      pci_cmd | PCI_COMMAND_SERR | PCI_COMMAND_PARITY);
+	if (pdev->broken_parity_status)
+		pci_cmd &= ~PCI_COMMAND_PARITY;
+	else
+		pci_cmd |= PCI_COMMAND_SERR | PCI_COMMAND_PARITY;
+
+	pci_write_config_word(pdev, PCI_COMMAND, pci_cmd);
 
 	pci_write_config_word(pdev, PCI_STATUS,
 		pci_status & (PCI_STATUS_DETECTED_PARITY |
@@ -2299,10 +2444,11 @@ static void rtl8169_pcierr_interrupt(struct net_device *dev)
 		tp->cp_cmd &= ~PCIDAC;
 		RTL_W16(CPlusCmd, tp->cp_cmd);
 		dev->features &= ~NETIF_F_HIGHDMA;
-		rtl8169_schedule_work(dev, rtl8169_reinit_task);
 	}
 
 	rtl8169_hw_reset(ioaddr);
+
+	rtl8169_schedule_work(dev, rtl8169_reinit_task);
 }
 
 static void
@@ -2372,16 +2518,17 @@ static inline void rtl8169_rx_csum(struct sk_buff *skb, struct RxDesc *desc)
 }
 
 static inline int rtl8169_try_rx_copy(struct sk_buff **sk_buff, int pkt_size,
-				      struct RxDesc *desc, int rx_buf_sz)
+				      struct RxDesc *desc, int rx_buf_sz,
+				      unsigned int align)
 {
 	int ret = -1;
 
 	if (pkt_size < rx_copybreak) {
 		struct sk_buff *skb;
 
-		skb = dev_alloc_skb(pkt_size + NET_IP_ALIGN);
+		skb = dev_alloc_skb(pkt_size + align);
 		if (skb) {
-			skb_reserve(skb, NET_IP_ALIGN);
+			skb_reserve(skb, (align - 1) & (u32)skb->data);
 			eth_copy_and_sum(skb, sk_buff[0]->data, pkt_size, 0);
 			*sk_buff = skb;
 			rtl8169_mark_to_asic(desc, rx_buf_sz);
@@ -2427,6 +2574,10 @@ rtl8169_rx_interrupt(struct net_device *dev, struct rtl8169_private *tp,
 				tp->stats.rx_length_errors++;
 			if (status & RxCRC)
 				tp->stats.rx_crc_errors++;
+			if (status & RxFOVF) {
+				rtl8169_schedule_work(dev, rtl8169_reset_task);
+				tp->stats.rx_fifo_errors++;
+			}
 			rtl8169_mark_to_asic(desc, tp->rx_buf_sz);
 		} else {
 			struct sk_buff *skb = tp->Rx_skbuff[entry];
@@ -2453,7 +2604,7 @@ rtl8169_rx_interrupt(struct net_device *dev, struct rtl8169_private *tp,
 				PCI_DMA_FROMDEVICE);
 
 			if (rtl8169_try_rx_copy(&skb, pkt_size, desc,
-						tp->rx_buf_sz)) {
+						tp->rx_buf_sz, tp->align)) {
 				pci_action = pci_unmap_single;
 				tp->Rx_skbuff[entry] = NULL;
 			}
@@ -2606,6 +2757,7 @@ static void rtl8169_down(struct net_device *dev)
 	struct rtl8169_private *tp = netdev_priv(dev);
 	void __iomem *ioaddr = tp->mmio_addr;
 	unsigned int poll_locked = 0;
+	unsigned int intrmask;
 
 	rtl8169_delete_timer(dev);
 
@@ -2644,8 +2796,11 @@ core_down:
 	 * 2) dev->change_mtu
 	 *    -> rtl8169_poll can not be issued again and re-enable the
 	 *       interruptions. Let's simply issue the IRQ down sequence again.
+	 *
+	 * No loop if hotpluged or major error (0xffff).
 	 */
-	if (RTL_R16(IntrMask))
+	intrmask = RTL_R16(IntrMask);
+	if (intrmask && (intrmask != 0xffff))
 		goto core_down;
 
 	rtl8169_tx_clear(tp);
@@ -2715,6 +2870,17 @@ rtl8169_set_rx_mode(struct net_device *dev)
 
 	tmp = rtl8169_rx_config | rx_mode |
 	      (RTL_R32(RxConfig) & rtl_chip_info[tp->chipset].RxConfigMask);
+
+	if ((tp->mac_version == RTL_GIGA_MAC_VER_11) ||
+	    (tp->mac_version == RTL_GIGA_MAC_VER_12) ||
+	    (tp->mac_version == RTL_GIGA_MAC_VER_13) ||
+	    (tp->mac_version == RTL_GIGA_MAC_VER_14) ||
+	    (tp->mac_version == RTL_GIGA_MAC_VER_15) ||
+	    (tp->mac_version == RTL_GIGA_MAC_VER_16) ||
+	    (tp->mac_version == RTL_GIGA_MAC_VER_17)) {
+		mc_filter[0] = 0xffffffff;
+		mc_filter[1] = 0xffffffff;
+	}
 
 	RTL_W32(RxConfig, tmp);
 	RTL_W32(MAR0 + 0, mc_filter[0]);
@@ -2809,7 +2975,7 @@ static struct pci_driver rtl8169_pci_driver = {
 static int __init
 rtl8169_init_module(void)
 {
-	return pci_module_init(&rtl8169_pci_driver);
+	return pci_register_driver(&rtl8169_pci_driver);
 }
 
 static void __exit

@@ -225,7 +225,7 @@ void account_ticks(struct pt_regs *regs)
 	account_tick_vtime(current);
 #else
 	while (ticks--)
-		update_process_times(user_mode(regs));
+		update_process_times(user_mode(regs), regs);
 #endif
 
 	s390_do_profile(regs);

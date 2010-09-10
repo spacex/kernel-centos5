@@ -46,7 +46,7 @@ static __inline__ unsigned long ide_default_io_base(int index)
 	 *	defined compatibility mode ports for PCI. A user can 
 	 *	override this using ide= but we must default safe.
 	 */
-	if (pci_find_device(PCI_ANY_ID, PCI_ANY_ID, NULL) == NULL) {
+	if (no_pci_devices()) {
 		switch(index) {
 			case 2: return 0x1e8;
 			case 3: return 0x168;

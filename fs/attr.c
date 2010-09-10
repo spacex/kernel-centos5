@@ -104,12 +104,11 @@ EXPORT_SYMBOL(inode_setattr);
 int notify_change(struct dentry * dentry, struct iattr * attr)
 {
 	struct inode *inode = dentry->d_inode;
-	mode_t mode;
 	int error;
 	struct timespec now;
 	unsigned int ia_valid = attr->ia_valid;
+	mode_t ia_mode = attr->ia_mode;
 
-	mode = inode->i_mode;
 	now = current_fs_time(inode->i_sb);
 
 	attr->ia_ctime = now;
@@ -118,27 +117,46 @@ int notify_change(struct dentry * dentry, struct iattr * attr)
 	if (!(ia_valid & ATTR_MTIME_SET))
 		attr->ia_mtime = now;
 	if (ia_valid & ATTR_KILL_SUID) {
-		attr->ia_valid &= ~ATTR_KILL_SUID;
-		if (mode & S_ISUID) {
+		ia_valid &= ~ATTR_KILL_SUID;
+		if (inode->i_mode & S_ISUID) {
 			if (!(ia_valid & ATTR_MODE)) {
-				ia_valid = attr->ia_valid |= ATTR_MODE;
-				attr->ia_mode = inode->i_mode;
+				ia_valid |= ATTR_MODE;
+				ia_mode = inode->i_mode;
 			}
-			attr->ia_mode &= ~S_ISUID;
+			ia_mode &= ~S_ISUID;
 		}
 	}
 	if (ia_valid & ATTR_KILL_SGID) {
-		attr->ia_valid &= ~ ATTR_KILL_SGID;
-		if ((mode & (S_ISGID | S_IXGRP)) == (S_ISGID | S_IXGRP)) {
+		ia_valid &= ~ATTR_KILL_SGID;
+		if ((inode->i_mode & (S_ISGID | S_IXGRP)) ==
+		    (S_ISGID | S_IXGRP)) {
 			if (!(ia_valid & ATTR_MODE)) {
-				ia_valid = attr->ia_valid |= ATTR_MODE;
-				attr->ia_mode = inode->i_mode;
+				ia_valid |= ATTR_MODE;
+				ia_mode = inode->i_mode;
 			}
-			attr->ia_mode &= ~S_ISGID;
+			ia_mode &= ~S_ISGID;
 		}
 	}
-	if (!attr->ia_valid)
+
+	if (!ia_valid)
 		return 0;
+
+	/*
+	 * For RHEL, we've added the S_NOATTRKILL flag to allow filesystems
+	 * to opt-out of ATTR_KILL_S*ID processing. The ATTR_KILL_S*ID bits
+	 * are now handled in two stages. First, we calculate what the
+	 * ia_valid and the ia_mode would look like if we were to allow the
+	 * ATTR_KILL_S*ID bits to modify them. We then make the decision of
+	 * whether to allow the modification to occur. We could just skip
+	 * all of the ATTR_KILL_S*ID processing altogether, but we need it
+	 * for inotify. If a process is watching for mode changes, we want
+	 * it to be notified if we suspect that the server will be doing the
+	 * mode change for us.
+	 */
+	if ((ia_valid & ATTR_MODE) && !(inode->i_flags & S_NOATTRKILL)) {
+		attr->ia_valid = ia_valid;
+		attr->ia_mode = ia_mode;
+	}
 
 	if (ia_valid & ATTR_SIZE)
 		down_write(&dentry->d_inode->i_alloc_sem);

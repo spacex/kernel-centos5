@@ -156,4 +156,8 @@ extern void __chk_io_ptr(void __iomem *);
 # define __attribute_const__	/* unimplemented */
 #endif
 
+#ifndef uninitialized_var
+# define uninitialized_var(x) x = x
+#endif
+
 #endif /* __LINUX_COMPILER_H */

@@ -2,6 +2,7 @@
 #define __LINUX_RTNETLINK_H
 
 #include <linux/netlink.h>
+#include <linux/if_addr.h>
 
 /****
  *		Routing/neighbour discovery messages.
@@ -350,6 +351,8 @@ enum
 #define RTAX_INITCWND RTAX_INITCWND
 	RTAX_FEATURES,
 #define RTAX_FEATURES RTAX_FEATURES
+	RTAX_RTO_MIN,
+#define RTAX_RTO_MIN RTAX_RTO_MIN
 	__RTAX_MAX
 };
 
@@ -383,62 +386,6 @@ struct rta_session
 };
 
 
-/*********************************************************
- *		Interface address.
- ****/
-
-struct ifaddrmsg
-{
-	unsigned char	ifa_family;
-	unsigned char	ifa_prefixlen;	/* The prefix length		*/
-	unsigned char	ifa_flags;	/* Flags			*/
-	unsigned char	ifa_scope;	/* See above			*/
-	int		ifa_index;	/* Link index			*/
-};
-
-enum
-{
-	IFA_UNSPEC,
-	IFA_ADDRESS,
-	IFA_LOCAL,
-	IFA_LABEL,
-	IFA_BROADCAST,
-	IFA_ANYCAST,
-	IFA_CACHEINFO,
-	IFA_MULTICAST,
-	__IFA_MAX
-};
-
-#define IFA_MAX (__IFA_MAX - 1)
-
-/* ifa_flags */
-
-#define IFA_F_SECONDARY		0x01
-#define IFA_F_TEMPORARY		IFA_F_SECONDARY
-
-#define IFA_F_DEPRECATED	0x20
-#define IFA_F_TENTATIVE		0x40
-#define IFA_F_PERMANENT		0x80
-
-struct ifa_cacheinfo
-{
-	__u32	ifa_prefered;
-	__u32	ifa_valid;
-	__u32	cstamp; /* created timestamp, hundredths of seconds */
-	__u32	tstamp; /* updated timestamp, hundredths of seconds */
-};
-
-
-#define IFA_RTA(r)  ((struct rtattr*)(((char*)(r)) + NLMSG_ALIGN(sizeof(struct ifaddrmsg))))
-#define IFA_PAYLOAD(n) NLMSG_PAYLOAD(n,sizeof(struct ifaddrmsg))
-
-/*
-   Important comment:
-   IFA_ADDRESS is prefix address, rather than local interface address.
-   It makes no difference for normally configured broadcast interfaces,
-   but for point-to-point IFA_ADDRESS is DESTINATION address,
-   local address is supplied in IFA_LOCAL attribute.
- */
 
 /**************************************************************
  *		Neighbour discovery.
@@ -933,7 +880,12 @@ struct rtnetlink_link
 	int (*dumpit)(struct sk_buff *, struct netlink_callback *cb);
 };
 
+#ifdef __GENKSYMS__
+extern struct rtnetlink_link * rtnetlink_links[32];
+#else
 extern struct rtnetlink_link * rtnetlink_links[NPROTO];
+#endif
+
 extern int rtnetlink_send(struct sk_buff *skb, u32 pid, u32 group, int echo);
 extern int rtnetlink_put_metrics(struct sk_buff *skb, u32 *metrics);
 

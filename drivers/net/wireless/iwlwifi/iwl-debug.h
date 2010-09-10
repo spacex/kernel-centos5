@@ -35,8 +35,16 @@ extern u32 iwl_debug_level;
 do { if (iwl_debug_level & (level)) \
   printk(KERN_ERR DRV_NAME": %c %s " fmt, \
 	 in_interrupt() ? 'I' : 'U', __FUNCTION__ , ## args); } while (0)
+
+#define IWL_DEBUG_LIMIT(level, fmt, args...) \
+do { if ((iwl_debug_level & (level)) && net_ratelimit()) \
+  printk(KERN_ERR DRV_NAME": %c %s " fmt, \
+	 in_interrupt() ? 'I' : 'U', __FUNCTION__ , ## args); } while (0)
 #else
 static inline void IWL_DEBUG(int level, const char *fmt, ...)
+{
+}
+static inline void IWL_DEBUG_LIMIT(int level, const char *fmt, ...)
 {
 }
 #endif				/* CONFIG_IWLWIFI_DEBUG */
@@ -58,11 +66,11 @@ static inline void IWL_DEBUG(int level, const char *fmt, ...)
  *
  * To add your debug level to the list of levels seen when you perform
  *
- * % cat /proc/net/ipw/debug_level
+ * % cat /proc/net/iwl/debug_level
  *
  * you simply need to add your entry to the iwl_debug_levels array.
  *
- * If you do not see debug_level in /proc/net/ipw then you do not have
+ * If you do not see debug_level in /proc/net/iwl then you do not have
  * CONFIG_IWLWIFI_DEBUG defined in your kernel configuration
  *
  */
@@ -123,6 +131,7 @@ static inline void IWL_DEBUG(int level, const char *fmt, ...)
 #define IWL_DEBUG_FW(f, a...) IWL_DEBUG(IWL_DL_FW, f, ## a)
 #define IWL_DEBUG_RF_KILL(f, a...) IWL_DEBUG(IWL_DL_RF_KILL, f, ## a)
 #define IWL_DEBUG_DROP(f, a...) IWL_DEBUG(IWL_DL_DROP, f, ## a)
+#define IWL_DEBUG_DROP_LIMIT(f, a...) IWL_DEBUG_LIMIT(IWL_DL_DROP, f, ## a)
 #define IWL_DEBUG_AP(f, a...) IWL_DEBUG(IWL_DL_AP, f, ## a)
 #define IWL_DEBUG_TXPOWER(f, a...) IWL_DEBUG(IWL_DL_TXPOWER, f, ## a)
 #define IWL_DEBUG_IO(f, a...) IWL_DEBUG(IWL_DL_IO, f, ## a)

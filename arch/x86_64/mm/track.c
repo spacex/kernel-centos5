@@ -48,6 +48,10 @@ void do_mm_track_pte(void * val)
 	if (pfn >= mm_tracking_struct.bitcnt)
 		return;
 
+#ifdef CONFIG_XEN
+	pfn = pfn_to_mfn(pfn);
+#endif
+
 	if (!test_and_set_bit(pfn, mm_tracking_struct.vector))
 		atomic_inc(&mm_tracking_struct.count);
 }
@@ -92,6 +96,10 @@ static inline void track_as_pte(void *val) {
 	if (pfn >= mm_tracking_struct.bitcnt)
 		return;
 
+#ifdef CONFIG_XEN
+	pfn = pfn_to_mfn(pfn);
+#endif
+
 	if (!test_and_set_bit(pfn, mm_tracking_struct.vector))
 		atomic_inc(&mm_tracking_struct.count);
 }
@@ -116,6 +124,10 @@ void do_mm_track_phys(void *val)
 
 	if (pfn >= mm_tracking_struct.bitcnt)
 		return;
+
+#ifdef CONFIG_XEN
+	pfn = pfn_to_mfn(pfn);
+#endif
 
 	if (!test_and_set_bit(pfn, mm_tracking_struct.vector))
 		atomic_inc(&mm_tracking_struct.count);

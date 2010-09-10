@@ -1,6 +1,6 @@
 /*
  * Copyright (C) Sistina Software, Inc.  1997-2003 All rights reserved.
- * Copyright (C) 2004-2006 Red Hat, Inc.  All rights reserved.
+ * Copyright (C) 2004-2008 Red Hat, Inc.  All rights reserved.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
@@ -68,14 +68,12 @@ unsigned int gfs2_struct2blk(struct gfs2_sbd *sdp, unsigned int nstruct,
  *
  */
 
-void gfs2_remove_from_ail(struct address_space *mapping, struct gfs2_bufdata *bd)
+void gfs2_remove_from_ail(struct gfs2_bufdata *bd)
 {
 	bd->bd_ail = NULL;
 	list_del_init(&bd->bd_ail_st_list);
 	list_del_init(&bd->bd_ail_gl_list);
 	atomic_dec(&bd->bd_gl->gl_ail_count);
-	if (mapping)
-		gfs2_meta_cache_flush(GFS2_I(mapping->host));
 	brelse(bd->bd_bh);
 }
 
@@ -125,6 +123,7 @@ static void gfs2_ail1_start_one(struct gfs2_sbd *sdp, struct gfs2_ail *ai)
 				unlock_buffer(bh);
 				brelse(bh);
 			}
+
 			gfs2_log_lock(sdp);
 
 			retry = 1;
@@ -248,7 +247,7 @@ static void gfs2_ail2_empty_one(struct gfs2_sbd *sdp, struct gfs2_ail *ai)
 		bd = list_entry(head->prev, struct gfs2_bufdata,
 				bd_ail_st_list);
 		gfs2_assert(sdp, bd->bd_ail == ai);
-		gfs2_remove_from_ail(bd->bd_bh->b_page->mapping, bd);
+		gfs2_remove_from_ail(bd);
 	}
 }
 
@@ -356,18 +355,14 @@ void gfs2_log_release(struct gfs2_sbd *sdp, unsigned int blks)
 
 static u64 log_bmap(struct gfs2_sbd *sdp, unsigned int lbn)
 {
-	struct inode *inode = sdp->sd_jdesc->jd_inode;
-	int error;
-	struct buffer_head bh_map = { .b_state = 0, .b_blocknr = 0 };
+	struct gfs2_journal_extent *je;
 
-	bh_map.b_size = 1 << inode->i_blkbits;
-	error = gfs2_block_map(inode, lbn, 0, &bh_map);
-	if (error || !bh_map.b_blocknr)
-		printk(KERN_INFO "error=%d, dbn=%llu lbn=%u", error,
-		       (unsigned long long)bh_map.b_blocknr, lbn);
-	gfs2_assert_withdraw(sdp, !error && bh_map.b_blocknr);
+	list_for_each_entry(je, &sdp->sd_jdesc->extent_list, extent_list) {
+		if (lbn >= je->lblock && lbn < je->lblock + je->blocks)
+			return je->dblock + lbn - je->lblock;
+	}
 
-	return bh_map.b_blocknr;
+	return -1;
 }
 
 /**
@@ -667,7 +662,7 @@ static void gfs2_ordered_write(struct gfs2_sbd *sdp)
 		get_bh(bh);
 		gfs2_log_unlock(sdp);
 		lock_buffer(bh);
-		if (test_clear_buffer_dirty(bh)) {
+		if (buffer_mapped(bh) && test_clear_buffer_dirty(bh)) {
 			bh->b_end_io = end_buffer_write_sync;
 			submit_bh(WRITE, bh);
 		} else {
@@ -782,7 +777,7 @@ void gfs2_log_flush(struct gfs2_sbd *sdp, struct gfs2_glock *gl)
 static void log_refund(struct gfs2_sbd *sdp, struct gfs2_trans *tr)
 {
 	unsigned int reserved;
-	unsigned int old;
+	unsigned int unused;
 
 	gfs2_log_lock(sdp);
 
@@ -794,17 +789,29 @@ static void log_refund(struct gfs2_sbd *sdp, struct gfs2_trans *tr)
 	sdp->sd_log_commited_revoke += tr->tr_num_revoke - tr->tr_num_revoke_rm;
 	gfs2_assert_withdraw(sdp, ((int)sdp->sd_log_commited_revoke) >= 0);
 	reserved = calc_reserved(sdp);
-	old = sdp->sd_log_blks_free;
-	sdp->sd_log_blks_free += tr->tr_reserved -
-				 (reserved - sdp->sd_log_blks_reserved);
-
-	gfs2_assert_withdraw(sdp, sdp->sd_log_blks_free >= old);
+	unused = sdp->sd_log_blks_reserved - reserved + tr->tr_reserved;
+	gfs2_assert_withdraw(sdp, unused >= 0);
+	sdp->sd_log_blks_free += unused;
 	gfs2_assert_withdraw(sdp, sdp->sd_log_blks_free <=
 			     sdp->sd_jdesc->jd_blocks);
-
 	sdp->sd_log_blks_reserved = reserved;
 
 	gfs2_log_unlock(sdp);
+}
+
+static void buf_lo_incore_commit(struct gfs2_sbd *sdp, struct gfs2_trans *tr)
+{
+	struct list_head *head = &tr->tr_list_buf;
+	struct gfs2_bufdata *bd;
+
+	gfs2_log_lock(sdp);
+	while (!list_empty(head)) {
+		bd = list_entry(head->next, struct gfs2_bufdata, bd_list_tr);
+		list_del_init(&bd->bd_list_tr);
+		tr->tr_num_buf--;
+	}
+	gfs2_log_unlock(sdp);
+	gfs2_assert_warn(sdp, !tr->tr_num_buf);
 }
 
 /**
@@ -818,7 +825,7 @@ static void log_refund(struct gfs2_sbd *sdp, struct gfs2_trans *tr)
 void gfs2_log_commit(struct gfs2_sbd *sdp, struct gfs2_trans *tr)
 {
 	log_refund(sdp, tr);
-	lops_incore_commit(sdp, tr);
+	buf_lo_incore_commit(sdp, tr);
 
 	sdp->sd_vfs->s_dirt = 1;
 	up_read(&sdp->sd_log_flush_lock);

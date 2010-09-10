@@ -1006,6 +1006,7 @@ int generic_ide_ioctl(ide_drive_t *, struct file *, struct block_device *, unsig
 extern	ide_hwif_t	ide_hwifs[];		/* master data repository */
 #endif
 extern int noautodma;
+extern int disable_ide;
 
 extern int ide_end_request (ide_drive_t *drive, int uptodate, int nrsecs);
 int ide_end_dequeued_request(ide_drive_t *drive, struct request *rq,

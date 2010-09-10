@@ -137,6 +137,11 @@ static void xenfb_update_screen(struct xenfb_info *info)
 
 	mutex_unlock(&info->mm_lock);
 
+	if (x2 < x1 || y2 < y1) {
+		printk("xenfb_update_screen bogus rect %d %d %d %d\n",
+		       x1, x2, y1, y2);
+		WARN_ON(1);
+	}
 	xenfb_do_update(info, x1, y1, x2 - x1, y2 - y1);
 }
 
@@ -188,7 +193,6 @@ static int xenfb_setcolreg(unsigned regno, unsigned red, unsigned green,
 static void xenfb_timer(unsigned long data)
 {
 	struct xenfb_info *info = (struct xenfb_info *)data;
-	info->dirty = 1;
 	wake_up(&info->wq);
 }
 
@@ -208,6 +212,7 @@ static void __xenfb_refresh(struct xenfb_info *info,
 		info->x1 = x1;
 	if (info->x2 < x2)
 		info->x2 = x2;
+	info->dirty = 1;
 
 	if (timer_pending(&info->refresh))
 		return;

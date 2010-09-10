@@ -334,10 +334,10 @@ int nfs3svc_release_fhandle(struct svc_rqst *, u32 *,
 int nfs3svc_release_fhandle2(struct svc_rqst *, u32 *,
 				struct nfsd3_fhandle_pair *);
 int nfs3svc_encode_entry(struct readdir_cd *, const char *name,
-				int namlen, loff_t offset, ino_t ino,
+				int namlen, loff_t offset, u64 ino,
 				unsigned int);
 int nfs3svc_encode_entry_plus(struct readdir_cd *, const char *name,
-				int namlen, loff_t offset, ino_t ino,
+				int namlen, loff_t offset, u64 ino,
 				unsigned int);
 /* Helper functions for NFSv3 ACL code */
 u32 *nfs3svc_encode_post_op_attr(struct svc_rqst *rqstp, u32 *p,

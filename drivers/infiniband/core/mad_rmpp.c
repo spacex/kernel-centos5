@@ -45,8 +45,8 @@ enum rmpp_state {
 struct mad_rmpp_recv {
 	struct ib_mad_agent_private *agent;
 	struct list_head list;
-	struct work_struct timeout_work;
-	struct work_struct cleanup_work;
+	struct delayed_work timeout_work;
+	struct delayed_work cleanup_work;
 	struct completion comp;
 	enum rmpp_state state;
 	spinlock_t lock;
@@ -163,8 +163,10 @@ static struct ib_mad_send_buf *alloc_response_msg(struct ib_mad_agent *agent,
 				 hdr_len, 0, GFP_KERNEL);
 	if (IS_ERR(msg))
 		ib_destroy_ah(ah);
-	else
+	else {
 		msg->ah = ah;
+		msg->context[0] = ah;
+	}
 
 	return msg;
 }
@@ -197,9 +199,7 @@ static void ack_ds_ack(struct ib_mad_agent_private *agent,
 
 void ib_rmpp_send_handler(struct ib_mad_send_wc *mad_send_wc)
 {
-	struct ib_rmpp_mad *rmpp_mad = mad_send_wc->send_buf->mad;
-
-	if (rmpp_mad->rmpp_hdr.rmpp_type != IB_MGMT_RMPP_TYPE_ACK)
+	if (mad_send_wc->send_buf->context[0] == mad_send_wc->send_buf->ah)
 		ib_destroy_ah(mad_send_wc->send_buf->ah);
 	ib_free_send_mad(mad_send_wc->send_buf);
 }
@@ -233,9 +233,10 @@ static void nack_recv(struct ib_mad_agent_private *agent,
 	}
 }
 
-static void recv_timeout_handler(void *data)
+static void recv_timeout_handler(struct work_struct *work)
 {
-	struct mad_rmpp_recv *rmpp_recv = data;
+	struct mad_rmpp_recv *rmpp_recv =
+		container_of(work, struct mad_rmpp_recv, timeout_work.work);
 	struct ib_mad_recv_wc *rmpp_wc;
 	unsigned long flags;
 
@@ -254,9 +255,10 @@ static void recv_timeout_handler(void *data)
 	ib_free_recv_mad(rmpp_wc);
 }
 
-static void recv_cleanup_handler(void *data)
+static void recv_cleanup_handler(struct work_struct *work)
 {
-	struct mad_rmpp_recv *rmpp_recv = data;
+	struct mad_rmpp_recv *rmpp_recv =
+		container_of(work, struct mad_rmpp_recv, cleanup_work.work);
 	unsigned long flags;
 
 	spin_lock_irqsave(&rmpp_recv->agent->lock, flags);
@@ -285,8 +287,8 @@ create_rmpp_recv(struct ib_mad_agent_private *agent,
 
 	rmpp_recv->agent = agent;
 	init_completion(&rmpp_recv->comp);
-	INIT_WORK(&rmpp_recv->timeout_work, recv_timeout_handler, rmpp_recv);
-	INIT_WORK(&rmpp_recv->cleanup_work, recv_cleanup_handler, rmpp_recv);
+	INIT_DELAYED_WORK(&rmpp_recv->timeout_work, recv_timeout_handler);
+	INIT_DELAYED_WORK(&rmpp_recv->cleanup_work, recv_cleanup_handler);
 	spin_lock_init(&rmpp_recv->lock);
 	rmpp_recv->state = RMPP_STATE_ACTIVE;
 	atomic_set(&rmpp_recv->refcount, 1);

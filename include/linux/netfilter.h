@@ -117,7 +117,11 @@ void nf_unregister_hooks(struct nf_hook_ops *reg, unsigned int n);
 int nf_register_sockopt(struct nf_sockopt_ops *reg);
 void nf_unregister_sockopt(struct nf_sockopt_ops *reg);
 
+#ifdef __GENKSYMS__
+extern struct list_head nf_hooks[32][NF_MAX_HOOKS];
+#else
 extern struct list_head nf_hooks[NPROTO][NF_MAX_HOOKS];
+#endif
 
 /* those NF_LOG_* defines and struct nf_loginfo are legacy definitios that will
  * disappear once iptables is replaced with pkttables.  Please DO NOT use them

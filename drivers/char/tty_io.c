@@ -1129,7 +1129,8 @@ int tty_check_change(struct tty_struct * tty)
 		return 0;
 	if (is_orphaned_pgrp(process_group(current)))
 		return -EIO;
-	(void) kill_pg(process_group(current), SIGTTOU, 1);
+	kill_pg(process_group(current), SIGTTOU, 1);
+	set_thread_flag(TIF_SIGPENDING);
 	return -ERESTARTSYS;
 }
 

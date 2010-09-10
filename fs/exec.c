@@ -488,7 +488,8 @@ struct file *open_exec(const char *name)
 			int err = vfs_permission(&nd, MAY_EXEC);
 			file = ERR_PTR(err);
 			if (!err) {
-				file = nameidata_to_filp(&nd, O_RDONLY);
+				file = nameidata_to_filp(&nd, force_o_largefile() ?
+					O_RDONLY|O_LARGEFILE : O_RDONLY);
 				if (!IS_ERR(file)) {
 					err = deny_write_access(file);
 					if (err) {
@@ -904,8 +905,7 @@ int flush_old_exec(struct linux_binprm * bprm)
 	return 0;
 
 mmap_failed:
-	put_files_struct(current->files);
-	current->files = files;
+	reset_files_struct(current, files);
 out:
 	return retval;
 }
@@ -1467,6 +1467,8 @@ int do_coredump(long signr, int exit_code, struct pt_regs * regs)
 	int retval = 0;
 	int fsuid = current->fsuid;
 	int flag = 0;
+
+	audit_core_dumps(signr);
 
 	binfmt = current->binfmt;
 	if (!binfmt || !binfmt->core_dump)

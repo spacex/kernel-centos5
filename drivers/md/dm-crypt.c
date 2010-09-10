@@ -33,7 +33,6 @@ struct crypt_io {
 	struct work_struct work;
 	atomic_t pending;
 	int error;
-	int post_process;
 };
 
 /*
@@ -77,6 +76,8 @@ struct crypt_config {
 	mempool_t *page_pool;
 	struct bio_set *bs;
 
+	struct workqueue_struct *io_queue;
+	struct workqueue_struct *crypt_queue;
 	/*
 	 * crypto related data
 	 */
@@ -328,7 +329,8 @@ static struct bio *crypt_alloc_buffer(struct crypt_io *io, unsigned int size)
 	struct bio *clone;
 	unsigned int nr_iovecs = (size + PAGE_SIZE - 1) >> PAGE_SHIFT;
 	gfp_t gfp_mask = GFP_NOIO | __GFP_HIGHMEM;
-	unsigned int i;
+	unsigned i, len;
+	struct page *page;
 
 	clone = bio_alloc_bioset(GFP_NOIO, nr_iovecs, cc->bs);
 	if (!clone)
@@ -337,10 +339,8 @@ static struct bio *crypt_alloc_buffer(struct crypt_io *io, unsigned int size)
 	clone_init(io, clone);
 
 	for (i = 0; i < nr_iovecs; i++) {
-		struct bio_vec *bv = bio_iovec_idx(clone, i);
-
-		bv->bv_page = mempool_alloc(cc->page_pool, gfp_mask);
-		if (!bv->bv_page)
+		page = mempool_alloc(cc->page_pool, gfp_mask);
+		if (!page)
 			break;
 
 		/*
@@ -351,15 +351,14 @@ static struct bio *crypt_alloc_buffer(struct crypt_io *io, unsigned int size)
 		if (i == (MIN_BIO_PAGES - 1))
 			gfp_mask = (gfp_mask | __GFP_NOWARN) & ~__GFP_WAIT;
 
-		bv->bv_offset = 0;
-		if (size > PAGE_SIZE)
-			bv->bv_len = PAGE_SIZE;
-		else
-			bv->bv_len = size;
+		len = (size > PAGE_SIZE) ? PAGE_SIZE : size;
 
-		clone->bi_size += bv->bv_len;
-		clone->bi_vcnt++;
-		size -= bv->bv_len;
+		if (!bio_add_page(clone, page, len, 0)) {
+			mempool_free(page, cc->page_pool);
+			break;
+		}
+
+		size -= len;
 	}
 
 	if (!clone->bi_size) {
@@ -424,18 +423,36 @@ static void dec_pending(struct crypt_io *io, int error)
 }
 
 /*
- * kcryptd:
+ * kcryptd/kcryptd_io:
  *
  * Needed because it would be very unwise to do decryption in an
  * interrupt context.
+ *
+ * kcryptd performs the actual encryption or decryption.
+ *
+ * kcryptd_io performs the IO submission.
+ *
+ * They must be separated as otherwise the final stages could be
+ * starved by new requests which can block in the first stages due
+ * to memory allocation.
  */
-static struct workqueue_struct *_kcryptd_workqueue;
 static void kcryptd_do_work(void *data);
+static void kcryptd_do_crypt(void *data);
 
 static void kcryptd_queue_io(struct crypt_io *io)
 {
+	struct crypt_config *cc = io->target->private;
+
 	INIT_WORK(&io->work, kcryptd_do_work, io);
-	queue_work(_kcryptd_workqueue, &io->work);
+	queue_work(cc->io_queue, &io->work);
+}
+
+static void kcryptd_queue_crypt(struct crypt_io *io)
+{
+	struct crypt_config *cc = io->target->private;
+
+	INIT_WORK(&io->work, kcryptd_do_crypt, io);
+	queue_work(cc->crypt_queue, &io->work);
 }
 
 static int crypt_endio(struct bio *clone, unsigned int done, int error)
@@ -443,6 +460,9 @@ static int crypt_endio(struct bio *clone, unsigned int done, int error)
 	struct crypt_io *io = clone->bi_private;
 	struct crypt_config *cc = io->target->private;
 	unsigned read_io = bio_data_dir(clone) == READ;
+
+	if (unlikely(!bio_flagged(clone, BIO_UPTODATE) && !error))
+		error = -EIO;
 
 	/*
 	 * free the processed pages, even if
@@ -458,14 +478,11 @@ static int crypt_endio(struct bio *clone, unsigned int done, int error)
 	if (!read_io)
 		goto out;
 
-	if (unlikely(!bio_flagged(clone, BIO_UPTODATE))) {
-		error = -EIO;
+	if (unlikely(error))
 		goto out;
-	}
 
 	bio_put(clone);
-	io->post_process = 1;
-	kcryptd_queue_io(io);
+	kcryptd_queue_crypt(io);
 	return 0;
 
 out:
@@ -588,10 +605,16 @@ static void kcryptd_do_work(void *data)
 {
 	struct crypt_io *io = data;
 
-	if (io->post_process)
-		process_read_endio(io);
-	else if (bio_data_dir(io->base_bio) == READ)
+	if (bio_data_dir(io->base_bio) == READ)
 		process_read(io);
+}
+
+static void kcryptd_do_crypt(void *data)
+{
+	struct crypt_io *io = data;
+
+	if (bio_data_dir(io->base_bio) == READ)
+		process_read_endio(io);
 	else
 		process_write(io);
 }
@@ -821,15 +844,33 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		cc->iv_mode = kmalloc(strlen(ivmode) + 1, GFP_KERNEL);
 		if (!cc->iv_mode) {
 			ti->error = "Error kmallocing iv_mode string";
-			goto bad5;
+			goto bad_iv_mode;
 		}
 		strcpy(cc->iv_mode, ivmode);
 	} else
 		cc->iv_mode = NULL;
 
+	cc->io_queue = create_singlethread_workqueue("kcryptd_io");
+	if (!cc->io_queue) {
+		ti->error = "Couldn't create kcryptd io queue";
+		goto bad_io_queue;
+	}
+
+	cc->crypt_queue = create_singlethread_workqueue("kcryptd");
+	if (!cc->crypt_queue) {
+		ti->error = "Couldn't create kcryptd queue";
+		goto bad_crypt_queue;
+	}
+
 	ti->private = cc;
 	return 0;
 
+bad_crypt_queue:
+	destroy_workqueue(cc->io_queue);
+bad_io_queue:
+	kfree(cc->iv_mode);
+bad_iv_mode:
+	dm_put_device(ti, cc->dev);
 bad5:
 	bioset_free(cc->bs);
 bad_bs:
@@ -851,6 +892,9 @@ bad1:
 static void crypt_dtr(struct dm_target *ti)
 {
 	struct crypt_config *cc = (struct crypt_config *) ti->private;
+
+	destroy_workqueue(cc->io_queue);
+	destroy_workqueue(cc->crypt_queue);
 
 	bioset_free(cc->bs);
 	mempool_destroy(cc->page_pool);
@@ -879,9 +923,13 @@ static int crypt_map(struct dm_target *ti, struct bio *bio,
 	io = mempool_alloc(cc->io_pool, GFP_NOIO);
 	io->target = ti;
 	io->base_bio = bio;
-	io->error = io->post_process = 0;
+	io->error = 0;
 	atomic_set(&io->pending, 0);
-	kcryptd_queue_io(io);
+
+	if (bio_data_dir(io->base_bio) == READ)
+		kcryptd_queue_io(io);
+	else
+		kcryptd_queue_crypt(io);
 
 	return 0;
 }
@@ -1014,25 +1062,12 @@ static int __init dm_crypt_init(void)
 	if (!_crypt_io_pool)
 		return -ENOMEM;
 
-	_kcryptd_workqueue = create_workqueue("kcryptd");
-	if (!_kcryptd_workqueue) {
-		r = -ENOMEM;
-		DMERR("couldn't create kcryptd");
-		goto bad1;
-	}
-
 	r = dm_register_target(&crypt_target);
 	if (r < 0) {
 		DMERR("register failed %d", r);
-		goto bad2;
+		kmem_cache_destroy(_crypt_io_pool);
 	}
 
-	return 0;
-
-bad2:
-	destroy_workqueue(_kcryptd_workqueue);
-bad1:
-	kmem_cache_destroy(_crypt_io_pool);
 	return r;
 }
 
@@ -1043,7 +1078,6 @@ static void __exit dm_crypt_exit(void)
 	if (r < 0)
 		DMERR("unregister failed %d", r);
 
-	destroy_workqueue(_kcryptd_workqueue);
 	kmem_cache_destroy(_crypt_io_pool);
 }
 

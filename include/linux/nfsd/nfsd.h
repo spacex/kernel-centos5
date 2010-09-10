@@ -53,7 +53,7 @@ struct readdir_cd {
 	int			err;	/* 0, nfserr, or nfserr_eof */
 };
 typedef int		(*encode_dent_fn)(struct readdir_cd *, const char *,
-						int, loff_t, ino_t, unsigned int);
+						int, loff_t, u64, unsigned int);
 typedef int (*nfsd_dirop_t)(struct inode *, struct dentry *, int, int);
 
 extern struct svc_program	nfsd_program;
@@ -74,6 +74,9 @@ int		nfsd_cross_mnt(struct svc_rqst *rqstp, struct dentry **dpp,
 		                struct svc_export **expp);
 int		nfsd_lookup(struct svc_rqst *, struct svc_fh *,
 				const char *, int, struct svc_fh *);
+int		nfsd_lookup_dentry(struct svc_rqst *, struct svc_fh *,
+				const char *, int,
+				struct svc_export **, struct dentry **);
 int		nfsd_setattr(struct svc_rqst *, struct svc_fh *,
 				struct iattr *, int, time_t);
 #ifdef CONFIG_NFSD_V4
@@ -122,7 +125,8 @@ int		nfsd_statfs(struct svc_rqst *, struct svc_fh *,
 				struct kstatfs *);
 
 int		nfsd_notify_change(struct inode *, struct iattr *);
-int		nfsd_permission(struct svc_export *, struct dentry *, int);
+int		nfsd_permission(struct svc_rqst *, struct svc_export *,
+				struct dentry *, int);
 int		nfsd_sync_dir(struct dentry *dp);
 
 #if defined(CONFIG_NFSD_V2_ACL) || defined(CONFIG_NFSD_V3_ACL)
@@ -237,6 +241,7 @@ void		nfsd_lockd_shutdown(void);
 #define	nfserr_badname		__constant_htonl(NFSERR_BADNAME)
 #define	nfserr_cb_path_down	__constant_htonl(NFSERR_CB_PATH_DOWN)
 #define	nfserr_locked		__constant_htonl(NFSERR_LOCKED)
+#define	nfserr_wrongsec		__constant_htonl(NFSERR_WRONGSEC)
 
 /* error codes for internal use */
 /* if a request fails due to kmalloc failure, it gets dropped.

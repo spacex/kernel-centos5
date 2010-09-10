@@ -7,6 +7,7 @@
 
 #include "dm.h"
 #include "dm-bio-list.h"
+#include "dm-uevent.h"
 
 #include <linux/init.h>
 #include <linux/module.h>
@@ -121,6 +122,11 @@ struct mapped_device {
 
 	/* forced geometry settings */
 	struct hd_geometry geometry;
+#ifndef __GENKSYMS__
+	atomic_t uevent_seq;
+	struct list_head uevent_list;
+	spinlock_t uevent_lock; /* Protect access to uevent_list */
+#endif
 };
 
 #define MIN_IOS 256
@@ -145,11 +151,19 @@ static int __init local_init(void)
 		return -ENOMEM;
 	}
 
+	r = dm_uevent_init();
+	if (r) {
+		kmem_cache_destroy(_tio_cache);
+		kmem_cache_destroy(_io_cache);
+		return r;
+	}
+
 	_major = major;
 	r = register_blkdev(_major, _name);
 	if (r < 0) {
 		kmem_cache_destroy(_tio_cache);
 		kmem_cache_destroy(_io_cache);
+		dm_uevent_exit();
 		return r;
 	}
 
@@ -166,6 +180,7 @@ static void local_exit(void)
 
 	if (unregister_blkdev(_major, _name) < 0)
 		DMERR("unregister_blkdev failed");
+	dm_uevent_exit();
 
 	_major = 0;
 
@@ -667,12 +682,18 @@ static struct bio *clone_bio(struct bio *bio, sector_t sector,
 	return clone;
 }
 
-static void __clone_and_map(struct clone_info *ci)
+static int __clone_and_map(struct clone_info *ci)
 {
 	struct bio *clone, *bio = ci->bio;
-	struct dm_target *ti = dm_table_find_target(ci->map, ci->sector);
-	sector_t len = 0, max = max_io_len(ci->md, ci->sector, ti);
+	struct dm_target *ti;
+	sector_t len = 0, max;
 	struct target_io *tio;
+
+	ti = dm_table_find_target(ci->map, ci->sector);
+	if (!dm_target_is_valid(ti))
+		return -EIO;
+
+	max = max_io_len(ci->md, ci->sector, ti);
 
 	/*
 	 * Allocate a target io object.
@@ -731,6 +752,9 @@ static void __clone_and_map(struct clone_info *ci)
 		do {
 			if (offset) {
 				ti = dm_table_find_target(ci->map, ci->sector);
+				if (!dm_target_is_valid(ti))
+					return -EIO;
+
 				max = max_io_len(ci->md, ci->sector, ti);
 
 				tio = alloc_tio(ci->md);
@@ -754,6 +778,8 @@ static void __clone_and_map(struct clone_info *ci)
 
 		ci->idx++;
 	}
+
+	return 0;
 }
 
 /*
@@ -762,6 +788,7 @@ static void __clone_and_map(struct clone_info *ci)
 static void __split_bio(struct mapped_device *md, struct bio *bio)
 {
 	struct clone_info ci;
+	int error = 0;
 
 	ci.map = dm_get_table(md);
 	if (!ci.map) {
@@ -781,11 +808,11 @@ static void __split_bio(struct mapped_device *md, struct bio *bio)
 	ci.idx = bio->bi_idx;
 
 	start_io_acct(ci.io);
-	while (ci.sector_count)
-		__clone_and_map(&ci);
+	while (ci.sector_count && !error)
+		error = __clone_and_map(&ci);
 
 	/* drop the extra reference count */
-	dec_pending(ci.io, 0);
+	dec_pending(ci.io, error);
 	dm_table_put(ci.map);
 }
 /*-----------------------------------------------------------------
@@ -991,6 +1018,9 @@ static struct mapped_device *alloc_dev(int minor)
 	atomic_set(&md->holders, 1);
 	atomic_set(&md->open_count, 0);
 	atomic_set(&md->event_nr, 0);
+	atomic_set(&md->uevent_seq, 0);
+	INIT_LIST_HEAD(&md->uevent_list);
+	spin_lock_init(&md->uevent_lock);
 
 	md->queue = blk_alloc_queue(GFP_KERNEL);
 	if (!md->queue)
@@ -1059,12 +1089,14 @@ static struct mapped_device *alloc_dev(int minor)
 	return NULL;
 }
 
+static void unlock_fs(struct mapped_device *md);
+
 static void free_dev(struct mapped_device *md)
 {
 	int minor = md->disk->first_minor;
 
 	if (md->suspended_bdev) {
-		thaw_bdev(md->suspended_bdev, NULL);
+		unlock_fs(md);
 		bdput(md->suspended_bdev);
 	}
 	mempool_destroy(md->tio_pool);
@@ -1088,7 +1120,15 @@ static void free_dev(struct mapped_device *md)
  */
 static void event_callback(void *context)
 {
+	unsigned long flags;
+	LIST_HEAD(uevents);
 	struct mapped_device *md = (struct mapped_device *) context;
+
+	spin_lock_irqsave(&md->uevent_lock, flags);
+	list_splice_init(&md->uevent_list, &uevents);
+	spin_unlock_irqrestore(&md->uevent_lock, flags);
+
+	dm_send_uevents(&uevents, &md->disk->kobj);
 
 	atomic_inc(&md->event_nr);
 	wake_up(&md->eventq);
@@ -1505,6 +1545,11 @@ out:
 /*-----------------------------------------------------------------
  * Event notification.
  *---------------------------------------------------------------*/
+uint32_t dm_next_uevent_seq(struct mapped_device *md)
+{
+	return atomic_add_return(1, &md->uevent_seq);
+}
+
 uint32_t dm_get_event_nr(struct mapped_device *md)
 {
 	return atomic_read(&md->event_nr);
@@ -1514,6 +1559,15 @@ int dm_wait_event(struct mapped_device *md, int event_nr)
 {
 	return wait_event_interruptible(md->eventq,
 			(event_nr != atomic_read(&md->event_nr)));
+}
+
+void dm_uevent_add(struct mapped_device *md, struct list_head *elist)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&md->uevent_lock, flags);
+	list_add(elist, &md->uevent_list);
+	spin_unlock_irqrestore(&md->uevent_lock, flags);
 }
 
 /*

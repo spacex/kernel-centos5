@@ -64,7 +64,7 @@ void account_tick_vtime(struct task_struct *tsk)
 		account_steal_time(tsk, cputime);
 	}
 
-	run_local_timers();
+	run_local_timers(task_pt_regs(tsk));
 	if (rcu_pending(smp_processor_id()))
 		rcu_check_callbacks(smp_processor_id(), rcu_user_flag);
 	scheduler_tick();

@@ -37,7 +37,7 @@
 
 #include <linux/string.h>
 #include <linux/slab.h>
-#include <linux/hardirq.h>
+#include <linux/sched.h>
 
 #include <asm/io.h>
 
@@ -49,10 +49,6 @@
 #include "mthca_cmd.h"
 #include "mthca_memfree.h"
 #include "mthca_wqe.h"
-
-static int mthca_qos_support = 0;
-module_param_named(qos_support, mthca_qos_support, int, 0644);
-MODULE_PARM_DESC(qos_support, "Enable QoS support if > 0");
 
 enum {
 	MTHCA_MAX_DIRECT_QP_SIZE = 4 * PAGE_SIZE,
@@ -253,7 +249,8 @@ void mthca_qp_event(struct mthca_dev *dev, u32 qpn,
 	spin_unlock(&dev->qp_table.lock);
 
 	if (!qp) {
-		mthca_warn(dev, "Async event for bogus QP %08x\n", qpn);
+		mthca_dbg(dev, "Async event %d for bogus QP %08x\n",
+			  (int) event_type, qpn);
 		return;
 	}
 
@@ -404,7 +401,7 @@ static int to_ib_qp_access_flags(int mthca_flags)
 static void to_ib_ah_attr(struct mthca_dev *dev, struct ib_ah_attr *ib_ah_attr,
 				struct mthca_qp_path *path)
 {
-	memset(ib_ah_attr, 0, sizeof *path);
+	memset(ib_ah_attr, 0, sizeof *ib_ah_attr);
 	ib_ah_attr->port_num 	  = (be32_to_cpu(path->port_pkey) >> 24) & 0x3;
 
 	if (ib_ah_attr->port_num == 0 || ib_ah_attr->port_num > dev->limits.num_ports)
@@ -650,19 +647,6 @@ static int __mthca_modify_qp(struct ib_qp *ibqp,
 			goto out_mailbox;
 
 		qp_param->opt_param_mask |= cpu_to_be32(MTHCA_QP_OPTPAR_PRIMARY_ADDR_PATH);
-		if (mthca_qos_support) {
-			u8 sl = attr->ah_attr.sl;
-			u8 sched_queue = (sl & 0x8) | (sl & (~(sl >> 1)) & 0x4) |
-				((sl >> 1) & (sl >> 2) & 0x2) | ((sl >> 1) & 0x1);
-
-			if (mthca_is_memfree(dev)) {
-				qp_context->rlkey_arbel_sched_queue |= sched_queue;
-			} else {
-				qp_context->tavor_sched_queue |= cpu_to_be32(sched_queue);
-			}
-			qp_param->opt_param_mask |=
-				cpu_to_be32(MTHCA_QP_OPTPAR_SCHED_QUEUE);
-		}
 	}
 
 	if (ibqp->qp_type == IB_QPT_RC &&
@@ -841,11 +825,6 @@ static int __mthca_modify_qp(struct ib_qp *ibqp,
 		if (qp->ibqp.send_cq != qp->ibqp.recv_cq)
 			mthca_cq_clean(dev, to_mcq(qp->ibqp.send_cq), qp->qpn, NULL);
 
-		if (dev->mthca_flags & MTHCA_FLAG_MSI_X)
-			synchronize_irq(dev->eq_table.eq[MTHCA_EQ_COMP].msi_x_vector);
-		else
-			synchronize_irq(dev->pdev->irq);
-
 		mthca_wq_reset(&qp->sq);
 		qp->sq.last = get_send_wqe(qp, qp->sq.max - 1);
 
@@ -864,21 +843,21 @@ out:
 	return err;
 }
 
-static const struct ib_qp_attr mthca_qp_attr = { .port_num = 1};
-static const int mthca_qp_attr_mask_table[IB_QPT_UD + 1] = {
-		[IB_QPT_UD]  = (IB_QP_PKEY_INDEX		|
-				IB_QP_PORT			|
-				IB_QP_QKEY),
-		[IB_QPT_UC]  = (IB_QP_PKEY_INDEX		|
-				IB_QP_PORT			|
-				IB_QP_ACCESS_FLAGS),
-		[IB_QPT_RC]  = (IB_QP_PKEY_INDEX		|
-				IB_QP_PORT			|
-				IB_QP_ACCESS_FLAGS),
-		[IB_QPT_SMI] = (IB_QP_PKEY_INDEX		|
-				IB_QP_QKEY),
-		[IB_QPT_GSI] = (IB_QP_PKEY_INDEX		|
-				IB_QP_QKEY),
+static const struct ib_qp_attr dummy_init_attr = { .port_num = 1 };
+static const int dummy_init_attr_mask[] = {
+	[IB_QPT_UD]  = (IB_QP_PKEY_INDEX		|
+			IB_QP_PORT			|
+			IB_QP_QKEY),
+	[IB_QPT_UC]  = (IB_QP_PKEY_INDEX		|
+			IB_QP_PORT			|
+			IB_QP_ACCESS_FLAGS),
+	[IB_QPT_RC]  = (IB_QP_PKEY_INDEX		|
+			IB_QP_PORT			|
+			IB_QP_ACCESS_FLAGS),
+	[IB_QPT_SMI] = (IB_QP_PKEY_INDEX		|
+			IB_QP_QKEY),
+	[IB_QPT_GSI] = (IB_QP_PKEY_INDEX		|
+			IB_QP_QKEY),
 };
 
 int mthca_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr, int attr_mask,
@@ -943,8 +922,8 @@ int mthca_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr, int attr_mask,
 	}
 
 	if (cur_state == IB_QPS_RESET && new_state == IB_QPS_ERR) {
-		err = __mthca_modify_qp(ibqp, &mthca_qp_attr,
-					mthca_qp_attr_mask_table[ibqp->qp_type],
+		err = __mthca_modify_qp(ibqp, &dummy_init_attr,
+					dummy_init_attr_mask[ibqp->qp_type],
 					IB_QPS_RESET, IB_QPS_INIT);
 		if (err)
 			goto out;
@@ -952,6 +931,7 @@ int mthca_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr, int attr_mask,
 	}
 
 	err = __mthca_modify_qp(ibqp, attr, attr_mask, cur_state, new_state);
+
 out:
 	mutex_unlock(&qp->mutex);
 	return err;
@@ -1161,21 +1141,21 @@ static void mthca_unmap_memfree(struct mthca_dev *dev,
 static int mthca_alloc_memfree(struct mthca_dev *dev,
 			       struct mthca_qp *qp)
 {
-	int ret = 0;
-
 	if (mthca_is_memfree(dev)) {
 		qp->rq.db_index = mthca_alloc_db(dev, MTHCA_DB_TYPE_RQ,
 						 qp->qpn, &qp->rq.db);
 		if (qp->rq.db_index < 0)
-			return ret;
+			return -ENOMEM;
 
 		qp->sq.db_index = mthca_alloc_db(dev, MTHCA_DB_TYPE_SQ,
 						 qp->qpn, &qp->sq.db);
-		if (qp->sq.db_index < 0)
+		if (qp->sq.db_index < 0) {
 			mthca_free_db(dev, MTHCA_DB_TYPE_RQ, qp->rq.db_index);
+			return -ENOMEM;
+		}
 	}
 
-	return ret;
+	return 0;
 }
 
 static void mthca_free_memfree(struct mthca_dev *dev,
@@ -1196,6 +1176,7 @@ static int mthca_alloc_qp_common(struct mthca_dev *dev,
 {
 	int ret;
 	int i;
+	struct mthca_next_seg *next;
 
 	qp->refcount = 1;
 	init_waitqueue_head(&qp->wait);
@@ -1238,7 +1219,6 @@ static int mthca_alloc_qp_common(struct mthca_dev *dev,
 	}
 
 	if (mthca_is_memfree(dev)) {
-		struct mthca_next_seg *next;
 		struct mthca_data_seg *scatter;
 		int size = (sizeof (struct mthca_next_seg) +
 			    qp->rq.max_gs * sizeof (struct mthca_data_seg)) / 16;
@@ -1261,6 +1241,13 @@ static int mthca_alloc_qp_common(struct mthca_dev *dev,
 						    qp->sq.wqe_shift) +
 						   qp->send_wqe_offset);
 		}
+	} else {
+		for (i = 0; i < qp->rq.max; ++i) {
+			next = get_recv_wqe(qp, i);
+			next->nda_op = htonl((((i + 1) % qp->rq.max) <<
+					      qp->rq.wqe_shift) | 1);
+		}
+
 	}
 
 	qp->sq.last = get_send_wqe(qp, qp->sq.max - 1);
@@ -1463,10 +1450,6 @@ void mthca_free_qp(struct mthca_dev *dev,
 	struct mthca_cq *send_cq;
 	struct mthca_cq *recv_cq;
 
-	if (qp->state != IB_QPS_RESET)
-		mthca_MODIFY_QP(dev, qp->state, IB_QPS_RESET, qp->qpn, 0,
-				NULL, 0, &status);
-
 	send_cq = to_mcq(qp->ibqp.send_cq);
 	recv_cq = to_mcq(qp->ibqp.recv_cq);
 
@@ -1480,25 +1463,15 @@ void mthca_free_qp(struct mthca_dev *dev,
 	mthca_array_clear(&dev->qp_table.qp,
 			  qp->qpn & (dev->limits.num_qps - 1));
 	--qp->refcount;
-
-	if (!qp->ibqp.uobject) {
-		__mthca_cq_clean(dev, send_cq, qp->qpn,
-			       qp->ibqp.srq ? to_msrq(qp->ibqp.srq) : NULL);
-		if (send_cq != recv_cq)
-			__mthca_cq_clean(dev, recv_cq, qp->qpn,
-					 qp->ibqp.srq ? to_msrq(qp->ibqp.srq) : NULL);
-	}
-
 	spin_unlock(&dev->qp_table.lock);
 
 	mthca_unlock_cqs(send_cq, recv_cq);
 
-	if (dev->mthca_flags & MTHCA_FLAG_MSI_X)
-		synchronize_irq(dev->eq_table.eq[MTHCA_EQ_COMP].msi_x_vector);
-	else
-		synchronize_irq(dev->pdev->irq);
-
 	wait_event(qp->wait, !get_qp_refcount(dev, qp));
+
+	if (qp->state != IB_QPS_RESET)
+		mthca_MODIFY_QP(dev, qp->state, IB_QPS_RESET, qp->qpn, 0,
+				NULL, 0, &status);
 
 	/*
 	 * If this is a userspace QP, the buffers, MR, CQs and so on
@@ -1506,6 +1479,11 @@ void mthca_free_qp(struct mthca_dev *dev,
 	 * unref the mem-free tables and free the QPN in our table.
 	 */
 	if (!qp->ibqp.uobject) {
+		mthca_cq_clean(dev, recv_cq, qp->qpn,
+			       qp->ibqp.srq ? to_msrq(qp->ibqp.srq) : NULL);
+		if (send_cq != recv_cq)
+			mthca_cq_clean(dev, send_cq, qp->qpn, NULL);
+
 		mthca_free_memfree(dev, qp);
 		mthca_free_wqe_buf(dev, qp);
 	}
@@ -1608,6 +1586,45 @@ static inline int mthca_wq_overflow(struct mthca_wq *wq, int nreq,
 	return cur + nreq >= wq->max;
 }
 
+static __always_inline void set_raddr_seg(struct mthca_raddr_seg *rseg,
+					  u64 remote_addr, u32 rkey)
+{
+	rseg->raddr    = cpu_to_be64(remote_addr);
+	rseg->rkey     = cpu_to_be32(rkey);
+	rseg->reserved = 0;
+}
+
+static __always_inline void set_atomic_seg(struct mthca_atomic_seg *aseg,
+					   struct ib_send_wr *wr)
+{
+	if (wr->opcode == IB_WR_ATOMIC_CMP_AND_SWP) {
+		aseg->swap_add = cpu_to_be64(wr->wr.atomic.swap);
+		aseg->compare  = cpu_to_be64(wr->wr.atomic.compare_add);
+	} else {
+		aseg->swap_add = cpu_to_be64(wr->wr.atomic.compare_add);
+		aseg->compare  = 0;
+	}
+
+}
+
+static void set_tavor_ud_seg(struct mthca_tavor_ud_seg *useg,
+			     struct ib_send_wr *wr)
+{
+	useg->lkey    = cpu_to_be32(to_mah(wr->wr.ud.ah)->key);
+	useg->av_addr =	cpu_to_be64(to_mah(wr->wr.ud.ah)->avdma);
+	useg->dqpn    =	cpu_to_be32(wr->wr.ud.remote_qpn);
+	useg->qkey    =	cpu_to_be32(wr->wr.ud.remote_qkey);
+
+}
+
+static void set_arbel_ud_seg(struct mthca_arbel_ud_seg *useg,
+			     struct ib_send_wr *wr)
+{
+	memcpy(useg->av, to_mah(wr->wr.ud.ah)->av, MTHCA_AV_SIZE);
+	useg->dqpn = cpu_to_be32(wr->wr.ud.remote_qpn);
+	useg->qkey = cpu_to_be32(wr->wr.ud.remote_qkey);
+}
+
 int mthca_tavor_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 			  struct ib_send_wr **bad_wr)
 {
@@ -1620,8 +1637,15 @@ int mthca_tavor_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 	int nreq;
 	int i;
 	int size;
-	int size0 = 0;
-	u32 f0;
+	/*
+	 * f0 and size0 are only used if nreq != 0, and they will
+	 * always be initialized the first time through the main loop
+	 * before nreq is incremented.  So nreq cannot become non-zero
+	 * without initializing f0 and size0, and they are in fact
+	 * never used uninitialized.
+	 */
+	int uninitialized_var(size0);
+	u32 uninitialized_var(f0);
 	int ind;
 	u8 op0 = 0;
 
@@ -1666,25 +1690,11 @@ int mthca_tavor_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 			switch (wr->opcode) {
 			case IB_WR_ATOMIC_CMP_AND_SWP:
 			case IB_WR_ATOMIC_FETCH_AND_ADD:
-				((struct mthca_raddr_seg *) wqe)->raddr =
-					cpu_to_be64(wr->wr.atomic.remote_addr);
-				((struct mthca_raddr_seg *) wqe)->rkey =
-					cpu_to_be32(wr->wr.atomic.rkey);
-				((struct mthca_raddr_seg *) wqe)->reserved = 0;
-
+				set_raddr_seg(wqe, wr->wr.atomic.remote_addr,
+					      wr->wr.atomic.rkey);
 				wqe += sizeof (struct mthca_raddr_seg);
 
-				if (wr->opcode == IB_WR_ATOMIC_CMP_AND_SWP) {
-					((struct mthca_atomic_seg *) wqe)->swap_add =
-						cpu_to_be64(wr->wr.atomic.swap);
-					((struct mthca_atomic_seg *) wqe)->compare =
-						cpu_to_be64(wr->wr.atomic.compare_add);
-				} else {
-					((struct mthca_atomic_seg *) wqe)->swap_add =
-						cpu_to_be64(wr->wr.atomic.compare_add);
-					((struct mthca_atomic_seg *) wqe)->compare = 0;
-				}
-
+				set_atomic_seg(wqe, wr);
 				wqe += sizeof (struct mthca_atomic_seg);
 				size += (sizeof (struct mthca_raddr_seg) +
 					 sizeof (struct mthca_atomic_seg)) / 16;
@@ -1693,12 +1703,9 @@ int mthca_tavor_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 			case IB_WR_RDMA_WRITE:
 			case IB_WR_RDMA_WRITE_WITH_IMM:
 			case IB_WR_RDMA_READ:
-				((struct mthca_raddr_seg *) wqe)->raddr =
-					cpu_to_be64(wr->wr.rdma.remote_addr);
-				((struct mthca_raddr_seg *) wqe)->rkey =
-					cpu_to_be32(wr->wr.rdma.rkey);
-				((struct mthca_raddr_seg *) wqe)->reserved = 0;
-				wqe += sizeof (struct mthca_raddr_seg);
+				set_raddr_seg(wqe, wr->wr.rdma.remote_addr,
+					      wr->wr.rdma.rkey);
+				wqe  += sizeof (struct mthca_raddr_seg);
 				size += sizeof (struct mthca_raddr_seg) / 16;
 				break;
 
@@ -1713,12 +1720,9 @@ int mthca_tavor_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 			switch (wr->opcode) {
 			case IB_WR_RDMA_WRITE:
 			case IB_WR_RDMA_WRITE_WITH_IMM:
-				((struct mthca_raddr_seg *) wqe)->raddr =
-					cpu_to_be64(wr->wr.rdma.remote_addr);
-				((struct mthca_raddr_seg *) wqe)->rkey =
-					cpu_to_be32(wr->wr.rdma.rkey);
-				((struct mthca_raddr_seg *) wqe)->reserved = 0;
-				wqe += sizeof (struct mthca_raddr_seg);
+				set_raddr_seg(wqe, wr->wr.rdma.remote_addr,
+					      wr->wr.rdma.rkey);
+				wqe  += sizeof (struct mthca_raddr_seg);
 				size += sizeof (struct mthca_raddr_seg) / 16;
 				break;
 
@@ -1730,16 +1734,8 @@ int mthca_tavor_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 			break;
 
 		case UD:
-			((struct mthca_tavor_ud_seg *) wqe)->lkey =
-				cpu_to_be32(to_mah(wr->wr.ud.ah)->key);
-			((struct mthca_tavor_ud_seg *) wqe)->av_addr =
-				cpu_to_be64(to_mah(wr->wr.ud.ah)->avdma);
-			((struct mthca_tavor_ud_seg *) wqe)->dqpn =
-				cpu_to_be32(wr->wr.ud.remote_qpn);
-			((struct mthca_tavor_ud_seg *) wqe)->qkey =
-				cpu_to_be32(wr->wr.ud.remote_qkey);
-
-			wqe += sizeof (struct mthca_tavor_ud_seg);
+			set_tavor_ud_seg(wqe, wr);
+			wqe  += sizeof (struct mthca_tavor_ud_seg);
 			size += sizeof (struct mthca_tavor_ud_seg) / 16;
 			break;
 
@@ -1764,13 +1760,8 @@ int mthca_tavor_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 		}
 
 		for (i = 0; i < wr->num_sge; ++i) {
-			((struct mthca_data_seg *) wqe)->byte_count =
-				cpu_to_be32(wr->sg_list[i].length);
-			((struct mthca_data_seg *) wqe)->lkey =
-				cpu_to_be32(wr->sg_list[i].lkey);
-			((struct mthca_data_seg *) wqe)->addr =
-				cpu_to_be64(wr->sg_list[i].addr);
-			wqe += sizeof (struct mthca_data_seg);
+			mthca_set_data_seg(wqe, wr->sg_list + i);
+			wqe  += sizeof (struct mthca_data_seg);
 			size += sizeof (struct mthca_data_seg) / 16;
 		}
 
@@ -1798,11 +1789,11 @@ int mthca_tavor_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 				    mthca_opcode[wr->opcode]);
 		wmb();
 		((struct mthca_next_seg *) prev_wqe)->ee_nds =
-			cpu_to_be32((size0 ? 0 : MTHCA_NEXT_DBD) | size |
+			cpu_to_be32((nreq ? 0 : MTHCA_NEXT_DBD) | size |
 				    ((wr->send_flags & IB_SEND_FENCE) ?
 				    MTHCA_NEXT_FENCE : 0));
 
-		if (!size0) {
+		if (!nreq) {
 			size0 = size;
 			op0   = mthca_opcode[wr->opcode];
 			f0    = wr->send_flags & IB_SEND_FENCE ?
@@ -1816,15 +1807,11 @@ int mthca_tavor_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 
 out:
 	if (likely(nreq)) {
-		__be32 doorbell[2];
-
-		doorbell[0] = cpu_to_be32(((qp->sq.next_ind << qp->sq.wqe_shift) +
-					   qp->send_wqe_offset) | f0 | op0);
-		doorbell[1] = cpu_to_be32((qp->qpn << 8) | size0);
-
 		wmb();
 
-		mthca_write64(doorbell,
+		mthca_write64(((qp->sq.next_ind << qp->sq.wqe_shift) +
+			       qp->send_wqe_offset) | f0 | op0,
+			      (qp->qpn << 8) | size0,
 			      dev->kar + MTHCA_SEND_DOORBELL,
 			      MTHCA_GET_DOORBELL_LOCK(&dev->doorbell_lock));
 		/*
@@ -1846,13 +1833,19 @@ int mthca_tavor_post_receive(struct ib_qp *ibqp, struct ib_recv_wr *wr,
 {
 	struct mthca_dev *dev = to_mdev(ibqp->device);
 	struct mthca_qp *qp = to_mqp(ibqp);
-	__be32 doorbell[2];
 	unsigned long flags;
 	int err = 0;
 	int nreq;
 	int i;
 	int size;
-	int size0 = 0;
+	/*
+	 * size0 is only used if nreq != 0, and it will always be
+	 * initialized the first time through the main loop before
+	 * nreq is incremented.  So nreq cannot become non-zero
+	 * without initializing size0, and it is in fact never used
+	 * uninitialized.
+	 */
+	int uninitialized_var(size0);
 	int ind;
 	void *wqe;
 	void *prev_wqe;
@@ -1878,7 +1871,6 @@ int mthca_tavor_post_receive(struct ib_qp *ibqp, struct ib_recv_wr *wr,
 		prev_wqe = qp->rq.last;
 		qp->rq.last = wqe;
 
-		((struct mthca_next_seg *) wqe)->nda_op = 0;
 		((struct mthca_next_seg *) wqe)->ee_nds =
 			cpu_to_be32(MTHCA_NEXT_DBD);
 		((struct mthca_next_seg *) wqe)->flags = 0;
@@ -1893,25 +1885,17 @@ int mthca_tavor_post_receive(struct ib_qp *ibqp, struct ib_recv_wr *wr,
 		}
 
 		for (i = 0; i < wr->num_sge; ++i) {
-			((struct mthca_data_seg *) wqe)->byte_count =
-				cpu_to_be32(wr->sg_list[i].length);
-			((struct mthca_data_seg *) wqe)->lkey =
-				cpu_to_be32(wr->sg_list[i].lkey);
-			((struct mthca_data_seg *) wqe)->addr =
-				cpu_to_be64(wr->sg_list[i].addr);
-			wqe += sizeof (struct mthca_data_seg);
+			mthca_set_data_seg(wqe, wr->sg_list + i);
+			wqe  += sizeof (struct mthca_data_seg);
 			size += sizeof (struct mthca_data_seg) / 16;
 		}
 
 		qp->wrid[ind + qp->sq.max] = wr->wr_id;
 
-		((struct mthca_next_seg *) prev_wqe)->nda_op =
-			cpu_to_be32((ind << qp->rq.wqe_shift) | 1);
-		wmb();
 		((struct mthca_next_seg *) prev_wqe)->ee_nds =
 			cpu_to_be32(MTHCA_NEXT_DBD | size);
 
-		if (!size0)
+		if (!nreq)
 			size0 = size;
 
 		++ind;
@@ -1922,29 +1906,23 @@ int mthca_tavor_post_receive(struct ib_qp *ibqp, struct ib_recv_wr *wr,
 		if (unlikely(nreq == MTHCA_TAVOR_MAX_WQES_PER_RECV_DB)) {
 			nreq = 0;
 
-			doorbell[0] = cpu_to_be32((qp->rq.next_ind << qp->rq.wqe_shift) | size0);
-			doorbell[1] = cpu_to_be32(qp->qpn << 8);
-
 			wmb();
 
-			mthca_write64(doorbell,
-				      dev->kar + MTHCA_RECEIVE_DOORBELL,
+			mthca_write64((qp->rq.next_ind << qp->rq.wqe_shift) | size0,
+				      qp->qpn << 8, dev->kar + MTHCA_RECEIVE_DOORBELL,
 				      MTHCA_GET_DOORBELL_LOCK(&dev->doorbell_lock));
 
+			qp->rq.next_ind = ind;
 			qp->rq.head += MTHCA_TAVOR_MAX_WQES_PER_RECV_DB;
-			size0 = 0;
 		}
 	}
 
 out:
 	if (likely(nreq)) {
-		doorbell[0] = cpu_to_be32((qp->rq.next_ind << qp->rq.wqe_shift) | size0);
-		doorbell[1] = cpu_to_be32((qp->qpn << 8) | nreq);
-
 		wmb();
 
-		mthca_write64(doorbell,
-			      dev->kar + MTHCA_RECEIVE_DOORBELL,
+		mthca_write64((qp->rq.next_ind << qp->rq.wqe_shift) | size0,
+			      qp->qpn << 8 | nreq, dev->kar + MTHCA_RECEIVE_DOORBELL,
 			      MTHCA_GET_DOORBELL_LOCK(&dev->doorbell_lock));
 	}
 
@@ -1966,7 +1944,7 @@ int mthca_arbel_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 {
 	struct mthca_dev *dev = to_mdev(ibqp->device);
 	struct mthca_qp *qp = to_mqp(ibqp);
-	__be32 doorbell[2];
+	u32 dbhi;
 	void *wqe;
 	void *prev_wqe;
 	unsigned long flags;
@@ -1974,8 +1952,15 @@ int mthca_arbel_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 	int nreq;
 	int i;
 	int size;
-	int size0 = 0;
-	u32 f0;
+	/*
+	 * f0 and size0 are only used if nreq != 0, and they will
+	 * always be initialized the first time through the main loop
+	 * before nreq is incremented.  So nreq cannot become non-zero
+	 * without initializing f0 and size0, and they are in fact
+	 * never used uninitialized.
+	 */
+	int uninitialized_var(size0);
+	u32 uninitialized_var(f0);
 	int ind;
 	u8 op0 = 0;
 
@@ -1989,13 +1974,10 @@ int mthca_arbel_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 		if (unlikely(nreq == MTHCA_ARBEL_MAX_WQES_PER_SEND_DB)) {
 			nreq = 0;
 
-			doorbell[0] = cpu_to_be32((MTHCA_ARBEL_MAX_WQES_PER_SEND_DB << 24) |
-						  ((qp->sq.head & 0xffff) << 8) |
-						  f0 | op0);
-			doorbell[1] = cpu_to_be32((qp->qpn << 8) | size0);
+			dbhi = (MTHCA_ARBEL_MAX_WQES_PER_SEND_DB << 24) |
+				((qp->sq.head & 0xffff) << 8) | f0 | op0;
 
 			qp->sq.head += MTHCA_ARBEL_MAX_WQES_PER_SEND_DB;
-			size0 = 0;
 
 			/*
 			 * Make sure that descriptors are written before
@@ -2009,7 +1991,8 @@ int mthca_arbel_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 			 * write MMIO send doorbell.
 			 */
 			wmb();
-			mthca_write64(doorbell,
+
+			mthca_write64(dbhi, (qp->qpn << 8) | size0,
 				      dev->kar + MTHCA_SEND_DOORBELL,
 				      MTHCA_GET_DOORBELL_LOCK(&dev->doorbell_lock));
 		}
@@ -2033,6 +2016,8 @@ int mthca_arbel_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 			 cpu_to_be32(MTHCA_NEXT_CQ_UPDATE) : 0) |
 			((wr->send_flags & IB_SEND_SOLICITED) ?
 			 cpu_to_be32(MTHCA_NEXT_SOLICIT) : 0)   |
+			((wr->send_flags & IB_SEND_IP_CSUM) ?
+			 cpu_to_be32(MTHCA_NEXT_IP_CSUM | MTHCA_NEXT_TCP_UDP_CSUM) : 0) |
 			cpu_to_be32(1);
 		if (wr->opcode == IB_WR_SEND_WITH_IMM ||
 		    wr->opcode == IB_WR_RDMA_WRITE_WITH_IMM)
@@ -2046,26 +2031,12 @@ int mthca_arbel_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 			switch (wr->opcode) {
 			case IB_WR_ATOMIC_CMP_AND_SWP:
 			case IB_WR_ATOMIC_FETCH_AND_ADD:
-				((struct mthca_raddr_seg *) wqe)->raddr =
-					cpu_to_be64(wr->wr.atomic.remote_addr);
-				((struct mthca_raddr_seg *) wqe)->rkey =
-					cpu_to_be32(wr->wr.atomic.rkey);
-				((struct mthca_raddr_seg *) wqe)->reserved = 0;
-
+				set_raddr_seg(wqe, wr->wr.atomic.remote_addr,
+					      wr->wr.atomic.rkey);
 				wqe += sizeof (struct mthca_raddr_seg);
 
-				if (wr->opcode == IB_WR_ATOMIC_CMP_AND_SWP) {
-					((struct mthca_atomic_seg *) wqe)->swap_add =
-						cpu_to_be64(wr->wr.atomic.swap);
-					((struct mthca_atomic_seg *) wqe)->compare =
-						cpu_to_be64(wr->wr.atomic.compare_add);
-				} else {
-					((struct mthca_atomic_seg *) wqe)->swap_add =
-						cpu_to_be64(wr->wr.atomic.compare_add);
-					((struct mthca_atomic_seg *) wqe)->compare = 0;
-				}
-
-				wqe += sizeof (struct mthca_atomic_seg);
+				set_atomic_seg(wqe, wr);
+				wqe  += sizeof (struct mthca_atomic_seg);
 				size += (sizeof (struct mthca_raddr_seg) +
 					 sizeof (struct mthca_atomic_seg)) / 16;
 				break;
@@ -2073,12 +2044,9 @@ int mthca_arbel_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 			case IB_WR_RDMA_READ:
 			case IB_WR_RDMA_WRITE:
 			case IB_WR_RDMA_WRITE_WITH_IMM:
-				((struct mthca_raddr_seg *) wqe)->raddr =
-					cpu_to_be64(wr->wr.rdma.remote_addr);
-				((struct mthca_raddr_seg *) wqe)->rkey =
-					cpu_to_be32(wr->wr.rdma.rkey);
-				((struct mthca_raddr_seg *) wqe)->reserved = 0;
-				wqe += sizeof (struct mthca_raddr_seg);
+				set_raddr_seg(wqe, wr->wr.rdma.remote_addr,
+					      wr->wr.rdma.rkey);
+				wqe  += sizeof (struct mthca_raddr_seg);
 				size += sizeof (struct mthca_raddr_seg) / 16;
 				break;
 
@@ -2093,12 +2061,9 @@ int mthca_arbel_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 			switch (wr->opcode) {
 			case IB_WR_RDMA_WRITE:
 			case IB_WR_RDMA_WRITE_WITH_IMM:
-				((struct mthca_raddr_seg *) wqe)->raddr =
-					cpu_to_be64(wr->wr.rdma.remote_addr);
-				((struct mthca_raddr_seg *) wqe)->rkey =
-					cpu_to_be32(wr->wr.rdma.rkey);
-				((struct mthca_raddr_seg *) wqe)->reserved = 0;
-				wqe += sizeof (struct mthca_raddr_seg);
+				set_raddr_seg(wqe, wr->wr.rdma.remote_addr,
+					      wr->wr.rdma.rkey);
+				wqe  += sizeof (struct mthca_raddr_seg);
 				size += sizeof (struct mthca_raddr_seg) / 16;
 				break;
 
@@ -2110,14 +2075,8 @@ int mthca_arbel_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 			break;
 
 		case UD:
-			memcpy(((struct mthca_arbel_ud_seg *) wqe)->av,
-			       to_mah(wr->wr.ud.ah)->av, MTHCA_AV_SIZE);
-			((struct mthca_arbel_ud_seg *) wqe)->dqpn =
-				cpu_to_be32(wr->wr.ud.remote_qpn);
-			((struct mthca_arbel_ud_seg *) wqe)->qkey =
-				cpu_to_be32(wr->wr.ud.remote_qkey);
-
-			wqe += sizeof (struct mthca_arbel_ud_seg);
+			set_arbel_ud_seg(wqe, wr);
+			wqe  += sizeof (struct mthca_arbel_ud_seg);
 			size += sizeof (struct mthca_arbel_ud_seg) / 16;
 			break;
 
@@ -2142,13 +2101,8 @@ int mthca_arbel_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 		}
 
 		for (i = 0; i < wr->num_sge; ++i) {
-			((struct mthca_data_seg *) wqe)->byte_count =
-				cpu_to_be32(wr->sg_list[i].length);
-			((struct mthca_data_seg *) wqe)->lkey =
-				cpu_to_be32(wr->sg_list[i].lkey);
-			((struct mthca_data_seg *) wqe)->addr =
-				cpu_to_be64(wr->sg_list[i].addr);
-			wqe += sizeof (struct mthca_data_seg);
+			mthca_set_data_seg(wqe, wr->sg_list + i);
+			wqe  += sizeof (struct mthca_data_seg);
 			size += sizeof (struct mthca_data_seg) / 16;
 		}
 
@@ -2180,7 +2134,7 @@ int mthca_arbel_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 				    ((wr->send_flags & IB_SEND_FENCE) ?
 				     MTHCA_NEXT_FENCE : 0));
 
-		if (!size0) {
+		if (!nreq) {
 			size0 = size;
 			op0   = mthca_opcode[wr->opcode];
 			f0    = wr->send_flags & IB_SEND_FENCE ?
@@ -2194,10 +2148,7 @@ int mthca_arbel_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 
 out:
 	if (likely(nreq)) {
-		doorbell[0] = cpu_to_be32((nreq << 24)                  |
-					  ((qp->sq.head & 0xffff) << 8) |
-					  f0 | op0);
-		doorbell[1] = cpu_to_be32((qp->qpn << 8) | size0);
+		dbhi = (nreq << 24) | ((qp->sq.head & 0xffff) << 8) | f0 | op0;
 
 		qp->sq.head += nreq;
 
@@ -2213,8 +2164,8 @@ out:
 		 * write MMIO send doorbell.
 		 */
 		wmb();
-		mthca_write64(doorbell,
-			      dev->kar + MTHCA_SEND_DOORBELL,
+
+		mthca_write64(dbhi, (qp->qpn << 8) | size0, dev->kar + MTHCA_SEND_DOORBELL,
 			      MTHCA_GET_DOORBELL_LOCK(&dev->doorbell_lock));
 	}
 
@@ -2270,20 +2221,12 @@ int mthca_arbel_post_receive(struct ib_qp *ibqp, struct ib_recv_wr *wr,
 		}
 
 		for (i = 0; i < wr->num_sge; ++i) {
-			((struct mthca_data_seg *) wqe)->byte_count =
-				cpu_to_be32(wr->sg_list[i].length);
-			((struct mthca_data_seg *) wqe)->lkey =
-				cpu_to_be32(wr->sg_list[i].lkey);
-			((struct mthca_data_seg *) wqe)->addr =
-				cpu_to_be64(wr->sg_list[i].addr);
+			mthca_set_data_seg(wqe, wr->sg_list + i);
 			wqe += sizeof (struct mthca_data_seg);
 		}
 
-		if (i < qp->rq.max_gs) {
-			((struct mthca_data_seg *) wqe)->byte_count = 0;
-			((struct mthca_data_seg *) wqe)->lkey = cpu_to_be32(MTHCA_INVAL_LKEY);
-			((struct mthca_data_seg *) wqe)->addr = 0;
-		}
+		if (i < qp->rq.max_gs)
+			mthca_set_data_seg_inval(wqe);
 
 		qp->wrid[ind + qp->sq.max] = wr->wr_id;
 
@@ -2313,8 +2256,8 @@ void mthca_free_err_wqe(struct mthca_dev *dev, struct mthca_qp *qp, int is_send,
 	struct mthca_next_seg *next;
 
 	/*
-	 * For SRQs, all WQEs generate a CQE, so we're always at the
-	 * end of the doorbell chain.
+	 * For SRQs, all receive WQEs generate a CQE, so we're always
+	 * at the end of the doorbell chain.
 	 */
 	if (qp->ibqp.srq && !is_send) {
 		*new_wqe = 0;

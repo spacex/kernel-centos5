@@ -48,7 +48,7 @@
 #include <linux/netfilter_ipv6.h>
 #include <linux/tty.h>
 #include <net/icmp.h>
-#include <net/ip.h>		/* for sysctl_local_port_range[] */
+#include <net/ip.h>		/* for local_port_range[] */
 #include <net/tcp.h>		/* struct or_callable used in sock_rcv_skb */
 #include <asm/uaccess.h>
 #include <asm/semaphore.h>
@@ -2562,13 +2562,17 @@ static int file_map_prot_check(struct file *file, unsigned long prot, int shared
 	return 0;
 }
 
-static int selinux_file_mmap(struct file *file, unsigned long reqprot,
-			     unsigned long prot, unsigned long flags)
+static int selinux_file_mmap_addr(struct file *file, unsigned long reqprot,
+				  unsigned long prot, unsigned long flags,
+				  unsigned long addr, unsigned long addr_only)
 {
-	int rc;
+	int rc = 0;
+	u32 sid = ((struct task_security_struct*)(current->security))->sid;
 
-	rc = secondary_ops->file_mmap(file, reqprot, prot, flags);
-	if (rc)
+	if (addr < mmap_min_addr)
+		rc = avc_has_perm(sid, sid, SECCLASS_MEMPROTECT,
+				  MEMPROTECT__MMAP_ZERO, NULL);
+	if (rc || addr_only)
 		return rc;
 
 	if (selinux_checkreqprot)
@@ -2576,6 +2580,14 @@ static int selinux_file_mmap(struct file *file, unsigned long reqprot,
 
 	return file_map_prot_check(file, prot,
 				   (flags & MAP_TYPE) == MAP_SHARED);
+}
+
+/* should be dead code unless some external garbage screwed with the security_ops */
+static int selinux_file_mmap(struct file *file, unsigned long reqprot,
+			     unsigned long prot, unsigned long flags)
+{
+	return selinux_file_mmap_addr(file, reqprot, prot, flags,
+				      (unsigned long)-1, 0);
 }
 
 static int selinux_file_mprotect(struct vm_area_struct *vma,
@@ -3153,8 +3165,6 @@ static int selinux_socket_post_create(struct socket *sock, int family,
 /* Range of port numbers used to automatically bind.
    Need to determine whether we should perform a name_bind
    permission check between the socket and the port number. */
-#define ip_local_port_range_0 sysctl_local_port_range[0]
-#define ip_local_port_range_1 sysctl_local_port_range[1]
 
 static int selinux_socket_bind(struct socket *sock, struct sockaddr *address, int addrlen)
 {
@@ -3197,20 +3207,27 @@ static int selinux_socket_bind(struct socket *sock, struct sockaddr *address, in
 			addrp = (char *)&addr6->sin6_addr.s6_addr;
 		}
 
-		if (snum&&(snum < max(PROT_SOCK,ip_local_port_range_0) ||
-			   snum > ip_local_port_range_1)) {
-			err = security_port_sid(sk->sk_family, sk->sk_type,
-						sk->sk_protocol, snum, &sid);
-			if (err)
-				goto out;
-			AVC_AUDIT_DATA_INIT(&ad,NET);
-			ad.u.net.sport = htons(snum);
-			ad.u.net.family = family;
-			err = avc_has_perm(isec->sid, sid,
-					   isec->sclass,
-					   SOCKET__NAME_BIND, &ad);
-			if (err)
-				goto out;
+		if (snum) {
+			int low, high;
+
+			inet_get_local_port_range(&low, &high);
+
+			if (snum < max(PROT_SOCK, low) || snum > high) {
+				err = security_port_sid(sk->sk_family,
+							sk->sk_type,
+							sk->sk_protocol, snum,
+							&sid);
+				if (err)
+					goto out;
+				AVC_AUDIT_DATA_INIT(&ad,NET);
+				ad.u.net.sport = htons(snum);
+				ad.u.net.family = family;
+				err = avc_has_perm(isec->sid, sid,
+						   isec->sclass,
+						   SOCKET__NAME_BIND, &ad);
+				if (err)
+					goto out;
+			}
 		}
 		
 		switch(isec->sclass) {
@@ -4802,6 +4819,7 @@ static struct security_operations selinux_ops = {
 	.key_free =                     selinux_key_free,
 	.key_permission =               selinux_key_permission,
 #endif
+	.file_mmap_addr =		selinux_file_mmap_addr,
 };
 
 static __init int selinux_init(void)
@@ -4824,6 +4842,7 @@ static __init int selinux_init(void)
 	sel_inode_cache = kmem_cache_create("selinux_inode_security",
 					    sizeof(struct inode_security_struct),
 					    0, SLAB_PANIC, NULL, NULL);
+
 	avc_init();
 
 	original_ops = secondary_ops = security_ops;

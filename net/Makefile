@@ -50,6 +50,7 @@ obj-$(CONFIG_MAC80211)		+= mac80211/
 obj-$(CONFIG_IEEE80211)		+= ieee80211/
 obj-$(CONFIG_TIPC)		+= tipc/
 obj-$(CONFIG_NETLABEL)		+= netlabel/
+obj-$(CONFIG_IUCV)		+= iucv/
 
 ifeq ($(CONFIG_NET),y)
 obj-$(CONFIG_SYSCTL)		+= sysctl_net.o

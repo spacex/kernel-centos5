@@ -100,6 +100,8 @@ out_exit:
 	return err;
 error:
 	spin_unlock_bh(&x->lock);
+	if (err == -EINPROGRESS)
+		goto out_exit;
 error_nolock:
 	kfree_skb(skb);
 	goto out_exit;
@@ -115,7 +117,7 @@ static int xfrm4_output_finish2(struct sk_buff *skb)
 		err = nf_hook(PF_INET, NF_IP_LOCAL_OUT, &skb, NULL,
 			      skb->dst->dev, dst_output);
 		if (unlikely(err != 1))
-			break;
+			goto out;
 
 		if (!skb->dst->xfrm)
 			return dst_output(skb);
@@ -123,9 +125,13 @@ static int xfrm4_output_finish2(struct sk_buff *skb)
 		err = nf_hook(PF_INET, NF_IP_POST_ROUTING, &skb, NULL,
 			      skb->dst->dev, xfrm4_output_finish2);
 		if (unlikely(err != 1))
-			break;
+			goto out;
 	}
 
+	if (err == -EINPROGRESS)
+		err = 0;
+
+out:
 	return err;
 }
 

@@ -443,6 +443,7 @@ EXPORT_SYMBOL_GPL(scsi_execute_async);
 static void scsi_init_cmd_errh(struct scsi_cmnd *cmd)
 {
 	cmd->serial_number = 0;
+	cmd->resid = 0;
 	memset(cmd->sense_buffer, 0, sizeof cmd->sense_buffer);
 	if (cmd->cmd_len == 0)
 		cmd->cmd_len = COMMAND_SIZE(cmd->cmnd[0]);
@@ -844,8 +845,8 @@ void scsi_io_completion(struct scsi_cmnd *cmd, unsigned int good_bytes)
 				memcpy(req->sense, cmd->sense_buffer,  len);
 				req->sense_len = len;
 			}
-		} else
-			req->data_len = cmd->resid;
+		}
+		req->data_len = cmd->resid;
 	}
 
 	/*
@@ -1991,6 +1992,202 @@ scsi_device_set_state(struct scsi_device *sdev, enum scsi_device_state state)
 	return -EINVAL;
 }
 EXPORT_SYMBOL(scsi_device_set_state);
+
+/**
+ * 	sdev_evt_emit - emit a single SCSI device uevent
+ *	@sdev: associated SCSI device
+ *	@evt: event to emit
+ *
+ *	Send a single uevent (scsi_event) to the associated scsi_device.
+ */
+static void scsi_evt_emit(struct scsi_device *sdev, struct scsi_event *evt)
+{
+	int idx = 0;
+	char *envp[3];
+
+	switch (evt->evt_type) {
+	case SDEV_EVT_MEDIA_CHANGE:
+		envp[idx++] = "SDEV_MEDIA_CHANGE=1";
+		break;
+
+	default:
+		/* do nothing */
+		break;
+	}
+
+	envp[idx++] = NULL;
+
+	kobject_uevent_env(&sdev->sdev_gendev.kobj, KOBJ_CHANGE, envp);
+}
+
+/**
+ * 	sdev_evt_thread - send a uevent for each scsi event
+ *	@work: work struct for scsi_device
+ *
+ *	Dispatch queued events to their associated scsi_device kobjects
+ *	as uevents.
+ */
+void scsi_evt_thread(void *opaque)
+{
+	struct scsi_device *sdev = opaque;
+	struct scsi_device_shadow *shdev = sdev_shadow(sdev);
+	LIST_HEAD(event_list);
+
+	if (!shdev)
+		return;
+
+	while (1) {
+		struct scsi_event *evt;
+		struct list_head *this, *tmp;
+		unsigned long flags;
+
+		spin_lock_irqsave(&sdev->list_lock, flags);
+		list_splice_init(&shdev->event_list, &event_list);
+		spin_unlock_irqrestore(&sdev->list_lock, flags);
+
+		if (list_empty(&event_list))
+			break;
+
+		list_for_each_safe(this, tmp, &event_list) {
+			evt = list_entry(this, struct scsi_event, node);
+			list_del(&evt->node);
+			scsi_evt_emit(sdev, evt);
+			kfree(evt);
+		}
+	}
+}
+
+/**
+ * 	sdev_evt_send - send asserted event to uevent thread
+ *	@sdev: scsi_device event occurred on
+ *	@evt: event to send
+ *
+ *	Assert scsi device event asynchronously.
+ */
+void sdev_evt_send(struct scsi_device *sdev, struct scsi_event *evt)
+{
+	struct scsi_device_shadow *shdev = sdev_shadow(sdev);
+	unsigned long flags;
+
+	if (!shdev)
+		return;
+
+	if (!test_bit(evt->evt_type, shdev->supported_events)) {
+		kfree(evt);
+		return;
+	}
+
+	spin_lock_irqsave(&sdev->list_lock, flags);
+	list_add_tail(&evt->node, &shdev->event_list);
+	schedule_work(&shdev->event_work);
+	spin_unlock_irqrestore(&sdev->list_lock, flags);
+}
+EXPORT_SYMBOL_GPL(sdev_evt_send);
+
+/**
+ * 	sdev_evt_alloc - allocate a new scsi event
+ *	@evt_type: type of event to allocate
+ *	@gfpflags: GFP flags for allocation
+ *
+ *	Allocates and returns a new scsi_event.
+ */
+struct scsi_event *sdev_evt_alloc(enum scsi_device_event evt_type,
+				  gfp_t gfpflags)
+{
+	struct scsi_event *evt = kzalloc(sizeof(struct scsi_event), gfpflags);
+	if (!evt)
+		return NULL;
+
+	evt->evt_type = evt_type;
+	INIT_LIST_HEAD(&evt->node);
+
+	/* evt_type-specific initialization, if any */
+	switch (evt_type) {
+	case SDEV_EVT_MEDIA_CHANGE:
+	default:
+		/* do nothing */
+		break;
+	}
+
+	return evt;
+}
+EXPORT_SYMBOL_GPL(sdev_evt_alloc);
+
+/**
+ * 	sdev_evt_send_simple - send asserted event to uevent thread
+ *	@sdev: scsi_device event occurred on
+ *	@evt_type: type of event to send
+ *	@gfpflags: GFP flags for allocation
+ *
+ *	Assert scsi device event asynchronously, given an event type.
+ */
+void sdev_evt_send_simple(struct scsi_device *sdev,
+			  enum scsi_device_event evt_type, gfp_t gfpflags)
+{
+	struct scsi_event *evt = sdev_evt_alloc(evt_type, gfpflags);
+	if (!evt) {
+		sdev_printk(KERN_ERR, sdev, "event %d eaten due to OOM\n",
+			    evt_type);
+		return;
+	}
+
+	sdev_evt_send(sdev, evt);
+}
+EXPORT_SYMBOL_GPL(sdev_evt_send_simple);
+
+static LIST_HEAD(sdev_shadow_list);
+
+struct scsi_device_shadow *sdev_shadow(struct scsi_device *sdev)
+{
+	struct scsi_device_shadow *shdev;
+
+	list_for_each_entry(shdev, &sdev_shadow_list, shadow_node) {
+		if (shdev->sdev == sdev)
+			return shdev;
+	}
+
+	shdev = kzalloc(sizeof(*shdev), GFP_ATOMIC);
+	if (shdev) {
+		shdev->sdev = sdev;
+		INIT_LIST_HEAD(&shdev->event_list);
+		INIT_WORK(&shdev->event_work, scsi_evt_thread, sdev);
+		INIT_LIST_HEAD(&shdev->shadow_node);
+
+		list_add(&shdev->shadow_node, &sdev_shadow_list);
+	}
+
+	return shdev;
+}
+
+EXPORT_SYMBOL(sdev_shadow);
+
+void sdev_shadow_release(struct scsi_device *sdev)
+{
+	struct scsi_device_shadow *shdev = NULL, *shtmp;
+	struct list_head *this, *tmp;
+
+	list_for_each_entry(shtmp, &sdev_shadow_list, shadow_node) {
+		if (shtmp->sdev == sdev) {
+			shdev = shtmp;
+			break;
+		}
+	}
+	if (!shdev)
+		return;
+
+	flush_scheduled_work();
+
+	list_for_each_safe(this, tmp, &shdev->event_list) {
+		struct scsi_event *evt;
+
+		evt = list_entry(this, struct scsi_event, node);
+		list_del(&evt->node);
+		kfree(evt);
+	}
+
+	list_del(&shdev->shadow_node);
+	kfree(shdev);
+}
 
 /**
  *	scsi_device_quiesce - Block user issued commands.

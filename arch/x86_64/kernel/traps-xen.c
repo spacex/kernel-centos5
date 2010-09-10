@@ -354,6 +354,7 @@ static int print_trace_stack(void *data, char *name)
 static void print_trace_address(void *data, unsigned long addr)
 {
 	printk_address(addr);
+	touch_nmi_watchdog();
 }
 
 static struct stacktrace_ops print_trace_ops = {

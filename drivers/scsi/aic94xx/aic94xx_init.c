@@ -38,7 +38,7 @@
 #include "aic94xx_seq.h"
 
 /* The format is "version.release.patchlevel" */
-#define ASD_DRIVER_VERSION "1.0.2-1"
+#define ASD_DRIVER_VERSION "1.0.2-2"
 
 static int use_msi = 0;
 module_param_named(use_msi, use_msi, int, S_IRUGO);
@@ -81,6 +81,9 @@ static struct scsi_host_template aic94xx_sht = {
 	.use_clustering		= ENABLE_CLUSTERING,
 	.eh_device_reset_handler	= sas_eh_device_reset_handler,
 	.eh_bus_reset_handler	= sas_eh_bus_reset_handler,
+	.slave_alloc		= sas_slave_alloc,
+	.target_destroy		= sas_target_destroy,
+	.ioctl			= sas_ioctl,
 };
 
 static int __devinit asd_map_memio(struct asd_ha_struct *asd_ha)
@@ -588,7 +591,7 @@ static int __devinit asd_pci_probe(struct pci_dev *dev,
 		goto Err;
 	}
 	asd_ha->pcidev = dev;
-	asd_ha->sas_ha.pcidev = asd_ha->pcidev;
+	asd_ha->sas_ha.dev = &asd_ha->pcidev->dev;
 	asd_ha->sas_ha.lldd_ha = asd_ha;
 
 	asd_ha->name = asd_dev->name;
@@ -653,7 +656,7 @@ static int __devinit asd_pci_probe(struct pci_dev *dev,
 	if (use_msi)
 		pci_enable_msi(asd_ha->pcidev);
 
-	err = request_irq(asd_ha->pcidev->irq, asd_hw_isr, SA_SHIRQ,
+	err = request_irq(asd_ha->pcidev->irq, asd_hw_isr, IRQF_SHARED,
 			  ASD_DRIVER_NAME, asd_ha);
 	if (err) {
 		asd_printk("couldn't get irq %d for %s\n",

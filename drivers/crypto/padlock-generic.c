@@ -61,3 +61,5 @@ module_exit(padlock_fini);
 MODULE_DESCRIPTION("VIA PadLock crypto engine support.");
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_AUTHOR("Michal Ludvig");
+
+MODULE_ALIAS("aes");

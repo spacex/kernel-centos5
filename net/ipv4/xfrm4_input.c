@@ -56,10 +56,19 @@ int xfrm4_rcv_encap(struct sk_buff *skb, __u16 encap_type)
 {
 	int err;
 	u32 spi, seq;
-	struct xfrm_state *xfrm_vec[XFRM_MAX_DEPTH];
 	struct xfrm_state *x;
-	int xfrm_nr = 0;
 	int decaps = 0;
+
+	/* Allocate new secpath or COW existing one. */
+	if (!skb->sp || atomic_read(&skb->sp->refcnt) != 1) {
+		struct sec_path *sp;
+		sp = secpath_dup(skb->sp);
+		if (!sp)
+			goto drop;
+		if (skb->sp)
+			secpath_put(skb->sp);
+		skb->sp = sp;
+	}
 
 	if ((err = xfrm4_parse_spi(skb, skb->nh.iph->protocol, &spi, &seq)) != 0)
 		goto drop;
@@ -67,12 +76,16 @@ int xfrm4_rcv_encap(struct sk_buff *skb, __u16 encap_type)
 	do {
 		struct iphdr *iph = skb->nh.iph;
 
-		if (xfrm_nr == XFRM_MAX_DEPTH)
+		if (skb->sp->len == XFRM_MAX_DEPTH)
 			goto drop;
 
 		x = xfrm_state_lookup((xfrm_address_t *)&iph->daddr, spi, iph->protocol, AF_INET);
-		if (x == NULL)
+		if (x == NULL) {
+			xfrm_audit_state_notfound(skb, AF_INET, spi, seq);
 			goto drop;
+		}
+
+		skb->sp->xvec[skb->sp->len++] = x;
 
 		spin_lock(&x->lock);
 		if (unlikely(x->km.state != XFRM_STATE_VALID))
@@ -81,13 +94,18 @@ int xfrm4_rcv_encap(struct sk_buff *skb, __u16 encap_type)
 		if ((x->encap ? x->encap->encap_type : 0) != encap_type)
 			goto drop_unlock;
 
-		if (x->props.replay_window && xfrm_replay_check(x, seq))
+		if (x->props.replay_window && xfrm_replay_check(x, seq)) {
+			xfrm_audit_state_replay(x, skb, seq);
 			goto drop_unlock;
+		}
 
 		if (xfrm_state_check_expire(x))
 			goto drop_unlock;
 
-		if (x->type->input(x, skb))
+		XFRM_SKB_CB(skb)->seq = seq;
+
+		err = x->type->input(x, skb);
+		if (err)
 			goto drop_unlock;
 
 		/* only the first xfrm gets the encap type */
@@ -101,8 +119,6 @@ int xfrm4_rcv_encap(struct sk_buff *skb, __u16 encap_type)
 
 		spin_unlock(&x->lock);
 
-		xfrm_vec[xfrm_nr++] = x;
-
 		if (x->mode->input(x, skb))
 			goto drop;
 
@@ -114,24 +130,6 @@ int xfrm4_rcv_encap(struct sk_buff *skb, __u16 encap_type)
 		if ((err = xfrm_parse_spi(skb, skb->nh.iph->protocol, &spi, &seq)) < 0)
 			goto drop;
 	} while (!err);
-
-	/* Allocate new secpath or COW existing one. */
-
-	if (!skb->sp || atomic_read(&skb->sp->refcnt) != 1) {
-		struct sec_path *sp;
-		sp = secpath_dup(skb->sp);
-		if (!sp)
-			goto drop;
-		if (skb->sp)
-			secpath_put(skb->sp);
-		skb->sp = sp;
-	}
-	if (xfrm_nr + skb->sp->len > XFRM_MAX_DEPTH)
-		goto drop;
-
-	memcpy(skb->sp->xvec + skb->sp->len, xfrm_vec,
-	       xfrm_nr * sizeof(xfrm_vec[0]));
-	skb->sp->len += xfrm_nr;
 
 	nf_reset(skb);
 
@@ -158,11 +156,9 @@ int xfrm4_rcv_encap(struct sk_buff *skb, __u16 encap_type)
 
 drop_unlock:
 	spin_unlock(&x->lock);
-	xfrm_state_put(x);
+	if (err == -EINPROGRESS)
+		return 0;
 drop:
-	while (--xfrm_nr >= 0)
-		xfrm_state_put(xfrm_vec[xfrm_nr]);
-
 	kfree_skb(skb);
 	return 0;
 }

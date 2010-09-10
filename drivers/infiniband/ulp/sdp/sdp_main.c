@@ -29,6 +29,15 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+/*
+ *  This file is based on net/ipv4/tcp.c
+ *  under the following permission notice:
+ *
+ *  This program is free software; you can redistribute it and/or
+ *  modify it under the terms of the GNU General Public License
+ *  as published by the Free Software Foundation; either  version
+ *  2 of the License, or(at your option) any later version.
+ */
 
 #if defined(__ia64__)
 /* csum_partial_copy_from_user is not exported on ia64.
@@ -36,6 +45,7 @@
    but for SDP HW checksum is always set, so ... */
 
 #include <linux/errno.h>
+#include <linux/types.h>
 #include <asm/checksum.h>
 
 static inline
@@ -117,12 +127,26 @@ static int send_poll_thresh = 8192;
 module_param_named(send_poll_thresh, send_poll_thresh, int, 0644);
 MODULE_PARM_DESC(send_poll_thresh, "Send message size thresh hold over which to start polling.");
 
+static unsigned int sdp_keepalive_time = SDP_KEEPALIVE_TIME;
+
+module_param_named(sdp_keepalive_time, sdp_keepalive_time, uint, 0644);
+MODULE_PARM_DESC(sdp_keepalive_time, "Default idle time in seconds before keepalive probe sent.");
+
+static int sdp_zcopy_thresh = 65536;
+module_param_named(sdp_zcopy_thresh, sdp_zcopy_thresh, int, 0644);
+MODULE_PARM_DESC(sdp_zcopy_thresh, "Zero copy send threshold; 0=0ff.");
+
 struct workqueue_struct *sdp_workqueue;
 
 static struct list_head sock_list;
 static spinlock_t sock_list_lock;
 
 DEFINE_RWLOCK(device_removal_lock);
+
+static inline unsigned int sdp_keepalive_time_when(const struct sdp_sock *ssk)
+{
+	return ssk->keepalive_time ? : sdp_keepalive_time;
+}
 
 inline void sdp_add_sock(struct sdp_sock *ssk)
 {
@@ -214,11 +238,90 @@ static void sdp_destroy_qp(struct sdp_sock *ssk)
 	if (pd)
 		ib_dealloc_pd(pd);
 
-	if (ssk->recv_frags)
-		sdp_remove_large_sock();
+	sdp_remove_large_sock(ssk);
 
 	kfree(ssk->rx_ring);
 	kfree(ssk->tx_ring);
+}
+
+
+static void sdp_reset_keepalive_timer(struct sock *sk, unsigned long len)
+{
+	struct sdp_sock *ssk = sdp_sk(sk);
+
+	sdp_dbg(sk, "%s\n", __func__);
+
+	ssk->keepalive_tx_head = ssk->tx_head;
+	ssk->keepalive_rx_head = ssk->rx_head;
+
+	sk_reset_timer(sk, &sk->sk_timer, jiffies + len);
+}
+
+static void sdp_delete_keepalive_timer(struct sock *sk)
+{
+	struct sdp_sock *ssk = sdp_sk(sk);
+
+	sdp_dbg(sk, "%s\n", __func__);
+
+	ssk->keepalive_tx_head = 0;
+	ssk->keepalive_rx_head = 0;
+
+	sk_stop_timer(sk, &sk->sk_timer);
+}
+
+static void sdp_keepalive_timer(unsigned long data)
+{
+	struct sock *sk = (struct sock *)data;
+	struct sdp_sock *ssk = sdp_sk(sk);
+
+	sdp_dbg(sk, "%s\n", __func__);
+
+	/* Only process if the socket is not in use */
+	bh_lock_sock(sk);
+	if (sock_owned_by_user(sk)) {
+		sdp_reset_keepalive_timer(sk, HZ / 20);
+		goto out;
+	}
+
+	if (!sock_flag(sk, SOCK_KEEPOPEN) || sk->sk_state == TCP_LISTEN ||
+	    sk->sk_state == TCP_CLOSE)
+		goto out;
+
+	if (ssk->keepalive_tx_head == ssk->tx_head &&
+	    ssk->keepalive_rx_head == ssk->rx_head)
+		sdp_post_keepalive(ssk);
+
+	sdp_reset_keepalive_timer(sk, sdp_keepalive_time_when(ssk));
+
+out:
+	bh_unlock_sock(sk);
+	sock_put(sk);
+}
+
+static void sdp_init_timer(struct sock *sk)
+{
+	init_timer(&sk->sk_timer);
+
+	sk->sk_timer.function = sdp_keepalive_timer;
+	sk->sk_timer.data = (unsigned long)sk;
+}
+
+static void sdp_set_keepalive(struct sock *sk, int val)
+{
+	sdp_dbg(sk, "%s %d\n", __func__, val);
+
+	if ((1 << sk->sk_state) & (TCPF_CLOSE | TCPF_LISTEN))
+		return;
+
+	if (val && !sock_flag(sk, SOCK_KEEPOPEN))
+		sdp_start_keepalive_timer(sk);
+	else if (!val)
+		sdp_delete_keepalive_timer(sk);
+}
+
+void sdp_start_keepalive_timer(struct sock *sk)
+{
+	sdp_reset_keepalive_timer(sk, sdp_keepalive_time_when(sdp_sk(sk)));
 }
 
 void sdp_reset_sk(struct sock *sk, int rc)
@@ -254,6 +357,8 @@ void sdp_reset_sk(struct sock *sk, int rc)
 void sdp_reset(struct sock *sk)
 {
 	int err;
+
+	sdp_dbg(sk, "%s state=%d\n", __func__, sk->sk_state);
 
 	if (sk->sk_state != TCP_ESTABLISHED)
 		return;
@@ -364,6 +469,8 @@ static void sdp_close(struct sock *sk, long timeout)
 	lock_sock(sk);
 
 	sdp_dbg(sk, "%s\n", __func__);
+
+	sdp_delete_keepalive_timer(sk);
 
 	sk->sk_shutdown = SHUTDOWN_MASK;
 	if (sk->sk_state == TCP_LISTEN || sk->sk_state == TCP_SYN_SENT) {
@@ -487,7 +594,7 @@ static int sdp_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
         if (addr_len < sizeof(struct sockaddr_in))
                 return -EINVAL;
 
-        if (uaddr->sa_family != AF_INET)
+        if (uaddr->sa_family != AF_INET && uaddr->sa_family != AF_INET_SDP)
                 return -EAFNOSUPPORT;
 
 	if (!ssk->id) {
@@ -539,7 +646,8 @@ static int sdp_disconnect(struct sock *sk, int flags)
 	ssk->id = NULL;
 	release_sock(sk); /* release socket since locking semantics is parent
 			     inside child */
-	rdma_destroy_id(id);
+	if (id)
+		rdma_destroy_id(id);
 
 	list_for_each_entry_safe(s, t, &ssk->backlog_queue, backlog_queue) {
 		sk_common_release(&s->isk.sk);
@@ -692,7 +800,7 @@ static int sdp_ioctl(struct sock *sk, int cmd, unsigned long arg)
 			/* Subtract 1, if FIN is in queue. */
 			if (answ && !skb_queue_empty(&sk->sk_receive_queue))
 				answ -=
-		        ((struct sk_buff *)sk->sk_receive_queue.prev)->h.raw[0]
+			(skb_transport_header(sk->sk_receive_queue.prev))[0]
 		        == SDP_MID_DISCONN ? 1 : 0;
 		} else
 			answ = ssk->urg_seq - ssk->copied_seq;
@@ -719,9 +827,9 @@ static int sdp_ioctl(struct sock *sk, int cmd, unsigned long arg)
 	return put_user(answ, (int __user *)arg); 
 }
 
-void sdp_destroy_work(void *_work)
+void sdp_destroy_work(struct work_struct *work)
 {
-	struct sdp_sock *ssk = container_of(_work, struct sdp_sock, destroy_work);
+	struct sdp_sock *ssk = container_of(work, struct sdp_sock, destroy_work);
 	struct sock *sk = &ssk->isk.sk;
 	sdp_dbg(sk, "%s: refcnt %d\n", __func__, atomic_read(&sk->sk_refcnt));
 
@@ -731,9 +839,9 @@ void sdp_destroy_work(void *_work)
 	sock_put(sk);
 }
 
-void sdp_time_wait_work(void *_work)
+void sdp_time_wait_work(struct work_struct *work)
 {
-	struct sdp_sock *ssk = container_of(_work, struct sdp_sock, time_wait_work);
+	struct sdp_sock *ssk = container_of(work, struct sdp_sock, time_wait_work.work);
 	struct sock *sk = &ssk->isk.sk;
 	lock_sock(sk);
 	sdp_dbg(sk, "%s\n", __func__);
@@ -768,8 +876,8 @@ static int sdp_init_sock(struct sock *sk)
 
 	INIT_LIST_HEAD(&ssk->accept_queue);
 	INIT_LIST_HEAD(&ssk->backlog_queue);
-	INIT_WORK(&ssk->time_wait_work, sdp_time_wait_work, &ssk->time_wait_work);
-	INIT_WORK(&ssk->destroy_work, sdp_destroy_work, &ssk->destroy_work);
+	INIT_DELAYED_WORK(&ssk->time_wait_work, sdp_time_wait_work);
+	INIT_WORK(&ssk->destroy_work, sdp_destroy_work);
 
 	sk->sk_route_caps |= NETIF_F_SG | NETIF_F_NO_CSUM;
 	return 0;
@@ -792,6 +900,15 @@ static void sdp_shutdown(struct sock *sk, int how)
 		sk->sk_state = TCP_LAST_ACK;
 	else
 		return;
+
+	/*
+	 * Just turn off CORK here.
+	 *   We could check for socket shutting down in main data path,
+	 * but this costs no extra cycles there.
+	 */
+	ssk->nonagle &= ~TCP_NAGLE_CORK;
+	if (ssk->nonagle & TCP_NAGLE_OFF)
+		ssk->nonagle |= TCP_NAGLE_PUSH;
 
 	sdp_post_sends(ssk, 0);
 }
@@ -821,9 +938,6 @@ static int sdp_setsockopt(struct sock *sk, int level, int optname,
 	int err = 0;
 
 	sdp_dbg(sk, "%s\n", __func__);
-	if (level != SOL_TCP)
-		return -ENOPROTOOPT;
-
 	if (optlen < sizeof(int))
 		return -EINVAL;
 
@@ -831,6 +945,28 @@ static int sdp_setsockopt(struct sock *sk, int level, int optname,
 		return -EFAULT;
 
 	lock_sock(sk);
+
+	/* SOCK_KEEPALIVE is really a SOL_SOCKET level option but there
+	 * is a problem handling it at that level.  In order to start
+	 * the keepalive timer on an SDP socket, we must call an SDP
+	 * specific routine.  Since sock_setsockopt() can not be modifed
+	 * to understand SDP, the application must pass that option
+	 * through to us.  Since SO_KEEPALIVE and TCP_DEFER_ACCEPT both
+	 * use the same optname, the level must not be SOL_TCP or SOL_SOCKET
+	 */
+	if (level == PF_INET_SDP && optname == SO_KEEPALIVE) {
+		sdp_set_keepalive(sk, val);
+		if (val)
+			sock_set_flag(sk, SOCK_KEEPOPEN);
+		else
+			sock_reset_flag(sk, SOCK_KEEPOPEN);
+		goto out;
+	}
+
+	if (level != SOL_TCP) {
+		err = -ENOPROTOOPT;
+		goto out;
+	}
 
 	switch (optname) {
 	case TCP_NODELAY:
@@ -870,11 +1006,29 @@ static int sdp_setsockopt(struct sock *sk, int level, int optname,
 			sdp_push_pending_frames(sk);
 		}
 		break;
+	case TCP_KEEPIDLE:
+		if (val < 1 || val > MAX_TCP_KEEPIDLE)
+			err = -EINVAL;
+		else {
+			ssk->keepalive_time = val * HZ;
+
+			if (sock_flag(sk, SOCK_KEEPOPEN) &&
+			    !((1 << sk->sk_state) & (TCPF_CLOSE | TCPF_LISTEN)))
+				sdp_reset_keepalive_timer(sk, ssk->keepalive_time);
+		}
+		break;
+	case SDP_ZCOPY_THRESH:
+		if (val < SDP_MIN_ZCOPY_THRESH || val > SDP_MAX_ZCOPY_THRESH)
+			err = -EINVAL;
+		else
+			ssk->zcopy_thresh = val;
+		break;
 	default:
 		err = -ENOPROTOOPT;
 		break;
 	}
 
+out:
 	release_sock(sk);
 	return err;
 }
@@ -906,6 +1060,12 @@ static int sdp_getsockopt(struct sock *sk, int level, int optname,
 		break;
 	case TCP_CORK:
 		val = !!(ssk->nonagle&TCP_NAGLE_CORK);
+		break;
+	case TCP_KEEPIDLE:
+		val = (ssk->keepalive_time ? : sdp_keepalive_time) / HZ;
+		break;
+	case SDP_ZCOPY_THRESH:
+		val = ssk->zcopy_thresh ? ssk->zcopy_thresh : sdp_zcopy_thresh;
 		break;
 	default:
 		return -ENOPROTOOPT;
@@ -1054,10 +1214,368 @@ void sdp_push_one(struct sock *sk, unsigned int mss_now)
 {
 }
 
-/* Like tcp_sendmsg */
-/* TODO: check locking */
+static inline struct bzcopy_state *sdp_bz_cleanup(struct bzcopy_state *bz)
+{
+	int i, max_retry;
+	struct sdp_sock *ssk = (struct sdp_sock *)bz->ssk;
+
+	/* Wait for in-flight sends; should be quick */
+	if (bz->busy) {
+		struct sock *sk = &ssk->isk.sk;
+
+		for (max_retry = 0; max_retry < 10000; max_retry++) {
+			poll_send_cq(sk);
+
+			if (!bz->busy)
+				break;
+		}
+
+		if (bz->busy)
+			sdp_warn(sk, "Could not reap %d in-flight sends\n",
+				 bz->busy);
+	}
+
+	if (bz->pages) {
+		for (i = bz->cur_page; i < bz->page_cnt; i++)
+			put_page(bz->pages[i]);
+
+		kfree(bz->pages);
+	}
+
+	kfree(bz);
+
+	return NULL;
+}
+
+
+static struct bzcopy_state *sdp_bz_setup(struct sdp_sock *ssk,
+					 unsigned char __user *base,
+					 int len,
+					 int size_goal)
+{
+	struct bzcopy_state *bz;
+	unsigned long addr;
+	int done_pages;
+	int thresh;
+
+	thresh = ssk->zcopy_thresh ? : sdp_zcopy_thresh;
+	if (thresh == 0 || len < thresh)
+		return NULL;
+
+	if (!can_do_mlock())
+		return NULL;
+
+	/*
+	 *   Since we use the TCP segmentation fields of the skb to map user
+	 * pages, we must make sure that everything we send in a single chunk
+	 * fits into the frags array in the skb.
+	 */
+	size_goal = size_goal / PAGE_SIZE + 1;
+	if (size_goal >= MAX_SKB_FRAGS)
+		return NULL;
+
+	bz = kzalloc(sizeof(*bz), GFP_KERNEL);
+	if (!bz)
+		return NULL;
+
+	addr = (unsigned long)base;
+
+	bz->u_base     = base;
+	bz->u_len      = len;
+	bz->left       = len;
+	bz->cur_offset = addr & ~PAGE_MASK;
+	bz->busy       = 0;
+	bz->ssk        = ssk;
+	bz->page_cnt   = PAGE_ALIGN(len + bz->cur_offset) >> PAGE_SHIFT;
+	bz->pages      = kcalloc(bz->page_cnt, sizeof(struct page *), GFP_KERNEL);
+
+	if (!bz->pages)
+		goto out_1;
+
+	down_write(&current->mm->mmap_sem);
+
+	if (!capable(CAP_IPC_LOCK))
+		goto out_2;
+
+	addr &= PAGE_MASK;
+
+	done_pages = get_user_pages(current, current->mm, addr, bz->page_cnt,
+				    0, 0, bz->pages, NULL);
+	if (unlikely(done_pages != bz->page_cnt)){
+		bz->page_cnt = done_pages;
+		goto out_2;
+	}
+
+	up_write(&current->mm->mmap_sem);
+
+	return bz;
+
+out_2:
+	up_write(&current->mm->mmap_sem);
+	kfree(bz->pages);
+out_1:
+	kfree(bz);
+
+	return NULL;
+}
+
+
 #define TCP_PAGE(sk)	(sk->sk_sndmsg_page)
 #define TCP_OFF(sk)	(sk->sk_sndmsg_off)
+static inline int sdp_bcopy_get(struct sock *sk, struct sk_buff *skb,
+				unsigned char __user *from, int copy)
+{
+	int err;
+	struct sdp_sock *ssk = sdp_sk(sk);
+
+	/* Where to copy to? */
+	if (skb_tailroom(skb) > 0) {
+		/* We have some space in skb head. Superb! */
+		if (copy > skb_tailroom(skb))
+			copy = skb_tailroom(skb);
+		if ((err = skb_add_data(skb, from, copy)) != 0)
+			return SDP_ERR_FAULT;
+	} else {
+		int merge = 0;
+		int i = skb_shinfo(skb)->nr_frags;
+		struct page *page = TCP_PAGE(sk);
+		int off = TCP_OFF(sk);
+
+		if (skb_can_coalesce(skb, i, page, off) &&
+		    off != PAGE_SIZE) {
+			/* We can extend the last page
+			 * fragment. */
+			merge = 1;
+		} else if (i == ssk->send_frags ||
+			   (!i &&
+			   !(sk->sk_route_caps & NETIF_F_SG))) {
+			/* Need to add new fragment and cannot
+			 * do this because interface is non-SG,
+			 * or because all the page slots are
+			 * busy. */
+			sdp_mark_push(ssk, skb);
+			return SDP_NEW_SEG;
+		} else if (page) {
+			if (off == PAGE_SIZE) {
+				put_page(page);
+				TCP_PAGE(sk) = page = NULL;
+				off = 0;
+			}
+		} else
+			off = 0;
+
+		if (copy > PAGE_SIZE - off)
+			copy = PAGE_SIZE - off;
+
+		if (!sk_stream_wmem_schedule(sk, copy))
+			return SDP_DO_WAIT_MEM;
+
+		if (!page) {
+			/* Allocate new cache page. */
+			if (!(page = sk_stream_alloc_page(sk)))
+				return SDP_DO_WAIT_MEM;
+		}
+
+		/* Time to copy data. We are close to
+		 * the end! */
+		err = skb_copy_to_page(sk, from, skb, page,
+				       off, copy);
+		if (err) {
+			/* If this page was new, give it to the
+			 * socket so it does not get leaked.
+			 */
+			if (!TCP_PAGE(sk)) {
+				TCP_PAGE(sk) = page;
+				TCP_OFF(sk) = 0;
+			}
+			return SDP_ERR_ERROR;
+		}
+
+		/* Update the skb. */
+		if (merge) {
+			skb_shinfo(skb)->frags[i - 1].size +=
+							copy;
+		} else {
+			skb_fill_page_desc(skb, i, page, off, copy);
+			if (TCP_PAGE(sk)) {
+				get_page(page);
+			} else if (off + copy < PAGE_SIZE) {
+				get_page(page);
+				TCP_PAGE(sk) = page;
+			}
+		}
+
+		TCP_OFF(sk) = off + copy;
+	}
+
+	return copy;
+}
+
+
+static inline int sdp_bzcopy_get(struct sock *sk, struct sk_buff *skb,
+				 unsigned char __user *from, int copy,
+				 struct bzcopy_state *bz)
+{
+	int this_page, left;
+	struct sdp_sock *ssk = sdp_sk(sk);
+
+	/* Push the first chunk to page align all following - TODO: review */
+	if (skb_shinfo(skb)->nr_frags == ssk->send_frags) {
+		sdp_mark_push(ssk, skb);
+		return SDP_NEW_SEG;
+	}
+
+	left = copy;
+	BUG_ON(left > bz->left);
+
+	while (left) {
+		if (skb_shinfo(skb)->nr_frags == ssk->send_frags) {
+			copy = copy - left;
+			break;
+		}
+
+		this_page = PAGE_SIZE - bz->cur_offset;
+
+		if (left <= this_page)
+			this_page = left;
+
+		if (!sk_stream_wmem_schedule(sk, copy))
+			return SDP_DO_WAIT_MEM;
+
+		skb_fill_page_desc(skb, skb_shinfo(skb)->nr_frags,
+				   bz->pages[bz->cur_page], bz->cur_offset,
+				   this_page);
+
+		BUG_ON(skb_shinfo(skb)->nr_frags >= MAX_SKB_FRAGS);
+
+		bz->cur_offset += this_page;
+		if (bz->cur_offset == PAGE_SIZE) {
+			bz->cur_offset = 0;
+			bz->cur_page++;
+
+			BUG_ON(bz->cur_page > bz->page_cnt);
+		} else {
+			BUG_ON(bz->cur_offset > PAGE_SIZE);
+
+			if (bz->cur_page != bz->page_cnt || left != this_page)
+				get_page(bz->pages[bz->cur_page]);
+		}
+
+		left -= this_page;
+
+		skb->len             += this_page;
+		skb->data_len         = skb->len;
+		skb->truesize        += this_page;
+		sk->sk_wmem_queued   += this_page;
+		sk->sk_forward_alloc -= this_page;
+	}
+
+	bz->left -= copy;
+	bz->busy++;
+	return copy;
+}
+
+static inline int slots_free(struct sdp_sock *ssk)
+{
+	int min_free;
+
+	min_free = SDP_TX_SIZE - (ssk->tx_head - ssk->tx_tail);
+	if (ssk->bufs < min_free)
+		min_free = ssk->bufs;
+	min_free -= (min_free < SDP_MIN_BUFS) ? min_free : SDP_MIN_BUFS;
+
+	return min_free;
+};
+
+/* like sk_stream_memory_free - except measures remote credits */
+static inline int sdp_bzcopy_slots_avail(struct sdp_sock *ssk,
+					 struct bzcopy_state *bz)
+{
+	return slots_free(ssk) > bz->busy;
+}
+
+/* like sk_stream_wait_memory - except waits on remote credits */
+static int sdp_bzcopy_wait_memory(struct sdp_sock *ssk, long *timeo_p,
+				  struct bzcopy_state *bz)
+{
+	struct sock *sk = &ssk->isk.sk;
+	int err = 0;
+	long vm_wait = 0;
+	long current_timeo = *timeo_p;
+	DEFINE_WAIT(wait);
+
+	BUG_ON(!bz);
+
+	if (sdp_bzcopy_slots_avail(ssk, bz))
+		current_timeo = vm_wait = (net_random() % (HZ / 5)) + 2;
+
+	while (1) {
+		set_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags);
+
+		prepare_to_wait(sk->sk_sleep, &wait, TASK_INTERRUPTIBLE);
+
+		if (unlikely(sk->sk_err | (sk->sk_shutdown & SEND_SHUTDOWN))) {
+			err = -EPIPE;
+			break;
+		}
+
+		if (unlikely(!*timeo_p)) {
+			err = -EAGAIN;
+			break;
+		}
+
+		if (unlikely(signal_pending(current))) {
+			err = sock_intr_errno(*timeo_p);
+			break;
+		}
+
+		clear_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags);
+
+		if (sdp_bzcopy_slots_avail(ssk, bz))
+			break;
+
+		set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
+		sk->sk_write_pending++;
+		sk_wait_event(sk, &current_timeo,
+			sdp_bzcopy_slots_avail(ssk, bz) && vm_wait);
+		sk->sk_write_pending--;
+
+		if (vm_wait) {
+			vm_wait -= current_timeo;
+			current_timeo = *timeo_p;
+			if (current_timeo != MAX_SCHEDULE_TIMEOUT &&
+			    (current_timeo -= vm_wait) < 0)
+				current_timeo = 0;
+			vm_wait = 0;
+		}
+		*timeo_p = current_timeo;
+	}
+
+	finish_wait(sk->sk_sleep, &wait);
+	return err;
+}
+
+/* like sk_stream_write_space - execpt measures remote credits */
+void sdp_bzcopy_write_space(struct sdp_sock *ssk)
+{
+	struct sock *sk = &ssk->isk.sk;
+	struct socket *sock = sk->sk_socket;
+
+	if (ssk->bufs >= ssk->min_bufs &&
+	    ssk->tx_head == ssk->tx_tail &&
+	   sock != NULL) {
+		clear_bit(SOCK_NOSPACE, &sock->flags);
+
+		if (sk->sk_sleep && waitqueue_active(sk->sk_sleep))
+			wake_up_interruptible(sk->sk_sleep);
+		if (sock->fasync_list && !(sk->sk_shutdown & SEND_SHUTDOWN))
+			sock_wake_async(sock, 2, POLL_OUT);
+	}
+}
+
+
+/* Like tcp_sendmsg */
+/* TODO: check locking */
 int sdp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		size_t size)
 {
@@ -1068,6 +1586,7 @@ int sdp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	int mss_now, size_goal;
 	int err, copied;
 	long timeo;
+	struct bzcopy_state *bz = NULL;
 
 	lock_sock(sk);
 	sdp_dbg_data(sk, "%s\n", __func__);
@@ -1101,25 +1620,39 @@ int sdp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 
 		iov++;
 
+		bz = sdp_bz_setup(ssk, from, seglen, size_goal);
+
 		while (seglen > 0) {
 			int copy;
 
 			skb = sk->sk_write_queue.prev;
 
 			if (!sk->sk_send_head ||
-			    (copy = size_goal - skb->len) <= 0) {
+			    (copy = size_goal - skb->len) <= 0 ||
+			    bz != *(struct bzcopy_state **)skb->cb) {
 
 new_segment:
-				/* Allocate new segment. If the interface is SG,
-				 * allocate skb fitting to single page.
+				/*
+				 * Allocate a new segment
+				 *   For bcopy, we stop sending once we have
+				 * SO_SENDBUF bytes in flight.  For bzcopy
+				 * we stop sending once we run out of remote
+				 * receive credits.
 				 */
-				if (!sk_stream_memory_free(sk))
-					goto wait_for_sndbuf;
+				if (bz) {
+					if (!sdp_bzcopy_slots_avail(ssk, bz))
+						goto wait_for_sndbuf;
+				} else {
+					if (!sk_stream_memory_free(sk))
+						goto wait_for_sndbuf;
+				}
 
 				skb = sk_stream_alloc_pskb(sk, select_size(sk, ssk),
 							   0, sk->sk_allocation);
 				if (!skb)
 					goto wait_for_memory;
+
+				*((struct bzcopy_state **)skb->cb) = bz;
 
 				/*
 				 * Check whether we can use HW checksum.
@@ -1127,7 +1660,7 @@ new_segment:
 				if (sk->sk_route_caps &
 				    (NETIF_F_IP_CSUM | NETIF_F_NO_CSUM |
 				     NETIF_F_HW_CSUM))
-					skb->ip_summed = CHECKSUM_HW;
+					skb->ip_summed = CHECKSUM_PARTIAL;
 
 				skb_entail(sk, ssk, skb);
 				copy = size_goal;
@@ -1144,84 +1677,17 @@ new_segment:
 				sdp_mark_push(ssk, skb);
 				goto new_segment;
 			}
-			/* Where to copy to? */
-			if (skb_tailroom(skb) > 0) {
-				/* We have some space in skb head. Superb! */
-				if (copy > skb_tailroom(skb))
-					copy = skb_tailroom(skb);
-				if ((err = skb_add_data(skb, from, copy)) != 0)
-					goto do_fault;
-			} else {
-				int merge = 0;
-				int i = skb_shinfo(skb)->nr_frags;
-				struct page *page = TCP_PAGE(sk);
-				int off = TCP_OFF(sk);
 
-				if (skb_can_coalesce(skb, i, page, off) &&
-				    off != PAGE_SIZE) {
-					/* We can extend the last page
-					 * fragment. */
-					merge = 1;
-				} else if (i == ssk->send_frags ||
-					   (!i &&
-					   !(sk->sk_route_caps & NETIF_F_SG))) {
-					/* Need to add new fragment and cannot
-					 * do this because interface is non-SG,
-					 * or because all the page slots are
-					 * busy. */
-					sdp_mark_push(ssk, skb);
-					goto new_segment;
-				} else if (page) {
-					if (off == PAGE_SIZE) {
-						put_page(page);
-						TCP_PAGE(sk) = page = NULL;
-						off = 0;
-					}
-				} else
-					off = 0;
-
-				if (copy > PAGE_SIZE - off)
-					copy = PAGE_SIZE - off;
-
-				if (!sk_stream_wmem_schedule(sk, copy))
+			copy = (bz) ? sdp_bzcopy_get(sk, skb, from, copy, bz) :
+				      sdp_bcopy_get(sk, skb, from, copy);
+			if (unlikely(copy < 0)) {
+				if (!++copy)
 					goto wait_for_memory;
-
-				if (!page) {
-					/* Allocate new cache page. */
-					if (!(page = sk_stream_alloc_page(sk)))
-						goto wait_for_memory;
-				}
-
-				/* Time to copy data. We are close to
-				 * the end! */
-				err = skb_copy_to_page(sk, from, skb, page,
-						       off, copy);
-				if (err) {
-					/* If this page was new, give it to the
-					 * socket so it does not get leaked.
-					 */
-					if (!TCP_PAGE(sk)) {
-						TCP_PAGE(sk) = page;
-						TCP_OFF(sk) = 0;
-					}
-					goto do_error;
-				}
-
-				/* Update the skb. */
-				if (merge) {
-					skb_shinfo(skb)->frags[i - 1].size +=
-									copy;
-				} else {
-					skb_fill_page_desc(skb, i, page, off, copy);
-					if (TCP_PAGE(sk)) {
-						get_page(page);
-					} else if (off + copy < PAGE_SIZE) {
-						get_page(page);
-						TCP_PAGE(sk) = page;
-					}
-				}
-
-				TCP_OFF(sk) = off + copy;
+				if (!++copy)
+					goto new_segment;
+				if (!++copy)
+					goto do_fault;
+				goto do_error;
 			}
 
 			if (!copied)
@@ -1253,7 +1719,9 @@ wait_for_memory:
 			if (copied)
 				sdp_push(sk, ssk, flags & ~MSG_MORE, mss_now, TCP_NAGLE_PUSH);
 
-			if ((err = sk_stream_wait_memory(sk, &timeo)) != 0)
+			err = (bz) ? sdp_bzcopy_wait_memory(ssk, &timeo, bz) :
+				     sk_stream_wait_memory(sk, &timeo);
+			if (err)
 				goto do_error;
 
 			mss_now = sdp_current_mss(sk, !(flags&MSG_OOB));
@@ -1262,10 +1730,16 @@ wait_for_memory:
 	}
 
 out:
-	if (copied)
+	if (copied) {
 		sdp_push(sk, ssk, flags, mss_now, ssk->nonagle);
-	if (size > send_poll_thresh)
-		poll_send_cq(sk);
+
+		if (bz)
+			bz = sdp_bz_cleanup(bz);
+		else
+			if (size > send_poll_thresh)
+				poll_send_cq(sk);
+	}
+
 	release_sock(sk);
 	return copied;
 
@@ -1281,6 +1755,8 @@ do_error:
 	if (copied)
 		goto out;
 out_err:
+	if (bz)
+		bz = sdp_bz_cleanup(bz);
 	err = sk_stream_error(sk, flags, err);
 	release_sock(sk);
 	return err;
@@ -1342,7 +1818,7 @@ static int sdp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			if (!skb)
 				break;
 
-			if (skb->h.raw[0] == SDP_MID_DISCONN)
+			if ((skb_transport_header(skb))[0] == SDP_MID_DISCONN)
 				goto found_fin_ok;
 
 			if (before(*seq, TCP_SKB_CB(skb)->seq)) {
@@ -1567,17 +2043,27 @@ static inline unsigned int sdp_listen_poll(const struct sock *sk)
 static unsigned int sdp_poll(struct file *file, struct socket *socket,
 			     struct poll_table_struct *wait)
 {
-	int mask;
+       unsigned int     mask;
+       struct sock     *sk  = socket->sk;
+       struct sdp_sock *ssk = sdp_sk(sk);
+
 	sdp_dbg_data(socket->sk, "%s\n", __func__);
 
 	mask = datagram_poll(file, socket, wait);
+
+       /*
+        * Adjust for memory in later kernels
+        */
+       if (!sk_stream_memory_free(sk) || !slots_free(ssk))
+               mask &= ~(POLLOUT | POLLWRNORM | POLLWRBAND);
+
 	/* TODO: Slightly ugly: it would be nicer if there was function
 	 * like datagram_poll that didn't include poll_wait,
 	 * then we could reverse the order. */
-	if (socket->sk->sk_state == TCP_LISTEN)
-		return sdp_listen_poll(socket->sk);
+       if (sk->sk_state == TCP_LISTEN)
+               return sdp_listen_poll(sk);
 
-	if (sdp_sk(socket->sk)->urg_data & TCP_URG_VALID)
+       if (ssk->urg_data & TCP_URG_VALID)
 		mask |= POLLPRI;
 	return mask;
 }
@@ -1692,6 +2178,8 @@ static int sdp_create_socket(struct socket *sock, int protocol)
 	}
 
 	sk->sk_destruct = sdp_destruct;
+
+	sdp_init_timer(sk);
 
 	sock->ops = &sdp_proto_ops;
 	sock->state = SS_UNCONNECTED;
@@ -1895,7 +2383,45 @@ static void sdp_add_device(struct ib_device *device)
 
 static void sdp_remove_device(struct ib_device *device)
 {
+	struct list_head  *p;
+	struct sdp_sock   *ssk;
+	struct sock       *sk;
+	struct rdma_cm_id *id;
+
+do_next:
 	write_lock(&device_removal_lock);
+
+	spin_lock_irq(&sock_list_lock);
+	list_for_each(p, &sock_list) {
+		ssk = list_entry(p, struct sdp_sock, sock_list);
+		if (ssk->ib_device == device) {
+			sk = &ssk->isk.sk;
+			id = ssk->id;
+
+			if (id) {
+				ssk->id = NULL;
+
+				spin_unlock_irq(&sock_list_lock);
+				write_unlock(&device_removal_lock);
+				rdma_destroy_id(id);
+
+				goto do_next;
+			}
+		}
+	}
+
+	list_for_each(p, &sock_list) {
+		ssk = list_entry(p, struct sdp_sock, sock_list);
+		if (ssk->ib_device == device) {
+			sk = &ssk->isk.sk;
+
+			sk->sk_shutdown |= RCV_SHUTDOWN;
+			sdp_reset(sk);
+		}
+	}
+
+	spin_unlock_irq(&sock_list_lock);
+
 	write_unlock(&device_removal_lock);
 }
 

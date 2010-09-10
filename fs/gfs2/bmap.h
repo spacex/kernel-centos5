@@ -1,6 +1,6 @@
 /*
  * Copyright (C) Sistina Software, Inc.  1997-2003 All rights reserved.
- * Copyright (C) 2004-2006 Red Hat, Inc.  All rights reserved.
+ * Copyright (C) 2004-2008 Red Hat, Inc.  All rights reserved.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
@@ -15,7 +15,7 @@ struct gfs2_inode;
 struct page;
 
 int gfs2_unstuff_dinode(struct gfs2_inode *ip, struct page *page);
-int gfs2_block_map(struct inode *inode, u64 lblock, int create, struct buffer_head *bh);
+int gfs2_block_map(struct inode *inode, sector_t lblock, struct buffer_head *bh, int create);
 int gfs2_extent_map(struct inode *inode, u64 lblock, int *new, u64 *dblock, unsigned *extlen);
 
 int gfs2_truncatei(struct gfs2_inode *ip, u64 size);

@@ -356,6 +356,8 @@ static void hptiop_host_request_callback(struct hptiop_hba *hba, u32 tag)
 
 	switch (le32_to_cpu(req->header.result)) {
 	case IOP_RESULT_SUCCESS:
+		scp->resid = scp->request_bufflen -
+				le32_to_cpu(req->dataxfer_length);
 		scp->result = (DID_OK<<16);
 		break;
 	case IOP_RESULT_BAD_TARGET:
@@ -377,8 +379,9 @@ static void hptiop_host_request_callback(struct hptiop_hba *hba, u32 tag)
 		scp->result = SAM_STAT_CHECK_CONDITION;
 		memset(&scp->sense_buffer,
 				0, sizeof(scp->sense_buffer));
-		memcpy(&scp->sense_buffer,
-			&req->sg_list, le32_to_cpu(req->dataxfer_length));
+		memcpy(&scp->sense_buffer, &req->sg_list,
+				min_t(size_t, sizeof(scp->sense_buffer),
+					le32_to_cpu(req->dataxfer_length)));
 		break;
 
 	default:
@@ -846,11 +849,11 @@ free_request_irq:
 unmap_pci_bar:
 	iounmap(hba->iop);
 
-free_pci_regions:
-	pci_release_regions(pcidev) ;
-
 free_scsi_host:
 	scsi_host_put(host);
+
+free_pci_regions:
+	pci_release_regions(pcidev);
 
 disable_pci_device:
 	pci_disable_device(pcidev);
@@ -911,6 +914,14 @@ static void hptiop_remove(struct pci_dev *pcidev)
 static struct pci_device_id hptiop_id_table[] = {
 	{ PCI_DEVICE(0x1103, 0x3220) },
 	{ PCI_DEVICE(0x1103, 0x3320) },
+	{ PCI_DEVICE(0x1103, 0x3520) },
+	{ PCI_DEVICE(0x1103, 0x4320) },
+	{ PCI_DEVICE(0x1103, 0x3510) },
+	{ PCI_DEVICE(0x1103, 0x3511) },
+	{ PCI_DEVICE(0x1103, 0x3521) },
+	{ PCI_DEVICE(0x1103, 0x3522) },
+	{ PCI_DEVICE(0x1103, 0x3410) },
+	{ PCI_DEVICE(0x1103, 0x3540) },
 	{},
 };
 

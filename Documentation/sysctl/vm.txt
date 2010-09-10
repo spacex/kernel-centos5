@@ -24,6 +24,7 @@ Currently, these files are in /proc/sys/vm:
 - dirty_writeback_centisecs
 - max_map_count
 - min_free_kbytes
+- mmap_min_addr
 - laptop_mode
 - block_dump
 - drop-caches
@@ -107,6 +108,19 @@ This is used to force the Linux VM to keep a minimum number
 of kilobytes free.  The VM uses this number to compute a pages_min
 value for each lowmem zone in the system.  Each lowmem zone gets 
 a number of reserved free pages based proportionally on its size.
+
+==============================================================
+
+mmap_min_addr
+
+This file indicates the amount of address space  which a user process will be
+restricted from mmaping.  Since kernel null dereference bugs could
+accidentally operate based on the information in the first couple of pages of
+memory userspace processes should not be allowed to write to them.  By default
+this value is set to 0 and no protections will be enforced by the security
+module.  Setting this value to something like 64k will allow the vast majority
+of applications to work correctly and provide defense in depth against future
+potential kernel bugs.
 
 ==============================================================
 

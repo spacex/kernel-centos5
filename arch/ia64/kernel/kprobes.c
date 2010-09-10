@@ -40,6 +40,8 @@ extern void jprobe_inst_return(void);
 DEFINE_PER_CPU(struct kprobe *, current_kprobe) = NULL;
 DEFINE_PER_CPU(struct kprobe_ctlblk, kprobe_ctlblk);
 
+struct kretprobe_blackpoint kretprobe_blacklist[] = {{NULL, NULL}};
+
 enum instruction_type {A, I, M, F, B, L, X, u};
 static enum instruction_type bundle_encoding[32][3] = {
   { M, I, I },				/* 00 */
@@ -296,25 +298,24 @@ static int __kprobes valid_kprobe_addr(int template, int slot,
  		return -EINVAL;
  	}
 
-	if (slot == 1 && bundle_encoding[template][1] != L) {
-		printk(KERN_WARNING "Inserting kprobes on slot #1 "
-		       "is not supported\n");
-		return -EINVAL;
-	}
-
 	return 0;
 }
 
 static void __kprobes save_previous_kprobe(struct kprobe_ctlblk *kcb)
 {
-	kcb->prev_kprobe.kp = kprobe_running();
-	kcb->prev_kprobe.status = kcb->kprobe_status;
+	unsigned int i;
+	i = atomic_add_return(1, &kcb->prev_kprobe_index);
+	kcb->prev_kprobe[i-1].kp = kprobe_running();
+	kcb->prev_kprobe[i-1].status = kcb->kprobe_status;
 }
 
 static void __kprobes restore_previous_kprobe(struct kprobe_ctlblk *kcb)
 {
-	__get_cpu_var(current_kprobe) = kcb->prev_kprobe.kp;
-	kcb->kprobe_status = kcb->prev_kprobe.status;
+	unsigned int i;
+	i = atomic_read(&kcb->prev_kprobe_index);
+	__get_cpu_var(current_kprobe) = kcb->prev_kprobe[i-1].kp;
+	kcb->kprobe_status = kcb->prev_kprobe[i-1].status;
+	atomic_sub(1, &kcb->prev_kprobe_index);
 }
 
 static void __kprobes set_current_kprobe(struct kprobe *p,
@@ -365,6 +366,23 @@ int __kprobes trampoline_probe_handler(struct kprobe *p, struct pt_regs *regs)
 			/* another task is sharing our hash bucket */
 			continue;
 
+		orig_ret_address = (unsigned long)ri->ret_addr;
+		if (orig_ret_address != trampoline_address)
+			/*
+			 * This is the real return address. Any other
+			 * instances associated with this task are for
+			 * other calls deeper on the call stack
+			 */
+			break;
+	}
+
+	regs->cr_iip = orig_ret_address;
+
+	hlist_for_each_entry_safe(ri, node, tmp, head, hlist) {
+		if (ri->task != current)
+			/* another task is sharing our hash bucket */
+			continue;
+
 		if (ri->rp && ri->rp->handler)
 			ri->rp->handler(ri, regs);
 
@@ -381,7 +399,6 @@ int __kprobes trampoline_probe_handler(struct kprobe *p, struct pt_regs *regs)
 	}
 
 	BUG_ON(!orig_ret_address || (orig_ret_address == trampoline_address));
-	regs->cr_iip = orig_ret_address;
 
 	reset_current_kprobe();
 	spin_unlock_irqrestore(&kretprobe_lock, flags);
@@ -451,25 +468,66 @@ int __kprobes arch_prepare_kprobe(struct kprobe *p)
 	return 0;
 }
 
+static inline unsigned int get_kprobe_slot(struct kprobe *p)
+{
+	unsigned int slot = ((unsigned long)p->addr) & 0xf;
+	/* p->ainsn.insn contains the original unaltered kprobe_opcode_t */
+	unsigned int template = p->ainsn.insn->bundle.quad0.template;
+
+	/* Move to slot 2, if bundle is MLX type and kprobe slot is 1 */
+ 	if (slot == 1 && bundle_encoding[template][1] == L)
+  		slot = 2;
+
+	return slot;
+}
+
 void __kprobes arch_arm_kprobe(struct kprobe *p)
 {
-	unsigned long addr = (unsigned long)p->addr;
-	unsigned long arm_addr = addr & ~0xFULL;
+	unsigned long arm_addr;
+	bundle_t *src, *dest;
+	unsigned int slot = get_kprobe_slot(p);
+
+	arm_addr = ((unsigned long)p->addr) & ~0xFUL;
+	dest = &((kprobe_opcode_t *)arm_addr)->bundle;
+	src = &p->opcode.bundle;
 
 	flush_icache_range((unsigned long)p->ainsn.insn,
 			(unsigned long)p->ainsn.insn + sizeof(kprobe_opcode_t));
-	memcpy((char *)arm_addr, &p->opcode, sizeof(kprobe_opcode_t));
+	switch (slot) {
+		case 0:
+			dest->quad0.slot0 = src->quad0.slot0;
+			break;
+		case 1:
+			dest->quad1.slot1_p1 = src->quad1.slot1_p1;
+			break;
+		case 2:
+			dest->quad1.slot2 = src->quad1.slot2;
+			break;
+	}
 	flush_icache_range(arm_addr, arm_addr + sizeof(kprobe_opcode_t));
 }
 
 void __kprobes arch_disarm_kprobe(struct kprobe *p)
 {
-	unsigned long addr = (unsigned long)p->addr;
-	unsigned long arm_addr = addr & ~0xFULL;
+	unsigned long arm_addr;
+	bundle_t *src, *dest;
+	unsigned int slot = get_kprobe_slot(p);
 
+	arm_addr = ((unsigned long)p->addr) & ~0xFUL;
+	dest = &((kprobe_opcode_t *)arm_addr)->bundle;
 	/* p->ainsn.insn contains the original unaltered kprobe_opcode_t */
-	memcpy((char *) arm_addr, (char *) p->ainsn.insn,
-					 sizeof(kprobe_opcode_t));
+	src = &p->ainsn.insn->bundle;
+	switch (slot) {
+		case 0:
+			dest->quad0.slot0 = src->quad0.slot0;
+			break;
+		case 1:
+			dest->quad1.slot1_p1 = src->quad1.slot1_p1;
+			break;
+		case 2:
+			dest->quad1.slot2 = src->quad1.slot2;
+			break;
+	}
 	flush_icache_range(arm_addr, arm_addr + sizeof(kprobe_opcode_t));
 }
 
@@ -802,7 +860,9 @@ int __kprobes kprobe_exceptions_notify(struct notifier_block *self,
 	switch(val) {
 	case DIE_BREAK:
 		/* err is break number from ia64_bad_break() */
-		if (args->err == 0x80200 || args->err == 0x80300 || args->err == 0)
+		if ((args->err >> 12) == (__IA64_BREAK_KPROBE >> 12)
+			|| args->err == __IA64_BREAK_JPROBE
+			|| args->err == 0)
 			if (pre_kprobes_handler(args))
 				ret = NOTIFY_STOP;
 		break;

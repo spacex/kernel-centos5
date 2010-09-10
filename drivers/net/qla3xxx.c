@@ -39,7 +39,7 @@
 
 #define DRV_NAME  	"qla3xxx"
 #define DRV_STRING 	"QLogic ISP3XXX Network Driver"
-#define DRV_VERSION	"v2.03.00-k4-RHEL5U1"
+#define DRV_VERSION	"v2.03.00-k4-RHEL5.2-01"
 #define PFX		DRV_NAME " "
 
 static const char ql3xxx_driver_name[] = DRV_NAME;
@@ -1657,7 +1657,7 @@ static int ql_finish_auto_neg(struct ql3_adapter *qdev)
 	return 0;
 }
 
-static void ql_link_state_machine(struct ql3_adapter *qdev)
+static void ql_link_state_machine_work(struct ql3_adapter *qdev)
 {
 	u32 curr_link_state;
 	unsigned long hw_flags;
@@ -1673,6 +1673,8 @@ static void ql_link_state_machine(struct ql3_adapter *qdev)
 			       "state.\n", qdev->ndev->name);
 
 		spin_unlock_irqrestore(&qdev->hw_lock, hw_flags);		
+		/* Restart timer on 1 second interval. */
+		mod_timer(&qdev->adapter_timer, jiffies + HZ * 1);\
 		return;
 	}
 
@@ -1717,6 +1719,8 @@ static void ql_link_state_machine(struct ql3_adapter *qdev)
 		break;
 	}
 	spin_unlock_irqrestore(&qdev->hw_lock, hw_flags);
+	/* Restart timer on 1 second interval. */
+	mod_timer(&qdev->adapter_timer, jiffies + HZ * 1);
 }
 
 /*
@@ -2262,6 +2266,12 @@ static int ql_tx_rx_clean(struct ql3_adapter *qdev,
 
 		net_rsp = qdev->rsp_current;
 		rmb();
+		/*
+		 * Fix 4032 chip undocumented "feature" where bit-8 is set if the
+		 * inbound completion is for a VLAN.
+		 */
+		if (qdev->device_id == QL3032_DEVICE_ID)
+			net_rsp->opcode &= 0x7f;
 		switch (net_rsp->opcode) {
 
 		case OPCODE_OB_MAC_IOCB_FN0:
@@ -3971,20 +3981,7 @@ static void ql_get_board_info(struct ql3_adapter *qdev)
 static void ql3xxx_timer(unsigned long ptr)
 {
 	struct ql3_adapter *qdev = (struct ql3_adapter *)ptr;
-
-	if (test_bit(QL_RESET_ACTIVE,&qdev->flags)) {
-		printk(KERN_DEBUG PFX
-		       "%s: Reset in progress.\n",
-		       qdev->ndev->name);
-		goto end;
-	}
-
-	if (test_bit(QL_ADAPTER_UP,&qdev->flags))
-		ql_link_state_machine(qdev);
-
-	/* Restart timer on 2 second interval. */
-end:
-	mod_timer(&qdev->adapter_timer, jiffies + HZ * 1);
+	queue_work(qdev->workqueue, &qdev->link_state_work);
 }
 
 static int __devinit ql3xxx_probe(struct pci_dev *pdev,
@@ -4138,6 +4135,8 @@ static int __devinit ql3xxx_probe(struct pci_dev *pdev,
 	INIT_WORK(&qdev->reset_work, (void (*)(void *))ql_reset_work, qdev);
 	INIT_WORK(&qdev->tx_timeout_work,
 		  (void (*)(void *))ql_tx_timeout_work, qdev);
+	INIT_WORK(&qdev->link_state_work, 
+		(void (*)(void *))ql_link_state_machine_work,qdev);
 
 	init_timer(&qdev->adapter_timer);
 	qdev->adapter_timer.function = ql3xxx_timer;

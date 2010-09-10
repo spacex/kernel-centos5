@@ -243,11 +243,13 @@ static int fpregs_set(struct task_struct *target,
 
 static const struct utrace_regset native_regsets[] = {
 	{
+		.core_note_type = NT_PRSTATUS,
 		.n = SPARC64_NGREGS,
 		.size = sizeof(long), .align = sizeof(long),
 		.get = genregs_get, .set = genregs_set
 	},
 	{
+		.core_note_type = NT_PRFPREG,
 		.n = SPARC64_NFPREGS,
 		.size = sizeof(long), .align = sizeof(long),
 		.get = fpregs_get, .set = fpregs_set
@@ -580,11 +582,13 @@ static int fpregs32_set(struct task_struct *target,
 
 static const struct utrace_regset sparc32_regsets[] = {
 	{
+		.core_note_type = NT_PRSTATUS,
 		.n = SPARC32_NGREGS,
 		.size = sizeof(u32), .align = sizeof(u32),
 		.get = genregs32_get, .set = genregs32_set
 	},
 	{
+		.core_note_type = NT_PRFPREG,
 		.n = SPARC32_NFPREGS,
 		.size = sizeof(u32), .align = sizeof(u32),
 		.get = fpregs32_get, .set = fpregs32_set

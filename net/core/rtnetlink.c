@@ -35,6 +35,7 @@
 #include <linux/init.h>
 #include <linux/security.h>
 #include <linux/mutex.h>
+#include <linux/if_addr.h>
 
 #include <asm/uaccess.h>
 #include <asm/system.h>
@@ -96,7 +97,11 @@ int rtattr_parse(struct rtattr *tb[], int maxattr, struct rtattr *rta, int len)
 
 struct sock *rtnl;
 
+#ifdef __GENKSYMS__
+struct rtnetlink_link * rtnetlink_links[32];
+#else
 struct rtnetlink_link * rtnetlink_links[NPROTO];
+#endif
 
 static const int rtm_min[RTM_NR_FAMILIES] =
 {

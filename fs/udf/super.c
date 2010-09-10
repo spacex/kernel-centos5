@@ -566,7 +566,7 @@ udf_vrs(struct super_block *sb, int silent)
 
 		if (vsd->stdIdent[0] == 0)
 		{
-			udf_release_data(bh);
+			brelse(bh);
 			break;
 		}
 		else if (!strncmp(vsd->stdIdent, VSD_STD_ID_CD001, VSD_STD_ID_LEN))
@@ -599,7 +599,7 @@ udf_vrs(struct super_block *sb, int silent)
 		}
 		else if (!strncmp(vsd->stdIdent, VSD_STD_ID_TEA01, VSD_STD_ID_LEN))
 		{
-			udf_release_data(bh);
+			brelse(bh);
 			break;
 		}
 		else if (!strncmp(vsd->stdIdent, VSD_STD_ID_NSR02, VSD_STD_ID_LEN))
@@ -610,7 +610,7 @@ udf_vrs(struct super_block *sb, int silent)
 		{
 			nsr03 = sector;
 		}
-		udf_release_data(bh);
+		brelse(bh);
 	}
 
 	if (nsr03)
@@ -676,7 +676,7 @@ udf_find_anchor(struct super_block *sb)
 			{
 				ident = le16_to_cpu(((tag *)bh->b_data)->tagIdent);
 				location = le32_to_cpu(((tag *)bh->b_data)->tagLocation);
-				udf_release_data(bh);
+				brelse(bh);
 			}
 
 			if (ident == TAG_IDENT_AVDP)
@@ -711,7 +711,7 @@ udf_find_anchor(struct super_block *sb)
 				{
 					ident = le16_to_cpu(((tag *)bh->b_data)->tagIdent);
 					location = le32_to_cpu(((tag *)bh->b_data)->tagLocation);
-					udf_release_data(bh);
+					brelse(bh);
 				}
 	
 				if (ident == TAG_IDENT_AVDP &&
@@ -730,7 +730,7 @@ udf_find_anchor(struct super_block *sb)
 					{
 						ident = le16_to_cpu(((tag *)bh->b_data)->tagIdent);
 						location = le32_to_cpu(((tag *)bh->b_data)->tagLocation);
-						udf_release_data(bh);
+						brelse(bh);
 					}
 	
 					if (ident == TAG_IDENT_AVDP &&
@@ -752,7 +752,7 @@ udf_find_anchor(struct super_block *sb)
 		{
 			ident = le16_to_cpu(((tag *)bh->b_data)->tagIdent);
 			location = le32_to_cpu(((tag *)bh->b_data)->tagLocation);
-			udf_release_data(bh);
+			brelse(bh);
 
 			if (ident == TAG_IDENT_AVDP && location == 256)
 				UDF_SET_FLAG(sb, UDF_FLAG_VARCONV);
@@ -769,7 +769,7 @@ udf_find_anchor(struct super_block *sb)
 			}
 			else
 			{
-				udf_release_data(bh);
+				brelse(bh);
 				if ((ident != TAG_IDENT_AVDP) && (i ||
 					(ident != TAG_IDENT_FE && ident != TAG_IDENT_EFE)))
 				{
@@ -798,7 +798,7 @@ udf_find_fileset(struct super_block *sb, kernel_lb_addr *fileset, kernel_lb_addr
 			return 1;
 		else if (ident != TAG_IDENT_FSD)
 		{
-			udf_release_data(bh);
+			brelse(bh);
 			return 1;
 		}
 			
@@ -837,7 +837,7 @@ udf_find_fileset(struct super_block *sb, kernel_lb_addr *fileset, kernel_lb_addr
 						newfileset.logicalBlockNum += 1 +
 							((le32_to_cpu(sp->numOfBytes) + sizeof(struct spaceBitmapDesc) - 1)
 								>> sb->s_blocksize_bits);
-						udf_release_data(bh);
+						brelse(bh);
 						break;
 					}
 					case TAG_IDENT_FSD:
@@ -848,7 +848,7 @@ udf_find_fileset(struct super_block *sb, kernel_lb_addr *fileset, kernel_lb_addr
 					default:
 					{
 						newfileset.logicalBlockNum ++;
-						udf_release_data(bh);
+						brelse(bh);
 						bh = NULL;
 						break;
 					}
@@ -868,7 +868,7 @@ udf_find_fileset(struct super_block *sb, kernel_lb_addr *fileset, kernel_lb_addr
 
 		UDF_SB_PARTITION(sb) = fileset->partitionReferenceNum;
 		udf_load_fileset(sb, bh, root);
-		udf_release_data(bh);
+		brelse(bh);
 		return 0;
 	}
 	return 1;
@@ -1086,7 +1086,7 @@ udf_load_logicalvol(struct super_block *sb, struct buffer_head * bh, kernel_lb_a
 						if (ident != 0 ||
 							strncmp(st->sparingIdent.ident, UDF_ID_SPARING, strlen(UDF_ID_SPARING)))
 						{
-							udf_release_data(UDF_SB_TYPESPAR(sb,i).s_spar_map[j]);
+							brelse(UDF_SB_TYPESPAR(sb,i).s_spar_map[j]);
 							UDF_SB_TYPESPAR(sb,i).s_spar_map[j] = NULL;
 						}
 					}
@@ -1140,12 +1140,12 @@ udf_load_logicalvolint(struct super_block *sb, kernel_extent_ad loc)
 			udf_load_logicalvolint(sb, leea_to_cpu(UDF_SB_LVID(sb)->nextIntegrityExt));
 		
 		if (UDF_SB_LVIDBH(sb) != bh)
-			udf_release_data(bh);
+			brelse(bh);
 		loc.extLength -= sb->s_blocksize;
 		loc.extLocation ++;
 	}
 	if (UDF_SB_LVIDBH(sb) != bh)
-		udf_release_data(bh);
+		brelse(bh);
 }
 
 /*
@@ -1248,7 +1248,7 @@ udf_process_sequence(struct super_block *sb, long block, long lastblock, kernel_
 					done = 1;
 				break;
 		}
-		udf_release_data(bh);
+		brelse(bh);
 	}
 	for (i=0; i<VDS_POS_LENGTH; i++)
 	{
@@ -1270,10 +1270,10 @@ udf_process_sequence(struct super_block *sb, long block, long lastblock, kernel_
 					gd = (struct generic_desc *)bh2->b_data;
 					if (ident == TAG_IDENT_PD)
 						udf_load_partdesc(sb, bh2);
-					udf_release_data(bh2);
+					brelse(bh2);
 				}
 			}
-			udf_release_data(bh);
+			brelse(bh);
 		}
 	}
 
@@ -1336,7 +1336,7 @@ udf_load_partition(struct super_block *sb, kernel_lb_addr *fileset)
 			reserve_e = reserve_e >> sb->s_blocksize_bits;
 			reserve_e += reserve_s;
 
-			udf_release_data(bh);
+			brelse(bh);
 
 			/* Process the main & reserve sequences */
 			/* responsible for finding the PartitionDesc(s) */
@@ -1411,7 +1411,7 @@ udf_load_partition(struct super_block *sb, kernel_lb_addr *fileset)
 							udf_ext0_offset(UDF_SB_VAT(sb));
 					UDF_SB_TYPEVIRT(sb,i).s_num_entries = (UDF_SB_VAT(sb)->i_size -
 						UDF_SB_TYPEVIRT(sb,i).s_start_offset) >> 2;
-					udf_release_data(bh);
+					brelse(bh);
 				}
 				UDF_SB_PARTROOT(sb,i) = udf_get_pblock(sb, 0, i, 0);
 				UDF_SB_PARTLEN(sb,i) = UDF_SB_PARTLEN(sb,ino.partitionReferenceNum);
@@ -1659,7 +1659,7 @@ static int udf_fill_super(struct super_block *sb, void *options, int silent)
 		iput(inode);
 		goto error_out;
 	}
-	sb->s_maxbytes = 1<<30;
+	sb->s_maxbytes = MAX_LFS_FILESIZE;
 	return 0;
 
 error_out:
@@ -1678,7 +1678,7 @@ error_out:
 		if (UDF_SB_PARTTYPE(sb, UDF_SB_PARTITION(sb)) == UDF_SPARABLE_MAP15)
 		{
 			for (i=0; i<4; i++)
-				udf_release_data(UDF_SB_TYPESPAR(sb, UDF_SB_PARTITION(sb)).s_spar_map[i]);
+				brelse(UDF_SB_TYPESPAR(sb, UDF_SB_PARTITION(sb)).s_spar_map[i]);
 		}
 	}
 #ifdef CONFIG_UDF_NLS
@@ -1687,7 +1687,7 @@ error_out:
 #endif
 	if (!(sb->s_flags & MS_RDONLY))
 		udf_close_lvid(sb);
-	udf_release_data(UDF_SB_LVIDBH(sb));
+	brelse(UDF_SB_LVIDBH(sb));
 	UDF_SB_FREE(sb);
 	kfree(sbi);
 	sb->s_fs_info = NULL;
@@ -1756,7 +1756,7 @@ udf_put_super(struct super_block *sb)
 		if (UDF_SB_PARTTYPE(sb, UDF_SB_PARTITION(sb)) == UDF_SPARABLE_MAP15)
 		{
 			for (i=0; i<4; i++)
-				udf_release_data(UDF_SB_TYPESPAR(sb, UDF_SB_PARTITION(sb)).s_spar_map[i]);
+				brelse(UDF_SB_TYPESPAR(sb, UDF_SB_PARTITION(sb)).s_spar_map[i]);
 		}
 	}
 #ifdef CONFIG_UDF_NLS
@@ -1765,7 +1765,7 @@ udf_put_super(struct super_block *sb)
 #endif
 	if (!(sb->s_flags & MS_RDONLY))
 		udf_close_lvid(sb);
-	udf_release_data(UDF_SB_LVIDBH(sb));
+	brelse(UDF_SB_LVIDBH(sb));
 	UDF_SB_FREE(sb);
 	kfree(sb->s_fs_info);
 	sb->s_fs_info = NULL;
@@ -1835,7 +1835,7 @@ udf_count_free_bitmap(struct super_block *sb, struct udf_bitmap *bitmap)
 	}
 	else if (ident != TAG_IDENT_SBD)
 	{
-		udf_release_data(bh);
+		brelse(bh);
 		printk(KERN_ERR "udf: udf_count_free failed\n");
 		goto out;
 	}
@@ -1857,7 +1857,7 @@ udf_count_free_bitmap(struct super_block *sb, struct udf_bitmap *bitmap)
 		}
 		if ( bytes )
 		{
-			udf_release_data(bh);
+			brelse(bh);
 			newblock = udf_get_lb_pblock(sb, loc, ++block);
 			bh = udf_tread(sb, newblock);
 			if (!bh)
@@ -1869,7 +1869,7 @@ udf_count_free_bitmap(struct super_block *sb, struct udf_bitmap *bitmap)
 			ptr = (uint8_t *)bh->b_data;
 		}
 	}
-	udf_release_data(bh);
+	brelse(bh);
 
 out:
 	unlock_kernel();
@@ -1881,21 +1881,20 @@ static unsigned int
 udf_count_free_table(struct super_block *sb, struct inode * table)
 {
 	unsigned int accum = 0;
-	uint32_t extoffset, elen;
-	kernel_lb_addr bloc, eloc;
+	uint32_t elen;
+	kernel_lb_addr eloc;
 	int8_t etype;
-	struct buffer_head *bh = NULL;
+	struct extent_position epos;
 
 	lock_kernel();
 
-	bloc = UDF_I_LOCATION(table);
-	extoffset = sizeof(struct unallocSpaceEntry);
+	epos.block = UDF_I_LOCATION(table);
+	epos.offset = sizeof(struct unallocSpaceEntry);
+	epos.bh = NULL;
 
-	while ((etype = udf_next_aext(table, &bloc, &extoffset, &eloc, &elen, &bh, 1)) != -1)
-	{
+	while ((etype = udf_next_aext(table, &epos, &eloc, &elen, 1)) != -1)
 		accum += (elen >> table->i_sb->s_blocksize_bits);
-	}
-	udf_release_data(bh);
+	brelse(epos.bh);
 
 	unlock_kernel();
 

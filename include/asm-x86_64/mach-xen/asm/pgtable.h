@@ -14,6 +14,7 @@
 #include <linux/threads.h>
 #include <linux/sched.h>
 #include <asm/pda.h>
+#include <asm/mm_track.h>
 #ifdef CONFIG_XEN
 #include <asm/hypervisor.h>
 
@@ -43,7 +44,7 @@ extern pmd_t level2_kernel_pgt[512];
 extern pgd_t init_level4_pgt[];
 extern unsigned long __supported_pte_mask;
 
-#define swapper_pg_dir ((pgd_t *)NULL)
+#define swapper_pg_dir init_level4_pgt
 
 extern void nonx_setup(char *str);
 extern void paging_init(void);
@@ -98,19 +99,29 @@ extern unsigned long empty_zero_page[PAGE_SIZE/sizeof(unsigned long)];
 #define pgd_none(x)	(!pgd_val(x))
 #define pud_none(x)	(!pud_val(x))
 
-#define set_pte_batched(pteptr, pteval) \
-	queue_l1_entry_update(pteptr, (pteval))
-
 extern inline int pud_present(pud_t pud)	{ return !pud_none(pud); }
 
 static inline void set_pte(pte_t *dst, pte_t val)
 {
+	mm_track_pte(dst);
 	*dst = val;
 }
 
-#define set_pmd(pmdptr, pmdval) xen_l2_entry_update(pmdptr, (pmdval))
-#define set_pud(pudptr, pudval) xen_l3_entry_update(pudptr, (pudval))
-#define set_pgd(pgdptr, pgdval) xen_l4_entry_update(pgdptr, (pgdval))
+static inline void set_pmd(pmd_t *pmdptr, pmd_t pmdval)
+{
+	mm_track_pmd(pmdptr);
+	xen_l2_entry_update(pmdptr, (pmdval));
+}
+static inline void set_pud(pud_t *pudptr, pud_t pudval)
+{
+	mm_track_pud(pudptr);
+	xen_l3_entry_update(pudptr, (pudval));	
+}
+static inline void set_pgd(pgd_t *pgdptr, pgd_t pgdval)
+{
+	mm_track_pgd(pgdptr);
+	xen_l4_entry_update(pgdptr, (pgdval));	
+}
 
 static inline void pud_clear (pud_t * pud)
 {
@@ -137,7 +148,11 @@ static inline void pgd_clear (pgd_t * pgd)
  * each domain will have separate page tables, with their own versions of
  * accessed & dirty state.
  */
-#define ptep_get_and_clear(mm,addr,xp)	__pte_ma(xchg(&(xp)->pte, 0))
+static inline pte_t ptep_get_and_clear(struct mm_struct *mm, unsigned long addr, pte_t *xp)
+{
+	mm_track_pte(xp);
+	return __pte_ma(xchg(&(xp)->pte, 0));
+}
 
 #if 0
 static inline pte_t ptep_get_and_clear(struct mm_struct *mm, unsigned long addr, pte_t *xp)
@@ -156,6 +171,7 @@ static inline pte_t ptep_get_and_clear_full(struct mm_struct *mm, unsigned long 
 	pte_t pte;
 	if (full) {
 		pte = *ptep;
+		mm_track_pte(ptep);
 		*ptep = __pte(0);
 	} else {
 		pte = ptep_get_and_clear(mm, addr, ptep);
@@ -195,6 +211,7 @@ static inline pte_t ptep_get_and_clear_full(struct mm_struct *mm, unsigned long 
 #define _PAGE_BIT_DIRTY		6
 #define _PAGE_BIT_PSE		7	/* 4 MB (or 2MB) page */
 #define _PAGE_BIT_GLOBAL	8	/* Global TLB entry PPro+ */
+#define _PAGE_BIT_SOFTDIRTY	9	/* save dirty state when hdw dirty bit cleared */
 #define _PAGE_BIT_NX           63       /* No execute: only valid after cpuid check */
 
 #define _PAGE_PRESENT	0x001
@@ -207,14 +224,18 @@ static inline pte_t ptep_get_and_clear_full(struct mm_struct *mm, unsigned long 
 #define _PAGE_PSE	0x080	/* 2MB page */
 #define _PAGE_FILE	0x040	/* nonlinear file mapping, saved PTE; unset:swap */
 #define _PAGE_GLOBAL	0x100	/* Global TLB entry */
+#define _PAGE_SOFTDIRTY	0x200
 
 #define _PAGE_PROTNONE	0x080	/* If not present */
 #define _PAGE_NX        (_AC(1,UL)<<_PAGE_BIT_NX)
 
+/* Mapped page is I/O or foreign and has no associated page struct. */
+#define _PAGE_IO	0x400
+
 #define _PAGE_TABLE	(_PAGE_PRESENT | _PAGE_RW | _PAGE_USER | _PAGE_ACCESSED | _PAGE_DIRTY)
 #define _KERNPG_TABLE	(_PAGE_PRESENT | _PAGE_RW | _PAGE_ACCESSED | _PAGE_DIRTY)
 
-#define _PAGE_CHG_MASK	(PTE_MASK | _PAGE_ACCESSED | _PAGE_DIRTY)
+#define _PAGE_CHG_MASK	(PTE_MASK | _PAGE_ACCESSED | _PAGE_DIRTY | _PAGE_SOFTDIRTY | _PAGE_IO)
 
 #define PAGE_NONE	__pgprot(_PAGE_PROTNONE | _PAGE_ACCESSED)
 #define PAGE_SHARED	__pgprot(_PAGE_PRESENT | _PAGE_RW | _PAGE_USER | _PAGE_ACCESSED | _PAGE_NX)
@@ -304,19 +325,22 @@ static inline unsigned long pud_bad(pud_t pud)
 
 #define pages_to_mb(x) ((x) >> (20-PAGE_SHIFT))
 
-#define pte_mfn(_pte) (((_pte).pte & PTE_MASK) >> PAGE_SHIFT)
-#define pte_pfn(_pte) mfn_to_local_pfn(pte_mfn(_pte))
+#define __pte_mfn(_pte) (((_pte).pte & PTE_MASK) >> PAGE_SHIFT)
+#define pte_mfn(_pte) ((_pte).pte & _PAGE_PRESENT ? \
+	__pte_mfn(_pte) : pfn_to_mfn(__pte_mfn(_pte)))
+#define pte_pfn(_pte) ((_pte).pte & _PAGE_IO ? end_pfn :	\
+		       (_pte).pte & _PAGE_PRESENT ?		\
+		       mfn_to_local_pfn(__pte_mfn(_pte)) :	\
+		       __pte_mfn(_pte))
 
 #define pte_page(x)	pfn_to_page(pte_pfn(x))
 
 static inline pte_t pfn_pte(unsigned long page_nr, pgprot_t pgprot)
 {
-	pte_t pte;
-        
-	(pte).pte = (pfn_to_mfn(page_nr) << PAGE_SHIFT);
-	(pte).pte |= pgprot_val(pgprot);
-	(pte).pte &= __supported_pte_mask;
-	return pte;
+	unsigned long pte = page_nr << PAGE_SHIFT;
+	pte |= pgprot_val(pgprot);
+	pte &= __supported_pte_mask;
+	return __pte(pte);
 }
 
 /*
@@ -329,7 +353,7 @@ static inline pte_t pfn_pte(unsigned long page_nr, pgprot_t pgprot)
 static inline int pte_user(pte_t pte)		{ return __pte_val(pte) & _PAGE_USER; }
 static inline int pte_read(pte_t pte)		{ return __pte_val(pte) & _PAGE_USER; }
 static inline int pte_exec(pte_t pte)		{ return __pte_val(pte) & _PAGE_USER; }
-static inline int pte_dirty(pte_t pte)		{ return __pte_val(pte) & _PAGE_DIRTY; }
+static inline int pte_dirty(pte_t pte)		{ return __pte_val(pte) & (_PAGE_DIRTY | _PAGE_SOFTDIRTY); }
 static inline int pte_young(pte_t pte)		{ return __pte_val(pte) & _PAGE_ACCESSED; }
 static inline int pte_write(pte_t pte)		{ return __pte_val(pte) & _PAGE_RW; }
 static inline int pte_file(pte_t pte)		{ return __pte_val(pte) & _PAGE_FILE; }
@@ -337,7 +361,12 @@ static inline int pte_huge(pte_t pte)		{ return __pte_val(pte) & _PAGE_PSE; }
 
 static inline pte_t pte_rdprotect(pte_t pte)	{ __pte_val(pte) &= ~_PAGE_USER; return pte; }
 static inline pte_t pte_exprotect(pte_t pte)	{ __pte_val(pte) &= ~_PAGE_USER; return pte; }
-static inline pte_t pte_mkclean(pte_t pte)	{ __pte_val(pte) &= ~_PAGE_DIRTY; return pte; }
+static inline pte_t pte_mkclean(pte_t pte)
+{
+	mm_track_pte(&pte);
+	__pte_val(pte) &= ~(_PAGE_SOFTDIRTY|_PAGE_DIRTY);
+	return pte;
+}
 static inline pte_t pte_mkold(pte_t pte)	{ __pte_val(pte) &= ~_PAGE_ACCESSED; return pte; }
 static inline pte_t pte_wrprotect(pte_t pte)	{ __pte_val(pte) &= ~_PAGE_RW; return pte; }
 static inline pte_t pte_mkread(pte_t pte)	{ __pte_val(pte) |= _PAGE_USER; return pte; }
@@ -443,18 +472,25 @@ static inline pud_t *pud_offset_k(pgd_t *pgd, unsigned long address)
 /* physical address -> PTE */
 static inline pte_t mk_pte_phys(unsigned long physpage, pgprot_t pgprot)
 { 
-	pte_t pte;
-	(pte).pte = physpage | pgprot_val(pgprot); 
-	return pte; 
+	unsigned long pteval;
+	pteval = physpage | pgprot_val(pgprot);
+	return __pte(pteval);
 }
  
 /* Change flags of a PTE */
 static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 { 
-        (pte).pte &= _PAGE_CHG_MASK;
-	(pte).pte |= pgprot_val(newprot);
-	(pte).pte &= __supported_pte_mask;
-       return pte; 
+	/*
+	 * Since this might change the present bit (which controls whether
+	 * a pte_t object has undergone p2m translation), we must use
+	 * pte_val() on the input pte and __pte() for the return value.
+	 */
+	unsigned long pteval = pte_val(pte);
+
+	pteval &= _PAGE_CHG_MASK;
+	pteval |= pgprot_val(newprot);
+	pteval &= __supported_pte_mask;
+	return __pte(pteval);
 }
 
 #define pte_index(address) \
@@ -533,6 +569,12 @@ int touch_pte_range(struct mm_struct *mm,
                     unsigned long address,
                     unsigned long size);
 
+int xen_change_pte_range(struct mm_struct *mm, pmd_t *pmd,
+		unsigned long addr, unsigned long end, pgprot_t newprot);
+
+#define arch_change_pte_range(mm, pmd, addr, end, newprot)	\
+		xen_change_pte_range(mm, pmd, addr, end, newprot)
+
 #define io_remap_pfn_range(vma, vaddr, pfn, size, prot)		\
 		direct_remap_pfn_range(vma,vaddr,pfn,size,prot,DOMID_IO)
 
@@ -541,6 +583,7 @@ int touch_pte_range(struct mm_struct *mm,
 #define GET_PFN(pfn)			(pfn)
 
 #define HAVE_ARCH_UNMAPPED_AREA
+#define HAVE_ARCH_UNMAPPED_AREA_TOPDOWN
 
 #define pgtable_cache_init()   do { } while (0)
 #define check_pgt_cache()      do { } while (0)

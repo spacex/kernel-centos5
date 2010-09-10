@@ -74,9 +74,9 @@ static int __direct_remap_pfn_range(struct mm_struct *mm,
 
 		/*
 		 * Fill in the machine address: PTE ptr is done later by
-		 * __direct_remap_area_pages(). 
+		 * apply_to_page_range(). 
 		 */
-		v->val = pte_val_ma(pfn_pte_ma(mfn, prot));
+		v->val = pte_val_ma(pfn_pte_ma(mfn, prot)) | _PAGE_IO;
 
 		mfn++;
 		address += PAGE_SIZE; 

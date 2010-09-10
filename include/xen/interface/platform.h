@@ -10,6 +10,9 @@
 #define __XEN_PUBLIC_PLATFORM_H__
 
 #include "xen.h"
+#ifdef CONFIG_X86_64
+#include "stratus.h"
+#endif
 
 #define XENPF_INTERFACE_VERSION 0x03000001
 
@@ -96,6 +99,41 @@ struct xenpf_platform_quirk {
 typedef struct xenpf_platform_quirk xenpf_platform_quirk_t;
 DEFINE_XEN_GUEST_HANDLE(xenpf_platform_quirk_t);
 
+#define XENPF_change_freq         52
+struct xenpf_change_freq {
+    /* IN variables */
+    uint32_t flags; /* Must be zero. */
+    uint32_t cpu;   /* Physical cpu. */
+    uint64_t freq;  /* New frequency (Hz). */
+};
+typedef struct xenpf_change_freq xenpf_change_freq_t;
+DEFINE_XEN_GUEST_HANDLE(xenpf_change_freq_t);
+
+/*
+ * Get idle times (nanoseconds since boot) for physical CPUs specified in the
+ * @cpumap_bitmap with range [0..@cpumap_nr_cpus-1]. The @idletime array is
+ * indexed by CPU number; only entries with the corresponding @cpumap_bitmap
+ * bit set are written to. On return, @cpumap_bitmap is modified so that any
+ * non-existent CPUs are cleared. Such CPUs have their @idletime array entry
+ * cleared.
+ */
+#define XENPF_getidletime         53
+struct xenpf_getidletime {
+    /* IN/OUT variables */
+    /* IN: CPUs to interrogate; OUT: subset of IN which are present */
+    XEN_GUEST_HANDLE(uint8_t) cpumap_bitmap;
+    /* IN variables */
+    /* Size of cpumap bitmap. */
+    uint32_t cpumap_nr_cpus;
+    /* Must be indexable for every cpu in cpumap_bitmap. */
+    XEN_GUEST_HANDLE(uint64_t) idletime;
+    /* OUT variables */
+    /* System time when the idletime snapshots were taken. */
+    uint64_t now;
+};
+typedef struct xenpf_getidletime xenpf_getidletime_t;
+DEFINE_XEN_GUEST_HANDLE(xenpf_getidletime_t);
+
 struct xen_platform_op {
     uint32_t cmd;
     uint32_t interface_version; /* XENPF_INTERFACE_VERSION */
@@ -106,11 +144,19 @@ struct xen_platform_op {
         struct xenpf_read_memtype      read_memtype;
         struct xenpf_microcode_update  microcode;
         struct xenpf_platform_quirk    platform_quirk;
+        struct xenpf_change_freq       change_freq;
+        struct xenpf_getidletime       getidletime;
         uint8_t                        pad[128];
     } u;
 };
 typedef struct xen_platform_op xen_platform_op_t;
 DEFINE_XEN_GUEST_HANDLE(xen_platform_op_t);
+
+#ifdef CONFIG_X86_64
+#define XENPF_stratus_call	0xffffffff
+typedef struct xenpf_stratus_call xenpf_stratus_call_t;
+DEFINE_XEN_GUEST_HANDLE(xenpf_stratus_call_t);
+#endif
 
 #endif /* __XEN_PUBLIC_PLATFORM_H__ */
 

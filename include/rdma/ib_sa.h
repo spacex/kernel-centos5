@@ -109,8 +109,8 @@ enum ib_sa_selector {
  * Reserved rows are indicated with comments to help maintainability.
  */
 
-/* reserved:								 0 */
-/* reserved:								 1 */
+#define IB_SA_PATH_REC_SERVICE_ID		       (IB_SA_COMP_MASK( 0) |\
+							IB_SA_COMP_MASK( 1))
 #define IB_SA_PATH_REC_DGID				IB_SA_COMP_MASK( 2)
 #define IB_SA_PATH_REC_SGID				IB_SA_COMP_MASK( 3)
 #define IB_SA_PATH_REC_DLID				IB_SA_COMP_MASK( 4)
@@ -123,7 +123,7 @@ enum ib_sa_selector {
 #define IB_SA_PATH_REC_REVERSIBLE			IB_SA_COMP_MASK(11)
 #define IB_SA_PATH_REC_NUMB_PATH			IB_SA_COMP_MASK(12)
 #define IB_SA_PATH_REC_PKEY				IB_SA_COMP_MASK(13)
-/* reserved:								14 */
+#define IB_SA_PATH_REC_QOS_CLASS			IB_SA_COMP_MASK(14)
 #define IB_SA_PATH_REC_SL				IB_SA_COMP_MASK(15)
 #define IB_SA_PATH_REC_MTU_SELECTOR			IB_SA_COMP_MASK(16)
 #define IB_SA_PATH_REC_MTU				IB_SA_COMP_MASK(17)
@@ -134,8 +134,7 @@ enum ib_sa_selector {
 #define IB_SA_PATH_REC_PREFERENCE			IB_SA_COMP_MASK(22)
 
 struct ib_sa_path_rec {
-	/* reserved */
-	/* reserved */
+	__be64       service_id;
 	union ib_gid dgid;
 	union ib_gid sgid;
 	__be16       dlid;
@@ -148,7 +147,7 @@ struct ib_sa_path_rec {
 	int          reversible;
 	u8           numb_path;
 	__be16       pkey;
-	/* reserved */
+	__be16       qos_class;
 	u8           sl;
 	u8           mtu_selector;
 	u8           mtu;
@@ -252,6 +251,127 @@ struct ib_sa_service_rec {
 	u16		data16[8];
 	u32		data32[4];
 	u64		data64[2];
+};
+
+enum {
+	IB_SA_EVENT_TYPE_FATAL		= 0x0,
+	IB_SA_EVENT_TYPE_URGENT		= 0x1,
+	IB_SA_EVENT_TYPE_SECURITY	= 0x2,
+	IB_SA_EVENT_TYPE_SM		= 0x3,
+	IB_SA_EVENT_TYPE_INFO		= 0x4,
+	IB_SA_EVENT_TYPE_EMPTY		= 0x7F,
+	IB_SA_EVENT_TYPE_ALL		= 0xFFFF
+};
+
+enum {
+	IB_SA_EVENT_PRODUCER_TYPE_CA		= 0x1,
+	IB_SA_EVENT_PRODUCER_TYPE_SWITCH	= 0x2,
+	IB_SA_EVENT_PRODUCER_TYPE_ROUTER	= 0x3,
+	IB_SA_EVENT_PRODUCER_TYPE_CLASS_MANAGER	= 0x4,
+	IB_SA_EVENT_PRODUCER_TYPE_ALL		= 0xFFFFFF
+};
+
+enum {
+	IB_SA_SM_TRAP_GID_IN_SERVICE			= 64,
+	IB_SA_SM_TRAP_GID_OUT_OF_SERVICE		= 65,
+	IB_SA_SM_TRAP_CREATE_MC_GROUP			= 66,
+	IB_SA_SM_TRAP_DELETE_MC_GROUP			= 67,
+	IB_SA_SM_TRAP_PORT_CHANGE_STATE			= 128,
+	IB_SA_SM_TRAP_LINK_INTEGRITY			= 129,
+	IB_SA_SM_TRAP_EXCESSIVE_BUFFER_OVERRUN		= 130,
+	IB_SA_SM_TRAP_FLOW_CONTROL_UPDATE_EXPIRED	= 131,
+	IB_SA_SM_TRAP_BAD_M_KEY				= 256,
+	IB_SA_SM_TRAP_BAD_P_KEY				= 257,
+	IB_SA_SM_TRAP_BAD_Q_KEY				= 258,
+	IB_SA_SM_TRAP_SWITCH_BAD_P_KEY			= 259,
+	IB_SA_SM_TRAP_ALL				= 0xFFFF
+};
+
+struct ib_sa_inform {
+	union ib_gid	gid;
+	__be16		lid_range_begin;
+	__be16		lid_range_end;
+	u8		is_generic;
+	u8		subscribe;
+	__be16		type;
+	union {
+		struct {
+			__be16	trap_num;
+			__be32	qpn;
+			u8	resp_time;
+			__be32	producer_type;
+		} generic;
+		struct {
+			__be16	device_id;
+			__be32	qpn;
+			u8	resp_time;
+			__be32	vendor_id;
+		} vendor;
+	} trap;
+};
+
+struct ib_sa_notice {
+	u8		is_generic;
+	u8		type;
+	union {
+		struct {
+			__be32	producer_type;
+			__be16	trap_num;
+		} generic;
+		struct {
+			__be32	vendor_id;
+			__be16	device_id;
+		} vendor;
+	} trap;
+	__be16		issuer_lid;
+	__be16		notice_count;
+	u8		notice_toggle;
+	/*
+	 * Align data 16 bits off 64 bit field to match InformInfo definition.
+	 * Data contained within this field will then align properly.
+	 * See IB spec 1.2, sections 13.4.8.2 and 14.2.5.1.
+	 */
+	u8		reserved[5];
+	u8		data_details[54];
+	union ib_gid	issuer_gid;
+};
+
+/*
+ * SM notice data details for:
+ *
+ * IB_SA_SM_TRAP_GID_IN_SERVICE		= 64
+ * IB_SA_SM_TRAP_GID_OUT_OF_SERVICE	= 65
+ * IB_SA_SM_TRAP_CREATE_MC_GROUP	= 66
+ * IB_SA_SM_TRAP_DELETE_MC_GROUP	= 67
+ */
+struct ib_sa_notice_data_gid {
+	u8	reserved[6];
+	u8	gid[16];
+	u8	padding[32];
+};
+
+/*
+ * SM notice data details for:
+ *
+ * IB_SA_SM_TRAP_PORT_CHANGE_STATE	= 128
+ */
+struct ib_sa_notice_data_port_change {
+	__be16	lid;
+	u8	padding[52];
+};
+
+/*
+ * SM notice data details for:
+ *
+ * IB_SA_SM_TRAP_LINK_INTEGRITY			= 129
+ * IB_SA_SM_TRAP_EXCESSIVE_BUFFER_OVERRUN	= 130
+ * IB_SA_SM_TRAP_FLOW_CONTROL_UPDATE_EXPIRED	= 131
+ */
+struct ib_sa_notice_data_port_error {
+	u8	reserved[2];
+	__be16	lid;
+	u8	port_num;
+	u8	padding[49];
 };
 
 struct ib_sa_client {
@@ -360,13 +480,8 @@ void ib_sa_free_multicast(struct ib_sa_multicast *multicast);
  * @device: Device associated with the multicast group.
  * @port_num: Port on the specified device to associate with the multicast
  *   group.
- * @mgid: optional MGID of multicast group.
+ * @mgid: MGID of multicast group.
  * @rec: Location to copy SA multicast member record.
- *
- * If an MGID is specified, returns an existing multicast member record if
- * one is found for the local port.  If no MGID is specified, or the specified
- * MGID is 0, returns a multicast member record filled in with default values
- * that may be used to create a new multicast group.
  */
 int ib_sa_get_mcmember_rec(struct ib_device *device, u8 port_num,
 			   union ib_gid *mgid, struct ib_sa_mcmember_rec *rec);
@@ -387,7 +502,54 @@ int ib_init_ah_from_path(struct ib_device *device, u8 port_num,
 			 struct ib_sa_path_rec *rec,
 			 struct ib_ah_attr *ah_attr);
 
-int ib_sa_pack_attr(void *dst, void *src, int attr_id);
-int ib_sa_unpack_attr(void *dst, void *src, int attr_id);
+struct ib_inform_info {
+	void		*context;
+	int		(*callback)(int status,
+				    struct ib_inform_info *info,
+				    struct ib_sa_notice *notice);
+	u16		trap_number;
+};
+
+/**
+ * ib_sa_register_inform_info - Registers to receive notice events.
+ * @device: Device associated with the registration.
+ * @port_num: Port on the specified device to associate with the registration.
+ * @trap_number: InformInfo trap number to register for.
+ * @gfp_mask: GFP mask for memory allocations.
+ * @callback: User callback invoked once the registration completes and to
+ *   report noticed events.
+ * @context: User specified context stored with the ib_inform_reg structure.
+ *
+ * This call initiates a registration request with the SA for the specified
+ * trap number.  If the operation is started successfully, it returns
+ * an ib_inform_info structure that is used to track the registration operation.
+ * Users must free this structure by calling ib_unregister_inform_info,
+ * even if the operation later fails.  (The callback status is non-zero.)
+ *
+ * If the registration fails; status will be non-zero.  If the registration
+ * succeeds, the callback status will be zero, but the notice parameter will
+ * be NULL.  If the notice parameter is not NULL, a trap or notice is being
+ * reported to the user.
+ *
+ * A status of -ENETRESET indicates that an error occurred which requires
+ * reregisteration.
+ */
+struct ib_inform_info *
+ib_sa_register_inform_info(struct ib_sa_client *client,
+			   struct ib_device *device, u8 port_num,
+			   u16 trap_number, gfp_t gfp_mask,
+			   int (*callback)(int status,
+					   struct ib_inform_info *info,
+					   struct ib_sa_notice *notice),
+			   void *context);
+
+/**
+ * ib_sa_unregister_inform_info - Releases an InformInfo registration.
+ * @info: InformInfo registration tracking structure.
+ *
+ * This call blocks until the registration request is destroyed.  It may
+ * not be called from within the registration callback.
+ */
+void ib_sa_unregister_inform_info(struct ib_inform_info *info);
 
 #endif /* IB_SA_H */

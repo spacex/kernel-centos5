@@ -313,6 +313,7 @@ static void make_sockaddr(struct sockaddr_storage *saddr, uint16_t port,
 		in6_addr->sin6_port = cpu_to_be16(port);
 		*addr_len = sizeof(struct sockaddr_in6);
 	}
+	memset((char *)saddr + *addr_len, 0, sizeof(struct sockaddr_storage) - *addr_len);
 }
 
 /* Close a remote connection and tidy up */
@@ -863,7 +864,7 @@ static void sctp_init_assoc(struct connection *con)
 static void tcp_connect_to_sock(struct connection *con)
 {
 	int result = -EHOSTUNREACH;
-	struct sockaddr_storage saddr;
+	struct sockaddr_storage saddr, src_addr;
 	int addr_len;
 	struct socket *sock;
 
@@ -896,6 +897,17 @@ static void tcp_connect_to_sock(struct connection *con)
 	con->rx_action = receive_from_sock;
 	con->connect_action = tcp_connect_to_sock;
 	add_sock(sock, con);
+
+	/* Bind to our cluster-known address connecting to avoid
+	   routing problems */
+	memcpy(&src_addr, dlm_local_addr[0], sizeof(src_addr));
+	make_sockaddr(&src_addr, 0, &addr_len);
+	result = sock->ops->bind(sock, (struct sockaddr *) &src_addr,
+				 addr_len);
+	if (result < 0) {
+		printk("dlm: could not bind for connect: %d\n", result);
+		/* This *may* not indicate a critical error */
+	}
 
 	make_sockaddr(&saddr, dlm_config.ci_tcp_port, &addr_len);
 

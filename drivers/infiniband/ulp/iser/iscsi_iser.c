@@ -384,12 +384,13 @@ iscsi_iser_session_create(struct iscsi_transport *iscsit,
 	struct iscsi_iser_cmd_task *iser_ctask;
 	struct iser_desc *desc;
 
-	cls_session = iscsi_session_setup(iscsit, scsit,
-					  sizeof(struct iscsi_iser_cmd_task),
-					  sizeof(struct iser_desc),
-					  initial_cmdsn, &hn);
+	cls_session = iscsi_session_setup2(iscsit, scsit, ISCSI_XMIT_CMDS_MAX,
+					   ISCSI_MAX_CMD_PER_LUN,
+					   sizeof(struct iscsi_iser_cmd_task),
+					   sizeof(struct iser_desc),
+					   initial_cmdsn, &hn);
 	if (!cls_session)
-	return NULL;
+		return NULL;
 
 	*hostno = hn;
 	session = class_to_transport_session(cls_session);
@@ -541,6 +542,7 @@ iscsi_iser_ep_disconnect(__u64 ep_handle)
 }
 
 static struct scsi_host_template iscsi_iser_sht = {
+	.module			= THIS_MODULE,
 	.name                   = "iSCSI Initiator over iSER, v." DRV_VER,
 	.queuecommand           = iscsi_queuecommand,
 	.can_queue		= ISCSI_XMIT_CMDS_MAX - 1,
@@ -574,7 +576,8 @@ static struct iscsi_transport iscsi_iser_transport = {
 				  ISCSI_PERSISTENT_ADDRESS |
 				  ISCSI_TARGET_NAME | ISCSI_TPGT |
 				  ISCSI_USERNAME | ISCSI_PASSWORD |
-				  ISCSI_USERNAME_IN | ISCSI_PASSWORD_IN,
+				  ISCSI_USERNAME_IN | ISCSI_PASSWORD_IN |
+				  ISCSI_PING_TMO | ISCSI_RECV_TMO,
 	.host_param_mask	= ISCSI_HOST_HWADDRESS |
 				  ISCSI_HOST_NETDEV_NAME |
 				  ISCSI_HOST_INITIATOR_NAME,
@@ -630,7 +633,7 @@ static int __init iser_init(void)
 	ig.desc_cache = kmem_cache_create("iser_descriptors",
 					  sizeof (struct iser_desc),
 					  0, SLAB_HWCACHE_ALIGN,
-					  NULL, NULL);
+					  NULL);
 	if (ig.desc_cache == NULL)
 		return -ENOMEM;
 

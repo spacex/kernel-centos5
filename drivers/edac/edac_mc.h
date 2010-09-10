@@ -448,6 +448,11 @@ extern void edac_mc_handle_ue(struct mem_ctl_info *mci,
 		int row, const char *msg);
 extern void edac_mc_handle_ue_no_info(struct mem_ctl_info *mci,
 		const char *msg);
+extern void edac_mc_handle_fbd_ue(struct mem_ctl_info *mci, unsigned int csrow,
+				  unsigned int channel0, unsigned int channel1,
+				  char *msg);
+extern void edac_mc_handle_fbd_ce(struct mem_ctl_info *mci, unsigned int csrow,
+				  unsigned int channel, char *msg);
 
 /*
  * This kmalloc's and initializes all the structures.

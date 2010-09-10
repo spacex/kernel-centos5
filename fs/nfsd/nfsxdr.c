@@ -492,7 +492,7 @@ nfssvc_encode_statfsres(struct svc_rqst *rqstp, u32 *p,
 
 int
 nfssvc_encode_entry(struct readdir_cd *ccd, const char *name,
-		    int namlen, loff_t offset, ino_t ino, unsigned int d_type)
+		    int namlen, loff_t offset, u64 ino, unsigned int d_type)
 {
 	struct nfsd_readdirres *cd = container_of(ccd, struct nfsd_readdirres, common);
 	u32	*p = cd->buffer;

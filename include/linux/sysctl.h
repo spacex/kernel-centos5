@@ -155,6 +155,10 @@ enum
 	KERN_MAX_LOCK_DEPTH=74,
 	KERN_KDUMP_ON_INIT=75,	/* int: ia64 kdump with INIT */
  	KERN_PANIC_ON_NMI=76, /* int: whether we will panic on an unrecovered */
+	KERN_SCHED_INTERACTIVE=77, /* int: disable the interactivity estimator */
+	KERN_LOCK_STAT=78,	/* int: enable lock statistics */
+	KERN_PROVE_LOCKING=79,	/* int: enable lock dependancy validation */
+	KERN_SOFTLOCKUP_THRESH=80, /* int: min time to report softlockups */
 };
 
 
@@ -198,6 +202,8 @@ enum
 	VM_VDSO_ENABLED=34,	/* map VDSO into new processes? */
 	VM_MIN_SLAB=35,		 /* Percent pages ignored by zone reclaim */
 	VM_PAGECACHE=37,        /* favor reclaiming unmapped pagecache pages */
+	VM_MMAP_MIN_ADDR=38, 	/* amount of memory to protect from mmap */
+	VM_FLUSH_MMAP=39,       /* flush mmap()d pagecache pages */
 };
 
 
@@ -425,6 +431,9 @@ enum
 	NET_CIPSOV4_CACHE_BUCKET_SIZE=119,
 	NET_CIPSOV4_RBM_OPTFMT=120,
 	NET_CIPSOV4_RBM_STRICTVALID=121,
+	NET_UDP_MEM=122,
+	NET_UDP_RMEM_MIN=123,
+	NET_UDP_WMEM_MIN=124,
 };
 
 enum {
@@ -528,6 +537,7 @@ enum {
 	NET_IPV6_IP6FRAG_TIME=23,
 	NET_IPV6_IP6FRAG_SECRET_INTERVAL=24,
 	NET_IPV6_MLD_MAX_MSF=25,
+	NET_IPV6_OPTIMISTIC_DAD=26,
 };
 
 enum {
@@ -775,6 +785,9 @@ enum {
 	NET_SCTP_SNDBUF_POLICY		 = 15,
 	NET_SCTP_SACK_TIMEOUT		 = 16,
 	NET_SCTP_RCVBUF_POLICY		 = 17,
+	NET_SCTP_BUF_MEM		 = 18,
+	NET_SCTP_BUF_RMEM		 = 19,
+	NET_SCTP_BUF_WMEM		 = 20,
 };
 
 /* /proc/sys/net/bridge */

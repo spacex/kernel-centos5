@@ -1,20 +1,20 @@
 /*
- *    Disk Array driver for Compaq SA53xx Controllers, SCSI Tape module
- *    Copyright 2001 Compaq Computer Corporation
+ *    Disk Array driver for HP Smart Array Controllers, SCSI Tape Module
+ *    (C) Copyright 2000, 2008 Hewlett-Packard Development Company, L.P.
  *
  *    This program is free software; you can redistribute it and/or modify
  *    it under the terms of the GNU General Public License as published by
- *    the Free Software Foundation; either version 2 of the License, or
- *    (at your option) any later version.
+ *    the Free Software Foundation; version 2 of the License.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
- *    NON INFRINGEMENT.  See the GNU General Public License for more details.
+ *    NON INFRINGEMENT. See the GNU General Public License for more details.
  *
  *    You should have received a copy of the GNU General Public License
  *    along with this program; if not, write to the Free Software
- *    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+ *    02111-1307, USA.
  *
  *    Questions/Comments/Bugfixes to iss_storagedev@hp.com
  *    
@@ -1440,20 +1440,17 @@ cciss_engage_scsi(int ctlr)
 }
 
 static void
-cciss_proc_tape_report(int ctlr, unsigned char *buffer, off_t *pos, off_t *len)
+cciss_seq_tape_report(struct seq_file *seq, int ctlr)
 {
 	unsigned long flags;
-	int size;
-
-	*pos = *pos -1; *len = *len - 1; // cut off the last trailing newline
 
 	CPQ_TAPE_LOCK(ctlr, flags);
-	size = sprintf(buffer + *len, 
+	seq_printf(seq,
 		"Sequential access devices: %d\n\n",
 			ccissscsi[ctlr].ndevices);
 	CPQ_TAPE_UNLOCK(ctlr, flags);
-	*pos += size; *len += size;
 }
+
 
 /* Need at least one of these error handlers to keep ../scsi/hosts.c from 
  * complaining.  Doing a host- or bus-reset can't do anything good here. 
@@ -1534,6 +1531,6 @@ static int  cciss_eh_abort_handler(struct scsi_cmnd *scsicmd)
 #define cciss_scsi_setup(cntl_num)
 #define cciss_unregister_scsi(ctlr)
 #define cciss_register_scsi(ctlr)
-#define cciss_proc_tape_report(ctlr, buffer, pos, len)
+#define cciss_seq_tape_report(struct seq_file *seq, int ctlr)
 
 #endif /* CONFIG_CISS_SCSI_TAPE */

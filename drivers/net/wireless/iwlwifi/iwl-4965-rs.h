@@ -27,14 +27,13 @@
 #ifndef __iwl_4965_rs_h__
 #define __iwl_4965_rs_h__
 
-#include "iwl-hw.h"
 #include "iwl-4965.h"
 
-struct iwl_rate_info {
-	u8 plcp;
-	u8 plcp_siso;
-	u8 plcp_mimo;
-	u8 ieee;
+struct iwl4965_rate_info {
+	u8 plcp;	/* uCode API:  IWL_RATE_6M_PLCP, etc. */
+	u8 plcp_siso;	/* uCode API:  IWL_RATE_SISO_6M_PLCP, etc. */
+	u8 plcp_mimo;	/* uCode API:  IWL_RATE_MIMO_6M_PLCP, etc. */
+	u8 ieee;	/* MAC header:  IWL_RATE_6M_IEEE, etc. */
 	u8 prev_ieee;    /* previous rate in IEEE speeds */
 	u8 next_ieee;    /* next rate in IEEE speeds */
 	u8 prev_rs;      /* previous rate used in rs algo */
@@ -43,6 +42,10 @@ struct iwl_rate_info {
 	u8 next_rs_tgg;  /* next rate used in TGG rs algo */
 };
 
+/*
+ * These serve as indexes into
+ * struct iwl4965_rate_info iwl4965_rates[IWL_RATE_COUNT];
+ */
 enum {
 	IWL_RATE_1M_INDEX = 0,
 	IWL_RATE_2M_INDEX,
@@ -84,6 +87,7 @@ enum {
 #define	IWL_RATE_5M_MASK   (1<<IWL_RATE_5M_INDEX)
 #define	IWL_RATE_11M_MASK  (1<<IWL_RATE_11M_INDEX)
 
+/* 4965 uCode API values for legacy bit rates, both OFDM and CCK */
 enum {
 	IWL_RATE_6M_PLCP  = 13,
 	IWL_RATE_9M_PLCP  = 15,
@@ -100,7 +104,7 @@ enum {
 	IWL_RATE_11M_PLCP = 110,
 };
 
-/* OFDM HT rate plcp */
+/* 4965 uCode API values for OFDM high-throughput (HT) bit rates */
 enum {
 	IWL_RATE_SISO_6M_PLCP = 0,
 	IWL_RATE_SISO_12M_PLCP = 1,
@@ -122,6 +126,7 @@ enum {
 	IWL_RATE_MIMO_INVM_PLCP = IWL_RATE_SISO_INVM_PLCP,
 };
 
+/* MAC header values for bit rates */
 enum {
 	IWL_RATE_6M_IEEE  = 12,
 	IWL_RATE_9M_IEEE  = 18,
@@ -171,116 +176,114 @@ enum {
 #define IWL_MIN_RSSI_VAL                 -100
 #define IWL_MAX_RSSI_VAL                    0
 
-extern const struct iwl_rate_info iwl_rates[IWL_RATE_COUNT];
+/* These values specify how many Tx frame attempts before
+ * searching for a new modulation mode */
+#define IWL_LEGACY_FAILURE_LIMIT	160
+#define IWL_LEGACY_SUCCESS_LIMIT	480
+#define IWL_LEGACY_TABLE_COUNT		160
 
-#define LQ_SIZE		2
+#define IWL_NONE_LEGACY_FAILURE_LIMIT	400
+#define IWL_NONE_LEGACY_SUCCESS_LIMIT	4500
+#define IWL_NONE_LEGACY_TABLE_COUNT	1500
 
-enum iwl_table_type {
+/* Success ratio (ACKed / attempted tx frames) values (perfect is 128 * 100) */
+#define IWL_RS_GOOD_RATIO		12800	/* 100% */
+#define IWL_RATE_SCALE_SWITCH		10880	/*  85% */
+#define IWL_RATE_HIGH_TH		10880	/*  85% */
+#define IWL_RATE_INCREASE_TH            8960	/*  70% */
+#define IWL_RATE_DECREASE_TH		1920	/*  15% */
+
+/* possible actions when in legacy mode */
+#define IWL_LEGACY_SWITCH_ANTENNA	0
+#define IWL_LEGACY_SWITCH_SISO		1
+#define IWL_LEGACY_SWITCH_MIMO	        2
+
+/* possible actions when in siso mode */
+#define IWL_SISO_SWITCH_ANTENNA		0
+#define IWL_SISO_SWITCH_MIMO		1
+#define IWL_SISO_SWITCH_GI		2
+
+/* possible actions when in mimo mode */
+#define IWL_MIMO_SWITCH_ANTENNA_A	0
+#define IWL_MIMO_SWITCH_ANTENNA_B	1
+#define IWL_MIMO_SWITCH_GI		2
+
+#define IWL_ACTION_LIMIT		3	/* # possible actions */
+
+#define LQ_SIZE		2	/* 2 mode tables:  "Active" and "Search" */
+
+extern const struct iwl4965_rate_info iwl4965_rates[IWL_RATE_COUNT];
+
+enum iwl4965_table_type {
 	LQ_NONE,
-	LQ_G,
+	LQ_G,		/* legacy types */
 	LQ_A,
-	LQ_SISO,
+	LQ_SISO,	/* high-throughput types */
 	LQ_MIMO,
 	LQ_MAX,
 };
 
-enum iwl_antenna_type {
+#define is_legacy(tbl) (((tbl) == LQ_G) || ((tbl) == LQ_A))
+#define is_siso(tbl) (((tbl) == LQ_SISO))
+#define is_mimo(tbl) (((tbl) == LQ_MIMO))
+#define is_Ht(tbl) (is_siso(tbl) || is_mimo(tbl))
+#define is_a_band(tbl) (((tbl) == LQ_A))
+#define is_g_and(tbl) (((tbl) == LQ_G))
+
+/* 4965 has 2 antennas/chains for Tx (but 3 for Rx) */
+enum iwl4965_antenna_type {
 	ANT_NONE,
 	ANT_MAIN,
 	ANT_AUX,
 	ANT_BOTH,
 };
 
-static inline int iwl_rate_index_from_plcp(int plcp)
+static inline u8 iwl4965_get_prev_ieee_rate(u8 rate_index)
 {
-	int i = 0;
+	u8 rate = iwl4965_rates[rate_index].prev_ieee;
 
-	if (plcp & RATE_MCS_HT_MSK) {
-		i = (plcp & 0xff);
-
-		if (i >= IWL_RATE_MIMO_6M_PLCP)
-			i = i - IWL_RATE_MIMO_6M_PLCP;
-
-		i += IWL_FIRST_OFDM_RATE;
-		/* skip 9M not supported in ht*/
-		if (i >= IWL_RATE_9M_INDEX)
-			i += 1;
-		if ((i >= IWL_FIRST_OFDM_RATE) &&
-		    (i <= IWL_LAST_OFDM_RATE))
-			return i;
-	} else {
-		for (i = 0; i < ARRAY_SIZE(iwl_rates); i++)
-			if (iwl_rates[i].plcp == (plcp &0xFF))
-				return i;
-	}
-	return -1;
-}
-
-static inline u8 iwl_rate_get_lowest_plcp(int rate_mask)
-{
-	u8 i;
-
-	for (i = IWL_RATE_1M_INDEX; i != IWL_RATE_INVALID;
-	     i = iwl_rates[i].next_ieee) {
-		if (rate_mask & (1 << i))
-			return iwl_rates[i].plcp;
-	}
-
-	return IWL_RATE_INVALID;
-}
-
-static inline u8 iwl_get_prev_ieee_rate(u8 rate_index)
-{
-	u8 rate = iwl_rates[rate_index].prev_ieee;
 	if (rate == IWL_RATE_INVALID)
 		rate = rate_index;
 	return rate;
 }
 
-#if IWL == 4965
+extern int iwl4965_rate_index_from_plcp(int plcp);
+
 /**
- * iwl_fill_rs_info - Fill an output text buffer with the rate representation
+ * iwl4965_fill_rs_info - Fill an output text buffer with the rate representation
  *
  * NOTE:  This is provided as a quick mechanism for a user to visualize
- * the performance of the rate control alogirthm and is not meant to be
+ * the performance of the rate control algorithm and is not meant to be
  * parsed software.
  */
-extern int iwl_fill_rs_info(struct ieee80211_hw *, char *buf, u8 sta_id);
+extern int iwl4965_fill_rs_info(struct ieee80211_hw *, char *buf, u8 sta_id);
 
 /**
- * iwl_rate_scale_init - Initialize the rate scale table based on assoc info
+ * iwl4965_rate_scale_init - Initialize the rate scale table based on assoc info
  *
- * The specific througput table used is based on the type of network
+ * The specific throughput table used is based on the type of network
  * the associated with, including A, B, G, and G w/ TGG protection
  */
-extern void iwl_rate_scale_init(struct ieee80211_hw *hw, s32 sta_id);
+extern void iwl4965_rate_scale_init(struct ieee80211_hw *hw, s32 sta_id);
 
 /**
- * iwl_rate_control_register - Register the rate control algorithm callbacks
+ * iwl4965_rate_control_register - Register the rate control algorithm callbacks
  *
  * Since the rate control algorithm is hardware specific, there is no need
  * or reason to place it as a stand alone module.  The driver can call
- * iwl_rate_control_register in order to register the rate control callbacks
+ * iwl4965_rate_control_register in order to register the rate control callbacks
  * with the mac80211 subsystem.  This should be performed prior to calling
  * ieee80211_register_hw
  *
  */
-extern void iwl_rate_control_register(void);
+extern void iwl4965_rate_control_register(struct ieee80211_hw *hw);
 
 /**
- * iwl_rate_control_unregister - Unregister the rate control callbacks
+ * iwl4965_rate_control_unregister - Unregister the rate control callbacks
  *
  * This should be called after calling ieee80211_unregister_hw, but before
  * the driver is unloaded.
  */
-extern void iwl_rate_control_unregister(void);
-#else
-static inline int iwl_fill_rs_info(struct ieee80211_hw *hw, char *buf,
-				   u8 sta_id)
-{ return -ENOTSUPP; }
-static inline void iwl_rate_scale_init(struct ieee80211_hw *hw, s32 sta_id) {}
-static inline void iwl_rate_control_register(void) {}
-static inline void iwl_rate_control_unregister(void) {}
-#endif /* IWL == 4965 */
+extern void iwl4965_rate_control_unregister(struct ieee80211_hw *hw);
 
 #endif

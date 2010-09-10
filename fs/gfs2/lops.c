@@ -1,6 +1,6 @@
 /*
  * Copyright (C) Sistina Software, Inc.  1997-2003 All rights reserved.
- * Copyright (C) 2004-2006 Red Hat, Inc.  All rights reserved.
+ * Copyright (C) 2004-2008 Red Hat, Inc.  All rights reserved.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
@@ -191,21 +191,6 @@ static void buf_lo_add(struct gfs2_sbd *sdp, struct gfs2_log_element *le)
 out:
 	gfs2_log_unlock(sdp);
 	unlock_buffer(bd->bd_bh);
-}
-
-static void buf_lo_incore_commit(struct gfs2_sbd *sdp, struct gfs2_trans *tr)
-{
-	struct list_head *head = &tr->tr_list_buf;
-	struct gfs2_bufdata *bd;
-
-	gfs2_log_lock(sdp);
-	while (!list_empty(head)) {
-		bd = list_entry(head->next, struct gfs2_bufdata, bd_list_tr);
-		list_del_init(&bd->bd_list_tr);
-		tr->tr_num_buf--;
-	}
-	gfs2_log_unlock(sdp);
-	gfs2_assert_warn(sdp, !tr->tr_num_buf);
 }
 
 static void buf_lo_before_commit(struct gfs2_sbd *sdp)
@@ -460,8 +445,10 @@ static int revoke_lo_scan_elements(struct gfs2_jdesc *jd, unsigned int start,
 			blkno = be64_to_cpu(*(__be64 *)(bh->b_data + offset));
 
 			error = gfs2_revoke_add(sdp, blkno, start);
-			if (error < 0)
+			if (error < 0) {
+				brelse(bh);
 				return error;
+			}
 			else if (error)
 				sdp->sd_found_revokes++;
 
@@ -556,17 +543,20 @@ static void databuf_lo_add(struct gfs2_sbd *sdp, struct gfs2_log_element *le)
 
 	lock_buffer(bd->bd_bh);
 	gfs2_log_lock(sdp);
-	if (!list_empty(&bd->bd_list_tr))
-		goto out;
-	tr->tr_touched = 1;
-	if (gfs2_is_jdata(ip)) {
-		tr->tr_num_buf++;
-		list_add(&bd->bd_list_tr, &tr->tr_list_buf);
+	if (tr) {
+		if (!list_empty(&bd->bd_list_tr))
+			goto out;
+		tr->tr_touched = 1;
+		if (gfs2_is_jdata(ip)) {
+			tr->tr_num_buf++;
+			list_add(&bd->bd_list_tr, &tr->tr_list_buf);
+		}
 	}
 	if (!list_empty(&le->le_list))
 		goto out;
 
-	__glock_lo_add(sdp, &bd->bd_gl->gl_le);
+	if (tr)
+		__glock_lo_add(sdp, &bd->bd_gl->gl_le);
 	if (gfs2_is_jdata(ip)) {
 		gfs2_pin(sdp, bd->bd_bh);
 		tr->tr_num_databuf_new++;
@@ -781,7 +771,6 @@ const struct gfs2_log_operations gfs2_glock_lops = {
 
 const struct gfs2_log_operations gfs2_buf_lops = {
 	.lo_add = buf_lo_add,
-	.lo_incore_commit = buf_lo_incore_commit,
 	.lo_before_commit = buf_lo_before_commit,
 	.lo_after_commit = buf_lo_after_commit,
 	.lo_before_scan = buf_lo_before_scan,
@@ -807,7 +796,6 @@ const struct gfs2_log_operations gfs2_rg_lops = {
 
 const struct gfs2_log_operations gfs2_databuf_lops = {
 	.lo_add = databuf_lo_add,
-	.lo_incore_commit = buf_lo_incore_commit,
 	.lo_before_commit = databuf_lo_before_commit,
 	.lo_after_commit = databuf_lo_after_commit,
 	.lo_scan_elements = databuf_lo_scan_elements,

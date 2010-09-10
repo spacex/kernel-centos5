@@ -3,8 +3,6 @@
 
 #include <linux/if_vlan.h>
 
-typedef unsigned int bool;
-
 #define ETH_FCS_LEN               4
 
 static inline struct net_device *vlan_group_get_device(struct vlan_group *vg,
@@ -20,3 +18,4 @@ static inline void vlan_group_set_device(struct vlan_group *vg, int vlan_id,
 }
 
 #endif 
+

@@ -47,14 +47,6 @@
 #define CPIA2_MIN_VER   0
 #define CPIA2_PATCH_VER	0
 
-/***
- * Image defines
- ***/
-#ifndef true
-#define true 1
-#define false 0
-#endif
-
 /*  Misc constants */
 #define ALLOW_CORRUPT 0		/* Causes collater to discard checksum */
 

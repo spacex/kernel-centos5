@@ -94,7 +94,7 @@ static inline void add_timer(struct timer_list *timer)
 #define del_singleshot_timer_sync(t) del_timer_sync(t)
 
 extern void init_timers(void);
-extern void run_local_timers(void);
+extern void run_local_timers(struct pt_regs *regs);
 struct hrtimer;
 extern int it_real_fn(struct hrtimer *);
 

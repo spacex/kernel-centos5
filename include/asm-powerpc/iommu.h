@@ -111,9 +111,12 @@ extern void iommu_init_early_dart(void);
 #ifdef CONFIG_PCI
 extern void pci_iommu_init(void);
 extern void pci_direct_iommu_init(void);
+extern unsigned long pci_direct_dma_offset;
 #else
 static inline void pci_iommu_init(void) { }
 #endif
+
+extern void ofdev_iommu_init(void);
 
 extern void alloc_dart_table(void);
 

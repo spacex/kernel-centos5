@@ -217,8 +217,14 @@ static int privcmd_ioctl(struct inode *inode, struct file *file,
 }
 
 #ifndef HAVE_ARCH_PRIVCMD_MMAP
+unsigned long privcmd_nopfn(struct vm_area_struct *vma,
+				unsigned long address)
+{
+	return NOPFN_SIGBUS;
+}
+
 static struct vm_operations_struct privcmd_vm_ops = {
-	.nopage = NULL
+	.nopfn = privcmd_nopfn
 };
 
 static int privcmd_mmap(struct file * file, struct vm_area_struct * vma)

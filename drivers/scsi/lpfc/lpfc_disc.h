@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2004-2007 Emulex.  All rights reserved.           *
+ * Copyright (C) 2004-2008 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -36,21 +36,24 @@ enum lpfc_work_type {
 	LPFC_EVT_WARM_START,
 	LPFC_EVT_KILL,
 	LPFC_EVT_ELS_RETRY,
+	LPFC_EVT_DEV_LOSS_DELAY,
+	LPFC_EVT_DEV_LOSS,
+	LPFC_EVT_REAUTH,
 };
 
 /* structure used to queue event to the discovery tasklet */
 struct lpfc_work_evt {
 	struct list_head      evt_listp;
-	void                * evt_arg1;
-	void                * evt_arg2;
+	void                 *evt_arg1;
+	void                 *evt_arg2;
 	enum lpfc_work_type   evt;
 };
 
 
 struct lpfc_nodelist {
 	struct list_head nlp_listp;
-	struct lpfc_name nlp_portname;		/* port name */
-	struct lpfc_name nlp_nodename;		/* node name */
+	struct lpfc_name nlp_portname;
+	struct lpfc_name nlp_nodename;
 	uint32_t         nlp_flag;		/* entry  flags */
 	uint32_t         nlp_DID;		/* FC D_ID of entry */
 	uint32_t         nlp_last_elscmd;	/* Last ELS cmd sent */
@@ -69,59 +72,76 @@ struct lpfc_nodelist {
 	uint16_t	nlp_maxframe;		/* Max RCV frame size */
 	uint8_t		nlp_class_sup;		/* Supported Classes */
 	uint8_t         nlp_retry;		/* used for ELS retries */
-	uint8_t         nlp_disc_refcnt;	/* used for DSM */
 	uint8_t         nlp_fcp_info;	        /* class info, bits 0-3 */
 #define NLP_FCP_2_DEVICE   0x10			/* FCP-2 device */
 
+	uint16_t        nlp_usg_map;	/* ndlp management usage bitmap */
+#define NLP_USG_NODE_ACT_BIT	0x1	/* Indicate ndlp is actively used */
+#define NLP_USG_IACT_REQ_BIT	0x2	/* Request to inactivate ndlp */
+#define NLP_USG_FREE_REQ_BIT	0x4	/* Request to invoke ndlp memory free */
+#define NLP_USG_FREE_ACK_BIT	0x8	/* Indicate ndlp memory free invoked */
+
 	struct timer_list   nlp_delayfunc;	/* Used for delayed ELS cmds */
+	struct timer_list   nlp_reauth_tmr;	/* Used for re-authentication */
+	struct timer_list   nlp_initiator_tmr;	/* Used with dev_loss */
 	struct fc_rport *rport;			/* Corresponding FC transport
 						   port structure */
-	struct lpfc_hba      *nlp_phba;
+	struct lpfc_vport *vport;
 	struct lpfc_work_evt els_retry_evt;
+	struct lpfc_work_evt els_reauth_evt;
+	struct lpfc_work_evt dev_loss_evt;
 	unsigned long last_ramp_up_time;        /* jiffy of last ramp up */
 	unsigned long last_q_full_time;		/* jiffy of last queue full */
+	struct kref     kref;
+	unsigned long unreg_time;		/* Last time ndlp was unreged */
 };
 
 /* Defines for nlp_flag (uint32) */
-#define NLP_NO_LIST        0x0		/* Indicates immediately free node */
-#define NLP_UNUSED_LIST    0x1		/* Flg to indicate node will be freed */
-#define NLP_PLOGI_LIST     0x2		/* Flg to indicate sent PLOGI */
-#define NLP_ADISC_LIST     0x3		/* Flg to indicate sent ADISC */
-#define NLP_REGLOGIN_LIST  0x4		/* Flg to indicate sent REG_LOGIN */
-#define NLP_PRLI_LIST      0x5		/* Flg to indicate sent PRLI */
-#define NLP_UNMAPPED_LIST  0x6		/* Node is now unmapped */
-#define NLP_MAPPED_LIST    0x7		/* Node is now mapped */
-#define NLP_NPR_LIST       0x8		/* Node is in NPort Recovery state */
-#define NLP_JUST_DQ        0x9		/* just deque ndlp in lpfc_nlp_list */
-#define NLP_LIST_MASK      0xf		/* mask to see what list node is on */
-#define NLP_PLOGI_SND      0x20		/* sent PLOGI request for this entry */
-#define NLP_PRLI_SND       0x40		/* sent PRLI request for this entry */
-#define NLP_ADISC_SND      0x80		/* sent ADISC request for this entry */
-#define NLP_LOGO_SND       0x100	/* sent LOGO request for this entry */
-#define NLP_RNID_SND       0x400	/* sent RNID request for this entry */
-#define NLP_ELS_SND_MASK   0x7e0	/* sent ELS request for this entry */
-#define NLP_DELAY_TMO      0x20000	/* delay timeout is running for node */
-#define NLP_NPR_2B_DISC    0x40000	/* node is included in num_disc_nodes */
-#define NLP_RCV_PLOGI      0x80000	/* Rcv'ed PLOGI from remote system */
-#define NLP_LOGO_ACC       0x100000	/* Process LOGO after ACC completes */
-#define NLP_TGT_NO_SCSIID  0x200000	/* good PRLI but no binding for scsid */
-#define NLP_ACC_REGLOGIN   0x1000000	/* Issue Reg Login after successful
+#define NLP_PLOGI_SND      0x00000020	/* sent PLOGI request for this entry */
+#define NLP_PRLI_SND       0x00000040	/* sent PRLI request for this entry */
+#define NLP_ADISC_SND      0x00000080	/* sent ADISC request for this entry */
+#define NLP_LOGO_SND       0x00000100	/* sent LOGO request for this entry */
+#define NLP_RNID_SND       0x00000400	/* sent RNID request for this entry */
+#define NLP_ELS_SND_MASK   0x000007e0	/* sent ELS request for this entry */
+#define NLP_DEFER_RM       0x00010000	/* Remove this ndlp if no longer used */
+#define NLP_DELAY_TMO      0x00020000	/* delay timeout is running for node */
+#define NLP_NPR_2B_DISC    0x00040000	/* node is included in num_disc_nodes */
+#define NLP_RCV_PLOGI      0x00080000	/* Rcv'ed PLOGI from remote system */
+#define NLP_LOGO_ACC       0x00100000	/* Process LOGO after ACC completes */
+#define NLP_TGT_NO_SCSIID  0x00200000	/* good PRLI but no binding for scsid */
+#define NLP_ACC_REGLOGIN   0x01000000	/* Issue Reg Login after successful
 					   ACC */
-#define NLP_NPR_ADISC      0x2000000	/* Issue ADISC when dq'ed from
+#define NLP_NPR_ADISC      0x02000000	/* Issue ADISC when dq'ed from
 					   NPR list */
-#define NLP_DELAY_REMOVE   0x4000000	/* Defer removal till end of DSM */
-#define NLP_NODEV_REMOVE   0x8000000	/* Defer removal till discovery ends */
+#define NLP_RM_DFLT_RPI    0x04000000	/* need to remove leftover dflt RPI */
+#define NLP_NODEV_REMOVE   0x08000000	/* Defer removal till discovery ends */
+#define NLP_TARGET_REMOVE  0x10000000   /* Target remove in process */
+#define NLP_SC_REQ         0x20000000	/* Target requires authentication */
 
-/* Defines for list searchs */
-#define NLP_SEARCH_MAPPED    0x1	/* search mapped */
-#define NLP_SEARCH_UNMAPPED  0x2	/* search unmapped */
-#define NLP_SEARCH_PLOGI     0x4	/* search plogi */
-#define NLP_SEARCH_ADISC     0x8	/* search adisc */
-#define NLP_SEARCH_REGLOGIN  0x10	/* search reglogin */
-#define NLP_SEARCH_PRLI      0x20	/* search prli */
-#define NLP_SEARCH_NPR       0x40	/* search npr */
-#define NLP_SEARCH_UNUSED    0x80	/* search mapped */
-#define NLP_SEARCH_ALL       0xff	/* search all lists */
+/* ndlp usage management macros */
+#define NLP_CHK_NODE_ACT(ndlp)		(((ndlp)->nlp_usg_map \
+						& NLP_USG_NODE_ACT_BIT) \
+					&& \
+					!((ndlp)->nlp_usg_map \
+						& NLP_USG_FREE_ACK_BIT))
+#define NLP_SET_NODE_ACT(ndlp)		((ndlp)->nlp_usg_map \
+						|= NLP_USG_NODE_ACT_BIT)
+#define NLP_INT_NODE_ACT(ndlp)		((ndlp)->nlp_usg_map \
+						= NLP_USG_NODE_ACT_BIT)
+#define NLP_CLR_NODE_ACT(ndlp)		((ndlp)->nlp_usg_map \
+						&= ~NLP_USG_NODE_ACT_BIT)
+#define NLP_CHK_IACT_REQ(ndlp)          ((ndlp)->nlp_usg_map \
+						& NLP_USG_IACT_REQ_BIT)
+#define NLP_SET_IACT_REQ(ndlp)          ((ndlp)->nlp_usg_map \
+						|= NLP_USG_IACT_REQ_BIT)
+#define NLP_CHK_FREE_REQ(ndlp)		((ndlp)->nlp_usg_map \
+						& NLP_USG_FREE_REQ_BIT)
+#define NLP_SET_FREE_REQ(ndlp)		((ndlp)->nlp_usg_map \
+						|= NLP_USG_FREE_REQ_BIT)
+#define NLP_CHK_FREE_ACK(ndlp)		((ndlp)->nlp_usg_map \
+						& NLP_USG_FREE_ACK_BIT)
+#define NLP_SET_FREE_ACK(ndlp)		((ndlp)->nlp_usg_map \
+						|= NLP_USG_FREE_ACK_BIT)
 
 /* There are 4 different double linked lists nodelist entries can reside on.
  * The Port Login (PLOGI) list and Address Discovery (ADISC) list are used

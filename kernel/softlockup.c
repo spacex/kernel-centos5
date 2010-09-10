@@ -13,6 +13,7 @@
 #include <linux/kthread.h>
 #include <linux/notifier.h>
 #include <linux/module.h>
+#include <linux/sched.h>
 
 static DEFINE_SPINLOCK(print_lock);
 
@@ -21,6 +22,7 @@ static DEFINE_PER_CPU(unsigned long, print_timestamp);
 static DEFINE_PER_CPU(struct task_struct *, watchdog_task);
 
 static int did_panic = 0;
+int softlockup_thresh = 10;
 
 static int
 softlock_panic(struct notifier_block *this, unsigned long event, void *ptr)
@@ -67,37 +69,48 @@ EXPORT_SYMBOL(touch_all_softlockup_watchdogs);
  * This callback runs from the timer interrupt, and checks
  * whether the watchdog thread has hung or not:
  */
-void softlockup_tick(void)
+void softlockup_tick(struct pt_regs *regs)
 {
 	int this_cpu = smp_processor_id();
 	unsigned long touch_timestamp = per_cpu(touch_timestamp, this_cpu);
+	unsigned long print_timestamp;
+	unsigned long now;
 
-	/* prevent double reports: */
-	if (per_cpu(print_timestamp, this_cpu) == touch_timestamp ||
-		did_panic ||
-			!per_cpu(watchdog_task, this_cpu))
-		return;
-
-	/* do not print during early bootup: */
-	if (unlikely(system_state != SYSTEM_RUNNING)) {
+	if (touch_timestamp == 0) {
 		touch_softlockup_watchdog();
 		return;
 	}
 
+	print_timestamp = per_cpu(print_timestamp, this_cpu);
+	/* report at most once a second */
+	if (time_after_eq(print_timestamp, touch_timestamp) &&
+	    time_before(print_timestamp, touch_timestamp + HZ) ||
+ 	    did_panic || !per_cpu(watchdog_task, this_cpu)) {
+		return;
+	}
+
+	now = jiffies;
+
 	/* Wake up the high-prio watchdog task every second: */
-	if (time_after(jiffies, touch_timestamp + HZ))
+	if (time_after(now, touch_timestamp + HZ))
 		wake_up_process(per_cpu(watchdog_task, this_cpu));
 
 	/* Warn about unreasonable 10+ seconds delays: */
-	if (time_after(jiffies, touch_timestamp + 10*HZ)) {
-		per_cpu(print_timestamp, this_cpu) = touch_timestamp;
+	if (time_before(now, touch_timestamp + softlockup_thresh*HZ))
+		return;
 
-		spin_lock(&print_lock);
-		printk(KERN_ERR "BUG: soft lockup detected on CPU#%d!\n",
-			this_cpu);
+	per_cpu(print_timestamp, this_cpu) = touch_timestamp;
+
+	spin_lock(&print_lock);
+	printk(KERN_ERR "BUG: soft lockup - CPU#%d stuck for %lus! [%s:%d]\n",
+	       this_cpu, (now - touch_timestamp)/HZ,
+	       current->comm, current->pid);
+	if (regs)
+		show_regs(regs);
+	else
 		dump_stack();
-		spin_unlock(&print_lock);
-	}
+	spin_unlock(&print_lock);
+
 }
 
 /*

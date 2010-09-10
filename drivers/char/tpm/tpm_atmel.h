@@ -4,7 +4,7 @@
  * Authors:
  * Kylene Hall <kjhall@us.ibm.com>
  *
- * Maintained by: <tpmdd_devel@lists.sourceforge.net>
+ * Maintained by: <tpmdd-devel@lists.sourceforge.net>
  *
  * Device driver for TCG/TCPA TPM (trusted platform module).
  * Specifications at www.trustedcomputinggroup.org
@@ -23,6 +23,9 @@
  */
 
 #ifdef CONFIG_PPC64
+
+#include <asm/prom.h>
+
 #define atmel_getb(chip, offset) readb(chip->vendor->iobase + offset);
 #define atmel_putb(val, chip, offset) writeb(val, chip->vendor->iobase + offset)
 #define atmel_request_region request_mem_region

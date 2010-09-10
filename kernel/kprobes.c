@@ -649,6 +649,18 @@ int __kprobes register_kretprobe(struct kretprobe *rp)
 	int ret = 0;
 	struct kretprobe_instance *inst;
 	int i;
+	void *addr = rp->kp.addr;
+
+	if (kretprobe_blacklist_size) {
+		if (addr == NULL)
+			kprobe_lookup_name(rp->kp.symbol_name, addr);
+		addr += rp->kp.offset;
+
+		for (i = 0; kretprobe_blacklist[i].name != NULL; i++) {
+			if (kretprobe_blacklist[i].addr == addr)
+				return -EINVAL;
+		}
+	}
 
 	rp->kp.pre_handler = pre_handler_kretprobe;
 	rp->kp.post_handler = NULL;
@@ -718,6 +730,18 @@ static int __init init_kprobes(void)
 		INIT_HLIST_HEAD(&kprobe_table[i]);
 		INIT_HLIST_HEAD(&kretprobe_inst_table[i]);
 	}
+
+	if (kretprobe_blacklist_size) {
+		/* lookup the function address from its name */
+		for (i = 0; kretprobe_blacklist[i].name != NULL; i++) {
+			kprobe_lookup_name(kretprobe_blacklist[i].name,
+					   kretprobe_blacklist[i].addr);
+			if (!kretprobe_blacklist[i].addr)
+				printk("kretprobe: lookup failed: %s\n",
+					kretprobe_blacklist[i].name);
+		}
+	}
+
 	atomic_set(&kprobe_count, 0);
 
 	err = arch_init_kprobes();

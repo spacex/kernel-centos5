@@ -413,6 +413,11 @@ extern unsigned int   skb_find_text(struct sk_buff *skb, unsigned int from,
 				    unsigned int to, struct ts_config *config,
 				    struct ts_state *state);
 
+static inline unsigned char *skb_end_pointer(const struct sk_buff *skb)
+{
+	return skb->end;
+}
+
 /* Internal */
 #define skb_shinfo(SKB)		((struct skb_shared_info *)((SKB)->end))
 
@@ -826,6 +831,21 @@ static inline void skb_fill_page_desc(struct sk_buff *skb, int i,
 #define SKB_FRAG_ASSERT(skb) 	BUG_ON(skb_shinfo(skb)->frag_list)
 #define SKB_LINEAR_ASSERT(skb)  BUG_ON(skb_is_nonlinear(skb))
 
+static inline unsigned char *skb_tail_pointer(const struct sk_buff *skb)
+{
+	return skb->tail;
+}
+
+static inline void skb_reset_tail_pointer(struct sk_buff *skb)
+{
+	skb->tail = skb->data;
+}
+
+static inline void skb_set_tail_pointer(struct sk_buff *skb, const int offset)
+{
+	skb->tail = skb->data + offset;
+}
+
 /*
  *	Add data to an sk_buff
  */
@@ -964,6 +984,72 @@ static inline void skb_reserve(struct sk_buff *skb, int len)
 {
 	skb->data += len;
 	skb->tail += len;
+}
+
+static inline unsigned char *skb_transport_header(const struct sk_buff *skb)
+{
+	return skb->h.raw;
+}
+
+static inline void skb_reset_transport_header(struct sk_buff *skb)
+{
+	skb->h.raw = skb->data;
+}
+
+static inline void skb_set_transport_header(struct sk_buff *skb,
+					    const int offset)
+{
+	skb->h.raw = skb->data + offset;
+}
+
+static inline int skb_transport_offset(const struct sk_buff *skb)
+{
+	return skb->h.raw - skb->data;
+}
+
+static inline unsigned char *skb_network_header(const struct sk_buff *skb)
+{
+	return skb->nh.raw;
+}
+
+static inline void skb_reset_network_header(struct sk_buff *skb)
+{
+	skb->nh.raw = skb->data;
+}
+
+static inline void skb_set_network_header(struct sk_buff *skb, const int offset)
+{
+	skb->nh.raw = skb->data + offset;
+}
+
+static inline int skb_network_offset(const struct sk_buff *skb)
+{
+	return skb->nh.raw - skb->data;
+}
+
+static inline u32 skb_network_header_len(const struct sk_buff *skb)
+{
+	return skb->h.raw - skb->nh.raw;
+}
+
+static inline unsigned char *skb_mac_header(const struct sk_buff *skb)
+{
+	return skb->mac.raw;
+}
+
+static inline int skb_mac_header_was_set(const struct sk_buff *skb)
+{
+	return skb->mac.raw != NULL;
+}
+
+static inline void skb_reset_mac_header(struct sk_buff *skb)
+{
+	skb->mac.raw = skb->data;
+}
+
+static inline void skb_set_mac_header(struct sk_buff *skb, const int offset)
+{
+	skb->mac.raw = skb->data + offset;
 }
 
 /*

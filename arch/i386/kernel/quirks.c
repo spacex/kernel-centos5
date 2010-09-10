@@ -44,7 +44,30 @@ static void __devinit quirk_intel_irqbalance(struct pci_dev *dev)
 	if (!(config & 0x2))
 		pci_write_config_byte(dev, 0xf4, config);
 }
+
+static void __devinit fix_hypertransport_config(struct pci_dev *dev)
+{
+	u32 htcfg;
+	/*
+	 * we found a hypertransport bus
+	 * make sure that we are broadcasting
+	 * interrupts to all cpus on the ht bus
+	 * if we're using extended apic ids
+	 */
+	pci_read_config_dword(dev, 0x68, &htcfg);
+	if (htcfg & (1 << 18)) {
+		printk(KERN_INFO "Detected use of extended apic ids on hypertransport bus\n");
+		if ((htcfg & (1 << 17)) == 0) {
+			printk(KERN_INFO "Enabling hypertransport extended apic interrupt broadcast\n");
+			printk(KERN_INFO "Note this is a bios bug, please contact your vendor\n");
+			htcfg |= (1 << 17);
+			pci_write_config_dword(dev, 0x68, htcfg);
+		}
+	}
+}
+
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL,	PCI_DEVICE_ID_INTEL_E7320_MCH,	quirk_intel_irqbalance);
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL,	PCI_DEVICE_ID_INTEL_E7525_MCH,	quirk_intel_irqbalance);
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL,	PCI_DEVICE_ID_INTEL_E7520_MCH,	quirk_intel_irqbalance);
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_AMD,	PCI_DEVICE_ID_AMD_K8_NB, fix_hypertransport_config);
 #endif

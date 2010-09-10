@@ -49,6 +49,7 @@ typedef u16 kprobe_opcode_t;
 #define JPROBE_ENTRY(pentry) (kprobe_opcode_t *)((func_descr_t *)pentry)
 
 #define ARCH_SUPPORTS_KRETPROBES
+#define kretprobe_blacklist_size 0
 #define ARCH_INACTIVE_KPROBE_COUNT 0
 #define flush_insn_slot(p)	do { } while (0)
 

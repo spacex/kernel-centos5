@@ -159,7 +159,7 @@ xencomm_alloc(gfp_t gfp_mask)
 
 	desc = (struct xencomm_desc *)__get_free_page(gfp_mask);
 	if (desc == NULL)
-		panic("%s: page allocation failed\n", __func__);
+		return NULL;
 
 	desc->nr_addrs = (PAGE_SIZE - sizeof(struct xencomm_desc)) /
 	                 sizeof(*desc->address);

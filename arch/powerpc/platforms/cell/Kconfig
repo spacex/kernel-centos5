@@ -25,6 +25,30 @@ config CBE_RAS
 	bool "RAS features for bare metal Cell BE"
 	default y
 
+config CBE_THERM
+	tristate "CBE thermal support"
+	default m
+	depends on CBE_RAS
+
+config CBE_CPUFREQ
+        tristate "CBE frequency scaling"
+        depends on CBE_RAS && CPU_FREQ
+        default m
+        help
+          This adds the cpufreq driver for Cell BE processors.
+          For details, take a look at <file:Documentation/cpu-freq/>.
+          If you don't have such processor, say N
+
+config CBE_CPUFREQ_PMI
+        tristate "CBE frequency scaling using PMI interface"
+        depends on CBE_CPUFREQ && PPC_PMI && EXPERIMENTAL
+        default n
+        help
+          Select this, if you want to use the PMI interface
+          to switch frequencies. Using PMI, the
+          processor will not only be able to run at lower speed,
+          but also at lower core voltage.
+
 config CBE_AXON_UTL
 	bool "CBE/Axon PCIe Upper Transaction layer error handling"
 	default n

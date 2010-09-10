@@ -1,6 +1,7 @@
 #ifndef S390_CIO_IOASM_H
 #define S390_CIO_IOASM_H
 
+#include <asm/chpid.h>
 #include "schid.h"
 
 /*
@@ -246,7 +247,7 @@ static inline int iac( void)
 	return ccode;
 }
 
-static inline int rchp(int chpid)
+static inline int rchp(struct chp_id chpid)
 {
 	int ccode;
 

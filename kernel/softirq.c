@@ -571,11 +571,10 @@ static int __cpuinit cpu_callback(struct notifier_block *nfb,
 {
 	int hotcpu = (unsigned long)hcpu;
 	struct task_struct *p;
+	struct sched_param param = { .sched_priority = MAX_RT_PRIO-1 };
 
 	switch (action) {
 	case CPU_UP_PREPARE:
-		BUG_ON(per_cpu(tasklet_vec, hotcpu).list);
-		BUG_ON(per_cpu(tasklet_hi_vec, hotcpu).list);
 		p = kthread_create(ksoftirqd, hcpu, "ksoftirqd/%d", hotcpu);
 		if (IS_ERR(p)) {
 			printk("ksoftirqd for %i failed\n", hotcpu);
@@ -597,6 +596,7 @@ static int __cpuinit cpu_callback(struct notifier_block *nfb,
 	case CPU_DEAD:
 		p = per_cpu(ksoftirqd, hotcpu);
 		per_cpu(ksoftirqd, hotcpu) = NULL;
+		sched_setscheduler(p, SCHED_FIFO, &param);
 		kthread_stop(p);
 		takeover_tasklets(hotcpu);
 		break;

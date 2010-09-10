@@ -73,6 +73,29 @@ static int verify_one_alg(struct rtattr **xfrma, enum xfrm_attr_type_t type)
 	return 0;
 }
 
+static int verify_aead(struct rtattr **xfrma)
+{
+	struct rtattr *rt = xfrma[XFRMA_ALG_AEAD - 1];
+	struct xfrm_algo_aead *algp;
+	int len;
+
+	if (!rt)
+		return 0;
+
+	len = (rt->rta_len - sizeof(*rt)) - sizeof(*algp);
+	if (len < 0)
+		return -EINVAL;
+
+	algp = RTA_DATA(rt);
+
+	len -= (algp->alg_key_len + 7U) / 8; 
+	if (len < 0)
+		return -EINVAL;
+
+	algp->alg_name[CRYPTO_MAX_ALG_NAME - 1] = '\0';
+	return 0;
+}
+
 static int verify_encap_tmpl(struct rtattr **xfrma)
 {
 	struct rtattr *rt = xfrma[XFRMA_ENCAP - 1];
@@ -138,20 +161,28 @@ static int verify_newsa_info(struct xfrm_usersa_info *p,
 	switch (p->id.proto) {
 	case IPPROTO_AH:
 		if (!xfrma[XFRMA_ALG_AUTH-1]	||
+		    xfrma[XFRMA_ALG_AEAD-1]	||
 		    xfrma[XFRMA_ALG_CRYPT-1]	||
 		    xfrma[XFRMA_ALG_COMP-1])
 			goto out;
 		break;
 
 	case IPPROTO_ESP:
-		if ((!xfrma[XFRMA_ALG_AUTH-1] &&
-		     !xfrma[XFRMA_ALG_CRYPT-1])	||
-		    xfrma[XFRMA_ALG_COMP-1])
+		if (xfrma[XFRMA_ALG_COMP-1])
+			goto out;
+		if (!xfrma[XFRMA_ALG_AUTH-1] &&
+		    !xfrma[XFRMA_ALG_CRYPT-1] &&
+		    !xfrma[XFRMA_ALG_AEAD-1])
+			goto out;
+		if ((xfrma[XFRMA_ALG_AUTH-1] ||
+		     xfrma[XFRMA_ALG_CRYPT-1]) &&
+		    xfrma[XFRMA_ALG_AEAD-1])
 			goto out;
 		break;
 
 	case IPPROTO_COMP:
 		if (!xfrma[XFRMA_ALG_COMP-1]	||
+		    xfrma[XFRMA_ALG_AEAD-1]	||
 		    xfrma[XFRMA_ALG_AUTH-1]	||
 		    xfrma[XFRMA_ALG_CRYPT-1])
 			goto out;
@@ -161,6 +192,8 @@ static int verify_newsa_info(struct xfrm_usersa_info *p,
 		goto out;
 	};
 
+	if ((err = verify_aead(xfrma)))
+		goto out;
 	if ((err = verify_one_alg(xfrma, XFRMA_ALG_AUTH)))
 		goto out;
 	if ((err = verify_one_alg(xfrma, XFRMA_ALG_CRYPT)))
@@ -188,6 +221,34 @@ out:
 	return err;
 }
 
+static int attach_aead(struct xfrm_algo_aead **algpp, u8 *props,
+		       struct rtattr *rta)
+{
+	struct xfrm_algo_aead *p, *ualg;
+	struct xfrm_algo_desc *algo;
+	int len;
+
+	if (!rta)
+		return 0;
+
+	ualg = RTA_DATA(rta);
+
+	algo = xfrm_aead_get_byname(ualg->alg_name, ualg->alg_icv_len, 1);
+	if (!algo)
+		return -ENOSYS;
+	*props = algo->desc.sadb_alg_id;
+
+	len = sizeof(*ualg) + (ualg->alg_key_len + 7U) / 8;
+	p = kmalloc(len , GFP_KERNEL);
+	if (!p)
+		return -ENOMEM;
+
+	memcpy(p, ualg, len);
+	strcpy(p->alg_name, algo->name);
+	*algpp = p;
+	return 0;
+}
+
 static int attach_one_algo(struct xfrm_algo **algpp, u8 *props,
 			   struct xfrm_algo_desc *(*get_byname)(char *, int),
 			   struct rtattr *u_arg)
@@ -213,6 +274,7 @@ static int attach_one_algo(struct xfrm_algo **algpp, u8 *props,
 		return -ENOMEM;
 
 	memcpy(p, ualg, len);
+	strcpy(p->alg_name, algo->name);
 	*algpp = p;
 	return 0;
 }
@@ -333,6 +395,9 @@ static struct xfrm_state *xfrm_state_construct(struct xfrm_usersa_info *p,
 
 	copy_from_user_state(x, p);
 
+	if ((err = attach_aead((struct xfrm_algo_aead **)&x->ealg,
+			       &x->props.ealgo, xfrma[XFRMA_ALG_AEAD - 1])))
+		goto error;
 	if ((err = attach_one_algo(&x->aalg, &x->props.aalgo,
 				   xfrm_aalg_get_byname,
 				   xfrma[XFRMA_ALG_AUTH-1])))
@@ -503,9 +568,18 @@ static int dump_one_state(struct xfrm_state *x, int count, void *ptr)
 	if (x->aalg)
 		RTA_PUT(skb, XFRMA_ALG_AUTH,
 			sizeof(*(x->aalg))+(x->aalg->alg_key_len+7)/8, x->aalg);
-	if (x->ealg)
-		RTA_PUT(skb, XFRMA_ALG_CRYPT,
-			sizeof(*(x->ealg))+(x->ealg->alg_key_len+7)/8, x->ealg);
+	if (x->ealg) {
+		if (xfrm_aead_get_byname(x->ealg->alg_name, 0, 0)) {
+			struct xfrm_algo_aead *aead = (void *)x->ealg;
+
+			RTA_PUT(skb, XFRMA_ALG_AEAD,
+				sizeof(*aead) + (aead->alg_key_len + 7) / 8,
+				aead);
+		} else 
+			RTA_PUT(skb, XFRMA_ALG_CRYPT,
+				sizeof(*x->ealg) +
+				(x->ealg->alg_key_len + 7) / 8, x->ealg);
+	}
 	if (x->calg)
 		RTA_PUT(skb, XFRMA_ALG_COMP, sizeof(*(x->calg)), x->calg);
 
@@ -1633,8 +1707,16 @@ static int inline xfrm_sa_len(struct xfrm_state *x)
 	int l = 0;
 	if (x->aalg)
 		l += RTA_SPACE(sizeof(*x->aalg) + (x->aalg->alg_key_len+7)/8);
-	if (x->ealg)
-		l += RTA_SPACE(sizeof(*x->ealg) + (x->ealg->alg_key_len+7)/8);
+	if (x->ealg) {
+		if (xfrm_aead_get_byname(x->ealg->alg_name, 0, 0)) {
+			struct xfrm_algo_aead *aead = (void *)x->ealg;
+
+			l += RTA_SPACE(sizeof(*aead) +
+			     (aead->alg_key_len + 7) / 8);
+		} else
+			l += RTA_SPACE(sizeof(*x->ealg) +
+			     (x->ealg->alg_key_len + 7) / 8);
+	}
 	if (x->calg)
 		l += RTA_SPACE(sizeof(*x->calg));
 	if (x->encap)
@@ -1684,9 +1766,18 @@ static int xfrm_notify_sa(struct xfrm_state *x, struct km_event *c)
 	if (x->aalg)
 		RTA_PUT(skb, XFRMA_ALG_AUTH,
 			sizeof(*(x->aalg))+(x->aalg->alg_key_len+7)/8, x->aalg);
-	if (x->ealg)
-		RTA_PUT(skb, XFRMA_ALG_CRYPT,
-			sizeof(*(x->ealg))+(x->ealg->alg_key_len+7)/8, x->ealg);
+	if (x->ealg) {
+		if (xfrm_aead_get_byname(x->ealg->alg_name, 0, 0)) {
+			struct xfrm_algo_aead *aead = (void *)x->ealg;
+
+			RTA_PUT(skb, XFRMA_ALG_AEAD,
+				sizeof(*aead) + (aead->alg_key_len + 7) / 8,
+				aead);
+		} else 
+			RTA_PUT(skb, XFRMA_ALG_CRYPT,
+				sizeof(*x->ealg) +
+				(x->ealg->alg_key_len + 7) / 8, x->ealg);
+	}
 	if (x->calg)
 		RTA_PUT(skb, XFRMA_ALG_COMP, sizeof(*(x->calg)), x->calg);
 

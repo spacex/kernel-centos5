@@ -15,3 +15,4 @@ header-y += ucontext.h
 
 unifdef-y += perfmon.h
 unifdef-y += ustack.h
+unifdef-y += gcc_intrin.h

@@ -98,6 +98,8 @@ int nmi_active;
 #define ARCH_PERFMON_NMI_EVENT_SEL	ARCH_PERFMON_UNHALTED_CORE_CYCLES_SEL
 #define ARCH_PERFMON_NMI_EVENT_UMASK	ARCH_PERFMON_UNHALTED_CORE_CYCLES_UMASK
 
+static int endflag __initdata = 0;
+
 #ifdef CONFIG_SMP
 /* The performance counters used by NMI_LOCAL_APIC don't trigger when
  * the CPU is idle. To make sure the NMI watchdog really ticks on all
@@ -105,7 +107,6 @@ int nmi_active;
  */
 static __init void nmi_cpu_busy(void *data)
 {
-	volatile int *endflag = data;
 	local_irq_enable_in_hardirq();
 	/* Intentionally don't use cpu_relax here. This is
 	   to make sure that the performance counter really ticks,
@@ -113,8 +114,8 @@ static __init void nmi_cpu_busy(void *data)
 	   pause instruction. On a real HT machine this is fine because
 	   all other CPUs are busy with "useless" delay loops and don't
 	   care if they get somewhat less cycles. */
-	while (*endflag == 0)
-		barrier();
+	while (endflag == 0)
+		mb();
 }
 #endif
 
@@ -142,7 +143,6 @@ static unsigned int adjust_for_32bit_ctr(unsigned int hz)
 
 static int __init check_nmi_watchdog(void)
 {
-	volatile int endflag = 0;
 	unsigned int *prev_nmi_count;
 	int cpu;
 
@@ -156,7 +156,7 @@ static int __init check_nmi_watchdog(void)
 	printk(KERN_INFO "Testing NMI watchdog ... ");
 
 	if (nmi_watchdog == NMI_LOCAL_APIC)
-		smp_call_function(nmi_cpu_busy, (void *)&endflag, 0, 0);
+		smp_call_function(nmi_cpu_busy, NULL, 0, 0);
 
 	for_each_possible_cpu(cpu)
 		prev_nmi_count[cpu] = per_cpu(irq_stat, cpu).__nmi_count;
@@ -172,7 +172,8 @@ static int __init check_nmi_watchdog(void)
 #endif
 		if (nmi_count(cpu) - prev_nmi_count[cpu] <= 5) {
 			endflag = 1;
-			printk("CPU#%d: NMI appears to be stuck (%d->%d)!\n",
+			printk(KERN_WARNING "WARNING: CPU#%d: NMI "
+			       "appears to be stuck (%d->%d)!\n",
 				cpu,
 				prev_nmi_count[cpu],
 				nmi_count(cpu));

@@ -689,6 +689,17 @@ static int dummy_netlink_recv (struct sk_buff *skb, int cap)
 	return 0;
 }
 
+static int dummy_file_mmap_addr (struct file *file, unsigned long reqprot,
+				 unsigned long prot,
+				 unsigned long flags,
+				 unsigned long addr,
+				 unsigned long addr_only)
+{
+	if ((addr < mmap_min_addr) && !capable(CAP_SYS_RAWIO))
+		return -EACCES;
+	return 0;
+}
+
 #ifdef CONFIG_SECURITY_NETWORK
 static int dummy_unix_stream_connect (struct socket *sock,
 				      struct socket *other,
@@ -1080,6 +1091,7 @@ void security_fixup_ops (struct security_operations *ops)
  	set_to_dummy_if_null(ops, setprocattr);
  	set_to_dummy_if_null(ops, secid_to_secctx);
  	set_to_dummy_if_null(ops, release_secctx);
+	set_to_dummy_if_null(ops, file_mmap_addr);
 #ifdef CONFIG_SECURITY_NETWORK
 	set_to_dummy_if_null(ops, unix_stream_connect);
 	set_to_dummy_if_null(ops, unix_may_send);

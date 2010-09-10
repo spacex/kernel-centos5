@@ -109,6 +109,38 @@ static inline int arch_free_page(struct page *page, int order) { return 0; }
 extern struct page *
 FASTCALL(__alloc_pages(gfp_t, unsigned int, struct zonelist *));
 
+static inline struct page *alloc_pages_thisnode(int nid, gfp_t gfp_mask,
+						unsigned int order)
+{
+	struct zonelist *zl;
+	struct zonelist thisnode_zl;
+	int i;
+
+	if (unlikely(order >= MAX_ORDER))
+		return NULL;
+
+	/* Unknown node is current node */
+	if (nid < 0)
+		nid = numa_node_id();
+
+	zl = NODE_DATA(nid)->node_zonelists + gfp_zone(gfp_mask);
+	/*
+	 * If the first fallback node is a different node, then this
+	 * node has no memory
+	 */
+	if (zl->zones[0]->zone_pgdat->node_id != nid)
+		return NULL;
+
+	for (i = 0; zl->zones[i] != NULL; i++) {
+		if (zl->zones[i]->zone_pgdat->node_id != nid)
+			break;
+		thisnode_zl.zones[i] = zl->zones[i];
+	}
+	thisnode_zl.zones[i] = NULL;
+
+	return __alloc_pages(gfp_mask, order, &thisnode_zl);
+}
+
 static inline struct page *alloc_pages_node(int nid, gfp_t gfp_mask,
 						unsigned int order)
 {

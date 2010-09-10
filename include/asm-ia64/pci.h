@@ -79,9 +79,6 @@ extern int pcibios_prep_mwi (struct pci_dev *);
 #define pci_dac_dma_sync_single_for_cpu(dev,dma_addr,len,dir)	do { } while (0)
 #define pci_dac_dma_sync_single_for_device(dev,dma_addr,len,dir)	do { mb(); } while (0)
 
-#define sg_dma_len(sg)		((sg)->dma_length)
-#define sg_dma_address(sg)	((sg)->dma_address)
-
 #ifdef CONFIG_PCI
 static inline void pci_dma_burst_advice(struct pci_dev *pdev,
 					enum pci_dma_burst_strategy *strat,

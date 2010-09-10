@@ -81,7 +81,6 @@
 
 #define fw_notify(s, args...) printk(KERN_NOTICE KBUILD_MODNAME ": " s, ## args)
 #define fw_error(s, args...) printk(KERN_ERR KBUILD_MODNAME ": " s, ## args)
-#define fw_debug(s, args...) printk(KERN_DEBUG KBUILD_MODNAME ": " s, ## args)
 
 static inline void
 fw_memcpy_from_be32(void *_dst, void *_src, size_t size)
@@ -124,6 +123,10 @@ typedef void (*fw_transaction_callback_t)(struct fw_card *card, int rcode,
 					  size_t length,
 					  void *callback_data);
 
+/*
+ * Important note:  The callback must guarantee that either fw_send_response()
+ * or kfree() is called on the @request.
+ */
 typedef void (*fw_address_callback_t)(struct fw_card *card,
 				      struct fw_request *request,
 				      int tcode, int destination, int source,
@@ -228,7 +231,7 @@ struct fw_card {
 	unsigned long reset_jiffies;
 
 	unsigned long long guid;
-	int max_receive;
+	unsigned max_receive;
 	int link_speed;
 	int config_rom_generation;
 
@@ -245,20 +248,7 @@ struct fw_card {
 	struct fw_node *root_node;
 	struct fw_node *irm_node;
 	int color;
-	/*
-	 * May range from 1(?) to 63
-	 * This is the gap-count for the bus attached to this card.
-	 * All devices on a bus must use the same gap count.  Too small a
-	 * gap count risks collision errors on the bus.  Too large a
-	 * gap count wastes bus bandwidth.  See the standards docs for
-	 * a discussion on gap count optimization.
-	 */
-	unsigned gap_count;
-	/*
-	 * May be zero or nonzero: nonzero means that there are 1394b
-	 * repeaters on the bus, so the gap count cannot be easily(?)
-	 * optimized.
-	 */
+	int gap_count;
 	int beta_repeaters_present;
 
 	int index;
@@ -441,7 +431,7 @@ void fw_send_phy_config(struct fw_card *card,
 
 /*
  * Called by the topology code to inform the device code of node
- * activity; found, lost, or updated nodes
+ * activity; found, lost, or updated nodes.
  */
 void
 fw_node_event(struct fw_card *card, struct fw_node *node, int event);

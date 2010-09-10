@@ -363,6 +363,7 @@ int xen_create_contiguous_region(
 
 	return success ? 0 : -ENOMEM;
 }
+EXPORT_SYMBOL_GPL(xen_create_contiguous_region);
 
 void xen_destroy_contiguous_region(unsigned long vstart, unsigned int order)
 {
@@ -455,3 +456,36 @@ int write_ldt_entry(void *ldt, int entry, __u32 entry_a, __u32 entry_b)
 		mach_lp, (u64)entry_a | ((u64)entry_b<<32));
 }
 #endif
+
+#define MAX_BATCHED_FULL_PTES 32
+
+int xen_change_pte_range(struct mm_struct *mm, pmd_t *pmd,
+			 unsigned long addr, unsigned long end, pgprot_t newprot)
+{
+	int rc = 0, i = 0;
+	mmu_update_t u[MAX_BATCHED_FULL_PTES];
+	pte_t *pte;
+	spinlock_t *ptl;
+
+	if (!xen_feature(XENFEAT_mmu_pt_update_preserve_ad))
+		return 0;
+
+	pte = pte_offset_map_lock(mm, pmd, addr, &ptl);
+	do {
+		if (pte_present(*pte)) {
+			u[i].ptr = virt_to_machine(pte) | MMU_PT_UPDATE_PRESERVE_AD;
+			u[i].val = __pte_val(pte_modify(*pte, newprot));
+			if (++i == MAX_BATCHED_FULL_PTES) {
+				if ((rc = HYPERVISOR_mmu_update(
+					&u[0], i, NULL, DOMID_SELF)) != 0)
+					break;
+				i = 0;
+			}
+		}
+	} while (pte++, addr += PAGE_SIZE, addr != end);
+	if (i)
+		rc = HYPERVISOR_mmu_update( &u[0], i, NULL, DOMID_SELF);
+	pte_unmap_unlock(pte - 1, ptl);
+	BUG_ON(rc && rc != -ENOSYS);
+	return !rc;
+}

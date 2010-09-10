@@ -57,28 +57,6 @@ MODULE_PARM_DESC(mcast_debug_level,
 
 static DEFINE_MUTEX(mcast_mutex);
 
-/* Used for all multicast joins (broadcast, IPv4 mcast and IPv6 mcast) */
-struct ipoib_mcast {
-	struct ib_sa_mcmember_rec mcmember;
-	struct ib_sa_multicast	 *mc;
-	struct ipoib_ah          *ah;
-
-	struct rb_node    rb_node;
-	struct list_head  list;
-
-	unsigned long created;
-	unsigned long backoff;
-
-	unsigned long flags;
-	unsigned char logcount;
-
-	struct list_head  neigh_list;
-
-	struct sk_buff_head pkt_queue;
-
-	struct net_device *dev;
-};
-
 struct ipoib_mcast_iter {
 	struct net_device *dev;
 	union ib_gid       mgid;
@@ -310,7 +288,7 @@ ipoib_mcast_sendonly_join_complete(int status,
 
 	if (!status)
 		status = ipoib_mcast_join_finish(mcast, &multicast->rec);
-	
+
 	if (status) {
 		if (mcast->logcount++ < 20)
 			ipoib_dbg_mcast(netdev_priv(dev), "multicast join failed for "
@@ -404,7 +382,8 @@ static int ipoib_mcast_join_complete(int status,
 		mcast->backoff = 1;
 		mutex_lock(&mcast_mutex);
 		if (test_bit(IPOIB_MCAST_RUN, &priv->flags))
-			queue_work(ipoib_workqueue, &priv->mcast_task);
+			queue_delayed_work(ipoib_workqueue,
+					   &priv->mcast_task, 0);
 		mutex_unlock(&mcast_mutex);
 
 		if (mcast == priv->broadcast)
@@ -513,16 +492,53 @@ static void ipoib_mcast_join(struct net_device *dev, struct ipoib_mcast *mcast,
 	}
 }
 
-void ipoib_mcast_join_task(void *dev_ptr)
+static int create_own_ah(struct ipoib_dev_priv *priv)
 {
-	struct net_device *dev = dev_ptr;
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ib_ah_attr attr = {
+		.dlid = priv->local_lid,
+		.port_num = priv->port,
+	};
+        struct ib_ah *ah;
+
+	if (priv->own_ah)
+		return 0;
+
+	ah = ib_create_ah(priv->pd, &attr);
+	if (!IS_ERR(ah)) {
+		ipoib_dbg(priv, "created own ah\n");
+		priv->own_ah = ah;
+	}
+
+	return IS_ERR(priv->own_ah);
+}
+
+void destroy_own_ah(struct ipoib_dev_priv *priv)
+{
+	unsigned long flags;
+
+	if (!priv->own_ah) {
+		ipoib_dbg(priv, "own ah already destroyed\n");
+		return;
+	} else
+		ipoib_dbg(priv, "destroying own ah\n");
+
+	spin_lock_irqsave(&priv->tx_lock, flags);
+	ib_destroy_ah(priv->own_ah);
+	priv->own_ah = NULL;
+	spin_unlock_irqrestore(&priv->tx_lock, flags);
+}
+
+void ipoib_mcast_join_task(struct work_struct *work)
+{
+	struct ipoib_dev_priv *priv =
+		container_of(work, struct ipoib_dev_priv, mcast_task.work);
+	struct net_device *dev = priv->dev;
 
 	if (!test_bit(IPOIB_MCAST_RUN, &priv->flags))
 		return;
 
 	if (ib_query_gid(priv->ca, priv->port, 0, &priv->local_gid))
-		ipoib_warn(priv, "ib_gid_entry_get() failed\n");
+		ipoib_warn(priv, "ib_query_gid() failed\n");
 	else
 		memcpy(priv->dev->dev_addr + 4, priv->local_gid.raw, sizeof (union ib_gid));
 
@@ -530,10 +546,11 @@ void ipoib_mcast_join_task(void *dev_ptr)
 		struct ib_port_attr attr;
 
 		if (!ib_query_port(priv->ca, priv->port, &attr)) {
-			priv->local_lid  = attr.lid;
-			priv->local_rate = attr.active_speed *
-				ib_width_enum_to_int(attr.active_width);
-		} else
+			priv->local_lid = attr.lid;
+			if (create_own_ah(priv))
+				ipoib_warn(priv, "create own_ah failed\n");
+		}
+		else
 			ipoib_warn(priv, "ib_query_port failed\n");
 	}
 
@@ -589,8 +606,7 @@ void ipoib_mcast_join_task(void *dev_ptr)
 		return;
 	}
 
-	priv->mcast_mtu = ib_mtu_enum_to_int(priv->broadcast->mcmember.mtu) -
-		IPOIB_ENCAP_LEN;
+	priv->mcast_mtu = IPOIB_UD_MTU(ib_mtu_enum_to_int(priv->broadcast->mcmember.mtu));
 
 	if (!ipoib_cm_admin_enabled(dev))
 		dev->mtu = min(priv->mcast_mtu, priv->admin_mtu);
@@ -608,7 +624,7 @@ int ipoib_mcast_start_thread(struct net_device *dev)
 
 	mutex_lock(&mcast_mutex);
 	if (!test_and_set_bit(IPOIB_MCAST_RUN, &priv->flags))
-		queue_work(ipoib_workqueue, &priv->mcast_task);
+		queue_delayed_work(ipoib_workqueue, &priv->mcast_task, 0);
 	mutex_unlock(&mcast_mutex);
 
 	spin_lock_irq(&priv->lock);
@@ -727,7 +743,8 @@ out:
 		if (skb->dst            &&
 		    skb->dst->neighbour &&
 		    !*to_ipoib_neigh(skb->dst->neighbour)) {
-			struct ipoib_neigh *neigh = ipoib_neigh_alloc(skb->dst->neighbour, skb->dev);
+			struct ipoib_neigh *neigh = ipoib_neigh_alloc(skb->dst->neighbour,
+									skb->dev);
 
 			if (neigh) {
 				kref_get(&mcast->ah->ref);
@@ -774,14 +791,16 @@ void ipoib_mcast_dev_flush(struct net_device *dev)
 	}
 }
 
-void ipoib_mcast_restart_task(void *dev_ptr)
+void ipoib_mcast_restart_task(struct work_struct *work)
 {
-	struct net_device *dev = dev_ptr;
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv =
+		container_of(work, struct ipoib_dev_priv, restart_task);
+	struct net_device *dev = priv->dev;
 	struct dev_mc_list *mclist;
 	struct ipoib_mcast *mcast, *tmcast;
 	LIST_HEAD(remove_list);
 	unsigned long flags;
+	struct ib_sa_mcmember_rec rec;
 
 	ipoib_dbg_mcast(priv, "restarting multicast task\n");
 
@@ -814,6 +833,14 @@ void ipoib_mcast_restart_task(void *dev_ptr)
 		mcast = __ipoib_mcast_find(dev, &mgid);
 		if (!mcast || test_bit(IPOIB_MCAST_FLAG_SENDONLY, &mcast->flags)) {
 			struct ipoib_mcast *nmcast;
+
+			/* ignore group which is directly joined by userspace */
+			if (test_bit(IPOIB_FLAG_UMCAST, &priv->flags) &&
+			    !ib_sa_get_mcmember_rec(priv->ca, priv->port, &mgid, &rec)) {
+				ipoib_dbg_mcast(priv, "ignoring multicast entry for mgid "
+						IPOIB_GID_FMT "\n", IPOIB_GID_ARG(mgid));
+				continue;
+			}
 
 			/* Not found or send-only group, let's add a new entry */
 			ipoib_dbg_mcast(priv, "adding multicast entry for mgid "

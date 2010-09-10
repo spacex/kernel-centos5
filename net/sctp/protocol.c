@@ -51,6 +51,7 @@
 #include <linux/netdevice.h>
 #include <linux/inetdevice.h>
 #include <linux/seq_file.h>
+#include <linux/bootmem.h>
 #include <net/protocol.h>
 #include <net/ip.h>
 #include <net/ipv6.h>
@@ -88,6 +89,10 @@ extern int sctp_eps_proc_init(void);
 extern int sctp_eps_proc_exit(void);
 extern int sctp_assocs_proc_init(void);
 extern int sctp_assocs_proc_exit(void);
+
+extern int sysctl_sctp_mem[3];
+extern int sysctl_sctp_rmem[3];
+extern int sysctl_sctp_wmem[3];
 
 /* Return the address of the control sock. */
 struct sock *sctp_get_ctl_sock(void)
@@ -982,34 +987,22 @@ SCTP_STATIC __init int sctp_init(void)
 	int i;
 	int status = -EINVAL;
 	unsigned long goal;
+ 	unsigned long limit;
+ 	int max_share;
 	int order;
 
 	/* SCTP_DEBUG sanity check. */
 	if (!sctp_sanity_check())
 		goto out;
 
-	status = proto_register(&sctp_prot, 1);
-	if (status)
-		goto out;
-
-	/* Add SCTP to inet_protos hash table.  */
-	status = -EAGAIN;
-	if (inet_add_protocol(&sctp_protocol, IPPROTO_SCTP) < 0)
-		goto err_add_protocol;
-
-	/* Add SCTP(TCP and UDP style) to inetsw linked list.  */
-	inet_register_protosw(&sctp_seqpacket_protosw);
-	inet_register_protosw(&sctp_stream_protosw);
-
-	/* Allocate a cache pools. */
+	/* Allocate bind_bucket and chunk caches. */
 	status = -ENOBUFS;
 	sctp_bucket_cachep = kmem_cache_create("sctp_bind_bucket",
 					       sizeof(struct sctp_bind_bucket),
 					       0, SLAB_HWCACHE_ALIGN,
 					       NULL, NULL);
-
 	if (!sctp_bucket_cachep)
-		goto err_bucket_cachep;
+		goto out;
 
 	sctp_chunk_cachep = kmem_cache_create("sctp_chunk",
 					       sizeof(struct sctp_chunk),
@@ -1086,6 +1079,31 @@ SCTP_STATIC __init int sctp_init(void)
 	/* Initialize handle used for association ids. */
 	idr_init(&sctp_assocs_id);
 
+ 	/* Set the pressure threshold to be a fraction of global memory that
+	 * is up to 1/2 at 256 MB, decreasing toward zero with the amount of
+	 * memory, with a floor of 128 pages.
+ 	 * Note this initalizes the data in sctpv6_prot too
+ 	 * Unabashedly stolen from tcp_init
+	 */
+ 	limit = min(num_physpages, 1UL<<(28-PAGE_SHIFT)) >> (20-PAGE_SHIFT);
+ 	limit = (limit * (num_physpages >> (20-PAGE_SHIFT))) >> (PAGE_SHIFT-11);
+ 	limit = max(limit, 128UL);
+ 	sysctl_sctp_mem[0] = limit / 4 * 3;
+ 	sysctl_sctp_mem[1] = limit;
+ 	sysctl_sctp_mem[2] = sysctl_sctp_mem[0] * 2;
+ 
+ 	/* Set per-socket limits to no more than 1/128 the pressure threshold*/
+	limit = (sysctl_sctp_mem[1]) << (PAGE_SHIFT - 7);
+	max_share = min(4UL*1024*1024, limit);
+ 
+ 	sysctl_sctp_rmem[0] = PAGE_SIZE; /* give each asoc 1 page min */
+ 	sysctl_sctp_rmem[1] = (1500 *(sizeof(struct sk_buff) + 1));
+ 	sysctl_sctp_rmem[2] = max(sysctl_sctp_rmem[1], max_share);
+ 
+ 	sysctl_sctp_wmem[0] = SK_MEM_QUANTUM;
+ 	sysctl_sctp_wmem[1] = 16*1024;
+ 	sysctl_sctp_wmem[2] = max(64*1024, max_share);
+ 
 	/* Size and allocate the association hash table.
 	 * The methodology is similar to that of the tcp hash tables.
 	 */
@@ -1148,9 +1166,6 @@ SCTP_STATIC __init int sctp_init(void)
 		sctp_port_hashtable[i].chain = NULL;
 	}
 
-	spin_lock_init(&sctp_port_alloc_lock);
-	sctp_port_rover = sysctl_local_port_range[0] - 1;
-
 	printk(KERN_INFO "SCTP: Hash tables configured "
 			 "(established %d bind %d)\n",
 		sctp_assoc_hashsize, sctp_port_hashsize);
@@ -1165,6 +1180,14 @@ SCTP_STATIC __init int sctp_init(void)
 
 	INIT_LIST_HEAD(&sctp_address_families);
 	sctp_register_af(&sctp_ipv4_specific);
+
+	status = proto_register(&sctp_prot, 1);
+	if (status)
+		goto err_proto_register;
+
+	/* Register SCTP(UDP and TCP style) with socket layer.  */
+	inet_register_protosw(&sctp_seqpacket_protosw);
+	inet_register_protosw(&sctp_stream_protosw);
 
 	status = sctp_v6_init();
 	if (status)
@@ -1184,15 +1207,37 @@ SCTP_STATIC __init int sctp_init(void)
 	/* Register notifier for inet address additions/deletions. */
 	register_inetaddr_notifier(&sctp_inetaddr_notifier);
 
+	/* Register SCTP with inet layer.  */
+	if (inet_add_protocol(&sctp_protocol, IPPROTO_SCTP) < 0) {
+		status = -EAGAIN;
+		goto err_add_protocol;
+	}
+ 
+	/* Register SCTP with inet6 layer.  */
+	status = sctp_v6_add_protocol();
+	if (status)
+		goto err_v6_add_protocol;
+
+
 	sctp_get_local_addr_list();
 
 	__unsafe(THIS_MODULE);
 	status = 0;
 out:
 	return status;
+err_v6_add_protocol:
+	inet_del_protocol(&sctp_protocol, IPPROTO_SCTP);
+	unregister_inetaddr_notifier(&sctp_inetaddr_notifier);
+err_add_protocol:
+	sctp_free_local_addr_list();
+	sock_release(sctp_ctl_socket);
 err_ctl_sock_init:
 	sctp_v6_exit();
 err_v6_init:
+	inet_unregister_protosw(&sctp_stream_protosw);
+	inet_unregister_protosw(&sctp_seqpacket_protosw);
+	proto_unregister(&sctp_prot);
+err_proto_register:
 	sctp_sysctl_unregister();
 	list_del(&sctp_ipv4_specific.list);
 	free_pages((unsigned long)sctp_port_hashtable,
@@ -1206,19 +1251,13 @@ err_ehash_alloc:
 			     sizeof(struct sctp_hashbucket)));
 err_ahash_alloc:
 	sctp_dbg_objcnt_exit();
-err_init_proc:
 	sctp_proc_exit();
+err_init_proc:
 	cleanup_sctp_mibs();
 err_init_mibs:
 	kmem_cache_destroy(sctp_chunk_cachep);
 err_chunk_cachep:
 	kmem_cache_destroy(sctp_bucket_cachep);
-err_bucket_cachep:
-	inet_del_protocol(&sctp_protocol, IPPROTO_SCTP);
-	inet_unregister_protosw(&sctp_seqpacket_protosw);
-	inet_unregister_protosw(&sctp_stream_protosw);
-err_add_protocol:
-	proto_unregister(&sctp_prot);
 	goto out;
 }
 
@@ -1229,8 +1268,9 @@ SCTP_STATIC __exit void sctp_exit(void)
 	 * up all the remaining associations and all that memory.
 	 */
 
-	/* Unregister notifier for inet address additions/deletions. */
-	unregister_inetaddr_notifier(&sctp_inetaddr_notifier);
+	/* Unregister with inet6/inet layers. */
+	sctp_v6_del_protocol();
+	inet_del_protocol(&sctp_protocol, IPPROTO_SCTP);
 
 	/* Free the local address list.  */
 	sctp_free_local_addr_list();
@@ -1238,7 +1278,16 @@ SCTP_STATIC __exit void sctp_exit(void)
 	/* Free the control endpoint.  */
 	sock_release(sctp_ctl_socket);
 
+	/* Cleanup v6 initializations. */
 	sctp_v6_exit();
+
+	/* Unregister with socket layer. */
+	inet_unregister_protosw(&sctp_stream_protosw);
+	inet_unregister_protosw(&sctp_seqpacket_protosw);
+
+	/* Unregister notifier for inet address additions/deletions. */
+	unregister_inetaddr_notifier(&sctp_inetaddr_notifier);
+
 	sctp_sysctl_unregister();
 	list_del(&sctp_ipv4_specific.list);
 
@@ -1250,16 +1299,13 @@ SCTP_STATIC __exit void sctp_exit(void)
 		   get_order(sctp_port_hashsize *
 			     sizeof(struct sctp_bind_hashbucket)));
 
-	kmem_cache_destroy(sctp_chunk_cachep);
-	kmem_cache_destroy(sctp_bucket_cachep);
-
 	sctp_dbg_objcnt_exit();
 	sctp_proc_exit();
 	cleanup_sctp_mibs();
 
-	inet_del_protocol(&sctp_protocol, IPPROTO_SCTP);
-	inet_unregister_protosw(&sctp_seqpacket_protosw);
-	inet_unregister_protosw(&sctp_stream_protosw);
+	kmem_cache_destroy(sctp_chunk_cachep);
+	kmem_cache_destroy(sctp_bucket_cachep);
+
 	proto_unregister(&sctp_prot);
 }
 

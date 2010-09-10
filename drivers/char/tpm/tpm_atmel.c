@@ -7,7 +7,7 @@
  * Reiner Sailer <sailer@watson.ibm.com>
  * Kylene Hall <kjhall@us.ibm.com>
  *
- * Maintained by: <tpmdd_devel@lists.sourceforge.net>
+ * Maintained by: <tpmdd-devel@lists.sourceforge.net>
  *
  * Device driver for TCG/TCPA TPM (trusted platform module).
  * Specifications at www.trustedcomputinggroup.org	 
@@ -184,7 +184,9 @@ static int __init init_atmel(void)
 	unsigned long base;
 	struct  tpm_chip *chip;
 
-	driver_register(&atml_drv);
+	rc = driver_register(&atml_drv);
+	if (rc)
+		return rc;
 
 	if ((iobase = atmel_get_base_addr(&base, &region_size)) == NULL) {
 		rc = -ENODEV;
@@ -195,10 +197,8 @@ static int __init init_atmel(void)
 	    (atmel_request_region
 	     (tpm_atmel.base, region_size, "tpm_atmel0") == NULL) ? 0 : 1;
 
-
-	if (IS_ERR
-	    (pdev =
-	     platform_device_register_simple("tpm_atmel", -1, NULL, 0))) {
+	pdev = platform_device_register_simple("tpm_atmel", -1, NULL, 0);
+	if (IS_ERR(pdev)) {
 		rc = PTR_ERR(pdev);
 		goto err_rel_reg;
 	}

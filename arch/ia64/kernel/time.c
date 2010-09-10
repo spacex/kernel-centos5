@@ -118,7 +118,7 @@ consider_steal_time(unsigned long new_itm, struct pt_regs *regs)
 	if (stolen > 0 || blocked > 0) {
 		account_steal_time(NULL, jiffies_to_cputime(stolen)); 
 		account_steal_time(idle_task(cpu), jiffies_to_cputime(blocked)); 
-		run_local_timers();
+		run_local_timers(regs);
 
 		if (rcu_pending(cpu))
 			rcu_check_callbacks(cpu, user_mode(regs));
@@ -173,7 +173,7 @@ timer_interrupt (int irq, void *dev_id, struct pt_regs *regs)
 	}
 
 	while (1) {
-		update_process_times(user_mode(regs));
+		update_process_times(user_mode(regs), regs);
 
 		new_itm += local_cpu_data->itm_delta;
 

@@ -32,13 +32,16 @@
 #include <linux/cache.h>
 #include <linux/interrupt.h>
 #include <linux/cpu.h>
+#include <linux/bootmem.h>
 
+#include <asm/ipl.h>
 #include <asm/sigp.h>
 #include <asm/pgalloc.h>
 #include <asm/irq.h>
 #include <asm/s390_ext.h>
 #include <asm/cpcmd.h>
 #include <asm/tlbflush.h>
+#include <asm/smp.h>
 
 extern volatile int __cpu_logical_map[];
 
@@ -474,6 +477,55 @@ void smp_ctl_clear_bit(int cr, int bit) {
 }
 
 /*
+ * In early ipl state a temp. logically cpu number is needed, so the sigp
+ * functions can be used to sense other cpus. Since NR_CPUS is >= 2 on
+ * CONFIG_SMP and the ipl cpu is logical cpu 0, it must be 1.
+ */
+#define CPU_INIT_NO	1
+
+#if defined(CONFIG_ZFCPDUMP) || defined(CONFIG_ZFCPDUMP_MODULE)
+
+/*
+ * zfcpdump_prefix_array holds prefix registers for the following scenario:
+ * 64 bit zfcpdump kernel and 31 bit kernel which is to be dumped. We have to
+ * save its prefix registers, since they get lost, when switching from 31 bit
+ * to 64 bit.
+ */
+unsigned int zfcpdump_prefix_array[NR_CPUS + 1] \
+	__attribute__((__section__(".data")));
+
+static void __init smp_get_save_area(unsigned int cpu, unsigned int phy_cpu)
+{
+	if (ipl_info.type != IPL_TYPE_FCP_DUMP)
+		return;
+	if (cpu >= NR_CPUS) {
+		printk(KERN_WARNING "Registers for cpu %i not saved since dump "
+		       "kernel was compiled with NR_CPUS=%i\n", cpu, NR_CPUS);
+		return;
+	}
+	zfcpdump_save_areas[cpu] = alloc_bootmem(sizeof(union save_area));
+	__cpu_logical_map[CPU_INIT_NO] = (__u16) phy_cpu;
+	while (signal_processor(CPU_INIT_NO, sigp_stop_and_store_status) ==
+	       sigp_busy)
+		cpu_relax();
+	memcpy(zfcpdump_save_areas[cpu],
+	       (void *)(unsigned long) store_prefix() + SAVE_AREA_BASE,
+	       SAVE_AREA_SIZE);
+#ifdef CONFIG_64BIT
+	/* copy original prefix register */
+	zfcpdump_save_areas[cpu]->s390x.pref_reg = zfcpdump_prefix_array[cpu];
+#endif
+}
+
+union save_area *zfcpdump_save_areas[NR_CPUS + 1];
+EXPORT_SYMBOL_GPL(zfcpdump_save_areas);
+
+#else
+
+static inline void smp_get_save_area(unsigned int cpu, unsigned int phy_cpu) { }
+
+#endif /* CONFIG_ZFCPDUMP || CONFIG_ZFCPDUMP_MODULE */
+/*
  * Lets check how many CPUs we have.
  */
 
@@ -497,6 +549,7 @@ __init smp_count_cpus(void)
 		if (signal_processor(1, sigp_sense) ==
 		    sigp_not_operational)
 			continue;
+		smp_get_save_area(num_cpus, cpu);
 		num_cpus++;
 	}
 

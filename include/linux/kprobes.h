@@ -157,6 +157,12 @@ struct kretprobe_instance {
 	struct task_struct *task;
 };
 
+struct kretprobe_blackpoint {
+	const char *name;
+	void *addr;
+};
+extern struct kretprobe_blackpoint kretprobe_blacklist[];
+
 extern spinlock_t kretprobe_lock;
 extern struct mutex kprobe_mutex;
 extern int arch_prepare_kprobe(struct kprobe *p);

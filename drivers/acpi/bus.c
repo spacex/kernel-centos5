@@ -219,6 +219,10 @@ int acpi_bus_set_power(acpi_handle handle, int state)
 		printk(KERN_WARNING PREFIX
 			      "Cannot set device to a higher-powered"
 			      " state than parent\n");
+		printk(KERN_WARNING PREFIX
+			      "Device requested power state D%d but"
+			      " parents power state is at D%d\n", state, device->parent->power.state);
+
 		return -ENODEV;
 	}
 

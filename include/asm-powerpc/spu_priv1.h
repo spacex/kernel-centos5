@@ -38,7 +38,7 @@ struct spu_priv1_ops {
 	u64 (*mfc_dar_get) (struct spu *spu);
 	u64 (*mfc_dsisr_get) (struct spu *spu);
 	void (*mfc_dsisr_set) (struct spu *spu, u64 dsisr);
-	void (*mfc_sdr_set) (struct spu *spu, u64 sdr/* Obsolete */);
+	void (*mfc_sdr_set) (struct spu *spu, u64 sdr /* unused */);
 	void (*mfc_sr1_set) (struct spu *spu, u64 sr1);
 	u64 (*mfc_sr1_get) (struct spu *spu);
 	void (*mfc_tclass_id_set) (struct spu *spu, u64 tclass_id);
@@ -178,6 +178,7 @@ struct spu_management_ops {
 	int (*enumerate_spus)(int (*fn)(void *data));
 	int (*create_spu)(struct spu *spu, void *data);
 	int (*destroy_spu)(struct spu *spu);
+	int (*init_affinity)(void);
 };
 
 extern const struct spu_management_ops* spu_management_ops;
@@ -198,6 +199,12 @@ static inline int
 spu_destroy_spu (struct spu *spu)
 {
 	return spu_management_ops->destroy_spu(spu);
+}
+
+static inline int
+spu_init_affinity (void)
+{
+	return spu_management_ops->init_affinity();
 }
 
 /*

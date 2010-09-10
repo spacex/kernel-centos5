@@ -155,13 +155,48 @@ int nfs_inode_set_delegation(struct inode *inode, struct rpc_cred *cred, struct 
 	return status;
 }
 
-static int nfs_do_return_delegation(struct inode *inode, struct nfs_delegation *delegation)
+static int nfs_do_return_delegation(struct inode *inode, struct nfs_delegation *delegation, int issync)
 {
 	int res = 0;
 
-	res = nfs4_proc_delegreturn(inode, delegation->cred, &delegation->stateid);
+	res = nfs4_proc_delegreturn(inode, delegation->cred, &delegation->stateid, issync);
 	nfs_free_delegation(delegation);
 	return res;
+}
+
+static struct nfs_delegation *nfs_detach_delegation(struct inode *inode)
+{
+	struct nfs_client *clp = NFS_SERVER(inode)->nfs_client;
+	struct nfs_inode *nfsi = NFS_I(inode);
+	struct nfs_delegation *delegation;
+
+	spin_lock(&clp->cl_lock);
+	delegation = nfsi->delegation;
+	if (delegation != NULL) {
+		list_del_init(&delegation->super_list);
+		nfsi->delegation = NULL;
+		nfsi->delegation_state = 0;
+	}
+	spin_unlock(&clp->cl_lock);
+	return delegation;
+}
+
+/*
+ * This function returns the delegation without reclaiming opens
+ * or protecting against delegation reclaims.
+ * It is therefore really only safe to be called from
+ * nfs4_clear_inode()
+ */
+void nfs_inode_return_delegation_noreclaim(struct inode *inode)
+{
+	struct nfs_delegation *delegation;
+
+	if (NFS_I(inode)->delegation == NULL)
+		return;
+	delegation = nfs_detach_delegation(inode);
+	if (delegation == NULL)
+		return;
+	nfs_do_return_delegation(inode, delegation, 0);
 }
 
 /* Sync all data to disk upon delegation return */
@@ -186,21 +221,14 @@ int __nfs_inode_return_delegation(struct inode *inode)
 	down_read(&clp->cl_sem);
 	/* Guard against new delegated open calls */
 	down_write(&nfsi->rwsem);
-	spin_lock(&clp->cl_lock);
-	delegation = nfsi->delegation;
-	if (delegation != NULL) {
-		list_del_init(&delegation->super_list);
-		nfsi->delegation = NULL;
-		nfsi->delegation_state = 0;
-	}
-	spin_unlock(&clp->cl_lock);
+	delegation = nfs_detach_delegation(inode);
 	nfs_delegation_claim_opens(inode);
 	up_write(&nfsi->rwsem);
 	up_read(&clp->cl_sem);
 	nfs_msync_inode(inode);
 
 	if (delegation != NULL)
-		res = nfs_do_return_delegation(inode, delegation);
+		res = nfs_do_return_delegation(inode, delegation, 1);
 	return res;
 }
 
@@ -341,7 +369,7 @@ static int recall_thread(void *data)
 	nfs_msync_inode(inode);
 
 	if (delegation != NULL)
-		nfs_do_return_delegation(inode, delegation);
+		nfs_do_return_delegation(inode, delegation, 1);
 	iput(inode);
 	module_put_and_exit(0);
 }

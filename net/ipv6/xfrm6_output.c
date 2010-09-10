@@ -26,7 +26,7 @@ static int xfrm6_tunnel_check_size(struct sk_buff *skb)
 	if (mtu < IPV6_MIN_MTU)
 		mtu = IPV6_MIN_MTU;
 
-	if (skb->len > mtu) {
+	if (!skb->local_df && skb->len > mtu) {
 		skb->dev = dst->dev;
 		icmpv6_send(skb, ICMPV6_PKT_TOOBIG, 0, mtu, skb->dev);
 		ret = -EMSGSIZE;
@@ -89,6 +89,8 @@ out_exit:
 	return err;
 error:
 	spin_unlock_bh(&x->lock);
+	if (err == -EINPROGRESS)
+		goto out_exit;
 error_nolock:
 	kfree_skb(skb);
 	goto out_exit;
@@ -104,7 +106,7 @@ static int xfrm6_output_finish2(struct sk_buff *skb)
 		err = nf_hook(PF_INET6, NF_IP6_LOCAL_OUT, &skb, NULL,
 			      skb->dst->dev, dst_output);
 		if (unlikely(err != 1))
-			break;
+			goto out;
 
 		if (!skb->dst->xfrm)
 			return dst_output(skb);
@@ -112,9 +114,13 @@ static int xfrm6_output_finish2(struct sk_buff *skb)
 		err = nf_hook(PF_INET6, NF_IP6_POST_ROUTING, &skb, NULL,
 			      skb->dst->dev, xfrm6_output_finish2);
 		if (unlikely(err != 1))
-			break;
+			goto out;
 	}
 
+	if (err == -EINPROGRESS)
+		err = 0;
+
+out:
 	return err;
 }
 

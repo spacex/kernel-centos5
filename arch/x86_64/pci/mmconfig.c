@@ -18,10 +18,6 @@
 #define MMCONFIG_APER_MIN	(2 * 1024*1024)
 #define MMCONFIG_APER_MAX	(256 * 1024*1024)
 
-/* Verify the first 16 busses. We assume that systems with more busses
-   get MCFG right. */
-#define MAX_CHECK_BUS 16
-
 static DECLARE_BITMAP(fallback_slots, 32*MAX_CHECK_BUS);
 
 /* Static virtual mapping of the MMCONFIG aperture */
@@ -177,27 +173,6 @@ static int __devinit disable_mmconf(struct dmi_system_id *d)
  * Systems which cannot use PCI MMCONFIG at this time...
  */
 static struct dmi_system_id __devinitdata nommconf_dmi_table[] = {
-	{
-		.callback = disable_mmconf,
-		.ident = "HP xw9300 Workstation",
-		.matches = {
-			DMI_MATCH(DMI_PRODUCT_NAME, "HP xw9300 Workstation"),
-		},
-	},
-	{
-		.callback = disable_mmconf,
-		.ident = "HP xw9400 Workstation",
-		.matches = {
-			DMI_MATCH(DMI_PRODUCT_NAME, "HP xw9400 Workstation"),
-		},
-	},
-        {
-                .callback = disable_mmconf,
-                .ident = "ProLiant DL585 G2",
-                .matches = {
-                        DMI_MATCH(DMI_PRODUCT_NAME, "ProLiant DL585 G2"),
-                },
-        },
         {
                 .callback = disable_mmconf,
                 .ident = "HP Compaq dc5700 Microtower",
@@ -256,5 +231,6 @@ void __init pci_mmcfg_init(void)
 	unreachable_devices();
 
 	raw_pci_ops = &pci_mmcfg;
-	pci_probe = (pci_probe & ~PCI_PROBE_MASK) | PCI_PROBE_MMCONF;
+	pci_probe = pci_probe & ~PCI_PROBE_MASK;
+	pci_probe = pci_probe | PCI_PROBE_MMCONF | PCI_USING_MMCONF;
 }

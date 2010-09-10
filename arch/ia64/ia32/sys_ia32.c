@@ -52,6 +52,7 @@
 #include <linux/vfs.h>
 #include <linux/mman.h>
 #include <linux/mutex.h>
+#include <linux/elf.h>
 
 #include <asm/intrinsics.h>
 #include <asm/types.h>
@@ -2314,16 +2315,19 @@ static int ia32_genregs_set(struct task_struct *target,
  */
 static const struct utrace_regset ia32_regsets[] = {
 	{
+		.core_note_type = NT_PRSTATUS,
 		.n = sizeof(struct user_regs_struct32)/4,
 		.size = 4, .align = 4,
 		.get = ia32_genregs_get, .set = ia32_genregs_set
 	},
 	{
+		.core_note_type = NT_PRFPREG,
 		.n = sizeof(struct ia32_user_i387_struct) / 4,
 		.size = 4, .align = 4,
 		.get = ia32_fpregs_get, .set = ia32_fpregs_set
 	},
 	{
+		.core_note_type = NT_PRXFPREG,
 		.n = sizeof(struct ia32_user_fxsr_struct) / 4,
 		.size = 4, .align = 4,
 		.get = ia32_fpxregs_get, .set = ia32_fpxregs_set

@@ -12,7 +12,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/pfkeyv2.h>
-#include <linux/crypto.h>
+#include <linux/ncrypto.h>
 #include <net/xfrm.h>
 #if defined(CONFIG_INET_AH) || defined(CONFIG_INET_AH_MODULE) || defined(CONFIG_INET6_AH) || defined(CONFIG_INET6_AH_MODULE)
 #include <net/ah.h>
@@ -28,9 +28,61 @@
  * that instantiated crypto transforms have correct parameters for IPsec
  * purposes.
  */
-static struct xfrm_algo_desc aalg_list[] = {
+static struct xfrm_nalgo_desc aead_list[] = {
 {
-	.name = "digest_null",
+	.name = "rfc4309(ccm(aes))",
+
+	.uinfo = {
+		.aead = {
+			.icv_truncbits = 64,
+		}
+	},
+
+	.desc = {
+		.sadb_alg_id = SADB_X_EALG_AES_CCM_ICV8,
+		.sadb_alg_ivlen = 8,
+		.sadb_alg_minbits = 128,
+		.sadb_alg_maxbits = 256
+	}
+},
+{
+	.name = "rfc4309(ccm(aes))",
+
+	.uinfo = {
+		.aead = {
+			.icv_truncbits = 96,
+		}
+	},
+
+	.desc = {
+		.sadb_alg_id = SADB_X_EALG_AES_CCM_ICV12,
+		.sadb_alg_ivlen = 8,
+		.sadb_alg_minbits = 128,
+		.sadb_alg_maxbits = 256
+	}
+},
+{
+	.name = "rfc4309(ccm(aes))",
+
+	.uinfo = {
+		.aead = {
+			.icv_truncbits = 128,
+		}
+	},
+
+	.desc = {
+		.sadb_alg_id = SADB_X_EALG_AES_CCM_ICV16,
+		.sadb_alg_ivlen = 8,
+		.sadb_alg_minbits = 128,
+		.sadb_alg_maxbits = 256
+	}
+},
+};
+
+static struct xfrm_nalgo_desc aalg_list[] = {
+{
+	.name = "hmac(digest_null)",
+	.compat = "digest_null",
 	
 	.uinfo = {
 		.auth = {
@@ -47,7 +99,8 @@ static struct xfrm_algo_desc aalg_list[] = {
 	}
 },
 {
-	.name = "md5",
+	.name = "hmac(md5)",
+	.compat = "md5",
 
 	.uinfo = {
 		.auth = {
@@ -64,7 +117,8 @@ static struct xfrm_algo_desc aalg_list[] = {
 	}
 },
 {
-	.name = "sha1",
+	.name = "hmac(sha1)",
+	.compat = "sha1",
 
 	.uinfo = {
 		.auth = {
@@ -81,7 +135,8 @@ static struct xfrm_algo_desc aalg_list[] = {
 	}
 },
 {
-	.name = "sha256",
+	.name = "hmac(sha256)",
+	.compat = "sha256",
 
 	.uinfo = {
 		.auth = {
@@ -98,7 +153,8 @@ static struct xfrm_algo_desc aalg_list[] = {
 	}
 },
 {
-	.name = "ripemd160",
+	.name = "hmac(ripemd160)",
+	.compat = "ripemd160",
 
 	.uinfo = {
 		.auth = {
@@ -114,11 +170,29 @@ static struct xfrm_algo_desc aalg_list[] = {
 		.sadb_alg_maxbits = 160
 	}
 },
+{
+	.name = "xcbc(aes)",
+
+	.uinfo = {
+		.auth = {
+			.icv_truncbits = 96,
+			.icv_fullbits = 128,
+		}
+	},
+
+	.desc = {
+		.sadb_alg_id = SADB_X_AALG_AES_XCBC_MAC,
+		.sadb_alg_ivlen = 0,
+		.sadb_alg_minbits = 128,
+		.sadb_alg_maxbits = 128
+	}
+},
 };
 
-static struct xfrm_algo_desc ealg_list[] = {
+static struct xfrm_nalgo_desc ealg_list[] = {
 {
-	.name = "cipher_null",
+	.name = "ecb(cipher_null)",
+	.compat = "cipher_null",
 	
 	.uinfo = {
 		.encr = {
@@ -135,7 +209,8 @@ static struct xfrm_algo_desc ealg_list[] = {
 	}
 },
 {
-	.name = "des",
+	.name = "cbc(des)",
+	.compat = "des",
 
 	.uinfo = {
 		.encr = {
@@ -152,7 +227,8 @@ static struct xfrm_algo_desc ealg_list[] = {
 	}
 },
 {
-	.name = "des3_ede",
+	.name = "cbc(des3_ede)",
+	.compat = "des3_ede",
 
 	.uinfo = {
 		.encr = {
@@ -169,7 +245,8 @@ static struct xfrm_algo_desc ealg_list[] = {
 	}
 },
 {
-	.name = "cast128",
+	.name = "cbc(cast128)",
+	.compat = "cast128",
 
 	.uinfo = {
 		.encr = {
@@ -186,7 +263,8 @@ static struct xfrm_algo_desc ealg_list[] = {
 	}
 },
 {
-	.name = "blowfish",
+	.name = "cbc(blowfish)",
+	.compat = "blowfish",
 
 	.uinfo = {
 		.encr = {
@@ -203,7 +281,8 @@ static struct xfrm_algo_desc ealg_list[] = {
 	}
 },
 {
-	.name = "aes",
+	.name = "cbc(aes)",
+	.compat = "aes",
 
 	.uinfo = {
 		.encr = {
@@ -220,7 +299,8 @@ static struct xfrm_algo_desc ealg_list[] = {
 	}
 },
 {
-        .name = "serpent",
+	.name = "cbc(serpent)",
+	.compat = "serpent",
 
         .uinfo = {
                 .encr = {
@@ -237,7 +317,8 @@ static struct xfrm_algo_desc ealg_list[] = {
         }
 },
 {
-        .name = "twofish",
+	.name = "cbc(twofish)",
+	.compat = "twofish",
                  
         .uinfo = {
                 .encr = {
@@ -253,9 +334,26 @@ static struct xfrm_algo_desc ealg_list[] = {
                 .sadb_alg_maxbits = 256
         }
 },
+{
+	.name = "rfc3686(ctr(aes))",
+
+	.uinfo = {
+		.encr = {
+			.blockbits = 128,
+			.defkeybits = 160, /* 128-bit key + 32-bit nonce */
+		}
+	},
+
+	.desc = {
+		.sadb_alg_id = SADB_X_EALG_AESCTR,
+		.sadb_alg_ivlen	= 8,
+		.sadb_alg_minbits = 128,
+		.sadb_alg_maxbits = 256
+	}
+},
 };
 
-static struct xfrm_algo_desc calg_list[] = {
+static struct xfrm_nalgo_desc calg_list[] = {
 {
 	.name = "deflate",
 	.uinfo = {
@@ -285,6 +383,11 @@ static struct xfrm_algo_desc calg_list[] = {
 },
 };
 
+static inline int aead_entries(void)
+{
+	return ARRAY_SIZE(aead_list);
+}
+
 static inline int aalg_entries(void)
 {
 	return ARRAY_SIZE(aalg_list);
@@ -308,7 +411,7 @@ struct xfrm_algo_desc *xfrm_aalg_get_byid(int alg_id)
 	for (i = 0; i < aalg_entries(); i++) {
 		if (aalg_list[i].desc.sadb_alg_id == alg_id) {
 			if (aalg_list[i].available)
-				return &aalg_list[i];
+				return (struct xfrm_algo_desc *)&aalg_list[i];
 			else
 				break;
 		}
@@ -324,7 +427,7 @@ struct xfrm_algo_desc *xfrm_ealg_get_byid(int alg_id)
 	for (i = 0; i < ealg_entries(); i++) {
 		if (ealg_list[i].desc.sadb_alg_id == alg_id) {
 			if (ealg_list[i].available)
-				return &ealg_list[i];
+				return (struct xfrm_algo_desc *)&ealg_list[i];
 			else
 				break;
 		}
@@ -340,7 +443,7 @@ struct xfrm_algo_desc *xfrm_calg_get_byid(int alg_id)
 	for (i = 0; i < calg_entries(); i++) {
 		if (calg_list[i].desc.sadb_alg_id == alg_id) {
 			if (calg_list[i].available)
-				return &calg_list[i];
+				return (struct xfrm_algo_desc *)&calg_list[i];
 			else
 				break;
 		}
@@ -349,8 +452,9 @@ struct xfrm_algo_desc *xfrm_calg_get_byid(int alg_id)
 }
 EXPORT_SYMBOL_GPL(xfrm_calg_get_byid);
 
-static struct xfrm_algo_desc *xfrm_get_byname(struct xfrm_algo_desc *list,
+static struct xfrm_algo_desc *xfrm_get_byname(struct xfrm_nalgo_desc *list,
 					      int entries, char *name,
+					      u32 type, u32 mask,
 					      int probe)
 {
 	int i, status;
@@ -359,49 +463,83 @@ static struct xfrm_algo_desc *xfrm_get_byname(struct xfrm_algo_desc *list,
 		return NULL;
 
 	for (i = 0; i < entries; i++) {
-		if (strcmp(name, list[i].name))
+		if (strcmp(name, list[i].name) &&
+		    list[i].compat && strcmp(name, list[i].compat))
 			continue;
 
 		if (list[i].available)
-			return &list[i];
+			return (struct xfrm_algo_desc *)&list[i];
 
 		if (!probe)
 			break;
 
-		status = crypto_alg_available(name, 0);
+		status = type ? 1 : crypto_alg_available(name, 0);
 		if (!status)
 			break;
 
 		list[i].available = status;
-		return &list[i];
+		return (struct xfrm_algo_desc *)&list[i];
 	}
 	return NULL;
 }
 
 struct xfrm_algo_desc *xfrm_aalg_get_byname(char *name, int probe)
 {
-	return xfrm_get_byname(aalg_list, aalg_entries(), name, probe);
+	return xfrm_get_byname(aalg_list, aalg_entries(), name,
+			       NCRYPTO_ALG_TYPE_HASH,
+			       NCRYPTO_ALG_TYPE_HASH_MASK, probe);
 }
 EXPORT_SYMBOL_GPL(xfrm_aalg_get_byname);
 
 struct xfrm_algo_desc *xfrm_ealg_get_byname(char *name, int probe)
 {
-	return xfrm_get_byname(ealg_list, ealg_entries(), name, probe);
+	return xfrm_get_byname(ealg_list, ealg_entries(), name,
+			       NCRYPTO_ALG_TYPE_BLKCIPHER,
+			       NCRYPTO_ALG_TYPE_MASK, probe);
 }
 EXPORT_SYMBOL_GPL(xfrm_ealg_get_byname);
 
 struct xfrm_algo_desc *xfrm_calg_get_byname(char *name, int probe)
 {
-	return xfrm_get_byname(calg_list, calg_entries(), name, probe);
+	return xfrm_get_byname(calg_list, calg_entries(), name, 0, 0, probe);
 }
 EXPORT_SYMBOL_GPL(xfrm_calg_get_byname);
+
+struct xfrm_algo_desc *xfrm_aead_get_byname(char *name, int icv_len, int probe)
+{
+	struct xfrm_nalgo_desc *list = aead_list;
+	int entries = aead_entries();
+	int i;
+
+	if (!name)
+		return NULL;
+
+	for (i = 0; i < entries; i++) {
+		if (strcmp(name, list[i].name))
+			continue;
+
+		if (icv_len && icv_len != list[i].uinfo.aead.icv_truncbits)
+			continue;
+
+		if (list[i].available)
+			return (struct xfrm_algo_desc *)&list[i];
+
+		if (!probe)
+			break;
+
+		list[i].available = 1;
+		return (struct xfrm_algo_desc *)&list[i];
+	}
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(xfrm_aead_get_byname);
 
 struct xfrm_algo_desc *xfrm_aalg_get_byidx(unsigned int idx)
 {
 	if (idx >= aalg_entries())
 		return NULL;
 
-	return &aalg_list[idx];
+	return (struct xfrm_algo_desc *)&aalg_list[idx];
 }
 EXPORT_SYMBOL_GPL(xfrm_aalg_get_byidx);
 
@@ -410,7 +548,7 @@ struct xfrm_algo_desc *xfrm_ealg_get_byidx(unsigned int idx)
 	if (idx >= ealg_entries())
 		return NULL;
 
-	return &ealg_list[idx];
+	return (struct xfrm_algo_desc *)&ealg_list[idx];
 }
 EXPORT_SYMBOL_GPL(xfrm_ealg_get_byidx);
 
@@ -427,15 +565,11 @@ void xfrm_probe_algs(void)
 	BUG_ON(in_softirq());
 
 	for (i = 0; i < aalg_entries(); i++) {
-		status = crypto_alg_available(aalg_list[i].name, 0);
-		if (aalg_list[i].available != status)
-			aalg_list[i].available = status;
+		aalg_list[i].available = 1;
 	}
 	
 	for (i = 0; i < ealg_entries(); i++) {
-		status = crypto_alg_available(ealg_list[i].name, 0);
-		if (ealg_list[i].available != status)
-			ealg_list[i].available = status;
+		ealg_list[i].available = 1;
 	}
 	
 	for (i = 0; i < calg_entries(); i++) {

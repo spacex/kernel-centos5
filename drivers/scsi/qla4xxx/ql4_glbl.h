@@ -80,6 +80,9 @@ int qla4xxx_process_ddb_changed(struct scsi_qla_host * ha,
 void qla4xxx_free_pdu(struct scsi_qla_host * ha, struct pdu_entry * pdu);
 int qla4xxx_mailbox_command(struct scsi_qla_host *ha, uint8_t inCount,
                             uint8_t outCount, uint32_t *mbx_cmd, uint32_t *mbx_sts);
+int qla4xxx_send_marker_iocb(struct scsi_qla_host *ha,
+	struct ddb_entry *ddb_entry, int lun);
+
 
 
 extern int extended_error_logging;

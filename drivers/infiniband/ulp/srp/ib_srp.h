@@ -54,6 +54,7 @@ enum {
 
 	SRP_PORT_REDIRECT	= 1,
 	SRP_DLID_REDIRECT	= 2,
+	SRP_STALE_CONN		= 3,
 
 	SRP_MAX_LUN		= 512,
 	SRP_DEF_SG_TABLESIZE	= 12,
@@ -77,6 +78,11 @@ enum srp_target_state {
 	SRP_TARGET_CONNECTING,
 	SRP_TARGET_DEAD,
 	SRP_TARGET_REMOVED
+};
+
+enum srp_request_type {
+	SRP_REQ_NORMAL,
+	SRP_REQ_TASK_MGMT,
 };
 
 struct srp_device {
@@ -107,7 +113,7 @@ struct srp_request {
 	struct srp_iu	       *tsk_mgmt;
 	struct ib_pool_fmr     *fmr;
 	/*
-	 * Fake scatterlist used when scmnd->use_sg==0.  Can be killed
+	 * Fake scatterlist used when scsi_sg_count(scmnd)==0.  Can be killed
 	 * when the SCSI midlayer no longer generates non-SG commands.
 	 */
 	struct scatterlist	fake_sg;
@@ -129,7 +135,7 @@ struct srp_target_port {
 	unsigned int		scsi_id;
 
 	struct ib_sa_path_rec	path;
-	u8			orig_dgid[16];
+	__be16			orig_dgid[8];
 	struct ib_sa_query     *path_query;
 	int			path_query_id;
 
@@ -160,6 +166,7 @@ struct srp_target_port {
 	int			status;
 	enum srp_target_state	state;
 	int			qp_in_error;
+	struct timer_list	qp_err_timer;
 };
 
 struct srp_iu {

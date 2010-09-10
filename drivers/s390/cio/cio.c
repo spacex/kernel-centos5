@@ -20,6 +20,7 @@
 #include <asm/cio.h>
 #include <asm/delay.h>
 #include <asm/irq.h>
+#include <asm/chpid.h>
 
 #include "airq.h"
 #include "cio.h"
@@ -28,6 +29,7 @@
 #include "ioasm.h"
 #include "blacklist.h"
 #include "cio_debug.h"
+#include "chp.h"
 
 debug_info_t *cio_debug_msg_id;
 debug_info_t *cio_debug_trace_id;
@@ -567,9 +569,10 @@ cio_validate_subchannel (struct subchannel *sch, struct subchannel_id schid)
 			      sch->schib.pmcw.dev, sch->schid.ssid);
 		return -ENODEV;
 	}
-	sch->opm = 0xff;
-	if (!cio_is_console(sch->schid))
-		chsc_validate_chpids(sch);
+	if (cio_is_console(sch->schid))
+		sch->opm = 0xff;
+	else
+		sch->opm = chp_get_sch_opm(sch);
 	sch->lpm = sch->schib.pmcw.pam & sch->opm;
 
 	CIO_DEBUG(KERN_INFO, 0,

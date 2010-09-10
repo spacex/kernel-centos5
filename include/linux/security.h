@@ -71,6 +71,7 @@ struct xfrm_user_sec_ctx;
 extern int cap_netlink_send(struct sock *sk, struct sk_buff *skb);
 extern int cap_netlink_recv(struct sk_buff *skb, int cap);
 
+extern unsigned long mmap_min_addr;
 /*
  * Values used in the task_security_ops calls
  */
@@ -1396,6 +1397,12 @@ struct security_operations {
 
 #endif	/* CONFIG_KEYS */
 
+#ifndef __GENKSYMS__
+	int (*file_mmap_addr) (struct file * file,
+				unsigned long reqprot,
+				unsigned long prot, unsigned long flags,
+				unsigned long addr, unsigned long addr_only);
+#endif
 };
 
 /* global variables */
@@ -1815,7 +1822,18 @@ static inline int security_file_mmap (struct file *file, unsigned long reqprot,
 				      unsigned long prot,
 				      unsigned long flags)
 {
-	return security_ops->file_mmap (file, reqprot, prot, flags);
+	return security_ops->file_mmap_addr (file, reqprot, prot, flags,
+					     (unsigned long)-1, 0);
+}
+
+static inline int security_file_mmap_addr (struct file *file, unsigned long reqprot,
+					   unsigned long prot,
+					   unsigned long flags,
+					   unsigned long addr,
+					   unsigned long addr_only)
+{
+	return security_ops->file_mmap_addr (file, reqprot, prot, flags,
+					     addr, addr_only);
 }
 
 static inline int security_file_mprotect (struct vm_area_struct *vma,
@@ -2489,6 +2507,15 @@ static inline int security_file_ioctl (struct file *file, unsigned int cmd,
 static inline int security_file_mmap (struct file *file, unsigned long reqprot,
 				      unsigned long prot,
 				      unsigned long flags)
+{
+	return 0;
+}
+
+static inline int security_file_mmap_addr (struct file *file, unsigned long reqprot,
+					   unsigned long prot,
+					   unsigned long flags,
+					   unsigned long addr,
+					   unsigned long addr_only)
 {
 	return 0;
 }

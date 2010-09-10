@@ -1301,7 +1301,7 @@ static void update_wall_time(void)
  * Called from the timer interrupt handler to charge one tick to the current 
  * process.  user_tick is 1 if the tick is user time, 0 for system.
  */
-void update_process_times(int user_tick)
+void update_process_times(int user_tick, struct pt_regs *regs)
 {
 	struct task_struct *p = current;
 	int cpu = smp_processor_id();
@@ -1311,7 +1311,7 @@ void update_process_times(int user_tick)
 		account_user_time(p, jiffies_to_cputime(1));
 	else
 		account_system_time(p, HARDIRQ_OFFSET, jiffies_to_cputime(1));
-	run_local_timers();
+	run_local_timers(regs);
 	if (rcu_pending(cpu))
 		rcu_check_callbacks(cpu, user_tick);
 	scheduler_tick();
@@ -1385,10 +1385,10 @@ static void run_timer_softirq(struct softirq_action *h)
 /*
  * Called by the local, per-CPU timer interrupt on SMP.
  */
-void run_local_timers(void)
+void run_local_timers(struct pt_regs *regs)
 {
 	raise_softirq(TIMER_SOFTIRQ);
-	softlockup_tick();
+	softlockup_tick(regs);
 }
 
 /*

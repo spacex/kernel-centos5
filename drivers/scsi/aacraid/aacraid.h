@@ -12,8 +12,7 @@
  *----------------------------------------------------------------------------*/
 
 #ifndef AAC_DRIVER_BUILD
-# define AAC_DRIVER_BUILD 2437
-# define AAC_DRIVER_BRANCH "-mh4"
+# define AAC_DRIVER_BUILD 2453
 #endif
 #define MAXIMUM_NUM_CONTAINERS	32
 
@@ -521,6 +520,12 @@ struct aac_driver_ident
 #define AAC_QUIRK_17SG	0x0010
 
 /*
+ *	Some adapter firmware does not support 64 bit scsi passthrough
+ * commands.
+ */
+#define AAC_QUIRK_SCSI_32	0x0020
+
+/*
  *	The adapter interface specs all queues to be located in the same
  *	physically contigous block. The host structure that defines the
  *	commuication queues will assume they are each a separate physically
@@ -865,6 +870,7 @@ struct aac_supplement_adapter_info
 };
 #define AAC_FEATURE_FALCON	0x00000010
 #define AAC_OPTION_MU_RESET	0x00000001
+#define AAC_OPTION_IGNORE_RESET	0x00000002
 #define AAC_SIS_VERSION_V3	3
 #define AAC_SIS_SLOT_UNKNOWN	0xFF
 
@@ -1261,6 +1267,19 @@ struct aac_synchronize_reply {
 	u8		data[16];
 };
 
+#define CT_PAUSE_IO    65
+#define CT_RELEASE_IO  66
+struct aac_pause {
+	__le32		command;	/* VM_ContainerConfig */
+	__le32		type;		/* CT_PAUSE_IO */
+	__le32		timeout;	/* 10ms ticks */
+	__le32		min;
+	__le32		noRescan;
+	__le32		parm3;
+	__le32		parm4;
+	__le32		count;	/* sizeof(((struct aac_pause_reply *)NULL)->data) */
+};
+
 struct aac_srb
 {
 	__le32		function;
@@ -1512,7 +1531,7 @@ struct aac_mntent {
 	__le32			capacityhigh;
 };
 
-#define FSCS_NOTCLEAN	0x0001  /* fsck is neccessary before mounting */
+#define FSCS_NOTCLEAN	0x0001  /* fsck is necessary before mounting */
 #define FSCS_READONLY	0x0002	/* possible result of broken mirror */
 #define FSCS_HIDDEN	0x0004	/* should be ignored - set during a clear */
 
@@ -1551,6 +1570,20 @@ struct aac_get_name_resp {
 	__le32		parm4;
 	__le32		parm5;
 	u8		data[16];
+};
+
+#define CT_CID_TO_32BITS_UID 165
+struct aac_get_serial {
+	__le32		command;	/* VM_ContainerConfig */
+	__le32		type;		/* CT_CID_TO_32BITS_UID */
+	__le32		cid;
+};
+
+struct aac_get_serial_resp {
+	__le32		dummy0;
+	__le32		dummy1;
+	__le32		status;	/* CT_OK */
+	__le32		uid;
 };
 
 /*
@@ -1779,10 +1812,10 @@ struct aac_aifcmd {
  *  	accounting for the fact capacity could be a 64 bit value
  *
  */
-static inline u32 cap_to_cyls(sector_t capacity, u32 divisor)
+static inline unsigned int cap_to_cyls(sector_t capacity, unsigned divisor)
 {
 	sector_div(capacity, divisor);
-	return (u32)capacity;
+	return capacity;
 }
 
 /* SCp.phase values */
@@ -1821,11 +1854,19 @@ int aac_queue_get(struct aac_dev * dev, u32 * index, u32 qid, struct hw_fib * hw
 unsigned int aac_response_normal(struct aac_queue * q);
 unsigned int aac_command_normal(struct aac_queue * q);
 unsigned int aac_intr_normal(struct aac_dev * dev, u32 Index);
+int aac_reset_adapter(struct aac_dev * dev, int forced);
 int aac_check_health(struct aac_dev * dev);
 int aac_command_thread(void *data);
 int aac_close_fib_context(struct aac_dev * dev, struct aac_fib_context *fibctx);
 int aac_fib_adapter_complete(struct fib * fibptr, unsigned short size);
 struct aac_driver_ident* aac_get_driver_ident(int devtype);
+/* Local Structure to set SCSI inquiry data strings */
+struct scsi_inq {
+	char vid[8];         /* Vendor ID */
+	char pid[16];        /* Product ID */
+	char prl[4];         /* Product Revision Level */
+};
+void setinqstr(struct aac_dev *dev, void *data, int tindex);
 int aac_get_adapter_info(struct aac_dev* dev);
 int aac_send_shutdown(struct aac_dev *dev);
 int aac_probe_container(struct aac_dev *dev, int cid);
@@ -1840,3 +1881,6 @@ extern int aif_timeout;
 extern int expose_physicals;
 extern int aac_reset_devices;
 extern int aac_commit;
+extern int update_interval;
+extern int check_interval;
+extern int aac_check_reset;

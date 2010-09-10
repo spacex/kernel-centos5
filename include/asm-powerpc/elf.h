@@ -281,15 +281,11 @@ extern int arch_setup_additional_pages(struct linux_binprm *bprm,
  * - keep the final alignment of sp (sp & 0xf)
  * - make sure the 32-bit value at the first 16 byte aligned position of
  *   AUXV is greater than 16 for glibc compatibility.
- *   AT_IGNOREPPC is used for that.
  * - for compatibility with glibc ARCH_DLINFO must always be defined on PPC,
  *   even if DLINFO_ARCH_ITEMS goes to zero or is undefined.
  */
 #define ARCH_DLINFO							\
 do {									\
-	/* Handle glibc compatibility. */				\
-	NEW_AUX_ENT(AT_IGNOREPPC, AT_IGNOREPPC);			\
-	NEW_AUX_ENT(AT_IGNOREPPC, AT_IGNOREPPC);			\
 	/* Cache size items */						\
 	NEW_AUX_ENT(AT_DCACHEBSIZE, dcache_bsize);			\
 	NEW_AUX_ENT(AT_ICACHEBSIZE, icache_bsize);			\
@@ -416,13 +412,8 @@ do {									\
 /* Notes used in ET_CORE. Note name is "SPU/<fd>/<filename>". */
 #define NT_SPU		1
 
-extern int arch_notes_size(void);
-extern void arch_write_notes(struct file *file);
-
-#define ELF_CORE_EXTRA_NOTES_SIZE arch_notes_size()
-#define ELF_CORE_WRITE_EXTRA_NOTES arch_write_notes(file)
-
 #define ARCH_HAVE_EXTRA_ELF_NOTES
-#endif /* CONFIG_PPC_CELL */
+
+#endif /* CONFIG_SPU_BASE */
 
 #endif /* _ASM_POWERPC_ELF_H */

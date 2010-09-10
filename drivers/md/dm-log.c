@@ -42,7 +42,7 @@ int dm_unregister_dirty_log_type(struct dirty_log_type *type)
 	return 0;
 }
 
-static struct dirty_log_type *get_type(const char *type_name)
+static struct dirty_log_type *_get_type(const char *type_name)
 {
 	struct dirty_log_type *type;
 
@@ -60,6 +60,62 @@ static struct dirty_log_type *get_type(const char *type_name)
 
 	spin_unlock(&_lock);
 	return NULL;
+}
+
+/*
+ * get_type
+ * @type_name
+ *
+ * Attempt to retrieve the dirty_log_type by name.
+ * If not immediately available, attempt to find
+ * the appropriate module.
+ *
+ * Log modules are named "dm-log-" followed by
+ * the 'type_name'.  Some modules contain multiple
+ * types, however.  In those cases, the 'type_name'
+ * may include more than we need.  However, '-'s
+ * in the type_name reveal the extra information.
+ * So, this function will try loading the module
+ * "dm-log-<type_name>", then try truncating the
+ * 'type_name' on the last '-' and try again.
+ * For example, if type_name was "clustered-disk",
+ * it would try loading:
+ *   dm-log-clustered-disk
+ *   dm-log-clustered
+ *
+ * Returns: dirty_log_type* on success, NULL on failure
+ */
+static struct dirty_log_type *get_type(const char *type_name)
+{
+	char *p, *type_name_dup;
+	struct dirty_log_type *type;
+
+	type = _get_type(type_name);
+	if (type)
+		return type;
+
+	type_name_dup = kstrdup(type_name, GFP_KERNEL);
+	if (!type_name_dup) {
+		DMWARN("No memory left to attempt log module load for \"%s\"",
+		       type_name);
+		return NULL;
+	}
+
+	while (request_module("dm-log-%s", type_name_dup) ||
+	       !(type = _get_type(type_name))) {
+		/* find the last '-' */
+		p = strrchr(type_name_dup, '-');
+		if (!p)
+			break;
+		p[0] = '\0';
+	}
+
+	if (!type)
+		DMWARN("Module for logging type \"%s\" not found.", type_name);
+
+	kfree(type_name_dup);
+
+	return type;
 }
 
 static void put_type(struct dirty_log_type *type)

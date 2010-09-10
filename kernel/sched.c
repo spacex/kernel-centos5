@@ -867,7 +867,7 @@ static int recalc_task_prio(struct task_struct *p, unsigned long long now)
 	/* Caller must always ensure 'now >= p->timestamp' */
 	unsigned long sleep_time = now - p->timestamp;
 
-	if (batch_task(p))
+	if (batch_task(p) || sched_interactive == 0)
 		sleep_time = 0;
 
 	if (likely(sleep_time > 0)) {
@@ -1587,9 +1587,9 @@ void fastcall sched_fork(struct task_struct *p, int clone_flags)
 	p->time_slice = (current->time_slice + 1) >> 1;
 	/*
 	 * The remainder of the first timeslice might be recovered by
-	 * the parent if the child exits early enough.
+	 * the creator (not parent) if the child exits early enough.
 	 */
-	p->first_time_slice = 1;
+	p->first_time_slice = current->pid;
 	current->time_slice >>= 1;
 	p->timestamp = sched_clock();
 	if (unlikely(!current->time_slice)) {
@@ -1700,22 +1700,27 @@ void fastcall sched_exit(struct task_struct *p)
 {
 	unsigned long flags;
 	struct rq *rq;
-
+	struct task_struct* creator = NULL;
 	/*
 	 * If the child was a (relative-) CPU hog then decrease
 	 * the sleep_avg of the parent as well.
 	 */
-	rq = task_rq_lock(p->parent, &flags);
-	if (p->first_time_slice && task_cpu(p) == task_cpu(p->parent)) {
-		p->parent->time_slice += p->time_slice;
-		if (unlikely(p->parent->time_slice > task_timeslice(p)))
-			p->parent->time_slice = task_timeslice(p);
-	}
-	if (p->sleep_avg < p->parent->sleep_avg)
-		p->parent->sleep_avg = p->parent->sleep_avg /
+
+        if (p->first_time_slice) {
+                creator = find_task_by_pid((pid_t)p->first_time_slice);
+                if (creator && task_cpu(p) == task_cpu(creator)) {
+                        rq = task_rq_lock(creator, &flags);
+                        creator->time_slice += p->time_slice;
+                        if (unlikely(creator->time_slice > task_timeslice(p)))
+                                creator->time_slice = task_timeslice(p);
+
+                        if (p->sleep_avg < creator->sleep_avg)
+                                creator->sleep_avg = creator->sleep_avg /
 		(EXIT_WEIGHT + 1) * EXIT_WEIGHT + p->sleep_avg /
 		(EXIT_WEIGHT + 1);
 	task_rq_unlock(rq, &flags);
+                }
+        }
 }
 
 /**
@@ -2937,6 +2942,8 @@ static inline int expired_starving(struct rq *rq)
 		return 1;
 	if (!STARVATION_LIMIT || !rq->expired_timestamp)
 		return 0;
+	if (sched_interactive == 1)
+		return 1;
 	if (jiffies - rq->expired_timestamp > STARVATION_LIMIT * rq->nr_running)
 		return 1;
 	return 0;
@@ -4059,6 +4066,16 @@ static inline struct task_struct *find_process_by_pid(pid_t pid)
 	return pid ? find_task_by_pid(pid) : current;
 }
 
+/*
+ * interactive mode:
+ * 2 - strong (default)
+ * 1 - weak - avoids starvation of tasks due to interactive bonus
+ * 0 - disabled - no bonus at all
+ */
+int __read_mostly sched_interactive = 2;
+int sched_interactive_min = 0;
+int sched_interactive_max = 2;
+
 /* Actually do priority change: must hold rq lock. */
 static void __setscheduler(struct task_struct *p, int policy, int prio)
 {
@@ -4073,6 +4090,8 @@ static void __setscheduler(struct task_struct *p, int policy, int prio)
 	 * SCHED_BATCH tasks are treated as perpetual CPU hogs:
 	 */
 	if (policy == SCHED_BATCH)
+		p->sleep_avg = 0;
+	if (policy == SCHED_NORMAL && sched_interactive == 0)
 		p->sleep_avg = 0;
 	set_load_weight(p);
 }
@@ -4817,7 +4836,7 @@ void show_state(void)
  * NOTE: this function does not set the idle thread's NEED_RESCHED
  * flag, to make booting more robust.
  */
-void __devinit init_idle(struct task_struct *idle, int cpu)
+void __cpuinit init_idle(struct task_struct *idle, int cpu)
 {
 	struct rq *rq = cpu_rq(cpu);
 	unsigned long flags;
@@ -5459,7 +5478,7 @@ static void cpu_attach_domain(struct sched_domain *sd, int cpu)
 }
 
 /* cpus with isolated domains */
-static cpumask_t cpu_isolated_map = CPU_MASK_NONE;
+static cpumask_t __cpuinitdata cpu_isolated_map = CPU_MASK_NONE;
 
 /* Setup the mask of cpus configured for isolated domains */
 static int __init isolated_cpu_setup(char *str)
@@ -6747,11 +6766,20 @@ static int update_sched_domains(struct notifier_block *nfb,
 
 void __init sched_init_smp(void)
 {
+	cpumask_t non_isolated_cpus;
+
 	lock_cpu_hotplug();
 	arch_init_sched_domains(&cpu_online_map);
+	cpus_andnot(non_isolated_cpus, cpu_possible_map, cpu_isolated_map);
+	if (cpus_empty(non_isolated_cpus))
+		cpu_set(smp_processor_id(), non_isolated_cpus);
 	unlock_cpu_hotplug();
 	/* XXX: Theoretical race here - CPU may be hotplugged now */
 	hotcpu_notifier(update_sched_domains, 0);
+
+	/* Move init over to a non-isolated CPU */
+	if (set_cpus_allowed(current, non_isolated_cpus) < 0)
+		BUG();
 }
 #else
 void __init sched_init_smp(void)

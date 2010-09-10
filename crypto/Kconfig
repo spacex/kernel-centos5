@@ -9,12 +9,78 @@ config CRYPTO
 	help
 	  This option provides the core Cryptographic API.
 
+config CRYPTO_API
+	tristate
+	depends on CRYPTO
+	help
+	  This option provides the (backported) core Cryptographic API.
+
+config CRYPTO_ALGAPI
+	tristate
+	depends on CRYPTO
+	select CRYPTO_API
+	help
+	  This option provides the API for cryptographic algorithms.
+
+config CRYPTO_AEAD
+	tristate
+	depends on CRYPTO
+	select CRYPTO_ALGAPI
+
+config CRYPTO_BLKCIPHER
+	tristate
+	depends on CRYPTO
+	select CRYPTO_ALGAPI
+
+config CRYPTO_SEQIV
+	tristate "Sequence Number IV Generator"
+	select CRYPTO_AEAD
+	select CRYPTO_BLKCIPHER
+	depends on CRYPTO
+	help
+	  This IV generator generates an IV based on a sequence number by
+	  xoring it with a salt.  This algorithm is mainly useful for CTR
+	  and similar modes.
+
+config CRYPTO_HASH
+	tristate
+	depends on CRYPTO
+	select CRYPTO_ALGAPI
+
+config CRYPTO_MANAGER
+	tristate "Cryptographic algorithm manager"
+	depends on CRYPTO
+	select CRYPTO_ALGAPI
+	help
+	  Create default cryptographic template instantiations such as
+	  cbc(aes).
+
 config CRYPTO_HMAC
 	bool "HMAC support"
 	depends on CRYPTO
 	help
 	  HMAC: Keyed-Hashing for Message Authentication (RFC2104).
 	  This is required for IPSec.
+
+config CRYPTO_NHMAC
+	tristate "HMAC support (new)"
+	select CRYPTO_HASH
+	select CRYPTO_MANAGER
+	depends on CRYPTO
+	help
+	  HMAC: Keyed-Hashing for Message Authentication (RFC2104).
+	  This is required for IPSec.
+
+config CRYPTO_XCBC
+	tristate "XCBC support"
+	depends on EXPERIMENTAL
+	select CRYPTO_HASH
+	select CRYPTO_MANAGER
+	help
+	  XCBC: Keyed-Hashing with encryption algorithm
+		http://www.ietf.org/rfc/rfc3566.txt
+		http://csrc.nist.gov/encryption/modes/proposedmodes/
+		 xcbc-mac/xcbc-mac-spec.pdf
 
 config CRYPTO_NULL
 	tristate "Null algorithms"
@@ -78,6 +144,19 @@ config CRYPTO_SHA512
 	  This code also includes SHA-384, a 384 bit hash with 192 bits
 	  of security against collision attacks.
 
+config CRYPTO_SHA512_S390
+	tristate "SHA384 and SHA512 digest algorithms (s390)"
+	depends on CRYPTO && S390
+	help
+	  SHA512 secure hash standard (DFIPS 180-2).
+	  
+	  This is the s390 hardware accelerated implementation of SHA 
+	  implementing a 512 bit hash with 256 bits of
+	  security against collision attacks.
+
+	  This code also includes SHA-384, a 384 bit hash with 192 bits
+	  of security against collision attacks.
+
 config CRYPTO_WP512
 	tristate "Whirlpool digest algorithms"
 	depends on CRYPTO
@@ -102,6 +181,42 @@ config CRYPTO_TGR192
 
 	  See also:
 	  <http://www.cs.technion.ac.il/~biham/Reports/Tiger/>.
+
+config CRYPTO_ECB
+	tristate "ECB support"
+	depends on CRYPTO
+	select CRYPTO_BLKCIPHER
+	select CRYPTO_MANAGER
+	help
+	  ECB: Electronic CodeBook mode
+	  This is the simplest block cipher algorithm.  It simply encrypts
+	  the input block by block.
+
+config CRYPTO_CBC
+	tristate "CBC support"
+	depends on CRYPTO
+	select CRYPTO_BLKCIPHER
+	select CRYPTO_MANAGER
+	help
+	  CBC: Cipher Block Chaining mode
+	  This block cipher algorithm is required for IPSec.
+
+config CRYPTO_CTR
+	tristate "CTR support"
+	depends on CRYPTO
+	select CRYPTO_BLKCIPHER
+	select CRYPTO_SEQIV
+	select CRYPTO_MANAGER
+	help
+	  CTR: Counter mode
+	  This block cipher algorithm is required for IPSec.
+
+config CRYPTO_CCM
+	tristate "CCM support"
+	select CRYPTO_CTR
+	select CRYPTO_AEAD
+	help
+	  Support for Counter with CBC MAC. Required for IPsec.
 
 config CRYPTO_DES
 	tristate "DES and Triple DES EDE cipher algorithms"
@@ -338,8 +453,19 @@ config CRYPTO_CRC32C
 config CRYPTO_TEST
 	tristate "Testing module"
 	depends on CRYPTO && m
+	select CRYPTO_ALGAPI
+	select CRYPTO_AEAD
 	help
 	  Quick & dirty crypto test module.
+
+config CRYPTO_AUTHENC
+	tristate "Authenc support"
+	select CRYPTO_AEAD
+	select CRYPTO_MANAGER
+	select CRYPTO_HASH
+	help
+	  Authenc: Combined mode wrapper for IPsec.
+	  This is required for IPSec.
 
 config CRYPTO_SIGNATURE
 	bool "In-kernel signature checker (EXPERIMENTAL)"

@@ -194,7 +194,7 @@ void iwch_ev_dispatch(struct cxio_rdev *rdev_p, struct sk_buff *skb)
 	case TPT_ERR_INTERNAL_ERR:
 		post_qp_event(rnicp, chp, rsp_msg, IB_EVENT_DEVICE_FATAL, 1);
 		break;
-	
+
 	/* QP Fatal Errors */
 	case TPT_ERR_OUT_OF_RQE:
 	case TPT_ERR_PBL_ADDR_BOUND:
@@ -223,7 +223,7 @@ void iwch_ev_dispatch(struct cxio_rdev *rdev_p, struct sk_buff *skb)
 	}
 done:
 	if (atomic_dec_and_test(&chp->refcnt))
-                wake_up(&chp->wait);
+	        wake_up(&chp->wait);
 	iwch_qp_rem_ref(&qhp->ibqp);
 out:
 	dev_kfree_skb_irq(skb);

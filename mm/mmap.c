@@ -931,6 +931,9 @@ unsigned long do_mmap_pgoff(struct file * file, unsigned long addr,
 	if (!len)
 		return -EINVAL;
 
+	if (!(flags & MAP_FIXED))
+		addr = round_hint_to_min(addr);
+
 	error = arch_mmap_check(addr, len, flags);
 	if (error)
 		return error;
@@ -1028,10 +1031,10 @@ unsigned long do_mmap_pgoff(struct file * file, unsigned long addr,
 		}
 	}
 
-	error = security_file_mmap(file, reqprot, prot, flags);
+	error = security_file_mmap_addr(file, reqprot, prot, flags, addr, 0);
 	if (error)
 		return error;
-		
+
 	/* Clear old maps */
 	error = -ENOMEM;
 munmap_back:
@@ -1684,6 +1687,12 @@ int expand_stack(struct vm_area_struct *vma, unsigned long address)
 	 */
 	if (unlikely(anon_vma_prepare(vma)))
 		return -ENOMEM;
+
+	address &= PAGE_MASK;
+	error = security_file_mmap_addr(0, 0, 0, 0, address, 1);
+	if (error)
+		return error;
+
 	anon_vma_lock(vma);
 
 	/*
@@ -1691,8 +1700,6 @@ int expand_stack(struct vm_area_struct *vma, unsigned long address)
 	 * is required to hold the mmap_sem in read mode.  We need the
 	 * anon_vma lock to serialize against concurrent expand_stacks.
 	 */
-	address &= PAGE_MASK;
-	error = 0;
 
 	/* Somebody else might have raced and expanded it already */
 	if (address < vma->vm_start) {
@@ -1973,6 +1980,10 @@ unsigned long do_brk(unsigned long addr, unsigned long len)
 	if (((addr + len) > TASK_SIZE) || ((addr + len) < addr) ||
 			is_hugepage_only_range(mm, addr, len))
 		return -EINVAL;
+
+	error = security_file_mmap_addr(0, 0, 0, 0, addr, 1);
+	if (error)
+		return error;
 
 	flags = VM_DATA_DEFAULT_FLAGS | VM_ACCOUNT | mm->def_flags;
 

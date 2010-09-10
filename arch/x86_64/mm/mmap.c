@@ -36,6 +36,38 @@
 #define MIN_GAP (128*1024*1024)
 #define MAX_GAP (TASK_SIZE/6*5)
 
+/*
+ * True on X86_32 or when emulating IA32 on X86_64
+ */
+static int mmap_is_ia32(void)
+{
+#ifdef __i386__
+	return 1;
+#endif
+#ifdef CONFIG_IA32_EMULATION
+	if (test_thread_flag(TIF_IA32))
+		return 1;
+#endif
+	return 0;
+}
+
+static unsigned long mmap_rnd(void)
+{
+	unsigned long rnd = 0;
+
+	/*
+	 *  8 bits of randomness in 32bit mmaps, 20 address space bits
+	 * 28 bits of randomness in 64bit mmaps, 40 address space bits
+	 */
+	if (current->flags & PF_RANDOMIZE) {
+		if (mmap_is_ia32())
+			rnd = (long)get_random_int() % (1<<8);
+		else
+			rnd = (long)(get_random_int() % (1<<28));
+	}
+	return rnd << PAGE_SHIFT;
+}
+
 static inline unsigned long mmap_base(void)
 {
 	unsigned long gap = current->signal->rlim[RLIMIT_STACK].rlim_cur;
@@ -45,7 +77,7 @@ static inline unsigned long mmap_base(void)
 	else if (gap > MAX_GAP)
 		gap = MAX_GAP;
 
-	return TASK_SIZE - (gap & PAGE_MASK);
+	return PAGE_ALIGN(TASK_SIZE - (gap & PAGE_MASK) - mmap_rnd());
 }
 
 static inline int mmap_is_legacy(void)
@@ -66,6 +98,18 @@ static inline int mmap_is_legacy(void)
 }
 
 /*
+ * Bottom-up (legacy) layout on X86_32 did not support randomization, X86_64
+ * does, but not when emulating X86_32
+ */
+static unsigned long mmap_legacy_base(void)
+{
+	if (mmap_is_ia32())
+		return TASK_UNMAPPED_BASE;
+	else
+		return TASK_UNMAPPED_BASE + mmap_rnd();
+}
+
+/*
  * This function, called very early during the creation of a new
  * process VM image, sets up which VM layout function to use:
  */
@@ -76,7 +120,7 @@ void arch_pick_mmap_layout(struct mm_struct *mm)
 	 * bit is set, or if the expected stack growth is unlimited:
 	 */
 	if (mmap_is_legacy()) {
-		mm->mmap_base = TASK_UNMAPPED_BASE;
+		mm->mmap_base = mmap_legacy_base();
 		mm->get_unmapped_area = arch_get_unmapped_area;
 		mm->unmap_area = arch_unmap_area;
 	} else {

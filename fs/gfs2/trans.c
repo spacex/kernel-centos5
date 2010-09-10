@@ -1,6 +1,6 @@
 /*
  * Copyright (C) Sistina Software, Inc.  1997-2003 All rights reserved.
- * Copyright (C) 2004-2006 Red Hat, Inc.  All rights reserved.
+ * Copyright (C) 2004-2008 Red Hat, Inc.  All rights reserved.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
@@ -117,6 +117,42 @@ void gfs2_trans_end(struct gfs2_sbd *sdp)
 void gfs2_trans_add_gl(struct gfs2_glock *gl)
 {
 	lops_add(gl->gl_sbd, &gl->gl_le);
+}
+
+/**
+ * gfs2_attach_bufdata - attach a struct gfs2_bufdata structure to a buffer
+ * @gl: the glock the buffer belongs to
+ * @bh: The buffer to be attached to
+ * @meta: Flag to indicate whether its metadata or not
+ */
+
+static void gfs2_attach_bufdata(struct gfs2_glock *gl, struct buffer_head *bh,
+				int meta)
+{
+	struct gfs2_bufdata *bd;
+
+	if (meta)
+		lock_page(bh->b_page);
+
+	if (bh->b_private) {
+		if (meta)
+			unlock_page(bh->b_page);
+		return;
+	}
+
+	bd = kmem_cache_zalloc(gfs2_bufdata_cachep, GFP_NOFS | __GFP_NOFAIL);
+	bd->bd_bh = bh;
+	bd->bd_gl = gl;
+
+	INIT_LIST_HEAD(&bd->bd_list_tr);
+	if (meta)
+		lops_init_le(&bd->bd_le, &gfs2_buf_lops);
+	else
+		lops_init_le(&bd->bd_le, &gfs2_databuf_lops);
+	bh->b_private = bd;
+
+	if (meta)
+		unlock_page(bh->b_page);
 }
 
 /**

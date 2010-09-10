@@ -31,19 +31,10 @@
 #ifndef _IGB_H_
 #define _IGB_H_
 
-#include "igb_compat.h"
-#include "e1000_api.h"
+#include "e1000_mac.h"
 #include "e1000_82575.h"
 
 struct igb_adapter;
-
-#define IGB_ERR(args...) printk(KERN_ERR "igb: " args)
-
-#define PFX "igb: "
-#define DPRINTK(nlevel, klevel, fmt, args...) \
-	(void)((NETIF_MSG_##nlevel & adapter->msg_enable) && \
-	printk(KERN_##klevel PFX "%s: %s: " fmt, adapter->netdev->name, \
-		__FUNCTION__ , ## args))
 
 /* Interrupt defines */
 #define IGB_MAX_TX_CLEAN 72
@@ -65,9 +56,12 @@ struct igb_adapter;
 #define IGB_MIN_RXD                       80
 #define IGB_MAX_RXD                     4096
 
+#define IGB_DEFAULT_ITR                    3 /* dynamic */
+#define IGB_MAX_ITR_USECS              10000
+#define IGB_MIN_ITR_USECS                 10
+
 /* Transmit and receive queues */
-#define IGB_MAX_RX_QUEUES                  4
-#define IGB_MAX_TX_QUEUES                  4
+#define IGB_MAX_RX_QUEUES                  1
 
 /* RX descriptor control thresholds.
  * PTHRESH - MAC will consider prefetch if it has fewer than this number of
@@ -98,11 +92,7 @@ struct igb_adapter;
 #define IGB_RXBUFFER_16384 16384
 
 /* Packet Buffer allocations */
-#define IGB_PBA_BYTES_SHIFT 0xA
-#define IGB_TX_HEAD_ADDR_SHIFT 7
-#define IGB_PBA_TX_MASK 0xFFFF0000
 
-#define IGB_FC_PAUSE_TIME 0x0680 /* 858 usec */
 
 /* How many Tx Descriptors do we need to call netif_wake_queue ? */
 #define IGB_TX_QUEUE_WAKE	16
@@ -124,7 +114,6 @@ struct igb_adapter;
 struct igb_buffer {
 	struct sk_buff *skb;
 	dma_addr_t dma;
-
 	union {
 		/* TX */
 		struct {
@@ -146,40 +135,44 @@ struct igb_queue_stats {
 
 struct igb_ring {
 	struct igb_adapter *adapter; /* backlink */
-	void *desc;         /* pointer to the descriptor ring memory */
-	dma_addr_t dma;     /* physical address of the descriptor ring */
-	unsigned int size;  /* length of descriptor ring in bytes */
-	u16 count;          /* number of descriptors in the ring */
-	u16 next_to_use;    /* index to next free descriptor */
-	u16 next_to_clean;  /* index to next processed descriptor */
-	u16 head, tail;     /* indices to ring head/tail */
+	void *desc;                  /* descriptor ring memory */
+	dma_addr_t dma;              /* phys address of the ring */
+	unsigned int size;           /* length of desc. ring in bytes */
+	unsigned int count;          /* number of desc. in the ring */
+	u16 next_to_use;
+	u16 next_to_clean;
+	u16 head;
+	u16 tail;
+	struct igb_buffer *buffer_info; /* array of buffer info structs */
 
-	u16 itr_register;
-	u32 itr_val;
 	u32 eims_value;
+	u32 itr_val;
+	u16 itr_register;
+	u16 cpu;
 
-	struct igb_buffer *buffer_info;
+	unsigned int total_bytes;
+	unsigned int total_packets;
 
 	union {
 		/* TX */
 		struct {
 			spinlock_t tx_clean_lock;
+			spinlock_t tx_lock;
 			bool detect_tx_hung;
-			char name[IFNAMSIZ + 5];
 		};
 		/* RX */
 		struct {
+			/* arrays of page information for packet split */
 			struct sk_buff *pending_skb;
 			int pending_skb_page;
+			int no_itr_adjust;
+			struct igb_queue_stats rx_stats;
 			struct net_device *netdev;
 			struct igb_ring *buddy;
 		};
 	};
 
-	int cpu;
-
-	unsigned int total_bytes;
-	unsigned int total_packets;
+	char name[IFNAMSIZ + 5];
 };
 
 #define IGB_DESC_UNUSED(R) \
@@ -196,37 +189,63 @@ struct igb_ring {
 #define E1000_TX_DESC(R, i)		E1000_GET_DESC(R, i, e1000_tx_desc)
 #define E1000_RX_DESC(R, i)		E1000_GET_DESC(R, i, e1000_rx_desc)
 
-#define MAX_MSIX_COUNT 10
 /* board specific private data structure */
 
 struct igb_adapter {
+	struct timer_list watchdog_timer;
+	struct timer_list phy_info_timer;
+	struct vlan_group *vlgrp;
+	u16 mng_vlan_id;
+	u32 bd_number;
+	u32 rx_buffer_len;
+	u32 wol;
+	u32 en_mng_pt;
+	u16 link_speed;
+	u16 link_duplex;
+	unsigned int total_tx_bytes;
+	unsigned int total_tx_packets;
+	unsigned int total_rx_bytes;
+	unsigned int total_rx_packets;
+	/* Interrupt Throttle Rate */
+	u32 itr;
+	u32 itr_setting;
+	u16 tx_itr;
+	u16 rx_itr;
+	int set_itr;
+
+	struct work_struct reset_task;
+	struct work_struct watchdog_task;
+	bool fc_autoneg;
+	u8  tx_timeout_factor;
+	struct timer_list blink_timer;
+	unsigned long led_status;
+
 	/* TX */
-	struct igb_ring *tx_ring;        /* One per active queue */
-	int num_tx_queues;
+	struct igb_ring *tx_ring;      /* One per active queue */
 	unsigned int restart_queue;
 	unsigned long tx_queue_len;
 	u32 txd_cmd;
-	u32 gotcl;
-	u64 gotcl_old;
+	u32 gotc;
+	u64 gotc_old;
 	u64 tpt_old;
 	u64 colc_old;
 	u32 tx_timeout_count;
-	unsigned int total_tx_bytes;
-	unsigned int total_tx_packets;
 
 	/* RX */
-	struct igb_ring *rx_ring;        /* One per active queue */
+	struct igb_ring *rx_ring;      /* One per active queue */
+	int num_tx_queues;
 	int num_rx_queues;
-	u32 alloc_rx_buff_failed;
+
 	u64 hw_csum_err;
 	u64 hw_csum_good;
 	u64 rx_hdr_split;
-	u64 gorcl_old;
-	u32 gorcl;
-	u16 rx_ps_hdr_size;
+	u32 alloc_rx_buff_failed;
 	bool rx_csum;
-	unsigned int total_rx_bytes;
-	unsigned int total_rx_packets;
+	u32 gorc;
+	u64 gorc_old;
+	u16 rx_ps_hdr_size;
+	u32 max_frame_size;
+	u32 min_frame_size;
 
 	/* OS defined structs */
 	struct net_device *netdev;
@@ -239,34 +258,6 @@ struct igb_adapter {
 	struct e1000_phy_info phy_info;
 	struct e1000_phy_stats phy_stats;
 
-	/* timers, tasks */
-	struct timer_list watchdog_timer;
-	struct timer_list phy_info_timer;
-	struct timer_list blink_timer;
-
-	struct work_struct reset_task;
-	struct work_struct watchdog_task;
-
-	struct vlan_group *vlgrp;
-	u16 mng_vlan_id;
-	u32 bd_number;
-	u32 rx_buffer_len;
-	u32 wol;
-	u32 en_mng_pt;
-	u16 link_speed;
-	u16 link_duplex;
-	/* Interrupt Throttle Rate */
-	u32 itr;
-	u32 itr_setting;
-	u16 tx_itr;
-	u16 rx_itr;
-	int set_itr;
-
-	u8 fc_autoneg;
-	u8 tx_timeout_factor;
-	unsigned long led_status;
-
-
 	u32 test_icr;
 	struct igb_ring test_tx_ring;
 	struct igb_ring test_rx_ring;
@@ -274,12 +265,11 @@ struct igb_adapter {
 	int msg_enable;
 	struct msix_entry *msix_entries;
 	u32 eims_enable_mask;
-	u32 lli_port;
-	u32 lli_size;
 
 	/* to not mess up cache alignment, always add to the bottom */
 	unsigned long state;
-	unsigned int flags;
+	unsigned int msi_enabled;
+
 	u32 eeprom_wol;
 };
 
@@ -289,20 +279,22 @@ enum e1000_state_t {
 	__IGB_DOWN
 };
 
-#define FLAG_IGB_HAS_MSI     (1 << 0)
-#define FLAG_IGB_LLI_PUSH    (1 << 1)
-#define FLAG_IGB_IN_NETPOLL  (1 << 2)
+enum igb_boards {
+	board_82575,
+};
 
 extern char igb_driver_name[];
-extern const char igb_driver_version[];
+extern char igb_driver_version[];
 
+extern char *igb_get_hw_dev_name(struct e1000_hw *hw);
 extern int igb_up(struct igb_adapter *);
 extern void igb_down(struct igb_adapter *);
 extern void igb_reinit_locked(struct igb_adapter *);
 extern void igb_reset(struct igb_adapter *);
-extern int igb_set_spd_dplx(struct igb_adapter *, u16 );
+extern int igb_set_spd_dplx(struct igb_adapter *, u16);
 extern int igb_setup_tx_resources(struct igb_adapter *, struct igb_ring *);
 extern int igb_setup_rx_resources(struct igb_adapter *, struct igb_ring *);
 extern void igb_update_stats(struct igb_adapter *);
+extern void igb_set_ethtool_ops(struct net_device *);
 
 #endif /* _IGB_H_ */

@@ -19,6 +19,7 @@
 #define _LINUX_IO_H
 
 #include <asm/io.h>
+#include <asm/page.h>
 
 struct device;
 
@@ -50,5 +51,8 @@ void __iomem * devm_ioremap(struct device *dev, unsigned long offset,
 void __iomem * devm_ioremap_nocache(struct device *dev, unsigned long offset,
 				    unsigned long size);
 void devm_iounmap(struct device *dev, void __iomem *addr);
+
+int ioremap_page_range(unsigned long addr, unsigned long end,
+		       unsigned long phys_addr, pgprot_t prot);
 
 #endif /* _LINUX_IO_H */

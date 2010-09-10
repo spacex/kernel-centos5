@@ -134,6 +134,8 @@ void inet_sock_destruct(struct sock *sk)
 	__skb_queue_purge(&sk->sk_receive_queue);
 	__skb_queue_purge(&sk->sk_error_queue);
 
+	sk_mem_reclaim(sk);
+
 	if (sk->sk_type == SOCK_STREAM && sk->sk_state != TCP_CLOSE) {
 		printk("Attempt to release TCP socket in state %d %p\n",
 		       sk->sk_state, sk);
@@ -1209,6 +1211,7 @@ static struct net_protocol udp_protocol = {
 
 static struct net_protocol icmp_protocol = {
 	.handler =	icmp_rcv,
+	.no_policy =	1,
 };
 
 static int __init init_ipv4_mibs(void)
@@ -1219,6 +1222,8 @@ static int __init init_ipv4_mibs(void)
 	ip_statistics[1] = alloc_percpu(struct ipstats_mib);
 	icmp_statistics[0] = alloc_percpu(struct icmp_mib);
 	icmp_statistics[1] = alloc_percpu(struct icmp_mib);
+	icmpmsg_statistics[0] = alloc_percpu(struct icmpmsg_mib);
+	icmpmsg_statistics[1] = alloc_percpu(struct icmpmsg_mib);
 	tcp_statistics[0] = alloc_percpu(struct tcp_mib);
 	tcp_statistics[1] = alloc_percpu(struct tcp_mib);
 	udp_statistics[0] = alloc_percpu(struct udp_mib);
@@ -1226,7 +1231,8 @@ static int __init init_ipv4_mibs(void)
 	if (!
 	    (net_statistics[0] && net_statistics[1] && ip_statistics[0]
 	     && ip_statistics[1] && tcp_statistics[0] && tcp_statistics[1]
-	     && udp_statistics[0] && udp_statistics[1]))
+	     && udp_statistics[0] && udp_statistics[1] && icmpmsg_statistics[0]
+	     && icmpmsg_statistics[1]))
 		return -ENOMEM;
 
 	(void) tcp_mib_init();
@@ -1316,6 +1322,8 @@ static int __init inet_init(void)
 	/* Setup TCP slab cache for open requests. */
 	tcp_init();
 
+	/* Setup UDP memory threshold */
+	udp_init();
 
 	/*
 	 *	Set the ICMP layer up

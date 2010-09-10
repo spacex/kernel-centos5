@@ -172,7 +172,7 @@ static int __inet6_check_established(struct inet_timewait_death_row *death_row,
 	const struct in6_addr *saddr = &np->daddr;
 	const int dif = sk->sk_bound_dev_if;
 	const u32 ports = INET_COMBINED_PORTS(inet->dport, lport);
-	const unsigned int hash = inet6_ehashfn(daddr, inet->num, saddr,
+	const unsigned int hash = inet6_ehashfn(daddr, lport, saddr,
 						inet->dport);
 	struct inet_ehash_bucket *head = inet_ehash_bucket(hinfo, hash);
 	struct sock *sk2;
@@ -254,18 +254,18 @@ int inet6_hash_connect(struct inet_timewait_death_row *death_row,
 	int ret;
 
  	if (snum == 0) {
- 		const int low = sysctl_local_port_range[0];
- 		const int high = sysctl_local_port_range[1];
-		const int range = high - low;
- 		int i, port;
+ 		int i, port, low, high, remaining;
 		static u32 hint;
 		const u32 offset = hint + inet6_sk_port_offset(sk);
 		struct hlist_node *node;
  		struct inet_timewait_sock *tw = NULL;
+ 		
+ 		inet_get_local_port_range(&low, &high);
+ 		remaining = (high - low) + 1;
 
  		local_bh_disable();
-		for (i = 1; i <= range; i++) {
-			port = low + (i + offset) % range;
+		for (i = 1; i <= remaining; i++) {
+			port = low + (i + offset) % remaining;
  			head = &hinfo->bhash[inet_bhashfn(port, hinfo->bhash_size)];
  			spin_lock(&head->lock);
 

@@ -712,6 +712,14 @@ static struct input_device_id mousedev_ids[] = {
 		.keybit = { [LONG(BTN_TOOL_FINGER)] = BIT(BTN_TOOL_FINGER) },
 		.absbit = { BIT(ABS_X) | BIT(ABS_Y) | BIT(ABS_PRESSURE) | BIT(ABS_TOOL_WIDTH) },
 	},	/* A touchpad */
+	{
+		.flags = INPUT_DEVICE_ID_MATCH_EVBIT |
+			 INPUT_DEVICE_ID_MATCH_KEYBIT |
+			 INPUT_DEVICE_ID_MATCH_ABSBIT,
+		.evbit = { BIT(EV_KEY) | BIT(EV_ABS) | BIT(EV_SYN) },
+		.keybit = { [LONG(BTN_LEFT)] = BIT(BTN_LEFT) },
+		.absbit = { BIT(ABS_X) | BIT(ABS_Y) },
+	},	/* A virtual remote mouse, host and remote screen size differ */
 
 	{ }, 	/* Terminating entry */
 };

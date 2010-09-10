@@ -24,9 +24,13 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/slab.h>
+#include <asm/atomic.h>
 #include <asm/spu.h>
 #include <asm/spu_csa.h>
 #include "spufs.h"
+
+
+atomic_t nr_spu_contexts = ATOMIC_INIT(0);
 
 struct spu_context *alloc_spu_context(struct spu_gang *gang)
 {
@@ -40,10 +44,10 @@ struct spu_context *alloc_spu_context(struct spu_gang *gang)
 	if (spu_init_csa(&ctx->csa))
 		goto out_free;
 	spin_lock_init(&ctx->mmio_lock);
-	spin_lock_init(&ctx->mapping_lock);
+	mutex_init(&ctx->mapping_lock);
 	kref_init(&ctx->kref);
 	mutex_init(&ctx->state_mutex);
-	init_MUTEX(&ctx->run_sema);
+	mutex_init(&ctx->run_mutex);
 	init_waitqueue_head(&ctx->ibox_wq);
 	init_waitqueue_head(&ctx->wbox_wq);
 	init_waitqueue_head(&ctx->stop_wq);
@@ -55,10 +59,12 @@ struct spu_context *alloc_spu_context(struct spu_gang *gang)
 	INIT_LIST_HEAD(&ctx->aff_list);
 	if (gang)
 		spu_gang_add_ctx(gang, ctx);
-	ctx->rt_priority = current->rt_priority;
-	ctx->policy = current->policy;
-	ctx->prio = current->prio;
-	INIT_WORK(&ctx->sched_work, spu_sched_tick, ctx);
+
+	__spu_update_sched_info(ctx);
+	spu_set_timeslice(ctx);
+	ctx->stats.util_state = SPU_UTIL_IDLE_LOADED;
+
+	atomic_inc(&nr_spu_contexts);
 	goto out;
 out_free:
 	kfree(ctx);
@@ -80,6 +86,7 @@ void destroy_spu_context(struct kref *kref)
 	if (ctx->prof_priv_kref)
 		kref_put(ctx->prof_priv_kref, ctx->prof_priv_release);
 	BUG_ON(!list_empty(&ctx->rq));
+	atomic_dec(&nr_spu_contexts);
 	kfree(ctx);
 }
 
@@ -107,6 +114,7 @@ void spu_forget(struct spu_context *ctx)
 
 void spu_unmap_mappings(struct spu_context *ctx)
 {
+	mutex_lock(&ctx->mapping_lock);
 	if (ctx->local_store)
 		unmap_mapping_range(ctx->local_store, 0, LS_SIZE, 1);
 	if (ctx->mfc)
@@ -121,46 +129,7 @@ void spu_unmap_mappings(struct spu_context *ctx)
 		unmap_mapping_range(ctx->mss, 0, 0x1000, 1);
 	if (ctx->psmap)
 		unmap_mapping_range(ctx->psmap, 0, 0x20000, 1);
-}
-
-/**
- * spu_acquire_exclusive - lock spu contex and protect against userspace access
- * @ctx:	spu contex to lock
- *
- * Note:
- *	Returns 0 and with the context locked on success
- *	Returns negative error and with the context _unlocked_ on failure.
- */
-int spu_acquire_exclusive(struct spu_context *ctx)
-{
-	int ret = -EINVAL;
-
-	spu_acquire(ctx);
-	/*
-	 * Context is about to be freed, so we can't acquire it anymore.
-	 */
-	if (!ctx->owner)
-		goto out_unlock;
-
-	if (ctx->state == SPU_STATE_SAVED) {
-		ret = spu_activate(ctx, 0);
-		if (ret)
-			goto out_unlock;
-	} else {
-		/*
-		 * We need to exclude userspace access to the context.
-		 *
-		 * To protect against memory access we invalidate all ptes
-		 * and make sure the pagefault handlers block on the mutex.
-		 */
-		spu_unmap_mappings(ctx);
-	}
-
-	return 0;
-
- out_unlock:
-	spu_release(ctx);
-	return ret;
+	mutex_unlock(&ctx->mapping_lock);
 }
 
 /**
@@ -201,23 +170,23 @@ int spu_acquire_runnable(struct spu_context *ctx, unsigned long flags)
 void spu_acquire_saved(struct spu_context *ctx)
 {
 	spu_acquire(ctx);
-	if (ctx->state != SPU_STATE_SAVED)
+	if (ctx->state != SPU_STATE_SAVED) {
+		set_bit(SPU_SCHED_WAS_ACTIVE, &ctx->sched_flags);
 		spu_deactivate(ctx);
+	}
 }
 
-void spu_set_profile_private_kref(struct spu_context * ctx,
-				  struct kref * prof_info_kref,
-				  void (* prof_info_release) (struct kref * kref))
+/**
+ * spu_release_saved - unlock spu context and return it to the runqueue
+ * @ctx:	context to unlock
+ */
+void spu_release_saved(struct spu_context *ctx)
 {
-	ctx->prof_priv_kref = prof_info_kref;
-	ctx->prof_priv_release = prof_info_release;
-}
-EXPORT_SYMBOL_GPL(spu_set_profile_private_kref);
+	BUG_ON(ctx->state != SPU_STATE_SAVED);
 
-void * spu_get_profile_private_kref(struct spu_context * ctx)
-{
-	return ctx->prof_priv_kref;
-}
-EXPORT_SYMBOL_GPL(spu_get_profile_private_kref);
+	if (test_and_clear_bit(SPU_SCHED_WAS_ACTIVE, &ctx->sched_flags))
+		spu_activate(ctx, 0);
 
+	spu_release(ctx);
+}
 

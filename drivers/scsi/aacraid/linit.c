@@ -164,22 +164,22 @@ MODULE_DEVICE_TABLE(pci, aac_pci_tbl);
  * for the card.  At that time we can remove the channels from here
  */
 static struct aac_driver_ident aac_drivers[] = {
-	{ aac_rx_init, "percraid", "DELL    ", "PERCRAID        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG }, /* PERC 2/Si (Iguana/PERC2Si) */
-	{ aac_rx_init, "percraid", "DELL    ", "PERCRAID        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG }, /* PERC 3/Di (Opal/PERC3Di) */
-	{ aac_rx_init, "percraid", "DELL    ", "PERCRAID        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG }, /* PERC 3/Si (SlimFast/PERC3Si */
-	{ aac_rx_init, "percraid", "DELL    ", "PERCRAID        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG }, /* PERC 3/Di (Iguana FlipChip/PERC3DiF */
-	{ aac_rx_init, "percraid", "DELL    ", "PERCRAID        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG }, /* PERC 3/Di (Viper/PERC3DiV) */
-	{ aac_rx_init, "percraid", "DELL    ", "PERCRAID        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG }, /* PERC 3/Di (Lexus/PERC3DiL) */
-	{ aac_rx_init, "percraid", "DELL    ", "PERCRAID        ", 1, AAC_QUIRK_31BIT | AAC_QUIRK_34SG }, /* PERC 3/Di (Jaguar/PERC3DiJ) */
-	{ aac_rx_init, "percraid", "DELL    ", "PERCRAID        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG }, /* PERC 3/Di (Dagger/PERC3DiD) */
-	{ aac_rx_init, "percraid", "DELL    ", "PERCRAID        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG }, /* PERC 3/Di (Boxster/PERC3DiB) */
-	{ aac_rx_init, "aacraid",  "ADAPTEC ", "catapult        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG }, /* catapult */
-	{ aac_rx_init, "aacraid",  "ADAPTEC ", "tomcat          ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG }, /* tomcat */
-	{ aac_rx_init, "aacraid",  "ADAPTEC ", "Adaptec 2120S   ", 1, AAC_QUIRK_31BIT | AAC_QUIRK_34SG }, /* Adaptec 2120S (Crusader) */
-	{ aac_rx_init, "aacraid",  "ADAPTEC ", "Adaptec 2200S   ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG }, /* Adaptec 2200S (Vulcan) */
-	{ aac_rx_init, "aacraid",  "ADAPTEC ", "Adaptec 2200S   ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG }, /* Adaptec 2200S (Vulcan-2m) */
-	{ aac_rx_init, "aacraid",  "Legend  ", "Legend S220     ", 1, AAC_QUIRK_31BIT | AAC_QUIRK_34SG }, /* Legend S220 (Legend Crusader) */
-	{ aac_rx_init, "aacraid",  "Legend  ", "Legend S230     ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG }, /* Legend S230 (Legend Vulcan) */
+	{ aac_rx_init, "percraid", "DELL    ", "PERCRAID        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* PERC 2/Si (Iguana/PERC2Si) */
+	{ aac_rx_init, "percraid", "DELL    ", "PERCRAID        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* PERC 3/Di (Opal/PERC3Di) */
+	{ aac_rx_init, "percraid", "DELL    ", "PERCRAID        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* PERC 3/Si (SlimFast/PERC3Si */
+	{ aac_rx_init, "percraid", "DELL    ", "PERCRAID        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* PERC 3/Di (Iguana FlipChip/PERC3DiF */
+	{ aac_rx_init, "percraid", "DELL    ", "PERCRAID        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* PERC 3/Di (Viper/PERC3DiV) */
+	{ aac_rx_init, "percraid", "DELL    ", "PERCRAID        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* PERC 3/Di (Lexus/PERC3DiL) */
+	{ aac_rx_init, "percraid", "DELL    ", "PERCRAID        ", 1, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* PERC 3/Di (Jaguar/PERC3DiJ) */
+	{ aac_rx_init, "percraid", "DELL    ", "PERCRAID        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* PERC 3/Di (Dagger/PERC3DiD) */
+	{ aac_rx_init, "percraid", "DELL    ", "PERCRAID        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* PERC 3/Di (Boxster/PERC3DiB) */
+	{ aac_rx_init, "aacraid",  "ADAPTEC ", "catapult        ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* catapult */
+	{ aac_rx_init, "aacraid",  "ADAPTEC ", "tomcat          ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* tomcat */
+	{ aac_rx_init, "aacraid",  "ADAPTEC ", "Adaptec 2120S   ", 1, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* Adaptec 2120S (Crusader) */
+	{ aac_rx_init, "aacraid",  "ADAPTEC ", "Adaptec 2200S   ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* Adaptec 2200S (Vulcan) */
+	{ aac_rx_init, "aacraid",  "ADAPTEC ", "Adaptec 2200S   ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* Adaptec 2200S (Vulcan-2m) */
+	{ aac_rx_init, "aacraid",  "Legend  ", "Legend S220     ", 1, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* Legend S220 (Legend Crusader) */
+	{ aac_rx_init, "aacraid",  "Legend  ", "Legend S230     ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* Legend S230 (Legend Vulcan) */
 
 	{ aac_rx_init, "aacraid",  "ADAPTEC ", "Adaptec 3230S   ", 2 }, /* Adaptec 3230S (Harrier) */
 	{ aac_rx_init, "aacraid",  "ADAPTEC ", "Adaptec 3240S   ", 2 }, /* Adaptec 3240S (Tornado) */
@@ -224,8 +224,8 @@ static struct aac_driver_ident aac_drivers[] = {
 	{ aac_sa_init, "percraid", "DELL    ", "PERCRAID        ", 4, AAC_QUIRK_34SG }, /* Dell PERC2/QC */
 	{ aac_sa_init, "hpnraid",  "HP      ", "NetRAID         ", 4, AAC_QUIRK_34SG }, /* HP NetRAID-4M */
 
-	{ aac_rx_init, "aacraid",  "DELL    ", "RAID            ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG }, /* Dell Catchall */
-	{ aac_rx_init, "aacraid",  "Legend  ", "RAID            ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG }, /* Legend Catchall */
+	{ aac_rx_init, "aacraid",  "DELL    ", "RAID            ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* Dell Catchall */
+	{ aac_rx_init, "aacraid",  "Legend  ", "RAID            ", 2, AAC_QUIRK_31BIT | AAC_QUIRK_34SG | AAC_QUIRK_SCSI_32 }, /* Legend Catchall */
 	{ aac_rx_init, "aacraid",  "ADAPTEC ", "RAID            ", 2 }, /* Adaptec Catch All */
 	{ aac_rkt_init, "aacraid", "ADAPTEC ", "RAID            ", 2 }, /* Adaptec Rocket Catch All */
 	{ aac_nark_init, "aacraid", "ADAPTEC ", "RAID            ", 2 } /* Adaptec NEMER/ARK Catch All */
@@ -420,6 +420,12 @@ static int aac_slave_configure(struct scsi_device *sdev)
 		unsigned num_one = 0;
 		unsigned depth;
 
+		/*
+		 * Firmware has an individual device recovery time typically
+		 * of 35 seconds, give us a margin.
+		 */
+		if (sdev->timeout < (45 * HZ))
+			sdev->timeout = 45 * HZ;
 		__shost_for_each_device(dev, host) {
 			if (dev->tagged_supported && (dev->type == TYPE_DISK) &&
 				(sdev_channel(dev) == CONTAINER_CHANNEL))
@@ -484,6 +490,8 @@ static int aac_change_queue_depth(struct scsi_device *sdev, int depth)
 static int aac_ioctl(struct scsi_device *sdev, int cmd, void __user * arg)
 {
 	struct aac_dev *dev = (struct aac_dev *)sdev->host->hostdata;
+	if (!capable(CAP_SYS_RAWIO))
+		return -EPERM;
 	return aac_do_ioctl(dev, cmd, arg);
 }
 
@@ -579,6 +587,17 @@ static int aac_eh_reset(struct scsi_cmnd* cmd)
 		ssleep(1);
 	}
 	printk(KERN_ERR "%s: SCSI bus appears hung\n", AAC_DRIVERNAME);
+	/*
+	 * This adapter needs a blind reset, only do so for Adapters that
+	 * support a register, instead of a commanded, reset.
+	 */
+	if ((aac->supplement_adapter_info.SupportedOptions2 &
+	   le32_to_cpu(AAC_OPTION_MU_RESET)) &&
+	  aac_check_reset &&
+	  ((aac_check_reset != 1) ||
+	   (aac->supplement_adapter_info.SupportedOptions2 &
+	    le32_to_cpu(AAC_OPTION_IGNORE_RESET))))
+		aac_reset_adapter(aac, 2); /* Bypass wait for command quiesce */
 	return SUCCESS; /* Cause an immediate retry of the command with a ten second delay after successful tur */
 }
 
@@ -694,17 +713,15 @@ static ssize_t aac_show_model(struct class_device *class_dev,
 {
 	struct aac_dev *dev = (struct aac_dev*)class_to_shost(class_dev)->hostdata;
 	int len;
+	struct scsi_inq scsi_inq;
+	char *cp;
 
-	if (dev->supplement_adapter_info.AdapterTypeText[0]) {
-		char * cp = dev->supplement_adapter_info.AdapterTypeText;
-		while (*cp && *cp != ' ')
-			++cp;
-		while (*cp == ' ')
-			++cp;
-		len = snprintf(buf, PAGE_SIZE, "%s\n", cp);
-	} else
-		len = snprintf(buf, PAGE_SIZE, "%s\n",
-		  aac_drivers[dev->cardtype].model);
+	setinqstr(dev, &scsi_inq, 255);
+	cp = &scsi_inq.pid[sizeof(scsi_inq.pid)-1];
+	while (*cp && *cp == ' ' && cp > scsi_inq.pid)
+		--cp;
+	len = snprintf(buf, PAGE_SIZE,
+	  "%.*s\n", (int)(cp - scsi_inq.pid) + 1, scsi_inq.pid);
 	return len;
 }
 
@@ -713,17 +730,15 @@ static ssize_t aac_show_vendor(struct class_device *class_dev,
 {
 	struct aac_dev *dev = (struct aac_dev*)class_to_shost(class_dev)->hostdata;
 	int len;
+	struct scsi_inq scsi_inq;
+	char *cp;
 
-	if (dev->supplement_adapter_info.AdapterTypeText[0]) {
-		char * cp = dev->supplement_adapter_info.AdapterTypeText;
-		while (*cp && *cp != ' ')
-			++cp;
-		len = snprintf(buf, PAGE_SIZE, "%.*s\n",
-		  (int)(cp - (char *)dev->supplement_adapter_info.AdapterTypeText),
-		  dev->supplement_adapter_info.AdapterTypeText);
-	} else
-		len = snprintf(buf, PAGE_SIZE, "%s\n",
-		  aac_drivers[dev->cardtype].vname);
+	setinqstr(dev, &scsi_inq, 255);
+	cp = &scsi_inq.vid[sizeof(scsi_inq.vid)-1];
+	while (*cp && *cp == ' ' && cp > scsi_inq.vid)
+		--cp;
+	len = snprintf(buf, PAGE_SIZE,
+	  "%.*s\n", (int)(cp - scsi_inq.vid) + 1, scsi_inq.vid);
 	return len;
 }
 
@@ -796,6 +811,31 @@ static ssize_t aac_show_max_id(struct class_device *class_dev, char *buf)
 	  class_to_shost(class_dev)->max_id);
 }
 
+static ssize_t aac_store_reset_adapter(struct class_device *class_dev,
+		const char *buf, size_t count)
+{
+	int retval = -EACCES;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return retval;
+	retval = aac_reset_adapter((struct aac_dev*)class_to_shost(class_dev)->hostdata, buf[0] == '!');
+	if (retval >= 0)
+		retval = count;
+	return retval;
+}
+
+static ssize_t aac_show_reset_adapter(struct class_device *class_dev,
+		char *buf)
+{
+	struct aac_dev *dev = (struct aac_dev*)class_to_shost(class_dev)->hostdata;
+	int len, tmp;
+
+	tmp = aac_adapter_check_health(dev);
+	if ((tmp == 0) && dev->in_reset)
+		tmp = -EBUSY;
+	len = snprintf(buf, PAGE_SIZE, "0x%x\n", tmp);
+	return len;
+}
 
 static struct class_device_attribute aac_model = {
 	.attr = {
@@ -853,6 +893,14 @@ static struct class_device_attribute aac_max_id = {
 	},
 	.show = aac_show_max_id,
 };
+static struct class_device_attribute aac_reset = {
+	.attr = {
+		.name = "reset_host",
+		.mode = S_IWUSR|S_IRUGO,
+	},
+	.store = aac_store_reset_adapter,
+	.show = aac_show_reset_adapter,
+};
 
 static struct class_device_attribute *aac_attrs[] = {
 	&aac_model,
@@ -863,6 +911,7 @@ static struct class_device_attribute *aac_attrs[] = {
 	&aac_serial_number,
 	&aac_max_channel,
 	&aac_max_id,
+	&aac_reset,
 	NULL
 };
 
@@ -907,7 +956,8 @@ static struct scsi_host_template aac_driver_template = {
 
 static void __aac_shutdown(struct aac_dev * aac)
 {
-	kthread_stop(aac->thread);
+	if (aac->aif_thread)
+		kthread_stop(aac->thread);
 	aac_send_shutdown(aac);
 	aac_adapter_disable_int(aac);
 	free_irq(aac->pdev->irq, aac);
@@ -1068,7 +1118,9 @@ static int __devinit aac_probe_one(struct pci_dev *pdev,
 	__aac_shutdown(aac);
  out_unmap:
 	aac_fib_map_free(aac);
-	pci_free_consistent(aac->pdev, aac->comm_size, aac->comm_addr, aac->comm_phys);
+	if (aac->comm_addr)
+		pci_free_consistent(aac->pdev, aac->comm_size, aac->comm_addr,
+		  aac->comm_phys);
 	kfree(aac->queues);
 	aac_adapter_ioremap(aac, 0);
 	kfree(aac->fibs);
@@ -1084,9 +1136,8 @@ static int __devinit aac_probe_one(struct pci_dev *pdev,
 static void aac_shutdown(struct pci_dev *dev)
 {
 	struct Scsi_Host *shost = pci_get_drvdata(dev);
-	struct aac_dev *aac = (struct aac_dev *)shost->hostdata;
 	scsi_block_requests(shost);
-	__aac_shutdown(aac);
+	__aac_shutdown((struct aac_dev *)shost->hostdata);
 }
 
 static void __devexit aac_remove_one(struct pci_dev *pdev)

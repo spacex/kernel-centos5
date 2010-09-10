@@ -238,7 +238,8 @@ static void print_mad_hdr(struct ib_mad_hdr *mad_hdr)
 	if (mad_hdr->status)
 		print_status_details(be16_to_cpu(mad_hdr->status));
 	printk("Class specific.0x%02x\n", be16_to_cpu(mad_hdr->class_specific));
-	printk("Trans ID.......0x%llx\n", mad_hdr->tid);
+	printk("Trans ID.......0x%llx\n", 
+		(unsigned long long)be64_to_cpu(mad_hdr->tid));
 	if (mad_hdr->mgmt_class == IB_MGMT_CLASS_SUBN_ADM)
 		printk("Attr ID........0x%02x (%s)\n",
 		       be16_to_cpu(mad_hdr->attr_id),
@@ -359,14 +360,16 @@ static void print_smp(struct ib_smp *smp)
 	printk("Status.........0x%02x\n", be16_to_cpu(smp->status));
 	if (smp->status)
 		print_status_details(be16_to_cpu(smp->status));
-	printk("Hop pointer...0x%01x\n", smp->hop_ptr);
-	printk("Hop counter...0x%01x\n", smp->hop_cnt);
-	printk("Trans ID.......0x%llx\n", smp->tid);
+	printk("Hop pointer....0x%01x\n", smp->hop_ptr);
+	printk("Hop counter....0x%01x\n", smp->hop_cnt);
+	printk("Trans ID.......0x%llx\n", 
+		(unsigned long long)be64_to_cpu(smp->tid));
 	printk("Attr ID........0x%02x (%s)\n", be16_to_cpu(smp->attr_id),
 		get_smp_attr(smp->attr_id));
 	printk("Attr modifier..0x%04x\n", be32_to_cpu(smp->attr_mod));
 
-	printk("Mkey...........0x%llx\n", be64_to_cpu(smp->mkey));
+	printk("Mkey...........0x%llx\n",
+		(unsigned long long)be64_to_cpu(smp->mkey));
 	printk("DR SLID........0x%02x\n", be16_to_cpu(smp->dr_slid));
 	printk("DR DLID........0x%02x", be16_to_cpu(smp->dr_dlid));
 
@@ -531,13 +534,13 @@ static void madeye_add_one(struct ib_device *device)
 
 	reg_flags = IB_MAD_SNOOP_SEND_COMPLETIONS | IB_MAD_SNOOP_RECVS;
 	for (i = 0; i <= e - s; i++) {
-		port[i].smi_agent = ib_register_mad_snoop(device, i,
+		port[i].smi_agent = ib_register_mad_snoop(device, i + s,
 							  IB_QPT_SMI,
 							  reg_flags,
 							  snoop_smi_handler,
 							  recv_smi_handler,
 							  &port[i]);
-		port[i].gsi_agent = ib_register_mad_snoop(device, i,
+		port[i].gsi_agent = ib_register_mad_snoop(device, i + s,
 							  IB_QPT_GSI,
 							  reg_flags,
 							  snoop_gsi_handler,

@@ -21,7 +21,7 @@ extern pmd_t level2_kernel_pgt[512];
 extern pgd_t init_level4_pgt[];
 extern unsigned long __supported_pte_mask;
 
-#define swapper_pg_dir ((pgd_t *)NULL)
+#define swapper_pg_dir init_level4_pgt
 
 extern void nonx_setup(const char *str);
 extern void paging_init(void);
@@ -390,6 +390,7 @@ static inline pte_t mk_pte_phys(unsigned long physpage, pgprot_t pgprot)
 { 
 	pte_t pte;
 	pte_val(pte) = physpage | pgprot_val(pgprot); 
+	pte_val(pte) &= __supported_pte_mask;
 	return pte; 
 }
  
@@ -450,6 +451,7 @@ extern int kern_addr_valid(unsigned long addr);
 #define GET_PFN(pfn)			(pfn)
 
 #define HAVE_ARCH_UNMAPPED_AREA
+#define HAVE_ARCH_UNMAPPED_AREA_TOPDOWN
 
 #define pgtable_cache_init()   do { } while (0)
 #define check_pgt_cache()      do { } while (0)

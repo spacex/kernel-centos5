@@ -44,7 +44,7 @@ int cpu_llc_id[NR_CPUS] __cpuinitdata = {[0 ... NR_CPUS-1] = BAD_APICID};
 #elif defined(__x86_64__)
 u8 cpu_llc_id[NR_CPUS] __cpuinitdata  = {[0 ... NR_CPUS-1] = BAD_APICID};
 #endif
-EXPORT_SYMBOL(cpu_llc_id);
+EXPORT_SYMBOL_GPL(cpu_llc_id);
 
 cpumask_t cpu_online_map;
 EXPORT_SYMBOL(cpu_online_map);
@@ -160,9 +160,9 @@ static void cpu_bringup_and_idle(void)
 	cpu_idle();
 }
 
-static void cpu_initialize_context(unsigned int cpu)
+static int cpu_initialize_context(unsigned int cpu)
 {
-	vcpu_guest_context_t ctxt;
+	vcpu_guest_context_t *ctxt;
 	struct task_struct *idle = idle_task(cpu);
 #ifdef __x86_64__
 	struct desc_ptr *gdt_descr = &cpu_gdt_descr[cpu];
@@ -171,58 +171,65 @@ static void cpu_initialize_context(unsigned int cpu)
 #endif
 
 	if (cpu_test_and_set(cpu, cpu_initialized_map))
-		return;
+		return 0;
 
-	memset(&ctxt, 0, sizeof(ctxt));
+	ctxt = kmalloc(sizeof(*ctxt), GFP_KERNEL);
+	if (ctxt == NULL)
+		return -ENOMEM;
 
-	ctxt.flags = VGCF_IN_KERNEL;
-	ctxt.user_regs.ds = __USER_DS;
-	ctxt.user_regs.es = __USER_DS;
-	ctxt.user_regs.fs = 0;
-	ctxt.user_regs.gs = 0;
-	ctxt.user_regs.ss = __KERNEL_DS;
-	ctxt.user_regs.eip = (unsigned long)cpu_bringup_and_idle;
-	ctxt.user_regs.eflags = X86_EFLAGS_IF | 0x1000; /* IOPL_RING1 */
+	memset(ctxt, 0, sizeof(*ctxt));
 
-	memset(&ctxt.fpu_ctxt, 0, sizeof(ctxt.fpu_ctxt));
+	ctxt->flags = VGCF_IN_KERNEL;
+	ctxt->user_regs.ds = __USER_DS;
+	ctxt->user_regs.es = __USER_DS;
+	ctxt->user_regs.fs = 0;
+	ctxt->user_regs.gs = 0;
+	ctxt->user_regs.ss = __KERNEL_DS;
+	ctxt->user_regs.eip = (unsigned long)cpu_bringup_and_idle;
+	ctxt->user_regs.eflags = X86_EFLAGS_IF | 0x1000; /* IOPL_RING1 */
 
-	smp_trap_init(ctxt.trap_ctxt);
+	memset(&ctxt->fpu_ctxt, 0, sizeof(ctxt->fpu_ctxt));
 
-	ctxt.ldt_ents = 0;
+	smp_trap_init(ctxt->trap_ctxt);
 
-	ctxt.gdt_frames[0] = virt_to_mfn(gdt_descr->address);
-	ctxt.gdt_ents      = gdt_descr->size / 8;
+	ctxt->ldt_ents = 0;
+
+	ctxt->gdt_frames[0] = virt_to_mfn(gdt_descr->address);
+	ctxt->gdt_ents      = gdt_descr->size / 8;
 
 #ifdef __i386__
-	ctxt.user_regs.cs = __KERNEL_CS;
-	ctxt.user_regs.esp = idle->thread.esp0 - sizeof(struct pt_regs);
+	ctxt->user_regs.cs = __KERNEL_CS;
+	ctxt->user_regs.esp = idle->thread.esp0 - sizeof(struct pt_regs);
 
-	ctxt.kernel_ss = __KERNEL_DS;
-	ctxt.kernel_sp = idle->thread.esp0;
+	ctxt->kernel_ss = __KERNEL_DS;
+	ctxt->kernel_sp = idle->thread.esp0;
 
-	ctxt.event_callback_cs     = __KERNEL_CS;
-	ctxt.event_callback_eip    = (unsigned long)hypervisor_callback;
-	ctxt.failsafe_callback_cs  = __KERNEL_CS;
-	ctxt.failsafe_callback_eip = (unsigned long)failsafe_callback;
+	ctxt->event_callback_cs     = __KERNEL_CS;
+	ctxt->event_callback_eip    = (unsigned long)hypervisor_callback;
+	ctxt->failsafe_callback_cs  = __KERNEL_CS;
+	ctxt->failsafe_callback_eip = (unsigned long)failsafe_callback;
 
-	ctxt.ctrlreg[3] = xen_pfn_to_cr3(virt_to_mfn(swapper_pg_dir));
+	ctxt->ctrlreg[3] = xen_pfn_to_cr3(virt_to_mfn(swapper_pg_dir));
 #else /* __x86_64__ */
-	ctxt.user_regs.cs = __KERNEL_CS;
-	ctxt.user_regs.esp = idle->thread.rsp0 - sizeof(struct pt_regs);
+	ctxt->user_regs.cs = __KERNEL_CS;
+	ctxt->user_regs.esp = idle->thread.rsp0 - sizeof(struct pt_regs);
 
-	ctxt.kernel_ss = __KERNEL_DS;
-	ctxt.kernel_sp = idle->thread.rsp0;
+	ctxt->kernel_ss = __KERNEL_DS;
+	ctxt->kernel_sp = idle->thread.rsp0;
 
-	ctxt.event_callback_eip    = (unsigned long)hypervisor_callback;
-	ctxt.failsafe_callback_eip = (unsigned long)failsafe_callback;
-	ctxt.syscall_callback_eip  = (unsigned long)system_call;
+	ctxt->event_callback_eip    = (unsigned long)hypervisor_callback;
+	ctxt->failsafe_callback_eip = (unsigned long)failsafe_callback;
+	ctxt->syscall_callback_eip  = (unsigned long)system_call;
 
-	ctxt.ctrlreg[3] = xen_pfn_to_cr3(virt_to_mfn(init_level4_pgt));
+	ctxt->ctrlreg[3] = xen_pfn_to_cr3(virt_to_mfn(init_level4_pgt));
 
-	ctxt.gs_base_kernel = (unsigned long)(cpu_pda(cpu));
+	ctxt->gs_base_kernel = (unsigned long)(cpu_pda(cpu));
 #endif
 
-	BUG_ON(HYPERVISOR_vcpu_op(VCPUOP_initialise, cpu, &ctxt));
+	BUG_ON(HYPERVISOR_vcpu_op(VCPUOP_initialise, cpu, ctxt));
+
+	kfree(ctxt);
+	return 0;
 }
 
 void __init smp_prepare_cpus(unsigned int max_cpus)
@@ -401,7 +408,9 @@ int __cpuinit __cpu_up(unsigned int cpu)
 	rc = cpu_up_check(cpu);
 	if (rc)
 		return rc;
-	cpu_initialize_context(cpu);
+	rc = cpu_initialize_context(cpu);
+	if (rc)
+		return rc;
 
 	if (num_online_cpus() == 1)
 		alternatives_smp_switch(1);

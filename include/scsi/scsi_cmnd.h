@@ -142,4 +142,17 @@ extern void *scsi_kmap_atomic_sg(struct scatterlist *sg, int sg_count,
 				 size_t *offset, size_t *len);
 extern void scsi_kunmap_atomic_sg(void *virt);
 
+#define scsi_sg_count(cmd) ((cmd)->use_sg)
+#define scsi_sglist(cmd) ((struct scatterlist *)(cmd)->request_buffer)
+#define scsi_bufflen(cmd) ((cmd)->request_bufflen)
+
+static inline void scsi_set_resid(struct scsi_cmnd *cmd, int resid)
+{
+	cmd->resid = resid;
+}
+
+static inline int scsi_get_resid(struct scsi_cmnd *cmd)
+{
+	return cmd->resid;
+}
 #endif /* _SCSI_SCSI_CMND_H */

@@ -29,7 +29,7 @@ struct pci_raw_ops *raw_pci_ops;
 
 #ifdef CONFIG_X86
 int pci_noseg = 0;
-#endif;
+#endif
 
 static int pci_read(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 *value)
 {
@@ -111,6 +111,21 @@ static void __devinit pcibios_fixup_ghosts(struct pci_bus *b)
 	}
 }
 
+static void __devinit pcibios_fixup_device_resources(struct pci_dev *dev)
+{
+	struct resource *rom_r = &dev->resource[PCI_ROM_RESOURCE];
+
+	if (pci_probe & PCI_NOASSIGN_ROMS) {
+		if (rom_r->parent)
+			return;
+		if (rom_r->start) {
+			/* we deal with BIOS assigned ROM later */
+			return;
+		}
+		rom_r->start = rom_r->end = rom_r->flags = 0;
+	}
+}
+
 /*
  *  Called after each bus is probed, but before its children
  *  are examined.
@@ -118,8 +133,12 @@ static void __devinit pcibios_fixup_ghosts(struct pci_bus *b)
 
 void __devinit  pcibios_fixup_bus(struct pci_bus *b)
 {
+	struct pci_dev *dev;
+
 	pcibios_fixup_ghosts(b);
 	pci_read_bridge_bases(b);
+	list_for_each_entry(dev, &b->devices, bus_list)
+		pcibios_fixup_device_resources(dev);
 }
 
 /*
@@ -224,6 +243,14 @@ static struct dmi_system_id __devinitdata pciprobe_dmi_table[] = {
 	},
 	{
 		.callback = set_bf_sort,
+		.ident = "Dell PowerEdge R900",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Dell"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "PowerEdge R900"),
+		},
+	},
+	{
+		.callback = set_bf_sort,
 		.ident = "HP ProLiant BL20p G3",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "HP"),
@@ -308,6 +335,30 @@ static struct dmi_system_id __devinitdata pciprobe_dmi_table[] = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "HP"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "ProLiant BL685c G1"),
+		},
+	},
+	{
+		.callback = set_bf_sort,
+		.ident = "HP ProLiant DL385 G2",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HP"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "ProLiant DL385 G2"),
+		},
+	},
+	{
+		.callback = set_bf_sort,
+		.ident = "HP ProLiant DL585 G2",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HP"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "ProLiant DL585 G2"),
+		},
+	},
+	{
+		.callback = set_bf_sort,
+		.ident = "HP ProLiant DL580 G5",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HP"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "ProLiant DL580 G5"),
 		},
 	},
 	{}
@@ -437,8 +488,14 @@ char * __devinit  pcibios_setup(char *str)
 	else if (!strcmp(str, "rom")) {
 		pci_probe |= PCI_ASSIGN_ROMS;
 		return NULL;
+	} else if (!strcmp(str, "norom")) {
+		pci_probe |= PCI_NOASSIGN_ROMS;
+		return NULL;
 	} else if (!strcmp(str, "assign-busses")) {
 		pci_probe |= PCI_ASSIGN_ALL_BUSSES;
+		return NULL;
+	} else if (!strcmp(str, "use_crs")) {
+		pci_probe |= PCI_USE__CRS;
 		return NULL;
 	} else if (!strcmp(str, "routeirq")) {
 		pci_routeirq = 1;
@@ -467,4 +524,73 @@ void pcibios_disable_device (struct pci_dev *dev)
 	pcibios_disable_resources(dev);
 	if (pcibios_disable_irq)
 		pcibios_disable_irq(dev);
+}
+
+/**
+ * This routine traps devices not correctly responding to MMCONFIG access.
+ * For each device on the current bus, compare a mmconf read of the
+ * vendor/device dword with a legacy PCI config read. If they're not the same,
+ * the bus serving this device must use legacy PCI config accesses instead of
+ * mmconf, as must all buses descending from this bus.
+ */
+void __devinit pcibios_fix_bus_scan_quirk(struct pci_bus *bus)
+{
+	int devfn;
+	int fail;
+	int found_nommconf_dev = 0;
+	static int advised;
+	u32 mcfg_vendev;
+	u32 arch_vendev;
+	struct pci_ops *save_ops = bus->ops;
+
+	/*
+	 * Return here if mmconf is NOT the default platform-wide pci config
+	 * access mechanism, or if this bus is within the range checked by
+	 * unreachable_devices().
+	 */
+	if (((pci_probe & PCI_USING_MMCONF) == 0) ||
+	    (bus->number < MAX_CHECK_BUS))
+		return;
+	/*
+	 * If the parent bus has already been programmed for legacy pci config
+	 * access, then there is no need to scan this bus.
+	 */
+	if (bus->parent != NULL)
+		if (bus->parent->ops == &pci_legacy_ops)
+			return;
+
+	if (!advised) {
+		pr_info("PCI: If a device isn't working, "
+			"try \"pci=nommconf\".\n");
+		advised = 1;
+	}
+	pr_debug("PCI: Checking bus %04x:%02x for MMCONFIG compliance.\n",
+		 pci_domain_nr(bus), bus->number);
+
+	for (devfn = 0; devfn < 256; devfn++) {
+		bus->ops = &pci_legacy_ops;
+		fail = pci_bus_read_config_dword(bus, devfn, PCI_VENDOR_ID,
+						 &arch_vendev);
+		if ((arch_vendev == 0xFFFFFFFF) || (arch_vendev == 0) || fail)
+			continue;
+
+		bus->ops = save_ops;	/* Restore to original value */
+		pci_bus_read_config_dword(bus, devfn, PCI_VENDOR_ID,
+					  &mcfg_vendev);
+		if (mcfg_vendev != arch_vendev) {
+			found_nommconf_dev = 1;
+			break;
+		}
+	}
+
+	if (found_nommconf_dev) {
+		pr_info("PCI: Device at %04x:%02x.%02x.%x is not MMCONFIG "
+			"compliant.\n", pci_domain_nr(bus), bus->number,
+			PCI_SLOT(devfn), PCI_FUNC(devfn));
+		pr_info("PCI: Bus %04x:%02x and its descendents cannot use "
+			"MMCONFIG.\n", pci_domain_nr(bus), bus->number);
+		bus->ops = &pci_legacy_ops;	/* Use Legacy PCI Config */
+	} else
+		bus->ops = save_ops;		/* Use MMCONFIG  */
+	return;
 }

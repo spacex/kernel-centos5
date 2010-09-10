@@ -5,6 +5,7 @@
 #   IPv6 as module will cause a CRASH if you try to unload it
 config IPV6
 	tristate "The IPv6 protocol"
+	select XFRM_NALGO
 	default m
 	---help---
 	  This is complemental support for the IP version 6.
@@ -57,11 +58,22 @@ config IPV6_ROUTE_INFO
 
 	  If unsure, say N.
 
+config IPV6_OPTIMISTIC_DAD
+	bool "IPv6: Enable RFC 4429 Optimistic DAD (EXPERIMENTAL)"
+	depends on IPV6 && EXPERIMENTAL
+	---help---
+	  This is experimental support for optimistic Duplicate
+	  Address Detection.  It allows for autoconfigured addresses
+	  to be used more quickly.
+
+	  If unsure, say N.
+
 config INET6_AH
 	tristate "IPv6: AH transformation"
 	depends on IPV6
 	select XFRM
 	select CRYPTO
+	select CRYPTO_AEAD
 	select CRYPTO_HMAC
 	select CRYPTO_MD5
 	select CRYPTO_SHA1
@@ -74,7 +86,9 @@ config INET6_ESP
 	tristate "IPv6: ESP transformation"
 	depends on IPV6
 	select XFRM
+	select XFRM_NALGO
 	select CRYPTO
+	select CRYPTO_AEAD
 	select CRYPTO_HMAC
 	select CRYPTO_MD5
 	select CRYPTO_SHA1

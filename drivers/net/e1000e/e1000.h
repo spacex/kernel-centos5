@@ -31,11 +31,11 @@
 #ifndef _E1000_H_
 #define _E1000_H_
 
+#include <linux/types.h>
+#include <linux/timer.h>
+#include <linux/workqueue.h>
+#include <linux/io.h>
 #include <linux/netdevice.h>
-#include <linux/ethtool.h>
-#include <linux/pci.h>
-#include <linux/delay.h>
-#include <asm/io.h>
 
 #include "e1000_compat.h"
 #include "hw.h"
@@ -123,7 +123,8 @@ struct e1000_buffer {
 			u16 next_to_watch;
 		};
 		/* RX */
-		struct page *page;
+		/* arrays of page information for packet split */
+		struct e1000_ps_page *ps_pages;
 	};
 
 };
@@ -143,18 +144,7 @@ struct e1000_ring {
 	/* array of buffer information structs */
 	struct e1000_buffer *buffer_info;
 
-	union {
-		/* for TX */
-		struct {
-			bool last_tx_tso; /* used to mark tso desc.  */
-		};
-		/* for RX */
-		struct {
-			/* arrays of page information for packet split */
-			struct e1000_ps_page *ps_pages;
-			struct sk_buff *rx_skb_top;
-		};
-	};
+	struct sk_buff *rx_skb_top;
 
 	struct e1000_queue_stats stats;
 };
@@ -221,6 +211,7 @@ struct e1000_adapter {
 	u32 tx_fifo_head;
 	u32 tx_head_addr;
 	u32 tx_fifo_size;
+	u32 tx_dma_failed;
 
 	/*
 	 * RX
@@ -242,6 +233,7 @@ struct e1000_adapter {
 	u64 gorcl_old;
 	u32 gorcl;
 	u32 alloc_rx_buff_failed;
+	u32 rx_dma_failed;
 
 	unsigned int rx_ps_pages;
 	u16 rx_ps_bsize0;
@@ -295,7 +287,6 @@ struct e1000_info {
 #define FLAG_HAS_CTRLEXT_ON_LOAD          (1 << 5)
 #define FLAG_HAS_SWSM_ON_LOAD             (1 << 6)
 #define FLAG_HAS_JUMBO_FRAMES             (1 << 7)
-#define FLAG_HAS_ASPM                     (1 << 8)
 #define FLAG_HAS_STATS_ICR_ICT            (1 << 9)
 #define FLAG_HAS_STATS_PTC_PRC            (1 << 10)
 #define FLAG_HAS_SMART_POWER_DOWN         (1 << 11)
@@ -338,26 +329,26 @@ enum latency_range {
 	latency_invalid = 255
 };
 
-extern char e1000_driver_name[];
-extern const char e1000_driver_version[];
+extern char e1000e_driver_name[];
+extern const char e1000e_driver_version[];
 
-extern void e1000_check_options(struct e1000_adapter *adapter);
-extern void e1000_set_ethtool_ops(struct net_device *netdev);
+extern void e1000e_check_options(struct e1000_adapter *adapter);
+extern void e1000e_set_ethtool_ops(struct net_device *netdev);
 
-extern int e1000_up(struct e1000_adapter *adapter);
-extern void e1000_down(struct e1000_adapter *adapter);
-extern void e1000_reinit_locked(struct e1000_adapter *adapter);
-extern void e1000_reset(struct e1000_adapter *adapter);
-extern void e1000_power_up_phy(struct e1000_adapter *adapter);
-extern int e1000_setup_rx_resources(struct e1000_adapter *adapter);
-extern int e1000_setup_tx_resources(struct e1000_adapter *adapter);
-extern void e1000_free_rx_resources(struct e1000_adapter *adapter);
-extern void e1000_free_tx_resources(struct e1000_adapter *adapter);
-extern void e1000_update_stats(struct e1000_adapter *adapter);
+extern int e1000e_up(struct e1000_adapter *adapter);
+extern void e1000e_down(struct e1000_adapter *adapter);
+extern void e1000e_reinit_locked(struct e1000_adapter *adapter);
+extern void e1000e_reset(struct e1000_adapter *adapter);
+extern void e1000e_power_up_phy(struct e1000_adapter *adapter);
+extern int e1000e_setup_rx_resources(struct e1000_adapter *adapter);
+extern int e1000e_setup_tx_resources(struct e1000_adapter *adapter);
+extern void e1000e_free_rx_resources(struct e1000_adapter *adapter);
+extern void e1000e_free_tx_resources(struct e1000_adapter *adapter);
+extern void e1000e_update_stats(struct e1000_adapter *adapter);
 
 extern unsigned int copybreak;
 
-extern char *e1000_get_hw_dev_name(struct e1000_hw *hw);
+extern char *e1000e_get_hw_dev_name(struct e1000_hw *hw);
 
 extern struct e1000_info e1000_82571_info;
 extern struct e1000_info e1000_82572_info;
@@ -366,79 +357,81 @@ extern struct e1000_info e1000_ich8_info;
 extern struct e1000_info e1000_ich9_info;
 extern struct e1000_info e1000_es2_info;
 
-extern s32  e1000_commit_phy(struct e1000_hw *hw);
+extern s32 e1000e_read_part_num(struct e1000_hw *hw, u32 *part_num);
 
-extern bool e1000_enable_mng_pass_thru(struct e1000_hw *hw);
+extern s32  e1000e_commit_phy(struct e1000_hw *hw);
 
-extern bool e1000_get_laa_state_82571(struct e1000_hw *hw);
-extern void e1000_set_laa_state_82571(struct e1000_hw *hw, bool state);
+extern bool e1000e_enable_mng_pass_thru(struct e1000_hw *hw);
 
-extern void e1000_set_kmrn_lock_loss_workaround_ich8lan(struct e1000_hw *hw,
+extern bool e1000e_get_laa_state_82571(struct e1000_hw *hw);
+extern void e1000e_set_laa_state_82571(struct e1000_hw *hw, bool state);
+
+extern void e1000e_set_kmrn_lock_loss_workaround_ich8lan(struct e1000_hw *hw,
 						 bool state);
-extern void e1000_igp3_phy_powerdown_workaround_ich8lan(struct e1000_hw *hw);
-extern void e1000_gig_downshift_workaround_ich8lan(struct e1000_hw *hw);
+extern void e1000e_igp3_phy_powerdown_workaround_ich8lan(struct e1000_hw *hw);
+extern void e1000e_gig_downshift_workaround_ich8lan(struct e1000_hw *hw);
 
-extern s32 e1000_check_for_copper_link(struct e1000_hw *hw);
-extern s32 e1000_check_for_fiber_link(struct e1000_hw *hw);
-extern s32 e1000_check_for_serdes_link(struct e1000_hw *hw);
-extern s32 e1000_cleanup_led_generic(struct e1000_hw *hw);
-extern s32 e1000_led_on_generic(struct e1000_hw *hw);
-extern s32 e1000_led_off_generic(struct e1000_hw *hw);
-extern s32 e1000_get_bus_info_pcie(struct e1000_hw *hw);
-extern s32 e1000_get_speed_and_duplex_copper(struct e1000_hw *hw, u16 *speed, u16 *duplex);
-extern s32 e1000_get_speed_and_duplex_fiber_serdes(struct e1000_hw *hw, u16 *speed, u16 *duplex);
-extern s32 e1000_disable_pcie_master(struct e1000_hw *hw);
-extern s32 e1000_get_auto_rd_done(struct e1000_hw *hw);
-extern s32 e1000_id_led_init(struct e1000_hw *hw);
-extern void e1000_clear_hw_cntrs_base(struct e1000_hw *hw);
-extern s32 e1000_setup_fiber_serdes_link(struct e1000_hw *hw);
-extern s32 e1000_copper_link_setup_m88(struct e1000_hw *hw);
-extern s32 e1000_copper_link_setup_igp(struct e1000_hw *hw);
-extern s32 e1000_setup_link(struct e1000_hw *hw);
-extern void e1000_clear_vfta(struct e1000_hw *hw);
-extern void e1000_init_rx_addrs(struct e1000_hw *hw, u16 rar_count);
-extern void e1000_mc_addr_list_update_generic(struct e1000_hw *hw,
+extern s32 e1000e_check_for_copper_link(struct e1000_hw *hw);
+extern s32 e1000e_check_for_fiber_link(struct e1000_hw *hw);
+extern s32 e1000e_check_for_serdes_link(struct e1000_hw *hw);
+extern s32 e1000e_cleanup_led_generic(struct e1000_hw *hw);
+extern s32 e1000e_led_on_generic(struct e1000_hw *hw);
+extern s32 e1000e_led_off_generic(struct e1000_hw *hw);
+extern s32 e1000e_get_bus_info_pcie(struct e1000_hw *hw);
+extern s32 e1000e_get_speed_and_duplex_copper(struct e1000_hw *hw, u16 *speed, u16 *duplex);
+extern s32 e1000e_get_speed_and_duplex_fiber_serdes(struct e1000_hw *hw, u16 *speed, u16 *duplex);
+extern s32 e1000e_disable_pcie_master(struct e1000_hw *hw);
+extern s32 e1000e_get_auto_rd_done(struct e1000_hw *hw);
+extern s32 e1000e_id_led_init(struct e1000_hw *hw);
+extern void e1000e_clear_hw_cntrs_base(struct e1000_hw *hw);
+extern s32 e1000e_setup_fiber_serdes_link(struct e1000_hw *hw);
+extern s32 e1000e_copper_link_setup_m88(struct e1000_hw *hw);
+extern s32 e1000e_copper_link_setup_igp(struct e1000_hw *hw);
+extern s32 e1000e_setup_link(struct e1000_hw *hw);
+extern void e1000e_clear_vfta(struct e1000_hw *hw);
+extern void e1000e_init_rx_addrs(struct e1000_hw *hw, u16 rar_count);
+extern void e1000e_mc_addr_list_update_generic(struct e1000_hw *hw,
 				       u8 *mc_addr_list, u32 mc_addr_count,
 				       u32 rar_used_count, u32 rar_count);
-extern void e1000_rar_set(struct e1000_hw *hw, u8 *addr, u32 index);
-extern s32 e1000_set_fc_watermarks(struct e1000_hw *hw);
-extern void e1000_set_pcie_no_snoop(struct e1000_hw *hw, u32 no_snoop);
-extern s32 e1000_get_hw_semaphore(struct e1000_hw *hw);
-extern s32 e1000_valid_led_default(struct e1000_hw *hw, u16 *data);
-extern void e1000_config_collision_dist(struct e1000_hw *hw);
-extern s32 e1000_config_fc_after_link_up(struct e1000_hw *hw);
-extern s32 e1000_force_mac_fc(struct e1000_hw *hw);
-extern s32 e1000_blink_led(struct e1000_hw *hw);
-extern void e1000_write_vfta(struct e1000_hw *hw, u32 offset, u32 value);
-extern void e1000_reset_adaptive(struct e1000_hw *hw);
-extern void e1000_update_adaptive(struct e1000_hw *hw);
+extern void e1000e_rar_set(struct e1000_hw *hw, u8 *addr, u32 index);
+extern s32 e1000e_set_fc_watermarks(struct e1000_hw *hw);
+extern void e1000e_set_pcie_no_snoop(struct e1000_hw *hw, u32 no_snoop);
+extern s32 e1000e_get_hw_semaphore(struct e1000_hw *hw);
+extern s32 e1000e_valid_led_default(struct e1000_hw *hw, u16 *data);
+extern void e1000e_config_collision_dist(struct e1000_hw *hw);
+extern s32 e1000e_config_fc_after_link_up(struct e1000_hw *hw);
+extern s32 e1000e_force_mac_fc(struct e1000_hw *hw);
+extern s32 e1000e_blink_led(struct e1000_hw *hw);
+extern void e1000e_write_vfta(struct e1000_hw *hw, u32 offset, u32 value);
+extern void e1000e_reset_adaptive(struct e1000_hw *hw);
+extern void e1000e_update_adaptive(struct e1000_hw *hw);
 
-extern s32 e1000_setup_copper_link(struct e1000_hw *hw);
-extern s32 e1000_get_phy_id(struct e1000_hw *hw);
-extern void e1000_put_hw_semaphore(struct e1000_hw *hw);
-extern s32 e1000_check_reset_block_generic(struct e1000_hw *hw);
-extern s32 e1000_phy_force_speed_duplex_igp(struct e1000_hw *hw);
-extern s32 e1000_get_cable_length_igp_2(struct e1000_hw *hw);
-extern s32 e1000_get_phy_info_igp(struct e1000_hw *hw);
-extern s32 e1000_read_phy_reg_igp(struct e1000_hw *hw, u32 offset, u16 *data);
-extern s32 e1000_phy_hw_reset_generic(struct e1000_hw *hw);
-extern s32 e1000_set_d3_lplu_state(struct e1000_hw *hw, bool active);
-extern s32 e1000_write_phy_reg_igp(struct e1000_hw *hw, u32 offset, u16 data);
-extern s32 e1000_phy_sw_reset(struct e1000_hw *hw);
-extern s32 e1000_phy_force_speed_duplex_m88(struct e1000_hw *hw);
-extern s32 e1000_get_cfg_done(struct e1000_hw *hw);
-extern s32 e1000_get_cable_length_m88(struct e1000_hw *hw);
-extern s32 e1000_get_phy_info_m88(struct e1000_hw *hw);
-extern s32 e1000_read_phy_reg_m88(struct e1000_hw *hw, u32 offset, u16 *data);
-extern s32 e1000_write_phy_reg_m88(struct e1000_hw *hw, u32 offset, u16 data);
-extern enum e1000_phy_type e1000_get_phy_type_from_id(u32 phy_id);
-extern void e1000_phy_force_speed_duplex_setup(struct e1000_hw *hw, u16 *phy_ctrl);
-extern s32 e1000_write_kmrn_reg(struct e1000_hw *hw, u32 offset, u16 data);
-extern s32 e1000_read_kmrn_reg(struct e1000_hw *hw, u32 offset, u16 *data);
-extern s32 e1000_phy_has_link_generic(struct e1000_hw *hw, u32 iterations,
+extern s32 e1000e_setup_copper_link(struct e1000_hw *hw);
+extern s32 e1000e_get_phy_id(struct e1000_hw *hw);
+extern void e1000e_put_hw_semaphore(struct e1000_hw *hw);
+extern s32 e1000e_check_reset_block_generic(struct e1000_hw *hw);
+extern s32 e1000e_phy_force_speed_duplex_igp(struct e1000_hw *hw);
+extern s32 e1000e_get_cable_length_igp_2(struct e1000_hw *hw);
+extern s32 e1000e_get_phy_info_igp(struct e1000_hw *hw);
+extern s32 e1000e_read_phy_reg_igp(struct e1000_hw *hw, u32 offset, u16 *data);
+extern s32 e1000e_phy_hw_reset_generic(struct e1000_hw *hw);
+extern s32 e1000e_set_d3_lplu_state(struct e1000_hw *hw, bool active);
+extern s32 e1000e_write_phy_reg_igp(struct e1000_hw *hw, u32 offset, u16 data);
+extern s32 e1000e_phy_sw_reset(struct e1000_hw *hw);
+extern s32 e1000e_phy_force_speed_duplex_m88(struct e1000_hw *hw);
+extern s32 e1000e_get_cfg_done(struct e1000_hw *hw);
+extern s32 e1000e_get_cable_length_m88(struct e1000_hw *hw);
+extern s32 e1000e_get_phy_info_m88(struct e1000_hw *hw);
+extern s32 e1000e_read_phy_reg_m88(struct e1000_hw *hw, u32 offset, u16 *data);
+extern s32 e1000e_write_phy_reg_m88(struct e1000_hw *hw, u32 offset, u16 data);
+extern enum e1000_phy_type e1000e_get_phy_type_from_id(u32 phy_id);
+extern void e1000e_phy_force_speed_duplex_setup(struct e1000_hw *hw, u16 *phy_ctrl);
+extern s32 e1000e_write_kmrn_reg(struct e1000_hw *hw, u32 offset, u16 data);
+extern s32 e1000e_read_kmrn_reg(struct e1000_hw *hw, u32 offset, u16 *data);
+extern s32 e1000e_phy_has_link_generic(struct e1000_hw *hw, u32 iterations,
 			       u32 usec_interval, bool *success);
-extern s32 e1000_phy_reset_dsp(struct e1000_hw *hw);
-extern s32 e1000_check_downshift(struct e1000_hw *hw);
+extern s32 e1000e_phy_reset_dsp(struct e1000_hw *hw);
+extern s32 e1000e_check_downshift(struct e1000_hw *hw);
 
 static inline s32 e1000_phy_hw_reset(struct e1000_hw *hw)
 {
@@ -465,23 +458,23 @@ static inline s32 e1000_get_cable_length(struct e1000_hw *hw)
 	return hw->phy.ops.get_cable_length(hw);
 }
 
-extern s32 e1000_acquire_nvm(struct e1000_hw *hw);
-extern s32 e1000_write_nvm_spi(struct e1000_hw *hw, u16 offset, u16 words, u16 *data);
-extern s32 e1000_update_nvm_checksum_generic(struct e1000_hw *hw);
-extern s32 e1000_poll_eerd_eewr_done(struct e1000_hw *hw, int ee_reg);
-extern s32 e1000_read_nvm_spi(struct e1000_hw *hw, u16 offset, u16 words, u16 *data);
-extern s32 e1000_read_nvm_eerd(struct e1000_hw *hw, u16 offset, u16 words, u16 *data);
-extern s32 e1000_validate_nvm_checksum_generic(struct e1000_hw *hw);
-extern void e1000_release_nvm(struct e1000_hw *hw);
-extern void e1000_reload_nvm(struct e1000_hw *hw);
-extern s32 e1000_read_mac_addr(struct e1000_hw *hw);
+extern s32 e1000e_acquire_nvm(struct e1000_hw *hw);
+extern s32 e1000e_write_nvm_spi(struct e1000_hw *hw, u16 offset, u16 words, u16 *data);
+extern s32 e1000e_update_nvm_checksum_generic(struct e1000_hw *hw);
+extern s32 e1000e_poll_eerd_eewr_done(struct e1000_hw *hw, int ee_reg);
+extern s32 e1000e_read_nvm_spi(struct e1000_hw *hw, u16 offset, u16 words, u16 *data);
+extern s32 e1000e_read_nvm_eerd(struct e1000_hw *hw, u16 offset, u16 words, u16 *data);
+extern s32 e1000e_validate_nvm_checksum_generic(struct e1000_hw *hw);
+extern void e1000e_release_nvm(struct e1000_hw *hw);
+extern void e1000e_reload_nvm(struct e1000_hw *hw);
+extern s32 e1000e_read_mac_addr(struct e1000_hw *hw);
 
 static inline s32 e1000_validate_nvm_checksum(struct e1000_hw *hw)
 {
 	return hw->nvm.ops.validate_nvm(hw);
 }
 
-static inline s32 e1000_update_nvm_checksum(struct e1000_hw *hw)
+static inline s32 e1000e_update_nvm_checksum(struct e1000_hw *hw)
 {
 	return hw->nvm.ops.update_nvm(hw);
 }
@@ -501,9 +494,9 @@ static inline s32 e1000_get_phy_info(struct e1000_hw *hw)
 	return hw->phy.ops.get_phy_info(hw);
 }
 
-extern bool e1000_check_mng_mode(struct e1000_hw *hw);
-extern bool e1000_enable_tx_pkt_filtering(struct e1000_hw *hw);
-extern s32 e1000_mng_write_dhcp_info(struct e1000_hw *hw, u8 *buffer, u16 length);
+extern bool e1000e_check_mng_mode(struct e1000_hw *hw);
+extern bool e1000e_enable_tx_pkt_filtering(struct e1000_hw *hw);
+extern s32 e1000e_mng_write_dhcp_info(struct e1000_hw *hw, u8 *buffer, u16 length);
 
 static inline u32 __er32(struct e1000_hw *hw, unsigned long reg)
 {

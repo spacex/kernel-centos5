@@ -110,6 +110,39 @@ do {							\
 	}						\
 } while (0)
 
+static int check_pages_physically_contiguous(unsigned long pfn, 
+					     unsigned int offset,
+					     size_t length)
+{
+	unsigned long next_mfn;
+	int i;
+	int nr_pages;
+	
+	next_mfn = pfn_to_mfn(pfn);
+	nr_pages = (offset + length + PAGE_SIZE-1) >> PAGE_SHIFT;
+	
+	for (i = 1; i < nr_pages; i++) {
+		if (pfn_to_mfn(++pfn) != ++next_mfn) 
+			return 0;
+	}
+	return 1;
+}
+
+int range_straddles_page_boundary(paddr_t p, size_t size)
+{
+	extern unsigned long *contiguous_bitmap;
+	unsigned long pfn = p >> PAGE_SHIFT;
+	unsigned int offset = p & ~PAGE_MASK;
+
+	if (offset + size <= PAGE_SIZE)
+		return 0;
+	if (test_bit(pfn, contiguous_bitmap))
+		return 0;
+	if (check_pages_physically_contiguous(pfn, offset, size))
+		return 0;
+	return 1;
+}
+
 int
 dma_map_sg(struct device *hwdev, struct scatterlist *sg, int nents,
 	   enum dma_data_direction direction)
@@ -130,6 +163,9 @@ dma_map_sg(struct device *hwdev, struct scatterlist *sg, int nents,
 			BUG_ON(!sg[i].page);
 			IOMMU_BUG_ON(address_needs_mapping(
 				hwdev, sg[i].dma_address));
+			IOMMU_BUG_ON(range_straddles_page_boundary(
+				page_to_pseudophys(sg[i].page) + sg[i].offset,
+				sg[i].length));
 		}
 		rc = nents;
 	}
@@ -361,7 +397,7 @@ dma_map_single(struct device *dev, void *ptr, size_t size,
 		dma = swiotlb_map_single(dev, ptr, size, direction);
 	} else {
 		dma = virt_to_bus(ptr);
-		IOMMU_BUG_ON(range_straddles_page_boundary(ptr, size));
+		IOMMU_BUG_ON(range_straddles_page_boundary(__pa(ptr), size));
 		IOMMU_BUG_ON(address_needs_mapping(dev, dma));
 	}
 

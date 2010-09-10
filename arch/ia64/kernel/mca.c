@@ -83,6 +83,7 @@
 #include <asm/system.h>
 #include <asm/sal.h>
 #include <asm/mca.h>
+#include <asm/kexec.h>
 
 #include <asm/irq.h>
 #include <asm/hw_irq.h>
@@ -94,11 +95,6 @@
 # define IA64_MCA_DEBUG(fmt...)	printk(fmt)
 #else
 # define IA64_MCA_DEBUG(fmt...)
-#endif
-
-#ifdef CONFIG_KEXEC
-/* Used by arch/ia64/kernel/crash.c */
-int kdump_in_progress;
 #endif
 
 /* Used by mca_asm.S */
@@ -1244,7 +1240,7 @@ ia64_mca_handler(struct pt_regs *regs, struct switch_stack *sw,
 		/* Dump buffered message to console */
 		ia64_mlogbuf_finish(1);
 #ifdef CONFIG_KEXEC
-		kdump_in_progress = 1;
+		atomic_set(&kdump_in_progress, 1);
 		/* In the case of (!recover), notify_die(DIE_MCA_MONARCH_LEAVE)
 		   will not return. A dump kernel will be booted. Need to set
 		   nonarch_cpu here to get slave cpus out of looping in OS.
@@ -1490,6 +1486,10 @@ default_monarch_init_process(struct notifier_block *self, unsigned long val, voi
 	struct task_struct *g, *t;
 	if (val != DIE_INIT_MONARCH_PROCESS)
 		return NOTIFY_DONE;
+#ifdef CONFIG_KEXEC
+	if (atomic_read(&kdump_in_progress))
+		return NOTIFY_DONE;
+#endif
 
 	/*
 	 * FIXME: mlogbuf will brim over with INIT stack dumps.

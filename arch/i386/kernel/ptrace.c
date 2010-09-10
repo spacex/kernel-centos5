@@ -19,6 +19,7 @@
 #include <linux/seccomp.h>
 #include <linux/signal.h>
 #include <linux/module.h>
+#include <linux/elf.h>
 
 #include <asm/tracehook.h>
 #include <asm/uaccess.h>
@@ -148,6 +149,10 @@ static unsigned long getreg(struct task_struct *child,
 		if (child == current)
 			savesegment(gs, retval);
 		break;
+	case EFL:
+		if (test_tsk_thread_flag(child, TIF_FORCED_TF))
+			retval &= ~X86_EFLAGS_TF;
+		goto fetch;
 	case DS:
 	case ES:
 	case SS:
@@ -155,6 +160,7 @@ static unsigned long getreg(struct task_struct *child,
 		retval = 0xffff;
 		/* fall through */
 	default:
+	fetch:
 		if (regno > GS*4)
 			regno -= 2*4;
 		regno = regno - sizeof(struct pt_regs);
@@ -713,16 +719,19 @@ tls_active(struct task_struct *target, const struct utrace_regset *regset)
  */
 static const struct utrace_regset native_regsets[] = {
 	{
+		.core_note_type = NT_PRSTATUS,
 		.n = FRAME_SIZE, .size = sizeof(long), .align = sizeof(long),
 		.get = genregs_get, .set = genregs_set
 	},
 	{
+		.core_note_type = NT_PRFPREG,
 		.n = sizeof(struct user_i387_struct) / sizeof(long),
 		.size = sizeof(long), .align = sizeof(long),
 		.active = fpregs_active,
 		.get = fpregs_get, .set = fpregs_set
 	},
 	{
+		.core_note_type = NT_PRXFPREG,
 		.n = sizeof(struct user_fxsr_struct) / sizeof(long),
 		.size = sizeof(long), .align = sizeof(long),
 		.active = fpxregs_active,
@@ -787,7 +796,7 @@ int arch_ptrace(long *req, struct task_struct *child,
 	case PTRACE_SET_THREAD_AREA:
 		return ptrace_onereg_access(child, engine,
 					    utrace_native_view(current), 3,
-					    addr, (void __user *)data,
+					    addr, (void __user *)data, NULL,
 					    *req == PTRACE_SET_THREAD_AREA);
 	}
 	return -ENOSYS;

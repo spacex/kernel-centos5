@@ -55,10 +55,12 @@ static void sctp_ulpevent_release_frag_data(struct sctp_ulpevent *event);
 
 
 /* Initialize an ULP event from an given skb.  */
-SCTP_STATIC void sctp_ulpevent_init(struct sctp_ulpevent *event, int msg_flags)
+SCTP_STATIC void sctp_ulpevent_init(struct sctp_ulpevent *event, int msg_flags,
+				    unsigned int len)
 {
 	memset(event, 0, sizeof(struct sctp_ulpevent));
 	event->msg_flags = msg_flags;
+	event->rmem_len = len;
 }
 
 /* Create a new sctp_ulpevent.  */
@@ -73,7 +75,7 @@ SCTP_STATIC struct sctp_ulpevent *sctp_ulpevent_new(int size, int msg_flags,
 		goto fail;
 
 	event = sctp_skb2event(skb);
-	sctp_ulpevent_init(event, msg_flags);
+	sctp_ulpevent_init(event, msg_flags, skb->truesize);
 
 	return event;
 
@@ -101,8 +103,8 @@ static inline void sctp_ulpevent_set_owner(struct sctp_ulpevent *event,
 	sctp_association_hold((struct sctp_association *)asoc);
 	skb = sctp_event2skb(event);
 	event->asoc = (struct sctp_association *)asoc;
-	atomic_add(skb->truesize, &event->asoc->rmem_alloc);
-	skb_set_owner_r(skb, asoc->base.sk);
+	atomic_add(event->rmem_len, &event->asoc->rmem_alloc);
+	sctp_skb_set_owner_r(skb, asoc->base.sk);
 }
 
 /* A simple destructor to give up the reference to the association. */
@@ -111,7 +113,7 @@ static inline void sctp_ulpevent_release_owner(struct sctp_ulpevent *event)
 	struct sctp_association *asoc = event->asoc;
 	struct sk_buff *skb = sctp_event2skb(event);
 
-	atomic_sub(skb->truesize, &asoc->rmem_alloc);
+	atomic_sub(event->rmem_len, &asoc->rmem_alloc);
 	sctp_association_put(asoc);
 }
 
@@ -372,7 +374,7 @@ struct sctp_ulpevent *sctp_ulpevent_make_remote_error(
 
 	/* Embed the event fields inside the cloned skb.  */
 	event = sctp_skb2event(skb);
-	sctp_ulpevent_init(event, MSG_NOTIFICATION);
+	sctp_ulpevent_init(event, MSG_NOTIFICATION, skb->truesize);
 
 	sre = (struct sctp_remote_error *)
 		skb_push(skb, sizeof(struct sctp_remote_error));
@@ -464,7 +466,7 @@ struct sctp_ulpevent *sctp_ulpevent_make_send_failed(
 
 	/* Embed the event fields inside the cloned skb.  */
 	event = sctp_skb2event(skb);
-	sctp_ulpevent_init(event, MSG_NOTIFICATION);
+	sctp_ulpevent_init(event, MSG_NOTIFICATION, skb->truesize);
 
 	ssf = (struct sctp_send_failed *)
 		skb_push(skb, sizeof(struct sctp_send_failed));
@@ -655,6 +657,24 @@ struct sctp_ulpevent *sctp_ulpevent_make_rcvmsg(struct sctp_association *asoc,
 	struct sctp_ulpevent *event = NULL;
 	struct sk_buff *skb;
 	size_t padding, len;
+	int rx_count;
+
+	/*
+	 * check to see if we need to make space for this
+	 * new skb, expand the rcvbuffer if needed, or drop
+	 * the frame
+	 */
+	if (asoc->ep->rcvbuf_policy) 
+		rx_count = atomic_read(&asoc->rmem_alloc);
+	else
+		rx_count = atomic_read(&asoc->base.sk->sk_rmem_alloc);
+
+	if (rx_count >= asoc->base.sk->sk_rcvbuf) {
+
+		if ((asoc->base.sk->sk_userlocks & SOCK_RCVBUF_LOCK) ||
+		    (!sk_rmem_schedule(asoc->base.sk, chunk->skb->truesize)))
+			goto fail;
+	}
 
 	/* Clone the original skb, sharing the data.  */
 	skb = skb_clone(chunk->skb, gfp);
@@ -683,7 +703,7 @@ struct sctp_ulpevent *sctp_ulpevent_make_rcvmsg(struct sctp_association *asoc,
 	event = sctp_skb2event(skb);
 
 	/* Initialize event with flags 0.  */
-	sctp_ulpevent_init(event, 0);
+	sctp_ulpevent_init(event, 0, skb->len + sizeof(struct sk_buff));
 
 	sctp_ulpevent_receive_data(event, asoc);
 

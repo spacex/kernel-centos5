@@ -155,6 +155,13 @@ struct ipv6_devstat {
 	DEFINE_SNMP_STAT(struct icmpv6_mib, icmpv6);
 };
 
+struct ipv6_devstat_ext {
+	struct proc_dir_entry	*proc_dir_entry;
+	DEFINE_SNMP_STAT(struct ipstats_mib, ipv6);
+	DEFINE_SNMP_STAT(struct icmpv6_mib, icmpv6);
+	DEFINE_SNMP_STAT(struct icmpv6msg_mib, icmpv6msg);
+};
+
 struct inet6_dev 
 {
 	struct net_device		*dev;
@@ -189,6 +196,10 @@ struct inet6_dev
 	struct ipv6_devconf	cnf;
 	struct ipv6_devstat	stats;
 	unsigned long		tstamp; /* ipv6InterfaceTable update timestamp */
+#ifndef __GENKSYMS__
+	struct rcu_head         rcu;
+	struct ipv6_devstat_ext statsx;
+#endif
 };
 
 extern struct ipv6_devconf ipv6_devconf;

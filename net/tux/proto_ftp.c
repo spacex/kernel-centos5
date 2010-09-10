@@ -623,8 +623,10 @@ void ftp_send_file (tux_req_t *req, int cachemiss)
 	SET_TIMESTAMP(req->output_timestamp);
 repeat:
 	ret = generic_send_file(req, req->data_sock, cachemiss);
-	update_bandwidth(req, req->in_file->f_pos - req->prev_pos);
-	req->prev_pos = req->in_file->f_pos;
+	if (req->in_file) {
+		update_bandwidth(req, req->in_file->f_pos - req->prev_pos);
+		req->prev_pos = req->in_file->f_pos;
+	}
 
 	switch (ret) {
 		case -5:
@@ -645,7 +647,8 @@ repeat:
 		case -1:
 			break;
 		default:
-			req->in_file->f_pos = 0;
+			if (req->in_file)
+				req->in_file->f_pos = 0;
 
 			if (tux_ftp_wait_close) {
 				req->data_sock->ops->shutdown(req->data_sock, SEND_SHUTDOWN);

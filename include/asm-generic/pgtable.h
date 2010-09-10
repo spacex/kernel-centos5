@@ -188,6 +188,10 @@ static inline void ptep_set_wrprotect(struct mm_struct *mm, unsigned long addres
 })
 #endif
 
+#ifndef arch_change_pte_range
+#define arch_change_pte_range(mm, pmd, addr, end, newprot) 0
+#endif
+
 #ifndef __ASSEMBLY__
 /*
  * When walking page tables, we usually want to skip any p?d_none entries;

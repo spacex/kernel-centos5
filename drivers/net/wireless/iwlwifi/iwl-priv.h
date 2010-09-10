@@ -52,8 +52,8 @@ struct iwl_priv {
 	u8 phymode;
 	int alloc_rxb_skb;
 
-	void (*rx_handlers[REPLY_MAX])(struct iwl_priv * priv,
-				       struct iwl_rx_mem_buffer * rxb);
+	void (*rx_handlers[REPLY_MAX])(struct iwl_priv *priv,
+				       struct iwl_rx_mem_buffer *rxb);
 
 	const struct ieee80211_hw_mode *modes;
 
@@ -62,6 +62,8 @@ struct iwl_priv {
 	struct iwl_spectrum_notification measure_report;
 	u8 measurement_status;
 #endif
+	/* ucode beacon time */
+	u32 ucode_beacon_time;
 
 	/* we allocate array of iwl_channel_info for NIC's valid channels.
 	 *    Access via channel # using indirect index array */
@@ -89,7 +91,8 @@ struct iwl_priv {
 	u8 only_active_channel;
 
 	/* spinlock */
-	spinlock_t lock;
+	spinlock_t lock;	/* protect general shared data */
+	spinlock_t hcmd_lock;	/* protect hcmd */
 	struct mutex mutex;
 
 	/* basic pci-network driver stuff */
@@ -97,7 +100,6 @@ struct iwl_priv {
 
 	/* pci hardware address support */
 	void __iomem *hw_base;
-	unsigned long hw_len;
 
 	/* uCode images, save to reload in case of failure */
 	struct fw_image_desc ucode_code;	/* runtime inst */
@@ -174,17 +176,16 @@ struct iwl_priv {
 	struct iwl_rx_queue rxq;
 	struct iwl_tx_queue txq[IWL_MAX_NUM_QUEUES];
 #if IWL == 4965
+	unsigned long txq_ctx_active_msk;
 	struct iwl_kw kw;	/* keep warm address */
 	u32 scd_base_addr;	/* scheduler sram base address */
 #endif
 
-	u32 status;
+	unsigned long status;
 	u32 config;
 
-	int quality;
-	int last_rx_rssi;
-	int last_rx_noise;
-	int last_rx_snr;
+	int last_rx_rssi;	/* From Rx packet statisitics */
+	int last_rx_noise;	/* From beacon statistics */
 
 	struct iwl_power_mgr power_data;
 
@@ -204,7 +205,7 @@ struct iwl_priv {
 
 	/*station table variables */
 	spinlock_t sta_lock;
-	u8 num_stations;
+	int num_stations;
 	struct iwl_station_entry stations[IWL_STATION_COUNT];
 
 	/* Indication if ieee80211_ops->open has been called */
@@ -245,6 +246,10 @@ struct iwl_priv {
 	u16 assoc_capability;
 	u8 ps_mode;
 
+#ifdef CONFIG_IWLWIFI_QOS
+	struct iwl_qos_info qos_data;
+#endif /*CONFIG_IWLWIFI_QOS */
+
 	struct workqueue_struct *workqueue;
 
 	struct work_struct up;
@@ -258,6 +263,7 @@ struct iwl_priv {
 	struct work_struct auth_work;
 	struct work_struct report_work;
 	struct work_struct request_scan;
+	struct work_struct beacon_update;
 
 	struct tasklet_struct irq_tasklet;
 
@@ -278,10 +284,11 @@ struct iwl_priv {
 	u32 pm_state[16];
 #endif
 
+#ifdef CONFIG_IWLWIFI_DEBUG
 	/* debugging info */
 	u32 framecnt_to_us;
-
-
+	atomic_t restrict_refcnt;
+#endif
 
 #if IWL == 4965
 	struct work_struct txpower_work;

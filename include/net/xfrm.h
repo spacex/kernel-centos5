@@ -12,9 +12,11 @@
 #include <linux/pfkeyv2.h>
 #include <linux/in6.h>
 #include <linux/mutex.h>
+#include <linux/audit.h>
 
 #include <net/sock.h>
 #include <net/dst.h>
+#include <net/ip.h>
 #include <net/route.h>
 #include <net/ipv6.h>
 #include <net/ip6_fib.h>
@@ -371,6 +373,22 @@ struct xfrm_mgr
 extern int xfrm_register_km(struct xfrm_mgr *km);
 extern int xfrm_unregister_km(struct xfrm_mgr *km);
 
+/*
+ * This structure is used for the duration where packets are being
+ * transformed by IPsec.  As soon as the packet leaves IPsec the
+ * area beyond the generic IP part may be overwritten.
+ */
+struct xfrm_skb_cb {
+	union {
+		struct inet_skb_parm h4;
+		struct inet6_skb_parm h6;
+        } header;
+
+        /* Sequence number for replay protection. */
+        u64 seq;
+};
+
+#define XFRM_SKB_CB(__skb) ((struct xfrm_skb_cb *)&((__skb)->cb[0]))
 
 extern struct xfrm_policy *xfrm_policy_list[XFRM_POLICY_MAX*2];
 
@@ -384,8 +402,38 @@ struct xfrm_audit
 #ifdef CONFIG_AUDITSYSCALL
 extern void xfrm_audit_log(uid_t auid, u32 secid, int type, int result,
 		    struct xfrm_policy *xp, struct xfrm_state *x);
+extern void xfrm_audit_state_replay_overflow(struct xfrm_state *x,
+                                             struct sk_buff *skb);
+extern void xfrm_audit_state_replay(struct xfrm_state *x, struct sk_buff *skb,
+				    __be32 net_seq);
+extern void xfrm_naudit_state_replay(struct xfrm_state *x, struct sk_buff *skb,
+				     __be32 net_seq);
+extern void xfrm_audit_state_notfound(struct sk_buff *skb, u16 family,
+				      __be32 net_spi, __be32 net_seq);
+extern void xfrm_naudit_state_notfound(struct sk_buff *skb, u16 family,
+				       __be32 net_spi, __be32 net_seq);
+extern void xfrm_audit_state_icvfail(struct xfrm_state *x,
+				     struct sk_buff *skb, u8 proto);
+
+static inline struct audit_buffer *xfrm_audit_start(const char *op)
+{
+	struct audit_buffer *audit_buf = NULL;
+
+	xfrm_audit_log(0, 0, AUDIT_MAC_IPSEC_EVENT, 0,
+		       (struct xfrm_policy *)&audit_buf, NULL);
+	if (audit_buf == NULL)
+		return NULL;
+	audit_log_format(audit_buf, "op=%s", op);
+	return audit_buf;
+}
 #else
 #define xfrm_audit_log(a,s,t,r,p,x) do { ; } while (0)
+#define xfrm_audit_state_replay_overflow(x, s)	do { ; } while (0)
+#define xfrm_audit_state_replay(s, f, sp, sq)	do { ; } while (0)
+#define xfrm_naudit_state_replay(s, f, sp, sq)	do { ; } while (0)
+#define xfrm_audit_state_notfound(s, f, sp, sq)	do { ; } while (0)
+#define xfrm_naudit_state_notfound(s, f, sp, sq) do { ; } while (0)
+#define xfrm_audit_state_icvfail(x, s, p)	do { ; } while (0)
 #endif /* CONFIG_AUDITSYSCALL */
 
 static inline void xfrm_pol_hold(struct xfrm_policy *policy)
@@ -702,14 +750,23 @@ xfrm_state_addr_cmp(struct xfrm_tmpl *tmpl, struct xfrm_state *x, unsigned short
 
 extern int __xfrm_policy_check(struct sock *, int dir, struct sk_buff *skb, unsigned short family);
 
-static inline int xfrm_policy_check(struct sock *sk, int dir, struct sk_buff *skb, unsigned short family)
+static inline int __xfrm_policy_check2(struct sock *sk, int dir,
+				       struct sk_buff *skb,
+				       unsigned int family, int reverse)
 {
+	int ndir = dir | (reverse ? XFRM_POLICY_MASK + 1 : 0);
+
 	if (sk && sk->sk_policy[XFRM_POLICY_IN])
-		return __xfrm_policy_check(sk, dir, skb, family);
+		return __xfrm_policy_check(sk, ndir, skb, family);
 		
 	return	(!xfrm_policy_list[dir] && !skb->sp) ||
 		(skb->dst->flags & DST_NOPOLICY) ||
-		__xfrm_policy_check(sk, dir, skb, family);
+		__xfrm_policy_check(sk, ndir, skb, family);
+}
+
+static inline int xfrm_policy_check(struct sock *sk, int dir, struct sk_buff *skb, unsigned int family)
+{
+	return __xfrm_policy_check2(sk, dir, skb, family, 0);
 }
 
 static inline int xfrm4_policy_check(struct sock *sk, int dir, struct sk_buff *skb)
@@ -722,7 +779,22 @@ static inline int xfrm6_policy_check(struct sock *sk, int dir, struct sk_buff *s
 	return xfrm_policy_check(sk, dir, skb, AF_INET6);
 }
 
+static inline int xfrm4_policy_check_reverse(struct sock *sk, int dir,
+					     struct sk_buff *skb)
+{
+	return __xfrm_policy_check2(sk, dir, skb, AF_INET, 1);
+}
+
+static inline int xfrm6_policy_check_reverse(struct sock *sk, int dir,
+					     struct sk_buff *skb)
+{
+	return __xfrm_policy_check2(sk, dir, skb, AF_INET6, 1);
+}
+
 extern int xfrm_decode_session(struct sk_buff *skb, struct flowi *fl, unsigned short family);
+extern void xfrm4_decode_session_reverse(struct sk_buff *skb, struct flowi *fl);
+extern void xfrm6_decode_session_reverse(struct sk_buff *skb, struct flowi *fl);
+
 extern int __xfrm_route_forward(struct sk_buff *skb, unsigned short family);
 
 static inline int xfrm_route_forward(struct sk_buff *skb, unsigned short family)
@@ -780,6 +852,26 @@ static inline int xfrm4_policy_check(struct sock *sk, int dir, struct sk_buff *s
 	return 1;
 }
 static inline int xfrm_policy_check(struct sock *sk, int dir, struct sk_buff *skb, unsigned short family)
+{
+	return 1;
+}
+static inline int xfrm4_decode_session_reverse(struct sk_buff *skb,
+					       struct flowi *fl)
+{
+	return -ENOSYS;
+}
+static inline int xfrm6_decode_session_reverse(struct sk_buff *skb,
+					       struct flowi *fl)
+{
+	return -ENOSYS;
+}
+static inline int xfrm4_policy_check_reverse(struct sock *sk, int dir,
+					     struct sk_buff *skb)
+{
+	return 1;
+}
+static inline int xfrm6_policy_check_reverse(struct sock *sk, int dir,
+					     struct sk_buff *skb)
 {
 	return 1;
 }
@@ -853,6 +945,10 @@ static inline int xfrm_state_kern(struct xfrm_state *x)
 /*
  * xfrm algorithm information
  */
+struct xfrm_algo_aead_info {
+	u16 icv_truncbits;
+};
+
 struct xfrm_algo_auth_info {
 	u16 icv_truncbits;
 	u16 icv_fullbits;
@@ -876,6 +972,19 @@ struct xfrm_algo_desc {
 		struct xfrm_algo_comp_info comp;
 	} uinfo;
 	struct sadb_alg desc;
+};
+
+struct xfrm_nalgo_desc {
+	char *name;
+	u8 available:1;
+	union {
+		struct xfrm_algo_aead_info aead;
+		struct xfrm_algo_auth_info auth;
+		struct xfrm_algo_encr_info encr;
+		struct xfrm_algo_comp_info comp;
+	} uinfo;
+	struct sadb_alg desc;
+	char *compat;
 };
 
 /* XFRM tunnel handlers.  */
@@ -926,17 +1035,21 @@ extern int xfrm_state_check(struct xfrm_state *x, struct sk_buff *skb);
 extern int xfrm_state_mtu(struct xfrm_state *x, int mtu);
 extern int xfrm_init_state(struct xfrm_state *x);
 extern int xfrm4_rcv(struct sk_buff *skb);
+extern int xfrm4_input_resume(struct sk_buff *skb, int err);
 extern int xfrm4_output(struct sk_buff *skb);
+extern int xfrm4_output_resume(struct sk_buff *skb, int err);
 extern int xfrm4_tunnel_register(struct xfrm_tunnel *handler);
 extern int xfrm4_tunnel_deregister(struct xfrm_tunnel *handler);
 extern int xfrm6_rcv_spi(struct sk_buff *skb, u32 spi);
 extern int xfrm6_rcv(struct sk_buff **pskb);
+extern int xfrm6_input_resume(struct sk_buff *skb, int nexthdr);
 extern int xfrm6_tunnel_register(struct xfrm6_tunnel *handler);
 extern int xfrm6_tunnel_deregister(struct xfrm6_tunnel *handler);
 extern u32 xfrm6_tunnel_alloc_spi(xfrm_address_t *saddr);
 extern void xfrm6_tunnel_free_spi(xfrm_address_t *saddr);
 extern u32 xfrm6_tunnel_spi_lookup(xfrm_address_t *saddr);
 extern int xfrm6_output(struct sk_buff *skb);
+extern int xfrm6_output_resume(struct sk_buff *skb, int err);
 
 #ifdef CONFIG_XFRM
 extern int xfrm4_rcv_encap(struct sk_buff *skb, __u16 encap_type);
@@ -999,12 +1112,23 @@ extern struct xfrm_algo_desc *xfrm_calg_get_byid(int alg_id);
 extern struct xfrm_algo_desc *xfrm_aalg_get_byname(char *name, int probe);
 extern struct xfrm_algo_desc *xfrm_ealg_get_byname(char *name, int probe);
 extern struct xfrm_algo_desc *xfrm_calg_get_byname(char *name, int probe);
+extern struct xfrm_algo_desc *xfrm_aead_get_byname(char *name, int icv_len,
+						   int probe);
+extern struct xfrm_nalgo_desc *xfrm_naalg_get_byname(char *name, int probe);
+extern struct xfrm_nalgo_desc *xfrm_nealg_get_byname(char *name, int probe);
+extern struct xfrm_nalgo_desc *xfrm_naead_get_byname(char *name, int icv_len,
+						     int probe);
 
 struct crypto_tfm;
+struct hash_desc;
 typedef void (icv_update_fn_t)(struct crypto_tfm *, struct scatterlist *, unsigned int);
+typedef int (nicv_update_fn_t)(struct hash_desc *, struct scatterlist *,
+			       unsigned int);
 
 extern void skb_icv_walk(const struct sk_buff *skb, struct crypto_tfm *tfm,
 			 int offset, int len, icv_update_fn_t icv_update);
+extern int skb_nicv_walk(const struct sk_buff *skb, struct hash_desc *tfm,
+			 int offset, int len, nicv_update_fn_t icv_update);
 
 static inline int xfrm_addr_cmp(xfrm_address_t *a, xfrm_address_t *b,
 				int family)
@@ -1043,5 +1167,9 @@ static inline void xfrm_aevent_doreplay(struct xfrm_state *x)
 		xfrm_replay_notify(x, XFRM_REPLAY_UPDATE);
 }
 
+static inline struct xfrm_state *xfrm_input_state(struct sk_buff *skb)
+{
+        return skb->sp->xvec[skb->sp->len - 1];
+}
 
 #endif	/* _NET_XFRM_H */

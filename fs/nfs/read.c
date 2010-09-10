@@ -208,9 +208,6 @@ static int nfs_readpage_sync(struct nfs_open_context *ctx, struct inode *inode,
 		if (rdata->res.eof != 0 || result == 0)
 			break;
 	} while (count);
-	spin_lock(&inode->i_lock);
-	NFS_I(inode)->cache_validity |= NFS_INO_INVALID_ATIME;
-	spin_unlock(&inode->i_lock);
 
 	if (rdata->res.eof || rdata->res.count == rdata->args.count) {
 		SetPageUptodate(page);
@@ -494,9 +491,6 @@ int nfs_readpage_result(struct rpc_task *task, struct nfs_read_data *data)
 		set_bit(NFS_INO_STALE, &NFS_FLAGS(data->inode));
 		nfs_mark_for_revalidate(data->inode);
 	}
-	spin_lock(&data->inode->i_lock);
-	NFS_I(data->inode)->cache_validity |= NFS_INO_INVALID_ATIME;
-	spin_unlock(&data->inode->i_lock);
 	return 0;
 }
 

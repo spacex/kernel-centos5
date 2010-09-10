@@ -37,6 +37,8 @@ static int ehci_bus_suspend (struct usb_hcd *hcd)
 
 	if (time_before (jiffies, ehci->next_statechange))
 		msleep(5);
+	del_timer_sync(&ehci->watchdog);
+	del_timer_sync(&ehci->iaa_watchdog);
 
 	port = HCS_N_PORTS (ehci->hcs_params);
 	spin_lock_irq (&ehci->lock);
@@ -48,7 +50,7 @@ static int ehci_bus_suspend (struct usb_hcd *hcd)
 	}
 	ehci->command = readl (&ehci->regs->command);
 	if (ehci->reclaim)
-		ehci->reclaim_ready = 1;
+		end_unlink_async(ehci, NULL);
 	ehci_work(ehci, NULL);
 
 	/* suspend any active/unsuspended ports, maybe allow wakeup */
@@ -72,7 +74,6 @@ static int ehci_bus_suspend (struct usb_hcd *hcd)
 	}
 
 	/* turn off now-idle HC */
-	del_timer_sync (&ehci->watchdog);
 	ehci_halt (ehci);
 	hcd->state = HC_STATE_SUSPENDED;
 

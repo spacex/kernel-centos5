@@ -3012,6 +3012,11 @@ static int __devinit happy_meal_pci_probe(struct pci_dev *pdev,
 #endif
 
 	err = -ENODEV;
+
+	if (pci_enable_device(pdev))
+		goto err_out;
+	pci_set_master(pdev);
+
 	if (!strcmp(prom_name, "SUNW,qfe") || !strcmp(prom_name, "qfe")) {
 		qp = quattro_pci_find(pdev);
 		if (qp == NULL)
@@ -3308,7 +3313,7 @@ static int __devexit hme_sbus_remove(struct of_device *dev)
 	struct happy_meal *hp = dev_get_drvdata(&dev->dev);
 	struct net_device *net_dev = hp->dev;
 
-	unregister_netdevice(net_dev);
+	unregister_netdev(net_dev);
 
 	/* XXX qfe parent interrupt... */
 

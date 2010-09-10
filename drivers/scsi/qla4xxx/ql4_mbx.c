@@ -33,7 +33,6 @@ int qla4xxx_mailbox_command(struct scsi_qla_host *ha, uint8_t inCount,
 	u_long wait_count;
 	uint32_t intr_status;
 	unsigned long flags = 0;
-	DECLARE_WAITQUEUE(wait, current);
 
 	/* Make sure that pointers are valid */
 	if (!mbx_cmd || !mbx_sts) {
@@ -90,10 +89,6 @@ int qla4xxx_mailbox_command(struct scsi_qla_host *ha, uint8_t inCount,
 	readl(&ha->reg->ctrl_status);
 	spin_unlock_irqrestore(&ha->hardware_lock, flags);
 
-	/* Wait for completion */
-	set_current_state(TASK_UNINTERRUPTIBLE);
-	add_wait_queue(&ha->mailbox_wait_queue, &wait);
-
 	/*
 	 * If we don't want status, don't wait for the mailbox command to
 	 * complete.  For example, MBOX_CMD_RESET_FW doesn't return status,
@@ -101,10 +96,10 @@ int qla4xxx_mailbox_command(struct scsi_qla_host *ha, uint8_t inCount,
 	 */
 	if (outCount == 0) {
 		status = QLA_SUCCESS;
-		set_current_state(TASK_RUNNING);
-		remove_wait_queue(&ha->mailbox_wait_queue, &wait);
 		goto mbox_exit;
 	}
+	/* Wait for completion */
+	set_current_state(TASK_UNINTERRUPTIBLE);
 	/* Wait for command to complete */
 	wait_count = jiffies + MBOX_TOV * HZ;
 	while (test_bit(AF_MBOX_COMMAND_DONE, &ha->flags) == 0) {
@@ -127,7 +122,6 @@ int qla4xxx_mailbox_command(struct scsi_qla_host *ha, uint8_t inCount,
 		msleep(10);
 	}
 	set_current_state(TASK_RUNNING);
-	remove_wait_queue(&ha->mailbox_wait_queue, &wait);
 
 	/* Check for mailbox timeout. */
 	if (!test_bit(AF_MBOX_COMMAND_DONE, &ha->flags)) {

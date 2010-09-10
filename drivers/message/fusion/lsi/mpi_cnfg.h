@@ -1,12 +1,12 @@
 /*
- *  Copyright (c) 2000-2005 LSI Logic Corporation.
+ *  Copyright (c) 2000-2007 LSI Corporation.
  *
  *
  *           Name:  mpi_cnfg.h
  *          Title:  MPI Config message, structures, and Pages
  *  Creation Date:  July 27, 2000
  *
- *    mpi_cnfg.h Version:  01.05.12
+ *    mpi_cnfg.h Version:  01.05.15
  *
  *  Version History
  *  ---------------
@@ -276,6 +276,38 @@
  *                      Added AdditionalControlFlags, MaxTargetPortConnectTime,
  *                      ReportDeviceMissingDelay, and IODeviceMissingDelay
  *                      fields to SAS IO Unit Page 1.
+ *  10-11-06  01.05.13  Added NumForceWWID field and ForceWWID array to
+ *                      Manufacturing Page 5.
+ *                      Added Manufacturing pages 8 through 10.
+ *                      Added defines for supported metadata size bits in
+ *                      CapabilitiesFlags field of IOC Page 6.
+ *                      Added defines for metadata size bits in VolumeSettings
+ *                      field of RAID Volume Page 0.
+ *                      Added SATA Link Reset settings, Enable SATA Asynchronous
+ *                      Notification bit, and HideNonZeroAttachedPhyIdentifiers
+ *                      bit to AdditionalControlFlags field of SAS IO Unit
+ *                      Page 1.
+ *                      Added defines for Enclosure Devices Unmapped and
+ *                      Device Limit Exceeded bits in Status field of SAS IO
+ *                      Unit Page 2.
+ *                      Added more AccessStatus values for SAS Device Page 0.
+ *                      Added bit for SATA Asynchronous Notification Support in
+ *                      Flags field of SAS Device Page 0.
+ *  02-28-07  01.05.14  Added ExtFlags field to Manufacturing Page 4.
+ *                      Added Disable SMART Polling for CapabilitiesFlags of
+ *                      IOC Page 6.
+ *                      Added Disable SMART Polling to DeviceSettings of BIOS
+ *                      Page 1.
+ *                      Added Multi-Port Domain bit for DiscoveryStatus field
+ *                      of SAS IO Unit Page.
+ *                      Added Multi-Port Domain Illegal flag for SAS IO Unit
+ *                      Page 1 AdditionalControlFlags field.
+ *  05-24-07  01.05.15  Added Hide Physical Disks with Non-Integrated RAID
+ *                      Metadata bit to Manufacturing Page 4 ExtFlags field.
+ *                      Added Internal Connector to End Device Present bit to
+ *                      Expander Page 0 Flags field.
+ *                      Fixed define for
+ *                      MPI_SAS_EXPANDER1_DISCINFO_BAD_PHY_DISABLED.
  *  --------------------------------------------------------------------------
  */
 
@@ -622,7 +654,7 @@ typedef struct _CONFIG_PAGE_MANUFACTURING_4
     U8                              InfoSize1;          /* 0Bh */
     U8                              InquirySize;        /* 0Ch */
     U8                              Flags;              /* 0Dh */
-    U16                             Reserved2;          /* 0Eh */
+    U16                             ExtFlags;           /* 0Eh */
     U8                              InquiryData[56];    /* 10h */
     U32                             ISVolumeSettings;   /* 48h */
     U32                             IMEVolumeSettings;  /* 4Ch */
@@ -641,7 +673,7 @@ typedef struct _CONFIG_PAGE_MANUFACTURING_4
 } CONFIG_PAGE_MANUFACTURING_4, MPI_POINTER PTR_CONFIG_PAGE_MANUFACTURING_4,
   ManufacturingPage4_t, MPI_POINTER pManufacturingPage4_t;
 
-#define MPI_MANUFACTURING4_PAGEVERSION                  (0x04)
+#define MPI_MANUFACTURING4_PAGEVERSION                  (0x05)
 
 /* defines for the Flags field */
 #define MPI_MANPAGE4_FORCE_BAD_BLOCK_TABLE              (0x80)
@@ -653,18 +685,31 @@ typedef struct _CONFIG_PAGE_MANUFACTURING_4
 #define MPI_MANPAGE4_IM_RESYNC_CACHE_ENABLE             (0x02)
 #define MPI_MANPAGE4_IR_NO_MIX_SAS_SATA                 (0x01)
 
+/* defines for the ExtFlags field */
+#define MPI_MANPAGE4_EXTFLAGS_HIDE_NON_IR_METADATA      (0x0008)
+#define MPI_MANPAGE4_EXTFLAGS_SAS_CACHE_DISABLE         (0x0004)
+#define MPI_MANPAGE4_EXTFLAGS_SATA_CACHE_DISABLE        (0x0002)
+#define MPI_MANPAGE4_EXTFLAGS_LEGACY_MODE               (0x0001)
+
+
+#ifndef MPI_MANPAGE5_NUM_FORCEWWID
+#define MPI_MANPAGE5_NUM_FORCEWWID      (1)
+#endif
 
 typedef struct _CONFIG_PAGE_MANUFACTURING_5
 {
     CONFIG_PAGE_HEADER              Header;             /* 00h */
     U64                             BaseWWID;           /* 04h */
     U8                              Flags;              /* 0Ch */
-    U8                              Reserved1;          /* 0Dh */
+    U8                              NumForceWWID;       /* 0Dh */
     U16                             Reserved2;          /* 0Eh */
+    U32                             Reserved3;          /* 10h */
+    U32                             Reserved4;          /* 14h */
+    U64                             ForceWWID[MPI_MANPAGE5_NUM_FORCEWWID]; /* 18h */
 } CONFIG_PAGE_MANUFACTURING_5, MPI_POINTER PTR_CONFIG_PAGE_MANUFACTURING_5,
   ManufacturingPage5_t, MPI_POINTER pManufacturingPage5_t;
 
-#define MPI_MANUFACTURING5_PAGEVERSION                  (0x01)
+#define MPI_MANUFACTURING5_PAGEVERSION                  (0x02)
 
 /* defines for the Flags field */
 #define MPI_MANPAGE5_TWO_WWID_PER_PHY                   (0x01)
@@ -738,6 +783,36 @@ typedef struct _CONFIG_PAGE_MANUFACTURING_7
 
 /* defines for the Flags field */
 #define MPI_MANPAGE7_FLAG_USE_SLOT_INFO                 (0x00000001)
+
+
+typedef struct _CONFIG_PAGE_MANUFACTURING_8
+{
+    CONFIG_PAGE_HEADER              Header;             /* 00h */
+    U32                             ProductSpecificInfo;/* 04h */
+} CONFIG_PAGE_MANUFACTURING_8, MPI_POINTER PTR_CONFIG_PAGE_MANUFACTURING_8,
+  ManufacturingPage8_t, MPI_POINTER pManufacturingPage8_t;
+
+#define MPI_MANUFACTURING8_PAGEVERSION                  (0x00)
+
+
+typedef struct _CONFIG_PAGE_MANUFACTURING_9
+{
+    CONFIG_PAGE_HEADER              Header;             /* 00h */
+    U32                             ProductSpecificInfo;/* 04h */
+} CONFIG_PAGE_MANUFACTURING_9, MPI_POINTER PTR_CONFIG_PAGE_MANUFACTURING_9,
+  ManufacturingPage9_t, MPI_POINTER pManufacturingPage9_t;
+
+#define MPI_MANUFACTURING9_PAGEVERSION                  (0x00)
+
+
+typedef struct _CONFIG_PAGE_MANUFACTURING_10
+{
+    CONFIG_PAGE_HEADER              Header;             /* 00h */
+    U32                             ProductSpecificInfo;/* 04h */
+} CONFIG_PAGE_MANUFACTURING_10, MPI_POINTER PTR_CONFIG_PAGE_MANUFACTURING_10,
+  ManufacturingPage10_t, MPI_POINTER pManufacturingPage10_t;
+
+#define MPI_MANUFACTURING10_PAGEVERSION                 (0x00)
 
 
 /****************************************************************************
@@ -1080,9 +1155,15 @@ typedef struct _CONFIG_PAGE_IOC_6
 } CONFIG_PAGE_IOC_6, MPI_POINTER PTR_CONFIG_PAGE_IOC_6,
   IOCPage6_t, MPI_POINTER pIOCPage6_t;
 
-#define MPI_IOCPAGE6_PAGEVERSION                        (0x00)
+#define MPI_IOCPAGE6_PAGEVERSION                        (0x01)
 
 /* IOC Page 6 Capabilities Flags */
+
+#define MPI_IOCPAGE6_CAP_FLAGS_DISABLE_SMART_POLLING    (0x00000008)
+
+#define MPI_IOCPAGE6_CAP_FLAGS_MASK_METADATA_SIZE       (0x00000006)
+#define MPI_IOCPAGE6_CAP_FLAGS_64MB_METADATA_SIZE       (0x00000000)
+#define MPI_IOCPAGE6_CAP_FLAGS_512MB_METADATA_SIZE      (0x00000002)
 
 #define MPI_IOCPAGE6_CAP_FLAGS_GLOBAL_HOT_SPARE         (0x00000001)
 
@@ -1150,6 +1231,7 @@ typedef struct _CONFIG_PAGE_BIOS_1
 #define MPI_BIOSPAGE1_IOCSET_ALTERNATE_CHS              (0x00000008)
 
 /* values for the DeviceSettings field */
+#define MPI_BIOSPAGE1_DEVSET_DISABLE_SMART_POLLING      (0x00000010)
 #define MPI_BIOSPAGE1_DEVSET_DISABLE_SEQ_LUN            (0x00000008)
 #define MPI_BIOSPAGE1_DEVSET_DISABLE_RM_LUN             (0x00000004)
 #define MPI_BIOSPAGE1_DEVSET_DISABLE_NON_RM_LUN         (0x00000002)
@@ -2160,6 +2242,11 @@ typedef struct _RAID_VOL0_SETTINGS
 #define MPI_RAIDVOL0_SETTING_AUTO_CONFIGURE             (0x0004)
 #define MPI_RAIDVOL0_SETTING_PRIORITY_RESYNC            (0x0008)
 #define MPI_RAIDVOL0_SETTING_FAST_DATA_SCRUBBING_0102   (0x0020) /* obsolete */
+
+#define MPI_RAIDVOL0_SETTING_MASK_METADATA_SIZE         (0x00C0)
+#define MPI_RAIDVOL0_SETTING_64MB_METADATA_SIZE         (0x0000)
+#define MPI_RAIDVOL0_SETTING_512MB_METADATA_SIZE        (0x0040)
+
 #define MPI_RAIDVOL0_SETTING_USE_PRODUCT_ID_SUFFIX      (0x0010)
 #define MPI_RAIDVOL0_SETTING_USE_DEFAULTS               (0x8000)
 
@@ -2203,7 +2290,7 @@ typedef struct _CONFIG_PAGE_RAID_VOL_0
 } CONFIG_PAGE_RAID_VOL_0, MPI_POINTER PTR_CONFIG_PAGE_RAID_VOL_0,
   RaidVolumePage0_t, MPI_POINTER pRaidVolumePage0_t;
 
-#define MPI_RAIDVOLPAGE0_PAGEVERSION                    (0x06)
+#define MPI_RAIDVOLPAGE0_PAGEVERSION                    (0x07)
 
 /* values for RAID Volume Page 0 InactiveStatus field */
 #define MPI_RAIDVOLPAGE0_UNKNOWN_INACTIVE               (0x00)
@@ -2218,11 +2305,11 @@ typedef struct _CONFIG_PAGE_RAID_VOL_0
 typedef struct _CONFIG_PAGE_RAID_VOL_1
 {
     CONFIG_PAGE_HEADER      Header;         /* 00h */
-    U8                      VolumeID;       /* 01h */
-    U8                      VolumeBus;      /* 02h */
-    U8                      VolumeIOC;      /* 03h */
-    U8                      Reserved0;      /* 04h */
-    U8                      GUID[24];       /* 05h */
+    U8                      VolumeID;       /* 04h */
+    U8                      VolumeBus;      /* 05h */
+    U8                      VolumeIOC;      /* 06h */
+    U8                      Reserved0;      /* 07h */
+    U8                      GUID[24];       /* 08h */
     U8                      Name[32];       /* 20h */
     U64                     WWID;           /* 40h */
     U32                     Reserved1;      /* 48h */
@@ -2277,7 +2364,7 @@ typedef struct _RAID_PHYS_DISK0_STATUS
 } RAID_PHYS_DISK0_STATUS, MPI_POINTER PTR_RAID_PHYS_DISK0_STATUS,
   RaidPhysDiskStatus_t, MPI_POINTER pRaidPhysDiskStatus_t;
 
-/* RAID Volume 2 IM Physical Disk DiskStatus flags */
+/* RAID Physical Disk PhysDiskStatus flags */
 
 #define MPI_PHYSDISK0_STATUS_FLAG_OUT_OF_SYNC           (0x01)
 #define MPI_PHYSDISK0_STATUS_FLAG_QUIESCED              (0x02)
@@ -2481,6 +2568,7 @@ typedef struct _CONFIG_PAGE_SAS_IO_UNIT_0
 #define MPI_SAS_IOUNIT0_DS_TABLE_LINK                       (0x00000400)
 #define MPI_SAS_IOUNIT0_DS_UNSUPPORTED_DEVICE               (0x00000800)
 #define MPI_SAS_IOUNIT0_DS_MAX_SATA_TARGETS                 (0x00001000)
+#define MPI_SAS_IOUNIT0_DS_MULTI_PORT_DOMAIN                (0x00002000)
 
 
 typedef struct _MPI_SAS_IO_UNIT1_PHY_DATA
@@ -2518,7 +2606,7 @@ typedef struct _CONFIG_PAGE_SAS_IO_UNIT_1
 } CONFIG_PAGE_SAS_IO_UNIT_1, MPI_POINTER PTR_CONFIG_PAGE_SAS_IO_UNIT_1,
   SasIOUnitPage1_t, MPI_POINTER pSasIOUnitPage1_t;
 
-#define MPI_SASIOUNITPAGE1_PAGEVERSION      (0x06)
+#define MPI_SASIOUNITPAGE1_PAGEVERSION      (0x07)
 
 /* values for SAS IO Unit Page 1 ControlFlags */
 #define MPI_SAS_IOUNIT1_CONTROL_DEVICE_SELF_TEST            (0x8000)
@@ -2544,7 +2632,14 @@ typedef struct _CONFIG_PAGE_SAS_IO_UNIT_1
 #define MPI_SAS_IOUNIT1_CONTROL_CLEAR_AFFILIATION           (0x0001)
 
 /* values for SAS IO Unit Page 1 AdditionalControlFlags */
-#define MPI_SAS_IOUNIT1_ACONTROL_ALLOW_TABLE_TO_TABLE       (0x0001)
+#define MPI_SAS_IOUNIT1_ACONTROL_MULTI_PORT_DOMAIN_ILLEGAL          (0x0080)
+#define MPI_SAS_IOUNIT1_ACONTROL_SATA_ASYNCHROUNOUS_NOTIFICATION    (0x0040)
+#define MPI_SAS_IOUNIT1_ACONTROL_HIDE_NONZERO_ATTACHED_PHY_IDENT    (0x0020)
+#define MPI_SAS_IOUNIT1_ACONTROL_PORT_ENABLE_ONLY_SATA_LINK_RESET   (0x0010)
+#define MPI_SAS_IOUNIT1_ACONTROL_OTHER_AFFILIATION_SATA_LINK_RESET  (0x0008)
+#define MPI_SAS_IOUNIT1_ACONTROL_SELF_AFFILIATION_SATA_LINK_RESET   (0x0004)
+#define MPI_SAS_IOUNIT1_ACONTROL_NO_AFFILIATION_SATA_LINK_RESET     (0x0002)
+#define MPI_SAS_IOUNIT1_ACONTROL_ALLOW_TABLE_TO_TABLE               (0x0001)
 
 /* defines for SAS IO Unit Page 1 ReportDeviceMissingDelay */
 #define MPI_SAS_IOUNIT1_REPORT_MISSING_TIMEOUT_MASK         (0x7F)
@@ -2585,9 +2680,11 @@ typedef struct _CONFIG_PAGE_SAS_IO_UNIT_2
 } CONFIG_PAGE_SAS_IO_UNIT_2, MPI_POINTER PTR_CONFIG_PAGE_SAS_IO_UNIT_2,
   SasIOUnitPage2_t, MPI_POINTER pSasIOUnitPage2_t;
 
-#define MPI_SASIOUNITPAGE2_PAGEVERSION      (0x05)
+#define MPI_SASIOUNITPAGE2_PAGEVERSION      (0x06)
 
 /* values for SAS IO Unit Page 2 Status field */
+#define MPI_SAS_IOUNIT2_STATUS_DEVICE_LIMIT_EXCEEDED        (0x08)
+#define MPI_SAS_IOUNIT2_STATUS_ENCLOSURE_DEVICES_UNMAPPED   (0x04)
 #define MPI_SAS_IOUNIT2_STATUS_DISABLED_PERSISTENT_MAPPINGS (0x02)
 #define MPI_SAS_IOUNIT2_STATUS_FULL_PERSISTENT_MAPPINGS     (0x01)
 
@@ -2663,6 +2760,7 @@ typedef struct _CONFIG_PAGE_SAS_EXPANDER_0
 #define MPI_SAS_EXPANDER0_DS_UNSUPPORTED_DEVICE         (0x00000800)
 
 /* values for SAS Expander Page 0 Flags field */
+#define MPI_SAS_EXPANDER0_FLAGS_CONNECTOR_END_DEVICE    (0x04)
 #define MPI_SAS_EXPANDER0_FLAGS_ROUTE_TABLE_CONFIG      (0x02)
 #define MPI_SAS_EXPANDER0_FLAGS_CONFIG_IN_PROGRESS      (0x01)
 
@@ -2703,7 +2801,7 @@ typedef struct _CONFIG_PAGE_SAS_EXPANDER_1
 /* see mpi_sas.h for values for SAS Expander Page 1 AttachedDeviceInfo values */
 
 /* values for SAS Expander Page 1 DiscoveryInfo field */
-#define MPI_SAS_EXPANDER1_DISCINFO_BAD_PHY DISABLED     (0x04)
+#define MPI_SAS_EXPANDER1_DISCINFO_BAD_PHY_DISABLED     (0x04)
 #define MPI_SAS_EXPANDER1_DISCINFO_LINK_STATUS_CHANGE   (0x02)
 #define MPI_SAS_EXPANDER1_DISCINFO_NO_ROUTING_ENTRIES   (0x01)
 
@@ -2739,24 +2837,38 @@ typedef struct _CONFIG_PAGE_SAS_DEVICE_0
 } CONFIG_PAGE_SAS_DEVICE_0, MPI_POINTER PTR_CONFIG_PAGE_SAS_DEVICE_0,
   SasDevicePage0_t, MPI_POINTER pSasDevicePage0_t;
 
-#define MPI_SASDEVICE0_PAGEVERSION          (0x04)
+#define MPI_SASDEVICE0_PAGEVERSION          (0x05)
 
 /* values for SAS Device Page 0 AccessStatus field */
-#define MPI_SAS_DEVICE0_ASTATUS_NO_ERRORS               (0x00)
-#define MPI_SAS_DEVICE0_ASTATUS_SATA_INIT_FAILED        (0x01)
-#define MPI_SAS_DEVICE0_ASTATUS_SATA_CAPABILITY_FAILED  (0x02)
+#define MPI_SAS_DEVICE0_ASTATUS_NO_ERRORS                   (0x00)
+#define MPI_SAS_DEVICE0_ASTATUS_SATA_INIT_FAILED            (0x01)
+#define MPI_SAS_DEVICE0_ASTATUS_SATA_CAPABILITY_FAILED      (0x02)
+#define MPI_SAS_DEVICE0_ASTATUS_SATA_AFFILIATION_CONFLICT   (0x03)
+/* specific values for SATA Init failures */
+#define MPI_SAS_DEVICE0_ASTATUS_SIF_UNKNOWN                 (0x10)
+#define MPI_SAS_DEVICE0_ASTATUS_SIF_AFFILIATION_CONFLICT    (0x11)
+#define MPI_SAS_DEVICE0_ASTATUS_SIF_DIAG                    (0x12)
+#define MPI_SAS_DEVICE0_ASTATUS_SIF_IDENTIFICATION          (0x13)
+#define MPI_SAS_DEVICE0_ASTATUS_SIF_CHECK_POWER             (0x14)
+#define MPI_SAS_DEVICE0_ASTATUS_SIF_PIO_SN                  (0x15)
+#define MPI_SAS_DEVICE0_ASTATUS_SIF_MDMA_SN                 (0x16)
+#define MPI_SAS_DEVICE0_ASTATUS_SIF_UDMA_SN                 (0x17)
+#define MPI_SAS_DEVICE0_ASTATUS_SIF_ZONING_VIOLATION        (0x18)
+#define MPI_SAS_DEVICE0_ASTATUS_SIF_NOT_ADDRESSABLE         (0x19)
+#define MPI_SAS_DEVICE0_ASTATUS_SIF_MAX                     (0x1F)
 
 /* values for SAS Device Page 0 Flags field */
-#define MPI_SAS_DEVICE0_FLAGS_SATA_SW_PRESERVE          (0x0200)
-#define MPI_SAS_DEVICE0_FLAGS_UNSUPPORTED_DEVICE        (0x0100)
-#define MPI_SAS_DEVICE0_FLAGS_SATA_48BIT_LBA_SUPPORTED  (0x0080)
-#define MPI_SAS_DEVICE0_FLAGS_SATA_SMART_SUPPORTED      (0x0040)
-#define MPI_SAS_DEVICE0_FLAGS_SATA_NCQ_SUPPORTED        (0x0020)
-#define MPI_SAS_DEVICE0_FLAGS_SATA_FUA_SUPPORTED        (0x0010)
-#define MPI_SAS_DEVICE0_FLAGS_PORT_SELECTOR_ATTACH      (0x0008)
-#define MPI_SAS_DEVICE0_FLAGS_MAPPING_PERSISTENT        (0x0004)
-#define MPI_SAS_DEVICE0_FLAGS_DEVICE_MAPPED             (0x0002)
-#define MPI_SAS_DEVICE0_FLAGS_DEVICE_PRESENT            (0x0001)
+#define MPI_SAS_DEVICE0_FLAGS_SATA_ASYNCHRONOUS_NOTIFY      (0x0400)
+#define MPI_SAS_DEVICE0_FLAGS_SATA_SW_PRESERVE              (0x0200)
+#define MPI_SAS_DEVICE0_FLAGS_UNSUPPORTED_DEVICE            (0x0100)
+#define MPI_SAS_DEVICE0_FLAGS_SATA_48BIT_LBA_SUPPORTED      (0x0080)
+#define MPI_SAS_DEVICE0_FLAGS_SATA_SMART_SUPPORTED          (0x0040)
+#define MPI_SAS_DEVICE0_FLAGS_SATA_NCQ_SUPPORTED            (0x0020)
+#define MPI_SAS_DEVICE0_FLAGS_SATA_FUA_SUPPORTED            (0x0010)
+#define MPI_SAS_DEVICE0_FLAGS_PORT_SELECTOR_ATTACH          (0x0008)
+#define MPI_SAS_DEVICE0_FLAGS_MAPPING_PERSISTENT            (0x0004)
+#define MPI_SAS_DEVICE0_FLAGS_DEVICE_MAPPED                 (0x0002)
+#define MPI_SAS_DEVICE0_FLAGS_DEVICE_PRESENT                (0x0001)
 
 /* see mpi_sas.h for values for SAS Device Page 0 DeviceInfo values */
 
@@ -2810,11 +2922,11 @@ typedef struct _CONFIG_PAGE_SAS_PHY_0
     U8                                  AttachedPhyIdentifier;  /* 16h */
     U8                                  Reserved2;              /* 17h */
     U32                                 AttachedDeviceInfo;     /* 18h */
-    U8                                  ProgrammedLinkRate;     /* 20h */
-    U8                                  HwLinkRate;             /* 21h */
-    U8                                  ChangeCount;            /* 22h */
-    U8                                  Flags;                  /* 23h */
-    U32                                 PhyInfo;                /* 24h */
+    U8                                  ProgrammedLinkRate;     /* 1Ch */
+    U8                                  HwLinkRate;             /* 1Dh */
+    U8                                  ChangeCount;            /* 1Eh */
+    U8                                  Flags;                  /* 1Fh */
+    U32                                 PhyInfo;                /* 20h */
 } CONFIG_PAGE_SAS_PHY_0, MPI_POINTER PTR_CONFIG_PAGE_SAS_PHY_0,
   SasPhyPage0_t, MPI_POINTER pSasPhyPage0_t;
 

@@ -331,7 +331,7 @@ static noinline void handle_lost_ticks(int lost, struct pt_regs *regs)
 		print_symbol("rip %s)\n", regs->rip);
 	}
 
-	if (lost_count == 1000 && !warned) {
+	if (lost_count == 1000 && !warned && report_lost_ticks) {
 		printk(KERN_WARNING "warning: many lost ticks.\n"
 		       KERN_WARNING "Your time source seems to be instable or "
 		   		"some driver is hogging interupts\n");
@@ -450,7 +450,7 @@ void main_timer_handler(struct pt_regs *regs)
 	for (i = 0; i < tick_divider; i++) {
 		do_timer(regs);
 #ifndef CONFIG_SMP
-		update_process_times(user_mode(regs));
+		update_process_times(user_mode(regs), regs);
 #endif
 
 	/*
@@ -648,7 +648,7 @@ static void cpufreq_delayed_get(void)
 	static int warned;
 	if (cpufreq_init && !cpufreq_delayed_issched) {
 		cpufreq_delayed_issched = 1;
-		if (!warned) {
+		if (!warned && report_lost_ticks) {
 			warned = 1;
 			printk(KERN_DEBUG 
 	"Losing some ticks... checking if CPU frequency changed.\n");
@@ -1022,6 +1022,12 @@ __cpuinit int unsynchronized_tsc(void)
 	if (apic_is_clustered_box())
 		return 1;
 #endif
+
+	/* AMD systems with constant TSCs have synchronized clocks */
+	if ((boot_cpu_data.x86_vendor == X86_VENDOR_AMD) &&
+		(boot_cpu_has(X86_FEATURE_CONSTANT_TSC)))
+	return 0;
+
 	/* Most intel systems have synchronized TSCs except for
 	   multi node systems */
  	if (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL) {
@@ -1029,11 +1035,6 @@ __cpuinit int unsynchronized_tsc(void)
 		/* But TSC doesn't tick in C3 so don't use it there */
 		if (acpi_fadt.length > 0 && acpi_fadt.plvl3_lat < 1000)
 			return 1;
-
-		/* AMD systems with constant TSCs have synchronized clocks */
-		if ((boot_cpu_data.x86_vendor == X86_VENDOR_AMD) && 
-			(boot_cpu_has(X86_FEATURE_CONSTANT_TSC)))
-			return 0;
 #endif
  		return 0;
 	}

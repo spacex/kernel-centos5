@@ -32,9 +32,6 @@
 
 #include <asm/uaccess.h>
 
-extern char ixgb_driver_name[];
-extern char ixgb_driver_version[];
-
 extern int ixgb_up(struct ixgb_adapter *adapter);
 extern void ixgb_down(struct ixgb_adapter *adapter, boolean_t kill_watchdog);
 extern void ixgb_reset(struct ixgb_adapter *adapter);
@@ -94,8 +91,7 @@ static struct ixgb_stats ixgb_gstrings_stats[] = {
 	{"tx_csum_offload_errors", IXGB_STAT(hw_csum_tx_error)}
 };
 
-#define IXGB_STATS_LEN	\
-	sizeof(ixgb_gstrings_stats) / sizeof(struct ixgb_stats)
+#define IXGB_STATS_LEN	ARRAY_SIZE(ixgb_gstrings_stats)
 
 static int
 ixgb_get_settings(struct net_device *netdev, struct ethtool_cmd *ecmd)
@@ -423,7 +419,7 @@ ixgb_get_eeprom(struct net_device *netdev,
 {
 	struct ixgb_adapter *adapter = netdev_priv(netdev);
 	struct ixgb_hw *hw = &adapter->hw;
-	uint16_t *eeprom_buff;
+	__le16 *eeprom_buff;
 	int i, max_len, first_word, last_word;
 	int ret_val = 0;
 
@@ -447,7 +443,7 @@ ixgb_get_eeprom(struct net_device *netdev,
 	first_word = eeprom->offset >> 1;
 	last_word = (eeprom->offset + eeprom->len - 1) >> 1;
 
-	eeprom_buff = kmalloc(sizeof(uint16_t) *
+	eeprom_buff = kmalloc(sizeof(__le16) *
 			(last_word - first_word + 1), GFP_KERNEL);
 	if(!eeprom_buff)
 		return -ENOMEM;
@@ -640,8 +636,8 @@ ixgb_phys_id(struct net_device *netdev, uint32_t data)
 {
 	struct ixgb_adapter *adapter = netdev_priv(netdev);
 
-	if(!data || data > (uint32_t)(MAX_SCHEDULE_TIMEOUT / HZ))
-		data = (uint32_t)(MAX_SCHEDULE_TIMEOUT / HZ);
+	if (!data)
+		data = INT_MAX;
 
 	if(!adapter->blink_timer.function) {
 		init_timer(&adapter->blink_timer);

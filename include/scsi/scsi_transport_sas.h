@@ -7,7 +7,7 @@
 
 struct scsi_transport_template;
 struct sas_rphy;
-
+struct request;
 
 enum sas_device_type {
 	SAS_PHY_UNUSED,
@@ -42,6 +42,12 @@ enum sas_phy_linkrate {
 	PHY_LINKRATE_G2  = PHY_LINKRATE_3,
 	PHY_LINKRATE_6   = 0x0A,
 };
+
+static inline int sas_protocol_ata(enum sas_protocol proto)
+{
+	return ((proto & SAS_PROTOCOL_SATA) ||
+		(proto & SAS_PROTOCOL_STP))? 1 : 0;
+}
 
 enum sas_linkrate {
 	SAS_LINK_RATE_UNKNOWN,
@@ -99,11 +105,15 @@ struct sas_phy {
 #define phy_to_shost(phy) \
 	dev_to_shost((phy)->dev.parent)
 
+struct request_queue;
 struct sas_rphy {
 	struct device		dev;
 	struct sas_identify	identify;
 	struct list_head	list;
 	u32			scsi_target_id;
+#ifndef __GENKSYMS__
+	struct request_queue    *q;
+#endif
 };
 
 #define dev_to_rphy(d) \
@@ -180,6 +190,7 @@ struct sas_function_template {
 	int (*phy_reset)(struct sas_phy *, int);
 #ifndef __GENKSYMS__
 	int (*set_phy_speed)(struct sas_phy *, struct sas_phy_linkrates *);
+	int (*smp_handler)(struct Scsi_Host *, struct sas_rphy *, struct request *);
 	int (*phy_enable)(struct sas_phy *, int);
 #endif
 };

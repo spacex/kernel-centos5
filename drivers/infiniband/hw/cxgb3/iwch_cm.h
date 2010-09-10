@@ -46,9 +46,9 @@
 #define MPA_KEY_REQ "MPA ID Req Frame"
 #define MPA_KEY_REP "MPA ID Rep Frame"
 
-#define MPA_MAX_PRIVATE_DATA 	256
-#define MPA_REV 		0	/* XXX - amso1100 uses rev 0 ! */
-#define MPA_REJECT 		0x20
+#define MPA_MAX_PRIVATE_DATA	256
+#define MPA_REV		0	/* XXX - amso1100 uses rev 0 ! */
+#define MPA_REJECT		0x20
 #define MPA_CRC			0x40
 #define MPA_MARKERS		0x80
 #define MPA_FLAGS_MASK		0xE0
@@ -83,7 +83,7 @@ struct terminate_message {
 #define TERM_MAX_LENGTH (sizeof(struct terminate_message) + 2 + 18 + 28)
 
 enum iwch_layers_types {
-	LAYER_RDMAP 		= 0x00,
+	LAYER_RDMAP		= 0x00,
 	LAYER_DDP		= 0x10,
 	LAYER_MPA		= 0x20,
 	RDMAP_LOCAL_CATA	= 0x00,
@@ -106,7 +106,7 @@ enum iwch_rdma_ecodes {
 	RDMAP_STREAM_CATA	= 0x07,
 	RDMAP_GLOBAL_CATA	= 0x08,
 	RDMAP_CANT_INV_STAG	= 0x09,
-	RDMAP_UNSPECIFIED	= 0xff	
+	RDMAP_UNSPECIFIED	= 0xff
 };
 
 enum iwch_ddp_ecodes {
@@ -130,7 +130,7 @@ enum iwch_mpa_ecodes {
 
 enum iwch_ep_state {
 	IDLE = 0,
-	LISTEN,	
+	LISTEN,
 	CONNECTING,
 	MPA_REQ_WAIT,
 	MPA_REQ_SENT,
@@ -192,12 +192,12 @@ struct iwch_ep {
 
 static inline struct iwch_ep *to_ep(struct iw_cm_id *cm_id)
 {
-	return (struct iwch_ep *)cm_id->provider_data;
+	return cm_id->provider_data;
 }
 
 static inline struct iwch_listen_ep *to_listen_ep(struct iw_cm_id *cm_id)
 {
-	return (struct iwch_listen_ep *)cm_id->provider_data;
+	return cm_id->provider_data;
 }
 
 static inline int compute_wscale(int win)

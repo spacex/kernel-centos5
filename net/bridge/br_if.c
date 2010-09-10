@@ -104,6 +104,7 @@ static void port_carrier_check(void *arg)
 		spin_unlock_bh(&br->lock);
 	}
 done:
+	dev_put(dev);
 	rtnl_unlock();
 }
 
@@ -157,7 +158,8 @@ static void del_nbp(struct net_bridge_port *p)
 
 	dev_set_promiscuity(dev, -1);
 
-	cancel_delayed_work(&p->carrier_check);
+	if (cancel_delayed_work(&p->carrier_check))
+		dev_put(dev);
 
 	spin_lock_bh(&br->lock);
 	br_stp_disable_port(p);
@@ -370,35 +372,15 @@ int br_min_mtu(const struct net_bridge *br)
 void br_features_recompute(struct net_bridge *br)
 {
 	struct net_bridge_port *p;
-	unsigned long features, checksum;
+	unsigned long features;
 
-	checksum = br->feature_mask & NETIF_F_ALL_CSUM ? NETIF_F_NO_CSUM : 0;
-	features = br->feature_mask & ~NETIF_F_ALL_CSUM;
+	features = br->feature_mask;
 
 	list_for_each_entry(p, &br->port_list, list) {
-		unsigned long feature = p->dev->features;
-
-		if (checksum & NETIF_F_NO_CSUM && !(feature & NETIF_F_NO_CSUM))
-			checksum ^= NETIF_F_NO_CSUM | NETIF_F_HW_CSUM;
-		if (checksum & NETIF_F_HW_CSUM && !(feature & NETIF_F_HW_CSUM))
-			checksum ^= NETIF_F_HW_CSUM | NETIF_F_IP_CSUM;
-		if (!(feature & NETIF_F_IP_CSUM))
-			checksum = 0;
-
-		if (feature & NETIF_F_GSO)
-			feature |= NETIF_F_GSO_SOFTWARE;
-		feature |= NETIF_F_GSO;
-
-		features &= feature;
+		features = netdev_compute_features(features, p->dev->features);
 	}
-
-	if (!(checksum & NETIF_F_ALL_CSUM))
-		features &= ~NETIF_F_SG;
-	if (!(features & NETIF_F_SG))
-		features &= ~NETIF_F_GSO_MASK;
-
-	br->dev->features = features | checksum | NETIF_F_LLTX |
-			    NETIF_F_GSO_ROBUST;
+	
+	br->dev->features = features;
 }
 
 /* called with RTNL */
@@ -440,7 +422,9 @@ int br_add_if(struct net_bridge *br, struct net_device *dev)
 	spin_lock_bh(&br->lock);
 	br_stp_recalculate_bridge_id(br);
 	br_features_recompute(br);
-	schedule_delayed_work(&p->carrier_check, BR_PORT_DEBOUNCE);
+	if (schedule_delayed_work(&p->carrier_check, BR_PORT_DEBOUNCE))
+		dev_hold(dev);
+
 	spin_unlock_bh(&br->lock);
 
 	dev_set_mtu(br->dev, br_min_mtu(br));

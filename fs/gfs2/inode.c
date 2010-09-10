@@ -1,6 +1,6 @@
 /*
  * Copyright (C) Sistina Software, Inc.  1997-2003 All rights reserved.
- * Copyright (C) 2004-2006 Red Hat, Inc.  All rights reserved.
+ * Copyright (C) 2004-2008 Red Hat, Inc.  All rights reserved.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
@@ -132,15 +132,21 @@ static struct inode *gfs2_iget_skip(struct super_block *sb,
 
 void gfs2_set_iop(struct inode *inode)
 {
+	struct gfs2_sbd *sdp = GFS2_SB(inode);
 	umode_t mode = inode->i_mode;
 
 	if (S_ISREG(mode)) {
 		inode->i_op = &gfs2_file_iops;
-		inode->i_fop = &gfs2_file_fops;
-		inode->i_mapping->a_ops = &gfs2_file_aops;
+		if (sdp->sd_args.ar_localflocks) 
+			inode->i_fop = &gfs2_file_fops_nolock;
+		else
+			inode->i_fop = &gfs2_file_fops;
 	} else if (S_ISDIR(mode)) {
 		inode->i_op = &gfs2_dir_iops;
-		inode->i_fop = &gfs2_dir_fops;
+		if (sdp->sd_args.ar_localflocks) 
+			inode->i_fop = &gfs2_dir_fops_nolock;
+		else
+			inode->i_fop = &gfs2_dir_fops;
 	} else if (S_ISLNK(mode)) {
 		inode->i_op = &gfs2_symlink_iops;
 	} else {
@@ -243,12 +249,10 @@ static int gfs2_dinode_in(struct gfs2_inode *ip, const void *buf)
 {
 	struct gfs2_dinode_host *di = &ip->i_di;
 	const struct gfs2_dinode *str = buf;
+	u16 height;
 
-	if (ip->i_no_addr != be64_to_cpu(str->di_num.no_addr)) {
-		if (gfs2_consist_inode(ip))
-			gfs2_dinode_print(ip);
-		return -EIO;
-	}
+	if (unlikely(ip->i_no_addr != be64_to_cpu(str->di_num.no_addr)))
+		goto corrupt;
 	ip->i_no_formal_ino = be64_to_cpu(str->di_num.no_formal_ino);
 	ip->i_inode.i_mode = be32_to_cpu(str->di_mode);
 	ip->i_inode.i_rdev = 0;
@@ -279,24 +283,28 @@ static int gfs2_dinode_in(struct gfs2_inode *ip, const void *buf)
 	ip->i_inode.i_ctime.tv_sec = be64_to_cpu(str->di_ctime);
 	ip->i_inode.i_ctime.tv_nsec = be32_to_cpu(str->di_ctime_nsec);
 
-	di->di_goal_meta = be64_to_cpu(str->di_goal_meta);
-	di->di_goal_data = be64_to_cpu(str->di_goal_data);
+	ip->i_goal = be64_to_cpu(str->di_goal_meta);
 	di->di_generation = be64_to_cpu(str->di_generation);
 
 	di->di_flags = be32_to_cpu(str->di_flags);
 	gfs2_set_inode_flags(&ip->i_inode);
-	di->di_height = be16_to_cpu(str->di_height);
+	height = be16_to_cpu(str->di_height);
+	if (unlikely(height > GFS2_MAX_META_HEIGHT))
+		goto corrupt;
+	ip->i_height = (u8)height;
 
 	di->di_depth = be16_to_cpu(str->di_depth);
 	di->di_entries = be32_to_cpu(str->di_entries);
 
 	di->di_eattr = be64_to_cpu(str->di_eattr);
-	return 0;
-}
+	if (S_ISREG(ip->i_inode.i_mode))
+		gfs2_set_aops(&ip->i_inode);
 
-static void gfs2_inode_bh(struct gfs2_inode *ip, struct buffer_head *bh)
-{
-	ip->i_cache[0] = bh;
+	return 0;
+corrupt:
+	if (gfs2_consist_inode(ip))
+		gfs2_dinode_print(ip);
+	return -EIO;
 }
 
 /**
@@ -707,9 +715,10 @@ static int alloc_dinode(struct gfs2_inode *dip, u64 *no_addr, u64 *generation)
 	struct gfs2_sbd *sdp = GFS2_SB(&dip->i_inode);
 	int error;
 
-	gfs2_alloc_get(dip);
+	if (gfs2_alloc_get(dip) == NULL)
+		return -ENOMEM;
 
-	dip->i_alloc.al_requested = RES_DINODE;
+	dip->i_alloc->al_requested = RES_DINODE;
 	error = gfs2_inplace_reserve(dip);
 	if (error)
 		goto out;
@@ -855,7 +864,7 @@ static int link_dinode(struct gfs2_inode *dip, const struct qstr *name,
 
 	error = alloc_required = gfs2_diradd_alloc_required(&dip->i_inode, name);
 	if (alloc_required < 0)
-		goto fail;
+		goto fail_quota_locks;
 	if (alloc_required) {
 		error = gfs2_quota_check(dip, dip->i_inode.i_uid, dip->i_inode.i_gid);
 		if (error)
@@ -896,7 +905,7 @@ fail_end_trans:
 	gfs2_trans_end(sdp);
 
 fail_ipreserv:
-	if (dip->i_alloc.al_rgd)
+	if (dip->i_alloc->al_rgd)
 		gfs2_inplace_release(dip);
 
 fail_quota_locks:
@@ -966,7 +975,7 @@ struct inode *gfs2_createi(struct gfs2_holder *ghs, const struct qstr *name,
 	struct gfs2_inum_host inum = { .no_addr = 0, .no_formal_ino = 0 };
 	int error;
 	u64 generation;
-	struct buffer_head *bh=NULL;
+	struct buffer_head *bh = NULL;
 
 	if (!name->len || name->len > GFS2_FNAMESIZE)
 		return ERR_PTR(-ENAMETOOLONG);
@@ -1003,8 +1012,6 @@ struct inode *gfs2_createi(struct gfs2_holder *ghs, const struct qstr *name,
 	if (IS_ERR(inode))
 		goto fail_gunlock2;
 
-	gfs2_inode_bh(GFS2_I(inode), bh);
-
 	error = gfs2_inode_refresh(GFS2_I(inode));
 	if (error)
 		goto fail_gunlock2;
@@ -1021,6 +1028,8 @@ struct inode *gfs2_createi(struct gfs2_holder *ghs, const struct qstr *name,
 	if (error)
 		goto fail_gunlock2;
 
+	if (bh)
+		brelse(bh);
 	if (!inode)
 		return ERR_PTR(-ENOMEM);
 	return inode;
@@ -1032,6 +1041,8 @@ fail_gunlock2:
 fail_gunlock:
 	gfs2_glock_dq(ghs);
 fail:
+	if (bh)
+		brelse(bh);
 	return ERR_PTR(error);
 }
 
@@ -1389,12 +1400,12 @@ void gfs2_dinode_out(const struct gfs2_inode *ip, void *buf)
 	str->di_mtime = cpu_to_be64(ip->i_inode.i_mtime.tv_sec);
 	str->di_ctime = cpu_to_be64(ip->i_inode.i_ctime.tv_sec);
 
-	str->di_goal_meta = cpu_to_be64(di->di_goal_meta);
-	str->di_goal_data = cpu_to_be64(di->di_goal_data);
+	str->di_goal_meta = cpu_to_be64(ip->i_goal);
+	str->di_goal_data = cpu_to_be64(ip->i_goal);
 	str->di_generation = cpu_to_be64(di->di_generation);
 
 	str->di_flags = cpu_to_be32(di->di_flags);
-	str->di_height = cpu_to_be16(di->di_height);
+	str->di_height = cpu_to_be16(ip->i_height);
 	str->di_payload_format = cpu_to_be32(S_ISDIR(ip->i_inode.i_mode) &&
 					     !(ip->i_di.di_flags & GFS2_DIF_EXHASH) ?
 					     GFS2_FORMAT_DE : 0);
@@ -1418,12 +1429,10 @@ void gfs2_dinode_print(const struct gfs2_inode *ip)
 	printk(KERN_INFO "  di_size = %llu\n", (unsigned long long)di->di_size);
 	printk(KERN_INFO "  di_blocks = %llu\n",
 	       (unsigned long long)di->di_blocks);
-	printk(KERN_INFO "  di_goal_meta = %llu\n",
-	       (unsigned long long)di->di_goal_meta);
-	printk(KERN_INFO "  di_goal_data = %llu\n",
-	       (unsigned long long)di->di_goal_data);
+	printk(KERN_INFO "  i_goal = %llu\n",
+	       (unsigned long long)ip->i_goal);
 	printk(KERN_INFO "  di_flags = 0x%.8X\n", di->di_flags);
-	printk(KERN_INFO "  di_height = %u\n", di->di_height);
+	printk(KERN_INFO "  i_height = %u\n", ip->i_height);
 	printk(KERN_INFO "  di_depth = %u\n", di->di_depth);
 	printk(KERN_INFO "  di_entries = %u\n", di->di_entries);
 	printk(KERN_INFO "  di_eattr = %llu\n",

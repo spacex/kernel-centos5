@@ -107,4 +107,5 @@ smp_call_function_on(void (*func) (void *info), void *info,
 #define smp_setup_cpu_possible_map()
 #endif
 
+extern union save_area *zfcpdump_save_areas[NR_CPUS + 1];
 #endif

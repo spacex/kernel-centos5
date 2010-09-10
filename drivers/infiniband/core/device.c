@@ -36,15 +36,23 @@
 #include <linux/module.h>
 #include <linux/string.h>
 #include <linux/errno.h>
+#include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/mutex.h>
+#include <linux/workqueue.h>
 
 #include "core_priv.h"
 
 MODULE_AUTHOR("Roland Dreier");
 MODULE_DESCRIPTION("core kernel InfiniBand API");
 MODULE_LICENSE("Dual BSD/GPL");
+
+#ifdef __ia64__
+/* workaround for a bug in hp chipset that would cause kernel
+   panic when dma resources are exhaused */
+int dma_map_sg_hp_wa = 0;
+#endif
 
 struct ib_client_data {
 	struct list_head  list;
@@ -93,7 +101,7 @@ static int ib_device_check_mandatory(struct ib_device *device)
 	};
 	int i;
 
-	for (i = 0; i < sizeof mandatory_table / sizeof mandatory_table[0]; ++i) {
+	for (i = 0; i < ARRAY_SIZE(mandatory_table); ++i) {
 		if (!*(void **) ((void *) device + mandatory_table[i].offset)) {
 			printk(KERN_WARNING "Device %s is missing mandatory function %s\n",
 			       device->name, mandatory_table[i].name);
@@ -118,12 +126,12 @@ static struct ib_device *__ib_device_get_by_name(const char *name)
 
 static int alloc_name(char *name)
 {
-	long *inuse;
+	unsigned long *inuse;
 	char buf[IB_DEVICE_NAME_MAX];
 	struct ib_device *device;
 	int i;
 
-	inuse = (long *) get_zeroed_page(GFP_KERNEL);
+	inuse = (unsigned long *) get_zeroed_page(GFP_KERNEL);
 	if (!inuse)
 		return -ENOMEM;
 
@@ -148,13 +156,13 @@ static int alloc_name(char *name)
 	return 0;
 }
 
-static inline int start_port(struct ib_device *device)
+static int start_port(struct ib_device *device)
 {
 	return (device->node_type == RDMA_NODE_IB_SWITCH) ? 0 : 1;
 }
 
 
-static inline int end_port(struct ib_device *device)
+static int end_port(struct ib_device *device)
 {
 	return (device->node_type == RDMA_NODE_IB_SWITCH) ?
 		0 : device->phys_port_cnt;
@@ -219,7 +227,6 @@ static int add_client_context(struct ib_device *device, struct ib_client *client
 	return 0;
 }
 
-/* read the lengths of pkey,gid tables on each port */
 static int read_port_table_lengths(struct ib_device *device)
 {
 	struct ib_port_attr *tprops = NULL;
@@ -232,40 +239,31 @@ static int read_port_table_lengths(struct ib_device *device)
 
 	num_ports = end_port(device) - start_port(device) + 1;
 
-	device->pkey_tbl_len = kmalloc(sizeof *device->pkey_tbl_len *
-						num_ports, GFP_KERNEL);
-	if (!device->pkey_tbl_len)
-		goto out;
-
-	device->gid_tbl_len = kmalloc(sizeof *device->gid_tbl_len *
-						num_ports, GFP_KERNEL);
-	if (!device->gid_tbl_len)
-		goto err1;
+	device->pkey_tbl_len = kmalloc(sizeof *device->pkey_tbl_len * num_ports,
+				       GFP_KERNEL);
+	device->gid_tbl_len = kmalloc(sizeof *device->gid_tbl_len * num_ports,
+				      GFP_KERNEL);
+	if (!device->pkey_tbl_len || !device->gid_tbl_len)
+		goto err;
 
 	for (port_index = 0; port_index < num_ports; ++port_index) {
 		ret = ib_query_port(device, port_index + start_port(device),
 					tprops);
 		if (ret)
-			goto err2;
+			goto err;
 		device->pkey_tbl_len[port_index] = tprops->pkey_tbl_len;
-		device->gid_tbl_len[port_index] = tprops->gid_tbl_len;
+		device->gid_tbl_len[port_index]  = tprops->gid_tbl_len;
 	}
 
 	ret = 0;
 	goto out;
-err2:
+
+err:
 	kfree(device->gid_tbl_len);
-err1:
 	kfree(device->pkey_tbl_len);
 out:
 	kfree(tprops);
 	return ret;
-}
-
-static inline void free_port_table_lengths(struct ib_device *device)
-{
-	kfree(device->gid_tbl_len);
-	kfree(device->pkey_tbl_len);
 }
 
 /**
@@ -310,6 +308,8 @@ int ib_register_device(struct ib_device *device)
 	if (ret) {
 		printk(KERN_WARNING "Couldn't register device %s with driver model\n",
 		       device->name);
+		kfree(device->gid_tbl_len);
+		kfree(device->pkey_tbl_len);
 		goto out;
 	}
 
@@ -351,7 +351,8 @@ void ib_unregister_device(struct ib_device *device)
 
 	list_del(&device->core_list);
 
-	free_port_table_lengths(device);
+	kfree(device->gid_tbl_len);
+	kfree(device->pkey_tbl_len);
 
 	mutex_unlock(&device_mutex);
 
@@ -575,10 +576,7 @@ int ib_query_port(struct ib_device *device,
 		  u8 port_num,
 		  struct ib_port_attr *port_attr)
 {
-	if (device->node_type == RDMA_NODE_IB_SWITCH) {
-		if (port_num)
-			return -EINVAL;
-	} else if (port_num < 1 || port_num > device->phys_port_cnt)
+	if (port_num < start_port(device) || port_num > end_port(device))
 		return -EINVAL;
 
 	return device->query_port(device, port_num, port_attr);
@@ -650,10 +648,7 @@ int ib_modify_port(struct ib_device *device,
 		   u8 port_num, int port_modify_mask,
 		   struct ib_port_modify *port_modify)
 {
-	if (device->node_type == RDMA_NODE_IB_SWITCH) {
-		if (port_num)
-			return -EINVAL;
-	} else if (port_num < 1 || port_num > device->phys_port_cnt)
+	if (port_num < start_port(device) || port_num > end_port(device))
 		return -EINVAL;
 
 	return device->modify_port(device, port_num, port_modify_mask,
@@ -671,28 +666,26 @@ EXPORT_SYMBOL(ib_modify_port);
  *   parameter may be NULL.
  */
 int ib_find_gid(struct ib_device *device, union ib_gid *gid,
-			u8 *port_num, u16 *index)
+		u8 *port_num, u16 *index)
 {
 	union ib_gid tmp_gid;
-	int ret, port, i, tbl_len;
+	int ret, port, i;
 
 	for (port = start_port(device); port <= end_port(device); ++port) {
-		tbl_len = device->gid_tbl_len[port - start_port(device)];
-		for (i = 0; i < tbl_len; ++i) {
+		for (i = 0; i < device->gid_tbl_len[port - start_port(device)]; ++i) {
 			ret = ib_query_gid(device, port, i, &tmp_gid);
 			if (ret)
-				goto out;
+				return ret;
 			if (!memcmp(&tmp_gid, gid, sizeof *gid)) {
 				*port_num = port;
-				*index = i;
-				ret = 0;
-				goto out;
+				if (index)
+					*index = i;
+				return 0;
 			}
 		}
 	}
-	ret = -ENOENT;
-out:
-	return ret;
+
+	return -ENOENT;
 }
 EXPORT_SYMBOL(ib_find_gid);
 
@@ -705,33 +698,34 @@ EXPORT_SYMBOL(ib_find_gid);
  * @index: The index into the PKey table where the PKey was found.
  */
 int ib_find_pkey(struct ib_device *device,
-			u8 port_num, u16 pkey, u16 *index)
+		 u8 port_num, u16 pkey, u16 *index)
 {
-	int ret, i, tbl_len;
+	int ret, i;
 	u16 tmp_pkey;
 
-	tbl_len = device->pkey_tbl_len[port_num - start_port(device)];
-	for (i = 0; i < tbl_len; ++i) {
+	for (i = 0; i < device->pkey_tbl_len[port_num - start_port(device)]; ++i) {
 		ret = ib_query_pkey(device, port_num, i, &tmp_pkey);
 		if (ret)
-			goto out;
+			return ret;
 
-		if (pkey == tmp_pkey) {
+		if ((pkey & 0x7fff) == (tmp_pkey & 0x7fff)) {
 			*index = i;
-			ret = 0;
-			goto out;
+			return 0;
 		}
 	}
-	ret = -ENOENT;
 
-out:
-	return ret;
+	return -ENOENT;
 }
 EXPORT_SYMBOL(ib_find_pkey);
 
 static int __init ib_core_init(void)
 {
 	int ret;
+
+#ifdef __ia64__
+	if (ia64_platform_is("hpzx1"))
+		dma_map_sg_hp_wa = 1;
+#endif
 
 	ret = ib_sysfs_setup();
 	if (ret)
@@ -750,6 +744,8 @@ static void __exit ib_core_cleanup(void)
 {
 	ib_cache_cleanup();
 	ib_sysfs_cleanup();
+	/* Make sure that any pending umem accounting work is done. */
+	flush_scheduled_work();
 }
 
 module_init(ib_core_init);

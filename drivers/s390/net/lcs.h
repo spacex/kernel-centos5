@@ -143,6 +143,7 @@ enum lcs_channel_states {
 	CH_STATE_RUNNING,
 	CH_STATE_SUSPENDED,
 	CH_STATE_CLEARED,
+	CH_STATE_ERROR,
 };
 
 /**

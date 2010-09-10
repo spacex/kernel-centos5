@@ -37,12 +37,6 @@ static int sas_configure_phy(struct domain_device *dev, int phy_id,
 			     u8 *sas_addr, int include);
 static int sas_disable_routing(struct domain_device *dev,  u8 *sas_addr);
 
-#if 0
-/* FIXME: smp needs to migrate into the sas class */
-static ssize_t smp_portal_read(struct kobject *, char *, loff_t, size_t);
-static ssize_t smp_portal_write(struct kobject *, char *, loff_t, size_t);
-#endif
-
 /* ---------- SMP task management ---------- */
 
 static void smp_task_timedout(unsigned long _task)
@@ -219,6 +213,36 @@ static void sas_set_ex_phy(struct domain_device *dev, int phy_id,
 #define DISCOVER_REQ_SIZE  16
 #define DISCOVER_RESP_SIZE 56
 
+static int sas_ex_phy_discover_helper(struct domain_device *dev, u8 *disc_req,
+				      u8 *disc_resp, int single)
+{
+	int i, res;
+
+	disc_req[9] = single;
+	for (i = 1 ; i < 3; i++) {
+		struct discover_resp *dr;
+
+		res = smp_execute_task(dev, disc_req, DISCOVER_REQ_SIZE,
+				       disc_resp, DISCOVER_RESP_SIZE);
+		if (res)
+			return res;
+		/* This is detecting a failure to transmit inital
+		 * dev to host FIS as described in section G.5 of
+		 * sas-2 r 04b */
+		dr = &((struct smp_resp *)disc_resp)->disc;
+		if (!(dr->attached_dev_type == 0 &&
+		      dr->attached_sata_dev))
+			break;
+		/* In order to generate the dev to host FIS, we
+		 * send a link reset to the expander port */
+		sas_smp_phy_control(dev, single, PHY_FUNC_LINK_RESET, NULL);
+		/* Wait for the reset to trigger the negotiation */
+		msleep(500);
+	}
+	sas_set_ex_phy(dev, single, disc_resp);
+	return 0;
+}
+
 static int sas_ex_phy_discover(struct domain_device *dev, int single)
 {
 	struct expander_device *ex = &dev->ex_dev;
@@ -239,23 +263,15 @@ static int sas_ex_phy_discover(struct domain_device *dev, int single)
 	disc_req[1] = SMP_DISCOVER;
 
 	if (0 <= single && single < ex->num_phys) {
-		disc_req[9] = single;
-		res = smp_execute_task(dev, disc_req, DISCOVER_REQ_SIZE,
-				       disc_resp, DISCOVER_RESP_SIZE);
-		if (res)
-			goto out_err;
-		sas_set_ex_phy(dev, single, disc_resp);
+		res = sas_ex_phy_discover_helper(dev, disc_req, disc_resp, single);
 	} else {
 		int i;
 
 		for (i = 0; i < ex->num_phys; i++) {
-			disc_req[9] = i;
-			res = smp_execute_task(dev, disc_req,
-					       DISCOVER_REQ_SIZE, disc_resp,
-					       DISCOVER_RESP_SIZE);
+			res = sas_ex_phy_discover_helper(dev, disc_req,
+							 disc_resp, i);
 			if (res)
 				goto out_err;
-			sas_set_ex_phy(dev, i, disc_resp);
 		}
 	}
 out_err:
@@ -452,7 +468,7 @@ static void sas_ex_disable_phy(struct domain_device *dev, int phy_id)
 	struct ex_phy *phy = &ex->ex_phy[phy_id];
 
 	sas_smp_phy_control(dev, phy_id, PHY_FUNC_DISABLE, NULL);
-	phy->linkrate = SAS_PHY_DISABLED;
+	phy->linkrate = linkrate_to_phy_linkrate(SAS_PHY_DISABLED);
 }
 
 static void sas_ex_disable_port(struct domain_device *dev, u8 *sas_addr)
@@ -491,13 +507,20 @@ static int sas_dev_present_in_domain(struct asd_sas_port *port,
 int sas_smp_get_phy_events(struct sas_phy *phy)
 {
 	int res;
+	u8 *req;
+	u8 *resp;
 	struct sas_rphy *rphy = dev_to_rphy(phy->dev.parent);
 	struct domain_device *dev = sas_find_dev_by_rphy(rphy);
-	u8 *req = alloc_smp_req(RPEL_REQ_SIZE);
-	u8 *resp = kzalloc(RPEL_RESP_SIZE, GFP_KERNEL);
 
-	if (!resp)
+	req = alloc_smp_req(RPEL_REQ_SIZE);
+	if (!req)
 		return -ENOMEM;
+
+	resp = alloc_smp_resp(RPEL_RESP_SIZE);
+	if (!resp) {
+		kfree(req);
+		return -ENOMEM;
+	}
 
 	req[1] = SMP_REPORT_PHY_ERR_LOG;
 	req[9] = phy->number;
@@ -519,6 +542,8 @@ int sas_smp_get_phy_events(struct sas_phy *phy)
 
 }
 
+#ifdef CONFIG_SCSI_SAS_ATA
+
 #define RPS_REQ_SIZE  16
 #define RPS_RESP_SIZE 60
 
@@ -528,6 +553,7 @@ static int sas_get_report_phy_sata(struct domain_device *dev,
 {
 	int res;
 	u8 *rps_req = alloc_smp_req(RPS_REQ_SIZE);
+	u8 *resp = (u8 *)rps_resp;
 
 	if (!rps_req)
 		return -ENOMEM;
@@ -538,9 +564,30 @@ static int sas_get_report_phy_sata(struct domain_device *dev,
 	res = smp_execute_task(dev, rps_req, RPS_REQ_SIZE,
 			            rps_resp, RPS_RESP_SIZE);
 
+	/* 0x34 is the FIS type for the D2H fis.  There's a potential
+	 * standards cockup here.  sas-2 explicitly specifies the FIS
+	 * should be encoded so that FIS type is in resp[24].
+	 * However, some expanders endian reverse this.  Undo the
+	 * reversal here */
+	if (!res && resp[27] == 0x34 && resp[24] != 0x34) {
+		int i;
+
+		for (i = 0; i < 5; i++) {
+			int j = 24 + (i*4);
+			u8 a, b;
+			a = resp[j + 0];
+			b = resp[j + 1];
+			resp[j + 0] = resp[j + 3];
+			resp[j + 1] = resp[j + 2];
+			resp[j + 2] = b;
+			resp[j + 3] = a;
+		}
+	}
+
 	kfree(rps_req);
-	return 0;
+	return res;
 }
+#endif
 
 static void sas_ex_get_linkrate(struct domain_device *parent,
 				       struct domain_device *child,
@@ -608,6 +655,7 @@ static struct domain_device *sas_ex_discover_end_dev(
 	}
 	sas_ex_get_linkrate(parent, child, phy);
 
+#ifdef CONFIG_SCSI_SAS_ATA
 	if ((phy->attached_tproto & SAS_PROTO_STP) || phy->attached_sata_dev) {
 		child->dev_type = SATA_DEV;
 		if (phy->attached_tproto & SAS_PROTO_STP)
@@ -624,16 +672,30 @@ static struct domain_device *sas_ex_discover_end_dev(
 		}
 		memcpy(child->frame_rcvd, &child->sata_dev.rps_resp.rps.fis,
 		       sizeof(struct dev_to_host_fis));
+
+		rphy = sas_end_device_alloc(phy->port);
+		if (unlikely(!rphy))
+			goto out_free;
+
 		sas_init_dev(child);
+
+		child->rphy = rphy;
+
+		spin_lock_irq(&parent->port->dev_list_lock);
+		list_add_tail(&child->dev_list_node, &parent->port->dev_list);
+		spin_unlock_irq(&parent->port->dev_list_lock);
+
 		res = sas_discover_sata(child);
 		if (res) {
 			SAS_DPRINTK("sas_discover_sata() for device %16llx at "
 				    "%016llx:0x%x returned 0x%x\n",
 				    SAS_ADDR(child->sas_addr),
 				    SAS_ADDR(parent->sas_addr), phy_id, res);
-			goto out_free;
+			goto out_list_del;
 		}
-	} else if (phy->attached_tproto & SAS_PROTO_SSP) {
+	} else
+#endif
+	  if (phy->attached_tproto & SAS_PROTO_SSP) {
 		child->dev_type = SAS_END_DEV;
 		rphy = sas_end_device_alloc(phy->port);
 		/* FIXME: error handling */
@@ -645,9 +707,9 @@ static struct domain_device *sas_ex_discover_end_dev(
 		child->rphy = rphy;
 		sas_fill_in_rphy(child, rphy);
 
-		spin_lock(&parent->port->dev_list_lock);
+		spin_lock_irq(&parent->port->dev_list_lock);
 		list_add_tail(&child->dev_list_node, &parent->port->dev_list);
-		spin_unlock(&parent->port->dev_list_lock);
+		spin_unlock_irq(&parent->port->dev_list_lock);
 
 		res = sas_discover_end_dev(child);
 		if (res) {
@@ -661,6 +723,7 @@ static struct domain_device *sas_ex_discover_end_dev(
 		SAS_DPRINTK("target proto 0x%x at %016llx:0x%x not handled\n",
 			    phy->attached_tproto, SAS_ADDR(parent->sas_addr),
 			    phy_id);
+		goto out_free;
 	}
 
 	list_add_tail(&child->siblings, &parent_ex->children);
@@ -691,7 +754,7 @@ static int sas_ex_join_wide_port(struct domain_device *parent, int phy_id)
 			continue;
 
 		if (!memcmp(phy->attached_sas_addr, ephy->attached_sas_addr,
-			    SAS_ADDR_SIZE)) {
+			    SAS_ADDR_SIZE) && ephy->port) {
 			sas_port_add_phy(ephy->port, phy->phy);
 			phy->phy_state = PHY_DEVICE_DISCOVERED;
 			return 0;
@@ -760,9 +823,9 @@ static struct domain_device *sas_ex_discover_expander(
 	sas_fill_in_rphy(child, rphy);
 	sas_rphy_add(rphy);
 
-	spin_lock(&parent->port->dev_list_lock);
+	spin_lock_irq(&parent->port->dev_list_lock);
 	list_add_tail(&child->dev_list_node, &parent->port->dev_list);
-	spin_unlock(&parent->port->dev_list_lock);
+	spin_unlock_irq(&parent->port->dev_list_lock);
 
 	res = sas_discover_expander(child);
 	if (res) {
@@ -781,7 +844,7 @@ static int sas_ex_discover_dev(struct domain_device *dev, int phy_id)
 	int res = 0;
 
 	/* Phy state */
-	if (ex_phy->linkrate == SAS_SATA_SPINUP_HOLD) {
+	if (ex_phy->linkrate == linkrate_to_phy_linkrate(SAS_SATA_SPINUP_HOLD)) {
 		if (!sas_smp_phy_control(dev, phy_id, PHY_FUNC_LINK_RESET, NULL))
 			res = sas_ex_phy_discover(dev, phy_id);
 		if (res)
@@ -811,7 +874,7 @@ static int sas_ex_discover_dev(struct domain_device *dev, int phy_id)
 			sas_configure_routing(dev, ex_phy->attached_sas_addr);
 		}
 		return 0;
-	} else if (ex_phy->linkrate == SAS_LINK_RATE_UNKNOWN)
+	} else if (ex_phy->linkrate == linkrate_to_phy_linkrate(SAS_LINK_RATE_UNKNOWN))
 		return 0;
 
 	if (ex_phy->attached_dev_type != SAS_END_DEV &&
@@ -966,8 +1029,9 @@ static int sas_ex_discover_devices(struct domain_device *dev, int single)
 		    ex_phy->phy_state == PHY_DEVICE_DISCOVERED)
 			continue;
 
-		switch (ex_phy->linkrate) {
+		switch (phy_linkrate_to_linkrate(ex_phy->linkrate)) {
 		case SAS_PHY_DISABLED:
+		case SAS_LINK_RATE_FAILED:
 		case SAS_SATA_PORT_SELECTOR:
 			continue;
 		default:
@@ -1356,31 +1420,6 @@ static int sas_disable_routing(struct domain_device *dev,  u8 *sas_addr)
 		return sas_configure_parent(dev->parent, dev, sas_addr, 0);
 	return 0;
 }
-
-#if 0
-#define SMP_BIN_ATTR_NAME "smp_portal"
-
-static void sas_ex_smp_hook(struct domain_device *dev)
-{
-	struct expander_device *ex_dev = &dev->ex_dev;
-	struct bin_attribute *bin_attr = &ex_dev->smp_bin_attr;
-
-	memset(bin_attr, 0, sizeof(*bin_attr));
-
-	bin_attr->attr.name = SMP_BIN_ATTR_NAME;
-	bin_attr->attr.owner = THIS_MODULE;
-	bin_attr->attr.mode = 0600;
-
-	bin_attr->size = 0;
-	bin_attr->private = NULL;
-	bin_attr->read = smp_portal_read;
-	bin_attr->write= smp_portal_write;
-	bin_attr->mmap = NULL;
-
-	ex_dev->smp_portal_pid = -1;
-	init_MUTEX(&ex_dev->smp_sema);
-}
-#endif
 
 /**
  * sas_discover_expander -- expander discovery
@@ -1843,74 +1882,3 @@ out:
 	return res;
 }
 
-#if 0
-/* ---------- SMP portal ---------- */
-
-static ssize_t smp_portal_write(struct kobject *kobj, char *buf, loff_t offs,
-				size_t size)
-{
-	struct domain_device *dev = to_dom_device(kobj);
-	struct expander_device *ex = &dev->ex_dev;
-
-	if (offs != 0)
-		return -EFBIG;
-	else if (size == 0)
-		return 0;
-
-	down_interruptible(&ex->smp_sema);
-	if (ex->smp_req)
-		kfree(ex->smp_req);
-	ex->smp_req = kzalloc(size, GFP_USER);
-	if (!ex->smp_req) {
-		up(&ex->smp_sema);
-		return -ENOMEM;
-	}
-	memcpy(ex->smp_req, buf, size);
-	ex->smp_req_size = size;
-	ex->smp_portal_pid = current->pid;
-	up(&ex->smp_sema);
-
-	return size;
-}
-
-static ssize_t smp_portal_read(struct kobject *kobj, char *buf, loff_t offs,
-			       size_t size)
-{
-	struct domain_device *dev = to_dom_device(kobj);
-	struct expander_device *ex = &dev->ex_dev;
-	u8 *smp_resp;
-	int res = -EINVAL;
-
-	/* XXX: sysfs gives us an offset of 0x10 or 0x8 while in fact
-	 *  it should be 0.
-	 */
-
-	down_interruptible(&ex->smp_sema);
-	if (!ex->smp_req || ex->smp_portal_pid != current->pid)
-		goto out;
-
-	res = 0;
-	if (size == 0)
-		goto out;
-
-	res = -ENOMEM;
-	smp_resp = alloc_smp_resp(size);
-	if (!smp_resp)
-		goto out;
-	res = smp_execute_task(dev, ex->smp_req, ex->smp_req_size,
-			       smp_resp, size);
-	if (!res) {
-		memcpy(buf, smp_resp, size);
-		res = size;
-	}
-
-	kfree(smp_resp);
-out:
-	kfree(ex->smp_req);
-	ex->smp_req = NULL;
-	ex->smp_req_size = 0;
-	ex->smp_portal_pid = -1;
-	up(&ex->smp_sema);
-	return res;
-}
-#endif

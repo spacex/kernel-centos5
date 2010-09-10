@@ -93,6 +93,7 @@ static int __init disable_randmaps(char *s)
 }
 __setup("norandmaps", disable_randmaps);
 
+int flush_mmap_pages = 1;
 
 /*
  * If a p?d_bad entry is found while walking page tables, report
@@ -744,6 +745,11 @@ static inline unsigned long zap_pud_range(struct mmu_gather *tlb,
 	return addr;
 }
 
+static void mmap_flush(struct address_space *mapping)
+{
+	filemap_flush(mapping);
+}
+
 static unsigned long unmap_page_range(struct mmu_gather *tlb,
 				struct vm_area_struct *vma,
 				unsigned long addr, unsigned long end,
@@ -768,6 +774,9 @@ static unsigned long unmap_page_range(struct mmu_gather *tlb,
 						zap_work, details);
 	} while (pgd++, addr = next, (addr != end && *zap_work > 0));
 	tlb_end_vma(tlb, vma);
+
+	if (!flush_mmap_pages && vma->vm_file && vma->vm_file->f_mapping)
+			pdflush_operation(mmap_flush, vma->vm_file->f_mapping);
 
 	return addr;
 }
@@ -1059,7 +1068,7 @@ int get_user_pages(struct task_struct *tsk, struct mm_struct *mm,
 
 		if (is_vm_hugetlb_page(vma)) {
 			i = follow_hugetlb_page(mm, vma, pages, vmas,
-						&start, &len, i);
+						&start, &len, i, write);
 			continue;
 		}
 
@@ -1624,6 +1633,7 @@ static int do_wp_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	pte_t entry;
 	int reuse = 0, ret = VM_FAULT_MINOR;
 	struct page *dirty_page = NULL;
+	int dirty_pte = 0;
 
 	old_page = vm_normal_page(vma, address, orig_pte);
 	if (!old_page)
@@ -1682,6 +1692,7 @@ static int do_wp_page(struct mm_struct *mm, struct vm_area_struct *vma,
 		flush_cache_page(vma, address, pte_pfn(orig_pte));
 		entry = pte_mkyoung(orig_pte);
 		entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+		dirty_pte++;
 		ptep_set_access_flags(vma, address, page_table, entry, 1);
 		update_mmu_cache(vma, address, entry);
 		lazy_mmu_prot_update(entry);
@@ -1725,6 +1736,7 @@ gotten:
 		flush_cache_page(vma, address, pte_pfn(orig_pte));
 		entry = mk_pte(new_page, vma->vm_page_prot);
 		entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+		dirty_pte++;
 		lazy_mmu_prot_update(entry);
 		/*
 		 * Clear the pte entry and flush it first, before updating the
@@ -1749,7 +1761,8 @@ gotten:
 unlock:
 	pte_unmap_unlock(page_table, ptl);
 	if (dirty_page) {
-		set_page_dirty_balance(dirty_page);
+		if (flush_mmap_pages || !dirty_pte)
+			set_page_dirty_balance(dirty_page);
 		put_page(dirty_page);
 	}
 	return ret;
@@ -2285,6 +2298,7 @@ static int do_no_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	int ret = VM_FAULT_MINOR;
 	int anon = 0;
 	struct page *dirty_page = NULL;
+	int dirty_pte = 0;
 
 	pte_unmap(page_table);
 	BUG_ON(vma->vm_flags & VM_PFNMAP);
@@ -2369,8 +2383,10 @@ retry:
 	if (pte_none(*page_table)) {
 		flush_icache_page(vma, new_page);
 		entry = mk_pte(new_page, vma->vm_page_prot);
-		if (write_access)
+		if (write_access) {
 			entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+			dirty_pte++;
+		}
 		lazy_mmu_prot_update(entry);
 		set_pte_at(mm, address, page_table, entry);
 		if (anon) {
@@ -2396,7 +2412,8 @@ retry:
 unlock:
 	pte_unmap_unlock(page_table, ptl);
 	if (dirty_page) {
-		set_page_dirty_balance(dirty_page);
+		if (flush_mmap_pages || !dirty_pte)
+			set_page_dirty_balance(dirty_page);
 		put_page(dirty_page);
 	}
 	return ret;

@@ -352,14 +352,6 @@ int qla4xxx_send_command_to_isp(struct scsi_qla_host *ha, struct srb * srb)
 	/* Get real lun and adapter */
 	ddb_entry = srb->ddb;
 
-	/* Send marker(s) if needed. */
-	if (ha->marker_needed == 1) {
-		if (qla4xxx_send_marker_iocb(ha, ddb_entry,
-					     cmd->device->lun) != QLA_SUCCESS)
-			return QLA_ERROR;
-
-		ha->marker_needed = 0;
-	}
 	tot_dsds = 0;
 
 	/* Acquire hardware specific lock */

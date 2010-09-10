@@ -92,6 +92,18 @@ void machine_kexec_cleanup(struct kimage *image)
 {
 }
 
+ 
+void arch_crash_save_vmcoreinfo(void)
+{
+#ifdef CONFIG_ARCH_DISCONTIGMEM_ENABLE
+	SYMBOL(node_data);
+	LENGTH(node_data, MAX_NUMNODES);
+#endif
+#ifdef CONFIG_X86_PAE
+	CONFIG(X86_PAE);
+#endif
+}
+
 #ifndef CONFIG_XEN
 /*
  * Do not allocate memory (or fail in any way) in machine_kexec().

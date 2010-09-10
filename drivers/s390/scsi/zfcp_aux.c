@@ -320,6 +320,8 @@ zfcp_module_init(void)
 	zfcp_transport_template = fc_attach_transport(&zfcp_transport_functions);
 	if (!zfcp_transport_template)
 		return -ENODEV;
+	/* disable transport scan */
+	set_fc_internal_target_scan(zfcp_transport_template);
 
 	retval = misc_register(&zfcp_cfdc_misc);
 	if (retval != 0) {

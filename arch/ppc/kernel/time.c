@@ -145,7 +145,7 @@ void timer_interrupt(struct pt_regs * regs)
 		jiffy_stamp += tb_ticks_per_jiffy;
 		
 		profile_tick(CPU_PROFILING, regs);
-		update_process_times(user_mode(regs));
+		update_process_times(user_mode(regs), regs);
 
 	  	if (smp_processor_id())
 			continue;

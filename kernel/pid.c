@@ -34,6 +34,7 @@ static kmem_cache_t *pid_cachep;
 
 int pid_max = PID_MAX_DEFAULT;
 int last_pid;
+EXPORT_SYMBOL_GPL(last_pid);
 
 #define RESERVED_PIDS		300
 

@@ -17,6 +17,7 @@
 #include <asm/lppaca.h>
 #include <asm/iseries/it_lp_reg_save.h>
 #include <asm/paca.h>
+#include <asm/mmu.h>
 
 
 /* This symbol is provided by the linker - let it fill in the paca
@@ -42,6 +43,17 @@ struct lppaca lppaca[] = {
 		.end_of_quantum = 0xfffffffffffffffful,
 		.slb_count = 64,
 		.vmxregs_in_use = 0,
+	},
+};
+
+/*
+ * 3 persistent SLBs are registered here.  The buffer will be zero
+ * initially, hence will all be invaild until we actually write them.
+ */
+struct slb_shadow slb_shadow[] __cacheline_aligned = {
+	[0 ... (NR_CPUS-1)] = {
+		.persistent = SLB_NUM_BOLTED,
+		.buffer_length = sizeof(struct slb_shadow),
 	},
 };
 

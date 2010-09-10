@@ -599,6 +599,7 @@ static struct feature_property {
 #ifdef CONFIG_PPC64
 	{"ibm,dfp", 1, 0, PPC_FEATURE_HAS_DFP},
 	{"ibm,purr", 1, CPU_FTR_PURR, 0},
+	{"ibm,spurr", 1, CPU_FTR_SPURR, 0},
 #endif /* CONFIG_PPC64 */
 };
 
@@ -1729,6 +1730,7 @@ struct device_node *of_get_cpu_node(int cpu, unsigned int *thread)
 	}
 	return NULL;
 }
+EXPORT_SYMBOL_GPL(of_get_cpu_node);
 
 #ifdef DEBUG
 static struct debugfs_blob_wrapper flat_dt_blob;

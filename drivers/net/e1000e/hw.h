@@ -29,6 +29,8 @@
 #ifndef _E1000_HW_H_
 #define _E1000_HW_H_
 
+#include <linux/types.h>
+
 struct e1000_hw;
 struct e1000_adapter;
 
@@ -301,8 +303,11 @@ enum e1e_registers {
 #define E1000_DEV_ID_82571EB_FIBER		0x105F
 #define E1000_DEV_ID_82571EB_SERDES		0x1060
 #define E1000_DEV_ID_82571EB_QUAD_COPPER	0x10A4
+#define E1000_DEV_ID_82571PT_QUAD_COPPER	0x10D5
 #define E1000_DEV_ID_82571EB_QUAD_FIBER		0x10A5
 #define E1000_DEV_ID_82571EB_QUAD_COPPER_LP	0x10BC
+#define E1000_DEV_ID_82571EB_SERDES_DUAL	0x10D9
+#define E1000_DEV_ID_82571EB_SERDES_QUAD	0x10DA
 #define E1000_DEV_ID_82572EI_COPPER		0x107D
 #define E1000_DEV_ID_82572EI_FIBER		0x107E
 #define E1000_DEV_ID_82572EI_SERDES		0x107F
@@ -700,7 +705,7 @@ struct e1000_phy_operations {
 	s32  (*read_phy_reg)(struct e1000_hw *, u32, u16 *);
 	void (*release_phy)(struct e1000_hw *);
 	s32  (*reset_phy)(struct e1000_hw *);
-	s32  (*set_d0_lplu_state)(struct e1000_hw *, bool x);
+	s32  (*set_d0_lplu_state)(struct e1000_hw *, bool);
 	s32  (*set_d3_lplu_state)(struct e1000_hw *, bool);
 	s32  (*write_phy_reg)(struct e1000_hw *, u32, u16);
 };
@@ -814,6 +819,7 @@ struct e1000_bus_info {
 
 struct e1000_dev_spec_82571 {
 	bool laa_is_present;
+	bool alt_mac_addr_is_present;
 };
 
 struct e1000_shadow_ram {
@@ -850,7 +856,7 @@ struct e1000_hw {
 
 #ifdef DEBUG
 #define hw_dbg(hw, format, arg...) \
-	printk(KERN_DEBUG, "%s: " format, e1000_get_hw_dev_name(hw), ##arg);
+	printk(KERN_DEBUG "%s: " format, e1000e_get_hw_dev_name(hw), ##arg)
 #else
 static inline int __attribute__ ((format (printf, 2, 3)))
 hw_dbg(struct e1000_hw *hw, const char *format, ...)

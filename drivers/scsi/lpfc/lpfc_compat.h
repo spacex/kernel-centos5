@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2004-2007 Emulex.  All rights reserved.           *
+ * Copyright (C) 2004-2005 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -31,6 +31,11 @@ However on a big-endian host, copy 4 bytes at a time,
 using writel() and readl().
  *******************************************************************/
 #include <asm/byteorder.h>
+
+/*
+ * This definition is to support older versions of scsi_transport_fc which
+ * do not have 8Gig speed definition.
+ */
 
 #ifdef __BIG_ENDIAN
 

@@ -181,6 +181,7 @@ SYSFS_PMCSETUP(pmc6, SPRN_PMC6);
 SYSFS_PMCSETUP(pmc7, SPRN_PMC7);
 SYSFS_PMCSETUP(pmc8, SPRN_PMC8);
 SYSFS_PMCSETUP(purr, SPRN_PURR);
+SYSFS_PMCSETUP(spurr, SPRN_SPURR);
 
 static SYSDEV_ATTR(mmcr0, 0600, show_mmcr0, store_mmcr0);
 static SYSDEV_ATTR(mmcr1, 0600, show_mmcr1, store_mmcr1);
@@ -194,6 +195,7 @@ static SYSDEV_ATTR(pmc6, 0600, show_pmc6, store_pmc6);
 static SYSDEV_ATTR(pmc7, 0600, show_pmc7, store_pmc7);
 static SYSDEV_ATTR(pmc8, 0600, show_pmc8, store_pmc8);
 static SYSDEV_ATTR(purr, 0600, show_purr, NULL);
+static SYSDEV_ATTR(spurr, 0600, show_spurr, NULL);
 
 static void register_cpu_online(unsigned int cpu)
 {
@@ -232,6 +234,8 @@ static void register_cpu_online(unsigned int cpu)
 
 	if (cpu_has_feature(CPU_FTR_SMT))
 		sysdev_create_file(s, &attr_purr);
+	if (cpu_has_feature(CPU_FTR_SPURR))
+		sysdev_create_file(s, &attr_spurr);
 }
 
 #ifdef CONFIG_HOTPLUG_CPU
@@ -274,6 +278,8 @@ static void unregister_cpu_online(unsigned int cpu)
 
 	if (cpu_has_feature(CPU_FTR_SMT))
 		sysdev_remove_file(s, &attr_purr);
+	if (cpu_has_feature(CPU_FTR_SPURR))
+		sysdev_remove_file(s, &attr_spurr);
 }
 #endif /* CONFIG_HOTPLUG_CPU */
 
@@ -298,6 +304,46 @@ static int __cpuinit sysfs_cpu_notify(struct notifier_block *self,
 static struct notifier_block __cpuinitdata sysfs_cpu_nb = {
 	.notifier_call	= sysfs_cpu_notify,
 };
+
+static DEFINE_MUTEX(cpu_mutex);
+
+int cpu_add_sysdev_attr_group(struct attribute_group *attrs)
+{
+        int cpu;
+        struct sys_device *sysdev;
+        int error = 0, rc = 0;
+
+        mutex_lock(&cpu_mutex);
+
+        for_each_possible_cpu(cpu) {
+                sysdev = get_cpu_sysdev(cpu);
+                error = sysfs_create_group(&sysdev->kobj, attrs);
+
+		if(error)
+			rc = error;
+        }
+
+        mutex_unlock(&cpu_mutex);
+        return rc;
+}
+EXPORT_SYMBOL_GPL(cpu_add_sysdev_attr_group);
+
+void cpu_remove_sysdev_attr_group(struct attribute_group *attrs)
+{
+        int cpu;
+        struct sys_device *sysdev;
+
+        mutex_lock(&cpu_mutex);
+
+        for_each_possible_cpu(cpu) {
+                sysdev = get_cpu_sysdev(cpu);
+                sysfs_remove_group(&sysdev->kobj, attrs);
+        }
+
+        mutex_unlock(&cpu_mutex);
+}
+EXPORT_SYMBOL_GPL(cpu_remove_sysdev_attr_group);
+
 
 /* NUMA stuff */
 

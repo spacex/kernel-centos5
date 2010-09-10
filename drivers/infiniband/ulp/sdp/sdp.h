@@ -42,6 +42,7 @@ extern int sdp_data_debug_level;
 #define SDP_RESOLVE_TIMEOUT 1000
 #define SDP_ROUTE_TIMEOUT 1000
 #define SDP_RETRY_COUNT 5
+#define SDP_KEEPALIVE_TIME (120 * 60 * HZ)
 
 #define SDP_TX_SIZE 0x40
 #define SDP_RX_SIZE 0x40
@@ -50,7 +51,11 @@ extern int sdp_data_debug_level;
 #define SDP_HEAD_SIZE (PAGE_SIZE / 2 + sizeof(struct sdp_bsdh))
 #define SDP_NUM_WC 4
 
+#define SDP_MIN_ZCOPY_THRESH    1024
+#define SDP_MAX_ZCOPY_THRESH 1048576
+
 #define SDP_OP_RECV 0x800000000LL
+#define SDP_OP_SEND 0x400000000LL
 
 enum sdp_mid {
 	SDP_MID_HELLO = 0x0,
@@ -68,6 +73,13 @@ enum sdp_flags {
 
 enum {
 	SDP_MIN_BUFS = 2
+};
+
+enum {
+	SDP_ERR_ERROR   = -4,
+	SDP_ERR_FAULT   = -3,
+	SDP_NEW_SEG     = -2,
+	SDP_DO_WAIT_MEM = -1
 };
 
 struct rdma_cm_id;
@@ -98,7 +110,7 @@ struct sdp_sock {
 	struct work_struct work;
 	wait_queue_head_t wq;
 
-	struct work_struct time_wait_work;
+	struct delayed_work time_wait_work;
 	struct work_struct destroy_work;
 
 	/* Like tcp_sock */
@@ -115,6 +127,12 @@ struct sdp_sock {
 
 	int time_wait;
 
+	unsigned keepalive_time;
+
+	/* tx_head/rx_head when keepalive timer started */
+	unsigned keepalive_tx_head;
+	unsigned keepalive_rx_head;
+
 	/* Data below will be reset on error */
 	/* rdma specific */
 	struct rdma_cm_id *id;
@@ -130,6 +148,8 @@ struct sdp_sock {
 	unsigned rx_tail;
 	unsigned mseq_ack;
 	unsigned bufs;
+	unsigned max_bufs;	/* Initial buffers offered by other side */
+	unsigned min_bufs;	/* Low water mark to wake senders */
 
 	int               remote_credits;
 	int 		  poll_cq;
@@ -140,17 +160,37 @@ struct sdp_sock {
 	struct ib_send_wr tx_wr;
 
 	/* SDP slow start */
-	int rcvbuf_scale;
-	int sent_request;
-	int sent_request_head;
-	int recv_request_head;
-	int recv_request;
-	int recv_frags;
-	int send_frags;
+	int rcvbuf_scale; 	/* local recv buf scale for each socket */
+	int sent_request_head; 	/* mark the tx_head of the last send resize
+				   request */
+	int sent_request; 	/* 0 - not sent yet, 1 - request pending
+				   -1 - resize done succesfully */
+	int recv_request_head; 	/* mark the rx_head when the resize request
+				   was recieved */
+	int recv_request; 	/* flag if request to resize was recieved */
+	int recv_frags; 	/* max skb frags in recv packets */
+	int send_frags; 	/* max skb frags in send packets */
+
+	/* BZCOPY data */
+	int   zcopy_thresh;
 
 	struct ib_sge ibsge[SDP_MAX_SEND_SKB_FRAGS + 1];
 	struct ib_wc  ibwc[SDP_NUM_WC];
 };
+
+/* Context used for synchronous zero copy bcopy (BZCOY) */
+struct bzcopy_state {
+	unsigned char __user  *u_base;
+	int                    u_len;
+	int                    left;
+	int                    page_cnt;
+	int                    cur_page;
+	int                    cur_offset;
+	int                    busy;
+	struct sdp_sock      *ssk;
+	struct page         **pages;
+};
+
 
 extern struct proto sdp_proto;
 extern struct workqueue_struct *sdp_workqueue;
@@ -207,19 +247,23 @@ void sdp_reset(struct sock *sk);
 void sdp_reset_sk(struct sock *sk, int rc);
 void sdp_time_wait_destroy_sk(struct sdp_sock *ssk);
 void sdp_completion_handler(struct ib_cq *cq, void *cq_context);
-void sdp_work(void *_work);
+void sdp_work(struct work_struct *work);
 int sdp_post_credits(struct sdp_sock *ssk);
 void sdp_post_send(struct sdp_sock *ssk, struct sk_buff *skb, u8 mid);
 void sdp_post_recvs(struct sdp_sock *ssk);
 int sdp_poll_cq(struct sdp_sock *ssk, struct ib_cq *cq);
 void sdp_post_sends(struct sdp_sock *ssk, int nonagle);
-void sdp_destroy_work(void *_work);
-void sdp_time_wait_work(void *_work);
+void sdp_destroy_work(struct work_struct *work);
+void sdp_time_wait_work(struct work_struct *work);
 struct sk_buff *sdp_recv_completion(struct sdp_sock *ssk, int id);
 struct sk_buff *sdp_send_completion(struct sdp_sock *ssk, int mseq);
 void sdp_urg(struct sdp_sock *ssk, struct sk_buff *skb);
 void sdp_add_sock(struct sdp_sock *ssk);
 void sdp_remove_sock(struct sdp_sock *ssk);
-void sdp_remove_large_sock(void);
+void sdp_remove_large_sock(struct sdp_sock *ssk);
+int sdp_resize_buffers(struct sdp_sock *ssk, u32 new_size);
+void sdp_post_keepalive(struct sdp_sock *ssk);
+void sdp_start_keepalive_timer(struct sock *sk);
+void sdp_bzcopy_write_space(struct sdp_sock *ssk);
 
 #endif

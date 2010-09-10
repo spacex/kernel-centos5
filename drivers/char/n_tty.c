@@ -1192,6 +1192,7 @@ static int job_control(struct tty_struct *tty, struct file *file)
 			    is_orphaned_pgrp(process_group(current)))
 				return -EIO;
 			kill_pg(process_group(current), SIGTTIN, 1);
+			set_thread_flag(TIF_SIGPENDING);
 			return -ERESTARTSYS;
 		}
 	}

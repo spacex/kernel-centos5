@@ -20,9 +20,6 @@
 #define MMCONFIG_APER_MIN	(2 * 1024*1024)
 #define MMCONFIG_APER_MAX	(256 * 1024*1024)
 
-/* Assume systems with more busses have correct MCFG */
-#define MAX_CHECK_BUS 16
-
 #define mmcfg_virt_addr ((void __iomem *) fix_to_virt(FIX_PCIE_MCFG))
 
 /* The base address of the last MMCONFIG device accessed */
@@ -202,31 +199,26 @@ static int __devinit disable_mmconf(struct dmi_system_id *d)
 static struct dmi_system_id __devinitdata nommconf_dmi_table[] = {
 	{
 		.callback = disable_mmconf,
-		.ident = "HP xw9300 Workstation",
-		.matches = {
-			DMI_MATCH(DMI_PRODUCT_NAME, "HP xw9300 Workstation"),
-		},
-	},
-	{
-		.callback = disable_mmconf,
-		.ident = "HP xw9400 Workstation",
-		.matches = {
-			DMI_MATCH(DMI_PRODUCT_NAME, "HP xw9400 Workstation"),
-		},
-	},
-	{
-		.callback = disable_mmconf,
-		.ident = "ProLiant DL585 G2",
-		.matches = {
-			DMI_MATCH(DMI_PRODUCT_NAME, "ProLiant DL585 G2"),
-		},
-	},
-	{
-		.callback = disable_mmconf,
 		.ident = "HP Compaq dc5700 Microtower",
 		.matches = {
 			DMI_MATCH(DMI_PRODUCT_NAME, 
 				"HP Compaq dc5700 Microtower"),
+		},
+	},
+	{
+		.callback = disable_mmconf,
+		.ident = "DQ35MPE",
+		.matches = {
+			DMI_MATCH(DMI_BOARD_NAME,
+				  "DQ35MPE"),
+		},
+	},
+	{
+		.callback = disable_mmconf,
+		.ident = "DQ35JO",
+		.matches = {
+			DMI_MATCH(DMI_BOARD_NAME,
+				  "DQ35JO"),
 		},
 	},
 
@@ -258,7 +250,7 @@ void __init pci_mmcfg_init(void)
 
 	printk(KERN_INFO "PCI: Using MMCONFIG\n");
 	raw_pci_ops = &pci_mmcfg;
-	pci_probe = (pci_probe & ~PCI_PROBE_MASK) | PCI_PROBE_MMCONF;
-
+	pci_probe = pci_probe & ~PCI_PROBE_MASK;
+	pci_probe = pci_probe | PCI_PROBE_MMCONF | PCI_USING_MMCONF;
 	unreachable_devices();
 }

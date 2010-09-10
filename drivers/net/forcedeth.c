@@ -5103,19 +5103,15 @@ static int __devinit nv_probe(struct pci_dev *pci_dev, const struct pci_device_i
 		if (readl(base + NvRegTransmitterControl) & NVREG_XMITCTL_SYNC_PHY_INIT) {
 			np->mac_in_use = readl(base + NvRegTransmitterControl) & NVREG_XMITCTL_MGMT_ST;
 			dprintk(KERN_INFO "%s: mgmt unit is running. mac in use %x.\n", pci_name(pci_dev), np->mac_in_use);
-			for (i = 0; i < 5000; i++) {
-				msleep(1);
-				if (nv_mgmt_acquire_sema(dev)) {
-					/* management unit setup the phy already? */
-					if ((readl(base + NvRegTransmitterControl) & NVREG_XMITCTL_SYNC_MASK) ==
-					    NVREG_XMITCTL_SYNC_PHY_INIT) {
-						/* phy is inited by mgmt unit */
-						phyinitialized = 1;
-						dprintk(KERN_INFO "%s: Phy already initialized by mgmt unit.\n", pci_name(pci_dev));
-					} else {
-						/* we need to init the phy */
-					}
-					break;
+			if (nv_mgmt_acquire_sema(dev)) {
+				/* management unit setup the phy already? */
+				if ((readl(base + NvRegTransmitterControl) & NVREG_XMITCTL_SYNC_MASK) ==
+				    NVREG_XMITCTL_SYNC_PHY_INIT) {
+					/* phy is inited by mgmt unit */
+					phyinitialized = 1;
+					dprintk(KERN_INFO "%s: Phy already initialized by mgmt unit.\n", pci_name(pci_dev));
+				} else {
+					/* we need to init the phy */
 				}
 			}
 		}
@@ -5417,7 +5413,8 @@ MODULE_DESCRIPTION("Reverse Engineered nForce ethernet driver"
 "6fedae1f6e66ab5f169bf58064e23e015fc1307d forcedeth: fix checksum feature in mcp65\n"
 "caf96469e8ab57170cc8ca9c59809132d38e529e forcedeth: disable msix\n"
 "e0379a14fc80cb98978fa86989dab77b522a8106 forcedeth: fixed missing call in napi poll\n"
-"a7475906bc496456ded9e4b062f94067fb93057a forcedeth: msi bugfix"
+"a7475906bc496456ded9e4b062f94067fb93057a forcedeth: msi bugfix\n"
+"9e555930bd873d238f5f7b9d76d3bf31e6e3ce93 forcedeth: boot delay fix"
 );
 MODULE_LICENSE("GPL");
 

@@ -1,6 +1,6 @@
 ################################################################################
 #
-# Intel PRO/1000 Linux driver
+# Intel 82575 PCI-Express Ethernet Linux driver
 # Copyright(c) 1999 - 2007 Intel Corporation.
 #
 # This program is free software; you can redistribute it and/or modify it
@@ -27,10 +27,11 @@
 ################################################################################
 
 #
-# Makefile for the Intel(R) PRO/1000 ethernet driver
+# Makefile for the Intel(R) 82575 PCI-Express ethernet driver
 #
 
 obj-$(CONFIG_IGB) += igb.o
 
-igb-objs := e1000_82575.o e1000_api.o e1000_mac.o e1000_manage.o \
-	    e1000_nvm.o e1000_phy.o igb_ethtool.o igb_main.o igb_param.o
+igb-objs := igb_main.o igb_ethtool.o e1000_82575.o \
+	    e1000_mac.o e1000_nvm.o e1000_phy.o
+

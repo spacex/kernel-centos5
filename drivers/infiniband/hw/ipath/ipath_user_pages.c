@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006 QLogic, Inc. All rights reserved.
+ * Copyright (c) 2006, 2007 QLogic Corporation. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -171,32 +171,6 @@ int ipath_get_user_pages(unsigned long start_page, size_t num_pages,
 	return ret;
 }
 
-/**
- * ipath_get_user_pages_nocopy - lock a single page for I/O and mark shared
- * @start_page: the page to lock
- * @p: the output page structure
- *
- * This is similar to ipath_get_user_pages, but it's always one page, and we
- * mark the page as locked for I/O, and shared.  This is used for the user
- * process page that contains the destination address for the rcvhdrq tail
- * update, so we need to have the vma. If we don't do this, the page can be
- * taken away from us on fork, even if the child never touches it, and then
- * the user process never sees the tail register updates.
- */
-int ipath_get_user_pages_nocopy(unsigned long page, struct page **p)
-{
-	struct vm_area_struct *vma;
-	int ret;
-
-	down_write(&current->mm->mmap_sem);
-
-	ret = __get_user_pages(page, 1, p, &vma);
-
-	up_write(&current->mm->mmap_sem);
-
-	return ret;
-}
-
 void ipath_release_user_pages(struct page **p, size_t num_pages)
 {
 	down_write(&current->mm->mmap_sem);
@@ -214,9 +188,10 @@ struct ipath_user_pages_work {
 	unsigned long num_pages;
 };
 
-static void user_pages_account(void *ptr)
+static void user_pages_account(struct work_struct *_work)
 {
-	struct ipath_user_pages_work *work = ptr;
+	struct ipath_user_pages_work *work =
+		container_of(_work, struct ipath_user_pages_work, work);
 
 	down_write(&work->mm->mmap_sem);
 	work->mm->locked_vm -= work->num_pages;
@@ -242,7 +217,7 @@ void ipath_release_user_pages_on_close(struct page **p, size_t num_pages)
 
 	goto bail;
 
-	INIT_WORK(&work->work, user_pages_account, work);
+	INIT_WORK(&work->work, user_pages_account);
 	work->mm = mm;
 	work->num_pages = num_pages;
 

@@ -37,6 +37,11 @@ typedef struct
         unsigned int unused  : 16;
 } __attribute__ ((packed)) cpuid_t;
 
+static inline void get_cpu_id(cpuid_t *ptr)
+{
+	asm volatile("stidp 0(%1)" : "=m" (*ptr) : "a" (ptr));
+}
+
 struct cpuinfo_S390
 {
         cpuid_t  cpu_id;
@@ -337,6 +342,23 @@ struct notifier_block;
 int register_idle_notifier(struct notifier_block *nb);
 int unregister_idle_notifier(struct notifier_block *nb);
 
+#endif
+
+/*
+ * Helper macro for exception table entries
+ */
+#ifndef __s390x__
+#define EX_TABLE(_fault,_target)			\
+	".section __ex_table,\"a\"\n"			\
+	"	.align 4\n"				\
+	"	.long  " #_fault "," #_target "\n"	\
+	".previous\n"
+#else
+#define EX_TABLE(_fault,_target)			\
+	".section __ex_table,\"a\"\n"			\
+	"	.align 8\n"				\
+	"	.quad  " #_fault "," #_target "\n"	\
+	".previous\n"
 #endif
 
 #endif                                 /* __ASM_S390_PROCESSOR_H           */

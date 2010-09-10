@@ -508,7 +508,6 @@ static void nfs_direct_write_complete(struct nfs_direct_req *dreq, struct inode 
 			nfs_direct_write_reschedule(dreq);
 			break;
 		default:
-			nfs_end_data_update(inode);
 			if (dreq->commit_data != NULL)
 				nfs_commit_free(dreq->commit_data);
 			nfs_direct_free_writedata(dreq);
@@ -530,7 +529,6 @@ static inline void nfs_alloc_commit_data(struct nfs_direct_req *dreq)
 
 static void nfs_direct_write_complete(struct nfs_direct_req *dreq, struct inode *inode)
 {
-	nfs_end_data_update(inode);
 	nfs_direct_free_writedata(dreq);
 	nfs_direct_complete(dreq);
 }
@@ -716,8 +714,6 @@ static ssize_t nfs_direct_write(struct kiocb *iocb, unsigned long user_addr, siz
 
 	nfs_add_stats(inode, NFSIOS_DIRECTWRITTENBYTES, count);
 
-	nfs_begin_data_update(inode);
-
 	rpc_clnt_sigmask(clnt, &oldset);
 	result = nfs_direct_write_schedule(dreq, user_addr, count, pos, sync);
 	if (!result)
@@ -839,10 +835,6 @@ ssize_t nfs_file_direct_write(struct kiocb *iocb, const char __user *buf, size_t
 	retval = nfs_direct_write(iocb, (unsigned long) buf, count, pos);
 
 	/*
-	 * XXX: nfs_end_data_update() already ensures this file's
-	 *      cached data is subsequently invalidated.  Do we really
-	 *      need to call invalidate_inode_pages2() again here?
-	 *
 	 *      For aio writes, this invalidation will almost certainly
 	 *      occur before the writes complete.  Kind of racey.
 	 */

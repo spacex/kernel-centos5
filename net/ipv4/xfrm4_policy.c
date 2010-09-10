@@ -10,6 +10,7 @@
 
 #include <linux/compiler.h>
 #include <linux/inetdevice.h>
+#include <net/icmp.h>
 #include <net/xfrm.h>
 #include <net/ip.h>
 
@@ -169,7 +170,7 @@ error:
 }
 
 static void
-_decode_session4(struct sk_buff *skb, struct flowi *fl)
+__decode_session4(struct sk_buff *skb, struct flowi *fl, int reverse)
 {
 	struct iphdr *iph = skb->nh.iph;
 	u8 *xprth = skb->nh.raw + iph->ihl*4;
@@ -184,8 +185,8 @@ _decode_session4(struct sk_buff *skb, struct flowi *fl)
 			if (pskb_may_pull(skb, xprth + 4 - skb->data)) {
 				u16 *ports = (u16 *)xprth;
 
-				fl->fl_ip_sport = ports[0];
-				fl->fl_ip_dport = ports[1];
+				fl->fl_ip_sport = ports[!!reverse];
+				fl->fl_ip_dport = ports[!reverse];
 			}
 			break;
 
@@ -227,9 +228,19 @@ _decode_session4(struct sk_buff *skb, struct flowi *fl)
 		};
 	}
 	fl->proto = iph->protocol;
-	fl->fl4_dst = iph->daddr;
-	fl->fl4_src = iph->saddr;
+	fl->fl4_dst = reverse ? iph->saddr : iph->daddr;
+	fl->fl4_src = reverse ? iph->daddr : iph->saddr;
 	fl->fl4_tos = iph->tos;
+}
+
+static void _decode_session4(struct sk_buff *skb, struct flowi *fl)
+{
+	__decode_session4(skb, fl, 0);
+}
+
+void xfrm4_decode_session_reverse(struct sk_buff *skb, struct flowi *fl)
+{
+	__decode_session4(skb, fl, 1);
 }
 
 static inline int xfrm4_garbage_collect(void)
@@ -300,6 +311,29 @@ static struct xfrm_policy_afinfo xfrm4_policy_afinfo = {
 	.bundle_create =	__xfrm4_bundle_create,
 	.decode_session =	_decode_session4,
 };
+
+int xfrm4_icmp_check(struct sk_buff *skb)
+{
+	struct icmphdr *icmph;
+	int ok;
+
+	ok = xfrm4_policy_check(NULL, XFRM_POLICY_IN, skb);
+
+	if (!ok) {
+		if (!(skb->sp && skb->sp->xvec[skb->sp->len - 1]->props.flags &
+				 XFRM_STATE_ICMP))
+			return 0;
+
+		if (!pskb_may_pull(skb, sizeof(*icmph) + sizeof(struct iphdr)))
+			return 0;
+
+		skb->nh.raw += sizeof(*icmph);
+		ok = xfrm4_policy_check_reverse(NULL, XFRM_POLICY_IN, skb);
+		skb->nh.raw -= sizeof(*icmph);
+	}
+
+	return ok;
+}
 
 static void __init xfrm4_policy_init(void)
 {

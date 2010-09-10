@@ -109,23 +109,42 @@ static char *sctp_hmac_alg = SCTP_COOKIE_HMAC_ALG;
 
 extern kmem_cache_t *sctp_bucket_cachep;
 
+extern int sysctl_sctp_mem[3];
+extern int sysctl_sctp_rmem[3];
+extern int sysctl_sctp_wmem[3];
+
+int sctp_memory_pressure;
+atomic_t sctp_memory_allocated;
+atomic_t sctp_sockets_allocated;
+ 
+static void sctp_enter_memory_pressure(void)
+{
+	sctp_memory_pressure = 1;
+}
+
 /* Get the sndbuf space available at the time on the association.  */
 static inline int sctp_wspace(struct sctp_association *asoc)
 {
+	int amt;
 	struct sock *sk = asoc->base.sk;
-	int amt = 0;
 
-	if (asoc->ep->sndbuf_policy) {
-		/* make sure that no association uses more than sk_sndbuf */
-		amt = sk->sk_sndbuf - asoc->sndbuf_used;
+	if (asoc->ep->sndbuf_policy)
+		amt = asoc->sndbuf_used;
+	else 
+		amt = atomic_read(&sk->sk_wmem_alloc);
+
+	if (amt >= sk->sk_sndbuf) {
+		if (sk->sk_userlocks & SOCK_SNDBUF_LOCK)
+			amt = 0;
+		else {
+			amt = sk_stream_wspace(sk);
+			if (amt < 0)
+				amt = 0;
+		}
 	} else {
-		/* do socket level accounting */
-		amt = sk->sk_sndbuf - atomic_read(&sk->sk_wmem_alloc);
+		amt = sk->sk_sndbuf - amt;
 	}
-
-	if (amt < 0)
-		amt = 0;
-
+	
 	return amt;
 }
 
@@ -157,6 +176,8 @@ static inline void sctp_set_owner_w(struct sctp_chunk *chunk)
 				sizeof(struct sctp_chunk);
 
 	atomic_add(sizeof(struct sctp_chunk), &sk->sk_wmem_alloc);
+	sk->sk_wmem_queued += chunk->skb->truesize;
+	sk_mem_charge(sk, chunk->skb->truesize);
 }
 
 /* Verify that this is a valid address. */
@@ -3121,6 +3142,7 @@ SCTP_STATIC int sctp_init_sock(struct sock *sk)
 	sp->hmac = NULL;
 
 	SCTP_DBG_OBJCNT_INC(sock);
+	atomic_inc(&sctp_sockets_allocated);
 	return 0;
 }
 
@@ -3134,7 +3156,7 @@ SCTP_STATIC int sctp_destroy_sock(struct sock *sk)
 	/* Release our hold on the endpoint. */
 	ep = sctp_sk(sk)->ep;
 	sctp_endpoint_free(ep);
-
+	atomic_dec(&sctp_sockets_allocated);
 	return 0;
 }
 
@@ -4645,22 +4667,14 @@ static long sctp_get_port_local(struct sock *sk, union sctp_addr *addr)
 	sctp_local_bh_disable();
 
 	if (snum == 0) {
-		/* Search for an available port.
-		 *
-		 * 'sctp_port_rover' was the last port assigned, so
-		 * we start to search from 'sctp_port_rover +
-		 * 1'. What we do is first check if port 'rover' is
-		 * already in the hash table; if not, we use that; if
-		 * it is, we try next.
-		 */
-		int low = sysctl_local_port_range[0];
-		int high = sysctl_local_port_range[1];
-		int remaining = (high - low) + 1;
-		int rover;
-		int index;
+		/* Search for an available port. */
+		int low, high, remaining, index;
+		unsigned int rover;
+		
+		inet_get_local_port_range(&low, &high);
+		remaining = (high - low) + 1;
+		rover = net_random() % remaining + low;
 
-		sctp_spin_lock(&sctp_port_alloc_lock);
-		rover = sctp_port_rover;
 		do {
 			rover++;
 			if ((rover < low) || (rover > high))
@@ -4675,8 +4689,6 @@ static long sctp_get_port_local(struct sock *sk, union sctp_addr *addr)
 		next:
 			sctp_spin_unlock(&head->lock);
 		} while (--remaining > 0);
-		sctp_port_rover = rover;
-		sctp_spin_unlock(&sctp_port_alloc_lock);
 
 		/* Exhausted local port range during search? */
 		ret = 1;
@@ -5357,11 +5369,37 @@ static void sctp_wfree(struct sk_buff *skb)
 
 	atomic_sub(sizeof(struct sctp_chunk), &sk->sk_wmem_alloc);
 
+	/*
+	 * This undoes what is done via sctp_set_owner_w and sk_mem_charge
+	 */
+	sk->sk_wmem_queued   -= skb->truesize;
+	sk_mem_uncharge(sk, skb->truesize);
+
 	sock_wfree(skb);
 	__sctp_write_space(asoc);
 
 	sctp_association_put(asoc);
 }
+
+/* Do accounting for the receive space on the socket.
+ * Accounting for the association is done in ulpevent.c
+ * We set this as a destructor for the cloned data skbs so that
+ * accounting is done at the correct time.
+ */
+void sctp_sock_rfree(struct sk_buff *skb)
+{
+	struct sock *sk = skb->sk;
+	struct sctp_ulpevent *event = sctp_skb2event(skb);
+
+	atomic_sub(event->rmem_len, &sk->sk_rmem_alloc);
+
+	/*
+	 * Mimic the behavior of sock_rfree
+	 */
+	sk_mem_uncharge(sk, event->rmem_len);
+
+}
+
 
 /* Helper function to wait for space in the sndbuf.  */
 static int sctp_wait_for_sndbuf(struct sctp_association *asoc, long *timeo_p,
@@ -5581,6 +5619,36 @@ void sctp_wait_for_close(struct sock *sk, long timeout)
 	finish_wait(sk->sk_sleep, &wait);
 }
 
+static void sctp_sock_rfree_frag(struct sk_buff *skb)
+{
+	struct sk_buff *frag;
+
+	if (!skb->data_len)
+		goto done;
+
+	/* Don't forget the fragments. */
+	for (frag = skb_shinfo(skb)->frag_list; frag; frag = frag->next)
+		sctp_sock_rfree_frag(frag);
+
+done:
+	sctp_sock_rfree(skb);
+}
+
+static void sctp_skb_set_owner_r_frag(struct sk_buff *skb, struct sock *sk)
+{
+	struct sk_buff *frag;
+
+	if (!skb->data_len)
+		goto done;
+
+	/* Don't forget the fragments. */
+	for (frag = skb_shinfo(skb)->frag_list; frag; frag = frag->next)
+		sctp_skb_set_owner_r_frag(frag, sk);
+
+done:
+	sctp_skb_set_owner_r(skb, sk);
+}
+
 /* Populate the fields of the newsk from the oldsk and migrate the assoc
  * and its messages to the newsk.
  */
@@ -5594,6 +5662,7 @@ static void sctp_sock_migrate(struct sock *oldsk, struct sock *newsk,
 	struct sctp_endpoint *newep = newsp->ep;
 	struct sk_buff *skb, *tmp;
 	struct sctp_ulpevent *event;
+	struct sctp_bind_hashbucket *head;
 	int flags = 0;
 
 	/* Migrate socket buffer sizes and all the socket level options to the
@@ -5611,10 +5680,15 @@ static void sctp_sock_migrate(struct sock *oldsk, struct sock *newsk,
 	newsp->hmac = NULL;
 
 	/* Hook this new socket in to the bind_hash list. */
+	head = &sctp_port_hashtable[sctp_phashfn(inet_sk(oldsk)->num)];
+	sctp_local_bh_disable();
+	sctp_spin_lock(&head->lock);
 	pp = sctp_sk(oldsk)->bind_hash;
 	sk_add_bind_node(newsk, &pp->owner);
 	sctp_sk(newsk)->bind_hash = pp;
 	inet_sk(newsk)->num = inet_sk(oldsk)->num;
+	sctp_spin_unlock(&head->lock);
+	sctp_local_bh_enable();
 
 	/* Copy the bind_addr list from the original endpoint to the new
 	 * endpoint so that we can handle restarts properly
@@ -5633,10 +5707,10 @@ static void sctp_sock_migrate(struct sock *oldsk, struct sock *newsk,
 	sctp_skb_for_each(skb, &oldsk->sk_receive_queue, tmp) {
 		event = sctp_skb2event(skb);
 		if (event->asoc == assoc) {
-			sock_rfree(skb);
+			sctp_sock_rfree_frag(skb);
 			__skb_unlink(skb, &oldsk->sk_receive_queue);
 			__skb_queue_tail(&newsk->sk_receive_queue, skb);
-			skb_set_owner_r(skb, newsk);
+			sctp_skb_set_owner_r_frag(skb, newsk);
 		}
 	}
 
@@ -5664,10 +5738,10 @@ static void sctp_sock_migrate(struct sock *oldsk, struct sock *newsk,
 		sctp_skb_for_each(skb, &oldsp->pd_lobby, tmp) {
 			event = sctp_skb2event(skb);
 			if (event->asoc == assoc) {
-				sock_rfree(skb);
+				sctp_sock_rfree_frag(skb);
 				__skb_unlink(skb, &oldsp->pd_lobby);
 				__skb_queue_tail(queue, skb);
-				skb_set_owner_r(skb, newsk);
+				sctp_skb_set_owner_r_frag(skb, newsk);
 			}
 		}
 
@@ -5704,6 +5778,7 @@ static void sctp_sock_migrate(struct sock *oldsk, struct sock *newsk,
 	sctp_release_sock(newsk);
 }
 
+
 /* This proto struct describes the ULP interface for SCTP.  */
 struct proto sctp_prot = {
 	.name        =	"SCTP",
@@ -5726,6 +5801,12 @@ struct proto sctp_prot = {
 	.unhash      =	sctp_unhash,
 	.get_port    =	sctp_get_port,
 	.obj_size    =  sizeof(struct sctp_sock),
+	.sysctl_mem  =  sysctl_sctp_mem,
+	.sysctl_rmem =  sysctl_sctp_rmem,
+	.sysctl_wmem =  sysctl_sctp_wmem,
+	.memory_pressure = &sctp_memory_pressure,
+	.enter_memory_pressure = sctp_enter_memory_pressure,
+	.memory_allocated = &sctp_memory_allocated,
 };
 
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
@@ -5750,5 +5831,11 @@ struct proto sctpv6_prot = {
 	.unhash		= sctp_unhash,
 	.get_port	= sctp_get_port,
 	.obj_size	= sizeof(struct sctp6_sock),
+	.sysctl_mem	= sysctl_sctp_mem,
+	.sysctl_rmem	= sysctl_sctp_rmem,
+	.sysctl_wmem	= sysctl_sctp_wmem,
+	.memory_pressure = &sctp_memory_pressure,
+	.enter_memory_pressure = sctp_enter_memory_pressure,
+	.memory_allocated = &sctp_memory_allocated,
 };
 #endif /* defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE) */

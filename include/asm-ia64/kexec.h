@@ -49,6 +49,7 @@ extern unsigned long kdump_find_rsvd_region(unsigned long size,
 extern void kdump_cpu_freeze(struct unw_frame_info *info, void *arg);
 extern int kdump_status[];
 extern atomic_t kdump_cpu_freezed;
+extern atomic_t kdump_in_progress;
 extern int kdump_kernel;
 
 #endif /* _ASM_IA64_KEXEC_H */

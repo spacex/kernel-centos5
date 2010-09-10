@@ -309,7 +309,7 @@ static struct sctp_ulpevent *sctp_make_reassembled_event(struct sk_buff_head *qu
  			if (!new)
  				return NULL;	/* try again later */
 
- 			new->sk = f_frag->sk;
+			sctp_skb_set_owner_r(new, f_frag->sk);
 
  			skb_shinfo(new)->frag_list = pos;
  		} else
@@ -870,6 +870,7 @@ void sctp_ulpq_renege(struct sctp_ulpq *ulpq, struct sctp_chunk *chunk,
 		sctp_ulpq_partial_delivery(ulpq, chunk, gfp);
 	}
 
+	sk_mem_reclaim(asoc->base.sk);
 	return;
 }
 

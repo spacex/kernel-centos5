@@ -37,6 +37,7 @@
  */
 
 #include <rdma/ib_smi.h>
+#include <rdma/ib_umem.h>
 #include <rdma/ib_user_verbs.h>
 #include <linux/mm.h>
 
@@ -663,6 +664,7 @@ static int mthca_destroy_qp(struct ib_qp *qp)
 }
 
 static struct ib_cq *mthca_create_cq(struct ib_device *ibdev, int entries,
+				     int comp_vector,
 				     struct ib_ucontext *context,
 				     struct ib_udata *udata)
 {
@@ -907,6 +909,8 @@ static struct ib_mr *mthca_get_dma_mr(struct ib_pd *pd, int acc)
 		return ERR_PTR(err);
 	}
 
+	mr->umem = NULL;
+
 	return &mr->ibmr;
 }
 
@@ -919,17 +923,13 @@ static struct ib_mr *mthca_reg_phys_mr(struct ib_pd       *pd,
 	struct mthca_mr *mr;
 	u64 *page_list;
 	u64 total_size;
-	u64 mask;
+	unsigned long mask;
 	int shift;
 	int npages;
 	int err;
 	int i, j, n;
 
-	/* First check that we have enough alignment */
-	if ((*iova_start & ~PAGE_MASK) != (buffer_list[0].addr & ~PAGE_MASK))
-		return ERR_PTR(-EINVAL);
-
-	mask = 0;
+	mask = buffer_list[0].addr ^ *iova_start;
 	total_size = 0;
 	for (i = 0; i < num_phys_buf; ++i) {
 		if (i != 0)
@@ -943,17 +943,7 @@ static struct ib_mr *mthca_reg_phys_mr(struct ib_pd       *pd,
 	if (mask & ~PAGE_MASK)
 		return ERR_PTR(-EINVAL);
 
-	/* Find largest page shift we can use to cover buffers */
-	for (shift = PAGE_SHIFT; shift < 31; ++shift)
-		if (num_phys_buf > 1) {
-			if ((1ULL << shift) & mask)
-				break;
-		} else {
-			if (1ULL << shift >=
-			    buffer_list[0].size +
-			    (buffer_list[0].addr & ((1ULL << shift) - 1)))
-				break;
-		}
+	shift = __ffs(mask | 1 << 31);
 
 	buffer_list[0].size += buffer_list[0].addr & ((1ULL << shift) - 1);
 	buffer_list[0].addr &= ~0ull << shift;
@@ -1002,11 +992,13 @@ static struct ib_mr *mthca_reg_phys_mr(struct ib_pd       *pd,
 	}
 
 	kfree(page_list);
+	mr->umem = NULL;
+
 	return &mr->ibmr;
 }
 
-static struct ib_mr *mthca_reg_user_mr(struct ib_pd *pd, struct ib_umem *region,
-				       int acc, struct ib_udata *udata)
+static struct ib_mr *mthca_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
+				       u64 virt, int acc, struct ib_udata *udata)
 {
 	struct mthca_dev *dev = to_mdev(pd->device);
 	struct ib_umem_chunk *chunk;
@@ -1017,20 +1009,26 @@ static struct ib_mr *mthca_reg_user_mr(struct ib_pd *pd, struct ib_umem *region,
 	int err = 0;
 	int write_mtt_size;
 
-	shift = ffs(region->page_size) - 1;
-
 	mr = kmalloc(sizeof *mr, GFP_KERNEL);
 	if (!mr)
 		return ERR_PTR(-ENOMEM);
 
+	mr->umem = ib_umem_get(pd->uobject->context, start, length, acc);
+	if (IS_ERR(mr->umem)) {
+		err = PTR_ERR(mr->umem);
+		goto err;
+	}
+
+	shift = ffs(mr->umem->page_size) - 1;
+
 	n = 0;
-	list_for_each_entry(chunk, &region->chunk_list, list)
+	list_for_each_entry(chunk, &mr->umem->chunk_list, list)
 		n += chunk->nents;
 
 	mr->mtt = mthca_alloc_mtt(dev, n);
 	if (IS_ERR(mr->mtt)) {
 		err = PTR_ERR(mr->mtt);
-		goto err;
+		goto err_umem;
 	}
 
 	pages = (u64 *) __get_free_page(GFP_KERNEL);
@@ -1041,14 +1039,14 @@ static struct ib_mr *mthca_reg_user_mr(struct ib_pd *pd, struct ib_umem *region,
 
 	i = n = 0;
 
-	write_mtt_size = min(mthca_write_mtt_size(dev), (int)(PAGE_SIZE / sizeof *pages));
+	write_mtt_size = min(mthca_write_mtt_size(dev), (int) (PAGE_SIZE / sizeof *pages));
 
-	list_for_each_entry(chunk, &region->chunk_list, list)
+	list_for_each_entry(chunk, &mr->umem->chunk_list, list)
 		for (j = 0; j < chunk->nmap; ++j) {
 			len = sg_dma_len(&chunk->page_list[j]) >> shift;
 			for (k = 0; k < len; ++k) {
 				pages[i++] = sg_dma_address(&chunk->page_list[j]) +
-					region->page_size * k;
+					mr->umem->page_size * k;
 				/*
 				 * Be friendly to write_mtt and pass it chunks
 				 * of appropriate size.
@@ -1070,8 +1068,8 @@ mtt_done:
 	if (err)
 		goto err_mtt;
 
-	err = mthca_mr_alloc(dev, to_mpd(pd)->pd_num, shift, region->virt_base,
-			     region->length, convert_access(acc), mr);
+	err = mthca_mr_alloc(dev, to_mpd(pd)->pd_num, shift, virt, length,
+			     convert_access(acc), mr);
 
 	if (err)
 		goto err_mtt;
@@ -1081,6 +1079,9 @@ mtt_done:
 err_mtt:
 	mthca_free_mtt(dev, mr->mtt);
 
+err_umem:
+	ib_umem_release(mr->umem);
+
 err:
 	kfree(mr);
 	return ERR_PTR(err);
@@ -1089,8 +1090,12 @@ err:
 static int mthca_dereg_mr(struct ib_mr *mr)
 {
 	struct mthca_mr *mmr = to_mmr(mr);
+
 	mthca_free_mr(to_mdev(mr->device), mmr);
+	if (mmr->umem)
+		ib_umem_release(mmr->umem);
 	kfree(mmr);
+
 	return 0;
 }
 
@@ -1251,6 +1256,8 @@ static int mthca_init_node_data(struct mthca_dev *dev)
 		goto out;
 	}
 
+	if (mthca_is_memfree(dev))
+		dev->rev_id = be32_to_cpup((__be32 *) (out_mad->data + 32));
 	memcpy(&dev->ib_dev.node_guid, out_mad->data + 12, 8);
 
 out:
@@ -1292,8 +1299,8 @@ int mthca_register_device(struct mthca_dev *dev)
 		(1ull << IB_USER_VERBS_CMD_DETACH_MCAST);
 	dev->ib_dev.node_type            = RDMA_NODE_IB_CA;
 	dev->ib_dev.phys_port_cnt        = dev->limits.num_ports;
+	dev->ib_dev.num_comp_vectors     = 1;
 	dev->ib_dev.dma_device           = &dev->pdev->dev;
-	dev->ib_dev.class_dev.dev        = &dev->pdev->dev;
 	dev->ib_dev.query_device         = mthca_query_device;
 	dev->ib_dev.query_port           = mthca_query_port;
 	dev->ib_dev.modify_device        = mthca_modify_device;

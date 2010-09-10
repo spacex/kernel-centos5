@@ -4,4 +4,4 @@
 
 obj-y	 := init.o fault.o ioremap.o extmem.o mmap.o
 obj-$(CONFIG_CMM) += cmm.o
-
+obj-$(CONFIG_HUGETLB_PAGE) += hugetlbpage.o

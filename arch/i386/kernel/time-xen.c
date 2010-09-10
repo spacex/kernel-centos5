@@ -50,6 +50,7 @@
 #include <linux/percpu.h>
 #include <linux/kernel_stat.h>
 #include <linux/posix-timers.h>
+#include <linux/cpufreq.h>
 
 #include <asm/io.h>
 #include <asm/smp.h>
@@ -664,8 +665,8 @@ irqreturn_t timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	if ((unlikely(delta < -(s64)permitted_clock_jitter) ||
 	     unlikely(delta_cpu < -(s64)permitted_clock_jitter))
 	    && printk_ratelimit()) {
-		printk("Timer ISR/%d: Time went backwards: "
-		       "delta=%lld delta_cpu=%lld shadow=%lld "
+		printk(KERN_WARNING "Warning Timer ISR/%d: Time went "
+		       "backwards: delta=%lld delta_cpu=%lld shadow=%lld "
 		       "off=%lld processed=%lld cpu_processed=%lld\n",
 		       cpu, delta, delta_cpu, shadow->system_timestamp,
 		       (s64)get_nsec_offset(shadow),
@@ -736,7 +737,7 @@ irqreturn_t timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 		touch_softlockup_watchdog();
 
 	/* Local timer processing (see update_process_times()). */
-	run_local_timers();
+	run_local_timers(regs);
 	if (rcu_pending(cpu))
 		rcu_check_callbacks(cpu, user_mode(regs));
 	scheduler_tick();
@@ -1087,6 +1088,45 @@ void local_teardown_timer(unsigned int cpu)
 	BUG_ON(cpu == 0);
 	unbind_from_irqhandler(per_cpu(timer_irq, cpu), NULL);
 }
+#endif
+
+#if CONFIG_CPU_FREQ
+static int time_cpufreq_notifier(struct notifier_block *nb, unsigned long val, 
+				void *data)
+{
+	struct cpufreq_freqs *freq = data;
+	dom0_op_t op;
+
+	if (cpu_has(&cpu_data[freq->cpu], X86_FEATURE_CONSTANT_TSC))
+		return 0;
+
+	if (val == CPUFREQ_PRECHANGE)
+		return 0;
+
+	op.cmd = DOM0_change_freq;
+	op.u.change_freq.flags = 0;
+	op.u.change_freq.cpu = freq->cpu;
+	op.u.change_freq.freq = (u64)freq->new * 1000;
+	HYPERVISOR_dom0_op(&op);
+
+	return 0;
+}
+
+static struct notifier_block time_cpufreq_notifier_block = {
+	.notifier_call = time_cpufreq_notifier
+};
+
+static int __init cpufreq_time_setup(void)
+{
+	if (cpufreq_register_notifier(&time_cpufreq_notifier_block,
+			CPUFREQ_TRANSITION_NOTIFIER)) {
+		printk(KERN_ERR "failed to set up cpufreq notifier\n");
+		return -ENODEV;
+	}
+	return 0;
+}
+
+core_initcall(cpufreq_time_setup);
 #endif
 
 /*

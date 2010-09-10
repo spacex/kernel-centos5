@@ -618,6 +618,7 @@ struct gendisk *alloc_disk_node(int minors, int node_id)
 			int size = (minors - 1) * sizeof(struct hd_struct *);
 			disk->part = kmalloc_node(size, GFP_KERNEL, node_id);
 			if (!disk->part) {
+				free_disk_stats(disk);
 				kfree(disk);
 				return NULL;
 			}

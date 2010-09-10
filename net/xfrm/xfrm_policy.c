@@ -946,7 +946,7 @@ restart:
 	if (!policy) {
 		/* To accelerate a bit...  */
 		if ((dst_orig->flags & DST_NOXFRM) || !xfrm_policy_list[XFRM_POLICY_OUT])
-			return 0;
+			goto nopol;
 
 		policy = flow_cache_lookup(fl, dst_orig->ops->family,
 					   dir, xfrm_policy_lookup);
@@ -955,7 +955,11 @@ restart:
 	}
 
 	if (!policy)
-		return 0;
+		goto nopol;
+
+	err = -ENOENT;
+	if ((flags & XFRM_LOOKUP_ICMP) && !(policy->flags & XFRM_POLICY_ICMP))
+		goto error;
 
 	family = dst_orig->ops->family;
 	policy->curlft.use_time = (unsigned long)xtime.tv_sec;
@@ -998,7 +1002,7 @@ restart:
 				xfrm_pol_put(policy);
 				return -EREMOTE;
 			}
-			if (err == -EAGAIN && flags) {
+			if (err == -EAGAIN && (flags & XFRM_LOOKUP_WAIT)) {
 				DECLARE_WAITQUEUE(wait, current);
 
 				add_wait_queue(&km_waitq, &wait);
@@ -1064,10 +1068,17 @@ restart:
 	return 0;
 
 error:
-	dst_release(dst_orig);
 	xfrm_pol_put(policy);
+dropdst:
+	dst_release(dst_orig);
 	*dst_p = NULL;
 	return err;
+
+nopol:
+	err = -ENOENT;
+	if (flags & XFRM_LOOKUP_ICMP)
+		goto dropdst;
+	return 0;
 }
 EXPORT_SYMBOL(__xfrm_lookup);
 
@@ -1152,15 +1163,54 @@ static inline int secpath_has_tunnel(struct sec_path *sp, int k)
 	return 0;
 }
 
+static inline void xfrm_reverse_flow(struct flowi *fl, int family)
+{
+	struct in6_addr tmp6;
+	u32 tmp4;
+	int port;
+
+	switch (family) {
+	case AF_INET:
+		tmp4 = fl->fl4_src;
+		fl->fl4_src = fl->fl4_dst;
+		fl->fl4_dst = tmp4;
+		break;
+
+	case AF_INET6:
+		ipv6_addr_copy(&tmp6, &fl->fl6_src);
+		ipv6_addr_copy(&fl->fl6_src, &fl->fl6_dst);
+		ipv6_addr_copy(&fl->fl6_dst, &tmp6);
+		break;
+	}
+
+	switch (fl->proto) {
+	case IPPROTO_UDP:
+	case IPPROTO_TCP:
+	case IPPROTO_SCTP:
+	case IPPROTO_DCCP:
+		port = fl->fl_ip_sport;
+		fl->fl_ip_sport = fl->fl_ip_dport;
+		fl->fl_ip_dport = port;
+		break;
+	}
+}
+
 int __xfrm_policy_check(struct sock *sk, int dir, struct sk_buff *skb, 
 			unsigned short family)
 {
 	struct xfrm_policy *pol;
+	int reverse;
 	struct flowi fl;
-	u8 fl_dir = policy_to_flow_dir(dir);
+	u8 fl_dir;
+
+	reverse = dir & ~XFRM_POLICY_MASK;
+	dir &= XFRM_POLICY_MASK;
+	fl_dir = policy_to_flow_dir(dir);
 
 	if (xfrm_decode_session(skb, &fl, family) < 0)
 		return 0;
+	if (reverse)
+		xfrm_reverse_flow(&fl, family);
 	nf_nat_decode_session(skb, &fl, family);
 
 	/* First, check used SA against their selectors. */
@@ -1475,6 +1525,13 @@ void xfrm_audit_log(uid_t auid, u32 sid, int type, int result,
 		type == AUDIT_MAC_IPSEC_DELSPD) && !xp);
 
 	audit_buf = audit_log_start(current->audit_context, GFP_ATOMIC, type);
+
+	/* The things we do for ABI compatibility! */
+	if (type == AUDIT_MAC_IPSEC_EVENT) {
+		*(struct audit_buffer **)xp = audit_buf;
+		return;
+	}
+
 	if (audit_buf == NULL)
 		return;
 
@@ -1496,9 +1553,10 @@ void xfrm_audit_log(uid_t auid, u32 sid, int type, int result,
 	}
 
 	if (sid != 0 &&
-		security_secid_to_secctx(sid, &secctx, &secctx_len) == 0)
+	    security_secid_to_secctx(sid, &secctx, &secctx_len) == 0) {
 		audit_log_format(audit_buf, " subj=%s", secctx);
-	else
+		security_release_secctx(secctx, secctx_len);
+	} else
 		audit_log_task_context(audit_buf);
 
 	if (xp) {
@@ -1527,9 +1585,17 @@ void xfrm_audit_log(uid_t auid, u32 sid, int type, int result,
 				saddr.s_addr = x->props.saddr.a4;
 				daddr.s_addr = x->id.daddr.a4;
 			}
-			audit_log_format(audit_buf,
-					 " src=%u.%u.%u.%u dst=%u.%u.%u.%u",
-					 NIPQUAD(saddr), NIPQUAD(daddr));
+			audit_log_format(audit_buf, " src=" NIPQUAD_FMT,
+					 NIPQUAD(saddr));
+			if (xp && (xp->selector.prefixlen_s != 32))
+				audit_log_format(audit_buf, " src_prefixlen=%d",
+						 xp->selector.prefixlen_s);
+
+			audit_log_format(audit_buf, " dst=" NIPQUAD_FMT,
+					 NIPQUAD(daddr));
+			if (xp && (xp->selector.prefixlen_d != 32))
+				audit_log_format(audit_buf, " dst_prefixlen=%d",
+						 xp->selector.prefixlen_d);
 		}
 			break;
 	case AF_INET6:
@@ -1546,9 +1612,17 @@ void xfrm_audit_log(uid_t auid, u32 sid, int type, int result,
 				memcpy(&daddr6, x->id.daddr.a6,
 					sizeof(struct in6_addr));
 			}
-			audit_log_format(audit_buf,
-					 " src=" NIP6_FMT " dst=" NIP6_FMT,
-					 NIP6(saddr6), NIP6(daddr6));
+			audit_log_format(audit_buf, " src=" NIP6_FMT,
+					 NIP6(saddr6));
+			if (xp && (xp->selector.prefixlen_s != 128))
+				audit_log_format(audit_buf, " src_prefixlen=%d",
+						 xp->selector.prefixlen_s);
+
+			audit_log_format(audit_buf, " dst=" NIP6_FMT,
+					 NIP6(daddr6));
+			if (xp && (xp->selector.prefixlen_d != 128))
+				audit_log_format(audit_buf, " dst_prefixlen=%d",
+						 xp->selector.prefixlen_d);
 		}
 		break;
 	}

@@ -21,14 +21,15 @@ static inline unsigned long pfn_to_mfn(unsigned long pfn)
 {
 	if (xen_feature(XENFEAT_auto_translated_physmap))
 		return pfn;
-	return phys_to_machine_mapping[(unsigned int)(pfn)] &
-		~FOREIGN_FRAME_BIT;
+	BUG_ON(end_pfn && pfn >= end_pfn);
+	return phys_to_machine_mapping[pfn] & ~FOREIGN_FRAME_BIT;
 }
 
 static inline int phys_to_machine_mapping_valid(unsigned long pfn)
 {
 	if (xen_feature(XENFEAT_auto_translated_physmap))
 		return 1;
+	BUG_ON(end_pfn && pfn >= end_pfn);
 	return (phys_to_machine_mapping[pfn] != INVALID_P2M_ENTRY);
 }
 
@@ -92,6 +93,7 @@ static inline unsigned long mfn_to_local_pfn(unsigned long mfn)
 
 static inline void set_phys_to_machine(unsigned long pfn, unsigned long mfn)
 {
+	BUG_ON(end_pfn && pfn >= end_pfn);
 	if (xen_feature(XENFEAT_auto_translated_physmap)) {
 		BUG_ON(pfn != mfn && mfn != INVALID_P2M_ENTRY);
 		return;
@@ -124,6 +126,22 @@ static inline paddr_t machine_to_phys(maddr_t machine)
 {
 	paddr_t phys = mfn_to_pfn(machine >> PAGE_SHIFT);
 	phys = (phys << PAGE_SHIFT) | (machine & ~PAGE_MASK);
+	return phys;
+}
+
+static inline paddr_t pte_phys_to_machine(paddr_t phys)
+{
+	maddr_t machine;
+	machine = pfn_to_mfn((phys & PHYSICAL_PAGE_MASK) >> PAGE_SHIFT);
+	machine = (machine << PAGE_SHIFT) | (phys & ~PHYSICAL_PAGE_MASK);
+	return machine;
+}
+
+static inline paddr_t pte_machine_to_phys(maddr_t machine)
+{
+	paddr_t phys;
+	phys = mfn_to_pfn((machine & PHYSICAL_PAGE_MASK) >> PAGE_SHIFT);
+	phys = (phys << PAGE_SHIFT) | (machine & ~PHYSICAL_PAGE_MASK);
 	return phys;
 }
 

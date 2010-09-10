@@ -2,7 +2,7 @@
  *
  *		Linux MegaRAID driver for SAS based RAID controllers
  *
- * Copyright (c) 2003-2005  LSI Logic Corporation.
+ * Copyright (c) 2003-2005  LSI Corporation.
  *
  *	   This program is free software; you can redistribute it and/or
  *	   modify it under the terms of the GNU General Public License
@@ -10,11 +10,13 @@
  *	   2 of the License, or (at your option) any later version.
  *
  * FILE		: megaraid_sas.c
- * Version	: v00.00.03.10
+ * Version	: v00.00.03.15-RH1
  *
  * Authors:
- * 	Sreenivas Bagalkote	<Sreenivas.Bagalkote@lsi.com>
- * 	Sumant Patro		<Sumant.Patro@lsi.com>
+ *	(email-id : megaraidlinux@lsi.com)
+ * 	Sreenivas Bagalkote
+ * 	Sumant Patro
+ *	Bo Yang
  *
  * List of supported controllers
  *
@@ -44,10 +46,22 @@
 #include <scsi/scsi_host.h>
 #include "megaraid_sas.h"
 
+/*
+ * Module parameters
+ */
+
+/*
+ * poll_mode_io:1- schedule command completion from q cmd
+ */
+static unsigned int poll_mode_io;
+module_param_named(poll_mode_io, poll_mode_io, int, 0);
+MODULE_PARM_DESC(poll_mode_io,
+	"Complete cmds from IO path, (default=0)");
+
 MODULE_LICENSE("GPL");
 MODULE_VERSION(MEGASAS_VERSION);
 MODULE_AUTHOR("megaraidlinux@lsi.com");
-MODULE_DESCRIPTION("LSI Logic MegaRAID SAS Driver");
+MODULE_DESCRIPTION("LSI MegaRAID SAS Driver");
 
 /*
  * PCI ID table for all supported controllers
@@ -74,6 +88,9 @@ static DEFINE_MUTEX(megasas_async_queue_mutex);
 
 static u32 megasas_dbg_lvl;
 
+static void
+megasas_complete_cmd(struct megasas_instance *instance, struct megasas_cmd *cmd,
+		     u8 alt_status);
 /**
  * megasas_get_cmd -	Get a command from the free pool
  * @instance:		Adapter soft state
@@ -893,6 +910,12 @@ megasas_queue_command(struct scsi_cmnd *scmd, void (*done) (struct scsi_cmnd *))
 
 	instance->instancet->fire_cmd(cmd->frame_phys_addr ,cmd->frame_count-1,instance->reg_set);
 
+	/*
+	 * Check if we have pend cmds to be completed
+	 */
+	if (poll_mode_io && atomic_read(&instance->fw_outstanding))
+		tasklet_schedule(&instance->isr_tasklet);
+
 	return 0;
 
  out_return_cmd:
@@ -923,6 +946,65 @@ static int megasas_slave_configure(struct scsi_device *sdev)
 }
 
 /**
+ * megasas_complete_cmd_dpc	 -	Returns FW's controller structure
+ * @instance_addr:			Address of adapter soft state
+ *
+ * Tasklet to complete cmds
+ */
+static void megasas_complete_cmd_dpc(unsigned long instance_addr)
+{
+	u32 producer;
+	u32 consumer;
+	u32 context;
+	struct megasas_cmd *cmd;
+	struct megasas_instance *instance =
+			(struct megasas_instance *)instance_addr;
+	unsigned long flags;
+
+	/* If we have already declared adapter dead, donot complete cmds */
+	if (instance->hw_crit_error)
+		return;
+
+	spin_lock_irqsave(&instance->completion_lock, flags);
+
+	producer = *instance->producer;
+	consumer = *instance->consumer;
+
+	while (consumer != producer) {
+		context = instance->reply_queue[consumer];
+
+		cmd = instance->cmd_list[context];
+
+		megasas_complete_cmd(instance, cmd, DID_OK);
+
+		consumer++;
+		if (consumer == (instance->max_fw_cmds + 1)) {
+			consumer = 0;
+		}
+	}
+
+	*instance->consumer = producer;
+
+	spin_unlock_irqrestore(&instance->completion_lock, flags);
+
+	/*
+	 * Check if we can restore can_queue
+	 */
+	if (instance->flag & MEGASAS_FW_BUSY
+		&& time_after(jiffies, instance->last_time + 5 * HZ)
+		&& atomic_read(&instance->fw_outstanding) < 17) {
+
+		spin_lock_irqsave(instance->host->host_lock, flags);
+		instance->flag &= ~MEGASAS_FW_BUSY;
+		instance->host->can_queue =
+				instance->max_fw_cmds - MEGASAS_INT_CMDS;
+
+		spin_unlock_irqrestore(instance->host->host_lock, flags);
+	}
+
+}
+
+/**
  * megasas_wait_for_outstanding -	Wait for all outstanding cmds
  * @instance:				Adapter soft state
  *
@@ -945,6 +1027,11 @@ static int megasas_wait_for_outstanding(struct megasas_instance *instance)
 		if (!(i % MEGASAS_RESET_NOTICE_INTERVAL)) {
 			printk(KERN_NOTICE "megasas: [%2d]waiting for %d "
 			       "commands to complete\n",i,outstanding);
+			/*
+			 * Call cmd completion routine. Cmd to be
+			 * be completed directly without depending on isr.
+			 */
+			megasas_complete_cmd_dpc((unsigned long)instance);
 		}
 
 		msleep(1000);
@@ -1137,7 +1224,7 @@ megasas_service_aen(struct megasas_instance *instance, struct megasas_cmd *cmd)
 static struct scsi_host_template megasas_template = {
 
 	.module = THIS_MODULE,
-	.name = "LSI Logic SAS based MegaRAID driver",
+	.name = "LSI SAS based MegaRAID driver",
 	.proc_name = "megaraid_sas",
 	.slave_configure = megasas_slave_configure,
 	.queuecommand = megasas_queue_command,
@@ -1827,57 +1914,120 @@ megasas_get_ctrl_info(struct megasas_instance *instance,
 }
 
 /**
- * megasas_complete_cmd_dpc	 -	Returns FW's controller structure
- * @instance_addr:			Address of adapter soft state
+ * megasas_issue_init_mfi -	Initializes the FW
+ * @instance:		Adapter soft state
  *
- * Tasklet to complete cmds
+ * Issues the INIT MFI cmd
  */
-static void megasas_complete_cmd_dpc(unsigned long instance_addr)
+static int
+megasas_issue_init_mfi(struct megasas_instance *instance)
 {
-	u32 producer;
-	u32 consumer;
 	u32 context;
+
 	struct megasas_cmd *cmd;
-	struct megasas_instance *instance = (struct megasas_instance *)instance_addr;
-	unsigned long flags;
 
-	/* If we have already declared adapter dead, donot complete cmds */
-	if (instance->hw_crit_error)
-		return;
-
-	producer = *instance->producer;
-	consumer = *instance->consumer;
-
-	while (consumer != producer) {
-		context = instance->reply_queue[consumer];
-
-		cmd = instance->cmd_list[context];
-
-		megasas_complete_cmd(instance, cmd, DID_OK);
-
-		consumer++;
-		if (consumer == (instance->max_fw_cmds + 1)) {
-			consumer = 0;
-		}
-	}
-
-	*instance->consumer = producer;
+	struct megasas_init_frame *init_frame;
+	struct megasas_init_queue_info *initq_info;
+	dma_addr_t init_frame_h;
+	dma_addr_t initq_info_h;
 
 	/*
-	 * Check if we can restore can_queue
+	 * Prepare a init frame. Note the init frame points to queue info
+	 * structure. Each frame has SGL allocated after first 64 bytes. For
+	 * this frame - since we don't need any SGL - we use SGL's space as
+	 * queue info structure
+	 *
+	 * We will not get a NULL command below. We just created the pool.
 	 */
-	if (instance->flag & MEGASAS_FW_BUSY
-		&& time_after(jiffies, instance->last_time + 5 * HZ)
-		&& atomic_read(&instance->fw_outstanding) < 17) {
+	cmd = megasas_get_cmd(instance);
 
-		spin_lock_irqsave(instance->host->host_lock, flags);
-		instance->flag &= ~MEGASAS_FW_BUSY;
-		instance->host->can_queue =
-				instance->max_fw_cmds - MEGASAS_INT_CMDS;
+	init_frame = (struct megasas_init_frame *)cmd->frame;
+	initq_info = (struct megasas_init_queue_info *)
+	    ((unsigned long)init_frame + 64);
 
-		spin_unlock_irqrestore(instance->host->host_lock, flags);
+	init_frame_h = cmd->frame_phys_addr;
+	initq_info_h = init_frame_h + 64;
+
+	context = init_frame->context;
+	memset(init_frame, 0, MEGAMFI_FRAME_SIZE);
+	memset(initq_info, 0, sizeof(struct megasas_init_queue_info));
+	init_frame->context = context;
+
+	initq_info->reply_queue_entries = instance->max_fw_cmds + 1;
+	initq_info->reply_queue_start_phys_addr_lo = instance->reply_queue_h;
+
+	initq_info->producer_index_phys_addr_lo = instance->producer_h;
+	initq_info->consumer_index_phys_addr_lo = instance->consumer_h;
+
+	init_frame->cmd = MFI_CMD_INIT;
+	init_frame->cmd_status = 0xFF;
+	init_frame->queue_info_new_phys_addr_lo = initq_info_h;
+
+	init_frame->data_xfer_len = sizeof(struct megasas_init_queue_info);
+
+	/*
+	 * disable the intr before firing the init frame to FW
+	 */
+	instance->instancet->disable_intr(instance->reg_set);
+
+	/*
+	 * Issue the init frame in polled mode
+	 */
+
+	if (megasas_issue_polled(instance, cmd)) {
+		printk(KERN_ERR "megasas: Failed to init firmware\n");
+		megasas_return_cmd(instance, cmd);
+		goto fail_fw_init;
 	}
 
+	megasas_return_cmd(instance, cmd);
+
+	return 0;
+
+fail_fw_init:
+	return -EINVAL;
+}
+
+/**
+ * megasas_start_timer - Initializes a timer object
+ * @instance:		Adapter soft state
+ * @timer:		timer object to be initialized
+ * @fn:			timer function
+ * @interval:		time interval between timer function call
+ *
+ */
+static inline void
+megasas_start_timer(struct megasas_instance *instance,
+			struct timer_list *timer,
+			void *fn, unsigned long interval)
+{
+	init_timer(timer);
+	timer->expires = jiffies + interval;
+	timer->data = (unsigned long)instance;
+	timer->function = fn;
+	add_timer(timer);
+}
+
+/**
+ * megasas_io_completion_timer - Timer fn
+ * @instance_addr:	Address of adapter soft state
+ *
+ * Schedules tasklet for cmd completion
+ * if poll_mode_io is set
+ */
+static void
+megasas_io_completion_timer(unsigned long instance_addr)
+{
+	struct megasas_instance *instance =
+			(struct megasas_instance *)instance_addr;
+
+	if (atomic_read(&instance->fw_outstanding))
+		tasklet_schedule(&instance->isr_tasklet);
+
+	/* Restart timer */
+	if (poll_mode_io)
+		mod_timer(&instance->io_completion_timer,
+			jiffies + MEGASAS_COMPLETION_TIMER_INTERVAL);
 }
 
 /**
@@ -1892,22 +2042,17 @@ static int megasas_init_mfi(struct megasas_instance *instance)
 	u32 reply_q_sz;
 	u32 max_sectors_1;
 	u32 max_sectors_2;
+	u32 tmp_sectors;
 	struct megasas_register_set __iomem *reg_set;
 
-	struct megasas_cmd *cmd;
 	struct megasas_ctrl_info *ctrl_info;
-
-	struct megasas_init_frame *init_frame;
-	struct megasas_init_queue_info *initq_info;
-	dma_addr_t init_frame_h;
-	dma_addr_t initq_info_h;
 
 	/*
 	 * Map the message registers
 	 */
 	instance->base_addr = pci_resource_start(instance->pdev, 0);
 
-	if (pci_request_regions(instance->pdev, "megasas: LSI Logic")) {
+	if (pci_request_regions(instance->pdev, "megasas: LSI")) {
 		printk(KERN_DEBUG "megasas: IO memory region busy!\n");
 		return -EBUSY;
 	}
@@ -1978,52 +2123,8 @@ static int megasas_init_mfi(struct megasas_instance *instance)
 		goto fail_reply_queue;
 	}
 
-	/*
-	 * Prepare a init frame. Note the init frame points to queue info
-	 * structure. Each frame has SGL allocated after first 64 bytes. For
-	 * this frame - since we don't need any SGL - we use SGL's space as
-	 * queue info structure
-	 *
-	 * We will not get a NULL command below. We just created the pool.
-	 */
-	cmd = megasas_get_cmd(instance);
-
-	init_frame = (struct megasas_init_frame *)cmd->frame;
-	initq_info = (struct megasas_init_queue_info *)
-	    ((unsigned long)init_frame + 64);
-
-	init_frame_h = cmd->frame_phys_addr;
-	initq_info_h = init_frame_h + 64;
-
-	memset(init_frame, 0, MEGAMFI_FRAME_SIZE);
-	memset(initq_info, 0, sizeof(struct megasas_init_queue_info));
-
-	initq_info->reply_queue_entries = instance->max_fw_cmds + 1;
-	initq_info->reply_queue_start_phys_addr_lo = instance->reply_queue_h;
-
-	initq_info->producer_index_phys_addr_lo = instance->producer_h;
-	initq_info->consumer_index_phys_addr_lo = instance->consumer_h;
-
-	init_frame->cmd = MFI_CMD_INIT;
-	init_frame->cmd_status = 0xFF;
-	init_frame->queue_info_new_phys_addr_lo = initq_info_h;
-
-	init_frame->data_xfer_len = sizeof(struct megasas_init_queue_info);
-
-	/*
-	 * disable the intr before firing the init frame to FW
-	 */
-	instance->instancet->disable_intr(instance->reg_set);
-
-	/*
-	 * Issue the init frame in polled mode
-	 */
-	if (megasas_issue_polled(instance, cmd)) {
-		printk(KERN_DEBUG "megasas: Failed to init firmware\n");
+	if (megasas_issue_init_mfi(instance))
 		goto fail_fw_init;
-	}
-
-	megasas_return_cmd(instance, cmd);
 
 	ctrl_info = kmalloc(sizeof(struct megasas_ctrl_info), GFP_KERNEL);
 
@@ -2036,30 +2137,39 @@ static int megasas_init_mfi(struct megasas_instance *instance)
 	 * Note that older firmwares ( < FW ver 30) didn't report information
 	 * to calculate max_sectors_1. So the number ended up as zero always.
 	 */
+	tmp_sectors = 0;
 	if (ctrl_info && !megasas_get_ctrl_info(instance, ctrl_info)) {
 
 		max_sectors_1 = (1 << ctrl_info->stripe_sz_ops.min) *
 		    ctrl_info->max_strips_per_io;
 		max_sectors_2 = ctrl_info->max_request_size;
 
-		instance->max_sectors_per_req = (max_sectors_1 < max_sectors_2)
+		tmp_sectors = (max_sectors_1 < max_sectors_2)
 		    ? max_sectors_1 : max_sectors_2;
-	} else
-		instance->max_sectors_per_req = instance->max_num_sge *
-		    PAGE_SIZE / 512;
+	}
+
+	instance->max_sectors_per_req = instance->max_num_sge *
+						PAGE_SIZE / 512;
+	if (tmp_sectors && (instance->max_sectors_per_req > tmp_sectors))
+		instance->max_sectors_per_req = tmp_sectors;
 
 	kfree(ctrl_info);
 
         /*
-	* Setup tasklet for cmd completion
-	*/
+	 * Setup tasklet for cmd completion
+	 */
 
-        tasklet_init(&instance->isr_tasklet, megasas_complete_cmd_dpc,
+	tasklet_init(&instance->isr_tasklet, megasas_complete_cmd_dpc,
                         (unsigned long)instance);
+
+	/* Initialize the cmd completion timer */
+	if (poll_mode_io)
+		megasas_start_timer(instance, &instance->io_completion_timer,
+				megasas_io_completion_timer,
+				MEGASAS_COMPLETION_TIMER_INTERVAL);
 	return 0;
 
       fail_fw_init:
-	megasas_return_cmd(instance, cmd);
 
 	pci_free_consistent(instance->pdev, reply_q_sz,
 			    instance->reply_queue, instance->reply_queue_h);
@@ -2320,7 +2430,7 @@ static int megasas_io_attach(struct megasas_instance *instance)
 	host->this_id = instance->init_id;
 	host->sg_tablesize = instance->max_num_sge;
 	host->max_sectors = instance->max_sectors_per_req;
-	host->cmd_per_lun = 128;
+	host->cmd_per_lun = MEGASAS_DEFAULT_CMD_PER_LUN;
 	host->max_channel = MEGASAS_MAX_CHANNELS - 1;
 	host->max_id = MEGASAS_MAX_DEV_PER_CHANNEL;
 	host->max_lun = MEGASAS_MAX_LUN;
@@ -2339,6 +2449,28 @@ static int megasas_io_attach(struct megasas_instance *instance)
 	 */
 	scsi_scan_host(host);
 	return 0;
+}
+
+static int
+megasas_set_dma_mask(struct pci_dev *pdev)
+{
+	/*
+	 * All our contollers are capable of performing 64-bit DMA
+	 */
+	if (IS_DMA64) {
+		if (pci_set_dma_mask(pdev, DMA_64BIT_MASK) != 0) {
+
+			if (pci_set_dma_mask(pdev, DMA_32BIT_MASK) != 0)
+				goto fail_set_dma_mask;
+		}
+	} else {
+		if (pci_set_dma_mask(pdev, DMA_32BIT_MASK) != 0)
+			goto fail_set_dma_mask;
+	}
+	return 0;
+
+fail_set_dma_mask:
+	return 1;
 }
 
 /**
@@ -2374,19 +2506,8 @@ megasas_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	pci_set_master(pdev);
 
-	/*
-	 * All our contollers are capable of performing 64-bit DMA
-	 */
-	if (IS_DMA64) {
-		if (pci_set_dma_mask(pdev, DMA_64BIT_MASK) != 0) {
-
-			if (pci_set_dma_mask(pdev, DMA_32BIT_MASK) != 0)
-				goto fail_set_dma_mask;
-		}
-	} else {
-		if (pci_set_dma_mask(pdev, DMA_32BIT_MASK) != 0)
-			goto fail_set_dma_mask;
-	}
+	if (megasas_set_dma_mask(pdev))
+		goto fail_set_dma_mask;
 
 	host = scsi_host_alloc(&megasas_template,
 			       sizeof(struct megasas_instance));
@@ -2435,6 +2556,7 @@ megasas_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	init_waitqueue_head(&instance->abort_cmd_wait_q);
 
 	spin_lock_init(&instance->cmd_pool_lock);
+	spin_lock_init(&instance->completion_lock);
 
 	sema_init(&instance->aen_mutex, 1);
 	sema_init(&instance->ioctl_sem, MEGASAS_INT_CMDS);
@@ -2568,8 +2690,10 @@ static void megasas_flush_cache(struct megasas_instance *instance)
 /**
  * megasas_shutdown_controller -	Instructs FW to shutdown the controller
  * @instance:				Adapter soft state
+ * @opcode:				Shutdown/Hibernate
  */
-static void megasas_shutdown_controller(struct megasas_instance *instance)
+static void megasas_shutdown_controller(struct megasas_instance *instance,
+					u32 opcode)
 {
 	struct megasas_cmd *cmd;
 	struct megasas_dcmd_frame *dcmd;
@@ -2592,13 +2716,145 @@ static void megasas_shutdown_controller(struct megasas_instance *instance)
 	dcmd->flags = MFI_FRAME_DIR_NONE;
 	dcmd->timeout = 0;
 	dcmd->data_xfer_len = 0;
-	dcmd->opcode = MR_DCMD_CTRL_SHUTDOWN;
+	dcmd->opcode = opcode;
 
 	megasas_issue_blocked_cmd(instance, cmd);
 
 	megasas_return_cmd(instance, cmd);
 
 	return;
+}
+
+/**
+ * megasas_suspend -	driver suspend entry point
+ * @pdev:		PCI device structure
+ * @state:		state
+ */
+static int __devinit
+megasas_suspend(struct pci_dev *pdev, pm_message_t state)
+{
+	struct Scsi_Host *host;
+	struct megasas_instance *instance;
+
+	instance = pci_get_drvdata(pdev);
+	host = instance->host;
+
+	if (poll_mode_io)
+		del_timer_sync(&instance->io_completion_timer);
+
+	megasas_flush_cache(instance);
+	megasas_shutdown_controller(instance, MR_DCMD_HIBERNATE_SHUTDOWN);
+	tasklet_kill(&instance->isr_tasklet);
+
+	pci_set_drvdata(instance->pdev, instance);
+	instance->instancet->disable_intr(instance->reg_set);
+	free_irq(instance->pdev->irq, instance);
+
+	pci_save_state(pdev);
+	pci_disable_device(pdev);
+
+	pci_set_power_state(pdev, pci_choose_state(pdev, state));
+
+	return 0;
+}
+
+/**
+ * megasas_resume-	driver resume entry point
+ * @pdev:		PCI device structure
+ */
+static int __devinit
+megasas_resume(struct pci_dev *pdev)
+{
+	int rval;
+	struct Scsi_Host *host;
+	struct megasas_instance *instance;
+
+	instance = pci_get_drvdata(pdev);
+	host = instance->host;
+	pci_set_power_state(pdev, PCI_D0);
+	pci_enable_wake(pdev, PCI_D0, 0);
+	pci_restore_state(pdev);
+
+	/*
+	 * PCI prepping: enable device set bus mastering and dma mask
+	 */
+	rval = pci_enable_device(pdev);
+
+	if (rval) {
+		printk(KERN_INFO "megasas: Enable device failed\n");
+		return rval;
+	}
+
+	pci_set_master(pdev);
+
+	if (megasas_set_dma_mask(pdev))
+		goto fail_set_dma_mask;
+
+	/*
+	 * Initialize MFI Firmware
+	 */
+
+	*instance->producer = 0;
+	*instance->consumer = 0;
+
+	atomic_set(&instance->fw_outstanding, 0);
+
+	/*
+	 * We expect the FW state to be READY
+	 */
+	if (megasas_transition_to_ready(instance))
+		goto fail_ready_state;
+
+	if (megasas_issue_init_mfi(instance))
+		goto fail_init_mfi;
+
+	tasklet_init(&instance->isr_tasklet, megasas_complete_cmd_dpc,
+		(unsigned long)instance);
+	/*
+	 * Register IRQ
+	 */
+	if (request_irq(pdev->irq, megasas_isr, IRQF_SHARED,
+		"megasas", instance)) {
+		printk(KERN_DEBUG "megasas: Failed to register IRQ\n");
+		goto fail_irq;
+	}
+
+	instance->instancet->enable_intr(instance->reg_set);
+
+	/*
+	 * Initiate AEN (Asynchronous Event Notification)
+	 */
+	if (megasas_start_aen(instance))
+		printk(KERN_ERR "megasas: Start AEN failed\n");
+
+	/* Initialize the cmd completion timer */
+	if (poll_mode_io)
+		megasas_start_timer(instance, &instance->io_completion_timer,
+				megasas_io_completion_timer,
+				MEGASAS_COMPLETION_TIMER_INTERVAL);
+
+	return 0;
+
+fail_irq:
+fail_init_mfi:
+
+	if (instance->evt_detail)
+		pci_free_consistent(pdev, sizeof(struct megasas_evt_detail),
+				    instance->evt_detail,
+				    instance->evt_detail_h);
+
+	if (instance->producer)
+		pci_free_consistent(pdev, sizeof(u32), instance->producer,
+				    instance->producer_h);
+	if (instance->consumer)
+		pci_free_consistent(pdev, sizeof(u32), instance->consumer,
+				    instance->consumer_h);
+	scsi_host_put(host);
+fail_set_dma_mask:
+fail_ready_state:
+	pci_disable_device(pdev);
+
+	return -ENODEV;
 }
 
 /**
@@ -2614,9 +2870,12 @@ static void megasas_detach_one(struct pci_dev *pdev)
 	instance = pci_get_drvdata(pdev);
 	host = instance->host;
 
+	if (poll_mode_io)
+		del_timer_sync(&instance->io_completion_timer);
+
 	scsi_remove_host(instance->host);
 	megasas_flush_cache(instance);
-	megasas_shutdown_controller(instance);
+	megasas_shutdown_controller(instance, MR_DCMD_CTRL_SHUTDOWN);
 	tasklet_kill(&instance->isr_tasklet);
 
 	/*
@@ -3035,7 +3294,7 @@ megasas_mgmt_compat_ioctl(struct file *file, unsigned int cmd,
 /*
  * File operations structure for management interface
  */
-static struct file_operations megasas_mgmt_fops = {
+static const struct file_operations megasas_mgmt_fops = {
 	.owner = THIS_MODULE,
 	.open = megasas_mgmt_open,
 	.release = megasas_mgmt_release,
@@ -3055,6 +3314,8 @@ static struct pci_driver megasas_pci_driver = {
 	.id_table = megasas_pci_table,
 	.probe = megasas_probe_one,
 	.remove = __devexit_p(megasas_detach_one),
+	.suspend = megasas_suspend,
+	.resume = megasas_resume,
 	.shutdown = megasas_shutdown,
 };
 
@@ -3082,7 +3343,7 @@ static DRIVER_ATTR(release_date, S_IRUGO, megasas_sysfs_show_release_date,
 static ssize_t
 megasas_sysfs_show_dbg_lvl(struct device_driver *dd, char *buf)
 {
-	return sprintf(buf,"%u",megasas_dbg_lvl);
+	return sprintf(buf, "%u\n", megasas_dbg_lvl);
 }
 
 static ssize_t
@@ -3098,6 +3359,64 @@ megasas_sysfs_set_dbg_lvl(struct device_driver *dd, const char *buf, size_t coun
 
 static DRIVER_ATTR(dbg_lvl, S_IRUGO|S_IWUGO, megasas_sysfs_show_dbg_lvl,
 		   megasas_sysfs_set_dbg_lvl);
+
+static ssize_t
+megasas_sysfs_show_poll_mode_io(struct device_driver *dd, char *buf)
+{
+	return sprintf(buf, "%u\n", poll_mode_io);
+}
+
+static ssize_t
+megasas_sysfs_set_poll_mode_io(struct device_driver *dd, const char *buf,
+				size_t count)
+{
+	int retval = count;
+	int tmp = poll_mode_io;
+	int i;
+	struct megasas_instance *instance;
+
+	if (sscanf(buf, "%u", &poll_mode_io) < 1) {
+		printk(KERN_ERR "megasas: could not set poll_mode_io\n");
+		retval = -EINVAL;
+	}
+
+	/*
+	 * Check if poll_mode_io is already set or is same as previous value
+	 */
+	if ((tmp && poll_mode_io) || (tmp == poll_mode_io))
+		goto out;
+
+	if (poll_mode_io) {
+		/*
+		 * Start timers for all adapters
+		 */
+		for (i = 0; i < megasas_mgmt_info.max_index; i++) {
+			instance = megasas_mgmt_info.instance[i];
+			if (instance) {
+				megasas_start_timer(instance,
+					&instance->io_completion_timer,
+					megasas_io_completion_timer,
+					MEGASAS_COMPLETION_TIMER_INTERVAL);
+			}
+		}
+	} else {
+		/*
+		 * Delete timers for all adapters
+		 */
+		for (i = 0; i < megasas_mgmt_info.max_index; i++) {
+			instance = megasas_mgmt_info.instance[i];
+			if (instance)
+				del_timer_sync(&instance->io_completion_timer);
+		}
+	}
+
+out:
+	return retval;
+}
+
+static DRIVER_ATTR(poll_mode_io, S_IRUGO|S_IWUGO,
+			megasas_sysfs_show_poll_mode_io,
+			megasas_sysfs_set_poll_mode_io);
 
 /**
  * megasas_init - Driver load entry point
@@ -3149,7 +3468,15 @@ static int __init megasas_init(void)
 	if (rval)
 		goto err_dcf_dbg_lvl;
 
+	rval = driver_create_file(&megasas_pci_driver.driver,
+				  &driver_attr_poll_mode_io);
+	if (rval)
+		goto err_dcf_poll_mode_io;
+
 	return rval;
+err_dcf_poll_mode_io:
+	driver_remove_file(&megasas_pci_driver.driver,
+			   &driver_attr_dbg_lvl);
 err_dcf_dbg_lvl:
 	driver_remove_file(&megasas_pci_driver.driver,
 			   &driver_attr_release_date);
@@ -3168,10 +3495,13 @@ err_pcidrv:
 static void __exit megasas_exit(void)
 {
 	driver_remove_file(&megasas_pci_driver.driver,
-			   &driver_attr_dbg_lvl);
+			&driver_attr_poll_mode_io);
 	driver_remove_file(&megasas_pci_driver.driver,
-			   &driver_attr_release_date);
-	driver_remove_file(&megasas_pci_driver.driver, &driver_attr_version);
+			&driver_attr_dbg_lvl);
+	driver_remove_file(&megasas_pci_driver.driver,
+			&driver_attr_release_date);
+	driver_remove_file(&megasas_pci_driver.driver,
+			&driver_attr_version);
 
 	pci_unregister_driver(&megasas_pci_driver);
 	unregister_chrdev(megasas_mgmt_majorno, "megaraid_sas_ioctl");

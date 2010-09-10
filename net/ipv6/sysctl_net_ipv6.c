@@ -80,6 +80,14 @@ static ctl_table ipv6_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec
 	},
+	{
+		.ctl_name	= NET_IPV6_OPTIMISTIC_DAD,
+		.procname	= "optimistic_dad",
+		.data		= &sysctl_ip6_odad,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec
+	},
 	{ .ctl_name = 0 }
 };
 

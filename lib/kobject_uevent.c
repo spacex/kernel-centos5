@@ -61,7 +61,8 @@ static char *action_to_string(enum kobject_action action)
  * @action: action that is happening (usually KOBJ_ADD and KOBJ_REMOVE)
  * @kobj: struct kobject that the action is happening to
  */
-void kobject_uevent(struct kobject *kobj, enum kobject_action action)
+int kobject_uevent_env(struct kobject *kobj, enum kobject_action action,
+		       char *envp_ext[])
 {
 	char **envp;
 	char *buffer;
@@ -74,14 +75,14 @@ void kobject_uevent(struct kobject *kobj, enum kobject_action action)
 	struct kset_uevent_ops *uevent_ops;
 	u64 seq;
 	char *seq_buff;
-	int i = 0;
+	int i = 0, j;
 	int retval;
 
 	pr_debug("%s\n", __FUNCTION__);
 
 	action_string = action_to_string(action);
 	if (!action_string)
-		return;
+		return 0;
 
 	/* search the kset we belong to */
 	top_kobj = kobj;
@@ -91,7 +92,7 @@ void kobject_uevent(struct kobject *kobj, enum kobject_action action)
 		} while (!top_kobj->kset && top_kobj->parent);
 	}
 	if (!top_kobj->kset)
-		return;
+		return 0;
 
 	kset = top_kobj->kset;
 	uevent_ops = kset->uevent_ops;
@@ -99,12 +100,12 @@ void kobject_uevent(struct kobject *kobj, enum kobject_action action)
 	/*  skip the event, if the filter returns zero. */
 	if (uevent_ops && uevent_ops->filter)
 		if (!uevent_ops->filter(kset, kobj))
-			return;
+			return 0;
 
 	/* environment index */
 	envp = kzalloc(NUM_ENVP * sizeof (char *), GFP_KERNEL);
 	if (!envp)
-		return;
+		return -ENOMEM;
 
 	/* environment values */
 	buffer = kmalloc(BUFFER_SIZE, GFP_KERNEL);
@@ -138,6 +139,11 @@ void kobject_uevent(struct kobject *kobj, enum kobject_action action)
 	/* just reserve the space, overwrite it after kset call has returned */
 	envp[i++] = seq_buff = scratch;
 	scratch += strlen("SEQNUM=18446744073709551616") + 1;
+
+	/* keys passed in from the caller */
+	if (envp_ext)
+		for (j = 0; envp_ext[j]; j++)
+			envp[i++] = envp_ext[j];
 
 	/* let the kset specific function add its stuff */
 	if (uevent_ops && uevent_ops->uevent) {
@@ -198,7 +204,22 @@ exit:
 	kfree(devpath);
 	kfree(buffer);
 	kfree(envp);
-	return;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(kobject_uevent_env);
+
+/**
+ * kobject_uevent - notify userspace by ending an uevent
+ *
+ * @action: action that is happening
+ * @kobj: struct kobject that the action is happening to
+ *
+ * Returns 0 if kobject_uevent() is completed with success or the
+ * corresponding error when it fails.
+ */
+void kobject_uevent(struct kobject *kobj, enum kobject_action action)
+{
+	kobject_uevent_env(kobj, action, NULL);
 }
 EXPORT_SYMBOL_GPL(kobject_uevent);
 
@@ -252,6 +273,43 @@ int add_uevent_var(char **envp, int num_envp, int *cur_index,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(add_uevent_var);
+
+/**
+ * add_uevent_var_env - add key value string to the environment buffer
+ * @env: environment buffer structure
+ * @format: printf format for the key=value pair
+ *
+ * Returns 0 if environment variable was added successfully or -ENOMEM
+ * if no space was available.
+ */
+int add_uevent_var_env(struct kobj_uevent_env *env, const char *format, ...)
+{
+	va_list args;
+	int len;
+
+	if (env->envp_idx >= ARRAY_SIZE(env->envp)) {
+		printk(KERN_ERR "add_uevent_var: too many keys\n");
+		WARN_ON(1);
+		return -ENOMEM;
+	}
+
+	va_start(args, format);
+	len = vsnprintf(&env->buf[env->buflen],
+			sizeof(env->buf) - env->buflen,
+			format, args);
+	va_end(args);
+
+	if (len >= (sizeof(env->buf) - env->buflen)) {
+		printk(KERN_ERR "add_uevent_var: buffer size too small\n");
+		WARN_ON(1);
+		return -ENOMEM;
+	}
+
+	env->envp[env->envp_idx++] = &env->buf[env->buflen];
+	env->buflen += len + 1;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(add_uevent_var_env);
 
 #if defined(CONFIG_NET)
 static int __init kobject_uevent_init(void)

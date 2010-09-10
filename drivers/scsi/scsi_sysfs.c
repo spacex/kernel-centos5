@@ -216,6 +216,8 @@ static void scsi_device_cls_release(struct class_device *class_dev)
 	put_device(&sdev->sdev_gendev);
 }
 
+extern void sdev_shadow_release(struct scsi_device *sdev);
+
 static void scsi_device_dev_release_usercontext(void *data)
 {
 	struct device *dev = data;
@@ -234,6 +236,8 @@ static void scsi_device_dev_release_usercontext(void *data)
 	list_del(&sdev->same_target_siblings);
 	list_del(&sdev->starved_entry);
 	spin_unlock_irqrestore(sdev->host->host_lock, flags);
+
+	sdev_shadow_release(sdev);
 
 	if (sdev->request_queue) {
 		sdev->request_queue->queuedata = NULL;

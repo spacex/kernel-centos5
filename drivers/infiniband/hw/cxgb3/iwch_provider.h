@@ -73,6 +73,7 @@ struct tpt_attributes {
 
 struct iwch_mr {
 	struct ib_mr ibmr;
+	struct ib_umem *umem;
 	struct iwch_dev *rhp;
 	u64 kva;
 	struct tpt_attributes attr;
@@ -104,7 +105,7 @@ struct iwch_cq {
 	spinlock_t lock;
 	atomic_t refcnt;
 	wait_queue_head_t wait;
-	u32 *user_rptr_addr;
+	u32 __user *user_rptr_addr;
 };
 
 static inline struct iwch_cq *to_iwch_cq(struct ib_cq *ibcq)
@@ -168,7 +169,7 @@ struct iwch_qp {
 
 static inline int qp_quiesced(struct iwch_qp *qhp)
 {
-	return (qhp->flags & QP_QUIESCED);
+	return qhp->flags & QP_QUIESCED;
 }
 
 static inline struct iwch_qp *to_iwch_qp(struct ib_qp *ibqp)
@@ -178,7 +179,6 @@ static inline struct iwch_qp *to_iwch_qp(struct ib_qp *ibqp)
 
 void iwch_qp_add_ref(struct ib_qp *qp);
 void iwch_qp_rem_ref(struct ib_qp *qp);
-struct ib_qp *iwch_get_qp(struct ib_device *dev, int qpn);
 
 struct iwch_ucontext {
 	struct ib_ucontext ibucontext;
@@ -206,30 +206,30 @@ static inline struct iwch_mm_entry *remove_mmap(struct iwch_ucontext *ucontext,
 	struct list_head *pos, *nxt;
 	struct iwch_mm_entry *mm;
 
-	spin_lock_irq(&ucontext->mmap_lock);
+	spin_lock(&ucontext->mmap_lock);
 	list_for_each_safe(pos, nxt, &ucontext->mmaps) {
-		
+
 		mm = list_entry(pos, struct iwch_mm_entry, entry);
 		if (mm->key == key && mm->len == len) {
 			list_del_init(&mm->entry);
-			spin_unlock_irq(&ucontext->mmap_lock);
-			PDBG("%s addr 0x%llx key 0x%x len %d\n", 
-			     __FUNCTION__, mm->addr, mm->key, mm->len);
+			spin_unlock(&ucontext->mmap_lock);
+			PDBG("%s key 0x%x addr 0x%llx len %d\n", __FUNCTION__,
+			     key, (unsigned long long) mm->addr, mm->len);
 			return mm;
 		}
 	}
-	spin_unlock_irq(&ucontext->mmap_lock);
+	spin_unlock(&ucontext->mmap_lock);
 	return NULL;
 }
 
 static inline void insert_mmap(struct iwch_ucontext *ucontext,
 			       struct iwch_mm_entry *mm)
 {
-	spin_lock_irq(&ucontext->mmap_lock);
-	PDBG("%s addr 0x%llx key 0x%x len %d\n", 
-	     __FUNCTION__, mm->addr, mm->key, mm->len);
+	spin_lock(&ucontext->mmap_lock);
+	PDBG("%s key 0x%x addr 0x%llx len %d\n", __FUNCTION__,
+	     mm->key, (unsigned long long) mm->addr, mm->len);
 	list_add_tail(&mm->entry, &ucontext->mmaps);
-	spin_unlock_irq(&ucontext->mmap_lock);
+	spin_unlock(&ucontext->mmap_lock);
 }
 
 enum iwch_qp_attr_mask {

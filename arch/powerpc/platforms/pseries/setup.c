@@ -232,15 +232,23 @@ static void pseries_kexec_cpu_down_xics(int crash_shutdown, int secondary)
 {
 	/* Don't risk a hypervisor call if we're crashing */
 	if (firmware_has_feature(FW_FEATURE_SPLPAR) && !crash_shutdown) {
-		unsigned long vpa = __pa(get_lppaca());
+		unsigned long addr;
 
-		if (unregister_vpa(hard_smp_processor_id(), vpa)) {
+		addr = __pa(get_slb_shadow());
+		if (unregister_slb_shadow(hard_smp_processor_id(), addr))
+			printk("SLB shadow buffer deregistration of "
+			       "cpu %u (hw_cpu_id %d) failed\n",
+			       smp_processor_id(),
+			       hard_smp_processor_id());
+
+		addr = __pa(get_lppaca());
+		if (unregister_vpa(hard_smp_processor_id(), addr)) {
 			printk("VPA deregistration of cpu %u (hw_cpu_id %d) "
 					"failed\n", smp_processor_id(),
 					hard_smp_processor_id());
 		}
 	}
-	xics_teardown_cpu(secondary);
+	xics_kexec_teardown_cpu(secondary);
 }
 #endif /* CONFIG_KEXEC */
 
@@ -338,7 +346,8 @@ static void pSeries_mach_cpu_die(void)
 {
 	local_irq_disable();
 	idle_task_exit();
-	xics_teardown_cpu(0);
+	xics_teardown_cpu();
+	unregister_slb_shadow(hard_smp_processor_id(), __pa(get_slb_shadow()));
 	rtas_stop_self();
 	/* Should never get here... */
 	BUG();
@@ -382,27 +391,27 @@ static void __init pSeries_init_early(void)
 
 static int pSeries_check_legacy_ioport(unsigned int baseport)
 {
-	struct device_node *np;
+	struct device_node *np = NULL;
+	int ret = -ENODEV;
 
 #define I8042_DATA_REG	0x60
 #define FDC_BASE	0x3f0
 
-
 	switch(baseport) {
 	case I8042_DATA_REG:
 		np = of_find_node_by_type(NULL, "8042");
-		if (np == NULL)
-			return -ENODEV;
-		of_node_put(np);
 		break;
 	case FDC_BASE:
 		np = of_find_node_by_type(NULL, "fdc");
-		if (np == NULL)
-			return -ENODEV;
-		of_node_put(np);
+		break;
+	default:
+		/* ipmi is supposed to fail here */
 		break;
 	}
-	return 0;
+	if (!np)
+		return ret;
+	of_node_put(np);
+	return ret;
 }
 
 /*

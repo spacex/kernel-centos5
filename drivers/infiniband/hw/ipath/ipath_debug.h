@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006 QLogic, Inc. All rights reserved.
+ * Copyright (c) 2006, 2007 QLogic Corporation. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -66,6 +66,7 @@
 #define __IPATH_IPATHERR    0x40000	/* Ethernet (IPATH) errors */
 #define __IPATH_IPATHPD     0x80000	/* Ethernet (IPATH) packet dump */
 #define __IPATH_IPATHTABLE  0x100000	/* Ethernet (IPATH) table dump */
+#define __IPATH_LINKVERBDBG 0x200000	/* very verbose linkchange debug */
 
 #else				/* _IPATH_DEBUGGING */
 
@@ -89,6 +90,7 @@
 #define __IPATH_IPATHERR  0x0	/* Ethernet (IPATH) errors on   */
 #define __IPATH_IPATHPD   0x0	/* Ethernet (IPATH) packet dump on   */
 #define __IPATH_IPATHTABLE 0x0	/* Ethernet (IPATH) packet dump on   */
+#define __IPATH_LINKVERBDBG 0x0	/* very verbose linkchange debug */
 
 #endif				/* _IPATH_DEBUGGING */
 

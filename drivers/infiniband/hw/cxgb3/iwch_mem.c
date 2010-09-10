@@ -162,7 +162,9 @@ int build_phys_page_list(struct ib_phys_buf *buffer_list,
 			    ((u64) j << *shift));
 
 	PDBG("%s va 0x%llx mask 0x%llx shift %d len %lld pbl_size %d\n",
-	     __FUNCTION__, *iova_start, mask, *shift, *total_size, *npages);
+	     __FUNCTION__, (unsigned long long) *iova_start,
+	     (unsigned long long) mask, *shift, (unsigned long long) *total_size,
+	     *npages);
 
 	return 0;
 

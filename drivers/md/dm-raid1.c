@@ -1063,6 +1063,7 @@ static void write_callback(unsigned long error, void *context)
 	struct mirror_set *ms;
 	int uptodate = 0;
 	int should_wake = 0;
+	unsigned long flags;
 
 	ms = (bio_get_m(bio))->ms;
 	bio_set_m(bio, NULL);
@@ -1087,11 +1088,11 @@ static void write_callback(unsigned long error, void *context)
 			 * events can block, we need to do it in
 			 * the main thread.
 			 */
-			spin_lock(&ms->lock);
+			spin_lock_irqsave(&ms->lock, flags);
 			if (!ms->failures.head)
 				should_wake = 1;
 			bio_list_add(&ms->failures, bio);
-			spin_unlock(&ms->lock);
+			spin_unlock_irqrestore(&ms->lock, flags);
 			if (should_wake)
 				wake(ms);
 			return;
@@ -1293,10 +1294,8 @@ static int do_mirror(struct mirror_set *ms)
 
 static void do_work(void *data)
 {
-	while (do_mirror(data)) {
-		set_current_state(TASK_INTERRUPTIBLE);
-		schedule_timeout(HZ/5);
-	}
+	while (do_mirror(data))
+		schedule();
 }
 
 /*-----------------------------------------------------------------
@@ -1686,6 +1685,10 @@ static void mirror_presuspend(struct dm_target *ti)
 	wait_event(recovery_stopped_event,
 		   !atomic_read(&ms->rh.recovery_in_flight));
 
+	if (log->type->presuspend && log->type->presuspend(log))
+		/* FIXME: need better error handling */
+		DMWARN("log presuspend failed");
+
 	/*
 	 * Now that recovery is complete/stopped and the
 	 * delayed bios are queued, we need to wait for
@@ -1693,10 +1696,6 @@ static void mirror_presuspend(struct dm_target *ti)
 	 * we know that all of our I/O has been pushed.
 	 */
 	flush_workqueue(ms->kmirrord_wq);
-
-	if (log->type->presuspend && log->type->presuspend(log))
-		/* FIXME: need better error handling */
-		DMWARN("log presuspend failed");
 }
 
 static void mirror_postsuspend(struct dm_target *ti)

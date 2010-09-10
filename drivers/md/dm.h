@@ -86,6 +86,11 @@ void dm_put_target_type(struct target_type *t);
 int dm_target_iterate(void (*iter_func)(struct target_type *tt,
 					void *param), void *param);
 
+/*
+ * To check the return value from dm_table_find_target().
+ */
+#define dm_target_is_valid(t) ((t)->table)
+
 /*-----------------------------------------------------------------
  * Useful inlines.
  *---------------------------------------------------------------*/

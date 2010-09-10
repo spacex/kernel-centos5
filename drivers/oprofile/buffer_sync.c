@@ -30,6 +30,7 @@
 #include <linux/profile.h>
 #include <linux/module.h>
 #include <linux/fs.h>
+#include <linux/oprofile.h>
  
 #include "oprofile_stats.h"
 #include "event_buffer.h"
@@ -42,6 +43,7 @@ static cpumask_t marked_cpus = CPU_MASK_NONE;
 static DEFINE_SPINLOCK(task_mortuary);
 static void process_task_mortuary(void);
 
+static int cpu_current_domain[NR_CPUS];
 
 /* Take ownership of the task struct and place it on the
  * list for processing. Only after two full buffer syncs
@@ -150,6 +152,11 @@ static void end_sync(void)
 int sync_start(void)
 {
 	int err;
+	int i;
+
+	for (i = 0; i < NR_CPUS; i++) {
+		cpu_current_domain[i] = COORDINATOR_DOMAIN;
+	}
 
 	start_cpu_work();
 
@@ -526,6 +533,11 @@ void sync_buffer(int cpu)
  
 	add_cpu_switch(cpu);
 
+	/* We need to assign the first samples in this CPU buffer to the
+	   same domain that we were processing at the last sync_buffer */
+	if (cpu_current_domain[cpu] != COORDINATOR_DOMAIN) {
+		add_domain_switch(cpu_current_domain[cpu]);
+	}
 	/* Remember, only we can modify tail_pos */
 
 	available = get_slots(cpu_buf);
@@ -559,10 +571,15 @@ void sync_buffer(int cpu)
 			}
 		} else {
 			if (domain_switch) {
+				cpu_current_domain[cpu] = s->eip;
 				add_domain_switch(s->eip);
 				domain_switch = 0;
 			} else {
-				if (state >= sb_bt_start &&
+				if (cpu_current_domain[cpu] !=
+				    COORDINATOR_DOMAIN) {
+					add_sample_entry(s->eip, s->event);
+				}
+				else  if (state >= sb_bt_start &&
 				    !add_sample(mm, s, cpu_mode)) {
 					if (state == sb_bt_start) {
 						state = sb_bt_ignore;
@@ -575,6 +592,11 @@ void sync_buffer(int cpu)
 		increment_tail(cpu_buf);
 	}
 	release_mm(mm);
+
+	/* We reset domain to COORDINATOR at each CPU switch */
+	if (cpu_current_domain[cpu] != COORDINATOR_DOMAIN) {
+		add_domain_switch(COORDINATOR_DOMAIN);
+	}
 
 	mark_done(cpu);
 

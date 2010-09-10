@@ -40,7 +40,7 @@
 #include "iwch.h"
 #include "iwch_cm.h"
 
-#define DRV_VERSION "1.0-ofed"
+#define DRV_VERSION "1.1"
 
 MODULE_AUTHOR("Boyd Faulkner, Steve Wise");
 MODULE_DESCRIPTION("Chelsio T3 RDMA Driver");
@@ -118,7 +118,10 @@ static void open_rnic_dev(struct t3cdev *tdev)
 	rnicp->rdev.ulp = rnicp;
 	rnicp->rdev.t3cdev_p = tdev;
 
+	mutex_lock(&dev_mutex);
+
 	if (cxio_rdev_open(&rnicp->rdev)) {
+		mutex_unlock(&dev_mutex);
 		printk(KERN_ERR MOD "Unable to open CXIO rdev\n");
 		ib_dealloc_device(&rnicp->ibdev);
 		return;
@@ -126,7 +129,6 @@ static void open_rnic_dev(struct t3cdev *tdev)
 
 	rnic_init(rnicp);
 
-	mutex_lock(&dev_mutex);
 	list_add_tail(&rnicp->entry, &dev_list);
 	mutex_unlock(&dev_mutex);
 
@@ -158,8 +160,6 @@ static void close_rnic_dev(struct t3cdev *tdev)
 	}
 	mutex_unlock(&dev_mutex);
 }
-
-extern void iwch_ev_dispatch(struct cxio_rdev *rdev_p, struct sk_buff *skb);
 
 static int __init iwch_init_module(void)
 {

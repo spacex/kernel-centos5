@@ -156,6 +156,8 @@ struct ipv6_devconf {
 	void		*sysctl;
 };
 
+extern int sysctl_ip6_odad;
+
 /* index values for the variables in ipv6_devconf */
 enum {
 	DEVCONF_FORWARDING = 0,
@@ -190,6 +192,16 @@ enum {
 
 #include <net/if_inet6.h>       /* struct ipv6_mc_socklist */
 #include <net/inet_sock.h>
+
+static inline struct ipv6hdr *ipv6_hdr(const struct sk_buff *skb)
+{
+	return (struct ipv6hdr *)skb_network_header(skb);
+}
+
+static inline struct ipv6hdr *ipipv6_hdr(const struct sk_buff *skb)
+{
+	return (struct ipv6hdr *)skb_transport_header(skb);
+}
 
 /* 
    This structure contains results of exthdrs parsing

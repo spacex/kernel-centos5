@@ -42,6 +42,7 @@
 #include "trans.h"
 #include "util.h"
 #include "eaops.h"
+#include "ops_address.h"
 
 /*
  * Most fields left uninitialised to catch anybody who tries to
@@ -293,7 +294,16 @@ static int do_gfs2_set_flags(struct file *filp, u32 reqflags, u32 mask)
 		if (error)
 			goto out;
 	}
-
+	if ((flags ^ new_flags) & GFS2_DIF_JDATA) {
+		if (flags & GFS2_DIF_JDATA)
+			gfs2_log_flush(sdp, ip->i_gl);
+		error = filemap_fdatawrite(inode->i_mapping);
+		if (error)
+			goto out;
+		error = filemap_fdatawait(inode->i_mapping);
+		if (error)
+			goto out;
+	}
 	error = gfs2_trans_begin(sdp, RES_DINODE, 0);
 	if (error)
 		goto out;
@@ -305,6 +315,7 @@ static int do_gfs2_set_flags(struct file *filp, u32 reqflags, u32 mask)
 	gfs2_dinode_out(ip, bh->b_data);
 	brelse(bh);
 	gfs2_set_inode_flags(inode);
+	gfs2_set_aops(inode);
 out_trans_end:
 	gfs2_trans_end(sdp);
 out:
@@ -519,18 +530,18 @@ static int gfs2_lock(struct file *file, int cmd, struct file_lock *fl)
 
 	if (sdp->sd_args.ar_localflocks) {
 		if (IS_GETLK(cmd)) {
-			struct file_lock tmp;
-			int ret;
-			ret = posix_test_lock(file, fl, &tmp);
-			fl->fl_type = F_UNLCK;
-			if (ret)
-				memcpy(fl, &tmp, sizeof(struct file_lock));
+			posix_test_lock(file, fl, NULL);
 			return 0;
 		} else {
 			return posix_lock_file_wait(file, fl);
 		}
 	}
 
+	if (cmd == F_CANCELLK) {
+		/* Hack: */
+		cmd = F_SETLK;
+		fl->fl_type = F_UNLCK;
+	}
 	if (IS_GETLK(cmd))
 		return gfs2_lm_plock_get(sdp, &name, file, fl);
 	else if (fl->fl_type == F_UNLCK)
@@ -611,15 +622,11 @@ static void do_unflock(struct file *file, struct file_lock *fl)
 static int gfs2_flock(struct file *file, int cmd, struct file_lock *fl)
 {
 	struct gfs2_inode *ip = GFS2_I(file->f_mapping->host);
-	struct gfs2_sbd *sdp = GFS2_SB(file->f_mapping->host);
 
 	if (!(fl->fl_flags & FL_FLOCK))
 		return -ENOLCK;
 	if ((ip->i_inode.i_mode & (S_ISGID | S_IXGRP)) == S_ISGID)
 		return -ENOLCK;
-
-	if (sdp->sd_args.ar_localflocks)
-		return flock_lock_file_wait(file, fl);
 
 	if (fl->fl_type == F_UNLCK) {
 		do_unflock(file, fl);
@@ -656,5 +663,31 @@ const struct file_operations gfs2_dir_fops = {
 	.fsync		= gfs2_fsync,
 	.lock		= gfs2_lock,
 	.flock		= gfs2_flock,
+};
+
+const struct file_operations gfs2_file_fops_nolock = {
+	.llseek		= gfs2_llseek,
+	.read		= generic_file_read,
+	.readv		= generic_file_readv,
+	.aio_read	= generic_file_aio_read,
+	.write		= generic_file_write,
+	.writev		= generic_file_writev,
+	.aio_write	= generic_file_aio_write,
+	.unlocked_ioctl	= gfs2_ioctl,
+	.mmap		= gfs2_mmap,
+	.open		= gfs2_open,
+	.release	= gfs2_close,
+	.fsync		= gfs2_fsync,
+	.sendfile	= generic_file_sendfile,
+	.splice_read	= generic_file_splice_read,
+	.splice_write	= generic_file_splice_write,
+};
+
+const struct file_operations gfs2_dir_fops_nolock = {
+	.readdir	= gfs2_readdir,
+	.unlocked_ioctl	= gfs2_ioctl,
+	.open		= gfs2_open,
+	.release	= gfs2_close,
+	.fsync		= gfs2_fsync,
 };
 

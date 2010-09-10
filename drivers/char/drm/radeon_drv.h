@@ -120,6 +120,12 @@ enum radeon_family {
 	CHIP_R420,
 	CHIP_RV410,
 	CHIP_RS400,
+	CHIP_RV515,
+	CHIP_R520,
+	CHIP_RV530,
+	CHIP_RV560,
+	CHIP_RV570,
+	CHIP_R580,
 	CHIP_LAST,
 };
 
@@ -285,6 +291,7 @@ typedef struct drm_radeon_private {
 
 	/* starting from here on, data is preserved accross an open */
 	uint32_t flags;		/* see radeon_chip_flags */
+	unsigned long fb_aper_offset;
 } drm_radeon_private_t;
 
 typedef struct drm_radeon_buf_priv {
@@ -353,7 +360,7 @@ extern long radeon_compat_ioctl(struct file *filp, unsigned int cmd,
 				unsigned long arg);
 
 /* r300_cmdbuf.c */
-extern void r300_init_reg_flags(void);
+extern void r300_init_reg_flags(struct drm_device *dev);
 
 extern int r300_do_cp_cmdbuf(drm_device_t * dev, DRMFILE filp,
 			     drm_file_t * filp_priv,
@@ -415,6 +422,16 @@ extern int r300_do_cp_cmdbuf(drm_device_t * dev, DRMFILE filp,
 #define RADEON_PCIE_TX_GART_START_HI	0x15
 #define RADEON_PCIE_TX_GART_END_LO	0x16
 #define RADEON_PCIE_TX_GART_END_HI	0x17
+
+#define R520_MC_IND_INDEX 0x70
+#define R520_MC_IND_WR_EN (1<<24)
+#define R520_MC_IND_DATA  0x74
+
+#define RV515_MC_FB_LOCATION 0x01
+#define RV515_MC_AGP_LOCATION 0x02
+
+#define R520_MC_FB_LOCATION 0x04
+#define R520_MC_AGP_LOCATION 0x05
 
 #define RADEON_MPP_TB_CONFIG		0x01c0
 #define RADEON_MEM_CNTL			0x0140
@@ -545,6 +562,11 @@ extern int r300_do_cp_cmdbuf(drm_device_t * dev, DRMFILE filp,
 #	define RADEON_RB3D_ZC_FREE		(1 << 2)
 #	define RADEON_RB3D_ZC_FLUSH_ALL		0x5
 #	define RADEON_RB3D_ZC_BUSY		(1 << 31)
+#define RADEON_RB3D_DSTCACHE_CTLSTAT   0x325c
+#      define RADEON_RB3D_DC_FLUSH             (3 << 0)
+#      define RADEON_RB3D_DC_FREE              (3 << 2)
+#      define RADEON_RB3D_DC_FLUSH_ALL         0xf
+#      define RADEON_RB3D_DC_BUSY              (1 << 31)
 #define RADEON_RB3D_ZSTENCILCNTL	0x1c2c
 #	define RADEON_Z_TEST_MASK		(7 << 4)
 #	define RADEON_Z_TEST_ALWAYS		(7 << 4)
@@ -946,6 +968,13 @@ do {									\
 	RADEON_WRITE( RADEON_PCIE_DATA, (val) );			\
 } while (0)
 
+#define RADEON_WRITE_MCIND( addr, val )					\
+	do {								\
+		RADEON_WRITE(R520_MC_IND_INDEX, 0xff0000 | ((addr) & 0xff));	\
+		RADEON_WRITE(R520_MC_IND_DATA, (val));			\
+		RADEON_WRITE(R520_MC_IND_INDEX, 0);	\
+	} while (0)
+
 #define CP_PACKET0( reg, n )						\
 	(RADEON_CP_PACKET0 | ((n) << 16) | ((reg) >> 2))
 #define CP_PACKET0_TABLE( reg, n )					\
@@ -986,12 +1015,12 @@ do {									\
 } while (0)
 
 #define RADEON_FLUSH_CACHE() do {					\
-	OUT_RING( CP_PACKET0( RADEON_RB2D_DSTCACHE_CTLSTAT, 0 ) );	\
+	OUT_RING( CP_PACKET0( RADEON_RB3D_DSTCACHE_CTLSTAT, 0 ) );	\
 	OUT_RING( RADEON_RB2D_DC_FLUSH );				\
 } while (0)
 
 #define RADEON_PURGE_CACHE() do {					\
-	OUT_RING( CP_PACKET0( RADEON_RB2D_DSTCACHE_CTLSTAT, 0 ) );	\
+	OUT_RING( CP_PACKET0( RADEON_RB3D_DSTCACHE_CTLSTAT, 0 ) );	\
 	OUT_RING( RADEON_RB2D_DC_FLUSH_ALL );				\
 } while (0)
 

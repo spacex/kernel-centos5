@@ -193,4 +193,6 @@ extern struct zfcp_fsf_req *zfcp_reqlist_ismember(struct zfcp_adapter *,
 						  unsigned long);
 extern int zfcp_reqlist_isempty(struct zfcp_adapter *);
 
+extern void set_fc_internal_target_scan(struct scsi_transport_template *t);
+
 #endif	/* ZFCP_EXT_H */

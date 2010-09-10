@@ -76,9 +76,13 @@ static int	audit_default;
 /* If auditing cannot proceed, audit_failure selects what happens. */
 static int	audit_failure = AUDIT_FAIL_PRINTK;
 
-/* If audit records are to be written to the netlink socket, audit_pid
- * contains the (non-zero) pid. */
+/*
+ * If audit records are to be written to the netlink socket, audit_pid
+ * contains the pid of the auditd process and audit_nlk_pid contains
+ * the pid to use to send netlink messages to that process.
+ */
 int		audit_pid;
+static int	audit_nlk_pid;
 
 /* If audit_rate_limit is non-zero, limit the rate of sending audit records
  * to that number per second.  This prevents DoS attacks, but results in
@@ -162,10 +166,13 @@ void audit_panic(const char *message)
 	case AUDIT_FAIL_SILENT:
 		break;
 	case AUDIT_FAIL_PRINTK:
-		printk(KERN_ERR "audit: %s\n", message);
+		if (printk_ratelimit())
+			printk(KERN_ERR "audit: %s\n", message);
 		break;
 	case AUDIT_FAIL_PANIC:
-		panic("audit: %s\n", message);
+		/* test audit_pid since printk is always losey, why bother? */
+		if (audit_pid)
+			panic("audit: %s\n", message);
 		break;
 	}
 }
@@ -230,11 +237,13 @@ void audit_log_lost(const char *message)
 	}
 
 	if (print) {
-		printk(KERN_WARNING
-		       "audit: audit_lost=%d audit_rate_limit=%d audit_backlog_limit=%d\n",
-		       atomic_read(&audit_lost),
-		       audit_rate_limit,
-		       audit_backlog_limit);
+		if (printk_ratelimit())
+			printk(KERN_WARNING
+				"audit: audit_lost=%d audit_rate_limit=%d "
+				"audit_backlog_limit=%d\n",
+				atomic_read(&audit_lost),
+				audit_rate_limit,
+				audit_backlog_limit);
 		audit_panic(message);
 	}
 }
@@ -405,19 +414,24 @@ static int kauditd_thread(void *dummy)
 {
 	struct sk_buff *skb;
 
-	while (1) {
+	while (!kthread_should_stop()) {
 		skb = skb_dequeue(&audit_skb_queue);
 		wake_up(&audit_backlog_wait);
 		if (skb) {
 			if (audit_pid) {
-				int err = netlink_unicast(audit_sock, skb, audit_pid, 0);
+				int err = netlink_unicast(audit_sock, skb, audit_nlk_pid, 0);
 				if (err < 0) {
 					BUG_ON(err != -ECONNREFUSED); /* Shoudn't happen */
 					printk(KERN_ERR "audit: *NO* daemon at audit_pid=%d\n", audit_pid);
+					audit_log_lost("auditd dissapeared\n");
 					audit_pid = 0;
 				}
 			} else {
-				printk(KERN_NOTICE "%s\n", skb->data + NLMSG_SPACE(0));
+				if (printk_ratelimit())
+					printk(KERN_NOTICE "%s\n", skb->data +
+						NLMSG_SPACE(0));
+				else
+					audit_log_lost("printk limit exceeded\n");
 				kfree_skb(skb);
 			}
 		} else {
@@ -434,6 +448,7 @@ static int kauditd_thread(void *dummy)
 			remove_wait_queue(&kauditd_wait, &wait);
 		}
 	}
+	return 0;
 }
 
 int audit_send_list(void *_dest)
@@ -637,6 +652,7 @@ static int audit_receive_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 						loginuid);
 			}
 			audit_pid = status_get->pid;
+			audit_nlk_pid = NETLINK_CB(skb).pid;
 		}
 		if (status_get->mask & AUDIT_STATUS_RATE_LIMIT)
 			err = audit_set_rate_limit(status_get->rate_limit,
@@ -1103,7 +1119,7 @@ struct audit_buffer *audit_log_start(struct audit_context *ctx, gfp_t gfp_mask,
 			remove_wait_queue(&audit_backlog_wait, &wait);
 			continue;
 		}
-		if (audit_rate_check())
+		if (audit_rate_check() && printk_ratelimit())
 			printk(KERN_WARNING
 			       "audit: audit_backlog=%d > "
 			       "audit_backlog_limit=%d\n",
@@ -1139,13 +1155,17 @@ struct audit_buffer *audit_log_start(struct audit_context *ctx, gfp_t gfp_mask,
 static inline int audit_expand(struct audit_buffer *ab, int extra)
 {
 	struct sk_buff *skb = ab->skb;
-	int ret = pskb_expand_head(skb, skb_headroom(skb), extra,
-				   ab->gfp_mask);
+	int oldtail = skb_tailroom(skb);
+	int ret = pskb_expand_head(skb, 0, extra, ab->gfp_mask);
+	int newtail = skb_tailroom(skb);
+
 	if (ret < 0) {
 		audit_log_lost("out of memory in audit_expand");
 		return 0;
 	}
-	return skb_tailroom(skb);
+
+	skb->truesize += newtail - oldtail;
+	return newtail;
 }
 
 /*
@@ -1381,9 +1401,10 @@ void audit_log_end(struct audit_buffer *ab)
 			skb_queue_tail(&audit_skb_queue, ab->skb);
 			ab->skb = NULL;
 			wake_up_interruptible(&kauditd_wait);
-		} else {
+		} else if (printk_ratelimit())
 			printk(KERN_NOTICE "%s\n", ab->skb->data + NLMSG_SPACE(0));
-		}
+		else
+			audit_log_lost("printk limit exceeded\n");
 	}
 	audit_buffer_free(ab);
 }

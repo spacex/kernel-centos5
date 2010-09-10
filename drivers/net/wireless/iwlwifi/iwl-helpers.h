@@ -30,6 +30,8 @@
 #ifndef __iwl_helpers_h__
 #define __iwl_helpers_h__
 
+#include <linux/ctype.h>
+
 /*
  * The structures defined by the hardware/uCode interface
  * have bit-wise operations.  For each bit-field there is
@@ -57,13 +59,14 @@
  * NOTE:  If used from IWL_GET_BITS then pos and len are compile-constants and
  *        will collapse to minimal code by the compiler.
  */
-#define iwl_get_bits(src, pos, len)   \
-({                                    \
-	u32 __tmp = le32_to_cpu(src); \
-	__tmp >>= pos;                \
-	__tmp &= (1UL << len) - 1;    \
-	__tmp;                        \
-})
+static inline u32 iwl_get_bits(__le32 src, u8 pos, u8 len)
+{
+	u32 tmp = le32_to_cpu(src);
+
+	tmp >>= pos;
+	tmp &= (1UL << len) - 1;
+	return tmp;
+}
 
 /**
  * iwl_set_bits - Set a hardware bit-field value
@@ -78,13 +81,23 @@
  * NOTE:  If used IWL_SET_BITS pos and len will be compile-constants and
  *        will collapse to minimal code by the compiler.
  */
-#define iwl_set_bits(dst, pos, len, val)                 \
-({                                                       \
-	u32 __tmp = le32_to_cpu(*dst);                   \
-	__tmp &= ~((1ULL << (pos+len)) - (1 << pos));    \
-	__tmp |= (val & ((1UL << len) - 1)) << pos;      \
-	*dst = cpu_to_le32(__tmp);                       \
-})
+static inline void iwl_set_bits(__le32 *dst, u8 pos, u8 len, int val)
+{
+	u32 tmp = le32_to_cpu(*dst);
+
+	tmp &= ~(((1UL << len) - 1) << pos);
+	tmp |= (val & ((1UL << len) - 1)) << pos;
+	*dst = cpu_to_le32(tmp);
+}
+
+static inline void iwl_set_bits16(__le16 *dst, u8 pos, u8 len, int val)
+{
+	u16 tmp = le16_to_cpu(*dst);
+
+	tmp &= ~((1UL << (pos + len)) - (1UL << pos));
+	tmp |= (val & ((1UL << len) - 1)) << pos;
+	*dst = cpu_to_le16(tmp);
+}
 
 /*
  * The bit-field definitions in iwl-xxxx-hw.h are in the form of:
@@ -108,46 +121,18 @@
  * and iwl_{get,set}_bits.
  *
  */
-#define _IWL_SET_BITS(s, d, o, l, v) \
-	iwl_set_bits(&s.d, o, l, v)
-
 #define IWL_SET_BITS(s, sym, v) \
-	_IWL_SET_BITS((s), IWL_ ## sym ## _SYM, IWL_ ## sym ## _POS, \
-		      IWL_ ## sym ## _LEN, (v))
+	iwl_set_bits(&(s).IWL_ ## sym ## _SYM, IWL_ ## sym ## _POS, \
+		     IWL_ ## sym ## _LEN, (v))
 
-#define _IWL_GET_BITS(s, v, o, l) \
-	iwl_get_bits(s.v, o, l)
+#define IWL_SET_BITS16(s, sym, v) \
+	iwl_set_bits16(&(s).IWL_ ## sym ## _SYM, IWL_ ## sym ## _POS, \
+		       IWL_ ## sym ## _LEN, (v))
 
 #define IWL_GET_BITS(s, sym) \
-	_IWL_GET_BITS((s), IWL_ ## sym ## _SYM, IWL_ ## sym ## _POS, \
+	iwl_get_bits((s).IWL_ ## sym ## _SYM, IWL_ ## sym ## _POS, \
 		      IWL_ ## sym ## _LEN)
 
-/*
- * make C=2 CF=-Wall will complain if you use ARRAY_SIZE on global data
- */
-#define GLOBAL_ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
-
-/* Debug and printf string expansion helpers for printing bitfields */
-#define BIT_FMT8 "%c%c%c%c-%c%c%c%c"
-#define BIT_FMT16 BIT_FMT8 ":" BIT_FMT8
-#define BIT_FMT32 BIT_FMT16 " " BIT_FMT16
-
-#define BITC(x, y) (((x>>y) & 1) ? '1' : '0')
-#define BIT_ARG8(x) \
-BITC(x, 7), BITC(x, 6), BITC(x, 5), BITC(x, 4), \
-BITC(x, 3), BITC(x, 2), BITC(x, 1), BITC(x, 0)
-
-#define BIT_ARG16(x) \
-BITC(x, 15), BITC(x, 14), BITC(x, 13), BITC(x, 12), \
-BITC(x, 11), BITC(x, 10), BITC(x, 9), BITC(x, 8), \
-BIT_ARG8(x)
-
-#define BIT_ARG32(x) \
-BITC(x, 31), BITC(x, 30), BITC(x, 29), BITC(x, 28), \
-BITC(x, 27), BITC(x, 26), BITC(x, 25), BITC(x, 24), \
-BITC(x, 23), BITC(x, 22), BITC(x, 21), BITC(x, 20), \
-BITC(x, 19), BITC(x, 18), BITC(x, 17), BITC(x, 16), \
-BIT_ARG16(x)
 
 #define KELVIN_TO_CELSIUS(x) ((x)-273)
 #define CELSIUS_TO_KELVIN(x) ((x)+273)
@@ -160,138 +145,102 @@ static inline struct ieee80211_conf *ieee80211_get_hw_conf(
 	return &hw->conf;
 }
 
-static inline const struct ieee80211_hw_mode *iwl_get_hw_mode(
-	struct iwl_priv *priv, int mode)
-{
-	int i;
-
-	for (i = 0; i < 3; i++)
-		if (priv->modes[i].mode == mode)
-			return &priv->modes[i];
-
-	return NULL;
-}
-
-#define WLAN_FC_GET_TYPE(fc)    (((fc) & IEEE80211_FCTL_FTYPE))
-#define WLAN_FC_GET_STYPE(fc)   (((fc) & IEEE80211_FCTL_STYPE))
-#define WLAN_GET_SEQ_FRAG(seq)  ((seq) & 0x000f)
-#define WLAN_GET_SEQ_SEQ(seq)   ((seq) >> 4)
-
 #define QOS_CONTROL_LEN 2
-
-static inline __le16 *ieee80211_get_qos_ctrl(struct ieee80211_hdr *hdr)
-{
-	u16 fc = le16_to_cpu(hdr->frame_control);
-	int hdr_len = ieee80211_get_hdrlen(fc);
-	if ( (fc & 0x00cc) == (IEEE80211_STYPE_QOS_DATA|IEEE80211_FTYPE_DATA))
-		return (u16 *) ((u8 *) hdr + hdr_len - QOS_CONTROL_LEN);
-	return NULL;
-}
 
 #define IEEE80211_STYPE_BACK_REQ	0x0080
 #define IEEE80211_STYPE_BACK		0x0090
 
-#define ieee80211_is_back_request(fc) \
-	((WLAN_FC_GET_TYPE(fc) == IEEE80211_FTYPE_CTL) && \
-	(WLAN_FC_GET_STYPE(fc) == IEEE80211_STYPE_BACK_REQ))
 
-#define ieee80211_is_probe_response(fc) \
-   ((WLAN_FC_GET_TYPE(fc) == IEEE80211_FTYPE_MGMT) && \
-    ( WLAN_FC_GET_STYPE(fc) == IEEE80211_STYPE_PROBE_RESP ))
-
-#define ieee80211_is_probe_request(fc) \
-   ((WLAN_FC_GET_TYPE(fc) == IEEE80211_FTYPE_MGMT) && \
-    ( WLAN_FC_GET_STYPE(fc) == IEEE80211_STYPE_PROBE_REQ ))
-
-#define ieee80211_is_beacon(fc) \
-   ((WLAN_FC_GET_TYPE(fc) == IEEE80211_FTYPE_MGMT) && \
-    ( WLAN_FC_GET_STYPE(fc) == IEEE80211_STYPE_BEACON ))
-
-#define ieee80211_is_atim(fc) \
-   ((WLAN_FC_GET_TYPE(fc) == IEEE80211_FTYPE_MGMT) && \
-    ( WLAN_FC_GET_STYPE(fc) == IEEE80211_STYPE_ATIM ))
-
-#define ieee80211_is_management(fc) \
-   (WLAN_FC_GET_TYPE(fc) == IEEE80211_FTYPE_MGMT)
-
-#define ieee80211_is_control(fc) \
-   (WLAN_FC_GET_TYPE(fc) == IEEE80211_FTYPE_CTL)
-
-#define ieee80211_is_data(fc) \
-   (WLAN_FC_GET_TYPE(fc) == IEEE80211_FTYPE_DATA)
-
-#define ieee80211_is_assoc_request(fc) \
-   ((WLAN_FC_GET_TYPE(fc) == IEEE80211_FTYPE_MGMT) && \
-   (WLAN_FC_GET_STYPE(fc) == IEEE80211_STYPE_ASSOC_REQ))
-
-#define ieee80211_is_assoc_response(fc) \
-   ((WLAN_FC_GET_TYPE(fc) == IEEE80211_FTYPE_MGMT) && \
-   (WLAN_FC_GET_STYPE(fc) == IEEE80211_STYPE_ASSOC_RESP))
-
-#define ieee80211_is_auth(fc) \
-   ((WLAN_FC_GET_TYPE(fc) == IEEE80211_FTYPE_MGMT) && \
-   (WLAN_FC_GET_STYPE(fc) == IEEE80211_STYPE_ASSOC_REQ))
-
-#define ieee80211_is_deauth(fc) \
-   ((WLAN_FC_GET_TYPE(fc) == IEEE80211_FTYPE_MGMT) && \
-   (WLAN_FC_GET_STYPE(fc) == IEEE80211_STYPE_ASSOC_REQ))
-
-#define ieee80211_is_disassoc(fc) \
-   ((WLAN_FC_GET_TYPE(fc) == IEEE80211_FTYPE_MGMT) && \
-   (WLAN_FC_GET_STYPE(fc) == IEEE80211_STYPE_ASSOC_REQ))
-
-#define ieee80211_is_reassoc_request(fc) \
-   ((WLAN_FC_GET_TYPE(fc) == IEEE80211_FTYPE_MGMT) && \
-   (WLAN_FC_GET_STYPE(fc) == IEEE80211_STYPE_REASSOC_REQ))
-
-#define ieee80211_is_reassoc_response(fc) \
-   ((WLAN_FC_GET_TYPE(fc) == IEEE80211_FTYPE_MGMT) && \
-   (WLAN_FC_GET_STYPE(fc) == IEEE80211_STYPE_REASSOC_RESP))
-
-static inline int iwl_is_empty_essid(const char *essid, int essid_len)
+static inline int ieee80211_is_management(u16 fc)
 {
-	/* Single white space is for Linksys APs */
-	if (essid_len == 1 && essid[0] == ' ')
-		return 1;
+	return (fc & IEEE80211_FCTL_FTYPE) == IEEE80211_FTYPE_MGMT;
+}
 
-	/* Otherwise, if the entire essid is 0, we assume it is hidden */
-	while (essid_len) {
-		essid_len--;
-		if (essid[essid_len] != '\0')
-			return 0;
-	}
+static inline int ieee80211_is_control(u16 fc)
+{
+	return (fc & IEEE80211_FCTL_FTYPE) == IEEE80211_FTYPE_CTL;
+}
 
-	return 1;
+static inline int ieee80211_is_data(u16 fc)
+{
+	return (fc & IEEE80211_FCTL_FTYPE) == IEEE80211_FTYPE_DATA;
+}
+
+static inline int ieee80211_is_back_request(u16 fc)
+{
+	return ((fc & IEEE80211_FCTL_FTYPE) == IEEE80211_FTYPE_CTL) &&
+	       ((fc & IEEE80211_FCTL_STYPE) == IEEE80211_STYPE_BACK_REQ);
+}
+
+static inline int ieee80211_is_probe_response(u16 fc)
+{
+	return ((fc & IEEE80211_FCTL_FTYPE) == IEEE80211_FTYPE_MGMT) &&
+	       ((fc & IEEE80211_FCTL_STYPE) == IEEE80211_STYPE_PROBE_RESP);
+}
+
+static inline int ieee80211_is_probe_request(u16 fc)
+{
+	return ((fc & IEEE80211_FCTL_FTYPE) == IEEE80211_FTYPE_MGMT) &&
+	       ((fc & IEEE80211_FCTL_STYPE) == IEEE80211_STYPE_PROBE_REQ);
+}
+
+static inline int ieee80211_is_beacon(u16 fc)
+{
+	return ((fc & IEEE80211_FCTL_FTYPE) == IEEE80211_FTYPE_MGMT) &&
+	       ((fc & IEEE80211_FCTL_STYPE) == IEEE80211_STYPE_BEACON);
+}
+
+static inline int ieee80211_is_atim(u16 fc)
+{
+	return ((fc & IEEE80211_FCTL_FTYPE) == IEEE80211_FTYPE_MGMT) &&
+	       ((fc & IEEE80211_FCTL_STYPE) == IEEE80211_STYPE_ATIM);
+}
+
+static inline int ieee80211_is_assoc_request(u16 fc)
+{
+	return ((fc & IEEE80211_FCTL_FTYPE) == IEEE80211_FTYPE_MGMT) &&
+	       ((fc & IEEE80211_FCTL_STYPE) == IEEE80211_STYPE_ASSOC_REQ);
+}
+
+static inline int ieee80211_is_assoc_response(u16 fc)
+{
+	return ((fc & IEEE80211_FCTL_FTYPE) == IEEE80211_FTYPE_MGMT) &&
+	       ((fc & IEEE80211_FCTL_STYPE) == IEEE80211_STYPE_ASSOC_RESP);
+}
+
+static inline int ieee80211_is_auth(u16 fc)
+{
+	return ((fc & IEEE80211_FCTL_FTYPE) == IEEE80211_FTYPE_MGMT) &&
+	       ((fc & IEEE80211_FCTL_STYPE) == IEEE80211_STYPE_ASSOC_REQ);
+}
+
+static inline int ieee80211_is_deauth(u16 fc)
+{
+	return ((fc & IEEE80211_FCTL_FTYPE) == IEEE80211_FTYPE_MGMT) &&
+	       ((fc & IEEE80211_FCTL_STYPE) == IEEE80211_STYPE_ASSOC_REQ);
+}
+
+static inline int ieee80211_is_disassoc(u16 fc)
+{
+	return ((fc & IEEE80211_FCTL_FTYPE) == IEEE80211_FTYPE_MGMT) &&
+	       ((fc & IEEE80211_FCTL_STYPE) == IEEE80211_STYPE_ASSOC_REQ);
+}
+
+static inline int ieee80211_is_reassoc_request(u16 fc)
+{
+	return ((fc & IEEE80211_FCTL_FTYPE) == IEEE80211_FTYPE_MGMT) &&
+	       ((fc & IEEE80211_FCTL_STYPE) == IEEE80211_STYPE_REASSOC_REQ);
+}
+
+static inline int ieee80211_is_reassoc_response(u16 fc)
+{
+	return ((fc & IEEE80211_FCTL_FTYPE) == IEEE80211_FTYPE_MGMT) &&
+	       ((fc & IEEE80211_FCTL_STYPE) == IEEE80211_STYPE_REASSOC_RESP);
 }
 
 static inline int iwl_check_bits(unsigned long field, unsigned long mask)
 {
 	return ((field & mask) == mask) ? 1 : 0;
-}
-
-static inline const char *iwl_escape_essid(const char *essid, u8 essid_len)
-{
-	static char escaped[IW_ESSID_MAX_SIZE * 2 + 1];
-	const char *s = essid;
-	char *d = escaped;
-
-	if (iwl_is_empty_essid(essid, essid_len)) {
-		memcpy(escaped, "<hidden>", sizeof("<hidden>"));
-		return escaped;
-	}
-
-	essid_len = min(essid_len, (u8) IW_ESSID_MAX_SIZE);
-	while (essid_len--) {
-		if (*s == '\0') {
-			*d++ = '\\';
-			*d++ = '0';
-			s++;
-		} else {
-			*d++ = *s++;
-		}
-	}
-	*d = '\0';
-	return escaped;
 }
 
 static inline unsigned long elapsed_jiffies(unsigned long start,
@@ -302,63 +251,5 @@ static inline unsigned long elapsed_jiffies(unsigned long start,
 
 	return end + (MAX_JIFFY_OFFSET - start);
 }
-
-#include <linux/ctype.h>
-
-static inline int snprint_line(char *buf, size_t count,
-			       const u8 * data, u32 len, u32 ofs)
-{
-	int out, i, j, l;
-	char c;
-
-	out = snprintf(buf, count, "%08X", ofs);
-
-	for (l = 0, i = 0; i < 2; i++) {
-		out += snprintf(buf + out, count - out, " ");
-		for (j = 0; j < 8 && l < len; j++, l++)
-			out +=
-			    snprintf(buf + out, count - out, "%02X ",
-				     data[(i * 8 + j)]);
-		for (; j < 8; j++)
-			out += snprintf(buf + out, count - out, "   ");
-	}
-	out += snprintf(buf + out, count - out, " ");
-	for (l = 0, i = 0; i < 2; i++) {
-		out += snprintf(buf + out, count - out, " ");
-		for (j = 0; j < 8 && l < len; j++, l++) {
-			c = data[(i * 8 + j)];
-			if (!isascii(c) || !isprint(c))
-				c = '.';
-
-			out += snprintf(buf + out, count - out, "%c", c);
-		}
-
-		for (; j < 8; j++)
-			out += snprintf(buf + out, count - out, " ");
-	}
-
-	return out;
-}
-
-#ifdef CONFIG_IWLWIFI_DEBUG
-static inline void printk_buf(int level, const void *p, u32 len)
-{
-	const u8 *data = p;
-	char line[81];
-	u32 ofs = 0;
-	if (!(iwl_debug_level & level))
-		return;
-
-	while (len) {
-		snprint_line(line, sizeof(line), &data[ofs],
-			     min(len, 16U), ofs);
-		printk(KERN_DEBUG "%s\n", line);
-		ofs += 16;
-		len -= min(len, 16U);
-	}
-}
-#else
-#define printk_buf(level, p, len) do {} while (0)
-#endif
 
 #endif				/* __iwl_helpers_h__ */

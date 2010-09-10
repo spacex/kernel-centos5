@@ -97,7 +97,7 @@ static struct fw_node *fw_node_create(u32 sid, int port_count, int color)
 {
 	struct fw_node *node;
 
-	node = kzalloc(sizeof *node + port_count * sizeof(node->ports[0]),
+	node = kzalloc(sizeof(*node) + port_count * sizeof(node->ports[0]),
 		       GFP_ATOMIC);
 	if (node == NULL)
 		return NULL;
@@ -152,6 +152,10 @@ static void update_hop_count(struct fw_node *node)
 	node->max_hops = max(max_child_hops, depths[0] + depths[1] + 2);
 }
 
+static inline struct fw_node *fw_node(struct list_head *l)
+{
+	return list_entry(l, struct fw_node, link);
+}
 
 /**
  * build_tree - Build the tree representation of the topology
@@ -162,7 +166,7 @@ static void update_hop_count(struct fw_node *node)
  * This function builds the tree representation of the topology given
  * by the self IDs from the latest bus reset.  During the construction
  * of the tree, the function checks that the self IDs are valid and
- * internally consistent.  On succcess this funtions returns the
+ * internally consistent.  On succcess this function returns the
  * fw_node corresponding to the local card otherwise NULL.
  */
 static struct fw_node *build_tree(struct fw_card *card,
@@ -172,7 +176,8 @@ static struct fw_node *build_tree(struct fw_card *card,
 	struct list_head stack, *h;
 	u32 *next_sid, *end, q;
 	int i, port_count, child_port_count, phy_id, parent_count, stack_depth;
-	unsigned gap_count;
+	int gap_count;
+	int beta_repeaters_present;
 
 	local_node = NULL;
 	node = NULL;
@@ -182,7 +187,7 @@ static struct fw_node *build_tree(struct fw_card *card,
 	phy_id = 0;
 	irm_node = NULL;
 	gap_count = SELF_ID_GAP_COUNT(*sid);
-	card->beta_repeaters_present = 0;
+	beta_repeaters_present = 0;
 
 	while (sid < end) {
 		next_sid = count_ports(sid, &port_count, &child_port_count);
@@ -210,6 +215,10 @@ static struct fw_node *build_tree(struct fw_card *card,
 		 */
 		for (i = 0, h = &stack; i < child_port_count; i++)
 			h = h->prev;
+		/*
+		 * When the stack is empty, this yields an invalid value,
+		 * but that pointer will never be dereferenced.
+		 */
 		child = fw_node(h);
 
 		node = fw_node_create(q, port_count, card->color);
@@ -275,16 +284,15 @@ static struct fw_node *build_tree(struct fw_card *card,
 
 	    if (node->phy_speed == SCODE_BETA &&
 		parent_count + child_port_count > 1)
-		    card->beta_repeaters_present = 1;
+		    beta_repeaters_present = 1;
 
 		/*
 		 * If all PHYs does not report the same gap count
 		 * setting, we fall back to 63 which will force a gap
 		 * count reconfiguration and a reset.
 		 */
-		if (SELF_ID_GAP_COUNT(q) != gap_count) {
+		if (SELF_ID_GAP_COUNT(q) != gap_count)
 			gap_count = 63;
-		}
 
 		update_hop_count(node);
 
@@ -295,6 +303,7 @@ static struct fw_node *build_tree(struct fw_card *card,
 	card->root_node = node;
 	card->irm_node = irm_node;
 	card->gap_count = gap_count;
+	card->beta_repeaters_present = beta_repeaters_present;
 
 	return local_node;
 }
@@ -427,7 +436,6 @@ update_tree(struct fw_card *card, struct fw_node *root)
 		node0->link_on = node1->link_on;
 		node0->initiated_reset = node1->initiated_reset;
 		node0->max_hops = node1->max_hops;
-
 		node1->color = card->color;
 		fw_node_event(card, node0, event);
 
@@ -445,10 +453,8 @@ update_tree(struct fw_card *card, struct fw_node *root)
 				 */
 				if (node0->ports[i]->color == card->color)
 					continue;
-				list_add_tail(&node0->ports[i]->link,
-					      &list0);
-				list_add_tail(&node1->ports[i]->link,
-					      &list1);
+				list_add_tail(&node0->ports[i]->link, &list0);
+				list_add_tail(&node1->ports[i]->link, &list1);
 			} else if (node0->ports[i]) {
 				/*
 				 * The nodes connected here were
@@ -486,7 +492,7 @@ update_topology_map(struct fw_card *card, u32 *self_ids, int self_id_count)
 	card->topology_map[1]++;
 	node_count = (card->root_node->node_id & 0x3f) + 1;
 	card->topology_map[2] = (node_count << 16) | self_id_count;
-	card->topology_map[0] = ((self_id_count + 2) << 16);
+	card->topology_map[0] = (self_id_count + 2) << 16;
 	memcpy(&card->topology_map[3], self_ids, self_id_count * 4);
 	fw_compute_block_crc(card->topology_map);
 }
@@ -500,19 +506,24 @@ fw_core_handle_bus_reset(struct fw_card *card,
 	unsigned long flags;
 
 	fw_flush_transactions(card);
+
 	spin_lock_irqsave(&card->lock, flags);
+
 	/*
 	 * If the new topology has a different self_id_count the topology
 	 * changed, either nodes were added or removed. In that case we
 	 * reset the IRM reset counter.
 	 */
-	if (card->self_id_count && card->self_id_count != self_id_count) {
+	if (card->self_id_count != self_id_count)
 		card->bm_retries = 0;
-	}
 
 	card->node_id = node_id;
+	/*
+	 * Update node_id before generation to prevent anybody from using
+	 * a stale node_id together with a current generation.
+	 */
+	smp_wmb();
 	card->generation = generation;
-	card->self_id_count = self_id_count;
 	card->reset_jiffies = jiffies;
 	schedule_delayed_work(&card->work, 0);
 

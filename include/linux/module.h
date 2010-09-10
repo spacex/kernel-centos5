@@ -318,7 +318,7 @@ struct module
 	int unsafe;
 
 	/* Am I GPL-compatible */
-	int license_gplok;
+	int license_gplok;		/* NOTE: reused for taint data. */
 	
 	/* Am I gpg signed */
 	int gpgsig_ok;
@@ -353,6 +353,7 @@ struct module
 	/* The command line arguments (may be mangled).  People like
 	   keeping pointers to this stuff */
 	char *args;
+
 };
 
 /* FIXME: It'd be nice to isolate modules during init, too, so they

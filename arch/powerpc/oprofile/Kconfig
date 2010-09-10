@@ -15,3 +15,10 @@ config OPROFILE
 
 	  If unsure, say N.
 
+config OPROFILE_CELL
+	bool "OProfile for Cell Broadband Engine"
+	depends on (OPROFILE = m || OPROFILE = y)
+	default y
+	help
+	  Profiling of Cell BE SPUs requires special support enabled
+	  by this option.

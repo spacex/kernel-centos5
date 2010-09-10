@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006 QLogic, Inc. All rights reserved.
+ * Copyright (c) 2006, 2007 QLogic Corporation. All rights reserved.
  * Copyright (c) 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -59,7 +59,7 @@ int ipath_post_srq_receive(struct ib_srq *ibsrq, struct ib_recv_wr *wr,
 
 		if ((unsigned) wr->num_sge > srq->rq.max_sge) {
 			*bad_wr = wr;
-			ret = -ENOMEM;
+			ret = -EINVAL;
 			goto bail;
 		}
 
@@ -80,6 +80,8 @@ int ipath_post_srq_receive(struct ib_srq *ibsrq, struct ib_recv_wr *wr,
 		wqe->num_sge = wr->num_sge;
 		for (i = 0; i < wr->num_sge; i++)
 			wqe->sg_list[i] = wr->sg_list[i];
+		/* Make sure queue entry is written before the head index. */
+		smp_wmb();
 		wq->head = next;
 		spin_unlock_irqrestore(&srq->rq.lock, flags);
 	}
@@ -92,8 +94,8 @@ bail:
 /**
  * ipath_create_srq - create a shared receive queue
  * @ibpd: the protection domain of the SRQ to create
- * @attr: the attributes of the SRQ
- * @udata: not used by the InfiniPath verbs driver
+ * @srq_init_attr: the attributes of the SRQ
+ * @udata: data from libipathverbs when creating a user SRQ
  */
 struct ib_srq *ipath_create_srq(struct ib_pd *ibpd,
 				struct ib_srq_init_attr *srq_init_attr,
@@ -128,44 +130,36 @@ struct ib_srq *ipath_create_srq(struct ib_pd *ibpd,
 	srq->rq.max_sge = srq_init_attr->attr.max_sge;
 	sz = sizeof(struct ib_sge) * srq->rq.max_sge +
 		sizeof(struct ipath_rwqe);
-	srq->rq.wq = vmalloc_user(sizeof(struct ipath_rwq) + srq->rq.size * sz);
+	srq->rq.wq = vmalloc(sizeof(struct ipath_rwq) + srq->rq.size * sz);
 	if (!srq->rq.wq) {
 		ret = ERR_PTR(-ENOMEM);
 		goto bail_srq;
 	}
+	memset(srq->rq.wq, 0, sizeof(struct ipath_rwq) + srq->rq.size * sz);
 
 	/*
 	 * Return the address of the RWQ as the offset to mmap.
 	 * See ipath_mmap() for details.
 	 */
 	if (udata && udata->outlen >= sizeof(__u64)) {
-		struct ipath_mmap_info *ip;
-		__u64 offset = (__u64) srq->rq.wq;
 		int err;
+		u32 s = sizeof(struct ipath_rwq) + srq->rq.size * sz;
 
-		err = ib_copy_to_udata(udata, &offset, sizeof(offset));
-		if (err) {
-			ret = ERR_PTR(err);
-			goto bail_wq;
-		}
-
-		/* Allocate info for ipath_mmap(). */
-		ip = kmalloc(sizeof(*ip), GFP_KERNEL);
-		if (!ip) {
+		srq->ip =
+		    ipath_create_mmap_info(dev, s,
+					   ibpd->uobject->context,
+					   srq->rq.wq);
+		if (!srq->ip) {
 			ret = ERR_PTR(-ENOMEM);
 			goto bail_wq;
 		}
-		srq->ip = ip;
-		ip->context = ibpd->uobject->context;
-		ip->obj = srq->rq.wq;
-		kref_init(&ip->ref);
-		ip->mmap_cnt = 0;
-		ip->size = PAGE_ALIGN(sizeof(struct ipath_rwq) +
-				      srq->rq.size * sz);
-		spin_lock_irq(&dev->pending_lock);
-		ip->next = dev->pending_mmaps;
-		dev->pending_mmaps = ip;
-		spin_unlock_irq(&dev->pending_lock);
+
+		err = ib_copy_to_udata(udata, &srq->ip->offset,
+				       sizeof(srq->ip->offset));
+		if (err) {
+			ret = ERR_PTR(err);
+			goto bail_ip;
+		}
 	} else
 		srq->ip = NULL;
 
@@ -181,21 +175,27 @@ struct ib_srq *ipath_create_srq(struct ib_pd *ibpd,
 	if (dev->n_srqs_allocated == ib_ipath_max_srqs) {
 		spin_unlock(&dev->n_srqs_lock);
 		ret = ERR_PTR(-ENOMEM);
-		goto bail_wq;
+		goto bail_ip;
 	}
 
  	dev->n_srqs_allocated++;
 	spin_unlock(&dev->n_srqs_lock);
 
+	if (srq->ip) {
+		spin_lock_irq(&dev->pending_lock);
+		list_add(&srq->ip->pending_mmaps, &dev->pending_mmaps);
+		spin_unlock_irq(&dev->pending_lock);
+	}
+
 	ret = &srq->ibsrq;
 	goto done;
 
+bail_ip:
+	kfree(srq->ip);
 bail_wq:
 	vfree(srq->rq.wq);
-
 bail_srq:
 	kfree(srq);
-
 done:
 	return ret;
 }
@@ -212,11 +212,11 @@ int ipath_modify_srq(struct ib_srq *ibsrq, struct ib_srq_attr *attr,
 		     struct ib_udata *udata)
 {
 	struct ipath_srq *srq = to_isrq(ibsrq);
+	struct ipath_rwq *wq;
 	int ret = 0;
 
 	if (attr_mask & IB_SRQ_MAX_WR) {
 		struct ipath_rwq *owq;
-		struct ipath_rwq *wq;
 		struct ipath_rwqe *p;
 		u32 sz, size, n, head, tail;
 
@@ -231,33 +231,28 @@ int ipath_modify_srq(struct ib_srq *ibsrq, struct ib_srq_attr *attr,
 		sz = sizeof(struct ipath_rwqe) +
 			srq->rq.max_sge * sizeof(struct ib_sge);
 		size = attr->max_wr + 1;
-		wq = vmalloc_user(sizeof(struct ipath_rwq) + size * sz);
+		wq = vmalloc(sizeof(struct ipath_rwq) + size * sz);
 		if (!wq) {
 			ret = -ENOMEM;
 			goto bail;
 		}
+		memset(wq, 0, sizeof(struct ipath_rwq) + size * sz);
 
-		/*
-		 * Return the address of the RWQ as the offset to mmap.
-		 * See ipath_mmap() for details.
-		 */
+		/* Check that we can write the offset to mmap. */
 		if (udata && udata->inlen >= sizeof(__u64)) {
 			__u64 offset_addr;
-			__u64 offset = (__u64) wq;
+			__u64 offset = 0;
 
 			ret = ib_copy_from_udata(&offset_addr, udata,
 						 sizeof(offset_addr));
-			if (ret) {
-				vfree(wq);
-				goto bail;
-			}
-			udata->outbuf = (void __user *) offset_addr;
+			if (ret)
+				goto bail_free;
+			udata->outbuf =
+				(void __user *) (unsigned long) offset_addr;
 			ret = ib_copy_to_udata(udata, &offset,
 					       sizeof(offset));
-			if (ret) {
-				vfree(wq);
-				goto bail;
-			}
+			if (ret)
+				goto bail_free;
 		}
 
 		spin_lock_irq(&srq->rq.lock);
@@ -278,10 +273,8 @@ int ipath_modify_srq(struct ib_srq *ibsrq, struct ib_srq_attr *attr,
 		else
 			n -= tail;
 		if (size <= n) {
-			spin_unlock_irq(&srq->rq.lock);
-			vfree(wq);
 			ret = -EINVAL;
-			goto bail;
+			goto bail_unlock;
 		}
 		n = 0;
 		p = wq->wq;
@@ -312,13 +305,25 @@ int ipath_modify_srq(struct ib_srq *ibsrq, struct ib_srq_attr *attr,
 		if (srq->ip) {
 			struct ipath_mmap_info *ip = srq->ip;
 			struct ipath_ibdev *dev = to_idev(srq->ibsrq.device);
+			u32 s = sizeof(struct ipath_rwq) + size * sz;
 
-			ip->obj = wq;
-			ip->size = PAGE_ALIGN(sizeof(struct ipath_rwq) +
-					      size * sz);
+			ipath_update_mmap_info(dev, ip, s, wq);
+
+			/*
+			 * Return the offset to mmap.
+			 * See ipath_mmap() for details.
+			 */
+			if (udata && udata->inlen >= sizeof(__u64)) {
+				ret = ib_copy_to_udata(udata, &ip->offset,
+						       sizeof(ip->offset));
+				if (ret)
+					goto bail;
+			}
+
 			spin_lock_irq(&dev->pending_lock);
-			ip->next = dev->pending_mmaps;
-			dev->pending_mmaps = ip;
+			if (list_empty(&ip->pending_mmaps))
+				list_add(&ip->pending_mmaps,
+					 &dev->pending_mmaps);
 			spin_unlock_irq(&dev->pending_lock);
 		}
 	} else if (attr_mask & IB_SRQ_LIMIT) {
@@ -329,7 +334,12 @@ int ipath_modify_srq(struct ib_srq *ibsrq, struct ib_srq_attr *attr,
 			srq->limit = attr->srq_limit;
 		spin_unlock_irq(&srq->rq.lock);
 	}
+	goto bail;
 
+bail_unlock:
+	spin_unlock_irq(&srq->rq.lock);
+bail_free:
+	vfree(wq);
 bail:
 	return ret;
 }

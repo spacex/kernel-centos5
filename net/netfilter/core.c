@@ -54,7 +54,11 @@ EXPORT_SYMBOL_GPL(nf_unregister_afinfo);
  * of skbuffs queued for userspace, and not deregister a hook unless
  * this is zero, but that sucks.  Now, we simply check when the
  * packets come back: if the hook is gone, the packet is discarded. */
+#ifdef __GENKSYMS__
+struct list_head nf_hooks[32][NF_MAX_HOOKS];
+#else
 struct list_head nf_hooks[NPROTO][NF_MAX_HOOKS];
+#endif
 EXPORT_SYMBOL(nf_hooks);
 static DEFINE_SPINLOCK(nf_hook_lock);
 

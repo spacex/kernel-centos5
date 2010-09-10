@@ -521,6 +521,16 @@
 /* Maximum size of returned data */
 #define IW_SCAN_MAX_DATA	4096	/* In bytes */
 
+/* Scan capability flags - in (struct iw_range *)->scan_capa */
+#define IW_SCAN_CAPA_NONE		0x00
+#define IW_SCAN_CAPA_ESSID		0x01
+#define IW_SCAN_CAPA_BSSID		0x02
+#define IW_SCAN_CAPA_CHANNEL	0x04
+#define IW_SCAN_CAPA_MODE		0x08
+#define IW_SCAN_CAPA_RATE		0x10
+#define IW_SCAN_CAPA_TYPE		0x20
+#define IW_SCAN_CAPA_TIME		0x40
+
 /* Max number of char in custom event - use multiple of them if needed */
 #define IW_CUSTOM_MAX		256	/* In bytes */
 
@@ -940,6 +950,11 @@ struct	iw_range
 	/* Old Frequency (backward compat - moved lower ) */
 	__u16		old_num_channels;
 	__u8		old_num_frequency;
+
+#ifndef __GENKSYMS__
+	/* Scan capabilities */
+	__u8		scan_capa; 	/* IW_SCAN_CAPA_* bit field */
+#endif
 
 	/* Wireless event capability bitmasks */
 	__u32		event_capa[6];

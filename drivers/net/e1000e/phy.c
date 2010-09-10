@@ -26,6 +26,8 @@
 
 *******************************************************************************/
 
+#include <linux/delay.h>
+
 #include "e1000.h"
 
 static s32 e1000_get_phy_cfg_done(struct e1000_hw *hw);
@@ -47,18 +49,17 @@ static const u16 e1000_igp_2_cable_length_table[] =
 	  100, 105, 109, 113, 116, 119, 122, 124, 104, 109, 114, 118, 121,
 	  124};
 #define IGP02E1000_CABLE_LENGTH_TABLE_SIZE \
-		(sizeof(e1000_igp_2_cable_length_table) / \
-		 sizeof(e1000_igp_2_cable_length_table[0]))
+		ARRAY_SIZE(e1000_igp_2_cable_length_table)
 
 /**
- *  e1000_check_reset_block_generic - Check if PHY reset is blocked
+ *  e1000e_check_reset_block_generic - Check if PHY reset is blocked
  *  @hw: pointer to the HW structure
  *
  *  Read the PHY management control register and check whether a PHY reset
  *  is blocked.  If a reset is not blocked return 0, otherwise
  *  return E1000_BLK_PHY_RESET (12).
  **/
-s32 e1000_check_reset_block_generic(struct e1000_hw *hw)
+s32 e1000e_check_reset_block_generic(struct e1000_hw *hw)
 {
 	u32 manc;
 
@@ -69,13 +70,13 @@ s32 e1000_check_reset_block_generic(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_get_phy_id - Retrieve the PHY ID and revision
+ *  e1000e_get_phy_id - Retrieve the PHY ID and revision
  *  @hw: pointer to the HW structure
  *
  *  Reads the PHY registers and stores the PHY ID and possibly the PHY
  *  revision in the hardware structure.
  **/
-s32 e1000_get_phy_id(struct e1000_hw *hw)
+s32 e1000e_get_phy_id(struct e1000_hw *hw)
 {
 	struct e1000_phy_info *phy = &hw->phy;
 	s32 ret_val;
@@ -98,12 +99,12 @@ s32 e1000_get_phy_id(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_phy_reset_dsp - Reset PHY DSP
+ *  e1000e_phy_reset_dsp - Reset PHY DSP
  *  @hw: pointer to the HW structure
  *
  *  Reset the digital signal processor.
  **/
-s32 e1000_phy_reset_dsp(struct e1000_hw *hw)
+s32 e1000e_phy_reset_dsp(struct e1000_hw *hw)
 {
 	s32 ret_val;
 
@@ -208,7 +209,7 @@ static s32 e1000_write_phy_reg_mdic(struct e1000_hw *hw, u32 offset, u16 data)
 }
 
 /**
- *  e1000_read_phy_reg_m88 - Read m88 PHY register
+ *  e1000e_read_phy_reg_m88 - Read m88 PHY register
  *  @hw: pointer to the HW structure
  *  @offset: register offset to be read
  *  @data: pointer to the read data
@@ -217,7 +218,7 @@ static s32 e1000_write_phy_reg_mdic(struct e1000_hw *hw, u32 offset, u16 data)
  *  and storing the retrieved information in data.  Release any acquired
  *  semaphores before exiting.
  **/
-s32 e1000_read_phy_reg_m88(struct e1000_hw *hw, u32 offset, u16 *data)
+s32 e1000e_read_phy_reg_m88(struct e1000_hw *hw, u32 offset, u16 *data)
 {
 	s32 ret_val;
 
@@ -235,7 +236,7 @@ s32 e1000_read_phy_reg_m88(struct e1000_hw *hw, u32 offset, u16 *data)
 }
 
 /**
- *  e1000_write_phy_reg_m88 - Write m88 PHY register
+ *  e1000e_write_phy_reg_m88 - Write m88 PHY register
  *  @hw: pointer to the HW structure
  *  @offset: register offset to write to
  *  @data: data to write at register offset
@@ -243,7 +244,7 @@ s32 e1000_read_phy_reg_m88(struct e1000_hw *hw, u32 offset, u16 *data)
  *  Acquires semaphore, if necessary, then writes the data to PHY register
  *  at the offset.  Release any acquired semaphores before exiting.
  **/
-s32 e1000_write_phy_reg_m88(struct e1000_hw *hw, u32 offset, u16 data)
+s32 e1000e_write_phy_reg_m88(struct e1000_hw *hw, u32 offset, u16 data)
 {
 	s32 ret_val;
 
@@ -261,7 +262,7 @@ s32 e1000_write_phy_reg_m88(struct e1000_hw *hw, u32 offset, u16 data)
 }
 
 /**
- *  e1000_read_phy_reg_igp - Read igp PHY register
+ *  e1000e_read_phy_reg_igp - Read igp PHY register
  *  @hw: pointer to the HW structure
  *  @offset: register offset to be read
  *  @data: pointer to the read data
@@ -270,7 +271,7 @@ s32 e1000_write_phy_reg_m88(struct e1000_hw *hw, u32 offset, u16 data)
  *  and storing the retrieved information in data.  Release any acquired
  *  semaphores before exiting.
  **/
-s32 e1000_read_phy_reg_igp(struct e1000_hw *hw, u32 offset, u16 *data)
+s32 e1000e_read_phy_reg_igp(struct e1000_hw *hw, u32 offset, u16 *data)
 {
 	s32 ret_val;
 
@@ -298,7 +299,7 @@ s32 e1000_read_phy_reg_igp(struct e1000_hw *hw, u32 offset, u16 *data)
 }
 
 /**
- *  e1000_write_phy_reg_igp - Write igp PHY register
+ *  e1000e_write_phy_reg_igp - Write igp PHY register
  *  @hw: pointer to the HW structure
  *  @offset: register offset to write to
  *  @data: data to write at register offset
@@ -306,7 +307,7 @@ s32 e1000_read_phy_reg_igp(struct e1000_hw *hw, u32 offset, u16 *data)
  *  Acquires semaphore, if necessary, then writes the data to PHY register
  *  at the offset.  Release any acquired semaphores before exiting.
  **/
-s32 e1000_write_phy_reg_igp(struct e1000_hw *hw, u32 offset, u16 data)
+s32 e1000e_write_phy_reg_igp(struct e1000_hw *hw, u32 offset, u16 data)
 {
 	s32 ret_val;
 
@@ -334,7 +335,7 @@ s32 e1000_write_phy_reg_igp(struct e1000_hw *hw, u32 offset, u16 data)
 }
 
 /**
- *  e1000_read_kmrn_reg - Read kumeran register
+ *  e1000e_read_kmrn_reg - Read kumeran register
  *  @hw: pointer to the HW structure
  *  @offset: register offset to be read
  *  @data: pointer to the read data
@@ -343,7 +344,7 @@ s32 e1000_write_phy_reg_igp(struct e1000_hw *hw, u32 offset, u16 data)
  *  using the kumeran interface.  The information retrieved is stored in data.
  *  Release any acquired semaphores before exiting.
  **/
-s32 e1000_read_kmrn_reg(struct e1000_hw *hw, u32 offset, u16 *data)
+s32 e1000e_read_kmrn_reg(struct e1000_hw *hw, u32 offset, u16 *data)
 {
 	u32 kmrnctrlsta;
 	s32 ret_val;
@@ -367,7 +368,7 @@ s32 e1000_read_kmrn_reg(struct e1000_hw *hw, u32 offset, u16 *data)
 }
 
 /**
- *  e1000_write_kmrn_reg - Write kumeran register
+ *  e1000e_write_kmrn_reg - Write kumeran register
  *  @hw: pointer to the HW structure
  *  @offset: register offset to write to
  *  @data: data to write at register offset
@@ -376,7 +377,7 @@ s32 e1000_read_kmrn_reg(struct e1000_hw *hw, u32 offset, u16 *data)
  *  at the offset using the kumeran interface.  Release any acquired semaphores
  *  before exiting.
  **/
-s32 e1000_write_kmrn_reg(struct e1000_hw *hw, u32 offset, u16 data)
+s32 e1000e_write_kmrn_reg(struct e1000_hw *hw, u32 offset, u16 data)
 {
 	u32 kmrnctrlsta;
 	s32 ret_val;
@@ -396,13 +397,13 @@ s32 e1000_write_kmrn_reg(struct e1000_hw *hw, u32 offset, u16 data)
 }
 
 /**
- *  e1000_copper_link_setup_m88 - Setup m88 PHY's for copper link
+ *  e1000e_copper_link_setup_m88 - Setup m88 PHY's for copper link
  *  @hw: pointer to the HW structure
  *
  *  Sets up MDI/MDI-X and polarity for m88 PHY's.  If necessary, transmit clock
  *  and downshift values are set also.
  **/
-s32 e1000_copper_link_setup_m88(struct e1000_hw *hw)
+s32 e1000e_copper_link_setup_m88(struct e1000_hw *hw)
 {
 	struct e1000_phy_info *phy = &hw->phy;
 	s32 ret_val;
@@ -482,7 +483,7 @@ s32 e1000_copper_link_setup_m88(struct e1000_hw *hw)
 	}
 
 	/* Commit the changes. */
-	ret_val = e1000_commit_phy(hw);
+	ret_val = e1000e_commit_phy(hw);
 	if (ret_val)
 		hw_dbg(hw, "Error committing the PHY changes\n");
 
@@ -490,13 +491,13 @@ s32 e1000_copper_link_setup_m88(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_copper_link_setup_igp - Setup igp PHY's for copper link
+ *  e1000e_copper_link_setup_igp - Setup igp PHY's for copper link
  *  @hw: pointer to the HW structure
  *
  *  Sets up LPLU, MDI/MDI-X, polarity, Smartspeed and Master/Slave config for
  *  igp PHY's.
  **/
-s32 e1000_copper_link_setup_igp(struct e1000_hw *hw)
+s32 e1000e_copper_link_setup_igp(struct e1000_hw *hw)
 {
 	struct e1000_phy_info *phy = &hw->phy;
 	s32 ret_val;
@@ -713,7 +714,7 @@ static s32 e1000_phy_setup_autoneg(struct e1000_hw *hw)
 		/* Since there really isn't a way to advertise that we are
 		 * capable of RX Pause ONLY, we will advertise that we
 		 * support both symmetric and asymmetric RX PAUSE.  Later
-		 * (in e1000_config_fc_after_link_up) we will disable the
+		 * (in e1000e_config_fc_after_link_up) we will disable the
 		 * hw's ability to send PAUSE frames.
 		 */
 		mii_autoneg_adv_reg |= (NWAY_AR_ASM_DIR | NWAY_AR_PAUSE);
@@ -814,7 +815,7 @@ static s32 e1000_copper_link_autoneg(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_setup_copper_link - Configure copper link settings
+ *  e1000e_setup_copper_link - Configure copper link settings
  *  @hw: pointer to the HW structure
  *
  *  Calls the appropriate function to configure the link for auto-neg or forced
@@ -822,7 +823,7 @@ static s32 e1000_copper_link_autoneg(struct e1000_hw *hw)
  *  to configure collision distance and flow control are called.  If link is
  *  not established, we return -E1000_ERR_PHY (-2).
  **/
-s32 e1000_setup_copper_link(struct e1000_hw *hw)
+s32 e1000e_setup_copper_link(struct e1000_hw *hw)
 {
 	s32 ret_val;
 	bool link;
@@ -847,7 +848,7 @@ s32 e1000_setup_copper_link(struct e1000_hw *hw)
 	/* Check link status. Wait up to 100 microseconds for link to become
 	 * valid.
 	 */
-	ret_val = e1000_phy_has_link_generic(hw,
+	ret_val = e1000e_phy_has_link_generic(hw,
 					     COPPER_LINK_UP_LIMIT,
 					     10,
 					     &link);
@@ -856,8 +857,8 @@ s32 e1000_setup_copper_link(struct e1000_hw *hw)
 
 	if (link) {
 		hw_dbg(hw, "Valid link established!!!\n");
-		e1000_config_collision_dist(hw);
-		ret_val = e1000_config_fc_after_link_up(hw);
+		e1000e_config_collision_dist(hw);
+		ret_val = e1000e_config_fc_after_link_up(hw);
 	} else {
 		hw_dbg(hw, "Unable to establish link!!!\n");
 	}
@@ -866,14 +867,14 @@ s32 e1000_setup_copper_link(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_phy_force_speed_duplex_igp - Force speed/duplex for igp PHY
+ *  e1000e_phy_force_speed_duplex_igp - Force speed/duplex for igp PHY
  *  @hw: pointer to the HW structure
  *
  *  Calls the PHY setup function to force speed and duplex.  Clears the
  *  auto-crossover to force MDI manually.  Waits for link and returns
  *  successful if link up is successful, else -E1000_ERR_PHY (-2).
  **/
-s32 e1000_phy_force_speed_duplex_igp(struct e1000_hw *hw)
+s32 e1000e_phy_force_speed_duplex_igp(struct e1000_hw *hw)
 {
 	struct e1000_phy_info *phy = &hw->phy;
 	s32 ret_val;
@@ -884,7 +885,7 @@ s32 e1000_phy_force_speed_duplex_igp(struct e1000_hw *hw)
 	if (ret_val)
 		return ret_val;
 
-	e1000_phy_force_speed_duplex_setup(hw, &phy_data);
+	e1000e_phy_force_speed_duplex_setup(hw, &phy_data);
 
 	ret_val = e1e_wphy(hw, PHY_CONTROL, phy_data);
 	if (ret_val)
@@ -911,7 +912,7 @@ s32 e1000_phy_force_speed_duplex_igp(struct e1000_hw *hw)
 	if (phy->wait_for_link) {
 		hw_dbg(hw, "Waiting for forced speed/duplex link on IGP phy.\n");
 
-		ret_val = e1000_phy_has_link_generic(hw,
+		ret_val = e1000e_phy_has_link_generic(hw,
 						     PHY_FORCE_LIMIT,
 						     100000,
 						     &link);
@@ -922,7 +923,7 @@ s32 e1000_phy_force_speed_duplex_igp(struct e1000_hw *hw)
 			hw_dbg(hw, "Link taking longer than expected.\n");
 
 		/* Try once more */
-		ret_val = e1000_phy_has_link_generic(hw,
+		ret_val = e1000e_phy_has_link_generic(hw,
 						     PHY_FORCE_LIMIT,
 						     100000,
 						     &link);
@@ -934,7 +935,7 @@ s32 e1000_phy_force_speed_duplex_igp(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_phy_force_speed_duplex_m88 - Force speed/duplex for m88 PHY
+ *  e1000e_phy_force_speed_duplex_m88 - Force speed/duplex for m88 PHY
  *  @hw: pointer to the HW structure
  *
  *  Calls the PHY setup function to force speed and duplex.  Clears the
@@ -943,7 +944,7 @@ s32 e1000_phy_force_speed_duplex_igp(struct e1000_hw *hw)
  *  After reset, TX_CLK and CRS on TX must be set.  Return successful upon
  *  successful completion, else return corresponding error code.
  **/
-s32 e1000_phy_force_speed_duplex_m88(struct e1000_hw *hw)
+s32 e1000e_phy_force_speed_duplex_m88(struct e1000_hw *hw)
 {
 	struct e1000_phy_info *phy = &hw->phy;
 	s32 ret_val;
@@ -968,7 +969,7 @@ s32 e1000_phy_force_speed_duplex_m88(struct e1000_hw *hw)
 	if (ret_val)
 		return ret_val;
 
-	e1000_phy_force_speed_duplex_setup(hw, &phy_data);
+	e1000e_phy_force_speed_duplex_setup(hw, &phy_data);
 
 	/* Reset the phy to commit changes. */
 	phy_data |= MII_CR_RESET;
@@ -982,7 +983,7 @@ s32 e1000_phy_force_speed_duplex_m88(struct e1000_hw *hw)
 	if (phy->wait_for_link) {
 		hw_dbg(hw, "Waiting for forced speed/duplex link on M88 phy.\n");
 
-		ret_val = e1000_phy_has_link_generic(hw, PHY_FORCE_LIMIT,
+		ret_val = e1000e_phy_has_link_generic(hw, PHY_FORCE_LIMIT,
 						     100000, &link);
 		if (ret_val)
 			return ret_val;
@@ -994,13 +995,13 @@ s32 e1000_phy_force_speed_duplex_m88(struct e1000_hw *hw)
 			ret_val = e1e_wphy(hw, M88E1000_PHY_PAGE_SELECT, 0x001d);
 			if (ret_val)
 				return ret_val;
-			ret_val = e1000_phy_reset_dsp(hw);
+			ret_val = e1000e_phy_reset_dsp(hw);
 			if (ret_val)
 				return ret_val;
 		}
 
 		/* Try once more */
-		ret_val = e1000_phy_has_link_generic(hw, PHY_FORCE_LIMIT,
+		ret_val = e1000e_phy_has_link_generic(hw, PHY_FORCE_LIMIT,
 						     100000, &link);
 		if (ret_val)
 			return ret_val;
@@ -1033,7 +1034,7 @@ s32 e1000_phy_force_speed_duplex_m88(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_phy_force_speed_duplex_setup - Configure forced PHY speed/duplex
+ *  e1000e_phy_force_speed_duplex_setup - Configure forced PHY speed/duplex
  *  @hw: pointer to the HW structure
  *  @phy_ctrl: pointer to current value of PHY_CONTROL
  *
@@ -1044,7 +1045,7 @@ s32 e1000_phy_force_speed_duplex_m88(struct e1000_hw *hw)
  *  caller must write to the PHY_CONTROL register for these settings to
  *  take affect.
  **/
-void e1000_phy_force_speed_duplex_setup(struct e1000_hw *hw, u16 *phy_ctrl)
+void e1000e_phy_force_speed_duplex_setup(struct e1000_hw *hw, u16 *phy_ctrl)
 {
 	struct e1000_mac_info *mac = &hw->mac;
 	u32 ctrl;
@@ -1087,13 +1088,13 @@ void e1000_phy_force_speed_duplex_setup(struct e1000_hw *hw, u16 *phy_ctrl)
 		hw_dbg(hw, "Forcing 10mb\n");
 	}
 
-	e1000_config_collision_dist(hw);
+	e1000e_config_collision_dist(hw);
 
 	ew32(CTRL, ctrl);
 }
 
 /**
- *  e1000_set_d3_lplu_state - Sets low power link up state for D3
+ *  e1000e_set_d3_lplu_state - Sets low power link up state for D3
  *  @hw: pointer to the HW structure
  *  @active: boolean used to enable/disable lplu
  *
@@ -1106,7 +1107,7 @@ void e1000_phy_force_speed_duplex_setup(struct e1000_hw *hw, u16 *phy_ctrl)
  *  During driver activity, SmartSpeed should be enabled so performance is
  *  maintained.
  **/
-s32 e1000_set_d3_lplu_state(struct e1000_hw *hw, bool active)
+s32 e1000e_set_d3_lplu_state(struct e1000_hw *hw, bool active)
 {
 	struct e1000_phy_info *phy = &hw->phy;
 	s32 ret_val;
@@ -1171,14 +1172,14 @@ s32 e1000_set_d3_lplu_state(struct e1000_hw *hw, bool active)
 }
 
 /**
- *  e1000_check_downshift - Checks whether a downshift in speed occured
+ *  e1000e_check_downshift - Checks whether a downshift in speed occured
  *  @hw: pointer to the HW structure
  *
  *  Success returns 0, Failure returns 1
  *
  *  A downshift is detected by querying the PHY link health.
  **/
-s32 e1000_check_downshift(struct e1000_hw *hw)
+s32 e1000e_check_downshift(struct e1000_hw *hw)
 {
 	struct e1000_phy_info *phy = &hw->phy;
 	s32 ret_val;
@@ -1308,7 +1309,7 @@ static s32 e1000_wait_autoneg(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_phy_has_link_generic - Polls PHY for link
+ *  e1000e_phy_has_link_generic - Polls PHY for link
  *  @hw: pointer to the HW structure
  *  @iterations: number of times to poll for link
  *  @usec_interval: delay between polling attempts
@@ -1316,10 +1317,10 @@ static s32 e1000_wait_autoneg(struct e1000_hw *hw)
  *
  *  Polls the PHY status register for link, 'iterations' number of times.
  **/
-s32 e1000_phy_has_link_generic(struct e1000_hw *hw, u32 iterations,
+s32 e1000e_phy_has_link_generic(struct e1000_hw *hw, u32 iterations,
 			       u32 usec_interval, bool *success)
 {
-	s32 ret_val;
+	s32 ret_val = 0;
 	u16 i, phy_status;
 
 	for (i = 0; i < iterations; i++) {
@@ -1347,7 +1348,7 @@ s32 e1000_phy_has_link_generic(struct e1000_hw *hw, u32 iterations,
 }
 
 /**
- *  e1000_get_cable_length_m88 - Determine cable length for m88 PHY
+ *  e1000e_get_cable_length_m88 - Determine cable length for m88 PHY
  *  @hw: pointer to the HW structure
  *
  *  Reads the PHY specific status register to retrieve the cable length
@@ -1361,7 +1362,7 @@ s32 e1000_phy_has_link_generic(struct e1000_hw *hw, u32 iterations,
  *	3			110 - 140 meters
  *	4			> 140 meters
  **/
-s32 e1000_get_cable_length_m88(struct e1000_hw *hw)
+s32 e1000e_get_cable_length_m88(struct e1000_hw *hw)
 {
 	struct e1000_phy_info *phy = &hw->phy;
 	s32 ret_val;
@@ -1382,7 +1383,7 @@ s32 e1000_get_cable_length_m88(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_get_cable_length_igp_2 - Determine cable length for igp2 PHY
+ *  e1000e_get_cable_length_igp_2 - Determine cable length for igp2 PHY
  *  @hw: pointer to the HW structure
  *
  *  The automatic gain control (agc) normalizes the amplitude of the
@@ -1392,7 +1393,7 @@ s32 e1000_get_cable_length_m88(struct e1000_hw *hw)
  *  into a lookup table to obtain the approximate cable length
  *  for each channel.
  **/
-s32 e1000_get_cable_length_igp_2(struct e1000_hw *hw)
+s32 e1000e_get_cable_length_igp_2(struct e1000_hw *hw)
 {
 	struct e1000_phy_info *phy = &hw->phy;
 	s32 ret_val;
@@ -1449,7 +1450,7 @@ s32 e1000_get_cable_length_igp_2(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_get_phy_info_m88 - Retrieve PHY information
+ *  e1000e_get_phy_info_m88 - Retrieve PHY information
  *  @hw: pointer to the HW structure
  *
  *  Valid for only copper links.  Read the PHY status register (sticky read)
@@ -1458,7 +1459,7 @@ s32 e1000_get_cable_length_igp_2(struct e1000_hw *hw)
  *  special status register to determine MDI/MDIx and current speed.  If
  *  speed is 1000, then determine cable length, local and remote receiver.
  **/
-s32 e1000_get_phy_info_m88(struct e1000_hw *hw)
+s32 e1000e_get_phy_info_m88(struct e1000_hw *hw)
 {
 	struct e1000_phy_info *phy = &hw->phy;
 	s32  ret_val;
@@ -1470,7 +1471,7 @@ s32 e1000_get_phy_info_m88(struct e1000_hw *hw)
 		return -E1000_ERR_CONFIG;
 	}
 
-	ret_val = e1000_phy_has_link_generic(hw, 1, 0, &link);
+	ret_val = e1000e_phy_has_link_generic(hw, 1, 0, &link);
 	if (ret_val)
 		return ret_val;
 
@@ -1523,7 +1524,7 @@ s32 e1000_get_phy_info_m88(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_get_phy_info_igp - Retrieve igp PHY information
+ *  e1000e_get_phy_info_igp - Retrieve igp PHY information
  *  @hw: pointer to the HW structure
  *
  *  Read PHY status to determine if link is up.  If link is up, then
@@ -1531,14 +1532,14 @@ s32 e1000_get_phy_info_m88(struct e1000_hw *hw)
  *  PHY port status to determine MDI/MDIx and speed.  Based on the speed,
  *  determine on the cable length, local and remote receiver.
  **/
-s32 e1000_get_phy_info_igp(struct e1000_hw *hw)
+s32 e1000e_get_phy_info_igp(struct e1000_hw *hw)
 {
 	struct e1000_phy_info *phy = &hw->phy;
 	s32 ret_val;
 	u16 data;
 	bool link;
 
-	ret_val = e1000_phy_has_link_generic(hw, 1, 0, &link);
+	ret_val = e1000e_phy_has_link_generic(hw, 1, 0, &link);
 	if (ret_val)
 		return ret_val;
 
@@ -1586,13 +1587,13 @@ s32 e1000_get_phy_info_igp(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_phy_sw_reset - PHY software reset
+ *  e1000e_phy_sw_reset - PHY software reset
  *  @hw: pointer to the HW structure
  *
  *  Does a software reset of the PHY by reading the PHY control register and
  *  setting/write the control register reset bit to the PHY.
  **/
-s32 e1000_phy_sw_reset(struct e1000_hw *hw)
+s32 e1000e_phy_sw_reset(struct e1000_hw *hw)
 {
 	s32 ret_val;
 	u16 phy_ctrl;
@@ -1612,7 +1613,7 @@ s32 e1000_phy_sw_reset(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_phy_hw_reset_generic - PHY hardware reset
+ *  e1000e_phy_hw_reset_generic - PHY hardware reset
  *  @hw: pointer to the HW structure
  *
  *  Verify the reset block is not blocking us from resetting.  Acquire
@@ -1620,7 +1621,7 @@ s32 e1000_phy_sw_reset(struct e1000_hw *hw)
  *  bit in the PHY.  Wait the appropriate delay time for the device to
  *  reset and relase the semaphore (if necessary).
  **/
-s32 e1000_phy_hw_reset_generic(struct e1000_hw *hw)
+s32 e1000e_phy_hw_reset_generic(struct e1000_hw *hw)
 {
 	struct e1000_phy_info *phy = &hw->phy;
 	s32 ret_val;
@@ -1651,13 +1652,13 @@ s32 e1000_phy_hw_reset_generic(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_get_cfg_done - Generic configuration done
+ *  e1000e_get_cfg_done - Generic configuration done
  *  @hw: pointer to the HW structure
  *
  *  Generic function to wait 10 milli-seconds for configuration to complete
  *  and return success.
  **/
-s32 e1000_get_cfg_done(struct e1000_hw *hw)
+s32 e1000e_get_cfg_done(struct e1000_hw *hw)
 {
 	mdelay(10);
 	return 0;
@@ -1696,12 +1697,12 @@ static s32 e1000_phy_force_speed_duplex(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_get_phy_type_from_id - Get PHY type from id
+ *  e1000e_get_phy_type_from_id - Get PHY type from id
  *  @phy_id: phy_id read from the phy
  *
  *  Returns the phy type from the id.
  **/
-enum e1000_phy_type e1000_get_phy_type_from_id(u32 phy_id)
+enum e1000_phy_type e1000e_get_phy_type_from_id(u32 phy_id)
 {
 	enum e1000_phy_type phy_type = e1000_phy_unknown;
 
@@ -1734,13 +1735,13 @@ enum e1000_phy_type e1000_get_phy_type_from_id(u32 phy_id)
 }
 
 /**
- *  e1000_commit_phy - Soft PHY reset
+ *  e1000e_commit_phy - Soft PHY reset
  *  @hw: pointer to the HW structure
  *
  *  Performs a soft PHY reset on those that apply. This is a function pointer
  *  entry point called by drivers.
  **/
-s32 e1000_commit_phy(struct e1000_hw *hw)
+s32 e1000e_commit_phy(struct e1000_hw *hw)
 {
 	if (hw->phy.ops.commit_phy)
 		return hw->phy.ops.commit_phy(hw);

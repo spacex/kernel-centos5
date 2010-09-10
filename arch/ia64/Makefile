@@ -28,16 +28,7 @@ cflags-y	:= -pipe $(EXTRA) -ffixed-r13 -mfixed-range=f12-f15,f32-f127 \
 		   -falign-functions=32 -frename-registers -fno-optimize-sibling-calls
 CFLAGS_KERNEL	:= -mconstant-gp
 
-GAS_STATUS	= $(shell $(srctree)/arch/ia64/scripts/check-gas "$(CC)" "$(OBJDUMP)")
-CPPFLAGS += $(shell $(srctree)/arch/ia64/scripts/toolchain-flags "$(CC)" "$(OBJDUMP)" "$(READELF)")
-
-ifeq ($(GAS_STATUS),buggy)
-$(error Sorry, you need a newer version of the assember, one that is built from	\
-	a source-tree that post-dates 18-Dec-2002.  You can find a pre-compiled	\
-	static binary of such an assembler at:					\
-										\
-		ftp://ftp.hpl.hp.com/pub/linux-ia64/gas-030124.tar.gz)
-endif
+CPPFLAGS += -DHAVE_WORKING_TEXT_ALIGN -DHAVE_MODEL_SMALL_ATTRIBUTE -DHAVE_SERIALIZE_DIRECTIVE
 
 ifeq ($(call cc-version),0304)
 	cflags-$(CONFIG_ITANIUM)	+= -mtune=merced

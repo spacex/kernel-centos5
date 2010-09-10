@@ -10,6 +10,7 @@
 #include <linux/kexec.h>
 #include <linux/string.h>
 #include <linux/reboot.h>
+#include <linux/numa.h>
 #include <asm/pgtable.h>
 #include <asm/tlbflush.h>
 #include <asm/mmu_context.h>
@@ -235,6 +236,17 @@ int machine_kexec_prepare(struct kimage *image)
 void machine_kexec_cleanup(struct kimage *image)
 {
 	return;
+}
+
+void arch_crash_save_vmcoreinfo(void)
+{
+#ifndef CONFIG_XEN
+	SYMBOL(phys_base);
+#endif
+#ifdef CONFIG_ARCH_DISCONTIGMEM_ENABLE
+	SYMBOL(node_data);
+	LENGTH(node_data, MAX_NUMNODES);
+#endif
 }
 
 #ifndef CONFIG_XEN

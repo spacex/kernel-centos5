@@ -44,4 +44,5 @@ obj-$(CONFIG_PCMCIA_WL3501)	+= wl3501_cs.o
 
 obj-$(CONFIG_USB_ZD1201)	+= zd1201.o
 
-obj-$(CONFIG_IWLWIFI)		+= iwlwifi/
+obj-$(CONFIG_IWL3945)		+= iwlwifi/
+obj-$(CONFIG_IWL4965)		+= iwlwifi/

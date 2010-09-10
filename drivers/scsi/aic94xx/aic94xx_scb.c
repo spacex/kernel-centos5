@@ -24,7 +24,6 @@
  *
  */
 
-#include <linux/pci.h>
 #include <scsi/scsi_host.h>
 
 #include "aic94xx.h"
@@ -62,7 +61,7 @@ static inline void get_lrate_mode(struct asd_phy *phy, u8 oob_mode)
 		phy->sas_phy.phy->negotiated_linkrate = SAS_LINK_RATE_6_0_GBPS;
 		break;
 	case PHY_SPEED_30:
-		phy->sas_phy.linkrate = PHY_LINKRATE_6;
+		phy->sas_phy.linkrate = PHY_LINKRATE_3;
 		phy->sas_phy.phy->negotiated_linkrate = SAS_LINK_RATE_3_0_GBPS;
 		break;
 	case PHY_SPEED_15:

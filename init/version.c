@@ -29,6 +29,22 @@ struct new_utsname system_utsname = {
 
 EXPORT_SYMBOL(system_utsname);
 
+struct uts_namespace init_uts_ns = {
+        .kref = {
+                .refcount       = ATOMIC_INIT(2),
+        },
+        .name = {
+                .sysname        = UTS_SYSNAME,
+                .nodename       = UTS_NODENAME,
+                .release        = UTS_RELEASE,
+                .version        = UTS_VERSION,
+                .machine        = UTS_MACHINE,
+                .domainname     = UTS_DOMAINNAME,
+        },
+};
+
+EXPORT_SYMBOL_GPL(init_uts_ns);
+
 const char linux_banner[] =
 	"Linux version " UTS_RELEASE " (" LINUX_COMPILE_BY "@"
 	LINUX_COMPILE_HOST ") (" LINUX_COMPILER ") " UTS_VERSION "\n";

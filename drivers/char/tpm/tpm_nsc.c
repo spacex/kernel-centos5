@@ -7,7 +7,7 @@
  * Reiner Sailer <sailer@watson.ibm.com>
  * Kylene Hall <kjhall@us.ibm.com>
  *
- * Maintained by: <tpmdd_devel@lists.sourceforge.net>
+ * Maintained by: <tpmdd-devel@lists.sourceforge.net>
  *
  * Device driver for TCG/TCPA TPM (trusted platform module).
  * Specifications at www.trustedcomputinggroup.org	 
@@ -284,7 +284,7 @@ static struct device_driver nsc_drv = {
 static int __init init_nsc(void)
 {
 	int rc = 0;
-	int lo, hi;
+	int lo, hi, err;
 	int nscAddrBase = TPM_ADDR;
 	struct tpm_chip *chip;
 	unsigned long base;
@@ -297,7 +297,9 @@ static int __init init_nsc(void)
 			return -ENODEV;
 	}
 
-	driver_register(&nsc_drv);
+	err = driver_register(&nsc_drv);
+	if (err)
+		return err;
 
 	hi = tpm_read_index(nscAddrBase, TPM_NSC_BASE0_HI);
 	lo = tpm_read_index(nscAddrBase, TPM_NSC_BASE0_LO);

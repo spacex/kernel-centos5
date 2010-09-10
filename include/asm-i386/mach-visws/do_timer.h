@@ -13,7 +13,7 @@ static inline void do_timer_interrupt_hook(struct pt_regs *regs)
 	for (i = 0; i < tick_divider; i++) {
 		do_timer(regs);
 #ifndef CONFIG_SMP
-		update_process_times(user_mode_vm(regs));
+		update_process_times(user_mode_vm(regs), regs);
 #endif
 	}
 /*

@@ -38,6 +38,7 @@
 #include <linux/device.h>
 #include <linux/notifier.h>
 
+#include <asm/ipl.h>
 #include <asm/uaccess.h>
 #include <asm/system.h>
 #include <asm/smp.h>
@@ -48,6 +49,7 @@
 #include <asm/page.h>
 #include <asm/ptrace.h>
 #include <asm/sections.h>
+#include <asm/cio.h>
 
 /*
  * Machine setup..
@@ -57,6 +59,8 @@ unsigned int console_devno = -1;
 unsigned int console_irq = -1;
 unsigned long memory_size = 0;
 unsigned long machine_flags = 0;
+unsigned long elf_hwcap = 0;
+char elf_platform[ELF_PLATFORM_SIZE];
 struct {
 	unsigned long addr, size, type;
 } memory_chunk[MEMORY_CHUNKS] = { { 0 } };
@@ -272,6 +276,27 @@ static void __init conmode_default(void)
 	}
 }
 
+#if defined(CONFIG_ZFCPDUMP) || defined(CONFIG_ZFCPDUMP_MODULE)
+static void __init setup_zfcpdump(unsigned int console_devno)
+{
+	static char str[64];
+
+	if (ipl_info.type != IPL_TYPE_FCP_DUMP)
+		return;
+	if (console_devno != -1)
+		sprintf(str, "cio_ignore=all,!0.0.%04x,!0.0.%04x",
+			ipl_info.data.fcp.dev_id.devno, console_devno);
+	else
+		sprintf(str, "cio_ignore=all,!0.0.%04x",
+			ipl_info.data.fcp.dev_id.devno);
+	strcat(COMMAND_LINE, " ");
+	strcat(COMMAND_LINE, str);
+	console_loglevel = 2;
+}
+#else
+static inline void setup_zfcpdump(unsigned int console_devno) {}
+#endif /* CONFIG_ZFCPDUMP */
+
 #ifdef CONFIG_SMP
 extern void machine_restart_smp(char *);
 extern void machine_halt_smp(void);
@@ -482,6 +507,9 @@ setup_resources(void)
 	}
 }
 
+unsigned long real_memory_size;
+EXPORT_SYMBOL_GPL(real_memory_size);
+
 static void __init
 setup_memory(void)
 {
@@ -519,6 +547,7 @@ setup_memory(void)
 		start_chunk = (memory_chunk[i].addr + PAGE_SIZE - 1);
 		start_chunk >>= PAGE_SHIFT;
 		end_chunk = (memory_chunk[i].addr + memory_chunk[i].size);
+		real_memory_size = max(real_memory_size, end_chunk);
 		end_chunk >>= PAGE_SHIFT;
 		if (start_chunk < start_pfn)
 			start_chunk = start_pfn;
@@ -565,6 +594,108 @@ setup_memory(void)
 		}
 	}
 #endif
+}
+
+static unsigned int __init stfl(void)
+{
+	asm volatile(
+		"	.insn	s,0xb2b10000,0(0)\n" /* stfl */
+		"0:\n"
+		EX_TABLE(0b,0b));
+	return S390_lowcore.stfl_fac_list;
+}
+
+static int __init __stfle(unsigned long long *list, int doublewords)
+{
+	typedef struct { unsigned long long _[doublewords]; } addrtype;
+	register unsigned long __nr asm("0") = doublewords - 1;
+
+	asm volatile(".insn s,0xb2b00000,%0" /* stfle */
+		     : "=m" (*(addrtype *) list), "+d" (__nr) : : "cc");
+	return __nr + 1;
+}
+
+int __init stfle(unsigned long long *list, int doublewords)
+{
+	if (!(stfl() & (1UL << 24)))
+		return -EOPNOTSUPP;
+	return __stfle(list, doublewords);
+}
+
+/*
+ * Setup hardware capabilities.
+ */
+static void __init setup_hwcaps(void)
+{
+	static const int stfl_bits[6] = { 0, 2, 7, 17, 19, 21 };
+	struct cpuinfo_S390 *cpuinfo = &S390_lowcore.cpu_data;
+	unsigned long long facility_list_extended;
+	unsigned int facility_list;
+	int i;
+
+	facility_list = stfl();
+	/*
+	 * The store facility list bits numbers as found in the principles
+	 * of operation are numbered with bit 1UL<<31 as number 0 to
+	 * bit 1UL<<0 as number 31.
+	 *   Bit 0: instructions named N3, "backported" to esa-mode
+	 *   Bit 2: z/Architecture mode is active
+	 *   Bit 7: the store-facility-list-extended facility is installed
+	 *   Bit 17: the message-security assist is installed
+	 *   Bit 19: the long-displacement facility is installed
+	 *   Bit 21: the extended-immediate facility is installed
+	 * These get translated to:
+	 *   HWCAP_S390_ESAN3 bit 0, HWCAP_S390_ZARCH bit 1,
+	 *   HWCAP_S390_STFLE bit 2, HWCAP_S390_MSA bit 3,
+	 *   HWCAP_S390_LDISP bit 4, and HWCAP_S390_EIMM bit 5.
+	 */
+	for (i = 0; i < 6; i++)
+		if (facility_list & (1UL << (31 - stfl_bits[i])))
+			elf_hwcap |= 1UL << i;
+
+	/*
+	 * Check for additional facilities with store-facility-list-extended.
+	 * stfle stores doublewords (8 byte) with bit 1ULL<<63 as bit 0
+	 * and 1ULL<<0 as bit 63. Bits 0-31 contain the same information
+	 * as stored by stfl, bits 32-xxx contain additional facilities.
+	 * How many facility words are stored depends on the number of
+	 * doublewords passed to the instruction. The additional facilites
+	 * are:
+	 *   Bit 43: decimal floating point facility is installed
+	 * translated to:
+	 *   HWCAP_S390_DFP bit 6.
+	 */
+	if ((elf_hwcap & (1UL << 2)) &&
+	    stfle(&facility_list_extended, 1) > 0) {
+		if (facility_list_extended & (1ULL << (64 - 43)))
+			elf_hwcap |= 1UL << 6;
+	}
+
+	if (facility_list & (1UL << 23))
+		elf_hwcap |= 1UL << 7;
+
+	switch (cpuinfo->cpu_id.machine) {
+	case 0x9672:
+#if !defined(CONFIG_64BIT)
+	default:	/* Use "g5" as default for 31 bit kernels. */
+#endif
+		strcpy(elf_platform, "g5");
+		break;
+	case 0x2064:
+	case 0x2066:
+#if defined(CONFIG_64BIT)
+	default:	/* Use "z900" as default for 64 bit kernels. */
+#endif
+		strcpy(elf_platform, "z900");
+		break;
+	case 0x2084:
+	case 0x2086:
+		strcpy(elf_platform, "z990");
+		break;
+	case 0x2094:
+		strcpy(elf_platform, "z9-109");
+		break;
+	}
 }
 
 /*
@@ -622,6 +753,12 @@ setup_arch(char **cmdline_p)
 	memory_end &= ~0x200000UL;
 #endif /* CONFIG_64BIT */
 
+	setup_ipl_info();
+#if defined(CONFIG_ZFCPDUMP) || defined(CONFIG_ZFCPDUMP_MODULE)
+	if (ipl_info.type == IPL_TYPE_FCP_DUMP) {
+		memory_end = ZFCPDUMP_HSA_SIZE;
+	}
+#endif
 	setup_memory();
 	setup_resources();
 	setup_lowcore();
@@ -631,12 +768,25 @@ setup_arch(char **cmdline_p)
 	smp_setup_cpu_possible_map();
 
 	/*
+	 * Setup capabilities (ELF_HWCAP & ELF_PLATFORM).
+	 */
+	setup_hwcaps();
+
+	if (S390_lowcore.stfl_fac_list & (1UL << 23)) {
+		__ctl_set_bit(0, 23);
+		machine_flags |= 1024;
+	}
+
+	/*
 	 * Create kernel page tables and switch to virtual addressing.
 	 */
         paging_init();
 
         /* Setup default console */
 	conmode_default();
+
+	/* Setup zfcpdump support */
+	setup_zfcpdump(console_devno);
 }
 
 void print_cpu_info(struct cpuinfo_S390 *cpuinfo)
@@ -662,8 +812,13 @@ void print_cpu_info(struct cpuinfo_S390 *cpuinfo)
 
 static int show_cpuinfo(struct seq_file *m, void *v)
 {
+	static const char *hwcap_str[8] = {
+		"esan3", "zarch", "stfle", "msa", "ldisp", "eimm", "dfp",
+		"edat"
+	};
         struct cpuinfo_S390 *cpuinfo;
 	unsigned long n = (unsigned long) v - 1;
+	int i;
 
 	preempt_disable();
 	if (!n) {
@@ -672,7 +827,13 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 			       "bogomips per cpu: %lu.%02lu\n",
 			       num_online_cpus(), loops_per_jiffy/(500000/HZ),
 			       (loops_per_jiffy/(5000/HZ))%100);
+		seq_puts(m, "features\t: ");
+		for (i = 0; i < 8; i++)
+			if (hwcap_str[i] && (elf_hwcap & (1UL << i)))
+				seq_printf(m, "%s ", hwcap_str[i]);
+		seq_puts(m, "\n");
 	}
+
 	if (cpu_online(n)) {
 #ifdef CONFIG_SMP
 		if (smp_processor_id() == n)

@@ -29,6 +29,8 @@
 
 #define KOBJ_NAME_LEN			20
 #define UEVENT_HELPER_PATH_LEN		256
+#define UEVENT_NUM_ENVP			32	/* number of env pointers */
+#define UEVENT_BUFFER_SIZE		2048	/* buffer for the variables */
 
 /* path to the userspace helper executed on an event */
 extern char uevent_helper[];
@@ -92,6 +94,12 @@ struct kobj_type {
 	struct attribute	** default_attrs;
 };
 
+struct kobj_uevent_env {
+	char *envp[UEVENT_NUM_ENVP];
+	int envp_idx;
+	char buf[UEVENT_BUFFER_SIZE];
+	int buflen;
+};
 
 /**
  *	kset - a set of kobjects of a specific type, belonging
@@ -262,11 +270,15 @@ extern int subsys_create_file(struct subsystem * , struct subsys_attribute *);
 
 #if defined(CONFIG_HOTPLUG)
 void kobject_uevent(struct kobject *kobj, enum kobject_action action);
+int kobject_uevent_env(struct kobject *kobj, enum kobject_action action,
+			char *envp[]);
 
 int add_uevent_var(char **envp, int num_envp, int *cur_index,
 			char *buffer, int buffer_size, int *cur_len,
 			const char *format, ...)
 	__attribute__((format (printf, 7, 8)));
+int add_uevent_var_env(struct kobj_uevent_env *env, const char *format, ...)
+	__attribute__((format (printf, 2, 3)));
 #else
 static inline void kobject_uevent(struct kobject *kobj, enum kobject_action action) { }
 
@@ -274,6 +286,10 @@ static inline int add_uevent_var(char **envp, int num_envp, int *cur_index,
 				      char *buffer, int buffer_size, int *cur_len, 
 				      const char *format, ...)
 { return 0; }
+
+static inline int add_uevent_var_env(struct kobj_uevent_env *env, const char *format, ...)
+{ return 0; }
+
 #endif
 
 #endif /* __KERNEL__ */

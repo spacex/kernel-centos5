@@ -1,6 +1,6 @@
 /*
  * Copyright (C) Sistina Software, Inc.  1997-2003 All rights reserved.
- * Copyright (C) 2004-2006 Red Hat, Inc.  All rights reserved.
+ * Copyright (C) 2004-2008 Red Hat, Inc.  All rights reserved.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
@@ -30,9 +30,8 @@ static void gfs2_init_inode_once(void *foo, kmem_cache_t *cachep, unsigned long 
 	if ((flags & (SLAB_CTOR_VERIFY|SLAB_CTOR_CONSTRUCTOR)) ==
 	    SLAB_CTOR_CONSTRUCTOR) {
 		inode_init_once(&ip->i_inode);
-		spin_lock_init(&ip->i_spin);
 		init_rwsem(&ip->i_rw_mutex);
-		memset(ip->i_cache, 0, sizeof(ip->i_cache));
+		ip->i_alloc = NULL;
 	}
 }
 
@@ -94,6 +93,12 @@ static int __init init_gfs2_fs(void)
 	if (!gfs2_bufdata_cachep)
 		goto fail;
 
+	gfs2_rgrpd_cachep = kmem_cache_create("gfs2_rgrpd",
+					      sizeof(struct gfs2_rgrpd),
+					      0, 0, NULL, NULL);
+	if (!gfs2_rgrpd_cachep)
+		goto fail;
+
 	error = register_filesystem(&gfs2_fs_type);
 	if (error)
 		goto fail;
@@ -112,6 +117,9 @@ fail_unregister:
 	unregister_filesystem(&gfs2_fs_type);
 fail:
 	gfs2_glock_exit();
+
+	if (gfs2_rgrpd_cachep)
+		kmem_cache_destroy(gfs2_rgrpd_cachep);
 
 	if (gfs2_bufdata_cachep)
 		kmem_cache_destroy(gfs2_bufdata_cachep);
@@ -138,6 +146,7 @@ static void __exit exit_gfs2_fs(void)
 	unregister_filesystem(&gfs2_fs_type);
 	unregister_filesystem(&gfs2meta_fs_type);
 
+	kmem_cache_destroy(gfs2_rgrpd_cachep);
 	kmem_cache_destroy(gfs2_bufdata_cachep);
 	kmem_cache_destroy(gfs2_inode_cachep);
 	kmem_cache_destroy(gfs2_glock_cachep);

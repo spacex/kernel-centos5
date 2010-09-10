@@ -19,6 +19,9 @@
 #include <asm/delay.h>
 #include <asm/meminit.h>
 #include <asm/machvec.h>
+#include <asm/processor.h>
+#include <linux/numa.h>
+#include <linux/mmzone.h>
 
 typedef void (*relocate_new_kernel_t)(unsigned long, unsigned long,
 		struct ia64_boot_param *, unsigned long);
@@ -97,6 +100,7 @@ static void ia64_machine_kexec(struct unw_frame_info *info, void *arg)
 	unsigned long vector;
 	int ii;
 
+	BUG_ON(!image);
 	if (image->type == KEXEC_TYPE_CRASH) {
 		crash_save_this_cpu();
 		current->thread.ksp = (__u64)info->sw - 16;
@@ -135,6 +139,32 @@ static void ia64_machine_kexec(struct unw_frame_info *info, void *arg)
 
 void machine_kexec(struct kimage *image)
 {
+	BUG_ON(!image);
 	unw_init_running(ia64_machine_kexec, image);
 	for(;;);
 }
+
+void arch_crash_save_vmcoreinfo(void)
+{
+#ifdef CONFIG_ARCH_DISCONTIGMEM_ENABLE
+	SYMBOL(pgdat_list);
+	LENGTH(pgdat_list, MAX_NUMNODES);
+
+	SYMBOL(node_memblk);
+	LENGTH(node_memblk, NR_NODE_MEMBLKS);
+	SIZE(node_memblk_s);
+	OFFSET(node_memblk_s, start_paddr);
+	OFFSET(node_memblk_s, size);
+#endif
+#ifdef CONFIG_PGTABLE_3
+	CONFIG(PGTABLE_3);
+#elif  CONFIG_PGTABLE_4
+	CONFIG(PGTABLE_4);
+#endif
+}
+
+unsigned long paddr_vmcoreinfo_note(void)
+{
+	return ia64_tpa((unsigned long)(char *)&vmcoreinfo_note);
+}
+

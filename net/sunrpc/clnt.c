@@ -118,6 +118,9 @@ rpc_new_client(struct rpc_xprt *xprt, char *servname,
 	dprintk("RPC: creating %s client for %s (xprt %p)\n",
 		program->name, servname, xprt);
 
+	err = rpciod_up();
+	if (err)
+		goto out_no_rpciod;
 	err = -EINVAL;
 	if (!xprt)
 		goto out_no_xprt;
@@ -200,6 +203,8 @@ out_no_stats:
 out_err:
 	xprt_put(xprt);
 out_no_xprt:
+	rpciod_down();
+out_no_rpciod:
 	return ERR_PTR(err);
 }
 
@@ -283,6 +288,7 @@ rpc_clone_client(struct rpc_clnt *clnt)
 	if (new->cl_auth)
 		atomic_inc(&new->cl_auth->au_count);
 	new->cl_pmap		= &new->cl_pmap_default;
+	rpciod_up();
 	return new;
 out_no_stats:
 	kfree(new);
@@ -355,6 +361,7 @@ out_free:
 	rpc_free_iostats(clnt->cl_metrics);
 	clnt->cl_metrics = NULL;
 	xprt_put(clnt->cl_xprt);
+	rpciod_down();
 	kfree(clnt);
 	return 0;
 }

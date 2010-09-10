@@ -25,6 +25,7 @@
 #include <linux/types.h>
 #include <linux/ip.h>
 #include <linux/in.h>
+#include <linux/skbuff.h>
 
 #include <net/inet_sock.h>
 #include <net/snmp.h>
@@ -42,6 +43,11 @@ struct inet_skb_parm
 #define IPSKB_FRAG_COMPLETE	8
 #define IPSKB_REROUTED		16
 };
+
+static inline unsigned int ip_hdrlen(const struct sk_buff *skb)
+{
+	return skb->nh.iph->ihl * 4;
+}
 
 struct ipcm_cookie
 {
@@ -161,6 +167,7 @@ DECLARE_SNMP_STAT(struct linux_mib, net_statistics);
 #define NET_ADD_STATS_BH(field, adnd)	SNMP_ADD_STATS_BH(net_statistics, field, adnd)
 #define NET_ADD_STATS_USER(field, adnd)	SNMP_ADD_STATS_USER(net_statistics, field, adnd)
 
+extern void inet_get_local_port_range(int *low, int *high);
 extern int sysctl_local_port_range[2];
 extern int sysctl_ip_default_ttl;
 extern int sysctl_ip_nonlocal_bind;

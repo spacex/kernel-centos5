@@ -103,6 +103,10 @@
 #include <asm/io.h>
 
 static int no_piix_dma;
+static int intel_via_libata;		/* Use libata for Intel devices */
+
+module_param(intel_via_libata, int, 0444);
+MODULE_PARM_DESC(intel_via_libata, "Use libata SATA/PATA driver for Intel IDE");
 
 /**
  *	piix_ratemask		-	compute rate mask for PIIX IDE
@@ -678,6 +682,10 @@ static struct pci_driver driver = {
 
 static int __init piix_ide_init(void)
 {
+	if (intel_via_libata) {
+		printk(KERN_INFO "Using libata for Intel IDE.\n");
+		return 0;
+	}
 	piix_check_450nx();
 	return ide_pci_register_driver(&driver);
 }

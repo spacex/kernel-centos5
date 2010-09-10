@@ -61,3 +61,6 @@
     S_("appletalk_socket")
     S_("packet")
     S_("key")
+    S_("context")
+    S_("dccp_socket")
+    S_("memprotect")

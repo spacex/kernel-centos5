@@ -60,32 +60,29 @@
  *
  */
 
-#define _iwl_write32(ipw, ofs, val) writel((val), (ipw)->hw_base + (ofs))
-static inline void __iwl_write32(const char *f, u32 l, struct iwl_priv *ipw,
+#define _iwl_write32(iwl, ofs, val) writel((val), (iwl)->hw_base + (ofs))
+#ifdef CONFIG_IWLWIFI_DEBUG
+static inline void __iwl_write32(const char *f, u32 l, struct iwl_priv *iwl,
 				 u32 ofs, u32 val)
 {
 	IWL_DEBUG_IO("write_direct32(0x%08X, 0x%08X) - %s %d\n",
 		     (u32) (ofs), (u32) (val), f, l);
-	_iwl_write32(ipw, ofs, val);
+	_iwl_write32(iwl, ofs, val);
 }
-
-#ifdef CONFIG_IWLWIFI_DEBUG
-#define iwl_write32(ipw, ofs, val) \
-	__iwl_write32(__FILE__, __LINE__, ipw, ofs, val)
+#define iwl_write32(iwl, ofs, val) \
+	__iwl_write32(__FILE__, __LINE__, iwl, ofs, val)
 #else
-#define iwl_write32(ipw, ofs, val) _iwl_write32(ipw, ofs, val)
+#define iwl_write32(iwl, ofs, val) _iwl_write32(iwl, ofs, val)
 #endif
 
-#define _iwl_read32(ipw, ofs) readl((ipw)->hw_base + (ofs))
-static inline u32 __iwl_read32(char *f, u32 l, struct iwl_priv *ipw, u32 ofs)
+#define _iwl_read32(iwl, ofs) readl((iwl)->hw_base + (ofs))
+#ifdef CONFIG_IWLWIFI_DEBUG
+static inline u32 __iwl_read32(char *f, u32 l, struct iwl_priv *iwl, u32 ofs)
 {
 	IWL_DEBUG_IO("read_direct32(0x%08X) - %s %d\n", ofs, f, l);
-	return _iwl_read32(ipw, ofs);
+	return _iwl_read32(iwl, ofs);
 }
-
-#ifdef CONFIG_IWLWIFI_DEBUG
-#define iwl_read32(ipw, ofs) \
-	__iwl_read32(__FILE__, __LINE__, ipw, ofs)
+#define iwl_read32(iwl, ofs) __iwl_read32(__FILE__, __LINE__, iwl, ofs)
 #else
 #define iwl_read32(p, o) _iwl_read32(p, o)
 #endif
@@ -104,6 +101,7 @@ static inline int _iwl_poll_bit(struct iwl_priv *priv, u32 addr,
 
 	return -ETIMEDOUT;
 }
+#ifdef CONFIG_IWLWIFI_DEBUG
 static inline int __iwl_poll_bit(const char *f, u32 l,
 				 struct iwl_priv *priv, u32 addr,
 				 u32 bits, u32 mask, int timeout)
@@ -119,10 +117,8 @@ static inline int __iwl_poll_bit(const char *f, u32 l,
 		     addr, bits, mask, rc, f, l);
 	return rc;
 }
-
-#ifdef CONFIG_IWLWIFI_DEBUG
-#define iwl_poll_bit(ipw, addr, bits, mask, timeout) \
-	__iwl_poll_bit(__FILE__, __LINE__, ipw, addr, bits, mask, timeout)
+#define iwl_poll_bit(iwl, addr, bits, mask, timeout) \
+	__iwl_poll_bit(__FILE__, __LINE__, iwl, addr, bits, mask, timeout)
 #else
 #define iwl_poll_bit(p, a, b, m, t) _iwl_poll_bit(p, a, b, m, t)
 #endif
@@ -131,6 +127,7 @@ static inline void _iwl_set_bit(struct iwl_priv *priv, u32 reg, u32 mask)
 {
 	_iwl_write32(priv, reg, _iwl_read32(priv, reg) | mask);
 }
+#ifdef CONFIG_IWLWIFI_DEBUG
 static inline void __iwl_set_bit(const char *f, u32 l,
 				 struct iwl_priv *priv, u32 reg, u32 mask)
 {
@@ -138,8 +135,6 @@ static inline void __iwl_set_bit(const char *f, u32 l,
 	IWL_DEBUG_IO("set_bit(0x%08X, 0x%08X) = 0x%08X\n", reg, mask, val);
 	_iwl_write32(priv, reg, val);
 }
-
-#ifdef CONFIG_IWLWIFI_DEBUG
 #define iwl_set_bit(p, r, m) __iwl_set_bit(__FILE__, __LINE__, p, r, m)
 #else
 #define iwl_set_bit(p, r, m) _iwl_set_bit(p, r, m)
@@ -149,6 +144,7 @@ static inline void _iwl_clear_bit(struct iwl_priv *priv, u32 reg, u32 mask)
 {
 	_iwl_write32(priv, reg, _iwl_read32(priv, reg) & ~mask);
 }
+#ifdef CONFIG_IWLWIFI_DEBUG
 static inline void __iwl_clear_bit(const char *f, u32 l,
 				   struct iwl_priv *priv, u32 reg, u32 mask)
 {
@@ -156,8 +152,6 @@ static inline void __iwl_clear_bit(const char *f, u32 l,
 	IWL_DEBUG_IO("clear_bit(0x%08X, 0x%08X) = 0x%08X\n", reg, mask, val);
 	_iwl_write32(priv, reg, val);
 }
-
-#ifdef CONFIG_IWLWIFI_DEBUG
 #define iwl_clear_bit(p, r, m) __iwl_clear_bit(__FILE__, __LINE__, p, r, m)
 #else
 #define iwl_clear_bit(p, r, m) _iwl_clear_bit(p, r, m)
@@ -168,7 +162,12 @@ static inline int _iwl_grab_restricted_access(struct iwl_priv *priv)
 	int rc;
 	u32 gp_ctl;
 
-	if (priv->status & STATUS_RF_KILL_MASK) {
+#ifdef CONFIG_IWLWIFI_DEBUG
+	if (atomic_read(&priv->restrict_refcnt))
+		return 0;
+#endif
+	if (test_bit(STATUS_RF_KILL_HW, &priv->status) ||
+	    test_bit(STATUS_RF_KILL_SW, &priv->status)) {
 		IWL_WARNING("WARNING: Requesting MAC access during RFKILL "
 			"wakes up NIC\n");
 
@@ -178,10 +177,9 @@ static inline int _iwl_grab_restricted_access(struct iwl_priv *priv)
 			IWL_DEBUG_RF_KILL("Wait for complete power-down, "
 				"gpctl = 0x%08x\n", gp_ctl);
 			mdelay(10);
-		} else {
+		} else
 			IWL_DEBUG_RF_KILL("power-down complete, "
-				"gpctl = 0x%08x\n", gp_ctl);
-		}
+					  "gpctl = 0x%08x\n", gp_ctl);
 	}
 
 	/* this bit wakes up the NIC */
@@ -195,23 +193,24 @@ static inline int _iwl_grab_restricted_access(struct iwl_priv *priv)
 		return -EIO;
 	}
 
-	priv->status |= STATUS_RESTRICTED;
-
+#ifdef CONFIG_IWLWIFI_DEBUG
+	atomic_inc(&priv->restrict_refcnt);
+#endif
 	return 0;
 }
 
+#ifdef CONFIG_IWLWIFI_DEBUG
 static inline int __iwl_grab_restricted_access(const char *f, u32 l,
 					       struct iwl_priv *priv)
 {
-	if (priv->status & STATUS_RESTRICTED)
-		IWL_ERROR
-		    ("Grabbing access while already held at line %d.\n", l);
+	if (atomic_read(&priv->restrict_refcnt))
+		IWL_DEBUG_INFO("Grabbing access while already held at "
+			       "line %d.\n", l);
 
 	IWL_DEBUG_IO("grabbing restricted access - %s %d\n", f, l);
 
 	return _iwl_grab_restricted_access(priv);
 }
-#ifdef CONFIG_IWLWIFI_DEBUG
 #define iwl_grab_restricted_access(priv) \
 	__iwl_grab_restricted_access(__FILE__, __LINE__, priv)
 #else
@@ -219,75 +218,76 @@ static inline int __iwl_grab_restricted_access(const char *f, u32 l,
 	_iwl_grab_restricted_access(priv)
 #endif
 
-static inline void _iwl_release_restricted_access(struct iwl_priv
-						  *priv)
+static inline void _iwl_release_restricted_access(struct iwl_priv *priv)
 {
-	_iwl_clear_bit(priv, CSR_GP_CNTRL,
-		       CSR_GP_CNTRL_REG_FLAG_MAC_ACCESS_REQ);
-
-	priv->status &= ~STATUS_RESTRICTED;
+#ifdef CONFIG_IWLWIFI_DEBUG
+	if (atomic_dec_and_test(&priv->restrict_refcnt))
+#endif
+		_iwl_clear_bit(priv, CSR_GP_CNTRL,
+			       CSR_GP_CNTRL_REG_FLAG_MAC_ACCESS_REQ);
 }
-
+#ifdef CONFIG_IWLWIFI_DEBUG
 static inline void __iwl_release_restricted_access(const char *f, u32 l,
 						   struct iwl_priv *priv)
 {
-	if (!(priv->status & STATUS_RESTRICTED))
-		IWL_ERROR
-		    ("Release unheld restricted access at line %d.\n", l);
+	if (atomic_read(&priv->restrict_refcnt) <= 0)
+		IWL_ERROR("Release unheld restricted access at line %d.\n", l);
 
 	IWL_DEBUG_IO("releasing restricted access - %s %d\n", f, l);
 	_iwl_release_restricted_access(priv);
 }
-
-#ifdef CONFIG_IWLWIFI_DEBUG
 #define iwl_release_restricted_access(priv) \
 	__iwl_release_restricted_access(__FILE__, __LINE__, priv)
 #else
 #define iwl_release_restricted_access(priv) \
 	_iwl_release_restricted_access(priv)
 #endif
+
 static inline u32 _iwl_read_restricted(struct iwl_priv *priv, u32 reg)
 {
 	return _iwl_read32(priv, reg);
 }
+#ifdef CONFIG_IWLWIFI_DEBUG
 static inline u32 __iwl_read_restricted(const char *f, u32 l,
 					struct iwl_priv *priv, u32 reg)
 {
 	u32 value = _iwl_read_restricted(priv, reg);
-	if (!(priv->status & STATUS_RESTRICTED))
+	if (!atomic_read(&priv->restrict_refcnt))
 		IWL_ERROR("Unrestricted access from %s %d\n", f, l);
 	IWL_DEBUG_IO("read_restricted(0x%4X) = 0x%08x - %s %d \n", reg, value,
 		     f, l);
 	return value;
 }
-
-#ifdef CONFIG_IWLWIFI_DEBUG
 #define iwl_read_restricted(priv, reg) \
 	__iwl_read_restricted(__FILE__, __LINE__, priv, reg)
 #else
-#define iwl_read_restricted(p, r) _iwl_read_restricted(p, r)
+#define iwl_read_restricted _iwl_read_restricted
 #endif
 
-static void inline _iwl_write_restricted(struct iwl_priv *priv,
+static inline void _iwl_write_restricted(struct iwl_priv *priv,
 					 u32 reg, u32 value)
 {
 	_iwl_write32(priv, reg, value);
 }
+#ifdef CONFIG_IWLWIFI_DEBUG
 static void __iwl_write_restricted(u32 line,
 				   struct iwl_priv *priv, u32 reg, u32 value)
 {
-	if (!(priv->status & STATUS_RESTRICTED))
+	if (!atomic_read(&priv->restrict_refcnt))
 		IWL_ERROR("Unrestricted access from line %d\n", line);
 	_iwl_write_restricted(priv, reg, value);
 }
-
 #define iwl_write_restricted(priv, reg, value) \
 	__iwl_write_restricted(__LINE__, priv, reg, value)
+#else
+#define iwl_write_restricted _iwl_write_restricted
+#endif
 
 static inline void iwl_write_buffer_restricted(struct iwl_priv *priv,
-					       u32 reg, u32 len, u32 * values)
+					       u32 reg, u32 len, u32 *values)
 {
 	u32 count = sizeof(u32);
+
 	if ((priv != NULL) && (values != NULL)) {
 		for (; 0 < len; len -= count, reg += count, values++)
 			_iwl_write_restricted(priv, reg, *values);
@@ -308,27 +308,26 @@ static inline int _iwl_poll_restricted_bit(struct iwl_priv *priv,
 
 	return -ETIMEDOUT;
 }
+
+#ifdef CONFIG_IWLWIFI_DEBUG
 static inline int __iwl_poll_restricted_bit(const char *f, u32 l,
 					    struct iwl_priv *priv,
 					    u32 addr, u32 mask, int timeout)
 {
 	int rc = _iwl_poll_restricted_bit(priv, addr, mask, timeout);
+
 	if (unlikely(rc == -ETIMEDOUT))
-		IWL_DEBUG_IO
-		    ("poll_restricted_bit(0x%08X, 0x%08X) - timedout - %s %d\n",
-		     addr, mask, f, l);
+		IWL_DEBUG_IO("poll_restricted_bit(0x%08X, 0x%08X) - "
+			     "timedout - %s %d\n", addr, mask, f, l);
 	else
-		IWL_DEBUG_IO
-		    ("poll_restricted_bit(0x%08X, 0x%08X) = 0x%08X - %s %d\n",
-		     addr, mask, rc, f, l);
+		IWL_DEBUG_IO("poll_restricted_bit(0x%08X, 0x%08X) = 0x%08X "
+			     "- %s %d\n", addr, mask, rc, f, l);
 	return rc;
 }
-
-#ifdef CONFIG_IWLWIFI_DEBUG
-#define iwl_poll_restricted_bit(ipw, addr, mask, timeout) \
-	__iwl_poll_restricted_bit(__FILE__, __LINE__, ipw, addr, mask, timeout)
+#define iwl_poll_restricted_bit(iwl, addr, mask, timeout) \
+	__iwl_poll_restricted_bit(__FILE__, __LINE__, iwl, addr, mask, timeout)
 #else
-#define iwl_poll_restricted_bit(p, a, m, t) _iwl_poll_restricted_bit(p, a, m, t)
+#define iwl_poll_restricted_bit _iwl_poll_restricted_bit
 #endif
 
 static inline u32 _iwl_read_restricted_reg(struct iwl_priv *priv, u32 reg)
@@ -336,16 +335,20 @@ static inline u32 _iwl_read_restricted_reg(struct iwl_priv *priv, u32 reg)
 	_iwl_write_restricted(priv, HBUS_TARG_PRPH_RADDR, reg | (3 << 24));
 	return _iwl_read_restricted(priv, HBUS_TARG_PRPH_RDAT);
 }
+#ifdef CONFIG_IWLWIFI_DEBUG
 static inline u32 __iwl_read_restricted_reg(u32 line,
 					    struct iwl_priv *priv, u32 reg)
 {
-	if (!(priv->status & STATUS_RESTRICTED))
+	if (!atomic_read(&priv->restrict_refcnt))
 		IWL_ERROR("Unrestricted access from line %d\n", line);
 	return _iwl_read_restricted_reg(priv, reg);
 }
 
 #define iwl_read_restricted_reg(priv, reg) \
 	__iwl_read_restricted_reg(__LINE__, priv, reg)
+#else
+#define iwl_read_restricted_reg _iwl_read_restricted_reg
+#endif
 
 static inline void _iwl_write_restricted_reg(struct iwl_priv *priv,
 					     u32 addr, u32 val)
@@ -354,46 +357,56 @@ static inline void _iwl_write_restricted_reg(struct iwl_priv *priv,
 			      ((addr & 0x0000FFFF) | (3 << 24)));
 	_iwl_write_restricted(priv, HBUS_TARG_PRPH_WDAT, val);
 }
+#ifdef CONFIG_IWLWIFI_DEBUG
 static inline void __iwl_write_restricted_reg(u32 line,
 					      struct iwl_priv *priv,
 					      u32 addr, u32 val)
 {
-	if (!(priv->status & STATUS_RESTRICTED))
+	if (!atomic_read(&priv->restrict_refcnt))
 		IWL_ERROR("Unrestricted access from line %d\n", line);
 	_iwl_write_restricted_reg(priv, addr, val);
 }
 
 #define iwl_write_restricted_reg(priv, addr, val) \
 	__iwl_write_restricted_reg(__LINE__, priv, addr, val);
+#else
+#define iwl_write_restricted_reg _iwl_write_restricted_reg
+#endif
 
 #define _iwl_set_bits_restricted_reg(priv, reg, mask) \
 	_iwl_write_restricted_reg(priv, reg, \
 				  (_iwl_read_restricted_reg(priv, reg) | mask))
+#ifdef CONFIG_IWLWIFI_DEBUG
 static inline void __iwl_set_bits_restricted_reg(u32 line, struct iwl_priv
 						 *priv, u32 reg, u32 mask)
 {
-	if (!(priv->status & STATUS_RESTRICTED))
+	if (!atomic_read(&priv->restrict_refcnt))
 		IWL_ERROR("Unrestricted access from line %d\n", line);
 	_iwl_set_bits_restricted_reg(priv, reg, mask);
 }
-
 #define iwl_set_bits_restricted_reg(priv, reg, mask) \
 	__iwl_set_bits_restricted_reg(__LINE__, priv, reg, mask)
+#else
+#define iwl_set_bits_restricted_reg _iwl_set_bits_restricted_reg
+#endif
 
 #define _iwl_set_bits_mask_restricted_reg(priv, reg, bits, mask) \
 	_iwl_write_restricted_reg( \
 	    priv, reg, ((_iwl_read_restricted_reg(priv, reg) & mask) | bits))
-static void inline __iwl_set_bits_mask_restricted_reg(u32 line, struct iwl_priv
-						      *priv, u32 reg,
-						      u32 bits, u32 mask)
+#ifdef CONFIG_IWLWIFI_DEBUG
+static inline void __iwl_set_bits_mask_restricted_reg(u32 line,
+		struct iwl_priv *priv, u32 reg, u32 bits, u32 mask)
 {
-	if (!(priv->status & STATUS_RESTRICTED))
+	if (!atomic_read(&priv->restrict_refcnt))
 		IWL_ERROR("Unrestricted access from line %d\n", line);
 	_iwl_set_bits_mask_restricted_reg(priv, reg, bits, mask);
 }
 
 #define iwl_set_bits_mask_restricted_reg(priv, reg, bits, mask) \
 	__iwl_set_bits_mask_restricted_reg(__LINE__, priv, reg, bits, mask)
+#else
+#define iwl_set_bits_mask_restricted_reg _iwl_set_bits_mask_restricted_reg
+#endif
 
 static inline void iwl_clear_bits_restricted_reg(struct iwl_priv
 						 *priv, u32 reg, u32 mask)
@@ -415,18 +428,16 @@ static inline void iwl_write_restricted_mem(struct iwl_priv *priv, u32 addr,
 	iwl_write_restricted(priv, HBUS_TARG_MEM_WDAT, val);
 }
 
-static inline void iwl_write_restricted_mem_buffer(struct iwl_priv *priv,
-						   u32 addr, u32 len,
-						   u32 * values)
+static inline void iwl_write_restricted_mems(struct iwl_priv *priv, u32 addr,
+					     u32 len, u32 *values)
 {
 	iwl_write_restricted(priv, HBUS_TARG_MEM_WADDR, addr);
 	for (; 0 < len; len -= sizeof(u32), values++)
 		iwl_write_restricted(priv, HBUS_TARG_MEM_WDAT, *values);
 }
 
-static inline void iwl_write_restricted_reg_buffer(struct iwl_priv *priv,
-						   u32 reg, u32 len,
-						   u8 * values)
+static inline void iwl_write_restricted_regs(struct iwl_priv *priv, u32 reg,
+					     u32 len, u8 *values)
 {
 	u32 reg_offset = reg;
 	u32 aligment = reg & 0x3;
@@ -454,21 +465,6 @@ static inline void iwl_write_restricted_reg_buffer(struct iwl_priv *priv,
 	for (; reg_offset < (reg + len);
 	     reg_offset += sizeof(u32), values += sizeof(u32))
 		_iwl_write_restricted_reg(priv, reg_offset, *((u32 *) values));
-}
-
-/**
- * iwl_dma_addr2rbd_ptr - convert a DMA address to a uCode read buffer pointer.
- *
- * NOTE: This function has 3945 and 4965 specific code paths in it.
- */
-static inline u32 iwl_dma_addr2rbd_ptr(struct iwl_priv *priv,
-				       dma_addr_t dma_addr)
-{
-#if IWL == 3945
-	return cpu_to_le32((u32)dma_addr);
-#elif IWL == 4965
-	return cpu_to_le32((u32)(dma_addr >> 8));
-#endif
 }
 
 #endif

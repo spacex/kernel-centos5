@@ -81,6 +81,7 @@
 #include <asm/system.h>
 #include <asm/uaccess.h>
 #include <asm/ioctls.h>
+#include <linux/bootmem.h>
 #include <linux/types.h>
 #include <linux/fcntl.h>
 #include <linux/module.h>
@@ -118,6 +119,17 @@ DEFINE_SNMP_STAT(struct udp_mib, udp_statistics) __read_mostly;
 struct hlist_head udp_hash[UDP_HTABLE_SIZE];
 DEFINE_RWLOCK(udp_hash_lock);
 
+int sysctl_udp_mem[3] __read_mostly;
+int sysctl_udp_rmem_min __read_mostly;
+int sysctl_udp_wmem_min __read_mostly;
+
+EXPORT_SYMBOL(sysctl_udp_mem);
+EXPORT_SYMBOL(sysctl_udp_rmem_min);
+EXPORT_SYMBOL(sysctl_udp_wmem_min);
+
+atomic_t udp_memory_allocated;
+EXPORT_SYMBOL(udp_memory_allocated);
+
 /* Shared by v4/v6 udp. */
 int udp_port_rover;
 
@@ -129,11 +141,13 @@ static int udp_v4_get_port(struct sock *sk, unsigned short snum)
 
 	write_lock_bh(&udp_hash_lock);
 	if (snum == 0) {
-		int best_size_so_far, best, result, i;
+		int best_size_so_far, best, result, i, low, high;
 
-		if (udp_port_rover > sysctl_local_port_range[1] ||
-		    udp_port_rover < sysctl_local_port_range[0])
-			udp_port_rover = sysctl_local_port_range[0];
+		inet_get_local_port_range(&low, &high);
+
+		if (udp_port_rover > high ||
+		    udp_port_rover < low)
+			udp_port_rover = low;
 		best_size_so_far = 32767;
 		best = result = udp_port_rover;
 		for (i = 0; i < UDP_HTABLE_SIZE; i++, result++) {
@@ -142,9 +156,8 @@ static int udp_v4_get_port(struct sock *sk, unsigned short snum)
 
 			list = &udp_hash[result & (UDP_HTABLE_SIZE - 1)];
 			if (hlist_empty(list)) {
-				if (result > sysctl_local_port_range[1])
-					result = sysctl_local_port_range[0] +
-						((result - sysctl_local_port_range[0]) &
+				if (result > high)
+					result = low + ((result - low) &
 						 (UDP_HTABLE_SIZE - 1));
 				goto gotit;
 			}
@@ -158,9 +171,8 @@ static int udp_v4_get_port(struct sock *sk, unsigned short snum)
 		}
 		result = best;
 		for(i = 0; i < (1 << 16) / UDP_HTABLE_SIZE; i++, result += UDP_HTABLE_SIZE) {
-			if (result > sysctl_local_port_range[1])
-				result = sysctl_local_port_range[0]
-					+ ((result - sysctl_local_port_range[0]) &
+			if (result > high)
+				result = low + ((result - low) &
 					   (UDP_HTABLE_SIZE - 1));
 			if (!udp_lport_inuse(result))
 				break;
@@ -605,8 +617,11 @@ int udp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 						 .dport = dport } } };
 		security_sk_classify_flow(sk, &fl);
 		err = ip_route_output_flow(&rt, &fl, sk, 1);
-		if (err)
+		if (err) {
+			if (err == -ENETUNREACH)
+				IP_INC_STATS_BH(IPSTATS_MIB_OUTNOROUTES);
 			goto out;
+		}
 
 		err = -EACCES;
 		if ((rt->rt_flags & RTCF_BROADCAST) &&
@@ -822,6 +837,8 @@ try_again:
 	if (err)
 		goto out_free;
 
+	UDP_INC_STATS_USER(UDP_MIB_INDATAGRAMS);
+
 	sock_recv_timestamp(msg, sk, skb);
 
 	/* Copy the address. */
@@ -840,14 +857,18 @@ try_again:
 		err = skb->len - sizeof(struct udphdr);
   
 out_free:
+	lock_sock(sk);
   	skb_free_datagram(sk, skb);
+	release_sock(sk);
 out:
   	return err;
 
 csum_copy_err:
 	UDP_INC_STATS_BH(UDP_MIB_INERRORS);
 
+	lock_sock(sk);
 	skb_kill_datagram(sk, skb, flags);
+	release_sock(sk);
 
 	if (noblock)
 		return -EAGAIN;	
@@ -1012,7 +1033,6 @@ static int udp_queue_rcv_skb(struct sock * sk, struct sk_buff *skb)
 		if (ret < 0) {
 			/* process the ESP packet */
 			ret = xfrm4_rcv_encap(skb, up->encap_type);
-			UDP_INC_STATS_BH(UDP_MIB_INDATAGRAMS);
 			return -ret;
 		}
 		/* FALLTHROUGH -- it's a UDP Packet */
@@ -1032,7 +1052,6 @@ static int udp_queue_rcv_skb(struct sock * sk, struct sk_buff *skb)
 		kfree_skb(skb);
 		return -1;
 	}
-	UDP_INC_STATS_BH(UDP_MIB_INDATAGRAMS);
 	return 0;
 }
 
@@ -1064,7 +1083,15 @@ static int udp_v4_mcast_deliver(struct sk_buff *skb, struct udphdr *uh,
 				skb1 = skb_clone(skb, GFP_ATOMIC);
 
 			if(skb1) {
-				int ret = udp_queue_rcv_skb(sk, skb1);
+				int ret = 0;
+
+				bh_lock_sock_nested(sk);
+				if (!sock_owned_by_user(sk))
+					ret = udp_queue_rcv_skb(sk, skb1);
+				else
+					sk_add_backlog(sk, skb1);
+				bh_unlock_sock(sk);
+
 				if (ret > 0)
 					/* we should probably re-process instead
 					 * of dropping packets here. */
@@ -1137,7 +1164,13 @@ int udp_rcv(struct sk_buff *skb)
 	sk = udp_v4_lookup(saddr, uh->source, daddr, uh->dest, skb->dev->ifindex);
 
 	if (sk != NULL) {
-		int ret = udp_queue_rcv_skb(sk, skb);
+		int ret = 0;
+		bh_lock_sock_nested(sk);
+		if (!sock_owned_by_user(sk))
+			ret = udp_queue_rcv_skb(sk, skb);
+		else
+			sk_add_backlog(sk, skb);
+		bh_unlock_sock(sk);
 		sock_put(sk);
 
 		/* a return value > 0 means to resubmit the input, but
@@ -1386,6 +1419,10 @@ struct proto udp_prot = {
 	.hash		   = udp_v4_hash,
 	.unhash		   = udp_v4_unhash,
 	.get_port	   = udp_v4_get_port,
+	.memory_allocated  = &udp_memory_allocated,
+	.sysctl_mem	   = sysctl_udp_mem,
+	.sysctl_wmem	   = &sysctl_udp_wmem_min,
+	.sysctl_rmem	   = &sysctl_udp_rmem_min,
 	.obj_size	   = sizeof(struct udp_sock),
 #ifdef CONFIG_COMPAT
 	.compat_setsockopt = compat_udp_setsockopt,
@@ -1577,6 +1614,25 @@ void udp4_proc_exit(void)
 	udp_proc_unregister(&udp4_seq_afinfo);
 }
 #endif /* CONFIG_PROC_FS */
+
+void __init udp_init(void)
+{
+	unsigned long limit;
+
+	/* Set the pressure threshold up by the same strategy of TCP. It is a
+	 * fraction of global memory that is up to 1/2 at 256 MB, decreasing
+	 * toward zero with the amount of memory, with a floor of 128 pages.
+	 */
+	limit = min(nr_all_pages, 1UL<<(28-PAGE_SHIFT)) >> (20-PAGE_SHIFT);
+	limit = (limit * (nr_all_pages >> (20-PAGE_SHIFT))) >> (PAGE_SHIFT-11);
+	limit = max(limit, 128UL);
+	sysctl_udp_mem[0] = limit / 4 * 3;
+	sysctl_udp_mem[1] = limit;
+	sysctl_udp_mem[2] = sysctl_udp_mem[0] * 2;
+
+	sysctl_udp_rmem_min = SK_MEM_QUANTUM;
+	sysctl_udp_wmem_min = SK_MEM_QUANTUM;
+}
 
 EXPORT_SYMBOL(udp_disconnect);
 EXPORT_SYMBOL(udp_hash);

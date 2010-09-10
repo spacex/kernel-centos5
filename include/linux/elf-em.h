@@ -21,6 +21,7 @@
 #define EM_SPARC32PLUS	18	/* Sun's "v8plus" */
 #define EM_PPC		20	/* PowerPC */
 #define EM_PPC64	21       /* PowerPC64 */
+#define EM_SPU		23	/* Cell BE SPU */
 #define EM_SH		42	/* SuperH */
 #define EM_SPARCV9	43	/* SPARC v9 64-bit */
 #define EM_IA_64	50	/* HP/Intel IA-64 */

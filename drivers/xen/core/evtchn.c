@@ -629,20 +629,11 @@ static void shutdown_pirq(unsigned int irq)
 
 static void enable_pirq(unsigned int irq)
 {
-	int evtchn = evtchn_from_irq(irq);
-
-	if (VALID_EVTCHN(evtchn)) {
-		unmask_evtchn(evtchn);
-		pirq_unmask_notify(irq_to_pirq(irq));
-	}
+	startup_pirq(irq);
 }
 
 static void disable_pirq(unsigned int irq)
 {
-	int evtchn = evtchn_from_irq(irq);
-
-	if (VALID_EVTCHN(evtchn))
-		mask_evtchn(evtchn);
 }
 
 static void ack_pirq(unsigned int irq)
@@ -661,7 +652,10 @@ static void end_pirq(unsigned int irq)
 {
 	int evtchn = evtchn_from_irq(irq);
 
-	if (VALID_EVTCHN(evtchn) && !(irq_desc[irq].status & IRQ_DISABLED)) {
+	if ((irq_desc[irq].status & (IRQ_DISABLED|IRQ_PENDING)) ==
+	    (IRQ_DISABLED|IRQ_PENDING)) {
+		shutdown_pirq(irq);
+	} else if (VALID_EVTCHN(evtchn)) {
 		unmask_evtchn(evtchn);
 		pirq_unmask_notify(irq_to_pirq(irq));
 	}

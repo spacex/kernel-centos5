@@ -15,6 +15,8 @@
 #include <linux/mutex.h>
 #include <asm/semaphore.h>
 
+#define KTHREAD_NICE_LEVEL (-5)
+
 /*
  * We dont want to execute off keventd since it might
  * hold a semaphore our callers hold too:
@@ -121,10 +123,18 @@ static void keventd_create_kthread(void *_create)
 	if (pid < 0) {
 		create->result = ERR_PTR(pid);
 	} else {
+		struct sched_param param = { .sched_priority = 0 };
 		wait_for_completion(&create->started);
 		read_lock(&tasklist_lock);
 		create->result = find_task_by_pid(pid);
 		read_unlock(&tasklist_lock);
+		/*
+		 * root may have changed our (kthread wq's) priority or CPU
+		 * mask. The kernel thread should not inherit these properties.
+		 */
+		sched_setscheduler(create->result, SCHED_NORMAL, &param);
+		set_user_nice(create->result, KTHREAD_NICE_LEVEL);
+		set_cpus_allowed(create->result, CPU_MASK_ALL);
 	}
 	complete(&create->done);
 }

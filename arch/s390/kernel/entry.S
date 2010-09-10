@@ -785,6 +785,20 @@ mcck_return:
 
         RESTORE_ALL __LC_RETURN_MCCK_PSW,0
 
+/*
+ * Reset channel path machine check handler.
+ */
+	.globl rchp_mcck_int_handler
+rchp_mcck_int_handler:
+	SAVE_ALL_BASE __LC_SAVE_AREA+32
+	SAVE_ALL_SYNC __LC_MCK_OLD_PSW,__LC_SAVE_AREA+32
+	CREATE_STACK_FRAME __LC_MCK_OLD_PSW,__LC_SAVE_AREA+32
+
+	l	%r1,BASED(.Ldo_rchp_mcck)
+	basr	%r14,%r1		# call machine check handler
+
+	RESTORE_ALL __LC_RETURN_MCCK_PSW,0
+
 #ifdef CONFIG_SMP
 /*
  * Restart interruption handler, kick starter for additional CPUs
@@ -1031,6 +1045,7 @@ cleanup_io_leave_insn:
 .Ldo_IRQ:      .long  do_IRQ
 .Ldo_extint:   .long  do_extint
 .Ldo_signal:   .long  do_signal
+.Ldo_rchp_mcck:.long  do_rchp_mcck
 .Lhandle_per:  .long  do_single_step
 .Ljump_table:  .long  pgm_check_table
 .Lschedule:    .long  schedule

@@ -1285,6 +1285,7 @@ struct ql3_adapter {
 	struct workqueue_struct *workqueue;
 	struct work_struct reset_work;
 	struct work_struct tx_timeout_work;
+	struct work_struct link_state_work;
 	u32 max_frame_size;
 	u32 device_id;
 	u16 phyType;

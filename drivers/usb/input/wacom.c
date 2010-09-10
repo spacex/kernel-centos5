@@ -702,7 +702,8 @@ static void wacom_intuos_irq(struct urb *urb, struct pt_regs *regs)
 						 - ((data[8] & 0x02) >> 1));
 
 			/* I3 2D mouse side buttons */
-			if (wacom->features->type == INTUOS3) {
+			if (wacom->features->type >= INTUOS3 &&
+			    wacom->features->type <= INTUOS319) {
 				input_report_key(dev, BTN_SIDE,   data[8] & 0x40);
 				input_report_key(dev, BTN_EXTRA,  data[8] & 0x20);
 			}

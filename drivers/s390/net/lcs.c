@@ -1397,11 +1397,13 @@ lcs_irq(struct ccw_device *cdev, unsigned long intparm, struct irb *irb)
 	if (rc || (dstat & DEV_STAT_UNIT_EXCEP)) {
 		PRINT_WARN("check on device %s, dstat=0x%X, cstat=0x%X \n",
 			    cdev->dev.bus_id, dstat, cstat);
-		if (rc) {
-			lcs_schedule_recovery(card);
-			wake_up(&card->wait_q);
-			return;
-		}
+		if (rc)
+			channel->state = CH_STATE_ERROR;
+	}
+	if (channel->state == CH_STATE_ERROR) {
+		lcs_schedule_recovery(card);
+		wake_up(&card->wait_q);
+		return;
 	}
 	/* How far in the ccw chain have we processed? */
 	if ((channel->state != CH_STATE_INIT) &&
@@ -1707,6 +1709,8 @@ lcs_stopcard(struct lcs_card *card)
 
 	if (card->read.state != CH_STATE_STOPPED &&
 	    card->write.state != CH_STATE_STOPPED &&
+	    card->read.state != CH_STATE_ERROR &&
+	    card->write.state != CH_STATE_ERROR &&
 	    card->state == DEV_STATE_UP) {
 		lcs_clear_multicast_list(card);
 		rc = lcs_send_stoplan(card,LCS_INITIATOR_TCPIP);

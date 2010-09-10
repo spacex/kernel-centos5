@@ -1270,12 +1270,13 @@ __dasd_check_expire(struct dasd_device * device)
 	    (time_after_eq(jiffies, cqr->expires + cqr->starttime))) {
 		if (device->discipline->term_IO(cqr) != 0) {
 			/* Hmpf, try again in 5 sec */
-			dasd_set_timer(device, 5*HZ);
 			DEV_MESSAGE(KERN_ERR, device,
 				    "internal error - timeout (%is) expired "
 				    "for cqr %p, termination failed, "
 				    "retrying in 5s",
 				    (cqr->expires/HZ), cqr);
+			cqr->expires += 5*HZ;
+			dasd_set_timer(device, 5*HZ);
 		} else {
 			DEV_MESSAGE(KERN_ERR, device,
 				    "internal error - timeout (%is) expired "
@@ -1958,8 +1959,9 @@ dasd_generic_probe (struct ccw_device *cdev,
 	if (ret)
 		printk(KERN_WARNING
 		       "dasd_generic_probe: could not initially online "
-		       "ccw-device %s\n", cdev->dev.bus_id);
-	return ret;
+		       "ccw-device %s, return code: %d\n", cdev->dev.bus_id,
+			ret);
+	return 0;
 }
 
 /*

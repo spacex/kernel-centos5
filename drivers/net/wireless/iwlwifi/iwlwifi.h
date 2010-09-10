@@ -31,7 +31,10 @@
 #define __iwlwifi_h__
 
 #include <linux/pci.h> /* for struct pci_device_id */
+#include <linux/kernel.h>
 #include <net/ieee80211_radiotap.h>
+
+#include "iwl-compat.h"
 
 struct iwl_priv;
 
@@ -39,12 +42,20 @@ struct iwl_priv;
 extern struct pci_device_id iwl_hw_card_ids[];
 
 #if IWL == 3945
+
 #define DRV_NAME	"iwl3945"
+#include "iwl-hw.h"
+#include "iwl-3945-hw.h"
+
 #elif IWL == 4965
+
 #define DRV_NAME        "iwl4965"
+#include "iwl-hw.h"
+#include "iwl-4965-hw.h"
+
 #endif
 
-#include "iwl-hw.h"
+#include "iwl-prph.h"
 
 /*
  * Driver implementation data structures, constants, inline
@@ -58,16 +69,28 @@ extern struct pci_device_id iwl_hw_card_ids[];
 
 #include "iwl-debug.h"
 
+/* Default noise level to report when noise measurement is not available.
+ *   This may be because we're:
+ *   1)  Not associated (4965, no beacon statistics being sent to driver)
+ *   2)  Scanning (noise measurement does not apply to associated channel)
+ *   3)  Receiving CCK (3945 delivers noise info only for OFDM frames)
+ * Use default noise value of -127 ... this is below the range of measurable
+ *   Rx dBm for either 3945 or 4965, so it can indicate "unmeasurable" to user.
+ *   Also, -127 works better than 0 when averaging frames with/without
+ *   noise info (e.g. averaging might be done in app); measured dBm values are
+ *   always negative ... using a negative value as the default keeps all
+ *   averages within an s8's (used in some apps) range of negative values. */
+#define IWL_NOISE_MEAS_NOT_AVAILABLE (-127)
 
 /* Module parameters accessible from iwl-*.c */
-extern int param_disable_hw_scan;
-extern int param_debug;
-extern int param_mode;
-extern int param_disable;
-extern int param_antenna;
-extern int param_hwcrypto;
-extern int param_qos_enable;
-
+extern int iwl_param_disable_hw_scan;
+extern int iwl_param_debug;
+extern int iwl_param_mode;
+extern int iwl_param_disable;
+extern int iwl_param_antenna;
+extern int iwl_param_hwcrypto;
+extern int iwl_param_qos_enable;
+extern int iwl_param_queues_num;
 
 enum iwl_antenna {
 	IWL_ANTENNA_DIVERSITY,
@@ -103,7 +126,7 @@ struct iwl_rt_rx_hdr {
 	__le64 rt_tsf;		/* TSF */
 	u8 rt_flags;		/* radiotap packet flags */
 	u8 rt_rate;		/* rate in 500kb/s */
-	__le16 rt_channel;	/* channel in mHz */
+	__le16 rt_channelMHz;	/* channel in MHz */
 	__le16 rt_chbitmask;	/* channel bitfield */
 	s8 rt_dbmsignal;	/* signal in dBm, kluged to signed */
 	s8 rt_dbmnoise;
@@ -133,7 +156,6 @@ struct iwl_queue {
 	dma_addr_t dma_addr;   /* physical addr for BD's */
 	int n_window;	       /* safe queue window */
 	u32 id;
-	u32 element_size;
 	int low_mark;	       /* low watermark, resume queue if free
 				* space more than this */
 	int high_mark;         /* high watermark, stop queue if free
@@ -156,7 +178,7 @@ struct iwl_tx_info {
  */
 struct iwl_tx_queue {
 	struct iwl_queue q;
-	u8 *bd;
+	struct iwl_tfd_frame *bd;
 	struct iwl_cmd *cmd;
 	dma_addr_t dma_addr_cmd;
 	struct iwl_tx_info *txb;
@@ -173,14 +195,16 @@ struct iwl_tx_queue {
 #include "iwl-4965-rs.h"
 #endif
 
-#define IWL_TX_QUEUE_AC0	0
-#define IWL_TX_QUEUE_AC1	1
-#define IWL_TX_QUEUE_AC2	2
-#define IWL_TX_QUEUE_AC3	3
-#define IWL_TX_QUEUE_HCCA_1	5
-#define IWL_TX_QUEUE_HCCA_2	6
-#define IWL_TX_QUEUE_NONE	7
-#define IWL_MAX_NUM_QUEUES   16
+#define IWL_TX_FIFO_AC0	0
+#define IWL_TX_FIFO_AC1	1
+#define IWL_TX_FIFO_AC2	2
+#define IWL_TX_FIFO_AC3	3
+#define IWL_TX_FIFO_HCCA_1	5
+#define IWL_TX_FIFO_HCCA_2	6
+#define IWL_TX_FIFO_NONE	7
+
+/* Minimum number of queues. MAX_NUM is defined in hw specific files */
+#define IWL_MIN_NUM_QUEUES	4
 
 /* Power management (not Tx power) structures */
 
@@ -229,9 +253,10 @@ struct iwl_frame {
 #define SEQ_TO_INDEX(x) (x & 0xff)
 #define INDEX_TO_SEQ(x) (x & 0xff)
 #define SEQ_HUGE_FRAME  (0x4000)
-#define SEQ_RX_FRAME    (0x8000)
+#define SEQ_RX_FRAME    __constant_cpu_to_le16(0x8000)
 #define SEQ_TO_SN(seq) (((seq) & IEEE80211_SCTL_SEQ) >> 4)
-#define SN_TO_SEQ(ssn) (((ssn) << 4 ) & IEEE80211_SCTL_SEQ)
+#define SN_TO_SEQ(ssn) (((ssn) << 4) & IEEE80211_SCTL_SEQ)
+#define MAX_SN ((IEEE80211_SCTL_SEQ) >> 4)
 
 enum {
 	/* CMD_SIZE_NORMAL = 0, */
@@ -240,31 +265,23 @@ enum {
 	CMD_ASYNC = (1 << 1),
 	/* CMD_NO_SKB = 0, */
 	CMD_WANT_SKB = (1 << 2),
-	/* CMD_LOCK = 0, */
-	CMD_NO_LOCK = (1 << 4),
 };
 
 struct iwl_cmd;
 struct iwl_priv;
 
-#define CMD_VAR_MAGIC 0xA987
-
 struct iwl_cmd_meta {
 	struct iwl_cmd_meta *source;
 	union {
 		struct sk_buff *skb;
-		int (*callback)(struct iwl_priv * priv,
-				struct iwl_cmd * cmd, struct sk_buff * skb);
+		int (*callback)(struct iwl_priv *priv,
+				struct iwl_cmd *cmd, struct sk_buff *skb);
 	} __attribute__ ((packed)) u;
-
-	u16 len;
 
 	/* The CMD_SIZE_HUGE flag bit indicates that the command
 	 * structure is stored at the end of the shared queue memory. */
-	u8 flags;
+	u32 flags;
 
-	u8 token;
-	u16 magic;
 } __attribute__ ((packed));
 
 struct iwl_cmd {
@@ -282,10 +299,8 @@ struct iwl_cmd {
 		struct iwl_powertable_cmd powertable;
 		struct iwl_qosparam_cmd qosparam;
 		struct iwl_tx_cmd tx;
-		struct iwl_key_cmd key;
 		struct iwl_tx_beacon_cmd tx_beacon;
 		struct iwl_rxon_assoc_cmd rxon_assoc;
-		struct iwl_rate_scaling_cmd rate_scale;
 		u8 *indirect;
 		u8 payload[360];
 	} __attribute__ ((packed)) cmd;
@@ -304,12 +319,8 @@ struct iwl_host_cmd {
 /*
  * RX related structures and functions
  */
-
-#if IWL == 3945
-#define RX_SPACE_HIGH_MARK	52
-#else
-#define RX_SPACE_HIGH_MARK	210
-#endif
+#define RX_FREE_BUFFERS 64
+#define RX_LOW_WATERMARK 8
 
 #define SUP_RATE_11A_MAX_NUM_CHANNELS  8
 #define SUP_RATE_11B_MAX_NUM_CHANNELS  4
@@ -328,7 +339,7 @@ struct iwl_host_cmd {
  * NOTE:  rx_free and rx_used are used as a FIFO for iwl_rx_mem_buffers
  */
 struct iwl_rx_queue {
-	void *bd;
+	__le32 *bd;
 	dma_addr_t dma_addr;
 	struct iwl_rx_mem_buffer pool[RX_QUEUE_SIZE + RX_FREE_BUFFERS];
 	struct iwl_rx_mem_buffer *queue[RX_QUEUE_SIZE];
@@ -352,51 +363,54 @@ struct iwl_rx_queue {
 #define MAX_B_CHANNELS  14
 #define MIN_B_CHANNELS  1
 
-#define STATUS_HCMD_ACTIVE      (1<<0)	/* host command in progress */
-
-#define STATUS_INT_ENABLED      (1<<1)
-#define STATUS_RF_KILL_HW       (1<<2)
-#define STATUS_RF_KILL_SW       (1<<3)
-#define STATUS_RF_KILL_MASK     (STATUS_RF_KILL_HW | STATUS_RF_KILL_SW)
-
-#define STATUS_INIT             (1<<4)
-#define STATUS_ALIVE            (1<<5)
-#define STATUS_READY            (1<<6)
-#define STATUS_TEMPERATURE      (1<<7)
-#define STATUS_GEO_CONFIGURED   (1<<8)
-#define STATUS_EXIT_PENDING     (1<<9)
-#define STATUS_IN_SUSPEND       (1<<10)
-#define STATUS_STATISTICS       (1<<11)
-
-#define STATUS_AUTH             (1<<13)
-
-#define STATUS_DISASSOCIATING   (1<<15)
-
-#define STATUS_ROAMING           (1<<16)
-#define STATUS_SCANNING          (1<<17)
-#define STATUS_SCAN_ABORTING     (1<<19)
-#define STATUS_SCAN_PENDING      (1<<20)
-#define STATUS_SCAN_HW           (1<<21)
-
-#define STATUS_POWER_PMI        (1<<24)
-#define STATUS_RESTRICTED       (1<<26)
-#define STATUS_FW_ERROR         (1<<27)
-
-#define STATUS_TX_MEASURE       (1<<28)
-
-/*todoG need to support adding adhoc station MAX_STATION should be 25 */
-#define IWL_INVALID_STATION     (0xff)
+#define STATUS_HCMD_ACTIVE	0	/* host command in progress */
+#define STATUS_INT_ENABLED	1
+#define STATUS_RF_KILL_HW	2
+#define STATUS_RF_KILL_SW	3
+#define STATUS_INIT		4
+#define STATUS_ALIVE		5
+#define STATUS_READY		6
+#define STATUS_TEMPERATURE	7
+#define STATUS_GEO_CONFIGURED	8
+#define STATUS_EXIT_PENDING	9
+#define STATUS_IN_SUSPEND	10
+#define STATUS_STATISTICS	11
+#define STATUS_SCANNING		12
+#define STATUS_SCAN_ABORTING	13
+#define STATUS_SCAN_HW		14
+#define STATUS_POWER_PMI	15
+#define STATUS_FW_ERROR		16
 
 #define MAX_TID_COUNT        9
 
 #define IWL_INVALID_RATE     0xFF
 #define IWL_INVALID_VALUE    -1
+
+#if IWL == 4965
+#ifdef CONFIG_IWLWIFI_HT
+#ifdef CONFIG_IWLWIFI_HT_AGG
+struct iwl_ht_agg {
+	u16 txq_id;
+	u16 frame_count;
+	u16 wait_for_ba;
+	u16 start_idx;
+	u32 bitmap0;
+	u32 bitmap1;
+	u32 rate_n_flags;
+};
+#endif /* CONFIG_IWLWIFI_HT_AGG */
+#endif /* CONFIG_IWLWIFI_HT */
+#endif
+
 struct iwl_tid_data {
 	u16 seq_number;
+#if IWL == 4965
+#ifdef CONFIG_IWLWIFI_HT
 #ifdef CONFIG_IWLWIFI_HT_AGG
-	s8 txq_id;
-	u8 ht_agg_active;
-#endif				/* CONFIG_IWLWIFI_HT_AGG */
+	struct iwl_ht_agg agg;
+#endif	/* CONFIG_IWLWIFI_HT_AGG */
+#endif /* CONFIG_IWLWIFI_HT */
+#endif
 };
 
 struct iwl_hw_key {
@@ -423,10 +437,10 @@ struct sta_ht_info {
 	u8 is_ht;
 	u16 rx_mimo_ps_mode;
 	u16 tx_mimo_ps_mode;
+	u16 control_channel;
 	u8 max_amsdu_size;
 	u8 ampdu_factor;
 	u8 mpdu_density;
-	u8 control_chan;
 	u8 operating_mode;
 	u8 supported_chan_width;
 	u8 extension_chan_offset;
@@ -438,12 +452,44 @@ struct sta_ht_info {
 };
 #endif				/*CONFIG_IWLWIFI_HT */
 
+#ifdef CONFIG_IWLWIFI_QOS
+
+union iwl_qos_capabity {
+	struct {
+		u8 edca_count:4;	/* bit 0-3 */
+		u8 q_ack:1;		/* bit 4 */
+		u8 queue_request:1;	/* bit 5 */
+		u8 txop_request:1;	/* bit 6 */
+		u8 reserved:1;		/* bit 7 */
+	} q_AP;
+	struct {
+		u8 acvo_APSD:1;		/* bit 0 */
+		u8 acvi_APSD:1;		/* bit 1 */
+		u8 ac_bk_APSD:1;	/* bit 2 */
+		u8 ac_be_APSD:1;	/* bit 3 */
+		u8 q_ack:1;		/* bit 4 */
+		u8 max_len:2;		/* bit 5-6 */
+		u8 more_data_ack:1;	/* bit 7 */
+	} q_STA;
+	u8 val;
+};
+
+/* QoS sturctures */
+struct iwl_qos_info {
+	int qos_enable;
+	int qos_active;
+	union iwl_qos_capabity qos_cap;
+	struct iwl_qosparam_cmd def_qos_parm;
+};
+#endif /*CONFIG_IWLWIFI_QOS */
+
 #define STA_PS_STATUS_WAKE             0
 #define STA_PS_STATUS_SLEEP            1
 
 struct iwl_station_entry {
 	struct iwl_addsta_cmd sta;
 	struct iwl_tid_data tid[MAX_TID_COUNT];
+#if IWL == 3945
 	union {
 		struct {
 			u8 rate;
@@ -451,6 +497,7 @@ struct iwl_station_entry {
 		} s;
 		u16 rate_n_flags;
 	} current_rate;
+#endif
 	u8 used;
 	u8 ps_status;
 	struct iwl_hw_key keyinfo;
@@ -466,15 +513,15 @@ struct fw_image_desc {
 /* uCode file layout */
 struct iwl_ucode {
 	__le32 ver;		/* major/minor/subminor */
-	__le32 inst_size;		/* bytes of runtime instructions */
-	__le32 data_size;		/* bytes of runtime data */
-	__le32 init_size;		/* bytes of initialization instructions */
+	__le32 inst_size;	/* bytes of runtime instructions */
+	__le32 data_size;	/* bytes of runtime data */
+	__le32 init_size;	/* bytes of initialization instructions */
 	__le32 init_data_size;	/* bytes of initialization data */
-	__le32 boot_size;		/* bytes of bootstrap instructions */
+	__le32 boot_size;	/* bytes of bootstrap instructions */
 	u8 data[0];		/* data in same order as "size" elements */
 };
 
-#define IWL_IBSS_MAC_HASH_SIZE 31
+#define IWL_IBSS_MAC_HASH_SIZE 32
 
 struct iwl_ibss_seq {
 	u8 mac[ETH_ALEN];
@@ -485,35 +532,31 @@ struct iwl_ibss_seq {
 };
 
 struct iwl_driver_hw_info {
-	u16 max_queue_number;
+	u16 max_txq_num;
 	u16 ac_queue_count;
 	u32 rx_buffer_size;
 	u16 tx_cmd_len;
 	u16 max_rxq_size;
 	u16 max_rxq_log;
 	u32 cck_flag;
+	u8  max_stations;
+	u8  bcast_sta_id;
 	void *shared_virt;
 	dma_addr_t shared_phys;
 };
 
 
-#define STA_FLG_RTS_MIMO_PROT_POS	(17)
-#define STA_FLG_RTS_MIMO_PROT_MSK	(1 << STA_FLG_RTS_MIMO_PROT_POS)
-#define STA_FLG_AGG_MPDU_8US_POS	(18)
-#define STA_FLG_AGG_MPDU_8US_MSK	(1 << STA_FLG_AGG_MPDU_8US_POS)
+#define STA_FLG_RTS_MIMO_PROT_MSK	__constant_cpu_to_le32(1 << 17)
+#define STA_FLG_AGG_MPDU_8US_MSK	__constant_cpu_to_le32(1 << 18)
 #define STA_FLG_MAX_AGG_SIZE_POS	(19)
-#define STA_FLG_MAX_AGG_SIZE_MSK	(3 << STA_FLG_MAX_AGG_SIZE_POS)
-#define STA_FLG_FAT_EN_POS		(21)
-#define STA_FLG_FAT_EN_MSK		(1 << STA_FLG_FAT_EN_POS)
-#define STA_FLG_MIMO_DIS_POS		(22)
-#define STA_FLG_MIMO_DIS_MSK		(1 << STA_FLG_MIMO_DIS_POS)
+#define STA_FLG_MAX_AGG_SIZE_MSK	__constant_cpu_to_le32(3 << 19)
+#define STA_FLG_FAT_EN_MSK		__constant_cpu_to_le32(1 << 21)
+#define STA_FLG_MIMO_DIS_MSK		__constant_cpu_to_le32(1 << 22)
 #define STA_FLG_AGG_MPDU_DENSITY_POS	(23)
-#define STA_FLG_AGG_MPDU_DENSITY_MSK	(7 << STA_FLG_AGG_MPDU_DENSITY_POS)
+#define STA_FLG_AGG_MPDU_DENSITY_MSK	__constant_cpu_to_le32(7 << 23)
 #define HT_SHORT_GI_20MHZ_ONLY          (1 << 0)
 #define HT_SHORT_GI_40MHZ_ONLY          (1 << 1)
 
-#include "iwl-3945.h"
-#include "iwl-4965.h"
 
 #include "iwl-priv.h"
 
@@ -532,7 +575,7 @@ struct iwl_driver_hw_info {
 
 /******************************************************************************
  *
- * Functions implemented in base.c which are forward declared here
+ * Functions implemented in iwl-base.c which are forward declared here
  * for use by iwl-*.c
  *
  *****************************************************************************/
@@ -540,7 +583,7 @@ struct iwl_addsta_cmd;
 extern int iwl_send_add_station(struct iwl_priv *priv,
 				struct iwl_addsta_cmd *sta, u8 flags);
 extern const char *iwl_get_tx_fail_reason(u32 status);
-extern u8 iwl_add_station(struct iwl_priv *priv, const u8 * bssid,
+extern u8 iwl_add_station(struct iwl_priv *priv, const u8 *bssid,
 			  int is_ap, u8 flags);
 extern int iwl_is_network_packet(struct iwl_priv *priv,
 				 struct ieee80211_hdr *header);
@@ -574,26 +617,31 @@ extern int iwl_calc_sig_qual(int rssi_dbm, int noise_dbm);
 extern int iwl_tx_queue_init(struct iwl_priv *priv,
 			     struct iwl_tx_queue *txq, int count, u32 id);
 extern int iwl_rx_queue_restock(struct iwl_priv *priv);
-extern void iwl_rx_replenish(void *data, u8 do_lock);
+extern void iwl_rx_replenish(void *data);
 extern void iwl_tx_queue_free(struct iwl_priv *priv, struct iwl_tx_queue *txq);
 extern int iwl_send_cmd_pdu(struct iwl_priv *priv, u8 id, u16 len,
 			    const void *data);
+extern int __must_check iwl_send_cmd_async(struct iwl_priv *priv,
+		struct iwl_host_cmd *cmd);
+extern int __must_check iwl_send_cmd_sync(struct iwl_priv *priv,
+		struct iwl_host_cmd *cmd);
 extern int __must_check iwl_send_cmd(struct iwl_priv *priv,
-				     struct iwl_host_cmd *cmd);
-extern int iwl_fill_beacon_frame(struct iwl_priv *priv,
-				 struct ieee80211_hdr *hdr, const u8 * dest,
-				 int left);
+		struct iwl_host_cmd *cmd);
+extern unsigned int iwl_fill_beacon_frame(struct iwl_priv *priv,
+					struct ieee80211_hdr *hdr,
+					const u8 *dest, int left);
 extern int iwl_rx_queue_update_write_ptr(struct iwl_priv *priv,
 					 struct iwl_rx_queue *q);
 extern int iwl_send_statistics_request(struct iwl_priv *priv);
 extern void iwl_set_decrypted_flag(struct iwl_priv *priv, struct sk_buff *skb,
 				   u32 decrypt_res,
 				   struct ieee80211_rx_status *stats);
+extern __le16 *ieee80211_get_qos_ctrl(struct ieee80211_hdr *hdr);
 
 extern const u8 BROADCAST_ADDR[ETH_ALEN];
 
 /*
- * Currently used by ipw-3945-rs... look at restructuring so that it doesn't
+ * Currently used by iwl-3945-rs... look at restructuring so that it doesn't
  * call this... todo... fix that.
 */
 extern u8 iwl_sync_station(struct iwl_priv *priv, int sta_id,
@@ -601,25 +649,23 @@ extern u8 iwl_sync_station(struct iwl_priv *priv, int sta_id,
 
 static inline int iwl_is_associated(struct iwl_priv *priv)
 {
-	return (priv->active_rxon.filter_flags & RXON_FILTER_ASSOC_MSK) ?
-		1 : 0;
+	return (priv->active_rxon.filter_flags & RXON_FILTER_ASSOC_MSK) ? 1 : 0;
 }
-extern void iwl_down(struct iwl_priv *priv);
 
 /******************************************************************************
  *
- * Functions implemented in iwl-*.c which are forward declared here
- * for use by base.c
+ * Functions implemented in iwl-[34]*.c which are forward declared here
+ * for use by iwl-base.c
  *
  * NOTE:  The implementation of these functions are hardware specific
- * which is why they are in the hardware specific files (vs. base.c)
+ * which is why they are in the hardware specific files (vs. iwl-base.c)
  *
  * Naming convention --
  * iwl_         <-- Its part of iwlwifi (should be changed to iwl_)
  * iwl_hw_      <-- Hardware specific (implemented in iwl-XXXX.c by all HW)
  * iwlXXXX_     <-- Hardware specific (implemented in iwl-XXXX.c for XXXX)
  * iwl_bg_      <-- Called from work queue context
- * d_           <-- mac80211 callback
+ * iwl_mac_     <-- mac80211 callback
  *
  ****************************************************************************/
 extern void iwl_hw_rx_handler_setup(struct iwl_priv *priv);
@@ -633,17 +679,14 @@ extern int iwl_hw_nic_stop_master(struct iwl_priv *priv);
 extern void iwl_hw_txq_ctx_free(struct iwl_priv *priv);
 extern void iwl_hw_txq_ctx_stop(struct iwl_priv *priv);
 extern int iwl_hw_nic_reset(struct iwl_priv *priv);
-extern int iwl_hw_tx_queue_attach_buffer_to_tfd(
-	struct iwl_priv *priv, void *tfd, dma_addr_t addr, u16 len);
-extern int iwl_hw_tx_queue_free_tfd(struct iwl_priv *priv,
-				    struct iwl_tx_queue *txq);
+extern int iwl_hw_txq_attach_buf_to_tfd(struct iwl_priv *priv, void *tfd,
+					dma_addr_t addr, u16 len);
+extern int iwl_hw_txq_free_tfd(struct iwl_priv *priv, struct iwl_tx_queue *txq);
 extern int iwl_hw_get_temperature(struct iwl_priv *priv);
-extern int iwl_tx_queue_free_tfd(struct iwl_priv *priv,
-				 struct iwl_tx_queue *txq);
 extern int iwl_hw_tx_queue_init(struct iwl_priv *priv,
 				struct iwl_tx_queue *txq);
-extern int iwl_hw_get_beacon_cmd(struct iwl_priv *priv,
-				 struct iwl_frame *frame, u16 rate);
+extern unsigned int iwl_hw_get_beacon_cmd(struct iwl_priv *priv,
+				 struct iwl_frame *frame, u8 rate);
 extern int iwl_hw_get_rx_read(struct iwl_priv *priv);
 extern void iwl_hw_build_tx_cmd_rate(struct iwl_priv *priv,
 				     struct iwl_cmd *cmd,
@@ -665,7 +708,8 @@ extern int iwl4965_get_temperature(const struct iwl_priv *priv);
  * not yet been merged into a single common layer for managing the
  * station tables.
  */
-extern u8 iwl_hw_find_station(struct iwl_priv *priv, const u8 * bssid);
+extern u8 iwl_hw_find_station(struct iwl_priv *priv, const u8 *bssid);
 
-
+extern int iwl_hw_channel_switch(struct iwl_priv *priv, u16 channel);
+extern int iwl_tx_queue_reclaim(struct iwl_priv *priv, int txq_id, int index);
 #endif

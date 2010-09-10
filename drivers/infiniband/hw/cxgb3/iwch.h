@@ -120,12 +120,12 @@ static inline struct iwch_dev *to_iwch_dev(struct ib_device *ibdev)
 
 static inline int t3b_device(const struct iwch_dev *rhp)
 {
-	return (rhp->rdev.t3cdev_p->type == T3B);
+	return rhp->rdev.t3cdev_p->type == T3B;
 }
 
 static inline int t3a_device(const struct iwch_dev *rhp)
 {
-	return (rhp->rdev.t3cdev_p->type == T3A);
+	return rhp->rdev.t3cdev_p->type == T3A;
 }
 
 static inline struct iwch_cq *get_chp(struct iwch_dev *rhp, u32 cqid)
@@ -171,4 +171,6 @@ static inline void remove_handle(struct iwch_dev *rhp, struct idr *idr, u32 id)
 
 extern struct cxgb3_client t3c_client;
 extern cxgb3_cpl_handler_func t3c_handlers[NUM_CPL_CMDS];
+extern void iwch_ev_dispatch(struct cxio_rdev *rdev_p, struct sk_buff *skb);
+
 #endif

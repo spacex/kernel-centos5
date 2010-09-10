@@ -375,7 +375,7 @@ int netxen_nic_hw_resources(struct netxen_adapter *adapter)
 						   recv_crb_registers[ctx].
 						   crb_rcvpeg_state));
 		while (state != PHAN_PEG_RCV_INITIALIZED && loops < 20) {
-			udelay(100);
+			msleep(1);
 			/* Window 1 call */
 			state = readl(NETXEN_CRB_NORMALIZE(adapter,
 							   recv_crb_registers
@@ -696,7 +696,7 @@ void netxen_nic_pci_change_crbwindow(struct netxen_adapter *adapter, u32 wndw)
 		adapter->curr_window = 0;
 }
 
-void netxen_load_firmware(struct netxen_adapter *adapter)
+int netxen_load_firmware(struct netxen_adapter *adapter)
 {
 	int i;
 	u32 data, size = 0;
@@ -708,15 +708,24 @@ void netxen_load_firmware(struct netxen_adapter *adapter)
 	writel(1, NETXEN_CRB_NORMALIZE(adapter, NETXEN_ROMUSB_GLB_CAS_RST));
 
 	for (i = 0; i < size; i++) {
-		if (netxen_rom_fast_read(adapter, flashaddr, (int *)&data) != 0) {
-			DPRINTK(ERR,
-				"Error in netxen_rom_fast_read(). Will skip"
-				"loading flash image\n");
-			return;
-		}
+		int retries = 10;
+		if (netxen_rom_fast_read(adapter, flashaddr, (int *)&data) != 0)
+			return -EIO;
+
 		off = netxen_nic_pci_set_window(adapter, memaddr);
 		addr = pci_base_offset(adapter, off);
 		writel(data, addr);
+		do {
+			if (readl(addr) == data)
+				break;
+			msleep(100);
+			writel(data, addr);
+		} while (--retries);
+		if (!retries) {
+			printk(KERN_ERR "%s: firmware load aborted, write failed at 0x%x\n",
+					netxen_nic_driver_name, memaddr);
+			return -EIO;
+		}
 		flashaddr += 4;
 		memaddr += 4;
 	}
@@ -726,7 +735,7 @@ void netxen_load_firmware(struct netxen_adapter *adapter)
 	       NETXEN_CRB_NORMALIZE(adapter, NETXEN_ROMUSB_GLB_CHIP_CLK_CTRL));
 	writel(0, NETXEN_CRB_NORMALIZE(adapter, NETXEN_ROMUSB_GLB_CAS_RST));
 
-	udelay(100);
+	return 0;
 }
 
 int

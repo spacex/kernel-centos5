@@ -333,6 +333,7 @@ extern int of_irq_map_pci(struct pci_dev *pdev, struct of_irq *out_irq);
  */
 extern void __iomem *of_iomap(struct device_node *np, int index);
 
+#define of_get_property(a, b, c)	get_property((a), (b), (c))
 
 #endif /* __KERNEL__ */
 #endif /* _POWERPC_PROM_H */

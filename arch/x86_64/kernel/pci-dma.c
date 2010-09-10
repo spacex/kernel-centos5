@@ -320,5 +320,10 @@ static int __init pci_iommu_init(void)
 	return 0;
 }
 
+void pci_iommu_shutdown(void)
+{
+	gart_iommu_shutdown();
+}
+
 /* Must execute after PCI subsystem */
 fs_initcall(pci_iommu_init);

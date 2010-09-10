@@ -1,6 +1,6 @@
 /*
  * Copyright (C) Sistina Software, Inc.  1997-2003 All rights reserved.
- * Copyright (C) 2004-2006 Red Hat, Inc.  All rights reserved.
+ * Copyright (C) 2004-2008 Red Hat, Inc.  All rights reserved.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
@@ -56,7 +56,7 @@ static void gfs2_ail_empty_gl(struct gfs2_glock *gl)
 		bd = list_entry(head->next, struct gfs2_bufdata,
 				bd_ail_gl_list);
 		bh = bd->bd_bh;
-		gfs2_remove_from_ail(NULL, bd);
+		gfs2_remove_from_ail(bd);
 		bd->bd_bh = NULL;
 		bh->b_private = NULL;
 		bd->bd_blkno = bh->b_blocknr;
@@ -119,6 +119,27 @@ static void meta_go_sync(struct gfs2_glock *gl)
 }
 
 /**
+ * gfs2_meta_inval - Invalidate all buffers associated with a glock
+ * @gl: the glock
+ *
+ */
+
+static void gfs2_meta_inval(struct gfs2_glock *gl)
+{
+	struct gfs2_sbd *sdp = gl->gl_sbd;
+	struct inode *aspace = gl->gl_aspace;
+	struct address_space *mapping = gl->gl_aspace->i_mapping;
+
+	gfs2_assert_withdraw(sdp, !atomic_read(&gl->gl_ail_count));
+
+	atomic_inc(&aspace->i_writecount);
+	truncate_inode_pages(mapping, 0);
+	atomic_dec(&aspace->i_writecount);
+
+	gfs2_assert_withdraw(sdp, !mapping->nrpages);
+}
+
+/**
  * meta_go_inval - invalidate the metadata for this glock
  * @gl: the glock
  * @flags:
@@ -131,7 +152,13 @@ static void meta_go_inval(struct gfs2_glock *gl, int flags)
 		return;
 
 	gfs2_meta_inval(gl);
-	gl->gl_vn++;
+	if (gl->gl_object == GFS2_I(gl->gl_sbd->sd_rindex))
+		gl->gl_sbd->sd_rindex_uptodate = 0;
+	else if (gl->gl_ops == &gfs2_rgrp_glops && gl->gl_object) {
+		struct gfs2_rgrpd *rgd = (struct gfs2_rgrpd *)gl->gl_object;
+
+		rgd->rd_flags &= ~GFS2_RDF_UPTODATE;
+	}
 }
 
 /**
@@ -297,23 +324,6 @@ static int inode_go_lock(struct gfs2_holder *gh)
 }
 
 /**
- * inode_go_unlock - operation done before an inode lock is unlocked by a
- *		     process
- * @gl: the glock
- * @flags:
- *
- */
-
-static void inode_go_unlock(struct gfs2_holder *gh)
-{
-	struct gfs2_glock *gl = gh->gh_gl;
-	struct gfs2_inode *ip = gl->gl_object;
-
-	if (ip)
-		gfs2_meta_cache_flush(ip);
-}
-
-/**
  * rgrp_go_demote_ok - Check to see if it's ok to unlock a RG's glock
  * @gl: the glock
  *
@@ -387,7 +397,6 @@ static void trans_go_xmote_bh(struct gfs2_glock *gl)
 
 	if (gl->gl_state != LM_ST_UNLOCKED &&
 	    test_bit(SDF_JOURNAL_LIVE, &sdp->sd_flags)) {
-		gfs2_meta_cache_flush(GFS2_I(sdp->sd_jdesc->jd_inode));
 		j_gl->gl_ops->go_inval(j_gl, DIO_METADATA);
 
 		error = gfs2_find_jhead(sdp->sd_jdesc, &head);
@@ -447,7 +456,6 @@ const struct gfs2_glock_operations gfs2_inode_glops = {
 	.go_inval = inode_go_inval,
 	.go_demote_ok = inode_go_demote_ok,
 	.go_lock = inode_go_lock,
-	.go_unlock = inode_go_unlock,
 	.go_type = LM_TYPE_INODE,
 	.go_min_hold_time = HZ / 10,
 };

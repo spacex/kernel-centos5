@@ -37,7 +37,7 @@ static inline void mmio_read_fixup(const volatile void __iomem *addr)
 		ppc_mmio_read_fixup(addr);
 }
 #else
-define mmio_read_fixup(addr)	do { } while(0)
+#define mmio_read_fixup(addr)	do { } while(0)
 #endif
 
 #ifdef CONFIG_EEH

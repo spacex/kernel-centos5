@@ -503,7 +503,8 @@ static void tcp_queue_skb(struct sock *sk, struct sk_buff *skb)
 	tp->write_seq = TCP_SKB_CB(skb)->end_seq;
 	skb_header_release(skb);
 	__skb_queue_tail(&sk->sk_write_queue, skb);
-	sk_charge_skb(sk, skb);
+	sk->sk_wmem_queued += skb->truesize;
+	sk_mem_charge(sk, skb->truesize);
 
 	/* Queue it, remembering where we must start sending. */
 	if (sk->sk_send_head == NULL)
@@ -560,7 +561,8 @@ int tcp_fragment(struct sock *sk, struct sk_buff *skb, u32 len, unsigned int mss
 	if (buff == NULL)
 		return -ENOMEM; /* We'll just try again later. */
 
-	sk_charge_skb(sk, buff);
+	sk->sk_wmem_queued += buff->truesize;
+	sk_mem_charge(sk, buff->truesize);
 	nlen = skb->len - len - nsize;
 	buff->truesize += nlen;
 	skb->truesize -= nlen;
@@ -693,7 +695,7 @@ int tcp_trim_head(struct sock *sk, struct sk_buff *skb, u32 len)
 
 	skb->truesize	     -= len;
 	sk->sk_wmem_queued   -= len;
-	sk->sk_forward_alloc += len;
+	sk_mem_uncharge(sk, len);
 	sock_set_flag(sk, SOCK_QUEUE_SHRUNK);
 
 	/* Any change of skb->len requires recalculation of tso
@@ -1047,7 +1049,8 @@ static int tso_fragment(struct sock *sk, struct sk_buff *skb, unsigned int len, 
 	if (unlikely(buff == NULL))
 		return -ENOMEM;
 
-	sk_charge_skb(sk, buff);
+	sk->sk_wmem_queued += buff->truesize;
+	sk_mem_charge(sk, buff->truesize);
 	buff->truesize += nlen;
 	skb->truesize -= nlen;
 
@@ -1197,7 +1200,8 @@ static int tcp_mtu_probe(struct sock *sk)
 	/* We're allowed to probe.  Build it now. */
 	if ((nskb = sk_stream_alloc_skb(sk, probe_size, GFP_ATOMIC)) == NULL)
 		return -1;
-	sk_charge_skb(sk, nskb);
+	sk->sk_wmem_queued += nskb->truesize;
+	sk_mem_charge(sk, nskb->truesize);
 
 	skb = sk->sk_send_head;
 	__skb_insert(nskb, skb->prev, skb, &sk->sk_write_queue);
@@ -1227,7 +1231,7 @@ static int tcp_mtu_probe(struct sock *sk)
 			 * Throw it away. */
 			TCP_SKB_CB(nskb)->flags |= TCP_SKB_CB(skb)->flags;
 			__skb_unlink(skb, &sk->sk_write_queue);
-			sk_stream_free_skb(sk, skb);
+			sk_wmem_free_skb(sk, skb);
 		} else {
 			TCP_SKB_CB(nskb)->flags |= TCP_SKB_CB(skb)->flags &
 			                           ~(TCPCB_FLAG_FIN|TCPCB_FLAG_PSH);
@@ -1609,7 +1613,7 @@ static void tcp_retrans_try_collapse(struct sock *sk, struct sk_buff *skb, int m
 		 */
 		tcp_dec_pcount_approx(&tp->fackets_out, next_skb);
 		tcp_packets_out_dec(tp, next_skb);
-		sk_stream_free_skb(sk, next_skb);
+		sk_wmem_free_skb(sk, next_skb);
 	}
 }
 
@@ -2003,8 +2007,9 @@ int tcp_send_synack(struct sock *sk)
 			__skb_unlink(skb, &sk->sk_write_queue);
 			skb_header_release(nskb);
 			__skb_queue_head(&sk->sk_write_queue, nskb);
-			sk_stream_free_skb(sk, skb);
-			sk_charge_skb(sk, nskb);
+			sk_wmem_free_skb(sk, skb);
+			sk->sk_wmem_queued += nskb->truesize;
+			sk_mem_charge(sk, nskb->truesize);
 			skb = nskb;
 		}
 
@@ -2171,7 +2176,8 @@ int tcp_connect(struct sock *sk)
 	tp->retrans_stamp = TCP_SKB_CB(buff)->when;
 	skb_header_release(buff);
 	__skb_queue_tail(&sk->sk_write_queue, buff);
-	sk_charge_skb(sk, buff);
+	sk->sk_wmem_queued += buff->truesize;
+	sk_mem_charge(sk, buff->truesize);
 	tp->packets_out += tcp_skb_pcount(buff);
 	tcp_transmit_skb(sk, buff, 1, GFP_KERNEL);
 

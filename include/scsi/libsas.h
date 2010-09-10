@@ -30,6 +30,9 @@
 #include <linux/timer.h>
 #include <linux/pci.h>
 #include <scsi/sas.h>
+#ifndef __GENKSYMS__
+#include <linux/libata.h>
+#endif
 #include <linux/list.h>
 #include <asm/semaphore.h>
 #include <scsi/scsi_device.h>
@@ -165,6 +168,15 @@ struct sata_device {
 
         u8     port_no;        /* port number, if this is a PM (Port) */
         struct list_head children; /* PM Ports if this is a PM */
+
+#ifndef __GENKSYMS__
+	struct ata_port *ap;
+	struct ata_host ata_host;
+	struct ata_taskfile tf;
+	u32 sstatus;
+	u32 serror;
+	u32 scontrol;
+#endif
 };
 
 /* ---------- Domain device ---------- */
@@ -352,9 +364,11 @@ struct sas_ha_struct {
 
 #ifndef __GENKSYMS__
 	struct list_head eh_done_q;
-	
+
 	enum sas_ha_state state;
 	spinlock_t 	  state_lock;
+
+	struct device *dev;
 #endif
 
 };
@@ -387,7 +401,7 @@ void sas_hash_addr(u8 *hashed, const u8 *sas_addr);
 static inline void sas_phy_disconnected(struct asd_sas_phy *phy)
 {
 	phy->oob_mode = OOB_NOT_CONNECTED;
-	phy->linkrate = SAS_LINK_RATE_UNKNOWN;
+	phy->linkrate = linkrate_to_phy_linkrate(SAS_LINK_RATE_UNKNOWN);
 }
 
 /* ---------- Tasks ---------- */
@@ -623,6 +637,7 @@ int sas_set_phy_speed(struct sas_phy *phy,
 		      struct sas_phy_linkrates *rates);
 int sas_phy_enable(struct sas_phy *phy, int enabled);
 int sas_phy_reset(struct sas_phy *phy, int hard_reset);
+int sas_queue_up(struct sas_task *task);
 extern int sas_queuecommand(struct scsi_cmnd *,
 		     void (*scsi_done)(struct scsi_cmnd *));
 extern int sas_target_alloc(struct scsi_target *);
@@ -659,5 +674,9 @@ void sas_task_abort(struct sas_task *);
 int __sas_task_abort(struct sas_task *);
 int sas_eh_device_reset_handler(struct scsi_cmnd *cmd);
 int sas_eh_bus_reset_handler(struct scsi_cmnd *cmd);
+
+extern void sas_target_destroy(struct scsi_target *);
+extern int sas_slave_alloc(struct scsi_device *);
+extern int sas_ioctl(struct scsi_device *sdev, int cmd, void __user *arg);
 
 #endif /* _SASLIB_H_ */

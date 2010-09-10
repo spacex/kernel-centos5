@@ -527,7 +527,7 @@ static int validate_mmap_request(struct file *file,
 	}
 
 	/* allow the security API to have its say */
-	ret = security_file_mmap(file, reqprot, prot, flags);
+	ret = security_file_mmap_addr(file, reqprot, prot, flags, addr, 0);
 	if (ret < 0)
 		return ret;
 
@@ -692,6 +692,9 @@ unsigned long do_mmap_pgoff(struct file *file,
 	unsigned long capabilities, vm_flags;
 	void *result;
 	int ret;
+
+	if (!(flags & MAP_FIXED))
+		addr = round_hint_to_min(addr);
 
 	/* decide whether we should attempt the mapping, and if so what sort of
 	 * mapping */

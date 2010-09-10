@@ -169,6 +169,10 @@ struct svc_rqst {
 						 * to prevent encrypting page
 						 * cache pages */
 	wait_queue_head_t	rq_wait;	/* synchronization */
+#ifndef __GENKSYMS__
+	u32			rq_flavor;	/* pseudoflavor */
+	struct auth_domain *	rq_gssclient;	/* "gss/"-style peer info */
+#endif
 };
 
 /*

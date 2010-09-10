@@ -11,6 +11,10 @@ obj-y     := route.o inetpeer.o protocol.o \
 	     datagram.o raw.o udp.o arp.o icmp.o devinet.o af_inet.o igmp.o \
 	     sysctl_net_ipv4.o fib_frontend.o fib_semantics.o
 
+xfrm4_esp-objs += xfrm4_ninput.o
+xfrm4_esp-objs += xfrm4_noutput.o
+obj-$(CONFIG_INET_ESP) += xfrm4_esp.o
+
 obj-$(CONFIG_IP_FIB_HASH) += fib_hash.o
 obj-$(CONFIG_IP_FIB_TRIE) += fib_trie.o
 obj-$(CONFIG_PROC_FS) += proc.o

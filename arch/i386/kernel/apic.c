@@ -1189,7 +1189,7 @@ inline void smp_local_timer_interrupt(struct pt_regs * regs)
 	for (i = 0; i < tick_divider; i++) {
 		profile_tick(CPU_PROFILING, regs);
 #ifdef CONFIG_SMP
-		update_process_times(user_mode_vm(regs));
+		update_process_times(user_mode_vm(regs), regs);
 #endif
 	}
 

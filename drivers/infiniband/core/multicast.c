@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006 Intel Corporation.  All rights reserved.
+ * Copyright (c) 2006 Intel Corporation.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -34,7 +34,6 @@
 #include <linux/dma-mapping.h>
 #include <linux/err.h>
 #include <linux/interrupt.h>
-#include <linux/pci.h>
 #include <linux/bitops.h>
 #include <linux/random.h>
 
@@ -197,7 +196,7 @@ static void queue_join(struct mcast_member *member)
 	unsigned long flags;
 
 	spin_lock_irqsave(&group->lock, flags);
-	list_add(&member->list, &group->pending_list);
+	list_add_tail(&member->list, &group->pending_list);
 	if (group->state == MCAST_IDLE) {
 		group->state = MCAST_BUSY;
 		atomic_inc(&group->refcount);
@@ -239,34 +238,6 @@ static u8 get_leave_state(struct mcast_group *group)
 	return leave_state & group->rec.join_state;
 }
 
-static int check_selector(ib_sa_comp_mask comp_mask,
-			  ib_sa_comp_mask selector_mask,
-			  ib_sa_comp_mask value_mask,
-			  u8 selector, u8 src_value, u8 dst_value)
-{
-	int err;
-
-	if (!(comp_mask & selector_mask) || !(comp_mask & value_mask))
-		return 0;
-
-	switch (selector) {
-	case IB_SA_GT:
-		err = (src_value <= dst_value);
-		break;
-	case IB_SA_LT:
-		err = (src_value >= dst_value);
-		break;
-	case IB_SA_EQ:
-		err = (src_value != dst_value);
-		break;
-	default:
-		err = 0;
-		break;
-	}
-
-	return err;
-}
-
 static int cmp_rec(struct ib_sa_mcmember_rec *src,
 		   struct ib_sa_mcmember_rec *dst, ib_sa_comp_mask comp_mask)
 {
@@ -279,24 +250,24 @@ static int cmp_rec(struct ib_sa_mcmember_rec *src,
 		return -EINVAL;
 	if (comp_mask & IB_SA_MCMEMBER_REC_MLID && src->mlid != dst->mlid)
 		return -EINVAL;
-	if (check_selector(comp_mask, IB_SA_MCMEMBER_REC_MTU_SELECTOR,
-			   IB_SA_MCMEMBER_REC_MTU, dst->mtu_selector,
-			   src->mtu, dst->mtu))
+	if (ib_sa_check_selector(comp_mask, IB_SA_MCMEMBER_REC_MTU_SELECTOR,
+				 IB_SA_MCMEMBER_REC_MTU, dst->mtu_selector,
+				 src->mtu, dst->mtu))
 		return -EINVAL;
 	if (comp_mask & IB_SA_MCMEMBER_REC_TRAFFIC_CLASS &&
 	    src->traffic_class != dst->traffic_class)
 		return -EINVAL;
 	if (comp_mask & IB_SA_MCMEMBER_REC_PKEY && src->pkey != dst->pkey)
 		return -EINVAL;
-	if (check_selector(comp_mask, IB_SA_MCMEMBER_REC_RATE_SELECTOR,
-			   IB_SA_MCMEMBER_REC_RATE, dst->rate_selector,
-			   src->rate, dst->rate))
+	if (ib_sa_check_selector(comp_mask, IB_SA_MCMEMBER_REC_RATE_SELECTOR,
+				 IB_SA_MCMEMBER_REC_RATE, dst->rate_selector,
+				 src->rate, dst->rate))
 		return -EINVAL;
-	if (check_selector(comp_mask,
-			   IB_SA_MCMEMBER_REC_PACKET_LIFE_TIME_SELECTOR,
-			   IB_SA_MCMEMBER_REC_PACKET_LIFE_TIME,
-			   dst->packet_life_time_selector,
-			   src->packet_life_time, dst->packet_life_time))
+	if (ib_sa_check_selector(comp_mask,
+				 IB_SA_MCMEMBER_REC_PACKET_LIFE_TIME_SELECTOR,
+				 IB_SA_MCMEMBER_REC_PACKET_LIFE_TIME,
+				 dst->packet_life_time_selector,
+				 src->packet_life_time, dst->packet_life_time))
 		return -EINVAL;
 	if (comp_mask & IB_SA_MCMEMBER_REC_SL && src->sl != dst->sl)
 		return -EINVAL;
@@ -364,8 +335,7 @@ static void join_group(struct mcast_group *group, struct mcast_member *member,
 	group->rec.join_state |= join_state;
 	member->multicast.rec = group->rec;
 	member->multicast.rec.join_state = join_state;
-	list_del(&member->list);
-	list_add(&member->list, &group->active_list);
+	list_move(&member->list, &group->active_list);
 }
 
 static int fail_join(struct mcast_group *group, struct mcast_member *member,
@@ -405,7 +375,7 @@ static void process_group_error(struct mcast_group *group)
 	spin_unlock_irq(&group->lock);
 }
 
-static void mcast_work_handler(void *_work)
+static void mcast_work_handler(struct work_struct *work)
 {
 	struct mcast_group *group;
 	struct mcast_member *member;
@@ -413,7 +383,7 @@ static void mcast_work_handler(void *_work)
 	int status, ret;
 	u8 join_state;
 
-	group = container_of(_work, typeof(*group), work);
+	group = container_of(work, typeof(*group), work);
 retest:
 	spin_lock_irq(&group->lock);
 	while (!list_empty(&group->pending_list) ||
@@ -543,7 +513,7 @@ static struct mcast_group *acquire_group(struct mcast_port *port,
 	group->rec.mgid = *mgid;
 	INIT_LIST_HEAD(&group->pending_list);
 	INIT_LIST_HEAD(&group->active_list);
-	INIT_WORK(&group->work, mcast_work_handler, &group->work);
+	INIT_WORK(&group->work, mcast_work_handler);
 	spin_lock_init(&group->lock);
 
 	spin_lock_irqsave(&port->lock, flags);
@@ -584,7 +554,7 @@ ib_sa_join_multicast(struct ib_sa_client *client,
 	if (!dev)
 		return ERR_PTR(-ENODEV);
 
-	member = kzalloc(sizeof *member, gfp_mask);
+	member = kmalloc(sizeof *member, gfp_mask);
 	if (!member)
 		return ERR_PTR(-ENOMEM);
 
@@ -667,21 +637,13 @@ int ib_sa_get_mcmember_rec(struct ib_device *device, u8 port_num,
 		return -ENODEV;
 
 	port = &dev->port[port_num - dev->start_port];
-	if (mgid && memcmp(mgid, &mgid0, sizeof mgid0)) {
-		spin_lock_irqsave(&port->lock, flags);
-		group = mcast_find(port, mgid);
-		if (group)
-			*rec = group->rec;
-		else
-			ret = -EADDRNOTAVAIL;
-		spin_unlock_irqrestore(&port->lock, flags);
-	} else {
-		memset(rec, 0, sizeof *rec);
-		ib_get_cached_gid(device, port_num, 0, &rec->port_gid);
-		rec->pkey = 0xFFFF;
-		get_random_bytes(&rec->qkey, sizeof rec->qkey);
-		rec->join_state = 1;
-	}
+	spin_lock_irqsave(&port->lock, flags);
+	group = mcast_find(port, mgid);
+	if (group)
+		*rec = group->rec;
+	else
+		ret = -EADDRNOTAVAIL;
+	spin_unlock_irqrestore(&port->lock, flags);
 
 	return ret;
 }

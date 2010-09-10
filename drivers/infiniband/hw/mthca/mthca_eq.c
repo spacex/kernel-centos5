@@ -110,11 +110,11 @@ enum {
 				(1ULL << MTHCA_EVENT_TYPE_WQ_ACCESS_ERROR)    | \
 				(1ULL << MTHCA_EVENT_TYPE_LOCAL_CATAS_ERROR)  | \
 				(1ULL << MTHCA_EVENT_TYPE_PORT_CHANGE)        | \
-				(1ULL << MTHCA_EVENT_TYPE_ECC_DETECT))        | \
-				(1ULL << MTHCA_EVENT_TYPE_CMD)
+				(1ULL << MTHCA_EVENT_TYPE_ECC_DETECT))
 #define MTHCA_SRQ_EVENT_MASK   ((1ULL << MTHCA_EVENT_TYPE_SRQ_CATAS_ERROR)    | \
 				(1ULL << MTHCA_EVENT_TYPE_SRQ_QP_LAST_WQE)    | \
 				(1ULL << MTHCA_EVENT_TYPE_SRQ_LIMIT))
+#define MTHCA_CMD_EVENT_MASK    (1ULL << MTHCA_EVENT_TYPE_CMD)
 
 #define MTHCA_EQ_DB_INC_CI     (1 << 24)
 #define MTHCA_EQ_DB_REQ_NOT    (2 << 24)
@@ -173,11 +173,6 @@ static inline u64 async_mask(struct mthca_dev *dev)
 
 static inline void tavor_set_eq_ci(struct mthca_dev *dev, struct mthca_eq *eq, u32 ci)
 {
-	__be32 doorbell[2];
-
-	doorbell[0] = cpu_to_be32(MTHCA_EQ_DB_SET_CI | eq->eqn);
-	doorbell[1] = cpu_to_be32(ci & (eq->nent - 1));
-
 	/*
 	 * This barrier makes sure that all updates to ownership bits
 	 * done by set_eqe_hw() hit memory before the consumer index
@@ -187,7 +182,7 @@ static inline void tavor_set_eq_ci(struct mthca_dev *dev, struct mthca_eq *eq, u
 	 * having set_eqe_hw() overwrite the owner field.
 	 */
 	wmb();
-	mthca_write64(doorbell,
+	mthca_write64(MTHCA_EQ_DB_SET_CI | eq->eqn, ci & (eq->nent - 1),
 		      dev->kar + MTHCA_EQ_DOORBELL,
 		      MTHCA_GET_DOORBELL_LOCK(&dev->doorbell_lock));
 }
@@ -212,12 +207,7 @@ static inline void set_eq_ci(struct mthca_dev *dev, struct mthca_eq *eq, u32 ci)
 
 static inline void tavor_eq_req_not(struct mthca_dev *dev, int eqn)
 {
-	__be32 doorbell[2];
-
-	doorbell[0] = cpu_to_be32(MTHCA_EQ_DB_REQ_NOT | eqn);
-	doorbell[1] = 0;
-
-	mthca_write64(doorbell,
+	mthca_write64(MTHCA_EQ_DB_REQ_NOT | eqn, 0,
 		      dev->kar + MTHCA_EQ_DOORBELL,
 		      MTHCA_GET_DOORBELL_LOCK(&dev->doorbell_lock));
 }
@@ -230,12 +220,7 @@ static inline void arbel_eq_req_not(struct mthca_dev *dev, u32 eqn_mask)
 static inline void disarm_cq(struct mthca_dev *dev, int eqn, int cqn)
 {
 	if (!mthca_is_memfree(dev)) {
-		__be32 doorbell[2];
-
-		doorbell[0] = cpu_to_be32(MTHCA_EQ_DB_DISARM_CQ | eqn);
-		doorbell[1] = cpu_to_be32(cqn);
-
-		mthca_write64(doorbell,
+		mthca_write64(MTHCA_EQ_DB_DISARM_CQ | eqn, cqn,
 			      dev->kar + MTHCA_EQ_DOORBELL,
 			      MTHCA_GET_DOORBELL_LOCK(&dev->doorbell_lock));
 	}
@@ -522,7 +507,7 @@ static int mthca_create_eq(struct mthca_dev *dev,
 		dma_list[i] = t;
 		pci_unmap_addr_set(&eq->page_list[i], mapping, t);
 
-		memset(eq->page_list[i].buf, 0, PAGE_SIZE);
+		clear_page(eq->page_list[i].buf);
 	}
 
 	for (i = 0; i < eq->nent; ++i)
@@ -863,17 +848,23 @@ int mthca_init_eq_table(struct mthca_dev *dev)
 	if (err)
 		goto err_out_unmap;
 
-	err = mthca_create_eq(dev, MTHCA_NUM_CMD_EQE + MTHCA_NUM_ASYNC_EQE +
-			      MTHCA_NUM_SPARE_EQE,
+	err = mthca_create_eq(dev, MTHCA_NUM_ASYNC_EQE + MTHCA_NUM_SPARE_EQE,
 			      (dev->mthca_flags & MTHCA_FLAG_MSI_X) ? 129 : intr,
 			      &dev->eq_table.eq[MTHCA_EQ_ASYNC]);
 	if (err)
 		goto err_out_comp;
 
+	err = mthca_create_eq(dev, MTHCA_NUM_CMD_EQE + MTHCA_NUM_SPARE_EQE,
+			      (dev->mthca_flags & MTHCA_FLAG_MSI_X) ? 130 : intr,
+			      &dev->eq_table.eq[MTHCA_EQ_CMD]);
+	if (err)
+		goto err_out_async;
+
 	if (dev->mthca_flags & MTHCA_FLAG_MSI_X) {
 		static const char *eq_name[] = {
 			[MTHCA_EQ_COMP]  = DRV_NAME " (comp)",
 			[MTHCA_EQ_ASYNC] = DRV_NAME " (async)",
+			[MTHCA_EQ_CMD]   = DRV_NAME " (cmd)"
 		};
 
 		for (i = 0; i < MTHCA_NUM_EQ; ++i) {
@@ -883,7 +874,7 @@ int mthca_init_eq_table(struct mthca_dev *dev)
 					  mthca_tavor_msi_x_interrupt,
 					  0, eq_name[i], dev->eq_table.eq + i);
 			if (err)
-				goto err_out_async;
+				goto err_out_cmd;
 			dev->eq_table.eq[i].have_irq = 1;
 		}
 	} else {
@@ -893,7 +884,7 @@ int mthca_init_eq_table(struct mthca_dev *dev)
 				  mthca_tavor_interrupt,
 				  IRQF_SHARED, DRV_NAME, dev);
 		if (err)
-			goto err_out_async;
+			goto err_out_cmd;
 		dev->eq_table.have_irq = 1;
 	}
 
@@ -906,6 +897,15 @@ int mthca_init_eq_table(struct mthca_dev *dev)
 		mthca_warn(dev, "MAP_EQ for async EQ %d returned status 0x%02x\n",
 			   dev->eq_table.eq[MTHCA_EQ_ASYNC].eqn, status);
 
+	err = mthca_MAP_EQ(dev, MTHCA_CMD_EVENT_MASK,
+			   0, dev->eq_table.eq[MTHCA_EQ_CMD].eqn, &status);
+	if (err)
+		mthca_warn(dev, "MAP_EQ for cmd EQ %d failed (%d)\n",
+			   dev->eq_table.eq[MTHCA_EQ_CMD].eqn, err);
+	if (status)
+		mthca_warn(dev, "MAP_EQ for cmd EQ %d returned status 0x%02x\n",
+			   dev->eq_table.eq[MTHCA_EQ_CMD].eqn, status);
+
 	for (i = 0; i < MTHCA_NUM_EQ; ++i)
 		if (mthca_is_memfree(dev))
 			arbel_eq_req_not(dev, dev->eq_table.eq[i].eqn_mask);
@@ -914,8 +914,11 @@ int mthca_init_eq_table(struct mthca_dev *dev)
 
 	return 0;
 
-err_out_async:
+err_out_cmd:
 	mthca_free_irqs(dev);
+	mthca_free_eq(dev, &dev->eq_table.eq[MTHCA_EQ_CMD]);
+
+err_out_async:
 	mthca_free_eq(dev, &dev->eq_table.eq[MTHCA_EQ_ASYNC]);
 
 err_out_comp:
@@ -938,6 +941,8 @@ void mthca_cleanup_eq_table(struct mthca_dev *dev)
 
 	mthca_MAP_EQ(dev, async_mask(dev),
 		     1, dev->eq_table.eq[MTHCA_EQ_ASYNC].eqn, &status);
+	mthca_MAP_EQ(dev, MTHCA_CMD_EVENT_MASK,
+		     1, dev->eq_table.eq[MTHCA_EQ_CMD].eqn, &status);
 
 	for (i = 0; i < MTHCA_NUM_EQ; ++i)
 		mthca_free_eq(dev, &dev->eq_table.eq[i]);

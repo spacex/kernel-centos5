@@ -521,6 +521,7 @@ extern unsigned char IDX_ACTIVATE_READ[];
 extern unsigned char IDX_ACTIVATE_WRITE[];
 
 #define IDX_ACTIVATE_SIZE 	0x22
+#define QETH_IDX_ACT_PNO(buffer) (buffer+0x0b)
 #define QETH_IDX_ACT_ISSUER_RM_TOKEN(buffer) (buffer+0x0c)
 #define QETH_IDX_NO_PORTNAME_REQUIRED(buffer) ((buffer)[0x0b]&0x80)
 #define QETH_IDX_ACT_FUNC_LEVEL(buffer) (buffer+0x10)
@@ -529,6 +530,7 @@ extern unsigned char IDX_ACTIVATE_WRITE[];
 #define QETH_IDX_ACT_QDIO_DEV_REALADDR(buffer) (buffer+0x20)
 #define QETH_IS_IDX_ACT_POS_REPLY(buffer) (((buffer)[0x08]&3)==2)
 #define QETH_IDX_REPLY_LEVEL(buffer) (buffer+0x12)
+#define QETH_IDX_ACT_CAUSE_CODE(buffer) (buffer)[0x09]
 
 #define PDU_ENCAPSULATION(buffer) \
 	(buffer + *(buffer + (*(buffer+0x0b)) + \

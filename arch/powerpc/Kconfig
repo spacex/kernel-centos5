@@ -488,6 +488,15 @@ config MMIO_NVRAM
 	bool
 	default n
 
+config PPC_PMI
+	tristate "Support for PMI"
+	depends PPC_IBM_CELL_BLADE
+	help
+	  PMI (Platform Management Interrupt) is a way to
+	  communicate with the BMC (Baseboard Mangement Controller).
+	  It is used in some IBM Cell blades.
+	default m
+
 config MPIC_BROKEN_U3
 	bool
 	depends on PPC_MAPLE
@@ -594,6 +603,16 @@ config PPC_TODC
 	bool "Generic Time-of-day Clock (TODC) support"
 	---help---
 	  This adds support for many TODC/RTC chips.
+
+config AXON_RAM
+	tristate "Axon DDR2 memory device driver"
+	depends on PPC_IBM_CELL_BLADE
+	default m
+	help
+	  It registers one block device per Axon's DDR2 memory bank found
+	  on a system. Block devices are called axonram?, their major and
+	  minor numbers are available in /proc/devices, /proc/partitions or
+	  in /sys/block/axonram?/dev.
 
 endmenu
 

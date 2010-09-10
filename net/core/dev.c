@@ -2385,10 +2385,11 @@ void dev_set_promiscuity(struct net_device *dev, int inc)
 		       					       "left");
 		audit_log(current->audit_context, GFP_ATOMIC,
 			AUDIT_ANOM_PROMISCUOUS,
-			"dev=%s prom=%d old_prom=%d auid=%u",
+			"dev=%s prom=%d old_prom=%d auid=%u ses=%u",
 			dev->name, (dev->flags & IFF_PROMISC),
 			(old_flags & IFF_PROMISC),
-			audit_get_loginuid(current->audit_context)); 
+			audit_get_loginuid(current->audit_context),
+			audit_get_sessionid(current->audit_context)); 
 	}
 }
 
@@ -3217,7 +3218,6 @@ void netdev_run_todo(void)
 			continue;
 		}
 
-		netdev_unregister_sysfs(dev);
 		dev->reg_state = NETREG_UNREGISTERED;
 
 		netdev_wait_allrefs(dev);
@@ -3228,11 +3228,11 @@ void netdev_run_todo(void)
 		BUG_TRAP(!dev->ip6_ptr);
 		BUG_TRAP(!dev->dn_ptr);
 
-		/* It must be the very last action,
-		 * after this 'dev' may point to freed up memory.
-		 */
 		if (dev->destructor)
 			dev->destructor(dev);
+
+		/* Free network device */
+		class_device_put(&dev->class_dev);
 	}
 
 out:
@@ -3388,6 +3388,9 @@ int unregister_netdevice(struct net_device *dev)
 	BUG_TRAP(!dev->master);
 
 	free_divert_blk(dev);
+
+	/* Remove entries from sysfs */
+	netdev_unregister_sysfs(dev);
 
 	/* Finish processing unregister after unlock */
 	net_set_todo(dev);
@@ -3549,6 +3552,44 @@ static int __init netdev_dma_register(void) { return -ENODEV; }
  *	present) and leaves us with a valid list of present and active devices.
  *
  */
+
+/**
+ *	netdev_compute_feature - compute conjunction of two feature sets
+ *	@all: first feature set
+ *	@one: second feature set
+ *
+ *	Computes a new feature set after adding a device with feature set
+ *	@one to the master device with current feature set @all.  Returns
+ *	the new feature set.
+ */
+int netdev_compute_features(unsigned long all, unsigned long one)
+{
+        /* if device needs checksumming, downgrade to hw checksumming */
+	if (all & NETIF_F_NO_CSUM && !(one & NETIF_F_NO_CSUM))
+		all ^= NETIF_F_NO_CSUM | NETIF_F_HW_CSUM;
+
+        /* if device can't do all checksum, downgrade to ipv4/ipv6 */
+	if (all & NETIF_F_HW_CSUM && !(one & NETIF_F_HW_CSUM))
+		all ^= NETIF_F_HW_CSUM | NETIF_F_IP_CSUM;
+
+	if (one & NETIF_F_GSO)
+		one |= NETIF_F_GSO_SOFTWARE;
+	one |= NETIF_F_GSO;
+
+        /* If even one device supports robust GSO, enable it for all. */
+	if (one & NETIF_F_GSO_ROBUST)
+		all |= NETIF_F_GSO_ROBUST;
+
+	all &= one | NETIF_F_LLTX;
+
+	if (!(all & NETIF_F_ALL_CSUM))
+		all &= ~NETIF_F_SG;
+	if (!(all & NETIF_F_SG))
+		all &= ~NETIF_F_GSO_MASK;
+
+	return all;
+}
+EXPORT_SYMBOL(netdev_compute_features);
 
 /*
  *       This is called single threaded during boot, so no need

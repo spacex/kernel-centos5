@@ -292,6 +292,9 @@ cpufreq_stat_notifier_trans (struct notifier_block *nb, unsigned long val,
 	if (old_index == new_index)
 		return 0;
 
+        if ((old_index < 0) || (new_index < 0))
+                return 0;
+
 	spin_lock(&cpufreq_stats_lock);
 	stat->last_index = new_index;
 #ifdef CONFIG_CPU_FREQ_STAT_DETAILS

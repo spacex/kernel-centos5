@@ -92,9 +92,10 @@ extern int dir_notify_enable;
 #define FS_REQUIRES_DEV 1 
 #define FS_BINARY_MOUNTDATA 2
 #define FS_REVAL_DOT	16384	/* Check the paths ".", ".." for staleness */
-#define FS_ODD_RENAME	32768	/* Temporary stuff; will go away as soon
-				  * as nfs_rename() will be cleaned up
-				  */
+#define FS_RENAME_DOES_D_MOVE	32768	/* FS will handle d_move()
+					 * during rename() internally.
+					 */
+
 /*
  * These are the fs-independent mount-flags: up to 32 flags are supported
  */
@@ -146,6 +147,9 @@ extern int dir_notify_enable;
 #define S_NOCMTIME	128	/* Do not update file c/mtime */
 #define S_SWAPFILE	256	/* Do not truncate: swapon got its bmaps */
 #define S_PRIVATE	512	/* Inode is fs-internal */
+
+/* RHEL only flags -- These are not upstream! */
+#define S_NOATTRKILL	65536	/* don't convert ATTR_KILL_* to mode change */
 
 /*
  * Note that nosuid etc flags are inode-specific: setting some file-system
@@ -746,6 +750,8 @@ extern spinlock_t files_lock;
 
 #define FL_POSIX	1
 #define FL_FLOCK	2
+#define FL_GRANT	4	/* kABI toggle to let the caller know
+				that fl_lmops has the grant callback */
 #define FL_ACCESS	8	/* not trying to lock, just looking */
 #define FL_EXISTS	16	/* when unlocking, test for existence */
 #define FL_LEASE	32	/* lease held on this file */
@@ -776,6 +782,9 @@ struct lock_manager_operations {
 	void (*fl_break)(struct file_lock *);
 	int (*fl_mylease)(struct file_lock *, struct file_lock *);
 	int (*fl_change)(struct file_lock **, int);
+#ifndef __GENKSYMS__
+	int (*fl_grant)(struct file_lock *, struct file_lock *, int);
+#endif
 };
 
 /* that will die - we need it for nfs_lock_info */
@@ -842,6 +851,10 @@ extern int posix_lock_file_conf(struct file *, struct file_lock *, struct file_l
 extern int posix_lock_file(struct file *, struct file_lock *);
 extern int posix_lock_file_wait(struct file *, struct file_lock *);
 extern int posix_unblock_lock(struct file *, struct file_lock *);
+extern int vfs_test_lock(struct file *, struct file_lock *);
+extern int vfs_lock_file(struct file *, unsigned int, struct file_lock *,
+			 struct file_lock *);
+extern int vfs_cancel_lock(struct file *filp, struct file_lock *fl);
 extern int flock_lock_file_wait(struct file *filp, struct file_lock *fl);
 extern int __break_lease(struct inode *inode, unsigned int flags);
 extern void lease_get_mtime(struct inode *, struct timespec *time);
@@ -1549,6 +1562,9 @@ extern int check_disk_change(struct block_device *);
 extern int invalidate_inodes(struct super_block *);
 extern int __invalidate_device(struct block_device *);
 extern int invalidate_partition(struct gendisk *, int);
+unsigned long __invalidate_mapping_pages(struct address_space *mapping,
+					 pgoff_t start, pgoff_t end,
+					 bool be_atomic);
 unsigned long invalidate_mapping_pages(struct address_space *mapping,
 					pgoff_t start, pgoff_t end);
 unsigned long invalidate_inode_pages(struct address_space *mapping);

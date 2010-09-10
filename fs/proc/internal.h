@@ -38,6 +38,7 @@ extern int proc_tid_stat(struct task_struct *,  char *);
 extern int proc_tgid_stat(struct task_struct *, char *);
 extern int proc_pid_status(struct task_struct *, char *);
 extern int proc_pid_statm(struct task_struct *, char *);
+extern int proc_pid_limits(struct task_struct *, char *);
 
 extern struct file_operations proc_maps_operations;
 extern struct file_operations proc_numa_maps_operations;

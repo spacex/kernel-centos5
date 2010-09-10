@@ -925,7 +925,7 @@ static int load_elf_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 		if (loc->elf_ex.e_type == ET_EXEC || load_addr_set)
 			elf_flags |= MAP_FIXED;
 		else if (loc->elf_ex.e_type == ET_DYN)
-#ifdef __i386__
+#if defined(__i386__) || defined(__x86_64__)
 			load_bias = 0;
 #else
 			load_bias = ELF_PAGESTART(ELF_ET_DYN_BASE - vaddr);
@@ -1110,10 +1110,8 @@ out_free_interp:
 out_free_file:
 	sys_close(elf_exec_fileno);
 out_free_fh:
-	if (files) {
-		put_files_struct(current->files);
-		current->files = files;
-	}
+	if (files)
+		reset_files_struct(current, files);
 out_free_ph:
 	kfree(elf_phdata);
 	goto out;
@@ -1235,31 +1233,68 @@ static int dump_seek(struct file *file, loff_t off)
 }
 
 /*
- * Decide whether a segment is worth dumping; default is yes to be
- * sure (missing info is worse than too much; etc).
- * Personally I'd include everything, and use the coredump limit...
- *
- * I think we should skip something. But I am not sure how. H.J.
+ * Decide what to dump of a segment, part, all or none.
  */
-static int maydump(struct vm_area_struct *vma)
+static unsigned long vma_dump_size(struct vm_area_struct *vma,
+				   unsigned long mm_flags)
 {
 	/* The vma can be set up to tell us the answer directly.  */
 	if (vma->vm_flags & VM_ALWAYSDUMP)
-		return 1;
+		goto whole;
 
 	/* Do not dump I/O mapped devices or special mappings */
 	if (vma->vm_flags & (VM_IO | VM_RESERVED))
 		return 0;
 
-	/* Dump shared memory only if mapped from an anonymous file. */
-	if (vma->vm_flags & VM_SHARED)
-		return vma->vm_file->f_dentry->d_inode->i_nlink == 0;
+#define FILTER(type)	(mm_flags & (1UL << MMF_DUMP_##type))
 
-	/* If it hasn't been written to, don't write it out */
-	if (!vma->anon_vma)
+	/* By default, dump shared memory if mapped from an anonymous file. */
+	if (vma->vm_flags & VM_SHARED) {
+		if (vma->vm_file->f_dentry->d_inode->i_nlink == 0 ?
+		    FILTER(ANON_SHARED) : FILTER(MAPPED_SHARED))
+			goto whole;
+		return 0;
+	}
+
+	/* Dump segments that have been written to.  */
+	if (vma->anon_vma && FILTER(ANON_PRIVATE))
+		goto whole;
+	if (vma->vm_file == NULL)
 		return 0;
 
-	return 1;
+	if (FILTER(MAPPED_PRIVATE))
+		goto whole;
+
+	/*
+	 * If this looks like the beginning of a DSO or executable mapping,
+	 * check for an ELF header.  If we find one, dump the first page to
+	 * aid in determining what was mapped here.
+	 */
+	if (FILTER(ELF_HEADERS) && vma->vm_file != NULL && vma->vm_pgoff == 0) {
+		u32 __user *header = (u32 __user *) vma->vm_start;
+		u32 word;
+		/*
+		 * Doing it this way gets the constant folded by GCC.
+		 */
+		union {
+			u32 cmp;
+			char elfmag[SELFMAG];
+		} magic;
+		BUILD_BUG_ON(SELFMAG != sizeof word);
+		magic.elfmag[EI_MAG0] = ELFMAG0;
+		magic.elfmag[EI_MAG1] = ELFMAG1;
+		magic.elfmag[EI_MAG2] = ELFMAG2;
+		magic.elfmag[EI_MAG3] = ELFMAG3;
+		if (get_user(word, header) == 0 && word == magic.cmp)
+			return PAGE_SIZE;
+	}
+
+#undef	FILTER
+
+	return 0;
+
+whole:
+	return vma->vm_end - vma->vm_start;
 }
 
 /* An ELF note in memory */
@@ -1520,6 +1555,7 @@ static int elf_core_dump(long signr, struct pt_regs *regs, struct file *file)
 #endif
 	int thread_status_size = 0;
 	elf_addr_t *auxv;
+	unsigned long mm_flags;
 
 	/*
 	 * We no longer stop all VM operations.
@@ -1644,9 +1680,7 @@ static int elf_core_dump(long signr, struct pt_regs *regs, struct file *file)
 		
 		sz += thread_status_size;
 
-#ifdef ELF_CORE_WRITE_EXTRA_NOTES
-		sz += ELF_CORE_EXTRA_NOTES_SIZE;
-#endif
+		sz += elf_coredump_extra_notes_size();
 
 		fill_elf_note_phdr(&phdr, sz, offset);
 		offset += sz;
@@ -1656,19 +1690,23 @@ static int elf_core_dump(long signr, struct pt_regs *regs, struct file *file)
 	/* Page-align dumped data */
 	dataoff = offset = roundup(offset, ELF_EXEC_PAGESIZE);
 
+	/*
+	 * We must use the same mm_flags while dumping core to avoid
+	 * inconsistency between the program headers and bodies, otherwise an
+	 * unusable core file can be generated.
+	 */
+	mm_flags = get_mm_flags(current->mm);
+
 	/* Write program headers for segments dump */
 	for (vma = current->mm->mmap; vma != NULL; vma = vma->vm_next) {
 		struct elf_phdr phdr;
-		size_t sz;
-
-		sz = vma->vm_end - vma->vm_start;
 
 		phdr.p_type = PT_LOAD;
 		phdr.p_offset = offset;
 		phdr.p_vaddr = vma->vm_start;
 		phdr.p_paddr = 0;
-		phdr.p_filesz = maydump(vma) ? sz : 0;
-		phdr.p_memsz = sz;
+		phdr.p_filesz = vma_dump_size(vma, mm_flags);
+		phdr.p_memsz = vma->vm_end - vma->vm_start;
 		offset += phdr.p_filesz;
 		phdr.p_flags = vma->vm_flags & VM_READ ? PF_R : 0;
 		if (vma->vm_flags & VM_WRITE)
@@ -1689,9 +1727,8 @@ static int elf_core_dump(long signr, struct pt_regs *regs, struct file *file)
 		if (!writenote(notes + i, file))
 			goto end_coredump;
 
-#ifdef ELF_CORE_WRITE_EXTRA_NOTES
-	ELF_CORE_WRITE_EXTRA_NOTES;
-#endif
+	if (elf_coredump_extra_notes_write(file, &file->f_pos))
+		goto end_coredump;
 
 	/* write out the thread status notes section */
 	list_for_each(t, &thread_list) {
@@ -1707,13 +1744,11 @@ static int elf_core_dump(long signr, struct pt_regs *regs, struct file *file)
 
 	for (vma = current->mm->mmap; vma != NULL; vma = vma->vm_next) {
 		unsigned long addr;
+		unsigned long end;
 
-		if (!maydump(vma))
-			continue;
+		end = vma->vm_start + vma_dump_size(vma, mm_flags);
 
-		for (addr = vma->vm_start;
-		     addr < vma->vm_end;
-		     addr += PAGE_SIZE) {
+		for (addr = vma->vm_start; addr < end; addr += PAGE_SIZE) {
 			struct page *page;
 			struct vm_area_struct *vma;
 

@@ -74,6 +74,10 @@ struct iscsi_uevent {
 		/* messages u -> k */
 		struct msg_create_session {
 			uint32_t	initial_cmdsn;
+#ifndef __GENKSYMS__
+			uint16_t	cmds_max;
+			uint16_t	queue_depth;
+#endif
 		} c_session;
 		struct msg_destroy_session {
 			uint32_t	sid;
@@ -243,6 +247,18 @@ enum iscsi_param {
 	ISCSI_PARAM_PASSWORD,
 	ISCSI_PARAM_PASSWORD_IN,
 
+	/*
+	 * These tmf timers are not yet used in RHEL, but come before the ping
+	 * ones upstream so they are being brought in to maintain ordering.
+	 */
+	ISCSI_PARAM_FAST_ABORT,
+	ISCSI_PARAM_ABORT_TMO,
+	ISCSI_PARAM_LU_RESET_TMO,
+	ISCSI_PARAM_HOST_RESET_TMO,
+
+	ISCSI_PARAM_PING_TMO,
+	ISCSI_PARAM_RECV_TMO,
+
 #endif
 };
 
@@ -272,6 +288,12 @@ enum iscsi_param {
 #define ISCSI_USERNAME_IN		(1 << ISCSI_PARAM_USERNAME_IN)
 #define ISCSI_PASSWORD			(1 << ISCSI_PARAM_PASSWORD)
 #define ISCSI_PASSWORD_IN		(1 << ISCSI_PARAM_PASSWORD_IN)
+#define ISCSI_FAST_ABORT		(1 << ISCSI_PARAM_FAST_ABORT)
+#define ISCSI_ABORT_TMO			(1 << ISCSI_PARAM_ABORT_TMO)
+#define ISCSI_LU_RESET_TMO		(1 << ISCSI_PARAM_LU_RESET_TMO)
+#define ISCSI_HOST_RESET_TMO		(1 << ISCSI_PARAM_HOST_RESET_TMO)
+#define ISCSI_PING_TMO			(1 << ISCSI_PARAM_PING_TMO)
+#define ISCSI_RECV_TMO			(1 << ISCSI_PARAM_RECV_TMO)
 
 /* iSCSI HBA params */
 enum iscsi_host_param {

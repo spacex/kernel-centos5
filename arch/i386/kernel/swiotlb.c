@@ -260,6 +260,7 @@ map_single(struct device *hwdev, struct phys_addr buffer, size_t size, int dir)
 	unsigned long flags;
 	char *dma_addr;
 	unsigned int nslots, stride, index, wrap;
+	struct phys_addr slot_buf;
 	int i;
 
 	/*
@@ -331,11 +332,27 @@ map_single(struct device *hwdev, struct phys_addr buffer, size_t size, int dir)
 	 * This is needed when we sync the memory.  Then we sync the buffer if
 	 * needed.
 	 */
-	io_tlb_orig_addr[index] = buffer;
+	slot_buf = buffer;
+	for (i = 0; i < nslots; i++) {
+		slot_buf.page += slot_buf.offset >> PAGE_SHIFT;
+		slot_buf.offset &= PAGE_SIZE - 1;
+		io_tlb_orig_addr[index+i] = slot_buf;
+		slot_buf.offset += 1 << IO_TLB_SHIFT;
+	}
 	if ((dir == DMA_TO_DEVICE) || (dir == DMA_BIDIRECTIONAL))
 		__sync_single(buffer, dma_addr, size, DMA_TO_DEVICE);
 
 	return dma_addr;
+}
+
+static struct phys_addr dma_addr_to_phys_addr(char *dma_addr)
+{
+	int index = (dma_addr - iotlb_virt_start) >> IO_TLB_SHIFT;
+	struct phys_addr buffer = io_tlb_orig_addr[index];
+	buffer.offset += (long)dma_addr & ((1 << IO_TLB_SHIFT) - 1);
+	buffer.page += buffer.offset >> PAGE_SHIFT;
+	buffer.offset &= PAGE_SIZE - 1;
+	return buffer;
 }
 
 /*
@@ -347,7 +364,7 @@ unmap_single(struct device *hwdev, char *dma_addr, size_t size, int dir)
 	unsigned long flags;
 	int i, count, nslots = ALIGN(size, 1 << IO_TLB_SHIFT) >> IO_TLB_SHIFT;
 	int index = (dma_addr - iotlb_virt_start) >> IO_TLB_SHIFT;
-	struct phys_addr buffer = io_tlb_orig_addr[index];
+	struct phys_addr buffer = dma_addr_to_phys_addr(dma_addr);
 
 	/*
 	 * First, sync the memory before unmapping the entry
@@ -387,8 +404,7 @@ unmap_single(struct device *hwdev, char *dma_addr, size_t size, int dir)
 static void
 sync_single(struct device *hwdev, char *dma_addr, size_t size, int dir)
 {
-	int index = (dma_addr - iotlb_virt_start) >> IO_TLB_SHIFT;
-	struct phys_addr buffer = io_tlb_orig_addr[index];
+	struct phys_addr buffer = dma_addr_to_phys_addr(dma_addr);
 	BUG_ON((dir != DMA_FROM_DEVICE) && (dir != DMA_TO_DEVICE));
 	__sync_single(buffer, dma_addr, size, dir);
 }
@@ -436,7 +452,7 @@ swiotlb_map_single(struct device *hwdev, void *ptr, size_t size, int dir)
 	 * we can safely return the device addr and not worry about bounce
 	 * buffering it.
 	 */
-	if (!range_straddles_page_boundary(ptr, size) &&
+	if (!range_straddles_page_boundary(__pa(ptr), size) &&
 	    !address_needs_mapping(hwdev, dev_addr))
 		return dev_addr;
 
@@ -529,7 +545,9 @@ swiotlb_map_sg(struct device *hwdev, struct scatterlist *sg, int nelems,
 
 	for (i = 0; i < nelems; i++, sg++) {
 		dev_addr = SG_ENT_PHYS_ADDRESS(sg);
-		if (address_needs_mapping(hwdev, dev_addr)) {
+		if (range_straddles_page_boundary(page_to_pseudophys(sg->page)
+						  + sg->offset, sg->length)
+		    || address_needs_mapping(hwdev, dev_addr)) {
 			buffer.page   = sg->page;
 			buffer.offset = sg->offset;
 			map = map_single(hwdev, buffer, sg->length, dir);

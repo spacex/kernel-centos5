@@ -252,10 +252,21 @@ static inline struct dst_entry *dst_check(struct dst_entry *dst, u32 cookie)
 
 extern void		dst_init(void);
 
+/* Flags for xfrm_lookup flags argument. */
+enum {
+	XFRM_LOOKUP_WAIT = 1 << 0,
+	XFRM_LOOKUP_ICMP = 1 << 1,
+};
+
 struct flowi;
 #ifndef CONFIG_XFRM
 static inline int xfrm_lookup(struct dst_entry **dst_p, struct flowi *fl,
 		       struct sock *sk, int flags)
+{
+	return 0;
+} 
+static inline int xfrm_nlookup(struct dst_entry **dst_p, struct flowi *fl,
+			       struct sock *sk, int flags)
 {
 	return 0;
 } 
@@ -267,6 +278,8 @@ static inline int __xfrm_lookup(struct dst_entry **dst_p, struct flowi *fl,
 #else
 extern int xfrm_lookup(struct dst_entry **dst_p, struct flowi *fl,
 		       struct sock *sk, int flags);
+extern int xfrm_nlookup(struct dst_entry **dst_p, struct flowi *fl,
+			struct sock *sk, int flags);
 extern int __xfrm_lookup(struct dst_entry **dst_p, struct flowi *fl,
 			 struct sock *sk, int flags);
 #endif

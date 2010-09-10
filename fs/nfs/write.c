@@ -239,7 +239,6 @@ static int nfs_writepage_sync(struct nfs_open_context *ctx, struct inode *inode,
 		count, (long long)(page_offset(page) + offset));
 
 	set_page_writeback(page);
-	nfs_begin_data_update(inode);
 	do {
 		if (count < wsize)
 			wdata->args.count = count;
@@ -271,7 +270,6 @@ static int nfs_writepage_sync(struct nfs_open_context *ctx, struct inode *inode,
 		ClearPageError(page);
 
 io_error:
-	nfs_end_data_update(inode);
 	end_page_writeback(page);
 	nfs_writedata_release(wdata);
 	return written ? written : result;
@@ -432,7 +430,6 @@ static int nfs_inode_add_request(struct inode *inode, struct nfs_page *req)
 		return error;
 	if (!nfsi->npages) {
 		igrab(inode);
-		nfs_begin_data_update(inode);
 		if (nfs_have_delegation(inode, FMODE_WRITE))
 			nfsi->change_attr++;
 	}
@@ -458,7 +455,6 @@ static void nfs_inode_remove_request(struct nfs_page *req)
 	nfsi->npages--;
 	if (!nfsi->npages) {
 		spin_unlock(&nfsi->req_lock);
-		nfs_end_data_update(inode);
 		iput(inode);
 	} else
 		spin_unlock(&nfsi->req_lock);

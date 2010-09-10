@@ -258,7 +258,7 @@ struct icom_port {
 struct icom_adapter {
 	void __iomem * base_addr;
 	unsigned long base_addr_pci;
-	unsigned char irq_number;
+	unsigned int irq_number;
 	struct pci_dev *pci_dev;
 	struct icom_port port_info[4];
 	int index;

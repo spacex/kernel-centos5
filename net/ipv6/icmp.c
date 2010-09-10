@@ -64,11 +64,13 @@
 #include <net/ip6_route.h>
 #include <net/addrconf.h>
 #include <net/icmp.h>
+#include <net/xfrm.h>
 
 #include <asm/uaccess.h>
 #include <asm/system.h>
 
 DEFINE_SNMP_STAT(struct icmpv6_mib, icmpv6_statistics) __read_mostly;
+DEFINE_SNMP_STAT(struct icmpv6msg_mib, icmpv6msg_statistics) __read_mostly;
 
 /*
  *	The ICMP socket(s). This is the most convenient way to flow control
@@ -84,7 +86,7 @@ static int icmpv6_rcv(struct sk_buff **pskb);
 
 static struct inet6_protocol icmpv6_protocol = {
 	.handler	=	icmpv6_rcv,
-	.flags		=	INET6_PROTO_FINAL,
+	.flags		=	INET6_PROTO_NOPOLICY|INET6_PROTO_FINAL,
 };
 
 static __inline__ int icmpv6_xmit_lock(void)
@@ -177,7 +179,8 @@ static inline int icmpv6_xrlim_allow(struct sock *sk, int type,
 	 */
 	dst = ip6_route_output(sk, fl);
 	if (dst->error) {
-		IP6_INC_STATS(IPSTATS_MIB_OUTNOROUTES);
+		IP6_INC_STATS(ip6_dst_idev(dst),
+			      IPSTATS_MIB_OUTNOROUTES);
 	} else if (dst->dev && (dst->dev->flags&IFF_LOOPBACK)) {
 		res = 1;
 	} else {
@@ -285,8 +288,10 @@ void icmpv6_send(struct sk_buff *skb, int type, int code, __u32 info,
 	struct ipv6_pinfo *np;
 	struct in6_addr *saddr = NULL;
 	struct dst_entry *dst;
+	struct dst_entry *dst2;
 	struct icmp6hdr tmp_hdr;
 	struct flowi fl;
+	struct flowi fl2;
 	struct icmpv6_msg msg;
 	int iif = 0;
 	int addr_type = 0;
@@ -390,9 +395,42 @@ void icmpv6_send(struct sk_buff *skb, int type, int code, __u32 info,
 		goto out_dst_release;
 	}
 
-	if ((err = xfrm_lookup(&dst, &fl, sk, 0)) < 0)
+	/* No need to clone since we're just using its address. */
+	dst2 = dst;
+
+	err = xfrm_lookup(&dst, &fl, sk, 0);
+	switch (err) {
+	case 0:
+		if (dst != dst2)
+			goto route_done;
+		break;
+	case -EPERM:
+		dst = NULL;
+		break;
+	default:
+		goto out;
+	}
+
+	xfrm6_decode_session_reverse(skb, &fl2);
+
+	if (ip6_dst_lookup(sk, &dst2, &fl))
 		goto out;
 
+	err = xfrm_nlookup(&dst2, &fl, sk, XFRM_LOOKUP_ICMP);
+	if (err == -ENOENT || err == -ENOSYS) {
+		err = -ENOENT;
+		if (!dst)
+			goto out;
+		goto route_done;
+	}
+
+	dst_release(dst);
+	dst = dst2;
+
+	if (err)
+		goto out;
+
+route_done:
 	if (ipv6_addr_is_multicast(&fl.fl6_dst))
 		hlimit = np->mcast_hops;
 	else
@@ -429,10 +467,6 @@ void icmpv6_send(struct sk_buff *skb, int type, int code, __u32 info,
 		goto out_put;
 	}
 	err = icmpv6_push_pending_frames(sk, &fl, &tmp_hdr, len + sizeof(struct icmp6hdr));
-
-	if (type >= ICMPV6_DEST_UNREACH && type <= ICMPV6_PARAMPROB)
-		ICMP6_INC_STATS_OFFSET_BH(idev, ICMP6_MIB_OUTDESTUNREACHS, type - ICMPV6_DEST_UNREACH);
-	ICMP6_INC_STATS_BH(idev, ICMP6_MIB_OUTMSGS);
 
 out_put:
 	if (likely(idev != NULL))
@@ -519,9 +553,6 @@ static void icmpv6_echo_reply(struct sk_buff *skb)
 	}
 	err = icmpv6_push_pending_frames(sk, &fl, &tmp_hdr, skb->len + sizeof(struct icmp6hdr));
 
-        ICMP6_INC_STATS_BH(idev, ICMP6_MIB_OUTECHOREPLIES);
-        ICMP6_INC_STATS_BH(idev, ICMP6_MIB_OUTMSGS);
-
 out_put: 
 	if (likely(idev != NULL))
 		in6_dev_put(idev);
@@ -599,6 +630,22 @@ static int icmpv6_rcv(struct sk_buff **pskb)
 	struct icmp6hdr *hdr;
 	int type;
 
+	if (!xfrm6_policy_check(NULL, XFRM_POLICY_IN, skb)) {
+		if (!(skb->sp && skb->sp->xvec[skb->sp->len - 1]->props.flags &
+				 XFRM_STATE_ICMP))
+			goto drop_no_count;
+
+		if (!pskb_may_pull(skb, sizeof(*hdr) + sizeof(*orig_hdr)))
+			goto drop_no_count;
+
+		skb->nh.raw += sizeof(*hdr);
+
+		if (!xfrm6_policy_check_reverse(NULL, XFRM_POLICY_IN, skb))
+			goto drop_no_count;
+
+		skb->nh.raw -= sizeof(*hdr);
+	}
+
 	ICMP6_INC_STATS_BH(idev, ICMP6_MIB_INMSGS);
 
 	saddr = &skb->nh.ipv6h->saddr;
@@ -621,17 +668,14 @@ static int icmpv6_rcv(struct sk_buff **pskb)
 		}
 	}
 
-	if (!pskb_pull(skb, sizeof(struct icmp6hdr)))
+	if (!pskb_pull(skb, sizeof(*hdr)))
 		goto discard_it;
 
 	hdr = (struct icmp6hdr *) skb->h.raw;
 
 	type = hdr->icmp6_type;
 
-	if (type >= ICMPV6_DEST_UNREACH && type <= ICMPV6_PARAMPROB)
-		ICMP6_INC_STATS_OFFSET_BH(idev, ICMP6_MIB_INDESTUNREACHS, type - ICMPV6_DEST_UNREACH);
-	else if (type >= ICMPV6_ECHO_REQUEST && type <= NDISC_REDIRECT)
-		ICMP6_INC_STATS_OFFSET_BH(idev, ICMP6_MIB_INECHOS, type - ICMPV6_ECHO_REQUEST);
+	ICMP6MSGIN_INC_STATS_BH(idev, type);
 
 	switch (type) {
 	case ICMPV6_ECHO_REQUEST:
@@ -710,6 +754,7 @@ static int icmpv6_rcv(struct sk_buff **pskb)
 
 discard_it:
 	ICMP6_INC_STATS_BH(idev, ICMP6_MIB_INERRORS);
+drop_no_count:
 	kfree_skb(skb);
 	return 0;
 }

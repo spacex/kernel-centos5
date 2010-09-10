@@ -727,7 +727,7 @@ int hash_page(unsigned long ea, unsigned long access, unsigned long trap)
 			   mmu_psize_defs[mmu_vmalloc_psize].sllp) {
 			get_paca()->vmalloc_sllp =
 				mmu_psize_defs[mmu_vmalloc_psize].sllp;
-			slb_flush_and_rebolt();
+			slb_vmalloc_update();
 #ifdef CONFIG_SPU_BASE
 			spu_flush_all_slbs(mm);
 #endif

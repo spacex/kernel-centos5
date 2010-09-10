@@ -35,6 +35,7 @@
 #include <linux/security.h>
 #include <linux/audit.h>
 #include <linux/signal.h>
+#include <linux/elf.h>
 
 #include <asm/segment.h>
 #include <asm/page.h>
@@ -43,7 +44,6 @@
 #include <asm/system.h>
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
-#include <asm/elf.h>
 
 #ifdef CONFIG_COMPAT
 #include "compat_ptrace.h"
@@ -172,13 +172,15 @@ genregs_set(struct task_struct *target,
 		unsigned long pswmask = regs->psw.mask;
 		ret = utrace_regset_copyin(&pos, &count, &kbuf, &ubuf,
 					   &pswmask, PT_PSWMASK, PT_PSWADDR);
-		if (pswmask != PSW_MASK_MERGE(PSW_USER_BITS, pswmask)
+		if (ret == 0 &&
 #ifdef CONFIG_COMPAT
-		    && pswmask != PSW_MASK_MERGE(PSW_USER32_BITS, pswmask)
+		    pswmask != PSW_MASK_MERGE(PSW_USER32_BITS, pswmask) &&
 #endif
-			)
+		    pswmask != PSW_MASK_MERGE(PSW_USER_BITS, pswmask))
 			/* Invalid psw mask. */
-			return -EINVAL;
+			ret = -EINVAL;
+		if (ret)
+			return ret;
 		regs->psw.mask = pswmask;
 		FixPerRegisters(target);
 	}
@@ -188,6 +190,8 @@ genregs_set(struct task_struct *target,
 		ret = utrace_regset_copyin(&pos, &count, &kbuf, &ubuf,
 					   &regs->psw.addr, PT_PSWADDR,
 					   PT_ACR0);
+		if (ret)
+			return ret;
 #ifndef CONFIG_64BIT
 		/* I'd like to reject addresses without the
 		   high order bit but older gdb's rely on it */
@@ -241,23 +245,23 @@ fpregs_set(struct task_struct *target,
 		save_fp_regs(&target->thread.fp_regs);
 
 	/* If setting FPC, must validate it first. */
-	if (count > 0 && pos == 0) {
-		unsigned long fpc;
+	if (count > 0 && pos < offsetof(s390_fp_regs, fprs)) {
+		u32 fpc[2] = { target->thread.fp_regs.fpc, 0 };
+		BUILD_BUG_ON(offsetof(s390_fp_regs, fprs) != sizeof(fpc));
 		ret = utrace_regset_copyin(&pos, &count, &kbuf, &ubuf,
 					   &fpc, 0, sizeof(fpc));
 		if (ret)
 			return ret;
 
-		if ((fpc & ~((unsigned long) FPC_VALID_MASK
-			     << (BITS_PER_LONG - 32))) != 0)
+		if ((fpc[0] & ~FPC_VALID_MASK) != 0 || fpc[1] != 0)
 			return -EINVAL;
 
-		memcpy(&target->thread.fp_regs, &fpc, sizeof(fpc));
+		target->thread.fp_regs.fpc = fpc[0];
 	}
 
-	if (ret == 0)
+	if (ret == 0 && count > 0)
 		ret = utrace_regset_copyin(&pos, &count, &kbuf, &ubuf,
-					   &target->thread.fp_regs, 0, -1);
+					   target->thread.fp_regs.fprs, 0, -1);
 
 	if (ret == 0 && target == current)
 		restore_fp_regs(&target->thread.fp_regs);
@@ -295,11 +299,13 @@ per_info_set(struct task_struct *target,
  */
 static const struct utrace_regset native_regsets[] = {
 	{
+		.core_note_type = NT_PRSTATUS,
 		.size = sizeof(long), .align = sizeof(long),
 		.n = sizeof(s390_regs) / sizeof(long),
 		.get = genregs_get, .set = genregs_set
 	},
 	{
+		.core_note_type = NT_PRFPREG,
 		.size = sizeof(long), .align = sizeof(long),
 		.n = sizeof(s390_fp_regs) / sizeof(long),
 		.get = fpregs_get, .set = fpregs_set
@@ -328,25 +334,31 @@ s390_genregs_get(struct task_struct *target,
 	int ret = 0;
 
 	/* Fake a 31 bit psw mask. */
-	if (count > 0 && pos == PT_PSWMASK / 2) {
+	if (count > 0 && pos == offsetof(struct user_regs_struct32, psw.mask)) {
 		u32 pswmask = PSW32_MASK_MERGE(PSW32_USER_BITS,
 					       (u32) (regs->psw.mask >> 32));
-		ret = utrace_regset_copyout(&pos, &count, &kbuf, &ubuf,
-					    &pswmask, PT_PSWMASK / 2,
-					    PT_PSWADDR / 2);
+		ret = utrace_regset_copyout(
+			&pos, &count, &kbuf, &ubuf, &pswmask,
+			offsetof(struct user_regs_struct32, psw.mask),
+			offsetof(struct user_regs_struct32, psw.addr));
 	}
 
 	/* Fake a 31 bit psw address. */
-	if (ret == 0 && count > 0 && pos == PT_PSWADDR / 2) {
+	if (ret == 0 && count > 0 &&
+	    pos == offsetof(struct user_regs_struct32, psw.addr)) {
 		u32 pswaddr = (u32) regs->psw.addr | PSW32_ADDR_AMODE31;
-		ret = utrace_regset_copyout(&pos, &count, &kbuf, &ubuf,
-					    &pswaddr, PT_PSWADDR / 2,
-					    PT_GPR0 / 2);
+		ret = utrace_regset_copyout(
+			&pos, &count, &kbuf, &ubuf, &pswaddr,
+			offsetof(struct user_regs_struct32, psw.addr),
+			offsetof(struct user_regs_struct32, gprs[0]));
 	}
 
 	/* The GPRs are directly on the stack.  Just truncate them.  */
-	while (ret == 0 && count > 0 && pos < PT_ACR0 / 2) {
-		u32 value = regs->gprs[(pos - PT_GPR0 / 2) / sizeof(u32)];
+	while (ret == 0 && count > 0 &&
+	       pos < offsetof(struct user_regs_struct32, acrs[0])) {
+		unsigned int n =
+			pos - offsetof(struct user_regs_struct32, gprs[0]);
+		u32 value = regs->gprs[n / sizeof(u32)];
 		if (kbuf) {
 			*(u32 *) kbuf = value;
 			kbuf += sizeof(u32);
@@ -360,22 +372,21 @@ s390_genregs_get(struct task_struct *target,
 	}
 
 	/* The ACRs are kept in the thread_struct.  */
-	if (ret == 0 && count > 0 && pos < PT_ACR0 / 2 + NUM_ACRS * ACR_SIZE) {
+	if (ret == 0 && count > 0 &&
+	    pos < offsetof(struct user_regs_struct32, acrs[NUM_ACRS])) {
 		if (target == current)
 			save_access_regs(target->thread.acrs);
-
-		ret = utrace_regset_copyout(&pos, &count, &kbuf, &ubuf,
-					    target->thread.acrs,
-					    PT_ACR0 / 2,
-					    PT_ACR0 / 2 + NUM_ACRS * ACR_SIZE);
+		ret = utrace_regset_copyout(
+			&pos, &count, &kbuf, &ubuf, target->thread.acrs,
+			offsetof(struct user_regs_struct32, acrs[0]),
+			offsetof(struct user_regs_struct32, acrs[NUM_ACRS]));
 	}
 
 	/* Finally, the ORIG_GPR2 value.  */
 	if (count > 0) {
 		if (kbuf)
 			*(u32 *) kbuf = regs->orig_gpr2;
-		else if (put_user((u32) regs->orig_gpr2,
-				  (u32 __user *) ubuf))
+		else if (put_user((u32) regs->orig_gpr2, (u32 __user *) ubuf))
 			return -EFAULT;
 	}
 
@@ -392,15 +403,16 @@ s390_genregs_set(struct task_struct *target,
 	int ret = 0;
 
 	/* Check for an invalid PSW mask.  */
-	if (count > 0 && pos == PT_PSWMASK / 2) {
+	if (count > 0 && pos == offsetof(struct user_regs_struct32, psw.mask)) {
 		u32 pswmask;
-		ret = utrace_regset_copyin(&pos, &count, &kbuf, &ubuf,
-					   &pswmask, PT_PSWMASK / 2,
-					   PT_PSWADDR / 2);
+		ret = utrace_regset_copyin(
+			&pos, &count, &kbuf, &ubuf, &pswmask,
+			offsetof(struct user_regs_struct32, psw.mask),
+			offsetof(struct user_regs_struct32, psw.addr));
 		if (ret)
 			return ret;
 
-		if (pswmask != PSW_MASK_MERGE(PSW_USER32_BITS, pswmask))
+		if (pswmask != PSW32_MASK_MERGE(PSW32_USER_BITS, pswmask))
 			/* Invalid psw mask. */
 			return -EINVAL;
 
@@ -411,18 +423,22 @@ s390_genregs_set(struct task_struct *target,
 	}
 
 	/* Build a 64 bit psw address from 31 bit address. */
-	if (count > 0 && pos == PT_PSWADDR / 2) {
+	if (count > 0 && pos == offsetof(struct user_regs_struct32, psw.addr)) {
 		u32 pswaddr;
-		ret = utrace_regset_copyin(&pos, &count, &kbuf, &ubuf,
-					   &pswaddr, PT_PSWADDR / 2,
-					   PT_GPR0 / 2);
+		ret = utrace_regset_copyin(
+			&pos, &count, &kbuf, &ubuf, &pswaddr,
+			offsetof(struct user_regs_struct32, psw.addr),
+			offsetof(struct user_regs_struct32, gprs[0]));
 		if (ret == 0)
 			/* Build a 64 bit psw mask from 31 bit mask. */
 			regs->psw.addr = pswaddr & PSW32_ADDR_INSN;
 	}
 
 	/* The GPRs are directly onto the stack. */
-	while (ret == 0 && count > 0 && pos < PT_ACR0 / 2) {
+	while (ret == 0 && count > 0 &&
+	       pos < offsetof(struct user_regs_struct32, acrs[0])) {
+		unsigned int n =
+			pos - offsetof(struct user_regs_struct32, gprs[0]);
 		u32 value;
 
 		if (kbuf) {
@@ -436,20 +452,21 @@ s390_genregs_set(struct task_struct *target,
 		pos += sizeof(u32);
 		count -= sizeof(u32);
 
-		regs->gprs[(pos - PT_GPR0 / 2) / sizeof(u32)] = value;
+		regs->gprs[n / sizeof(u32)] = value;
 	}
 
 	/* The ACRs are kept in the thread_struct.  */
-	if (count > 0 && pos < PT_ORIGGPR2 / 2) {
-		if (target == current
-		    && (pos != PT_ACR0 / 2
-			|| count < sizeof(target->thread.acrs)))
+	if (count > 0 &&
+	    pos < offsetof(struct user_regs_struct32, acrs[NUM_ACRS])) {
+		if (target == current &&
+		    (pos != offsetof(struct user_regs_struct32, acrs[0]) ||
+		     count < sizeof(target->thread.acrs)))
 			save_access_regs(target->thread.acrs);
 
-		ret = utrace_regset_copyin(&pos, &count, &kbuf, &ubuf,
-					   target->thread.acrs,
-					   PT_ACR0 / 2,
-					   PT_ACR0 / 2 + NUM_ACRS * ACR_SIZE);
+		ret = utrace_regset_copyin(
+			&pos, &count, &kbuf, &ubuf, target->thread.acrs,
+			offsetof(struct user_regs_struct32, acrs[0]),
+			offsetof(struct user_regs_struct32, acrs[NUM_ACRS]));
 
 		if (ret == 0 && target == current)
 			restore_access_regs(target->thread.acrs);
@@ -543,11 +560,13 @@ s390_per_info_set(struct task_struct *target,
 
 static const struct utrace_regset s390_compat_regsets[] = {
 	{
+		.core_note_type = NT_PRSTATUS,
 		.size = sizeof(u32), .align = sizeof(u32),
-		.n = sizeof(s390_regs) / sizeof(long),
+		.n = offsetof(struct user_regs_struct32, fp_regs) / sizeof(u32),
 		.get = s390_genregs_get, .set = s390_genregs_set
 	},
 	{
+		.core_note_type = NT_PRFPREG,
 		.size = sizeof(u32), .align = sizeof(u32),
 		.n = sizeof(s390_fp_regs) / sizeof(u32),
 		.get = fpregs_get, .set = fpregs_set
@@ -680,11 +699,15 @@ int arch_ptrace(long *request, struct task_struct *child,
 
 #ifdef CONFIG_COMPAT
 static const struct ptrace_layout_segment s390_compat_uarea[] = {
-	{PT_PSWMASK / 2, PT_FPC / 2, 0, 0},
-	{PT_FPC / 2, PT_CR_9 / 2, 1, 0},
-	{PT_CR_9 / 2, PT_IEEE_IP / 2, 2, 0},
-	{PT_IEEE_IP / 2, sizeof(struct user32), -1, -1},
-	{0, 0, -1, 0}
+	{ offsetof(struct user_regs_struct32, psw),
+	  offsetof(struct user_regs_struct32, fp_regs), 0, 0 },
+	{ offsetof(struct user_regs_struct32, fp_regs),
+	  offsetof(struct user_regs_struct32, per_info), 1, 0 },
+	{ offsetof(struct user_regs_struct32, per_info),
+	  offsetof(struct user_regs_struct32, ieee_instruction_pointer), 2, 0 },
+	{ offsetof(struct user_regs_struct32, ieee_instruction_pointer),
+	  sizeof(struct user32), -1, -1 },
+	{ 0, 0, -1, 0 }
 };
 
 int arch_compat_ptrace(compat_long_t *request,

@@ -98,6 +98,13 @@ static const struct pci_device_id icom_pci_table[] = {
 	      .subdevice = PCI_DEVICE_ID_IBM_ICOM_FOUR_PORT_MODEL,
 	      .driver_data = ADAPTER_V2,
 	 },
+	{
+	      .vendor = PCI_VENDOR_ID_IBM,
+	      .device = PCI_DEVICE_ID_IBM_ICOM_DEV_ID_2,
+	      .subvendor = PCI_VENDOR_ID_IBM,
+	      .subdevice = PCI_DEVICE_ID_IBM_ICOM_V2_ONE_PORT_RVX_ONE_PORT_MDM_PCIE,
+	      .driver_data = ADAPTER_V2,
+	 },
 	{}
 };
 

@@ -117,7 +117,7 @@ extern int ptrace_onereg_access(struct task_struct *child,
 				struct utrace_attached_engine *engine,
 				const struct utrace_regset_view *view,
 				int setno, unsigned long regno,
-				void __user *data, int write);
+				void __user *udata, void *kdata, int write);
 
 
 /*

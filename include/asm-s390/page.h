@@ -18,6 +18,16 @@
 #define PAGE_DEFAULT_ACC	0
 #define PAGE_DEFAULT_KEY	(PAGE_DEFAULT_ACC << 4)
 
+#define HPAGE_SHIFT	21
+#define HPAGE_SIZE	(1UL << HPAGE_SHIFT)
+#define HPAGE_MASK	(~(HPAGE_SIZE - 1))
+#define HUGETLB_PAGE_ORDER	(HPAGE_SHIFT - PAGE_SHIFT)
+
+#define ARCH_HAS_SETCLEAR_HUGE_PTE
+#define ARCH_HAS_HUGE_PTE_TYPE
+#define ARCH_HAS_PREPARE_HUGEPAGE
+#define ARCH_HAS_HUGEPAGE_CLEAR_FLUSH
+
 #ifdef __KERNEL__
 #include <asm/setup.h>
 #ifndef __ASSEMBLY__
@@ -67,12 +77,18 @@ static inline void copy_page(void *to, void *from)
 
 static inline void clear_page(void *page)
 {
-        asm volatile ("   lgr  2,%0\n"
-                      "   lghi 3,4096\n"
-                      "   slgr 1,1\n"
-                      "   mvcl 2,0"
-                      : : "a" ((void *) (page))
-		      : "memory", "cc", "1", "2", "3" );
+	if (MACHINE_HAS_CPAGE) {
+		asm volatile(
+			"	.insn	rre,0xb9af0000,%0,%1"
+			: : "d" (0x10000), "a" (page) : "memory", "cc");
+	} else {
+		asm volatile ("   lgr  2,%0\n"
+			      "   lghi 3,4096\n"
+			      "   slgr 1,1\n"
+			      "   mvcl 2,0"
+			      : : "a" ((void *) (page))
+			      : "memory", "cc", "1", "2", "3" );
+	}
 }
 
 static inline void copy_page(void *to, void *from)

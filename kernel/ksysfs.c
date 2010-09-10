@@ -60,6 +60,17 @@ static ssize_t kexec_crash_loaded_show(struct subsystem *subsys, char *page)
 	return sprintf(page, "%d\n", !!kexec_crash_image);
 }
 KERNEL_ATTR_RO(kexec_crash_loaded);
+
+#ifndef CONFIG_XEN
+static ssize_t vmcoreinfo_show(struct kset *kset, char *page)
+{
+	return sprintf(page, "%lx %x\n",
+		       paddr_vmcoreinfo_note(),
+		       (unsigned int)vmcoreinfo_max_size);
+}
+KERNEL_ATTR_RO(vmcoreinfo);
+#endif /* CONFIG_XEN */
+
 #endif /* CONFIG_KEXEC */
 
 decl_subsys(kernel, NULL, NULL);
@@ -73,7 +84,10 @@ static struct attribute * kernel_attrs[] = {
 #ifdef CONFIG_KEXEC
 	&kexec_loaded_attr.attr,
 	&kexec_crash_loaded_attr.attr,
-#endif
+#ifndef CONFIG_XEN
+	&vmcoreinfo_attr.attr,
+#endif /* CONFIG_XEN */
+#endif /* CONFIG_KEXEC */
 	NULL
 };
 

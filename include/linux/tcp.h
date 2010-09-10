@@ -165,6 +165,21 @@ struct tcp_info
 #include <net/inet_connection_sock.h>
 #include <net/inet_timewait_sock.h>
 
+static inline struct tcphdr *tcp_hdr(const struct sk_buff *skb)
+{
+	return (struct tcphdr *)skb_transport_header(skb);
+}
+
+static inline unsigned int tcp_hdrlen(const struct sk_buff *skb)
+{
+	return tcp_hdr(skb)->doff * 4;
+}
+
+static inline unsigned int tcp_optlen(const struct sk_buff *skb)
+{
+	return (tcp_hdr(skb)->doff - 5) * 4;
+}
+
 /* This defines a selective acknowledgement block. */
 struct tcp_sack_block {
 	__u32	start_seq;

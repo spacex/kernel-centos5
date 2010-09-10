@@ -5,7 +5,7 @@
  *
  * Copyright (c) 2004  Michal Ludvig <michal@logix.cz>
  *
- * Key expansion routine taken from crypto/aes.c
+ * Key expansion routine taken from crypto/aes_generic.c
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by

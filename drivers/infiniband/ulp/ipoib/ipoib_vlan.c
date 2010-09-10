@@ -42,10 +42,11 @@
 
 #include "ipoib.h"
 
-static ssize_t show_parent(struct class_device *class_dev, char *buf)
+#define to_net_dev(class) container_of(class, struct net_device, class_dev)
+
+static ssize_t show_parent(struct class_device *d, char *buf)
 {
-	struct net_device *dev =
-		container_of(class_dev, struct net_device, class_dev);
+	struct net_device *dev = to_net_dev(d);
 	struct ipoib_dev_priv *priv = netdev_priv(dev);
 
 	return sprintf(buf, "%s\n", priv->parent->name);
@@ -89,6 +90,10 @@ int ipoib_vlan_add(struct net_device *pdev, unsigned short pkey)
 		goto err;
 	}
 
+	priv->max_ib_mtu = ppriv->max_ib_mtu;
+	/* MTU will be reset when mcast join happens */
+	priv->dev->mtu  = IPOIB_UD_MTU(priv->max_ib_mtu);
+	priv->mcast_mtu  = priv->admin_mtu = priv->dev->mtu;
 	set_bit(IPOIB_FLAG_SUBINTERFACE, &priv->flags);
 
 	priv->pkey = pkey;
@@ -118,6 +123,8 @@ int ipoib_vlan_add(struct net_device *pdev, unsigned short pkey)
 	if (ipoib_cm_add_mode_attr(priv->dev))
 		goto sysfs_failed;
 	if (ipoib_add_pkey_attr(priv->dev))
+		goto sysfs_failed;
+	if (ipoib_add_umcast_attr(priv->dev))
 		goto sysfs_failed;
 
 	if (class_device_create_file(&priv->dev->class_dev,

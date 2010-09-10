@@ -39,6 +39,10 @@ extern int sysctl_legacy_va_layout;
 #include <asm/pgtable.h>
 #include <asm/processor.h>
 
+#ifdef CONFIG_SECURITY
+extern unsigned long mmap_min_addr;
+#endif
+
 #define nth_page(page,n) pfn_to_page(page_to_pfn((page)) + (n))
 
 /*
@@ -318,17 +322,21 @@ static inline int get_page_unless_zero(struct page *page)
 
 extern void FASTCALL(__page_cache_release(struct page *));
 
+static inline struct page *compound_head(struct page *page)
+{
+	if (unlikely(PageTail(page)))
+		return (struct page *) page->private;
+	return page;
+}
+
 static inline int page_count(struct page *page)
 {
-	if (unlikely(PageCompound(page)))
-		page = (struct page *)page_private(page);
-	return atomic_read(&page->_count);
+	return atomic_read(&compound_head(page)->_count);
 }
 
 static inline void get_page(struct page *page)
 {
-	if (unlikely(PageCompound(page)))
-		page = (struct page *)page_private(page);
+	page = compound_head(page);
 	atomic_inc(&page->_count);
 }
 
@@ -345,6 +353,24 @@ void put_page(struct page *page);
 void put_pages_list(struct list_head *pages);
 
 void split_page(struct page *page, unsigned int order);
+
+/*
+ * Compound pages have a destructor function.  Provide a
+ * prototype for that function and accessor functions.
+ * These are _only_ valid on the head of a PG_compound page.
+ */
+typedef void compound_page_dtor(struct page *);
+
+static inline void set_compound_page_dtor(struct page *page,
+						compound_page_dtor *dtor)
+{
+	page[1].lru.next = (void *)dtor;
+}
+
+static inline compound_page_dtor *get_compound_page_dtor(struct page *page)
+{
+	return (compound_page_dtor *)page[1].lru.next;
+}
 
 /*
  * Multiple processes may "see" the same page. E.g. for untouched
@@ -520,6 +546,21 @@ static inline void set_page_links(struct page *page, unsigned long zone,
 	set_page_zone(page, zone);
 	set_page_node(page, node);
 	set_page_section(page, pfn_to_section_nr(pfn));
+}
+
+/*
+ * If a hint addr is less than mmap_min_addr change hint to be as
+ * low as possible but still greater than mmap_min_addr
+ */
+static inline unsigned long round_hint_to_min(unsigned long hint)
+{
+#ifdef CONFIG_SECURITY
+	hint &= PAGE_MASK;
+	if (((void *)hint != NULL) &&
+	    (hint < mmap_min_addr))
+		return PAGE_ALIGN(mmap_min_addr);
+#endif
+	return hint;
 }
 
 /*

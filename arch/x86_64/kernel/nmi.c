@@ -121,6 +121,8 @@ void __cpuinit nmi_watchdog_default(void)
 		nmi_watchdog = NMI_IO_APIC;
 }
 
+static int endflag __initdata = 0;
+
 #ifdef CONFIG_SMP
 /* The performance counters used by NMI_LOCAL_APIC don't trigger when
  * the CPU is idle. To make sure the NMI watchdog really ticks on all
@@ -128,7 +130,6 @@ void __cpuinit nmi_watchdog_default(void)
  */
 static __init void nmi_cpu_busy(void *data)
 {
-	volatile int *endflag = data;
 	local_irq_enable_in_hardirq();
 	/* Intentionally don't use cpu_relax here. This is
 	   to make sure that the performance counter really ticks,
@@ -136,8 +137,8 @@ static __init void nmi_cpu_busy(void *data)
 	   pause instruction. On a real HT machine this is fine because
 	   all other CPUs are busy with "useless" delay loops and don't
 	   care if they get somewhat less cycles. */
-	while (*endflag == 0)
-		barrier();
+	while (endflag == 0)
+		mb();
 }
 #endif
 
@@ -160,7 +161,6 @@ static unsigned int adjust_for_32bit_ctr(unsigned int hz)
 
 int __init check_nmi_watchdog (void)
 {
-	volatile int endflag = 0;
 	int *counts;
 	int cpu;
 
@@ -172,7 +172,7 @@ int __init check_nmi_watchdog (void)
 
 #ifdef CONFIG_SMP
 	if (nmi_watchdog == NMI_LOCAL_APIC)
-		smp_call_function(nmi_cpu_busy, (void *)&endflag, 0, 0);
+		smp_call_function(nmi_cpu_busy, NULL, 0, 0);
 #endif
 
 	for (cpu = 0; cpu < NR_CPUS; cpu++)
@@ -183,7 +183,8 @@ int __init check_nmi_watchdog (void)
 	for_each_online_cpu(cpu) {
 		if (cpu_pda(cpu)->__nmi_count - counts[cpu] <= 5) {
 			endflag = 1;
-			printk("CPU#%d: NMI appears to be stuck (%d->%d)!\n",
+			printk(KERN_WARNING "WARNING: CPU#%d: NMI "
+			       "appears to be stuck (%d->%d)!\n",
 			       cpu,
 			       counts[cpu],
 			       cpu_pda(cpu)->__nmi_count);
@@ -497,7 +498,7 @@ void setup_apic_nmi_watchdog(void)
 {
 	switch (boot_cpu_data.x86_vendor) {
 	case X86_VENDOR_AMD:
-		if ((boot_cpu_data.x86 != 15) || (boot_cpu_data.x86 != 16))
+		if ((boot_cpu_data.x86 != 15) && (boot_cpu_data.x86 != 16))
 			return;
 		if (strstr(boot_cpu_data.x86_model_id, "Screwdriver"))
 			return;

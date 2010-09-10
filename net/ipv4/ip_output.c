@@ -163,9 +163,15 @@ EXPORT_SYMBOL_GPL(ip_build_and_send_pkt);
 static inline int ip_finish_output2(struct sk_buff *skb)
 {
 	struct dst_entry *dst = skb->dst;
+	struct rtable *rt = (struct rtable *)dst;
 	struct hh_cache *hh = dst->hh;
 	struct net_device *dev = dst->dev;
 	int hh_len = LL_RESERVED_SPACE(dev);
+
+	if (rt->rt_type == RTN_MULTICAST)
+		IP_INC_STATS(IPSTATS_MIB_OUTMCASTPKTS);
+	else if (rt->rt_type == RTN_BROADCAST)
+		IP_INC_STATS(IPSTATS_MIB_OUTBCASTPKTS);
 
 	/* Be paranoid, rather than too clever. */
 	if (unlikely(skb_headroom(skb) < hh_len && dev->hard_header)) {
@@ -1017,8 +1023,6 @@ alloc_new_skb:
 
 				skb_fill_page_desc(skb, i, page, 0, 0);
 				frag = &skb_shinfo(skb)->frags[i];
-				skb->truesize += PAGE_SIZE;
-				atomic_add(PAGE_SIZE, &sk->sk_wmem_alloc);
 			} else {
 				err = -EMSGSIZE;
 				goto error;
@@ -1031,6 +1035,8 @@ alloc_new_skb:
 			frag->size += copy;
 			skb->len += copy;
 			skb->data_len += copy;
+			skb->truesize += copy;
+			atomic_add(copy, &sk->sk_wmem_alloc);
 		}
 		offset += copy;
 		length -= copy;
@@ -1175,6 +1181,8 @@ ssize_t	ip_append_page(struct sock *sk, struct page *page,
 
 		skb->len += len;
 		skb->data_len += len;
+		skb->truesize += len;
+		atomic_add(len, &sk->sk_wmem_alloc);
 		offset += len;
 		size -= len;
 	}
@@ -1263,6 +1271,10 @@ int ip_push_pending_frames(struct sock *sk)
 
 	skb->priority = sk->sk_priority;
 	skb->dst = dst_clone(&rt->u.dst);
+
+	if (iph->protocol == IPPROTO_ICMP)
+		icmp_out_count(((struct icmphdr *)
+			(iph + 1))->type);
 
 	/* Netfilter gets whole the not fragmented skb. */
 	err = NF_HOOK(PF_INET, NF_IP_LOCAL_OUT, skb, NULL, 

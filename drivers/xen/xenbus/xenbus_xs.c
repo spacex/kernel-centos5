@@ -779,8 +779,9 @@ static int process_msg(void)
 		msg->u.watch.vec = split(body, msg->hdr.len,
 					 &msg->u.watch.vec_size);
 		if (IS_ERR(msg->u.watch.vec)) {
+			err = PTR_ERR(msg->u.watch.vec);
 			kfree(msg);
-			return PTR_ERR(msg->u.watch.vec);
+			return (err);
 		}
 
 		spin_lock(&watches_lock);

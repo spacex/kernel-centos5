@@ -31,11 +31,11 @@ struct fw_node {
 	u16 node_id;
 	u8 color;
 	u8 port_count;
-	unsigned link_on : 1;
-	unsigned initiated_reset : 1;
-	unsigned b_path : 1;
-	u8 phy_speed : 3; /* As in the self ID packet. */
-	u8 max_speed : 5; /* Minimum of all phy-speeds and port speeds on
+	u8 link_on : 1;
+	u8 initiated_reset : 1;
+	u8 b_path : 1;
+	u8 phy_speed : 2; /* As in the self ID packet. */
+	u8 max_speed : 2; /* Minimum of all phy-speeds and port speeds on
 			   * the path from the local node to this node. */
 	u8 max_depth : 4; /* Maximum depth to any leaf node */
 	u8 max_hops : 4;  /* Max hops in this sub tree */
@@ -49,12 +49,6 @@ struct fw_node {
 
 	struct fw_node *ports[0];
 };
-
-static inline struct fw_node *
-fw_node(struct list_head *l)
-{
-	return list_entry(l, struct fw_node, link);
-}
 
 static inline struct fw_node *
 fw_node_get(struct fw_node *node)
@@ -75,6 +69,6 @@ void
 fw_destroy_nodes(struct fw_card *card);
 
 int
-fw_compute_block_crc(u32 *buffer);
+fw_compute_block_crc(u32 *block);
 
 #endif /* __fw_topology_h */

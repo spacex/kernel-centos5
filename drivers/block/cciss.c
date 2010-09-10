@@ -1,11 +1,10 @@
 /*
- *    Disk Array driver for HP SA 5xxx and 6xxx Controllers
- *    Copyright 2000, 2006 Hewlett-Packard Development Company, L.P.
+ *    Disk Array driver for HP Smart Array Controllers
+ *    Copyright 2000, 2008 Hewlett-Packard Development Company, L.P.
  *
  *    This program is free software; you can redistribute it and/or modify
  *    it under the terms of the GNU General Public License as published by
- *    the Free Software Foundation; either version 2 of the License, or
- *    (at your option) any later version.
+ *    the Free Software Foundation; version 2 of the License.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -14,7 +13,8 @@
  *
  *    You should have received a copy of the GNU General Public License
  *    along with this program; if not, write to the Free Software
- *    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+ *    02111-1307, USA.
  *
  *    Questions/Comments/Bugfixes to iss_storagedev@hp.com
  *
@@ -33,6 +33,7 @@
 #include <linux/blkpg.h>
 #include <linux/timer.h>
 #include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include <linux/init.h>
 #include <linux/hdreg.h>
 #include <linux/spinlock.h>
@@ -47,15 +48,16 @@
 #include <linux/completion.h>
 
 #define CCISS_DRIVER_VERSION(maj,min,submin) ((maj<<16)|(min<<8)|(submin))
-#define DRIVER_NAME "HP CISS Driver (v 3.6.16-RH1)"
-#define DRIVER_VERSION CCISS_DRIVER_VERSION(3,6,16)
+#define DRIVER_NAME "HP CISS Driver (v 3.6.20-RH1)"
+#define DRIVER_VERSION CCISS_DRIVER_VERSION(3,6,20)
 
 /* Embedded module documentation macros - see modules.h */
 MODULE_AUTHOR("Hewlett-Packard Company");
-MODULE_DESCRIPTION("Driver for HP Controller SA5xxx SA6xxx version 3.6.16-RH1");
+MODULE_DESCRIPTION("Driver for HP Controller SA5xxx SA6xxx version 3.6.20-RH1");
 MODULE_SUPPORTED_DEVICE("HP SA5i SA5i+ SA532 SA5300 SA5312 SA641 SA642 SA6400"
-			" SA6i P600 P800 P400 P400i E200 E200i E500 P700m");
-MODULE_VERSION("3.6.16-RH1");
+			" SA6i P600 P800 P400 P400i E200 E200i E500 P700m"
+			" and HP Smart Array G2 SAS/SATA Controllers");
+MODULE_VERSION("3.6.20-RH1");
 MODULE_LICENSE("GPL");
 
 #include "cciss_cmd.h"
@@ -84,6 +86,17 @@ static const struct pci_device_id cciss_pci_device_id[] = {
 	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSD,     0x103C, 0x3215},
 	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSC,     0x103C, 0x3237},
 	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSC,     0x103C, 0x323D},
+	{PCI_VENDOR_ID_HP, 	PCI_DEVICE_ID_HP_CISSC,     0x103c, 0x323D},
+	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3240},
+	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3241},
+	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3242},
+	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3243},
+	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3244},
+	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3245},
+	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3246},
+	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3247},
+	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3248},
+	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3249},
 	{PCI_VENDOR_ID_HP,     PCI_ANY_ID,      PCI_ANY_ID, PCI_ANY_ID,
 		PCI_CLASS_STORAGE_RAID << 8, 0xffff << 8, 0},
 	{0,}
@@ -117,6 +130,16 @@ static struct board_type products[] = {
 	{0x3215103C, "Smart Array E200i", &SA5_access, 120},
 	{0x3237103C, "Smart Array E500", &SA5_access, 512},
 	{0x323D103C, "Smart Array P700m", &SA5_access, 512},
+	{0x3240103C, "Smart Array 344", &SA5_access, 384},
+	{0x3241103C, "Smart Array 544", &SA5_access, 384},
+	{0x3242103C, "Smart Array 380", &SA5_access, 384},
+	{0x3243103C, "Smart Array 580", &SA5_access, 384},
+	{0x3244103C, "Smart Array 380i", &SA5_access, 384},
+	{0x3245103C, "Smart Array 580i", &SA5_access, 384},
+	{0x3246103C, "Smart Array 308", &SA5_access, 384},
+	{0x3247103C, "Smart Array 508", &SA5_access, 384},
+	{0x3248103C, "Smart Array 388", &SA5_access, 384},
+	{0x3249103C, "Smart Array 588", &SA5_access, 384},
 	{0xFFFF103C, "Unknown Smart Array", &SA5_access, 120},
 };
 
@@ -127,7 +150,6 @@ static struct board_type products[] = {
 /*define how many times we will try a command because of bus resets */
 #define MAX_CMD_RETRIES 3
 
-#define READ_AHEAD 	 1024
 #define MAX_CTLR	32
 
 /* Originally cciss driver only supports 8 major numbers */
@@ -170,8 +192,6 @@ static void fail_all_cmds(unsigned long ctlr);
 static void cciss_shutdown(struct pci_dev *);
 
 #ifdef CONFIG_PROC_FS
-static int cciss_proc_get_info(char *buffer, char **start, off_t offset,
-			       int length, int *eof, void *data);
 static void cciss_procinit(int i);
 #else
 static void cciss_procinit(int i)
@@ -235,24 +255,46 @@ static inline CommandList_struct *removeQ(CommandList_struct **Qptr,
 #define ENG_GIG 1000000000
 #define ENG_GIG_FACTOR (ENG_GIG/512)
 #define RAID_UNKNOWN 6
+#define ENGAGE_SCSI	"engage scsi"
 static const char *raid_label[] = { "0", "4", "1(1+0)", "5", "5+1", "ADG",
 	"UNKNOWN"
 };
 
 static struct proc_dir_entry *proc_cciss;
 
-static int cciss_proc_get_info(char *buffer, char **start, off_t offset,
-			       int length, int *eof, void *data)
+static void cciss_seq_show_header(struct seq_file *seq)
 {
-	off_t pos = 0;
-	off_t len = 0;
-	int size, i, ctlr;
-	ctlr_info_t *h = (ctlr_info_t *) data;
-	drive_info_struct *drv;
-	unsigned long flags;
-	sector_t vol_sz, vol_sz_frac;
+	ctlr_info_t *h = seq->private;
 
-	ctlr = h->ctlr;
+	seq_printf(seq, "%s: HP %s Controller\n"
+		"Board ID: 0x%08lx\n"
+		"Firmware Version: %c%c%c%c\n"
+		"IRQ: %d\n"
+		"Logical drives: %d\n"
+		"Sector size: %d\n"
+		"Current Q depth: %d\n"
+		"Current # commands on controller: %d\n"
+		"Max Q depth since init: %d\n"
+		"Max # commands on controller since init: %d\n"
+		"Max SG entries since init: %d\n",
+		h->devname,
+		h->product_name,
+		(unsigned long)h->board_id,
+		h->firm_ver[0], h->firm_ver[1], h->firm_ver[2],
+		h->firm_ver[3], (unsigned int)h->intr[SIMPLE_MODE_INT],
+		h->num_luns,
+		h->cciss_sector_size,
+		h->Qdepth, h->commands_outstanding,
+		h->maxQsinceinit, h->max_outstanding, h->maxSG);
+
+	cciss_seq_tape_report (seq, h->ctlr);
+}
+
+static void *cciss_seq_start(struct seq_file *seq, loff_t *pos)
+{
+	ctlr_info_t *h = seq->private;
+	unsigned ctlr = h->ctlr;
+	unsigned long flags;
 
 	/* prevent displaying bogus info during configuration
 	 * or deconfiguration of a logical volume
@@ -260,115 +302,154 @@ static int cciss_proc_get_info(char *buffer, char **start, off_t offset,
 	spin_lock_irqsave(CCISS_LOCK(ctlr), flags);
 	if (h->busy_configuring) {
 		spin_unlock_irqrestore(CCISS_LOCK(ctlr), flags);
-		return -EBUSY;
+		return ERR_PTR(-EBUSY);
 	}
 	h->busy_configuring = 1;
 	spin_unlock_irqrestore(CCISS_LOCK(ctlr), flags);
 
-	size = sprintf(buffer, "%s: HP %s Controller\n"
-		       "Board ID: 0x%08lx\n"
-		       "Firmware Version: %c%c%c%c\n"
-		       "IRQ: %d\n"
-		       "Logical drives: %d\n"
-		       "Sector size: %d\n"
-		       "Current Q depth: %d\n"
-		       "Current # commands on controller: %d\n"
-		       "Max Q depth since init: %d\n"
-		       "Max # commands on controller since init: %d\n"
-		       "Max SG entries since init: %d\n\n",
-		       h->devname,
-		       h->product_name,
-		       (unsigned long)h->board_id,
-		       h->firm_ver[0], h->firm_ver[1], h->firm_ver[2],
-		       h->firm_ver[3], (unsigned int)h->intr[SIMPLE_MODE_INT],
-		       h->num_luns,
-		       h->cciss_sector_size,
-		       h->Qdepth, h->commands_outstanding,
-		       h->maxQsinceinit, h->max_outstanding, h->maxSG);
+	if (*pos == 0)
+		cciss_seq_show_header(seq);
 
-	pos += size;
-	len += size;
-	cciss_proc_tape_report(ctlr, buffer, &pos, &len);
-	for (i = 0; i <= h->highest_lun; i++) {
-
-		drv = &h->drv[i];
-		if (drv->heads == 0)
-			continue;
-
-		vol_sz = drv->nr_blocks;
-		vol_sz_frac = sector_div(vol_sz, ENG_GIG_FACTOR);
-		vol_sz_frac *= 100;
-		sector_div(vol_sz_frac, ENG_GIG_FACTOR);
-
-		if (drv->raid_level > 5)
-			drv->raid_level = RAID_UNKNOWN;
-		size = sprintf(buffer + len, "cciss/c%dd%d:"
-			       "\t%4u.%02uGB\tRAID %s\n",
-			       ctlr, i, (int)vol_sz, (int)vol_sz_frac,
-			       raid_label[drv->raid_level]);
-		pos += size;
-		len += size;
-	}
-
-	*eof = 1;
-	*start = buffer + offset;
-	len -= offset;
-	if (len > length)
-		len = length;
-	h->busy_configuring = 0;
-	return len;
+	return pos;
 }
 
-static int
-cciss_proc_write(struct file *file, const char __user *buffer,
-		 unsigned long count, void *data)
+static int cciss_seq_show(struct seq_file *seq, void *v)
 {
-	unsigned char cmd[80];
-	int len;
-#ifdef CONFIG_CISS_SCSI_TAPE
-	ctlr_info_t *h = (ctlr_info_t *) data;
-	int rc;
+	sector_t vol_sz, vol_sz_frac;
+	ctlr_info_t *h = seq->private;
+	unsigned ctlr = h->ctlr;
+	loff_t *pos = v;
+	drive_info_struct *drv = &h->drv[*pos];
+
+	if (*pos > h->highest_lun)
+		return 0;
+
+	if (drv->heads == 0)
+		return 0;
+
+	vol_sz = drv->nr_blocks;
+	vol_sz_frac = sector_div(vol_sz, ENG_GIG_FACTOR);
+	vol_sz_frac *= 100;
+	sector_div(vol_sz_frac, ENG_GIG_FACTOR);
+
+	if (drv->raid_level > 5)
+		drv->raid_level = RAID_UNKNOWN;
+	seq_printf(seq, "cciss/c%dd%d:"
+			"\t%4u.%02uGB\tRAID %s\n",
+			ctlr, *pos, (int)vol_sz, (int)vol_sz_frac,
+			raid_label[drv->raid_level]);
+
+	return 0;
+}
+
+static void *cciss_seq_next(struct seq_file *seq, void *v, loff_t *pos)
+{
+	ctlr_info_t *h = seq->private;
+
+	if (*pos > h->highest_lun)
+		return NULL;
+	*pos += 1;
+
+	return pos;
+}
+
+static void cciss_seq_stop(struct seq_file *seq, void *v)
+{
+	ctlr_info_t *h = seq->private;
+
+	/* Only reset h->busy_configuring if we succeeded in setting
+	 * it during cciss_seq_start. */
+	if (v == ERR_PTR(-EBUSY))
+		return;
+
+	h->busy_configuring = 0;
+}
+
+static struct seq_operations cciss_seq_ops = {
+	.start = cciss_seq_start,
+	.show  = cciss_seq_show,
+	.next  = cciss_seq_next,
+	.stop  = cciss_seq_stop,
+};
+
+static int cciss_seq_open(struct inode *inode, struct file *file)
+{
+	int ret = seq_open(file, &cciss_seq_ops);
+	struct seq_file *seq = file->private_data;
+
+	if (!ret)
+		seq->private = PDE(inode)->data;
+
+	return ret;
+}
+
+static ssize_t
+cciss_proc_write(struct file *file, const char __user *buf,
+		 size_t length, loff_t *ppos)
+{
+	struct seq_file *seq = file->private_data;
+	ctlr_info_t *h = seq->private;
+	int err, rc;
+	char *buffer;
+
+
+#ifndef CONFIG_CISS_SCSI_TAPE
+	return -EINVAL;
 #endif
 
-	if (count > sizeof(cmd) - 1)
+	if (!buf || length > PAGE_SIZE - 1)
 		return -EINVAL;
-	if (copy_from_user(cmd, buffer, count))
-		return -EFAULT;
-	cmd[count] = '\0';
-	len = strlen(cmd);	// above 3 lines ensure safety
-	if (len && cmd[len - 1] == '\n')
-		cmd[--len] = '\0';
-#	ifdef CONFIG_CISS_SCSI_TAPE
-	if (strcmp("engage scsi", cmd) == 0) {
+
+	buffer = (char *)__get_free_page(GFP_KERNEL);
+	if (!buffer)
+		return -ENOMEM;
+
+	err = -EFAULT;
+	if (copy_from_user(buffer, buf, length))
+		goto out;
+	buffer[length] = '\0';
+
+	if (strncmp(ENGAGE_SCSI, buffer, sizeof ENGAGE_SCSI - 1) == 0) {
 		rc = cciss_engage_scsi(h->ctlr);
 		if (rc != 0)
-			return -rc;
-		return count;
+			err = -rc;
+		else
+			err = length;
 	}
+	else 
+		err = -EINVAL;
 	/* might be nice to have "disengage" too, but it's not
 	   safely possible. (only 1 module use count, lock issues.) */
-#	endif
-	return -EINVAL;
+
+ out:
+	free_page((unsigned long)buffer);
+	return err;
 }
 
-/*
- * Get us a file in /proc/cciss that says something about each controller.
- * Create /proc/cciss if it doesn't exist yet.
- */
+static struct file_operations cciss_proc_fops = {
+	.owner	 = THIS_MODULE,
+	.open    = cciss_seq_open,
+	.read    = seq_read,
+	.llseek  = seq_lseek,
+	.release = seq_release,
+	.write	 = cciss_proc_write,
+};
+
 static void __devinit cciss_procinit(int i)
 {
 	struct proc_dir_entry *pde;
 
-	if (proc_cciss == NULL) {
+	if (proc_cciss == NULL)
 		proc_cciss = proc_mkdir("cciss", proc_root_driver);
-		if (!proc_cciss)
-			return;
-	}
+	if (!proc_cciss)
+		return;
 
-	pde = create_proc_read_entry(hba[i]->devname,
-				     S_IWUSR | S_IRUSR | S_IRGRP | S_IROTH,
-				     proc_cciss, cciss_proc_get_info, hba[i]);
-	pde->write_proc = cciss_proc_write;
+	pde = create_proc_entry(hba[i]->devname, S_IWUSR | S_IRUSR | S_IRGRP | S_IROTH, proc_cciss);
+	if (!pde)
+		return;
+
+	pde->proc_fops = &cciss_proc_fops;
+	pde->data = hba[i];
 }
 #endif				/* CONFIG_PROC_FS */
 
@@ -1335,7 +1416,6 @@ geo_inq:
 		disk->private_data = &h->drv[drv_index];
 
 		/* Set up queue information */
-		disk->queue->backing_dev_info.ra_pages = READ_AHEAD;
 		blk_queue_bounce_limit(disk->queue, hba[ctlr]->pdev->dma_mask);
 
 		/* This is a hardware imposed limit. */
@@ -2980,15 +3060,20 @@ static int cciss_pci_init(ctlr_info_t *c, struct pci_dev *pdev)
 	}
 #endif
 
-	/* Disabling DMA prefetch for the P600
-	 * An ASIC bug may result in a prefetch beyond
-	 * physical memory.
+	/* Disabling DMA prefetch and refetch for the P600.
+	 * An ASIC bug may result in accesses to invalid memory addresses.
+	 * We've disabled prefetch for some time now. Testing with XEN
+	 * kernels revealed a bug in the refetch if dom0 resides on a P600.
 	 */
 	if(board_id == 0x3225103C) {
 		__u32 dma_prefetch;
+		__u32 dma_refetch;
 		dma_prefetch = readl(c->vaddr + I2O_DMA1_CFG);
 		dma_prefetch |= 0x8000;
 		writel(dma_prefetch, c->vaddr + I2O_DMA1_CFG);
+		pci_read_config_dword(pdev, PCI_COMMAND_PARITY, &dma_refetch);
+		dma_refetch |= 0x1;
+		pci_write_config_dword(pdev, PCI_COMMAND_PARITY, dma_refetch);
 	}
 
 #ifdef CCISS_DEBUG
@@ -3201,6 +3286,205 @@ static void free_hba(int i)
 	kfree(p);
 }
 
+/* Send a message CDB to the firmware. */
+static __devinit int cciss_message(struct pci_dev *pdev, unsigned char opcode, unsigned char type)
+{
+	typedef struct {
+		CommandListHeader_struct CommandHeader;
+		RequestBlock_struct Request;
+		ErrDescriptor_struct ErrorDescriptor;
+	} Command;
+	static const size_t cmd_sz = sizeof(Command) + sizeof(ErrorInfo_struct);
+	Command *cmd;
+	dma_addr_t paddr64;
+	uint32_t paddr32, tag;
+	void __iomem *vaddr;
+	int i, err;
+
+	vaddr = ioremap_nocache(pci_resource_start(pdev, 0), pci_resource_len(pdev, 0));
+	if (vaddr == NULL)
+		return -ENOMEM;
+
+	/* The Inbound Post Queue only accepts 32-bit physical addresses for the
+	   CCISS commands, so they must be allocated from the lower 4GiB of
+	   memory. */
+	err = pci_set_consistent_dma_mask(pdev, DMA_32BIT_MASK);
+	if (err) {
+		iounmap(vaddr);
+		return -ENOMEM;
+	}
+
+	cmd = pci_alloc_consistent(pdev, cmd_sz, &paddr64);
+	if (cmd == NULL) {
+		iounmap(vaddr);
+		return -ENOMEM;
+	}
+
+	/* This must fit, because of the 32-bit consistent DMA mask.  Also,
+	   although there's no guarantee, we assume that the address is at
+	   least 4-byte aligned (most likely, it's page-aligned). */
+	paddr32 = paddr64;
+
+	cmd->CommandHeader.ReplyQueue = 0;
+	cmd->CommandHeader.SGList = 0;
+	cmd->CommandHeader.SGTotal = 0;
+	cmd->CommandHeader.Tag.lower = paddr32;
+	cmd->CommandHeader.Tag.upper = 0;
+	memset(&cmd->CommandHeader.LUN.LunAddrBytes, 0, 8);
+
+	cmd->Request.CDBLen = 16;
+	cmd->Request.Type.Type = TYPE_MSG;
+	cmd->Request.Type.Attribute = ATTR_HEADOFQUEUE;
+	cmd->Request.Type.Direction = XFER_NONE;
+	cmd->Request.Timeout = 0; /* Don't time out */
+	cmd->Request.CDB[0] = opcode;
+	cmd->Request.CDB[1] = type;
+	memset(&cmd->Request.CDB[2], 0, 14); /* the rest of the CDB is reserved */
+
+	cmd->ErrorDescriptor.Addr.lower = paddr32 + sizeof(Command);
+	cmd->ErrorDescriptor.Addr.upper = 0;
+	cmd->ErrorDescriptor.Len = sizeof(ErrorInfo_struct);
+
+	writel(paddr32, vaddr + SA5_REQUEST_PORT_OFFSET);
+
+	for (i = 0; i < 10; i++) {
+		tag = readl(vaddr + SA5_REPLY_PORT_OFFSET);
+		if ((tag & ~3) == paddr32)
+			break;
+		schedule_timeout_uninterruptible(HZ);
+	}
+
+	iounmap(vaddr);
+
+	/* we leak the DMA buffer here ... no choice since the controller could
+	   still complete the command. */
+	if (i == 10) {
+		printk(KERN_ERR "cciss: controller message %02x:%02x timed out\n",
+			opcode, type);
+		return -ETIMEDOUT;
+	}
+
+	pci_free_consistent(pdev, cmd_sz, cmd, paddr64);
+
+	if (tag & 2) {
+		printk(KERN_ERR "cciss: controller message %02x:%02x failed\n",
+			opcode, type);
+		return -EIO;
+	}
+
+	printk(KERN_INFO "cciss: controller message %02x:%02x succeeded\n",
+		opcode, type);
+	return 0;
+}
+
+#define cciss_soft_reset_controller(p) cciss_message(p, 1, 0)
+#define cciss_noop(p) cciss_message(p, 3, 0)
+
+static __devinit int cciss_reset_msi(struct pci_dev *pdev)
+{
+/* the #defines are stolen from drivers/pci/msi.h. */
+#define msi_control_reg(base)		(base + PCI_MSI_FLAGS)
+#define PCI_MSIX_FLAGS_ENABLE		(1 << 15)
+
+	int pos;
+	u16 control = 0;
+
+	pos = pci_find_capability(pdev, PCI_CAP_ID_MSI);
+	if (pos) {
+		pci_read_config_word(pdev, msi_control_reg(pos), &control);
+		if (control & PCI_MSI_FLAGS_ENABLE) {
+			printk(KERN_INFO "cciss: resetting MSI\n");
+			pci_write_config_word(pdev, msi_control_reg(pos), control & ~PCI_MSI_FLAGS_ENABLE);
+		}
+	}
+
+	pos = pci_find_capability(pdev, PCI_CAP_ID_MSIX);
+	if (pos) {
+		pci_read_config_word(pdev, msi_control_reg(pos), &control);
+		if (control & PCI_MSIX_FLAGS_ENABLE) {
+			printk(KERN_INFO "cciss: resetting MSI-X\n");
+			pci_write_config_word(pdev, msi_control_reg(pos), control & ~PCI_MSIX_FLAGS_ENABLE);
+		}
+	}
+
+	return 0;
+}
+
+/* This does a hard reset of the controller using PCI power management
+ * states. */
+static __devinit int cciss_hard_reset_controller(struct pci_dev *pdev)
+{
+	u16 pmcsr, saved_config_space[32];
+	int i, pos;
+
+	printk(KERN_INFO "cciss: using PCI PM to reset controller\n");
+
+	/* This is very nearly the same thing as
+
+	   pci_save_state(pci_dev);
+	   pci_set_power_state(pci_dev, PCI_D3hot);
+	   pci_set_power_state(pci_dev, PCI_D0);
+	   pci_restore_state(pci_dev);
+
+	   but we can't use these nice canned kernel routines on
+	   kexec, because they also check the MSI/MSI-X state in PCI
+	   configuration space and do the wrong thing when it is
+	   set/cleared.  Also, the pci_save/restore_state functions
+	   violate the ordering requirements for restoring the
+	   configuration space from the CCISS document (see the
+	   comment below).  So we roll our own .... */
+
+	for (i = 0; i < 32; i++)
+		pci_read_config_word(pdev, 2*i, &saved_config_space[i]);
+
+	pos = pci_find_capability(pdev, PCI_CAP_ID_PM);
+	if (pos == 0) {
+		printk(KERN_ERR "cciss_reset_controller: PCI PM not supported\n");
+		return -ENODEV;
+	}
+
+	/* Quoting from the Open CISS Specification: "The Power
+	 * Management Control/Status Register (CSR) controls the power
+	 * state of the device.  The normal operating state is D0,
+	 * CSR=00h.  The software off state is D3, CSR=03h.  To reset
+	 * the controller, place the interface device in D3 then to
+	 * D0, this causes a secondary PCI reset which will reset the
+	 * controller." */
+
+	/* enter the D3hot power management state */
+	pci_read_config_word(pdev, pos + PCI_PM_CTRL, &pmcsr);
+	pmcsr &= ~PCI_PM_CTRL_STATE_MASK;
+	pmcsr |= PCI_D3hot;
+	pci_write_config_word(pdev, pos + PCI_PM_CTRL, pmcsr);
+
+	set_current_state(TASK_UNINTERRUPTIBLE);
+	schedule_timeout(HZ >> 1);
+
+	/* enter the D0 power management state */
+	pmcsr &= ~PCI_PM_CTRL_STATE_MASK;
+	pmcsr |= PCI_D0;
+	pci_write_config_word(pdev, pos + PCI_PM_CTRL, pmcsr);
+
+	set_current_state(TASK_UNINTERRUPTIBLE);
+	schedule_timeout(HZ >> 1);
+
+	/* Restore the PCI configuration space.  The Open CISS
+	 * Specification says, "Restore the PCI Configuration
+	 * Registers, offsets 00h through 60h. It is important to
+	 * restore the command register, 16-bits at offset 04h,
+	 * last. Do not restore the configuration status register,
+	 * 16-bits at offset 06h."  Note that the offset is 2*i. */
+	for (i = 0; i < 32; i++) {
+		if (i == 2 || i == 3)
+			continue;
+		pci_write_config_word(pdev, 2*i, saved_config_space[i]);
+	}
+	wmb();
+	pci_write_config_word(pdev, 4, saved_config_space[2]);
+
+	return 0;
+}
+
 /*
  *  This is it.  Find all the controllers and register them.  I really hate
  *  stealing all these major device numbers.
@@ -3213,6 +3497,24 @@ static int __devinit cciss_init_one(struct pci_dev *pdev,
 	int j = 0;
 	int rc;
 	int dac;
+
+	if (reset_devices) {
+		/* Reset the controller with a PCI power-cycle */
+		if (cciss_hard_reset_controller(pdev) || cciss_reset_msi(pdev))
+			return -ENODEV;
+
+		/* Some devices (notably the HP Smart Array 5i Controller)
+		   need a little pause here */
+		schedule_timeout_uninterruptible(30*HZ);
+
+		/* Now try to get the controller to respond to a no-op */
+		for (i=0; i<12; i++) {
+			if (cciss_noop(pdev) == 0)
+				break;
+			else
+				printk("cciss: no-op failed%s\n", (i < 11 ? "; re-trying" : ""));
+		}
+	}
 
 	i = alloc_cciss_hba();
 	if (i < 0)
@@ -3348,7 +3650,6 @@ static int __devinit cciss_init_one(struct pci_dev *pdev,
 		}
 		drv->queue = q;
 
-		q->backing_dev_info.ra_pages = READ_AHEAD;
 		blk_queue_bounce_limit(q, hba[i]->pdev->dma_mask);
 
 		/* This is a hardware imposed limit. */

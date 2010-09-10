@@ -67,7 +67,7 @@ void smp_local_timer_interrupt(struct pt_regs *regs)
 	profile_tick(CPU_PROFILING, regs);
 #ifndef CONFIG_XEN
 #ifdef CONFIG_SMP
-		update_process_times(user_mode(regs));
+		update_process_times(user_mode(regs), regs);
 #endif
 #endif
 	/*

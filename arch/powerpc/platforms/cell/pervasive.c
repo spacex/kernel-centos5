@@ -38,6 +38,8 @@
 #include "pervasive.h"
 #include "cbe_regs.h"
 
+static int sysreset_hack;
+
 static DEFINE_SPINLOCK(cbe_pervasive_lock);
 
 static void __init cbe_enable_pause_zero(void)
@@ -131,6 +133,9 @@ static void cbe_idle(void)
 
 static int cbe_system_reset_exception(struct pt_regs *regs)
 {
+	int cpu;
+	struct cbe_pmd_regs __iomem *pmd;
+
 	switch (regs->msr & SRR1_WAKEMASK) {
 	case SRR1_WAKEEE:
 		do_IRQ(regs);
@@ -139,6 +144,18 @@ static int cbe_system_reset_exception(struct pt_regs *regs)
 		timer_interrupt(regs);
 		break;
 	case SRR1_WAKEMT:
+		/*
+		 * The BMC can inject user triggered system reset exceptions,
+		 * but cannot set the system reset reason in srr1,
+		 * so check an extra register here.
+		 */
+		if (sysreset_hack && (cpu = smp_processor_id()) == 0) {
+			pmd = cbe_get_cpu_pmd_regs(cpu);
+			if (in_be64(&pmd->ras_esc_0) & 0xffff) {
+				out_be64(&pmd->ras_esc_0, 0);
+				return 0;
+			}
+		}
 		break;
 #ifdef CONFIG_CBE_RAS
 	case SRR1_WAKESYSERR:
@@ -158,8 +175,24 @@ static int cbe_system_reset_exception(struct pt_regs *regs)
 
 void __init cbe_pervasive_init(void)
 {
+	int cpu;
+
 	if (!cpu_has_feature(CPU_FTR_PAUSE_ZERO))
 		return;
+
+	sysreset_hack = machine_is_compatible("IBM,CBPLUS-1.0");
+
+	for_each_possible_cpu(cpu) {
+		struct cbe_pmd_regs __iomem *regs = cbe_get_cpu_pmd_regs(cpu);
+		if (!regs)
+			continue;
+
+		/* Enable JTAG system-reset hack */
+		if (sysreset_hack)
+			out_be32(&regs->fir_mode_reg,
+				in_be32(&regs->fir_mode_reg) |
+				CBE_PMD_FIR_MODE_M8);
+	}
 
 	ppc_md.idle_loop = cbe_idle;
 	ppc_md.system_reset_exception = cbe_system_reset_exception;

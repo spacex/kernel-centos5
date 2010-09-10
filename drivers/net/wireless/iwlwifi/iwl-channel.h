@@ -136,15 +136,13 @@ static inline int is_channel_radar(const struct iwl_channel_info *ch_info)
 
 static inline u8 is_channel_a_band(const struct iwl_channel_info *ch_info)
 {
-	return ((ch_info->phymode == MODE_IEEE80211A) ||
-		(ch_info->phymode == MODE_ATHEROS_TURBO)) ? 1 : 0;
+	return ch_info->phymode == MODE_IEEE80211A;
 }
 
 static inline u8 is_channel_bg_band(const struct iwl_channel_info *ch_info)
 {
 	return ((ch_info->phymode == MODE_IEEE80211B) ||
-		(ch_info->phymode == MODE_IEEE80211G) ||
-		(ch_info->phymode == MODE_ATHEROS_TURBOG)) ? 1 : 0;
+		(ch_info->phymode == MODE_IEEE80211G));
 }
 
 static inline int is_channel_passive(const struct iwl_channel_info *ch)
@@ -158,6 +156,6 @@ static inline int is_channel_ibss(const struct iwl_channel_info *ch)
 }
 
 extern const struct iwl_channel_info *iwl_get_channel_info(
-	const struct iwl_priv *priv, int phymode, int channel);
+	const struct iwl_priv *priv, int phymode, u16 channel);
 
 #endif

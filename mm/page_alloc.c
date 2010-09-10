@@ -186,12 +186,13 @@ static void prep_compound_page(struct page *page, unsigned long order)
 	int i;
 	int nr_pages = 1 << order;
 
-	page[1].lru.next = (void *)free_compound_page;	/* set dtor */
+	set_compound_page_dtor(page, free_compound_page);
 	page[1].lru.prev = (void *)order;
-	for (i = 0; i < nr_pages; i++) {
+	__SetPageHead(page);
+	for (i = 1; i < nr_pages; i++) {
 		struct page *p = page + i;
 
-		__SetPageCompound(p);
+		__SetPageTail(p);
 		set_page_private(p, (unsigned long)page);
 	}
 }
@@ -204,13 +205,14 @@ static void destroy_compound_page(struct page *page, unsigned long order)
 	if (unlikely((unsigned long)page[1].lru.prev != order))
 		bad_page(page);
 
-	for (i = 0; i < nr_pages; i++) {
+	__ClearPageHead(page);
+	for (i = 1; i < nr_pages; i++) {
 		struct page *p = page + i;
 
-		if (unlikely(!PageCompound(p) |
+		if (unlikely(!PageTail(p) |
 				(page_private(p) != (unsigned long)page)))
 			bad_page(page);
-		__ClearPageCompound(p);
+		__ClearPageTail(p);
 	}
 }
 
@@ -384,12 +386,17 @@ static inline int free_pages_check(struct page *page)
 			1 << PG_private |
 			1 << PG_locked	|
 			1 << PG_active	|
-			1 << PG_reclaim	|
 			1 << PG_slab	|
 			1 << PG_swapcache |
 			1 << PG_writeback |
 			1 << PG_reserved |
 			1 << PG_buddy ))))
+		bad_page(page);
+	/*
+	 * PageReclaim == PageTail. It is only an error
+	 * for PageReclaim to be set if PageCompound is clear.
+	 */
+	if (unlikely(!PageCompound(page) && PageReclaim(page)))
 		bad_page(page);
 	if (PageDirty(page))
 		__ClearPageDirty(page);
@@ -638,6 +645,7 @@ void drain_node_pages(int nodeid)
 				local_irq_save(flags);
 				free_pages_bulk(zone, pcp->count, &pcp->list, 0);
 				pcp->count = 0;
+				touch_softlockup_watchdog();
 				local_irq_restore(flags);
 			}
 		}
@@ -808,6 +816,7 @@ again:
 
 	__count_zone_vm_events(PGALLOC, zone, 1 << order);
 	zone_statistics(zonelist, zone);
+	touch_softlockup_watchdog();
 	local_irq_restore(flags);
 	put_cpu();
 
@@ -817,6 +826,7 @@ again:
 	return page;
 
 failed:
+	touch_softlockup_watchdog();
 	local_irq_restore(flags);
 	put_cpu();
 	return NULL;
@@ -994,6 +1004,8 @@ nofail_alloc:
 		goto nopage;
 
 rebalance:
+	if (test_thread_flag(TIF_MEMDIE))
+		goto nopage;
 	cond_resched();
 
 	/* We now go into synchronous reclaim */
@@ -1354,8 +1366,23 @@ void show_free_areas(void)
 		printk("= %lukB\n", K(total));
 	}
 
+	printk("%d pagecache pages\n", global_page_state(NR_FILE_PAGES));
+
 	show_swap_cache_info();
 }
+
+/*
+ * zonlist_order.
+ * 0 = order by node distance, -zonetype
+ * 1 = order by -zonetype, node distance
+ *
+ * If not NUMA, ZONELIST_ORDER_ZONE and ZONELIST_ORDER_NODE will create
+ * the same zonelist.
+ */
+#define ZONELIST_ORDER_NODE	(0)
+#define ZONELIST_ORDER_ZONE	(1)
+
+static int zonelist_order = ZONELIST_ORDER_NODE;
 
 /*
  * Builds allocation fallback zone lists.
@@ -1397,6 +1424,65 @@ static inline int highest_zone(int zone_bits)
 }
 
 #ifdef CONFIG_NUMA
+
+static int __parse_numa_zonelist_order(char *s)
+{
+	if (*s == 'n' || *s == 'N')
+		zonelist_order = ZONELIST_ORDER_NODE;
+	else if (*s == 'z' || *s == 'Z')
+		zonelist_order = ZONELIST_ORDER_ZONE;
+	else
+		printk(KERN_WARNING "Ignoring invalid numa_zonelist_order:"
+		    "%s\n", s);
+	return 0;
+}
+
+static __init int setup_numa_zonelist_order(char *s)
+{
+	if (s)
+		return __parse_numa_zonelist_order(s);
+	return 0;
+}
+early_param("numa_zonelist_order", setup_numa_zonelist_order);
+
+static void build_zonelist_in_node_order(pg_data_t *pgdat, int node)
+{
+	int i, j, k;
+	struct zonelist *zonelist;
+	for (i = 0; i < GFP_ZONETYPES; i++) {
+		zonelist = pgdat->node_zonelists + i;
+		for (j = 0; zonelist->zones[j] != NULL; j++);
+		k = highest_zone(i);
+		j = build_zonelists_node(NODE_DATA(node), zonelist, j, k);
+		zonelist->zones[j] = NULL;
+	}
+}
+
+static int node_order[MAX_NUMNODES];
+
+static void build_zonelist_in_zone_order(pg_data_t *pgdat, int nr_nodes)
+{
+	int k;
+	int pos, j, i, node;
+	int zone_type;
+	struct zone *z;
+	struct zonelist *zonelist;
+
+	for (i = 0; i < GFP_ZONETYPES; i++) {
+		zonelist = pgdat->node_zonelists + i;
+		pos = 0;
+		k = highest_zone(i);
+		for (zone_type = k; zone_type >= 0; zone_type--)
+			for (j = 0; j < nr_nodes; j++) {
+				node = node_order[j];
+				z = &NODE_DATA(node)->node_zones[zone_type];
+				if (populated_zone(z))
+					zonelist->zones[pos++] = z;
+			}
+		zonelist->zones[pos] = NULL;
+	}
+}
+
 #define MAX_NODE_LOAD (num_online_nodes())
 static int __meminitdata node_load[MAX_NUMNODES];
 /**
@@ -1465,6 +1551,7 @@ static void __meminit build_zonelists(pg_data_t *pgdat)
 	int prev_node, load;
 	struct zonelist *zonelist;
 	nodemask_t used_mask;
+	int node_order_length = 0;
 
 	/* initialize zonelists */
 	for (i = 0; i < GFP_ZONETYPES; i++) {
@@ -1477,6 +1564,10 @@ static void __meminit build_zonelists(pg_data_t *pgdat)
 	load = num_online_nodes();
 	prev_node = local_node;
 	nodes_clear(used_mask);
+
+	memset(node_load, 0, sizeof(node_load));
+	memset(node_order, 0, sizeof(node_order));
+
 	while ((node = find_next_best_node(local_node, &used_mask)) >= 0) {
 		int distance = node_distance(local_node, node);
 
@@ -1497,16 +1588,14 @@ static void __meminit build_zonelists(pg_data_t *pgdat)
 			node_load[node] += load;
 		prev_node = node;
 		load--;
-		for (i = 0; i < GFP_ZONETYPES; i++) {
-			zonelist = pgdat->node_zonelists + i;
-			for (j = 0; zonelist->zones[j] != NULL; j++);
-
-			k = highest_zone(i);
-
-	 		j = build_zonelists_node(NODE_DATA(node), zonelist, j, k);
-			zonelist->zones[j] = NULL;
-		}
+		if (zonelist_order == ZONELIST_ORDER_NODE)
+			build_zonelist_in_node_order(pgdat, node);
+		else
+			node_order[node_order_length++] = node;
 	}
+	/* we already have node_order */
+	if (zonelist_order == ZONELIST_ORDER_ZONE)
+		build_zonelist_in_zone_order(pgdat, node_order_length);
 }
 
 #else	/* CONFIG_NUMA */

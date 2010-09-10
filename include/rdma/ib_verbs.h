@@ -5,7 +5,7 @@
  * Copyright (c) 2004 Topspin Corporation.  All rights reserved.
  * Copyright (c) 2004 Voltaire Corporation.  All rights reserved.
  * Copyright (c) 2005 Sun Microsystems, Inc. All rights reserved.
- * Copyright (c) 2005, 2006 Cisco Systems.  All rights reserved.
+ * Copyright (c) 2005, 2006, 2007 Cisco Systems.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -41,16 +41,17 @@
 #if !defined(IB_VERBS_H)
 #define IB_VERBS_H
 
-#include <linux/pci.h>
 #include <linux/types.h>
 #include <linux/device.h>
 #include <linux/mm.h>
 #include <linux/dma-mapping.h>
+#include <linux/kref.h>
+#include <linux/list.h>
+#include <linux/rwsem.h>
+#include <linux/scatterlist.h>
 
 #include <asm/atomic.h>
-#include <asm/scatterlist.h>
 #include <asm/uaccess.h>
-#include <linux/kref.h>
 
 union ib_gid {
 	u8	raw[16];
@@ -94,7 +95,15 @@ enum ib_device_cap_flags {
 	IB_DEVICE_N_NOTIFY_CQ		= (1<<14),
 	IB_DEVICE_ZERO_STAG		= (1<<15),
 	IB_DEVICE_SEND_W_INV		= (1<<16),
-	IB_DEVICE_MEM_WINDOW		= (1<<17)
+	IB_DEVICE_MEM_WINDOW		= (1<<17),
+	/*
+	 * devices which publish this capability must support insertion of UDP
+	 * and TCP checksum on outgoing packets and can verify the validity of
+	 * checksum for incoming packets. Setting this flag implies the driver
+	 * may set NETIF_F_IP_CSUM.
+	 */
+	IB_DEVICE_IP_CSUM		= (1<<18),
+	IB_DEVICE_TCP_TSO               = (1<<19),
 };
 
 enum ib_atomic_cap {
@@ -402,6 +411,7 @@ enum ib_wc_opcode {
 	IB_WC_COMP_SWAP,
 	IB_WC_FETCH_ADD,
 	IB_WC_BIND_MW,
+	IB_WC_LSO,
 /*
  * Set value of IB_WC_RECV so consumers can test if a completion is a
  * receive by testing (opcode & IB_WC_RECV).
@@ -430,11 +440,14 @@ struct ib_wc {
 	u8			sl;
 	u8			dlid_path_bits;
 	u8			port_num;	/* valid only for DR SMPs on switches */
+	int			csum_ok;
 };
 
-enum ib_cq_notify {
-	IB_CQ_SOLICITED,
-	IB_CQ_NEXT_COMP
+enum ib_cq_notify_flags {
+	IB_CQ_SOLICITED			= 1 << 0,
+	IB_CQ_NEXT_COMP			= 1 << 1,
+	IB_CQ_SOLICITED_MASK		= IB_CQ_SOLICITED | IB_CQ_NEXT_COMP,
+	IB_CQ_REPORT_MISSED_EVENTS	= 1 << 2,
 };
 
 enum ib_srq_attr_mask {
@@ -483,6 +496,10 @@ enum ib_qp_type {
 	IB_QPT_RAW_ETY
 };
 
+enum qp_create_flags {
+	QP_CREATE_LSO = 1 << 0,
+};
+
 struct ib_qp_init_attr {
 	void                  (*event_handler)(struct ib_event *, void *);
 	void		       *qp_context;
@@ -493,6 +510,7 @@ struct ib_qp_init_attr {
 	enum ib_sig_type	sq_sig_type;
 	enum ib_qp_type		qp_type;
 	u8			port_num; /* special QP types only */
+	enum qp_create_flags    create_flags;
 };
 
 enum ib_rnr_timeout {
@@ -605,14 +623,17 @@ enum ib_wr_opcode {
 	IB_WR_SEND_WITH_IMM,
 	IB_WR_RDMA_READ,
 	IB_WR_ATOMIC_CMP_AND_SWP,
-	IB_WR_ATOMIC_FETCH_AND_ADD
+	IB_WR_ATOMIC_FETCH_AND_ADD,
+	IB_WR_LSO
 };
 
 enum ib_send_flags {
 	IB_SEND_FENCE		= 1,
 	IB_SEND_SIGNALED	= (1<<1),
 	IB_SEND_SOLICITED	= (1<<2),
-	IB_SEND_INLINE		= (1<<3)
+	IB_SEND_INLINE		= (1<<3),
+	IB_SEND_IP_CSUM         = (1<<4),
+	IB_SEND_UDP_LSO		= (1<<5)
 };
 
 struct ib_sge {
@@ -642,6 +663,9 @@ struct ib_send_wr {
 		} atomic;
 		struct {
 			struct ib_ah *ah;
+			void   *header;
+			int     hlen;
+			int     mss;
 			u32	remote_qpn;
 			u32	remote_qkey;
 			u16	pkey_index; /* valid for GSI only */
@@ -709,6 +733,7 @@ struct ib_ucontext {
 	struct list_head	qp_list;
 	struct list_head	srq_list;
 	struct list_head	ah_list;
+	int			closing;
 };
 
 struct ib_uobject {
@@ -722,38 +747,11 @@ struct ib_uobject {
 	int			live;
 };
 
-struct ib_umem {
-	unsigned long		user_base;
-	unsigned long		virt_base;
-	size_t			length;
-	int			offset;
-	int			page_size;
-	int                     writable;
-	struct list_head	chunk_list;
-};
-
-struct ib_umem_chunk {
-	struct list_head	list;
-	int                     nents;
-	int                     nmap;
-	struct scatterlist      page_list[0];
-};
-
 struct ib_udata {
 	void __user *inbuf;
 	void __user *outbuf;
 	size_t       inlen;
 	size_t       outlen;
-};
-
-#define IB_UMEM_MAX_PAGE_CHUNK						\
-	((PAGE_SIZE - offsetof(struct ib_umem_chunk, page_list)) /	\
-	 ((void *) &((struct ib_umem_chunk *) 0)->page_list[1] -	\
-	  (void *) &((struct ib_umem_chunk *) 0)->page_list[0]))
-
-struct ib_umem_object {
-	struct ib_uobject	uobject;
-	struct ib_umem		umem;
 };
 
 struct ib_pd {
@@ -910,8 +908,12 @@ struct ib_device {
 	spinlock_t                    client_data_lock;
 
 	struct ib_cache               cache;
+	int                          *pkey_tbl_len;
+	int                          *gid_tbl_len;
 
 	u32                           flags;
+
+	int			      num_comp_vectors;
 
 	struct iw_cm_verbs	     *iwcm;
 
@@ -979,8 +981,11 @@ struct ib_device {
 						struct ib_recv_wr *recv_wr,
 						struct ib_recv_wr **bad_recv_wr);
 	struct ib_cq *             (*create_cq)(struct ib_device *device, int cqe,
+						int comp_vector,
 						struct ib_ucontext *context,
 						struct ib_udata *udata);
+	int                        (*modify_cq)(struct ib_cq *cq, u16 cq_count,
+						u16 cq_period);
 	int                        (*destroy_cq)(struct ib_cq *cq);
 	int                        (*resize_cq)(struct ib_cq *cq, int cqe,
 						struct ib_udata *udata);
@@ -988,7 +993,7 @@ struct ib_device {
 					      struct ib_wc *wc);
 	int                        (*peek_cq)(struct ib_cq *cq, int wc_cnt);
 	int                        (*req_notify_cq)(struct ib_cq *cq,
-						    enum ib_cq_notify cq_notify);
+						    enum ib_cq_notify_flags flags);
 	int                        (*req_ncomp_notif)(struct ib_cq *cq,
 						      int wc_cnt);
 	struct ib_mr *             (*get_dma_mr)(struct ib_pd *pd,
@@ -999,7 +1004,8 @@ struct ib_device {
 						  int mr_access_flags,
 						  u64 *iova_start);
 	struct ib_mr *             (*reg_user_mr)(struct ib_pd *pd,
-						  struct ib_umem *region,
+						  u64 start, u64 length,
+						  u64 virt_addr,
 						  int mr_access_flags,
 						  struct ib_udata *udata);
 	int                        (*query_mr)(struct ib_mr *mr,
@@ -1059,8 +1065,6 @@ struct ib_device {
 	__be64			     node_guid;
 	u8                           node_type;
 	u8                           phys_port_cnt;
-	int                          *pkey_tbl_len;
-	int                          *gid_tbl_len;
 };
 
 struct ib_client {
@@ -1136,28 +1140,11 @@ int ib_modify_port(struct ib_device *device,
 		   u8 port_num, int port_modify_mask,
 		   struct ib_port_modify *port_modify);
 
-/**
- * ib_find_gid - Returns the port number and GID table index where
- *   a specified GID value occurs.
- * @device: The device to query.
- * @gid: The GID value to search for.
- * @port_num: The port number of the device where the GID value was found.
- * @index: The index into the GID table where the GID was found.  This
- *   parameter may be NULL.
- */
 int ib_find_gid(struct ib_device *device, union ib_gid *gid,
-			u8 *port_num, u16 *index);
+		u8 *port_num, u16 *index);
 
-/**
- * ib_find_pkey - Returns the PKey table index where a specified
- *   PKey value occurs.
- * @device: The device to query.
- * @port_num: The port number of the device to search for the PKey.
- * @pkey: The PKey value to search for.
- * @index: The index into the PKey table where the PKey was found.
- */
 int ib_find_pkey(struct ib_device *device,
-			u8 port_num, u16 pkey, u16 *index);
+		 u8 port_num, u16 pkey, u16 *index);
 
 /**
  * ib_alloc_pd - Allocates an unused protection domain.
@@ -1384,13 +1371,15 @@ static inline int ib_post_recv(struct ib_qp *qp,
  * @cq_context: Context associated with the CQ returned to the user via
  *   the associated completion and event handlers.
  * @cqe: The minimum size of the CQ.
+ * @comp_vector - Completion vector used to signal completion events.
+ *     Must be >= 0 and < context->num_comp_vectors.
  *
  * Users can examine the cq structure to determine the actual CQ size.
  */
 struct ib_cq *ib_create_cq(struct ib_device *device,
 			   ib_comp_handler comp_handler,
 			   void (*event_handler)(struct ib_event *, void *),
-			   void *cq_context, int cqe);
+			   void *cq_context, int cqe, int comp_vector);
 
 /**
  * ib_resize_cq - Modifies the capacity of the CQ.
@@ -1400,6 +1389,16 @@ struct ib_cq *ib_create_cq(struct ib_device *device,
  * Users can examine the cq structure to determine the actual CQ size.
  */
 int ib_resize_cq(struct ib_cq *cq, int cqe);
+
+/**
+ * ib_modify_cq - Modifies moderation params of the CQ
+ * @cq: The CQ to modify.
+ * @cq_count: number of CQEs that will tirgger an event
+ * @cq_period: max period of time beofre triggering an event
+ *
+ * Users can examine the cq structure to determine the actual CQ size.
+ */
+int ib_modify_cq(struct ib_cq *cq, u16 cq_count, u16 cq_period);
 
 /**
  * ib_destroy_cq - Destroys the specified CQ.
@@ -1440,14 +1439,34 @@ int ib_peek_cq(struct ib_cq *cq, int wc_cnt);
 /**
  * ib_req_notify_cq - Request completion notification on a CQ.
  * @cq: The CQ to generate an event for.
- * @cq_notify: If set to %IB_CQ_SOLICITED, completion notification will
- *   occur on the next solicited event. If set to %IB_CQ_NEXT_COMP,
- *   notification will occur on the next completion.
+ * @flags:
+ *   Must contain exactly one of %IB_CQ_SOLICITED or %IB_CQ_NEXT_COMP
+ *   to request an event on the next solicited event or next work
+ *   completion at any type, respectively. %IB_CQ_REPORT_MISSED_EVENTS
+ *   may also be |ed in to request a hint about missed events, as
+ *   described below.
+ *
+ * Return Value:
+ *    < 0 means an error occurred while requesting notification
+ *   == 0 means notification was requested successfully, and if
+ *        IB_CQ_REPORT_MISSED_EVENTS was passed in, then no events
+ *        were missed and it is safe to wait for another event.  In
+ *        this case is it guaranteed that any work completions added
+ *        to the CQ since the last CQ poll will trigger a completion
+ *        notification event.
+ *    > 0 is only returned if IB_CQ_REPORT_MISSED_EVENTS was passed
+ *        in.  It means that the consumer must poll the CQ again to
+ *        make sure it is empty to avoid missing an event because of a
+ *        race between requesting notification and an entry being
+ *        added to the CQ.  This return value means it is possible
+ *        (but not guaranteed) that a work completion has been added
+ *        to the CQ since the last poll without triggering a
+ *        completion notification event.
  */
 static inline int ib_req_notify_cq(struct ib_cq *cq,
-				   enum ib_cq_notify cq_notify)
+				   enum ib_cq_notify_flags flags)
 {
-	return cq->device->req_notify_cq(cq, cq_notify);
+	return cq->device->req_notify_cq(cq, flags);
 }
 
 /**

@@ -785,6 +785,11 @@ static LIST_HEAD(ide_pci_drivers);
 
 int __ide_pci_register_driver(struct pci_driver *driver, struct module *module)
 {
+	if (disable_ide) {
+		printk(KERN_DEBUG "IDE disabled: ignore pci driver %s\n", driver ->name);
+		return -ENODEV;
+	}
+
 	if(!pre_init)
 		return __pci_register_driver(driver, module);
 	driver->driver.owner = module;

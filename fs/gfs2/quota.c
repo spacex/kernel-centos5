@@ -1,6 +1,6 @@
 /*
  * Copyright (C) Sistina Software, Inc.  1997-2003 All rights reserved.
- * Copyright (C) 2004-2006 Red Hat, Inc.  All rights reserved.
+ * Copyright (C) 2004-2008 Red Hat, Inc.  All rights reserved.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
@@ -274,10 +274,10 @@ static int bh_get(struct gfs2_quota_data *qd)
 	}
 
 	block = qd->qd_slot / sdp->sd_qc_per_block;
-	offset = qd->qd_slot % sdp->sd_qc_per_block;;
+	offset = qd->qd_slot % sdp->sd_qc_per_block;
 
 	bh_map.b_size = 1 << ip->i_inode.i_blkbits;
-	error = gfs2_block_map(&ip->i_inode, block, 0, &bh_map);
+	error = gfs2_block_map(&ip->i_inode, block, &bh_map, 0);
 	if (error)
 		goto fail;
 	error = gfs2_meta_read(ip->i_gl, bh_map.b_blocknr, DIO_WAIT, &bh);
@@ -454,7 +454,7 @@ static void qdsb_put(struct gfs2_quota_data *qd)
 int gfs2_quota_hold(struct gfs2_inode *ip, u32 uid, u32 gid)
 {
 	struct gfs2_sbd *sdp = GFS2_SB(&ip->i_inode);
-	struct gfs2_alloc *al = &ip->i_alloc;
+	struct gfs2_alloc *al = ip->i_alloc;
 	struct gfs2_quota_data **qd = al->al_qd;
 	int error;
 
@@ -502,7 +502,7 @@ out:
 void gfs2_quota_unhold(struct gfs2_inode *ip)
 {
 	struct gfs2_sbd *sdp = GFS2_SB(&ip->i_inode);
-	struct gfs2_alloc *al = &ip->i_alloc;
+	struct gfs2_alloc *al = ip->i_alloc;
 	unsigned int x;
 
 	gfs2_assert_warn(sdp, !test_bit(GIF_QD_LOCKED, &ip->i_flags));
@@ -617,16 +617,9 @@ static int gfs2_adjust_quota(struct gfs2_inode *ip, loff_t loc,
 	s64 value;
 	int err = -EIO;
 
-	if (gfs2_is_stuffed(ip)) {
-		struct gfs2_alloc *al = NULL;
-		al = gfs2_alloc_get(ip);
-		/* just request 1 blk */
-		al->al_requested = 1;
-		gfs2_inplace_reserve(ip);
+	if (gfs2_is_stuffed(ip))
 		gfs2_unstuff_dinode(ip, NULL);
-		gfs2_inplace_release(ip);
-		gfs2_alloc_put(ip);
-	}
+
 	page = grab_cache_page(mapping, index);
 	if (!page)
 		return -ENOMEM;
@@ -646,7 +639,7 @@ static int gfs2_adjust_quota(struct gfs2_inode *ip, loff_t loc,
 	}
 
 	if (!buffer_mapped(bh)) {
-		gfs2_get_block(inode, iblock, bh, 1);
+		gfs2_block_map(inode, iblock, bh, 1);
 		if (!buffer_mapped(bh))
 			goto unlock;
 	}
@@ -691,7 +684,7 @@ static int do_sync(unsigned int num_qd, struct gfs2_quota_data **qda)
 	unsigned int qx, x;
 	struct gfs2_quota_data *qd;
 	loff_t offset;
-	unsigned int nalloc = 0;
+	unsigned int nalloc = 0, blocks;
 	struct gfs2_alloc *al = NULL;
 	int error;
 
@@ -728,30 +721,34 @@ static int do_sync(unsigned int num_qd, struct gfs2_quota_data **qda)
 			nalloc++;
 	}
 
-	if (nalloc) {
-		al = gfs2_alloc_get(ip);
-
-		al->al_requested = nalloc * (data_blocks + ind_blocks);
-
-		error = gfs2_inplace_reserve(ip);
-		if (error)
-			goto out_alloc;
-
-		error = gfs2_trans_begin(sdp,
-					 al->al_rgd->rd_length +
-					 num_qd * data_blocks +
-					 nalloc * ind_blocks +
-					 RES_DINODE + num_qd +
-					 RES_STATFS, 0);
-		if (error)
-			goto out_ipres;
-	} else {
-		error = gfs2_trans_begin(sdp,
-					 num_qd * data_blocks +
-					 RES_DINODE + num_qd, 0);
-		if (error)
-			goto out_gunlock;
+	al = gfs2_alloc_get(ip);
+	if (!al) {
+		error = -ENOMEM;
+		goto out_gunlock;
 	}
+	/*
+	 * 1 blk for unstuffing inode if stuffed. We add this extra
+	 * block to the reservation unconditionally. If the inode
+	 * doesn't need unstuffing, the block will be released to the
+	 * rgrp since it won't be allocated during the transaction
+	 */
+	al->al_requested = 1;
+	/* +1 in the end for block requested above for unstuffing */
+	blocks = num_qd * data_blocks + RES_DINODE + num_qd + 1;
+
+	if (nalloc)
+		al->al_requested += nalloc * (data_blocks + ind_blocks);
+
+	error = gfs2_inplace_reserve(ip);
+	if (error)
+		goto out_alloc;
+
+	if (nalloc)
+		blocks += al->al_rgd->rd_length + nalloc * ind_blocks + RES_STATFS;
+
+	error = gfs2_trans_begin(sdp, blocks, 0);
+	if (error)
+		goto out_ipres;
 
 	for (x = 0; x < num_qd; x++) {
 		qd = qda[x];
@@ -770,11 +767,9 @@ static int do_sync(unsigned int num_qd, struct gfs2_quota_data **qda)
 out_end_trans:
 	gfs2_trans_end(sdp);
 out_ipres:
-	if (nalloc)
-		gfs2_inplace_release(ip);
+	gfs2_inplace_release(ip);
 out_alloc:
-	if (nalloc)
-		gfs2_alloc_put(ip);
+	gfs2_alloc_put(ip);
 out_gunlock:
 	gfs2_glock_dq_uninit(&i_gh);
 out:
@@ -856,7 +851,7 @@ fail:
 int gfs2_quota_lock(struct gfs2_inode *ip, u32 uid, u32 gid)
 {
 	struct gfs2_sbd *sdp = GFS2_SB(&ip->i_inode);
-	struct gfs2_alloc *al = &ip->i_alloc;
+	struct gfs2_alloc *al = ip->i_alloc;
 	unsigned int x;
 	int error = 0;
 
@@ -924,7 +919,7 @@ static int need_sync(struct gfs2_quota_data *qd)
 
 void gfs2_quota_unlock(struct gfs2_inode *ip)
 {
-	struct gfs2_alloc *al = &ip->i_alloc;
+	struct gfs2_alloc *al = ip->i_alloc;
 	struct gfs2_quota_data *qda[4];
 	unsigned int count = 0;
 	unsigned int x;
@@ -972,7 +967,7 @@ static int print_message(struct gfs2_quota_data *qd, char *type)
 int gfs2_quota_check(struct gfs2_inode *ip, u32 uid, u32 gid)
 {
 	struct gfs2_sbd *sdp = GFS2_SB(&ip->i_inode);
-	struct gfs2_alloc *al = &ip->i_alloc;
+	struct gfs2_alloc *al = ip->i_alloc;
 	struct gfs2_quota_data *qd;
 	s64 value;
 	unsigned int x;
@@ -1016,10 +1011,9 @@ int gfs2_quota_check(struct gfs2_inode *ip, u32 uid, u32 gid)
 void gfs2_quota_change(struct gfs2_inode *ip, s64 change,
 		       u32 uid, u32 gid)
 {
-	struct gfs2_alloc *al = &ip->i_alloc;
+	struct gfs2_alloc *al = ip->i_alloc;
 	struct gfs2_quota_data *qd;
 	unsigned int x;
-	unsigned int found = 0;
 
 	if (gfs2_assert_warn(GFS2_SB(&ip->i_inode), change))
 		return;
@@ -1032,7 +1026,6 @@ void gfs2_quota_change(struct gfs2_inode *ip, s64 change,
 		if ((qd->qd_id == uid && test_bit(QDF_USER, &qd->qd_flags)) ||
 		    (qd->qd_id == gid && !test_bit(QDF_USER, &qd->qd_flags))) {
 			do_qc(qd, change);
-			found++;
 		}
 	}
 }

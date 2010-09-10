@@ -27,6 +27,8 @@
 *******************************************************************************/
 
 #include <linux/netdevice.h>
+#include <linux/ethtool.h>
+#include <linux/delay.h>
 #include <linux/pci.h>
 
 #include "e1000.h"
@@ -45,14 +47,14 @@ enum e1000_mng_mode {
 						    * Technology signature */
 
 /**
- *  e1000_get_bus_info_pcie - Get PCIe bus information
+ *  e1000e_get_bus_info_pcie - Get PCIe bus information
  *  @hw: pointer to the HW structure
  *
  *  Determines and stores the system bus information for a particular
  *  network interface.  The following bus information is determined and stored:
  *  bus speed, bus width, type (PCIe), and PCIe function.
  **/
-s32 e1000_get_bus_info_pcie(struct e1000_hw *hw)
+s32 e1000e_get_bus_info_pcie(struct e1000_hw *hw)
 {
 	struct e1000_bus_info *bus = &hw->bus;
 	struct e1000_adapter *adapter = hw->adapter;
@@ -85,7 +87,7 @@ s32 e1000_get_bus_info_pcie(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_write_vfta - Write value to VLAN filter table
+ *  e1000e_write_vfta - Write value to VLAN filter table
  *  @hw: pointer to the HW structure
  *  @offset: register offset in VLAN filter table
  *  @value: register value written to VLAN filter table
@@ -93,14 +95,14 @@ s32 e1000_get_bus_info_pcie(struct e1000_hw *hw)
  *  Writes value at the given offset in the register array which stores
  *  the VLAN filter table.
  **/
-void e1000_write_vfta(struct e1000_hw *hw, u32 offset, u32 value)
+void e1000e_write_vfta(struct e1000_hw *hw, u32 offset, u32 value)
 {
 	E1000_WRITE_REG_ARRAY(hw, E1000_VFTA, offset, value);
 	e1e_flush();
 }
 
 /**
- *  e1000_init_rx_addrs - Initialize receive address's
+ *  e1000e_init_rx_addrs - Initialize receive address's
  *  @hw: pointer to the HW structure
  *  @rar_count: receive address registers
  *
@@ -108,14 +110,14 @@ void e1000_write_vfta(struct e1000_hw *hw, u32 offset, u32 value)
  *  register to the devices MAC address and clearing all the other receive
  *  address registers to 0.
  **/
-void e1000_init_rx_addrs(struct e1000_hw *hw, u16 rar_count)
+void e1000e_init_rx_addrs(struct e1000_hw *hw, u16 rar_count)
 {
 	u32 i;
 
 	/* Setup the receive address */
 	hw_dbg(hw, "Programming MAC Address into RAR[0]\n");
 
-	e1000_rar_set(hw, hw->mac.addr, 0);
+	e1000e_rar_set(hw, hw->mac.addr, 0);
 
 	/* Zero out the other (rar_entry_count - 1) receive addresses */
 	hw_dbg(hw, "Clearing RAR[1-%u]\n", rar_count-1);
@@ -128,7 +130,7 @@ void e1000_init_rx_addrs(struct e1000_hw *hw, u16 rar_count)
 }
 
 /**
- *  e1000_rar_set - Set receive address register
+ *  e1000e_rar_set - Set receive address register
  *  @hw: pointer to the HW structure
  *  @addr: pointer to the receive address
  *  @index: receive address array register
@@ -136,7 +138,7 @@ void e1000_init_rx_addrs(struct e1000_hw *hw, u16 rar_count)
  *  Sets the receive address array register at index to the address passed
  *  in by addr.
  **/
-void e1000_rar_set(struct e1000_hw *hw, u8 *addr, u32 index)
+void e1000e_rar_set(struct e1000_hw *hw, u8 *addr, u32 index)
 {
 	u32 rar_low, rar_high;
 
@@ -258,7 +260,7 @@ static u32 e1000_hash_mc_addr(struct e1000_hw *hw, u8 *mc_addr)
 }
 
 /**
- *  e1000_mc_addr_list_update_generic - Update Multicast addresses
+ *  e1000e_mc_addr_list_update_generic - Update Multicast addresses
  *  @hw: pointer to the HW structure
  *  @mc_addr_list: array of multicast addresses to program
  *  @mc_addr_count: number of multicast addresses to program
@@ -270,7 +272,7 @@ static u32 e1000_hash_mc_addr(struct e1000_hw *hw, u8 *mc_addr)
  *  The parameter rar_count will usually be hw->mac.rar_entry_count
  *  unless there are workarounds that change this.
  **/
-void e1000_mc_addr_list_update_generic(struct e1000_hw *hw,
+void e1000e_mc_addr_list_update_generic(struct e1000_hw *hw,
 				       u8 *mc_addr_list, u32 mc_addr_count,
 				       u32 rar_used_count, u32 rar_count)
 {
@@ -283,7 +285,7 @@ void e1000_mc_addr_list_update_generic(struct e1000_hw *hw,
 	 */
 	for (i = rar_used_count; i < rar_count; i++) {
 		if (mc_addr_count) {
-			e1000_rar_set(hw, mc_addr_list, i);
+			e1000e_rar_set(hw, mc_addr_list, i);
 			mc_addr_count--;
 			mc_addr_list += ETH_ALEN;
 		} else {
@@ -311,12 +313,12 @@ void e1000_mc_addr_list_update_generic(struct e1000_hw *hw,
 }
 
 /**
- *  e1000_clear_hw_cntrs_base - Clear base hardware counters
+ *  e1000e_clear_hw_cntrs_base - Clear base hardware counters
  *  @hw: pointer to the HW structure
  *
  *  Clears the base hardware counters by reading the counter registers.
  **/
-void e1000_clear_hw_cntrs_base(struct e1000_hw *hw)
+void e1000e_clear_hw_cntrs_base(struct e1000_hw *hw)
 {
 	u32 temp;
 
@@ -360,14 +362,14 @@ void e1000_clear_hw_cntrs_base(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_check_for_copper_link - Check for link (Copper)
+ *  e1000e_check_for_copper_link - Check for link (Copper)
  *  @hw: pointer to the HW structure
  *
  *  Checks to see of the link status of the hardware has changed.  If a
  *  change in link status has been detected, then we read the PHY registers
  *  to get the current speed/duplex if link exists.
  **/
-s32 e1000_check_for_copper_link(struct e1000_hw *hw)
+s32 e1000e_check_for_copper_link(struct e1000_hw *hw)
 {
 	struct e1000_mac_info *mac = &hw->mac;
 	s32 ret_val;
@@ -385,7 +387,7 @@ s32 e1000_check_for_copper_link(struct e1000_hw *hw)
 	 * link.  If so, then we want to get the current speed/duplex
 	 * of the PHY.
 	 */
-	ret_val = e1000_phy_has_link_generic(hw, 1, 0, &link);
+	ret_val = e1000e_phy_has_link_generic(hw, 1, 0, &link);
 	if (ret_val)
 		return ret_val;
 
@@ -396,7 +398,7 @@ s32 e1000_check_for_copper_link(struct e1000_hw *hw)
 
 	/* Check if there was DownShift, must be checked
 	 * immediately after link-up */
-	e1000_check_downshift(hw);
+	e1000e_check_downshift(hw);
 
 	/* If we are forcing speed/duplex, then we simply return since
 	 * we have already determined whether we have link or not.
@@ -410,14 +412,14 @@ s32 e1000_check_for_copper_link(struct e1000_hw *hw)
 	 * of MAC speed/duplex configuration.  So we only need to
 	 * configure Collision Distance in the MAC.
 	 */
-	e1000_config_collision_dist(hw);
+	e1000e_config_collision_dist(hw);
 
 	/* Configure Flow Control now that Auto-Neg has completed.
 	 * First, we need to restore the desired flow control
 	 * settings because we may have had to re-autoneg with a
 	 * different link partner.
 	 */
-	ret_val = e1000_config_fc_after_link_up(hw);
+	ret_val = e1000e_config_fc_after_link_up(hw);
 	if (ret_val) {
 		hw_dbg(hw, "Error configuring flow control\n");
 	}
@@ -426,13 +428,13 @@ s32 e1000_check_for_copper_link(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_check_for_fiber_link - Check for link (Fiber)
+ *  e1000e_check_for_fiber_link - Check for link (Fiber)
  *  @hw: pointer to the HW structure
  *
  *  Checks for link up on the hardware.  If link is not up and we have
  *  a signal, then we need to force link up.
  **/
-s32 e1000_check_for_fiber_link(struct e1000_hw *hw)
+s32 e1000e_check_for_fiber_link(struct e1000_hw *hw)
 {
 	struct e1000_mac_info *mac = &hw->mac;
 	u32 rxcw;
@@ -469,7 +471,7 @@ s32 e1000_check_for_fiber_link(struct e1000_hw *hw)
 		ew32(CTRL, ctrl);
 
 		/* Configure Flow Control after forcing link up. */
-		ret_val = e1000_config_fc_after_link_up(hw);
+		ret_val = e1000e_config_fc_after_link_up(hw);
 		if (ret_val) {
 			hw_dbg(hw, "Error configuring flow control\n");
 			return ret_val;
@@ -491,13 +493,13 @@ s32 e1000_check_for_fiber_link(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_check_for_serdes_link - Check for link (Serdes)
+ *  e1000e_check_for_serdes_link - Check for link (Serdes)
  *  @hw: pointer to the HW structure
  *
  *  Checks for link up on the hardware.  If link is not up and we have
  *  a signal, then we need to force link up.
  **/
-s32 e1000_check_for_serdes_link(struct e1000_hw *hw)
+s32 e1000e_check_for_serdes_link(struct e1000_hw *hw)
 {
 	struct e1000_mac_info *mac = &hw->mac;
 	u32 rxcw;
@@ -532,7 +534,7 @@ s32 e1000_check_for_serdes_link(struct e1000_hw *hw)
 		ew32(CTRL, ctrl);
 
 		/* Configure Flow Control after forcing link up. */
-		ret_val = e1000_config_fc_after_link_up(hw);
+		ret_val = e1000e_config_fc_after_link_up(hw);
 		if (ret_val) {
 			hw_dbg(hw, "Error configuring flow control\n");
 			return ret_val;
@@ -617,7 +619,7 @@ static s32 e1000_set_default_fc_generic(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_setup_link - Setup flow control and link settings
+ *  e1000e_setup_link - Setup flow control and link settings
  *  @hw: pointer to the HW structure
  *
  *  Determines which flow control settings to use, then configures flow
@@ -626,7 +628,7 @@ static s32 e1000_set_default_fc_generic(struct e1000_hw *hw)
  *  should be established.  Assumes the hardware has previously been reset
  *  and the transmitter and receiver are not enabled.
  **/
-s32 e1000_setup_link(struct e1000_hw *hw)
+s32 e1000e_setup_link(struct e1000_hw *hw)
 {
 	struct e1000_mac_info *mac = &hw->mac;
 	s32 ret_val;
@@ -637,9 +639,15 @@ s32 e1000_setup_link(struct e1000_hw *hw)
 	if (e1000_check_reset_block(hw))
 		return 0;
 
-	ret_val = e1000_set_default_fc_generic(hw);
-	if (ret_val)
-		return ret_val;
+	/*
+	 * If flow control is set to default, set flow control based on
+	 * the EEPROM flow control settings.
+	 */
+	if (mac->fc == e1000_fc_default) {
+		ret_val = e1000_set_default_fc_generic(hw);
+		if (ret_val)
+			return ret_val;
+	}
 
 	/* We want to save off the original Flow Control configuration just
 	 * in case we get disconnected and then reconnected into a different
@@ -666,7 +674,7 @@ s32 e1000_setup_link(struct e1000_hw *hw)
 
 	ew32(FCTTV, mac->fc_pause_time);
 
-	return e1000_set_fc_watermarks(hw);
+	return e1000e_set_fc_watermarks(hw);
 }
 
 /**
@@ -784,13 +792,13 @@ static s32 e1000_poll_fiber_serdes_link_generic(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_setup_fiber_serdes_link - Setup link for fiber/serdes
+ *  e1000e_setup_fiber_serdes_link - Setup link for fiber/serdes
  *  @hw: pointer to the HW structure
  *
  *  Configures collision distance and flow control for fiber and serdes
  *  links.  Upon successful setup, poll for link.
  **/
-s32 e1000_setup_fiber_serdes_link(struct e1000_hw *hw)
+s32 e1000e_setup_fiber_serdes_link(struct e1000_hw *hw)
 {
 	u32 ctrl;
 	s32 ret_val;
@@ -800,7 +808,7 @@ s32 e1000_setup_fiber_serdes_link(struct e1000_hw *hw)
 	/* Take the link out of reset */
 	ctrl &= ~E1000_CTRL_LRST;
 
-	e1000_config_collision_dist(hw);
+	e1000e_config_collision_dist(hw);
 
 	ret_val = e1000_commit_fc_settings_generic(hw);
 	if (ret_val)
@@ -833,14 +841,14 @@ s32 e1000_setup_fiber_serdes_link(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_config_collision_dist - Configure collision distance
+ *  e1000e_config_collision_dist - Configure collision distance
  *  @hw: pointer to the HW structure
  *
  *  Configures the collision distance to the default value and is used
  *  during link setup. Currently no func pointer exists and all
  *  implementations are handled in the generic version of this function.
  **/
-void e1000_config_collision_dist(struct e1000_hw *hw)
+void e1000e_config_collision_dist(struct e1000_hw *hw)
 {
 	u32 tctl;
 
@@ -854,14 +862,14 @@ void e1000_config_collision_dist(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_set_fc_watermarks - Set flow control high/low watermarks
+ *  e1000e_set_fc_watermarks - Set flow control high/low watermarks
  *  @hw: pointer to the HW structure
  *
  *  Sets the flow control high/low threshold (watermark) registers.  If
  *  flow control XON frame transmission is enabled, then set XON frame
  *  tansmission as well.
  **/
-s32 e1000_set_fc_watermarks(struct e1000_hw *hw)
+s32 e1000e_set_fc_watermarks(struct e1000_hw *hw)
 {
 	struct e1000_mac_info *mac = &hw->mac;
 	u32 fcrtl = 0, fcrth = 0;
@@ -888,7 +896,7 @@ s32 e1000_set_fc_watermarks(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_force_mac_fc - Force the MAC's flow control settings
+ *  e1000e_force_mac_fc - Force the MAC's flow control settings
  *  @hw: pointer to the HW structure
  *
  *  Force the MAC's flow control settings.  Sets the TFCE and RFCE bits in the
@@ -897,7 +905,7 @@ s32 e1000_set_fc_watermarks(struct e1000_hw *hw)
  *  autonegotiation is managed by the PHY rather than the MAC.  Software must
  *  also configure these bits when link is forced on a fiber connection.
  **/
-s32 e1000_force_mac_fc(struct e1000_hw *hw)
+s32 e1000e_force_mac_fc(struct e1000_hw *hw)
 {
 	struct e1000_mac_info *mac = &hw->mac;
 	u32 ctrl;
@@ -949,7 +957,7 @@ s32 e1000_force_mac_fc(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_config_fc_after_link_up - Configures flow control after link
+ *  e1000e_config_fc_after_link_up - Configures flow control after link
  *  @hw: pointer to the HW structure
  *
  *  Checks the status of auto-negotiation after link up to ensure that the
@@ -958,7 +966,7 @@ s32 e1000_force_mac_fc(struct e1000_hw *hw)
  *  and did not fail, then we configure flow control based on our link
  *  partner.
  **/
-s32 e1000_config_fc_after_link_up(struct e1000_hw *hw)
+s32 e1000e_config_fc_after_link_up(struct e1000_hw *hw)
 {
 	struct e1000_mac_info *mac = &hw->mac;
 	s32 ret_val = 0;
@@ -972,10 +980,10 @@ s32 e1000_config_fc_after_link_up(struct e1000_hw *hw)
 	if (mac->autoneg_failed) {
 		if (hw->media_type == e1000_media_type_fiber ||
 		    hw->media_type == e1000_media_type_internal_serdes)
-			ret_val = e1000_force_mac_fc(hw);
+			ret_val = e1000e_force_mac_fc(hw);
 	} else {
 		if (hw->media_type == e1000_media_type_copper)
-			ret_val = e1000_force_mac_fc(hw);
+			ret_val = e1000e_force_mac_fc(hw);
 	}
 
 	if (ret_val) {
@@ -1145,7 +1153,7 @@ s32 e1000_config_fc_after_link_up(struct e1000_hw *hw)
 		/* Now we call a subroutine to actually force the MAC
 		 * controller to use the correct flow control settings.
 		 */
-		ret_val = e1000_force_mac_fc(hw);
+		ret_val = e1000e_force_mac_fc(hw);
 		if (ret_val) {
 			hw_dbg(hw, "Error forcing flow control settings\n");
 			return ret_val;
@@ -1156,7 +1164,7 @@ s32 e1000_config_fc_after_link_up(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_get_speed_and_duplex_copper - Retreive current speed/duplex
+ *  e1000e_get_speed_and_duplex_copper - Retreive current speed/duplex
  *  @hw: pointer to the HW structure
  *  @speed: stores the current speed
  *  @duplex: stores the current duplex
@@ -1164,7 +1172,7 @@ s32 e1000_config_fc_after_link_up(struct e1000_hw *hw)
  *  Read the status register for the current speed/duplex and store the current
  *  speed and duplex for copper connections.
  **/
-s32 e1000_get_speed_and_duplex_copper(struct e1000_hw *hw, u16 *speed, u16 *duplex)
+s32 e1000e_get_speed_and_duplex_copper(struct e1000_hw *hw, u16 *speed, u16 *duplex)
 {
 	u32 status;
 
@@ -1192,7 +1200,7 @@ s32 e1000_get_speed_and_duplex_copper(struct e1000_hw *hw, u16 *speed, u16 *dupl
 }
 
 /**
- *  e1000_get_speed_and_duplex_fiber_serdes - Retreive current speed/duplex
+ *  e1000e_get_speed_and_duplex_fiber_serdes - Retreive current speed/duplex
  *  @hw: pointer to the HW structure
  *  @speed: stores the current speed
  *  @duplex: stores the current duplex
@@ -1200,7 +1208,7 @@ s32 e1000_get_speed_and_duplex_copper(struct e1000_hw *hw, u16 *speed, u16 *dupl
  *  Sets the speed and duplex to gigabit full duplex (the only possible option)
  *  for fiber/serdes links.
  **/
-s32 e1000_get_speed_and_duplex_fiber_serdes(struct e1000_hw *hw, u16 *speed, u16 *duplex)
+s32 e1000e_get_speed_and_duplex_fiber_serdes(struct e1000_hw *hw, u16 *speed, u16 *duplex)
 {
 	*speed = SPEED_1000;
 	*duplex = FULL_DUPLEX;
@@ -1209,12 +1217,12 @@ s32 e1000_get_speed_and_duplex_fiber_serdes(struct e1000_hw *hw, u16 *speed, u16
 }
 
 /**
- *  e1000_get_hw_semaphore - Acquire hardware semaphore
+ *  e1000e_get_hw_semaphore - Acquire hardware semaphore
  *  @hw: pointer to the HW structure
  *
  *  Acquire the HW semaphore to access the PHY or NVM
  **/
-s32 e1000_get_hw_semaphore(struct e1000_hw *hw)
+s32 e1000e_get_hw_semaphore(struct e1000_hw *hw)
 {
 	u32 swsm;
 	s32 timeout = hw->nvm.word_size + 1;
@@ -1249,7 +1257,7 @@ s32 e1000_get_hw_semaphore(struct e1000_hw *hw)
 
 	if (i == timeout) {
 		/* Release semaphores */
-		e1000_put_hw_semaphore(hw);
+		e1000e_put_hw_semaphore(hw);
 		hw_dbg(hw, "Driver can't access the NVM\n");
 		return -E1000_ERR_NVM;
 	}
@@ -1258,12 +1266,12 @@ s32 e1000_get_hw_semaphore(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_put_hw_semaphore - Release hardware semaphore
+ *  e1000e_put_hw_semaphore - Release hardware semaphore
  *  @hw: pointer to the HW structure
  *
  *  Release hardware semaphore used to access the PHY or NVM
  **/
-void e1000_put_hw_semaphore(struct e1000_hw *hw)
+void e1000e_put_hw_semaphore(struct e1000_hw *hw)
 {
 	u32 swsm;
 
@@ -1273,12 +1281,12 @@ void e1000_put_hw_semaphore(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_get_auto_rd_done - Check for auto read completion
+ *  e1000e_get_auto_rd_done - Check for auto read completion
  *  @hw: pointer to the HW structure
  *
  *  Check EEPROM for Auto Read done bit.
  **/
-s32 e1000_get_auto_rd_done(struct e1000_hw *hw)
+s32 e1000e_get_auto_rd_done(struct e1000_hw *hw)
 {
 	s32 i = 0;
 
@@ -1298,14 +1306,14 @@ s32 e1000_get_auto_rd_done(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_valid_led_default - Verify a valid default LED config
+ *  e1000e_valid_led_default - Verify a valid default LED config
  *  @hw: pointer to the HW structure
  *  @data: pointer to the NVM (EEPROM)
  *
  *  Read the EEPROM for the current default LED configuration.  If the
  *  LED configuration is not valid, set to a valid LED configuration.
  **/
-s32 e1000_valid_led_default(struct e1000_hw *hw, u16 *data)
+s32 e1000e_valid_led_default(struct e1000_hw *hw, u16 *data)
 {
 	s32 ret_val;
 
@@ -1322,11 +1330,11 @@ s32 e1000_valid_led_default(struct e1000_hw *hw, u16 *data)
 }
 
 /**
- *  e1000_id_led_init -
+ *  e1000e_id_led_init -
  *  @hw: pointer to the HW structure
  *
  **/
-s32 e1000_id_led_init(struct e1000_hw *hw)
+s32 e1000e_id_led_init(struct e1000_hw *hw)
 {
 	struct e1000_mac_info *mac = &hw->mac;
 	s32 ret_val;
@@ -1386,25 +1394,25 @@ s32 e1000_id_led_init(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_cleanup_led_generic - Set LED config to default operation
+ *  e1000e_cleanup_led_generic - Set LED config to default operation
  *  @hw: pointer to the HW structure
  *
  *  Remove the current LED configuration and set the LED configuration
  *  to the default value, saved from the EEPROM.
  **/
-s32 e1000_cleanup_led_generic(struct e1000_hw *hw)
+s32 e1000e_cleanup_led_generic(struct e1000_hw *hw)
 {
 	ew32(LEDCTL, hw->mac.ledctl_default);
 	return 0;
 }
 
 /**
- *  e1000_blink_led - Blink LED
+ *  e1000e_blink_led - Blink LED
  *  @hw: pointer to the HW structure
  *
  *  Blink the led's which are set to be on.
  **/
-s32 e1000_blink_led(struct e1000_hw *hw)
+s32 e1000e_blink_led(struct e1000_hw *hw)
 {
 	u32 ledctl_blink = 0;
 	u32 i;
@@ -1430,12 +1438,12 @@ s32 e1000_blink_led(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_led_on_generic - Turn LED on
+ *  e1000e_led_on_generic - Turn LED on
  *  @hw: pointer to the HW structure
  *
  *  Turn LED on.
  **/
-s32 e1000_led_on_generic(struct e1000_hw *hw)
+s32 e1000e_led_on_generic(struct e1000_hw *hw)
 {
 	u32 ctrl;
 
@@ -1457,12 +1465,12 @@ s32 e1000_led_on_generic(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_led_off_generic - Turn LED off
+ *  e1000e_led_off_generic - Turn LED off
  *  @hw: pointer to the HW structure
  *
  *  Turn LED off.
  **/
-s32 e1000_led_off_generic(struct e1000_hw *hw)
+s32 e1000e_led_off_generic(struct e1000_hw *hw)
 {
 	u32 ctrl;
 
@@ -1484,13 +1492,13 @@ s32 e1000_led_off_generic(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_set_pcie_no_snoop - Set PCI-express capabilities
+ *  e1000e_set_pcie_no_snoop - Set PCI-express capabilities
  *  @hw: pointer to the HW structure
  *  @no_snoop: bitmap of snoop events
  *
  *  Set the PCI-express register to snoop for events enabled in 'no_snoop'.
  **/
-void e1000_set_pcie_no_snoop(struct e1000_hw *hw, u32 no_snoop)
+void e1000e_set_pcie_no_snoop(struct e1000_hw *hw, u32 no_snoop)
 {
 	u32 gcr;
 
@@ -1503,7 +1511,7 @@ void e1000_set_pcie_no_snoop(struct e1000_hw *hw, u32 no_snoop)
 }
 
 /**
- *  e1000_disable_pcie_master - Disables PCI-express master access
+ *  e1000e_disable_pcie_master - Disables PCI-express master access
  *  @hw: pointer to the HW structure
  *
  *  Returns 0 if successful, else returns -10
@@ -1513,7 +1521,7 @@ void e1000_set_pcie_no_snoop(struct e1000_hw *hw, u32 no_snoop)
  *  Disables PCI-Express master access and verifies there are no pending
  *  requests.
  **/
-s32 e1000_disable_pcie_master(struct e1000_hw *hw)
+s32 e1000e_disable_pcie_master(struct e1000_hw *hw)
 {
 	u32 ctrl;
 	s32 timeout = MASTER_DISABLE_TIMEOUT;
@@ -1539,12 +1547,12 @@ s32 e1000_disable_pcie_master(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_reset_adaptive - Reset Adaptive Interframe Spacing
+ *  e1000e_reset_adaptive - Reset Adaptive Interframe Spacing
  *  @hw: pointer to the HW structure
  *
  *  Reset the Adaptive Interframe Spacing throttle to default values.
  **/
-void e1000_reset_adaptive(struct e1000_hw *hw)
+void e1000e_reset_adaptive(struct e1000_hw *hw)
 {
 	struct e1000_mac_info *mac = &hw->mac;
 
@@ -1559,13 +1567,13 @@ void e1000_reset_adaptive(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_update_adaptive - Update Adaptive Interframe Spacing
+ *  e1000e_update_adaptive - Update Adaptive Interframe Spacing
  *  @hw: pointer to the HW structure
  *
  *  Update the Adaptive Interframe Spacing Throttle value based on the
  *  time between transmitted packets and time between collisions.
  **/
-void e1000_update_adaptive(struct e1000_hw *hw)
+void e1000e_update_adaptive(struct e1000_hw *hw)
 {
 	struct e1000_mac_info *mac = &hw->mac;
 
@@ -1702,14 +1710,14 @@ static u16 e1000_shift_in_eec_bits(struct e1000_hw *hw, u16 count)
 }
 
 /**
- *  e1000_poll_eerd_eewr_done - Poll for EEPROM read/write completion
+ *  e1000e_poll_eerd_eewr_done - Poll for EEPROM read/write completion
  *  @hw: pointer to the HW structure
  *  @ee_reg: EEPROM flag for polling
  *
  *  Polls the EEPROM status bit for either read or write completion based
  *  upon the value of 'ee_reg'.
  **/
-s32 e1000_poll_eerd_eewr_done(struct e1000_hw *hw, int ee_reg)
+s32 e1000e_poll_eerd_eewr_done(struct e1000_hw *hw, int ee_reg)
 {
 	u32 attempts = 100000;
 	u32 i, reg = 0;
@@ -1730,14 +1738,14 @@ s32 e1000_poll_eerd_eewr_done(struct e1000_hw *hw, int ee_reg)
 }
 
 /**
- *  e1000_acquire_nvm - Generic request for access to EEPROM
+ *  e1000e_acquire_nvm - Generic request for access to EEPROM
  *  @hw: pointer to the HW structure
  *
  *  Set the EEPROM access request bit and wait for EEPROM access grant bit.
  *  Return successful if access grant bit set, else clear the request for
  *  EEPROM access and return -E1000_ERR_NVM (-1).
  **/
-s32 e1000_acquire_nvm(struct e1000_hw *hw)
+s32 e1000e_acquire_nvm(struct e1000_hw *hw)
 {
 	u32 eecd = er32(EECD);
 	s32 timeout = E1000_NVM_GRANT_ATTEMPTS;
@@ -1806,12 +1814,12 @@ static void e1000_stop_nvm(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_release_nvm - Release exclusive access to EEPROM
+ *  e1000e_release_nvm - Release exclusive access to EEPROM
  *  @hw: pointer to the HW structure
  *
  *  Stop any current commands to the EEPROM and clear the EEPROM request bit.
  **/
-void e1000_release_nvm(struct e1000_hw *hw)
+void e1000e_release_nvm(struct e1000_hw *hw)
 {
 	u32 eecd;
 
@@ -1868,7 +1876,7 @@ static s32 e1000_ready_nvm_eeprom(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_read_nvm_spi - Read EEPROM's using SPI
+ *  e1000e_read_nvm_spi - Read EEPROM's using SPI
  *  @hw: pointer to the HW structure
  *  @offset: offset of word in the EEPROM to read
  *  @words: number of words to read
@@ -1876,7 +1884,7 @@ static s32 e1000_ready_nvm_eeprom(struct e1000_hw *hw)
  *
  *  Reads a 16 bit word from the EEPROM.
  **/
-s32 e1000_read_nvm_spi(struct e1000_hw *hw, u16 offset, u16 words, u16 *data)
+s32 e1000e_read_nvm_spi(struct e1000_hw *hw, u16 offset, u16 words, u16 *data)
 {
 	struct e1000_nvm_info *nvm = &hw->nvm;
 	u32 i = 0;
@@ -1924,7 +1932,7 @@ s32 e1000_read_nvm_spi(struct e1000_hw *hw, u16 offset, u16 words, u16 *data)
 }
 
 /**
- *  e1000_read_nvm_eerd - Reads EEPROM using EERD register
+ *  e1000e_read_nvm_eerd - Reads EEPROM using EERD register
  *  @hw: pointer to the HW structure
  *  @offset: offset of word in the EEPROM to read
  *  @words: number of words to read
@@ -1932,11 +1940,11 @@ s32 e1000_read_nvm_spi(struct e1000_hw *hw, u16 offset, u16 words, u16 *data)
  *
  *  Reads a 16 bit word from the EEPROM using the EERD register.
  **/
-s32 e1000_read_nvm_eerd(struct e1000_hw *hw, u16 offset, u16 words, u16 *data)
+s32 e1000e_read_nvm_eerd(struct e1000_hw *hw, u16 offset, u16 words, u16 *data)
 {
 	struct e1000_nvm_info *nvm = &hw->nvm;
 	u32 i, eerd = 0;
-	s32 ret_val;
+	s32 ret_val = 0;
 
 	/* A check for invalid values:  offset too large, too many words,
 	 * and not enough words. */
@@ -1951,7 +1959,7 @@ s32 e1000_read_nvm_eerd(struct e1000_hw *hw, u16 offset, u16 words, u16 *data)
 		       E1000_NVM_RW_REG_START;
 
 		ew32(EERD, eerd);
-		ret_val = e1000_poll_eerd_eewr_done(hw, E1000_NVM_POLL_READ);
+		ret_val = e1000e_poll_eerd_eewr_done(hw, E1000_NVM_POLL_READ);
 		if (ret_val)
 			break;
 
@@ -1963,7 +1971,7 @@ s32 e1000_read_nvm_eerd(struct e1000_hw *hw, u16 offset, u16 words, u16 *data)
 }
 
 /**
- *  e1000_write_nvm_spi - Write to EEPROM using SPI
+ *  e1000e_write_nvm_spi - Write to EEPROM using SPI
  *  @hw: pointer to the HW structure
  *  @offset: offset within the EEPROM to be written to
  *  @words: number of words to write
@@ -1971,10 +1979,10 @@ s32 e1000_read_nvm_eerd(struct e1000_hw *hw, u16 offset, u16 words, u16 *data)
  *
  *  Writes data to EEPROM at offset using SPI interface.
  *
- *  If e1000_update_nvm_checksum is not called after this function , the
+ *  If e1000e_update_nvm_checksum is not called after this function , the
  *  EEPROM will most likley contain an invalid checksum.
  **/
-s32 e1000_write_nvm_spi(struct e1000_hw *hw, u16 offset, u16 words, u16 *data)
+s32 e1000e_write_nvm_spi(struct e1000_hw *hw, u16 offset, u16 words, u16 *data)
 {
 	struct e1000_nvm_info *nvm = &hw->nvm;
 	s32 ret_val;
@@ -2040,20 +2048,55 @@ s32 e1000_write_nvm_spi(struct e1000_hw *hw, u16 offset, u16 words, u16 *data)
 }
 
 /**
- *  e1000_read_mac_addr - Read device MAC address
+ *  e1000e_read_mac_addr - Read device MAC address
  *  @hw: pointer to the HW structure
  *
  *  Reads the device MAC address from the EEPROM and stores the value.
  *  Since devices with two ports use the same EEPROM, we increment the
  *  last bit in the MAC address for the second port.
  **/
-s32 e1000_read_mac_addr(struct e1000_hw *hw)
+s32 e1000e_read_mac_addr(struct e1000_hw *hw)
 {
 	s32 ret_val;
 	u16 offset, nvm_data, i;
+	u16 mac_addr_offset = 0;
+
+	if (hw->mac.type == e1000_82571) {
+		/* Check for an alternate MAC address.  An alternate MAC
+		 * address can be setup by pre-boot software and must be
+		 * treated like a permanent address and must override the
+		 * actual permanent MAC address. */
+		ret_val = e1000_read_nvm(hw, NVM_ALT_MAC_ADDR_PTR, 1,
+						&mac_addr_offset);
+		if (ret_val) {
+			hw_dbg(hw, "NVM Read Error\n");
+			return ret_val;
+		}
+		if (mac_addr_offset == 0xFFFF)
+			mac_addr_offset = 0;
+
+		if (mac_addr_offset) {
+			if (hw->bus.func == E1000_FUNC_1)
+				mac_addr_offset += ETH_ALEN/sizeof(u16);
+
+			/* make sure we have a valid mac address here
+			 * before using it */
+			ret_val = e1000_read_nvm(hw, mac_addr_offset, 1,
+						 &nvm_data);
+			if (ret_val) {
+				hw_dbg(hw, "NVM Read Error\n");
+				return ret_val;
+			}
+			if (nvm_data & 0x0001)
+				mac_addr_offset = 0;
+		}
+
+		if (mac_addr_offset)
+			hw->dev_spec.e82571.alt_mac_addr_is_present = 1;
+	}
 
 	for (i = 0; i < ETH_ALEN; i += 2) {
-		offset = i >> 1;
+		offset = mac_addr_offset + (i >> 1);
 		ret_val = e1000_read_nvm(hw, offset, 1, &nvm_data);
 		if (ret_val) {
 			hw_dbg(hw, "NVM Read Error\n");
@@ -2064,7 +2107,7 @@ s32 e1000_read_mac_addr(struct e1000_hw *hw)
 	}
 
 	/* Flip last bit of mac address if we're on second port */
-	if (hw->bus.func == E1000_FUNC_1)
+	if (!mac_addr_offset && hw->bus.func == E1000_FUNC_1)
 		hw->mac.perm_addr[5] ^= 1;
 
 	for (i = 0; i < ETH_ALEN; i++)
@@ -2074,13 +2117,13 @@ s32 e1000_read_mac_addr(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_validate_nvm_checksum_generic - Validate EEPROM checksum
+ *  e1000e_validate_nvm_checksum_generic - Validate EEPROM checksum
  *  @hw: pointer to the HW structure
  *
  *  Calculates the EEPROM checksum by reading/adding each word of the EEPROM
  *  and then verifies that the sum of the EEPROM is equal to 0xBABA.
  **/
-s32 e1000_validate_nvm_checksum_generic(struct e1000_hw *hw)
+s32 e1000e_validate_nvm_checksum_generic(struct e1000_hw *hw)
 {
 	s32 ret_val;
 	u16 checksum = 0;
@@ -2104,14 +2147,14 @@ s32 e1000_validate_nvm_checksum_generic(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_update_nvm_checksum_generic - Update EEPROM checksum
+ *  e1000e_update_nvm_checksum_generic - Update EEPROM checksum
  *  @hw: pointer to the HW structure
  *
  *  Updates the EEPROM checksum by reading/adding each word of the EEPROM
  *  up to the checksum.  Then calculates the EEPROM checksum and writes the
  *  value to the EEPROM.
  **/
-s32 e1000_update_nvm_checksum_generic(struct e1000_hw *hw)
+s32 e1000e_update_nvm_checksum_generic(struct e1000_hw *hw)
 {
 	s32 ret_val;
 	u16 checksum = 0;
@@ -2134,13 +2177,13 @@ s32 e1000_update_nvm_checksum_generic(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_reload_nvm - Reloads EEPROM
+ *  e1000e_reload_nvm - Reloads EEPROM
  *  @hw: pointer to the HW structure
  *
  *  Reloads the EEPROM by setting the "Reinitialize from EEPROM" bit in the
  *  extended control register.
  **/
-void e1000_reload_nvm(struct e1000_hw *hw)
+void e1000e_reload_nvm(struct e1000_hw *hw)
 {
 	u32 ctrl_ext;
 
@@ -2211,13 +2254,13 @@ static s32 e1000_mng_enable_host_if(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_check_mng_mode - check managament mode
+ *  e1000e_check_mng_mode - check managament mode
  *  @hw: pointer to the HW structure
  *
  *  Reads the firmware semaphore register and returns true (>0) if
  *  manageability is enabled, else false (0).
  **/
-bool e1000_check_mng_mode(struct e1000_hw *hw)
+bool e1000e_check_mng_mode(struct e1000_hw *hw)
 {
 	u32 fwsm = er32(FWSM);
 
@@ -2225,13 +2268,13 @@ bool e1000_check_mng_mode(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_enable_tx_pkt_filtering - Enable packet filtering on TX
+ *  e1000e_enable_tx_pkt_filtering - Enable packet filtering on TX
  *  @hw: pointer to the HW structure
  *
  *  Enables packet filtering on transmit packets if manageability is enabled
  *  and host interface is enabled.
  **/
-bool e1000_enable_tx_pkt_filtering(struct e1000_hw *hw)
+bool e1000e_enable_tx_pkt_filtering(struct e1000_hw *hw)
 {
 	struct e1000_host_mng_dhcp_cookie *hdr = &hw->mng_cookie;
 	u32 *buffer = (u32 *)&hw->mng_cookie;
@@ -2240,7 +2283,7 @@ bool e1000_enable_tx_pkt_filtering(struct e1000_hw *hw)
 	u8 i, len;
 
 	/* No manageability, no filtering */
-	if (!e1000_check_mng_mode(hw)) {
+	if (!e1000e_check_mng_mode(hw)) {
 		hw->mac.tx_pkt_filtering = 0;
 		return 0;
 	}
@@ -2381,14 +2424,14 @@ static s32 e1000_mng_host_if_write(struct e1000_hw *hw, u8 *buffer,
 }
 
 /**
- *  e1000_mng_write_dhcp_info - Writes DHCP info to host interface
+ *  e1000e_mng_write_dhcp_info - Writes DHCP info to host interface
  *  @hw: pointer to the HW structure
  *  @buffer: pointer to the host interface
  *  @length: size of the buffer
  *
  *  Writes the DHCP information to the host interface.
  **/
-s32 e1000_mng_write_dhcp_info(struct e1000_hw *hw, u8 *buffer, u16 length)
+s32 e1000e_mng_write_dhcp_info(struct e1000_hw *hw, u8 *buffer, u16 length)
 {
 	struct e1000_host_mng_command_header hdr;
 	s32 ret_val;
@@ -2424,12 +2467,12 @@ s32 e1000_mng_write_dhcp_info(struct e1000_hw *hw, u8 *buffer, u16 length)
 }
 
 /**
- *  e1000_enable_mng_pass_thru - Enable processing of ARP's
+ *  e1000e_enable_mng_pass_thru - Enable processing of ARP's
  *  @hw: pointer to the HW structure
  *
  *  Verifies the hardware needs to allow ARPs to be processed by the host.
  **/
-bool e1000_enable_mng_pass_thru(struct e1000_hw *hw)
+bool e1000e_enable_mng_pass_thru(struct e1000_hw *hw)
 {
 	u32 manc;
 	u32 fwsm, factps;
@@ -2462,3 +2505,24 @@ bool e1000_enable_mng_pass_thru(struct e1000_hw *hw)
 	return ret_val;
 }
 
+s32 e1000e_read_part_num(struct e1000_hw *hw, u32 *part_num)
+{
+	s32 ret_val;
+	u16 nvm_data;
+
+	ret_val = e1000_read_nvm(hw, NVM_PBA_OFFSET_0, 1, &nvm_data);
+	if (ret_val) {
+		hw_dbg(hw, "NVM Read Error\n");
+		return ret_val;
+	}
+	*part_num = (u32)(nvm_data << 16);
+
+	ret_val = e1000_read_nvm(hw, NVM_PBA_OFFSET_1, 1, &nvm_data);
+	if (ret_val) {
+		hw_dbg(hw, "NVM Read Error\n");
+		return ret_val;
+	}
+	*part_num |= nvm_data;
+
+	return 0;
+}

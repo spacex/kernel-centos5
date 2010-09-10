@@ -31,7 +31,7 @@
 #include <scsi/iscsi_if.h>
 
 #define ISCSI_SESSION_ATTRS 15
-#define ISCSI_CONN_ATTRS 11
+#define ISCSI_CONN_ATTRS 13
 #define ISCSI_HOST_ATTRS 4
 #define ISCSI_TRANSPORT_VERSION "2.0-724"
 
@@ -811,9 +811,17 @@ iscsi_if_create_session(struct iscsi_internal *priv, struct iscsi_uevent *ev)
 	unsigned long flags;
 	uint32_t hostno;
 
-	session = transport->create_session(transport, &priv->t,
-					    ev->u.c_session.initial_cmdsn,
-					    &hostno);
+	if ((!ev->u.c_session.cmds_max && !ev->u.c_session.queue_depth) ||
+	     !transport->create_session2)
+		session = transport->create_session(transport, &priv->t,
+						ev->u.c_session.initial_cmdsn,
+						&hostno);
+	else
+		session = transport->create_session2(transport, &priv->t,
+						ev->u.c_session.cmds_max,
+						ev->u.c_session.queue_depth,
+						ev->u.c_session.initial_cmdsn,
+						&hostno);
 	if (!session)
 		return -ENOMEM;
 
@@ -1176,6 +1184,8 @@ iscsi_conn_attr(port, ISCSI_PARAM_CONN_PORT);
 iscsi_conn_attr(exp_statsn, ISCSI_PARAM_EXP_STATSN);
 iscsi_conn_attr(persistent_address, ISCSI_PARAM_PERSISTENT_ADDRESS);
 iscsi_conn_attr(address, ISCSI_PARAM_CONN_ADDRESS);
+iscsi_conn_attr(ping_tmo, ISCSI_PARAM_PING_TMO);
+iscsi_conn_attr(recv_tmo, ISCSI_PARAM_RECV_TMO);
 
 #define iscsi_cdev_to_session(_cdev) \
 	iscsi_dev_to_session(_cdev->dev)
@@ -1410,6 +1420,8 @@ iscsi_register_transport(struct iscsi_transport *tt)
 	SETUP_CONN_RD_ATTR(exp_statsn, ISCSI_EXP_STATSN);
 	SETUP_CONN_RD_ATTR(persistent_address, ISCSI_PERSISTENT_ADDRESS);
 	SETUP_CONN_RD_ATTR(persistent_port, ISCSI_PERSISTENT_PORT);
+	SETUP_CONN_RD_ATTR(ping_tmo, ISCSI_PING_TMO);
+	SETUP_CONN_RD_ATTR(recv_tmo, ISCSI_RECV_TMO);
 
 	BUG_ON(count > ISCSI_CONN_ATTRS);
 	priv->conn_attrs[count] = NULL;

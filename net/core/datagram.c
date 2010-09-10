@@ -198,6 +198,7 @@ no_packet:
 void skb_free_datagram(struct sock *sk, struct sk_buff *skb)
 {
 	kfree_skb(skb);
+	sk_mem_reclaim(sk);
 }
 
 /**
@@ -231,6 +232,7 @@ void skb_kill_datagram(struct sock *sk, struct sk_buff *skb, unsigned int flags)
 	}
 
 	kfree_skb(skb);
+	sk_mem_reclaim(sk);
 }
 
 EXPORT_SYMBOL(skb_kill_datagram);

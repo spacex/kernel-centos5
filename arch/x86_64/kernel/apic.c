@@ -947,7 +947,7 @@ void smp_local_timer_interrupt(struct pt_regs *regs)
 	for (i = 0; i < tick_divider; i++) {
 		profile_tick(CPU_PROFILING, regs);
 #ifdef CONFIG_SMP
-		update_process_times(user_mode(regs));
+		update_process_times(user_mode(regs), regs);
 #endif
 	}
 	if (apic_runs_main_timer > 1 && smp_processor_id() == boot_cpu_id)

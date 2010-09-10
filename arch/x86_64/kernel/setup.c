@@ -38,6 +38,7 @@
 #include <linux/acpi.h>
 #include <linux/kallsyms.h>
 #include <linux/edd.h>
+#include <linux/iscsi_ibft.h>
 #include <linux/mmzone.h>
 #include <linux/kexec.h>
 #include <linux/cpufreq.h>
@@ -656,6 +657,8 @@ void __init setup_arch(char **cmdline_p)
 	}
 #endif
 
+	reserve_ibft_region();
+
 	paging_init();
 
 	check_ioapic();
@@ -1137,6 +1140,8 @@ void __cpuinit identify_cpu(struct cpuinfo_x86 *c)
 			c->x86_capability[2] = cpuid_edx(0x80860001);
 	}
 
+	init_scattered_cpuid_features(c);
+
 	c->apicid = phys_pkg_id(0);
 
 	/*
@@ -1243,7 +1248,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		"cxmmx", NULL, "cyrix_arr", "centaur_mcr", NULL,
 		"constant_tsc", NULL, NULL,
 		"up", NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+		"ida", NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 
 		/* Intel-defined (#2) */

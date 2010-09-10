@@ -21,6 +21,7 @@
 #include <linux/seccomp.h>
 #include <linux/signal.h>
 #include <linux/module.h>
+#include <linux/elf.h>
 
 #include <asm/tracehook.h>
 #include <asm/uaccess.h>
@@ -247,7 +248,7 @@ static int putreg(struct task_struct *child,
 			return -EIO;
 		child->thread.gsindex = value &= 0xffff;
 		if (child == current)
-			loadsegment(gs, value);
+			load_gs_index(value);
 		return 0;
 	case offsetof(struct user_regs_struct,ds):
 		if (value && (value & 3) != 3)
@@ -678,10 +679,12 @@ fsgs_set(struct task_struct *target,
  */
 static const struct utrace_regset native_regsets[] = {
 	{
+		.core_note_type = NT_PRSTATUS,
 		.n = sizeof(struct user_regs_struct)/8, .size = 8, .align = 8,
 		.get = genregs_get, .set = genregs_set
 	},
 	{
+		.core_note_type = NT_PRFPREG,
 		.n = sizeof(struct user_i387_struct) / sizeof(long),
 		.size = sizeof(long), .align = sizeof(long),
 		.active = fpregs_active,
@@ -746,7 +749,7 @@ int arch_ptrace(long *req, struct task_struct *child,
 	case PTRACE_SET_THREAD_AREA:
 		return ptrace_onereg_access(child, engine,
 					    &utrace_ia32_view, 3,
-					    addr, (void __user *)data,
+					    addr, (void __user *)data, NULL,
 					    *req == PTRACE_SET_THREAD_AREA);
 #endif
 		/* normal 64bit interface to access TLS data.

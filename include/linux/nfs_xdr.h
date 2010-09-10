@@ -63,7 +63,8 @@ struct nfs_fattr {
 #define NFS_ATTR_FATTR		0x0002		/* post-op attributes */
 #define NFS_ATTR_FATTR_V3	0x0004		/* NFSv3 attributes */
 #define NFS_ATTR_FATTR_V4	0x0008		/* NFSv4 change attribute */
-#define NFS_ATTR_FATTR_V4_REFERRAL	0x0010		/* NFSv4 referral */
+#define NFS_ATTR_WCC_V4		0x0010		/* pre-op change attribute */
+#define NFS_ATTR_FATTR_V4_REFERRAL	0x0020		/* NFSv4 referral */
 
 /*
  * Info on the file system
@@ -145,6 +146,7 @@ struct nfs_openres {
 	nfs4_stateid		delegation;
 	__u32			do_recall;
 	__u64			maxsize;
+	__u32			attrset[NFS4_BITMAP_SIZE];
 };
 
 /*

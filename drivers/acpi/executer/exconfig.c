@@ -418,12 +418,13 @@ acpi_ex_load_op(union acpi_operand_object *obj_desc,
 		return_ACPI_STATUS(AE_AML_OPERAND_TYPE);
 	}
 
-	/* The table must be either an SSDT or a PSDT */
+	/* The table must be either an SSDT or a PSDT or an OEMx */
 
 	if ((!ACPI_COMPARE_NAME(table_ptr->signature, PSDT_SIG)) &&
-	    (!ACPI_COMPARE_NAME(table_ptr->signature, SSDT_SIG))) {
+	    (!ACPI_COMPARE_NAME(table_ptr->signature, SSDT_SIG)) &&
+		(strncmp(table_ptr->signature, "OEM", 3))) {
 		ACPI_ERROR((AE_INFO,
-			    "Table has invalid signature [%4.4s], must be SSDT or PSDT",
+			    "Table has invalid signature [%4.4s], must be SSDT, PSDT or OEMx",
 			    table_ptr->signature));
 		status = AE_BAD_SIGNATURE;
 		goto cleanup;

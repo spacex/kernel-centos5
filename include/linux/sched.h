@@ -118,6 +118,9 @@ extern unsigned long avenrun[];		/* Load averages */
 	load += n*(FIXED_1-exp); \
 	load >>= FSHIFT;
 
+extern int sched_interactive;
+extern int sched_interactive_min;
+extern int sched_interactive_max;
 extern unsigned long total_forks;
 extern int nr_threads;
 extern int last_pid;
@@ -209,21 +212,22 @@ long io_schedule_timeout(long timeout);
 
 extern void cpu_init (void);
 extern void trap_init(void);
-extern void update_process_times(int user);
+extern void update_process_times(int user, struct pt_regs *regs);
 extern void scheduler_tick(void);
 
 #ifdef CONFIG_DETECT_SOFTLOCKUP
 extern unsigned long softlockup_get_next_event(void);
-extern void softlockup_tick(void);
+extern void softlockup_tick(struct pt_regs *regs);
 extern void spawn_softlockup_task(void);
 extern void touch_softlockup_watchdog(void);
 extern void touch_all_softlockup_watchdogs(void);
+extern int softlockup_thresh;
 #else
 static inline unsigned long softlockup_get_next_event(void)
 {
 	return MAX_JIFFY_OFFSET;
 }
-static inline void softlockup_tick(void)
+static inline void softlockup_tick(struct pt_regs *regs)
 {
 }
 static inline void spawn_softlockup_task(void)
@@ -309,6 +313,23 @@ typedef unsigned long mm_counter_t;
 	if ((mm)->hiwater_vm < (mm)->total_vm)		\
 		(mm)->hiwater_vm = (mm)->total_vm;	\
 } while (0)
+
+/* coredump filter bits */
+#define MMF_DUMP_ANON_PRIVATE	0
+#define MMF_DUMP_ANON_SHARED	1
+#define MMF_DUMP_MAPPED_PRIVATE	2
+#define MMF_DUMP_MAPPED_SHARED	3
+#define MMF_DUMP_ELF_HEADERS	4
+#define MMF_DUMP_FILTER_BITS	5
+#define MMF_DUMP_FILTER_MASK ((1 << MMF_DUMP_FILTER_BITS) - 1)
+#define MMF_DUMP_FILTER_DEFAULT \
+	((1 << MMF_DUMP_ANON_PRIVATE) | (1 << MMF_DUMP_ANON_SHARED))
+
+struct mm_flags {
+	struct hlist_node hlist;
+	void *addr;
+	unsigned long flags;
+};
 
 struct mm_struct {
 	struct vm_area_struct * mmap;		/* list of VMAs */
@@ -1303,6 +1324,9 @@ extern void mmput(struct mm_struct *);
 extern struct mm_struct *get_task_mm(struct task_struct *task);
 /* Remove the current tasks stale references to the old mm_struct */
 extern void mm_release(struct task_struct *, struct mm_struct *);
+
+extern unsigned long get_mm_flags(struct mm_struct *);
+extern int set_mm_flags(struct mm_struct *, unsigned long, int);
 
 extern int  copy_thread(int, unsigned long, unsigned long, unsigned long, struct task_struct *, struct pt_regs *);
 extern void flush_thread(void);

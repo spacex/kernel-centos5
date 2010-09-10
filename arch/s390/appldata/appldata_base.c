@@ -14,20 +14,20 @@
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/errno.h>
-#include <asm/uaccess.h>
-#include <asm/io.h>
-#include <asm/smp.h>
 #include <linux/interrupt.h>
 #include <linux/proc_fs.h>
 #include <linux/page-flags.h>
 #include <linux/swap.h>
 #include <linux/pagemap.h>
 #include <linux/sysctl.h>
-#include <asm/timer.h>
-//#include <linux/kernel_stat.h>
 #include <linux/notifier.h>
 #include <linux/cpu.h>
 #include <linux/workqueue.h>
+#include <asm/appldata.h>
+#include <asm/timer.h>
+#include <asm/uaccess.h>
+#include <asm/io.h>
+#include <asm/smp.h>
 
 #include "appldata.h"
 
@@ -39,34 +39,6 @@
 
 #define TOD_MICRO	0x01000			/* nr. of TOD clock units
 						   for 1 microsecond */
-
-/*
- * Parameter list for DIAGNOSE X'DC'
- */
-#ifndef CONFIG_64BIT
-struct appldata_parameter_list {
-	u16 diag;		/* The DIAGNOSE code X'00DC'          */
-	u8  function;		/* The function code for the DIAGNOSE */
-	u8  parlist_length;	/* Length of the parameter list       */
-	u32 product_id_addr;	/* Address of the 16-byte product ID  */
-	u16 reserved;
-	u16 buffer_length;	/* Length of the application data buffer  */
-	u32 buffer_addr;	/* Address of the application data buffer */
-};
-#else
-struct appldata_parameter_list {
-	u16 diag;
-	u8  function;
-	u8  parlist_length;
-	u32 unused01;
-	u16 reserved;
-	u16 buffer_length;
-	u32 unused02;
-	u64 product_id_addr;
-	u64 buffer_addr;
-};
-#endif /* CONFIG_64BIT */
-
 /*
  * /proc entries (sysctl)
  */
@@ -181,46 +153,17 @@ static void appldata_work_fn(void *data)
 int appldata_diag(char record_nr, u16 function, unsigned long buffer,
 			u16 length, char *mod_lvl)
 {
-	unsigned long ry;
-	struct appldata_product_id {
-		char prod_nr[7];			/* product nr. */
-		char prod_fn[2];			/* product function */
-		char record_nr;				/* record nr. */
-		char version_nr[2];			/* version */
-		char release_nr[2];			/* release */
-		char mod_lvl[2];			/* modification lvl. */
-	} appldata_product_id = {
-	/* all strings are EBCDIC, record_nr is byte */
+	struct appldata_product_id id = {
 		.prod_nr    = {0xD3, 0xC9, 0xD5, 0xE4,
-				0xE7, 0xD2, 0xD9},	/* "LINUXKR" */
-		.prod_fn    = {0xD5, 0xD3},		/* "NL" */
-		.record_nr  = record_nr,
-		.version_nr = {0xF2, 0xF6},		/* "26" */
-		.release_nr = {0xF0, 0xF1},		/* "01" */
-		.mod_lvl    = {mod_lvl[0], mod_lvl[1]},
-	};
-	struct appldata_parameter_list appldata_parameter_list = {
-				.diag = 0xDC,
-				.function = function,
-				.parlist_length =
-					sizeof(appldata_parameter_list),
-				.buffer_length = length,
-				.product_id_addr =
-					(unsigned long) &appldata_product_id,
-				.buffer_addr = virt_to_phys((void *) buffer)
+			       0xE7, 0xD2, 0xD9},	/* "LINUXKR" */
+		.prod_fn    = 0xD5D3,			/* "NL" */
+		.version_nr = 0xF2F6,			/* "26" */
+		.release_nr = 0xF0F1,			/* "01" */
 	};
 
-	if (!MACHINE_IS_VM)
-		return -ENOSYS;
-	ry = -1;
-	asm volatile(
-			"diag %1,%0,0xDC\n\t"
-			: "=d" (ry)
-			: "d" (&appldata_parameter_list),
-			  "m" (appldata_parameter_list),
-			  "m" (appldata_product_id)
-			: "cc");
-	return (int) ry;
+	id.record_nr = record_nr;
+	id.mod_lvl = (mod_lvl[0]) << 8 | mod_lvl[1];
+	return appldata_asm(&id, function, (void *) buffer, length);
 }
 /************************ timer, work, DIAG <END> ****************************/
 
@@ -367,6 +310,7 @@ appldata_interval_handler(ctl_table *ctl, int write, struct file *filp,
 	if (copy_from_user(buf, buffer, len > sizeof(buf) ? sizeof(buf) : len)) {
 		return -EFAULT;
 	}
+	interval = 0;
 	sscanf(buf, "%i", &interval);
 	if (interval <= 0) {
 		P_ERROR("Timer CPU interval has to be > 0!\n");
@@ -665,106 +609,20 @@ static int __init appldata_init(void)
 	register_hotcpu_notifier(&appldata_nb);
 
 	appldata_sysctl_header = register_sysctl_table(appldata_dir_table, 1);
-#ifdef MODULE
-	appldata_dir_table[0].de->owner = THIS_MODULE;
-	appldata_table[0].de->owner = THIS_MODULE;
-	appldata_table[1].de->owner = THIS_MODULE;
-#endif
 
 	P_DEBUG("Base interface initialized.\n");
 	return 0;
 }
 
-/*
- * appldata_exit()
- *
- * stop timer, unregister /proc entries
- */
-static void __exit appldata_exit(void)
-{
-	struct list_head *lh;
-	struct appldata_ops *ops;
-	int rc, i;
+__initcall(appldata_init);
 
-	P_DEBUG("Unloading module ...\n");
-	/*
-	 * ops list should be empty, but just in case something went wrong...
-	 */
-	spin_lock(&appldata_ops_lock);
-	list_for_each(lh, &appldata_ops_list) {
-		ops = list_entry(lh, struct appldata_ops, list);
-		rc = appldata_diag(ops->record_nr, APPLDATA_STOP_REC,
-				(unsigned long) ops->data, ops->size,
-				ops->mod_lvl);
-		if (rc != 0) {
-			P_ERROR("STOP DIAG 0xDC for %s failed, "
-				"return code: %d\n", ops->name, rc);
-		}
-	}
-	spin_unlock(&appldata_ops_lock);
-
-	for_each_online_cpu(i)
-		appldata_offline_cpu(i);
-
-	appldata_timer_active = 0;
-
-	unregister_sysctl_table(appldata_sysctl_header);
-
-	destroy_workqueue(appldata_wq);
-	P_DEBUG("... module unloaded!\n");
-}
 /**************************** init / exit <END> ******************************/
-
-
-module_init(appldata_init);
-module_exit(appldata_exit);
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Gerald Schaefer");
-MODULE_DESCRIPTION("Linux-VM Monitor Stream, base infrastructure");
 
 EXPORT_SYMBOL_GPL(appldata_register_ops);
 EXPORT_SYMBOL_GPL(appldata_unregister_ops);
 EXPORT_SYMBOL_GPL(appldata_diag);
 
-#ifdef MODULE
-/*
- * Kernel symbols needed by appldata_mem and appldata_os modules.
- * However, if this file is compiled as a module (for testing only), these
- * symbols are not exported. In this case, we define them locally and export
- * those.
- */
-void si_swapinfo(struct sysinfo *val)
-{
-	val->freeswap = -1ul;
-	val->totalswap = -1ul;
-}
-
-unsigned long avenrun[3] = {-1 - FIXED_1/200, -1 - FIXED_1/200,
-				-1 - FIXED_1/200};
-int nr_threads = -1;
-
-void get_full_page_state(struct page_state *ps)
-{
-	memset(ps, -1, sizeof(struct page_state));
-}
-
-unsigned long nr_running(void)
-{
-	return -1;
-}
-
-unsigned long nr_iowait(void)
-{
-	return -1;
-}
-
-/*unsigned long nr_context_switches(void)
-{
-	return -1;
-}*/
-#endif /* MODULE */
 EXPORT_SYMBOL_GPL(si_swapinfo);
 EXPORT_SYMBOL_GPL(nr_threads);
 EXPORT_SYMBOL_GPL(nr_running);
 EXPORT_SYMBOL_GPL(nr_iowait);
-//EXPORT_SYMBOL_GPL(nr_context_switches);

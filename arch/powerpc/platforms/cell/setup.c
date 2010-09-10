@@ -54,7 +54,6 @@
 #include <asm/of_device.h>
 
 #include "interrupt.h"
-#include "iommu.h"
 #include "cbe_regs.h"
 #include "pervasive.h"
 #include "ras.h"
@@ -96,7 +95,7 @@ static int __init cell_publish_devices(void)
 		of_platform_bus_probe(NULL, NULL, NULL);
 	return 0;
 }
-device_initcall(cell_publish_devices);
+subsys_initcall(cell_publish_devices);
 
 static void cell_mpic_cascade(unsigned int irq, struct irq_desc *desc,
 			      struct pt_regs *regs)
@@ -204,6 +203,11 @@ static void __init cell_init_irq(void)
 	mpic_init_IRQ();
 }
 
+static void __init cell_set_dabrx(void)
+{
+	mtspr(SPRN_DABRX, DABRX_KERNEL | DABRX_USER);
+}
+
 static void __init cell_setup_arch(void)
 {
 #ifdef CONFIG_SPU_BASE
@@ -212,6 +216,8 @@ static void __init cell_setup_arch(void)
 #endif
 
 	cbe_regs_init();
+
+	cell_set_dabrx();
 
 #ifdef CONFIG_CBE_RAS
 	cbe_ras_init();
@@ -246,8 +252,6 @@ static void __init cell_setup_arch(void)
 static void __init cell_init_early(void)
 {
 	DBG(" -> cell_init_early()\n");
-
-	cell_init_iommu();
 
 	DBG(" <- cell_init_early()\n");
 }

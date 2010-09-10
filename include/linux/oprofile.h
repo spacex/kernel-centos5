@@ -20,7 +20,33 @@
 #ifdef CONFIG_XEN
 #include <xen/interface/xenoprof.h>
 #endif
- 
+
+/* Each escaped entry is prefixed by ESCAPE_CODE
+ * then one of the following codes, then the
+ * relevant data.
+ * These #defines live in this file so that arch-specific
+ * buffer sync'ing code can access them.
+ */
+#define ESCAPE_CODE			~0UL
+#define CTX_SWITCH_CODE			1
+#define CPU_SWITCH_CODE			2
+#define COOKIE_SWITCH_CODE		3
+#define KERNEL_ENTER_SWITCH_CODE	4
+#define KERNEL_EXIT_SWITCH_CODE		5
+#define USER_ENTER_SWITCH_CODE		5
+#define MODULE_LOADED_CODE		6
+#define CTX_TGID_CODE			7
+#define TRACE_BEGIN_CODE		8
+#define TRACE_END_CODE			9
+#define XEN_ENTER_SWITCH_CODE		10
+#if defined(__i386__) || defined(__x86_64__)
+#define DOMAIN_SWITCH_CODE		11
+#else
+#define SPU_PROFILING_CODE		11
+#define SPU_CTX_SWITCH_CODE		12
+#define DOMAIN_SWITCH_CODE		13
+#endif
+
 struct super_block;
 struct dentry;
 struct file_operations;
@@ -44,6 +70,14 @@ struct oprofile_operations {
 	int (*start)(void);
 	/* Stop delivering interrupts. */
 	void (*stop)(void);
+	/* Arch-specific buffer sync functions.
+	 * Return value = 0:  Success
+	 * Return value = -1: Failure
+	 * Return value = 1:  Run generic sync function
+	 */
+	int (*sync_start)(void);
+	int (*sync_stop)(void);
+
 	/* Initiate a stack backtrace. Optional. */
 	void (*backtrace)(struct pt_regs * const regs, unsigned int depth);
 	/* CPU identification string. */
@@ -63,6 +97,13 @@ int oprofile_arch_init(struct oprofile_operations * ops);
  * One-time exit/cleanup for the arch.
  */
 void oprofile_arch_exit(void);
+
+/**
+ * Add data to the event buffer.
+ * The data passed is free-form, but typically consists of
+ * file offsets, dcookies, context information, and ESCAPE codes.
+ */
+void add_event_entry(unsigned long data);
 
 /**
  * Add a sample. This may be called from any context. Pass

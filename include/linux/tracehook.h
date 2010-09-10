@@ -130,6 +130,17 @@ struct utrace_regset {
 	unsigned int bias;	/* Bias from natural indexing.  */
 
 	/*
+	 * If nonzero, this gives the n_type field (NT_* value) of the
+	 * core file note in which this regset's data appears.
+	 * NT_PRSTATUS is a special case in that the regset data starts
+	 * at offsetof(struct elf_prstatus, pr_reg) into the note data;
+	 * that is part of the per-machine ELF formats userland knows
+	 * about.  In other cases, the core file note contains exactly
+	 * the whole regset (n*size) and nothing else.
+	 */
+	unsigned int core_note_type;
+
+	/*
 	 * Return -%ENODEV if not available on the hardware found.
 	 * Return %0 if no interesting state in this thread.
 	 * Return >%0 number of @size units of interesting state.

@@ -46,7 +46,7 @@ struct iscsi_nopin;
 #define debug_scsi(fmt...)
 #endif
 
-#define ISCSI_XMIT_CMDS_MAX	128	/* must be power of 2 */
+#define ISCSI_XMIT_CMDS_MAX	256	/* must be power of 2 */
 #define ISCSI_MGMT_CMDS_MAX	16	/* must be power of 2 */
 #define ISCSI_CONN_MAX			1
 
@@ -208,6 +208,13 @@ struct iscsi_conn {
 	/* local address */
 	int			local_port;
 	char			local_address[ISCSI_ADDRESS_BUF_LEN];
+
+	struct timer_list	transport_timer;
+	unsigned long		last_recv;
+	unsigned long		last_ping;
+	int			ping_timeout;
+	int			recv_timeout;
+	struct iscsi_mgmt_task	*ping_mtask;
 #endif
 };
 
@@ -303,6 +310,9 @@ extern int iscsi_host_get_param(struct Scsi_Host *shost,
 extern struct iscsi_cls_session *
 iscsi_session_setup(struct iscsi_transport *, struct scsi_transport_template *,
 		    int, int, uint32_t, uint32_t *);
+extern struct iscsi_cls_session *
+iscsi_session_setup2(struct iscsi_transport *, struct scsi_transport_template *,
+		     uint16_t, uint16_t, int, int, uint32_t, uint32_t *);
 extern void iscsi_session_teardown(struct iscsi_cls_session *);
 extern struct iscsi_session *class_to_transport_session(struct iscsi_cls_session *);
 extern void iscsi_session_recovery_timedout(struct iscsi_cls_session *);
@@ -343,6 +353,8 @@ extern int __iscsi_complete_pdu(struct iscsi_conn *, struct iscsi_hdr *,
 				char *, int);
 extern int iscsi_verify_itt(struct iscsi_conn *, struct iscsi_hdr *,
 			    uint32_t *);
+extern void iscsi_free_mgmt_task(struct iscsi_conn *conn,
+				 struct iscsi_mgmt_task *mtask);
 extern void iscsi_update_cmdsn(struct iscsi_session *,
 				struct iscsi_nopin *);;
 

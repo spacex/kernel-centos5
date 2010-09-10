@@ -144,9 +144,10 @@ static ssize_t sel_write_enforce(struct file * file, const char __user * buf,
 		if (length)
 			goto out;
 		audit_log(current->audit_context, GFP_KERNEL, AUDIT_MAC_STATUS,
-			"enforcing=%d old_enforcing=%d auid=%u", new_value, 
-			selinux_enforcing,
-			audit_get_loginuid(current->audit_context));
+			"enforcing=%d old_enforcing=%d auid=%u ses=%u",
+			new_value, selinux_enforcing,
+			audit_get_loginuid(current->audit_context),
+			audit_get_sessionid(current->audit_context));
 		selinux_enforcing = new_value;
 		if (selinux_enforcing)
 			avc_ss_reset(0);
@@ -198,8 +199,9 @@ static ssize_t sel_write_disable(struct file * file, const char __user * buf,
 		if (length < 0)
 			goto out;
 		audit_log(current->audit_context, GFP_KERNEL, AUDIT_MAC_STATUS,
-			"selinux=0 auid=%u",
-			audit_get_loginuid(current->audit_context));
+			"selinux=0 auid=%u ses=%u",
+			audit_get_loginuid(current->audit_context),
+			audit_get_sessionid(current->audit_context));
 	}
 
 	length = count;
@@ -286,8 +288,9 @@ static ssize_t sel_write_load(struct file * file, const char __user * buf,
 	else
 		length = count;
 	audit_log(current->audit_context, GFP_KERNEL, AUDIT_MAC_POLICY_LOAD,
-		"policy loaded auid=%u",
-		audit_get_loginuid(current->audit_context));
+		"policy loaded auid=%u ses=%u",
+		audit_get_loginuid(current->audit_context),
+		audit_get_sessionid(current->audit_context));
 out:
 	mutex_unlock(&sel_mutex);
 	vfree(data);

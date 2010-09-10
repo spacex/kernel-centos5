@@ -37,6 +37,7 @@
 #include <linux/completion.h>
 #include <linux/pci.h>
 #include <linux/errno.h>
+#include <linux/sched.h>
 #include <asm/io.h>
 #include <rdma/ib_mad.h>
 
@@ -289,6 +290,12 @@ static int mthca_cmd_post(struct mthca_dev *dev,
 		err = mthca_cmd_post_hcr(dev, in_param, out_param, in_modifier,
 					 op_modifier, op, token, event);
 
+	/*
+	 * Make sure that our HCR writes don't get mixed in with
+	 * writes from another CPU starting a FW command.
+	 */
+	mmiowb();
+
 	mutex_unlock(&dev->cmd.hcr_mutex);
 	return err;
 }
@@ -355,6 +362,7 @@ void mthca_cmd_event(struct mthca_dev *dev,
 	context->result    = 0;
 	context->status    = status;
 	context->out_param = out_param;
+
 	complete(&context->done);
 }
 
@@ -769,7 +777,7 @@ int mthca_QUERY_FW(struct mthca_dev *dev, u8 *status)
 
 	MTHCA_GET(dev->fw_ver,   outbox, QUERY_FW_VER_OFFSET);
 	/*
-	 * FW subminor version is at more signifant bits than minor
+	 * FW subminor version is at more significant bits than minor
 	 * version, so swap here.
 	 */
 	dev->fw_ver = (dev->fw_ver & 0xffff00000000ull) |
@@ -1246,10 +1254,14 @@ int mthca_QUERY_ADAPTER(struct mthca_dev *dev,
 
 	if (err)
 		goto out;
-
-	MTHCA_GET(adapter->vendor_id, outbox,   QUERY_ADAPTER_VENDOR_ID_OFFSET);
-	MTHCA_GET(adapter->device_id, outbox,   QUERY_ADAPTER_DEVICE_ID_OFFSET);
-	MTHCA_GET(adapter->revision_id, outbox, QUERY_ADAPTER_REVISION_ID_OFFSET);
+	if (!mthca_is_memfree(dev)) {
+		MTHCA_GET(adapter->vendor_id, outbox,
+			  QUERY_ADAPTER_VENDOR_ID_OFFSET);
+		MTHCA_GET(adapter->device_id, outbox,
+			  QUERY_ADAPTER_DEVICE_ID_OFFSET);
+		MTHCA_GET(adapter->revision_id, outbox,
+			  QUERY_ADAPTER_REVISION_ID_OFFSET);
+	}
 	MTHCA_GET(adapter->inta_pin, outbox,    QUERY_ADAPTER_INTA_PIN_OFFSET);
 
 	get_board_id(outbox + QUERY_ADAPTER_VSD_OFFSET / 4,
@@ -1374,6 +1386,9 @@ int mthca_INIT_HCA(struct mthca_dev *dev,
 		MTHCA_PUT(inbox, param->log_uar_sz,  INIT_HCA_LOG_UAR_SZ_OFFSET);
 		MTHCA_PUT(inbox, param->uarc_base,   INIT_HCA_UAR_CTX_BASE_OFFSET);
 	}
+
+	if (dev->device_cap_flags & IB_DEVICE_IP_CSUM)
+		*(inbox + INIT_HCA_FLAGS2_OFFSET / 4) |= cpu_to_be32(7 << 3);
 
 	err = mthca_cmd(dev, mailbox->dma, 0, 0, CMD_INIT_HCA, HZ, status);
 

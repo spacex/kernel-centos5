@@ -34,6 +34,7 @@
  */
 
 #include "ipoib.h"
+#include <linux/ethtool.h>
 
 int ipoib_mcast_attach(struct net_device *dev, u16 mlid, union ib_gid *mgid)
 {
@@ -95,7 +96,6 @@ int ipoib_init_qp(struct net_device *dev)
 	struct ib_qp_attr qp_attr;
 	int attr_mask;
 
-	/* Make sure we have a valid pkey_index in priv->pkey_index */
 	if (!test_bit(IPOIB_PKEY_ASSIGNED, &priv->flags))
 		return -1;
 
@@ -150,14 +150,16 @@ int ipoib_transport_dev_init(struct net_device *dev, struct ib_device *ca)
 		.cap = {
 			.max_send_wr  = ipoib_sendq_size,
 			.max_recv_wr  = ipoib_recvq_size,
-			.max_send_sge = 1,
-			.max_recv_sge = 1
+			.max_send_sge = dev->features & NETIF_F_SG ? MAX_SKB_FRAGS + 1 : 1,
+			.max_recv_sge = IPOIB_UD_RX_SG
 		},
-		.sq_sig_type = IB_SIGNAL_ALL_WR,
-		.qp_type     = IB_QPT_UD
+		.sq_sig_type = IB_SIGNAL_REQ_WR,
+		.qp_type     = IB_QPT_UD,
+		.create_flags = QP_CREATE_LSO,
 	};
 
-	int ret, size;
+	int i, ret, size;
+	struct ethtool_coalesce *coal;
 
 	priv->pd = ib_alloc_pd(priv->ca);
 	if (IS_ERR(priv->pd)) {
@@ -171,47 +173,88 @@ int ipoib_transport_dev_init(struct net_device *dev, struct ib_device *ca)
 		goto out_free_pd;
 	}
 
-	size = ipoib_sendq_size + ipoib_recvq_size + 1;
+	size = ipoib_sendq_size + ipoib_recvq_size;
 	ret = ipoib_cm_dev_init(dev);
 	if (!ret)
-		size += ipoib_recvq_size + 1 /* 1 extra for rx_drain_qp */;
+		size += ipoib_recvq_size + 1; /* 1 extra for rx_drain_qp */
 
-	priv->cq = ib_create_cq(priv->ca, ipoib_ib_completion, NULL, dev, size);
-	if (IS_ERR(priv->cq)) {
-		printk(KERN_WARNING "%s: failed to create CQ\n", ca->name);
+	priv->rcq = ib_create_cq(priv->ca, ipoib_ib_rx_completion, NULL, dev, size, 0);
+	if (IS_ERR(priv->rcq)) {
+		printk(KERN_WARNING "%s: failed to create receive CQ\n", ca->name);
 		goto out_free_mr;
 	}
 
-	if (ib_req_notify_cq(priv->cq, IB_CQ_NEXT_COMP))
-		goto out_free_cq;
+	priv->scq = ib_create_cq(priv->ca, NULL, NULL, dev, ipoib_sendq_size, 0);
+	if (IS_ERR(priv->scq)) {
+		printk(KERN_WARNING "%s: failed to create send CQ\n", ca->name);
+		goto out_free_rcq;
+	}
 
-	init_attr.send_cq = priv->cq;
-	init_attr.recv_cq = priv->cq,
+
+	coal = kzalloc(sizeof *coal, GFP_KERNEL);
+	if (coal) {
+		coal->rx_coalesce_usecs = 10;
+		coal->rx_max_coalesced_frames = 16;
+		dev->ethtool_ops->set_coalesce(dev, coal);
+		kfree(coal);
+	}
+
+	if (ib_req_notify_cq(priv->rcq, IB_CQ_NEXT_COMP))
+		goto out_free_scq;
+
+	init_attr.send_cq = priv->scq;
+	init_attr.recv_cq = priv->rcq;
 
 	priv->qp = ib_create_qp(priv->pd, &init_attr);
 	if (IS_ERR(priv->qp)) {
 		printk(KERN_WARNING "%s: failed to create QP\n", ca->name);
-		goto out_free_cq;
+		goto out_free_rcq;
 	}
 
 	priv->dev->dev_addr[1] = (priv->qp->qp_num >> 16) & 0xff;
 	priv->dev->dev_addr[2] = (priv->qp->qp_num >>  8) & 0xff;
 	priv->dev->dev_addr[3] = (priv->qp->qp_num      ) & 0xff;
 
-	priv->tx_sge.lkey 	= priv->mr->lkey;
+	for (i = 0; i < MAX_SKB_FRAGS + 1; ++i)
+		priv->tx_sge[i].lkey    = priv->mr->lkey;
 
 	priv->tx_wr.opcode 	= IB_WR_SEND;
-	priv->tx_wr.sg_list 	= &priv->tx_sge;
-	priv->tx_wr.num_sge 	= 1;
+	priv->tx_wr.sg_list 	= priv->tx_sge;
 	priv->tx_wr.send_flags 	= IB_SEND_SIGNALED;
+
+	for (i = 0; i < UD_POST_RCV_COUNT; ++i) {
+		priv->sglist_draft[i][0].lkey = priv->mr->lkey;
+		priv->sglist_draft[i][1].lkey = priv->mr->lkey;
+		priv->rx_wr_draft[i].sg_list = &priv->sglist_draft[i][0];
+		if (i < UD_POST_RCV_COUNT - 1)
+			priv->rx_wr_draft[i].next = &priv->rx_wr_draft[i + 1];
+	}
+	priv->rx_wr_draft[i].next = NULL;
+
+	if (ipoib_ud_need_sg(priv->max_ib_mtu)) {
+		for (i = 0; i < UD_POST_RCV_COUNT; ++i) {
+			priv->sglist_draft[i][0].length = IPOIB_UD_HEAD_SIZE;
+			priv->sglist_draft[i][1].length = PAGE_SIZE;
+			priv->rx_wr_draft[i].num_sge = IPOIB_UD_RX_SG;
+		}
+	} else {
+		for (i = 0; i < UD_POST_RCV_COUNT; ++i) {
+			priv->sglist_draft[i][0].length = IPOIB_UD_BUF_SIZE(priv->max_ib_mtu);
+			priv->rx_wr_draft[i].num_sge = 1;
+		}
+	}
 
 	return 0;
 
-out_free_cq:
-	ib_destroy_cq(priv->cq);
+out_free_scq:
+	ib_destroy_cq(priv->scq);
+
+out_free_rcq:
+	ib_destroy_cq(priv->rcq);
 
 out_free_mr:
 	ib_dereg_mr(priv->mr);
+	ipoib_cm_dev_cleanup(dev);
 
 out_free_pd:
 	ib_dealloc_pd(priv->pd);
@@ -230,7 +273,10 @@ void ipoib_transport_dev_cleanup(struct net_device *dev)
 		clear_bit(IPOIB_PKEY_ASSIGNED, &priv->flags);
 	}
 
-	if (ib_destroy_cq(priv->cq))
+	if (ib_destroy_cq(priv->scq))
+		ipoib_warn(priv, "ib_cq_destroy failed\n");
+
+	if (ib_destroy_cq(priv->rcq))
 		ipoib_warn(priv, "ib_cq_destroy failed\n");
 
 	ipoib_cm_dev_cleanup(dev);
@@ -259,7 +305,7 @@ void ipoib_event(struct ib_event_handler *handler,
 		ipoib_dbg(priv, "Port state change event\n");
 		queue_work(ipoib_workqueue, &priv->flush_task);
 	} else if (record->event == IB_EVENT_PKEY_CHANGE) {
-		ipoib_dbg(priv, "pkey change event on port:%d\n", priv->port);
+		ipoib_dbg(priv, "P_Key change event on port:%d\n", priv->port);
 		queue_work(ipoib_workqueue, &priv->pkey_event_task);
 	}
 }

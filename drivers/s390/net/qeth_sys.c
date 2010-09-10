@@ -115,7 +115,7 @@ qeth_dev_portno_store(struct device *dev, struct device_attribute *attr, const c
 		return -EPERM;
 
 	portno = simple_strtoul(buf, &tmp, 16);
-	if (portno > MAX_PORTNO){
+	if (portno > QETH_MAX_PORTNO){
 		PRINT_WARN("portno 0x%X is out of range\n", portno);
 		return -EINVAL;
 	}
@@ -720,10 +720,6 @@ qeth_dev_layer2_store(struct device *dev, struct device_attribute *attr, const c
 
 	if (!card)
 		return -EINVAL;
-	if (card->info.type == QETH_CARD_TYPE_IQD) {
-                PRINT_WARN("Layer2 on Hipersockets is not supported! \n");
-                return -EPERM;
-        }
 
 	if (((card->state != CARD_STATE_DOWN) &&
 	     (card->state != CARD_STATE_RECOVER)))

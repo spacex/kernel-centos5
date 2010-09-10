@@ -36,21 +36,28 @@
 #include <linux/cdev.h>
 #include <linux/swap.h>
 #include <linux/vmalloc.h>
+#include <linux/highmem.h>
+#include <linux/io.h>
+#include <linux/jiffies.h>
 #include <asm/pgtable.h>
 
 #include "ipath_kernel.h"
 #include "ipath_common.h"
+#include "ipath_user_sdma.h"
 
 static int ipath_open(struct inode *, struct file *);
 static int ipath_close(struct inode *, struct file *);
 static ssize_t ipath_write(struct file *, const char __user *, size_t,
 			   loff_t *);
+static ssize_t ipath_writev(struct file *, const struct iovec *,
+			    unsigned long , loff_t *);
 static unsigned int ipath_poll(struct file *, struct poll_table_struct *);
 static int ipath_mmap(struct file *, struct vm_area_struct *);
 
-static struct file_operations ipath_file_ops = {
+static const struct file_operations ipath_file_ops = {
 	.owner = THIS_MODULE,
 	.write = ipath_write,
+	.writev = ipath_writev,
 	.open = ipath_open,
 	.release = ipath_close,
 	.poll = ipath_poll,
@@ -61,7 +68,7 @@ static struct file_operations ipath_file_ops = {
  * Convert kernel virtual addresses to physical addresses so they don't
  * potentially conflict with the chip addresses used as mmap offsets.
  * It doesn't really matter what mmap offset we use as long as we can
- * interpret it correctly. 
+ * interpret it correctly.
  */
 static u64 cvt_kvaddr(void *p)
 {
@@ -169,7 +176,7 @@ static int ipath_get_base_info(struct file *fp,
 		kinfo->spi_piocnt = dd->ipath_pbufsport;
 		kinfo->spi_piobufbase = (u64) pd->port_piobufs;
 		kinfo->__spi_uregbase = (u64) dd->ipath_uregbase +
-			dd->ipath_palign * pd->port_port;
+			dd->ipath_ureg_align * pd->port_port;
 	} else if (master) {
 		kinfo->spi_piocnt = (dd->ipath_pbufsport / subport_cnt) +
 				    (dd->ipath_pbufsport % subport_cnt);
@@ -184,9 +191,31 @@ static int ipath_get_base_info(struct file *fp,
 		kinfo->spi_piobufbase = (u64) pd->port_piobufs +
 			dd->ipath_palign * kinfo->spi_piocnt * slave;
 	}
+
+	/*
+	 * Set the PIO avail update threshold to no larger
+	 * than the number of buffers per process. Note that
+	 * we decrease it here, but won't ever increase it.
+	 */
+	if (dd->ipath_pioupd_thresh &&
+		kinfo->spi_piocnt < dd->ipath_pioupd_thresh) {
+		unsigned long flags;
+		dd->ipath_pioupd_thresh = kinfo->spi_piocnt;
+		ipath_dbg("Decreased pio update threshold to %u\n",
+			dd->ipath_pioupd_thresh);
+		spin_lock_irqsave(&dd->ipath_sendctrl_lock, flags);
+		dd->ipath_sendctrl &= ~(INFINIPATH_S_UPDTHRESH_MASK
+			<< INFINIPATH_S_UPDTHRESH_SHIFT);
+		dd->ipath_sendctrl |= dd->ipath_pioupd_thresh
+			<< INFINIPATH_S_UPDTHRESH_SHIFT;
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_sendctrl,
+			dd->ipath_sendctrl);
+		spin_unlock_irqrestore(&dd->ipath_sendctrl_lock, flags);
+	}
+
 	if (shared) {
 		kinfo->spi_port_uregbase = (u64) dd->ipath_uregbase +
-			dd->ipath_palign * pd->port_port;
+			dd->ipath_ureg_align * pd->port_port;
 		kinfo->spi_port_rcvegrbuf = kinfo->spi_rcv_egrbufs;
 		kinfo->spi_port_rcvhdr_base = kinfo->spi_rcvhdr_base;
 		kinfo->spi_port_rcvhdr_tailaddr = kinfo->spi_rcvhdr_tailaddr;
@@ -219,7 +248,12 @@ static int ipath_get_base_info(struct file *fp,
 	kinfo->spi_pioalign = dd->ipath_palign;
 
 	kinfo->spi_qpair = IPATH_KD_QP;
-	kinfo->spi_piosize = dd->ipath_ibmaxlen;
+	/*
+	 * user mode PIO buffers are always 2KB, even when 4KB can
+	 * be received, and sent via the kernel; this is ibmaxlen
+	 * for 2K MTU.
+	 */
+	kinfo->spi_piosize = dd->ipath_piosize2k - 2 * sizeof(u32);
 	kinfo->spi_mtu = dd->ipath_ibmaxlen;	/* maxlen, not ibmtu */
 	kinfo->spi_port = pd->port_port;
 	kinfo->spi_subport = subport_fp(fp);
@@ -396,7 +430,8 @@ static int ipath_tid_update(struct ipath_portdata *pd, struct file *fp,
 			   "TID %u, vaddr %lx, physaddr %llx pgp %p\n",
 			   tid, vaddr, (unsigned long long) physaddr,
 			   pagep[i]);
-		dd->ipath_f_put_tid(dd, &tidbase[tid], 1, physaddr);
+		dd->ipath_f_put_tid(dd, &tidbase[tid], RCVHQ_RCV_TYPE_EXPECTED,
+				    physaddr);
 		/*
 		 * don't check this tid in ipath_portshadow, since we
 		 * just filled it in; start with the next one.
@@ -422,7 +457,8 @@ static int ipath_tid_update(struct ipath_portdata *pd, struct file *fp,
 			if (dd->ipath_pageshadow[porttid + tid]) {
 				ipath_cdbg(VERBOSE, "Freeing TID %u\n",
 					   tid);
-				dd->ipath_f_put_tid(dd, &tidbase[tid], 1,
+				dd->ipath_f_put_tid(dd, &tidbase[tid],
+						    RCVHQ_RCV_TYPE_EXPECTED,
 						    dd->ipath_tidinvalid);
 				pci_unmap_page(dd->pcidev,
 					dd->ipath_physshadow[porttid + tid],
@@ -536,16 +572,18 @@ static int ipath_tid_free(struct ipath_portdata *pd, unsigned subport,
 			continue;
 		cnt++;
 		if (dd->ipath_pageshadow[porttid + tid]) {
+			struct page *p;
+			p = dd->ipath_pageshadow[porttid + tid];
+			dd->ipath_pageshadow[porttid + tid] = NULL;
 			ipath_cdbg(VERBOSE, "PID %u freeing TID %u\n",
 				   pd->port_pid, tid);
-			dd->ipath_f_put_tid(dd, &tidbase[tid], 1,
+			dd->ipath_f_put_tid(dd, &tidbase[tid],
+					    RCVHQ_RCV_TYPE_EXPECTED,
 					    dd->ipath_tidinvalid);
 			pci_unmap_page(dd->pcidev,
 				dd->ipath_physshadow[porttid + tid],
 				PAGE_SIZE, PCI_DMA_FROMDEVICE);
-			ipath_release_user_pages(
-				&dd->ipath_pageshadow[porttid + tid], 1);
-			dd->ipath_pageshadow[porttid + tid] = NULL;
+			ipath_release_user_pages(&p, 1);
 			ipath_stats.sps_pageunlocks++;
 		} else
 			ipath_dbg("Unused tid %u, ignoring\n", tid);
@@ -738,11 +776,12 @@ static int ipath_manage_rcvq(struct ipath_portdata *pd, unsigned subport,
 		 * updated and correct itself, even in the face of software
 		 * bugs.
 		 */
-		*(volatile u64 *)pd->port_rcvhdrtail_kvaddr = 0;
-		set_bit(INFINIPATH_R_PORTENABLE_SHIFT + pd->port_port,
+		if (pd->port_rcvhdrtail_kvaddr)
+			ipath_clear_rcvhdrtail(pd);
+		set_bit(dd->ipath_r_portenable_shift + pd->port_port,
 			&dd->ipath_rcvctrl);
 	} else
-		clear_bit(INFINIPATH_R_PORTENABLE_SHIFT + pd->port_port,
+		clear_bit(dd->ipath_r_portenable_shift + pd->port_port,
 			  &dd->ipath_rcvctrl);
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_rcvctrl,
 			 dd->ipath_rcvctrl);
@@ -877,7 +916,7 @@ static int ipath_create_user_egr(struct ipath_portdata *pd)
 
 	egrcnt = dd->ipath_rcvegrcnt;
 	/* TID number offset for this port */
-	egroff = pd->port_port * egrcnt;
+	egroff = (pd->port_port - 1) * egrcnt + dd->ipath_p0_rcvegrcnt;
 	egrsize = dd->ipath_rcvegrbufsize;
 	ipath_cdbg(VERBOSE, "Allocating %d egr buffers, at egrtid "
 		   "offset %x, egrsize %u\n", egrcnt, egroff, egrsize);
@@ -921,7 +960,8 @@ static int ipath_create_user_egr(struct ipath_portdata *pd)
 					    (u64 __iomem *)
 					    ((char __iomem *)
 					     dd->ipath_kregbase +
-					     dd->ipath_rcvegrbase), 0, pa);
+					     dd->ipath_rcvegrbase),
+					    RCVHQ_RCV_TYPE_EAGER, pa);
 			pa += egrsize;
 		}
 		cond_resched();	/* don't hog the cpu */
@@ -1043,11 +1083,6 @@ static int mmap_piobufs(struct vm_area_struct *vma,
 	}
 
 	phys = dd->ipath_physaddr + piobufs;
-
-	/*
-	 * Don't mark this as non-cached, or we don't get the
-	 * write combining behavior we want on the PIO buffers!
-	 */
 
 #if defined(__powerpc__)
 	/* There isn't a generic way to specify writethrough mappings */
@@ -1279,7 +1314,7 @@ static int ipath_mmap(struct file *fp, struct vm_area_struct *vma)
 		goto bail;
 	}
 
-	ureg = dd->ipath_uregbase + dd->ipath_palign * pd->port_port;
+	ureg = dd->ipath_uregbase + dd->ipath_ureg_align * pd->port_port;
 	if (!pd->port_subport_cnt) {
 		/* port is not shared */
 		piocnt = dd->ipath_pbufsport;
@@ -1337,66 +1372,141 @@ bail:
 	return ret;
 }
 
+static unsigned ipath_poll_hdrqfull(struct ipath_portdata *pd)
+{
+	unsigned pollflag = 0;
+
+	if ((pd->poll_type & IPATH_POLL_TYPE_OVERFLOW) &&
+	    pd->port_hdrqfull != pd->port_hdrqfull_poll) {
+		pollflag |= POLLIN | POLLRDNORM;
+		pd->port_hdrqfull_poll = pd->port_hdrqfull;
+	}
+
+	return pollflag;
+}
+
+static unsigned int ipath_poll_urgent(struct ipath_portdata *pd,
+				      struct file *fp,
+				      struct poll_table_struct *pt)
+{
+	unsigned pollflag = 0;
+	struct ipath_devdata *dd;
+
+	dd = pd->port_dd;
+
+	/* variable access in ipath_poll_hdrqfull() needs this */
+	rmb();
+	pollflag = ipath_poll_hdrqfull(pd);
+
+	if (pd->port_urgent != pd->port_urgent_poll) {
+		pollflag |= POLLIN | POLLRDNORM;
+		pd->port_urgent_poll = pd->port_urgent;
+	}
+
+	if (!pollflag) {
+		/* this saves a spin_lock/unlock in interrupt handler... */
+		set_bit(IPATH_PORT_WAITING_URG, &pd->port_flag);
+		/* flush waiting flag so don't miss an event... */
+		wmb();
+		poll_wait(fp, &pd->port_wait, pt);
+	}
+
+	return pollflag;
+}
+
+static unsigned int ipath_poll_next(struct ipath_portdata *pd,
+				    struct file *fp,
+				    struct poll_table_struct *pt)
+{
+	u32 head;
+	u32 tail;
+	unsigned pollflag = 0;
+	struct ipath_devdata *dd;
+
+	dd = pd->port_dd;
+
+	/* variable access in ipath_poll_hdrqfull() needs this */
+	rmb();
+	pollflag = ipath_poll_hdrqfull(pd);
+
+	head = ipath_read_ureg32(dd, ur_rcvhdrhead, pd->port_port);
+	if (pd->port_rcvhdrtail_kvaddr)
+		tail = ipath_get_rcvhdrtail(pd);
+	else
+		tail = ipath_read_ureg32(dd, ur_rcvhdrtail, pd->port_port);
+
+	if (head != tail)
+		pollflag |= POLLIN | POLLRDNORM;
+	else {
+		/* this saves a spin_lock/unlock in interrupt handler */
+		set_bit(IPATH_PORT_WAITING_RCV, &pd->port_flag);
+		/* flush waiting flag so we don't miss an event */
+		wmb();
+
+		set_bit(pd->port_port + dd->ipath_r_intravail_shift,
+			&dd->ipath_rcvctrl);
+
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_rcvctrl,
+				 dd->ipath_rcvctrl);
+
+		if (dd->ipath_rhdrhead_intr_off) /* arm rcv interrupt */
+			ipath_write_ureg(dd, ur_rcvhdrhead,
+					 dd->ipath_rhdrhead_intr_off | head,
+					 pd->port_port);
+
+		poll_wait(fp, &pd->port_wait, pt);
+	}
+
+	return pollflag;
+}
+
 static unsigned int ipath_poll(struct file *fp,
 			       struct poll_table_struct *pt)
 {
 	struct ipath_portdata *pd;
-	u32 head, tail;
-	int bit;
-	unsigned pollflag = 0;
-	struct ipath_devdata *dd;
+	unsigned pollflag;
 
 	pd = port_fp(fp);
 	if (!pd)
-		goto bail;
-	dd = pd->port_dd;
+		pollflag = 0;
+	else if (pd->poll_type & IPATH_POLL_TYPE_URGENT)
+		pollflag = ipath_poll_urgent(pd, fp, pt);
+	else
+		pollflag = ipath_poll_next(pd, fp, pt);
 
-	bit = pd->port_port + INFINIPATH_R_INTRAVAIL_SHIFT;
-	set_bit(bit, &dd->ipath_rcvctrl);
-
-	/*
-	 * Before blocking, make sure that head is still == tail,
-	 * reading from the chip, so we can be sure the interrupt
-	 * enable has made it to the chip.  If not equal, disable
-	 * interrupt again and return immediately.  This avoids races,
-	 * and the overhead of the chip read doesn't matter much at
-	 * this point, since we are waiting for something anyway.
-	 */
-
-	ipath_write_kreg(dd, dd->ipath_kregs->kr_rcvctrl,
-			 dd->ipath_rcvctrl);
-
-	head = ipath_read_ureg32(dd, ur_rcvhdrhead, pd->port_port);
-	tail = ipath_read_ureg32(dd, ur_rcvhdrtail, pd->port_port);
-
-	if (tail == head) {
-		set_bit(IPATH_PORT_WAITING_RCV, &pd->port_flag);
-		if (dd->ipath_rhdrhead_intr_off) /* arm rcv interrupt */
-			(void)ipath_write_ureg(dd, ur_rcvhdrhead,
-					       dd->ipath_rhdrhead_intr_off
-					       | head, pd->port_port);
-		poll_wait(fp, &pd->port_wait, pt);
-
-		if (test_bit(IPATH_PORT_WAITING_RCV, &pd->port_flag)) {
-			/* timed out, no packets received */
-			clear_bit(IPATH_PORT_WAITING_RCV, &pd->port_flag);
-			pd->port_rcvwait_to++;
-		}
-		else
-			pollflag = POLLIN | POLLRDNORM;
-	}
-	else {
-		/* it's already happened; don't do wait_event overhead */
-		pollflag = POLLIN | POLLRDNORM;
-		pd->port_rcvnowait++;
-	}
-
-	clear_bit(bit, &dd->ipath_rcvctrl);
-	ipath_write_kreg(dd, dd->ipath_kregs->kr_rcvctrl,
-			 dd->ipath_rcvctrl);
-
-bail:
 	return pollflag;
+}
+
+static int ipath_supports_subports(int user_swmajor, int user_swminor)
+{
+	/* no subport implementation prior to software version 1.3 */
+	return (user_swmajor > 1) || (user_swminor >= 3);
+}
+
+static int ipath_compatible_subports(int user_swmajor, int user_swminor)
+{
+	/* this code is written long-hand for clarity */
+	if (IPATH_USER_SWMAJOR != user_swmajor) {
+		/* no promise of compatibility if major mismatch */
+		return 0;
+	}
+	if (IPATH_USER_SWMAJOR == 1) {
+		switch (IPATH_USER_SWMINOR) {
+		case 0:
+		case 1:
+		case 2:
+			/* no subport implementation so cannot be compatible */
+			return 0;
+		case 3:
+			/* 3 is only compatible with itself */
+			return user_swminor == 3;
+		default:
+			/* >= 4 are compatible (or are expected to be) */
+			return user_swminor >= 4;
+		}
+	}
+	/* make no promises yet for future major versions */
+	return 0;
 }
 
 static int init_subports(struct ipath_devdata *dd,
@@ -1408,20 +1518,32 @@ static int init_subports(struct ipath_devdata *dd,
 	size_t size;
 
 	/*
-	 * If the user is requesting zero or one port,
+	 * If the user is requesting zero subports,
 	 * skip the subport allocation.
 	 */
-	if (uinfo->spu_subport_cnt <= 1)
+	if (uinfo->spu_subport_cnt <= 0)
 		goto bail;
 
-	/* Old user binaries don't know about new subport implementation */
-	if ((uinfo->spu_userversion & 0xffff) != IPATH_USER_SWMINOR) {
+	/* Self-consistency check for ipath_compatible_subports() */
+	if (ipath_supports_subports(IPATH_USER_SWMAJOR, IPATH_USER_SWMINOR) &&
+	    !ipath_compatible_subports(IPATH_USER_SWMAJOR,
+				       IPATH_USER_SWMINOR)) {
 		dev_info(&dd->pcidev->dev,
-			 "Mismatched user minor version (%d) and driver "
-                         "minor version (%d) while port sharing. Ensure "
+			 "Inconsistent ipath_compatible_subports()\n");
+		goto bail;
+	}
+
+	/* Check for subport compatibility */
+	if (!ipath_compatible_subports(uinfo->spu_userversion >> 16,
+				       uinfo->spu_userversion & 0xffff)) {
+		dev_info(&dd->pcidev->dev,
+			 "Mismatched user version (%d.%d) and driver "
+			 "version (%d.%d) while port sharing. Ensure "
                          "that driver and library are from the same "
-                         "release.\n", 
+                         "release.\n",
+			 (int) (uinfo->spu_userversion >> 16),
                          (int) (uinfo->spu_userversion & 0xffff),
+			 IPATH_USER_SWMAJOR,
 	                 IPATH_USER_SWMINOR);
 		goto bail;
 	}
@@ -1519,6 +1641,9 @@ static int try_alloc_port(struct ipath_devdata *dd, int port,
 		port_fp(fp) = pd;
 		pd->port_pid = current->pid;
 		strncpy(pd->port_comm, current->comm, sizeof(pd->port_comm));
+		ipath_chg_pioavailkernel(dd,
+			dd->ipath_pbufsport * (pd->port_port - 1),
+			dd->ipath_pbufsport, 0);
 		ipath_stats.sps_ports++;
 		ret = 0;
 	} else
@@ -1592,15 +1717,16 @@ static int find_best_unit(struct file *fp,
 	 */
 	if (!cpus_empty(current->cpus_allowed) &&
 	    !cpus_full(current->cpus_allowed)) {
-		int ncpus = num_online_cpus(), curcpu = -1;
+		int ncpus = num_online_cpus(), curcpu = -1, nset = 0;
 		for (i = 0; i < ncpus; i++)
 			if (cpu_isset(i, current->cpus_allowed)) {
 				ipath_cdbg(PROC, "%s[%u] affinity set for "
-					   "cpu %d\n", current->comm,
-					   current->pid, i);
+					   "cpu %d/%d\n", current->comm,
+					   current->pid, i, ncpus);
 				curcpu = i;
+				nset++;
 			}
-		if (curcpu != -1) {
+		if (curcpu != -1 && nset != ncpus) {
 			if (npresent) {
 				prefunit = curcpu / (ncpus / npresent);
 				ipath_cdbg(PROC,"%s[%u] %d chips, %d cpus, "
@@ -1700,6 +1826,7 @@ static int find_shared_port(struct file *fp,
 			}
 			port_fp(fp) = pd;
 			subport_fp(fp) = pd->port_cnt++;
+			pd->port_subpid[subport_fp(fp)] = current->pid;
 			tidcursor_fp(fp) = 0;
 			pd->active_slaves |= 1 << subport_fp(fp);
 			ipath_cdbg(PROC,
@@ -1724,14 +1851,13 @@ static int ipath_open(struct inode *in, struct file *fp)
 	return fp->private_data ? 0 : -ENOMEM;
 }
 
-
 /* Get port early, so can set affinity prior to memory allocation */
 static int ipath_assign_port(struct file *fp,
 			      const struct ipath_user_info *uinfo)
 {
 	int ret;
 	int i_minor;
-	unsigned swminor;
+	unsigned swmajor, swminor;
 
 	/* Check to be sure we haven't already initialized this file */
 	if (port_fp(fp)) {
@@ -1740,7 +1866,8 @@ static int ipath_assign_port(struct file *fp,
 	}
 
 	/* for now, if major version is different, bail */
-	if ((uinfo->spu_userversion >> 16) != IPATH_USER_SWMAJOR) {
+	swmajor = uinfo->spu_userversion >> 16;
+	if (swmajor != IPATH_USER_SWMAJOR) {
 		ipath_dbg("User major version %d not same as driver "
 			  "major %d\n", uinfo->spu_userversion >> 16,
 			  IPATH_USER_SWMAJOR);
@@ -1755,12 +1882,12 @@ static int ipath_assign_port(struct file *fp,
 
 	mutex_lock(&ipath_mutex);
 
-	if (swminor == IPATH_USER_SWMINOR && uinfo->spu_subport_cnt &&
+	if (ipath_compatible_subports(swmajor, swminor) &&
+	    uinfo->spu_subport_cnt &&
 	    (ret = find_shared_port(fp, uinfo))) {
-		mutex_unlock(&ipath_mutex);
 		if (ret > 0)
 			ret = 0;
-		goto done;
+		goto done_chk_sdma;
 	}
 
 	i_minor = iminor(fp->f_dentry->d_inode) - IPATH_USER_MINOR_BASE;
@@ -1771,6 +1898,21 @@ static int ipath_assign_port(struct file *fp,
 		ret = find_free_port(i_minor - 1, fp, uinfo);
 	else
 		ret = find_best_unit(fp, uinfo);
+
+done_chk_sdma:
+	if (!ret) {
+		struct ipath_filedata *fd = fp->private_data;
+		const struct ipath_portdata *pd = fd->pd;
+		const struct ipath_devdata *dd = pd->port_dd;
+
+		fd->pq = ipath_user_sdma_queue_create(&dd->pcidev->dev,
+						      dd->ipath_unit,
+						      pd->port_port,
+						      fd->subport);
+
+		if (!fd->pq)
+			ret = -ENOMEM;
+	}
 
 	mutex_unlock(&ipath_mutex);
 
@@ -1829,26 +1971,36 @@ static int ipath_do_user_init(struct file *fp,
 	 */
 	head32 = ipath_read_ureg32(dd, ur_rcvegrindextail, pd->port_port);
 	ipath_write_ureg(dd, ur_rcvegrindexhead, head32, pd->port_port);
-	dd->ipath_lastegrheads[pd->port_port] = -1;
-	dd->ipath_lastrcvhdrqtails[pd->port_port] = -1;
+	pd->port_lastrcvhdrqtail = -1;
 	ipath_cdbg(VERBOSE, "Wrote port%d egrhead %x from tail regs\n",
 		pd->port_port, head32);
 	pd->port_tidcursor = 0;	/* start at beginning after open */
+
+	/* initialize poll variables... */
+	pd->port_urgent = 0;
+	pd->port_urgent_poll = 0;
+	pd->port_hdrqfull_poll = pd->port_hdrqfull;
+
 	/*
-	 * now enable the port; the tail registers will be written to memory
-	 * by the chip as soon as it sees the write to
-	 * dd->ipath_kregs->kr_rcvctrl.  The update only happens on
-	 * transition from 0 to 1, so clear it first, then set it as part of
-	 * enabling the port.  This will (very briefly) affect any other
-	 * open ports, but it shouldn't be long enough to be an issue.
-	 * We explictly set the in-memory copy to 0 beforehand, so we don't
-	 * have to wait to be sure the DMA update has happened.
+	 * Now enable the port for receive.
+	 * For chips that are set to DMA the tail register to memory
+	 * when they change (and when the update bit transitions from
+	 * 0 to 1.  So for those chips, we turn it off and then back on.
+	 * This will (very briefly) affect any other open ports, but the
+	 * duration is very short, and therefore isn't an issue.  We
+	 * explictly set the in-memory tail copy to 0 beforehand, so we
+	 * don't have to wait to be sure the DMA update has happened
+	 * (chip resets head/tail to 0 on transition to enable).
 	 */
-	*(volatile u64 *)pd->port_rcvhdrtail_kvaddr = 0ULL;
-	set_bit(INFINIPATH_R_PORTENABLE_SHIFT + pd->port_port,
+	set_bit(dd->ipath_r_portenable_shift + pd->port_port,
 		&dd->ipath_rcvctrl);
-	ipath_write_kreg(dd, dd->ipath_kregs->kr_rcvctrl,
-			 dd->ipath_rcvctrl & ~INFINIPATH_R_TAILUPD);
+	if (!(dd->ipath_flags & IPATH_NODMA_RTAIL)) {
+		if (pd->port_rcvhdrtail_kvaddr)
+			ipath_clear_rcvhdrtail(pd);
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_rcvctrl,
+			dd->ipath_rcvctrl &
+			~(1ULL << dd->ipath_r_tailupd_shift));
+	}
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_rcvctrl,
 			 dd->ipath_rcvctrl);
 	/* Notify any waiting slaves */
@@ -1876,14 +2028,15 @@ static void unlock_expected_tids(struct ipath_portdata *pd)
 	ipath_cdbg(VERBOSE, "Port %u unlocking any locked expTID pages\n",
 		   pd->port_port);
 	for (i = port_tidbase; i < maxtid; i++) {
-		if (!dd->ipath_pageshadow[i])
+		struct page *ps = dd->ipath_pageshadow[i];
+
+		if (!ps)
 			continue;
 
+		dd->ipath_pageshadow[i] = NULL;
 		pci_unmap_page(dd->pcidev, dd->ipath_physshadow[i],
 			PAGE_SIZE, PCI_DMA_FROMDEVICE);
-		ipath_release_user_pages_on_close(&dd->ipath_pageshadow[i],
-						  1);
-		dd->ipath_pageshadow[i] = NULL;
+		ipath_release_user_pages_on_close(&ps, 1);
 		cnt++;
 		ipath_stats.sps_pageunlocks++;
 	}
@@ -1918,6 +2071,13 @@ static int ipath_close(struct inode *in, struct file *fp)
 		mutex_unlock(&ipath_mutex);
 		goto bail;
 	}
+
+	dd = pd->port_dd;
+
+	/* drain user sdma queue */
+	ipath_user_sdma_queue_drain(dd, fd->pq);
+	ipath_user_sdma_queue_destroy(fd->pq);
+
 	if (--pd->port_cnt) {
 		/*
 		 * XXX If the master closes the port before the slave(s),
@@ -1925,11 +2085,11 @@ static int ipath_close(struct inode *in, struct file *fp)
 		 * the slave(s) don't wait for receive data forever.
 		 */
 		pd->active_slaves &= ~(1 << fd->subport);
+		pd->port_subpid[fd->subport] = 0;
 		mutex_unlock(&ipath_mutex);
 		goto bail;
 	}
 	port = pd->port_port;
-	dd = pd->port_dd;
 
 	if (pd->port_hdrqfull) {
 		ipath_cdbg(PROC, "%s[%u] had %u rcvhdrqfull errors "
@@ -1949,15 +2109,17 @@ static int ipath_close(struct inode *in, struct file *fp)
 			pd->port_rcvnowait = pd->port_pionowait = 0;
 	}
 	if (pd->port_flag) {
-		ipath_dbg("port %u port_flag still set to 0x%lx\n",
+		ipath_cdbg(PROC, "port %u port_flag set: 0x%lx\n",
 			  pd->port_port, pd->port_flag);
 		pd->port_flag = 0;
 	}
 
 	if (dd->ipath_kregbase) {
 		int i;
-		/* atomically clear receive enable port. */
-		clear_bit(INFINIPATH_R_PORTENABLE_SHIFT + port,
+		/* atomically clear receive enable port and intr avail. */
+		clear_bit(dd->ipath_r_portenable_shift + port,
+			  &dd->ipath_rcvctrl);
+		clear_bit(pd->port_port + dd->ipath_r_intravail_shift,
 			  &dd->ipath_rcvctrl);
 		ipath_write_kreg( dd, dd->ipath_kregs->kr_rcvctrl,
 			dd->ipath_rcvctrl);
@@ -1984,6 +2146,7 @@ static int ipath_close(struct inode *in, struct file *fp)
 
 		i = dd->ipath_pbufsport * (port - 1);
 		ipath_disarm_piobufs(dd, i, dd->ipath_pbufsport);
+		ipath_chg_pioavailkernel(dd, i, dd->ipath_pbufsport, 1);
 
 		dd->ipath_f_clear_tids(dd, pd->port_port);
 
@@ -2019,7 +2182,8 @@ static int ipath_port_info(struct ipath_portdata *pd, u16 subport,
 	info.port = pd->port_port;
 	info.subport = subport;
 	/* Don't return new fields if old library opened the port. */
-	if ((pd->userversion & 0xffff) == IPATH_USER_SWMINOR) {
+	if (ipath_supports_subports(pd->userversion >> 16,
+				    pd->userversion & 0xffff)) {
 		/* Number of user ports available for this device. */
 		info.num_ports = pd->port_dd->ipath_cfgports - 1;
 		info.num_subports = pd->port_subport_cnt;
@@ -2045,6 +2209,35 @@ static int ipath_get_slave_info(struct ipath_portdata *pd,
 	if (copy_to_user(slave_mask_addr, &pd->active_slaves, sizeof(u32)))
 		ret = -EFAULT;
 	return ret;
+}
+
+static int ipath_sdma_get_inflight(struct ipath_user_sdma_queue *pq,
+				   u32 __user *inflightp)
+{
+	const u32 val = ipath_user_sdma_inflight_counter(pq);
+
+	if (put_user(val, inflightp))
+		return -EFAULT;
+
+	return 0;
+}
+
+static int ipath_sdma_get_complete(struct ipath_devdata *dd,
+				   struct ipath_user_sdma_queue *pq,
+				   u32 __user *completep)
+{
+	u32 val;
+	int err;
+
+	err = ipath_user_sdma_make_progress(dd, pq);
+	if (err < 0)
+		return err;
+
+	val = ipath_user_sdma_complete_counter(pq);
+	if (put_user(val, completep))
+		return -EFAULT;
+
+	return 0;
 }
 
 static ssize_t ipath_write(struct file *fp, const char __user *data,
@@ -2106,22 +2299,50 @@ static ssize_t ipath_write(struct file *fp, const char __user *data,
 		dest = &cmd.cmd.slave_mask_addr;
 		src = &ucmd->cmd.slave_mask_addr;
 		break;
+	case IPATH_CMD_PIOAVAILUPD:	// force an update of PIOAvail reg
+		copy = 0;
+		src = NULL;
+		dest = NULL;
+		break;
+	case IPATH_CMD_POLL_TYPE:
+		copy = sizeof(cmd.cmd.poll_type);
+		dest = &cmd.cmd.poll_type;
+		src = &ucmd->cmd.poll_type;
+		break;
+	case IPATH_CMD_ARMLAUNCH_CTRL:
+		copy = sizeof(cmd.cmd.armlaunch_ctrl);
+		dest = &cmd.cmd.armlaunch_ctrl;
+		src = &ucmd->cmd.armlaunch_ctrl;
+		break;
+	case IPATH_CMD_SDMA_INFLIGHT:
+		copy = sizeof(cmd.cmd.sdma_inflight);
+		dest = &cmd.cmd.sdma_inflight;
+		src = &ucmd->cmd.sdma_inflight;
+		break;
+	case IPATH_CMD_SDMA_COMPLETE:
+		copy = sizeof(cmd.cmd.sdma_complete);
+		dest = &cmd.cmd.sdma_complete;
+		src = &ucmd->cmd.sdma_complete;
+		break;
 	default:
 		ret = -EINVAL;
 		goto bail;
 	}
 
-	if ((count - consumed) < copy) {
-		ret = -EINVAL;
-		goto bail;
+	if (copy) {
+		if ((count - consumed) < copy) {
+			ret = -EINVAL;
+			goto bail;
+		}
+
+		if (copy_from_user(dest, src, copy)) {
+			ret = -EFAULT;
+			goto bail;
+		}
+
+		consumed += copy;
 	}
 
-	if (copy_from_user(dest, src, copy)) {
-		ret = -EFAULT;
-		goto bail;
-	}
-
-	consumed += copy;
 	pd = port_fp(fp);
 	if (!pd && cmd.type != __IPATH_CMD_USER_INIT &&
 		cmd.type != IPATH_CMD_ASSIGN_PORT) {
@@ -2172,6 +2393,29 @@ static ssize_t ipath_write(struct file *fp, const char __user *data,
 					   (void __user *) (unsigned long)
 					   cmd.cmd.slave_mask_addr);
 		break;
+	case IPATH_CMD_PIOAVAILUPD:
+		ipath_force_pio_avail_update(pd->port_dd);
+		break;
+	case IPATH_CMD_POLL_TYPE:
+		pd->poll_type = cmd.cmd.poll_type;
+		break;
+	case IPATH_CMD_ARMLAUNCH_CTRL:
+		if (cmd.cmd.armlaunch_ctrl)
+			ipath_enable_armlaunch(pd->port_dd);
+		else
+			ipath_disable_armlaunch(pd->port_dd);
+		break;
+	case IPATH_CMD_SDMA_INFLIGHT:
+		ret = ipath_sdma_get_inflight(user_sdma_queue_fp(fp),
+					      (u32 __user *) (unsigned long)
+					      cmd.cmd.sdma_inflight);
+		break;
+	case IPATH_CMD_SDMA_COMPLETE:
+		ret = ipath_sdma_get_complete(pd->port_dd,
+					      user_sdma_queue_fp(fp),
+					      (u32 __user *) (unsigned long)
+					      cmd.cmd.sdma_complete);
+		break;
 	}
 
 	if (ret >= 0)
@@ -2181,9 +2425,22 @@ bail:
 	return ret;
 }
 
+static ssize_t ipath_writev(struct file *filp, const struct iovec *iov,
+			    unsigned long dim, loff_t *off)
+{
+	struct ipath_filedata *fp = filp->private_data;
+	struct ipath_portdata *pd = port_fp(filp);
+	struct ipath_user_sdma_queue *pq = fp->pq;
+
+	if (!dim)
+		return -EINVAL;
+
+	return ipath_user_sdma_writev(pd->port_dd, pq, iov, dim);
+}
+
 static struct class *ipath_class;
 
-static int init_cdev(int minor, char *name, struct file_operations *fops,
+static int init_cdev(int minor, char *name, const struct file_operations *fops,
 		     struct cdev **cdevp, struct class_device **class_devp)
 {
 	const dev_t dev = MKDEV(IPATH_MAJOR, minor);
@@ -2240,7 +2497,7 @@ done:
 	return ret;
 }
 
-int ipath_cdev_init(int minor, char *name, struct file_operations *fops,
+int ipath_cdev_init(int minor, char *name, const struct file_operations *fops,
 		    struct cdev **cdevp, struct class_device **class_devp)
 {
 	return init_cdev(minor, name, fops, cdevp, class_devp);

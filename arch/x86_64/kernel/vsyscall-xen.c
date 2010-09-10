@@ -45,7 +45,7 @@ seqlock_t __xtime_lock __section_xtime_lock = SEQLOCK_UNLOCKED;
 	({unsigned long v;  		\
 	extern char __vsyscall_0; 	\
 	  asm("" : "=r" (v) : "0" (x)); \
-	  ((v - VSYSCALL_FIRST_PAGE) + __pa_symbol(&__vsyscall_0)); })
+	  ((v - fix_to_virt(VSYSCALL_FIRST_PAGE)) + __pa_symbol(&__vsyscall_0)); })
 
 static __always_inline void timeval_normalize(struct timeval * tv)
 {

@@ -61,13 +61,13 @@ MODULE_PARM_DESC(debug_level, "Enable debug tracing if > 0");
 
 #ifdef CONFIG_PCI_MSI
 
-static int msi_x = 0;
+static int msi_x = 1;
 module_param(msi_x, int, 0444);
 MODULE_PARM_DESC(msi_x, "attempt to use MSI-X if nonzero");
 
 static int msi = 0;
 module_param(msi, int, 0444);
-MODULE_PARM_DESC(msi, "attempt to use MSI if nonzero");
+MODULE_PARM_DESC(msi, "attempt to use MSI if nonzero (deprecated, use MSI-X instead)");
 
 #else /* CONFIG_PCI_MSI */
 
@@ -137,27 +137,45 @@ static const char mthca_version[] __devinitdata =
 
 static int mthca_tune_pci(struct mthca_dev *mdev)
 {
+	int cap;
+	u16 val;
+
 	if (!tune_pci)
 		return 0;
 
 	/* First try to max out Read Byte Count */
-	if (pci_find_capability(mdev->pdev, PCI_CAP_ID_PCIX)) {
-		if (pcix_set_mmrbc(mdev->pdev, pcix_get_max_mmrbc(mdev->pdev))) {
-			mthca_err(mdev, "Couldn't set PCI-X max read count, "
-				"aborting.\n");
+	cap = pci_find_capability(mdev->pdev, PCI_CAP_ID_PCIX);
+	if (cap) {
+		if (pci_read_config_word(mdev->pdev, cap + PCI_X_CMD, &val)) {
+			mthca_err(mdev, "Couldn't read PCI-X command register, "
+				  "aborting.\n");
+			return -ENODEV;
+		}
+		val = (val & ~PCI_X_CMD_MAX_READ) | (3 << 2);
+		if (pci_write_config_word(mdev->pdev, cap + PCI_X_CMD, val)) {
+			mthca_err(mdev, "Couldn't write PCI-X command register, "
+				  "aborting.\n");
 			return -ENODEV;
 		}
 	} else if (!(mdev->mthca_flags & MTHCA_FLAG_PCIE))
 		mthca_info(mdev, "No PCI-X capability, not setting RBC.\n");
 
-	if (pci_find_capability(mdev->pdev, PCI_CAP_ID_EXP)) {
-		if (pcie_set_readrq(mdev->pdev, 4096)) {
-			mthca_err(mdev, "Couldn't write PCI Express read request, "
-				"aborting.\n");
+	cap = pci_find_capability(mdev->pdev, PCI_CAP_ID_EXP);
+	if (cap) {
+		if (pci_read_config_word(mdev->pdev, cap + PCI_EXP_DEVCTL, &val)) {
+			mthca_err(mdev, "Couldn't read PCI Express device control "
+				  "register, aborting.\n");
 			return -ENODEV;
 		}
-	} else if (!(mdev->mthca_flags & MTHCA_FLAG_PCIE))
-		mthca_info(mdev, "No PCI-X capability, not setting RBC.\n");
+		val = (val & ~PCI_EXP_DEVCTL_READRQ) | (5 << 12);
+		if (pci_write_config_word(mdev->pdev, cap + PCI_EXP_DEVCTL, val)) {
+			mthca_err(mdev, "Couldn't write PCI Express device control "
+				  "register, aborting.\n");
+			return -ENODEV;
+		}
+	} else if (mdev->mthca_flags & MTHCA_FLAG_PCIE)
+		mthca_info(mdev, "No PCI Express capability, "
+			   "not setting Max Read Request Size.\n");
 
 	return 0;
 }
@@ -270,6 +288,10 @@ static int mthca_dev_lim(struct mthca_dev *mdev, struct mthca_dev_lim *dev_lim)
 
 	if (dev_lim->flags & DEV_LIM_FLAG_SRQ)
 		mdev->mthca_flags |= MTHCA_FLAG_SRQ;
+
+	if (mthca_is_memfree(mdev))
+		if (dev_lim->flags & DEV_LIM_FLAG_IPOIB_CSUM)
+			mdev->device_cap_flags |= IB_DEVICE_IP_CSUM;
 
 	return 0;
 }
@@ -476,7 +498,7 @@ static int mthca_init_icm(struct mthca_dev *mdev,
 							dev_lim->qpc_entry_sz,
 							mdev->limits.num_qps,
 							mdev->limits.reserved_qps,
-						       	0, 0);
+							0, 0);
 	if (!mdev->qp_table.qp_table) {
 		mthca_err(mdev, "Failed to map QP context memory, aborting.\n");
 		err = -ENOMEM;
@@ -739,7 +761,8 @@ static int mthca_init_hca(struct mthca_dev *mdev)
 	}
 
 	mdev->eq_table.inta_pin = adapter.inta_pin;
-	mdev->rev_id            = adapter.revision_id;
+	if (!mthca_is_memfree(mdev))
+		mdev->rev_id = adapter.revision_id;
 	memcpy(mdev->board_id, adapter.board_id, sizeof mdev->board_id);
 
 	return 0;
@@ -815,14 +838,19 @@ static int mthca_setup_hca(struct mthca_dev *dev)
 
 	err = mthca_NOP(dev, &status);
 	if (err || status) {
-		mthca_err(dev, "NOP command failed to generate interrupt (IRQ %d), aborting.\n",
-			  dev->mthca_flags & MTHCA_FLAG_MSI_X ?
-			  dev->eq_table.eq[MTHCA_EQ_ASYNC].msi_x_vector :
-			  dev->pdev->irq);
-		if (dev->mthca_flags & (MTHCA_FLAG_MSI | MTHCA_FLAG_MSI_X))
-			mthca_err(dev, "Try again with MSI/MSI-X disabled.\n");
-		else
+		if (dev->mthca_flags & (MTHCA_FLAG_MSI | MTHCA_FLAG_MSI_X)) {
+			mthca_warn(dev, "NOP command failed to generate interrupt "
+				   "(IRQ %d).\n",
+				   dev->mthca_flags & MTHCA_FLAG_MSI_X ?
+				   dev->eq_table.eq[MTHCA_EQ_CMD].msi_x_vector :
+				   dev->pdev->irq);
+			mthca_warn(dev, "Trying again with MSI/MSI-X disabled.\n");
+		} else {
+			mthca_err(dev, "NOP command failed to generate interrupt "
+				  "(IRQ %d), aborting.\n",
+				  dev->pdev->irq);
 			mthca_err(dev, "BIOS or ACPI interrupt routing problem?\n");
+		}
 
 		goto err_cmd_poll;
 	}
@@ -958,11 +986,12 @@ static void mthca_release_regions(struct pci_dev *pdev,
 
 static int mthca_enable_msi_x(struct mthca_dev *mdev)
 {
-	struct msix_entry entries[2];
+	struct msix_entry entries[3];
 	int err;
 
 	entries[0].entry = 0;
 	entries[1].entry = 1;
+	entries[2].entry = 2;
 
 	err = pci_enable_msix(mdev->pdev, entries, ARRAY_SIZE(entries));
 	if (err) {
@@ -974,6 +1003,7 @@ static int mthca_enable_msi_x(struct mthca_dev *mdev)
 
 	mdev->eq_table.eq[MTHCA_EQ_COMP ].msi_x_vector = entries[0].vector;
 	mdev->eq_table.eq[MTHCA_EQ_ASYNC].msi_x_vector = entries[1].vector;
+	mdev->eq_table.eq[MTHCA_EQ_CMD  ].msi_x_vector = entries[2].vector;
 
 	return 0;
 }
@@ -993,14 +1023,14 @@ static struct {
 	u64 latest_fw;
 	u32 flags;
 } mthca_hca_table[] = {
-	[TAVOR]        = { .latest_fw = MTHCA_FW_VER(3, 4, 0),
+	[TAVOR]        = { .latest_fw = MTHCA_FW_VER(3, 5, 0),
 			   .flags     = 0 },
-	[ARBEL_COMPAT] = { .latest_fw = MTHCA_FW_VER(4, 7, 600),
+	[ARBEL_COMPAT] = { .latest_fw = MTHCA_FW_VER(4, 8, 200),
 			   .flags     = MTHCA_FLAG_PCIE },
-	[ARBEL_NATIVE] = { .latest_fw = MTHCA_FW_VER(5, 1, 400),
+	[ARBEL_NATIVE] = { .latest_fw = MTHCA_FW_VER(5, 2, 0),
 			   .flags     = MTHCA_FLAG_MEMFREE |
 					MTHCA_FLAG_PCIE },
-	[SINAI]        = { .latest_fw = MTHCA_FW_VER(1, 1, 0),
+	[SINAI]        = { .latest_fw = MTHCA_FW_VER(1, 2, 0),
 			   .flags     = MTHCA_FLAG_MEMFREE |
 					MTHCA_FLAG_PCIE    |
 					MTHCA_FLAG_SINAI_OPT }
@@ -1095,12 +1125,6 @@ static int __mthca_init_one(struct pci_dev *pdev, int hca_type)
 		goto err_free_dev;
 	}
 
-	if (msi_x && !mthca_enable_msi_x(mdev))
-		mdev->mthca_flags |= MTHCA_FLAG_MSI_X;
-	if (msi && !(mdev->mthca_flags & MTHCA_FLAG_MSI_X) &&
-	    !pci_enable_msi(pdev))
-		mdev->mthca_flags |= MTHCA_FLAG_MSI;
-
 	if (mthca_cmd_init(mdev)) {
 		mthca_err(mdev, "Failed to init command interface, aborting.\n");
 		goto err_free_dev;
@@ -1114,8 +1138,10 @@ static int __mthca_init_one(struct pci_dev *pdev, int hca_type)
 	if (err)
 		goto err_cmd;
 
+	mdev->ib_dev.flags = mdev->device_cap_flags;
+
 	if (mdev->fw_ver < mthca_hca_table[hca_type].latest_fw) {
-		mthca_warn(mdev, "HCA FW version %d.%d.%d is old (%d.%d.%d is current).\n",
+		mthca_warn(mdev, "HCA FW version %d.%d.%03d is old (%d.%d.%03d is current).\n",
 			   (int) (mdev->fw_ver >> 32), (int) (mdev->fw_ver >> 16) & 0xffff,
 			   (int) (mdev->fw_ver & 0xffff),
 			   (int) (mthca_hca_table[hca_type].latest_fw >> 32),
@@ -1124,7 +1150,35 @@ static int __mthca_init_one(struct pci_dev *pdev, int hca_type)
 		mthca_warn(mdev, "If you have problems, try updating your HCA FW.\n");
 	}
 
+	if (msi_x && !mthca_enable_msi_x(mdev))
+		mdev->mthca_flags |= MTHCA_FLAG_MSI_X;
+	else if (msi) {
+		static int warned;
+
+		if (!warned) {
+			printk(KERN_WARNING PFX "WARNING: MSI support will be "
+			       "removed from the ib_mthca driver in January 2008.\n");
+			printk(KERN_WARNING "    If you are using MSI and cannot "
+			       "switch to MSI-X, please tell "
+			       "<general@lists.openfabrics.org>.\n");
+			++warned;
+		}
+
+		if (!pci_enable_msi(pdev))
+			mdev->mthca_flags |= MTHCA_FLAG_MSI;
+	}
+
 	err = mthca_setup_hca(mdev);
+	if (err == -EBUSY && (mdev->mthca_flags & (MTHCA_FLAG_MSI | MTHCA_FLAG_MSI_X))) {
+		if (mdev->mthca_flags & MTHCA_FLAG_MSI_X)
+			pci_disable_msix(pdev);
+		if (mdev->mthca_flags & MTHCA_FLAG_MSI)
+			pci_disable_msi(pdev);
+		mdev->mthca_flags &= ~(MTHCA_FLAG_MSI_X | MTHCA_FLAG_MSI);
+
+		err = mthca_setup_hca(mdev);
+	}
+
 	if (err)
 		goto err_close;
 
@@ -1160,17 +1214,17 @@ err_cleanup:
 	mthca_cleanup_uar_table(mdev);
 
 err_close:
+	if (mdev->mthca_flags & MTHCA_FLAG_MSI_X)
+		pci_disable_msix(pdev);
+	if (mdev->mthca_flags & MTHCA_FLAG_MSI)
+		pci_disable_msi(pdev);
+
 	mthca_close_hca(mdev);
 
 err_cmd:
 	mthca_cmd_cleanup(mdev);
 
 err_free_dev:
-	if (mdev->mthca_flags & MTHCA_FLAG_MSI_X)
-		pci_disable_msix(pdev);
-	if (mdev->mthca_flags & MTHCA_FLAG_MSI)
-		pci_disable_msi(pdev);
-
 	ib_dealloc_device(&mdev->ib_dev);
 
 err_free_res:
@@ -1230,12 +1284,14 @@ static void __mthca_remove_one(struct pci_dev *pdev)
 int __mthca_restart_one(struct pci_dev *pdev)
 {
 	struct mthca_dev *mdev;
+	int hca_type;
 
 	mdev = pci_get_drvdata(pdev);
 	if (!mdev)
 		return -ENODEV;
+	hca_type = mdev->hca_type;
 	__mthca_remove_one(pdev);
-	return __mthca_init_one(pdev, mdev->hca_type);
+	return __mthca_init_one(pdev, hca_type);
 }
 
 static int __devinit mthca_init_one(struct pci_dev *pdev,

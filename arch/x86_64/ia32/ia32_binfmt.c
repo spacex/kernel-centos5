@@ -137,6 +137,10 @@ struct elf_prpsinfo
 #define user user32
 
 #define __ASM_X86_64_ELF_H 1
+
+#define __HAVE_ARCH_RANDOMIZE_BRK
+extern void randomize_brk(unsigned long old_brk);
+
 #define elf_read_implies_exec(ex, executable_stack)     (executable_stack != EXSTACK_DISABLE_X)
 //#include <asm/ia32.h>
 #include <linux/elf.h>

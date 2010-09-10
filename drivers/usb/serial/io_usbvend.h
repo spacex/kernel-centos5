@@ -334,6 +334,10 @@ struct edge_compatibility_bits
 
 };
 
+#define EDGE_COMPATIBILITY_MASK0	0x0001
+#define EDGE_COMPATIBILITY_MASK1	0x3FFF
+#define EDGE_COMPATIBILITY_MASK2	0x0001
+
 struct edge_compatibility_descriptor
 {
 	__u8	Length;				// Descriptor Length (per USB spec)

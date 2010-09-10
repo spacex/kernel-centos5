@@ -18,7 +18,7 @@
  */
 
 /*
- * The basic structure of this driver is based the old storage driver,
+ * The basic structure of this driver is based on the old storage driver,
  * drivers/ieee1394/sbp2.c, originally written by
  *     James Goodwin <jamesg@filanet.com>
  * with later contributions and ongoing maintenance from
@@ -27,7 +27,6 @@
  * and many others.
  */
 
-#include <linux/err.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -36,12 +35,13 @@
 #include <linux/scatterlist.h>
 #include <linux/dma-mapping.h>
 #include <linux/blkdev.h>
+#include <linux/string.h>
+#include <linux/stringify.h>
 #include <linux/timer.h>
-#include <linux/pci.h>
+#include <linux/workqueue.h>
 
 #include <scsi/scsi.h>
 #include <scsi/scsi_cmnd.h>
-#include <scsi/scsi_dbg.h>
 #include <scsi/scsi_device.h>
 #include <scsi/scsi_host.h>
 
@@ -61,59 +61,114 @@ module_param_named(exclusive_login, sbp2_param_exclusive_login, bool, 0644);
 MODULE_PARM_DESC(exclusive_login, "Exclusive login to sbp2 device "
 		 "(default = Y, use N for concurrent initiators)");
 
+/*
+ * Flags for firmware oddities
+ *
+ * - 128kB max transfer
+ *   Limit transfer size. Necessary for some old bridges.
+ *
+ * - 36 byte inquiry
+ *   When scsi_mod probes the device, let the inquiry command look like that
+ *   from MS Windows.
+ *
+ * - skip mode page 8
+ *   Suppress sending of mode_sense for mode page 8 if the device pretends to
+ *   support the SCSI Primary Block commands instead of Reduced Block Commands.
+ *
+ * - fix capacity
+ *   Tell sd_mod to correct the last sector number reported by read_capacity.
+ *   Avoids access beyond actual disk limits on devices with an off-by-one bug.
+ *   Don't use this with devices which don't have this bug.
+ *
+ * - override internal blacklist
+ *   Instead of adding to the built-in blacklist, use only the workarounds
+ *   specified in the module load parameter.
+ *   Useful if a blacklist entry interfered with a non-broken device.
+ */
+#define SBP2_WORKAROUND_128K_MAX_TRANS	0x1
+#define SBP2_WORKAROUND_INQUIRY_36	0x2
+#define SBP2_WORKAROUND_MODE_SENSE_8	0x4
+#define SBP2_WORKAROUND_FIX_CAPACITY	0x8
+#define SBP2_WORKAROUND_OVERRIDE	0x100
+
+static int sbp2_param_workarounds;
+module_param_named(workarounds, sbp2_param_workarounds, int, 0644);
+MODULE_PARM_DESC(workarounds, "Work around device bugs (default = 0"
+	", 128kB max transfer = " __stringify(SBP2_WORKAROUND_128K_MAX_TRANS)
+	", 36 byte inquiry = "    __stringify(SBP2_WORKAROUND_INQUIRY_36)
+	", skip mode page 8 = "   __stringify(SBP2_WORKAROUND_MODE_SENSE_8)
+	", fix capacity = "       __stringify(SBP2_WORKAROUND_FIX_CAPACITY)
+	", override internal blacklist = " __stringify(SBP2_WORKAROUND_OVERRIDE)
+	", or a combination)");
+
 /* I don't know why the SCSI stack doesn't define something like this... */
 typedef void (*scsi_done_fn_t)(struct scsi_cmnd *);
 
 static const char sbp2_driver_name[] = "sbp2";
 
-struct sbp2_device {
-	struct kref kref;
+/*
+ * We create one struct sbp2_logical_unit per SBP-2 Logical Unit Number Entry
+ * and one struct scsi_device per sbp2_logical_unit.
+ */
+struct sbp2_logical_unit {
+	struct sbp2_target *tgt;
+	struct list_head link;
 	struct scsi_device *sdev;
-	struct fw_unit *unit;
 	struct fw_address_handler address_handler;
 	struct list_head orb_list;
-	u64 management_agent_address;
+
 	u64 command_block_agent_address;
-	u32 workarounds;
+	u16 lun;
 	int login_id;
 
 	/*
-	 * We cache these addresses and only update them once we've
-	 * logged in or reconnected to the sbp2 device.  That way, any
-	 * IO to the device will automatically fail and get retried if
-	 * it happens in a window where the device is not ready to
-	 * handle it (e.g. after a bus reset but before we reconnect).
+	 * The generation is updated once we've logged in or reconnected
+	 * to the logical unit.  Thus, I/O to the device will automatically
+	 * fail and get retried if it happens in a window where the device
+	 * is not ready, e.g. after a bus reset but before we reconnect.
 	 */
-	int node_id;
-	int address_high;
 	int generation;
-
 	int retries;
 	struct work_struct work;
-	struct Scsi_Host *scsi_host;
 };
 
-#define SBP2_MAX_SG_ELEMENT_LENGTH	0xf000
-#define SBP2_MAX_SECTORS		255	/* Max sectors supported */
-#define SBP2_ORB_TIMEOUT		2000	/* Timeout in ms */
+/*
+ * We create one struct sbp2_target per IEEE 1212 Unit Directory
+ * and one struct Scsi_Host per sbp2_target.
+ */
+struct sbp2_target {
+	struct kref kref;
+	struct fw_unit *unit;
+	struct list_head lu_list;
 
+	u64 management_agent_address;
+	int directory_id;
+	int node_id;
+	int address_high;
+	unsigned int workarounds;
+
+	unsigned int mgt_orb_timeout;
+};
+
+/*
+ * Per section 7.4.8 of the SBP-2 spec, a mgt_ORB_timeout value can be
+ * provided in the config rom. Most devices do provide a value, which
+ * we'll use for login management orbs, but with some sane limits.
+ */
+#define SBP2_MIN_LOGIN_ORB_TIMEOUT	5000U	/* Timeout in ms */
+#define SBP2_MAX_LOGIN_ORB_TIMEOUT	40000U	/* Timeout in ms */
+#define SBP2_ORB_TIMEOUT		2000U	/* Timeout in ms */
+#define SBP2_MAX_SG_ELEMENT_LENGTH	0xf000
 #define SBP2_ORB_NULL			0x80000000
 
 #define SBP2_DIRECTION_TO_MEDIA		0x0
 #define SBP2_DIRECTION_FROM_MEDIA	0x1
 
 /* Unit directory keys */
-#define SBP2_COMMAND_SET_SPECIFIER	0x38
-#define SBP2_COMMAND_SET		0x39
-#define SBP2_COMMAND_SET_REVISION	0x3b
-#define SBP2_FIRMWARE_REVISION		0x3c
-
-/* Flags for detected oddities and brokeness */
-#define SBP2_WORKAROUND_128K_MAX_TRANS	0x1
-#define SBP2_WORKAROUND_INQUIRY_36	0x2
-#define SBP2_WORKAROUND_MODE_SENSE_8	0x4
-#define SBP2_WORKAROUND_FIX_CAPACITY	0x8
-#define SBP2_WORKAROUND_OVERRIDE	0x100
+#define SBP2_CSR_UNIT_CHARACTERISTICS	0x3a
+#define SBP2_CSR_FIRMWARE_REVISION	0x3c
+#define SBP2_CSR_LOGICAL_UNIT_NUMBER	0x14
+#define SBP2_CSR_LOGICAL_UNIT_DIRECTORY	0xd4
 
 /* Management orb opcodes */
 #define SBP2_LOGIN_REQUEST		0x0
@@ -161,17 +216,18 @@ struct sbp2_pointer {
 
 struct sbp2_orb {
 	struct fw_transaction t;
+	struct kref kref;
 	dma_addr_t request_bus;
 	int rcode;
 	struct sbp2_pointer pointer;
-	void (*callback) (struct sbp2_orb * orb, struct sbp2_status * status);
+	void (*callback)(struct sbp2_orb * orb, struct sbp2_status * status);
 	struct list_head link;
 };
 
 #define MANAGEMENT_ORB_LUN(v)			((v))
 #define MANAGEMENT_ORB_FUNCTION(v)		((v) << 16)
 #define MANAGEMENT_ORB_RECONNECT(v)		((v) << 20)
-#define MANAGEMENT_ORB_EXCLUSIVE(v)            ((v) ? 1 << 28 : 0)
+#define MANAGEMENT_ORB_EXCLUSIVE(v)		((v) ? 1 << 28 : 0)
 #define MANAGEMENT_ORB_REQUEST_FORMAT(v)	((v) << 29)
 #define MANAGEMENT_ORB_NOTIFY			((1) << 31)
 
@@ -221,9 +277,9 @@ struct sbp2_command_orb {
 	} request;
 	struct scsi_cmnd *cmd;
 	scsi_done_fn_t done;
-	struct fw_unit *unit;
+	struct sbp2_logical_unit *lu;
 
-	struct sbp2_pointer page_table[SG_ALL];
+	struct sbp2_pointer page_table[SG_ALL] __attribute__((aligned(8)));
 	dma_addr_t page_table_bus;
 };
 
@@ -239,7 +295,7 @@ struct sbp2_command_orb {
 static const struct {
 	u32 firmware_revision;
 	u32 model;
-	unsigned workarounds;
+	unsigned int workarounds;
 } sbp2_workarounds_table[] = {
 	/* DViCO Momobay CX-1 with TSB42AA9 bridge */ {
 		.firmware_revision	= 0x002800,
@@ -257,6 +313,7 @@ static const struct {
 		.model			= ~0,
 		.workarounds		= SBP2_WORKAROUND_128K_MAX_TRANS,
 	},
+
 	/*
 	 * There are iPods (2nd gen, 3rd gen) with model_id == 0, but
 	 * these iPods do not feature the read_capacity bug according
@@ -282,13 +339,21 @@ static const struct {
 };
 
 static void
+free_orb(struct kref *kref)
+{
+	struct sbp2_orb *orb = container_of(kref, struct sbp2_orb, kref);
+
+	kfree(orb);
+}
+
+static void
 sbp2_status_write(struct fw_card *card, struct fw_request *request,
 		  int tcode, int destination, int source,
 		  int generation, int speed,
 		  unsigned long long offset,
 		  void *payload, size_t length, void *callback_data)
 {
-	struct sbp2_device *sd = callback_data;
+	struct sbp2_logical_unit *lu = callback_data;
 	struct sbp2_orb *orb;
 	struct sbp2_status status;
 	size_t header_size;
@@ -312,20 +377,22 @@ sbp2_status_write(struct fw_card *card, struct fw_request *request,
 
 	/* Lookup the orb corresponding to this status write. */
 	spin_lock_irqsave(&card->lock, flags);
-	list_for_each_entry(orb, &sd->orb_list, link) {
+	list_for_each_entry(orb, &lu->orb_list, link) {
 		if (STATUS_GET_ORB_HIGH(status) == 0 &&
-		    STATUS_GET_ORB_LOW(status) == orb->request_bus &&
-		    orb->rcode == RCODE_COMPLETE) {
+		    STATUS_GET_ORB_LOW(status) == orb->request_bus) {
+			orb->rcode = RCODE_COMPLETE;
 			list_del(&orb->link);
 			break;
 		}
 	}
 	spin_unlock_irqrestore(&card->lock, flags);
 
-	if (&orb->link != &sd->orb_list)
+	if (&orb->link != &lu->orb_list)
 		orb->callback(orb, &status);
 	else
 		fw_error("status write for unknown orb\n");
+
+	kref_put(&orb->kref, free_orb);
 
 	fw_send_response(card, request, RCODE_COMPLETE);
 }
@@ -337,21 +404,34 @@ complete_transaction(struct fw_card *card, int rcode,
 	struct sbp2_orb *orb = data;
 	unsigned long flags;
 
-	orb->rcode = rcode;
-	if (rcode != RCODE_COMPLETE) {
-		spin_lock_irqsave(&card->lock, flags);
+	/*
+	 * This is a little tricky.  We can get the status write for
+	 * the orb before we get this callback.  The status write
+	 * handler above will assume the orb pointer transaction was
+	 * successful and set the rcode to RCODE_COMPLETE for the orb.
+	 * So this callback only sets the rcode if it hasn't already
+	 * been set and only does the cleanup if the transaction
+	 * failed and we didn't already get a status write.
+	 */
+	spin_lock_irqsave(&card->lock, flags);
+	if (orb->rcode == -1)
+		orb->rcode = rcode;
+	if (orb->rcode != RCODE_COMPLETE) {
 		list_del(&orb->link);
 		spin_unlock_irqrestore(&card->lock, flags);
 		orb->callback(orb, NULL);
+	} else {
+		spin_unlock_irqrestore(&card->lock, flags);
 	}
+
+	kref_put(&orb->kref, free_orb);
 }
 
 static void
-sbp2_send_orb(struct sbp2_orb *orb, struct fw_unit *unit,
+sbp2_send_orb(struct sbp2_orb *orb, struct sbp2_logical_unit *lu,
 	      int node_id, int generation, u64 offset)
 {
-	struct fw_device *device = fw_device(unit->device.parent);
-	struct sbp2_device *sd = unit->device.driver_data;
+	struct fw_device *device = fw_device(lu->tgt->unit->device.parent);
 	unsigned long flags;
 
 	orb->pointer.high = 0;
@@ -359,20 +439,22 @@ sbp2_send_orb(struct sbp2_orb *orb, struct fw_unit *unit,
 	fw_memcpy_to_be32(&orb->pointer, &orb->pointer, sizeof(orb->pointer));
 
 	spin_lock_irqsave(&device->card->lock, flags);
-	list_add_tail(&orb->link, &sd->orb_list);
+	list_add_tail(&orb->link, &lu->orb_list);
 	spin_unlock_irqrestore(&device->card->lock, flags);
 
+	/* Take a ref for the orb list and for the transaction callback. */
+	kref_get(&orb->kref);
+	kref_get(&orb->kref);
+
 	fw_send_request(device->card, &orb->t, TCODE_WRITE_BLOCK_REQUEST,
-			node_id, generation,
-			device->node->max_speed, offset,
+			node_id, generation, device->max_speed, offset,
 			&orb->pointer, sizeof(orb->pointer),
 			complete_transaction, orb);
 }
 
-static int sbp2_cancel_orbs(struct fw_unit *unit)
+static int sbp2_cancel_orbs(struct sbp2_logical_unit *lu)
 {
-	struct fw_device *device = fw_device(unit->device.parent);
-	struct sbp2_device *sd = unit->device.driver_data;
+	struct fw_device *device = fw_device(lu->tgt->unit->device.parent);
 	struct sbp2_orb *orb, *next;
 	struct list_head list;
 	unsigned long flags;
@@ -380,7 +462,7 @@ static int sbp2_cancel_orbs(struct fw_unit *unit)
 
 	INIT_LIST_HEAD(&list);
 	spin_lock_irqsave(&device->card->lock, flags);
-	list_splice_init(&sd->orb_list, &list);
+	list_splice_init(&lu->orb_list, &list);
 	spin_unlock_irqrestore(&device->card->lock, flags);
 
 	list_for_each_entry_safe(orb, next, &list, link) {
@@ -399,7 +481,7 @@ static void
 complete_management_orb(struct sbp2_orb *base_orb, struct sbp2_status *status)
 {
 	struct sbp2_management_orb *orb =
-	    (struct sbp2_management_orb *)base_orb;
+		container_of(base_orb, struct sbp2_management_orb, base);
 
 	if (status)
 		memcpy(&orb->status, status, sizeof(*status));
@@ -407,34 +489,25 @@ complete_management_orb(struct sbp2_orb *base_orb, struct sbp2_status *status)
 }
 
 static int
-sbp2_send_management_orb(struct fw_unit *unit, int node_id, int generation,
-			 int function, int lun, void *response)
+sbp2_send_management_orb(struct sbp2_logical_unit *lu, int node_id,
+			 int generation, int function, int lun_or_login_id,
+			 void *response)
 {
-	struct fw_device *device = fw_device(unit->device.parent);
-	struct sbp2_device *sd = unit->device.driver_data;
+	struct fw_device *device = fw_device(lu->tgt->unit->device.parent);
 	struct sbp2_management_orb *orb;
+	unsigned int timeout;
 	int retval = -ENOMEM;
 
 	orb = kzalloc(sizeof(*orb), GFP_ATOMIC);
 	if (orb == NULL)
 		return -ENOMEM;
 
-	/*
-	 * The sbp2 device is going to send a block read request to
-	 * read out the request from host memory, so map it for
-	 * dma.
-	 */
-	orb->base.request_bus =
-		dma_map_single(device->card->device, &orb->request,
-			       sizeof(orb->request), DMA_TO_DEVICE);
-	if (dma_mapping_error(orb->base.request_bus))
-		goto out;
-
+	kref_init(&orb->base.kref);
 	orb->response_bus =
 		dma_map_single(device->card->device, &orb->response,
 			       sizeof(orb->response), DMA_FROM_DEVICE);
 	if (dma_mapping_error(orb->response_bus))
-		goto out;
+		goto fail_mapping_response;
 
 	orb->request.response.high    = 0;
 	orb->request.response.low     = orb->response_bus;
@@ -442,22 +515,20 @@ sbp2_send_management_orb(struct fw_unit *unit, int node_id, int generation,
 	orb->request.misc =
 		MANAGEMENT_ORB_NOTIFY |
 		MANAGEMENT_ORB_FUNCTION(function) |
-		MANAGEMENT_ORB_LUN(lun);
+		MANAGEMENT_ORB_LUN(lun_or_login_id);
 	orb->request.length =
 		MANAGEMENT_ORB_RESPONSE_LENGTH(sizeof(orb->response));
 
-	orb->request.status_fifo.high = sd->address_handler.offset >> 32;
-	orb->request.status_fifo.low  = sd->address_handler.offset;
+	orb->request.status_fifo.high = lu->address_handler.offset >> 32;
+	orb->request.status_fifo.low  = lu->address_handler.offset;
 
-	/*
-	 * FIXME: Yeah, ok this isn't elegant, we hardwire
-	 * 1 second reconnect time.  The reconnect setting
-	 * is probably fine
-	 */
 	if (function == SBP2_LOGIN_REQUEST) {
 		orb->request.misc |=
 			MANAGEMENT_ORB_EXCLUSIVE(sbp2_param_exclusive_login) |
 			MANAGEMENT_ORB_RECONNECT(0);
+		timeout = lu->tgt->mgt_orb_timeout;
+	} else {
+		timeout = SBP2_ORB_TIMEOUT;
 	}
 
 	fw_memcpy_to_be32(&orb->request, &orb->request, sizeof(orb->request));
@@ -465,22 +536,39 @@ sbp2_send_management_orb(struct fw_unit *unit, int node_id, int generation,
 	init_completion(&orb->done);
 	orb->base.callback = complete_management_orb;
 
-	sbp2_send_orb(&orb->base, unit,
-		      node_id, generation, sd->management_agent_address);
+	orb->base.request_bus =
+		dma_map_single(device->card->device, &orb->request,
+			       sizeof(orb->request), DMA_TO_DEVICE);
+	if (dma_mapping_error(orb->base.request_bus))
+		goto fail_mapping_request;
 
-	wait_for_completion_timeout(&orb->done,
-				    msecs_to_jiffies(SBP2_ORB_TIMEOUT));
+	sbp2_send_orb(&orb->base, lu, node_id, generation,
+		      lu->tgt->management_agent_address);
+
+	wait_for_completion_timeout(&orb->done, msecs_to_jiffies(timeout));
 
 	retval = -EIO;
-	if (sbp2_cancel_orbs(unit) == 0) {
-		fw_error("orb reply timed out, rcode=0x%02x\n",
-			 orb->base.rcode);
+	if (sbp2_cancel_orbs(lu) == 0) {
+		/*
+		 * Logout requests frequently get sent to devices that aren't
+		 * there any more, resulting in extraneous error messages in
+		 * the logs.  Unfortunately, this means logout requests that
+		 * actually fail don't get logged.
+		 */
+		if (function != SBP2_LOGOUT_REQUEST)
+			fw_error("orb reply timed out, rcode=0x%02x\n",
+				 orb->base.rcode);
 		goto out;
 	}
 
 	if (orb->base.rcode != RCODE_COMPLETE) {
-		fw_error("management write failed, rcode 0x%02x\n",
-			 orb->base.rcode);
+		/*
+                 * On device removal from the bus, sometimes the logout
+		 * request times out, sometimes it just fails.
+		 */
+		if (function != SBP2_LOGOUT_REQUEST)
+			fw_error("management write failed, rcode 0x%02x\n",
+				 orb->base.rcode);
 		goto out;
 	}
 
@@ -496,13 +584,14 @@ sbp2_send_management_orb(struct fw_unit *unit, int node_id, int generation,
  out:
 	dma_unmap_single(device->card->device, orb->base.request_bus,
 			 sizeof(orb->request), DMA_TO_DEVICE);
+ fail_mapping_request:
 	dma_unmap_single(device->card->device, orb->response_bus,
 			 sizeof(orb->response), DMA_FROM_DEVICE);
-
+ fail_mapping_response:
 	if (response)
 		fw_memcpy_from_be32(response,
 				    orb->response, sizeof(orb->response));
-	kfree(orb);
+	kref_put(&orb->base.kref, free_orb);
 
 	return retval;
 }
@@ -516,10 +605,9 @@ complete_agent_reset_write(struct fw_card *card, int rcode,
 	kfree(t);
 }
 
-static int sbp2_agent_reset(struct fw_unit *unit)
+static int sbp2_agent_reset(struct sbp2_logical_unit *lu)
 {
-	struct fw_device *device = fw_device(unit->device.parent);
-	struct sbp2_device *sd = unit->device.driver_data;
+	struct fw_device *device = fw_device(lu->tgt->unit->device.parent);
 	struct fw_transaction *t;
 	static u32 zero;
 
@@ -528,253 +616,424 @@ static int sbp2_agent_reset(struct fw_unit *unit)
 		return -ENOMEM;
 
 	fw_send_request(device->card, t, TCODE_WRITE_QUADLET_REQUEST,
-			sd->node_id, sd->generation, SCODE_400,
-			sd->command_block_agent_address + SBP2_AGENT_RESET,
+			lu->tgt->node_id, lu->generation, device->max_speed,
+			lu->command_block_agent_address + SBP2_AGENT_RESET,
 			&zero, sizeof(zero), complete_agent_reset_write, t);
 
 	return 0;
 }
 
-static void sbp2_reconnect(void *w);
-static struct scsi_host_template scsi_driver_template;
-
-static void release_sbp2_device(struct kref *kref)
+static void sbp2_release_target(struct kref *kref)
 {
-	struct sbp2_device *sd = container_of(kref, struct sbp2_device, kref);
-	struct Scsi_Host *host =
-		container_of((void *)sd, struct Scsi_Host, hostdata[0]);
+	struct sbp2_target *tgt = container_of(kref, struct sbp2_target, kref);
+	struct sbp2_logical_unit *lu, *next;
+	struct Scsi_Host *shost =
+		container_of((void *)tgt, struct Scsi_Host, hostdata[0]);
 
-	scsi_remove_host(host);
-	sbp2_send_management_orb(sd->unit, sd->node_id, sd->generation,
-				 SBP2_LOGOUT_REQUEST, sd->login_id, NULL);
-	fw_core_remove_address_handler(&sd->address_handler);
-	fw_notify("removed sbp2 unit %s\n", sd->unit->device.bus_id);
-	put_device(&sd->unit->device);
-	scsi_host_put(host);
+	list_for_each_entry_safe(lu, next, &tgt->lu_list, link) {
+		if (lu->sdev)
+			scsi_remove_device(lu->sdev);
+
+		sbp2_send_management_orb(lu, tgt->node_id, lu->generation,
+				SBP2_LOGOUT_REQUEST, lu->login_id, NULL);
+		fw_core_remove_address_handler(&lu->address_handler);
+		list_del(&lu->link);
+		kfree(lu);
+	}
+	scsi_remove_host(shost);
+	fw_notify("released %s\n", tgt->unit->device.bus_id);
+
+	put_device(&tgt->unit->device);
+	scsi_host_put(shost);
+}
+
+static struct workqueue_struct *sbp2_wq;
+
+/*
+ * Always get the target's kref when scheduling work on one its units.
+ * Each workqueue job is responsible to call sbp2_target_put() upon return.
+ */
+static void sbp2_queue_work(struct sbp2_logical_unit *lu, unsigned long delay)
+{
+	if (queue_delayed_work(sbp2_wq, &lu->work, delay))
+		kref_get(&lu->tgt->kref);
+}
+
+static void sbp2_target_put(struct sbp2_target *tgt)
+{
+	kref_put(&tgt->kref, sbp2_release_target);
+}
+
+static void sbp2_reconnect(void *w);
+
+/* not exported in 2.6.18, so local copy */
+static int scsilun_to_int(struct scsi_lun *scsilun)
+{
+	int i;
+	unsigned int lun;
+
+	lun = 0;
+	for (i = 0; i < sizeof(lun); i += 2)
+		lun = lun | (((scsilun->scsi_lun[i] << 8) |
+			      scsilun->scsi_lun[i + 1]) << (i * 8));
+	return lun;
 }
 
 static void sbp2_login(void *w)
 {
 	struct work_struct *work = w;
-	struct sbp2_device *sd =
-		container_of(work, struct sbp2_device, work);
-	struct Scsi_Host *host =
-		container_of((void *)sd, struct Scsi_Host, hostdata[0]);
-	struct fw_unit *unit = sd->unit;
+	struct sbp2_logical_unit *lu =
+		container_of(work, struct sbp2_logical_unit, work);
+	struct Scsi_Host *shost =
+		container_of((void *)lu->tgt, struct Scsi_Host, hostdata[0]);
+	struct scsi_device *sdev;
+	struct scsi_lun eight_bytes_lun;
+	struct fw_unit *unit = lu->tgt->unit;
 	struct fw_device *device = fw_device(unit->device.parent);
 	struct sbp2_login_response response;
-	int generation, node_id, local_node_id, lun, retval;
+	int generation, node_id, local_node_id;
 
-	/* FIXME: Make this work for multi-lun devices. */
-	lun = 0;
+	generation    = device->generation;
+	smp_rmb();    /* node_id must not be older than generation */
+	node_id       = device->node_id;
+	local_node_id = device->card->node_id;
 
-	generation    = device->card->generation;
-	node_id       = device->node->node_id;
-	local_node_id = device->card->local_node->node_id;
-
-	if (sbp2_send_management_orb(unit, node_id, generation,
-				     SBP2_LOGIN_REQUEST, lun, &response) < 0) {
-		if (sd->retries++ < 5) {
-			schedule_delayed_work(&sd->work, DIV_ROUND_UP(HZ, 5));
-		} else {
-			fw_error("failed to login to %s\n",
-				 unit->device.bus_id);
-			kref_put(&sd->kref, release_sbp2_device);
-		}
-		return;
+	if (sbp2_send_management_orb(lu, node_id, generation,
+				SBP2_LOGIN_REQUEST, lu->lun, &response) < 0) {
+		if (lu->retries++ < 5)
+			sbp2_queue_work(lu, DIV_ROUND_UP(HZ, 5));
+		else
+			fw_error("failed to login to %s LUN %04x\n",
+				 unit->device.bus_id, lu->lun);
+		goto out;
 	}
-
-	sd->generation   = generation;
-	sd->node_id      = node_id;
-	sd->address_high = local_node_id << 16;
+	lu->generation        = generation;
+	lu->tgt->node_id      = node_id;
+	lu->tgt->address_high = local_node_id << 16;
 
 	/* Get command block agent offset and login id. */
-	sd->command_block_agent_address =
+	lu->command_block_agent_address =
 		((u64) (response.command_block_agent.high & 0xffff) << 32) |
 		response.command_block_agent.low;
-	sd->login_id = LOGIN_RESPONSE_GET_LOGIN_ID(response);
+	lu->login_id = LOGIN_RESPONSE_GET_LOGIN_ID(response);
 
-	fw_notify("logged in to sbp2 unit %s (%d retries)\n",
-		  unit->device.bus_id, sd->retries);
+	fw_notify("logged in to %s LUN %04x (%d retries)\n",
+		  unit->device.bus_id, lu->lun, lu->retries);
+
 #if 0
 	/* FIXME: The linux1394 sbp2 does this last step. */
 	sbp2_set_busy_timeout(scsi_id);
 #endif
 
-	PREPARE_WORK(&sd->work, sbp2_reconnect, &(sd->work));
-	sbp2_agent_reset(unit);
+	PREPARE_WORK(&lu->work, sbp2_reconnect, &(lu->work));
+	sbp2_agent_reset(lu);
 
-	/* FIXME: Loop over luns here. */
-	retval = scsi_add_device(host, 0, 0, lun);
-	if (retval < 0) {
-		sbp2_send_management_orb(unit, sd->node_id, sd->generation,
-					 SBP2_LOGOUT_REQUEST, sd->login_id,
-					 NULL);
+	memset(&eight_bytes_lun, 0, sizeof(eight_bytes_lun));
+	eight_bytes_lun.scsi_lun[0] = (lu->lun >> 8) & 0xff;
+	eight_bytes_lun.scsi_lun[1] = lu->lun & 0xff;
+
+	sdev = __scsi_add_device(shost, 0, 0,
+				 scsilun_to_int(&eight_bytes_lun), lu);
+	if (IS_ERR(sdev)) {
 		/*
-		 * Set this back to sbp2_login so we fall back and
-		 * retry login on bus reset.
+		 * The most frequent cause for __scsi_add_device() to fail
+		 * is a bust reset while sending the SCSI INQUIRY.  Try again.
 		 */
-		PREPARE_WORK(&sd->work, sbp2_login, &(sd->work));
+		goto out_logout_login;
+
+	} else if (sdev->sdev_state == SDEV_OFFLINE) {
+		/* FIXME: We are unable to perform reconnects while in
+		 * sbp2_login().  Therefore __scsi_add_device() will get
+		 * into trouble if a bus reset happens in parallel.
+		 * It will either fail (that's OK, see above) or take sdev
+		 * offline.  Here is a crude workaround for the latter.
+		 */
+		scsi_device_put(sdev);
+		scsi_remove_device(sdev);
+		goto out_logout_login;
+
+	} else {
+		/*
+		 * Can you believe it?  Everything went well.
+		 */
+		lu->sdev = sdev;
+		scsi_device_put(sdev);
+		goto out;
 	}
-	kref_put(&sd->kref, release_sbp2_device);
+
+ out_logout_login:
+	smp_rmb(); /* generation may have changed */
+	generation = device->generation;
+	smp_rmb(); /* node_id must not be older than generation */
+
+	sbp2_send_management_orb(lu, device->node_id, generation,
+			SBP2_LOGOUT_REQUEST, lu->login_id, NULL);
+	/*
+	 * If a bus reset happened, sbp2_update will have requeued
+	 * lu->work already. Reset the work from reconnect to login.
+	 */
+	PREPARE_WORK(&lu->work, sbp2_login, &(lu->work));
+ out:
+	sbp2_target_put(lu->tgt);
 }
+
+static int sbp2_add_logical_unit(struct sbp2_target *tgt, int lun_entry)
+{
+	struct sbp2_logical_unit *lu;
+
+	lu = kmalloc(sizeof(*lu), GFP_KERNEL);
+	if (!lu)
+		return -ENOMEM;
+
+	lu->address_handler.length           = 0x100;
+	lu->address_handler.address_callback = sbp2_status_write;
+	lu->address_handler.callback_data    = lu;
+
+	if (fw_core_add_address_handler(&lu->address_handler,
+					&fw_high_memory_region) < 0) {
+		kfree(lu);
+		return -ENOMEM;
+	}
+
+	lu->tgt  = tgt;
+	lu->sdev = NULL;
+	lu->lun  = lun_entry & 0xffff;
+	lu->retries = 0;
+	INIT_LIST_HEAD(&lu->orb_list);
+	INIT_WORK(&lu->work, sbp2_login, &(lu->work));
+
+	list_add_tail(&lu->link, &tgt->lu_list);
+	return 0;
+}
+
+static int sbp2_scan_logical_unit_dir(struct sbp2_target *tgt, u32 *directory)
+{
+	struct fw_csr_iterator ci;
+	int key, value;
+
+	fw_csr_iterator_init(&ci, directory);
+	while (fw_csr_iterator_next(&ci, &key, &value))
+		if (key == SBP2_CSR_LOGICAL_UNIT_NUMBER &&
+		    sbp2_add_logical_unit(tgt, value) < 0)
+			return -ENOMEM;
+	return 0;
+}
+
+static int sbp2_scan_unit_dir(struct sbp2_target *tgt, u32 *directory,
+			      u32 *model, u32 *firmware_revision)
+{
+	struct fw_csr_iterator ci;
+	int key, value;
+	unsigned int timeout;
+
+	fw_csr_iterator_init(&ci, directory);
+	while (fw_csr_iterator_next(&ci, &key, &value)) {
+		switch (key) {
+
+		case CSR_DEPENDENT_INFO | CSR_OFFSET:
+			tgt->management_agent_address =
+				0xfffff0000000ULL + 4 * value;
+			break;
+
+		case CSR_DIRECTORY_ID:
+			tgt->directory_id = value;
+			break;
+
+		case CSR_MODEL:
+			*model = value;
+			break;
+
+		case SBP2_CSR_FIRMWARE_REVISION:
+			*firmware_revision = value;
+			break;
+
+		case SBP2_CSR_UNIT_CHARACTERISTICS:
+			/* the timeout value is stored in 500ms units */
+			timeout = ((unsigned int) value >> 8 & 0xff) * 500;
+			timeout = max(timeout, SBP2_MIN_LOGIN_ORB_TIMEOUT);
+			tgt->mgt_orb_timeout =
+				min(timeout, SBP2_MAX_LOGIN_ORB_TIMEOUT);
+
+			if (timeout > tgt->mgt_orb_timeout)
+				fw_notify("%s: config rom contains %ds "
+					  "management ORB timeout, limiting "
+					  "to %ds\n", tgt->unit->device.bus_id,
+					  timeout / 1000,
+					  tgt->mgt_orb_timeout / 1000);
+			break;
+
+		case SBP2_CSR_LOGICAL_UNIT_NUMBER:
+			if (sbp2_add_logical_unit(tgt, value) < 0)
+				return -ENOMEM;
+			break;
+
+		case SBP2_CSR_LOGICAL_UNIT_DIRECTORY:
+			if (sbp2_scan_logical_unit_dir(tgt, ci.p + value) < 0)
+				return -ENOMEM;
+			break;
+		}
+	}
+	return 0;
+}
+
+static void sbp2_init_workarounds(struct sbp2_target *tgt, u32 model,
+				  u32 firmware_revision)
+{
+	int i;
+	unsigned int w = sbp2_param_workarounds;
+
+	if (w)
+		fw_notify("Please notify linux1394-devel@lists.sourceforge.net "
+			  "if you need the workarounds parameter for %s\n",
+			  tgt->unit->device.bus_id);
+
+	if (w & SBP2_WORKAROUND_OVERRIDE)
+		goto out;
+
+	for (i = 0; i < ARRAY_SIZE(sbp2_workarounds_table); i++) {
+
+		if (sbp2_workarounds_table[i].firmware_revision !=
+		    (firmware_revision & 0xffffff00))
+			continue;
+
+		if (sbp2_workarounds_table[i].model != model &&
+		    sbp2_workarounds_table[i].model != ~0)
+			continue;
+
+		w |= sbp2_workarounds_table[i].workarounds;
+		break;
+	}
+ out:
+	if (w)
+		fw_notify("Workarounds for %s: 0x%x "
+			  "(firmware_revision 0x%06x, model_id 0x%06x)\n",
+			  tgt->unit->device.bus_id,
+			  w, firmware_revision, model);
+	tgt->workarounds = w;
+}
+
+static struct scsi_host_template scsi_driver_template;
 
 static int sbp2_probe(struct device *dev)
 {
 	struct fw_unit *unit = fw_unit(dev);
 	struct fw_device *device = fw_device(unit->device.parent);
-	struct sbp2_device *sd;
-	struct fw_csr_iterator ci;
-	struct Scsi_Host *host;
-	int i, key, value, err;
+	struct sbp2_target *tgt;
+	struct sbp2_logical_unit *lu;
+	struct Scsi_Host *shost;
 	u32 model, firmware_revision;
 
-	err = -ENOMEM;
-	host = scsi_host_alloc(&scsi_driver_template, sizeof(*sd));
-	if (host == NULL)
-		goto fail;
+	shost = scsi_host_alloc(&scsi_driver_template, sizeof(*tgt));
+	if (shost == NULL)
+		return -ENOMEM;
 
-	sd = (struct sbp2_device *) host->hostdata;
-	unit->device.driver_data = sd;
-	sd->unit = unit;
-	INIT_LIST_HEAD(&sd->orb_list);
-	kref_init(&sd->kref);
+	tgt = (struct sbp2_target *)shost->hostdata;
+	unit->device.driver_data = tgt;
+	tgt->unit = unit;
+	kref_init(&tgt->kref);
+	INIT_LIST_HEAD(&tgt->lu_list);
 
-	sd->address_handler.length = 0x100;
-	sd->address_handler.address_callback = sbp2_status_write;
-	sd->address_handler.callback_data = sd;
+	if (fw_device_enable_phys_dma(device) < 0)
+		goto fail_shost_put;
 
-	err = fw_core_add_address_handler(&sd->address_handler,
-					&fw_high_memory_region);
-	if (err < 0)
-		goto fail_host;
+	if (scsi_add_host(shost, &unit->device) < 0)
+		goto fail_shost_put;
 
-	err = fw_device_enable_phys_dma(device);
-	if (err < 0)
-		goto fail_address_handler;
-
-	err = scsi_add_host(host, &unit->device);
-	if (err < 0)
-		goto fail_address_handler;
-
-	/*
-	 * Scan unit directory to get management agent address,
-	 * firmware revison and model.  Initialize firmware_revision
-	 * and model to values that wont match anything in our table.
-	 */
+	/* Initialize to values that won't match anything in our table. */
 	firmware_revision = 0xff000000;
 	model = 0xff000000;
-	fw_csr_iterator_init(&ci, unit->directory);
-	while (fw_csr_iterator_next(&ci, &key, &value)) {
-		switch (key) {
-		case CSR_DEPENDENT_INFO | CSR_OFFSET:
-			sd->management_agent_address =
-				0xfffff0000000ULL + 4 * value;
-			break;
-		case SBP2_FIRMWARE_REVISION:
-			firmware_revision = value;
-			break;
-		case CSR_MODEL:
-			model = value;
-			break;
-		}
-	}
 
-	for (i = 0; i < ARRAY_SIZE(sbp2_workarounds_table); i++) {
-		if (sbp2_workarounds_table[i].firmware_revision !=
-		    (firmware_revision & 0xffffff00))
-			continue;
-		if (sbp2_workarounds_table[i].model != model &&
-		    sbp2_workarounds_table[i].model != ~0)
-			continue;
-		sd->workarounds |= sbp2_workarounds_table[i].workarounds;
-		break;
-	}
+	/* implicit directory ID */
+	tgt->directory_id = ((unit->directory - device->config_rom) * 4
+			     + CSR_CONFIG_ROM) & 0xffffff;
 
-	if (sd->workarounds)
-		fw_notify("Workarounds for node %s: 0x%x "
-			  "(firmware_revision 0x%06x, model_id 0x%06x)\n",
-			  unit->device.bus_id,
-			  sd->workarounds, firmware_revision, model);
+	if (sbp2_scan_unit_dir(tgt, unit->directory, &model,
+			       &firmware_revision) < 0)
+		goto fail_tgt_put;
+
+	sbp2_init_workarounds(tgt, model, firmware_revision);
 
 	get_device(&unit->device);
 
-	/*
-	 * We schedule work to do the login so we can easily
-	 * reschedule retries. Always get the ref before scheduling
-	 * work.
-	 */
-	INIT_WORK(&sd->work, sbp2_login,&(sd->work));
-	if (schedule_delayed_work(&sd->work, 0))
-		kref_get(&sd->kref);
-
+	/* Do the login in a workqueue so we can easily reschedule retries. */
+	list_for_each_entry(lu, &tgt->lu_list, link)
+		sbp2_queue_work(lu, 0);
 	return 0;
 
- fail_address_handler:
-	fw_core_remove_address_handler(&sd->address_handler);
- fail_host:
-	scsi_host_put(host);
- fail:
-	return err;
+ fail_tgt_put:
+	sbp2_target_put(tgt);
+	return -ENOMEM;
+
+ fail_shost_put:
+	scsi_host_put(shost);
+	return -ENOMEM;
 }
 
 static int sbp2_remove(struct device *dev)
 {
 	struct fw_unit *unit = fw_unit(dev);
-	struct sbp2_device *sd = unit->device.driver_data;
+	struct sbp2_target *tgt = unit->device.driver_data;
 
-	kref_put(&sd->kref, release_sbp2_device);
-
+	sbp2_target_put(tgt);
 	return 0;
 }
 
 static void sbp2_reconnect(void *w)
 {
 	struct work_struct *work = w;
-	struct sbp2_device *sd =
-		container_of(work, struct sbp2_device, work);
-	struct fw_unit *unit = sd->unit;
+	struct sbp2_logical_unit *lu =
+		container_of(work, struct sbp2_logical_unit, work);
+	struct fw_unit *unit = lu->tgt->unit;
 	struct fw_device *device = fw_device(unit->device.parent);
 	int generation, node_id, local_node_id;
 
-	generation    = device->card->generation;
-	node_id       = device->node->node_id;
-	local_node_id = device->card->local_node->node_id;
+	generation    = device->generation;
+	smp_rmb();    /* node_id must not be older than generation */
+	node_id       = device->node_id;
+	local_node_id = device->card->node_id;
 
-	if (sbp2_send_management_orb(unit, node_id, generation,
+	if (sbp2_send_management_orb(lu, node_id, generation,
 				     SBP2_RECONNECT_REQUEST,
-				     sd->login_id, NULL) < 0) {
-		if (sd->retries++ >= 5) {
+				     lu->login_id, NULL) < 0) {
+		if (lu->retries++ >= 5) {
 			fw_error("failed to reconnect to %s\n",
 				 unit->device.bus_id);
 			/* Fall back and try to log in again. */
-			sd->retries = 0;
-			PREPARE_WORK(&sd->work, sbp2_login, &(sd->work));
+			lu->retries = 0;
+			PREPARE_WORK(&lu->work, sbp2_login, &(lu->work));
 		}
-		schedule_delayed_work(&sd->work, DIV_ROUND_UP(HZ, 5));
-		return;
+		sbp2_queue_work(lu, DIV_ROUND_UP(HZ, 5));
+		goto out;
 	}
 
-	sd->generation   = generation;
-	sd->node_id      = node_id;
-	sd->address_high = local_node_id << 16;
+	lu->generation        = generation;
+	lu->tgt->node_id      = node_id;
+	lu->tgt->address_high = local_node_id << 16;
 
-	fw_notify("reconnected to unit %s (%d retries)\n",
-		  unit->device.bus_id, sd->retries);
-	sbp2_agent_reset(unit);
-	sbp2_cancel_orbs(unit);
-	kref_put(&sd->kref, release_sbp2_device);
+	fw_notify("reconnected to %s LUN %04x (%d retries)\n",
+		  unit->device.bus_id, lu->lun, lu->retries);
+
+	sbp2_agent_reset(lu);
+	sbp2_cancel_orbs(lu);
+ out:
+	sbp2_target_put(lu->tgt);
 }
 
 static void sbp2_update(struct fw_unit *unit)
 {
-	struct fw_device *device = fw_device(unit->device.parent);
-	struct sbp2_device *sd = unit->device.driver_data;
+	struct sbp2_target *tgt = unit->device.driver_data;
+	struct sbp2_logical_unit *lu;
 
-	sd->retries = 0;
-	fw_device_enable_phys_dma(device);
-	if (schedule_delayed_work(&sd->work, 0))
-		kref_get(&sd->kref);
+	fw_device_enable_phys_dma(fw_device(unit->device.parent));
+
+	/*
+	 * Fw-core serializes sbp2_update() against sbp2_remove().
+	 * Iteration over tgt->lu_list is therefore safe here.
+	 */
+	list_for_each_entry(lu, &tgt->lu_list, link) {
+		lu->retries = 0;
+		sbp2_queue_work(lu, 0);
+	}
 }
 
 #define SBP2_UNIT_SPEC_ID_ENTRY	0x0000609e
@@ -842,15 +1101,14 @@ sbp2_status_to_sense_data(u8 *sbp2_status, u8 *sense_data)
 static void
 complete_command_orb(struct sbp2_orb *base_orb, struct sbp2_status *status)
 {
-	struct sbp2_command_orb *orb = (struct sbp2_command_orb *)base_orb;
-	struct fw_unit *unit = orb->unit;
-	struct fw_device *device = fw_device(unit->device.parent);
-	struct scatterlist *sg;
+	struct sbp2_command_orb *orb =
+		container_of(base_orb, struct sbp2_command_orb, base);
+	struct fw_device *device = fw_device(orb->lu->tgt->unit->device.parent);
 	int result;
 
 	if (status != NULL) {
 		if (STATUS_GET_DEAD(*status))
-			sbp2_agent_reset(unit);
+			sbp2_agent_reset(orb->lu);
 
 		switch (STATUS_GET_RESPONSE(*status)) {
 		case SBP2_STATUS_REQUEST_COMPLETE:
@@ -881,30 +1139,26 @@ complete_command_orb(struct sbp2_orb *base_orb, struct sbp2_status *status)
 	dma_unmap_single(device->card->device, orb->base.request_bus,
 			 sizeof(orb->request), DMA_TO_DEVICE);
 
-	if (orb->cmd->use_sg > 0) {
-		sg = (struct scatterlist *)orb->cmd->request_buffer;
-		dma_unmap_sg(device->card->device, sg, orb->cmd->use_sg,
-			     orb->cmd->sc_data_direction);
-	}
+	if (orb->cmd->use_sg > 0)
+		dma_unmap_sg(device->card->device,
+			     (struct scatterlist *)orb->cmd->request_buffer,
+			     orb->cmd->use_sg, orb->cmd->sc_data_direction);
+
 
 	if (orb->page_table_bus != 0)
 		dma_unmap_single(device->card->device, orb->page_table_bus,
-				 sizeof(orb->page_table_bus), DMA_TO_DEVICE);
+				 sizeof(orb->page_table), DMA_TO_DEVICE);
 
 	orb->cmd->result = result;
 	orb->done(orb->cmd);
-	kfree(orb);
 }
 
-static int sbp2_command_orb_map_scatterlist(struct sbp2_command_orb *orb)
+static int
+sbp2_map_scatterlist(struct sbp2_command_orb *orb, struct fw_device *device,
+		     struct sbp2_logical_unit *lu)
 {
-	struct sbp2_device *sd =
-		(struct sbp2_device *)orb->cmd->device->host->hostdata;
-	struct fw_unit *unit = sd->unit;
-	struct fw_device *device = fw_device(unit->device.parent);
 	struct scatterlist *sg;
 	int sg_len, l, i, j, count;
-	size_t size;
 	dma_addr_t sg_addr;
 
 	sg = (struct scatterlist *)orb->cmd->request_buffer;
@@ -913,6 +1167,7 @@ static int sbp2_command_orb_map_scatterlist(struct sbp2_command_orb *orb)
 
 	if (count == 0)
 		goto fail;
+
 	/*
 	 * Handle the special case where there is only one element in
 	 * the scatter list by converting it to an immediate block
@@ -921,21 +1176,28 @@ static int sbp2_command_orb_map_scatterlist(struct sbp2_command_orb *orb)
 	 * tables.
 	 */
 	if (count == 1 && sg_dma_len(sg) < SBP2_MAX_SG_ELEMENT_LENGTH) {
-		orb->request.data_descriptor.high = sd->address_high;
+		orb->request.data_descriptor.high = lu->tgt->address_high;
 		orb->request.data_descriptor.low  = sg_dma_address(sg);
-		orb->request.misc |=
-			COMMAND_ORB_DATA_SIZE(sg_dma_len(sg));
+		orb->request.misc |= COMMAND_ORB_DATA_SIZE(sg_dma_len(sg));
 		return 0;
 	}
 
 	/*
 	 * Convert the scatterlist to an sbp2 page table.  If any
-	 * scatterlist entries are too big for sbp2 we split the as we go.
+	 * scatterlist entries are too big for sbp2, we split them as we
+	 * go.  Even if we ask the block I/O layer to not give us sg
+	 * elements larger than 65535 bytes, some IOMMUs may merge sg elements
+	 * during DMA mapping, and Linux currently doesn't prevent this.
 	 */
 	for (i = 0, j = 0; i < count; i++) {
-		sg_len = sg_dma_len(sg + i);
-		sg_addr = sg_dma_address(sg + i);
+		sg_len = sg_dma_len(sg+i);
+		sg_addr = sg_dma_address(sg+i);
 		while (sg_len) {
+			/* FIXME: This won't get us out of the pinch. */
+			if (unlikely(j >= ARRAY_SIZE(orb->page_table))) {
+				fw_error("page table overflow\n");
+				goto fail_page_table;
+			}
 			l = min(sg_len, SBP2_MAX_SG_ELEMENT_LENGTH);
 			orb->page_table[j].low = sg_addr;
 			orb->page_table[j].high = (l << 16);
@@ -945,7 +1207,13 @@ static int sbp2_command_orb_map_scatterlist(struct sbp2_command_orb *orb)
 		}
 	}
 
-	size = sizeof(orb->page_table[0]) * j;
+	fw_memcpy_to_be32(orb->page_table, orb->page_table,
+			  sizeof(orb->page_table[0]) * j);
+	orb->page_table_bus =
+		dma_map_single(device->card->device, orb->page_table,
+			       sizeof(orb->page_table), DMA_TO_DEVICE);
+	if (dma_mapping_error(orb->page_table_bus))
+		goto fail_page_table;
 
 	/*
 	 * The data_descriptor pointer is the one case where we need
@@ -954,19 +1222,12 @@ static int sbp2_command_orb_map_scatterlist(struct sbp2_command_orb *orb)
 	 * initiator (i.e. us), but data_descriptor can refer to data
 	 * on other nodes so we need to put our ID in descriptor.high.
 	 */
-
-	orb->page_table_bus =
-		dma_map_single(device->card->device, orb->page_table,
-			       size, DMA_TO_DEVICE);
-	if (dma_mapping_error(orb->page_table_bus))
-		goto fail_page_table;
-	orb->request.data_descriptor.high = sd->address_high;
+	orb->request.data_descriptor.high = lu->tgt->address_high;
 	orb->request.data_descriptor.low  = orb->page_table_bus;
 	orb->request.misc |=
 		COMMAND_ORB_PAGE_TABLE_PRESENT |
 		COMMAND_ORB_DATA_SIZE(j);
 
-	fw_memcpy_to_be32(orb->page_table, orb->page_table, size);
 	return 0;
 
  fail_page_table:
@@ -980,18 +1241,18 @@ static int sbp2_command_orb_map_scatterlist(struct sbp2_command_orb *orb)
 
 static int sbp2_scsi_queuecommand(struct scsi_cmnd *cmd, scsi_done_fn_t done)
 {
-	struct sbp2_device *sd =
-		(struct sbp2_device *)cmd->device->host->hostdata;
-	struct fw_unit *unit = sd->unit;
-	struct fw_device *device = fw_device(unit->device.parent);
+	struct sbp2_logical_unit *lu = cmd->device->hostdata;
+	struct fw_device *device = fw_device(lu->tgt->unit->device.parent);
 	struct sbp2_command_orb *orb;
+	unsigned int max_payload;
+	int retval = SCSI_MLQUEUE_HOST_BUSY;
 
 	/*
 	 * Bidirectional commands are not yet implemented, and unknown
 	 * transfer direction not handled.
 	 */
 	if (cmd->sc_data_direction == DMA_BIDIRECTIONAL) {
-		fw_error("Cannot handle DMA_BIDIRECTIONAL, rejecting command\n");
+		fw_error("Can't handle DMA_BIDIRECTIONAL, rejecting command\n");
 		cmd->result = DID_ERROR << 16;
 		done(cmd);
 		return 0;
@@ -999,18 +1260,15 @@ static int sbp2_scsi_queuecommand(struct scsi_cmnd *cmd, scsi_done_fn_t done)
 
 	orb = kzalloc(sizeof(*orb), GFP_ATOMIC);
 	if (orb == NULL) {
-		goto fail_alloc;
+		fw_notify("failed to alloc orb\n");
+		return SCSI_MLQUEUE_HOST_BUSY;
 	}
 
 	/* Initialize rcode to something not RCODE_COMPLETE. */
 	orb->base.rcode = -1;
-	orb->base.request_bus =
-		dma_map_single(device->card->device, &orb->request,
-			       sizeof(orb->request), DMA_TO_DEVICE);
-	if (dma_mapping_error(orb->base.request_bus))
-		goto fail_mapping;
+	kref_init(&orb->base.kref);
 
-	orb->unit = unit;
+	orb->lu   = lu;
 	orb->done = done;
 	orb->cmd  = cmd;
 
@@ -1022,9 +1280,11 @@ static int sbp2_scsi_queuecommand(struct scsi_cmnd *cmd, scsi_done_fn_t done)
 	 * specifies the max payload size as 2 ^ (max_payload + 2), so
 	 * if we set this to max_speed + 7, we get the right value.
 	 */
+	max_payload = min(device->max_speed + 7,
+			  device->card->max_receive - 1);
 	orb->request.misc =
-		COMMAND_ORB_MAX_PAYLOAD(device->node->max_speed + 7) |
-		COMMAND_ORB_SPEED(device->node->max_speed) |
+		COMMAND_ORB_MAX_PAYLOAD(max_payload) |
+		COMMAND_ORB_SPEED(device->max_speed) |
 		COMMAND_ORB_NOTIFY;
 
 	if (cmd->sc_data_direction == DMA_FROM_DEVICE)
@@ -1034,8 +1294,9 @@ static int sbp2_scsi_queuecommand(struct scsi_cmnd *cmd, scsi_done_fn_t done)
 		orb->request.misc |=
 			COMMAND_ORB_DIRECTION(SBP2_DIRECTION_TO_MEDIA);
 
-	if (cmd->use_sg && sbp2_command_orb_map_scatterlist(orb) < 0)
-		goto fail_map_payload;
+	if (cmd->use_sg && sbp2_map_scatterlist(orb, device, lu) < 0)
+		goto out;
+
 	fw_memcpy_to_be32(&orb->request, &orb->request, sizeof(orb->request));
 
 	memset(orb->request.command_block,
@@ -1044,48 +1305,49 @@ static int sbp2_scsi_queuecommand(struct scsi_cmnd *cmd, scsi_done_fn_t done)
 
 	orb->base.callback = complete_command_orb;
 
-	sbp2_send_orb(&orb->base, unit, sd->node_id, sd->generation,
-		      sd->command_block_agent_address + SBP2_ORB_POINTER);
+	orb->base.request_bus =
+		dma_map_single(device->card->device, &orb->request,
+			       sizeof(orb->request), DMA_TO_DEVICE);
+	if (dma_mapping_error(orb->base.request_bus))
+		goto out;
 
-	return 0;
-
- fail_map_payload:
-	dma_unmap_single(device->card->device, orb->base.request_bus,
-			 sizeof(orb->request), DMA_TO_DEVICE);
- fail_mapping:
-	kfree(orb);
- fail_alloc:
-	return SCSI_MLQUEUE_HOST_BUSY;
+	sbp2_send_orb(&orb->base, lu, lu->tgt->node_id, lu->generation,
+		      lu->command_block_agent_address + SBP2_ORB_POINTER);
+	retval = 0;
+ out:
+	kref_put(&orb->base.kref, free_orb);
+	return retval;
 }
 
 static int sbp2_scsi_slave_alloc(struct scsi_device *sdev)
 {
-	struct sbp2_device *sd = (struct sbp2_device *)sdev->host->hostdata;
+	struct sbp2_logical_unit *lu = sdev->hostdata;
 
 	sdev->allow_restart = 1;
 
-	if (sd->workarounds & SBP2_WORKAROUND_INQUIRY_36)
+	if (lu->tgt->workarounds & SBP2_WORKAROUND_INQUIRY_36)
 		sdev->inquiry_len = 36;
+
 	return 0;
 }
 
 static int sbp2_scsi_slave_configure(struct scsi_device *sdev)
 {
-	struct sbp2_device *sd = (struct sbp2_device *)sdev->host->hostdata;
-	struct fw_unit *unit = sd->unit;
+	struct sbp2_logical_unit *lu = sdev->hostdata;
 
 	sdev->use_10_for_rw = 1;
 
 	if (sdev->type == TYPE_ROM)
 		sdev->use_10_for_ms = 1;
+
 	if (sdev->type == TYPE_DISK &&
-	    sd->workarounds & SBP2_WORKAROUND_MODE_SENSE_8)
+	    lu->tgt->workarounds & SBP2_WORKAROUND_MODE_SENSE_8)
 		sdev->skip_ms_page_8 = 1;
-	if (sd->workarounds & SBP2_WORKAROUND_FIX_CAPACITY) {
-		fw_notify("setting fix_capacity for %s\n", unit->device.bus_id);
+
+	if (lu->tgt->workarounds & SBP2_WORKAROUND_FIX_CAPACITY)
 		sdev->fix_capacity = 1;
-	}
-	if (sd->workarounds & SBP2_WORKAROUND_128K_MAX_TRANS)
+
+	if (lu->tgt->workarounds & SBP2_WORKAROUND_128K_MAX_TRANS)
 		blk_queue_max_sectors(sdev->request_queue, 128 * 1024 / 512);
 
 	return 0;
@@ -1097,12 +1359,11 @@ static int sbp2_scsi_slave_configure(struct scsi_device *sdev)
  */
 static int sbp2_scsi_abort(struct scsi_cmnd *cmd)
 {
-	struct sbp2_device *sd =
-		(struct sbp2_device *)cmd->device->host->hostdata;
-	struct fw_unit *unit = sd->unit;
+	struct sbp2_logical_unit *lu = cmd->device->hostdata;
 
-	sbp2_agent_reset(unit);
-	sbp2_cancel_orbs(unit);
+	fw_notify("sbp2_scsi_abort\n");
+	sbp2_agent_reset(lu);
+	sbp2_cancel_orbs(lu);
 
 	return SUCCESS;
 }
@@ -1119,37 +1380,18 @@ sbp2_sysfs_ieee1394_id_show(struct device *dev, struct device_attribute *attr,
 			    char *buf)
 {
 	struct scsi_device *sdev = to_scsi_device(dev);
-	struct sbp2_device *sd;
-	struct fw_unit *unit;
+	struct sbp2_logical_unit *lu;
 	struct fw_device *device;
-	u32 directory_id;
-	struct fw_csr_iterator ci;
-	int key, value, lun;
 
 	if (!sdev)
 		return 0;
-	sd = (struct sbp2_device *)sdev->host->hostdata;
-	unit = sd->unit;
-	device = fw_device(unit->device.parent);
 
-	/* implicit directory ID */
-	directory_id = ((unit->directory - device->config_rom) * 4
-			+ CSR_CONFIG_ROM) & 0xffffff;
-
-	/* explicit directory ID, overrides implicit ID if present */
-	fw_csr_iterator_init(&ci, unit->directory);
-	while (fw_csr_iterator_next(&ci, &key, &value))
-		if (key == CSR_DIRECTORY_ID) {
-			directory_id = value;
-			break;
-		}
-
-	/* FIXME: Make this work for multi-lun devices. */
-	lun = 0;
+	lu = sdev->hostdata;
+	device = fw_device(lu->tgt->unit->device.parent);
 
 	return sprintf(buf, "%08x%08x:%06x:%04x\n",
 		       device->config_rom[3], device->config_rom[4],
-		       directory_id, lun);
+		       lu->tgt->directory_id, lu->lun);
 }
 
 static DEVICE_ATTR(ieee1394_id, S_IRUGO, sbp2_sysfs_ieee1394_id_show, NULL);
@@ -1162,7 +1404,7 @@ static struct device_attribute *sbp2_scsi_sysfs_attrs[] = {
 static struct scsi_host_template scsi_driver_template = {
 	.module			= THIS_MODULE,
 	.name			= "SBP-2 IEEE-1394",
-	.proc_name		= (char *)sbp2_driver_name,
+	.proc_name		= sbp2_driver_name,
 	.queuecommand		= sbp2_scsi_queuecommand,
 	.slave_alloc		= sbp2_scsi_slave_alloc,
 	.slave_configure	= sbp2_scsi_slave_configure,
@@ -1187,12 +1429,17 @@ MODULE_ALIAS("sbp2");
 
 static int __init sbp2_init(void)
 {
+	sbp2_wq = create_singlethread_workqueue(KBUILD_MODNAME);
+	if (!sbp2_wq)
+		return -ENOMEM;
+
 	return driver_register(&sbp2_driver.driver);
 }
 
 static void __exit sbp2_cleanup(void)
 {
 	driver_unregister(&sbp2_driver.driver);
+	destroy_workqueue(sbp2_wq);
 }
 
 module_init(sbp2_init);

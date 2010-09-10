@@ -24,7 +24,7 @@
 int kdump_status[NR_CPUS];
 atomic_t kdump_cpu_freezed;
 int kdump_on_init = 1;
-extern int kdump_in_progress;
+atomic_t kdump_in_progress;
 
 ssize_t
 copy_oldmem_page(unsigned long pfn, char *buf,
@@ -139,6 +139,7 @@ machine_crash_shutdown(struct pt_regs *pt)
 static void
 machine_kdump_on_init(void)
 {
+	crash_save_vmcoreinfo();
 	local_irq_disable();
 	kexec_disable_iosapic();
 	machine_kexec(ia64_kimage);
@@ -173,30 +174,44 @@ kdump_init_notifier(struct notifier_block *self, unsigned long val, void *data)
 	if (!kdump_on_init)
 		return NOTIFY_DONE;
 
-	if (val != DIE_INIT_MONARCH_ENTER &&
-	    val != DIE_INIT_SLAVE_ENTER &&
+	if (!ia64_kimage) {
+		if (val == DIE_INIT_MONARCH_LEAVE)
+			printk(KERN_NOTICE
+				"%s: kdump not configured\n",
+				__FUNCTION__);
+		return NOTIFY_DONE;
+	}
+
+	if (val != DIE_INIT_MONARCH_LEAVE &&
+	    val != DIE_INIT_SLAVE_LEAVE &&
+	    val != DIE_INIT_MONARCH_PROCESS &&
 	    val != DIE_MCA_RENDZVOUS_LEAVE &&
 	    val != DIE_MCA_MONARCH_LEAVE)
 		return NOTIFY_DONE;
 
 	nd = (struct ia64_mca_notify_die *)args->err;
 	/* Reason code 1 means machine check rendezous*/
-	if ((val==DIE_INIT_MONARCH_ENTER || val==DIE_INIT_SLAVE_ENTER) &&
-	    nd->sos->rv_rc == 1)
+	if ((val == DIE_INIT_MONARCH_LEAVE || val == DIE_INIT_SLAVE_LEAVE
+	    || val == DIE_INIT_MONARCH_PROCESS) && nd->sos->rv_rc == 1)
 		return NOTIFY_DONE;
 
 	if (kdump_sending_init)
 		unw_init_running(kdump_cpu_freeze, NULL);
 
 	switch (val) {
-		case DIE_INIT_MONARCH_ENTER:
+		case DIE_INIT_MONARCH_PROCESS:
+			atomic_set(&kdump_in_progress, 1);
+			*(nd->monarch_cpu) = -1;
+			break;
+		case DIE_INIT_MONARCH_LEAVE:
 			machine_kdump_on_init();
 			break;
-		case DIE_INIT_SLAVE_ENTER:
-			unw_init_running(kdump_cpu_freeze, NULL);
+		case DIE_INIT_SLAVE_LEAVE:
+			if (atomic_read(&kdump_in_progress))
+				unw_init_running(kdump_cpu_freeze, NULL);
 			break;
 		case DIE_MCA_RENDZVOUS_LEAVE:
-			if (kdump_in_progress)
+			if (atomic_read(&kdump_in_progress))
 				unw_init_running(kdump_cpu_freeze, NULL);
 			break;
 		case DIE_MCA_MONARCH_LEAVE:
@@ -236,8 +251,10 @@ static int
 machine_crash_setup(void)
 {
 	char *from = strstr(saved_command_line, "elfcorehdr=");
+	/* be notified before default_monarch_init_process */
 	static struct notifier_block kdump_init_notifier_nb = {
 		.notifier_call = kdump_init_notifier,
+		.priority = 1,
 	};
 	int ret;
 	if (from)

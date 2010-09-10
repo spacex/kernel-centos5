@@ -1235,7 +1235,6 @@ static int __devinit qla4xxx_probe_adapter(struct pci_dev *pdev,
 	INIT_LIST_HEAD(&ha->free_srb_q);
 
 	mutex_init(&ha->mbox_sem);
-	init_waitqueue_head(&ha->mailbox_wait_queue);
 
 	spin_lock_init(&ha->hardware_lock);
 	spin_lock_init(&ha->list_lock);
@@ -1579,9 +1578,6 @@ static int qla4xxx_eh_device_reset(struct scsi_cmnd *cmd)
 		goto eh_dev_reset_done;
 	}
 
-	/* Send marker. */
-	ha->marker_needed = 1;
-
 	/*
 	 * If we are coming down the EH path, wait for all commands to complete
 	 * for the device.
@@ -1597,6 +1593,9 @@ static int qla4xxx_eh_device_reset(struct scsi_cmnd *cmd)
 			goto eh_dev_reset_done;
 		}
 	}
+	if (qla4xxx_send_marker_iocb(ha, ddb_entry, cmd->device->lun)
+		!= QLA_SUCCESS)
+		goto eh_dev_reset_done;
 
 	dev_info(&ha->pdev->dev,
 		   "scsi(%ld:%d:%d:%d): DEVICE RESET SUCCEEDED.\n",

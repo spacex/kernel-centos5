@@ -20,12 +20,21 @@ int xfrm6_rcv_spi(struct sk_buff *skb, u32 spi)
 {
 	int err;
 	u32 seq;
-	struct xfrm_state *xfrm_vec[XFRM_MAX_DEPTH];
 	struct xfrm_state *x;
-	int xfrm_nr = 0;
 	int decaps = 0;
 	int nexthdr;
 	unsigned int nhoff;
+
+	/* Allocate new secpath or COW existing one. */
+	if (!skb->sp || atomic_read(&skb->sp->refcnt) != 1) {
+		struct sec_path *sp;
+		sp = secpath_dup(skb->sp);
+		if (!sp)
+			goto drop;
+		if (skb->sp)
+			secpath_put(skb->sp);
+		skb->sp = sp;
+	}
 
 	nhoff = IP6CB(skb)->nhoff;
 	nexthdr = skb->nh.raw[nhoff];
@@ -37,21 +46,30 @@ int xfrm6_rcv_spi(struct sk_buff *skb, u32 spi)
 	do {
 		struct ipv6hdr *iph = skb->nh.ipv6h;
 
-		if (xfrm_nr == XFRM_MAX_DEPTH)
+		if (skb->sp->len == XFRM_MAX_DEPTH)
 			goto drop;
 
 		x = xfrm_state_lookup((xfrm_address_t *)&iph->daddr, spi, nexthdr, AF_INET6);
-		if (x == NULL)
+		if (x == NULL) {
+			xfrm_naudit_state_notfound(skb, AF_INET6, spi, seq);
 			goto drop;
+		}
+
+		skb->sp->xvec[skb->sp->len++] = x;
+
 		spin_lock(&x->lock);
 		if (unlikely(x->km.state != XFRM_STATE_VALID))
 			goto drop_unlock;
 
-		if (x->props.replay_window && xfrm_replay_check(x, seq))
+		if (x->props.replay_window && xfrm_replay_check(x, seq)) {
+			xfrm_naudit_state_replay(x, skb, seq);
 			goto drop_unlock;
+		}
 
 		if (xfrm_state_check_expire(x))
 			goto drop_unlock;
+
+		XFRM_SKB_CB(skb)->seq = seq;
 
 		nexthdr = x->type->input(x, skb);
 		if (nexthdr <= 0)
@@ -67,8 +85,6 @@ int xfrm6_rcv_spi(struct sk_buff *skb, u32 spi)
 
 		spin_unlock(&x->lock);
 
-		xfrm_vec[xfrm_nr++] = x;
-
 		if (x->mode->input(x, skb))
 			goto drop;
 
@@ -81,23 +97,6 @@ int xfrm6_rcv_spi(struct sk_buff *skb, u32 spi)
 			goto drop;
 	} while (!err);
 
-	/* Allocate new secpath or COW existing one. */
-	if (!skb->sp || atomic_read(&skb->sp->refcnt) != 1) {
-		struct sec_path *sp;
-		sp = secpath_dup(skb->sp);
-		if (!sp)
-			goto drop;
-		if (skb->sp)
-			secpath_put(skb->sp);
-		skb->sp = sp;
-	}
-
-	if (xfrm_nr + skb->sp->len > XFRM_MAX_DEPTH)
-		goto drop;
-
-	memcpy(skb->sp->xvec + skb->sp->len, xfrm_vec,
-	       xfrm_nr * sizeof(xfrm_vec[0]));
-	skb->sp->len += xfrm_nr;
 	skb->ip_summed = CHECKSUM_NONE;
 
 	nf_reset(skb);
@@ -124,10 +123,9 @@ int xfrm6_rcv_spi(struct sk_buff *skb, u32 spi)
 
 drop_unlock:
 	spin_unlock(&x->lock);
-	xfrm_state_put(x);
+	if (nexthdr == -EINPROGRESS)
+		return -1;
 drop:
-	while (--xfrm_nr >= 0)
-		xfrm_state_put(xfrm_vec[xfrm_nr]);
 	kfree_skb(skb);
 	return -1;
 }

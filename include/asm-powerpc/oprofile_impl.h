@@ -39,12 +39,16 @@ struct op_system_config {
 
 /* Per-arch configuration */
 struct op_powerpc_model {
-	void (*reg_setup) (struct op_counter_config *,
+	int (*reg_setup) (struct op_counter_config *,
 			   struct op_system_config *,
 			   int num_counters);
-	void (*cpu_setup) (void *);
-	void (*start) (struct op_counter_config *);
+	int  (*cpu_setup) (struct op_counter_config *);
+	int  (*start) (struct op_counter_config *);
+	int  (*global_start) (struct op_counter_config *);
 	void (*stop) (void);
+	void (*global_stop) (void);
+	int (*sync_start)(void);
+	int (*sync_stop)(void);
 	void (*handle_interrupt) (struct pt_regs *,
 				  struct op_counter_config *);
 	int num_counters;
@@ -54,6 +58,7 @@ extern struct op_powerpc_model op_model_fsl_booke;
 extern struct op_powerpc_model op_model_rs64;
 extern struct op_powerpc_model op_model_power4;
 extern struct op_powerpc_model op_model_7450;
+extern struct op_powerpc_model op_model_cell;
 
 #ifndef CONFIG_FSL_BOOKE
 
@@ -121,6 +126,7 @@ static inline void ctr_write(unsigned int i, unsigned int val)
 		break;
 	}
 }
+
 #endif /* !CONFIG_FSL_BOOKE */
 
 extern void op_powerpc_backtrace(struct pt_regs * const regs, unsigned int depth);

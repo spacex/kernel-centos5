@@ -31,6 +31,7 @@
 #include <linux/seq_file.h>
 #include <asm/uaccess.h>
 #include <linux/platform_device.h>
+#include <linux/dmi.h>
 
 ACPI_MODULE_NAME("bay");
 MODULE_AUTHOR("Kristen Carlson Accardi");
@@ -360,9 +361,54 @@ find_bay(acpi_handle handle, u32 lvl, void *context, void **rv)
 	return AE_OK;
 }
 
+static unsigned int generic_bay_driver = 1;
+static unsigned int override_bay_driver = 0;
+
+static int __init setup_generic_bay_driver(char *str)
+{
+	int value;
+
+	override_bay_driver = 1;
+	get_option(&str, &value);
+	generic_bay_driver = value;
+
+	return 1;
+}
+
+/* generic_bay_driver can have values of 0 or 1 */
+__setup("generic_bay_driver=", setup_generic_bay_driver);
+
+static int __init private_bay_driver(struct dmi_system_id *d)
+{
+	generic_bay_driver = 0;
+
+	return 0;
+}
+
+static struct dmi_system_id __initdata private_driver_table[] = {
+	{
+		.callback = private_bay_driver,
+		.ident = "Lenovo T60 laptop",
+		.matches = {DMI_MATCH(DMI_PRODUCT_VERSION, "ThinkPad T60"),},
+	},
+	{
+		.callback = private_bay_driver,
+		.ident = "Lenovo T61 laptop",
+		.matches = {DMI_MATCH(DMI_PRODUCT_VERSION, "ThinkPad T61"),},
+	},
+
+	{ }
+};
+
 static int __init bay_init(void)
 {
 	int bays = 0;
+
+	if (!override_bay_driver)
+		dmi_check_system(private_driver_table);
+
+	if (!generic_bay_driver)
+		return -EBUSY;
 
 	INIT_LIST_HEAD(&drive_bays);
 

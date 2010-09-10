@@ -71,11 +71,11 @@ static int udp_v6_get_port(struct sock *sk, unsigned short snum)
 
 	write_lock_bh(&udp_hash_lock);
 	if (snum == 0) {
-		int best_size_so_far, best, result, i;
+		int best_size_so_far, best, result, i, low, high;
 
-		if (udp_port_rover > sysctl_local_port_range[1] ||
-		    udp_port_rover < sysctl_local_port_range[0])
-			udp_port_rover = sysctl_local_port_range[0];
+		inet_get_local_port_range(&low, &high);
+		if (udp_port_rover > high || udp_port_rover < low)
+			udp_port_rover = low;
 		best_size_so_far = 32767;
 		best = result = udp_port_rover;
 		for (i = 0; i < UDP_HTABLE_SIZE; i++, result++) {
@@ -84,9 +84,8 @@ static int udp_v6_get_port(struct sock *sk, unsigned short snum)
 
 			list = &udp_hash[result & (UDP_HTABLE_SIZE - 1)];
 			if (hlist_empty(list)) {
-				if (result > sysctl_local_port_range[1])
-					result = sysctl_local_port_range[0] +
-						((result - sysctl_local_port_range[0]) &
+				if (result > high)
+					result = low + ((result - low) &
 						 (UDP_HTABLE_SIZE - 1));
 				goto gotit;
 			}
@@ -100,9 +99,8 @@ static int udp_v6_get_port(struct sock *sk, unsigned short snum)
 		}
 		result = best;
 		for(i = 0; i < (1 << 16) / UDP_HTABLE_SIZE; i++, result += UDP_HTABLE_SIZE) {
-			if (result > sysctl_local_port_range[1])
-				result = sysctl_local_port_range[0]
-					+ ((result - sysctl_local_port_range[0]) &
+			if (result > high)
+				result = low + ((result - low) &
 					   (UDP_HTABLE_SIZE - 1));
 			if (!udp_lport_inuse(result))
 				break;
@@ -260,6 +258,8 @@ try_again:
 	if (err)
 		goto out_free;
 
+	UDP6_INC_STATS_USER(UDP_MIB_INDATAGRAMS);
+
 	sock_recv_timestamp(msg, sk, skb);
 
 	/* Copy the address. */
@@ -295,12 +295,16 @@ try_again:
 		err = skb->len - sizeof(struct udphdr);
 
 out_free:
+	lock_sock(sk);
 	skb_free_datagram(sk, skb);
+	release_sock(sk);
 out:
 	return err;
 
 csum_copy_err:
+	lock_sock(sk);
 	skb_kill_datagram(sk, skb, flags);
+	release_sock(sk);
 
 	if (flags & MSG_DONTWAIT) {
 		UDP6_INC_STATS_USER(UDP_MIB_INERRORS);
@@ -361,7 +365,6 @@ static inline int udpv6_queue_rcv_skb(struct sock * sk, struct sk_buff *skb)
 		kfree_skb(skb);
 		return 0;
 	}
-	UDP6_INC_STATS_BH(UDP_MIB_INDATAGRAMS);
 	return 0;
 }
 
@@ -426,10 +429,21 @@ static void udpv6_mcast_deliver(struct udphdr *uh,
 	while ((sk2 = udp_v6_mcast_next(sk_next(sk2), uh->dest, daddr,
 					uh->source, saddr, dif))) {
 		struct sk_buff *buff = skb_clone(skb, GFP_ATOMIC);
-		if (buff)
-			udpv6_queue_rcv_skb(sk2, buff);
+		if (buff) {
+			bh_lock_sock_nested(sk2);
+			if (!sock_owned_by_user(sk2))
+				udpv6_queue_rcv_skb(sk2, buff);
+			else
+				sk_add_backlog(sk2, buff);
+			bh_unlock_sock(sk2);
+		}
 	}
-	udpv6_queue_rcv_skb(sk, skb);
+	bh_lock_sock_nested(sk);
+	if (!sock_owned_by_user(sk))
+		udpv6_queue_rcv_skb(sk, skb);
+	else
+		sk_add_backlog(sk, skb);
+	bh_unlock_sock(sk);
 out:
 	read_unlock(&udp_hash_lock);
 }
@@ -514,7 +528,12 @@ static int udpv6_rcv(struct sk_buff **pskb)
 	
 	/* deliver */
 	
-	udpv6_queue_rcv_skb(sk, skb);
+	bh_lock_sock_nested(sk);
+	if (!sock_owned_by_user(sk))
+		udpv6_queue_rcv_skb(sk, skb);
+	else
+		sk_add_backlog(sk, skb);
+	bh_unlock_sock(sk);
 	sock_put(sk);
 	return(0);
 
@@ -1094,6 +1113,10 @@ struct proto udpv6_prot = {
 	.hash		   = udp_v6_hash,
 	.unhash		   = udp_v6_unhash,
 	.get_port	   = udp_v6_get_port,
+	.memory_allocated  = &udp_memory_allocated,
+	.sysctl_mem	   = sysctl_udp_mem,
+	.sysctl_wmem	   = &sysctl_udp_wmem_min,
+	.sysctl_rmem	   = &sysctl_udp_rmem_min,
 	.obj_size	   = sizeof(struct udp6_sock),
 #ifdef CONFIG_COMPAT
 	.compat_setsockopt = compat_udpv6_setsockopt,

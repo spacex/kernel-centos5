@@ -288,6 +288,12 @@ struct nfsd4_rename {
 	struct nfsd4_change_info  rn_tinfo; /* response */
 };
 
+struct nfsd4_secinfo {
+	u32 si_namelen;					/* request */
+	char *si_name;					/* request */
+	struct svc_export *si_exp;			/* response */
+};
+
 struct nfsd4_setattr {
 	stateid_t	sa_stateid;         /* request */
 	u32		sa_bmval[2];        /* request */
@@ -361,6 +367,7 @@ struct nfsd4_op {
 		struct nfsd4_remove		remove;
 		struct nfsd4_rename		rename;
 		clientid_t			renew;
+		struct nfsd4_secinfo		secinfo;
 		struct nfsd4_setattr		setattr;
 		struct nfsd4_setclientid	setclientid;
 		struct nfsd4_setclientid_confirm setclientid_confirm;
@@ -417,8 +424,8 @@ set_change_info(struct nfsd4_change_info *cinfo, struct svc_fh *fhp)
 	cinfo->atomic = 1;
 	cinfo->before_ctime_sec = fhp->fh_pre_ctime.tv_sec;
 	cinfo->before_ctime_nsec = fhp->fh_pre_ctime.tv_nsec;
-	cinfo->after_ctime_sec = fhp->fh_post_ctime.tv_sec;
-	cinfo->after_ctime_nsec = fhp->fh_post_ctime.tv_nsec;
+	cinfo->after_ctime_sec = fhp->fh_post_attr.ctime.tv_sec;
+	cinfo->after_ctime_nsec = fhp->fh_post_attr.ctime.tv_nsec;
 }
 
 int nfs4svc_encode_voidres(struct svc_rqst *, u32 *, void *);
@@ -430,7 +437,7 @@ void nfsd4_encode_operation(struct nfsd4_compoundres *, struct nfsd4_op *);
 void nfsd4_encode_replay(struct nfsd4_compoundres *resp, struct nfsd4_op *op);
 int nfsd4_encode_fattr(struct svc_fh *fhp, struct svc_export *exp,
 		       struct dentry *dentry, u32 *buffer, int *countp, 
-		       u32 *bmval, struct svc_rqst *);
+		       u32 *bmval, struct svc_rqst *, int ignore_crossmnt);
 extern int nfsd4_setclientid(struct svc_rqst *rqstp, 
 		struct nfsd4_setclientid *setclid);
 extern int nfsd4_setclientid_confirm(struct svc_rqst *rqstp, 

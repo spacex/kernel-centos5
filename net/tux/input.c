@@ -601,7 +601,8 @@ restart:
 #ifdef CONFIG_TUX_DEBUG
 		req->bytes_expected = 0;
 #endif
-		req->in_file->f_pos = 0;
+		if (req->in_file)
+			req->in_file->f_pos = 0;
 		req->atom_idx = 0;
 		clear_keepalive(req);
 		req->status = -1;

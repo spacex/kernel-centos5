@@ -14,6 +14,7 @@
 #include <linux/list.h>
 
 #include <asm/ebcdic.h>
+#include <asm/chpid.h>
 
 /* maximum number of pages concerning our own memory management */
 #define MAX_KMEM_PAGES (sizeof(unsigned long) << 3)
@@ -27,6 +28,7 @@
 #define EvTyp_CntlProgIdent	0x0B
 #define EvTyp_SigQuiesce	0x1D
 #define EvTyp_VT220Msg		0x1A
+#define EVTYP_SDIAS		0x1C
 
 #define EvTyp_OpCmd_Mask	0x80000000
 #define EvTyp_Msg_Mask		0x40000000
@@ -36,6 +38,7 @@
 #define EvTyp_CtlProgIdent_Mask	0x00200000
 #define EvTyp_SigQuiesce_Mask	0x00000008
 #define EvTyp_VT220Msg_Mask	0x00000040
+#define EVTYP_SDIAS_MASK	0x00000010
 
 #define GnrlMsgFlgs_DOM		0x8000
 #define GnrlMsgFlgs_SndAlrm	0x4000
@@ -123,6 +126,18 @@ struct sclp_register {
 	void (*receiver_fn)(struct evbuf_header *);
 };
 
+#define SCLP_CHP_INFO_MASK_SIZE		32
+
+struct sclp_chp_info {
+	u8 recognized[SCLP_CHP_INFO_MASK_SIZE];
+	u8 standby[SCLP_CHP_INFO_MASK_SIZE];
+	u8 configured[SCLP_CHP_INFO_MASK_SIZE];
+};
+
+extern int sclp_chp_configure(struct chp_id chpid);
+extern int sclp_chp_deconfigure(struct chp_id chpid);
+extern int sclp_chp_read_info(struct sclp_chp_info *info);
+
 /* externals from sclp.c */
 int sclp_add_request(struct sclp_req *req);
 void sclp_sync_wait(void);
@@ -131,6 +146,9 @@ void sclp_unregister(struct sclp_register *reg);
 int sclp_remove_processed(struct sccb_header *sccb);
 int sclp_deactivate(void);
 int sclp_reactivate(void);
+
+int sclp_sdias_init(void);
+void sclp_sdias_exit(void);
 
 /* useful inlines */
 

@@ -279,9 +279,18 @@ struct fc_internal {
 	struct transport_container rport_attr_cont;
 	struct class_device_attribute private_rport_attrs[FC_RPORT_NUM_ATTRS];
 	struct class_device_attribute *rport_attrs[FC_RPORT_NUM_ATTRS + 1];
+
+	/* needed for kabi workaround for zfcp driver */
+	int disable_target_scan;
 };
 
 #define to_fc_internal(tmpl)	container_of(tmpl, struct fc_internal, t)
+
+void set_fc_internal_target_scan(struct scsi_transport_template *t)
+{
+	to_fc_internal(t)->disable_target_scan = 1;
+}
+EXPORT_SYMBOL_GPL(set_fc_internal_target_scan);
 
 static int fc_target_setup(struct transport_container *tc, struct device *dev,
 			   struct class_device *cdev)
@@ -2422,10 +2431,12 @@ fc_scsi_scan_rport(void *data)
 {
 	struct fc_rport *rport = (struct fc_rport *)data;
 	struct Scsi_Host *shost = rport_to_shost(rport);
+	struct fc_internal *i = to_fc_internal(shost->transportt);
 	unsigned long flags;
 
 	if ((rport->port_state == FC_PORTSTATE_ONLINE) &&
-	    (rport->roles & FC_RPORT_ROLE_FCP_TARGET)) {
+	    (rport->roles & FC_RPORT_ROLE_FCP_TARGET) &&
+	    !(i->disable_target_scan)) {
 		scsi_scan_target(&rport->dev, rport->channel,
 			rport->scsi_target_id, SCAN_WILD_CARD, 1);
 	}

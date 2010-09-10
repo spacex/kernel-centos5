@@ -17,7 +17,7 @@
 #include <linux/libata.h>
 
 #define DRV_NAME "pata_isapnp"
-#define DRV_VERSION "0.2.1"
+#define DRV_VERSION "0.2.2"
 
 static struct scsi_host_template isapnp_sht = {
 	.module			= THIS_MODULE,
@@ -38,7 +38,6 @@ static struct scsi_host_template isapnp_sht = {
 };
 
 static struct ata_port_operations isapnp_port_ops = {
-	.port_disable	= ata_port_disable,
 	.tf_load	= ata_tf_load,
 	.tf_read	= ata_tf_read,
 	.check_status 	= ata_check_status,
@@ -58,9 +57,8 @@ static struct ata_port_operations isapnp_port_ops = {
 
 	.irq_clear	= ata_bmdma_irq_clear,
 	.irq_on		= ata_irq_on,
-	.irq_ack	= ata_irq_ack,
 
-	.port_start	= ata_port_start,
+	.port_start	= ata_sff_port_start,
 };
 
 /**
@@ -77,14 +75,16 @@ static int isapnp_init_one(struct pnp_dev *idev, const struct pnp_device_id *dev
 	struct ata_host *host;
 	struct ata_port *ap;
 	void __iomem *cmd_addr, *ctl_addr;
-	int rc;
+	int irq = 0;
+	irq_handler_t handler = NULL;
 
 	if (pnp_port_valid(idev, 0) == 0)
 		return -ENODEV;
 
-	/* FIXME: Should selected polled PIO here not fail */
-	if (pnp_irq_valid(idev, 0) == 0)
-		return -ENODEV;
+	if (pnp_irq_valid(idev, 0)) {
+		irq = pnp_irq(idev, 0);
+		handler = ata_interrupt;
+	}
 
 	/* allocate host */
 	host = ata_host_alloc(&idev->dev, 1);
@@ -113,8 +113,12 @@ static int isapnp_init_one(struct pnp_dev *idev, const struct pnp_device_id *dev
 
 	ata_std_ports(&ap->ioaddr);
 
+	ata_port_desc(ap, "cmd 0x%llx ctl 0x%llx",
+		      (unsigned long long)pnp_port_start(idev, 0),
+		      (unsigned long long)pnp_port_start(idev, 1));
+
 	/* activate */
-	return ata_host_activate(host, pnp_irq(idev, 0), ata_interrupt, 0,
+	return ata_host_activate(host, irq, handler, 0,
 				 &isapnp_sht);
 }
 
@@ -139,6 +143,8 @@ static struct pnp_device_id isapnp_devices[] = {
 	{.id = "PNP0600", .driver_data = 0},
 	{.id = ""}
 };
+
+MODULE_DEVICE_TABLE(pnp, isapnp_devices);
 
 static struct pnp_driver isapnp_driver = {
 	.name		= DRV_NAME,

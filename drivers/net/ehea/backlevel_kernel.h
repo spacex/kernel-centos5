@@ -19,6 +19,16 @@
 #include <asm/current.h>
 #include <asm/of_device.h>
 
+#define ip_hdr(skb) (skb->nh.iph)
+
+#define ip_hdrlen(skb) (ip_hdr(skb)->ihl * 4)
+
+#define tcp_hdrlen(skb) (skb->h.th->doff * 4)
+
+#define skb_network_header(skb) (skb->nh.raw)
+
+#define skb_network_offset(skb) (u8)(((u64)ip_hdr(skb)) - ((u64)skb->data))
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,21)
 #define vlan_group_set_device(vlan_group, vlan_id, net_device)	\
 {								\
@@ -403,5 +413,14 @@ static inline long plpar_hcall9(u64 opcode, u64 *outs, u64 arg1, u64 arg2, u64 a
 				       &outs[5], &outs[6], &outs[7], &outs[7]);
 };
 #endif
+
+/* inet_lro */
+typedef __u16 __bitwise __sum16;
+typedef __u32 __bitwise __wsum;
+
+static inline __wsum csum_unfold(__sum16 n)
+{
+	return (__force __wsum)n;
+}
 
 #endif	/* __BACKLEVEL_KERNEL_H__ */

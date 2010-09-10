@@ -40,6 +40,11 @@
 #define to_ioat_device(dev) container_of(dev, struct ioat_device, common)
 #define to_ioat_desc(lh) container_of(lh, struct ioat_desc_sw, node)
 
+static int ioat_pending_level = 4;
+module_param(ioat_pending_level, int, 0644);
+MODULE_PARM_DESC(ioat_pending_level,
+		 "high-water mark for pushing ioat descriptors (default: 4)");
+
 /* internal functions */
 static int __devinit ioat_probe(struct pci_dev *pdev, const struct pci_device_id *ent);
 static void __devexit ioat_remove(struct pci_dev *pdev);
@@ -310,7 +315,8 @@ static dma_cookie_t do_ioat_dma_memcpy(struct ioat_dma_chan *ioat_chan,
 	list_splice_init(&new_chain, ioat_chan->used_desc.prev);
 
 	ioat_chan->pending += desc_count;
-	if (ioat_chan->pending >= 20) {
+	if (ioat_chan->pending >= ioat_pending_level)
+	{
 		append = 1;
 		ioat_chan->pending = 0;
 	}
@@ -553,6 +559,8 @@ static enum dma_status ioat_dma_is_complete(struct dma_chan *chan,
 
 static struct pci_device_id ioat_pci_tbl[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_IOAT) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_UNISYS,
+		     PCI_DEVICE_ID_UNISYS_DMA_DIRECTOR) },
 	{ 0, }
 };
 
@@ -818,7 +826,7 @@ static void __devexit ioat_remove(struct pci_dev *pdev)
 }
 
 /* MODULE API */
-MODULE_VERSION("1.7");
+MODULE_VERSION("1.9");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Intel Corporation");
 

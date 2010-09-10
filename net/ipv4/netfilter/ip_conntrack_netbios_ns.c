@@ -20,6 +20,7 @@
 #include <linux/init.h>
 #include <linux/skbuff.h>
 #include <linux/netdevice.h>
+#include <linux/if_addr.h>
 #include <linux/inetdevice.h>
 #include <linux/in.h>
 #include <linux/ip.h>

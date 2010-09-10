@@ -298,6 +298,18 @@ config I8XX_TCO
 	  To compile this driver as a module, choose M here: the
 	  module will be called i8xx_tco.
 
+config HP_WATCHDOG
+	tristate "HP Proliant iLO 2 Hardware Watchdog Timer"
+	depends on WATCHDOG && X86
+	help
+	  A software monitoring watchdog and NMI sourcing driver. This driver
+	  will detect lockups and provide stack trace. Also, when an NMI
+	  occurs this driver will make the necessary BIOS calls to log
+	  the cause of the NMI. This is a driver that will only load on a
+	  HP ProLiant system with a minimum of iLO2 support.
+	  To compile this driver as a module, choose M here: the
+	  module will be called hpwdt.
+
 config SC1200_WDT
 	tristate "National Semiconductor PC87307/PC97307 (ala SC1200) Watchdog"
 	depends on WATCHDOG && X86

@@ -159,15 +159,26 @@ vrregs_get(struct task_struct *target,
 	   unsigned int pos, unsigned int count,
 	   void *kbuf, void __user *ubuf)
 {
+	int ret;
+
 	BUILD_BUG_ON(offsetof(struct thread_struct, vscr)
 		     != offsetof(struct thread_struct, vr[32]));
-	BUILD_BUG_ON(offsetof(struct thread_struct, vscr) + sizeof(vector128)
-		     != offsetof(struct thread_struct, vrsave));
 
 	flush_altivec_to_thread(target);
 
-	return utrace_regset_copyout(&pos, &count, &kbuf, &ubuf,
-				     &target->thread.vr, 0, -1);
+	ret = utrace_regset_copyout(&pos, &count, &kbuf, &ubuf,
+				    &target->thread.vr,
+				    0, 33 * sizeof(vector128));
+	if (ret == 0 && count > 0) {
+		/*
+		 * Copy out only the low-order word of vrsave.
+		 */
+		u32 vrsave = target->thread.vrsave;
+		ret = utrace_regset_copyout(&pos, &count, &kbuf, &ubuf, &vrsave,
+					    33 * sizeof(vector128), -1);
+	}
+
+	return ret;
 }
 
 static int
@@ -176,10 +187,25 @@ vrregs_set(struct task_struct *target,
 	    unsigned int pos, unsigned int count,
 	    const void *kbuf, const void __user *ubuf)
 {
+	int ret;
+
 	flush_altivec_to_thread(target);
 
-	return utrace_regset_copyin(&pos, &count, &kbuf, &ubuf,
-				    &target->thread.vr, 0, -1);
+	ret = utrace_regset_copyin(&pos, &count, &kbuf, &ubuf,
+				   &target->thread.vr,
+				   0, 33 * sizeof(vector128));
+	if (ret == 0 && count > 0) {
+		/*
+		 * Copy in only the low-order word of vrsave.
+		 */
+		u32 vrsave;
+		ret = utrace_regset_copyin(&pos, &count, &kbuf, &ubuf, &vrsave,
+					   33 * sizeof(vector128), -1);
+		if (ret == 0)
+			target->thread.vrsave = vrsave;
+	}
+
+	return ret;
 }
 #endif	/* CONFIG_ALTIVEC */
 
@@ -313,10 +339,12 @@ evrregs_set(struct task_struct *target,
  */
 static const struct utrace_regset native_regsets[] = {
 	{
+		.core_note_type = NT_PRSTATUS,
 		.n = ELF_NGREG, .size = sizeof(long), .align = sizeof(long),
 		.get = genregs_get, .set = genregs_set
 	},
 	{
+		.core_note_type = NT_PRFPREG,
 		.n = ELF_NFPREG,
 		.size = sizeof(double), .align = sizeof(double),
 		.get = fpregs_get, .set = fpregs_set
@@ -431,11 +459,13 @@ ppc32_gpr_set(struct task_struct *target,
  */
 static const struct utrace_regset ppc32_regsets[] = {
 	{
+		.core_note_type = NT_PRSTATUS,
 		.n = ELF_NGREG,
 		.size = sizeof(compat_long_t), .align = sizeof(compat_long_t),
 		.get = ppc32_gpr_get, .set = ppc32_gpr_set
 	},
 	{
+		.core_note_type = NT_PRFPREG,
 		.n = ELF_NFPREG,
 		.size = sizeof(double), .align = sizeof(double),
 		.get = fpregs_get, .set = fpregs_set
@@ -501,11 +531,14 @@ int arch_ptrace(long *request, struct task_struct *child,
 					    *request == PPC_PTRACE_SETFPREGS);
 #ifdef CONFIG_PPC64
 	case PTRACE_GET_DEBUGREG:
-	case PTRACE_SET_DEBUGREG:
 		return ptrace_onereg_access(child, engine,
 					    utrace_native_view(current), 3,
 					    addr, (unsigned long __user *)data,
-					    *request == PTRACE_SET_DEBUGREG);
+					    NULL, 0);
+	case PTRACE_SET_DEBUGREG:
+		return ptrace_onereg_access(child, engine,
+					    utrace_native_view(current), 3,
+					    addr, NULL, &data, 1);
 #endif /* CONFIG_PPC64 */
 #ifdef CONFIG_ALTIVEC
 	case PTRACE_GETVRREGS:
@@ -576,13 +609,16 @@ int arch_compat_ptrace(compat_long_t *request,
 		return ptrace_whole_regset(child, engine, data, 2, 1);
 #endif
 	case PTRACE_GET_DEBUGREG:
-	case PTRACE_SET_DEBUGREG:
 		return ptrace_onereg_access(child, engine,
 					    utrace_native_view(current), 3,
 					    addr,
 					    (unsigned long __user *)
 					    (unsigned long) data,
-					    *request == PTRACE_SET_DEBUGREG);
+					    NULL, 0);
+	case PTRACE_SET_DEBUGREG:
+		return ptrace_onereg_access(child, engine,
+					    utrace_native_view(current), 3,
+					    addr, NULL, &data, 1);
 
 	/*
 	 * Read 4 bytes of the other process' storage

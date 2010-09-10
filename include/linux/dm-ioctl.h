@@ -131,6 +131,9 @@ struct dm_ioctl {
 	char name[DM_NAME_LEN];	/* device name */
 	char uuid[DM_UUID_LEN];	/* unique identifier for
 				 * the block device */
+#ifndef __GENKSYMS__
+	char data[7];		/* padding or data */
+#endif
 };
 
 /*
@@ -286,8 +289,8 @@ typedef char ioctl_struct[308];
 
 #define DM_VERSION_MAJOR	4
 #define DM_VERSION_MINOR	11
-#define DM_VERSION_PATCHLEVEL	0
-#define DM_VERSION_EXTRA	"-ioctl (2006-09-14)"
+#define DM_VERSION_PATCHLEVEL	5
+#define DM_VERSION_EXTRA	"-ioctl (2007-12-12)"
 
 /* Status bits */
 #define DM_READONLY_FLAG	(1 << 0) /* In/Out */

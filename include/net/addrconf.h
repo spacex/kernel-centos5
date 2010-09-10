@@ -70,7 +70,9 @@ extern int			ipv6_get_saddr(struct dst_entry *dst,
 extern int			ipv6_dev_get_saddr(struct net_device *dev, 
 					       struct in6_addr *daddr,
 					       struct in6_addr *saddr);
-extern int			ipv6_get_lladdr(struct net_device *dev, struct in6_addr *);
+extern int			ipv6_get_lladdr(struct net_device *dev,
+						struct in6_addr *addr,
+						unsigned char banned_flags);
 extern int			ipv6_rcv_saddr_equal(const struct sock *sk, 
 						      const struct sock *sk2);
 extern void			addrconf_join_solict(struct net_device *dev,
@@ -126,7 +128,7 @@ extern int unregister_inet6addr_notifier(struct notifier_block *nb);
 static inline struct inet6_dev *
 __in6_dev_get(struct net_device *dev)
 {
-	return (struct inet6_dev *)dev->ip6_ptr;
+	return rcu_dereference(dev->ip6_ptr);
 }
 
 extern rwlock_t addrconf_lock;
@@ -135,11 +137,11 @@ static inline struct inet6_dev *
 in6_dev_get(struct net_device *dev)
 {
 	struct inet6_dev *idev = NULL;
-	read_lock(&addrconf_lock);
-	idev = dev->ip6_ptr;
+	rcu_read_lock();
+	idev = __in6_dev_get(dev);
 	if (idev)
 		atomic_inc(&idev->refcnt);
-	read_unlock(&addrconf_lock);
+	rcu_read_unlock();
 	return idev;
 }
 

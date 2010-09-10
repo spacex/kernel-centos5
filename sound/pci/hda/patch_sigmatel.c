@@ -44,6 +44,8 @@ enum {
 
 enum {
 	STAC_9205_REF,
+	STAC_9205_DELL_M43,
+	STAC_9205_DELL_M44,
 	STAC_9205_MODELS
 };
 
@@ -83,6 +85,8 @@ struct sigmatel_spec {
 	unsigned int alt_switch: 1;
 	unsigned int hp_detect: 1;
 	unsigned int gpio_mute: 1;
+
+	unsigned int gpio_mask, gpio_data;
 
 	/* playback */
 	struct hda_multi_out multiout;
@@ -204,7 +208,6 @@ static hda_nid_t stac9205_pin_nids[12] = {
 	0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
 	0x0f, 0x14, 0x16, 0x17, 0x18,
 	0x21, 0x22,
-	
 };
 
 static int stac92xx_dmux_enum_info(struct snd_kcontrol *kcontrol,
@@ -702,18 +705,60 @@ static unsigned int ref9205_pin_configs[12] = {
 	0x90a000f0, 0x90a000f0, 0x01441030, 0x01c41030
 };
 
+static unsigned int dell_m43_9205_pin_configs[12] = {
+	0x0321101f, 0x03a11020, 0x90a70330, 0x90170310,
+	0x400000fe, 0x400000ff, 0x400000fd, 0x40f000f9,
+	0x400000fa, 0x400000fc, 0x0144131f, 0x40c003f8,
+};
+
+static unsigned int dell_m44_9205_pin_configs[12] = {
+	0x0421101f, 0x04a11020, 0x400003fa, 0x90170310,
+	0x400003fb, 0x400003fc, 0x400003fd, 0x400003f9,
+	0x90a60330, 0x400003ff, 0x01441340, 0x40c003fe,
+};
+ 
 static unsigned int *stac9205_brd_tbl[STAC_9205_MODELS] = {
-	ref9205_pin_configs,
+	[STAC_9205_REF] = ref9205_pin_configs,
+	[STAC_9205_DELL_M43] = dell_m43_9205_pin_configs,
+	[STAC_9205_DELL_M44] = dell_m44_9205_pin_configs,
 };
 
 static const char *stac9205_models[STAC_9205_MODELS] = {
 	[STAC_9205_REF] = "ref",
+	[STAC_9205_DELL_M43] = "dell-m43",
+	[STAC_9205_DELL_M44] = "dell-m44",
 };
 
 static struct snd_pci_quirk stac9205_cfg_tbl[] = {
 	/* SigmaTel reference board */
 	SND_PCI_QUIRK(PCI_VENDOR_ID_INTEL, 0x2668,
 		      "DFI LanParty", STAC_9205_REF),
+	SND_PCI_QUIRK(PCI_VENDOR_ID_DELL, 0x01f8,
+		      "Dell Precision", STAC_9205_DELL_M43),
+	SND_PCI_QUIRK(PCI_VENDOR_ID_DELL, 0x021b,
+		      "Dell Precision", STAC_9205_DELL_M43),
+	SND_PCI_QUIRK(PCI_VENDOR_ID_DELL, 0x021c,
+		      "Dell Precision", STAC_9205_DELL_M43),
+	SND_PCI_QUIRK(PCI_VENDOR_ID_DELL, 0x01f9,
+		      "Dell Precision", STAC_9205_DELL_M43),
+	SND_PCI_QUIRK(PCI_VENDOR_ID_DELL, 0x01fa,
+		      "Dell Precision", STAC_9205_DELL_M43),
+	SND_PCI_QUIRK(PCI_VENDOR_ID_DELL, 0x01fe,
+		      "Dell Precision", STAC_9205_DELL_M43),
+	SND_PCI_QUIRK(PCI_VENDOR_ID_DELL, 0x01ff,
+		      "Dell Precision", STAC_9205_DELL_M43),
+	SND_PCI_QUIRK(PCI_VENDOR_ID_DELL, 0x0206,
+		      "Dell Precision", STAC_9205_DELL_M43),
+	SND_PCI_QUIRK(PCI_VENDOR_ID_DELL, 0x01f1,
+		      "Dell Inspiron", STAC_9205_DELL_M44),
+	SND_PCI_QUIRK(PCI_VENDOR_ID_DELL, 0x01f2,
+		      "Dell Inspiron", STAC_9205_DELL_M44),
+	SND_PCI_QUIRK(PCI_VENDOR_ID_DELL, 0x01fc,
+		      "Dell Inspiron", STAC_9205_DELL_M44),
+	SND_PCI_QUIRK(PCI_VENDOR_ID_DELL, 0x01fd,
+		      "Dell Inspiron", STAC_9205_DELL_M44),
+	SND_PCI_QUIRK(PCI_VENDOR_ID_DELL, 0x021f,
+		      "Dell Inspiron", STAC_9205_DELL_M44),
 	{} /* terminator */
 };
 
@@ -743,33 +788,55 @@ static int stac92xx_save_bios_config_regs(struct hda_codec *codec)
 	return 0;
 }
 
+static void stac92xx_set_config_reg(struct hda_codec *codec,
+				     hda_nid_t pin_nid, unsigned int pin_config)
+{
+	int i;
+	snd_hda_codec_write(codec, pin_nid, 0,
+			    AC_VERB_SET_CONFIG_DEFAULT_BYTES_0,
+			    pin_config & 0x000000ff);
+	snd_hda_codec_write(codec, pin_nid, 0,
+			    AC_VERB_SET_CONFIG_DEFAULT_BYTES_1,
+			    (pin_config & 0x0000ff00) >> 8);
+	snd_hda_codec_write(codec, pin_nid, 0,
+			    AC_VERB_SET_CONFIG_DEFAULT_BYTES_2,
+			    (pin_config & 0x00ff0000) >> 16);
+	snd_hda_codec_write(codec, pin_nid, 0,
+			    AC_VERB_SET_CONFIG_DEFAULT_BYTES_3,
+			    pin_config >> 24);
+	i = snd_hda_codec_read(codec, pin_nid, 0,
+			       AC_VERB_GET_CONFIG_DEFAULT,
+			       0x00);
+	snd_printdd(KERN_INFO "hda_codec: pin nid %2.2x pin config %8.8x\n",
+		    pin_nid, i);
+}
+
 static void stac92xx_set_config_regs(struct hda_codec *codec)
 {
 	int i;
 	struct sigmatel_spec *spec = codec->spec;
-	unsigned int pin_cfg;
 
-	if (! spec->pin_nids || ! spec->pin_configs)
+	if (!spec->pin_configs)
 		return;
+	for (i = 0; i < spec->num_pins; i++)
+	     stac92xx_set_config_reg(codec, spec->pin_nids[i],
+				     spec->pin_configs[i]);
+}
 
-	for (i = 0; i < spec->num_pins; i++) {
-		snd_hda_codec_write(codec, spec->pin_nids[i], 0,
-				    AC_VERB_SET_CONFIG_DEFAULT_BYTES_0,
-				    spec->pin_configs[i] & 0x000000ff);
-		snd_hda_codec_write(codec, spec->pin_nids[i], 0,
-				    AC_VERB_SET_CONFIG_DEFAULT_BYTES_1,
-				    (spec->pin_configs[i] & 0x0000ff00) >> 8);
-		snd_hda_codec_write(codec, spec->pin_nids[i], 0,
-				    AC_VERB_SET_CONFIG_DEFAULT_BYTES_2,
-				    (spec->pin_configs[i] & 0x00ff0000) >> 16);
-		snd_hda_codec_write(codec, spec->pin_nids[i], 0,
-				    AC_VERB_SET_CONFIG_DEFAULT_BYTES_3,
-				    spec->pin_configs[i] >> 24);
-		pin_cfg = snd_hda_codec_read(codec, spec->pin_nids[i], 0,
-					     AC_VERB_GET_CONFIG_DEFAULT,
-					     0x00);	
-		snd_printdd(KERN_INFO "hda_codec: pin nid %2.2x pin config %8.8x\n", spec->pin_nids[i], pin_cfg);
-	}
+static void stac92xx_enable_gpio_mask(struct hda_codec *codec)
+{
+	struct sigmatel_spec *spec = codec->spec;
+	/* Configure GPIOx as output */
+	snd_hda_codec_write(codec, codec->afg, 0,
+			    AC_VERB_SET_GPIO_DIRECTION, spec->gpio_mask);
+	/* Configure GPIOx as CMOS */
+	snd_hda_codec_write(codec, codec->afg, 0, 0x7e7, 0x00000000);
+	/* Assert GPIOx */
+	snd_hda_codec_write(codec, codec->afg, 0,
+			    AC_VERB_SET_GPIO_DATA, spec->gpio_data);
+	/* Enable GPIOx */
+	snd_hda_codec_write(codec, codec->afg, 0,
+			    AC_VERB_SET_GPIO_MASK, spec->gpio_mask);
 }
 
 /*
@@ -1801,8 +1868,10 @@ static int stac92xx_resume(struct hda_codec *codec)
 	struct sigmatel_spec *spec = codec->spec;
 	int i;
 
-	stac92xx_init(codec);
 	stac92xx_set_config_regs(codec);
+	if (spec->gpio_mask && spec->gpio_data)
+	    stac92xx_enable_gpio_mask(codec);
+	stac92xx_init(codec);
 	for (i = 0; i < spec->num_mixers; i++)
 		snd_hda_resume_ctls(codec, spec->mixers[i]);
 	if (spec->multiout.dig_out_nid)
@@ -2067,6 +2136,9 @@ static int patch_stac927x(struct hda_codec *codec)
 	}
 
 	spec->multiout.dac_nids = spec->dac_nids;
+	/* GPIO0 High = Enable EAPD */
+	spec->gpio_mask = spec->gpio_data = 0x00000001;
+	stac92xx_enable_gpio_mask(codec);
 
 	err = stac92xx_parse_auto_config(codec, 0x1e, 0x20);
 	if (!err) {
@@ -2129,18 +2201,25 @@ static int patch_stac9205(struct hda_codec *codec)
 
 	spec->multiout.dac_nids = spec->dac_nids;
 
-	/* Configure GPIO0 as EAPD output */
-	snd_hda_codec_write(codec, codec->afg, 0,
-			    AC_VERB_SET_GPIO_DIRECTION, 0x00000001);
-	/* Configure GPIO0 as CMOS */
-	snd_hda_codec_write(codec, codec->afg, 0, 0x7e7, 0x00000000);
-	/* Assert GPIO0 high */
-	snd_hda_codec_write(codec, codec->afg, 0,
-			    AC_VERB_SET_GPIO_DATA, 0x00000001);
-	/* Enable GPIO0 */
-	snd_hda_codec_write(codec, codec->afg, 0,
-			    AC_VERB_SET_GPIO_MASK, 0x00000001);
+	switch (spec->board_config) {
+	case STAC_9205_DELL_M43:
+	    /* Enable SPDIF in/out */
+	    stac92xx_set_config_reg(codec, 0x1f, 0x01441030);
+	    stac92xx_set_config_reg(codec, 0x20, 0x1c410030);
 
+	    spec->gpio_mask = 0x0000000b; /* GPIO0-2 */
+	    /* GPIO0 High = EAPD, GPIO1 Low = DRM,
+	     * GPIO2 High = Headphone Mute
+	     */
+	    spec->gpio_data = 0x00000005;
+	    break;
+	default:
+	    /* GPIO0 High = EAPD */
+	    spec->gpio_mask = spec->gpio_data = 0x00000001;
+	    break;
+	} 
+
+	stac92xx_enable_gpio_mask(codec);
 	err = stac92xx_parse_auto_config(codec, 0x1f, 0x20);
 	if (!err) {
 		if (spec->board_config < 0) {

@@ -13,6 +13,7 @@
 #include <linux/slab.h>
 #include <linux/errno.h>
 #include <linux/list.h>
+#include <linux/reboot.h>
 
 #include "css.h"
 #include "cio.h"
@@ -294,7 +295,7 @@ static int css_evaluate_new_subchannel(struct subchannel_id schid, int slow)
 		/* Will be done on the slow path. */
 		return -EAGAIN;
 	}
-	if (stsch(schid, &schib) || !schib.pmcw.dnv) {
+	if (stsch_err(schid, &schib) || !schib.pmcw.dnv) {
 		/* Unusable - ignore. */
 		return 0;
 	}
@@ -589,6 +590,25 @@ setup_css(int nr)
 	css_generate_pgid(css[nr], tod_high);
 }
 
+static int css_reboot_event(struct notifier_block *this,
+			    unsigned long event,
+			    void *ptr)
+{
+	int ret, i;
+
+	ret = 0;
+	for (i = 0; i <= __MAX_CSSID && !ret; i++) {
+		if (css[i]->cm_enabled)
+			ret = chsc_secm(css[i], 0);
+	}
+
+	return ret ? NOTIFY_BAD : NOTIFY_DONE;
+}
+
+static struct notifier_block css_reboot_notifier = {
+	.notifier_call = css_reboot_event,
+};
+
 /*
  * Now that the driver core is running, we can setup our channel subsystem.
  * The struct subchannel's are created during probing (except for the
@@ -635,12 +655,17 @@ init_channel_subsystem (void)
 				goto out_device;
 		}
 	}
+	ret = register_reboot_notifier(&css_reboot_notifier);
+	if (ret)
+		goto out_file;
 	css_init_done = 1;
 
 	ctl_set_bit(6, 28);
 
 	for_each_subchannel(__init_channel_subsystem, NULL);
 	return 0;
+out_file:
+	device_remove_file(&css[i]->device, &dev_attr_cm_enable);
 out_device:
 	device_unregister(&css[i]->device);
 out_free:

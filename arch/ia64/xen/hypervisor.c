@@ -724,6 +724,7 @@ xen_ia64_privcmd_vma_close(struct vm_area_struct* vma)
 
 	for (i = 0; i < privcmd_vma->num_entries; i++) {
 		xen_ia64_privcmd_entry_close(privcmd_range, entry_offset + i);
+		cond_resched();
 	}
 	vma->vm_private_data = NULL;
 	kfree(privcmd_vma);

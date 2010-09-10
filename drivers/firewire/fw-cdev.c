@@ -23,20 +23,19 @@
 #include <linux/device.h>
 #include <linux/vmalloc.h>
 #include <linux/poll.h>
+#include <linux/preempt.h>
+#include <linux/time.h>
 #include <linux/delay.h>
 #include <linux/mm.h>
 #include <linux/idr.h>
 #include <linux/compat.h>
 #include <linux/firewire-cdev.h>
+#include <asm/system.h>
 #include <asm/uaccess.h>
 #include "fw-transaction.h"
 #include "fw-topology.h"
 #include "fw-device.h"
 
-/*
- * dequeue_event() just kfree()'s the event, so the event has to be
- * the first field in the struct.
- */
 
 struct client;
 struct client_resource {
@@ -44,6 +43,11 @@ struct client_resource {
 	void (*release)(struct client *client, struct client_resource *r);
 	u32 handle;
 };
+
+/*
+ * dequeue_event() just kfree()'s the event, so the event has to be
+ * the first field in the struct.
+ */
 
 struct event {
 	struct { void *data; size_t size; } v[2];
@@ -138,11 +142,10 @@ static void queue_event(struct client *client, struct event *event,
 	event->v[1].size = size1;
 
 	spin_lock_irqsave(&client->lock, flags);
-
 	list_add_tail(&event->link, &client->event_list);
-	wake_up_interruptible(&client->wait);
-
 	spin_unlock_irqrestore(&client->lock, flags);
+
+	wake_up_interruptible(&client->wait);
 }
 
 static int
@@ -202,12 +205,13 @@ fill_bus_reset_event(struct fw_cdev_event_bus_reset *event,
 
 	event->closure	     = client->bus_reset_closure;
 	event->type          = FW_CDEV_EVENT_BUS_RESET;
+	event->generation    = client->device->generation;
+	smp_rmb();	     /* node_id must not be older than generation */
 	event->node_id       = client->device->node_id;
 	event->local_node_id = card->local_node->node_id;
 	event->bm_node_id    = 0; /* FIXME: We don't track the BM. */
 	event->irm_node_id   = card->irm_node->node_id;
 	event->root_node_id  = card->root_node->node_id;
-	event->generation    = card->generation;
 }
 
 static void
@@ -363,7 +367,7 @@ complete_transaction(struct fw_card *card, int rcode,
 		    response->response.data, response->response.length);
 }
 
-static ssize_t ioctl_send_request(struct client *client, void *buffer)
+static int ioctl_send_request(struct client *client, void *buffer)
 {
 	struct fw_device *device = client->device;
 	struct fw_cdev_send_request *request = buffer;
@@ -395,7 +399,7 @@ static ssize_t ioctl_send_request(struct client *client, void *buffer)
 			request->tcode & 0x1f,
 			device->node->node_id,
 			request->generation,
-			device->node->max_speed,
+			device->max_speed,
 			request->offset,
 			response->response.data, request->length,
 			complete_transaction, response);
@@ -619,25 +623,25 @@ iso_callback(struct fw_iso_context *context, u32 cycle,
 	     size_t header_length, void *header, void *data)
 {
 	struct client *client = data;
-	struct iso_interrupt *interrupt;
+	struct iso_interrupt *irq;
 
-	interrupt = kzalloc(sizeof(*interrupt) + header_length, GFP_ATOMIC);
-	if (interrupt == NULL)
+	irq = kzalloc(sizeof(*irq) + header_length, GFP_ATOMIC);
+	if (irq == NULL)
 		return;
 
-	interrupt->interrupt.type      = FW_CDEV_EVENT_ISO_INTERRUPT;
-	interrupt->interrupt.closure   = client->iso_closure;
-	interrupt->interrupt.cycle     = cycle;
-	interrupt->interrupt.header_length = header_length;
-	memcpy(interrupt->interrupt.header, header, header_length);
-	queue_event(client, &interrupt->event,
-		    &interrupt->interrupt,
-		    sizeof(interrupt->interrupt) + header_length, NULL, 0);
+	irq->interrupt.type      = FW_CDEV_EVENT_ISO_INTERRUPT;
+	irq->interrupt.closure   = client->iso_closure;
+	irq->interrupt.cycle     = cycle;
+	irq->interrupt.header_length = header_length;
+	memcpy(irq->interrupt.header, header, header_length);
+	queue_event(client, &irq->event, &irq->interrupt,
+		    sizeof(irq->interrupt) + header_length, NULL, 0);
 }
 
 static int ioctl_create_iso_context(struct client *client, void *buffer)
 {
 	struct fw_cdev_create_iso_context *request = buffer;
+	struct fw_iso_context *context;
 
 	if (request->channel > 63)
 		return -EINVAL;
@@ -659,16 +663,17 @@ static int ioctl_create_iso_context(struct client *client, void *buffer)
 		return -EINVAL;
 	}
 
-	client->iso_closure = request->closure;
-	client->iso_context = fw_iso_context_create(client->device->card,
+	context = fw_iso_context_create(client->device->card,
 						    request->type,
 						    request->channel,
 						    request->speed,
 						    request->header_size,
 						    iso_callback, client);
-	if (IS_ERR(client->iso_context))
-		return PTR_ERR(client->iso_context);
+	if (IS_ERR(context))
+		return PTR_ERR(context);
 
+	client->iso_closure = request->closure;
+	client->iso_context = context;
 	/* We only support one context at this time. */
 	request->handle = 0;
 
@@ -717,28 +722,29 @@ static int ioctl_queue_iso(struct client *client, void *buffer)
 		buffer_end = 0;
 	}
 
-	if (!access_ok(VERIFY_READ, request->packets, request->size))
+	p = (struct fw_cdev_iso_packet __user *)u64_to_uptr(request->packets);
+
+	if (!access_ok(VERIFY_READ, p, request->size))
 		return -EFAULT;
 
-	p = (struct fw_cdev_iso_packet __user *)u64_to_uptr(request->packets);
 	end = (void __user *)p + request->size;
 	count = 0;
 	while (p < end) {
 		if (get_user(control, &p->control))
 			return -EFAULT;
-
 		u.packet.payload_length = GET_PAYLOAD_LENGTH(control);
 		u.packet.interrupt = GET_INTERRUPT(control);
 		u.packet.skip = GET_SKIP(control);
 		u.packet.tag = GET_TAG(control);
 		u.packet.sy = GET_SY(control);
 		u.packet.header_length = GET_HEADER_LENGTH(control);
+
 		if (ctx->type == FW_ISO_CONTEXT_TRANSMIT) {
 			header_length = u.packet.header_length;
 		} else {
 			/*
 			 * We require that header_length is a multiple of
-			 * the fixed header size, ctx->header_size
+			 * the fixed header size, ctx->header_size.
 			 */
 			if (ctx->header_size == 0) {
 				if (u.packet.header_length > 0)
@@ -806,6 +812,28 @@ static int ioctl_stop_iso(struct client *client, void *buffer)
 	return fw_iso_context_stop(client->iso_context);
 }
 
+static int ioctl_get_cycle_timer(struct client *client, void *buffer)
+{
+	struct fw_cdev_get_cycle_timer *request = buffer;
+	struct fw_card *card = client->device->card;
+	unsigned long long bus_time;
+	struct timeval tv;
+	unsigned long flags;
+
+	preempt_disable();
+	local_irq_save(flags);
+
+	bus_time = card->driver->get_bus_time(card);
+	do_gettimeofday(&tv);
+
+	local_irq_restore(flags);
+	preempt_enable();
+
+	request->local_time = tv.tv_sec * 1000000ULL + tv.tv_usec;
+	request->cycle_timer = bus_time & 0xffffffff;
+	return 0;
+}
+
 static int (* const ioctl_handlers[])(struct client *client, void *buffer) = {
 	ioctl_get_info,
 	ioctl_send_request,
@@ -819,6 +847,7 @@ static int (* const ioctl_handlers[])(struct client *client, void *buffer) = {
 	ioctl_queue_iso,
 	ioctl_start_iso,
 	ioctl_stop_iso,
+	ioctl_get_cycle_timer,
 };
 
 static int

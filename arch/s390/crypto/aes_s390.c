@@ -7,7 +7,7 @@
  *   Copyright (C) 2005 IBM Deutschland GmbH, IBM Corporation
  *   Author(s): Jan Glauber (jang@de.ibm.com)
  *
- * Derived from "crypto/aes.c"
+ * Derived from "crypto/aes_generic.c"
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free

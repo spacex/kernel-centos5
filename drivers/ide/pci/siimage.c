@@ -1078,6 +1078,26 @@ static ide_pci_device_t siimage_chipsets[] __devinitdata = {
  
 static int __devinit siimage_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 {
+	struct pci_dev *drac = pci_get_device(PCI_VENDOR_ID_DELL,
+					      PCI_DEVICE_ID_DELL_RAC4, NULL);
+
+	if (drac == NULL) {
+	    /* There are two common devices on DRACs. See if we can *
+	     * find the second one if couldn't find the first.      */
+	    drac = pci_get_device(PCI_VENDOR_ID_DELL,
+				  0x0014, NULL);
+	}
+
+	if (drac) {
+	    /* Watch out, watch out, there's a DRAC about ! */
+	    if (drac->bus == dev->bus) {
+	        pci_dev_put(drac);
+	        printk(KERN_INFO "siimage: Ignoring DRAC controller.\n");
+		return -ENODEV;
+	    }
+	    pci_dev_put(drac);
+	}
+
 	return ide_setup_pci_device(dev, &siimage_chipsets[id->driver_data]);
 }
 

@@ -384,7 +384,9 @@ config INET_AH
 config INET_ESP
 	tristate "IP: ESP transformation"
 	select XFRM
+	select XFRM_NALGO
 	select CRYPTO
+	select CRYPTO_AEAD
 	select CRYPTO_HMAC
 	select CRYPTO_MD5
 	select CRYPTO_SHA1

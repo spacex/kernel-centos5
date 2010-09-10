@@ -165,6 +165,11 @@ new_space (u64 phys_base, int sparse)
 	io_space[i].mmio_base = mmio_base;
 	io_space[i].sparse = sparse;
 
+#ifdef CONFIG_XEN
+	if (is_initial_xendomain())
+		HYPERVISOR_add_io_space(phys_base, sparse, i);
+#endif
+
 	return i;
 }
 
@@ -665,8 +670,6 @@ pci_mmap_legacy_page_range(struct pci_bus *bus, struct vm_area_struct *vma)
 		return -EINVAL;
 	prot = phys_mem_access_prot(NULL, vma->vm_pgoff, size,
 				    vma->vm_page_prot);
-	if (pgprot_val(prot) != pgprot_val(pgprot_noncached(vma->vm_page_prot)))
-		return -EINVAL;
 
 	addr = pci_get_legacy_mem(bus);
 	if (IS_ERR(addr))

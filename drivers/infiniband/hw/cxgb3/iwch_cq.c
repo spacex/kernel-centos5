@@ -36,13 +36,13 @@
  * Get one cq entry from cxio and map it to openib.
  *
  * Returns:
- * 	0 			EMPTY;
+ *	0			EMPTY;
  *	1			cqe returned
- *	-EAGAIN 		caller must try again
- * 	any other -errno	fatal error
+ *	-EAGAIN		caller must try again
+ *	any other -errno	fatal error
  */
-int iwch_poll_cq_one(struct iwch_dev *rhp, struct iwch_cq *chp,
-		     struct ib_wc *wc)
+static int iwch_poll_cq_one(struct iwch_dev *rhp, struct iwch_cq *chp,
+			    struct ib_wc *wc)
 {
 	struct iwch_qp *qhp = NULL;
 	struct t3_cqe cqe, *rd_cqe;
@@ -86,7 +86,7 @@ int iwch_poll_cq_one(struct iwch_dev *rhp, struct iwch_cq *chp,
 	     "lo 0x%x cookie 0x%llx\n", __FUNCTION__,
 	     CQE_QPID(cqe), CQE_TYPE(cqe),
 	     CQE_OPCODE(cqe), CQE_STATUS(cqe), CQE_WRID_HI(cqe),
-	     CQE_WRID_LOW(cqe), cookie);
+	     CQE_WRID_LOW(cqe), (unsigned long long) cookie);
 
 	if (CQE_TYPE(cqe) == 0) {
 		if (!CQE_STATUS(cqe))
@@ -128,7 +128,7 @@ int iwch_poll_cq_one(struct iwch_dev *rhp, struct iwch_cq *chp,
 	if (cqe_flushed)
 		wc->status = IB_WC_WR_FLUSH_ERR;
 	else {
-		
+
 		switch (CQE_STATUS(cqe)) {
 		case TPT_ERR_SUCCESS:
 			wc->status = IB_WC_SUCCESS;
@@ -201,9 +201,9 @@ int iwch_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *wc)
 #endif
 
 		/*
-	 	 * Because T3 can post CQEs that are _not_ associated
-	 	 * with a WR, we might have to poll again after removing
-	 	 * one of these.
+		 * Because T3 can post CQEs that are _not_ associated
+		 * with a WR, we might have to poll again after removing
+		 * one of these.
 		 */
 		do {
 			err = iwch_poll_cq_one(rhp, chp, wc + npolled);
@@ -221,10 +221,4 @@ int iwch_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *wc)
 	else {
 		return npolled;
 	}
-}
-
-int iwch_modify_cq(struct ib_cq *cq, int cqe)
-{
-	PDBG("iwch_modify_cq: TBD\n");
-	return 0;
 }

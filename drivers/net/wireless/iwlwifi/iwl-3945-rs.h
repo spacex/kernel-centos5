@@ -27,19 +27,29 @@
 #ifndef __iwl_3945_rs_h__
 #define __iwl_3945_rs_h__
 
-struct iwl_rate_info {
-	u8 plcp;
-	u8 ieee;
+struct iwl3945_rate_info {
+	u8 plcp;		/* uCode API:  IWL_RATE_6M_PLCP, etc. */
+	u8 ieee;		/* MAC header:  IWL_RATE_6M_IEEE, etc. */
 	u8 prev_ieee;		/* previous rate in IEEE speeds */
 	u8 next_ieee;		/* next rate in IEEE speeds */
 	u8 prev_rs;		/* previous rate used in rs algo */
 	u8 next_rs;		/* next rate used in rs algo */
 	u8 prev_rs_tgg;		/* previous rate used in TGG rs algo */
 	u8 next_rs_tgg;		/* next rate used in TGG rs algo */
+        u8 table_rs_index;	/* index in rate scale table cmd */
+        u8 prev_table_rs;	/* prev in rate table cmd */
 };
 
+/*
+ * These serve as indexes into
+ * struct iwl3945_rate_info iwl3945_rates[IWL_RATE_COUNT];
+ */
 enum {
-	IWL_RATE_6M_INDEX = 0,
+	IWL_RATE_1M_INDEX = 0,
+	IWL_RATE_2M_INDEX,
+	IWL_RATE_5M_INDEX,
+	IWL_RATE_11M_INDEX,
+	IWL_RATE_6M_INDEX,
 	IWL_RATE_9M_INDEX,
 	IWL_RATE_12M_INDEX,
 	IWL_RATE_18M_INDEX,
@@ -47,13 +57,25 @@ enum {
 	IWL_RATE_36M_INDEX,
 	IWL_RATE_48M_INDEX,
 	IWL_RATE_54M_INDEX,
-	IWL_RATE_1M_INDEX,
-	IWL_RATE_2M_INDEX,
-	IWL_RATE_5M_INDEX,
-	IWL_RATE_11M_INDEX,
 	IWL_RATE_COUNT,
 	IWL_RATE_INVM_INDEX,
 	IWL_RATE_INVALID = IWL_RATE_INVM_INDEX
+};
+
+enum {
+	IWL_RATE_6M_INDEX_TABLE = 0,
+	IWL_RATE_9M_INDEX_TABLE,
+	IWL_RATE_12M_INDEX_TABLE,
+	IWL_RATE_18M_INDEX_TABLE,
+	IWL_RATE_24M_INDEX_TABLE,
+	IWL_RATE_36M_INDEX_TABLE,
+	IWL_RATE_48M_INDEX_TABLE,
+	IWL_RATE_54M_INDEX_TABLE,
+	IWL_RATE_1M_INDEX_TABLE,
+	IWL_RATE_2M_INDEX_TABLE,
+	IWL_RATE_5M_INDEX_TABLE,
+	IWL_RATE_11M_INDEX_TABLE,
+	IWL_RATE_INVM_INDEX_TABLE = IWL_RATE_INVM_INDEX,
 };
 
 enum {
@@ -77,6 +99,7 @@ enum {
 #define	IWL_RATE_5M_MASK   (1<<IWL_RATE_5M_INDEX)
 #define	IWL_RATE_11M_MASK  (1<<IWL_RATE_11M_INDEX)
 
+/* 3945 uCode API values for (legacy) bit rates, both OFDM and CCK */
 enum {
 	IWL_RATE_6M_PLCP = 13,
 	IWL_RATE_9M_PLCP = 15,
@@ -92,6 +115,7 @@ enum {
 	IWL_RATE_11M_PLCP = 110,
 };
 
+/* MAC header values for bit rates */
 enum {
 	IWL_RATE_6M_IEEE = 12,
 	IWL_RATE_9M_IEEE = 18,
@@ -140,82 +164,52 @@ enum {
 #define IWL_MIN_RSSI_VAL                 -100
 #define IWL_MAX_RSSI_VAL                    0
 
-extern const struct iwl_rate_info iwl_rates[IWL_RATE_COUNT];
+extern const struct iwl3945_rate_info iwl3945_rates[IWL_RATE_COUNT];
 
-static inline int iwl_rate_index_from_plcp(int plcp)
+static inline u8 iwl3945_get_prev_ieee_rate(u8 rate_index)
 {
-	int i = 0;
-	for (i = 0; i < IWL_RATE_COUNT; i++)
-		if (iwl_rates[i].plcp == plcp)
-			return i;
-	return -1;
-}
+	u8 rate = iwl3945_rates[rate_index].prev_ieee;
 
-static inline u8 iwl_rate_get_lowest_plcp(int rate_mask)
-{
-	u8 i;
-
-	for (i = IWL_RATE_1M_INDEX; i != IWL_RATE_INVALID;
-	     i = iwl_rates[i].next_ieee) {
-		if (rate_mask & (1 << i))
-			return iwl_rates[i].plcp;
-	}
-
-	return IWL_RATE_INVALID;
-}
-
-static inline u8 iwl_get_prev_ieee_rate(u8 rate_index)
-{
-	u8 rate = iwl_rates[rate_index].prev_ieee;
 	if (rate == IWL_RATE_INVALID)
 		rate = rate_index;
 	return rate;
 }
 
-#if IWL == 3945
 /**
- * iwl_fill_rs_info - Fill an output text buffer with the rate representation
+ * iwl3945_fill_rs_info - Fill an output text buffer with the rate representation
  *
  * NOTE:  This is provided as a quick mechanism for a user to visualize
- * the performance of the rate control alogirthm and is not meant to be
+ * the performance of the rate control algorithm and is not meant to be
  * parsed software.
  */
-extern int iwl_fill_rs_info(struct ieee80211_hw *, char *buf, u8 sta_id);
+extern int iwl3945_fill_rs_info(struct ieee80211_hw *, char *buf, u8 sta_id);
 
 /**
- * iwl_rate_scale_init - Initialize the rate scale table based on assoc info
+ * iwl3945_rate_scale_init - Initialize the rate scale table based on assoc info
  *
- * The specific througput table used is based on the type of network
+ * The specific throughput table used is based on the type of network
  * the associated with, including A, B, G, and G w/ TGG protection
  */
-extern void iwl_rate_scale_init(struct ieee80211_hw *hw, s32 sta_id);
+extern void iwl3945_rate_scale_init(struct ieee80211_hw *hw, s32 sta_id);
 
 /**
- * iwl_rate_control_register - Register the rate control algorithm callbacks
+ * iwl3945_rate_control_register - Register the rate control algorithm callbacks
  *
  * Since the rate control algorithm is hardware specific, there is no need
  * or reason to place it as a stand alone module.  The driver can call
- * iwl_rate_control_register in order to register the rate control callbacks
+ * iwl3945_rate_control_register in order to register the rate control callbacks
  * with the mac80211 subsystem.  This should be performed prior to calling
  * ieee80211_register_hw
  *
  */
-extern void iwl_rate_control_register(void);
+extern void iwl3945_rate_control_register(struct ieee80211_hw *hw);
 
 /**
- * iwl_rate_control_unregister - Unregister the rate control callbacks
+ * iwl3945_rate_control_unregister - Unregister the rate control callbacks
  *
  * This should be called after calling ieee80211_unregister_hw, but before
  * the driver is unloaded.
  */
-extern void iwl_rate_control_unregister(void);
-#else
-static inline int iwl_fill_rs_info(struct ieee80211_hw *hw, char *buf,
-				   u8 sta_id)
-{ return -ENOTSUPP; }
-static inline void iwl_rate_scale_init(struct ieee80211_hw *hw, s32 sta_id) {}
-static inline void iwl_rate_control_register(void) {}
-static inline void iwl_rate_control_unregister(void) {}
-#endif /* IWL == 3945 */
+extern void iwl3945_rate_control_unregister(struct ieee80211_hw *hw);
 
 #endif

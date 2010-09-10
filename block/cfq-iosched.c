@@ -1866,11 +1866,12 @@ static void cfq_completed_request(request_queue_t *q, struct request *rq)
 	if (cfqd->active_queue == cfqq) {
 		if (time_after(now, cfqq->slice_end))
 			cfq_slice_expired(cfqd, 0);
-		else if (sync && RB_EMPTY_ROOT(&cfqq->sort_list)) {
-			if (!cfq_arm_slice_timer(cfqd, cfqq))
-				cfq_schedule_dispatch(cfqd);
-		}
+		else if (sync && RB_EMPTY_ROOT(&cfqq->sort_list))
+			cfq_arm_slice_timer(cfqd, cfqq);
 	}
+
+	if (!cfqd->rq_in_driver)
+		cfq_schedule_dispatch(cfqd);
 }
 
 static struct request *

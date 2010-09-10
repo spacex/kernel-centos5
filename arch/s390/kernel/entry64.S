@@ -790,6 +790,19 @@ mcck_return:
 #endif
 	lpswe	__LC_RETURN_MCCK_PSW	# back to caller
 
+/*
+ * Reset channel path machine check handler.
+ */
+	.globl rchp_mcck_int_handler
+rchp_mcck_int_handler:
+	SAVE_ALL_BASE __LC_SAVE_AREA+64
+	SAVE_ALL_SYNC __LC_MCK_OLD_PSW,__LC_SAVE_AREA+64
+	CREATE_STACK_FRAME __LC_MCK_OLD_PSW,__LC_SAVE_AREA+64
+
+	brasl	%r14,do_rchp_mcck
+
+	RESTORE_ALL __LC_RETURN_MCCK_PSW,0
+
 #ifdef CONFIG_SMP
 /*
  * Restart interruption handler, kick starter for additional CPUs

@@ -15,6 +15,8 @@
 extern struct bus_type of_platform_bus_type;
 extern struct dma_mapping_ops of_platform_dma_ops;
 
+struct iommu_table;
+
 /*
  * The of_device is a kind of "base class" that is a superset of
  * struct device for use by devices attached to an OF node and
@@ -23,7 +25,11 @@ extern struct dma_mapping_ops of_platform_dma_ops;
 struct of_device
 {
 	struct device_node	*node;		/* OF device node */
+	struct iommu_table	*iommu;		/* iommu table */
 	u64			dma_mask;	/* DMA mask */
+#ifdef CONFIG_NUMA
+	int			numa_node;	/* Numa node */
+#endif
 	struct device		dev;		/* Generic device interface */
 };
 #define	to_of_device(d) container_of(d, struct of_device, dev)
@@ -35,6 +41,8 @@ extern const struct of_device_id *of_match_device(
 
 extern struct of_device *of_dev_get(struct of_device *dev);
 extern void of_dev_put(struct of_device *dev);
+
+extern void (*iommu_setup_of_dev)(struct of_device *odev);
 
 /*
  * An of_platform_driver driver is attached to a basic of_device on

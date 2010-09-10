@@ -364,6 +364,15 @@ HYPERVISOR_expose_p2m(unsigned long conv_start_gpfn,
 }
 #endif
 
+static inline int
+HYPERVISOR_add_io_space(unsigned long phys_base,
+			unsigned long sparse,
+			unsigned long space_number)
+{
+	return _hypercall4(int, ia64_dom0vp_op, IA64_DOM0VP_add_io_space,
+			   phys_base, sparse, space_number);
+}
+
 // for balloon driver
 #define HYPERVISOR_update_va_mapping(va, new_val, flags) (0)
 

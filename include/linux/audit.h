@@ -25,6 +25,7 @@
 #define _LINUX_AUDIT_H_
 
 #include <linux/elf-em.h>
+#include <linux/types.h>
 
 /* The netlink messages for the audit system is divided into blocks:
  * 1000 - 1099 are for commanding the audit system
@@ -108,10 +109,12 @@
 #define AUDIT_MAC_IPSEC_DELSA	1412	/* Delete a XFRM state */
 #define AUDIT_MAC_IPSEC_ADDSPD	1413	/* Add a XFRM policy */
 #define AUDIT_MAC_IPSEC_DELSPD	1414	/* Delete a XFRM policy */
+#define AUDIT_MAC_IPSEC_EVENT	1415	/* Audit an IPSec event */
 
 #define AUDIT_FIRST_KERN_ANOM_MSG   1700
 #define AUDIT_LAST_KERN_ANOM_MSG    1799
 #define AUDIT_ANOM_PROMISCUOUS      1700 /* Device changed promiscuous mode */
+#define AUDIT_ANOM_ABEND            1701 /* Process ended abnormally */
 
 #define AUDIT_KERNEL		2000	/* Asynchronous audit record. NOT A REQUEST. */
 
@@ -382,6 +385,7 @@ static inline void audit_inode_child(const char *dname,
 	if (unlikely(!audit_dummy_context()))
 		__audit_inode_child(dname, inode, parent);
 }
+void audit_core_dumps(long signr);
 
 static inline void audit_ptrace(struct task_struct *t)
 {
@@ -395,6 +399,7 @@ extern void auditsc_get_stamp(struct audit_context *ctx,
 			      struct timespec *t, unsigned int *serial);
 extern int  audit_set_loginuid(struct task_struct *task, uid_t loginuid);
 extern uid_t audit_get_loginuid(struct audit_context *ctx);
+extern unsigned int audit_get_sessionid(struct audit_context *ctx);
 extern void audit_log_task_context(struct audit_buffer *ab);
 extern int __audit_ipc_obj(struct kern_ipc_perm *ipcp);
 extern int __audit_ipc_set_perm(unsigned long qbytes, uid_t uid, gid_t gid, mode_t mode);
@@ -464,8 +469,10 @@ extern int audit_signals;
 #define __audit_inode_child(d,i,p) do { ; } while (0)
 #define audit_inode(n,d) do { ; } while (0)
 #define audit_inode_child(d,i,p) do { ; } while (0)
+#define audit_core_dumps(i) do { ; } while (0)
 #define auditsc_get_stamp(c,t,s) do { BUG(); } while (0)
 #define audit_get_loginuid(c) ({ -1; })
+#define audit_get_sessionid(c) ({ -1; })
 #define audit_log_task_context(b) do { ; } while (0)
 #define audit_ipc_obj(i) ({ 0; })
 #define audit_ipc_set_perm(q,u,g,m) ({ 0; })

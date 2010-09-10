@@ -73,6 +73,7 @@ static inline int pci_no_d1d2(struct pci_dev *dev)
 extern int pcie_mch_quirk;
 extern struct device_attribute pci_dev_attrs[];
 extern struct class_device_attribute class_device_attr_cpuaffinity;
+extern void pcibios_fix_bus_scan_quirk(struct pci_bus *bus);
 
 /**
  * pci_match_one_device - Tell if a PCI device structure has a matching

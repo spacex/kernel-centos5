@@ -15,7 +15,7 @@ static inline int is_vm_hugetlb_page(struct vm_area_struct *vma)
 
 int hugetlb_sysctl_handler(struct ctl_table *, int, struct file *, void __user *, size_t *, loff_t *);
 int copy_hugetlb_page_range(struct mm_struct *, struct mm_struct *, struct vm_area_struct *);
-int follow_hugetlb_page(struct mm_struct *, struct vm_area_struct *, struct page **, struct vm_area_struct **, unsigned long *, int *, int);
+int follow_hugetlb_page(struct mm_struct *, struct vm_area_struct *, struct page **, struct vm_area_struct **, unsigned long *, int *, int, int);
 void unmap_hugepage_range(struct vm_area_struct *, unsigned long, unsigned long);
 void __unmap_hugepage_range(struct vm_area_struct *, unsigned long, unsigned long);
 int hugetlb_prefault(struct address_space *, struct vm_area_struct *);
@@ -73,6 +73,28 @@ static inline int prepare_hugepage_range(unsigned long addr, unsigned long len)
 int prepare_hugepage_range(unsigned long addr, unsigned long len);
 #endif
 
+#ifndef ARCH_HAS_HUGE_PTE_TYPE
+#define huge_pte_none(pte)			pte_none(pte)
+#define huge_pte_wrprotect(pte)			pte_wrprotect(pte)
+#define huge_ptep_set_wrprotect(mm, addr, ptep)	\
+	ptep_set_wrprotect(mm, addr, ptep)
+#define huge_ptep_set_access_flags(vma, addr, ptep, pte, dirty)	\
+	ptep_set_access_flags(vma, addr, ptep, pte, dirty)
+#define huge_ptep_get(ptep)			(*ptep)
+#endif
+
+#ifndef ARCH_HAS_PREPARE_HUGEPAGE
+#define arch_prepare_hugepage(page)		0
+#define arch_release_hugepage(page)		do { } while (0)
+#else
+int arch_prepare_hugepage(struct page *page);
+void arch_release_hugepage(struct page *page);
+#endif
+
+#ifndef ARCH_HAS_HUGEPAGE_CLEAR_FLUSH
+#define huge_ptep_clear_flush(vma, addr, ptep) do { } while (0)
+#endif
+
 #ifndef ARCH_HAS_SETCLEAR_HUGE_PTE
 #define set_huge_pte_at(mm, addr, ptep, pte)	set_pte_at(mm, addr, ptep, pte)
 #define huge_ptep_get_and_clear(mm, addr, ptep) ptep_get_and_clear(mm, addr, ptep)
@@ -100,7 +122,7 @@ static inline unsigned long hugetlb_total_pages(void)
 	return 0;
 }
 
-#define follow_hugetlb_page(m,v,p,vs,a,b,i)	({ BUG(); 0; })
+#define follow_hugetlb_page(m,v,p,vs,a,b,i,w)	({ BUG(); 0; })
 #define follow_huge_addr(mm, addr, write)	ERR_PTR(-EINVAL)
 #define copy_hugetlb_page_range(src, dst, vma)	({ BUG(); 0; })
 #define hugetlb_prefault(mapping, vma)		({ BUG(); 0; })

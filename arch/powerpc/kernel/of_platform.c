@@ -55,6 +55,8 @@ static struct of_device_id of_default_bus_ids[] = {
 
 static atomic_t bus_no_reg_magic;
 
+void (*iommu_setup_of_dev)(struct of_device *odev);
+
 /*
  *
  * OF platform device type definition & base infrastructure
@@ -129,6 +131,15 @@ static int of_platform_device_resume(struct device * dev)
 	return error;
 }
 
+static void of_platform_device_shutdown(struct device *dev)
+{
+	struct of_device *of_dev = to_of_device(dev);
+	struct of_platform_driver *drv = to_of_platform_driver(dev->driver);
+
+	if (dev->driver && drv->shutdown)
+		drv->shutdown(of_dev);
+}
+
 struct bus_type of_platform_bus_type = {
        .name	= "of_platform",
        .match	= of_platform_bus_match,
@@ -136,6 +147,7 @@ struct bus_type of_platform_bus_type = {
        .remove	= of_platform_device_remove,
        .suspend	= of_platform_device_suspend,
        .resume	= of_platform_device_resume,
+       .shutdown = of_platform_device_shutdown,
 };
 EXPORT_SYMBOL(of_platform_bus_type);
 
@@ -232,6 +244,9 @@ struct of_device* of_platform_device_create(struct device_node *np,
 	dev->dev.parent = parent;
 	dev->dev.bus = &of_platform_bus_type;
 	dev->dev.release = of_release_dev;
+#ifdef CONFIG_NUMA
+	dev->numa_node = of_node_to_nid(np);
+#endif
 
 	/* We do not fill the DMA ops for platform devices by default.
 	 * This is currently the responsibility of the platform code
@@ -242,6 +257,9 @@ struct of_device* of_platform_device_create(struct device_node *np,
 		strlcpy(dev->dev.bus_id, bus_id, BUS_ID_SIZE);
 	else
 		of_platform_make_bus_id(dev);
+
+	if (iommu_setup_of_dev)
+		iommu_setup_of_dev(dev);
 
 	if (of_device_register(dev) != 0) {
 		kfree(dev);

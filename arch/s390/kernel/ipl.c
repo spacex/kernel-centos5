@@ -14,6 +14,7 @@
 #include <linux/delay.h>
 #include <linux/reboot.h>
 #include <linux/ctype.h>
+#include <asm/ipl.h>
 #include <asm/smp.h>
 #include <asm/setup.h>
 #include <asm/cpcmd.h>
@@ -28,41 +29,67 @@ extern char s390_readinfo_sccb[];
 #define SCCB_LOADPARM (&s390_readinfo_sccb[24])
 #define SCCB_FLAG (s390_readinfo_sccb[91])
 
-enum ipl_type {
-	IPL_TYPE_NONE	 = 1,
-	IPL_TYPE_UNKNOWN = 2,
-	IPL_TYPE_CCW	 = 4,
-	IPL_TYPE_FCP	 = 8,
-};
-
-#define IPL_NONE_STR	 "none"
-#define IPL_UNKNOWN_STR  "unknown"
-#define IPL_CCW_STR	 "ccw"
-#define IPL_FCP_STR	 "fcp"
+#define IPL_UNKNOWN_STR		"unknown"
+#define IPL_CCW_STR		"ccw"
+#define IPL_FCP_STR		"fcp"
+#define IPL_FCP_DUMP_STR	"fcp_dump"
 
 static char *ipl_type_str(enum ipl_type type)
 {
 	switch (type) {
-	case IPL_TYPE_NONE:
-		return IPL_NONE_STR;
 	case IPL_TYPE_CCW:
 		return IPL_CCW_STR;
 	case IPL_TYPE_FCP:
 		return IPL_FCP_STR;
+	case IPL_TYPE_FCP_DUMP:
+		return IPL_FCP_DUMP_STR;
 	case IPL_TYPE_UNKNOWN:
 	default:
 		return IPL_UNKNOWN_STR;
 	}
 }
 
+enum dump_type {
+	DUMP_TYPE_NONE	= 1,
+	DUMP_TYPE_CCW	= 2,
+	DUMP_TYPE_FCP	= 4,
+};
+
+#define DUMP_NONE_STR	 "none"
+#define DUMP_CCW_STR	 "ccw"
+#define DUMP_FCP_STR	 "fcp"
+
+static char *dump_type_str(enum dump_type type)
+{
+	switch (type) {
+	case DUMP_TYPE_NONE:
+		return DUMP_NONE_STR;
+	case DUMP_TYPE_CCW:
+		return DUMP_CCW_STR;
+	case DUMP_TYPE_FCP:
+		return DUMP_FCP_STR;
+	default:
+		return NULL;
+	}
+}
+
 enum ipl_method {
-	IPL_METHOD_NONE,
-	IPL_METHOD_CCW_CIO,
-	IPL_METHOD_CCW_DIAG,
-	IPL_METHOD_CCW_VM,
-	IPL_METHOD_FCP_RO_DIAG,
-	IPL_METHOD_FCP_RW_DIAG,
-	IPL_METHOD_FCP_RO_VM,
+	REIPL_METHOD_CCW_CIO,
+	REIPL_METHOD_CCW_DIAG,
+	REIPL_METHOD_CCW_VM,
+	REIPL_METHOD_FCP_RO_DIAG,
+	REIPL_METHOD_FCP_RW_DIAG,
+	REIPL_METHOD_FCP_RO_VM,
+	REIPL_METHOD_FCP_DUMP,
+	REIPL_METHOD_DEFAULT,
+};
+
+enum dump_method {
+	DUMP_METHOD_NONE,
+	DUMP_METHOD_CCW_CIO,
+	DUMP_METHOD_CCW_DIAG,
+	DUMP_METHOD_CCW_VM,
+	DUMP_METHOD_FCP_DIAG,
 };
 
 enum shutdown_action {
@@ -89,39 +116,18 @@ static char *shutdown_action_str(enum shutdown_action action)
 	}
 }
 
-enum diag308_subcode  {
-	DIAG308_IPL   = 3,
-	DIAG308_DUMP  = 4,
-	DIAG308_SET   = 5,
-	DIAG308_STORE = 6,
-};
-
-enum diag308_ipl_type {
-	DIAG308_IPL_TYPE_FCP = 0,
-	DIAG308_IPL_TYPE_CCW = 2,
-};
-
-enum diag308_opt {
-	DIAG308_IPL_OPT_IPL  = 0x10,
-	DIAG308_IPL_OPT_DUMP = 0x20,
-};
-
-enum diag308_rc {
-	DIAG308_RC_OK = 1,
-};
-
 static int diag308_set_works = 0;
 
 static int reipl_capabilities = IPL_TYPE_UNKNOWN;
 
 static enum ipl_type reipl_type = IPL_TYPE_UNKNOWN;
-static enum ipl_method reipl_method = IPL_METHOD_NONE;
+static enum ipl_method reipl_method = REIPL_METHOD_DEFAULT;
 static struct ipl_parameter_block *reipl_block_fcp;
 static struct ipl_parameter_block *reipl_block_ccw;
 
-static int dump_capabilities = IPL_TYPE_NONE;
-static enum ipl_type dump_type = IPL_TYPE_NONE;
-static enum ipl_method dump_method = IPL_METHOD_NONE;
+static int dump_capabilities = DUMP_TYPE_NONE;
+static enum dump_type dump_type = DUMP_TYPE_NONE;
+static enum dump_method dump_method = DUMP_METHOD_NONE;
 static struct ipl_parameter_block *dump_block_fcp;
 static struct ipl_parameter_block *dump_block_ccw;
 
@@ -149,6 +155,7 @@ int diag308(unsigned long subcode, void *addr)
 
 	return _rc;
 }
+EXPORT_SYMBOL_GPL(diag308);
 
 /* SYSFS */
 
@@ -194,24 +201,51 @@ static void make_attrs_ro(struct attribute **attrs)
  * ipl section
  */
 
-static enum ipl_type ipl_get_type(void)
+static enum ipl_type get_ipl_type(void)
 {
 	struct ipl_parameter_block *ipl = IPL_PARMBLOCK_START;
 
-	if (!IPL_DEVNO_VALID)
+	if (!(ipl_parameter_flags & IPL_DEVNO_VALID))
 		return IPL_TYPE_UNKNOWN;
-	if (!IPL_PARMBLOCK_VALID)
+	if (!(ipl_parameter_flags & IPL_PARMBLOCK_VALID))
 		return IPL_TYPE_CCW;
 	if (ipl->hdr.version > IPL_MAX_SUPPORTED_VERSION)
 		return IPL_TYPE_UNKNOWN;
 	if (ipl->hdr.pbt != DIAG308_IPL_TYPE_FCP)
 		return IPL_TYPE_UNKNOWN;
+	if (ipl->ipl_info.fcp.opt == DIAG308_IPL_OPT_DUMP)
+		return IPL_TYPE_FCP_DUMP;
 	return IPL_TYPE_FCP;
 }
 
+void __init setup_ipl_info(void)
+{
+	ipl_info.type = get_ipl_type();
+	switch (ipl_info.type) {
+	case IPL_TYPE_CCW:
+		ipl_info.data.ccw.dev_id.devno = ipl_devno;
+		ipl_info.data.ccw.dev_id.ssid = 0;
+		break;
+	case IPL_TYPE_FCP:
+	case IPL_TYPE_FCP_DUMP:
+		ipl_info.data.fcp.dev_id.devno =
+			IPL_PARMBLOCK_START->ipl_info.fcp.devno;
+		ipl_info.data.fcp.dev_id.ssid = 0;
+		ipl_info.data.fcp.wwpn = IPL_PARMBLOCK_START->ipl_info.fcp.wwpn;
+		ipl_info.data.fcp.lun = IPL_PARMBLOCK_START->ipl_info.fcp.lun;
+		break;
+	case IPL_TYPE_UNKNOWN:
+	default:
+		/* We have no info to copy */
+		break;
+	}
+}
+
+struct ipl_info ipl_info;
+EXPORT_SYMBOL_GPL(ipl_info);
 static ssize_t ipl_type_show(struct subsystem *subsys, char *page)
 {
-	return sprintf(page, "%s\n", ipl_type_str(ipl_get_type()));
+	return sprintf(page, "%s\n", ipl_type_str(ipl_info.type));
 }
 
 static struct subsys_attribute sys_ipl_type_attr = __ATTR_RO(ipl_type);
@@ -220,10 +254,11 @@ static ssize_t sys_ipl_device_show(struct subsystem *subsys, char *page)
 {
 	struct ipl_parameter_block *ipl = IPL_PARMBLOCK_START;
 
-	switch (ipl_get_type()) {
+	switch (ipl_info.type) {
 	case IPL_TYPE_CCW:
 		return sprintf(page, "0.0.%04x\n", ipl_devno);
 	case IPL_TYPE_FCP:
+	case IPL_TYPE_FCP_DUMP:
 		return sprintf(page, "0.0.%04x\n", ipl->ipl_info.fcp.devno);
 	default:
 		return 0;
@@ -451,20 +486,26 @@ static int reipl_set_type(enum ipl_type type)
 	switch(type) {
 	case IPL_TYPE_CCW:
 		if (MACHINE_IS_VM)
-			reipl_method = IPL_METHOD_CCW_VM;
+			reipl_method = REIPL_METHOD_CCW_VM;
 		else
-			reipl_method = IPL_METHOD_CCW_CIO;
+			reipl_method = REIPL_METHOD_CCW_CIO;
 		break;
 	case IPL_TYPE_FCP:
 		if (diag308_set_works)
-			reipl_method = IPL_METHOD_FCP_RW_DIAG;
+			reipl_method = REIPL_METHOD_FCP_RW_DIAG;
 		else if (MACHINE_IS_VM)
-			reipl_method = IPL_METHOD_FCP_RO_VM;
+			reipl_method = REIPL_METHOD_FCP_RO_VM;
 		else
-			reipl_method = IPL_METHOD_FCP_RO_DIAG;
+			reipl_method = REIPL_METHOD_FCP_RO_DIAG;
+		break;
+	case IPL_TYPE_FCP_DUMP:
+		reipl_method = REIPL_METHOD_FCP_DUMP;
+		break;
+	case IPL_TYPE_UNKNOWN:
+		reipl_method = REIPL_METHOD_DEFAULT;
 		break;
 	default:
-		reipl_method = IPL_METHOD_NONE;
+		BUG();
 	}
 	reipl_type = type;
 	return 0;
@@ -540,22 +581,24 @@ static struct attribute_group dump_ccw_attr_group = {
 
 /* dump type */
 
-static int dump_set_type(enum ipl_type type)
+static int dump_set_type(enum dump_type type)
 {
 	if (!(dump_capabilities & type))
 		return -EINVAL;
 	switch(type) {
-	case IPL_TYPE_CCW:
+	case DUMP_TYPE_CCW:
 		if (MACHINE_IS_VM)
-			dump_method = IPL_METHOD_CCW_VM;
+			dump_method = DUMP_METHOD_CCW_VM;
+		else if (diag308_set_works)
+			dump_method = DUMP_METHOD_CCW_DIAG;
 		else
-			dump_method = IPL_METHOD_CCW_CIO;
+			dump_method = DUMP_METHOD_CCW_CIO;
 		break;
-	case IPL_TYPE_FCP:
-		dump_method = IPL_METHOD_FCP_RW_DIAG;
+	case DUMP_TYPE_FCP:
+		dump_method = DUMP_METHOD_FCP_DIAG;
 		break;
 	default:
-		dump_method = IPL_METHOD_NONE;
+		dump_method = DUMP_METHOD_NONE;
 	}
 	dump_type = type;
 	return 0;
@@ -563,7 +606,7 @@ static int dump_set_type(enum ipl_type type)
 
 static ssize_t dump_type_show(struct subsystem *subsys, char *page)
 {
-	return sprintf(page, "%s\n", ipl_type_str(dump_type));
+	return sprintf(page, "%s\n", dump_type_str(dump_type));
 }
 
 static ssize_t dump_type_store(struct subsystem *subsys, const char *buf,
@@ -571,12 +614,12 @@ static ssize_t dump_type_store(struct subsystem *subsys, const char *buf,
 {
 	int rc = -EINVAL;
 
-	if (strncmp(buf, IPL_NONE_STR, strlen(IPL_NONE_STR)) == 0)
-		rc = dump_set_type(IPL_TYPE_NONE);
-	else if (strncmp(buf, IPL_CCW_STR, strlen(IPL_CCW_STR)) == 0)
-		rc = dump_set_type(IPL_TYPE_CCW);
-	else if (strncmp(buf, IPL_FCP_STR, strlen(IPL_FCP_STR)) == 0)
-		rc = dump_set_type(IPL_TYPE_FCP);
+	if (strncmp(buf, DUMP_NONE_STR, strlen(DUMP_NONE_STR)) == 0)
+		rc = dump_set_type(DUMP_TYPE_NONE);
+	else if (strncmp(buf, DUMP_CCW_STR, strlen(DUMP_CCW_STR)) == 0)
+		rc = dump_set_type(DUMP_TYPE_CCW);
+	else if (strncmp(buf, DUMP_FCP_STR, strlen(DUMP_FCP_STR)) == 0)
+		rc = dump_set_type(DUMP_TYPE_FCP);
 	return (rc != 0) ? rc : len;
 }
 
@@ -642,42 +685,44 @@ void do_reipl(void)
 	char loadparm[LOADPARM_LEN + 1];
 
 	switch (reipl_method) {
-	case IPL_METHOD_CCW_CIO:
+	case REIPL_METHOD_CCW_CIO:
 		devid.devno = reipl_block_ccw->ipl_info.ccw.devno;
-		if (ipl_get_type() == IPL_TYPE_CCW && devid.devno == ipl_devno)
+		if (ipl_info.type == IPL_TYPE_CCW && devid.devno == ipl_devno)
 			diag308(DIAG308_IPL, NULL);
 		devid.ssid  = 0;
 		reipl_ccw_dev(&devid);
 		break;
-	case IPL_METHOD_CCW_VM:
+	case REIPL_METHOD_CCW_VM:
 		reipl_get_ascii_loadparm(loadparm);
 		if (strlen(loadparm) == 0)
-			sprintf(buf, "IPL %X",
+			sprintf(buf, "IPL %X CLEAR",
 				reipl_block_ccw->ipl_info.ccw.devno);
 		else
-			sprintf(buf, "IPL %X LOADPARM '%s'",
+			sprintf(buf, "IPL %X CLEAR LOADPARM '%s'",
 				reipl_block_ccw->ipl_info.ccw.devno, loadparm);
 		cpcmd(buf, NULL, 0, NULL);
 		break;
-	case IPL_METHOD_CCW_DIAG:
+	case REIPL_METHOD_CCW_DIAG:
 		diag308(DIAG308_SET, reipl_block_ccw);
 		diag308(DIAG308_IPL, NULL);
 		break;
-	case IPL_METHOD_FCP_RW_DIAG:
+	case REIPL_METHOD_FCP_RW_DIAG:
 		diag308(DIAG308_SET, reipl_block_fcp);
 		diag308(DIAG308_IPL, NULL);
 		break;
-	case IPL_METHOD_FCP_RO_DIAG:
+	case REIPL_METHOD_FCP_RO_DIAG:
 		diag308(DIAG308_IPL, NULL);
 		break;
-	case IPL_METHOD_FCP_RO_VM:
+	case REIPL_METHOD_FCP_RO_VM:
 		cpcmd("IPL", NULL, 0, NULL);
 		break;
-	case IPL_METHOD_NONE:
-	default:
+	case REIPL_METHOD_DEFAULT:
 		if (MACHINE_IS_VM)
 			cpcmd("IPL", NULL, 0, NULL);
 		diag308(DIAG308_IPL, NULL);
+		break;
+	case REIPL_METHOD_FCP_DUMP:
+	default:
 		break;
 	}
 	signal_processor(smp_processor_id(), sigp_stop_and_store_status);
@@ -691,29 +736,29 @@ static void do_dump(void)
 	static char buf[100];
 
 	switch (dump_method) {
-	case IPL_METHOD_CCW_CIO:
+	case DUMP_METHOD_CCW_CIO:
 		lowcore_save = S390_lowcore;
 		dump_smp_stop_all();
 		devid.devno = dump_block_ccw->ipl_info.ccw.devno;
 		devid.ssid  = 0;
 		reipl_ccw_dev(&devid);
 		break;
-	case IPL_METHOD_CCW_VM:
+	case DUMP_METHOD_CCW_VM:
 		dump_smp_stop_all();
 		sprintf(buf, "STORE STATUS");
 		cpcmd(buf, NULL, 0, NULL);
 		sprintf(buf, "IPL %X", dump_block_ccw->ipl_info.ccw.devno);
 		cpcmd(buf, NULL, 0, NULL);
 		break;
-	case IPL_METHOD_CCW_DIAG:
+	case DUMP_METHOD_CCW_DIAG:
 		diag308(DIAG308_SET, dump_block_ccw);
 		diag308(DIAG308_DUMP, NULL);
 		break;
-	case IPL_METHOD_FCP_RW_DIAG:
+	case DUMP_METHOD_FCP_DIAG:
 		diag308(DIAG308_SET, dump_block_fcp);
 		diag308(DIAG308_DUMP, NULL);
 		break;
-	case IPL_METHOD_NONE:
+	case DUMP_METHOD_NONE:
 	default:
 		return;
 	}
@@ -754,12 +799,13 @@ static int __init ipl_init(void)
 	rc = firmware_register(&ipl_subsys);
 	if (rc)
 		return rc;
-	switch (ipl_get_type()) {
+	switch (ipl_info.type) {
 	case IPL_TYPE_CCW:
 		rc = sysfs_create_group(&ipl_subsys.kset.kobj,
 					&ipl_ccw_attr_group);
 		break;
 	case IPL_TYPE_FCP:
+	case IPL_TYPE_FCP_DUMP:
 		rc = ipl_register_fcp_files();
 		break;
 	default:
@@ -798,7 +844,7 @@ static int __init reipl_ccw_init(void)
 	}
 	reipl_block_ccw->hdr.len = IPL_PARM_BLK_CCW_LEN;
 	reipl_block_ccw->hdr.version = IPL_PARM_BLOCK_VERSION;
-	reipl_block_ccw->hdr.blk0_len = sizeof(reipl_block_ccw->ipl_info.ccw);
+	reipl_block_ccw->hdr.blk0_len = IPL_PARM_BLK0_CCW_LEN;
 	reipl_block_ccw->hdr.pbt = DIAG308_IPL_TYPE_CCW;
 	/* check if read scp info worked and set loadparm */
 	if (SCCB_VALID)
@@ -811,7 +857,7 @@ static int __init reipl_ccw_init(void)
 	/* FIXME: check for diag308_set_works when enabling diag ccw reipl */
 	if (!MACHINE_IS_VM)
 		sys_reipl_ccw_loadparm_attr.attr.mode = S_IRUGO;
-	if (ipl_get_type() == IPL_TYPE_CCW)
+	if (ipl_info.type == IPL_TYPE_CCW)
 		reipl_block_ccw->ipl_info.ccw.devno = ipl_devno;
 	reipl_capabilities |= IPL_TYPE_CCW;
 	return 0;
@@ -821,9 +867,9 @@ static int __init reipl_fcp_init(void)
 {
 	int rc;
 
-	if ((!diag308_set_works) && (ipl_get_type() != IPL_TYPE_FCP))
+	if ((!diag308_set_works) && (ipl_info.type != IPL_TYPE_FCP))
 		return 0;
-	if ((!diag308_set_works) && (ipl_get_type() == IPL_TYPE_FCP))
+	if ((!diag308_set_works) && (ipl_info.type == IPL_TYPE_FCP))
 		make_attrs_ro(reipl_fcp_attrs);
 
 	reipl_block_fcp = (void *) get_zeroed_page(GFP_KERNEL);
@@ -834,13 +880,12 @@ static int __init reipl_fcp_init(void)
 		free_page((unsigned long)reipl_block_fcp);
 		return rc;
 	}
-	if (ipl_get_type() == IPL_TYPE_FCP) {
+	if (ipl_info.type == IPL_TYPE_FCP) {
 		memcpy(reipl_block_fcp, IPL_PARMBLOCK_START, PAGE_SIZE);
 	} else {
 		reipl_block_fcp->hdr.len = IPL_PARM_BLK_FCP_LEN;
 		reipl_block_fcp->hdr.version = IPL_PARM_BLOCK_VERSION;
-		reipl_block_fcp->hdr.blk0_len =
-			sizeof(reipl_block_fcp->ipl_info.fcp);
+		reipl_block_fcp->hdr.blk0_len = IPL_PARM_BLK0_FCP_LEN;
 		reipl_block_fcp->hdr.pbt = DIAG308_IPL_TYPE_FCP;
 		reipl_block_fcp->ipl_info.fcp.opt = DIAG308_IPL_OPT_IPL;
 	}
@@ -866,7 +911,7 @@ static int __init reipl_init(void)
 	rc = reipl_fcp_init();
 	if (rc)
 		return rc;
-	rc = reipl_set_type(ipl_get_type());
+	rc = reipl_set_type(ipl_info.type);
 	if (rc)
 		return rc;
 	return 0;
@@ -886,9 +931,9 @@ static int __init dump_ccw_init(void)
 	}
 	dump_block_ccw->hdr.len = IPL_PARM_BLK_CCW_LEN;
 	dump_block_ccw->hdr.version = IPL_PARM_BLOCK_VERSION;
-	dump_block_ccw->hdr.blk0_len = sizeof(reipl_block_ccw->ipl_info.ccw);
+	dump_block_ccw->hdr.blk0_len = IPL_PARM_BLK0_CCW_LEN;
 	dump_block_ccw->hdr.pbt = DIAG308_IPL_TYPE_CCW;
-	dump_capabilities |= IPL_TYPE_CCW;
+	dump_capabilities |= DUMP_TYPE_CCW;
 	return 0;
 }
 
@@ -910,10 +955,10 @@ static int __init dump_fcp_init(void)
 	}
 	dump_block_fcp->hdr.len = IPL_PARM_BLK_FCP_LEN;
 	dump_block_fcp->hdr.version = IPL_PARM_BLOCK_VERSION;
-	dump_block_fcp->hdr.blk0_len = sizeof(dump_block_fcp->ipl_info.fcp);
+	dump_block_fcp->hdr.blk0_len = IPL_PARM_BLK0_FCP_LEN;
 	dump_block_fcp->hdr.pbt = DIAG308_IPL_TYPE_FCP;
 	dump_block_fcp->ipl_info.fcp.opt = DIAG308_IPL_OPT_DUMP;
-	dump_capabilities |= IPL_TYPE_FCP;
+	dump_capabilities |= DUMP_TYPE_FCP;
 	return 0;
 }
 
@@ -952,7 +997,7 @@ static int __init dump_init(void)
 	rc = dump_fcp_init();
 	if (rc)
 		return rc;
-	dump_set_type(IPL_TYPE_NONE);
+	dump_set_type(DUMP_TYPE_NONE);
 	return 0;
 }
 

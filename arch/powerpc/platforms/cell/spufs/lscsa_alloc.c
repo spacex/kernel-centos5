@@ -28,7 +28,7 @@
 #include <asm/spu_csa.h>
 #include <asm/mmu.h>
 
-int spu_alloc_lscsa(struct spu_state *csa)
+static int spu_alloc_lscsa_std(struct spu_state *csa)
 {
 	struct spu_lscsa *lscsa;
 	unsigned char *p;
@@ -46,7 +46,7 @@ int spu_alloc_lscsa(struct spu_state *csa)
 	return 0;
 }
 
-void spu_free_lscsa(struct spu_state *csa)
+static void spu_free_lscsa_std(struct spu_state *csa)
 {
 	/* Clear reserved bit before vfree. */
 	unsigned char *p;
@@ -60,3 +60,12 @@ void spu_free_lscsa(struct spu_state *csa)
 	vfree(csa->lscsa);
 }
 
+int spu_alloc_lscsa(struct spu_state *csa)
+{
+	return spu_alloc_lscsa_std(csa);
+}
+
+void spu_free_lscsa(struct spu_state *csa)
+{
+	spu_free_lscsa_std(csa);
+}

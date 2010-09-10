@@ -47,6 +47,8 @@ typedef u8 kprobe_opcode_t;
 #define  ARCH_INACTIVE_KPROBE_COUNT 0
 #define flush_insn_slot(p)	do { } while (0)
 
+extern const int kretprobe_blacklist_size;
+
 void arch_remove_kprobe(struct kprobe *p);
 void kretprobe_trampoline(void);
 

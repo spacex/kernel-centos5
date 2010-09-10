@@ -90,6 +90,7 @@ void selinux_task_ctxid(struct task_struct *tsk, u32 *ctxid);
  *     kfree() on it after use.
  */
 int selinux_ctxid_to_string(u32 ctxid, char **ctx, u32 *ctxlen);
+#define selinux_sid_to_string(sid,ctx,ctxlen) selinux_ctxid_to_string((sid),(ctx),(ctxlen))
 
 /**
  *     selinux_get_inode_sid - get the inode's security context ID

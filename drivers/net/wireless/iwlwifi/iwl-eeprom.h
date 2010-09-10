@@ -69,6 +69,8 @@
  *
  */
 
+#define IWL_EEPROM_ACCESS_TIMEOUT	5000 /* uSec */
+#define IWL_EEPROM_ACCESS_DELAY		10   /* uSec */
 /* EEPROM field values */
 #define ANTENNA_SWITCH_NORMAL     0
 #define ANTENNA_SWITCH_INVERSE    1
@@ -142,7 +144,7 @@ struct iwl_eeprom_channel {
 struct iwl_eeprom_txpower_sample {
 	u8 gain_index;		/* index into power (gain) setup table ... */
 	s8 power;		/* ... for this pwr level for this chnl group */
-	__le16 v_det;		/* PA output voltage */
+	u16 v_det;		/* PA output voltage */
 } __attribute__ ((packed));
 
 /*
@@ -155,14 +157,14 @@ struct iwl_eeprom_txpower_sample {
  */
 struct iwl_eeprom_txpower_group {
 	struct iwl_eeprom_txpower_sample samples[5];	/* 5 power levels */
-	__le32 a, b, c, d, e;	/* coefficients for voltage->power
+	s32 a, b, c, d, e;	/* coefficients for voltage->power
 				 * formula (signed) */
-	__le32 Fa, Fb, Fc, Fd, Fe;	/* these modify coeffs based on
+	s32 Fa, Fb, Fc, Fd, Fe;	/* these modify coeffs based on
 					 * frequency (signed) */
 	s8 saturation_power;	/* highest power possible by h/w in this
 				 * band */
 	u8 group_channel;	/* "representative" channel # in this band */
-	__le16 temperature;	/* h/w temperature at factory calib this band
+	s16 temperature;	/* h/w temperature at factory calib this band
 				 * (signed) */
 } __attribute__ ((packed));
 
@@ -173,11 +175,11 @@ struct iwl_eeprom_txpower_group {
  * Data copied from EEPROM.
  */
 struct iwl_eeprom_temperature_corr {
-	__le32 Ta;
-	__le32 Tb;
-	__le32 Tc;
-	__le32 Td;
-	__le32 Te;
+	u32 Ta;
+	u32 Tb;
+	u32 Tc;
+	u32 Td;
+	u32 Te;
 } __attribute__ ((packed));
 
 #if IWL == 4965
@@ -187,32 +189,31 @@ struct iwl_eeprom_temperature_corr {
 #define EEPROM_TX_POWER_VERSION        (2)
 #define EEPROM_TX_POWER_VERSION_NEW    (5)
 
-struct iwl_eeprom_calib_measurement {
+struct iwl_eeprom_calib_measure {
 	u8 temperature;
 	u8 gain_idx;
 	u8 actual_pow;
 	s8 pa_det;
 } __attribute__ ((packed));
 
-struct iwl_eeprom_calib_channel_info {
+struct iwl_eeprom_calib_ch_info {
 	u8 ch_num;
-	struct iwl_eeprom_calib_measurement
-	 measurements[EEPROM_TX_POWER_TX_CHAINS][EEPROM_TX_POWER_MEASUREMENTS];
+	struct iwl_eeprom_calib_measure measurements[EEPROM_TX_POWER_TX_CHAINS]
+		[EEPROM_TX_POWER_MEASUREMENTS];
 } __attribute__ ((packed));
 
 struct iwl_eeprom_calib_subband_info {
 	u8 ch_from;
 	u8 ch_to;
-	struct iwl_eeprom_calib_channel_info ch1;
-	struct iwl_eeprom_calib_channel_info ch2;
+	struct iwl_eeprom_calib_ch_info ch1;
+	struct iwl_eeprom_calib_ch_info ch2;
 } __attribute__ ((packed));
 
 struct iwl_eeprom_calib_info {
 	u8 saturation_power24;
 	u8 saturation_power52;
-	__le16 voltage;		/* signed */
-	struct iwl_eeprom_calib_subband_info
-	 band_info_tbl[EEPROM_TX_POWER_BANDS];
+	s16 voltage;		/* signed */
+	struct iwl_eeprom_calib_subband_info band_info[EEPROM_TX_POWER_BANDS];
 } __attribute__ ((packed));
 
 #endif
@@ -220,32 +221,32 @@ struct iwl_eeprom_calib_info {
 struct iwl_eeprom {
 	u8 reserved0[16];
 #define EEPROM_DEVICE_ID                    (2*0x08)	/* 2 bytes */
-	__le16 device_id;	/* abs.ofs: 16 */
+	u16 device_id;	/* abs.ofs: 16 */
 	u8 reserved1[2];
 #define EEPROM_PMC                          (2*0x0A)	/* 2 bytes */
-	__le16 pmc;		/* abs.ofs: 20 */
+	u16 pmc;		/* abs.ofs: 20 */
 	u8 reserved2[20];
 #define EEPROM_MAC_ADDRESS                  (2*0x15)	/* 6  bytes */
 	u8 mac_address[6];	/* abs.ofs: 42 */
 	u8 reserved3[58];
 #define EEPROM_BOARD_REVISION               (2*0x35)	/* 2  bytes */
-	__le16 board_revision;	/* abs.ofs: 106 */
+	u16 board_revision;	/* abs.ofs: 106 */
 	u8 reserved4[11];
 #define EEPROM_BOARD_PBA_NUMBER             (2*0x3B+1)	/* 9  bytes */
 	u8 board_pba_number[9];	/* abs.ofs: 119 */
 	u8 reserved5[8];
 #define EEPROM_VERSION                      (2*0x44)	/* 2  bytes */
-	__le16 version;		/* abs.ofs: 136 */
+	u16 version;		/* abs.ofs: 136 */
 #define EEPROM_SKU_CAP                      (2*0x45)	/* 1  bytes */
 	u8 sku_cap;		/* abs.ofs: 138 */
 #define EEPROM_LEDS_MODE                    (2*0x45+1)	/* 1  bytes */
 	u8 leds_mode;		/* abs.ofs: 139 */
 #define EEPROM_OEM_MODE                     (2*0x46)	/* 2  bytes */
-	__le16 oem_mode;
+	u16 oem_mode;
 #define EEPROM_WOWLAN_MODE                  (2*0x47)	/* 2  bytes */
-	__le16 wowlan_mode;	/* abs.ofs: 142 */
+	u16 wowlan_mode;	/* abs.ofs: 142 */
 #define EEPROM_LEDS_TIME_INTERVAL           (2*0x48)	/* 2  bytes */
-	__le16 leds_time_interval;	/* abs.ofs: 144 */
+	u16 leds_time_interval;	/* abs.ofs: 144 */
 #define EEPROM_LEDS_OFF_TIME                (2*0x49)	/* 1  bytes */
 	u8 leds_off_time;	/* abs.ofs: 146 */
 #define EEPROM_LEDS_ON_TIME                 (2*0x49+1)	/* 1  bytes */
@@ -259,7 +260,7 @@ struct iwl_eeprom {
 #else
 	u8 reserved6[8];
 #define EEPROM_4965_BOARD_REVISION          (2*0x4F)	/* 2 bytes */
-	__le16 board_revision_4965;	/* abs.ofs: 158 */
+	u16 board_revision_4965;	/* abs.ofs: 158 */
 	u8 reserved7[13];
 #define EEPROM_4965_BOARD_PBA               (2*0x56+1)	/* 9 bytes */
 	u8 board_pba_number_4965[9];	/* abs.ofs: 173 */
@@ -268,23 +269,23 @@ struct iwl_eeprom {
 #define EEPROM_REGULATORY_SKU_ID            (2*0x60)	/* 4  bytes */
 	u8 sku_id[4];		/* abs.ofs: 192 */
 #define EEPROM_REGULATORY_BAND_1            (2*0x62)	/* 2  bytes */
-	__le16 band_1_count;	/* abs.ofs: 196 */
+	u16 band_1_count;	/* abs.ofs: 196 */
 #define EEPROM_REGULATORY_BAND_1_CHANNELS   (2*0x63)	/* 28 bytes */
 	struct iwl_eeprom_channel band_1_channels[14];	/* abs.ofs: 196 */
 #define EEPROM_REGULATORY_BAND_2            (2*0x71)	/* 2  bytes */
-	__le16 band_2_count;	/* abs.ofs: 226 */
+	u16 band_2_count;	/* abs.ofs: 226 */
 #define EEPROM_REGULATORY_BAND_2_CHANNELS   (2*0x72)	/* 26 bytes */
 	struct iwl_eeprom_channel band_2_channels[13];	/* abs.ofs: 228 */
 #define EEPROM_REGULATORY_BAND_3            (2*0x7F)	/* 2  bytes */
-	__le16 band_3_count;	/* abs.ofs: 254 */
+	u16 band_3_count;	/* abs.ofs: 254 */
 #define EEPROM_REGULATORY_BAND_3_CHANNELS   (2*0x80)	/* 24 bytes */
 	struct iwl_eeprom_channel band_3_channels[12];	/* abs.ofs: 256 */
 #define EEPROM_REGULATORY_BAND_4            (2*0x8C)	/* 2  bytes */
-	__le16 band_4_count;	/* abs.ofs: 280 */
+	u16 band_4_count;	/* abs.ofs: 280 */
 #define EEPROM_REGULATORY_BAND_4_CHANNELS   (2*0x8D)	/* 22 bytes */
 	struct iwl_eeprom_channel band_4_channels[11];	/* abs.ofs: 282 */
 #define EEPROM_REGULATORY_BAND_5            (2*0x98)	/* 2  bytes */
-	__le16 band_5_count;	/* abs.ofs: 304 */
+	u16 band_5_count;	/* abs.ofs: 304 */
 #define EEPROM_REGULATORY_BAND_5_CHANNELS   (2*0x99)	/* 12 bytes */
 	struct iwl_eeprom_channel band_5_channels[6];	/* abs.ofs: 306 */
 
@@ -316,10 +317,10 @@ struct iwl_eeprom {
 	struct iwl_eeprom_channel band_52_channels[11];	/* abs.ofs: 336 */
 	u8 reserved12[6];
 #define EEPROM_CALIB_VERSION_OFFSET            (2*0xB6)	/* 2 bytes */
-	__le16 calib_version;	/* abs.ofs: 364 */
+	u16 calib_version;	/* abs.ofs: 364 */
 	u8 reserved13[2];
 #define EEPROM_SATURATION_POWER_OFFSET         (2*0xB8)	/* 2 bytes */
-	__le16 satruation_power;	/* abs.ofs: 368 */
+	u16 satruation_power;	/* abs.ofs: 368 */
 	u8 reserved14[94];
 #define EEPROM_IWL_CALIB_TXPOWER_OFFSET        (2*0xE8)	/* 48  bytes */
 	struct iwl_eeprom_calib_info calib_info;	/* abs.ofs: 464 */

@@ -22,6 +22,8 @@
 #include <asm/paca.h>
 #include <asm/cputable.h>
 #include <asm/cacheflush.h>
+#include <asm/smp.h>
+#include <linux/compiler.h>
 
 #ifdef DEBUG
 #define DBG(fmt...) udbg_printf(fmt)
@@ -50,9 +52,35 @@ static inline unsigned long mk_vsid_data(unsigned long ea, unsigned long flags)
 	return (get_kernel_vsid(ea) << SLB_VSID_SHIFT) | flags;
 }
 
-static inline void create_slbe(unsigned long ea, unsigned long flags,
-			       unsigned long entry)
+static inline void slb_shadow_update(unsigned long ea,
+				     unsigned long flags,
+				     unsigned long entry)
 {
+	/*
+	 * Clear the ESID first so the entry is not valid while we are
+	 * updating it.  No write barriers are needed here, provided
+	 * we only update the current CPU's SLB shadow buffer.
+	 */
+	get_slb_shadow()->save_area[entry].esid = 0;
+	get_slb_shadow()->save_area[entry].vsid = mk_vsid_data(ea, flags);
+	get_slb_shadow()->save_area[entry].esid = mk_esid_data(ea, entry);
+}
+
+static inline void slb_shadow_clear(unsigned long entry)
+{
+	get_slb_shadow()->save_area[entry].esid = 0;
+}
+
+static inline void create_shadowed_slbe(unsigned long ea, unsigned long flags,
+					unsigned long entry)
+{
+	/*
+	 * Updating the shadow buffer before writing the SLB ensures
+	 * we don't get a stale entry here if we get preempted by PHYP
+	 * between these two statements.
+	 */
+	slb_shadow_update(ea, flags, entry);
+
 	asm volatile("slbmte  %0,%1" :
 		     : "r" (mk_vsid_data(ea, flags)),
 		       "r" (mk_esid_data(ea, entry))
@@ -74,8 +102,13 @@ void slb_flush_and_rebolt(void)
 	vflags = SLB_VSID_KERNEL | vmalloc_llp;
 
 	ksp_esid_data = mk_esid_data(get_paca()->kstack, 2);
-	if ((ksp_esid_data & ESID_MASK) == PAGE_OFFSET)
+	if ((ksp_esid_data & ESID_MASK) == PAGE_OFFSET) {
 		ksp_esid_data &= ~SLB_ESID_V;
+		slb_shadow_clear(2);
+	} else {
+		/* Update stack entry; others don't change */
+		slb_shadow_update(get_paca()->kstack, lflags, 2);
+	}
 
 	/* We need to do this all in asm, so we're sure we don't touch
 	 * the stack between the slbia and rebolting it. */
@@ -91,6 +124,15 @@ void slb_flush_and_rebolt(void)
 		        "r"(mk_vsid_data(ksp_esid_data, lflags)),
 		        "r"(ksp_esid_data)
 		     : "memory");
+}
+
+void slb_vmalloc_update(void)
+{
+	unsigned long vflags;
+
+	vflags = SLB_VSID_KERNEL | mmu_psize_defs[mmu_vmalloc_psize].sllp;
+	slb_shadow_update(VMALLOC_START, vflags, 1);
+	slb_flush_and_rebolt();
 }
 
 /* Flush all user entries from the segment table of the current processor. */
@@ -209,9 +251,11 @@ void slb_initialize(void)
 	asm volatile("isync":::"memory");
 	asm volatile("slbmte  %0,%0"::"r" (0) : "memory");
 	asm volatile("isync; slbia; isync":::"memory");
-	create_slbe(PAGE_OFFSET, lflags, 0);
+	create_shadowed_slbe(PAGE_OFFSET, lflags, 0);
 
-	create_slbe(VMALLOC_START, vflags, 1);
+	create_shadowed_slbe(VMALLOC_START, vflags, 1);
+
+	slb_shadow_clear(2);
 
 	/* We don't bolt the stack for the time being - we're in boot,
 	 * so the stack is in the bolted segment.  By the time it goes

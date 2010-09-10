@@ -12,28 +12,6 @@
 #include "ql4_inline.h"
 
 /**
- * qla2x00_process_completed_request() - Process a Fast Post response.
- * @ha: SCSI driver HA context
- * @index: SRB index
- **/
-static void qla4xxx_process_completed_request(struct scsi_qla_host *ha,
-					      uint32_t index)
-{
-	struct srb *srb;
-
-	srb = qla4xxx_del_from_active_array(ha, index);
-	if (srb) {
-		/* Save ISP completion status */
-		srb->cmd->result = DID_OK << 16;
-		qla4xxx_srb_compl(ha, srb);
-	} else {
-		DEBUG2(printk("scsi%ld: Invalid ISP SCSI completion handle = "
-			      "%d\n", ha->host_no, index));
-		set_bit(DPC_RESET_HA, &ha->dpc_flags);
-	}
-}
-
-/**
  * qla4xxx_status_entry - processes status IOCBs
  * @ha: Pointer to host adapter structure.
  * @sts_entry: Pointer to status entry structure.
@@ -48,31 +26,19 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 	uint32_t residual;
 	uint16_t sensebytecnt;
 
-	if (sts_entry->completionStatus == SCS_COMPLETE &&
-	    sts_entry->scsiStatus == 0) {
-		qla4xxx_process_completed_request(ha,
-						  le32_to_cpu(sts_entry->
-							      handle));
-		return;
-	}
-
 	srb = qla4xxx_del_from_active_array(ha, le32_to_cpu(sts_entry->handle));
 	if (!srb) {
-		/* FIXMEdg: Don't we need to reset ISP in this case??? */
-		DEBUG2(printk(KERN_WARNING "scsi%ld: %s: Status Entry invalid "
-			      "handle 0x%x, sp=%p. This cmd may have already "
-			      "been completed.\n", ha->host_no, __func__,
-			      le32_to_cpu(sts_entry->handle), srb));
+		dev_warn(&ha->pdev->dev, "%s invalid status entry:"
+			" handle=0x%0x\n", __func__, sts_entry->handle);
+		set_bit(DPC_RESET_HA, &ha->dpc_flags);
+		return;
 	}
 
 	cmd = srb->cmd;
 	if (cmd == NULL) {
-		DEBUG2(printk("scsi%ld: %s: Command already returned back to "
-			      "OS pkt->handle=%d srb=%p srb->state:%d\n",
-			      ha->host_no, __func__, sts_entry->handle,
-			      srb, srb->state));
-		dev_warn(&ha->pdev->dev, "Command is NULL:"
-			" already returned to OS (srb=%p)\n", srb);
+		dev_warn(&ha->pdev->dev, "%s Command is NULL: srb=%p"
+			" sts_handle=0x%0x srb_state=0x%0x\n", __func__,
+			srb, sts_entry->handle, srb->state);
 		return;
 	}
 
@@ -88,11 +54,6 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 	scsi_status = sts_entry->scsiStatus;
 	switch (sts_entry->completionStatus) {
 	case SCS_COMPLETE:
-		if (scsi_status == 0) {
-			cmd->result = DID_OK << 16;
-			break;
-		}
-
 		if (sts_entry->iscsiFlags & ISCSI_FLAG_RESIDUAL_OVER) {
 			cmd->result = DID_ERROR << 16;
 			break;
@@ -433,7 +394,6 @@ static void qla4xxx_isr_decode_mailbox(struct scsi_qla_host * ha,
 					readl(&ha->reg->mailbox[i]);
 
 			set_bit(AF_MBOX_COMMAND_DONE, &ha->flags);
-			wake_up(&ha->mailbox_wait_queue);
 		}
 	} else if (mbox_status >> 12 == MBOX_ASYNC_EVENT_STATUS) {
 		/* Immediately process the AENs that don't require much work.

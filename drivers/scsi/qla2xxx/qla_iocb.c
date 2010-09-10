@@ -330,7 +330,7 @@ qla2x00_start_scsi(srb_t *sp)
 		handle++;
 		if (handle == MAX_OUTSTANDING_COMMANDS)
 			handle = 1;
-		if (ha->outstanding_cmds[handle] == 0)
+		if (!ha->outstanding_cmds[handle])
 			break;
 	}
 	if (index == MAX_OUTSTANDING_COMMANDS)
@@ -356,7 +356,7 @@ qla2x00_start_scsi(srb_t *sp)
 	}
 
 	/* Calculate the number of request entries needed. */
-	req_cnt = ha->isp_ops.calc_req_entries(tot_dsds);
+	req_cnt = ha->isp_ops->calc_req_entries(tot_dsds);
 	if (ha->req_q_cnt < (req_cnt + 2)) {
 		cnt = RD_REG_WORD_RELAXED(ISP_REQ_Q_OUT(ha, reg));
 		if (ha->req_ring_index < cnt)
@@ -394,7 +394,7 @@ qla2x00_start_scsi(srb_t *sp)
 	cmd_pkt->byte_count = cpu_to_le32((uint32_t)cmd->request_bufflen);
 
 	/* Build IOCB segments */
-	ha->isp_ops.build_iocbs(sp, cmd_pkt, tot_dsds);
+	ha->isp_ops->build_iocbs(sp, cmd_pkt, tot_dsds);
 
 	/* Set total data segment count. */
 	cmd_pkt->entry_count = (uint8_t)req_cnt;
@@ -453,9 +453,10 @@ __qla2x00_marker(scsi_qla_host_t *ha, uint16_t loop_id, uint16_t lun,
 {
 	mrk_entry_t *mrk;
 	struct mrk_entry_24xx *mrk24;
+	scsi_qla_host_t *pha = to_qla_parent(ha);
 
 	mrk24 = NULL;
-	mrk = (mrk_entry_t *)qla2x00_req_pkt(ha);
+	mrk = (mrk_entry_t *)qla2x00_req_pkt(pha);
 	if (mrk == NULL) {
 		DEBUG2_3(printk("%s(%ld): failed to allocate Marker IOCB.\n",
 		    __func__, ha->host_no));
@@ -466,12 +467,13 @@ __qla2x00_marker(scsi_qla_host_t *ha, uint16_t loop_id, uint16_t lun,
 	mrk->entry_type = MARKER_TYPE;
 	mrk->modifier = type;
 	if (type != MK_SYNC_ALL) {
-		if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+		if (IS_FWI2_CAPABLE(ha)) {
 			mrk24 = (struct mrk_entry_24xx *) mrk;
 			mrk24->nport_handle = cpu_to_le16(loop_id);
 			mrk24->lun[1] = LSB(lun);
 			mrk24->lun[2] = MSB(lun);
 			host_to_fcp_swap(mrk24->lun, sizeof(mrk24->lun));
+			mrk24->vp_index = ha->vp_idx;
 		} else {
 			SET_TARGET_ID(ha, mrk->target, loop_id);
 			mrk->lun = cpu_to_le16(lun);
@@ -479,7 +481,7 @@ __qla2x00_marker(scsi_qla_host_t *ha, uint16_t loop_id, uint16_t lun,
 	}
 	wmb();
 
-	qla2x00_isp_cmd(ha);
+	qla2x00_isp_cmd(pha);
 
 	return (QLA_SUCCESS);
 }
@@ -520,7 +522,7 @@ qla2x00_req_pkt(scsi_qla_host_t *ha)
 	for (timer = HZ; timer; timer--) {
 		if ((req_cnt + 2) >= ha->req_q_cnt) {
 			/* Calculate number of free request entries. */
-			if (IS_QLA24XX(ha) || IS_QLA54XX(ha))
+			if (IS_FWI2_CAPABLE(ha))
 				cnt = (uint16_t)RD_REG_DWORD(
 				    &reg->isp24.req_q_out);
 			else
@@ -558,7 +560,7 @@ qla2x00_req_pkt(scsi_qla_host_t *ha)
 
 		/* Check for pending interrupts. */
 		/* During init we issue marker directly */
-		if (!ha->marker_needed)
+		if (!ha->marker_needed && !ha->flags.init_done)
 			qla2x00_poll(ha);
 
 		spin_lock_irq(&ha->hardware_lock);
@@ -594,7 +596,7 @@ qla2x00_isp_cmd(scsi_qla_host_t *ha)
 		ha->request_ring_ptr++;
 
 	/* Set chip new ring index. */
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	if (IS_FWI2_CAPABLE(ha)) {
 		WRT_REG_DWORD(&reg->isp24.req_q_in, ha->req_ring_index);
 		RD_REG_DWORD_RELAXED(&reg->isp24.req_q_in);
 	} else {
@@ -755,7 +757,7 @@ qla24xx_start_scsi(srb_t *sp)
 		handle++;
 		if (handle == MAX_OUTSTANDING_COMMANDS)
 			handle = 1;
-		if (ha->outstanding_cmds[handle] == 0)
+		if (!ha->outstanding_cmds[handle])
 			break;
 	}
 	if (index == MAX_OUTSTANDING_COMMANDS)
@@ -813,6 +815,7 @@ qla24xx_start_scsi(srb_t *sp)
 	cmd_pkt->port_id[0] = sp->fcport->d_id.b.al_pa;
 	cmd_pkt->port_id[1] = sp->fcport->d_id.b.area;
 	cmd_pkt->port_id[2] = sp->fcport->d_id.b.domain;
+	cmd_pkt->vp_index = sp->fcport->vp_idx;
 
 	int_to_scsilun(sp->cmd->device->lun, &cmd_pkt->lun);
 	host_to_fcp_swap((uint8_t *)&cmd_pkt->lun, sizeof(cmd_pkt->lun));

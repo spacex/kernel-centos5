@@ -91,8 +91,6 @@ static int alloc_page_backing(struct gfs2_inode *ip, struct page *page)
 		x += extlen;
 	}
 
-	gfs2_assert_warn(sdp, al->al_alloced);
-
 out_trans:
 	gfs2_trans_end(sdp);
 out_ipres:

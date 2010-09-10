@@ -220,6 +220,7 @@ struct nfs_inode {
 #define NFS_INO_STALE		(2)		/* possible stale inode */
 #define NFS_INO_ACL_LRU_SET	(3)		/* Inode is on the LRU list */
 #define NFS_INO_FSCACHE	(4)		/* inode can be cached by FS-Cache */
+#define NFS_INO_MOUNTPOINT	(5)		/* inode is remote mountpoint */
 
 static inline struct nfs_inode *NFS_I(struct inode *inode)
 {
@@ -250,11 +251,6 @@ static inline struct nfs_inode *NFS_I(struct inode *inode)
 
 #define NFS_FILEID(inode)		(NFS_I(inode)->fileid)
 
-static inline int nfs_caches_unstable(struct inode *inode)
-{
-	return atomic_read(&NFS_I(inode)->data_updates) != 0;
-}
-
 static inline void nfs_mark_for_revalidate(struct inode *inode)
 {
 	struct nfs_inode *nfsi = NFS_I(inode);
@@ -264,12 +260,6 @@ static inline void nfs_mark_for_revalidate(struct inode *inode)
 	if (S_ISDIR(inode->i_mode))
 		nfsi->cache_validity |= NFS_INO_REVAL_PAGECACHE|NFS_INO_INVALID_DATA;
 	spin_unlock(&inode->i_lock);
-}
-
-static inline void NFS_CACHEINV(struct inode *inode)
-{
-	if (!nfs_caches_unstable(inode))
-		nfs_mark_for_revalidate(inode);
 }
 
 static inline int nfs_server_capable(struct inode *inode, int cap)
@@ -289,26 +279,26 @@ static inline void nfs_set_verifier(struct dentry * dentry, unsigned long verf)
 
 /**
  * nfs_save_change_attribute - Returns the inode attribute change cookie
- * @inode - pointer to inode
+ * @dir - pointer to parent directory inode
  * The "change attribute" is updated every time we finish an operation
  * that will result in a metadata change on the server.
  */
-static inline long nfs_save_change_attribute(struct inode *inode)
+static inline unsigned long nfs_save_change_attribute(struct inode *dir)
 {
-	return NFS_I(inode)->cache_change_attribute;
+	return NFS_I(dir)->cache_change_attribute;
 }
 
 /**
- * nfs_verify_change_attribute - Detects NFS inode cache updates
- * @inode - pointer to inode
+ * nfs_verify_change_attribute - Detects NFS remote directory changes
+ * @dir - pointer to parent directory inode
  * @chattr - previously saved change attribute
- * Return "false" if metadata has been updated (or is in the process of
- * being updated) since the change attribute was saved.
+ * Return "false" if the verifiers doesn't match the change attribute.
+ * This would usually indicate that the directory contents have changed on
+ * the server, and that any dentries need revalidating.
  */
-static inline int nfs_verify_change_attribute(struct inode *inode, unsigned long chattr)
+static inline int nfs_verify_change_attribute(struct inode *dir, unsigned long chattr)
 {
-	return !nfs_caches_unstable(inode)
-		&& time_after_eq(chattr, NFS_I(inode)->cache_change_attribute);
+	return chattr == NFS_I(dir)->cache_change_attribute;
 }
 
 /*
@@ -316,10 +306,12 @@ static inline int nfs_verify_change_attribute(struct inode *inode, unsigned long
  */
 extern int nfs_sync_mapping(struct address_space *mapping);
 extern void nfs_zap_caches(struct inode *);
+extern void nfs_invalidate_atime(struct inode *);
 extern struct inode *nfs_fhget(struct super_block *, struct nfs_fh *,
 				struct nfs_fattr *);
 extern int nfs_refresh_inode(struct inode *, struct nfs_fattr *);
 extern int nfs_post_op_update_inode(struct inode *inode, struct nfs_fattr *fattr);
+extern int nfs_post_op_update_inode_force_wcc(struct inode *inode, struct nfs_fattr *fattr);
 extern int nfs_getattr(struct vfsmount *, struct dentry *, struct kstat *);
 extern int nfs_permission(struct inode *, int, struct nameidata *);
 extern int nfs_access_get_cached(struct inode *, struct rpc_cred *, struct nfs_access_entry *);
@@ -333,10 +325,6 @@ extern int __nfs_revalidate_inode(struct nfs_server *, struct inode *);
 extern int nfs_revalidate_mapping(struct inode *inode, struct address_space *mapping);
 extern int nfs_setattr(struct dentry *, struct iattr *);
 extern void nfs_setattr_update_inode(struct inode *inode, struct iattr *attr);
-extern void nfs_begin_attr_update(struct inode *);
-extern void nfs_end_attr_update(struct inode *);
-extern void nfs_begin_data_update(struct inode *);
-extern void nfs_end_data_update(struct inode *);
 extern struct nfs_open_context *get_nfs_open_context(struct nfs_open_context *ctx);
 extern void put_nfs_open_context(struct nfs_open_context *ctx);
 extern struct nfs_open_context *nfs_find_open_context(struct inode *inode, struct rpc_cred *cred, int mode);
@@ -344,6 +332,7 @@ extern struct vfsmount *nfs_do_submount(const struct vfsmount *mnt_parent,
 					const struct dentry *dentry,
 					struct nfs_fh *fh,
 					struct nfs_fattr *fattr);
+extern u64 nfs_compat_user_ino64(u64 fileid);
 
 /* linux/net/ipv4/ipconfig.c: trims ip addr off front of name, too. */
 extern u32 root_nfs_parse_addr(char *name); /*__init*/

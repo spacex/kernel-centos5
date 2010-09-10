@@ -81,6 +81,7 @@ int access_process_vm(struct task_struct *tsk, unsigned long addr, void *buf, in
 	
 	return buf - old_buf;
 }
+EXPORT_SYMBOL_GPL(access_process_vm);
 
 
 #ifdef CONFIG_DEBUG_PREEMPT
@@ -134,6 +135,14 @@ struct ptrace_state
 };
 
 static const struct utrace_engine_ops ptrace_utrace_ops; /* Initialized below. */
+
+/*
+ * We use this bit in task_struct.exit_code of a ptrace'd task to indicate
+ * a ptrace stop.  It must not overlap with any bits used in real exit_code's.
+ * Those are (PTRACE_EVENT_* << 8) | 0xff.
+ */
+#define PTRACE_TRAPPED_MASK	0x10000
+
 
 static void
 ptrace_state_unlink(struct ptrace_state *state)
@@ -204,6 +213,14 @@ ptrace_done(struct ptrace_state *state)
 	CHECK_DEAD(state);
 	BUG_ON(state->rcu.func);
 	BUG_ON(state->rcu.next);
+	/*
+	 * We clear @task here, while we are sure that the task_struct is
+	 * still live, because our caller has to permit its release.
+	 * By RCU rules, this means that inside rcu_read_lock(),
+	 * rcu_dereference(state->task) will always produce either
+	 * a pointer that is being kept alive by RCU, or NULL.
+	 */
+	rcu_assign_pointer(state->task, NULL);
 	call_rcu(&state->rcu, ptrace_state_free);
 }
 
@@ -431,8 +448,6 @@ static int ptrace_attach(struct task_struct *task)
 	if (retval)
 		(void) utrace_detach(task, engine);
 	else {
-		int stopped = 0;
-
 		NO_LOCKS;
 
 		/*
@@ -442,48 +457,14 @@ static int ptrace_attach(struct task_struct *task)
 		 * We cannot call into the signal code if it's dead.
 		 */
 		read_lock(&tasklist_lock);
-		if (likely(!task->exit_state)) {
+		if (likely(!task->exit_state))
 			force_sig_specific(SIGSTOP, task);
-
-			spin_lock_irq(&task->sighand->siglock);
-			stopped = (task->state == TASK_STOPPED);
-			spin_unlock_irq(&task->sighand->siglock);
-		}
 		read_unlock(&tasklist_lock);
-
-		if (stopped) {
-			const struct utrace_regset *regset;
-
-			/*
-			 * Set QUIESCE immediately, so we can allow
-			 * ptrace requests while he's in TASK_STOPPED.
-			 */
-			retval = ptrace_update(task, state, /* XXX child death+other thread waits race could have freed state already */
-					       UTRACE_ACTION_QUIESCE, 0);
-			if (retval)
-				/*
-				 * Anything is possible here.  It might not
-				 * really have been quiescent yet.  It
-				 * might have just woken up and died.
-				 */
-				BUG_ON(retval != -ESRCH && retval != -EALREADY);
-			retval = 0;
-
-			/*
-			 * Do now the regset 0 writeback that we do on every
-			 * stop, since it's never been done.  On register
-			 * window machines, this makes sure the user memory
-			 * backing the register data is up to date.
-			 */
-			regset = utrace_regset(task, engine,
-					       utrace_native_view(task), 0);
-			if (regset->writeback)
-				(*regset->writeback)(task, regset, 1);
-		}
 
 		pr_debug("%d ptrace_attach %d complete (%sstopped)"
 			 " state %lu code %x",
-			 current->pid, task->pid, stopped ? "" : "not ",
+			 current->pid, task->pid,
+			 task->state == TASK_STOPPED ? "" : "not ",
 			 task->state, task->exit_code);
 	}
 
@@ -584,18 +565,29 @@ ptrace_exit(struct task_struct *tsk)
 	}
 	task_unlock(tsk);
 
-	restart = 0;
 	do {
 		struct ptrace_state *state;
+		struct task_struct *p;
 		int error;
 
 		START_CHECK;
 
 		rcu_read_lock();
 
+		restart = 0;
 		list_for_each_safe_rcu(pos, n, &tsk->ptracees) {
 			state = list_entry(pos, struct ptrace_state, entry);
-			error = utrace_detach(state->task, state->engine);
+			/*
+			 * Here rcu_read_lock() keeps live any task_struct
+			 * that state->task still points to.  If state->task
+			 * was cleared already, then state itself is on the
+			 * way to be freed by RCU and we are just seeing a
+			 * stale list element here.
+			 */
+			p = rcu_dereference(state->task);
+			if (unlikely(p == NULL))
+				continue;
+			error = utrace_detach(p, state->engine);
 			BUG_ON(state->parent != tsk);
 			if (likely(error == 0)) {
 				ptrace_state_unlink(state);
@@ -608,13 +600,12 @@ ptrace_exit(struct task_struct *tsk)
 				 * Since wait_task_inactive might yield,
 				 * we must go out of rcu_read_lock and restart.
 				 */
-				struct task_struct *p = state->task;
 				get_task_struct(p);
 				rcu_read_unlock();
 				wait_task_inactive(p);
 				put_task_struct(p);
 				restart = 1;
-				break;
+				goto loop_unlocked;
 			}
 			else {
 				BUG_ON(error != -ESRCH);
@@ -624,10 +615,11 @@ ptrace_exit(struct task_struct *tsk)
 
 		rcu_read_unlock();
 
+	loop_unlocked:
 		END_CHECK;
 
 		cond_resched();
-	} while (restart > 0);
+	} while (unlikely(restart > 0));
 
 	if (likely(restart == 0))
 		/*
@@ -720,7 +712,7 @@ ptrace_onereg_access(struct task_struct *target,
 		     struct utrace_attached_engine *engine,
 		     const struct utrace_regset_view *view,
 		     int setno, unsigned long regno,
-		     void __user *data, int write)
+		     void __user *udata, void *kdata, int write)
 {
 	const struct utrace_regset *regset = utrace_regset(target, engine,
 							   view, setno);
@@ -736,18 +728,20 @@ ptrace_onereg_access(struct task_struct *target,
 	pos = (regno - regset->bias) * regset->size;
 
 	if (write) {
-		if (!access_ok(VERIFY_READ, data, regset->size))
+		if (kdata == NULL &&
+		    !access_ok(VERIFY_READ, udata, regset->size))
 			ret = -EIO;
 		else
 			ret = (*regset->set)(target, regset, pos, regset->size,
-					     NULL, data);
+					     kdata, udata);
 	}
 	else {
-		if (!access_ok(VERIFY_WRITE, data, regset->size))
+		if (kdata == NULL &&
+		    !access_ok(VERIFY_WRITE, udata, regset->size))
 			ret = -EIO;
 		else
 			ret = (*regset->get)(target, regset, pos, regset->size,
-					     NULL, data);
+					     kdata, udata);
 	}
 
 	return ret;
@@ -1315,7 +1309,9 @@ ptrace_do_wait(struct task_struct *tsk,
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(state, &tsk->ptracees, entry) {
-		p = state->task;
+		p = rcu_dereference(state->task);
+		if (unlikely(p == NULL))
+			continue;
 
 		if (pid > 0) {
 			if (p->pid != pid)
@@ -1384,7 +1380,29 @@ ptrace_do_wait(struct task_struct *tsk,
 		 * check fails we are sure to get a wakeup if it stops.
 		 */
 		exit_code = xchg(&p->exit_code, 0);
-		if (exit_code)
+		if (exit_code & PTRACE_TRAPPED_MASK)
+			goto found;
+
+		/*
+		 * If p was in job-control stop (TASK_STOPPED) rather than
+		 * ptrace stop (TASK_TRACED), then SIGCONT can asynchronously
+		 * clear it back to TASK_RUNNING.  Until it gets scheduled
+		 * and clears its own ->exit_code, our xchg below will see
+		 * its stop signal.  But, we must not report it if it's no
+		 * longer in TASK_STOPPED, as vanilla wait would not--the
+		 * caller can tell if it sent the SIGCONT before calling
+		 * wait.  We must somehow distinguish this from the case
+		 * where p is in TASK_RUNNING with p->exit_code set because
+		 * it is on its way to entering TASK_TRACED (QUIESCE) for our
+		 * stop.  So, ptrace_report sets the PTRACE_TRAPPED_MASK bit
+		 * in exit_code when it's setting QUIESCE.  For a job control
+		 * control stop, that bit will never have been set.  Since
+		 * the bit's not set now, we should only report right now if
+		 * p is still stopped.  For this case we are protected by
+		 * races the same wait that vanilla do_wait (exit.c) is:
+		 * wait_chldexit is woken after p->state is set to TASK_STOPPED.
+		 */
+		if (p->state == TASK_STOPPED)
 			goto found;
 
 		// XXX should handle WCONTINUED
@@ -1435,6 +1453,7 @@ found:
 	}
 	else {
 		why = CLD_TRAPPED;
+		exit_code &= ~PTRACE_TRAPPED_MASK;
 		status = exit_code;
 		exit_code = (status << 8) | 0x7f;
 	}
@@ -1602,8 +1621,14 @@ ptrace_report(struct utrace_attached_engine *engine,
 	 */
 	utrace_set_flags(tsk, engine, engine->flags | UTRACE_ACTION_QUIESCE);
 
+	/*
+	 * The PTRACE_TRAPPED_MASK bit distinguishes to ptrace_do_wait that
+	 * this is a ptrace report, so we expect to enter TASK_TRACED but
+	 * might not be there yet when examined.
+	 */
 	BUG_ON(code == 0);
-	tsk->exit_code = code;
+	WARN_ON(code &~ 0x7ff);
+	tsk->exit_code = code | PTRACE_TRAPPED_MASK;
 	do_notify(tsk, state->parent, CLD_TRAPPED);
 
 	pr_debug("%d ptrace_report quiescing exit_code %x\n",

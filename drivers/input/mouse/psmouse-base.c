@@ -185,6 +185,15 @@ static psmouse_ret_t psmouse_process_byte(struct psmouse *psmouse, struct pt_reg
 	}
 
 /*
+ * Cortron PS2 Trackball reports SIDE button on the 4th bit of the first
+ * byte.
+ */
+	if (psmouse->type == PSMOUSE_CORTRON) {
+		input_report_key(dev, BTN_SIDE, (packet[0] >> 3) & 1);
+		packet[0] |= 0x08;
+	}
+
+/*
  * Generic PS/2 Mouse
  */
 
@@ -544,6 +553,20 @@ static int ps2bare_detect(struct psmouse *psmouse, int set_properties)
 	return 0;
 }
 
+/*
+ * Cortron PS/2 protocol detection. There's no special way to detect it, so it
+ * must be forced by sysfs protocol writing.
+ */
+static int cortron_detect(struct psmouse *psmouse, int set_properties)
+{
+	if (set_properties) {
+		psmouse->vendor = "Cortron";
+		psmouse->name = "PS/2 Trackball";
+		set_bit(BTN_SIDE, psmouse->dev->keybit);
+	}
+
+	return 0;
+}
 
 /*
  * psmouse_extensions() probes for any extensions to the basic PS/2 protocol
@@ -717,6 +740,12 @@ static struct psmouse_protocol psmouse_protocols[] = {
 		.name		= "TPPS/2",
 		.alias		= "trackpoint",
 		.detect		= trackpoint_detect,
+	},
+ 	{
+		.type		= PSMOUSE_CORTRON,
+		.name		= "CortronPS/2",
+		.alias		= "cortps",
+		.detect		= cortron_detect,
 	},
 	{
 		.type		= PSMOUSE_AUTO,

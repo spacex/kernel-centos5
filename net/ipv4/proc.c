@@ -65,7 +65,8 @@ static int sockstat_seq_show(struct seq_file *seq, void *v)
 		   fold_prot_inuse(&tcp_prot), atomic_read(&tcp_orphan_count),
 		   tcp_death_row.tw_count, atomic_read(&tcp_sockets_allocated),
 		   atomic_read(&tcp_memory_allocated));
-	seq_printf(seq, "UDP: inuse %d\n", fold_prot_inuse(&udp_prot));
+	seq_printf(seq, "UDP: inuse %d mem %d\n", fold_prot_inuse(&udp_prot),
+		   atomic_read(&udp_memory_allocated));
 	seq_printf(seq, "RAW: inuse %d\n", fold_prot_inuse(&raw_prot));
 	seq_printf(seq,  "FRAG: inuse %d memory %d\n", ip_frag_nqueues,
 		   atomic_read(&ip_frag_mem));
@@ -120,35 +121,43 @@ static const struct snmp_mib snmp4_ipstats_list[] = {
 	SNMP_MIB_SENTINEL
 };
 
+/* Following RFC4293 items are displayed in /proc/net/netstat */
+static const struct snmp_mib snmp4_ipextstats_list[] = {
+	SNMP_MIB_ITEM("InNoRoutes", IPSTATS_MIB_INNOROUTES),
+	SNMP_MIB_ITEM("InTruncatedPkts", IPSTATS_MIB_INTRUNCATEDPKTS),
+	SNMP_MIB_ITEM("InMcastPkts", IPSTATS_MIB_INMCASTPKTS),
+	SNMP_MIB_ITEM("OutMcastPkts", IPSTATS_MIB_OUTMCASTPKTS),
+	SNMP_MIB_ITEM("InBcastPkts", IPSTATS_MIB_INBCASTPKTS),
+	SNMP_MIB_ITEM("OutBcastPkts", IPSTATS_MIB_OUTBCASTPKTS),
+	SNMP_MIB_SENTINEL
+};
+
 static const struct snmp_mib snmp4_icmp_list[] = {
 	SNMP_MIB_ITEM("InMsgs", ICMP_MIB_INMSGS),
 	SNMP_MIB_ITEM("InErrors", ICMP_MIB_INERRORS),
-	SNMP_MIB_ITEM("InDestUnreachs", ICMP_MIB_INDESTUNREACHS),
-	SNMP_MIB_ITEM("InTimeExcds", ICMP_MIB_INTIMEEXCDS),
-	SNMP_MIB_ITEM("InParmProbs", ICMP_MIB_INPARMPROBS),
-	SNMP_MIB_ITEM("InSrcQuenchs", ICMP_MIB_INSRCQUENCHS),
-	SNMP_MIB_ITEM("InRedirects", ICMP_MIB_INREDIRECTS),
-	SNMP_MIB_ITEM("InEchos", ICMP_MIB_INECHOS),
-	SNMP_MIB_ITEM("InEchoReps", ICMP_MIB_INECHOREPS),
-	SNMP_MIB_ITEM("InTimestamps", ICMP_MIB_INTIMESTAMPS),
-	SNMP_MIB_ITEM("InTimestampReps", ICMP_MIB_INTIMESTAMPREPS),
-	SNMP_MIB_ITEM("InAddrMasks", ICMP_MIB_INADDRMASKS),
-	SNMP_MIB_ITEM("InAddrMaskReps", ICMP_MIB_INADDRMASKREPS),
 	SNMP_MIB_ITEM("OutMsgs", ICMP_MIB_OUTMSGS),
 	SNMP_MIB_ITEM("OutErrors", ICMP_MIB_OUTERRORS),
-	SNMP_MIB_ITEM("OutDestUnreachs", ICMP_MIB_OUTDESTUNREACHS),
-	SNMP_MIB_ITEM("OutTimeExcds", ICMP_MIB_OUTTIMEEXCDS),
-	SNMP_MIB_ITEM("OutParmProbs", ICMP_MIB_OUTPARMPROBS),
-	SNMP_MIB_ITEM("OutSrcQuenchs", ICMP_MIB_OUTSRCQUENCHS),
-	SNMP_MIB_ITEM("OutRedirects", ICMP_MIB_OUTREDIRECTS),
-	SNMP_MIB_ITEM("OutEchos", ICMP_MIB_OUTECHOS),
-	SNMP_MIB_ITEM("OutEchoReps", ICMP_MIB_OUTECHOREPS),
-	SNMP_MIB_ITEM("OutTimestamps", ICMP_MIB_OUTTIMESTAMPS),
-	SNMP_MIB_ITEM("OutTimestampReps", ICMP_MIB_OUTTIMESTAMPREPS),
-	SNMP_MIB_ITEM("OutAddrMasks", ICMP_MIB_OUTADDRMASKS),
-	SNMP_MIB_ITEM("OutAddrMaskReps", ICMP_MIB_OUTADDRMASKREPS),
 	SNMP_MIB_SENTINEL
 };
+
+static struct {
+	char *name;
+	int index;
+} icmpmibmap[] = {
+	{ "DestUnreachs", ICMP_DEST_UNREACH },
+	{ "TimeExcds", ICMP_TIME_EXCEEDED },
+	{ "ParmProbs", ICMP_PARAMETERPROB },
+	{ "SrcQuenchs", ICMP_SOURCE_QUENCH },
+	{ "Redirects", ICMP_REDIRECT },
+	{ "Echos", ICMP_ECHO },
+	{ "EchoReps", ICMP_ECHOREPLY },
+	{ "Timestamps", ICMP_TIMESTAMP },
+	{ "TimestampReps", ICMP_TIMESTAMPREPLY },
+	{ "AddrMasks", ICMP_ADDRESS },
+	{ "AddrMaskReps", ICMP_ADDRESSREPLY },
+	{ 0, 0 }
+};
+
 
 static const struct snmp_mib snmp4_tcp_list[] = {
 	SNMP_MIB_ITEM("RtoAlgorithm", TCP_MIB_RTOALGORITHM),
@@ -245,6 +254,72 @@ static const struct snmp_mib snmp4_net_list[] = {
 	SNMP_MIB_SENTINEL
 };
 
+static void icmpmsg_put(struct seq_file *seq)
+{
+#define PERLINE	16
+
+	int j, i, count;
+	static int out[PERLINE];
+
+	count = 0;
+	for (i = 0; i < ICMPMSG_MIB_MAX; i++) {
+
+		if (fold_field((void **) icmpmsg_statistics, i))
+			out[count++] = i;
+		if (count < PERLINE)
+			continue;
+
+		seq_printf(seq, "\nIcmpMsg:");
+		for (j = 0; j < PERLINE; ++j)
+			seq_printf(seq, " %sType%u", i & 0x100 ? "Out" : "In",
+					i & 0xff);
+		seq_printf(seq, "\nIcmpMsg: ");
+		for (j = 0; j < PERLINE; ++j)
+			seq_printf(seq, " %lu",
+				fold_field((void **) icmpmsg_statistics,
+				out[j]));
+		seq_putc(seq, '\n');
+	}
+	if (count) {
+		seq_printf(seq, "\nIcmpMsg:");
+		for (j = 0; j < count; ++j)
+			seq_printf(seq, " %sType%u", out[j] & 0x100 ? "Out" :
+				"In", out[j] & 0xff);
+		seq_printf(seq, "\nIcmpMsg:");
+		for (j = 0; j < count; ++j)
+			seq_printf(seq, " %lu", fold_field((void **)
+				icmpmsg_statistics, out[j]));
+	}
+
+#undef PERLINE
+}
+
+static void icmp_put(struct seq_file *seq)
+{
+	int i;
+
+	seq_puts(seq, "\nIcmp: InMsgs InErrors");
+	for (i=0; icmpmibmap[i].name != NULL; i++)
+		seq_printf(seq, " In%s", icmpmibmap[i].name);
+	seq_printf(seq, " OutMsgs OutErrors");
+	for (i=0; icmpmibmap[i].name != NULL; i++)
+		seq_printf(seq, " Out%s", icmpmibmap[i].name);
+	seq_printf(seq, "\nIcmp: %lu %lu",
+		fold_field((void **) icmp_statistics, ICMP_MIB_INMSGS),
+		fold_field((void **) icmp_statistics, ICMP_MIB_INERRORS));
+	for (i=0; icmpmibmap[i].name != NULL; i++)
+		seq_printf(seq, " %lu",
+			fold_field((void **) icmpmsg_statistics,
+				icmpmibmap[i].index));
+	seq_printf(seq, " %lu %lu",
+		fold_field((void **) icmp_statistics, ICMP_MIB_OUTMSGS),
+		fold_field((void **) icmp_statistics, ICMP_MIB_OUTERRORS));
+	for (i=0; icmpmibmap[i].name != NULL; i++)
+		seq_printf(seq, " %lu",
+			fold_field((void **) icmpmsg_statistics,
+				icmpmibmap[i].index | 0x100 ));
+}
+
 /*
  *	Called from the PROCfs module. This outputs /proc/net/snmp.
  */
@@ -265,15 +340,8 @@ static int snmp_seq_show(struct seq_file *seq, void *v)
 			   fold_field((void **) ip_statistics, 
 				      snmp4_ipstats_list[i].entry));
 
-	seq_puts(seq, "\nIcmp:");
-	for (i = 0; snmp4_icmp_list[i].name != NULL; i++)
-		seq_printf(seq, " %s", snmp4_icmp_list[i].name);
-
-	seq_puts(seq, "\nIcmp:");
-	for (i = 0; snmp4_icmp_list[i].name != NULL; i++)
-		seq_printf(seq, " %lu",
-			   fold_field((void **) icmp_statistics, 
-				      snmp4_icmp_list[i].entry));
+	icmp_put(seq);  /* RFC 2011 compatibility */
+	icmpmsg_put(seq);
 
 	seq_puts(seq, "\nTcp:");
 	for (i = 0; snmp4_tcp_list[i].name != NULL; i++)
@@ -319,6 +387,8 @@ static struct file_operations snmp_seq_fops = {
 	.release = single_release,
 };
 
+
+
 /*
  *	Output /proc/net/netstat
  */
@@ -335,6 +405,16 @@ static int netstat_seq_show(struct seq_file *seq, void *v)
 		seq_printf(seq, " %lu",
 			   fold_field((void **) net_statistics, 
 				      snmp4_net_list[i].entry));
+
+	seq_puts(seq, "\nIpExt:");
+	for (i = 0; snmp4_ipextstats_list[i].name != NULL; i++)
+		seq_printf(seq, " %s", snmp4_ipextstats_list[i].name);
+
+	seq_puts(seq, "\nIpExt:");
+	for (i = 0; snmp4_ipextstats_list[i].name != NULL; i++)
+		seq_printf(seq, " %lu",
+			   fold_field((void **)ip_statistics,
+					   snmp4_ipextstats_list[i].entry));
 
 	seq_putc(seq, '\n');
 	return 0;

@@ -50,6 +50,42 @@
 
 static struct kmem_cache *av_cache;
 
+int ehca_calc_ipd(struct ehca_shca *shca, int port,
+		  enum ib_rate path_rate, u32 *ipd)
+{
+	int path = ib_rate_to_mult(path_rate);
+	int link, ret;
+	struct ib_port_attr pa;
+
+	if (path_rate == IB_RATE_PORT_CURRENT) {
+		*ipd = 0;
+		return 0;
+	}
+
+	if (unlikely(path < 0)) {
+		ehca_err(&shca->ib_device, "Invalid static rate! path_rate=%x",
+			 path_rate);
+		return -EINVAL;
+	}
+
+	ret = ehca_query_port(&shca->ib_device, port, &pa);
+	if (unlikely(ret < 0)) {
+		ehca_err(&shca->ib_device, "Failed to query port  ret=%i", ret);
+		return ret;
+	}
+
+	link = ib_width_enum_to_int(pa.active_width) * pa.active_speed;
+
+	if (path >= link)
+		/* no need to throttle if path faster than link */
+		*ipd = 0;
+	else
+		/* IPD = round((link / path) - 1) */
+		*ipd = ((link + (path >> 1)) / path) - 1;
+
+	return 0;
+}
+
 struct ib_ah *ehca_create_ah(struct ib_pd *pd, struct ib_ah_attr *ah_attr)
 {
 	int ret;
@@ -57,7 +93,7 @@ struct ib_ah *ehca_create_ah(struct ib_pd *pd, struct ib_ah_attr *ah_attr)
 	struct ehca_shca *shca = container_of(pd->device, struct ehca_shca,
 					      ib_device);
 
-	av = kmem_cache_alloc(av_cache, GFP_KERNEL);
+	av = kmem_cache_alloc(av_cache, GFP_ATOMIC);
 	if (!av) {
 		ehca_err(pd->device, "Out of memory pd=%p ah_attr=%p",
 			 pd, ah_attr);
@@ -69,17 +105,15 @@ struct ib_ah *ehca_create_ah(struct ib_pd *pd, struct ib_ah_attr *ah_attr)
 	av->av.slid_path_bits = ah_attr->src_path_bits;
 
 	if (ehca_static_rate < 0) {
-		int ah_mult = ib_rate_to_mult(ah_attr->static_rate);
-		int ehca_mult =
-			ib_rate_to_mult(shca->sport[ah_attr->port_num].rate );
-
-		if (ah_mult >= ehca_mult)
-			av->av.ipd = 0;
-		else
-			av->av.ipd = (ah_mult > 0) ?
-				((ehca_mult - 1) / ah_mult) : 0;
+		u32 ipd;
+		if (ehca_calc_ipd(shca, ah_attr->port_num,
+				  ah_attr->static_rate, &ipd)) {
+			ret = -EINVAL;
+			goto create_ah_exit1;
+		}
+		av->av.ipd = ipd;
 	} else
-	        av->av.ipd = ehca_static_rate;
+		av->av.ipd = ehca_static_rate;
 
 	av->av.lnh = ah_attr->ah_flags;
 	av->av.grh.word_0 = EHCA_BMASK_SET(GRH_IPVERSION_MASK, 6);
@@ -118,7 +152,7 @@ struct ib_ah *ehca_create_ah(struct ib_pd *pd, struct ib_ah_attr *ah_attr)
 		}
 		memcpy(&av->av.grh.word_1, &gid, sizeof(gid));
 	}
-	av->av.pmtu = EHCA_MAX_MTU;
+	av->av.pmtu = shca->max_mtu;
 
 	/* dgid comes in grh.word_3 */
 	memcpy(&av->av.grh.word_3, &ah_attr->grh.dgid,
@@ -137,6 +171,8 @@ int ehca_modify_ah(struct ib_ah *ah, struct ib_ah_attr *ah_attr)
 	struct ehca_av *av;
 	struct ehca_ud_av new_ehca_av;
 	struct ehca_pd *my_pd = container_of(ah->pd, struct ehca_pd, ib_pd);
+	struct ehca_shca *shca = container_of(ah->pd->device, struct ehca_shca,
+					      ib_device);
 	u32 cur_pid = current->tgid;
 
 	if (my_pd->ib_pd.uobject && my_pd->ib_pd.uobject->context &&
@@ -192,7 +228,7 @@ int ehca_modify_ah(struct ib_ah *ah, struct ib_ah_attr *ah_attr)
 		memcpy(&new_ehca_av.grh.word_1, &gid, sizeof(gid));
 	}
 
-	new_ehca_av.pmtu = EHCA_MAX_MTU;
+	new_ehca_av.pmtu = shca->max_mtu;
 
 	memcpy(&new_ehca_av.grh.word_3, &ah_attr->grh.dgid,
 	       sizeof(ah_attr->grh.dgid));
@@ -257,7 +293,7 @@ int ehca_init_av_cache(void)
 	av_cache = kmem_cache_create("ehca_cache_av",
 				   sizeof(struct ehca_av), 0,
 				   SLAB_HWCACHE_ALIGN,
-				   NULL, NULL);
+				   NULL);
 	if (!av_cache)
 		return -ENOMEM;
 	return 0;

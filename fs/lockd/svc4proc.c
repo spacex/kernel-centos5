@@ -53,6 +53,9 @@ nlm4svc_retrieve_args(struct svc_rqst *rqstp, struct nlm_args *argp,
 		lock->fl.fl_file  = file->f_file;
 		lock->fl.fl_owner = (fl_owner_t) host;
 		lock->fl.fl_lmops = &nlmsvc_lock_operations;
+		/* kABI toggle to let the caller know that f_lmops has
+		the grant callback. */
+		lock->fl.fl_flags |= FL_GRANT;
 	}
 
 	return 0;
@@ -96,10 +99,14 @@ nlm4svc_proc_test(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	/* Obtain client and file */
 	if ((resp->status = nlm4svc_retrieve_args(rqstp, argp, &host, &file)))
-		return rpc_success;
+		return resp->status == nlm_drop_reply ?
+			rpc_drop_reply :rpc_success;
 
 	/* Now check for conflicting locks */
-	resp->status = nlmsvc_testlock(file, &argp->lock, &resp->lock);
+	resp->status = nlmsvc_testlock(rqstp, file, &argp->lock,
+				       &resp->lock, &resp->cookie);
+	if (resp->status == nlm_drop_reply)
+		return rpc_drop_reply;
 
 	dprintk("lockd: TEST4          status %d\n", ntohl(resp->status));
 	nlm_release_host(host);
@@ -126,7 +133,8 @@ nlm4svc_proc_lock(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	/* Obtain client and file */
 	if ((resp->status = nlm4svc_retrieve_args(rqstp, argp, &host, &file)))
-		return rpc_success;
+		return resp->status == nlm_drop_reply ?
+			rpc_drop_reply :rpc_success;
 
 #if 0
 	/* If supplied state doesn't match current state, we assume it's
@@ -143,6 +151,8 @@ nlm4svc_proc_lock(struct svc_rqst *rqstp, struct nlm_args *argp,
 	/* Now try to lock the file */
 	resp->status = nlmsvc_lock(rqstp, file, &argp->lock,
 					argp->block, &argp->cookie);
+	if (resp->status == nlm_drop_reply)
+		return rpc_drop_reply;
 
 	dprintk("lockd: LOCK          status %d\n", ntohl(resp->status));
 	nlm_release_host(host);
@@ -169,7 +179,8 @@ nlm4svc_proc_cancel(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	/* Obtain client and file */
 	if ((resp->status = nlm4svc_retrieve_args(rqstp, argp, &host, &file)))
-		return rpc_success;
+		return resp->status == nlm_drop_reply ?
+			rpc_drop_reply :rpc_success;
 
 	/* Try to cancel request. */
 	resp->status = nlmsvc_cancel_blocked(file, &argp->lock);
@@ -202,7 +213,8 @@ nlm4svc_proc_unlock(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	/* Obtain client and file */
 	if ((resp->status = nlm4svc_retrieve_args(rqstp, argp, &host, &file)))
-		return rpc_success;
+		return resp->status == nlm_drop_reply ?
+			rpc_drop_reply :rpc_success;
 
 	/* Now try to remove the lock */
 	resp->status = nlmsvc_unlock(file, &argp->lock);
@@ -337,7 +349,8 @@ nlm4svc_proc_share(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	/* Obtain client and file */
 	if ((resp->status = nlm4svc_retrieve_args(rqstp, argp, &host, &file)))
-		return rpc_success;
+		return resp->status == nlm_drop_reply ?
+			rpc_drop_reply :rpc_success;
 
 	/* Now try to create the share */
 	resp->status = nlmsvc_share_file(host, file, argp);
@@ -370,7 +383,8 @@ nlm4svc_proc_unshare(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	/* Obtain client and file */
 	if ((resp->status = nlm4svc_retrieve_args(rqstp, argp, &host, &file)))
-		return rpc_success;
+		return resp->status == nlm_drop_reply ?
+			rpc_drop_reply :rpc_success;
 
 	/* Now try to lock the file */
 	resp->status = nlmsvc_unshare_file(host, file, argp);

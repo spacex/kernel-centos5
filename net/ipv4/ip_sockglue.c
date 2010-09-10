@@ -511,11 +511,6 @@ static int do_ip_setsockopt(struct sock *sk, int level,
 				val &= ~3;
 				val |= inet->tos & 3;
 			}
-			if (IPTOS_PREC(val) >= IPTOS_PREC_CRITIC_ECP && 
-			    !capable(CAP_NET_ADMIN)) {
-				err = -EPERM;
-				break;
-			}
 			if (inet->tos != val) {
 				inet->tos = val;
 				sk->sk_priority = rt_tos2priority(val);
@@ -619,6 +614,10 @@ static int do_ip_setsockopt(struct sock *sk, int level,
 		case IP_DROP_MEMBERSHIP: 
 		{
 			struct ip_mreqn mreq;
+			
+			err = -EPROTO;
+			if (inet_sk(sk)->is_icsk)
+				break;
 
 			if (optlen < sizeof(struct ip_mreq))
 				goto e_inval;

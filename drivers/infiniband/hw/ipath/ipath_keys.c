@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006 QLogic, Inc. All rights reserved.
+ * Copyright (c) 2006, 2007 QLogic Corporation. All rights reserved.
  * Copyright (c) 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -128,9 +128,8 @@ int ipath_lkey_ok(struct ipath_qp *qp, struct ipath_sge *isge,
 	int ret;
 
 	/*
-	 * We use LKEY == zero to mean a physical kmalloc() address.
-	 * This is a bit of a hack since we rely on dma_map_single()
-	 * being reversible by calling bus_to_virt().
+	 * We use LKEY == zero for kernel virtual addresses
+	 * (see ipath_get_dma_mr and ipath_dma.c).
 	 */
 	if (sge->lkey == 0) {
 		struct ipath_pd *pd = to_ipd(qp->ibqp.pd);

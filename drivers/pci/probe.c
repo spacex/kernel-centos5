@@ -2,13 +2,13 @@
  * probe.c - PCI detection and setup code
  */
 
-#include <linux/kernel.h>
+#include <linux/cpumask.h>
 #include <linux/delay.h>
 #include <linux/init.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/slab.h>
-#include <linux/module.h>
-#include <linux/cpumask.h>
 #include "pci.h"
 
 #define CARDBUS_LATENCY_TIMER	176	/* secondary latency timer */
@@ -21,6 +21,18 @@ LIST_HEAD(pci_root_buses);
 EXPORT_SYMBOL(pci_root_buses);
 
 LIST_HEAD(pci_devices);
+
+/*
+ * Some device drivers need know if pci is initiated.
+ * Basically, we think pci is not initiated when there
+ * is no device in list of pci_devices.
+ */
+int no_pci_devices(void)
+{
+	return list_empty(&pci_devices);
+}
+
+EXPORT_SYMBOL(no_pci_devices);
 
 #ifdef HAVE_PCI_LEGACY
 /**
@@ -532,7 +544,7 @@ int __devinit pci_scan_bridge(struct pci_bus *bus, struct pci_dev * dev, int max
 		pci_write_config_dword(dev, PCI_PRIMARY_BUS, buses);
 
 		if (!is_cardbus) {
-			child->bridge_ctl = bctl | PCI_BRIDGE_CTL_NO_ISA;
+			child->bridge_ctl = bctl;
 			/*
 			 * Adjust subordinate busnr in parent buses.
 			 * We do this before scanning for children because
@@ -911,6 +923,11 @@ unsigned int __devinit pci_scan_child_bus(struct pci_bus *bus)
 {
 	unsigned int devfn, pass, max = bus->secondary;
 	struct pci_dev *dev;
+
+	/*
+	 * Address arch-dependent bus scanning quirks before scanning the bus.
+	 */
+	pcibios_fix_bus_scan_quirk(bus);
 
 	pr_debug("PCI: Scanning bus %04x:%02x\n", pci_domain_nr(bus), bus->number);
 

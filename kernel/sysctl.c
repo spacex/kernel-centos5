@@ -77,10 +77,17 @@ extern int pid_max_min, pid_max_max;
 extern int sysctl_drop_caches;
 extern int percpu_pagelist_fraction;
 extern int compat_log;
+extern int flush_mmap_pages;
 
 #if defined(CONFIG_X86_LOCAL_APIC) && defined(CONFIG_X86)
 extern int proc_unknown_nmi_panic(ctl_table *, int, struct file *,
 				  void __user *, size_t *, loff_t *);
+#endif
+
+#ifdef CONFIG_DETECT_SOFTLOCKUP
+int proc_dointvec_minmax_softlockup(
+                  ctl_table *table, int write, struct file *filp,
+		  void __user *buffer, size_t *lenp, loff_t *ppos);
 #endif
 
 extern unsigned int vdso_enabled, vdso_populate;
@@ -104,6 +111,16 @@ static int __init setup_exec_shield(char *str)
 }
 
 __setup("exec-shield=", setup_exec_shield);
+
+/* Constants used for minimum and  maximum */
+#ifdef CONFIG_DETECT_SOFTLOCKUP
+static int one = 1;
+static int sixty = 60;
+static int threehundred = 300;
+#endif
+
+static int zero;
+static int one_hundred = 100;
 
 /* this is needed for the proc_dointvec_minmax for [fs_]overflow UID and GID */
 static int maxolduid = 65535;
@@ -188,6 +205,8 @@ int sysctl_legacy_va_layout;
 #endif
 
 /* /proc declarations: */
+extern int prove_locking;
+extern int lock_stat;
 
 #ifdef CONFIG_PROC_FS
 
@@ -254,6 +273,16 @@ static ctl_table root_table[] = {
 
 static ctl_table kern_table[] = {
 	{
+		.ctl_name	= KERN_SCHED_INTERACTIVE,
+		.procname	= "sched_interactive",
+		.data		= &sched_interactive,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec_minmax,
+		.extra1		= &sched_interactive_min,
+		.extra2		= &sched_interactive_max,
+	},
+	{
 		.ctl_name	= KERN_OSTYPE,
 		.procname	= "ostype",
 		.data		= system_utsname.sysname,
@@ -306,6 +335,26 @@ static ctl_table kern_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec,
 	},
+#ifdef CONFIG_PROVE_LOCKING
+	{
+		.ctl_name	= KERN_PROVE_LOCKING,
+		.procname	= "prove_locking",
+		.data		= &prove_locking,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+	},
+#endif
+#ifdef CONFIG_LOCK_STAT
+	{
+		.ctl_name	= KERN_LOCK_STAT,
+		.procname	= "lock_stat",
+		.data		= &lock_stat,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+	},
+#endif
 	{
 		.ctl_name	= KERN_EXEC_SHIELD,
 		.procname	= "exec-shield",
@@ -748,6 +797,19 @@ static ctl_table kern_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 #endif
+#ifdef CONFIG_DETECT_SOFTLOCKUP
+	{
+		.ctl_name	= KERN_SOFTLOCKUP_THRESH,
+		.procname	= "softlockup_thresh",
+		.data		= &softlockup_thresh,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec_minmax_softlockup,
+		.strategy	= &sysctl_intvec,
+		.extra1		= &one,
+		.extra2		= &sixty,
+	},
+#endif
 #ifdef CONFIG_COMPAT
 	{
 		.ctl_name	= KERN_COMPAT_LOG,
@@ -768,15 +830,8 @@ static ctl_table kern_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 #endif
-
 	{ .ctl_name = 0 }
 };
-
-/* Constants for minimum and maximum testing in vm_table.
-   We use these as one-element integer vectors. */
-static int zero;
-static int one_hundred = 100;
-
 
 static ctl_table vm_table[] = {
 	{
@@ -833,6 +888,16 @@ static ctl_table vm_table[] = {
 		.extra1		= &zero,
 		.extra2		= &one_hundred,
 	},
+#ifdef CONFIG_SECURITY
+	{
+		.ctl_name	= VM_MMAP_MIN_ADDR,
+		.procname	= "mmap_min_addr",
+		.data		= &mmap_min_addr,
+		.maxlen         = sizeof(unsigned long),
+		.mode		= 0644,
+		.proc_handler	= &proc_doulongvec_minmax,
+	},
+#endif
 	{
 		.ctl_name	= VM_DIRTY_WB_CS,
 		.procname	= "dirty_writeback_centisecs",
@@ -1044,7 +1109,17 @@ static ctl_table vm_table[] = {
 		.strategy	= &sysctl_intvec,
 		.extra1		= &zero,
 		.extra2		= &one_hundred,
-},
+	},
+	{
+		.ctl_name	= VM_FLUSH_MMAP,
+		.procname	= "flush_mmap_pages",
+		.data		= &flush_mmap_pages,
+		.maxlen		= sizeof(flush_mmap_pages),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+		.strategy	= &sysctl_intvec,
+		.extra1		= &zero,
+	},
 	{ .ctl_name = 0 }
 };
 
@@ -2017,6 +2092,26 @@ int proc_dointvec_minmax(ctl_table *table, int write, struct file *filp,
 	return do_proc_dointvec(table, write, filp, buffer, lenp, ppos,
 				do_proc_dointvec_minmax_conv, &param);
 }
+
+#ifdef CONFIG_DETECT_SOFTLOCKUP
+/*
+ * proc_dointvec_minmax_softlockup -- add conditional to handle
+ * large systems.
+ */
+int proc_dointvec_minmax_softlockup(
+                  ctl_table *table, int write, struct file *filp,
+		  void __user *buffer, size_t *lenp, loff_t *ppos)
+{
+	struct do_proc_dointvec_minmax_conv_param param = {
+		.min = (int *) table->extra1,
+		.max = (int *) table->extra2,
+	};
+	if (num_online_cpus() > 128)
+		param.max = &threehundred;
+	return do_proc_dointvec(table, write, filp, buffer, lenp, ppos,
+				do_proc_dointvec_minmax_conv, &param);
+}
+#endif
 
 static int do_proc_doulongvec_minmax(ctl_table *table, int write,
 				     struct file *filp,

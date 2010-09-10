@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006 QLogic, Inc. All rights reserved.
+ * Copyright (c) 2006, 2007 QLogic Corporation. All rights reserved.
  * Copyright (c) 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -42,7 +42,7 @@
 #include <rdma/ib_pack.h>
 #include <rdma/ib_user_verbs.h>
 
-#include "ipath_layer.h"
+#include "ipath_kernel.h"
 
 #define IPATH_MAX_RDMA_ATOMIC	4
 
@@ -61,6 +61,7 @@
  */
 #define IB_CQ_NONE	(IB_CQ_NEXT_COMP + 1)
 
+/* AETH NAK opcode values */
 #define IB_RNR_NAK			0x20
 #define IB_NAK_PSN_ERROR		0x60
 #define IB_NAK_INVALID_REQUEST		0x61
@@ -68,6 +69,7 @@
 #define IB_NAK_REMOTE_OPERATIONAL_ERROR 0x63
 #define IB_NAK_INVALID_RD_REQUEST	0x64
 
+/* Flags for checking QP state (see ib_ipath_state_ops[]) */
 #define IPATH_POST_SEND_OK		0x01
 #define IPATH_POST_RECV_OK		0x02
 #define IPATH_PROCESS_RECV_OK		0x04
@@ -136,6 +138,11 @@ struct ipath_ib_header {
 	} u;
 } __attribute__ ((packed));
 
+struct ipath_pio_header {
+	__le32 pbc[2];
+	struct ipath_ib_header hdr;
+} __attribute__ ((packed));
+
 /*
  * There is one struct ipath_mcast for each multicast GID.
  * All attached QPs are then stored as a list of
@@ -173,12 +180,12 @@ struct ipath_ah {
  * this as its vm_private_data.
  */
 struct ipath_mmap_info {
-	struct ipath_mmap_info *next;
+	struct list_head pending_mmaps;
 	struct ib_ucontext *context;
 	void *obj;
+	__u64 offset;
 	struct kref ref;
 	unsigned size;
-	unsigned mmap_cnt;
 };
 
 /*
@@ -189,7 +196,11 @@ struct ipath_mmap_info {
 struct ipath_cq_wc {
 	u32 head;		/* index of next entry to fill */
 	u32 tail;		/* index of next ib_poll_cq() entry */
-	struct ib_uverbs_wc queue[1]; /* this is actually size ibcq.cqe + 1 */
+	union {
+		/* these are actually size ibcq.cqe + 1 */
+		struct ib_uverbs_wc uqueue[0];
+		struct ib_wc kqueue[0];
+	};
 };
 
 /*
@@ -241,7 +252,7 @@ struct ipath_mregion {
  */
 struct ipath_sge {
 	struct ipath_mregion *mr;
-	void *vaddr;		/* current pointer into the segment */
+	void *vaddr;		/* kernel virtual address of segment */
 	u32 sge_length;		/* length of the SGE */
 	u32 length;		/* remaining length of the segment */
 	u16 m;			/* current index: mr->map[m] */
@@ -251,6 +262,7 @@ struct ipath_sge {
 /* Memory region */
 struct ipath_mr {
 	struct ib_mr ibmr;
+	struct ib_umem *umem;
 	struct ipath_mregion mr;	/* must be last */
 };
 
@@ -312,6 +324,7 @@ struct ipath_sge_state {
 	struct ipath_sge *sg_list;      /* next SGE to be used if any */
 	struct ipath_sge sge;   /* progress state for the current SGE */
 	u8 num_sge;
+	u8 static_rate;
 };
 
 /*
@@ -320,6 +333,7 @@ struct ipath_sge_state {
  */
 struct ipath_ack_entry {
 	u8 opcode;
+	u8 sent;
 	u32 psn;
 	union {
 		struct ipath_sge_state rdma_sge;
@@ -348,6 +362,7 @@ struct ipath_qp {
 	struct tasklet_struct s_task;
 	struct ipath_mmap_info *ip;
 	struct ipath_sge_state *s_cur_sge;
+	struct ipath_verbs_txreq *s_tx;
 	struct ipath_sge_state s_sge;	/* current send request data */
 	struct ipath_ack_entry s_ack_queue[IPATH_MAX_RDMA_ATOMIC + 1];
 	struct ipath_sge_state s_ack_rdma_sge;
@@ -355,7 +370,8 @@ struct ipath_qp {
 	struct ipath_sge_state r_sge;	/* current receive data */
 	spinlock_t s_lock;
 	unsigned long s_busy;
-	u32 s_hdrwords;		/* size of s_hdr in 32 bit words */
+	u16 s_pkt_delay;
+	u16 s_hdrwords;		/* size of s_hdr in 32 bit words */
 	u32 s_cur_size;		/* size of send packet in bytes */
 	u32 s_len;		/* total length of s_sge */
 	u32 s_rdma_read_len;	/* total length of s_rdma_read_sge */
@@ -379,7 +395,6 @@ struct ipath_qp {
 	u8 r_nak_state;		/* non-zero if NAK is pending */
 	u8 r_min_rnr_timer;	/* retry timeout value for RNR NAKs */
 	u8 r_reuse_sge;		/* for UC receive errors */
-	u8 r_sge_inx;		/* current index into sg_list */
 	u8 r_wrid_valid;	/* r_wrid set but CQ entry not yet made */
 	u8 r_max_rd_atomic;	/* max number of RDMA read/atomic to receive */
 	u8 r_head_ack_queue;	/* index into s_ack_queue[] */
@@ -395,6 +410,7 @@ struct ipath_qp {
 	u8 s_num_rd_atomic;	/* number of RDMA read/atomic pending */
 	u8 s_tail_ack_queue;	/* index into s_ack_queue[] */
 	u8 s_flags;
+	u8 s_dmult;
 	u8 timeout;		/* Timeout for this QP */
 	enum ib_mtu path_mtu;
 	u32 remote_qpn;
@@ -407,12 +423,14 @@ struct ipath_qp {
 	u32 s_ssn;		/* SSN of tail entry */
 	u32 s_lsn;		/* limit sequence number (credit) */
 	struct ipath_swqe *s_wq;	/* send work queue */
+	struct ipath_swqe *s_wqe;
 	struct ipath_rq r_rq;		/* receive work queue */
 	struct ipath_sge r_sg_list[0];	/* verified SGEs */
 };
 
 /* Bit definition for s_busy. */
 #define IPATH_S_BUSY		0
+#define IPATH_S_DESTROYING	1
 
 /*
  * Bit definitions for s_flags.
@@ -422,7 +440,7 @@ struct ipath_qp {
 #define IPATH_S_RDMAR_PENDING	0x04
 #define IPATH_S_ACK_PENDING	0x08
 
-#define IPATH_PSN_CREDIT	2048
+#define IPATH_PSN_CREDIT	512
 
 /*
  * Since struct ipath_swqe is not a fixed size, we can't simply index into
@@ -485,13 +503,14 @@ struct ipath_opcode_stats {
 
 struct ipath_ibdev {
 	struct ib_device ibdev;
-	struct list_head dev_list;
 	struct ipath_devdata *dd;
-	struct ipath_mmap_info *pending_mmaps;
+	struct list_head pending_mmaps;
+	spinlock_t mmap_offset_lock;
+	u32 mmap_offset;
 	int ib_unit;		/* This is the device number */
 	u16 sm_lid;		/* in host order */
 	u8 sm_sl;
-	u8 mkeyprot_resv_lmc;
+	u8 mkeyprot;
 	/* non-zero when timer is set */
 	unsigned long mkey_lease_timeout;
 
@@ -500,6 +519,8 @@ struct ipath_ibdev {
 	struct ipath_lkey_table lk_table;
 	struct list_head pending[3];	/* FIFO of QPs waiting for ACKs */
 	struct list_head piowait;	/* list for wait PIO buf */
+	struct list_head txreq_free;
+	void *txreq_bufs;
 	/* list of QPs waiting for RNR timer */
 	struct list_head rnrwait;
 	spinlock_t pending_lock;
@@ -544,6 +565,7 @@ struct ipath_ibdev {
 	u32 z_pkey_violations;			/* starting count for PMA */
 	u32 z_local_link_integrity_errors;	/* starting count for PMA */
 	u32 z_excessive_buffer_overrun_errors;	/* starting count for PMA */
+	u32 z_vl15_dropped;			/* starting count for PMA */
 	u32 n_rc_resends;
 	u32 n_rc_acks;
 	u32 n_rc_qacks;
@@ -559,6 +581,7 @@ struct ipath_ibdev {
 	u32 n_rdma_dup_busy;
 	u32 n_piowait;
 	u32 n_no_piobuf;
+	u32 n_unaligned;
 	u32 port_cap_flags;
 	u32 pma_sample_start;
 	u32 pma_sample_interval;
@@ -570,7 +593,6 @@ struct ipath_ibdev {
 	u16 pending_index;	/* which pending queue is active */
 	u8 pma_sample_status;
 	u8 subnet_timeout;
-	u8 link_width_enabled;
 	u8 vl_high_limit;
 	struct ipath_opcode_stats opstats[128];
 };
@@ -588,6 +610,17 @@ struct ipath_verbs_counters {
 	u64 port_rcv_packets;
 	u32 local_link_integrity_errors;
 	u32 excessive_buffer_overrun_errors;
+	u32 vl15_dropped;
+};
+
+struct ipath_verbs_txreq {
+	struct ipath_qp         *qp;
+	struct ipath_swqe       *wqe;
+	u32                      map_len;
+	u32                      len;
+	struct ipath_sge_state  *ss;
+	struct ipath_pio_header  hdr;
+	struct ipath_sdma_txreq  txreq;
 };
 
 static inline struct ipath_mr *to_imr(struct ib_mr *ibmr)
@@ -623,6 +656,12 @@ static inline struct ipath_qp *to_iqp(struct ib_qp *ibqp)
 static inline struct ipath_ibdev *to_idev(struct ib_device *ibdev)
 {
 	return container_of(ibdev, struct ipath_ibdev, ibdev);
+}
+
+static inline void ipath_schedule_send(struct ipath_qp *qp)
+{
+	if (!test_bit(IPATH_S_DESTROYING, &qp->s_busy))
+		tasklet_hi_schedule(&qp->s_task);
 }
 
 int ipath_process_mad(struct ib_device *ibdev,
@@ -666,7 +705,7 @@ struct ib_qp *ipath_create_qp(struct ib_pd *ibpd,
 
 int ipath_destroy_qp(struct ib_qp *ibqp);
 
-void ipath_error_qp(struct ipath_qp *qp, enum ib_wc_status err);
+int ipath_error_qp(struct ipath_qp *qp, enum ib_wc_status err);
 
 int ipath_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 		    int attr_mask, struct ib_udata *udata);
@@ -682,16 +721,16 @@ void ipath_sqerror_qp(struct ipath_qp *qp, struct ib_wc *wc);
 
 void ipath_get_credit(struct ipath_qp *qp, u32 aeth);
 
-int ipath_verbs_send(struct ipath_devdata *dd, u32 hdrwords,
-		     u32 *hdr, u32 len, struct ipath_sge_state *ss);
+unsigned ipath_ib_rate_to_mult(enum ib_rate rate);
 
-void ipath_cq_enter(struct ipath_cq *cq, struct ib_wc *entry, int sig);
+enum ib_rate ipath_mult_to_ib_rate(unsigned mult);
+
+int ipath_verbs_send(struct ipath_qp *qp, struct ipath_ib_header *hdr,
+		     u32 hdrwords, struct ipath_sge_state *ss, u32 len);
 
 void ipath_copy_sge(struct ipath_sge_state *ss, void *data, u32 length);
 
 void ipath_skip_sge(struct ipath_sge_state *ss, u32 length);
-
-int ipath_post_ruc_send(struct ipath_qp *qp, struct ib_send_wr *wr);
 
 void ipath_uc_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 		  int has_grh, void *data, u32 tlen, struct ipath_qp *qp);
@@ -732,15 +771,17 @@ int ipath_query_srq(struct ib_srq *ibsrq, struct ib_srq_attr *attr);
 
 int ipath_destroy_srq(struct ib_srq *ibsrq);
 
+void ipath_cq_enter(struct ipath_cq *cq, struct ib_wc *entry, int sig);
+
 int ipath_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *entry);
 
-struct ib_cq *ipath_create_cq(struct ib_device *ibdev, int entries,
+struct ib_cq *ipath_create_cq(struct ib_device *ibdev, int entries, int comp_vector,
 			      struct ib_ucontext *context,
 			      struct ib_udata *udata);
 
 int ipath_destroy_cq(struct ib_cq *ibcq);
 
-int ipath_req_notify_cq(struct ib_cq *ibcq, enum ib_cq_notify notify);
+int ipath_req_notify_cq(struct ib_cq *ibcq, enum ib_cq_notify_flags notify_flags);
 
 int ipath_resize_cq(struct ib_cq *ibcq, int cqe, struct ib_udata *udata);
 
@@ -750,8 +791,8 @@ struct ib_mr *ipath_reg_phys_mr(struct ib_pd *pd,
 				struct ib_phys_buf *buffer_list,
 				int num_phys_buf, int acc, u64 *iova_start);
 
-struct ib_mr *ipath_reg_user_mr(struct ib_pd *pd, struct ib_umem *region,
-				int mr_access_flags,
+struct ib_mr *ipath_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
+				u64 virt_addr, int mr_access_flags,
 				struct ib_udata *udata);
 
 int ipath_dereg_mr(struct ib_mr *ibmr);
@@ -768,24 +809,41 @@ int ipath_dealloc_fmr(struct ib_fmr *ibfmr);
 
 void ipath_release_mmap_info(struct kref *ref);
 
+struct ipath_mmap_info *ipath_create_mmap_info(struct ipath_ibdev *dev,
+					       u32 size,
+					       struct ib_ucontext *context,
+					       void *obj);
+
+void ipath_update_mmap_info(struct ipath_ibdev *dev,
+			    struct ipath_mmap_info *ip,
+			    u32 size, void *obj);
+
 int ipath_mmap(struct ib_ucontext *context, struct vm_area_struct *vma);
 
-void ipath_no_bufs_available(struct ipath_qp *qp, struct ipath_ibdev *dev);
-
 void ipath_insert_rnr_queue(struct ipath_qp *qp);
+
+int ipath_init_sge(struct ipath_qp *qp, struct ipath_rwqe *wqe,
+		   u32 *lengthp, struct ipath_sge_state *ss);
 
 int ipath_get_rwqe(struct ipath_qp *qp, int wr_id_only);
 
 u32 ipath_make_grh(struct ipath_ibdev *dev, struct ib_grh *hdr,
 		   struct ib_global_route *grh, u32 hwords, u32 nwords);
 
-void ipath_do_ruc_send(unsigned long data);
+void ipath_make_ruc_header(struct ipath_ibdev *dev, struct ipath_qp *qp,
+			   struct ipath_other_headers *ohdr,
+			   u32 bth0, u32 bth2);
 
-int ipath_make_rc_req(struct ipath_qp *qp, struct ipath_other_headers *ohdr,
-		      u32 pmtu, u32 *bth0p, u32 *bth2p);
+void ipath_do_send(unsigned long data);
 
-int ipath_make_uc_req(struct ipath_qp *qp, struct ipath_other_headers *ohdr,
-		      u32 pmtu, u32 *bth0p, u32 *bth2p);
+void ipath_send_complete(struct ipath_qp *qp, struct ipath_swqe *wqe,
+			 enum ib_wc_status status);
+
+int ipath_make_rc_req(struct ipath_qp *qp);
+
+int ipath_make_uc_req(struct ipath_qp *qp);
+
+int ipath_make_ud_req(struct ipath_qp *qp);
 
 int ipath_register_ib_device(struct ipath_devdata *);
 
@@ -795,8 +853,6 @@ void ipath_ib_rcv(struct ipath_ibdev *, void *, void *, u32);
 
 int ipath_ib_piobufavail(struct ipath_ibdev *);
 
-void ipath_ib_timer(struct ipath_ibdev *);
-
 unsigned ipath_get_npkeys(struct ipath_devdata *);
 
 u32 ipath_get_cr_errpkey(struct ipath_devdata *);
@@ -805,7 +861,17 @@ unsigned ipath_get_pkey(struct ipath_devdata *, unsigned);
 
 extern const enum ib_wc_opcode ib_ipath_wc_opcode[];
 
+/*
+ * Below converts HCA-specific LinkTrainingState to IB PhysPortState
+ * values.
+ */
 extern const u8 ipath_cvt_physportstate[];
+#define IB_PHYSPORTSTATE_SLEEP 1
+#define IB_PHYSPORTSTATE_POLL 2
+#define IB_PHYSPORTSTATE_DISABLED 3
+#define IB_PHYSPORTSTATE_CFG_TRAIN 4
+#define IB_PHYSPORTSTATE_LINKUP 5
+#define IB_PHYSPORTSTATE_LINK_ERR_RECOVER 6
 
 extern const int ib_ipath_state_ops[];
 

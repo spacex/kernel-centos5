@@ -1,5 +1,6 @@
 
 menu "Fusion MPT device support"
+	depends on PCI
 
 config FUSION
 	bool
@@ -19,6 +20,7 @@ config FUSION_SPI
 	  LSI53C1020A
 	  LSI53C1030
 	  LSI53C1035
+	  ATTO UL4D
 
 config FUSION_FC
 	tristate "Fusion MPT ScsiHost drivers for FC"
@@ -36,6 +38,7 @@ config FUSION_FC
 	  LSIFC929
 	  LSIFC929X
 	  LSIFC929XL
+	  Brocade FC 410/420
 
 config FUSION_SAS
 	tristate "Fusion MPT ScsiHost drivers for SAS"
@@ -66,7 +69,7 @@ config FUSION_MAX_SGE
 
 config FUSION_CTL
 	tristate "Fusion MPT misc device (ioctl) driver"
-	depends on FUSION_SPI || FUSION_FC
+	depends on FUSION_SPI || FUSION_FC || FUSION_SAS
 	---help---
 	  The Fusion MPT misc device driver provides specialized control
 	  of MPT adapters via system ioctl calls.  Use of ioctl calls to
@@ -99,5 +102,19 @@ config FUSION_LAN
 	  will be compiled.
 
 	  If unsure whether you really want or need this, say N.
+
+config FUSION_LOGGING
+	bool "Fusion MPT logging facility"
+	depends on FUSION
+	---help---
+	  This turns on a logging facility that can be used to debug a number
+	  of Fusion MPT related problems.
+
+	  The debug level can be programmed on the fly via SysFS (hex values)
+
+	  echo [level] > /sys/class/scsi_host/host#/debug_level
+
+	  There are various debug levels that an be found in the source:
+	  file:drivers/message/fusion/mptdebug.h
 
 endmenu

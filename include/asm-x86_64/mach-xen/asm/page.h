@@ -12,6 +12,14 @@
 #include <xen/interface/xen.h> 
 #include <xen/foreign_page.h>
 
+/*
+ * Need to repeat this here in order to not include pgtable.h (which in turn
+ * depends on definitions made here), but to be able to use the symbolic
+ * below. The preprocessor will warn if the two definitions aren't identical.
+ */
+#define _PAGE_PRESENT	0x001
+#define _PAGE_IO	0x400
+
 #define arch_free_page(_page,_order)			\
 ({	int foreign = PageForeign(_page);		\
 	if (foreign)					\
@@ -30,6 +38,13 @@
 #define PAGE_SHIFT	12
 #define PAGE_SIZE	(_AC(1,UL) << PAGE_SHIFT)
 #define PAGE_MASK	(~(PAGE_SIZE-1))
+
+/* See Documentation/x86_64/mm.txt for a description of the memory map. */
+#define __PHYSICAL_MASK_SHIFT	46
+#define __PHYSICAL_MASK		((1UL << __PHYSICAL_MASK_SHIFT) - 1)
+#define __VIRTUAL_MASK_SHIFT	48
+#define __VIRTUAL_MASK		((1UL << __VIRTUAL_MASK_SHIFT) - 1)
+
 #define PHYSICAL_PAGE_MASK	(~(PAGE_SIZE-1) & __PHYSICAL_MASK)
 
 #define THREAD_ORDER 1 
@@ -87,28 +102,34 @@ typedef struct { unsigned long pgd; } pgd_t;
 
 typedef struct { unsigned long pgprot; } pgprot_t;
 
-#define pte_val(x)	(((x).pte & 1) ? machine_to_phys((x).pte) : \
+#define pte_val(x)	((((x).pte & (_PAGE_PRESENT|_PAGE_IO)) \
+			  == _PAGE_PRESENT) ?		       \
+			 pte_machine_to_phys((x).pte) :	       \
 			 (x).pte)
 #define pte_val_ma(x)	((x).pte)
 
 static inline unsigned long pmd_val(pmd_t x)
 {
 	unsigned long ret = x.pmd;
-	if (ret) ret = machine_to_phys(ret);
+#ifdef CONFIG_XEN_COMPAT_030002
+	if (ret) ret = pte_machine_to_phys(ret) | _PAGE_PRESENT;
+#else
+	if (ret & _PAGE_PRESENT) ret = pte_machine_to_phys(ret);
+#endif
 	return ret;
 }
 
 static inline unsigned long pud_val(pud_t x)
 {
 	unsigned long ret = x.pud;
-	if (ret) ret = machine_to_phys(ret);
+	if (ret & _PAGE_PRESENT) ret = pte_machine_to_phys(ret);
 	return ret;
 }
 
 static inline unsigned long pgd_val(pgd_t x)
 {
 	unsigned long ret = x.pgd;
-	if (ret) ret = machine_to_phys(ret);
+	if (ret & _PAGE_PRESENT) ret = pte_machine_to_phys(ret);
 	return ret;
 }
 
@@ -116,25 +137,26 @@ static inline unsigned long pgd_val(pgd_t x)
 
 static inline pte_t __pte(unsigned long x)
 {
-	if (x & 1) x = phys_to_machine(x);
+	if ((x & (_PAGE_PRESENT|_PAGE_IO)) == _PAGE_PRESENT)
+		x = pte_phys_to_machine(x);
 	return ((pte_t) { (x) });
 }
 
 static inline pmd_t __pmd(unsigned long x)
 {
-	if ((x & 1)) x = phys_to_machine(x);
+	if (x & _PAGE_PRESENT) x = pte_phys_to_machine(x);
 	return ((pmd_t) { (x) });
 }
 
 static inline pud_t __pud(unsigned long x)
 {
-	if ((x & 1)) x = phys_to_machine(x);
+	if (x & _PAGE_PRESENT) x = pte_phys_to_machine(x);
 	return ((pud_t) { (x) });
 }
 
 static inline pgd_t __pgd(unsigned long x)
 {
-	if ((x & 1)) x = phys_to_machine(x);
+	if (x & _PAGE_PRESENT) x = pte_phys_to_machine(x);
 	return ((pgd_t) { (x) });
 }
 
@@ -152,12 +174,6 @@ static inline pgd_t __pgd(unsigned long x)
 
 /* to align the pointer to the (next) page boundary */
 #define PAGE_ALIGN(addr)	(((addr)+PAGE_SIZE-1)&PAGE_MASK)
-
-/* See Documentation/x86_64/mm.txt for a description of the memory map. */
-#define __PHYSICAL_MASK_SHIFT	46
-#define __PHYSICAL_MASK		((_AC(1,UL) << __PHYSICAL_MASK_SHIFT) - 1)
-#define __VIRTUAL_MASK_SHIFT	48
-#define __VIRTUAL_MASK		((_AC(1,UL) << __VIRTUAL_MASK_SHIFT) - 1)
 
 #define KERNEL_TEXT_SIZE  (_AC(40,UL)*1024*1024)
 #define KERNEL_TEXT_START _AC(0xffffffff80000000,UL)

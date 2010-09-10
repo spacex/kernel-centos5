@@ -30,7 +30,17 @@ struct new_utsname {
 	char domainname[65];
 };
 
+#ifdef __KERNEL__
+
+#include <linux/kref.h>
+
+struct uts_namespace {
+	struct kref kref;
+	struct new_utsname name;
+};
+
 extern struct new_utsname system_utsname;
+extern struct uts_namespace init_uts_ns;
 
 extern struct rw_semaphore uts_sem;
 
@@ -38,5 +48,7 @@ static inline struct new_utsname *init_utsname(void)
 {
 	return &system_utsname;
 }
+
+#endif /* __KERNEL__ */
 
 #endif

@@ -37,8 +37,8 @@ static char e1000_driver_string[] = "Intel(R) PRO/1000 Network Driver";
 #define DRIVERNAPI "-NAPI"
 #endif
 #define DRV_VERSION "7.3.20-k2"DRIVERNAPI
-char e1000_driver_version[] = DRV_VERSION;
-static char e1000_copyright[] = "Copyright (c) 1999-2006 Intel Corporation.";
+const char e1000_driver_version[] = DRV_VERSION;
+static const char e1000_copyright[] = "Copyright (c) 1999-2006 Intel Corporation.";
 
 /* e1000_pci_tbl - PCI Device ID Table
  *
@@ -73,14 +73,6 @@ static struct pci_device_id e1000_pci_tbl[] = {
 	INTEL_E1000_ETHERNET_DEVICE(0x1026),
 	INTEL_E1000_ETHERNET_DEVICE(0x1027),
 	INTEL_E1000_ETHERNET_DEVICE(0x1028),
-	INTEL_E1000_ETHERNET_DEVICE(0x1049),
-	INTEL_E1000_ETHERNET_DEVICE(0x104A),
-	INTEL_E1000_ETHERNET_DEVICE(0x104B),
-	INTEL_E1000_ETHERNET_DEVICE(0x104C),
-	INTEL_E1000_ETHERNET_DEVICE(0x104D),
-	INTEL_E1000_ETHERNET_DEVICE(0x105E),
-	INTEL_E1000_ETHERNET_DEVICE(0x105F),
-	INTEL_E1000_ETHERNET_DEVICE(0x1060),
 	INTEL_E1000_ETHERNET_DEVICE(0x1075),
 	INTEL_E1000_ETHERNET_DEVICE(0x1076),
 	INTEL_E1000_ETHERNET_DEVICE(0x1077),
@@ -89,27 +81,9 @@ static struct pci_device_id e1000_pci_tbl[] = {
 	INTEL_E1000_ETHERNET_DEVICE(0x107A),
 	INTEL_E1000_ETHERNET_DEVICE(0x107B),
 	INTEL_E1000_ETHERNET_DEVICE(0x107C),
-	INTEL_E1000_ETHERNET_DEVICE(0x107D),
-	INTEL_E1000_ETHERNET_DEVICE(0x107E),
-	INTEL_E1000_ETHERNET_DEVICE(0x107F),
 	INTEL_E1000_ETHERNET_DEVICE(0x108A),
-	INTEL_E1000_ETHERNET_DEVICE(0x108B),
-	INTEL_E1000_ETHERNET_DEVICE(0x108C),
-	INTEL_E1000_ETHERNET_DEVICE(0x1096),
-	INTEL_E1000_ETHERNET_DEVICE(0x1098),
 	INTEL_E1000_ETHERNET_DEVICE(0x1099),
-	INTEL_E1000_ETHERNET_DEVICE(0x109A),
-	INTEL_E1000_ETHERNET_DEVICE(0x10A4),
-	INTEL_E1000_ETHERNET_DEVICE(0x10A5),
 	INTEL_E1000_ETHERNET_DEVICE(0x10B5),
-	INTEL_E1000_ETHERNET_DEVICE(0x10B9),
-	INTEL_E1000_ETHERNET_DEVICE(0x10BA),
-	INTEL_E1000_ETHERNET_DEVICE(0x10BB),
-	INTEL_E1000_ETHERNET_DEVICE(0x10BC),
-	INTEL_E1000_ETHERNET_DEVICE(0x10C4),
-	INTEL_E1000_ETHERNET_DEVICE(0x10C5),
-	INTEL_E1000_ETHERNET_DEVICE(0x10D9),
-	INTEL_E1000_ETHERNET_DEVICE(0x10DA),
 	/* required last entry */
 	{0,}
 };
@@ -188,7 +162,6 @@ static void e1000_alloc_rx_buffers_ps(struct e1000_adapter *adapter,
 static int e1000_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd);
 static int e1000_mii_ioctl(struct net_device *netdev, struct ifreq *ifr,
 			   int cmd);
-void e1000_set_ethtool_ops(struct net_device *netdev);
 static void e1000_enter_82542_rst(struct e1000_adapter *adapter);
 static void e1000_leave_82542_rst(struct e1000_adapter *adapter);
 static void e1000_tx_timeout(struct net_device *dev);
@@ -212,8 +185,6 @@ static void e1000_shutdown(struct pci_dev *pdev);
 /* for netdump / net console */
 static void e1000_netpoll (struct net_device *netdev);
 #endif
-
-extern void e1000_check_options(struct e1000_adapter *adapter);
 
 #define COPYBREAK_DEFAULT 256
 static unsigned int copybreak __read_mostly = COPYBREAK_DEFAULT;
@@ -1105,6 +1076,7 @@ e1000_probe(struct pci_dev *pdev,
 	case E1000_DEV_ID_82571EB_QUAD_COPPER:
 	case E1000_DEV_ID_82571EB_QUAD_FIBER:
 	case E1000_DEV_ID_82571EB_QUAD_COPPER_LOWPROFILE:
+	case E1000_DEV_ID_82571PT_QUAD_COPPER:
 		/* if quad port adapter, disable WoL on all but port A */
 		if (global_quad_port_a != 0)
 			adapter->eeprom_wol = 0;
@@ -1231,11 +1203,12 @@ e1000_remove(struct pci_dev *pdev)
 	 * would have already happened in close and is redundant. */
 	e1000_release_hw_control(adapter);
 
-	unregister_netdev(netdev);
 #ifdef CONFIG_E1000_NAPI
 	for (i = 0; i < adapter->num_rx_queues; i++)
 		dev_put(&adapter->polling_netdev[i]);
 #endif
+
+	unregister_netdev(netdev);
 
 	if (!e1000_check_phy_reset_block(&adapter->hw))
 		e1000_phy_hw_reset(&adapter->hw);
@@ -2928,33 +2901,30 @@ e1000_tso(struct e1000_adapter *adapter, struct e1000_tx_ring *tx_ring,
 				return err;
 		}
 
-		hdr_len = ((skb->h.raw - skb->data) + (skb->h.th->doff << 2));
+		hdr_len = skb_transport_offset(skb) + tcp_hdrlen(skb);
 		mss = skb_shinfo(skb)->gso_size;
 		if (skb->protocol == htons(ETH_P_IP)) {
-			skb->nh.iph->tot_len = 0;
-			skb->nh.iph->check = 0;
-			skb->h.th->check =
-				~csum_tcpudp_magic(skb->nh.iph->saddr,
-						   skb->nh.iph->daddr,
-						   0,
-						   IPPROTO_TCP,
-						   0);
+			struct iphdr *iph = ip_hdr(skb);
+			iph->tot_len = 0;
+			iph->check = 0;
+			tcp_hdr(skb)->check = ~csum_tcpudp_magic(iph->saddr,
+								 iph->daddr, 0,
+								 IPPROTO_TCP,
+								 0);
 			cmd_length = E1000_TXD_CMD_IP;
-			ipcse = skb->h.raw - skb->data - 1;
+			ipcse = skb_transport_offset(skb) - 1;
 		} else if (skb->protocol == htons(ETH_P_IPV6)) {
-			skb->nh.ipv6h->payload_len = 0;
-			skb->h.th->check =
-				~csum_ipv6_magic(&skb->nh.ipv6h->saddr,
-						 &skb->nh.ipv6h->daddr,
-						 0,
-						 IPPROTO_TCP,
-						 0);
+			ipv6_hdr(skb)->payload_len = 0;
+			tcp_hdr(skb)->check =
+				~csum_ipv6_magic(&ipv6_hdr(skb)->saddr,
+						 &ipv6_hdr(skb)->daddr,
+						 0, IPPROTO_TCP, 0);
 			ipcse = 0;
 		}
-		ipcss = skb->nh.raw - skb->data;
-		ipcso = (void *)&(skb->nh.iph->check) - (void *)skb->data;
-		tucss = skb->h.raw - skb->data;
-		tucso = (void *)&(skb->h.th->check) - (void *)skb->data;
+		ipcss = skb_network_offset(skb);
+		ipcso = (void *)&(ip_hdr(skb)->check) - (void *)skb->data;
+		tucss = skb_transport_offset(skb);
+		tucso = (void *)&(tcp_hdr(skb)->check) - (void *)skb->data;
 		tucse = 0;
 
 		cmd_length |= (E1000_TXD_CMD_DEXT | E1000_TXD_CMD_TSE |
@@ -2995,7 +2965,7 @@ e1000_tx_csum(struct e1000_adapter *adapter, struct e1000_tx_ring *tx_ring,
 	uint8_t css;
 
 	if (likely(skb->ip_summed == CHECKSUM_HW)) {
-		css = skb->h.raw - skb->data;
+		css = skb_transport_offset(skb);
 
 		i = tx_ring->next_to_use;
 		buffer_info = &tx_ring->buffer_info[i];
@@ -3296,14 +3266,13 @@ e1000_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 	unsigned int first, max_per_txd = E1000_MAX_DATA_PER_TXD;
 	unsigned int max_txd_pwr = E1000_MAX_TXD_PWR;
 	unsigned int tx_flags = 0;
-	unsigned int len = skb->len;
+	unsigned int len = skb->len - skb->data_len;
 	unsigned long flags;
-	unsigned int nr_frags = 0;
-	unsigned int mss = 0;
+	unsigned int nr_frags;
+	unsigned int mss;
 	int count = 0;
 	int tso;
 	unsigned int f;
-	len -= skb->data_len;
 
 	/* This goes back to the question of how to logically map a tx queue
 	 * to a flow.  Right now, performance is impacted slightly negatively
@@ -3336,8 +3305,8 @@ e1000_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 		/* TSO Workaround for 82571/2/3 Controllers -- if skb->data
 		* points to just header, pull a few bytes of payload from
 		* frags into skb->data */
-		hdr_len = ((skb->h.raw - skb->data) + (skb->h.th->doff << 2));
-		if (skb->data_len && (hdr_len == (skb->len - skb->data_len))) {
+		hdr_len = skb_transport_offset(skb) + tcp_hdrlen(skb);
+		if (skb->data_len && hdr_len == len) {
 			switch (adapter->hw.mac_type) {
 				unsigned int pull_size;
 			case e1000_82544:
@@ -3347,7 +3316,7 @@ e1000_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 				 * NOTE: this is a TSO only workaround
 				 * if end byte alignment not correct move us
 				 * into the next dword */
-				if ((unsigned long)(skb->tail - 1) & 4)
+				if ((unsigned long)(skb_tail_pointer(skb) - 1) & 4)
 					break;
 				/* fall through */
 			case e1000_82571:
@@ -3374,8 +3343,6 @@ e1000_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 	if ((mss) || (skb->ip_summed == CHECKSUM_HW))
 		count++;
 	count++;
-	if (skb->ip_summed == CHECKSUM_HW)
-		count++;
 
 	/* Controller Erratum workaround */
 	if (!skb->data_len && tx_ring->last_tx_tso && !skb_is_gso(skb))
@@ -3629,7 +3596,7 @@ e1000_update_stats(struct e1000_adapter *adapter)
 
 	spin_lock_irqsave(&adapter->stats_lock, flags);
 
-	/* these counters are modified from e1000_adjust_tbi_stats,
+	/* these counters are modified from e1000_tbi_adjust_stats,
 	 * called from the interrupt context, so they must only
 	 * be written while holding adapter->stats_lock
 	 */
@@ -3721,10 +3688,6 @@ e1000_update_stats(struct e1000_adapter *adapter)
 	}
 
 	/* Fill out the OS statistics structure */
-	adapter->net_stats.rx_packets = adapter->stats.gprc;
-	adapter->net_stats.tx_packets = adapter->stats.gptc;
-	adapter->net_stats.rx_bytes = adapter->stats.gorcl;
-	adapter->net_stats.tx_bytes = adapter->stats.gotcl;
 	adapter->net_stats.multicast = adapter->stats.mprc;
 	adapter->net_stats.collisions = adapter->stats.colc;
 
@@ -4108,6 +4071,8 @@ e1000_clean_tx_irq(struct e1000_adapter *adapter,
 	}
 	adapter->total_tx_bytes += total_tx_bytes;
 	adapter->total_tx_packets += total_tx_packets;
+	adapter->net_stats.tx_bytes += total_tx_bytes;
+	adapter->net_stats.tx_packets += total_tx_packets;
 	return cleaned;
 }
 
@@ -4266,9 +4231,12 @@ e1000_clean_rx_irq(struct e1000_adapter *adapter,
 			    netdev_alloc_skb(netdev, length + NET_IP_ALIGN);
 			if (new_skb) {
 				skb_reserve(new_skb, NET_IP_ALIGN);
-				memcpy(new_skb->data - NET_IP_ALIGN,
-				       skb->data - NET_IP_ALIGN,
-				       length + NET_IP_ALIGN);
+				skb_copy_to_linear_data_offset(new_skb,
+							       -NET_IP_ALIGN,
+							       (skb->data -
+							        NET_IP_ALIGN),
+							       (length +
+							        NET_IP_ALIGN));
 				/* save the skb in buffer_info as good */
 				buffer_info->skb = skb;
 				skb = new_skb;
@@ -4327,6 +4295,8 @@ next_desc:
 
 	adapter->total_rx_packets += total_rx_packets;
 	adapter->total_rx_bytes += total_rx_bytes;
+	adapter->net_stats.rx_bytes += total_rx_bytes;
+	adapter->net_stats.rx_packets += total_rx_packets;
 	return cleaned;
 }
 
@@ -4430,7 +4400,7 @@ e1000_clean_rx_irq_ps(struct e1000_adapter *adapter,
 				PCI_DMA_FROMDEVICE);
 			vaddr = kmap_atomic(ps_page->ps_page[0],
 			                    KM_SKB_DATA_SOFTIRQ);
-			memcpy(skb->tail, vaddr, l1);
+			memcpy(skb_tail_pointer(skb), vaddr, l1);
 			kunmap_atomic(vaddr, KM_SKB_DATA_SOFTIRQ);
 			pci_dma_sync_single_for_device(pdev,
 				ps_page_dma->ps_page_dma[0],
@@ -4514,6 +4484,8 @@ next_desc:
 
 	adapter->total_rx_packets += total_rx_packets;
 	adapter->total_rx_bytes += total_rx_bytes;
+	adapter->net_stats.rx_bytes += total_rx_bytes;
+	adapter->net_stats.rx_packets += total_rx_packets;
 	return cleaned;
 }
 
@@ -4848,6 +4820,7 @@ e1000_mii_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 			spin_unlock_irqrestore(&adapter->stats_lock, flags);
 			return -EIO;
 		}
+		spin_unlock_irqrestore(&adapter->stats_lock, flags);
 		if (adapter->hw.media_type == e1000_media_type_copper) {
 			switch (data->reg_num) {
 			case PHY_CTRL:
@@ -4868,12 +4841,8 @@ e1000_mii_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 						   DUPLEX_HALF;
 					retval = e1000_set_spd_dplx(adapter,
 								    spddplx);
-					if (retval) {
-						spin_unlock_irqrestore(
-							&adapter->stats_lock,
-							flags);
+					if (retval)
 						return retval;
-					}
 				}
 				if (netif_running(adapter->netdev))
 					e1000_reinit_locked(adapter);
@@ -4882,11 +4851,8 @@ e1000_mii_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 				break;
 			case M88E1000_PHY_SPEC_CTRL:
 			case M88E1000_EXT_PHY_SPEC_CTRL:
-				if (e1000_phy_reset(&adapter->hw)) {
-					spin_unlock_irqrestore(
-						&adapter->stats_lock, flags);
+				if (e1000_phy_reset(&adapter->hw))
 					return -EIO;
-				}
 				break;
 			}
 		} else {
@@ -4901,7 +4867,6 @@ e1000_mii_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 				break;
 			}
 		}
-		spin_unlock_irqrestore(&adapter->stats_lock, flags);
 		break;
 	default:
 		return -EOPNOTSUPP;
@@ -4943,6 +4908,20 @@ e1000_write_pci_cfg(struct e1000_hw *hw, uint32_t reg, uint16_t *value)
 	pci_write_config_word(adapter->pdev, reg, *value);
 }
 
+int
+e1000_pcix_get_mmrbc(struct e1000_hw *hw)
+{
+	struct e1000_adapter *adapter = hw->back;
+	return pcix_get_mmrbc(adapter->pdev);
+}
+
+void
+e1000_pcix_set_mmrbc(struct e1000_hw *hw, int mmrbc)
+{
+	struct e1000_adapter *adapter = hw->back;
+	pcix_set_mmrbc(adapter->pdev, mmrbc);
+}
+
 int32_t
 e1000_read_pcie_cap_reg(struct e1000_hw *hw, uint32_t reg, uint16_t *value)
 {
@@ -4956,20 +4935,6 @@ e1000_read_pcie_cap_reg(struct e1000_hw *hw, uint32_t reg, uint16_t *value)
     pci_read_config_word(adapter->pdev, cap_offset + reg, value);
 
     return E1000_SUCCESS;
-}
-
-int
-e1000_pcix_get_mmrbc(struct e1000_hw *hw)
-{
-       struct e1000_adapter *adapter = hw->back; 
-       return pcix_get_mmrbc(adapter->pdev);
-}
-
-void 
-e1000_pcix_set_mmrbc(struct e1000_hw *hw, int mmrbc)
-{
-       struct e1000_adapter *adapter = hw->back;
-       pcix_set_mmrbc(adapter->pdev, mmrbc);
 }
 
 void

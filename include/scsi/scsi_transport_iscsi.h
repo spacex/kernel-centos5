@@ -133,6 +133,9 @@ struct iscsi_transport {
 	int (*set_host_param) (struct Scsi_Host *shost,
 			      enum iscsi_host_param param, char *buf,
 			      int buflen);
+	struct iscsi_cls_session *(*create_session2) (struct iscsi_transport *i,
+		struct scsi_transport_template *t, uint16_t cmds_max,
+		uint16_t qdepth, uint32_t sn, uint32_t *hn);
 #endif
 };
 

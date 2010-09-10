@@ -40,6 +40,104 @@
 #define ROUND_DIV(v,s) (((v) + (s) - 1) / (s))
 
 static int
+xencomm_privcmd_memory_reservation_op(privcmd_hypercall_t *hypercall)
+{
+	const unsigned long cmd = hypercall->arg[0];
+	int ret = 0;
+	xen_memory_reservation_t kern_op;
+	xen_memory_reservation_t __user *user_op;
+	struct xencomm_handle *desc = NULL;
+	struct xencomm_handle *desc_op;
+
+	user_op = (xen_memory_reservation_t __user *)hypercall->arg[1];
+	if (copy_from_user(&kern_op, user_op,
+			   sizeof(xen_memory_reservation_t)))
+		return -EFAULT;
+	desc_op = xencomm_create_inline(&kern_op);
+
+	if (!xen_guest_handle(kern_op.extent_start)) {
+		ret = xencomm_arch_hypercall_memory_op(cmd, desc_op);
+		if (ret < 0)
+			return ret;
+	} else {
+		xen_ulong_t nr_done = 0;
+		xen_ulong_t nr_extents = kern_op.nr_extents;
+		void *addr = xen_guest_handle(kern_op.extent_start);
+			
+		/*
+		 * Work around.
+		 *   Xencomm has single page size limit caused
+		 *   by xencomm_alloc()/xencomm_free() so that
+		 *   we have to repeat the hypercall.
+		 *   This limitation can be removed.
+		 */
+#define MEMORYOP_XENCOMM_LIMIT						\
+		(((((PAGE_SIZE - sizeof(struct xencomm_desc)) /		\
+		    sizeof(uint64_t)) - 2) * PAGE_SIZE) /		\
+		 sizeof(*xen_guest_handle(kern_op.extent_start)))
+
+		/*
+		 * Work around.
+		 *   Even if the above limitation is removed,
+		 *   the hypercall with large number of extents 
+		 *   may cause the soft lockup warning.
+		 *   In order to avoid the warning, we limit
+		 *   the number of extents and repeat the hypercall.
+		 *   The following value is determined by experimentation.
+		 *   If the following limit causes soft lockup warning,
+		 *   we should decrease this value.
+		 *
+		 *   Another way would be that start with small value and
+		 *   increase adoptively measuring hypercall time.
+		 *   It might be over-kill.
+		 */
+#define MEMORYOP_MAX_EXTENTS	(MEMORYOP_XENCOMM_LIMIT / 4)
+
+		while (nr_extents > 0) {
+			xen_ulong_t nr_tmp = nr_extents;
+			if (nr_tmp > MEMORYOP_MAX_EXTENTS)
+				nr_tmp = MEMORYOP_MAX_EXTENTS;
+
+			kern_op.nr_extents = nr_tmp;
+			ret = xencomm_create
+				(addr + nr_done * sizeof(*xen_guest_handle(kern_op.extent_start)),
+				 nr_tmp * sizeof(*xen_guest_handle(kern_op.extent_start)),
+				 &desc, GFP_KERNEL);
+
+			if (addr != NULL && nr_tmp > 0 && desc == NULL)
+				return nr_done > 0 ? nr_done : -ENOMEM;
+
+			set_xen_guest_handle(kern_op.extent_start,
+					     (void *)desc);
+
+			ret = xencomm_arch_hypercall_memory_op(cmd, desc_op);
+			xencomm_free(desc);
+			if (ret < 0)
+				return nr_done > 0 ? nr_done : ret;
+
+			nr_done += ret;
+			nr_extents -= ret;
+			if (ret < nr_tmp)
+				break;
+
+			/*
+			 * prevent softlock up message.
+			 * give cpu to soft lockup kernel thread.
+			 */
+			if (nr_extents > 0)
+				schedule();
+		}
+		ret = nr_done;
+		set_xen_guest_handle(kern_op.extent_start, addr);
+	}
+
+	if (copy_to_user(user_op, &kern_op, sizeof(xen_memory_reservation_t)))
+		return -EFAULT;
+
+	return ret;
+}
+
+static int
 xencomm_privcmd_dom0_op(privcmd_hypercall_t *hypercall)
 {
 	dom0_op_t kern_op;
@@ -286,7 +384,13 @@ xencomm_privcmd_domctl(privcmd_hypercall_t *hypercall)
 		return ret;
 	}
 
-	ret = xencomm_arch_hypercall_domctl (op_desc);
+	ret = xencomm_arch_hypercall_domctl(op_desc);
+	if (kern_op.cmd == XEN_DOMCTL_destroydomain) {
+		while (ret == -EAGAIN) {
+			schedule(); /* prevent softlock up message */
+			ret = xencomm_arch_hypercall_domctl(op_desc);
+		}
+	}
 
 	/* FIXME: should we restore the handle?  */
 	if (copy_to_user(user_op, &kern_op, sizeof(xen_domctl_t)))
@@ -350,48 +454,7 @@ xencomm_privcmd_memory_op(privcmd_hypercall_t *hypercall)
 	case XENMEM_increase_reservation:
 	case XENMEM_decrease_reservation:
 	case XENMEM_populate_physmap:
-	{
-		xen_memory_reservation_t kern_op;
-		xen_memory_reservation_t __user *user_op;
-		struct xencomm_handle *desc = NULL;
-		struct xencomm_handle *desc_op;
-
-		user_op = (xen_memory_reservation_t __user *)hypercall->arg[1];
-		if (copy_from_user(&kern_op, user_op,
-		                   sizeof(xen_memory_reservation_t)))
-			return -EFAULT;
-		desc_op = xencomm_create_inline(&kern_op);
-
-		if (xen_guest_handle(kern_op.extent_start)) {
-			void * addr;
-
-			addr = xen_guest_handle(kern_op.extent_start);
-			ret = xencomm_create
-				(addr,
-				 kern_op.nr_extents *
-				 sizeof(*xen_guest_handle
-					(kern_op.extent_start)),
-				 &desc, GFP_KERNEL);
-			if (ret)
-				return ret;
-			set_xen_guest_handle(kern_op.extent_start,
-			                     (void *)desc);
-		}
-
-		ret = xencomm_arch_hypercall_memory_op(cmd, desc_op);
-
-		if (desc)
-			xencomm_free(desc);
-
-		if (ret != 0)
-			return ret;
-
-		if (copy_to_user(user_op, &kern_op,
-		                 sizeof(xen_memory_reservation_t)))
-			return -EFAULT;
-
-		return ret;
-	}
+		return xencomm_privcmd_memory_reservation_op(hypercall);
 	case XENMEM_translate_gpfn_list:
 	{
 		xen_translate_gpfn_list_t kern_op;

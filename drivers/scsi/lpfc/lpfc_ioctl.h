@@ -30,6 +30,10 @@
 #ifndef FC_REG_DUMP_EVENT
 #define FC_REG_DUMP_EVENT       0x10    /* Register for Dump events */
 #endif
+#ifndef FC_REG_TEMPERATURE_EVENT
+#define FC_REG_TEMPERATURE_EVENT	0x20    /* Register for temperature
+						   event */
+#endif
 
 #define FC_REG_EVENT_MASK       0xff    /* event mask */
 
@@ -58,7 +62,7 @@ struct DfcRevInfo {
 	uint32_t a_Minor;
 } ;
 
-#define LPFC_WWPN_TYPE 		0
+#define LPFC_WWPN_TYPE		0
 #define LPFC_PORTID_TYPE	1
 #define LPFC_WWNN_TYPE		2
 
@@ -173,3 +177,14 @@ struct lpfc_host_event {
 	enum lpfc_host_event_code event_code;
 	uint32_t data;
 };
+
+#ifdef __KERNEL__
+struct lpfcdfc_host;
+
+/* Initialize/Un-initialize char device */
+int lpfc_cdev_init(void);
+void lpfc_cdev_exit(void);
+void lpfcdfc_host_del(struct lpfcdfc_host *);
+struct lpfcdfc_host *lpfcdfc_host_add(struct pci_dev *, struct Scsi_Host *,
+				      struct lpfc_hba *);
+#endif	/* __KERNEL__ */

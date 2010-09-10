@@ -1,7 +1,7 @@
 /*
  * utrace infrastructure interface for debugging user processes
  *
- * Copyright (C) 2006, 2007 Red Hat, Inc.  All rights reserved.
+ * Copyright (C) 2006, 2007, 2008 Red Hat, Inc.  All rights reserved.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
@@ -488,6 +488,8 @@ restart:
 		 * Check this first; a race with reaping may lead to restart.
 		 */
 		rcu_read_unlock();
+		if (!(flags & UTRACE_ATTACH_CREATE))
+			return ERR_PTR(-ENOENT);
 		return ERR_PTR(-ESRCH);
 	}
 
@@ -573,10 +575,13 @@ finish:
 EXPORT_SYMBOL_GPL(utrace_attach);
 
 /*
- * When an engine is detached, the target thread may still see it and make
- * callbacks until it quiesces.  We reset its event flags to just QUIESCE
- * and install a special ops vector whose callback is dead_engine_delete.
- * When the target thread quiesces, it can safely free the engine itself.
+ * When an engine is detached, the target thread may still see it
+ * and make callbacks until it quiesces.  We install a special ops
+ * vector whose callbacks are all dead_engine_delete.  When the
+ * target thread quiesces, it can safely free the engine itself.
+ * We must cover all callbacks in case of races between checking
+ * engine->flags and utrace_detach changing engine->ops.
+ * Only report_reap is never called due to a special case in utrace_reap.
  */
 static u32
 dead_engine_delete(struct utrace_attached_engine *engine,
@@ -585,9 +590,38 @@ dead_engine_delete(struct utrace_attached_engine *engine,
 	return UTRACE_ACTION_DETACH;
 }
 
+/*
+ * Don't use .report_xxx = ... style here because this way makes it easier
+ * to be sure we're forced to have an initializer here for every member.
+ */
 static const struct utrace_engine_ops dead_engine_ops =
 {
-	.report_quiesce = &dead_engine_delete
+	(u32 (*)(struct utrace_attached_engine *, struct task_struct *,
+		 unsigned long, struct task_struct *)) &dead_engine_delete,
+	(u32 (*)(struct utrace_attached_engine *, struct task_struct *,
+		 pid_t)) &dead_engine_delete,
+	&dead_engine_delete,
+	(u32 (*)(struct utrace_attached_engine *, struct task_struct *,
+		 struct pt_regs *, u32, siginfo_t *,
+		 const struct k_sigaction *, struct k_sigaction *))
+	&dead_engine_delete,
+	(u32 (*)(struct utrace_attached_engine *, struct task_struct *,
+		 int)) &dead_engine_delete,
+	(u32 (*)(struct utrace_attached_engine *, struct task_struct *,
+		 const struct linux_binprm *, struct pt_regs *))
+	&dead_engine_delete,
+	(u32 (*)(struct utrace_attached_engine *, struct task_struct *,
+		 struct pt_regs *)) &dead_engine_delete,
+	(u32 (*)(struct utrace_attached_engine *, struct task_struct *,
+		 struct pt_regs *)) &dead_engine_delete,
+	(u32 (*)(struct utrace_attached_engine *, struct task_struct *,
+		 long, long *)) &dead_engine_delete,
+	(u32 (*)(struct utrace_attached_engine *, struct task_struct *))
+	&dead_engine_delete,
+	NULL,			/* report_reap */
+	NULL,			/* allow_access_process_vm */
+	NULL,			/* unsafe_exec */
+	NULL,			/* tracer_task */
 };
 
 
@@ -793,9 +827,32 @@ utrace_detach(struct task_struct *target,
 		return ret;
 	}
 
-	flags = engine->flags;
-	engine->flags = UTRACE_EVENT(QUIESCE) | UTRACE_ACTION_QUIESCE;
+	/*
+	 * This must work while the target thread races with us doing:
+	 *	if (engine->flags & UTRACE_EVENT(x)) REPORT(x, ...);
+	 * The REPORT macro uses smp_rmb() between checking engine->flags
+	 * and using engine->ops.  Here we change engine->ops first, then
+	 * use smp_wmb() before changing engine->flags.  This ensures it
+	 * can check the old flags before using the old ops, or check the
+	 * old flags before using the new ops, or check the new flags
+	 * before using the new ops, but can never check the new flags
+	 * before using the old ops.  Hence, dead_engine_ops might be used
+	 * with any old flags in place.  So, it has report_* callback
+	 * pointers for every event type.  Since it has to have those
+	 * anyway, we enable (for after any potential race) all the events
+	 * that have no overhead to enable.  We want it to get into that
+	 * callback and complete the detach ASAP.
+	 */
 	rcu_assign_pointer(engine->ops, &dead_engine_ops);
+	smp_wmb();
+	flags = engine->flags;
+	engine->flags = (UTRACE_EVENT(QUIESCE)
+			 | UTRACE_EVENT(CLONE)
+			 | UTRACE_EVENT(VFORK_DONE)
+			 | UTRACE_EVENT(EXEC)
+			 | UTRACE_EVENT(EXIT)
+			 | UTRACE_EVENT(JCTL)
+			 | UTRACE_ACTION_QUIESCE);
 
 	if (quiesce(target, 1)) {
 		remove_engine(engine, target, utrace);
@@ -920,7 +977,7 @@ utrace_set_flags(struct task_struct *target,
 {
 	struct utrace *utrace;
 	int report;
-	unsigned long old_flags, old_utrace_flags;
+	unsigned long old_flags, old_utrace_flags, set_utrace_flags;
 	int ret = -EALREADY;
 
 #ifdef ARCH_HAS_SINGLE_STEP
@@ -954,6 +1011,22 @@ restart:			/* See below. */
 	}
 
 	/*
+	 * When it's in TASK_STOPPED state, do not set UTRACE_EVENT(JCTL).
+	 * That bit indicates utrace_report_jctl has not run yet and so the
+	 * target cannot be considered quiescent.  But if the bit wasn't
+	 * already set, it can't be in running in there and really is
+	 * quiescent now in its existing job control stop.  We set
+	 * UTRACE_ACTION_QUIESCE to be sure that once it resumes it will
+	 * recompute its flags in utrace_quiescent.
+	 */
+	set_utrace_flags = flags;
+	if (((set_utrace_flags &~ old_utrace_flags) & UTRACE_EVENT(JCTL))
+	    && target->state == TASK_STOPPED) {
+		set_utrace_flags &= ~UTRACE_EVENT(JCTL);
+		set_utrace_flags |= UTRACE_ACTION_QUIESCE;
+	}
+
+	/*
 	 * When setting these flags, it's essential that we really
 	 * synchronize with exit_notify.  They cannot be set after
 	 * exit_notify takes the tasklist_lock.  By holding the read
@@ -963,7 +1036,7 @@ restart:			/* See below. */
 	 * knows positively that utrace_report_death will be called or
 	 * that it won't.
 	 */
-	if ((flags &~ old_utrace_flags) & (UTRACE_ACTION_NOREAP
+	if ((set_utrace_flags &~ old_utrace_flags) & (UTRACE_ACTION_NOREAP
 					   | DEATH_EVENTS)) {
 		read_lock(&tasklist_lock);
 		if (unlikely(target->exit_state)) {
@@ -971,12 +1044,12 @@ restart:			/* See below. */
 			spin_unlock(&utrace->lock);
 			return ret;
 		}
-		target->utrace_flags |= flags;
+		target->utrace_flags |= set_utrace_flags;
 		read_unlock(&tasklist_lock);
 	}
 
 	engine->flags = flags;
-	target->utrace_flags |= flags;
+	target->utrace_flags |= set_utrace_flags;
 	ret = 0;
 
 	report = 0;
@@ -1098,8 +1171,18 @@ update_action(struct task_struct *tsk, struct utrace *utrace,
 	return ret;
 }
 
-#define REPORT(callback, ...) do { \
-	u32 ret = (*rcu_dereference(engine->ops)->callback) \
+/*
+ * This macro is always used after checking engine->flags.
+ * The smp_rmb() here pairs with smp_wmb() in utrace_detach.
+ * engine->ops changes before engine->flags, so the flags we
+ * just tested properly enabled this report for the real ops,
+ * or harmlessly enabled it for dead_engine_ops.
+ */
+#define REPORT(callback, ...)						\
+	do {								\
+		u32 ret;						\
+		smp_rmb();						\
+		ret = (*rcu_dereference(engine->ops)->callback)		\
 		(engine, tsk, ##__VA_ARGS__); \
 	action = update_action(tsk, utrace, engine, ret); \
 	} while (0)
@@ -1302,6 +1385,7 @@ restart:
 	 */
 	if (action & UTRACE_ACTION_QUIESCE) {
 		int killed;
+		int stop;
 
 		if (signal != NULL) {
 			BUG_ON(utrace->u.live.signal != NULL);
@@ -1318,7 +1402,8 @@ restart:
 		 * Never stop when there is a SIGKILL bringing us down.
 		 */
 		killed = sigkill_pending(tsk);
-		if (!killed && (tsk->utrace_flags & UTRACE_ACTION_QUIESCE)) {
+		stop = !killed && (tsk->utrace_flags & UTRACE_ACTION_QUIESCE);
+		if (likely(stop)) {
 			set_current_state(TASK_TRACED);
 			/*
 			 * If there is a group stop in progress,
@@ -1340,10 +1425,32 @@ restart:
 			 */
 			BUG_ON(tsk->utrace != utrace);
 			BUG_ON(utrace->u.live.signal != signal);
+
+			if (likely(stop)) {
+				/*
+				 * Synchronize with any utrace_detach
+				 * that might be in progress.  We were
+				 * just now quiescent in TASK_TRACED,
+				 * and it expected us to stay there.
+				 * But SIGKILL might have broken that.
+				 * Taking this lock here serializes its
+				 * work so that if it had the lock and
+				 * thought we were still in TASK_TRACED,
+				 * we block until it has finished
+				 * looking at utrace.  A utrace_detach
+				 * that gets the lock after we release
+				 * it here will not think we are
+				 * quiescent at all, since we are in
+				 * TASK_RUNNING state now.
+				 */
+				spin_lock(&utrace->lock);
+				spin_unlock(&utrace->lock);
+			}
+
 			utrace->u.live.signal = NULL;
 		}
 
-		if (killed)	/* Game over, man!  */
+		if (unlikely(killed)) /* Game over, man!  */
 			return 1;
 
 		/*
@@ -1872,13 +1979,28 @@ utrace_get_signal(struct task_struct *tsk, struct pt_regs *regs,
 	 */
 	if (signal.signr != 0) {
 		if (signal.return_ka == NULL) {
-			ka = &tsk->sighand->action[signal.signr - 1];
+			/*
+			 * utrace_inject_signal recorded this to have us
+			 * use the injected signal's normal sigaction.  We
+			 * have to perform the SA_ONESHOT work now because
+			 * our caller will never touch the real sigaction.
+			 */
+			ka = &tsk->sighand->action[info->si_signo - 1];
+			*return_ka = *ka;
 			if (ka->sa.sa_flags & SA_ONESHOT)
 				ka->sa.sa_handler = SIG_DFL;
-			*return_ka = *ka;
 		}
 		else
 			BUG_ON(signal.return_ka != return_ka);
+
+		/*
+		 * We already processed the SA_ONESHOT work ahead of time.
+		 * Once we return nonzero, our caller will only refer to
+		 * return_ka.  So we must clear the flag to be sure it
+		 * doesn't clear return_ka->sa.sa_handler.
+		 */
+		return_ka->sa.sa_flags &= ~SA_ONESHOT;
+
 		return signal.signr;
 	}
 

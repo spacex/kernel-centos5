@@ -16,6 +16,10 @@ ipv6-$(CONFIG_NETFILTER) += netfilter.o
 ipv6-$(CONFIG_IPV6_MULTIPLE_TABLES) += fib6_rules.o
 ipv6-objs += $(ipv6-y)
 
+xfrm6_esp-objs += xfrm6_ninput.o
+xfrm6_esp-objs += xfrm6_noutput.o
+obj-$(CONFIG_INET6_ESP) += xfrm6_esp.o
+
 obj-$(CONFIG_INET6_AH) += ah6.o
 obj-$(CONFIG_INET6_ESP) += esp6.o
 obj-$(CONFIG_INET6_IPCOMP) += ipcomp6.o

@@ -358,6 +358,9 @@ DEFINE_XEN_GUEST_HANDLE(vcpu_guest_context_t);
 /* gmfn version of IA64_DOM0VP_add_physmap */
 #define IA64_DOM0VP_add_physmap_with_gmfn       9
 
+/* Add an I/O port space range */
+#define IA64_DOM0VP_add_io_space        11
+
 // flags for page assignement to pseudo physical address space
 #define _ASSIGN_readonly                0
 #define ASSIGN_readonly                 (1UL << _ASSIGN_readonly)

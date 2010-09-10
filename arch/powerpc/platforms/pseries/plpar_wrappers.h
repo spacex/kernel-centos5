@@ -40,6 +40,16 @@ static inline long register_vpa(unsigned long cpu, unsigned long vpa)
 	return vpa_call(0x1, cpu, vpa);
 }
 
+static inline long unregister_slb_shadow(unsigned long cpu, unsigned long vpa)
+{
+	return vpa_call(0x7, cpu, vpa);
+}
+
+static inline long register_slb_shadow(unsigned long cpu, unsigned long vpa)
+{
+	return vpa_call(0x3, cpu, vpa);
+}
+
 extern void vpa_init(int cpu);
 
 static inline long plpar_pte_remove(unsigned long flags, unsigned long ptex,

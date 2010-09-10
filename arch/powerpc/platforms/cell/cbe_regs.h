@@ -15,6 +15,8 @@
 #ifndef CBE_REGS_H
 #define CBE_REGS_H
 
+#include <asm/cell-pmu.h>
+
 /*
  *
  * Some HID register definitions
@@ -111,14 +113,50 @@ struct cbe_pmd_regs {
 	u64	checkstop_fir;					/* 0x0c00 */
 	u64	recoverable_fir;				/* 0x0c08 */
 	u64	spec_att_mchk_fir;				/* 0x0c10 */
-	u64	fir_mode_reg;					/* 0x0c18 */
+	u32	fir_mode_reg;					/* 0x0c18 */
+	u8	pad_0x0c1c_0x0c20 [4];				/* 0x0c1c */
+#define CBE_PMD_FIR_MODE_M8		0x00800
 	u64	fir_enable_mask;				/* 0x0c20 */
 
-	u8	pad_0x0c28_0x1000 [0x1000 - 0x0c28];		/* 0x0c28 */
+	u8	pad_0x0c28_0x0ca8 [0x0ca8 - 0x0c28];		/* 0x0c28 */
+	u64	ras_esc_0;					/* 0x0ca8 */
+	u8	pad_0x0cb0_0x1000 [0x1000 - 0x0cb0];		/* 0x0cb0 */
 };
 
 extern struct cbe_pmd_regs __iomem *cbe_get_pmd_regs(struct device_node *np);
 extern struct cbe_pmd_regs __iomem *cbe_get_cpu_pmd_regs(int cpu);
+
+/*
+ * PMU shadow registers
+ *
+ * Many of the registers in the performance monitoring unit are write-only,
+ * so we need to save a copy of what we write to those registers.
+ *
+ * The actual data counters are read/write. However, writing to the counters
+ * only takes effect if the PMU is enabled. Otherwise the value is stored in
+ * a hardware latch until the next time the PMU is enabled. So we save a copy
+ * of the counter values if we need to read them back while the PMU is
+ * disabled. The counter_value_in_latch field is a bitmap indicating which
+ * counters currently have a value waiting to be written.
+ */
+
+struct cbe_pmd_shadow_regs {
+	u32 group_control;
+	u32 debug_bus_control;
+	u32 trace_address;
+	u32 ext_tr_timer;
+	u32 pm_status;
+	u32 pm_control;
+	u32 pm_interval;
+	u32 pm_start_stop;
+	u32 pm07_control[NR_CTRS];
+
+	u32 pm_ctr[NR_PHYS_CTRS];
+	u32 counter_value_in_latch;
+};
+
+extern struct cbe_pmd_shadow_regs *cbe_get_pmd_shadow_regs(struct device_node *np);
+extern struct cbe_pmd_shadow_regs *cbe_get_cpu_pmd_shadow_regs(int cpu);
 
 /*
  *
@@ -206,10 +244,11 @@ struct cbe_mic_tm_regs {
 	u64	slow_fast_timer_0;				/* 0x0090 */
 	u64	slow_next_timer_0;				/* 0x0098 */
 
-	u8	pad_0x00a0_0x01c0[0x01c0 - 0x0a0];		/* 0x00a0 */
+	u8	pad_0x00a0_0x01c0[0x01c0 - 0x00a0];		/* 0x00a0 */
 
 	u64	mic_ctl_cnfg_1;					/* 0x01c0 */
 #define CBE_MIC_DISABLE_PWR_SAV_1	0x8000000000000000LL
+
 	u64	pad_0x01c8;					/* 0x01c8 */
 
 	u64	slow_fast_timer_1;				/* 0x01d0 */

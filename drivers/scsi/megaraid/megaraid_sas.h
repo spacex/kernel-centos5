@@ -2,7 +2,7 @@
  *
  *		Linux MegaRAID driver for SAS based RAID controllers
  *
- * Copyright (c) 2003-2005  LSI Logic Corporation.
+ * Copyright (c) 2003-2005  LSI Corporation.
  *
  *		This program is free software; you can redistribute it and/or
  *		modify it under the terms of the GNU General Public License
@@ -15,12 +15,12 @@
 #ifndef LSI_MEGARAID_SAS_H
 #define LSI_MEGARAID_SAS_H
 
-/**
+/*
  * MegaRAID SAS Driver meta data
  */
-#define MEGASAS_VERSION				"00.00.03.10"
-#define MEGASAS_RELDATE				"Mar 28, 2007"
-#define MEGASAS_EXT_VERSION			"Wed Mar 28 10:25:52 PST 2007"
+#define MEGASAS_VERSION				"00.00.03.15-RH1"
+#define MEGASAS_RELDATE				"Nov 21, 2007"
+#define MEGASAS_EXT_VERSION			"Wed Nov. 21 10:29:45 PST 2007"
 
 /*
  * Device IDs
@@ -40,7 +40,7 @@
  * "message frames"
  */
 
-/**
+/*
  * FW posts its state in upper 4 bits of outbound_msg_0 register
  */
 #define MFI_STATE_MASK				0xF0000000
@@ -58,7 +58,7 @@
 
 #define MEGAMFI_FRAME_SIZE			64
 
-/**
+/*
  * During FW init, clear pending cmds & reset state using inbound_msg_0
  *
  * ABORT	: Abort all pending cmds
@@ -78,7 +78,7 @@
 						MFI_INIT_MFIMODE| \
 						MFI_INIT_ABORT
 
-/**
+/*
  * MFI frame flags
  */
 #define MFI_FRAME_POST_IN_REPLY_QUEUE		0x0000
@@ -92,12 +92,12 @@
 #define MFI_FRAME_DIR_READ			0x0010
 #define MFI_FRAME_DIR_BOTH			0x0018
 
-/**
+/*
  * Definition for cmd_status
  */
 #define MFI_CMD_STATUS_POLL_MODE		0xFF
 
-/**
+/*
  * MFI command opcodes
  */
 #define MFI_CMD_INIT				0x00
@@ -117,6 +117,7 @@
 #define MR_FLUSH_DISK_CACHE			0x02
 
 #define MR_DCMD_CTRL_SHUTDOWN			0x01050000
+#define MR_DCMD_HIBERNATE_SHUTDOWN		0x01060000
 #define MR_ENABLE_DRIVE_SPINDOWN		0x01
 
 #define MR_DCMD_CTRL_EVENT_GET_INFO		0x01040100
@@ -128,7 +129,7 @@
 #define MR_DCMD_CLUSTER_RESET_ALL		0x08010100
 #define MR_DCMD_CLUSTER_RESET_LD		0x08010200
 
-/**
+/*
  * MFI command completion codes
  */
 enum MFI_STAT {
@@ -536,9 +537,10 @@ struct megasas_ctrl_info {
 #define MEGASAS_DEFAULT_INIT_ID			-1
 #define MEGASAS_MAX_LUN				8
 #define MEGASAS_MAX_LD				64
+#define MEGASAS_DEFAULT_CMD_PER_LUN		128
+
 
 #define MEGASAS_DBG_LVL				1
-
 #define MEGASAS_FW_BUSY				1
 
 /*
@@ -570,7 +572,8 @@ struct megasas_ctrl_info {
 #define IS_DMA64				(sizeof(dma_addr_t) == 8)
 
 #define MFI_OB_INTR_STATUS_MASK			0x00000002
-#define MFI_POLL_TIMEOUT_SECS			10
+#define MFI_POLL_TIMEOUT_SECS			60
+#define MEGASAS_COMPLETION_TIMER_INTERVAL	(HZ/10)
 
 #define MFI_REPLY_1078_MESSAGE_INTERRUPT	0x80000000
 
@@ -1083,6 +1086,8 @@ struct megasas_instance {
 	struct megasas_cmd **cmd_list;
 	struct list_head cmd_pool;
 	spinlock_t cmd_pool_lock;
+	/* used to synch producer, consumer ptrs */
+	spinlock_t completion_lock;
 	struct dma_pool *frame_dma_pool;
 	struct dma_pool *sense_dma_pool;
 
@@ -1108,6 +1113,8 @@ struct megasas_instance {
 
 	u8 flag;
 	unsigned long last_time;
+
+	struct timer_list io_completion_timer;
 };
 
 #define MEGASAS_IS_LOGICAL(scp)						\

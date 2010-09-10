@@ -753,6 +753,15 @@ void pcim_pin_device(struct pci_dev *pdev)
 }
 
 /**
+ * pcibios_fix_bus_scan_quirk - provide for arch-specific bus scan quirks
+ * @bus: the PCI bus to scan
+ *
+ * Scans the bus for arch-specific quirks. This is the default implementation.
+ * Architecture implementations can override this.
+ */
+void __attribute__ ((weak)) pcibios_fix_bus_scan_quirk(struct pci_bus *bus) {}
+
+/**
  * pcibios_disable_device - disable arch specific PCI resources for device dev
  * @dev: the PCI device to disable
  *

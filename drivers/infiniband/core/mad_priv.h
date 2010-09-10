@@ -39,7 +39,6 @@
 
 #include <linux/completion.h>
 #include <linux/err.h>
-#include <linux/pci.h>
 #include <linux/workqueue.h>
 #include <rdma/ib_mad.h>
 #include <rdma/ib_smi.h>
@@ -102,7 +101,7 @@ struct ib_mad_agent_private {
 	struct list_head send_list;
 	struct list_head wait_list;
 	struct list_head done_list;
-	struct work_struct timed_work;
+	struct delayed_work timed_work;
 	unsigned long timeout;
 	struct list_head local_list;
 	struct work_struct local_work;

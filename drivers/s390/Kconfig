@@ -104,9 +104,8 @@ config CCW_CONSOLE
  	default y
  
 config SCLP
-	bool "Support for SCLP"
-	help
-	  Include support for the SCLP interface to the service element.
+	bool
+	default y
 
 config SCLP_TTY
 	bool "Support for SCLP line mode terminal"
@@ -212,6 +211,19 @@ config MONREADER
 	depends on IUCV
 	help
 	  Character device driver for reading z/VM monitor service records
+
+config S390_VMUR
+	tristate "z/VM unit record device driver"
+	depends on S390
+	default "m"
+	help
+	  Character device driver for z/VM reader, puncher and printer.
+
+config MONWRITER
+	tristate "API for writing z/VM monitor service records"
+	default "m"
+	help
+	  Character device driver for writing z/VM monitor service records
 
 endmenu
 

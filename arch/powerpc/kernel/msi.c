@@ -746,7 +746,6 @@ struct pci_dn *get_pdn(struct pci_dev *pdev)
 
 void disable_msi_mode(struct pci_dev *dev, int pos, int type)
 {
-	WARN_ON(1);
 }
 
 void pci_scan_msi_device(struct pci_dev *dev)

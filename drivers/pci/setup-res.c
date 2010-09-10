@@ -148,11 +148,18 @@ int pci_assign_resource(struct pci_dev *dev, int resno)
 	}
 
 	if (ret) {
-		printk(KERN_ERR "PCI: Failed to allocate %s resource "
-			"#%d:%llx@%llx for %s\n",
-			res->flags & IORESOURCE_IO ? "I/O" : "mem",
-			resno, (unsigned long long)size,
-			(unsigned long long)res->start, pci_name(dev));
+		if (resno < PCI_ROM_RESOURCE)
+			printk(KERN_ERR "PCI: Failed to allocate %s resource "
+				"#%d:%llx@%llx for %s\n",
+				res->flags & IORESOURCE_IO ? "I/O" : "mem",
+				resno, (unsigned long long)size,
+				(unsigned long long)res->start, pci_name(dev));
+		else
+			printk("PCI: %s resource #%d:%llx@%llx for %s "
+				"was not allocated.\n",
+				res->flags & IORESOURCE_IO ? "I/O" : "mem",
+				resno, (unsigned long long)size,
+				(unsigned long long)res->start, pci_name(dev));
 	} else if (resno < PCI_BRIDGE_RESOURCES) {
 		pci_update_resource(dev, res, resno);
 	}

@@ -35,6 +35,8 @@
 #define ARCH_OFFSET	0
 #endif
 
+#define IPL_PARMBLOCK_ORIGIN 0x2000
+
 #ifndef CONFIG_IPL
         .org   0
         .long  0x00080000,0x80000000+startup   # Just a restart PSW

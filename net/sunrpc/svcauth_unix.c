@@ -5,6 +5,7 @@
 #include <linux/sunrpc/xdr.h>
 #include <linux/sunrpc/svcsock.h>
 #include <linux/sunrpc/svcauth.h>
+#include <linux/sunrpc/gss_api.h>
 #include <linux/err.h>
 #include <linux/seq_file.h>
 #include <linux/hash.h>
@@ -378,7 +379,7 @@ void svcauth_unix_purge(void)
 	cache_purge(&ip_map_cache);
 }
 
-static int
+int
 svcauth_unix_set_client(struct svc_rqst *rqstp)
 {
 	struct ip_map *ipm;
@@ -408,6 +409,8 @@ svcauth_unix_set_client(struct svc_rqst *rqstp)
 	}
 	return SVC_OK;
 }
+
+EXPORT_SYMBOL(svcauth_unix_set_client);
 
 static int
 svcauth_null_accept(struct svc_rqst *rqstp, u32 *authp)
@@ -444,6 +447,7 @@ svcauth_null_accept(struct svc_rqst *rqstp, u32 *authp)
 	svc_putu32(resv, RPC_AUTH_NULL);
 	svc_putu32(resv, 0);
 
+	rqstp->rq_flavor = RPC_AUTH_UNIX;
 	return SVC_OK;
 }
 
@@ -514,6 +518,7 @@ svcauth_unix_accept(struct svc_rqst *rqstp, u32 *authp)
 	svc_putu32(resv, RPC_AUTH_NULL);
 	svc_putu32(resv, 0);
 
+	rqstp->rq_flavor = RPC_AUTH_NULL;
 	return SVC_OK;
 
 badcred:

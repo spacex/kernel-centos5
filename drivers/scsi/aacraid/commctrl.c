@@ -52,7 +52,7 @@
  *	This routine sends a fib to the adapter on behalf of a user level
  *	program.
  */
-# define AAC_DEBUG_PREAMBLE	
+# define AAC_DEBUG_PREAMBLE	KERN_INFO
 # define AAC_DEBUG_POSTAMBLE
  
 static int ioctl_send_fib(struct aac_dev * dev, void __user *arg)
