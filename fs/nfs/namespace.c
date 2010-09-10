@@ -173,10 +173,8 @@ static void nfs_expire_automounts(void *data)
 
 void nfs_release_automount_timer(void)
 {
-	if (list_empty(&nfs_automount_list)) {
+	if (list_empty(&nfs_automount_list))
 		cancel_delayed_work(&nfs_automount_task);
-		flush_scheduled_work();
-	}
 }
 
 /*

@@ -547,11 +547,7 @@ static int wacom_intuos_inout(struct urb *urb)
 		return 1;
 	}
 
-	if((wacom->tool[idx] == BTN_TOOL_LENS) && ((wacom->features->type == INTUOS312)
-			|| (wacom->features->type == INTUOS319)))
-		return 1;
-	else
-		return 0;
+	return 0;
 }
 
 static void wacom_intuos_general(struct urb *urb)

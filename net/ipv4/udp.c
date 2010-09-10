@@ -1001,6 +1001,25 @@ static int udp_encap_rcv(struct sock * sk, struct sk_buff *skb)
 #endif
 }
 
+static int __udp_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
+{
+	int rc;
+
+	if ((rc = sock_queue_rcv_skb(sk, skb)) < 0) {
+		/* Note that an ENOMEM error is charged twice */
+		if (rc == -ENOMEM)
+			UDP_INC_STATS_BH(UDP_MIB_INERRORS);
+		goto drop;
+	}
+
+	return 0;
+
+drop:
+	UDP_INC_STATS_BH(UDP_MIB_INERRORS);
+	kfree_skb(skb);
+	return -1;
+}
+
 /* returns:
  *  -1: error
  *   0: success
@@ -1011,6 +1030,7 @@ static int udp_encap_rcv(struct sock * sk, struct sk_buff *skb)
  */
 static int udp_queue_rcv_skb(struct sock * sk, struct sk_buff *skb)
 {
+	int rc;
 	struct udp_sock *up = udp_sk(sk);
 
 	/*
@@ -1034,9 +1054,7 @@ static int udp_queue_rcv_skb(struct sock * sk, struct sk_buff *skb)
 		 */
 		int ret;
 
-		bh_unlock_sock(sk);
 		ret = udp_encap_rcv(sk, skb);
-		bh_lock_sock(sk);
 		if (ret == 0) {
 			/* Eat the packet .. */
 			kfree_skb(skb);
@@ -1044,9 +1062,7 @@ static int udp_queue_rcv_skb(struct sock * sk, struct sk_buff *skb)
 		}
 		if (ret < 0) {
 			/* process the ESP packet */
-			bh_unlock_sock(sk);
 			ret = xfrm4_rcv_encap(skb, up->encap_type);
-			bh_lock_sock(sk);
 			return -ret;
 		}
 		/* FALLTHROUGH -- it's a UDP Packet */
@@ -1061,12 +1077,16 @@ static int udp_queue_rcv_skb(struct sock * sk, struct sk_buff *skb)
 		skb->ip_summed = CHECKSUM_UNNECESSARY;
 	}
 
-	if (sock_queue_rcv_skb(sk,skb)<0) {
-		UDP_INC_STATS_BH(UDP_MIB_INERRORS);
-		kfree_skb(skb);
-		return -1;
-	}
-	return 0;
+	rc = 0;
+
+	bh_lock_sock(sk);
+	if (!sock_owned_by_user(sk))
+		rc = __udp_queue_rcv_skb(sk, skb);
+	else
+		sk_add_backlog(sk, skb);
+	bh_unlock_sock(sk);
+
+	return rc;
 }
 
 /*
@@ -1097,14 +1117,7 @@ static int udp_v4_mcast_deliver(struct sk_buff *skb, struct udphdr *uh,
 				skb1 = skb_clone(skb, GFP_ATOMIC);
 
 			if(skb1) {
-				int ret = 0;
-
-				bh_lock_sock(sk);
-				if (!sock_owned_by_user(sk))
-					ret = udp_queue_rcv_skb(sk, skb1);
-				else
-					sk_add_backlog(sk, skb1);
-				bh_unlock_sock(sk);
+				int ret = udp_queue_rcv_skb(sk, skb1);
 
 				if (ret > 0)
 					/* we should probably re-process instead
@@ -1178,13 +1191,7 @@ int udp_rcv(struct sk_buff *skb)
 	sk = udp_v4_lookup(saddr, uh->source, daddr, uh->dest, skb->dev->ifindex);
 
 	if (sk != NULL) {
-		int ret = 0;
-		bh_lock_sock(sk);
-		if (!sock_owned_by_user(sk))
-			ret = udp_queue_rcv_skb(sk, skb);
-		else
-			sk_add_backlog(sk, skb);
-		bh_unlock_sock(sk);
+		int ret = udp_queue_rcv_skb(sk, skb);
 		sock_put(sk);
 
 		/* a return value > 0 means to resubmit the input, but
@@ -1429,7 +1436,7 @@ struct proto udp_prot = {
 	.sendmsg	   = udp_sendmsg,
 	.recvmsg	   = udp_recvmsg,
 	.sendpage	   = udp_sendpage,
-	.backlog_rcv	   = udp_queue_rcv_skb,
+	.backlog_rcv	   = __udp_queue_rcv_skb,
 	.hash		   = udp_v4_hash,
 	.unhash		   = udp_v4_unhash,
 	.get_port	   = udp_v4_get_port,

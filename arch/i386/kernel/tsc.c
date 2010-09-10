@@ -451,9 +451,8 @@ out:
  */
 static __init int unsynchronized_tsc(void)
 {
-	/* AMD systems with constant TSCs have synchronized clocks */
-	if ((boot_cpu_data.x86_vendor == X86_VENDOR_AMD) &&
-	    (boot_cpu_has(X86_FEATURE_CONSTANT_TSC)))
+	/* AMD and Intel systems with constant TSCs have synchronized clocks */
+	if (boot_cpu_has(X86_FEATURE_NONSTOP_TSC))
 		return 0;
 
 	/* Most intel systems have synchronized TSCs except for

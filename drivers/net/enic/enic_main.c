@@ -397,10 +397,13 @@ static irqreturn_t enic_isr_legacy(int irq, void *data, struct pt_regs *regs)
 		return IRQ_NONE;	/* not our interrupt */
 	}
 
-	if (ENIC_TEST_INTR(pba, ENIC_INTX_NOTIFY))
+	if (ENIC_TEST_INTR(pba, ENIC_INTX_NOTIFY)) {
+		vnic_intr_return_all_credits(&enic->intr[ENIC_INTX_NOTIFY]);
 		enic_notify_check(enic);
+	}
 
 	if (ENIC_TEST_INTR(pba, ENIC_INTX_ERR)) {
+		vnic_intr_return_all_credits(&enic->intr[ENIC_INTX_ERR]);
 		enic_log_q_error(enic);
 		/* schedule recovery from WQ/RQ error */
 		schedule_work(&enic->reset);
@@ -473,6 +476,8 @@ static irqreturn_t enic_isr_msix_err(int irq, void *data, struct pt_regs *regs)
 {
 	struct enic *enic = data;
 
+	vnic_intr_return_all_credits(&enic->intr[ENIC_MSIX_ERR]);
+
 	enic_log_q_error(enic);
 
 	/* schedule recovery from WQ/RQ error */
@@ -485,8 +490,8 @@ static irqreturn_t enic_isr_msix_notify(int irq, void *data, struct pt_regs *reg
 {
 	struct enic *enic = data;
 
+	vnic_intr_return_all_credits(&enic->intr[ENIC_MSIX_NOTIFY]);
 	enic_notify_check(enic);
-	vnic_intr_unmask(&enic->intr[ENIC_MSIX_NOTIFY]);
 
 	return IRQ_HANDLED;
 }
@@ -613,7 +618,7 @@ static inline void enic_queue_wq_skb(struct enic *enic,
 			vlan_tag_insert, vlan_tag);
 }
 
-/* netif_tx_lock held, process context with BHs disabled */
+/* netif_tx_lock held, process context with BHs disabled, or BH */
 static int enic_hard_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
 	struct enic *enic = netdev_priv(netdev);
@@ -1065,7 +1070,7 @@ static int enic_poll(struct net_device *netdev, int *budget)
 			lro_flush_all(&enic->lro_mgr);
 
 		netif_rx_complete(netdev);
-		vnic_intr_unmask(&enic->intr[ENIC_MSIX_RQ]);
+		vnic_intr_unmask(&enic->intr[ENIC_INTX_WQ_RQ]);
 		return 0;
 	}
 
@@ -1091,9 +1096,9 @@ static int enic_poll_msix(struct net_device *netdev, int *budget)
 
 		vnic_rq_fill(&enic->rq[0], enic_rq_alloc_buf);
 
-		/* Accumulate intr event credits for this polling
+		/* Return intr event credits for this polling
 		 * cycle.  An intr event is the completion of a
-		 * a WQ or RQ packet.
+		 * RQ packet.
 		 */
 
 		vnic_intr_return_credits(&enic->intr[ENIC_MSIX_RQ],

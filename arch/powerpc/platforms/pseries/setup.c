@@ -392,7 +392,6 @@ static void __init pSeries_init_early(void)
 static int pSeries_check_legacy_ioport(unsigned int baseport)
 {
 	struct device_node *np = NULL;
-	int ret = -ENODEV;
 
 #define I8042_DATA_REG	0x60
 #define FDC_BASE	0x3f0
@@ -409,9 +408,9 @@ static int pSeries_check_legacy_ioport(unsigned int baseport)
 		break;
 	}
 	if (!np)
-		return ret;
+		return -ENODEV;
 	of_node_put(np);
-	return ret;
+	return 0;
 }
 
 /*

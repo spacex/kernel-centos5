@@ -63,7 +63,11 @@ static ktime_t ktime_get_real(void)
 {
 	struct timespec now;
 
+#ifdef CONFIG_TIME_INTERPOLATION
+	now = current_kernel_time();
+#else
 	getnstimeofday(&now);
+#endif
 
 	return timespec_to_ktime(now);
 }
@@ -111,7 +115,11 @@ void ktime_get_ts(struct timespec *ts)
 
 	do {
 		seq = read_seqbegin(&xtime_lock);
+#ifdef CONFIG_TIME_INTERPOLATION
+		*ts = xtime;
+#else
 		getnstimeofday(ts);
+#endif
 		tomono = wall_to_monotonic;
 
 	} while (read_seqretry(&xtime_lock, seq));

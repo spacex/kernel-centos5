@@ -1274,15 +1274,8 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 	clear_tsk_thread_flag(p, TIF_SYSCALL_EMU);
 #endif
 
-	/* Our parent execution domain becomes current domain
-	   These must match for thread signalling to apply */
-	   
-	p->parent_exec_id = p->self_exec_id;
-
 	/* ok, now we should be set up.. */
-	p->exit_signal = (clone_flags & CLONE_THREAD) ? -1 :
-			 (clone_flags & CLONE_PARENT) ? SIGCHLD :
-			 (clone_flags & CSIGNAL);
+	p->exit_signal = (clone_flags & CLONE_THREAD) ? -1 : (clone_flags & CSIGNAL);
 	p->pdeath_signal = 0;
 	p->exit_state = 0;
 
@@ -1314,10 +1307,13 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 		set_task_cpu(p, smp_processor_id());
 
 	/* CLONE_PARENT re-uses the old parent */
-	if (clone_flags & (CLONE_PARENT|CLONE_THREAD))
+	if (clone_flags & (CLONE_PARENT|CLONE_THREAD)) {
 		p->parent = current->parent;
-	else
+		p->parent_exec_id = current->parent_exec_id;
+	} else {
 		p->parent = current;
+		p->parent_exec_id = current->self_exec_id;
+	}
 
 	spin_lock(&current->sighand->siglock);
 

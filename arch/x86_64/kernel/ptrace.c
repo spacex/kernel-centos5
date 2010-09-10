@@ -772,6 +772,11 @@ int arch_ptrace(long *req, struct task_struct *child,
 }
 #endif	/* CONFIG_PTRACE */
 
+#if defined CONFIG_IA32_EMULATION
+# define IS_IA32	is_compat_task()
+#else
+# define IS_IA32	0
+#endif
 
 asmlinkage void syscall_trace_enter(struct pt_regs *regs)
 {
@@ -782,7 +787,7 @@ asmlinkage void syscall_trace_enter(struct pt_regs *regs)
 		tracehook_report_syscall(regs, 0);
 
 	if (unlikely(current->audit_context)) {
-		if (test_thread_flag(TIF_IA32)) {
+		if (IS_IA32) {
 			audit_syscall_entry(AUDIT_ARCH_I386,
 					    regs->orig_rax,
 					    regs->rbx, regs->rcx,
