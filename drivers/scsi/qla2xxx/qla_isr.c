@@ -1986,8 +1986,14 @@ qla2x00_request_irqs(scsi_qla_host_t *ha)
 	int ret;
 
 	/* If possible, enable MSI-X. */
-	if ((!IS_QLA2432(ha) && !IS_QLA2532(ha) && !IS_QLA8432(ha)
-	    && !IS_QLA8001(ha)) || !ql2xenablemsix)
+	if (!IS_QLA2432(ha) && !IS_QLA2532(ha) && !IS_QLA8432(ha)
+	    && !IS_QLA8001(ha))
+		goto skip_msi;
+
+	if (ql2xenablemsix == 2)
+		goto skip_msix;
+
+	if (ql2xenablemsix != 1)
 		goto skip_msi;
 
 	if (IS_QLA2432(ha) && (ha->chip_revision < QLA_MSIX_CHIP_REV_24XX ||

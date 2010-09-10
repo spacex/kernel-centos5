@@ -23,6 +23,8 @@
 #include <asm/proto.h>
 #include <asm/msr.h>
 #include <asm/vsyscall.h>
+#include <asm/apicdef.h>
+#include <asm/apic.h>
 
 /* The I/O port the PMTMR resides at.
  * The location is detected during setup_arch(),
@@ -99,6 +101,30 @@ void pmtimer_wait(unsigned us)
 		b = inl(pmtmr_ioport);
 		cpu_relax();
 	} while (cyc2us(b - a) < us);
+}
+
+int pmtimer_calibrate_apic(unsigned us, int *tries)
+{
+	u32 a, b;
+	unsigned int apic = 0, apic_start = 0;
+
+	while(*tries) {
+		apic_start = apic_read(APIC_TMCCT);
+		a = pmtimer_wait_tick();
+		do {
+			b = inl(pmtmr_ioport);
+			cpu_relax();
+		} while (cyc2us(b - a) < us);
+		apic = apic_read(APIC_TMCCT);
+		b = inl(pmtmr_ioport);
+
+		/* if wait is longer that ~10% of expected time, try again */
+		if ((cyc2us(b - a)) < (us + (us >> 3)))
+			break;
+		(*tries)--;
+	}
+
+	return (apic_start - apic);
 }
 
 void pmtimer_resume(void)

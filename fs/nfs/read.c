@@ -85,7 +85,6 @@ void nfs_readdata_release(void *data)
         nfs_readdata_free(data);
 }
 
-static
 unsigned int nfs_page_length(struct inode *inode, struct page *page)
 {
 	loff_t i_size = i_size_read(inode);

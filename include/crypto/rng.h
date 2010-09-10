@@ -17,12 +17,27 @@
 
 #define NCRYPTO_ALG_TYPE_RNG		0x0000000c
 
+/*
+ * RNG behavioral flags
+ * CRYPTO_RNG_TEST_MODE
+ *   places the RNG into a test mode for various certification tests.  Some
+ *   RNG's (most notably Deterministic RNGs) Can have internal tests which are 
+ *   required in normal operation mode, but affect the deterministic output 
+ *   of the RNG which throws some test vectors off, as they may not account for
+ *   these tests.  This flag allows us to disable the internal tests of an RNG.
+ */
+#define CRYPTO_RNG_TEST_MODE	0x01
+
 struct crypto_rng;
 
 struct rng_alg {
 	int (*rng_make_random)(struct crypto_rng *tfm, u8 *rdata,
 			       unsigned int dlen);
 	int (*rng_reset)(struct crypto_rng *tfm, u8 *seed, unsigned int slen);
+
+	int (*rng_set_flags)(struct crypto_rng *tfm, u8 flags);
+
+	int (*rng_get_flags)(struct crypto_rng *tfm, u8 *flags);
 
 	unsigned int seedsize;
 };
@@ -31,6 +46,10 @@ struct rng_tfm {
 	int (*rng_gen_random)(struct crypto_rng *tfm, u8 *rdata,
 			      unsigned int dlen);
 	int (*rng_reset)(struct crypto_rng *tfm, u8 *seed, unsigned int slen);
+
+	int (*rng_set_flags)(struct crypto_rng *tfm, u8 flags);
+
+	int (*rng_get_flags)(struct crypto_rng *tfm, u8 *flags);
 };
 
 struct crypto_rng {
@@ -92,6 +111,16 @@ static inline int crypto_rng_reset(struct crypto_rng *tfm,
 static inline int crypto_rng_seedsize(struct crypto_rng *tfm)
 {
 	return crypto_rng_alg(tfm)->seedsize;
+}
+
+static inline int crypto_rng_set_flags(struct crypto_rng *tfm, u8 flags)
+{
+	return crypto_rng_alg(tfm)->rng_set_flags(tfm, flags);
+}
+
+static inline int crypto_rng_get_flags(struct crypto_rng *tfm, u8 *flags)
+{
+	return crypto_rng_alg(tfm)->rng_get_flags(tfm, flags);
 }
 
 #endif

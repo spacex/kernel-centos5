@@ -1684,9 +1684,10 @@ static int selinux_vm_enough_memory_mm(struct mm_struct *mm, long pages)
 	rc = secondary_ops->capable(current, CAP_SYS_ADMIN);
 	if (rc == 0)
 		rc = avc_has_perm_noaudit(tsec->sid, tsec->sid,
-					SECCLASS_CAPABILITY,
-					CAP_TO_MASK(CAP_SYS_ADMIN),
-					NULL);
+					  SECCLASS_CAPABILITY,
+					  CAP_TO_MASK(CAP_SYS_ADMIN),
+					  0,
+					  NULL);
 
 	if (rc == 0)
 		cap_sys_admin = 1;
@@ -4666,7 +4667,7 @@ static int selinux_setprocattr(struct task_struct *p,
 			rcu_read_unlock();
 			error = avc_has_perm_noaudit(ptsid, sid,
 						     SECCLASS_PROCESS,
-						     PROCESS__PTRACE, &avd);
+						     PROCESS__PTRACE, 0, &avd);
 			if (!error)
 				tsec->sid = sid;
 			task_unlock(p);

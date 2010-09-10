@@ -17,27 +17,27 @@
  */
 #define DRV_NAME	"qlge"
 #define DRV_STRING	"QLogic 10 Gigabit PCI-E Ethernet Driver "
-#define DRV_VERSION	"1.00.00.20"
-#define DIS_VERSION	"2.6.16-2.6.18-p20"
-#define REL_DATE	"090714"
+#define DRV_VERSION	"1.00.00.21"
+#define DIS_VERSION	"2.6.16-2.6.18-p21"
+#define REL_DATE	"090812"
 
 #define PFX "qlge: "
 #define QPRINTK(qdev, nlevel, klevel, fmt, args...) \
 	do {	\
-	if (!((qdev)->msg_enable & NETIF_MSG_##nlevel))		\
-		;						\
-	else							\
-		dev_printk(KERN_##klevel, &((qdev)->pdev->dev),	\
-			"%s: " fmt, __func__, ##args);  \
+		if (!((qdev)->msg_enable & NETIF_MSG_##nlevel))	\
+			;					\
+		else						\
+			dev_printk(KERN_##klevel, &((qdev)->pdev->dev),	\
+					"%s: " fmt, __func__, ##args);  \
 	} while (0)
 #if 0
 #define QPRINTK_DBG(qdev, nlevel, klevel, fmt, args...)	\
 	do {	\
-	if (!((qdev)->msg_enable & NETIF_MSG_##nlevel))		\
-		;						\
-	else							\
-		dev_printk(KERN_##klevel, &((qdev)->pdev->dev),	\
-			"%s: " fmt, __func__, ##args);  \
+		if (!((qdev)->msg_enable & NETIF_MSG_##nlevel))	\
+			;					\
+		else						\
+			dev_printk(KERN_##klevel, &((qdev)->pdev->dev),	\
+					"%s: " fmt, __func__, ##args);  \
 	} while (0)
 #else
 #define QPRINTK_DBG(qdev, nlevel, klevel, fmt, args...)
@@ -71,11 +71,11 @@
 		MAX_DB_PAGES_PER_BQ(NUM_SMALL_BUFFERS) * sizeof(u64) + \
 		MAX_DB_PAGES_PER_BQ(NUM_LARGE_BUFFERS) * sizeof(u64))
 
-#define SMALL_BUFFER_SIZE 2504	/* Per FCoE largest frame for normal MTU */
+#define SMALL_BUFFER_SIZE 256	/* Per FCoE largest frame for normal MTU */
 #define LARGE_BUFFER_SIZE 9600	/* Per FCoE largest frame for jumbo MTU */
 
 #define MAX_SPLIT_SIZE 1023
-#define QLGE_SB_PAD 32
+#define QLGE_SB_PAD 0
 
 #define MAX_CQ 128
 #define DFLT_COALESCE_WAIT 100	/* 100 usec wait for coalescing */
@@ -1218,7 +1218,7 @@ struct ricb {
 #define RSS_RI6 0x40
 #define RSS_RT6 0x80
 	__le16 mask;
-	__le32 hash_cq_id[256];
+	u8 hash_cq_id[1024];
 	__le32 ipv6_hash_key[10];
 	__le32 ipv4_hash_key[4];
 } __attribute((packed));
@@ -1244,16 +1244,23 @@ struct tx_ring_desc {
 	struct tx_ring_desc *next;
 };
 
+struct page_chunk {
+	struct page *page;	/* master page */
+	char *va;		/* virt addr for this chunk */
+	u64 map;		/* mapping for master */
+	unsigned int offset;	/* offset for this chunk */
+	unsigned int last_flag; /* flag set for last chunk in page */
+};
+
 struct bq_desc {
 	union {
-		struct page *lbq_page;
+		struct page_chunk pg_chunk;
 		struct sk_buff *skb;
 	} p;
-	char *pg_addr;
 	__le64 *addr;
 	u32 index;
-	 DECLARE_PCI_UNMAP_ADDR(mapaddr);
-	 DECLARE_PCI_UNMAP_LEN(maplen);
+	DECLARE_PCI_UNMAP_ADDR(mapaddr);
+	DECLARE_PCI_UNMAP_LEN(maplen);
 };
 
 #define QL_TXQ_IDX(qdev, skb) (smp_processor_id()%(qdev->tx_ring_count))
@@ -1317,6 +1324,7 @@ struct rx_ring {
 	dma_addr_t lbq_base_dma;
 	void *lbq_base_indirect;
 	dma_addr_t lbq_base_indirect_dma;
+	struct page_chunk pg_chunk; /* current page for chunks */
 	struct bq_desc *lbq;	/* array of control blocks */
 	void __iomem *lbq_prod_idx_db_reg; /* PCI doorbell mem area + 0x18 */
 	u32 lbq_prod_idx;	/* current sw prod idx */
@@ -1348,6 +1356,12 @@ struct rx_ring {
 	u8 reserved;
 	struct ql_adapter *qdev;
 	struct net_device *dummy_netdev;
+
+#ifdef NETIF_F_GRO
+	struct napi_struct napi;
+#endif
+	unsigned long packets;	/* total packets received */
+	unsigned long bytes;	/* total bytes received */
 };
 
 /*
@@ -1833,6 +1847,7 @@ struct ql_adapter {
 
 	struct rx_ring rx_ring[MAX_RX_RINGS];
 	struct tx_ring tx_ring[MAX_TX_RINGS];
+	unsigned int lbq_buf_order;
 
 	int rx_csum;
 

@@ -17,6 +17,7 @@
 #include <asm/tlbflush.h>
 #include <asm/apic.h>
 #include <asm/proto.h>
+#include <linux/kvm_para.h>
 
 /*
  * Power off function, if any
@@ -110,6 +111,10 @@ void machine_shutdown(void)
 	 * stop all of the others.
 	 */
 	smp_send_stop();
+#endif
+
+#ifndef CONFIG_XEN
+	kvmclock_disable();
 #endif
 
 	local_irq_save(flags);

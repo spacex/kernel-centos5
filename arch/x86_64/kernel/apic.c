@@ -41,6 +41,7 @@
 int apic_verbosity;
 int apic_runs_main_timer;
 int apic_calibrate_pmtmr __initdata;
+int apic_calibration_iters __initdata = 10;
 
 int disable_apic_timer __initdata;
 
@@ -761,6 +762,33 @@ static void setup_APIC_timer(unsigned int clocks)
 	local_irq_restore(flags);
 }
 
+ /*
+ * Helper function for calibrate_APIC_clock(): Make sure that
+ * APIC TMCTT and TSC are read at the same time, to reasonable
+ * accuracy. On any sane system, the retry loop won't need more
+ * than a single retry, given that the rdtsc/apic_read/rdtsc
+ * sequence won't take more than a few cycles.
+ */
+#define MAX_DIFFERENCE 1000UL
+static inline int __init
+__read_tsc_and_apic(unsigned long *tsc, unsigned int *apic)
+{
+	unsigned long tsc0, tsc1, diff;
+	int i = 0;
+
+	do {
+		rdtsc_barrier();
+		rdtscll(tsc0);
+		*apic = apic_read(APIC_TMCCT);
+		rdtsc_barrier();
+		rdtscll(tsc1);
+		diff = tsc1 - tsc0;
+	} while (diff > MAX_DIFFERENCE && ++i < apic_calibration_iters);
+
+	*tsc = tsc0 + (diff >> 1);
+	return diff > MAX_DIFFERENCE ? -EIO : 0;
+}
+
 /*
  * In this function we calibrate APIC bus clocks to the external
  * timer. Unfortunately we cannot use jiffies and the timer irq
@@ -778,8 +806,9 @@ static void setup_APIC_timer(unsigned int clocks)
 
 static int __init calibrate_APIC_clock(void)
 {
-	int apic, apic_start, tsc, tsc_start;
-	int result;
+	unsigned int apic, apic_start;
+	unsigned long tsc, tsc_start;
+	int result, err_start, err;
 	/*
 	 * Put whatever arbitrary (but long enough) timeout
 	 * value into the APIC clock, we just want to get the
@@ -787,28 +816,30 @@ static int __init calibrate_APIC_clock(void)
 	 */
 	__setup_APIC_LVTT(0xffffffff);
 
-	apic_start = apic_read(APIC_TMCCT);
 #ifdef CONFIG_X86_PM_TIMER
 	if (apic_calibrate_pmtmr && pmtmr_ioport) {
-		pmtimer_wait(5000);  /* 5ms wait */
-		apic = apic_read(APIC_TMCCT);
-		result = (apic_start - apic) * 1000L / 5;
+		int tries = apic_calibration_iters;
+		result = pmtimer_calibrate_apic(5000, &tries) * 1000L / 5;
+		if (!tries)
+			printk(KERN_CRIT "WARNING calibrate_APIC_clock: "
+			       "the APIC timer calibration may be wrong.\n");
 	} else
 #endif
 	{
-		rdtscl(tsc_start);
+		err_start = __read_tsc_and_apic(&tsc_start, &apic_start);
 
 		do {
-			apic = apic_read(APIC_TMCCT);
-			rdtscl(tsc);
+			err = __read_tsc_and_apic(&tsc, &apic);
 		} while ((tsc - tsc_start) < TICK_COUNT &&
-				(apic - apic_start) < TICK_COUNT);
+				(apic_start - apic) < TICK_COUNT);
+
+		if (err_start || err)
+			printk(KERN_CRIT "WARNING calibrate_APIC_clock: "
+			       "the APIC timer calibration may be wrong.\n");
 
 		result = (apic_start - apic) * 1000L * tsc_khz /
 					(tsc - tsc_start);
 	}
-	printk("result %d\n", result);
-
 
 	printk(KERN_INFO "Detected %d.%03d MHz APIC timer.\n",
 		result / 1000 / 1000, result / 1000 % 1000);
@@ -1204,6 +1235,13 @@ static __init int setup_apicpmtimer(char *s)
 	return setup_apicmaintimer(NULL);
 }
 __setup("apicpmtimer", setup_apicpmtimer);
+
+static __init int setup_apiccalibrationiters(char *str)
+{
+	get_option(&str, &apic_calibration_iters);
+	return 1;
+}
+__setup("apiccalibrationiters=", setup_apiccalibrationiters);
 
 /* dummy parsing: see setup.c */
 

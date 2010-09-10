@@ -208,6 +208,7 @@ struct mlx4_caps {
 	int			max_cqes;
 	int			reserved_cqs;
 	int			num_eqs;
+	int			eqc_entry_size;
 	int			reserved_eqs;
 	int			num_comp_vectors;
 	int			num_mpts;

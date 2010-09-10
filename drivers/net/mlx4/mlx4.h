@@ -223,6 +223,7 @@ struct mlx4_eq_table {
 	struct mlx4_icm_table	cmpt_table;
 	int			have_irq;
 	u8			inta_pin;
+	int			order;
 };
 
 struct mlx4_srq_table {

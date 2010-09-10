@@ -46,6 +46,16 @@ static int rngapi_reset(struct crypto_rng *tfm, u8 *seed, unsigned int slen)
 	return err;
 }
 
+static int rngapi_set_flags(struct crypto_rng *tfm, u8 flags)
+{
+	return -EOPNOTSUPP;
+}
+
+static int rngapi_get_flags(struct crypto_rng *tfm, u8 *flags)
+{
+	return -EOPNOTSUPP;
+}
+
 static int crypto_init_rng_ops(struct ncrypto_tfm *tfm, u32 type, u32 mask)
 {
 	struct rng_alg *alg = (struct rng_alg *)&tfm->__crt_alg->cra_u;
@@ -53,6 +63,8 @@ static int crypto_init_rng_ops(struct ncrypto_tfm *tfm, u32 type, u32 mask)
 
 	ops->rng_gen_random = alg->rng_make_random;
 	ops->rng_reset = rngapi_reset;
+	ops->rng_set_flags = alg->rng_set_flags ? : rngapi_set_flags;
+	ops->rng_get_flags = alg->rng_get_flags ? : rngapi_get_flags;
 
 	return 0;
 }

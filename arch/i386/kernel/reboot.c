@@ -17,6 +17,7 @@
 #include <asm/desc.h>
 #include "mach_reboot.h"
 #include <linux/reboot_fixups.h>
+#include <linux/kvm_para.h>
 
 /*
  * Power off function, if any
@@ -312,6 +313,9 @@ void machine_shutdown(void)
 	smp_send_stop();
 #endif /* CONFIG_SMP */
 
+#ifndef CONFIG_XEN
+	kvmclock_disable();
+#endif
 	lapic_shutdown();
 
 #ifdef CONFIG_X86_IO_APIC

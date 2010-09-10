@@ -78,6 +78,7 @@ pnpacpi_parse_allocated_irqresource(struct pnp_resource_table *res, u32 gsi,
 {
 	int i = 0;
 	int irq;
+	int p, t;
 
 	if (!valid_IRQ(gsi))
 		return;
@@ -87,6 +88,23 @@ pnpacpi_parse_allocated_irqresource(struct pnp_resource_table *res, u32 gsi,
 		i++;
 	if (i >= PNP_MAX_IRQ)
 		return;
+
+	/*
+	 * in IO-APIC mode, use overrided attribute. Two reasons:
+	 * 1. BIOS bug in DSDT
+	 * 2. BIOS uses IO-APIC mode Interrupt Source Override
+	 */
+	if (!acpi_get_override_irq(gsi, &t, &p)) {
+		t = t ? ACPI_LEVEL_SENSITIVE : ACPI_EDGE_SENSITIVE;
+		p = p ? ACPI_ACTIVE_LOW : ACPI_ACTIVE_HIGH;
+
+		if (triggering != t || polarity != p) {
+			pnp_warn("IRQ %d override to %s, %s",
+				gsi, t ? "edge":"level", p ? "low":"high");
+			triggering = t;
+			polarity = p;
+		}
+	}
 
 	res->irq_resource[i].flags = IORESOURCE_IRQ;  // Also clears _UNSET flag
 	irq = acpi_register_gsi(gsi, triggering, polarity);

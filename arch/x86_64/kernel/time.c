@@ -36,6 +36,7 @@
 #include <linux/efi.h>
 #include <linux/acpi.h>
 #include <linux/delay.h>
+#include <linux/kvm_para.h>
 #ifdef CONFIG_ACPI
 #include <acpi/achware.h>	/* for PM timer frequency */
 #include <acpi/acpi_bus.h>
@@ -121,6 +122,15 @@ static inline long do_gettimeoffset_tsc(void)
 		t = vxtime.last_tsc; /* hack */
 	x = ((t - vxtime.last_tsc) * vxtime.tsc_quot) >> NS_SCALE;
 	return x;
+}
+
+static inline long do_gettimeoffset_kvm(void)
+{
+	unsigned long t;
+	t = kvm_clock_read();
+	if (t < vxtime.last_kvm)
+		t = vxtime.last_kvm;
+	return t -vxtime.last_kvm;
 }
 
 static inline long do_gettimeoffset_hpet(void)
@@ -307,7 +317,16 @@ unsigned long long monotonic_clock(void)
  	u32 last_offset, this_offset, offset;
 	unsigned long long base;
 
-	if (vxtime.mode == VXTIME_HPET) {
+	if (vxtime.mode == VXTIME_KVM) {
+		do {
+			seq = read_seqbegin(&xtime_lock);
+
+			last_offset = vxtime.last_kvm;
+			base = monotonic_base;
+			this_offset = kvm_clock_read();
+		} while (read_seqretry(&xtime_lock, seq));
+		offset = (this_offset - last_offset);
+	} else if (vxtime.mode == VXTIME_HPET) {
 		do {
 			seq = read_seqbegin(&xtime_lock);
 
@@ -477,9 +496,18 @@ static void do_timer_tsc_timekeeping(struct pt_regs *regs)
 {
 	int i;
 	cycles_t tsc, tsc_accounted, tsc_not_accounted;
+	unsigned long *last = NULL;
 
-	tsc = get_cycles_sync();
-	tsc_accounted = vxtime.last_tsc;
+
+	if (use_kvm_time) {
+		tsc = kvm_clock_read();
+		last = &vxtime.last_kvm;
+	}
+	else {
+		tsc = get_cycles_sync();
+		last = &vxtime.last_tsc;
+	}
+	tsc_accounted = *last;
 
 	if (unlikely(tsc < tsc_accounted))
 		return;
@@ -499,9 +527,14 @@ static void do_timer_tsc_timekeeping(struct pt_regs *regs)
 		tsc_accounted += cycles_per_tick;
 	}
 
-	monotonic_base += ((tsc_accounted - vxtime.last_tsc) *
+	if (use_kvm_time) {
+		monotonic_base += (tsc_accounted - *last);
+		vxtime.last_tsc = get_cycles_sync();
+	} else
+		monotonic_base += ((tsc_accounted - *last) *
 					1000000 / cpu_khz);
-	vxtime.last_tsc = tsc_accounted;
+
+	*last = tsc_accounted;
 }
 
 void main_timer_handler(struct pt_regs *regs)
@@ -521,6 +554,7 @@ void main_timer_handler(struct pt_regs *regs)
 		do_timer_tsc_timekeeping(regs);
 	else
 		do_timer_account_lost_ticks(regs);
+
 
 /*
  * If we have an externally synchronized Linux clock, then update CMOS clock
@@ -642,6 +676,15 @@ static unsigned long get_cmos_time(void)
 
 	return mktime(year, mon, day, hour, min, sec);
 }
+
+static unsigned long get_wallclock(void)
+{
+	if (use_kvm_time)
+		return kvm_get_wallclock();
+	else
+		return get_cmos_time();
+}
+
 
 /* calibrate_cpu is used on systems with fixed rate TSCs to determine
  * processor frequency */
@@ -1042,7 +1085,7 @@ void __init time_init(void)
 	if (nohpet)
 		vxtime.hpet_address = 0;
 
-	xtime.tv_sec = get_cmos_time();
+	xtime.tv_sec = get_wallclock();
 	xtime.tv_nsec = 0;
 
 	set_normalized_timespec(&wall_to_monotonic,
@@ -1053,7 +1096,12 @@ void __init time_init(void)
 	else
 		vxtime.hpet_address = 0;
 
-	if (hpet_use_timer) {
+	if (use_kvm_time) {
+		timename = "KVM";
+		/* no need to get frequency here, since we'll skip the calibrate loop anyway */
+		timekeeping_use_tsc = 1;
+		vxtime.last_kvm = kvm_clock_read();
+	} else if (hpet_use_timer) {
 		/* set tick_nsec to use the proper rate for HPET */
 	  	tick_nsec = TICK_NSEC_HPET;
 		tsc_khz = hpet_calibrate_tsc();
@@ -1088,7 +1136,7 @@ void __init time_init(void)
 
 	/* Keep time based on the TSC rather than by counting interrupts. */
 	if (timekeeping_use_tsc > 0) {
-		cycles_per_tick = (cpu_khz * 1000) / REAL_HZ;
+		cycles_per_tick = get_hypervisor_cycles_per_tick();
 		/*
 		 * The maximum cycles we will account per
 		 * timer interrupt is 10 minutes.
@@ -1161,7 +1209,12 @@ void time_init_gtod(void)
 	else
 		vgetcpu_mode = VGETCPU_LSL;
 
-	if (timekeeping_use_tsc > 0) {
+	if (use_kvm_time) {
+		timetype = "KVM";
+		vxtime.last_kvm = kvm_clock_read();
+		vxtime.mode = VXTIME_KVM;
+		do_gettimeoffset = do_gettimeoffset_kvm;
+	} else if (timekeeping_use_tsc > 0) {
 		timetype = "TSC Timekeeping";
 		vxtime.mode = VXTIME_TSC;
 	} else if (vxtime.hpet_address && notsc) {
@@ -1212,7 +1265,7 @@ static int timer_suspend(struct sys_device *dev, pm_message_t state)
 	/*
 	 * Estimate time zone so that set_time can update the clock
 	 */
-	long cmos_time =  get_cmos_time();
+	long cmos_time =  get_wallclock();
 
 	clock_cmos_diff = -cmos_time;
 	clock_cmos_diff += get_seconds();
@@ -1224,7 +1277,7 @@ static int timer_resume(struct sys_device *dev)
 {
 	unsigned long flags;
 	unsigned long sec;
-	unsigned long ctime = get_cmos_time();
+	unsigned long ctime = get_wallclock();
 	unsigned long sleep_length = (ctime - sleep_start) * HZ;
 
 	if (vxtime.hpet_address)
@@ -1529,16 +1582,21 @@ static int __init boot_override_clock(char *str)
 	if (!strcmp(str, "hpet")) {
 		pmtmr_ioport = 0;
 		notsc = 1;
+		use_kvm_time = 0;
 	} else if (!strcmp(str, "pmtmr") || !strcmp(str, "pmtimer")) {
 		nohpet = 1;
 		notsc = 1;
+		use_kvm_time = 0;
 	} else if (!strcmp(str, "tsc")) {
 		nohpet = 1;
 		pmtmr_ioport = 0;
+		use_kvm_time = 0;
 	} else if (!strcmp(str, "tsccount")) {
 		timekeeping_use_tsc = 1;
+		use_kvm_time = 0;
 	} else if (!strcmp(str, "notsccount")) {
 		timekeeping_use_tsc = -1;
+		use_kvm_time = 0;
 	} else
 		printk(KERN_WARNING "%s is unknown clock source\n", str);
 

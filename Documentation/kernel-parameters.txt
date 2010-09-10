@@ -266,6 +266,10 @@ running once the system is up.
 			Change the amount of debugging information output
 			when initialising the APIC and IO-APIC components.
 
+	apiccalibrationiters=
+			[APIC,i386, x86_64] Number of iterations during APIC
+			calibration.  Default is 10.
+
 	apm=		[APM] Advanced Power Management
 			See header of arch/i386/kernel/apm.c.
 

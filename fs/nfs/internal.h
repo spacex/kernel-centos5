@@ -186,6 +186,7 @@ extern int nfs4_path_walk(struct nfs_server *server,
 
 /* read.c */
 extern int nfs_readpage_async(struct nfs_open_context *, struct inode *, struct page *);
+unsigned int nfs_page_length(struct inode *, struct page *);
 
 /*
  * Determine the device name as a string

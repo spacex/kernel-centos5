@@ -39,6 +39,7 @@ extern void ia32_syscall(void);
 extern int pmtimer_mark_offset(void);
 extern void pmtimer_resume(void);
 extern void pmtimer_wait(unsigned);
+extern int pmtimer_calibrate_apic(unsigned, int *tries);
 extern long do_gettimeoffset_pm(void);
 #ifdef CONFIG_X86_PM_TIMER
 extern u32 pmtmr_ioport;

@@ -51,6 +51,8 @@ obj-y				+= addon_cpuid_features.o
 ifndef CONFIG_XEN
 obj-y				+= vmware.o
 obj-y				+= hypervisor.o
+obj-y				+= pvclock.o
+obj-y				+= kvmclock.o
 endif
 
 CFLAGS_vsyscall.o		:= $(PROFILING) -g0
@@ -63,6 +65,8 @@ microcode-$(subst m,y,$(CONFIG_MICROCODE))  += ../../i386/kernel/microcode.o
 intel_cacheinfo-y		+= ../../i386/kernel/cpu/intel_cacheinfo.o
 addon_cpuid_features-y		+= ../../i386/kernel/cpu/addon_cpuid_features.o
 vmware-y			+= ../../i386/kernel/cpu/vmware.o
+pvclock-y			+= ../../i386/kernel/pvclock.o
+kvmclock-y			+= ../../i386/kernel/kvmclock.o
 hypervisor-y			+= ../../i386/kernel/cpu/hypervisor.o
 quirks-y			+= ../../i386/kernel/quirks.o
 i8237-y				+= ../../i386/kernel/i8237.o

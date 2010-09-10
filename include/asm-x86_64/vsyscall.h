@@ -27,6 +27,7 @@ enum vsyscall_num {
 #define VXTIME_TSC	1
 #define VXTIME_HPET	2
 #define VXTIME_PMTMR	3
+#define VXTIME_KVM	4
 
 #define VGETCPU_RDTSCP	1
 #define VGETCPU_LSL	2
@@ -35,6 +36,7 @@ struct vxtime_data {
 	long hpet_address;	/* HPET base address */
 	int last;
 	unsigned long last_tsc;
+	unsigned long last_kvm;
 	long quot;
 	long tsc_quot;
 	int mode;

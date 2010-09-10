@@ -356,7 +356,7 @@ int mlx4_en_lro_rx(struct mlx4_en_priv *priv, struct mlx4_en_rx_ring *ring,
 
 	if (lro) {
 		/* Check VLAN tag */
-		if (cqe->vlan_my_qpn & MLX4_CQE_VLAN_PRESENT_MASK) {
+		if (be32_to_cpu(cqe->vlan_my_qpn) & MLX4_CQE_VLAN_PRESENT_MASK) {
 			if (cqe->sl_vid != lro->vlan_prio || !lro->has_vlan) {
 				mlx4_en_lro_flush_single(priv, ring, lro);
 				goto sync_device;
@@ -454,7 +454,7 @@ new_session:
 						tcp_data_len);
 
 			/* Handle vlans */
-			if (cqe->vlan_my_qpn & MLX4_CQE_VLAN_PRESENT_MASK) {
+			if (be32_to_cpu(cqe->vlan_my_qpn) & MLX4_CQE_VLAN_PRESENT_MASK) {
 				lro->vlan_prio = cqe->sl_vid;
 				lro->has_vlan = 1;
 			} else

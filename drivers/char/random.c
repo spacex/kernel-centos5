@@ -392,6 +392,12 @@ module_param(debug, bool, 0644);
  * storing entropy in an entropy pool.
  *
  **********************************************************************/
+#define EXTRACT_SIZE 10
+#define REP_CHECK_BLOCK_COPIED 1
+struct repetition_check {
+	__u8 last_data[EXTRACT_SIZE];
+	__u8 flags;
+};
 
 struct entropy_store;
 struct entropy_store {
@@ -407,7 +413,7 @@ struct entropy_store {
 	unsigned add_ptr;
 	int entropy_count;
 	int input_rotate;
-	__u8 *last_data;
+	struct repetition_check *rep;
 };
 
 static __u32 input_pool_data[INPUT_POOL_WORDS];
@@ -670,7 +676,6 @@ void add_disk_randomness(struct gendisk *disk)
 
 EXPORT_SYMBOL(add_disk_randomness);
 
-#define EXTRACT_SIZE 10
 
 /*********************************************************************
  *
@@ -810,18 +815,24 @@ static ssize_t extract_entropy(struct entropy_store *r, void * buf,
 	__u8 tmp[EXTRACT_SIZE];
 	unsigned long flags;
 
+repeat_extract:
 	xfer_secondary_pool(r, nbytes);
 	nbytes = account(r, nbytes, min, reserved);
 
 	while (nbytes) {
 		extract_buf(r, tmp);
 
-		if (r->last_data) {
+		if (r->rep) {
 			spin_lock_irqsave(&r->lock, flags);
-			if (!memcmp(tmp, r->last_data, EXTRACT_SIZE))
+			if ((r->rep->flags & REP_CHECK_BLOCK_COPIED) &&
+			    !memcmp(tmp, r->rep->last_data, EXTRACT_SIZE))
 				panic("Hardware RNG duplicated output!\n");
-			memcpy(r->last_data, tmp, EXTRACT_SIZE);
+			memcpy(r->rep->last_data, tmp, EXTRACT_SIZE);
 			spin_unlock_irqrestore(&r->lock, flags);
+			if (!(r->rep->flags & REP_CHECK_BLOCK_COPIED)) {
+				r->rep->flags |= REP_CHECK_BLOCK_COPIED;
+				goto repeat_extract;
+			}
 		}
 		i = min_t(int, nbytes, EXTRACT_SIZE);
 		memcpy(buf, tmp, i);
@@ -910,9 +921,10 @@ static void init_std_data(struct entropy_store *r)
 
 	/* Enable continuous test in fips mode */
 	if (fips_enabled) {
-		r->last_data = kmalloc(EXTRACT_SIZE, GFP_KERNEL);
-		if (!r->last_data)
+		r->rep = kmalloc(sizeof(struct repetition_check), GFP_KERNEL);
+		if (!r->rep)
 			panic("RNG self test failed to init!\n");
+		r->rep->flags = 0;
 	}
 }
 

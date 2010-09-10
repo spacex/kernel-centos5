@@ -33,6 +33,7 @@
 
 #define PRNG_FIXED_SIZE 0x1
 #define PRNG_NEED_RESET 0x2
+#define PRNG_DISABLE_CONT_TEST 0x3
 
 /*
  * Note: DT is our counter value
@@ -85,7 +86,7 @@ static void xor_vectors(unsigned char *in1, unsigned char *in2,
  * Returns DEFAULT_BLK_SZ bytes of random data per call
  * returns 0 if generation succeded, <0 if something went wrong
  */
-static int _get_more_prng_bytes(struct prng_context *ctx)
+static int _get_more_prng_bytes(struct prng_context *ctx, int test)
 {
 	int i;
 	unsigned char tmp[DEFAULT_BLK_SZ];
@@ -130,6 +131,9 @@ static int _get_more_prng_bytes(struct prng_context *ctx)
 			 * First check that we didn't produce the same
 			 * random data that we did last time around through this
 			 */
+			if (ctx->flags & PRNG_DISABLE_CONT_TEST)
+				goto skip_test;
+
 			if (!memcmp(ctx->rand_data, ctx->last_rand_data,
 					DEFAULT_BLK_SZ)) {
 				if (fips_enabled) {
@@ -150,7 +154,7 @@ static int _get_more_prng_bytes(struct prng_context *ctx)
 			}
 			memcpy(ctx->last_rand_data, ctx->rand_data,
 				DEFAULT_BLK_SZ);
-
+skip_test:
 			/*
 			 * Lastly xor the random data with I
 			 * and encrypt that to obtain a new secret vector V
@@ -225,7 +229,7 @@ static int get_prng_bytes(char *buf, size_t nbytes, struct prng_context *ctx)
 
 remainder:
 	if (ctx->rand_data_valid == DEFAULT_BLK_SZ) {
-		if (_get_more_prng_bytes(ctx) < 0) {
+		if (_get_more_prng_bytes(ctx, 1) < 0) {
 			memset(buf, 0, nbytes);
 			err = -EINVAL;
 			goto done;
@@ -252,7 +256,7 @@ empty_rbuf:
 	 */
 	for (; byte_count >= DEFAULT_BLK_SZ; byte_count -= DEFAULT_BLK_SZ) {
 		if (ctx->rand_data_valid == DEFAULT_BLK_SZ) {
-			if (_get_more_prng_bytes(ctx) < 0) {
+			if (_get_more_prng_bytes(ctx, 1) < 0) {
 				memset(buf, 0, nbytes);
 				err = -EINVAL;
 				goto done;
@@ -323,7 +327,6 @@ static int reset_prng_context(struct prng_context *ctx,
 		goto out;
 	}
 
-	ctx->rand_data_valid = DEFAULT_BLK_SZ;
 
 	ret = crypto_cipher_setkey(ctx->tfm, prng_key, klen);
 	if (ret) {
@@ -335,6 +338,18 @@ static int reset_prng_context(struct prng_context *ctx,
 
 	rc = 0;
 	ctx->flags &= ~PRNG_NEED_RESET;
+
+	/*
+	 * If we don't disable the continuity test
+	 * we need to seed the n=0 iteration for test
+	 * comparison, so we get a first block here that
+	 * we never return to the user
+	 */
+	ctx->rand_data_valid = DEFAULT_BLK_SZ;
+	if (!(ctx->flags & PRNG_DISABLE_CONT_TEST))
+		_get_more_prng_bytes(ctx, 0);
+	
+	ctx->rand_data_valid = DEFAULT_BLK_SZ;
 out:
 	spin_unlock(&ctx->prng_lock);
 
@@ -398,6 +413,42 @@ static int cprng_reset(struct crypto_rng *tfm, u8 *seed, unsigned int slen)
 	return 0;
 }
 
+/*
+ *  These are the registered functions which export behavioral flags
+ *  to the crypto api.  Most rng's don't have flags, but some might, like
+ *  the cprng which implements a 'test mode' for validation of vectors
+ *  which disables the internal continuity tests
+ */
+static int cprng_set_flags(struct crypto_rng *tfm, u8 flags)
+{
+	struct prng_context *prng = crypto_rng_ctx(tfm);
+
+	/*
+	 * Disable any internal testing on the output of this instance
+	 * of a cprng.  Note that given that this rng is deterministic
+	 * setting this flag changes the output sequence.  Specifically
+	 * the continuity check never returns the first random block, saving
+	 * it instead as a seed on the continuity test.  By disabling this 
+	 * the 0th iteration will be returned
+	 */
+	if (flags & CRYPTO_RNG_TEST_MODE)
+		prng->flags |= PRNG_DISABLE_CONT_TEST;
+
+	return 0;
+}
+
+static int cprng_get_flags(struct crypto_rng *tfm, u8 *flags)
+{
+	struct prng_context *prng = crypto_rng_ctx(tfm);
+
+	*flags = 0;
+
+	if (prng->flags & PRNG_DISABLE_CONT_TEST)
+		*flags |= CRYPTO_RNG_TEST_MODE;
+
+	return 0;
+}
+
 static struct ncrypto_alg rng_alg = {
 	.cra_name		= "stdrng",
 	.cra_driver_name	= "ansi_cprng",
@@ -423,6 +474,9 @@ static int __init prng_mod_init(void)
 
 	alg->rng_make_random = cprng_get_random;
 	alg->rng_reset = cprng_reset;
+	alg->rng_set_flags = cprng_set_flags;
+	alg->rng_get_flags = cprng_get_flags;
+
 	alg->seedsize =	DEFAULT_PRNG_KSZ + 2*DEFAULT_BLK_SZ;
 
 	ret = ncrypto_register_alg(&rng_alg);

@@ -72,6 +72,11 @@ static void __br_forward(const struct net_bridge_port *to, struct sk_buff *skb)
 {
 	struct net_device *indev;
 
+	if (skb_warn_if_lro(skb)) {
+		kfree_skb(skb);
+		return;
+	}
+
 	indev = skb->dev;
 	skb->dev = to->dev;
 	skb->ip_summed = CHECKSUM_NONE;

@@ -49,7 +49,12 @@ struct kvm_mmu_op_release_pt {
 #include <asm/processor.h>
 
 extern void kvmclock_init(void);
-
+extern int kvm_register_clock(char *txt);
+extern void kvmclock_disable(void);
+extern unsigned long kvm_get_wallclock(void);
+#include <linux/clocksource.h> // for cycle_t
+cycle_t kvm_clock_read(void);
+extern unsigned int use_kvm_time;
 
 /* This instruction is vmcall.  On non-VT architectures, it will generate a
  * trap that we will then rewrite to the appropriate instruction.

@@ -56,6 +56,7 @@
 #include <mach_apic.h>
 #include <mach_wakecpu.h>
 #include <smpboot_hooks.h>
+#include <linux/kvm_para.h>
 
 /* Set if we find a B stepping CPU */
 static int __devinitdata smp_b_stepping;
@@ -540,6 +541,11 @@ static void __cpuinit start_secondary(void *unused)
 	smp_callin();
 	while (!cpu_isset(smp_processor_id(), smp_commenced_mask))
 		rep_nop();
+
+#ifndef CONFIG_XEN
+	WARN_ON(kvm_register_clock("secondary cpu clock"));
+#endif
+
 	setup_secondary_APIC_clock();
 	if (nmi_watchdog == NMI_IO_APIC) {
 		disable_8259A_irq(0);
@@ -1334,6 +1340,9 @@ void __devinit smp_prepare_boot_cpu(void)
 	cpu_set(smp_processor_id(), cpu_present_map);
 	cpu_set(smp_processor_id(), cpu_possible_map);
 	per_cpu(cpu_state, smp_processor_id()) = CPU_ONLINE;
+#ifndef CONFIG_XEN
+	WARN_ON(kvm_register_clock("primary cpu clock"));
+#endif
 }
 
 #ifdef CONFIG_HOTPLUG_CPU

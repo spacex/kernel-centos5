@@ -24,7 +24,7 @@
 #include <asm/nmi.h>
 #include <asm/hw_irq.h>
 #include <asm/mach_apic.h>
-
+#include <linux/kvm_para.h>
 #ifndef CONFIG_XEN
 #include <asm/virtext.h>
 #endif
@@ -177,6 +177,10 @@ static void nmi_shootdown_cpus(void)
 extern struct pci_dev *mcp55_rewrite;
 void machine_crash_shutdown(struct pt_regs *regs)
 {
+
+#ifndef CONFIG_XEN
+	kvmclock_disable();
+#endif
 	/*
 	 * This function is only called after the system
 	 * has panicked or is otherwise in a critical state.

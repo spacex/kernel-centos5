@@ -50,6 +50,15 @@ unsigned long get_hypervisor_tsc_freq(void)
 	return 0;
 }
 
+unsigned long get_hypervisor_cycles_per_tick(void)
+{
+
+	if (boot_cpu_data.x86_hyper_vendor == X86_HYPER_VENDOR_KVM)
+		return 1000000000 / REAL_HZ;
+	else /* Same thing for VMware or baremetal, in case we force it */
+		return (cpu_khz * 1000) / REAL_HZ;
+}
+
 static inline void __cpuinit
 hypervisor_set_feature_bits(struct cpuinfo_x86 *c)
 {
@@ -57,6 +66,8 @@ hypervisor_set_feature_bits(struct cpuinfo_x86 *c)
 		vmware_set_feature_bits(c);
 		return;
 	}
+	if (boot_cpu_data.x86_hyper_vendor == X86_HYPER_VENDOR_KVM)
+		kvmclock_init();
 }
 
 void __cpuinit init_hypervisor(struct cpuinfo_x86 *c)

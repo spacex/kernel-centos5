@@ -74,6 +74,8 @@
 #define X86_FEATURE_FXSAVE_LEAK (3*32+10) /* FXSAVE leaks FOP/FIP/FOP */
 #define X86_FEATURE_ARCH_PERFMON (3*32+11) /* Intel Architectural PerfMon */
 #define X86_FEATURE_IDA		(3*32+16) /* Intel Dynamic Acceleration */
+#define X86_FEATURE_MFENCE_RDTSC (3*32+17) /* Mfence synchronizes RDTSC */
+#define X86_FEATURE_LFENCE_RDTSC (3*32+18) /* Lfence synchronizes RDTSC */
 #define X86_FEATURE_TSC_RELIABLE (3*32+23) /* TSC is known to be reliable */
 #define X86_FEATURE_NONSTOP_TSC (3*32+24) /* TSC does not stop in C states */
 
@@ -83,10 +85,14 @@
 #define X86_FEATURE_DSCPL	(4*32+ 4) /* CPL Qualified Debug Store */
 #define X86_FEATURE_EST		(4*32+ 7) /* Enhanced SpeedStep */
 #define X86_FEATURE_TM2		(4*32+ 8) /* Thermal Monitor 2 */
+#define X86_FEATURE_SSSE3	(4*32+ 9) /* Supplemental SSE-3 */
 #define X86_FEATURE_CID		(4*32+10) /* Context ID */
 #define X86_FEATURE_CX16        (4*32+13) /* CMPXCHG16B */
 #define X86_FEATURE_XTPR	(4*32+14) /* Send Task Priority Messages */
 #define X86_FEATURE_DCA		(4*32+18) /* Direct Cache Access */
+#define X86_FEATURE_XMM4_1	(4*32+19) /* "sse4_1" SSE-4.1 */
+#define X86_FEATURE_XMM4_2	(4*32+20) /* "sse4_2" SSE-4.2 */
+#define X86_FEATURE_POPCNT      (4*32+23) /* POPCNT instruction */
 #define X86_FEATURE_HYPERVISOR	(4*32+31) /* Running on a hypervisor */
 
 /* VIA/Cyrix/Centaur-defined CPU features, CPUID level 0xC0000001, word 5 */
@@ -104,6 +110,15 @@
 /* More extended AMD flags: CPUID level 0x80000001, ecx, word 6 */
 #define X86_FEATURE_LAHF_LM	(6*32+ 0) /* LAHF/SAHF in long mode */
 #define X86_FEATURE_CMP_LEGACY	(6*32+ 1) /* If yes HyperThreading not valid */
+#define X86_FEATURE_SVM		(6*32+ 2) /* Secure virtual machine */
+#define X86_FEATURE_EXTAPIC	(6*32+ 3) /* Extended APIC space */
+#define X86_FEATURE_CR8_LEGACY	(6*32+ 4) /* CR8 in 32-bit mode */
+#define X86_FEATURE_ABM		(6*32+ 5) /* Advanced bit manipulation */
+#define X86_FEATURE_SSE4A	(6*32+ 6) /* SSE-4A */
+#define X86_FEATURE_MISALIGNSSE (6*32+ 7) /* Misaligned SSE mode */
+#define X86_FEATURE_3DNOWPREFETCH (6*32+ 8) /* 3DNow prefetch instructions */
+#define X86_FEATURE_OSVW	(6*32+ 9) /* OS Visible Workaround */
+#define X86_FEATURE_IBS		(6*32+10) /* Instruction Based Sampling */
 
 #define cpu_has(c, bit)		test_bit(bit, (c)->x86_capability)
 #define boot_cpu_has(bit)	test_bit(bit, boot_cpu_data.x86_capability)
@@ -140,6 +155,8 @@
 #define cpu_has_pmm		boot_cpu_has(X86_FEATURE_PMM)
 #define cpu_has_pmm_enabled	boot_cpu_has(X86_FEATURE_PMM_EN)
 #define cpu_has_hypervisor	boot_cpu_has(X86_FEATURE_HYPERVISOR)
+#define cpu_has_xmm4_1		boot_cpu_has(X86_FEATURE_XMM4_1)
+#define cpu_has_xmm4_2		boot_cpu_has(X86_FEATURE_XMM4_2)
 
 #endif /* __ASM_I386_CPUFEATURE_H */
 

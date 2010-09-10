@@ -1007,6 +1007,28 @@ static void __devinit setup_APIC_timer(unsigned int clocks)
 	local_irq_restore(flags);
 }
 
+int apic_calibration_iters __initdata = 10;
+#define MAX_DIFFERENCE 1000ULL
+
+static inline int __init
+__read_tsc_and_apic(unsigned long long *tsc, long *apic)
+{
+	unsigned long long tsc0, tsc1, diff;
+	int i = 0;
+
+	do {
+		rdtsc_barrier();
+		rdtscll(tsc0);
+		*apic = apic_read(APIC_TMCCT);
+		rdtsc_barrier();
+		rdtscll(tsc1);
+		diff = tsc1 - tsc0;
+	} while (diff > MAX_DIFFERENCE && ++i < apic_calibration_iters);
+
+	*tsc = tsc0 + (diff >> 1);
+	return diff > MAX_DIFFERENCE ? -EIO : 0;
+}
+
 /*
  * In this function we calibrate APIC bus clocks to the external
  * timer. Unfortunately we cannot use jiffies and the timer irq
@@ -1020,12 +1042,15 @@ static void __devinit setup_APIC_timer(unsigned int clocks)
  * APIC irq that way.
  */
 
+#define TICK_COUNT 100000000
+
 static int __init calibrate_APIC_clock(void)
 {
 	unsigned long long t1 = 0, t2 = 0;
 	long tt1, tt2;
 	long result;
-	int i;
+	long long result2;
+	int i, err = 0, err_start = 0;
 	const int LOOPS = REAL_HZ/10;
 
 	apic_printk(APIC_VERBOSE, "calibrating APIC timer ...\n");
@@ -1048,50 +1073,78 @@ static int __init calibrate_APIC_clock(void)
 	/*
 	 * We wrapped around just now. Let's start:
 	 */
-	if (cpu_has_tsc)
-		rdtscll(t1);
-	tt1 = apic_read(APIC_TMCCT);
+	if (!cpu_has_tsc) {
+		/*
+		 * these systems are so old that it is unlikely that SMI
+		 * is even implemented.  Use the old calibration method.
+		 */
+		tt1 = apic_read(APIC_TMCCT);
 
-	/*
-	 * Let's wait LOOPS wraprounds:
-	 */
-	for (i = 0; i < LOOPS; i++)
-		wait_timer_tick();
+		/*
+		 * Let's wait LOOPS wraprounds:
+		 */
+		for (i = 0; i < LOOPS; i++)
+			wait_timer_tick();
 
-	tt2 = apic_read(APIC_TMCCT);
-	if (cpu_has_tsc)
-		rdtscll(t2);
+		tt2 = apic_read(APIC_TMCCT);
 
-	/*
-	 * The APIC bus clock counter is 32 bits only, it
-	 * might have overflown, but note that we use signed
-	 * longs, thus no extra care needed.
-	 *
-	 * underflown to be exact, as the timer counts down ;)
-	 */
+		/*
+		 * The APIC bus clock counter is 32 bits only, it
+		 * might have overflown, but note that we use signed
+		 * longs, thus no extra care needed.
+		 *
+		 * underflown to be exact, as the timer counts down ;)
+		 */
 
-	result = (tt1-tt2)*APIC_DIVISOR/LOOPS;
+		result = (tt1-tt2)*APIC_DIVISOR/LOOPS;
 
-	if (cpu_has_tsc)
+		apic_printk(APIC_VERBOSE, "..... host bus clock speed is "
+			    "%ld.%04ld MHz.\n",
+			    result/(1000000/REAL_HZ),
+			    result%(1000000/REAL_HZ));
+	} else {
+		err_start = __read_tsc_and_apic(&t1, &tt1);
+
+		do {
+			err = __read_tsc_and_apic(&t2, &tt2);
+		} while ((t2 - t1) < TICK_COUNT &&
+			 (tt1 - tt2) < TICK_COUNT);
+
+		if (err_start || err)
+			printk(KERN_CRIT "WARNING calibrate_APIC_clock: "
+			       "the APIC timer calibration may be wrong.\n");
+
+		result2 = (tt1 - tt2) * 1000LL * tsc_khz * APIC_DIVISOR;
+		do_div(result2, (t2 - t1));
+		result = (long)result2 / REAL_HZ;
+
+		/* this is an informational message.*/
 		apic_printk(APIC_VERBOSE, "..... CPU clock speed is "
-			"%ld.%04ld MHz.\n",
-			((long)(t2-t1)/LOOPS)/(1000000/REAL_HZ),
-			((long)(t2-t1)/LOOPS)%(1000000/REAL_HZ));
+			    "%ld.%04ld MHz.\n",
+			    ((long)cpu_khz/REAL_HZ),
+			    ((long)cpu_khz%REAL_HZ));
 
-	apic_printk(APIC_VERBOSE, "..... host bus clock speed is "
-		"%ld.%04ld MHz.\n",
-		result/(1000000/REAL_HZ),
-		result%(1000000/REAL_HZ));
+		apic_printk(APIC_VERBOSE, "..... host bus clock speed is "
+			    "%ld.%04ld MHz.\n",
+			    result/REAL_HZ, result%REAL_HZ);
+	}
 
 	return result;
 }
+
+static __init int setup_apiccalibrationiters(char *str)
+{
+	get_option(&str, &apic_calibration_iters);
+	return 1;
+}
+__setup("apiccalibrationiters=", setup_apiccalibrationiters);
 
 static unsigned int calibration_result;
 
 void __init setup_boot_APIC_clock(void)
 {
 	unsigned long flags;
-	apic_printk(APIC_VERBOSE, "Using local APIC timer interrupts.\n");
+	printk("Using local APIC timer interrupts.\n");
 	using_apic_timer = 1;
 
 	local_irq_save(flags);

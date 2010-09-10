@@ -46,8 +46,8 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 
 		/* Intel-defined (#2) */
 		"pni", NULL, NULL, "monitor", "ds_cpl", "vmx", "smx", "est",
-		"tm2", NULL, "cid", NULL, NULL, "cx16", "xtpr", NULL,
-		NULL, NULL, NULL, NULL, NULL, NULL, NULL, "popcnt",
+		"tm2", "ssse3", "cid", NULL, NULL, "cx16", "xtpr", NULL,
+		NULL, NULL, NULL, "sse4_1", "sse4_2", NULL, NULL, "popcnt",
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 
 		/* VIA/Cyrix/Centaur-defined */
@@ -57,7 +57,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 
 		/* AMD-defined (#2) */
-		"lahf_lm", "cmp_legacy", "svm", "extapic", "cr8legacy", "abm", 
+		"lahf_lm", "cmp_legacy", "svm", "extapic", "cr8legacy", "abm",
 		"sse4a", "misalignsse",
 		"3dnowprefetch", "osvw", "ibs", NULL, NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,

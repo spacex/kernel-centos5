@@ -46,6 +46,7 @@
 #include <linux/bootmem.h>
 #include <linux/thread_info.h>
 #include <linux/module.h>
+#include <linux/kvm_para.h>
 
 #include <linux/delay.h>
 #include <linux/mc146818rtc.h>
@@ -543,7 +544,9 @@ void __cpuinit start_secondary(void)
 
 	/* otherwise gcc will move up the smp_processor_id before the cpu_init */
 	barrier();
-
+#ifndef CONFIG_XEN
+	WARN_ON(kvm_register_clock("secondary cpu clock"));
+#endif
 	Dprintk("cpu %d: setting up apic clock\n", smp_processor_id()); 	
 	setup_secondary_APIC_clock();
 
@@ -1136,6 +1139,9 @@ void __init smp_prepare_boot_cpu(void)
 	cpu_set(me, cpu_online_map);
 	cpu_set(me, cpu_callout_map);
 	per_cpu(cpu_state, me) = CPU_ONLINE;
+#ifndef CONFIG_XEN
+	WARN_ON(kvm_register_clock("primary cpu clock"));
+#endif
 }
 
 /*

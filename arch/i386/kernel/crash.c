@@ -23,6 +23,7 @@
 #include <asm/hw_irq.h>
 #include <asm/apic.h>
 #include <mach_ipi.h>
+#include <linux/kvm_para.h>
 
 
 /* This keeps a track of which one is crashing cpu. */
@@ -159,6 +160,9 @@ static void nmi_shootdown_cpus(void)
 
 void machine_crash_shutdown(struct pt_regs *regs)
 {
+#ifndef CONFIG_XEN
+	kvmclock_disable();
+#endif
 	/* This function is only called after the system
 	 * has panicked or is otherwise in a critical state.
 	 * The minimum amount of code to allow a kexec'd kernel

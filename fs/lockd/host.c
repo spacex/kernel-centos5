@@ -78,6 +78,8 @@ nlm_lookup_host(int server, struct sockaddr_in *sin,
 		nlm_gc_hosts();
 
 	for (hp = &nlm_hosts[hash]; (host = *hp) != 0; hp = &host->h_next) {
+		if (host->h_killed)
+			continue;
 		if (host->h_proto != proto)
 			continue;
 		if (host->h_version != version)

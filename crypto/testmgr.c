@@ -1102,6 +1102,8 @@ static int alg_test_cprng(const struct alg_test_desc *desc, const char *driver,
 		return PTR_ERR(rng);
 	}
 
+	crypto_rng_set_flags(rng, CRYPTO_RNG_TEST_MODE);
+
 	err = test_cprng(rng, desc->suite.cprng.vecs, desc->suite.cprng.count);
 
 	crypto_free_rng(rng);

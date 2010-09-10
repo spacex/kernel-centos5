@@ -108,7 +108,10 @@ MODULE_PARM_DESC(ql2xqfullrampup,
 int ql2xenablemsix = 0;
 module_param(ql2xenablemsix, int, S_IRUGO|S_IRUSR);
 MODULE_PARM_DESC(ql2xenablemsix,
-                 "Set to enable MSI-X interrupt mechanism.");
+                "Set to enable MSI or MSI-X interrupt mechanism."
+                " Default is 0, enable traditional pin-based interrupt mechanism."
+                " 1 = enable MSI-X interrupt mechanism."
+                " 2 = enable MSI interrupt mechanism.");
 
 /*
  * SCSI host template entry points

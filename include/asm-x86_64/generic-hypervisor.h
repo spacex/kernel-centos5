@@ -21,6 +21,7 @@
 #define ASM_X86__HYPERVISOR_H
 
 extern unsigned long get_hypervisor_tsc_freq(void);
+extern unsigned long get_hypervisor_cycles_per_tick(void);
 extern void init_hypervisor(struct cpuinfo_x86 *c);
 
 #endif

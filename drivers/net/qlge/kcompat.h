@@ -31,6 +31,11 @@
 
 /*****************************************************************************/
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 18))
+#ifndef NETIF_F_GRO
+#define vlan_gro_receive(_napi, _vlgrp, _vlan, _skb) \
+		vlan_hwaccel_receive_skb(_skb, _vlgrp, _vlan)
+#define napi_gro_receive(_napi, _skb) netif_receive_skb(_skb)
+#endif
 
 #ifndef CHECKSUM_PARTIAL
 #define CHECKSUM_PARTIAL CHECKSUM_HW

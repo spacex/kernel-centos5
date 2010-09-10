@@ -46,6 +46,7 @@
 #include <linux/bcd.h>
 #include <linux/efi.h>
 #include <linux/mca.h>
+#include <linux/kvm_para.h>
 
 #include <asm/io.h>
 #include <asm/smp.h>
@@ -212,7 +213,9 @@ unsigned long get_cmos_time(void)
 
 	spin_lock_irqsave(&rtc_lock, flags);
 
-	if (efi_enabled)
+	if (use_kvm_time)
+		retval = kvm_get_wallclock();
+	else if (efi_enabled)
 		retval = efi_get_time();
 	else
 		retval = mach_get_cmos_time();

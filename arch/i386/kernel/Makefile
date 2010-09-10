@@ -40,6 +40,10 @@ obj-$(CONFIG_VM86)		+= vm86.o
 obj-$(CONFIG_EARLY_PRINTK)	+= early_printk.o
 obj-$(CONFIG_HPET_TIMER) 	+= hpet.o
 obj-$(CONFIG_K8_NB)		+= k8.o
+ifndef CONFIG_XEN
+obj-y				+= pvclock.o
+obj-y				+= kvmclock.o
+endif
 
 EXTRA_AFLAGS   := -traditional
 
