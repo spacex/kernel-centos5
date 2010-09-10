@@ -1406,7 +1406,7 @@ static void fill_elf_header(struct elfhdr *elf, int segs)
 	return;
 }
 
-static void fill_elf_note_phdr(struct elf_phdr *phdr, int sz, off_t offset)
+static void fill_elf_note_phdr(struct elf_phdr *phdr, int sz, loff_t offset)
 {
 	phdr->p_type = PT_NOTE;
 	phdr->p_offset = offset;
@@ -1572,7 +1572,7 @@ static int elf_core_dump(long signr, struct pt_regs *regs, struct file *file)
 	int i;
 	struct vm_area_struct *vma;
 	struct elfhdr *elf = NULL;
-	off_t offset = 0, dataoff, foffset;
+	loff_t offset = 0, dataoff, foffset;
 	unsigned long limit = current->signal->rlim[RLIMIT_CORE].rlim_cur;
 	int numnote;
 	struct memelfnote *notes = NULL;

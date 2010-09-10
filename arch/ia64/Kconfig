@@ -616,9 +616,6 @@ if XEN
 config XEN_UTIL
 	default n
 
-config HAVE_ARCH_ALLOC_SKB
-	default y
-
 config HAVE_ARCH_DEV_ALLOC_SKB
 	default y
 

@@ -266,6 +266,7 @@ static inline u64 ktime_to_ns(const ktime_t kt)
 
 /* Get the monotonic time in timespec format: */
 extern void ktime_get_ts(struct timespec *ts);
+extern ktime_t ktime_add_safe(const ktime_t lhs, const ktime_t rhs);
 
 /* Get the real (wall-) time in timespec format: */
 #define ktime_get_real_ts(ts)	getnstimeofday(ts)

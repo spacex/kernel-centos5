@@ -146,10 +146,9 @@ extern int audit_add_tree_rule(struct audit_krule *);
 extern int audit_remove_tree_rule(struct audit_krule *);
 extern void audit_trim_trees(void);
 extern int audit_tag_tree(char *old, char *new);
-extern void audit_schedule_prune(void);
-extern void audit_prune_trees(void);
 extern const char *audit_tree_path(struct audit_tree *);
 extern void audit_put_tree(struct audit_tree *);
+extern void audit_kill_trees(struct list_head *);
 #else
 #define audit_remove_tree_rule(rule) BUG()
 #define audit_add_tree_rule(rule) -EINVAL
@@ -158,6 +157,7 @@ extern void audit_put_tree(struct audit_tree *);
 #define audit_put_tree(tree) (void)0
 #define audit_tag_tree(old, new) -EINVAL
 #define audit_tree_path(rule) ""        /* never called */
+#define audit_kill_trees(list) BUG()
 #endif
 
 extern char *audit_unpack_string(void **, size_t *, size_t);
@@ -174,8 +174,12 @@ static inline int audit_signal_info(int sig, struct task_struct *t)
 extern enum audit_state audit_filter_inodes(struct task_struct *,
 					    struct audit_context *);
 extern void audit_set_auditable(struct audit_context *);
+extern struct list_head *audit_killed_trees(void);
 #else
 #define audit_signal_info(s,t) AUDIT_DISABLED
 #define audit_filter_inodes(t,c) AUDIT_DISABLED
 #define audit_set_auditable(c)
+extern struct list_head *audit_killed_trees(void);
 #endif
+
+extern struct mutex audit_cmd_mutex;

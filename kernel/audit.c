@@ -131,7 +131,7 @@ static DECLARE_WAIT_QUEUE_HEAD(kauditd_wait);
 static DECLARE_WAIT_QUEUE_HEAD(audit_backlog_wait);
 
 /* Serialize requests from userspace. */
-static DEFINE_MUTEX(audit_cmd_mutex);
+DEFINE_MUTEX(audit_cmd_mutex);
 
 /* AUDIT_BUFSIZ is the size of the temporary buffer used for formatting
  * audit records.  Since printk uses a 1024 byte buffer, this buffer
@@ -499,21 +499,6 @@ int audit_send_list(void *_dest)
 
 	return 0;
 }
-
-#ifdef CONFIG_AUDITSYSCALL
-static int prune_tree_thread(void *unused)
-{
-	mutex_lock(&audit_cmd_mutex);
-	audit_prune_trees();
-	mutex_unlock(&audit_cmd_mutex);
-	return 0;
-}
-
-void audit_schedule_prune(void)
-{
-	kthread_run(prune_tree_thread, NULL, "audit_prune_tree");
-}
-#endif
 
 struct sk_buff *audit_make_reply(int pid, int seq, int type, int done,
 				 int multi, void *payload, int size)

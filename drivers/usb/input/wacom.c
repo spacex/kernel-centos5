@@ -9,7 +9,7 @@
  *  Copyright (c) 2000 Daniel Egger		<egger@suse.de>
  *  Copyright (c) 2001 Frederic Lepied		<flepied@mandrakesoft.com>
  *  Copyright (c) 2004 Panagiotis Issaris	<panagiotis.issaris@mech.kuleuven.ac.be>
- *  Copyright (c) 2002-2006 Ping Cheng		<pingc@wacom.com>
+ *  Copyright (c) 2002-2009 Ping Cheng		<pingc@wacom.com>
  *
  *  ChangeLog:
  *      v0.1 (vp)  - Initial release
@@ -540,6 +540,28 @@ static int wacom_intuos_inout(struct urb *urb)
 
 	/* Exit report */
 	if ((data[1] & 0xfe) == 0x80) {
+		input_report_abs(dev, ABS_X, 0);
+		input_report_abs(dev, ABS_Y, 0);
+		input_report_abs(dev, ABS_DISTANCE, 0);
+		input_report_abs(dev, ABS_TILT_X, 0);
+		input_report_abs(dev, ABS_TILT_Y, 0);
+		if (wacom->tool[idx] >= BTN_TOOL_MOUSE) {
+			input_report_key(dev, BTN_LEFT, 0);
+			input_report_key(dev, BTN_MIDDLE, 0);
+			input_report_key(dev, BTN_RIGHT, 0);
+			input_report_key(dev, BTN_SIDE, 0);
+			input_report_key(dev, BTN_EXTRA, 0);
+			input_report_abs(dev, ABS_THROTTLE, 0);
+			input_report_abs(dev, ABS_RZ, 0);
+		} else {
+			input_report_abs(dev, ABS_PRESSURE, 0);
+			input_report_key(dev, BTN_STYLUS, 0);
+			input_report_key(dev, BTN_STYLUS2, 0);
+			input_report_key(dev, BTN_TOUCH, 0);
+			input_report_abs(dev, ABS_WHEEL, 0);
+			if (wacom->features->type >= INTUOS3S)
+				input_report_abs(dev, ABS_Z, 0);
+		}
 		input_report_key(dev, wacom->tool[idx], 0);
 		input_report_abs(dev, ABS_MISC, 0); /* reset tool id */
 		input_event(dev, EV_MSC, MSC_SERIAL, wacom->serial[idx]);
