@@ -189,13 +189,10 @@ static struct dentry *gfs2_get_dentry(struct super_block *sb, void *inum_obj)
 {
 	struct gfs2_sbd *sdp = sb->s_fs_info;
 	struct gfs2_inum_host *inum = inum_obj;
-	struct gfs2_holder i_gh, ri_gh, rgd_gh;
-	struct gfs2_rgrpd *rgd;
+	struct gfs2_holder i_gh;
 	struct inode *inode;
 	struct dentry *dentry;
 	int error;
-
-	/* System files? */
 
 	inode = gfs2_ilookup(sb, inum->no_addr);
 	if (inode) {
@@ -211,29 +208,11 @@ static struct dentry *gfs2_get_dentry(struct super_block *sb, void *inum_obj)
 	if (error)
 		return ERR_PTR(error);
 
-	error = gfs2_rindex_hold(sdp, &ri_gh);
+	error = gfs2_check_blk_type(sdp, inum->no_addr, GFS2_BLKST_DINODE);
 	if (error)
 		goto fail;
 
-	error = -EINVAL;
-	rgd = gfs2_blk2rgrpd(sdp, inum->no_addr);
-	if (!rgd)
-		goto fail_rindex;
-
-	error = gfs2_glock_nq_init(rgd->rd_gl, LM_ST_SHARED, 0, &rgd_gh);
-	if (error)
-		goto fail_rindex;
-
-	error = -ESTALE;
-	if (gfs2_get_block_type(rgd, inum->no_addr) != GFS2_BLKST_DINODE)
-		goto fail_rgd;
-
-	gfs2_glock_dq_uninit(&rgd_gh);
-	gfs2_glock_dq_uninit(&ri_gh);
-
-	inode = gfs2_inode_lookup(sb, DT_UNKNOWN,
-					inum->no_addr,
-					0, 0);
+	inode = gfs2_inode_lookup(sb, DT_UNKNOWN, inum->no_addr, 0, 0);
 	if (!inode)
 		goto fail;
 	if (IS_ERR(inode)) {
@@ -273,12 +252,6 @@ out_inode:
 
 	dentry->d_op = &gfs2_dops;
 	return dentry;
-
-fail_rgd:
-	gfs2_glock_dq_uninit(&rgd_gh);
-
-fail_rindex:
-	gfs2_glock_dq_uninit(&ri_gh);
 
 fail:
 	gfs2_glock_dq_uninit(&i_gh);

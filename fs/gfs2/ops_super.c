@@ -507,8 +507,13 @@ static void gfs2_delete_inode(struct inode *inode)
 		goto out;
 	}
 
+	error = gfs2_check_blk_type(sdp, ip->i_no_addr, GFS2_BLKST_UNLINKED);
+	if (error)
+		goto out_truncate;
+
 	gfs2_glock_dq_wait(&ip->i_iopen_gh);
-	gfs2_holder_reinit(LM_ST_EXCLUSIVE, LM_FLAG_TRY_1CB | GL_NOCACHE, &ip->i_iopen_gh);
+	gfs2_holder_reinit(LM_ST_EXCLUSIVE, LM_FLAG_TRY_1CB | GL_NOCACHE,
+			   &ip->i_iopen_gh);
 	error = gfs2_glock_nq(&ip->i_iopen_gh);
 	if (error)
 		goto out_truncate;
@@ -549,7 +554,7 @@ out_unlock:
 		gfs2_glock_dq(&ip->i_iopen_gh);
 	gfs2_holder_uninit(&ip->i_iopen_gh);
 	gfs2_glock_dq_uninit(&gh);
-	if (error && error != GLR_TRYFAILED)
+	if (error && error != GLR_TRYFAILED && error != -EROFS)
 		fs_warn(sdp, "gfs2_delete_inode: %d\n", error);
 out:
 	truncate_inode_pages(&inode->i_data, 0);

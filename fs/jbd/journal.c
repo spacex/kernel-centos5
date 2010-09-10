@@ -1646,6 +1646,7 @@ void * __jbd_kmalloc (const char *where, size_t size, gfp_t flags, int retry)
 #define JBD_MAX_SLABS 5
 #define JBD_SLAB_INDEX(size)  (size >> 11)
 
+static DECLARE_RWSEM(jbd_slab_lock); /* protect jbd_slab[] */
 static kmem_cache_t *jbd_slab[JBD_MAX_SLABS];
 static const char *jbd_slab_names[JBD_MAX_SLABS] = {
 	"jbd_1k", "jbd_2k", "jbd_4k", NULL, "jbd_8k"
@@ -1655,24 +1656,27 @@ static void journal_destroy_jbd_slabs(void)
 {
 	int i;
 
+	down_write(&jbd_slab_lock);
 	for (i = 0; i < JBD_MAX_SLABS; i++) {
 		if (jbd_slab[i])
 			kmem_cache_destroy(jbd_slab[i]);
 		jbd_slab[i] = NULL;
 	}
+	up_write(&jbd_slab_lock);
 }
 
 static int journal_create_jbd_slab(size_t slab_size)
 {
-	int i = JBD_SLAB_INDEX(slab_size);
+	int rc = 0, i = JBD_SLAB_INDEX(slab_size);
 
 	BUG_ON(i >= JBD_MAX_SLABS);
 
 	/*
 	 * Check if we already have a slab created for this size
 	 */
+	down_write(&jbd_slab_lock);
 	if (jbd_slab[i])
-		return 0;
+		goto out_lock;
 
 	/*
 	 * Create a slab and force alignment to be same as slabsize -
@@ -1683,9 +1687,11 @@ static int journal_create_jbd_slab(size_t slab_size)
 				slab_size, slab_size, 0, NULL, NULL);
 	if (!jbd_slab[i]) {
 		printk(KERN_EMERG "JBD: no memory for jbd_slab cache\n");
-		return -ENOMEM;
+		rc = -ENOMEM;
 	}
-	return 0;
+out_lock:
+	up_write(&jbd_slab_lock);
+	return rc;
 }
 
 void * jbd_slab_alloc(size_t size, gfp_t flags)

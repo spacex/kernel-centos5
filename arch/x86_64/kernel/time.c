@@ -1606,7 +1606,10 @@ static int timer_resume(struct sys_device *dev)
 	write_seqlock_irqsave(&xtime_lock,flags);
 	xtime.tv_sec = sec;
 	xtime.tv_nsec = 0;
-	if (vxtime.mode == VXTIME_HPET) {
+	if (vxtime.mode == VXTIME_KVM) {
+		vxtime.last_kvm = kvm_clock_read();
+		vxtime.last_tsc = get_cycles_sync();
+	} else if (vxtime.mode == VXTIME_HPET) {
 		if (hpet_use_timer)
 			vxtime.last = hpet_readl(HPET_T0_CMP) - hpet_tick_real;
 		else

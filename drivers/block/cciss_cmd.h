@@ -272,6 +272,7 @@ typedef struct _ErrorInfo_struct {
 #define CMD_SCSI	0x03
 #define CMD_MSG_DONE	0x04
 #define CMD_MSG_TIMEOUT 0x05
+#define CMD_MSG_STALE	0xff
 
 /* This structure needs to be divisible by 8 for new
  * indexing method.
@@ -288,8 +289,7 @@ typedef struct _CommandList_struct {
   int			   ctlr;
   int			   cmd_type; 
   long			   cmdindex;
-  struct _CommandList_struct *prev;
-  struct _CommandList_struct *next;
+  struct hlist_node list;
   struct request *	   rq;
   struct completion *waiting;
   int	 retry_count;

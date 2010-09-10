@@ -125,7 +125,11 @@ void arch_pick_mmap_layout(struct mm_struct *mm)
 		mm->unmap_area = arch_unmap_area;
 	} else {
 		mm->mmap_base = mmap_base();
-		mm->get_unmapped_area = arch_get_unmapped_area_topdown;
+		if (test_thread_flag(TIF_IA32) && sysctl_topdown_allocate_fast)
+			mm->get_unmapped_area = arch_get_unmapped_area_topdown_fast;
+		else
+			mm->get_unmapped_area = arch_get_unmapped_area_topdown;
 		mm->unmap_area = arch_unmap_area_topdown;
 	}
+
 }

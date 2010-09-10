@@ -203,6 +203,7 @@ extern ctl_table inotify_table[];
 
 #ifdef HAVE_ARCH_PICK_MMAP_LAYOUT
 int sysctl_legacy_va_layout;
+int sysctl_topdown_allocate_fast;
 #endif
 
 /* /proc declarations: */
@@ -1045,6 +1046,16 @@ static ctl_table vm_table[] = {
 		.procname	= "legacy_va_layout",
 		.data		= &sysctl_legacy_va_layout,
 		.maxlen		= sizeof(sysctl_legacy_va_layout),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+		.strategy	= &sysctl_intvec,
+		.extra1		= &zero,
+	},
+	{
+		.ctl_name	= VM_TOPDOWN_ALLOCATE_FAST,
+		.procname	= "topdown_allocate_fast",
+		.data		= &sysctl_topdown_allocate_fast,
+		.maxlen		= sizeof(sysctl_topdown_allocate_fast),
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec,
 		.strategy	= &sysctl_intvec,

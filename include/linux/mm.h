@@ -31,8 +31,10 @@ extern int page_cluster;
 
 #ifdef CONFIG_SYSCTL
 extern int sysctl_legacy_va_layout;
+extern int sysctl_topdown_allocate_fast;
 #else
 #define sysctl_legacy_va_layout 0
+#define sysctl_topdown_allocate_fast 0
 #endif
 
 #include <asm/page.h>

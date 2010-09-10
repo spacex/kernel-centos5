@@ -568,7 +568,6 @@ static int read_rindex_entry(struct gfs2_inode *ip,
 
 	rgd->rd_gl->gl_object = rgd;
 	rgd->rd_flags &= ~GFS2_RDF_UPTODATE;
-	rgd->rd_flags |= GFS2_RDF_CHECK;
 	return error;
 }
 
@@ -764,7 +763,7 @@ int gfs2_rgrp_bh_get(struct gfs2_rgrpd *rgd)
 
 	if (!(rgd->rd_flags & GFS2_RDF_UPTODATE)) {
 		gfs2_rgrp_in(rgd, (rgd->rd_bits[0].bi_bh)->b_data);
-		rgd->rd_flags |= GFS2_RDF_UPTODATE;
+		rgd->rd_flags |= (GFS2_RDF_UPTODATE | GFS2_RDF_CHECK);
 	}
 
 	spin_lock(&sdp->sd_rindex_spin);
@@ -1273,7 +1272,7 @@ void gfs2_inplace_release(struct gfs2_inode *ip)
  * Returns: The block type (GFS2_BLKST_*)
  */
 
-unsigned char gfs2_get_block_type(struct gfs2_rgrpd *rgd, u64 block)
+static unsigned char gfs2_get_block_type(struct gfs2_rgrpd *rgd, u64 block)
 {
 	struct gfs2_bitmap *bi = NULL;
 	u32 length, rgrp_block, buf_block;
@@ -1681,6 +1680,53 @@ void gfs2_free_di(struct gfs2_rgrpd *rgd, struct gfs2_inode *ip)
 	gfs2_free_uninit_di(rgd, ip->i_no_addr);
 	gfs2_quota_change(ip, -1, ip->i_inode.i_uid, ip->i_inode.i_gid);
 	gfs2_meta_wipe(ip, ip->i_no_addr, 1);
+}
+
+/**
+ * gfs2_check_blk_type - Check the type of a block
+ * @sdp: The superblock
+ * @no_addr: The block number to check
+ * @type: The block type we are looking for
+ *
+ * Returns: 0 if the block type matches the expected type
+ *          -ESTALE if it doesn't match
+ *          or -ve errno if something went wrong while checking
+ */
+
+int gfs2_check_blk_type(struct gfs2_sbd *sdp, u64 no_addr, unsigned int type)
+{
+	struct gfs2_rgrpd *rgd;
+	struct gfs2_holder ri_gh, rgd_gh;
+	struct gfs2_inode *ip = GFS2_I(sdp->sd_rindex);
+	int ri_locked = 0;
+	int error;
+
+	if (!gfs2_glock_is_locked_by_me(ip->i_gl)) {
+		error = gfs2_rindex_hold(sdp, &ri_gh);
+		if (error)
+			goto fail;
+		ri_locked = 1;
+	}
+
+	error = -EINVAL;
+	rgd = gfs2_blk2rgrpd(sdp, no_addr);
+	if (!rgd)
+		goto fail_rindex;
+
+	error = gfs2_glock_nq_init(rgd->rd_gl, LM_ST_SHARED, 0, &rgd_gh);
+	if (error)
+		goto fail_rindex;
+
+	error = 0;
+	if (gfs2_get_block_type(rgd, no_addr) != type)
+		error = -ESTALE;
+
+	gfs2_glock_dq_uninit(&rgd_gh);
+fail_rindex:
+	if (ri_locked)
+		gfs2_glock_dq_uninit(&ri_gh);
+fail:
+	return error;
 }
 
 /**

@@ -207,6 +207,7 @@ enum
 	VM_MMAP_MIN_ADDR=38, 	/* amount of memory to protect from mmap */
 	VM_FLUSH_MMAP=39,       /* flush mmap()d pagecache pages */
 	VM_MAX_WRITEBACK_PAGES=40, /*maximum pages written per writeback loop */
+	VM_TOPDOWN_ALLOCATE_FAST=42, /* optimize speed over fragmentation in topdown alloc */
 };
 
 

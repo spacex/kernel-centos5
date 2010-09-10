@@ -1474,6 +1474,9 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 		case SCTP_CMD_SET_SK_ERR:
 			sctp_cmd_set_sk_err(asoc, cmd->obj.error);
 			break;
+		case SCTP_CMD_UPDATE_INITTAG:
+			asoc->peer.i.init_tag = cmd->obj.u32;
+			break;
 		default:
 			printk(KERN_WARNING "Impossible command: %u, %p\n",
 			       cmd->verb, cmd->obj.ptr);

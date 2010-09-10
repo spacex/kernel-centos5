@@ -134,6 +134,66 @@ static struct pci_raw_ops pci_mmcfg = {
 	.write =	pci_mmcfg_write,
 };
 
+#ifdef CONFIG_XEN
+/* 
+ * 1=default for xen kernel,
+ * 0=force use of MMCONFIG_APER_MAX
+ */
+static int use_acpi_mcfg_max_pci_bus_num = 1;
+
+/*
+ * on  == use acpi table value
+ * off == use max PCI bus num value
+ */
+int __init acpi_mcfg_max_pci_bus_num_setup(char *str)
+{
+	/* force use of acpi value for max pci bus num */
+	if (!strncmp(str, "on", 2))
+		use_acpi_mcfg_max_pci_bus_num = 1;
+	/* force use of MMCONFIG_APER_MAX */
+	if (!strncmp(str, "off", 3))
+		use_acpi_mcfg_max_pci_bus_num = 0;
+
+	return 1;
+}
+
+__setup("acpi_mcfg_max_pci_bus_num=", acpi_mcfg_max_pci_bus_num_setup);
+#endif
+
+/* 
+ * RHEL5 doesn't trust acpi for max pci bus num in acpi table;
+ * but could map past/over valid PCI mmconf space if blindly
+ * use MMCONFIG_APER_MAX; e.g., xen dom0's may fail.
+ * so check if system requires acpi table value,
+ * or sysadmin has forced use of MMCONFIG_APER_MAX on kernel cmd line
+ */
+static unsigned long get_mmcfg_aper(struct acpi_table_mcfg_config *cfg)
+{
+	unsigned long mmcfg_aper = MMCONFIG_APER_MAX;
+
+/* xen kernel && pci pass-through only */
+#ifdef CONFIG_XEN
+	extern int pci_pt_e820_access_enabled;
+
+	if (use_acpi_mcfg_max_pci_bus_num && pci_pt_e820_access_enabled) {
+		/* trust acpi values for end & start bus number */
+		mmcfg_aper = 
+			cfg->end_bus_number - cfg->start_bus_number + 1;
+		printk(KERN_INFO
+		       "PCI: Using acpi max pci bus value of 0x%lx \n",
+			mmcfg_aper);
+		/* 32 slots, 8 fcns/slot, 4096 pci-cfg bytes/fcn */
+		mmcfg_aper *= 32 * 8 * 4096;
+		if (mmcfg_aper < MMCONFIG_APER_MIN) 
+			mmcfg_aper = MMCONFIG_APER_MIN;
+		if (mmcfg_aper > MMCONFIG_APER_MAX)
+			mmcfg_aper = MMCONFIG_APER_MAX;
+	}
+#endif
+
+	return mmcfg_aper;
+}
+
 void __init pci_mmcfg_init(void)
 {
 	int i;
@@ -165,9 +225,14 @@ void __init pci_mmcfg_init(void)
 		return;
 	}
 	for (i = 0; i < pci_mmcfg_config_num; ++i) {
-		pci_mmcfg_virt[i].cfg = &pci_mmcfg_config[i];
+		struct acpi_table_mcfg_config *cfg = &pci_mmcfg_config[i];
+		unsigned long mmcfg_aper;
+
+		mmcfg_aper = get_mmcfg_aper(cfg);
+
+		pci_mmcfg_virt[i].cfg = cfg;
 		pci_mmcfg_virt[i].virt = ioremap_nocache(pci_mmcfg_config[i].base_address,
-							 MMCONFIG_APER_MAX);
+							 mmcfg_aper);
 		if (!pci_mmcfg_virt[i].virt) {
 			printk("PCI: Cannot map mmconfig aperture for segment %d\n",
 			       pci_mmcfg_config[i].pci_segment_group_number);

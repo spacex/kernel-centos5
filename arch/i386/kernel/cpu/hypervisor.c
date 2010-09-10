@@ -66,8 +66,6 @@ hypervisor_set_feature_bits(struct cpuinfo_x86 *c)
 		vmware_set_feature_bits(c);
 		return;
 	}
-	if (boot_cpu_data.x86_hyper_vendor == X86_HYPER_VENDOR_KVM)
-		kvmclock_init();
 }
 
 void __cpuinit init_hypervisor(struct cpuinfo_x86 *c)

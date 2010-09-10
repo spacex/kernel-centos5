@@ -108,7 +108,7 @@ const sctp_sm_table_entry_t *sctp_sm_lookup_event(sctp_event_t event_type,
 	/* SCTP_STATE_EMPTY */ \
 	{.fn = sctp_sf_ootb, .name = "sctp_sf_ootb"}, \
 	/* SCTP_STATE_CLOSED */ \
-	{.fn = sctp_sf_tabort_8_4_8, .name = "sctp_sf_tabort_8_4_8"}, \
+	{.fn = sctp_sf_ootb, .name = "sctp_sf_ootb"}, \
 	/* SCTP_STATE_COOKIE_WAIT */ \
 	{.fn = sctp_sf_discard_chunk, .name = "sctp_sf_discard_chunk"}, \
 	/* SCTP_STATE_COOKIE_ECHOED */ \
@@ -171,7 +171,7 @@ const sctp_sm_table_entry_t *sctp_sm_lookup_event(sctp_event_t event_type,
 	/*  SCTP_STATE_EMPTY */ \
 	{.fn = sctp_sf_ootb, .name = "sctp_sf_ootb"}, \
 	/* SCTP_STATE_CLOSED */ \
-	{.fn = sctp_sf_tabort_8_4_8, .name = "sctp_sf_tabort_8_4_8"}, \
+	{.fn = sctp_sf_ootb, .name = "sctp_sf_ootb"}, \
 	/* SCTP_STATE_COOKIE_WAIT */ \
 	{.fn = sctp_sf_discard_chunk, .name = "sctp_sf_discard_chunk"}, \
 	/* SCTP_STATE_COOKIE_ECHOED */ \
@@ -192,7 +192,7 @@ const sctp_sm_table_entry_t *sctp_sm_lookup_event(sctp_event_t event_type,
 	/*  SCTP_STATE_EMPTY */ \
 	{.fn = sctp_sf_ootb, .name = "sctp_sf_ootb"}, \
 	/* SCTP_STATE_CLOSED */ \
-	{.fn = sctp_sf_tabort_8_4_8, .name = "sctp_sf_tabort_8_4_8"}, \
+	{.fn = sctp_sf_ootb, .name = "sctp_sf_ootb"}, \
 	/* SCTP_STATE_COOKIE_WAIT */ \
 	{.fn = sctp_sf_discard_chunk, .name = "sctp_sf_discard_chunk"}, \
 	/* SCTP_STATE_COOKIE_ECHOED */ \
@@ -214,7 +214,7 @@ const sctp_sm_table_entry_t *sctp_sm_lookup_event(sctp_event_t event_type,
 	/*  SCTP_STATE_EMPTY */ \
 	{.fn = sctp_sf_ootb, .name = "sctp_sf_ootb"}, \
 	/* SCTP_STATE_CLOSED */ \
-	{.fn = sctp_sf_tabort_8_4_8, .name = "sctp_sf_tabort_8_4_8"}, \
+	{.fn = sctp_sf_ootb, .name = "sctp_sf_ootb"}, \
 	/* SCTP_STATE_COOKIE_WAIT */ \
 	{.fn = sctp_sf_violation, .name = "sctp_sf_violation"}, \
 	/* SCTP_STATE_COOKIE_ECHOED */ \
@@ -260,7 +260,7 @@ const sctp_sm_table_entry_t *sctp_sm_lookup_event(sctp_event_t event_type,
 	/* SCTP_STATE_EMPTY */ \
 	{.fn = sctp_sf_ootb, .name = "sctp_sf_ootb"}, \
 	/* SCTP_STATE_CLOSED */ \
-	{.fn = sctp_sf_tabort_8_4_8, .name = "sctp_sf_tabort_8_4_8"}, \
+	{.fn = sctp_sf_ootb, .name = "sctp_sf_ootb"}, \
 	/* SCTP_STATE_COOKIE_WAIT */ \
 	{.fn = sctp_sf_discard_chunk, .name = "sctp_sf_discard_chunk"}, \
 	/* SCTP_STATE_COOKIE_ECHOED */ \
@@ -303,7 +303,7 @@ const sctp_sm_table_entry_t *sctp_sm_lookup_event(sctp_event_t event_type,
 	/* SCTP_STATE_EMPTY */ \
 	{.fn = sctp_sf_ootb, .name = "sctp_sf_ootb"}, \
 	/* SCTP_STATE_CLOSED */ \
-	{.fn = sctp_sf_tabort_8_4_8, .name = "sctp_sf_tabort_8_4_8"}, \
+	{.fn = sctp_sf_ootb, .name = "sctp_sf_ootb"}, \
 	/* SCTP_STATE_COOKIE_WAIT */ \
 	{.fn = sctp_sf_discard_chunk, .name = "sctp_sf_discard_chunk"}, \
 	/* SCTP_STATE_COOKIE_ECHOED */ \
@@ -502,7 +502,7 @@ static const sctp_sm_table_entry_t addip_chunk_event_table[SCTP_NUM_ADDIP_CHUNK_
 	/* SCTP_STATE_EMPTY */ \
 	{.fn = sctp_sf_ootb, .name = "sctp_sf_ootb"}, \
 	/* SCTP_STATE_CLOSED */ \
-	{.fn = sctp_sf_tabort_8_4_8, .name = "sctp_sf_tabort_8_4_8"}, \
+	{.fn = sctp_sf_ootb, .name = "sctp_sf_ootb"}, \
 	/* SCTP_STATE_COOKIE_WAIT */ \
 	{.fn = sctp_sf_discard_chunk, .name = "sctp_sf_discard_chunk"}, \
 	/* SCTP_STATE_COOKIE_ECHOED */ \
@@ -531,7 +531,7 @@ chunk_event_table_unknown[SCTP_STATE_NUM_STATES] = {
 	/* SCTP_STATE_EMPTY */
 	{.fn = sctp_sf_ootb, .name = "sctp_sf_ootb"},
 	/* SCTP_STATE_CLOSED */
-	{.fn = sctp_sf_tabort_8_4_8, .name = "sctp_sf_tabort_8_4_8"},
+	{.fn = sctp_sf_ootb, .name = "sctp_sf_ootb"},
 	/* SCTP_STATE_COOKIE_WAIT */
 	{.fn = sctp_sf_unk_chunk, .name = "sctp_sf_unk_chunk"},
 	/* SCTP_STATE_COOKIE_ECHOED */

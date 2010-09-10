@@ -69,6 +69,7 @@
 #include <asm/generic-hypervisor.h>
 #include <asm/pci-direct.h>
 #include <asm/k8.h>
+#include <asm/kvm_para.h>
 
 /*
  * Machine setup..
@@ -579,6 +580,14 @@ void __init setup_arch(char **cmdline_p)
 	 * needs to be done after dmi_scan_machine, for the BP.
 	 */
 	init_hypervisor(&boot_cpu_data);
+
+	/*
+	 * init_hypervisor gets called more than one time throughout
+	 * the life of the cpu, but that hurts kvm. We only need it
+	 * once, so we do it explicitly here
+	 */
+	if (boot_cpu_data.x86_hyper_vendor == X86_HYPER_VENDOR_KVM)
+		kvmclock_init();
 
 #ifdef CONFIG_ACPI
 	/*

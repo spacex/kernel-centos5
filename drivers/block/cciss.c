@@ -53,16 +53,16 @@
 #include <linux/kthread.h>
 
 #define CCISS_DRIVER_VERSION(maj,min,submin) ((maj<<16)|(min<<8)|(submin))
-#define DRIVER_NAME "HP CISS Driver (v 3.6.20-RH3)"
+#define DRIVER_NAME "HP CISS Driver (v 3.6.20-RH4)"
 #define DRIVER_VERSION CCISS_DRIVER_VERSION(3,6,20)
 
 /* Embedded module documentation macros - see modules.h */
 MODULE_AUTHOR("Hewlett-Packard Company");
-MODULE_DESCRIPTION("Driver for HP Controller SA5xxx SA6xxx version 3.6.20-RH3");
+MODULE_DESCRIPTION("Driver for HP Controller SA5xxx SA6xxx version 3.6.20-RH4");
 MODULE_SUPPORTED_DEVICE("HP SA5i SA5i+ SA532 SA5300 SA5312 SA641 SA642 SA6400"
 			" SA6i P600 P800 P400 P400i E200 E200i E500 P700m"
 			" and HP Smart Array G2 SAS/SATA Controllers");
-MODULE_VERSION("3.6.20-RH3");
+MODULE_VERSION("3.6.20-RH4");
 MODULE_LICENSE("GPL");
 
 #include "cciss_cmd.h"
@@ -215,31 +215,28 @@ static struct block_device_operations cciss_fops = {
 /*
  * Enqueuing and dequeuing functions for cmdlists.
  */
-static inline void addQ(CommandList_struct **Qptr, CommandList_struct *c)
+static inline void addQ(struct hlist_head *list, CommandList_struct *c)
 {
-	if (*Qptr == NULL) {
-		*Qptr = c;
-		c->next = c->prev = c;
-	} else {
-		c->prev = (*Qptr)->prev;
-		c->next = (*Qptr);
-		(*Qptr)->prev->next = c;
-		(*Qptr)->prev = c;
-	}
+	hlist_add_head(&c->list, list);
 }
 
-static inline CommandList_struct *removeQ(CommandList_struct **Qptr,
-					  CommandList_struct *c)
+static inline void removeQ(CommandList_struct *c)
 {
-	if (c && c->next != c) {
-		if (*Qptr == c)
-			*Qptr = c->next;
-		c->prev->next = c->next;
-		c->next->prev = c->prev;
-	} else {
-		*Qptr = NULL;
+	/*
+	 * After kexec/dump some commands might still
+	 * be in flight, which the firmware will try
+	 * to complete. Resetting the firmware doesn't work
+	 * with old fw revisions, so we have to mark
+	 * them off as 'stale' to prevent the driver from
+	 * falling over.
+	 */
+	if (hlist_unhashed(&c->list)) {
+		WARN_ON(1);
+		c->cmd_type = CMD_MSG_STALE;
+		return;
 	}
-	return c;
+
+	hlist_del_init(&c->list);
 }
 
 #include "cciss_scsi.c"		/* For SCSI tape support */
@@ -717,6 +714,7 @@ static CommandList_struct *cmd_alloc(ctlr_info_t *h, int get_from_pool)
 		c->cmdindex = i;
 	}
 
+	INIT_HLIST_NODE(&c->list);
 	c->busaddr = (__u32) cmd_dma_handle;
 	temp64.val = (__u64) err_dma_handle;
 	c->ErrDesc.Addr.lower = temp64.val32.lower;
@@ -2863,7 +2861,8 @@ static void start_io(ctlr_info_t *h)
 {
 	CommandList_struct *c;
 
-	while ((c = h->reqQ) != NULL) {
+	while (!hlist_empty(&h->reqQ)) {
+		c = hlist_entry(h->reqQ.first, CommandList_struct, list);
 		/* can't do anything if fifo is full */
 		if ((h->access.fifo_full(h))) {
 			printk(KERN_WARNING "cciss: fifo full\n");
@@ -2871,14 +2870,14 @@ static void start_io(ctlr_info_t *h)
 		}
 
 		/* Get the first entry from the Request Q */
-		removeQ(&(h->reqQ), c);
+		removeQ(c);
 		h->Qdepth--;
 
 		/* Tell the controller execute command */
 		h->access.submit_command(h, c);
 
 		/* Put job onto the completed Q */
-		addQ(&(h->cmpQ), c);
+		addQ(&h->cmpQ, c);
 	}
 }
 
@@ -2891,7 +2890,7 @@ static inline void resend_cciss_cmd(ctlr_info_t *h, CommandList_struct *c)
 	memset(c->err_info, 0, sizeof(ErrorInfo_struct));
 
 	/* add it to software queue and then send it to the controller */
-	addQ(&(h->reqQ), c);
+	addQ(&h->reqQ, c);
 	h->Qdepth++;
 	if (h->Qdepth > h->maxQsinceinit)
 		h->maxQsinceinit = h->Qdepth;
@@ -3224,7 +3223,7 @@ static void do_cciss_request(request_queue_t *q)
 	}
 	spin_lock_irq(q->queue_lock);
 
-	addQ(&(h->reqQ), c);
+	addQ(&h->reqQ, c);
 	h->Qdepth++;
 	if (h->Qdepth > h->maxQsinceinit)
 		h->maxQsinceinit = h->Qdepth;
@@ -3313,16 +3312,12 @@ static irqreturn_t do_cciss_intr(int irq, void *dev_id, struct pt_regs *regs)
 				a = c->busaddr;
 
 			} else {
+				struct hlist_node *tmp;
+
 				a &= ~3;
-				if ((c = h->cmpQ) == NULL) {
-					printk(KERN_WARNING
-					       "cciss: Completion of %08x ignored\n",
-					       a1);
-					continue;
-				}
-				while (c->busaddr != a) {
-					c = c->next;
-					if (c == h->cmpQ)
+				c = NULL;
+				hlist_for_each_entry(c, tmp, &h->cmpQ, list) {
+					if (c->busaddr == a)
 						break;
 				}
 			}
@@ -3330,8 +3325,8 @@ static irqreturn_t do_cciss_intr(int irq, void *dev_id, struct pt_regs *regs)
 			 * If we've found the command, take it off the
 			 * completion Q and free it
 			 */
-			if (c->busaddr == a) {
-				removeQ(&h->cmpQ, c);
+			if (c && c->busaddr == a) {
+				removeQ(c);
 				if (c->cmd_type == CMD_RWREQ) {
 					complete_command(h, c, 0);
 				} else if (c->cmd_type == CMD_IOCTL_PEND) {
@@ -4029,6 +4024,8 @@ static int __devinit cciss_init_one(struct pci_dev *pdev,
 		return -1;
 
 	hba[i]->busy_initializing = 1;
+	INIT_HLIST_HEAD(&hba[i]->cmpQ);
+	INIT_HLIST_HEAD(&hba[i]->reqQ);
 
 	if (cciss_pci_init(hba[i], pdev) != 0)
 		goto clean0;
@@ -4358,16 +4355,19 @@ static void fail_all_cmds(unsigned long ctlr)
 	pci_disable_device(h->pdev);	/* Make sure it is really dead. */
 
 	/* move everything off the request queue onto the completed queue */
-	while ((c = h->reqQ) != NULL) {
-		removeQ(&(h->reqQ), c);
+	while (!hlist_empty(&h->reqQ)) {
+		c = hlist_entry(h->reqQ.first, CommandList_struct, list);
+		removeQ(c);
 		h->Qdepth--;
-		addQ(&(h->cmpQ), c);
+		addQ(&h->cmpQ, c);
 	}
 
 	/* Now, fail everything on the completed queue with a HW error */
-	while ((c = h->cmpQ) != NULL) {
-		removeQ(&h->cmpQ, c);
-		c->err_info->CommandStatus = CMD_HARDWARE_ERR;
+	while (!hlist_empty(&h->cmpQ)) {
+		c = hlist_entry(h->cmpQ.first, CommandList_struct, list);
+		removeQ(c);
+		if (c->cmd_type != CMD_MSG_STALE)
+			c->err_info->CommandStatus = CMD_HARDWARE_ERR;
 		if (c->cmd_type == CMD_RWREQ) {
 			complete_command(h, c, 0);
 		} else if (c->cmd_type == CMD_IOCTL_PEND)

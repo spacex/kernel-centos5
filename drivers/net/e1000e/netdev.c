@@ -483,23 +483,24 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 
 		length = le16_to_cpu(rx_desc->length);
 
-		/* !EOP means multiple descriptors were used to store a single
-		 * packet, if thats the case we need to toss it.  In fact, we
-		 * to toss every packet with the EOP bit clear and the next
-		 * frame that _does_ have the EOP bit set, as it is by
+		/*
+		 * !EOP means multiple descriptors were used to store a single
+		 * packet, if that's the case we need to toss it.  In fact, we
+		 * need to toss every packet with the EOP bit clear and the
+		 * next frame that _does_ have the EOP bit set, as it is by
 		 * definition only a frame fragment
 		 */
 		if (unlikely(!(status & E1000_RXD_STAT_EOP)))
-			set_bit(__E1000_DISCARDING, &adapter->flags);
+			adapter->flags2 |= FLAG2_IS_DISCARDING;
 
-		if (test_bit(__E1000_DISCARDING, &adapter->flags)) {
+		if (adapter->flags2 & FLAG2_IS_DISCARDING) {
 			/* All receives must fit into a single buffer */
 			e_dbg("%s: Receive packet consumed multiple buffers\n",
 			      netdev->name);
 			/* recycle */
 			buffer_info->skb = skb;
 			if (status & E1000_RXD_STAT_EOP)
-				clear_bit(__E1000_DISCARDING, &adapter->flags);
+				adapter->flags2 &= ~FLAG2_IS_DISCARDING;
 			goto next_desc;
 		}
 
@@ -759,10 +760,16 @@ static bool e1000_clean_rx_irq_ps(struct e1000_adapter *adapter,
 				 PCI_DMA_FROMDEVICE);
 		buffer_info->dma = 0;
 
-		if (!(staterr & E1000_RXD_STAT_EOP)) {
+		/* see !EOP comment in other rx routine */
+		if (!(staterr & E1000_RXD_STAT_EOP))
+			adapter->flags2 |= FLAG2_IS_DISCARDING;
+
+		if (adapter->flags2 & FLAG2_IS_DISCARDING) {
 			e_dbg("%s: Packet Split buffers didn't pick up the "
 			      "full packet\n", netdev->name);
 			dev_kfree_skb_irq(skb);
+			if (staterr & E1000_RXD_STAT_EOP)
+				adapter->flags2 &= ~FLAG2_IS_DISCARDING;
 			goto next_desc;
 		}
 
@@ -1132,6 +1139,7 @@ static void e1000_clean_rx_ring(struct e1000_adapter *adapter)
 
 	rx_ring->next_to_clean = 0;
 	rx_ring->next_to_use = 0;
+	adapter->flags2 &= ~FLAG2_IS_DISCARDING;
 
 	writel(0, adapter->hw.hw_addr + rx_ring->head);
 	writel(0, adapter->hw.hw_addr + rx_ring->tail);
@@ -4568,8 +4576,7 @@ static int e1000_suspend(struct pci_dev *pdev, pm_message_t state)
 		/* Allow time for pending master requests to run */
 		e1000e_disable_pcie_master(&adapter->hw);
 
-		if ((adapter->flags2 & FLAG2_HAS_PHY_WAKEUP) &&
-		    !(hw->mac.ops.check_mng_mode(hw))) {
+		if (adapter->flags2 & FLAG2_HAS_PHY_WAKEUP) {
 			/* enable wakeup by the PHY */
 			retval = e1000_init_phy_wakeup(adapter, wufc);
 			if (retval)
@@ -4587,7 +4594,8 @@ static int e1000_suspend(struct pci_dev *pdev, pm_message_t state)
 	}
 
 	/* make sure adapter isn't asleep if manageability is enabled */
-	if (adapter->flags & FLAG_MNG_PT_ENABLED) {
+	if ((adapter->flags & FLAG_MNG_PT_ENABLED) ||
+	    (hw->mac.ops.check_mng_mode(hw))) {
 		pci_enable_wake(pdev, PCI_D3hot, 1);
 		pci_enable_wake(pdev, PCI_D3cold, 1);
 	}
@@ -4955,10 +4963,7 @@ static int __devinit e1000_probe(struct pci_dev *pdev,
 		goto err_pci_reg;
 
 	pci_set_master(pdev);
-	/* PCI config space info */
-	err = pci_save_state(pdev);
-	if (err)
-		goto err_alloc_etherdev;
+	pci_save_state(pdev);
 
 	err = -ENOMEM;
 	netdev = alloc_etherdev(sizeof(struct e1000_adapter));

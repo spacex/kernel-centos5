@@ -830,7 +830,7 @@ static int ip6_dst_lookup_tail(struct sock *sk,
 		 * dst entry and replace it instead with the
 		 * dst entry of the nexthop router
 		 */
-		if (!((*dst)->neighbour->nud_state & NUD_VALID)) {
+		if ((*dst)->neighbour && !((*dst)->neighbour->nud_state & NUD_VALID)) {
 			struct inet6_ifaddr *ifp;
 			struct flowi fl_gw;
 			int redirect;
