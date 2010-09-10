@@ -4233,14 +4233,20 @@ e1000_clean_rx_irq(struct e1000_adapter *adapter,
 
 		length = le16_to_cpu(rx_desc->length);
 
-		if (unlikely(!(status & E1000_RXD_STAT_EOP) || (length <= 4))) {
+		if (unlikely(!(status & E1000_RXD_STAT_EOP)))
+			set_bit(__E1000_DISCARDING, &adapter->flags);
+
+		if (test_bit(__E1000_DISCARDING, &adapter->flags)) {
 			/* All receives must fit into a single buffer */
 			E1000_DBG("%s: Receive packet consumed multiple"
 				  " buffers\n", netdev->name);
 			/* recycle */
 			buffer_info->skb = skb;
+			if (status & E1000_RXD_STAT_EOP)
+				clear_bit(__E1000_DISCARDING, &adapter->flags);
 			goto next_desc;
 		}
+
 
 		if (unlikely(rx_desc->errors & E1000_RXD_ERR_FRAME_ERR_MASK)) {
 			last_byte = *(skb->data + length - 1);

@@ -67,6 +67,7 @@ static const int multicast_filter_limit = 32;
 #define RX_DMA_BURST	6	/* Maximum PCI burst, '6' is 1024 */
 #define TX_DMA_BURST	6	/* Maximum PCI burst, '6' is 1024 */
 #define EarlyTxThld	0x3F	/* 0x3F means NO early transmit */
+#define RxPacketMaxSize	0x3FE8	/* 16K - 1 - ETH_HLEN - VLAN - CRC... */
 #define SafeMtu		0x1c20	/* ... actually life sucks beyond ~7k */
 #define InterFrameGap	0x03	/* 3 means InterFrameGap = the shortest one */
 
@@ -2344,10 +2345,10 @@ static u16 rtl_rw_cpluscmd(void __iomem *ioaddr)
 	return cmd;
 }
 
-static void rtl_set_rx_max_size(void __iomem *ioaddr, unsigned int rx_buf_sz)
+static void rtl_set_rx_max_size(void __iomem *ioaddr)
 {
 	/* Low hurts. Let's disable the filtering. */
-	RTL_W16(RxMaxSize, rx_buf_sz);
+	RTL_W16(RxMaxSize, 16383);
 }
 
 static void rtl8169_set_magic_reg(void __iomem *ioaddr, unsigned mac_version)
@@ -2394,7 +2395,7 @@ static void rtl_hw_start_8169(struct net_device *dev)
 
 	RTL_W8(EarlyTxThres, EarlyTxThld);
 
-	rtl_set_rx_max_size(ioaddr, tp->rx_buf_sz);
+	rtl_set_rx_max_size(ioaddr);
 
 	if ((tp->mac_version == RTL_GIGA_MAC_VER_01) ||
 	    (tp->mac_version == RTL_GIGA_MAC_VER_02) ||
@@ -2655,7 +2656,7 @@ static void rtl_hw_start_8168(struct net_device *dev)
 
 	RTL_W8(EarlyTxThres, EarlyTxThld);
 
-	rtl_set_rx_max_size(ioaddr, tp->rx_buf_sz);
+	rtl_set_rx_max_size(ioaddr);
 
 	tp->cp_cmd |= RTL_R16(CPlusCmd) | PktCntrDisable | INTT_1;
 
@@ -2833,7 +2834,7 @@ static void rtl_hw_start_8101(struct net_device *dev)
 
 	RTL_W8(EarlyTxThres, EarlyTxThld);
 
-	rtl_set_rx_max_size(ioaddr, tp->rx_buf_sz);
+	rtl_set_rx_max_size(ioaddr);
 
 	tp->cp_cmd |= rtl_rw_cpluscmd(ioaddr) | PCIMulRW;
 
@@ -2934,7 +2935,7 @@ static struct sk_buff *rtl8169_alloc_rx_skb(struct pci_dev *pdev,
 
 	pad = align ? align : NET_IP_ALIGN;
 
-	skb = netdev_alloc_skb(dev, rx_buf_sz + pad);
+	skb = netdev_alloc_skb(dev, 16383 + pad);
 	if (!skb)
 		goto err_out;
 
