@@ -210,8 +210,8 @@ static void evtchn_bind_to_user(struct per_user_data *u, int port)
 	spin_unlock_irq(&port_user_lock);
 }
 
-static int evtchn_ioctl(struct inode *inode, struct file *file,
-			unsigned int cmd, unsigned long arg)
+static long evtchn_ioctl(struct file *file,
+			 unsigned int cmd, unsigned long arg)
 {
 	int rc;
 	struct per_user_data *u = file->private_data;
@@ -425,7 +425,7 @@ static struct file_operations evtchn_fops = {
 	.owner   = THIS_MODULE,
 	.read    = evtchn_read,
 	.write   = evtchn_write,
-	.ioctl   = evtchn_ioctl,
+	.unlocked_ioctl = evtchn_ioctl,
 	.poll    = evtchn_poll,
 	.fasync  = evtchn_fasync,
 	.open    = evtchn_open,

@@ -83,15 +83,18 @@ xencomm_privcmd_memory_reservation_op(privcmd_hypercall_t *hypercall)
 		 *   may cause the soft lockup warning.
 		 *   In order to avoid the warning, we limit
 		 *   the number of extents and repeat the hypercall.
-		 *   The following value is determined by experimentation.
-		 *   If the following limit causes soft lockup warning,
+		 *   The following value is determined by evaluation.
+		 *   Time of one hypercall should be smaller than
+		 *   a vcpu time slice. The time with current
+		 *   MEMORYOP_MAX_EXTENTS is around 5 msec.
+		 *   If the following limit causes some issues,
 		 *   we should decrease this value.
 		 *
 		 *   Another way would be that start with small value and
 		 *   increase adoptively measuring hypercall time.
 		 *   It might be over-kill.
 		 */
-#define MEMORYOP_MAX_EXTENTS	(MEMORYOP_XENCOMM_LIMIT / 4)
+#define MEMORYOP_MAX_EXTENTS	(MEMORYOP_XENCOMM_LIMIT / 512)
 
 		while (nr_extents > 0) {
 			xen_ulong_t nr_tmp = nr_extents;

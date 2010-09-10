@@ -408,3 +408,88 @@ int invalidate_inode_pages2(struct address_space *mapping)
 	return invalidate_inode_pages2_range(mapping, 0, -1);
 }
 EXPORT_SYMBOL_GPL(invalidate_inode_pages2);
+
+/**
+ * invalidate_inode_pages3_range - remove range of pages from an address_space
+ * @mapping: the address_space
+ * @start: the page offset 'from' which to invalidate
+ * @end: the page offset 'to' which to invalidate (inclusive)
+ *
+ * Any pages which are found to be mapped into pagetables are unmapped prior to
+ * invalidation.
+ *
+ * Returns -EIO if any pages could not be invalidated.
+ */
+int invalidate_inode_pages3_range(struct address_space *mapping,
+				  pgoff_t start, pgoff_t end)
+{
+	struct pagevec pvec;
+	pgoff_t next;
+	int i;
+	int ret = 0;
+	int wrapped = 0;
+
+	pagevec_init(&pvec, 0);
+	next = start;
+	while (next <= end && !wrapped &&
+		pagevec_lookup(&pvec, mapping, next,
+			min(end - next, (pgoff_t)PAGEVEC_SIZE - 1) + 1)) {
+		for (i = 0; i < pagevec_count(&pvec); i++) {
+			struct page *page = pvec.pages[i];
+			pgoff_t page_index;
+
+			lock_page(page);
+			if (page->mapping != mapping) {
+				unlock_page(page);
+				continue;
+			}
+			page_index = page->index;
+			next = page_index + 1;
+			if (next == 0)
+				wrapped = 1;
+			if (page_index > end) {
+				unlock_page(page);
+				break;
+			}
+			wait_on_page_writeback(page);
+			while (page_mapped(page)) {
+				unmap_mapping_range(mapping,
+				  (loff_t)page_index<<PAGE_CACHE_SHIFT,
+				  PAGE_CACHE_SIZE, 0);
+			}
+			if (!invalidate_complete_page2(mapping, page))
+				ret = -EIO;
+			else {
+				/*
+				 * Update the truncate_count.  This should
+				 * prevent any threads in do_no_page()
+				 * who found this page in the page cache
+				 * from using it.
+				 */
+				spin_lock(&mapping->i_mmap_lock);
+				mapping->truncate_count++;
+				spin_unlock(&mapping->i_mmap_lock);
+			}
+			unlock_page(page);
+		}
+		pagevec_release(&pvec);
+		cond_resched();
+	}
+	return ret;
+}
+EXPORT_SYMBOL_GPL(invalidate_inode_pages3_range);
+
+/**
+ * invalidate_inode_pages3 - remove all pages from an address_space
+ * @mapping: the address_space
+ *
+ * Any pages which are found to be mapped into pagetables are unmapped prior to
+ * invalidation.
+ *
+ * Returns -EIO if any pages could not be invalidated.
+ */
+int invalidate_inode_pages3(struct address_space *mapping)
+{
+	return invalidate_inode_pages3_range(mapping, 0, -1);
+}
+EXPORT_SYMBOL_GPL(invalidate_inode_pages3);

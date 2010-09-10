@@ -2382,6 +2382,8 @@ retry:
 		}
 	}
 
+	lock_page(new_page);
+
 	page_table = pte_offset_map_lock(mm, pmd, address, &ptl);
 	/*
 	 * For a file-backed vma, someone could have truncated or otherwise
@@ -2390,6 +2392,7 @@ retry:
 	 */
 	if (mapping && unlikely(sequence != mapping->truncate_count)) {
 		pte_unmap_unlock(page_table, ptl);
+		unlock_page(new_page);
 		page_cache_release(new_page);
 		cond_resched();
 		sequence = mapping->truncate_count;
@@ -2421,9 +2424,11 @@ retry:
 			inc_mm_counter(mm, anon_rss);
 			lru_cache_add_active(new_page);
 			page_add_new_anon_rmap(new_page, vma, address);
+			unlock_page(new_page);
 		} else {
 			inc_mm_counter(mm, file_rss);
 			page_add_file_rmap(new_page);
+			unlock_page(new_page);
 			if (write_access) {
 				dirty_page = new_page;
 				get_page(dirty_page);
@@ -2431,6 +2436,7 @@ retry:
 		}
 	} else {
 		/* One of our sibling threads was faster, back out. */
+		unlock_page(new_page);
 		page_cache_release(new_page);
 		goto unlock;
 	}

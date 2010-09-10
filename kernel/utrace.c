@@ -1117,9 +1117,15 @@ wake:
 	 *
 	 * On the exit path, it's only truly quiescent if it has
 	 * already been through utrace_report_death, or never will.
+	 *
+	 * If it's live, it's only really quiescent enough if it has
+	 * actually got into TASK_TRACED.  If it has UTRACE_ACTION_QUIESCE
+	 * set but is still on the way and hasn't entered utrace_quiescent
+	 * yet, let it get through its callbacks and bookkeeping.
+	 * Otherwise we could break an assumption about getting through
+	 * utrace_quiescent at least once before of setting QUIESCE.
 	 */
-	if (unlikely(target->exit_state)
-	    && unlikely(target->utrace_flags & DEATH_EVENTS))
+	if (!quiesce(target, 0))
 		spin_unlock(&utrace->lock);
 	else
 		wake_quiescent(old_flags, utrace, target);

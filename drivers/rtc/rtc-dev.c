@@ -350,6 +350,12 @@ static int rtc_dev_ioctl(struct inode *inode, struct file *file,
 	return err;
 }
 
+static int rtc_dev_fasync(int fd, struct file *file, int on)
+{
+	struct rtc_device *rtc = to_rtc_device(file->private_data);
+	return fasync_helper(fd, file, on, &rtc->async_queue);
+}
+
 static int rtc_dev_release(struct inode *inode, struct file *file)
 {
 	struct rtc_device *rtc = to_rtc_device(file->private_data);
@@ -360,14 +366,11 @@ static int rtc_dev_release(struct inode *inode, struct file *file)
 	if (rtc->ops->release)
 		rtc->ops->release(rtc->class_dev.dev);
 
+	if (file->f_flags & FASYNC)
+		rtc_dev_fasync(-1, file, 0);
+
 	mutex_unlock(&rtc->char_lock);
 	return 0;
-}
-
-static int rtc_dev_fasync(int fd, struct file *file, int on)
-{
-	struct rtc_device *rtc = to_rtc_device(file->private_data);
-	return fasync_helper(fd, file, on, &rtc->async_queue);
 }
 
 static struct file_operations rtc_dev_fops = {

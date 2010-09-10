@@ -6,6 +6,8 @@
 #include <linux/linkage.h>
 
 struct vm_area_struct;
+static inline void *kmalloc(size_t size, gfp_t flags);
+extern void kfree(const void *);
 
 /*
  * GFP bitmasks..
@@ -113,8 +115,9 @@ static inline struct page *alloc_pages_thisnode(int nid, gfp_t gfp_mask,
 						unsigned int order)
 {
 	struct zonelist *zl;
-	struct zonelist thisnode_zl;
-	int i;
+	struct zonelist *thisnode_zl;
+	int i, j;
+	struct page *hugepage = NULL;
 
 	if (unlikely(order >= MAX_ORDER))
 		return NULL;
@@ -131,14 +134,22 @@ static inline struct page *alloc_pages_thisnode(int nid, gfp_t gfp_mask,
 	if (zl->zones[0]->zone_pgdat->node_id != nid)
 		return NULL;
 
-	for (i = 0; zl->zones[i] != NULL; i++) {
-		if (zl->zones[i]->zone_pgdat->node_id != nid)
-			break;
-		thisnode_zl.zones[i] = zl->zones[i];
-	}
-	thisnode_zl.zones[i] = NULL;
+	thisnode_zl = (struct zonelist *)kmalloc(sizeof(struct zonelist), GFP_ATOMIC);
+	if (!thisnode_zl)
+		return NULL;
 
-	return __alloc_pages(gfp_mask, order, &thisnode_zl);
+	/* make zonelist with every zone on this node and null terminate */
+	for (i = 0, j = 0; zl->zones[i] != NULL; i++) {
+		if (zl->zones[i]->zone_pgdat->node_id == nid)
+			thisnode_zl->zones[j++] = zl->zones[i];
+	}
+	thisnode_zl->zones[j] = NULL;
+
+	hugepage = __alloc_pages(gfp_mask, order, thisnode_zl);
+	kfree(thisnode_zl);
+
+
+	return hugepage;
 }
 
 static inline struct page *alloc_pages_node(int nid, gfp_t gfp_mask,

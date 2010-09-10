@@ -38,8 +38,8 @@ static struct proc_dir_entry *capabilities_intf;
 static int privcmd_enforce_singleshot_mapping(struct vm_area_struct *vma);
 #endif
 
-static int privcmd_ioctl(struct inode *inode, struct file *file,
-			 unsigned int cmd, unsigned long data)
+static long privcmd_ioctl(struct file *file,
+			  unsigned int cmd, unsigned long data)
 {
 	int ret = -ENOSYS;
 	void __user *udata = (void __user *) data;
@@ -248,8 +248,8 @@ static int privcmd_enforce_singleshot_mapping(struct vm_area_struct *vma)
 #endif
 
 static struct file_operations privcmd_file_ops = {
-	.ioctl = privcmd_ioctl,
-	.mmap  = privcmd_mmap,
+	.unlocked_ioctl = privcmd_ioctl,
+	.mmap = privcmd_mmap,
 };
 
 static int capabilities_read(char *page, char **start, off_t off,

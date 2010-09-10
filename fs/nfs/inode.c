@@ -709,7 +709,7 @@ int nfs_revalidate_mapping(struct inode *inode, struct address_space *mapping)
 		nfs_inc_stats(inode, NFSIOS_DATAINVALIDATE);
 		if (S_ISREG(inode->i_mode))
 			nfs_sync_mapping(mapping);
-		invalidate_inode_pages2(mapping);
+		invalidate_inode_pages3(mapping);
 
 		spin_lock(&inode->i_lock);
 		nfsi->cache_validity &= ~NFS_INO_INVALID_DATA;

@@ -923,9 +923,21 @@ ptrace_start(long pid, long request,
 	 *  (void) utrace_regset(child, engine, utrace_native_view(child), 0);
 	 */
 	wait_task_inactive(child);
-
-	if (child->exit_state)
-		goto out_tsk;
+	while (child->state != TASK_TRACED && child->state != TASK_STOPPED) {
+		if (child->exit_state)
+			goto out_tsk;
+		/*
+		 * This is a dismal kludge, but it only comes up on ia64.
+		 * It might be blocked inside regset->writeback() called
+		 * from ptrace_report(), when it's on its way to quiescing
+		 * in TASK_TRACED real soon now.  We actually need that
+		 * writeback call to have finished, before a PTRACE_PEEKDATA
+		 * here, for example.  So keep waiting until it's really there.
+		 */
+		yield();
+		wait_task_inactive(child);
+	}
+	wait_task_inactive(child);
 
 	*childp = child;
 	*enginep = engine;
