@@ -2014,6 +2014,8 @@ static int do_tkill(int tgid, int pid, int sig)
 	int error;
 	struct siginfo info;
 	struct task_struct *p;
+	unsigned long flags;
+	int acquired_tasklist_lock = 0;
 
 	error = -ESRCH;
 	info.si_signo = sig;
@@ -2022,22 +2024,31 @@ static int do_tkill(int tgid, int pid, int sig)
 	info.si_pid = current->tgid;
 	info.si_uid = current->uid;
 
-	read_lock(&tasklist_lock);
+	rcu_read_lock();
+	if (unlikely(sig_needs_tasklist(sig))) {
+		read_lock(&tasklist_lock);
+		acquired_tasklist_lock = 1;
+	}
 	p = find_task_by_pid(pid);
 	if (p && (tgid <= 0 || p->tgid == tgid)) {
 		error = check_kill_permission(sig, &info, p);
 		/*
 		 * The null signal is a permissions and process existence
 		 * probe.  No signal is actually delivered.
+	 	 *
+		 * If lock_task_sighand() fails we pretend the task dies
+		 * after receiving the signal. The window is tiny, and the
+		 * signal is private anyway.
 		 */
-		if (!error && sig && p->sighand) {
-			spin_lock_irq(&p->sighand->siglock);
+		if (!error && sig && lock_task_sighand(p, &flags)) {
 			handle_stop_signal(sig, p);
 			error = specific_send_sig_info(sig, &info, p);
-			spin_unlock_irq(&p->sighand->siglock);
+			unlock_task_sighand(p, &flags);
 		}
 	}
-	read_unlock(&tasklist_lock);
+	if (unlikely(acquired_tasklist_lock))
+		read_unlock(&tasklist_lock);
+	rcu_read_unlock();
 
 	return error;
 }

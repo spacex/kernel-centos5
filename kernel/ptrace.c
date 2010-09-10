@@ -1065,7 +1065,7 @@ ptrace_common(long request, struct task_struct *child,
 			flags |= UTRACE_ACTION_BLOCKSTEP;
 		ret = ptrace_update(child, state, flags, 1);
 		if (ret)
-			BUG_ON(ret != -ESRCH);
+			BUG_ON(ret != -ESRCH && ret != -EALREADY);
 		ret = 0;
 		break;
 
@@ -1079,7 +1079,7 @@ ptrace_common(long request, struct task_struct *child,
 		state->options = data;
 		ret = ptrace_update(child, state, UTRACE_ACTION_QUIESCE, 1);
 		if (ret)
-			BUG_ON(ret != -ESRCH);
+			BUG_ON(ret != -ESRCH && ret != -EALREADY);
 		ret = 0;
 		break;
 	}

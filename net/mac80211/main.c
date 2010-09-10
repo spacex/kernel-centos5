@@ -526,20 +526,37 @@ static int ieee80211_stop(struct net_device *dev)
 		synchronize_rcu();
 		skb_queue_purge(&sdata->u.sta.skb_queue);
 
-		if (local->scan_dev == sdata->dev) {
-			if (!local->ops->hw_scan) {
-				local->sta_sw_scanning = 0;
-				cancel_delayed_work(&local->scan_work);
-			} else
-				local->sta_hw_scanning = 0;
-		}
-
 		sdata->u.sta.flags &= ~IEEE80211_STA_PRIVACY_INVOKED;
 		kfree(sdata->u.sta.extra_ie);
 		sdata->u.sta.extra_ie = NULL;
 		sdata->u.sta.extra_ie_len = 0;
 		/* fall through */
 	default:
+		if (local->scan_dev == sdata->dev) {
+			if (!local->ops->hw_scan)
+				cancel_rearming_delayed_work(&local->scan_work);
+			/*
+			 * The software scan can no longer run now, so we can
+			 * clear out the scan_dev reference. However, the
+			 * hardware scan may still be running. The complete
+			 * function must be prepared to handle a NULL value.
+			 */
+			local->scan_dev = NULL;
+			/*
+			 * The memory barrier guarantees that another CPU
+			 * that is hardware-scanning will now see the fact
+			 * that this interface is gone.
+			 */
+			smp_mb();
+			/*
+			 * If software scanning, complete the scan but since
+			 * the scan_dev is NULL already don't send out a
+			 * scan event to userspace -- the scan is incomplete.
+			 */
+			if (local->sta_sw_scanning)
+				ieee80211_scan_completed(&local->hw);
+		}
+
 		conf.vif = &sdata->vif;
 		conf.type = sdata->vif.type;
 		conf.mac_addr = dev->dev_addr;

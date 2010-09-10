@@ -3317,16 +3317,10 @@ void ieee80211_sta_work(void *ptr)
 	if (ifsta->state != IEEE80211_AUTHENTICATE &&
 	    ifsta->state != IEEE80211_ASSOCIATE &&
 	    test_and_clear_bit(IEEE80211_STA_REQ_SCAN, &ifsta->request)) {
-		int rc;
-
 		if (ifsta->scan_ssid_len)
-			rc = ieee80211_sta_start_scan(dev, ifsta->scan_ssid, ifsta->scan_ssid_len);
+			ieee80211_sta_start_scan(dev, ifsta->scan_ssid, ifsta->scan_ssid_len);
 		else
-			rc = ieee80211_sta_start_scan(dev, NULL, 0);
-
-		if (rc)
-			ieee80211_scan_completed(local_to_hw(local));
-
+			ieee80211_sta_start_scan(dev, NULL, 0);
 		return;
 	}
 
@@ -3810,9 +3804,20 @@ void ieee80211_scan_completed(struct ieee80211_hw *hw)
 	struct ieee80211_sub_if_data *sdata;
 	union iwreq_data wrqu;
 
+	WARN_ON(!local->sta_hw_scanning && !local->sta_sw_scanning);
+	if (!local->sta_hw_scanning && !local->sta_sw_scanning)
+		return;
+
 	local->last_scan_completed = jiffies;
 	memset(&wrqu, 0, sizeof(wrqu));
-	wireless_send_event(dev, SIOCGIWSCAN, &wrqu, NULL);
+
+	/*
+	 * local->scan_dev could have been NULLed by the interface
+	 * down code in case we were scanning on an interface that is
+	 * being taken down.
+	 */
+	if (dev)
+		wireless_send_event(dev, SIOCGIWSCAN, &wrqu, NULL);
 
 	if (local->sta_hw_scanning) {
 		local->sta_hw_scanning = 0;
@@ -3884,7 +3889,10 @@ void ieee80211_sta_scan_work(void *l)
 	int skip;
 	unsigned long next_delay = 0;
 
-	if (!local->sta_sw_scanning)
+	/*
+	 * Avoid re-scheduling when the sdata is going away.
+	 */
+	if (!netif_running(sdata->dev))
 		return;
 
 	switch (local->scan_state) {
@@ -3963,9 +3971,8 @@ void ieee80211_sta_scan_work(void *l)
 		break;
 	}
 
-	if (local->sta_sw_scanning)
-		queue_delayed_work(local->hw.workqueue, &local->scan_work,
-				   next_delay);
+	queue_delayed_work(local->hw.workqueue, &local->scan_work,
+			   next_delay);
 }
 
 
@@ -4002,13 +4009,16 @@ static int ieee80211_sta_start_scan(struct net_device *dev,
 	}
 
 	if (local->ops->hw_scan) {
-		int rc = local->ops->hw_scan(local_to_hw(local),
-					     ssid, ssid_len);
-		if (!rc) {
-			local->sta_hw_scanning = 1;
-			local->scan_dev = dev;
+		int rc;
+
+		local->sta_hw_scanning = 1;
+		rc = local->ops->hw_scan(local_to_hw(local), ssid, ssid_len);
+		if (rc) {
+			local->sta_hw_scanning = 0;
+			return rc;
 		}
-		return rc;
+		local->scan_dev = dev;
+		return 0;
 	}
 
 	local->sta_sw_scanning = 1;

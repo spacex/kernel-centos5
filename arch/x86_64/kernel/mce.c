@@ -218,7 +218,6 @@ void do_machine_check(struct pt_regs * regs, long error_code)
 		mce_get_rip(&m, regs);
 		if (error_code >= 0)
 			rdtscll(m.tsc);
-		wrmsrl(MSR_IA32_MC0_STATUS + i*4, 0);
 		if (error_code != -2)
 			mce_log(&m);
 
@@ -270,6 +269,9 @@ void do_machine_check(struct pt_regs * regs, long error_code)
  out:
 	/* Last thing done in the machine check exception to clear state. */
 	wrmsrl(MSR_IA32_MCG_STATUS, 0);
+	for (i = 0; i < banks; i++)
+		wrmsrl(MSR_IA32_MC0_STATUS + i*4, 0);
+
  out2:
 	atomic_dec(&mce_entry);
 }

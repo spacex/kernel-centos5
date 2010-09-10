@@ -1033,17 +1033,17 @@ __cpuinit int unsynchronized_tsc(void)
 		return 1;
 #endif
 
-	/* AMD systems with constant TSCs have synchronized clocks */
-	if ((boot_cpu_data.x86_vendor == X86_VENDOR_AMD) &&
-		(boot_cpu_has(X86_FEATURE_CONSTANT_TSC)))
-	return 0;
+	/* AMD or Intel systems with constant TSCs have synchronized clocks */
+	if (boot_cpu_has(X86_FEATURE_NONSTOP_TSC))
+		return 0;
 
 	/* Most intel systems have synchronized TSCs except for
 	   multi node systems */
  	if (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL) {
 #ifdef CONFIG_ACPI
 		/* But TSC doesn't tick in C3 so don't use it there */
-		if (acpi_fadt.length > 0 && acpi_fadt.plvl3_lat < 1000)
+		if (acpi_fadt.length > 0 && acpi_fadt.plvl3_lat < 1000 &&
+		    max_cstate > 1)
 			return 1;
 #endif
  		return 0;

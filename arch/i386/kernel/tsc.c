@@ -10,7 +10,7 @@
 #include <linux/jiffies.h>
 #include <linux/init.h>
 #include <linux/dmi.h>
-
+#include <linux/acpi.h>
 #include <asm/delay.h>
 #include <asm/tsc.h>
 #include <asm/delay.h>
@@ -451,12 +451,22 @@ out:
  */
 static __init int unsynchronized_tsc(void)
 {
-	/*
-	 * Intel systems are normally all synchronized.
-	 * Exceptions must mark TSC as unstable:
-	 */
-	if (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL)
+	/* AMD systems with constant TSCs have synchronized clocks */
+	if ((boot_cpu_data.x86_vendor == X86_VENDOR_AMD) &&
+	    (boot_cpu_has(X86_FEATURE_CONSTANT_TSC)))
+		return 0;
+
+	/* Most intel systems have synchronized TSCs except for
+	   multi node systems */
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL) {
+#ifdef CONFIG_ACPI
+		/* But TSC doesn't tick in C3 so don't use it there */
+		if (acpi_fadt.length > 0 && acpi_fadt.plvl3_lat < 1000 &&
+		    max_cstate > 1)
+			return 1;
+#endif
  		return 0;
+	}
 
 	/* assume multi socket systems are not synchronized: */
  	return num_possible_cpus() > 1;

@@ -42,6 +42,7 @@ const unsigned char scsi_command_size[8] =
 EXPORT_SYMBOL(scsi_command_size);
 
 #define BLK_DEFAULT_TIMEOUT	(60 * HZ)
+#define BLK_MIN_TIMEOUT		(7 * HZ)
 
 #include <scsi/sg.h>
 
@@ -311,6 +312,8 @@ static int sg_io(struct file *file, request_queue_t *q,
 		rq->timeout = q->sg_timeout;
 	if (!rq->timeout)
 		rq->timeout = BLK_DEFAULT_TIMEOUT;
+	if (rq->timeout < BLK_MIN_TIMEOUT)
+		rq->timeout = BLK_MIN_TIMEOUT;
 
 	rq->retries = 0;
 

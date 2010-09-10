@@ -128,6 +128,9 @@ static void __cpuinit init_intel(struct cpuinfo_x86 *c)
 			set_bit(X86_FEATURE_ARCH_PERFMON, c->x86_capability);
 	}
 
+	if (cpuid_eax(0x80000000) >= 0x80000007) 
+		c->x86_power = cpuid_edx(0x80000007);
+
 	/* SEP CPUID bug: Pentium Pro reports SEP but doesn't have it until model 3 mask 3 */
 	if ((c->x86<<8 | c->x86_model<<4 | c->x86_mask) < 0x633)
 		clear_bit(X86_FEATURE_SEP, c->x86_capability);
@@ -195,6 +198,14 @@ static void __cpuinit init_intel(struct cpuinfo_x86 *c)
 	if ((c->x86 == 0xf && c->x86_model >= 0x03) ||
 		(c->x86 == 0x6 && c->x86_model >= 0x0e))
 		set_bit(X86_FEATURE_CONSTANT_TSC, c->x86_capability);
+        /*
+         * c->x86_power is 8000_0007 edx. Bit 8 is TSC runs at constant rate
+         * with P/T states and does not stop in deep C-states
+         */
+        if (c->x86_power & (1 << 8)) {
+                set_bit(X86_FEATURE_CONSTANT_TSC,c->x86_capability);
+                set_bit(X86_FEATURE_NONSTOP_TSC,c->x86_capability);
+        }
 }
 
 

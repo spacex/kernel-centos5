@@ -903,13 +903,12 @@ qla24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
     uint32_t dwords)
 {
 	int ret;
-	uint32_t liter, miter;
+	uint32_t liter;
 	uint32_t sec_mask, rest_addr;
 	uint32_t fdata, findex, cnt;
 	struct device_reg_24xx __iomem *reg = &ha->iobase->isp24;
 	dma_addr_t optrom_dma;
 	void *optrom = NULL;
-	uint32_t *s, *d;
 
 	ret = QLA_SUCCESS;
 
@@ -971,9 +970,7 @@ qla24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
 		/* Go with burst-write. */
 		if (optrom && (liter + OPTROM_BURST_DWORDS) <= dwords) {
 			/* Copy data to DMA'ble buffer. */
-			for (miter = 0, s = optrom, d = dwptr;
-			    miter < OPTROM_BURST_DWORDS; miter++, s++, d++)
-				*s = cpu_to_le32(*d);
+			memcpy(optrom, dwptr, OPTROM_BURST_SIZE);
 
 			ret = qla2x00_load_ram(ha, optrom_dma,
 			    flash_data_to_access_addr(faddr),

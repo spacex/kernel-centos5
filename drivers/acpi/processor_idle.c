@@ -362,7 +362,8 @@ static void acpi_processor_idle(void)
 
 #ifdef CONFIG_GENERIC_TIME
 		/* TSC halts in C2, so notify users */
-		mark_tsc_unstable();
+		if (!boot_cpu_has(X86_FEATURE_NONSTOP_TSC))
+			mark_tsc_unstable();
 #endif
 		/* Re-enable interrupts */
 		local_irq_enable();
@@ -416,7 +417,8 @@ static void acpi_processor_idle(void)
 
 #ifdef CONFIG_GENERIC_TIME
 		/* TSC halts in C3, so notify users */
-		mark_tsc_unstable();
+		if (!boot_cpu_has(X86_FEATURE_NONSTOP_TSC))
+			mark_tsc_unstable();
 #endif
 		/* Re-enable interrupts */
 		local_irq_enable();

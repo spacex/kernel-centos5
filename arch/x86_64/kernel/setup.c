@@ -889,8 +889,10 @@ static void __init init_amd(struct cpuinfo_x86 *c)
 	display_cacheinfo(c);
 
 	/* c->x86_power is 8000_0007 edx. Bit 8 is constant TSC */
-	if (c->x86_power & (1<<8))
+	if (c->x86_power & (1<<8)) {
 		set_bit(X86_FEATURE_CONSTANT_TSC, &c->x86_capability);
+		set_bit(X86_FEATURE_NONSTOP_TSC, &c->x86_capability);
+	}
 
 	/* Multi core CPU? */
 	if (c->extended_cpuid_level >= 0x80000008)
@@ -994,9 +996,13 @@ static void srat_detect_node(void)
 static void __cpuinit init_intel(struct cpuinfo_x86 *c)
 {
 	/* Cache sizes */
-	unsigned n;
+	unsigned n,dummy;
 
 	init_intel_cacheinfo(c);
+
+        if (c->extended_cpuid_level >= 0x80000007)
+                cpuid(0x80000007, &dummy, &dummy, &dummy, &c->x86_power);
+
 	if (c->cpuid_level > 9 ) {
 		unsigned eax = cpuid_eax(10);
 		/* Check for version and the number of counters */
@@ -1021,6 +1027,12 @@ static void __cpuinit init_intel(struct cpuinfo_x86 *c)
 	if ((c->x86 == 0xf && c->x86_model >= 0x03) ||
 	    (c->x86 == 0x6 && c->x86_model >= 0x0e))
 		set_bit(X86_FEATURE_CONSTANT_TSC, &c->x86_capability);
+
+	if (c->x86_power & (1<<8)) {
+		set_bit(X86_FEATURE_CONSTANT_TSC, &c->x86_capability);
+		set_bit(X86_FEATURE_NONSTOP_TSC, &c->x86_capability);
+	}
+
 	if (c->x86 == 15)
 		set_bit(X86_FEATURE_SYNC_RDTSC, &c->x86_capability);
 	else
@@ -1248,7 +1260,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		"constant_tsc", NULL, NULL,
 		"up", NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 		"ida", NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+		"nonstop_tsc", NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 
 		/* Intel-defined (#2) */
 		"pni", NULL, NULL, "monitor", "ds_cpl", "vmx", "smx", "est",

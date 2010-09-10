@@ -596,7 +596,7 @@ static ssize_t read_rbu_image_type(struct kobject *kobj, char *buffer,
 {
 	int size = 0;
 	if (!pos)
-		size = sprintf(buffer, "%s\n", image_type);
+		size = scnprintf(buffer, count, "%s\n", image_type);
 	return size;
 }
 
@@ -666,7 +666,7 @@ static ssize_t read_rbu_packet_size(struct kobject *kobj, char *buffer,
 	int size = 0;
 	if (!pos) {
 		spin_lock(&rbu_data.lock);
-		size = sprintf(buffer, "%lu\n", rbu_data.packetsize);
+		size = scnprintf(buffer, count, "%lu\n", rbu_data.packetsize);
 		spin_unlock(&rbu_data.lock);
 	}
 	return size;

@@ -144,9 +144,9 @@ struct ixgbe_ring {
 		      * offset associated with this ring, which is different
 		      * for DCE and RSS modes */
 	struct ixgbe_queue_stats stats;
-	u8 v_idx; /* maps directly to the index for this ring in the hardware
-		   * vector array, can also be used for finding the bit in EICR
-		   * and friends that represents the vector for this ring */
+	u16 v_idx; /* maps directly to the index for this ring in the hardware
+	           * vector array, can also be used for finding the bit in EICR
+	           * and friends that represents the vector for this ring */
 
 	u32 eims_value;
 	u16 itr_register;
@@ -280,6 +280,9 @@ struct ixgbe_adapter {
 
 	unsigned long state;
 	u64 tx_busy;
+
+	unsigned int tx_ring_count;
+	unsigned int rx_ring_count;
 };
 
 enum ixbge_state_t {
@@ -307,5 +310,16 @@ extern int ixgbe_setup_rx_resources(struct ixgbe_adapter *adapter,
 				    struct ixgbe_ring *rxdr);
 extern int ixgbe_setup_tx_resources(struct ixgbe_adapter *adapter,
 				    struct ixgbe_ring *txdr);
+extern void ixgbe_free_rx_resources(struct ixgbe_adapter *adapter,
+                                    struct ixgbe_ring *rxdr);
+extern void ixgbe_free_tx_resources(struct ixgbe_adapter *adapter,
+                                    struct ixgbe_ring *txdr);
+extern int ixgbe_open(struct net_device *netdev);
+extern int ixgbe_close(struct net_device *netdev);
+extern void ixgbe_reset_interrupt_capability(struct ixgbe_adapter *adapter);
+extern void ixgbe_napi_disable_all(struct ixgbe_adapter *adapter);
+extern int __devinit ixgbe_init_interrupt_scheme(struct ixgbe_adapter *adapter);
+extern int ixgbe_napi_add_all(struct ixgbe_adapter *adapter);
+extern void ixgbe_napi_del_all(struct ixgbe_adapter *adapter);
 
 #endif /* _IXGBE_H_ */

@@ -74,6 +74,7 @@
 #define X86_FEATURE_FXSAVE_LEAK (3*32+10) /* FXSAVE leaks FOP/FIP/FOP */
 #define X86_FEATURE_ARCH_PERFMON (3*32+11) /* Intel Architectural PerfMon */
 #define X86_FEATURE_IDA		(3*32+16) /* Intel Dynamic Acceleration */
+#define X86_FEATURE_NONSTOP_TSC (3*32+24) /* TSC does not stop in C states */
 
 /* Intel-defined CPU features, CPUID level 0x00000001 (ecx), word 4 */
 #define X86_FEATURE_XMM3	(4*32+ 0) /* Streaming SIMD Extensions-3 */

@@ -672,14 +672,8 @@ int nfs_attribute_timeout(struct inode *inode)
 
 	if (nfs_have_delegation(inode, FMODE_READ))
 		return 0;
-	/*
-	 * Special case: if the attribute timeout is set to 0, then we
-	 *               treat the cache as having expired (unless we
-	 *               have a delegation).
-	 */
-	if (nfsi->attrtimeo == 0)
-		return 1;
-	return time_after(jiffies, nfsi->read_cache_jiffies+nfsi->attrtimeo);
+	return !time_in_range_open(jiffies, nfsi->read_cache_jiffies,
+			           nfsi->read_cache_jiffies + nfsi->attrtimeo);
 }
 
 /**
@@ -1010,7 +1004,8 @@ static int nfs_update_inode(struct inode *inode, struct nfs_fattr *fattr)
 		nfs_inc_stats(inode, NFSIOS_ATTRINVALIDATE);
 		nfsi->attrtimeo = NFS_MINATTRTIMEO(inode);
 		nfsi->attrtimeo_timestamp = jiffies;
-	} else if (time_after(jiffies, nfsi->attrtimeo_timestamp+nfsi->attrtimeo)) {
+	} else if (!time_in_range_open(jiffies, nfsi->attrtimeo_timestamp,
+				nfsi->attrtimeo_timestamp + nfsi->attrtimeo)) {
 		if ((nfsi->attrtimeo <<= 1) > NFS_MAXATTRTIMEO(inode))
 			nfsi->attrtimeo = NFS_MAXATTRTIMEO(inode);
 		nfsi->attrtimeo_timestamp = jiffies;
