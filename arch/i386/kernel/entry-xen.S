@@ -443,10 +443,6 @@ restore_nocheck_notrace:
 1:	iret
 .section .fixup,"ax"
 iret_exc:
-#ifndef CONFIG_XEN
-	TRACE_IRQS_ON
-	sti
-#endif
 	pushl $0			# no error code
 	pushl $do_iret_error
 	jmp error_code

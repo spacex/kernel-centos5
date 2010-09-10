@@ -384,8 +384,6 @@ restore_nocheck_notrace:
 1:	iret
 .section .fixup,"ax"
 iret_exc:
-	TRACE_IRQS_ON
-	sti
 	pushl $0			# no error code
 	pushl $do_iret_error
 	jmp error_code

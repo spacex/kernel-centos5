@@ -42,9 +42,13 @@ struct usb_lcd {
 	size_t			bulk_in_size;		/* the size of the receive buffer */
 	__u8			bulk_in_endpointAddr;	/* the address of the bulk in endpoint */
 	__u8			bulk_out_endpointAddr;	/* the address of the bulk out endpoint */
-	struct kref             kref;
+	struct kref		kref;
+	struct semaphore	limit_sem;		/* to stop writes at full throttle from
+							 * using up all RAM */
 };
 #define to_lcd_dev(d) container_of(d, struct usb_lcd, kref)
+
+#define USB_LCD_CONCURRENT_WRITES	5
 
 static struct usb_driver lcd_driver;
 
@@ -183,12 +187,13 @@ static void lcd_write_bulk_callback(struct urb *urb, struct pt_regs *regs)
 	/* free up our allocated buffer */
 	usb_buffer_free(urb->dev, urb->transfer_buffer_length,
 			urb->transfer_buffer, urb->transfer_dma);
+	up(&dev->limit_sem);
 }
 
 static ssize_t lcd_write(struct file *file, const char __user * user_buffer, size_t count, loff_t *ppos)
 {
 	struct usb_lcd *dev;
-        int retval = 0;
+        int retval = 0, r;
 	struct urb *urb = NULL;
 	char *buf = NULL;
 	
@@ -197,11 +202,17 @@ static ssize_t lcd_write(struct file *file, const char __user * user_buffer, siz
 	/* verify that we actually have some data to write */
 	if (count == 0)
 		goto exit;
+		
+	r = down_interruptible(&dev->limit_sem);
+	if (r < 0)
+		return -EINTR;
 
 	/* create a urb, and a buffer for it, and copy the data to the urb */
 	urb = usb_alloc_urb(0, GFP_KERNEL);
-	if (!urb)
-		return -ENOMEM;
+	if (!urb) {
+		retval = -ENOMEM;
+		goto err_no_buf;
+	}
 	
 	buf = usb_buffer_alloc(dev->udev, count, GFP_KERNEL, &urb->transfer_dma);
 	if (!buf) {
@@ -236,6 +247,8 @@ exit:
 error:
 	usb_buffer_free(dev->udev, count, buf, urb->transfer_dma);
 	usb_free_urb(urb);
+err_no_buf:
+	up(&dev->limit_sem);
 	return retval;
 }
 
@@ -274,6 +287,7 @@ static int lcd_probe(struct usb_interface *interface, const struct usb_device_id
 		goto error;
 	}
 	kref_init(&dev->kref);
+	sema_init(&dev->limit_sem, USB_LCD_CONCURRENT_WRITES);
 
 	dev->udev = usb_get_dev(interface_to_usbdev(interface));
 	dev->interface = interface;

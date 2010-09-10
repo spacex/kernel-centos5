@@ -157,6 +157,8 @@ void __cpuinit check_efer(void)
         }       
 }
 
+unsigned long kernel_eflags;
+
 /*
  * cpu_init() initializes state that is per-CPU. Some data is already
  * initialized (naturally) in the bootstrap process, such as the GDT
@@ -268,4 +270,6 @@ void __cpuinit cpu_init (void)
 	set_debugreg(0UL, 7);
 
 	fpu_init(); 
+
+	raw_local_save_flags(kernel_eflags);
 }

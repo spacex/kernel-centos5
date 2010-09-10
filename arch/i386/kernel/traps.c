@@ -639,7 +639,9 @@ check_lazy_exec_limit(int cpu, struct pt_regs *regs, long error_code)
  */
 fastcall void do_iret_error(struct pt_regs *regs, long error_code)
 {
-	int ok = check_lazy_exec_limit(get_cpu(), regs, error_code);
+	int ok;
+	local_irq_enable();
+	ok = check_lazy_exec_limit(get_cpu(), regs, error_code);
 	put_cpu();
 	if (!ok && notify_die(DIE_TRAP, "iret exception", regs,
 			      error_code, 32, SIGSEGV) != NOTIFY_STOP) {

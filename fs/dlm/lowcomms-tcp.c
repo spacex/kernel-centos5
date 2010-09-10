@@ -499,10 +499,15 @@ static int accept_from_sock(struct connection *con)
 			init_rwsem(&othercon->sock_sem);
 			set_bit(CF_IS_OTHERCON, &othercon->flags);
 			newcon->othercon = othercon;
+			othercon->sock = newsock;
+			newsock->sk->sk_user_data = othercon;
+			add_sock(newsock, othercon);	
 		}
-		othercon->sock = newsock;
-		newsock->sk->sk_user_data = othercon;
-		add_sock(newsock, othercon);
+		else {
+			printk("Extra connection from node %d attempted\n", nodeid);
+			result = -EAGAIN;
+			goto accept_err;
+		}
 	}
 	else {
 		newsock->sk->sk_user_data = newcon;
