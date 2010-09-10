@@ -707,6 +707,9 @@ running once the system is up.
 	ip2=		[HW] Set IO/IRQ pairs for up to 4 IntelliPort boards
 			See comment before ip2_setup() in drivers/char/ip2.c.
 
+	ipmi_dev_order=	[IA-32,X86_64]
+			See Documentation/IPMI.txt.
+
 	ips=		[HW,SCSI] Adaptec / IBM ServeRAID controller
 			See header of drivers/scsi/ips.c.
 

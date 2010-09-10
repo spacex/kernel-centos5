@@ -612,13 +612,11 @@ void ipoib_cm_handle_rx_wc(struct net_device *dev, struct ib_wc *wc)
 	}
 
 	if (wc->byte_len < SKB_TSHOLD) {
-		int dlen = wc->byte_len - IPOIB_ENCAP_LEN;
+		int dlen = wc->byte_len;
 
 		small_skb = dev_alloc_skb(dlen);
 		if (small_skb) {
-			small_skb->protocol = ((struct ipoib_header *)skb->data)->proto;
-			skb_copy_from_linear_data_offset(skb, IPOIB_ENCAP_LEN,
-							 small_skb->data, dlen);
+			skb_copy_from_linear_data(skb, small_skb->data, dlen);
 			skb_put(small_skb, dlen);
 			skb = small_skb;
 			goto copied;
@@ -647,11 +645,11 @@ void ipoib_cm_handle_rx_wc(struct net_device *dev, struct ib_wc *wc)
 
 	skb_put_frags(skb, IPOIB_CM_HEAD_SIZE, wc->byte_len, newskb);
 
+copied:
 	skb->protocol = ((struct ipoib_header *) skb->data)->proto;
 	skb_reset_mac_header(skb);
 	skb_pull(skb, IPOIB_ENCAP_LEN);
 
-copied:
 	dev->last_rx = jiffies;
 	++priv->stats.rx_packets;
 	priv->stats.rx_bytes += skb->len;

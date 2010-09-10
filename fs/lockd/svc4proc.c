@@ -103,7 +103,7 @@ nlm4svc_proc_test(struct svc_rqst *rqstp, struct nlm_args *argp,
 			rpc_drop_reply :rpc_success;
 
 	/* Now check for conflicting locks */
-	resp->status = nlmsvc_testlock(rqstp, file, &argp->lock,
+	resp->status = nlmsvc_testlock(rqstp, file, host, &argp->lock,
 				       &resp->lock, &resp->cookie);
 	if (resp->status == nlm_drop_reply)
 		return rpc_drop_reply;
@@ -149,7 +149,7 @@ nlm4svc_proc_lock(struct svc_rqst *rqstp, struct nlm_args *argp,
 #endif
 
 	/* Now try to lock the file */
-	resp->status = nlmsvc_lock(rqstp, file, &argp->lock,
+	resp->status = nlmsvc_lock(rqstp, file, host, &argp->lock,
 					argp->block, &argp->cookie);
 	if (resp->status == nlm_drop_reply)
 		return rpc_drop_reply;

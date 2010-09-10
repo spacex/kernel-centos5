@@ -926,6 +926,9 @@ int try_to_unmap(struct page *page, int migration)
 
 	BUG_ON(!PageLocked(page));
 
+	if (PageXpmem(page))
+		return SWAP_FAIL;
+
 	if (PageAnon(page))
 		ret = try_to_unmap_anon(page, migration);
 	else

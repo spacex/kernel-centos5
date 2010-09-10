@@ -86,6 +86,7 @@
 #define PG_reclaim		17	/* To be reclaimed asap */
 #define PG_nosave_free		18	/* Free, should not be written */
 #define PG_buddy		19	/* Page is free, on buddy lists */
+#define PG_xpmem		27	/* Testing for xpmem. */
 
 /* PG_owner_priv_1 users should have descriptive aliases */
 #define PG_checked              PG_owner_priv_1 /* Used by some filesystems */
@@ -271,6 +272,14 @@
 #define PageUncached(page)	test_bit(PG_uncached, &(page)->flags)
 #define SetPageUncached(page)	set_bit(PG_uncached, &(page)->flags)
 #define ClearPageUncached(page)	clear_bit(PG_uncached, &(page)->flags)
+
+#if defined(CONFIG_IA64) || defined(CONFIG_X86_64)
+#define PageXpmem(page) test_bit(PG_xpmem, &(page)->flags)
+#define SetPageXpmem(page) set_bit(PG_xpmem, &(page)->flags)
+#define ClearPageXpmem(page) clear_bit(PG_xpmem, &(page)->flags)
+#else
+#define PageXpmem(page)	0
+#endif
 
 struct page;	/* forward declaration */
 

@@ -186,11 +186,12 @@ extern struct nlm_host *nlm_find_client(void);
  * Server-side lock handling
  */
 u32		  nlmsvc_lock(struct svc_rqst *, struct nlm_file *,
-					struct nlm_lock *, int, struct nlm_cookie *);
+				struct nlm_host *, struct nlm_lock *, int,
+				struct nlm_cookie *);
 u32		  nlmsvc_unlock(struct nlm_file *, struct nlm_lock *);
 u32		  nlmsvc_testlock(struct svc_rqst *, struct nlm_file *,
-				  struct nlm_lock *, struct nlm_lock *,
-				  struct nlm_cookie *);
+				  struct nlm_host *, struct nlm_lock *,
+				  struct nlm_lock *, struct nlm_cookie *);
 u32		  nlmsvc_cancel_blocked(struct nlm_file *, struct nlm_lock *);
 unsigned long	  nlmsvc_retry_blocked(void);
 void		  nlmsvc_traverse_blocks(struct nlm_host *, struct nlm_file *,

@@ -658,3 +658,17 @@ registered.
 
 Note that if you have ACPI enabled, the system will prefer using ACPI to
 power off.
+
+
+BMC Device Ordering
+-------------------
+
+To control the order in which device nodes are created there is a kernel
+parameter named, "ipmi_dev_order".  By default dmi_scan.c creates ipmi 
+device nodes in LIFO order.  Users can specify, "ipmi_dev_order=2", in 
+the kernel command line to direct the system to create the device nodes
+in FIFO order.  
+
+Note that this option is only available on IA-32, and X86_64.  The option
+is only important to users on multinode systems.
+

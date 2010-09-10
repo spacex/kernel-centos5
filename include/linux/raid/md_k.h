@@ -314,6 +314,9 @@ static inline char * mdname (mddev_t * mddev)
 #define ITERATE_RDEV(mddev,rdev,tmp)					\
 	ITERATE_RDEV_GENERIC((mddev)->disks,rdev,tmp)
 
+#define rdev_for_each_rcu(rdev, mddev)					\
+	list_for_each_entry_rcu(rdev, &((mddev)->disks), same_set)
+
 /*
  * Iterates through 'pending RAID disks'
  */

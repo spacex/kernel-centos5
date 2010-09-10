@@ -424,6 +424,14 @@ static struct ehca_qp *internal_create_qp(
 	u32 swqe_size = 0, rwqe_size = 0, ib_qp_num;
 	unsigned long flags;
 
+	if (!atomic_add_unless(&shca->num_qps, 1, ehca_max_qp)) {
+		ehca_err(pd->device, "Unable to create QP, max number of %i "
+			 "QPs reached.", ehca_max_qp);
+		ehca_err(pd->device, "To increase the maximum number of QPs "
+			 "use the number_of_qps module parameter.\n");
+		return ERR_PTR(-ENOSPC);
+	}
+
 	memset(&parms, 0, sizeof(parms));
 	qp_type = init_attr->qp_type;
 
@@ -431,6 +439,7 @@ static struct ehca_qp *internal_create_qp(
 		init_attr->sq_sig_type != IB_SIGNAL_ALL_WR) {
 		ehca_err(pd->device, "init_attr->sg_sig_type=%x not allowed",
 			 init_attr->sq_sig_type);
+		atomic_dec(&shca->num_qps);
 		return ERR_PTR(-EINVAL);
 	}
 
@@ -455,6 +464,7 @@ static struct ehca_qp *internal_create_qp(
 
 	if (is_llqp && has_srq) {
 		ehca_err(pd->device, "LLQPs can't have an SRQ");
+		atomic_dec(&shca->num_qps);
 		return ERR_PTR(-EINVAL);
 	}
 
@@ -466,6 +476,7 @@ static struct ehca_qp *internal_create_qp(
 			ehca_err(pd->device, "no more than three SGEs "
 				 "supported for SRQ  pd=%p  max_sge=%x",
 				 pd, init_attr->cap.max_recv_sge);
+			atomic_dec(&shca->num_qps);
 			return ERR_PTR(-EINVAL);
 		}
 	}
@@ -477,6 +488,7 @@ static struct ehca_qp *internal_create_qp(
 	    qp_type != IB_QPT_SMI &&
 	    qp_type != IB_QPT_GSI) {
 		ehca_err(pd->device, "wrong QP Type=%x", qp_type);
+		atomic_dec(&shca->num_qps);
 		return ERR_PTR(-EINVAL);
 	}
 
@@ -490,6 +502,7 @@ static struct ehca_qp *internal_create_qp(
 					 "or max_rq_wr=%x for RC LLQP",
 					 init_attr->cap.max_send_wr,
 					 init_attr->cap.max_recv_wr);
+				atomic_dec(&shca->num_qps);
 				return ERR_PTR(-EINVAL);
 			}
 			break;
@@ -497,6 +510,7 @@ static struct ehca_qp *internal_create_qp(
 			if (!EHCA_BMASK_GET(HCA_CAP_UD_LL_QP, shca->hca_cap)) {
 				ehca_err(pd->device, "UD LLQP not supported "
 					 "by this adapter");
+				atomic_dec(&shca->num_qps);
 				return ERR_PTR(-ENOSYS);
 			}
 			if (!(init_attr->cap.max_send_sge <= 5
@@ -508,20 +522,22 @@ static struct ehca_qp *internal_create_qp(
 					 "or max_recv_sge=%x for UD LLQP",
 					 init_attr->cap.max_send_sge,
 					 init_attr->cap.max_recv_sge);
+				atomic_dec(&shca->num_qps);
 				return ERR_PTR(-EINVAL);
 			} else if (init_attr->cap.max_send_wr > 255) {
 				ehca_err(pd->device,
 					 "Invalid Number of "
 					 "max_send_wr=%x for UD QP_TYPE=%x",
 					 init_attr->cap.max_send_wr, qp_type);
+				atomic_dec(&shca->num_qps);
 				return ERR_PTR(-EINVAL);
 			}
 			break;
 		default:
 			ehca_err(pd->device, "unsupported LL QP Type=%x",
 				 qp_type);
+			atomic_dec(&shca->num_qps);
 			return ERR_PTR(-EINVAL);
-			break;
 		}
 	} else {
 		int max_sge = (qp_type == IB_QPT_UD || qp_type == IB_QPT_SMI
@@ -533,6 +549,7 @@ static struct ehca_qp *internal_create_qp(
 				 "send_sge=%x recv_sge=%x max_sge=%x",
 				 init_attr->cap.max_send_sge,
 				 init_attr->cap.max_recv_sge, max_sge);
+			atomic_dec(&shca->num_qps);
 			return ERR_PTR(-EINVAL);
 		}
 	}
@@ -543,6 +560,7 @@ static struct ehca_qp *internal_create_qp(
 	my_qp = kmem_cache_zalloc(qp_cache, GFP_KERNEL);
 	if (!my_qp) {
 		ehca_err(pd->device, "pd=%p not enough memory to alloc qp", pd);
+		atomic_dec(&shca->num_qps);
 		return ERR_PTR(-ENOMEM);
 	}
 
@@ -822,6 +840,7 @@ create_qp_exit1:
 
 create_qp_exit0:
 	kmem_cache_free(qp_cache, my_qp);
+	atomic_dec(&shca->num_qps);
 	return ERR_PTR(ret);
 }
 
@@ -1990,6 +2009,7 @@ static int internal_destroy_qp(struct ib_device *dev, struct ehca_qp *my_qp,
 	if (HAS_SQ(my_qp))
 		ipz_queue_dtor(my_pd, &my_qp->ipz_squeue);
 	kmem_cache_free(qp_cache, my_qp);
+	atomic_dec(&shca->num_qps);
 	return 0;
 }
 

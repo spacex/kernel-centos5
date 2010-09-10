@@ -101,6 +101,9 @@ EXPORT_SYMBOL(boot_cpu_data);
 
 unsigned long mmu_cr4_features;
 
+unsigned int ipmi_dev_order=1;
+EXPORT_SYMBOL_GPL(ipmi_dev_order);
+
 #ifdef	CONFIG_ACPI
 	int acpi_disabled = 0;
 #else
@@ -994,6 +997,9 @@ static void __init parse_cmdline_early (char ** cmdline_p)
 		 */
 		else if (!memcmp(from, "vmalloc=", 8))
 			__VMALLOC_RESERVE = memparse(from+8, &from);
+
+		else if (!memcmp(from, "ipmi_dev_order=", 15))
+			ipmi_dev_order = simple_strtoul(from + 15, NULL, 0);
 
 	next_char:
 		c = *(from++);

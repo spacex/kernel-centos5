@@ -6,7 +6,8 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation.
  *
- * Written by: Eliezer Tamir <eliezert@broadcom.com>
+ * Maintained by: Eilon Greenstein <eilong@broadcom.com>
+ * Written by: Eliezer Tamir
  * Based on code from Michael Chan's bnx2 driver
  * UDP CSUM errata workaround by Arik Gendelman
  * Slowpath rework by Vladislav Zolotarov
@@ -63,8 +64,8 @@
 #include "bnx2x.h"
 #include "bnx2x_init.h"
 
-#define DRV_MODULE_VERSION      "1.40.22"
-#define DRV_MODULE_RELDATE      "2007/11/27"
+#define DRV_MODULE_VERSION      "1.42.4"
+#define DRV_MODULE_RELDATE      "2008/4/9"
 #define BNX2X_BC_VER    	0x040200
 
 /* Time in jiffies before concluding the transmitter is hung. */
@@ -74,7 +75,7 @@ static char version[] __devinitdata =
 	"Broadcom NetXtreme II 5771X 10Gigabit Ethernet Driver "
 	DRV_MODULE_NAME " " DRV_MODULE_VERSION " (" DRV_MODULE_RELDATE ")\n";
 
-MODULE_AUTHOR("Eliezer Tamir <eliezert@broadcom.com>");
+MODULE_AUTHOR("Eliezer Tamir");
 MODULE_DESCRIPTION("Broadcom NetXtreme II BCM57710 Driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_MODULE_VERSION);
@@ -6156,7 +6157,7 @@ static int bnx2x_function_init(struct bnx2x *bp, int mode)
 		   func, mode);
 		REG_WR(bp, GRCBASE_MISC + MISC_REGISTERS_RESET_REG_1_SET,
 		       0xffffffff);
-		REG_WR(bp, GRCBASE_MISC + MISC_REGISTERS_RESET_REG_1_SET,
+		REG_WR(bp, GRCBASE_MISC + MISC_REGISTERS_RESET_REG_2_SET,
 		       0xfffc);
 		bnx2x_init_block(bp, MISC_COMMON_START, MISC_COMMON_END);
 
@@ -8002,38 +8003,6 @@ static int bnx2x_set_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 	   cmd->cmd, cmd->supported, cmd->advertising, cmd->speed,
 	   cmd->duplex, cmd->port, cmd->phy_address, cmd->transceiver,
 	   cmd->autoneg, cmd->maxtxpkt, cmd->maxrxpkt);
-
-	switch (cmd->port) {
-	case PORT_TP:
-		if (!(bp->supported & SUPPORTED_TP)) {
-			DP(NETIF_MSG_LINK, "TP not supported\n");
-			return -EINVAL;
-		}
-
-		if (bp->phy_flags & PHY_XGXS_FLAG) {
-			bnx2x_link_reset(bp);
-			bnx2x_link_settings_supported(bp, SWITCH_CFG_1G);
-			bnx2x_phy_deassert(bp);
-		}
-		break;
-
-	case PORT_FIBRE:
-		if (!(bp->supported & SUPPORTED_FIBRE)) {
-			DP(NETIF_MSG_LINK, "FIBRE not supported\n");
-			return -EINVAL;
-		}
-
-		if (!(bp->phy_flags & PHY_XGXS_FLAG)) {
-			bnx2x_link_reset(bp);
-			bnx2x_link_settings_supported(bp, SWITCH_CFG_10G);
-			bnx2x_phy_deassert(bp);
-		}
-		break;
-
-	default:
-		DP(NETIF_MSG_LINK, "Unknown port type\n");
-		return -EINVAL;
-	}
 
 	if (cmd->autoneg == AUTONEG_ENABLE) {
 		if (!(bp->supported & SUPPORTED_Autoneg)) {
@@ -9935,10 +9904,10 @@ static int __devinit bnx2x_init_one(struct pci_dev *pdev,
 	       (bnx2x_get_pcie_speed(bp) == 2) ? "5GHz (Gen2)" : "2.5GHz",
 	       dev->base_addr, bp->pdev->irq);
 
-	printk(KERN_INFO "node addr ");
+	printk("node addr ");
         for (i = 0; i < 6; i++)
-                printk(KERN_INFO "%2.2x", dev->dev_addr[i]);
-	printk(KERN_INFO "\n");
+                printk("%2.2x", dev->dev_addr[i]);
+	printk("\n");
 
 	return 0;
 }

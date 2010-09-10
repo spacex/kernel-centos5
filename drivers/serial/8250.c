@@ -1199,7 +1199,17 @@ receive_chars(struct uart_8250_port *up, int *status, struct pt_regs *regs)
 	char flag;
 
 	do {
-		ch = serial_inp(up, UART_RX);
+		if (likely(lsr & UART_LSR_DR))
+			ch = serial_inp(up, UART_RX);
+		else
+			/*
+			 * Intel 82571 has a Serial Over Lan device that will set BI
+			 * without setting UART_LSR_DR. To avoid reading from the
+			 * receive buffer without UART_LSR_DR bit set, we just force
+			 * the read character to be 0
+			 */
+			ch = 0;
+
 		flag = TTY_NORMAL;
 		up->port.icount.rx++;
 
@@ -1256,7 +1266,7 @@ receive_chars(struct uart_8250_port *up, int *status, struct pt_regs *regs)
 
 	ignore_char:
 		lsr = serial_inp(up, UART_LSR);
-	} while ((lsr & UART_LSR_DR) && (max_count-- > 0));
+	} while ((lsr & (UART_LSR_DR | UART_LSR_BI)) && (max_count-- > 0));
 	spin_unlock(&up->port.lock);
 	tty_flip_buffer_push(tty);
 	spin_lock(&up->port.lock);
@@ -1337,7 +1347,7 @@ serial8250_handle_port(struct uart_8250_port *up, struct pt_regs *regs)
 
 	DEBUG_INTR("status = %x...", status);
 
-	if (status & UART_LSR_DR)
+	if (status & (UART_LSR_DR | UART_LSR_BI))
 		receive_chars(up, &status, regs);
 	check_modem_status(up);
 	if (status & UART_LSR_THRE)
@@ -1829,6 +1839,7 @@ static int serial8250_startup(struct uart_port *port)
 	(void) serial_inp(up, UART_RX);
 	(void) serial_inp(up, UART_IIR);
 	(void) serial_inp(up, UART_MSR);
+	up->lsr_break_flag = 0;
 
 	return 0;
 }

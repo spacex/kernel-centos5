@@ -171,18 +171,14 @@ nlmsvc_find_block(struct nlm_cookie *cookie,  struct sockaddr_in *sin)
  * logging industries.
  */
 static inline struct nlm_block *
-nlmsvc_create_block(struct svc_rqst *rqstp, struct nlm_file *file,
-		struct nlm_lock *lock, struct nlm_cookie *cookie, int conf)
+nlmsvc_create_block(struct svc_rqst *rqstp, struct nlm_host *host,
+		struct nlm_file *file, struct nlm_lock *lock,
+		struct nlm_cookie *cookie, int conf)
 {
 	struct nlm_block	*block;
-	struct nlm_host		*host;
 	struct nlm_rqst		*call = NULL;
 
-	/* Create host handle for callback */
-	host = nlmsvc_lookup_host(rqstp);
-	if (host == NULL)
-		return NULL;
-
+	nlm_get_host(host);
 	call = nlm_alloc_call(host);
 	if (call == NULL)
 		return NULL;
@@ -387,7 +383,8 @@ nlmsvc_defer_lock_rqst(struct svc_rqst *rqstp, struct nlm_block *block)
  */
 u32
 nlmsvc_lock(struct svc_rqst *rqstp, struct nlm_file *file,
-			struct nlm_lock *lock, int wait, struct nlm_cookie *cookie)
+		struct nlm_host *host, struct nlm_lock *lock,
+		int wait, struct nlm_cookie *cookie)
 {
 	struct nlm_block	*block = NULL;
 	int			error;
@@ -401,7 +398,6 @@ nlmsvc_lock(struct svc_rqst *rqstp, struct nlm_file *file,
 				(long long)lock->fl.fl_end,
 				wait);
 
-
 	/* Lock file against concurrent access */
 	down(&file->f_sema);
 	/* Get existing block (in case client is busy-waiting)
@@ -409,7 +405,7 @@ nlmsvc_lock(struct svc_rqst *rqstp, struct nlm_file *file,
 	 */
 	block = nlmsvc_lookup_block(file, lock);
 	if (block == NULL) {
-		block = nlmsvc_create_block(rqstp, file, lock, cookie, 0);
+		block = nlmsvc_create_block(rqstp, host, file, lock, cookie, 0);
 		ret = nlm_lck_denied_nolocks;
 		if (block == NULL)
 			goto out;
@@ -482,8 +478,8 @@ out:
  */
 u32
 nlmsvc_testlock(struct svc_rqst *rqstp, struct nlm_file *file,
-		struct nlm_lock *lock, struct nlm_lock *conflock,
-		struct nlm_cookie *cookie)
+		struct nlm_host *host, struct nlm_lock *lock,
+		struct nlm_lock *conflock, struct nlm_cookie *cookie)
 {
 	struct nlm_block 	*block = NULL;
 	int			error;
@@ -500,7 +496,7 @@ nlmsvc_testlock(struct svc_rqst *rqstp, struct nlm_file *file,
 	block = nlmsvc_lookup_block(file, lock);
 
 	if (block == NULL) {
-		block = nlmsvc_create_block(rqstp, file, lock, cookie, 1);
+		block = nlmsvc_create_block(rqstp, host, file, lock, cookie, 1);
 		if (block == NULL)
 			return nlm_granted;
 	}

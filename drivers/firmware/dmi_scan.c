@@ -153,6 +153,9 @@ static void __init dmi_save_ipmi_device(struct dmi_header *dm)
 {
 	struct dmi_device *dev;
 	void * data;
+#ifdef CONFIG_X86
+	extern unsigned int ipmi_dev_order;
+#endif
 
 	data = dmi_alloc(dm->length);
 	if (data == NULL) {
@@ -172,7 +175,19 @@ static void __init dmi_save_ipmi_device(struct dmi_header *dm)
 	dev->name = "IPMI controller";
 	dev->device_data = data;
 
-	list_add(&dev->list, &dmi_devices);
+#ifdef CONFIG_X86
+	switch(ipmi_dev_order) {
+	case 2:		/* FIFO */
+	  list_add_tail(&dev->list, &dmi_devices);
+	  break;
+	default:	/* LIFO */
+#endif
+	  list_add(&dev->list, &dmi_devices);
+#ifdef CONFIG_X86
+	  break;
+	}
+#endif
+
 }
 
 /*

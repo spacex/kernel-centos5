@@ -258,9 +258,9 @@ static struct page *read_sb_page(mddev_t *mddev, long offset, unsigned long inde
 static int write_sb_page(mddev_t *mddev, long offset, struct page *page, int wait)
 {
 	mdk_rdev_t *rdev;
-	struct list_head *tmp;
 
-	ITERATE_RDEV(mddev, rdev, tmp)
+	rcu_read_lock();
+	rdev_for_each_rcu(rdev, mddev)
 		if (test_bit(In_sync, &rdev->flags)
 		    && !test_bit(Faulty, &rdev->flags))
 			md_super_write(mddev, rdev,
@@ -268,6 +268,7 @@ static int write_sb_page(mddev_t *mddev, long offset, struct page *page, int wai
 				       + page->index * (PAGE_SIZE/512),
 				       PAGE_SIZE,
 				       page);
+	rcu_read_unlock();
 
 	if (wait)
 		md_super_wait(mddev);
