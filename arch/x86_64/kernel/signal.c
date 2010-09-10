@@ -384,7 +384,7 @@ handle_signal(unsigned long sig, siginfo_t *info, struct k_sigaction *ka,
 		 * The tracer may want to single-step inside the
 		 * handler too.
 		 */
-		regs->eflags &= ~TF_MASK;
+		regs->eflags &= ~(TF_MASK | X86_EFLAGS_DF);
 		tracehook_report_handle_signal(sig, ka, oldset, regs);
 	}
 

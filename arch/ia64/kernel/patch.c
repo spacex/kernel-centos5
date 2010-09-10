@@ -205,46 +205,8 @@ patch_running_on_xen(unsigned long start, unsigned long end)
 	ia64_srlz_i();
 }
 
-static void __init
-patch_brl_symaddr(unsigned long start, unsigned long end,
-                  unsigned long symaddr)
-{
-	s32 *offp = (s32 *)start;
-	u64 ip;
-
-	while (offp < (s32 *)end) {
-		ip = (u64)offp + *offp;
-		ia64_patch_imm60((u64)ia64_imva((void *)ip),
-				 (u64)(symaddr - (ip & -16)) / 16);
-		ia64_fc((void *)ip);
-		++offp;
-	}
-	ia64_sync_i();
-	ia64_srlz_i();
-}
-
-#define EXTERN_PATCHLIST(name)					\
-	extern char __start_gate_brl_##name##_patchlist[];	\
-	extern char __end_gate_brl_##name##_patchlist[];	\
-	extern char name[]
-
-#define PATCH_BRL_SYMADDR(name)						\
-	patch_brl_symaddr((unsigned long)__start_gate_brl_##name##_patchlist, \
-	                  (unsigned long)__end_gate_brl_##name##_patchlist,   \
-	                  (unsigned long)name)
-
-static void __init
-patch_brl_in_vdso(void)
-{
-	EXTERN_PATCHLIST(xen_ssm_i_0);
-	EXTERN_PATCHLIST(xen_ssm_i_1);
-
-	PATCH_BRL_SYMADDR(xen_ssm_i_0);
-	PATCH_BRL_SYMADDR(xen_ssm_i_1);
-}
 #else
 #define patch_running_on_xen(start, end)	do { } while (0)
-#define patch_brl_in_vdso()			do { } while (0)
 #endif
 
 void __init
@@ -257,7 +219,6 @@ ia64_patch_gate (void)
 	patch_brl_fsys_bubble_down(START(brl_fsys_bubble_down), END(brl_fsys_bubble_down));
 #ifdef CONFIG_XEN
 	patch_running_on_xen(START(running_on_xen), END(running_on_xen));
-	patch_brl_in_vdso();
 #endif
 	ia64_patch_vtop(START(vtop), END(vtop));
 	ia64_patch_mckinley_e9(START(mckinley_e9), END(mckinley_e9));

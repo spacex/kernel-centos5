@@ -64,8 +64,7 @@
 #endif
 
 #ifndef __ASSEMBLY__
-#define	XEN_HYPER_SSM_I		asm("break %0" : : "i" (HYPERPRIVOP_SSM_I))
-#define	XEN_HYPER_GET_IVR	asm("break %0" : : "i" (HYPERPRIVOP_GET_IVR))
+#define	XEN_HYPER_SSM_I		asm ("break %0" : : "i" (HYPERPRIVOP_SSM_I) : "memory")
 
 /************************************************/
 /* Instructions paravirtualized for correctness */
@@ -127,7 +126,10 @@ extern void xen_set_eflag(unsigned long);	/* see xen_ia64_setreg */
 
 /* turning off interrupts can be paravirtualized simply by writing
  * to a memory-mapped virtual psr.i bit (implemented as a 16-bit bool) */
-#define xen_rsm_i()	xen_set_virtual_psr_i(0)
+#define xen_rsm_i()							\
+do {	xen_set_virtual_psr_i(0);					\
+	barrier();							\
+} while(0)
 
 /* turning on interrupts is a bit more complicated.. write to the
  * memory-mapped virtual psr.i bit first (to avoid race condition),
@@ -136,12 +138,10 @@ extern void xen_set_eflag(unsigned long);	/* see xen_ia64_setreg */
 #define xen_ssm_i()							\
 ({									\
 	int old = xen_get_virtual_psr_i();				\
-	if (!old) {							\
-		if (xen_get_virtual_pend())				\
-			xen_hyper_ssm_i();				\
-		else							\
-			xen_set_virtual_psr_i(1);			\
-	}								\
+	xen_set_virtual_psr_i(1);					\
+	barrier();							\
+	if (!old && xen_get_virtual_pend())				\
+		xen_hyper_ssm_i();					\
 })
 
 #define xen_ia64_intrin_local_irq_restore(x)				\

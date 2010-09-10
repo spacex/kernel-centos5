@@ -125,46 +125,9 @@ GLOBAL_ENTRY(xen_send_ipi)
         ;;
 END(xen_send_ipi)
 
-#ifdef CONFIG_XEN_IA64_VDSO_PARAVIRT
-// Those are vdso specialized.
-// In fsys mode, call, ret can't be used.
-
-	// see xen_ssm_i() in privop.h
-	// r22 = &vcpu->vcpu_info->evtchn_upcall_mask
-	// r23 = &vpsr.ic
-	// r24 = &vcpu->vcpu_info->evtchn_upcall_pending
-	// r25 = tmp
-	// r31 = tmp
-	// p11 = tmp
-	// p14 = tmp
-#define XEN_SET_PSR_I			\
-	ld1 r31=[r22];			\
-	ld1 r25=[r24];			\
-	;;				\
-	st1 [r22]=r0;			\
-	cmp.ne.unc p14,p0=r0,r31;	\
-	;;				\
-(p14)	cmp.ne.unc p11,p0=r0,r25;	\
-	;;				\
-(p11)	st1 [r22]=r20;			\
-(p11)	XEN_HYPER_SSM_I;
-		
-GLOBAL_ENTRY(xen_ssm_i_0)
-	XEN_SET_PSR_I
-	brl.cond.sptk	.vdso_ssm_i_0_ret
-	;; 
-END(xen_ssm_i_0)
-
-GLOBAL_ENTRY(xen_ssm_i_1)
-	XEN_SET_PSR_I
-	brl.cond.sptk	.vdso_ssm_i_1_ret
-	;; 
-END(xen_ssm_i_1)
-
 GLOBAL_ENTRY(__hypercall)
 	mov r2=r37
 	break 0x1000
 	br.ret.sptk.many b0
 	;;
 END(__hypercall)
-#endif

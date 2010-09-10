@@ -48,14 +48,6 @@ SECTIONS
 				    __start_gate_running_on_xen_patchlist = .;
 				    *(.data.patch.running_on_xen)
 				    __end_gate_running_on_xen_patchlist = .;
-
-				    __start_gate_brl_xen_ssm_i_0_patchlist = .;
-				    *(.data.patch.brl_xen_ssm_i_0)
-				    __end_gate_brl_xen_ssm_i_0_patchlist = .;
-
-				    __start_gate_brl_xen_ssm_i_1_patchlist = .;
-				    *(.data.patch.brl_xen_ssm_i_1)
-				    __end_gate_brl_xen_ssm_i_1_patchlist = .;
 #endif
   }									:readable
   .IA_64.unwind_info		: { *(.IA_64.unwind_info*) }

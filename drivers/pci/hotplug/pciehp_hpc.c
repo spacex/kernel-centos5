@@ -805,13 +805,47 @@ static int hpc_power_on_slot(struct slot * slot)
 	return retval;
 }
 
+static inline int pcie_mask_bad_dllp(struct controller *ctrl)
+{
+	struct pci_dev *dev = ctrl->pci_dev;
+	int pos;
+	u32 reg;
+
+	pos = pci_find_ext_capability(dev, PCI_EXT_CAP_ID_ERR);
+	if (!pos)
+		return 0;
+	pci_read_config_dword(dev, pos + PCI_ERR_COR_MASK, &reg);
+	if (reg & PCI_ERR_COR_BAD_DLLP)
+		return 0;
+	reg |= PCI_ERR_COR_BAD_DLLP;
+	pci_write_config_dword(dev, pos + PCI_ERR_COR_MASK, reg);
+	return 1;
+}
+
+static inline void pcie_unmask_bad_dllp(struct controller *ctrl)
+{
+	struct pci_dev *dev = ctrl->pci_dev;
+	u32 reg;
+	int pos;
+
+	pos = pci_find_ext_capability(dev, PCI_EXT_CAP_ID_ERR);
+	if (!pos)
+		return;
+	pci_read_config_dword(dev, pos + PCI_ERR_COR_MASK, &reg);
+	if (!(reg & PCI_ERR_COR_BAD_DLLP))
+		return;
+	reg &= ~PCI_ERR_COR_BAD_DLLP;
+	pci_write_config_dword(dev, pos + PCI_ERR_COR_MASK, reg);
+}
+
 static int hpc_power_off_slot(struct slot * slot)
 {
 	struct php_ctlr_state_s *php_ctlr = slot->ctrl->hpc_ctlr_handle;
+  	struct controller *ctrl = slot->ctrl;
 	u16 slot_cmd;
 	u16 slot_ctrl;
-
 	int retval = 0;
+	int changed;
 
 	DBG_ENTER_ROUTINE 
 
@@ -833,6 +867,14 @@ static int hpc_power_off_slot(struct slot * slot)
 		return retval;
 	}
 
+	/*
+	 * Set Bad DLLP Mask bit in Correctable Error Mask
+	 * Register. This is the workaround against Bad DLLP error
+	 * that sometimes happens during turning power off the slot
+	 * which conforms to PCI Express 1.0a spec.
+	 */
+	changed = pcie_mask_bad_dllp(ctrl);
+
 	slot_cmd = (slot_ctrl & ~PWR_CTRL) | POWER_OFF;
 
 	/*
@@ -852,9 +894,20 @@ static int hpc_power_off_slot(struct slot * slot)
 
 	if (retval) {
 		err("%s: Write command failed!\n", __FUNCTION__);
-		return -1;
+		retval = -1;
+		goto out;
 	}
 	dbg("%s: SLOT_CTRL %x write cmd %x\n",__FUNCTION__, SLOT_CTRL(slot->ctrl->cap_base), slot_cmd);
+
+	/*
+	 * After turning power off, we must wait for at least 1 second
+	 * before taking any action that relies on power having been
+	 * removed from the slot/adapter.
+	 */
+	msleep(1000);
+out:
+	if (changed)
+		pcie_unmask_bad_dllp(ctrl);
 
 	DBG_LEAVE_ROUTINE
 
