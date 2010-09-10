@@ -17,63 +17,131 @@
 #include "sysfs.h"
 #include "core.h"
 
-static inline struct cfg80211_registered_device *cdev_to_rdev(
-	struct class_device *cdev)
+static inline struct cfg80211_registered_device *dev_to_rdev(
+	struct device *dev)
 {
-	return container_of(cdev, struct cfg80211_registered_device,
-			    wiphy.class_dev);
+	return container_of(dev, struct cfg80211_registered_device, wiphy.dev);
 }
 
-static ssize_t _show_index(struct class_device *cdev,
-			   char *buf)
-{
-	return sprintf(buf, "%d\n", cdev_to_rdev(cdev)->idx);
+#define SHOW_FMT(name, fmt, member)					\
+static ssize_t name ## _show(struct device *dev,			\
+			      struct device_attribute *attr,		\
+			      char *buf)				\
+{									\
+	return sprintf(buf, fmt "\n", dev_to_rdev(dev)->member);	\
 }
 
-static ssize_t _show_permaddr(struct class_device *cdev,
-			      char *buf)
-{
-	char *addr = cdev_to_rdev(cdev)->wiphy.perm_addr;
+SHOW_FMT(index, "%d", wiphy_idx);
+SHOW_FMT(macaddress, "%pM", wiphy.perm_addr);
 
-	return sprintf(buf, "%.2x:%.2x:%.2x:%.2x:%.2x:%.2x\n",
-		       addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
-}
-
-static struct class_device_attribute ieee80211_class_dev_attrs[] = {
-	__ATTR(index, S_IRUGO, _show_index, NULL),
-	__ATTR(macaddress, S_IRUGO, _show_permaddr, NULL),
+static struct device_attribute ieee80211_dev_attrs[] = {
+	__ATTR_RO(index),
+	__ATTR_RO(macaddress),
 	{}
 };
 
-static void wiphy_class_dev_release(struct class_device *cdev)
+#if 0
+void wiphy_bus_release(struct device *dev)
 {
-	struct cfg80211_registered_device *dev = cdev_to_rdev(cdev);
-
-	cfg80211_dev_free(dev);
+	/* Pedantic avoidance of BUG... */
 }
+#endif
 
-static int wiphy_uevent(struct class_device *cdev, char **envp,
-			int num_envp, char *buf, int size)
+void wiphy_dev_release(struct device *dev)
 {
+	struct cfg80211_registered_device *rdev = dev_to_rdev(dev);
+
+	cfg80211_dev_free(rdev);
+}
+EXPORT_SYMBOL_GPL(wiphy_dev_release);
+
+#ifdef CONFIG_HOTPLUG
+#if 0 /* Not in RHEL5... */
+static int wiphy_uevent(struct device *dev, struct kobj_uevent_env *env)
+#else
+static int wiphy_uevent(struct device *dev, char **envp, int num_envp,
+			char *buffer, int buffer_size)
+#endif
+{
+	/* TODO, we probably need stuff here */
 	return 0;
 }
+#endif
 
+static int wiphy_suspend(struct device *dev, pm_message_t state)
+{
+	struct cfg80211_registered_device *rdev = dev_to_rdev(dev);
+	int ret = 0;
+
+	rdev->suspend_at = get_seconds();
+
+	if (rdev->ops->suspend) {
+		rtnl_lock();
+		ret = rdev->ops->suspend(&rdev->wiphy);
+		rtnl_unlock();
+	}
+
+	return ret;
+}
+
+static int wiphy_resume(struct device *dev)
+{
+	struct cfg80211_registered_device *rdev = dev_to_rdev(dev);
+	int ret = 0;
+
+	/* Age scan results with time spent in suspend */
+	spin_lock_bh(&rdev->bss_lock);
+	cfg80211_bss_age(rdev, get_seconds() - rdev->suspend_at);
+	spin_unlock_bh(&rdev->bss_lock);
+
+	if (rdev->ops->resume) {
+		rtnl_lock();
+		ret = rdev->ops->resume(&rdev->wiphy);
+		rtnl_unlock();
+	}
+
+	return ret;
+}
+
+#if 0 /* Not in RHEL5...*/
 struct class ieee80211_class = {
 	.name = "ieee80211",
 	.owner = THIS_MODULE,
-	.release = wiphy_class_dev_release,
-	.class_dev_attrs = ieee80211_class_dev_attrs,
+	.dev_release = wiphy_dev_release,
+	.dev_attrs = ieee80211_dev_attrs,
+#ifdef CONFIG_HOTPLUG
+	.dev_uevent = wiphy_uevent,
+#endif
+	.suspend = wiphy_suspend,
+	.resume = wiphy_resume,
+};
+#else
+struct bus_type ieee80211_bus_type = {
+	.name = "ieee80211",
+	.dev_attrs = ieee80211_dev_attrs,
 #ifdef CONFIG_HOTPLUG
 	.uevent = wiphy_uevent,
 #endif
+	.suspend = wiphy_suspend,
+	.resume = wiphy_resume,
 };
+EXPORT_SYMBOL_GPL(ieee80211_bus_type);
+#endif
 
 int wiphy_sysfs_init(void)
 {
+#if 0 /* Not in RHEL5... */
 	return class_register(&ieee80211_class);
+#else
+	return bus_register(&ieee80211_bus_type);
+#endif
 }
 
 void wiphy_sysfs_exit(void)
 {
+#if 0 /* Not in RHEL5... */
 	class_unregister(&ieee80211_class);
+#else
+	bus_unregister(&ieee80211_bus_type);
+#endif
 }

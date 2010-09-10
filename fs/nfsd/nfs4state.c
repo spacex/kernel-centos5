@@ -211,7 +211,7 @@ alloc_init_deleg(struct nfs4_client *clp, struct nfs4_stateid *stp, struct svc_f
 	dp->dl_recall.cbr_dp = NULL;
 	dp->dl_recall.cbr_ident = cb->cb_ident;
 	dp->dl_recall.cbr_trunc = 0;
-	dp->dl_stateid.si_boot = boot_time;
+	dp->dl_stateid.si_boot = get_seconds();
 	dp->dl_stateid.si_stateownerid = current_delegid++;
 	dp->dl_stateid.si_fileid = 0;
 	dp->dl_stateid.si_generation = 0;
@@ -1165,7 +1165,7 @@ init_stateid(struct nfs4_stateid *stp, struct nfs4_file *fp, struct nfsd4_open *
 	stp->st_stateowner = sop;
 	get_nfs4_file(fp);
 	stp->st_file = fp;
-	stp->st_stateid.si_boot = boot_time;
+	stp->st_stateid.si_boot = get_seconds();
 	stp->st_stateid.si_stateownerid = sop->so_id;
 	stp->st_stateid.si_fileid = fp->fi_id;
 	stp->st_stateid.si_generation = 0;
@@ -1977,12 +1977,42 @@ nfs4_check_fh(struct svc_fh *fhp, struct nfs4_stateid *stp)
 static int
 STALE_STATEID(stateid_t *stateid)
 {
-	if (stateid->si_boot == boot_time)
-		return 0;
-	dprintk("NFSD: stale stateid (%08x/%08x/%08x/%08x)!\n",
-		stateid->si_boot, stateid->si_stateownerid, stateid->si_fileid,
-		stateid->si_generation);
-	return 1;
+	if (time_after((unsigned long)boot_time,
+			(unsigned long)stateid->si_boot)) {
+		dprintk("NFSD: stale stateid (%08x/%08x/%08x/%08x)!\n",
+			stateid->si_boot, stateid->si_stateownerid,
+			stateid->si_fileid, stateid->si_generation);
+		return 1;
+	}
+	return 0;
+}
+
+static int
+EXPIRED_STATEID(stateid_t *stateid)
+{
+	if (time_before((unsigned long)boot_time,
+			((unsigned long)stateid->si_boot)) &&
+	    time_before((unsigned long)(stateid->si_boot + lease_time), get_seconds())) {
+		dprintk("NFSD: expired stateid (%08x/%08x/%08x/%08x)!\n",
+			stateid->si_boot, stateid->si_stateownerid,
+			stateid->si_fileid, stateid->si_generation);
+		return 1;
+	}
+	return 0;
+}
+
+static __be32
+stateid_error_map(stateid_t *stateid)
+{
+	if (STALE_STATEID(stateid))
+		return nfserr_stale_stateid;
+	if (EXPIRED_STATEID(stateid))
+		return nfserr_expired;
+
+	dprintk("NFSD: bad stateid (%08x/%08x/%08x/%08x)!\n",
+		stateid->si_boot, stateid->si_stateownerid,
+		stateid->si_fileid, stateid->si_generation);
+	return nfserr_bad_stateid;
 }
 
 static inline int
@@ -2079,12 +2109,14 @@ nfs4_preprocess_stateid_op(struct svc_fh *current_fh, stateid_t *stateid, int fl
 	if (!stateid->si_fileid) { /* delegation stateid */
 		if(!(dp = find_delegation_stateid(ino, stateid))) {
 			dprintk("NFSD: delegation stateid not found\n");
+			status = stateid_error_map(stateid);
 			goto out;
 		}
 		stidp = &dp->dl_stateid;
 	} else { /* open or lock stateid */
 		if (!(stp = find_stateid(stateid, flags))) {
 			dprintk("NFSD: open or lock stateid not found\n");
+			status = stateid_error_map(stateid);
 			goto out;
 		}
 		if ((flags & CHECK_FH) && nfs4_check_fh(current_fh, stp))
@@ -2164,7 +2196,7 @@ nfs4_preprocess_seqid_op(struct svc_fh *current_fh, u32 seqid, stateid_t *statei
 		 */
 		sop = search_close_lru(stateid->si_stateownerid, flags);
 		if (sop == NULL)
-			return nfserr_bad_stateid;
+			return stateid_error_map(stateid);
 		*sopp = sop;
 		goto check_replay;
 	}
@@ -2617,7 +2649,7 @@ alloc_init_lock_stateid(struct nfs4_stateowner *sop, struct nfs4_file *fp, struc
 	stp->st_stateowner = sop;
 	get_nfs4_file(fp);
 	stp->st_file = fp;
-	stp->st_stateid.si_boot = boot_time;
+	stp->st_stateid.si_boot = get_seconds();
 	stp->st_stateid.si_stateownerid = sop->so_id;
 	stp->st_stateid.si_fileid = fp->fi_id;
 	stp->st_stateid.si_generation = 0;

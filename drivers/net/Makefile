@@ -11,6 +11,7 @@ obj-$(CONFIG_E1000E) += e1000e/
 obj-$(CONFIG_IGB) += igb/
 obj-$(CONFIG_IBM_EMAC) += ibm_emac/
 obj-$(CONFIG_IGBVF) += igbvf/
+obj-$(CONFIG_IXGBEVF) += ixgbevf/
 obj-$(CONFIG_IXGBE) += ixgbe/
 obj-$(CONFIG_IXGB) += ixgb/
 obj-$(CONFIG_CHELSIO_T1) += chelsio/
@@ -89,6 +90,7 @@ obj-$(CONFIG_RIONET) += rionet.o
 #
 
 obj-$(CONFIG_MII) += mii.o
+obj-$(CONFIG_MDIO) += mdio.o
 obj-$(CONFIG_PHYLIB) += phy/
 
 obj-$(CONFIG_SUNDANCE) += sundance.o
@@ -209,6 +211,7 @@ obj-$(CONFIG_R8169) += r8169.o
 obj-$(CONFIG_AMD8111_ETH) += amd8111e.o
 obj-$(CONFIG_IBMVETH) += ibmveth.o
 obj-$(CONFIG_S2IO) += s2io.o
+obj-$(CONFIG_VXGE) += vxge/
 obj-$(CONFIG_MYRI10GE) += myri10ge/
 obj-$(CONFIG_SMC91X) += smc91x.o
 obj-$(CONFIG_SMC911X) += smc911x.o
@@ -236,3 +239,4 @@ obj-$(CONFIG_FS_ENET) += fs_enet/
 obj-$(CONFIG_NETXEN_NIC) += netxen/
 obj-$(CONFIG_NIU) += niu.o
 obj-$(CONFIG_VIRTIO_NET) += virtio_net.o
+obj-$(CONFIG_SFC) += sfc/

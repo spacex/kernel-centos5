@@ -46,7 +46,7 @@ int mlx4_pd_alloc(struct mlx4_dev *dev, u32 *pdn)
 	*pdn = mlx4_bitmap_alloc(&priv->pd_bitmap);
 	if (*pdn == -1)
 		return -ENOMEM;
-
+	*pdn |= dev->caps.pd_base << dev->caps.slave_pd_shift;
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mlx4_pd_alloc);
@@ -73,12 +73,18 @@ void mlx4_cleanup_pd_table(struct mlx4_dev *dev)
 
 int mlx4_uar_alloc(struct mlx4_dev *dev, struct mlx4_uar *uar)
 {
+	int offset;
+
 	uar->index = mlx4_bitmap_alloc(&mlx4_priv(dev)->uar_table.bitmap);
 	if (uar->index == -1)
 		return -ENOMEM;
 
-	uar->pfn = (pci_resource_start(dev->pdev, 2) >> PAGE_SHIFT) + uar->index;
-
+	if (mlx4_is_slave(dev))
+		offset = uar->index % ((int) pci_resource_len(dev->pdev, 2) /
+				       dev->caps.uar_page_size);
+	else
+		offset = uar->index;
+	uar->pfn = (pci_resource_start(dev->pdev, 2) >> PAGE_SHIFT) + offset;
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mlx4_uar_alloc);
@@ -98,12 +104,14 @@ int mlx4_init_uar_table(struct mlx4_dev *dev)
 		return -ENODEV;
 	}
 
-	return mlx4_bitmap_init(&mlx4_priv(dev)->uar_table.bitmap,
-				dev->caps.num_uars, dev->caps.num_uars - 1,
-				max(128, dev->caps.reserved_uars), 0);
+	return mlx4_bitmap_init_no_mask(&mlx4_priv(dev)->uar_table.bitmap,
+					dev->caps.num_uars,
+					dev->caps.reserved_uars, 0);
 }
 
 void mlx4_cleanup_uar_table(struct mlx4_dev *dev)
 {
+	if (mlx4_is_master(dev))
+		return;
 	mlx4_bitmap_cleanup(&mlx4_priv(dev)->uar_table.bitmap);
 }

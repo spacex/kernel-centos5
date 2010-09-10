@@ -150,8 +150,11 @@ static void nfs_writedata_free(struct nfs_write_data *wdata)
 	call_rcu_bh(&wdata->task.u.tk_rcu, nfs_writedata_rcu_free);
 }
 
-void nfs_writedata_release(void *wdata)
+void nfs_writedata_release(void *data)
 {
+	struct nfs_write_data *wdata = data;
+
+	put_nfs_open_context(wdata->args.context);
 	nfs_writedata_free(wdata);
 }
 
@@ -225,7 +228,7 @@ static int nfs_writepage_sync(struct nfs_open_context *ctx, struct inode *inode,
 	wdata->cred = ctx->cred;
 	wdata->inode = inode;
 	wdata->args.fh = NFS_FH(inode);
-	wdata->args.context = ctx;
+	wdata->args.context = get_nfs_open_context(ctx);
 	wdata->args.pages = &page;
 	wdata->args.stable = NFS_FILE_SYNC;
 	wdata->args.pgbase = offset;
@@ -984,7 +987,7 @@ static void nfs_write_rpcsetup(struct nfs_page *req,
 	data->args.pgbase = req->wb_pgbase + offset;
 	data->args.pages  = data->pagevec;
 	data->args.count  = count;
-	data->args.context = req->wb_context;
+	data->args.context = get_nfs_open_context(req->wb_context);
 
 	data->res.fattr   = &data->fattr;
 	data->res.count   = count;
@@ -993,7 +996,8 @@ static void nfs_write_rpcsetup(struct nfs_page *req,
 
 	/* Set up the initial task struct.  */
 	flags = (how & FLUSH_SYNC) ? 0 : RPC_TASK_ASYNC;
-	rpc_init_task(&data->task, NFS_CLIENT(inode), flags, call_ops, data);
+	rpc_init_task_wq(&data->task, NFS_CLIENT(inode), flags, call_ops, data,
+			 nfsiod_workqueue);
 	NFS_PROTO(inode)->write_setup(data, how);
 
 	data->task.tk_priority = flush_task_priority(how);
@@ -1353,8 +1357,11 @@ int nfs_writeback_done(struct rpc_task *task, struct nfs_write_data *data)
 
 
 #if defined(CONFIG_NFS_V3) || defined(CONFIG_NFS_V4)
-void nfs_commit_release(void *wdata)
+void nfs_commit_release(void *data)
 {
+	struct nfs_write_data *wdata = data;
+
+	put_nfs_open_context(wdata->args.context);
 	nfs_commit_free(wdata);
 }
 
@@ -1383,6 +1390,7 @@ static void nfs_commit_rpcsetup(struct list_head *head,
 	/* Note: we always request a commit of the entire inode */
 	data->args.offset = 0;
 	data->args.count  = 0;
+	data->args.context = get_nfs_open_context(first->wb_context);
 	data->res.count   = 0;
 	data->res.fattr   = &data->fattr;
 	data->res.verf    = &data->verf;
@@ -1390,7 +1398,7 @@ static void nfs_commit_rpcsetup(struct list_head *head,
 
 	/* Set up the initial task struct.  */
 	flags = (how & FLUSH_SYNC) ? 0 : RPC_TASK_ASYNC;
-	rpc_init_task(&data->task, NFS_CLIENT(inode), flags, &nfs_commit_ops, data);
+	rpc_init_task_wq(&data->task, NFS_CLIENT(inode), flags, &nfs_commit_ops, data, nfsiod_workqueue);
 	NFS_PROTO(inode)->commit_setup(data, how);
 
 	data->task.tk_priority = flush_task_priority(how);

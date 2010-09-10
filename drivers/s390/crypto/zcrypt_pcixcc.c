@@ -490,6 +490,8 @@ static int convert_type86_ica(struct zcrypt_device *zdev,
 			zdev->min_mod_size = PCIXCC_MIN_MOD_SIZE_OLD;
 			return -EAGAIN;
 		}
+		if (service_rc == 8 && service_rs == 72)
+			return -EINVAL;
 		PRINTK("Unknown service rc/rs (PCIXCC/CEX2C): %d/%d\n",
 		       service_rc, service_rs);
 		zdev->online = 0;

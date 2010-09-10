@@ -131,10 +131,6 @@ static int kjournald2(void *arg)
 	journal->j_task = current;
 	wake_up(&journal->j_wait_done_commit);
 
-	printk(KERN_INFO "kjournald2 starting: pid %d, dev %s, "
-	       "commit interval %ld seconds\n", current->pid,
-	       journal->j_devname, journal->j_commit_interval / HZ);
-
 	/*
 	 * And now, wait forever for commit wakeup events.
 	 */
@@ -218,7 +214,8 @@ static int jbd2_journal_start_thread(journal_t *journal)
 {
 	struct task_struct *t;
 
-	t = kthread_run(kjournald2, journal, "kjournald2");
+	t = kthread_run(kjournald2, journal, "jbd2/%s",
+			journal->j_devname);
 	if (IS_ERR(t))
 		return PTR_ERR(t);
 
@@ -291,6 +288,7 @@ int jbd2_journal_write_metadata_buffer(transaction_t *transaction,
 	struct page *new_page;
 	unsigned int new_offset;
 	struct buffer_head *bh_in = jh2bh(jh_in);
+	journal_t *journal = transaction->t_journal;
 
 	/*
 	 * The buffer really shouldn't be locked: only the current committing
@@ -304,6 +302,11 @@ int jbd2_journal_write_metadata_buffer(transaction_t *transaction,
 	J_ASSERT_BH(bh_in, buffer_jbddirty(bh_in));
 
 	new_bh = alloc_buffer_head(GFP_NOFS|__GFP_NOFAIL);
+	/* keep subsequent assertions sane */
+	new_bh->b_state = 0;
+	init_buffer(new_bh, NULL, NULL);
+	atomic_set(&new_bh->b_count, 1);
+	new_jh = jbd2_journal_add_journal_head(new_bh);	/* This sleeps */
 
 	/*
 	 * If a new transaction has already done a buffer copy-out, then
@@ -365,14 +368,6 @@ repeat:
 		kunmap_atomic(mapped_data, KM_USER0);
 	}
 
-	/* keep subsequent assertions sane */
-	new_bh->b_state = 0;
-	init_buffer(new_bh, NULL, NULL);
-	atomic_set(&new_bh->b_count, 1);
-	jbd_unlock_bh_state(bh_in);
-
-	new_jh = jbd2_journal_add_journal_head(new_bh);	/* This sleeps */
-
 	set_bh_page(new_bh, new_page, new_offset);
 	new_jh->b_transaction = NULL;
 	new_bh->b_size = jh2bh(jh_in)->b_size;
@@ -389,7 +384,11 @@ repeat:
 	 * copying is moved to the transaction's shadow queue.
 	 */
 	JBUFFER_TRACE(jh_in, "file as BJ_Shadow");
-	jbd2_journal_file_buffer(jh_in, transaction, BJ_Shadow);
+	spin_lock(&journal->j_list_lock);
+	__jbd2_journal_file_buffer(jh_in, transaction, BJ_Shadow);
+	spin_unlock(&journal->j_list_lock);
+	jbd_unlock_bh_state(bh_in);
+
 	JBUFFER_TRACE(new_jh, "file as BJ_IO");
 	jbd2_journal_file_buffer(new_jh, transaction, BJ_IO);
 
@@ -1070,6 +1069,7 @@ journal_t * jbd2_journal_init_dev(struct block_device *bdev,
 
 	return journal;
 out_err:
+	kfree(journal->j_wbuf);
 	jbd2_stats_proc_exit(journal);
 	kfree(journal);
 	return NULL;
@@ -1102,7 +1102,7 @@ journal_t * jbd2_journal_init_inode (struct inode *inode)
 	while ((p = strchr(p, '/')))
 		*p = '!';
 	p = journal->j_devname + strlen(journal->j_devname);
-	sprintf(p, ":%lu", journal->j_inode->i_ino);
+	sprintf(p, "-%lu", journal->j_inode->i_ino);
 	jbd_debug(1,
 		  "journal %p: inode %s/%ld, size %Ld, bits %d, blksize %ld\n",
 		  journal, inode->i_sb->s_id, inode->i_ino,
@@ -1143,6 +1143,7 @@ journal_t * jbd2_journal_init_inode (struct inode *inode)
 
 	return journal;
 out_err:
+	kfree(journal->j_wbuf);
 	jbd2_stats_proc_exit(journal);
 	kfree(journal);
 	return NULL;
@@ -1174,6 +1175,12 @@ static int journal_reset(journal_t *journal)
 
 	first = be32_to_cpu(sb->s_first);
 	last = be32_to_cpu(sb->s_maxlen);
+	if (first + JBD2_MIN_JOURNAL_BLOCKS > last + 1) {
+		printk(KERN_ERR "JBD: Journal too short (blocks %llu-%llu).\n",
+		       first, last);
+		journal_fail_superblock(journal);
+		return -EINVAL;
+	}
 
 	journal->j_first = first;
 	journal->j_last = last;
@@ -1774,7 +1781,7 @@ int jbd2_journal_wipe(journal_t *journal, int write)
  * Journal abort has very specific semantics, which we describe
  * for journal abort.
  *
- * Two internal function, which provide abort to te jbd layer
+ * Two internal functions, which provide abort to the jbd layer
  * itself are here.
  */
 
@@ -1872,7 +1879,7 @@ void jbd2_journal_abort(journal_t *journal, int errno)
  * int jbd2_journal_errno () - returns the journal's error state.
  * @journal: journal to examine.
  *
- * This is the errno numbet set with jbd2_journal_abort(), the last
+ * This is the errno number set with jbd2_journal_abort(), the last
  * time the journal was mounted - if the journal was stopped
  * without calling abort this will be 0.
  *
@@ -1896,7 +1903,7 @@ int jbd2_journal_errno(journal_t *journal)
  * int jbd2_journal_clear_err () - clears the journal's error state
  * @journal: journal to act on.
  *
- * An error must be cleared or Acked to take a FS out of readonly
+ * An error must be cleared or acked to take a FS out of readonly
  * mode.
  */
 int jbd2_journal_clear_err(journal_t *journal)
@@ -1916,7 +1923,7 @@ int jbd2_journal_clear_err(journal_t *journal)
  * void jbd2_journal_ack_err() - Ack journal err.
  * @journal: journal to act on.
  *
- * An error must be cleared or Acked to take a FS out of readonly
+ * An error must be cleared or acked to take a FS out of readonly
  * mode.
  */
 void jbd2_journal_ack_err(journal_t *journal)

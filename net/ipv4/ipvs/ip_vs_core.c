@@ -813,6 +813,16 @@ ip_vs_out(unsigned int hooknum, struct sk_buff **pskb,
 	skb->nh.iph->saddr = cp->vaddr;
 	ip_send_check(skb->nh.iph);
 
+	/* For policy routing, packets originating from this
+	 * machine itself may be routed differently to packets
+	 * passing through.  We want this packet to be routed as
+	 * if it came from this machine itself.  So re-compute
+	 * the routing information.
+	 */
+	if (ip_route_me_harder(pskb) != 0)
+		goto drop;
+	skb = *pskb;
+
 	IP_VS_DBG_PKT(10, pp, skb, 0, "After SNAT");
 
 	ip_vs_out_stats(cp, skb);
@@ -1023,15 +1033,23 @@ ip_vs_in(unsigned int hooknum, struct sk_buff **pskb,
 		ret = NF_ACCEPT;
 	}
 
-	/* increase its packet counter and check if it is needed
-	   to be synchronized */
+	/* Increase its packet counter and check if it is needed               
+	 * to be synchronized                                                  
+	 *                                                                     
+	 * Sync connection if it is about to close to                          
+	 * encorage the standby servers to update the connections timeout      
+	 */
 	atomic_inc(&cp->in_pkts);
 	if ((ip_vs_sync_state & IP_VS_STATE_MASTER) &&
-	    (cp->protocol != IPPROTO_TCP ||
-	     cp->state == IP_VS_TCP_S_ESTABLISHED) &&
-	    (atomic_read(&cp->in_pkts) % sysctl_ip_vs_sync_threshold[1]
-	     == sysctl_ip_vs_sync_threshold[0]))
+	    (((cp->protocol != IPPROTO_TCP ||
+	       cp->state == IP_VS_TCP_S_ESTABLISHED) &&
+	      (atomic_read(&cp->in_pkts) % sysctl_ip_vs_sync_threshold[1]
+	       == sysctl_ip_vs_sync_threshold[0])) ||
+	     ((cp->protocol == IPPROTO_TCP) && (cp->old_state != cp->state) &&
+	      ((cp->state == IP_VS_TCP_S_FIN_WAIT) ||
+	       (cp->state == IP_VS_TCP_S_CLOSE)))))
 		ip_vs_sync_conn(cp);
+	cp->old_state = cp->state;
 
 	ip_vs_conn_put(cp);
 	return ret;

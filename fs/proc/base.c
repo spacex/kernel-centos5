@@ -231,7 +231,7 @@ static struct pid_entry tgid_base_stuff[] = {
 	E(PROC_TGID_MOUNTS,    "mounts",  S_IFREG|S_IRUGO),
 	E(PROC_TGID_MOUNTSTATS, "mountstats", S_IFREG|S_IRUSR),
 #ifdef CONFIG_MMU
-	E(PROC_TGID_SMAPS,     "smaps",   S_IFREG|S_IRUSR),
+	E(PROC_TGID_SMAPS,     "smaps",   S_IFREG|S_IRUGO),
 #endif
 #ifdef CONFIG_SECURITY
 	E(PROC_TGID_ATTR,      "attr",    S_IFDIR|S_IRUGO|S_IXUGO),
@@ -1954,7 +1954,6 @@ static struct dentry *proc_pident_lookup(struct inode *dir,
 	if (!p->name)
 		goto out;
 
-	error = ERR_PTR(-EINVAL);
 	inode = proc_pid_make_inode(dir->i_sb, task, p->type);
 	if (!inode)
 		goto out;
@@ -2632,7 +2631,7 @@ static int proc_task_readdir(struct file * filp, void * dirent, filldir_t filldi
 		tid = task->pid;
 		len = snprintf(buf, sizeof(buf), "%d", tid);
 		ino = fake_ino(tid, PROC_TID_INO);
-		if (filldir(dirent, buf, len, pos, ino, DT_DIR < 0)) {
+		if (filldir(dirent, buf, len, pos, ino, DT_DIR) < 0) {
 			/* returning this tgid failed, save it as the first
 			 * pid for the next readir call */
 			filp->f_version = tid;

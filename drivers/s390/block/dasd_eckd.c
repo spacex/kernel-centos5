@@ -68,6 +68,7 @@ struct dasd_eckd_private {
 	int init_cqr_status;
 	int uses_cdl;
 	struct attrib_data_t attrib;	/* e.g. cache operations */
+	u32 real_cyl;
 };
 
 /* The ccw bus type uses this table to find devices that it sends to
@@ -107,6 +108,14 @@ dasd_eckd_probe (struct ccw_device *cdev)
 	}
 	ret = dasd_generic_probe(cdev, &dasd_eckd_discipline);
 	return ret;
+}
+
+static void set_ch_t(struct ch_t *geo, __u32 cyl, __u8 head)
+{
+	geo->cyl = (__u16) cyl;
+	geo->head = cyl >> 16;
+	geo->head <<= 4;
+	geo->head |= head;
 }
 
 static int
@@ -238,11 +247,12 @@ check_XRC (struct ccw1         *de_ccw,
 } /* end check_XRC */
 
 static inline void
-define_extent(struct ccw1 * ccw, struct DE_eckd_data * data, int trk,
-	      int totrk, int cmd, struct dasd_device * device)
+define_extent(struct ccw1 *ccw, struct DE_eckd_data *data, unsigned int trk,
+	      unsigned int totrk, int cmd, struct dasd_device *device)
 {
 	struct dasd_eckd_private *private;
-	struct ch_t geo, beg, end;
+	u32 begcyl, endcyl;
+	u16 heads, beghead, endhead;
 
 	private = (struct dasd_eckd_private *) device->private;
 
@@ -299,32 +309,29 @@ define_extent(struct ccw1 * ccw, struct DE_eckd_data * data, int trk,
 	    && !(private->uses_cdl && trk < 2))
 		data->ga_extended |= 0x40; /* Regular Data Format Mode */
 
-	geo.cyl = private->rdc_data.no_cyl;
-	geo.head = private->rdc_data.trk_per_cyl;
-	beg.cyl = trk / geo.head;
-	beg.head = trk % geo.head;
-	end.cyl = totrk / geo.head;
-	end.head = totrk % geo.head;
+	heads = private->rdc_data.trk_per_cyl;
+	begcyl = trk / heads;
+	beghead = trk % heads;
+	endcyl = totrk / heads;
+	endhead = totrk % heads;
 
 	/* check for sequential prestage - enhance cylinder range */
 	if (data->attributes.operation == DASD_SEQ_PRESTAGE ||
 	    data->attributes.operation == DASD_SEQ_ACCESS) {
 
-		if (end.cyl + private->attrib.nr_cyl < geo.cyl)
-			end.cyl += private->attrib.nr_cyl;
+		if (endcyl + private->attrib.nr_cyl < private->real_cyl)
+			endcyl += private->attrib.nr_cyl;
 		else
-			end.cyl = (geo.cyl - 1);
+			endcyl = (private->real_cyl - 1);
 	}
 
-	data->beg_ext.cyl = beg.cyl;
-	data->beg_ext.head = beg.head;
-	data->end_ext.cyl = end.cyl;
-	data->end_ext.head = end.head;
+	set_ch_t(&data->beg_ext, begcyl, beghead);
+	set_ch_t(&data->end_ext, endcyl, endhead);
 }
 
-static inline void
-locate_record(struct ccw1 *ccw, struct LO_eckd_data *data, int trk,
-	      int rec_on_trk, int no_rec, int cmd,
+static void
+locate_record(struct ccw1 *ccw, struct LO_eckd_data *data, unsigned int trk,
+	      unsigned int rec_on_trk, int no_rec, int cmd,
 	      struct dasd_device * device, int reclen)
 {
 	struct dasd_eckd_private *private;
@@ -417,10 +424,11 @@ locate_record(struct ccw1 *ccw, struct LO_eckd_data *data, int trk,
 	default:
 		DEV_MESSAGE(KERN_ERR, device, "unknown opcode 0x%x", cmd);
 	}
-	data->seek_addr.cyl = data->search_arg.cyl =
-		trk / private->rdc_data.trk_per_cyl;
-	data->seek_addr.head = data->search_arg.head =
-		trk % private->rdc_data.trk_per_cyl;
+	set_ch_t(&data->seek_addr,
+		 trk / private->rdc_data.trk_per_cyl,
+		 trk % private->rdc_data.trk_per_cyl);
+	data->search_arg.cyl = data->seek_addr.cyl;
+	data->search_arg.head = data->seek_addr.head;
 	data->search_arg.record = rec_on_trk;
 }
 
@@ -797,6 +805,12 @@ dasd_eckd_check_characteristics(struct dasd_device *device)
 		DEV_MESSAGE(KERN_WARNING, device,
 			    "Read device characteristics returned "
 			    "rc=%d", rc);
+	/* find the vaild cylinder size */
+	if (private->rdc_data.no_cyl == LV_COMPAT_CYL &&
+	    private->rdc_data.long_no_cyl)
+		private->real_cyl = private->rdc_data.long_no_cyl;
+	else
+		private->real_cyl = private->rdc_data.no_cyl;
 
 	DEV_MESSAGE(KERN_INFO, device,
 		    "%04X/%02X(CU:%04X/%02X) Cyl:%d Head:%d Sec:%d",
@@ -804,7 +818,7 @@ dasd_eckd_check_characteristics(struct dasd_device *device)
 		    private->rdc_data.dev_model,
 		    private->rdc_data.cu_type,
 		    private->rdc_data.cu_model.model,
-		    private->rdc_data.no_cyl,
+		    private->real_cyl,
 		    private->rdc_data.trk_per_cyl,
 		    private->rdc_data.sec_per_trk);
 	/*
@@ -934,8 +948,6 @@ dasd_eckd_end_analysis(struct dasd_device *device)
 	}
 
 	private->uses_cdl = 1;
-	/* Calculate number of blocks/records per track. */
-	blk_per_trk = recs_per_track(&private->rdc_data, 0, device->bp_block);
 	/* Check Track 0 for Compatible Disk Layout */
 	count_area = NULL;
 	for (i = 0; i < 3; i++) {
@@ -977,14 +989,14 @@ dasd_eckd_end_analysis(struct dasd_device *device)
 		device->s2b_shift++;
 
 	blk_per_trk = recs_per_track(&private->rdc_data, 0, device->bp_block);
-	device->blocks = (private->rdc_data.no_cyl *
+	device->blocks = (private->real_cyl *
 			  private->rdc_data.trk_per_cyl *
 			  blk_per_trk);
 
 	DEV_MESSAGE(KERN_INFO, device,
 		    "(%dkB blks): %dkB at %dkB/trk %s",
 		    (device->bp_block >> 10),
-		    ((private->rdc_data.no_cyl *
+		    ((private->real_cyl *
 		      private->rdc_data.trk_per_cyl *
 		      blk_per_trk * (device->bp_block >> 9)) >> 1),
 		    ((blk_per_trk * device->bp_block) >> 10),
@@ -1030,7 +1042,8 @@ dasd_eckd_format_device(struct dasd_device * device,
 	struct eckd_count *ect;
 	struct ccw1 *ccw;
 	void *data;
-	int rpt, cyl, head;
+ 	int rpt;
+  	struct ch_t address;
 	int cplength, datasize;
 	int i;
 	int intensity = 0;
@@ -1038,24 +1051,25 @@ dasd_eckd_format_device(struct dasd_device * device,
 
 	private = (struct dasd_eckd_private *) device->private;
 	rpt = recs_per_track(&private->rdc_data, 0, fdata->blksize);
-	cyl = fdata->start_unit / private->rdc_data.trk_per_cyl;
-	head = fdata->start_unit % private->rdc_data.trk_per_cyl;
+	set_ch_t(&address,
+		 fdata->start_unit / private->rdc_data.trk_per_cyl,
+		 fdata->start_unit % private->rdc_data.trk_per_cyl);
 
 	/* Sanity checks. */
 	if (fdata->start_unit >=
-	    (private->rdc_data.no_cyl * private->rdc_data.trk_per_cyl)) {
-		DEV_MESSAGE(KERN_INFO, device, "Track no %d too big!",
+	    (private->real_cyl * private->rdc_data.trk_per_cyl)) {
+		DEV_MESSAGE(KERN_INFO, device, "Track no %u too big!",
 			    fdata->start_unit);
 		return ERR_PTR(-EINVAL);
 	}
 	if (fdata->start_unit > fdata->stop_unit) {
-		DEV_MESSAGE(KERN_INFO, device, "Track %d reached! ending.",
+		DEV_MESSAGE(KERN_INFO, device, "Track %u reached! ending.",
 			    fdata->start_unit);
 		return ERR_PTR(-EINVAL);
 	}
 	if (dasd_check_blocksize(fdata->blksize) != 0) {
 		DEV_MESSAGE(KERN_WARNING, device,
-			    "Invalid blocksize %d...terminating!",
+			    "Invalid blocksize %u...terminating!",
 			    fdata->blksize);
 		return ERR_PTR(-EINVAL);
 	}
@@ -1158,8 +1172,8 @@ dasd_eckd_format_device(struct dasd_device * device,
 	if (intensity & 0x01) {	/* write record zero */
 		ect = (struct eckd_count *) data;
 		data += sizeof(struct eckd_count);
-		ect->cyl = cyl;
-		ect->head = head;
+		ect->cyl = address.cyl;
+		ect->head = address.head;
 		ect->record = 0;
 		ect->kl = 0;
 		ect->dl = 8;
@@ -1173,8 +1187,8 @@ dasd_eckd_format_device(struct dasd_device * device,
 	if ((intensity & ~0x08) & 0x04) {	/* erase track */
 		ect = (struct eckd_count *) data;
 		data += sizeof(struct eckd_count);
-		ect->cyl = cyl;
-		ect->head = head;
+		ect->cyl = address.cyl;
+		ect->head = address.head;
 		ect->record = 1;
 		ect->kl = 0;
 		ect->dl = 0;
@@ -1187,8 +1201,8 @@ dasd_eckd_format_device(struct dasd_device * device,
 		for (i = 0; i < rpt; i++) {
 			ect = (struct eckd_count *) data;
 			data += sizeof(struct eckd_count);
-			ect->cyl = cyl;
-			ect->head = head;
+			ect->cyl = address.cyl;
+			ect->head = address.head;
 			ect->record = i + 1;
 			ect->kl = 0;
 			ect->dl = fdata->blksize;
@@ -1410,7 +1424,8 @@ dasd_eckd_build_cp(struct dasd_device * device, struct request *req)
 			recid++;
 		}
 	}
-	if (blk_noretry_ff_request(req))
+	if (blk_noretry_ff_request(req) ||
+	    device->features & DASD_FEATURE_FAILFAST)
 		set_bit(DASD_CQR_FLAGS_FAILFAST, &cqr->flags);
 	cqr->device = device;
 	cqr->expires = 5 * 60 * HZ;	/* 5 minutes */

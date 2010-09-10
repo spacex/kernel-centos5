@@ -3137,7 +3137,7 @@ static int niu_process_rx_pkt(struct niu *np, struct rx_ring_info *rp)
 	rp->rcr_index = index;
 
 	skb_reserve(skb, NET_IP_ALIGN);
-	__pskb_pull_tail(skb, min(len, NIU_RXPULL_MAX));
+	__pskb_pull_tail(skb, min(len, VLAN_ETH_HLEN));
 
 	rp->rx_packets++;
 	rp->rx_bytes += skb->len;
@@ -5721,8 +5721,6 @@ out_err:
 
 static void niu_full_shutdown(struct niu *np, struct net_device *dev)
 {
-	flush_scheduled_work();
-
 	niu_disable_napi(np);
 	netif_stop_queue(dev);
 
@@ -8933,6 +8931,8 @@ static int __devexit niu_of_remove(struct of_device *op)
 
 	if (dev) {
 		struct niu *np = netdev_priv(dev);
+
+		flush_scheduled_work();
 
 		unregister_netdev(dev);
 

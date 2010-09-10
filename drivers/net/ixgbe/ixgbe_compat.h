@@ -17,4 +17,15 @@ static inline void vlan_group_set_device(struct vlan_group *vg, int vlan_id,
 	vg->vlan_devices[vlan_id] = NULL;
 }
 
+/*
+ * * FCoE CRC & EOF - 8 bytes.
+ **/
+struct fcoe_crc_eof {
+	__le32          fcoe_crc32;     /* CRC for FC packet */
+	__u8            fcoe_eof;       /* EOF from RFC 3643 */
+	__u8            fcoe_resvd[3];  /* reserved - send zero and ignore */
+} __attribute__((packed));
+
+#define IXGBE_RTTDCS_ARBDIS     0x00000040 /* DCB arbiter disable */
+
 #endif 

@@ -731,6 +731,7 @@ int get_sb_bdev(struct file_system_type *fs_type,
 
 		s->s_flags |= MS_ACTIVE;
 		bdev_uevent(bdev, KOBJ_MOUNT);
+		bdev->bd_super = s;
 	}
 
 	return simple_set_mnt(mnt, s);
@@ -750,6 +751,7 @@ void kill_block_super(struct super_block *sb)
 	struct block_device *bdev = sb->s_bdev;
 
 	bdev_uevent(bdev, KOBJ_UMOUNT);
+	bdev->bd_super = 0;
 	generic_shutdown_super(sb);
 	sync_blockdev(bdev);
 	close_bdev_excl(bdev);

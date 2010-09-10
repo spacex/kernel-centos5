@@ -58,6 +58,66 @@
 
 #define NFSDDBG_FACILITY		NFSDDBG_PROC
 
+static u32 nfsd_attrmask[] = {
+	NFSD_WRITEABLE_ATTRS_WORD0,
+	NFSD_WRITEABLE_ATTRS_WORD1
+};
+
+static __be32
+check_attr_support(struct svc_rqst *rqstp, struct svc_fh *current_fh,
+		   u32 *bmval, u32 *writable)
+{
+	struct dentry *dentry = current_fh->fh_dentry;
+	struct svc_export *exp = current_fh->fh_export;
+
+	/*
+	 * Check about attributes are supported by the NFSv4 server or not.
+	 * According to spec, unsupported attributes return ERR_ATTRNOTSUPP.
+	 */
+	if ((bmval[0] & ~NFSD_SUPPORTED_ATTRS_WORD0) ||
+	    (bmval[1] & ~NFSD_SUPPORTED_ATTRS_WORD1))
+		return nfserr_attrnotsupp;
+
+	/*
+	 * Check FATTR4_WORD0_ACL & FATTR4_WORD0_FS_LOCATIONS can be supported
+	 * in current environment or not.
+	 */
+	if (bmval[0] & FATTR4_WORD0_ACL) {
+		if (!IS_POSIXACL(dentry->d_inode))
+			return nfserr_attrnotsupp;
+	}
+	if (bmval[0] & FATTR4_WORD0_FS_LOCATIONS) {
+		if (exp->ex_fslocs.locations == NULL)
+			return nfserr_attrnotsupp;
+	}
+
+	/*
+	 * According to spec, read-only attributes return ERR_INVAL.
+	 */
+	if (writable) {
+		if ((bmval[0] & ~writable[0]) || (bmval[1] & ~writable[1]))
+			return nfserr_inval;
+	}
+
+	return nfs_ok;
+}
+
+static __be32
+nfsd4_check_open_attributes(struct svc_rqst *rqstp,
+	struct svc_fh *current_fh, struct nfsd4_open *open)
+{
+	__be32 status = nfs_ok;
+
+	if (open->op_create == NFS4_OPEN_CREATE) {
+		if (open->op_createmode == NFS4_CREATE_UNCHECKED
+		    || open->op_createmode == NFS4_CREATE_GUARDED)
+			status = check_attr_support(rqstp, current_fh,
+					open->op_bmval, nfsd_attrmask);
+	}
+
+	return status;
+}
+
 static inline void
 fh_dup2(struct svc_fh *dst, struct svc_fh *src)
 {
@@ -201,6 +261,10 @@ nfsd4_open(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nfsd4_open 
 		else
 			status = NFSERR_REPLAY_ME;
 	}
+	if (status)
+		goto out;
+
+	status = nfsd4_check_open_attributes(rqstp, current_fh, open);
 	if (status)
 		goto out;
 
@@ -361,6 +425,11 @@ nfsd4_create(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nfsd4_cre
 	status = fh_verify(rqstp, current_fh, S_IFDIR, MAY_CREATE);
 	if (status == nfserr_symlink)
 		status = nfserr_notdir;
+	if (status)
+		return status;
+
+	status = check_attr_support(rqstp, current_fh, create->cr_bmval,
+				    nfsd_attrmask);
 	if (status)
 		return status;
 
@@ -639,6 +708,12 @@ nfsd4_setattr(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nfsd4_se
 		}
 	}
 	status = nfs_ok;
+
+	status = check_attr_support(rqstp, current_fh, setattr->sa_bmval,
+				    nfsd_attrmask);
+	if (status)
+		return status;
+
 	if (setattr->sa_acl != NULL)
 		status = nfsd4_set_nfs4_acl(rqstp, current_fh, setattr->sa_acl);
 	if (status)
@@ -706,9 +781,10 @@ nfsd4_verify(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nfsd4_ver
 	if (status)
 		return status;
 
-	if ((verify->ve_bmval[0] & ~NFSD_SUPPORTED_ATTRS_WORD0)
-	    || (verify->ve_bmval[1] & ~NFSD_SUPPORTED_ATTRS_WORD1))
-		return nfserr_attrnotsupp;
+	status = check_attr_support(rqstp, current_fh, verify->ve_bmval, NULL);
+	if (status)
+		return status;
+
 	if ((verify->ve_bmval[0] & FATTR4_WORD0_RDATTR_ERROR)
 	    || (verify->ve_bmval[1] & NFSD_WRITEONLY_ATTRS_WORD1))
 		return nfserr_inval;
@@ -833,12 +909,13 @@ nfsd4_proc_compound(struct svc_rqst *rqstp,
 		}
 
 		/* All operations except RENEW, SETCLIENTID, RESTOREFH
-		* SETCLIENTID_CONFIRM, PUTFH and PUTROOTFH
+		* SETCLIENTID_CONFIRM, PUTFH, PUTPUBFH and PUTROOTFH
 		* require a valid current filehandle
 		*/
 		if (!current_fh->fh_dentry) {
 			if (!((op->opnum == OP_PUTFH) ||
 			      (op->opnum == OP_PUTROOTFH) ||
+			      (op->opnum == OP_PUTPUBFH) ||
 			      (op->opnum == OP_SETCLIENTID) ||
 			      (op->opnum == OP_SETCLIENTID_CONFIRM) ||
 			      (op->opnum == OP_RENEW) ||
@@ -919,6 +996,9 @@ nfsd4_proc_compound(struct svc_rqst *rqstp,
 			op->status = nfsd4_putfh(rqstp, current_fh, &op->u.putfh);
 			break;
 		case OP_PUTROOTFH:
+			op->status = nfsd4_putrootfh(rqstp, current_fh);
+			break;
+		case OP_PUTPUBFH:
 			op->status = nfsd4_putrootfh(rqstp, current_fh);
 			break;
 		case OP_READ:

@@ -289,6 +289,7 @@ ARGS_ATTR(posix_acl,       "%d\n");
 ARGS_ATTR(quota,           "%u\n");
 ARGS_ATTR(suiddir,         "%d\n");
 ARGS_ATTR(data,            "%d\n");
+ARGS_ATTR(statfs_percent,  "%d\n");
 
 static struct attribute *args_attrs[] = {
 	&args_attr_lockproto.attr,
@@ -304,6 +305,7 @@ static struct attribute *args_attrs[] = {
 	&args_attr_quota.attr,
 	&args_attr_suiddir.attr,
 	&args_attr_data.attr,
+	&args_attr_statfs_percent.attr,
 	NULL,
 };
 

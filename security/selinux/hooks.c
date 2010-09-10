@@ -2375,16 +2375,22 @@ static int selinux_inode_permission(struct inode *inode, int mask,
 static int selinux_inode_setattr(struct dentry *dentry, struct iattr *iattr)
 {
 	int rc;
+	unsigned int ia_valid = iattr->ia_valid;
 
 	rc = secondary_ops->inode_setattr(dentry, iattr);
 	if (rc)
 		return rc;
 
-	if (iattr->ia_valid & ATTR_FORCE)
-		return 0;
+	/* ATTR_FORCE is just used for ATTR_KILL_S[UG]ID. */
+	if (ia_valid & ATTR_FORCE) {
+		ia_valid &= ~(ATTR_KILL_SUID | ATTR_KILL_SGID | ATTR_MODE |
+				ATTR_FORCE);
+		if (!ia_valid)
+			return 0;
+	}
 
-	if (iattr->ia_valid & (ATTR_MODE | ATTR_UID | ATTR_GID |
-			       ATTR_ATIME_SET | ATTR_MTIME_SET))
+	if (ia_valid & (ATTR_MODE | ATTR_UID | ATTR_GID |
+			ATTR_ATIME_SET | ATTR_MTIME_SET))
 		return dentry_has_perm(current, NULL, dentry, FILE__SETATTR);
 
 	return dentry_has_perm(current, NULL, dentry, FILE__WRITE);

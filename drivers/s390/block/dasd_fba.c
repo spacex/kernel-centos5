@@ -344,7 +344,8 @@ dasd_fba_build_cp(struct dasd_device * device, struct request *req)
 			recid++;
 		}
 	}
-	if (blk_noretry_ff_request(req))
+	if (blk_noretry_ff_request(req) ||
+	    device->features & DASD_FEATURE_FAILFAST)
 		set_bit(DASD_CQR_FLAGS_FAILFAST, &cqr->flags);
 	cqr->device = device;
 	cqr->expires = 5 * 60 * HZ;	/* 5 minutes */

@@ -268,7 +268,6 @@ nfsd_setattr(struct svc_rqst *rqstp, struct svc_fh *fhp, struct iattr *iap,
 	struct inode	*inode;
 	int		accmode = MAY_SATTR;
 	int		ftype = 0;
-	int		imode;
 	int		err;
 	int		size_change = 0;
 
@@ -354,16 +353,26 @@ nfsd_setattr(struct svc_rqst *rqstp, struct svc_fh *fhp, struct iattr *iap,
 		DQUOT_INIT(inode);
 	}
 
-	imode = inode->i_mode;
+	/* sanitize the mode change */
 	if (iap->ia_valid & ATTR_MODE) {
 		iap->ia_mode &= S_IALLUGO;
-		imode = iap->ia_mode |= (imode & ~S_IALLUGO);
+		iap->ia_mode |= (inode->i_mode & ~S_IALLUGO);
 	}
 
 	/* Revoke setuid/setgid bit on chown/chgrp */
-	if (((iap->ia_valid & ATTR_UID) && iap->ia_uid != inode->i_uid) ||
-	    ((iap->ia_valid & ATTR_GID) && iap->ia_gid != inode->i_gid))
-		iap->ia_valid |= (ATTR_KILL_SGID | ATTR_KILL_SUID);
+	if (!S_ISDIR(inode->i_mode) &&
+	   (((iap->ia_valid & ATTR_UID) && iap->ia_uid != inode->i_uid) ||
+	    ((iap->ia_valid & ATTR_GID) && iap->ia_gid != inode->i_gid))) {
+		if (iap->ia_valid & ATTR_MODE) {
+			/* we're setting mode too, just clear the s*id bits */
+			iap->ia_mode &= ~S_ISUID;
+			if (iap->ia_mode & S_IXGRP)
+				iap->ia_mode &= ~S_ISGID;
+		} else {
+			/* set ATTR_KILL_* bits and let VFS handle it */
+			iap->ia_valid |= (ATTR_KILL_SGID | ATTR_KILL_SUID);
+		}
+	}
 
 	/* Change the attributes. */
 
@@ -448,7 +457,7 @@ nfsd4_set_nfs4_acl(struct svc_rqst *rqstp, struct svc_fh *fhp,
 	/* Get inode */
 	error = fh_verify(rqstp, fhp, 0 /* S_IFREG */, MAY_SATTR);
 	if (error)
-		goto out;
+		return error;
 
 	dentry = fhp->fh_dentry;
 	inode = dentry->d_inode;
@@ -457,30 +466,25 @@ nfsd4_set_nfs4_acl(struct svc_rqst *rqstp, struct svc_fh *fhp,
 
 	error = nfs4_acl_nfsv4_to_posix(acl, &pacl, &dpacl, flags);
 	if (error == -EINVAL) {
-		error = nfserr_attrnotsupp;
-		goto out;
+		return nfserr_attrnotsupp;
 	} else if (error < 0)
 		goto out_nfserr;
 
 	error = set_nfsv4_acl_one(dentry, pacl, POSIX_ACL_XATTR_ACCESS);
 	if (error < 0)
-		goto out_nfserr;
+		goto out_release;
 
-	if (S_ISDIR(inode->i_mode)) {
+	if (S_ISDIR(inode->i_mode))
 		error = set_nfsv4_acl_one(dentry, dpacl, POSIX_ACL_XATTR_DEFAULT);
-		if (error < 0)
-			goto out_nfserr;
-	}
 
-	error = nfs_ok;
-
-out:
+out_release:
 	posix_acl_release(pacl);
 	posix_acl_release(dpacl);
-	return (error);
 out_nfserr:
-	error = nfserrno(error);
-	goto out;
+	if (error == -EOPNOTSUPP)
+		return nfserr_attrnotsupp;
+	else
+		return nfserrno(error);
 }
 
 static struct posix_acl *

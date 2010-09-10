@@ -405,10 +405,24 @@ static int __init p4_init(char ** cpu_type)
 	return 0;
 }
 
+static int force_arch_perfmon;
+static int force_cpu_type(const char *str, struct kernel_param *kp)
+{
+	if (!strcmp(str, "arch_perfmon")) {
+		force_arch_perfmon = 1;
+		printk(KERN_INFO "oprofile: forcing architectural perfmon\n");
+	}
+
+	return 0;
+}
+module_param_call(cpu_type, force_cpu_type, NULL, NULL, 0);
 
 static int __init ppro_init(char **cpu_type)
 {
 	__u8 cpu_model = boot_cpu_data.x86_model;
+
+	if (force_arch_perfmon && cpu_has_arch_perfmon)
+		return 0;
 
 	switch (cpu_model) {
 	case 0 ... 2:
@@ -432,8 +446,13 @@ static int __init ppro_init(char **cpu_type)
 	case 15: case 23:
 		*cpu_type = "i386/core_2";
 		break;
+	case 0x2e:
 	case 26:
-		*cpu_type = "i386/core_2";
+		arch_perfmon_setup_counters();
+		*cpu_type = "i386/core_i7";
+		break;
+	case 28:
+		*cpu_type = "i386/atom";
 		break;
 	default:
 		/* Unknown */

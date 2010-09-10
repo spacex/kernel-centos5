@@ -252,10 +252,10 @@ static ssize_t part_size_read(struct hd_struct * p, char *page)
 }
 static ssize_t part_stats_read(struct hd_struct *p, char *page)
 {
-	preempt_disable();
+	ssize_t res;
+	rcu_read_lock();
 	part_round_stats(p);
-	preempt_enable();
-	return sprintf(page,
+	res = sprintf(page,
 		"%8lu %8lu %8llu %8u "
 		"%8lu %8lu %8llu %8u "
 		"%8u %8u %8u"
@@ -271,6 +271,8 @@ static ssize_t part_stats_read(struct hd_struct *p, char *page)
 		get_partstats(p)->in_flight,
 		jiffies_to_msecs(part_stat_read(p, io_ticks)),
 		jiffies_to_msecs(part_stat_read(p, time_in_queue)));
+	rcu_read_unlock();
+	return res;
 }
 static struct part_attribute part_attr_uevent = {
 	.attr = {.name = "uevent", .mode = S_IWUSR },
@@ -505,9 +507,23 @@ int rescan_partitions(struct gendisk *disk, struct block_device *bdev)
 		sector_t from = state->parts[p].from;
 		if (!size)
 			continue;
+		if (from >= get_capacity(disk)) {
+			printk(KERN_WARNING
+			       "%s: p%d ignored, start %llu is behind the end of the disk\n",
+			       disk->disk_name, p, (unsigned long long) from);
+			continue;
+		}
 		if (from + size > get_capacity(disk)) {
-			printk(" %s: p%d exceeds device capacity\n",
-				disk->disk_name, p);
+			/*
+			 * we can not ignore partitions of broken tables
+			 * created by for example camera firmware, but we
+			 * limit them to the end of the disk to avoid
+			 * creating invalid block devices
+			 */
+			printk(KERN_WARNING
+			       "%s: p%d size %llu limited to end of disk\n",
+			       disk->disk_name, p, (unsigned long long) size);
+			size = get_capacity(disk) - from;
 		}
 		add_partition(disk, p, from, size);
 #ifdef CONFIG_BLK_DEV_MD

@@ -95,8 +95,8 @@ struct blk_io_trace {
  * The remap event
  */
 struct blk_io_trace_remap {
-	__be32 device;
-	u32 __pad;
+	__be32 device_from;
+	u32 device_to;
 	__be64 sector;
 };
 

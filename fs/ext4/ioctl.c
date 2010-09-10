@@ -12,7 +12,7 @@
 #include <linux/capability.h>
 #include <linux/time.h>
 #include <linux/compat.h>
-#include <linux/smp_lock.h>
+#include <linux/file.h>
 #include <asm/uaccess.h>
 #include "ext4_jbd2.h"
 #include "ext4.h"
@@ -46,8 +46,7 @@ long ext4_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		if (get_user(flags, (int __user *) arg))
 			return -EFAULT;
 
-		if (!S_ISDIR(inode->i_mode))
-			flags &= ~EXT4_DIRSYNC_FL;
+		flags = ext4_mask_flags(inode->i_mode, flags);
 
 		err = -EPERM;
 		mutex_lock(&inode->i_mutex);
@@ -184,7 +183,7 @@ flags_out:
 	case EXT4_IOC_GROUP_EXTEND: {
 		ext4_fsblk_t n_blocks_count;
 		struct super_block *sb = inode->i_sb;
-		int err, err2;
+		int err, err2=0;
 
 		if (!capable(CAP_SYS_RESOURCE))
 			return -EPERM;
@@ -196,18 +195,56 @@ flags_out:
 			return -EFAULT;
 
 		err = ext4_group_extend(sb, EXT4_SB(sb)->s_es, n_blocks_count);
-		jbd2_journal_lock_updates(EXT4_SB(sb)->s_journal);
-		err2 = jbd2_journal_flush(EXT4_SB(sb)->s_journal);
-		jbd2_journal_unlock_updates(EXT4_SB(sb)->s_journal);
+		if (EXT4_SB(sb)->s_journal) {
+			jbd2_journal_lock_updates(EXT4_SB(sb)->s_journal);
+			err2 = jbd2_journal_flush(EXT4_SB(sb)->s_journal);
+			jbd2_journal_unlock_updates(EXT4_SB(sb)->s_journal);
+		}
 		if (err == 0)
 			err = err2;
 
 		return err;
 	}
+
+	case EXT4_IOC_MOVE_EXT: {
+		struct move_extent me;
+		struct file *donor_filp;
+		int err;
+
+		if (!(filp->f_mode & FMODE_READ) ||
+		    !(filp->f_mode & FMODE_WRITE))
+			return -EBADF;
+
+		if (copy_from_user(&me,
+			(struct move_extent __user *)arg, sizeof(me)))
+			return -EFAULT;
+		me.moved_len = 0;
+
+		donor_filp = fget(me.donor_fd);
+		if (!donor_filp)
+			return -EBADF;
+
+		if (!(donor_filp->f_mode & FMODE_WRITE)) {
+			err = -EBADF;
+			goto mext_out;
+		}
+
+		err = ext4_move_extents(filp, donor_filp, me.orig_start,
+					me.donor_start, me.len, &me.moved_len);
+		if (me.moved_len > 0)
+			remove_suid(donor_filp->f_dentry);
+
+		if (copy_to_user((struct move_extent *)arg, &me, sizeof(me)))
+			err = -EFAULT;
+mext_out:
+		fput(donor_filp);
+		return err;
+	}
+
 	case EXT4_IOC_GROUP_ADD: {
 		struct ext4_new_group_data input;
 		struct super_block *sb = inode->i_sb;
-		int err, err2;
+		int err, err2=0;
 
 		if (!capable(CAP_SYS_RESOURCE))
 			return -EPERM;
@@ -220,9 +257,11 @@ flags_out:
 			return -EFAULT;
 
 		err = ext4_group_add(sb, &input);
-		jbd2_journal_lock_updates(EXT4_SB(sb)->s_journal);
-		err2 = jbd2_journal_flush(EXT4_SB(sb)->s_journal);
-		jbd2_journal_unlock_updates(EXT4_SB(sb)->s_journal);
+		if (EXT4_SB(sb)->s_journal) {
+			jbd2_journal_lock_updates(EXT4_SB(sb)->s_journal);
+			err2 = jbd2_journal_flush(EXT4_SB(sb)->s_journal);
+			jbd2_journal_unlock_updates(EXT4_SB(sb)->s_journal);
+		}
 		if (err == 0)
 			err = err2;
 
@@ -247,6 +286,18 @@ flags_out:
 		mutex_lock(&(inode->i_mutex));
 		err = ext4_ext_migrate(inode);
 		mutex_unlock(&(inode->i_mutex));
+		return err;
+	}
+
+	case EXT4_IOC_ALLOC_DA_BLKS:
+	{
+		int err;
+		if (!is_owner_or_cap(inode))
+			return -EACCES;
+
+		if (IS_RDONLY(inode))
+			return -EROFS;
+		err = ext4_alloc_da_blocks(inode);
 		return err;
 	}
 

@@ -102,7 +102,7 @@ dasd_devices_show(struct seq_file *m, void *v)
 			seq_printf(m, "n/f	 ");
 		else
 			seq_printf(m,
-				   "at blocksize: %d, %ld blocks, %ld MB",
+				   "at blocksize: %d, %lld blocks, %lld MB",
 				   device->bp_block, device->blocks,
 				   ((device->bp_block >> 9) *
 				    device->blocks) >> 11);

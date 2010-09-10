@@ -40,8 +40,7 @@ obj-y				+= device_handler/
 obj-$(CONFIG_LIBFC)		+= libfc/
 obj-$(CONFIG_FCOE)		+= fcoe/
 obj-$(CONFIG_FCOE_FNIC)		+= fnic/
-obj-$(CONFIG_LIBISCSI1)		+= libiscsi1.o
-libiscsi1-objs			:= libiscsi.o
+obj-$(CONFIG_LIBISCSI1)		+= libiscsi.o
 obj-$(CONFIG_ISCSI_TCP) 	+= libiscsi2.o	libiscsi_tcp.o iscsi_tcp.o
 obj-$(CONFIG_INFINIBAND_ISER) 	+= libiscsi2.o
 obj-$(CONFIG_SCSI_AMIGA7XX)	+= amiga7xx.o	53c7xx.o
@@ -95,7 +94,9 @@ obj-$(CONFIG_SCSI_QLOGIC_1280)	+= qla1280.o
 obj-$(CONFIG_SCSI_QLA_FC)	+= qla2xxx/
 obj-$(CONFIG_SCSI_QLA_ISCSI)	+= qla4xxx/
 obj-$(CONFIG_SCSI_BNX2_ISCSI)	+= libiscsi2.o bnx2i/
+obj-$(CONFIG_BE2ISCSI)		+= libiscsi.o be2iscsi/
 obj-$(CONFIG_SCSI_LPFC)		+= lpfc/
+obj-$(CONFIG_SCSI_BFA_FC)	+= bfa/
 obj-$(CONFIG_SCSI_PAS16)	+= pas16.o
 obj-$(CONFIG_SCSI_SEAGATE)	+= seagate.o
 obj-$(CONFIG_SCSI_FD_8xx)	+= seagate.o
@@ -141,6 +142,7 @@ obj-$(CONFIG_SCSI_IBMVFC)	+= ibmvscsi/
 obj-$(CONFIG_SCSI_HPTIOP)	+= hptiop.o
 obj-$(CONFIG_SCSI_STEX)		+= stex.o
 obj-$(CONFIG_SCSI_CXGB3_ISCSI)	+= libiscsi2.o libiscsi_tcp.o cxgb3i/
+obj-$(CONFIG_SCSI_PMCRAID)      += pmcraid.o
 
 obj-$(CONFIG_ARM)		+= arm/
 

@@ -183,10 +183,10 @@ u8 * ieee80211_tkip_add_iv(u8 *pos, struct ieee80211_key *key,
 	*pos++ = iv1;
 	*pos++ = iv2;
 	*pos++ = (key->conf.keyidx << 6) | (1 << 5) /* Ext IV */;
-	*pos++ = key->u.tkip.iv32 & 0xff;
-	*pos++ = (key->u.tkip.iv32 >> 8) & 0xff;
-	*pos++ = (key->u.tkip.iv32 >> 16) & 0xff;
-	*pos++ = (key->u.tkip.iv32 >> 24) & 0xff;
+	*pos++ = key->u.tkip.tx.iv32 & 0xff;
+	*pos++ = (key->u.tkip.tx.iv32 >> 8) & 0xff;
+	*pos++ = (key->u.tkip.tx.iv32 >> 16) & 0xff;
+	*pos++ = (key->u.tkip.tx.iv32 >> 24) & 0xff;
 	return pos;
 }
 
@@ -194,24 +194,24 @@ u8 * ieee80211_tkip_add_iv(u8 *pos, struct ieee80211_key *key,
 void ieee80211_tkip_gen_phase1key(struct ieee80211_key *key, u8 *ta,
 				  u16 *phase1key)
 {
-	tkip_mixing_phase1(ta, &key->conf.key[ALG_TKIP_TEMP_ENCR_KEY],
-			   key->u.tkip.iv32, phase1key);
+	tkip_mixing_phase1(ta, &key->conf.key[NL80211_TKIP_DATA_OFFSET_ENCR_KEY],
+			   key->u.tkip.tx.iv32, phase1key);
 }
 
 void ieee80211_tkip_gen_rc4key(struct ieee80211_key *key, u8 *ta,
 			       u8 *rc4key)
 {
 	/* Calculate per-packet key */
-	if (key->u.tkip.iv16 == 0 || !key->u.tkip.tx_initialized) {
+	if (key->u.tkip.tx.iv16 == 0 || !key->u.tkip.tx.initialized) {
 		/* IV16 wrapped around - perform TKIP phase 1 */
-		tkip_mixing_phase1(ta, &key->conf.key[ALG_TKIP_TEMP_ENCR_KEY],
-				   key->u.tkip.iv32, key->u.tkip.p1k);
-		key->u.tkip.tx_initialized = 1;
+		tkip_mixing_phase1(ta, &key->conf.key[NL80211_TKIP_DATA_OFFSET_ENCR_KEY],
+				   key->u.tkip.tx.iv32, key->u.tkip.tx.p1k);
+		key->u.tkip.tx.initialized = 1;
 	}
 
-	tkip_mixing_phase2(key->u.tkip.p1k,
-			   &key->conf.key[ALG_TKIP_TEMP_ENCR_KEY],
-			   key->u.tkip.iv16, rc4key);
+	tkip_mixing_phase2(key->u.tkip.tx.p1k,
+			   &key->conf.key[NL80211_TKIP_DATA_OFFSET_ENCR_KEY],
+			   key->u.tkip.tx.iv16, rc4key);
 }
 
 void ieee80211_get_tkip_key(struct ieee80211_key_conf *keyconf,
@@ -222,8 +222,7 @@ void ieee80211_get_tkip_key(struct ieee80211_key_conf *keyconf,
 			container_of(keyconf, struct ieee80211_key, conf);
 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
 	u8 *data = (u8 *) hdr;
-	u16 fc = le16_to_cpu(hdr->frame_control);
-	int hdr_len = ieee80211_get_hdrlen(fc);
+	int hdr_len = ieee80211_hdrlen(hdr->frame_control);
 	u8 *ta = hdr->addr2;
 	u16 iv16;
 	u32 iv32;
@@ -233,35 +232,35 @@ void ieee80211_get_tkip_key(struct ieee80211_key_conf *keyconf,
 	iv32 = data[hdr_len + 4] | (data[hdr_len + 5] << 8) |
 	       (data[hdr_len + 6] << 16) | (data[hdr_len + 7] << 24);
 
-#ifdef CONFIG_TKIP_DEBUG
+#ifdef CONFIG_MAC80211_TKIP_DEBUG
 	printk(KERN_DEBUG "TKIP encrypt: iv16 = 0x%04x, iv32 = 0x%08x\n",
 			iv16, iv32);
 
-	if (iv32 != key->u.tkip.iv32) {
+	if (iv32 != key->u.tkip.tx.iv32) {
 		printk(KERN_DEBUG "skb: iv32 = 0x%08x key: iv32 = 0x%08x\n",
-			iv32, key->u.tkip.iv32);
+			iv32, key->u.tkip.tx.iv32);
 		printk(KERN_DEBUG "Wrap around of iv16 in the middle of a "
 			"fragmented packet\n");
 	}
-#endif /* CONFIG_TKIP_DEBUG */
+#endif /* CONFIG_MAC80211_TKIP_DEBUG */
 
 	/* Update the p1k only when the iv16 in the packet wraps around, this
 	 * might occur after the wrap around of iv16 in the key in case of
 	 * fragmented packets. */
-	if (iv16 == 0 || !key->u.tkip.tx_initialized) {
+	if (iv16 == 0 || !key->u.tkip.tx.initialized) {
 		/* IV16 wrapped around - perform TKIP phase 1 */
-		tkip_mixing_phase1(ta, &key->conf.key[ALG_TKIP_TEMP_ENCR_KEY],
-			iv32, key->u.tkip.p1k);
-		key->u.tkip.tx_initialized = 1;
+		tkip_mixing_phase1(ta, &key->conf.key[NL80211_TKIP_DATA_OFFSET_ENCR_KEY],
+			iv32, key->u.tkip.tx.p1k);
+		key->u.tkip.tx.initialized = 1;
 	}
 
 	if (type == IEEE80211_TKIP_P1_KEY) {
-		memcpy(outkey, key->u.tkip.p1k, sizeof(u16) * 5);
+		memcpy(outkey, key->u.tkip.tx.p1k, sizeof(u16) * 5);
 		return;
 	}
 
-	tkip_mixing_phase2(key->u.tkip.p1k,
-		&key->conf.key[ALG_TKIP_TEMP_ENCR_KEY],	iv16, outkey);
+	tkip_mixing_phase2(key->u.tkip.tx.p1k,
+		&key->conf.key[NL80211_TKIP_DATA_OFFSET_ENCR_KEY],	iv16, outkey);
 }
 EXPORT_SYMBOL(ieee80211_get_tkip_key);
 
@@ -304,7 +303,7 @@ int ieee80211_tkip_decrypt_data(struct crypto_tfm *tfm,
 	keyid = pos[3];
 	iv32 = pos[4] | (pos[5] << 8) | (pos[6] << 16) | (pos[7] << 24);
 	pos += 8;
-#ifdef CONFIG_TKIP_DEBUG
+#ifdef CONFIG_MAC80211_TKIP_DEBUG
 	{
 		int i;
 		printk(KERN_DEBUG "TKIP decrypt: data(len=%zd)", payload_len);
@@ -314,7 +313,7 @@ int ieee80211_tkip_decrypt_data(struct crypto_tfm *tfm,
 		printk(KERN_DEBUG "TKIP decrypt: iv16=%04x iv32=%08x\n",
 		       iv16, iv32);
 	}
-#endif /* CONFIG_TKIP_DEBUG */
+#endif /* CONFIG_MAC80211_TKIP_DEBUG */
 
 	if (!(keyid & (1 << 5)))
 		return TKIP_DECRYPT_NO_EXT_IV;
@@ -322,69 +321,66 @@ int ieee80211_tkip_decrypt_data(struct crypto_tfm *tfm,
 	if ((keyid >> 6) != key->conf.keyidx)
 		return TKIP_DECRYPT_INVALID_KEYIDX;
 
-	if (key->u.tkip.rx_initialized[queue] &&
-	    (iv32 < key->u.tkip.iv32_rx[queue] ||
-	     (iv32 == key->u.tkip.iv32_rx[queue] &&
-	      iv16 <= key->u.tkip.iv16_rx[queue]))) {
-#ifdef CONFIG_TKIP_DEBUG
-		DECLARE_MAC_BUF(mac);
+	if (key->u.tkip.rx[queue].initialized &&
+	    (iv32 < key->u.tkip.rx[queue].iv32 ||
+	     (iv32 == key->u.tkip.rx[queue].iv32 &&
+	      iv16 <= key->u.tkip.rx[queue].iv16))) {
+#ifdef CONFIG_MAC80211_TKIP_DEBUG
 		printk(KERN_DEBUG "TKIP replay detected for RX frame from "
-		       "%s (RX IV (%04x,%02x) <= prev. IV (%04x,%02x)\n",
-		       print_mac(mac, ta),
-		       iv32, iv16, key->u.tkip.iv32_rx[queue],
-		       key->u.tkip.iv16_rx[queue]);
-#endif /* CONFIG_TKIP_DEBUG */
+		       "%pM (RX IV (%04x,%02x) <= prev. IV (%04x,%02x)\n",
+		       ta, iv32, iv16, key->u.tkip.rx[queue].iv32,
+		       key->u.tkip.rx[queue].iv16);
+#endif /* CONFIG_MAC80211_TKIP_DEBUG */
 		return TKIP_DECRYPT_REPLAY;
 	}
 
 	if (only_iv) {
 		res = TKIP_DECRYPT_OK;
-		key->u.tkip.rx_initialized[queue] = 1;
+		key->u.tkip.rx[queue].initialized = 1;
 		goto done;
 	}
 
-	if (!key->u.tkip.rx_initialized[queue] ||
-	    key->u.tkip.iv32_rx[queue] != iv32) {
-		key->u.tkip.rx_initialized[queue] = 1;
+	if (!key->u.tkip.rx[queue].initialized ||
+	    key->u.tkip.rx[queue].iv32 != iv32) {
+		key->u.tkip.rx[queue].initialized = 1;
 		/* IV16 wrapped around - perform TKIP phase 1 */
-		tkip_mixing_phase1(ta, &key->conf.key[ALG_TKIP_TEMP_ENCR_KEY],
-				   iv32, key->u.tkip.p1k_rx[queue]);
-#ifdef CONFIG_TKIP_DEBUG
+		tkip_mixing_phase1(ta, &key->conf.key[NL80211_TKIP_DATA_OFFSET_ENCR_KEY],
+				   iv32, key->u.tkip.rx[queue].p1k);
+#ifdef CONFIG_MAC80211_TKIP_DEBUG
 		{
 			int i;
-			DECLARE_MAC_BUF(mac);
-			printk(KERN_DEBUG "TKIP decrypt: Phase1 TA=%s"
-			       " TK=", print_mac(mac, ta));
+			printk(KERN_DEBUG "TKIP decrypt: Phase1 TA=%pM"
+			       " TK=", ta);
 			for (i = 0; i < 16; i++)
 				printk("%02x ",
 				       key->conf.key[
-						ALG_TKIP_TEMP_ENCR_KEY + i]);
+						NL80211_TKIP_DATA_OFFSET_ENCR_KEY + i]);
 			printk("\n");
 			printk(KERN_DEBUG "TKIP decrypt: P1K=");
 			for (i = 0; i < 5; i++)
-				printk("%04x ", key->u.tkip.p1k_rx[queue][i]);
+				printk("%04x ", key->u.tkip.rx[queue].p1k[i]);
 			printk("\n");
 		}
-#endif /* CONFIG_TKIP_DEBUG */
+#endif /* CONFIG_MAC80211_TKIP_DEBUG */
 		if (key->local->ops->update_tkip_key &&
 			key->flags & KEY_FLAG_UPLOADED_TO_HARDWARE) {
 			u8 bcast[ETH_ALEN] =
 				{0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
-			u8 *sta_addr = key->sta->addr;
+			u8 *sta_addr = key->sta->sta.addr;
 
 			if (is_multicast_ether_addr(ra))
 				sta_addr = bcast;
 
 			key->local->ops->update_tkip_key(
 				local_to_hw(key->local), &key->conf,
-				sta_addr, iv32, key->u.tkip.p1k_rx[queue]);
+				sta_addr, iv32, key->u.tkip.rx[queue].p1k);
 		}
 	}
 
-	tkip_mixing_phase2(key->u.tkip.p1k_rx[queue],
-			   &key->conf.key[ALG_TKIP_TEMP_ENCR_KEY],
+	tkip_mixing_phase2(key->u.tkip.rx[queue].p1k,
+			   &key->conf.key[NL80211_TKIP_DATA_OFFSET_ENCR_KEY],
 			   iv16, rc4key);
-#ifdef CONFIG_TKIP_DEBUG
+#ifdef CONFIG_MAC80211_TKIP_DEBUG
 	{
 		int i;
 		printk(KERN_DEBUG "TKIP decrypt: Phase2 rc4key=");
@@ -392,7 +388,7 @@ int ieee80211_tkip_decrypt_data(struct crypto_tfm *tfm,
 			printk("%02x ", rc4key[i]);
 		printk("\n");
 	}
-#endif /* CONFIG_TKIP_DEBUG */
+#endif /* CONFIG_MAC80211_TKIP_DEBUG */
 
 	res = ieee80211_wep_decrypt_data(tfm, rc4key, 16, pos, payload_len - 12);
  done:

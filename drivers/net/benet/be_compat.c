@@ -30,6 +30,9 @@ void be_netdev_ops_init(struct net_device *netdev, struct net_device_ops *ops)
 	netdev->vlan_rx_register = ops->ndo_vlan_rx_register;
 	netdev->vlan_rx_add_vid = ops->ndo_vlan_rx_add_vid;
 	netdev->vlan_rx_kill_vid = ops->ndo_vlan_rx_kill_vid;
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	netdev->poll_controller = ops->ndo_poll_controller;
+#endif
 }
 
 int eth_validate_addr(struct net_device *netdev)
@@ -51,3 +54,4 @@ int be_poll_compat(struct net_device *netdev, int *budget)
 	else
 		return 1;
 }
+

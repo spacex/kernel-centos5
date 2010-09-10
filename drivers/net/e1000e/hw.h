@@ -214,6 +214,8 @@ enum e1e_registers {
 	E1000_FACTPS    = 0x05B30, /* Function Active and Power State to MNG */
 	E1000_SWSM      = 0x05B50, /* SW Semaphore */
 	E1000_FWSM      = 0x05B54, /* FW Semaphore */
+	E1000_SWSM2     = 0x05B58, /* Driver-only SW semaphore */
+	E1000_CRC_OFFSET = 0x05F50, /* CRC Offset register */
 	E1000_HICR      = 0x08F00, /* Host Interface Control */
 };
 
@@ -257,7 +259,7 @@ enum e1e_registers {
 #define IGP01E1000_PLHR_SS_DOWNGRADE	0x8000
 
 #define IGP01E1000_PSSR_POLARITY_REVERSED	0x0002
-#define IGP01E1000_PSSR_MDIX			0x0008
+#define IGP01E1000_PSSR_MDIX			0x0800
 #define IGP01E1000_PSSR_SPEED_MASK		0xC000
 #define IGP01E1000_PSSR_SPEED_1000MBPS		0xC000
 
@@ -301,6 +303,9 @@ enum e1e_registers {
 #define E1000_KMRNCTRLSTA_REN		0x00200000
 #define E1000_KMRNCTRLSTA_DIAG_OFFSET	0x3    /* Kumeran Diagnostic */
 #define E1000_KMRNCTRLSTA_DIAG_NELPBK	0x1000 /* Nearend Loopback mode */
+#define E1000_KMRNCTRLSTA_K1_CONFIG	0x7
+#define E1000_KMRNCTRLSTA_K1_ENABLE	0x140E
+#define E1000_KMRNCTRLSTA_K1_DISABLE	0x1400
 
 #define IFE_PHY_EXTENDED_STATUS_CONTROL	0x10
 #define IFE_PHY_SPECIAL_CONTROL		0x11 /* 100BaseTx PHY Special Control */
@@ -351,6 +356,7 @@ enum e1e_registers {
 #define E1000_DEV_ID_80003ES2LAN_COPPER_SPT	0x10BA
 #define E1000_DEV_ID_80003ES2LAN_SERDES_SPT	0x10BB
 
+#define E1000_DEV_ID_ICH8_82567V_3		0x1501
 #define E1000_DEV_ID_ICH8_IGP_M_AMT		0x1049
 #define E1000_DEV_ID_ICH8_IGP_AMT		0x104A
 #define E1000_DEV_ID_ICH8_IGP_C			0x104B
@@ -759,11 +765,13 @@ struct e1000_phy_operations {
 	s32  (*get_cable_length)(struct e1000_hw *);
 	s32  (*get_phy_info)(struct e1000_hw *);
 	s32  (*read_phy_reg)(struct e1000_hw *, u32, u16 *);
+	s32  (*read_phy_reg_locked)(struct e1000_hw *, u32, u16 *);
 	void (*release_phy)(struct e1000_hw *);
 	s32  (*reset_phy)(struct e1000_hw *);
 	s32  (*set_d0_lplu_state)(struct e1000_hw *, bool);
 	s32  (*set_d3_lplu_state)(struct e1000_hw *, bool);
 	s32  (*write_phy_reg)(struct e1000_hw *, u32, u16);
+	s32  (*write_phy_reg_locked)(struct e1000_hw *, u32, u16);
 	s32  (*cfg_on_link_up)(struct e1000_hw *);
 };
 
@@ -883,6 +891,7 @@ struct e1000_fc_info {
 struct e1000_dev_spec_82571 {
 	bool laa_is_present;
 	bool alt_mac_addr_is_present;
+	u32 smb_counter;
 };
 
 struct e1000_shadow_ram {
@@ -895,6 +904,7 @@ struct e1000_shadow_ram {
 struct e1000_dev_spec_ich8lan {
 	bool kmrn_lock_loss_workaround_enabled;
 	struct e1000_shadow_ram shadow_ram[E1000_ICH8_SHADOW_RAM_WORDS];
+	bool nvm_k1_enabled;
 };
 
 struct e1000_hw {

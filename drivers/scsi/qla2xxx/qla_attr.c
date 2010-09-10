@@ -315,7 +315,7 @@ qla2x00_sysfs_write_optrom_ctl(struct kobject *kobj, char *buf, loff_t off,
 
 		ha->optrom_state = QLA_SWAITING;
 
-		DEBUG2(qla_printk(KERN_INFO, ha,
+		DEBUG9(qla_printk(KERN_INFO, ha,
 		    "Freeing flash region allocation -- 0x%x bytes.\n",
 		    ha->optrom_region_size));
 
@@ -341,7 +341,7 @@ qla2x00_sysfs_write_optrom_ctl(struct kobject *kobj, char *buf, loff_t off,
 			return count;
 		}
 
-		DEBUG2(qla_printk(KERN_INFO, ha,
+		DEBUG9(qla_printk(KERN_INFO, ha,
 		    "Reading flash region -- 0x%x/0x%x.\n",
 		    ha->optrom_region_start, ha->optrom_region_size));
 
@@ -583,13 +583,21 @@ qla2x00_find_port(struct scsi_qla_host *ha, uint8_t *pn)
 static void
 qla2x00_wait_for_passthru_completion(struct scsi_qla_host *ha)
 {
+	unsigned long timeout;
+
 	if (unlikely(pci_channel_offline(ha->pdev)))
 		return;
 
-	if (!wait_for_completion_timeout(&ha->pass_thru_intr_comp, 10 * HZ)) {
+	timeout = ((ha->r_a_tov / 10 * 2) + 5) * HZ;
+	if (!wait_for_completion_timeout(&ha->pass_thru_intr_comp,
+	    timeout)) {
 		DEBUG2(qla_printk(KERN_WARNING, ha,
 		    "Passthru request timed out.\n"));
 		ha->isp_ops->fw_dump(ha, 0);
+		set_bit(ISP_ABORT_NEEDED, &ha->dpc_flags);
+		qla2xxx_wake_dpc(ha);
+		ha->pass_thru_cmd_result = 0;
+		ha->pass_thru_cmd_in_process = 0;
 	}
 }
 
@@ -813,7 +821,7 @@ qla2x00_sysfs_write_ct(struct kobject *kobj, char *buf, loff_t off,
 		ct_iocb->nport_handle = cpu_to_le16(ha->mgmt_svr_loop_id);
 		ct_iocb->cmd_dsd_count = __constant_cpu_to_le16(1);
 		ct_iocb->vp_index = ha->vp_idx;
-		ct_iocb->timeout = __constant_cpu_to_le16(25);
+		ct_iocb->timeout = (cpu_to_le16(ha->r_a_tov / 10 * 2) + 2);
 		ct_iocb->rsp_dsd_count = __constant_cpu_to_le16(1);
 		ct_iocb->rsp_byte_count = cpu_to_le32(PAGE_SIZE);
 		ct_iocb->cmd_byte_count = cpu_to_le32(count);
@@ -844,7 +852,7 @@ qla2x00_sysfs_write_ct(struct kobject *kobj, char *buf, loff_t off,
 		SET_TARGET_ID(ha, ct_iocb_2G->loop_id, ha->mgmt_svr_loop_id);
 		ct_iocb_2G->status = __constant_cpu_to_le16(0);
 		ct_iocb_2G->control_flags = __constant_cpu_to_le16(0);
-		ct_iocb_2G->timeout = __constant_cpu_to_le16(25);
+		ct_iocb_2G->timeout = (cpu_to_le16(ha->r_a_tov / 10 * 2) + 2);
 		ct_iocb_2G->cmd_dsd_count = __constant_cpu_to_le16(1);
 		ct_iocb_2G->total_dsd_count = __constant_cpu_to_le16(2);
 		ct_iocb_2G->rsp_bytecount = cpu_to_le32(PAGE_SIZE);
@@ -1593,8 +1601,9 @@ static ssize_t
 qla24xx_node_name(struct class_device *cdev, char *buf)
 {
 	scsi_qla_host_t *ha = to_qla_host(class_to_shost(cdev));
-	uint8_t fc_wwnn_str[16];
+	uint8_t fc_wwnn_str[17];
 
+	memset(fc_wwnn_str, 0, 17);
 	fc_convert_hex_char(ha->node_name, fc_wwnn_str, WWN_SIZE);
 
 	return snprintf(buf, PAGE_SIZE, "%s\n", fc_wwnn_str);
@@ -1604,8 +1613,9 @@ static ssize_t
 qla24xx_port_name(struct class_device *cdev, char *buf)
 {
 	scsi_qla_host_t *ha = to_qla_host(class_to_shost(cdev));
-	uint8_t fc_wwpn_str[16];
+	uint8_t fc_wwpn_str[17];
 
+	memset(fc_wwpn_str, 0, 17);
 	fc_convert_hex_char(ha->port_name, fc_wwpn_str, WWN_SIZE);
 
 	return snprintf(buf, PAGE_SIZE, "%s\n", fc_wwpn_str);
@@ -1616,8 +1626,9 @@ qla24xx_vport_id_show(struct class_device *cdev, char *buf)
 {
 	scsi_qla_host_t *ha = to_qla_host(class_to_shost(cdev));
 	uint8_t fc_vport_id[2];
-	uint8_t fc_vport_id_str[4];
-	
+	uint8_t fc_vport_id_str[5];
+
+	memset(fc_vport_id_str, 0, 5);	
 	fc_vport_id[0] = (ha->vp_idx & 0xff00) >> 0x08;
 	fc_vport_id[1] = ha->vp_idx & 0xff;
 
@@ -1665,11 +1676,12 @@ qla24xx_symbolic_port_name_show(struct class_device *cdev, char *buf)
 {
 	int	len = 0;
 	char	fw_str[30];
-	char	fc_vp_idx_str[4];
+	char	fc_vp_idx_str[5];
 	uint8_t	vp_idx[2];
 
 	scsi_qla_host_t *ha = to_qla_host(class_to_shost(cdev));
-
+	
+	memset(fc_vp_idx_str, 0, 5);
 	len = snprintf(buf, PAGE_SIZE, ha->model_number);
 	len += snprintf(buf + len, PAGE_SIZE, " FW:");
 	len += snprintf(buf + len, PAGE_SIZE,

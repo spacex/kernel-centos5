@@ -57,6 +57,15 @@ struct linux_binprm{
 #define BINPRM_FLAGS_EXECFD (1 << BINPRM_FLAGS_EXECFD_BIT)
 
 
+/* Function parameter for binfmt->coredump */
+struct coredump_params {
+	long signr;
+	struct pt_regs *regs;
+	struct file *file;
+	unsigned long limit;
+	unsigned long mm_flags;
+};
+
 /*
  * This structure defines the functions that are used to load the binary formats that
  * linux accepts.

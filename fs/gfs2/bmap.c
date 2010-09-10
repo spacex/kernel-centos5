@@ -424,7 +424,7 @@ int gfs2_block_map(struct inode *inode, sector_t lblock,
 	int new = 0;
 	u64 dblock = 0;
 	int boundary;
-	unsigned int maxlen = bh_map->b_size >> inode->i_blkbits;
+	unsigned int maxlen = (bh_map->b_size + bsize - 1) >> inode->i_blkbits;
 	struct metapath mp;
 	u64 size;
 	struct buffer_head *dibh = NULL;

@@ -26,6 +26,7 @@ int pcibios_last_bus = -1;
 unsigned long pirq_table_addr;
 struct pci_bus *pci_root_bus;
 struct pci_raw_ops *raw_pci_ops;
+struct pci_raw_ops *raw_pci_ext_ops;
 
 #ifdef CONFIG_X86
 int pci_noseg = 0;
@@ -33,16 +34,28 @@ int pci_noseg = 0;
 
 struct pci_sysdata pci_default_sysdata = { .node = -1 };
 
-static int pci_read(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 *value)
+static int pci_read(struct pci_bus *bus, unsigned int devfn, int reg, int size,
+		    u32 *value)
 {
-	return raw_pci_ops->read(pci_domain_nr(bus), bus->number,
-				 devfn, where, size, value);
+	if (raw_pci_ops && (reg < 256 || (pci_probe & PCI_USING_MMCONF)))
+		return raw_pci_ops->read(pci_domain_nr(bus), bus->number, devfn,
+					 reg, size, value);
+	if (raw_pci_ext_ops)
+		return raw_pci_ext_ops->read(pci_domain_nr(bus), bus->number,
+					     devfn, reg, size, value);
+	return -EINVAL;
 }
 
-static int pci_write(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 value)
+static int pci_write(struct pci_bus *bus, unsigned int devfn, int reg, int size,
+		     u32 value)
 {
-	return raw_pci_ops->write(pci_domain_nr(bus), bus->number,
-				  devfn, where, size, value);
+	if (raw_pci_ops && (reg < 256 || (pci_probe & PCI_USING_MMCONF)))
+		return raw_pci_ops->write(pci_domain_nr(bus), bus->number,
+					  devfn, reg, size, value);
+	if (raw_pci_ext_ops)
+		return raw_pci_ext_ops->write(pci_domain_nr(bus), bus->number,
+					      devfn, reg, size, value);
+	return -EINVAL;
 }
 
 struct pci_ops pci_root_ops = {
@@ -549,3 +562,12 @@ struct pci_bus *pci_scan_bus_with_sysdata(int busno)
 
 	return bus;
 }
+
+int pci_ext_cfg_avail(struct pci_dev *dev)
+{
+	if (raw_pci_ops)
+		return 1;
+	else
+		return 0;
+}
+

@@ -931,31 +931,33 @@ ptrace_start(long pid, long request,
 	 * To do this purely in utrace terms, we could do:
 	 *  (void) utrace_regset(child, engine, utrace_native_view(child), 0);
 	 */
-	wait_task_inactive(child);
-	while (child->state != TASK_TRACED && child->state != TASK_STOPPED) {
-		if (child->exit_state) {
-			__ptrace_state_free(state);
-			goto out_tsk;
-		}
-
-		task_lock(child);
-		if (child->mm && child->mm->core_waiters) {
-			task_unlock(child);
-			__ptrace_state_free(state);
-			goto out_tsk;
-		}
-		task_unlock(child);
-
-		/*
-		 * This is a dismal kludge, but it only comes up on ia64.
-		 * It might be blocked inside regset->writeback() called
-		 * from ptrace_report(), when it's on its way to quiescing
-		 * in TASK_TRACED real soon now.  We actually need that
-		 * writeback call to have finished, before a PTRACE_PEEKDATA
-		 * here, for example.  So keep waiting until it's really there.
-		 */
-		yield();
+	if (request != PTRACE_KILL) {
 		wait_task_inactive(child);
+		while (child->state != TASK_TRACED && child->state != TASK_STOPPED) {
+			if (child->exit_state) {
+				__ptrace_state_free(state);
+				goto out_tsk;
+			}
+
+			task_lock(child);
+			if (child->mm && child->mm->core_waiters) {
+				task_unlock(child);
+				__ptrace_state_free(state);
+				goto out_tsk;
+			}
+			task_unlock(child);
+
+			/*
+			 * This is a dismal kludge, but it only comes up on ia64.
+			 * It might be blocked inside regset->writeback() called
+			 * from ptrace_report(), when it's on its way to quiescing
+			 * in TASK_TRACED real soon now.  We actually need that
+			 * writeback call to have finished, before a PTRACE_PEEKDATA
+			 * here, for example.  So keep waiting until it's really there.
+			 */
+			yield();
+			wait_task_inactive(child);
+		}
 	}
 	wait_task_inactive(child);
 

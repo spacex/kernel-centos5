@@ -283,7 +283,8 @@
 #define __NR_readlinkat			1291
 #define __NR_fchmodat			1292
 #define __NR_faccessat			1293
-/* 1294, 1295 reserved for pselect/ppoll */
+#define __NR_pselect6			1294
+#define __NR_ppoll			1295
 #define __NR_unshare			1296
 #define __NR_splice			1297
 #define __NR_set_robust_list		1298
@@ -293,11 +294,16 @@
 #define __NR_vmsplice			1302
 #define __NR_fallocate			1303
 #define __NR_getcpu			1304
+/* #define __NR_epoll_pwait		1305 */
+/* #define __NR_utimensat			1306 */
+/* #define __NR_signalfd			1307 */
+/* #define __NR_timerfd			1308 */
+#define __NR_eventfd			1309
 
 #ifdef __KERNEL__
 
 
-#define NR_syscalls			281 /* length of syscall table */
+#define NR_syscalls			286 /* length of syscall table */
 
 #define __ARCH_WANT_SYS_RT_SIGACTION
 #define __ARCH_WANT_SYS_RT_SIGSUSPEND
@@ -407,7 +413,7 @@ struct pt_regs;
 struct sigaction;
 long sys_execve(char __user *filename, char __user * __user *argv,
 			   char __user * __user *envp, struct pt_regs *regs);
-asmlinkage long sys_pipe(void);
+asmlinkage long sys_ia64_pipe(void);
 asmlinkage long sys_rt_sigaction(int sig,
 				 const struct sigaction __user *act,
 				 struct sigaction __user *oact,

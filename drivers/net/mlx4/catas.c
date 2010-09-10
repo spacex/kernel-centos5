@@ -66,11 +66,17 @@ static void poll_catas(unsigned long dev_ptr)
 {
 	struct mlx4_dev *dev = (struct mlx4_dev *) dev_ptr;
 	struct mlx4_priv *priv = mlx4_priv(dev);
+	int err = 0;
 
 	if (readl(priv->catas_err.map)) {
 		dump_err_buf(dev);
+		err++;
+	}
+	err += priv->catas_state;
 
+	if (err) {
 		mlx4_dispatch_event(dev, MLX4_DEV_EVENT_CATASTROPHIC_ERROR, 0);
+		priv->catas_state = 1;
 
 		if (internal_err_reset) {
 			spin_lock(&catas_lock);
@@ -92,6 +98,9 @@ static void catas_reset(struct work_struct *work)
 	LIST_HEAD(tlist);
 	int ret;
 
+	if (!mutex_trylock(&drv_mutex))
+		return;
+
 	spin_lock_irq(&catas_lock);
 	list_splice_init(&catas_list, &tlist);
 	spin_unlock_irq(&catas_lock);
@@ -104,6 +113,7 @@ static void catas_reset(struct work_struct *work)
 		else
 			mlx4_dbg(dev, "Reset succeeded\n");
 	}
+	mutex_unlock(&drv_mutex);
 }
 
 void mlx4_start_catas_poll(struct mlx4_dev *dev)

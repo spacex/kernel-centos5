@@ -1546,6 +1546,7 @@ static void raid10d(mddev_t *mddev)
 				generic_make_request(bio);
 			}
 		}
+		cond_resched();
 	}
 	spin_unlock_irqrestore(&conf->device_lock, flags);
 	if (unplug)

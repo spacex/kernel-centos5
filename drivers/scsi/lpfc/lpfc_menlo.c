@@ -28,6 +28,7 @@
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_tcq.h>
 #include <scsi/scsi_transport_fc.h>
+#include <scsi/fc/fc_fs.h>
 
 #include "lpfc_hw4.h"
 #include "lpfc_hw.h"
@@ -232,7 +233,7 @@ lpfc_alloc_menlo_genrequest64(struct lpfc_hba * phba,
 	cmd->ulpCommand = CMD_GEN_REQUEST64_CR;
 	cmd->un.genreq64.w5.hcsw.Fctl = (SI | LA);
 	cmd->un.genreq64.w5.hcsw.Dfctl = 0;
-	cmd->un.genreq64.w5.hcsw.Rctl = FC_FCP_CMND;
+	cmd->un.genreq64.w5.hcsw.Rctl = FC_RCTL_DD_UNSOL_CMD;
 	cmd->un.genreq64.w5.hcsw.Type = MENLO_TRANSPORT_TYPE; /* 0xfe */
 	cmd->un.ulpWord[4] = MENLO_DID; /* 0x0000FC0E */
 	cmd->ulpBdeCount = 1;

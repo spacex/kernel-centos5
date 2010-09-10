@@ -167,9 +167,9 @@ int mlx4_register_device(struct mlx4_dev *dev)
 	list_add_tail(&priv->dev_list, &dev_list);
 	list_for_each_entry(intf, &intf_list, list)
 		mlx4_add_device(intf, priv);
-
 	mutex_unlock(&intf_mutex);
-	mlx4_start_catas_poll(dev);
+	if (!mlx4_is_slave(dev))
+		mlx4_start_catas_poll(dev);
 
 	mlx4_start_sense(dev);
 
@@ -183,7 +183,8 @@ void mlx4_unregister_device(struct mlx4_dev *dev)
 
 	mlx4_stop_sense(dev);
 
-	mlx4_stop_catas_poll(dev);
+	if (!mlx4_is_slave(dev))
+		mlx4_stop_catas_poll(dev);
 	mutex_lock(&intf_mutex);
 
 	list_for_each_entry(intf, &intf_list, list)

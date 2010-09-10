@@ -244,11 +244,20 @@ struct rpc_wait_queue {
 /*
  * Function prototypes
  */
+struct rpc_task *rpc_new_task_wq(struct rpc_clnt *, int flags,
+				const struct rpc_call_ops *ops, void *data,
+				struct workqueue_struct *workqueue);
 struct rpc_task *rpc_new_task(struct rpc_clnt *, int flags,
 				const struct rpc_call_ops *ops, void *data);
+struct rpc_task *rpc_run_task_wq(struct rpc_clnt *clnt, int flags,
+				 const struct rpc_call_ops *ops, void *data,
+				 struct workqueue_struct *workqueue);
 struct rpc_task *rpc_run_task(struct rpc_clnt *clnt, int flags,
 				const struct rpc_call_ops *ops, void *data);
 struct rpc_task *rpc_new_child(struct rpc_clnt *, struct rpc_task *parent);
+void		rpc_init_task_wq(struct rpc_task *task, struct rpc_clnt *clnt,
+				int flags, const struct rpc_call_ops *ops,
+				void *data, struct workqueue_struct *workqueue);
 void		rpc_init_task(struct rpc_task *task, struct rpc_clnt *clnt,
 				int flags, const struct rpc_call_ops *ops,
 				void *data);

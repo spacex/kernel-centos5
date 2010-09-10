@@ -38,6 +38,7 @@
 #include <asm/udbg.h>
 #include <asm/syscalls.h>
 #include <asm/atomic.h>
+#include <asm/mmu.h>
 
 struct rtas_t rtas = {
 	.lock = SPIN_LOCK_UNLOCKED
@@ -689,6 +690,7 @@ static void rtas_percpu_suspend_me(void *info)
 		goto out;
 
 	if (rc == H_CONTINUE) {
+		slb_set_size(SLB_MIN_SIZE);
 		printk("Linux suspends from hypervisor at %lld "
 		       "(cpu %u (hwid%u)).\n", sched_clock(),
 		       smp_processor_id(), hard_smp_processor_id());

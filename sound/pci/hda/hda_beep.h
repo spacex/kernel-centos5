@@ -24,20 +24,24 @@
 
 #include "hda_codec.h"
 
-#define BIT_MASK(nr)           (1UL << ((nr) % BITS_PER_LONG))
-
 /* beep information */
 struct hda_beep {
 	struct input_dev *dev;
 	struct hda_codec *codec;
 	char phys[32];
 	int tone;
-	int nid;
-	int enabled;
+	hda_nid_t nid;
+	unsigned int enabled:1;
+	unsigned int request_enable:1;
+	unsigned int linear_tone:1;	/* linear tone for IDT/STAC codec */
+	struct work_struct register_work; /* registration work */
+	struct work_struct unregister_work; /* unregistration work */
 	struct work_struct beep_work; /* scheduled task for beep event */
+	struct mutex mutex;
 };
 
 #ifdef CONFIG_SND_HDA_INPUT_BEEP
+int snd_hda_enable_beep_device(struct hda_codec *codec, int enable);
 int snd_hda_attach_beep_device(struct hda_codec *codec, int nid);
 void snd_hda_detach_beep_device(struct hda_codec *codec);
 #else

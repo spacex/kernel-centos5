@@ -1,5 +1,5 @@
 /*
-	Copyright (C) 2004 - 2008 rt2x00 SourceForge Project
+	Copyright (C) 2004 - 2009 rt2x00 SourceForge Project
 	<http://rt2x00.serialmonkey.com>
 
 	This program is free software; you can redistribute it and/or modify
@@ -48,8 +48,6 @@
  * Signal information.
  * Defaul offset is required for RSSI <-> dBm conversion.
  */
-#define MAX_SIGNAL			100
-#define MAX_RX_SSI			-1
 #define DEFAULT_RSSI_OFFSET		120
 
 /*
@@ -59,8 +57,15 @@
 #define CSR_REG_SIZE			0x0100
 #define EEPROM_BASE			0x0000
 #define EEPROM_SIZE			0x006a
+#define BBP_BASE			0x0000
 #define BBP_SIZE			0x0060
-#define RF_SIZE				0x0014
+#define RF_BASE				0x0004
+#define RF_SIZE				0x0010
+
+/*
+ * Number of TX queues.
+ */
+#define NUM_TX_QUEUES			2
 
 /*
  * Control/Status Registers(CSR).
@@ -184,6 +189,14 @@
  * MAC_CSR19: GPIO control register.
  */
 #define MAC_CSR19			0x0426
+#define MAC_CSR19_BIT0			FIELD32(0x0001)
+#define MAC_CSR19_BIT1			FIELD32(0x0002)
+#define MAC_CSR19_BIT2			FIELD32(0x0004)
+#define MAC_CSR19_BIT3			FIELD32(0x0008)
+#define MAC_CSR19_BIT4			FIELD32(0x0010)
+#define MAC_CSR19_BIT5			FIELD32(0x0020)
+#define MAC_CSR19_BIT6			FIELD32(0x0040)
+#define MAC_CSR19_BIT7			FIELD32(0x0080)
 
 /*
  * MAC_CSR20: LED control register.
@@ -206,7 +219,7 @@
 #define MAC_CSR21_OFF_PERIOD		FIELD16(0xff00)
 
 /*
- * Collision window control register.
+ * MAC_CSR22: Collision window control register.
  */
 #define MAC_CSR22			0x042c
 
@@ -293,7 +306,7 @@
 #define TXRX_CSR7_BBP_ID1_VALID		FIELD16(0x8000)
 
 /*
- * TXRX_CSR5: OFDM TX BBP ID1.
+ * TXRX_CSR8: OFDM TX BBP ID1.
  */
 #define TXRX_CSR8			0x0450
 #define TXRX_CSR8_BBP_ID0		FIELD16(0x007f)
@@ -367,7 +380,14 @@
  */
 
 /*
- * SEC_CSR0-SEC_CSR7: Shared key 0, word 0-7
+ * SEC_CSR0: Shared key 0, word 0
+ * SEC_CSR1: Shared key 0, word 1
+ * SEC_CSR2: Shared key 0, word 2
+ * SEC_CSR3: Shared key 0, word 3
+ * SEC_CSR4: Shared key 0, word 4
+ * SEC_CSR5: Shared key 0, word 5
+ * SEC_CSR6: Shared key 0, word 6
+ * SEC_CSR7: Shared key 0, word 7
  */
 #define SEC_CSR0			0x0480
 #define SEC_CSR1			0x0482
@@ -379,7 +399,14 @@
 #define SEC_CSR7			0x048e
 
 /*
- * SEC_CSR8-SEC_CSR15: Shared key 1, word 0-7
+ * SEC_CSR8: Shared key 1, word 0
+ * SEC_CSR9: Shared key 1, word 1
+ * SEC_CSR10: Shared key 1, word 2
+ * SEC_CSR11: Shared key 1, word 3
+ * SEC_CSR12: Shared key 1, word 4
+ * SEC_CSR13: Shared key 1, word 5
+ * SEC_CSR14: Shared key 1, word 6
+ * SEC_CSR15: Shared key 1, word 7
  */
 #define SEC_CSR8			0x0490
 #define SEC_CSR9			0x0492
@@ -391,7 +418,14 @@
 #define SEC_CSR15			0x049e
 
 /*
- * SEC_CSR16-SEC_CSR23: Shared key 2, word 0-7
+ * SEC_CSR16: Shared key 2, word 0
+ * SEC_CSR17: Shared key 2, word 1
+ * SEC_CSR18: Shared key 2, word 2
+ * SEC_CSR19: Shared key 2, word 3
+ * SEC_CSR20: Shared key 2, word 4
+ * SEC_CSR21: Shared key 2, word 5
+ * SEC_CSR22: Shared key 2, word 6
+ * SEC_CSR23: Shared key 2, word 7
  */
 #define SEC_CSR16			0x04a0
 #define SEC_CSR17			0x04a2
@@ -403,7 +437,14 @@
 #define SEC_CSR23			0x04ae
 
 /*
- * SEC_CSR24-SEC_CSR31: Shared key 3, word 0-7
+ * SEC_CSR24: Shared key 3, word 0
+ * SEC_CSR25: Shared key 3, word 1
+ * SEC_CSR26: Shared key 3, word 2
+ * SEC_CSR27: Shared key 3, word 3
+ * SEC_CSR28: Shared key 3, word 4
+ * SEC_CSR29: Shared key 3, word 5
+ * SEC_CSR30: Shared key 3, word 6
+ * SEC_CSR31: Shared key 3, word 7
  */
 #define SEC_CSR24			0x04b0
 #define SEC_CSR25			0x04b2
@@ -413,6 +454,9 @@
 #define SEC_CSR29			0x04ba
 #define SEC_CSR30			0x04bc
 #define SEC_CSR31			0x04be
+
+#define KEY_ENTRY(__idx) \
+	( SEC_CSR0 + ((__idx) * 16) )
 
 /*
  * PHY control registers.
@@ -787,24 +831,17 @@
 #define RXD_W3_EIV			FIELD32(0xffffffff)
 
 /*
- * Macro's for converting txpower from EEPROM to mac80211 value
+ * Macros for converting txpower from EEPROM to mac80211 value
  * and from mac80211 value to register value.
  */
 #define MIN_TXPOWER	0
 #define MAX_TXPOWER	31
 #define DEFAULT_TXPOWER	24
 
-#define TXPOWER_FROM_DEV(__txpower)		\
-({						\
-	((__txpower) > MAX_TXPOWER) ?		\
-		DEFAULT_TXPOWER : (__txpower);	\
-})
+#define TXPOWER_FROM_DEV(__txpower) \
+	(((u8)(__txpower)) > MAX_TXPOWER) ? DEFAULT_TXPOWER : (__txpower)
 
-#define TXPOWER_TO_DEV(__txpower)			\
-({							\
-	((__txpower) <= MIN_TXPOWER) ? MIN_TXPOWER :	\
-	(((__txpower) >= MAX_TXPOWER) ? MAX_TXPOWER :	\
-	(__txpower));					\
-})
+#define TXPOWER_TO_DEV(__txpower) \
+	clamp_t(char, __txpower, MIN_TXPOWER, MAX_TXPOWER)
 
 #endif /* RT2500USB_H */

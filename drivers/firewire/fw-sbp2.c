@@ -757,19 +757,6 @@ static void sbp2_unblock(struct sbp2_target *tgt)
 	scsi_unblock_requests(shost);
 }
 
-/* not exported in 2.6.18, so local copy */
-static int scsilun_to_int(struct scsi_lun *scsilun)
-{
-	int i;
-	unsigned int lun;
-
-	lun = 0;
-	for (i = 0; i < sizeof(lun); i += 2)
-		lun = lun | (((scsilun->scsi_lun[i] << 8) |
-			      scsilun->scsi_lun[i + 1]) << (i * 8));
-	return lun;
-}
-
 static int sbp2_lun2int(u16 lun)
 {
 	struct scsi_lun eight_bytes_lun;

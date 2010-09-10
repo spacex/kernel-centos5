@@ -9,6 +9,7 @@
 
 #include <linux/types.h>
 
+#include "ieee80211_i.h"
 #include "michael.h"
 
 static inline u32 rotr(u32 val, int bits)
@@ -42,7 +43,7 @@ do { \
 } while (0)
 
 
-static inline u32 michael_get32(u8 *data)
+static inline u32 michael_get32(const u8 *data)
 {
 	return data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
 }
@@ -57,11 +58,19 @@ static inline void michael_put32(u32 val, u8 *data)
 }
 
 
-void michael_mic(u8 *key, u8 *da, u8 *sa, u8 priority,
-		 u8 *data, size_t data_len, u8 *mic)
+void michael_mic(const u8 *key, struct ieee80211_hdr *hdr,
+		 const u8 *data, size_t data_len, u8 *mic)
 {
 	u32 l, r, val;
 	size_t block, blocks, left;
+	u8 *da, *sa, tid;
+
+	da = ieee80211_get_DA(hdr);
+	sa = ieee80211_get_SA(hdr);
+	if (ieee80211_is_data_qos(hdr->frame_control))
+		tid = *ieee80211_get_qos_ctl(hdr) & IEEE80211_QOS_CTL_TID_MASK;
+	else
+		tid = 0;
 
 	l = michael_get32(key);
 	r = michael_get32(key + 4);
@@ -74,7 +83,7 @@ void michael_mic(u8 *key, u8 *da, u8 *sa, u8 priority,
 	michael_block(l, r);
 	l ^= michael_get32(&sa[2]);
 	michael_block(l, r);
-	l ^= priority;
+	l ^= tid;
 	michael_block(l, r);
 
 	/* Real data */

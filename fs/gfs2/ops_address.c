@@ -744,6 +744,7 @@ int gfs2_write_begin(struct file *file, struct address_space *mapping,
 		goto out_trans_fail;
 
 	error = -ENOMEM;
+	flags |= AOP_FLAG_NOFS;
 	page = grab_cache_page_write_begin(mapping, index, flags);
 	*pagep = page;
 	if (unlikely(!page))
@@ -868,15 +869,19 @@ static int gfs2_stuffed_write_end(struct inode *inode, struct buffer_head *dibh,
 	unlock_page(page);
 	page_cache_release(page);
 
-	if (inode->i_size < to) {
-		i_size_write(inode, to);
-		ip->i_disksize = inode->i_size;
-		di->di_size = cpu_to_be64(inode->i_size);
+	if (copied) {
+		if (inode->i_size < to) {
+			i_size_write(inode, to);
+			ip->i_disksize = inode->i_size;
+		}
+		gfs2_dinode_out(ip, di);
 		mark_inode_dirty(inode);
 	}
 
-	if (inode == sdp->sd_rindex)
+	if (inode == sdp->sd_rindex){
 		adjust_fs_space(inode);
+		ip->i_gh.gh_flags |= GL_NOCACHE;
+	}
 
 	brelse(dibh);
 	gfs2_trans_end(sdp);
@@ -916,7 +921,6 @@ int gfs2_write_end(struct file *file, struct address_space *mapping,
 	struct gfs2_inode *m_ip = GFS2_I(sdp->sd_statfs_inode);
 	struct buffer_head *dibh;
 	struct gfs2_alloc *al = ip->i_alloc;
-	struct gfs2_dinode *di;
 	unsigned int from = pos & (PAGE_CACHE_SIZE - 1);
 	unsigned int to = from + len;
 	int ret;
@@ -939,16 +943,17 @@ int gfs2_write_end(struct file *file, struct address_space *mapping,
 		gfs2_page_add_databufs(ip, page, from, to);
 
 	ret = generic_write_end(file, mapping, pos, len, copied, page, fsdata);
-
-	if (likely(ret >= 0) && (inode->i_size > ip->i_disksize)) {
-		di = (struct gfs2_dinode *)dibh->b_data;
-		ip->i_disksize = inode->i_size;
-		di->di_size = cpu_to_be64(inode->i_size);
+	if (ret > 0) {
+		if (inode->i_size > ip->i_disksize)
+			ip->i_disksize = inode->i_size;
+		gfs2_dinode_out(ip, dibh->b_data);
 		mark_inode_dirty(inode);
 	}
 
-	if (inode == sdp->sd_rindex)
+	if (inode == sdp->sd_rindex) {
 		adjust_fs_space(inode);
+		ip->i_gh.gh_flags |= GL_NOCACHE;
+	}
 
 	brelse(dibh);
 	gfs2_trans_end(sdp);
@@ -1088,8 +1093,10 @@ static int gfs2_commit_write(struct file *file, struct page *page,
 		di->di_size = cpu_to_be64(inode->i_size);
 	}
 
-	if (inode == sdp->sd_rindex)
+	if (inode == sdp->sd_rindex) {
 		adjust_fs_space(inode);
+		ip->i_gh.gh_flags |= GL_NOCACHE;
+	}
 
 	brelse(dibh);
 	gfs2_trans_end(sdp);

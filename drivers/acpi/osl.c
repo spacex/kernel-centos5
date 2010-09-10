@@ -74,6 +74,21 @@ static acpi_osd_handler acpi_irq_handler;
 static void *acpi_irq_context;
 static struct workqueue_struct *kacpid_wq;
 
+static void bind_to_cpu0(void *context)
+{
+	set_cpus_allowed(current, cpumask_of_cpu(0));
+	kfree(context);
+}
+
+static void bind_workqueue(struct workqueue_struct *wq)
+{
+	struct work_struct *work;
+
+	work = kzalloc(sizeof(struct work_struct), GFP_KERNEL);
+	INIT_WORK(work, bind_to_cpu0, work);
+	queue_work(wq, work);
+}
+
 acpi_status acpi_os_initialize(void)
 {
 	return AE_OK;
@@ -92,6 +107,7 @@ acpi_status acpi_os_initialize1(void)
 	}
 	kacpid_wq = create_singlethread_workqueue("kacpid");
 	BUG_ON(!kacpid_wq);
+	bind_workqueue(kacpid_wq);
 
 	return AE_OK;
 }

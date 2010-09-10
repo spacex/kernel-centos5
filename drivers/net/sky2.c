@@ -1411,6 +1411,8 @@ static int sky2_up(struct net_device *dev)
 	if (netif_msg_ifup(sky2))
 		printk(KERN_INFO PFX "%s: enabling interface\n", dev->name);
 
+	netif_carrier_off(dev);
+
 	/* must be power of 2 */
 	sky2->tx_le = pci_alloc_consistent(hw->pdev,
 					   TX_RING_SIZE *
@@ -1757,7 +1759,6 @@ static int sky2_down(struct net_device *dev)
 
 	/* Stop more packets from being queued */
 	netif_stop_queue(dev);
-	netif_carrier_off(dev);
 
 	/* Disable port IRQ */
 	imask = sky2_read32(hw, B0_IMSK);
@@ -1815,6 +1816,8 @@ static int sky2_down(struct net_device *dev)
 	sky2_write8(hw, SK_REG(port, TX_GMF_CTRL_T), GMF_RST_SET);
 
 	sky2_phy_power_down(hw, port);
+
+	netif_carrier_off(dev);
 
 	/* turn off LED's */
 	sky2_write16(hw, B0_Y2LED, LED_STAT_OFF);
@@ -4321,6 +4324,8 @@ static int __devinit sky2_probe(struct pci_dev *pdev,
 		dev_err(&pdev->dev, "cannot register net device\n");
 		goto err_out_free_netdev;
 	}
+
+	netif_carrier_off(dev);
 
 	dev->poll = sky2_poll;
 	dev->weight = 64;

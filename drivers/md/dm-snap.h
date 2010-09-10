@@ -233,4 +233,7 @@ static inline int bdev_equal(struct block_device *lhs, struct block_device *rhs)
 	return lhs == rhs;
 }
 
+int dm_exception_store_set_chunk_size(struct dm_snapshot *s,
+				      unsigned long chunk_size, char **error);
+
 #endif

@@ -1759,16 +1759,8 @@ static void amd8111e_vlan_rx_register(struct net_device *dev, struct vlan_group 
 	lp->vlgrp = grp;
 	spin_unlock_irq(&lp->lock);
 }
-	
-static void amd8111e_vlan_rx_kill_vid(struct net_device *dev, unsigned short vid)
-{
-	struct amd8111e_priv *lp = netdev_priv(dev);
-	spin_lock_irq(&lp->lock);
-	if (lp->vlgrp)
-		lp->vlgrp->vlan_devices[vid] = NULL;
-	spin_unlock_irq(&lp->lock);
-}
-#endif
+	#endif
+
 static int amd8111e_enable_magicpkt(struct amd8111e_priv* lp)
 {
 	writel( VAL1|MPPLBA, lp->mmio + CMD3);
@@ -2028,7 +2020,6 @@ static int __devinit amd8111e_probe_one(struct pci_dev *pdev,
 #if AMD8111E_VLAN_TAG_USED
 	dev->features |= NETIF_F_HW_VLAN_TX | NETIF_F_HW_VLAN_RX ;
 	dev->vlan_rx_register =amd8111e_vlan_rx_register;
-	dev->vlan_rx_kill_vid = amd8111e_vlan_rx_kill_vid;
 #endif	
 	
 	lp = netdev_priv(dev);
@@ -2081,7 +2072,6 @@ static int __devinit amd8111e_probe_one(struct pci_dev *pdev,
 #if AMD8111E_VLAN_TAG_USED
 	dev->features |= NETIF_F_HW_VLAN_TX | NETIF_F_HW_VLAN_RX;
 	dev->vlan_rx_register =amd8111e_vlan_rx_register;
-	dev->vlan_rx_kill_vid = amd8111e_vlan_rx_kill_vid;
 #endif	
 	/* Probe the external PHY */
 	amd8111e_probe_ext_phy(dev);

@@ -32,13 +32,11 @@
 
 extern struct list_head bond_dev_list;
 
-#ifdef BONDING_DEBUG
+extern int debug;
+
 #define dprintk(fmt, args...) \
-	printk(KERN_DEBUG     \
+	if (debug) printk(KERN_DEBUG     \
 	       DRV_NAME ": %s() %d: " fmt, __FUNCTION__, __LINE__ , ## args )
-#else
-#define dprintk(fmt, args...)
-#endif /* BONDING_DEBUG */
 
 #define IS_UP(dev)					   \
 	      ((((dev)->flags & IFF_UP) == IFF_UP)	&& \
@@ -138,6 +136,7 @@ struct bond_params {
 	int downdelay;
 	int lacp_fast;
 	char primary[IFNAMSIZ];
+	int primary_reselect;
 	__be32 arp_targets[BOND_MAX_ARP_TARGETS];
 };
 
@@ -202,6 +201,7 @@ struct bonding {
 	struct   slave *curr_active_slave;
 	struct   slave *current_arp_slave;
 	struct   slave *primary_slave;
+	bool     force_primary;
 	s32      slave_cnt; /* never change this value outside the attach/detach wrappers */
 	rwlock_t lock;
 	rwlock_t curr_slave_lock;
@@ -263,6 +263,10 @@ static inline struct bonding *bond_get_bond_by_slave(struct slave *slave)
 
 	return (struct bonding *)slave->dev->master->priv;
 }
+
+#define BOND_PRI_RESELECT_ALWAYS	0
+#define BOND_PRI_RESELECT_BETTER	1
+#define BOND_PRI_RESELECT_FAILURE	2
 
 #define BOND_FOM_NONE			0
 #define BOND_FOM_ACTIVE			1
@@ -356,6 +360,7 @@ extern struct bond_parm_tbl bond_mode_tbl[];
 extern struct bond_parm_tbl xmit_hashtype_tbl[];
 extern struct bond_parm_tbl arp_validate_tbl[];
 extern struct bond_parm_tbl fail_over_mac_tbl[];
+extern struct bond_parm_tbl pri_reselect_tbl[];
 
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
 void bond_send_unsolicited_na(struct bonding *bond);

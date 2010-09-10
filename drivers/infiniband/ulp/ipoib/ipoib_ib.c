@@ -384,6 +384,7 @@ static void ipoib_ib_handle_tx_wc(struct net_device *dev, struct ib_wc *wc)
 	priv->stats.tx_bytes += tx_req->skb->len;
 
 	dev_kfree_skb_any(tx_req->skb);
+	tx_req->skb = NULL;
 
 	++priv->tx_tail;
 	if (unlikely(--priv->tx_outstanding == ipoib_sendq_size >> 1) &&
@@ -576,6 +577,7 @@ void ipoib_send(struct net_device *dev, struct sk_buff *skb,
 	if (unlikely(ipoib_dma_map_tx(priv->ca, tx_req))) {
 		++priv->stats.tx_errors;
 		dev_kfree_skb_any(skb);
+		tx_req->skb = NULL;
 		return;
 	}
 
@@ -598,6 +600,7 @@ void ipoib_send(struct net_device *dev, struct sk_buff *skb,
 		--priv->tx_outstanding;
 		ipoib_dma_unmap_tx(priv->ca, tx_req);
 		dev_kfree_skb_any(skb);
+		tx_req->skb = NULL;
 		if (netif_queue_stopped(dev))
 			netif_wake_queue(dev);
 	} else {
@@ -861,6 +864,7 @@ int ipoib_ib_dev_stop(struct net_device *dev, int flush)
 							(ipoib_sendq_size - 1)];
 				ipoib_dma_unmap_tx(priv->ca, tx_req);
 				dev_kfree_skb_any(tx_req->skb);
+				tx_req->skb = NULL;
 				++priv->tx_tail;
 				--priv->tx_outstanding;
 			}

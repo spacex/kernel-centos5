@@ -1659,6 +1659,11 @@ compat_sys_vmsplice_wrapper:
 	llgfr	%r5,%r5			# unsigned int
 	jg	compat_sys_vmsplice
 
+	.globl	sys_eventfd_wrapper
+sys_eventfd_wrapper:
+	llgfr	%r2,%r2			# unsigned int
+	jg	sys_eventfd
+
 	.globl	sys_fallocate_wrapper
 sys_fallocate_wrapper:
 	lgfr	%r2,%r2			# int

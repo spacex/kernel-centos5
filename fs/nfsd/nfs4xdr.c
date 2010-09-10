@@ -235,9 +235,9 @@ nfsd4_decode_bitmap(struct nfsd4_compoundargs *argp, u32 *bmval)
 	DECODE_TAIL;
 }
 
-static int
-nfsd4_decode_fattr(struct nfsd4_compoundargs *argp, u32 *bmval, struct iattr *iattr,
-    struct nfs4_acl **acl)
+static __be32
+nfsd4_decode_fattr(struct nfsd4_compoundargs *argp, u32 *bmval,
+		   struct iattr *iattr, struct nfs4_acl **acl)
 {
 	int expected_len, len = 0;
 	u32 dummy32;
@@ -247,15 +247,6 @@ nfsd4_decode_fattr(struct nfsd4_compoundargs *argp, u32 *bmval, struct iattr *ia
 	iattr->ia_valid = 0;
 	if ((status = nfsd4_decode_bitmap(argp, bmval)))
 		return status;
-
-	/*
-	 * According to spec, unsupported attributes return ERR_NOTSUPP;
-	 * read-only attributes return ERR_INVAL.
-	 */
-	if ((bmval[0] & ~NFSD_SUPPORTED_ATTRS_WORD0) || (bmval[1] & ~NFSD_SUPPORTED_ATTRS_WORD1))
-		return nfserr_attrnotsupp;
-	if ((bmval[0] & ~NFSD_WRITEABLE_ATTRS_WORD0) || (bmval[1] & ~NFSD_WRITEABLE_ATTRS_WORD1))
-		return nfserr_inval;
 
 	READ_BUF(4);
 	READ32(expected_len);
@@ -267,42 +258,42 @@ nfsd4_decode_fattr(struct nfsd4_compoundargs *argp, u32 *bmval, struct iattr *ia
 		iattr->ia_valid |= ATTR_SIZE;
 	}
 	if (bmval[0] & FATTR4_WORD0_ACL) {
-		int nace, i;
-		struct nfs4_ace ace;
+		int nace;
+		struct nfs4_ace *ace;
 
 		READ_BUF(4); len += 4;
 		READ32(nace);
 
-		*acl = nfs4_acl_new();
+		if (nace > NFS4_ACL_MAX)
+			return nfserr_resource;
+
+		*acl = nfs4_acl_new(nace);
 		if (*acl == NULL) {
 			status = -ENOMEM;
 			goto out_nfserr;
 		}
-		defer_free(argp, (void (*)(const void *))nfs4_acl_free, *acl);
+		defer_free(argp, kfree, *acl);
 
-		for (i = 0; i < nace; i++) {
+		(*acl)->naces = nace;
+		for (ace = (*acl)->aces; ace < (*acl)->aces + nace; ace++) {
 			READ_BUF(16); len += 16;
-			READ32(ace.type);
-			READ32(ace.flag);
-			READ32(ace.access_mask);
+			READ32(ace->type);
+			READ32(ace->flag);
+			READ32(ace->access_mask);
 			READ32(dummy32);
 			READ_BUF(dummy32);
 			len += XDR_QUADLEN(dummy32) << 2;
 			READMEM(buf, dummy32);
-			ace.whotype = nfs4_acl_get_whotype(buf, dummy32);
+			ace->whotype = nfs4_acl_get_whotype(buf, dummy32);
 			status = 0;
-			if (ace.whotype != NFS4_ACL_WHO_NAMED)
-				ace.who = 0;
-			else if (ace.flag & NFS4_ACE_IDENTIFIER_GROUP)
+			if (ace->whotype != NFS4_ACL_WHO_NAMED)
+				ace->who = 0;
+			else if (ace->flag & NFS4_ACE_IDENTIFIER_GROUP)
 				status = nfsd_map_name_to_gid(argp->rqstp,
-						buf, dummy32, &ace.who);
+						buf, dummy32, &ace->who);
 			else
 				status = nfsd_map_name_to_uid(argp->rqstp,
-						buf, dummy32, &ace.who);
-			if (status)
-				goto out_nfserr;
-			status = nfs4_acl_add_ace(*acl, ace.type, ace.flag,
-				 ace.access_mask, ace.whotype, ace.who);
+						buf, dummy32, &ace->who);
 			if (status)
 				goto out_nfserr;
 		}
@@ -363,20 +354,6 @@ nfsd4_decode_fattr(struct nfsd4_compoundargs *argp, u32 *bmval, struct iattr *ia
 			goto xdr_error;
 		}
 	}
-	if (bmval[1] & FATTR4_WORD1_TIME_METADATA) {
-		/* We require the high 32 bits of 'seconds' to be 0, and we ignore
-		   all 32 bits of 'nseconds'. */
-		READ_BUF(12);
-		len += 12;
-		READ32(dummy32);
-		if (dummy32)
-			return nfserr_inval;
-		READ32(iattr->ia_ctime.tv_sec);
-		READ32(iattr->ia_ctime.tv_nsec);
-		if (iattr->ia_ctime.tv_nsec >= (u32)1000000000)
-			return nfserr_inval;
-		iattr->ia_valid |= ATTR_CTIME;
-	}
 	if (bmval[1] & FATTR4_WORD1_TIME_MODIFY_SET) {
 		READ_BUF(4);
 		len += 4;
@@ -403,7 +380,10 @@ nfsd4_decode_fattr(struct nfsd4_compoundargs *argp, u32 *bmval, struct iattr *ia
 			goto xdr_error;
 		}
 	}
-	if (len != expected_len)
+	if (bmval[0] & ~NFSD_WRITEABLE_ATTRS_WORD0
+	    || bmval[1] & ~NFSD_WRITEABLE_ATTRS_WORD1)
+		READ_BUF(expected_len - len);
+	else if (len != expected_len)
 		goto xdr_error;
 
 	DECODE_TAIL;
@@ -485,7 +465,9 @@ nfsd4_decode_create(struct nfsd4_compoundargs *argp, struct nfsd4_create *create
 	if ((status = check_filename(create->cr_name, create->cr_namelen, nfserr_inval)))
 		return status;
 
-	if ((status = nfsd4_decode_fattr(argp, create->cr_bmval, &create->cr_iattr, &create->cr_acl)))
+	status = nfsd4_decode_fattr(argp, create->cr_bmval, &create->cr_iattr,
+				    &create->cr_acl);
+	if (status)
 		goto out;
 
 	DECODE_TAIL;
@@ -646,7 +628,9 @@ nfsd4_decode_open(struct nfsd4_compoundargs *argp, struct nfsd4_open *open)
 		switch (open->op_createmode) {
 		case NFS4_CREATE_UNCHECKED:
 		case NFS4_CREATE_GUARDED:
-			if ((status = nfsd4_decode_fattr(argp, open->op_bmval, &open->op_iattr, &open->op_acl)))
+			status = nfsd4_decode_fattr(argp, open->op_bmval,
+				&open->op_iattr, &open->op_acl);
+			if (status)
 				goto out;
 			break;
 		case NFS4_CREATE_EXCLUSIVE:
@@ -840,7 +824,9 @@ nfsd4_decode_setattr(struct nfsd4_compoundargs *argp, struct nfsd4_setattr *seta
 	READ_BUF(sizeof(stateid_t));
 	READ32(setattr->sa_stateid.si_generation);
 	COPYMEM(&setattr->sa_stateid.si_opaque, sizeof(stateid_opaque_t));
-	if ((status = nfsd4_decode_fattr(argp, setattr->sa_bmval, &setattr->sa_iattr, &setattr->sa_acl)))
+	status = nfsd4_decode_fattr(argp, setattr->sa_bmval, &setattr->sa_iattr,
+				    &setattr->sa_acl);
+	if (status)
 		goto out;
 
 	DECODE_TAIL;
@@ -1119,6 +1105,9 @@ nfsd4_decode_compound(struct nfsd4_compoundargs *argp)
 			op->status = nfsd4_decode_putfh(argp, &op->u.putfh);
 			break;
 		case OP_PUTROOTFH:
+			op->status = nfs_ok;
+			break;
+		case OP_PUTPUBFH:
 			op->status = nfs_ok;
 			break;
 		case OP_READ:
@@ -1443,7 +1432,8 @@ nfsd4_encode_fattr(struct svc_fh *fhp, struct svc_export *exp,
 	status = vfs_getattr(exp->ex_mnt, dentry, &stat);
 	if (status)
 		goto out_nfserr;
-	if ((bmval0 & (FATTR4_WORD0_FILES_FREE | FATTR4_WORD0_FILES_TOTAL)) ||
+	if ((bmval0 & (FATTR4_WORD0_FILES_FREE | FATTR4_WORD0_FILES_TOTAL |
+			FATTR4_WORD0_MAXNAME)) ||
 	    (bmval1 & (FATTR4_WORD1_SPACE_AVAIL | FATTR4_WORD1_SPACE_FREE |
 		       FATTR4_WORD1_SPACE_TOTAL))) {
 		status = vfs_statfs(dentry, &statfs);
@@ -1571,7 +1561,6 @@ nfsd4_encode_fattr(struct svc_fh *fhp, struct svc_export *exp,
 	}
 	if (bmval0 & FATTR4_WORD0_ACL) {
 		struct nfs4_ace *ace;
-		struct list_head *h;
 
 		if (acl == NULL) {
 			if ((buflen -= 4) < 0)
@@ -1584,9 +1573,7 @@ nfsd4_encode_fattr(struct svc_fh *fhp, struct svc_export *exp,
 			goto out_resource;
 		WRITE32(acl->naces);
 
-		list_for_each(h, &acl->ace_head) {
-			ace = list_entry(h, struct nfs4_ace, l_ace);
-
+		for (ace = acl->aces; ace < acl->aces + acl->naces; ace++) {
 			if ((buflen -= 4*3) < 0)
 				goto out_resource;
 			WRITE32(ace->type);
@@ -1680,7 +1667,7 @@ out_acl:
 	if (bmval0 & FATTR4_WORD0_MAXNAME) {
 		if ((buflen -= 4) < 0)
 			goto out_resource;
-		WRITE32(~(u32) 0);
+		WRITE32(statfs.f_namelen);
 	}
 	if (bmval0 & FATTR4_WORD0_MAXREAD) {
 		if ((buflen -= 8) < 0)
@@ -1801,7 +1788,7 @@ out_acl:
 	status = nfs_ok;
 
 out:
-	nfs4_acl_free(acl);
+	kfree(acl);
 	if (fhp == &tempfh)
 		fh_put(&tempfh);
 	return status;
@@ -2609,6 +2596,8 @@ nfsd4_encode_operation(struct nfsd4_compoundres *resp, struct nfsd4_op *op)
 	case OP_PUTFH:
 		break;
 	case OP_PUTROOTFH:
+		break;
+	case OP_PUTPUBFH: 
 		break;
 	case OP_READ:
 		op->status = nfsd4_encode_read(resp, op->status, &op->u.read);

@@ -116,6 +116,19 @@ extern int raw_notifier_call_chain(struct raw_notifier_head *,
  */
 #define NOTIFY_STOP		(NOTIFY_OK|NOTIFY_STOP_MASK)
 
+/* Encapsulate (negative) errno value (in particular, NOTIFY_BAD <=> EPERM). */
+static inline int notifier_from_errno(int err)
+{
+	return NOTIFY_STOP_MASK | (NOTIFY_OK - err);
+}
+
+/* Restore (negative) errno value from notify return value. */
+static inline int notifier_to_errno(int ret)
+{
+	ret &= ~NOTIFY_STOP_MASK;
+	return ret > NOTIFY_OK ? NOTIFY_OK - ret : 0;
+}
+
 /*
  *	Declared notifiers so far. I can imagine quite a few more chains
  *	over time (eg laptop power reset chains, reboot chain (to clean 
@@ -140,6 +153,7 @@ extern int raw_notifier_call_chain(struct raw_notifier_head *,
 #define NETDEV_CHANGENAME	0x000A
 #define NETDEV_FEAT_CHANGE	0x000B
 #define NETDEV_BONDING_FAILOVER 0x000C
+#define NETDEV_PRE_UP		0x000D
 
 #define SYS_DOWN	0x0001	/* Notify of system down */
 #define SYS_RESTART	SYS_DOWN
@@ -154,6 +168,8 @@ extern int raw_notifier_call_chain(struct raw_notifier_head *,
 #define CPU_DOWN_PREPARE	0x0005 /* CPU (unsigned)v going down */
 #define CPU_DOWN_FAILED		0x0006 /* CPU (unsigned)v NOT going down */
 #define CPU_DEAD		0x0007 /* CPU (unsigned)v dead */
+#define CPU_DYING		0x000A /* CPU (unsigned)v not running any task,
+				        * not handling interrupts, soon dead */
 
 /* Used for CPU hotplug events occuring while tasks are frozen due to a suspend
  * operation in progress
@@ -162,6 +178,7 @@ extern int raw_notifier_call_chain(struct raw_notifier_head *,
 
 #define CPU_ONLINE_FROZEN	(CPU_ONLINE | CPU_TASKS_FROZEN)
 #define CPU_DEAD_FROZEN		(CPU_DEAD | CPU_TASKS_FROZEN)
+#define CPU_DYING_FROZEN	(CPU_DYING | CPU_TASKS_FROZEN)
 
 #endif /* __KERNEL__ */
 #endif /* _LINUX_NOTIFIER_H */

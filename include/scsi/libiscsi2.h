@@ -296,6 +296,7 @@ struct iscsi_session {
 	int			cmds_max;	/* size of cmds array */
 	struct iscsi_task	**cmds;		/* Original Cmds arr */
 	struct iscsi_pool	cmdpool;	/* PDU's pool */
+	void			*dd_data;	/* LLD private data */
 };
 
 enum {
@@ -356,7 +357,7 @@ extern void iscsi2_host_free(struct Scsi_Host *shost);
  */
 extern struct iscsi_cls_session *
 iscsi2_session_setup(struct iscsi_transport *, struct Scsi_Host *shost,
-		    uint16_t, int, uint32_t, unsigned int);
+		    uint16_t, int, int, uint32_t, unsigned int);
 extern void iscsi2_session_teardown(struct iscsi_cls_session *);
 extern void iscsi2_session_recovery_timedout(struct iscsi_cls_session *);
 extern int iscsi2_set_param(struct iscsi_cls_conn *cls_conn,
@@ -408,7 +409,8 @@ extern void iscsi2_requeue_task(struct iscsi_task *task);
 extern struct iscsi_task *iscsi_itt_to_task(struct iscsi_conn *, itt_t);
 extern void iscsi2_put_task(struct iscsi_task *task);
 extern void __iscsi2_get_task(struct iscsi_task *task);
-
+extern void iscsi2_complete_scsi_task(struct iscsi_task *task,
+                              uint32_t exp_cmdsn, uint32_t max_cmdsn);
 /*
  * generic helpers
  */

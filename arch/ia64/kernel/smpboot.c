@@ -139,6 +139,7 @@ EXPORT_SYMBOL(cpu_possible_map);
 
 cpumask_t cpu_core_map[NR_CPUS] __cacheline_aligned;
 cpumask_t cpu_sibling_map[NR_CPUS] __cacheline_aligned;
+EXPORT_SYMBOL(cpu_core_map);
 int smp_num_siblings = 1;
 int smp_num_cpucores = 1;
 

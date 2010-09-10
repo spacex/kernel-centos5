@@ -149,12 +149,15 @@ EXPORT_SYMBOL(reset_devices);
  * greater than 0, limits the maximum number of CPUs activated in
  * SMP mode to <NUM>.
  */
-static int __init nosmp(char *str)
+#ifndef CONFIG_X86_IO_APIC
+static inline void disable_ioapic_setup(void) {};
+#endif
+int __init nosmp(char *str)
 {
 	max_cpus = 0;
+	disable_ioapic_setup();
 	return 1;
 }
-
 __setup("nosmp", nosmp);
 
 static int __init maxcpus(char *str)

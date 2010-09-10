@@ -59,6 +59,33 @@ void mcheck_init(struct cpuinfo_x86 *c)
 	}
 }
 
+void mce_panic(char *msg)
+{
+	static atomic_t mce_entry = ATOMIC_INIT(0);
+	/*
+	 * Machine check panics often come up from multiple CPUs in parallel.
+	 * panic doesn't handle that well and deadlocks, so synchronize here.
+	 */
+	int first = atomic_add_return(1, &mce_entry) == 1;
+
+	if (!first) {
+		/*
+		 * Enable interrupts so that smp_stop_cpus() can interrupts us,
+		 * but prevent scheduling in case someone compiles this
+		 * preemptible.
+		 * Then wait for the other panic to shut us down.
+		 */
+		preempt_disable();
+		local_irq_enable();
+		printk("CPU %d: MCE PANIC: %s\n", smp_processor_id(), msg);
+		for (;;)
+			cpu_relax();
+	}
+
+	oops_in_progress = 1;
+	panic(msg);
+}
+
 static int __init mcheck_disable(char *str)
 {
 	mce_disabled = 1;

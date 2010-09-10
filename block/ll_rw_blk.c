@@ -2689,13 +2689,16 @@ static void drive_stat_acct(struct request *rq, int nr_sectors, int new_io)
 	if (!new_io) {
 		__all_stat_inc(rq->rq_disk, merges[rw], rq->sector);
 	} else {
-		struct hd_struct *part = get_part(rq->rq_disk, rq->sector);
+		struct hd_struct *part;
+		rcu_read_lock();
+		part = get_part(rq->rq_disk, rq->sector);
 		disk_round_stats(rq->rq_disk);
 		rq->rq_disk->in_flight++;
 		if (part) {
 			part_round_stats(part);
 			get_partstats(part)->in_flight++;
 		}
+		rcu_read_unlock();
 	}
 }
 
@@ -2864,14 +2867,17 @@ EXPORT_SYMBOL(blk_congestion_wait);
 static void blk_account_io_merge(struct request *req)
 {
 	if (blk_do_io_stat(req)) {
-		struct hd_struct *part
-			= get_part(req->rq_disk, req->sector);
+		struct hd_struct *part;
+
 		disk_round_stats(req->rq_disk);
 		req->rq_disk->in_flight--;
+		rcu_read_lock();
+		part = get_part(req->rq_disk, req->sector);
 		if (part) {
 			part_round_stats(part);
 			get_partstats(part)->in_flight--;
 		}
+		rcu_read_unlock();
 	}
 }
 
@@ -3396,16 +3402,19 @@ static void blk_account_io_done(struct request *req)
 		unsigned long duration = jiffies - req->start_time;
 		const int rw = rq_data_dir(req);
 		struct gendisk *disk = req->rq_disk;
-		struct hd_struct *part = get_part(disk, req->sector);
+		struct hd_struct *part;
 
 		__all_stat_inc(disk, ios[rw], req->sector);
 		__all_stat_add(disk, ticks[rw], duration, req->sector);
 		disk_round_stats(disk);
 		disk->in_flight--;
+		rcu_read_lock();
+		part = get_part(disk, req->sector);
 		if (part) {
 			part_round_stats(part);
 			get_partstats(part)->in_flight--;
 		}
+		rcu_read_unlock();
 	}
 }
 
@@ -3946,9 +3955,6 @@ queue_ra_store(struct request_queue *q, const char *page, size_t count)
 	ssize_t ret = queue_var_store(&ra_kb, page, count);
 
 	spin_lock_irq(q->queue_lock);
-	if (ra_kb > (q->max_sectors >> 1))
-		ra_kb = (q->max_sectors >> 1);
-
 	q->backing_dev_info.ra_pages = ra_kb >> (PAGE_CACHE_SHIFT - 10);
 	spin_unlock_irq(q->queue_lock);
 

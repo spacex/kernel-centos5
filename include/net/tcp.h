@@ -28,6 +28,7 @@
 #include <linux/percpu.h>
 #include <linux/skbuff.h>
 #include <linux/dmaengine.h>
+#include <linux/cryptohash.h>
 
 #include <net/inet_connection_sock.h>
 #include <net/inet_timewait_sock.h>
@@ -412,10 +413,19 @@ extern int			tcp_disconnect(struct sock *sk, int flags);
 extern void			tcp_unhash(struct sock *sk);
 
 /* From syncookies.c */
+extern __u32 syncookie_secret[2][16-3+SHA_DIGEST_WORDS];
 extern struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb, 
 				    struct ip_options *opt);
 extern __u32 cookie_v4_init_sequence(struct sock *sk, struct sk_buff *skb, 
 				     __u16 *mss);
+
+/* From net/ipv6/syncookies.c */
+extern struct sock *cookie_v6_check(struct sock *sk, struct sk_buff *skb);
+extern __u32 cookie_v6_init_sequence(struct sock *sk, struct sk_buff *skb,
+				     __u16 *mss);
+
+extern __u32 cookie_init_timestamp(struct request_sock *req);
+extern void cookie_check_timestamp(struct tcp_options_received *tcp_opt);
 
 /* tcp_output.c */
 
@@ -969,6 +979,7 @@ static inline void tcp_openreq_init(struct request_sock *req,
 	struct inet_request_sock *ireq = inet_rsk(req);
 
 	req->rcv_wnd = 0;		/* So that tcp_send_synack() knows! */
+	req->cookie_ts = 0;
 	tcp_rsk(req)->rcv_isn = TCP_SKB_CB(skb)->seq;
 	req->mss = rx_opt->mss_clamp;
 	req->ts_recent = rx_opt->saw_tstamp ? rx_opt->rcv_tsval : 0;
@@ -1089,6 +1100,7 @@ extern int tcp_proc_register(struct tcp_seq_afinfo *afinfo);
 extern void tcp_proc_unregister(struct tcp_seq_afinfo *afinfo);
 
 extern struct request_sock_ops tcp_request_sock_ops;
+extern struct request_sock_ops tcp6_request_sock_ops;
 
 extern int tcp_v4_destroy_sock(struct sock *sk);
 

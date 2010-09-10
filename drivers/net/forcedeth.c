@@ -878,6 +878,12 @@ enum {
 };
 static int phy_cross = NV_CROSSOVER_DETECTION_DISABLED;
 
+/*
+ * Power down phy when interface is down (persists through reboot;
+ * older Linux and other OSes may not power it up again)
+ */
+static int phy_power_down = 0;
+
 static inline struct fe_priv *get_nvpriv(struct net_device *dev)
 {
 	return netdev_priv(dev);
@@ -1446,9 +1452,12 @@ static int phy_init(struct net_device *dev)
 	/* some phys clear out pause advertisment on reset, set it back */
 	mii_rw(dev, np->phyaddr, MII_ADVERTISE, reg);
 
-	/* restart auto negotiation */
+	/* restart auto negotiation, power down phy */
 	mii_control = mii_rw(dev, np->phyaddr, MII_BMCR, MII_READ);
 	mii_control |= (BMCR_ANRESTART | BMCR_ANENABLE);
+	if (phy_power_down) {
+		mii_control |= BMCR_PDOWN;
+	}
 	if (mii_rw(dev, np->phyaddr, MII_BMCR, mii_control)) {
 		return PHY_ERROR;
 	}
@@ -5176,12 +5185,7 @@ static void nv_vlan_rx_register(struct net_device *dev, struct vlan_group *grp)
 	writel(np->txrxctl_bits, get_hwbase(dev) + NvRegTxRxControl);
 
 	spin_unlock_irq(&np->lock);
-};
-
-static void nv_vlan_rx_kill_vid(struct net_device *dev, unsigned short vid)
-{
-	/* nothing to do */
-};
+}
 
 /* The mgmt unit and driver use a semaphore to access the phy during init */
 static int nv_mgmt_acquire_sema(struct net_device *dev)
@@ -5421,9 +5425,13 @@ static int nv_close(struct net_device *dev)
 
 	nv_drain_rxtx(dev);
 
-	if (np->wolenabled) {
+	if (np->wolenabled || !phy_power_down) {
 		writel(NVREG_PFF_ALWAYS|NVREG_PFF_MYADDR, base + NvRegPacketFilterFlags);
 		nv_start_rx(dev);
+	} else {
+		/* power down phy */
+		mii_rw(dev, np->phyaddr, MII_BMCR,
+		       mii_rw(dev, np->phyaddr, MII_BMCR, MII_READ)|BMCR_PDOWN);
 	}
 
 	/* FIXME: power down nic */
@@ -5550,7 +5558,6 @@ static int __devinit nv_probe(struct pci_dev *pci_dev, const struct pci_device_i
 		np->vlanctl_bits = NVREG_VLANCONTROL_ENABLE;
 		dev->features |= NETIF_F_HW_VLAN_RX | NETIF_F_HW_VLAN_TX;
 		dev->vlan_rx_register = nv_vlan_rx_register;
-		dev->vlan_rx_kill_vid = nv_vlan_rx_kill_vid;
 	}
 
 	np->msi_flags = 0;
@@ -5988,6 +5995,9 @@ static int nv_resume(struct pci_dev *pdev)
 	for (i = 0;i <= np->register_size/sizeof(u32); i++)
 		writel(np->saved_config_space[i], base+i*sizeof(u32));
 
+	/* restore phy state, including autoneg */
+	phy_init(dev);
+
 	netif_device_attach(dev);
 	if (netif_running(dev)) {
 		rc = nv_open(dev);
@@ -6010,7 +6020,6 @@ static void nv_shutdown(struct pci_dev *pdev)
 	if (system_state == SYSTEM_POWER_OFF) {
 		if (pci_enable_wake(pdev, PCI_D3cold, np->wolenabled))
 			pci_enable_wake(pdev, PCI_D3hot, np->wolenabled);
-		pci_set_power_state(pdev, PCI_D3hot);
 	}
 }
 #else
@@ -6213,6 +6222,8 @@ module_param(dma_64bit, int, 0);
 MODULE_PARM_DESC(dma_64bit, "High DMA is enabled by setting to 1 and disabled by setting to 0.");
 module_param(phy_cross, int, 0);
 MODULE_PARM_DESC(phy_cross, "Phy crossover detection for Realtek 8201 phy is enabled by setting to 1 and disabled by setting to 0.");
+module_param(phy_power_down, int, 0);
+MODULE_PARM_DESC(phy_power_down, "Power down phy and disable link when interface is down (1), or leave phy powered up (0).");
 
 MODULE_AUTHOR("Manfred Spraul <manfred@colorfullife.com>");
 MODULE_DESCRIPTION("Reverse Engineered nForce ethernet driver"

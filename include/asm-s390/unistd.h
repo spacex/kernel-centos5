@@ -307,8 +307,11 @@
 /* Number 312 is reserved for sys_epoll_pwait */
 /* Number 313 is reserved for sys_utimes */
 #define __NR_fallocate		314
-
-#define NR_syscalls 315
+/* Number 315 is reserved for sys_utimensat */
+/* Number 316 is reserved for sys_signalfd */
+/* Number 317 is reserved for sys_timerfd */
+#define __NR_eventfd		318
+#define NR_syscalls 319
 
 /* 
  * There are some system calls that are not present on 64 bit, some
@@ -620,7 +623,6 @@ asmlinkage long sys_execve(struct pt_regs regs);
 asmlinkage long sys_clone(struct pt_regs regs);
 asmlinkage long sys_fork(struct pt_regs regs);
 asmlinkage long sys_vfork(struct pt_regs regs);
-asmlinkage long sys_pipe(unsigned long __user *fildes);
 struct sigaction;
 asmlinkage long sys_rt_sigaction(int sig,
 				const struct sigaction __user *act,

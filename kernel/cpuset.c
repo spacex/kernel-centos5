@@ -2109,6 +2109,9 @@ out:
 static int cpuset_handle_cpuhp(struct notifier_block *nb,
 				unsigned long phase, void *cpu)
 {
+	if (phase == CPU_DYING || phase == CPU_DYING_FROZEN)
+		return NOTIFY_DONE;
+
 	mutex_lock(&manage_mutex);
 	mutex_lock(&callback_mutex);
 

@@ -54,9 +54,8 @@
 #define PNEIGH_HASHMASK		0xF
 
 static void neigh_timer_handler(unsigned long arg);
-#ifdef CONFIG_ARPD
-static void neigh_app_notify(struct neighbour *n);
-#endif
+static void __neigh_notify(struct neighbour *n, int type, int flags);
+static void neigh_update_notify(struct neighbour *neigh);
 static int pneigh_ifdown(struct neigh_table *tbl, struct net_device *dev);
 void neigh_changeaddr(struct neigh_table *tbl, struct net_device *dev);
 
@@ -109,6 +108,7 @@ static void neigh_cleanup_and_release(struct neighbour *neigh)
 	if (neigh->parms->neigh_destructor)
 		neigh->parms->neigh_destructor(neigh);
 
+	__neigh_notify(neigh, RTM_DELNEIGH, 0);
 	neigh_release(neigh);
 }
 
@@ -829,12 +829,8 @@ out:
 		write_unlock(&neigh->lock);
 	}
 	if (notify)
-		call_netevent_notifiers(NETEVENT_NEIGH_UPDATE, neigh);
+		neigh_update_notify(neigh);
 
-#ifdef CONFIG_ARPD
-	if (notify && neigh->parms->app_probes)
-		neigh_app_notify(neigh);
-#endif
 	neigh_release(neigh);
 }
 
@@ -1064,11 +1060,8 @@ out:
 	write_unlock_bh(&neigh->lock);
 
 	if (notify)
-		call_netevent_notifiers(NETEVENT_NEIGH_UPDATE, neigh);
-#ifdef CONFIG_ARPD
-	if (notify && neigh->parms->app_probes)
-		neigh_app_notify(neigh);
-#endif
+		neigh_update_notify(neigh);
+
 	return err;
 }
 
@@ -1925,6 +1918,11 @@ rtattr_failure:
 	return -1;
 }
 
+static void neigh_update_notify(struct neighbour *neigh)
+{
+	call_netevent_notifiers(NETEVENT_NEIGH_UPDATE, neigh);
+	__neigh_notify(neigh, RTM_NEWNEIGH, 0);
+}
 
 static int neigh_dump_table(struct neigh_table *tbl, struct sk_buff *skb,
 			    struct netlink_callback *cb)
@@ -2345,8 +2343,7 @@ static struct file_operations neigh_stat_seq_fops = {
 
 #endif /* CONFIG_PROC_FS */
 
-#ifdef CONFIG_ARPD
-void neigh_app_ns(struct neighbour *n)
+static void __neigh_notify(struct neighbour *n, int type, int flags)
 {
 	struct nlmsghdr  *nlh;
 	int size = NLMSG_SPACE(sizeof(struct ndmsg) + 256);
@@ -2355,32 +2352,20 @@ void neigh_app_ns(struct neighbour *n)
 	if (!skb)
 		return;
 
-	if (neigh_fill_info(skb, n, 0, 0, RTM_GETNEIGH, 0) < 0) {
+	if (neigh_fill_info(skb, n, 0, 0, type, 0) < 0) {
 		kfree_skb(skb);
 		return;
 	}
 	nlh			   = (struct nlmsghdr *)skb->data;
-	nlh->nlmsg_flags	   = NLM_F_REQUEST;
+	nlh->nlmsg_flags	   = flags;
 	NETLINK_CB(skb).dst_group  = RTNLGRP_NEIGH;
 	netlink_broadcast(rtnl, skb, 0, RTNLGRP_NEIGH, GFP_ATOMIC);
 }
 
-static void neigh_app_notify(struct neighbour *n)
+#ifdef CONFIG_ARPD
+void neigh_app_ns(struct neighbour *n)
 {
-	struct nlmsghdr *nlh;
-	int size = NLMSG_SPACE(sizeof(struct ndmsg) + 256);
-	struct sk_buff *skb = alloc_skb(size, GFP_ATOMIC);
-
-	if (!skb)
-		return;
-
-	if (neigh_fill_info(skb, n, 0, 0, RTM_NEWNEIGH, 0) < 0) {
-		kfree_skb(skb);
-		return;
-	}
-	nlh			   = (struct nlmsghdr *)skb->data;
-	NETLINK_CB(skb).dst_group  = RTNLGRP_NEIGH;
-	netlink_broadcast(rtnl, skb, 0, RTNLGRP_NEIGH, GFP_ATOMIC);
+	__neigh_notify(n, RTM_GETNEIGH, NLM_F_REQUEST);
 }
 
 #endif /* CONFIG_ARPD */

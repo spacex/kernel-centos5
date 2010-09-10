@@ -45,6 +45,9 @@ struct request_sock {
 	struct request_sock		*dl_next; /* Must be first member! */
 	u16				mss;
 	u8				retrans;
+	/* The following field is used under the name 'cookie_ts' by
+	   the define below. The reason is KABI compliance.
+	*/
 	u8				__pad;
 	/* The following two fields can be easily recomputed I think -AK */
 	u32				window_clamp; /* window clamp at creation time */
@@ -56,6 +59,9 @@ struct request_sock {
 	u32				secid;
 	u32				peer_secid;
 };
+
+/* syncookie: encode tcpopts in timestamp in struct request_sock */
+#define cookie_ts __pad
 
 static inline struct request_sock *reqsk_alloc(struct request_sock_ops *ops)
 {

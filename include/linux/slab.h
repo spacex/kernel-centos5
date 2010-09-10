@@ -214,6 +214,8 @@ static inline void *kmemdup(const void *src, size_t len, gfp_t gfp)
 	return p;
 }
 
+extern void * __krealloc(const void *, size_t, gfp_t);
+extern void * krealloc(const void *, size_t, gfp_t);
 extern void kfree(const void *);
 extern unsigned int ksize(const void *);
 extern int slab_is_available(void);

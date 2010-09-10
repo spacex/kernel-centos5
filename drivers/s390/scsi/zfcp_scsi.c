@@ -24,6 +24,11 @@
 #include "zfcp_ext.h"
 #include <asm/atomic.h>
 
+static unsigned int default_depth = 32;
+module_param_named(queue_depth, default_depth, uint, 0600);
+MODULE_PARM_DESC(queue_depth, "Default queue depth for new SCSI devices");
+
+static int zfcp_scsi_change_queue_depth(struct scsi_device *, int);
 static void zfcp_scsi_slave_destroy(struct scsi_device *sdp);
 static int zfcp_scsi_slave_alloc(struct scsi_device *sdp);
 static int zfcp_scsi_slave_configure(struct scsi_device *sdp);
@@ -46,6 +51,7 @@ struct zfcp_data zfcp_data = {
 	.scsi_host_template = {
 		.name			= ZFCP_NAME,
 		.proc_name		= "zfcp",
+		.change_queue_depth	= zfcp_scsi_change_queue_depth,
 		.slave_alloc		= zfcp_scsi_slave_alloc,
 		.slave_configure	= zfcp_scsi_slave_configure,
 		.slave_destroy		= zfcp_scsi_slave_destroy,
@@ -120,6 +126,12 @@ void
 zfcp_set_fcp_dl(struct fcp_cmnd_iu *fcp_cmd, fcp_dl_t fcp_dl)
 {
 	*zfcp_get_fcp_dl_ptr(fcp_cmd) = fcp_dl;
+}
+
+static int zfcp_scsi_change_queue_depth(struct scsi_device *sdev, int depth)
+{
+	scsi_adjust_queue_depth(sdev, scsi_get_tag_type(sdev), depth);
+	return sdev->queue_depth;
 }
 
 /*
@@ -200,7 +212,7 @@ static int
 zfcp_scsi_slave_configure(struct scsi_device *sdp)
 {
 	if (sdp->tagged_supported)
-		scsi_adjust_queue_depth(sdp, MSG_SIMPLE_TAG, ZFCP_CMND_PER_LUN);
+		scsi_adjust_queue_depth(sdp, MSG_SIMPLE_TAG, default_depth);
 	else
 		scsi_adjust_queue_depth(sdp, 0, 1);
 	return 0;

@@ -788,7 +788,7 @@ iscsi_sw_tcp_session_create(struct iscsi_endpoint *ep, uint16_t cmds_max,
 		goto free_host;
 
 	cls_session = iscsi2_session_setup(&iscsi_sw_tcp_transport, shost,
-					  cmds_max,
+					  cmds_max, 0,
 					  sizeof(struct iscsi_tcp_task) +
 					  sizeof(struct iscsi_sw_tcp_hdrbuf),
 					  initial_cmdsn, 0);

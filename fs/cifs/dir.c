@@ -137,10 +137,9 @@ cifs_bp_rename_retry:
 
 int cifs_posix_open(char *full_path, struct inode **pinode,
 		    struct super_block *sb, int mode, int oflags,
-		    int *poplock, __u16 *pnetfid, int xid)
+		    __u32 *poplock, __u16 *pnetfid, int xid)
 {
 	int rc;
-	__u32 oplock;
 	FILE_UNIX_BASIC_INFO *presp_data;
 	__u32 posix_flags = 0;
 	struct cifs_sb_info *cifs_sb = CIFS_SB(sb);
@@ -167,8 +166,6 @@ int cifs_posix_open(char *full_path, struct inode **pinode,
 		posix_flags |= SMB_O_EXCL;
 	if (oflags & O_TRUNC)
 		posix_flags |= SMB_O_TRUNC;
-	if (oflags & O_APPEND)
-		posix_flags |= SMB_O_APPEND;
 	if (oflags & O_SYNC)
 		posix_flags |= SMB_O_SYNC;
 	if (oflags & O_DIRECTORY)
@@ -180,7 +177,7 @@ int cifs_posix_open(char *full_path, struct inode **pinode,
 
 
 	rc = CIFSPOSIXCreate(xid, cifs_sb->tcon, posix_flags, mode,
-			pnetfid, presp_data, &oplock, full_path,
+			pnetfid, presp_data, poplock, full_path,
 			cifs_sb->local_nls, cifs_sb->mnt_cifs_flags &
 					CIFS_MOUNT_MAP_SPECIAL_CHR);
 	if (rc)
@@ -231,7 +228,7 @@ cifs_create(struct inode *inode, struct dentry *direntry, int mode,
 	int rc = -ENOENT;
 	int xid;
 	int create_options = CREATE_NOT_DIR;
-	int oplock = 0;
+	__u32 oplock = 0;
 	int oflags;
 	/*
 	 * BB below access is probably too much for mknod to request
@@ -424,13 +421,16 @@ cifs_create_set_dentry:
 			goto cifs_create_out;
 		pCifsFile->netfid = fileHandle;
 		pCifsFile->pid = current->tgid;
-		pCifsFile->pInode = newinode;
+		pCifsFile->pInode = igrab(newinode);
 		pCifsFile->invalidHandle = false;
+		pCifsFile->mnt = nd->mnt;
 		pCifsFile->closePend     = false;
 		init_MUTEX(&pCifsFile->fh_sem);
 		mutex_init(&pCifsFile->lock_mutex);
 		INIT_LIST_HEAD(&pCifsFile->llist);
-		atomic_set(&pCifsFile->wrtPending, 0);
+		atomic_set(&pCifsFile->count, 1);
+		INIT_WORK(&pCifsFile->oplock_break, cifs_oplock_break,
+			  pCifsFile);
 
 		/* set the following in open now
 				pCifsFile->pfile = file; */

@@ -160,6 +160,21 @@ static inline unsigned int cpuid_edx(unsigned int op)
 #define MSR_IA32_UCODE_WRITE		0x79
 #define MSR_IA32_UCODE_REV		0x8b
 
+#ifdef CONFIG_SMP
+void rdmsr_on_cpu(unsigned int cpu, u32 msr_no, u32 *l, u32 *h);
+void wrmsr_on_cpu(unsigned int cpu, u32 msr_no, u32 l, u32 h);
+int rdmsr_safe_on_cpu(unsigned int cpu, u32 msr_no, u32 *l, u32 *h);
+int wrmsr_safe_on_cpu(unsigned int cpu, u32 msr_no, u32 l, u32 h);
+#else  /*  CONFIG_SMP  */
+static inline void rdmsr_on_cpu(unsigned int cpu, u32 msr_no, u32 *l, u32 *h)
+{
+	rdmsr(msr_no, *l, *h);
+}
+static inline void wrmsr_on_cpu(unsigned int cpu, u32 msr_no, u32 l, u32 h)
+{
+	wrmsr(msr_no, l, h);
+}
+#endif  /*  CONFIG_SMP  */
 
 #endif
 
@@ -172,6 +187,9 @@ static inline unsigned int cpuid_edx(unsigned int op)
 #define MSR_FS_BASE 0xc0000100		/* 64bit GS base */
 #define MSR_GS_BASE 0xc0000101		/* 64bit FS base */
 #define MSR_KERNEL_GS_BASE  0xc0000102	/* SwapGS GS shadow (or USER_GS from kernel) */ 
+
+#define ENABLE_CF8_EXT_CFG      (1ULL << 46)
+#define MSR_K8_NB_CFG 0xc001001f
 /* EFER bits: */ 
 #define _EFER_SCE 0  /* SYSCALL/SYSRET */
 #define _EFER_LME 8  /* Long mode enable */

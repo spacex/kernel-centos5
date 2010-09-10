@@ -104,22 +104,6 @@ struct dio {
 	unsigned cur_page_len;		/* Nr of bytes at cur_page_offset */
 	sector_t cur_page_block;	/* Where it starts */
 
-	/*
-	 * Page fetching state. These variables belong to dio_refill_pages().
-	 */
-	int curr_page;			/* changes */
-	int total_pages;		/* doesn't change */
-	unsigned long curr_user_address;/* changes */
-
-	/*
-	 * Page queue.  These variables belong to dio_refill_pages() and
-	 * dio_get_page().
-	 */
-	struct page *pages[DIO_PAGES];	/* page buffer */
-	unsigned head;			/* next page to process */
-	unsigned tail;			/* last valid page + 1 */
-	int page_errors;		/* errno from get_user_pages() */
-
 	/* BIO completion state */
 	spinlock_t bio_lock;		/* protects BIO fields below */
 	unsigned long refcount;		/* direct_io_worker() and bios */
@@ -131,6 +115,22 @@ struct dio {
 	int is_async;			/* is IO async ? */
 	int io_error;			/* IO error in completion path */
 	ssize_t result;                 /* IO result */
+
+	/*
+	 * Page fetching state. These variables belong to dio_refill_pages().
+	 */
+	int curr_page;			/* changes */
+	int total_pages;		/* doesn't change */
+	unsigned long curr_user_address;/* changes */
+
+	/*
+	 * Page queue.  These variables belong to dio_refill_pages() and
+	 * dio_get_page().
+	 */
+	unsigned head;			/* next page to process */
+	unsigned tail;			/* last valid page + 1 */
+	int page_errors;		/* errno from get_user_pages() */
+	struct page *pages[DIO_PAGES];	/* page buffer */
 };
 
 /*
@@ -1041,9 +1041,6 @@ direct_io_worker(int rw, struct kiocb *iocb, struct inode *inode,
 	if (dio->bio)
 		dio_bio_submit(dio);
 
-	/* All IO is now issued, send it on its way */
-	blk_run_address_space(inode->i_mapping);
-
 	/*
 	 * It is possible that, we return short IO due to end of file.
 	 * In that case, we need to release all the pages we got hold on.
@@ -1070,8 +1067,11 @@ direct_io_worker(int rw, struct kiocb *iocb, struct inode *inode,
 	    ((rw & READ) || (dio->result == dio->size)))
 		ret = -EIOCBQUEUED;
 
-	if (ret != -EIOCBQUEUED)
+	if (ret != -EIOCBQUEUED) {
+		/* All IO is now issued, send it on its way */
+		blk_run_address_space(inode->i_mapping);
 		dio_await_completion(dio);
+	}
 
 	/*
 	 * Sync will always be dropping the final ref and completing the
@@ -1164,10 +1164,16 @@ __blockdev_direct_IO(int rw, struct kiocb *iocb, struct inode *inode,
 		}
 	}
 
-	dio = kzalloc(sizeof(*dio), GFP_KERNEL);
+	dio = kmalloc(sizeof(*dio), GFP_KERNEL);
 	retval = -ENOMEM;
 	if (!dio)
 		goto out;
+	/*
+	 * Believe it or not, zeroing out the page array caused a .5%
+	 * performance regression in a database benchmark.  So, we take
+	 * care to only zero out what's needed.
+	 */
+	memset(dio, 0, offsetof(struct dio, pages));
 
 	/*
 	 * For block device access DIO_NO_LOCKING is used,
@@ -1219,6 +1225,19 @@ __blockdev_direct_IO(int rw, struct kiocb *iocb, struct inode *inode,
 
 	retval = direct_io_worker(rw, iocb, inode, iov, offset,
 				nr_segs, blkbits, get_block, end_io, dio);
+
+	/*
+	 * In case of error extending write may have instantiated a few
+	 * blocks outside i_size. Trim these off again for DIO_LOCKING.
+	 * NOTE: DIO_NO_LOCK/DIO_OWN_LOCK callers have to handle this by
+	 * it's own meaner.
+	 */
+	if (unlikely(retval < 0 && (rw & WRITE))) {
+		loff_t isize = i_size_read(inode);
+
+		if (end > isize && dio_lock_type == DIO_LOCKING)
+			vmtruncate(inode, isize);
+	}
 
 	if (rw == READ && dio_lock_type == DIO_LOCKING)
 		release_i_mutex = 0;

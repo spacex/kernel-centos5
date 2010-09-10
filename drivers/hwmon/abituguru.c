@@ -16,11 +16,12 @@
     Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 /*
-    This driver supports the sensor part of the custom Abit uGuru chip found
-    on Abit uGuru motherboards. Note: because of lack of specs the CPU / RAM /
-    etc voltage & frequency control is not supported!
+    This driver supports the sensor part of the first and second revision of
+    the custom Abit uGuru chip found on Abit uGuru motherboards. Note: because
+    of lack of specs the CPU/RAM voltage & frequency control is not supported!
 */
 #include <linux/module.h>
+#include <linux/sched.h>
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/jiffies.h>
@@ -30,6 +31,7 @@
 #include <linux/platform_device.h>
 #include <linux/hwmon.h>
 #include <linux/hwmon-sysfs.h>
+#include <linux/dmi.h>
 #include <asm/io.h>
 
 /* Banks */
@@ -174,7 +176,7 @@ MODULE_PARM_DESC(verbose, "How verbose should the driver be? (0-3):\n"
    The structure is dynamically allocated, at the same time when a new
    abituguru device is allocated. */
 struct abituguru_data {
-	struct class_device *class_dev; /* hwmon registered device */
+	struct class_device *class_dev;	/* hwmon registered device */
 	struct mutex update_lock;	/* protect access to data and uGuru */
 	unsigned long last_updated;	/* In jiffies */
 	unsigned short addr;		/* uguru base address */
@@ -417,7 +419,7 @@ static int __devinit
 abituguru_detect_bank1_sensor_type(struct abituguru_data *data,
 				   u8 sensor_addr)
 {
-	u8 val, buf[3];
+	u8 val, test_flag, buf[3];
 	int i, ret = -ENODEV; /* error is the most common used retval :| */
 
 	/* If overriden by the user return the user selected type */
@@ -435,7 +437,7 @@ abituguru_detect_bank1_sensor_type(struct abituguru_data *data,
 		return -ENODEV;
 
 	/* Test val is sane / usable for sensor type detection. */
-	if ((val < 10u) || (val > 240u)) {
+	if ((val < 10u) || (val > 250u)) {
 		printk(KERN_WARNING ABIT_UGURU_NAME
 			": bank1-sensor: %d reading (%d) too close to limits, "
 			"unable to determine sensor type, skipping sensor\n",
@@ -448,10 +450,20 @@ abituguru_detect_bank1_sensor_type(struct abituguru_data *data,
 
 	ABIT_UGURU_DEBUG(2, "testing bank1 sensor %d\n", (int)sensor_addr);
 	/* Volt sensor test, enable volt low alarm, set min value ridicously
-	   high. If its a volt sensor this should always give us an alarm. */
-	buf[0] = ABIT_UGURU_VOLT_LOW_ALARM_ENABLE;
-	buf[1] = 245;
-	buf[2] = 250;
+	   high, or vica versa if the reading is very high. If its a volt
+	   sensor this should always give us an alarm. */
+	if (val <= 240u) {
+		buf[0] = ABIT_UGURU_VOLT_LOW_ALARM_ENABLE;
+		buf[1] = 245;
+		buf[2] = 250;
+		test_flag = ABIT_UGURU_VOLT_LOW_ALARM_FLAG;
+	} else {
+		buf[0] = ABIT_UGURU_VOLT_HIGH_ALARM_ENABLE;
+		buf[1] = 5;
+		buf[2] = 10;
+		test_flag = ABIT_UGURU_VOLT_HIGH_ALARM_FLAG;
+	}
+
 	if (abituguru_write(data, ABIT_UGURU_SENSOR_BANK1 + 2, sensor_addr,
 			buf, 3) != 3)
 		goto abituguru_detect_bank1_sensor_type_exit;
@@ -468,13 +480,13 @@ abituguru_detect_bank1_sensor_type(struct abituguru_data *data,
 				sensor_addr, buf, 3,
 				ABIT_UGURU_MAX_RETRIES) != 3)
 			goto abituguru_detect_bank1_sensor_type_exit;
-		if (buf[0] & ABIT_UGURU_VOLT_LOW_ALARM_FLAG) {
+		if (buf[0] & test_flag) {
 			ABIT_UGURU_DEBUG(2, "  found volt sensor\n");
 			ret = ABIT_UGURU_IN_SENSOR;
 			goto abituguru_detect_bank1_sensor_type_exit;
 		} else
 			ABIT_UGURU_DEBUG(2, "  alarm raised during volt "
-				"sensor test, but volt low flag not set\n");
+				"sensor test, but volt range flag not set\n");
 	} else
 		ABIT_UGURU_DEBUG(2, "  alarm not raised during volt sensor "
 			"test\n");
@@ -1266,30 +1278,43 @@ static int __devinit abituguru_probe(struct platform_device *pdev)
 	printk(KERN_INFO ABIT_UGURU_NAME ": found Abit uGuru\n");
 
 	/* Register sysfs hooks */
-	data->class_dev = hwmon_device_register(&pdev->dev);
-	if (IS_ERR(data->class_dev)) {
-		res = PTR_ERR(data->class_dev);
-		goto abituguru_probe_error;
-	}
 	for (i = 0; i < sysfs_attr_i; i++)
-		device_create_file(&pdev->dev, &data->sysfs_attr[i].dev_attr);
+		if (device_create_file(&pdev->dev,
+				&data->sysfs_attr[i].dev_attr))
+			goto abituguru_probe_error;
 	for (i = 0; i < ARRAY_SIZE(abituguru_sysfs_attr); i++)
-		device_create_file(&pdev->dev,
-			&abituguru_sysfs_attr[i].dev_attr);
+		if (device_create_file(&pdev->dev,
+				&abituguru_sysfs_attr[i].dev_attr))
+			goto abituguru_probe_error;
 
-	return 0;
+	data->class_dev = hwmon_device_register(&pdev->dev);
+	if (!IS_ERR(data->class_dev))
+		return 0; /* success */
 
+	res = PTR_ERR(data->class_dev);
 abituguru_probe_error:
+	for (i = 0; data->sysfs_attr[i].dev_attr.attr.name; i++)
+		device_remove_file(&pdev->dev, &data->sysfs_attr[i].dev_attr);
+	for (i = 0; i < ARRAY_SIZE(abituguru_sysfs_attr); i++)
+		device_remove_file(&pdev->dev,
+			&abituguru_sysfs_attr[i].dev_attr);
+	platform_set_drvdata(pdev, NULL);
 	kfree(data);
 	return res;
 }
 
 static int __devexit abituguru_remove(struct platform_device *pdev)
 {
+	int i;
 	struct abituguru_data *data = platform_get_drvdata(pdev);
 
-	platform_set_drvdata(pdev, NULL);
 	hwmon_device_unregister(data->class_dev);
+	for (i = 0; data->sysfs_attr[i].dev_attr.attr.name; i++)
+		device_remove_file(&pdev->dev, &data->sysfs_attr[i].dev_attr);
+	for (i = 0; i < ARRAY_SIZE(abituguru_sysfs_attr); i++)
+		device_remove_file(&pdev->dev,
+			&abituguru_sysfs_attr[i].dev_attr);
+	platform_set_drvdata(pdev, NULL);
 	kfree(data);
 
 	return 0;
@@ -1354,13 +1379,39 @@ LEAVE_UPDATE:
 		return NULL;
 }
 
+#ifdef CONFIG_PM
+static int abituguru_suspend(struct platform_device *pdev, pm_message_t state)
+{
+	struct abituguru_data *data = platform_get_drvdata(pdev);
+	/* make sure all communications with the uguru are done and no new
+	   ones are started */
+	mutex_lock(&data->update_lock);
+	return 0;
+}
+
+static int abituguru_resume(struct platform_device *pdev)
+{
+	struct abituguru_data *data = platform_get_drvdata(pdev);
+	/* See if the uGuru is still ready */
+	if (inb_p(data->addr + ABIT_UGURU_DATA) != ABIT_UGURU_STATUS_INPUT)
+		data->uguru_ready = 0;
+	mutex_unlock(&data->update_lock);
+	return 0;
+}
+#else
+#define abituguru_suspend	NULL
+#define abituguru_resume	NULL
+#endif /* CONFIG_PM */
+
 static struct platform_driver abituguru_driver = {
 	.driver = {
 		.owner	= THIS_MODULE,
 		.name	= ABIT_UGURU_NAME,
 	},
-	.probe	= abituguru_probe,
-	.remove	= __devexit_p(abituguru_remove),
+	.probe		= abituguru_probe,
+	.remove		= __devexit_p(abituguru_remove),
+	.suspend	= abituguru_suspend,
+	.resume		= abituguru_resume,
 };
 
 static int __init abituguru_detect(void)
@@ -1396,6 +1447,15 @@ static int __init abituguru_init(void)
 {
 	int address, err;
 	struct resource res = { .flags = IORESOURCE_IO };
+
+#ifdef CONFIG_DMI
+	const char *board_vendor = dmi_get_system_info(DMI_BOARD_VENDOR);
+
+	/* safety check, refuse to load on non Abit motherboards */
+	if (!force && (!board_vendor ||
+			strcmp(board_vendor, "http://www.abit.com.tw/")))
+		return -ENODEV;
+#endif
 
 	address = abituguru_detect();
 	if (address < 0)

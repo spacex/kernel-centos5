@@ -69,6 +69,10 @@ acpi_ex_store_buffer_to_buffer(union acpi_operand_object *source_desc,
 
 	ACPI_FUNCTION_TRACE_PTR(ex_store_buffer_to_buffer, source_desc);
 
+	if (source_desc == target_desc) {
+		return_ACPI_STATUS(AE_OK);
+	}
+
 	/* We know that source_desc is a buffer by now */
 
 	buffer = ACPI_CAST_PTR(u8, source_desc->buffer.pointer);

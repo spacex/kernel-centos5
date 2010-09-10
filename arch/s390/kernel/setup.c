@@ -114,75 +114,6 @@ void __devinit cpu_init (void)
 }
 
 /*
- * VM halt and poweroff setup routines
- */
-char vmhalt_cmd[128] = "";
-char vmpoff_cmd[128] = "";
-char vmpanic_cmd[128] = "";
-
-static inline void strncpy_skip_quote(char *dst, char *src, int n)
-{
-        int sx, dx;
-
-        dx = 0;
-        for (sx = 0; src[sx] != 0; sx++) {
-                if (src[sx] == '"') continue;
-                dst[dx++] = src[sx];
-                if (dx >= n) break;
-        }
-}
-
-static int __init vmhalt_setup(char *str)
-{
-        strncpy_skip_quote(vmhalt_cmd, str, 127);
-        vmhalt_cmd[127] = 0;
-        return 1;
-}
-
-__setup("vmhalt=", vmhalt_setup);
-
-static int __init vmpoff_setup(char *str)
-{
-        strncpy_skip_quote(vmpoff_cmd, str, 127);
-        vmpoff_cmd[127] = 0;
-        return 1;
-}
-
-__setup("vmpoff=", vmpoff_setup);
-
-static int vmpanic_notify(struct notifier_block *self, unsigned long event,
-			  void *data)
-{
-	if (MACHINE_IS_VM && strlen(vmpanic_cmd) > 0)
-		cpcmd(vmpanic_cmd, NULL, 0, NULL);
-
-	return NOTIFY_OK;
-}
-
-#define PANIC_PRI_VMPANIC	0
-
-static struct notifier_block vmpanic_nb = {
-	.notifier_call = vmpanic_notify,
-	.priority = PANIC_PRI_VMPANIC
-};
-
-static int __init vmpanic_setup(char *str)
-{
-	static int register_done __initdata = 0;
-
-	strncpy_skip_quote(vmpanic_cmd, str, 127);
-	vmpanic_cmd[127] = 0;
-	if (!register_done) {
-		register_done = 1;
-		atomic_notifier_chain_register(&panic_notifier_list,
-					       &vmpanic_nb);
-	}
-	return 1;
-}
-
-__setup("vmpanic=", vmpanic_setup);
-
-/*
  * condev= and conmode= setup parameter.
  */
 
@@ -200,6 +131,14 @@ static int __init condev_setup(char *str)
 
 __setup("condev=", condev_setup);
 
+static void __init set_preferred_console(void)
+{
+	if (CONSOLE_IS_3215 || CONSOLE_IS_SCLP)
+		add_preferred_console("ttyS", 0, NULL);
+	if (CONSOLE_IS_3270)
+		add_preferred_console("tty3270", 0, NULL);
+}
+
 static int __init conmode_setup(char *str)
 {
 #if defined(CONFIG_SCLP_CONSOLE)
@@ -214,6 +153,7 @@ static int __init conmode_setup(char *str)
 	if (strncmp(str, "3270", 5) == 0)
 		SET_CONSOLE_3270;
 #endif
+	set_preferred_console();
         return 1;
 }
 
@@ -276,7 +216,7 @@ static void __init conmode_default(void)
 }
 
 /* Set up boot command line */
-static char __initdata s390_command_line[COMMAND_LINE_SIZE];
+static char s390_command_line[COMMAND_LINE_SIZE];
 
 static void __init setup_boot_command_line(void)
 {
@@ -896,9 +836,6 @@ static void __init setup_hwcaps(void)
 void __init
 setup_arch(char **cmdline_p)
 {
-	/* set up preferred console */
-	add_preferred_console("ttyS", 0, NULL);
-
         /*
          * print what head.S has found out about the machine
          */
@@ -961,6 +898,7 @@ setup_arch(char **cmdline_p)
 
         /* Setup default console */
 	conmode_default();
+	set_preferred_console();
 
 	/* Setup zfcpdump support */
 	setup_zfcpdump(console_devno);

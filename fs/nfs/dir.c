@@ -152,6 +152,8 @@ typedef struct {
 	struct nfs_entry *entry;
 	decode_dirent_t	decode;
 	int		plus;
+	unsigned long   timestamp;
+	int             timestamp_valid;
 } nfs_readdir_descriptor_t;
 
 /* Now we cache directories properly, by stuffing the dirent
@@ -193,6 +195,8 @@ int nfs_readdir_filler(nfs_readdir_descriptor_t *desc, struct page *page)
 		}
 		goto error;
 	}
+	desc->timestamp = timestamp;
+	desc->timestamp_valid = 1;
 	SetPageUptodate(page);
 	/* Ensure consistent page alignment of the data.
 	 * Note: assumes we have exclusive access to this mapping either
@@ -217,6 +221,10 @@ int dir_decode(nfs_readdir_descriptor_t *desc)
 	if (IS_ERR(p))
 		return PTR_ERR(p);
 	desc->ptr = p;
+	if (desc->timestamp_valid)
+		desc->entry->fattr->time_start = desc->timestamp;
+	else
+		desc->entry->fattr->valid &= ~NFS_ATTR_FATTR;
 	return 0;
 }
 
@@ -308,6 +316,10 @@ int find_dirent_page(nfs_readdir_descriptor_t *desc)
 			__FUNCTION__, desc->page_index,
 			(long long) *desc->dir_cookie);
 
+	/* If we find the page in the page_cache, we cannot be sure
+	 * how fresh the data is, so we will ignore readdir_plus attributes.
+	 */
+	desc->timestamp_valid = 0;
 	page = read_cache_page(inode->i_mapping, desc->page_index,
 			       (filler_t *)nfs_readdir_filler, desc);
 	if (IS_ERR(page)) {
@@ -461,6 +473,7 @@ int uncached_readdir(nfs_readdir_descriptor_t *desc, void *dirent,
 	struct rpc_cred	*cred = nfs_file_cred(file);
 	struct page	*page = NULL;
 	int		status;
+	unsigned long	timestamp;
 
 	dfprintk(DIRCACHE, "NFS: uncached_readdir() searching for cookie %Lu\n",
 			(unsigned long long)*desc->dir_cookie);
@@ -470,6 +483,7 @@ int uncached_readdir(nfs_readdir_descriptor_t *desc, void *dirent,
 		status = -ENOMEM;
 		goto out;
 	}
+	timestamp = jiffies;
 	status = NFS_PROTO(inode)->readdir(file->f_dentry, cred,
 						*desc->dir_cookie, page,
 						NFS_SERVER(inode)->dtsize,
@@ -477,6 +491,8 @@ int uncached_readdir(nfs_readdir_descriptor_t *desc, void *dirent,
 	desc->page = page;
 	desc->ptr = kmap(page);		/* matching kunmap in nfs_do_filldir */
 	if (status >= 0) {
+		desc->timestamp = timestamp;
+		desc->timestamp_valid = 1;
 		if ((status = dir_decode(desc)) == 0)
 			desc->entry->prev_cookie = *desc->dir_cookie;
 	} else
@@ -1053,7 +1069,7 @@ static int nfs_open_revalidate(struct dentry *dentry, struct nameidata *nd)
 	unlock_kernel();
 out:
 	dput(parent);
-	if (ret == 1)
+	if (!ret)
 		d_drop(dentry);
 	return ret;
 no_open:

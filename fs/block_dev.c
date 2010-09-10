@@ -1189,6 +1189,21 @@ static long block_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 	return blkdev_ioctl(file->f_mapping->host, file, cmd, arg);
 }
 
+/*
+ * Try to release a page associated with block device when the system
+ * is under memory pressure.
+ */
+static int blkdev_releasepage(struct page *page, gfp_t wait)
+{
+	struct super_block *super = BDEV_I(page->mapping->host)->bdev.bd_super;
+
+	if (super && (super->s_type->fs_flags & FS_HAS_TRYTOFREE) &&
+	    super->s_op->bdev_try_to_free_page)
+		return super->s_op->bdev_try_to_free_page(super, page, wait);
+
+	return try_to_free_buffers(page);
+}
+
 const struct address_space_operations def_blk_aops = {
 	.readpage	= blkdev_readpage,
 	.writepage	= blkdev_writepage,
@@ -1196,6 +1211,7 @@ const struct address_space_operations def_blk_aops = {
 	.prepare_write	= blkdev_prepare_write,
 	.commit_write	= blkdev_commit_write,
 	.writepages	= generic_writepages,
+	.releasepage	= blkdev_releasepage,
 	.direct_IO	= blkdev_direct_IO,
 };
 

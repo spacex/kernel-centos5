@@ -235,6 +235,14 @@ static void __device_release_driver(struct device * dev)
 			drv->remove(dev);
 		devres_release_all(dev);
 		dev->driver = NULL;
+		if (dev->bus) {
+			struct blocking_notifier_head *notifier_head;
+
+			notifier_head = get_notifier_for_bus(dev->bus);
+			if (notifier_head)
+				blocking_notifier_call_chain(notifier_head,
+						BUS_NOTIFY_UNBOUND_DRIVER, dev);
+		}
 		put_driver(drv);
 	}
 }

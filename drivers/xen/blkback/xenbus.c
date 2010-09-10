@@ -87,6 +87,13 @@ static void update_blkif_status(blkif_t *blkif)
 		return;
 	}
 
+	err = filemap_write_and_wait(blkif->vbd.bdev->bd_inode->i_mapping);
+	if (err) {
+		xenbus_dev_error(blkif->be->dev, err, "block flush");
+		return;
+	}
+	invalidate_inode_pages2(blkif->vbd.bdev->bd_inode->i_mapping);
+
 	blkif->xenblkd = kthread_run(blkif_schedule, blkif, name);
 	if (IS_ERR(blkif->xenblkd)) {
 		err = PTR_ERR(blkif->xenblkd);
@@ -299,7 +306,7 @@ static void backend_changed(struct xenbus_watch *watch,
 		be->minor = minor;
 
 		err = vbd_create(be->blkif, handle, major, minor,
-				 (NULL == strchr(be->mode, 'w')));
+				 (NULL == strchr(be->mode, 'w')),dev);
 		if (err) {
 			be->major = be->minor = 0;
 			xenbus_dev_fatal(dev, err, "creating vbd structure");

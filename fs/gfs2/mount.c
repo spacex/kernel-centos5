@@ -45,6 +45,11 @@ enum {
 	Opt_data_writeback,
 	Opt_data_ordered,
 	Opt_meta,
+	Opt_err_withdraw,
+	Opt_err_panic,
+	Opt_statfs_quantum,
+	Opt_statfs_percent,
+	Opt_quota_quantum,
 	Opt_err,
 };
 
@@ -72,6 +77,11 @@ static match_table_t tokens = {
 	{Opt_data_writeback, "data=writeback"},
 	{Opt_data_ordered, "data=ordered"},
 	{Opt_meta, "meta"},
+	{Opt_err_withdraw, "errors=withdraw"},
+	{Opt_err_panic, "errors=panic"},
+	{Opt_statfs_quantum, "statfs_quantum=%d"},
+	{Opt_statfs_percent, "statfs_percent=%d"},
+	{Opt_quota_quantum, "quota_quantum=%d"},
 	{Opt_err, NULL}
 };
 
@@ -88,6 +98,7 @@ int gfs2_mount_args(struct gfs2_sbd *sdp, struct gfs2_args *args, char *options)
 	char *o;
 	int token;
 	substring_t tmp[MAX_OPT_ARGS];
+	int rv;
 
 	/* Split the options into tokens with the "," character and
 	   process them */
@@ -126,6 +137,11 @@ int gfs2_mount_args(struct gfs2_sbd *sdp, struct gfs2_args *args, char *options)
 			args->ar_localcaching = 1;
 			break;
 		case Opt_debug:
+			if (args->ar_errors == GFS2_ERRORS_PANIC) {
+				printk(KERN_WARNING "GFS2: -o debug and -o errors=panic "
+				       "are mutually exclusive.\n");
+				return -EINVAL;
+			}
 			args->ar_debug = 1;
 			break;
 		case Opt_nodebug:
@@ -167,6 +183,39 @@ int gfs2_mount_args(struct gfs2_sbd *sdp, struct gfs2_args *args, char *options)
 			break;
 		case Opt_meta:
 			args->ar_meta = 1;
+			break;
+		case Opt_statfs_quantum:
+			rv = match_int(&tmp[0], &args->ar_statfs_quantum);
+			if (rv || args->ar_statfs_quantum < 0) {
+				printk(KERN_WARNING "GFS2: statfs_quantum mount option requires a non-negative numeric argument\n");
+				return rv ? rv : -EINVAL;
+			}
+			break;
+		case Opt_quota_quantum:
+			rv = match_int(&tmp[0], &args->ar_quota_quantum);
+			if (rv || args->ar_quota_quantum <= 0) {
+				printk(KERN_WARNING "GFS2: quota_quantum mount option requires a positive numeric argument\n");
+				return rv ? rv : -EINVAL;
+			}
+			break;
+		case Opt_statfs_percent:
+			rv = match_int(&tmp[0], &args->ar_statfs_percent);
+			if (rv || args->ar_statfs_percent < 0 ||
+			    args->ar_statfs_percent > 100) {
+				printk(KERN_WARNING "GFS2: statfs_percent mount option requires a numeric argument between 0 and 100\n");
+				return rv ? rv : -EINVAL;
+			}
+			break;
+		case Opt_err_withdraw:
+			args->ar_errors = GFS2_ERRORS_WITHDRAW;
+			break;
+		case Opt_err_panic:
+			if (args->ar_debug) {
+				printk(KERN_WARNING "GFS2: -o debug and -o errors=panic "
+					"are mutually exclusive.\n");
+				return -EINVAL;
+			}
+			args->ar_errors = GFS2_ERRORS_PANIC;
 			break;
 		case Opt_err:
 		default:

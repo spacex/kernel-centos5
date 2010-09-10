@@ -40,7 +40,11 @@
 			dev->pdev->device == 0x2A42 || \
 			dev->pdev->device == 0x2e02 || \
 			dev->pdev->device == 0x2e12 || \
-			dev->pdev->device == 0x2e22)
+			dev->pdev->device == 0x2e22 || \
+			dev->pdev->device == 0x2e32 || \
+			dev->pdev->device == 0x2e42 || \
+			dev->pdev->device == 0x0042 || \
+			dev->pdev->device == 0x0046)
 
 #define IS_G33(dev)    (dev->pdev->device == 0x29C2 || \
 			dev->pdev->device == 0x29B2 || \
@@ -50,9 +54,15 @@
 
 #define IS_G4X(dev)	(dev->pdev->device == 0x2e02 || \
 			 dev->pdev->device == 0x2e12 || \
-			 dev->pdev->device == 0x2e22)
+			 dev->pdev->device == 0x2e22 || \
+			 dev->pdev->device == 0x2e32 || \
+			 dev->pdev->device == 0x2e42)
 
-#define I915_NEED_GFX_HWS(dev) (IS_G33(dev) || IS_IGD(dev) || IS_G4X(dev))
+#define IS_IRONLAKE_D(dev)	((dev)->pdev->device == 0x0042)
+#define IS_IRONLAKE_M(dev)	((dev)->pdev->device == 0x0046)
+#define IS_IRONLAKE(dev)	(IS_IRONLAKE_D(dev) || IS_IRONLAKE_M(dev))
+
+#define I915_NEED_GFX_HWS(dev) (IS_G33(dev) || IS_IGD(dev) || IS_G4X(dev) || IS_IRONLAKE(dev))
 
 /* Really want an OS-independent resettable timer.  Would like to have
  * this loop run for (eg) 3 sec, but have the timer reset every time

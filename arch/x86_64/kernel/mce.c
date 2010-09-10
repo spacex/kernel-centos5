@@ -119,6 +119,32 @@ static void print_mce(struct mce *m)
     "Run through mcelog --ascii to decode and contact your hardware vendor\n");
 }
 
+static void print_mce_panic(char *msg)
+{
+	static atomic_t mce_entry = ATOMIC_INIT(0);
+	/*
+	 * Machine check panics often come up from multiple CPUs in parallel.
+	 * panic doesn't handle that well and deadlocks, so synchronize here.
+	 */
+	int first = atomic_add_return(1, &mce_entry) == 1;
+
+	if (!first) {
+		/*
+		 * Enable interrupts so that smp_stop_cpus() can interrupts us,
+		 * but prevent scheduling in case someone compiles this
+		 * preemptible.
+		 * Then wait for the other panic to shut us down.
+		 */
+		preempt_disable();
+		local_irq_enable();
+		printk("CPU %d: MCE PANIC: %s\n", smp_processor_id(), msg);
+		for (;;)
+			cpu_relax();
+	}
+
+	panic(msg);
+}
+
 static void mce_panic(char *msg, struct mce *backup, unsigned long start)
 { 
 	int i;
@@ -136,7 +162,7 @@ static void mce_panic(char *msg, struct mce *backup, unsigned long start)
 	if (tolerant >= 3)
 		printk("Fake panic: %s\n", msg);
 	else
-		panic(msg);
+		print_mce_panic(msg);
 } 
 
 static int mce_available(struct cpuinfo_x86 *c)

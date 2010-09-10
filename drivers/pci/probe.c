@@ -9,6 +9,7 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/slab.h>
+#include <acpi/acpi_hest.h>
 #include "pci.h"
 
 #define CARDBUS_LATENCY_TIMER	176	/* secondary latency timer */
@@ -701,6 +702,12 @@ static void set_pcie_port_type(struct pci_dev *pdev)
 	pdev->pcie_type = (reg16 & PCI_EXP_FLAGS_TYPE) >> 4;
 }
 
+static void set_pci_aer_firmware_first(struct pci_dev *pdev)
+{
+	if (acpi_hest_firmware_first_pci(pdev))
+		pdev->aer_firmware_first = 1;
+}
+
 /**
  * pci_setup_device - fill in class and map information of a device
  * @dev: the device structure to fill
@@ -727,6 +734,7 @@ int pci_setup_device(struct pci_dev * dev)
 	dev->cfg_size = pci_cfg_space_size(dev);
 	dev->error_state = pci_channel_io_normal;
 	set_pcie_port_type(dev);
+	set_pci_aer_firmware_first(dev);
 
 	/* Assume 32-bit PCI; let 64-bit PCI cards (which are far rarer)
 	   set this higher, assuming the system even supports it.  */
@@ -924,6 +932,9 @@ void __devinit pci_device_add(struct pci_dev *dev, struct pci_bus *bus)
 
 	/* Single Root I/O Virtualization */
 	pci_iov_init(dev);
+
+	/* Enable ACS P2P upstream forwarding */
+	pci_enable_acs(dev);
 
 	/*
 	 * Add the device to our list of discovered devices
@@ -1232,4 +1243,3 @@ void __init pci_sort_breadthfirst(void)
 	pci_sort_breadthfirst_devices();
 	pci_sort_breadthfirst_klist();
 }
-

@@ -4310,6 +4310,20 @@ static int __init brightness_check_levels(void)
 	return (ACPI_SUCCESS(status) && found_node != NULL);
 }
 
+static int __init brightness_mode_quirk(void)
+{
+	switch (thinkpad_id.bios_model) {
+	case 0x5531:
+	case 0x5631:
+	case 0x5731:
+	case 0x3037:
+	case 0x3437:
+	case 0x3537:
+		return 1;
+	}
+	return 0;
+}
+
 static int __init brightness_init(struct ibm_init_struct *iibm)
 {
 	int b;
@@ -4328,8 +4342,12 @@ static int __init brightness_init(struct ibm_init_struct *iibm)
 	if (!brightness_mode) {
 		if (thinkpad_id.vendor == PCI_VENDOR_ID_LENOVO)
 			brightness_mode = 2;
-		else
-			brightness_mode = 3;
+		else {
+			if (brightness_mode_quirk())
+				brightness_mode = 2;
+			else
+				brightness_mode = 3;
+		}
 
 		dbg_printk(TPACPI_DBG_INIT, "selected brightness_mode=%d\n",
 			brightness_mode);

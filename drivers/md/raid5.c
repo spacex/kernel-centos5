@@ -1868,7 +1868,9 @@ static void handle_stripe5(struct stripe_head *sh)
 		return_bi = bi->bi_next;
 		bi->bi_next = NULL;
 		bi->bi_size = 0;
-		bi->bi_end_io(bi, bytes, 0);
+		bi->bi_end_io(bi, bytes,
+			      test_bit(BIO_UPTODATE, &bi->bi_flags)
+			        ? 0 : -EIO);
 	}
 	for (i=disks; i-- ;) {
 		int rw;
@@ -2421,7 +2423,9 @@ static void handle_stripe6(struct stripe_head *sh, struct page *tmp_page)
 		return_bi = bi->bi_next;
 		bi->bi_next = NULL;
 		bi->bi_size = 0;
-		bi->bi_end_io(bi, bytes, 0);
+		bi->bi_end_io(bi, bytes,
+			      test_bit(BIO_UPTODATE, &bi->bi_flags)
+			        ? 0 : -EIO);
 	}
 	for (i=disks; i-- ;) {
 		int rw;
@@ -2724,7 +2728,9 @@ static int make_request(request_queue_t *q, struct bio * bi)
 		if ( rw == WRITE )
 			md_write_end(mddev);
 		bi->bi_size = 0;
-		bi->bi_end_io(bi, bytes, 0);
+		bi->bi_end_io(bi, bytes,
+			      test_bit(BIO_UPTODATE, &bi->bi_flags)
+			        ? 0 : -EIO);
 	}
 	return 0;
 }
@@ -2986,6 +2992,8 @@ static void raid5d (mddev_t *mddev)
 		handled++;
 		handle_stripe(sh, conf->spare_page);
 		release_stripe(sh);
+
+		cond_resched();
 
 		spin_lock_irq(&conf->device_lock);
 	}

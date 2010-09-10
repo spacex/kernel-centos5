@@ -49,12 +49,6 @@
 #include <linux/miscdevice.h>
 #endif
 
-/**
- * NOTE
- * FWDOWNLOAD - PR is let me know if we need to implement this
- * DIAGBUFFER - PR said hold off
- */
-
 #define MPT2SAS_DEV_NAME	"mpt2ctl"
 #define MPT2_MAGIC_NUMBER	'L'
 #define MPT2_IOCTL_DEFAULT_TIMEOUT (10) /* in seconds */

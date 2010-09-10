@@ -3356,10 +3356,10 @@ void do_unblank_screen(int leaving_gfx)
 	 * context for the sake of the low level drivers, except in the special
 	 * case of oops_in_progress
 	 */
-	if (!oops_in_progress)
+	if (!oops_in_progress) {
 		might_sleep();
-
-	WARN_CONSOLE_UNLOCKED();
+		WARN_CONSOLE_UNLOCKED();
+	}
 
 	ignore_poke = 0;
 	if (!console_blanked)

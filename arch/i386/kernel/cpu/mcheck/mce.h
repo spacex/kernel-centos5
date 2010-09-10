@@ -12,3 +12,5 @@ extern fastcall void (*machine_check_vector)(struct pt_regs *, long error_code);
 extern int mce_disabled;
 extern int nr_mce_banks;
 
+void mce_panic(char *msg);
+

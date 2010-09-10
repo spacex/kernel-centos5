@@ -23,6 +23,7 @@
 #include <linux/interrupt.h>
 #include <linux/workqueue.h>
 #include <linux/firmware.h>
+#include <linux/aer.h>
 #include <linux/mutex.h>
 #include <asm/semaphore.h>
 
@@ -1683,7 +1684,7 @@ typedef struct fc_port {
 #define FCF_FAILOVER_NEEDED	BIT_3
 #define FCF_RESET_NEEDED	BIT_4
 #define FCF_PERSISTENT_BOUND	BIT_5
-#define FCF_TAPE_PRESENT	BIT_6
+#define FCF_FCP2_DEVICE		BIT_6
 #define FCF_FARP_DONE		BIT_7
 #define FCF_FARP_FAILED		BIT_8
 #define FCF_FARP_REPLY_NEEDED	BIT_9
@@ -2570,7 +2571,7 @@ typedef struct scsi_qla_host {
 	dma_addr_t	edc_data_dma;
 	uint16_t	edc_data_len;
 
-#define DCBX_TLV_DATA_SIZE PAGE_SIZE
+#define DCBX_TLV_DATA_SIZE 4096 /* Page size */
 	void		*dcbx_tlv;
 	dma_addr_t	dcbx_tlv_dma;
 

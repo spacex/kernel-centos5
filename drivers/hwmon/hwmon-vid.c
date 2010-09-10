@@ -1,7 +1,7 @@
 /*
     hwmon-vid.c - VID/VRM/VRD voltage conversions
 
-    Copyright (c) 2004 Rudolf Marek <r.marek@sh.cvut.cz>
+    Copyright (c) 2004 Rudolf Marek <r.marek@assembler.cz>
 
     Partly imported from i2c-vid.h of the lm_sensors project
     Copyright (c) 2002 Mark D. Studebaker <mdsxyz123@yahoo.com>
@@ -93,7 +93,7 @@ int vid_from_reg(int val, u8 vrm)
 	case 110:		/* Intel Conroe */
 				/* compute in uV, round to mV */
 		val &= 0xff;
-		if(((val & 0x7e) == 0xfe) || (!(val & 0x7e)))
+		if (val < 0x02 || val > 0xb2)
 			return 0;
 		return((1600000 - (val - 2) * 6250 + 500) / 1000);
 	case 24:                /* Opteron processor */
@@ -132,7 +132,9 @@ int vid_from_reg(int val, u8 vrm)
 		val &= 0x7f;
 		return(val > 0x77 ? 0 : (1500000 - (val * 12500) + 500) / 1000);
 	default:		/* report 0 for unknown */
-		printk(KERN_INFO "hwmon-vid: requested unknown VRM version\n");
+		if (vrm)
+			printk(KERN_WARNING "hwmon-vid: Requested unsupported "
+			       "VRM version (%u)\n", (unsigned int)vrm);
 		return 0;
 	}
 }
@@ -166,16 +168,16 @@ static struct vrm_model vrm_models[] = {
 	{X86_VENDOR_INTEL, 0x6, 0xE, ANY, 14},		/* Intel Core (65 nm) */
 	{X86_VENDOR_INTEL, 0x6, 0xF, ANY, 110},		/* Intel Conroe */
 	{X86_VENDOR_INTEL, 0x6, ANY, ANY, 82},		/* any P6 */
-	{X86_VENDOR_INTEL, 0x7, ANY, ANY, 0},		/* Itanium */
 	{X86_VENDOR_INTEL, 0xF, 0x0, ANY, 90},		/* P4 */
 	{X86_VENDOR_INTEL, 0xF, 0x1, ANY, 90},		/* P4 Willamette */
 	{X86_VENDOR_INTEL, 0xF, 0x2, ANY, 90},		/* P4 Northwood */
 	{X86_VENDOR_INTEL, 0xF, ANY, ANY, 100},		/* Prescott and above assume VRD 10 */
-	{X86_VENDOR_INTEL, 0x10, ANY, ANY, 0},		/* Itanium 2 */
 	{X86_VENDOR_CENTAUR, 0x6, 0x7, ANY, 85},	/* Eden ESP/Ezra */
 	{X86_VENDOR_CENTAUR, 0x6, 0x8, 0x7, 85},	/* Ezra T */
 	{X86_VENDOR_CENTAUR, 0x6, 0x9, 0x7, 85},	/* Nemiah */
-	{X86_VENDOR_CENTAUR, 0x6, 0x9, ANY, 17},	/* C3-M */
+	{X86_VENDOR_CENTAUR, 0x6, 0x9, ANY, 17},	/* C3-M, Eden-N */
+	{X86_VENDOR_CENTAUR, 0x6, 0xA, 0x7, 0},		/* No information */
+	{X86_VENDOR_CENTAUR, 0x6, 0xA, ANY, 13},	/* C7, Esther */
 	{X86_VENDOR_UNKNOWN, ANY, ANY, ANY, 0}		/* stop here */
 };
 
@@ -232,7 +234,7 @@ u8 vid_which_vrm(void)
 EXPORT_SYMBOL(vid_from_reg);
 EXPORT_SYMBOL(vid_which_vrm);
 
-MODULE_AUTHOR("Rudolf Marek <r.marek@sh.cvut.cz>");
+MODULE_AUTHOR("Rudolf Marek <r.marek@assembler.cz>");
 
 MODULE_DESCRIPTION("hwmon-vid driver");
 MODULE_LICENSE("GPL");

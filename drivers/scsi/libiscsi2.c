@@ -88,12 +88,9 @@ inline void iscsi_conn_queue_work(struct iscsi_conn *conn)
 }
 EXPORT_SYMBOL_GPL(iscsi_conn_queue_work);
 
-void
-iscsi2_update_cmdsn(struct iscsi_session *session, struct iscsi_nopin *hdr)
+static void __iscsi2_update_cmdsn(struct iscsi_session *session,
+				 uint32_t exp_cmdsn, uint32_t max_cmdsn)
 {
-	uint32_t max_cmdsn = be32_to_cpu(hdr->max_cmdsn);
-	uint32_t exp_cmdsn = be32_to_cpu(hdr->exp_cmdsn);
-
 	/*
 	 * standard specifies this check for when to update expected and
 	 * max sequence numbers
@@ -116,6 +113,12 @@ iscsi2_update_cmdsn(struct iscsi_session *session, struct iscsi_nopin *hdr)
 		    !list_empty(&session->leadconn->mgmtqueue))
 			iscsi_conn_queue_work(session->leadconn);
 	}
+}
+
+void iscsi2_update_cmdsn(struct iscsi_session *session, struct iscsi_nopin *hdr)
+{
+	__iscsi2_update_cmdsn(session, be32_to_cpu(hdr->exp_cmdsn),
+			     be32_to_cpu(hdr->max_cmdsn));
 }
 EXPORT_SYMBOL_GPL(iscsi2_update_cmdsn);
 
@@ -1047,6 +1050,30 @@ int iscsi2_complete_pdu(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
 	return rc;
 }
 EXPORT_SYMBOL_GPL(iscsi2_complete_pdu);
+
+/**
+ * iscsi2_complete_scsi_task - finish scsi task normally
+ * @task: iscsi task for scsi cmd
+ * @exp_cmdsn: expected cmd sn in cpu format
+ * @max_cmdsn: max cmd sn in cpu format
+ *
+ * This is used when drivers do not need or cannot perform
+ * lower level pdu processing.
+ *
+ * Called with session lock
+ */
+void iscsi2_complete_scsi_task(struct iscsi_task *task,
+			      uint32_t exp_cmdsn, uint32_t max_cmdsn)
+{
+	struct iscsi_conn *conn = task->conn;
+
+	ISCSI_DBG_SESSION(conn->session, "[itt 0x%x]\n", task->itt);
+
+	conn->last_recv = jiffies;
+	__iscsi2_update_cmdsn(conn->session, exp_cmdsn, max_cmdsn);
+	iscsi_complete_task(task, ISCSI_TASK_COMPLETED);
+}
+EXPORT_SYMBOL_GPL(iscsi2_complete_scsi_task);
 
 int iscsi2_verify_itt(struct iscsi_conn *conn, itt_t itt)
 {
@@ -2243,7 +2270,7 @@ static void iscsi_host_dec_session_cnt(struct Scsi_Host *shost)
  */
 struct iscsi_cls_session *
 iscsi2_session_setup(struct iscsi_transport *iscsit, struct Scsi_Host *shost,
-		    uint16_t cmds_max, int cmd_task_size,
+		    uint16_t cmds_max, int dd_size, int cmd_task_size,
 		    uint32_t initial_cmdsn, unsigned int id)
 {
 	struct iscsi_host *ihost = shost_priv(shost);
@@ -2293,7 +2320,8 @@ iscsi2_session_setup(struct iscsi_transport *iscsit, struct Scsi_Host *shost,
 	scsi_cmds = total_cmds - ISCSI_MGMT_CMDS_MAX;
 
 	cls_session = iscsi2_alloc_session(shost, iscsit,
-					   sizeof(struct iscsi_session));
+					   sizeof(struct iscsi_session) +
+					   dd_size);
 	if (!cls_session)
 		goto dec_session_count;
 	session = cls_session->dd_data;
@@ -2310,6 +2338,7 @@ iscsi2_session_setup(struct iscsi_transport *iscsit, struct Scsi_Host *shost,
 	session->max_cmdsn = initial_cmdsn + 1;
 	session->max_r2t = 1;
 	session->tt = iscsit;
+	session->dd_data = cls_session->dd_data + sizeof(*session);
 	mutex_init(&session->eh_mutex);
 	spin_lock_init(&session->lock);
 

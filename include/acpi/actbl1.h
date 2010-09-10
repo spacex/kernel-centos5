@@ -245,7 +245,8 @@ enum acpi_dmar_type {
 	ACPI_DMAR_TYPE_HARDWARE_UNIT = 0,
 	ACPI_DMAR_TYPE_RESERVED_MEMORY = 1,
 	ACPI_DMAR_TYPE_ATSR = 2,
-	ACPI_DMAR_TYPE_RESERVED = 3	/* 3 and greater are reserved */
+	ACPI_DMAR_HARDWARE_AFFINITY = 3,
+	ACPI_DMAR_TYPE_RESERVED = 4	/* 4 and greater are reserved */
 };
 
 struct acpi_dmar_device_scope {
@@ -300,9 +301,31 @@ struct acpi_dmar_reserved_memory {
 	u64 end_address;	/* 4_k aligned limit address */
 };
 
-/* Flags */
+/* Masks for Flags field above */
 
 #define ACPI_DMAR_ALLOW_ALL         (1)
+
+/* 2: Root Port ATS Capability Reporting Structure */
+
+struct acpi_dmar_atsr {
+	struct acpi_dmar_header header;
+	u8 flags;
+	u8 reserved;
+	u16 segment;
+};
+
+/* Masks for Flags field above */
+
+#define ACPI_DMAR_ALL_PORTS         (1)
+
+/* 3: Remapping Hardware Static Affinity Structure */
+
+struct acpi_dmar_rhsa {
+	struct acpi_dmar_header header;
+	u32 reserved;
+	u64 base_address;
+	u32 proximity_domain;
+};
 
 /*******************************************************************************
  *

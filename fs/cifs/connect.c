@@ -29,14 +29,10 @@
 #include <linux/delay.h>
 #include <linux/completion.h>
 #include <linux/version.h>
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 #include <linux/mempool.h>
-#include <linux/pagevec.h>
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,19)
-#include <linux/freezer.h>
-#endif /* 2.6.19 */
-#endif
 #include <linux/kthread.h>
+#include <linux/pagevec.h>
+#include <linux/namei.h>
 #include <asm/uaccess.h>
 #include <asm/processor.h>
 #include <net/ipv6.h>
@@ -857,6 +853,10 @@ cifs_parse_mount_options(char *options, const char *devname,
 	char *data;
 	unsigned int  temp_len, i, j;
 	char separator[2];
+	short int override_uid = -1;
+	short int override_gid = -1;
+	bool uid_specified = false;
+	bool gid_specified = false;
 
 	separator[0] = ',';
 	separator[1] = 0;
@@ -1012,7 +1012,8 @@ cifs_parse_mount_options(char *options, const char *devname,
 				}
 				strcpy(vol->password, value);
 			}
-		} else if (strnicmp(data, "ip", 2) == 0) {
+		} else if (!strnicmp(data, "ip", 2) ||
+			   !strnicmp(data, "addr", 4)) {
 			if (!value || !*value) {
 				vol->UNCip = NULL;
 			} else if (strnlen(value, 35) < 35) {
@@ -1141,18 +1142,20 @@ cifs_parse_mount_options(char *options, const char *devname,
 						    "too long.\n");
 				return 1;
 			}
-		} else if (strnicmp(data, "uid", 3) == 0) {
-			if (value && *value) {
-				vol->linux_uid =
-					simple_strtoul(value, &value, 0);
-				vol->override_uid = 1;
-			}
-		} else if (strnicmp(data, "gid", 3) == 0) {
-			if (value && *value) {
-				vol->linux_gid =
-					simple_strtoul(value, &value, 0);
-				vol->override_gid = 1;
-			}
+		} else if (!strnicmp(data, "uid", 3) && value && *value) {
+			vol->linux_uid = simple_strtoul(value, &value, 0);
+			uid_specified = true;
+		} else if (!strnicmp(data, "forceuid", 8)) {
+			override_uid = 1;
+		} else if (!strnicmp(data, "noforceuid", 10)) {
+			override_uid = 0;
+		} else if (!strnicmp(data, "gid", 3) && value && *value) {
+			vol->linux_gid = simple_strtoul(value, &value, 0);
+			gid_specified = true;
+		} else if (!strnicmp(data, "forcegid", 8)) {
+			override_gid = 1;
+		} else if (!strnicmp(data, "noforcegid", 10)) {
+			override_gid = 0;
 		} else if (strnicmp(data, "file_mode", 4) == 0) {
 			if (value && *value) {
 				vol->file_mode =
@@ -1409,11 +1412,23 @@ cifs_parse_mount_options(char *options, const char *devname,
 	if (vol->UNCip == NULL)
 		vol->UNCip = &vol->UNC[2];
 
+	if (uid_specified)
+		vol->override_uid = override_uid;
+	else if (override_uid == 1)
+		printk(KERN_NOTICE "CIFS: ignoring forceuid mount option "
+				   "specified with no uid= option.\n");
+
+	if (gid_specified)
+		vol->override_gid = override_gid;
+	else if (override_gid == 1)
+		printk(KERN_NOTICE "CIFS: ignoring forcegid mount option "
+				   "specified with no gid= option.\n");
+
 	return 0;
 }
 
 static struct TCP_Server_Info *
-cifs_find_tcp_session(struct sockaddr_storage *addr)
+cifs_find_tcp_session(struct sockaddr_storage *addr, unsigned short int port)
 {
 	struct list_head *tmp;
 	struct TCP_Server_Info *server;
@@ -1433,14 +1448,35 @@ cifs_find_tcp_session(struct sockaddr_storage *addr)
 		if (server->tcpStatus == CifsNew)
 			continue;
 
-		if (addr->ss_family == AF_INET &&
-		    (addr4->sin_addr.s_addr !=
-		     server->addr.sockAddr.sin_addr.s_addr))
-			continue;
-		else if (addr->ss_family == AF_INET6 &&
-			 !ipv6_addr_equal(&server->addr.sockAddr6.sin6_addr,
-					  &addr6->sin6_addr))
-			continue;
+		switch (addr->ss_family) {
+		case AF_INET:
+			if (addr4->sin_addr.s_addr ==
+			    server->addr.sockAddr.sin_addr.s_addr) {
+				addr4->sin_port = htons(port);
+				/* user overrode default port? */
+				if (addr4->sin_port) {
+					if (addr4->sin_port !=
+					    server->addr.sockAddr.sin_port)
+						continue;
+				}
+				break;
+			} else
+				continue;
+
+		case AF_INET6:
+			if (ipv6_addr_equal(&addr6->sin6_addr,
+			    &server->addr.sockAddr6.sin6_addr)) {
+				addr6->sin6_port = htons(port);
+				/* user overrode default port? */
+				if (addr6->sin6_port) {
+					if (addr6->sin6_port !=
+					   server->addr.sockAddr6.sin6_port)
+						continue;
+				}
+				break;
+			} else
+				continue;
+		}
 
 		++server->srv_count;
 		write_unlock(&cifs_tcp_ses_lock);
@@ -1522,7 +1558,7 @@ cifs_get_tcp_session(struct smb_vol *volume_info)
 	}
 
 	/* see if we already have a matching tcp_ses */
-	tcp_ses = cifs_find_tcp_session(&addr);
+	tcp_ses = cifs_find_tcp_session(&addr, volume_info->port);
 	if (tcp_ses)
 		return tcp_ses;
 
@@ -1565,14 +1601,14 @@ cifs_get_tcp_session(struct smb_vol *volume_info)
 		cFYI(1, ("attempting ipv6 connect"));
 		/* BB should we allow ipv6 on port 139? */
 		/* other OS never observed in Wild doing 139 with v6 */
+		sin_server6->sin6_port = htons(volume_info->port);
 		memcpy(&tcp_ses->addr.sockAddr6, sin_server6,
 			sizeof(struct sockaddr_in6));
-		sin_server6->sin6_port = htons(volume_info->port);
 		rc = ipv6_connect(tcp_ses);
 	} else {
+		sin_server->sin_port = htons(volume_info->port);
 		memcpy(&tcp_ses->addr.sockAddr, sin_server,
 			sizeof(struct sockaddr_in));
-		sin_server->sin_port = htons(volume_info->port);
 		rc = ipv4_connect(tcp_ses);
 	}
 	if (rc < 0) {
@@ -1603,7 +1639,8 @@ cifs_get_tcp_session(struct smb_vol *volume_info)
 
 out_err:
 	if (tcp_ses) {
-		kfree(tcp_ses->hostname);
+		if (!IS_ERR(tcp_ses->hostname))
+			kfree(tcp_ses->hostname);
 		if (tcp_ses->ssocket)
 			sock_release(tcp_ses->ssocket);
 		kfree(tcp_ses);
@@ -1696,7 +1733,6 @@ cifs_put_tcon(struct cifsTconInfo *tcon)
 	CIFSSMBTDis(xid, tcon);
 	_FreeXid(xid);
 
-	DeleteTconOplockQEntries(tcon);
 	tconInfoFree(tcon);
 	cifs_put_smb_ses(ses);
 }
@@ -2249,15 +2285,7 @@ is_path_accessible(int xid, struct cifsTconInfo *tcon,
 		   struct cifs_sb_info *cifs_sb, const char *full_path)
 {
 	int rc;
-	__u64 inode_num;
 	FILE_ALL_INFO *pfile_info;
-
-	rc = CIFSGetSrvInodeNumber(xid, tcon, full_path, &inode_num,
-				   cifs_sb->local_nls,
-				   cifs_sb->mnt_cifs_flags &
-						CIFS_MOUNT_MAP_SPECIAL_CHR);
-	if (rc != -EOPNOTSUPP)
-		return rc;
 
 	pfile_info = kmalloc(sizeof(FILE_ALL_INFO), GFP_KERNEL);
 	if (pfile_info == NULL)
@@ -2271,17 +2299,82 @@ is_path_accessible(int xid, struct cifsTconInfo *tcon,
 	return rc;
 }
 
+static void
+cleanup_volume_info(struct smb_vol **pvolume_info)
+{
+	struct smb_vol *volume_info;
+
+	if (!pvolume_info && !*pvolume_info)
+		return;
+
+	volume_info = *pvolume_info;
+	if (volume_info->password) {
+		memset(volume_info->password, 0,
+		       strlen(volume_info->password));
+		kfree(volume_info->password);
+	}
+	kfree(volume_info->UNC);
+	kfree(volume_info->prepath);
+	kfree(volume_info);
+	*pvolume_info = NULL;
+	return;
+}
+
+#ifdef CONFIG_CIFS_DFS_UPCALL
+/* build_path_to_root returns full path to root when
+ * we do not have an exiting connection (tcon) */
+static char *
+build_unc_path_to_root(const struct smb_vol *volume_info,
+		const struct cifs_sb_info *cifs_sb)
+{
+	char *full_path;
+
+	int unc_len = strnlen(volume_info->UNC, MAX_TREE_SIZE + 1);
+	full_path = kmalloc(unc_len + cifs_sb->prepathlen + 1, GFP_KERNEL);
+	if (full_path == NULL)
+		return ERR_PTR(-ENOMEM);
+
+	strncpy(full_path, volume_info->UNC, unc_len);
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_POSIX_PATHS) {
+		int i;
+		for (i = 0; i < unc_len; i++) {
+			if (full_path[i] == '\\')
+				full_path[i] = '/';
+		}
+	}
+
+	if (cifs_sb->prepathlen)
+		strncpy(full_path + unc_len, cifs_sb->prepath,
+				cifs_sb->prepathlen);
+
+	full_path[unc_len + cifs_sb->prepathlen] = 0; /* add trailing null */
+	return full_path;
+}
+#endif
+
 int
 cifs_mount(struct super_block *sb, struct cifs_sb_info *cifs_sb,
-	   char *mount_data, const char *devname)
+		char *mount_data_global, const char *devname)
 {
-	int rc = 0;
+	int rc;
 	int xid;
 	struct smb_vol *volume_info;
-	struct cifsSesInfo *pSesInfo = NULL;
-	struct cifsTconInfo *tcon = NULL;
-	struct TCP_Server_Info *srvTcp = NULL;
+	struct cifsSesInfo *pSesInfo;
+	struct cifsTconInfo *tcon;
+	struct TCP_Server_Info *srvTcp;
 	char   *full_path;
+	char *mount_data = mount_data_global;
+#ifdef CONFIG_CIFS_DFS_UPCALL
+	struct dfs_info3_param *referrals = NULL;
+	unsigned int num_referrals = 0;
+	int referral_walks_count = 0;
+try_mount_again:
+#endif
+	rc = 0;
+	tcon = NULL;
+	pSesInfo = NULL;
+	srvTcp = NULL;
+	full_path = NULL;
 
 	xid = GetXid();
 
@@ -2428,11 +2521,9 @@ cifs_mount(struct super_block *sb, struct cifs_sb_info *cifs_sb,
 				}
 			}
 
-			/* check for null share name ie connect to dfs root */
 			if ((strchr(volume_info->UNC + 3, '\\') == NULL)
 			    && (strchr(volume_info->UNC + 3, '/') == NULL)) {
-				/* rc = connect_to_dfs_path(...) */
-				cFYI(1, ("DFS root not supported"));
+				cERROR(1, ("Missing share name"));
 				rc = -ENODEV;
 				goto mount_fail_check;
 			} else {
@@ -2449,7 +2540,7 @@ cifs_mount(struct super_block *sb, struct cifs_sb_info *cifs_sb,
 				}
 			}
 			if (rc)
-				goto mount_fail_check;
+				goto remote_path_check;
 			tcon->seal = volume_info->seal;
 			write_lock(&cifs_tcp_ses_lock);
 			list_add(&tcon->tcon_list, &pSesInfo->tcon_list);
@@ -2464,10 +2555,10 @@ cifs_mount(struct super_block *sb, struct cifs_sb_info *cifs_sb,
 		tcon->nocase = volume_info->nocase;
 	}
 	if (pSesInfo) {
-		if (pSesInfo->capabilities & CAP_LARGE_FILES) {
-			sb->s_maxbytes = (u64) 1 << 63;
-		} else
-			sb->s_maxbytes = (u64) 1 << 31;	/* 2 GB */
+		if (pSesInfo->capabilities & CAP_LARGE_FILES)
+			sb->s_maxbytes = MAX_LFS_FILESIZE;
+		else
+			sb->s_maxbytes = MAX_NON_LFS;
 	}
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 10)
@@ -2475,19 +2566,9 @@ cifs_mount(struct super_block *sb, struct cifs_sb_info *cifs_sb,
 	sb->s_time_gran = 100;
 #endif
 
-mount_fail_check:
-	/* on error free sesinfo and tcon struct if needed */
-	if (rc) {
-		/* If find_unc succeeded then rc == 0 so we can not end */
-		/* up accidently freeing someone elses tcon struct */
-		if (tcon)
-			cifs_put_tcon(tcon);
-		else if (pSesInfo)
-			cifs_put_smb_ses(pSesInfo);
-		else
-			cifs_put_tcp_session(srvTcp);
-		goto out;
-	}
+	if (rc)
+		goto remote_path_check;
+
 	cifs_sb->tcon = tcon;
 
 	/* do not care if following two calls succeed - informational */
@@ -2519,7 +2600,9 @@ mount_fail_check:
 		cifs_sb->rsize = min(cifs_sb->rsize,
 			       (tcon->ses->server->maxBuf - MAX_CIFS_HDR_SIZE));
 
-	if (!rc && cifs_sb->prepathlen) {
+remote_path_check:
+	/* check if a whole path (including prepath) is not remote */
+	if (!rc && cifs_sb->prepathlen && tcon) {
 		/* build_path_to_root works only when we have a valid tcon */
 		full_path = cifs_build_path_to_root(cifs_sb);
 		if (full_path == NULL) {
@@ -2527,13 +2610,89 @@ mount_fail_check:
 			goto mount_fail_check;
 		}
 		rc = is_path_accessible(xid, tcon, cifs_sb, full_path);
-		if (rc) {
-			cERROR(1, ("Path %s in not accessible: %d",
-						full_path, rc));
+		if (rc != -EREMOTE) {
 			kfree(full_path);
 			goto mount_fail_check;
 		}
 		kfree(full_path);
+	}
+
+	/* get referral if needed */
+	if (rc == -EREMOTE) {
+#ifdef CONFIG_CIFS_DFS_UPCALL
+		if (referral_walks_count > MAX_NESTED_LINKS) {
+			/*
+			 * BB: when we implement proper loop detection,
+			 *     we will remove this check. But now we need it
+			 *     to prevent an indefinite loop if 'DFS tree' is
+			 *     misconfigured (i.e. has loops).
+			 */
+			rc = -ELOOP;
+			goto mount_fail_check;
+		}
+		/* convert forward to back slashes in prepath here if needed */
+		if ((cifs_sb->mnt_cifs_flags & CIFS_MOUNT_POSIX_PATHS) == 0)
+			convert_delimiter(cifs_sb->prepath,
+					CIFS_DIR_SEP(cifs_sb));
+		full_path = build_unc_path_to_root(volume_info, cifs_sb);
+		if (IS_ERR(full_path)) {
+			rc = PTR_ERR(full_path);
+			goto mount_fail_check;
+		}
+
+		cFYI(1, ("Getting referral for: %s", full_path));
+		rc = get_dfs_path(xid, pSesInfo , full_path + 1,
+			cifs_sb->local_nls, &num_referrals, &referrals,
+			cifs_sb->mnt_cifs_flags & CIFS_MOUNT_MAP_SPECIAL_CHR);
+		if (!rc && num_referrals > 0) {
+			char *fake_devname = NULL;
+
+			if (mount_data != mount_data_global)
+				kfree(mount_data);
+
+			mount_data = cifs_compose_mount_options(
+					cifs_sb->mountdata, full_path + 1,
+					referrals, &fake_devname);
+
+			free_dfs_info_array(referrals, num_referrals);
+			kfree(fake_devname);
+			kfree(full_path);
+
+			if (IS_ERR(mount_data)) {
+				rc = PTR_ERR(mount_data);
+				mount_data = NULL;
+				goto mount_fail_check;
+			}
+
+			if (tcon)
+				cifs_put_tcon(tcon);
+			else if (pSesInfo)
+				cifs_put_smb_ses(pSesInfo);
+
+			cleanup_volume_info(&volume_info);
+			referral_walks_count++;
+			FreeXid(xid);
+			goto try_mount_again;
+		}
+#else /* No DFS support, return error on mount */
+		rc = -EOPNOTSUPP;
+#endif
+	}
+
+mount_fail_check:
+	/* on error free sesinfo and tcon struct if needed */
+	if (rc) {
+		if (mount_data != mount_data_global)
+			kfree(mount_data);
+		/* If find_unc succeeded then rc == 0 so we can not end */
+		/* up accidently freeing someone elses tcon struct */
+		if (tcon)
+			cifs_put_tcon(tcon);
+		else if (pSesInfo)
+			cifs_put_smb_ses(pSesInfo);
+		else
+			cifs_put_tcp_session(srvTcp);
+		goto out;
 	}
 
 	/* volume_info->password is freed above when existing session found
@@ -2542,16 +2701,7 @@ mount_fail_check:
 	password will be freed at unmount time) */
 out:
 	/* zero out password before freeing */
-	if (volume_info) {
-		if (volume_info->password != NULL) {
-			memset(volume_info->password, 0,
-				strlen(volume_info->password));
-			kfree(volume_info->password);
-		}
-		kfree(volume_info->UNC);
-		kfree(volume_info->prepath);
-		kfree(volume_info);
-	}
+	cleanup_volume_info(&volume_info);
 	FreeXid(xid);
 	return rc;
 }
@@ -2574,9 +2724,9 @@ CIFSTCon(unsigned int xid, struct cifsSesInfo *ses,
 		return -EIO;
 
 	smb_buffer = cifs_buf_get();
-	if (smb_buffer == NULL) {
+	if (smb_buffer == NULL)
 		return -ENOMEM;
-	}
+
 	smb_buffer_response = smb_buffer;
 
 	header_assemble(smb_buffer, SMB_COM_TREE_CONNECT_ANDX,
@@ -2682,6 +2832,7 @@ CIFSTCon(unsigned int xid, struct cifsSesInfo *ses,
 		strncpy(tcon->treeName, tree, MAX_TREE_SIZE);
 
 		/* mostly informational -- no need to fail on error here */
+		kfree(tcon->nativeFileSystem);
 		tcon->nativeFileSystem = cifs_strndup_from_ucs(bcc_ptr,
 						      bytes_left,
 						      smb_buffer->Flags2 &

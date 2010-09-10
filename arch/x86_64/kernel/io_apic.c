@@ -242,11 +242,9 @@ static int pirqs_enabled;
 int skip_ioapic_setup;
 int ioapic_force;
 
-/* dummy parsing: see setup.c */
-
-static int __init disable_ioapic_setup(char *str)
+static int __init parse_noapic(char *str)
 {
-	skip_ioapic_setup = 1;
+	disable_ioapic_setup();
 	return 1;
 }
 
@@ -257,7 +255,7 @@ static int __init enable_ioapic_setup(char *str)
 	return 1;
 }
 
-__setup("noapic", disable_ioapic_setup);
+__setup("noapic", parse_noapic);
 __setup("apic", enable_ioapic_setup);
 
 static int __init setup_disable_8254_timer(char *s)

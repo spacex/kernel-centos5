@@ -67,16 +67,23 @@ int gfs2_assert_warn_i(struct gfs2_sbd *sdp, char *assertion,
 			gfs2_tune_get(sdp, gt_complain_secs) * HZ))
 		return -2;
 
-	printk(KERN_WARNING
-	       "GFS2: fsid=%s: warning: assertion \"%s\" failed\n"
-	       "GFS2: fsid=%s:   function = %s, file = %s, line = %u\n",
-	       sdp->sd_fsname, assertion,
-	       sdp->sd_fsname, function, file, line);
+	if (sdp->sd_args.ar_errors == GFS2_ERRORS_WITHDRAW)
+		printk(KERN_WARNING
+		       "GFS2: fsid=%s: warning: assertion \"%s\" failed\n"
+		       "GFS2: fsid=%s:   function = %s, file = %s, line = %u\n",
+		       sdp->sd_fsname, assertion,
+		       sdp->sd_fsname, function, file, line);
 
 	if (sdp->sd_args.ar_debug)
 		BUG();
 	else
 		dump_stack();
+
+	if (sdp->sd_args.ar_errors == GFS2_ERRORS_PANIC)
+		panic("GFS2: fsid=%s: warning: assertion \"%s\" failed\n"
+		      "GFS2: fsid=%s:   function = %s, file = %s, line = %u\n",
+		      sdp->sd_fsname, assertion,
+		      sdp->sd_fsname, function, file, line);
 
 	sdp->sd_last_warning = jiffies;
 

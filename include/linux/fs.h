@@ -21,7 +21,7 @@
 
 /* Fixed constants first: */
 #undef NR_OPEN
-#define NR_OPEN (1024*1024)	/* Absolute upper limit on fd num */
+extern int sysctl_nr_open;
 #define INR_OPEN 1024		/* Initial setting for nfile rlimits */
 
 #define BLOCK_SIZE_BITS 10
@@ -95,6 +95,7 @@ extern int dir_notify_enable;
 #define FS_HAS_FALLOCATE 4    /* Safe to check for ->fallocate */
 #define FS_HAS_FIEMAP  8      /* Safe to check for ->fiemap */
 #define FS_HAS_FREEZE 16      /* Safe to check for ->freeze_fs etc */
+#define FS_HAS_TRYTOFREE 32   /* Safe to check for ->bdev_try_to_free... */
 #define FS_REVAL_DOT	16384	/* Check the paths ".", ".." for staleness */
 #define FS_RENAME_DOES_D_MOVE	32768	/* FS will handle d_move()
 					 * during rename() internally.
@@ -564,6 +565,7 @@ struct block_device {
 
 	/* this isn't embedded in anything external, so should be safe */
 #ifndef __GENKSYMS__
+	struct super_block *	bd_super;
 	/* The counter of freeze processes */
 	int			bd_fsfreeze_count;
 	/* Mutex for freeze */
@@ -1305,6 +1307,7 @@ struct super_operations {
 #ifndef __GENKSYMS__
 	int (*freeze_fs) (struct super_block *);
 	int (*unfreeze_fs) (struct super_block *);
+	int (*bdev_try_to_free_page)(struct super_block*, struct page*, gfp_t);
 #endif
 };
 

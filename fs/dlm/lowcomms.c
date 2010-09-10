@@ -104,6 +104,7 @@ struct connection {
 #define CF_CONNECT_PENDING 3
 #define CF_INIT_PENDING 4
 #define CF_IS_OTHERCON 5
+#define CF_CLOSE 6
 	struct list_head writequeue;  /* List of outgoing writequeue_entries */
 	spinlock_t writequeue_lock;
 	int (*rx_action) (struct connection *);	/* What to do when active */
@@ -274,6 +275,8 @@ static void lowcomms_write_space(struct sock *sk)
 
 static inline void lowcomms_connect_sock(struct connection *con)
 {
+	if (test_bit(CF_CLOSE, &con->flags))
+		return;
 	if (!test_and_set_bit(CF_CONNECT_PENDING, &con->flags))
 		queue_work(send_workqueue, &con->swork);
 }
@@ -1355,6 +1358,9 @@ int dlm_lowcomms_close(int nodeid)
 	log_print("closing connection to node %d", nodeid);
 	con = nodeid2con(nodeid, 0);
 	if (con) {
+		clear_bit(CF_CONNECT_PENDING, &con->flags);
+		clear_bit(CF_WRITE_PENDING, &con->flags);
+		set_bit(CF_CLOSE, &con->flags);
 		clean_one_writequeue(con);
 		close_connection(con, 1);
 	}
@@ -1379,9 +1385,10 @@ static void process_send_sockets(void *data)
 	struct connection *con = data;
 	if (test_and_clear_bit(CF_CONNECT_PENDING, &con->flags)) {
 		con->connect_action(con);
+		set_bit(CF_WRITE_PENDING, &con->flags);
 	}
-	clear_bit(CF_WRITE_PENDING, &con->flags);
-	send_to_sock(con);
+	if (test_and_clear_bit(CF_WRITE_PENDING, &con->flags))
+		send_to_sock(con);
 }
 
 

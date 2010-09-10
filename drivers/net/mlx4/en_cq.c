@@ -58,7 +58,7 @@ int mlx4_en_create_cq(struct mlx4_en_priv *priv,
 			mdev->dev->caps.num_comp_vectors;
 	} else {
 		cq->buf_size = sizeof(struct mlx4_cqe);
-		cq->vector = MLX4_LEAST_ATTACHED_VECTOR;
+		cq->vector = 0;
 	}
 	cq->ring = ring;
 	cq->is_tx = mode;
@@ -70,13 +70,16 @@ int mlx4_en_create_cq(struct mlx4_en_priv *priv,
 
 	err = mlx4_alloc_hwq_res(mdev->dev, &cq->wqres,
 				cq->buf_size, 2 * PAGE_SIZE);
-	if (err)
+	if (err) {
+		en_err(priv, "Failed to allocate CQ buffer\n");
 		return err;
+	}
 
 	err = mlx4_en_map_buffer(&cq->wqres.buf);
-	if (err)
+	if (err) {
+		en_err(priv, "Failed to map CQ buffer\n");
 		mlx4_free_hwq_res(mdev->dev, &cq->wqres, cq->buf_size);
-	else
+	} else
 		cq->buf = (struct mlx4_cqe *) cq->wqres.buf.direct.buf;
 
 	return err;
@@ -93,6 +96,9 @@ int mlx4_en_activate_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq)
 	*cq->mcq.set_ci_db = 0;
 	*cq->mcq.arm_db    = 0;
 	memset(cq->buf, 0, cq->buf_size);
+
+	if (!cq->is_tx)
+		cq->size = priv->rx_ring[cq->ring].actual_size;
 
 	err = mlx4_cq_alloc(mdev->dev, cq->size, &cq->wqres.mtt, &mdev->priv_uar,
 			    cq->wqres.db.dma, &cq->mcq, cq->vector, cq->is_tx);

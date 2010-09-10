@@ -46,6 +46,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/ctype.h>
 #include <linux/efi.h>
+#include <linux/setup.h>
 
 #include <asm/mtrr.h>
 #include <asm/uaccess.h>
@@ -68,8 +69,8 @@
 #include <asm/dmi.h>
 #include <asm/generic-hypervisor.h>
 #include <asm/pci-direct.h>
-#include <asm/k8.h>
 #include <asm/kvm_para.h>
+#include <asm/k8.h>
 
 /*
  * Machine setup..
@@ -440,6 +441,8 @@ static __init void parse_cmdline_early (char ** cmdline_p)
 
 		else if (!memcmp(from, "ipmi_dev_order=", 15))
 			ipmi_dev_order = simple_strtoul(from + 15, NULL, 0);
+		else if (!memcmp(from, "nosmp", 5))
+			nosmp(NULL);
 
 	next_char:
 		c = *(from++);
@@ -806,65 +809,42 @@ static int nearby_node(int apicid)
 
 /*
  * Fixup core topology information for AMD multi-node processors.
- * Assumption 1: Number of cores in each internal node is the same.
- * Assumption 2: Mixed systems with both single-node and dual-node
- * processors are not supported.
+ * Assumption: Number of cores in each internal node is the same.
  */
 #ifdef CONFIG_X86_HT
 static void __cpuinit amd_fixup_dcm(struct cpuinfo_x86 *c)
 {
-#ifdef CONFIG_PCI
-	u32 t, cpn;
-	u8 n, n_id;
+	unsigned long long value;
+	u32 nodes, cores_per_node;
 	int cpu = smp_processor_id();
+
+	if (!cpu_has(c, X86_FEATURE_NODEID_MSR))
+		return;
 
 	/* fixup topology information only once for a core */
 	if (cpu_has(c, X86_FEATURE_AMD_DCM))
 		return;
 
-	/* proceed only is there is a valid AMD northbridge
+	/* proceed only if there is a valid AMD northbridge
 	 * (not in virtualized environments!)
 	 */
 	if (!early_is_k8_nb(read_pci_config(0, 24, 3, 0x00)))
 		return;
 
-	/* check for multi-node processor on boot cpu */
-	t = read_pci_config(0, 24, 3, 0xe8);
-	if (!(t & (1 << 29)))
+	rdmsrl(0xc001100c, value);
+
+	nodes = ((value >> 3) & 7) + 1;
+	if (nodes == 1)
 		return;
 
 	set_bit(X86_FEATURE_AMD_DCM, c->x86_capability);
+	cores_per_node = c->x86_max_cores / nodes;
 
-	/* cores per node: each internal node has half the number of cores */
-	cpn = c->x86_max_cores >> 1;
+	/* store NodeID, use llc_shared_map to store sibling info */
+	cpu_llc_id[cpu] = value & 7;
 
-	/* even-numbered NB_id of this dual-node processor */
-	n = c->phys_proc_id << 1;
-
-	/*
-	 * determine internal node id and assign cores fifty-fifty to
-	 * each node of the dual-node processor
-	 */
-	t = read_pci_config(0, 24 + n, 3, 0xe8);
-	n = (t >> 30) & 0x3;
-	if (n == 0) {
-		if (c->cpu_core_id < cpn)
-			n_id = 0;
-		else
-			n_id = 1;
-	} else {
-		if (c->cpu_core_id < cpn)
-			n_id = 1;
-		else
-			n_id = 0;
-	}
-
-	/* compute entire NodeID, use llc_shared_map to store sibling info */
-	cpu_llc_id[cpu] = (c->phys_proc_id << 1) + n_id;
-
-	/* fixup core id to be in range from 0 to cpn */
-	c->cpu_core_id = c->cpu_core_id % cpn;
-#endif
+	/* fixup core id to be in range from 0 to (cores_per_node - 1) */
+	c->cpu_core_id = c->cpu_core_id % cores_per_node;
 }
 #endif
 
@@ -1001,6 +981,9 @@ static void __init init_amd(struct cpuinfo_x86 *c)
 	if (c->x86 == 0x10 && !force_mwait)
 		clear_bit(X86_FEATURE_MWAIT, &c->x86_capability);
 	set_bit(X86_FEATURE_MFENCE_RDTSC, &c->x86_capability);
+
+	if (c->x86 >= 0x10)
+		amd_enable_pci_ext_cfg(c);
 }
 
 static void __cpuinit detect_ht(struct cpuinfo_x86 *c)
@@ -1351,7 +1334,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		"constant_tsc", NULL, NULL,
 		"up", NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 		"ida", NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-		"nonstop_tsc", NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+		"nonstop_tsc", "arat", NULL, NULL, NULL, NULL, NULL, NULL,
 
 		/* Intel-defined (#2) */
 		"pni", NULL, NULL, "monitor", "ds_cpl", "vmx", "smx", "est",

@@ -107,7 +107,14 @@ u64 mlx4_make_profile(struct mlx4_dev *dev,
 	profile[MLX4_RES_AUXC].num    = request->num_qp;
 	profile[MLX4_RES_SRQ].num     = request->num_srq;
 	profile[MLX4_RES_CQ].num      = request->num_cq;
-	profile[MLX4_RES_EQ].num      = MLX4_NUM_EQ + dev_cap->reserved_eqs;
+	if (mlx4_is_master(dev))
+		profile[MLX4_RES_EQ].num = dev_cap->reserved_eqs +
+					   MLX4_MFUNC_EQ_NUM *
+					   (dev->num_slaves + 1);
+	else
+		profile[MLX4_RES_EQ].num = min_t(unsigned, dev_cap->max_eqs,
+						 dev_cap->reserved_eqs +
+						 num_possible_cpus() + 1);
 	profile[MLX4_RES_DMPT].num    = request->num_mpt;
 	profile[MLX4_RES_CMPT].num    = MLX4_NUM_CMPTS;
 	profile[MLX4_RES_MTT].num     = request->num_mtt;
@@ -196,7 +203,13 @@ u64 mlx4_make_profile(struct mlx4_dev *dev,
 			init_hca->log_num_cqs = profile[i].log_num;
 			break;
 		case MLX4_RES_EQ:
-			dev->caps.num_eqs     = profile[i].num;
+			if (mlx4_is_master(dev)) {
+				dev->caps.num_eqs = dev_cap->reserved_eqs +
+						    min_t(unsigned,
+							  MLX4_MFUNC_EQ_NUM,
+							  num_possible_cpus() + 1);
+			} else
+				dev->caps.num_eqs     = profile[i].num;
 			init_hca->eqc_base    = profile[i].start;
 			init_hca->log_num_eqs = profile[i].log_num;
 			break;
@@ -232,6 +245,8 @@ u64 mlx4_make_profile(struct mlx4_dev *dev,
 	 * of the HCA profile anyway.
 	 */
 	dev->caps.num_pds = MLX4_NUM_PDS;
+	dev->caps.slave_pd_shift = MLX4_SLAVE_PD_SHIFT;
+	dev->caps.pd_base = 0;
 
 	kfree(profile);
 	return total_size;

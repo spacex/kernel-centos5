@@ -1016,22 +1016,6 @@ struct mid_db_entry_24xx {
 	uint8_t reserved_1;
 };
 
- /*
- * Virtual Fabric ID type definition.
- */
-typedef struct vf_id {
-        uint16_t id : 12;
-        uint16_t priority : 4;
-} vf_id_t;
-
-/*
- * Virtual Fabric HopCt type definition.
- */
-typedef struct vf_hopct {
-        uint16_t reserved : 8;
-        uint16_t hopct : 8;
-} vf_hopct_t;
-
 /*
  * Virtual Port Control IOCB
  */
@@ -1056,17 +1040,17 @@ struct vp_ctrl_entry_24xx {
 #define VCE_COMMAND_DISABLE_VPS	0x08	/* Disable VPs. */
 #define VCE_COMMAND_DISABLE_VPS_REINIT	0x09 /* Disable VPs and reinit link. */
 #define VCE_COMMAND_DISABLE_VPS_LOGO	0x0a /* Disable VPs and LOGO ports. */
-#define VCE_COMMAND_DISABLE_VPS_LOGO_ALL	0x0b	/* Disable VPs & LOGO */
+#define VCE_COMMAND_DISABLE_VPS_LOGO_ALL	0x0b /* Disable VPs and
+							LOGO ports. */
 
 	uint16_t vp_count;
 
 	uint8_t vp_idx_map[16];
-
 	uint16_t flags;
-	struct vf_id    id;
+	uint16_t id;
 	uint16_t reserved_4;
-	struct vf_hopct  hopct;
-	uint8_t reserved_5[8];
+	uint16_t hopct;
+	uint8_t reserved_5[24];
 };
 
 /*
@@ -1095,7 +1079,8 @@ struct vp_config_entry_24xx {
 
 	uint8_t command;
 #define VCT_COMMAND_MOD_VPS	0x00	/* Modify VP configurations. */
-#define VCT_COMMAND_MOD_ENABLE_VPS	0x01	/* above cmd + enable VPs. */
+#define VCT_COMMAND_MOD_ENABLE_VPS	0x01	/* Modify configuration
+						   & enable VPs. */
 
 	uint8_t vp_count;
 
@@ -1113,11 +1098,10 @@ struct vp_config_entry_24xx {
 	uint16_t reserved_vp2;
 	uint8_t port_name_idx2[WWN_SIZE];
 	uint8_t node_name_idx2[WWN_SIZE];
-
-	struct vf_id    id;
+	uint16_t id;
 	uint16_t reserved_4;
-	struct vf_hopct  hopct;
-	uint8_t reserved_5;
+	uint16_t hopct;
+	uint8_t reserved_5[2];
 };
 
 #define VP_RPT_ID_IOCB_TYPE	0x32	/* Report ID Acquisition entry. */

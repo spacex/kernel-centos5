@@ -327,8 +327,4 @@ static inline struct mlx4_qp *__mlx4_qp_lookup(struct mlx4_dev *dev, u32 qpn)
 
 void mlx4_qp_remove(struct mlx4_dev *dev, struct mlx4_qp *qp);
 
-int mlx4_qp_get_region(struct mlx4_dev *dev,
-		       enum qp_region region,
-		       int *base_qpn, int *cnt);
-
 #endif /* MLX4_QP_H */

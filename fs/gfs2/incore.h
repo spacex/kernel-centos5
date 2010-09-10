@@ -377,6 +377,12 @@ struct gfs2_statfs_change_host {
 #define GFS2_DATA_WRITEBACK	1
 #define GFS2_DATA_ORDERED	2
 
+#define GFS2_ERRORS_DEFAULT     GFS2_ERRORS_WITHDRAW
+#define GFS2_ERRORS_WITHDRAW    0
+#define GFS2_ERRORS_CONTINUE    1 /* place holder for future feature */
+#define GFS2_ERRORS_RO          2 /* place holder for future feature */
+#define GFS2_ERRORS_PANIC       3
+
 struct gfs2_args {
 	char ar_lockproto[GFS2_LOCKNAME_LEN]; /* Name of the Lock Protocol */
 	char ar_locktable[GFS2_LOCKNAME_LEN]; /* Name of the Lock Table */
@@ -393,6 +399,10 @@ struct gfs2_args {
 	int ar_suiddir; /* suiddir support */
 	int ar_data; /* ordered/writeback */
 	int ar_meta; /* mount metafs */
+	int ar_errors; /* errors=panic|withdraw */
+	int ar_statfs_quantum; /* The fast statfs interval */
+	int ar_quota_quantum; /* The quota interval */
+	int ar_statfs_percent; /* The % change to force sync */
 };
 
 struct gfs2_tune {
@@ -506,6 +516,7 @@ struct gfs2_sbd {
 	spinlock_t sd_statfs_spin;
 	struct gfs2_statfs_change_host sd_statfs_master;
 	struct gfs2_statfs_change_host sd_statfs_local;
+	int sd_statfs_force_sync;
 
 	/* Resource group stuff */
 

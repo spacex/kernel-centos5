@@ -117,6 +117,8 @@ struct shrinker {
 int vm_swappiness = 60;
 long vm_total_pages;	/* The total number of pages which the VM controls */
 
+int max_reclaims_in_progress = 0;
+
 static LIST_HEAD(shrinker_list);
 static DECLARE_RWSEM(shrinker_rwsem);
 
@@ -898,6 +900,12 @@ static void shrink_zone(int priority, struct zone *zone,
 	unsigned long nr_reclaimed = sc->nr_reclaimed;
 	unsigned long swap_cluster_max = sc->swap_cluster_max;
 
+	if (max_reclaims_in_progress && !current_is_kswapd() &&
+	    atomic_read(&zone->reclaim_in_progress) > max_reclaims_in_progress) {
+		nr_reclaimed++;
+		goto out;
+	}
+
 	atomic_inc(&zone->reclaim_in_progress);
 
 	/*
@@ -950,6 +958,7 @@ static void shrink_zone(int priority, struct zone *zone,
 			break;
 	}
 
+out:
 	sc->nr_reclaimed = nr_reclaimed;
 
 	throttle_vm_writeout();
@@ -1586,6 +1595,13 @@ int zone_reclaim_mode __read_mostly;
 #define RECLAIM_SWAP (1<<2)	/* Swap pages out during reclaim */
 
 /*
+ * Minimum time between zone_reclaim() scans that failed. Ordinarily, a
+ * scan will not fail because it will be determined in advance if it can
+ * succeeed but this does not always work. See mmzone.h
+ */
+int zone_reclaim_interval __read_mostly = 30*HZ;
+
+/*
  * Priority for ZONE_RECLAIM. This determines the fraction of pages
  * of a node considered for each zone_reclaim. 4 scans 1/16th of
  * a zone.
@@ -1679,6 +1695,7 @@ int zone_reclaim(struct zone *zone, gfp_t gfp_mask, unsigned int order)
 	cpumask_t mask;
 	int node_id;
 	int ret;
+	struct zone_extra_data *zed = zone_extra_data(zone);
 
 	/*
 	 * Zone reclaim reclaims unmapped file backed pages and
@@ -1694,6 +1711,11 @@ int zone_reclaim(struct zone *zone, gfp_t gfp_mask, unsigned int order)
 	    zone_page_state(zone, NR_FILE_MAPPED) <= zone->min_unmapped_ratio
 	    && zone_page_state(zone, NR_SLAB)
 			<= zone->min_slab_pages)
+		return 0;
+
+	/* Do not attempt a scan if scanning failed recently */
+	if (time_before(jiffies,
+			zed->zone_reclaim_failure + zone_reclaim_interval))
 		return 0;
 
 	/*
@@ -1717,6 +1739,14 @@ int zone_reclaim(struct zone *zone, gfp_t gfp_mask, unsigned int order)
 		return 0;
 	if (atomic_inc_and_test(&zone->reclaim_in_progress)) {
 		ret = __zone_reclaim(zone, gfp_mask, order);
+		/*
+		 * We were unable to reclaim enough pages to stay on node and
+		 * unable to detect in advance that the scan would fail. Allow
+		 * off node accesses for zone_reclaim_interval_jiffies before
+		 * trying zone_reclaim() again
+		 */
+		if (!ret)
+			zed->zone_reclaim_failure = jiffies;
 		atomic_dec(&zone->reclaim_in_progress);
 		return ret;
 	} else {

@@ -307,11 +307,9 @@ int netif_map(netif_t *netif, unsigned long tx_ring_ref,
 
 	netif_get(netif);
 
-	rtnl_lock();
 	netif_carrier_on(netif->dev);
 	if (netif_running(netif->dev))
 		__netif_up(netif);
-	rtnl_unlock();
 
 	return 0;
 err_hypervisor:

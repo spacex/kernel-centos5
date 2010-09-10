@@ -572,7 +572,7 @@ static int ext2_check_descriptors (struct super_block * sb)
 			return 0;
 		}
 		if (le32_to_cpu(gdp->bg_inode_table) < block ||
-		    le32_to_cpu(gdp->bg_inode_table) + sbi->s_itb_per_group >=
+		    le32_to_cpu(gdp->bg_inode_table) + sbi->s_itb_per_group - 1 >=
 		    block + EXT2_BLOCKS_PER_GROUP(sb))
 		{
 			ext2_error (sb, "ext2_check_descriptors",
@@ -720,6 +720,7 @@ static int ext2_fill_super(struct super_block *sb, void *data, int silent)
 	sb->s_flags = (sb->s_flags & ~MS_POSIXACL) |
 		((EXT2_SB(sb)->s_mount_opt & EXT2_MOUNT_POSIX_ACL) ?
 		 MS_POSIXACL : 0);
+	sb->s_flags |= MS_HAS_NEW_AOPS;
 
 	ext2_xip_verify_sb(sb); /* see if bdev supports xip, unset
 				    EXT2_MOUNT_XIP if not */
@@ -1028,6 +1029,7 @@ static int ext2_remount (struct super_block * sb, int * flags, char * data)
 
 	sb->s_flags = (sb->s_flags & ~MS_POSIXACL) |
 		((sbi->s_mount_opt & EXT2_MOUNT_POSIX_ACL) ? MS_POSIXACL : 0);
+	sb->s_flags |= MS_HAS_NEW_AOPS;
 
 	es = sbi->s_es;
 	if (((sbi->s_mount_opt & EXT2_MOUNT_XIP) !=

@@ -78,13 +78,10 @@ int anon_inode_getfd(const char *name, const struct file_operations *fops,
 
 	if (IS_ERR(anon_inode_inode))
 		return -ENODEV;
-	file = get_empty_filp();
-	if (!file)
-		return -ENFILE;
 
 	error = get_unused_fd();
 	if (error < 0)
-		goto err_put_filp;
+		return error;
 	fd = error;
 
 	/*
@@ -111,6 +108,11 @@ int anon_inode_getfd(const char *name, const struct file_operations *fops,
 	dentry->d_flags &= ~DCACHE_UNHASHED;
 	d_instantiate(dentry, anon_inode_inode);
 
+	error = -ENFILE;
+	file = get_empty_filp();
+	if (!file)
+		goto err_dput;
+
 	file->f_vfsmnt = mntget(anon_inode_mnt);
 	file->f_dentry = dentry;
 	file->f_mapping = anon_inode_inode->i_mapping;
@@ -126,10 +128,10 @@ int anon_inode_getfd(const char *name, const struct file_operations *fops,
 
 	return fd;
 
+err_dput:
+	dput(dentry);
 err_put_unused_fd:
 	put_unused_fd(fd);
-err_put_filp:
-	fput(file);
 	return error;
 }
 EXPORT_SYMBOL_GPL(anon_inode_getfd);

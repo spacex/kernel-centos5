@@ -175,6 +175,23 @@ static void link_report(struct net_device *dev)
 	}
 }
 
+static void enable_tx_fifo_drain(struct adapter *adapter,
+				 struct port_info *pi)
+{
+	t3_set_reg_field(adapter, A_XGM_TXFIFO_CFG + pi->mac.offset, 0,
+			 F_ENDROPPKT);
+	t3_write_reg(adapter, A_XGM_RX_CTRL + pi->mac.offset, 0);
+	t3_write_reg(adapter, A_XGM_TX_CTRL + pi->mac.offset, F_TXEN);
+	t3_write_reg(adapter, A_XGM_RX_CTRL + pi->mac.offset, F_RXEN);
+}
+
+static void disable_tx_fifo_drain(struct adapter *adapter,
+				  struct port_info *pi)
+{
+	t3_set_reg_field(adapter, A_XGM_TXFIFO_CFG + pi->mac.offset,
+			 F_ENDROPPKT, 0);
+}
+
 void t3_os_link_fault(struct adapter *adap, int port_id, int state)
 {
 	struct net_device *dev = adap->port[port_id];
@@ -187,6 +204,8 @@ void t3_os_link_fault(struct adapter *adap, int port_id, int state)
 		struct cmac *mac = &pi->mac;
 
 		netif_carrier_on(dev);
+
+		disable_tx_fifo_drain(adap, pi);
 
 		/* Clear local faults */
 		t3_xgm_intr_disable(adap, pi->port_id);
@@ -203,9 +222,12 @@ void t3_os_link_fault(struct adapter *adap, int port_id, int state)
 		t3_xgm_intr_enable(adap, pi->port_id);
 
 		t3_mac_enable(mac, MAC_DIRECTION_TX);
-	} else
+	} else {
 		netif_carrier_off(dev);
 
+		/* Flush TX FIFO */
+		enable_tx_fifo_drain(adap, pi);
+	}
 	link_report(dev);
 }
 
@@ -235,6 +257,8 @@ void t3_os_link_changed(struct adapter *adapter, int port_id, int link_stat,
 
 	if (link_stat != netif_carrier_ok(dev)) {
 		if (link_stat) {
+			disable_tx_fifo_drain(adapter, pi);
+
 			t3_mac_enable(mac, MAC_DIRECTION_RX);
 
 			/* Clear local faults */
@@ -266,6 +290,9 @@ void t3_os_link_changed(struct adapter *adapter, int port_id, int link_stat,
 			t3_read_reg(adapter, A_XGM_INT_STATUS + pi->mac.offset);
 			t3_mac_disable(mac, MAC_DIRECTION_RX);
 			t3_link_start(&pi->phy, mac, &pi->link_config);
+
+			/* Flush TX FIFO */
+			enable_tx_fifo_drain(adapter, pi);
 		}
 
 		link_report(dev);
@@ -441,6 +468,7 @@ static int init_tp_parity(struct adapter *adap)
 		memset(req, 0, sizeof(*req));
 		req->wr.wr_hi = htonl(V_WR_OP(FW_WROPCODE_FORWARD));
 		OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_SMT_WRITE_REQ, i));
+		req->mtu_idx = NMTUS - 1;
 		req->iff = i;
 		t3_mgmt_tx(adap, skb);
 	}
@@ -2491,11 +2519,6 @@ static void vlan_rx_register(struct net_device *dev, struct vlan_group *grp)
 	t3_synchronize_rx(adapter, pi);
 }
 
-static void vlan_rx_kill_vid(struct net_device *dev, unsigned short vid)
-{
-	/* nothing */
-}
-
 #ifdef CONFIG_NET_POLL_CONTROLLER
 static void cxgb_netpoll(struct net_device *dev)
 {
@@ -3144,7 +3167,6 @@ static int __devinit init_one(struct pci_dev *pdev,
 
 		netdev->features |= NETIF_F_HW_VLAN_TX | NETIF_F_HW_VLAN_RX;
 		netdev->vlan_rx_register = vlan_rx_register;
-		netdev->vlan_rx_kill_vid = vlan_rx_kill_vid;
 
 		netdev->open = cxgb_open;
 		netdev->stop = cxgb_close;

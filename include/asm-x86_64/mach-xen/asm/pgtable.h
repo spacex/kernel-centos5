@@ -107,6 +107,12 @@ static inline void set_pte(pte_t *dst, pte_t val)
 	*dst = val;
 }
 
+static inline void set_huge_pte(pte_t *dst, pte_t val)
+{
+	mm_track_pmd( (pmd_t *)dst);
+	*dst = val;
+} 
+
 static inline void set_pmd(pmd_t *pmdptr, pmd_t pmdval)
 {
 	mm_track_pmd(pmdptr);
@@ -151,6 +157,13 @@ static inline void pgd_clear (pgd_t * pgd)
 static inline pte_t ptep_get_and_clear(struct mm_struct *mm, unsigned long addr, pte_t *xp)
 {
 	mm_track_pte(xp);
+	return __pte_ma(xchg(&(xp)->pte, 0));
+}
+
+static inline pte_t huge_ptep_get_and_clear(struct mm_struct *mm,
+					    unsigned long addr, pte_t *xp)
+{
+	mm_track_pmd( (pmd_t *)xp);
 	return __pte_ma(xchg(&(xp)->pte, 0));
 }
 
@@ -318,6 +331,14 @@ static inline unsigned long pud_bad(pud_t pud)
 	    HYPERVISOR_update_va_mapping((addr), (pteval), 0))		\
 		set_pte((ptep), (pteval));				\
 } while (0)
+
+static inline void set_huge_pte_at(struct mm_struct *_mm, unsigned long addr,
+				   pte_t *ptep, pte_t pteval)
+{
+	if (((_mm) != current->mm && (_mm) != &init_mm) ||
+	    HYPERVISOR_update_va_mapping((addr), (pteval), 0))
+		set_huge_pte(ptep, pteval);
+}
 
 #define pte_none(x)	(!(x).pte)
 #define pte_present(x)	((x).pte & (_PAGE_PRESENT | _PAGE_PROTNONE))

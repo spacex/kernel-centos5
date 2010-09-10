@@ -29,6 +29,12 @@
 #include <linux/highmem.h>
 #include <linux/workqueue.h>
 #include <linux/security.h>
+#ifndef __GENKSYMS__
+#include <linux/blkdev.h>
+#include <linux/mempool.h>
+#include <linux/hash.h>
+#endif
+#include <linux/eventfd.h>
 
 #include <asm/kmap_types.h>
 #include <asm/uaccess.h>
@@ -58,8 +64,132 @@ static DECLARE_WORK(fput_work, aio_fput_routine, NULL);
 static DEFINE_SPINLOCK(fput_lock);
 static LIST_HEAD(fput_head);
 
+/*
+ * TODO: If we want to be clever, we could determine the size of the
+ * hash based on the nr of iocbs passed to io_submit.  This would mean
+ * a switch from the on-stack allocation, and a method to determine
+ * optimal hash size based on number of elements.   -JEM
+ */
+#define AIO_BATCH_HASH_BITS	3 /* allocated on-stack, so don't go crazy */
+#define AIO_BATCH_HASH_SIZE	(1 << AIO_BATCH_HASH_BITS)
+struct aio_batch_entry {
+	struct hlist_node list;
+	struct address_space *mapping;
+};
+mempool_t *abe_pool;
+ 
+
 static void aio_kick_handler(void *);
 static void aio_queue_work(struct kioctx *);
+
+/*
+ * Instead of adding a ki_eventfd member to the struct kiocb (which would
+ * break kabi), the following code creates a lookaside hash table indexed
+ * by struct kiocb.  Stored in each entry is the eventfd file pointer.
+ */
+#define KIOCB_HASH_BITS	5
+#define KIOCB_HASH_SIZE	(1<<KIOCB_HASH_BITS)
+
+static DEFINE_SPINLOCK(kiocb_list_lock);
+static struct hlist_head kiocb_list[KIOCB_HASH_SIZE];
+
+struct kiocb_hash_entry {
+	struct hlist_node list;
+	struct kiocb *kiocb;
+	struct file *filp;
+};
+
+static inline struct hlist_head *aio_kiocb_hash(struct kiocb *kiocb)
+{
+	return &kiocb_list[hash_ptr(kiocb, KIOCB_HASH_BITS)];
+}
+
+static struct kiocb_hash_entry *kiocb_hash_lookup(struct kiocb *kiocb)
+{
+	struct kiocb_hash_entry *hashent;
+	struct hlist_node *pos;
+	struct hlist_head *bucket = aio_kiocb_hash(kiocb);
+
+	hlist_for_each_entry(hashent, pos, bucket, list) {
+		if (hashent->kiocb == kiocb)
+			return hashent;
+	}
+	return NULL;
+}
+
+static struct file *aio_eventfp_lookup(struct kiocb *kiocb)
+{
+	struct kiocb_hash_entry *kh;
+	unsigned long flags;
+
+	spin_lock_irqsave(&kiocb_list_lock, flags);
+	kh = kiocb_hash_lookup(kiocb);
+	spin_unlock_irqrestore(&kiocb_list_lock, flags);
+	return kh->filp;
+}
+
+static void aio_eventfd_unhash(struct kiocb *kiocb)
+{
+	struct kiocb_hash_entry *kh;
+	unsigned long flags;
+
+	kiocbClearRESFD(kiocb);
+	spin_lock_irqsave(&kiocb_list_lock, flags);
+	kh = kiocb_hash_lookup(kiocb);
+	hlist_del(&kh->list);
+	spin_unlock_irqrestore(&kiocb_list_lock, flags);
+	kfree(kh);
+}
+
+static void aio_eventfd_fput(struct kiocb *kiocb)
+{
+	unsigned long flags;
+	struct kiocb_hash_entry *kh;
+
+	/*
+	 * It is often the case that there is no eventfd associated with
+	 * a particular request.
+	 */
+	if (!kiocbIsRESFD(kiocb))
+		return;
+
+	kiocbClearRESFD(kiocb);
+	spin_lock_irqsave(&kiocb_list_lock, flags);
+	kh = kiocb_hash_lookup(kiocb);
+	hlist_del(&kh->list);
+	spin_unlock_irqrestore(&kiocb_list_lock, flags);
+
+	fput(kh->filp);
+	kfree(kh);
+}
+
+static void aio_eventfd_signal(struct kiocb *kiocb)
+{
+	struct kiocb_hash_entry *kh;
+
+	if (!kiocbIsRESFD(kiocb))
+		return;
+
+	spin_lock(&kiocb_list_lock);
+	kh = kiocb_hash_lookup(kiocb);
+	spin_unlock(&kiocb_list_lock);
+
+	eventfd_signal(kh->filp, 1);
+}
+
+static int aio_hash_kiocb(struct kiocb *kiocb, struct file *filp)
+{
+	unsigned long flags;
+	struct kiocb_hash_entry *kh = kmalloc(sizeof(*kh), GFP_KERNEL);
+	if (!kh)
+		return -ENOMEM;
+	kh->kiocb = kiocb;
+	kh->filp = filp;
+	spin_lock_irqsave(&kiocb_list_lock, flags);
+	hlist_add_head(&kh->list, aio_kiocb_hash(kiocb));
+	spin_unlock_irqrestore(&kiocb_list_lock, flags);
+	return 0;
+}
 
 /* aio_setup
  *	Creates the slab caches used by the aio routines, panic on
@@ -73,6 +203,8 @@ static int __init aio_setup(void)
 				0, SLAB_HWCACHE_ALIGN|SLAB_PANIC, NULL, NULL);
 
 	aio_wq = create_workqueue("aio");
+	abe_pool = mempool_create_kmalloc_pool(1, sizeof(struct aio_batch_entry));
+	BUG_ON(!abe_pool);
 
 	pr_debug("aio_setup: sizeof(struct page) = %d\n", (int)sizeof(struct page));
 
@@ -482,7 +614,9 @@ static void aio_fput_routine(void *data)
 		spin_unlock_irq(&fput_lock);
 
 		/* Complete the fput */
-		__fput(req->ki_filp);
+		if (req->ki_filp != NULL)
+			__fput(req->ki_filp);
+		aio_eventfd_fput(req);
 
 		/* Link the iocb into the context's free list */
 		spin_lock_irq(&ctx->ctx_lock);
@@ -500,12 +634,15 @@ static void aio_fput_routine(void *data)
  */
 static int __aio_put_req(struct kioctx *ctx, struct kiocb *req)
 {
+	int schedule_putreq = 0;
+	struct file *eventfp;
+
 	dprintk(KERN_DEBUG "aio_put(%p): f_count=%d\n",
 		req, atomic_read(&req->ki_filp->f_count));
 
 	assert_spin_locked(&ctx->ctx_lock);
 
-	req->ki_users --;
+	req->ki_users--;
 	if (unlikely(req->ki_users < 0))
 		BUG();
 	if (likely(req->ki_users))
@@ -514,10 +651,24 @@ static int __aio_put_req(struct kioctx *ctx, struct kiocb *req)
 	req->ki_cancel = NULL;
 	req->ki_retry = NULL;
 
-	/* Must be done under the lock to serialise against cancellation.
-	 * Call this aio_fput as it duplicates fput via the fput_work.
+	/*
+	 * Try to optimize the aio and eventfd file* puts, by avoiding to
+	 * schedule work in case it is not __fput() time. In normal cases,
+	 * we would not be holding the last reference to the file*, so
+	 * this function will be executed w/out any aio kthread wakeup.
 	 */
-	if (unlikely(atomic_dec_and_test(&req->ki_filp->f_count))) {
+	if (unlikely(atomic_dec_and_test(&req->ki_filp->f_count)))
+		schedule_putreq++;
+	else
+		req->ki_filp = NULL;
+	if (kiocbIsRESFD(req)) {
+		eventfp = aio_eventfp_lookup(req);
+		if (unlikely(atomic_dec_and_test(&eventfp->f_count)))
+			schedule_putreq++;
+		else
+			aio_eventfd_unhash(req);
+	}
+	if (unlikely(schedule_putreq)) {
 		get_ioctx(ctx);
 		spin_lock(&fput_lock);
 		list_add(&req->ki_list, &fput_head);
@@ -1006,6 +1157,13 @@ int fastcall aio_complete(struct kiocb *iocb, long res, long res2)
 
 	pr_debug("added to ring %p at [%lu]\n", iocb, tail);
 
+	/*
+	 * Check if the user asked us to deliver the result through an
+	 * eventfd. The eventfd_signal() function is safe to be called
+	 * from IRQ context.
+	 */
+	aio_eventfd_signal(iocb);
+
 	pr_debug("%ld retries: %d of %d\n", iocb->ki_retried,
 		iocb->ki_nbytes - iocb->ki_left, iocb->ki_nbytes);
 put_rq:
@@ -1456,6 +1614,20 @@ static ssize_t aio_setup_iocb(struct kiocb *kiocb)
 	return 0;
 }
 
+static int aio_eventfd_fget(struct kiocb *kiocb, int resfd)
+{
+	int ret;
+	struct file *filp = eventfd_fget(resfd);
+	if (IS_ERR(filp))
+		return PTR_ERR(filp);
+
+	ret = aio_hash_kiocb(kiocb, filp);
+	if (ret)
+		fput(filp);
+
+	return ret;
+}
+
 /*
  * aio_wake_function:
  * 	wait queue callback function for aio notification,
@@ -1484,16 +1656,51 @@ static int aio_wake_function(wait_queue_t *wait, unsigned mode,
 	return 1;
 }
 
+static void aio_batch_add(struct address_space *mapping,
+			  struct hlist_head *batch_hash)
+{
+	struct aio_batch_entry *abe;
+	struct hlist_node *pos;
+	unsigned bucket;
+
+	bucket = hash_ptr(mapping, AIO_BATCH_HASH_BITS);
+	hlist_for_each_entry(abe, pos, &batch_hash[bucket], list) {
+		if (abe->mapping == mapping)
+			return;
+	}
+
+	abe = mempool_alloc(abe_pool, GFP_KERNEL);
+	BUG_ON(!igrab(mapping->host));
+	abe->mapping = mapping;
+	hlist_add_head(&abe->list, &batch_hash[bucket]);
+	return;
+}
+
+static void aio_batch_free(struct hlist_head *batch_hash)
+{
+	struct aio_batch_entry *abe;
+	struct hlist_node *pos, *n;
+	int i;
+
+	for (i = 0; i < AIO_BATCH_HASH_SIZE; i++) {
+		hlist_for_each_entry_safe(abe, pos, n, &batch_hash[i], list) {
+			blk_run_address_space(abe->mapping);
+			iput(abe->mapping->host);
+			hlist_del(&abe->list);
+			mempool_free(abe, abe_pool);
+		}
+	}
+}
+
 int fastcall io_submit_one(struct kioctx *ctx, struct iocb __user *user_iocb,
-			 struct iocb *iocb)
+			struct iocb *iocb, struct hlist_head *batch_hash)
 {
 	struct kiocb *req;
 	struct file *file;
 	ssize_t ret;
 
 	/* enforce forwards compatibility on users */
-	if (unlikely(iocb->aio_reserved1 || iocb->aio_reserved2 ||
-		     iocb->aio_reserved3)) {
+	if (unlikely(iocb->aio_reserved1 || iocb->aio_reserved2)) {
 		pr_debug("EINVAL: io_submit: reserve field set\n");
 		return -EINVAL;
 	}
@@ -1516,6 +1723,19 @@ int fastcall io_submit_one(struct kioctx *ctx, struct iocb __user *user_iocb,
 	if (unlikely(!req)) {
 		fput(file);
 		return -EAGAIN;
+	}
+
+	if (iocb->aio_flags & IOCB_FLAG_RESFD) {
+		/*
+		 * If the IOCB_FLAG_RESFD flag of aio_flags is set, get an
+		 * instance of the file* now. The file descriptor must be
+		 * an eventfd() fd, and will be signaled for each completed
+		 * event using the eventfd_signal() function.
+		 */
+		ret = aio_eventfd_fget(req, (int) iocb->aio_resfd);
+		if (unlikely(ret))
+			goto out_put_req;
+		kiocbSetRESFD(req);
 	}
 
 	req->ki_filp = file;
@@ -1549,6 +1769,8 @@ int fastcall io_submit_one(struct kioctx *ctx, struct iocb __user *user_iocb,
 			;
 	}
 	spin_unlock_irq(&ctx->ctx_lock);
+	aio_batch_add(file->f_mapping, batch_hash);
+
 	aio_put_req(req);	/* drop extra ref to req */
 	return 0;
 
@@ -1576,6 +1798,7 @@ asmlinkage long sys_io_submit(aio_context_t ctx_id, long nr,
 	struct kioctx *ctx;
 	long ret = 0;
 	int i;
+	struct hlist_head batch_hash[AIO_BATCH_HASH_SIZE] = { { 0, }, };
 
 	if (unlikely(nr < 0))
 		return -EINVAL;
@@ -1607,10 +1830,11 @@ asmlinkage long sys_io_submit(aio_context_t ctx_id, long nr,
 			break;
 		}
 
-		ret = io_submit_one(ctx, user_iocb, &tmp);
+		ret = io_submit_one(ctx, user_iocb, &tmp, batch_hash);
 		if (ret)
 			break;
 	}
+	aio_batch_free(batch_hash);
 
 	put_ioctx(ctx);
 	return i ? i : ret;

@@ -128,6 +128,8 @@ enum mem_type {
 	MEM_FB_DDR2,		/* fully buffered DDR2 */
 	MEM_RDDR2,		/* Registered DDR2 RAM */
 	MEM_XDR,                /* Rambus XDR */
+	MEM_DDR3,		/* Unbuffered DDR3 RAM */
+	MEM_RDDR3,		/* Registered DDR3 RAM */
 };
 
 #define MEM_FLAG_EMPTY		BIT(MEM_EMPTY)
@@ -344,6 +346,7 @@ struct mem_ctl_info {
 	const char *mod_name;
 	const char *mod_ver;
 	const char *ctl_name;
+	const char *dev_name;
 	char proc_name[MC_PROC_NAME_MAX_LEN + 1];
 	void *pvt_info;
 	u32 ue_noinfo_count;	/* Uncorrectable Errors w/o info */

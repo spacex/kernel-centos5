@@ -194,7 +194,7 @@ void __init e820_bootmem_free(pg_data_t *pgdat, unsigned long start,unsigned lon
 			free_bootmem_node(pgdat, addr, last-addr);
 	}
 }
-
+#define TB_PFN (1UL << (40 - PAGE_SHIFT))
 /*
  * Find the highest page frame number we have available
  */
@@ -219,7 +219,9 @@ unsigned long __init e820_end_of_ram(void)
 				end_pfn_map = end>>PAGE_SHIFT;
 		} 
 	}
-
+	/* cap last pfn at 1TB */
+	if (end_pfn > TB_PFN)
+		end_pfn = TB_PFN;
 	if (end_pfn > end_pfn_map) 
 		end_pfn_map = end_pfn;
 	if (end_pfn_map > MAXMEM>>PAGE_SHIFT)

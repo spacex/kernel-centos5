@@ -607,7 +607,7 @@ ql_fc_proc_nl_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh, int rcvlen)
 		return -EBADMSG;
 
 	shost = scsi_host_lookup(ql_cmd->host_no);
-	if (IS_ERR(shost)) {
+	if (!shost) {
 		DEBUG16(printk(KERN_ERR "%s: could not find host no %u\n",
 		    __func__, ql_cmd->host_no));
 		err = -ENODEV;
@@ -627,16 +627,19 @@ ql_fc_proc_nl_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh, int rcvlen)
 		rsp_hdr_len = offsetof(struct qla_fc_msg, u);
 		ql_cmd->error = 0;
 		ql_fc_get_aen(ha);
-		return ql_fc_nl_rsp(NETLINK_CREDS(skb)->pid, nlh->nlmsg_seq,
+		err =  ql_fc_nl_rsp(NETLINK_CREDS(skb)->pid, nlh->nlmsg_seq,
 			(uint32_t)nlh->nlmsg_type, ql_cmd, rsp_hdr_len,
 			&aen_log, sizeof(struct qlfc_aen_log));
+		goto exit_proc_nl_rcv_msg;
 
 	case QLFC_LOOPBACK_CMD:
 	case QLFC_LOOPBACK_DATA:
-		return ql_fc_loopback(ha, skb, nlh, ql_cmd, rcvlen);
+		err = ql_fc_loopback(ha, skb, nlh, ql_cmd, rcvlen);
+		goto exit_proc_nl_rcv_msg;
 
 	case QLFC_IIDMA:
-		return ql_fc_iidma(ha, skb, nlh, ql_cmd, rcvlen);
+		err = ql_fc_iidma(ha, skb, nlh, ql_cmd, rcvlen);
+		goto exit_proc_nl_rcv_msg;
 	}
 
 	/* Use existing 84xx interface to get MPI XGMAC statistics for
@@ -690,6 +693,8 @@ ql_fc_proc_nl_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh, int rcvlen)
 	}
 
 exit_proc_nl_rcv_msg:
+	if (shost)
+		scsi_host_put(shost);
 	return err;
 }
 

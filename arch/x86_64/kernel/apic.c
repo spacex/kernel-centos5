@@ -43,6 +43,7 @@ int apic_verbosity;
 int apic_runs_main_timer;
 int apic_calibrate_pmtmr __initdata;
 int apic_calibration_iters __initdata = 10;
+int apic_calibration_diff __initdata = 5000;
 
 int disable_apic_timer __initdata;
 
@@ -770,7 +771,6 @@ static void setup_APIC_timer(unsigned int clocks)
  * than a single retry, given that the rdtsc/apic_read/rdtsc
  * sequence won't take more than a few cycles.
  */
-#define MAX_DIFFERENCE 1000UL
 static inline int __init
 __read_tsc_and_apic(unsigned long *tsc, unsigned int *apic)
 {
@@ -784,10 +784,10 @@ __read_tsc_and_apic(unsigned long *tsc, unsigned int *apic)
 		rdtsc_barrier();
 		rdtscll(tsc1);
 		diff = tsc1 - tsc0;
-	} while (diff > MAX_DIFFERENCE && ++i < apic_calibration_iters);
+	} while (diff > apic_calibration_diff && ++i < apic_calibration_iters);
 
 	*tsc = tsc0 + (diff >> 1);
-	return diff > MAX_DIFFERENCE ? -EIO : 0;
+	return diff > apic_calibration_diff ? -EIO : 0;
 }
 
 /*
@@ -1284,6 +1284,14 @@ static __init int setup_apiccalibrationiters(char *str)
 	return 1;
 }
 __setup("apiccalibrationiters=", setup_apiccalibrationiters);
+
+static __init int setup_apiccalibrationdiff(char *str)
+{
+	get_option(&str, &apic_calibration_diff);
+	return 1;
+}
+__setup("apiccalibrationdiff=", setup_apiccalibrationdiff);
+
 
 /* dummy parsing: see setup.c */
 

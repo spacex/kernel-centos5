@@ -1167,6 +1167,58 @@ qeth_determine_card_type(struct qeth_card *card)
 	return -ENOENT;
 }
 
+static void qeth_configure_unitaddr(struct qeth_card *card, char *prcd)
+{
+	QETH_DBF_TEXT(setup, 2, "getunit");
+	card->info.chpid = prcd[30];
+	card->info.unit_addr2 = prcd[31];
+	card->info.cula = prcd[63];
+	card->info.guestlan = ((prcd[0x10] == _ascebc['V']) &&
+			       (prcd[0x11] == _ascebc['M']));
+}
+
+static void qeth_configure_blkt_default(struct qeth_card *card, char *prcd) {
+	QETH_DBF_TEXT(setup, 2, "cfgblkt");
+
+	if (prcd[74] == 0xF0 && prcd[75] == 0xF0 && prcd[76] == 0xF5) {
+		card->info.blkt.time_total = 250;
+		card->info.blkt.inter_packet = 5;
+		card->info.blkt.inter_packet_jumbo = 15;
+	} else {
+		card->info.blkt.time_total = 0;
+		card->info.blkt.inter_packet = 0;
+		card->info.blkt.inter_packet_jumbo = 0;
+	}
+}
+
+static void qeth_determine_capabilities(struct qeth_card *card)
+{
+	int rc;
+	int length;
+	char *prcd;
+
+	QETH_DBF_TEXT(setup, 2, "detcapab");
+	rc = ccw_device_set_online(CARD_DDEV(card));
+	if (rc) {
+		QETH_DBF_TEXT_(setup, 2, "3err%d", rc);
+		goto out;
+	}
+
+	rc = read_conf_data(CARD_DDEV(card), (void **) &prcd, &length);
+	if (rc) {
+		QETH_DBF_TEXT_(setup, 2, "5err%d", rc);
+		goto out_offline;
+	}
+	qeth_configure_unitaddr(card, prcd);
+	qeth_configure_blkt_default(card, prcd);
+	kfree(prcd);
+
+out_offline:
+	ccw_device_set_offline(CARD_DDEV(card));
+out:
+	return;
+}
+
 static int
 qeth_probe_device(struct ccwgroup_device *gdev)
 {
@@ -1221,31 +1273,14 @@ qeth_probe_device(struct ccwgroup_device *gdev)
 	write_lock_irqsave(&qeth_card_list.rwlock, flags);
 	list_add_tail(&card->list, &qeth_card_list.list);
 	write_unlock_irqrestore(&qeth_card_list.rwlock, flags);
+
+	qeth_determine_capabilities(card);
+
 	return rc;
 }
 
 
-static int
-qeth_get_unitaddr(struct qeth_card *card)
-{
- 	int length;
-	char *prcd;
-	int rc;
 
-	QETH_DBF_TEXT(setup, 2, "getunit");
-	rc = read_conf_data(CARD_DDEV(card), (void **) &prcd, &length);
-	if (rc) {
-		PRINT_ERR("read_conf_data for device %s returned %i\n",
-			  CARD_DDEV_ID(card), rc);
-		return rc;
-	}
-	card->info.chpid = prcd[30];
-	card->info.unit_addr2 = prcd[31];
-	card->info.cula = prcd[63];
-	card->info.guestlan = ((prcd[0x10] == _ascebc['V']) &&
-			       (prcd[0x11] == _ascebc['M']));
-	return 0;
-}
 
 static void
 qeth_init_tokens(struct qeth_card *card)
@@ -2628,16 +2663,22 @@ qeth_rebuild_skb(struct qeth_card *card, struct sk_buff *skb,
 		qeth_rebuild_skb_fake_ll(card, skb, hdr);
 	else
 		skb->mac.raw = skb->data;
-	skb->ip_summed = card->options.checksum_type;
-	if (card->options.checksum_type == HW_CHECKSUMMING){
-		if ( (hdr->hdr.l3.ext_flags &
-		      (QETH_HDR_EXT_CSUM_HDR_REQ |
-		       QETH_HDR_EXT_CSUM_TRANSP_REQ)) ==
-		     (QETH_HDR_EXT_CSUM_HDR_REQ |
-		      QETH_HDR_EXT_CSUM_TRANSP_REQ) )
+	switch (card->options.checksum_type) {
+	case SW_CHECKSUMMING:
+		skb->ip_summed = CHECKSUM_NONE;
+		break;
+	case NO_CHECKSUMMING:
+		skb->ip_summed = CHECKSUM_UNNECESSARY;
+		break;
+	case HW_CHECKSUMMING:
+		if ((hdr->hdr.l3.ext_flags &
+		    (QETH_HDR_EXT_CSUM_HDR_REQ |
+		     QETH_HDR_EXT_CSUM_TRANSP_REQ)) ==
+		    (QETH_HDR_EXT_CSUM_HDR_REQ |
+		     QETH_HDR_EXT_CSUM_TRANSP_REQ))
 			skb->ip_summed = CHECKSUM_UNNECESSARY;
 		else
-			skb->ip_summed = SW_CHECKSUMMING;
+			skb->ip_summed = CHECKSUM_NONE;
 	}
 	return vlan_id;
 }
@@ -6074,6 +6115,30 @@ qeth_layer2_send_setmac_cb(struct qeth_card *card,
 			   "device %s: x%x\n", CARD_BUS_ID(card),
 			   cmd->hdr.return_code);
 		card->info.mac_bits &= ~QETH_LAYER2_MAC_REGISTERED;
+		switch (cmd->hdr.return_code) {
+		case IPA_RC_L2_DUP_MAC:
+		case IPA_RC_L2_DUP_LAYER3_MAC:
+			PRINT_WARN("%s: MAC address "
+				"%2.2x:%2.2x:%2.2x:%2.2x:%2.2x:%2.2x "
+				"already exists\n",
+				CARD_BUS_ID(card),
+				card->dev->dev_addr[0], card->dev->dev_addr[1],
+				card->dev->dev_addr[2], card->dev->dev_addr[3],
+				card->dev->dev_addr[4], card->dev->dev_addr[5]);
+			break;
+		case IPA_RC_L2_MAC_NOT_AUTH_BY_HYP:
+		case IPA_RC_L2_MAC_NOT_AUTH_BY_ADP:
+			PRINT_WARN("%s: MAC address "
+				"%2.2x:%2.2x:%2.2x:%2.2x:%2.2x:%2.2x "
+				"is not authorized\n",
+				CARD_BUS_ID(card),
+				card->dev->dev_addr[0], card->dev->dev_addr[1],
+				card->dev->dev_addr[2], card->dev->dev_addr[3],
+				card->dev->dev_addr[4], card->dev->dev_addr[5]);
+			break;
+		default:
+			break;
+		}
 		cmd->hdr.return_code = -EIO;
 	} else {
 		card->info.mac_bits |= QETH_LAYER2_MAC_REGISTERED;
@@ -6644,11 +6709,6 @@ retry:
 			goto out;
 		else
 			goto retry;
-	}
-	rc = qeth_get_unitaddr(card);
-	if (rc) {
-		QETH_DBF_TEXT_(setup, 2, "2err%d", rc);
-		return rc;
 	}
 	mpno = qdio_get_ssqd_pct(CARD_DDEV(card));
 	if (mpno)

@@ -242,24 +242,6 @@ deadline_find_drq_rb(struct deadline_data *dd, sector_t sector, int data_dir)
 }
 
 /*
- * deadline_find_first_drq finds the first (lowest sector numbered) request
- * for the specified data_dir. Used to sweep back to the start of the disk
- * (1-way elevator) after we process the last (highest sector) request.
- */
-static struct deadline_rq *
-deadline_find_first_drq(struct deadline_data *dd, int data_dir)
-{
-	struct rb_node *n = dd->sort_list[data_dir].rb_node;
-
-	for (;;) {
-		if (n->rb_left == NULL)
-			return rb_entry_drq(n);
-		
-		n = n->rb_left;
-	}
-}
-
-/*
  * add drq to rbtree and fifo
  */
 static void
@@ -523,26 +505,22 @@ dispatch_find_request:
 	/*
 	 * we are not running a batch, find best request for selected data_dir
 	 */
-	if (deadline_check_fifo(dd, data_dir)) {
-		/* An expired request exists - satisfy it */
-		dd->batching = 0;
+	if (deadline_check_fifo(dd, data_dir) || !dd->next_drq[data_dir]) {
+		/*
+		 * A deadline has expired, the last requeue was in the other
+		 * direction, or we have run out of higher-sectored requests.
+		 * Start again from the request with the earliest expiry time.
+		 */
 		drq = list_entry_fifo(dd->fifo_list[data_dir].next);
-		
-	} else if (dd->next_drq[data_dir]) {
+	} else {
 		/*
 		 * The last req was the same dir and we have a next request in
 		 * sort order. No expired requests so continue on from here.
 		 */
 		drq = dd->next_drq[data_dir];
-	} else {
-		/*
-		 * The last req was the other direction or we have run out of
-		 * higher-sectored requests. Go back to the lowest sectored
-		 * request (1 way elevator) and start a new batch.
-		 */
-		dd->batching = 0;
-		drq = deadline_find_first_drq(dd, data_dir);
 	}
+
+	dd->batching = 0;
 
 dispatch_request:
 	/*

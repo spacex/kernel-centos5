@@ -38,6 +38,8 @@
 #define HPAGE_MASK	(~(HPAGE_SIZE - 1))
 #define HUGETLB_PAGE_ORDER	(HPAGE_SHIFT - PAGE_SHIFT)
 
+#define ARCH_HAS_SETCLEAR_HUGE_PTE
+
 #ifndef __ASSEMBLY__
 
 extern unsigned long end_pfn;

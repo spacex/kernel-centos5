@@ -196,6 +196,59 @@ void pci_walk_bus(struct pci_bus *top, void (*cb)(struct pci_dev *, void *),
 }
 EXPORT_SYMBOL_GPL(pci_walk_bus);
 
+/** pci_walk_bus_int - walk devices on/under bus, calling callback.
+ *  @top      bus whose devices should be walked
+ *  @cb       int callback to be called for each device found
+ *  @userdata arbitrary pointer to be passed to callback.
+ *
+ *  Walk the given bus, including any bridged devices
+ *  on buses under this bus.  Call the provided callback
+ *  on each device found.
+ *
+ *  We check the return of @cb each time. If it returns anything
+ *  other than 0, we break out.
+ *
+ *  This is upstream's implementation of pci_walk_bus.
+ */
+void pci_walk_bus_int(struct pci_bus *top, int (*cb)(struct pci_dev *, void *),
+		      void *userdata)
+{
+	struct pci_dev *dev;
+	struct pci_bus *bus;
+	struct list_head *next;
+	int retval;
+
+	bus = top;
+	down_read(&pci_bus_sem);
+	next = top->devices.next;
+	for (;;) {
+		if (next == &bus->devices) {
+			/* end of this bus, go up or finish */
+			if (bus == top)
+				break;
+			next = bus->self->bus_list.next;
+			bus = bus->self->bus;
+			continue;
+		}
+		dev = list_entry(next, struct pci_dev, bus_list);
+		if (dev->subordinate) {
+			/* this is a pci-pci bridge, do its devices next */
+			next = dev->subordinate->devices.next;
+			bus = dev->subordinate;
+		} else
+			next = dev->bus_list.next;
+
+		/* Run device routines with the device locked */
+		down(&dev->dev.sem);
+		retval = cb(dev, userdata);
+		up(&dev->dev.sem);
+		if (retval)
+			break;
+	}
+	up_read(&pci_bus_sem);
+}
+EXPORT_SYMBOL_GPL(pci_walk_bus_int);
+
 EXPORT_SYMBOL(pci_bus_alloc_resource);
 EXPORT_SYMBOL_GPL(pci_bus_add_device);
 EXPORT_SYMBOL(pci_bus_add_devices);

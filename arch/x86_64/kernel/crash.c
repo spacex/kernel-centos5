@@ -160,7 +160,7 @@ static void nmi_shootdown_cpus(void)
 
 	msecs = 1000; /* Wait at most a second for the other cpus to stop */
 	while ((atomic_read(&waiting_for_crash_ipi) > 0) && msecs) {
-		mdelay(1);
+		udelay(1000);
 		msecs--;
 	}
 	/* Leave the nmi callback set */

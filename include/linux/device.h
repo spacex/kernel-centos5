@@ -93,6 +93,8 @@ extern struct blocking_notifier_head *get_notifier_for_bus(struct bus_type *bus)
 #define BUS_NOTIFY_DEL_DEVICE		0x00000002 /* device removed */
 #define BUS_NOTIFY_BOUND_DRIVER		0x00000003 /* driver bound to device */
 #define BUS_NOTIFY_UNBIND_DRIVER	0x00000004 /* about to be unbound */
+#define BUS_NOTIFY_UNBOUND_DRIVER	0x00000005 /* driver is unbound
+						      from the device */
 
 /* driverfs interface for exporting bus attributes */
 

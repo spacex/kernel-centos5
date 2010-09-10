@@ -119,6 +119,9 @@ struct pci_cap_saved_state {
 	u32 data[0];
 };
 
+struct pci_sriov;
+struct pci_ats;
+
 /*
  * The pci_dev structure is used to describe PCI devices.
  */
@@ -208,7 +211,11 @@ struct pci_dev {
 #ifdef CONFIG_DMAR
 	void *iommu; /* hook for IOMMU specific extension */
 #endif
+#ifdef CONFIG_PCI_IOV
+	struct pci_ats *ats; /* Address Translation Service */
 #endif
+	unsigned int aer_firmware_first:1;
+#endif /* !__GENKSYMS__ */
 };
 
 #define pci_dev_g(n) list_entry(n, struct pci_dev, global_list)
@@ -297,6 +304,15 @@ struct pci_bus {
 #define to_pci_bus(n)	container_of(n, struct pci_bus, class_dev)
 
 /*
+ * Returns true if the pci bus is root (behind host-pci bridge),
+ * false otherwise
+ */
+static inline bool pci_is_root_bus(struct pci_bus *pbus)
+{
+	return !(pbus->parent);
+}
+
+/*
  * Error values that may be returned by PCI functions.
  */
 #define PCIBIOS_SUCCESSFUL		0x00
@@ -322,6 +338,7 @@ struct pci_raw_ops {
 };
 
 extern struct pci_raw_ops *raw_pci_ops;
+extern struct pci_raw_ops *raw_pci_ext_ops;
 
 #ifdef CONFIG_64BIT
 struct pci_bus_region {
@@ -525,7 +542,13 @@ struct pci_dev *pci_get_subsys (unsigned int vendor, unsigned int device,
 				unsigned int ss_vendor, unsigned int ss_device,
 				struct pci_dev *from);
 struct pci_dev *pci_get_slot (struct pci_bus *bus, unsigned int devfn);
-struct pci_dev *pci_get_bus_and_slot (unsigned int bus, unsigned int devfn);
+struct pci_dev *pci_get_domain_bus_and_slot(int domain, unsigned int bus,
+					    unsigned int devfn);
+static inline struct pci_dev *pci_get_bus_and_slot(unsigned int bus,
+						   unsigned int devfn)
+{
+	return pci_get_domain_bus_and_slot(0, bus, devfn);
+}
 struct pci_dev *pci_get_class (unsigned int class, struct pci_dev *from);
 int pci_dev_present(const struct pci_device_id *ids);
 
@@ -535,6 +558,7 @@ int pci_bus_read_config_dword (struct pci_bus *bus, unsigned int devfn, int wher
 int pci_bus_write_config_byte (struct pci_bus *bus, unsigned int devfn, int where, u8 val);
 int pci_bus_write_config_word (struct pci_bus *bus, unsigned int devfn, int where, u16 val);
 int pci_bus_write_config_dword (struct pci_bus *bus, unsigned int devfn, int where, u32 val);
+struct pci_ops *pci_bus_set_ops(struct pci_bus *bus, struct pci_ops *ops);
 
 static inline int pci_read_config_byte(struct pci_dev *dev, int where, u8 *val)
 {
@@ -575,6 +599,7 @@ int pci_enable_device_io(struct pci_dev *dev);
 int pci_enable_device_mem(struct pci_dev *dev);
 void pci_disable_device(struct pci_dev *dev);
 void pci_set_master(struct pci_dev *dev);
+void pci_clear_master(struct pci_dev *dev);
 int pci_set_pcie_reset_state(struct pci_dev *dev, enum pcie_reset_state state);
 #define HAVE_PCI_SET_MWI
 int pci_set_mwi(struct pci_dev *dev);
@@ -650,6 +675,8 @@ int pci_scan_bridge(struct pci_bus *bus, struct pci_dev * dev, int max, int pass
 
 void pci_walk_bus(struct pci_bus *top, void (*cb)(struct pci_dev *, void *),
 		  void *userdata);
+void pci_walk_bus_int(struct pci_bus *top, int (*cb)(struct pci_dev *, void *),
+		      void *userdata);
 int pci_cfg_space_size(struct pci_dev *dev);
 unsigned char pci_bus_max_busnr(struct pci_bus* bus);
 
@@ -691,6 +718,7 @@ static inline int pci_enable_msix(struct pci_dev* dev,
 static inline void pci_disable_msix(struct pci_dev *dev) {}
 static inline void msi_remove_pci_irq_vectors(struct pci_dev *dev) {}
 static inline void pci_restore_msi_state(struct pci_dev *dev) {}
+static inline int pci_msi_enabled(void) {return 0;}
 #ifdef CONFIG_XEN
 #define register_msi_get_owner(func) 0
 #define unregister_msi_get_owner(func) 0
@@ -707,6 +735,9 @@ extern void pci_restore_msi_state(struct pci_dev *dev);
 #ifdef CONFIG_XEN
 extern int register_msi_get_owner(int (*func)(struct pci_dev *dev));
 extern int unregister_msi_get_owner(int (*func)(struct pci_dev *dev));
+static inline int pci_msi_enabled(void) { return 0;}
+#else
+extern int pci_msi_enabled(void);
 #endif
 #endif
 
@@ -716,6 +747,17 @@ static inline void restore_pcie_reg(struct pci_dev *dev) {}
 #else
 extern int save_pcie_reg(struct pci_dev *dev);
 extern void restore_pcie_reg(struct pci_dev *dev);
+#endif
+
+#ifndef CONFIG_PCIE_ECRC
+static inline void pcie_set_ecrc_checking(struct pci_dev *dev)
+{
+	return;
+}
+static inline void pcie_ecrc_get_policy(char *str) {};
+#else
+extern void pcie_set_ecrc_checking(struct pci_dev *dev);
+extern void pcie_ecrc_get_policy(char *str);
 #endif
 
 extern void pci_block_user_cfg_access(struct pci_dev *dev);
@@ -906,6 +948,10 @@ extern int pci_pci_problems;
 #define PCIPCI_VSFX		16
 #define PCIPCI_ALIMAGIK		32
 
+int pci_ext_cfg_avail(struct pci_dev *dev);
+
+void __iomem *pci_ioremap_bar(struct pci_dev *pdev, int bar);
+
 #ifdef CONFIG_PCI_IOV
 extern int pci_enable_sriov(struct pci_dev *dev, int nr_virtfn);
 extern void pci_disable_sriov(struct pci_dev *dev);
@@ -918,6 +964,8 @@ static inline void pci_disable_sriov(struct pci_dev *dev)
 {
 }
 #endif
+
+void pci_request_acs(void);
 
 #endif /* __KERNEL__ */
 #endif /* LINUX_PCI_H */

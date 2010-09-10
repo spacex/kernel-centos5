@@ -155,6 +155,7 @@ struct obs_kernel_param {
 
 /* Relies on saved_command_line being set */
 void __init parse_early_param(void);
+int __init nosmp(char *str);
 #endif /* __ASSEMBLY__ */
 
 /**

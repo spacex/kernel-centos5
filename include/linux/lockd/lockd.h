@@ -61,6 +61,9 @@ struct nlm_host {
 	spinlock_t		h_lock;
 	struct list_head	h_granted;	/* Locks in GRANTED state */
 	struct list_head	h_reclaim;	/* Locks in RECLAIM state */
+#ifndef __GENKSYMS__
+	struct sockaddr_in	h_saddr;	/* our address (optional) */
+#endif
 };
 
 /*
@@ -174,7 +177,7 @@ int		  nlmclnt_reclaim(struct nlm_host *, struct file_lock *);
  */
 struct nlm_host * nlmclnt_lookup_host(struct sockaddr_in *, int, int);
 struct nlm_host * nlmsvc_lookup_host(struct svc_rqst *);
-struct nlm_host * nlm_lookup_host(int server, struct sockaddr_in *, int, int);
+struct nlm_host * nlm_lookup_host(int server, struct sockaddr_in *, int, int, struct sockaddr_in *);
 struct rpc_clnt * nlm_bind_host(struct nlm_host *);
 void		  nlm_rebind_host(struct nlm_host *);
 struct nlm_host * nlm_get_host(struct nlm_host *);

@@ -40,6 +40,10 @@ extern void (*mtrr_hook) (void);
 extern void zap_low_mappings (void);
 extern void lock_ipi_call_lock(void);
 extern void unlock_ipi_call_lock(void);
+int smp_call_function_single(int cpu, void (*func) (void *info), void *info,
+			     int nonatomic, int wait);
+void smp_call_function_many(cpumask_t *mask, void (*func) (void *info),
+			    void *info, int nonatomic, int wait);
 
 #define MAX_APICID 256
 extern u8 x86_cpu_to_apicid[];

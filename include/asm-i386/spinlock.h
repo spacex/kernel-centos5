@@ -199,4 +199,8 @@ static inline void __raw_write_unlock(raw_rwlock_t *rw)
 				 : "+m" (rw->lock) : : "memory");
 }
 
+/* The {read|write|spin}_lock() on x86 are full memory barriers. */
+static inline void smp_mb__after_lock(void) { }
+#define ARCH_HAS_SMP_MB_AFTER_LOCK
+
 #endif /* __ASM_SPINLOCK_H */

@@ -343,7 +343,10 @@ void gfs2_statfs_change(struct gfs2_sbd *sdp, s64 total, s64 free,
 {
 	struct gfs2_inode *l_ip = GFS2_I(sdp->sd_sc_inode);
 	struct gfs2_statfs_change_host *l_sc = &sdp->sd_statfs_local;
+	struct gfs2_statfs_change_host *m_sc = &sdp->sd_statfs_master;
 	struct buffer_head *l_bh;
+	s64 x, y;
+	int need_sync = 0;
 	int error;
 
 	error = gfs2_meta_inode_buffer(l_ip, &l_bh);
@@ -356,9 +359,17 @@ void gfs2_statfs_change(struct gfs2_sbd *sdp, s64 total, s64 free,
 	l_sc->sc_free += free;
 	l_sc->sc_dinodes += dinodes;
 	gfs2_statfs_change_out(l_sc, l_bh->b_data + sizeof(struct gfs2_dinode));
+	if (sdp->sd_args.ar_statfs_percent) {
+		x = 100 * l_sc->sc_free;
+		y = m_sc->sc_free * sdp->sd_args.ar_statfs_percent;
+		if (x >= y || x <= -y)
+			need_sync = 1;
+	}
 	spin_unlock(&sdp->sd_statfs_spin);
 
 	brelse(l_bh);
+	if (need_sync)
+		gfs2_wake_up_statfs(sdp);
 }
 
 void update_statfs(struct gfs2_sbd *sdp, struct buffer_head *m_bh,
@@ -420,6 +431,7 @@ int gfs2_statfs_sync(struct gfs2_sbd *sdp)
 		goto out_bh2;
 
 	update_statfs(sdp, m_bh, l_bh);
+	sdp->sd_statfs_force_sync = 0;
 
 	gfs2_trans_end(sdp);
 

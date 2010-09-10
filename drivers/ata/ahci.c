@@ -478,6 +478,7 @@ static const struct pci_device_id ahci_pci_tbl[] = {
 	{ PCI_VDEVICE(INTEL, 0x502a), board_ahci }, /* Tolapai */
 	{ PCI_VDEVICE(INTEL, 0x502b), board_ahci }, /* Tolapai */
 	{ PCI_VDEVICE(INTEL, 0x3a05), board_ahci }, /* ICH10 */
+	{ PCI_VDEVICE(INTEL, 0x3a22), board_ahci }, /* ICH10 */
 	{ PCI_VDEVICE(INTEL, 0x3a25), board_ahci }, /* ICH10 */
 	{ PCI_VDEVICE(INTEL, 0x3b22), board_ahci }, /* PCH AHCI */
 	{ PCI_VDEVICE(INTEL, 0x3b23), board_ahci }, /* PCH AHCI */
@@ -500,6 +501,12 @@ static const struct pci_device_id ahci_pci_tbl[] = {
 	{ PCI_VDEVICE(ATI, 0x4393), board_ahci_sb700 }, /* ATI SB700/800 */
 	{ PCI_VDEVICE(ATI, 0x4394), board_ahci_sb700 }, /* ATI SB700/800 */
 	{ PCI_VDEVICE(ATI, 0x4395), board_ahci_sb700 }, /* ATI SB700/800 */
+
+	/* AMD */
+	{ PCI_VDEVICE(AMD, 0x7800), board_ahci }, /* AMD Hudson-2 */
+	/* AMD is using RAID class only for ahci controllers */
+	{ PCI_VENDOR_ID_AMD, PCI_ANY_ID, PCI_ANY_ID, PCI_ANY_ID,
+	  PCI_CLASS_STORAGE_RAID << 8, 0xffffff, board_ahci },
 
 	/* VIA */
 	{ PCI_VDEVICE(VIA, 0x3349), board_ahci_vt8251 }, /* VIA VT8251 */
@@ -2285,8 +2292,9 @@ static int ahci_pci_device_resume(struct pci_dev *pdev)
 	struct ata_host *host = dev_get_drvdata(&pdev->dev);
 	int rc;
 
-	if (pdev->vendor == PCI_VENDOR_ID_ATI &&
-	    (pdev->device == 0x4380 || pdev->device == 0x4390)) {
+	if ((pdev->vendor == PCI_VENDOR_ID_AMD && pdev->device == 0x7800) ||
+	    (pdev->vendor == PCI_VENDOR_ID_ATI &&
+	     (pdev->device == 0x4380 || pdev->device == 0x4390))) {
 		u8 tmp;
 		pci_read_config_byte(pdev, PCI_CLASS_DEVICE, &tmp);
 		if (tmp == 0x01) {

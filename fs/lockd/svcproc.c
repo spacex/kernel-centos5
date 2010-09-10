@@ -470,6 +470,7 @@ nlmsvc_proc_sm_notify(struct svc_rqst *rqstp, struct nlm_reboot *argp,
 					      void	        *resp)
 {
 	struct sockaddr_in	saddr = rqstp->rq_addr;
+	struct sockaddr_in	anyaddr = {0};
 	int			vers = argp->vers;
 	int			prot = argp->proto >> 1;
 	struct nlm_host		*host;
@@ -495,7 +496,7 @@ nlmsvc_proc_sm_notify(struct svc_rqst *rqstp, struct nlm_reboot *argp,
 		}
 	} else {
 		/* If we run on an NFS server, delete all locks held by the client */
-		if ((host = nlm_lookup_host(1, &saddr, prot, vers)) != NULL) {
+		if ((host = nlm_lookup_host(1, &saddr, prot, vers, &anyaddr)) != NULL) {
 			nlmsvc_free_host_resources(host);
 			nlm_release_host(host);
 		}

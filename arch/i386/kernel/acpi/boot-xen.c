@@ -64,7 +64,7 @@ static inline int gsi_irq_sharing(int gsi) { return gsi; }
 #define PREFIX			"ACPI: "
 
 int acpi_noirq;	/* skip ACPI IRQ initialization */
-int acpi_pci_disabled __initdata;	/* skip ACPI PCI scan and IRQ initialization */
+int acpi_pci_disabled;	/* skip ACPI PCI scan and IRQ initialization */
 int acpi_ht __initdata = 1;	/* enable HT */
 
 int acpi_lapic;

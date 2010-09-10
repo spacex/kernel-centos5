@@ -5004,7 +5004,7 @@ static inline struct task_struct *younger_sibling(struct task_struct *p)
 
 static const char stat_nam[] = "RSDTtZX";
 
-static void show_task(struct task_struct *p)
+void sched_show_task(struct task_struct *p)
 {
 	struct task_struct *relative;
 	unsigned long free = 0;
@@ -5073,7 +5073,7 @@ void show_state(void)
 		 * console might take alot of time:
 		 */
 		touch_nmi_watchdog();
-		show_task(p);
+		sched_show_task(p);
 	} while_each_thread(g, p);
 
 	touch_all_softlockup_watchdogs();

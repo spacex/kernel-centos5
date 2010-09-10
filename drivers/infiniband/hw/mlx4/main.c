@@ -465,13 +465,15 @@ static int mlx4_ib_mcg_attach(struct ib_qp *ibqp, union ib_gid *gid, u16 lid)
 	return mlx4_multicast_attach(to_mdev(ibqp->device)->dev,
 				     &to_mqp(ibqp)->mqp, gid->raw,
 				     !!(to_mqp(ibqp)->flags &
-					MLX4_IB_QP_BLOCK_MULTICAST_LOOPBACK));
+					MLX4_IB_QP_BLOCK_MULTICAST_LOOPBACK),
+				     MLX4_PROT_IB_IPV6);
 }
 
 static int mlx4_ib_mcg_detach(struct ib_qp *ibqp, union ib_gid *gid, u16 lid)
 {
 	return mlx4_multicast_detach(to_mdev(ibqp->device)->dev,
-				     &to_mqp(ibqp)->mqp, gid->raw);
+				     &to_mqp(ibqp)->mqp, gid->raw,
+				     MLX4_PROT_IB_IPV6);
 }
 
 static int init_node_data(struct mlx4_ib_dev *dev)

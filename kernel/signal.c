@@ -28,6 +28,7 @@
 #include <asm/unistd.h>
 #include <asm/siginfo.h>
 #include "audit.h"	/* audit_signal_info() */
+#include <trace/signal.h>
 
 /*
  * SLAB caches for signal bits.
@@ -652,12 +653,21 @@ static int send_signal(int sig, struct siginfo *info, struct task_struct *t,
 			break;
 		}
 	} else if (!is_si_special(info)) {
-		if (sig >= SIGRTMIN && info->si_code != SI_USER)
-		/*
-		 * Queue overflow, abort.  We may abort if the signal was rt
-		 * and sent by user using something other than kill().
-		 */
+		if (sig >= SIGRTMIN && info->si_code != SI_USER) {
+			/*
+			 * Queue overflow, abort.  We may abort if the
+			 * signal was rt and sent by user using something
+			 * other than kill().
+			 */
+			trace_signal_overflow_fail(sig, info);
 			return -EAGAIN;
+		} else {
+			/*
+			 * This is a silent loss of information.  We still
+			 * send the signal, but the *info bits are lost.
+			 */
+			trace_signal_lose_info(sig, info);
+		}
 	}
 
 out_set:
@@ -705,6 +715,8 @@ static int
 specific_send_sig_info(int sig, struct siginfo *info, struct task_struct *t)
 {
 	int ret = 0;
+
+	trace_signal_generate(sig, info, t);
 
 	BUG_ON(!irqs_disabled());
 	assert_spin_locked(&t->sighand->siglock);
@@ -893,6 +905,8 @@ int
 __group_send_sig_info(int sig, struct siginfo *info, struct task_struct *p)
 {
 	int ret = 0;
+
+	trace_signal_generate(sig, info, p);
 
 	assert_spin_locked(&p->sighand->siglock);
 	handle_stop_signal(sig, p);
@@ -1638,6 +1652,9 @@ relock:
 				break; /* will return 0 */
 			ka = &current->sighand->action[signr-1];
 		}
+
+		/* Trace actually delivered signals. */
+		trace_signal_deliver(signr, info, ka);
 
 		if (ka->sa.sa_handler == SIG_IGN) /* Do nothing.  */
 			continue;

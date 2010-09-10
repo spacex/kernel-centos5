@@ -71,6 +71,8 @@ extern void dmi_scan_machine(void);
 extern int dmi_get_year(int field);
 extern int dmi_name_in_vendors(char *str);
 extern int dmi_name_in_serial(const char *str);
+extern int dmi_available;
+extern int dmi_walk(void (*decode)(const struct dmi_header *));
 
 #else
 
@@ -81,6 +83,9 @@ static inline struct dmi_device * dmi_find_device(int type, const char *name,
 static inline int dmi_get_year(int year) { return 0; }
 static inline int dmi_name_in_vendors(char *s) { return 0; }
 static inline int dmi_name_in_serial(const char *s) { return 0; }
+#define dmi_available 0
+static inline int dmi_walk(void (*decode)(const struct dmi_header *))
+	{ return -1; }
 
 #endif
 

@@ -1,5 +1,5 @@
 /*
-	Copyright (C) 2004 - 2008 rt2x00 SourceForge Project
+	Copyright (C) 2004 - 2009 rt2x00 SourceForge Project
 	<http://rt2x00.serialmonkey.com>
 
 	This program is free software; you can redistribute it and/or modify
@@ -39,8 +39,6 @@
  * Signal information.
  * Defaul offset is required for RSSI <-> dBm conversion.
  */
-#define MAX_SIGNAL			100
-#define MAX_RX_SSI			-1
 #define DEFAULT_RSSI_OFFSET		120
 
 /*
@@ -50,8 +48,15 @@
 #define CSR_REG_SIZE			0x04b0
 #define EEPROM_BASE			0x0000
 #define EEPROM_SIZE			0x0100
+#define BBP_BASE			0x0000
 #define BBP_SIZE			0x0080
-#define RF_SIZE				0x0014
+#define RF_BASE				0x0004
+#define RF_SIZE				0x0010
+
+/*
+ * Number of TX queues.
+ */
+#define NUM_TX_QUEUES			4
 
 /*
  * USB registers.
@@ -89,6 +94,16 @@
 #define PAIRWISE_KEY_TABLE_BASE		0x1200
 #define PAIRWISE_TA_TABLE_BASE		0x1a00
 
+#define SHARED_KEY_ENTRY(__idx) \
+	( SHARED_KEY_TABLE_BASE + \
+		((__idx) * sizeof(struct hw_key_entry)) )
+#define PAIRWISE_KEY_ENTRY(__idx) \
+	( PAIRWISE_KEY_TABLE_BASE + \
+		((__idx) * sizeof(struct hw_key_entry)) )
+#define PAIRWISE_TA_ENTRY(__idx) \
+	( PAIRWISE_TA_TABLE_BASE + \
+		((__idx) * sizeof(struct hw_pairwise_ta_entry)) )
+
 struct hw_key_entry {
 	u8 key[16];
 	u8 tx_mic[8];
@@ -97,7 +112,8 @@ struct hw_key_entry {
 
 struct hw_pairwise_ta_entry {
 	u8 address[6];
-	u8 reserved[2];
+	u8 cipher;
+	u8 reserved;
 } __attribute__ ((packed));
 
 /*
@@ -251,6 +267,19 @@ struct hw_pairwise_ta_entry {
  * MAC_CSR13: GPIO.
  */
 #define MAC_CSR13			0x3034
+#define MAC_CSR13_BIT0			FIELD32(0x00000001)
+#define MAC_CSR13_BIT1			FIELD32(0x00000002)
+#define MAC_CSR13_BIT2			FIELD32(0x00000004)
+#define MAC_CSR13_BIT3			FIELD32(0x00000008)
+#define MAC_CSR13_BIT4			FIELD32(0x00000010)
+#define MAC_CSR13_BIT5			FIELD32(0x00000020)
+#define MAC_CSR13_BIT6			FIELD32(0x00000040)
+#define MAC_CSR13_BIT7			FIELD32(0x00000080)
+#define MAC_CSR13_BIT8			FIELD32(0x00000100)
+#define MAC_CSR13_BIT9			FIELD32(0x00000200)
+#define MAC_CSR13_BIT10			FIELD32(0x00000400)
+#define MAC_CSR13_BIT11			FIELD32(0x00000800)
+#define MAC_CSR13_BIT12			FIELD32(0x00001000)
 
 /*
  * MAC_CSR14: LED control register.
@@ -560,6 +589,10 @@ struct hw_pairwise_ta_entry {
  * SEC_CSR4: Pairwise key table lookup control.
  */
 #define SEC_CSR4			0x30b0
+#define SEC_CSR4_ENABLE_BSS0		FIELD32(0x00000001)
+#define SEC_CSR4_ENABLE_BSS1		FIELD32(0x00000002)
+#define SEC_CSR4_ENABLE_BSS2		FIELD32(0x00000004)
+#define SEC_CSR4_ENABLE_BSS3		FIELD32(0x00000008)
 
 /*
  * SEC_CSR5: shared key table security mode register.
@@ -776,7 +809,7 @@ struct hw_pairwise_ta_entry {
 
 /*
  * EEPROM antenna.
- * ANTENNA_NUM: Number of antenna's.
+ * ANTENNA_NUM: Number of antennas.
  * TX_DEFAULT: Default antenna 0: diversity, 1: A, 2: B.
  * RX_DEFAULT: Default antenna 0: diversity, 1: A, 2: B.
  * FRAME_TYPE: 0: DPDT , 1: SPDT , noted this bit is valid for g only.
@@ -1007,8 +1040,10 @@ struct hw_pairwise_ta_entry {
 
 /*
  * Word4
+ * ICV: Received ICV of originally encrypted.
+ * NOTE: This is a guess, the official definition is "reserved"
  */
-#define RXD_W4_RESERVED			FIELD32(0xffffffff)
+#define RXD_W4_ICV			FIELD32(0xffffffff)
 
 /*
  * the above 20-byte is called RXINFO and will be DMAed to MAC RX block
@@ -1023,24 +1058,17 @@ struct hw_pairwise_ta_entry {
 #define RXD_W5_RESERVED			FIELD32(0xffffffff)
 
 /*
- * Macro's for converting txpower from EEPROM to mac80211 value
+ * Macros for converting txpower from EEPROM to mac80211 value
  * and from mac80211 value to register value.
  */
 #define MIN_TXPOWER	0
 #define MAX_TXPOWER	31
 #define DEFAULT_TXPOWER	24
 
-#define TXPOWER_FROM_DEV(__txpower)		\
-({						\
-	((__txpower) > MAX_TXPOWER) ?		\
-		DEFAULT_TXPOWER : (__txpower);	\
-})
+#define TXPOWER_FROM_DEV(__txpower) \
+	(((u8)(__txpower)) > MAX_TXPOWER) ? DEFAULT_TXPOWER : (__txpower)
 
-#define TXPOWER_TO_DEV(__txpower)			\
-({							\
-	((__txpower) <= MIN_TXPOWER) ? MIN_TXPOWER :	\
-	(((__txpower) >= MAX_TXPOWER) ? MAX_TXPOWER :	\
-	(__txpower));					\
-})
+#define TXPOWER_TO_DEV(__txpower) \
+	clamp_t(char, __txpower, MIN_TXPOWER, MAX_TXPOWER)
 
 #endif /* RT73USB_H */

@@ -1,7 +1,4 @@
-/* Get the upper 32bit of the given dma_addr_t
- * Compiler should optimize and eliminate the code if dma_addr_t is 32bit
- */
-#define upper_32bit(addr) (sizeof(addr) > 4 ? (u32)((addr) >> 32) : (u32)0)
+#define BIT_MASK(w) BIT(w)
 
 static inline u64 get_unaligned_le64(const unsigned char *addr)
 {
@@ -37,6 +34,21 @@ static inline char *kstrndup(const char *s, size_t max, gfp_t gfp)
         return buf;
 }
 
+static inline
+int snd_pcm_sgbuf_get_chunk_size(struct snd_pcm_substream *substream,
+                                 unsigned long ofs, unsigned long size)
+{
+        unsigned long res = PAGE_SIZE - (ofs % PAGE_SIZE);
+        if (size < res)
+                res = size;
+        return res;
+}
+
+static inline
+void cancel_work_sync(struct work_struct *work)
+{
+}
+
 /* Realtek codecs */
 extern struct hda_codec_preset_list realtek_list[];
 /* C-Media codecs */
@@ -57,6 +69,10 @@ extern struct hda_codec_preset_list nvhdmi_list[];
 extern struct hda_codec_preset_list conexant_list[];
 /* VIA codecs */
 extern struct hda_codec_preset_list via_list[];
+/* CA0110 (Creative) codecs */
+extern struct hda_codec_preset_list ca0110_list[];
+/* Cirrus codecs */
+extern struct hda_codec_preset_list cirrus_list[];
 
 #ifdef PRESETS
 static struct hda_codec_preset_list *hda_preset_table[] = {
@@ -69,6 +85,8 @@ static struct hda_codec_preset_list *hda_preset_table[] = {
         intel_list,
         conexant_list,
         via_list,
+        ca0110_list,
+        cirrus_list,
         NULL
 };
 

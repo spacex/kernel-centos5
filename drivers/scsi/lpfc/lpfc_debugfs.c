@@ -54,8 +54,7 @@
  * debugfs interface
  *
  * To access this interface the user should:
- * # mkdir /debug
- * # mount -t debugfs none /debug
+ * # mount -t debugfs none /sys/kernel/debug
  *
  * The lpfc debugfs directory hierachy is:
  * lpfc/lpfcX/vportY
@@ -1259,7 +1258,7 @@ lpfc_debugfs_initialize(struct lpfc_vport *vport)
 			debugfs_create_dir(name, phba->hba_debugfs_root);
 		if (!vport->vport_debugfs_root) {
 			lpfc_printf_vlog(vport, KERN_ERR, LOG_INIT,
-					 "0417 Cant create debugfs");
+					 "0417 Cant create debugfs\n");
 			goto debug_failed;
 		}
 		atomic_inc(&phba->debugfs_vport_count);
@@ -1312,7 +1311,7 @@ lpfc_debugfs_initialize(struct lpfc_vport *vport)
 				 vport, &lpfc_debugfs_op_nodelist);
 	if (!vport->debug_nodelist) {
 		lpfc_printf_vlog(vport, KERN_ERR, LOG_INIT,
-				 "0409 Cant create debugfs nodelist");
+				 "0409 Cant create debugfs nodelist\n");
 		goto debug_failed;
 	}
 debug_failed:

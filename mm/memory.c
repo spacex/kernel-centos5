@@ -1900,6 +1900,9 @@ unlock:
 		if (flush_mmap_pages || !dirty_pte)
 			set_page_dirty_balance(dirty_page);
 		put_page(dirty_page);
+
+		if (vma->vm_file)
+			file_update_time(vma->vm_file);
 	}
 	return ret;
 oom:
@@ -2561,6 +2564,9 @@ unlock:
 		if (flush_mmap_pages || !dirty_pte)
 			set_page_dirty_balance(dirty_page);
 		put_page(dirty_page);
+
+		if (vma->vm_file)
+			file_update_time(vma->vm_file);
 	}
 	return ret;
 oom:

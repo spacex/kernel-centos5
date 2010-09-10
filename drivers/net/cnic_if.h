@@ -12,8 +12,11 @@
 #ifndef CNIC_IF_H
 #define CNIC_IF_H
 
-#define CNIC_MODULE_VERSION	"2.0.1"
-#define CNIC_MODULE_RELDATE	"Oct 01, 2009"
+#include <linux/in.h>
+#include <linux/in6.h>
+
+#define CNIC_MODULE_VERSION	"2.1.0"
+#define CNIC_MODULE_RELDATE	"Oct 10, 2009"
 
 #define CNIC_ULP_RDMA		0
 #define CNIC_ULP_ISCSI		1
@@ -81,6 +84,8 @@ struct kcqe {
 #define DRV_CTL_CTX_WR_CMD		0x103
 #define DRV_CTL_CTXTBL_WR_CMD		0x104
 #define DRV_CTL_COMPLETION_CMD		0x105
+#define DRV_CTL_START_L2_CMD		0x106
+#define DRV_CTL_STOP_L2_CMD		0x107
 
 struct cnic_ctl_completion {
 	u32	cid;
@@ -105,11 +110,17 @@ struct drv_ctl_io {
 	dma_addr_t	dma_addr;
 };
 
+struct drv_ctl_l2_ring {
+	u32		client_id;
+	u32		cid;
+};
+
 struct drv_ctl_info {
 	int	cmd;
 	union {
 		struct drv_ctl_completion comp;
 		struct drv_ctl_io io;
+		struct drv_ctl_l2_ring ring;
 		char bytes[MAX_DRV_CTL_DATA];
 	} data;
 };
@@ -143,6 +154,7 @@ struct cnic_eth_dev {
 	u32		max_kwqe_pending;
 	struct pci_dev	*pdev;
 	void __iomem	*io_base;
+	void __iomem	*io_base2;
 
 	u32		ctx_tbl_offset;
 	u32		ctx_tbl_len;

@@ -42,6 +42,7 @@
 #include <linux/efi.h>
 #include <linux/init.h>
 #include <linux/edd.h>
+#include <linux/iscsi_ibft.h>
 #include <linux/nodemask.h>
 #include <linux/kexec.h>
 #include <linux/crash_dump.h>
@@ -1752,6 +1753,7 @@ void __init setup_arch(char **cmdline_p)
 	smp_alloc_memory(); /* AP processor realmode stacks in low memory*/
 #endif
 	paging_init();
+	reserve_ibft_region();
 	remapped_pgdat_init();
 	sparse_init();
 	zone_sizes_init();

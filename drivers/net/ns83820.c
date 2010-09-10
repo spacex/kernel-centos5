@@ -506,18 +506,6 @@ static void ns83820_vlan_rx_register(struct net_device *ndev, struct vlan_group 
 	spin_unlock(&dev->tx_lock);
 	spin_unlock_irq(&dev->misc_lock);
 }
-
-static void ns83820_vlan_rx_kill_vid(struct net_device *ndev, unsigned short vid)
-{
-	struct ns83820 *dev = PRIV(ndev);
-
-	spin_lock_irq(&dev->misc_lock);
-	spin_lock(&dev->tx_lock);
-	if (dev->vlgrp)
-		dev->vlgrp->vlan_devices[vid] = NULL;
-	spin_unlock(&dev->tx_lock);
-	spin_unlock_irq(&dev->misc_lock);
-}
 #endif
 
 /* Packet Receiver
@@ -2081,7 +2069,6 @@ static int __devinit ns83820_init_one(struct pci_dev *pci_dev, const struct pci_
 	/* We also support hardware vlan acceleration */
 	ndev->features |= NETIF_F_HW_VLAN_TX | NETIF_F_HW_VLAN_RX;
 	ndev->vlan_rx_register = ns83820_vlan_rx_register;
-	ndev->vlan_rx_kill_vid = ns83820_vlan_rx_kill_vid;
 #endif
 
 	if (using_dac) {

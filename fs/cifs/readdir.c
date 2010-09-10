@@ -77,7 +77,11 @@ construct_dentry(struct qstr *qstring, struct file *file,
 
 	cFYI(1, ("For %s", qstring->name));
 
-	qstring->hash = full_name_hash(qstring->name, qstring->len);
+	if (file->f_dentry->d_op && file->f_dentry->d_op->d_hash)
+		file->f_dentry->d_op->d_hash(file->f_dentry, qstring);
+	else
+		qstring->hash = full_name_hash(qstring->name, qstring->len);
+
 	tmp_dentry = d_lookup(file->f_dentry, qstring);
 	if (tmp_dentry) {
 		/* BB: overwrite old name? i.e. tmp_dentry->d_name and
@@ -925,12 +929,11 @@ static int cifs_get_name_from_search_buf(struct qstr *pqst,
 					   min(len, max_len), nlt,
 					   cifs_sb->mnt_cifs_flags &
 						CIFS_MOUNT_MAP_SPECIAL_CHR);
+		pqst->len -= nls_nullsize(nlt);
 	} else {
 		pqst->name = filename;
 		pqst->len = len;
 	}
-	pqst->hash = full_name_hash(pqst->name, pqst->len);
-/*	cFYI(1, ("filldir on %s",pqst->name));  */
 	return rc;
 }
 

@@ -31,6 +31,7 @@
 #include <linux/spinlock.h>
 #include <linux/pm.h>
 #include <linux/pci.h>
+#include <linux/pci-acpi.h>
 #include <linux/acpi.h>
 #include <acpi/acpi_bus.h>
 #include <acpi/acpi_drivers.h>
@@ -177,6 +178,7 @@ static int acpi_pci_root_add(struct acpi_device *device)
 	acpi_status status = AE_OK;
 	unsigned long value = 0;
 	acpi_handle handle = NULL;
+	u32 flags, base_flags;
 
 
 	if (!device)
@@ -197,6 +199,13 @@ static int acpi_pci_root_add(struct acpi_device *device)
 	 * TBD: Doesn't the bus driver automatically set this?
 	 */
 	device->ops.bind = acpi_pci_bind;
+
+        /*
+	 * All supported architectures that use ACPI have support for
+	 * PCI domains, so we indicate this in _OSC support capabilities.
+	 */
+	flags = base_flags = OSC_PCI_SEGMENT_GROUPS_SUPPORT;
+	pci_acpi_osc_support(device->handle, flags);
 
 	/* 
 	 * Segment
@@ -323,6 +332,11 @@ static int acpi_pci_root_add(struct acpi_device *device)
 	if (ACPI_SUCCESS(status))
 		result = acpi_pci_irq_add_prt(device->handle, root->id.segment,
 					      root->id.bus);
+	/* Indicate support for various _OSC capabilities. */
+	if (pci_ext_cfg_avail(root->bus->self))
+		flags |= OSC_EXT_PCI_CONFIG_SUPPORT;
+	if (flags != base_flags)
+		pci_acpi_osc_support(device->handle, flags);
 
       end:
 	if (result) {

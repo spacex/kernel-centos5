@@ -31,6 +31,7 @@ extern int gfs2_quota_refresh(struct gfs2_sbd *sdp, int user, u32 id);
 extern int gfs2_quota_init(struct gfs2_sbd *sdp);
 extern void gfs2_quota_scan(struct gfs2_sbd *sdp);
 extern void gfs2_quota_cleanup(struct gfs2_sbd *sdp);
+extern void gfs2_wake_up_statfs(struct gfs2_sbd *sdp);
 extern int gfs2_quotad(void *data);
 
 #endif /* __QUOTA_DOT_H__ */

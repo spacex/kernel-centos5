@@ -252,6 +252,11 @@ do {								\
 	1 : ({ local_irq_restore(flags); 0; }); \
 })
 
+/* The lock does not imply full memory barrier. */
+#ifndef ARCH_HAS_SMP_MB_AFTER_LOCK
+static inline void smp_mb__after_lock(void) { smp_mb(); }
+#endif
+
 /*
  * Pull the atomic_t declaration:
  * (asm-mips/atomic.h needs above definitions)

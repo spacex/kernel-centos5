@@ -361,9 +361,12 @@ struct l2_fhdr {
 #define BNX2_L2CTX_CTX_TYPE_CTX_BD_CHN_TYPE_VALUE	 (1<<28)
 
 #define BNX2_L2CTX_HOST_BDIDX				0x00000004
-#define BNX2_L2CTX_STATUSB_NUM_SHIFT			 16
-#define BNX2_L2CTX_STATUSB_NUM(sb_id)			 \
-	(((sb_id) > 0) ? (((sb_id) + 7) << BNX2_L2CTX_STATUSB_NUM_SHIFT) : 0)
+#define BNX2_L2CTX_L5_STATUSB_NUM_SHIFT			 16
+#define BNX2_L2CTX_L2_STATUSB_NUM_SHIFT			 24
+#define BNX2_L2CTX_L5_STATUSB_NUM(sb_id)		\
+	(((sb_id) > 0) ? (((sb_id) + 7) << BNX2_L2CTX_L5_STATUSB_NUM_SHIFT) : 0)
+#define BNX2_L2CTX_L2_STATUSB_NUM(sb_id)		\
+	(((sb_id) > 0) ? (((sb_id) + 7) << BNX2_L2CTX_L2_STATUSB_NUM_SHIFT) : 0)
 #define BNX2_L2CTX_HOST_BSEQ				0x00000008
 #define BNX2_L2CTX_NX_BSEQ				0x0000000c
 #define BNX2_L2CTX_NX_BDHADDR_HI			0x00000010
@@ -6542,6 +6545,8 @@ struct l2_fhdr {
 struct sw_bd {
 	struct sk_buff		*skb;
 	DECLARE_PCI_UNMAP_ADDR(mapping)
+	unsigned short		is_gso;
+	unsigned short		nr_frags;
 };
 
 struct sw_pg {
@@ -6708,6 +6713,7 @@ struct bnx2 {
 					 BNX2_FLAG_USING_MSIX)
 #define BNX2_FLAG_JUMBO_BROKEN		0x00000800
 #define BNX2_FLAG_CAN_KEEP_VLAN		0x00001000
+#define BNX2_FLAG_BROKEN_STATS		0x00002000
 
 	struct bnx2_napi	bnx2_napi[BNX2_MAX_MSIX_VEC];
 
@@ -6881,7 +6887,7 @@ struct bnx2 {
 
 	struct net_device_stats net_stats;
 
-	struct flash_spec	*flash_info;
+	const struct flash_spec	*flash_info;
 	u32			flash_size;
 
 	int			status_stats_size;
@@ -6969,6 +6975,10 @@ struct fw_info {
 	const u32 rodata_index;
 	const u32 *rodata;
 };
+
+#define RV2P_P1_FIXUP_PAGE_SIZE_IDX		0
+#define RV2P_BD_PAGE_SIZE_MSK			0xffff
+#define RV2P_BD_PAGE_SIZE			((BCM_PAGE_SIZE / 16) - 1)
 
 #define RV2P_PROC1                              0
 #define RV2P_PROC2                              1

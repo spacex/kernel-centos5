@@ -486,7 +486,8 @@ int netdev_register_sysfs(struct net_device *net)
 
 #ifdef WIRELESS_EXT
 	if (net->get_wireless_stats
-	    || (net->wireless_handlers && net->wireless_handlers->get_wireless_stats))
+	    || (net->wireless_handlers && net->wireless_handlers->get_wireless_stats)
+	    || net->ieee80211_ptr)
 		*groups++ = &wireless_group;
 #endif
 

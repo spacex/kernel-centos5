@@ -21,6 +21,7 @@
 #include <linux/time.h>
 #include <linux/fs.h>
 #include <linux/jbd2.h>
+#include <linux/mount.h>
 #include "ext4.h"
 #include "ext4_jbd2.h"
 #include "xattr.h"
@@ -39,7 +40,8 @@ static int ext4_release_file(struct inode *inode, struct file *filp)
 	}
 	/* if we are the last writer on the inode, drop the block reservation */
 	if ((filp->f_mode & FMODE_WRITE) &&
-			(atomic_read(&inode->i_writecount) == 1))
+			(atomic_read(&inode->i_writecount) == 1) &&
+		        !EXT4_I(inode)->i_reserved_data_blocks)
 	{
 		down_write(&EXT4_I(inode)->i_data_sem);
 		ext4_discard_preallocations(inode);
@@ -141,6 +143,38 @@ static int ext4_file_mmap(struct file *file, struct vm_area_struct *vma)
 	return 0;
 }
 
+static int ext4_file_open(struct inode * inode, struct file * filp)
+{
+	struct super_block *sb = inode->i_sb;
+	struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
+	struct vfsmount *mnt;
+	struct dentry *mntpt;
+	char buf[64], *cp;
+
+	if (unlikely(!(sbi->s_mount_flags & EXT4_MF_MNTDIR_SAMPLED) &&
+		     !(sb->s_flags & MS_RDONLY))) {
+		sbi->s_mount_flags |= EXT4_MF_MNTDIR_SAMPLED;
+		/*
+		 * Sample where the filesystem has been mounted and
+		 * store it in the superblock for sysadmin convenience
+		 * when trying to sort through large numbers of block
+		 * devices or filesystem images.
+		 */
+		memset(buf, 0, sizeof(buf));
+		mnt = mntget(filp->f_vfsmnt);
+		mntpt = dget(mnt->mnt_mountpoint);
+		cp = d_path(mntpt, mnt, buf, sizeof(buf));
+		dput(mntpt);
+		mntput(mnt);
+		if (!IS_ERR(cp)) {
+			memcpy(sbi->s_es->s_last_mounted, cp,
+			       sizeof(sbi->s_es->s_last_mounted));
+			sb->s_dirt = 1;
+		}
+	}
+	return generic_file_open(inode, filp);
+}
+
 struct file_operations ext4_file_operations = {
 	.llseek		= generic_file_llseek,
 	.read		= do_sync_read,
@@ -154,7 +188,7 @@ struct file_operations ext4_file_operations = {
 	.compat_ioctl	= ext4_compat_ioctl,
 #endif
 	.mmap		= ext4_file_mmap,
-	.open		= generic_file_open,
+	.open		= ext4_file_open,
 	.release	= ext4_release_file,
 	.fsync		= ext4_sync_file,
 	.sendfile	= generic_file_sendfile,

@@ -34,6 +34,7 @@
 #define E1000_EERD     0x00014  /* EEPROM Read - RW */
 #define E1000_CTRL_EXT 0x00018  /* Extended Device Control - RW */
 #define E1000_MDIC     0x00020  /* MDI Control - RW */
+#define E1000_MDICNFG  0x00E04  /* MDI Config - RW */
 #define E1000_SCTL     0x00024  /* SerDes Control - RW */
 #define E1000_FCAL     0x00028  /* Flow Control Address Low - RW */
 #define E1000_FCAH     0x0002C  /* Flow Control Address High -RW */
@@ -74,7 +75,9 @@
 #define E1000_FCRTL    0x02160  /* Flow Control Receive Threshold Low - RW */
 #define E1000_FCRTH    0x02168  /* Flow Control Receive Threshold High - RW */
 #define E1000_FCRTV    0x02460  /* Flow Control Refresh Timer Value - RW */
+
 /* Split and Replication RX Control - RW */
+#define E1000_RXPBS    0x02404  /* Rx Packet Buffer Size - RW */
 /*
  * Convenience macros
  *
@@ -236,9 +239,12 @@
 #define E1000_CCMCTL      0x05B48 /* CCM Control Register */
 #define E1000_GIOCTL      0x05B44 /* GIO Analog Control Register */
 #define E1000_SCCTL       0x05B4C /* PCIc PLL Configuration Register */
+#define E1000_GCR         0x05B00 /* PCI-Ex Control */
 #define E1000_FACTPS    0x05B30 /* Function Active and Power State to MNG */
 #define E1000_SWSM      0x05B50 /* SW Semaphore */
 #define E1000_FWSM      0x05B54 /* FW Semaphore */
+#define E1000_DCA_ID    0x05B70 /* DCA Requester ID Information - RO */
+#define E1000_DCA_CTRL  0x05B74 /* DCA Control - RW */
 
 /* RSS registers */
 #define E1000_MRQC      0x05818 /* Multiple Receive Control - RW */
@@ -277,4 +283,6 @@
 #define array_rd32(reg, offset) \
 	(readl(hw->hw_addr + reg + ((offset) << 2)))
 
+/* DMA Coalescing registers */
+#define E1000_PCIEMISC          0x05BB8 /* PCIE misc config register */
 #endif

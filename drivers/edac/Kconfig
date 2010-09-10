@@ -91,6 +91,13 @@ config EDAC_I3000
 	  Support for error detection and correction on the Intel
 	  3000 and 3010 server chipsets.
 
+config EDAC_I3200
+	tristate "Intel 3200"
+	depends on EDAC_MM_EDAC && PCI && X86 && EXPERIMENTAL
+	help
+	  Support for error detection and correction on the Intel
+	  3200 and 3210 server chipsets.
+
 config EDAC_I5000
 	tristate "Intel 5000 chipsets (Greencreek/Blackford)"
 	depends on EDAC_MM_EDAC && PCI && X86
@@ -118,6 +125,13 @@ config EDAC_K8
 	help
 	  Support for error detection and correction on the AMD
 	  K8 Memory Controller
+
+config EDAC_AMD64
+       tristate "AMD64 (Opteron, Athlon64) F10h, F11h"
+       depends on EDAC_MM_EDAC && K8_NB && X86_64 && PCI
+       help
+         Support for error detection and correction on the AMD 64
+         F10h and F11h families of Memory Controllers
 
 config EDAC_R82600
 	tristate "Radisys 82600 embedded chipset"

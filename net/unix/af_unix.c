@@ -306,7 +306,7 @@ static void unix_write_space(struct sock *sk)
 {
 	read_lock(&sk->sk_callback_lock);
 	if (unix_writable(sk)) {
-		if (sk->sk_sleep && waitqueue_active(sk->sk_sleep))
+		if (sk_has_sleeper(sk))
 			wake_up_interruptible(sk->sk_sleep);
 		sk_wake_async(sk, 2, POLL_OUT);
 	}
@@ -1923,7 +1923,7 @@ static unsigned int unix_poll(struct file * file, struct socket *sock, poll_tabl
 	struct sock *sk = sock->sk;
 	unsigned int mask;
 
-	poll_wait(file, sk->sk_sleep, wait);
+	sock_poll_wait(file, sk->sk_sleep, wait);
 	mask = 0;
 
 	/* exceptional events? */

@@ -207,6 +207,8 @@ xlbd_put_major_info(struct xlbd_major_info *mi)
 	/* XXX: release major if 0 */
 }
 
+extern char chosen_elevator[];
+
 static int
 xlvbd_init_blk_queue(struct gendisk *gd, u16 sector_size)
 {
@@ -216,7 +218,10 @@ xlvbd_init_blk_queue(struct gendisk *gd, u16 sector_size)
 	if (rq == NULL)
 		return -1;
 
-	elevator_init(rq, "noop");
+	/* Always respect the user's explicitly chosen elevator, but otherwise
+	   pick a different default than CONFIG_DEFAULT_IOSCHED.  */
+	if (!*chosen_elevator)
+		elevator_init(rq, "noop");
 
 	/* Hard sector size and max sectors impersonate the equiv. hardware. */
 	blk_queue_hardsect_size(rq, sector_size);
@@ -232,6 +237,9 @@ xlvbd_init_blk_queue(struct gendisk *gd, u16 sector_size)
 
 	/* Make sure buffer addresses are sector-aligned. */
 	blk_queue_dma_alignment(rq, 511);
+
+	/* Make sure we don't use bounce buffers. */
+	blk_queue_bounce_limit(rq, BLK_BOUNCE_ANY);
 
 	gd->queue = rq;
 

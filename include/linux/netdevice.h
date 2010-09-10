@@ -348,9 +348,15 @@ struct net_device
 #define NETIF_F_LLTX		4096	/* LockLess TX */
 #define NETIF_F_GRO		16384	/* Generic receive offload */
 
+/* Go to the end of the bit field and count backwards when adding new entries
+ * so we don't cause the calculated fields below to shift.  Also don't forget
+ * to update GSO_MASK below to exclude added bits */
+#define NETIF_F_VLAN_TSO	1 << 31	/* Supports TSO for VLANs */
+#define NETIF_F_VLAN_CSUM	1 << 30	/* Supports TX checksumming for VLANs */
+
 	/* Segmentation offload features */
 #define NETIF_F_GSO_SHIFT	16
-#define NETIF_F_GSO_MASK	0xffff0000
+#define NETIF_F_GSO_MASK	0x3fff0000
 #define NETIF_F_TSO		(SKB_GSO_TCPV4 << NETIF_F_GSO_SHIFT)
 #define NETIF_F_UFO		(SKB_GSO_UDP << NETIF_F_GSO_SHIFT)
 #define NETIF_F_GSO_ROBUST	(SKB_GSO_DODGY << NETIF_F_GSO_SHIFT)

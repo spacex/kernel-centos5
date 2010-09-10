@@ -63,7 +63,7 @@ void dfs_shrink_umount_helper(struct vfsmount *vfsmnt)
  * i.e. strips from UNC trailing path that is not part of share
  * name and fixup missing '\' in the begining of DFS node refferal
  * if neccessary.
- * Returns pointer to share name on success or NULL on error.
+ * Returns pointer to share name on success or ERR_PTR on error.
  * Caller is responsible for freeing returned string.
  */
 static char *cifs_get_share_name(const char *node_name)
@@ -76,7 +76,7 @@ static char *cifs_get_share_name(const char *node_name)
 	UNC = kmalloc(len+2 /*for term null and additional \ if it's missed */,
 			 GFP_KERNEL);
 	if (!UNC)
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 
 	/* get share name and server name */
 	if (node_name[1] != '\\') {
@@ -95,7 +95,7 @@ static char *cifs_get_share_name(const char *node_name)
 		cERROR(1, ("%s: no server name end in node name: %s",
 			__func__, node_name));
 		kfree(UNC);
-		return NULL;
+		return ERR_PTR(-EINVAL);
 	}
 
 	/* find sharename end */
@@ -141,6 +141,12 @@ char *cifs_compose_mount_options(const char *sb_mountdata,
 		return ERR_PTR(-EINVAL);
 
 	*devname = cifs_get_share_name(ref->node_name);
+	if (IS_ERR(*devname)) {
+		rc = PTR_ERR(*devname);
+		*devname = NULL;
+		goto compose_mount_options_err;
+	}
+
 	rc = dns_resolve_server_name_to_ip(*devname, &srvIP);
 	if (rc != 0) {
 		cERROR(1, ("%s: Failed to resolve server part of %s to IP: %d",
@@ -271,7 +277,7 @@ static int add_mount_helper(struct vfsmount *newmnt, struct nameidata *nd,
 	int err;
 
 	mntget(newmnt);
-	err = do_add_mount(newmnt, nd, nd->mnt->mnt_flags, mntlist);
+	err = do_add_mount(newmnt, nd, nd->mnt->mnt_flags | MNT_SHRINKABLE, mntlist);
 	switch (err) {
 	case 0:
 		dput(nd->dentry);
@@ -349,27 +355,24 @@ cifs_dfs_follow_mountpoint(struct dentry *dentry, struct nameidata *nd)
 		cifs_sb->mnt_cifs_flags & CIFS_MOUNT_MAP_SPECIAL_CHR);
 
 	for (i = 0; i < num_referrals; i++) {
+		int len;
 		dump_referral(referrals+i);
-		/* connect to a storage node */
-		if (referrals[i].flags & DFSREF_STORAGE_SERVER) {
-			int len;
-			len = strlen(referrals[i].node_name);
-			if (len < 2) {
-				cERROR(1, ("%s: Net Address path too short: %s",
+		/* connect to a node */
+		len = strlen(referrals[i].node_name);
+		if (len < 2) {
+			cERROR(1, ("%s: Net Address path too short: %s",
 					__func__, referrals[i].node_name));
-				rc = -EINVAL;
-				goto out_err;
-			}
-			mnt = cifs_dfs_do_refmount(nd->mnt, nd->dentry,
-						referrals + i);
-			cFYI(1, ("%s: cifs_dfs_do_refmount:%s , mnt:%p",
-					 __func__,
+			rc = -EINVAL;
+			goto out_err;
+		}
+		mnt = cifs_dfs_do_refmount(nd->mnt,
+				nd->dentry, referrals + i);
+		cFYI(1, ("%s: cifs_dfs_do_refmount:%s , mnt:%p", __func__,
 					referrals[i].node_name, mnt));
 
-			/* complete mount procedure if we accured submount */
-			if (!IS_ERR(mnt))
-				break;
-		}
+		/* complete mount procedure if we accured submount */
+		if (!IS_ERR(mnt))
+			break;
 	}
 
 	/* we need it cause for() above could exit without valid submount */
@@ -377,7 +380,6 @@ cifs_dfs_follow_mountpoint(struct dentry *dentry, struct nameidata *nd)
 	if (IS_ERR(mnt))
 		goto out_err;
 
-	nd->mnt->mnt_flags |= MNT_SHRINKABLE;
 	rc = add_mount_helper(mnt, nd, &cifs_dfs_automount_list);
 
 out:

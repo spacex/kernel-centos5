@@ -14,6 +14,7 @@
 #define DMA_PTE_SNP (1 << 11)
 
 #define CONTEXT_TT_MULTI_LEVEL	0
+#define CONTEXT_TT_DEV_IOTLB	1
 #define CONTEXT_TT_PASS_THROUGH 2
 
 struct intel_iommu;
@@ -37,5 +38,13 @@ static inline int iommu_calculate_max_sagaw(struct intel_iommu *iommu)
 #endif
 
 extern int dmar_disabled;
+
+#ifdef CONFIG_DMA_API_DEBUG
+extern void debug_dma_dump_mappings(struct device *dev);
+#else
+static inline void debug_dma_dump_mappings(struct device *dev)
+{
+}
+#endif /* CONFIG_DMA_API_DEBUG */
 
 #endif

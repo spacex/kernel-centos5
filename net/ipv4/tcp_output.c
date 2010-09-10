@@ -513,7 +513,10 @@ static void tcp_queue_skb(struct sock *sk, struct sk_buff *skb)
 
 static void tcp_set_skb_tso_segs(struct sock *sk, struct sk_buff *skb, unsigned int mss_now)
 {
-	if (skb->len <= mss_now || !sk_can_gso(sk)) {
+	struct tcp_sock *tp = tcp_sk(sk);
+
+	if (skb->len <= mss_now || !sk_can_gso(sk) ||
+	    tp->urg_mode) {
 		/* Avoid the costly divide in the normal
 		 * non-TSO case.
 		 */
@@ -812,10 +815,6 @@ unsigned int tcp_sync_mss(struct sock *sk, u32 pmtu)
 
 /* Compute the current effective MSS, taking SACKs and IP options,
  * and even PMTU discovery events into account.
- *
- * LARGESEND note: !urg_mode is overkill, only frames up to snd_up
- * cannot be large. However, taking into account rare use of URG, this
- * is not a big flaw.
  */
 unsigned int tcp_current_mss(struct sock *sk, int large_allowed)
 {
@@ -827,7 +826,7 @@ unsigned int tcp_current_mss(struct sock *sk, int large_allowed)
 
 	mss_now = tp->mss_cache;
 
-	if (large_allowed && sk_can_gso(sk) && !tp->urg_mode)
+	if (large_allowed && sk_can_gso(sk))
 		doing_tso = 1;
 
 	if (dst) {
@@ -917,10 +916,10 @@ static inline unsigned int tcp_cwnd_test(struct tcp_sock *tp, struct sk_buff *sk
 static int tcp_init_tso_segs(struct sock *sk, struct sk_buff *skb, unsigned int mss_now)
 {
 	int tso_segs = tcp_skb_pcount(skb);
+	struct tcp_sock *tp = tcp_sk(sk);
 
-	if (!tso_segs ||
-	    (tso_segs > 1 &&
-	     tcp_skb_mss(skb) != mss_now)) {
+	if (!tso_segs || (tso_segs > 1 && (tcp_skb_mss(skb) != mss_now ||
+			tp->urg_mode))) {
 		tcp_set_skb_tso_segs(sk, skb, mss_now);
 		tso_segs = tcp_skb_pcount(skb);
 	}
@@ -1276,6 +1275,10 @@ static int tcp_mtu_probe(struct sock *sk)
  * send_head.  This happens as incoming acks open up the remote
  * window for us.
  *
+ * LARGESEND note: !tp->urg_mode is overkill, only frames between
+ * snd_up-64k-mss .. snd_up cannot be large. However, taking into
+ * account rare use of URG, this is not a big flaw.
+ *
  * Returns 1, if no segments are in flight and we have queued segments, but
  * cannot send anything now because of SWS or another problem.
  */
@@ -1327,7 +1330,7 @@ static int tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle)
 		}
 
 		limit = mss_now;
-		if (tso_segs > 1) {
+		if (tso_segs > 1 && !tp->urg_mode) {
 			limit = tcp_window_allows(tp, skb,
 						  mss_now, cwnd_quota);
 
@@ -1400,7 +1403,7 @@ void tcp_push_one(struct sock *sk, unsigned int mss_now)
 		BUG_ON(!tso_segs);
 
 		limit = mss_now;
-		if (tso_segs > 1) {
+		if (tso_segs > 1 && !tp->urg_mode) {
 			limit = tcp_window_allows(tp, skb,
 						  mss_now, cwnd_quota);
 
@@ -2079,7 +2082,11 @@ struct sk_buff * tcp_make_synack(struct sock *sk, struct dst_entry *dst,
 
 	/* RFC1323: The window in SYN & SYN/ACK segments is never scaled. */
 	th->window = htons(req->rcv_wnd);
-
+#ifdef CONFIG_SYN_COOKIES
+	if (unlikely(req->cookie_ts))
+		TCP_SKB_CB(skb)->when = cookie_init_timestamp(req);
+	else
+#endif
 	TCP_SKB_CB(skb)->when = tcp_time_stamp;
 	tcp_syn_build_options((__u32 *)(th + 1), dst_metric(dst, RTAX_ADVMSS), ireq->tstamp_ok,
 			      ireq->sack_ok, ireq->wscale_ok, ireq->rcv_wscale,
@@ -2413,6 +2420,7 @@ void tcp_send_probe0(struct sock *sk)
 	}
 }
 
+EXPORT_SYMBOL(tcp_select_initial_window);
 EXPORT_SYMBOL(tcp_connect);
 EXPORT_SYMBOL(tcp_make_synack);
 EXPORT_SYMBOL(tcp_simple_retransmit);

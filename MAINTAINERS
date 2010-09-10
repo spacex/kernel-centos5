@@ -235,6 +235,13 @@ W:	http://wiki.parisc-linux.org/AD1889
 L:	parisc-linux@lists.parisc-linux.org
 S:	Maintained
 
+ACPI WMI DRIVER
+P:      Carlos Corbacho
+M:      carlos@strangeworlds.co.uk
+L:      linux-acpi@vger.kernel.org
+W:      http://www.lesswatts.org/projects/acpi/
+S:      Maintained
+
 ADM1025 HARDWARE MONITOR DRIVER
 P:	Jean Delvare
 M:	khali@linux-fr.org

@@ -23,7 +23,6 @@
 #include <linux/mutex.h>
 #include "ext4_jbd2.h"
 #include "ext4.h"
-#include "group.h"
 
 /*
  * with AGGRESSIVE_CHECK allocator runs consistency checks over
@@ -39,11 +38,19 @@
 
 /*
  */
-#define MB_DEBUG__
-#ifdef MB_DEBUG
-#define mb_debug(fmt, a...)	printk(fmt, ##a)
+#ifdef CONFIG_EXT4_DEBUG
+extern u8 mb_enable_debug;
+
+#define mb_debug(n, fmt, a...)	                                        \
+	do {								\
+		if ((n) <= mb_enable_debug) {		        	\
+			printk(KERN_DEBUG "(%s, %d): %s: ",		\
+			       __FILE__, __LINE__, __func__);		\
+			printk(fmt, ## a);				\
+		}							\
+	} while (0)
 #else
-#define mb_debug(fmt, a...)
+#define mb_debug(n, fmt, a...)
 #endif
 
 /*
@@ -78,7 +85,7 @@
  * with 'ext4_mb_stats' allocator will collect stats that will be
  * shown at umount. The collecting costs though!
  */
-#define MB_DEFAULT_STATS		1
+#define MB_DEFAULT_STATS		0
 
 /*
  * files smaller than MB_DEFAULT_STREAM_THRESHOLD are served
@@ -130,20 +137,23 @@ struct ext4_prealloc_space {
 	unsigned		pa_deleted;
 	ext4_fsblk_t		pa_pstart;	/* phys. block */
 	ext4_lblk_t		pa_lstart;	/* log. block */
-	unsigned short		pa_len;		/* len of preallocated chunk */
-	unsigned short		pa_free;	/* how many blocks are free */
-	unsigned short		pa_linear;	/* consumed in one direction
-						 * strictly, for grp prealloc */
+	ext4_grpblk_t		pa_len;		/* len of preallocated chunk */
+	ext4_grpblk_t		pa_free;	/* how many blocks are free */
+	unsigned short		pa_type;	/* pa type. inode or group */
 	spinlock_t		*pa_obj_lock;
 	struct inode		*pa_inode;	/* hack, for history only */
 };
 
+enum {
+	MB_INODE_PA = 0,
+	MB_GROUP_PA = 1
+};
 
 struct ext4_free_extent {
 	ext4_lblk_t fe_logical;
 	ext4_grpblk_t fe_start;
 	ext4_group_t fe_group;
-	int fe_len;
+	ext4_grpblk_t fe_len;
 };
 
 /*
@@ -247,7 +257,6 @@ static inline void ext4_mb_store_history(struct ext4_allocation_context *ac)
 
 #define in_range(b, first, len)	((b) >= (first) && (b) <= (first) + (len) - 1)
 
-struct buffer_head *read_block_bitmap(struct super_block *, ext4_group_t);
 static inline ext4_fsblk_t ext4_grp_offs_to_block(struct super_block *sb,
 					struct ext4_free_extent *fex)
 {

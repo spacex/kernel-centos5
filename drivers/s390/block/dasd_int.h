@@ -303,7 +303,7 @@ struct dasd_device {
 	spinlock_t request_queue_lock;
 	struct block_device *bdev;
         unsigned int devindex;
-	unsigned long blocks;	   /* size of volume in blocks */
+	unsigned long long blocks; /* size of volume in blocks */
 	unsigned int bp_block;	   /* bytes per block */
 	unsigned int s2b_shift;	   /* log2 (bp_block/512) */
 	unsigned long flags;	   /* per device flags */

@@ -524,13 +524,27 @@ done:
 	return err;
 }
 
+static inline void syn_flood_warning(struct sk_buff *skb)
+{
+#ifdef CONFIG_SYN_COOKIES
+	if (sysctl_tcp_syncookies)
+		printk(KERN_INFO
+		       "TCPv6: Possible SYN flooding on port %d. "
+		       "Sending cookies.\n", ntohs(tcp_hdr(skb)->dest));
+	else
+#endif
+		printk(KERN_INFO
+		       "TCPv6: Possible SYN flooding on port %d. "
+		       "Dropping request.\n", ntohs(tcp_hdr(skb)->dest));
+}
+
 static void tcp_v6_reqsk_destructor(struct request_sock *req)
 {
 	if (inet6_rsk(req)->pktopts)
 		kfree_skb(inet6_rsk(req)->pktopts);
 }
 
-static struct request_sock_ops tcp6_request_sock_ops = {
+struct request_sock_ops tcp6_request_sock_ops = {
 	.family		=	AF_INET6,
 	.obj_size	=	sizeof(struct tcp6_request_sock),
 	.rtx_syn_ack	=	tcp_v6_send_synack,
@@ -791,9 +805,9 @@ static struct sock *tcp_v6_hnd_req(struct sock *sk,struct sk_buff *skb)
 		return NULL;
 	}
 
-#if 0 /*def CONFIG_SYN_COOKIES*/
+#ifdef CONFIG_SYN_COOKIES
 	if (!th->rst && !th->syn && th->ack)
-		sk = cookie_v6_check(sk, skb, &(IPCB(skb)->opt));
+		sk = cookie_v6_check(sk, skb);
 #endif
 	return sk;
 }
@@ -809,6 +823,11 @@ static int tcp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct request_sock *req = NULL;
 	__u32 isn = TCP_SKB_CB(skb)->when;
+#ifdef CONFIG_SYN_COOKIES
+	int want_cookie = 0;
+#else
+#define want_cookie 0
+#endif
 
 	if (skb->protocol == htons(ETH_P_IP))
 		return tcp_v4_conn_request(sk, skb);
@@ -816,12 +835,14 @@ static int tcp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 	if (!ipv6_unicast_destination(skb))
 		goto drop; 
 
-	/*
-	 *	There are no SYN attacks on IPv6, yet...	
-	 */
 	if (inet_csk_reqsk_queue_is_full(sk) && !isn) {
 		if (net_ratelimit())
-			printk(KERN_INFO "TCPv6: dropping request, synflood is possible\n");
+			syn_flood_warning(skb);
+#ifdef CONFIG_SYN_COOKIES
+		if (sysctl_tcp_syncookies)
+			want_cookie = 1;
+		else
+#endif
 		goto drop;		
 	}
 
@@ -838,29 +859,37 @@ static int tcp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 
 	tcp_parse_options(skb, &tmp_opt, 0);
 
+	if (want_cookie && !tmp_opt.saw_tstamp)
+		tcp_clear_options(&tmp_opt);
+
 	tmp_opt.tstamp_ok = tmp_opt.saw_tstamp;
 	tcp_openreq_init(req, &tmp_opt, skb);
 
 	treq = inet6_rsk(req);
 	ipv6_addr_copy(&treq->rmt_addr, &skb->nh.ipv6h->saddr);
 	ipv6_addr_copy(&treq->loc_addr, &skb->nh.ipv6h->daddr);
-	TCP_ECN_create_request(req, skb->h.th);
 	treq->pktopts = NULL;
-	if (ipv6_opt_accepted(sk, skb) ||
-	    np->rxopt.bits.rxinfo || np->rxopt.bits.rxoinfo ||
-	    np->rxopt.bits.rxhlim || np->rxopt.bits.rxohlim) {
-		atomic_inc(&skb->users);
-		treq->pktopts = skb;
-	}
-	treq->iif = sk->sk_bound_dev_if;
+	if (!want_cookie)
+		TCP_ECN_create_request(req, tcp_hdr(skb));
 
-	/* So that link locals have meaning */
-	if (!sk->sk_bound_dev_if &&
-	    ipv6_addr_type(&treq->rmt_addr) & IPV6_ADDR_LINKLOCAL)
-		treq->iif = inet6_iif(skb);
+	if (want_cookie) {
+		isn = cookie_v6_init_sequence(sk, skb, &req->mss);
+		req->cookie_ts = tmp_opt.tstamp_ok;
+	} else if (!isn) {
+		if (ipv6_opt_accepted(sk, skb) ||
+		    np->rxopt.bits.rxinfo || np->rxopt.bits.rxoinfo ||
+		    np->rxopt.bits.rxhlim || np->rxopt.bits.rxohlim) {
+			atomic_inc(&skb->users);
+			treq->pktopts = skb;
+		}
+		treq->iif = sk->sk_bound_dev_if;
+		/* So that link locals have meaning */
+		if (!sk->sk_bound_dev_if &&
+		    ipv6_addr_type(&treq->rmt_addr) & IPV6_ADDR_LINKLOCAL)
+			treq->iif = inet6_iif(skb);
 
-	if (isn == 0) 
 		isn = tcp_v6_init_sequence(sk,skb);
+	}
 
 	tcp_rsk(req)->snt_isn = isn;
 
@@ -869,8 +898,10 @@ static int tcp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 	if (tcp_v6_send_synack(sk, req, NULL))
 		goto drop;
 
-	inet6_csk_reqsk_queue_hash_add(sk, req, TCP_TIMEOUT_INIT);
-	return 0;
+	if (!want_cookie) {
+		inet6_csk_reqsk_queue_hash_add(sk, req, TCP_TIMEOUT_INIT);
+		return 0;
+	}
 
 drop:
 	if (req)

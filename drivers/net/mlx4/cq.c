@@ -60,7 +60,8 @@ struct mlx4_cq_context {
 	__be32			solicit_producer_index;
 	__be32			consumer_index;
 	__be32			producer_index;
-	u32			reserved4[2];
+	__be32			pd; /* for sriov guest id */
+	u32			reserved4;
 	__be64			db_rec_addr;
 };
 
@@ -191,16 +192,80 @@ static int mlx4_find_least_loaded_vector(struct mlx4_priv *priv)
 {
 	int i;
 	int index = 0;
-	int min = priv->eq_table.eq[MLX4_EQ_COMP_CPU0].load;
+	int min = priv->eq_table.eq[0].load;
 
 	for (i = 1; i < priv->dev.caps.num_comp_vectors; i++) {
-		if (priv->eq_table.eq[MLX4_EQ_COMP_CPU0 + i].load < min) {
+		if (priv->eq_table.eq[i].load < min) {
 			index = i;
-			min = priv->eq_table.eq[MLX4_EQ_COMP_CPU0 + i].load;
+			min = priv->eq_table.eq[i].load;
 		}
 	}
 
 	return index;
+}
+
+int mlx4_cq_alloc_icm(struct mlx4_dev *dev, int *cqn)
+{
+	struct mlx4_priv *priv = mlx4_priv(dev);
+	struct mlx4_cq_table *cq_table = &priv->cq_table;
+	u64 out_param;
+	int err;
+
+	if (mlx4_is_slave(dev)) {
+		err = mlx4_cmd_imm(dev, 0, &out_param, RES_CQ,
+						       ICM_RESERVE_AND_ALLOC,
+						       MLX4_CMD_ALLOC_RES,
+						       MLX4_CMD_TIME_CLASS_A);
+		if (err) {
+			*cqn = -1;
+			return err;
+		} else {
+			*cqn = out_param;
+			return 0;
+		}
+	}
+
+	*cqn = mlx4_bitmap_alloc(&cq_table->bitmap);
+	if (*cqn == -1)
+		return -ENOMEM;
+
+	err = mlx4_table_get(dev, &cq_table->table, *cqn);
+	if (err)
+		goto err_out;
+
+	err = mlx4_table_get(dev, &cq_table->cmpt_table, *cqn);
+	if (err)
+		goto err_put;
+	return 0;
+
+err_put:
+	mlx4_table_put(dev, &cq_table->table, *cqn);
+
+err_out:
+	mlx4_bitmap_free(&cq_table->bitmap, *cqn);
+	return err;
+}
+
+void mlx4_cq_free_icm(struct mlx4_dev *dev, int cqn)
+{
+	struct mlx4_priv *priv = mlx4_priv(dev);
+	struct mlx4_cq_table *cq_table = &priv->cq_table;
+	u64 in_param;
+	int err;
+
+	if (mlx4_is_slave(dev)) {
+		*((u32 *) &in_param) = cqn;
+		*(((u32 *) &in_param) + 1) = 0;
+		err = mlx4_cmd(dev, in_param, RES_CQ, ICM_RESERVE_AND_ALLOC,
+						      MLX4_CMD_FREE_RES,
+						      MLX4_CMD_TIME_CLASS_A);
+		if (err)
+			mlx4_warn(dev, "Failed freeing cq:%d\n", cqn);
+	} else {
+		mlx4_table_put(dev, &cq_table->cmpt_table, cqn);
+		mlx4_table_put(dev, &cq_table->table, cqn);
+		mlx4_bitmap_free(&cq_table->bitmap, cqn);
+	}
 }
 
 int mlx4_cq_alloc(struct mlx4_dev *dev, int nent, struct mlx4_mtt *mtt,
@@ -214,23 +279,21 @@ int mlx4_cq_alloc(struct mlx4_dev *dev, int nent, struct mlx4_mtt *mtt,
 	u64 mtt_addr;
 	int err;
 
-	cq->cqn = mlx4_bitmap_alloc(&cq_table->bitmap);
-	if (cq->cqn == -1)
-		return -ENOMEM;
+	if (vector >= dev->caps.num_comp_vectors)
+		return -EINVAL;
 
-	err = mlx4_table_get(dev, &cq_table->table, cq->cqn);
-	if (err)
-		goto err_out;
+	cq->vector = (vector == MLX4_LEAST_ATTACHED_VECTOR) ?
+		mlx4_find_least_loaded_vector(priv) : vector;
 
-	err = mlx4_table_get(dev, &cq_table->cmpt_table, cq->cqn);
+	err = mlx4_cq_alloc_icm(dev, &cq->cqn);
 	if (err)
-		goto err_put;
+		return err;
 
 	spin_lock_irq(&cq_table->lock);
 	err = radix_tree_insert(&cq_table->tree, cq->cqn, cq);
 	spin_unlock_irq(&cq_table->lock);
 	if (err)
-		goto err_cmpt_put;
+		goto err_icm;
 
 	mailbox = mlx4_alloc_cmd_mailbox(dev);
 	if (IS_ERR(mailbox)) {
@@ -243,22 +306,13 @@ int mlx4_cq_alloc(struct mlx4_dev *dev, int nent, struct mlx4_mtt *mtt,
 
 	cq_context->flags	    = cpu_to_be32(!!collapsed << 18);
 	cq_context->logsize_usrpage = cpu_to_be32((ilog2(nent) << 24) | uar->index);
-
-	if (vector == MLX4_LEAST_ATTACHED_VECTOR)
-		vector = mlx4_find_least_loaded_vector(priv);
-	else if (vector >= dev->caps.num_comp_vectors) {
-		err = -EINVAL;
-		goto err_radix;
-	}
-
-	cq->comp_eq_idx		    = MLX4_EQ_COMP_CPU0 + vector;
-	cq_context->comp_eqn	    = priv->eq_table.eq[MLX4_EQ_COMP_CPU0 +
-							vector].eqn;
+	cq_context->comp_eqn	    = priv->eq_table.eq[vector].eqn;
 	cq_context->log_page_size   = mtt->page_shift - MLX4_ICM_PAGE_SHIFT;
 
 	mtt_addr = mlx4_mtt_addr(dev, mtt);
 	cq_context->mtt_base_addr_h = mtt_addr >> 32;
 	cq_context->mtt_base_addr_l = cpu_to_be32(mtt_addr & 0xffffffff);
+	cq_context->pd = cpu_to_be32(dev->caps.pd_base << dev->caps.slave_pd_shift);
 	cq_context->db_rec_addr     = cpu_to_be64(db_rec);
 
 	err = mlx4_SW2HW_CQ(dev, mailbox, cq->cqn);
@@ -266,7 +320,7 @@ int mlx4_cq_alloc(struct mlx4_dev *dev, int nent, struct mlx4_mtt *mtt,
 	if (err)
 		goto err_radix;
 
-	priv->eq_table.eq[cq->comp_eq_idx].load++;
+	priv->eq_table.eq[cq->vector].load++;
 	cq->cons_index = 0;
 	cq->arm_sn     = 1;
 	cq->uar        = uar;
@@ -280,14 +334,8 @@ err_radix:
 	radix_tree_delete(&cq_table->tree, cq->cqn);
 	spin_unlock_irq(&cq_table->lock);
 
-err_cmpt_put:
-	mlx4_table_put(dev, &cq_table->cmpt_table, cq->cqn);
-
-err_put:
-	mlx4_table_put(dev, &cq_table->table, cq->cqn);
-
-err_out:
-	mlx4_bitmap_free(&cq_table->bitmap, cq->cqn);
+err_icm:
+	mlx4_cq_free_icm(dev, cq->cqn);
 
 	return err;
 }
@@ -303,8 +351,8 @@ void mlx4_cq_free(struct mlx4_dev *dev, struct mlx4_cq *cq)
 	if (err)
 		mlx4_warn(dev, "HW2SW_CQ failed (%d) for CQN %06x\n", err, cq->cqn);
 
-	synchronize_irq(priv->eq_table.eq[cq->comp_eq_idx].irq);
-	priv->eq_table.eq[cq->comp_eq_idx].load--;
+	synchronize_irq(priv->eq_table.eq[cq->vector].irq);
+	priv->eq_table.eq[cq->vector].load--;
 
 	spin_lock_irq(&cq_table->lock);
 	radix_tree_delete(&cq_table->tree, cq->cqn);
@@ -314,8 +362,7 @@ void mlx4_cq_free(struct mlx4_dev *dev, struct mlx4_cq *cq)
 		complete(&cq->free);
 	wait_for_completion(&cq->free);
 
-	mlx4_table_put(dev, &cq_table->table, cq->cqn);
-	mlx4_bitmap_free(&cq_table->bitmap, cq->cqn);
+	mlx4_cq_free_icm(dev, cq->cqn);
 }
 EXPORT_SYMBOL_GPL(mlx4_cq_free);
 
@@ -326,6 +373,8 @@ int mlx4_init_cq_table(struct mlx4_dev *dev)
 
 	spin_lock_init(&cq_table->lock);
 	INIT_RADIX_TREE(&cq_table->tree, GFP_ATOMIC);
+	if (mlx4_is_slave(dev))
+		return 0;
 
 	err = mlx4_bitmap_init(&cq_table->bitmap, dev->caps.num_cqs,
 			       dev->caps.num_cqs - 1, dev->caps.reserved_cqs, 0);
@@ -337,6 +386,8 @@ int mlx4_init_cq_table(struct mlx4_dev *dev)
 
 void mlx4_cleanup_cq_table(struct mlx4_dev *dev)
 {
+	if (mlx4_is_slave(dev))
+		return;
 	/* Nothing to do to clean up radix_tree */
 	mlx4_bitmap_cleanup(&mlx4_priv(dev)->cq_table.bitmap);
 }

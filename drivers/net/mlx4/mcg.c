@@ -67,12 +67,12 @@ static int mlx4_WRITE_MCG(struct mlx4_dev *dev, int index,
 }
 
 static int mlx4_MGID_HASH(struct mlx4_dev *dev, struct mlx4_cmd_mailbox *mailbox,
-			  u16 *hash)
+			  u16 *hash, u8 op_mod)
 {
 	u64 imm;
 	int err;
 
-	err = mlx4_cmd_imm(dev, mailbox->dma, &imm, 0, 0, MLX4_CMD_MGID_HASH,
+	err = mlx4_cmd_imm(dev, mailbox->dma, &imm, 0, op_mod, MLX4_CMD_MGID_HASH,
 			   MLX4_CMD_TIME_CLASS_A);
 
 	if (!err)
@@ -97,13 +97,15 @@ static int mlx4_MGID_HASH(struct mlx4_dev *dev, struct mlx4_cmd_mailbox *mailbox
  * entry in hash chain and *mgm holds end of hash chain.
  */
 static int find_mgm(struct mlx4_dev *dev,
-		    u8 *gid, struct mlx4_cmd_mailbox *mgm_mailbox,
+		    u8 *gid, enum mlx4_protocol prot,
+		    struct mlx4_cmd_mailbox *mgm_mailbox,
 		    u16 *hash, int *prev, int *index)
 {
 	struct mlx4_cmd_mailbox *mailbox;
 	struct mlx4_mgm *mgm = mgm_mailbox->buf;
 	u8 *mgid;
 	int err;
+	u8 op_mod = (prot == MLX4_PROT_ETH)? !!(dev->caps.vep_mc_steering) : 0;
 
 	mailbox = mlx4_alloc_cmd_mailbox(dev);
 	if (IS_ERR(mailbox))
@@ -112,7 +114,7 @@ static int find_mgm(struct mlx4_dev *dev,
 
 	memcpy(mgid, gid, 16);
 
-	err = mlx4_MGID_HASH(dev, mailbox, hash);
+	err = mlx4_MGID_HASH(dev, mailbox, hash, op_mod);
 	mlx4_free_cmd_mailbox(dev, mailbox);
 	if (err)
 		return err;
@@ -146,8 +148,9 @@ static int find_mgm(struct mlx4_dev *dev,
 			return err;
 		}
 
-		if (!memcmp(mgm->gid, gid, 16))
-			return err;
+		if (!memcmp(mgm->gid, gid, 16) &&
+				(prot == be32_to_cpu(mgm->members_count) >> 30))
+				return err;
 
 		*prev = *index;
 		*index = be32_to_cpu(mgm->next_gid_index) >> 6;
@@ -157,8 +160,10 @@ static int find_mgm(struct mlx4_dev *dev,
 	return err;
 }
 
-int mlx4_multicast_attach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16],
-			  int block_mcast_loopback)
+static int mlx4_multicast_attach_common(struct mlx4_dev *dev,
+					struct mlx4_qp *qp, u8 gid[16],
+                                        int block_mcast_loopback,
+					enum mlx4_protocol prot)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
 	struct mlx4_cmd_mailbox *mailbox;
@@ -177,7 +182,7 @@ int mlx4_multicast_attach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16],
 
 	mutex_lock(&priv->mcg_table.mutex);
 
-	err = find_mgm(dev, gid, mailbox, &hash, &prev, &index);
+	err = find_mgm(dev, gid, prot, mailbox, &hash, &prev, &index);
 	if (err)
 		goto out;
 
@@ -199,7 +204,7 @@ int mlx4_multicast_attach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16],
 		memcpy(mgm->gid, gid, 16);
 	}
 
-	members_count = be32_to_cpu(mgm->members_count);
+	members_count = be32_to_cpu(mgm->members_count) & 0xffffff;
 	if (members_count == MLX4_QP_PER_MGM) {
 		mlx4_err(dev, "MGM at index %x is full.\n", index);
 		err = -ENOMEM;
@@ -216,7 +221,8 @@ int mlx4_multicast_attach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16],
 	mgm->qp[members_count++] = cpu_to_be32((qp->qpn & MGM_QPN_MASK) |
 					       (!!mlx4_blck_lb << MGM_BLCK_LB_BIT));
 
-	mgm->members_count       = cpu_to_be32(members_count);
+	mgm->members_count       = cpu_to_be32(members_count | ((u32) prot << 30));
+	mgm->next_gid_index	 = cpu_to_be32(!!(dev->caps.vep_mc_steering) << 4);
 
 	err = mlx4_WRITE_MCG(dev, index, mailbox);
 	if (err)
@@ -229,7 +235,8 @@ int mlx4_multicast_attach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16],
 	if (err)
 		goto out;
 
-	mgm->next_gid_index = cpu_to_be32(index << 6);
+	mgm->next_gid_index = cpu_to_be32((index << 6) |
+					  (!!(dev->caps.vep_mc_steering) << 4));
 
 	err = mlx4_WRITE_MCG(dev, prev, mailbox);
 	if (err)
@@ -249,9 +256,10 @@ out:
 	mlx4_free_cmd_mailbox(dev, mailbox);
 	return err;
 }
-EXPORT_SYMBOL_GPL(mlx4_multicast_attach);
 
-int mlx4_multicast_detach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16])
+static int mlx4_multicast_detach_common(struct mlx4_dev *dev,
+					struct mlx4_qp *qp, u8 gid[16],
+					enum mlx4_protocol prot)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
 	struct mlx4_cmd_mailbox *mailbox;
@@ -261,6 +269,7 @@ int mlx4_multicast_detach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16])
 	int prev, index;
 	int i, loc;
 	int err;
+	u8 pf_num = gid[7] >> 4;
 
 	mailbox = mlx4_alloc_cmd_mailbox(dev);
 	if (IS_ERR(mailbox))
@@ -269,7 +278,7 @@ int mlx4_multicast_detach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16])
 
 	mutex_lock(&priv->mcg_table.mutex);
 
-	err = find_mgm(dev, gid, mailbox, &hash, &prev, &index);
+	err = find_mgm(dev, gid, prot, mailbox, &hash, &prev, &index);
 	if (err)
 		goto out;
 
@@ -288,7 +297,7 @@ int mlx4_multicast_detach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16])
 		goto out;
 	}
 
-	members_count = be32_to_cpu(mgm->members_count);
+	members_count = be32_to_cpu(mgm->members_count) & 0xffffff;
 	for (loc = -1, i = 0; i < members_count; ++i)
 		if ((be32_to_cpu(mgm->qp[i]) & MGM_QPN_MASK) == qp->qpn)
 			loc = i;
@@ -300,7 +309,7 @@ int mlx4_multicast_detach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16])
 	}
 
 
-	mgm->members_count = cpu_to_be32(--members_count);
+	mgm->members_count = cpu_to_be32(--members_count | ((u32) prot << 30));
 	mgm->qp[loc]       = mgm->qp[i - 1];
 	mgm->qp[i - 1]     = 0;
 
@@ -316,8 +325,11 @@ int mlx4_multicast_detach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16])
 			err = mlx4_READ_MCG(dev, amgm_index, mailbox);
 			if (err)
 				goto out;
-		} else
+		} else {
 			memset(mgm->gid, 0, 16);
+			if (prot == MLX4_PROT_ETH)
+				gid[7] = pf_num << 4;
+		}
 
 		err = mlx4_WRITE_MCG(dev, index, mailbox);
 		if (err)
@@ -333,12 +345,12 @@ int mlx4_multicast_detach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16])
 		}
 	} else {
 		/* Remove entry from AMGM */
-		int cur_next_index = be32_to_cpu(mgm->next_gid_index) >> 6;
+		int cur_next_index = be32_to_cpu(mgm->next_gid_index);
 		err = mlx4_READ_MCG(dev, prev, mailbox);
 		if (err)
 			goto out;
 
-		mgm->next_gid_index = cpu_to_be32(cur_next_index << 6);
+		mgm->next_gid_index = cpu_to_be32(cur_next_index);
 
 		err = mlx4_WRITE_MCG(dev, prev, mailbox);
 		if (err)
@@ -358,12 +370,96 @@ out:
 	mlx4_free_cmd_mailbox(dev, mailbox);
 	return err;
 }
+
+int mlx4_MCAST_wrapper(struct mlx4_dev *dev, int slave, struct mlx4_vhcr *vhcr,
+						     struct mlx4_cmd_mailbox *inbox,
+						     struct mlx4_cmd_mailbox *outbox)
+{
+	struct mlx4_qp qp; /* dummy for calling attach/detach */
+	u8 *gid = inbox->buf;
+	enum mlx4_protocol prot = (vhcr->in_modifier >> 28) & 0x7;
+	u8 pf_num = mlx4_priv(dev)->mfunc.master.slave_state[slave].pf_num;
+
+	if (prot == MLX4_PROT_ETH)
+		gid[7] = pf_num << 4;
+
+	qp.qpn = vhcr->in_modifier & 0xffffff;
+	if (vhcr->op_modifier)
+		return mlx4_multicast_attach_common(dev, &qp, gid,
+					     vhcr->in_modifier >> 31, prot);
+	else
+		return mlx4_multicast_detach_common(dev, &qp, gid, prot);
+}
+
+static int mlx4_MCAST(struct mlx4_dev *dev, struct mlx4_qp *qp,
+		      u8 gid[16], u8 attach, u8 block_loopback,
+		      enum mlx4_protocol prot)
+{
+	struct mlx4_cmd_mailbox *mailbox;
+	int err;
+	int qpn;
+
+	if (!mlx4_is_slave(dev))
+		return -EBADF;
+
+	mailbox = mlx4_alloc_cmd_mailbox(dev);
+	if (IS_ERR(mailbox))
+		return PTR_ERR(mailbox);
+
+	memcpy(mailbox->buf, gid, 16);
+	qpn = qp->qpn;
+	qpn |= (prot << 28);
+	if (attach && block_loopback)
+		qpn |= (1 << 31);
+
+	err = mlx4_cmd(dev, mailbox->dma, qpn, attach, MLX4_CMD_MCAST_ATTACH,
+						       MLX4_CMD_TIME_CLASS_A);
+	mlx4_free_cmd_mailbox(dev, mailbox);
+	return err;
+}
+
+
+int mlx4_multicast_attach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16],
+			  int block_mcast_loopback, enum mlx4_protocol prot)
+{
+	if (prot == MLX4_PROT_ETH && !dev->caps.vep_mc_steering)
+		return 0;
+
+	if (mlx4_is_slave(dev))
+		return mlx4_MCAST(dev, qp, gid, 1, block_mcast_loopback, prot);
+
+	if (mlx4_is_master(dev) && prot == MLX4_PROT_ETH)
+		gid[7] = dev->caps.function << 4;
+
+	return mlx4_multicast_attach_common(dev, qp, gid,
+					    block_mcast_loopback, prot);
+}
+EXPORT_SYMBOL_GPL(mlx4_multicast_attach);
+
+int mlx4_multicast_detach(struct mlx4_dev *dev, struct mlx4_qp *qp, u8 gid[16],
+						enum mlx4_protocol prot)
+{
+	if (prot == MLX4_PROT_ETH && !dev->caps.vep_mc_steering)
+		return 0;
+
+	if (mlx4_is_slave(dev))
+		return mlx4_MCAST(dev, qp, gid, 0, 0, prot);
+
+	if (mlx4_is_master(dev) && prot == MLX4_PROT_ETH)
+		gid[7] = dev->caps.function << 4;
+
+	return mlx4_multicast_detach_common(dev, qp, gid, prot);
+}
 EXPORT_SYMBOL_GPL(mlx4_multicast_detach);
 
 int mlx4_init_mcg_table(struct mlx4_dev *dev)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
 	int err;
+
+	/* Nothing to do for slaves - mcg handling is para-virtualized */
+	if (mlx4_is_slave(dev))
+		return 0;
 
 	err = mlx4_bitmap_init(&priv->mcg_table.bitmap, dev->caps.num_amgms,
 			       dev->caps.num_amgms - 1, 0, 0);
@@ -377,5 +473,7 @@ int mlx4_init_mcg_table(struct mlx4_dev *dev)
 
 void mlx4_cleanup_mcg_table(struct mlx4_dev *dev)
 {
+	if (mlx4_is_slave(dev))
+		return;
 	mlx4_bitmap_cleanup(&mlx4_priv(dev)->mcg_table.bitmap);
 }

@@ -47,6 +47,7 @@ extern char initial_stab[];
 
 #define SLB_NUM_BOLTED		3
 #define SLB_CACHE_ENTRIES	8
+#define SLB_MIN_SIZE		32
 
 /* Bits in the SLB ESID word */
 #define SLB_ESID_V		ASM_CONST(0x0000000008000000) /* valid */
@@ -286,6 +287,7 @@ extern void stabs_alloc(void);
 extern void slb_initialize(void);
 extern void slb_flush_and_rebolt(void);
 extern void stab_initialize(unsigned long stab);
+extern void slb_set_size(u16 size);
 
 extern void slb_vmalloc_update(void);
 #endif /* __ASSEMBLY__ */

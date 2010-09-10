@@ -52,6 +52,60 @@ static const char mlx4_en_version[] __devinitdata =
 	DRV_NAME ": Mellanox ConnectX HCA Ethernet driver v"
 	DRV_VERSION " (" DRV_RELDATE ")\n";
 
+
+#define MLX4_EN_PARM_INT(X, def_val, desc) \
+	static unsigned int X = def_val;\
+	module_param(X , uint, 0444); \
+	MODULE_PARM_DESC(X, desc);
+
+
+/*
+ * Device scope module parameters
+ */
+
+
+/* Use a XOR rathern than Toeplitz hash function for RSS */
+MLX4_EN_PARM_INT(rss_xor, 0, "Use XOR hash function for RSS");
+
+/* RSS hash type mask - default to <saddr, daddr, sport, dport> */
+MLX4_EN_PARM_INT(rss_mask, 0x5, "RSS hash type bitmask");
+
+/* Number of LRO sessions per Rx ring (rounded up to a power of two) */
+MLX4_EN_PARM_INT(num_lro, MLX4_EN_MAX_LRO_DESCRIPTORS,
+		 "Number of LRO sessions per ring or disabled (0)");
+
+/* Allow reassembly of fragmented IP packets */
+MLX4_EN_PARM_INT(ip_reasm, 1, "Allow reassembly of fragmented IP packets (!0)");
+
+/* Priority pausing */
+MLX4_EN_PARM_INT(pfctx, 0, "Priority based Flow Control policy on TX[7:0]."
+			   " Per priority bit mask");
+MLX4_EN_PARM_INT(pfcrx, 0, "Priority based Flow Control policy on RX[7:0]."
+			   " Per priority bit mask");
+
+int mlx4_en_get_profile(struct mlx4_en_dev *mdev)
+{
+	struct mlx4_en_profile *params = &mdev->profile;
+	int i;
+
+	params->rss_xor = (rss_xor != 0);
+	params->rss_mask = rss_mask & 0x1f;
+	params->num_lro = min_t(int, num_lro , MLX4_EN_MAX_LRO_DESCRIPTORS);
+	params->ip_reasm = ip_reasm;
+	for (i = 1; i <= MLX4_MAX_PORTS; i++) {
+		params->prof[i].rx_pause = 1;
+		params->prof[i].rx_ppp = pfcrx;
+		params->prof[i].tx_pause = 1;
+		params->prof[i].tx_ppp = pfctx;
+		params->prof[i].tx_ring_size = MLX4_EN_DEF_TX_RING_SIZE;
+		params->prof[i].rx_ring_size = MLX4_EN_DEF_RX_RING_SIZE;
+		params->prof[i].tx_ring_num = MLX4_EN_NUM_HASH_RINGS + 1 +
+			(!!pfcrx) * MLX4_EN_NUM_PPP_RINGS;
+	}
+
+	return 0;
+}
+
 static void mlx4_en_event(struct mlx4_dev *dev, void *endev_ptr,
 			  enum mlx4_dev_event event, int port)
 {
@@ -142,13 +196,13 @@ static void *mlx4_en_add(struct mlx4_dev *dev)
 		mlx4_warn(mdev, "LSO not supported, please upgrade to later "
 				"FW version to enable LSO\n");
 
-	if(mlx4_mr_alloc(mdev->dev, mdev->priv_pdn, 0, ~0ull,
-			 MLX4_PERM_LOCAL_WRITE |  MLX4_PERM_LOCAL_READ,
-			 0, 0, &mdev->mr)){
+	if (mlx4_mr_alloc(mdev->dev, mdev->priv_pdn, 0, ~0ull,
+			  MLX4_PERM_LOCAL_WRITE |  MLX4_PERM_LOCAL_READ,
+			  0, 0, &mdev->mr)) {
 		mlx4_err(mdev, "Failed allocating memory region\n");
 		goto err_uar;
 	}
-	if(mlx4_mr_enable(mdev->dev, &mdev->mr)){
+	if (mlx4_mr_enable(mdev->dev, &mdev->mr)) {
 		mlx4_err(mdev, "Failed enabling memory region\n");
 		goto err_mr;
 	}
@@ -165,17 +219,12 @@ static void *mlx4_en_add(struct mlx4_dev *dev)
 	mlx4_foreach_port(i, dev, MLX4_PORT_TYPE_ETH)
 		mdev->port_cnt++;
 
-	/* Number of RX rings is the minimum between:
-	 * number of completion vextors + 1 (for default ring)
-	 * and MAX_RX_RINGS */
-	mlx4_foreach_port(i, dev, MLX4_PORT_TYPE_ETH) {
-		mlx4_info(mdev, "Using %d tx rings for port:%d\n",
-			  mdev->profile.prof[i].tx_ring_num, i);
-		mdev->profile.prof[i].rx_ring_num =
-			min_t(int, dev->caps.num_comp_vectors + 1, MAX_RX_RINGS);
-		mlx4_info(mdev, "Defaulting to %d rx rings for port:%d\n",
-			  mdev->profile.prof[i].rx_ring_num, i);
-	}
+	/* Number of RX rings is between (MIN_RX_RINGS, MAX_RX_RINGS) + 1
+	 * and depends on number of completion vectors */
+	mlx4_foreach_port(i, dev, MLX4_PORT_TYPE_ETH)
+		mdev->profile.prof[i].rx_ring_num = rounddown_pow_of_two(
+			max_t(int, MIN_RX_RINGS,
+			      min_t(int, dev->caps.num_comp_vectors, MAX_RX_RINGS - 1))) + 1;
 
 	/* Create our own workqueue for reset/multicast tasks
 	 * Note: we cannot use the shared workqueue because of deadlocks caused
@@ -249,6 +298,22 @@ static struct mlx4_interface mlx4_en_interface = {
 	.event	= mlx4_en_event,
 	.query  = mlx4_en_query
 };
+
+static struct pci_device_id mlx4_en_pci_table[] = {
+	{ PCI_VDEVICE(MELLANOX, 0x6340) }, /* ConnectX VPI - IB SDR / 10GigE */
+	{ PCI_VDEVICE(MELLANOX, 0x634a) }, /* ConnectX VPI PCIe 2.0 2.5GT/s - IB DDR / 10GigE */
+	{ PCI_VDEVICE(MELLANOX, 0x6732) }, /* ConnectX VPI PCIe 2.0 5GT/s - IB DDR / 10GigE */
+	{ PCI_VDEVICE(MELLANOX, 0x673c) }, /* ConnectX VPI PCIe 2.0 5GT/s - IB QDR / 10GigE */
+	{ PCI_VDEVICE(MELLANOX, 0x6368) }, /* ConnectX EN 10GigE, PCIe 2.0 2.5GT/s */
+	{ PCI_VDEVICE(MELLANOX, 0x6750) }, /* ConnectX EN 10GigE, PCIe 2.0 5GT/s */
+	{ PCI_VDEVICE(MELLANOX, 0x6372) }, /* ConnectX EN 10GBASE-T 10GigE */
+	{ PCI_VDEVICE(MELLANOX, 0x675a) }, /* ConnectX EN 10GBASE-T 10GigE, PCIe 2.0  */
+	{ PCI_VDEVICE(MELLANOX, 0x6764) }, /* ConnectX EN 10GigE, PCIe 2.0 5GT/s */
+	{ 0, }
+};
+
+MODULE_DEVICE_TABLE(pci, mlx4_en_pci_table);
+
 
 static int __init mlx4_en_init(void)
 {

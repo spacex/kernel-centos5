@@ -23,6 +23,7 @@
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
+#include <linux/ethtool.h>
 #include <net/datalink.h>
 #include <linux/mm.h>
 #include <linux/in.h>
@@ -232,10 +233,8 @@ static int unregister_vlan_dev(struct net_device *real_dev,
 			 * interlock with HW accelerating devices or SW vlan
 			 * input packet processing.
 			 */
-			if (real_dev->features &
-			    (NETIF_F_HW_VLAN_RX | NETIF_F_HW_VLAN_FILTER)) {
+			if (real_dev->features & NETIF_F_HW_VLAN_FILTER)
 				real_dev->vlan_rx_kill_vid(real_dev, vlan_id);
-			}
 
 			grp->vlan_devices[vlan_id] = NULL;
 			synchronize_net();
@@ -320,10 +319,26 @@ static int unregister_vlan_device(const char *vlan_IF_name)
 	return ret;
 }
 
+static u32 vlan_ethtool_get_rx_csum(struct net_device *dev)
+{
+	const struct vlan_dev_info *vlan = VLAN_DEV_INFO(dev);
+	struct net_device *real_dev = vlan->real_dev;
+
+	if (real_dev->ethtool_ops == NULL ||
+	    real_dev->ethtool_ops->get_rx_csum == NULL)
+		return 0;
+	return real_dev->ethtool_ops->get_rx_csum(real_dev);
+}
+
+static const struct ethtool_ops vlan_ethtool_ops = {
+	.get_link		= ethtool_op_get_link,
+	.get_rx_csum		= vlan_ethtool_get_rx_csum,
+};
+
 static void vlan_setup(struct net_device *new_dev)
 {
 	SET_MODULE_OWNER(new_dev);
-	    
+
 	/* new_dev->ifindex = 0;  it will be set when added to
 	 * the global list.
 	 * iflink is set as well.
@@ -346,6 +361,7 @@ static void vlan_setup(struct net_device *new_dev)
 	new_dev->set_multicast_list = vlan_dev_set_multicast_list;
 	new_dev->destructor = free_netdev;
 	new_dev->do_ioctl = vlan_dev_ioctl;
+	new_dev->ethtool_ops = &vlan_ethtool_ops;
 }
 
 static void vlan_transfer_operstate(const struct net_device *dev, struct net_device *vlandev)
@@ -408,16 +424,14 @@ static struct net_device *register_vlan_device(const char *eth_IF_name,
 	}
 
 	if ((real_dev->features & NETIF_F_HW_VLAN_RX) &&
-	    (real_dev->vlan_rx_register == NULL ||
-	     real_dev->vlan_rx_kill_vid == NULL)) {
+	    !real_dev->vlan_rx_register) {
 		printk(VLAN_DBG "%s: Device %s has buggy VLAN hw accel.\n",
 			__FUNCTION__, real_dev->name);
 		goto out_put_dev;
 	}
 
 	if ((real_dev->features & NETIF_F_HW_VLAN_FILTER) &&
-	    (real_dev->vlan_rx_add_vid == NULL ||
-	     real_dev->vlan_rx_kill_vid == NULL)) {
+	    (!real_dev->vlan_rx_add_vid || !real_dev->vlan_rx_kill_vid)) {
 		printk(VLAN_DBG "%s: Device %s has buggy VLAN hw accel.\n",
 			__FUNCTION__, real_dev->name);
 		goto out_put_dev;
@@ -486,6 +500,11 @@ static struct net_device *register_vlan_device(const char *eth_IF_name,
 	new_dev->state = (real_dev->state & ((1<<__LINK_STATE_NOCARRIER) |
 					     (1<<__LINK_STATE_DORMANT))) |
 			 (1<<__LINK_STATE_PRESENT); 
+
+	if (real_dev->features & NETIF_F_VLAN_TSO)
+		new_dev->features |= real_dev->features & VLAN_TSO_FEATURES;
+	if (real_dev->features & NETIF_F_VLAN_CSUM)
+		new_dev->features |= real_dev->features & NETIF_F_ALL_CSUM;
 
 	/* need 4 bytes for extra VLAN header info,
 	 * hope the underlying device can handle it.
@@ -596,6 +615,24 @@ out_ret_null:
 	return NULL;
 }
 
+static void vlan_transfer_features(struct net_device *dev,
+				   struct net_device *vlandev)
+{
+	unsigned long old_features = vlandev->features;
+
+	if (dev->features & NETIF_F_VLAN_TSO) {
+		vlandev->features &= ~VLAN_TSO_FEATURES;
+		vlandev->features |= dev->features & VLAN_TSO_FEATURES;
+	}
+	if (dev->features & NETIF_F_VLAN_CSUM) {
+		vlandev->features &= ~NETIF_F_ALL_CSUM;
+		vlandev->features |= dev->features & NETIF_F_ALL_CSUM;
+	}
+
+	if (old_features != vlandev->features)
+		netdev_features_change(vlandev);
+}
+
 static int vlan_device_event(struct notifier_block *unused, unsigned long event, void *ptr)
 {
 	struct net_device *dev = ptr;
@@ -620,6 +657,18 @@ static int vlan_device_event(struct notifier_block *unused, unsigned long event,
 
 			vlan_transfer_operstate(dev, vlandev);
 		}
+		break;
+
+	case NETDEV_FEAT_CHANGE:
+		/* Propagate device features to underlying device */
+		for (i = 0; i < VLAN_GROUP_ARRAY_LEN; i++) {
+			vlandev = grp->vlan_devices[i];
+			if (!vlandev)
+				continue;
+
+			vlan_transfer_features(dev, vlandev);
+		}
+
 		break;
 
 	case NETDEV_DOWN:

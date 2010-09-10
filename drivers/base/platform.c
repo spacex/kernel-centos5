@@ -212,7 +212,8 @@ EXPORT_SYMBOL_GPL(platform_device_add_resources);
  *	pointer.  The memory associated with the platform data will be freed
  *	when the platform device is released.
  */
-int platform_device_add_data(struct platform_device *pdev, void *data, size_t size)
+int platform_device_add_data(struct platform_device *pdev, const void *data,
+			     size_t size)
 {
 	void *d;
 
@@ -544,9 +545,17 @@ int __init platform_bus_init(void)
 #ifndef ARCH_HAS_DMA_GET_REQUIRED_MASK
 u64 dma_get_required_mask(struct device *dev)
 {
-	u32 low_totalram = ((max_pfn - 1) << PAGE_SHIFT);
-	u32 high_totalram = ((max_pfn - 1) >> (32 - PAGE_SHIFT));
 	u64 mask;
+	u32 low_totalram;
+	u32 high_totalram;
+
+#ifdef CONFIG_IA64
+	if (ia64_platform_is("sn2"))
+		return DMA_64BIT_MASK;
+#endif /* CONFIG_IA64 */
+
+	low_totalram = ((max_pfn - 1) << PAGE_SHIFT);
+	high_totalram = ((max_pfn - 1) >> (32 - PAGE_SHIFT));
 
 	if (!high_totalram) {
 		/* convert to mask just covering totalram */

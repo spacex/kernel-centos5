@@ -174,29 +174,34 @@ struct pci_dev * pci_get_slot(struct pci_bus *bus, unsigned int devfn)
 }
 
 /**
- * pci_get_bus_and_slot - locate PCI device from a given PCI slot
- * @bus: number of PCI bus on which desired PCI device resides
- * @devfn: encodes number of PCI slot in which the desired PCI
- * device resides and the logical device number within that slot
- * in case of multi-function devices.
+ * pci_get_domain_bus_and_slot - locate PCI device for a given PCI domain (segment), bus, and slot
+ * @domain: PCI domain/segment on which the PCI device resides.
+ * @bus: PCI bus on which desired PCI device resides
+ * @devfn: encodes number of PCI slot in which the desired PCI device
+ * resides and the logical device number within that slot in case of
+ * multi-function devices.
  *
- * Given a PCI bus and slot/function number, the desired PCI device
- * is located in system global list of PCI devices.  If the device
- * is found, a pointer to its data structure is returned.  If no
- * device is found, %NULL is returned. The returned device has its
- * reference count bumped by one.
+ * Given a PCI domain, bus, and slot/function number, the desired PCI
+ * device is located in the list of PCI devices. If the device is
+ * found, its reference count is increased and this function returns a
+ * pointer to its data structure.  The caller must decrement the
+ * reference count by calling pci_dev_put().  If no device is found,
+ * %NULL is returned.
  */
-
-struct pci_dev * pci_get_bus_and_slot(unsigned int bus, unsigned int devfn)
+struct pci_dev *pci_get_domain_bus_and_slot(int domain, unsigned int bus,
+					    unsigned int devfn)
 {
 	struct pci_dev *dev = NULL;
 
 	while ((dev = pci_get_device(PCI_ANY_ID, PCI_ANY_ID, dev)) != NULL) {
-		if (dev->bus->number == bus && dev->devfn == devfn)
+		if (pci_domain_nr(dev->bus) == domain &&
+		    (dev->bus->number == bus && dev->devfn == devfn))
 			return dev;
 	}
 	return NULL;
 }
+EXPORT_SYMBOL(pci_get_domain_bus_and_slot);
+
 /**
  * pci_find_subsys - begin or continue searching for a PCI device by vendor/subvendor/device/subdevice id
  * @vendor: PCI vendor id to match, or %PCI_ANY_ID to match all vendor ids
@@ -448,5 +453,4 @@ EXPORT_SYMBOL(pci_find_slot);
 EXPORT_SYMBOL(pci_get_device);
 EXPORT_SYMBOL(pci_get_subsys);
 EXPORT_SYMBOL(pci_get_slot);
-EXPORT_SYMBOL(pci_get_bus_and_slot);
 EXPORT_SYMBOL(pci_get_class);

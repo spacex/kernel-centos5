@@ -939,6 +939,7 @@ __alloc_pages(gfp_t gfp_mask, unsigned int order,
 	int do_retry;
 	int alloc_flags;
 	int did_some_progress;
+	int would_oom_kill = 0;
 
 	might_sleep_if(wait);
 
@@ -991,7 +992,8 @@ restart:
 
 	/* This allocation should allow future memory freeing. */
 
-	if (((p->flags & PF_MEMALLOC) || unlikely(test_thread_flag(TIF_MEMDIE)))
+	if (((p->flags & PF_MEMALLOC) ||
+			unlikely(test_thread_flag(TIF_MEMDIE) || would_oom_kill))
 			&& !in_interrupt()) {
 		if (!(gfp_mask & __GFP_NOMEMALLOC)) {
 nofail_alloc:
@@ -1013,7 +1015,7 @@ nofail_alloc:
 		goto nopage;
 
 rebalance:
-	if (test_thread_flag(TIF_MEMDIE))
+	if (test_thread_flag(TIF_MEMDIE) && !(gfp_mask & __GFP_NOFAIL) || would_oom_kill)
 		goto nopage;
 	cond_resched();
 
@@ -1047,7 +1049,10 @@ rebalance:
 		if (page)
 			goto got_pg;
 
-		out_of_memory(zonelist, gfp_mask, order, 0);
+		if (!(gfp_mask & __GFP_NO_OOM))
+			out_of_memory(zonelist, gfp_mask, order, 0);
+		else
+			would_oom_kill = 1;
 		goto restart;
 	}
 

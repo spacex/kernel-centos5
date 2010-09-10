@@ -82,6 +82,12 @@ MODULE_PARM_DESC(qlge_spool_coredump,
 		"Option to enable spooling of firmware dump. "
 		"to log. Default is 0 - do not spool.");
 
+static int qlge_receive_routing = 1;
+module_param(qlge_receive_routing, int, S_IRUGO|S_IRUSR);
+MODULE_PARM_DESC(qlge_receive_routing,
+		"Option to Set/Clear receive routing bit. "
+		"Default is 1 - set receive routing.");
+
 static struct pci_device_id qlge_pci_tbl[] __devinitdata = {
 		{PCI_DEVICE(PCI_VENDOR_ID_QLOGIC, QLGE_DEVICE_ID_8012)},
 		{PCI_DEVICE(PCI_VENDOR_ID_QLOGIC, QLGE_DEVICE_ID_8000)},
@@ -271,8 +277,15 @@ void ql_link_on(struct ql_adapter *qdev)
 				qdev->ndev->name);
 			return;
 		}
+		
+		/* Using the current mac address when link up */
 		spin_lock_irqsave(&qdev->hw_lock, hw_flags);
-		if (ql_set_mac_addr_reg(qdev, (u8 *) qdev->ndev->dev_addr,
+		QPRINTK_DBG(qdev, DRV, ERR,
+		"Current mac addr %02x:%02x:%02x:%02x:%02x:%02x\n",
+		qdev->current_mac_addr[0], qdev->current_mac_addr[1], qdev->current_mac_addr[2],
+		qdev->current_mac_addr[3], qdev->current_mac_addr[4], qdev->current_mac_addr[5]);
+
+		if (ql_set_mac_addr_reg(qdev, (u8 *) qdev->current_mac_addr,
 				MAC_ADDR_TYPE_CAM_MAC, qdev->func*MAX_CQ)) {
 			QPRINTK(qdev, IFUP, ERR,
 					"Failed to restore mac address.\n");
@@ -392,6 +405,37 @@ static int ql_set_mac_addr_reg(struct ql_adapter *qdev, u8 *addr, u32 type,
 
 	switch (type) {
 	case MAC_ADDR_TYPE_MULTI_MAC:
+		{
+			u32 upper = (addr[0] << 8) | addr[1];
+			u32 lower = (addr[2] << 24) | (addr[3] << 16) |
+					(addr[4] << 8) | (addr[5]);
+
+			status =
+				ql_wait_reg_rdy(qdev,
+				MAC_ADDR_IDX, MAC_ADDR_MW, 0);
+			if (status)
+				goto exit;
+			ql_write32(qdev, MAC_ADDR_IDX, (offset++) |
+				(index << MAC_ADDR_IDX_SHIFT) |
+				type | MAC_ADDR_E);
+			ql_write32(qdev, MAC_ADDR_DATA, lower);
+			status =
+				ql_wait_reg_rdy(qdev,
+				MAC_ADDR_IDX, MAC_ADDR_MW, 0);
+			if (status)
+				goto exit;
+			ql_write32(qdev, MAC_ADDR_IDX, (offset++) |
+				(index << MAC_ADDR_IDX_SHIFT) |
+				type | MAC_ADDR_E);
+
+			ql_write32(qdev, MAC_ADDR_DATA, upper);
+			status =
+				ql_wait_reg_rdy(qdev,
+				MAC_ADDR_IDX, MAC_ADDR_MW, 0);
+			if (status)
+				goto exit;
+			break;
+		}
 	case MAC_ADDR_TYPE_CAM_MAC:
 		{
 			u32 cam_output;
@@ -435,15 +479,13 @@ static int ql_set_mac_addr_reg(struct ql_adapter *qdev, u8 *addr, u32 type,
 			 * and possibly the function id.  Right now we hardcode
 			 * the route field to NIC core.
 			 */
-			if (type == MAC_ADDR_TYPE_CAM_MAC) {
-				cam_output = (CAM_OUT_ROUTE_NIC |
+			cam_output = (CAM_OUT_ROUTE_NIC |
 					(qdev->func << CAM_OUT_FUNC_SHIFT) |
 					(0 << CAM_OUT_CQ_ID_SHIFT));
-				if (qdev->vlgrp)
-					cam_output |= CAM_OUT_RV;
-				/* route to NIC core */
-				ql_write32(qdev, MAC_ADDR_DATA, cam_output);
-			}
+			if (qdev->vlgrp)
+				cam_output |= CAM_OUT_RV;
+			/* route to NIC core */
+			ql_write32(qdev, MAC_ADDR_DATA, cam_output);
 			break;
 		}
 	case MAC_ADDR_TYPE_VLAN:
@@ -569,7 +611,7 @@ static int ql_set_routing_reg(struct ql_adapter *qdev, u32 index, u32 mask,
 		}
 	case RT_IDX_MCAST:	/* Pass up All Multicast frames. */
 		{
-			value = RT_IDX_DST_CAM_Q | /* dest */
+			value = RT_IDX_DST_DFLT_Q | /* dest */
 				RT_IDX_TYPE_NICQ | /* type */
 				(RT_IDX_ALLMULTI_SLOT <<
 				RT_IDX_IDX_SHIFT); /* index */
@@ -577,7 +619,7 @@ static int ql_set_routing_reg(struct ql_adapter *qdev, u32 index, u32 mask,
 		}
 	case RT_IDX_MCAST_MATCH:	/* Pass up matched Multicast frames. */
 		{
-			value = RT_IDX_DST_CAM_Q | /* dest */
+			value = RT_IDX_DST_DFLT_Q | /* dest */
 				RT_IDX_TYPE_NICQ | /* type */
 				(RT_IDX_MCAST_MATCH_SLOT <<
 				RT_IDX_IDX_SHIFT); /* index */
@@ -694,6 +736,21 @@ static void ql_enable_all_completion_interrupts(struct ql_adapter *qdev)
 			atomic_set(&qdev->intr_context[i].irq_cnt, 1);
 		ql_enable_completion_interrupt(qdev, i);
 	}
+}
+
+/* link state work function. Delaying link up by 2 second because
+ * of bonding mode (tlb/alb) modifies the mac addresses. 
+ */
+static void ql_link_work(struct work_struct *work)
+{
+	struct ql_adapter *qdev = 
+			container_of(work, struct ql_adapter, link_work);
+	
+	if ((ql_read32(qdev, STS) & qdev->port_init) &&
+			(ql_read32(qdev, STS) & qdev->port_link_up))
+		ql_link_on(qdev);
+
+	return;
 }
 
 static int ql_validate_flash(struct ql_adapter *qdev, u32 size, const char *str)
@@ -3370,6 +3427,15 @@ static int ql_adapter_initialize(struct ql_adapter *qdev)
 		FSC_DBL_MASK | FSC_DBRST_MASK | (value << 16);
 	ql_write32(qdev, FSC, mask | value);
 
+	/* Set Receive Routing bit in reset/failover register to use function
+	 * number and CQ from CAM lookup
+	 */
+	if (qlge_receive_routing)
+		value = RST_FO_RR_RCV_FUNC_CQ;
+	else
+		value = 0;
+	ql_write32(qdev, RST_FO, RST_FO_RR_MASK | value);
+
 	/* Reroute all packets to our Interface.
 	 * They may have been routed to MPI firmware
 	 * due to WOL.
@@ -3381,6 +3447,11 @@ static int ql_adapter_initialize(struct ql_adapter *qdev)
 	/* Sticky reg needs clearing due to WOL. */
 	ql_write32(qdev, MGMT_RCV_CFG, mask);
 	ql_write32(qdev, MGMT_RCV_CFG, mask | value);
+
+	/* Default WOL is enable on Mezz cards */
+	if (qdev->pdev->subsystem_device == 0x0068 ||
+			qdev->pdev->subsystem_device == 0x0180 )
+		qdev->wol = WAKE_MAGIC;
 
 	/* Start up the rx queues. */
 	for (i = 0; i < qdev->rx_ring_count; i++) {
@@ -3444,6 +3515,11 @@ static int ql_adapter_reset(struct ql_adapter *qdev)
 		QPRINTK(qdev, IFUP, ERR, "Failed to clear Routing tables.\n");
 		return status;
 	}
+	/* Stop management traffic. */
+	ql_mb_set_mgmnt_traffic_ctl(qdev, MB_SET_MPI_TFK_STOP);
+
+	/* Wait for the NIC and MGMNT FIFOs to empty. */
+	ql_wait_fifo_empty(qdev);
 
 	ql_write32(qdev, RST_FO, (RST_FO_FR << 16) | RST_FO_FR);
 
@@ -3460,7 +3536,8 @@ static int ql_adapter_reset(struct ql_adapter *qdev)
 			"ETIMEOUT!!! errored out of resetting the chip!\n");
 		status = -ETIMEDOUT;
 	}
-
+	/* Resume management traffic. */
+	ql_mb_set_mgmnt_traffic_ctl(qdev, MB_SET_MPI_TFK_RESUME);
 	return status;
 }
 
@@ -3487,10 +3564,12 @@ int ql_wol(struct ql_adapter *qdev)
 	 * settings.
 	 */
 
-	if (qdev->wol & WAKE_ARP) {
+	if (qdev->wol & (WAKE_ARP | WAKE_MAGICSECURE | WAKE_PHY | WAKE_UCAST |
+			WAKE_MCAST | WAKE_BCAST)) {
 		QPRINTK(qdev, IFDOWN, ERR,
-			"ARP request WOL not support yet.\n");
-		return status;
+			"Unsupported WOL paramter. qdev->wol = 0x%x.\n",
+			qdev->wol);
+		return -EINVAL;
 	}
 
 	if (qdev->wol & WAKE_MAGIC) {
@@ -3508,28 +3587,7 @@ int ql_wol(struct ql_adapter *qdev)
 		wol |= MB_WOL_MAGIC_PKT;
 	}
 
-	if (qdev->wol & WAKE_MAGICSECURE) {
-		QPRINTK(qdev, IFDOWN, ERR,
-			"Secure Magic packet WOL not support yet.\n");
-		return status;
-	}
-
-	if (qdev->wol & WAKE_PHY)
-		wol |= (MB_WOL_LINK_UP | MB_WOL_LINK_DOWN);
-
-	if (qdev->wol & WAKE_UCAST)
-		wol |= MB_WOL_UCAST;
-
-	if (qdev->wol & WAKE_MCAST)
-		wol |= MB_WOL_MCAST;
-
-	if (qdev->wol & WAKE_BCAST)
-		wol |= MB_WOL_BCAST;
-
 	if (qdev->wol) {
-		/* Reroute all packets to Management Interface */
-		ql_write32(qdev, MGMT_RCV_CFG, (MGMT_RCV_CFG_RM |
-			(MGMT_RCV_CFG_RM << 16)));
 		wol |= MB_WOL_MODE_ON;
 		status = ql_mb_wol_mode(qdev, wol);
 		QPRINTK(qdev, DRV, ERR, "WOL %s (wol code 0x%x) on %s\n",
@@ -3577,6 +3635,7 @@ static int ql_adapter_down(struct ql_adapter *qdev)
 	cancel_delayed_work_sync(&qdev->mpi_idc_work);
 	cancel_delayed_work_sync(&qdev->mpi_core_to_log);
 	cancel_delayed_work_sync(&qdev->mpi_port_cfg_work);
+	cancel_delayed_work_sync(&qdev->link_work);
 
 	for (i = 0; i < qdev->tx_ring_count; i++)
 		del_timer_sync(&qdev->tx_ring[i].txq_clean_timer);
@@ -3608,9 +3667,10 @@ static int ql_adapter_up(struct ql_adapter *qdev)
 	ql_enable_napi(qdev);
 	ql_alloc_rx_buffers(qdev);
 	ql_enable_all_completion_interrupts(qdev);
-	if ((ql_read32(qdev, STS) & qdev->port_init) &&
-			(ql_read32(qdev, STS) & qdev->port_link_up))
-		ql_link_on(qdev);
+	
+	/* trigger link work function*/
+	queue_delayed_work(qdev->workqueue, &qdev->link_work,
+					msecs_to_jiffies(2000));
 	ql_enable_interrupts(qdev);
 	return 0;
 err_init:
@@ -3993,12 +4053,6 @@ static int qlge_set_mac_address(struct net_device *ndev, void *p)
 	struct sockaddr *addr = p;
 	unsigned long hw_flags = 0;
 	int status;
-	if (netif_running(ndev)) {
-		QPRINTK(qdev, DRV, ERR,
-			"Interface already active, aborting change mac address "
-			"request !!!\n");
-		return -EBUSY;
-	}
 
 	if (!is_valid_ether_addr(addr->sa_data)) {
 		QPRINTK_DBG(qdev, DRV, ERR,
@@ -4027,7 +4081,9 @@ static int qlge_set_mac_address(struct net_device *ndev, void *p)
 		QPRINTK(qdev, HW, ERR, "Failed to load MAC address.\n");
 
 	ql_sem_unlock(qdev, SEM_MAC_ADDR_MASK);
-
+	/* Saving the current mac address */
+	memcpy(qdev->current_mac_addr, ndev->dev_addr, ndev->addr_len);
+		
 	return status;
 }
 
@@ -4169,11 +4225,14 @@ static int __devinit ql_init_device(struct pci_dev *pdev,
 		return err;
 	}
 
+	qdev->ndev = ndev;
+	qdev->pdev = pdev;
+	pci_set_drvdata(pdev, ndev);
 	pos = pci_find_capability(pdev, PCI_CAP_ID_EXP);
 	if (pos <= 0) {
 		dev_err(&pdev->dev, PFX "Cannot find PCI Express capability, "
 			"aborting.\n");
-		goto err_out;
+		return pos;
 	} else {
 		pci_read_config_word(pdev, pos + PCI_EXP_DEVCTL, &val16);
 		val16 &= ~PCI_EXP_DEVCTL_NOSNOOP_EN;
@@ -4197,7 +4256,7 @@ static int __devinit ql_init_device(struct pci_dev *pdev,
 	err = pci_request_regions(pdev, DRV_NAME);
 	if (err) {
 		dev_err(&pdev->dev, "PCI region request failed.\n");
-		goto err_out;
+		return err;
 	}
 
 	if (!pci_set_dma_mask(pdev, DMA_64BIT_MASK)) {
@@ -4216,7 +4275,6 @@ static int __devinit ql_init_device(struct pci_dev *pdev,
 
 	pci_set_master(pdev);
 	pci_save_state(pdev);
-	pci_set_drvdata(pdev, ndev);
 	qdev->reg_base =
 		ioremap_nocache(pci_resource_start(pdev, 1),
 				pci_resource_len(pdev, 1));
@@ -4235,8 +4293,6 @@ static int __devinit ql_init_device(struct pci_dev *pdev,
 		err = -ENOMEM;
 		goto err_out;
 	}
-	qdev->ndev = ndev;
-	qdev->pdev = pdev;
 
 	err = ql_get_board_info(qdev);
 	if (err) {
@@ -4266,6 +4322,8 @@ static int __devinit ql_init_device(struct pci_dev *pdev,
 	}
 
 	memcpy(ndev->perm_addr, ndev->dev_addr, ndev->addr_len);
+	/* Initializing current mac address */
+	memcpy(qdev->current_mac_addr, ndev->dev_addr, ndev->addr_len);
 
 	/* Set up the default ring sizes. */
 	qdev->tx_ring_size = NUM_TX_RING_ENTRIES;
@@ -4289,6 +4347,7 @@ static int __devinit ql_init_device(struct pci_dev *pdev,
 	INIT_DELAYED_WORK(&qdev->mpi_idc_work, ql_mpi_idc_work);
 	INIT_DELAYED_WORK(&qdev->mpi_core_to_log, ql_mpi_core_to_log);
 	INIT_DELAYED_WORK(&qdev->mpi_port_cfg_work, ql_mpi_port_cfg_work);
+	INIT_DELAYED_WORK(&qdev->link_work, ql_link_work);
 	init_completion(&qdev->ide_completion);
 	mutex_init(&qdev->mpi_mutex);
 
@@ -4414,9 +4473,11 @@ static int __devinit qlge_probe(struct pci_dev *pdev,
 		return err;
 	}
 
+#if ((LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16)) && \
+	(RHEL_RELEASE_CODE > RHEL_RELEASE_VERSION(5, 3)))
 	/* Set EEH reset type to fundamental for this device */
 	pdev->fndmntl_rst_rqd = 1;
-
+#endif
 	qdev = netdev_priv(ndev);
 	SET_NETDEV_DEV(ndev, &pdev->dev);
 	ndev->features = (0
@@ -4535,6 +4596,7 @@ static void ql_eeh_close(struct net_device *ndev)
 	cancel_delayed_work_sync(&qdev->mpi_idc_work);
 	cancel_delayed_work_sync(&qdev->mpi_core_to_log);
 	cancel_delayed_work_sync(&qdev->mpi_port_cfg_work);
+	cancel_delayed_work_sync(&qdev->link_work);
 
 	for (i = 0; i < qdev->tx_ring_count; i++)
 		del_timer_sync(&qdev->tx_ring[i].txq_clean_timer);

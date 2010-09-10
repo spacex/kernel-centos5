@@ -50,6 +50,7 @@
 #include <linux/acct.h>
 #include <linux/cn_proc.h>
 #include <linux/audit.h>
+#include <trace/signal.h>
 
 #include <asm/uaccess.h>
 #include <asm/mmu_context.h>
@@ -1674,7 +1675,7 @@ int do_coredump(long signr, int exit_code, struct pt_regs * regs)
 	struct mm_struct *mm = current->mm;
 	struct linux_binfmt * binfmt;
 	struct inode * inode;
-	struct file * file;
+	struct file * file = NULL;
 	int retval = 0;
 	int fsuid = current->fsuid;
 	int flag = 0;
@@ -1683,6 +1684,13 @@ int do_coredump(long signr, int exit_code, struct pt_regs * regs)
 	char **helper_argv = NULL;
 	int helper_argc = 0;
 	char *delimit;
+	struct coredump_params cprm = {
+		.signr = signr,
+		.file = NULL,
+		.regs = regs,
+		.limit = current->signal->rlim[RLIMIT_CORE].rlim_cur,
+		.mm_flags = get_mm_flags(mm),
+	};
 
 	audit_core_dumps(signr);
 
@@ -1735,9 +1743,6 @@ int do_coredump(long signr, int exit_code, struct pt_regs * regs)
 	 * at which point file size limits and permissions will be imposed
 	 * as it does with any other process
 	 */
-	if ((!ispipe) && (core_limit < binfmt->min_coredump))
-		goto fail_unlock;
-
 	if (ispipe) {
 		helper_argv = argv_split(GFP_KERNEL, corename+1, &helper_argc);
 		/* Terminate the string before the first option */
@@ -1752,23 +1757,31 @@ int do_coredump(long signr, int exit_code, struct pt_regs * regs)
 		if (!strcmp(delimit, current->comm)) {
 			printk(KERN_NOTICE "Recursive core dump detected, "
 					   "aborting\n");
-			goto fail_unlock;
+			goto end_open;
 		}
 		current->signal->rlim[RLIMIT_CORE].rlim_cur = RLIM_INFINITY;
 
 		/* SIGPIPE can happen, but it's just never processed */
 		if(call_usermodehelper_pipe(corename+1, helper_argv, NULL, 
 			       &file)) {
+			file = NULL;	/*
+					 * call_usermodehelper_pipe can return
+					 * error without setting file = NULL
+					 */
 			printk(KERN_INFO "Core dump to %s pipe failed\n",
 			       corename);
-			goto fail_unlock;
+			goto end_open;
 		}
-	} else
+	} else if (core_limit >= binfmt->min_coredump)
 		file = filp_open(corename,
 				 O_CREAT | 2 | O_NOFOLLOW | O_LARGEFILE | flag,
 				 0600);
 
-	if (IS_ERR(file))
+end_open:
+	cprm.file = file;
+	trace_signal_coredump(&cprm, corename);
+
+	if (!file || IS_ERR(file))
 		goto fail_unlock;
 	inode = file->f_dentry->d_inode;
 	if (inode->i_nlink > 1)

@@ -105,8 +105,9 @@ static struct page *alloc_fresh_huge_page_node(int nid)
 {
 	struct page *page;
 
-	page = alloc_pages_thisnode(nid, GFP_HIGHUSER|__GFP_COMP|__GFP_NOWARN,
-					HUGETLB_PAGE_ORDER);
+	page = alloc_pages_thisnode(nid,
+		GFP_HIGHUSER|__GFP_COMP|__GFP_NOWARN|__GFP_NOMEMALLOC|__GFP_NO_OOM,
+		HUGETLB_PAGE_ORDER);
 	if (page) {
 		if (arch_prepare_hugepage(page)) {
 			__free_pages(page, HUGETLB_PAGE_ORDER);

@@ -7,6 +7,10 @@
 #include <linux/tracepoint.h>
 #include <linux/mm.h>
 
+DEFINE_TRACE(mm_kernel_pagefault,
+	TPPROTO(struct task_struct *task, unsigned long address, unsigned long ip),
+	TPARGS(task, address, ip));
+
 DEFINE_TRACE(mm_anon_fault,
 	TPPROTO(struct mm_struct *mm, unsigned long address, struct page *page),
 	TPARGS(mm, address, page));

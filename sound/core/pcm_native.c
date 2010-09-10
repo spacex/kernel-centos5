@@ -2179,7 +2179,6 @@ static int snd_pcm_release(struct inode *inode, struct file *file)
 	substream = pcm_file->substream;
 	snd_assert(substream != NULL, return -ENXIO);
 	pcm = substream->pcm;
-	fasync_helper(-1, file, 0, &substream->runtime->fasync);
 	mutex_lock(&pcm->open_mutex);
 	snd_pcm_release_substream(substream);
 	kfree(pcm_file);

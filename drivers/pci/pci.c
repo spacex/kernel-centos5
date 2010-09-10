@@ -45,29 +45,19 @@ pci_bus_max_busnr(struct pci_bus* bus)
 }
 EXPORT_SYMBOL_GPL(pci_bus_max_busnr);
 
-#if 0
-/**
- * pci_max_busnr - returns maximum PCI bus number
- *
- * Returns the highest PCI bus number present in the system global list of
- * PCI buses.
- */
-unsigned char __devinit
-pci_max_busnr(void)
+void __iomem *pci_ioremap_bar(struct pci_dev *pdev, int bar)
 {
-	struct pci_bus *bus = NULL;
-	unsigned char max, n;
-
-	max = 0;
-	while ((bus = pci_find_next_bus(bus)) != NULL) {
-		n = pci_bus_max_busnr(bus);
-		if(n > max)
-			max = n;
+	/*
+	 * Make sure the BAR is actually a memory resource, not an IO resource
+	 */
+	if (!(pci_resource_flags(pdev, bar) & IORESOURCE_MEM)) {
+		WARN_ON(1);
+		return NULL;
 	}
-	return max;
+	return ioremap_nocache(pci_resource_start(pdev, bar),
+			       pci_resource_len(pdev, bar));
 }
-
-#endif  /*  0  */
+EXPORT_SYMBOL_GPL(pci_ioremap_bar);
 
 #define PCI_FIND_CAP_TTL	48
 
@@ -710,6 +700,8 @@ static int __pci_enable_device_flags(struct pci_dev *dev,
 	if (dev->is_enabled)
 		return 0;		/* already enabled */
 
+	dev->is_enabled = 1;
+
 	for (i = 0; i < DEVICE_COUNT_RESOURCE; i++)
 		if (dev->resource[i].flags & flags)
 			bars |= (1 << i);
@@ -1023,6 +1015,54 @@ void pci_enable_ari(struct pci_dev *dev)
 	bridge->ari_enabled = 1;
 }
 
+static int pci_acs_enable;
+
+/**
+ * pci_request_acs - ask for ACS to be enabled if supported
+ */
+void pci_request_acs(void)
+{
+	pci_acs_enable = 1;
+}
+
+/**
+ * pci_enable_acs - enable ACS if hardware support it
+ * @dev: the PCI device
+ */
+void pci_enable_acs(struct pci_dev *dev)
+{
+	int pos;
+	u16 cap;
+	u16 ctrl;
+
+	if (!pci_acs_enable)
+		return;
+
+	if (!dev->is_pcie)
+		return;
+
+	pos = pci_find_ext_capability(dev, PCI_EXT_CAP_ID_ACS);
+	if (!pos)
+		return;
+
+	pci_read_config_word(dev, pos + PCI_ACS_CAP, &cap);
+	pci_read_config_word(dev, pos + PCI_ACS_CTRL, &ctrl);
+
+	/* Source Validation */
+	ctrl |= (cap & PCI_ACS_SV);
+
+	/* P2P Request Redirect */
+	ctrl |= (cap & PCI_ACS_RR);
+
+	/* P2P Completion Redirect */
+	ctrl |= (cap & PCI_ACS_CR);
+
+	/* Upstream Forwarding */
+	ctrl |= (cap & PCI_ACS_UF);
+
+	pci_write_config_word(dev, pos + PCI_ACS_CTRL, ctrl);
+}
+
 int
 pci_get_interrupt_pin(struct pci_dev *dev, struct pci_dev **bridge)
 {
@@ -1190,6 +1230,22 @@ int pci_request_regions(struct pci_dev *pdev, const char *res_name)
 	return pci_request_selected_regions(pdev, ((1 << 6) - 1), res_name);
 }
 
+static void __pci_set_master(struct pci_dev *dev, bool enable)
+{
+	u16 old_cmd, cmd;
+
+	pci_read_config_word(dev, PCI_COMMAND, &old_cmd);
+	if (enable)
+		cmd = old_cmd | PCI_COMMAND_MASTER;
+	else
+		cmd = old_cmd & ~PCI_COMMAND_MASTER;
+	if (cmd != old_cmd) {
+		pr_debug("PCI: %s bus mastering for device %s\n",
+			enable ? "Enabling" : "Disabling", pci_name(dev));
+		pci_write_config_word(dev, PCI_COMMAND, cmd);
+	}
+	dev->is_busmaster = enable;
+}
 /**
  * pci_set_master - enables bus-mastering for device dev
  * @dev: the PCI device to enable
@@ -1197,19 +1253,19 @@ int pci_request_regions(struct pci_dev *pdev, const char *res_name)
  * Enables bus-mastering on the device and calls pcibios_set_master()
  * to do the needed arch specific settings.
  */
-void
-pci_set_master(struct pci_dev *dev)
+void pci_set_master(struct pci_dev *dev)
 {
-	u16 cmd;
-
-	pci_read_config_word(dev, PCI_COMMAND, &cmd);
-	if (! (cmd & PCI_COMMAND_MASTER)) {
-		pr_debug("PCI: Enabling bus mastering for device %s\n", pci_name(dev));
-		cmd |= PCI_COMMAND_MASTER;
-		pci_write_config_word(dev, PCI_COMMAND, cmd);
-	}
-	dev->is_busmaster = 1;
+	__pci_set_master(dev, true);
 	pcibios_set_master(dev);
+}
+
+/**
+ * pci_clear_master - disables bus-mastering for device dev
+ * @dev: the PCI device to disable
+ */
+void pci_clear_master(struct pci_dev *dev)
+{
+	__pci_set_master(dev, false);
 }
 
 #ifndef HAVE_ARCH_PCI_MWI
@@ -1421,6 +1477,21 @@ static int __pcie_flr(struct pci_dev *dev, int probe)
 	return 0;
 }
 
+static int __pci_dev_specific_reset(struct pci_dev *dev, int probe)
+{
+	struct pci_dev_reset_methods *i;
+
+	for (i = pci_dev_reset_methods; i->reset; i++) {
+		if ((i->vendor == dev->vendor ||
+		     i->vendor == (u16)PCI_ANY_ID) &&
+		    (i->device == dev->device ||
+		     i->device == (u16)PCI_ANY_ID))
+			return i->reset(dev, probe);
+	}
+
+	return -ENOTTY;
+}
+
 static int __pci_af_flr(struct pci_dev *dev, int probe)
 {
 	int cappos = pci_find_capability(dev, PCI_CAP_ID_AF);
@@ -1461,6 +1532,10 @@ static int __pci_af_flr(struct pci_dev *dev, int probe)
 static int __pci_reset_function(struct pci_dev *pdev, int probe)
 {
 	int res;
+
+	res = __pci_dev_specific_reset(pdev, probe);
+	if (res != -ENOTTY)
+		return res;
 
 	res = __pcie_flr(pdev, probe);
 	if (res != -ENOTTY)
@@ -1744,6 +1819,19 @@ int pci_resource_bar(struct pci_dev *dev, int resno, enum pci_bar_type *type)
 	return 0;
 }
 
+/**
+ * pci_ext_cfg_enabled - can we access extended PCI config space?
+ * @dev: The PCI device of the root bridge.
+ *
+ * Returns 1 if we can access PCI extended config space (offsets
+ * greater than 0xff). This is the default implementation. Architecture
+ * implementations can override this.
+ */
+int __attribute__ ((weak)) pci_ext_cfg_avail(struct pci_dev *dev)
+{
+	return 1;
+}
+
 static int __devinit pci_init(void)
 {
 	struct pci_dev *dev = NULL;
@@ -1763,6 +1851,8 @@ static int __devinit pci_setup(char *str)
 		if (*str && (str = pcibios_setup(str)) && *str) {
 			if (!strcmp(str, "nomsi")) {
 				pci_no_msi();
+			} else if (!strcmp(str, "aer")) {
+				pci_aer_enable();
 			} else {
 				printk(KERN_ERR "PCI: Unknown option `%s'\n",
 						str);
@@ -1800,6 +1890,7 @@ EXPORT_SYMBOL(pci_request_region);
 EXPORT_SYMBOL(pci_release_selected_regions);
 EXPORT_SYMBOL(pci_request_selected_regions);
 EXPORT_SYMBOL(pci_set_master);
+EXPORT_SYMBOL(pci_clear_master);
 EXPORT_SYMBOL(pci_set_mwi);
 EXPORT_SYMBOL(pci_try_set_mwi);
 EXPORT_SYMBOL(pci_clear_mwi);

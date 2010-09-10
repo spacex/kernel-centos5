@@ -41,14 +41,13 @@ static int __init pci_legacy_init(void)
 	}
 
 	if (pcibios_scanned++)
-		goto end;
+		return 0;
 
 	printk("PCI: Probing PCI hardware\n");
 	pci_root_bus = pcibios_scan_root(0);
 	if (pci_root_bus)
 		pci_bus_add_devices(pci_root_bus);
 
-end:
 	pcibios_fixup_peer_bridges();
 
 	return 0;

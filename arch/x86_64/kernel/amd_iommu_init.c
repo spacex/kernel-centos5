@@ -1181,6 +1181,8 @@ void __init amd_iommu_detect(void)
 		iommu_aperture_disabled = 1;
 		iommu_aperture = 0;
 #endif
+		/* Make sure ACS will be enabled */
+		pci_request_acs();
 	}
 }
 

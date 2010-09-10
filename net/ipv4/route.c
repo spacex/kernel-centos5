@@ -3174,10 +3174,12 @@ static int ipv4_sysctl_rt_secret_interval(ctl_table *ctl, int write,
 }
 
 static int ipv4_sysctl_rt_secret_interval_strategy(ctl_table *table,
+						   int __user *name, int nlen,
 						   void __user *oldval,
 						   size_t __user *oldlenp,
 						   void __user *newval,
-						   size_t newlen)
+						   size_t newlen,
+						   void **context)
 {
 	int old = ip_rt_secret_interval;
 

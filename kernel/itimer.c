@@ -13,6 +13,7 @@
 #include <linux/time.h>
 #include <linux/posix-timers.h>
 #include <linux/hrtimer.h>
+#include <trace/timer.h>
 
 #include <asm/uaccess.h>
 
@@ -133,6 +134,7 @@ int it_real_fn(struct hrtimer *timer)
 	struct signal_struct *sig =
 	    container_of(timer, struct signal_struct, real_timer);
 
+	trace_itimer_expire(ITIMER_REAL, sig, 0);
 	send_group_sig_info(SIGALRM, SEND_SIG_PRIV, sig->tsk);
 
 	if (sig->it_real_incr.tv64 != 0) {
@@ -236,6 +238,7 @@ again:
 		expires = timeval_to_ktime(value->it_value);
 		if (expires.tv64 != 0)
 			hrtimer_start(timer, expires, HRTIMER_REL);
+		trace_itimer_state(ITIMER_REAL, value, 0);
 		spin_unlock_irq(&tsk->sighand->siglock);
 		break;
 	case ITIMER_VIRTUAL:
@@ -255,6 +258,7 @@ again:
 		}
 		tsk->signal->it_virt_expires = nval;
 		tsk->signal->it_virt_incr = ninterval;
+		trace_itimer_state(ITIMER_VIRTUAL, value, nval);
 		spin_unlock_irq(&tsk->sighand->siglock);
 		read_unlock(&tasklist_lock);
 		if (ovalue) {
@@ -279,6 +283,7 @@ again:
 		}
 		tsk->signal->it_prof_expires = nval;
 		tsk->signal->it_prof_incr = ninterval;
+		trace_itimer_state(ITIMER_PROF, value, nval);
 		spin_unlock_irq(&tsk->sighand->siglock);
 		read_unlock(&tasklist_lock);
 		if (ovalue) {

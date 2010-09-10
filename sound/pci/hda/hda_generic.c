@@ -123,7 +123,7 @@ static int add_new_node(struct hda_codec *codec, struct hda_gspec *spec, hda_nid
 		return -ENOMEM;
 	node->nid = nid;
 	node->wid_caps = get_wcaps(codec, nid);
-	node->type = (node->wid_caps & AC_WCAP_TYPE) >> AC_WCAP_TYPE_SHIFT;
+	node->type = get_wcaps_type(node->wid_caps);
 	if (node->wid_caps & AC_WCAP_CONN_LIST) {
 		nconns = snd_hda_get_connections(codec, nid, conn_list,
 						 HDA_MAX_CONNECTIONS);
@@ -149,7 +149,7 @@ static int add_new_node(struct hda_codec *codec, struct hda_gspec *spec, hda_nid
 	node->nconns = nconns;
 
 	if (node->type == AC_WID_PIN) {
-		node->pin_caps = snd_hda_param_read(codec, node->nid, AC_PAR_PIN_CAP);
+		node->pin_caps = snd_hda_query_pin_caps(codec, node->nid);
 		node->pin_ctl = snd_hda_codec_read(codec, node->nid, 0, AC_VERB_GET_PIN_WIDGET_CONTROL, 0);
 		node->def_cfg = snd_hda_codec_get_pincfg(codec, node->nid);
 	}

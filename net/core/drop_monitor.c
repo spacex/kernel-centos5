@@ -173,13 +173,23 @@ static void trace_napi_poll_hit(struct net_device *napi)
 {
 	struct dm_hw_stat_delta *new_stat;
  	struct net_device_stats *stats;
+
+	if (!napi)
+		return;
  
 	/*
 	 * Ratelimit our check time to dm_hw_check_delta jiffies
 	 */
 	if (!time_after(jiffies, napi->last_rx + dm_hw_check_delta))
 		return;
-  
+
+	if (!napi->get_stats)  
+		return;
+
+	stats = napi->get_stats(napi);
+	if (!stats)
+		return;
+
 	rcu_read_lock();
 	list_for_each_entry_rcu(new_stat, &hw_stats_list, list) {
 		stats = napi->get_stats(napi);

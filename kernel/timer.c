@@ -42,6 +42,8 @@
 #include <asm/timex.h>
 #include <asm/io.h>
 
+#include <trace/timer.h>
+
 #ifdef CONFIG_TIME_INTERPOLATION
 static void time_interpolator_update(long delta_nsec);
 #else
@@ -277,6 +279,7 @@ static void internal_add_timer(tvec_base_t *base, struct timer_list *timer)
  */
 void fastcall init_timer(struct timer_list *timer)
 {
+	trace_timer_init(timer);
 	timer->entry.next = NULL;
 	timer->base = __raw_get_cpu_var(tvec_bases);
 }
@@ -286,6 +289,8 @@ static inline void detach_timer(struct timer_list *timer,
 					int clear_pending)
 {
 	struct list_head *entry = &timer->entry;
+
+	trace_timer_cancel(timer);
 
 	__list_del(entry->prev, entry->next);
 	if (clear_pending)
@@ -338,6 +343,8 @@ int __mod_timer(struct timer_list *timer, unsigned long expires)
 		ret = 1;
 	}
 
+	trace_timer_start(timer, expires);
+
 	new_base = __get_cpu_var(tvec_bases);
 
 	if (base != new_base) {
@@ -382,6 +389,7 @@ void add_timer_on(struct timer_list *timer, int cpu)
   	BUG_ON(timer_pending(timer) || !timer->function);
 	spin_lock_irqsave(&base->lock, flags);
 	timer->base = base;
+	trace_timer_start(timer, timer->expires);
 	internal_add_timer(base, timer);
 	spin_unlock_irqrestore(&base->lock, flags);
 }
@@ -483,6 +491,8 @@ out:
 	return ret;
 }
 
+EXPORT_SYMBOL(try_to_del_timer_sync);
+
 /***
  * del_timer_sync - deactivate a timer and wait for the handler to finish.
  * @timer: the timer to be deactivated
@@ -575,7 +585,9 @@ static inline void __run_timers(tvec_base_t *base)
 			spin_unlock_irq(&base->lock);
 			{
 				int preempt_count = preempt_count();
+				trace_timer_expire_entry(timer);
 				fn(data);
+				trace_timer_expire_exit(timer);
 				if (preempt_count != preempt_count()) {
 					printk(KERN_WARNING "huh, entered %p "
 					       "with preempt_count %08x, exited"

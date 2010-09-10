@@ -52,13 +52,10 @@ d. MSI/MSI-X. Can be enabled on platforms which support this feature
 (IA64, Xeon) resulting in noticeable performance improvement(upto 7%
 on certain platforms).
 
-e. NAPI. Compile-time option(CONFIG_S2IO_NAPI) for better Rx interrupt 
-moderation.
-
-f. Statistics. Comprehensive MAC-level and software statistics displayed
+e. Statistics. Comprehensive MAC-level and software statistics displayed
 using "ethtool -S" option.
 
-g. Multi-FIFO/Ring. Supports up to 8 transmit queues and receive rings, 
+f. Multi-FIFO/Ring. Supports up to 8 transmit queues and receive rings,
 with multiple steering options.
 
 4.  Command line parameters
@@ -126,7 +123,7 @@ However, you may want to set PCI latency timer to 248.
 #setpci -d 17d5:* LATENCY_TIMER=f8
 For detailed description of the PCI registers, please see Xframe User Guide.
 b. Use 2-buffer mode. This results in large performance boost on
-on certain platforms(eg. SGI Altix, IBM xSeries).
+certain platforms(eg. SGI Altix, IBM xSeries).
 c. Ensure Receive Checksum offload is enabled. Use "ethtool -K ethX" command to 
 set/verify this option.
 d. Enable NAPI feature(in kernel configuration Device Drivers ---> Network 

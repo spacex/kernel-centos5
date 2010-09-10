@@ -17,6 +17,7 @@
 #include <linux/highmem.h>
 #include <linux/pagemap.h>
 #include <linux/audit.h>
+#include <linux/syscalls.h>
 
 #include <asm/uaccess.h>
 #include <asm/ioctls.h>
@@ -656,12 +657,12 @@ pipe_rdwr_fasync(int fd, struct file *filp, int on)
 	int retval;
 
 	mutex_lock(&inode->i_mutex);
-
 	retval = fasync_helper(fd, filp, on, &pipe->fasync_readers);
-
-	if (retval >= 0)
+	if (retval >= 0) {
 		retval = fasync_helper(fd, filp, on, &pipe->fasync_writers);
-
+		if (retval < 0) /* this can happen only if on == T */
+			fasync_helper(-1, filp, 0, &pipe->fasync_readers);
+	}
 	mutex_unlock(&inode->i_mutex);
 
 	if (retval < 0)
@@ -674,14 +675,12 @@ pipe_rdwr_fasync(int fd, struct file *filp, int on)
 static int
 pipe_read_release(struct inode *inode, struct file *filp)
 {
-	pipe_read_fasync(-1, filp, 0);
 	return pipe_release(inode, 1, 0);
 }
 
 static int
 pipe_write_release(struct inode *inode, struct file *filp)
 {
-	pipe_write_fasync(-1, filp, 0);
 	return pipe_release(inode, 0, 1);
 }
 
@@ -690,7 +689,6 @@ pipe_rdwr_release(struct inode *inode, struct file *filp)
 {
 	int decr, decw;
 
-	pipe_rdwr_fasync(-1, filp, 0);
 	decr = (filp->f_mode & FMODE_READ) != 0;
 	decw = (filp->f_mode & FMODE_WRITE) != 0;
 	return pipe_release(inode, decr, decw);
@@ -1033,6 +1031,26 @@ int do_pipe(int *fd)
 }
 
 EXPORT_SYMBOL_GPL(do_pipe);
+
+/*
+ * sys_pipe() is the normal C calling standard for creating
+ * a pipe. It's not the way Unix traditionally does this, though.
+ */
+asmlinkage long sys_pipe(int __user *fildes)
+{
+	int fd[2];
+	int error;
+
+	error = do_pipe(fd);
+	if (!error) {
+		if (copy_to_user(fildes, fd, sizeof(fd))) {
+			sys_close(fd[0]);
+			sys_close(fd[1]);
+			error = -EFAULT;
+		}
+	}
+	return error;
+}
 
 /*
  * pipefs should _never_ be mounted by userland - too much of security hassle,

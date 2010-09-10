@@ -18,9 +18,9 @@
 /*
  * MegaRAID SAS Driver meta data
  */
-#define MEGASAS_VERSION				"00.00.04.08-RH2"
-#define MEGASAS_RELDATE				"May 05, 2009"
-#define MEGASAS_EXT_VERSION			"Tues. May 5, 11:41:51 PST 2009"
+#define MEGASAS_VERSION				"00.00.04.17-RH1"
+#define MEGASAS_RELDATE				"Nov. 25, 2009"
+#define MEGASAS_EXT_VERSION			"Wed. Nov. 25, 11:41:51 PST 2009"
 
 /*
  * Device IDs
@@ -117,6 +117,7 @@
 #define MFI_CMD_STP				0x08
 
 #define MR_DCMD_CTRL_GET_INFO			0x01010000
+#define MR_DCMD_LD_GET_LIST			0x03010000
 
 #define MR_DCMD_CTRL_CACHE_FLUSH		0x01101000
 #define MR_FLUSH_CTRL_CACHE			0x01
@@ -146,6 +147,8 @@
 #define MR_EVT_FOREIGN_CFG_IMPORTED		0x00db
 #define MR_EVT_LD_OFFLINE			0x00fc
 #define MR_EVT_CTRL_HOST_BUS_SCAN_REQUESTED	0x0152
+#define MAX_LOGICAL_DRIVES                      64
+
 
 /*
  * MFI command completion codes
@@ -343,6 +346,33 @@ struct MR_PD_ADDRESS {
                     
     };
     u64     sasAddr[2];
+} __attribute__ ((packed));
+
+ /*
+ * defines the logical drive reference structure
+ */
+typedef union  _MR_LD_REF {        // LD reference structure
+    struct {
+        u8      targetId;           // LD target id (0 to MAX_TARGET_ID)
+        u8      reserved;           // reserved to make in line with MR_PD_REF
+        u16     seqNum;             // Sequence Number
+    };
+    u32     ref;                    // shorthand reference to full 32-bits
+} MR_LD_REF;                        // 4 bytes
+
+
+/*
+ * defines the logical drive list structure
+ */
+struct MR_LD_LIST {
+    u32     ldCount;                // number of LDs
+    u32     reserved;               // pad to 8-byte boundary
+    struct {
+        MR_LD_REF   ref;            // LD reference
+        u8          state;          // current LD state (MR_LD_STATE)
+        u8          reserved[3];    // pad to 8-byte boundary
+        u64         size;           // LD size
+    } ldList[MAX_LOGICAL_DRIVES];
 } __attribute__ ((packed));
 
 /*
@@ -651,6 +681,8 @@ struct megasas_ctrl_info {
 #define MEGASAS_MAX_PD				(MEGASAS_MAX_PD_CHANNELS * \
 							MEGASAS_MAX_DEV_PER_CHANNEL)
 
+#define MEGASAS_MAX_LD_IDS			(MEGASAS_MAX_LD_CHANNELS * \
+							MEGASAS_MAX_DEV_PER_CHANNEL)
 #define MEGASAS_DBG_LVL				1
 #define MEGASAS_FW_BUSY				1
 /* Frame Type */
@@ -1236,6 +1268,7 @@ struct megasas_instance {
 
 	struct megasas_instance_template *instancet;
 	struct tasklet_struct isr_tasklet;
+	u8     ld_ids[MEGASAS_MAX_LD_IDS];
 
 	u8 flag;
 	u8 unload;

@@ -54,6 +54,7 @@
 #include <asm/uaccess.h>
 #include <asm/atomic.h>
 
+#include "internal.h"
 #include "iostat.h"
 
 #define NFSDBG_FACILITY		NFSDBG_VFS
@@ -306,7 +307,7 @@ static ssize_t nfs_direct_read_schedule(struct nfs_direct_req *dreq, unsigned lo
 		data->inode = inode;
 		data->cred = ctx->cred;
 		data->args.fh = NFS_FH(inode);
-		data->args.context = ctx;
+		data->args.context = get_nfs_open_context(ctx);
 		data->args.offset = pos;
 		data->args.pgbase = pgbase;
 		data->args.pages = data->pagevec;
@@ -315,8 +316,8 @@ static ssize_t nfs_direct_read_schedule(struct nfs_direct_req *dreq, unsigned lo
 		data->res.eof = 0;
 		data->res.count = bytes;
 
-		rpc_init_task(&data->task, NFS_CLIENT(inode), RPC_TASK_ASYNC,
-				&nfs_read_direct_ops, data);
+		rpc_init_task_wq(&data->task, NFS_CLIENT(inode), RPC_TASK_ASYNC,
+				 &nfs_read_direct_ops, data, nfsiod_workqueue);
 		NFS_PROTO(inode)->read_setup(data);
 
 		data->task.tk_cookie = (unsigned long) inode;
@@ -415,8 +416,8 @@ static void nfs_direct_write_reschedule(struct nfs_direct_req *dreq)
 		 * Reuse data->task; data->args should not have changed
 		 * since the original request was sent.
 		 */
-		rpc_init_task(&data->task, NFS_CLIENT(inode), RPC_TASK_ASYNC,
-				&nfs_write_direct_ops, data);
+		rpc_init_task_wq(&data->task, NFS_CLIENT(inode), RPC_TASK_ASYNC,
+				&nfs_write_direct_ops, data, nfsiod_workqueue);
 		NFS_PROTO(inode)->write_setup(data, FLUSH_STABLE);
 
 		data->task.tk_priority = RPC_PRIORITY_NORMAL;
@@ -475,12 +476,13 @@ static void nfs_direct_commit_schedule(struct nfs_direct_req *dreq)
 	data->args.fh = NFS_FH(data->inode);
 	data->args.offset = 0;
 	data->args.count = 0;
+	data->args.context = get_nfs_open_context(dreq->ctx);
 	data->res.count = 0;
 	data->res.fattr = &data->fattr;
 	data->res.verf = &data->verf;
 
-	rpc_init_task(&data->task, NFS_CLIENT(dreq->inode), RPC_TASK_ASYNC,
-				&nfs_commit_direct_ops, data);
+	rpc_init_task_wq(&data->task, NFS_CLIENT(dreq->inode), RPC_TASK_ASYNC,
+				&nfs_commit_direct_ops, data, nfsiod_workqueue);
 	NFS_PROTO(data->inode)->commit_setup(data, 0);
 
 	data->task.tk_priority = RPC_PRIORITY_NORMAL;
@@ -645,7 +647,7 @@ static ssize_t nfs_direct_write_schedule(struct nfs_direct_req *dreq, unsigned l
 		data->inode = inode;
 		data->cred = ctx->cred;
 		data->args.fh = NFS_FH(inode);
-		data->args.context = ctx;
+		data->args.context = get_nfs_open_context(ctx);
 		data->args.offset = pos;
 		data->args.pgbase = pgbase;
 		data->args.pages = data->pagevec;
@@ -654,8 +656,8 @@ static ssize_t nfs_direct_write_schedule(struct nfs_direct_req *dreq, unsigned l
 		data->res.count = bytes;
 		data->res.verf = &data->verf;
 
-		rpc_init_task(&data->task, NFS_CLIENT(inode), RPC_TASK_ASYNC,
-				&nfs_write_direct_ops, data);
+		rpc_init_task_wq(&data->task, NFS_CLIENT(inode), RPC_TASK_ASYNC,
+				 &nfs_write_direct_ops, data, nfsiod_workqueue);
 		NFS_PROTO(inode)->write_setup(data, sync);
 
 		data->task.tk_priority = RPC_PRIORITY_NORMAL;

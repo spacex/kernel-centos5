@@ -226,12 +226,6 @@ static int ael1006_reset(struct cphy *phy, int wait)
 	return t3_phy_reset(phy, MDIO_DEV_PMA_PMD, wait);
 }
 
-static int ael1006_power_down(struct cphy *phy, int enable)
-{
-	return t3_mdio_change_bits(phy, MDIO_DEV_PMA_PMD, MII_BMCR,
-				   BMCR_PDOWN, enable ? BMCR_PDOWN : 0);
-}
-
 static struct cphy_ops ael1006_ops = {
 	.reset = ael1006_reset,
 	.intr_enable = t3_phy_lasi_intr_enable,
@@ -239,7 +233,7 @@ static struct cphy_ops ael1006_ops = {
 	.intr_clear = t3_phy_lasi_intr_clear,
 	.intr_handler = t3_phy_lasi_intr_handler,
 	.get_link_status = get_link_status_r,
-	.power_down = ael1006_power_down,
+	.power_down = ael1002_power_down,
 };
 
 int t3_ael1006_phy_prep(struct cphy *phy, struct adapter *adapter,
@@ -1648,9 +1642,39 @@ static int ael2020_get_module_type(struct cphy *phy, int delay_ms)
  */
 static int ael2020_intr_enable(struct cphy *phy)
 {
-	int err = mdio_write(phy, MDIO_DEV_PMA_PMD, AEL2020_GPIO_CTRL,
-			     0x2 << (AEL2020_GPIO_MODDET*4));
-	return err ? err : t3_phy_lasi_intr_enable(phy);
+	struct reg_val regs[] = {
+		/* output Module's Loss Of Signal (LOS) to LED */
+		{ MDIO_DEV_PMA_PMD, AEL2020_GPIO_CFG+AEL2020_GPIO_LSTAT,
+			0xffff, 0x4 },
+		{ MDIO_DEV_PMA_PMD, AEL2020_GPIO_CTRL,
+			0xffff, 0x8 << (AEL2020_GPIO_LSTAT*4) },
+
+		 /* enable module detect status change interrupts */
+		{ MDIO_DEV_PMA_PMD, AEL2020_GPIO_CTRL,
+			0xffff, 0x2 << (AEL2020_GPIO_MODDET*4) },
+
+		/* end */
+		{ 0, 0, 0, 0 }
+	};
+	int err, link_ok = 0;
+
+	/* set up "link status" LED and enable module change interrupts */
+	err = set_phy_regs(phy, regs);
+	if (err)
+		return err;
+
+	err = get_link_status_r(phy, &link_ok, NULL, NULL, NULL);
+	if (err)
+		return err;
+	if (link_ok)
+		t3_link_changed(phy->adapter,
+				phy2portid(phy));
+
+	err = t3_phy_lasi_intr_enable(phy);
+	if (err)
+		return err;
+
+	return 0;
 }
 
 /*
@@ -1658,9 +1682,26 @@ static int ael2020_intr_enable(struct cphy *phy)
  */
 static int ael2020_intr_disable(struct cphy *phy)
 {
-	int err = mdio_write(phy, MDIO_DEV_PMA_PMD, AEL2020_GPIO_CTRL,
-			     0x1 << (AEL2020_GPIO_MODDET*4));
-	return err ? err : t3_phy_lasi_intr_disable(phy);
+	struct reg_val regs[] = {
+		/* reset "link status" LED to "off" */
+		{ MDIO_DEV_PMA_PMD, AEL2020_GPIO_CTRL,
+			0xffff, 0xb << (AEL2020_GPIO_LSTAT*4) },
+
+		/* disable module detect status change interrupts */
+		{ MDIO_DEV_PMA_PMD, AEL2020_GPIO_CTRL,
+			0xffff, 0x1 << (AEL2020_GPIO_MODDET*4) },
+
+		/* end */
+		{ 0, 0, 0, 0 }
+	};
+	int err;
+
+	/* turn off "link status" LED and disable module change interrupts */
+	err = set_phy_regs(phy, regs);
+	if (err)
+		return err;
+
+	return t3_phy_lasi_intr_disable(phy);
 }
 
 /*
@@ -1678,31 +1719,26 @@ static int ael2020_intr_clear(struct cphy *phy)
 	return err ? err : t3_phy_lasi_intr_clear(phy);
 }
 
+static struct reg_val ael2020_reset_regs[] = {
+	/* Erratum #2: CDRLOL asserted, causing PMA link down status */
+	{ MDIO_DEV_PMA_PMD, 0xc003, 0xffff, 0x3101 },
+
+	/* force XAUI to send LF when RX_LOS is asserted */
+	{ MDIO_DEV_PMA_PMD, 0xcd40, 0xffff, 0x0001 },
+
+	/* allow writes to transceiver module EEPROM on i2c bus */
+	{ MDIO_DEV_PMA_PMD, 0xff02, 0xffff, 0x0023 },
+	{ MDIO_DEV_PMA_PMD, 0xff03, 0xffff, 0x0000 },
+	{ MDIO_DEV_PMA_PMD, 0xff04, 0xffff, 0x0000 },
+
+	/* end */
+	{ 0, 0, 0, 0 }
+};
 /*
  * Reset the PHY and put it into a canonical operating state.
  */
 static int ael2020_reset(struct cphy *phy, int wait)
 {
-	static struct reg_val regs0[] = {
-		/* Erratum #2: CDRLOL asserted, causing PMA link down status */
-		{ MDIO_DEV_PMA_PMD, 0xc003, 0xffff, 0x3101 },
-
-		/* force XAUI to send LF when RX_LOS is asserted */
-		{ MDIO_DEV_PMA_PMD, 0xcd40, 0xffff, 0x0001 },
-
-		/* RX_LOS pin is active high */
-		{ MDIO_DEV_PMA_PMD, AEL_OPT_SETTINGS,
-			0x0020, 0x0020 },
-
-		/* output Module's Loss Of Signal (LOS) to LED */
-		{ MDIO_DEV_PMA_PMD, AEL2020_GPIO_CFG+AEL2020_GPIO_LSTAT,
-			0xffff, 0x0004 },
-		{ MDIO_DEV_PMA_PMD, AEL2020_GPIO_CTRL,
-			0xffff, 0x8 << (AEL2020_GPIO_LSTAT*4) },
-
-		/* end */
-		{ 0, 0, 0, 0 }
-	};
 	int err;
 	unsigned int lasi_ctrl;
 
@@ -1718,7 +1754,7 @@ static int ael2020_reset(struct cphy *phy, int wait)
 
 	/* basic initialization for all module types */
 	phy->priv = edc_none;
-	err = set_phy_regs(phy, regs0);
+	err = set_phy_regs(phy, ael2020_reset_regs);
 	if (err)
 		return err;
 
@@ -1795,10 +1831,16 @@ static struct cphy_ops ael2020_ops = {
 int t3_ael2020_phy_prep(struct cphy *phy, struct adapter *adapter, int phy_addr,
 			const struct mdio_ops *mdio_ops)
 {
+	int err;
+
 	cphy_init(phy, adapter, phy_addr, &ael2020_ops, mdio_ops,
 		  SUPPORTED_10000baseT_Full | SUPPORTED_AUI | SUPPORTED_FIBRE |
 		  SUPPORTED_IRQ, "10GBASE-R");
 	msleep(125);
+
+	err = set_phy_regs(phy, ael2020_reset_regs);
+	if (err)
+		return err;
 	return 0;
 }
 
@@ -1834,7 +1876,7 @@ static struct cphy_ops qt2045_ops = {
 	.intr_clear = t3_phy_lasi_intr_clear,
 	.intr_handler = t3_phy_lasi_intr_handler,
 	.get_link_status = get_link_status_x,
-	.power_down = ael1006_power_down,
+	.power_down = ael1002_power_down,
 };
 
 int t3_qt2045_phy_prep(struct cphy *phy, struct adapter *adapter,

@@ -216,6 +216,7 @@ extern void cpu_init (void);
 extern void trap_init(void);
 extern void update_process_times(int user, struct pt_regs *regs);
 extern void scheduler_tick(void);
+extern void sched_show_task(struct task_struct *p);
 
 #ifdef CONFIG_DETECT_SOFTLOCKUP
 extern unsigned long softlockup_get_next_event(void);
@@ -242,6 +243,15 @@ static inline void touch_softlockup_watchdog(void)
 static inline void touch_all_softlockup_watchdogs(void)
 {
 }
+#endif
+#ifdef CONFIG_DETECT_HUNG_TASK
+extern unsigned int  sysctl_hung_task_panic;
+extern unsigned long sysctl_hung_task_check_count;
+extern unsigned long sysctl_hung_task_timeout_secs;
+extern unsigned long sysctl_hung_task_warnings;
+extern int proc_dohung_task_timeout_secs(struct ctl_table *table, int write,
+					 struct file *filp, void __user *buffer,
+					 size_t *lenp, loff_t *ppos);
 #endif
 
 
@@ -859,6 +869,9 @@ struct task_struct_aux {
 	struct completion *vfork_done;  /* for vfork() [displaced from task_struct] */
 	struct list_head  *scm_work_list; /*displaced from task_struct for abi compat*/
 	struct task_io_accounting ioac;
+#ifdef CONFIG_DETECT_HUNG_TASK
+	unsigned long last_switch_count; /* hung task detection */
+#endif
 };
 
 #define task_aux(tsk) ((tsk)->auxilliary)

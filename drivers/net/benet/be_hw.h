@@ -51,13 +51,14 @@
  * with the OS.
  */
 #define MEMBAR_CTRL_INT_CTRL_HOSTINTR_MASK	(1 << 29) /* bit 29 */
-/* PCI physical function number */
-#define MEMBAR_CTRL_INT_CTRL_PFUNC_MASK  	0x7 	/* bits 26 - 28 */
-#define MEMBAR_CTRL_INT_CTRL_PFUNC_SHIFT	26
 
-/********* ISR0 Register Offset *************/
-#define CEV_ISR0_OFFSET			0xC18
-#define CEV_ISR_SIZE			4
+/********* Power managment (WOL) **********/
+#define PCICFG_PM_CONTROL_OFFSET		0x44
+#define PCICFG_PM_CONTROL_MASK			0x108	/* bits 3 & 8 */
+
+/********* ISR0 Register offset **********/
+#define CEV_ISR0_OFFSET 			0xC18
+#define CEV_ISR_SIZE				4
 
 /********* Event Q door bell *************/
 #define DB_EQ_OFFSET			DB_CQ_OFFSET
@@ -98,6 +99,63 @@
 /* Number of entries posted */
 #define DB_MCCQ_NUM_POSTED_SHIFT	(16)	/* bits 16 - 29 */
 
+/* Flashrom related descriptors */
+#define IMAGE_TYPE_FIRMWARE		160
+#define IMAGE_TYPE_BOOTCODE		224
+#define IMAGE_TYPE_OPTIONROM		32
+
+#define NUM_FLASHDIR_ENTRIES		32
+
+#define IMG_TYPE_ISCSI_ACTIVE		0
+#define IMG_TYPE_REDBOOT		1
+#define IMG_TYPE_BIOS			2
+#define IMG_TYPE_PXE_BIOS		3
+#define IMG_TYPE_FCOE_BIOS		8
+#define IMG_TYPE_ISCSI_BACKUP		9
+#define IMG_TYPE_FCOE_FW_ACTIVE		10
+#define IMG_TYPE_FCOE_FW_BACKUP 	11
+#define IMG_TYPE_NCSI_BITFILE		13
+#define IMG_TYPE_NCSI_8051		14
+
+#define FLASHROM_OPER_FLASH		1
+#define FLASHROM_OPER_SAVE		2
+#define FLASHROM_OPER_REPORT		4
+
+#define FLASH_IMAGE_MAX_SIZE_g2            (1310720) /* Max firmware image sz */
+#define FLASH_BIOS_IMAGE_MAX_SIZE_g2       (262144)  /* Max OPTION ROM img sz */
+#define FLASH_REDBOOT_IMAGE_MAX_SIZE_g2	  (262144)  /* Max Redboot image sz */
+#define FLASH_IMAGE_MAX_SIZE_g3            (2097152) /* Max fw image size */
+#define FLASH_BIOS_IMAGE_MAX_SIZE_g3       (524288)  /* Max OPTION ROM img sz */
+#define FLASH_REDBOOT_IMAGE_MAX_SIZE_g3	  (1048576)  /* Max Redboot image sz */
+
+#define FLASH_NCSI_MAGIC		(0x16032009)
+#define FLASH_NCSI_DISABLED		(0)
+#define FLASH_NCSI_ENABLED		(1)
+
+#define FLASH_NCSI_BITFILE_HDR_OFFSET	(0x600000)
+
+/* Offsets for components on Flash. */
+#define FLASH_iSCSI_PRIMARY_IMAGE_START_g2 (1048576)
+#define FLASH_iSCSI_BACKUP_IMAGE_START_g2  (2359296)
+#define FLASH_FCoE_PRIMARY_IMAGE_START_g2  (3670016)
+#define FLASH_FCoE_BACKUP_IMAGE_START_g2   (4980736)
+#define FLASH_iSCSI_BIOS_START_g2          (7340032)
+#define FLASH_PXE_BIOS_START_g2            (7864320)
+#define FLASH_FCoE_BIOS_START_g2           (524288)
+#define FLASH_REDBOOT_START_g2		  (0)
+
+#define FLASH_iSCSI_PRIMARY_IMAGE_START_g3 (2097152)
+#define FLASH_iSCSI_BACKUP_IMAGE_START_g3  (4194304)
+#define FLASH_FCoE_PRIMARY_IMAGE_START_g3  (6291456)
+#define FLASH_FCoE_BACKUP_IMAGE_START_g3   (8388608)
+#define FLASH_iSCSI_BIOS_START_g3          (12582912)
+#define FLASH_PXE_BIOS_START_g3            (13107200)
+#define FLASH_FCoE_BIOS_START_g3           (13631488)
+#define FLASH_REDBOOT_START_g3             (262144)
+
+
+
+
 /*
  * BE descriptors: host memory data structures whose formats
  * are hardwired in BE silicon.
@@ -106,6 +164,7 @@
 #define EQ_ENTRY_VALID_MASK 		0x1	/* bit 0 */
 #define EQ_ENTRY_RES_ID_MASK 		0xFFFF	/* bits 16 - 31 */
 #define EQ_ENTRY_RES_ID_SHIFT 		16
+
 struct be_eq_entry {
 	u32 evt;
 };
@@ -207,7 +266,7 @@ struct amap_eth_rx_compl {
 	u8 numfrags[3];		/* dword 1 */
 	u8 rss_flush;		/* dword 2 */
 	u8 cast_enc[2];		/* dword 2 */
-	u8 qnq;			/* dword 2 */
+	u8 vtm;			/* dword 2 */
 	u8 rss_bank;		/* dword 2 */
 	u8 rsvd1[23];		/* dword 2 */
 	u8 lro_pkt;		/* dword 2 */
@@ -218,4 +277,81 @@ struct amap_eth_rx_compl {
 
 struct be_eth_rx_compl {
 	u32 dw[4];
+};
+
+struct controller_id {
+	u32 vendor;
+	u32 device;
+	u32 subvendor;
+	u32 subdevice;
+};
+
+struct flash_comp {
+	unsigned long offset;
+	int optype;
+	int size;
+};
+
+struct image_hdr {
+	u32 imageid;
+	u32 imageoffset;
+	u32 imagelength;
+	u32 image_checksum;
+	u8 image_version[32];
+};
+struct flash_file_hdr_g2 {
+	u8 sign[32];
+	u32 cksum;
+	u32 antidote;
+	struct controller_id cont_id;
+	u32 file_len;
+	u32 chunk_num;
+	u32 total_chunks;
+	u32 num_imgs;
+	u8 build[24];
+};
+
+struct flash_file_hdr_g3 {
+	u8 sign[52];
+	u8 ufi_version[4];
+	u32 file_len;
+	u32 cksum;
+	u32 antidote;
+	u32 num_imgs;
+	u8 build[24];
+	u8 rsvd[32];
+};
+
+struct flash_section_hdr {
+	u32 format_rev;
+	u32 cksum;
+	u32 antidote;
+	u32 build_no;
+	u8 id_string[64];
+	u32 active_entry_mask;
+	u32 valid_entry_mask;
+	u32 org_content_mask;
+	u32 rsvd0;
+	u32 rsvd1;
+	u32 rsvd2;
+	u32 rsvd3;
+	u32 rsvd4;
+};
+
+struct flash_section_entry {
+	u32 type;
+	u32 offset;
+	u32 pad_size;
+	u32 image_size;
+	u32 cksum;
+	u32 entry_point;
+	u32 rsvd0;
+	u32 rsvd1;
+	u8 ver_data[32];
+};
+
+struct flash_section_info {
+	u8 cookie[32];
+	struct flash_section_hdr fsec_hdr;
+	struct flash_section_entry fsec_entry[32];
 };

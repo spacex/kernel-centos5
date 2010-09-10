@@ -329,7 +329,7 @@
 /* #define __NR_utimensat	304 */
 /* #define __NR_signalfd	305 */
 /* #define __NR_timerfd_create	306 */
-/* #define __NR_eventfd		307 */
+#define __NR_eventfd		307
 /* #define __NR_sync_file_range2 308 */
 #define __NR_fallocate		309
 

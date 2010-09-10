@@ -19,8 +19,7 @@
 #define BE_COMPAT_H
 
 
-#define PTR_ALIGN(p, a)         	((typeof(p))			\
-					ALIGN((unsigned long)(p), (a)))
+#define ETH_FCS_LEN			4
 
 #define DEFINE_PCI_DEVICE_TABLE(_table) struct pci_device_id _table[] 	\
 						__devinitdata
@@ -78,6 +77,7 @@ extern void be_netdev_ops_init(struct net_device *netdev,
 			struct net_device_ops *ops);
 extern int eth_validate_addr(struct net_device *);
 
+#define dma_mapping_error(dev, map) dma_mapping_error(map)
 
 /*
  * Back port of new NAPI: simulate polling on multiple napi instances
@@ -87,15 +87,12 @@ extern int eth_validate_addr(struct net_device *);
 extern int be_poll(struct napi_struct *, int);
 extern int be_poll_compat(struct net_device *netdev, int *budget);
 
-static inline void compat_napi_schedule(struct napi_struct *napi)
+static inline void napi_schedule(struct napi_struct *napi)
 {
 	netif_rx_schedule(napi->dev);
 }
-static inline void compat_napi_complete(struct napi_struct *napi)
-{
-	netif_rx_complete(napi->dev);
-}
-static inline void compat_netif_napi_add(struct net_device *netdev,
+
+static inline void netif_napi_add(struct net_device *netdev,
 		  struct napi_struct *napi,
 		  int (*poll) (struct napi_struct *, int), int weight)
 {
@@ -105,12 +102,12 @@ static inline void compat_netif_napi_add(struct net_device *netdev,
 	napi->dev = netdev;
 }
 
-static inline void compat_napi_enable(struct napi_struct *napi)
+static inline void napi_enable(struct napi_struct *napi)
 {
 	netif_poll_enable(napi->dev);
 }
 
-static inline void compat_napi_disable(struct napi_struct *napi)
+static inline void napi_disable(struct napi_struct *napi)
 {
 	netif_poll_disable(napi->dev);
 }

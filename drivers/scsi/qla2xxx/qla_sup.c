@@ -937,7 +937,8 @@ qla2xxx_flash_npiv_conf(scsi_qla_host_t *ha)
 		wwnn = wwn_to_u64(entry->node_name);
 
 		DEBUG2(qla_printk(KERN_DEBUG, ha, "NPIV[%02x]: wwpn=%llx "
-		    "wwnn=%llx vf_id=0x%x qos=0x%x.\n", cnt, wwpn, wwnn,
+		    "wwnn=%llx vf_id=0x%x qos=0x%x.\n", cnt,
+		    (unsigned long long)wwpn, (unsigned long long)wwnn,
 		    le16_to_cpu(entry->vf_id), le16_to_cpu(entry->qos)));
 
 		qla24xx_vport_create(ha, wwpn, wwnn);
@@ -1065,7 +1066,8 @@ qla24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
 				    0xff0000) | ((fdata >> 16) & 0xff));
                         ret = qla24xx_erase_sector(ha, fdata);
                         if (ret != QLA_SUCCESS) {
-                                DEBUG9(qla_printk("Unable to erase sector: "
+				DEBUG9(qla_printk(KERN_ERR, ha,
+				    "Unable to erase sector: "
                                     "address=%x.\n", faddr));
                                 break;
                         }
@@ -2258,11 +2260,14 @@ qla25xx_read_optrom_data(struct scsi_qla_host *ha, uint8_t *buf,
 	uint8_t *pbuf;
 	uint32_t faddr, left, burst;
 
+	if (IS_QLA25XX(ha) || IS_QLA81XX(ha))
+		goto try_fast;
 	if (offset & 0xfff)
 		goto slow_read;
 	if (length < OPTROM_BURST_SIZE)
 		goto slow_read;
 
+try_fast:
 	optrom = dma_alloc_coherent(&ha->pdev->dev, OPTROM_BURST_SIZE,
 	    &optrom_dma, GFP_KERNEL);
 	if (!optrom) {

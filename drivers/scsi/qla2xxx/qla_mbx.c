@@ -2284,7 +2284,7 @@ qla24xx_abort_target(fc_port_t *fcport)
 	tsk->p.tsk.entry_type = TSK_MGMT_IOCB_TYPE;
 	tsk->p.tsk.entry_count = 1;
 	tsk->p.tsk.nport_handle = cpu_to_le16(fcport->loop_id);
-	tsk->p.tsk.timeout = __constant_cpu_to_le16(25);
+	tsk->p.tsk.timeout = cpu_to_le16(ha->r_a_tov / 10 * 2);
 	tsk->p.tsk.control_flags = __constant_cpu_to_le32(TCF_TARGET_RESET);
 	tsk->p.tsk.port_id[0] = fcport->d_id.b.al_pa;
 	tsk->p.tsk.port_id[1] = fcport->d_id.b.area;
@@ -2672,8 +2672,10 @@ qla24xx_report_id_acquisition(scsi_qla_host_t *ha,
 		    vp_idx, MSB(stat),
 		    rptid_entry->port_id[2], rptid_entry->port_id[1],
 		    rptid_entry->port_id[0]));
-		if (vp_idx == 0)
-			return;
+
+		vha = ha;
+		if (vp_idx == 0 && (MSB(stat) != 1))
+			goto reg_needed;
 
 		if (MSB(stat) == 1) {
 			DEBUG2(printk("scsi(%ld): Could not acquire ID for "
@@ -2697,6 +2699,9 @@ qla24xx_report_id_acquisition(scsi_qla_host_t *ha,
 		 * response queue. Handle it in dpc context.
 		 */
 		set_bit(VP_IDX_ACQUIRED, &vha->vp_flags);
+reg_needed:
+	    	set_bit(REGISTER_FC4_NEEDED, &vha->dpc_flags);
+	    	set_bit(REGISTER_FDMI_NEEDED, &vha->dpc_flags);
 	    	set_bit(VP_DPC_NEEDED, &ha->dpc_flags);
 
 		wake_up_process(ha->dpc_thread);
@@ -3352,13 +3357,15 @@ qla2x00_loopback_test(scsi_qla_host_t *ha, struct msg_loopback *req,
 	mbx_cmd_t	*mcp = &mc;
 
 	DEBUG11(printk("%s(%ld): Options=%x iterations=%x MAILBOX_CNT=%d.\n",
-	     __func__, ha->host_no, req->Options, req->IterationCount,
+	     __func__, ha->host_no, req->options, req->iter_cnt,
 	     MAILBOX_REGISTER_COUNT));
 
 	memset(mcp->mb, 0 , sizeof(mcp->mb));
 
 	mcp->mb[0] = MBC_DIAGNOSTIC_LOOP_BACK;
 	mcp->mb[1] = req->options | BIT_6;
+	if (IS_QLA81XX(ha))
+		mcp->mb[2] = 0;
 	mcp->mb[10] = LSW(req->tx_cnt);
 	mcp->mb[11] = MSW(req->tx_cnt);
 	mcp->mb[14] = LSW(ha->loopback_buf.loopback_dma);
@@ -3373,6 +3380,9 @@ qla2x00_loopback_test(scsi_qla_host_t *ha, struct msg_loopback *req,
 	mcp->mb[19] = MSW(req->iter_cnt);
 	mcp->out_mb = MBX_21|MBX_20|MBX_19|MBX_18|MBX_17|MBX_16|MBX_15|
 	    MBX_14|MBX_13|MBX_12|MBX_11|MBX_10|MBX_7|MBX_6|MBX_1|MBX_0;
+	if (IS_QLA81XX(ha))
+		mcp->out_mb |= MBX_2;
+
 	mcp->in_mb = MBX_19|MBX_18|MBX_3|MBX_2|MBX_1|MBX_0;
 	mcp->buf_size = req->tx_cnt;
 	mcp->flags = MBX_DMA_OUT|MBX_DMA_IN|IOCTL_CMD;
@@ -3404,6 +3414,10 @@ qla2x00_echo_test(scsi_qla_host_t *ha, struct msg_loopback *req,
 
 	mcp->mb[0] = MBC_DIAGNOSTIC_ECHO;
 	mcp->mb[1] = BIT_6;
+	if (IS_QLA81XX(ha)) {
+		mcp->mb[1] |= BIT_15;
+		mcp->mb[2] |= 0;
+	}
 	mcp->mb[10] = req->tx_cnt;
 	mcp->mb[14] = LSW(ha->loopback_buf.loopback_dma);
 	mcp->mb[15] = MSW(ha->loopback_buf.loopback_dma);
@@ -3414,8 +3428,16 @@ qla2x00_echo_test(scsi_qla_host_t *ha, struct msg_loopback *req,
 	mcp->mb[6] = LSW(MSD(ha->loopback_buf.loopback_dma));
 	mcp->mb[7] = MSW(MSD(ha->loopback_buf.loopback_dma));
 	mcp->out_mb = MBX_21|MBX_20|MBX_17|MBX_16|MBX_15|MBX_14|MBX_10|
-	   MBX_7|MBX_6|MBX_2|MBX_1|MBX_0;
-	mcp->in_mb = MBX_1|MBX_0;
+	   MBX_7|MBX_6|MBX_1|MBX_0;
+	if (IS_QLA81XX(ha))
+		mcp->out_mb |= MBX_2;
+
+	mcp->in_mb = MBX_0;
+	if (IS_QLA24XX_TYPE(ha) || IS_QLA25XX(ha) || IS_QLA81XX(ha))
+		mcp->in_mb |= MBX_1;
+	if (IS_QLA81XX(ha))
+		mcp->in_mb |= MBX_3;
+
 	mcp->buf_size = req->tx_cnt;
 	mcp->flags = MBX_DMA_OUT|MBX_DMA_IN|IOCTL_CMD;
 	mcp->tov = MBX_TOV_SECONDS;
@@ -3493,6 +3515,38 @@ qla2x00_write_ram_word(scsi_qla_host_t *ha, uint32_t risc_addr, uint32_t data)
 		    ha->host_no, rval, mcp->mb[0]));
 	} else {
 		DEBUG11(printk("%s(%ld): done.\n", __func__, ha->host_no));
+	}
+
+	return rval;
+}
+
+int
+qla2x00_get_data_rate(scsi_qla_host_t *ha)
+{
+	int rval;
+	mbx_cmd_t mc;
+	mbx_cmd_t *mcp = &mc;
+
+	if (!IS_FWI2_CAPABLE(ha))
+		return QLA_FUNCTION_FAILED;
+
+	DEBUG11(printk(KERN_INFO "%s(%ld): entered.\n", __func__, ha->host_no));
+
+	mcp->mb[0] = MBC_DATA_RATE;
+	mcp->mb[1] = 0;
+	mcp->out_mb = MBX_1|MBX_0;
+	mcp->in_mb = MBX_2|MBX_1|MBX_0;
+	mcp->tov = MBX_TOV_SECONDS;
+	mcp->flags = 0;
+	rval = qla2x00_mailbox_command(ha, mcp);
+	if (rval != QLA_SUCCESS) {
+		DEBUG2_3_11(printk(KERN_INFO "%s(%ld): failed=%x mb[0]=%x.\n",
+		    __func__, ha->host_no, rval, mcp->mb[0]));
+	} else {
+		DEBUG11(printk(KERN_INFO
+		    "%s(%ld): done.\n", __func__, ha->host_no));
+		if (mcp->mb[1] != 0x7)
+			ha->link_data_rate = mcp->mb[1];
 	}
 
 	return rval;

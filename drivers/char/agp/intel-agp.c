@@ -40,6 +40,14 @@
 #define PCI_DEVICE_ID_INTEL_G45_IG          0x2E22
 #define PCI_DEVICE_ID_INTEL_G41_HB          0x2E30
 #define PCI_DEVICE_ID_INTEL_G41_IG          0x2E32
+#define PCI_DEVICE_ID_INTEL_B43_HB          0x2E40
+#define PCI_DEVICE_ID_INTEL_B43_IG          0x2E42
+#define PCI_DEVICE_ID_INTEL_IRONLAKE_D_HB	    0x0040
+#define PCI_DEVICE_ID_INTEL_IRONLAKE_D_IG	    0x0042
+#define PCI_DEVICE_ID_INTEL_IRONLAKE_M_HB	    0x0044
+#define PCI_DEVICE_ID_INTEL_IRONLAKE_MA_HB	    0x0062
+#define PCI_DEVICE_ID_INTEL_IRONLAKE_MC2_HB	    0x006a
+#define PCI_DEVICE_ID_INTEL_IRONLAKE_M_IG	    0x0046
 
 /* cover 915 and 945 variants */
 #define IS_I915 (agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_E7221_HB || \
@@ -64,7 +72,12 @@
 		agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_Q45_HB || \
 		agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_G45_HB || \
 		agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_GM45_HB || \
-		agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_G41_HB)
+		agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_G41_HB || \
+		agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_B43_HB || \
+		agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_IRONLAKE_D_HB || \
+		agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_IRONLAKE_M_HB || \
+		agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_IRONLAKE_MA_HB || \
+		agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_IRONLAKE_MC2_HB)
 
 /* Intel 815 register */
 #define INTEL_815_APCONT	0x51
@@ -999,6 +1012,11 @@ static void intel_i965_get_gtt_range(int *gtt_offset, int *gtt_size)
 	case PCI_DEVICE_ID_INTEL_Q45_HB:
 	case PCI_DEVICE_ID_INTEL_G45_HB:
 	case PCI_DEVICE_ID_INTEL_G41_HB:
+	case PCI_DEVICE_ID_INTEL_B43_HB:
+	case PCI_DEVICE_ID_INTEL_IRONLAKE_D_HB:
+	case PCI_DEVICE_ID_INTEL_IRONLAKE_M_HB:
+	case PCI_DEVICE_ID_INTEL_IRONLAKE_MA_HB:
+	case PCI_DEVICE_ID_INTEL_IRONLAKE_MC2_HB:
 		*gtt_offset = *gtt_size = MB(2);
 		break;
 	default:
@@ -2113,6 +2131,41 @@ static int __devinit agp_intel_probe(struct pci_dev *pdev,
 		} else
 			bridge->driver = NULL;
 		break;
+	case PCI_DEVICE_ID_INTEL_B43_HB:
+		if (find_i830(PCI_DEVICE_ID_INTEL_B43_IG)) {
+			bridge->driver = &intel_i965_driver;
+			name = "B43";
+		} else
+			bridge->driver = NULL;
+		break;
+	case PCI_DEVICE_ID_INTEL_IRONLAKE_D_HB:
+		if (find_i830(PCI_DEVICE_ID_INTEL_IRONLAKE_D_IG)) {
+			bridge->driver = &intel_i965_driver;
+			name = "IRONLAKE/D";
+		} else
+			bridge->driver = NULL;
+		break;
+	case PCI_DEVICE_ID_INTEL_IRONLAKE_M_HB:
+		if (find_i830(PCI_DEVICE_ID_INTEL_IRONLAKE_M_IG)) {
+			bridge->driver = &intel_i965_driver;
+			name = "IRONLAKE/M";
+		} else
+			bridge->driver = NULL;
+		break;
+	case PCI_DEVICE_ID_INTEL_IRONLAKE_MA_HB:
+		if (find_i830(PCI_DEVICE_ID_INTEL_IRONLAKE_M_IG)) {
+			bridge->driver = &intel_i965_driver;
+			name = "IRONLAKE/MA";
+		} else
+			bridge->driver = NULL;
+		break;
+	case PCI_DEVICE_ID_INTEL_IRONLAKE_MC2_HB:
+		if (find_i830(PCI_DEVICE_ID_INTEL_IRONLAKE_M_IG)) {
+			bridge->driver = &intel_i965_driver;
+			name = "IRONLAKE/MC2";
+		} else
+			bridge->driver = NULL;
+		break;
 	default:
 		if (cap_ptr)
 			printk(KERN_WARNING PFX "Unsupported Intel chipset (device id: %04x)\n",
@@ -2283,6 +2336,11 @@ static struct pci_device_id agp_intel_pci_table[] = {
 	ID(PCI_DEVICE_ID_INTEL_Q45_HB),
 	ID(PCI_DEVICE_ID_INTEL_G45_HB),
 	ID(PCI_DEVICE_ID_INTEL_G41_HB),
+	ID(PCI_DEVICE_ID_INTEL_B43_HB),
+	ID(PCI_DEVICE_ID_INTEL_IRONLAKE_D_HB),
+	ID(PCI_DEVICE_ID_INTEL_IRONLAKE_M_HB),
+	ID(PCI_DEVICE_ID_INTEL_IRONLAKE_MA_HB),
+	ID(PCI_DEVICE_ID_INTEL_IRONLAKE_MC2_HB),
 	{ }
 };
 

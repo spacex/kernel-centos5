@@ -228,6 +228,7 @@ static void __insert_origin(struct origin *o)
  */
 static int register_snapshot(struct dm_snapshot *snap)
 {
+	struct dm_snapshot *l;
 	struct origin *o;
 	struct block_device *bdev = snap->origin->bdev;
 
@@ -249,7 +250,11 @@ static int register_snapshot(struct dm_snapshot *snap)
 		__insert_origin(o);
 	}
 
-	list_add_tail(&snap->list, &o->snapshots);
+	/* Sort the list according to chunk size, largest-first smallest-last */
+	list_for_each_entry(l, &o->snapshots, list)
+		if (l->chunk_size < snap->chunk_size)
+			break;
+	list_add_tail(&snap->list, &l->list);
 
 	up_write(&_origins_lock);
 	return 0;
@@ -481,6 +486,9 @@ static int init_hash_tables(struct dm_snapshot *s)
 	hash_size = min(origin_dev_size, cow_dev_size) >> s->chunk_shift;
 	hash_size = min(hash_size, max_buckets);
 
+	if (hash_size < 64)
+		hash_size = 64;
+
 	/* Round it down to a power of 2 */
 	hash_size = round_down(hash_size);
 	if (init_exception_table(&s->complete, hash_size,
@@ -535,9 +543,14 @@ static int set_chunk_size(struct dm_snapshot *s, const char *chunk_size_arg,
 	 * round up if it's not.
 	 */
 	chunk_size = round_up(chunk_size, PAGE_SIZE >> 9);
+	return dm_exception_store_set_chunk_size(s, chunk_size, error);
+}
 
+int dm_exception_store_set_chunk_size(struct dm_snapshot *s,
+				      unsigned long chunk_size, char **error)
+{
 	/* Check chunk_size is a power of 2 */
-	if (chunk_size & (chunk_size - 1)) {
+	if (!is_power_of_2(chunk_size)) {
 		*error = "Chunk size is not a power of 2";
 		return -EINVAL;
 	}
@@ -545,6 +558,11 @@ static int set_chunk_size(struct dm_snapshot *s, const char *chunk_size_arg,
 	/* Validate the chunk size against the device block size */
 	if (chunk_size % (bdev_hardsect_size(s->cow->bdev) >> 9)) {
 		*error = "Chunk size is not a multiple of device blocksize";
+		return -EINVAL;
+	}
+
+	if (chunk_size > INT_MAX >> SECTOR_SHIFT) {
+		*error = "Chunk size is too high";
 		return -EINVAL;
 	}
 
@@ -1139,6 +1157,7 @@ static int snapshot_status(struct dm_target *ti, status_type_t type,
 
 	switch (type) {
 	case STATUSTYPE_INFO:
+		down_write(&snap->lock);
 		if (!snap->valid)
 			snprintf(result, maxlen, "Invalid");
 		else {
@@ -1154,6 +1173,7 @@ static int snapshot_status(struct dm_target *ti, status_type_t type,
 			else
 				snprintf(result, maxlen, "Unknown");
 		}
+		up_write(&snap->lock);
 		break;
 
 	case STATUSTYPE_TABLE:

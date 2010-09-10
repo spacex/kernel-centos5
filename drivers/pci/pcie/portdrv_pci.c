@@ -14,8 +14,10 @@
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/pcieport_if.h>
+#include <linux/aer.h>
 
 #include "portdrv.h"
+#include "aer/aerdrv.h"
 
 /*
  * Version Information
@@ -29,6 +31,43 @@ MODULE_LICENSE("GPL");
 
 /* global data */
 static const char device_name[] = "pcieport-driver";
+
+static int pcie_portdrv_save_config(struct pci_dev *dev)
+{
+	return pci_save_state(dev);
+}
+
+#ifdef CONFIG_PM
+static int pcie_portdrv_restore_config(struct pci_dev *dev)
+{
+	int retval;
+
+	pci_restore_state(dev);
+	retval = pci_enable_device(dev);
+	if (retval)
+		return retval;
+	pci_set_master(dev);
+	return 0;
+}
+
+static int pcie_portdrv_suspend(struct pci_dev *dev, pm_message_t state)
+{
+	int ret = pcie_port_device_suspend(dev, state);
+
+	if (!ret)
+		ret = pcie_portdrv_save_config(dev);
+	return ret;
+}
+
+static int pcie_portdrv_resume(struct pci_dev *dev)
+{
+	pcie_portdrv_restore_config(dev);
+	return pcie_port_device_resume(dev);
+}
+#else
+#define pcie_portdrv_suspend NULL
+#define pcie_portdrv_resume NULL
+#endif
 
 /*
  * pcie_portdrv_probe - Probe PCI-Express port devices
@@ -52,14 +91,17 @@ static int __devinit pcie_portdrv_probe (struct pci_dev *dev,
 	
 	pci_set_master(dev);
         if (!dev->irq && dev->pin) {
-		printk(KERN_WARNING 
-		"%s->Dev[%04x:%04x] has invalid IRQ. Check vendor BIOS\n", 
-		__FUNCTION__, dev->device, dev->vendor);
+		dev_warn(&dev->dev, "device [%04x:%04x] has invalid IRQ; "
+			 "check vendor BIOS\n", dev->vendor, dev->device);
 	}
 	if (pcie_port_device_register(dev)) {
 		pci_disable_device(dev);
 		return -ENOMEM;
 	}
+
+	pcie_portdrv_save_config(dev);
+
+	pci_enable_pcie_error_reporting(dev);
 
 	return 0;
 }
@@ -67,42 +109,147 @@ static int __devinit pcie_portdrv_probe (struct pci_dev *dev,
 static void pcie_portdrv_remove (struct pci_dev *dev)
 {
 	pcie_port_device_remove(dev);
+	pci_disable_device(dev);
 	kfree(pci_get_drvdata(dev));
 }
 
-#ifdef CONFIG_PM
-static int pcie_portdrv_save_config(struct pci_dev *dev)
+static int error_detected_iter(struct device *device, void *data)
 {
-	return pci_save_state(dev);
-}
+	struct pcie_device *pcie_device;
+	struct pcie_port_service_driver *driver;
+	struct aer_broadcast_data *result_data;
+	pci_ers_result_t status;
 
-static int pcie_portdrv_restore_config(struct pci_dev *dev)
-{
-	int retval;
+	result_data = (struct aer_broadcast_data *) data;
 
-	pci_restore_state(dev);
-	retval = pci_enable_device(dev);
-	if (retval)
-		return retval;
-	pci_set_master(dev);
+	if (device->bus == &pcie_port_bus_type && device->driver) {
+		driver = to_service_driver(device->driver);
+		if (!driver ||
+			!driver->err_handler ||
+			!driver->err_handler->error_detected)
+			return 0;
+
+		pcie_device = to_pcie_device(device);
+
+		/* Forward error detected message to service drivers */
+		status = driver->err_handler->error_detected(
+			pcie_device->port,
+			result_data->state);
+		result_data->result =
+			merge_result(result_data->result, status);
+	}
+
 	return 0;
 }
 
-static int pcie_portdrv_suspend (struct pci_dev *dev, pm_message_t state)
+static pci_ers_result_t pcie_portdrv_error_detected(struct pci_dev *dev,
+					enum pci_channel_state error)
 {
-	int ret = pcie_port_device_suspend(dev, state);
+	struct aer_broadcast_data result_data =
+			{error, PCI_ERS_RESULT_CAN_RECOVER};
 
-	if (!ret)
-		ret = pcie_portdrv_save_config(dev);
-	return ret;
+	device_for_each_child(&dev->dev, &result_data, error_detected_iter);
+
+	return result_data.result;
 }
 
-static int pcie_portdrv_resume (struct pci_dev *dev)
+static int mmio_enabled_iter(struct device *device, void *data)
 {
-	pcie_portdrv_restore_config(dev);
-	return pcie_port_device_resume(dev);
+	struct pcie_device *pcie_device;
+	struct pcie_port_service_driver *driver;
+	pci_ers_result_t status, *result;
+
+	result = (pci_ers_result_t *) data;
+
+	if (device->bus == &pcie_port_bus_type && device->driver) {
+		driver = to_service_driver(device->driver);
+		if (driver &&
+			driver->err_handler &&
+			driver->err_handler->mmio_enabled) {
+			pcie_device = to_pcie_device(device);
+
+			/* Forward error message to service drivers */
+			status = driver->err_handler->mmio_enabled(
+					pcie_device->port);
+			*result = merge_result(*result, status);
+		}
+	}
+
+	return 0;
 }
-#endif
+
+static pci_ers_result_t pcie_portdrv_mmio_enabled(struct pci_dev *dev)
+{
+	pci_ers_result_t status = PCI_ERS_RESULT_RECOVERED;
+
+	device_for_each_child(&dev->dev, &status, mmio_enabled_iter);
+	return status;
+}
+
+static int slot_reset_iter(struct device *device, void *data)
+{
+	struct pcie_device *pcie_device;
+	struct pcie_port_service_driver *driver;
+	pci_ers_result_t status, *result;
+
+	result = (pci_ers_result_t *) data;
+
+	if (device->bus == &pcie_port_bus_type && device->driver) {
+		driver = to_service_driver(device->driver);
+		if (driver &&
+			driver->err_handler &&
+			driver->err_handler->slot_reset) {
+			pcie_device = to_pcie_device(device);
+
+			/* Forward error message to service drivers */
+			status = driver->err_handler->slot_reset(
+					pcie_device->port);
+			*result = merge_result(*result, status);
+		}
+	}
+
+	return 0;
+}
+
+static pci_ers_result_t pcie_portdrv_slot_reset(struct pci_dev *dev)
+{
+	pci_ers_result_t status = PCI_ERS_RESULT_NONE;
+
+	/* If fatal, restore cfg space for possible link reset at upstream */
+	if (dev->error_state == pci_channel_io_frozen) {
+		pcie_portdrv_restore_config(dev);
+		pci_enable_pcie_error_reporting(dev);
+	}
+
+	device_for_each_child(&dev->dev, &status, slot_reset_iter);
+
+	return status;
+}
+
+static int resume_iter(struct device *device, void *data)
+{
+	struct pcie_device *pcie_device;
+	struct pcie_port_service_driver *driver;
+
+	if (device->bus == &pcie_port_bus_type && device->driver) {
+		driver = to_service_driver(device->driver);
+		if (driver &&
+			driver->err_handler &&
+			driver->err_handler->resume) {
+			pcie_device = to_pcie_device(device);
+
+			/* Forward error message to service drivers */
+			driver->err_handler->resume(pcie_device->port);
+		}
+	}
+
+	return 0;
+}
+
+static void pcie_portdrv_err_resume(struct pci_dev *dev)
+{
+	device_for_each_child(&dev->dev, NULL, resume_iter);
+}
 
 /*
  * LINUX Device Driver Model
@@ -114,33 +261,45 @@ static const struct pci_device_id port_pci_ids[] = { {
 };
 MODULE_DEVICE_TABLE(pci, port_pci_ids);
 
-static struct pci_driver pcie_portdrv = {
+static struct pci_error_handlers pcie_portdrv_err_handler = {
+		.error_detected = pcie_portdrv_error_detected,
+		.mmio_enabled = pcie_portdrv_mmio_enabled,
+		.slot_reset = pcie_portdrv_slot_reset,
+		.resume = pcie_portdrv_err_resume,
+};
+
+static struct pci_driver pcie_portdriver = {
 	.name		= (char *)device_name,
 	.id_table	= &port_pci_ids[0],
 
 	.probe		= pcie_portdrv_probe,
 	.remove		= pcie_portdrv_remove,
 
-#ifdef	CONFIG_PM
 	.suspend	= pcie_portdrv_suspend,
 	.resume		= pcie_portdrv_resume,
-#endif	/* PM */
+
+	.err_handler 	= &pcie_portdrv_err_handler,
 };
 
 static int __init pcie_portdrv_init(void)
 {
-	int retval = 0;
+	int retval;
 
-	pcie_port_bus_register();
-	retval = pci_register_driver(&pcie_portdrv);
+	retval = pcie_port_bus_register();
+	if (retval) {
+		printk(KERN_WARNING "PCIE: bus_register error: %d\n", retval);
+		goto out;
+	}
+	retval = pci_register_driver(&pcie_portdriver);
 	if (retval)
 		pcie_port_bus_unregister();
+ out:
 	return retval;
 }
 
 static void __exit pcie_portdrv_exit(void) 
 {
-	pci_unregister_driver(&pcie_portdrv);
+	pci_unregister_driver(&pcie_portdriver);
 	pcie_port_bus_unregister();
 }
 

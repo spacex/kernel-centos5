@@ -47,6 +47,8 @@
 
 static void
 lpfc_release_scsi_buf_s4(struct lpfc_hba *phba, struct lpfc_scsi_buf *psb);
+static void
+lpfc_release_scsi_buf_s3(struct lpfc_hba *phba, struct lpfc_scsi_buf *psb);
 
 /**
  * lpfc_sli4_set_rsp_sgl_last - Set the last bit in the response sge.
@@ -177,6 +179,36 @@ lpfc_send_sdev_queuedepth_change_event(struct lpfc_hba *phba,
 }
 
 /**
+ * lpfc_change_queue_depth - Alter scsi device queue depth
+ * @sdev: Pointer the scsi device on which to change the queue depth.
+ * @qdepth: New queue depth to set the sdev to.
+ * @reason: The reason for the queue depth change.
+ *
+ * This function is called by the midlayer and the LLD to alter the queue
+ * depth for a scsi device. This function sets the queue depth to the new
+ * value and sends an event out to log the queue depth change.
+ **/
+int
+lpfc_change_queue_depth(struct scsi_device *sdev, int qdepth, int reason)
+{
+	struct lpfc_vport *vport = (struct lpfc_vport *) sdev->host->hostdata;
+	struct lpfc_hba   *phba = vport->phba;
+	struct lpfc_rport_data *rdata;
+	unsigned long new_queue_depth, old_queue_depth;
+
+	old_queue_depth = sdev->queue_depth;
+	scsi_adjust_queue_depth(sdev, scsi_get_tag_type(sdev), qdepth);
+	new_queue_depth = sdev->queue_depth;
+	rdata = sdev->hostdata;
+	if (rdata)
+		lpfc_send_sdev_queuedepth_change_event(phba, vport,
+						       rdata->pnode, sdev->lun,
+						       old_queue_depth,
+						       new_queue_depth);
+	return sdev->queue_depth;
+}
+
+/**
  * lpfc_rampdown_queue_depth - Post RAMP_DOWN_QUEUE event to worker thread
  * @phba: The Hba for which this call is being executed.
  *
@@ -240,8 +272,10 @@ lpfc_rampup_queue_depth(struct lpfc_vport  *vport,
 	if (vport->cfg_lun_queue_depth <= queue_depth)
 		return;
 	spin_lock_irqsave(&phba->hbalock, flags);
-	if (((phba->last_ramp_up_time + QUEUE_RAMP_UP_INTERVAL) > jiffies) ||
-	 ((phba->last_rsrc_error_time + QUEUE_RAMP_UP_INTERVAL ) > jiffies)) {
+	if (time_before(jiffies,
+			phba->last_ramp_up_time + QUEUE_RAMP_UP_INTERVAL) ||
+	    time_before(jiffies,
+			phba->last_rsrc_error_time + QUEUE_RAMP_UP_INTERVAL)) {
 		spin_unlock_irqrestore(&phba->hbalock, flags);
 		return;
 	}
@@ -273,10 +307,9 @@ lpfc_ramp_down_queue_handler(struct lpfc_hba *phba)
 	struct lpfc_vport **vports;
 	struct Scsi_Host  *shost;
 	struct scsi_device *sdev;
-	unsigned long new_queue_depth, old_queue_depth;
+	unsigned long new_queue_depth;
 	unsigned long num_rsrc_err, num_cmd_success;
 	int i;
-	struct lpfc_rport_data *rdata;
 
 	num_rsrc_err = atomic_read(&phba->num_rsrc_err);
 	num_cmd_success = atomic_read(&phba->num_cmd_success);
@@ -294,22 +327,8 @@ lpfc_ramp_down_queue_handler(struct lpfc_hba *phba)
 				else
 					new_queue_depth = sdev->queue_depth -
 								new_queue_depth;
-				old_queue_depth = sdev->queue_depth;
-				if (sdev->ordered_tags)
-					scsi_adjust_queue_depth(sdev,
-							MSG_ORDERED_TAG,
-							new_queue_depth);
-				else
-					scsi_adjust_queue_depth(sdev,
-							MSG_SIMPLE_TAG,
-							new_queue_depth);
-				rdata = sdev->hostdata;
-				if (rdata)
-					lpfc_send_sdev_queuedepth_change_event(
-						phba, vports[i],
-						rdata->pnode,
-						sdev->lun, old_queue_depth,
-						new_queue_depth);
+				lpfc_change_queue_depth(sdev, new_queue_depth,
+							0);
 			}
 		}
 	lpfc_destroy_vport_work_array(phba, vports);
@@ -333,7 +352,6 @@ lpfc_ramp_up_queue_handler(struct lpfc_hba *phba)
 	struct Scsi_Host  *shost;
 	struct scsi_device *sdev;
 	int i;
-	struct lpfc_rport_data *rdata;
 
 	vports = lpfc_create_vport_work_array(phba);
 	if (vports != NULL)
@@ -343,22 +361,8 @@ lpfc_ramp_up_queue_handler(struct lpfc_hba *phba)
 				if (vports[i]->cfg_lun_queue_depth <=
 				    sdev->queue_depth)
 					continue;
-				if (sdev->ordered_tags)
-					scsi_adjust_queue_depth(sdev,
-							MSG_ORDERED_TAG,
-							sdev->queue_depth+1);
-				else
-					scsi_adjust_queue_depth(sdev,
-							MSG_SIMPLE_TAG,
-							sdev->queue_depth+1);
-				rdata = sdev->hostdata;
-				if (rdata)
-					lpfc_send_sdev_queuedepth_change_event(
-						phba, vports[i],
-						rdata->pnode,
-						sdev->lun,
-						sdev->queue_depth - 1,
-						sdev->queue_depth);
+				lpfc_change_queue_depth(sdev,
+							sdev->queue_depth+1, 0);
 			}
 		}
 	lpfc_destroy_vport_work_array(phba, vports);
@@ -519,7 +523,7 @@ lpfc_new_scsi_buf_s3(struct lpfc_vport *vport, int num_to_alloc)
 		iocb->ulpClass = CLASS3;
 		psb->status = IOSTAT_SUCCESS;
 		/* Put it back into the SCSI buffer list */
-		lpfc_release_scsi_buf_s4(phba, psb);
+		lpfc_release_scsi_buf_s3(phba, psb);
 	}
 
 	return bcnt;
@@ -716,19 +720,17 @@ lpfc_new_scsi_buf_s4(struct lpfc_vport *vport, int num_to_alloc)
 		 */
 		sgl->addr_hi = cpu_to_le32(putPaddrHigh(pdma_phys_fcp_cmd));
 		sgl->addr_lo = cpu_to_le32(putPaddrLow(pdma_phys_fcp_cmd));
-		bf_set(lpfc_sli4_sge_len, sgl, sizeof(struct fcp_cmnd));
 		bf_set(lpfc_sli4_sge_last, sgl, 0);
 		sgl->word2 = cpu_to_le32(sgl->word2);
-		sgl->word3 = cpu_to_le32(sgl->word3);
+		sgl->sge_len = cpu_to_le32(sizeof(struct fcp_cmnd));
 		sgl++;
 
 		/* Setup the physical region for the FCP RSP */
 		sgl->addr_hi = cpu_to_le32(putPaddrHigh(pdma_phys_fcp_rsp));
 		sgl->addr_lo = cpu_to_le32(putPaddrLow(pdma_phys_fcp_rsp));
-		bf_set(lpfc_sli4_sge_len, sgl, sizeof(struct fcp_rsp));
 		bf_set(lpfc_sli4_sge_last, sgl, 1);
 		sgl->word2 = cpu_to_le32(sgl->word2);
-		sgl->word3 = cpu_to_le32(sgl->word3);
+		sgl->sge_len = cpu_to_le32(sizeof(struct fcp_rsp));
 
 		/*
 		 * Since the IOCB for the FCP I/O is built into this
@@ -955,7 +957,7 @@ lpfc_scsi_prep_dma_buf_s3(struct lpfc_hba *phba, struct lpfc_scsi_buf *lpfc_cmd)
 
 		if (lpfc_cmd->seg_cnt > phba->cfg_sg_seg_cnt) {
 			printk(KERN_ERR "%s: Too many sg segments from "
-			       "dma_map_sg.  Config %d, seg_cnt %d",
+			       "dma_map_sg.  Config %d, seg_cnt %d\n",
 			       __func__, phba->cfg_sg_seg_cnt,
 			       lpfc_cmd->seg_cnt);
 			dma_unmap_sg(&phba->pcidev->dev, sgel,
@@ -1045,11 +1047,14 @@ lpfc_scsi_prep_dma_buf_s4(struct lpfc_hba *phba, struct lpfc_scsi_buf *lpfc_cmd)
 	struct fcp_cmnd *fcp_cmnd = lpfc_cmd->fcp_cmnd;
 	struct sli4_sge *sgl = (struct sli4_sge *)lpfc_cmd->fcp_bpl;
 	IOCB_t *iocb_cmd = &lpfc_cmd->cur_iocbq.iocb;
+	uint32_t vpi = (lpfc_cmd->cur_iocbq.vport
+			? lpfc_cmd->cur_iocbq.vport->vpi
+			: 0);
 	dma_addr_t physaddr;
 	uint32_t num_bde = 0;
 	uint32_t dma_len;
 	uint32_t dma_offset = 0;
-	int nseg, datadir = scsi_cmnd->sc_data_direction;
+	int dma_error, nseg, datadir = scsi_cmnd->sc_data_direction;
 
 	/*
 	 * There are three possibilities here - use scatter-gather segment, use
@@ -1101,7 +1106,6 @@ lpfc_scsi_prep_dma_buf_s4(struct lpfc_hba *phba, struct lpfc_scsi_buf *lpfc_cmd)
 		for (num_bde = 0; num_bde < nseg;) {
 			physaddr = sg_dma_address(sgel);
 			dma_len = sg_dma_len(sgel);
-			bf_set(lpfc_sli4_sge_len, sgl, sg_dma_len(sgel));
 			sgl->addr_lo = cpu_to_le32(putPaddrLow(physaddr));
 			sgl->addr_hi = cpu_to_le32(putPaddrHigh(physaddr));
 			if ((num_bde + 1) == nseg)
@@ -1110,12 +1114,40 @@ lpfc_scsi_prep_dma_buf_s4(struct lpfc_hba *phba, struct lpfc_scsi_buf *lpfc_cmd)
 				bf_set(lpfc_sli4_sge_last, sgl, 0);
 			bf_set(lpfc_sli4_sge_offset, sgl, dma_offset);
 			sgl->word2 = cpu_to_le32(sgl->word2);
-			sgl->word3 = cpu_to_le32(sgl->word3);
+			sgl->sge_len = cpu_to_le32(dma_len);
 			dma_offset += dma_len;
 			sgl++;
 			sgel++;
 			num_bde++;
 		}
+	} else if (scsi_cmnd->request_buffer && scsi_cmnd->request_bufflen) {
+		physaddr = dma_map_single(&phba->pcidev->dev,
+					  scsi_cmnd->request_buffer,
+					  scsi_cmnd->request_bufflen,
+					  datadir);
+		dma_error = dma_mapping_error(physaddr);
+		if (dma_error) {
+			lpfc_printf_log(phba, KERN_ERR, LOG_FCP,
+					"(%d):2729 Unable to dma_map_single "
+					"request_buffer: x%x\n",
+					vpi, dma_error);
+			return 1;
+		}
+		sgl += 1;
+		/* clear the last flag in the fcp_rsp map entry */
+		sgl->word2 = le32_to_cpu(sgl->word2);
+		bf_set(lpfc_sli4_sge_last, sgl, 0);
+		sgl->word2 = cpu_to_le32(sgl->word2);
+		sgl += 1;
+
+		sgl->addr_lo = cpu_to_le32(putPaddrLow(physaddr));
+		sgl->addr_hi = cpu_to_le32(putPaddrHigh(physaddr));
+		bf_set(lpfc_sli4_sge_last, sgl, 1);
+		bf_set(lpfc_sli4_sge_offset, sgl, dma_offset);
+		sgl->word2 = cpu_to_le32(sgl->word2);
+		sgl->sge_len = cpu_to_le32(scsi_cmnd->request_bufflen);
+
+		lpfc_cmd->nonsg_phys = physaddr;
 	} else {
 		sgl += 1;
 		/* clear the last flag in the fcp_rsp map entry */
@@ -1136,7 +1168,7 @@ lpfc_scsi_prep_dma_buf_s4(struct lpfc_hba *phba, struct lpfc_scsi_buf *lpfc_cmd)
 	 * Due to difference in data length between DIF/non-DIF paths,
 	 * we need to set word 4 of IOCB here
 	 */
-	iocb_cmd->un.fcpi.fcpi_parm = cpu_to_be32(scsi_cmnd->request_bufflen);
+	iocb_cmd->un.fcpi.fcpi_parm = scsi_cmnd->request_bufflen;
 	return 0;
 }
 
@@ -1315,6 +1347,21 @@ lpfc_handle_fcp_err(struct lpfc_hba *phba, struct lpfc_vport *vport,
 		goto out;
 	}
 
+	if (resp_info & RSP_LEN_VALID) {
+		rsplen = be32_to_cpu(fcprsp->rspRspLen);
+		if ((rsplen != 0 && rsplen != 4 && rsplen != 8) ||
+		    (fcprsp->rspInfo3 != RSP_NO_FAILURE)) {
+			lpfc_printf_vlog(vport, KERN_ERR, LOG_FCP,
+				 "2719 Invalid response length: "
+				 "tgt x%x lun x%x cmnd x%x rsplen x%x\n",
+				 cmnd->device->id,
+				 cmnd->device->lun, cmnd->cmnd[0],
+				 rsplen);
+			host_status = DID_ERROR;
+			goto out;
+		}
+	}
+
 	if ((resp_info & SNS_LEN_VALID) && fcprsp->rspSnsLen) {
 		uint32_t snslen = be32_to_cpu(fcprsp->rspSnsLen);
 		if (snslen > SCSI_SENSE_BUFFERSIZE)
@@ -1339,15 +1386,6 @@ lpfc_handle_fcp_err(struct lpfc_hba *phba, struct lpfc_vport *vport,
 			be32_to_cpu(fcprsp->rspSnsLen),
 			be32_to_cpu(fcprsp->rspRspLen),
 			fcprsp->rspInfo3);
-
-	if (resp_info & RSP_LEN_VALID) {
-		rsplen = be32_to_cpu(fcprsp->rspRspLen);
-		if ((rsplen != 0 && rsplen != 4 && rsplen != 8) ||
-		    (fcprsp->rspInfo3 != RSP_NO_FAILURE)) {
-			host_status = DID_ERROR;
-			goto out;
-		}
-	}
 
 	cmnd->resid = 0;
 	if (resp_info & RESID_UNDER) {
@@ -1400,7 +1438,7 @@ lpfc_handle_fcp_err(struct lpfc_hba *phba, struct lpfc_vport *vport,
 	} else if (resp_info & RESID_OVER) {
 		lpfc_printf_log(phba, KERN_WARNING, LOG_FCP,
 				"(%d):0720 FCP command x%x residual "
-				"overrun error. Data: x%x x%x \n",
+				"overrun error. Data: x%x x%x\n",
 				(vport ? vport->vpi : 0),
 				cmnd->cmnd[0],
 				cmnd->request_bufflen, cmnd->resid);
@@ -1451,7 +1489,7 @@ lpfc_scsi_cmd_iocb_cmpl(struct lpfc_hba *phba, struct lpfc_iocbq *pIocbIn,
 	struct scsi_cmnd *cmd = lpfc_cmd->pCmd;
 	int result;
 	struct scsi_device *tmp_sdev;
-	int depth = 0;
+	int depth;
 	unsigned long flags;
 	struct lpfc_fast_path_event *fast_path_evt;
 	struct Scsi_Host *shost = cmd->device->host;
@@ -1642,24 +1680,16 @@ lpfc_scsi_cmd_iocb_cmpl(struct lpfc_hba *phba, struct lpfc_iocbq *pIocbIn,
 			if (tmp_sdev->id != scsi_id)
 				continue;
 			depth = scsi_track_queue_full(tmp_sdev,
-					tmp_sdev->queue_depth - 1);
-		}
-		/*
-		 * The queue depth cannot be lowered any more.
-		 * Modify the returned error code to store
-		 * the final depth value set by
-		 * scsi_track_queue_full.
-		 */
-		if (depth == -1)
-			depth = shost->cmd_per_lun;
-
-		if (depth) {
+						      tmp_sdev->queue_depth-1);
+			if (depth <= 0)
+				continue;
 			lpfc_printf_vlog(vport, KERN_WARNING, LOG_FCP,
 					 "0711 detected queue full - lun queue "
 					 "depth adjusted to %d.\n", depth);
 			lpfc_send_sdev_queuedepth_change_event(phba, vport,
-				pnode, 0xFFFFFFFF,
-				depth+1, depth);
+							       pnode,
+							       tmp_sdev->lun,
+							       depth+1, depth);
 		}
 	}
 
@@ -2020,7 +2050,7 @@ lpfc_queuecommand(struct scsi_cmnd *cmnd, void (*done) (struct scsi_cmnd *))
 	struct lpfc_vport *vport = (struct lpfc_vport *) shost->hostdata;
 	struct lpfc_hba   *phba = vport->phba;
 	struct lpfc_rport_data *rdata = cmnd->device->hostdata;
-	struct lpfc_nodelist *ndlp = rdata->pnode;
+	struct lpfc_nodelist *ndlp;
 	struct lpfc_scsi_buf *lpfc_cmd;
 	struct scsi_device *sdev;
 	struct fc_rport *rport = starget_to_rport(scsi_target(cmnd->device));
@@ -2051,6 +2081,7 @@ lpfc_queuecommand(struct scsi_cmnd *cmnd, void (*done) (struct scsi_cmnd *))
 		}
 		goto out_fail_command;
 	}
+	ndlp = rdata->pnode;
 
 	/*
 	 * Catch race where our node has transitioned, but the
@@ -2210,6 +2241,10 @@ lpfc_abort_handler(struct scsi_cmnd *cmnd)
 
 	icmd->ulpLe = 1;
 	icmd->ulpClass = cmd->ulpClass;
+
+	/* ABTS WQE must go to the same WQ as the WQE to be aborted */
+	abtsiocb->fcp_wqidx = iocb->fcp_wqidx;
+
 	if (lpfc_is_link_up(phba))
 		icmd->ulpCommand = CMD_ABORT_XRI_CN;
 	else
@@ -2376,9 +2411,15 @@ static int
 lpfc_chk_tgt_mapped(struct lpfc_vport *vport, struct scsi_cmnd *cmnd)
 {
 	struct lpfc_rport_data *rdata = cmnd->device->hostdata;
-	struct lpfc_nodelist *pnode = rdata->pnode;
+	struct lpfc_nodelist *pnode;
 	unsigned long later;
 
+	if (!rdata) {
+		lpfc_printf_vlog(vport, KERN_INFO, LOG_FCP,
+			"0797 Tgt Map rport failure: rdata x%p\n", rdata);
+		return FAILED;
+	}
+	pnode = rdata->pnode;
 	/*
 	 * If target is not in a MAPPED state, delay until
 	 * target is rediscovered or devloss timeout expires.
@@ -2463,12 +2504,18 @@ lpfc_device_reset_handler(struct scsi_cmnd *cmnd)
 	struct Scsi_Host  *shost = cmnd->device->host;
 	struct lpfc_vport *vport = (struct lpfc_vport *) shost->hostdata;
 	struct lpfc_rport_data *rdata = cmnd->device->hostdata;
-	struct lpfc_nodelist *pnode = rdata->pnode;
+	struct lpfc_nodelist *pnode;
 	unsigned tgt_id = cmnd->device->id;
 	unsigned int lun_id = cmnd->device->lun;
 	struct lpfc_scsi_event_header scsi_event;
 	int status;
 
+	if (!rdata) {
+		lpfc_printf_vlog(vport, KERN_ERR, LOG_FCP,
+			"0798 Device Reset rport failure: rdata x%p\n", rdata);
+		return FAILED;
+	}
+	pnode = rdata->pnode;
 	lpfc_block_error_handler(cmnd);
 
 	status = lpfc_chk_tgt_mapped(vport, cmnd);
@@ -2649,6 +2696,8 @@ lpfc_slave_alloc(struct scsi_device *sdev)
 				 "Allocated %d buffers.\n",
 				 num_to_alloc, num_allocated);
 	}
+	if (num_allocated > 0)
+		phba->total_scsi_bufs += num_allocated;
 	return 0;
 }
 

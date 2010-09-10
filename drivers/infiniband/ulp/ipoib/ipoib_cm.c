@@ -202,6 +202,7 @@ static void ipoib_cm_free_rx_ring(struct net_device *dev,
 			ipoib_cm_dma_unmap_rx(priv, IPOIB_CM_RX_SG - 1,
 					      rx_ring[i].mapping);
 			dev_kfree_skb_any(rx_ring[i].skb);
+			rx_ring[i].skb = NULL;
 		}
 
 	vfree(rx_ring);
@@ -738,6 +739,7 @@ void ipoib_cm_send(struct net_device *dev, struct sk_buff *skb, struct ipoib_cm_
 	if (unlikely(ib_dma_mapping_error(priv->ca, addr))) {
 		++priv->stats.tx_errors;
 		dev_kfree_skb_any(skb);
+		tx_req->skb = NULL;
 		return;
 	}
 
@@ -749,6 +751,7 @@ void ipoib_cm_send(struct net_device *dev, struct sk_buff *skb, struct ipoib_cm_
 		++priv->stats.tx_errors;
 		ib_dma_unmap_single(priv->ca, addr, skb->len, DMA_TO_DEVICE);
 		dev_kfree_skb_any(skb);
+		tx_req->skb = NULL;
 	} else {
 		dev->trans_start = jiffies;
 		++tx->tx_head;
@@ -787,6 +790,7 @@ void ipoib_cm_handle_tx_wc(struct net_device *dev, struct ib_wc *wc)
 	priv->stats.tx_bytes += tx_req->skb->len;
 
 	dev_kfree_skb_any(tx_req->skb);
+	tx_req->skb = NULL;
 
 	netif_tx_lock(dev);
 
@@ -1181,6 +1185,7 @@ timeout:
 		ib_dma_unmap_single(priv->ca, tx_req->mapping, tx_req->skb->len,
 				    DMA_TO_DEVICE);
 		dev_kfree_skb_any(tx_req->skb);
+		tx_req->skb = NULL;
 		++p->tx_tail;
 		netif_tx_lock_bh(p->dev);
 		if (unlikely(--priv->tx_outstanding == ipoib_sendq_size >> 1) &&

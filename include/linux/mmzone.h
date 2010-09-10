@@ -263,6 +263,24 @@ struct zone {
 	char			*name;
 } ____cacheline_internodealigned_in_smp;
 
+/*
+ * Extra per-zone data, which we cannot put in the struct zone
+ * because of RHEL kABI reasons.  We use the zone_idx and the
+ * zone->zone_pgdat->node_id as indices to the zone_extra_data
+ * array in mm/vmstat.c
+ */
+struct zone_extra_data {
+	/*
+	 * timestamp (in jiffies) of the last zone_reclaim that scanned
+	 * but failed to free enough pages. This is used to avoid repeated
+	 * scans when zone_reclaim() is unable to detect in advance that
+	 * the scanning is useless. This can happen for example if a zone
+	 * has large numbers of clean unmapped file pages on tmpfs
+	 */
+	unsigned long		zone_reclaim_failure;
+};
+
+extern struct zone_extra_data *zone_extra_data(struct zone * zone);
 
 /*
  * The "priority" of VM scanning is how much of the queues we will scan in one

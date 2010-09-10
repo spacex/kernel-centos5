@@ -520,6 +520,9 @@ struct nfs_open_context *get_nfs_open_context(struct nfs_open_context *ctx)
 
 void put_nfs_open_context(struct nfs_open_context *ctx)
 {
+	if (ctx == NULL)
+		return;
+
 	if (atomic_dec_and_test(&ctx->count)) {
 		if (!list_empty(&ctx->list)) {
 			struct inode *inode = ctx->path.dentry->d_inode;
@@ -1167,12 +1170,46 @@ static void nfs_destroy_inodecache(void)
 		printk(KERN_INFO "nfs_inode_cache: not all structures were freed\n");
 }
 
+struct workqueue_struct *nfsiod_workqueue;
+
+/*
+ * start up the nfsiod workqueue
+ */
+static int nfsiod_start(void)
+{
+	struct workqueue_struct *wq;
+	dprintk("RPC:       creating workqueue nfsiod\n");
+	wq = create_singlethread_workqueue("nfsiod");
+	if (wq == NULL)
+		return -ENOMEM;
+	nfsiod_workqueue = wq;
+	return 0;
+}
+
+/*
+ * Destroy the nfsiod workqueue
+ */
+static void nfsiod_stop(void)
+{
+	struct workqueue_struct *wq;
+
+	wq = nfsiod_workqueue;
+	if (wq == NULL)
+		return;
+	nfsiod_workqueue = NULL;
+	destroy_workqueue(wq);
+}
+
 /*
  * Initialize NFS
  */
 static int __init init_nfs_fs(void)
 {
 	int err;
+
+	err = nfsiod_start();
+	if (err)
+		goto out6;
 
 	err = nfs_fs_proc_init();
 	if (err)
@@ -1220,6 +1257,8 @@ out3:
 out4:
 	nfs_fs_proc_exit();
 out5:
+	nfsiod_stop();
+out6:
 	return err;
 }
 
@@ -1235,6 +1274,7 @@ static void __exit exit_nfs_fs(void)
 #endif
 	unregister_nfs_fs();
 	nfs_fs_proc_exit();
+	nfsiod_stop();
 }
 
 /* Not quite true; I just maintain it */

@@ -78,7 +78,6 @@ qla2x00_initialize_adapter(scsi_qla_host_t *ha)
 	ha->mbx_flags = 0;
 	ha->isp_abort_cnt = 0;
 	ha->beacon_blink_led = 0;
-	set_bit(REGISTER_FDMI_NEEDED, &ha->dpc_flags);
 
 	qla_printk(KERN_INFO, ha, "Configuring PCI space...\n");
 	rval = ha->isp_ops->pci_config(ha);
@@ -1605,7 +1604,8 @@ qla2x00_set_model_info(scsi_qla_host_t *ha, uint8_t *model, size_t len, char *de
 {
 	char *st, *en;
 	uint16_t index;
-	int use_tbl = !IS_QLA25XX(ha) && !IS_QLA81XX(ha);
+	int use_tbl = !IS_QLA24XX_TYPE(ha) && !IS_QLA25XX(ha) &&
+	    !IS_QLA81XX(ha);
 
 	if (memcmp(model, BINZERO, len) != 0) {
 		strncpy(ha->model_number, model, len);
@@ -1821,8 +1821,8 @@ qla2x00_nvram_config(scsi_qla_host_t *ha)
 	ha->login_timeout = nv->login_timeout;
 	icb->login_timeout = nv->login_timeout;
 
-	/* Set minimum RATOV to 200 tenths of a second. */
-	ha->r_a_tov = 200;
+	/* Set minimum RATOV to 100 tenths of a second. */
+	ha->r_a_tov = 100;
 
 	ha->loop_reset_delay = nv->reset_delay;
 
@@ -1990,6 +1990,8 @@ qla2x00_configure_loop(scsi_qla_host_t *ha)
 	 */
 	clear_bit(LOCAL_LOOP_UPDATE, &ha->dpc_flags);
 	clear_bit(RSCN_UPDATE, &ha->dpc_flags);
+
+	qla2x00_get_data_rate(ha);
 
 	/* Determine what we need to do */
 	if (ha->current_topology == ISP_CFG_FL &&
@@ -2467,7 +2469,7 @@ qla2x00_configure_fabric(scsi_qla_host_t *ha)
 
 		/*
 		 * Logout all previous fabric devices marked lost, except
-		 * tape devices.
+		 * FCP2 devices.
 		 */
 		list_for_each_entry(fcport, &pha->fcports, list) {
 			if (fcport->vp_idx !=ha->vp_idx)
@@ -2483,7 +2485,7 @@ qla2x00_configure_fabric(scsi_qla_host_t *ha)
 				qla2x00_mark_device_lost(ha, fcport,
 				    ql2xplogiabsentdevice, 0);
 				if (fcport->loop_id != FC_NO_LOOP_ID &&
-				    (fcport->flags & FCF_TAPE_PRESENT) == 0 &&
+				    (fcport->flags & FCF_FCP2_DEVICE) == 0 &&
 				    fcport->port_type != FCT_INITIATOR &&
 				    fcport->port_type != FCT_BROADCAST) {
 					ha->isp_ops->fabric_logout(ha,
@@ -2786,7 +2788,7 @@ qla2x00_find_all_fabric_devs(scsi_qla_host_t *ha, struct list_head *new_fcports)
 			fcport->d_id.b24 = new_fcport->d_id.b24;
 			fcport->flags |= FCF_LOGIN_NEEDED;
 			if (fcport->loop_id != FC_NO_LOOP_ID &&
-			    (fcport->flags & FCF_TAPE_PRESENT) == 0 &&
+			    (fcport->flags & FCF_FCP2_DEVICE) == 0 &&
 			    fcport->port_type != FCT_INITIATOR &&
 			    fcport->port_type != FCT_BROADCAST) {
 				ha->isp_ops->fabric_logout(ha, fcport->loop_id,
@@ -3038,9 +3040,9 @@ qla2x00_fabric_dev_login(scsi_qla_host_t *ha, fc_port_t *fcport,
 
 	rval = qla2x00_fabric_login(ha, fcport, next_loopid);
 	if (rval == QLA_SUCCESS) {
-		/* Send an ADISC to tape devices.*/
+		/* Send an ADISC to FCP2 devices.*/
 		opts = 0;
-		if (fcport->flags & FCF_TAPE_PRESENT)
+		if (fcport->flags & FCF_FCP2_DEVICE)
 			opts |= BIT_1;
 		rval = qla2x00_get_port_database(ha, fcport, opts);
 		if (rval != QLA_SUCCESS) {
@@ -3129,7 +3131,7 @@ qla2x00_fabric_login(scsi_qla_host_t *ha, fc_port_t *fcport,
 			} else {
 				fcport->port_type = FCT_TARGET;
 				if (mb[1] & BIT_1) {
-					fcport->flags |= FCF_TAPE_PRESENT;
+					fcport->flags |= FCF_FCP2_DEVICE;
 				}
 			}
 
@@ -3377,6 +3379,16 @@ qla2x00_abort_isp(scsi_qla_host_t *ha)
 			ha->isp_abort_cnt = 0;
 			clear_bit(ISP_ABORT_RETRY, &ha->dpc_flags);
 
+			if (IS_QLA81XX(ha))
+				/* Update the FW versions */
+				qla2x00_get_fw_version(ha,
+				    &ha->fw_major_version,
+				    &ha->fw_minor_version,
+				    &ha->fw_subminor_version,
+				    &ha->fw_attributes, &ha->fw_memory_size,
+				    ha->mpi_version, &ha->mpi_capabilities,
+				    ha->phy_version);
+
 			if (ha->eft) {
 				rval = qla2x00_trace_control(ha, TC_ENABLE,
 				    ha->eft_dma, EFT_NUM_BUFFERS);
@@ -3454,7 +3466,7 @@ isp_return:
 static int
 qla2x00_restart_isp(scsi_qla_host_t *ha)
 {
-	uint8_t		status = 0;
+	int		status = 0;
 	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 	unsigned long	flags = 0;
 	uint32_t wait_time;
@@ -3710,8 +3722,8 @@ qla24xx_nvram_config(scsi_qla_host_t *ha)
 	ha->login_timeout = le16_to_cpu(nv->login_timeout);
 	icb->login_timeout = cpu_to_le16(nv->login_timeout);
 
-	/* Set minimum RATOV to 200 tenths of a second. */
-	ha->r_a_tov = 200;
+	/* Set minimum RATOV to 100 tenths of a second. */
+	ha->r_a_tov = 100;
 
 	ha->loop_reset_delay = nv->reset_delay;
 

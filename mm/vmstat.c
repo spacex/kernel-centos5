@@ -376,6 +376,20 @@ void zone_statistics(struct zonelist *zonelist, struct zone *z)
 }
 #endif
 
+/*
+ * Extra zone data, which cannot be put into the struct zone
+ * for RHEL kABI reasons.  We only ever return a pointer to
+ * the struct for each individual zone so we can add entries
+ * to the zone_extra_data structure, without having anything
+ * in the kernel rely on the size of this array.
+ */
+static struct zone_extra_data zones_extra_data[MAX_NUMNODES][MAX_NR_ZONES];
+
+struct zone_extra_data *zone_extra_data(struct zone *zone)
+{
+	return &zones_extra_data[zone->zone_pgdat->node_id][zone_idx(zone)];
+}
+
 #ifdef CONFIG_PROC_FS
 
 #include <linux/seq_file.h>

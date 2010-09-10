@@ -82,7 +82,10 @@ static void nfs_readdata_free(struct nfs_read_data *rdata)
 
 void nfs_readdata_release(void *data)
 {
-        nfs_readdata_free(data);
+	struct nfs_read_data *rdata = data;
+
+	put_nfs_open_context(rdata->args.context);
+	nfs_readdata_free(rdata);
 }
 
 unsigned int nfs_page_length(struct inode *inode, struct page *page)
@@ -159,7 +162,7 @@ static int nfs_readpage_sync(struct nfs_open_context *ctx, struct inode *inode,
 	rdata->inode = inode;
 	INIT_LIST_HEAD(&rdata->pages);
 	rdata->args.fh = NFS_FH(inode);
-	rdata->args.context = ctx;
+	rdata->args.context = get_nfs_open_context(ctx);
 	rdata->args.pages = &page;
 	rdata->args.pgbase = 0UL;
 	rdata->args.count = rsize;
@@ -216,13 +219,13 @@ static int nfs_readpage_sync(struct nfs_open_context *ctx, struct inode *inode,
 	result = 0;
 
 	nfs_readpage_to_fscache(inode, page, 1);
-	nfs_readdata_free(rdata);
+	nfs_readdata_release(rdata);
 	unlock_page(page);
 
 	return result;
 
 io_error:
-	nfs_readdata_free(rdata);
+	nfs_readdata_release(rdata);
 out_unlock:
 	unlock_page(page);
 	return result;
@@ -288,7 +291,7 @@ static void nfs_read_rpcsetup(struct nfs_page *req, struct nfs_read_data *data,
 	data->args.pgbase = req->wb_pgbase + offset;
 	data->args.pages  = data->pagevec;
 	data->args.count  = count;
-	data->args.context = req->wb_context;
+	data->args.context = get_nfs_open_context(req->wb_context);
 
 	data->res.fattr   = &data->fattr;
 	data->res.count   = count;
@@ -297,7 +300,8 @@ static void nfs_read_rpcsetup(struct nfs_page *req, struct nfs_read_data *data,
 
 	/* Set up the initial task struct. */
 	flags = RPC_TASK_ASYNC | (IS_SWAPFILE(inode)? NFS_RPC_SWAPFLAGS : 0);
-	rpc_init_task(&data->task, NFS_CLIENT(inode), flags, call_ops, data);
+	rpc_init_task_wq(&data->task, NFS_CLIENT(inode), flags, call_ops, data,
+			 nfsiod_workqueue);
 	NFS_PROTO(inode)->read_setup(data);
 
 	data->task.tk_cookie = (unsigned long)inode;
@@ -405,7 +409,7 @@ out_bad:
 	while (!list_empty(&list)) {
 		data = list_entry(list.next, struct nfs_read_data, pages);
 		list_del(&data->pages);
-		nfs_readdata_free(data);
+		nfs_readdata_release(data);
 	}
 	SetPageError(page);
 	nfs_readpage_release(req);

@@ -367,4 +367,233 @@ extern u8 acpi_fadt_is_v1;	/* is set to 1 if FADT is revision 1,
 #define ACPI_FADT_FLAG_OFFSET(f,o)      ACPI_FLAG_OFFSET (struct fadt_descriptor,f,o)
 #define ACPI_FACS_FLAG_OFFSET(f,o)      ACPI_FLAG_OFFSET (struct facs_descriptor,f,o)
 
+/*******************************************************************************
+ *
+ * HEST - Hardware Error Source Table (ACPI 4.0)
+ *        Version 1
+ *
+ ******************************************************************************/
+
+struct acpi_table_hest {
+	struct acpi_table_header header;	/* Common ACPI table header */
+	u32 error_source_count;
+};
+
+/* HEST subtable header */
+
+struct acpi_hest_header {
+	u16 type;
+	u16 source_id;
+};
+
+/* Values for Type field above for subtables */
+
+enum acpi_hest_types {
+	ACPI_HEST_TYPE_IA32_CHECK = 0,
+	ACPI_HEST_TYPE_IA32_CORRECTED_CHECK = 1,
+	ACPI_HEST_TYPE_IA32_NMI = 2,
+	ACPI_HEST_TYPE_NOT_USED3 = 3,
+	ACPI_HEST_TYPE_NOT_USED4 = 4,
+	ACPI_HEST_TYPE_NOT_USED5 = 5,
+	ACPI_HEST_TYPE_AER_ROOT_PORT = 6,
+	ACPI_HEST_TYPE_AER_ENDPOINT = 7,
+	ACPI_HEST_TYPE_AER_BRIDGE = 8,
+	ACPI_HEST_TYPE_GENERIC_ERROR = 9,
+	ACPI_HEST_TYPE_RESERVED = 10	/* 10 and greater are reserved */
+};
+
+/*
+ * HEST substructures contained in subtables
+ */
+
+/*
+ * IA32 Error Bank(s) - Follows the struct acpi_hest_ia_machine_check and
+ * struct acpi_hest_ia_corrected structures.
+ */
+struct acpi_hest_ia_error_bank {
+	u8 bank_number;
+	u8 clear_status_on_init;
+	u8 status_format;
+	u8 reserved;
+	u32 control_register;
+	u64 control_data;
+	u32 status_register;
+	u32 address_register;
+	u32 misc_register;
+};
+
+/* Common HEST sub-structure for PCI/AER structures below (6,7,8) */
+
+struct acpi_hest_aer_common {
+	u16 reserved1;
+	u8 flags;
+	u8 enabled;
+	u32 records_to_preallocate;
+	u32 max_sections_per_record;
+	u32 bus;
+	u16 device;
+	u16 function;
+	u16 device_control;
+	u16 reserved2;
+	u32 uncorrectable_mask;
+	u32 uncorrectable_severity;
+	u32 correctable_mask;
+	u32 advanced_capabilities;
+};
+
+/* Masks for HEST Flags fields */
+
+#define ACPI_HEST_FIRMWARE_FIRST        (1)
+#define ACPI_HEST_GLOBAL                (1<<1)
+
+/* Hardware Error Notification */
+
+struct acpi_hest_notify {
+	u8 type;
+	u8 length;
+	u16 config_write_enable;
+	u32 poll_interval;
+	u32 vector;
+	u32 polling_threshold_value;
+	u32 polling_threshold_window;
+	u32 error_threshold_value;
+	u32 error_threshold_window;
+};
+
+/* Values for Notify Type field above */
+
+enum acpi_hest_notify_types {
+	ACPI_HEST_NOTIFY_POLLED = 0,
+	ACPI_HEST_NOTIFY_EXTERNAL = 1,
+	ACPI_HEST_NOTIFY_LOCAL = 2,
+	ACPI_HEST_NOTIFY_SCI = 3,
+	ACPI_HEST_NOTIFY_NMI = 4,
+	ACPI_HEST_NOTIFY_RESERVED = 5	/* 5 and greater are reserved */
+};
+
+/* Values for config_write_enable bitfield above */
+
+#define ACPI_HEST_TYPE                  (1)
+#define ACPI_HEST_POLL_INTERVAL         (1<<1)
+#define ACPI_HEST_POLL_THRESHOLD_VALUE  (1<<2)
+#define ACPI_HEST_POLL_THRESHOLD_WINDOW (1<<3)
+#define ACPI_HEST_ERR_THRESHOLD_VALUE   (1<<4)
+#define ACPI_HEST_ERR_THRESHOLD_WINDOW  (1<<5)
+
+/*
+ * HEST subtables
+ */
+
+/* 0: IA32 Machine Check Exception */
+
+struct acpi_hest_ia_machine_check {
+	struct acpi_hest_header header;
+	u16 reserved1;
+	u8 flags;
+	u8 enabled;
+	u32 records_to_preallocate;
+	u32 max_sections_per_record;
+	u64 global_capability_data;
+	u64 global_control_data;
+	u8 num_hardware_banks;
+	u8 reserved3[7];
+};
+
+/* 1: IA32 Corrected Machine Check */
+
+struct acpi_hest_ia_corrected {
+	struct acpi_hest_header header;
+	u16 reserved1;
+	u8 flags;
+	u8 enabled;
+	u32 records_to_preallocate;
+	u32 max_sections_per_record;
+	struct acpi_hest_notify notify;
+	u8 num_hardware_banks;
+	u8 reserved2[3];
+};
+
+/* 2: IA32 Non-Maskable Interrupt */
+
+struct acpi_hest_ia_nmi {
+	struct acpi_hest_header header;
+	u32 reserved;
+	u32 records_to_preallocate;
+	u32 max_sections_per_record;
+	u32 max_raw_data_length;
+};
+
+/* 3,4,5: Not used */
+
+/* 6: PCI Express Root Port AER */
+
+struct acpi_hest_aer_root {
+	struct acpi_hest_header header;
+	struct acpi_hest_aer_common aer;
+	u32 root_error_command;
+};
+
+/* 7: PCI Express AER (AER Endpoint) */
+
+struct acpi_hest_aer {
+	struct acpi_hest_header header;
+	struct acpi_hest_aer_common aer;
+};
+
+/* 8: PCI Express/PCI-X Bridge AER */
+
+struct acpi_hest_aer_bridge {
+	struct acpi_hest_header header;
+	struct acpi_hest_aer_common aer;
+	u32 uncorrectable_mask2;
+	u32 uncorrectable_severity2;
+	u32 advanced_capabilities2;
+};
+
+/* 9: Generic Hardware Error Source */
+
+struct acpi_hest_generic {
+	struct acpi_hest_header header;
+	u16 related_source_id;
+	u8 reserved;
+	u8 enabled;
+	u32 records_to_preallocate;
+	u32 max_sections_per_record;
+	u32 max_raw_data_length;
+	struct acpi_generic_address error_status_address;
+	struct acpi_hest_notify notify;
+	u32 error_block_length;
+};
+
+/* Generic Error Status block */
+
+struct acpi_hest_generic_status {
+	u32 block_status;
+	u32 raw_data_offset;
+	u32 raw_data_length;
+	u32 data_length;
+	u32 error_severity;
+};
+
+/* Values for block_status flags above */
+
+#define ACPI_HEST_UNCORRECTABLE             (1)
+#define ACPI_HEST_CORRECTABLE               (1<<1)
+#define ACPI_HEST_MULTIPLE_UNCORRECTABLE    (1<<2)
+#define ACPI_HEST_MULTIPLE_CORRECTABLE      (1<<3)
+#define ACPI_HEST_ERROR_ENTRY_COUNT         (0xFF<<4)	/* 8 bits, error count */
+
+/* Generic Error Data entry */
+
+struct acpi_hest_generic_data {
+	u8 section_type[16];
+	u32 error_severity;
+	u16 revision;
+	u8 validation_bits;
+	u8 flags;
+	u32 error_data_length;
+	u8 fru_id[16];
+	u8 fru_text[20];
+};
+
 #endif				/* __ACTBL_H__ */

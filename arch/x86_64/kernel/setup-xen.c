@@ -37,6 +37,7 @@
 #include <linux/pci.h>
 #include <linux/acpi.h>
 #include <linux/kallsyms.h>
+#include <linux/iscsi_ibft.h>
 #include <linux/edd.h>
 #include <linux/mmzone.h>
 #include <linux/kexec.h>
@@ -44,6 +45,7 @@
 #include <linux/dmi.h>
 #include <linux/dma-mapping.h>
 #include <linux/ctype.h>
+#include <linux/setup.h>
 
 #include <asm/mtrr.h>
 #include <asm/uaccess.h>
@@ -504,6 +506,8 @@ static __init void parse_cmdline_early (char ** cmdline_p)
 
 		else if (!memcmp(from, "ipmi_dev_order=", 15))
 			ipmi_dev_order = simple_strtoul(from + 15, NULL, 0);
+		else if (!memcmp(from, "nosmp", 5))
+			nosmp(NULL);
 
 	next_char:
 		c = *(from++);
@@ -794,6 +798,7 @@ void __init setup_arch(char **cmdline_p)
 #endif
 
 	paging_init();
+	reserve_ibft_region();
 #ifdef CONFIG_X86_LOCAL_APIC
 	/*
 	 * Find and reserve possible boot-time SMP configuration:
@@ -1187,6 +1192,9 @@ static void __init init_amd(struct cpuinfo_x86 *c)
 
 	/* Fix cpuid4 emulation for more */
 	num_cache_leaves = 3;
+
+	if (c->x86 >= 0x10)
+		amd_enable_pci_ext_cfg(c);
 }
 
 static void __cpuinit detect_ht(struct cpuinfo_x86 *c)
@@ -1414,6 +1422,8 @@ void __cpuinit identify_cpu(struct cpuinfo_x86 *c)
 			c->x86_capability[2] = cpuid_edx(0x80860001);
 	}
 
+	init_scattered_cpuid_features(c);
+
 	c->apicid = phys_pkg_id(0);
 
 	/*
@@ -1518,14 +1528,14 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		/* Other (Linux-defined) */
 		"cxmmx", NULL, "cyrix_arr", "centaur_mcr", NULL,
 		"constant_tsc", NULL, NULL,
-		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 		"up", NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+		"ida", NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+		NULL, "arat", NULL, NULL, NULL, NULL, NULL, NULL,
 
 		/* Intel-defined (#2) */
 		"pni", NULL, NULL, "monitor", "ds_cpl", "vmx", "smx", "est",
-		"tm2", NULL, "cid", NULL, NULL, "cx16", "xtpr", NULL,
-		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+		"tm2", "ssse3", "cid", NULL, NULL, "cx16", "xtpr", NULL,
+		NULL, NULL, NULL, "sse4_1", "sse4_2", NULL, NULL, "popcnt",
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 
 		/* VIA/Cyrix/Centaur-defined */
@@ -1535,8 +1545,9 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 
 		/* AMD-defined (#2) */
-		"lahf_lm", "cmp_legacy", "svm", NULL, "cr8_legacy", NULL, NULL, NULL,
-		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+		"lahf_lm", "cmp_legacy", "svm", NULL, "cr8_legacy",
+		NULL, "abm", "sse4a",
+		"misalignsse", NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 	};

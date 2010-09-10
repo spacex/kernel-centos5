@@ -44,10 +44,11 @@
 #include <linux/cpu.h>
 #include <linux/smp.h>
 #include <linux/inet_lro.h>
+#include <linux/aer.h>
 
 #include "e1000.h"
 
-#define DRV_VERSION "1.0.2-k2"
+#define DRV_VERSION "1.0.2-k3"
 char e1000e_driver_name[] = "e1000e";
 const char e1000e_driver_version[] = DRV_VERSION;
 
@@ -1498,7 +1499,7 @@ static int e1000_request_msix(struct e1000_adapter *adapter)
 	else
 		memcpy(adapter->rx_ring->name, netdev->name, IFNAMSIZ);
 	err = request_irq(adapter->msix_entries[vector].vector,
-			  &e1000_intr_msix_rx, 0, adapter->rx_ring->name,
+			  e1000_intr_msix_rx, 0, adapter->rx_ring->name,
 			  netdev);
 	if (err)
 		goto out;
@@ -1511,7 +1512,7 @@ static int e1000_request_msix(struct e1000_adapter *adapter)
 	else
 		memcpy(adapter->tx_ring->name, netdev->name, IFNAMSIZ);
 	err = request_irq(adapter->msix_entries[vector].vector,
-			  &e1000_intr_msix_tx, 0, adapter->tx_ring->name,
+			  e1000_intr_msix_tx, 0, adapter->tx_ring->name,
 			  netdev);
 	if (err)
 		goto out;
@@ -1520,7 +1521,7 @@ static int e1000_request_msix(struct e1000_adapter *adapter)
 	vector++;
 
 	err = request_irq(adapter->msix_entries[vector].vector,
-			  &e1000_msix_other, 0, netdev->name, netdev);
+			  e1000_msix_other, 0, netdev->name, netdev);
 	if (err)
 		goto out;
 
@@ -1551,7 +1552,7 @@ static int e1000_request_irq(struct e1000_adapter *adapter)
 		e1000e_set_interrupt_capability(adapter);
 	}
 	if (adapter->flags & FLAG_MSI_ENABLED) {
-		err = request_irq(adapter->pdev->irq, &e1000_intr_msi, 0,
+		err = request_irq(adapter->pdev->irq, e1000_intr_msi, 0,
 				  netdev->name, netdev);
 		if (!err)
 			return err;
@@ -1561,7 +1562,7 @@ static int e1000_request_irq(struct e1000_adapter *adapter)
 		adapter->int_mode = E1000E_INT_MODE_LEGACY;
 	}
 
-	err = request_irq(adapter->pdev->irq, &e1000_intr, IRQF_SHARED,
+	err = request_irq(adapter->pdev->irq, e1000_intr, IRQF_SHARED,
 			  netdev->name, netdev);
 	if (err)
 		e_err("Unable to allocate interrupt, Error: %d\n", err);
@@ -2281,8 +2282,6 @@ static void e1000_configure_tx(struct e1000_adapter *adapter)
 		ew32(TARC(1), tarc);
 	}
 
-	e1000e_config_collision_dist(hw);
-
 	/* Setup Transmit Descriptor Settings for eop descriptor */
 	adapter->txd_cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_IFCS;
 
@@ -2294,6 +2293,8 @@ static void e1000_configure_tx(struct e1000_adapter *adapter)
 	adapter->txd_cmd |= E1000_TXD_CMD_RS;
 
 	ew32(TCTL, tctl);
+
+	e1000e_config_collision_dist(hw);
 
 	adapter->tx_queue_len = adapter->netdev->tx_queue_len;
 }
@@ -2438,6 +2439,18 @@ static void e1000_setup_rctl(struct e1000_adapter *adapter)
 		}
 
 		ew32(PSRCTL, psrctl);
+	}
+
+	/*
+	 * Disable hardware filtering/packet split for NFS write request
+	 * headers and NFS read reply headers on ICH platforms due to
+	 * possible skb_shared_info corruption with some MTUs.
+	 */
+	if (adapter->flags & FLAG_IS_ICH) {
+		rfctl = er32(RFCTL);
+		rfctl |= (E1000_RFCTL_NFSW_DIS |
+			  E1000_RFCTL_NFSR_DIS);
+		ew32(RFCTL, rfctl);
 	}
 
 	ew32(RCTL, rctl);
@@ -2798,25 +2811,38 @@ void e1000e_reset(struct e1000_adapter *adapter)
 	/*
 	 * flow control settings
 	 *
-	 * The high water mark must be low enough to fit two full frame
+	 * The high water mark must be low enough to fit one full frame
 	 * (or the size used for early receive) above it in the Rx FIFO.
 	 * Set it to the lower of:
 	 * - 90% of the Rx FIFO size, and
 	 * - the full Rx FIFO size minus the early receive size (for parts
 	 *   with ERT support assuming ERT set to E1000_ERT_2048), or
-	 * - the full Rx FIFO size minus two full frames
+	 * - the full Rx FIFO size minus one full frame
 	 */
-	if ((adapter->flags & FLAG_HAS_ERT) &&
-	    (adapter->netdev->mtu > ETH_DATA_LEN))
-		hwm = min(((pba << 10) * 9 / 10),
-			  ((pba << 10) - (E1000_ERT_2048 << 3)));
-	else
-		hwm = min(((pba << 10) * 9 / 10),
-			  ((pba << 10) - (2 * adapter->max_frame_size)));
+	if (hw->mac.type == e1000_pchlan) {
+		/*
+		 * Workaround PCH LOM adapter hangs with certain network
+		 * loads.  If hangs persist, try disabling Tx flow control.
+		 */
+		if (adapter->netdev->mtu > ETH_DATA_LEN) {
+			fc->high_water = 0x3500;
+			fc->low_water  = 0x1500;
+		} else {
+			fc->high_water = 0x5000;
+			fc->low_water  = 0x3000;
+		}
+	} else {
+		if ((adapter->flags & FLAG_HAS_ERT) &&
+		    (adapter->netdev->mtu > ETH_DATA_LEN))
+			hwm = min(((pba << 10) * 9 / 10),
+				  ((pba << 10) - (E1000_ERT_2048 << 3)));
+		else
+			hwm = min(((pba << 10) * 9 / 10),
+				  ((pba << 10) - adapter->max_frame_size));
 
-	fc->high_water = hwm & E1000_FCRTH_RTH; /* 8-byte granularity */
-	fc->low_water = (fc->high_water - (2 * adapter->max_frame_size));
-	fc->low_water &= E1000_FCRTL_RTL; /* 8-byte granularity */
+		fc->high_water = hwm & E1000_FCRTH_RTH; /* 8-byte granularity */
+		fc->low_water = fc->high_water - 8;
+	}
 
 	if (adapter->flags & FLAG_DISABLE_FC_PAUSE_TIME)
 		fc->pause_time = 0xFFFF;
@@ -2841,6 +2867,10 @@ void e1000e_reset(struct e1000_adapter *adapter)
 
 	if (mac->ops.init_hw(hw))
 		e_err("Hardware Error\n");
+
+	/* additional part of the flow-control workaround above */
+	if (hw->mac.type == e1000_pchlan)
+		ew32(FCRTV_PCH, 0x1000);
 
 	e1000_update_mng_vlan(adapter);
 
@@ -3023,7 +3053,7 @@ static int e1000_test_msi_interrupt(struct e1000_adapter *adapter)
 	if (err)
 		goto msi_test_failed;
 
-	err = request_irq(adapter->pdev->irq, &e1000_intr_msi_test, 0,
+	err = request_irq(adapter->pdev->irq, e1000_intr_msi_test, 0,
 			  netdev->name, netdev);
 	if (err) {
 		pci_disable_msi(adapter->pdev);
@@ -4325,8 +4355,10 @@ static int e1000_change_mtu(struct net_device *netdev, int new_mtu)
 
 	while (test_and_set_bit(__E1000_RESETTING, &adapter->state))
 		msleep(1);
-	/* e1000e_down has a dependency on max_frame_size */
+	/* e1000e_down -> e1000e_reset dependent on max_frame_size & mtu */
 	adapter->max_frame_size = max_frame;
+	e_info("changing MTU from %d to %d\n", netdev->mtu, new_mtu);
+	netdev->mtu = new_mtu;
 	if (netif_running(netdev))
 		e1000e_down(adapter);
 
@@ -4356,9 +4388,6 @@ static int e1000_change_mtu(struct net_device *netdev, int new_mtu)
 		adapter->rx_buffer_len = ETH_FRAME_LEN + VLAN_HLEN
 					 + ETH_FCS_LEN;
 
-	e_info("changing MTU from %d to %d\n", netdev->mtu, new_mtu);
-	netdev->mtu = new_mtu;
-
 	if (netif_running(netdev))
 		e1000e_up(adapter);
 	else
@@ -4383,8 +4412,6 @@ static int e1000_mii_ioctl(struct net_device *netdev, struct ifreq *ifr,
 		data->phy_id = adapter->hw.phy.addr;
 		break;
 	case SIOCGMIIREG:
-		if (!capable(CAP_NET_ADMIN))
-			return -EPERM;
 		switch (data->reg_num & 0x1F) {
 		case MII_BMCR:
 			data->val_out = adapter->phy_regs.bmcr;
@@ -4783,6 +4810,9 @@ static pci_ers_result_t e1000_io_error_detected(struct pci_dev *pdev,
 
 	netif_device_detach(netdev);
 
+	if (state == pci_channel_io_perm_failure)
+		return PCI_ERS_RESULT_DISCONNECT;
+
 	if (netif_running(netdev))
 		e1000e_down(adapter);
 	pci_disable_device(pdev);
@@ -4804,24 +4834,29 @@ static pci_ers_result_t e1000_io_slot_reset(struct pci_dev *pdev)
 	struct e1000_adapter *adapter = netdev_priv(netdev);
 	struct e1000_hw *hw = &adapter->hw;
 	int err;
+	pci_ers_result_t result;
 
 	e1000e_disable_l1aspm(pdev);
 	err = pci_enable_device_mem(pdev);
 	if (err) {
 		dev_err(&pdev->dev,
 			"Cannot re-enable PCI device after reset.\n");
-		return PCI_ERS_RESULT_DISCONNECT;
+		result = PCI_ERS_RESULT_DISCONNECT;
+	} else {
+		pci_set_master(pdev);
+		pci_restore_state(pdev);
+
+		pci_enable_wake(pdev, PCI_D3hot, 0);
+		pci_enable_wake(pdev, PCI_D3cold, 0);
+
+		e1000e_reset(adapter);
+		ew32(WUS, ~0);
+		result = PCI_ERS_RESULT_RECOVERED;
 	}
-	pci_set_master(pdev);
-	pci_restore_state(pdev);
 
-	pci_enable_wake(pdev, PCI_D3hot, 0);
-	pci_enable_wake(pdev, PCI_D3cold, 0);
+	pci_cleanup_aer_uncorrect_error_status(pdev);
 
-	e1000e_reset(adapter);
-	ew32(WUS, ~0);
-
-	return PCI_ERS_RESULT_RECOVERED;
+	return result;
 }
 
 /**
@@ -4961,6 +4996,9 @@ static int __devinit e1000_probe(struct pci_dev *pdev,
 	                                  e1000e_driver_name);
 	if (err)
 		goto err_pci_reg;
+
+	/* AER (Advanced Error Reporting) hooks */
+	pci_enable_pcie_error_reporting(pdev);
 
 	pci_set_master(pdev);
 	pci_save_state(pdev);
@@ -5286,6 +5324,9 @@ static void __devexit e1000_remove(struct pci_dev *pdev)
 
 	free_netdev(netdev);
 
+	/* AER disable */
+	pci_disable_pcie_error_reporting(pdev);
+
 	pci_disable_device(pdev);
 }
 
@@ -5336,6 +5377,7 @@ static struct pci_device_id e1000_pci_tbl[] = {
 	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_ICH8_IGP_C), board_ich8lan },
 	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_ICH8_IGP_M), board_ich8lan },
 	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_ICH8_IGP_M_AMT), board_ich8lan },
+	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_ICH8_82567V_3), board_ich8lan },
 
 	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_ICH9_IFE), board_ich9lan },
 	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_ICH9_IFE_G), board_ich9lan },

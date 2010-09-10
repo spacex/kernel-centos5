@@ -96,7 +96,9 @@ static void arcmsr_flush_hba_cache(struct AdapterControlBlock *acb);
 static void arcmsr_flush_hbb_cache(struct AdapterControlBlock *acb);
 static const char *arcmsr_info(struct Scsi_Host *);
 static irqreturn_t arcmsr_interrupt(struct AdapterControlBlock *acb);
-static ssize_t arcmsr_adjust_disk_queue_depth(struct device *dev, const char *buf, size_t count)
+static ssize_t arcmsr_adjust_disk_queue_depth(struct device *dev,
+					      struct device_attribute *attr,
+					      const char *buf, size_t count)
 {
 	int queue_depth;
 	struct scsi_device *sdev = to_scsi_device(dev);

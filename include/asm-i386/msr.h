@@ -251,6 +251,9 @@ static inline void wrmsrl (unsigned long msr, unsigned long long val)
 #define MSR_K7_FID_VID_CTL		0xC0010041
 #define MSR_K7_FID_VID_STATUS		0xC0010042
 
+#define ENABLE_CF8_EXT_CFG		(1ULL << 46)
+#define MSR_K8_NB_CFG			0xc001001f
+
 /* extended feature register */
 #define MSR_EFER 			0xc0000080
 
@@ -288,4 +291,27 @@ static inline void wrmsrl (unsigned long msr, unsigned long long val)
 #define MSR_TMTA_LRTI_READOUT		0x80868018
 #define MSR_TMTA_LRTI_VOLT_MHZ		0x8086801a
 
+#ifdef CONFIG_SMP
+void rdmsr_on_cpu(unsigned int cpu, u32 msr_no, u32 *l, u32 *h);
+void wrmsr_on_cpu(unsigned int cpu, u32 msr_no, u32 l, u32 h);
+int rdmsr_safe_on_cpu(unsigned int cpu, u32 msr_no, u32 *l, u32 *h);
+int wrmsr_safe_on_cpu(unsigned int cpu, u32 msr_no, u32 l, u32 h);
+#else  /*  CONFIG_SMP  */
+static inline void rdmsr_on_cpu(unsigned int cpu, u32 msr_no, u32 *l, u32 *h)
+{
+	rdmsr(msr_no, *l, *h);
+}
+static inline void wrmsr_on_cpu(unsigned int cpu, u32 msr_no, u32 l, u32 h)
+{
+	wrmsr(msr_no, l, h);
+}
+static inline int rdmsr_safe_on_cpu(unsigned int cpu, u32 msr_no, u32 *l, u32 *h)
+{
+	return rdmsr_safe(msr_no, l, h);
+}
+static inline int wrmsr_safe_on_cpu(unsigned int cpu, u32 msr_no, u32 l, u32 h)
+{
+	return wrmsr_safe(msr_no, l, h);
+}
+#endif  /*  CONFIG_SMP  */
 #endif /* __ASM_MSR_H */

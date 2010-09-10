@@ -66,8 +66,12 @@ struct vf_data_storage {
 	unsigned char vf_mac_addresses[ETH_ALEN];
 	u16 vf_mc_hashes[IGB_MAX_VF_MC_ENTRIES];
 	u16 num_vf_mc_hashes;
-	bool clear_to_send;
+	u16 vlans_enabled;
+	u32 flags;
+	unsigned long last_nack;
 };
+
+#define IGB_VF_FLAG_CTS            0x00000001 /* VF is clear to send data */
 
 /* RX descriptor control thresholds.
  * PTHRESH - MAC will consider prefetch if it has fewer than this number of
@@ -89,8 +93,6 @@ struct vf_data_storage {
 
 /* Supported Rx Buffer Sizes */
 #define IGB_RXBUFFER_128   128    /* Used for packet split */
-#define IGB_RXBUFFER_256   256    /* Used for packet split */
-#define IGB_RXBUFFER_512   512
 #define IGB_RXBUFFER_1024  1024
 #define IGB_RXBUFFER_2048  2048
 #define IGB_RXBUFFER_16384 16384
@@ -266,6 +268,9 @@ struct igb_adapter {
 	/* to not mess up cache alignment, always add to the bottom */
 	unsigned long state;
 	unsigned int flags;
+#ifdef CONFIG_IGB_DCA
+	unsigned int dca_enabled;
+#endif
 	u32 eeprom_wol;
 	unsigned int tx_ring_count;
 	unsigned int rx_ring_count;
@@ -274,7 +279,7 @@ struct igb_adapter {
 };
 
 #define IGB_FLAG_HAS_MSI           (1 << 0)
-#define IGB_FLAG_HAS_DCA           (1 << 1)
+#define IGB_FLAG_DCA_ENABLED       (1 << 1)
 #define IGB_FLAG_QUAD_PORT_A       (1 << 2)
 #define IGB_FLAG_NEED_CTX_IDX      (1 << 3)
 

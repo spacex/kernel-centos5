@@ -920,7 +920,7 @@ DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL,	PCI_DEVICE_ID_INTEL_82454NX,	quirk_
 
 static void __devinit quirk_amd_ide_mode(struct pci_dev *pdev)
 {
-	/* set sb600/sb700/sb800 sata to ahci mode */
+	/* set SBX00/Hudson-2 SATA in IDE mode to AHCI mode */
 	u8 tmp;
  
 	pci_read_config_byte(pdev, PCI_CLASS_DEVICE, &tmp);
@@ -938,6 +938,7 @@ static void __devinit quirk_amd_ide_mode(struct pci_dev *pdev)
 
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_ATI, PCI_DEVICE_ID_ATI_IXP600_SATA, quirk_amd_ide_mode);
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_ATI, PCI_DEVICE_ID_ATI_IXP700_SATA, quirk_amd_ide_mode);
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_HUDSON2_SATA_IDE, quirk_amd_ide_mode);
 
 /*
  *	Serverworks CSB5 IDE does not fully support native mode
@@ -1702,6 +1703,36 @@ extern struct pci_fixup __end_pci_fixups_final[];
 extern struct pci_fixup __start_pci_fixups_enable[];
 extern struct pci_fixup __end_pci_fixups_enable[];
 
+/*
+ * Followings are device-specific reset methods which can be used to
+ * reset a single function if other methods (e.g. FLR, PM D0->D3) are
+ * not available.
+ */
+static int reset_intel_82599_sfp_virtfn(struct pci_dev *dev, int probe)
+{
+	int pos;
+
+	pos = pci_find_capability(dev, PCI_CAP_ID_EXP);
+	if (!pos)
+		return -ENOTTY;
+
+	if (probe)
+		return 0;
+
+	pci_write_config_word(dev, pos + PCI_EXP_DEVCTL,
+				PCI_EXP_DEVCTL_BCR_FLR);
+	msleep(100);
+
+	return 0;
+}
+
+#define PCI_DEVICE_ID_INTEL_82599_SFP_VF   0x10ed
+
+struct pci_dev_reset_methods pci_dev_reset_methods[] = {
+	{ PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_82599_SFP_VF,
+		 reset_intel_82599_sfp_virtfn },
+	{ 0 }
+};
 
 void pci_fixup_device(enum pci_fixup_pass pass, struct pci_dev *dev)
 {

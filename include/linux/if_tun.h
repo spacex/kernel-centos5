@@ -38,6 +38,7 @@ struct tun_struct {
 	unsigned long 		flags;
 	int			attached;
 	uid_t			owner;
+	gid_t			group;
 
 	wait_queue_head_t	read_wait;
 	struct sk_buff_head	readq;
@@ -84,6 +85,7 @@ struct tun_struct {
 #define TUNSETPERSIST _IOW('T', 203, int) 
 #define TUNSETOWNER   _IOW('T', 204, int)
 #define TUNSETLINK    _IOW('T', 205, int)
+#define TUNSETGROUP   _IOW('T', 206, int)
 #define TUNGETFEATURES _IOR('T', 207, unsigned int)
 #define TUNSETOFFLOAD _IOW('T', 208, unsigned int)
 #define TUNGETIFF      _IOR('T', 210, unsigned int)

@@ -633,7 +633,7 @@ int cifs_get_inode_info(struct inode **pinode,
 	/* fill in 0777 bits from ACL */
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_CIFS_ACL) {
 		cFYI(1, ("Getting mode bits from ACL"));
-		acl_to_uid_mode(inode, full_path, pfid);
+		acl_to_uid_mode(cifs_sb, inode, full_path, pfid);
 	}
 #endif
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_UNX_EMUL) {
@@ -857,7 +857,7 @@ set_via_filehandle:
 	if (open_file == NULL)
 		CIFSSMBClose(xid, pTcon, netfid);
 	else
-		atomic_dec(&open_file->wrtPending);
+		cifsFileInfo_put(open_file);
 out:
 	return rc;
 }
@@ -1739,7 +1739,7 @@ cifs_set_file_size(struct inode *inode, struct iattr *attrs,
 		__u32 npid = open_file->pid;
 		rc = CIFSSMBSetFileSize(xid, pTcon, attrs->ia_size, nfid,
 					npid, false);
-		atomic_dec(&open_file->wrtPending);
+		cifsFileInfo_put(open_file);
 		cFYI(1, ("SetFSize for attrs rc = %d", rc));
 		if ((rc == -EINVAL) || (rc == -EOPNOTSUPP)) {
 			unsigned int bytes_written;

@@ -314,6 +314,9 @@ qla2x00_do_dpc_all_vps(scsi_qla_host_t *ha)
 
 	clear_bit(VP_DPC_NEEDED, &ha->dpc_flags);
 
+	if (!(ha->current_topology & ISP_CFG_F))
+			return;
+
 	for_each_mapped_vp_idx(ha, i) {
 		vp_idx_matched = 0;
 
@@ -466,8 +469,6 @@ qla24xx_create_vhost(scsi_qla_host_t *ha, uint64_t fc_wwpn, uint64_t fc_wwnn)
 	init_completion(&vha->mbx_intr_comp);
 
 	vha->dpc_flags = 0L;
-	set_bit(REGISTER_FDMI_NEEDED, &vha->dpc_flags);
-	set_bit(REGISTER_FC4_NEEDED, &vha->dpc_flags);
 
 	/*
 	 * To fix the issue of processing a parent's RSCN for the vport before

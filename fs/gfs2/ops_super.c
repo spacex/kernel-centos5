@@ -307,7 +307,16 @@ static int gfs2_remount_fs(struct super_block *sb, int *flags, char *data)
 {
 	struct gfs2_sbd *sdp = sb->s_fs_info;
 	struct gfs2_args args = sdp->sd_args; /* Default to current settings */
+	struct gfs2_tune *gt = &sdp->sd_tune;
 	int error;
+
+	spin_lock(&gt->gt_spin);
+	args.ar_quota_quantum = gt->gt_quota_quantum;
+	if (gt->gt_statfs_slow)
+		args.ar_statfs_quantum = 0;
+	else
+		args.ar_statfs_quantum = gt->gt_statfs_quantum;
+	spin_unlock(&gt->gt_spin);
 
 	error = gfs2_mount_args(sdp, &args, data);
 	if (error)
@@ -344,6 +353,19 @@ static int gfs2_remount_fs(struct super_block *sb, int *flags, char *data)
 		sb->s_flags |= MS_POSIXACL;
 	else
 		sb->s_flags &= ~MS_POSIXACL;
+
+	spin_lock(&gt->gt_spin);
+	gt->gt_quota_quantum = args.ar_quota_quantum;
+	if (args.ar_statfs_quantum) {
+		gt->gt_statfs_slow = 0;
+		gt->gt_statfs_quantum = args.ar_statfs_quantum;
+	}
+	else {
+		gt->gt_statfs_slow = 1;
+		gt->gt_statfs_quantum = 30;
+	}
+	spin_unlock(&gt->gt_spin);
+
         /* Indicate support for setlease fop */
         *flags |= MS_HAS_SETLEASE;
 	return 0;
@@ -479,6 +501,22 @@ static int gfs2_show_options(struct seq_file *s, struct vfsmount *mnt)
 			break;
 		}
 		seq_printf(s, ",data=%s", state);
+	}
+	if (args->ar_errors != GFS2_ERRORS_DEFAULT) {
+		const char *state;
+
+		switch (args->ar_errors) {
+		case GFS2_ERRORS_WITHDRAW:
+			state = "withdraw";
+			break;
+		case GFS2_ERRORS_PANIC:
+			state = "panic";
+			break;
+		default:
+			state = "unknown";
+			break;
+		}
+		seq_printf(s, ",errors=%s", state);
 	}
 
 	return 0;

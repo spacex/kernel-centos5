@@ -636,7 +636,7 @@ __SYSCALL(__NR_signalfd, sys_ni_syscall)
 #define __NR_timerfd_create	283
 __SYSCALL(__NR_timerfd_create, sys_ni_syscall)
 #define __NR_eventfd		284
-__SYSCALL(__NR_eventfd, sys_ni_syscall)
+__SYSCALL(__NR_eventfd, sys_eventfd)
 #define __NR_fallocate		285
 __SYSCALL(__NR_fallocate, sys_fallocate)
 
@@ -840,7 +840,6 @@ asmlinkage long sys_clone(unsigned long clone_flags, unsigned long newsp,
 			struct pt_regs regs);
 asmlinkage long sys_fork(struct pt_regs regs);
 asmlinkage long sys_vfork(struct pt_regs regs);
-asmlinkage long sys_pipe(int *fildes);
 
 #ifndef __ASSEMBLY__
 

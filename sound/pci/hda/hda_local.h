@@ -66,6 +66,19 @@
 /* stereo mute switch */
 #define HDA_CODEC_MUTE(xname, nid, xindex, direction) \
 	HDA_CODEC_MUTE_MONO(xname, nid, 3, xindex, direction)
+/* special beep mono mute switch with index (index=0,1,...) (channel=1,2) */
+#define HDA_CODEC_MUTE_BEEP_MONO_IDX(xname, xcidx, nid, channel, xindex, direction) \
+	{ .iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = xname, .index = xcidx, \
+	  .info = snd_hda_mixer_amp_switch_info, \
+	  .get = snd_hda_mixer_amp_switch_get, \
+	  .put = snd_hda_mixer_amp_switch_put_beep, \
+	  .private_value = HDA_COMPOSE_AMP_VAL(nid, channel, xindex, direction) }
+/* special beep mono mute switch */
+#define HDA_CODEC_MUTE_BEEP_MONO(xname, nid, channel, xindex, direction) \
+	HDA_CODEC_MUTE_BEEP_MONO_IDX(xname, 0, nid, channel, xindex, direction)
+/* special beep stereo mute switch */
+#define HDA_CODEC_MUTE_BEEP(xname, nid, xindex, direction) \
+	HDA_CODEC_MUTE_BEEP_MONO(xname, nid, 3, xindex, direction)
 
 int snd_hda_mixer_amp_volume_info(struct snd_kcontrol *kcontrol,
 				  struct snd_ctl_elem_info *uinfo);
@@ -81,6 +94,8 @@ int snd_hda_mixer_amp_switch_get(struct snd_kcontrol *kcontrol,
 				 struct snd_ctl_elem_value *ucontrol);
 int snd_hda_mixer_amp_switch_put(struct snd_kcontrol *kcontrol,
 				 struct snd_ctl_elem_value *ucontrol);
+int snd_hda_mixer_amp_switch_put_beep(struct snd_kcontrol *kcontrol,
+				      struct snd_ctl_elem_value *ucontrol);
 /* lowlevel accessor with caching; use carefully */
 int snd_hda_codec_amp_read(struct hda_codec *codec, hda_nid_t nid, int ch,
 			   int direction, int index);
@@ -99,7 +114,6 @@ struct snd_kcontrol *snd_hda_find_mixer_ctl(struct hda_codec *codec,
 int snd_hda_add_vmaster(struct hda_codec *codec, char *name,
 			unsigned int *tlv, const char **slaves);
 int snd_hda_codec_reset(struct hda_codec *codec);
-int snd_hda_codec_configure(struct hda_codec *codec);
 
 /* amp value bits */
 #define HDA_AMP_MUTE	0x80
@@ -408,9 +422,23 @@ static inline u32 get_wcaps(struct hda_codec *codec, hda_nid_t nid)
 	return codec->wcaps[nid - codec->start_nid];
 }
 
+/* get the widget type from widget capability bits */
+#define get_wcaps_type(wcaps) (((wcaps) & AC_WCAP_TYPE) >> AC_WCAP_TYPE_SHIFT)
+
+static inline unsigned int get_wcaps_channels(u32 wcaps)
+{
+	unsigned int chans;
+
+	chans = (wcaps & AC_WCAP_CHAN_CNT_EXT) >> 13;
+	chans = ((chans << 1) | 1) + 1;
+
+	return chans;
+}
+
 u32 query_amp_caps(struct hda_codec *codec, hda_nid_t nid, int direction);
 int snd_hda_override_amp_caps(struct hda_codec *codec, hda_nid_t nid, int dir,
 			      unsigned int caps);
+u32 snd_hda_query_pin_caps(struct hda_codec *codec, hda_nid_t nid);
 
 int snd_hda_ctl_add(struct hda_codec *codec, struct snd_kcontrol *kctl);
 void snd_hda_ctls_clear(struct hda_codec *codec);
@@ -528,11 +556,13 @@ int snd_hdmi_get_eld(struct hdmi_eld *, struct hda_codec *, hda_nid_t);
 void snd_hdmi_show_eld(struct hdmi_eld *eld);
 
 #ifdef CONFIG_PROC_FS
-int snd_hda_eld_proc_new(struct hda_codec *codec, struct hdmi_eld *eld);
+int snd_hda_eld_proc_new(struct hda_codec *codec, struct hdmi_eld *eld,
+			 int index);
 void snd_hda_eld_proc_free(struct hda_codec *codec, struct hdmi_eld *eld);
 #else
 static inline int snd_hda_eld_proc_new(struct hda_codec *codec,
-				       struct hdmi_eld *eld)
+				       struct hdmi_eld *eld,
+				       int index)
 {
 	return 0;
 }

@@ -32,6 +32,7 @@ Currently, these files are in /proc/sys/vm:
 - min_unmapped_ratio
 - min_slab_ratio
 - panic_on_oom
+- zone_reclaim_interval
 
 ==============================================================
 
@@ -218,4 +219,16 @@ rogue processes and system will survive.  If you want to panic the system
 rather than killing rogue processes, set this to 1.
 
 The default value is 0.
+
+================================================================
+
+zone_reclaim_interval:
+
+The time allowed for off node allocations after zone reclaim
+has failed to reclaim enough pages to allow a local allocation.
+
+Time is set in seconds and set by default to 30 seconds.
+
+Reduce the interval if undesired off node allocations occur. However, too
+frequent scans will have a negative impact on off-node allocation performance.
 

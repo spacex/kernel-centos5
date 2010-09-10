@@ -207,12 +207,18 @@ struct rpc_xprt {
 	void			(*old_data_ready)(struct sock *, int);
 	void			(*old_state_change)(struct sock *);
 	void			(*old_write_space)(struct sock *);
+#ifndef __GENKSYMS__
+	struct sockaddr_in	srcaddr;		/* local (source) address */
+#endif
 };
 
 #define XPRT_LAST_FRAG		(1 << 0)
 #define XPRT_COPY_RECM		(1 << 1)
 #define XPRT_COPY_XID		(1 << 2)
 #define XPRT_COPY_DATA		(1 << 3)
+
+/* private RHEL flag to indicate presence of rpc_xprt.srcaddr field */
+#define XPRT_SRCADDR_PRESENT	(1 << 16)
 
 #ifdef __KERNEL__
 

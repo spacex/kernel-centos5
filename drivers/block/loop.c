@@ -764,13 +764,18 @@ static int loop_set_fd(struct loop_device *lo, struct file *lo_file,
 	error = -EINVAL;
 	if (S_ISREG(inode->i_mode) || S_ISBLK(inode->i_mode)) {
 		const struct address_space_operations *aops = mapping->a_ops;
+		struct address_space_operations_ext *axops =
+			(struct address_space_operations_ext *)mapping->a_ops;
+
 		/*
 		 * If we can't read - sorry. If we only can't write - well,
 		 * it's going to be read-only.
 		 */
 		if (!file->f_op->sendfile)
 			goto out_putf;
-		if (aops->prepare_write || IS_NEWAOPS(inode))
+		if ((aops->prepare_write && aops->commit_write) ||
+		    (IS_NEWAOPS(inode) && axops->write_begin &&
+		     axops->write_end))
 			lo_flags |= LO_FLAGS_USE_AOPS;
 		if (!(lo_flags & LO_FLAGS_USE_AOPS) && !file->f_op->write)
 			lo_flags |= LO_FLAGS_READ_ONLY;

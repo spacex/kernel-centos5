@@ -279,6 +279,10 @@ append:
 
 	/* It is OK to send this chunk.  */
 	list_add_tail(&chunk->list, &packet->chunk_list);
+	if (sctp_chunk_is_data(chunk)) {
+		sctp_chunk_assign_tsn(chunk);
+		sctp_chunk_assign_ssn(chunk);
+	}
 	packet->size += chunk_len;
 	chunk->transport = packet->transport;
 finish:
@@ -390,23 +394,22 @@ int sctp_packet_transmit(struct sctp_packet *packet)
 		list_del_init(&chunk->list);
 		if (sctp_chunk_is_data(chunk)) {
 
-			if (!chunk->has_tsn) {
-				sctp_chunk_assign_ssn(chunk);
-				sctp_chunk_assign_tsn(chunk);
+			if (!chunk->resent) {
 
-			/* 6.3.1 C4) When data is in flight and when allowed
-			 * by rule C5, a new RTT measurement MUST be made each
-			 * round trip.  Furthermore, new RTT measurements
-			 * SHOULD be made no more than once per round-trip
-			 * for a given destination transport address.
-			 */
+				/* 6.3.1 C4) When data is in flight and when allowed
+				 * by rule C5, a new RTT measurement MUST be made each
+				 * round trip.  Furthermore, new RTT measurements
+				 * SHOULD be made no more than once per round-trip
+				 * for a given destination transport address.
+				 */
 
 				if (!tp->rto_pending) {
 					chunk->rtt_in_progress = 1;
 					tp->rto_pending = 1;
 				}
-			} else
-				chunk->resent = 1;
+			}
+
+			chunk->resent = 1;
 
 			chunk->sent_at = jiffies;
 			has_data = 1;

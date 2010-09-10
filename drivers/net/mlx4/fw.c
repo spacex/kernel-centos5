@@ -32,6 +32,7 @@
  * SOFTWARE.
  */
 
+#include <linux/etherdevice.h>
 #include <linux/mlx4/cmd.h>
 
 #include "fw.h"
@@ -133,6 +134,68 @@ int mlx4_MOD_STAT_CFG(struct mlx4_dev *dev, struct mlx4_mod_stat_cfg *cfg)
 	return err;
 }
 
+int mlx4_QUERY_PORT_wrapper(struct mlx4_dev *dev, int slave, struct mlx4_vhcr *vhcr,
+							  struct mlx4_cmd_mailbox *inbox,
+							  struct mlx4_cmd_mailbox *outbox)
+{
+	return mlx4_cmd_box(dev, 0, outbox->dma, vhcr->in_modifier, 0, MLX4_CMD_QUERY_PORT,
+					   MLX4_CMD_TIME_CLASS_B);
+}
+
+int mlx4_QUERY_SLAVE_CAP_wrapper(struct mlx4_dev *dev, int slave, struct mlx4_vhcr *vhcr,
+						       struct mlx4_cmd_mailbox *inbox,
+						       struct mlx4_cmd_mailbox *outbox)
+{
+	struct mlx4_caps *caps = outbox->buf;
+	u8 rand_mac[6];
+	int i, j;
+
+	memcpy(caps, &dev->caps, sizeof *caps);
+
+	/* The Master function is in charge for qp1 of al slaves */
+	caps->sqp_demux = 0;
+	for (i = 1; i <= dev->caps.num_ports; ++i) {
+		random_ether_addr(rand_mac);
+		caps->def_mac[i] = 0;
+		for (j = 0; j < ETH_ALEN - 1; j++)
+			caps->def_mac[i] |= ((u64)(rand_mac[j]) << 8 * j);
+	}
+
+	/* Ports are activated according to physical function number */
+	mlx4_set_port_mask(dev, caps, slave);
+
+	/* PDs have the same range in every guest; the distinction is in the msbs,
+	 * which contains the guest ID (vf + 1) */
+	caps->pd_base = slave + 1;
+	caps->function = slave;
+
+	/* All other resources are allocated by the master, but we still report
+	 * 'num' and 'reserved' capabilities as follows:
+	 * - num remains the maximum resource index
+	 * - 'num - reserved' is the total available objects of a resource, but
+	 *   resource indices may be less than 'reserved'
+	 * TODO: set per-resource quotas */
+	return 0;
+}
+
+int mlx4_QUERY_SLAVE_CAP(struct mlx4_dev *dev, struct mlx4_caps *caps)
+{
+	struct mlx4_cmd_mailbox *mailbox;
+	int err;
+
+	mailbox = mlx4_alloc_cmd_mailbox(dev);
+	if (IS_ERR(mailbox))
+		return PTR_ERR(mailbox);
+
+	err = mlx4_cmd_box(dev, 0, mailbox->dma, 0, 0, MLX4_CMD_QUERY_SLAVE_CAP,
+			   MLX4_CMD_TIME_CLASS_A);
+	if (!err)
+		memcpy(caps, mailbox->buf, sizeof *caps);
+
+	mlx4_free_cmd_mailbox(dev, mailbox);
+	return err;
+}
+
 int mlx4_QUERY_DEV_CAP(struct mlx4_dev *dev, struct mlx4_dev_cap *dev_cap)
 {
 	struct mlx4_cmd_mailbox *mailbox;
@@ -178,6 +241,7 @@ int mlx4_QUERY_DEV_CAP(struct mlx4_dev *dev, struct mlx4_dev_cap *dev_cap)
 #define QUERY_DEV_CAP_MAX_GID_OFFSET		0x3b
 #define QUERY_DEV_CAP_RATE_SUPPORT_OFFSET	0x3c
 #define QUERY_DEV_CAP_MAX_PKEY_OFFSET		0x3f
+#define QUERY_DEV_CAP_ETH_UC_LOOPBACK_OFFSET	0x43
 #define QUERY_DEV_CAP_FLAGS_OFFSET		0x44
 #define QUERY_DEV_CAP_RSVD_UAR_OFFSET		0x48
 #define QUERY_DEV_CAP_UAR_SZ_OFFSET		0x49
@@ -236,7 +300,7 @@ int mlx4_QUERY_DEV_CAP(struct mlx4_dev *dev, struct mlx4_dev_cap *dev_cap)
 	MLX4_GET(field, outbox, QUERY_DEV_CAP_MAX_MPT_OFFSET);
 	dev_cap->max_mpts = 1 << (field & 0x3f);
 	MLX4_GET(field, outbox, QUERY_DEV_CAP_RSVD_EQ_OFFSET);
-	dev_cap->reserved_eqs = 1 << (field & 0xf);
+	dev_cap->reserved_eqs = field & 0xff;
 	MLX4_GET(field, outbox, QUERY_DEV_CAP_MAX_EQ_OFFSET);
 	dev_cap->max_eqs = 1 << (field & 0xf);
 	MLX4_GET(field, outbox, QUERY_DEV_CAP_RSVD_MTT_OFFSET);
@@ -262,12 +326,20 @@ int mlx4_QUERY_DEV_CAP(struct mlx4_dev *dev, struct mlx4_dev_cap *dev_cap)
 	dev_cap->max_rdma_global = 1 << (field & 0x3f);
 	MLX4_GET(field, outbox, QUERY_DEV_CAP_ACK_DELAY_OFFSET);
 	dev_cap->local_ca_ack_delay = field & 0x1f;
+	MLX4_GET(field, outbox, QUERY_DEV_CAP_MTU_WIDTH_OFFSET);
+	dev_cap->pf_num = field;
+	if (dev_cap->pf_num > 1)
+		dev->flags |= MLX4_FLAG_MASTER;
 	MLX4_GET(field, outbox, QUERY_DEV_CAP_VL_PORT_OFFSET);
 	dev_cap->num_ports = field & 0xf;
 	MLX4_GET(field, outbox, QUERY_DEV_CAP_MAX_MSG_SZ_OFFSET);
 	dev_cap->max_msg_sz = 1 << (field & 0x1f);
 	MLX4_GET(stat_rate, outbox, QUERY_DEV_CAP_RATE_SUPPORT_OFFSET);
 	dev_cap->stat_rate_support = stat_rate;
+	MLX4_GET(field, outbox, QUERY_DEV_CAP_ETH_UC_LOOPBACK_OFFSET);
+	dev_cap->loopback_support = field & 0x1;
+	dev_cap->vep_uc_steering = field & 0x4;
+	dev_cap->vep_mc_steering = field & 0x8;
 	MLX4_GET(dev_cap->flags, outbox, QUERY_DEV_CAP_FLAGS_OFFSET);
 	MLX4_GET(field, outbox, QUERY_DEV_CAP_RSVD_UAR_OFFSET);
 	dev_cap->reserved_uars = field >> 4;
@@ -408,7 +480,7 @@ int mlx4_QUERY_DEV_CAP(struct mlx4_dev *dev, struct mlx4_dev_cap *dev_cap)
 	 * we can't use any EQs whose doorbell falls on that page,
 	 * even if the EQ itself isn't reserved.
 	 */
-	dev_cap->reserved_eqs = max(dev_cap->reserved_uars * 4,
+        dev_cap->reserved_eqs = max(dev_cap->reserved_uars * 4,
 				    dev_cap->reserved_eqs);
 
 	mlx4_dbg(dev, "Max ICM size %lld MB\n",
@@ -554,6 +626,7 @@ int mlx4_QUERY_FW(struct mlx4_dev *dev)
 
 #define QUERY_FW_OUT_SIZE             0x100
 #define QUERY_FW_VER_OFFSET            0x00
+#define QUERY_FW_PPF_ID                0x09
 #define QUERY_FW_CMD_IF_REV_OFFSET     0x0a
 #define QUERY_FW_MAX_CMD_OFFSET        0x0f
 #define QUERY_FW_ERR_START_OFFSET      0x30
@@ -563,6 +636,9 @@ int mlx4_QUERY_FW(struct mlx4_dev *dev)
 #define QUERY_FW_SIZE_OFFSET           0x00
 #define QUERY_FW_CLR_INT_BASE_OFFSET   0x20
 #define QUERY_FW_CLR_INT_BAR_OFFSET    0x28
+
+#define QUERY_FW_COMM_BASE_OFFSET      0x40
+#define QUERY_FW_COMM_BAR_OFFSET       0x48
 
 	mailbox = mlx4_alloc_cmd_mailbox(dev);
 	if (IS_ERR(mailbox))
@@ -582,6 +658,9 @@ int mlx4_QUERY_FW(struct mlx4_dev *dev)
 	dev->caps.fw_ver = (fw_ver & 0xffff00000000ull) |
 		((fw_ver & 0xffff0000ull) >> 16) |
 		((fw_ver & 0x0000ffffull) << 16);
+
+	MLX4_GET(lg, outbox, QUERY_FW_PPF_ID);
+	dev->caps.function = lg;
 
 	MLX4_GET(cmd_if_rev, outbox, QUERY_FW_CMD_IF_REV_OFFSET);
 	if (cmd_if_rev < MLX4_COMMAND_INTERFACE_MIN_REV ||
@@ -624,6 +703,11 @@ int mlx4_QUERY_FW(struct mlx4_dev *dev)
 	MLX4_GET(fw->clr_int_bar,  outbox, QUERY_FW_CLR_INT_BAR_OFFSET);
 	fw->clr_int_bar = (fw->clr_int_bar >> 6) * 2;
 
+	MLX4_GET(fw->comm_base, outbox, QUERY_FW_COMM_BASE_OFFSET);
+	MLX4_GET(fw->comm_bar,  outbox, QUERY_FW_COMM_BAR_OFFSET);
+	fw->comm_bar = (fw->comm_bar >> 6) * 2;
+	mlx4_dbg(dev, "Communication vector bar:%d offset:0x%llx\n", fw->comm_bar,
+								     fw->comm_base);
 	mlx4_dbg(dev, "FW size %d KB\n", fw->fw_pages >> 2);
 
 	/*
@@ -812,6 +896,35 @@ int mlx4_INIT_HCA(struct mlx4_dev *dev, struct mlx4_init_hca_param *param)
 	return err;
 }
 
+static int mlx4_common_init_port(struct mlx4_dev *dev, int function, int port)
+{
+	struct mlx4_priv *priv = mlx4_priv(dev);
+	int err;
+
+	if (priv->mfunc.master.slave_state[function].init_port_mask & (1 << port))
+		return 0;
+
+	/* Enable port only if it was previously disabled */
+	if (!priv->mfunc.master.init_port_ref[port]) {
+		err = mlx4_cmd(dev, 0, port, 0, MLX4_CMD_INIT_PORT,
+			       MLX4_CMD_TIME_CLASS_A);
+		if (err)
+			return err;
+	}
+	++priv->mfunc.master.init_port_ref[port];
+	priv->mfunc.master.slave_state[function].init_port_mask |= (1 << port);
+	return 0;
+}
+
+int mlx4_INIT_PORT_wrapper(struct mlx4_dev *dev, int slave, struct mlx4_vhcr *vhcr,
+							 struct mlx4_cmd_mailbox *inbox,
+							 struct mlx4_cmd_mailbox *outbox)
+{
+	int port = vhcr->in_modifier;
+
+	return mlx4_common_init_port(dev, slave, port);
+}
+
 int mlx4_INIT_PORT(struct mlx4_dev *dev, int port)
 {
 	struct mlx4_cmd_mailbox *mailbox;
@@ -858,17 +971,52 @@ int mlx4_INIT_PORT(struct mlx4_dev *dev, int port)
 			       MLX4_CMD_TIME_CLASS_A);
 
 		mlx4_free_cmd_mailbox(dev, mailbox);
-	} else
-		err = mlx4_cmd(dev, 0, port, 0, MLX4_CMD_INIT_PORT,
-			       MLX4_CMD_TIME_CLASS_A);
+	} else {
+		if (mlx4_is_master(dev))
+			err = mlx4_common_init_port(dev, dev->caps.function,
+						    port);
+		else
+			err = mlx4_cmd(dev, 0, port, 0, MLX4_CMD_INIT_PORT,
+				       MLX4_CMD_TIME_CLASS_A);
+	}
 
 	return err;
 }
 EXPORT_SYMBOL_GPL(mlx4_INIT_PORT);
 
+static int mlx4_common_close_port(struct mlx4_dev *dev, int function, int port)
+{
+	struct mlx4_priv *priv = mlx4_priv(dev);
+	int err;
+
+	if (!(priv->mfunc.master.slave_state[function].init_port_mask & (1 << port)))
+		return 0;
+
+	if (priv->mfunc.master.init_port_ref[port] == 1) {
+		err = mlx4_cmd(dev, 0, port, 0, MLX4_CMD_CLOSE_PORT, 1000);
+		if (err)
+			return err;
+	}
+	--priv->mfunc.master.init_port_ref[port];
+	priv->mfunc.master.slave_state[function].init_port_mask &= ~(1 << port);
+	return 0;
+}
+
+int mlx4_CLOSE_PORT_wrapper(struct mlx4_dev *dev, int slave, struct mlx4_vhcr *vhcr,
+							  struct mlx4_cmd_mailbox *inbox,
+							  struct mlx4_cmd_mailbox *outbox)
+{
+	int port= vhcr->in_modifier;
+
+	return mlx4_common_close_port(dev, slave, port);
+}
+
 int mlx4_CLOSE_PORT(struct mlx4_dev *dev, int port)
 {
-	return mlx4_cmd(dev, 0, port, 0, MLX4_CMD_CLOSE_PORT, 1000);
+	if (mlx4_is_master(dev))
+		return mlx4_common_close_port(dev, dev->caps.function, port);
+	else
+		return mlx4_cmd(dev, 0, port, 0, MLX4_CMD_CLOSE_PORT, 1000);
 }
 EXPORT_SYMBOL_GPL(mlx4_CLOSE_PORT);
 
@@ -899,6 +1047,29 @@ int mlx4_NOP(struct mlx4_dev *dev)
 {
 	/* Input modifier of 0x1f means "finish as soon as possible." */
 	return mlx4_cmd(dev, 0, 0x1f, 0, MLX4_CMD_NOP, 100);
+}
+
+int mlx4_QUERY_FUNC(struct mlx4_dev *dev, int func, u8 *pf_num)
+{
+	struct mlx4_cmd_mailbox *mailbox;
+	u8 *outbox;
+	int ret;
+
+	mailbox = mlx4_alloc_cmd_mailbox(dev);
+	if (IS_ERR(mailbox))
+		return PTR_ERR(mailbox);
+	outbox = mailbox->buf;
+
+	ret = mlx4_cmd_box(dev, 0, mailbox->dma, func & 0xff, 0,
+			   MLX4_CMD_QUERY_FUNC, MLX4_CMD_TIME_CLASS_A);
+	if (ret)
+		goto out;
+
+	*pf_num = outbox[3];
+
+out:
+	mlx4_free_cmd_mailbox(dev, mailbox);
+	return ret;
 }
 
 int mlx4_query_diag_counters(struct mlx4_dev *dev, int array_length,

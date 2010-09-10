@@ -347,7 +347,7 @@ void unlock_ipi_call_lock(void)
  */
 static void
 __smp_call_function_single(int cpu, void (*func) (void *info), void *info,
-				int nonatomic, int wait)
+			   int nonatomic, int wait)
 {
 	struct call_data_struct data;
 	int cpus = 1;
@@ -382,39 +382,43 @@ __smp_call_function_single(int cpu, void (*func) (void *info), void *info,
  * @nonatomic: Currently unused.
  * @wait: If true, wait until function has completed on other CPUs.
  *
- * Retrurns 0 on success, else a negative status code.
+ * Returns 0 on success, else a negative status code.
  *
  * Does not return until the remote CPU is nearly ready to execute <func>
  * or is or has executed.
  */
 
 int smp_call_function_single (int cpu, void (*func) (void *info), void *info,
-	int nonatomic, int wait)
+			      int nonatomic, int wait)
 {
 	/* prevent preemption and reschedule on another processor */
+	unsigned long flags;
 	int me = get_cpu();
+
 	if (cpu == me) {
-		WARN_ON(1);
-		put_cpu();
-		return -EBUSY;
+		local_irq_save(flags);
+		func(info);
+		local_irq_restore(flags);
+	} else {
+		spin_lock_bh(&call_lock);
+		__smp_call_function_single(cpu, func, info, nonatomic, wait);
+		spin_unlock_bh(&call_lock);
 	}
-	spin_lock_bh(&call_lock);
-	__smp_call_function_single(cpu, func, info, nonatomic, wait);
-	spin_unlock_bh(&call_lock);
 	put_cpu();
 	return 0;
 }
+EXPORT_SYMBOL(smp_call_function_single);
 
-/*
- * this function sends a 'generic call function' IPI to all other CPUs
- * in the system.
- */
-static void __smp_call_function (void (*func) (void *info), void *info,
-				int nonatomic, int wait)
+static void __smp_call_function_many(cpumask_t *mask, void (*func) (void *info),
+				     void *info, int nonatomic, int wait)
 {
 	struct call_data_struct data;
-	int cpus = num_online_cpus()-1;
+	int cpus;
+	int cpu = smp_processor_id();
 
+	if (cpu_isset(cpu, *mask))
+		cpu_clear(cpu, *mask);
+	cpus = cpus_weight(*mask);
 	if (!cpus)
 		return;
 
@@ -428,7 +432,7 @@ static void __smp_call_function (void (*func) (void *info), void *info,
 	call_data = &data;
 	wmb();
 	/* Send a message to all other CPUs and wait for them to respond */
-	send_IPI_allbutself(CALL_FUNCTION_VECTOR);
+	send_IPI_mask(*mask, CALL_FUNCTION_VECTOR);
 
 	/* Wait for response */
 	while (atomic_read(&data.started) != cpus)
@@ -450,6 +454,19 @@ static void __smp_call_function (void (*func) (void *info), void *info,
 }
 
 /*
+ * this function sends a 'generic call function' IPI to all other CPUs
+ * in mask.
+ */
+void smp_call_function_many(cpumask_t *mask, void (*func) (void *info),
+			    void *info, int nonatomic, int wait)
+{
+	spin_lock(&call_lock);
+	__smp_call_function_many(mask, func, info, nonatomic, wait);
+	spin_unlock(&call_lock);
+}
+EXPORT_SYMBOL(smp_call_function_many);
+
+/*
  * smp_call_function - run a function on all other CPUs.
  * @func: The function to run. This must be fast and non-blocking.
  * @info: An arbitrary pointer to pass to the function.
@@ -464,12 +481,13 @@ static void __smp_call_function (void (*func) (void *info), void *info,
  * hardware interrupt handler or from a bottom half handler.
  * Actually there are a few legal cases, like panic.
  */
-int smp_call_function (void (*func) (void *info), void *info, int nonatomic,
-			int wait)
+int smp_call_function(void (*func) (void *info), void *info, int nonatomic,
+		      int wait)
 {
-	spin_lock(&call_lock);
-	__smp_call_function(func,info,nonatomic,wait);
-	spin_unlock(&call_lock);
+	cpumask_t thismask = CPU_MASK_NONE;
+
+	cpus_or(thismask, cpu_online_map, thismask);
+	smp_call_function_many(&thismask, func, info, nonatomic, wait);
 	return 0;
 }
 EXPORT_SYMBOL(smp_call_function);
@@ -498,6 +516,8 @@ static void smp_really_stop_cpu(void *dummy)
 void smp_send_stop(void)
 {
 	int nolock = 0;
+	cpumask_t thismask = CPU_MASK_NONE;
+
 #ifndef CONFIG_XEN
 	if (reboot_force)
 		return;
@@ -507,7 +527,8 @@ void smp_send_stop(void)
 		/* ignore locking because we have panicked anyways */
 		nolock = 1;
 	}
-	__smp_call_function(smp_really_stop_cpu, NULL, 0, 0);
+	cpus_or(thismask, cpu_online_map, thismask);
+	__smp_call_function_many(&thismask, smp_really_stop_cpu, NULL, 0, 0);
 	if (!nolock)
 		spin_unlock(&call_lock);
 

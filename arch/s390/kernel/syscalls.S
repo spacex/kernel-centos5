@@ -323,4 +323,7 @@ NI_SYSCALL	/* 311 sys_getcpu */
 NI_SYSCALL	/* 312 sys_epoll_pwait */
 NI_SYSCALL	/* 313 sys_utimes */
 SYSCALL(s390_fallocate,sys_fallocate,sys_fallocate_wrapper)
-
+NI_SYSCALL	/* 315 sys_utimensat */
+NI_SYSCALL	/* 316 sys_signalfd */
+NI_SYSCALL	/* 317 old sys_timer_fd */
+SYSCALL(sys_eventfd,sys_eventfd,sys_eventfd_wrapper)

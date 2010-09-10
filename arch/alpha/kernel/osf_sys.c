@@ -432,7 +432,7 @@ sys_getpagesize(void)
 asmlinkage unsigned long
 sys_getdtablesize(void)
 {
-	return NR_OPEN;
+	return sysctl_nr_open;
 }
 
 /*

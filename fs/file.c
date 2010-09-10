@@ -25,6 +25,8 @@ struct fdtable_defer {
 	struct fdtable *next;
 };
 
+int sysctl_nr_open __read_mostly = 1024*1024;
+
 /*
  * We use this list to defer free fdtables that have vmalloced
  * sets/arrays. By keeping a per-cpu list, we avoid having to embed
@@ -241,8 +243,16 @@ static struct fdtable *alloc_fdtable(int nr)
   		goto out;
 
 	nfds = max_t(int, 8 * L1_CACHE_BYTES, roundup_pow_of_two(nr + 1));
-	if (nfds > NR_OPEN)
-		nfds = NR_OPEN;
+	/*
+	 * Note that this can drive nfds *below* what we had passed if sysctl_nr_open
+	 * had been set lower between the check in expand_files() and here.  Deal
+	 * with that in caller, it's cheaper that way.
+	 *
+	 * We make sure that nfds remains a multiple of BITS_PER_LONG - otherwise
+	 * bitmaps handling below becomes unpleasant, to put it mildly...
+	 */
+	if (unlikely(nfds > sysctl_nr_open))
+		nfds = ((sysctl_nr_open - 1) | (BITS_PER_LONG - 1)) + 1;
 
   	new_openset = alloc_fdset(nfds);
   	new_execset = alloc_fdset(nfds);
@@ -267,8 +277,8 @@ static struct fdtable *alloc_fdtable(int nr)
 			nfds = PAGE_SIZE / sizeof(struct file *);
 		else {
 			nfds = nfds * 2;
-			if (nfds > NR_OPEN)
-				nfds = NR_OPEN;
+			if (nfds > sysctl_nr_open)
+				nfds = sysctl_nr_open;
   		}
 	} while (nfds <= nr);
 	new_fds = alloc_fd_array(nfds);
@@ -311,6 +321,15 @@ static int expand_fdtable(struct files_struct *files, int nr)
 	}
 
 	spin_lock(&files->file_lock);
+	/*
+	 * extremely unlikely race - sysctl_nr_open decreased between the check in
+	 * caller and alloc_fdtable().  Cheaper to catch it here...
+	 */
+	if (unlikely(nfdt->max_fds <= nr)) {
+		__free_fdtable(nfdt);
+		kfree(nfdt);
+		return -EMFILE;
+	}
 	fdt = files_fdtable(files);
 	/*
 	 * Check again since another task may have expanded the
@@ -343,8 +362,8 @@ int expand_files(struct files_struct *files, int nr)
 
 	fdt = files_fdtable(files);
 	if (nr >= fdt->max_fdset || nr >= fdt->max_fds) {
-		if (fdt->max_fdset >= NR_OPEN ||
-			fdt->max_fds >= NR_OPEN || nr >= NR_OPEN) {
+		if (fdt->max_fdset >= sysctl_nr_open ||
+			fdt->max_fds >= sysctl_nr_open || nr >= sysctl_nr_open) {
 			err = -EMFILE;
 			goto out;
 		}

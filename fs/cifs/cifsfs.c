@@ -68,14 +68,7 @@ unsigned int multiuser_mount = 0;
 unsigned int extended_security = CIFSSEC_DEF;
 /* unsigned int ntlmv2_support = 0; */
 unsigned int sign_CIFS_PDUs = 1;
-extern struct task_struct *oplockThread; /* remove sparse warning */
-struct task_struct *oplockThread = NULL;
-/* extern struct task_struct * dnotifyThread; remove sparse warning */
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 20)
-static const struct super_operations cifs_super_ops;
-#else
 static struct super_operations cifs_super_ops;
-#endif
 unsigned int CIFSMaxBufSize = CIFS_MAX_MSGSIZE;
 module_param(CIFSMaxBufSize, int, 0);
 MODULE_PARM_DESC(CIFSMaxBufSize, "Network buffer size (not including header). "
@@ -98,6 +91,8 @@ extern mempool_t *cifs_req_poolp;
 extern mempool_t *cifs_mid_poolp;
 
 extern struct kmem_cache *cifs_oplock_cachep;
+
+struct workqueue_struct *cifswq;
 
 static int
 cifs_read_super(struct super_block *sb, void *data,
@@ -378,80 +373,75 @@ cifs_show_options(struct seq_file *s, struct vfsmount *m)
 	struct TCP_Server_Info *server;
 
 	cifs_sb = CIFS_SB(m->mnt_sb);
+	tcon = cifs_sb->tcon;
 
-	if (cifs_sb) {
-		tcon = cifs_sb->tcon;
-		if (tcon) {
-			seq_printf(s, ",unc=%s", cifs_sb->tcon->treeName);
-			if (tcon->ses) {
-				if (tcon->ses->userName)
-					seq_printf(s, ",username=%s",
-					   tcon->ses->userName);
-				if (tcon->ses->domainName)
-					seq_printf(s, ",domain=%s",
-					   tcon->ses->domainName);
-				server = tcon->ses->server;
-				if (server) {
-					seq_printf(s, ",addr=");
-					switch (server->addr.sockAddr6.
-						sin6_family) {
-					case AF_INET6:
-						seq_printf(s, NIP6_FMT,
-							   NIP6(server->addr.sockAddr6.sin6_addr));
-						break;
-					case AF_INET:
-						seq_printf(s, NIPQUAD_FMT,
-							   NIPQUAD(server->addr.sockAddr.sin_addr.s_addr));
-						break;
-					}
-				}
-			}
-			if ((cifs_sb->mnt_cifs_flags & CIFS_MOUNT_OVERR_UID) ||
-			   !(tcon->unix_ext))
-				seq_printf(s, ",uid=%d", cifs_sb->mnt_uid);
-			if ((cifs_sb->mnt_cifs_flags & CIFS_MOUNT_OVERR_GID) ||
-			   !(tcon->unix_ext))
-				seq_printf(s, ",gid=%d", cifs_sb->mnt_gid);
-			if (!tcon->unix_ext) {
-				seq_printf(s, ",file_mode=0%o,dir_mode=0%o",
+	seq_printf(s, ",unc=%s", cifs_sb->tcon->treeName);
+	if (tcon->ses->userName)
+		seq_printf(s, ",username=%s", tcon->ses->userName);
+	if (tcon->ses->domainName)
+		seq_printf(s, ",domain=%s", tcon->ses->domainName);
+
+	seq_printf(s, ",uid=%d", cifs_sb->mnt_uid);
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_OVERR_UID)
+		seq_printf(s, ",forceuid");
+	else
+		seq_printf(s, ",noforceuid");
+
+	seq_printf(s, ",gid=%d", cifs_sb->mnt_gid);
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_OVERR_GID)
+		seq_printf(s, ",forcegid");
+	else
+		seq_printf(s, ",noforcegid");
+
+	server = tcon->ses->server;
+	seq_printf(s, ",addr=");
+	switch (server->addr.sockAddr6.sin6_family) {
+	case AF_INET6:
+		seq_printf(s, NIP6_FMT, NIP6(server->addr.sockAddr6.sin6_addr));
+		break;
+	case AF_INET:
+		seq_printf(s, NIPQUAD_FMT, NIPQUAD(server->addr.sockAddr.sin_addr.s_addr));
+		break;
+	}
+
+	if (!tcon->unix_ext)
+		seq_printf(s, ",file_mode=0%o,dir_mode=0%o",
 					   cifs_sb->mnt_file_mode,
 					   cifs_sb->mnt_dir_mode);
-			}
-			if (tcon->seal)
-				seq_printf(s, ",seal");
-			if (tcon->nocase)
-				seq_printf(s, ",nocase");
-			if (tcon->retry)
-				seq_printf(s, ",hard");
-		}
-		if (cifs_sb->prepath)
-			seq_printf(s, ",prepath=%s", cifs_sb->prepath);
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_POSIX_PATHS)
-			seq_printf(s, ",posixpaths");
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_SET_UID)
-			seq_printf(s, ",setuids");
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_SERVER_INUM)
-			seq_printf(s, ",serverino");
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_DIRECT_IO)
-			seq_printf(s, ",directio");
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_XATTR)
-			seq_printf(s, ",nouser_xattr");
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_MAP_SPECIAL_CHR)
-			seq_printf(s, ",mapchars");
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_UNX_EMUL)
-			seq_printf(s, ",sfu");
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_BRL)
-			seq_printf(s, ",nobrl");
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_CIFS_ACL)
-			seq_printf(s, ",cifsacl");
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_DYNPERM)
-			seq_printf(s, ",dynperm");
-		if (m->mnt_sb->s_flags & MS_POSIXACL)
-			seq_printf(s, ",acl");
+	if (tcon->seal)
+		seq_printf(s, ",seal");
+	if (tcon->nocase)
+		seq_printf(s, ",nocase");
+	if (tcon->retry)
+		seq_printf(s, ",hard");
+	if (cifs_sb->prepath)
+		seq_printf(s, ",prepath=%s", cifs_sb->prepath);
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_POSIX_PATHS)
+		seq_printf(s, ",posixpaths");
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_SET_UID)
+		seq_printf(s, ",setuids");
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_SERVER_INUM)
+		seq_printf(s, ",serverino");
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_DIRECT_IO)
+		seq_printf(s, ",directio");
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_XATTR)
+		seq_printf(s, ",nouser_xattr");
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_MAP_SPECIAL_CHR)
+		seq_printf(s, ",mapchars");
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_UNX_EMUL)
+		seq_printf(s, ",sfu");
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_BRL)
+		seq_printf(s, ",nobrl");
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_CIFS_ACL)
+		seq_printf(s, ",cifsacl");
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_DYNPERM)
+		seq_printf(s, ",dynperm");
+	if (m->mnt_sb->s_flags & MS_POSIXACL)
+		seq_printf(s, ",acl");
 
-		seq_printf(s, ",rsize=%d", cifs_sb->rsize);
-		seq_printf(s, ",wsize=%d", cifs_sb->wsize);
-	}
+	seq_printf(s, ",rsize=%d", cifs_sb->rsize);
+	seq_printf(s, ",wsize=%d", cifs_sb->wsize);
+
 	return 0;
 }
 
@@ -1101,87 +1091,12 @@ cifs_destroy_mids(void)
 	kmem_cache_destroy(cifs_oplock_cachep);
 }
 
-static int cifs_oplock_thread(void *dummyarg)
-{
-	struct oplock_q_entry *oplock_item;
-	struct cifsTconInfo *pTcon;
-	struct inode *inode;
-	__u16  netfid;
-	int rc, waitrc = 0;
-
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 22)
-	set_freezable();
-#endif
-	do {
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 12)
-		if (try_to_freeze())
-			continue;
-#endif
-
-		spin_lock(&GlobalMid_Lock);
-		if (list_empty(&GlobalOplock_Q)) {
-			spin_unlock(&GlobalMid_Lock);
-			set_current_state(TASK_INTERRUPTIBLE);
-			schedule_timeout(39*HZ);
-		} else {
-			oplock_item = list_entry(GlobalOplock_Q.next,
-						struct oplock_q_entry, qhead);
-			cFYI(1, ("found oplock item to write out"));
-			pTcon = oplock_item->tcon;
-			inode = oplock_item->pinode;
-			netfid = oplock_item->netfid;
-			spin_unlock(&GlobalMid_Lock);
-			DeleteOplockQEntry(oplock_item);
-			/* can not grab inode sem here since it would
-				deadlock when oplock received on delete
-				since vfs_unlink holds the i_mutex across
-				the call */
-			/* mutex_lock(&inode->i_mutex);*/
-			if (S_ISREG(inode->i_mode)) {
-				rc = filemap_fdatawrite(inode->i_mapping);
-				if (CIFS_I(inode)->clientCanCacheRead == 0) {
-					waitrc = filemap_fdatawait(
-							      inode->i_mapping);
-					invalidate_remote_inode(inode);
-				}
-				if (rc == 0)
-					rc = waitrc;
-			} else
-				rc = 0;
-			/* mutex_unlock(&inode->i_mutex);*/
-			if (rc)
-				CIFS_I(inode)->write_behind_rc = rc;
-			cFYI(1, ("Oplock flush inode %p rc %d",
-				inode, rc));
-
-				/* releasing stale oplock after recent reconnect
-				of smb session using a now incorrect file
-				handle is not a data integrity issue but do
-				not bother sending an oplock release if session
-				to server still is disconnected since oplock
-				already released by the server in that case */
-			if (!pTcon->need_reconnect) {
-				rc = CIFSSMBLock(0, pTcon, netfid,
-						0 /* len */ , 0 /* offset */, 0,
-						0, LOCKING_ANDX_OPLOCK_RELEASE,
-						false /* wait flag */);
-				cFYI(1, ("Oplock release rc = %d", rc));
-			}
-			set_current_state(TASK_INTERRUPTIBLE);
-			schedule_timeout(1);  /* yield in case q were corrupt */
-		}
-	} while (!kthread_should_stop());
-
-	return 0;
-}
-
 static int __init
 init_cifs(void)
 {
 	int rc = 0;
 	cifs_proc_init();
 	INIT_LIST_HEAD(&cifs_tcp_ses_list);
-	INIT_LIST_HEAD(&GlobalOplock_Q);
 #ifdef CONFIG_CIFS_EXPERIMENTAL
 	INIT_LIST_HEAD(&GlobalDnotifyReqList);
 	INIT_LIST_HEAD(&GlobalDnotifyRsp_Q);
@@ -1244,10 +1159,10 @@ init_cifs(void)
 	if (rc)
 		goto out_unregister_key_type;
 #endif
-	oplockThread = kthread_run(cifs_oplock_thread, NULL, "cifsoplockd");
-	if (IS_ERR(oplockThread)) {
-		rc = PTR_ERR(oplockThread);
-		cERROR(1, ("error %d create oplock thread", rc));
+	cifswq = create_singlethread_workqueue("cifswq");
+	if (!cifswq) {
+		rc = -ENOMEM;
+		cERROR(1, ("error %d creating workqueue", rc));
 		goto out_unregister_dfs_key_type;
 	}
 
@@ -1281,6 +1196,7 @@ exit_cifs(void)
 	cifs_proc_clean();
 #ifdef CONFIG_CIFS_DFS_UPCALL
 	cifs_dfs_release_automount_timer();
+	destroy_workqueue(cifswq);
 	unregister_key_type(&key_type_dns_resolver);
 #endif
 #ifdef CONFIG_CIFS_UPCALL
@@ -1290,7 +1206,6 @@ exit_cifs(void)
 	cifs_destroy_inodecache();
 	cifs_destroy_mids();
 	cifs_destroy_request_bufs();
-	kthread_stop(oplockThread);
 }
 
 MODULE_AUTHOR("Steve French <sfrench@us.ibm.com>");

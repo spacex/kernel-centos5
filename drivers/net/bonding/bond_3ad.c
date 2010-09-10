@@ -20,8 +20,6 @@
  *
  */
 
-//#define BONDING_DEBUG 1
-
 #include <linux/skbuff.h>
 #include <linux/if_ether.h>
 #include <linux/netdevice.h>

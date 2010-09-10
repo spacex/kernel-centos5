@@ -645,11 +645,13 @@ static void xenfb_backend_changed(struct xenbus_device *dev,
 		if (val)
 			info->update_wanted = 1;
 
-		info->kthread = kthread_run(xenfb_thread, info, "xenfb thread");
-		if (IS_ERR(info->kthread)) {
-			info->kthread = NULL;
-			xenbus_dev_fatal(dev, PTR_ERR(info->kthread),
-					"xenfb_thread");
+		if (!info->kthread) {
+			info->kthread = kthread_run(xenfb_thread, info, "xenfb thread");
+			if (IS_ERR(info->kthread)) {
+				info->kthread = NULL;
+				xenbus_dev_fatal(dev, PTR_ERR(info->kthread),
+						 "xenfb_thread");
+			}
 		}
 		break;
 

@@ -134,6 +134,7 @@ struct mirror_set {
 	struct bio_list reads;
 	struct bio_list writes;
 	struct bio_list failures;
+	struct bio_list holds;	/* bios are waiting until suspend */
 
 	struct dm_io_client *io_client;
 
@@ -141,6 +142,7 @@ struct mirror_set {
 	region_t nr_regions;
 	int in_sync;
 	int log_failure;
+	int leg_failure;
 	atomic_t suspend;
 
 	struct mirror *default_mirror;	/* Default mirror */
@@ -635,10 +637,8 @@ static void rh_recovery_end(struct region *reg, int success)
 	if (success ||
 	    (rh->log->type->get_failure_response(rh->log) == DMLOG_IOERR_IGNORE))
 		list_add(&reg->list, &reg->rh->recovered_regions);
-	else {
-		reg->state = RH_NOSYNC;
+	else
 		list_add(&reg->list, &reg->rh->failed_recovered_regions);
-	}
 	spin_unlock_irq(&rh->region_lock);
 
 	wake(rh->ms);
@@ -874,6 +874,17 @@ use_mirror:
 	return ret;
 }
 
+static struct mirror *get_valid_mirror(struct mirror_set *ms)
+{
+	struct mirror *m;
+
+	for (m = ms->mirror; m < ms->mirror + ms->nr_mirrors; m++)
+		if (!atomic_read(&m->error_count))
+			return m;
+
+	return NULL;
+}
+
 /* fail_mirror
  * @m: mirror device to fail
  * @error_type: one of the enum's, DM_RAID1_*_ERROR
@@ -893,6 +904,8 @@ static void fail_mirror(struct mirror *m, enum dm_raid1_error error_type)
 	struct mirror_set *ms = m->ms;
 	struct mirror *new;
 	struct dm_dirty_log *log = ms->rh.log;
+
+	ms->leg_failure = 1;
 
 	atomic_inc(&m->error_count);
 
@@ -922,15 +935,12 @@ static void fail_mirror(struct mirror *m, enum dm_raid1_error error_type)
 		goto out;
 	}
 
-	for (new = ms->mirror; new < ms->mirror + ms->nr_mirrors; new++)
-		if (!atomic_read(&new->error_count)) {
-			ms->default_mirror = new;
-			break;
-		}
-
-	if (unlikely(new == ms->mirror + ms->nr_mirrors))
-		DMWARN("All sides of mirror have failed.");
-
+	new = get_valid_mirror(ms);
+	if (new)
+		ms->default_mirror = new;
+	else
+  		DMWARN("All sides of mirror have failed.");
+  
 out:
 	schedule_work(&ms->trigger_event);
 }
@@ -970,6 +980,30 @@ static void map_region(struct io_region *io, struct mirror *m,
 	io->bdev = m->dev->bdev;
 	io->sector = map_sector(m, bio);
 	io->count = bio->bi_size >> 9;
+}
+
+static void hold_bio(struct mirror_set *ms, struct bio *bio)
+{
+	spin_lock_irq(&ms->lock);
+
+	/*
+	 * If device is suspended, complete the bio.
+	 */
+	if (atomic_read(&ms->suspend)) {
+		spin_unlock_irq(&ms->lock);
+
+		if (dm_noflush_suspending(ms->ti))
+			bio_endio(bio, bio->bi_size, DM_ENDIO_REQUEUE);
+		else
+			bio_endio(bio, bio->bi_size, -EIO);
+		return;
+	}
+
+	/*
+	 * Hold bio until the suspend is complete.
+	 */
+	bio_list_add(&ms->holds, bio);
+	spin_unlock_irq(&ms->lock);
 }
 
 /*-----------------------------------------------------------------
@@ -1065,8 +1099,7 @@ static void do_reads(struct mirror_set *ms, struct bio_list *reads)
  *
  * This function is _not_ interrupt safe!
  */
-static void __bio_mark_nosync(struct mirror_set *ms,
-			      struct bio *bio, unsigned int done, int error)
+static void __bio_mark_nosync(struct mirror_set *ms, struct bio *bio)
 {
 	unsigned long flags;
 	struct region_hash *rh = &ms->rh;
@@ -1100,7 +1133,6 @@ static void __bio_mark_nosync(struct mirror_set *ms,
 	BUG_ON(!list_empty(&reg->list));
 	spin_unlock_irqrestore(&rh->region_lock, flags);
 
-	bio_endio(bio, done, error);
 	if (recovering)
 		complete_resync_work(reg, 0);
 }
@@ -1110,7 +1142,6 @@ static void write_callback(unsigned long error, void *context)
 	unsigned int i, ret = 0;
 	struct bio *bio = (struct bio *) context;
 	struct mirror_set *ms;
-	int uptodate = 0;
 	int should_wake = 0;
 	unsigned long flags;
 
@@ -1123,36 +1154,27 @@ static void write_callback(unsigned long error, void *context)
 	 * This way we handle both writes to SYNC and NOSYNC
 	 * regions with the same code.
 	 */
-	if (unlikely(error)) {
-		for (i = 0; i < ms->nr_mirrors; i++) {
-			if (test_bit(i, &error))
-				fail_mirror(ms->mirror + i, DM_RAID1_WRITE_ERROR);
-			else
-				uptodate = 1;
-		}
-
-		if (likely(uptodate)) {
-			/*
-			 * Need to raise event.  Since raising
-			 * events can block, we need to do it in
-			 * the main thread.
-			 */
-			spin_lock_irqsave(&ms->lock, flags);
-			if (!ms->failures.head)
-				should_wake = 1;
-			bio_list_add(&ms->failures, bio);
-			spin_unlock_irqrestore(&ms->lock, flags);
-			if (should_wake)
-				wake(ms);
-			return;
-		} else {
-			DMERR("All replicated volumes dead, failing I/O");
-			/* None of the writes succeeded, fail the I/O. */
-			ret = -EIO;
-		}
+	if (likely(!error)) {
+		bio_endio(bio, bio->bi_size, ret);
+		return;
 	}
 
-	bio_endio(bio, bio->bi_size, ret);
+	for (i = 0; i < ms->nr_mirrors; i++)
+		if (test_bit(i, &error))
+			fail_mirror(ms->mirror + i, DM_RAID1_WRITE_ERROR);
+
+	/*
+	 * Need to raise event.  Since raising
+	 * events can block, we need to do it in
+	 * the main thread.
+	 */
+	spin_lock_irqsave(&ms->lock, flags);
+	if (!ms->failures.head)
+		should_wake = 1;
+	bio_list_add(&ms->failures, bio);
+	spin_unlock_irqrestore(&ms->lock, flags);
+	if (should_wake)
+		wake(ms);
 }
 
 static void do_write(struct mirror_set *ms, struct bio *bio)
@@ -1248,7 +1270,12 @@ static void do_writes(struct mirror_set *ms, struct bio_list *writes)
 	rh_inc_pending(&ms->rh, &sync);
 	rh_inc_pending(&ms->rh, &nosync);
 
-	ms->log_failure = rh_flush(&ms->rh);
+	/*
+	 * If the flush fails on a previous call and succeeds here,
+	 * we must not reset the log_failure variable.  We need
+	 * userspace interaction to do that.
+	 */
+	ms->log_failure = rh_flush(&ms->rh) ? 1 : ms->log_failure;
 
 	/*
 	 * Dispatch io.
@@ -1266,8 +1293,13 @@ static void do_writes(struct mirror_set *ms, struct bio_list *writes)
 		rh_delay(&ms->rh, bio);
 
 	while ((bio = bio_list_pop(&nosync))) {
-		map_bio(ms->default_mirror, bio);
-		generic_make_request(bio);
+		if (unlikely(ms->leg_failure) &&
+		    log->type->get_failure_response(log) == DMLOG_IOERR_BLOCK)
+			hold_bio(ms, bio);
+		else {
+			map_bio(ms->default_mirror, bio);
+			generic_make_request(bio);
+		}
 	}
 }
 
@@ -1275,44 +1307,48 @@ static void do_failures(struct mirror_set *ms, struct bio_list *failures)
 {
 	struct bio *bio;
 
-	if (!failures->head)
+	if (likely(!failures->head))
 		return;
 
-	if (ms->log_failure) {
+	/*
+	 * If the log has failed, unattempted writes are being
+	 * put on the holds list.  We can't issue those writes
+	 * until a log has been marked, so we must store them.
+	 *
+	 * If a 'noflush' suspend is in progress, we can requeue
+	 * the I/O's to the core.  This give userspace a chance
+	 * to reconfigure the mirror, at which point the core
+	 * will reissue the writes.  If the 'noflush' flag is
+	 * not set, we have no choice but to return errors.
+	 *
+	 * Some writes on the failures list may have been
+	 * submitted before the log failure and represent a
+	 * failure to write to one of the devices.  It is ok
+	 * for us to treat them the same and requeue them
+	 * as well.
+	 */
+
+	while ((bio = bio_list_pop(failures))) {
+		struct dm_dirty_log *log = ms->rh.log;
+
+		if (!ms->log_failure)
+			__bio_mark_nosync(ms, bio);
+
 		/*
-		 * If the log has failed, unattempted writes are being
-		 * put on the failures list.  We can't issue those writes
-		 * until a log has been marked, so we must store them.
-		 *
-		 * If a 'noflush' suspend is in progress, we can requeue
-		 * the I/O's to the core.  This give userspace a chance
-		 * to reconfigure the mirror, at which point the core
-		 * will reissue the writes.  If the 'noflush' flag is
-		 * not set, we have no choice but to return errors.
-		 *
-		 * Some writes on the failures list may have been
-		 * submitted before the log failure and represent a
-		 * failure to write to one of the devices.  It is ok
-		 * for us to treat them the same and requeue them
-		 * as well.
+		 * If all the legs are dead, fail the I/O.
+		 * If we have been told to handle errors, hold the bio
+		 * and wait for userspace to deal with the problem.
+		 * Otherwise pretend that the I/O succeeded. (This would
+		 * be wrong if the failed leg returned after reboot and
+		 * got replicated back to the good legs.)
 		 */
-		if (dm_noflush_suspending(ms->ti)) {
-			while ((bio = bio_list_pop(failures)))
-				bio_endio(bio, bio->bi_size, DM_ENDIO_REQUEUE);
-		} else if (atomic_read(&ms->suspend)) {
-			while ((bio = bio_list_pop(failures)))
-				bio_endio(bio, bio->bi_size, -EIO);
-		} else {
-			spin_lock_irq(&ms->lock);
-			bio_list_merge(&ms->failures, failures);
-			spin_unlock_irq(&ms->lock);
-			delayed_wake(ms);
-		}
-		return;
-	}
-
-	while ((bio = bio_list_pop(failures)))
-		__bio_mark_nosync(ms, bio, bio->bi_size, 0);
+		if (!get_valid_mirror(ms))
+			bio_endio(bio, bio->bi_size, -EIO);
+		else if (log->type->get_failure_response(log) == DMLOG_IOERR_BLOCK)
+			hold_bio(ms, bio);
+		else
+			bio_endio(bio, bio->bi_size, 0);
+  	}
 }
 
 static void trigger_event(void *data)
@@ -1379,6 +1415,7 @@ static struct mirror_set *alloc_context(unsigned int nr_mirrors,
 	ms->nr_regions = dm_sector_div_up(ti->len, region_size);
 	ms->in_sync = 0;
 	ms->log_failure = 0;
+	ms->leg_failure = 0;
 	atomic_set(&ms->suspend, 0);
 
 	spin_lock_init(&ms->choose_lock);
@@ -1733,7 +1770,24 @@ static void mirror_presuspend(struct dm_target *ti)
 	struct mirror_set *ms = (struct mirror_set *) ti->private;
 	struct dm_dirty_log *log = ms->rh.log;
 
+	struct bio_list holds;
+	struct bio *bio;
+
 	atomic_set(&ms->suspend, 1);
+
+	/*
+	 * Process bios in the hold list to start recovery waiting
+	 * for bios in the hold list. After the process, no bio has
+	 * a chance to be added in the hold list because ms->suspend
+	 * is set.
+	 */
+	spin_lock_irq(&ms->lock);
+	holds = ms->holds;
+	bio_list_init(&ms->holds);
+	spin_unlock_irq(&ms->lock);
+
+	while ((bio = bio_list_pop(&holds)))
+		hold_bio(ms, bio);
 
 	/*
 	 * We must finish up all the work that we've

@@ -4422,9 +4422,11 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 			 * But, this leaves one open to an easy denial of
 		 	 * service attack, and SYN cookies can't defend
 			 * against this problem. So, we drop the data
-			 * in the interest of security over speed.
+			 * in the interest of security over speed unless
+			 * it's still in use.
 			 */
-			goto discard;
+			kfree_skb(skb);
+			return 0;
 		}
 		goto discard;
 
@@ -4641,6 +4643,7 @@ discard:
 
 EXPORT_SYMBOL(sysctl_tcp_ecn);
 EXPORT_SYMBOL(sysctl_tcp_reordering);
+EXPORT_SYMBOL(sysctl_tcp_adv_win_scale);
 EXPORT_SYMBOL(tcp_parse_options);
 EXPORT_SYMBOL(tcp_rcv_established);
 EXPORT_SYMBOL(tcp_rcv_state_process);

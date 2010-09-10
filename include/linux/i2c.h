@@ -95,6 +95,9 @@ extern s32 i2c_smbus_write_byte_data(struct i2c_client * client,
 extern s32 i2c_smbus_read_word_data(struct i2c_client * client, u8 command);
 extern s32 i2c_smbus_write_word_data(struct i2c_client * client,
                                      u8 command, u16 value);
+/* Returns the number of read bytes */
+extern s32 i2c_smbus_read_block_data(struct i2c_client *client,
+				     u8 command, u8 *values);
 extern s32 i2c_smbus_write_block_data(struct i2c_client * client,
 				      u8 command, u8 length,
 				      const u8 *values);
@@ -544,7 +547,8 @@ enum chips { any_chip, chip1 };						\
 I2C_CLIENT_MODULE_PARM(force, "List of adapter,address pairs to "	\
 		       "boldly assume to be present");			\
 I2C_CLIENT_MODULE_PARM_FORCE(chip1);					\
-static unsigned short *forces[] = { force, force_##chip1, NULL };	\
+static unsigned short *forces[] =	{ force,		\
+	force_##chip1, NULL };						\
 I2C_CLIENT_INSMOD_COMMON
 
 #define I2C_CLIENT_INSMOD_2(chip1, chip2)				\
@@ -553,8 +557,8 @@ I2C_CLIENT_MODULE_PARM(force, "List of adapter,address pairs to "	\
 		       "boldly assume to be present");			\
 I2C_CLIENT_MODULE_PARM_FORCE(chip1);					\
 I2C_CLIENT_MODULE_PARM_FORCE(chip2);					\
-static unsigned short *forces[] = { force, force_##chip1,		\
-				    force_##chip2, NULL };		\
+static unsigned short *forces[] =	{ force,		\
+	force_##chip1, force_##chip2, NULL };				\
 I2C_CLIENT_INSMOD_COMMON
 
 #define I2C_CLIENT_INSMOD_3(chip1, chip2, chip3)			\
@@ -564,9 +568,8 @@ I2C_CLIENT_MODULE_PARM(force, "List of adapter,address pairs to "	\
 I2C_CLIENT_MODULE_PARM_FORCE(chip1);					\
 I2C_CLIENT_MODULE_PARM_FORCE(chip2);					\
 I2C_CLIENT_MODULE_PARM_FORCE(chip3);					\
-static unsigned short *forces[] = { force, force_##chip1,		\
-				    force_##chip2, force_##chip3,	\
-				    NULL };				\
+static unsigned short *forces[] =	{ force,		\
+	force_##chip1, force_##chip2, force_##chip3, NULL };		\
 I2C_CLIENT_INSMOD_COMMON
 
 #define I2C_CLIENT_INSMOD_4(chip1, chip2, chip3, chip4)			\
@@ -577,9 +580,9 @@ I2C_CLIENT_MODULE_PARM_FORCE(chip1);					\
 I2C_CLIENT_MODULE_PARM_FORCE(chip2);					\
 I2C_CLIENT_MODULE_PARM_FORCE(chip3);					\
 I2C_CLIENT_MODULE_PARM_FORCE(chip4);					\
-static unsigned short *forces[] = { force, force_##chip1,		\
-				    force_##chip2, force_##chip3,	\
-				    force_##chip4, NULL};		\
+static unsigned short *forces[] =	{ force,		\
+	force_##chip1, force_##chip2, force_##chip3,			\
+	force_##chip4, NULL};						\
 I2C_CLIENT_INSMOD_COMMON
 
 #define I2C_CLIENT_INSMOD_5(chip1, chip2, chip3, chip4, chip5)		\
@@ -591,10 +594,9 @@ I2C_CLIENT_MODULE_PARM_FORCE(chip2);					\
 I2C_CLIENT_MODULE_PARM_FORCE(chip3);					\
 I2C_CLIENT_MODULE_PARM_FORCE(chip4);					\
 I2C_CLIENT_MODULE_PARM_FORCE(chip5);					\
-static unsigned short *forces[] = { force, force_##chip1,		\
-				    force_##chip2, force_##chip3,	\
-				    force_##chip4, force_##chip5,	\
-				    NULL };				\
+static unsigned short *forces[] = { force,			\
+	force_##chip1, force_##chip2, force_##chip3,			\
+	force_##chip4, force_##chip5, NULL };				\
 I2C_CLIENT_INSMOD_COMMON
 
 #define I2C_CLIENT_INSMOD_6(chip1, chip2, chip3, chip4, chip5, chip6)	\
@@ -607,10 +609,9 @@ I2C_CLIENT_MODULE_PARM_FORCE(chip3);					\
 I2C_CLIENT_MODULE_PARM_FORCE(chip4);					\
 I2C_CLIENT_MODULE_PARM_FORCE(chip5);					\
 I2C_CLIENT_MODULE_PARM_FORCE(chip6);					\
-static unsigned short *forces[] = { force, force_##chip1,		\
-				    force_##chip2, force_##chip3,	\
-				    force_##chip4, force_##chip5,	\
-				    force_##chip6, NULL };		\
+static unsigned short * forces[] = { force,			\
+	force_##chip1, force_##chip2, force_##chip3,			\
+	force_##chip4, force_##chip5, force_##chip6, NULL };		\
 I2C_CLIENT_INSMOD_COMMON
 
 #define I2C_CLIENT_INSMOD_7(chip1, chip2, chip3, chip4, chip5, chip6, chip7) \
@@ -625,11 +626,10 @@ I2C_CLIENT_MODULE_PARM_FORCE(chip4);					\
 I2C_CLIENT_MODULE_PARM_FORCE(chip5);					\
 I2C_CLIENT_MODULE_PARM_FORCE(chip6);					\
 I2C_CLIENT_MODULE_PARM_FORCE(chip7);					\
-static unsigned short *forces[] = { force, force_##chip1,		\
-				    force_##chip2, force_##chip3,	\
-				    force_##chip4, force_##chip5,	\
-				    force_##chip6, force_##chip7,	\
-				    NULL };				\
+static unsigned short *forces[] = { force,			\
+	force_##chip1, force_##chip2, force_##chip3,			\
+	force_##chip4, force_##chip5, force_##chip6,			\
+	force_##chip7, NULL };						\
 I2C_CLIENT_INSMOD_COMMON
 
 #define I2C_CLIENT_INSMOD_8(chip1, chip2, chip3, chip4, chip5, chip6, chip7, chip8) \

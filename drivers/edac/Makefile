@@ -14,10 +14,15 @@ obj-$(CONFIG_EDAC_E7XXX)		+= e7xxx_edac.o
 obj-$(CONFIG_EDAC_E752X)		+= e752x_edac.o
 obj-$(CONFIG_EDAC_I82875P)		+= i82875p_edac.o
 obj-$(CONFIG_EDAC_I3000)		+= i3000_edac.o
+obj-$(CONFIG_EDAC_I3200)                += i3200_edac.o
 obj-$(CONFIG_EDAC_I5000)		+= i5000_edac.o
 obj-$(CONFIG_EDAC_I5400)		+= i5400_edac.o
 obj-$(CONFIG_EDAC_I82860)		+= i82860_edac.o
 obj-$(CONFIG_EDAC_K8)			+= k8_edac.o
+
+amd64_edac_mod-y := amd64_edac.o edac_mce_amd.o
+obj-$(CONFIG_EDAC_AMD64)                += amd64_edac_mod.o
+
 obj-$(CONFIG_EDAC_R82600)		+= r82600_edac.o
 obj-$(CONFIG_EDAC_CELL)			+= cell_edac.o
 

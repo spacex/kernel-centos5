@@ -891,6 +891,7 @@ static struct rpc_xprt *xprt_setup(int proto, struct sockaddr_in *ap, struct rpc
 		return ERR_PTR(-ENOMEM);
 
 	xprt->addr = *ap;
+	xprt->tcp_flags |= XPRT_SRCADDR_PRESENT;
 
 	switch (proto) {
 	case IPPROTO_UDP:

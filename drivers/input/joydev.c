@@ -149,8 +149,6 @@ static int joydev_release(struct inode * inode, struct file * file)
 {
 	struct joydev_list *list = file->private_data;
 
-	joydev_fasync(-1, file, 0);
-
 	list_del(&list->node);
 
 	if (!--list->joydev->open) {

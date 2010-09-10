@@ -267,12 +267,12 @@ dasd_state_ready_to_basic(struct dasd_device * device)
 	rc = dasd_flush_ccw_queue(device, 0);
 	if (rc)
 		return rc;
+	device->state = DASD_STATE_BASIC;
 	dasd_destroy_partitions(device);
 	dasd_flush_request_queue(device);
 	device->blocks = 0;
 	device->bp_block = 0;
 	device->s2b_shift = 0;
-	device->state = DASD_STATE_BASIC;
 	return 0;
 }
 
@@ -1210,9 +1210,14 @@ __dasd_process_blk_queue(struct dasd_device * device)
 	 * for that. State DASD_STATE_ONLINE is normal block device
 	 * operation.
 	 */
-	if (device->state != DASD_STATE_READY &&
-	    device->state != DASD_STATE_ONLINE)
+	if (device->state < DASD_STATE_READY) {
+		while ((req = elv_next_request(queue))) {
+			blkdev_dequeue_request(req);
+			dasd_end_request(req, 0);
+		}
 		return;
+	}
+
 	nr_queued = 0;
 	/* Now we try to fetch requests from the request queue */
 	list_for_each_entry(cqr, &device->ccw_queue, list)

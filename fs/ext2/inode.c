@@ -650,18 +650,21 @@ ext2_readpages(struct file *file, struct address_space *mapping,
 	return mpage_readpages(mapping, pages, nr_pages, ext2_get_block);
 }
 
-static int
-ext2_prepare_write(struct file *file, struct page *page,
-			unsigned from, unsigned to)
+int __ext2_write_begin(struct file *file, struct address_space *mapping,
+		loff_t pos, unsigned len, unsigned flags,
+		struct page **pagep, void **fsdata)
 {
-	return block_prepare_write(page,from,to,ext2_get_block);
+	return block_write_begin(file, mapping, pos, len, flags, pagep, fsdata,
+							ext2_get_block);
 }
 
 static int
-ext2_nobh_prepare_write(struct file *file, struct page *page,
-			unsigned from, unsigned to)
+ext2_write_begin(struct file *file, struct address_space *mapping,
+		loff_t pos, unsigned len, unsigned flags,
+		struct page **pagep, void **fsdata)
 {
-	return nobh_prepare_write(page,from,to,ext2_get_block);
+	*pagep = NULL;
+	return __ext2_write_begin(file, mapping, pos, len, flags, pagep,fsdata);
 }
 
 static int ext2_nobh_writepage(struct page *page,
@@ -692,17 +695,17 @@ ext2_writepages(struct address_space *mapping, struct writeback_control *wbc)
 	return mpage_writepages(mapping, wbc, ext2_get_block);
 }
 
-const struct address_space_operations ext2_aops = {
-	.readpage		= ext2_readpage,
-	.readpages		= ext2_readpages,
-	.writepage		= ext2_writepage,
-	.sync_page		= block_sync_page,
-	.prepare_write		= ext2_prepare_write,
-	.commit_write		= generic_commit_write,
-	.bmap			= ext2_bmap,
-	.direct_IO		= ext2_direct_IO,
-	.writepages		= ext2_writepages,
-	.migratepage		= buffer_migrate_page,
+const struct address_space_operations_ext ext2_aops = {
+	.orig_aops.readpage		= ext2_readpage,
+	.orig_aops.readpages		= ext2_readpages,
+	.orig_aops.writepage		= ext2_writepage,
+	.orig_aops.sync_page		= block_sync_page,
+	.write_begin			= ext2_write_begin,
+	.write_end			= generic_write_end,
+	.orig_aops.bmap			= ext2_bmap,
+	.orig_aops.direct_IO		= ext2_direct_IO,
+	.orig_aops.writepages		= ext2_writepages,
+	.orig_aops.migratepage		= buffer_migrate_page,
 };
 
 const struct address_space_operations ext2_aops_xip = {
@@ -715,8 +718,7 @@ const struct address_space_operations ext2_nobh_aops = {
 	.readpages		= ext2_readpages,
 	.writepage		= ext2_nobh_writepage,
 	.sync_page		= block_sync_page,
-	.prepare_write		= ext2_nobh_prepare_write,
-	.commit_write		= nobh_commit_write,
+	/* XXX: todo */
 	.bmap			= ext2_bmap,
 	.direct_IO		= ext2_direct_IO,
 	.writepages		= ext2_writepages,
@@ -1138,7 +1140,8 @@ void ext2_read_inode (struct inode * inode)
 			inode->i_mapping->a_ops = &ext2_nobh_aops;
 			inode->i_fop = &ext2_file_operations;
 		} else {
-			inode->i_mapping->a_ops = &ext2_aops;
+			inode->i_mapping->a_ops =
+				(struct address_space_operations *)&ext2_aops;
 			inode->i_fop = &ext2_file_operations;
 		}
 	} else if (S_ISDIR(inode->i_mode)) {
@@ -1147,7 +1150,8 @@ void ext2_read_inode (struct inode * inode)
 		if (test_opt(inode->i_sb, NOBH))
 			inode->i_mapping->a_ops = &ext2_nobh_aops;
 		else
-			inode->i_mapping->a_ops = &ext2_aops;
+			inode->i_mapping->a_ops =
+				(struct address_space_operations *)&ext2_aops;
 	} else if (S_ISLNK(inode->i_mode)) {
 		if (ext2_inode_is_fast_symlink(inode))
 			inode->i_op = &ext2_fast_symlink_inode_operations;
@@ -1156,7 +1160,9 @@ void ext2_read_inode (struct inode * inode)
 			if (test_opt(inode->i_sb, NOBH))
 				inode->i_mapping->a_ops = &ext2_nobh_aops;
 			else
-				inode->i_mapping->a_ops = &ext2_aops;
+				inode->i_mapping->a_ops =
+					(struct address_space_operations *)
+					&ext2_aops;
 		}
 	} else {
 		inode->i_op = &ext2_special_inode_operations;

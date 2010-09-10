@@ -97,6 +97,7 @@ static void mark_open_files_invalid(struct cifsTconInfo *pTcon)
 	list_for_each_safe(tmp, tmp1, &pTcon->openFileList) {
 		open_file = list_entry(tmp, struct cifsFileInfo, tlist);
 		open_file->invalidHandle = true;
+		open_file->oplock_break_cancelled = true;
 	}
 	write_unlock(&GlobalSMBSeslock);
 	/* BB Add call to invalidate_inodes(sb) for all superblocks mounted
@@ -2435,8 +2436,7 @@ querySymLinkRetry:
 	params = 2 /* level */  + 4 /* rsrvd */  + name_len /* incl null */ ;
 	pSMB->TotalDataCount = 0;
 	pSMB->MaxParameterCount = cpu_to_le16(2);
-	/* BB find exact max data count below from sess structure BB */
-	pSMB->MaxDataCount = cpu_to_le16(4000);
+	pSMB->MaxDataCount = cpu_to_le16(CIFSMaxBufSize);
 	pSMB->MaxSetupCount = 0;
 	pSMB->Reserved = 0;
 	pSMB->Flags = 0;
@@ -3969,6 +3969,10 @@ parse_DFS_referrals(TRANSACTION2_GET_DFS_REFER_RSP *pSMBr,
 		if (is_unicode) {
 			__le16 *tmp = kmalloc(strlen(searchName)*2 + 2,
 						GFP_KERNEL);
+			if (tmp == NULL) {
+				rc = -ENOMEM;
+				goto parse_DFS_referrals_exit;
+			}
 			cifsConvertToUCS((__le16 *) tmp, searchName,
 					PATH_MAX, nls_codepage, remap);
 			node->path_consumed = cifs_ucs2_bytes(tmp,

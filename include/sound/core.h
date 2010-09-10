@@ -22,6 +22,10 @@
  *
  */
 
+#ifndef __SOUND_DRIVER_H
+#include <sound/driver.h>
+#endif
+
 #include <linux/sched.h>		/* wake_up() */
 #include <linux/mutex.h>		/* struct mutex */
 #include <linux/rwsem.h>		/* struct rw_semaphore */

@@ -22,6 +22,7 @@
 #include <linux/slab.h>
 #include <linux/ctype.h>
 #include <linux/version.h>
+#include <linux/mount.h>
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 #include <linux/mempool.h>
 #endif
@@ -40,7 +41,6 @@ extern mempool_t *cifs_req_poolp;
 extern kmem_cache_t *cifs_sm_req_cachep;
 extern kmem_cache_t *cifs_req_cachep;
 #endif
-extern struct task_struct *oplockThread;
 
 /* The xid serves as a useful identifier for each incoming vfs request,
    in a similar way to the mid which is useful to track each sent smb,
@@ -587,30 +587,38 @@ is_valid_oplock_break(struct smb_hdr *buf, struct TCP_Server_Info *srv)
 				continue;
 
 			cifs_stats_inc(&tcon->num_oplock_brks);
-			write_lock(&GlobalSMBSeslock);
+			read_lock(&GlobalSMBSeslock);
 			list_for_each(tmp2, &tcon->openFileList) {
 				netfile = list_entry(tmp2, struct cifsFileInfo,
 						     tlist);
 				if (pSMB->Fid != netfile->netfid)
 					continue;
 
-				write_unlock(&GlobalSMBSeslock);
-				read_unlock(&cifs_tcp_ses_lock);
+				/*
+				 * don't do anything if file is about to be
+				 * closed anyway.
+				 */
+				if (netfile->closePend) {
+					read_unlock(&GlobalSMBSeslock);
+					read_unlock(&cifs_tcp_ses_lock);
+					return true;
+				}
+
 				cFYI(1, ("file id match, oplock break"));
 				pCifsInode = CIFS_I(netfile->pInode);
 				pCifsInode->clientCanCacheAll = false;
 				if (pSMB->OplockLevel == 0)
 					pCifsInode->clientCanCacheRead = false;
-				pCifsInode->oplockPending = true;
-				AllocOplockQEntry(netfile->pInode,
-						  netfile->netfid, tcon);
-				cFYI(1, ("about to wake up oplock thread"));
-				if (oplockThread)
-					wake_up_process(oplockThread);
-
+				if (queue_work(cifswq, &netfile->oplock_break)) {
+					cifsFileInfo_get(netfile);
+					mntget(netfile->mnt);
+					netfile->oplock_break_cancelled = false;
+				}
+				read_unlock(&GlobalSMBSeslock);
+				read_unlock(&cifs_tcp_ses_lock);
 				return true;
 			}
-			write_unlock(&GlobalSMBSeslock);
+			read_unlock(&GlobalSMBSeslock);
 			read_unlock(&cifs_tcp_ses_lock);
 			cFYI(1, ("No matching file for oplock break"));
 			return true;

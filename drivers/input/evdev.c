@@ -109,7 +109,6 @@ static int evdev_release(struct inode * inode, struct file * file)
 		list->evdev->grab = NULL;
 	}
 
-	evdev_fasync(-1, file, 0);
 	list_del(&list->node);
 
 	if (!--list->evdev->open) {

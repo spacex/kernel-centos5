@@ -28,12 +28,21 @@
 #ifndef _E1000_82575_H_
 #define _E1000_82575_H_
 
-void igb_update_mc_addr_list(struct e1000_hw*, u8*, u32, u32, u32);
-extern void igb_shutdown_fiber_serdes_link_82575(struct e1000_hw *hw);
+extern void igb_shutdown_serdes_link_82575(struct e1000_hw *hw);
 extern void igb_rx_fifo_flush_82575(struct e1000_hw *hw);
+
+#define ID_LED_DEFAULT_82575_SERDES ((ID_LED_DEF1_DEF2 << 12) | \
+                                     (ID_LED_DEF1_DEF2 <<  8) | \
+                                     (ID_LED_DEF1_DEF2 <<  4) | \
+                                     (ID_LED_OFF1_ON2))
 
 #define E1000_RAR_ENTRIES_82575   16
 #define E1000_RAR_ENTRIES_82576   24
+#define E1000_RAR_ENTRIES_82580   24
+
+#define E1000_SW_SYNCH_MB              0x00000100
+#define E1000_STAT_DEV_RST_SET         0x00100000
+#define E1000_CTRL_DEV_RST             0x20000000
 
 /* SRRCTL bit definitions */
 #define E1000_SRRCTL_BSIZEPKT_SHIFT                     10 /* Shift _right_ */
@@ -143,7 +152,25 @@ struct e1000_adv_tx_context_desc {
 #define E1000_RXDCTL_QUEUE_ENABLE  0x02000000 /* Enable specific Rx Queue */
 
 /* Direct Cache Access (DCA) definitions */
+#define E1000_DCA_CTRL_DCA_MODE_DISABLE 0x01 /* DCA Disable */
+#define E1000_DCA_CTRL_DCA_MODE_CB2     0x02 /* DCA Mode CB2 */
+
+#define E1000_DCA_RXCTRL_CPUID_MASK 0x0000001F /* Rx CPUID Mask */
+#define E1000_DCA_RXCTRL_DESC_DCA_EN (1 << 5) /* DCA Rx Desc enable */
+#define E1000_DCA_RXCTRL_HEAD_DCA_EN (1 << 6) /* DCA Rx Desc header enable */
+#define E1000_DCA_RXCTRL_DATA_DCA_EN (1 << 7) /* DCA Rx Desc payload enable */
+
+#define E1000_DCA_TXCTRL_CPUID_MASK 0x0000001F /* Tx CPUID Mask */
+#define E1000_DCA_TXCTRL_DESC_DCA_EN (1 << 5) /* DCA Tx Desc enable */
 #define E1000_DCA_TXCTRL_TX_WB_RO_EN (1 << 11) /* Tx Desc writeback RO bit */
+
+/* Additional DCA related definitions, note change in position of CPUID */
+#define E1000_DCA_TXCTRL_CPUID_MASK_82576 0xFF000000 /* Tx CPUID Mask */
+#define E1000_DCA_RXCTRL_CPUID_MASK_82576 0xFF000000 /* Rx CPUID Mask */
+#define E1000_DCA_TXCTRL_CPUID_SHIFT 24 /* Tx CPUID now in the last byte */
+#define E1000_DCA_RXCTRL_CPUID_SHIFT 24 /* Rx CPUID now in the last byte */
+
+#define E1000_NVM_APME_82575          0x0400
 
 #define MAX_NUM_VFS                   8
 
@@ -182,7 +209,10 @@ struct e1000_adv_tx_context_desc {
 
 #define ALL_QUEUES   0xFFFF
 
+/* RX packet buffer size defines */
+#define E1000_RXPBS_SIZE_MASK_82576  0x0000007F
 void igb_vmdq_set_loopback_pf(struct e1000_hw *, bool);
 void igb_vmdq_set_replication_pf(struct e1000_hw *, bool);
+u16 igb_rxpbs_adjust_82580(u32 data);
 
 #endif

@@ -66,6 +66,7 @@ struct multipath {
 
 	struct hw_handler hw_handler;
 	const char *hw_handler_name;
+	char *hw_handler_params;
 	unsigned nr_priority_groups;
 	struct list_head priority_groups;
 	unsigned pg_init_required;	/* pg_init needs calling? */
@@ -219,6 +220,7 @@ static void free_multipath(struct multipath *m)
 		dm_put_hw_handler(hwh->type);
 	}
 	kfree(m->hw_handler_name);
+	kfree(m->hw_handler_params);
 	mempool_destroy(m->mpio_pool);
 	kfree(m);
 }
@@ -588,11 +590,33 @@ static struct pgpath *parse_path(struct arg_set *as, struct path_selector *ps,
 	}
 
 	if (m->hw_handler_name) {
-		r = scsi_dh_attach(bdev_get_queue(p->path.dev->bdev),
-				   m->hw_handler_name);
+		struct request_queue *q = bdev_get_queue(p->path.dev->bdev);
+
+		r = scsi_dh_attach(q, m->hw_handler_name);
+		if (r == -EBUSY) {
+			/*
+			 * Already attached to different hw_handler,
+			 * try to reattach with correct one.
+			 */
+			scsi_dh_detach(q);
+			r = scsi_dh_attach(q, m->hw_handler_name);
+		}
+
 		if (r < 0) {
+			ti->error = "error attaching hardware handler";
 			dm_put_device(ti, p->path.dev);
 			goto bad;
+		}
+
+		if (m->hw_handler_params) {
+			r = scsi_dh_set_params(q, m->hw_handler_params);
+			if (r < 0) {
+				ti->error = "unable to set hardware "
+							"handler parameters";
+				scsi_dh_detach(q);
+				dm_put_device(ti, p->path.dev);
+				goto bad;
+			}
 		}
 	}
 
@@ -704,9 +728,24 @@ static int parse_hw_handler(struct arg_set *as, struct multipath *m,
 	if (scsi_dh_handler_exist(m->hw_handler_name)) {
 		DMINFO("Using scsi_dh module scsi_dh_%s for failover/failback "
 		       "and device management.", m->hw_handler_name);
-		if (hw_argc > 1)
-			DMWARN("No arguments accepted for this hardware "
-			       "handler");
+
+		if (hw_argc > 1) {
+			char *p;
+			int i, j, len = 4;
+
+			for (i = 0; i <= hw_argc - 2; i++)
+				len += strlen(as->argv[i]) + 1;
+			p = m->hw_handler_params = kzalloc(len, GFP_KERNEL);
+			if (!p) {
+				ti->error = "memory allocation failed";
+				r = -ENOMEM;
+				goto done;
+			}
+			j = sprintf(p, "%d", hw_argc - 1);
+			for (i = 0, p+=j+1; i <= hw_argc - 2; i++, p+=j+1)
+				j = sprintf(p, "%s", as->argv[i]);
+		}
+
 		goto done;
 	}
 
@@ -1133,8 +1172,9 @@ void dm_pg_init_complete(struct path *path, unsigned err_flags)
 	spin_unlock_irqrestore(&m->lock, flags);
 }
 
-static void pg_init_done(struct path *path, int errors)
+static void pg_init_done(void *data, int errors)
 {
+	struct path *path = data;
 	struct pgpath *pgpath = path_to_pgpath(path);
 	struct priority_group *pg = pgpath->pg;
 	struct multipath *m = pg->m;
@@ -1206,11 +1246,10 @@ static void pg_init_done(struct path *path, int errors)
 
 static void activate_path(void *data)
 {
-	int ret;
 	struct pgpath *pgpath = (struct pgpath *) data;
 
-	ret = scsi_dh_activate(bdev_get_queue(pgpath->path.dev->bdev));
-	pg_init_done(&pgpath->path, ret);
+	scsi_dh_activate(bdev_get_queue(pgpath->path.dev->bdev),
+				pg_init_done, &pgpath->path);
 }
 
 /*

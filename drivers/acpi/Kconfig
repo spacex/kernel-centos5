@@ -178,6 +178,16 @@ config ACPI_NUMA
 	depends on (X86 || IA64)
 	default y if IA64_GENERIC || IA64_SGI_SN2
 
+config ACPI_WMI
+	tristate "WMI (EXPERIMENTAL)"
+	depends on EXPERIMENTAL
+	help
+	  This driver adds support for the ACPI-WMI mapper device (PNP0C14)
+	  found on some systems.
+
+	  NOTE: You will need another driver or userspace application on top of
+	  this to actually use anything defined in the ACPI-WMI mapper.
+
 config ACPI_ASUS
         tristate "ASUS/Medion Laptop Extras"
 	depends on X86
@@ -267,6 +277,17 @@ config ACPI_TOSHIBA
 
 	  If you have a legacy free Toshiba laptop (such as the Libretto L1
 	  series), say Y.
+
+config ACPI_POWER_METER
+      tristate "ACPI 4.0 power meter"
+      depends on HWMON
+      help
+        This driver exposes ACPI 4.0 power meters as hardware monitoring
+        devices.  Say Y (or M) if you have a computer with ACPI 4.0 firmware
+        and a power meter.
+
+        To compile this driver as a module, choose M here:
+        the module will be called power-meter.
 
 config ACPI_CUSTOM_DSDT
 	bool "Include Custom DSDT"
@@ -382,6 +403,10 @@ config ACPI_SBS
 	  Depends on I2C (Device Drivers ---> I2C support)
 	  A "Smart Battery" is quite old and quite rare compared
 	  to today's ACPI "Control Method" battery.
+
+config DELL_WMI
+	tristate "Dell WMI Laptop Extras"
+	depends on X86 && ACPI_WMI
 
 config THINKPAD_ACPI
         tristate "ThinkPad ACPI Laptop Extras"

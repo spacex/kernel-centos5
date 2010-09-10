@@ -426,13 +426,12 @@ static int ipmi_set_timeout(int do_heartbeat)
 
 	wait_for_completion(&set_timeout_wait);
 
+	mutex_unlock(&set_timeout_lock);
+
 	if ((do_heartbeat == IPMI_SET_TIMEOUT_FORCE_HB)
 	    || ((send_heartbeat_now)
 		&& (do_heartbeat == IPMI_SET_TIMEOUT_HB_IF_NECESSARY)))
-	{
 		rv = ipmi_heartbeat();
-	}
-	mutex_unlock(&set_timeout_lock);
 
 out:
 	return rv;
@@ -820,7 +819,6 @@ static int ipmi_close(struct inode *ino, struct file *filep)
 		clear_bit(0, &ipmi_wdog_open);
 	}
 
-	ipmi_fasync (-1, filep, 0);
 	expect_close = 0;
 
 	return 0;

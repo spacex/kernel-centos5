@@ -45,20 +45,36 @@
 #include <linux/mlx4/cq.h>
 #include <linux/mlx4/srq.h>
 #include <linux/mlx4/doorbell.h>
+#include <linux/mlx4/cmd.h>
 
 #include "en_port.h"
 
 #define DRV_NAME	"mlx4_en"
-#define DRV_VERSION	"1.4.1"
-#define DRV_RELDATE	"April 2009"
-
+#define DRV_VERSION	"1.4.2.2"
+#define DRV_RELDATE	"Nov 2009"
 
 #define MLX4_EN_MSG_LEVEL	(NETIF_MSG_LINK | NETIF_MSG_IFDOWN)
 
-#define mlx4_dbg(mlevel, priv, format, arg...)	\
+#define en_print(level, priv, format, arg...)			\
+	{							\
+	if ((priv)->registered)					\
+		printk(level "%s: %s: " format, DRV_NAME,	\
+			(priv->dev)->name, ## arg);		\
+	else							\
+		printk(level "%s: %s: Port %d: " format,	\
+			DRV_NAME, (&priv->mdev->pdev->dev)->bus_id, \
+			(priv)->port, ## arg);			\
+	}
+
+#define en_dbg(mlevel, priv, format, arg...)	\
 	if (NETIF_MSG_##mlevel & priv->msg_enable) \
-	printk(KERN_DEBUG "%s %s: " format , DRV_NAME ,\
-		(&priv->mdev->pdev->dev)->bus_id , ## arg)
+		en_print(KERN_DEBUG, priv, format, ## arg)
+#define en_warn(priv, format, arg...) \
+	en_print(KERN_WARNING, priv, format, ## arg)
+#define en_err(priv, format, arg...) \
+	en_print(KERN_ERR, priv, format, ## arg)
+#define en_info(priv, format, arg...) \
+	en_print(KERN_INFO, priv, format, ## arg)
 
 #define mlx4_err(mdev, format, arg...) \
 	printk(KERN_ERR "%s %s: " format , DRV_NAME ,\
@@ -77,13 +93,11 @@
 
 #define MLX4_EN_PAGE_SHIFT	12
 #define MLX4_EN_PAGE_SIZE	(1 << MLX4_EN_PAGE_SHIFT)
-#define MAX_TX_RINGS		(MLX4_EN_NUM_HASH_RINGS + MLX4_EN_NUM_PPP_RINGS + 1)
-#define MAX_RX_RINGS		17
-#define MAX_RSS_MAP_SIZE	64
-#define RSS_FACTOR		1
+#define MAX_TX_RINGS		(MLX4_EN_NUM_HASH_RINGS + 1 + MLX4_EN_NUM_PPP_RINGS)
+#define MAX_RX_RINGS		9
+#define MIN_RX_RINGS		4
 #define TXBB_SIZE		64
 #define HEADROOM		(2048 / TXBB_SIZE + 1)
-#define MAX_LSO_HDR_SIZE	92
 #define STAMP_STRIDE		64
 #define STAMP_DWORDS		(STAMP_STRIDE / 4)
 #define STAMP_SHIFT		31
@@ -127,7 +141,7 @@ enum {
 #define MLX4_EN_SMALL_PKT_SIZE		64
 #define MLX4_EN_TX_HASH_SIZE		256
 #define MLX4_EN_TX_HASH_MASK		(MLX4_EN_TX_HASH_SIZE - 1)
-#define MLX4_EN_NUM_HASH_RINGS		8
+#define MLX4_EN_NUM_HASH_RINGS		4
 #define MLX4_EN_NUM_PPP_RINGS		8
 #define MLX4_EN_DEF_TX_RING_SIZE	512
 #define MLX4_EN_DEF_RX_RING_SIZE  	1024
@@ -146,6 +160,7 @@ enum {
 #define MLX4_EN_RX_SIZE_THRESH		1024
 #define MLX4_EN_RX_RATE_THRESH		(1000000 / MLX4_EN_RX_COAL_TIME_HIGH)
 #define MLX4_EN_SAMPLE_INTERVAL		0
+#define MLX4_EN_AVG_PKT_SMALL		256
 
 #define MLX4_EN_AUTO_CONF	0xffff
 
@@ -161,9 +176,13 @@ enum {
 
 #define SMALL_PACKET_SIZE      (256 - NET_IP_ALIGN)
 #define HEADER_COPY_SIZE       (128 - NET_IP_ALIGN)
+#define MLX4_LOOPBACK_TEST_PAYLOAD (HEADER_COPY_SIZE - ETH_HLEN)
 
 #define MLX4_EN_MIN_MTU		46
-#define ETH_BCAST		0xffffffffffff
+#define ETH_BCAST		0xffffffffffffULL
+
+#define MLX4_EN_LOOPBACK_RETRIES	5
+#define MLX4_EN_LOOPBACK_TIMEOUT	1000
 
 #ifdef MLX4_EN_PERF_STAT
 /* Number of samples to 'average' */
@@ -203,7 +222,8 @@ enum cq_type {
  */
 #define ROUNDUP_LOG2(x)		ilog2(roundup_pow_of_two(x))
 #define XNOR(x, y)		(!(x) == !(y))
-#define ILLEGAL_MAC(addr)	(addr == 0xffffffffffff || addr == 0x0)
+#define ILLEGAL_MAC(addr)	(addr == 0xffffffffffffULL || addr == 0x0)
+#define rounddown_pow_of_two(n)	((n == 1) ? 0 : (1UL << ilog2(n)))
 
 
 struct mlx4_en_tx_info {
@@ -278,7 +298,6 @@ struct mlx4_en_ipfrag {
 };
 
 struct mlx4_en_rx_desc {
-	struct mlx4_wqe_srq_next_seg next;
 	/* actual number of entries depends on rx ring stride */
 	struct mlx4_wqe_data_seg data[0];
 };
@@ -312,7 +331,6 @@ struct mlx4_en_lro {
 
 
 struct mlx4_en_rx_ring {
-	struct mlx4_srq srq;
 	struct mlx4_hwq_resources wqres;
 	struct mlx4_en_rx_alloc page_alloc[MLX4_EN_MAX_RX_FRAGS];
 	struct mlx4_en_lro lro;
@@ -328,8 +346,6 @@ struct mlx4_en_rx_ring {
 	u32 prod;
 	u32 cons;
 	u32 buf_size;
-	int need_refill;
-	int full;
 	void *buf;
 	void *rx_info;
 	unsigned long bytes;
@@ -343,7 +359,7 @@ static inline int mlx4_en_can_lro(__be16 status)
 {
 	return (status & cpu_to_be16(MLX4_CQE_STATUS_IPV4	|
 				     MLX4_CQE_STATUS_IPV4F	|
-                                     MLX4_CQE_STATUS_IPV6	|
+				     MLX4_CQE_STATUS_IPV6	|
 				     MLX4_CQE_STATUS_IPV4OPT	|
 				     MLX4_CQE_STATUS_TCP	|
 				     MLX4_CQE_STATUS_UDP	|
@@ -416,11 +432,9 @@ struct mlx4_en_dev {
 
 
 struct mlx4_en_rss_map {
-	int size;
 	int base_qpn;
-	u16 map[MAX_RSS_MAP_SIZE];
-	struct mlx4_qp qps[MAX_RSS_MAP_SIZE];
-	enum mlx4_qp_state state[MAX_RSS_MAP_SIZE];
+	struct mlx4_qp qps[MAX_RX_RINGS];
+	enum mlx4_qp_state state[MAX_RX_RINGS];
 	struct mlx4_qp indir_qp;
 	enum mlx4_qp_state indir_state;
 };
@@ -432,6 +446,12 @@ struct mlx4_en_rss_context {
 	u8 hash_fn;
 	u8 flags;
 	__be32 rss_key[10];
+};
+
+struct mlx4_en_port_state {
+	int link_state;
+	int link_speed;
+	int transciver;
 };
 
 struct mlx4_en_pkt_stats {
@@ -489,6 +509,7 @@ struct mlx4_en_priv {
 	struct vlan_group *vlgrp;
 	struct net_device_stats stats;
 	struct net_device_stats ret_stats;
+	struct mlx4_en_port_state port_state;
 	spinlock_t stats_lock;
 
 	unsigned long last_moder_packets;
@@ -507,14 +528,16 @@ struct mlx4_en_priv {
 	u16 sample_interval;
 	u16 adaptive_rx_coal;
 	u32 msg_enable;
+	u32 loopback_ok;
+	u32 validate_loopback;
 
 	struct mlx4_hwq_resources res;
 	int link_state;
 	int last_link_state;
 	bool port_up;
 	int port;
-	int registered;
-	int allocated;
+	bool registered;
+	bool allocated;
 	int rx_csum;
 	u64 mac;
 	int mac_index;
@@ -539,7 +562,6 @@ struct mlx4_en_priv {
 	struct mlx4_en_tx_hash_entry tx_hash[MLX4_EN_TX_HASH_SIZE];
 	struct work_struct mcast_task;
 	struct work_struct mac_task;
-	struct delayed_work refill_task;
 	struct work_struct watchdog_task;
 	struct work_struct linkstate_task;
 	struct delayed_work stats_task;
@@ -564,8 +586,6 @@ void mlx4_en_stop_port(struct net_device *dev);
 void mlx4_en_free_resources(struct mlx4_en_priv *priv);
 int mlx4_en_alloc_resources(struct mlx4_en_priv *priv);
 
-int mlx4_en_get_profile(struct mlx4_en_dev *mdev);
-
 int mlx4_en_create_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq,
 		      int entries, int ring, enum cq_type mode);
 void mlx4_en_destroy_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq);
@@ -584,7 +604,7 @@ int mlx4_en_create_tx_ring(struct mlx4_en_priv *priv, struct mlx4_en_tx_ring *ri
 void mlx4_en_destroy_tx_ring(struct mlx4_en_priv *priv, struct mlx4_en_tx_ring *ring);
 int mlx4_en_activate_tx_ring(struct mlx4_en_priv *priv,
 			     struct mlx4_en_tx_ring *ring,
-			     int cq, int srqn);
+			     int cq);
 void mlx4_en_deactivate_tx_ring(struct mlx4_en_priv *priv,
 				struct mlx4_en_tx_ring *ring);
 
@@ -603,30 +623,31 @@ int mlx4_en_process_rx_cq_skb(struct net_device *dev,
 			      int budget);
 int mlx4_en_poll_rx_cq(struct net_device *poll_dev, int *budget);;
 void mlx4_en_fill_qp_context(struct mlx4_en_priv *priv, int size, int stride,
-			     int is_tx, int rss, int qpn, int cqn, int srqn,
+			     int is_tx, int rss, int qpn, int cqn,
 			     struct mlx4_qp_context *context);
 void mlx4_en_sqp_event(struct mlx4_qp *qp, enum mlx4_event event);
 int mlx4_en_map_buffer(struct mlx4_buf *buf);
 void mlx4_en_unmap_buffer(struct mlx4_buf *buf);
 
 void mlx4_en_calc_rx_buf(struct net_device *dev);
+void mlx4_en_set_prio_map(struct mlx4_en_priv *priv, u16 *prio_map, u32 ring_num);
+int mlx4_en_config_rss_steer(struct mlx4_en_priv *priv);
+void mlx4_en_release_rss_steer(struct mlx4_en_priv *priv);
+int mlx4_en_free_tx_buf(struct net_device *dev, struct mlx4_en_tx_ring *ring);
+void mlx4_en_rx_irq(struct mlx4_cq *mcq);
+
+struct sk_buff *mlx4_en_rx_skb(struct mlx4_en_priv *priv,
+			       struct mlx4_en_rx_desc *rx_desc,
+			       struct skb_frag_struct *skb_frags,
+			       struct mlx4_en_rx_alloc *page_alloc,
+			       unsigned int length);
 int mlx4_en_complete_rx_desc(struct mlx4_en_priv *priv,
 			     struct mlx4_en_rx_desc *rx_desc,
 			     struct skb_frag_struct *skb_frags,
 			     struct skb_frag_struct *skb_frags_rx,
 			     struct mlx4_en_rx_alloc *page_alloc,
 			     int length);
-struct sk_buff *mlx4_en_rx_skb(struct mlx4_en_priv *priv,
-			       struct mlx4_en_rx_desc *rx_desc,
-			       struct skb_frag_struct *skb_frags,
-			       struct mlx4_en_rx_alloc *page_alloc,
-			       unsigned int length);
-
-void mlx4_en_set_default_rss_map(struct mlx4_en_priv *priv,
-				 struct mlx4_en_rss_map *rss_map,
-				 int num_entries, int num_rings);
-
-void mlx4_en_lro_flush(struct mlx4_en_priv* priv, struct mlx4_en_rx_ring *ring, u8 all);
+void mlx4_en_lro_flush(struct mlx4_en_priv *priv, struct mlx4_en_rx_ring *ring, u8 all);
 int mlx4_en_lro_rx(struct mlx4_en_priv *priv, struct mlx4_en_rx_ring *ring,
 		   struct mlx4_en_rx_desc *rx_desc,
 		   struct skb_frag_struct *skb_frags,
@@ -634,14 +655,6 @@ int mlx4_en_lro_rx(struct mlx4_en_priv *priv, struct mlx4_en_rx_ring *ring,
 void mlx4_en_lro_destroy(struct mlx4_en_rx_ring *ring);
 int mlx4_en_lro_init(struct mlx4_en_rx_ring *ring, int num_lro);
 
-void mlx4_en_set_prio_map(struct mlx4_en_priv *priv, u16 *prio_map, u32 ring_num);
-int mlx4_en_config_rss_steer(struct mlx4_en_priv *priv);
-void mlx4_en_release_rss_steer(struct mlx4_en_priv *priv);
-int mlx4_en_free_tx_buf(struct net_device *dev, struct mlx4_en_tx_ring *ring);
-void mlx4_en_rx_refill(struct work_struct *work);
-void mlx4_en_rx_irq(struct mlx4_cq *mcq);
-
-int mlx4_SET_MCAST_FLTR(struct mlx4_dev *dev, u8 port, u64 mac, u64 clear, u8 mode);
 int mlx4_SET_VLAN_FLTR(struct mlx4_dev *dev, u8 port, struct vlan_group *grp);
 int mlx4_SET_PORT_general(struct mlx4_dev *dev, u8 port, int mtu,
 			  u8 pptx, u8 pfctx, u8 pprx, u8 pfcrx);
@@ -649,6 +662,11 @@ int mlx4_SET_PORT_qpn_calc(struct mlx4_dev *dev, u8 port, u32 base_qpn,
 			   u8 promisc);
 
 int mlx4_en_DUMP_ETH_STATS(struct mlx4_en_dev *mdev, u8 port, u8 reset);
+int mlx4_en_QUERY_PORT(struct mlx4_en_dev *mdev, u8 port);
+
+#define MLX4_EN_NUM_SELF_TEST	5
+void mlx4_en_ex_selftest(struct net_device *dev, u32 *flags, u64 *buf);
+u64 mlx4_en_mac_to_u64(u8 *addr);
 
 /*
  * Globals

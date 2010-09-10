@@ -1008,7 +1008,7 @@ static void __devinit setup_APIC_timer(unsigned int clocks)
 }
 
 int apic_calibration_iters __initdata = 10;
-#define MAX_DIFFERENCE 1000ULL
+int apic_calibration_diff __initdata = 5000;
 
 static inline int __init
 __read_tsc_and_apic(unsigned long long *tsc, long *apic)
@@ -1023,10 +1023,10 @@ __read_tsc_and_apic(unsigned long long *tsc, long *apic)
 		rdtsc_barrier();
 		rdtscll(tsc1);
 		diff = tsc1 - tsc0;
-	} while (diff > MAX_DIFFERENCE && ++i < apic_calibration_iters);
+	} while (diff > apic_calibration_diff && ++i < apic_calibration_iters);
 
 	*tsc = tsc0 + (diff >> 1);
-	return diff > MAX_DIFFERENCE ? -EIO : 0;
+	return diff > apic_calibration_diff ? -EIO : 0;
 }
 
 /*
@@ -1138,6 +1138,14 @@ static __init int setup_apiccalibrationiters(char *str)
 	return 1;
 }
 __setup("apiccalibrationiters=", setup_apiccalibrationiters);
+
+static __init int setup_apiccalibrationdiff(char *str)
+{
+	get_option(&str, &apic_calibration_diff);
+	return 1;
+}
+__setup("apiccalibrationdiff=", setup_apiccalibrationdiff);
+
 
 static unsigned int calibration_result;
 

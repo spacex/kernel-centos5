@@ -116,7 +116,8 @@ static int ext2_create (struct inode * dir, struct dentry * dentry, int mode, st
 			inode->i_mapping->a_ops = &ext2_nobh_aops;
 			inode->i_fop = &ext2_file_operations;
 		} else {
-			inode->i_mapping->a_ops = &ext2_aops;
+			inode->i_mapping->a_ops =
+				(struct address_space_operations *)&ext2_aops;
 			inode->i_fop = &ext2_file_operations;
 		}
 		mark_inode_dirty(inode);
@@ -168,7 +169,8 @@ static int ext2_symlink (struct inode * dir, struct dentry * dentry,
 		if (test_opt(inode->i_sb, NOBH))
 			inode->i_mapping->a_ops = &ext2_nobh_aops;
 		else
-			inode->i_mapping->a_ops = &ext2_aops;
+			inode->i_mapping->a_ops =
+				(struct address_space_operations *)&ext2_aops;
 		err = page_symlink(inode, symname, l);
 		if (err)
 			goto out_fail;
@@ -225,7 +227,8 @@ static int ext2_mkdir(struct inode * dir, struct dentry * dentry, int mode)
 	if (test_opt(inode->i_sb, NOBH))
 		inode->i_mapping->a_ops = &ext2_nobh_aops;
 	else
-		inode->i_mapping->a_ops = &ext2_aops;
+		inode->i_mapping->a_ops =
+			(struct address_space_operations *)&ext2_aops;
 
 	inode_inc_link_count(inode);
 

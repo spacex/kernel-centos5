@@ -64,6 +64,7 @@ struct mlx4_dev_cap {
 	int max_responder_per_qp;
 	int max_rdma_global;
 	int local_ca_ack_delay;
+	int pf_num;
 	int num_ports;
 	u32 max_msg_sz;
 	int ib_mtu[MLX4_MAX_PORTS + 1];
@@ -78,6 +79,9 @@ struct mlx4_dev_cap {
 	int wavelength[MLX4_MAX_PORTS + 1];
 	u64 trans_code[MLX4_MAX_PORTS + 1];
 	u16 stat_rate_support;
+	int loopback_support;
+	int vep_uc_steering;
+	int vep_mc_steering;
 	u32 flags;
 	int reserved_uars;
 	int uar_size;
@@ -164,6 +168,10 @@ struct mlx4_set_ib_param {
 };
 
 int mlx4_QUERY_DEV_CAP(struct mlx4_dev *dev, struct mlx4_dev_cap *dev_cap);
+int mlx4_QUERY_SLAVE_CAP(struct mlx4_dev *dev, struct mlx4_caps *caps);
+int mlx4_QUERY_SLAVE_CAP_wrapper(struct mlx4_dev *dev, int slave, struct mlx4_vhcr *vhcr,
+						    struct mlx4_cmd_mailbox *inbox,
+						    struct mlx4_cmd_mailbox *outbox);
 int mlx4_MAP_FA(struct mlx4_dev *dev, struct mlx4_icm *icm);
 int mlx4_UNMAP_FA(struct mlx4_dev *dev);
 int mlx4_RUN_FW(struct mlx4_dev *dev);
@@ -177,5 +185,6 @@ int mlx4_MAP_ICM_AUX(struct mlx4_dev *dev, struct mlx4_icm *icm);
 int mlx4_UNMAP_ICM_AUX(struct mlx4_dev *dev);
 int mlx4_NOP(struct mlx4_dev *dev);
 int mlx4_MOD_STAT_CFG(struct mlx4_dev *dev, struct mlx4_mod_stat_cfg *cfg);
+int mlx4_QUERY_FUNC(struct mlx4_dev *dev, int func, u8 *pf_num);
 
 #endif /* MLX4_FW_H */

@@ -366,9 +366,6 @@ static int rtc_dev_release(struct inode *inode, struct file *file)
 	if (rtc->ops->release)
 		rtc->ops->release(rtc->class_dev.dev);
 
-	if (file->f_flags & FASYNC)
-		rtc_dev_fasync(-1, file, 0);
-
 	mutex_unlock(&rtc->char_lock);
 	return 0;
 }

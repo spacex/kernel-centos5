@@ -44,12 +44,12 @@
 /* LRO hash function - using sum of source and destination port LSBs is
  * good enough */
 #define LRO_INDEX(th, size) \
-	((*((u8*) &th->source + 1) + *((u8*) &th->dest + 1)) & (size - 1))
+	((*((u8 *) &th->source + 1) + *((u8 *) &th->dest + 1)) & (size - 1))
 
 /* #define CONFIG_MLX4_EN_DEBUG_LRO */
 
 #ifdef CONFIG_MLX4_EN_DEBUG_LRO
-static void mlx4_en_lro_validate(struct mlx4_en_priv* priv, struct mlx4_en_lro *lro)
+static void mlx4_en_lro_validate(struct mlx4_en_priv *priv, struct mlx4_en_lro *lro)
 {
 	int i;
 	int size, size2;
@@ -85,7 +85,7 @@ static void mlx4_en_lro_validate(struct mlx4_en_priv* priv, struct mlx4_en_lro *
 
 		if (size2 != len2) {
 			mlx4_err(priv->mdev, "Bad skb size:%d in LRO fraglist. "
-			          "Expected:%d (skb:%d)\n", size2, len2, cur_skb);
+				 "Expected:%d (skb:%d)\n", size2, len2, cur_skb);
 			return;
 		}
 		size += size2;
@@ -97,8 +97,8 @@ static void mlx4_en_lro_validate(struct mlx4_en_priv* priv, struct mlx4_en_lro *
 }
 #endif /* MLX4_EN_DEBUG_LRO */
 
-static void mlx4_en_lro_flush_single(struct mlx4_en_priv* priv,
-		   struct mlx4_en_rx_ring* ring, struct mlx4_en_lro *lro)
+static void mlx4_en_lro_flush_single(struct mlx4_en_priv *priv,
+		   struct mlx4_en_rx_ring *ring, struct mlx4_en_lro *lro)
 {
 	struct sk_buff *skb = lro->skb;
 	struct iphdr *iph = (struct iphdr *) skb->data;
@@ -156,7 +156,7 @@ static void mlx4_en_lro_flush_single(struct mlx4_en_priv* priv,
 	hlist_add_head(&lro->node, &ring->lro_free);
 }
 
-void mlx4_en_lro_flush(struct mlx4_en_priv* priv, struct mlx4_en_rx_ring *ring, u8 all)
+void mlx4_en_lro_flush(struct mlx4_en_priv *priv, struct mlx4_en_rx_ring *ring, u8 all)
 {
 	struct mlx4_en_lro *lro;
 	struct hlist_node *node, *tmp;
@@ -192,7 +192,7 @@ static inline int mlx4_en_lro_append(struct mlx4_en_priv *priv,
 						page_alloc,
 						data_len + hlen);
 	if (!nr_frags) {
-		mlx4_dbg(DRV, priv, "Failed completing rx desc during LRO append\n");
+		en_dbg(DRV, priv, "Failed completing rx desc during LRO append\n");
 		return -ENOMEM;
 	}
 
@@ -230,7 +230,7 @@ static inline struct mlx4_en_lro *mlx4_en_lro_find_session(struct mlx4_en_dev *m
 	struct hlist_head *list = &ring->lro_hash[index];
 
 	hlist_for_each_entry(lro, node, list, node) {
-		if (lro->sport_dport == *((u32*) &th->source) &&
+		if (lro->sport_dport == *((u32 *) &th->source) &&
 		    lro->saddr == iph->saddr &&
 		    lro->daddr == iph->daddr)
 			return lro;
@@ -313,7 +313,7 @@ int mlx4_en_lro_rx(struct mlx4_en_priv *priv, struct mlx4_en_rx_ring *ring,
 	/* We only handle aligned timestamp options */
 	tcp_hlen = (th->doff << 2);
 	if (tcp_hlen == sizeof(*th) + TCPOLEN_TSTAMP_ALIGNED) {
-		ts = (u32*) (th + 1);
+		ts = (u32 *) (th + 1);
 		if (unlikely(*ts != htonl((TCPOPT_NOP << 24) |
 					  (TCPOPT_NOP << 16) |
 					  (TCPOPT_TIMESTAMP << 8) |
@@ -323,7 +323,6 @@ int mlx4_en_lro_rx(struct mlx4_en_priv *priv, struct mlx4_en_rx_ring *ring,
 		tsecr = ts[2];
 	} else if (tcp_hlen != sizeof(*th))
 		goto sync_device;
-	
 
 	/* At this point we know we have a TCP packet that is likely to be
 	 * eligible for LRO. Therefore, see now if we have an oustanding
@@ -344,7 +343,7 @@ int mlx4_en_lro_rx(struct mlx4_en_priv *priv, struct mlx4_en_rx_ring *ring,
 	/* Get ip length and verify that the frame is big enough */
 	ip_len = ntohs(iph->tot_len);
 	if (unlikely(length < ETH_HLEN + ip_len)) {
-		mlx4_warn(mdev, "Cannot LRO - ip payload exceeds frame!\n");
+		en_warn(priv, "Cannot LRO - ip payload exceeds frame!\n");
 		goto sync_device;
 	}
 
@@ -442,7 +441,7 @@ new_session:
 			/* Initialize session */
 			lro->saddr = iph->saddr;
 			lro->daddr = iph->daddr;
-			lro->sport_dport = *((u32*) &th->source);
+			lro->sport_dport = *((u32 *) &th->source);
 
 			lro->next_seq = seq + tcp_data_len;
 			lro->tot_len = ip_len;

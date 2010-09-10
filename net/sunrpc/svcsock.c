@@ -532,6 +532,7 @@ svc_recvfrom(struct svc_rqst *rqstp, struct kvec *iov, int nr, int buflen)
 {
 	struct msghdr	msg;
 	struct socket	*sock;
+	struct sockaddr_in daddr;
 	int		len, alen;
 
 	rqstp->rq_addrlen = sizeof(rqstp->rq_addr);
@@ -552,6 +553,10 @@ svc_recvfrom(struct svc_rqst *rqstp, struct kvec *iov, int nr, int buflen)
 	 */
 	alen = sizeof(rqstp->rq_addr);
 	kernel_getpeername(sock, (struct sockaddr *)&rqstp->rq_addr, &alen);
+
+	alen = sizeof(daddr);
+	kernel_getsockname(sock, (struct sockaddr *)&daddr, &alen);
+	rqstp->rq_daddr = daddr.sin_addr.s_addr;
 
 	dprintk("svc: socket %p recvfrom(%p, %Zu) = %d\n",
 		rqstp->rq_sock, iov[0].iov_base, iov[0].iov_len, len);

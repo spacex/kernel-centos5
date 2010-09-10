@@ -83,6 +83,18 @@ static inline void set_pte(pte_t *dst, pte_t val)
 } 
 #define set_pte_at(mm,addr,ptep,pteval) set_pte(ptep,pteval)
 
+static inline void set_huge_pte(pte_t *dst, pte_t val)
+{
+	mm_track_pmd( (pmd_t *)dst);
+	pte_val(*dst) = pte_val(val);
+} 
+
+static inline void set_huge_pte_at(struct mm_struct *mm, unsigned long addr,
+                                   pte_t *ptep, pte_t pte)
+{
+	set_huge_pte(ptep, pte);
+} 
+
 static inline void set_pmd(pmd_t *dst, pmd_t val)
 {
 	mm_track_pmd(dst);
@@ -117,6 +129,12 @@ static inline void pgd_clear (pgd_t * pgd)
 static inline pte_t ptep_get_and_clear(struct mm_struct *mm, unsigned long addr, pte_t *xp)
 {
 	mm_track_pte(xp);
+	return __pte(xchg(&(xp)->pte, 0));
+}
+
+static inline pte_t huge_ptep_get_and_clear(struct mm_struct *mm, unsigned long addr, pte_t *xp)
+{
+	mm_track_pmd( (pmd_t *)xp);
 	return __pte(xchg(&(xp)->pte, 0));
 }
 

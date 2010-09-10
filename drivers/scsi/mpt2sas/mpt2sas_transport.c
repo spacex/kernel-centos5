@@ -58,7 +58,6 @@
 #include <scsi/scsi_dbg.h>
 
 #include "mpt2sas_base.h"
-
 /**
  * _transport_sas_node_find_by_handle - sas node search
  * @ioc: per adapter object
@@ -110,6 +109,7 @@ _transport_convert_phy_link_rate(u8 link_rate)
 	case MPI2_SAS_NEG_LINK_RATE_PORT_SELECTOR:
 		rc = SAS_SATA_PORT_SELECTOR;
 		break;
+	case MPI2_SAS_NEG_LINK_RATE_SMP_RESET_IN_PROGRESS:
 	default:
 	case MPI2_SAS_NEG_LINK_RATE_SATA_OOB_COMPLETE:
 	case MPI2_SAS_NEG_LINK_RATE_UNKNOWN_LINK_RATE:
@@ -138,11 +138,18 @@ _transport_set_identify(struct MPT2SAS_ADAPTER *ioc, u16 handle,
 	u32 device_info;
 	u32 ioc_status;
 
+	if (ioc->shost_recovery) {
+		printk(MPT2SAS_INFO_FMT "%s: host reset in progress!\n",
+		    __func__, ioc->name);
+		return -EFAULT;
+	}
+
 	if ((mpt2sas_config_get_sas_device_pg0(ioc, &mpi_reply, &sas_device_pg0,
 	    MPI2_SAS_DEVICE_PGAD_FORM_HANDLE, handle))) {
 		printk(MPT2SAS_ERR_FMT "failure at %s:%d/%s()!\n",
+
 		    ioc->name, __FILE__, __LINE__, __func__);
-		return -1;
+		return -ENXIO;
 	}
 
 	ioc_status = le16_to_cpu(mpi_reply.IOCStatus) &
@@ -151,7 +158,7 @@ _transport_set_identify(struct MPT2SAS_ADAPTER *ioc, u16 handle,
 		printk(MPT2SAS_ERR_FMT "handle(0x%04x), ioc_status(0x%04x)"
 		    "\nfailure at %s:%d/%s()!\n", ioc->name, handle, ioc_status,
 		     __FILE__, __LINE__, __func__);
-		return -1;
+		return -EIO;
 	}
 
 	memset(identify, 0, sizeof(identify));
@@ -262,7 +269,7 @@ struct rep_manu_reply{
 };
 
 /**
- * transport_expander_report_manufacture - obtain SMP report_manufacture
+ * _transport_expander_report_manufacture - obtain SMP report_manufacture
  * @ioc: per adapter object
  * @sas_address: expander sas address
  * @edev: the sas_expander_device object
@@ -286,21 +293,17 @@ _transport_expander_report_manufacture(struct MPT2SAS_ADAPTER *ioc,
 	void *psge;
 	u32 sgl_flags;
 	u8 issue_reset = 0;
-	unsigned long flags;
 	void *data_out = NULL;
 	dma_addr_t data_out_dma;
 	u32 sz;
 	u64 *sas_address_le;
 	u16 wait_state_count;
 
-	spin_lock_irqsave(&ioc->ioc_reset_in_progress_lock, flags);
-	if (ioc->ioc_reset_in_progress) {
-		spin_unlock_irqrestore(&ioc->ioc_reset_in_progress_lock, flags);
+	if (ioc->shost_recovery) {
 		printk(MPT2SAS_INFO_FMT "%s: host reset in progress!\n",
 		    __func__, ioc->name);
 		return -EFAULT;
 	}
-	spin_unlock_irqrestore(&ioc->ioc_reset_in_progress_lock, flags);
 
 	mutex_lock(&ioc->transport_cmds.mutex);
 
@@ -542,19 +545,11 @@ mpt2sas_transport_port_add(struct MPT2SAS_ADAPTER *ioc, u16 handle,
 	    port_siblings) {
 		if ((ioc->logging_level & MPT_DEBUG_TRANSPORT))
 			dev_printk(KERN_INFO, &port->dev, "add: handle(0x%04x)"
-				    ", sas_addr(0x%016llx), phy(%d)\n", handle,
-				    (unsigned long long)
-				    mpt2sas_port->remote_identify.sas_address,
-				    mpt2sas_phy->phy_id);
-		/* CQ 67144
-		 * Trying to add phy that is already part of another port,
-		 * this deletes the previous instance.
-		 */
-		if (mpt2sas_phy->port != NULL)
-			sas_port_delete_phy(mpt2sas_phy->port,
-			    mpt2sas_phy->phy);
+			    ", sas_addr(0x%016llx), phy(%d)\n", handle,
+			    (unsigned long long)
+			    mpt2sas_port->remote_identify.sas_address,
+			    mpt2sas_phy->phy_id);
 		sas_port_add_phy(port, mpt2sas_phy->phy);
-		mpt2sas_phy->port = port;
 	}
 
 	mpt2sas_port->port = port;
@@ -654,7 +649,6 @@ mpt2sas_transport_port_remove(struct MPT2SAS_ADAPTER *ioc, u64 sas_address,
 			    mpt2sas_port->remote_identify.sas_address,
 			    mpt2sas_phy->phy_id);
 		sas_port_delete_phy(mpt2sas_port->port, mpt2sas_phy->phy);
-		mpt2sas_phy->port = NULL; /*  CQ 67144 */
 		list_del(&mpt2sas_phy->port_siblings);
 	}
 	sas_port_delete(mpt2sas_port->port);
@@ -796,7 +790,7 @@ mpt2sas_transport_add_expander_phy(struct MPT2SAS_ADAPTER *ioc, struct _sas_phy
 }
 
 /**
- * mpt2sas_transport_update_phy_link_change - refreshing phy link changes
+ * mpt2sas_transport_update_links - refreshing phy link changes
  * @ioc: per adapter object
  * @handle: handle to sas_host or expander
  * @attached_handle: attached device handle
@@ -806,12 +800,18 @@ mpt2sas_transport_add_expander_phy(struct MPT2SAS_ADAPTER *ioc, struct _sas_phy
  * Returns nothing.
  */
 void
-mpt2sas_transport_update_phy_link_change(struct MPT2SAS_ADAPTER *ioc,
+mpt2sas_transport_update_links(struct MPT2SAS_ADAPTER *ioc,
     u16 handle, u16 attached_handle, u8 phy_number, u8 link_rate)
 {
 	unsigned long flags;
 	struct _sas_node *sas_node;
 	struct _sas_phy *mpt2sas_phy;
+
+	if (ioc->shost_recovery) {
+		printk(MPT2SAS_INFO_FMT "%s: host reset in progress!\n",
+			__func__, ioc->name);
+		return;
+	}
 
 	spin_lock_irqsave(&ioc->sas_node_lock, flags);
 	sas_node = _transport_sas_node_find_by_handle(ioc, handle);
@@ -1007,6 +1007,7 @@ _transport_phy_reset(struct sas_phy *phy, int hard_reset)
 
 	return 0;
 }
+
 
 struct sas_function_template mpt2sas_transport_functions = {
 	.get_linkerrors		= _transport_get_linkerrors,

@@ -505,6 +505,26 @@ extern int ec_write(u8 addr, u8 val);
 
 #endif /*CONFIG_ACPI_EC*/
 
+#if defined(CONFIG_ACPI_WMI) || defined(CONFIG_ACPI_WMI_MODULE)
+
+typedef void (*wmi_notify_handler) (u32 value, void *context);
+
+extern acpi_status wmi_evaluate_method(const char *guid, u8 instance,
+					u32 method_id,
+					const struct acpi_buffer *in,
+					struct acpi_buffer *out);
+extern acpi_status wmi_query_block(const char *guid, u8 instance,
+					struct acpi_buffer *out);
+extern acpi_status wmi_set_block(const char *guid, u8 instance,
+					const struct acpi_buffer *in);
+extern acpi_status wmi_install_notify_handler(const char *guid,
+					wmi_notify_handler handler, void *data);
+extern acpi_status wmi_remove_notify_handler(const char *guid);
+extern acpi_status wmi_get_event_data(u32 event, struct acpi_buffer *out);
+extern bool wmi_has_guid(const char *guid);
+
+#endif	/* CONFIG_ACPI_WMI */
+
 extern int acpi_blacklisted(void);
 extern void acpi_bios_year(char *s);
 

@@ -152,9 +152,7 @@ static void meta_go_inval(struct gfs2_glock *gl, int flags)
 		return;
 
 	gfs2_meta_inval(gl);
-	if (gl->gl_object == GFS2_I(gl->gl_sbd->sd_rindex))
-		gl->gl_sbd->sd_rindex_uptodate = 0;
-	else if (gl->gl_ops == &gfs2_rgrp_glops && gl->gl_object) {
+	if (gl->gl_ops == &gfs2_rgrp_glops && gl->gl_object) {
 		struct gfs2_rgrpd *rgd = (struct gfs2_rgrpd *)gl->gl_object;
 
 		rgd->rd_flags &= ~GFS2_RDF_UPTODATE;
@@ -217,6 +215,8 @@ static void inode_go_inval(struct gfs2_glock *gl, int flags)
 			set_bit(GIF_INVALID, &ip->i_flags);
 	}
 
+	if (gl->gl_object == GFS2_I(gl->gl_sbd->sd_rindex))
+		gl->gl_sbd->sd_rindex_uptodate = 0;
 	if (ip && S_ISREG(ip->i_inode.i_mode))
 		truncate_inode_pages(ip->i_inode.i_mapping, 0);
 }

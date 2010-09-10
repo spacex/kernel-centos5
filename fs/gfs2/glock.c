@@ -720,11 +720,15 @@ __acquires(&gl->gl_spin)
 	return;
 
 out_sched:
+	clear_bit(GLF_LOCK, &gl->gl_flags);
+	smp_mb__after_clear_bit();
 	gfs2_glock_hold(gl);
 	if (queue_delayed_work(glock_workqueue, &gl->gl_work, 0) == 0)
 		gfs2_glock_put_nolock(gl);
+	return;
 out:
 	clear_bit(GLF_LOCK, &gl->gl_flags);
+	smp_mb__after_clear_bit();
 }
 
 static void delete_work_func(void *data)
@@ -1494,10 +1498,11 @@ static int gfs2_shrink_glock_memory(int nr, gfp_t gfp_mask)
 				handle_callback(gl, LM_ST_UNLOCKED, 0);
 				nr--;
 			}
+			clear_bit(GLF_LOCK, &gl->gl_flags);
+			smp_mb__after_clear_bit();
 			if (queue_delayed_work(glock_workqueue, &gl->gl_work, 0) == 0)
 				gfs2_glock_put_nolock(gl);
 			spin_unlock(&gl->gl_spin);
-			clear_bit(GLF_LOCK, &gl->gl_flags);
 			spin_lock(&lru_lock);
 			continue;
 		}

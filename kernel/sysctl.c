@@ -79,6 +79,7 @@ extern int percpu_pagelist_fraction;
 extern int compat_log;
 extern int flush_mmap_pages;
 extern int max_writeback_pages;
+extern int blk_iopoll_enabled;
 
 #if defined(CONFIG_X86_LOCAL_APIC) && defined(CONFIG_X86)
 extern int proc_unknown_nmi_panic(ctl_table *, int, struct file *,
@@ -115,12 +116,12 @@ __setup("exec-shield=", setup_exec_shield);
 
 /* Constants used for minimum and  maximum */
 #ifdef CONFIG_DETECT_SOFTLOCKUP
-static int one = 1;
 static int sixty = 60;
 static int threehundred = 300;
 #endif
 
 static int zero;
+static int one = 1;
 static int one_hundred = 100;
 
 /* this is needed for the proc_dointvec_minmax for [fs_]overflow UID and GID */
@@ -227,6 +228,9 @@ extern struct proc_dir_entry *proc_sys_root;
 static void register_proc_table(ctl_table *, struct proc_dir_entry *, void *);
 static void unregister_proc_table(ctl_table *, struct proc_dir_entry *);
 #endif
+
+/* Something that isn't CTL_ANY, CTL_NONE or a value that may clash. */
+#define CTL_UNNUMBERED          -2
 
 /* The default sysctl tables: */
 
@@ -822,6 +826,46 @@ static ctl_table kern_table[] = {
 		.extra2		= &one,
 	},
 #endif
+#ifdef CONFIG_DETECT_HUNG_TASK
+	{
+		.ctl_name	= KERN_HUNG_TASK_PANIC,
+		.procname	= "hung_task_panic",
+		.data		= &sysctl_hung_task_panic,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec_minmax,
+		.strategy	= &sysctl_intvec,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+	{
+		.ctl_name	= KERN_HUNG_TASK_CHECK_COUNT,
+		.procname	= "hung_task_check_count",
+		.data		= &sysctl_hung_task_check_count,
+		.maxlen		= sizeof(unsigned long),
+		.mode		= 0644,
+		.proc_handler	= &proc_doulongvec_minmax,
+		.strategy	= &sysctl_intvec,
+	},
+	{
+		.ctl_name	= KERN_HUNG_TASK_TIMEOUT_SECS,
+		.procname	= "hung_task_timeout_secs",
+		.data		= &sysctl_hung_task_timeout_secs,
+		.maxlen		= sizeof(unsigned long),
+		.mode		= 0644,
+		.proc_handler	= &proc_dohung_task_timeout_secs,
+		.strategy	= &sysctl_intvec,
+	},
+	{
+		.ctl_name	= KERN_HUNG_TASK_WARNINGS,
+		.procname	= "hung_task_warnings",
+		.data		= &sysctl_hung_task_warnings,
+		.maxlen		= sizeof(unsigned long),
+		.mode		= 0644,
+		.proc_handler	= &proc_doulongvec_minmax,
+		.strategy	= &sysctl_intvec,
+	},
+#endif
 #ifdef CONFIG_COMPAT
 	{
 		.ctl_name	= KERN_COMPAT_LOG,
@@ -842,6 +886,14 @@ static ctl_table kern_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 #endif
+	{
+		.ctl_name	= -2,
+		.procname	= "blk_iopoll",
+		.data		= &blk_iopoll_enabled,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+	},
 	{ .ctl_name = 0 }
 };
 
@@ -1085,6 +1137,15 @@ static ctl_table vm_table[] = {
 		.extra1		= &zero,
 	},
 	{
+		.ctl_name       = VM_ZONE_RECLAIM_INTERVAL,
+		.procname       = "zone_reclaim_interval",
+		.data           = &zone_reclaim_interval,
+		.maxlen         = sizeof(zone_reclaim_interval),
+		.mode           = 0644,
+		.proc_handler   = &proc_dointvec_jiffies,
+		.strategy       = &sysctl_jiffies,
+	},
+	{
 		.ctl_name	= VM_MIN_UNMAPPED,
 		.procname	= "min_unmapped_ratio",
 		.data		= &sysctl_min_unmapped_ratio,
@@ -1150,6 +1211,16 @@ static ctl_table vm_table[] = {
 		.strategy	= &sysctl_intvec,
 		.extra1		= &zero,
 	},
+	{
+		.ctl_name	= VM_MAX_RECLAIMS,
+		.procname	= "max_reclaims_in_progress",
+		.data		= &max_reclaims_in_progress,
+		.maxlen		= sizeof(flush_mmap_pages),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+		.strategy	= &sysctl_intvec,
+		.extra1		= &zero,
+	},
 	{ .ctl_name = 0 }
 };
 
@@ -1182,6 +1253,14 @@ static ctl_table fs_table[] = {
 		.ctl_name	= FS_MAXFILE,
 		.procname	= "file-max",
 		.data		= &files_stat.max_files,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.ctl_name	= CTL_UNNUMBERED,
+		.procname	= "nr_open",
+		.data		= &sysctl_nr_open,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec,

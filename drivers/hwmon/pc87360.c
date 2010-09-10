@@ -1,7 +1,7 @@
 /*
  *  pc87360.c - Part of lm_sensors, Linux kernel modules
  *              for hardware monitoring
- *  Copyright (C) 2004 Jean Delvare <khali@linux-fr.org>
+ *  Copyright (C) 2004, 2007 Jean Delvare <khali@linux-fr.org>
  *
  *  Copied from smsc47m1.c:
  *  Copyright (C) 2002 Mark D. Studebaker <mdsxyz123@yahoo.com>
@@ -37,8 +37,7 @@
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/jiffies.h>
-#include <linux/i2c.h>
-#include <linux/i2c-isa.h>
+#include <linux/platform_device.h>
 #include <linux/hwmon.h>
 #include <linux/hwmon-sysfs.h>
 #include <linux/hwmon-vid.h>
@@ -47,11 +46,9 @@
 #include <asm/io.h>
 
 static u8 devid;
-static unsigned short address;
+static struct platform_device *pdev;
 static unsigned short extra_isa[3];
 static u8 confreg[4];
-
-enum chips { any_chip, pc87360, pc87363, pc87364, pc87365, pc87366 };
 
 static int init = 1;
 module_param(init, int, 0);
@@ -61,6 +58,10 @@ MODULE_PARM_DESC(init,
  "*1: Forcibly enable internal voltage and temperature channels, except in9\n"
  " 2: Forcibly enable all voltage and temperature channels, except in9\n"
  " 3: Forcibly enable all voltage and temperature channels, including in9");
+
+static unsigned short force_id;
+module_param(force_id, ushort, 0);
+MODULE_PARM_DESC(force_id, "Override the detected device ID");
 
 /*
  * Super-I/O registers and operations
@@ -178,11 +179,11 @@ static inline u8 PWM_TO_REG(int val, int inv)
 					 ((val) + 500) / 1000)
 
 /*
- * Client data (each client gets its own)
+ * Device data
  */
 
 struct pc87360_data {
-	struct i2c_client client;
+	const char *name;
 	struct class_device *class_dev;
 	struct mutex lock;
 	struct mutex update_lock;
@@ -222,26 +223,28 @@ struct pc87360_data {
  * Functions declaration
  */
 
-static int pc87360_detect(struct i2c_adapter *adapter);
-static int pc87360_detach_client(struct i2c_client *client);
+static int pc87360_probe(struct platform_device *pdev);
+static int __devexit pc87360_remove(struct platform_device *pdev);
 
 static int pc87360_read_value(struct pc87360_data *data, u8 ldi, u8 bank,
 			      u8 reg);
 static void pc87360_write_value(struct pc87360_data *data, u8 ldi, u8 bank,
 				u8 reg, u8 value);
-static void pc87360_init_client(struct i2c_client *client, int use_thermistors);
+static void pc87360_init_device(struct platform_device *pdev,
+				int use_thermistors);
 static struct pc87360_data *pc87360_update_device(struct device *dev);
 
 /*
- * Driver data (common to all clients)
+ * Driver data
  */
 
-static struct i2c_driver pc87360_driver = {
+static struct platform_driver pc87360_driver = {
 	.driver = {
+		.owner	= THIS_MODULE,
 		.name	= "pc87360",
 	},
-	.attach_adapter	= pc87360_detect,
-	.detach_client	= pc87360_detach_client,
+	.probe		= pc87360_probe,
+	.remove		= __devexit_p(pc87360_remove),
 };
 
 /*
@@ -280,8 +283,7 @@ static ssize_t set_fan_min(struct device *dev, struct device_attribute *devattr,
 	size_t count)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
-	struct i2c_client *client = to_i2c_client(dev);
-	struct pc87360_data *data = i2c_get_clientdata(client);
+	struct pc87360_data *data = dev_get_drvdata(dev);
 	long fan_min = simple_strtol(buf, NULL, 10);
 
 	mutex_lock(&data->update_lock);
@@ -327,6 +329,12 @@ static struct sensor_device_attribute fan_min[] = {
 	SENSOR_ATTR(fan3_min, S_IWUSR | S_IRUGO, show_fan_min, set_fan_min, 2),
 };
 
+#define FAN_UNIT_ATTRS(X)	\
+	&fan_input[X].dev_attr.attr,	\
+	&fan_status[X].dev_attr.attr,	\
+	&fan_div[X].dev_attr.attr,	\
+	&fan_min[X].dev_attr.attr
+
 static ssize_t show_pwm(struct device *dev, struct device_attribute *devattr, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
@@ -340,8 +348,7 @@ static ssize_t set_pwm(struct device *dev, struct device_attribute *devattr, con
 	size_t count)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
-	struct i2c_client *client = to_i2c_client(dev);
-	struct pc87360_data *data = i2c_get_clientdata(client);
+	struct pc87360_data *data = dev_get_drvdata(dev);
 	long val = simple_strtol(buf, NULL, 10);
 
 	mutex_lock(&data->update_lock);
@@ -357,6 +364,19 @@ static struct sensor_device_attribute pwm[] = {
 	SENSOR_ATTR(pwm1, S_IWUSR | S_IRUGO, show_pwm, set_pwm, 0),
 	SENSOR_ATTR(pwm2, S_IWUSR | S_IRUGO, show_pwm, set_pwm, 1),
 	SENSOR_ATTR(pwm3, S_IWUSR | S_IRUGO, show_pwm, set_pwm, 2),
+};
+
+static struct attribute * pc8736x_fan_attr_array[] = {
+	FAN_UNIT_ATTRS(0),
+	FAN_UNIT_ATTRS(1),
+	FAN_UNIT_ATTRS(2),
+	&pwm[0].dev_attr.attr,
+	&pwm[1].dev_attr.attr,
+	&pwm[2].dev_attr.attr,
+	NULL
+};
+static const struct attribute_group pc8736x_fan_group = {
+	.attrs = pc8736x_fan_attr_array,
 };
 
 static ssize_t show_in_input(struct device *dev, struct device_attribute *devattr, char *buf)
@@ -390,8 +410,7 @@ static ssize_t set_in_min(struct device *dev, struct device_attribute *devattr, 
 	size_t count)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
-	struct i2c_client *client = to_i2c_client(dev);
-	struct pc87360_data *data = i2c_get_clientdata(client);
+	struct pc87360_data *data = dev_get_drvdata(dev);
 	long val = simple_strtol(buf, NULL, 10);
 
 	mutex_lock(&data->update_lock);
@@ -405,8 +424,7 @@ static ssize_t set_in_max(struct device *dev, struct device_attribute *devattr, 
 	size_t count)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
-	struct i2c_client *client = to_i2c_client(dev);
-	struct pc87360_data *data = i2c_get_clientdata(client);
+	struct pc87360_data *data = dev_get_drvdata(dev);
 	long val = simple_strtol(buf, NULL, 10);
 
 	mutex_lock(&data->update_lock);
@@ -471,6 +489,60 @@ static struct sensor_device_attribute in_max[] = {
 	SENSOR_ATTR(in10_max, S_IWUSR | S_IRUGO, show_in_max, set_in_max, 10),
 };
 
+#define VIN_UNIT_ATTRS(X) \
+	&in_input[X].dev_attr.attr,	\
+	&in_status[X].dev_attr.attr,	\
+	&in_min[X].dev_attr.attr,	\
+	&in_max[X].dev_attr.attr
+
+static ssize_t show_vid(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct pc87360_data *data = pc87360_update_device(dev);
+	return sprintf(buf, "%u\n", vid_from_reg(data->vid, data->vrm));
+}
+static DEVICE_ATTR(cpu0_vid, S_IRUGO, show_vid, NULL);
+
+static ssize_t show_vrm(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct pc87360_data *data = dev_get_drvdata(dev);
+	return sprintf(buf, "%u\n", data->vrm);
+}
+static ssize_t set_vrm(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct pc87360_data *data = dev_get_drvdata(dev);
+	data->vrm = simple_strtoul(buf, NULL, 10);
+	return count;
+}
+static DEVICE_ATTR(vrm, S_IRUGO | S_IWUSR, show_vrm, set_vrm);
+
+static ssize_t show_in_alarms(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct pc87360_data *data = pc87360_update_device(dev);
+	return sprintf(buf, "%u\n", data->in_alarms);
+}
+static DEVICE_ATTR(alarms_in, S_IRUGO, show_in_alarms, NULL);
+
+static struct attribute *pc8736x_vin_attr_array[] = {
+	VIN_UNIT_ATTRS(0),
+	VIN_UNIT_ATTRS(1),
+	VIN_UNIT_ATTRS(2),
+	VIN_UNIT_ATTRS(3),
+	VIN_UNIT_ATTRS(4),
+	VIN_UNIT_ATTRS(5),
+	VIN_UNIT_ATTRS(6),
+	VIN_UNIT_ATTRS(7),
+	VIN_UNIT_ATTRS(8),
+	VIN_UNIT_ATTRS(9),
+	VIN_UNIT_ATTRS(10),
+	&dev_attr_cpu0_vid.attr,
+	&dev_attr_vrm.attr,
+	&dev_attr_alarms_in.attr,
+	NULL
+};
+static const struct attribute_group pc8736x_vin_group = {
+	.attrs = pc8736x_vin_attr_array,
+};
+
 static ssize_t show_therm_input(struct device *dev, struct device_attribute *devattr, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
@@ -509,8 +581,7 @@ static ssize_t set_therm_min(struct device *dev, struct device_attribute *devatt
 	size_t count)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
-	struct i2c_client *client = to_i2c_client(dev);
-	struct pc87360_data *data = i2c_get_clientdata(client);
+	struct pc87360_data *data = dev_get_drvdata(dev);
 	long val = simple_strtol(buf, NULL, 10);
 
 	mutex_lock(&data->update_lock);
@@ -524,8 +595,7 @@ static ssize_t set_therm_max(struct device *dev, struct device_attribute *devatt
 	size_t count)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
-	struct i2c_client *client = to_i2c_client(dev);
-	struct pc87360_data *data = i2c_get_clientdata(client);
+	struct pc87360_data *data = dev_get_drvdata(dev);
 	long val = simple_strtol(buf, NULL, 10);
 
 	mutex_lock(&data->update_lock);
@@ -539,8 +609,7 @@ static ssize_t set_therm_crit(struct device *dev, struct device_attribute *devat
 	size_t count)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
-	struct i2c_client *client = to_i2c_client(dev);
-	struct pc87360_data *data = i2c_get_clientdata(client);
+	struct pc87360_data *data = dev_get_drvdata(dev);
 	long val = simple_strtol(buf, NULL, 10);
 
 	mutex_lock(&data->update_lock);
@@ -589,33 +658,22 @@ static struct sensor_device_attribute therm_crit[] = {
 		    show_therm_crit, set_therm_crit, 2+11),
 };
 
-static ssize_t show_vid(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	struct pc87360_data *data = pc87360_update_device(dev);
-	return sprintf(buf, "%u\n", vid_from_reg(data->vid, data->vrm));
-}
-static DEVICE_ATTR(cpu0_vid, S_IRUGO, show_vid, NULL);
+#define THERM_UNIT_ATTRS(X) \
+	&therm_input[X].dev_attr.attr,	\
+	&therm_status[X].dev_attr.attr,	\
+	&therm_min[X].dev_attr.attr,	\
+	&therm_max[X].dev_attr.attr,	\
+	&therm_crit[X].dev_attr.attr
 
-static ssize_t show_vrm(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	struct pc87360_data *data = pc87360_update_device(dev);
-	return sprintf(buf, "%u\n", data->vrm);
-}
-static ssize_t set_vrm(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-	struct pc87360_data *data = i2c_get_clientdata(client);
-	data->vrm = simple_strtoul(buf, NULL, 10);
-	return count;
-}
-static DEVICE_ATTR(vrm, S_IRUGO | S_IWUSR, show_vrm, set_vrm);
-
-static ssize_t show_in_alarms(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	struct pc87360_data *data = pc87360_update_device(dev);
-	return sprintf(buf, "%u\n", data->in_alarms);
-}
-static DEVICE_ATTR(alarms_in, S_IRUGO, show_in_alarms, NULL);
+static struct attribute * pc8736x_therm_attr_array[] = {
+	THERM_UNIT_ATTRS(0),
+	THERM_UNIT_ATTRS(1),
+	THERM_UNIT_ATTRS(2),
+	NULL
+};
+static const struct attribute_group pc8736x_therm_group = {
+	.attrs = pc8736x_therm_attr_array,
+};
 
 static ssize_t show_temp_input(struct device *dev, struct device_attribute *devattr, char *buf)
 {
@@ -651,8 +709,7 @@ static ssize_t set_temp_min(struct device *dev, struct device_attribute *devattr
 	size_t count)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
-	struct i2c_client *client = to_i2c_client(dev);
-	struct pc87360_data *data = i2c_get_clientdata(client);
+	struct pc87360_data *data = dev_get_drvdata(dev);
 	long val = simple_strtol(buf, NULL, 10);
 
 	mutex_lock(&data->update_lock);
@@ -666,8 +723,7 @@ static ssize_t set_temp_max(struct device *dev, struct device_attribute *devattr
 	size_t count)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
-	struct i2c_client *client = to_i2c_client(dev);
-	struct pc87360_data *data = i2c_get_clientdata(client);
+	struct pc87360_data *data = dev_get_drvdata(dev);
 	long val = simple_strtol(buf, NULL, 10);
 
 	mutex_lock(&data->update_lock);
@@ -681,8 +737,7 @@ static ssize_t set_temp_crit(struct device *dev, struct device_attribute *devatt
 	size_t count)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
-	struct i2c_client *client = to_i2c_client(dev);
-	struct pc87360_data *data = i2c_get_clientdata(client);
+	struct pc87360_data *data = dev_get_drvdata(dev);
 	long val = simple_strtol(buf, NULL, 10);
 
 	mutex_lock(&data->update_lock);
@@ -735,6 +790,33 @@ static ssize_t show_temp_alarms(struct device *dev, struct device_attribute *att
 }
 static DEVICE_ATTR(alarms_temp, S_IRUGO, show_temp_alarms, NULL);
 
+#define TEMP_UNIT_ATTRS(X) \
+	&temp_input[X].dev_attr.attr,	\
+	&temp_status[X].dev_attr.attr,	\
+	&temp_min[X].dev_attr.attr,	\
+	&temp_max[X].dev_attr.attr,	\
+	&temp_crit[X].dev_attr.attr
+
+static struct attribute * pc8736x_temp_attr_array[] = {
+	TEMP_UNIT_ATTRS(0),
+	TEMP_UNIT_ATTRS(1),
+	TEMP_UNIT_ATTRS(2),
+	/* include the few miscellaneous atts here */
+	&dev_attr_alarms_temp.attr,
+	NULL
+};
+static const struct attribute_group pc8736x_temp_group = {
+	.attrs = pc8736x_temp_attr_array,
+};
+
+static ssize_t show_name(struct device *dev, struct device_attribute
+			 *devattr, char *buf)
+{
+	struct pc87360_data *data = dev_get_drvdata(dev);
+	return sprintf(buf, "%s\n", data->name);
+}
+static DEVICE_ATTR(name, S_IRUGO, show_name, NULL);
+
 /*
  * Device detection, registration and update
  */
@@ -748,7 +830,7 @@ static int __init pc87360_find(int sioaddr, u8 *devid, unsigned short *addresses
 	/* No superio_enter */
 
 	/* Identify device */
-	val = superio_inb(sioaddr, DEVID);
+	val = force_id ? force_id : superio_inb(sioaddr, DEVID);
 	switch (val) {
 	case 0xE1: /* PC87360 */
 	case 0xE8: /* PC87363 */
@@ -829,27 +911,17 @@ static int __init pc87360_find(int sioaddr, u8 *devid, unsigned short *addresses
 	return 0;
 }
 
-static int pc87360_detect(struct i2c_adapter *adapter)
+static int __devinit pc87360_probe(struct platform_device *pdev)
 {
 	int i;
-	struct i2c_client *client;
 	struct pc87360_data *data;
 	int err = 0;
 	const char *name = "pc87360";
 	int use_thermistors = 0;
-	struct device *dev;
+	struct device *dev = &pdev->dev;
 
 	if (!(data = kzalloc(sizeof(struct pc87360_data), GFP_KERNEL)))
 		return -ENOMEM;
-
-	client = &data->client;
-	dev = &client->dev;
-	i2c_set_clientdata(client, data);
-	client->addr = address;
-	mutex_init(&data->lock);
-	client->adapter = adapter;
-	client->driver = &pc87360_driver;
-	client->flags = 0;
 
 	data->fannr = 2;
 	data->innr = 0;
@@ -877,15 +949,17 @@ static int pc87360_detect(struct i2c_adapter *adapter)
 		break;
 	}
 
-	strlcpy(client->name, name, sizeof(client->name));
+	data->name = name;
 	data->valid = 0;
+	mutex_init(&data->lock);
 	mutex_init(&data->update_lock);
+	platform_set_drvdata(pdev, data);
 
 	for (i = 0; i < 3; i++) {
 		if (((data->address[i] = extra_isa[i]))
 		 && !request_region(extra_isa[i], PC87360_EXTENT,
 		 		    pc87360_driver.driver.name)) {
-			dev_err(&client->dev, "Region 0x%x-0x%x already "
+			dev_err(dev, "Region 0x%x-0x%x already "
 				"in use!\n", extra_isa[i],
 				extra_isa[i]+PC87360_EXTENT-1);
 			for (i--; i >= 0; i--)
@@ -899,9 +973,6 @@ static int pc87360_detect(struct i2c_adapter *adapter)
 	if (data->fannr)
 		data->fan_conf = confreg[0] | (confreg[1] << 8);
 
-	if ((err = i2c_attach_client(client)))
-		goto ERROR2;
-
 	/* Use the correct reference voltage
 	   Unless both the VLM and the TMS logical devices agree to
 	   use an external Vref, the internal one is used. */
@@ -913,11 +984,11 @@ static int pc87360_detect(struct i2c_adapter *adapter)
 						PC87365_REG_TEMP_CONFIG);
 		}
 		data->in_vref = (i&0x02) ? 3025 : 2966;
-		dev_dbg(&client->dev, "Using %s reference voltage\n",
+		dev_dbg(dev, "Using %s reference voltage\n",
 			(i&0x02) ? "external" : "internal");
 
 		data->vid_conf = confreg[3];
-		data->vrm = 90;
+		data->vrm = vid_which_vrm();
 	}
 
 	/* Fan clock dividers may be needed before any data is read */
@@ -932,65 +1003,75 @@ static int pc87360_detect(struct i2c_adapter *adapter)
 		if (devid == 0xe9 && data->address[1]) /* PC87366 */
 			use_thermistors = confreg[2] & 0x40;
 
-		pc87360_init_client(client, use_thermistors);
+		pc87360_init_device(pdev, use_thermistors);
 	}
 
-	/* Register sysfs hooks */
-	data->class_dev = hwmon_device_register(&client->dev);
+	/* Register all-or-nothing sysfs groups */
+
+	if (data->innr &&
+	    (err = sysfs_create_group(&dev->kobj,
+				      &pc8736x_vin_group)))
+		goto ERROR3;
+
+	if (data->innr == 14 &&
+	    (err = sysfs_create_group(&dev->kobj,
+				      &pc8736x_therm_group)))
+		goto ERROR3;
+
+	/* create device attr-files for varying sysfs groups */
+
+	if (data->tempnr) {
+		for (i = 0; i < data->tempnr; i++) {
+			if ((err = device_create_file(dev,
+					&temp_input[i].dev_attr))
+			    || (err = device_create_file(dev,
+					&temp_min[i].dev_attr))
+			    || (err = device_create_file(dev,
+					&temp_max[i].dev_attr))
+			    || (err = device_create_file(dev,
+					&temp_crit[i].dev_attr))
+			    || (err = device_create_file(dev,
+					&temp_status[i].dev_attr)))
+				goto ERROR3;
+		}
+		if ((err = device_create_file(dev, &dev_attr_alarms_temp)))
+			goto ERROR3;
+	}
+
+	for (i = 0; i < data->fannr; i++) {
+		if (FAN_CONFIG_MONITOR(data->fan_conf, i)
+		    && ((err = device_create_file(dev,
+					&fan_input[i].dev_attr))
+			|| (err = device_create_file(dev,
+					&fan_min[i].dev_attr))
+			|| (err = device_create_file(dev,
+					&fan_div[i].dev_attr))
+			|| (err = device_create_file(dev,
+					&fan_status[i].dev_attr))))
+			goto ERROR3;
+
+		if (FAN_CONFIG_CONTROL(data->fan_conf, i)
+		    && (err = device_create_file(dev, &pwm[i].dev_attr)))
+			goto ERROR3;
+	}
+
+	if ((err = device_create_file(dev, &dev_attr_name)))
+		goto ERROR3;
+
+	data->class_dev = hwmon_device_register(dev);
 	if (IS_ERR(data->class_dev)) {
 		err = PTR_ERR(data->class_dev);
 		goto ERROR3;
 	}
-
-	if (data->innr) {
-		for (i = 0; i < 11; i++) {
-			device_create_file(dev, &in_input[i].dev_attr);
-			device_create_file(dev, &in_min[i].dev_attr);
-			device_create_file(dev, &in_max[i].dev_attr);
-			device_create_file(dev, &in_status[i].dev_attr);
-		}
-		device_create_file(dev, &dev_attr_cpu0_vid);
-		device_create_file(dev, &dev_attr_vrm);
-		device_create_file(dev, &dev_attr_alarms_in);
-	}
-
-	if (data->tempnr) {
-		for (i = 0; i < data->tempnr; i++) {
-			device_create_file(dev, &temp_input[i].dev_attr);
-			device_create_file(dev, &temp_min[i].dev_attr);
-			device_create_file(dev, &temp_max[i].dev_attr);
-			device_create_file(dev, &temp_crit[i].dev_attr);
-			device_create_file(dev, &temp_status[i].dev_attr);
-		}
-		device_create_file(dev, &dev_attr_alarms_temp);
-	}
-
-	if (data->innr == 14) {
-		for (i = 0; i < 3; i++) {
-			device_create_file(dev, &therm_input[i].dev_attr);
-			device_create_file(dev, &therm_min[i].dev_attr);
-			device_create_file(dev, &therm_max[i].dev_attr);
-			device_create_file(dev, &therm_crit[i].dev_attr);
-			device_create_file(dev, &therm_status[i].dev_attr);
-		}
-	}
-
-	for (i = 0; i < data->fannr; i++) {
-		if (FAN_CONFIG_MONITOR(data->fan_conf, i)) {
-			device_create_file(dev, &fan_input[i].dev_attr);
-			device_create_file(dev, &fan_min[i].dev_attr);
-			device_create_file(dev, &fan_div[i].dev_attr);
-			device_create_file(dev, &fan_status[i].dev_attr);
-		}
-		if (FAN_CONFIG_CONTROL(data->fan_conf, i))
-			device_create_file(dev, &pwm[i].dev_attr);
-	}
-
 	return 0;
 
 ERROR3:
-	i2c_detach_client(client);
-ERROR2:
+	device_remove_file(dev, &dev_attr_name);
+	/* can still remove groups whose members were added individually */
+	sysfs_remove_group(&dev->kobj, &pc8736x_temp_group);
+	sysfs_remove_group(&dev->kobj, &pc8736x_fan_group);
+	sysfs_remove_group(&dev->kobj, &pc8736x_therm_group);
+	sysfs_remove_group(&dev->kobj, &pc8736x_vin_group);
 	for (i = 0; i < 3; i++) {
 		if (data->address[i]) {
 			release_region(data->address[i], PC87360_EXTENT);
@@ -1001,15 +1082,18 @@ ERROR1:
 	return err;
 }
 
-static int pc87360_detach_client(struct i2c_client *client)
+static int __devexit pc87360_remove(struct platform_device *pdev)
 {
-	struct pc87360_data *data = i2c_get_clientdata(client);
+	struct pc87360_data *data = platform_get_drvdata(pdev);
 	int i;
 
 	hwmon_device_unregister(data->class_dev);
 
-	if ((i = i2c_detach_client(client)))
-		return i;
+	device_remove_file(&pdev->dev, &dev_attr_name);
+	sysfs_remove_group(&pdev->dev.kobj, &pc8736x_temp_group);
+	sysfs_remove_group(&pdev->dev.kobj, &pc8736x_fan_group);
+	sysfs_remove_group(&pdev->dev.kobj, &pc8736x_therm_group);
+	sysfs_remove_group(&pdev->dev.kobj, &pc8736x_vin_group);
 
 	for (i = 0; i < 3; i++) {
 		if (data->address[i]) {
@@ -1047,9 +1131,10 @@ static void pc87360_write_value(struct pc87360_data *data, u8 ldi, u8 bank,
 	mutex_unlock(&(data->lock));
 }
 
-static void pc87360_init_client(struct i2c_client *client, int use_thermistors)
+static void pc87360_init_device(struct platform_device *pdev,
+				int use_thermistors)
 {
-	struct pc87360_data *data = i2c_get_clientdata(client);
+	struct pc87360_data *data = platform_get_drvdata(pdev);
 	int i, nr;
 	const u8 init_in[14] = { 2, 2, 2, 2, 2, 2, 2, 1, 1, 3, 1, 2, 2, 2 };
 	const u8 init_temp[3] = { 2, 2, 1 };
@@ -1058,7 +1143,7 @@ static void pc87360_init_client(struct i2c_client *client, int use_thermistors)
 	if (init >= 2 && data->innr) {
 		reg = pc87360_read_value(data, LD_IN, NO_BANK,
 					 PC87365_REG_IN_CONVRATE);
-		dev_info(&client->dev, "VLM conversion set to "
+		dev_info(&pdev->dev, "VLM conversion set to "
 			 "1s period, 160us delay\n");
 		pc87360_write_value(data, LD_IN, NO_BANK,
 				    PC87365_REG_IN_CONVRATE,
@@ -1072,7 +1157,7 @@ static void pc87360_init_client(struct i2c_client *client, int use_thermistors)
 			reg = pc87360_read_value(data, LD_IN, i,
 						 PC87365_REG_IN_STATUS);
 			if (!(reg & 0x01)) {
-				dev_dbg(&client->dev, "Forcibly "
+				dev_dbg(&pdev->dev, "Forcibly "
 					"enabling in%d\n", i);
 				pc87360_write_value(data, LD_IN, i,
 						    PC87365_REG_IN_STATUS,
@@ -1096,7 +1181,7 @@ static void pc87360_init_client(struct i2c_client *client, int use_thermistors)
 			reg = pc87360_read_value(data, LD_TEMP, i,
 						 PC87365_REG_TEMP_STATUS);
 			if (!(reg & 0x01)) {
-				dev_dbg(&client->dev, "Forcibly "
+				dev_dbg(&pdev->dev, "Forcibly "
 					"enabling temp%d\n", i+1);
 				pc87360_write_value(data, LD_TEMP, i,
 						    PC87365_REG_TEMP_STATUS,
@@ -1113,7 +1198,7 @@ static void pc87360_init_client(struct i2c_client *client, int use_thermistors)
 				reg = pc87360_read_value(data, LD_TEMP,
 				      (i-11)/2, PC87365_REG_TEMP_STATUS);
 				if (reg & 0x01) {
-					dev_dbg(&client->dev, "Skipping "
+					dev_dbg(&pdev->dev, "Skipping "
 						"temp%d, pin already in use "
 						"by temp%d\n", i-7, (i-11)/2);
 					continue;
@@ -1123,7 +1208,7 @@ static void pc87360_init_client(struct i2c_client *client, int use_thermistors)
 				reg = pc87360_read_value(data, LD_IN, i,
 							 PC87365_REG_IN_STATUS);
 				if (!(reg & 0x01)) {
-					dev_dbg(&client->dev, "Forcibly "
+					dev_dbg(&pdev->dev, "Forcibly "
 						"enabling temp%d\n", i-7);
 					pc87360_write_value(data, LD_IN, i,
 						PC87365_REG_TEMP_STATUS,
@@ -1137,7 +1222,7 @@ static void pc87360_init_client(struct i2c_client *client, int use_thermistors)
 		reg = pc87360_read_value(data, LD_IN, NO_BANK,
 					 PC87365_REG_IN_CONFIG);
 		if (reg & 0x01) {
-			dev_dbg(&client->dev, "Forcibly "
+			dev_dbg(&pdev->dev, "Forcibly "
 				"enabling monitoring (VLM)\n");
 			pc87360_write_value(data, LD_IN, NO_BANK,
 					    PC87365_REG_IN_CONFIG,
@@ -1149,7 +1234,7 @@ static void pc87360_init_client(struct i2c_client *client, int use_thermistors)
 		reg = pc87360_read_value(data, LD_TEMP, NO_BANK,
 					 PC87365_REG_TEMP_CONFIG);
 		if (reg & 0x01) {
-			dev_dbg(&client->dev, "Forcibly enabling "
+			dev_dbg(&pdev->dev, "Forcibly enabling "
 				"monitoring (TMS)\n");
 			pc87360_write_value(data, LD_TEMP, NO_BANK,
 					    PC87365_REG_TEMP_CONFIG,
@@ -1171,9 +1256,9 @@ static void pc87360_init_client(struct i2c_client *client, int use_thermistors)
 	}
 }
 
-static void pc87360_autodiv(struct i2c_client *client, int nr)
+static void pc87360_autodiv(struct device *dev, int nr)
 {
-	struct pc87360_data *data = i2c_get_clientdata(client);
+	struct pc87360_data *data = dev_get_drvdata(dev);
 	u8 old_min = data->fan_min[nr];
 
 	/* Increase clock divider if needed and possible */
@@ -1183,7 +1268,7 @@ static void pc87360_autodiv(struct i2c_client *client, int nr)
 			data->fan_status[nr] += 0x20;
 			data->fan_min[nr] >>= 1;
 			data->fan[nr] >>= 1;
-			dev_dbg(&client->dev, "Increasing "
+			dev_dbg(dev, "Increasing "
 				"clock divider to %d for fan %d\n",
 				FAN_DIV_FROM_REG(data->fan_status[nr]), nr+1);
 		}
@@ -1195,7 +1280,7 @@ static void pc87360_autodiv(struct i2c_client *client, int nr)
 			data->fan_status[nr] -= 0x20;
 			data->fan_min[nr] <<= 1;
 			data->fan[nr] <<= 1;
-			dev_dbg(&client->dev, "Decreasing "
+			dev_dbg(dev, "Decreasing "
 				"clock divider to %d for fan %d\n",
 				FAN_DIV_FROM_REG(data->fan_status[nr]),
 				nr+1);
@@ -1212,14 +1297,13 @@ static void pc87360_autodiv(struct i2c_client *client, int nr)
 
 static struct pc87360_data *pc87360_update_device(struct device *dev)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct pc87360_data *data = i2c_get_clientdata(client);
+	struct pc87360_data *data = dev_get_drvdata(dev);
 	u8 i;
 
 	mutex_lock(&data->update_lock);
 
 	if (time_after(jiffies, data->last_updated + HZ * 2) || !data->valid) {
-		dev_dbg(&client->dev, "Data update\n");
+		dev_dbg(dev, "Data update\n");
 
 		/* Fans */
 		for (i = 0; i < data->fannr; i++) {
@@ -1233,7 +1317,7 @@ static struct pc87360_data *pc87360_update_device(struct device *dev)
 						   LD_FAN, NO_BANK,
 						   PC87360_REG_FAN_MIN(i));
 				/* Change clock divider if needed */
-				pc87360_autodiv(client, i);
+				pc87360_autodiv(dev, i);
 				/* Clear bits and write new divider */
 				pc87360_write_value(data, LD_FAN, NO_BANK,
 						    PC87360_REG_FAN_STATUS(i),
@@ -1321,9 +1405,53 @@ static struct pc87360_data *pc87360_update_device(struct device *dev)
 	return data;
 }
 
+static int __init pc87360_device_add(unsigned short address)
+{
+	struct resource res = {
+		.name	= "pc87360",
+		.flags	= IORESOURCE_IO,
+	};
+	int err, i;
+
+	pdev = platform_device_alloc("pc87360", address);
+	if (!pdev) {
+		err = -ENOMEM;
+		printk(KERN_ERR "pc87360: Device allocation failed\n");
+		goto exit;
+	}
+
+	for (i = 0; i < 3; i++) {
+		if (!extra_isa[i])
+			continue;
+		res.start = extra_isa[i];
+		res.end = extra_isa[i] + PC87360_EXTENT - 1;
+		err = platform_device_add_resources(pdev, &res, 1);
+		if (err) {
+			printk(KERN_ERR "pc87360: Device resource[%d] "
+			       "addition failed (%d)\n", i, err);
+			goto exit_device_put;
+		}
+	}
+
+	err = platform_device_add(pdev);
+	if (err) {
+		printk(KERN_ERR "pc87360: Device addition failed (%d)\n",
+		       err);
+		goto exit_device_put;
+	}
+
+	return 0;
+
+exit_device_put:
+	platform_device_put(pdev);
+exit:
+	return err;
+}
+
 static int __init pc87360_init(void)
 {
-	int i;
+	int err, i;
+	unsigned short address = 0;
 
 	if (pc87360_find(0x2e, &devid, extra_isa)
 	 && pc87360_find(0x4e, &devid, extra_isa)) {
@@ -1346,12 +1474,27 @@ static int __init pc87360_init(void)
 		return -ENODEV;
 	}
 
-	return i2c_isa_add_driver(&pc87360_driver);
+	err = platform_driver_register(&pc87360_driver);
+	if (err)
+		goto exit;
+
+	/* Sets global pdev as a side effect */
+	err = pc87360_device_add(address);
+	if (err)
+		goto exit_driver;
+
+	return 0;
+
+ exit_driver:
+	platform_driver_unregister(&pc87360_driver);
+ exit:
+	return err;
 }
 
 static void __exit pc87360_exit(void)
 {
-	i2c_isa_del_driver(&pc87360_driver);
+	platform_device_unregister(pdev);
+	platform_driver_unregister(&pc87360_driver);
 }
 
 

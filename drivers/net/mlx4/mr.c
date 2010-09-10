@@ -52,9 +52,7 @@ struct mlx4_mpt_entry {
 	__be64 length;
 	__be32 lkey;
 	__be32 win_cnt;
-	u8	reserved1;
-	u8	flags2;
-	u8	reserved2;
+	u8	reserved1[3];
 	u8	mtt_rep;
 	__be64 mtt_seg;
 	__be32 mtt_sz;
@@ -72,8 +70,6 @@ struct mlx4_mpt_entry {
 #define MLX4_MPT_PD_FLAG_FAST_REG   (1 << 27)
 #define MLX4_MPT_PD_FLAG_RAE	    (1 << 28)
 #define MLX4_MPT_PD_FLAG_EN_INV	    (3 << 24)
-
-#define MLX4_MPT_FLAG2_FBO_EN	     (1 <<  7)
 
 #define MLX4_MPT_STATUS_SW		0xF0
 #define MLX4_MPT_STATUS_HW		0x00
@@ -149,8 +145,11 @@ static int mlx4_buddy_init(struct mlx4_buddy *buddy, int max_order)
 		goto err_out;
 
 	for (i = 0; i <= buddy->max_order; ++i) {
-		s = BITS_TO_LONGS(1 << (buddy->max_order - i));
-		buddy->bits[i] = kmalloc(s * sizeof (long), GFP_KERNEL);
+		s = BITS_TO_LONGS(1 << (buddy->max_order - i)) * sizeof(long);
+		if(s > PAGE_SIZE)
+			buddy->bits[i] = (unsigned long *)__get_free_pages(GFP_KERNEL, get_order(s));
+		else 
+			buddy->bits[i] = kmalloc(s, GFP_KERNEL);
 		if (!buddy->bits[i])
 			goto err_out_free;
 		bitmap_zero(buddy->bits[i], 1 << (buddy->max_order - i));
@@ -162,9 +161,13 @@ static int mlx4_buddy_init(struct mlx4_buddy *buddy, int max_order)
 	return 0;
 
 err_out_free:
-	for (i = 0; i <= buddy->max_order; ++i)
-		kfree(buddy->bits[i]);
-
+	for (i = 0; i <= buddy->max_order; ++i){
+		s = BITS_TO_LONGS(1 << (buddy->max_order - i)) * sizeof(long);
+		if(s > PAGE_SIZE)
+			free_pages((unsigned long)buddy->bits[i], get_order(s));
+		else
+			kfree(buddy->bits[i]);
+	}
 err_out:
 	kfree(buddy->bits);
 	kfree(buddy->num_free);
@@ -174,19 +177,40 @@ err_out:
 
 static void mlx4_buddy_cleanup(struct mlx4_buddy *buddy)
 {
-	int i;
+	int i, s;
 
-	for (i = 0; i <= buddy->max_order; ++i)
-		kfree(buddy->bits[i]);
+	for (i = 0; i <= buddy->max_order; ++i){
+		s = BITS_TO_LONGS(1 << (buddy->max_order - i)) * sizeof(long);
+		if(s > PAGE_SIZE)
+			free_pages((unsigned long)buddy->bits[i], get_order(s));
+		else
+			kfree(buddy->bits[i]);
+	}
 
 	kfree(buddy->bits);
 	kfree(buddy->num_free);
 }
 
-static u32 mlx4_alloc_mtt_range(struct mlx4_dev *dev, int order)
+u32 mlx4_alloc_mtt_range(struct mlx4_dev *dev, int order)
 {
 	struct mlx4_mr_table *mr_table = &mlx4_priv(dev)->mr_table;
+	u64 in_param;
+	u64 out_param;
 	u32 seg;
+	int err;
+
+	if (mlx4_is_slave(dev)) {
+		*((u32 *) &in_param) = order;
+		*(((u32 *) &in_param) + 1) = 0;
+		err = mlx4_cmd_imm(dev, in_param, &out_param, RES_MTT,
+						       ICM_RESERVE_AND_ALLOC,
+						       MLX4_CMD_ALLOC_RES,
+						       MLX4_CMD_TIME_CLASS_A);
+		if (err)
+			return -1;
+		else
+			return out_param;
+	}
 
 	seg = mlx4_buddy_alloc(&mr_table->mtt_buddy, order);
 	if (seg == -1)
@@ -224,16 +248,33 @@ int mlx4_mtt_init(struct mlx4_dev *dev, int npages, int page_shift,
 }
 EXPORT_SYMBOL_GPL(mlx4_mtt_init);
 
-void mlx4_mtt_cleanup(struct mlx4_dev *dev, struct mlx4_mtt *mtt)
+void mlx4_free_mtt_range(struct mlx4_dev *dev, u32 first_seg, int order)
 {
 	struct mlx4_mr_table *mr_table = &mlx4_priv(dev)->mr_table;
+	u64 in_param;
+	int err;
 
+	if (mlx4_is_slave(dev)) {
+		*((u32 *) &in_param) = first_seg;
+		*(((u32 *) &in_param) + 1) = order;
+		err = mlx4_cmd(dev, in_param, RES_MTT, ICM_RESERVE_AND_ALLOC,
+						       MLX4_CMD_FREE_RES,
+						       MLX4_CMD_TIME_CLASS_A);
+		if (err)
+			mlx4_warn(dev, "Failed to free mtt range at:%d order:%d\n", first_seg, order);
+	} else {
+		mlx4_buddy_free(&mr_table->mtt_buddy, first_seg, order);
+		mlx4_table_put_range(dev, &mr_table->mtt_table, first_seg,
+					     first_seg + (1 << order) - 1);
+	}
+}
+
+void mlx4_mtt_cleanup(struct mlx4_dev *dev, struct mlx4_mtt *mtt)
+{
 	if (mtt->order < 0)
 		return;
 
-	mlx4_buddy_free(&mr_table->mtt_buddy, mtt->first_seg, mtt->order);
-	mlx4_table_put_range(dev, &mr_table->mtt_table, mtt->first_seg,
-			     mtt->first_seg + (1 << mtt->order) - 1);
+	mlx4_free_mtt_range(dev, mtt->first_seg, mtt->order);
 }
 EXPORT_SYMBOL_GPL(mlx4_mtt_cleanup);
 
@@ -267,64 +308,129 @@ static int mlx4_HW2SW_MPT(struct mlx4_dev *dev, struct mlx4_cmd_mailbox *mailbox
 			    !mailbox, MLX4_CMD_HW2SW_MPT, MLX4_CMD_TIME_CLASS_B);
 }
 
-int mlx4_mr_reserve_range(struct mlx4_dev *dev, int cnt, int align, u32 *base_mridx)
+int mlx4_WRITE_MTT_wrapper(struct mlx4_dev *dev, int slave, struct mlx4_vhcr *vhcr,
+						 struct mlx4_cmd_mailbox *inbox,
+						 struct mlx4_cmd_mailbox *outbox)
+{
+	struct mlx4_mtt mtt;
+	u64 *page_list = inbox->buf;
+	int i;
+
+	/* Call the SW implementation of write_mtt:
+	 * - Prepare a dummy mtt struct
+	 * - Translate inbox contents to simple addresses in host endianess */
+	mtt.first_seg = 0;
+	mtt.order = 0;
+	mtt.page_shift = 0;
+	for (i = 0; i < vhcr->in_modifier; ++i)
+		page_list[i + 2] = be64_to_cpu(page_list[i + 2]) & ~1ULL;
+	vhcr->errno = mlx4_write_mtt(dev, &mtt, be64_to_cpu(page_list[0]),
+						vhcr->in_modifier,
+						page_list + 2);
+	return 0;
+}
+
+static int mlx4_WRITE_MTT(struct mlx4_dev *dev, struct mlx4_cmd_mailbox *mailbox,
+			  int num_entries)
+{
+	return mlx4_cmd(dev, mailbox->dma, num_entries, 0, MLX4_CMD_WRITE_MTT,
+			MLX4_CMD_TIME_CLASS_A);
+}
+
+int mlx4_mr_reserve(struct mlx4_dev *dev)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
-	u32 mridx;
+	u64 out_param;
+	int err;
 
-	mridx = mlx4_bitmap_alloc_range(&priv->mr_table.mpt_bitmap, cnt, align);
-	if (mridx == -1)
+	if (mlx4_is_slave(dev)) {
+		err = mlx4_cmd_imm(dev, 0, &out_param, RES_MPT, ICM_RESERVE,
+								MLX4_CMD_ALLOC_RES,
+								MLX4_CMD_TIME_CLASS_A);
+		if (err)
+			return -1;
+		return out_param;
+	}
+	return mlx4_bitmap_alloc(&priv->mr_table.mpt_bitmap);
+}
+
+void mlx4_mr_release(struct mlx4_dev *dev, u32 index)
+{
+	struct mlx4_priv *priv = mlx4_priv(dev);
+	u64 in_param;
+	int err;
+
+	if (mlx4_is_slave(dev)) {
+		*((u32 *) &in_param) = index;
+		*(((u32 *) &in_param) + 1) = 0;
+		err = mlx4_cmd(dev, in_param, RES_MPT, ICM_RESERVE,
+						       MLX4_CMD_FREE_RES,
+						       MLX4_CMD_TIME_CLASS_A);
+		if (err)
+			mlx4_warn(dev, "Failed to release mr index:%d\n", index);
+	} else
+		mlx4_bitmap_free(&priv->mr_table.mpt_bitmap, index);
+}
+
+int mlx4_mr_alloc_icm(struct mlx4_dev *dev, u32 index)
+{
+	struct mlx4_mr_table *mr_table = &mlx4_priv(dev)->mr_table;
+	u64 param;
+
+	if (mlx4_is_slave(dev)) {
+		*((u32 *) &param) = index;
+		*(((u32 *) &param) + 1) = 0;
+		return mlx4_cmd_imm(dev, param, &param, RES_MPT, ICM_ALLOC,
+							MLX4_CMD_ALLOC_RES,
+							MLX4_CMD_TIME_CLASS_A);
+	} else
+		return mlx4_table_get(dev, &mr_table->dmpt_table, index);
+}
+
+void mlx4_mr_free_icm(struct mlx4_dev *dev, u32 index)
+{
+	struct mlx4_mr_table *mr_table = &mlx4_priv(dev)->mr_table;
+	u64 in_param;
+	int err;
+
+	if (mlx4_is_slave(dev)) {
+		*((u32 *) &in_param) = index;
+		*(((u32 *) &in_param) + 1) = 0;
+		err = mlx4_cmd(dev, in_param, RES_MPT, ICM_ALLOC,
+						       MLX4_CMD_FREE_RES,
+						       MLX4_CMD_TIME_CLASS_A);
+		if (err)
+			mlx4_warn(dev, "Failed to free icm of mr index:%d\n", index);
+	} else
+		mlx4_table_put(dev, &mr_table->dmpt_table, index);
+}
+
+int mlx4_mr_alloc(struct mlx4_dev *dev, u32 pd, u64 iova, u64 size, u32 access,
+		  int npages, int page_shift, struct mlx4_mr *mr)
+{
+	u32 index;
+	int err;
+
+	index = mlx4_mr_reserve(dev);
+	if (index == -1)
 		return -ENOMEM;
 
-	*base_mridx = mridx;
-	return 0;
-
-}
-EXPORT_SYMBOL_GPL(mlx4_mr_reserve_range);
-
-void mlx4_mr_release_range(struct mlx4_dev *dev, u32 base_mridx, int cnt)
-{
-	struct mlx4_priv *priv = mlx4_priv(dev);
-	mlx4_bitmap_free_range(&priv->mr_table.mpt_bitmap, base_mridx, cnt);
-}
-EXPORT_SYMBOL_GPL(mlx4_mr_release_range);
-
-int mlx4_mr_alloc_reserved(struct mlx4_dev *dev, u32 mridx, u32 pd,
-			   u64 iova, u64 size, u32 access, int npages,
-			   int page_shift, struct mlx4_mr *mr)
-{
 	mr->iova       = iova;
 	mr->size       = size;
 	mr->pd	       = pd;
 	mr->access     = access;
 	mr->enabled    = 0;
-	mr->key	       = hw_index_to_key(mridx);
+	mr->key	       = hw_index_to_key(index);
 
-	return mlx4_mtt_init(dev, npages, page_shift, &mr->mtt);
-}
-EXPORT_SYMBOL_GPL(mlx4_mr_alloc_reserved);
-
-int mlx4_mr_alloc(struct mlx4_dev *dev, u32 pd, u64 iova, u64 size, u32 access,
-		  int npages, int page_shift, struct mlx4_mr *mr)
-{
-	struct mlx4_priv *priv = mlx4_priv(dev);
-	u32 index;
-	int err;
-
-	index = mlx4_bitmap_alloc(&priv->mr_table.mpt_bitmap);
-	if (index == -1)
-		return -ENOMEM;
-
-	err = mlx4_mr_alloc_reserved(dev, index, pd, iova, size,
-				     access, npages, page_shift, mr);
+	err = mlx4_mtt_init(dev, npages, page_shift, &mr->mtt);
 	if (err)
-		mlx4_bitmap_free(&priv->mr_table.mpt_bitmap, index);
+		mlx4_mr_release(dev, index);
 
 	return err;
 }
 EXPORT_SYMBOL_GPL(mlx4_mr_alloc);
 
-void mlx4_mr_free_reserved(struct mlx4_dev *dev, struct mlx4_mr *mr)
+void mlx4_mr_free(struct mlx4_dev *dev, struct mlx4_mr *mr)
 {
 	int err;
 
@@ -337,25 +443,18 @@ void mlx4_mr_free_reserved(struct mlx4_dev *dev, struct mlx4_mr *mr)
 	}
 
 	mlx4_mtt_cleanup(dev, &mr->mtt);
-}
-EXPORT_SYMBOL_GPL(mlx4_mr_free_reserved);
-
-void mlx4_mr_free(struct mlx4_dev *dev, struct mlx4_mr *mr)
-{
-	struct mlx4_priv *priv = mlx4_priv(dev);
-	mlx4_mr_free_reserved(dev, mr);
-	mlx4_bitmap_free(&priv->mr_table.mpt_bitmap, key_to_hw_index(mr->key));
+	mlx4_mr_release(dev, key_to_hw_index(mr->key));
+	mlx4_mr_free_icm(dev, key_to_hw_index(mr->key));
 }
 EXPORT_SYMBOL_GPL(mlx4_mr_free);
 
 int mlx4_mr_enable(struct mlx4_dev *dev, struct mlx4_mr *mr)
 {
-	struct mlx4_mr_table *mr_table = &mlx4_priv(dev)->mr_table;
 	struct mlx4_cmd_mailbox *mailbox;
 	struct mlx4_mpt_entry *mpt_entry;
 	int err;
 
-	err = mlx4_table_get(dev, &mr_table->dmpt_table, key_to_hw_index(mr->key));
+	err = mlx4_mr_alloc_icm(dev, key_to_hw_index(mr->key));
 	if (err)
 		return err;
 
@@ -413,7 +512,7 @@ err_cmd:
 	mlx4_free_cmd_mailbox(dev, mailbox);
 
 err_table:
-	mlx4_table_put(dev, &mr_table->dmpt_table, key_to_hw_index(mr->key));
+	mlx4_mr_free_icm(dev, key_to_hw_index(mr->key));
 	return err;
 }
 EXPORT_SYMBOL_GPL(mlx4_mr_enable);
@@ -451,24 +550,50 @@ static int mlx4_write_mtt_chunk(struct mlx4_dev *dev, struct mlx4_mtt *mtt,
 int mlx4_write_mtt(struct mlx4_dev *dev, struct mlx4_mtt *mtt,
 		   int start_index, int npages, u64 *page_list)
 {
+	struct mlx4_cmd_mailbox *mailbox = NULL;
 	int chunk;
-	int err;
+	int err = 0;
+	__be64 *inbox = NULL;
+	int i;
 
 	if (mtt->order < 0)
 		return -EINVAL;
 
+	if (mlx4_is_slave(dev)) {
+		mailbox = mlx4_alloc_cmd_mailbox(dev);
+		if (IS_ERR(mailbox))
+			return PTR_ERR(mailbox);
+		inbox = mailbox->buf;
+	}
+
 	while (npages > 0) {
-		chunk = min_t(int, PAGE_SIZE / sizeof(u64), npages);
-		err = mlx4_write_mtt_chunk(dev, mtt, start_index, chunk, page_list);
+		if (mlx4_is_slave(dev)) {
+			int s = mtt->first_seg * dev->caps.mtts_per_seg + start_index;
+			chunk = min_t(int, MLX4_MAILBOX_SIZE / sizeof(u64) - dev->caps.mtts_per_seg, npages);
+			if (s / (PAGE_SIZE / sizeof (u64)) !=
+			    (s + chunk - 1) / (PAGE_SIZE / sizeof (u64)))
+			    	chunk = PAGE_SIZE / sizeof (u64) - (s % (PAGE_SIZE / sizeof (u64)));
+
+			inbox[0] = cpu_to_be64(mtt->first_seg * dev->caps.mtts_per_seg + start_index);
+			inbox[1] = 0;
+			for (i = 0; i < chunk; ++i)
+				inbox[i + 2] = cpu_to_be64(page_list[i] | MLX4_MTT_FLAG_PRESENT);
+			err = mlx4_WRITE_MTT(dev, mailbox, chunk);
+		} else {
+			chunk = min_t(int, PAGE_SIZE / sizeof(u64), npages);
+			err = mlx4_write_mtt_chunk(dev, mtt, start_index, chunk, page_list);
+		}
 		if (err)
-			return err;
+			goto out;
 
 		npages      -= chunk;
 		start_index += chunk;
 		page_list   += chunk;
 	}
-
-	return 0;
+out:
+	if (mlx4_is_slave(dev))
+		mlx4_free_cmd_mailbox(dev, mailbox);
+	return err;
 }
 EXPORT_SYMBOL_GPL(mlx4_write_mtt);
 
@@ -501,8 +626,9 @@ int mlx4_init_mr_table(struct mlx4_dev *dev)
 	struct mlx4_mr_table *mr_table = &mlx4_priv(dev)->mr_table;
 	int err;
 
-	if (!is_power_of_2(dev->caps.num_mpts))
-		return -EINVAL;
+	/* Nothing to do for slaves - all MR handling is forwarded to the master */
+	if (mlx4_is_slave(dev))
+		return 0;
 
 	err = mlx4_bitmap_init(&mr_table->mpt_bitmap, dev->caps.num_mpts,
 			       ~0, dev->caps.reserved_mrws, 0);
@@ -538,6 +664,8 @@ void mlx4_cleanup_mr_table(struct mlx4_dev *dev)
 {
 	struct mlx4_mr_table *mr_table = &mlx4_priv(dev)->mr_table;
 
+	if (mlx4_is_slave(dev))
+		return;
 	mlx4_buddy_cleanup(&mr_table->mtt_buddy);
 	mlx4_bitmap_cleanup(&mr_table->mpt_bitmap);
 }
@@ -569,9 +697,8 @@ static inline int mlx4_check_fmr(struct mlx4_fmr *fmr, u64 *page_list,
 	return 0;
 }
 
-int mlx4_map_phys_fmr_fbo(struct mlx4_dev *dev, struct mlx4_fmr *fmr,
-			  u64 *page_list, int npages, u64 iova, u32 fbo,
-			  u32 len, u32 *lkey, u32 *rkey, int same_key)
+int mlx4_map_phys_fmr(struct mlx4_dev *dev, struct mlx4_fmr *fmr, u64 *page_list,
+		      int npages, u64 iova, u32 *lkey, u32 *rkey)
 {
 	u32 key;
 	int i, err;
@@ -583,8 +710,7 @@ int mlx4_map_phys_fmr_fbo(struct mlx4_dev *dev, struct mlx4_fmr *fmr,
 	++fmr->maps;
 
 	key = key_to_hw_index(fmr->mr.key);
-	if (!same_key)
-		key += dev->caps.num_mpts;
+	key += dev->caps.num_mpts;
 	*lkey = *rkey = fmr->mr.key = hw_index_to_key(key);
 
 	*(u8 *) fmr->mpt = MLX4_MPT_STATUS_SW;
@@ -600,10 +726,8 @@ int mlx4_map_phys_fmr_fbo(struct mlx4_dev *dev, struct mlx4_fmr *fmr,
 
 	fmr->mpt->key    = cpu_to_be32(key);
 	fmr->mpt->lkey   = cpu_to_be32(key);
-	fmr->mpt->length = cpu_to_be64(len);
+	fmr->mpt->length = cpu_to_be64(npages * (1ull << fmr->page_shift));
 	fmr->mpt->start  = cpu_to_be64(iova);
-	fmr->mpt->first_byte_offset = cpu_to_be32(fbo & 0x001fffff);
-	fmr->mpt->flags2 = (fbo ? MLX4_MPT_FLAG2_FBO_EN : 0);
 
 	/* Make MTT entries are visible before setting MPT status */
 	wmb();
@@ -614,16 +738,6 @@ int mlx4_map_phys_fmr_fbo(struct mlx4_dev *dev, struct mlx4_fmr *fmr,
 	wmb();
 
 	return 0;
-}
-EXPORT_SYMBOL_GPL(mlx4_map_phys_fmr_fbo);
-
-int mlx4_map_phys_fmr(struct mlx4_dev *dev, struct mlx4_fmr *fmr, u64 *page_list,
-		      int npages, u64 iova, u32 *lkey, u32 *rkey)
-{
-	u32 len = npages * (1ull << fmr->page_shift);
-
-	return mlx4_map_phys_fmr_fbo(dev, fmr, page_list, npages, iova, 0,
-				     len, lkey, rkey, 0);
 }
 EXPORT_SYMBOL_GPL(mlx4_map_phys_fmr);
 
@@ -669,49 +783,6 @@ err_free:
 }
 EXPORT_SYMBOL_GPL(mlx4_fmr_alloc);
 
-int mlx4_fmr_alloc_reserved(struct mlx4_dev *dev, u32 mridx,
-			    u32 pd, u32 access, int max_pages,
-			    int max_maps, u8 page_shift, struct mlx4_fmr *fmr)
-{
-	struct mlx4_priv *priv = mlx4_priv(dev);
-	u64 mtt_seg;
-	int err = -ENOMEM;
-
-	if (page_shift < (ffs(dev->caps.page_size_cap) - 1) || page_shift >= 32)
-		return -EINVAL;
-
-	/* All MTTs must fit in the same page */
-	if (max_pages * sizeof *fmr->mtts > PAGE_SIZE)
-		return -EINVAL;
-
-	fmr->page_shift = page_shift;
-	fmr->max_pages  = max_pages;
-	fmr->max_maps   = max_maps;
-	fmr->maps = 0;
-
-	err = mlx4_mr_alloc_reserved(dev, mridx, pd, 0, 0, access, max_pages,
-				     page_shift, &fmr->mr);
-	if (err)
-		return err;
-
-	mtt_seg = fmr->mr.mtt.first_seg * dev->caps.mtt_entry_sz;
-
-	fmr->mtts = mlx4_table_find(&priv->mr_table.mtt_table,
-				    fmr->mr.mtt.first_seg,
-				    &fmr->dma_handle);
-	if (!fmr->mtts) {
-		err = -ENOMEM;
-		goto err_free;
-	}
-
-	return 0;
-
-err_free:
-	mlx4_mr_free_reserved(dev, &fmr->mr);
-	return err;
-}
-EXPORT_SYMBOL_GPL(mlx4_fmr_alloc_reserved);
-
 int mlx4_fmr_enable(struct mlx4_dev *dev, struct mlx4_fmr *fmr)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
@@ -753,18 +824,6 @@ int mlx4_fmr_free(struct mlx4_dev *dev, struct mlx4_fmr *fmr)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mlx4_fmr_free);
-
-int mlx4_fmr_free_reserved(struct mlx4_dev *dev, struct mlx4_fmr *fmr)
-{
-	if (fmr->maps)
-		return -EBUSY;
-
-	fmr->mr.enabled = 0;
-	mlx4_mr_free_reserved(dev, &fmr->mr);
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(mlx4_fmr_free_reserved);
 
 int mlx4_SYNC_TPT(struct mlx4_dev *dev)
 {

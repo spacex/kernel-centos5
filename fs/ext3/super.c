@@ -600,6 +600,26 @@ static struct dentry *ext3_get_dentry(struct super_block *sb, void *vobjp)
 	return result;
 }
 
+/*
+ * Try to release metadata pages (indirect blocks, directories) which are
+ * mapped via the block device.  Since these pages could have journal heads
+ * which would prevent try_to_free_buffers() from freeing them, we must use
+ * jbd layer's try_to_free_buffers() function to release them.
+ */
+static int bdev_try_to_free_page(struct super_block *sb, struct page *page,
+				 gfp_t wait)
+{
+	journal_t *journal = EXT3_SB(sb)->s_journal;
+
+	WARN_ON(PageChecked(page));
+	if (!page_has_buffers(page))
+		return 0;
+	if (journal)
+		return journal_try_to_free_buffers(journal, page, 
+						   wait & ~__GFP_WAIT);
+	return try_to_free_buffers(page);
+}
+
 #ifdef CONFIG_QUOTA
 #define QTYPE2NAME(t) ((t)==USRQUOTA?"user":"group")
 #define QTYPE2MOPT(on, t) ((t)==USRQUOTA?((on)##USRJQUOTA):((on)##GRPJQUOTA))
@@ -664,6 +684,7 @@ static struct super_operations ext3_sops = {
 	.quota_read	= ext3_quota_read,
 	.quota_write	= ext3_quota_write,
 #endif
+	.bdev_try_to_free_page = bdev_try_to_free_page,
 };
 
 static struct export_operations ext3_export_ops = {
@@ -1219,7 +1240,7 @@ static int ext3_check_descriptors (struct super_block * sb)
 			return 0;
 		}
 		if (le32_to_cpu(gdp->bg_inode_table) < first_block ||
-		    le32_to_cpu(gdp->bg_inode_table) + sbi->s_itb_per_group >
+		    le32_to_cpu(gdp->bg_inode_table) + sbi->s_itb_per_group - 1 >
 		    last_block)
 		{
 			ext3_error (sb, "ext3_check_descriptors",
@@ -2787,7 +2808,8 @@ static struct file_system_type ext3_fs_type = {
 	.name		= "ext3",
 	.get_sb		= ext3_get_sb,
 	.kill_sb	= kill_block_super,
-	.fs_flags	= FS_REQUIRES_DEV|FS_HAS_FIEMAP|FS_HAS_FREEZE,
+	.fs_flags	= FS_REQUIRES_DEV|FS_HAS_FIEMAP|FS_HAS_FREEZE
+			 |FS_HAS_TRYTOFREE,
 };
 
 static int __init init_ext3_fs(void)

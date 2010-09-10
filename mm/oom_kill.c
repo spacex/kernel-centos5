@@ -278,8 +278,8 @@ static void __oom_kill_task(struct task_struct *p, const char *message)
 	}
 	task_unlock(p);
 	if (message) 
-		printk(KERN_ERR "%s: Killed process %d (%s).\n",
-				message, p->pid, p->comm);
+		printk(KERN_ERR "%s: Killed process %d, UID %d, (%s).\n",
+				message, p->pid, p->uid, p->comm);
 
 	/*
 	 * We give our sacrificial lamb high priority and access to

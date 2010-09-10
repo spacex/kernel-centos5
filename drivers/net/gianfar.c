@@ -137,7 +137,6 @@ int gfar_clean_rx_ring(struct net_device *dev, int rx_work_limit);
 static int gfar_process_frame(struct net_device *dev, struct sk_buff *skb, int length);
 static void gfar_vlan_rx_register(struct net_device *netdev,
 		                struct vlan_group *grp);
-static void gfar_vlan_rx_kill_vid(struct net_device *netdev, uint16_t vid);
 void gfar_halt(struct net_device *dev);
 void gfar_start(struct net_device *dev);
 static void gfar_clear_exact_match(struct net_device *dev);
@@ -278,7 +277,6 @@ static int gfar_probe(struct platform_device *pdev)
 
 	if (priv->einfo->device_flags & FSL_GIANFAR_DEV_HAS_VLAN) {
 		dev->vlan_rx_register = gfar_vlan_rx_register;
-		dev->vlan_rx_kill_vid = gfar_vlan_rx_kill_vid;
 
 		dev->features |= NETIF_F_HW_VLAN_TX | NETIF_F_HW_VLAN_RX;
 
@@ -1082,21 +1080,6 @@ static void gfar_vlan_rx_register(struct net_device *dev,
 
 	spin_unlock_irqrestore(&priv->rxlock, flags);
 }
-
-
-static void gfar_vlan_rx_kill_vid(struct net_device *dev, uint16_t vid)
-{
-	struct gfar_private *priv = netdev_priv(dev);
-	unsigned long flags;
-
-	spin_lock_irqsave(&priv->rxlock, flags);
-
-	if (priv->vlgrp)
-		priv->vlgrp->vlan_devices[vid] = NULL;
-
-	spin_unlock_irqrestore(&priv->rxlock, flags);
-}
-
 
 static int gfar_change_mtu(struct net_device *dev, int new_mtu)
 {

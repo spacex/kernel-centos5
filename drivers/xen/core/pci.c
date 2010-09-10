@@ -55,6 +55,11 @@ static int __init hook_pci_bus(void)
 	pci_bus_remove = pci_bus_type.remove;
 	pci_bus_type.remove = pci_bus_remove_wrapper;
 
+#ifndef __ia64__
+	/* Make sure ACS will be enabled */
+	pci_request_acs();
+#endif
+
 	return 0;
 }
 

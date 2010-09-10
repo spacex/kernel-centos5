@@ -31,6 +31,8 @@
 #define DBG(fmt...)
 #endif
 
+extern unsigned int *slb_compare_rr_to_size;
+
 extern void slb_allocate_realmode(unsigned long ea);
 extern void slb_allocate_user(unsigned long ea);
 
@@ -195,12 +197,18 @@ void switch_slb(struct task_struct *tsk, struct mm_struct *mm)
 static inline void patch_slb_encoding(unsigned int *insn_addr,
 				      unsigned int immed)
 {
-	/* Assume the instruction had a "0" immediate value, just
-	 * "or" in the new value
-	 */
-	*insn_addr |= immed;
+	*insn_addr = (*insn_addr & 0xffff0000) | immed;
 	flush_icache_range((unsigned long)insn_addr, 4+
 			   (unsigned long)insn_addr);
+}
+
+void slb_set_size(u16 size)
+{
+	if (mmu_slb_size == size)
+		return;
+
+	mmu_slb_size = size;
+	patch_slb_encoding(slb_compare_rr_to_size, mmu_slb_size);
 }
 
 void slb_initialize(void)
@@ -209,7 +217,6 @@ void slb_initialize(void)
 	static int slb_encoding_inited;
 	extern unsigned int *slb_miss_kernel_load_linear;
 	extern unsigned int *slb_miss_kernel_load_io;
-	extern unsigned int *slb_compare_rr_to_size;
 #ifdef CONFIG_HUGETLB_PAGE
 	extern unsigned int *slb_miss_user_load_huge;
 	unsigned long huge_llp;

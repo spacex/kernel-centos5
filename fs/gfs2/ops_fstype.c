@@ -67,14 +67,11 @@ static void gfs2_tune_init(struct gfs2_tune *gt)
 	gt->gt_quota_scale_num = 1;
 	gt->gt_quota_scale_den = 1;
 	gt->gt_quota_cache_secs = 300;
-	gt->gt_quota_quantum = 60;
 	gt->gt_new_files_jdata = 0;
 	gt->gt_new_files_directio = 0;
 	gt->gt_max_readahead = 1 << 18;
 	gt->gt_stall_secs = 600;
 	gt->gt_complain_secs = 10;
-	gt->gt_statfs_quantum = 30;
-	gt->gt_statfs_slow = 0;
 }
 
 static struct gfs2_sbd *init_sbd(struct super_block *sb)
@@ -985,6 +982,9 @@ static int fill_super(struct super_block *sb, void *data, int silent)
 
 	sdp->sd_args.ar_quota = GFS2_QUOTA_DEFAULT;
 	sdp->sd_args.ar_data = GFS2_DATA_DEFAULT;
+	sdp->sd_args.ar_errors = GFS2_ERRORS_DEFAULT;
+	sdp->sd_args.ar_statfs_quantum = 30;
+	sdp->sd_args.ar_quota_quantum = 60;
 
 	error = gfs2_mount_args(sdp, &sdp->sd_args, data);
 	if (error) {
@@ -1012,6 +1012,16 @@ static int fill_super(struct super_block *sb, void *data, int silent)
 	sdp->sd_fsb2bb_shift = sdp->sd_sb.sb_bsize_shift -
                                GFS2_BASIC_BLOCK_SHIFT;
 	sdp->sd_fsb2bb = 1 << sdp->sd_fsb2bb_shift;
+
+	sdp->sd_tune.gt_quota_quantum = sdp->sd_args.ar_quota_quantum;
+	if (sdp->sd_args.ar_statfs_quantum) {
+		sdp->sd_tune.gt_statfs_slow = 0;
+		sdp->sd_tune.gt_statfs_quantum = sdp->sd_args.ar_statfs_quantum;
+	}
+	else {
+		sdp->sd_tune.gt_statfs_slow = 1;
+		sdp->sd_tune.gt_statfs_quantum = 30;
+	}
 
 	error = init_names(sdp, silent);
 	if (error)

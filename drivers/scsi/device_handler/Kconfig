@@ -11,6 +11,12 @@ menuconfig SCSI_DH
 	  devices utilized in multipath configurations. Say Y here to
 	  select support for specific hardware.
 
+config SCSI_DH_EMC
+	tristate "EMC CLARiiON Device Handler"
+	depends on SCSI_DH
+	help
+	If you have a EMC CLARiiON select y. Otherwise, say N.
+
 config SCSI_DH_RDAC
 	tristate "LSI RDAC Device Handler"
 	depends on SCSI_DH

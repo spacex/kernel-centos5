@@ -11,4 +11,16 @@ extern int num_k8_northbridges;
 extern int cache_k8_northbridges(void);
 extern void k8_flush_garts(void);
 
+#ifdef CONFIG_K8_NB
+static inline struct pci_dev *node_to_k8_nb_misc(int node)
+{
+	return (node < num_k8_northbridges) ? k8_northbridges[node] : NULL;
+}
+#else
+static inline struct pci_dev *node_to_k8_nb_misc(int node)
+{
+	return NULL;
+}
+#endif
+
 #endif

@@ -31,11 +31,13 @@
 #include <linux/jiffies.h>
 #include <linux/i2c.h>
 #include <linux/hwmon.h>
+#include <linux/hwmon-sysfs.h>
 #include <linux/err.h>
 #include <linux/mutex.h>
 
 /* Addresses to scan */
-static unsigned short normal_i2c[] = { 0x48, 0x49, 0x4a, 0x4b, I2C_CLIENT_END };
+static unsigned short normal_i2c[] = { 0x48, 0x49, 0x4a, 0x4b,
+				       I2C_CLIENT_END };
 
 /* Insmod parameters */
 I2C_CLIENT_INSMOD_1(lm77);
@@ -51,7 +53,7 @@ I2C_CLIENT_INSMOD_1(lm77);
 /* Each client has this additional data */
 struct lm77_data {
 	struct i2c_client	client;
-	struct class_device *class_dev;
+	struct class_device 	*class_dev;
 	struct mutex		update_lock;
 	char			valid;
 	unsigned long		last_updated;	/* In jiffies */
@@ -113,7 +115,6 @@ show(temp_input);
 show(temp_crit);
 show(temp_min);
 show(temp_max);
-show(alarms);
 
 /* read routines for hysteresis values */
 static ssize_t show_temp_crit_hyst(struct device *dev, struct device_attribute *attr, char *buf)
@@ -138,7 +139,7 @@ static ssize_t set_##value(struct device *dev, struct device_attribute *attr, co
 {										\
 	struct i2c_client *client = to_i2c_client(dev);				\
 	struct lm77_data *data = i2c_get_clientdata(client);			\
-	long val = simple_strtoul(buf, NULL, 10);				\
+	long val = simple_strtol(buf, NULL, 10);				\
 										\
 	mutex_lock(&data->update_lock);						\
 	data->value = val;				\
@@ -186,6 +187,14 @@ static ssize_t set_temp_crit(struct device *dev, struct device_attribute *attr, 
 	return count;
 }
 
+static ssize_t show_alarm(struct device *dev, struct device_attribute *attr,
+			  char *buf)
+{
+	int bitnr = to_sensor_dev_attr(attr)->index;
+	struct lm77_data *data = lm77_update_device(dev);
+	return sprintf(buf, "%u\n", (data->alarms >> bitnr) & 1);
+}
+
 static DEVICE_ATTR(temp1_input, S_IRUGO,
 		   show_temp_input, NULL);
 static DEVICE_ATTR(temp1_crit, S_IWUSR | S_IRUGO,
@@ -202,8 +211,9 @@ static DEVICE_ATTR(temp1_min_hyst, S_IRUGO,
 static DEVICE_ATTR(temp1_max_hyst, S_IRUGO,
 		   show_temp_max_hyst, NULL);
 
-static DEVICE_ATTR(alarms, S_IRUGO,
-		   show_alarms, NULL);
+static SENSOR_DEVICE_ATTR(temp1_crit_alarm, S_IRUGO, show_alarm, NULL, 2);
+static SENSOR_DEVICE_ATTR(temp1_min_alarm, S_IRUGO, show_alarm, NULL, 0);
+static SENSOR_DEVICE_ATTR(temp1_max_alarm, S_IRUGO, show_alarm, NULL, 1);
 
 static int lm77_attach_adapter(struct i2c_adapter *adapter)
 {
@@ -211,6 +221,24 @@ static int lm77_attach_adapter(struct i2c_adapter *adapter)
 		return 0;
 	return i2c_probe(adapter, &addr_data, lm77_detect);
 }
+
+static struct attribute *lm77_attributes[] = {
+	&dev_attr_temp1_input.attr,
+	&dev_attr_temp1_crit.attr,
+	&dev_attr_temp1_min.attr,
+	&dev_attr_temp1_max.attr,
+	&dev_attr_temp1_crit_hyst.attr,
+	&dev_attr_temp1_min_hyst.attr,
+	&dev_attr_temp1_max_hyst.attr,
+	&sensor_dev_attr_temp1_crit_alarm.dev_attr.attr,
+	&sensor_dev_attr_temp1_min_alarm.dev_attr.attr,
+	&sensor_dev_attr_temp1_max_alarm.dev_attr.attr,
+	NULL
+};
+
+static const struct attribute_group lm77_group = {
+	.attrs = lm77_attributes,
+};
 
 /* This function is called by i2c_probe */
 static int lm77_detect(struct i2c_adapter *adapter, int address, int kind)
@@ -317,22 +345,19 @@ static int lm77_detect(struct i2c_adapter *adapter, int address, int kind)
 	lm77_init_client(new_client);
 
 	/* Register sysfs hooks */
+	if ((err = sysfs_create_group(&new_client->dev.kobj, &lm77_group)))
+		goto exit_detach;
+
 	data->class_dev = hwmon_device_register(&new_client->dev);
 	if (IS_ERR(data->class_dev)) {
 		err = PTR_ERR(data->class_dev);
-		goto exit_detach;
+		goto exit_remove;
 	}
 
-	device_create_file(&new_client->dev, &dev_attr_temp1_input);
-	device_create_file(&new_client->dev, &dev_attr_temp1_crit);
-	device_create_file(&new_client->dev, &dev_attr_temp1_min);
-	device_create_file(&new_client->dev, &dev_attr_temp1_max);
-	device_create_file(&new_client->dev, &dev_attr_temp1_crit_hyst);
-	device_create_file(&new_client->dev, &dev_attr_temp1_min_hyst);
-	device_create_file(&new_client->dev, &dev_attr_temp1_max_hyst);
-	device_create_file(&new_client->dev, &dev_attr_alarms);
 	return 0;
 
+exit_remove:
+	sysfs_remove_group(&new_client->dev.kobj, &lm77_group);
 exit_detach:
 	i2c_detach_client(new_client);
 exit_free:
@@ -345,6 +370,7 @@ static int lm77_detach_client(struct i2c_client *client)
 {
 	struct lm77_data *data = i2c_get_clientdata(client);
 	hwmon_device_unregister(data->class_dev);
+	sysfs_remove_group(&client->dev.kobj, &lm77_group);
 	i2c_detach_client(client);
 	kfree(data);
 	return 0;

@@ -166,8 +166,7 @@ static int igb_get_settings(struct net_device *netdev, struct ethtool_cmd *ecmd)
 		ecmd->duplex = -1;
 	}
 
-	ecmd->autoneg = ((hw->phy.media_type == e1000_media_type_fiber) ||
-			 hw->mac.autoneg) ? AUTONEG_ENABLE : AUTONEG_DISABLE;
+	ecmd->autoneg = hw->mac.autoneg ? AUTONEG_ENABLE : AUTONEG_DISABLE;
 	return 0;
 }
 
@@ -189,23 +188,20 @@ static int igb_set_settings(struct net_device *netdev, struct ethtool_cmd *ecmd)
 
 	if (ecmd->autoneg == AUTONEG_ENABLE) {
 		hw->mac.autoneg = 1;
-		if (hw->phy.media_type == e1000_media_type_fiber)
-			hw->phy.autoneg_advertised = ADVERTISED_1000baseT_Full |
-						     ADVERTISED_FIBRE |
-						     ADVERTISED_Autoneg;
-		else
-			hw->phy.autoneg_advertised = ecmd->advertising |
-						     ADVERTISED_TP |
-						     ADVERTISED_Autoneg;
+		hw->phy.autoneg_advertised = ecmd->advertising |
+					     ADVERTISED_TP |
+					     ADVERTISED_Autoneg;
 		ecmd->advertising = hw->phy.autoneg_advertised;
-	} else
+		if (adapter->fc_autoneg)
+			hw->fc.requested_mode = e1000_fc_default;
+	} else {
 		if (igb_set_spd_dplx(adapter, ecmd->speed + ecmd->duplex)) {
 			clear_bit(__IGB_RESETTING, &adapter->state);
 			return -EINVAL;
 		}
+	}
 
 	/* reset the link */
-
 	if (netif_running(adapter->netdev)) {
 		igb_down(adapter);
 		igb_up(adapter);
@@ -225,11 +221,11 @@ static void igb_get_pauseparam(struct net_device *netdev,
 	pause->autoneg =
 		(adapter->fc_autoneg ? AUTONEG_ENABLE : AUTONEG_DISABLE);
 
-	if (hw->fc.type == e1000_fc_rx_pause)
+	if (hw->fc.current_mode == e1000_fc_rx_pause)
 		pause->rx_pause = 1;
-	else if (hw->fc.type == e1000_fc_tx_pause)
+	else if (hw->fc.current_mode == e1000_fc_tx_pause)
 		pause->tx_pause = 1;
-	else if (hw->fc.type == e1000_fc_full) {
+	else if (hw->fc.current_mode == e1000_fc_full) {
 		pause->rx_pause = 1;
 		pause->tx_pause = 1;
 	}
@@ -247,26 +243,28 @@ static int igb_set_pauseparam(struct net_device *netdev,
 	while (test_and_set_bit(__IGB_RESETTING, &adapter->state))
 		msleep(1);
 
-	if (pause->rx_pause && pause->tx_pause)
-		hw->fc.type = e1000_fc_full;
-	else if (pause->rx_pause && !pause->tx_pause)
-		hw->fc.type = e1000_fc_rx_pause;
-	else if (!pause->rx_pause && pause->tx_pause)
-		hw->fc.type = e1000_fc_tx_pause;
-	else if (!pause->rx_pause && !pause->tx_pause)
-		hw->fc.type = e1000_fc_none;
-
-	hw->fc.original_type = hw->fc.type;
-
 	if (adapter->fc_autoneg == AUTONEG_ENABLE) {
+		hw->fc.requested_mode = e1000_fc_default;
 		if (netif_running(adapter->netdev)) {
 			igb_down(adapter);
 			igb_up(adapter);
 		} else
 			igb_reset(adapter);
-	} else
-		retval = ((hw->phy.media_type == e1000_media_type_fiber) ?
-			  igb_setup_link(hw) : igb_force_mac_fc(hw));
+	} else {
+		if (pause->rx_pause && pause->tx_pause)
+			hw->fc.requested_mode = e1000_fc_full;
+		else if (pause->rx_pause && !pause->tx_pause)
+			hw->fc.requested_mode = e1000_fc_rx_pause;
+		else if (!pause->rx_pause && pause->tx_pause)
+			hw->fc.requested_mode = e1000_fc_tx_pause;
+		else if (!pause->rx_pause && !pause->tx_pause)
+			hw->fc.requested_mode = e1000_fc_none;
+
+		hw->fc.current_mode = hw->fc.requested_mode;
+
+		retval = ((hw->phy.media_type == e1000_media_type_copper) ?
+			  igb_force_mac_fc(hw) : igb_setup_link(hw));
+	}
 
 	clear_bit(__IGB_RESETTING, &adapter->state);
 	return retval;
@@ -849,6 +847,49 @@ struct igb_reg_test {
 #define TABLE64_TEST_LO	5
 #define TABLE64_TEST_HI	6
 
+/* 82580 reg test */
+static struct igb_reg_test reg_test_82580[] = {
+	{ E1000_FCAL,	   0x100, 1,  PATTERN_TEST, 0xFFFFFFFF, 0xFFFFFFFF },
+	{ E1000_FCAH,	   0x100, 1,  PATTERN_TEST, 0x0000FFFF, 0xFFFFFFFF },
+	{ E1000_FCT,	   0x100, 1,  PATTERN_TEST, 0x0000FFFF, 0xFFFFFFFF },
+	{ E1000_VET,	   0x100, 1,  PATTERN_TEST, 0xFFFFFFFF, 0xFFFFFFFF },
+	{ E1000_RDBAL(0),  0x100, 4,  PATTERN_TEST, 0xFFFFFF80, 0xFFFFFFFF },
+	{ E1000_RDBAH(0),  0x100, 4,  PATTERN_TEST, 0xFFFFFFFF, 0xFFFFFFFF },
+	{ E1000_RDLEN(0),  0x100, 4,  PATTERN_TEST, 0x000FFFF0, 0x000FFFFF },
+	{ E1000_RDBAL(4),  0x40,  4,  PATTERN_TEST, 0xFFFFFF80, 0xFFFFFFFF },
+	{ E1000_RDBAH(4),  0x40,  4,  PATTERN_TEST, 0xFFFFFFFF, 0xFFFFFFFF },
+	{ E1000_RDLEN(4),  0x40,  4,  PATTERN_TEST, 0x000FFFF0, 0x000FFFFF },
+	/* RDH is read-only for 82580, only test RDT. */
+	{ E1000_RDT(0),	   0x100, 4,  PATTERN_TEST, 0x0000FFFF, 0x0000FFFF },
+	{ E1000_RDT(4),	   0x40,  4,  PATTERN_TEST, 0x0000FFFF, 0x0000FFFF },
+	{ E1000_FCRTH,	   0x100, 1,  PATTERN_TEST, 0x0000FFF0, 0x0000FFF0 },
+	{ E1000_FCTTV,	   0x100, 1,  PATTERN_TEST, 0x0000FFFF, 0x0000FFFF },
+	{ E1000_TIPG,	   0x100, 1,  PATTERN_TEST, 0x3FFFFFFF, 0x3FFFFFFF },
+	{ E1000_TDBAL(0),  0x100, 4,  PATTERN_TEST, 0xFFFFFF80, 0xFFFFFFFF },
+	{ E1000_TDBAH(0),  0x100, 4,  PATTERN_TEST, 0xFFFFFFFF, 0xFFFFFFFF },
+	{ E1000_TDLEN(0),  0x100, 4,  PATTERN_TEST, 0x000FFFF0, 0x000FFFFF },
+	{ E1000_TDBAL(4),  0x40,  4,  PATTERN_TEST, 0xFFFFFF80, 0xFFFFFFFF },
+	{ E1000_TDBAH(4),  0x40,  4,  PATTERN_TEST, 0xFFFFFFFF, 0xFFFFFFFF },
+	{ E1000_TDLEN(4),  0x40,  4,  PATTERN_TEST, 0x000FFFF0, 0x000FFFFF },
+	{ E1000_TDT(0),	   0x100, 4,  PATTERN_TEST, 0x0000FFFF, 0x0000FFFF },
+	{ E1000_TDT(4),	   0x40,  4,  PATTERN_TEST, 0x0000FFFF, 0x0000FFFF },
+	{ E1000_RCTL,	   0x100, 1,  SET_READ_TEST, 0xFFFFFFFF, 0x00000000 },
+	{ E1000_RCTL, 	   0x100, 1,  SET_READ_TEST, 0x04CFB0FE, 0x003FFFFB },
+	{ E1000_RCTL, 	   0x100, 1,  SET_READ_TEST, 0x04CFB0FE, 0xFFFFFFFF },
+	{ E1000_TCTL,	   0x100, 1,  SET_READ_TEST, 0xFFFFFFFF, 0x00000000 },
+	{ E1000_RA,	   0, 16, TABLE64_TEST_LO,
+						0xFFFFFFFF, 0xFFFFFFFF },
+	{ E1000_RA,	   0, 16, TABLE64_TEST_HI,
+						0x83FFFFFF, 0xFFFFFFFF },
+	{ E1000_RA2,	   0, 8, TABLE64_TEST_LO,
+						0xFFFFFFFF, 0xFFFFFFFF },
+	{ E1000_RA2,	   0, 8, TABLE64_TEST_HI,
+						0x83FFFFFF, 0xFFFFFFFF },
+	{ E1000_MTA,	   0, 128, TABLE32_TEST,
+						0xFFFFFFFF, 0xFFFFFFFF },
+	{ 0, 0, 0, 0 }
+};
+
 /* 82576 reg test */
 static struct igb_reg_test reg_test_82576[] = {
 	{ E1000_FCAL,	   0x100, 1,  PATTERN_TEST, 0xFFFFFFFF, 0xFFFFFFFF },
@@ -981,6 +1022,10 @@ static int igb_reg_test(struct igb_adapter *adapter, u64 *data)
 	toggle = 0x7FFFF3FF;
 
 	switch (adapter->hw.mac.type) {
+	case e1000_82580:
+		test = reg_test_82580;
+		toggle = 0x7FEFF3FF;
+		break;
 	case e1000_82576:
 		test = reg_test_82576;
 		break;
@@ -1099,37 +1144,44 @@ static int igb_intr_test(struct igb_adapter *adapter, u64 *data)
 	*data = 0;
 
 	/* Hook up test interrupt handler just for this test */
-	if (adapter->msix_entries)
-		/* NOTE: we don't test MSI-X interrupts here, yet */
-		return 0;
+	if (adapter->msix_entries) {
+		if (request_irq(adapter->msix_entries[0].vector,
+		                &igb_test_intr, 0, netdev->name, adapter)) {
+			*data = 1;
+			return -1;
+		}
 
-	if (adapter->flags & IGB_FLAG_HAS_MSI) {
+	} else if (adapter->flags & IGB_FLAG_HAS_MSI) {
 		shared_int = false;
-		if (request_irq(irq, &igb_test_intr, 0, netdev->name, netdev)) {
+		if (request_irq(irq,
+		                &igb_test_intr, 0, netdev->name, adapter)) {
 			*data = 1;
 			return -1;
 		}
 	} else if (!request_irq(irq, &igb_test_intr, IRQF_PROBE_SHARED,
-				netdev->name, netdev)) {
+				netdev->name, adapter)) {
 		shared_int = false;
 	} else if (request_irq(irq, &igb_test_intr, IRQF_SHARED,
-		 netdev->name, netdev)) {
+		 netdev->name, adapter)) {
 		*data = 1;
 		return -1;
 	}
 	dev_info(&adapter->pdev->dev, "testing %s interrupt\n",
 		(shared_int ? "shared" : "unshared"));
 	/* Disable all the interrupts */
-	wr32(E1000_IMC, 0xFFFFFFFF);
+	wr32(E1000_IMC, ~0);
 	msleep(10);
 
 	/* Define all writable bits for ICS */
-	switch(hw->mac.type) {
+	switch (hw->mac.type) {
 	case e1000_82575:
 		ics_mask = 0x37F47EDD;
 		break;
 	case e1000_82576:
 		ics_mask = 0x77D4FBFD;
+		break;
+	case e1000_82580:
+		ics_mask = 0x77DCFED5;
 		break;
 	default:
 		ics_mask = 0x7FFFFFFF;
@@ -1214,7 +1266,10 @@ static int igb_intr_test(struct igb_adapter *adapter, u64 *data)
 	msleep(10);
 
 	/* Unhook test interrupt handler */
-	free_irq(irq, netdev);
+	if (adapter->msix_entries)
+		free_irq(adapter->msix_entries[0].vector, adapter);
+	else
+		free_irq(irq, adapter);
 
 	return *data;
 }
@@ -1431,6 +1486,9 @@ static int igb_integrated_phy_loopback(struct igb_adapter *adapter)
 		igb_write_phy_reg(hw, PHY_CONTROL, 0x9140);
 		/* autoneg off */
 		igb_write_phy_reg(hw, PHY_CONTROL, 0x8140);
+	} else if (hw->phy.type == e1000_phy_82580) {
+		/* enable MII loopback */
+		igb_write_phy_reg(hw, I82580_PHY_LBK_CTRL, 0x8041);
 	}
 
 	ctrl_reg = rd32(E1000_CTRL);
@@ -1473,8 +1531,7 @@ static int igb_setup_loopback_test(struct igb_adapter *adapter)
 	struct e1000_hw *hw = &adapter->hw;
 	u32 reg;
 
-	if (hw->phy.media_type == e1000_media_type_fiber ||
-	    hw->phy.media_type == e1000_media_type_internal_serdes) {
+	if (hw->phy.media_type == e1000_media_type_internal_serdes) {
 		reg = rd32(E1000_RCTL);
 		reg |= E1000_RCTL_LBM_TCVR;
 		wr32(E1000_RCTL, reg);
@@ -1786,7 +1843,7 @@ static int igb_wol_exclusion(struct igb_adapter *adapter,
 		/* dual port cards only support WoL on port A from now on
 		 * unless it was enabled in the eeprom for port B
 		 * so exclude FUNC_1 ports from having WoL enabled */
-		if (rd32(E1000_STATUS) & E1000_STATUS_FUNC_1 &&
+		if ((rd32(E1000_STATUS) & E1000_STATUS_FUNC_MASK) &&
 		    !adapter->eeprom_wol) {
 			wol->supported = 0;
 			break;
@@ -1833,7 +1890,6 @@ static void igb_get_wol(struct net_device *netdev, struct ethtool_wolinfo *wol)
 static int igb_set_wol(struct net_device *netdev, struct ethtool_wolinfo *wol)
 {
 	struct igb_adapter *adapter = netdev_priv(netdev);
-	struct e1000_hw *hw = &adapter->hw;
 
 	if (wol->wolopts & (WAKE_PHY | WAKE_ARP | WAKE_MAGICSECURE))
 		return -EOPNOTSUPP;
@@ -1841,11 +1897,6 @@ static int igb_set_wol(struct net_device *netdev, struct ethtool_wolinfo *wol)
 	if (igb_wol_exclusion(adapter, wol) ||
 	    !device_can_wakeup(&adapter->pdev->dev))
 		return wol->wolopts ? -EOPNOTSUPP : 0;
-
-	switch (hw->device_id) {
-	default:
-		break;
-	}
 
 	/* these settings will always override what we currently have */
 	adapter->wol = 0;

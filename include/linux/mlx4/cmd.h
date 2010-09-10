@@ -56,7 +56,9 @@ enum {
 	MLX4_CMD_QUERY_HCA	 = 0xb,
 	MLX4_CMD_QUERY_PORT	 = 0x43,
 	MLX4_CMD_SENSE_PORT	 = 0x4d,
+	MLX4_CMD_HW_HEALTH_CHECK = 0x50,
 	MLX4_CMD_SET_PORT	 = 0xc,
+	MLX4_CMD_QUERY_FUNC	 = 0x56,
 	MLX4_CMD_ACCESS_DDR	 = 0x2e,
 	MLX4_CMD_MAP_ICM	 = 0xffa,
 	MLX4_CMD_UNMAP_ICM	 = 0xff9,
@@ -117,6 +119,21 @@ enum {
 	/* miscellaneous commands */
 	MLX4_CMD_DIAG_RPRT	 = 0x30,
 	MLX4_CMD_NOP		 = 0x31,
+	MLX4_CMD_ACCESS_MEM	 = 0x2e,
+
+	/* Ethernet specific commands */
+	MLX4_CMD_SET_VLAN_FLTR	 = 0x47,
+	MLX4_CMD_SET_MCAST_FLTR	 = 0x48,
+	MLX4_CMD_DUMP_ETH_STATS	 = 0x49,
+
+	/* virtual commands */
+	MLX4_CMD_ALLOC_RES	 = 0xf00,
+	MLX4_CMD_FREE_RES	 = 0xf01,
+	MLX4_CMD_REPLACE_RES	 = 0xf02,
+	MLX4_CMD_GET_EVENT	 = 0xf03,
+	MLX4_CMD_QUERY_SLAVE_CAP = 0xf04,
+	MLX4_CMD_MCAST_ATTACH	 = 0xf05,
+	MLX4_CMD_GET_SLAVE_SQP	 = 0xf06,
 
 	/* debug commands */
 	MLX4_CMD_QUERY_DEBUG_MSG = 0x2a,
@@ -130,7 +147,8 @@ enum {
 };
 
 enum {
-	MLX4_MAILBOX_SIZE	=  4096
+	MLX4_MAILBOX_SIZE	= 4096,
+	MLX4_ACCESS_MEM_ALIGN	= 256,
 };
 
 enum {
@@ -140,6 +158,7 @@ enum {
 	MLX4_SET_PORT_MAC_TABLE = 0x2,
 	MLX4_SET_PORT_VLAN_TABLE = 0x3,
 	MLX4_SET_PORT_PRIO_MAP  = 0x4,
+	MLX4_SET_PORT_MODIFIERS
 };
 
 struct mlx4_dev;

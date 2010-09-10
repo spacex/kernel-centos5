@@ -329,7 +329,7 @@ static void rpc_make_runnable(struct rpc_task *task)
 		int status;
 
 		INIT_WORK(&task->u.tk_work, rpc_async_schedule, (void *)task);
-		status = queue_work(task->tk_workqueue, &task->u.tk_work);
+		status = queue_work(rpciod_workqueue, &task->u.tk_work);
 		if (status < 0) {
 			printk(KERN_WARNING "RPC: failed to add task to queue: error: %d!\n", status);
 			task->tk_status = status;
@@ -813,7 +813,8 @@ void rpc_free(struct rpc_task *task)
 /*
  * Creation and deletion of RPC task structures
  */
-void rpc_init_task(struct rpc_task *task, struct rpc_clnt *clnt, int flags, const struct rpc_call_ops *tk_ops, void *calldata)
+void rpc_init_task_wq(struct rpc_task *task, struct rpc_clnt *clnt, int flags, const struct rpc_call_ops *tk_ops,
+		      void *calldata, struct workqueue_struct *workqueue)
 {
 	memset(task, 0, sizeof(*task));
 	init_timer(&task->tk_timer);
@@ -835,7 +836,7 @@ void rpc_init_task(struct rpc_task *task, struct rpc_clnt *clnt, int flags, cons
 	task->tk_cookie = (unsigned long)current;
 
 	/* Initialize workqueue for async tasks */
-	task->tk_workqueue = rpciod_workqueue;
+	task->tk_workqueue = workqueue;
 
 	if (clnt) {
 		atomic_inc(&clnt->cl_users);
@@ -854,13 +855,19 @@ void rpc_init_task(struct rpc_task *task, struct rpc_clnt *clnt, int flags, cons
 				current->pid);
 }
 
+void rpc_init_task(struct rpc_task *task, struct rpc_clnt *clnt, int flags, const struct rpc_call_ops *tk_ops,
+		   void *calldata)
+{
+	rpc_init_task_wq(task, clnt, flags, tk_ops, calldata, NULL);
+}
+
 static struct rpc_task *
 rpc_alloc_task(void)
 {
 	return (struct rpc_task *)mempool_alloc(rpc_task_mempool, GFP_NOFS);
 }
 
-static void rpc_free_task(struct rcu_head *rcu)
+static void rpc_free_task_rcu(struct rcu_head *rcu)
 {
 	struct rpc_task *task = container_of(rcu, struct rpc_task, u.tk_rcu);
 	dprintk("RPC: %4d freeing task\n", task->tk_pid);
@@ -872,7 +879,8 @@ static void rpc_free_task(struct rcu_head *rcu)
  * clean up after an allocation failure, as the client may
  * have specified "oneshot".
  */
-struct rpc_task *rpc_new_task(struct rpc_clnt *clnt, int flags, const struct rpc_call_ops *tk_ops, void *calldata)
+struct rpc_task *rpc_new_task_wq(struct rpc_clnt *clnt, int flags, const struct rpc_call_ops *tk_ops, void *calldata,
+				 struct workqueue_struct *workqueue)
 {
 	struct rpc_task	*task;
 
@@ -880,7 +888,7 @@ struct rpc_task *rpc_new_task(struct rpc_clnt *clnt, int flags, const struct rpc
 	if (!task)
 		goto cleanup;
 
-	rpc_init_task(task, clnt, flags, tk_ops, calldata);
+	rpc_init_task_wq(task, clnt, flags, tk_ops, calldata, workqueue);
 
 	dprintk("RPC: %4d allocated task\n", task->tk_pid);
 	task->tk_flags |= RPC_TASK_DYNAMIC;
@@ -898,12 +906,28 @@ cleanup:
 	goto out;
 }
 
+struct rpc_task *rpc_new_task(struct rpc_clnt *clnt, int flags, const struct rpc_call_ops *tk_ops, void *calldata)
+{
+	return rpc_new_task_wq(clnt, flags, tk_ops, calldata, NULL);
+}
 
-void rpc_put_task(struct rpc_task *task)
+static void rpc_free_task(struct rpc_task *task)
 {
 	const struct rpc_call_ops *tk_ops = task->tk_ops;
 	void *calldata = task->tk_calldata;
 
+	if (task->tk_flags & RPC_TASK_DYNAMIC)
+		call_rcu_bh(&task->u.tk_rcu, rpc_free_task_rcu);
+	rpc_release_calldata(tk_ops, calldata);
+}
+
+static void rpc_async_release(void *task)
+{
+	rpc_free_task((struct rpc_task *) task);
+}
+
+void rpc_put_task(struct rpc_task *task)
+{
 	if (!atomic_dec_and_test(&task->tk_count))
 		return;
 	/* Release resources */
@@ -915,9 +939,11 @@ void rpc_put_task(struct rpc_task *task)
 		rpc_release_client(task->tk_client);
 		task->tk_client = NULL;
 	}
-	if (task->tk_flags & RPC_TASK_DYNAMIC)
-		call_rcu_bh(&task->u.tk_rcu, rpc_free_task);
-	rpc_release_calldata(tk_ops, calldata);
+	if (task->tk_workqueue != NULL) {
+		INIT_WORK(&task->u.tk_work, rpc_async_release, (void *) task);
+		queue_work(task->tk_workqueue, &task->u.tk_work);
+	} else
+		rpc_free_task(task);
 }
 EXPORT_SYMBOL(rpc_put_task);
 
@@ -954,12 +980,12 @@ static void rpc_release_task(struct rpc_task *task)
  * @ops: RPC call ops
  * @data: user call data
  */
-struct rpc_task *rpc_run_task(struct rpc_clnt *clnt, int flags,
-					const struct rpc_call_ops *ops,
-					void *data)
+struct rpc_task *rpc_run_task_wq(struct rpc_clnt *clnt, int flags,
+				const struct rpc_call_ops *ops,
+				void *data, struct workqueue_struct *workqueue)
 {
 	struct rpc_task *task;
-	task = rpc_new_task(clnt, flags, ops, data);
+	task = rpc_new_task_wq(clnt, flags, ops, data, workqueue);
 	if (task == NULL) {
 		rpc_release_calldata(ops, data);
 		return ERR_PTR(-ENOMEM);
@@ -967,6 +993,14 @@ struct rpc_task *rpc_run_task(struct rpc_clnt *clnt, int flags,
 	atomic_inc(&task->tk_count);
 	rpc_execute(task);
 	return task;
+}
+EXPORT_SYMBOL(rpc_run_task_wq);
+
+struct rpc_task *rpc_run_task(struct rpc_clnt *clnt, int flags,
+					const struct rpc_call_ops *ops,
+					void *data)
+{
+	return rpc_run_task_wq(clnt, flags, ops, data, NULL);
 }
 EXPORT_SYMBOL(rpc_run_task);
 

@@ -398,6 +398,7 @@ struct ohci_hcd {
 #define	OHCI_BIG_ENDIAN		0x08			/* big endian HC */
 #define	OHCI_QUIRK_ZFMICRO	0x10			/* Compaq ZFMicro chipset*/
 #define	OHCI_QUIRK_AMD_ISO	0x200			/* ISO transfers */
+#define	OHCI_QUIRK_AMD_PREFETCH	0x400			/* pre-fetch for ISO transfer */
 	// there are also chip quirks/bugs in init logic
 
 };

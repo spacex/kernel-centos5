@@ -66,6 +66,7 @@ parameter is applicable:
 	PARIDE	The ParIDE subsystem is enabled.
 	PARISC	The PA-RISC architecture is enabled.
 	PCI	PCI bus support is enabled.
+	PCIE    PCI Express support is enabled.
 	PCMCIA	The PCMCIA subsystem is enabled.
 	PNP	Plug & Play support is enabled.
 	PPC	PowerPC architecture is enabled.
@@ -269,6 +270,10 @@ running once the system is up.
 	apiccalibrationiters=
 			[APIC,i386, x86_64] Number of iterations during APIC
 			calibration.  Default is 10.
+
+	apiccalibrationdiff=
+			[APIC,i386, x86_64] Length of APIC calibration window.
+			Default is 5000.
 
 	apm=		[APM] Advanced Power Management
 			See header of arch/i386/kernel/apm.c.
@@ -963,7 +968,10 @@ running once the system is up.
 			Format: <1-256>
 
 	maxcpus=	[SMP] Maximum number of processors that	an SMP kernel
-			should make use of
+			should make use of.  maxcpus=n : n >= 0 limits the
+			kernel to using 'n' processors.  n=0 is a special case,
+			it is equivalent to "nosmp", which also disables
+			the IO APIC.
 
 	max_addr=[KMG]	[KNL,BOOT,ia64] All physical memory greater than or
 			equal to this physical address is ignored.
@@ -1217,7 +1225,8 @@ running once the system is up.
 
 	nosep		[BUGS=IA-32] Disables x86 SYSENTER/SYSEXIT support.
 
-	nosmp		[SMP] Tells an SMP kernel to act as a UP kernel.
+	nosmp		[SMP] Tells an SMP kernel to act as a UP kernel,
+			and disable the IO APIC.  legacy for "maxcpus=0".
 
 	nosync		[HW,M68K] Disables sync negotiation for all devices.
 
@@ -1244,6 +1253,14 @@ running once the system is up.
 
 	oprofile.timer=	[HW]
 			Use timer interrupt instead of performance counters
+
+	oprofile.cpu_type=	Force an oprofile cpu type
+			This might be useful if you have an older oprofile
+			userland or if you want common events.
+			Format: { arch_perfmon }
+			arch_perfmon: [X86] Force use of architectural
+				perfmon on Intel CPUs instead of the
+				CPU specific event set.
 
 	optcd=		[HW,CD]
 			Format: <io>
@@ -1314,6 +1331,9 @@ running once the system is up.
 				Mechanism 1.
 		conf2		[IA-32] Force use of PCI Configuration
 				Mechanism 2.
+		aer		[PCIE] By default in RHEL5, PCIEAER is disabled.
+				This kernel boot option can be used to enable
+				the use of the PCIE advanced error reporting.
 		nommconf	[IA-32,X86_64] Disable use of MMCONFIG for PCI
 				Configuration
 		nomsi		[MSI] If the PCI_MSI kernel config parameter is

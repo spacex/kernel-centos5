@@ -352,19 +352,32 @@ struct cifsFileInfo {
 	/* lock scope id (0 if none) */
 	struct file *pfile; /* needed for writepage */
 	struct inode *pInode; /* needed for oplock break */
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 17)
+	struct vfsmount *mnt;
 	struct mutex lock_mutex;
-#else
-	struct semaphore lock_mutex;
-#endif
 	struct list_head llist; /* list of byte range locks we have. */
 	bool closePend:1;	/* file is marked to close */
 	bool invalidHandle:1;	/* file closed via session abend */
-	bool messageMode:1;	/* for pipes: message vs byte mode */
-	atomic_t wrtPending;   /* handle in use - defer close */
+	bool oplock_break_cancelled:1;
+	atomic_t count;		/* reference count */
 	struct semaphore fh_sem; /* prevents reopen race after dead ses*/
 	struct cifs_search_info srch_inf;
+	struct work_struct oplock_break; /* workqueue job for oplock breaks */
 };
+
+/* Take a reference on the file private data */
+static inline void cifsFileInfo_get(struct cifsFileInfo *cifs_file)
+{
+	atomic_inc(&cifs_file->count);
+}
+
+/* Release a reference on the file private data */
+static inline void cifsFileInfo_put(struct cifsFileInfo *cifs_file)
+{
+	if (atomic_dec_and_test(&cifs_file->count)) {
+		iput(cifs_file->pInode);
+		kfree(cifs_file);
+	}
+}
 
 /*
  * One of these for each file inode
@@ -380,7 +393,6 @@ struct cifsInodeInfo {
 	unsigned long time;	/* jiffies of last update/check of inode */
 	bool clientCanCacheRead:1;	/* read oplock */
 	bool clientCanCacheAll:1;	/* read and writebehind oplock */
-	bool oplockPending:1;
 	bool delete_pending:1;		/* DELETE_ON_CLOSE is set */
 	u64  server_eof;		/* current file size on server */
 	struct inode vfs_inode;
@@ -654,8 +666,6 @@ GLOBAL_EXTERN rwlock_t		cifs_tcp_ses_lock;
  */
 GLOBAL_EXTERN rwlock_t GlobalSMBSeslock;
 
-GLOBAL_EXTERN struct list_head GlobalOplock_Q;
-
 /* Outstanding dir notify requests */
 GLOBAL_EXTERN struct list_head GlobalDnotifyReqList;
 /* DirNotify response queue */
@@ -706,3 +716,4 @@ GLOBAL_EXTERN unsigned int cifs_min_rcv;    /* min size of big ntwrk buf pool */
 GLOBAL_EXTERN unsigned int cifs_min_small;  /* min size of small buf pool */
 GLOBAL_EXTERN unsigned int cifs_max_pending; /* MAX requests at once to server*/
 
+extern struct workqueue_struct *cifswq;

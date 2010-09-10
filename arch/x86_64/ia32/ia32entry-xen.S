@@ -468,7 +468,7 @@ ia32_sys_call_table:
 	.quad sys_mkdir
 	.quad sys_rmdir		/* 40 */
 	.quad sys_dup
-	.quad sys32_pipe
+	.quad sys_pipe
 	.quad compat_sys_times
 	.quad quiet_ni_syscall			/* old prof syscall holder */
 	.quad sys_brk		/* 45 */
@@ -663,7 +663,7 @@ ia32_sys_call_table:
 	.quad quiet_ni_syscall		/* tux */
 	.quad quiet_ni_syscall    	/* security */
 	.quad sys_gettid	
-	.quad sys_readahead	/* 225 */
+	.quad sys32_readahead	/* 225 */
 	.quad sys_setxattr
 	.quad sys_lsetxattr
 	.quad sys_fsetxattr
@@ -688,7 +688,7 @@ ia32_sys_call_table:
 	.quad compat_sys_io_getevents
 	.quad compat_sys_io_submit
 	.quad sys_io_cancel
-	.quad sys_fadvise64		/* 250 */
+	.quad sys32_fadvise64		/* 250 */
 	.quad quiet_ni_syscall 	/* free_huge_pages */
 	.quad sys_exit_group
 	.quad sys32_lookup_dcookie
@@ -752,7 +752,7 @@ ia32_sys_call_table:
 	.quad compat_sys_set_robust_list
 	.quad compat_sys_get_robust_list
 	.quad sys_splice
-	.quad sys_sync_file_range
+	.quad sys32_sync_file_range
 	.quad sys_tee
 	.quad compat_sys_vmsplice
 	.quad compat_sys_move_pages

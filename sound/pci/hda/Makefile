@@ -16,5 +16,7 @@ snd-hda-intel-y += patch_intelhdmi.o
 snd-hda-intel-y += patch_nvhdmi.o
 snd-hda-intel-y += patch_conexant.o
 snd-hda-intel-y += patch_via.o
+snd-hda-intel-y += patch_ca0110.o
+snd-hda-intel-y += patch_cirrus.o
 
 obj-$(CONFIG_SND_HDA_INTEL) += snd-hda-intel.o

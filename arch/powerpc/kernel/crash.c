@@ -189,7 +189,7 @@ static void crash_kexec_prepare_cpus(int cpu)
 	msecs = 10000;
 	while ((cpus_weight(cpus_in_crash) < ncpus) && (--msecs > 0)) {
 		cpu_relax();
-		mdelay(1);
+		udelay(1000);
 	}
 
 	/* Would it be better to replace the trap vector here? */
@@ -241,7 +241,7 @@ void crash_kexec_secondary(struct pt_regs *regs)
 			local_irq_restore(flags);
 			return;
 		}
-		mdelay(1);
+		udelay(1000);
 		cpu_relax();
 	}
 	if (cpu == crashing_cpu) {

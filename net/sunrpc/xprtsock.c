@@ -832,7 +832,15 @@ static void xs_tcp_state_change(struct sock *sk)
 			xprt->tcp_offset = 0;
 			xprt->tcp_reclen = 0;
 			xprt->tcp_copied = 0;
-			xprt->tcp_flags = XPRT_COPY_RECM | XPRT_COPY_XID;
+
+			if (xprt->tcp_flags & XPRT_SRCADDR_PRESENT)
+				xprt->tcp_flags = XPRT_SRCADDR_PRESENT |
+						  XPRT_COPY_RECM |
+						  XPRT_COPY_XID;
+			else
+				xprt->tcp_flags = XPRT_COPY_RECM |
+						  XPRT_COPY_XID;
+
 			xprt->reestablish_timeout = XS_TCP_INIT_REEST_TO;
 			xprt_wake_pending_tasks(xprt, 0);
 		}
@@ -984,7 +992,7 @@ static void xs_set_port(struct rpc_xprt *xprt, unsigned short port)
 	xprt->addr.sin_port = htons(port);
 }
 
-static int xs_bindresvport(struct rpc_xprt *xprt, struct socket *sock)
+static int xs_bind(struct rpc_xprt *xprt, struct socket *sock)
 {
 	struct sockaddr_in myaddr = {
 		.sin_family = AF_INET,
@@ -992,15 +1000,28 @@ static int xs_bindresvport(struct rpc_xprt *xprt, struct socket *sock)
 	int err;
 	unsigned short port = xprt->port;
 
+	/* only bind for reserved port, or if the the srcaddr is set */
+	if (xprt->tcp_flags & XPRT_SRCADDR_PRESENT) {
+		if (!xprt->resvport) {
+			if (xprt->srcaddr.sin_addr.s_addr == INADDR_ANY)
+				goto out_skip;
+			port = 0;
+		}
+		myaddr.sin_addr = xprt->srcaddr.sin_addr;
+	} else {
+		if (!xprt->resvport)
+			goto out_skip;
+	}
+
 	do {
 		myaddr.sin_port = htons(port);
 		err = kernel_bind(sock, (struct sockaddr *) &myaddr,
 						sizeof(myaddr));
+		if (!xprt->resvport)
+			break;
 		if (err == 0) {
 			xprt->port = port;
-			dprintk("RPC:      xs_bindresvport bound to port %u\n",
-					port);
-			return 0;
+			break;
 		}
 		if (port <= xprt_min_resvport)
 			port = xprt_max_resvport;
@@ -1008,8 +1029,14 @@ static int xs_bindresvport(struct rpc_xprt *xprt, struct socket *sock)
 			port--;
 	} while (err == -EADDRINUSE && port != xprt->port);
 
-	dprintk("RPC:      can't bind to reserved port (%d).\n", -err);
+	dprintk("RPC:       xs_bind "NIPQUAD_FMT":%u: %s (%d)\n",
+		NIPQUAD(myaddr.sin_addr), port, err ? "failed" : "ok", err);
 	return err;
+out_skip:
+	dprintk("RPC:       xs_bind not binding socket (srcaddr %s)\n",
+		(xprt->tcp_flags & XPRT_SRCADDR_PRESENT) ? "present" :
+		"absent");
+	return 0;
 }
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
@@ -1069,7 +1096,7 @@ static void xs_udp_connect_worker(void *args)
 	}
 	xs_reclassify_socket(sock);
 
-	if (xprt->resvport && xs_bindresvport(xprt, sock) < 0) {
+	if (xs_bind(xprt, sock)) {
 		sock_release(sock);
 		goto out;
 	}
@@ -1152,7 +1179,7 @@ static void xs_tcp_connect_worker(void *args)
 		}
 		xs_reclassify_socket(sock);
 
-		if (xprt->resvport && xs_bindresvport(xprt, sock) < 0) {
+		if (xs_bind(xprt, sock)) {
 			sock_release(sock);
 			goto out;
 		}
@@ -1248,10 +1275,6 @@ static void xs_connect(struct rpc_task *task)
 	} else {
 		dprintk("RPC:      xs_connect scheduled xprt %p\n", xprt);
 		queue_work(rpciod_workqueue, &xprt->connect_worker);
-
-		/* flush_scheduled_work can sleep... */
-		if (!RPC_IS_ASYNC(task))
-			flush_scheduled_work();
 	}
 }
 

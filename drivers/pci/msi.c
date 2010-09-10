@@ -30,7 +30,6 @@ static int pci_msi_enable = 1;
 static int last_alloc_vector;
 static int nr_released_vectors;
 static int nr_reserved_vectors = NR_HP_RESERVED_VECTORS;
-static int nr_msix_devices;
 
 #ifndef CONFIG_X86_IO_APIC
 int vector_irq[NR_VECTORS] = { [0 ... NR_VECTORS - 1] = -1};
@@ -503,7 +502,7 @@ void pci_scan_msi_device(struct pci_dev *dev)
 		return;
 
    	if (pci_find_capability(dev, PCI_CAP_ID_MSIX) > 0)
-		nr_msix_devices++;
+		return;
 	else if (pci_find_capability(dev, PCI_CAP_ID_MSI) > 0)
 		nr_reserved_vectors++;
 }
@@ -965,9 +964,6 @@ int pci_enable_msi(struct pci_dev* dev)
 	if (!status) {
    		if (!pos)
 			nr_reserved_vectors--;	/* Only MSI capable */
-		else if (nr_msix_devices > 0)
-			nr_msix_devices--;	/* Both MSI and MSI-X capable,
-						   but choose enabling MSI */
 	}
 
 	return status;
@@ -1131,9 +1127,6 @@ int pci_enable_msix(struct pci_dev* dev, struct msix_entry *entries, int nvec)
 	   default to avoid any MSI-X driver to take all available
  	   resources */
 	free_vectors -= nr_reserved_vectors;
-	/* Find the average of free vectors among MSI-X devices */
-	if (nr_msix_devices > 0)
-		free_vectors /= nr_msix_devices;
 	spin_unlock_irqrestore(&msi_lock, flags);
 
 	if (nvec > free_vectors) {
@@ -1144,8 +1137,6 @@ int pci_enable_msix(struct pci_dev* dev, struct msix_entry *entries, int nvec)
 	}
 
 	status = msix_capability_init(dev, entries, nvec);
-	if (!status && nr_msix_devices > 0)
-		nr_msix_devices--;
 
 	return status;
 }
@@ -1263,6 +1254,18 @@ void pci_no_msi(void)
 {
 	pci_msi_enable = 0;
 }
+
+/**
+ * pci_msi_enabled - is MSI enabled?
+ *
+ * Returns true if MSI has not been disabled by the command-line option
+ * pci=nomsi.
+ **/
+int pci_msi_enabled(void)
+{
+	return pci_msi_enable;
+}
+EXPORT_SYMBOL(pci_msi_enabled);
 
 EXPORT_SYMBOL(pci_enable_msi);
 EXPORT_SYMBOL(pci_disable_msi);

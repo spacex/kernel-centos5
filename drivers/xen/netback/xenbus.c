@@ -19,6 +19,8 @@
 
 #include <stdarg.h>
 #include <linux/module.h>
+#include <linux/netdevice.h>
+#include <linux/rtnetlink.h>
 #include <xen/xenbus.h>
 #include "common.h"
 
@@ -311,10 +313,12 @@ static void connect(struct backend_info *be)
 	int err;
 	struct xenbus_device *dev = be->dev;
 
+	rtnl_lock();
+
 	err = xen_net_read_mac(dev, be->netif->fe_dev_addr);
 	if (err) {
 		xenbus_dev_fatal(dev, err, "parsing %s/mac", dev->nodename);
-		return;
+		goto out;
 	}
 
 	xen_net_read_rate(dev, &be->netif->credit_bytes,
@@ -323,11 +327,14 @@ static void connect(struct backend_info *be)
 
 	err = connect_rings(be);
 	if (err)
-		return;
+		goto out;
 
 	/* May not get a kick from the frontend, so start the tx_queue now. */
 	if (!netbk_can_queue(be->netif->dev))
 		netif_wake_queue(be->netif->dev);
+
+out:
+	rtnl_unlock();
 }
 
 
@@ -398,6 +405,8 @@ static int connect_rings(struct backend_info *be)
 		be->netif->features &= ~NETIF_F_IP_CSUM;
 		be->netif->dev->features &= ~NETIF_F_IP_CSUM;
 	}
+
+	netdev_features_change(be->netif->dev);
 
 	/* Map the shared frame, irq etc. */
 	err = netif_map(be->netif, tx_ring_ref, rx_ring_ref, evtchn);

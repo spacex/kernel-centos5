@@ -24,6 +24,7 @@
 #include <asm/apic.h>
 #include <mach_ipi.h>
 #include <linux/kvm_para.h>
+#include <linux/pci.h>
 
 
 /* This keeps a track of which one is crashing cpu. */
@@ -143,7 +144,7 @@ static void nmi_shootdown_cpus(void)
 
 	msecs = 1000; /* Wait at most a second for the other cpus to stop */
 	while ((atomic_read(&waiting_for_crash_ipi) > 0) && msecs) {
-		mdelay(1);
+		udelay(1000);
 		msecs--;
 	}
 
@@ -157,6 +158,8 @@ static void nmi_shootdown_cpus(void)
 }
 #endif
 #endif /* CONFIG_XEN */
+
+extern struct pci_dev *mcp55_rewrite;
 
 void machine_crash_shutdown(struct pt_regs *regs)
 {
@@ -182,6 +185,25 @@ void machine_crash_shutdown(struct pt_regs *regs)
 #if defined(CONFIG_X86_IO_APIC)
 	disable_IO_APIC();
 #endif
+	if (crashing_cpu && mcp55_rewrite) {
+		u32 cfg;
+		printk(KERN_CRIT "REWRITING MCP55 CFG REG\n");
+		/*
+		 * We have a mcp55 chip on board which has been 
+		 * flagged as only sending legacy interrupts
+		 * to the BSP, and we are crashing on an AP
+		 * This is obviously bad, and we need to 
+		 * fix it up.  To do this we write to the 
+		 * flagged device, to the register at offset 0x74
+		 * and we make sure that bit 2 and bit 15 are clear
+		 * This forces legacy interrupts to be broadcast
+		 * to all cpus
+		 */
+		pci_read_config_dword(mcp55_rewrite, 0x74, &cfg);
+		cfg &= ~((1 << 2) | (1 << 15));
+		printk(KERN_CRIT "CFG = %x\n", cfg);
+		pci_write_config_dword(mcp55_rewrite, 0x74, cfg);
+	}
 #endif /* CONFIG_XEN */
 	crash_save_self(regs);
 }

@@ -172,6 +172,16 @@ int mlx4_bitmap_init(struct mlx4_bitmap *bitmap, u32 num, u32 mask,
 	return 0;
 }
 
+/* Like bitmap_init, but doesn't require 'num' to be a power of 2 or
+ * a non-trivial mask */
+int mlx4_bitmap_init_no_mask(struct mlx4_bitmap *bitmap, u32 num,
+			     u32 reserved_bot, u32 reserved_top)
+{
+	u32 num_rounded = roundup_pow_of_two(num);
+	return mlx4_bitmap_init(bitmap, num_rounded, num_rounded - 1,
+				reserved_bot, num_rounded - num + reserved_top);
+}
+
 void mlx4_bitmap_cleanup(struct mlx4_bitmap *bitmap)
 {
 	kfree(bitmap->table);

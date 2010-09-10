@@ -161,6 +161,10 @@ enum
 	KERN_PROVE_LOCKING=79,	/* int: enable lock dependancy validation */
 	KERN_SOFTLOCKUP_THRESH=80, /* int: min time to report softlockups */
 	KERN_SOFTLOCKUP_PANIC=81, /* int: panic on softlockup */
+	KERN_HUNG_TASK_PANIC=82,
+	KERN_HUNG_TASK_CHECK_COUNT=83,
+	KERN_HUNG_TASK_TIMEOUT_SECS=84,
+	KERN_HUNG_TASK_WARNINGS=85,
 };
 
 
@@ -207,7 +211,9 @@ enum
 	VM_MMAP_MIN_ADDR=38, 	/* amount of memory to protect from mmap */
 	VM_FLUSH_MMAP=39,       /* flush mmap()d pagecache pages */
 	VM_MAX_WRITEBACK_PAGES=40, /*maximum pages written per writeback loop */
+	VM_ZONE_RECLAIM_INTERVAL=41, /* interval between zone_reclaim failures */
 	VM_TOPDOWN_ALLOCATE_FAST=42, /* optimize speed over fragmentation in topdown alloc */
+	VM_MAX_RECLAIMS=43,     /* max reclaims allowed */
 };
 
 

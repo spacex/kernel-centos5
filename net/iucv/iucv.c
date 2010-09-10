@@ -332,7 +332,7 @@ static int iucv_query_maxconn(void)
 		"	srl	%0,28\n"
 		: "=d" (ccode), "+d" (reg0), "+d" (reg1) : : "cc");
 	if (ccode == 0)
-		iucv_max_pathid = reg0;
+		iucv_max_pathid = reg1;
 	kfree(param);
 	return ccode ? -EPERM : 0;
 }
@@ -1511,6 +1511,8 @@ static void iucv_path_complete(struct iucv_irq_data *data)
 	struct iucv_path_complete *ipc = (void *) data;
 	struct iucv_path *path = iucv_path_table[ipc->ippathid];
 
+	if (path)
+		path->flags = ipc->ipflags1;
 	if (path && path->handler && path->handler->path_complete)
 		path->handler->path_complete(path, ipc->ipuser);
 }

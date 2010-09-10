@@ -135,6 +135,10 @@ extern int ext2_setattr (struct dentry *, struct iattr *);
 extern void ext2_set_inode_flags(struct inode *inode);
 extern int ext2_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
 		       u64 start, u64 len);
+int __ext2_write_begin(struct file *file, struct address_space *mapping,
+		loff_t pos, unsigned len, unsigned flags,
+		struct page **pagep, void **fsdata);
+
 
 /* ioctl.c */
 extern int ext2_ioctl (struct inode *, struct file *, unsigned int,
@@ -164,7 +168,7 @@ extern const struct file_operations ext2_file_operations;
 extern const struct file_operations ext2_xip_file_operations;
 
 /* inode.c */
-extern const struct address_space_operations ext2_aops;
+extern const struct address_space_operations_ext ext2_aops;
 extern const struct address_space_operations ext2_aops_xip;
 extern const struct address_space_operations ext2_nobh_aops;
 

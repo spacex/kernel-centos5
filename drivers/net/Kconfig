@@ -2027,6 +2027,11 @@ config IGBVF
          To compile this driver as a module, choose M here. The module
          will be called igbvf.
 
+config IGB_DCA
+	bool "Enable DCA"
+	default y
+	depends on IGB && DCA && !(IGB=y && DCA=m)
+
 source "drivers/net/ixp2000/Kconfig"
 
 config MYRI_SBUS
@@ -2369,6 +2374,9 @@ endmenu
 menu "Ethernet (10000 Mbit)"
 	depends on !UML
 
+config MDIO
+	tristate
+
 config CHELSIO_T1
         tristate "Chelsio 10Gb Ethernet support"
         depends on PCI
@@ -2439,6 +2447,37 @@ config IXGBE
 	  <file:Documentation/networking/net-modules.txt>.  The module
 	  will be called ixgbe.
 
+config IXGBE_DCA
+	bool "Direct Cache Access (DCA) Support"
+	default y
+	depends on IXGBE && DCA && !(IXGBE=y && DCA=m)
+	---help---
+	  Say Y here if you want to use Direct Cache Access (DCA) in the
+	  driver.  DCA is a method for warming the CPU cache before data
+	  is used, with the intent of lessening the impact of cache misses.
+
+config IXGBEVF
+       tristate "Intel(R) 82599 Virtual Function Ethernet support"
+       depends on PCI_MSI
+       ---help---
+         This driver supports Intel(R) 82599 virtual functions.  For more
+         information on how to identify your adapter, go to the Adapter &
+         Driver ID Guide at:
+
+         <http://support.intel.com/support/network/sb/CS-008441.htm>
+
+         For general information and support, go to the Intel support
+         website at:
+
+         <http://support.intel.com>
+
+         More specific information on configuring the driver is in
+         <file:Documentation/networking/ixgbevf.txt>.
+
+         To compile this driver as a module, choose M here. The module
+         will be called ixgbevf.  MSI-X interrupt support is required
+         for this driver to work correctly.
+
 config IXGB
 	tristate "Intel(R) PRO/10GbE support"
 	depends on PCI
@@ -2502,6 +2541,23 @@ config S2IO_NAPI
 	  information.
 
 	  If in doubt, say N.
+
+config VXGE
+	tristate "Neterion X3100 Series 10GbE PCIe Server Adapter"
+	depends on PCI && INET
+	---help---
+	  This driver supports Neterion Inc's X3100 Series 10 GbE PCIe
+	  I/O Virtualized Server Adapter.
+	  More specific information on configuring the driver is in
+	  <file:Documentation/networking/vxge.txt>.
+
+config VXGE_DEBUG_TRACE_ALL
+	bool "Enabling All Debug trace statments in driver"
+	default n
+	depends on VXGE
+	---help---
+	  Say Y here if you want to enabling all the debug trace statements in
+	  driver. By  default only few debug trace statements are enabled.
 
 config MYRI10GE
 	tristate "Myricom Myri-10G Ethernet support"
@@ -2583,6 +2639,8 @@ config MLX4_DEBUG
 	  the driver is loaded through sysfs).
 
 source "drivers/net/benet/Kconfig"
+
+source "drivers/net/sfc/Kconfig"
 
 endmenu
 

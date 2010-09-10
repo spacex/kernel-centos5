@@ -20,12 +20,14 @@ extern const char *print_tainted(void);
 #endif
 
 #ifndef HAVE_ARCH_WARN_ON
-#define WARN_ON(condition) do { \
-	if (unlikely((condition)!=0)) { \
+#define WARN_ON(condition) ({ \
+	int __ret_warn_on = !!(condition); \
+	if (unlikely((__ret_warn_on)!=0)) { \
 		printk("BUG: warning at %s:%d/%s() (%s)\n", __FILE__, __LINE__, __FUNCTION__, print_tainted()); \
 		dump_stack(); \
 	} \
-} while (0)
+	unlikely(__ret_warn_on); \
+})
 #endif
 
 #else /* !CONFIG_BUG */
@@ -38,7 +40,10 @@ extern const char *print_tainted(void);
 #endif
 
 #ifndef HAVE_ARCH_WARN_ON
-#define WARN_ON(condition) do { if (condition) ; } while(0)
+#define WARN_ON(condition) ({ \
+	int __ret_warn_on = !!(condition); \
+	unlikely(__ret_warn_on); \
+})
 #endif
 #endif
 

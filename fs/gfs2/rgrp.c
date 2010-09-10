@@ -586,11 +586,7 @@ static int gfs2_ri_update(struct gfs2_inode *ip)
 	u64 rgrp_count = ip->i_disksize;
 	int error;
 
-	if (do_div(rgrp_count, sizeof(struct gfs2_rindex))) {
-		gfs2_consist_inode(ip);
-		return -EIO;
-	}
-
+	do_div(rgrp_count, sizeof(struct gfs2_rindex));
 	clear_rgrpdi(sdp);
 
 	file_ra_state_init(&ra_state, inode->i_mapping);
@@ -895,7 +891,8 @@ static int try_rgrp_fit(struct gfs2_rgrpd *rgd, struct gfs2_alloc *al)
  * Returns: The inode, if one has been found
  */
 
-static struct inode *try_rgrp_unlink(struct gfs2_rgrpd *rgd, u64 *last_unlinked)
+static struct inode *try_rgrp_unlink(struct gfs2_rgrpd *rgd, u64 *last_unlinked,
+				     u64 skip)
 {
 	struct inode *inode;
 	u32 goal = 0, block;
@@ -916,6 +913,8 @@ static struct inode *try_rgrp_unlink(struct gfs2_rgrpd *rgd, u64 *last_unlinked)
 		no_addr = block + rgd->rd_data0;
 		goal++;
 		if (*last_unlinked != NO_BLOCK && no_addr <= *last_unlinked)
+			continue;
+		if (no_addr == skip)
 			continue;
 		*last_unlinked = no_addr;
 		inode = gfs2_inode_lookup(rgd->rd_sbd->sd_vfs, DT_UNKNOWN,
@@ -1115,7 +1114,7 @@ static struct inode *get_local_rgrp(struct gfs2_inode *ip, u64 *last_unlinked)
 			if (try_rgrp_fit(rgd, al))
 				goto out;
 			if (rgd->rd_flags & GFS2_RDF_CHECK)
-				inode = try_rgrp_unlink(rgd, last_unlinked);
+				inode = try_rgrp_unlink(rgd, last_unlinked, ip->i_no_addr);
 			if (!rg_locked)
 				gfs2_glock_dq_uninit(&al->al_rgd_gh);
 			if (inode)
@@ -1151,7 +1150,7 @@ static struct inode *get_local_rgrp(struct gfs2_inode *ip, u64 *last_unlinked)
 			if (try_rgrp_fit(rgd, al))
 				goto out;
 			if (rgd->rd_flags & GFS2_RDF_CHECK)
-				inode = try_rgrp_unlink(rgd, last_unlinked);
+				inode = try_rgrp_unlink(rgd, last_unlinked, ip->i_no_addr);
 			if (!rg_locked)
 				gfs2_glock_dq_uninit(&al->al_rgd_gh);
 			if (inode)

@@ -371,7 +371,6 @@ static void ip_vs_process_message(const char *buffer, const size_t buflen)
 			}
 		} else if (!cp->dest) {
 			/* it is an entry created by the synchronization */
-			cp->state = ntohs(s->state);
 			cp->flags = flags | IP_VS_CONN_F_HASHED;
 		}	/* Note that we don't touch its state and flags
 			   if it is a normal entry. */

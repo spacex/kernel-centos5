@@ -161,6 +161,8 @@ static inline unsigned int cpuid_edx(unsigned int op)
 #define MSR_FS_BASE 0xc0000100		/* 64bit GS base */
 #define MSR_GS_BASE 0xc0000101		/* 64bit FS base */
 #define MSR_KERNEL_GS_BASE  0xc0000102	/* SwapGS GS shadow (or USER_GS from kernel) */ 
+#define ENABLE_CF8_EXT_CFG	(1ULL << 46)
+#define MSR_K8_NB_CFG	0xc001001f
 /* EFER bits: */ 
 #define _EFER_SCE 0  /* SYSCALL/SYSRET */
 #define _EFER_LME 8  /* Long mode enable */

@@ -330,5 +330,5 @@ ENTRY(sys_call_table)
 	.long sys_ni_syscall		/* 320 */ /* sys_utimensat */
 	.long sys_ni_syscall		/* sys_signalfd */
 	.long sys_ni_syscall		/* sys_timerfd_create */
-	.long sys_ni_syscall		/* sys_eventfd */
+	.long sys_eventfd		/* sys_eventfd */
 	.long sys_fallocate

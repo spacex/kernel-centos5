@@ -104,7 +104,7 @@ static int ql_soft_reset_mpi_risc(struct ql_adapter *qdev)
  * we are the higher function and the lower function
  * is not enabled.
  */
-static int ql_own_firmware(struct ql_adapter *qdev)
+int ql_own_firmware(struct ql_adapter *qdev)
 {
 	u32 temp;
 
@@ -401,6 +401,29 @@ static void ql_init_fw_done(struct ql_adapter *qdev, struct mbox_params *mbcp)
 	}
 }
 
+/* DCBX firmware async event handler */
+static int ql_dcbx_chg(struct ql_adapter *qdev, struct mbox_params *mbcp)
+{
+	int status, i;
+
+	/* Get the status data and start up a thread to
+	 * handle the request.
+	 */
+	mbcp->out_count = 5;
+	status = ql_get_mb_sts(qdev, mbcp);
+	if (status) {
+		QPRINTK(qdev, DRV, ERR,
+			"Could not read MPI regs!\n");
+	} else	{
+		QPRINTK_DBG(qdev, DRV, INFO,
+			"Got DCBX ANE!\n");
+		for (i = 0; i < mbcp->out_count; i++)
+			QPRINTK_DBG(qdev, DRV, ERR, "mbox_out[%d] = 0x%.08x.\n",
+					i, mbcp->mbox_out[i]);
+	}
+	return status;
+}
+
 /* Process an async event and clear it unless it's an
  * error condition.
  *  This can get called iteratively from the mpi_work thread
@@ -524,7 +547,7 @@ static int ql_mpi_handler(struct ql_adapter *qdev, struct mbox_params *mbcp)
 		break;
 
 	case AEN_DCBX_CHG:
-		/* Need to support AEN 8110 */
+		ql_dcbx_chg(qdev, mbcp); 
 		break;
 	default:
 		QPRINTK(qdev, DRV, ERR,
@@ -548,7 +571,12 @@ end:
  */
 static int ql_mailbox_command(struct ql_adapter *qdev, struct mbox_params *mbcp)
 {
-	int status, count;
+	int status, i;
+	unsigned long count;
+
+	for (i = 0; i < mbcp->in_count; i++) 
+		QPRINTK_DBG(qdev, DRV, DEBUG,
+			"mbcp->mbox_in[%d] = 0x%x. \n", i, mbcp->mbox_in[i]);
 
 	mutex_lock(&qdev->mpi_mutex);
 
@@ -557,9 +585,13 @@ static int ql_mailbox_command(struct ql_adapter *qdev, struct mbox_params *mbcp)
 
 	/* Load the mailbox registers and wake up MPI RISC. */
 	status = ql_exec_mb_cmd(qdev, mbcp);
-	if (status)
+	if (status) {
+		QPRINTK(qdev, DRV, ERR,
+			"Failed ql_exec_mb_cmd(),"
+			" status = %d.\n",
+			status);
 		goto end;
-
+	}
 
 	/* If we're generating a system error, then there's nothing
 	 * to wait for.
@@ -570,9 +602,9 @@ static int ql_mailbox_command(struct ql_adapter *qdev, struct mbox_params *mbcp)
 	/* Wait for the command to complete. We loop
 	 * here because some AEN might arrive while
 	 * we're waiting for the mailbox command to
-	 * complete. If more than 5 arrive then we can
-	 * assume something is wrong. */
-	count = 5;
+	 * complete. No mailbox command should take
+	 * longer than 5 seconds. */
+	count = jiffies + (HZ * 5);
 	do {
 		/* Wait for the interrupt to come in. */
 		status = ql_wait_mbx_cmd_cmplt(qdev);
@@ -605,15 +637,16 @@ static int ql_mailbox_command(struct ql_adapter *qdev, struct mbox_params *mbcp)
 					MB_CMD_STS_GOOD) ||
 			((mbcp->mbox_out[0] & 0x0000f000) ==
 					MB_CMD_STS_INTRMDT))
-			break;
-	} while (--count);
+			goto done;
+	} while (time_before(jiffies, count));
 
 	if (!count) {
 		QPRINTK(qdev, DRV, ERR,
-			"Timed out waiting for mailbox complet.\n");
+			"Timed out waiting for mailbox complete.\n");
 		status = -ETIMEDOUT;
 		goto end;
 	}
+done:
 
 	/* Now we can clear the interrupt condition
 	 * and look at our status.
@@ -630,7 +663,9 @@ end:
 	/* End polled mode for MPI */
 	ql_write32(qdev, INTR_MASK, (INTR_MASK_PI << 16) | INTR_MASK_PI);
 	mutex_unlock(&qdev->mpi_mutex);
-
+	for (i = 0; i < mbcp->out_count; i++)
+		QPRINTK_DBG(qdev, DRV, DEBUG, "mbox_out[%d] = 0x%.08x.\n",
+				i, mbcp->mbox_out[i]);
 	return status;
 }
 
@@ -824,6 +859,7 @@ int ql_mb_dump_ram(struct ql_adapter *qdev, u64 req_dma, u32 addr,
 	return status;
 }
 
+/* Issue a mailbox command to dump RISC RAM. */
 int ql_dump_risc_ram_area(struct ql_adapter *qdev, void *buf,
 		u32 ram_addr, int word_count)
 {
@@ -1000,6 +1036,95 @@ int ql_mb_get_led_cfg(struct ql_adapter *qdev)
 	return status;
 }
 
+int ql_mb_set_mgmnt_traffic_ctl(struct ql_adapter *qdev, u32 control)
+{
+	struct mbox_params mbc;
+	struct mbox_params *mbcp = &mbc;
+	int status;
+
+	memset(mbcp, 0, sizeof(struct mbox_params));
+
+	mbcp->in_count = 1;
+	mbcp->out_count = 2;
+
+	mbcp->mbox_in[0] = MB_CMD_SET_MGMNT_TFK_CTL;
+	mbcp->mbox_in[1] = control;
+
+	status = ql_mailbox_command(qdev, mbcp);
+	if (status)
+		return status;
+
+	if (mbcp->mbox_out[0] == MB_CMD_STS_GOOD)
+		return status;
+
+	if (mbcp->mbox_out[0] == MB_CMD_STS_INVLD_CMD) {
+		QPRINTK_DBG(qdev, DRV, ERR,
+			"Command not supported by firmware.\n");
+		status = -EINVAL;
+	} else if (mbcp->mbox_out[0] == MB_CMD_STS_ERR) {
+		/* This indicates that the firmware is
+		 * already in the state we are trying to
+		 * change it to.
+		 */
+		QPRINTK_DBG(qdev, DRV, ERR,
+			"Command parameters make no change.\n");
+	}
+	return status;
+}
+
+/* Returns a negative error code or the mailbox command status. */
+static int ql_mb_get_mgmnt_traffic_ctl(struct ql_adapter *qdev, u32 *control)
+{
+	struct mbox_params mbc;
+	struct mbox_params *mbcp = &mbc;
+	int status;
+
+	memset(mbcp, 0, sizeof(struct mbox_params));
+	*control = 0;
+
+	mbcp->in_count = 1;
+	mbcp->out_count = 1;
+
+	mbcp->mbox_in[0] = MB_CMD_GET_MGMNT_TFK_CTL;
+
+	status = ql_mailbox_command(qdev, mbcp);
+	if (status)
+		return status;
+
+	if (mbcp->mbox_out[0] == MB_CMD_STS_GOOD) {
+		*control = mbcp->mbox_in[1];
+		return status;
+	}
+
+	if (mbcp->mbox_out[0] == MB_CMD_STS_INVLD_CMD) {
+		QPRINTK_DBG(qdev, DRV, ERR,
+			"Command not supported by firmware.\n");
+		status = -EINVAL;
+	} else if (mbcp->mbox_out[0] == MB_CMD_STS_ERR) {
+		QPRINTK(qdev, DRV, ERR,
+			"Failed to get MPI traffic control.\n");
+		status = -EIO;
+	}
+	return status;
+}
+
+int ql_wait_fifo_empty(struct ql_adapter *qdev)
+{
+	int count = 5;
+	u32 mgmnt_fifo_empty;
+	u32 nic_fifo_empty;
+
+	do {
+		nic_fifo_empty = ql_read32(qdev, STS) & STS_NFE;
+		ql_mb_get_mgmnt_traffic_ctl(qdev, &mgmnt_fifo_empty);
+		mgmnt_fifo_empty &= MB_GET_MPI_TFK_FIFO_EMPTY;
+		if (nic_fifo_empty && mgmnt_fifo_empty)
+			return 0;
+		msleep(100);
+	} while (count-- > 0);
+	return -ETIMEDOUT;
+}
+
 /* API called in work thread context to set new TX/RX
  * maximum frame size values to match MTU.
  */
@@ -1158,6 +1283,7 @@ void ql_mpi_reset_work(struct work_struct *work)
 	cancel_delayed_work_sync(&qdev->mpi_port_cfg_work);
 	cancel_delayed_work_sync(&qdev->mpi_core_to_log);
 	cancel_delayed_work_sync(&qdev->mpi_idc_work);
+	cancel_delayed_work_sync(&qdev->link_work);
 
 	/* If we're not the dominant NIC function,
 	 * then there is nothing to do.
@@ -1177,7 +1303,7 @@ void ql_mpi_reset_work(struct work_struct *work)
 		qdev->core_is_dumped = 1;
 		if (test_bit(QL_SPOOL_LOG, &qdev->flags))
 			queue_delayed_work(qdev->workqueue,
-				&qdev->mpi_core_to_log, 0);
+				&qdev->mpi_core_to_log, 5 * HZ); 
 	}
 	ql_soft_reset_mpi_risc(qdev);
 	clear_bit(QL_IN_FW_RST, &qdev->flags);

@@ -71,7 +71,7 @@ EXPORT_SYMBOL_GPL(cache_k8_northbridges);
 
 /* Ignores subdevice/subvendor but as far as I can figure out
    they're useless anyways */
-int __init early_is_k8_nb(u32 device)
+int early_is_k8_nb(u32 device)
 {
 	struct pci_device_id *id;
 	u32 vendor = device & 0xffff;

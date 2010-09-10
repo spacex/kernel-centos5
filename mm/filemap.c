@@ -3010,13 +3010,16 @@ generic_file_direct_IO(int rw, struct kiocb *iocb, const struct iovec *iov,
 	 * After a write we want buffered reads to be sure to go to disk to get
 	 * the new data.  We invalidate clean cached page from the region we're
 	 * about to write.  We do this *before* the write so that we can return
-	 * -EIO without clobbering -EIOCBQUEUED from ->direct_IO().
+	 * without clobbering -EIOCBQUEUED from ->direct_IO().
 	 */
 	if (rw == WRITE && mapping->nrpages) {
 		retval = invalidate_inode_pages2_range(mapping,
 					offset >> PAGE_CACHE_SHIFT, end);
-		if (retval)
+		if (retval) {
+			if (retval == -EBUSY)
+				return 0;
 			goto out;
+		}
 	}
 
 	retval = mapping->a_ops->direct_IO(rw, iocb, iov, offset, nr_segs);

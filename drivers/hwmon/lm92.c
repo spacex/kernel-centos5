@@ -45,6 +45,7 @@
 #include <linux/slab.h>
 #include <linux/i2c.h>
 #include <linux/hwmon.h>
+#include <linux/hwmon-sysfs.h>
 #include <linux/err.h>
 #include <linux/mutex.h>
 
@@ -209,6 +210,14 @@ static ssize_t show_alarms(struct device *dev, struct device_attribute *attr, ch
 	return sprintf(buf, "%d\n", ALARMS_FROM_REG(data->temp1_input));
 }
 
+static ssize_t show_alarm(struct device *dev, struct device_attribute *attr,
+			  char *buf)
+{
+	int bitnr = to_sensor_dev_attr(attr)->index;
+	struct lm92_data *data = lm92_update_device(dev);
+	return sprintf(buf, "%d\n", (data->temp1_input >> bitnr) & 1);
+}
+
 static DEVICE_ATTR(temp1_input, S_IRUGO, show_temp1_input, NULL);
 static DEVICE_ATTR(temp1_crit, S_IWUSR | S_IRUGO, show_temp1_crit,
 	set_temp1_crit);
@@ -221,6 +230,9 @@ static DEVICE_ATTR(temp1_max, S_IWUSR | S_IRUGO, show_temp1_max,
 	set_temp1_max);
 static DEVICE_ATTR(temp1_max_hyst, S_IRUGO, show_temp1_max_hyst, NULL);
 static DEVICE_ATTR(alarms, S_IRUGO, show_alarms, NULL);
+static SENSOR_DEVICE_ATTR(temp1_crit_alarm, S_IRUGO, show_alarm, NULL, 2);
+static SENSOR_DEVICE_ATTR(temp1_min_alarm, S_IRUGO, show_alarm, NULL, 0);
+static SENSOR_DEVICE_ATTR(temp1_max_alarm, S_IRUGO, show_alarm, NULL, 1);
 
 
 /*
@@ -287,6 +299,25 @@ static int max6635_check(struct i2c_client *client)
 
 	return 1;
 }
+
+static struct attribute *lm92_attributes[] = {
+	&dev_attr_temp1_input.attr,
+	&dev_attr_temp1_crit.attr,
+	&dev_attr_temp1_crit_hyst.attr,
+	&dev_attr_temp1_min.attr,
+	&dev_attr_temp1_min_hyst.attr,
+	&dev_attr_temp1_max.attr,
+	&dev_attr_temp1_max_hyst.attr,
+	&dev_attr_alarms.attr,
+	&sensor_dev_attr_temp1_crit_alarm.dev_attr.attr,
+	&sensor_dev_attr_temp1_min_alarm.dev_attr.attr,
+	&sensor_dev_attr_temp1_max_alarm.dev_attr.attr,
+	NULL
+};
+
+static const struct attribute_group lm92_group = {
+	.attrs = lm92_attributes,
+};
 
 /* The following function does more than just detection. If detection
    succeeds, it also registers the new chip. */
@@ -359,23 +390,19 @@ static int lm92_detect(struct i2c_adapter *adapter, int address, int kind)
 	lm92_init_client(new_client);
 
 	/* Register sysfs hooks */
+	if ((err = sysfs_create_group(&new_client->dev.kobj, &lm92_group)))
+		goto exit_detach;
+
 	data->class_dev = hwmon_device_register(&new_client->dev);
 	if (IS_ERR(data->class_dev)) {
 		err = PTR_ERR(data->class_dev);
-		goto exit_detach;
+		goto exit_remove;
 	}
-
-	device_create_file(&new_client->dev, &dev_attr_temp1_input);
-	device_create_file(&new_client->dev, &dev_attr_temp1_crit);
-	device_create_file(&new_client->dev, &dev_attr_temp1_crit_hyst);
-	device_create_file(&new_client->dev, &dev_attr_temp1_min);
-	device_create_file(&new_client->dev, &dev_attr_temp1_min_hyst);
-	device_create_file(&new_client->dev, &dev_attr_temp1_max);
-	device_create_file(&new_client->dev, &dev_attr_temp1_max_hyst);
-	device_create_file(&new_client->dev, &dev_attr_alarms);
 
 	return 0;
 
+exit_remove:
+	sysfs_remove_group(&new_client->dev.kobj, &lm92_group);
 exit_detach:
 	i2c_detach_client(new_client);
 exit_free:
@@ -397,6 +424,7 @@ static int lm92_detach_client(struct i2c_client *client)
 	int err;
 
 	hwmon_device_unregister(data->class_dev);
+	sysfs_remove_group(&client->dev.kobj, &lm92_group);
 
 	if ((err = i2c_detach_client(client)))
 		return err;
@@ -414,7 +442,6 @@ static struct i2c_driver lm92_driver = {
 	.driver = {
 		.name	= "lm92",
 	},
-	.id		= I2C_DRIVERID_LM92,
 	.attach_adapter	= lm92_attach_adapter,
 	.detach_client	= lm92_detach_client,
 };

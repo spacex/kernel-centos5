@@ -42,7 +42,9 @@ static void			nlm_gc_hosts(void);
 struct nlm_host *
 nlmclnt_lookup_host(struct sockaddr_in *sin, int proto, int version)
 {
-	return nlm_lookup_host(0, sin, proto, version);
+	struct sockaddr_in ssin = {0};
+
+	return nlm_lookup_host(0, sin, proto, version, &ssin);
 }
 
 /*
@@ -51,20 +53,24 @@ nlmclnt_lookup_host(struct sockaddr_in *sin, int proto, int version)
 struct nlm_host *
 nlmsvc_lookup_host(struct svc_rqst *rqstp)
 {
+	struct sockaddr_in ssin = {0};
+
+	ssin.sin_addr.s_addr = rqstp->rq_daddr;
 	return nlm_lookup_host(1, &rqstp->rq_addr,
-			       rqstp->rq_prot, rqstp->rq_vers);
+			       rqstp->rq_prot, rqstp->rq_vers, &ssin);
 }
 
 /*
  * Common host lookup routine for server & client
  */
 struct nlm_host *
-nlm_lookup_host(int server, struct sockaddr_in *sin,
-					int proto, int version)
+nlm_lookup_host(int server, struct sockaddr_in *sin, int proto, int version,
+		struct sockaddr_in *ssin)
 {
 	struct nlm_host	*host, **hp;
 	u32		addr;
 	int		hash;
+	int		cmp_src = 1;
 
 	dprintk("lockd: nlm_lookup_host(%08x, p=%d, v=%d)\n",
 			(unsigned)(sin? ntohl(sin->sin_addr.s_addr) : 0), proto, version);
@@ -77,6 +83,9 @@ nlm_lookup_host(int server, struct sockaddr_in *sin,
 	if (time_after_eq(jiffies, next_gc))
 		nlm_gc_hosts();
 
+	if (!server || ssin->sin_addr.s_addr == INADDR_ANY)
+		cmp_src = 0;
+
 	for (hp = &nlm_hosts[hash]; (host = *hp) != 0; hp = &host->h_next) {
 		if (host->h_killed)
 			continue;
@@ -85,6 +94,8 @@ nlm_lookup_host(int server, struct sockaddr_in *sin,
 		if (host->h_version != version)
 			continue;
 		if (host->h_server != server)
+			continue;
+		if (cmp_src && !nlm_cmp_addr(&host->h_saddr, ssin))
 			continue;
 
 		if (nlm_cmp_addr(&host->h_addr, sin)) {
@@ -111,6 +122,7 @@ nlm_lookup_host(int server, struct sockaddr_in *sin,
 
 	host->h_addr       = *sin;
 	host->h_addr.sin_port = 0;	/* ouch! */
+	host->h_saddr	   = *ssin;
 	host->h_version    = version;
 	host->h_proto      = proto;
 	host->h_rpcclnt    = NULL;
@@ -195,6 +207,8 @@ nlm_bind_host(struct nlm_host *host)
 
 		xprt_set_timeout(&xprt->timeout, 5, nlmsvc_timeout);
 		xprt->resvport = 1;	/* NLM requires a reserved port */
+		if (xprt->tcp_flags & XPRT_SRCADDR_PRESENT)
+			xprt->srcaddr = host->h_saddr;
 
 		/* Existing NLM servers accept AUTH_UNIX only */
 		clnt = rpc_new_client(xprt, host->h_name, &nlm_program,

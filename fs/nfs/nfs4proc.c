@@ -51,6 +51,7 @@
 
 #include "nfs4_fs.h"
 #include "delegation.h"
+#include "internal.h"
 #include "iostat.h"
 
 #define NFSDBG_FACILITY		NFSDBG_PROC
@@ -302,7 +303,8 @@ static int nfs4_call_async(struct rpc_clnt *clnt,
 {
 	struct rpc_task *task;
 
-	if (!(task = rpc_new_task(clnt, RPC_TASK_ASYNC, tk_ops, calldata)))
+	if (!(task = rpc_new_task_wq(clnt, RPC_TASK_ASYNC, tk_ops, calldata,
+				     nfsiod_workqueue)))
 		return -ENOMEM;
 	rpc_execute(task);
 	return 0;
@@ -630,7 +632,8 @@ static int _nfs4_proc_open_confirm(struct nfs4_opendata *data)
 	 * want to ensure that it takes the 'error' code path.
 	 */
 	data->rpc_status = -ENOMEM;
-	task = rpc_run_task(server->client, RPC_TASK_ASYNC, &nfs4_open_confirm_ops, data);
+	task = rpc_run_task_wq(server->client, RPC_TASK_ASYNC,
+			       &nfs4_open_confirm_ops, data, nfsiod_workqueue);
 	if (IS_ERR(task))
 		return PTR_ERR(task);
 	status = nfs4_wait_for_completion_rpc_task(task);
@@ -736,7 +739,8 @@ static int _nfs4_proc_open(struct nfs4_opendata *data)
 	 * want to ensure that it takes the 'error' code path.
 	 */
 	data->rpc_status = -ENOMEM;
-	task = rpc_run_task(server->client, RPC_TASK_ASYNC, &nfs4_open_ops, data);
+	task = rpc_run_task_wq(server->client, RPC_TASK_ASYNC, &nfs4_open_ops,
+				data, nfsiod_workqueue);
 	if (IS_ERR(task))
 		return PTR_ERR(task);
 	status = nfs4_wait_for_completion_rpc_task(task);
@@ -3324,7 +3328,7 @@ static struct rpc_task *nfs4_do_unlck(struct file_lock *fl,
 		return ERR_PTR(-ENOMEM);
 	}
 
-	return rpc_run_task(NFS_CLIENT(lsp->ls_state->inode), RPC_TASK_ASYNC, &nfs4_locku_ops, data);
+	return rpc_run_task_wq(NFS_CLIENT(lsp->ls_state->inode), RPC_TASK_ASYNC, &nfs4_locku_ops, data, nfsiod_workqueue);
 }
 
 static int nfs4_proc_unlck(struct nfs4_state *state, int cmd, struct file_lock *request)
@@ -3503,8 +3507,8 @@ static int _nfs4_do_setlk(struct nfs4_state *state, int cmd, struct file_lock *f
 		data->arg.block = 1;
 	if (reclaim != 0)
 		data->arg.reclaim = 1;
-	task = rpc_run_task(NFS_CLIENT(state->inode), RPC_TASK_ASYNC,
-			&nfs4_lock_ops, data);
+	task = rpc_run_task_wq(NFS_CLIENT(state->inode), RPC_TASK_ASYNC,
+			&nfs4_lock_ops, data, nfsiod_workqueue);
 	if (IS_ERR(task))
 		return PTR_ERR(task);
 	ret = nfs4_wait_for_completion_rpc_task(task);

@@ -1,5 +1,5 @@
 /*
-	Copyright (C) 2004 - 2008 rt2x00 SourceForge Project
+	Copyright (C) 2004 - 2009 rt2x00 SourceForge Project
 	<http://rt2x00.serialmonkey.com>
 
 	This program is free software; you can redistribute it and/or modify
@@ -37,8 +37,6 @@
  * Signal information.
  * Defaul offset is required for RSSI <-> dBm conversion.
  */
-#define MAX_SIGNAL			100
-#define MAX_RX_SSI			-1
 #define DEFAULT_RSSI_OFFSET		100
 
 /*
@@ -48,8 +46,15 @@
 #define CSR_REG_SIZE			0x014c
 #define EEPROM_BASE			0x0000
 #define EEPROM_SIZE			0x0100
+#define BBP_BASE			0x0000
 #define BBP_SIZE			0x0020
-#define RF_SIZE				0x0010
+#define RF_BASE				0x0004
+#define RF_SIZE				0x000c
+
+/*
+ * Number of TX queues.
+ */
+#define NUM_TX_QUEUES			2
 
 /*
  * Control/Status Registers(CSR).
@@ -923,7 +928,7 @@
 #define RXD_W7_RESERVED			FIELD32(0xffffffff)
 
 /*
- * Macro's for converting txpower from EEPROM to mac80211 value
+ * Macros for converting txpower from EEPROM to mac80211 value
  * and from mac80211 value to register value.
  * NOTE: Logics in rt2400pci for txpower are reversed
  * compared to the other rt2x00 drivers. A higher txpower
@@ -935,19 +940,13 @@
 #define MAX_TXPOWER	62
 #define DEFAULT_TXPOWER	39
 
-#define TXPOWER_FROM_DEV(__txpower)					\
-({									\
-	((__txpower) > MAX_TXPOWER) ? DEFAULT_TXPOWER - MIN_TXPOWER :	\
-	((__txpower) < MIN_TXPOWER) ? DEFAULT_TXPOWER - MIN_TXPOWER :	\
-	(((__txpower) - MAX_TXPOWER) + MIN_TXPOWER);			\
-})
+#define __CLAMP_TX(__txpower) \
+	clamp_t(char, (__txpower), MIN_TXPOWER, MAX_TXPOWER)
 
-#define TXPOWER_TO_DEV(__txpower)			\
-({							\
-	(__txpower) += MIN_TXPOWER;			\
-	((__txpower) <= MIN_TXPOWER) ? MAX_TXPOWER :	\
-	(((__txpower) >= MAX_TXPOWER) ? MIN_TXPOWER :	\
-	(MAX_TXPOWER - ((__txpower) - MIN_TXPOWER)));	\
-})
+#define TXPOWER_FROM_DEV(__txpower) \
+	((__CLAMP_TX(__txpower) - MAX_TXPOWER) + MIN_TXPOWER)
+
+#define TXPOWER_TO_DEV(__txpower) \
+	MAX_TXPOWER - (__CLAMP_TX(__txpower) - MIN_TXPOWER)
 
 #endif /* RT2400PCI_H */

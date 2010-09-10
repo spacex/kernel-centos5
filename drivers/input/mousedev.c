@@ -384,8 +384,6 @@ static int mousedev_release(struct inode * inode, struct file * file)
 {
 	struct mousedev_list *list = file->private_data;
 
-	mousedev_fasync(-1, file, 0);
-
 	list_del(&list->node);
 
 	if (!--list->mousedev->open) {

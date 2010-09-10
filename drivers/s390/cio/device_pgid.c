@@ -86,7 +86,7 @@ __ccw_device_sense_pgid_start(struct ccw_device *cdev)
 
 		}
 		cdev->private->imask >>= 1;
-		cdev->private->iretry = 5;
+		cdev->private->iretry = 10;
 		i++;
 	}
 
@@ -103,7 +103,7 @@ ccw_device_sense_pgid_start(struct ccw_device *cdev)
 
 	cdev->private->state = DEV_STATE_SENSE_PGID;
 	cdev->private->imask = 0x80;
-	cdev->private->iretry = 5;
+	cdev->private->iretry = 10;
 	memset (&cdev->private->pgid, 0, sizeof (cdev->private->pgid));
 	ret = __ccw_device_sense_pgid_start(cdev);
 	if (ret && ret != -EBUSY)
@@ -209,7 +209,7 @@ ccw_device_sense_pgid_irq(struct ccw_device *cdev, enum dev_event dev_event)
 		/* Fall through. */
 	case 0:			/* Sense Path Group ID successful. */
 		cdev->private->imask >>= 1;
-		cdev->private->iretry = 5;
+		cdev->private->iretry = 10;
 		/* Fall through. */
 	case -EAGAIN:		/* Try again. */
 		ret = __ccw_device_sense_pgid_start(cdev);
@@ -397,7 +397,7 @@ __ccw_device_verify_start(struct ccw_device *cdev)
 	sch = to_subchannel(cdev->dev.parent);
 	/* Repeat for all paths. */
 	for (; cdev->private->imask; cdev->private->imask >>= 1,
-				     cdev->private->iretry = 5) {
+				     cdev->private->iretry = 10) {
 		if ((cdev->private->imask & sch->schib.pmcw.pam) == 0)
 			/* Path not available, try next. */
 			continue;
@@ -453,7 +453,7 @@ ccw_device_verify_irq(struct ccw_device *cdev, enum dev_event dev_event)
 		sch->vpm |= sch->opm & cdev->private->imask;
 		/* Go on with next path. */
 		cdev->private->imask >>= 1;
-		cdev->private->iretry = 5;
+		cdev->private->iretry = 10;
 		__ccw_device_verify_start(cdev);
 		break;
 	case -EOPNOTSUPP:
@@ -468,7 +468,7 @@ ccw_device_verify_irq(struct ccw_device *cdev, enum dev_event dev_event)
 		/* Retry */
 		sch->vpm = 0;
 		cdev->private->imask = 0x80;
-		cdev->private->iretry = 5;
+		cdev->private->iretry = 10;
 		/* fall through. */
 	case -EAGAIN:		/* Try again. */
 		__ccw_device_verify_start(cdev);
@@ -478,7 +478,7 @@ ccw_device_verify_irq(struct ccw_device *cdev, enum dev_event dev_event)
 		break;
 	case -EACCES:		/* channel is not operational. */
 		cdev->private->imask >>= 1;
-		cdev->private->iretry = 5;
+		cdev->private->iretry = 10;
 		__ccw_device_verify_start(cdev);
 		break;
 	}
@@ -491,7 +491,7 @@ ccw_device_verify_start(struct ccw_device *cdev)
 
 	cdev->private->flags.pgid_single = 0;
 	cdev->private->imask = 0x80;
-	cdev->private->iretry = 5;
+	cdev->private->iretry = 10;
 
 	/* Start with empty vpm. */
 	sch->vpm = 0;
@@ -519,7 +519,7 @@ __ccw_device_disband_start(struct ccw_device *cdev)
 			if (ret == 0)
 				return;
 		}
-		cdev->private->iretry = 5;
+		cdev->private->iretry = 10;
 		cdev->private->imask >>= 1;
 	}
 	ccw_device_disband_done(cdev, (sch->lpm != 0) ? 0 : -ENODEV);
@@ -568,7 +568,7 @@ ccw_device_disband_irq(struct ccw_device *cdev, enum dev_event dev_event)
 		break;
 	case -EACCES:		/* channel is not operational. */
 		cdev->private->imask >>= 1;
-		cdev->private->iretry = 5;
+		cdev->private->iretry = 10;
 		__ccw_device_disband_start(cdev);
 		break;
 	}
@@ -581,7 +581,7 @@ ccw_device_disband_start(struct ccw_device *cdev)
 	ccw_device_set_timeout(cdev, 60*HZ);
 
 	cdev->private->flags.pgid_single = 0;
-	cdev->private->iretry = 5;
+	cdev->private->iretry = 10;
 	cdev->private->imask = 0x80;
 	__ccw_device_disband_start(cdev);
 }

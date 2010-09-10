@@ -31,11 +31,13 @@
 
 #define BUG_ON(condition) do { if (unlikely((condition)!=0)) BUG(); } while(0)
 #define PAGE_BUG(page) do {  BUG(); } while (0)
-#define WARN_ON(condition) do {						   \
-  if (unlikely((condition)!=0)) {					   \
+#define WARN_ON(condition) ({						   \
+  int __ret_warn_on = !!(condition);					   \
+  if (unlikely((__ret_warn_on)!=0)) {					   \
     printk ("Warning in %s at %s:%d\n", __FUNCTION__, __FILE__, __LINE__); \
       dump_stack();							   \
   }									   \
-} while (0)
+  unlikely(__ret_warn_on);						   \
+})
 
 #endif	/* _XTENSA_BUG_H */

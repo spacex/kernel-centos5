@@ -162,7 +162,7 @@ __ccw_device_sense_id_start(struct ccw_device *cdev)
 				return ret;
 		}
 		cdev->private->imask >>= 1;
-		cdev->private->iretry = 5;
+		cdev->private->iretry = 10;
 	}
 	return ret;
 }
@@ -174,7 +174,7 @@ ccw_device_sense_id_start(struct ccw_device *cdev)
 
 	memset (&cdev->private->senseid, 0, sizeof (struct senseid));
 	cdev->private->imask = 0x80;
-	cdev->private->iretry = 5;
+	cdev->private->iretry = 10;
 	ret = __ccw_device_sense_id_start(cdev);
 	if (ret && ret != -EBUSY)
 		ccw_device_sense_id_done(cdev, ret);
@@ -293,7 +293,7 @@ ccw_device_sense_id_irq(struct ccw_device *cdev, enum dev_event dev_event)
 	case -EACCES:		/* channel is not operational. */
 		sch->lpm &= ~cdev->private->imask;
 		cdev->private->imask >>= 1;
-		cdev->private->iretry = 5;
+		cdev->private->iretry = 10;
 		/* fall through. */
 	case -EAGAIN:		/* try again. */
 		ret = __ccw_device_sense_id_start(cdev);

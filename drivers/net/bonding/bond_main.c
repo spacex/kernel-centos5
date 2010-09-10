@@ -31,8 +31,6 @@
  *
  */
 
-//#define BONDING_DEBUG 1
-
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/sched.h>
@@ -95,6 +93,7 @@ static int updelay	= 0;
 static int downdelay	= 0;
 static int use_carrier	= 1;
 static char *mode	= NULL;
+static char *primary_reselect = 0;
 static char *primary	= NULL;
 static char *lacp_rate	= NULL;
 static char *xmit_hash_policy = NULL;
@@ -103,6 +102,7 @@ static char *arp_ip_target[BOND_MAX_ARP_TARGETS] = { NULL, };
 static char *arp_validate = NULL;
 static char *fail_over_mac = NULL;
 struct bond_params bonding_defaults;
+int debug = 0;
 
 module_param(max_bonds, int, 0);
 MODULE_PARM_DESC(max_bonds, "Max number of bonded devices");
@@ -127,6 +127,14 @@ MODULE_PARM_DESC(mode, "Mode of operation : 0 for balance-rr, "
 		       "6 for balance-alb");
 module_param(primary, charp, 0);
 MODULE_PARM_DESC(primary, "Primary network device to use");
+module_param(primary_reselect, charp, 0);
+MODULE_PARM_DESC(primary_reselect, "Reselect primary slave "
+				   "once it comes up; "
+				   "0 for always (default), "
+				   "1 for only if speed of primary is "
+				   "better, "
+				   "2 for only on active slave "
+				   "failure");
 module_param(lacp_rate, charp, 0);
 MODULE_PARM_DESC(lacp_rate, "LACPDU tx rate to request from 802.3ad partner "
 			    "(slow/fast)");
@@ -141,6 +149,8 @@ module_param(arp_validate, charp, 0);
 MODULE_PARM_DESC(arp_validate, "validate src/dst of ARP probes: none (default), active, backup or all");
 module_param(fail_over_mac, charp, 0);
 MODULE_PARM_DESC(fail_over_mac, "For active-backup, do not set all slaves to the same MAC.  none (default), active or follow");
+module_param(debug, int, 0);
+MODULE_PARM_DESC(debug, "Print debug messages; 0 for off (default), 1 for on");
 
 /*----------------------------- Global variables ----------------------------*/
 
@@ -198,6 +208,13 @@ struct bond_parm_tbl fail_over_mac_tbl[] = {
 {	"active",		BOND_FOM_ACTIVE},
 {	"follow",		BOND_FOM_FOLLOW},
 {	NULL,			-1},
+};
+
+struct bond_parm_tbl pri_reselect_tbl[] = {
+{       "always",		BOND_PRI_RESELECT_ALWAYS},
+{       "better",		BOND_PRI_RESELECT_BETTER},
+{       "failure",		BOND_PRI_RESELECT_FAILURE},
+{       NULL,			-1},
 };
 
 /*-------------------------- Forward declarations ---------------------------*/
@@ -1089,6 +1106,25 @@ out:
 
 }
 
+static bool bond_should_change_active(struct bonding *bond)
+{
+	struct slave *prim = bond->primary_slave;
+	struct slave *curr = bond->curr_active_slave;
+
+	if (!prim || !curr || curr->link != BOND_LINK_UP)
+		return true;
+	if (bond->force_primary) {
+		bond->force_primary = false;
+		return true;
+	}
+	if (bond->params.primary_reselect == BOND_PRI_RESELECT_BETTER &&
+	    (prim->speed < curr->speed ||
+	     (prim->speed == curr->speed && prim->duplex <= curr->duplex)))
+		return false;
+	if (bond->params.primary_reselect == BOND_PRI_RESELECT_FAILURE)
+		return false;
+	return true;
+}
 
 /**
  * find_best_interface - select the best available slave to be the active one
@@ -1113,14 +1149,9 @@ static struct slave *bond_find_best_slave(struct bonding *bond)
 		}
 	}
 
-	/* first try the primary link; if arping, a link must tx/rx traffic
-	 * before it can be considered the curr_active_slave - also, we would skip
-	 * slaves between the curr_active_slave and primary_slave that may be up
-	 * and able to arp
-	 */
 	if ((bond->primary_slave) &&
-	    (!bond->params.arp_interval) &&
-	    (IS_UP(bond->primary_slave->dev))) {
+	    bond->primary_slave->link == BOND_LINK_UP &&
+	    bond_should_change_active(bond)) {
 		new_active = bond->primary_slave;
 	}
 
@@ -1128,15 +1159,14 @@ static struct slave *bond_find_best_slave(struct bonding *bond)
 	old_active = new_active;
 
 	bond_for_each_slave_from(bond, new_active, i, old_active) {
-		if (IS_UP(new_active->dev)) {
-			if (new_active->link == BOND_LINK_UP) {
-				return new_active;
-			} else if (new_active->link == BOND_LINK_BACK) {
-				/* link up, but waiting for stabilization */
-				if (new_active->delay < mintime) {
-					mintime = new_active->delay;
-					bestslave = new_active;
-				}
+		if (new_active->link == BOND_LINK_UP) {
+			return new_active;
+		} else if (new_active->link == BOND_LINK_BACK &&
+			   IS_UP(new_active->dev)) {
+			/* link up, but waiting for stabilization */
+			if (new_active->delay < mintime) {
+				mintime = new_active->delay;
+				bestslave = new_active;
 			}
 		}
 	}
@@ -1711,6 +1741,7 @@ int bond_enslave(struct net_device *bond_dev, struct net_device *slave_dev)
 		/* if there is a primary slave, remember it */
 		if (strcmp(bond->params.primary, new_slave->dev->name) == 0) {
 			bond->primary_slave = new_slave;
+			bond->force_primary = true;
 		}
 	}
 
@@ -2747,6 +2778,17 @@ static int bond_arp_rcv(struct sk_buff *skb, struct net_device *dev, struct pack
 	unsigned char *arp_ptr;
 	__be32 sip, tip;
 
+	if (dev->priv_flags & IFF_802_1Q_VLAN) {
+		/*
+		 * When using VLANS and bonding, dev and oriv_dev may be
+		 * incorrect if the physical interface supports VLAN
+		 * acceleration.  With this change ARP validation now
+		 * works for hosts only reachable on the VLAN interface.
+		 */
+		dev = VLAN_DEV_INFO(dev)->real_dev;
+		orig_dev = skb->input_dev;
+	}
+
 	if (!(dev->priv_flags & IFF_BONDING) || !(dev->flags & IFF_MASTER))
 		goto out;
 
@@ -3000,18 +3042,6 @@ static int bond_ab_arp_inspect(struct bonding *bond, int delta_in_ticks)
 		}
 	}
 
-	read_lock(&bond->curr_slave_lock);
-
-	/*
-	 * Trigger a commit if the primary option setting has changed.
-	 */
-	if (bond->primary_slave &&
-	    (bond->primary_slave != bond->curr_active_slave) &&
-	    (bond->primary_slave->link == BOND_LINK_UP))
-		commit++;
-
-	read_unlock(&bond->curr_slave_lock);
-
 	return commit;
 }
 
@@ -3032,90 +3062,57 @@ static void bond_ab_arp_commit(struct bonding *bond, int delta_in_ticks)
 			continue;
 
 		case BOND_LINK_UP:
-			write_lock_bh(&bond->curr_slave_lock);
-
-			if (!bond->curr_active_slave &&
+			if ((!bond->curr_active_slave &&
 			    time_before_eq(jiffies, slave->dev->trans_start +
-					   delta_in_ticks)) {
+					   delta_in_ticks)) ||
+			   bond->curr_active_slave != slave) {
 				slave->link = BOND_LINK_UP;
-				bond_change_active_slave(bond, slave);
 				bond->current_arp_slave = NULL;
 
 				printk(KERN_INFO DRV_NAME
-				       ": %s: %s is up and now the "
-				       "active interface\n",
+				       ": %s: link status definitely "
+				       "up for interface %s.\n",
 				       bond->dev->name, slave->dev->name);
 
-			} else if (bond->curr_active_slave != slave) {
-				/* this slave has just come up but we
-				 * already have a current slave; this can
-				 * also happen if bond_enslave adds a new
-				 * slave that is up while we are searching
-				 * for a new slave
-				 */
-				slave->link = BOND_LINK_UP;
-				bond_set_slave_inactive_flags(slave);
-				bond->current_arp_slave = NULL;
+				if (!bond->curr_active_slave ||
+				    (slave == bond->primary_slave))
+					goto do_failover;
 
-				printk(KERN_INFO DRV_NAME
-				       ": %s: backup interface %s is now up\n",
-				       bond->dev->name, slave->dev->name);
 			}
 
-			write_unlock_bh(&bond->curr_slave_lock);
-
-			break;
+			continue;
 
 		case BOND_LINK_DOWN:
 			if (slave->link_failure_count < UINT_MAX)
 				slave->link_failure_count++;
 
 			slave->link = BOND_LINK_DOWN;
+			bond_set_slave_inactive_flags(slave);
+
+			printk(KERN_INFO DRV_NAME
+			       ": %s: link status definitely down for "
+			       "interface %s, disabling it\n",
+			       bond->dev->name, slave->dev->name);
 
 			if (slave == bond->curr_active_slave) {
-				printk(KERN_INFO DRV_NAME
-				       ": %s: link status down for active "
-				       "interface %s, disabling it\n",
-				       bond->dev->name, slave->dev->name);
-
-				bond_set_slave_inactive_flags(slave);
-
-				write_lock_bh(&bond->curr_slave_lock);
-
-				bond_select_active_slave(bond);
-				if (bond->curr_active_slave)
-					bond->curr_active_slave->jiffies =
-						jiffies;
-
-				write_unlock_bh(&bond->curr_slave_lock);
-
 				bond->current_arp_slave = NULL;
-
-			} else if (slave->state == BOND_STATE_BACKUP) {
-				printk(KERN_INFO DRV_NAME
-				       ": %s: backup interface %s is now down\n",
-				       bond->dev->name, slave->dev->name);
-
-				bond_set_slave_inactive_flags(slave);
+				goto do_failover;
 			}
-			break;
+
+			continue;
 
 		default:
 			printk(KERN_ERR DRV_NAME
 			       ": %s: impossible: new_link %d on slave %s\n",
 			       bond->dev->name, slave->new_link,
 			       slave->dev->name);
+			continue;
 		}
-	}
 
-	/*
-	 * No race with changes to primary via sysfs, as we hold rtnl.
-	 */
-	if (bond->primary_slave &&
-	    (bond->primary_slave != bond->curr_active_slave) &&
-	    (bond->primary_slave->link == BOND_LINK_UP)) {
+do_failover:
+		ASSERT_RTNL();
 		write_lock_bh(&bond->curr_slave_lock);
-		bond_change_active_slave(bond, bond->primary_slave);
+		bond_select_active_slave(bond);
 		write_unlock_bh(&bond->curr_slave_lock);
 	}
 
@@ -3323,11 +3320,14 @@ static void bond_info_show_master(struct seq_file *seq)
 	}
 
 	if (USES_PRIMARY(bond->params.mode)) {
-		seq_printf(seq, "Primary Slave: %s\n",
+		seq_printf(seq, "Primary Slave: %s",
 			   (bond->primary_slave) ?
 			   bond->primary_slave->dev->name : "None");
+		if (bond->primary_slave)
+			seq_printf(seq, " (primary_reselect %s)",
+		   pri_reselect_tbl[bond->params.primary_reselect].modename);
 
-		seq_printf(seq, "Currently Active Slave: %s\n",
+		seq_printf(seq, "\nCurrently Active Slave: %s\n",
 			   (curr) ? curr->dev->name : "None");
 	}
 
@@ -4762,7 +4762,7 @@ int bond_parse_parm(const char *buf, struct bond_parm_tbl *tbl)
 
 static int bond_check_params(struct bond_params *params)
 {
-	int arp_validate_value, fail_over_mac_value;
+	int arp_validate_value, fail_over_mac_value, primary_reselect_value;
 
 	/*
 	 * Convert string parameters.
@@ -5044,6 +5044,20 @@ static int bond_check_params(struct bond_params *params)
 		primary = NULL;
 	}
 
+	if (primary && primary_reselect) {
+		primary_reselect_value = bond_parse_parm(primary_reselect,
+							 pri_reselect_tbl);
+		if (primary_reselect_value == -1) {
+			printk(KERN_ERR DRV_NAME
+			       ": Error: Invalid primary_reselect \"%s\"\n",
+			       primary_reselect ==
+					NULL ? "NULL" : primary_reselect);
+			return -EINVAL;
+		}
+	} else {
+		primary_reselect_value = BOND_PRI_RESELECT_ALWAYS;
+	}
+
 	if (fail_over_mac) {
 		fail_over_mac_value = bond_parse_parm(fail_over_mac,
 						      fail_over_mac_tbl);
@@ -5075,6 +5089,7 @@ static int bond_check_params(struct bond_params *params)
 	params->use_carrier = use_carrier;
 	params->lacp_fast = lacp_fast;
 	params->primary[0] = 0;
+	params->primary_reselect = primary_reselect_value;
 	params->fail_over_mac = fail_over_mac_value;
 
 	if (primary) {

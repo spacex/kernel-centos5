@@ -160,6 +160,15 @@ dasd_diag_erp(struct dasd_device *device)
 
 	mdsk_term_io(device);
 	rc = mdsk_init_io(device, device->bp_block, 0, NULL);
+	if (rc == 4) {
+		if (!(device->features & DASD_FEATURE_READONLY)) {
+			DEV_MESSAGE(KERN_WARNING, device, "%s",
+				 "The access mode of a DIAG device changed"
+				 " to read-only");
+			device->features |= DASD_FEATURE_READONLY;
+		}
+		rc = 0;
+	}
 	if (rc)
 		DEV_MESSAGE(KERN_WARNING, device, "DIAG ERP unsuccessful, "
 			    "rc=%d", rc);
@@ -433,16 +442,20 @@ dasd_diag_check_device(struct dasd_device *device)
 	for (sb = 512; sb < bsize; sb = sb << 1)
 		device->s2b_shift++;
 	rc = mdsk_init_io(device, device->bp_block, 0, NULL);
-	if (rc) {
+	if (rc && (rc != 4)) {
 		DEV_MESSAGE(KERN_WARNING, device, "DIAG initialization "
 			"failed (rc=%d)", rc);
 		rc = -EIO;
 	} else {
+		if (rc == 4)
+			device->features |= DASD_FEATURE_READONLY;
 		DEV_MESSAGE(KERN_INFO, device,
-			    "(%ld B/blk): %ldkB",
+			    "(%ld B/blk): %ldkB%s",
 			    (unsigned long) device->bp_block,
 			    (unsigned long) (device->blocks <<
-				device->s2b_shift) >> 1);
+					     device->s2b_shift) >> 1,
+			    (rc == 4) ? ", read-only device" : "");
+		rc = 0;
 	}
 out:
 	free_page((long) label);
@@ -548,7 +561,8 @@ dasd_diag_build_cp(struct dasd_device * device, struct request *req)
 	}
 	cqr->retries = DIAG_MAX_RETRIES;
 	cqr->buildclk = get_clock();
-	if (blk_noretry_ff_request(req))
+	if (blk_noretry_ff_request(req) ||
+	    device->features & DASD_FEATURE_FAILFAST)
 		set_bit(DASD_CQR_FLAGS_FAILFAST, &cqr->flags);
 	cqr->device = device;
 	cqr->expires = DIAG_TIMEOUT;

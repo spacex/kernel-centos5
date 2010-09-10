@@ -99,24 +99,15 @@ extern int CIFS_SessSetup(unsigned int xid, struct cifsSesInfo *ses,
 			     const int stage,
 			     const struct nls_table *nls_cp);
 extern __u16 GetNextMid(struct TCP_Server_Info *server);
-extern struct oplock_q_entry *AllocOplockQEntry(struct inode *, u16,
-						 struct cifsTconInfo *);
-extern void DeleteOplockQEntry(struct oplock_q_entry *);
-extern void DeleteTconOplockQEntries(struct cifsTconInfo *);
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,5,0)
 extern struct timespec cifs_NTtimeToUnix(u64 /* utc nanoseconds since 1601 */ );
 extern u64 cifs_UnixTimeToNT(struct timespec);
 extern struct timespec cnvrtDosUnixTm(__u16 date, __u16 time);
-#else
-extern u64 cifs_UnixTimeToNT(time_t);
-extern time_t cifs_NTtimeToUnix(u64);
-extern time_t cnvrtDosUnixTm(__u16 date, __u16 time);
-#endif
 extern __le64 cnvrtDosCifsTm(__u16 date, __u16 time);
 
+extern void cifs_oplock_break(void *data);
 extern int cifs_posix_open(char *full_path, struct inode **pinode,
 			   struct super_block *sb, int mode, int oflags,
-			   int *poplock, __u16 *pnetfid, int xid);
+			   __u32 *poplock, __u16 *pnetfid, int xid);
 extern void posix_fill_in_inode(struct inode *tmp_inode,
 				FILE_UNIX_BASIC_INFO *pData, int isNewInode);
 extern struct inode *cifs_new_inode(struct super_block *sb, __u64 *inum);
@@ -127,8 +118,8 @@ extern int cifs_get_inode_info(struct inode **pinode,
 extern int cifs_get_inode_info_unix(struct inode **pinode,
 			const unsigned char *search_path,
 			struct super_block *sb, int xid);
-extern void acl_to_uid_mode(struct inode *inode, const char *path,
-			    const __u16 *pfid);
+extern void acl_to_uid_mode(struct cifs_sb_info *cifs_sb, struct inode *inode,
+			    const char *path, const __u16 *pfid);
 extern int mode_to_acl(struct inode *inode, const char *path, __u64);
 
 extern int cifs_mount(struct super_block *, struct cifs_sb_info *, char *,

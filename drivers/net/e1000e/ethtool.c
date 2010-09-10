@@ -319,10 +319,18 @@ static int e1000_set_pauseparam(struct net_device *netdev,
 
 		hw->fc.current_mode = hw->fc.requested_mode;
 
-		retval = ((hw->phy.media_type == e1000_media_type_fiber) ?
-			  hw->mac.ops.setup_link(hw) : e1000e_force_mac_fc(hw));
+		if (hw->phy.media_type == e1000_media_type_fiber) {
+			retval = hw->mac.ops.setup_link(hw);
+			/* implicit goto out */
+		} else {
+			retval = e1000e_force_mac_fc(hw);
+			if (retval)
+				goto out;
+			e1000e_set_fc_watermarks(hw);
+		}
 	}
 
+out:
 	clear_bit(__E1000_RESETTING, &adapter->state);
 	return retval;
 }
@@ -913,10 +921,10 @@ static int e1000_intr_test(struct e1000_adapter *adapter, u64 *data)
 		e1000e_set_interrupt_capability(adapter);
 	}
 	/* Hook up test interrupt handler just for this test */
-	if (!request_irq(irq, &e1000_test_intr, IRQF_PROBE_SHARED, netdev->name,
+	if (!request_irq(irq, e1000_test_intr, IRQF_PROBE_SHARED, netdev->name,
 			 netdev)) {
 		shared_int = 0;
-	} else if (request_irq(irq, &e1000_test_intr, IRQF_SHARED,
+	} else if (request_irq(irq, e1000_test_intr, IRQF_SHARED,
 		 netdev->name, netdev)) {
 		*data = 1;
 		ret_val = -1;

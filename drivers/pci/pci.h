@@ -59,6 +59,12 @@ static inline void pci_restore_msi_state(struct pci_dev *dev) {}
 static inline void pci_restore_msix_state(struct pci_dev *dev) {}
 #endif
 
+#ifdef CONFIG_PCIEAER
+void pci_aer_enable(void);
+#else
+static inline void pci_aer_enable(void) { }
+#endif
+
 static inline int pci_no_d1d2(struct pci_dev *dev)
 {
 	unsigned int parent_dstates = 0;
@@ -134,6 +140,15 @@ struct pci_sriov {
 	struct resource res[PCI_SRIOV_NUM_BARS]; /* VF BAR resource */
 };
 
+/* Address Translation Service */
+struct pci_ats {
+        int pos;        /* capability position */
+        int stu;        /* Smallest Translation Unit */
+        int qdep;       /* Invalidate Queue Depth */
+        int ref_cnt;    /* Physical Function reference count */
+        int is_enabled:1;       /* Enable bit is set */
+};
+
 #ifdef CONFIG_PCI_IOV
 extern int pci_iov_init(struct pci_dev *dev);
 extern void pci_iov_release(struct pci_dev *dev);
@@ -141,6 +156,20 @@ extern int pci_iov_resource_bar(struct pci_dev *dev, int resno,
 				enum pci_bar_type *type);
 extern void pci_restore_iov_state(struct pci_dev *dev);
 extern int pci_iov_bus_range(struct pci_bus *bus);
+
+extern int pci_enable_ats(struct pci_dev *dev, int ps);
+extern void pci_disable_ats(struct pci_dev *dev);
+extern int pci_ats_queue_depth(struct pci_dev *dev);
+/**
+ * pci_ats_enabled - query the ATS status
+ * @dev: the PCI device
+ *
+ * Returns 1 if ATS capability is enabled, or 0 if not.
+ */
+static inline int pci_ats_enabled(struct pci_dev *dev)
+{
+	return dev->ats && dev->ats->is_enabled;
+}
 #else
 static inline int pci_iov_init(struct pci_dev *dev)
 {
@@ -162,5 +191,31 @@ static inline int pci_iov_bus_range(struct pci_bus *bus)
 {
 	return 0;
 }
+
+static inline int pci_enable_ats(struct pci_dev *dev, int ps)
+{
+	return -ENODEV;
+}
+static inline void pci_disable_ats(struct pci_dev *dev)
+{
+}
+static inline int pci_ats_queue_depth(struct pci_dev *dev)
+{
+	return -ENODEV;
+}
+static inline int pci_ats_enabled(struct pci_dev *dev)
+{
+	return 0;
+}
 #endif /* CONFIG_PCI_IOV */
 struct pci_dev *pci_find_upstream_pcie_bridge(struct pci_dev *pdev);
+
+extern void pci_enable_acs(struct pci_dev *dev);
+
+struct pci_dev_reset_methods {
+	u16 vendor;
+	u16 device;
+	int (*reset)(struct pci_dev *dev, int probe);
+};
+
+extern struct pci_dev_reset_methods pci_dev_reset_methods[];

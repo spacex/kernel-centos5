@@ -142,6 +142,41 @@ static void ql_update_stats(struct ql_adapter *qdev)
 		iter++;
 	}
 
+	/*
+	 * Get Per-priority TX pause frame counter statistics.
+	 */
+	for (i = 0x500; i < 0x540; i += 8) {
+		if (ql_read_xgmac_reg64(qdev, i, &data)) {
+			QPRINTK(qdev, DRV, ERR,
+				"Error reading status register 0x%.04x.\n", i);
+			goto end;
+		} else
+			*iter = data;
+		iter++;
+	}
+
+	/*
+	 * Get Per-priority RX pause frame counter statistics.
+	 */
+	for (i = 0x568; i < 0x5a8; i += 8) {
+		if (ql_read_xgmac_reg64(qdev, i, &data)) {
+			QPRINTK(qdev, DRV, ERR,
+				"Error reading status register 0x%.04x.\n", i);
+			goto end;
+		} else
+			*iter = data;
+		iter++;
+	}
+
+	/*
+	 * Get RX NIC FIFO DROP statistics.
+	 */
+	if (ql_read_xgmac_reg64(qdev, 0x5b8, &data)) {
+		QPRINTK(qdev, DRV, ERR,
+			"Error reading status register 0x%.04x.\n", i);
+		goto end;
+	} else
+		*iter = data;
 end:
 	ql_sem_unlock(qdev, qdev->xg_sem_mask);
 quit:
@@ -195,6 +230,23 @@ static char ql_stats_str_arr[][ETH_GSTRING_LEN] = {
 	{"rx_1024_to_1518_pkts"},
 	{"rx_1519_to_max_pkts"},
 	{"rx_len_err_pkts"},
+	{"tx_cbfc_pause_frames0"},
+	{"tx_cbfc_pause_frames1"},
+	{"tx_cbfc_pause_frames2"},
+	{"tx_cbfc_pause_frames3"},
+	{"tx_cbfc_pause_frames4"},
+	{"tx_cbfc_pause_frames5"},
+	{"tx_cbfc_pause_frames6"},
+	{"tx_cbfc_pause_frames7"},
+	{"rx_cbfc_pause_frames0"},
+	{"rx_cbfc_pause_frames1"},
+	{"rx_cbfc_pause_frames2"},
+	{"rx_cbfc_pause_frames3"},
+	{"rx_cbfc_pause_frames4"},
+	{"rx_cbfc_pause_frames5"},
+	{"rx_cbfc_pause_frames6"},
+	{"rx_cbfc_pause_frames7"},
+	{"rx_nic_fifo_drop"},
 };
 
 static void ql_get_strings(struct net_device *dev, u32 stringset, u8 *buf)
@@ -267,6 +319,23 @@ ql_get_ethtool_stats(struct net_device *ndev,
 	*data++ = s->rx_1024_to_1518_pkts;
 	*data++ = s->rx_1519_to_max_pkts;
 	*data++ = s->rx_len_err_pkts;
+	*data++ = s->tx_cbfc_pause_frames0;
+	*data++ = s->tx_cbfc_pause_frames1;
+	*data++ = s->tx_cbfc_pause_frames2;
+	*data++ = s->tx_cbfc_pause_frames3;
+	*data++ = s->tx_cbfc_pause_frames4;
+	*data++ = s->tx_cbfc_pause_frames5;
+	*data++ = s->tx_cbfc_pause_frames6;
+	*data++ = s->tx_cbfc_pause_frames7;
+	*data++ = s->rx_cbfc_pause_frames0;
+	*data++ = s->rx_cbfc_pause_frames1;
+	*data++ = s->rx_cbfc_pause_frames2;
+	*data++ = s->rx_cbfc_pause_frames3;
+	*data++ = s->rx_cbfc_pause_frames4;
+	*data++ = s->rx_cbfc_pause_frames5;
+	*data++ = s->rx_cbfc_pause_frames6;
+	*data++ = s->rx_cbfc_pause_frames7;
+	*data++ = s->rx_nic_fifo_drop;
 }
 
 static int ql_get_settings(struct net_device *ndev,
@@ -308,7 +377,7 @@ static void ql_get_drvinfo(struct net_device *ndev,
 	strncpy(drvinfo->bus_info, pci_name(qdev->pdev), 32);
 	drvinfo->n_stats = ARRAY_SIZE(ql_stats_str_arr);
 	drvinfo->testinfo_len = QLGE_TEST_LEN;
-	drvinfo->regdump_len = sizeof(struct ql_mpi_coredump);
+	drvinfo->regdump_len = 1 * 512;
 	drvinfo->eedump_len = 0;
 }
 
@@ -330,32 +399,12 @@ static int ql_set_wol(struct net_device *ndev, struct ethtool_wolinfo *wol)
 		return -EINVAL;
 	qdev->wol = wol->wolopts;
 
-	QPRINTK(qdev, DRV, DEBUG, "Set wol option 0x%x on %s\n",
+	QPRINTK(qdev, DRV, INFO, "Set wol option 0x%x on %s\n",
 			 qdev->wol, ndev->name);
 	if (!qdev->wol) {
 		u32 wol = 0;
-		u8 zero_mac_addr[6];
-
-		memset(zero_mac_addr, 0, sizeof(zero_mac_addr));
-		/* Disable WOL does not work,
-		 * so enable WOL with Invalid mac address
-		 */
-		status = ql_mb_wol_set_magic(qdev, 0);
-		if (status) {
-			QPRINTK(qdev, IFDOWN, ERR,
-				"Failed to clear magic packet on %s\n",
-				qdev->ndev->name);
-			return status;
-		} else
-			QPRINTK(qdev, DRV, INFO,
-				"Cleared magic packet successfully on %s!\n",
-				qdev->ndev->name);
-
-		wol |= MB_WOL_MAGIC_PKT;
-		wol |= MB_WOL_MODE_ON;
 		status = ql_mb_wol_mode(qdev, wol);
-
-		QPRINTK(qdev, DRV, DEBUG, "WOL %s (wol code 0x%x) on %s\n",
+		QPRINTK(qdev, DRV, ERR, "WOL %s (wol code 0x%x) on %s\n",
 			(status == 0) ? "cleared sucessfully" : "clear failed",
 			wol, qdev->ndev->name);
 	}
@@ -398,8 +447,11 @@ static int ql_setup_loopback_test(struct ql_adapter *qdev)
 	if (status)
 		return status;
 	qdev->link_config |= CFG_LOOPBACK_PCS;
-	if (netif_carrier_ok(qdev->ndev))
+	if (netif_carrier_ok(qdev->ndev)) {
+		set_bit(QL_LINK_UP, &qdev->flags);
 		netif_carrier_off(qdev->ndev);
+	} else 
+		clear_bit(QL_LINK_UP, &qdev->flags);
 
 	status = ql_mb_set_port_cfg(qdev);
 	if (status)
@@ -410,7 +462,7 @@ void ql_loopback_cleanup(struct ql_adapter *qdev)
 {
 	qdev->link_config &= ~CFG_LOOPBACK_PCS;
 	ql_mb_set_port_cfg(qdev);
-	if (!netif_carrier_ok(qdev->ndev))
+	if (test_bit(QL_LINK_UP, &qdev->flags))
 		netif_carrier_on(qdev->ndev);
 
 }
@@ -525,7 +577,7 @@ static void ql_self_test(struct net_device *ndev,
 
 static int ql_get_regs_len(struct net_device *ndev)
 {
-	return sizeof(struct ql_mpi_coredump);
+	return 1 * 512;
 }
 
 static void ql_get_regs(struct net_device *ndev,
@@ -535,7 +587,7 @@ static void ql_get_regs(struct net_device *ndev,
 
 	ql_get_dump(qdev, p);
 	qdev->core_is_dumped = 0;
-	regs->len = sizeof(struct ql_mpi_coredump);
+	regs->len = 1 * 512;
 }
 
 
@@ -590,6 +642,37 @@ static int ql_set_coalesce(struct net_device *ndev, struct ethtool_coalesce *c)
 	qdev->tx_max_coalesced_frames = c->tx_max_coalesced_frames;
 
 	return ql_update_ring_coalescing(qdev);
+}
+
+static void ql_get_pauseparam(struct net_device *netdev,
+			struct ethtool_pauseparam *pause)
+{
+	struct ql_adapter *qdev = netdev_priv(netdev);
+	
+	ql_mb_get_port_cfg(qdev);
+	if (qdev->link_config & CFG_PAUSE_STD) {
+		pause->rx_pause = 1;
+		pause->tx_pause = 1;
+	}
+}
+
+static int ql_set_pauseparam(struct net_device *netdev,
+			struct ethtool_pauseparam *pause)
+{
+	struct ql_adapter *qdev = netdev_priv(netdev);
+	int status = 0;
+	
+	if ((pause->rx_pause) || (pause->tx_pause))
+		qdev->link_config |= CFG_PAUSE_STD;
+	else if (!(pause->rx_pause && pause->tx_pause))
+		qdev->link_config &= ~CFG_PAUSE_STD;
+	else
+		return -EINVAL;
+	
+	status = ql_mb_set_port_cfg(qdev);
+	if (status)
+		return status;
+	return status;
 }
 
 static u32 ql_get_rx_csum(struct net_device *netdev)
@@ -661,6 +744,8 @@ struct ethtool_ops qlge_ethtool_ops = {
 	.phys_id		 = ql_phys_id,
 	.self_test_count	 = ql_self_test_count,
 	.self_test		 = ql_self_test,
+	.get_pauseparam		 = ql_get_pauseparam,
+	.set_pauseparam		 = ql_set_pauseparam,
 	.get_rx_csum		 = ql_get_rx_csum,
 	.set_rx_csum		 = ql_set_rx_csum,
 	.get_tx_csum		 = ql_get_tx_csum,

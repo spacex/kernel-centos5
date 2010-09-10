@@ -328,7 +328,7 @@
 /* #define __NR_utimensat	320 */
 /* #define __NR_signalfd	321 */
 /* #define __NR_timerfd_create	322 */
-/* #define __NR_eventfd		323 */
+#define __NR_eventfd		323
 #define __NR_fallocate		324
 #ifdef __KERNEL__
 
@@ -489,7 +489,6 @@ asmlinkage int sys_execve(struct pt_regs regs);
 asmlinkage int sys_clone(struct pt_regs regs);
 asmlinkage int sys_fork(struct pt_regs regs);
 asmlinkage int sys_vfork(struct pt_regs regs);
-asmlinkage int sys_pipe(unsigned long __user *fildes);
 asmlinkage long sys_iopl(unsigned long unused);
 struct sigaction;
 asmlinkage long sys_rt_sigaction(int sig,

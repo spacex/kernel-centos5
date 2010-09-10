@@ -56,14 +56,22 @@ static inline void* get_service_data(struct pcie_device *dev)
 
 struct pcie_port_service_driver {
 	const char *name;
-	int (*probe) (struct pcie_device *dev, 
-		const struct pcie_port_service_id *id);
+	int (*probe) (struct pcie_device *dev,
+		      const struct pcie_port_service_id *id);
 	void (*remove) (struct pcie_device *dev);
 	int (*suspend) (struct pcie_device *dev, pm_message_t state);
 	int (*resume) (struct pcie_device *dev);
 
 	const struct pcie_port_service_id *id_table;
 	struct device_driver driver;
+
+#ifndef __GENKSYMS__
+	/* Service Error Recovery Handler */
+	struct pci_error_handlers *err_handler;
+
+	/* Link Reset Capability - AER service driver specific */
+	pci_ers_result_t (*reset_link) (struct pci_dev *dev);
+#endif
 };
 #define to_service_driver(d) \
 	container_of(d, struct pcie_port_service_driver, driver)

@@ -25,6 +25,7 @@
 
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_transport_fc.h>
+#include <scsi/fc/fc_fs.h>
 
 #include "lpfc_hw4.h"
 #include "lpfc_hw.h"
@@ -70,6 +71,8 @@ struct unsol_rcv_ct_ctx {
 	uint32_t ctxt_id;
 	uint32_t SID;
 	uint32_t oxid;
+	uint32_t flags;
+#define UNSOL_VALD	0x00000001
 };
 
 /* values for a_topology */
@@ -86,6 +89,8 @@ struct unsol_rcv_ct_ctx {
 #define LNK_REDISCOVERY         0x5
 #define LNK_READY               0x6
 
+#define CT_CTX_SIZE             64
+
 struct lpfcdfc_host {
 	struct list_head node;
 	int inst;
@@ -96,9 +101,12 @@ struct lpfcdfc_host {
 	void (*base_ct_unsol_event)(struct lpfc_hba *,
 				    struct lpfc_sli_ring *,
 				    struct lpfc_iocbq *);
+	void (*base_ct_unsol_abort)(struct lpfc_hba *,
+				    struct lpfc_sli_ring *,
+				    struct lpfc_iocbq *);
 	/* Threads waiting for async event */
 	struct list_head ev_waiters;
-	struct unsol_rcv_ct_ctx ct_ctx[64];
+	struct unsol_rcv_ct_ctx ct_ctx[CT_CTX_SIZE];
 	uint32_t ctx_idx;
 	uint32_t blocked;
 	uint32_t ref_count;
@@ -440,7 +448,6 @@ lpfc_ioctl_send_els(struct lpfc_hba * phba,
 
 	cmdiocbq->iocb.ulpContext = rpi;
 	cmdiocbq->iocb_flag |= LPFC_IO_LIBDFC;
-	cmdiocbq->context1 = NULL;
 	cmdiocbq->context2 = NULL;
 
 	iocb_status = lpfc_sli_issue_iocb_wait(phba, LPFC_ELS_RING, cmdiocbq,
@@ -746,8 +753,8 @@ lpfc_ioctl_send_mgmt_cmd(struct lpfc_hba * phba,
 	cmd->ulpCommand = CMD_GEN_REQUEST64_CR;
 	cmd->un.genreq64.w5.hcsw.Fctl = (SI | LA);
 	cmd->un.genreq64.w5.hcsw.Dfctl = 0;
-	cmd->un.genreq64.w5.hcsw.Rctl = FC_UNSOL_CTL;
-	cmd->un.genreq64.w5.hcsw.Type = FC_COMMON_TRANSPORT_ULP;
+	cmd->un.genreq64.w5.hcsw.Rctl = FC_RCTL_DD_UNSOL_CTL;
+	cmd->un.genreq64.w5.hcsw.Type = FC_TYPE_CT;
 	cmd->ulpBdeCount = 1;
 	cmd->ulpLe = 1;
 	cmd->ulpClass = CLASS3;
@@ -1326,8 +1333,8 @@ static int lpfcdfc_loop_get_xri(struct lpfc_hba *phba, uint16_t rpi,
 
 	cmd->un.xseq64.w5.hcsw.Fctl = LA;
 	cmd->un.xseq64.w5.hcsw.Dfctl = 0;
-	cmd->un.xseq64.w5.hcsw.Rctl = FC_UNSOL_CTL;
-	cmd->un.xseq64.w5.hcsw.Type = FC_COMMON_TRANSPORT_ULP;
+	cmd->un.xseq64.w5.hcsw.Rctl = FC_RCTL_DD_UNSOL_CTL;
+	cmd->un.xseq64.w5.hcsw.Type = FC_TYPE_CT;
 
 	cmd->ulpCommand = CMD_XMIT_SEQUENCE64_CR;
 	cmd->ulpBdeCount = 1;
@@ -1642,8 +1649,8 @@ lpfc_ioctl_loopback_test(struct lpfc_hba *phba,
 
 	cmd->un.xseq64.w5.hcsw.Fctl = (LS | LA);
 	cmd->un.xseq64.w5.hcsw.Dfctl = 0;
-	cmd->un.xseq64.w5.hcsw.Rctl = FC_UNSOL_CTL;
-	cmd->un.xseq64.w5.hcsw.Type = FC_COMMON_TRANSPORT_ULP;
+	cmd->un.xseq64.w5.hcsw.Rctl = FC_RCTL_DD_UNSOL_CTL;
+	cmd->un.xseq64.w5.hcsw.Type = FC_TYPE_CT;
 
 	cmd->ulpCommand = CMD_XMIT_SEQUENCE64_CX;
 	cmd->ulpBdeCount = 1;
@@ -1768,7 +1775,7 @@ lpfc_issue_ct_rsp(struct lpfc_hba * phba, uint32_t tag,
 {
 	struct lpfc_sli *psli;
 	IOCB_t *icmd;
-	struct lpfc_iocbq *ctiocb;
+	struct lpfc_iocbq *ctiocb = NULL;
 	uint32_t num_entry;
 	int rc = 0;
 	struct lpfc_nodelist *ndlp = NULL;
@@ -1793,8 +1800,8 @@ lpfc_issue_ct_rsp(struct lpfc_hba * phba, uint32_t tag,
 	icmd->un.xseq64.bdl.bdeSize = (num_entry * sizeof (struct ulp_bde64));
 	icmd->un.xseq64.w5.hcsw.Fctl = (LS | LA);
 	icmd->un.xseq64.w5.hcsw.Dfctl = 0;
-	icmd->un.xseq64.w5.hcsw.Rctl = FC_SOL_CTL;
-	icmd->un.xseq64.w5.hcsw.Type = FC_COMMON_TRANSPORT_ULP;
+	icmd->un.xseq64.w5.hcsw.Rctl = FC_RCTL_DD_SOL_CTL;
+	icmd->un.xseq64.w5.hcsw.Type = FC_TYPE_CT;
 
 	pci_dma_sync_single_for_device(phba->pcidev, bmp->phys, LPFC_BPL_SIZE,
 							PCI_DMA_TODEVICE);
@@ -1805,19 +1812,24 @@ lpfc_issue_ct_rsp(struct lpfc_hba * phba, uint32_t tag,
 	icmd->ulpLe = 1;
 	icmd->ulpClass = CLASS3;
 	if (phba->sli_rev == LPFC_SLI_REV4) {
+		/* Do not issue unsol response if oxid not marked as valid */
+		if (!(dfchba->ct_ctx[tag].flags & UNSOL_VALD)) {
+			rc = IOCB_ERROR;
+			goto issue_ct_rsp_exit;
+		}
 		icmd->ulpContext = dfchba->ct_ctx[tag].oxid;
 		ndlp = lpfc_findnode_did(phba->pport, dfchba->ct_ctx[tag].SID);
 		if (!ndlp) {
 			lpfc_printf_log(phba, KERN_WARNING, LOG_ELS,
-				 "1268 ndlp null for oxid %x SID %x\n",
+				 "2721 ndlp null for oxid %x SID %x\n",
 					icmd->ulpContext,
 					dfchba->ct_ctx[tag].SID);
-			lpfc_sli_release_iocbq(phba, ctiocb);
-			return IOCB_ERROR;
+			rc = IOCB_ERROR;
+			goto issue_ct_rsp_exit;
 		}
 		icmd->un.ulpWord[3] = ndlp->nlp_rpi;
-		dfchba->ct_ctx[tag].oxid = 0;
-		dfchba->ct_ctx[tag].SID = 0;
+		/* The exchange is done, mark the entry as invalid */
+		dfchba->ct_ctx[tag].flags &= ~UNSOL_VALD;
 	} else
 		icmd->ulpContext = (ushort) tag;
 
@@ -1825,7 +1837,7 @@ lpfc_issue_ct_rsp(struct lpfc_hba * phba, uint32_t tag,
 
 	/* Xmit CT response on exchange <xid> */
 	lpfc_printf_log(phba, KERN_INFO, LOG_ELS,
-			"1200 Xmit CT response on exchange x%x Data: x%x x%x\n",
+			"2722 Xmit CT response on exchange x%x Data: x%x x%x\n",
 			icmd->ulpContext, icmd->ulpIoTag, phba->link_state);
 
 	ctiocb->iocb_cmpl = NULL;
@@ -1846,8 +1858,9 @@ lpfc_issue_ct_rsp(struct lpfc_hba * phba, uint32_t tag,
 	if (rc != IOCB_SUCCESS)
 		rc = IOCB_ERROR;
 
-	lpfc_sli_release_iocbq(phba, ctiocb);
 issue_ct_rsp_exit:
+	if (ctiocb)
+		lpfc_sli_release_iocbq(phba, ctiocb);
 	return rc;
 }
 
@@ -1874,7 +1887,8 @@ lpfcdfc_ct_unsol_event(struct lpfc_hba * phba,
 	struct lpfc_dmabuf *bdeBuf2 = piocbq->context3;
 	struct lpfc_hbq_entry *hbqe;
 
-	BUG_ON(&dfchba->node == &lpfcdfc_hosts);
+	if (&dfchba->node == &lpfcdfc_hosts)
+		return;
 	INIT_LIST_HEAD(&head);
 	list_add_tail(&head, &piocbq->list);
 
@@ -1997,14 +2011,20 @@ lpfcdfc_ct_unsol_event(struct lpfc_hba * phba,
 							dmabuf);
 						break;
 					case ELX_LOOPBACK_XRI_SETUP:
-						if (!(phba->sli3_options &
-						      LPFC_SLI3_HBQ_ENABLED))
+						/* For SLI2 or SLI3 with HBQ
+						 * ENABLED use buf free, all
+						 * others post the buffer
+						 */
+						if ((phba->sli_rev ==
+							LPFC_SLI_REV2) ||
+							(phba->sli3_options &
+							LPFC_SLI3_HBQ_ENABLED))
+							lpfc_in_buf_free(phba,
+									dmabuf);
+						else
 							lpfc_post_buffer(phba,
 									 pring,
 									 1, 1);
-						else
-							lpfc_in_buf_free(phba,
-									dmabuf);
 						break;
 					default:
 						if (!(phba->sli3_options &
@@ -2021,11 +2041,24 @@ lpfcdfc_ct_unsol_event(struct lpfc_hba * phba,
 		mutex_lock(&lpfcdfc_lock);
 		if (phba->sli_rev == LPFC_SLI_REV4) {
 			evt_dat->immed_dat = dfchba->ctx_idx;
-			dfchba->ctx_idx = (dfchba->ctx_idx + 1) % 64;
+			dfchba->ctx_idx = (dfchba->ctx_idx + 1) % CT_CTX_SIZE;
+			/* Provide warning for over-run of the ct_ctx array */
+			if (dfchba->ct_ctx[evt_dat->immed_dat].flags &
+			    UNSOL_VALD)
+				lpfc_printf_log(phba, KERN_WARNING, LOG_ELS,
+						"2717 CT context array entry "
+						"[%d] over-run: oxid:x%x, "
+						"sid:x%x\n", dfchba->ctx_idx,
+						dfchba->ct_ctx[
+						    evt_dat->immed_dat].oxid,
+						dfchba->ct_ctx[
+						    evt_dat->immed_dat].SID);
 			dfchba->ct_ctx[evt_dat->immed_dat].oxid =
-						piocbq->iocb.ulpContext;
+					piocbq->iocb.ulpContext;
 			dfchba->ct_ctx[evt_dat->immed_dat].SID =
-				piocbq->iocb.un.rcvels.remoteID;
+					piocbq->iocb.un.rcvels.remoteID;
+			/* Setting valid bit while clear up all other bits */
+			dfchba->ct_ctx[evt_dat->immed_dat].flags = UNSOL_VALD;
 		} else
 			evt_dat->immed_dat = piocbq->iocb.ulpContext;
 
@@ -2048,6 +2081,45 @@ error_unsol_ct_exit:
 	return;
 }
 
+static void
+lpfcdfc_sli4_ct_unsol_abort(struct lpfc_hba *phba,
+		       struct lpfc_sli_ring *pring,
+		       struct lpfc_iocbq *piocbq)
+{
+	struct lpfcdfc_host *dfchba;
+	int idx;
+
+	dfchba = lpfcdfc_host_from_hba(phba);
+	if (&dfchba->node == &lpfcdfc_hosts)
+		return;
+
+	if (piocbq->iocb.ulpBdeCount == 0 ||
+	    piocbq->iocb.un.cont64[0].tus.f.bdeSize == 0)
+		goto unsol_ct_abort_exit;
+
+	if (phba->link_state == LPFC_HBA_ERROR ||
+	    (!(phba->sli.sli_flag & LPFC_SLI_ACTIVE)))
+		goto unsol_ct_abort_exit;
+
+	mutex_lock(&lpfcdfc_lock);
+	for (idx = 0; idx < CT_CTX_SIZE; idx++) {
+		if (!(dfchba->ct_ctx[idx].flags & UNSOL_VALD))
+			continue;
+		if (dfchba->ct_ctx[idx].oxid != piocbq->iocb.ulpContext)
+			continue;
+		if (dfchba->ct_ctx[idx].SID != piocbq->iocb.un.rcvels.remoteID)
+			continue;
+		/* Mark the entry aborted as invalid */
+		dfchba->ct_ctx[idx].flags &= ~UNSOL_VALD;
+		break;
+	}
+	mutex_unlock(&lpfcdfc_lock);
+
+unsol_ct_abort_exit:
+	if (dfchba->base_ct_unsol_abort)
+		(dfchba->base_ct_unsol_abort)(phba, pring, piocbq);
+	return;
+}
 
 struct lpfc_dmabufext *
 __dfc_cmd_data_alloc(struct lpfc_hba * phba,
@@ -2211,8 +2283,10 @@ lpfcdfc_host_add (struct pci_dev * dev,
 	spin_lock_irq(&phba->hbalock);
 	prt = phba->sli.ring[LPFC_ELS_RING].prt;
 	dfchba->base_ct_unsol_event = prt[2].lpfc_sli_rcv_unsol_event;
+	dfchba->base_ct_unsol_abort = prt[4].lpfc_sli_rcv_unsol_event;
 	prt[2].lpfc_sli_rcv_unsol_event = lpfcdfc_ct_unsol_event;
 	prt[3].lpfc_sli_rcv_unsol_event = lpfcdfc_ct_unsol_event;
+	prt[4].lpfc_sli_rcv_unsol_event = lpfcdfc_sli4_ct_unsol_abort;
 	spin_unlock_irq(&phba->hbalock);
 	mutex_lock(&lpfcdfc_lock);
 	list_add_tail(&dfchba->node, &lpfcdfc_hosts);

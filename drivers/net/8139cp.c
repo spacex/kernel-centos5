@@ -443,21 +443,12 @@ static void cp_vlan_rx_register(struct net_device *dev, struct vlan_group *grp)
 
 	spin_lock_irqsave(&cp->lock, flags);
 	cp->vlgrp = grp;
-	cp->cpcmd |= RxVlanOn;
-	cpw16(CpCmd, cp->cpcmd);
-	spin_unlock_irqrestore(&cp->lock, flags);
-}
+	if (grp)
+		cp->cpcmd |= RxVlanOn;
+	else
+		cp->cpcmd &= ~RxVlanOn;
 
-static void cp_vlan_rx_kill_vid(struct net_device *dev, unsigned short vid)
-{
-	struct cp_private *cp = netdev_priv(dev);
-	unsigned long flags;
-
-	spin_lock_irqsave(&cp->lock, flags);
-	cp->cpcmd &= ~RxVlanOn;
 	cpw16(CpCmd, cp->cpcmd);
-	if (cp->vlgrp)
-		cp->vlgrp->vlan_devices[vid] = NULL;
 	spin_unlock_irqrestore(&cp->lock, flags);
 }
 #endif /* CP_VLAN_TAG_USED */
@@ -1601,6 +1592,28 @@ static int cp_ioctl (struct net_device *dev, struct ifreq *rq, int cmd)
 	return rc;
 }
 
+static int cp_set_mac_address(struct net_device *dev, void *p)
+{
+	struct cp_private *cp = netdev_priv(dev);
+	struct sockaddr *addr = p;
+
+	if (!is_valid_ether_addr(addr->sa_data))
+		return -EADDRNOTAVAIL;
+
+	memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
+
+	spin_lock_irq(&cp->lock);
+
+	cpw8_f(Cfg9346, Cfg9346_Unlock);
+	cpw32_f(MAC0 + 0, le32_to_cpu (*(__le32 *) (dev->dev_addr + 0)));
+	cpw32_f(MAC0 + 4, le32_to_cpu (*(__le32 *) (dev->dev_addr + 4)));
+	cpw8_f(Cfg9346, Cfg9346_Lock);
+
+	spin_unlock_irq(&cp->lock);
+
+	return 0;
+}
+
 /* Serial EEPROM section. */
 
 /*  EEPROM_Ctrl bits. */
@@ -1936,6 +1949,7 @@ static int cp_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 	dev->open = cp_open;
 	dev->stop = cp_close;
 	dev->set_multicast_list = cp_set_rx_mode;
+	dev->set_mac_address = cp_set_mac_address;
 	dev->hard_start_xmit = cp_start_xmit;
 	dev->get_stats = cp_get_stats;
 	dev->do_ioctl = cp_ioctl;
@@ -1956,7 +1970,6 @@ static int cp_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 #if CP_VLAN_TAG_USED
 	dev->features |= NETIF_F_HW_VLAN_TX | NETIF_F_HW_VLAN_RX;
 	dev->vlan_rx_register = cp_vlan_rx_register;
-	dev->vlan_rx_kill_vid = cp_vlan_rx_kill_vid;
 #endif
 
 	if (pci_using_dac)

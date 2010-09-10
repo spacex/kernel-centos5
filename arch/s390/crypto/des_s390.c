@@ -173,8 +173,9 @@ static int des3_128_setkey(struct crypto_tfm *tfm, const u8 *key,
 	struct crypt_s390_des3_128_ctx *dctx = crypto_tfm_ctx(tfm);
 	const u8* temp_key = key;
 
-	if (!(memcmp(key, &key[DES_KEY_SIZE], DES_KEY_SIZE))) {
-		*flags |= CRYPTO_TFM_RES_BAD_KEY_SCHED;
+	if (!(memcmp(key, &key[DES_KEY_SIZE], DES_KEY_SIZE)) &&
+	    (*flags & CRYPTO_TFM_REQ_WEAK_KEY)) {
+		*flags |= CRYPTO_TFM_RES_WEAK_KEY;
 		return -EINVAL;
 	}
 	for (i = 0; i < 2; i++, temp_key += DES_KEY_SIZE) {
@@ -311,9 +312,10 @@ static int des3_192_setkey(struct crypto_tfm *tfm, const u8 *key,
 
 	if (!(memcmp(key, &key[DES_KEY_SIZE], DES_KEY_SIZE) &&
 	    memcmp(&key[DES_KEY_SIZE], &key[DES_KEY_SIZE * 2],
-		   DES_KEY_SIZE))) {
+		   DES_KEY_SIZE)) &&
+	    (*flags & CRYPTO_TFM_REQ_WEAK_KEY)) {
 
-		*flags |= CRYPTO_TFM_RES_BAD_KEY_SCHED;
+		*flags |= CRYPTO_TFM_RES_WEAK_KEY;
 		return -EINVAL;
 	}
 	for (i = 0; i < 3; i++, temp_key += DES_KEY_SIZE) {

@@ -133,7 +133,8 @@ static void elevator_attach(request_queue_t *q, struct elevator_queue *eq,
 	eq->elevator_data = data;
 }
 
-static char chosen_elevator[16];
+char chosen_elevator[16];
+EXPORT_SYMBOL_GPL(chosen_elevator);
 
 static int __init elevator_setup(char *str)
 {

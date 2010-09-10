@@ -568,11 +568,8 @@ qla2x00_eh_wait_on_command(scsi_qla_host_t *ha, struct scsi_cmnd *cmd)
 		return ret;
 	}
 
-	while (CMD_SP(cmd)) {
+	while (CMD_SP(cmd) && wait_iter--) {
 		msleep(ABORT_POLLING_PERIOD);
-
-		if (--wait_iter)
-			break;
 	}
 	if (CMD_SP(cmd))
 		ret = QLA_FUNCTION_FAILED;
@@ -740,6 +737,14 @@ qla2x00_abort_fcport_cmds(fc_port_t *fcport)
 	spin_unlock_irqrestore(&pha->hardware_lock, flags);
 }
 
+static int
+qla2x00_is_eh_active(struct Scsi_Host *shost)
+{
+	if (shost->shost_state == SHOST_RECOVERY)
+		return 1;
+	return 0;
+}
+
 static void
 qla2x00_block_error_handler(struct scsi_cmnd *cmnd)
 {
@@ -814,6 +819,7 @@ qla2xxx_eh_abort(struct scsi_cmnd *cmd)
 		if (ha->isp_ops->abort_command(ha, sp)) {
 			DEBUG2(printk("%s(%ld): abort_command "
 			    "mbx failed.\n", __func__, ha->host_no));
+			ret = FAILED;
 		} else {
 			DEBUG3(printk("%s(%ld): abort_command "
 			    "mbx success.\n", __func__, ha->host_no));
@@ -868,6 +874,9 @@ qla2x00_eh_wait_for_pending_target_commands(scsi_qla_host_t *ha, unsigned int t)
 	unsigned long flags;
 
 	status = 0;
+
+	if (!qla2x00_is_eh_active(ha->host))
+		return status;
 
 	/*
 	 * Waiting for all commands for the designated target in the active
@@ -1006,6 +1015,9 @@ qla2x00_eh_wait_for_pending_commands(scsi_qla_host_t *ha)
 	unsigned long flags;
 
 	status = 1;
+
+	if (!qla2x00_is_eh_active(ha->host))
+		return status;
 
 	/*
 	 * Waiting for all commands for the designated target in the active
@@ -1211,7 +1223,8 @@ qla2x00_loop_reset(scsi_qla_host_t *ha)
 
 	if (ha->flags.enable_target_reset) {
 		list_for_each_entry(fcport, &ha->fcports, list) {
-			if (fcport->port_type != FCT_TARGET)
+			if (fcport->port_type != FCT_TARGET ||
+			    ha->vp_idx != fcport->vp_idx)
 				continue;
 
 			ret = qla2x00_device_reset(ha, fcport);
@@ -1795,6 +1808,8 @@ qla2x00_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	sprintf(ha->host_str, "%s_%ld", QLA2XXX_DRIVER_NAME, ha->host_no);
 	ha->parent = NULL;
 
+	pci_enable_pcie_error_reporting(pdev);
+
 	/* Set ISP-type information. */
 	qla2x00_set_isp_flags(ha);
 
@@ -2018,14 +2033,14 @@ qla2x00_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	pci_set_drvdata(pdev, ha);
 
-	ha->flags.init_done = 1;
-	ha->flags.online = 1;
-
 	num_hosts++;
 
 	ret = scsi_add_host(host, &pdev->dev);
 	if (ret)
 		goto probe_failed;
+
+	ha->flags.init_done = 1;
+	ha->flags.online = 1;
 
 	scsi_scan_host(host);
 
@@ -2132,6 +2147,8 @@ qla2x00_remove_one(struct pci_dev *pdev)
 	qla2x00_free_device(ha);
 
 	scsi_host_put(ha->host);
+
+	pci_disable_pcie_error_reporting(pdev);
 
 	pci_disable_device(pdev);
 	pci_set_drvdata(pdev, NULL);
@@ -2293,7 +2310,7 @@ qla2x00_mark_all_devices_lost(scsi_qla_host_t *ha, int defer)
 	scsi_qla_host_t *pha = to_qla_parent(ha);
 
 	list_for_each_entry(fcport, &pha->fcports, list) {
-		if (ha->vp_idx != 0 && ha->vp_idx != fcport->vp_idx)
+		if (ha->vp_idx != fcport->vp_idx)
 			continue;
 
 		/*
@@ -2302,12 +2319,9 @@ qla2x00_mark_all_devices_lost(scsi_qla_host_t *ha, int defer)
 		 */
 		if (atomic_read(&fcport->state) == FCS_DEVICE_DEAD)
 			continue;
-		if (atomic_read(&fcport->state) == FCS_ONLINE) {
-			if (defer)
-				qla2x00_schedule_rport_del(ha, fcport, defer);
-			else if (ha->vp_idx == fcport->vp_idx)
-				qla2x00_schedule_rport_del(ha, fcport, defer);
-		}
+		if (atomic_read(&fcport->state) == FCS_ONLINE)
+			qla2x00_schedule_rport_del(ha, fcport, defer);
+
 		atomic_set(&fcport->state, FCS_DEVICE_LOST);
 	}
 
@@ -2787,7 +2801,7 @@ qla2x00_do_dpc(void *data)
 {
 	scsi_qla_host_t *ha;
 	fc_port_t	*fcport;
-	uint8_t		status;
+	int		status;
 	uint16_t	next_loopid;
 	int		rval;
 
@@ -2882,7 +2896,7 @@ qla2x00_do_dpc(void *data)
 
 					if (fcport->flags & FCF_FABRIC_DEVICE) {
 						if (fcport->flags &
-						    FCF_TAPE_PRESENT)
+						    FCF_FCP2_DEVICE)
 							ha->isp_ops->fabric_logout(
 							    ha, fcport->loop_id,
 							    fcport->d_id.b.domain,
@@ -3124,7 +3138,9 @@ qla2x00_timer(scsi_qla_host_t *ha)
 			if (!IS_QLA2100(ha) && ha->link_down_timeout)
 				atomic_set(&ha->loop_state, LOOP_DEAD);
 
-			/* Schedule an ISP abort to return any tape commands. */
+			/* Schedule an ISP abort to return any FCP2-device
+			 * commands.
+			 */
 			/* NPIV - scan physical port only */
 			if (!ha->parent) {
 				spin_lock_irqsave(&ha->hardware_lock,
@@ -3138,7 +3154,7 @@ qla2x00_timer(scsi_qla_host_t *ha)
 					if (!sp)
 						continue;
 					sfcp = sp->fcport;
-					if (!(sfcp->flags & FCF_TAPE_PRESENT))
+					if (!(sfcp->flags & FCF_FCP2_DEVICE))
 						continue;
 
 					set_bit(ISP_ABORT_NEEDED,
@@ -3255,6 +3271,7 @@ qla2xxx_pci_error_detected(struct pci_dev *pdev, pci_channel_state_t state)
 		return PCI_ERS_RESULT_CAN_RECOVER;
 	case pci_channel_io_frozen:
 		ha->flags.eeh_busy = 1;
+		qla2x00_free_irqs(ha);
 		pci_disable_device(pdev);
 		return PCI_ERS_RESULT_NEED_RESET;
 	case pci_channel_io_perm_failure:
@@ -3310,6 +3327,12 @@ qla2xxx_pci_slot_reset(struct pci_dev *pdev)
 
 	qla_printk(KERN_WARNING, ha, "slot_reset\n");
 
+	/* Workaround: qla2xxx driver which access hardware earlier
+	 * needs error state to be pci_channel_io_online.
+	 * Otherwise mailbox command timesout.
+	 */
+	pdev->error_state = pci_channel_io_normal;
+
 	pci_restore_state(pdev);
 
 #ifdef QL_DEBUG_LEVEL_17
@@ -3335,6 +3358,9 @@ qla2xxx_pci_slot_reset(struct pci_dev *pdev)
 		return ret;
 	}
 
+	if (qla2x00_request_irqs(ha))
+		return ret;
+
 	if (ha->isp_ops->pci_config(ha))
 		return ret;
 
@@ -3359,6 +3385,8 @@ qla2xxx_pci_slot_reset(struct pci_dev *pdev)
 	if (qla2x00_abort_isp(ha)== QLA_SUCCESS)
 		ret =  PCI_ERS_RESULT_RECOVERED;
 	clear_bit(ABORT_ISP_ACTIVE, &ha->dpc_flags);
+
+	pci_cleanup_aer_uncorrect_error_status(pdev);
 
 	qla_printk(KERN_WARNING, ha, "slot_reset-return:ret=%x\n",ret);
 

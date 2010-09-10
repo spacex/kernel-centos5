@@ -771,7 +771,7 @@ static void vlan_flush_mc_list(struct net_device *dev)
 	struct dev_mc_list *dmi = dev->mc_list;
 
 	while (dmi) {
-		printk(KERN_DEBUG "%s: del %.2x:%.2x:%.2x:%.2x:%.2x:%.2x mcast address from vlan interface\n",
+		pr_debug("%s: del %.2x:%.2x:%.2x:%.2x:%.2x:%.2x mcast address from vlan interface\n",
 		       dev->name,
 		       dmi->dmi_addr[0],
 		       dmi->dmi_addr[1],
@@ -862,7 +862,7 @@ void vlan_dev_set_multicast_list(struct net_device *vlan_dev)
 		for (dmi = vlan_dev->mc_list; dmi != NULL; dmi = dmi->next) {
 			if (vlan_should_add_mc(dmi, VLAN_DEV_INFO(vlan_dev)->old_mc_list)) {
 				dev_mc_add(real_dev, dmi->dmi_addr, dmi->dmi_addrlen, 0);
-				printk(KERN_DEBUG "%s: add %.2x:%.2x:%.2x:%.2x:%.2x:%.2x mcast address to master interface\n",
+				pr_debug("%s: add %.2x:%.2x:%.2x:%.2x:%.2x:%.2x mcast address to master interface\n",
 				       vlan_dev->name,
 				       dmi->dmi_addr[0],
 				       dmi->dmi_addr[1],
@@ -880,7 +880,7 @@ void vlan_dev_set_multicast_list(struct net_device *vlan_dev)
 				 * delete it from the real list on the underlying device.
 				 */
 				dev_mc_delete(real_dev, dmi->dmi_addr, dmi->dmi_addrlen, 0);
-				printk(KERN_DEBUG "%s: del %.2x:%.2x:%.2x:%.2x:%.2x:%.2x mcast address from master interface\n",
+				pr_debug("%s: del %.2x:%.2x:%.2x:%.2x:%.2x:%.2x mcast address from master interface\n",
 				       vlan_dev->name,
 				       dmi->dmi_addr[0],
 				       dmi->dmi_addr[1],
@@ -904,6 +904,7 @@ static int vlan_gro_common(struct napi_struct *napi, struct vlan_group *grp,
 	if (skb_bond_should_drop(skb))
 		goto drop;
 
+	skb->input_dev = skb->dev;
 	skb->dev = grp->vlan_devices[vlan_tci & VLAN_VID_MASK];
 
 	if (!skb->dev)

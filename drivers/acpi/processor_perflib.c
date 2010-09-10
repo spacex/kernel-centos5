@@ -619,7 +619,7 @@ static int acpi_processor_get_psd(struct acpi_processor	*pr)
 	if (pdomain->coord_type != DOMAIN_COORD_TYPE_SW_ALL &&
 	    pdomain->coord_type != DOMAIN_COORD_TYPE_SW_ANY &&
 	    pdomain->coord_type != DOMAIN_COORD_TYPE_HW_ALL) {
-		ACPI_DEBUG_PRINT((ACPI_DB_ERROR "Invalid _PSD:coord_type\n"));
+		ACPI_DEBUG_PRINT((ACPI_DB_ERROR, "Invalid _PSD:coord_type\n"));
 		result = -EFAULT;
 		goto end;
 	}

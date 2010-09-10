@@ -745,16 +745,6 @@ typhoon_vlan_rx_register(struct net_device *dev, struct vlan_group *grp)
 	spin_unlock_bh(&tp->state_lock);
 }
 
-static void
-typhoon_vlan_rx_kill_vid(struct net_device *dev, unsigned short vid)
-{
-	struct typhoon *tp = netdev_priv(dev);
-	spin_lock_bh(&tp->state_lock);
-	if(tp->vlgrp)
-		tp->vlgrp->vlan_devices[vid] = NULL;
-	spin_unlock_bh(&tp->state_lock);
-}
-
 static inline void
 typhoon_tso_fill(struct sk_buff *skb, struct transmit_ring *txRing,
 			u32 ring_dma)
@@ -2550,7 +2540,7 @@ typhoon_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	dev->get_stats		= typhoon_get_stats;
 	dev->set_mac_address	= typhoon_set_mac_address;
 	dev->vlan_rx_register	= typhoon_vlan_rx_register;
-	dev->vlan_rx_kill_vid	= typhoon_vlan_rx_kill_vid;
+
 	SET_ETHTOOL_OPS(dev, &typhoon_ethtool_ops);
 
 	/* We can handle scatter gather, up to 16 entries, and

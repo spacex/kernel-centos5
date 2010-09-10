@@ -179,6 +179,7 @@ static void blk_remove_tree(struct dentry *dir)
 static struct dentry *blk_create_tree(const char *blk_name)
 {
 	struct dentry *dir = NULL;
+	int created = 0;
 
 	mutex_lock(&blk_tree_mutex);
 
@@ -186,13 +187,17 @@ static struct dentry *blk_create_tree(const char *blk_name)
 		blk_tree_root = debugfs_create_dir("block", NULL);
 		if (!blk_tree_root)
 			goto err;
+		created = 1;
 	}
 
 	dir = debugfs_create_dir(blk_name, blk_tree_root);
 	if (dir)
 		root_users++;
-	else
-		blk_remove_root();
+	else {
+		/* Delete root only if we created it */
+		if (created)
+			blk_remove_root();
+	}
 
 err:
 	mutex_unlock(&blk_tree_mutex);
@@ -802,7 +807,8 @@ void blk_add_trace_remap(struct request_queue *q, struct bio *bio,
 	if (likely(!bt))
 		return;
 
-	r.device = cpu_to_be32(dev);
+	r.device_from = cpu_to_be32(dev);
+	r.device_to = cpu_to_be32(bio->bi_bdev->bd_dev);
 	r.sector = cpu_to_be64(to);
 
 	__blk_add_trace(bt, from, bio->bi_size, bio->bi_rw, BLK_TA_REMAP,
