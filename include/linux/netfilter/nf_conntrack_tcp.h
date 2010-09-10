@@ -2,6 +2,9 @@
 #define _NF_CONNTRACK_TCP_H
 /* TCP tracking. */
 
+/* Be liberal in window checking */
+#define IP_CT_TCP_FLAG_BE_LIBERAL              0x08
+
 /* This is exposed to userspace (ctnetlink) */
 enum tcp_conntrack {
 	TCP_CONNTRACK_NONE,

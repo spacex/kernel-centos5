@@ -36,12 +36,23 @@
 			dev->pdev->device == 0x2992 || \
 			dev->pdev->device == 0x29A2 || \
 			dev->pdev->device == 0x2A02 || \
-			dev->pdev->device == 0x2A12)
+			dev->pdev->device == 0x2A12 || \
+			dev->pdev->device == 0x2A42 || \
+			dev->pdev->device == 0x2e02 || \
+			dev->pdev->device == 0x2e12 || \
+			dev->pdev->device == 0x2e22)
 
 #define IS_G33(dev)    (dev->pdev->device == 0x29C2 || \
 			dev->pdev->device == 0x29B2 || \
 			dev->pdev->device == 0x29D2)
 
+#define IS_IGD(dev)	(dev->pdev->device == 0x2a42)
+
+#define IS_G4X(dev)	(dev->pdev->device == 0x2e02 || \
+			 dev->pdev->device == 0x2e12 || \
+			 dev->pdev->device == 0x2e22)
+
+#define I915_NEED_GFX_HWS(dev) (IS_G33(dev) || IS_IGD(dev) || IS_G4X(dev))
 
 /* Really want an OS-independent resettable timer.  Would like to have
  * this loop run for (eg) 3 sec, but have the timer reset every time
@@ -197,7 +208,7 @@ static int i915_initialize(drm_device_t * dev,
 	dev_priv->vblank_pipe = DRM_I915_VBLANK_PIPE_A;
 
 	/* Program Hardware Status Page */
-	if (!IS_G33(dev)) {
+	if (!I915_NEED_GFX_HWS(dev)) {
 		dev_priv->status_page_dmah =
 			drm_pci_alloc(dev, PAGE_SIZE, PAGE_SIZE, 0xffffffff);
 

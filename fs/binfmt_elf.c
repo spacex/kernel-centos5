@@ -152,6 +152,7 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 	elf_addr_t *elf_info;
 	int ei_index = 0;
 	struct task_struct *tsk = current;
+	struct vm_area_struct *vma;
 
 	/*
 	 * If this architecture has a platform capability string, copy it
@@ -238,6 +239,15 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 	sp = (elf_addr_t __user *)bprm->p;
 #endif
 
+
+	/*
+	 * Grow the stack manually; some architectures have a limit on how
+	 * far ahead a user-space access may be in order to grow the stack.
+	 */
+	vma = find_extend_vma(current->mm, bprm->p);
+	if (!vma)
+		return -EFAULT;
+
 	/* Now, let's put argc (and argv, envp if appropriate) on the stack */
 	if (__put_user(argc, sp++))
 		return -EFAULT;
@@ -256,8 +266,8 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 	while (argc-- > 0) {
 		size_t len;
 		__put_user((elf_addr_t)p, argv++);
-		len = strnlen_user((void __user *)p, PAGE_SIZE*MAX_ARG_PAGES);
-		if (!len || len > PAGE_SIZE*MAX_ARG_PAGES)
+		len = strnlen_user((void __user *)p, MAX_ARG_STRLEN);
+		if (!len || len > MAX_ARG_STRLEN)
 			return 0;
 		p += len;
 	}
@@ -267,8 +277,8 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 	while (envc-- > 0) {
 		size_t len;
 		__put_user((elf_addr_t)p, envp++);
-		len = strnlen_user((void __user *)p, PAGE_SIZE*MAX_ARG_PAGES);
-		if (!len || len > PAGE_SIZE*MAX_ARG_PAGES)
+		len = strnlen_user((void __user *)p, MAX_ARG_STRLEN);
+		if (!len || len > MAX_ARG_STRLEN)
 			return 0;
 		p += len;
 	}
@@ -563,7 +573,8 @@ static unsigned long randomize_stack_top(unsigned long stack_top)
 {
 	unsigned int random_variable = 0;
 
-	if (current->flags & PF_RANDOMIZE) {
+	if ((current->flags & PF_RANDOMIZE) &&
+		!(current->personality & ADDR_NO_RANDOMIZE)) {
 		random_variable = get_random_int() & STACK_RND_MASK;
 		random_variable <<= PAGE_SHIFT;
 	}
@@ -842,10 +853,6 @@ static int load_elf_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 	}
 
 	/* OK, This is the point of no return */
-	current->mm->start_data = 0;
-	current->mm->end_data = 0;
-	current->mm->end_code = 0;
-	current->mm->mmap = NULL;
 	current->flags &= ~PF_FORKNOEXEC;
 	current->mm->def_flags = def_flags;
 
@@ -1052,9 +1059,13 @@ static int load_elf_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 
 	compute_creds(bprm);
 	current->flags &= ~PF_FORKNOEXEC;
-	create_elf_tables(bprm, &loc->elf_ex,
+	retval = create_elf_tables(bprm, &loc->elf_ex,
 			  (interpreter_type == INTERPRETER_AOUT),
 			  load_addr, interp_load_addr);
+	if (retval < 0) {
+		send_sig(SIGKILL, current, 0);
+		goto out;
+	}
 	/* N.B. passed_fileno might not be initialized? */
 	if (interpreter_type == INTERPRETER_AOUT)
 		current->mm->arg_start += strlen(passed_fileno) + 1;
@@ -1224,11 +1235,23 @@ static int dump_write(struct file *file, const void *addr, int nr)
 
 static int dump_seek(struct file *file, loff_t off)
 {
-	if (file->f_op->llseek) {
-		if (file->f_op->llseek(file, off, 0) != off)
+	if (file->f_op->llseek && file->f_op->llseek != no_llseek) {
+		if (file->f_op->llseek(file, off, SEEK_CUR) < 0)
 			return 0;
-	} else
-		file->f_pos = off;
+	} else {
+		char *buf = (char *)get_zeroed_page(GFP_KERNEL);
+		if (!buf)
+			return 0;
+		while (off > 0) {
+			unsigned long n = off;
+			if (n > PAGE_SIZE)
+				n = PAGE_SIZE;
+			if (!dump_write(file, buf, n))
+				return 0;
+			off -= n;
+		}
+		free_page((unsigned long)buf);
+	}
 	return 1;
 }
 
@@ -1317,30 +1340,39 @@ static int notesize(struct memelfnote *en)
 	return sz;
 }
 
-#define DUMP_WRITE(addr, nr)	\
-	do { if (!dump_write(file, (addr), (nr))) return 0; } while(0)
-#define DUMP_SEEK(off)	\
-	do { if (!dump_seek(file, (off))) return 0; } while(0)
+#define DUMP_WRITE(addr, nr, foffset)	\
+	do { if (!dump_write(file, (addr), (nr))) return 0; *foffset += (nr); } while(0)
 
-static int writenote(struct memelfnote *men, struct file *file)
+static int alignfile(struct file *file, loff_t *foffset)
+{
+	char buf[4] = { 0, };
+	int extra = roundup(*foffset,4);
+	extra -= *foffset;
+
+	if ((extra > 0) && (extra < 4))
+		DUMP_WRITE(buf, extra, foffset);
+	return 1;
+}
+
+static int writenote(struct memelfnote *men, struct file *file,
+			loff_t *foffset)
 {
 	struct elf_note en;
-
 	en.n_namesz = strlen(men->name) + 1;
 	en.n_descsz = men->datasz;
 	en.n_type = men->type;
 
-	DUMP_WRITE(&en, sizeof(en));
-	DUMP_WRITE(men->name, en.n_namesz);
-	/* XXX - cast from long long to long to avoid need for libgcc.a */
-	DUMP_SEEK(roundup((unsigned long)file->f_pos, 4));	/* XXX */
-	DUMP_WRITE(men->data, men->datasz);
-	DUMP_SEEK(roundup((unsigned long)file->f_pos, 4));	/* XXX */
+	DUMP_WRITE(&en, sizeof(en), foffset);
+	DUMP_WRITE(men->name, en.n_namesz, foffset);
+	if (!alignfile(file, foffset))
+		return 0;
+	DUMP_WRITE(men->data, men->datasz, foffset);
+	if (!alignfile(file, foffset))
+		return 0;
 
 	return 1;
 }
 #undef DUMP_WRITE
-#undef DUMP_SEEK
 
 #define DUMP_WRITE(addr, nr)	\
 	if ((size += (nr)) > limit || !dump_write(file, (addr), (nr))) \
@@ -1540,7 +1572,7 @@ static int elf_core_dump(long signr, struct pt_regs *regs, struct file *file)
 	int i;
 	struct vm_area_struct *vma;
 	struct elfhdr *elf = NULL;
-	off_t offset = 0, dataoff;
+	off_t offset = 0, dataoff, foffset;
 	unsigned long limit = current->signal->rlim[RLIMIT_CORE].rlim_cur;
 	int numnote;
 	struct memelfnote *notes = NULL;
@@ -1669,6 +1701,7 @@ static int elf_core_dump(long signr, struct pt_regs *regs, struct file *file)
 	DUMP_WRITE(elf, sizeof(*elf));
 	offset += sizeof(*elf);				/* Elf header */
 	offset += (segs+1) * sizeof(struct elf_phdr);	/* Program headers */
+	foffset = offset;
 
 	/* Write notes phdr entry */
 	{
@@ -1687,7 +1720,6 @@ static int elf_core_dump(long signr, struct pt_regs *regs, struct file *file)
 		DUMP_WRITE(&phdr, sizeof(phdr));
 	}
 
-	/* Page-align dumped data */
 	dataoff = offset = roundup(offset, ELF_EXEC_PAGESIZE);
 
 	/*
@@ -1724,10 +1756,10 @@ static int elf_core_dump(long signr, struct pt_regs *regs, struct file *file)
 
  	/* write out the notes section */
 	for (i = 0; i < numnote; i++)
-		if (!writenote(notes + i, file))
+		if (!writenote(notes + i, file, &foffset))
 			goto end_coredump;
 
-	if (elf_coredump_extra_notes_write(file, &file->f_pos))
+	if (elf_coredump_extra_notes_write(file, &foffset))
 		goto end_coredump;
 
 	/* write out the thread status notes section */
@@ -1736,11 +1768,12 @@ static int elf_core_dump(long signr, struct pt_regs *regs, struct file *file)
 				list_entry(t, struct elf_thread_status, list);
 
 		for (i = 0; i < tmp->num_notes; i++)
-			if (!writenote(&tmp->notes[i], file))
+			if (!writenote(&tmp->notes[i], file, &foffset))
 				goto end_coredump;
 	}
- 
-	DUMP_SEEK(dataoff);
+
+	/* Align to page */
+	DUMP_SEEK(dataoff - foffset);
 
 	for (vma = current->mm->mmap; vma != NULL; vma = vma->vm_next) {
 		unsigned long addr;
@@ -1754,10 +1787,10 @@ static int elf_core_dump(long signr, struct pt_regs *regs, struct file *file)
 
 			if (get_user_pages(current, current->mm, addr, 1, 0, 1,
 						&page, &vma) <= 0) {
-				DUMP_SEEK(file->f_pos + PAGE_SIZE);
+				DUMP_SEEK(PAGE_SIZE);
 			} else {
 				if (page == ZERO_PAGE(addr)) {
-					DUMP_SEEK(file->f_pos + PAGE_SIZE);
+					DUMP_SEEK(PAGE_SIZE);
 				} else {
 					void *kaddr;
 					flush_cache_page(vma, addr,
@@ -1781,12 +1814,6 @@ static int elf_core_dump(long signr, struct pt_regs *regs, struct file *file)
 	ELF_CORE_WRITE_EXTRA_DATA;
 #endif
 
-	if ((off_t)file->f_pos != offset) {
-		/* Sanity check */
-		printk(KERN_WARNING
-		       "elf_core_dump: file->f_pos (%ld) != offset (%ld)\n",
-		       (off_t)file->f_pos, offset);
-	}
 
 end_coredump:
 	set_fs(fs);

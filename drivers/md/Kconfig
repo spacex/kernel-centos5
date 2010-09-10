@@ -240,6 +240,11 @@ config DM_ZERO
 config DM_MULTIPATH
 	tristate "Multipath target (EXPERIMENTAL)"
 	depends on BLK_DEV_DM && EXPERIMENTAL
+	# nasty syntax but means make DM_MULTIPATH independent
+	# of SCSI_DH if the latter isn't defined but if
+	# it is, DM_MULTIPATH must depend on it.  We get a build
+	# error if SCSI_DH=m and DM_MULTIPATH=y otherwise.
+	depends on SCSI_DH || !SCSI_DH
 	---help---
 	  Allow volume managers to support multipath hardware.
 
@@ -261,7 +266,13 @@ config DM_MULTIPATH_HP
         ---help---
           Multipath support for HP MSA (Active/Passive) series hardware.
 
- config DM_UEVENT
+config DM_RAID45
+        tristate "RAID 4/5 target (EXPERIMENTAL)"
+        depends on BLK_DEV_DM && EXPERIMENTAL
+        ---help---
+          A target that supports RAID4 and RAID5 mappings.
+
+config DM_UEVENT
  	bool "DM uevents (EXPERIMENTAL)"
  	depends on BLK_DEV_DM && EXPERIMENTAL
  	---help---

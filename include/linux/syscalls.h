@@ -599,5 +599,5 @@ asmlinkage long sys_get_robust_list(int pid,
 asmlinkage long sys_set_robust_list(struct robust_list_head __user *head,
 				    size_t len);
 asmlinkage long sys_getcpu(unsigned *cpu, unsigned *node, struct getcpu_cache *cache);
-
+asmlinkage long sys_fallocate(int fd, int mode, loff_t offset, loff_t len);
 #endif

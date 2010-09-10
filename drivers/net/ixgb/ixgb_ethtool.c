@@ -32,15 +32,6 @@
 
 #include <asm/uaccess.h>
 
-extern int ixgb_up(struct ixgb_adapter *adapter);
-extern void ixgb_down(struct ixgb_adapter *adapter, boolean_t kill_watchdog);
-extern void ixgb_reset(struct ixgb_adapter *adapter);
-extern int ixgb_setup_rx_resources(struct ixgb_adapter *adapter);
-extern int ixgb_setup_tx_resources(struct ixgb_adapter *adapter);
-extern void ixgb_free_rx_resources(struct ixgb_adapter *adapter);
-extern void ixgb_free_tx_resources(struct ixgb_adapter *adapter);
-extern void ixgb_update_stats(struct ixgb_adapter *adapter);
-
 #define IXGB_ALL_RAR_ENTRIES 16
 
 struct ixgb_stats {
@@ -49,7 +40,7 @@ struct ixgb_stats {
 	int stat_offset;
 };
 
-#define IXGB_STAT(m) sizeof(((struct ixgb_adapter *)0)->m), \
+#define IXGB_STAT(m) FIELD_SIZEOF(struct ixgb_adapter, m), \
 		      offsetof(struct ixgb_adapter, m)
 static struct ixgb_stats ixgb_gstrings_stats[] = {
 	{"rx_packets", IXGB_STAT(net_stats.rx_packets)},
@@ -67,6 +58,7 @@ static struct ixgb_stats ixgb_gstrings_stats[] = {
 	{"rx_over_errors", IXGB_STAT(net_stats.rx_over_errors)},
 	{"rx_crc_errors", IXGB_STAT(net_stats.rx_crc_errors)},
 	{"rx_frame_errors", IXGB_STAT(net_stats.rx_frame_errors)},
+	{"rx_no_buffer_count", IXGB_STAT(stats.rnbc)},
 	{"rx_fifo_errors", IXGB_STAT(net_stats.rx_fifo_errors)},
 	{"rx_missed_errors", IXGB_STAT(net_stats.rx_missed_errors)},
 	{"tx_aborted_errors", IXGB_STAT(net_stats.tx_aborted_errors)},

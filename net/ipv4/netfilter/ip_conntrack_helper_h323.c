@@ -1417,10 +1417,10 @@ static int process_rcf(struct sk_buff **pskb, struct ip_conntrack *ct,
 		DEBUGP
 		    ("ip_ct_ras: set RAS connection timeout to %u seconds\n",
 		     info->timeout);
-		ip_ct_refresh_acct(ct, ctinfo, NULL, info->timeout * HZ);
+		ip_ct_refresh(ct, *pskb, info->timeout * HZ);
 
 		/* Set expect timeout */
-		read_lock_bh(&ip_conntrack_lock);
+		write_lock_bh(&ip_conntrack_lock);
 		exp = find_expect(ct, ct->tuplehash[dir].tuple.dst.ip,
 				  info->sig_port[!dir]);
 		if (exp) {
@@ -1433,8 +1433,9 @@ static int process_rcf(struct sk_buff **pskb, struct ip_conntrack *ct,
 			       ntohs(exp->tuple.dst.u.tcp.port),
 			       info->timeout);
 			set_expect_timeout(exp, info->timeout);
+			ip_conntrack_expect_put(exp);
 		}
-		read_unlock_bh(&ip_conntrack_lock);
+		write_unlock_bh(&ip_conntrack_lock);
 	}
 
 	return 0;
@@ -1465,7 +1466,7 @@ static int process_urq(struct sk_buff **pskb, struct ip_conntrack *ct,
 	info->sig_port[!dir] = 0;
 
 	/* Give it 30 seconds for UCF or URJ */
-	ip_ct_refresh_acct(ct, ctinfo, NULL, 30 * HZ);
+	ip_ct_refresh(ct, *pskb, 30 * HZ);
 
 	return 0;
 }

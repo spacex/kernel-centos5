@@ -58,6 +58,7 @@ DEFINE_XEN_GUEST_HANDLE(xen_sysctl_tbuf_op_t);
  */
 #define XEN_SYSCTL_physinfo          3
 struct xen_sysctl_physinfo {
+    /* IN variables. */
     uint32_t threads_per_core;
     uint32_t cores_per_socket;
     uint32_t sockets_per_node;
@@ -67,6 +68,23 @@ struct xen_sysctl_physinfo {
     uint64_t free_pages;
     uint64_t scrub_pages;
     uint32_t hw_cap[8];
+
+    /* IN/OUT variables. */
+    /*
+     * IN: maximum addressable entry in the caller-provided cpu_to_node array.
+     * OUT: largest cpu identifier in the system.
+     * If OUT is greater than IN then the cpu_to_node array is truncated!
+     */
+    uint32_t max_cpu_id;
+    /*
+     * If not NULL, this array is filled with node identifier for each cpu.
+     * If a cpu has no node information (e.g., cpu not present) then the
+     * sentinel value ~0u is written.
+     * The size of this array is specified by the caller in @max_cpu_id.
+     * If the actual @max_cpu_id is smaller than the array then the trailing
+     * elements of the array will not be written by the sysctl.
+     */
+    XEN_GUEST_HANDLE_64(uint32_t) cpu_to_node;
 };
 typedef struct xen_sysctl_physinfo xen_sysctl_physinfo_t;
 DEFINE_XEN_GUEST_HANDLE(xen_sysctl_physinfo_t);

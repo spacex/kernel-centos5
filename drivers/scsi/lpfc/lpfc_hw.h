@@ -64,6 +64,7 @@
 #define SLI3_IOCB_CMD_SIZE	128
 #define SLI3_IOCB_RSP_SIZE	64
 
+#define BUF_SZ_4K		4096
 
 /* Common Transport structures and definitions */
 
@@ -1131,6 +1132,8 @@ typedef struct {
 /* Start FireFly Register definitions */
 #define PCI_VENDOR_ID_EMULEX        0x10df
 #define PCI_DEVICE_ID_FIREFLY       0x1ae5
+#define PCI_DEVICE_ID_PROTEUS_VF    0xe100
+#define PCI_DEVICE_ID_PROTEUS_PF    0xe180
 #define PCI_DEVICE_ID_SAT_SMB       0xf011
 #define PCI_DEVICE_ID_SAT_MID       0xf015
 #define PCI_DEVICE_ID_RFLY          0xf095
@@ -1157,10 +1160,12 @@ typedef struct {
 #define PCI_DEVICE_ID_LP11000S      0xfc10
 #define PCI_DEVICE_ID_LPE11000S     0xfc20
 #define PCI_DEVICE_ID_SAT_S         0xfc40
+#define PCI_DEVICE_ID_PROTEUS_S     0xfc50
 #define PCI_DEVICE_ID_HELIOS        0xfd00
 #define PCI_DEVICE_ID_HELIOS_SCSP   0xfd11
 #define PCI_DEVICE_ID_HELIOS_DCSP   0xfd12
 #define PCI_DEVICE_ID_ZEPHYR        0xfe00
+#define PCI_DEVICE_ID_HORNET        0xfe05
 #define PCI_DEVICE_ID_ZEPHYR_SCSP   0xfe11
 #define PCI_DEVICE_ID_ZEPHYR_DCSP   0xfe12
 
@@ -1178,6 +1183,7 @@ typedef struct {
 #define ZEPHYR_JEDEC_ID             0x0577
 #define VIPER_JEDEC_ID              0x4838
 #define SATURN_JEDEC_ID             0x1004
+#define HORNET_JDEC_ID              0x2057706D
 
 #define JEDEC_ID_MASK               0x0FFFF000
 #define JEDEC_ID_SHIFT              12
@@ -1312,6 +1318,10 @@ typedef struct {		/* FireFly BIU registers */
 #define MBX_HEARTBEAT       0x31
 #define MBX_WRITE_VPARMS    0x32
 #define MBX_ASYNCEVT_ENABLE 0x33
+#define MBX_READ_EVENT_LOG_STATUS 0x37
+#define MBX_READ_EVENT_LOG  0x38
+#define MBX_WRITE_EVENT_LOG 0x39
+
 
 #define MBX_CONFIG_HBQ	    0x7C
 #define MBX_LOAD_AREA       0x81
@@ -1620,6 +1630,14 @@ typedef struct {
 		} s2;
 	} un;
 } BIU_DIAG_VAR;
+
+/* Structure for MB command READ_EVENT_LOG (0x38) */
+typedef struct {
+	uint32_t rsvd1;
+	uint32_t offset;
+	struct ulp_bde64 rcv_bde64;
+}READ_EVENT_LOG_VAR;
+
 
 /* Structure for MB Command INIT_LINK (05) */
 
@@ -2226,7 +2244,10 @@ typedef struct {
 typedef struct {
 	uint32_t eventTag;	/* Event tag */
 #ifdef __BIG_ENDIAN_BITFIELD
-	uint32_t rsvd1:22;
+	uint32_t rsvd1:19;
+	uint32_t fa:1;
+	uint32_t mm:1;		/* Menlo Maintenance mode enabled */
+	uint32_t rx:1;
 	uint32_t pb:1;
 	uint32_t il:1;
 	uint32_t attType:8;
@@ -2234,7 +2255,10 @@ typedef struct {
 	uint32_t attType:8;
 	uint32_t il:1;
 	uint32_t pb:1;
-	uint32_t rsvd1:22;
+	uint32_t rx:1;
+	uint32_t mm:1;
+	uint32_t fa:1;
+	uint32_t rsvd1:19;
 #endif
 
 #define AT_RESERVED    0x00	/* Reserved - attType */
@@ -2255,6 +2279,7 @@ typedef struct {
 
 #define TOPOLOGY_PT_PT 0x01	/* Topology is pt-pt / pt-fabric */
 #define TOPOLOGY_LOOP  0x02	/* Topology is FC-AL */
+#define TOPOLOGY_LNK_MENLO_MAINTENANCE 0x05 /* maint mode zephtr to menlo */
 
 	union {
 		struct ulp_bde lilpBde; /* This BDE points to a 128 byte buffer
@@ -2551,10 +2576,17 @@ typedef struct {
 
 	uint32_t pcbLow;       /* bit 31:0  of memory based port config block */
 	uint32_t pcbHigh;      /* bit 63:32 of memory based port config block */
-	uint32_t hbainit[6];
+	uint32_t hbainit[5];
+#ifdef __BIG_ENDIAN_BITFIELD
+	uint32_t hps	   :  1; /* bit 31 word9 Host Pointer in slim */
+	uint32_t rsvd	   : 31; /* least significant 31 bits of word 9 */
+#else   /*  __LITTLE_ENDIAN */
+	uint32_t rsvd      : 31; /* least significant 31 bits of word 9 */
+	uint32_t hps	   :  1; /* bit 31 word9 Host Pointer in slim */
+#endif
 
 #ifdef __BIG_ENDIAN_BITFIELD
-	uint32_t rsvd      : 24;  /* Reserved                             */
+	uint32_t rsvd1     : 24;  /* Reserved                             */
 	uint32_t cmv	   :  1;  /* Configure Max VPIs                   */
 	uint32_t ccrp      :  1;  /* Config Command Ring Polling          */
 	uint32_t csah      :  1;  /* Configure Synchronous Abort Handling */
@@ -2572,7 +2604,7 @@ typedef struct {
 	uint32_t csah      :  1;  /* Configure Synchronous Abort Handling */
 	uint32_t ccrp      :  1;  /* Config Command Ring Polling          */
 	uint32_t cmv	   :  1;  /* Configure Max VPIs                   */
-	uint32_t rsvd      : 24;  /* Reserved                             */
+	uint32_t rsvd1     : 24;  /* Reserved                             */
 #endif
 #ifdef __BIG_ENDIAN_BITFIELD
 	uint32_t rsvd2     : 24;  /* Reserved                             */
@@ -2709,7 +2741,7 @@ typedef struct {
 /* Union of all Mailbox Command types */
 #define MAILBOX_CMD_WSIZE	32
 #define MAILBOX_CMD_SIZE	(MAILBOX_CMD_WSIZE * sizeof(uint32_t))
-#define MAILBOX_EXT_WSIZE	256
+#define MAILBOX_EXT_WSIZE	512
 #define MAILBOX_EXT_SIZE	(MAILBOX_EXT_WSIZE * sizeof(uint32_t))
 #define MAILBOX_HBA_EXT_OFFSET  0x100
 #define MAILBOX_MAX_XMIT_SIZE   1024
@@ -2751,6 +2783,7 @@ typedef union {
 	REG_VPI_VAR varRegVpi;		/* cmd = 0x96 (REG_VPI) */
 	UNREG_VPI_VAR varUnregVpi;	/* cmd = 0x97 (UNREG_VPI) */
 	ASYNCEVT_ENABLE_VAR varCfgAsyncEvent; /*cmd = x33 (CONFIG_ASYNC) */
+	READ_EVENT_LOG_VAR varRdEventLog; /* cmd = 0x38 (READ_EVENT_LOG) */
 } MAILVARIANTS;
 
 /*
@@ -3364,3 +3397,10 @@ lpfc_error_lost_link(IOCB_t *iocbp)
 		 iocbp->un.ulpWord[4] == IOERR_LINK_DOWN ||
 		 iocbp->un.ulpWord[4] == IOERR_SLI_DOWN));
 }
+
+#define MENLO_TRANSPORT_TYPE 0xfe
+#define MENLO_CONTEXT 0
+#define MENLO_PU 3
+#define MENLO_TIMEOUT 30
+#define SETVAR_MLOMNT 0x103107
+#define SETVAR_MLORST 0x103007

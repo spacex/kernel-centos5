@@ -316,13 +316,18 @@ int cap_syslog (int type)
 	return 0;
 }
 
-int cap_vm_enough_memory(long pages)
+int cap_vm_enough_memory_mm(struct mm_struct *mm, long pages)
 {
 	int cap_sys_admin = 0;
 
 	if (cap_capable(current, CAP_SYS_ADMIN) == 0)
 		cap_sys_admin = 1;
-	return __vm_enough_memory(pages, cap_sys_admin);
+	return __vm_enough_memory(mm, pages, cap_sys_admin);
+}
+
+int cap_vm_enough_memory(long pages)
+{
+	return cap_vm_enough_memory_mm(current->mm, pages);
 }
 
 EXPORT_SYMBOL(cap_capable);
@@ -340,6 +345,7 @@ EXPORT_SYMBOL(cap_task_post_setuid);
 EXPORT_SYMBOL(cap_task_reparent_to_init);
 EXPORT_SYMBOL(cap_syslog);
 EXPORT_SYMBOL(cap_vm_enough_memory);
+EXPORT_SYMBOL(cap_vm_enough_memory_mm);
 
 MODULE_DESCRIPTION("Standard Linux Common Capabilities Security Module");
 MODULE_LICENSE("GPL");

@@ -13,6 +13,7 @@
 # 2) modpost is then used to
 # 3)  create one <module>.mod.c file pr. module
 # 4)  create one Module.symvers file with CRC for all exported symbols
+# 4a) [CONFIG_MARKERS] create one Module.markers file listing defined markers
 # 5) compile all <module>.mod.c files
 # 6) final link of the module to a <module.ko> file
 
@@ -41,6 +42,10 @@ include scripts/Makefile.lib
 
 kernelsymfile := $(objtree)/Module.symvers
 modulesymfile := $(KBUILD_EXTMOD)/Module.symvers
+kernelmarkersfile := $(objtree)/Module.markers
+modulemarkersfile := $(KBUILD_EXTMOD)/Module.markers
+
+markersfile = $(if $(KBUILD_EXTMOD),$(modulemarkersfile),$(kernelmarkersfile))
 
 # Step 1), find all modules listed in $(MODVERDIR)/
 __modules := $(sort $(shell grep -h '\.ko' /dev/null $(wildcard $(MODVERDIR)/*.mod)))
@@ -58,6 +63,8 @@ quiet_cmd_modpost = MODPOST
 	$(if $(KBUILD_EXTMOD),-i,-o) $(kernelsymfile) \
 	$(if $(KBUILD_EXTMOD),-I $(modulesymfile)) \
 	$(if $(KBUILD_EXTMOD),-o $(modulesymfile)) \
+	$(if $(CONFIG_MARKERS),-K $(kernelmarkersfile)) \
+	$(if $(CONFIG_MARKERS),-M $(markersfile)) \
 	$(filter-out FORCE,$^)
 
 PHONY += __modpost
@@ -67,6 +74,10 @@ __modpost: $(wildcard vmlinux) $(modules:.ko=.o) FORCE
 # Declare generated files as targets for modpost
 $(symverfile):         __modpost ;
 $(modules:.ko=.mod.c): __modpost ;
+
+ifdef CONFIG_MARKERS
+$(markersfile):	       __modpost ;
+endif
 
 
 # Step 5), compile all *.mod.c files

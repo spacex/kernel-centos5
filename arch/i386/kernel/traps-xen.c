@@ -613,7 +613,8 @@ check_lazy_exec_limit(int cpu, struct pt_regs *regs, long error_code)
 	desc1 = &current->mm->context.user_cs;
 	desc2 = get_cpu_gdt_table(cpu) + GDT_ENTRY_DEFAULT_USER_CS;
 
-	if (desc1->a != desc2->a || desc1->b != desc2->b) {
+	if ((desc1->a & 0xff0000ff) != (desc2->a & 0xff0000ff) ||
+            desc1->b != desc2->b) {
 		/*
 		 * The CS was not in sync - reload it and retry the
 		 * instruction. If the instruction still faults then
@@ -787,26 +788,27 @@ void die_nmi (struct pt_regs *regs, const char *msg)
 static void default_do_nmi(struct pt_regs * regs)
 {
 	unsigned char reason = 0;
+	int cpu;
+
+	cpu = smp_processor_id();
 
 	/* Only the BSP gets external NMIs from the system.  */
-	if (!smp_processor_id())
+	if (!cpu)
 		reason = get_nmi_reason();
  
 	if (!(reason & 0xc0)) {
 		if (notify_die(DIE_NMI_IPI, "nmi_ipi", regs, reason, 2, SIGINT)
 							== NOTIFY_STOP)
 			return;
-#ifdef CONFIG_X86_LOCAL_APIC
 		/*
 		 * Ok, so this is none of the documented NMI sources,
 		 * so it must be the NMI watchdog.
 		 */
-		if (nmi_watchdog) {
-			nmi_watchdog_tick(regs);
+		if (nmi_watchdog_tick(regs))
 			return;
-		}
-#endif
-		unknown_nmi_error(reason, regs);
+
+		if (!do_nmi_callback(regs, cpu))
+			unknown_nmi_error(reason, regs);
 		return;
 	}
 	if (notify_die(DIE_NMI, "nmi", regs, reason, 2, SIGINT) == NOTIFY_STOP)

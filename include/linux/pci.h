@@ -189,12 +189,20 @@ struct pci_dev {
 	struct bin_attribute *rom_attr; /* attribute descriptor for sysfs ROM entry */
 	int rom_attr_enabled;		/* has display of the rom attribute been enabled? */
 	struct bin_attribute *res_attr[DEVICE_COUNT_RESOURCE]; /* sysfs file for resources */
+#ifndef __GENKSYMS__
+	u8              revision;       /* PCI revision, low byte of class word */
+#endif
 };
 
 #define pci_dev_g(n) list_entry(n, struct pci_dev, global_list)
 #define pci_dev_b(n) list_entry(n, struct pci_dev, bus_list)
 #define	to_pci_dev(n) container_of(n, struct pci_dev, dev)
 #define for_each_pci_dev(d) while ((d = pci_get_device(PCI_ANY_ID, PCI_ANY_ID, d)) != NULL)
+
+static inline int pci_channel_offline(struct pci_dev *pdev)
+{
+	return (pdev->error_state != pci_channel_io_normal);
+}
 
 static inline struct pci_cap_saved_state *pci_find_saved_cap(
 	struct pci_dev *pci_dev,char cap)
@@ -542,6 +550,7 @@ void pci_set_master(struct pci_dev *dev);
 int pci_set_pcie_reset_state(struct pci_dev *dev, enum pcie_reset_state state);
 #define HAVE_PCI_SET_MWI
 int pci_set_mwi(struct pci_dev *dev);
+int pci_try_set_mwi(struct pci_dev *dev);
 void pci_clear_mwi(struct pci_dev *dev);
 void pci_intx(struct pci_dev *dev, int enable);
 int pci_set_dma_mask(struct pci_dev *dev, u64 mask);
@@ -648,6 +657,7 @@ static inline int pci_enable_msix(struct pci_dev* dev,
 	struct msix_entry *entries, int nvec) {return -1;}
 static inline void pci_disable_msix(struct pci_dev *dev) {}
 static inline void msi_remove_pci_irq_vectors(struct pci_dev *dev) {}
+static inline void pci_restore_msi_state(struct pci_dev *dev) {}
 #else
 extern void pci_scan_msi_device(struct pci_dev *dev);
 extern int pci_enable_msi(struct pci_dev *dev);
@@ -656,6 +666,15 @@ extern int pci_enable_msix(struct pci_dev* dev,
 	struct msix_entry *entries, int nvec);
 extern void pci_disable_msix(struct pci_dev *dev);
 extern void msi_remove_pci_irq_vectors(struct pci_dev *dev);
+extern void pci_restore_msi_state(struct pci_dev *dev);
+#endif
+
+#ifndef CONFIG_EEH
+static inline int save_pcie_reg(struct pci_dev *dev) {return -1;}
+static inline void restore_pcie_reg(struct pci_dev *dev) {}
+#else
+extern int save_pcie_reg(struct pci_dev *dev);
+extern void restore_pcie_reg(struct pci_dev *dev);
 #endif
 
 extern void pci_block_user_cfg_access(struct pci_dev *dev);

@@ -46,9 +46,9 @@ enum {
 extern void __buggy_use_of_MLX4_GET(void);
 extern void __buggy_use_of_MLX4_PUT(void);
 
-static int mlx4_core_enable_qos = 1;
+static int mlx4_core_enable_qos = 0;
 module_param_named(enable_qos, mlx4_core_enable_qos, int, 0444);
-MODULE_PARM_DESC(enable_qos, "Enable Quality of Service support in the HCA if > 0, (default 1)");
+MODULE_PARM_DESC(enable_qos, "Enable Quality of Service support in the HCA if > 0, (default 0)");
 
 #define MLX4_GET(dest, source, offset)				      \
 	do {							      \

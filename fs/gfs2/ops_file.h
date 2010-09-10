@@ -18,9 +18,9 @@ extern int gfs2_internal_read(struct gfs2_inode *ip,
 			      struct file_ra_state *ra_state,
 			      char *buf, loff_t *pos, unsigned size);
 extern void gfs2_set_inode_flags(struct inode *inode);
-extern const struct file_operations gfs2_file_fops;
+extern const struct file_operations_ext gfs2_file_fops;
 extern const struct file_operations gfs2_dir_fops;
-extern const struct file_operations gfs2_file_fops_nolock;
+extern const struct file_operations_ext gfs2_file_fops_nolock;
 extern const struct file_operations gfs2_dir_fops_nolock;
 
 #endif /* __OPS_FILE_DOT_H__ */

@@ -4,7 +4,7 @@
    Written By: Adam Radford <linuxraid@amcc.com>
    Modifications By: Tom Couch <linuxraid@amcc.com>
 
-   Copyright (C) 2004-2006 Applied Micro Circuits Corporation.
+   Copyright (C) 2004-2007 Applied Micro Circuits Corporation.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -66,9 +66,13 @@
    2.26.02.006 - Fix 9550SX pchip reset timeout.
                  Add big endian support.
    2.26.02.007 - Disable local interrupts during kmap/unmap_atomic().
-   2.26.02.008 - Free irq handler in __twa_shutdown().
+   2.26.06.001 - Free irq handler in __twa_shutdown().
                  Serialize reset code.
                  Add support for 9650SE controllers.
+   2.26.06.002 - Fix dma mask setting to fallback to 32-bit if 64-bit fails.
+   2.26.08.001 - Add support for 9690SA controllers.
+   2.26.08.002 - Fix pci_unmap_single() to unmap correctly on 4GB+.
+   2.26.08.003 - Increase max AENs drained to 256.
 */
 
 #include <linux/module.h>
@@ -89,10 +93,11 @@
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_tcq.h>
 #include <scsi/scsi_cmnd.h>
+#include <linux/libata.h>
 #include "3w-9xxx.h"
 
 /* Globals */
-#define TW_DRIVER_VERSION "2.26.02.008"
+#define TW_DRIVER_VERSION "2.26.08.003-2.6.18RH"
 static TW_Device_Extension *twa_device_extension_list[TW_MAX_SLOT];
 static unsigned int twa_device_extension_count;
 static int twa_major = -1;
@@ -124,11 +129,11 @@ static int twa_initconnection(TW_Device_Extension *tw_dev, int message_credits,
 			      unsigned short *fw_on_ctlr_branch, 
 			      unsigned short *fw_on_ctlr_build, 
 			      u32 *init_connect_result);
-static void twa_load_sgl(TW_Command_Full *full_command_packet, int request_id, dma_addr_t dma_handle, int length);
+static void twa_load_sgl(TW_Device_Extension *tw_dev, TW_Command_Full *full_command_packet, int request_id, dma_addr_t dma_handle, int length);
 static int twa_poll_response(TW_Device_Extension *tw_dev, int request_id, int seconds);
 static int twa_poll_status_gone(TW_Device_Extension *tw_dev, u32 flag, int seconds);
 static int twa_post_command_packet(TW_Device_Extension *tw_dev, int request_id, char internal);
-static int twa_reset_device_extension(TW_Device_Extension *tw_dev, int ioctl_reset);
+static int twa_reset_device_extension(TW_Device_Extension *tw_dev);
 static int twa_reset_sequence(TW_Device_Extension *tw_dev, int soft_reset);
 static int twa_scsiop_execute_scsi(TW_Device_Extension *tw_dev, int request_id, char *cdb, int use_sg, TW_SG_Entry *sglistarg);
 static void twa_scsiop_execute_scsi_complete(TW_Device_Extension *tw_dev, int request_id);
@@ -683,7 +688,7 @@ static int twa_chrdev_ioctl(struct inode *inode, struct file *file, unsigned int
 		full_command_packet = &tw_ioctl->firmware_command;
 
 		/* Load request id and sglist for both command types */
-		twa_load_sgl(full_command_packet, request_id, dma_handle, data_buffer_length_adjusted);
+		twa_load_sgl(tw_dev, full_command_packet, request_id, dma_handle, data_buffer_length_adjusted);
 
 		memcpy(tw_dev->command_packet_virt[request_id], &(tw_ioctl->firmware_command), sizeof(TW_Command_Full));
 
@@ -700,10 +705,10 @@ static int twa_chrdev_ioctl(struct inode *inode, struct file *file, unsigned int
 		if (tw_dev->chrdev_request_id != TW_IOCTL_CHRDEV_FREE) {
 			/* Now we need to reset the board */
 			printk(KERN_WARNING "3w-9xxx: scsi%d: WARNING: (0x%02X:0x%04X): Character ioctl (0x%x) timed out, resetting card.\n",
-			       tw_dev->host->host_no, TW_DRIVER, 0xc,
+			       tw_dev->host->host_no, TW_DRIVER, 0x37,
 			       cmd);
 			retval = TW_IOCTL_ERROR_OS_EIO;
-			twa_reset_device_extension(tw_dev, 1);
+			twa_reset_device_extension(tw_dev);
 			goto out3;
 		}
 
@@ -890,7 +895,9 @@ static int twa_decode_bits(TW_Device_Extension *tw_dev, u32 status_reg_value)
 	}
 
 	if (status_reg_value & TW_STATUS_QUEUE_ERROR) {
-		if ((tw_dev->tw_pci_dev->device != PCI_DEVICE_ID_3WARE_9650SE) || (!test_bit(TW_IN_RESET, &tw_dev->flags)))
+		if (((tw_dev->tw_pci_dev->device != PCI_DEVICE_ID_3WARE_9650SE) &&
+		     (tw_dev->tw_pci_dev->device != PCI_DEVICE_ID_3WARE_9690SA)) ||
+		    (!test_bit(TW_IN_RESET, &tw_dev->flags)))
 			TW_PRINTK(tw_dev->host, TW_DRIVER, 0xe, "Controller Queue Error: clearing");
 		writel(TW_CONTROL_CLEAR_QUEUE_ERROR, TW_CONTROL_REG_ADDR(tw_dev));
 	}
@@ -935,8 +942,7 @@ static int twa_empty_response_queue_large(TW_Device_Extension *tw_dev)
 	unsigned long before;
 	int retval = 1;
 
-	if ((tw_dev->tw_pci_dev->device == PCI_DEVICE_ID_3WARE_9550SX) ||
-	    (tw_dev->tw_pci_dev->device == PCI_DEVICE_ID_3WARE_9650SE)) {
+	if (tw_dev->tw_pci_dev->device != PCI_DEVICE_ID_3WARE_9000) {
 		before = jiffies;
 		while ((response_que_value & TW_9550SX_DRAIN_COMPLETED) != TW_9550SX_DRAIN_COMPLETED) {
 			response_que_value = readl(TW_RESPONSE_QUEUE_REG_ADDR_LARGE(tw_dev));
@@ -1196,7 +1202,6 @@ static irqreturn_t twa_interrupt(int irq, void *dev_instance, struct pt_regs *re
 	u32 status_reg_value;
 	TW_Response_Queue response_que;
 	TW_Command_Full *full_command_packet;
-	TW_Command *command_packet;
 	TW_Device_Extension *tw_dev = (TW_Device_Extension *)dev_instance;
 	int handled = 0;
 
@@ -1274,7 +1279,6 @@ static irqreturn_t twa_interrupt(int irq, void *dev_instance, struct pt_regs *re
 			request_id = TW_RESID_OUT(response_que.response_id);
 			full_command_packet = tw_dev->command_packet_virt[request_id];
 			error = 0;
-			command_packet = &full_command_packet->command.oldcommand;
 			/* Check for command packet errors */
 			if (full_command_packet->command.newcommand.status != 0) {
 				if (tw_dev->srb[request_id] != 0) {
@@ -1349,11 +1353,15 @@ twa_interrupt_bail:
 } /* End twa_interrupt() */
 
 /* This function will load the request id and various sgls for ioctls */
-static void twa_load_sgl(TW_Command_Full *full_command_packet, int request_id, dma_addr_t dma_handle, int length)
+static void twa_load_sgl(TW_Device_Extension *tw_dev, TW_Command_Full *full_command_packet, int request_id, dma_addr_t dma_handle, int length)
 {
 	TW_Command *oldcommand;
 	TW_Command_Apache *newcommand;
 	TW_SG_Entry *sgl;
+	unsigned int pae = 0;
+
+	if ((sizeof(long) < 8) && (sizeof(dma_addr_t) > 4))
+		pae = 1;
 
 	if (TW_OP_OUT(full_command_packet->command.newcommand.opcode__reserved) == TW_OP_EXECUTE_SCSI) {
 		newcommand = &full_command_packet->command.newcommand;
@@ -1369,12 +1377,14 @@ static void twa_load_sgl(TW_Command_Full *full_command_packet, int request_id, d
 
 		if (TW_SGL_OUT(oldcommand->opcode__sgloffset)) {
 			/* Load the sg list */
-			sgl = (TW_SG_Entry *)((u32 *)oldcommand+TW_SGL_OUT(oldcommand->opcode__sgloffset));
+			if (tw_dev->tw_pci_dev->device == PCI_DEVICE_ID_3WARE_9690SA)
+				sgl = (TW_SG_Entry *)((u32 *)oldcommand+oldcommand->size - (sizeof(TW_SG_Entry)/4) + pae);
+			else
+				sgl = (TW_SG_Entry *)((u32*)oldcommand+TW_SGL_OUT(oldcommand->opcode__sgloffset));
 			sgl->address = TW_CPU_TO_SGL(dma_handle + sizeof(TW_Ioctl_Buf_Apache) - 1);
 			sgl->length = cpu_to_le32(length);
 
-			if ((sizeof(long) < 8) && (sizeof(dma_addr_t) > 4))
-				oldcommand->size += 1;
+			oldcommand->size += pae;
 		}
 	}
 } /* End twa_load_sgl() */
@@ -1425,7 +1435,7 @@ static dma_addr_t twa_map_scsi_single_data(TW_Device_Extension *tw_dev, int requ
 	}
 
 	cmd->SCp.phase = TW_PHASE_SINGLE;
-	cmd->SCp.have_data_in = mapping;
+	cmd->SCp.dma_handle = mapping;
 	retval = mapping;
 out:
 	return retval;
@@ -1535,7 +1545,8 @@ static int twa_post_command_packet(TW_Device_Extension *tw_dev, int request_id, 
 	command_que_value = tw_dev->command_packet_phys[request_id];
 
 	/* For 9650SE write low 4 bytes first */
-	if (tw_dev->tw_pci_dev->device == PCI_DEVICE_ID_3WARE_9650SE) {
+	if ((tw_dev->tw_pci_dev->device == PCI_DEVICE_ID_3WARE_9650SE) ||
+	    (tw_dev->tw_pci_dev->device == PCI_DEVICE_ID_3WARE_9690SA)) {
 		command_que_value += TW_COMMAND_OFFSET;
 		writel((u32)command_que_value, TW_COMMAND_QUEUE_REG_ADDR_LARGE(tw_dev));
 	}
@@ -1566,7 +1577,8 @@ static int twa_post_command_packet(TW_Device_Extension *tw_dev, int request_id, 
 		TW_UNMASK_COMMAND_INTERRUPT(tw_dev);
 		goto out;
 	} else {
-		if (tw_dev->tw_pci_dev->device == PCI_DEVICE_ID_3WARE_9650SE) {
+		if ((tw_dev->tw_pci_dev->device == PCI_DEVICE_ID_3WARE_9650SE) ||
+		    (tw_dev->tw_pci_dev->device == PCI_DEVICE_ID_3WARE_9690SA)) {
 			/* Now write upper 4 bytes */
 			writel((u32)((u64)command_que_value >> 32), TW_COMMAND_QUEUE_REG_ADDR_LARGE(tw_dev) + 0x4);
 		} else {
@@ -1590,7 +1602,7 @@ out:
 } /* End twa_post_command_packet() */
 
 /* This function will reset a device extension */
-static int twa_reset_device_extension(TW_Device_Extension *tw_dev, int ioctl_reset)
+static int twa_reset_device_extension(TW_Device_Extension *tw_dev)
 {
 	int i = 0;
 	int retval = 1;
@@ -1748,7 +1760,7 @@ static int twa_scsi_eh_reset(struct scsi_cmnd *SCpnt)
 	mutex_lock(&tw_dev->ioctl_lock);
 
 	/* Now reset the card and some of the device extension data */
-	if (twa_reset_device_extension(tw_dev, 0)) {
+	if (twa_reset_device_extension(tw_dev)) {
 		TW_PRINTK(tw_dev->host, TW_DRIVER, 0x2b, "Controller reset failed during scsi host reset");
 		goto out;
 	}
@@ -2021,7 +2033,7 @@ static void twa_unmap_scsi_data(TW_Device_Extension *tw_dev, int request_id)
 
 	switch(cmd->SCp.phase) {
 	case TW_PHASE_SINGLE:
-		pci_unmap_single(pdev, cmd->SCp.have_data_in, cmd->request_bufflen, DMA_BIDIRECTIONAL);
+		pci_unmap_single(pdev, cmd->SCp.dma_handle, cmd->request_bufflen, DMA_BIDIRECTIONAL);
 		break;
 	case TW_PHASE_SGLIST:
 		pci_unmap_sg(pdev, cmd->request_buffer, cmd->use_sg, DMA_BIDIRECTIONAL);
@@ -2062,12 +2074,16 @@ static int __devinit twa_probe(struct pci_dev *pdev, const struct pci_device_id 
 	}
 
 	pci_set_master(pdev);
+	pci_try_set_mwi(pdev);
 
-	retval = pci_set_dma_mask(pdev, sizeof(dma_addr_t) > 4 ? DMA_64BIT_MASK : DMA_32BIT_MASK);
-	if (retval) {
-		TW_PRINTK(host, TW_DRIVER, 0x23, "Failed to set dma mask");
-		goto out_disable_device;
-	}
+	if (pci_set_dma_mask(pdev, DMA_64BIT_MASK)
+	    || pci_set_consistent_dma_mask(pdev, DMA_64BIT_MASK))
+		if (pci_set_dma_mask(pdev, DMA_32BIT_MASK)
+		    || pci_set_consistent_dma_mask(pdev, DMA_32BIT_MASK)) {
+			TW_PRINTK(host, TW_DRIVER, 0x23, "Failed to set dma mask");
+			retval = -ENODEV;
+			goto out_disable_device;
+		}
 
 	host = scsi_host_alloc(&driver_template, sizeof(TW_Device_Extension));
 	if (!host) {
@@ -2115,7 +2131,8 @@ static int __devinit twa_probe(struct pci_dev *pdev, const struct pci_device_id 
 		goto out_iounmap;
 
 	/* Set host specific parameters */
-	if (pdev->device == PCI_DEVICE_ID_3WARE_9650SE)
+	if ((pdev->device == PCI_DEVICE_ID_3WARE_9650SE) ||
+	    (pdev->device == PCI_DEVICE_ID_3WARE_9690SA))
 		host->max_id = TW_MAX_UNITS_9650SE;
 	else
 		host->max_id = TW_MAX_UNITS;
@@ -2221,6 +2238,8 @@ static struct pci_device_id twa_pci_tbl[] __devinitdata = {
 	{ PCI_VENDOR_ID_3WARE, PCI_DEVICE_ID_3WARE_9550SX,
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
 	{ PCI_VENDOR_ID_3WARE, PCI_DEVICE_ID_3WARE_9650SE,
+	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
+	{ PCI_VENDOR_ID_3WARE, PCI_DEVICE_ID_3WARE_9690SA,
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
 	{ }
 };

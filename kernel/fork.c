@@ -48,7 +48,9 @@
 #include <linux/hash.h>
 #ifndef __GENKSYMS__
 #include <linux/ptrace.h>
+#include <linux/tty.h>
 #endif
+#include <trace/sched.h>
 
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
@@ -118,6 +120,7 @@ static kmem_cache_t *mm_cachep;
 
 void free_task(struct task_struct *tsk)
 {
+	kfree(task_aux(tsk));
 	free_thread_info(tsk->thread_info);
 	rt_mutex_debug_task_free(tsk);
 	free_task_struct(tsk);
@@ -140,8 +143,11 @@ void __put_task_struct(struct task_struct *tsk)
 }
 EXPORT_SYMBOL_GPL(__put_task_struct);
 
+static struct task_struct_aux init_task_aux;
+
 void __init fork_init(unsigned long mempages)
 {
+	task_aux(current) = &init_task_aux;
 #ifndef __HAVE_ARCH_TASK_STRUCT_ALLOCATOR
 #ifndef ARCH_MIN_TASKALIGN
 #define ARCH_MIN_TASKALIGN	L1_CACHE_BYTES
@@ -173,6 +179,7 @@ void __init fork_init(unsigned long mempages)
 
 static struct task_struct *dup_task_struct(struct task_struct *orig)
 {
+	struct task_struct_aux *aux;
 	struct task_struct *tsk;
 	struct thread_info *ti;
 
@@ -188,9 +195,18 @@ static struct task_struct *dup_task_struct(struct task_struct *orig)
 		return NULL;
 	}
 
+	aux = kmalloc(sizeof(*aux), GFP_KERNEL);
+	if (!aux) {
+		free_thread_info(ti);
+		free_task_struct(tsk);
+		return NULL;
+	}
+
 	*tsk = *orig;
+	*aux = *task_aux(orig);
 	tsk->thread_info = ti;
 	setup_thread_stack(tsk, orig);
+	task_aux(tsk) = aux;
 
 	/* One for us, one for whoever does the "release_task()" (usually parent) */
 	atomic_set(&tsk->usage,2);
@@ -545,14 +561,14 @@ EXPORT_SYMBOL_GPL(get_task_mm);
  */
 void mm_release(struct task_struct *tsk, struct mm_struct *mm)
 {
-	struct completion *vfork_done = tsk->vfork_done;
+	struct completion *vfork_done = task_aux(tsk)->vfork_done;
 
 	/* Get rid of any cached register state */
 	deactivate_mm(tsk, mm);
 
 	/* notify parent sleeping on vfork() */
 	if (vfork_done) {
-		tsk->vfork_done = NULL;
+		task_aux(tsk)->vfork_done = NULL;
 		complete(vfork_done);
 	}
 	if (tsk->clear_child_tid && atomic_read(&mm->mm_users) > 1) {
@@ -999,6 +1015,8 @@ static inline int copy_signal(unsigned long clone_flags, struct task_struct * ts
 	}
 	acct_init_pacct(&sig->pacct);
 
+	tty_audit_fork(sig);
+
 	return 0;
 }
 
@@ -1023,7 +1041,7 @@ static inline void copy_flags(unsigned long clone_flags, struct task_struct *p)
 {
 	unsigned long new_flags = p->flags;
 
-	new_flags &= ~(PF_SUPERPRIV | PF_NOFREEZE);
+	new_flags &= ~(PF_SUPERPRIV | PF_NOFREEZE | PF_PREEMPT_NOTIFIER);
 	new_flags |= PF_FORKNOEXEC;
 	new_flags |= PF_STARTING;
 	p->flags = new_flags;
@@ -1136,7 +1154,7 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 
 	INIT_LIST_HEAD(&p->children);
 	INIT_LIST_HEAD(&p->sibling);
-	p->vfork_done = NULL;
+	task_aux(p)->vfork_done = NULL;
 	spin_lock_init(&p->alloc_lock);
 	ptrace_init_task(p);
 
@@ -1461,11 +1479,14 @@ long do_fork(unsigned long clone_flags,
 		int is_user = likely(user_mode(regs));
 		struct completion vfork;
 
+		trace_sched_process_fork(current, p);
+
 		if (clone_flags & CLONE_VFORK) {
-			p->vfork_done = &vfork;
+			task_aux(p)->vfork_done = &vfork;
 			init_completion(&vfork);
 		}
 
+		audit_finish_fork(p);
 		if (likely(is_user))
 			tracehook_report_clone(clone_flags, p);
 

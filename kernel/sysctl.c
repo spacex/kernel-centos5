@@ -401,7 +401,7 @@ static ctl_table kern_table[] = {
 		.ctl_name	= KERN_CORE_PATTERN,
 		.procname	= "core_pattern",
 		.data		= core_pattern,
-		.maxlen		= 64,
+		.maxlen		= 128,
 		.mode		= 0644,
 		.proc_handler	= &proc_dostring,
 		.strategy	= &sysctl_string,
@@ -808,6 +808,16 @@ static ctl_table kern_table[] = {
 		.strategy	= &sysctl_intvec,
 		.extra1		= &one,
 		.extra2		= &sixty,
+	},
+	{
+		.ctl_name	= KERN_SOFTLOCKUP_PANIC,
+		.procname	= "softlockup_panic",
+		.data		= &softlockup_panic,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+		.extra1		= &zero,
+		.extra2		= &one,
 	},
 #endif
 #ifdef CONFIG_COMPAT

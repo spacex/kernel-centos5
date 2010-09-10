@@ -18,6 +18,7 @@
 #include <linux/fs.h>
 #include <linux/kmod.h>
 #include <linux/ctype.h>
+#include <linux/genhd.h>
 
 #include "check.h"
 
@@ -249,11 +250,27 @@ static ssize_t part_size_read(struct hd_struct * p, char *page)
 {
 	return sprintf(page, "%llu\n",(unsigned long long)p->nr_sects);
 }
-static ssize_t part_stat_read(struct hd_struct * p, char *page)
+static ssize_t part_stats_read(struct hd_struct *p, char *page)
 {
-	return sprintf(page, "%8u %8llu %8u %8llu\n",
-		       p->ios[0], (unsigned long long)p->sectors[0],
-		       p->ios[1], (unsigned long long)p->sectors[1]);
+	preempt_disable();
+	part_round_stats(p);
+	preempt_enable();
+	return sprintf(page,
+		"%8lu %8lu %8llu %8u "
+		"%8lu %8lu %8llu %8u "
+		"%8u %8u %8u"
+		"\n",
+		part_stat_read(p, ios[READ]),
+		part_stat_read(p, merges[READ]),
+		(unsigned long long)part_stat_read(p, sectors[READ]),
+		jiffies_to_msecs(part_stat_read(p, ticks[READ])),
+		part_stat_read(p, ios[WRITE]),
+		part_stat_read(p, merges[WRITE]),
+		(unsigned long long)part_stat_read(p, sectors[WRITE]),
+		jiffies_to_msecs(part_stat_read(p, ticks[WRITE])),
+		get_partstats(p)->in_flight,
+		jiffies_to_msecs(part_stat_read(p, io_ticks)),
+		jiffies_to_msecs(part_stat_read(p, time_in_queue)));
 }
 static struct part_attribute part_attr_uevent = {
 	.attr = {.name = "uevent", .mode = S_IWUSR },
@@ -273,7 +290,7 @@ static struct part_attribute part_attr_size = {
 };
 static struct part_attribute part_attr_stat = {
 	.attr = {.name = "stat", .mode = S_IRUGO },
-	.show	= part_stat_read
+	.show	= part_stats_read
 };
 
 static struct attribute * default_attrs[] = {
@@ -290,6 +307,7 @@ extern struct subsystem block_subsys;
 static void part_release(struct kobject *kobj)
 {
 	struct hd_struct * p = container_of(kobj,struct hd_struct,kobj);
+	free_partstats(p);
 	kfree(p);
 }
 
@@ -330,6 +348,7 @@ void delete_partition(struct gendisk *disk, int part)
 	p->nr_sects = 0;
 	p->ios[0] = p->ios[1] = 0;
 	p->sectors[0] = p->sectors[1] = 0;
+	part_stat_reset(p);
 	sysfs_remove_link(&p->kobj, "subsystem");
 	if (p->holder_dir)
 		kobject_unregister(p->holder_dir);
@@ -347,6 +366,10 @@ void add_partition(struct gendisk *disk, int part, sector_t start, sector_t len)
 		return;
 	
 	memset(p, 0, sizeof(*p));
+	if (!init_partstats(p)) {
+		kfree(p);
+		return;
+	}
 	p->start_sect = start;
 	p->nr_sects = len;
 	p->partno = part;
@@ -464,11 +487,12 @@ int rescan_partitions(struct gendisk *disk, struct block_device *bdev)
 	res = invalidate_partition(disk, 0);
 	if (res)
 		return res;
-	bdev->bd_invalidated = 0;
 	for (p = 1; p < disk->minors; p++)
 		delete_partition(disk, p);
 	if (disk->fops->revalidate_disk)
 		disk->fops->revalidate_disk(disk);
+	check_disk_size_change(disk, bdev);
+	bdev->bd_invalidated = 0;
 	if (!get_capacity(disk) || !(state = check_partition(disk, bdev)))
 		return 0;
 	if (IS_ERR(state))      /* I/O error reading the partition table */

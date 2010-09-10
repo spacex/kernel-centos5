@@ -106,6 +106,7 @@ EXPORT_SYMBOL_GPL(access_process_vm);
 struct ptrace_state
 {
 	struct rcu_head rcu;
+	atomic_t refcnt;
 #ifdef PTRACE_DEBUG
 	atomic_t check_dead;
 #endif
@@ -165,6 +166,7 @@ ptrace_setup(struct task_struct *target, struct utrace_attached_engine *engine,
 		return ERR_PTR(-ENOMEM);
 
 	INIT_RCU_HEAD(&state->rcu);
+	atomic_set(&state->refcnt, 1);
 	CHECK_INIT(state);
 	state->task = target;
 	state->engine = engine;
@@ -199,12 +201,18 @@ ptrace_setup(struct task_struct *target, struct utrace_attached_engine *engine,
 	return state;
 }
 
+static void __ptrace_state_free(struct ptrace_state *state)
+{
+	if (atomic_dec_and_test(&state->refcnt))
+		kfree(state);
+}
+
 static void
 ptrace_state_free(struct rcu_head *rhead)
 {
 	struct ptrace_state *state = container_of(rhead,
 						  struct ptrace_state, rcu);
-	kfree(state);
+	__ptrace_state_free(state);
 }
 
 static void
@@ -633,10 +641,9 @@ ptrace_exit(struct task_struct *tsk)
 static int
 ptrace_induce_signal(struct task_struct *target,
 		     struct utrace_attached_engine *engine,
+		     struct ptrace_state *state,
 		     long signr)
 {
-	struct ptrace_state *state = engine->data;
-
 	if (signr == 0)
 		return 0;
 
@@ -906,6 +913,7 @@ ptrace_start(long pid, long request,
 		ret = -ESRCH;  /* Return value for exit_state bail-out.  */
 	}
 
+	atomic_inc(&state->refcnt);
 	rcu_read_unlock();
 
 	NO_LOCKS;
@@ -924,8 +932,10 @@ ptrace_start(long pid, long request,
 	 */
 	wait_task_inactive(child);
 	while (child->state != TASK_TRACED && child->state != TASK_STOPPED) {
-		if (child->exit_state)
+		if (child->exit_state) {
+			__ptrace_state_free(state);
 			goto out_tsk;
+		}
 		/*
 		 * This is a dismal kludge, but it only comes up on ia64.
 		 * It might be blocked inside regset->writeback() called
@@ -1000,7 +1010,7 @@ ptrace_common(long request, struct task_struct *child,
 		/*
 		 * Detach a process that was attached.
 		 */
-		ret = ptrace_induce_signal(child, engine, data);
+		ret = ptrace_induce_signal(child, engine, state, data);
 		if (!ret) {
 			ret = ptrace_detach(child, engine, state);
 			if (ret == -EALREADY) /* Already a zombie.  */
@@ -1036,7 +1046,7 @@ ptrace_common(long request, struct task_struct *child,
 			if (is_singlestep(request))
 				break;
 
-		ret = ptrace_induce_signal(child, engine, data);
+		ret = ptrace_induce_signal(child, engine, state, data);
 		if (ret)
 			break;
 
@@ -1156,6 +1166,7 @@ asmlinkage long sys_ptrace(long request, long pid, long addr, long data)
 out_tsk:
 	NO_LOCKS;
 	put_task_struct(child);
+	__ptrace_state_free(state);
 out:
 	pr_debug("%d ptrace -> %lx\n", current->pid, ret);
 	return ret;
@@ -1240,6 +1251,7 @@ asmlinkage long compat_sys_ptrace(compat_long_t request, compat_long_t pid,
 
 out_tsk:
 	put_task_struct(child);
+	__ptrace_state_free(state);
 out:
 	pr_debug("%d ptrace -> %lx\n", current->pid, (long)ret);
 	return ret;
@@ -1955,9 +1967,17 @@ ptrace_report_exec(struct utrace_attached_engine *engine,
 	if (unlikely(state == NULL))
 		return UTRACE_ACTION_RESUME;
 
-	return ptrace_event(engine, tsk, state,
-			    (state->options & PTRACE_O_TRACEEXEC)
-			    ? PTRACE_EVENT_EXEC : 0);
+	if (state->options & PTRACE_O_TRACEEXEC)
+		return ptrace_event(engine, tsk, state, PTRACE_EVENT_EXEC);
+
+	/*
+	 * Without PTRACE_O_TRACEEXEC, this is not a stop in the
+	 * ptrace_notify() style.  Instead, it's a regular signal.
+	 * The difference is in where the real stop takes place and
+	 * what ptrace can do with tsk->exit_code there.
+	 */
+	send_sig(SIGTRAP, tsk, 0);
+	return UTRACE_ACTION_RESUME;
 }
 
 static u32

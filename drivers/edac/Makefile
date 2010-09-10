@@ -18,4 +18,5 @@ obj-$(CONFIG_EDAC_I5000)		+= i5000_edac.o
 obj-$(CONFIG_EDAC_I82860)		+= i82860_edac.o
 obj-$(CONFIG_EDAC_K8)			+= k8_edac.o
 obj-$(CONFIG_EDAC_R82600)		+= r82600_edac.o
+obj-$(CONFIG_EDAC_CELL)			+= cell_edac.o
 

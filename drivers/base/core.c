@@ -309,6 +309,16 @@ int device_add(struct device *dev)
 	if ((error = kobject_add(&dev->kobj)))
 		goto Error;
 
+	/* notify clients of device entry (new way) */
+	if (dev->bus) {
+		struct blocking_notifier_head *notifier_head;
+
+		notifier_head = get_notifier_for_bus(dev->bus);
+		if (notifier_head)
+			blocking_notifier_call_chain(notifier_head,
+						BUS_NOTIFY_ADD_DEVICE, dev);
+	}
+
 	dev->uevent_attr.attr.name = "uevent";
 	dev->uevent_attr.attr.mode = S_IWUSR;
 	if (dev->driver)
@@ -368,6 +378,7 @@ int device_add(struct device *dev)
 	/* notify platform of device entry */
 	if (platform_notify)
 		platform_notify(dev);
+
  Done:
  	kfree(class_name);
 	put_device(dev);
@@ -486,6 +497,15 @@ void device_del(struct device * dev)
 	 */
 	if (platform_notify_remove)
 		platform_notify_remove(dev);
+
+	if (dev->bus) {
+		struct blocking_notifier_head *notifier_head;
+
+		notifier_head = get_notifier_for_bus(dev->bus);
+		if (notifier_head)
+			blocking_notifier_call_chain(notifier_head,
+						BUS_NOTIFY_DEL_DEVICE, dev);
+	}
 
 	device_pm_remove(dev);
 	kobject_uevent(&dev->kobj, KOBJ_REMOVE);

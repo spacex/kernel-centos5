@@ -22,6 +22,11 @@
 #define ISA_START_ADDRESS      0xa0000
 #define ISA_END_ADDRESS                0x100000
 
+static inline int phys_addr_valid(unsigned long addr)
+{
+	return addr < (1UL << boot_cpu_data.x86_phys_bits);
+}
+
 static inline void remap_area_pte(pte_t * pte, unsigned long address, unsigned long size,
 	unsigned long phys_addr, unsigned long flags)
 {
@@ -170,6 +175,13 @@ void __iomem * __ioremap(unsigned long phys_addr, unsigned long size, unsigned l
 	last_addr = phys_addr + size - 1;
 	if (!size || last_addr < phys_addr)
 		return NULL;
+
+	if (!phys_addr_valid(phys_addr)) {
+		printk(KERN_WARNING "ioremap: invalid physical address %lx\n",
+			phys_addr);
+		WARN_ON_ONCE(1);
+		return NULL;
+	}
 
 	/*
 	 * Don't remap the low PCI/ISA area, it's always mapped..

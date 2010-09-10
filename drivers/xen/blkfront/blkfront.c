@@ -49,6 +49,10 @@
 #include <asm/hypervisor.h>
 #include <asm/maddr.h>
 
+#ifdef HAVE_XEN_PLATFORM_COMPAT_H
+#include <xen/platform-compat.h>
+#endif
+
 #define BLKIF_STATE_DISCONNECTED 0
 #define BLKIF_STATE_CONNECTED    1
 #define BLKIF_STATE_SUSPENDED    2
@@ -88,8 +92,13 @@ static int blkfront_probe(struct xenbus_device *dev,
 	err = xenbus_scanf(XBT_NIL, dev->nodename,
 			   "virtual-device", "%i", &vdevice);
 	if (err != 1) {
-		xenbus_dev_fatal(dev, err, "reading virtual-device");
-		return err;
+		/* go looking in the extended area instead */
+		err = xenbus_scanf(XBT_NIL, dev->nodename, "virtual-device-ext",
+				   "%i", &vdevice);
+		if (err != 1) {
+			xenbus_dev_fatal(dev, err, "reading virtual-device");
+			return err;
+		}
 	}
 
 	info = kzalloc(sizeof(*info), GFP_KERNEL);
@@ -215,7 +224,7 @@ static int setup_blkring(struct xenbus_device *dev,
 
 	info->ring_ref = GRANT_INVALID_REF;
 
-	sring = (blkif_sring_t *)__get_free_page(GFP_KERNEL);
+	sring = (blkif_sring_t *)__get_free_page(GFP_NOIO| __GFP_HIGH);
 	if (!sring) {
 		xenbus_dev_fatal(dev, -ENOMEM, "allocating shared ring");
 		return -ENOMEM;
@@ -760,7 +769,7 @@ static void blkif_recover(struct blkfront_info *info)
 	int j;
 
 	/* Stage 1: Make a safe copy of the shadow state. */
-	copy = kmalloc(sizeof(info->shadow), GFP_KERNEL | __GFP_NOFAIL);
+	copy = kmalloc(sizeof(info->shadow), GFP_NOIO | __GFP_NOFAIL | __GFP_HIGH);
 	memcpy(copy, info->shadow, sizeof(info->shadow));
 
 	/* Stage 2: Set up free list. */
@@ -832,6 +841,9 @@ static struct xenbus_device_id blkfront_ids[] = {
 	{ "vbd" },
 	{ "" }
 };
+#ifdef CONFIG_XEN_PV_ON_HVM
+MODULE_ALIAS("xen:vbd");
+#endif
 
 
 static struct xenbus_driver blkfront = {
@@ -848,10 +860,21 @@ static struct xenbus_driver blkfront = {
 
 static int __init xlblk_init(void)
 {
+	int rtn_val;
+#ifdef CONFIG_XEN_PV_ON_HVM
+	extern void xvd_dev_shutdown(void);
+#endif
+
 	if (!is_running_on_xen())
 		return -ENODEV;
 
-	return xenbus_register_frontend(&blkfront);
+	rtn_val = xenbus_register_frontend(&blkfront);
+
+#ifdef CONFIG_XEN_PV_ON_HVM
+	/* remove any xvd's in xvd_rem_list after all dev's configured */
+	xvd_dev_shutdown();
+#endif
+	return rtn_val;
 }
 module_init(xlblk_init);
 

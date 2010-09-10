@@ -324,10 +324,15 @@
 #define __NR_vmsplice		316
 #define __NR_move_pages		317
 #define __NR_getcpu		318
-
+/* #define __NR_epoll_pwait	319 */
+/* #define __NR_utimensat	320 */
+/* #define __NR_signalfd	321 */
+/* #define __NR_timerfd_create	322 */
+/* #define __NR_eventfd		323 */
+#define __NR_fallocate		324
 #ifdef __KERNEL__
 
-#define NR_syscalls 319
+#define NR_syscalls 325
 
 #ifndef __KERNEL_SYSCALLS_NO_ERRNO__
 /*

@@ -288,6 +288,10 @@ static int vmalloc_fault(unsigned long address)
 	pmd_t *pmd, *pmd_ref;
 	pte_t *pte, *pte_ref;
 
+	/* Make sure we are in vmalloc area */
+	if (!(address >= VMALLOC_START && address < VMALLOC_END))
+		return -1;
+
 	/* Copy kernel mappings over when needed. This can also
 	   happen within a race in page table update. In the later
 	   case just flush. */

@@ -21,7 +21,9 @@
 #include "zd_usb.h"
 #include "zd_chip.h"
 
-static const u32 al2230_table[][3] = {
+#define IS_AL2230S(chip) ((chip)->al2230s_bit || (chip)->rf.type == AL2230S_RF)
+
+static const u32 zd1211_al2230_table[][3] = {
 	RF_CHANNEL( 1) = { 0x03f790, 0x033331, 0x00000d, },
 	RF_CHANNEL( 2) = { 0x03f790, 0x0b3331, 0x00000d, },
 	RF_CHANNEL( 3) = { 0x03e790, 0x033331, 0x00000d, },
@@ -38,12 +40,71 @@ static const u32 al2230_table[][3] = {
 	RF_CHANNEL(14) = { 0x03e7c0, 0x066661, 0x00000d, },
 };
 
+static const u32 zd1211b_al2230_table[][3] = {
+	RF_CHANNEL( 1) = { 0x09efc0, 0x8cccc0, 0xb00000, },
+	RF_CHANNEL( 2) = { 0x09efc0, 0x8cccd0, 0xb00000, },
+	RF_CHANNEL( 3) = { 0x09e7c0, 0x8cccc0, 0xb00000, },
+	RF_CHANNEL( 4) = { 0x09e7c0, 0x8cccd0, 0xb00000, },
+	RF_CHANNEL( 5) = { 0x05efc0, 0x8cccc0, 0xb00000, },
+	RF_CHANNEL( 6) = { 0x05efc0, 0x8cccd0, 0xb00000, },
+	RF_CHANNEL( 7) = { 0x05e7c0, 0x8cccc0, 0xb00000, },
+	RF_CHANNEL( 8) = { 0x05e7c0, 0x8cccd0, 0xb00000, },
+	RF_CHANNEL( 9) = { 0x0defc0, 0x8cccc0, 0xb00000, },
+	RF_CHANNEL(10) = { 0x0defc0, 0x8cccd0, 0xb00000, },
+	RF_CHANNEL(11) = { 0x0de7c0, 0x8cccc0, 0xb00000, },
+	RF_CHANNEL(12) = { 0x0de7c0, 0x8cccd0, 0xb00000, },
+	RF_CHANNEL(13) = { 0x03efc0, 0x8cccc0, 0xb00000, },
+	RF_CHANNEL(14) = { 0x03e7c0, 0x866660, 0xb00000, },
+};
+
+static const struct zd_ioreq16 zd1211b_ioreqs_shared_1[] = {
+	{ CR240, 0x57 }, { CR9,   0xe0 },
+};
+
+static const struct zd_ioreq16 ioreqs_init_al2230s[] = {
+	{ CR47,   0x1e }, /* MARK_002 */
+	{ CR106,  0x22 },
+	{ CR107,  0x2a }, /* MARK_002 */
+	{ CR109,  0x13 }, /* MARK_002 */
+	{ CR118,  0xf8 }, /* MARK_002 */
+	{ CR119,  0x12 }, { CR122,  0xe0 },
+	{ CR128,  0x10 }, /* MARK_001 from 0xe->0x10 */
+	{ CR129,  0x0e }, /* MARK_001 from 0xd->0x0e */
+	{ CR130,  0x10 }, /* MARK_001 from 0xb->0x0d */
+};
+
+static int zd1211b_al2230_finalize_rf(struct zd_chip *chip)
+{
+	int r;
+	static const struct zd_ioreq16 ioreqs[] = {
+		{ CR80,  0x30 }, { CR81,  0x30 }, { CR79,  0x58 },
+		{ CR12,  0xf0 }, { CR77,  0x1b }, { CR78,  0x58 },
+		{ CR203, 0x06 },
+		{ },
+
+		{ CR240, 0x80 },
+	};
+
+	r = zd_iowrite16a_locked(chip, ioreqs, ARRAY_SIZE(ioreqs));
+	if (r)
+		return r;
+
+	/* related to antenna selection? */
+	if (chip->new_phy_layout) {
+		r = zd_iowrite16_locked(chip, 0xe1, CR9);
+		if (r)
+			return r;
+	}
+
+	return zd_iowrite16_locked(chip, 0x06, CR203);
+}
+
 static int zd1211_al2230_init_hw(struct zd_rf *rf)
 {
 	int r;
 	struct zd_chip *chip = zd_rf_to_chip(rf);
 
-	static const struct zd_ioreq16 ioreqs[] = {
+	static const struct zd_ioreq16 ioreqs_init[] = {
 		{ CR15,   0x20 }, { CR23,   0x40 }, { CR24,  0x20 },
 		{ CR26,   0x11 }, { CR28,   0x3e }, { CR29,  0x00 },
 		{ CR44,   0x33 }, { CR106,  0x2a }, { CR107, 0x1a },
@@ -70,10 +131,9 @@ static int zd1211_al2230_init_hw(struct zd_rf *rf)
 		{ CR119,  0x10 }, { CR120,  0x4f }, { CR121, 0x77 },
 		{ CR122,  0xe0 }, { CR137,  0x88 }, { CR252, 0xff },
 		{ CR253,  0xff },
+	};
 
-		/* These following happen separately in the vendor driver */
-		{ },
-
+	static const struct zd_ioreq16 ioreqs_pll[] = {
 		/* shdnb(PLL_ON)=0 */
 		{ CR251,  0x2f },
 		/* shdnb(PLL_ON)=1 */
@@ -81,7 +141,7 @@ static int zd1211_al2230_init_hw(struct zd_rf *rf)
 		{ CR138,  0x28 }, { CR203,  0x06 },
 	};
 
-	static const u32 rv[] = {
+	static const u32 rv1[] = {
 		/* Channel 1 */
 		0x03f790,
 		0x033331,
@@ -90,6 +150,9 @@ static int zd1211_al2230_init_hw(struct zd_rf *rf)
 		0x0b3331,
 		0x03b812,
 		0x00fff3,
+	};
+
+	static const u32 rv2[] = {
 		0x000da4,
 		0x0f4dc5, /* fix freq shift, 0x04edc5 */
 		0x0805b6,
@@ -101,8 +164,9 @@ static int zd1211_al2230_init_hw(struct zd_rf *rf)
 		0x0bdffc,
 		0x00000d,
 		0x00500f,
+	};
 
-		/* These writes happen separately in the vendor driver */
+	static const u32 rv3[] = {
 		0x00d00f,
 		0x004c0f,
 		0x00540f,
@@ -110,11 +174,38 @@ static int zd1211_al2230_init_hw(struct zd_rf *rf)
 		0x00500f,
 	};
 
-	r = zd_iowrite16a_locked(chip, ioreqs, ARRAY_SIZE(ioreqs));
+	r = zd_iowrite16a_locked(chip, ioreqs_init, ARRAY_SIZE(ioreqs_init));
 	if (r)
 		return r;
 
-	r = zd_rfwritev_locked(chip, rv, ARRAY_SIZE(rv), RF_RV_BITS);
+	if (IS_AL2230S(chip)) {
+		r = zd_iowrite16a_locked(chip, ioreqs_init_al2230s,
+			ARRAY_SIZE(ioreqs_init_al2230s));
+		if (r)
+			return r;
+	}
+
+	r = zd_rfwritev_locked(chip, rv1, ARRAY_SIZE(rv1), RF_RV_BITS);
+	if (r)
+		return r;
+
+	/* improve band edge for AL2230S */
+	if (IS_AL2230S(chip))
+		r = zd_rfwrite_locked(chip, 0x000824, RF_RV_BITS);
+	else
+		r = zd_rfwrite_locked(chip, 0x0005a4, RF_RV_BITS);
+	if (r)
+		return r;
+
+	r = zd_rfwritev_locked(chip, rv2, ARRAY_SIZE(rv2), RF_RV_BITS);
+	if (r)
+		return r;
+
+	r = zd_iowrite16a_locked(chip, ioreqs_pll, ARRAY_SIZE(ioreqs_pll));
+	if (r)
+		return r;
+
+	r = zd_rfwritev_locked(chip, rv3, ARRAY_SIZE(rv3), RF_RV_BITS);
 	if (r)
 		return r;
 
@@ -139,7 +230,7 @@ static int zd1211b_al2230_init_hw(struct zd_rf *rf)
 		{ CR47,  0x1e },
 
 		/* ZD1211B 05.06.10 */
-		{ CR48,  0x00 }, { CR49,  0x00 }, { CR51,  0x01 },
+		{ CR48,  0x06 }, { CR49,  0xf9 }, { CR51,  0x01 },
 		{ CR52,  0x80 }, { CR53,  0x7e }, { CR65,  0x00 },
 		{ CR66,  0x00 }, { CR67,  0x00 }, { CR68,  0x00 },
 		{ CR69,  0x28 },
@@ -172,79 +263,99 @@ static int zd1211b_al2230_init_hw(struct zd_rf *rf)
 		{ CR137, 0x50 }, /* 5614 */
 		{ CR138, 0xa8 },
 		{ CR144, 0xac }, /* 5621 */
-		{ CR150, 0x0d }, { CR252, 0x00 }, { CR253, 0x00 },
+		{ CR150, 0x0d }, { CR252, 0x34 }, { CR253, 0x34 },
 	};
 
 	static const u32 rv1[] = {
-		/* channel 1 */
-		0x03f790,
-		0x033331,
-		0x00000d,
-
-		0x0b3331,
-		0x03b812,
-		0x00fff3,
-		0x0005a4,
-		0x0f4dc5, /* fix freq shift 0x044dc5 */
-		0x0805b6,
-		0x0146c7,
-		0x000688,
-		0x0403b9, /* External control TX power (CR31) */
-		0x00dbba,
-		0x00099b,
-		0x0bdffc,
-		0x00000d,
-		0x00580f,
-	};
-
-	static const struct zd_ioreq16 ioreqs2[] = {
-		{ CR47,  0x1e }, { CR_RFCFG, 0x03 },
+		0x8cccd0,
+		0x481dc0,
+		0xcfff00,
+		0x25a000,
 	};
 
 	static const u32 rv2[] = {
-		0x00880f,
-		0x00080f,
+		/* To improve AL2230 yield, improve phase noise, 4713 */
+		0x25a000,
+		0xa3b2f0,
+
+		0x6da010, /* Reg6 update for MP versio */
+		0xe36280, /* Modified by jxiao for Bor-Chin on 2004/08/02 */
+		0x116000,
+		0x9dc020, /* External control TX power (CR31) */
+		0x5ddb00, /* RegA update for MP version */
+		0xd99000, /* RegB update for MP version */
+		0x3ffbd0, /* RegC update for MP version */
+		0xb00000, /* RegD update for MP version */
+
+		/* improve phase noise and remove phase calibration,4713 */
+		0xf01a00,
 	};
 
-	static const struct zd_ioreq16 ioreqs3[] = {
-		{ CR_RFCFG, 0x00 }, { CR47, 0x1e }, { CR251, 0x7f },
+	static const struct zd_ioreq16 ioreqs2[] = {
+		{ CR251, 0x2f }, /* shdnb(PLL_ON)=0 */
+		{ CR251, 0x7f }, /* shdnb(PLL_ON)=1 */
 	};
 
 	static const u32 rv3[] = {
-		0x00d80f,
-		0x00780f,
-		0x00580f,
+		/* To improve AL2230 yield, 4713 */
+		0xf01b00,
+		0xf01e00,
+		0xf01a00,
 	};
 
-	static const struct zd_ioreq16 ioreqs4[] = {
-		{ CR138, 0x28 }, { CR203, 0x06 },
+	static const struct zd_ioreq16 ioreqs3[] = {
+		/* related to 6M band edge patching, happens unconditionally */
+		{ CR128, 0x14 }, { CR129, 0x12 }, { CR130, 0x10 },
 	};
 
+	r = zd_iowrite16a_locked(chip, zd1211b_ioreqs_shared_1,
+		ARRAY_SIZE(zd1211b_ioreqs_shared_1));
+	if (r)
+		return r;
 	r = zd_iowrite16a_locked(chip, ioreqs1, ARRAY_SIZE(ioreqs1));
 	if (r)
 		return r;
-	r = zd_rfwritev_locked(chip, rv1, ARRAY_SIZE(rv1), RF_RV_BITS);
+
+	if (IS_AL2230S(chip)) {
+		r = zd_iowrite16a_locked(chip, ioreqs_init_al2230s,
+			ARRAY_SIZE(ioreqs_init_al2230s));
+		if (r)
+			return r;
+	}
+
+	r = zd_rfwritev_cr_locked(chip, zd1211b_al2230_table[0], 3);
+	if (r)
+		return r;
+	r = zd_rfwritev_cr_locked(chip, rv1, ARRAY_SIZE(rv1));
+	if (r)
+		return r;
+
+	if (IS_AL2230S(chip))
+		r = zd_rfwrite_locked(chip, 0x241000, RF_RV_BITS);
+	else
+		r = zd_rfwrite_locked(chip, 0x25a000, RF_RV_BITS);
+	if (r)
+		return r;
+
+	r = zd_rfwritev_cr_locked(chip, rv2, ARRAY_SIZE(rv2));
 	if (r)
 		return r;
 	r = zd_iowrite16a_locked(chip, ioreqs2, ARRAY_SIZE(ioreqs2));
 	if (r)
 		return r;
-	r = zd_rfwritev_locked(chip, rv2, ARRAY_SIZE(rv2), RF_RV_BITS);
+	r = zd_rfwritev_cr_locked(chip, rv3, ARRAY_SIZE(rv3));
 	if (r)
 		return r;
 	r = zd_iowrite16a_locked(chip, ioreqs3, ARRAY_SIZE(ioreqs3));
 	if (r)
 		return r;
-	r = zd_rfwritev_locked(chip, rv3, ARRAY_SIZE(rv3), RF_RV_BITS);
-	if (r)
-		return r;
-	return zd_iowrite16a_locked(chip, ioreqs4, ARRAY_SIZE(ioreqs4));
+	return zd1211b_al2230_finalize_rf(chip);
 }
 
-static int al2230_set_channel(struct zd_rf *rf, u8 channel)
+static int zd1211_al2230_set_channel(struct zd_rf *rf, u8 channel)
 {
 	int r;
-	const u32 *rv = al2230_table[channel-1];
+	const u32 *rv = zd1211_al2230_table[channel-1];
 	struct zd_chip *chip = zd_rf_to_chip(rf);
 	static const struct zd_ioreq16 ioreqs[] = {
 		{ CR138, 0x28 },
@@ -255,6 +366,24 @@ static int al2230_set_channel(struct zd_rf *rf, u8 channel)
 	if (r)
 		return r;
 	return zd_iowrite16a_locked(chip, ioreqs, ARRAY_SIZE(ioreqs));
+}
+
+static int zd1211b_al2230_set_channel(struct zd_rf *rf, u8 channel)
+{
+	int r;
+	const u32 *rv = zd1211b_al2230_table[channel-1];
+	struct zd_chip *chip = zd_rf_to_chip(rf);
+
+	r = zd_iowrite16a_locked(chip, zd1211b_ioreqs_shared_1,
+		ARRAY_SIZE(zd1211b_ioreqs_shared_1));
+	if (r)
+		return r;
+
+	r = zd_rfwritev_cr_locked(chip, rv, 3);
+	if (r)
+		return r;
+
+	return zd1211b_al2230_finalize_rf(chip);
 }
 
 static int zd1211_al2230_switch_radio_on(struct zd_rf *rf)
@@ -294,15 +423,17 @@ int zd_rf_init_al2230(struct zd_rf *rf)
 {
 	struct zd_chip *chip = zd_rf_to_chip(rf);
 
-	rf->set_channel = al2230_set_channel;
 	rf->switch_radio_off = al2230_switch_radio_off;
-	if (chip->is_zd1211b) {
+	if (zd_chip_is_zd1211b(chip)) {
 		rf->init_hw = zd1211b_al2230_init_hw;
+		rf->set_channel = zd1211b_al2230_set_channel;
 		rf->switch_radio_on = zd1211b_al2230_switch_radio_on;
 	} else {
 		rf->init_hw = zd1211_al2230_init_hw;
+		rf->set_channel = zd1211_al2230_set_channel;
 		rf->switch_radio_on = zd1211_al2230_switch_radio_on;
 	}
-	rf->patch_6m_band_edge = 1;
+	rf->patch_6m_band_edge = zd_rf_generic_patch_6m;
+	rf->patch_cck_gain = 1;
 	return 0;
 }

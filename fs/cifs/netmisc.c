@@ -1,7 +1,7 @@
 /*
  *   fs/cifs/netmisc.c
  *
- *   Copyright (c) International Business Machines  Corp., 2002
+ *   Copyright (c) International Business Machines  Corp., 2002,2008
  *   Author(s): Steve French (sfrench@us.ibm.com)
  *
  *   Error mapping routines from Samba libsmb/errormap.c
@@ -132,56 +132,22 @@ static const struct smb_to_posix_error mapping_table_ERRHRD[] = {
 	{0, 0}
 };
 
-
-/* if the mount helper is missing we need to reverse the 1st slash
-   from '/' to backslash in order to format the UNC properly for
-   ip address parsing and for tree connect (unless the user
-   remembered to put the UNC name in properly). Fortunately we do
-   not have to call this twice (we check for IPv4 addresses
-   first, so it is already converted by the time we
-   try IPv6 addresses */
-static int canonicalize_unc(char *cp)
-{
-	int i;
-
-	for (i = 0; i <= 46 /* INET6_ADDRSTRLEN */ ; i++) {
-		if (cp[i] == 0)
-			break;
-		if (cp[i] == '\\')
-			break;
-		if (cp[i] == '/') {
-#ifdef CONFIG_CIFS_DEBUG2
-			cFYI(1, ("change slash to backslash in malformed UNC"));
-#endif
-			cp[i] = '\\';
-			return 1;
-		}
-	}
-	return 0;
-}
-
 /* Convert string containing dotted ip address to binary form */
 /* returns 0 if invalid address */
 
 int
-cifs_inet_pton(int address_family, char *cp, void *dst)
+cifs_inet_pton(const int address_family, const char *cp, void *dst)
 {
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,19)
 	int ret = 0;
 
 	/* calculate length by finding first slash or NULL */
-	if (address_family == AF_INET) {
+	if (address_family == AF_INET)
 		ret = in4_pton(cp, -1 /* len */, dst, '\\', NULL);
-		if (ret == 0) {
-			if (canonicalize_unc(cp))
-				ret = in4_pton(cp, -1, dst, '\\', NULL);
-		}
-	} else if (address_family == AF_INET6) {
+	else if (address_family == AF_INET6)
 		ret = in6_pton(cp, -1 /* len */, dst , '\\', NULL);
-	}
-#ifdef CONFIG_CIFS_DEBUG2
-	cFYI(1, ("address conversion returned %d for %s", ret, cp));
-#endif
+
+	cFYI(DBG2, ("address conversion returned %d for %s", ret, cp));
 	if (ret > 0)
 		ret = 1;
 	return ret;
@@ -204,7 +170,7 @@ cifs_inet_pton(int address_family, char *cp, void *dst)
 
 	temp = *cp;
 
-	while (TRUE) {
+	while (true) {
 		if (!isdigit(temp))
 			return 0;
 
@@ -236,8 +202,6 @@ cifs_inet_pton(int address_family, char *cp, void *dst)
 		if (temp != '\\') {
 			if (temp != '/')
 				return 0;
-			else
-				(*cp = '\\');	/* switch the slash the expected way */
 		}
 	if (value > addr_class_max[end - bytes])
 		return 0;
@@ -314,7 +278,8 @@ static const struct {
 	ERRDOS, 87, NT_STATUS_INVALID_PARAMETER_MIX}, {
 	ERRHRD, ERRgeneral, NT_STATUS_INVALID_QUOTA_LOWER}, {
 	ERRHRD, ERRgeneral, NT_STATUS_DISK_CORRUPT_ERROR}, {
-	ERRDOS, ERRbadfile, NT_STATUS_OBJECT_NAME_INVALID}, {	/* mapping changed since shell does lookup on * and expects file not found */
+	 /* mapping changed since shell does lookup on * expects FileNotFound */
+	ERRDOS, ERRbadfile, NT_STATUS_OBJECT_NAME_INVALID}, {
 	ERRDOS, ERRbadfile, NT_STATUS_OBJECT_NAME_NOT_FOUND}, {
 	ERRDOS, ERRalreadyexists, NT_STATUS_OBJECT_NAME_COLLISION}, {
 	ERRHRD, ERRgeneral, NT_STATUS_HANDLE_NOT_WAITABLE}, {
@@ -831,7 +796,7 @@ cifs_print_status(__u32 status_code)
 
 
 static void
-ntstatus_to_dos(__u32 ntstatus, __u8 * eclass, __u16 * ecode)
+ntstatus_to_dos(__u32 ntstatus, __u8 *eclass, __u16 *ecode)
 {
 	int i;
 	if (ntstatus == 0) {
@@ -881,11 +846,12 @@ map_smb_to_linux_error(struct smb_hdr *smb, int logErr)
 	/* old style errors */
 
 	/* DOS class smb error codes - map DOS */
-	if (smberrclass == ERRDOS) {  /* 1 byte field no need to byte reverse */
+	if (smberrclass == ERRDOS) {
+		/* 1 byte field no need to byte reverse */
 		for (i = 0;
 		     i <
-		     sizeof (mapping_table_ERRDOS) /
-		     sizeof (struct smb_to_posix_error); i++) {
+		     sizeof(mapping_table_ERRDOS) /
+		     sizeof(struct smb_to_posix_error); i++) {
 			if (mapping_table_ERRDOS[i].smb_err == 0)
 				break;
 			else if (mapping_table_ERRDOS[i].smb_err ==
@@ -895,11 +861,12 @@ map_smb_to_linux_error(struct smb_hdr *smb, int logErr)
 			}
 			/* else try next error mapping one to see if match */
 		}
-	} else if (smberrclass == ERRSRV) {   /* server class of error codes */
+	} else if (smberrclass == ERRSRV) {
+		/* server class of error codes */
 		for (i = 0;
 		     i <
-		     sizeof (mapping_table_ERRSRV) /
-		     sizeof (struct smb_to_posix_error); i++) {
+		     sizeof(mapping_table_ERRSRV) /
+		     sizeof(struct smb_to_posix_error); i++) {
 			if (mapping_table_ERRSRV[i].smb_err == 0)
 				break;
 			else if (mapping_table_ERRSRV[i].smb_err ==
@@ -928,14 +895,14 @@ map_smb_to_linux_error(struct smb_hdr *smb, int logErr)
 unsigned int
 smbCalcSize(struct smb_hdr *ptr)
 {
-	return (sizeof (struct smb_hdr) + (2 * ptr->WordCount) +
+	return (sizeof(struct smb_hdr) + (2 * ptr->WordCount) +
 		2 /* size of the bcc field */ + BCC(ptr));
 }
 
 unsigned int
 smbCalcSize_LE(struct smb_hdr *ptr)
 {
-	return (sizeof (struct smb_hdr) + (2 * ptr->WordCount) +
+	return (sizeof(struct smb_hdr) + (2 * ptr->WordCount) +
 		2 /* size of the bcc field */ + le16_to_cpu(BCC_LE(ptr)));
 }
 
@@ -985,8 +952,8 @@ struct timespec cnvrtDosUnixTm(__u16 date, __u16 time)
 {
 	struct timespec ts;
 	int sec, min, days, month, year;
-	SMB_TIME * st = (SMB_TIME *)&time;
-	SMB_DATE * sd = (SMB_DATE *)&date;
+	SMB_TIME *st = (SMB_TIME *)&time;
+	SMB_DATE *sd = (SMB_DATE *)&date;
 
 	cFYI(1, ("date %d time %d", date, time));
 
@@ -1000,8 +967,11 @@ struct timespec cnvrtDosUnixTm(__u16 date, __u16 time)
 		cERROR(1, ("illegal hours %d", st->Hours));
 	days = sd->Day;
 	month = sd->Month;
-	if ((days > 31) || (month > 12))
+	if ((days > 31) || (month > 12)) {
 		cERROR(1, ("illegal date, month %d day: %d", month, days));
+		if (month > 12)
+			month = 12;
+	}
 	month -= 1;
 	days += total_days_of_prev_months[month];
 	days += 3652; /* account for difference in days between 1980 and 1970 */

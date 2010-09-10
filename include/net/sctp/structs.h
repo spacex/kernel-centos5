@@ -1570,6 +1570,9 @@ struct sctp_association {
 	/* Transport to which SHUTDOWN chunk was last sent.  */
 	struct sctp_transport *shutdown_last_sent_to;
 
+	/* How many times have we resent a SHUTDOWN */
+	int shutdown_retries;
+
 	/* Transport to which INIT chunk was last sent.  */
 	struct sctp_transport *init_last_sent_to;
 
@@ -1603,6 +1606,11 @@ struct sctp_association {
 	 * the SCTP_STATUS sockopt.
 	 */
 	__u16 unack_data;
+
+	/* The total number of data chunks that we've had to retransmit
+	 * as the result of a T3 timer expiration
+	 */
+	__u32 rtx_data_chunks;
 
 	/* This is the association's receive buffer space.  This value is used
 	 * to set a_rwnd field in an INIT or a SACK chunk.

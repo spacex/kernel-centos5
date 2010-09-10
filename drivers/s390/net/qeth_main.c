@@ -856,7 +856,7 @@ qeth_set_ip_addr_list(struct qeth_card *card)
 			spin_unlock_irqrestore(&card->ip_lock, flags);
 			rc = qeth_register_addr_entry(card, todo);
 			spin_lock_irqsave(&card->ip_lock, flags);
-			if (!rc)
+			if (!rc || (rc == 0xe080))
 				list_add_tail(&todo->entry, &card->ip_list);
 			else
 				kfree(todo);
@@ -866,7 +866,7 @@ qeth_set_ip_addr_list(struct qeth_card *card)
 			spin_unlock_irqrestore(&card->ip_lock, flags);
 			rc = qeth_deregister_addr_entry(card, addr);
 			spin_lock_irqsave(&card->ip_lock, flags);
-			if (!rc)
+			if (!rc || (rc == 0xe010))
 				kfree(addr);
 			else
 				list_add_tail(&addr->entry, &card->ip_list);
@@ -1661,6 +1661,7 @@ qeth_check_ipa_data(struct qeth_card *card, struct qeth_cmd_buffer *iob)
 					   QETH_CARD_IFNAME(card),
 					   card->info.chpid);
 				netif_carrier_on(card->dev);
+				card->lan_online = 1;
 				qeth_schedule_recovery(card);
 				return NULL;
 			case IPA_CMD_MODCCID:
@@ -2558,7 +2559,8 @@ qeth_layer2_rebuild_skb(struct qeth_card *card, struct sk_buff *skb,
 		skb_pull(skb, VLAN_HLEN);
 	}
 #endif
-	*((__u32 *)skb->cb) = ++card->seqno.pkt_seqno;
+	if (skb->protocol == htons(ETH_P_802_2))
+		*((__u32 *)skb->cb) = ++card->seqno.pkt_seqno;
 	return vlan_id;
 }
 
@@ -2644,7 +2646,8 @@ qeth_process_inbound_buffer(struct qeth_card *card,
 				skb->ip_summed = CHECKSUM_UNNECESSARY;
 			else
 				skb->ip_summed = CHECKSUM_NONE;
-			*((__u32 *)skb->cb) = ++card->seqno.pkt_seqno;
+			if (skb->protocol == htons(ETH_P_802_2))
+				*((__u32 *)skb->cb) = ++card->seqno.pkt_seqno;
 		} else if (hdr->hdr.l3.id == QETH_HEADER_TYPE_LAYER3)
 			vlan_tag = qeth_rebuild_skb(card, skb, hdr);
 		else if (hdr->hdr.osn.id == QETH_HEADER_TYPE_OSN) {
@@ -4554,6 +4557,11 @@ qeth_send_packet(struct qeth_card *card, struct sk_buff *skb)
 	}
 	if (skb_is_gso(skb))
 		large_send = card->options.large_send;
+
+	if ((large_send == QETH_LARGE_SEND_TSO) &&
+		((skb_shinfo(new_skb)->nr_frags + 2) > 16))
+		large_send = QETH_LARGE_SEND_EDDP;
+
 	/* check on OSN device*/
 	if (card->info.type == QETH_CARD_TYPE_OSN)
 		hdr = (struct qeth_hdr *)new_skb->data;
@@ -5919,9 +5927,9 @@ qeth_add_vlan_mc6(struct qeth_card *card)
 		in_dev = in6_dev_get(vg->vlan_devices[i]);
 		if (!in_dev)
 			continue;
-		read_lock(&in_dev->lock);
+		read_lock_bh(&in_dev->lock);
 		qeth_add_mc6(card,in_dev);
-		read_unlock(&in_dev->lock);
+		read_unlock_bh(&in_dev->lock);
 		in6_dev_put(in_dev);
 	}
 #endif /* CONFIG_QETH_VLAN */
@@ -5938,10 +5946,10 @@ qeth_add_multicast_ipv6(struct qeth_card *card)
 	in6_dev = in6_dev_get(card->dev);
 	if (in6_dev == NULL)
 		return;
-	read_lock(&in6_dev->lock);
+	read_lock_bh(&in6_dev->lock);
 	qeth_add_mc6(card, in6_dev);
 	qeth_add_vlan_mc6(card);
-	read_unlock(&in6_dev->lock);
+	read_unlock_bh(&in6_dev->lock);
 	in6_dev_put(in6_dev);
 }
 #endif /* CONFIG_QETH_IPV6 */
@@ -7241,12 +7249,6 @@ qeth_softsetup_ipv6(struct qeth_card *card)
 
 	QETH_DBF_TEXT(trace,3,"softipv6");
 
-	rc = qeth_send_startlan(card, QETH_PROT_IPV6);
-	if (rc) {
-		PRINT_ERR("IPv6 startlan failed on %s\n",
-			  QETH_CARD_IFNAME(card));
-		return rc;
-	}
 	rc = qeth_query_ipassists(card,QETH_PROT_IPV6);
 	if (rc) {
 		PRINT_ERR("IPv6 query ipassist failed on %s\n",

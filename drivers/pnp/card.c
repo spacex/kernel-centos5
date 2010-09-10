@@ -237,16 +237,18 @@ void pnp_remove_card(struct pnp_card * card)
  * pnp_add_card_device - adds a device to the specified card
  * @card: pointer to the card to add to
  * @dev: pointer to the device to add
+ * @number: unique number identifying the device
  */
 
-int pnp_add_card_device(struct pnp_card * card, struct pnp_dev * dev)
+int pnp_add_card_device(struct pnp_card * card, struct pnp_dev * dev,
+			unsigned int number)
 {
 	if (!card || !dev || !dev->protocol)
 		return -EINVAL;
 	dev->dev.parent = &card->dev;
 	dev->card_link = NULL;
-	snprintf(dev->dev.bus_id, BUS_ID_SIZE, "%02x:%02x.%02x", dev->protocol->number,
-		 card->number,dev->number);
+	snprintf(dev->dev.bus_id, BUS_ID_SIZE, "%02x:%02x.%02x",
+		 dev->protocol->number, card->number, number);
 	spin_lock(&pnp_lock);
 	dev->card = card;
 	list_add_tail(&dev->card_list, &card->devices);

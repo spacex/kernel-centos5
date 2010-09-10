@@ -30,6 +30,7 @@ unsigned long oprofile_started;
 unsigned long backtrace_depth;
 static unsigned long is_setup;
 static DEFINE_MUTEX(start_mutex);
+unsigned long driver_version = 0x1000;	/*Update version here */
 
 /* timer
    0 - use performance monitoring hardware if available

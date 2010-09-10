@@ -247,7 +247,6 @@ static struct pid_entry tgid_base_stuff[] = {
 	E(PROC_TGID_LOGINUID, "loginuid", S_IFREG|S_IWUSR|S_IRUGO),
 #endif
 	E(PROC_TGID_LIMITS, "limits", S_IFREG|S_IRUSR),
-	E(PROC_TID_LIMITS, "limits", S_IFREG|S_IRUSR),
 #if defined(USE_ELF_CORE_DUMP) && defined(CONFIG_ELF_CORE)
 	E(PROC_TGID_COREDUMP_FILTER, "coredump_filter",
 	  S_IFREG|S_IRUGO|S_IWUSR),
@@ -295,7 +294,6 @@ static struct pid_entry tid_base_stuff[] = {
 #ifdef CONFIG_AUDITSYSCALL
 	E(PROC_TID_LOGINUID, "loginuid", S_IFREG|S_IWUSR|S_IRUGO),
 #endif
-	E(PROC_TGID_LIMITS, "limits", S_IFREG|S_IRUSR),
 	E(PROC_TID_LIMITS, "limits", S_IFREG|S_IRUSR),
 
 	{0,0,NULL,0}

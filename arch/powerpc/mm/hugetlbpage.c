@@ -513,8 +513,8 @@ int prepare_hugepage_range(unsigned long addr, unsigned long len)
 	if ((addr + len) > 0x100000000UL)
 		err = open_high_hpage_areas(current->mm,
 					    HTLB_AREA_MASK(addr, len));
-#ifdef CONFIG_SPU_BASE
-	spu_flush_all_slbs(current->mm);
+#ifdef CONFIG_SPE_BASE
+	spu_flush_all_slbs(mm);
 #endif
 	if (err) {
 		printk(KERN_DEBUG "prepare_hugepage_range(%lx, %lx)"

@@ -429,7 +429,7 @@ struct Scsi_Host *scsi_host_lookup(unsigned short hostnum)
 {
 	struct class *class = &shost_class;
 	struct class_device *cdev;
-	struct Scsi_Host *shost = ERR_PTR(-ENXIO), *p;
+	struct Scsi_Host *shost = NULL, *p;
 
 	down_read(&class->subsys.rwsem);
 	list_for_each_entry(cdev, &class->children, node) {

@@ -23,7 +23,9 @@
 #include <linux/crc32.h>
 #include <linux/lm_interface.h>
 #include <linux/writeback.h>
+#include <linux/uaccess.h>
 #include <asm/uaccess.h>
+#include <linux/mpage.h>
 
 #include "gfs2.h"
 #include "incore.h"
@@ -43,6 +45,24 @@
 #include "util.h"
 #include "eaops.h"
 #include "ops_address.h"
+
+static void iov_iter_advance(struct iov_iter *i, size_t bytes);
+static inline void iov_iter_init(struct iov_iter *i,
+                        const struct iovec *iov, unsigned long nr_segs,
+                        size_t count, size_t written)
+{
+        i->iov = iov;
+        i->nr_segs = nr_segs;
+        i->iov_offset = 0;
+        i->count = count + written;
+
+        iov_iter_advance(i, written);
+}
+
+static inline size_t iov_iter_count(struct iov_iter *i)
+{
+        return i->count;
+}
 
 /*
  * Most fields left uninitialised to catch anybody who tries to
@@ -136,8 +156,8 @@ static int gfs2_readdir(struct file *file, void *dirent, filldir_t filldir)
 	u64 offset = file->f_pos;
 	int error;
 
-	gfs2_holder_init(dip->i_gl, LM_ST_SHARED, GL_ATIME, &d_gh);
-	error = gfs2_glock_nq_atime(&d_gh);
+	gfs2_holder_init(dip->i_gl, LM_ST_SHARED, 0, &d_gh);
+	error = gfs2_glock_nq(&d_gh);
 	if (error) {
 		gfs2_holder_uninit(&d_gh);
 		return error;
@@ -202,8 +222,8 @@ static int gfs2_get_flags(struct file *filp, u32 __user *ptr)
 	int error;
 	u32 fsflags;
 
-	gfs2_holder_init(ip->i_gl, LM_ST_SHARED, GL_ATIME, &gh);
-	error = gfs2_glock_nq_atime(&gh);
+	gfs2_holder_init(ip->i_gl, LM_ST_SHARED, 0, &gh);
+	error = gfs2_glock_nq(&gh);
 	if (error)
 		return error;
 
@@ -366,8 +386,8 @@ static int gfs2_mmap(struct file *file, struct vm_area_struct *vma)
 	struct gfs2_holder i_gh;
 	int error;
 
-	gfs2_holder_init(ip->i_gl, LM_ST_SHARED, GL_ATIME, &i_gh);
-	error = gfs2_glock_nq_atime(&i_gh);
+	gfs2_holder_init(ip->i_gl, LM_ST_SHARED, 0, &i_gh);
+	error = gfs2_glock_nq(&i_gh);
 	if (error) {
 		gfs2_holder_uninit(&i_gh);
 		return error;
@@ -507,6 +527,24 @@ static int gfs2_fsync(struct file *file, struct dentry *dentry, int datasync)
 }
 
 /**
+ * gfs2_setlease - acquire/release a file lease
+ * @file: the file pointer
+ * @arg: lease type
+ * @fl: file lock
+ *
+ * Returns: errno
+ */
+
+static int gfs2_setlease(struct file *file, long arg, struct file_lock **fl)
+{
+	/*
+	 * We don't currently have a way to enforce a lease across the whole
+	 * cluster; until we do, disable leases (by just returning -EINVAL)
+	 */
+	return -EINVAL;
+}
+
+/**
  * gfs2_lock - acquire/release a posix lock on a file
  * @file: the file pointer
  * @cmd: either modify or retrieve lock state, possibly wait
@@ -561,8 +599,7 @@ static int do_flock(struct file *file, int cmd, struct file_lock *fl)
 	int error = 0;
 
 	state = (fl->fl_type == F_WRLCK) ? LM_ST_EXCLUSIVE : LM_ST_SHARED;
-	flags = (IS_SETLKW(cmd) ? 0 : LM_FLAG_TRY) | GL_EXACT | GL_NOCACHE
-		| GL_FLOCK;
+	flags = (IS_SETLKW(cmd) ? 0 : LM_FLAG_TRY) | GL_EXACT | GL_NOCACHE;
 
 	mutex_lock(&fp->f_fl_mutex);
 
@@ -575,9 +612,8 @@ static int do_flock(struct file *file, int cmd, struct file_lock *fl)
 		gfs2_glock_dq_wait(fl_gh);
 		gfs2_holder_reinit(state, flags, fl_gh);
 	} else {
-		error = gfs2_glock_get(GFS2_SB(&ip->i_inode),
-				      ip->i_no_addr, &gfs2_flock_glops,
-				      CREATE, &gl);
+		error = gfs2_glock_get(GFS2_SB(&ip->i_inode), ip->i_no_addr,
+				       &gfs2_flock_glops, CREATE, &gl);
 		if (error)
 			goto out;
 		gfs2_holder_init(gl, state, flags, fl_gh);
@@ -635,24 +671,477 @@ static int gfs2_flock(struct file *file, int cmd, struct file_lock *fl)
 		return do_flock(file, cmd, fl);
 }
 
-const struct file_operations gfs2_file_fops = {
-	.llseek		= gfs2_llseek,
-	.read		= generic_file_read,
-	.readv		= generic_file_readv,
-	.aio_read	= generic_file_aio_read,
-	.write		= generic_file_write,
-	.writev		= generic_file_writev,
-	.aio_write	= generic_file_aio_write,
-	.unlocked_ioctl	= gfs2_ioctl,
-	.mmap		= gfs2_mmap,
-	.open		= gfs2_open,
-	.release	= gfs2_close,
-	.fsync		= gfs2_fsync,
-	.lock		= gfs2_lock,
-	.sendfile	= generic_file_sendfile,
-	.flock		= gfs2_flock,
-	.splice_read	= generic_file_splice_read,
-	.splice_write	= generic_file_splice_write,
+/**
+ * generic_file functions backported from upstream filemap.c:
+ * In many cases I needed to change generic_* to gfs2_*
+ */
+
+static unsigned long iov_iter_single_seg_count(struct iov_iter *i)
+{
+	const struct iovec *iov = i->iov;
+	if (i->nr_segs == 1)
+		return i->count;
+	else
+		return min(i->count, iov->iov_len - i->iov_offset);
+}
+
+static void iov_iter_advance(struct iov_iter *i, size_t bytes)
+{
+	BUG_ON(i->count < bytes);
+
+	if (likely(i->nr_segs == 1)) {
+		i->iov_offset += bytes;
+		i->count -= bytes;
+	} else {
+		const struct iovec *iov = i->iov;
+		size_t base = i->iov_offset;
+
+		/*
+		 * The !iov->iov_len check ensures we skip over unlikely
+		 * zero-length segments (without overruning the iovec).
+		 */
+		while (bytes || unlikely(i->count && !iov->iov_len)) {
+			int copy;
+
+			copy = min(bytes, iov->iov_len - base);
+			BUG_ON(!i->count || i->count < copy);
+			i->count -= copy;
+			bytes -= copy;
+			base += copy;
+			if (iov->iov_len == base) {
+				iov++;
+				base = 0;
+			}
+		}
+		i->iov = iov;
+		i->iov_offset = base;
+	}
+}
+
+static inline int gfs2_fault_in_pages_readable(const char __user *uaddr,
+					       int size)
+{
+        volatile char c;
+        int ret;
+
+        if (unlikely(size == 0))
+                return 0;
+
+        ret = __get_user(c, uaddr);
+        if (ret == 0) {
+                const char __user *end = uaddr + size - 1;
+
+                if (((unsigned long)uaddr & PAGE_MASK) !=
+                                ((unsigned long)end & PAGE_MASK))
+                        ret = __get_user(c, end);
+        }
+        return ret;
+}
+static int iov_iter_fault_in_readable(struct iov_iter *i, size_t bytes)
+{
+	char __user *buf = i->iov->iov_base + i->iov_offset;
+	bytes = min(bytes, i->iov->iov_len - i->iov_offset);
+	return gfs2_fault_in_pages_readable(buf, bytes);
+}
+
+static ssize_t gfs2_perform_write(struct file *file,
+				  struct iov_iter *i, loff_t pos)
+{
+	struct address_space *mapping = file->f_mapping;
+	long status = 0;
+	ssize_t written = 0;
+	unsigned int flags = 0;
+
+	/*
+	 * Copies from kernel address space cannot fail (NFSD is a big user).
+	 */
+	/*if (segment_eq(get_fs(), KERNEL_DS))
+	  flags |= AOP_FLAG_UNINTERRUPTIBLE;*/
+
+	do {
+		struct page *page;
+		pgoff_t index;		/* Pagecache index for current page */
+		unsigned long offset;	/* Offset into pagecache page */
+		unsigned long bytes;	/* Bytes to write to page */
+		size_t copied;		/* Bytes copied from user */
+		void *fsdata;
+
+		offset = (pos & (PAGE_CACHE_SIZE - 1));
+		index = pos >> PAGE_CACHE_SHIFT;
+		bytes = min_t(unsigned long, PAGE_CACHE_SIZE - offset,
+						iov_iter_count(i));
+
+again:
+
+		/*
+		 * Bring in the user page that we will copy from _first_.
+		 * Otherwise there's a nasty deadlock on copying from the
+		 * same page as we're writing to, without it being marked
+		 * up-to-date.
+		 *
+		 * Not only is this an optimisation, but it is also required
+		 * to check that the address is actually valid, when atomic
+		 * usercopies are used, below.
+		 */
+		if (unlikely(iov_iter_fault_in_readable(i, bytes))) {
+			status = -EFAULT;
+			break;
+		}
+
+		status = gfs2_write_begin(file, mapping, pos, bytes, flags,
+						&page, &fsdata);
+		if (unlikely(status))
+			break;
+
+		/* pagefault disable */
+		inc_preempt_count();
+		barrier();
+		copied = iov_iter_copy_from_user_atomic(page, i, offset, bytes);
+		/* pagefault enable */
+		barrier();
+		dec_preempt_count();
+		barrier();
+		preempt_check_resched();
+
+		flush_dcache_page(page);
+
+		status = gfs2_write_end(file, mapping, pos, bytes, copied,
+					page, fsdata);
+		if (unlikely(status < 0))
+			break;
+		copied = status;
+
+		cond_resched();
+
+		iov_iter_advance(i, copied);
+		if (unlikely(copied == 0)) {
+			/*
+			 * If we were unable to copy any data at all, we must
+			 * fall back to a single segment length write.
+			 *
+			 * If we didn't fallback here, we could livelock
+			 * because not all segments in the iov can be copied at
+			 * once without a pagefault.
+			 */
+			bytes = min_t(unsigned long, PAGE_CACHE_SIZE - offset,
+						iov_iter_single_seg_count(i));
+			goto again;
+		}
+		pos += copied;
+		written += copied;
+
+		balance_dirty_pages_ratelimited(mapping);
+
+	} while (iov_iter_count(i));
+
+	return written ? written : status;
+}
+
+static ssize_t
+gfs2_file_buffered_write(struct kiocb *iocb, const struct iovec *iov,
+			 unsigned long nr_segs, loff_t pos, loff_t *ppos,
+			 size_t count, ssize_t written)
+{
+	struct file *file = iocb->ki_filp;
+	struct address_space *mapping = file->f_mapping;
+	const struct address_space_operations *a_ops = mapping->a_ops;
+	struct inode *inode = mapping->host;
+	ssize_t status;
+	struct iov_iter i;
+
+	iov_iter_init(&i, iov, nr_segs, count, written);
+	status = gfs2_perform_write(file, &i, pos);
+
+	if (likely(status >= 0)) {
+		written += status;
+		*ppos = pos + status;
+
+		/*
+		 * For now, when the user asks for O_SYNC, we'll actually give
+		 * O_DSYNC
+		 */
+		if (unlikely((file->f_flags & O_SYNC) || IS_SYNC(inode))) {
+			if (!a_ops->writepage || !is_sync_kiocb(iocb))
+				status = generic_osync_inode(inode, mapping,
+						OSYNC_METADATA|OSYNC_DATA);
+		}
+  	}
+	
+	/*
+	 * If we get here for O_DIRECT writes then we must have fallen through
+	 * to buffered writes (block instantiation inside i_size).  So we sync
+	 * the file data here, to try to honour O_DIRECT expectations.
+	 */
+	if (unlikely(file->f_flags & O_DIRECT) && written)
+		status = filemap_write_and_wait(mapping);
+
+	return written ? written : status;
+}
+
+/*
+ * Performs necessary checks before doing a write
+ * @iov:	io vector request
+ * @nr_segs:	number of segments in the iovec
+ * @count:	number of bytes to write
+ * @access_flags: type of access: %VERIFY_READ or %VERIFY_WRITE
+ *
+ * Adjust number of segments and amount of bytes to write (nr_segs should be
+ * properly initialized first). Returns appropriate error code that caller
+ * should return or zero in case that write should be allowed.
+ */
+static int generic_segment_checks(const struct iovec *iov,
+			unsigned long *nr_segs, size_t *count, int access_flags)
+{
+	unsigned long   seg;
+	size_t cnt = 0;
+	for (seg = 0; seg < *nr_segs; seg++) {
+		const struct iovec *iv = &iov[seg];
+
+		/*
+		 * If any segment has a negative length, or the cumulative
+		 * length ever wraps negative then return -EINVAL.
+		 */
+		cnt += iv->iov_len;
+		if (unlikely((ssize_t)(cnt|iv->iov_len) < 0))
+			return -EINVAL;
+		if (access_ok(access_flags, iv->iov_base, iv->iov_len))
+			continue;
+		if (seg == 0)
+			return -EFAULT;
+		*nr_segs = seg;
+		cnt -= iv->iov_len;	/* This segment is no good */
+		break;
+	}
+	*count = cnt;
+	return 0;
+}
+
+static ssize_t
+__gfs2_file_aio_write_nolock(struct kiocb *iocb, const struct iovec *iov,
+			     unsigned long nr_segs, loff_t *ppos)
+{
+	struct file *file = iocb->ki_filp;
+	struct address_space * mapping = file->f_mapping;
+	size_t ocount;		/* original count */
+	size_t count;		/* after file limit checks */
+	struct inode 	*inode = mapping->host;
+	loff_t		pos;
+	ssize_t		written;
+	ssize_t		err;
+
+	ocount = 0;
+	err = generic_segment_checks(iov, &nr_segs, &ocount, VERIFY_READ);
+	if (err)
+		return err;
+
+	count = ocount;
+	pos = *ppos;
+
+	vfs_check_frozen(inode->i_sb, SB_FREEZE_WRITE);
+
+	/* We can write back this queue in page reclaim */
+	current->backing_dev_info = mapping->backing_dev_info;
+	written = 0;
+
+	err = generic_write_checks(file, &pos, &count, S_ISBLK(inode->i_mode));
+	if (err)
+		goto out;
+
+	if (count == 0)
+		goto out;
+
+	err = remove_suid(file->f_dentry);
+	if (err)
+		goto out;
+
+	file_update_time(file);
+
+	/* coalesce the iovecs and go direct-to-BIO for O_DIRECT */
+	if (unlikely(file->f_flags & O_DIRECT)) {
+		loff_t endbyte;
+		ssize_t written_buffered;
+
+		written = generic_file_direct_write(iocb, iov, &nr_segs, pos,
+							ppos, count, ocount);
+		if (written < 0 || written == count)
+			goto out;
+		/*
+		 * direct-io write to a hole: fall through to buffered I/O
+		 * for completing the rest of the request.
+		 */
+		pos += written;
+		count -= written;
+		written_buffered = gfs2_file_buffered_write(iocb, iov,
+							    nr_segs, pos,
+							    ppos, count,
+							    written);
+		/*
+		 * If gfs2_file_buffered_write() returned a synchronous error
+		 * then we want to return the number of bytes which were
+		 * direct-written, or the error code if that was zero.  Note
+		 * that this differs from normal direct-io semantics, which
+		 * will return -EFOO even if some bytes were written.
+		 */
+		if (written_buffered < 0) {
+			err = written_buffered;
+			goto out;
+		}
+
+		/*
+		 * We need to ensure that the page cache pages are written to
+		 * disk and invalidated to preserve the expected O_DIRECT
+		 * semantics.
+		 */
+		endbyte = pos + written_buffered - written - 1;
+		err = do_sync_file_range(file, pos, endbyte,
+					 SYNC_FILE_RANGE_WAIT_BEFORE|
+					 SYNC_FILE_RANGE_WRITE|
+					 SYNC_FILE_RANGE_WAIT_AFTER);
+		if (err == 0) {
+			written = written_buffered;
+			invalidate_mapping_pages(mapping,
+						 pos >> PAGE_CACHE_SHIFT,
+						 endbyte >> PAGE_CACHE_SHIFT);
+		} else {
+			/*
+			 * We don't know how much we wrote, so just return
+			 * the number of bytes which were direct-written
+			 */
+		}
+	} else {
+		written = gfs2_file_buffered_write(iocb, iov, nr_segs,
+						   pos, ppos, count, written);
+	}
+out:
+	current->backing_dev_info = NULL;
+	return written ? written : err;
+}
+
+static ssize_t
+gfs2_file_aio_write_nolock(struct kiocb *iocb, const struct iovec *iov,
+			   unsigned long nr_segs, loff_t *ppos)
+{
+	struct file *file = iocb->ki_filp;
+	struct address_space *mapping = file->f_mapping;
+	struct inode *inode = mapping->host;
+	ssize_t ret;
+	loff_t pos = *ppos;
+
+	ret = __gfs2_file_aio_write_nolock(iocb, iov, nr_segs, ppos);
+
+	if (ret > 0 && ((file->f_flags & O_SYNC) || IS_SYNC(inode))) {
+		int err;
+
+		err = sync_page_range_nolock(inode, mapping, pos, ret);
+		if (err < 0)
+			ret = err;
+	}
+	return ret;
+}
+
+static ssize_t gfs2_file_aio_write(struct kiocb *iocb, const char __user *buf,
+				   size_t count, loff_t pos)
+{
+	struct file *file = iocb->ki_filp;
+	struct address_space *mapping = file->f_mapping;
+	struct inode *inode = mapping->host;
+	ssize_t ret;
+	struct iovec local_iov = { .iov_base = (void __user *)buf,
+					.iov_len = count };
+
+	BUG_ON(iocb->ki_pos != pos);
+
+	mutex_lock(&inode->i_mutex);
+	ret = __gfs2_file_aio_write_nolock(iocb, &local_iov, 1, &iocb->ki_pos);
+	mutex_unlock(&inode->i_mutex);
+
+	if (ret > 0 && ((file->f_flags & O_SYNC) || IS_SYNC(inode))) {
+		ssize_t err;
+
+		err = sync_page_range(inode, mapping, pos, ret);
+		if (err < 0)
+			ret = err;
+	}
+	return ret;
+}
+
+static ssize_t gfs2_file_write_nolock(struct file *file,
+				      const struct iovec *iov,
+				      unsigned long nr_segs, loff_t *ppos)
+{
+	struct kiocb kiocb;
+	ssize_t ret;
+
+	init_sync_kiocb(&kiocb, file);
+	ret = gfs2_file_aio_write_nolock(&kiocb, iov, nr_segs, ppos);
+	if (-EIOCBQUEUED == ret)
+		ret = wait_on_sync_kiocb(&kiocb);
+	return ret;
+}
+
+static ssize_t gfs2_file_write(struct file *file, const char __user *buf,
+			       size_t count, loff_t *ppos)
+{
+	struct address_space *mapping = file->f_mapping;
+	struct inode *inode = mapping->host;
+	ssize_t	ret;
+	struct iovec local_iov = { .iov_base = (void __user *)buf,
+					.iov_len = count };
+
+	mutex_lock(&inode->i_mutex);
+	ret = gfs2_file_write_nolock(file, &local_iov, 1, ppos);
+	mutex_unlock(&inode->i_mutex);
+
+	if (ret > 0 && ((file->f_flags & O_SYNC) || IS_SYNC(inode))) {
+		ssize_t err;
+
+		err = sync_page_range(inode, mapping, *ppos - ret, ret);
+		if (err < 0)
+			ret = err;
+	}
+	return ret;
+}
+
+static ssize_t gfs2_file_writev(struct file *file, const struct iovec *iov,
+				unsigned long nr_segs, loff_t *ppos)
+{
+	struct address_space *mapping = file->f_mapping;
+	struct inode *inode = mapping->host;
+	ssize_t ret;
+
+	mutex_lock(&inode->i_mutex);
+	ret = gfs2_file_write_nolock(file, iov, nr_segs, ppos);
+	mutex_unlock(&inode->i_mutex);
+
+	if (ret > 0 && ((file->f_flags & O_SYNC) || IS_SYNC(inode))) {
+		int err;
+
+		err = sync_page_range(inode, mapping, *ppos - ret, ret);
+		if (err < 0)
+			ret = err;
+	}
+	return ret;
+}
+
+const struct file_operations_ext gfs2_file_fops = {
+	.f_op_orig.llseek		= gfs2_llseek,
+	.f_op_orig.read		= generic_file_read,
+	.f_op_orig.readv		= generic_file_readv,
+	.f_op_orig.aio_read	= generic_file_aio_read,
+	.f_op_orig.write		= gfs2_file_write,
+	.f_op_orig.writev		= gfs2_file_writev,
+	.f_op_orig.aio_write	= gfs2_file_aio_write,
+	.f_op_orig.unlocked_ioctl	= gfs2_ioctl,
+	.f_op_orig.mmap		= gfs2_mmap,
+	.f_op_orig.open		= gfs2_open,
+	.f_op_orig.release	= gfs2_close,
+	.f_op_orig.fsync		= gfs2_fsync,
+	.f_op_orig.lock		= gfs2_lock,
+	.f_op_orig.sendfile	= generic_file_sendfile,
+	.f_op_orig.flock		= gfs2_flock,
+	.f_op_orig.splice_read	= generic_file_splice_read,
+	.f_op_orig.splice_write	= generic_file_splice_write,
+	.setlease = gfs2_setlease,
 };
 
 const struct file_operations gfs2_dir_fops = {
@@ -665,22 +1154,25 @@ const struct file_operations gfs2_dir_fops = {
 	.flock		= gfs2_flock,
 };
 
-const struct file_operations gfs2_file_fops_nolock = {
-	.llseek		= gfs2_llseek,
-	.read		= generic_file_read,
-	.readv		= generic_file_readv,
-	.aio_read	= generic_file_aio_read,
-	.write		= generic_file_write,
-	.writev		= generic_file_writev,
-	.aio_write	= generic_file_aio_write,
-	.unlocked_ioctl	= gfs2_ioctl,
-	.mmap		= gfs2_mmap,
-	.open		= gfs2_open,
-	.release	= gfs2_close,
-	.fsync		= gfs2_fsync,
-	.sendfile	= generic_file_sendfile,
-	.splice_read	= generic_file_splice_read,
-	.splice_write	= generic_file_splice_write,
+const struct file_operations_ext gfs2_file_fops_nolock = {
+	.f_op_orig.llseek		= gfs2_llseek,
+	.f_op_orig.read		= generic_file_read,
+	.f_op_orig.readv		= generic_file_readv,
+	.f_op_orig.aio_read	= generic_file_aio_read,
+	.f_op_orig.write		= gfs2_file_write,
+	.f_op_orig.writev		= gfs2_file_writev,
+	.f_op_orig.aio_write	= gfs2_file_aio_write,
+	.f_op_orig.unlocked_ioctl	= gfs2_ioctl,
+	.f_op_orig.mmap		= gfs2_mmap,
+	.f_op_orig.open		= gfs2_open,
+	.f_op_orig.release	= gfs2_close,
+	.f_op_orig.fsync		= gfs2_fsync,
+	/* .f_op_orig.lock = NULL, */
+	.f_op_orig.sendfile	= generic_file_sendfile,
+	.f_op_orig.flock		= gfs2_flock,
+	.f_op_orig.splice_read	= generic_file_splice_read,
+	.f_op_orig.splice_write	= generic_file_splice_write,
+	/* .setlease = NULL, */
 };
 
 const struct file_operations gfs2_dir_fops_nolock = {

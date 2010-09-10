@@ -130,16 +130,17 @@ int __pnp_add_device(struct pnp_dev *dev)
 /*
  * pnp_add_device - adds a pnp device to the pnp layer
  * @dev: pointer to dev to add
+ * @number: unique number identifying device
  *
  *  adds to driver model, name database, fixups, interface, etc.
  */
 
-int pnp_add_device(struct pnp_dev *dev)
+int pnp_add_device(struct pnp_dev *dev, unsigned int number)
 {
 	if (!dev || !dev->protocol || dev->card)
 		return -EINVAL;
 	dev->dev.parent = &dev->protocol->dev;
-	sprintf(dev->dev.bus_id, "%02x:%02x", dev->protocol->number, dev->number);
+	sprintf(dev->dev.bus_id, "%02x:%02x", dev->protocol->number, number);
 	return __pnp_add_device(dev);
 }
 

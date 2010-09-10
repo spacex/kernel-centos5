@@ -108,6 +108,24 @@ struct vcpu_register_runstate_memory_area {
 };
 typedef struct vcpu_register_runstate_memory_area vcpu_register_runstate_memory_area_t;
 
+#define VCPUOP_register_vcpu_info   10  /* arg == vcpu_register_vcpu_info_t */
+
+/*
+ * Get the physical ID information for a pinned vcpu's underlying physical
+ * processor.  The physical ID informmation is architecture-specific.
+ * On x86: id[7:0]=apic_id, id[15:8]=acpi_id, id[63:16]=mbz,
+ *         and an unavailable identifier is returned as 0xff.
+ * This command returns -EINVAL if it is not a valid operation for this VCPU.
+ */
+#define VCPUOP_get_physid           12 /* arg == vcpu_get_physid_t */
+struct vcpu_get_physid {
+    uint64_t phys_id;
+};
+typedef struct vcpu_get_physid vcpu_get_physid_t;
+DEFINE_XEN_GUEST_HANDLE(vcpu_get_physid_t);
+#define xen_vcpu_physid_to_x86_apicid(physid) ((uint8_t)((physid)>>0))
+#define xen_vcpu_physid_to_x86_acpiid(physid) ((uint8_t)((physid)>>8))
+
 #endif /* __XEN_PUBLIC_VCPU_H__ */
 
 /*

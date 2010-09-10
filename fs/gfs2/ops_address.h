@@ -16,5 +16,11 @@
 
 extern int gfs2_releasepage(struct page *page, gfp_t gfp_mask);
 extern void gfs2_set_aops(struct inode *inode);
+extern int gfs2_write_begin(struct file *file, struct address_space *mapping,
+			    loff_t pos, unsigned len, unsigned flags,
+			    struct page **pagep, void **fsdata);
+extern int gfs2_write_end(struct file *file, struct address_space *mapping,
+			  loff_t pos, unsigned len, unsigned copied,
+			  struct page *page, void *fsdata);
 
 #endif /* __OPS_ADDRESS_DOT_H__ */

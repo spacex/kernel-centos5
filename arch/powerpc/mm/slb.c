@@ -209,6 +209,7 @@ void slb_initialize(void)
 	static int slb_encoding_inited;
 	extern unsigned int *slb_miss_kernel_load_linear;
 	extern unsigned int *slb_miss_kernel_load_io;
+	extern unsigned int *slb_compare_rr_to_size;
 #ifdef CONFIG_HUGETLB_PAGE
 	extern unsigned int *slb_miss_user_load_huge;
 	unsigned long huge_llp;
@@ -228,6 +229,8 @@ void slb_initialize(void)
 				   SLB_VSID_KERNEL | linear_llp);
 		patch_slb_encoding(slb_miss_kernel_load_io,
 				   SLB_VSID_KERNEL | io_llp);
+		patch_slb_encoding(slb_compare_rr_to_size,
+				   mmu_slb_size);
 
 		DBG("SLB: linear  LLP = %04x\n", linear_llp);
 		DBG("SLB: io      LLP = %04x\n", io_llp);

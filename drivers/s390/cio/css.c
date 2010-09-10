@@ -21,8 +21,8 @@
 #include "ioasm.h"
 #include "chsc.h"
 #include "device.h"
+#include "idset.h"
 
-int need_rescan = 0;
 int css_init_done = 0;
 static int need_reprobe = 0;
 static int max_ssid = 0;
@@ -31,7 +31,7 @@ struct channel_subsystem *css[__MAX_CSSID + 1];
 
 int css_characteristics_avail = 0;
 
-inline int
+int
 for_each_subchannel(int(*fn)(struct subchannel_id, void *), void *data)
 {
 	struct subchannel_id schid;
@@ -48,6 +48,62 @@ for_each_subchannel(int(*fn)(struct subchannel_id, void *), void *data)
 		schid.sch_no = 0;
 	} while (schid.ssid++ < max_ssid);
 	return ret;
+}
+
+struct cb_data {
+	void *data;
+	struct idset *set;
+	int (*fn_known_sch)(struct subchannel *, void *);
+	int (*fn_unknown_sch)(struct subchannel_id, void *);
+};
+
+static int call_fn_known_sch(struct device *dev, void *data)
+{
+	struct subchannel *sch = to_subchannel(dev);
+	struct cb_data *cb = data;
+	int rc = 0;
+
+	idset_sch_del(cb->set, sch->schid);
+	if (cb->fn_known_sch)
+		rc = cb->fn_known_sch(sch, cb->data);
+	return rc;
+}
+
+static int call_fn_unknown_sch(struct subchannel_id schid, void *data)
+{
+	struct cb_data *cb = data;
+	int rc = 0;
+
+	if (idset_sch_contains(cb->set, schid))
+		rc = cb->fn_unknown_sch(schid, cb->data);
+	return rc;
+}
+
+int for_each_subchannel_staged(int (*fn_known)(struct subchannel *, void *),
+			       int (*fn_unknown)(struct subchannel_id,
+			       void *), void *data)
+{
+	struct cb_data cb;
+	int rc;
+
+	cb.set = idset_sch_new();
+	if (!cb.set)
+		return -ENOMEM;
+	idset_fill(cb.set);
+	cb.data = data;
+	cb.fn_known_sch = fn_known;
+	cb.fn_unknown_sch = fn_unknown;
+	/* Process registered subchannels. */
+	rc = bus_for_each_dev(&css_bus_type, NULL, &cb, call_fn_known_sch);
+	if (rc)
+		goto out;
+	/* Process unregistered subchannels. */
+	if (fn_unknown)
+		rc = for_each_subchannel(call_fn_unknown_sch, &cb);
+out:
+	idset_free(cb.set);
+
+	return rc;
 }
 
 static struct subchannel *
@@ -109,7 +165,6 @@ css_subchannel_release(struct device *dev)
 
 extern int css_get_ssd_info(struct subchannel *sch);
 
-
 int css_sch_device_register(struct subchannel *sch)
 {
 	int ret;
@@ -123,8 +178,18 @@ int css_sch_device_register(struct subchannel *sch)
 void css_sch_device_unregister(struct subchannel *sch)
 {
 	mutex_lock(&sch->reg_mutex);
-	device_unregister(&sch->dev);
+	if (device_is_registered(&sch->dev))
+		device_unregister(&sch->dev);
 	mutex_unlock(&sch->reg_mutex);
+}
+
+void css_sch_device_unregister_wq(void *data)
+{
+	struct subchannel *sch = data;
+
+	css_sch_device_unregister(sch);
+	/* Release reference for work queue processing */
+	put_device(&sch->dev);
 }
 
 static int
@@ -136,7 +201,7 @@ css_register_subchannel(struct subchannel *sch)
 	sch->dev.parent = &css[0]->device;
 	sch->dev.bus = &css_bus_type;
 	sch->dev.release = &css_subchannel_release;
-	
+
 	/* make it known to the system */
 	ret = css_sch_device_register(sch);
 	if (ret)
@@ -196,6 +261,8 @@ static inline int css_get_subchannel_status(struct subchannel *sch)
 	return CIO_OPER;
 }
 
+typedef void (*workfunc)(void *);
+
 static int css_evaluate_known_subchannel(struct subchannel *sch, int slow)
 {
 	int event, ret, disc;
@@ -241,8 +308,10 @@ static int css_evaluate_known_subchannel(struct subchannel *sch, int slow)
 			spin_unlock_irqrestore(&sch->lock, flags);
 			ret = sch->driver->notify(&sch->dev, event);
 			spin_lock_irqsave(&sch->lock, flags);
-			if (ret)
+			if (ret) {
 				action = NONE;
+				device_wake_up_wait_q(sch);
+			}
 		}
 		break;
 	case CIO_REVALIDATE:
@@ -264,11 +333,14 @@ static int css_evaluate_known_subchannel(struct subchannel *sch, int slow)
 	switch (action) {
 	case UNREGISTER:
 	case UNREGISTER_PROBE:
-		/* Unregister device (will use subchannel lock). */
-		spin_unlock_irqrestore(&sch->lock, flags);
-		css_sch_device_unregister(sch);
-		spin_lock_irqsave(&sch->lock, flags);
-
+		/* Unregister device */
+		/* Get reference for work queue processing */
+		if (get_device(&sch->dev)) {
+			PREPARE_WORK(&sch->kick_work,
+				     (workfunc)css_sch_device_unregister_wq,
+				     (void *)sch);
+			queue_work(slow_path_wq, &sch->kick_work);
+		}
 		/* Reset intparm to zeroes. */
 		sch->schib.pmcw.intparm = 0;
 		cio_modify(sch);
@@ -305,7 +377,7 @@ static int css_evaluate_new_subchannel(struct subchannel_id schid, int slow)
 	return css_probe_device(schid);
 }
 
-static int css_evaluate_subchannel(struct subchannel_id schid, int slow)
+static void css_evaluate_subchannel(struct subchannel_id schid, int slow)
 {
 	struct subchannel *sch;
 	int ret;
@@ -316,58 +388,132 @@ static int css_evaluate_subchannel(struct subchannel_id schid, int slow)
 		put_device(&sch->dev);
 	} else
 		ret = css_evaluate_new_subchannel(schid, slow);
-
-	return ret;
+	if (ret == -EAGAIN)
+		css_schedule_eval(schid);
 }
 
-static int
-css_rescan_devices(struct subchannel_id schid, void *data)
+static struct idset *slow_subchannel_set;
+static spinlock_t slow_subchannel_lock;
+
+static int __init slow_subchannel_init(void)
 {
-	return css_evaluate_subchannel(schid, 1);
-}
-
-struct slow_subchannel {
-	struct list_head slow_list;
-	struct subchannel_id schid;
-};
-
-static LIST_HEAD(slow_subchannels_head);
-static DEFINE_SPINLOCK(slow_subchannel_lock);
-
-static void
-css_trigger_slow_path(void)
-{
-	CIO_TRACE_EVENT(4, "slowpath");
-
-	if (need_rescan) {
-		need_rescan = 0;
-		for_each_subchannel(css_rescan_devices, NULL);
-		return;
+	spin_lock_init(&slow_subchannel_lock);
+	slow_subchannel_set = idset_sch_new();
+	if (!slow_subchannel_set) {
+		printk(KERN_WARNING "cio: could not allocate slow subchannel "
+		       "set\n");
+		return -ENOMEM;
 	}
+	return 0;
+}
+
+subsys_initcall(slow_subchannel_init);
+
+static int slow_eval_known_fn(struct subchannel *sch, void *data)
+{
+	int eval;
+	int rc;
 
 	spin_lock_irq(&slow_subchannel_lock);
-	while (!list_empty(&slow_subchannels_head)) {
-		struct slow_subchannel *slow_sch =
-			list_entry(slow_subchannels_head.next,
-				   struct slow_subchannel, slow_list);
-
-		list_del_init(slow_subchannels_head.next);
-		spin_unlock_irq(&slow_subchannel_lock);
-		css_evaluate_subchannel(slow_sch->schid, 1);
-		spin_lock_irq(&slow_subchannel_lock);
-		kfree(slow_sch);
-	}
+	eval = idset_sch_contains(slow_subchannel_set, sch->schid);
+	idset_sch_del(slow_subchannel_set, sch->schid);
 	spin_unlock_irq(&slow_subchannel_lock);
+	if (eval) {
+		rc = css_evaluate_known_subchannel(sch, 1);
+		if (rc == -EAGAIN)
+			css_schedule_eval(sch->schid);
+	}
+	return 0;
 }
 
-typedef void (*workfunc)(void *);
-DECLARE_WORK(slow_path_work, (workfunc)css_trigger_slow_path, NULL);
+static int slow_eval_unknown_fn(struct subchannel_id schid, void *data)
+{
+	int eval;
+	int rc = 0;
+
+	spin_lock_irq(&slow_subchannel_lock);
+	eval = idset_sch_contains(slow_subchannel_set, schid);
+	idset_sch_del(slow_subchannel_set, schid);
+	spin_unlock_irq(&slow_subchannel_lock);
+	if (eval) {
+		rc = css_evaluate_new_subchannel(schid, 1);
+		switch (rc) {
+		case -EAGAIN:
+			css_schedule_eval(schid);
+			rc = 0;
+			break;
+		case -ENXIO:
+		case -ENOMEM:
+		case -EIO:
+			/* These should abort looping */
+			break;
+		default:
+			rc = 0;
+		}
+	}
+	return rc;
+}
+
+static void css_slow_path_func(struct work_struct *unused)
+{
+	CIO_TRACE_EVENT(4, "slowpath");
+	for_each_subchannel_staged(slow_eval_known_fn, slow_eval_unknown_fn,
+				   NULL);
+}
+
+DECLARE_WORK(slow_path_work, (workfunc)css_slow_path_func, NULL);
 struct workqueue_struct *slow_path_wq;
+
+static int css_end_grace_period(struct device *dev, void *data)
+{
+	struct subchannel *sch = to_subchannel(dev);
+	int wait = 0;
+
+	spin_lock_irq(&sch->lock);
+	if (device_in_grace_period(sch)) {
+		device_kill_io(sch);
+		wait = 1;
+	}
+	spin_unlock_irq(&sch->lock);
+	if (wait)
+		device_wait_for_final_state(sch);
+
+	return 0;
+}
+
+void css_wait_for_slow_path(void)
+{
+	/* First flush outstanding notifications. */
+	flush_workqueue(ccw_device_notify_work);
+	/* Then deal with devices in the grace period. */
+	bus_for_each_dev(&css_bus_type, NULL, NULL, css_end_grace_period);
+	/* Now let pending slow work complete. */
+	flush_workqueue(slow_path_wq);
+}
+
+void css_schedule_eval(struct subchannel_id schid)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&slow_subchannel_lock, flags);
+	idset_sch_add(slow_subchannel_set, schid);
+	queue_work(slow_path_wq, &slow_path_work);
+	spin_unlock_irqrestore(&slow_subchannel_lock, flags);
+}
+
+void css_schedule_eval_all(void)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&slow_subchannel_lock, flags);
+	idset_fill(slow_subchannel_set);
+	queue_work(slow_path_wq, &slow_path_work);
+	spin_unlock_irqrestore(&slow_subchannel_lock, flags);
+}
 
 /* Reprobe subchannel if unregistered. */
 static int reprobe_subchannel(struct subchannel_id schid, void *data)
 {
-	struct subchannel *sch;
 	int ret;
 
 	CIO_DEBUG(KERN_INFO, 6, "cio: reprobe 0.%x.%04x\n",
@@ -375,19 +521,13 @@ static int reprobe_subchannel(struct subchannel_id schid, void *data)
 	if (need_reprobe)
 		return -EAGAIN;
 
-	sch = get_subchannel_by_schid(schid);
-	if (sch) {
-		/* Already known. */
-		put_device(&sch->dev);
-		return 0;
-	}
-
 	ret = css_probe_device(schid);
 	switch (ret) {
 	case 0:
 		break;
 	case -ENXIO:
 	case -ENOMEM:
+	case -EIO:
 		/* These should abort looping */
 		break;
 	default:
@@ -398,7 +538,7 @@ static int reprobe_subchannel(struct subchannel_id schid, void *data)
 }
 
 /* Work function used to reprobe all unregistered subchannels. */
-static void reprobe_all(void *data)
+static void reprobe_all(struct work_struct *unused)
 {
 	int ret;
 
@@ -408,13 +548,13 @@ static void reprobe_all(void *data)
 	/* Make sure initial subchannel scan is done. */
 	wait_event(ccw_device_init_wq,
 		   atomic_read(&ccw_device_init_count) == 0);
-	ret = for_each_subchannel(reprobe_subchannel, NULL);
+	ret = for_each_subchannel_staged(NULL, reprobe_subchannel, NULL);
 
 	CIO_MSG_EVENT(2, "reprobe done (rc=%d, need_reprobe=%d)\n", ret,
 		      need_reprobe);
 }
 
-DECLARE_WORK(css_reprobe_work, reprobe_all, NULL);
+DECLARE_WORK(css_reprobe_work, (workfunc)reprobe_all, NULL);
 
 /* Schedule reprobing of all unregistered subchannels. */
 void css_schedule_reprobe(void)
@@ -426,33 +566,14 @@ void css_schedule_reprobe(void)
 EXPORT_SYMBOL_GPL(css_schedule_reprobe);
 
 /*
- * Rescan for new devices. FIXME: This is slow.
- * This function is called when we have lost CRWs due to overflows and we have
- * to do subchannel housekeeping.
- */
-void
-css_reiterate_subchannels(void)
-{
-	css_clear_subchannel_slow_list();
-	need_rescan = 1;
-}
-
-/*
  * Called from the machine check handler for subchannel report words.
  */
-int
-css_process_crw(int rsid1, int rsid2)
+void css_process_crw(int rsid1, int rsid2)
 {
-	int ret;
 	struct subchannel_id mchk_schid;
 
 	CIO_CRW_EVENT(2, "source is subchannel %04X, subsystem id %x\n",
 		      rsid1, rsid2);
-
-	if (need_rescan)
-		/* We need to iterate all subchannels anyway. */
-		return -EAGAIN;
-
 	init_subchannel_id(&mchk_schid);
 	mchk_schid.sch_no = rsid1;
 	if (rsid2 != 0)
@@ -463,14 +584,7 @@ css_process_crw(int rsid1, int rsid2)
 	 * use stsch() to find out if the subchannel in question has come
 	 * or gone.
 	 */
-	ret = css_evaluate_subchannel(mchk_schid, 0);
-	if (ret == -EAGAIN) {
-		if (css_enqueue_subchannel_slow(mchk_schid)) {
-			css_clear_subchannel_slow_list();
-			need_rescan = 1;
-		}
-	}
-	return ret;
+	css_evaluate_subchannel(mchk_schid, 0);
 }
 
 static int __init
@@ -547,10 +661,14 @@ css_cm_enable_show(struct device *dev, struct device_attribute *attr,
 		   char *buf)
 {
 	struct channel_subsystem *css = to_css(dev);
+	int ret;
 
 	if (!css)
 		return 0;
-	return sprintf(buf, "%x\n", css->cm_enabled);
+	mutex_lock(&css->mutex);
+	ret = sprintf(buf, "%x\n", css->cm_enabled);
+	mutex_unlock(&css->mutex);
+	return ret;
 }
 
 static ssize_t
@@ -560,6 +678,7 @@ css_cm_enable_store(struct device *dev, struct device_attribute *attr,
 	struct channel_subsystem *css = to_css(dev);
 	int ret;
 
+	mutex_lock(&css->mutex);
 	switch (buf[0]) {
 	case '0':
 		ret = css->cm_enabled ? chsc_secm(css, 0) : 0;
@@ -570,6 +689,7 @@ css_cm_enable_store(struct device *dev, struct device_attribute *attr,
 	default:
 		ret = -EINVAL;
 	}
+	mutex_unlock(&css->mutex);
 	return ret < 0 ? ret : count;
 }
 
@@ -598,8 +718,10 @@ static int css_reboot_event(struct notifier_block *this,
 
 	ret = 0;
 	for (i = 0; i <= __MAX_CSSID && !ret; i++) {
+		mutex_lock(&css[i]->mutex);
 		if (css[i]->cm_enabled)
 			ret = chsc_secm(css[i], 0);
+		mutex_unlock(&css[i]->mutex);
 	}
 
 	return ret ? NOTIFY_BAD : NOTIFY_DONE;
@@ -739,47 +861,6 @@ struct bus_type css_bus_type = {
 };
 
 subsys_initcall(init_channel_subsystem);
-
-int
-css_enqueue_subchannel_slow(struct subchannel_id schid)
-{
-	struct slow_subchannel *new_slow_sch;
-	unsigned long flags;
-
-	new_slow_sch = kzalloc(sizeof(struct slow_subchannel), GFP_ATOMIC);
-	if (!new_slow_sch)
-		return -ENOMEM;
-	new_slow_sch->schid = schid;
-	spin_lock_irqsave(&slow_subchannel_lock, flags);
-	list_add_tail(&new_slow_sch->slow_list, &slow_subchannels_head);
-	spin_unlock_irqrestore(&slow_subchannel_lock, flags);
-	return 0;
-}
-
-void
-css_clear_subchannel_slow_list(void)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&slow_subchannel_lock, flags);
-	while (!list_empty(&slow_subchannels_head)) {
-		struct slow_subchannel *slow_sch =
-			list_entry(slow_subchannels_head.next,
-				   struct slow_subchannel, slow_list);
-
-		list_del_init(slow_subchannels_head.next);
-		kfree(slow_sch);
-	}
-	spin_unlock_irqrestore(&slow_subchannel_lock, flags);
-}
-
-
-
-int
-css_slow_subchannels_exist(void)
-{
-	return (!list_empty(&slow_subchannels_head));
-}
 
 MODULE_LICENSE("GPL");
 EXPORT_SYMBOL(css_bus_type);

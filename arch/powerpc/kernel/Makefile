@@ -71,7 +71,8 @@ obj-$(CONFIG_PCI_MSI)		+= msi.o msi-rtas.o
 endif
 
 pci64-$(CONFIG_PPC64)		+= pci_64.o pci_dn.o pci_iommu.o \
-				   pci_direct_iommu.o ofdev_iommu.o iomap.o
+				   pci_direct_iommu.o pci_fixed_iommu.o \
+				   ofdev_iommu.o iomap.o
 pci32-$(CONFIG_PPC32)		:= pci_32.o
 obj-$(CONFIG_PCI)		+= $(pci64-y) $(pci32-y)
 kexec-$(CONFIG_PPC64)		:= machine_kexec_64.o

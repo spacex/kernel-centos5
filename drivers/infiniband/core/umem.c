@@ -38,8 +38,13 @@
 #include <linux/dma-mapping.h>
 #include <linux/sched.h>
 #include <linux/hugetlb.h>
+#include <linux/dma-attrs.h>
 
 #include "uverbs.h"
+
+static int allow_weak_ordering;
+module_param(allow_weak_ordering, bool, 0444);
+MODULE_PARM_DESC(allow_weak_ordering,  "Allow weak ordering for data registered memory");
 
 #define IB_UMEM_MAX_PAGE_CHUNK						\
 	((PAGE_SIZE - offsetof(struct ib_umem_chunk, page_list)) /	\
@@ -96,14 +101,21 @@ static void dma_unmap_sg_ia64(struct ib_device *ibdev,
 
 #endif
 
-static void __ib_umem_release(struct ib_device *dev, struct ib_umem *umem, int dirty)
+static void __ib_umem_release(struct ib_device *dev, struct ib_umem *umem, int dirty, int dmasync)
 {
 	struct ib_umem_chunk *chunk, *tmp;
 	int i;
 
+	DEFINE_DMA_ATTRS(attrs);
+
+	if (dmasync)
+		dma_set_attr(DMA_ATTR_WRITE_BARRIER, &attrs);
+	else if (allow_weak_ordering)
+		dma_set_attr(DMA_ATTR_WEAK_ORDERING, &attrs);
+
 	list_for_each_entry_safe(chunk, tmp, &umem->chunk_list, list) {
-		ib_dma_unmap_sg(dev, chunk->page_list,
-				chunk->nents, DMA_BIDIRECTIONAL);
+		ib_dma_unmap_sg_attrs(dev, chunk->page_list,
+				      chunk->nents, DMA_BIDIRECTIONAL, &attrs);
 		for (i = 0; i < chunk->nents; ++i) {
 			struct page *page = sg_page(&chunk->page_list[i]);
 
@@ -122,9 +134,10 @@ static void __ib_umem_release(struct ib_device *dev, struct ib_umem *umem, int d
  * @addr: userspace virtual address to start at
  * @size: length of region to pin
  * @access: IB_ACCESS_xxx flags for memory being pinned
+ * @dmasync: flush in-flight DMA when the memory region is written
  */
-struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
-			    size_t size, int access)
+static struct ib_umem *__ib_umem_get(struct ib_ucontext *context, unsigned long addr,
+			    size_t size, int access, int dmasync)
 {
 	struct ib_umem *umem;
 	struct page **page_list;
@@ -137,6 +150,13 @@ struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
 	int ret;
 	int off;
 	int i;
+	DEFINE_DMA_ATTRS(attrs);
+
+	if (dmasync)
+		dma_set_attr(DMA_ATTR_WRITE_BARRIER, &attrs);
+	else if (allow_weak_ordering)
+		dma_set_attr(DMA_ATTR_WEAK_ORDERING, &attrs);
+
 
 	if (!can_do_mlock())
 		return ERR_PTR(-EPERM);
@@ -224,10 +244,11 @@ struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
 				sg_set_page(&chunk->page_list[i], page_list[i + off], PAGE_SIZE, 0);
 			}
 
-			chunk->nmap = ib_dma_map_sg(context->device,
-						    &chunk->page_list[0],
-						    chunk->nents,
-						    DMA_BIDIRECTIONAL);
+			chunk->nmap = ib_dma_map_sg_attrs(context->device,
+							  &chunk->page_list[0],
+							  chunk->nents,
+							  DMA_BIDIRECTIONAL,
+							  &attrs);
 			if (chunk->nmap <= 0) {
 				for (i = 0; i < chunk->nents; ++i)
 					put_page(sg_page(&chunk->page_list[i]));
@@ -247,7 +268,7 @@ struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
 
 out:
 	if (ret < 0) {
-		__ib_umem_release(context->device, umem, 0);
+		__ib_umem_release(context->device, umem, 0, dmasync);
 		kfree(umem);
 	} else
 		current->mm->locked_vm = locked;
@@ -259,7 +280,20 @@ out:
 
 	return ret < 0 ? ERR_PTR(ret) : umem;
 }
+
+struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
+			    size_t size, int access)
+{
+	return __ib_umem_get(context, addr, size, access, 0);
+}
 EXPORT_SYMBOL(ib_umem_get);
+
+struct ib_umem *ib_umem_get_dmasync(struct ib_ucontext *context, unsigned long addr,
+			    size_t size, int access)
+{
+	return __ib_umem_get(context, addr, size, access, 1);
+}
+EXPORT_SYMBOL(ib_umem_get_dmasync);
 
 static void ib_umem_account(struct work_struct *work)
 {
@@ -276,13 +310,13 @@ static void ib_umem_account(struct work_struct *work)
  * ib_umem_release - release memory pinned with ib_umem_get
  * @umem: umem struct to release
  */
-void ib_umem_release(struct ib_umem *umem)
+static void ib_umem_release_attr(struct ib_umem *umem, int dmasync)
 {
 	struct ib_ucontext *context = umem->context;
 	struct mm_struct *mm;
 	unsigned long diff;
 
-	__ib_umem_release(umem->context->device, umem, 1);
+	__ib_umem_release(umem->context->device, umem, 1, dmasync);
 
 	mm = get_task_mm(current);
 	if (!mm) {
@@ -317,7 +351,18 @@ void ib_umem_release(struct ib_umem *umem)
 	mmput(mm);
 	kfree(umem);
 }
+
+void ib_umem_release(struct ib_umem *umem)
+{
+	return ib_umem_release_attr(umem, 0);
+}
 EXPORT_SYMBOL(ib_umem_release);
+
+void ib_umem_release_dmasync(struct ib_umem *umem)
+{
+	return ib_umem_release_attr(umem, 1);
+}
+EXPORT_SYMBOL(ib_umem_release_dmasync);
 
 int ib_umem_page_count(struct ib_umem *umem)
 {

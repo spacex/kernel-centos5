@@ -61,7 +61,8 @@ enum
 	CTL_DEV=7,		/* Devices */
 	CTL_BUS=8,		/* Busses */
 	CTL_ABI=9,		/* Binary emulation */
-	CTL_CPU=10		/* CPU stuff (speed scaling, etc) */
+	CTL_CPU=10,		/* CPU stuff (speed scaling, etc) */
+	CTL_CRYPTO=11,		/* Crypto API */
 };
 
 /* CTL_BUS names: */
@@ -159,6 +160,7 @@ enum
 	KERN_LOCK_STAT=78,	/* int: enable lock statistics */
 	KERN_PROVE_LOCKING=79,	/* int: enable lock dependancy validation */
 	KERN_SOFTLOCKUP_THRESH=80, /* int: min time to report softlockups */
+	KERN_SOFTLOCKUP_PANIC=81, /* int: panic on softlockup */
 };
 
 
@@ -257,6 +259,13 @@ enum
 	BUS_ISA_MEM_BASE=1,
 	BUS_ISA_PORT_BASE=2,
 	BUS_ISA_PORT_SHIFT=3
+};
+
+/* /proc/sys/crypto */
+
+enum
+{
+	CRYPTO_FIPS=1,
 };
 
 /* /proc/sys/net/core */
@@ -576,6 +585,9 @@ enum {
 	NET_IPV6_ACCEPT_RA_RTR_PREF=20,
 	NET_IPV6_RTR_PROBE_INTERVAL=21,
 	NET_IPV6_ACCEPT_RA_RT_INFO_MAX_PLEN=22,
+#define NET_IPV6_SYSCTL_EXTENDED_BOUNDARY NET_IPV6_ACCEPT_RA_RT_INFO_MAX_PLEN
+	NET_IPV6_DISABLE=23,
+	NET_IPV6_ACCEPT_DAD=24,
 	__NET_IPV6_MAX
 };
 

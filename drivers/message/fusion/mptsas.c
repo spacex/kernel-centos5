@@ -3,9 +3,8 @@
  *      For use with LSI PCI chip/adapter(s)
  *      running LSI Fusion MPT (Message Passing Technology) firmware.
  *
- *  Copyright (c) 1999-2007 LSI Corporation
+ *  Copyright (c) 1999-2008 LSI Corporation
  *  (mailto:DL-MPTFusionLinux@lsi.com)
- *  Copyright (c) 2005-2007 Dell
  */
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /*
@@ -229,6 +228,20 @@ static inline MPT_ADAPTER *rphy_to_ioc(struct sas_rphy *rphy)
 {
 	struct Scsi_Host *shost = dev_to_shost(rphy->dev.parent->parent);
 	return ((MPT_SCSI_HOST *)shost->hostdata)->ioc;
+}
+
+static struct mptsas_portinfo *
+mptsas_get_hba_portinfo(MPT_ADAPTER *ioc)
+{
+	struct list_head	*head = &ioc->sas_topology;
+	struct mptsas_portinfo	*pi = NULL;
+
+	/* always the first entry on sas_topology list */
+
+	if (!list_empty(head))
+		pi = list_entry(head->next, struct mptsas_portinfo, list);
+
+	return pi;
 }
 
 /*
@@ -1574,6 +1587,12 @@ mptsas_sas_expander_pg0(MPT_ADAPTER *ioc, struct mptsas_portinfo *port_info,
 	if (error)
 		goto out_free_consistent;
 
+
+	if (!buffer->NumPhys) {
+		error = -ENODEV;
+		goto out_free_consistent;
+	}
+
 	/* save config data */
 	port_info->num_phys = buffer->NumPhys;
 	port_info->phy_info = kcalloc(port_info->num_phys,
@@ -1896,8 +1915,7 @@ static int mptsas_probe_one_phy(struct device *dev,
 			int i;
 
 			mutex_lock(&ioc->sas_topology_mutex);
-			port_info = mptsas_find_portinfo_by_handle(ioc,
-								   ioc->handle);
+			port_info = mptsas_get_hba_portinfo(ioc);
 			mutex_unlock(&ioc->sas_topology_mutex);
 
 			for (i = 0; i < port_info->num_phys; i++)
@@ -1967,8 +1985,7 @@ mptsas_probe_hba_phys(MPT_ADAPTER *ioc)
 
 	mptsas_sas_io_unit_pg1(ioc);
 	mutex_lock(&ioc->sas_topology_mutex);
-	ioc->handle = hba->phy_info[0].handle;
-	port_info = mptsas_find_portinfo_by_handle(ioc, ioc->handle);
+	port_info = mptsas_get_hba_portinfo(ioc);
 	if (!port_info) {
 		port_info = hba;
 		list_add_tail(&port_info->list, &ioc->sas_topology);
@@ -2025,11 +2042,8 @@ mptsas_probe_expander_phys(MPT_ADAPTER *ioc, u32 *handle)
 	struct mptsas_portinfo *port_info, *p, *ex;
 	struct device *parent;
 	struct sas_rphy *rphy;
-	int error = -ENOMEM, i;
-	u8	add_new_expander;
-	u64	expander_sas_address;
+	int error = -ENOMEM, i, j;
 
-	add_new_expander = 0;
 	ex = kzalloc(sizeof(*port_info), GFP_KERNEL);
 	if (!ex)
 		goto out;
@@ -2047,7 +2061,6 @@ mptsas_probe_expander_phys(MPT_ADAPTER *ioc, u32 *handle)
 	if (!port_info) {
 		port_info = ex;
 		list_add_tail(&port_info->list, &ioc->sas_topology);
-		add_new_expander = 1;
 	} else {
 		for (i = 0; i < ex->num_phys; i++) {
 			port_info->phy_info[i].handle =
@@ -2087,28 +2100,20 @@ mptsas_probe_expander_phys(MPT_ADAPTER *ioc, u32 *handle)
 		}
 	}
 
-	expander_sas_address = port_info->phy_info[0].identify.sas_address;
-
-	if (add_new_expander)
-		printk(MYIOC_s_INFO_FMT "add expander: num_phys %d, "
-		    "sas_addr (0x%llx)\n", ioc->name, port_info->num_phys,
-		    (unsigned long long)expander_sas_address);
-
-	parent = NULL;
-	mutex_lock(&ioc->sas_topology_mutex);
-	list_for_each_entry(p, &ioc->sas_topology, list) {
-		for (i = 0; i < p->num_phys && parent == NULL; i++) {
-			if (expander_sas_address !=
-			    p->phy_info[i].attached.sas_address)
-				continue;
-			rphy = mptsas_get_rphy(&p->phy_info[i]);
-			parent = &rphy->dev;
+	parent = &ioc->sh->shost_gendev;
+	for (i = 0; i < port_info->num_phys; i++) {
+		mutex_lock(&ioc->sas_topology_mutex);
+		list_for_each_entry(p, &ioc->sas_topology, list) {
+			for (j = 0; j < p->num_phys; j++) {
+				if (port_info->phy_info[i].identify.handle !=
+						p->phy_info[j].attached.handle)
+					continue;
+				rphy = mptsas_get_rphy(&p->phy_info[j]);
+				parent = &rphy->dev;
+			}
 		}
+		mutex_unlock(&ioc->sas_topology_mutex);
 	}
-	mutex_unlock(&ioc->sas_topology_mutex);
-
-	if (!parent)
-		parent = &ioc->sh->shost_gendev;
 
 	mptsas_setup_wide_ports(ioc, port_info);
 

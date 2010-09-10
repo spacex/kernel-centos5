@@ -5,7 +5,7 @@
  *
  * GPL LICENSE SUMMARY
  *
- * Copyright(c) 2005 - 2007 Intel Corporation. All rights reserved.
+ * Copyright(c) 2005 - 2008 Intel Corporation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -30,7 +30,7 @@
  *
  * BSD LICENSE
  *
- * Copyright(c) 2005 - 2007 Intel Corporation. All rights reserved.
+ * Copyright(c) 2005 - 2008 Intel Corporation. All rights reserved.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -508,21 +508,27 @@ struct iwl3945_qosparam_cmd {
 #define	IWL_STATION_COUNT	32 	/* MAX(3945,4965)*/
 #define	IWL_INVALID_STATION 	255
 
-#define STA_FLG_TX_RATE_MSK		__constant_cpu_to_le32(1<<2);
-#define STA_FLG_PWR_SAVE_MSK		__constant_cpu_to_le32(1<<8);
+#define STA_FLG_TX_RATE_MSK		__constant_cpu_to_le32(1 << 2);
+#define STA_FLG_PWR_SAVE_MSK		__constant_cpu_to_le32(1 << 8);
 
 /* Use in mode field.  1: modify existing entry, 0: add new station entry */
 #define STA_CONTROL_MODIFY_MSK		0x01
 
 /* key flags __le16*/
-#define STA_KEY_FLG_ENCRYPT_MSK	__constant_cpu_to_le16(0x7)
-#define STA_KEY_FLG_NO_ENC	__constant_cpu_to_le16(0x0)
-#define STA_KEY_FLG_WEP		__constant_cpu_to_le16(0x1)
-#define STA_KEY_FLG_CCMP	__constant_cpu_to_le16(0x2)
-#define STA_KEY_FLG_TKIP	__constant_cpu_to_le16(0x3)
+#define STA_KEY_FLG_ENCRYPT_MSK	__constant_cpu_to_le16(0x0007)
+#define STA_KEY_FLG_NO_ENC	__constant_cpu_to_le16(0x0000)
+#define STA_KEY_FLG_WEP		__constant_cpu_to_le16(0x0001)
+#define STA_KEY_FLG_CCMP	__constant_cpu_to_le16(0x0002)
+#define STA_KEY_FLG_TKIP	__constant_cpu_to_le16(0x0003)
 
 #define STA_KEY_FLG_KEYID_POS	8
 #define STA_KEY_FLG_INVALID 	__constant_cpu_to_le16(0x0800)
+/* wep key is either from global key (0) or from station info array (1) */
+#define STA_KEY_FLG_WEP_KEY_MAP_MSK  __constant_cpu_to_le16(0x0008)
+
+/* wep key in STA: 5-bytes (0) or 13-bytes (1) */
+#define STA_KEY_FLG_KEY_SIZE_MSK     __constant_cpu_to_le16(0x1000)
+#define STA_KEY_MULTICAST_MSK        __constant_cpu_to_le16(0x4000)
 
 /* Flags indicate whether to modify vs. don't change various station params */
 #define	STA_MODIFY_KEY_MASK		0x01
@@ -546,7 +552,8 @@ struct iwl3945_keyinfo {
 	u8 tkip_rx_tsc_byte2;	/* TSC[2] for key mix ph1 detection */
 	u8 reserved1;
 	__le16 tkip_rx_ttak[5];	/* 10-byte unicast TKIP TTAK */
-	__le16 reserved2;
+	u8 key_offset;
+	u8 reserved2;
 	u8 key[16];		/* 16-byte unicast decryption key */
 } __attribute__ ((packed));
 
@@ -659,26 +666,26 @@ struct iwl3945_rx_frame_hdr {
 	u8 payload[0];
 } __attribute__ ((packed));
 
-#define	RX_RES_STATUS_NO_CRC32_ERROR	__constant_cpu_to_le32(1 << 0)
-#define	RX_RES_STATUS_NO_RXE_OVERFLOW	__constant_cpu_to_le32(1 << 1)
+#define RX_RES_STATUS_NO_CRC32_ERROR	__constant_cpu_to_le32(1 << 0)
+#define RX_RES_STATUS_NO_RXE_OVERFLOW	__constant_cpu_to_le32(1 << 1)
 
-#define	RX_RES_PHY_FLAGS_BAND_24_MSK	__constant_cpu_to_le16(1 << 0)
-#define	RX_RES_PHY_FLAGS_MOD_CCK_MSK		__constant_cpu_to_le16(1 << 1)
-#define	RX_RES_PHY_FLAGS_SHORT_PREAMBLE_MSK	__constant_cpu_to_le16(1 << 2)
-#define	RX_RES_PHY_FLAGS_NARROW_BAND_MSK	__constant_cpu_to_le16(1 << 3)
-#define	RX_RES_PHY_FLAGS_ANTENNA_MSK		__constant_cpu_to_le16(0xf0)
+#define RX_RES_PHY_FLAGS_BAND_24_MSK	__constant_cpu_to_le16(1 << 0)
+#define RX_RES_PHY_FLAGS_MOD_CCK_MSK		__constant_cpu_to_le16(1 << 1)
+#define RX_RES_PHY_FLAGS_SHORT_PREAMBLE_MSK	__constant_cpu_to_le16(1 << 2)
+#define RX_RES_PHY_FLAGS_NARROW_BAND_MSK	__constant_cpu_to_le16(1 << 3)
+#define RX_RES_PHY_FLAGS_ANTENNA_MSK		__constant_cpu_to_le16(0xf0)
 
-#define	RX_RES_STATUS_SEC_TYPE_MSK	(0x7 << 8)
-#define	RX_RES_STATUS_SEC_TYPE_NONE	(0x0 << 8)
-#define	RX_RES_STATUS_SEC_TYPE_WEP	(0x1 << 8)
-#define	RX_RES_STATUS_SEC_TYPE_CCMP	(0x2 << 8)
-#define	RX_RES_STATUS_SEC_TYPE_TKIP	(0x3 << 8)
+#define RX_RES_STATUS_SEC_TYPE_MSK	(0x7 << 8)
+#define RX_RES_STATUS_SEC_TYPE_NONE	(0x0 << 8)
+#define RX_RES_STATUS_SEC_TYPE_WEP	(0x1 << 8)
+#define RX_RES_STATUS_SEC_TYPE_CCMP	(0x2 << 8)
+#define RX_RES_STATUS_SEC_TYPE_TKIP	(0x3 << 8)
 
-#define	RX_RES_STATUS_DECRYPT_TYPE_MSK	(0x3 << 11)
-#define	RX_RES_STATUS_NOT_DECRYPT	(0x0 << 11)
-#define	RX_RES_STATUS_DECRYPT_OK	(0x3 << 11)
-#define	RX_RES_STATUS_BAD_ICV_MIC	(0x1 << 11)
-#define	RX_RES_STATUS_BAD_KEY_TTAK	(0x2 << 11)
+#define RX_RES_STATUS_DECRYPT_TYPE_MSK	(0x3 << 11)
+#define RX_RES_STATUS_NOT_DECRYPT	(0x0 << 11)
+#define RX_RES_STATUS_DECRYPT_OK	(0x3 << 11)
+#define RX_RES_STATUS_BAD_ICV_MIC	(0x1 << 11)
+#define RX_RES_STATUS_BAD_KEY_TTAK	(0x2 << 11)
 
 struct iwl3945_rx_frame_end {
 	__le32 status;
@@ -699,45 +706,6 @@ struct iwl3945_rx_frame {
 	struct iwl3945_rx_frame_hdr hdr;
 	struct iwl3945_rx_frame_end end;
 } __attribute__ ((packed));
-
-/* Fixed (non-configurable) rx data from phy */
-#define RX_PHY_FLAGS_ANTENNAE_OFFSET		(4)
-#define RX_PHY_FLAGS_ANTENNAE_MASK		(0x70)
-#define IWL_AGC_DB_MASK 	(0x3f80)	/* MASK(7,13) */
-#define IWL_AGC_DB_POS		(7)
-struct iwl4965_rx_non_cfg_phy {
-	__le16 ant_selection;	/* ant A bit 4, ant B bit 5, ant C bit 6 */
-	__le16 agc_info;	/* agc code 0:6, agc dB 7:13, reserved 14:15 */
-	u8 rssi_info[6];	/* we use even entries, 0/2/4 for A/B/C rssi */
-	u8 pad[0];
-} __attribute__ ((packed));
-
-/*
- * REPLY_4965_RX = 0xc3 (response only, not a command)
- * Used only for legacy (non 11n) frames.
- */
-#define RX_RES_PHY_CNT 14
-struct iwl4965_rx_phy_res {
-	u8 non_cfg_phy_cnt;     /* non configurable DSP phy data byte count */
-	u8 cfg_phy_cnt;		/* configurable DSP phy data byte count */
-	u8 stat_id;		/* configurable DSP phy data set ID */
-	u8 reserved1;
-	__le64 timestamp;	/* TSF at on air rise */
-	__le32 beacon_time_stamp; /* beacon at on-air rise */
-	__le16 phy_flags;	/* general phy flags: band, modulation, ... */
-	__le16 channel;		/* channel number */
-	__le16 non_cfg_phy[RX_RES_PHY_CNT];	/* upto 14 phy entries */
-	__le32 reserved2;
-	__le32 rate_n_flags;
-	__le16 byte_count;		/* frame's byte-count */
-	__le16 reserved3;
-} __attribute__ ((packed));
-
-struct iwl4965_rx_mpdu_res_start {
-	__le16 byte_count;
-	__le16 reserved;
-} __attribute__ ((packed));
-
 
 /******************************************************************************
  * (5)
@@ -1010,7 +978,7 @@ struct iwl3945_rate_scaling_info {
  * For example, if you set 9MB (PLCP 0x0f) as the first
  * rate in the rate table, the bit mask for that rate
  * when passed through ofdm_basic_rates on the REPLY_RXON
- * command would be bit 0 (1<<0)
+ * command would be bit 0 (1 << 0)
  */
 struct iwl3945_rate_scaling_cmd {
 	u8 table_id;
@@ -1020,6 +988,10 @@ struct iwl3945_rate_scaling_cmd {
 
 /*
  * REPLY_BT_CONFIG = 0x9b (command, has simple generic response)
+ *
+ * 3945 and 4965 support hardware handshake with Bluetooth device on
+ * same platform.  Bluetooth device alerts wireless device when it will Tx;
+ * wireless device can delay or kill its own Tx to accomodate.
  */
 struct iwl3945_bt_cmd {
 	u8 flags;
@@ -1186,9 +1158,9 @@ struct iwl3945_spectrum_notification {
  */
 #define IWL_POWER_VEC_SIZE 5
 
-#define IWL_POWER_DRIVER_ALLOW_SLEEP_MSK	__constant_cpu_to_le32(1<<0)
-#define IWL_POWER_SLEEP_OVER_DTIM_MSK		__constant_cpu_to_le32(1<<2)
-#define IWL_POWER_PCI_PM_MSK			__constant_cpu_to_le32(1<<3)
+#define IWL_POWER_DRIVER_ALLOW_SLEEP_MSK	__constant_cpu_to_le32(1 << 0)
+#define IWL_POWER_SLEEP_OVER_DTIM_MSK		__constant_cpu_to_le32(1 << 2)
+#define IWL_POWER_PCI_PM_MSK			__constant_cpu_to_le32(1 << 3)
 struct iwl3945_powertable_cmd {
 	__le32 flags;
 	__le32 rx_data_timeout;
@@ -1258,20 +1230,47 @@ struct iwl3945_ct_kill_config {
  *
  *****************************************************************************/
 
+/**
+ * struct iwl3945_scan_channel - entry in REPLY_SCAN_CMD channel table
+ *
+ * One for each channel in the scan list.
+ * Each channel can independently select:
+ * 1)  SSID for directed active scans
+ * 2)  Txpower setting (for rate specified within Tx command)
+ * 3)  How long to stay on-channel (behavior may be modified by quiet_time,
+ *     quiet_plcp_th, good_CRC_th)
+ *
+ * To avoid uCode errors, make sure the following are true (see comments
+ * under struct iwl3945_scan_cmd about max_out_time and quiet_time):
+ * 1)  If using passive_dwell (i.e. passive_dwell != 0):
+ *     active_dwell <= passive_dwell (< max_out_time if max_out_time != 0)
+ * 2)  quiet_time <= active_dwell
+ * 3)  If restricting off-channel time (i.e. max_out_time !=0):
+ *     passive_dwell < max_out_time
+ *     active_dwell < max_out_time
+ */
 struct iwl3945_scan_channel {
-	/* type is defined as:
-	 * 0:0 active (0 - passive)
-	 * 1:4 SSID direct
-	 *     If 1 is set then corresponding SSID IE is transmitted in probe
+	/*
+	 * type is defined as:
+	 * 0:0 1 = active, 0 = passive
+	 * 1:4 SSID direct bit map; if a bit is set, then corresponding
+	 *     SSID IE is transmitted in probe request.
 	 * 5:7 reserved
 	 */
 	u8 type;
-	u8 channel;
+	u8 channel;	/* band is selected by iwl3945_scan_cmd "flags" field */
 	struct iwl3945_tx_power tpc;
-	__le16 active_dwell;
-	__le16 passive_dwell;
+	__le16 active_dwell;	/* in 1024-uSec TU (time units), typ 5-50 */
+	__le16 passive_dwell;	/* in 1024-uSec TU (time units), typ 20-500 */
 } __attribute__ ((packed));
 
+/**
+ * struct iwl3945_ssid_ie - directed scan network information element
+ *
+ * Up to 4 of these may appear in REPLY_SCAN_CMD, selected by "type" field
+ * in struct iwl3945_scan_channel; each channel may select different ssids from
+ * among the 4 entries.  SSID IEs get transmitted in reverse order of entry.
+ */
 struct iwl3945_ssid_ie {
 	u8 id;
 	u8 len;
@@ -1285,40 +1284,98 @@ struct iwl3945_ssid_ie {
 
 /*
  * REPLY_SCAN_CMD = 0x80 (command)
+ *
+ * The hardware scan command is very powerful; the driver can set it up to
+ * maintain (relatively) normal network traffic while doing a scan in the
+ * background.  The max_out_time and suspend_time control the ratio of how
+ * long the device stays on an associated network channel ("service channel")
+ * vs. how long it's away from the service channel, tuned to other channels
+ * for scanning.
+ *
+ * max_out_time is the max time off-channel (in usec), and suspend_time
+ * is how long (in "extended beacon" format) that the scan is "suspended"
+ * after returning to the service channel.  That is, suspend_time is the
+ * time that we stay on the service channel, doing normal work, between
+ * scan segments.  The driver may set these parameters differently to support
+ * scanning when associated vs. not associated, and light vs. heavy traffic
+ * loads when associated.
+ *
+ * After receiving this command, the device's scan engine does the following;
+ *
+ * 1)  Sends SCAN_START notification to driver
+ * 2)  Checks to see if it has time to do scan for one channel
+ * 3)  Sends NULL packet, with power-save (PS) bit set to 1,
+ *     to tell AP that we're going off-channel
+ * 4)  Tunes to first channel in scan list, does active or passive scan
+ * 5)  Sends SCAN_RESULT notification to driver
+ * 6)  Checks to see if it has time to do scan on *next* channel in list
+ * 7)  Repeats 4-6 until it no longer has time to scan the next channel
+ *     before max_out_time expires
+ * 8)  Returns to service channel
+ * 9)  Sends NULL packet with PS=0 to tell AP that we're back
+ * 10) Stays on service channel until suspend_time expires
+ * 11) Repeats entire process 2-10 until list is complete
+ * 12) Sends SCAN_COMPLETE notification
+ *
+ * For fast, efficient scans, the scan command also has support for staying on
+ * a channel for just a short time, if doing active scanning and getting no
+ * responses to the transmitted probe request.  This time is controlled by
+ * quiet_time, and the number of received packets below which a channel is
+ * considered "quiet" is controlled by quiet_plcp_threshold.
+ *
+ * For active scanning on channels that have regulatory restrictions against
+ * blindly transmitting, the scan can listen before transmitting, to make sure
+ * that there is already legitimate activity on the channel.  If enough
+ * packets are cleanly received on the channel (controlled by good_CRC_th,
+ * typical value 1), the scan engine starts transmitting probe requests.
+ *
+ * Driver must use separate scan commands for 2.4 vs. 5 GHz bands.
+ *
+ * To avoid uCode errors, see timing restrictions described under
+ * struct iwl3945_scan_channel.
  */
 struct iwl3945_scan_cmd {
 	__le16 len;
 	u8 reserved0;
-	u8 channel_count;
-	__le16 quiet_time;     /* dwell only this long on quiet chnl
-				* (active scan) */
-	__le16 quiet_plcp_th;  /* quiet chnl is < this # pkts (typ. 1) */
-	__le16 good_CRC_th;    /* passive -> active promotion threshold */
+	u8 channel_count;	/* # channels in channel list */
+	__le16 quiet_time;	/* dwell only this # millisecs on quiet channel
+				 * (only for active scan) */
+	__le16 quiet_plcp_th;	/* quiet chnl is < this # pkts (typ. 1) */
+	__le16 good_CRC_th;	/* passive -> active promotion threshold */
 	__le16 reserved1;
-	__le32 max_out_time;   /* max usec to be out of associated (service)
-				* chnl */
-	__le32 suspend_time;   /* pause scan this long when returning to svc
-				* chnl.
-				* 3945 -- 31:24 # beacons, 19:0 additional usec,
-				* 4965 -- 31:22 # beacons, 21:0 additional usec.
-				*/
-	__le32 flags;
-	__le32 filter_flags;
+	__le32 max_out_time;	/* max usec to be away from associated (service)
+				 * channel */
+	__le32 suspend_time;	/* pause scan this long (in "extended beacon
+				 * format") when returning to service channel:
+				 * 3945; 31:24 # beacons, 19:0 additional usec,
+				 * 4965; 31:22 # beacons, 21:0 additional usec.
+				 */
+	__le32 flags;		/* RXON_FLG_* */
+	__le32 filter_flags;	/* RXON_FILTER_* */
 
+	/* For active scans (set to all-0s for passive scans).
+	 * Does not include payload.  Must specify Tx rate; no rate scaling. */
 	struct iwl3945_tx_cmd tx_cmd;
+
+	/* For directed active scans (set to all-0s otherwise) */
 	struct iwl3945_ssid_ie direct_scan[PROBE_OPTION_MAX];
 
-	u8 data[0];
 	/*
-	 * The channels start after the probe request payload and are of type:
+	 * Probe request frame, followed by channel list.
+	 *
+	 * Size of probe request frame is specified by byte count in tx_cmd.
+	 * Channel list follows immediately after probe request frame.
+	 * Number of channels in list is specified by channel_count.
+	 * Each channel in list is of type:
 	 *
 	 * struct iwl3945_scan_channel channels[0];
 	 *
 	 * NOTE:  Only one band of channels can be scanned per pass.  You
-	 * can not mix 2.4GHz channels and 5.2GHz channels and must
-	 * request a scan multiple times (not concurrently)
-	 *
+	 * must not mix 2.4GHz channels and 5.2GHz channels, and you must wait
+	 * for one scan to complete (i.e. receive SCAN_COMPLETE_NOTIFICATION)
+	 * before requesting another scan.
 	 */
+	u8 data[0];
 } __attribute__ ((packed));
 
 /* Can abort will notify by complete notification with abort status. */

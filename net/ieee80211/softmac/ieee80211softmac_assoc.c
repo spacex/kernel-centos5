@@ -30,7 +30,7 @@
  * Overview
  *
  * Before you can associate, you have to authenticate.
- * 
+ *
  */
 
 /* Sends out an association request to the desired AP */
@@ -41,10 +41,10 @@ ieee80211softmac_assoc(struct ieee80211softmac_device *mac, struct ieee80211soft
 
 	/* Switch to correct channel for this network */
 	mac->set_channel(mac->dev, net->channel);
-	
+
 	/* Send association request */
 	ieee80211softmac_send_mgt_frame(mac, net, IEEE80211_STYPE_ASSOC_REQ, 0);
-	
+
 	dprintk(KERN_INFO PFX "sent association request!\n");
 
 	spin_lock_irqsave(&mac->lock, flags);
@@ -153,7 +153,7 @@ network_matches_request(struct ieee80211softmac_device *mac, struct ieee80211_ne
 	}
 
 	/* if 'ANY' network requested, take any that doesn't have privacy enabled */
-	if (mac->associnfo.req_essid.len == 0 
+	if (mac->associnfo.req_essid.len == 0
 	    && !(net->capability & WLAN_CAPABILITY_PRIVACY))
 		return 1;
 	if (net->ssid_len != mac->associnfo.req_essid.len)
@@ -209,8 +209,8 @@ ieee80211softmac_assoc_work(void *d)
 
 	/* try to find the requested network in our list, if we found one already */
 	if (bssvalid || mac->associnfo.bssfixed)
-		found = ieee80211softmac_get_network_by_bssid(mac, mac->associnfo.bssid);	
-	
+		found = ieee80211softmac_get_network_by_bssid(mac, mac->associnfo.bssid);
+
 	/* Search the ieee80211 networks for this network if we didn't find it by bssid,
 	 * but only if we've scanned at least once (to get a better list of networks to
 	 * select from). If we have not scanned before, the !found logic below will be
@@ -263,15 +263,16 @@ ieee80211softmac_assoc_work(void *d)
 			spin_lock_irqsave(&mac->lock, flags);
 			mac->associnfo.scan_retry--;
 			spin_unlock_irqrestore(&mac->lock, flags);
-		
-			/* We know of no such network. Let's scan. 
+
+			/* We know of no such network. Let's scan.
 			 * NB: this also happens if we had no memory to copy the network info...
 			 * Maybe we can hope to have more memory after scanning finishes ;)
 			 */
 			dprintk(KERN_INFO PFX "Associate: Scanning for networks first.\n");
 			ieee80211softmac_notify(mac->dev, IEEE80211SOFTMAC_EVENT_SCAN_FINISHED, ieee80211softmac_assoc_notify_scan, NULL);
-			if (ieee80211softmac_start_scan(mac))
+			if (ieee80211softmac_start_scan(mac)) {
 				dprintk(KERN_INFO PFX "Associate: failed to initiate scan. Is device up?\n");
+			}
 			return;
 		} else {
 			spin_lock_irqsave(&mac->lock, flags);
@@ -343,7 +344,7 @@ ieee80211softmac_associated(struct ieee80211softmac_device *mac,
 		mac->set_bssid_filter(mac->dev, net->bssid);
 	memcpy(mac->ieee->bssid, net->bssid, ETH_ALEN);
 	netif_carrier_on(mac->dev);
-	
+
 	mac->association_id = le16_to_cpup(&resp->aid);
 }
 
@@ -364,7 +365,7 @@ ieee80211softmac_handle_assoc_response(struct net_device * dev,
 
 	if (unlikely(!mac->running))
 		return -ENODEV;
-	
+
 	spin_lock_irqsave(&mac->lock, flags);
 
 	if (!mac->associnfo.associating) {
@@ -377,7 +378,8 @@ ieee80211softmac_handle_assoc_response(struct net_device * dev,
 
 	/* someone sending us things without us knowing him? Ignore. */
 	if (!network) {
-		dprintk(KERN_INFO PFX "Received unrequested assocation response from " MAC_FMT "\n", MAC_ARG(resp->header.addr3));
+		dprintk(KERN_INFO PFX "Received unrequested assocation response from " MAC_FMT "\n",
+			MAC_ARG(resp->header.addr3));
 		spin_unlock_irqrestore(&mac->lock, flags);
 		return 0;
 	}
@@ -401,7 +403,7 @@ ieee80211softmac_handle_assoc_response(struct net_device * dev,
 				network->authenticated = 0;
 				/* we don't want to do this more than once ... */
 				network->auth_desynced_once = 1;
-				schedule_work(&mac->associnfo.work);
+				schedule_delayed_work(&mac->associnfo.work, 0);
 				break;
 			}
 		default:
@@ -411,7 +413,7 @@ ieee80211softmac_handle_assoc_response(struct net_device * dev,
 			mac->associated = 0;
 			ieee80211softmac_call_events_locked(mac, IEEE80211SOFTMAC_EVENT_ASSOCIATE_FAILED, network);
 	}
-	
+
 	spin_unlock_irqrestore(&mac->lock, flags);
 	return 0;
 }
@@ -423,7 +425,7 @@ ieee80211softmac_try_reassoc(struct ieee80211softmac_device *mac)
 
 	spin_lock_irqsave(&mac->lock, flags);
 	mac->associnfo.associating = 1;
-	schedule_work(&mac->associnfo.work);
+	schedule_delayed_work(&mac->associnfo.work, 0);
 	spin_unlock_irqrestore(&mac->lock, flags);
 }
 
@@ -465,7 +467,7 @@ ieee80211softmac_handle_reassoc_req(struct net_device * dev,
 		dprintkl(KERN_INFO PFX "reassoc request from unknown network\n");
 		return 0;
 	}
-	schedule_work(&mac->associnfo.work);
+	schedule_delayed_work(&mac->associnfo.work, 0);
 
 	return 0;
 }

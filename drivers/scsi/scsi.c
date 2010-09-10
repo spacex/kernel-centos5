@@ -358,7 +358,6 @@ void scsi_log_send(struct scsi_cmnd *cmd)
 void scsi_log_completion(struct scsi_cmnd *cmd, int disposition)
 {
 	unsigned int level;
-	struct scsi_device *sdev;
 
 	/*
 	 * If ML COMPLETE log level is greater than or equal to:
@@ -375,38 +374,40 @@ void scsi_log_completion(struct scsi_cmnd *cmd, int disposition)
 	if (unlikely(scsi_logging_level)) {
 		level = SCSI_LOG_LEVEL(SCSI_LOG_MLCOMPLETE_SHIFT,
 				       SCSI_LOG_MLCOMPLETE_BITS);
-		if (((level > 0) && (cmd->result || disposition != SUCCESS)) ||
+		if (((level > 0) &&
+		    (cmd->result || !scsi_disposition_finish(disposition))) ||
 		    (level > 1)) {
-			sdev = cmd->device;
-			sdev_printk(KERN_INFO, sdev, "done ");
+			scmd_printk(KERN_INFO, cmd, "Done: ");
 			if (level > 2)
 				printk("0x%p ", cmd);
+
 			/*
 			 * Dump truncated values, so we usually fit within
 			 * 80 chars.
 			 */
-			switch (disposition) {
-			case SUCCESS:
-				printk("SUCCESS");
-				break;
-			case NEEDS_RETRY:
-				printk("RETRY  ");
-				break;
-			case ADD_TO_MLQUEUE:
-				printk("MLQUEUE");
-				break;
-			case FAILED:
-				printk("FAILED ");
-				break;
-			case TIMEOUT_ERROR:
-				/* 
-				 * If called via scsi_times_out.
-				 */
-				printk("TIMEOUT");
-				break;
-			default:
-				printk("UNKNOWN");
+			if (scsi_disposition_finish(disposition))
+				printk("SUCCESS\n");
+			else if (scsi_disposition_retry(disposition))
+				printk("RETRY\n");
+			else if (scsi_disposition_fail(disposition))
+				printk("FAILED\n");
+			else {
+				switch (disposition) {
+				case SUCCESS:
+					printk("SUCCESS\n");
+					break;
+				case TIMEOUT_ERROR:
+					/*
+					 * If called via scsi_times_out.
+					 */
+					printk("TIMEOUT\n");
+					break;
+				default:
+					printk("UNKNOWN: 0x%x\n",
+					       disposition);
+				}
 			}
+
 			printk(" %8x ", cmd->result);
 			scsi_print_command(cmd);
 			if (status_byte(cmd->result) & CHECK_CONDITION) {
@@ -418,8 +419,8 @@ void scsi_log_completion(struct scsi_cmnd *cmd, int disposition)
 			}
 			if (level > 3) {
 				printk(KERN_INFO "scsi host busy %d failed %d\n",
-				       sdev->host->host_busy,
-				       sdev->host->host_failed);
+				       cmd->device->host->host_busy,
+				       cmd->device->host->host_failed);
 			}
 		}
 	}
@@ -477,7 +478,7 @@ int scsi_dispatch_cmd(struct scsi_cmnd *cmd)
 		 * future requests should not occur until the device 
 		 * transitions out of the suspend state.
 		 */
-		scsi_queue_insert(cmd, SCSI_MLQUEUE_DEVICE_BUSY);
+		scsi_attempt_requeue_command(cmd, SCSI_MLQUEUE_DEVICE_BUSY);
 
 		SCSI_LOG_MLQUEUE(3, printk("queuecommand : device blocked \n"));
 
@@ -559,7 +560,7 @@ int scsi_dispatch_cmd(struct scsi_cmnd *cmd)
 	if (rtn) {
 		if (scsi_delete_timer(cmd)) {
 			atomic_inc(&cmd->device->iodone_cnt);
-			scsi_queue_insert(cmd,
+			scsi_attempt_requeue_command(cmd,
 					  (rtn == SCSI_MLQUEUE_DEVICE_BUSY) ?
 					  rtn : SCSI_MLQUEUE_HOST_BUSY);
 		}
@@ -647,27 +648,6 @@ void __scsi_done(struct scsi_cmnd *cmd)
 	 */
 	rq->completion_data = cmd;
 	blk_complete_request(rq);
-}
-
-/*
- * Function:    scsi_retry_command
- *
- * Purpose:     Send a command back to the low level to be retried.
- *
- * Notes:       This command is always executed in the context of the
- *              bottom half handler, or the error handler thread. Low
- *              level drivers should not become re-entrant as a result of
- *              this.
- */
-int scsi_retry_command(struct scsi_cmnd *cmd)
-{
-        /*
-         * Zero the sense information from the last time we tried
-         * this command.
-         */
-	memset(cmd->sense_buffer, 0, sizeof(cmd->sense_buffer));
-
-	return scsi_queue_insert(cmd, SCSI_MLQUEUE_EH_RETRY);
 }
 
 /*

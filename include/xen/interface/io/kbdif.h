@@ -38,6 +38,7 @@ struct xenkbd_motion
 	__u8 type;         /* XENKBD_TYPE_MOTION */
 	__s32 rel_x;       /* relative X motion */
 	__s32 rel_y;       /* relative Y motion */
+	__s32 rel_z;       /* relative Z motion (wheel) */
 };
 
 struct xenkbd_key
@@ -52,6 +53,7 @@ struct xenkbd_position
 	__u8 type;         /* XENKBD_TYPE_POS */
 	__s32 abs_x;       /* absolute X position (in FB pixels) */
 	__s32 abs_y;       /* absolute Y position (in FB pixels) */
+	__s32 rel_z;       /* relative Z motion (wheel) */
 };
 
 #define XENKBD_IN_EVENT_SIZE 40

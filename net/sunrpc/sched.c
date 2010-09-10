@@ -41,7 +41,6 @@ static mempool_t	*rpc_task_mempool __read_mostly;
 static mempool_t	*rpc_buffer_mempool __read_mostly;
 
 static void			__rpc_default_timer(struct rpc_task *task);
-static void			rpciod_killall(void);
 static void			rpc_async_schedule(void *);
 static void			 rpc_release_task(struct rpc_task *task);
 
@@ -64,8 +63,6 @@ static LIST_HEAD(all_tasks);
 /*
  * rpciod-related stuff
  */
-static DEFINE_MUTEX(rpciod_mutex);
-static unsigned int		rpciod_users;
 struct workqueue_struct *rpciod_workqueue;
 
 /*
@@ -761,10 +758,16 @@ static void rpc_async_schedule(void *arg)
  * @task: RPC task that will use this buffer
  * @size: requested byte size
  *
- * We try to ensure that some NFS reads and writes can always proceed
- * by using a mempool when allocating 'small' buffers.
+ * To prevent rpciod from hanging, this allocator never sleeps,
+ * returning NULL if the request cannot be serviced immediately.
+ * The caller can arrange to sleep in a way that is safe for rpciod.
+ *
+ * Most requests are 'small' (under 2KiB) and can be serviced from a
+ * mempool, ensuring that NFS reads and writes can always proceed,
+ * and that there is good locality of reference for these buffers.
+ *
  * In order to avoid memory starvation triggering more writebacks of
- * NFS requests, we use GFP_NOFS rather than GFP_KERNEL.
+ * NFS requests, we avoid using GFP_KERNEL.
  */
 void * rpc_malloc(struct rpc_task *task, size_t size)
 {
@@ -774,7 +777,7 @@ void * rpc_malloc(struct rpc_task *task, size_t size)
 	if (task->tk_flags & RPC_TASK_SWAPPER)
 		gfp = GFP_ATOMIC;
 	else
-		gfp = GFP_NOFS;
+		gfp = GFP_NOWAIT;
 
 	if (size > RPC_BUFFER_MAXSIZE) {
 		req->rq_buffer = kmalloc(size, gfp);
@@ -1060,84 +1063,43 @@ void rpc_killall_tasks(struct rpc_clnt *clnt)
 	spin_unlock(&rpc_sched_lock);
 }
 
-static DECLARE_MUTEX_LOCKED(rpciod_running);
-
-static void rpciod_killall(void)
+int rpciod_up(void)
 {
-	unsigned long flags;
+	return try_module_get(THIS_MODULE) ? 0 : -EINVAL;
+}
 
-	while (!list_empty(&all_tasks)) {
-		clear_thread_flag(TIF_SIGPENDING);
-		rpc_killall_tasks(NULL);
-		flush_workqueue(rpciod_workqueue);
-		if (!list_empty(&all_tasks)) {
-			dprintk("rpciod_killall: waiting for tasks to exit\n");
-			yield();
-		}
-	}
-
-	spin_lock_irqsave(&current->sighand->siglock, flags);
-	recalc_sigpending();
-	spin_unlock_irqrestore(&current->sighand->siglock, flags);
+void rpciod_down(void)
+{
+	module_put(THIS_MODULE);
 }
 
 /*
- * Start up the rpciod process if it's not already running.
+ * Start up the rpciod workqueue.
  */
-int
-rpciod_up(void)
+static int rpciod_start(void)
 {
 	struct workqueue_struct *wq;
-	int error = 0;
 
-	mutex_lock(&rpciod_mutex);
-	dprintk("rpciod_up: users %d\n", rpciod_users);
-	rpciod_users++;
-	if (rpciod_workqueue)
-		goto out;
-	/*
-	 * If there's no pid, we should be the first user.
-	 */
-	if (rpciod_users > 1)
-		printk(KERN_WARNING "rpciod_up: no workqueue, %d users??\n", rpciod_users);
 	/*
 	 * Create the rpciod thread and wait for it to start.
 	 */
-	error = -ENOMEM;
+	dprintk("RPC:       creating workqueue rpciod\n");
 	wq = create_workqueue("rpciod");
-	if (wq == NULL) {
-		printk(KERN_WARNING "rpciod_up: create workqueue failed, error=%d\n", error);
-		rpciod_users--;
-		goto out;
-	}
 	rpciod_workqueue = wq;
-	error = 0;
-out:
-	mutex_unlock(&rpciod_mutex);
-	return error;
+	return rpciod_workqueue != NULL;
 }
 
-void
-rpciod_down(void)
+static void rpciod_stop(void)
 {
-	mutex_lock(&rpciod_mutex);
-	dprintk("rpciod_down sema %d\n", rpciod_users);
-	if (rpciod_users) {
-		if (--rpciod_users)
-			goto out;
-	} else
-		printk(KERN_WARNING "rpciod_down: no users??\n");
+	struct workqueue_struct *wq = NULL;
 
-	if (!rpciod_workqueue) {
-		dprintk("rpciod_down: Nothing to do!\n");
-		goto out;
-	}
-	rpciod_killall();
+	if (rpciod_workqueue == NULL)
+		return;
+	dprintk("RPC:       destroying workqueue rpciod\n");
 
-	destroy_workqueue(rpciod_workqueue);
+	wq = rpciod_workqueue;
 	rpciod_workqueue = NULL;
- out:
-	mutex_unlock(&rpciod_mutex);
+	destroy_workqueue(wq);
 }
 
 #ifdef RPC_DEBUG
@@ -1176,6 +1138,7 @@ void rpc_show_tasks(void)
 void
 rpc_destroy_mempool(void)
 {
+	rpciod_stop();
 	if (rpc_buffer_mempool)
 		mempool_destroy(rpc_buffer_mempool);
 	if (rpc_task_mempool)
@@ -1208,6 +1171,8 @@ rpc_init_mempool(void)
 	rpc_buffer_mempool = mempool_create_slab_pool(RPC_BUFFER_POOLSIZE,
 						      rpc_buffer_slabp);
 	if (!rpc_buffer_mempool)
+		goto err_nomem;
+	if (!rpciod_start())
 		goto err_nomem;
 	return 0;
 err_nomem:

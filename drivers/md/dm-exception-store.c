@@ -8,13 +8,13 @@
 
 #include "dm.h"
 #include "dm-snap.h"
-#include "dm-io.h"
 #include "kcopyd.h"
 
 #include <linux/mm.h>
 #include <linux/pagemap.h>
 #include <linux/vmalloc.h>
 #include <linux/slab.h>
+#include <linux/dm-io.h>
 
 #define DM_MSG_PREFIX "snapshots"
 #define DM_CHUNK_SIZE_DEFAULT_SECTORS 32	/* 16KB */
@@ -128,7 +128,7 @@ struct pstore {
 
 static inline unsigned int sectors_to_pages(unsigned int sectors)
 {
-	return sectors / (PAGE_SIZE >> 9);
+	return DIV_ROUND_UP(sectors, PAGE_SIZE >> 9);
 }
 
 static int alloc_area(struct pstore *ps)

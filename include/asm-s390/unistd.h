@@ -302,8 +302,13 @@
 #define __NR_sync_file_range	307
 #define __NR_tee		308
 #define __NR_vmsplice		309
+/* Number 310 is reserved for sys_move_pages */
+/* Number 311 is reserved for sys_getcpu */
+/* Number 312 is reserved for sys_epoll_pwait */
+/* Number 313 is reserved for sys_utimes */
+#define __NR_fallocate		314
 
-#define NR_syscalls 310
+#define NR_syscalls 315
 
 /* 
  * There are some system calls that are not present on 64 bit, some

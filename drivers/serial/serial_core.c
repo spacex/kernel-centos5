@@ -199,6 +199,13 @@ static int uart_startup(struct uart_state *state, int init_hw)
 			spin_unlock_irq(&port->lock);
 		}
 
+		if (info->flags & UIF_DSR_FLOW) {
+			spin_lock_irq(&port->lock);
+			if (!(port->ops->get_mctrl(port) & TIOCM_DSR))
+				info->tty->hw_stopped = 1;
+			spin_unlock_irq(&port->lock);
+		}
+
 		info->flags |= UIF_INITIALIZED;
 
 		clear_bit(TTY_IO_ERROR, &info->tty->flags);
@@ -591,6 +598,8 @@ static void uart_throttle(struct tty_struct *tty)
 
 	if (tty->termios->c_cflag & CRTSCTS)
 		uart_clear_mctrl(state->port, TIOCM_RTS);
+	if (state->info->flags & UIF_DSR_FLOW)
+		uart_clear_mctrl(state->port, TIOCM_DTR);
 }
 
 static void uart_unthrottle(struct tty_struct *tty)
@@ -607,6 +616,8 @@ static void uart_unthrottle(struct tty_struct *tty)
 
 	if (tty->termios->c_cflag & CRTSCTS)
 		uart_set_mctrl(port, TIOCM_RTS);
+	if (state->info->flags & UIF_DSR_FLOW)
+		uart_set_mctrl(port, TIOCM_DTR);
 }
 
 static int uart_get_info(struct uart_state *state,
@@ -1168,7 +1179,10 @@ static void uart_set_termios(struct tty_struct *tty, struct termios *old_termios
 		if (!(cflag & CRTSCTS) ||
 		    !test_bit(TTY_THROTTLED, &tty->flags))
 			mask |= TIOCM_RTS;
-		uart_set_mctrl(state->port, mask);
+		if (state->info->flags & UIF_DSR_FLOW)
+			mask &= ~TIOCM_DTR;
+		if (mask)
+			uart_set_mctrl(state->port, mask);
 	}
 
 	/* Handle turning off CRTSCTS */
@@ -1182,6 +1196,7 @@ static void uart_set_termios(struct tty_struct *tty, struct termios *old_termios
 	/* Handle turning on CRTSCTS */
 	if (!(old_termios->c_cflag & CRTSCTS) && (cflag & CRTSCTS)) {
 		spin_lock_irqsave(&state->port->lock, flags);
+		state->port->info->flags &= ~UIF_DSR_FLOW;
 		if (!(state->port->ops->get_mctrl(state->port) & TIOCM_CTS)) {
 			tty->hw_stopped = 1;
 			state->port->ops->stop_tx(state->port);
@@ -1200,6 +1215,81 @@ static void uart_set_termios(struct tty_struct *tty, struct termios *old_termios
 	    (tty->termios->c_cflag & CLOCAL))
 		wake_up_interruptible(&state->info->open_wait);
 #endif
+}
+
+static void uart_set_termiox(struct tty_struct *tty, struct termiox *tnew)
+{
+	struct uart_state *state = tty->driver_data;
+	long flags;
+
+	if ((tnew->x_cflag & (CTSXON | RTSXOFF)) == (CTSXON | RTSXOFF)) {
+		/* Handle turning on CRTSCTS */
+		spin_lock_irqsave(&state->port->lock, flags);
+		tty->termios->c_cflag |= CRTSCTS;
+		state->port->info->flags &= ~UIF_DSR_FLOW;
+		state->port->info->flags |= UIF_CTS_FLOW;
+
+		if (!(state->port->ops->get_mctrl(state->port) & TIOCM_CTS)) {
+			tty->hw_stopped = 1;
+			state->port->ops->stop_tx(state->port);
+		} else if (tty->hw_stopped) {
+			tty->hw_stopped = 0;
+			__uart_start(tty);
+		}
+		spin_unlock_irqrestore(&state->port->lock, flags);
+
+		uart_clear_mctrl(state->port, TIOCM_RTS | TIOCM_DTR);
+
+		if (tty->termios->c_cflag & CBAUD) {
+			unsigned int mask = TIOCM_DTR;
+
+			if (!test_bit(TTY_THROTTLED, &tty->flags))
+				mask |= TIOCM_RTS;
+			uart_set_mctrl(state->port, mask);
+		}
+	} else if ((tnew->x_cflag & (DSRXON | DTRXOFF)) == (DSRXON | DTRXOFF)) {
+		spin_lock_irqsave(&state->port->lock, flags);
+		tty->termios->c_cflag &= ~CRTSCTS;
+		state->port->info->flags &= ~UIF_CTS_FLOW;
+		state->port->info->flags |= UIF_DSR_FLOW;
+
+		if (!(state->port->ops->get_mctrl(state->port) & TIOCM_DSR)) {
+			tty->hw_stopped = 1;
+			state->port->ops->stop_tx(state->port);
+		} else if (tty->hw_stopped) {
+			tty->hw_stopped = 0;
+			__uart_start(tty);
+		}
+		spin_unlock_irqrestore(&state->port->lock, flags);
+
+		uart_clear_mctrl(state->port, TIOCM_RTS | TIOCM_DTR);
+
+		if (tty->termios->c_cflag & CBAUD)
+			uart_set_mctrl(state->port, TIOCM_DTR);
+	} else if (!(tnew->x_cflag & (CTSXON | RTSXOFF | DSRXON | DTRXOFF))) {
+		/* disabling flow control */
+		spin_lock_irqsave(&state->port->lock, flags);
+		tty->termios->c_cflag &= ~CRTSCTS;
+		state->port->info->flags &= ~UIF_CTS_FLOW;
+		state->port->info->flags &= ~UIF_DSR_FLOW;
+
+		tty->hw_stopped = 0;
+		__uart_start(tty);
+		spin_unlock_irqrestore(&state->port->lock, flags);
+
+		uart_clear_mctrl(state->port, TIOCM_RTS);
+		uart_set_mctrl(state->port, TIOCM_DTR);
+	}
+}
+
+static void uart_get_termiox(struct tty_struct *tty, struct termiox *t)
+{
+	struct uart_state *state = tty->driver_data;
+
+	if (state->info->flags & UIF_CTS_FLOW)
+		t->x_cflag = CTSXON | RTSXOFF;
+	else if (state->info->flags & UIF_DSR_FLOW)
+		t->x_cflag = DSRXON | DTRXOFF;
 }
 
 /*
@@ -1468,7 +1558,8 @@ uart_block_til_ready(struct file *filp, struct uart_state *state)
 		 * not set RTS here - we want to make sure we catch
 		 * the data from the modem.
 		 */
-		if (info->tty->termios->c_cflag & CBAUD)
+		if (info->tty->termios->c_cflag & CBAUD &&
+		    !(info->flags & UIF_DSR_FLOW))
 			uart_set_mctrl(port, TIOCM_DTR);
 
 		/*
@@ -2180,9 +2271,11 @@ int uart_register_driver(struct uart_driver *drv)
 	normal->subtype		= SERIAL_TYPE_NORMAL;
 	normal->init_termios	= tty_std_termios;
 	normal->init_termios.c_cflag = B9600 | CS8 | CREAD | HUPCL | CLOCAL;
-	normal->flags		= TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV;
+	normal->flags		= TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV | TTY_DRIVER_HAS_TERMIOX;
 	normal->driver_state    = drv;
 	tty_set_operations(normal, &uart_ops);
+	normal->set_termiox = uart_set_termiox;
+	normal->get_termiox = uart_get_termiox;
 
 	/*
 	 * Initialise the UART state(s).

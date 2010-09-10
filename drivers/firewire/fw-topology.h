@@ -20,11 +20,12 @@
 #define __fw_topology_h
 
 enum {
-	FW_NODE_CREATED =   0x00,
-	FW_NODE_UPDATED =   0x01,
-	FW_NODE_DESTROYED = 0x02,
-	FW_NODE_LINK_ON =   0x03,
-	FW_NODE_LINK_OFF =  0x04,
+	FW_NODE_CREATED,
+	FW_NODE_UPDATED,
+	FW_NODE_DESTROYED,
+	FW_NODE_LINK_ON,
+	FW_NODE_LINK_OFF,
+	FW_NODE_INITIATED_RESET,
 };
 
 struct fw_node {
@@ -35,8 +36,8 @@ struct fw_node {
 	u8 initiated_reset : 1;
 	u8 b_path : 1;
 	u8 phy_speed : 2; /* As in the self ID packet. */
-	u8 max_speed : 2; /* Minimum of all phy-speeds and port speeds on
-			   * the path from the local node to this node. */
+	u8 max_speed : 2; /* Minimum of all phy-speeds on the path from the
+			   * local node to this node. */
 	u8 max_depth : 4; /* Maximum depth to any leaf node */
 	u8 max_hops : 4;  /* Max hops in this sub tree */
 	atomic_t ref_count;
@@ -70,5 +71,6 @@ fw_destroy_nodes(struct fw_card *card);
 
 int
 fw_compute_block_crc(u32 *block);
+
 
 #endif /* __fw_topology_h */

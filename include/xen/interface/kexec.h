@@ -109,6 +109,11 @@ typedef struct xen_kexec_load {
 #define KEXEC_RANGE_MA_XEN   1   /* machine address and size of Xen itself */
 #define KEXEC_RANGE_MA_CPU   2   /* machine address and size of a CPU note */
 
+#define KEXEC_RANGE_MA_VMCOREINFO 6 /* machine address and size of vmcoreinfo */
+ 
+extern size_t vmcoreinfo_size_xen;
+extern unsigned long paddr_vmcoreinfo_xen;
+
 /*
  * Find the address and size of certain memory areas
  * range == KEXEC_RANGE_... [in]

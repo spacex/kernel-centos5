@@ -549,6 +549,23 @@ config USB_ZD1201
 	  To compile this driver as a module, choose M here: the
 	  module will be called zd1201.
 
+config RTL8180
+	tristate "Realtek 8185 PCI support"
+	depends on MAC80211 && PCI && NET_RADIO && EXPERIMENTAL
+	select EEPROM_93CX6
+
+config RTL8187
+	tristate "Realtek 8187 USB support"
+	depends on MAC80211 && USB && NET_RADIO && EXPERIMENTAL
+	select EEPROM_93CX6
+	---help---
+	  This is a driver for RTL8187 based cards.
+	  These are USB based chips found in cards such as:
+
+	  Netgear WG111v2
+
+	  Thanks to Realtek for their support!
+
 source "drivers/net/wireless/hostap/Kconfig"
 source "drivers/net/wireless/bcm43xx/Kconfig"
 source "drivers/net/wireless/zd1211rw/Kconfig"
@@ -561,4 +578,6 @@ config NET_WIRELESS
 
 endmenu
 
+source "drivers/net/wireless/ath5k/Kconfig"
 source "drivers/net/wireless/iwlwifi/Kconfig"
+source "drivers/net/wireless/rt2x00/Kconfig"

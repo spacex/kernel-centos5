@@ -49,4 +49,8 @@ extern void usermodehelper_init(void);
 extern int __exec_usermodehelper(char *path, char **argv, char **envp,
 				 struct key *ring);
 
+struct file;
+extern int call_usermodehelper_pipe(char *path, char *argv[], char *envp[],
+				    struct file **filp);
+
 #endif /* __LINUX_KMOD_H__ */

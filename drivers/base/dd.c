@@ -45,6 +45,15 @@ void device_bind_driver(struct device * dev)
 
 	pr_debug("bound device '%s' to driver '%s'\n",
 		 dev->bus_id, dev->driver->name);
+	if (dev->bus) {
+		struct blocking_notifier_head *notifier_head;
+
+		notifier_head = get_notifier_for_bus(dev->bus);
+		if (notifier_head)
+			blocking_notifier_call_chain(notifier_head,
+						BUS_NOTIFY_BOUND_DRIVER, dev);
+	}
+
 	klist_add_tail(&dev->knode_driver, &dev->driver->klist_devices);
 	sysfs_create_link(&dev->driver->kobj, &dev->kobj,
 			  kobject_name(&dev->kobj));
@@ -212,6 +221,14 @@ static void __device_release_driver(struct device * dev)
 		sysfs_remove_link(&dev->kobj, "driver");
 		klist_remove(&dev->knode_driver);
 
+		if (dev->bus) {
+			struct blocking_notifier_head *notifier_head;
+
+			notifier_head = get_notifier_for_bus(dev->bus);
+			if (notifier_head)
+				blocking_notifier_call_chain(notifier_head,
+						BUS_NOTIFY_UNBIND_DRIVER, dev);
+		}
 		if (dev->bus && dev->bus->remove)
 			dev->bus->remove(dev);
 		else if (drv->remove)

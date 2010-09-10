@@ -3,7 +3,7 @@ PATCHLEVEL = 6
 SUBLEVEL = 18
 EXTRAVERSION = -prep
 RHEL_MAJOR = 5
-RHEL_MINOR = 2
+RHEL_MINOR = 3
 NAME=Avast! A bilge rat!
 
 # *DOCUMENTATION*
@@ -729,6 +729,9 @@ endif # ifdef CONFIG_KALLSYMS
 
 # vmlinux image - including updated kernel symbols
 vmlinux: $(vmlinux-lds) $(vmlinux-init) $(vmlinux-main) $(kallsyms.o) FORCE
+ifdef CONFIG_SAMPLES
+	$(Q)$(MAKE) $(build)=samples
+endif
 	$(call if_changed_rule,vmlinux__)
 	$(Q)rm -f .old_version
 

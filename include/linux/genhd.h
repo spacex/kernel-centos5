@@ -74,6 +74,33 @@ struct partition {
 	__le32 nr_sects;		/* nr of sectors in partition */
 } __attribute__((packed));
 
+struct disk_stats {
+	unsigned long sectors[2];	/* READs and WRITEs */
+	unsigned long ios[2];
+	unsigned long merges[2];
+	unsigned long ticks[2];
+	unsigned long io_ticks;
+	unsigned long time_in_queue;
+};
+
+/*
+ * Auxiliary struct to avoid kABI breakage
+ */
+struct partstats {
+	struct hlist_node hlist;
+	struct rcu_head rcu;
+	void *addr;
+	unsigned long stamp, stamp_idle;
+	int in_flight;
+#ifdef	CONFIG_SMP
+	struct disk_stats *dkstats;
+#else
+	struct disk_stats dkstats;
+#endif
+};
+
+extern struct partstats *get_partstats(struct hd_struct *);
+
 struct hd_struct {
 	sector_t start_sect;
 	sector_t nr_sects;
@@ -88,15 +115,6 @@ struct hd_struct {
 #define GENHD_FL_CD				8
 #define GENHD_FL_UP				16
 #define GENHD_FL_SUPPRESS_PARTITION_INFO	32
-
-struct disk_stats {
-	unsigned long sectors[2];	/* READs and WRITEs */
-	unsigned long ios[2];
-	unsigned long merges[2];
-	unsigned long ticks[2];
-	unsigned long io_ticks;
-	unsigned long time_in_queue;
-};
 	
 struct gendisk {
 	int major;			/* major number of driver */
@@ -143,6 +161,43 @@ struct disk_attribute {
  * The __ variants should only be called in critical sections. The full
  * variants disable/enable preemption.
  */
+static inline struct hd_struct *get_part(struct gendisk *gendiskp,
+					 sector_t sector)
+{
+	struct hd_struct *part;
+	int i;
+	for (i = 0; i < gendiskp->minors - 1; i++) {
+		part = gendiskp->part[i];
+		if (part && part->start_sect <= sector
+		    && sector < part->start_sect + part->nr_sects)
+			return part;
+	}
+	return NULL;
+}
+
+#define disk_stats_index(field) (offsetof(struct disk_stats, field))
+/*
+ * Maintain old stats field of struct hd_struct to avoid kABI breakage
+ */
+static inline void part_stat_add_old(struct hd_struct *part, int addnd,
+							int offset)
+{
+	switch( offset ) {
+	case disk_stats_index(ios[0]):
+		part->ios[0] += addnd;
+		break;
+	case disk_stats_index(ios[1]):
+		part->ios[1] += addnd;
+		break;
+	case disk_stats_index(sectors[0]):
+		part->sectors[0] += addnd;
+		break;
+	case disk_stats_index(sectors[1]):
+		part->sectors[1] += addnd;
+		break;
+	}
+}
+
 #ifdef	CONFIG_SMP
 #define __disk_stat_add(gendiskp, field, addnd) 	\
 	(per_cpu_ptr(gendiskp->dkstats, smp_processor_id())->field += addnd)
@@ -162,6 +217,57 @@ static inline void disk_stat_set_all(struct gendisk *gendiskp, int value)	{
 		memset(per_cpu_ptr(gendiskp->dkstats, i), value,
 				sizeof (struct disk_stats));
 }		
+
+#define part_stat_add(part, field, addnd)				\
+({									\
+	struct partstats *ps;						\
+	rcu_read_lock();						\
+	ps = get_partstats(part);					\
+	per_cpu_ptr(ps->dkstats, smp_processor_id())->field += addnd;	\
+	rcu_read_unlock();						\
+	part_stat_add_old(part, addnd, disk_stats_index(field));	\
+})
+
+#define __all_stat_add(gendiskp, field, addnd, sector)		\
+({								\
+	struct hd_struct *part = get_part(gendiskp, sector);	\
+	if (part)						\
+		part_stat_add(part, field, addnd);		\
+	__disk_stat_add(gendiskp, field, addnd);		\
+})
+
+#define all_stat_add(gendiskp, field, addnd, sector)		\
+({								\
+	struct hd_struct *part = get_part(gendiskp, sector);	\
+	if (part)						\
+		part_stat_add(part, field, addnd);		\
+	disk_stat_add(gendiskp, field, addnd);			\
+})
+
+#define part_stat_read(part, field)				\
+({								\
+	struct partstats *ps;					\
+	typeof(ps->dkstats->field) res = 0;			\
+	int i;							\
+	rcu_read_lock();					\
+	ps = get_partstats(part);				\
+	for_each_possible_cpu(i)				\
+		res += per_cpu_ptr(ps->dkstats, i)->field;	\
+	rcu_read_unlock();					\
+	res;							\
+})
+
+static inline void part_stat_reset(struct hd_struct *part)
+{
+	struct partstats *ps;
+	int i;
+	rcu_read_lock();
+	ps = get_partstats(part);
+	for_each_possible_cpu(i)
+		memset(per_cpu_ptr(ps->dkstats, i), 0,
+		       sizeof(struct disk_stats));
+	rcu_read_unlock();
+}
 				
 #else
 #define __disk_stat_add(gendiskp, field, addnd) \
@@ -170,6 +276,51 @@ static inline void disk_stat_set_all(struct gendisk *gendiskp, int value)	{
 
 static inline void disk_stat_set_all(struct gendisk *gendiskp, int value)	{
 	memset(&gendiskp->dkstats, value, sizeof (struct disk_stats));
+}
+#define part_stat_add(part, field, addnd) 			\
+({								\
+	rcu_read_lock();					\
+	get_partstats(part)->dkstats.field += addnd;		\
+	rcu_read_unlock();					\
+	part_stat_add_old(part, addnd, disk_stats_index(field));\
+})
+
+#define __all_stat_add(gendiskp, field, addnd, sector)		\
+({								\
+	struct hd_struct *part = get_part(gendiskp, sector);	\
+	if (part) {						\
+		rcu_read_lock();				\
+		get_partstats(part)->dkstats.field += addnd;	\
+		rcu_read_unlock();				\
+	}							\
+	__disk_stat_add(gendiskp, field, addnd);		\
+})
+
+#define all_stat_add(gendiskp, field, addnd, sector)		\
+({								\
+	struct hd_struct *part = get_part(gendiskp, sector);	\
+	if (part) {						\
+		rcu_read_lock();				\
+		get_partstats(part)->dkstats.field += addnd;	\
+		rcu_read_unlock();				\
+	}							\
+	disk_stat_add(gendiskp, field, addnd);			\
+})
+
+#define part_stat_read(part, field)	 		\
+({							\
+	typeof(((struct disk_stats *)0)->field) res;	\
+	rcu_read_lock();				\
+	res = get_partstats(part)->dkstats.field;	\
+	rcu_read_unlock();				\
+	res;						\
+})
+
+static inline void part_stat_reset(struct hd_struct *part)
+{
+	rcu_read_lock();
+	memset(&get_partstats(part)->dkstats, 0, sizeof(struct disk_stats));
+	rcu_read_unlock();
 }
 #endif
 
@@ -191,6 +342,23 @@ static inline void disk_stat_set_all(struct gendisk *gendiskp, int value)	{
 #define disk_stat_sub(gendiskp, field, subnd) \
 		disk_stat_add(gendiskp, field, -subnd)
 
+#define part_stat_inc(gendiskp, field) part_stat_add(gendiskp, field, 1)
+#define part_stat_dec(gendiskp, field) part_stat_add(gendiskp, field, -1)
+#define part_stat_sub(gendiskp, field, subnd) \
+		part_stat_add(gendiskp, field, -subnd)
+
+#define __all_stat_inc(gendiskp, field, sector) \
+		__all_stat_add(gendiskp, field, 1, sector)
+#define all_stat_inc(gendiskp, field, sector) \
+		all_stat_add(gendiskp, field, 1, sector)
+#define __all_stat_dec(gendiskp, field, sector) \
+		__all_stat_add(gendiskp, field, -1, sector)
+#define all_stat_dec(gendiskp, field, sector) \
+		all_stat_add(gendiskp, field, -1, sector)
+#define __all_stat_sub(gendiskp, field, subnd, sector) \
+		__all_stat_add(gendiskp, field, -subnd, sector)
+#define all_stat_sub(gendiskp, field, subnd, sector) \
+		all_stat_add(gendiskp, field, -subnd, sector)
 
 /* Inlines to alloc and free disk stats in struct gendisk */
 #ifdef  CONFIG_SMP
@@ -206,6 +374,20 @@ static inline void free_disk_stats(struct gendisk *disk)
 {
 	free_percpu(disk->dkstats);
 }
+
+static inline int init_part_stats(struct partstats *ps)
+{
+	ps->dkstats = alloc_percpu(struct disk_stats);
+	if (!ps->dkstats)
+		return 0;
+	return 1;
+}
+
+static inline void free_part_stats(struct partstats *ps)
+{
+	free_percpu(ps->dkstats);
+}
+
 #else	/* CONFIG_SMP */
 static inline int init_disk_stats(struct gendisk *disk)
 {
@@ -215,10 +397,20 @@ static inline int init_disk_stats(struct gendisk *disk)
 static inline void free_disk_stats(struct gendisk *disk)
 {
 }
+
+static inline int init_part_stats(struct partstats *ps)
+{
+	return 1;
+}
+
+static inline void free_part_stats(struct partstats *ps)
+{
+}
 #endif	/* CONFIG_SMP */
 
 /* drivers/block/ll_rw_blk.c */
 extern void disk_round_stats(struct gendisk *disk);
+extern void part_round_stats(struct hd_struct *part);
 
 /* drivers/block/genhd.c */
 extern int get_blkdev_list(char *, int);
@@ -226,6 +418,8 @@ extern void add_disk(struct gendisk *disk);
 extern void del_gendisk(struct gendisk *gp);
 extern void unlink_gendisk(struct gendisk *gp);
 extern struct gendisk *get_gendisk(dev_t dev, int *part);
+int init_partstats(struct hd_struct *part);
+void free_partstats(struct hd_struct *part);
 
 extern void set_device_ro(struct block_device *bdev, int flag);
 extern void set_disk_ro(struct gendisk *disk, int flag);

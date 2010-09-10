@@ -45,6 +45,9 @@ struct cryptomgr_param {
 
 	char larval[CRYPTO_MAX_ALG_NAME];
 	char template[CRYPTO_MAX_ALG_NAME];
+
+	u32 otype;
+	u32 omask;
 };
 
 static int cryptomgr_probe(void *data)
@@ -76,8 +79,7 @@ out:
 	module_put_and_exit(0);
 
 err:
-	crypto_larval_error(param->larval, param->type.data.type,
-			    param->type.data.mask);
+	crypto_larval_error(param->larval, param->otype, param->omask);
 	goto out;
 }
 
@@ -169,13 +171,16 @@ static int cryptomgr_schedule_probe(struct crypto_larval *larval)
 
 	param->type.attr.rta_len = sizeof(param->type);
 	param->type.attr.rta_type = CRYPTOA_TYPE;
-	param->type.data.type = larval->alg.cra_flags;
-	param->type.data.mask = larval->mask;
+	param->type.data.type = larval->alg.cra_flags & ~NCRYPTO_ALG_TESTED;
+	param->type.data.mask = larval->mask & ~NCRYPTO_ALG_TESTED;
 	param->tb[0] = &param->type.attr;
+
+	param->otype = larval->alg.cra_flags;
+	param->omask = larval->mask;
 
 	memcpy(param->larval, larval->alg.cra_name, CRYPTO_MAX_ALG_NAME);
 
-	thread = kthread_run(cryptomgr_probe, param, "cryptomgr");
+	thread = kthread_run(cryptomgr_probe, param, "cryptomgr_probe");
 	if (IS_ERR(thread))
 		goto err_free_param;
 

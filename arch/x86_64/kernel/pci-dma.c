@@ -10,6 +10,8 @@
 #include <asm/io.h>
 #include <asm/proto.h>
 #include <asm/calgary.h>
+#include <asm/amd_iommu.h>
+#include <asm/amd_iommu_types.h>
 
 int iommu_merge __read_mostly = 0;
 EXPORT_SYMBOL(iommu_merge);
@@ -279,6 +281,11 @@ __init int iommu_setup(char *p)
 		    use_calgary = 1;
 #endif /* CONFIG_CALGARY_IOMMU */
 
+#ifdef CONFIG_AMD_IOMMU
+	    if (!strncmp(p, "amd", 3))
+		    amd_iommu_enable = 1;
+#endif /* CONFIG_AMD_IOMMU */
+
 	    p += strcspn(p, ",");
 	    if (*p == ',')
 		    ++p;
@@ -301,6 +308,10 @@ void __init pci_iommu_alloc(void)
 	detect_calgary();
 #endif
 
+#ifdef CONFIG_AMD_IOMMU
+	amd_iommu_detect();
+#endif
+
 #ifdef CONFIG_SWIOTLB
 	pci_swiotlb_init();
 #endif
@@ -310,6 +321,10 @@ static int __init pci_iommu_init(void)
 {
 #ifdef CONFIG_CALGARY_IOMMU
 	calgary_iommu_init();
+#endif
+
+#ifdef CONFIG_AMD_IOMMU
+	amd_iommu_init();
 #endif
 
 #ifdef CONFIG_IOMMU

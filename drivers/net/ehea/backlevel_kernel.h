@@ -414,13 +414,4 @@ static inline long plpar_hcall9(u64 opcode, u64 *outs, u64 arg1, u64 arg2, u64 a
 };
 #endif
 
-/* inet_lro */
-typedef __u16 __bitwise __sum16;
-typedef __u32 __bitwise __wsum;
-
-static inline __wsum csum_unfold(__sum16 n)
-{
-	return (__force __wsum)n;
-}
-
 #endif	/* __BACKLEVEL_KERNEL_H__ */

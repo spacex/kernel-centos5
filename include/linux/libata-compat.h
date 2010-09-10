@@ -39,11 +39,6 @@ static inline struct page *sg_page(struct scatterlist *sg)
 
 #ifdef CONFIG_PCI
 
-static inline int pci_try_set_mwi(struct pci_dev *pdev)
-{
-	return pci_set_mwi(pdev);
-}
-
 static inline int pci_reenable_device(struct pci_dev *pdev)
 {
 	return pci_enable_device(pdev);

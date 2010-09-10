@@ -39,6 +39,7 @@
 #include <linux/pipe_fs_i.h>
 #include <linux/audit.h> /* for audit_free() */
 #include <linux/resource.h>
+#include <trace/sched.h>
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -132,6 +133,7 @@ static void __exit_signal(struct task_struct *tsk)
 
 static void delayed_put_task_struct(struct rcu_head *rhp)
 {
+	trace_sched_process_free(container_of(rhp, struct task_struct, rcu));
 	put_task_struct(container_of(rhp, struct task_struct, rcu));
 }
 
@@ -886,6 +888,8 @@ fastcall NORET_TYPE void do_exit(long code)
 	if (unlikely(tsk->compat_robust_list))
 		compat_exit_robust_list(tsk);
 #endif
+	if (group_dead)
+		tty_audit_exit();
 	if (unlikely(tsk->audit_context))
 		audit_free(tsk);
 	taskstats_exit_send(tsk, tidstats, group_dead, mycpu);
@@ -895,6 +899,8 @@ fastcall NORET_TYPE void do_exit(long code)
 
 	if (group_dead)
 		acct_process();
+	trace_sched_process_exit(tsk);
+
 	exit_sem(tsk);
 	__exit_files(tsk);
 	__exit_fs(tsk);
@@ -1381,6 +1387,8 @@ static long do_wait(pid_t pid, int options, struct siginfo __user *infop,
 	DECLARE_WAITQUEUE(wait, current);
 	struct task_struct *tsk;
 	int flag, retval;
+
+	trace_sched_process_wait(pid);
 
 	add_wait_queue(&current->signal->wait_chldexit,&wait);
 repeat:

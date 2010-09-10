@@ -14,6 +14,9 @@ struct scm_fp_list
 {
 	int		count;
 	struct file	*fp[SCM_MAX_FD];
+#ifndef __GENKSYMS__
+	struct list_head	list;
+#endif
 };
 
 struct scm_cookie

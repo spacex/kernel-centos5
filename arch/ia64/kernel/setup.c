@@ -60,9 +60,9 @@
 #include <asm/setup.h>
 #include <asm/smp.h>
 #include <asm/system.h>
+#include <asm/tlbflush.h>
 #include <asm/unistd.h>
 #include <asm/system.h>
-#include <asm/kexec.h>
 #ifdef CONFIG_XEN
 #include <asm/hypervisor.h>
 #include <asm/xen/xencomm.h>
@@ -301,6 +301,26 @@ static int __init register_memory(void)
 
 __initcall(register_memory);
 
+/*
+ * This function checks if the reserved crashkernel is allowed on the specific
+ * IA64 machine flavour. Machines without an IO TLB use swiotlb and require
+ * some memory below 4 GB (i.e. in 32 bit area), see the implementation of
+ * lib/swiotlb.c. The hpzx1 architecture has an IO TLB but cannot use that
+ * in kdump case. See the comment in sba_init() in sba_iommu.c.
+ *
+ * So, the only machvec that really supports loading the kdump kernel
+ * over 4 GB is "sn2".
+ */
+static int __init check_crashkernel_memory(unsigned long pbase, size_t size)
+{
+       if (ia64_platform_is("sn2"))
+               return 1;
+       else {
+	       printk("%s: pbase = %0lx\n", __FUNCTION__, pbase);
+               return pbase < (1UL << 32);
+       }
+}
+
 /**
  * reserve_memory - setup reserved memory areas
  *
@@ -367,7 +387,18 @@ reserve_memory (void)
 			if (size) {
 				sort_regions(rsvd_region, n);
 				base = kdump_find_rsvd_region(size,
-				rsvd_region, n);
+							      rsvd_region, n);
+				printk("%s: base = %0lx\n", __FUNCTION__, base);
+				if (!check_crashkernel_memory(base,size)) {
+					printk("crashkernel: There would be "
+					       "kdump memory at %ld GB but "
+					       "this is unusable because it "
+					       "must\nbe below 4 GB. Change "
+					       "the memory configuration of "
+					       "of the machine.\n",
+					       (unsigned long)(base >> 30));
+					return;
+				}
 				if (base != ~0UL) {
 					rsvd_region[n].start =
 						(unsigned long)__va(base);
@@ -666,10 +697,8 @@ setup_arch (char **cmdline_p)
 		ia64_mca_init();
 
 	platform_setup(cmdline_p);
+	check_sal_cache_flush();
 	paging_init();
-#ifdef CONFIG_XEN
-	xen_contiguous_bitmap_init(max_pfn);
-#endif
 }
 
 /*
@@ -1035,9 +1064,15 @@ cpu_init (void)
 #endif
 
 	/* set ia64_ctx.max_rid to the maximum RID that is supported by all CPUs: */
-	if (ia64_pal_vm_summary(NULL, &vmi) == 0)
+	if (ia64_pal_vm_summary(NULL, &vmi) == 0) {
 		max_ctx = (1U << (vmi.pal_vm_info_2_s.rid_size - 3)) - 1;
-	else {
+		if (vmi.pal_vm_info_2_s.max_purges!=1){
+			printk(KERN_WARNING "cpu_init: PAL max_purges is overridden to 1 "
+				"PALO is required for multiple outsanding ptc.g \n");
+			vmi.pal_vm_info_2_s.max_purges = 1;
+		}
+		setup_ptcg_sem(vmi.pal_vm_info_2_s.max_purges, NPTCG_FROM_PAL);
+	} else {
 		printk(KERN_WARNING "cpu_init: PAL VM summary failed, assuming 18 RID bits\n");
 		max_ctx = (1U << 15) - 1;	/* use architected minimum */
 	}

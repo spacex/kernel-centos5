@@ -262,7 +262,6 @@ static struct msi_desc* alloc_msi_entry(void)
 	return entry;
 }
 
-#ifdef CONFIG_PM
 int pci_save_msi_state(struct pci_dev *dev)
 {
 	return 0;
@@ -325,7 +324,7 @@ void pci_restore_msix_state(struct pci_dev *dev)
 	control |= PCI_MSIX_FLAGS_ENABLE;
 	pci_write_config_word(dev, pos + PCI_MSIX_FLAGS, control);
 }
-#endif	/* CONFIG_PM */
+EXPORT_SYMBOL_GPL(pci_restore_msi_state);
 
 /**
  * msi_capability_init - configure device's MSI capability structure

@@ -218,6 +218,19 @@ config X86_HT
 	depends on SMP && !MK8 && !X86_64_XEN
 	default y
 
+config EFI
+	bool "Boot from EFI support (EXPERIMENTAL)"
+	---help---
+	  This enables the the kernel to boot on EFI platforms using
+	  system configuration information passed to it from the firmware.
+	  This also enables the kernel to use any EFI runtime services that are
+	  available (such as the EFI variable services).
+	  This option is only useful on systems that have EFI firmware
+	  and will result in a kernel image that is ~8k larger. However,
+	  even with this option, the resultant kernel should continue to
+	  boot on existing non-EFI platforms. For more information on
+	  how to set up [U]EFI64 system, see Documentation/x86_64/uefi.txt.
+
 config MATH_EMULATION
 	bool
 
@@ -499,6 +512,26 @@ config CALGARY_IOMMU_ENABLED_BY_DEFAULT
 	  Calgary anyway, pass 'iommu=calgary' on the kernel command line.
 	  If unsure, say Y.
 
+config AMD_IOMMU
+	bool "AMD IOMMU support"
+	select SWIOTLB
+	depends on X86_64 && PCI && ACPI
+	help
+	  With this option you can enable support for AMD IOMMU hardware in
+	  your system. An IOMMU is a hardware component which provides
+	  remapping of DMA memory accesses from devices. With an AMD IOMMU you
+	  can isolate the the DMA memory of different devices and protect the
+	  system from misbehaving device drivers or hardware.
+
+	  You can find out if your system has an AMD IOMMU if you look into
+	  your BIOS for an option to enable it or if you have an IVRS ACPI
+	  table.
+
+config IOMMU_HELPER
+	bool "IOMMU Helper functions"
+	default n
+	depends on (AMD_IOMMU || GART_IOMMU)
+
 # need this always selected by IOMMU for the VIA workaround
 config SWIOTLB
 	bool
@@ -649,7 +682,14 @@ config XEN_PCIDEV_FE_DEBUG
 	help
 	  Enables some debug statements within the PCI Frontend.
 
+source "drivers/virtio/Kconfig"
+
 source "drivers/pci/pcie/Kconfig"
+
+config PCI_DOMAINS
+        bool "Support multiple PCI domains"
+        depends on PCI
+        default y
 
 source "drivers/pci/Kconfig"
 
@@ -720,5 +760,9 @@ source "security/Kconfig"
 source "crypto/Kconfig"
 
 source "drivers/xen/Kconfig"
+
+if !X86_64_XEN
+source "drivers/xenpv_hvm/Kconfig"
+endif
 
 source "lib/Kconfig"

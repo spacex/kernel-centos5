@@ -100,6 +100,9 @@ struct xenbus_driver {
 				 enum xenbus_state backend_state);
 	int (*remove)(struct xenbus_device *dev);
 	int (*suspend)(struct xenbus_device *dev);
+#ifdef CONFIG_XEN_PV_ON_HVM
+	int (*suspend_cancel)(struct xenbus_device *dev);
+#endif
 	int (*resume)(struct xenbus_device *dev);
 	int (*uevent)(struct xenbus_device *, char **, int, char *, int);
 	struct device_driver driver;
@@ -160,6 +163,9 @@ int register_xenbus_watch(struct xenbus_watch *watch);
 void unregister_xenbus_watch(struct xenbus_watch *watch);
 void xs_suspend(void);
 void xs_resume(void);
+#ifdef CONFIG_XEN_PV_ON_HVM
+void xs_suspend_cancel(void);
+#endif
 
 /* Used by xenbus_dev to borrow kernel's store connection. */
 void *xenbus_dev_request_and_reply(struct xsd_sockmsg *msg);
@@ -167,6 +173,9 @@ void *xenbus_dev_request_and_reply(struct xsd_sockmsg *msg);
 /* Called from xen core code. */
 void xenbus_suspend(void);
 void xenbus_resume(void);
+#ifdef CONFIG_XEN_PV_ON_HVM
+void xenbus_suspend_cancel(void);
+#endif
 
 #define XENBUS_IS_ERR_READ(str) ({			\
 	if (!IS_ERR(str) && strlen(str) == 0) {		\

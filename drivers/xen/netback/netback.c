@@ -1508,13 +1508,12 @@ static int __init netback_init(void)
 	netif_xenbus_init();
 
 #ifdef NETBE_DEBUG_INTERRUPT
-	(void)bind_virq_to_irqhandler(
-		VIRQ_DEBUG,
-		0,
-		netif_be_dbg,
-		SA_SHIRQ, 
-		"net-be-dbg",
-		&netif_be_dbg);
+	(void)bind_virq_to_irqhandler(VIRQ_DEBUG,
+				      0,
+				      netif_be_dbg,
+				      SA_SHIRQ, 
+				      "net-be-dbg",
+				      &netif_be_dbg);
 #endif
 
 	return 0;

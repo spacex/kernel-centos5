@@ -245,8 +245,7 @@ lpfc_reauth_node(unsigned long ptr)
 	if (evtp->evt_arg1) {
 		evtp->evt = LPFC_EVT_REAUTH;
 		list_add_tail(&evtp->evt_listp, &phba->work_list);
-		if (phba->work_wait)
-			lpfc_worker_wake_up(phba);
+		lpfc_worker_wake_up(phba);
 	}
 	spin_unlock_irqrestore(&phba->hbalock, flags);
 	return;

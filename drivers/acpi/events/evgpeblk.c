@@ -41,6 +41,7 @@
  * POSSIBILITY OF SUCH DAMAGES.
  */
 
+#include <linux/dmi.h>
 #include <acpi/acpi.h>
 #include <acpi/acevents.h>
 #include <acpi/acnamesp.h>
@@ -1058,6 +1059,48 @@ acpi_ev_initialize_gpe_block(struct acpi_namespace_node *gpe_device,
 	return_ACPI_STATUS(status);
 }
 
+static int hp_gpe_use_32_bit(struct dmi_system_id *d)
+{
+	if ((u64)acpi_gbl_FADT->V1_gpe0_blk !=
+	    acpi_gbl_FADT->xgpe0_blk.address) {
+		printk("HP xw System ... overriding gpe0_blk to "
+		       "32-bit value \n");
+		acpi_gbl_FADT->xgpe0_blk.address =
+						(u64)acpi_gbl_FADT->V1_gpe0_blk;
+	}
+
+	return 0;
+}
+
+/* HP xw series blacklist */
+static struct dmi_system_id acpi_hp_gpe_table[] = {
+	{
+	 .callback = hp_gpe_use_32_bit,
+	 .ident = "HP xw",
+	 .matches = {
+		     DMI_MATCH(DMI_BOARD_VENDOR, "Hewlett-Packard"),
+		     DMI_MATCH(DMI_PRODUCT_NAME, "HP xw"),
+	 	    },
+	},
+	{
+	 .callback = hp_gpe_use_32_bit,
+	 .ident = "HP me09 Workstation",
+	 .matches = {
+		     DMI_MATCH(DMI_BOARD_VENDOR, "Hewlett-Packard"),
+		     DMI_MATCH(DMI_PRODUCT_NAME, "HP me09 Workstation"),
+	 	    },
+	},
+	{
+	 .callback = hp_gpe_use_32_bit,
+	 .ident = "HP he09 Workstation",
+	 .matches = {
+		     DMI_MATCH(DMI_BOARD_VENDOR, "Hewlett-Packard"),
+		     DMI_MATCH(DMI_PRODUCT_NAME, "HP he09 Workstation"),
+	 	    },
+	},
+	 {}
+};
+
 /*******************************************************************************
  *
  * FUNCTION:    acpi_ev_gpe_initialize
@@ -1099,6 +1142,11 @@ acpi_status acpi_ev_gpe_initialize(void)
 	 *  FADT table contain zeros. The GPE0_LEN and GPE1_LEN do not need
 	 *  to be the same size."
 	 */
+
+	/* This is strictly against the ACPI spec.  We should always use the
+	   64-bit address.  However, on HP xw systems it appears that the
+	   64-bit address is incorrect so use the 32-bit address */
+	dmi_check_system(acpi_hp_gpe_table);
 
 	/*
 	 * Determine the maximum GPE number for this machine.

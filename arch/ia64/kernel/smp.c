@@ -49,6 +49,8 @@
 #include <asm/unistd.h>
 #include <asm/mca.h>
 
+static DEFINE_PER_CPU(unsigned short, local_flush_count) ____cacheline_aligned;
+
 /*
  * Structure and data for smp_call_function(). This is designed to minimise static memory
  * requirements. It also looks cleaner.
@@ -274,6 +276,64 @@ void
 smp_send_reschedule (int cpu)
 {
 	platform_send_ipi(cpu, IA64_IPI_RESCHEDULE, IA64_IPI_DM_INT, 0);
+}
+
+/*
+ * Called with preeemption disabled.
+ */
+static void
+smp_send_local_flush_tlb (int cpu)
+{
+	platform_send_ipi(cpu, IA64_IPI_LOCAL_TLB_FLUSH, IA64_IPI_DM_INT, 0);
+}
+
+void
+smp_local_flush_tlb(void)
+{
+	__ia64_per_cpu_var(local_flush_count)++;
+	local_flush_tlb_all();
+}
+
+/*
+ * Flush counts are kept in a "short" to preserve stack space. It is possible (but
+ * highly unlikely) that a count could wrap & the flush would not be seen as complete.
+ * Retry the flush IPI after a long time...
+ */
+#define FLUSH_RETRY_COUNT	10000
+
+void
+smp_flush_tlb_cpumask (cpumask_t xcpumask)
+{
+	unsigned short counts[NR_CPUS];
+	cpumask_t cpumask = xcpumask;
+	int count, mycpu, cpu, flush_mycpu = 0;
+
+	preempt_disable();
+	mycpu = smp_processor_id();
+
+	for_each_cpu_mask(cpu, cpumask) {
+		counts[cpu] = per_cpu(local_flush_count, cpu);
+		mb();
+		if (cpu == mycpu)
+			flush_mycpu = 1;
+		else
+			smp_send_local_flush_tlb(cpu);
+	}
+
+	if (flush_mycpu)
+		smp_local_flush_tlb();
+
+	for_each_cpu_mask(cpu, cpumask) {
+		count = 0;
+		while(counts[cpu] == per_cpu(local_flush_count, cpu)) {
+			udelay(1);
+			if (count++ >= FLUSH_RETRY_COUNT) {
+				count = 0;
+				smp_send_local_flush_tlb(cpu);
+			}
+		}
+	}
+	preempt_enable();
 }
 
 void

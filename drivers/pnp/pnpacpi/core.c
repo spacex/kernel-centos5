@@ -168,7 +168,7 @@ static int __init pnpacpi_add_device(struct acpi_device *device)
 		strncpy(dev->name, acpi_device_bid(device), sizeof(dev->name));
 
 	dev->number = num;
-	
+
 	/* set the initial values for the PnP device */
 	dev_id = kcalloc(1, sizeof(struct pnp_id), GFP_KERNEL);
 	if (!dev_id)
@@ -214,7 +214,7 @@ static int __init pnpacpi_add_device(struct acpi_device *device)
 	/* clear out the damaged flags */
 	if (!dev->active)
 		pnp_init_resource_table(&dev->res);
-	pnp_add_device(dev);
+	pnp_add_device(dev, num);
 	num ++;
 
 	return AE_OK;

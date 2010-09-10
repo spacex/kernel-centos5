@@ -26,6 +26,14 @@ void set_nmi_callback(nmi_callback_t callback);
  */
 void unset_nmi_callback(void);
 
+/**
+ * do_nmi_callback2
+ *
+ * Check to see if a callback exists and execute it. Return 1
+ * if the handler exists and was handled successfully.
+ */
+int do_nmi_callback2(struct pt_regs *regs, int cpu);
+
 #ifdef CONFIG_PM
  
 /** Replace the PM callback routine for NMI. */
@@ -55,6 +63,22 @@ extern void die_nmi(char *str, struct pt_regs *regs);
 extern int panic_on_timeout;
 extern int unknown_nmi_panic;
 
+extern int avail_to_resrv_perfctr_nmi_bit(unsigned int);
+extern int avail_to_resrv_perfctr_nmi(unsigned int);
+extern int reserve_perfctr_nmi(unsigned int);
+extern void release_perfctr_nmi(unsigned int);
+extern int reserve_evntsel_nmi(unsigned int);
+extern void release_evntsel_nmi(unsigned int);
+
+void lapic_watchdog_stop(void);
+int lapic_watchdog_probe(void);
+int lapic_watchdog_init(unsigned nmi_hz);
+int lapic_wd_event(unsigned nmi_hz);
+unsigned lapic_adjust_nmi_hz(unsigned hz);
+int lapic_watchdog_ok(void);
+void disable_lapic_nmi_watchdog(void);
+void enable_lapic_nmi_watchdog(void);
+
 extern int check_nmi_watchdog(void);
  
 extern void setup_apic_nmi_watchdog (void);
@@ -62,7 +86,7 @@ extern int reserve_lapic_nmi(void);
 extern void release_lapic_nmi(void);
 extern void disable_timer_nmi_watchdog(void);
 extern void enable_timer_nmi_watchdog(void);
-extern void nmi_watchdog_tick (struct pt_regs * regs, unsigned reason);
+extern int nmi_watchdog_tick (struct pt_regs * regs, unsigned reason);
 
 extern void nmi_watchdog_default(void);
 extern int setup_nmi_watchdog(char *);

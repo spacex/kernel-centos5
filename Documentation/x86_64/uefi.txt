@@ -1,0 +1,42 @@
+General note on [U]EFI x86_64 support
+-------------------------------------
+
+This provides documentation on [U]EFI support for x86_64 architecture.
+The nomenclature EFI and UEFI are used intechangeably in this document.
+
+Although the tools below are _not_ needed for building the kernel,
+the needed bootloader support and associated tools for x86_64 platforms
+with EFI firmware and specifications are listed below.
+
+1. UEFI specification:  http://www.uefi.org
+
+2. Booting EFI64 enabled kernel requires boot loader support.
+Patches to elilo and gnu-efi library with x86_64 support and documentation
+have been submitted to respective project maintainers.
+	elilo: http://sourceforge.net/projects/elilo
+	gnu-efi library: http://sourceforge.net/projects/gnu-efi/
+	gnu-efi-3.0d release now supports [U]EFI x86_64.
+
+3. The tool to convert ELF to PE-COFF image:
+	binutils-2.17.50.0.14 supports Intel64 EFI.
+	see http://www.kernel.org/pub/linux/devel/binutils/
+	[ elilo/gnu-efi with x86_64 support need this binutils support ]
+
+4. x86_64 platform with EFI/UEFI firmware.
+ 
+Mechanics:
+---------
+- Apply the EFI64 kernel patches and build with the following configuration.
+	CONFIG_EFI=y
+	EFI_FB=y
+	CONFIG_FRAMEBUFFER_CONSOLE=y
+	CONFIG_EFI_VARS=y
+  
+- Create a VFAT partition on the disk
+- Copy the following to the VFAT partition:
+	elilo bootloader with x86_64 support and elilo configuration file
+	efi64 kernel image and initrd. Instructions on building elilo
+	and its dependencies can be found in the elilo sourceforge project.
+- Boot to EFI shell and invoke elilo choosing efi64 kernel image
+- On UEFI2.0 firmware systems, pass vga=normal for boot messages to show up
+  console. You can pass along the 'resume' boot option to test suspend/resume.

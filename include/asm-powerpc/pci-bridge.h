@@ -83,6 +83,11 @@ struct pci_dn {
 #ifdef CONFIG_PCI_MSI
 	struct list_head msi_list;
 #endif
+#ifdef CONFIG_PPC_CELL_NATIVE
+	int	use_iommu_fixed;
+	u64	addr;			/* address to DMA to when using the
+					   Cell's IOMMU fixed mapping */
+#endif
 };
 
 /* Get the pointer to a device_node's pci_dn */

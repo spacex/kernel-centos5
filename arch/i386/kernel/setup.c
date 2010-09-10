@@ -265,7 +265,12 @@ static struct resource standard_io_resources[] = { {
 }, {
 	.name	= "keyboard",
 	.start	= 0x0060,
-	.end	= 0x006f,
+	.end	= 0x0060,
+	.flags	= IORESOURCE_BUSY | IORESOURCE_IO
+}, {
+	.name	= "keyboard",
+	.start	= 0x0064,
+	.end	= 0x0064,
 	.flags	= IORESOURCE_BUSY | IORESOURCE_IO
 }, {
 	.name	= "dma page reg",
@@ -1012,6 +1017,7 @@ e820_all_mapped(unsigned long s, unsigned long e, unsigned type)
 	return 0;
 }
 
+#define MAX_PAE36_PFN 1024*1024*16
 /*
  * Find the highest page frame number we have available
  */
@@ -1038,6 +1044,10 @@ void __init find_max_pfn(void)
 		if (end > max_pfn)
 			max_pfn = end;
 		memory_present(0, start, end);
+	}
+	if (max_pfn > MAX_PAE36_PFN) {
+		printk("RAM exceeds maximum supported memory for x86, Truncating to 64GB\n");
+		max_pfn = MAX_PAE36_PFN;
 	}
 }
 

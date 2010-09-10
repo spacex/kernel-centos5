@@ -33,6 +33,7 @@
 #include <linux/crypto.h>
 #include <linux/file.h>
 #include <linux/scatterlist.h>
+#include <asm/unaligned.h>
 #include "ecryptfs_kernel.h"
 
 static int
@@ -305,8 +306,11 @@ static int encrypt_scatterlist(struct ecryptfs_crypt_stat *crypt_stat,
 	}
 	/* Consider doing this once, when the file is opened */
 	mutex_lock(&crypt_stat->cs_tfm_mutex);
-	rc = crypto_cipher_setkey(crypt_stat->tfm, crypt_stat->key,
-				  crypt_stat->key_size);
+	if (!(crypt_stat->flags & ECRYPTFS_KEY_SET)) {
+		rc = crypto_cipher_setkey(crypt_stat->tfm, crypt_stat->key,
+					  crypt_stat->key_size);
+		crypt_stat->flags |= ECRYPTFS_KEY_SET;
+	}
 	if (rc) {
 		ecryptfs_printk(KERN_ERR, "Error setting key; rc = [%d]\n",
 				rc);
@@ -326,11 +330,10 @@ out:
  *
  * Convert an eCryptfs page index into a lower byte offset
  */
-void ecryptfs_lower_offset_for_extent(loff_t *offset, loff_t extent_num,
-				      struct ecryptfs_crypt_stat *crypt_stat)
+static void ecryptfs_lower_offset_for_extent(loff_t *offset, loff_t extent_num,
+					     struct ecryptfs_crypt_stat *crypt_stat)
 {
-	(*offset) = ((crypt_stat->extent_size
-		      * crypt_stat->num_header_extents_at_front)
+	(*offset) = (crypt_stat->num_header_bytes_at_front
 		     + (crypt_stat->extent_size * extent_num));
 }
 
@@ -385,7 +388,7 @@ static int ecryptfs_encrypt_extent(struct page *enc_extent_page,
 	if (rc < 0) {
 		printk(KERN_ERR "%s: Error attempting to encrypt page with "
 		       "page->index = [%ld], extent_offset = [%ld]; "
-		       "rc = [%d]\n", __FUNCTION__, page->index, extent_offset,
+		       "rc = [%d]\n", __func__, page->index, extent_offset,
 		       rc);
 		goto out;
 	}
@@ -422,8 +425,8 @@ int ecryptfs_encrypt_page(struct page *page)
 {
 	struct inode *ecryptfs_inode;
 	struct ecryptfs_crypt_stat *crypt_stat;
-	char *enc_extent_virt = NULL;
-	struct page *enc_extent_page;
+	char *enc_extent_virt;
+	struct page *enc_extent_page = NULL;
 	loff_t extent_offset;
 	int rc = 0;
 
@@ -435,18 +438,18 @@ int ecryptfs_encrypt_page(struct page *page)
 						       0, PAGE_CACHE_SIZE);
 		if (rc)
 			printk(KERN_ERR "%s: Error attempting to copy "
-			       "page at index [%ld]\n", __FUNCTION__,
+			       "page at index [%ld]\n", __func__,
 			       page->index);
 		goto out;
 	}
-	enc_extent_virt = kmalloc(PAGE_CACHE_SIZE, GFP_USER);
-	if (!enc_extent_virt) {
+	enc_extent_page = alloc_page(GFP_USER);
+	if (!enc_extent_page) {
 		rc = -ENOMEM;
 		ecryptfs_printk(KERN_ERR, "Error allocating memory for "
 				"encrypted extent\n");
 		goto out;
 	}
-	enc_extent_page = virt_to_page(enc_extent_virt);
+	enc_extent_virt = kmap(enc_extent_page);
 	for (extent_offset = 0;
 	     extent_offset < (PAGE_CACHE_SIZE / crypt_stat->extent_size);
 	     extent_offset++) {
@@ -456,7 +459,7 @@ int ecryptfs_encrypt_page(struct page *page)
 					     extent_offset);
 		if (rc) {
 			printk(KERN_ERR "%s: Error encrypting extent; "
-			       "rc = [%d]\n", __FUNCTION__, rc);
+			       "rc = [%d]\n", __func__, rc);
 			goto out;
 		}
 		ecryptfs_lower_offset_for_extent(
@@ -474,7 +477,10 @@ int ecryptfs_encrypt_page(struct page *page)
 		}
 	}
 out:
-	kfree(enc_extent_virt);
+	if (enc_extent_page) {
+		kunmap(enc_extent_page);
+		__free_page(enc_extent_page);
+	}
 	return rc;
 }
 
@@ -517,7 +523,7 @@ static int ecryptfs_decrypt_extent(struct page *page,
 	if (rc < 0) {
 		printk(KERN_ERR "%s: Error attempting to decrypt to page with "
 		       "page->index = [%ld], extent_offset = [%ld]; "
-		       "rc = [%d]\n", __FUNCTION__, page->index, extent_offset,
+		       "rc = [%d]\n", __func__, page->index, extent_offset,
 		       rc);
 		goto out;
 	}
@@ -556,8 +562,8 @@ int ecryptfs_decrypt_page(struct page *page)
 {
 	struct inode *ecryptfs_inode;
 	struct ecryptfs_crypt_stat *crypt_stat;
-	char *enc_extent_virt = NULL;
-	struct page *enc_extent_page;
+	char *enc_extent_virt;
+	struct page *enc_extent_page = NULL;
 	unsigned long extent_offset;
 	int rc = 0;
 
@@ -570,18 +576,18 @@ int ecryptfs_decrypt_page(struct page *page)
 						      ecryptfs_inode);
 		if (rc)
 			printk(KERN_ERR "%s: Error attempting to copy "
-			       "page at index [%ld]\n", __FUNCTION__,
+			       "page at index [%ld]\n", __func__,
 			       page->index);
 		goto out;
 	}
-	enc_extent_virt = kmalloc(PAGE_CACHE_SIZE, GFP_USER);
-	if (!enc_extent_virt) {
+	enc_extent_page = alloc_page(GFP_USER);
+	if (!enc_extent_page) {
 		rc = -ENOMEM;
 		ecryptfs_printk(KERN_ERR, "Error allocating memory for "
 				"encrypted extent\n");
 		goto out;
 	}
-	enc_extent_page = virt_to_page(enc_extent_virt);
+	enc_extent_virt = kmap(enc_extent_page);
 	for (extent_offset = 0;
 	     extent_offset < (PAGE_CACHE_SIZE / crypt_stat->extent_size);
 	     extent_offset++) {
@@ -604,12 +610,15 @@ int ecryptfs_decrypt_page(struct page *page)
 					     extent_offset);
 		if (rc) {
 			printk(KERN_ERR "%s: Error encrypting extent; "
-			       "rc = [%d]\n", __FUNCTION__, rc);
+			       "rc = [%d]\n", __func__, rc);
 			goto out;
 		}
 	}
 out:
-	kfree(enc_extent_virt);
+	if (enc_extent_page) {
+		kunmap(enc_extent_page);
+		__free_page(enc_extent_page);
+	}
 	return rc;
 }
 
@@ -781,15 +790,13 @@ void ecryptfs_set_default_sizes(struct ecryptfs_crypt_stat *crypt_stat)
 	set_extent_mask_and_shift(crypt_stat);
 	crypt_stat->iv_bytes = ECRYPTFS_DEFAULT_IV_BYTES;
 	if (crypt_stat->flags & ECRYPTFS_METADATA_IN_XATTR)
-		crypt_stat->num_header_extents_at_front = 0;
+		crypt_stat->num_header_bytes_at_front = 0;
 	else {
 		if (PAGE_CACHE_SIZE <= ECRYPTFS_MINIMUM_HEADER_EXTENT_SIZE)
-			crypt_stat->num_header_extents_at_front =
-				(ECRYPTFS_MINIMUM_HEADER_EXTENT_SIZE
-				 / crypt_stat->extent_size);
+			crypt_stat->num_header_bytes_at_front =
+				ECRYPTFS_MINIMUM_HEADER_EXTENT_SIZE;
 		else
-			crypt_stat->num_header_extents_at_front =
-				(PAGE_CACHE_SIZE / crypt_stat->extent_size);
+			crypt_stat->num_header_bytes_at_front =	PAGE_CACHE_SIZE;
 	}
 }
 
@@ -971,10 +978,8 @@ static int contains_ecryptfs_marker(char *data)
 {
 	u32 m_1, m_2;
 
-	memcpy(&m_1, data, 4);
-	m_1 = be32_to_cpu(m_1);
-	memcpy(&m_2, (data + 4), 4);
-	m_2 = be32_to_cpu(m_2);
+	m_1 = get_unaligned_be32(data);
+	m_2 = get_unaligned_be32(data + 4);
 	if ((m_1 ^ MAGIC_ECRYPTFS_MARKER) == m_2)
 		return 1;
 	ecryptfs_printk(KERN_DEBUG, "m_1 = [0x%.8x]; m_2 = [0x%.8x]; "
@@ -1012,8 +1017,7 @@ static int ecryptfs_process_flags(struct ecryptfs_crypt_stat *crypt_stat,
 	int i;
 	u32 flags;
 
-	memcpy(&flags, page_virt, 4);
-	flags = be32_to_cpu(flags);
+	flags = get_unaligned_be32(page_virt);
 	for (i = 0; i < ((sizeof(ecryptfs_flag_map)
 			  / sizeof(struct ecryptfs_flag_map_elem))); i++)
 		if (flags & ecryptfs_flag_map[i].file_flag) {
@@ -1039,11 +1043,9 @@ static void write_ecryptfs_marker(char *page_virt, size_t *written)
 
 	get_random_bytes(&m_1, (MAGIC_ECRYPTFS_MARKER_SIZE_BYTES / 2));
 	m_2 = (m_1 ^ MAGIC_ECRYPTFS_MARKER);
-	m_1 = cpu_to_be32(m_1);
-	memcpy(page_virt, &m_1, (MAGIC_ECRYPTFS_MARKER_SIZE_BYTES / 2));
-	m_2 = cpu_to_be32(m_2);
-	memcpy(page_virt + (MAGIC_ECRYPTFS_MARKER_SIZE_BYTES / 2), &m_2,
-	       (MAGIC_ECRYPTFS_MARKER_SIZE_BYTES / 2));
+	put_unaligned_be32(m_1, page_virt);
+	page_virt += (MAGIC_ECRYPTFS_MARKER_SIZE_BYTES / 2);
+	put_unaligned_be32(m_2, page_virt);
 	(*written) = MAGIC_ECRYPTFS_MARKER_SIZE_BYTES;
 }
 
@@ -1060,14 +1062,13 @@ write_ecryptfs_flags(char *page_virt, struct ecryptfs_crypt_stat *crypt_stat,
 			flags |= ecryptfs_flag_map[i].file_flag;
 	/* Version is in top 8 bits of the 32-bit flag vector */
 	flags |= ((((u8)crypt_stat->file_version) << 24) & 0xFF000000);
-	flags = cpu_to_be32(flags);
-	memcpy(page_virt, &flags, 4);
+	put_unaligned_be32(flags, page_virt);
 	(*written) = 4;
 }
 
 struct ecryptfs_cipher_code_str_map_elem {
 	char cipher_str[16];
-	u16 cipher_code;
+	u8 cipher_code;
 };
 
 /* Add support for additional ciphers by adding elements here. The
@@ -1091,10 +1092,10 @@ ecryptfs_cipher_code_str_map[] = {
  *
  * Returns zero on no match, or the cipher code on match
  */
-u16 ecryptfs_code_for_cipher_string(struct ecryptfs_crypt_stat *crypt_stat)
+u8 ecryptfs_code_for_cipher_string(struct ecryptfs_crypt_stat *crypt_stat)
 {
 	int i;
-	u16 code = 0;
+	u8 code = 0;
 	struct ecryptfs_cipher_code_str_map_elem *map =
 		ecryptfs_cipher_code_str_map;
 
@@ -1126,7 +1127,7 @@ u16 ecryptfs_code_for_cipher_string(struct ecryptfs_crypt_stat *crypt_stat)
  *
  * Returns zero on success
  */
-int ecryptfs_cipher_code_to_string(char *str, u16 cipher_code)
+int ecryptfs_cipher_code_to_string(char *str, u8 cipher_code)
 {
 	int rc = 0;
 	int i;
@@ -1154,7 +1155,7 @@ int ecryptfs_read_and_validate_header_region(char *data,
 				 ecryptfs_inode);
 	if (rc) {
 		printk(KERN_ERR "%s: Error reading header region; rc = [%d]\n",
-		       __FUNCTION__, rc);
+		       __func__, rc);
 		goto out;
 	}
 	if (!contains_ecryptfs_marker(data + ECRYPTFS_FILE_SIZE_BYTES)) {
@@ -1175,22 +1176,21 @@ ecryptfs_write_header_metadata(char *virt,
 
 	header_extent_size = (u32)crypt_stat->extent_size;
 	num_header_extents_at_front =
-		(u16)crypt_stat->num_header_extents_at_front;
-	header_extent_size = cpu_to_be32(header_extent_size);
-	memcpy(virt, &header_extent_size, 4);
+		(u16)(crypt_stat->num_header_bytes_at_front
+		      / crypt_stat->extent_size);
+	put_unaligned_be32(header_extent_size, virt);
 	virt += 4;
-	num_header_extents_at_front = cpu_to_be16(num_header_extents_at_front);
-	memcpy(virt, &num_header_extents_at_front, 2);
+	put_unaligned_be16(num_header_extents_at_front, virt);
 	(*written) = 6;
 }
 
-struct kmem_cache *ecryptfs_header_cache_0;
 struct kmem_cache *ecryptfs_header_cache_1;
 struct kmem_cache *ecryptfs_header_cache_2;
 
 /**
  * ecryptfs_write_headers_virt
  * @page_virt: The virtual address to write the headers to
+ * @max: The size of memory allocated at page_virt
  * @size: Set to the number of bytes written by this function
  * @crypt_stat: The cryptographic context
  * @ecryptfs_dentry: The eCryptfs dentry
@@ -1218,7 +1218,8 @@ struct kmem_cache *ecryptfs_header_cache_2;
  *
  * Returns zero on success
  */
-static int ecryptfs_write_headers_virt(char *page_virt, size_t *size,
+static int ecryptfs_write_headers_virt(char *page_virt, size_t max,
+				       size_t *size,
 				       struct ecryptfs_crypt_stat *crypt_stat,
 				       struct dentry *ecryptfs_dentry)
 {
@@ -1236,7 +1237,7 @@ static int ecryptfs_write_headers_virt(char *page_virt, size_t *size,
 	offset += written;
 	rc = ecryptfs_generate_key_packet_set((page_virt + offset), crypt_stat,
 					      ecryptfs_dentry, &written,
-					      PAGE_CACHE_SIZE - offset);
+					      max - offset);
 	if (rc)
 		ecryptfs_printk(KERN_WARNING, "Error generating key packet "
 				"set; rc = [%d]\n", rc);
@@ -1250,40 +1251,16 @@ static int ecryptfs_write_headers_virt(char *page_virt, size_t *size,
 static int
 ecryptfs_write_metadata_to_contents(struct ecryptfs_crypt_stat *crypt_stat,
 				    struct dentry *ecryptfs_dentry,
-				    char *page_virt)
+				    char *virt)
 {
-	int current_header_page;
-	int header_pages;
 	int rc;
 
-	rc = ecryptfs_write_lower(ecryptfs_dentry->d_inode, page_virt,
-				  0, PAGE_CACHE_SIZE);
-	if (rc) {
+	rc = ecryptfs_write_lower(ecryptfs_dentry->d_inode, virt,
+				  0, crypt_stat->num_header_bytes_at_front);
+	if (rc)
 		printk(KERN_ERR "%s: Error attempting to write header "
-		       "information to lower file; rc = [%d]\n", __FUNCTION__,
+		       "information to lower file; rc = [%d]\n", __func__,
 		       rc);
-		goto out;
-	}
-	header_pages = ((crypt_stat->extent_size
-			 * crypt_stat->num_header_extents_at_front)
-			/ PAGE_CACHE_SIZE);
-	memset(page_virt, 0, PAGE_CACHE_SIZE);
-	current_header_page = 1;
-	while (current_header_page < header_pages) {
-		loff_t offset;
-
-		offset = (((loff_t)current_header_page) << PAGE_CACHE_SHIFT);
-		if ((rc = ecryptfs_write_lower(ecryptfs_dentry->d_inode,
-					       page_virt, offset,
-					       PAGE_CACHE_SIZE))) {
-			printk(KERN_ERR "%s: Error attempting to write header "
-			       "information to lower file; rc = [%d]\n",
-			       __FUNCTION__, rc);
-			goto out;
-		}
-		current_header_page++;
-	}
-out:
 	return rc;
 }
 
@@ -1309,15 +1286,13 @@ ecryptfs_write_metadata_to_xattr(struct dentry *ecryptfs_dentry,
  * retrieved via a prompt.  Exactly what happens at this point should
  * be policy-dependent.
  *
- * TODO: Support header information spanning multiple pages
- *
  * Returns zero on success; non-zero on error
  */
 int ecryptfs_write_metadata(struct dentry *ecryptfs_dentry)
 {
 	struct ecryptfs_crypt_stat *crypt_stat =
 		&ecryptfs_inode_to_private(ecryptfs_dentry->d_inode)->crypt_stat;
-	char *page_virt;
+	char *virt;
 	size_t size = 0;
 	int rc = 0;
 
@@ -1328,40 +1303,38 @@ int ecryptfs_write_metadata(struct dentry *ecryptfs_dentry)
 			goto out;
 		}
 	} else {
+		printk(KERN_WARNING "%s: Encrypted flag not set\n",
+		       __func__);
 		rc = -EINVAL;
-		ecryptfs_printk(KERN_WARNING,
-				"Called with crypt_stat->encrypted == 0\n");
 		goto out;
 	}
 	/* Released in this function */
-	page_virt = kmem_cache_zalloc(ecryptfs_header_cache_0, GFP_USER);
-	if (!page_virt) {
-		ecryptfs_printk(KERN_ERR, "Out of memory\n");
+	virt = (char *)get_zeroed_page(GFP_KERNEL);
+	if (!virt) {
+		printk(KERN_ERR "%s: Out of memory\n", __func__);
 		rc = -ENOMEM;
 		goto out;
 	}
-	rc = ecryptfs_write_headers_virt(page_virt, &size, crypt_stat,
-  					 ecryptfs_dentry);
+	rc = ecryptfs_write_headers_virt(virt, PAGE_CACHE_SIZE, &size,
+					 crypt_stat, ecryptfs_dentry);
 	if (unlikely(rc)) {
-		ecryptfs_printk(KERN_ERR, "Error whilst writing headers\n");
-		memset(page_virt, 0, PAGE_CACHE_SIZE);
+		printk(KERN_ERR "%s: Error whilst writing headers; rc = [%d]\n",
+		       __func__, rc);
 		goto out_free;
 	}
 	if (crypt_stat->flags & ECRYPTFS_METADATA_IN_XATTR)
 		rc = ecryptfs_write_metadata_to_xattr(ecryptfs_dentry,
-						      crypt_stat, page_virt,
-						      size);
+						      crypt_stat, virt, size);
 	else
 		rc = ecryptfs_write_metadata_to_contents(crypt_stat,
-							 ecryptfs_dentry,
-							 page_virt);
+							 ecryptfs_dentry, virt);
 	if (rc) {
-		printk(KERN_ERR "Error writing metadata out to lower file; "
-		       "rc = [%d]\n", rc);
+		printk(KERN_ERR "%s: Error writing metadata out to lower file; "
+		       "rc = [%d]\n", __func__, rc);
 		goto out_free;
 	}
 out_free:
-	kmem_cache_free(ecryptfs_header_cache_0, page_virt);
+	free_page((unsigned long)virt);
 out:
 	return rc;
 }
@@ -1376,21 +1349,19 @@ static int parse_header_metadata(struct ecryptfs_crypt_stat *crypt_stat,
 	u32 header_extent_size;
 	u16 num_header_extents_at_front;
 
-	memcpy(&header_extent_size, virt, sizeof(u32));
-	header_extent_size = be32_to_cpu(header_extent_size);
-	virt += sizeof(u32);
-	memcpy(&num_header_extents_at_front, virt, sizeof(u16));
-	num_header_extents_at_front = be16_to_cpu(num_header_extents_at_front);
-	crypt_stat->num_header_extents_at_front =
-		(int)num_header_extents_at_front;
-	(*bytes_read) = (sizeof(u32) + sizeof(u16));
+	header_extent_size = get_unaligned_be32(virt);
+	virt += sizeof(__be32);
+	num_header_extents_at_front = get_unaligned_be16(virt);
+	crypt_stat->num_header_bytes_at_front =
+		(((size_t)num_header_extents_at_front
+		  * (size_t)header_extent_size));
+	(*bytes_read) = (sizeof(__be32) + sizeof(__be16));
 	if ((validate_header_size == ECRYPTFS_VALIDATE_HEADER_SIZE)
-	    && ((crypt_stat->extent_size
-		 * crypt_stat->num_header_extents_at_front)
+	    && (crypt_stat->num_header_bytes_at_front
 		< ECRYPTFS_MINIMUM_HEADER_EXTENT_SIZE)) {
 		rc = -EINVAL;
-		printk(KERN_WARNING "Invalid number of header extents: [%zd]\n",
-		       crypt_stat->num_header_extents_at_front);
+		printk(KERN_WARNING "Invalid header size: [%zd]\n",
+		       crypt_stat->num_header_bytes_at_front);
 	}
 	return rc;
 }
@@ -1405,7 +1376,8 @@ static int parse_header_metadata(struct ecryptfs_crypt_stat *crypt_stat,
  */
 static void set_default_header_data(struct ecryptfs_crypt_stat *crypt_stat)
 {
-	crypt_stat->num_header_extents_at_front = 2;
+	crypt_stat->num_header_bytes_at_front =
+		ECRYPTFS_MINIMUM_HEADER_EXTENT_SIZE;
 }
 
 /**
@@ -1491,9 +1463,10 @@ int ecryptfs_read_xattr_region(char *page_virt, struct inode *ecryptfs_inode)
 	size = ecryptfs_getxattr_lower(lower_dentry, ECRYPTFS_XATTR_NAME,
 				       page_virt, ECRYPTFS_DEFAULT_EXTENT_SIZE);
 	if (size < 0) {
-		printk(KERN_ERR "Error attempting to read the [%s] "
-		       "xattr from the lower file; return value = [%zd]\n",
-		       ECRYPTFS_XATTR_NAME, size);
+		if (unlikely(ecryptfs_verbosity > 0))
+			printk(KERN_INFO "Error attempting to read the [%s] "
+			       "xattr from the lower file; return value = "
+			       "[%zd]\n", ECRYPTFS_XATTR_NAME, size);
 		rc = -EINVAL;
 		goto out;
 	}
@@ -1548,7 +1521,7 @@ int ecryptfs_read_metadata(struct dentry *ecryptfs_dentry)
 	if (!page_virt) {
 		rc = -ENOMEM;
 		printk(KERN_ERR "%s: Unable to allocate page_virt\n",
-		       __FUNCTION__);
+		       __func__);
 		goto out;
 	}
 	rc = ecryptfs_read_lower(page_virt, 0, crypt_stat->extent_size,
@@ -1733,7 +1706,7 @@ out:
 }
 
 struct kmem_cache *ecryptfs_key_tfm_cache;
-struct list_head key_tfm_list;
+static struct list_head key_tfm_list;
 struct mutex key_tfm_list_mutex;
 
 int ecryptfs_init_crypto(void)
@@ -1862,9 +1835,9 @@ int ecryptfs_get_tfm_and_mutex_for_cipher_name(struct crypto_tfm **tfm,
 			goto out;
 		}
 	}
-	mutex_unlock(&key_tfm_list_mutex);
 	(*tfm) = key_tfm->key_tfm;
 	(*tfm_mutex) = &key_tfm->key_tfm_mutex;
 out:
+	mutex_unlock(&key_tfm_list_mutex);
 	return rc;
 }

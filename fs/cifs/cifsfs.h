@@ -1,7 +1,7 @@
 /*
  *   fs/cifs/cifsfs.h
  *
- *   Copyright (c) International Business Machines  Corp., 2002, 2005
+ *   Copyright (c) International Business Machines  Corp., 2002, 2007
  *   Author(s): Steve French (sfrench@us.ibm.com)
  *
  *   This library is free software; you can redistribute it and/or modify
@@ -23,14 +23,6 @@
 #define _CIFSFS_H
 
 #define ROOT_I 2
-
-#ifndef FALSE
-#define FALSE 0
-#endif
-
-#ifndef TRUE
-#define TRUE 1
-#endif
 
 #include <linux/version.h>
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,11)
@@ -61,8 +53,14 @@ static inline void i_size_write(struct inode *inode, loff_t size)
 #endif
 #endif
 
+extern struct file_system_type cifs_fs_type;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 20)
 extern const struct address_space_operations cifs_addr_ops;
 extern const struct address_space_operations cifs_addr_ops_smallbuf;
+#else
+extern struct address_space_operations cifs_addr_ops;
+extern struct address_space_operations cifs_addr_ops_smallbuf;
+#endif
 
 /* Functions related to super block operations */
 /* extern const struct super_operations cifs_super_ops;*/
@@ -71,8 +69,13 @@ extern void cifs_read_inode(struct inode *);
 /* extern void cifs_write_inode(struct inode *); */ /* BB not needed yet */
 
 /* Functions related to inodes */
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 20)
 extern const struct inode_operations cifs_dir_inode_ops;
+#else
+extern struct inode_operations cifs_dir_inode_ops;
+#endif
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
+extern struct inode *cifs_iget(struct super_block *, unsigned long);
 extern int cifs_create(struct inode *, struct dentry *, int, 
 		       struct nameidata *);
 extern struct dentry * cifs_lookup(struct inode *, struct dentry *,
@@ -93,14 +96,27 @@ extern int cifs_rename(struct inode *, struct dentry *, struct inode *,
 extern int cifs_revalidate(struct dentry *);
 extern int cifs_setattr(struct dentry *, struct iattr *);
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 20)
 extern const struct inode_operations cifs_file_inode_ops;
 extern const struct inode_operations cifs_symlink_inode_ops;
+#else
+extern struct inode_operations cifs_file_inode_ops;
+extern struct inode_operations cifs_symlink_inode_ops;
+#endif
+extern struct inode_operations cifs_dfs_referral_inode_operations;
 
 /* Functions related to files and directories */
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 20)
 extern const struct file_operations cifs_file_ops;
 extern const struct file_operations cifs_file_direct_ops; /* if directio mnt */
 extern const struct file_operations cifs_file_nobrl_ops;
 extern const struct file_operations cifs_file_direct_nobrl_ops; /* no brlocks */
+#else
+extern struct file_operations cifs_file_ops;
+extern struct file_operations cifs_file_direct_ops; /* if directio mnt */
+extern struct file_operations cifs_file_nobrl_ops;
+extern struct file_operations cifs_file_direct_nobrl_ops; /* no brlocks */
+#endif
 extern int cifs_open(struct inode *inode, struct file *file);
 extern int cifs_close(struct inode *inode, struct file *file);
 extern int cifs_closedir(struct inode *inode, struct file *file);
@@ -116,7 +132,11 @@ extern int cifs_flush(struct file *, fl_owner_t id);
 extern int cifs_flush(struct file *);
 #endif /* 2.6.17 */
 extern int cifs_file_mmap(struct file * , struct vm_area_struct *);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 20)
 extern const struct file_operations cifs_dir_ops;
+#else
+extern struct file_operations cifs_dir_ops;
+#endif
 extern int cifs_dir_open(struct inode *inode, struct file *file);
 extern int cifs_readdir(struct file *file, void *direntry, filldir_t filldir);
 extern int cifs_dir_notify(struct file *, unsigned long arg);
@@ -145,5 +165,10 @@ extern ssize_t	cifs_getxattr(struct dentry *, const char *, void *, size_t);
 extern ssize_t	cifs_listxattr(struct dentry *, char *, size_t);
 extern int cifs_ioctl(struct inode *inode, struct file *filep,
 		       unsigned int command, unsigned long arg);
-#define CIFS_VERSION   "1.50cRH"
+
+#ifdef CONFIG_CIFS_EXPERIMENTAL
+extern struct export_operations cifs_export_ops;
+#endif /* EXPERIMENTAL */
+
+#define CIFS_VERSION   "1.54RH"
 #endif				/* _CIFSFS_H */

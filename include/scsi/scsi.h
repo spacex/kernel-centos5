@@ -104,6 +104,8 @@ extern const char *const scsi_device_types[MAX_SCSI_DEVICE_CODE];
 #define PERSISTENT_RESERVE_IN 0x5e
 #define PERSISTENT_RESERVE_OUT 0x5f
 #define REPORT_LUNS           0xa0
+#define MAINTENANCE_IN        0xa3
+#define MAINTENANCE_OUT       0xa4
 #define MOVE_MEDIUM           0xa5
 #define EXCHANGE_MEDIUM       0xa6
 #define READ_12               0xa8
@@ -121,6 +123,10 @@ extern const char *const scsi_device_types[MAX_SCSI_DEVICE_CODE];
 #define SERVICE_ACTION_IN     0x9e
 /* values for service action in */
 #define	SAI_READ_CAPACITY_16  0x10
+/* values for maintenance in */
+#define	MI_REPORT_TARGET_PGS  0x0a
+/* values for maintenance out */
+#define	MO_SET_TARGET_PGS     0x0a
 
 /* Values for T10/04-262r7 */
 #define	ATA_16		      0x85	/* 16-byte pass-thru */
@@ -310,6 +316,11 @@ struct scsi_lun {
 #define DID_IMM_RETRY   0x0c	/* Retry without decrementing retry count  */
 #define DID_REQUEUE	0x0d	/* Requeue command (no immediate retry) also
 				 * without decrementing the retry count	   */
+#define DID_TRANSPORT_DISRUPTED 0x0e /* Transport error disrupted execution
+				      * and the driver blocked the port to
+				      * recover the link. Transport class will
+				      * retry or fail IO */
+#define DID_TRANSPORT_FAILFAST	0x0f /* Transport class fastfailed the io */
 #define DRIVER_OK       0x00	/* Driver status                           */
 
 /*
@@ -347,6 +358,7 @@ struct scsi_lun {
 #define SOFT_ERROR      0x2005
 #define ADD_TO_MLQUEUE  0x2006
 #define TIMEOUT_ERROR   0x2007
+#define SCSI_RETURN_NOT_HANDLED   0x2008
 
 /*
  * Midlevel queue return values.
@@ -354,6 +366,56 @@ struct scsi_lun {
 #define SCSI_MLQUEUE_HOST_BUSY   0x1055
 #define SCSI_MLQUEUE_DEVICE_BUSY 0x1056
 #define SCSI_MLQUEUE_EH_RETRY    0x1057
+
+/*
+ * New Midlevel queue return values. To maintain KABI we keep
+ * the old values above and rename the new ones with a version
+ * number 2.
+ */
+enum {
+	/*
+	 * Retry Constraints
+	 *
+	 * SCSI_IGN_ALLOWED		: Ignore cmd retries allowed check
+	 * SCSI_IGN_BLK_FAILFAST	: Ignore blk_failfast check.
+	 */
+	SCSI_IGN_ALLOWED	= 0x01,
+	SCSI_IGN_BLK_FAILFAST	= 0x02,
+
+	SCSI_MLQUEUE_DIS_SHIFT		= 4,
+	SCSI_MLQUEUE_DIS_FINISH		= 0x01 << SCSI_MLQUEUE_DIS_SHIFT,
+	SCSI_MLQUEUE_DIS_RETRY		= 0x02 << SCSI_MLQUEUE_DIS_SHIFT,
+	SCSI_MLQUEUE_DIS_XPT_RETRY	= 0x04 << SCSI_MLQUEUE_DIS_SHIFT,
+	SCSI_MLQUEUE_DIS_DEV_RETRY	= 0x08 << SCSI_MLQUEUE_DIS_SHIFT,
+	SCSI_MLQUEUE_DIS_DRV_RETRY	= 0x10 << SCSI_MLQUEUE_DIS_SHIFT,
+	SCSI_MLQUEUE_DIS_FAIL		= 0x20 << SCSI_MLQUEUE_DIS_SHIFT,
+
+	SCSI_MLQUEUE_BUSY_SHIFT		= 8,
+	SCSI_MLQUEUE_HOST_BUSY2		= (0x01 << SCSI_MLQUEUE_BUSY_SHIFT) |
+		SCSI_MLQUEUE_DIS_RETRY | SCSI_IGN_BLK_FAILFAST |
+		SCSI_IGN_ALLOWED,
+	SCSI_MLQUEUE_DEVICE_BUSY2	= (0x02 << SCSI_MLQUEUE_BUSY_SHIFT) |
+		SCSI_MLQUEUE_DIS_RETRY | SCSI_IGN_BLK_FAILFAST |
+		SCSI_IGN_ALLOWED,
+	SCSI_MLQUEUE_TARGET_BUSY2	= (0x04 << SCSI_MLQUEUE_BUSY_SHIFT) |
+		SCSI_MLQUEUE_DIS_RETRY | SCSI_IGN_BLK_FAILFAST |
+		SCSI_IGN_ALLOWED,
+	SCSI_MLQUEUE_IMM_RETRY		= (0x08 << SCSI_MLQUEUE_BUSY_SHIFT) |
+		SCSI_MLQUEUE_DIS_RETRY | SCSI_IGN_BLK_FAILFAST |
+		SCSI_IGN_ALLOWED,
+	SCSI_MLQUEUE_TARGET_COM_ERR	= (0x10 << SCSI_MLQUEUE_BUSY_SHIFT) |
+		SCSI_MLQUEUE_DIS_RETRY | SCSI_IGN_BLK_FAILFAST,
+};
+
+#define scsi_disposition_finish(dis) (dis & SCSI_MLQUEUE_DIS_FINISH)
+#define scsi_disposition_fail(dis) (dis & SCSI_MLQUEUE_DIS_FAIL)
+#define scsi_disposition_retry(dis)			\
+	((dis & SCSI_MLQUEUE_DIS_RETRY)		||	\
+	 (dis & SCSI_MLQUEUE_DIS_XPT_RETRY)	||	\
+	 (dis & SCSI_MLQUEUE_DIS_DEV_RETRY)	||	\
+	 (dis & SCSI_MLQUEUE_DIS_DRV_RETRY))
+#define scsi_ign_cmd_retries(dis) (dis & SCSI_IGN_ALLOWED)
+#define scsi_ign_failfast(dis) (dis & SCSI_IGN_BLK_FAILFAST)
 
 /*
  *  Use these to separate status msg and our bytes

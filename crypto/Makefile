@@ -5,7 +5,9 @@
 proc-crypto-$(CONFIG_PROC_FS) = proc.o
 
 obj-$(CONFIG_CRYPTO) += api.o scatterwalk.o cipher.o digest.o compress.o \
-			$(proc-crypto-y)
+			testmgr_digest.o $(proc-crypto-y)
+
+obj-$(CONFIG_CRYPTO_FIPS) += fips.o
 
 crypto_algapi-objs := algapi.o ncipher.o nscatterwalk.o
 obj-$(CONFIG_CRYPTO_ALGAPI) += crypto_algapi.o
@@ -24,6 +26,8 @@ obj-$(CONFIG_CRYPTO_HASH) += crypto_hash.o
 
 obj-$(CONFIG_CRYPTO_API) += crypto_api.o
 obj-$(CONFIG_CRYPTO_MANAGER) += cryptomgr.o
+obj-$(CONFIG_CRYPTO_MANAGER) += testmgr.o
+obj-$(CONFIG_CRYPTO_MANAGER) += testmgr_cipher.o
 obj-$(CONFIG_CRYPTO_HMAC) += hmac_old.o
 obj-$(CONFIG_CRYPTO_NHMAC) += hmac.o
 obj-$(CONFIG_CRYPTO_XCBC) += xcbc.o
@@ -54,7 +58,9 @@ obj-$(CONFIG_CRYPTO_DEFLATE) += deflate.o
 obj-$(CONFIG_CRYPTO_MICHAEL_MIC) += michael_mic.o
 obj-$(CONFIG_CRYPTO_CRC32C) += crc32c.o
 obj-$(CONFIG_CRYPTO_AUTHENC) += authenc.o
-
+obj-$(CONFIG_CRYPTO_RNG) += rng.o
+obj-$(CONFIG_CRYPTO_RNG) += krng.o
+obj-$(CONFIG_CRYPTO_ANSI_CPRNG) += ansi_cprng.o
 obj-$(CONFIG_CRYPTO_TEST) += tcrypt.o
 
 obj-$(CONFIG_CRYPTO_SIGNATURE) += signature/

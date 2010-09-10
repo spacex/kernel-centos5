@@ -29,6 +29,7 @@
 #include <sound/core.h>
 #include "hda_codec.h"
 #include "hda_local.h"
+#include "hda_patch.h"
 #define NUM_PINS	11
 
 
@@ -50,7 +51,7 @@ struct cmi_spec {
 
 	/* playback */
 	struct hda_multi_out multiout;
-	hda_nid_t dac_nids[4];		/* NID for each DAC */
+	hda_nid_t dac_nids[AUTO_CFG_MAX_OUTS];	/* NID for each DAC */
 	int num_dacs;
 
 	/* capture */
@@ -73,7 +74,6 @@ struct cmi_spec {
 	unsigned int pin_def_confs;
 
 	/* multichannel pins */
-	hda_nid_t multich_pin[4];	/* max 8-channel */
 	struct hda_verb multi_init[9];	/* 2 verbs for each pin + terminator */
 };
 
@@ -187,7 +187,6 @@ static struct snd_kcontrol_new cmi9880_basic_mixer[] = {
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 		/* The multiple "Capture Source" controls confuse alsamixer
 		 * So call somewhat different..
-		 * FIXME: the controls appear in the "playback" view!
 		 */
 		/* .name = "Capture Source", */
 		.name = "Input Source",
@@ -332,6 +331,11 @@ static int cmi9880_build_controls(struct hda_codec *codec)
 		err = snd_hda_create_spdif_out_ctls(codec, spec->multiout.dig_out_nid);
 		if (err < 0)
 			return err;
+		err = snd_hda_create_spdif_share_sw(codec,
+						    &spec->multiout);
+		if (err < 0)
+			return err;
+		spec->multiout.share_spdif = 1;
 	}
 	if (spec->dig_in_nid) {
 		err = snd_hda_create_spdif_in_ctls(codec, spec->dig_in_nid);
@@ -427,27 +431,6 @@ static int cmi9880_init(struct hda_codec *codec)
 	return 0;
 }
 
-#ifdef CONFIG_PM
-/*
- * resume
- */
-static int cmi9880_resume(struct hda_codec *codec)
-{
-	struct cmi_spec *spec = codec->spec;
-
-	cmi9880_init(codec);
-	snd_hda_resume_ctls(codec, cmi9880_basic_mixer);
-	if (spec->channel_modes)
-		snd_hda_resume_ctls(codec, cmi9880_ch_mode_mixer);
-	if (spec->multiout.dig_out_nid)
-		snd_hda_resume_spdif_out(codec);
-	if (spec->dig_in_nid)
-		snd_hda_resume_spdif_in(codec);
-
-	return 0;
-}
-#endif
-
 /*
  * Analog playback callbacks
  */
@@ -456,7 +439,8 @@ static int cmi9880_playback_pcm_open(struct hda_pcm_stream *hinfo,
 				     struct snd_pcm_substream *substream)
 {
 	struct cmi_spec *spec = codec->spec;
-	return snd_hda_multi_out_analog_open(codec, &spec->multiout, substream);
+	return snd_hda_multi_out_analog_open(codec, &spec->multiout, substream,
+					     hinfo);
 }
 
 static int cmi9880_playback_pcm_prepare(struct hda_pcm_stream *hinfo,
@@ -497,6 +481,17 @@ static int cmi9880_dig_playback_pcm_close(struct hda_pcm_stream *hinfo,
 	return snd_hda_multi_out_dig_close(codec, &spec->multiout);
 }
 
+static int cmi9880_dig_playback_pcm_prepare(struct hda_pcm_stream *hinfo,
+					    struct hda_codec *codec,
+					    unsigned int stream_tag,
+					    unsigned int format,
+					    struct snd_pcm_substream *substream)
+{
+	struct cmi_spec *spec = codec->spec;
+	return snd_hda_multi_out_dig_prepare(codec, &spec->multiout, stream_tag,
+					     format, substream);
+}
+
 /*
  * Analog capture
  */
@@ -519,7 +514,7 @@ static int cmi9880_capture_pcm_cleanup(struct hda_pcm_stream *hinfo,
 {
 	struct cmi_spec *spec = codec->spec;
 
-	snd_hda_codec_setup_stream(codec, spec->adc_nids[substream->number], 0, 0, 0);
+	snd_hda_codec_cleanup_stream(codec, spec->adc_nids[substream->number]);
 	return 0;
 }
 
@@ -556,7 +551,8 @@ static struct hda_pcm_stream cmi9880_pcm_digital_playback = {
 	/* NID is set in cmi9880_build_pcms */
 	.ops = {
 		.open = cmi9880_dig_playback_pcm_open,
-		.close = cmi9880_dig_playback_pcm_close
+		.close = cmi9880_dig_playback_pcm_close,
+		.prepare = cmi9880_dig_playback_pcm_prepare
 	},
 };
 
@@ -583,6 +579,7 @@ static int cmi9880_build_pcms(struct hda_codec *codec)
 		codec->num_pcms++;
 		info++;
 		info->name = "CMI9880 Digital";
+		info->pcm_type = HDA_PCM_TYPE_SPDIF;
 		if (spec->multiout.dig_out_nid) {
 			info->stream[SNDRV_PCM_STREAM_PLAYBACK] = cmi9880_pcm_digital_playback;
 			info->stream[SNDRV_PCM_STREAM_PLAYBACK].nid = spec->multiout.dig_out_nid;
@@ -615,6 +612,8 @@ static const char *cmi9880_models[CMI_MODELS] = {
 
 static struct snd_pci_quirk cmi9880_cfg_tbl[] = {
 	SND_PCI_QUIRK(0x1043, 0x813d, "ASUS P5AD2", CMI_FULL_DIG),
+	SND_PCI_QUIRK(0x1854, 0x002b, "LG LS75", CMI_MINIMAL),
+	SND_PCI_QUIRK(0x1854, 0x0032, "LG", CMI_FULL_DIG),
 	{} /* terminator */
 };
 
@@ -623,9 +622,6 @@ static struct hda_codec_ops cmi9880_patch_ops = {
 	.build_pcms = cmi9880_build_pcms,
 	.init = cmi9880_init,
 	.free = cmi9880_free,
-#ifdef CONFIG_PM
-	.resume = cmi9880_resume,
-#endif
 };
 
 static int patch_cmi9880(struct hda_codec *codec)

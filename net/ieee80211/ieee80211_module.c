@@ -5,8 +5,8 @@
   Portions of this file are based on the WEP enablement code provided by the
   Host AP project hostap-drivers v0.1.3
   Copyright (c) 2001-2002, SSH Communications Security Corp and Jouni Malinen
-  <jkmaline@cc.hut.fi>
-  Copyright (c) 2002-2003, Jouni Malinen <jkmaline@cc.hut.fi>
+  <j@w1.fi>
+  Copyright (c) 2002-2003, Jouni Malinen <j@w1.fi>
 
   This program is free software; you can redistribute it and/or modify it
   under the terms of version 2 of the GNU General Public License as
@@ -47,6 +47,9 @@
 #include <linux/wireless.h>
 #include <linux/etherdevice.h>
 #include <asm/uaccess.h>
+#if 0 /* Not in RHEL5... */
+#include <net/net_namespace.h>
+#endif
 #include <net/arp.h>
 
 #include <net/ieee80211.h>
@@ -140,7 +143,7 @@ struct net_device *alloc_ieee80211(int sizeof_priv)
 
 	dev = alloc_etherdev(sizeof(struct ieee80211_device) + sizeof_priv);
 	if (!dev) {
-		IEEE80211_ERROR("Unable to network device.\n");
+		IEEE80211_ERROR("Unable to allocate network device.\n");
 		goto failed;
 	}
 	ieee = netdev_priv(dev);
@@ -180,9 +183,8 @@ struct net_device *alloc_ieee80211(int sizeof_priv)
 	ieee->ieee802_1x = 1;	/* Default to supporting 802.1x */
 
 	INIT_LIST_HEAD(&ieee->crypt_deinit_list);
-	init_timer(&ieee->crypt_deinit_timer);
-	ieee->crypt_deinit_timer.data = (unsigned long)ieee;
-	ieee->crypt_deinit_timer.function = ieee80211_crypt_deinit_handler;
+	setup_timer(&ieee->crypt_deinit_timer, ieee80211_crypt_deinit_handler,
+			(unsigned long)ieee);
 	ieee->crypt_quiesced = 0;
 
 	spin_lock_init(&ieee->lock);
@@ -229,6 +231,7 @@ void free_ieee80211(struct net_device *dev)
 
 static int debug = 0;
 u32 ieee80211_debug_level = 0;
+EXPORT_SYMBOL_GPL(ieee80211_debug_level);
 static struct proc_dir_entry *ieee80211_proc = NULL;
 
 static int show_debug_level(char *page, char **start, off_t offset,

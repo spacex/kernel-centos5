@@ -2989,9 +2989,6 @@ e1000_tx_csum(struct e1000_adapter *adapter, struct e1000_tx_ring *tx_ring,
 	return FALSE;
 }
 
-#define E1000_MAX_TXD_PWR	12
-#define E1000_MAX_DATA_PER_TXD	(1<<E1000_MAX_TXD_PWR)
-
 static int
 e1000_tx_map(struct e1000_adapter *adapter, struct e1000_tx_ring *tx_ring,
              struct sk_buff *skb, unsigned int first, unsigned int max_per_txd,
@@ -3263,8 +3260,8 @@ e1000_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 {
 	struct e1000_adapter *adapter = netdev_priv(netdev);
 	struct e1000_tx_ring *tx_ring;
-	unsigned int first, max_per_txd = E1000_MAX_DATA_PER_TXD;
-	unsigned int max_txd_pwr = E1000_MAX_TXD_PWR;
+	unsigned int max_txd_pwr = adapter->tx_desc_pwr;
+	unsigned int first, max_per_txd = (1 << max_txd_pwr);
 	unsigned int tx_flags = 0;
 	unsigned int len = skb->len - skb->data_len;
 	unsigned long flags;
@@ -3284,11 +3281,6 @@ e1000_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 		dev_kfree_skb_any(skb);
 		return NETDEV_TX_OK;
 	}
-
-	/* 82571 and newer doesn't need the workaround that limited descriptor
-	 * length to 4kB */
-	if (adapter->hw.mac_type >= e1000_82571)
-		max_per_txd = 8192;
 
 	mss = skb_shinfo(skb)->gso_size;
 	/* The controller does a simple calculation to

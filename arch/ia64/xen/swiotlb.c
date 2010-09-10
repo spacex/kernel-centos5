@@ -606,7 +606,7 @@ swiotlb_map_single(struct device *hwdev, void *ptr, size_t size, int dir)
 	 * we can safely return the device addr and not worry about bounce
 	 * buffering it.
 	 */
-	if (!range_straddles_page_boundary(ptr, size) &&
+	if (!range_straddles_page_boundary(__pa(ptr), size) &&
 	    !address_needs_mapping(hwdev, dev_addr) && !swiotlb_force)
 		return dev_addr;
 
@@ -775,7 +775,10 @@ swiotlb_map_sg(struct device *hwdev, struct scatterlist *sg, int nelems,
 	for (i = 0; i < nelems; i++, sg++) {
 		addr = SG_ENT_VIRT_ADDRESS(sg);
 		dev_addr = virt_to_bus(addr);
-		if (swiotlb_force || address_needs_mapping(hwdev, dev_addr)) {
+		if (swiotlb_force ||
+		    range_straddles_page_boundary(page_to_pseudophys(sg->page)
+						  + sg->offset, sg->length) ||
+		    address_needs_mapping(hwdev, dev_addr)) {
 			void *map = map_single(hwdev, addr, sg->length, dir);
 			sg->dma_address = virt_to_bus(map);
 			if (!map) {

@@ -7,6 +7,7 @@
 #include <asm/proto.h>
 #include <asm/swiotlb.h>
 #include <asm/dma.h>
+#include <asm/calgary.h>
 
 int swiotlb __read_mostly;
 EXPORT_SYMBOL(swiotlb);
@@ -39,5 +40,12 @@ void pci_swiotlb_init(void)
 		printk(KERN_INFO "PCI-DMA: Using software bounce buffering for IO (SWIOTLB)\n");
 		swiotlb_init();
 		dma_ops = &swiotlb_dma_ops;
+	} else {
+#ifdef CONFIG_CALGARY_IOMMU
+		if (use_calgary && (end_pfn > MAX_DMA32_PFN)) {
+			swiotlb_init();
+			fallback_dma_ops = &swiotlb_dma_ops;
+		}
+#endif
 	}
 }

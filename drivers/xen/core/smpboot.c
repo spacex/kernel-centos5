@@ -28,7 +28,7 @@
 extern irqreturn_t smp_reschedule_interrupt(int, void *, struct pt_regs *);
 extern irqreturn_t smp_call_function_interrupt(int, void *, struct pt_regs *);
 
-extern void local_setup_timer(unsigned int cpu);
+extern int local_setup_timer(unsigned int cpu);
 extern void local_teardown_timer(unsigned int cpu);
 
 extern void hypervisor_callback(void);
@@ -107,32 +107,45 @@ set_cpu_sibling_map(int cpu)
 	cpu_data[cpu].booted_cores = 1;
 }
 
-static void xen_smp_intr_init(unsigned int cpu)
+static int xen_smp_intr_init(unsigned int cpu)
 {
+	int rc;
+
+	per_cpu(resched_irq, cpu) = per_cpu(callfunc_irq, cpu) = -1;
+
 	sprintf(resched_name[cpu], "resched%d", cpu);
-	per_cpu(resched_irq, cpu) =
-		bind_ipi_to_irqhandler(
-			RESCHEDULE_VECTOR,
-			cpu,
-			smp_reschedule_interrupt,
-			SA_INTERRUPT,
-			resched_name[cpu],
-			NULL);
-	BUG_ON(per_cpu(resched_irq, cpu) < 0);
+	rc = bind_ipi_to_irqhandler(RESCHEDULE_VECTOR,
+				    cpu,
+				    smp_reschedule_interrupt,
+				    SA_INTERRUPT,
+				    resched_name[cpu],
+				    NULL);
+	if (rc < 0)
+		goto fail;
+	per_cpu(resched_irq, cpu) = rc;
 
 	sprintf(callfunc_name[cpu], "callfunc%d", cpu);
-	per_cpu(callfunc_irq, cpu) =
-		bind_ipi_to_irqhandler(
-			CALL_FUNCTION_VECTOR,
-			cpu,
-			smp_call_function_interrupt,
-			SA_INTERRUPT,
-			callfunc_name[cpu],
-			NULL);
-	BUG_ON(per_cpu(callfunc_irq, cpu) < 0);
+	rc = bind_ipi_to_irqhandler(CALL_FUNCTION_VECTOR,
+				    cpu,
+				    smp_call_function_interrupt,
+				    SA_INTERRUPT,
+				    callfunc_name[cpu],
+				    NULL);
+	if (rc < 0)
+		goto fail;
+	per_cpu(callfunc_irq, cpu) = rc;
 
-	if (cpu != 0)
-		local_setup_timer(cpu);
+	if ((cpu != 0) && ((rc = local_setup_timer(cpu)) != 0))
+		goto fail;
+
+	return 0;
+
+ fail:
+	if (per_cpu(resched_irq, cpu) >= 0)
+		unbind_from_irqhandler(per_cpu(resched_irq, cpu), NULL);
+	if (per_cpu(callfunc_irq, cpu) >= 0)
+		unbind_from_irqhandler(per_cpu(callfunc_irq, cpu), NULL);
+	return rc;
 }
 
 #ifdef CONFIG_HOTPLUG_CPU
@@ -236,17 +249,28 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 {
 	int cpu;
 	struct task_struct *idle;
+	int apicid, acpiid;
+	struct vcpu_get_physid cpu_id;
 #ifdef __x86_64__
 	struct desc_ptr *gdt_descr;
 #else
 	struct Xgt_desc_struct *gdt_descr;
 #endif
 
-	boot_cpu_data.apicid = 0;
+	apicid = 0;
+	if (HYPERVISOR_vcpu_op(VCPUOP_get_physid, 0, &cpu_id) == 0) {
+		apicid = xen_vcpu_physid_to_x86_apicid(cpu_id.phys_id);
+		acpiid = xen_vcpu_physid_to_x86_acpiid(cpu_id.phys_id);
+#ifdef CONFIG_ACPI
+		if (acpiid != 0xff)
+			x86_acpiid_to_apicid[acpiid] = apicid;
+#endif
+	}
+	boot_cpu_data.apicid = apicid;
 	cpu_data[0] = boot_cpu_data;
 
-	cpu_2_logical_apicid[0] = 0;
-	x86_cpu_to_apicid[0] = 0;
+	cpu_2_logical_apicid[0] = apicid;
+	x86_cpu_to_apicid[0] = apicid;
 
 	current_thread_info()->cpu = 0;
 
@@ -257,7 +281,8 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 
 	set_cpu_sibling_map(0);
 
-	xen_smp_intr_init(0);
+	if (xen_smp_intr_init(0))
+		BUG();
 
 	cpu_initialized_map = cpumask_of_cpu(0);
 
@@ -289,11 +314,20 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 			(void *)gdt_descr->address,
 			XENFEAT_writable_descriptor_tables);
 
+		apicid = cpu;
+		if (HYPERVISOR_vcpu_op(VCPUOP_get_physid, cpu, &cpu_id) == 0) {
+			apicid = xen_vcpu_physid_to_x86_apicid(cpu_id.phys_id);
+			acpiid = xen_vcpu_physid_to_x86_acpiid(cpu_id.phys_id);
+#ifdef CONFIG_ACPI
+			if (acpiid != 0xff)
+				x86_acpiid_to_apicid[acpiid] = apicid;
+#endif
+		}
 		cpu_data[cpu] = boot_cpu_data;
-		cpu_data[cpu].apicid = cpu;
+		cpu_data[cpu].apicid = apicid;
 
-		cpu_2_logical_apicid[cpu] = cpu;
-		x86_cpu_to_apicid[cpu] = cpu;
+		cpu_2_logical_apicid[cpu] = apicid;
+		x86_cpu_to_apicid[cpu] = apicid;
 
 		idle = fork_idle(cpu);
 		if (IS_ERR(idle))
@@ -419,7 +453,13 @@ int __cpuinit __cpu_up(unsigned int cpu)
 	set_cpu_sibling_map(cpu);
 	wmb();
 
-	xen_smp_intr_init(cpu);
+
+	rc = xen_smp_intr_init(cpu);
+	if (rc) {
+		remove_siblinginfo(cpu);
+		return rc;
+	}
+
 	cpu_set(cpu, cpu_online_map);
 
 	rc = HYPERVISOR_vcpu_op(VCPUOP_up, cpu, NULL);

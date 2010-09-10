@@ -18,15 +18,6 @@
 
 #include "internal.h"
 
-/* Crypto notification events. */
-enum {
-	CRYPTO_MSG_ALG_REQUEST,
-	CRYPTO_MSG_ALG_REGISTER,
-	CRYPTO_MSG_ALG_UNREGISTER,
-	CRYPTO_MSG_TMPL_REGISTER,
-	CRYPTO_MSG_TMPL_UNREGISTER,
-};
-
 struct crypto_larval {
 	struct ncrypto_alg alg;
 	struct ncrypto_alg *adult;
@@ -43,9 +34,11 @@ struct ncrypto_alg *__crypto_alg_lookup(const char *name, u32 type, u32 mask);
 struct ncrypto_alg *ncrypto_alg_mod_lookup(const char *name, u32 type,
 					   u32 mask);
 
+struct crypto_larval *crypto_larval_alloc(const char *name, u32 type, u32 mask);
 void crypto_larval_kill(struct ncrypto_alg *alg);
 struct ncrypto_alg *crypto_larval_lookup(const char *name, u32 type, u32 mask);
 void crypto_larval_error(const char *name, u32 type, u32 mask);
+void crypto_alg_tested(const char *name, int err);
 
 void crypto_shoot_alg(struct ncrypto_alg *alg);
 struct ncrypto_tfm *__crypto_alloc_tfm(struct ncrypto_alg *alg, u32 type,
@@ -56,6 +49,7 @@ int crypto_register_instance(struct crypto_template *tmpl,
 
 int crypto_register_notifier(struct notifier_block *nb);
 int crypto_unregister_notifier(struct notifier_block *nb);
+int crypto_probing_notify(unsigned long val, void *v);
 
 static inline void ncrypto_alg_put(struct ncrypto_alg *alg)
 {
@@ -88,9 +82,9 @@ static inline int crypto_is_moribund(struct ncrypto_alg *alg)
 	return alg->cra_flags & (NCRYPTO_ALG_DEAD | NCRYPTO_ALG_DYING);
 }
 
-static inline int crypto_notify(unsigned long val, void *v)
+static inline void crypto_notify(unsigned long val, void *v)
 {
-	return blocking_notifier_call_chain(&crypto_chain, val, v);
+	blocking_notifier_call_chain(&crypto_chain, val, v);
 }
 
 #endif	/* _CRYPTO_NINTERNAL_H */

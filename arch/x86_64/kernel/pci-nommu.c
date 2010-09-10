@@ -9,6 +9,7 @@
 #include <asm/proto.h>
 #include <asm/processor.h>
 #include <asm/dma.h>
+#include <asm/calgary.h>
 
 static int
 check_addr(char *name, struct device *hwdev, dma_addr_t bus, size_t size)
@@ -90,6 +91,11 @@ struct dma_mapping_ops nommu_dma_ops = {
 
 void __init no_iommu_init(void)
 {
+#ifdef CONFIG_CALGARY_IOMMU
+	if (use_calgary && (end_pfn <= MAX_DMA32_PFN))
+		fallback_dma_ops = &nommu_dma_ops;
+#endif
+
 	if (dma_ops)
 		return;
 

@@ -492,6 +492,95 @@ __constant_test_bit(unsigned long nr, const volatile unsigned long *addr) {
  __constant_test_bit((nr),(addr)) : \
  __test_bit((nr),(addr)) )
 
+
+/**
+ * __ffs_word_loop - find byte offset of first long != 0UL
+ * @addr: pointer to array of unsigned long
+ * @size: size of the array in bits
+ */
+static inline unsigned long __ffs_word_loop(const unsigned long *addr,
+					    unsigned long size)
+{
+	typedef struct { long _[__BITOPS_WORDS(size)]; } addrtype;
+	unsigned long bytes = 0;
+
+	asm volatile(
+#ifndef __s390x__
+		"	ahi	%1,-1\n"
+		"	sra	%1,5\n"
+		"	jz	1f\n"
+		"0:	c	%2,0(%0,%3)\n"
+		"	jne	1f\n"
+		"	la	%0,4(%0)\n"
+		"	brct	%1,0b\n"
+		"1:\n"
+#else
+		"	aghi	%1,-1\n"
+		"	srag	%1,%1,6\n"
+		"	jz	1f\n"
+		"0:	cg	%2,0(%0,%3)\n"
+		"	jne	1f\n"
+		"	la	%0,8(%0)\n"
+		"	brct	%1,0b\n"
+		"1:\n"
+#endif
+		: "+&a" (bytes), "+&a" (size)
+		: "d" (0UL), "a" (addr), "m" (*(addrtype *) addr)
+		: "cc" );
+	return bytes;
+}
+
+/**
+ * __ffs_word - add number of the first set bit
+ * @nr: base value the bit number is added to
+ * @word: the word that is searched for set bits
+ */
+static inline unsigned long __ffs_word(unsigned long nr, unsigned long word)
+{
+#ifdef __s390x__
+	if (likely((word & 0xffffffff) == 0)) {
+		word >>= 32;
+		nr += 32;
+	}
+#endif
+	if (likely((word & 0xffff) == 0)) {
+		word >>= 16;
+		nr += 16;
+	}
+	if (likely((word & 0xff) == 0)) {
+		word >>= 8;
+		nr += 8;
+	}
+	return nr + _sb_findmap[(unsigned char) word];
+}
+
+/**
+ * __load_ulong_le - load little endian unsigned long
+ * @p: pointer to array of unsigned long
+ * @offset: byte offset of source value in the array
+ */
+static inline unsigned long __load_ulong_le(const unsigned long *p,
+					    unsigned long offset)
+{
+	unsigned long word;
+
+	p = (unsigned long *)((unsigned long) p + offset);
+#ifndef __s390x__
+	asm volatile(
+		"	ic	%0,0(%1)\n"
+		"	icm	%0,2,1(%1)\n"
+		"	icm	%0,4,2(%1)\n"
+		"	icm	%0,8,3(%1)"
+		: "=&d" (word) : "a" (p), "m" (*p) : "cc");
+#else
+	asm volatile(
+		"	lrvg	%0,%1"
+		: "=d" (word) : "m" (*p) );
+#endif
+	return word;
+}
+
+
 /*
  * ffz = Find First Zero in word. Undefined if no zero exists,
  * so code should check against ~0UL first..
@@ -949,6 +1038,47 @@ ext2_find_next_zero_bit(void *vaddr, unsigned long size, unsigned long offset)
 		p++;
         }
 	return offset + ext2_find_first_zero_bit(p, size);
+}
+
+static inline unsigned long ext2_find_first_bit(void *vaddr,
+						unsigned long size)
+{
+	unsigned long bytes, bits;
+
+	if (!size)
+		return 0;
+	bytes = __ffs_word_loop(vaddr, size);
+	bits = __ffs_word(bytes*8, __load_ulong_le(vaddr, bytes));
+	return (bits < size) ? bits : size;
+}
+
+static inline int ext2_find_next_bit(void *vaddr, unsigned long size,
+				     unsigned long offset)
+{
+	unsigned long *addr = vaddr, *p;
+	unsigned long bit, set;
+
+	if (offset >= size)
+		return size;
+	bit = offset & (__BITOPS_WORDSIZE - 1);
+	offset -= bit;
+	size -= offset;
+	p = addr + offset / __BITOPS_WORDSIZE;
+	if (bit) {
+		/*
+ 		 * s390 version of ffs returns __BITOPS_WORDSIZE
+ 		 * if no set bit is present in the word.
+ 		 */
+		set = __ffs_word(0, __load_ulong_le(p, 0) & (~0UL << bit));
+		if (set >= size)
+			return size + offset;
+		if (set < __BITOPS_WORDSIZE)
+			return set + offset;
+		offset += __BITOPS_WORDSIZE;
+		size -= __BITOPS_WORDSIZE;
+		p++;
+	}
+	return offset + ext2_find_first_bit(p, size);
 }
 
 #include <asm-generic/bitops/minix.h>

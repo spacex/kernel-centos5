@@ -28,6 +28,7 @@
 #include <linux/syscalls.h>
 #include <linux/rcupdate.h>
 #include <linux/audit.h>
+#include <linux/falloc.h>
 
 #include <asm/unistd.h>
 
@@ -355,6 +356,74 @@ asmlinkage long sys_ftruncate64(unsigned int fd, loff_t length)
 	return ret;
 }
 #endif
+
+asmlinkage long sys_fallocate(int fd, int mode, loff_t offset, loff_t len)
+{
+	struct file *file;
+	struct inode *inode;
+	long ret = -EINVAL;
+
+	if (offset < 0 || len <= 0)
+		goto out;
+
+	/* Return error if mode is not supported */
+	ret = -EOPNOTSUPP;
+	if (mode && !(mode & FALLOC_FL_KEEP_SIZE))
+		goto out;
+
+	ret = -EBADF;
+	file = fget(fd);
+	if (!file)
+		goto out;
+	if (!(file->f_mode & FMODE_WRITE))
+		goto out_fput;
+	/*
+	 * Revalidate the write permissions, in case security policy has
+	 * changed since the files were opened.
+	 */
+	ret = security_file_permission(file, MAY_WRITE);
+	if (ret)
+		goto out_fput;
+
+	inode = file->f_dentry->d_inode;
+
+	ret = -ESPIPE;
+	if (S_ISFIFO(inode->i_mode))
+		goto out_fput;
+
+	ret = -ENODEV;
+	/*
+	 * Let individual file system decide if it supports preallocation
+	 * for directories or not.
+	 */
+	if (!S_ISREG(inode->i_mode) && !S_ISDIR(inode->i_mode))
+		goto out_fput;
+
+	ret = -EFBIG;
+	/* Check for wrap through zero too */
+	if ((loff_t)((unsigned long long)offset + (unsigned long long)len) < 0 ||
+	    (offset + len) > inode->i_sb->s_maxbytes)
+		goto out_fput;
+
+	/*
+	 * KABI trick; filesystem implementing ->fallocate must
+	 * set FS_HAS_FALLOCATE in fs_flags so we know it's safe to test
+	 */
+	if (!(inode->i_sb->s_type->fs_flags & FS_HAS_FALLOCATE)) {
+		ret = -EOPNOTSUPP;
+		goto out_fput;
+	}
+
+	if (inode->i_op && inode->i_op->fallocate)
+		ret = inode->i_op->fallocate(inode, mode, offset, len);
+	else
+		ret = -EOPNOTSUPP;
+
+out_fput:
+	fput(file);
+out:
+	return ret;
+}
 
 #ifdef __ARCH_WANT_SYS_UTIME
 
@@ -1179,6 +1248,7 @@ asmlinkage long sys_close(unsigned int fd)
 	struct file * filp;
 	struct files_struct *files = current->files;
 	struct fdtable *fdt;
+	int retval;
 
 	spin_lock(&files->file_lock);
 	fdt = files_fdtable(files);
@@ -1191,7 +1261,16 @@ asmlinkage long sys_close(unsigned int fd)
 	FD_CLR(fd, fdt->close_on_exec);
 	__put_unused_fd(files, fd);
 	spin_unlock(&files->file_lock);
-	return filp_close(filp, files);
+	retval = filp_close(filp, files);
+
+	/* can't restart close syscall because file table entry was cleared */
+	if (unlikely(retval == -ERESTARTSYS ||
+		     retval == -ERESTARTNOINTR ||
+		     retval == -ERESTARTNOHAND ||
+		     retval == -ERESTART_RESTARTBLOCK))
+		retval = -EINTR;
+
+	return retval;
 
 out_unlock:
 	spin_unlock(&files->file_lock);

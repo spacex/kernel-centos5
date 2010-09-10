@@ -901,9 +901,12 @@ void key_revoke(struct key *key)
 {
 	key_check(key);
 
-	/* make sure no one's trying to change or use the key when we mark
-	 * it */
-	down_write(&key->sem);
+	/* make sure no one's trying to change or use the key when we mark it
+	 * - we tell lockdep that we might nest because we might be revoking an
+	 *   authorisation key whilst holding the sem on a key we've just
+	 *   instantiated
+	 */
+	down_write_nested(&key->sem, 1);
 	set_bit(KEY_FLAG_REVOKED, &key->flags);
 
 	if (key->type->revoke)

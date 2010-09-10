@@ -15,12 +15,13 @@
  *
  */
 
-#include <linux/compiler.h>
+#include <linux/completion.h>
 #include <linux/init.h>
 #include <linux/crypto.h>
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/kmod.h>
+#include <linux/mutex.h>
 #include <linux/rwsem.h>
 #include <linux/slab.h>
 #include <linux/string.h>
@@ -28,6 +29,9 @@
 
 LIST_HEAD(crypto_alg_list);
 DECLARE_RWSEM(crypto_alg_sem);
+
+BLOCKING_NOTIFIER_HEAD(ocrypto_chain);
+EXPORT_SYMBOL_GPL(ocrypto_chain);
 
 static inline int crypto_alg_get(struct crypto_alg *alg)
 {
@@ -253,10 +257,35 @@ static inline int crypto_set_driver_name(struct crypto_alg *alg)
 	return 0;
 }
 
+static int ocrypto_probing_notify(unsigned long val, void *v)
+{
+	int ok;
+
+	ok = blocking_notifier_call_chain(&ocrypto_chain, val, v);
+	if (ok == NOTIFY_DONE) {
+		request_module("testmgr_cipher");
+		ok = blocking_notifier_call_chain(&ocrypto_chain, val, v);
+	}
+
+	return ok;
+}
+
+static DECLARE_COMPLETION(test_done);
+static int test_err;
+
+void ocrypto_alg_tested(const char *name, int err)
+{
+	test_err = err;
+	complete(&test_done);
+}
+EXPORT_SYMBOL_GPL(ocrypto_alg_tested);
+
 int crypto_register_alg(struct crypto_alg *alg)
 {
 	int ret;
 	struct crypto_alg *q;
+	struct crypto_cipher_test param;
+	static DEFINE_MUTEX(test_lock);
 
 	if (alg->cra_alignmask & (alg->cra_alignmask + 1))
 		return -EINVAL;
@@ -274,6 +303,12 @@ int crypto_register_alg(struct crypto_alg *alg)
 	if (unlikely(ret))
 		return ret;
 
+	param.alg = alg;
+	memcpy(param.name, alg->cra_name, CRYPTO_MAX_ALG_NAME);
+	memcpy(alg->cra_name, "untested", sizeof("untested"));
+
+	mutex_lock(&test_lock);
+
 	down_write(&crypto_alg_sem);
 	
 	list_for_each_entry(q, &crypto_alg_list, cra_list) {
@@ -286,6 +321,41 @@ int crypto_register_alg(struct crypto_alg *alg)
 	list_add(&alg->cra_list, &crypto_alg_list);
 out:	
 	up_write(&crypto_alg_sem);
+
+	if (ret)
+		goto out2;
+
+	switch (alg->cra_flags & CRYPTO_ALG_TYPE_MASK) {
+	case CRYPTO_ALG_TYPE_CIPHER:
+		INIT_COMPLETION(test_done);
+		ret = ocrypto_probing_notify(CRYPTO_MSG_ALG_REGISTER, &param);
+		if (ret != NOTIFY_STOP) {
+			if (unlikely(ret != NOTIFY_DONE)) {
+				WARN_ON(1);
+				ret = -EINVAL;
+				break;
+			}
+			ocrypto_alg_tested(alg->cra_driver_name, 0);
+		}
+
+		ret = wait_for_completion_interruptible(&test_done);
+		if (unlikely(ret))
+			WARN_ON(1);
+		else
+			ret = test_err;
+		break;
+
+	case CRYPTO_ALG_TYPE_DIGEST:
+		ret = digest_test(alg->cra_driver_name, param.name);
+		break;
+	}
+
+	if (ret)
+		crypto_unregister_alg(alg);
+
+out2:
+	memcpy(alg->cra_name, param.name, CRYPTO_MAX_ALG_NAME);
+	mutex_unlock(&test_lock);
 	return ret;
 }
 
@@ -321,6 +391,18 @@ int crypto_alg_available(const char *name, u32 flags)
 	
 	return ret;
 }
+
+int ocrypto_register_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_register(&ocrypto_chain, nb);
+}
+EXPORT_SYMBOL_GPL(ocrypto_register_notifier);
+
+int ocrypto_unregister_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_unregister(&ocrypto_chain, nb);
+}
+EXPORT_SYMBOL_GPL(ocrypto_unregister_notifier);
 
 static int __init init_crypto(void)
 {

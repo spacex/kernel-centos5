@@ -302,11 +302,15 @@ ccw_device_remove_disconnected(struct ccw_device *cdev)
 	 * Forced offline in disconnected state means
 	 * 'throw away device'.
 	 */
+	/* Get subchannel reference for local processing. */
+	if (!get_device(cdev->dev.parent))
+		return;
 	sch = to_subchannel(cdev->dev.parent);
 	css_sch_device_unregister(sch);
 	/* Reset intparm to zeroes. */
 	sch->schib.pmcw.intparm = 0;
 	cio_modify(sch);
+	/* Release subchannel reference for local processing. */
 	put_device(&sch->dev);
 }
 
@@ -672,6 +676,8 @@ ccw_device_release(struct device *dev)
 	struct ccw_device *cdev;
 
 	cdev = to_ccwdev(dev);
+	/* Just to be sure this is not still running. */
+	ccw_device_schedule_verify(cdev, 0);
 	kfree(cdev->private);
 	kfree(cdev);
 }
@@ -724,18 +730,22 @@ out:
 		wake_up(&ccw_device_init_wq);
 }
 
-void
-ccw_device_call_sch_unregister(void *data)
+static void ccw_device_call_sch_unregister(void *data)
 {
 	struct ccw_device *cdev = data;
 	struct subchannel *sch;
 
+	/* Get subchannel reference for local processing. */
+	if (!get_device(cdev->dev.parent))
+		return;
 	sch = to_subchannel(cdev->dev.parent);
 	css_sch_device_unregister(sch);
 	/* Reset intparm to zeroes. */
 	sch->schib.pmcw.intparm = 0;
 	cio_modify(sch);
+	/* Release cdev reference for workqueue processing.*/
 	put_device(&cdev->dev);
+	/* Release subchannel reference for local processing. */
 	put_device(&sch->dev);
 }
 
@@ -761,6 +771,8 @@ io_subchannel_recog_done(struct ccw_device *cdev)
 		PREPARE_WORK(&cdev->private->kick_work,
 			     ccw_device_call_sch_unregister, (void *) cdev);
 		queue_work(slow_path_wq, &cdev->private->kick_work);
+		/* Release subchannel reference for asynchronous recognition. */
+		put_device(&sch->dev);
 		if (atomic_dec_and_test(&ccw_device_init_count))
 			wake_up(&ccw_device_init_wq);
 		break;
@@ -847,6 +859,11 @@ io_subchannel_probe (struct subchannel *sch)
 			get_device(&cdev->dev);
 		return 0;
 	}
+	/* Check if we have a disconnected device with this devno. */
+	cdev = get_disc_ccwdev_by_devno(sch->schib.pmcw.dev, sch->schid.ssid,
+					NULL);
+	if (cdev)
+		ccw_device_remove_disconnected(cdev);
 	cdev = kzalloc (sizeof(*cdev), GFP_KERNEL);
 	if (!cdev)
 		return -ENOMEM;
@@ -888,7 +905,10 @@ ccw_device_unregister(void *data)
 
 	cdev = (struct ccw_device *)data;
 	if (test_and_clear_bit(1, &cdev->private->registered))
-		device_unregister(&cdev->dev);
+		device_del(&cdev->dev);
+	/* decrement refcount from device_initialize */
+	put_device(&cdev->dev);
+	/* decrement refcount from calling function */
 	put_device(&cdev->dev);
 }
 

@@ -1,0 +1,45 @@
+#
+# This Kconfig describe xen options
+#
+
+# add other arch's if needed in depends below ...
+
+menu "Xen PV-ON-HVM Configuration"
+
+config XEN_PV_ON_HVM
+# when/if ia64 xen-hfiles added to rhel4 sources
+#	depends on !XEN && (X86_64 || X86 || IA64)
+	bool "XEN_PV_ON_HVM Support"
+	default y if (!X86_XEN && (X86 || X86_64))
+	help
+	  Support for Xen paravirtualized drivers on fully-virtualized guest
+
+config XEN_BLKDEV_FRONTEND
+	tristate "Block-device frontend driver"
+	depends on XEN_PV_ON_HVM
+	default y
+	help
+	  The block-device frontend driver allows the kernel to access block
+	  devices mounted within another guest OS. Unless you are building a
+	  dedicated device-driver domain, or your master control domain
+	  (domain 0), then you almost certainly want to say Y here.
+
+config XEN_NETDEV_FRONTEND
+	tristate "Network-device frontend driver"
+	depends on XEN_PV_ON_HVM
+	default y
+	help
+	  The network-device frontend driver allows the kernel to access
+	  network interfaces within another guest OS. Unless you are building a
+	  dedicated device-driver domain, or your master control domain
+	  (domain 0), then you almost certainly want to say Y here.
+
+endmenu
+
+#config HAVE_ARCH_ALLOC_SKB
+#	bool
+#	default y
+
+#config HAVE_ARCH_DEV_ALLOC_SKB
+#	bool
+#	default y

@@ -193,6 +193,14 @@ void input_event(struct input_dev *dev, unsigned int type, unsigned int code, in
 }
 EXPORT_SYMBOL(input_event);
 
+/*
+ * Input_mutex protects access to both input_dev_list and input_handler_list.
+ * This also causes input_[un]register_device and input_[un]register_handler
+ * be mutually exclusive which simplifies locking in drivers implementing
+ * input handlers.
+ */
+static DEFINE_MUTEX(input_mutex);
+
 /**
  * input_inject_event() - send input event from input handler
  * @handle: input handle to send event through
@@ -393,7 +401,8 @@ static struct list_head *list_get_next_element(struct list_head *list, struct li
 
 static void *input_devices_seq_start(struct seq_file *seq, loff_t *pos)
 {
-	/* acquire lock here ... Yes, we do need locking, I knowi, I know... */
+	if (mutex_lock_interruptible(&input_mutex))
+		return NULL;
 
 	return list_get_nth_element(&input_dev_list, pos);
 }
@@ -405,7 +414,7 @@ static void *input_devices_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 
 static void input_devices_seq_stop(struct seq_file *seq, void *v)
 {
-	/* release lock here */
+	mutex_unlock(&input_mutex);
 }
 
 static void input_seq_print_bitmap(struct seq_file *seq, const char *name,
@@ -488,7 +497,9 @@ static struct file_operations input_devices_fileops = {
 
 static void *input_handlers_seq_start(struct seq_file *seq, loff_t *pos)
 {
-	/* acquire lock here ... Yes, we do need locking, I knowi, I know... */
+	if (mutex_lock_interruptible(&input_mutex))
+		return NULL;
+
 	seq->private = (void *)(unsigned long)*pos;
 	return list_get_nth_element(&input_handler_list, pos);
 }
@@ -501,7 +512,7 @@ static void *input_handlers_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 
 static void input_handlers_seq_stop(struct seq_file *seq, void *v)
 {
-	/* release lock here */
+	mutex_unlock(&input_mutex);
 }
 
 static int input_handlers_seq_show(struct seq_file *seq, void *v)
@@ -956,7 +967,6 @@ int input_register_device(struct input_dev *dev)
 	}
 
 	INIT_LIST_HEAD(&dev->h_list);
-	list_add_tail(&dev->node, &input_dev_list);
 
 	dev->cdev.class = &input_class;
 	snprintf(dev->cdev.class_id, sizeof(dev->cdev.class_id),
@@ -985,6 +995,13 @@ int input_register_device(struct input_dev *dev)
 		dev->name ? dev->name : "Unspecified device", path ? path : "N/A");
 	kfree(path);
 
+	error = mutex_lock_interruptible(&input_mutex);
+	if (error) {
+		goto fail4;
+	}
+
+	list_add_tail(&dev->node, &input_dev_list);
+
 	list_for_each_entry(handler, &input_handler_list, node)
 		if (!handler->blacklist || !input_match_device(handler->blacklist, dev))
 			if ((id = input_match_device(handler->id_table, dev)))
@@ -996,8 +1013,12 @@ int input_register_device(struct input_dev *dev)
 
 	input_wakeup_procfs_readers();
 
+	mutex_unlock(&input_mutex);
+
 	return 0;
 
+ fail4: module_put(THIS_MODULE);
+	sysfs_remove_group(&dev->cdev.kobj, &input_dev_caps_attr_group);
  fail3:	sysfs_remove_group(&dev->cdev.kobj, &input_dev_id_attr_group);
  fail2:	sysfs_remove_group(&dev->cdev.kobj, &input_dev_attr_group);
  fail1:	class_device_del(&dev->cdev);
@@ -1013,6 +1034,8 @@ void input_unregister_device(struct input_dev *dev)
 		return;
 
 	del_timer_sync(&dev->timer);
+
+	mutex_lock(&input_mutex);
 
 	list_for_each_safe(node, next, &dev->h_list) {
 		struct input_handle * handle = to_handle(node);
@@ -1034,6 +1057,8 @@ void input_unregister_device(struct input_dev *dev)
 	class_device_unregister(&dev->cdev);
 
 	input_wakeup_procfs_readers();
+
+	mutex_unlock(&input_mutex);
 }
 EXPORT_SYMBOL(input_unregister_device);
 
@@ -1045,6 +1070,8 @@ void input_register_handler(struct input_handler *handler)
 
 	if (!handler)
 		return;
+
+	mutex_lock(&input_mutex);
 
 	INIT_LIST_HEAD(&handler->h_list);
 
@@ -1063,12 +1090,16 @@ void input_register_handler(struct input_handler *handler)
 				}
 
 	input_wakeup_procfs_readers();
+
+	mutex_unlock(&input_mutex);
 }
 EXPORT_SYMBOL(input_register_handler);
 
 void input_unregister_handler(struct input_handler *handler)
 {
 	struct list_head *node, *next;
+
+	mutex_lock(&input_mutex);
 
 	list_for_each_safe(node, next, &handler->h_list) {
 		struct input_handle * handle = to_handle_h(node);
@@ -1083,6 +1114,8 @@ void input_unregister_handler(struct input_handler *handler)
 		input_table[handler->minor >> 5] = NULL;
 
 	input_wakeup_procfs_readers();
+
+	mutex_unlock(&input_mutex);
 }
 EXPORT_SYMBOL(input_unregister_handler);
 

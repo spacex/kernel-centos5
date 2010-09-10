@@ -20,7 +20,9 @@ typedef unsigned char	slotid_t;	/* slot (blade) within module */
 typedef unsigned char	slabid_t;	/* slab (asic) within slot */
 typedef u64 nic_t;
 typedef unsigned long iopaddr_t;
+#ifndef _ASM_IA64_MADDR_H /* paddr_t is defined in asm-ia64/maddr.h */
 typedef unsigned long paddr_t;
+#endif
 typedef short cnodeid_t;
 
 #endif /* _ASM_IA64_SN_TYPES_H */

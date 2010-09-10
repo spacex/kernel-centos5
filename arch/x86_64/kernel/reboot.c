@@ -7,6 +7,7 @@
 #include <linux/ctype.h>
 #include <linux/string.h>
 #include <linux/pm.h>
+#include <linux/efi.h>
 #include <asm/io.h>
 #include <asm/kdebug.h>
 #include <asm/delay.h>
@@ -22,6 +23,14 @@
  */
 void (*pm_power_off)(void);
 EXPORT_SYMBOL(pm_power_off);
+
+/* machine_emergency_restart_func is set to the restart implementation here.
+ * The variable provides a way for overriding the implementation.
+ * For example, EFI initialization could set up an emergency restart
+ * function hiding its implementation from here.
+ */
+void (*machine_emergency_restart_func)(void) = machine_emergency_restart;
+EXPORT_SYMBOL(machine_emergency_restart_func);
 
 static long no_idt[3];
 static enum { 
@@ -151,11 +160,17 @@ void machine_restart(char * __unused)
 	if (!reboot_force) {
 		machine_shutdown();
 	}
-	machine_emergency_restart();
+	machine_emergency_restart_func();
 }
 
 void machine_halt(void)
 {
+	machine_shutdown();
+
+	/* stop current CPU */
+	local_irq_disable();
+	for (;;)
+		halt();
 }
 
 void machine_power_off(void)

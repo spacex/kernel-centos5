@@ -1414,9 +1414,9 @@ qla2x00_print_scsi_cmd(struct scsi_cmnd * cmd)
 		printk("0x%02x ", cmd->cmnd[i]);
 	}
 	printk("\n  seg_cnt=%d, allowed=%d, retries=%d\n",
-	    cmd->use_sg, cmd->allowed, cmd->retries);
+	       scsi_sg_count(cmd), cmd->allowed, cmd->retries);
 	printk("  request buffer=0x%p, request buffer len=0x%x\n",
-	    cmd->request_buffer, cmd->request_bufflen);
+	       scsi_sglist(cmd), scsi_bufflen(cmd));
 	printk("  tag=%d, transfersize=0x%x\n",
 	    cmd->tag, cmd->transfersize);
 	printk("  serial_number=%lx, SP=%p\n", cmd->serial_number, sp);
@@ -1429,16 +1429,31 @@ qla2x00_print_scsi_cmd(struct scsi_cmnd * cmd)
 }
 
 void
-qla2x00_dump_pkt(void *pkt)
+qla2x00_print_byte_buf(void *buffer, size_t count, size_t per_line)
 {
-	uint32_t i;
-	uint8_t *data = (uint8_t *) pkt;
+	uint8_t *p = buffer;
+	size_t i;
 
-	for (i = 0; i < 64; i++) {
-		if (!(i % 4))
-			printk("\n%02x: ", i);
+	for (i = 0; i < count; i++){
+		if (i && per_line && !(i % per_line))
+			printk("\n");
+		printk(" %02X", *p++);
+	}
+	printk("\n");
+}
 
-		printk("%02x ", data[i]);
+void
+qla2x00_print_word_buf(void *buffer, size_t count, size_t per_line)
+{
+	uint16_t *p = buffer;
+	size_t i;
+
+	count /= sizeof(*p);
+
+	for (i = 0; i < count; i++) {
+		if (i && per_line && !(i % per_line))
+			printk("\n");
+		printk(" %04X", *p++);
 	}
 	printk("\n");
 }

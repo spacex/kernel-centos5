@@ -36,6 +36,7 @@
 #include <asm/idle.h>
 #include <asm/proto.h>
 #include <asm/timex.h>
+#include <asm/ipi.h>
 
 int apic_verbosity;
 int apic_runs_main_timer;
@@ -479,8 +480,7 @@ void __cpuinit setup_local_APIC (void)
 	}
 
 	nmi_watchdog_default();
-	if (nmi_watchdog == NMI_LOCAL_APIC)
-		setup_apic_nmi_watchdog();
+	setup_apic_nmi_watchdog();
 	apic_pm_activate();
 }
 
@@ -897,6 +897,12 @@ void smp_send_timer_broadcast_ipi(void)
 {
 	cpumask_t mask;
 
+	if (cpus_equal(cpu_online_map, timer_interrupt_broadcast_ipi_mask)) {
+		__send_IPI_shortcut(APIC_DEST_ALLINC, LOCAL_TIMER_VECTOR,
+					APIC_DEST_LOGICAL);
+		return;
+	}
+
 	cpus_and(mask, cpu_online_map, timer_interrupt_broadcast_ipi_mask);
 	if (!cpus_empty(mask)) {
 		send_IPI_mask(mask, LOCAL_TIMER_VECTOR);
@@ -1009,6 +1015,15 @@ __cpuinit int apic_is_clustered_box(void)
 	int i, clusters, zeros;
 	unsigned id;
 	DECLARE_BITMAP(clustermap, NUM_APIC_CLUSTERS);
+
+	/*
+	* there is not this kind of box with AMD CPU yet.
+	* Some AMD box with quadcore cpu and 8 sockets apicid
+	* will be [4, 0x23] or [8, 0x27] could be thought to
+	* have three apic_clusters. So go out early.
+	*/
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD && !is_vsmp_box())
+		return 0;
 
 	bitmap_zero(clustermap, NUM_APIC_CLUSTERS);
 

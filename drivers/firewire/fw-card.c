@@ -16,10 +16,14 @@
  * Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 
-#include <linux/module.h>
-#include <linux/errno.h>
+#include <linux/completion.h>
+#include <linux/delay.h>
 #include <linux/device.h>
+#include <linux/errno.h>
+#include <linux/kref.h>
+#include <linux/module.h>
 #include <linux/mutex.h>
+
 #include "fw-transaction.h"
 #include "fw-topology.h"
 #include "fw-device.h"
@@ -84,17 +88,16 @@ static u16 crc_itu_t(u16 crc, const u8 *buffer, size_t len)
 
 int fw_compute_block_crc(u32 *block)
 {
-        __be32 be32_block[256];
-        int i, length;
+	__be32 be32_block[256];
+	int i, length;
 
-        length = (*block >> 16) & 0xff;
-        for (i = 0; i < length; i++)
-                be32_block[i] = cpu_to_be32(block[i + 1]);
-        *block |= crc_itu_t(0, (u8 *) be32_block, length * 4);
+	length = (*block >> 16) & 0xff;
+	for (i = 0; i < length; i++)
+		be32_block[i] = cpu_to_be32(block[i + 1]);
+	*block |= crc_itu_t(0, (u8 *) be32_block, length * 4);
 
-        return length;
+	return length;
 }
-
 
 static DEFINE_MUTEX(card_mutex);
 static LIST_HEAD(card_list);
@@ -170,15 +173,12 @@ generate_config_rom(struct fw_card *card, size_t *config_rom_length)
 		i += desc->length;
 	}
 
-	/*
-	 * Calculate CRCs for all blocks in the config rom.  This
+	/* Calculate CRCs for all blocks in the config rom.  This
 	 * assumes that CRC length and info length are identical for
 	 * the bus info block, which is always the case for this
-	 * implementation.
-	 */
-	for (i = 0; i < j; i += length + 1) {
+	 * implementation. */
+	for (i = 0; i < j; i += length + 1)
 		length = fw_compute_block_crc(config_rom + i);
-	}
 
 	*config_rom_length = j;
 
@@ -199,7 +199,7 @@ update_config_roms(void)
 }
 
 int
-fw_core_add_descriptor (struct fw_descriptor *desc)
+fw_core_add_descriptor(struct fw_descriptor *desc)
 {
 	size_t i;
 
@@ -248,27 +248,15 @@ static const char gap_count_table[] = {
 	63, 5, 7, 8, 10, 13, 16, 18, 21, 24, 26, 29, 32, 35, 37, 40
 };
 
-struct bm_data {
-	struct fw_transaction t;
-	struct {
-		__be32 arg;
-		__be32 data;
-	} lock;
-	u32 old;
-	int rcode;
-	struct completion done;
-};
-
-static void
-complete_bm_lock(struct fw_card *card, int rcode,
-		 void *payload, size_t length, void *data)
+void
+fw_schedule_bm_work(struct fw_card *card, bool delay)
 {
-	struct bm_data *bmd = data;
+	int scheduled;
 
-	if (rcode == RCODE_COMPLETE)
-		bmd->old = be32_to_cpu(*(__be32 *) payload);
-	bmd->rcode = rcode;
-	complete(&bmd->done);
+	fw_card_get(card);
+	scheduled = schedule_delayed_work(&card->work, delay ? DIV_ROUND_UP(HZ, 10) : 0 );
+	if (!scheduled)
+		fw_card_put(card);
 }
 
 static void
@@ -276,20 +264,32 @@ fw_card_bm_work(void *w)
 {
 	struct work_struct *work = w;
 	struct fw_card *card = container_of(work, struct fw_card, work);
-	struct fw_device *root;
-	struct bm_data bmd;
+	struct fw_device *root_device;
+	struct fw_node *root_node, *local_node;
 	unsigned long flags;
-	int root_id, new_root_id, irm_id, gap_count, generation, grace;
-	int do_reset = 0;
+	int root_id, new_root_id, irm_id, gap_count, generation, grace, rcode;
+	bool do_reset = false;
+	__be32 lock_data[2];
 
 	spin_lock_irqsave(&card->lock, flags);
+	local_node = card->local_node;
+	root_node  = card->root_node;
+
+	if (local_node == NULL) {
+		spin_unlock_irqrestore(&card->lock, flags);
+		goto out_put_card;
+	}
+	fw_node_get(local_node);
+	fw_node_get(root_node);
 
 	generation = card->generation;
-	root = card->root_node->data;
-	root_id = card->root_node->node_id;
+	root_device = root_node->data;
+	if (root_device)
+		fw_device_get(root_device);
+	root_id = root_node->node_id;
 	grace = time_after(jiffies, card->reset_jiffies + DIV_ROUND_UP(HZ, 10));
 
-	if (card->bm_generation + 1 == generation ||
+	if (is_next_generation(generation, card->bm_generation) ||
 	    (card->bm_generation != generation && grace)) {
 		/*
 		 * This first step is to figure out who is IRM and
@@ -305,78 +305,77 @@ fw_card_bm_work(void *w)
 
 		irm_id = card->irm_node->node_id;
 		if (!card->irm_node->link_on) {
-			new_root_id = card->local_node->node_id;
+			new_root_id = local_node->node_id;
 			fw_notify("IRM has link off, making local node (%02x) root.\n",
 				  new_root_id);
 			goto pick_me;
 		}
 
-		bmd.lock.arg = cpu_to_be32(0x3f);
-		bmd.lock.data = cpu_to_be32(card->local_node->node_id);
+		lock_data[0] = cpu_to_be32(0x3f);
+		lock_data[1] = cpu_to_be32(local_node->node_id);
 
 		spin_unlock_irqrestore(&card->lock, flags);
 
-		init_completion(&bmd.done);
-		fw_send_request(card, &bmd.t, TCODE_LOCK_COMPARE_SWAP,
-				irm_id, generation,
-				SCODE_100, CSR_REGISTER_BASE + CSR_BUS_MANAGER_ID,
-				&bmd.lock, sizeof(bmd.lock),
-				complete_bm_lock, &bmd);
-		wait_for_completion(&bmd.done);
+		rcode = fw_run_transaction(card, TCODE_LOCK_COMPARE_SWAP,
+				irm_id, generation, SCODE_100,
+				CSR_REGISTER_BASE + CSR_BUS_MANAGER_ID,
+				lock_data, sizeof(lock_data));
 
-		if (bmd.rcode == RCODE_GENERATION) {
-			/*
-			 * Another bus reset happened. Just return,
-			 * the BM work has been rescheduled.
-			 */
-			return;
-		}
+		if (rcode == RCODE_GENERATION)
+			/* Another bus reset, BM work has been rescheduled. */
+			goto out;
 
-		if (bmd.rcode == RCODE_COMPLETE && bmd.old != 0x3f)
+		if (rcode == RCODE_COMPLETE &&
+		    lock_data[0] != cpu_to_be32(0x3f))
 			/* Somebody else is BM, let them do the work. */
-			return;
+			goto out;
 
 		spin_lock_irqsave(&card->lock, flags);
-		if (bmd.rcode != RCODE_COMPLETE) {
+
+		if (rcode != RCODE_COMPLETE) {
 			/*
 			 * The lock request failed, maybe the IRM
 			 * isn't really IRM capable after all. Let's
 			 * do a bus reset and pick the local node as
 			 * root, and thus, IRM.
 			 */
-			new_root_id = card->local_node->node_id;
+			new_root_id = local_node->node_id;
 			fw_notify("BM lock failed, making local node (%02x) root.\n",
 				  new_root_id);
 			goto pick_me;
 		}
 	} else if (card->bm_generation != generation) {
-		/* OK, we weren't BM in the last generation, and it's
+		/*
+		 * OK, we weren't BM in the last generation, and it's
 		 * less than 100ms since last bus reset. Reschedule
-		 * this task 100ms from now. */
+		 * this task 100ms from now.
+		 */
 		spin_unlock_irqrestore(&card->lock, flags);
-		schedule_delayed_work(&card->work, DIV_ROUND_UP(HZ, 10));
-		return;
+		fw_schedule_bm_work(card, true);
+		goto out;
 	}
 
-	/* We're bus manager for this generation, so next step is to
+	/*
+	 * We're bus manager for this generation, so next step is to
 	 * make sure we have an active cycle master and do gap count
-	 * optimization. */
+	 * optimization.
+	 */
 	card->bm_generation = generation;
 
-	if (root == NULL) {
+	if (root_device == NULL) {
 		/*
 		 * Either link_on is false, or we failed to read the
 		 * config rom.  In either case, pick another root.
 		 */
-		new_root_id = card->local_node->node_id;
-	} else if (atomic_read(&root->state) != FW_DEVICE_RUNNING) {
+		new_root_id = local_node->node_id;
+	} else if (atomic_read(&root_device->state) != FW_DEVICE_RUNNING) {
 		/*
 		 * If we haven't probed this device yet, bail out now
 		 * and let's try again once that's done.
 		 */
 		spin_unlock_irqrestore(&card->lock, flags);
-		return;
-	} else if (root->config_rom[2] & BIB_CMC) {
+		goto out;
+	} else if (root_device->cmc) {
 		/*
 		 * FIXME: I suppose we should set the cmstr bit in the
 		 * STATE_CLEAR register of this node, as described in
@@ -390,39 +389,45 @@ fw_card_bm_work(void *w)
 		 * successfully read the config rom, but it's not
 		 * cycle master capable.
 		 */
-		new_root_id = card->local_node->node_id;
+		new_root_id = local_node->node_id;
 	}
 
  pick_me:
 	/*
 	 * Pick a gap count from 1394a table E-1.  The table doesn't cover
 	 * the typically much larger 1394b beta repeater delays though.
-	*/
+	 */
 	if (!card->beta_repeaters_present &&
-	    card->root_node->max_hops < ARRAY_SIZE(gap_count_table)) {
-		gap_count = gap_count_table[card->root_node->max_hops];
-	} else {
+	    root_node->max_hops < ARRAY_SIZE(gap_count_table))
+		gap_count = gap_count_table[root_node->max_hops];
+	else
 		gap_count = 63;
-	}
-		
 
 	/*
-	 * Finally, figure out if we should do a reset or not.  If we've
-	 * done less that 5 resets with the same physical topology and we
+	 * Finally, figure out if we should do a reset or not.  If we have
+	 * done less than 5 resets with the same physical topology and we
 	 * have either a new root or a new gap count setting, let's do it.
 	 */
 
 	if (card->bm_retries++ < 5 &&
-	    (card->gap_count != gap_count || new_root_id != root_id)) {
-		do_reset = 1;
-	}
+	    (card->gap_count != gap_count || new_root_id != root_id))
+		do_reset = true;
 
 	spin_unlock_irqrestore(&card->lock, flags);
 
 	if (do_reset) {
+		fw_notify("phy config: card %d, new root=%x, gap_count=%d\n",
+			  card->index, new_root_id, gap_count);
 		fw_send_phy_config(card, new_root_id, generation, gap_count);
 		fw_core_initiate_bus_reset(card, 1);
 	}
+ out:
+	if (root_device)
+		fw_device_put(root_device);
+	fw_node_put(root_node);
+	fw_node_put(local_node);
+ out_put_card:
+	fw_card_put(card);
 }
 
 static void
@@ -439,14 +444,17 @@ fw_card_initialize(struct fw_card *card, const struct fw_card_driver *driver,
 {
 	static atomic_t index = ATOMIC_INIT(-1);
 
-	kref_init(&card->kref);
 	card->index = atomic_inc_return(&index);
 	card->driver = driver;
 	card->device = device;
 	card->current_tlabel = 0;
 	card->tlabel_mask = 0;
 	card->color = 0;
+	card->bm_retries = 0;
+	card->broadcast_channel = BROADCAST_CHANNEL_INITIAL;
 
+	kref_init(&card->kref);
+	init_completion(&card->done);
 	INIT_LIST_HEAD(&card->transaction_list);
 	spin_lock_init(&card->lock);
 	setup_timer(&card->flush_timer,
@@ -468,12 +476,6 @@ fw_card_add(struct fw_card *card,
 	card->max_receive = max_receive;
 	card->link_speed = link_speed;
 	card->guid = guid;
-
-	/*
-	 * The subsystem grabs a reference when the card is added and
-	 * drops it when the driver calls fw_core_remove_card.
-	 */
-	fw_card_get(card);
 
 	mutex_lock(&card_mutex);
 	config_rom = generate_config_rom(card, &length);
@@ -545,7 +547,6 @@ dummy_enable_phys_dma(struct fw_card *card,
 }
 
 static struct fw_card_driver dummy_driver = {
-	.name            = "dummy",
 	.enable          = dummy_enable,
 	.update_phy_reg  = dummy_update_phy_reg,
 	.set_config_rom  = dummy_set_config_rom,
@@ -554,6 +555,14 @@ static struct fw_card_driver dummy_driver = {
 	.send_response   = dummy_send_response,
 	.enable_phys_dma = dummy_enable_phys_dma,
 };
+
+void
+fw_card_release(struct kref *kref)
+{
+	struct fw_card *card = container_of(kref, struct fw_card, kref);
+
+	complete(&card->done);
+}
 
 void
 fw_core_remove_card(struct fw_card *card)
@@ -570,43 +579,15 @@ fw_core_remove_card(struct fw_card *card)
 	card->driver = &dummy_driver;
 
 	fw_destroy_nodes(card);
-	flush_scheduled_work();
 
-	fw_flush_transactions(card);
-	del_timer_sync(&card->flush_timer);
-
+	/* Wait for all users, especially device workqueue jobs, to finish. */
 	fw_card_put(card);
+	wait_for_completion(&card->done);
+
+	WARN_ON(!list_empty(&card->transaction_list));
+	del_timer_sync(&card->flush_timer);
 }
 EXPORT_SYMBOL(fw_core_remove_card);
-
-struct fw_card *
-fw_card_get(struct fw_card *card)
-{
-	kref_get(&card->kref);
-
-	return card;
-}
-EXPORT_SYMBOL(fw_card_get);
-
-static void
-release_card(struct kref *kref)
-{
-	struct fw_card *card = container_of(kref, struct fw_card, kref);
-
-	kfree(card);
-}
-
-/*
- * An assumption for fw_card_put() is that the card driver allocates
- * the fw_card struct with kalloc and that it has been shut down
- * before the last ref is dropped.
- */
-void
-fw_card_put(struct fw_card *card)
-{
-	kref_put(&card->kref, release_card);
-}
-EXPORT_SYMBOL(fw_card_put);
 
 int
 fw_core_initiate_bus_reset(struct fw_card *card, int short_reset)

@@ -5,8 +5,8 @@
   Portions of this file are based on the WEP enablement code provided by the
   Host AP project hostap-drivers v0.1.3
   Copyright (c) 2001-2002, SSH Communications Security Corp and Jouni Malinen
-  <jkmaline@cc.hut.fi>
-  Copyright (c) 2002-2003, Jouni Malinen <jkmaline@cc.hut.fi>
+  <j@w1.fi>
+  Copyright (c) 2002-2003, Jouni Malinen <j@w1.fi>
 
   This program is free software; you can redistribute it and/or modify it
   under the terms of version 2 of the GNU General Public License as
@@ -89,12 +89,11 @@ static char *ieee80211_translate_scan(struct ieee80211_device *ieee,
 		start = iwe_stream_add_event(start, stop, &iwe, IW_EV_UINT_LEN);
 	}
 
-	/* Add frequency/channel */
+	/* Add channel and frequency */
+	/* Note : userspace automatically computes channel using iwrange */
 	iwe.cmd = SIOCGIWFREQ;
-/*	iwe.u.freq.m = ieee80211_frequency(network->channel, network->mode);
-	iwe.u.freq.e = 3; */
-	iwe.u.freq.m = network->channel;
-	iwe.u.freq.e = 0;
+	iwe.u.freq.m = ieee80211_channel_to_freq(ieee, network->channel);
+	iwe.u.freq.e = 6;
 	iwe.u.freq.i = 0;
 	start = iwe_stream_add_event(start, stop, &iwe, IW_EV_FREQ_LEN);
 
@@ -409,7 +408,7 @@ int ieee80211_wx_set_encode(struct ieee80211_device *ieee,
 					       (*crypt)->priv);
 		sec.flags |= (1 << key);
 		/* This ensures a key will be activated if no key is
-		 * explicitely set */
+		 * explicitly set */
 		if (key == sec.active_key)
 			sec.flags |= SEC_ACTIVE_KEY;
 
@@ -709,7 +708,7 @@ int ieee80211_wx_get_encodeext(struct ieee80211_device *ieee,
 	} else
 		idx = ieee->tx_keyidx;
 
-	if (!ext->ext_flags & IW_ENCODE_EXT_GROUP_KEY &&
+	if (!(ext->ext_flags & IW_ENCODE_EXT_GROUP_KEY) &&
 	    ext->alg != IW_ENCODE_ALG_WEP)
 		if (idx != 0 || ieee->iw_mode != IW_MODE_INFRA)
 			return -EINVAL;
@@ -754,7 +753,7 @@ int ieee80211_wx_set_auth(struct net_device *dev,
 	int err = 0;
 
 	spin_lock_irqsave(&ieee->lock, flags);
-	
+
 	switch (wrqu->param.flags & IW_AUTH_INDEX) {
 	case IW_AUTH_WPA_VERSION:
 	case IW_AUTH_CIPHER_PAIRWISE:
@@ -799,7 +798,7 @@ int ieee80211_wx_get_auth(struct net_device *dev,
 	int err = 0;
 
 	spin_lock_irqsave(&ieee->lock, flags);
-	
+
 	switch (wrqu->param.flags & IW_AUTH_INDEX) {
 	case IW_AUTH_WPA_VERSION:
 	case IW_AUTH_CIPHER_PAIRWISE:

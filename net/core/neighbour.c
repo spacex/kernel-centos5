@@ -104,6 +104,15 @@ static int neigh_blackhole(struct sk_buff *skb)
 	return -ENETDOWN;
 }
 
+static void neigh_cleanup_and_release(struct neighbour *neigh)
+{
+	if (neigh->parms->neigh_destructor)
+		neigh->parms->neigh_destructor(neigh);
+
+	neigh_release(neigh);
+}
+
+
 /*
  * It is random distribution in the interval (1/2)*base...(3/2)*base.
  * It corresponds to default IPv6 settings and is not overridable,
@@ -140,7 +149,7 @@ static int neigh_forced_gc(struct neigh_table *tbl)
 				n->dead = 1;
 				shrunk	= 1;
 				write_unlock(&n->lock);
-				neigh_release(n);
+				neigh_cleanup_and_release(n);
 				continue;
 			}
 			write_unlock(&n->lock);
@@ -211,7 +220,7 @@ static void neigh_flush_dev(struct neigh_table *tbl, struct net_device *dev)
 				NEIGH_PRINTK2("neigh %p is stray.\n", n);
 			}
 			write_unlock(&n->lock);
-			neigh_release(n);
+			neigh_cleanup_and_release(n);
 		}
 	}
 }
@@ -583,9 +592,6 @@ void neigh_destroy(struct neighbour *neigh)
 			kfree(hh);
 	}
 
-	if (neigh->parms->neigh_destructor)
-		(neigh->parms->neigh_destructor)(neigh);
-
 	skb_queue_purge(&neigh->arp_queue);
 
 	dev_put(neigh->dev);
@@ -676,7 +682,7 @@ static void neigh_periodic_timer(unsigned long arg)
 			*np = n->next;
 			n->dead = 1;
 			write_unlock(&n->lock);
-			neigh_release(n);
+			neigh_cleanup_and_release(n);
 			continue;
 		}
 		write_unlock(&n->lock);
@@ -812,7 +818,7 @@ static void neigh_timer_handler(unsigned long arg)
 		struct sk_buff *skb = skb_peek(&neigh->arp_queue);
 		/* keep skb alive even if arp_queue overflows */
 		if (skb)
-			skb_get(skb);
+			skb = skb_copy(skb, GFP_ATOMIC);
 		write_unlock(&neigh->lock);
 		neigh->ops->solicit(neigh, skb);
 		atomic_inc(&neigh->probes);
@@ -878,6 +884,7 @@ int __neigh_event_send(struct neighbour *neigh, struct sk_buff *skb)
 				buff = neigh->arp_queue.next;
 				__skb_unlink(buff, &neigh->arp_queue);
 				kfree_skb(buff);
+				NEIGH_CACHE_STAT_INC(neigh->tbl, unres_discards);
 			}
 			__skb_queue_tail(&neigh->arp_queue, skb);
 		}
@@ -2014,7 +2021,7 @@ void __neigh_for_each_release(struct neigh_table *tbl,
 				np = &n->next;
 			write_unlock(&n->lock);
 			if (release)
-				neigh_release(n);
+				neigh_cleanup_and_release(n);
 		}
 	}
 }
@@ -2282,12 +2289,12 @@ static int neigh_stat_seq_show(struct seq_file *seq, void *v)
 	struct neigh_statistics *st = v;
 
 	if (v == SEQ_START_TOKEN) {
-		seq_printf(seq, "entries  allocs destroys hash_grows  lookups hits  res_failed  rcv_probes_mcast rcv_probes_ucast  periodic_gc_runs forced_gc_runs\n");
+		seq_printf(seq, "entries  allocs destroys hash_grows  lookups hits  res_failed  rcv_probes_mcast rcv_probes_ucast  periodic_gc_runs forced_gc_runs unresolved_discards\n");
 		return 0;
 	}
 
 	seq_printf(seq, "%08x  %08lx %08lx %08lx  %08lx %08lx  %08lx  "
-			"%08lx %08lx  %08lx %08lx\n",
+			"%08lx %08lx  %08lx %08lx %08lx\n",
 		   atomic_read(&tbl->entries),
 
 		   st->allocs,
@@ -2303,7 +2310,8 @@ static int neigh_stat_seq_show(struct seq_file *seq, void *v)
 		   st->rcv_probes_ucast,
 
 		   st->periodic_gc_runs,
-		   st->forced_gc_runs
+		   st->forced_gc_runs,
+		   st->unres_discards
 		   );
 
 	return 0;

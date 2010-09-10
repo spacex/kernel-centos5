@@ -410,7 +410,7 @@ static int sas_recover_I_T(struct domain_device *dev)
 }
 
 /* Find the sas_phy that's attached to this device */
-struct sas_phy *find_local_sas_phy(struct domain_device *dev)
+struct sas_phy *sas_find_local_phy(struct domain_device *dev)
 {
 	struct domain_device *pdev = dev->parent;
 	struct ex_phy *exphy = NULL;
@@ -458,7 +458,7 @@ int sas_eh_device_reset_handler(struct scsi_cmnd *cmd)
 int sas_eh_bus_reset_handler(struct scsi_cmnd *cmd)
 {
 	struct domain_device *dev = cmd_to_domain_dev(cmd);
-	struct sas_phy *phy = find_local_sas_phy(dev);
+	struct sas_phy *phy = sas_find_local_phy(dev);
 	int res;
 
 	res = sas_phy_reset(phy, 1);
@@ -1077,3 +1077,4 @@ EXPORT_SYMBOL_GPL(sas_eh_bus_reset_handler);
 EXPORT_SYMBOL_GPL(sas_slave_alloc);
 EXPORT_SYMBOL_GPL(sas_target_destroy);
 EXPORT_SYMBOL_GPL(sas_ioctl);
+EXPORT_SYMBOL_GPL(sas_find_local_phy);

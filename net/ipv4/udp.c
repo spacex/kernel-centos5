@@ -915,23 +915,32 @@ static int udp_encap_rcv(struct sock * sk, struct sk_buff *skb)
 	return 1; 
 #else
 	struct udp_sock *up = udp_sk(sk);
-  	struct udphdr *uh = skb->h.uh;
+  	struct udphdr *uh;
 	struct iphdr *iph;
 	int iphlen, len;
   
-	__u8 *udpdata = (__u8 *)uh + sizeof(struct udphdr);
-	__u32 *udpdata32 = (__u32 *)udpdata;
+	__u8 *udpdata;
+	__u32 *udpdata32;
 	__u16 encap_type = up->encap_type;
 
 	/* if we're overly short, let UDP handle it */
-	if (udpdata > skb->tail)
+	len = skb->len - sizeof(struct udphdr);
+	if (len <= 0)
 		return 1;
 
 	/* if this is not encapsulated socket, then just return now */
 	if (!encap_type)
 		return 1;
 
-	len = skb->tail - udpdata;
+	/* If this is a paged skb, make sure we pull up
+	 * whatever data we need to look at. */
+	if (!pskb_may_pull(skb, sizeof(struct udphdr) + min(len, 8)))
+		return 1;
+
+	/* Now we can get the pointers */
+	uh = skb->h.uh;
+	udpdata = (__u8 *)uh + sizeof(struct udphdr);
+	udpdata32 = (__be32 *)udpdata;
 
 	switch (encap_type) {
 	default:
@@ -1025,7 +1034,9 @@ static int udp_queue_rcv_skb(struct sock * sk, struct sk_buff *skb)
 		 */
 		int ret;
 
+		bh_unlock_sock(sk);
 		ret = udp_encap_rcv(sk, skb);
+		bh_lock_sock(sk);
 		if (ret == 0) {
 			/* Eat the packet .. */
 			kfree_skb(skb);
@@ -1033,7 +1044,9 @@ static int udp_queue_rcv_skb(struct sock * sk, struct sk_buff *skb)
 		}
 		if (ret < 0) {
 			/* process the ESP packet */
+			bh_unlock_sock(sk);
 			ret = xfrm4_rcv_encap(skb, up->encap_type);
+			bh_lock_sock(sk);
 			return -ret;
 		}
 		/* FALLTHROUGH -- it's a UDP Packet */
@@ -1086,7 +1099,7 @@ static int udp_v4_mcast_deliver(struct sk_buff *skb, struct udphdr *uh,
 			if(skb1) {
 				int ret = 0;
 
-				bh_lock_sock_nested(sk);
+				bh_lock_sock(sk);
 				if (!sock_owned_by_user(sk))
 					ret = udp_queue_rcv_skb(sk, skb1);
 				else
@@ -1166,7 +1179,7 @@ int udp_rcv(struct sk_buff *skb)
 
 	if (sk != NULL) {
 		int ret = 0;
-		bh_lock_sock_nested(sk);
+		bh_lock_sock(sk);
 		if (!sock_owned_by_user(sk))
 			ret = udp_queue_rcv_skb(sk, skb);
 		else

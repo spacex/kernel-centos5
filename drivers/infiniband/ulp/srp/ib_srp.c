@@ -81,6 +81,13 @@ module_param(mellanox_workarounds, int, 0444);
 MODULE_PARM_DESC(mellanox_workarounds,
 		 "Enable workarounds for Mellanox SRP target bugs if != 0");
 
+static int srp_dev_loss_tmo = 60;
+
+module_param(srp_dev_loss_tmo, int, 0444);
+MODULE_PARM_DESC(srp_dev_loss_tmo,
+		 "Default number of seconds that srp transport should \
+		  insulate the lost of a remote port (default is 60 secs");
+
 static void srp_add_one(struct ib_device *device);
 static void srp_remove_one(struct ib_device *device);
 static void srp_completion(struct ib_cq *cq, void *target_ptr);
@@ -540,9 +547,10 @@ static void srp_remove_req(struct srp_target_port *target, struct srp_request *r
 	list_move_tail(&req->list, &target->free_reqs);
 }
 
-static void srp_reset_req(struct srp_target_port *target, struct srp_request *req)
+static void srp_reset_req(struct srp_target_port *target,
+			  struct srp_request *req, int status)
 {
-	req->scmnd->result = DID_RESET << 16;
+	req->scmnd->result = status << 16;
 	req->scmnd->scsi_done(req->scmnd);
 	srp_remove_req(target, req);
 }
@@ -585,7 +593,7 @@ static int srp_reconnect_target(struct srp_target_port *target)
 
 	spin_lock_irq(target->scsi_host->host_lock);
 	list_for_each_entry_safe(req, tmp, &target->req_queue, list)
-		srp_reset_req(target, req);
+		srp_reset_req(target, req, DID_RESET);
 	spin_unlock_irq(target->scsi_host->host_lock);
 
 	target->rx_head	 = 0;
@@ -931,13 +939,38 @@ static void srp_reconnect_work(struct work_struct *work)
 static void srp_qp_in_err_timer(unsigned long data)
 {
 	struct srp_target_port *target = (struct srp_target_port *)data;
+	struct srp_request *req, *tmp;
+
+	if (!target->qp_in_error || target->state != SRP_TARGET_LIVE) 
+		goto out;
+
+	shost_printk(KERN_ERR, target->scsi_host,
+		     PFX "srp_qp_in_err_timer called\n");
 
 	spin_lock_irq(target->scsi_host->host_lock);
+	list_for_each_entry_safe(req, tmp, &target->req_queue, list)
+		srp_reset_req(target, req, DID_NO_CONNECT);
+
 	INIT_WORK(&target->work, srp_reconnect_work);
 	schedule_work(&target->work);
 	spin_unlock_irq(target->scsi_host->host_lock);
+out:
+	if (target->qp_err_timer.function)	
+		del_timer(&target->qp_err_timer);
+}
 
-	del_timer(&target->qp_err_timer);
+static void srp_qp_err_add_timer(struct srp_target_port *target, int time)
+{
+	target->qp_in_error = 1;
+	if (!timer_pending(&target->qp_err_timer)) {
+		setup_timer(&target->qp_err_timer,
+			    srp_qp_in_err_timer,
+			    (unsigned long)target);
+		target->qp_err_timer.expires = time * HZ + jiffies;
+		add_timer(&target->qp_err_timer);
+
+		shost_printk(KERN_WARNING PFX, target->scsi_host, "add qp_in_err timer\n");
+	}
 }
 
 static void srp_completion(struct ib_cq *cq, void *target_ptr)
@@ -952,16 +985,10 @@ static void srp_completion(struct ib_cq *cq, void *target_ptr)
 				     PFX "failed %s status %d\n",
 				     wc.wr_id & SRP_OP_RECV ? "receive" : "send",
 				     wc.status);
-			if (!target->qp_in_error) {
-				target->qp_in_error = 1;
-				if (!timer_pending(&target->qp_err_timer)) {
-					setup_timer(&target->qp_err_timer,
-						    srp_qp_in_err_timer,
-						    (unsigned long)target);
-					target->qp_err_timer.expires = 10 * HZ + jiffies;
-					add_timer(&target->qp_err_timer);
-				}
-			}
+			if (!target->qp_in_error &&
+			    target->state == SRP_TARGET_LIVE)
+				srp_qp_err_add_timer(target,
+						     srp_dev_loss_tmo - 30);
 			break;
 		}
 
@@ -1482,7 +1509,7 @@ static int srp_reset_device(struct scsi_cmnd *scmnd)
 
 	list_for_each_entry_safe(req, tmp, &target->req_queue, list)
 		if (req->scmnd->device == scmnd->device)
-			srp_reset_req(target, req);
+			srp_reset_req(target, req, DID_RESET);
 
 	spin_unlock_irq(target->scsi_host->host_lock);
 
@@ -1492,9 +1519,21 @@ static int srp_reset_device(struct scsi_cmnd *scmnd)
 static int srp_reset_host(struct scsi_cmnd *scmnd)
 {
 	struct srp_target_port *target = host_to_target(scmnd->device->host);
+	struct srp_request *req, *tmp;
 	int ret = FAILED;
 
-	shost_printk(KERN_ERR, target->scsi_host, PFX "SRP reset_host called\n");
+	shost_printk(KERN_ERR, target->scsi_host,
+		     PFX "SRP reset_host called state %d qp_err %d\n",
+		     target->state, target->qp_in_error);
+
+	if ((timer_pending(&target->qp_err_timer) && target->qp_in_error) ||
+	    target->state != SRP_TARGET_LIVE) {
+		spin_lock_irq(target->scsi_host->host_lock);
+		list_for_each_entry_safe(req, tmp, &target->req_queue, list)
+			srp_reset_req(target, req, DID_RESET);
+		spin_unlock_irq(target->scsi_host->host_lock);
+		return SUCCESS;
+	}
 
 	if (!srp_reconnect_target(target))
 		ret = SUCCESS;
@@ -1612,6 +1651,48 @@ static ssize_t show_local_ib_device(struct class_device *cdev, char *buf)
 	return sprintf(buf, "%s\n", target->srp_host->dev->dev->name);
 }
 
+static ssize_t srp_target_oofabric(struct class_device *cdev,
+				   const char *buf, size_t count)
+{
+	struct srp_target_port *target = host_to_target(class_to_shost(cdev));
+
+	shost_printk(KERN_DEBUG, target->scsi_host, PFX
+		     "Get async_event out-of-fabric at state=%d qp_err=%d\n",
+		     target->state, target->qp_in_error);
+
+	if (target->state != SRP_TARGET_LIVE)
+		return -EINVAL;	
+
+	spin_lock_irq(target->scsi_host->host_lock);
+	if (!target->qp_in_error)
+		srp_qp_err_add_timer(target, srp_dev_loss_tmo);
+	spin_unlock_irq(target->scsi_host->host_lock);
+	
+	return count;
+}
+
+static ssize_t srp_target_infabric(struct class_device *cdev,
+				   const char *buf, size_t count)
+{
+	struct srp_target_port *target = host_to_target(class_to_shost(cdev));
+
+	shost_printk(KERN_DEBUG, target->scsi_host, PFX
+		     "Get async_event in-fabric at state=%d qp_err=%d\n",
+		     target->state, target->qp_in_error);
+
+	spin_lock_irq(target->scsi_host->host_lock);
+	if (timer_pending(&target->qp_err_timer)
+	    && target->qp_in_error) {
+		shost_printk(KERN_WARNING PFX, target->scsi_host, "delete qp_in_err timer\n");
+		del_timer(&target->qp_err_timer);
+		INIT_WORK(&target->work, srp_reconnect_work);
+		schedule_work(&target->work);
+	}	
+	spin_unlock_irq(target->scsi_host->host_lock);
+	
+	return count;
+}
+
 static CLASS_DEVICE_ATTR(id_ext,	  S_IRUGO, show_id_ext,		 NULL);
 static CLASS_DEVICE_ATTR(ioc_guid,	  S_IRUGO, show_ioc_guid,	 NULL);
 static CLASS_DEVICE_ATTR(service_id,	  S_IRUGO, show_service_id,	 NULL);
@@ -1621,6 +1702,8 @@ static CLASS_DEVICE_ATTR(orig_dgid,	  S_IRUGO, show_orig_dgid,	 NULL);
 static CLASS_DEVICE_ATTR(zero_req_lim,	  S_IRUGO, show_zero_req_lim,	 NULL);
 static CLASS_DEVICE_ATTR(local_ib_port,   S_IRUGO, show_local_ib_port,	 NULL);
 static CLASS_DEVICE_ATTR(local_ib_device, S_IRUGO, show_local_ib_device, NULL);
+static CLASS_DEVICE_ATTR(target_oofabric, S_IWUSR, NULL,  srp_target_oofabric);
+static CLASS_DEVICE_ATTR(target_infabric, S_IWUSR, NULL,  srp_target_infabric);
 
 static struct class_device_attribute *srp_host_attrs[] = {
 	&class_device_attr_id_ext,
@@ -1632,6 +1715,8 @@ static struct class_device_attribute *srp_host_attrs[] = {
 	&class_device_attr_zero_req_lim,
 	&class_device_attr_local_ib_port,
 	&class_device_attr_local_ib_device,
+	&class_device_attr_target_oofabric,
+	&class_device_attr_target_infabric,
 	NULL
 };
 
@@ -2020,6 +2105,71 @@ free_host:
 	return NULL;
 }
 
+static void srp_event_handler(struct ib_event_handler *handler,
+			      struct ib_event *event)
+{
+	struct srp_device *srp_dev =
+	    ib_get_client_data(event->device, &srp_client);
+	struct srp_host *host, *tmp_host;
+	struct srp_target_port *target, *tmp_target;
+
+	if (!srp_dev || srp_dev->dev != event->device)
+		return;
+
+	printk(KERN_DEBUG PFX "ASYNC event=%d on device=%s\n",
+		event->event, srp_dev->dev->name);
+
+	switch (event->event) {
+	case IB_EVENT_PORT_ERR:
+		list_for_each_entry_safe(host, tmp_host,
+					 &srp_dev->dev_list, list) {
+			if (event->element.port_num == host->port) {
+				spin_lock(&host->target_lock);
+				list_for_each_entry_safe(target, tmp_target,
+							 &host->target_list, list) {
+					spin_lock_irq(target->scsi_host->host_lock);
+					if (!target->qp_in_error &&
+					    target->state == SRP_TARGET_LIVE)
+						srp_qp_err_add_timer(target,
+								     srp_dev_loss_tmo);
+					spin_unlock_irq(target->scsi_host->host_lock);
+				}
+				spin_unlock(&host->target_lock);
+			}
+		}
+		break;
+	case IB_EVENT_PORT_ACTIVE:
+	case IB_EVENT_LID_CHANGE:
+	case IB_EVENT_PKEY_CHANGE:
+	case IB_EVENT_SM_CHANGE:
+		list_for_each_entry_safe(host, tmp_host, &srp_dev->dev_list,
+					 list) {
+			if (event->element.port_num == host->port) {
+				spin_lock(&host->target_lock);
+				list_for_each_entry_safe(target, tmp_target,
+							 &host->target_list, list) {
+					spin_lock_irq(target->scsi_host->host_lock);
+					if (timer_pending(&target->qp_err_timer)
+					    && target->qp_in_error) {
+						shost_printk(KERN_WARNING PFX,
+							     target->scsi_host,
+							     "delete qp_in_err timer\n");
+						del_timer(&target->qp_err_timer);
+						INIT_WORK(&target->work, srp_reconnect_work);
+						schedule_work(&target->work);
+					}	
+					spin_unlock_irq(target->scsi_host->host_lock);
+				}
+				spin_unlock(&host->target_lock);
+			}
+		}
+		break;
+	default:
+		break;
+	}
+
+}
+
 static void srp_add_one(struct ib_device *device)
 {
 	struct srp_device *srp_dev;
@@ -2063,6 +2213,11 @@ static void srp_add_one(struct ib_device *device)
 				    IB_ACCESS_REMOTE_READ |
 				    IB_ACCESS_REMOTE_WRITE);
 	if (IS_ERR(srp_dev->mr))
+		goto err_pd;
+
+	INIT_IB_EVENT_HANDLER(&srp_dev->event_handler, srp_dev->dev,
+			      srp_event_handler);
+	if (ib_register_event_handler(&srp_dev->event_handler))
 		goto err_pd;
 
 	memset(&fmr_param, 0, sizeof fmr_param);
@@ -2115,6 +2270,8 @@ static void srp_remove_one(struct ib_device *device)
 	struct srp_target_port *target, *tmp_target;
 
 	srp_dev = ib_get_client_data(device, &srp_client);
+
+	ib_unregister_event_handler(&srp_dev->event_handler);
 
 	list_for_each_entry_safe(host, tmp_host, &srp_dev->dev_list, list) {
 		class_device_unregister(&host->class_dev);
@@ -2171,6 +2328,9 @@ static int __init srp_init_module(void)
 	srp_max_iu_len = (sizeof (struct srp_cmd) +
 			  sizeof (struct srp_indirect_buf) +
 			  srp_sg_tablesize * 16);
+
+	if (srp_dev_loss_tmo < 60)
+		srp_dev_loss_tmo = 60;
 
 	ret = class_register(&srp_class);
 	if (ret) {

@@ -210,10 +210,12 @@ ioc4_clock_calibrate(struct ioc4_driver_data *idd)
 		       IOC4_CALIBRATE_DEFAULT / IOC4_EXTINT_COUNT_DIVISOR);
 		period = IOC4_CALIBRATE_DEFAULT;
 	} else {
+		u64 ns = period;
+
+		do_div(ns, IOC4_EXTINT_COUNT_DIVISOR);
 		printk(KERN_DEBUG
-		       "IOC4 %s: PCI clock is %ld ns.\n",
-		       pci_name(idd->idd_pdev),
-		       period / IOC4_EXTINT_COUNT_DIVISOR);
+		       "IOC4 %s: PCI clock is %llu ns.\n",
+		       pci_name(idd->idd_pdev), (unsigned long long)ns);
 	}
 
 	/* Remember results.  We store the extint clock period rather
@@ -246,10 +248,11 @@ ioc4_variant(struct ioc4_driver_data *idd)
 		    idd->idd_pdev->bus->number == pdev->bus->number &&
 		    3 == PCI_SLOT(pdev->devfn))
 			found = 1;
-		pci_dev_put(pdev);
 	} while (pdev && !found);
-	if (NULL != pdev)
+	if (NULL != pdev) {
+		pci_dev_put(pdev);
 		return IOC4_VARIANT_IO9;
+	}
 
 	/* IO10: Look for a Vitesse VSC 7174 at the same bus and slot 3. */
 	pdev = NULL;
@@ -260,10 +263,11 @@ ioc4_variant(struct ioc4_driver_data *idd)
 		    idd->idd_pdev->bus->number == pdev->bus->number &&
 		    3 == PCI_SLOT(pdev->devfn))
 			found = 1;
-		pci_dev_put(pdev);
 	} while (pdev && !found);
-	if (NULL != pdev)
+	if (NULL != pdev) {
+		pci_dev_put(pdev);
 		return IOC4_VARIANT_IO10;
+	}
 
 	/* PCI-RT: No SCSI/SATA controller will be present */
 	return IOC4_VARIANT_PCI_RT;
@@ -311,7 +315,7 @@ ioc4_probe(struct pci_dev *pdev, const struct pci_device_id *pci_id)
 		ret = -ENODEV;
 		goto out_pci;
 	}
-	if (!request_region(idd->idd_bar0, sizeof(struct ioc4_misc_regs),
+	if (!request_mem_region(idd->idd_bar0, sizeof(struct ioc4_misc_regs),
 			    "ioc4_misc")) {
 		printk(KERN_WARNING
 		       "%s: Unable to request IOC4 misc region "
@@ -381,7 +385,7 @@ ioc4_probe(struct pci_dev *pdev, const struct pci_device_id *pci_id)
 	return 0;
 
 out_misc_region:
-	release_region(idd->idd_bar0, sizeof(struct ioc4_misc_regs));
+	release_mem_region(idd->idd_bar0, sizeof(struct ioc4_misc_regs));
 out_pci:
 	kfree(idd);
 out_idd:
@@ -420,7 +424,7 @@ ioc4_remove(struct pci_dev *pdev)
 		       "Device removal may be incomplete.\n",
 		       __FUNCTION__, pci_name(idd->idd_pdev));
 	}
-	release_region(idd->idd_bar0, sizeof(struct ioc4_misc_regs));
+	release_mem_region(idd->idd_bar0, sizeof(struct ioc4_misc_regs));
 
 	/* Disable IOC4 and relinquish */
 	pci_disable_device(pdev);

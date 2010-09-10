@@ -143,6 +143,7 @@
 
 /* Special Purpose Registers (SPRNs)*/
 #define SPRN_CTR	0x009	/* Count Register */
+#define SPRN_DSCR	0x011	/* Data Stream Control Register */
 #define SPRN_CTRLF	0x088
 #define SPRN_CTRLT	0x098
 #define   CTRL_CT	0xc0000000	/* current thread */
@@ -597,11 +598,6 @@
 #define PV_970MP	0x0044
 #define PV_BE		0x0070
 
-/*
- * Number of entries in the SLB. If this ever changes we should handle
- * it with a use a cpu feature fixup.
- */
-#define SLB_NUM_ENTRIES 64
 
 /* Macros for setting and retrieving special purpose registers */
 #ifndef __ASSEMBLY__

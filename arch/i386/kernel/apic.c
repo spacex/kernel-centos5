@@ -586,8 +586,7 @@ void __devinit setup_local_APIC(void)
 			printk("No ESR for 82489DX.\n");
 	}
 
-	if (nmi_watchdog == NMI_LOCAL_APIC)
-		setup_apic_nmi_watchdog();
+	setup_apic_nmi_watchdog();
 	apic_pm_activate();
 }
 
@@ -1254,20 +1253,26 @@ static void up_apic_timer_interrupt_call(struct pt_regs *regs)
 
 void smp_send_timer_broadcast_ipi(struct pt_regs *regs)
 {
+#ifdef CONFIG_SMP
 	cpumask_t mask;
 
+	if (cpus_equal(cpu_online_map, timer_bcast_ipi)) {
+		__send_IPI_shortcut(APIC_DEST_ALLINC, LOCAL_TIMER_VECTOR);
+		return;
+	}
 	cpus_and(mask, cpu_online_map, timer_bcast_ipi);
 	if (!cpus_empty(mask)) {
-#ifdef CONFIG_SMP
 		send_IPI_mask(mask, LOCAL_TIMER_VECTOR);
+	}
 #else
+	if (!cpus_empty(timer_bcast_ipi)) {
 		/*
 		 * We can directly call the apic timer interrupt handler
 		 * in UP case. Minus all irq related functions
 		 */
 		up_apic_timer_interrupt_call(regs);
-#endif
 	}
+#endif
 }
 
 int setup_profiling_timer(unsigned int multiplier)

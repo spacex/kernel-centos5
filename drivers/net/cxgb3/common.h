@@ -351,12 +351,14 @@ struct tp_params {
 
 struct qset_params {		/* SGE queue set parameters */
 	unsigned int polling;	/* polling/interrupt service for rspq */
+	unsigned int lro;	/* large receive offload */
 	unsigned int coalesce_usecs;	/* irq coalescing timer */
 	unsigned int rspq_size;	/* # of entries in response queue */
 	unsigned int fl_size;	/* # of entries in regular free list */
 	unsigned int jumbo_size;	/* # of entries in jumbo free list */
 	unsigned int txq_size[SGE_TXQ_PER_SET];	/* Tx queue sizes */
 	unsigned int cong_thres;	/* FL congestion threshold */
+	unsigned int vector;		/* Interrupt (line or vector) number */
 };
 
 struct sge_params {
@@ -681,13 +683,14 @@ int t3_phy_intr_handler(struct adapter *adapter);
 void t3_link_changed(struct adapter *adapter, int port_id);
 int t3_link_start(struct cphy *phy, struct cmac *mac, struct link_config *lc);
 const struct adapter_info *t3_get_adapter_info(unsigned int board_id);
-int t3_seeprom_read(struct adapter *adapter, u32 addr, u32 *data);
-int t3_seeprom_write(struct adapter *adapter, u32 addr, u32 data);
+int t3_seeprom_read(struct adapter *adapter, u32 addr, __le32 *data);
+int t3_seeprom_write(struct adapter *adapter, u32 addr, __le32 data);
 int t3_seeprom_wp(struct adapter *adapter, int enable);
 int t3_get_tp_version(struct adapter *adapter, u32 *vers);
 int t3_check_tpsram_version(struct adapter *adapter, int *must_load);
-int t3_check_tpsram(struct adapter *adapter, u8 *tp_ram, unsigned int size);
-int t3_set_proto_sram(struct adapter *adap, u8 *data);
+int t3_check_tpsram(struct adapter *adapter, const u8 *tp_ram,
+		    unsigned int size);
+int t3_set_proto_sram(struct adapter *adap, const u8 *data);
 int t3_read_flash(struct adapter *adapter, unsigned int addr,
 		  unsigned int nwords, u32 *data, int byte_oriented);
 int t3_load_fw(struct adapter *adapter, const u8 * fw_data, unsigned int size);
@@ -698,6 +701,7 @@ void mac_prep(struct cmac *mac, struct adapter *adapter, int index);
 void early_hw_init(struct adapter *adapter, const struct adapter_info *ai);
 int t3_prep_adapter(struct adapter *adapter, const struct adapter_info *ai,
 		    int reset);
+int t3_replay_prep_adapter(struct adapter *adapter);
 void t3_led_ready(struct adapter *adapter);
 void t3_fatal_err(struct adapter *adapter);
 void t3_set_vlan_accel(struct adapter *adapter, unsigned int ports, int on);

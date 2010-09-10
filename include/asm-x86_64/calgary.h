@@ -60,6 +60,7 @@ struct cal_chipset_ops {
 #define TCE_TABLE_SIZE_8M		7
 
 extern int use_calgary;
+extern const struct dma_mapping_ops* fallback_dma_ops;
 
 #ifdef CONFIG_CALGARY_IOMMU
 extern int calgary_iommu_init(void);

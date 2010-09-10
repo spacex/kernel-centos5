@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2006-2007 Emulex.  All rights reserved.           *
+ * Copyright (C) 2006-2008 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -49,9 +49,7 @@
 #include "lpfc_auth_access.h"
 
 /* fc security */
-char security_work_q_name[KOBJ_NAME_LEN];
-struct workqueue_struct *security_work_q = NULL;
-struct sock *fc_nl_sock;
+struct workqueue_struct *security_work_q;
 struct list_head fc_security_user_list;
 int fc_service_state = FC_SC_SERVICESTATE_UNKNOWN;
 static int fc_service_pid;
@@ -192,13 +190,9 @@ lpfc_fc_sc_request(struct lpfc_vport *vport,
 {
 	struct Scsi_Host *shost = lpfc_shost_from_vport(vport);
 	struct fc_security_request *fc_sc_req;
-	struct sk_buff *skb;
-	struct nlmsghdr	*nlh;
 	struct fc_nl_sc_message *fc_nl_sc_msg;
-	const char *fn;
 	unsigned long flags;
 	u32 len;
-	int err = 0;
 	u32 seq = ++vport->sc_tran_id;
 
 	if (fc_service_state != FC_SC_SERVICESTATE_ONLINE)
@@ -208,7 +202,6 @@ lpfc_fc_sc_request(struct lpfc_vport *vport,
 		return -EINVAL;
 
 	fc_sc_req = kzalloc(sizeof(struct fc_security_request), GFP_KERNEL);
-
 	if (!fc_sc_req)
 		return -ENOMEM;
 
@@ -216,64 +209,29 @@ lpfc_fc_sc_request(struct lpfc_vport *vport,
 	fc_sc_req->data = auth_rsp;
 	fc_sc_req->data_len = auth_rsp_len;
 	fc_sc_req->vport = vport;
-
-	len = NLMSG_SPACE(sizeof(struct fc_nl_sc_message) + auth_req_len);
-
-	skb = alloc_skb(len, GFP_KERNEL);
-	if (!skb) {
-		err = -ENOBUFS;
-		fn = "alloc_skb";
-		goto send_fail;
-	}
-
-	nlh = nlmsg_put(skb, fc_service_pid, seq, FC_TRANSPORT_MSG,
-			len - sizeof(*nlh), 0);
-	if (!nlh) {
-		err = -ENOBUFS;
-		fn = "nlmsg_put";
-		goto send_fail;
-	}
-
-	fc_nl_sc_msg = NLMSG_DATA(nlh);
-	fc_nl_sc_msg->snlh.version = SCSI_NL_VERSION;
-	fc_nl_sc_msg->snlh.transport = SCSI_NL_TRANSPORT_FC;
-	fc_nl_sc_msg->snlh.magic = SCSI_NL_MAGIC;
-	fc_nl_sc_msg->snlh.msgtype = msg_type;
-	fc_nl_sc_msg->snlh.msglen = len;
-	fc_nl_sc_msg->data_len = auth_req_len;
-	if (auth_req_len)
-		memcpy(fc_nl_sc_msg->data, auth_req, auth_req_len);
-
-	fc_nl_sc_msg->host_no = shost->host_no;
-	fc_nl_sc_msg->tran_id = seq;
 	fc_sc_req->tran_id = seq;
+
+	len = sizeof(struct fc_nl_sc_message) + auth_req_len;
+	fc_nl_sc_msg = kzalloc(len, GFP_KERNEL);
+	if (!fc_nl_sc_msg) {
+		kfree(fc_sc_req);
+		return -ENOMEM;
+	}
+	fc_nl_sc_msg->msgtype = msg_type;
+	fc_nl_sc_msg->data_len = auth_req_len;
+	memcpy(fc_nl_sc_msg->data, auth_req, auth_req_len);
+	fc_nl_sc_msg->tran_id = seq;
 
 	spin_lock_irqsave(shost->host_lock, flags);
 	list_add_tail(&fc_sc_req->rlist, &vport->sc_response_wait_queue);
 	spin_unlock_irqrestore(shost->host_lock, flags);
-
-	err = nlmsg_unicast(fc_nl_sock, skb, fc_service_pid);
-	if (err < 0) {
-		fn = "nlmsg_unicast";
-		spin_lock_irqsave(shost->host_lock, flags);
-		list_del(&fc_sc_req->rlist);
-		spin_unlock_irqrestore(shost->host_lock, flags);
-		goto send_fail;
-	}
+	scsi_nl_send_vendor_msg(fc_service_pid, shost->host_no,
+				(SCSI_NL_VID_TYPE_PCI | PCI_VENDOR_ID_EMULEX),
+				(char *) fc_nl_sc_msg, len);
+	kfree(fc_nl_sc_msg);
 	lpfc_fc_sc_add_timer(fc_sc_req, FC_SC_REQ_TIMEOUT,
 			     lpfc_fc_sc_req_times_out);
-
 	return 0;
-
-send_fail:
-
-	kfree(fc_sc_req);
-
-	lpfc_printf_vlog(vport, KERN_WARNING, LOG_SECURITY,
-			 "1020 Dropped Message type %d to PID %d : %s : err "
-			 "%d\n", msg_type, fc_service_pid, fn, err);
-	return err;
-
 }
 
 /**
@@ -507,32 +465,20 @@ lpfc_fc_sc_process_msg(struct work_struct *work)
  **/
 
 int
-lpfc_fc_sc_schedule_msg(struct fc_nl_sc_message *fc_nl_sc_msg, int rcvlen)
+lpfc_fc_sc_schedule_msg(struct Scsi_Host *shost,
+			struct fc_nl_sc_message *fc_nl_sc_msg, int rcvlen)
 {
 	struct fc_security_request *fc_sc_req;
 	u32 req_type;
-	struct lpfc_vport *vport = 0;
 	int err = 0;
 	struct fc_sc_msg_work_q_wrapper *wqw;
 	unsigned long flags;
-	struct Scsi_Host *shost;
-
-	spin_lock_irqsave(&fc_security_user_lock, flags);
-
-	vport = lpfc_fc_find_vport(fc_nl_sc_msg->host_no);
-
-	spin_unlock_irqrestore(&fc_security_user_lock, flags);
-	if (!vport) {
-		printk(KERN_WARNING
-			"%s: Host does not exist for msg type %x.\n",
-			__FUNCTION__, fc_nl_sc_msg->snlh.msgtype);
-		return -EBADR;
-	}
-	shost = lpfc_shost_from_vport(vport);
+	struct lpfc_vport *vport = (struct lpfc_vport *) shost->hostdata;
+	int msg_type = fc_nl_sc_msg->msgtype;
 
 	if (vport->port_state == FC_PORTSTATE_DELETED) {
 		printk(KERN_WARNING
-		"%s: Host being deleted.\n", __FUNCTION__);
+		"%s: Host being deleted.\n", __func__);
 		return -EBADR;
 	}
 
@@ -541,7 +487,7 @@ lpfc_fc_sc_schedule_msg(struct fc_nl_sc_message *fc_nl_sc_msg, int rcvlen)
 	if (!wqw)
 		return -ENOMEM;
 
-	switch (fc_nl_sc_msg->snlh.msgtype) {
+	switch (msg_type) {
 	case FC_NL_SC_GET_CONFIG_RSP:
 		req_type = FC_NL_SC_GET_CONFIG_REQ;
 		break;
@@ -585,8 +531,7 @@ lpfc_fc_sc_schedule_msg(struct fc_nl_sc_message *fc_nl_sc_msg, int rcvlen)
 	wqw->status = 0;
 	wqw->fc_sc_req = fc_sc_req;
 	wqw->data_len = rcvlen;
-	wqw->msgtype = fc_nl_sc_msg->snlh.msgtype;
-
+	wqw->msgtype = msg_type;
 	if (!fc_sc_req->data ||
 		(fc_sc_req->data_len < fc_nl_sc_msg->data_len)) {
 		wqw->status = -ENOBUFS;
@@ -608,147 +553,48 @@ lpfc_fc_sc_schedule_msg(struct fc_nl_sc_message *fc_nl_sc_msg, int rcvlen)
 	return err;
 }
 
-static int
-lpfc_fc_handle_nl_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh, int rcvlen)
+int
+lpfc_rcv_nl_msg(struct Scsi_Host *shost, void *payload,
+		uint32_t len, uint32_t pid)
 {
-	struct scsi_nl_hdr *snlh = NLMSG_DATA(nlh);
+	struct fc_nl_sc_message *msg = (struct fc_nl_sc_message *)payload;
 	int err = 0;
-	int pid;
-
-	pid = nlh->nlmsg_pid;
-
-	switch (snlh->msgtype) {
-
+	switch (msg->msgtype) {
 	case FC_NL_SC_REG:
-
-		fc_service_pid = nlh->nlmsg_pid;
+		fc_service_pid = pid;
 		fc_service_state = FC_SC_SERVICESTATE_ONLINE;
-		if (nlh->nlmsg_flags & NLM_F_ACK)
-			netlink_ack(skb, nlh, err);
-		skb_pull(skb, rcvlen);
 		lpfc_fc_sc_schedule_notify_all(FC_NL_SC_REG);
 		break;
-
 	case FC_NL_SC_DEREG:
-
-		fc_service_pid = nlh->nlmsg_pid;
+		fc_service_pid = pid;
 		fc_service_state = FC_SC_SERVICESTATE_OFFLINE;
-		if (nlh->nlmsg_flags & NLM_F_ACK)
-			netlink_ack(skb, nlh, err);
-		skb_pull(skb, rcvlen);
 		lpfc_fc_sc_schedule_notify_all(FC_NL_SC_DEREG);
 		break;
-
 	case FC_NL_SC_GET_CONFIG_RSP:
 	case FC_NL_SC_DHCHAP_MAKE_CHALLENGE_RSP:
 	case FC_NL_SC_DHCHAP_MAKE_RESPONSE_RSP:
 	case FC_NL_SC_DHCHAP_AUTHENTICATE_RSP:
-
-		err = lpfc_fc_sc_schedule_msg((struct fc_nl_sc_message *)snlh,
-				rcvlen);
-
-		if ((nlh->nlmsg_flags & NLM_F_ACK) || err)
-			netlink_ack(skb, nlh, err);
-
-		skb_pull(skb, rcvlen);
+		err = lpfc_fc_sc_schedule_msg(shost, msg, len);
 		break;
-
 	default:
 		printk(KERN_WARNING "%s: unknown msg type 0x%x len %d\n",
-		       __FUNCTION__, snlh->msgtype, rcvlen);
-		netlink_ack(skb, nlh, -EBADR);
-		skb_pull(skb, rcvlen);
+		       __func__, msg->msgtype, len);
 		break;
 	}
-
 	return err;
 }
 
 void
-lpfc_fc_nl_rcv_msg(struct sk_buff *skb)
-{
-	struct nlmsghdr *nlh;
-	struct scsi_nl_hdr *snlh;
-	uint32_t rlen;
-	int err;
-
-	while (skb->len >= NLMSG_SPACE(0)) {
-		err = 0;
-
-		nlh = (struct nlmsghdr *) skb->data;
-
-		if ((nlh->nlmsg_len < (sizeof(*nlh) + sizeof(*snlh))) ||
-		    (skb->len < nlh->nlmsg_len)) {
-			printk(KERN_WARNING "%s: discarding partial skb\n",
-			       __FUNCTION__);
-			break;
-		}
-
-		rlen = NLMSG_ALIGN(nlh->nlmsg_len);
-		if (rlen > skb->len) {
-			printk(KERN_WARNING "%s: rlen > skb->len\n",
-				 __FUNCTION__);
-			rlen = skb->len;
-		}
-
-		if (nlh->nlmsg_type != FC_TRANSPORT_MSG) {
-			printk(KERN_WARNING "%s: Not FC_TRANSPORT_MSG\n",
-			       __FUNCTION__);
-			err = -EBADMSG;
-			goto next_msg;
-		}
-
-		snlh = NLMSG_DATA(nlh);
-		if ((snlh->version != SCSI_NL_VERSION) ||
-		    (snlh->magic != SCSI_NL_MAGIC)) {
-			printk(KERN_WARNING "%s: Bad Version or Magic number\n",
-			       __FUNCTION__);
-			err = -EPROTOTYPE;
-			goto next_msg;
-		}
-
-next_msg:
-		if (err) {
-			printk(KERN_WARNING "%s: err %d\n", __FUNCTION__, err);
-			netlink_ack(skb, nlh, err);
-			skb_pull(skb, rlen);
-			continue;
-		}
-
-		lpfc_fc_handle_nl_rcv_msg(skb, nlh, rlen);
-	}
-}
-
-void
-lpfc_fc_nl_rcv(struct sock *sk, int len)
-{
-	struct sk_buff *skb;
-
-	while ((skb = skb_dequeue(&sk->sk_receive_queue))) {
-		lpfc_fc_nl_rcv_msg(skb);
-		kfree_skb(skb);
-	}
-}
-
-int
-lpfc_fc_nl_rcv_nl_event(struct notifier_block *this,
+lpfc_rcv_nl_event(struct notifier_block *this,
 			unsigned long event,
 			void *ptr)
 {
 	struct netlink_notify *n = ptr;
-
 	if ((event == NETLINK_URELEASE) &&
-	    (n->protocol == NETLINK_FCTRANSPORT) && (n->pid)) {
+	    (n->protocol == NETLINK_SCSITRANSPORT) && (n->pid)) {
+		printk(KERN_WARNING "Warning - Security Service Offline\n");
 		fc_service_state = FC_SC_SERVICESTATE_OFFLINE;
 		lpfc_fc_sc_schedule_notify_all(FC_NL_SC_DEREG);
-		}
-
-	return NOTIFY_DONE;
+	}
 }
-
-struct notifier_block lpfc_fc_netlink_notifier = {
-	.notifier_call  = lpfc_fc_nl_rcv_nl_event,
-};
-
-
 

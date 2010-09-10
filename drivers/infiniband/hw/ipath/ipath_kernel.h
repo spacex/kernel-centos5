@@ -1,7 +1,7 @@
 #ifndef _IPATH_KERNEL_H
 #define _IPATH_KERNEL_H
 /*
- * Copyright (c) 2006, 2007 QLogic Corporation. All rights reserved.
+ * Copyright (c) 2006, 2007, 2008 QLogic Corporation. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -118,6 +118,10 @@ struct ipath_portdata {
 	u16 port_subport_cnt;
 	/* non-zero if port is being shared. */
 	u16 port_subport_id;
+	/* number of pio bufs for this port (all procs, if shared) */
+	u32 port_piocnt;
+	/* first pio buffer for this port */
+	u32 port_pio_base;
 	/* chip offset of PIO buffers for this port */
 	u32 port_piobufs;
 	/* how many alloc_pages() chunks in port_rcvegrbuf_pages */
@@ -385,6 +389,8 @@ struct ipath_devdata {
 	u32 ipath_lastrpkts;
 	/* pio bufs allocated per port */
 	u32 ipath_pbufsport;
+	/* if remainder on bufs/port, ports < extrabuf get 1 extra */
+	u32 ipath_ports_extrabuf;
 	u32 ipath_pioupd_thresh; /* update threshold, some chips */
 	/*
 	 * number of ports configured as max; zero is set to number chip
@@ -423,6 +429,13 @@ struct ipath_devdata {
 	u32 ipath_pcibar1;
 	u32 ipath_x1_fix_tries;
 	u32 ipath_autoneg_tries;
+	u32 serdes_first_init_done;
+
+	struct ipath_relock {
+		atomic_t ipath_relock_timer_active;
+		struct timer_list ipath_relock_timer;
+		unsigned int ipath_relock_interval; /* in jiffies */
+	} ipath_relock_singleton;
 
 	/* interrupt number */
 	int ipath_irq;
@@ -504,6 +517,7 @@ struct ipath_devdata {
 
 	/* HoL blocking / user app forward-progress state */
 	unsigned          ipath_hol_state;
+	unsigned          ipath_hol_next;
 	struct timer_list ipath_hol_timer;
 
 	/*
@@ -801,10 +815,12 @@ struct ipath_devdata {
 	u8 ipath_presets_needed; /* Set if presets to be restored next DOWN */
 };
 
-/* HoL blocking / forward progress states */
+/* ipath_hol_state values (stopping/starting user proc, send flushing */
 #define IPATH_HOL_UP       0
-#define IPATH_HOL_DOWNSTOP 1
-#define IPATH_HOL_DOWNCONT 2
+#define IPATH_HOL_DOWN     1
+/* ipath_hol_next toggle values, used when hol_state IPATH_HOL_DOWN */
+#define IPATH_HOL_DOWNSTOP 0
+#define IPATH_HOL_DOWNCONT 1
 
 /* bit positions for sdma_status */
 #define IPATH_SDMA_ABORTING  0
@@ -867,7 +883,8 @@ struct sk_buff *ipath_alloc_skb(struct ipath_devdata *dd, gfp_t);
 extern int ipath_diag_inuse;
 
 irqreturn_t ipath_intr(int irq, void *devid);
-int ipath_decode_err(char *buf, size_t blen, ipath_err_t err);
+int ipath_decode_err(struct ipath_devdata *dd, char *buf, size_t blen,
+                     ipath_err_t err);
 #if __IPATH_INFO || __IPATH_DBG
 extern const char *ipath_ibcstatus_str[];
 #endif
@@ -903,6 +920,10 @@ void ipath_disable_armlaunch(struct ipath_devdata *);
 void ipath_hol_down(struct ipath_devdata *);
 void ipath_hol_up(struct ipath_devdata *);
 void ipath_hol_event(unsigned long);
+void ipath_toggle_rclkrls(struct ipath_devdata *);
+void ipath_sd7220_clr_ibpar(struct ipath_devdata *);
+void ipath_set_relock_poll(struct ipath_devdata *, int);
+void ipath_shutdown_relock_poll(struct ipath_devdata *);
 
 /* for use in system calls, where we want to know device type, etc. */
 #define port_fp(fp) ((struct ipath_filedata *)(fp)->private_data)->pd
@@ -973,6 +994,8 @@ void ipath_hol_event(unsigned long);
 #define IPATH_HAS_MULT_IB_SPEED 0x8000000
 #define IPATH_IB_AUTONEG_INPROG 0x10000000
 #define IPATH_IB_AUTONEG_FAILED 0x20000000
+		/* Linkdown-disable intentionally, Do not attempt to bring up */
+#define IPATH_IB_LINK_DISABLED 0x40000000
 #define IPATH_IB_FORCE_NOTIFY 0x80000000 /* force notify on next ib change */
 
 /* Bits in GPIO for the added interrupts */
@@ -1003,7 +1026,7 @@ int ipath_update_eeprom_log(struct ipath_devdata *dd);
 void ipath_inc_eeprom_err(struct ipath_devdata *dd, u32 eidx, u32 incr);
 u64 ipath_snap_cntr(struct ipath_devdata *, ipath_creg);
 void ipath_dump_lookup_output_queue(struct ipath_devdata *);
-void ipath_disarm_senderrbufs(struct ipath_devdata *, int);
+void ipath_disarm_senderrbufs(struct ipath_devdata *);
 void ipath_force_pio_avail_update(struct ipath_devdata *);
 void signal_ib_event(struct ipath_devdata *dd, enum ib_event_type ev);
 
@@ -1019,6 +1042,7 @@ void ipath_set_led_override(struct ipath_devdata *dd, unsigned int val);
 /* send dma routines */
 int setup_sdma(struct ipath_devdata *);
 void teardown_sdma(struct ipath_devdata *);
+void ipath_restart_sdma(struct ipath_devdata *);
 void ipath_sdma_intr(struct ipath_devdata *);
 int ipath_sdma_verbs_send(struct ipath_devdata *, struct ipath_sge_state *,
 			  u32, struct ipath_verbs_txreq *);

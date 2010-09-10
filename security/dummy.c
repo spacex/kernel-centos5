@@ -108,13 +108,18 @@ static int dummy_settime(struct timespec *ts, struct timezone *tz)
 	return 0;
 }
 
-static int dummy_vm_enough_memory(long pages)
+static int dummy_vm_enough_memory_mm(struct mm_struct *mm, long pages)
 {
 	int cap_sys_admin = 0;
 
 	if (dummy_capable(current, CAP_SYS_ADMIN) == 0)
 		cap_sys_admin = 1;
-	return __vm_enough_memory(pages, cap_sys_admin);
+	return __vm_enough_memory(mm, pages, cap_sys_admin);
+}
+
+static int dummy_vm_enough_memory(long pages)
+{
+	return dummy_vm_enough_memory_mm(current->mm, pages);
 }
 
 static int dummy_bprm_alloc_security (struct linux_binprm *bprm)
@@ -981,6 +986,7 @@ void security_fixup_ops (struct security_operations *ops)
 	set_to_dummy_if_null(ops, syslog);
 	set_to_dummy_if_null(ops, settime);
 	set_to_dummy_if_null(ops, vm_enough_memory);
+	set_to_dummy_if_null(ops, vm_enough_memory_mm);
 	set_to_dummy_if_null(ops, bprm_alloc_security);
 	set_to_dummy_if_null(ops, bprm_free_security);
 	set_to_dummy_if_null(ops, bprm_apply_creds);

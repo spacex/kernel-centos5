@@ -33,8 +33,10 @@
 #ifndef __NES_HW_H
 #define __NES_HW_H
 
-#define NES_PHY_TYPE_1G   2
-#define NES_PHY_TYPE_IRIS 3
+#define NES_PHY_TYPE_1G        2
+#define NES_PHY_TYPE_IRIS      3
+#define NES_PHY_TYPE_ARGUS     4
+#define NES_PHY_TYPE_PUMA_1G   5
 #define NES_PHY_TYPE_PUMA_10G  6
 
 #define NES_MULTICAST_PF_MAX 8
@@ -905,7 +907,7 @@ struct nes_hw_qp {
 };
 
 struct nes_hw_cq {
-	struct nes_hw_cqe volatile *cq_vbase;	/* PCI memory for host rings */
+	struct nes_hw_cqe *cq_vbase;	/* PCI memory for host rings */
 	void (*ce_handler)(struct nes_device *nesdev, struct nes_hw_cq *cq);
 	dma_addr_t cq_pbase;	/* PCI memory for host rings */
 	u16 cq_head;

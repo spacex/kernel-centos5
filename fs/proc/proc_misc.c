@@ -620,6 +620,18 @@ static int execdomains_read_proc(char *page, char **start, off_t off,
 	return proc_calc_metrics(page, start, off, count, eof, len);
 }
 
+#ifdef CONFIG_IA64
+static int ptcache_read_proc(char *page, char **start, off_t off,
+				 int count, int *eof, void *data)
+{
+	int len;
+
+	len = sprintf(page, "%lu\n", (unsigned long)
+		(pgtable_quicklist_total_size() << (PAGE_SHIFT - 10)));
+	return proc_calc_metrics(page, start, off, count, eof, len);
+}
+#endif
+
 #ifdef CONFIG_MAGIC_SYSRQ
 /*
  * writing 'C' to /proc/sysrq-trigger is like sysrq-C
@@ -673,6 +685,9 @@ void __init proc_misc_init(void)
 		{"cmdline",	cmdline_read_proc},
 		{"locks",	locks_read_proc},
 		{"execdomains",	execdomains_read_proc},
+#ifdef CONFIG_IA64
+		{"ptcache",	ptcache_read_proc},
+#endif
 		{NULL,}
 	};
 	for (p = simple_ones; p->name; p++)

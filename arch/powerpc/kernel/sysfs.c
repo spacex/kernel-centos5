@@ -182,6 +182,7 @@ SYSFS_PMCSETUP(pmc7, SPRN_PMC7);
 SYSFS_PMCSETUP(pmc8, SPRN_PMC8);
 SYSFS_PMCSETUP(purr, SPRN_PURR);
 SYSFS_PMCSETUP(spurr, SPRN_SPURR);
+SYSFS_PMCSETUP(dscr, SPRN_DSCR);
 
 static SYSDEV_ATTR(mmcr0, 0600, show_mmcr0, store_mmcr0);
 static SYSDEV_ATTR(mmcr1, 0600, show_mmcr1, store_mmcr1);
@@ -196,6 +197,7 @@ static SYSDEV_ATTR(pmc7, 0600, show_pmc7, store_pmc7);
 static SYSDEV_ATTR(pmc8, 0600, show_pmc8, store_pmc8);
 static SYSDEV_ATTR(purr, 0600, show_purr, NULL);
 static SYSDEV_ATTR(spurr, 0600, show_spurr, NULL);
+static SYSDEV_ATTR(dscr, 0600, show_dscr, store_dscr);
 
 static void register_cpu_online(unsigned int cpu)
 {
@@ -236,6 +238,8 @@ static void register_cpu_online(unsigned int cpu)
 		sysdev_create_file(s, &attr_purr);
 	if (cpu_has_feature(CPU_FTR_SPURR))
 		sysdev_create_file(s, &attr_spurr);
+	if (cpu_has_feature(CPU_FTR_DSCR))
+		sysdev_create_file(s, &attr_dscr);
 }
 
 #ifdef CONFIG_HOTPLUG_CPU
@@ -280,6 +284,8 @@ static void unregister_cpu_online(unsigned int cpu)
 		sysdev_remove_file(s, &attr_purr);
 	if (cpu_has_feature(CPU_FTR_SPURR))
 		sysdev_remove_file(s, &attr_spurr);
+	if (cpu_has_feature(CPU_FTR_DSCR))
+		sysdev_remove_file(s, &attr_dscr);
 }
 #endif /* CONFIG_HOTPLUG_CPU */
 

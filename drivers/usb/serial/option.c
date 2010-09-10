@@ -71,6 +71,7 @@ static int  option_send_setup(struct usb_serial_port *port);
 #define HUAWEI_VENDOR_ID                0x12D1
 #define AUDIOVOX_VENDOR_ID              0x0F3D
 #define NOVATELWIRELESS_VENDOR_ID       0x1410
+#define DELL_VENDOR_ID                  0x413C
 #define ANYDATA_VENDOR_ID               0x16d5
 
 #define OPTION_PRODUCT_OLD              0x5000
@@ -92,6 +93,17 @@ static struct usb_device_id option_ids[] = {
 	{ USB_DEVICE(HUAWEI_VENDOR_ID, HUAWEI_PRODUCT_E600) },
 	{ USB_DEVICE(AUDIOVOX_VENDOR_ID, AUDIOVOX_PRODUCT_AIRCARD) },
 	{ USB_DEVICE(NOVATELWIRELESS_VENDOR_ID,NOVATELWIRELESS_PRODUCT_U740) },
+	{ USB_DEVICE(DELL_VENDOR_ID, 0x8114) }, /* Dell Wireless 5700 Mobile Broadband CDMA/EVDO Mini-Card == Novatel Expedite EV620 CDMA/EV-DO */
+	{ USB_DEVICE(DELL_VENDOR_ID, 0x8115) }, /* Dell Wireless 5500 Mobile Broadband HSDPA Mini-Card == Novatel Expedite EU740 HSDPA/3G */
+	{ USB_DEVICE(DELL_VENDOR_ID, 0x8116) }, /* Dell Wireless 5505 Mobile Broadband HSDPA Mini-Card == Novatel Expedite EU740 HSDPA/3G */
+	{ USB_DEVICE(DELL_VENDOR_ID, 0x8117) }, /* Dell Wireless 5700 Mobile Broadband CDMA/EVDO ExpressCard == Novatel Merlin XV620 CDMA/EV-DO */
+	{ USB_DEVICE(DELL_VENDOR_ID, 0x8118) }, /* Dell Wireless 5510 Mobile Broadband HSDPA ExpressCard == Novatel Merlin XU870 HSDPA/3G */
+	{ USB_DEVICE(DELL_VENDOR_ID, 0x8128) }, /* Dell Wireless 5700 Mobile Broadband CDMA/EVDO Mini-Card == Novatel Expedite E720 CDMA/EV-DO */
+	{ USB_DEVICE(DELL_VENDOR_ID, 0x8129) }, /* Dell Wireless 5700 Mobile Broadband CDMA/EVDO Mini-Card == Novatel Expedite ET620 CDMA/EV-DO */
+	{ USB_DEVICE(DELL_VENDOR_ID, 0x8133) }, /* Dell Wireless 5720 == Novatel EV620 CDMA/EV-DO */
+	{ USB_DEVICE(DELL_VENDOR_ID, 0x8136) }, /* Dell Wireless HSDPA 5520 == Novatel Expedite EU860D */
+	{ USB_DEVICE(DELL_VENDOR_ID, 0x8137) }, /* Dell Wireless HSDPA 5520 */
+	{ USB_DEVICE(DELL_VENDOR_ID, 0x8138) }, /* Dell Wireless 5520 Voda I Mobile Broadband (3G HSDPA) Minicard */
 	{ USB_DEVICE(ANYDATA_VENDOR_ID, ANYDATA_PRODUCT_ID) },
 	{ } /* Terminating entry */
 };

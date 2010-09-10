@@ -55,7 +55,7 @@ static int gfs2_drevalidate(struct dentry *dentry, struct nameidata *nd)
 	if (sdp->sd_args.ar_localcaching)
 		goto valid;
 
-	had_lock = gfs2_glock_is_locked_by_me(dip->i_gl);
+	had_lock = (gfs2_glock_is_locked_by_me(dip->i_gl) != NULL);
 	if (!had_lock) {
 		error = gfs2_glock_nq_init(dip->i_gl, LM_ST_SHARED, 0, &d_gh);
 		if (error)

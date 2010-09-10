@@ -223,27 +223,30 @@ static void __init sal_desc_ap_wakeup(void *p) { }
  */
 static int sal_cache_flush_drops_interrupts;
 
-static void __init
+void __init
 check_sal_cache_flush (void)
 {
 	unsigned long flags;
 	int cpu;
-	u64 vector;
+	u64 vector, cache_type = 3;
+	struct ia64_sal_retval isrv;
 
 	cpu = get_cpu();
 	local_irq_save(flags);
 
 	/*
-	 * Schedule a timer interrupt, wait until it's reported, and see if
-	 * SAL_CACHE_FLUSH drops it.
+	 * Send ourselves a timer interrupt, wait until it's reported, and see
+	 * if SAL_CACHE_FLUSH drops it.
 	 */
-	ia64_set_itv(IA64_TIMER_VECTOR);
-	ia64_set_itm(ia64_get_itc() + 1000);
+	platform_send_ipi(cpu, IA64_TIMER_VECTOR, IA64_IPI_DM_INT, 0);
 
 	while (!ia64_get_irr(IA64_TIMER_VECTOR))
 		cpu_relax();
 
-	ia64_sal_cache_flush(3);
+	SAL_CALL(isrv, SAL_CACHE_FLUSH, cache_type, 0, 0, 0, 0, 0, 0);
+
+	if (isrv.status)
+		printk(KERN_ERR "SAL_CAL_FLUSH failed with %ld\n", isrv.status);
 
 	if (ia64_get_irr(IA64_TIMER_VECTOR)) {
 		vector = ia64_get_ivr();
@@ -331,7 +334,6 @@ ia64_sal_init (struct ia64_sal_systab *systab)
 		p += SAL_DESC_SIZE(*p);
 	}
 
-	check_sal_cache_flush();
 }
 
 int

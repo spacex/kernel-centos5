@@ -112,6 +112,12 @@ void xen_destroy_contiguous_region(
 /* Turn jiffies into Xen system time. */
 u64 jiffies_to_st(unsigned long jiffies);
 
+#ifdef CONFIG_XEN_SCRUB_PAGES
+#define scrub_pages(_p,_n) memset((void *)(_p), 0, (_n) << PAGE_SHIFT)
+#else
+#define scrub_pages(_p,_n) ((void)0)
+#endif
+
 #include <asm/hypercall.h>
 
 #if defined(CONFIG_X86_64)
@@ -182,6 +188,8 @@ HYPERVISOR_poll(
 	return rc;
 }
 
+#ifdef CONFIG_XEN
+
 static inline void
 MULTI_update_va_mapping(
     multicall_entry_t *mcl, unsigned long va,
@@ -230,5 +238,13 @@ MULTI_update_va_mapping_otherdomain(
     mcl->args[MULTI_UVMFLAGS_INDEX] = flags;
     mcl->args[MULTI_UVMDOMID_INDEX] = domid;
 }
+
+#else /* !defined(CONFIG_XEN) .... HVM */
+
+/* Multicalls not supported for HVM guests. */
+#define MULTI_update_va_mapping(a,b,c,d) ((void)0)
+#define MULTI_grant_table_op(a,b,c,d) ((void)0)
+
+#endif
 
 #endif /* __HYPERVISOR_H__ */

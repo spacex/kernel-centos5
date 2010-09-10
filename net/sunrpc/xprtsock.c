@@ -476,6 +476,13 @@ clear_close_wait:
 	smp_mb__after_clear_bit();
 }
 
+static int
+xs_wait_bit_uninterruptible(void *word)
+{
+	schedule();
+	return 0;
+}
+
 /**
  * xs_destroy - prepare to shutdown a transport
  * @xprt: doomed transport
@@ -485,8 +492,9 @@ static void xs_destroy(struct rpc_xprt *xprt)
 {
 	dprintk("RPC:      xs_destroy xprt %p\n", xprt);
 
-	cancel_delayed_work(&xprt->connect_worker);
-	flush_scheduled_work();
+	if (!cancel_delayed_work(&xprt->connect_worker))
+		wait_on_bit(&xprt->state, XPRT_CONNECTING,
+			    xs_wait_bit_uninterruptible, TASK_UNINTERRUPTIBLE);
 
 	xprt_disconnect(xprt);
 	xs_close(xprt);
@@ -837,7 +845,7 @@ static void xs_tcp_state_change(struct sock *sk)
 		/* Try to schedule an autoclose RPC calls */
 		set_bit(XPRT_CLOSE_WAIT, &xprt->state);
 		if (test_and_set_bit(XPRT_LOCKED, &xprt->state) == 0)
-			schedule_work(&xprt->task_cleanup);
+			queue_work(rpciod_workqueue, &xprt->task_cleanup);
 	default:
 		xprt_disconnect(xprt);
 	}
@@ -1232,14 +1240,14 @@ static void xs_connect(struct rpc_task *task)
 	if (xprt->sock != NULL) {
 		dprintk("RPC:      xs_connect delayed xprt %p for %lu seconds\n",
 				xprt, xprt->reestablish_timeout / HZ);
-		schedule_delayed_work(&xprt->connect_worker,
+		queue_delayed_work(rpciod_workqueue, &xprt->connect_worker,
 					xprt->reestablish_timeout);
 		xprt->reestablish_timeout <<= 1;
 		if (xprt->reestablish_timeout > XS_TCP_MAX_REEST_TO)
 			xprt->reestablish_timeout = XS_TCP_MAX_REEST_TO;
 	} else {
 		dprintk("RPC:      xs_connect scheduled xprt %p\n", xprt);
-		schedule_work(&xprt->connect_worker);
+		queue_work(rpciod_workqueue, &xprt->connect_worker);
 
 		/* flush_scheduled_work can sleep... */
 		if (!RPC_IS_ASYNC(task))

@@ -204,8 +204,8 @@ static struct scsi_device *scsi_alloc_sdev(struct scsi_target *starget,
 	int display_failure_msg = 1, ret;
 	struct Scsi_Host *shost = dev_to_shost(starget->dev.parent);
 
-	sdev = kzalloc(sizeof(*sdev) + shost->transportt->device_size,
-		       GFP_ATOMIC);
+	sdev = kzalloc(sizeof(*sdev) + shost->transportt->device_size
+			+ sizeof(struct scsi_dh_data *), GFP_ATOMIC);
 	if (!sdev)
 		goto out;
 

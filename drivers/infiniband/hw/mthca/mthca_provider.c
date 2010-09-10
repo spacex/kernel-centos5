@@ -1013,7 +1013,8 @@ static struct ib_mr *mthca_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 	if (!mr)
 		return ERR_PTR(-ENOMEM);
 
-	mr->umem = ib_umem_get(pd->uobject->context, start, length, acc);
+	mr->umem = ib_umem_get_dmasync(pd->uobject->context, start,
+					 length, acc);
 	if (IS_ERR(mr->umem)) {
 		err = PTR_ERR(mr->umem);
 		goto err;
@@ -1080,7 +1081,7 @@ err_mtt:
 	mthca_free_mtt(dev, mr->mtt);
 
 err_umem:
-	ib_umem_release(mr->umem);
+	ib_umem_release_dmasync(mr->umem);
 
 err:
 	kfree(mr);
@@ -1093,7 +1094,7 @@ static int mthca_dereg_mr(struct ib_mr *mr)
 
 	mthca_free_mr(to_mdev(mr->device), mmr);
 	if (mmr->umem)
-		ib_umem_release(mmr->umem);
+		ib_umem_release_dmasync(mmr->umem);
 	kfree(mmr);
 
 	return 0;

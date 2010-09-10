@@ -1,6 +1,6 @@
 /******************************************************************************
  *
- * Copyright(c) 2005 - 2007 Intel Corporation. All rights reserved.
+ * Copyright(c) 2005 - 2008 Intel Corporation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of version 2 of the GNU General Public License as
@@ -36,8 +36,8 @@ struct iwl3945_rate_info {
 	u8 next_rs;		/* next rate used in rs algo */
 	u8 prev_rs_tgg;		/* previous rate used in TGG rs algo */
 	u8 next_rs_tgg;		/* next rate used in TGG rs algo */
-        u8 table_rs_index;	/* index in rate scale table cmd */
-        u8 prev_table_rs;	/* prev in rate table cmd */
+	u8 table_rs_index;	/* index in rate scale table cmd */
+	u8 prev_table_rs;	/* prev in rate table cmd */
 };
 
 /*
@@ -86,18 +86,18 @@ enum {
 };
 
 /* #define vs. enum to keep from defaulting to 'large integer' */
-#define	IWL_RATE_6M_MASK   (1<<IWL_RATE_6M_INDEX)
-#define	IWL_RATE_9M_MASK   (1<<IWL_RATE_9M_INDEX)
-#define	IWL_RATE_12M_MASK  (1<<IWL_RATE_12M_INDEX)
-#define	IWL_RATE_18M_MASK  (1<<IWL_RATE_18M_INDEX)
-#define	IWL_RATE_24M_MASK  (1<<IWL_RATE_24M_INDEX)
-#define	IWL_RATE_36M_MASK  (1<<IWL_RATE_36M_INDEX)
-#define	IWL_RATE_48M_MASK  (1<<IWL_RATE_48M_INDEX)
-#define	IWL_RATE_54M_MASK  (1<<IWL_RATE_54M_INDEX)
-#define	IWL_RATE_1M_MASK   (1<<IWL_RATE_1M_INDEX)
-#define	IWL_RATE_2M_MASK   (1<<IWL_RATE_2M_INDEX)
-#define	IWL_RATE_5M_MASK   (1<<IWL_RATE_5M_INDEX)
-#define	IWL_RATE_11M_MASK  (1<<IWL_RATE_11M_INDEX)
+#define	IWL_RATE_6M_MASK   (1 << IWL_RATE_6M_INDEX)
+#define	IWL_RATE_9M_MASK   (1 << IWL_RATE_9M_INDEX)
+#define	IWL_RATE_12M_MASK  (1 << IWL_RATE_12M_INDEX)
+#define	IWL_RATE_18M_MASK  (1 << IWL_RATE_18M_INDEX)
+#define	IWL_RATE_24M_MASK  (1 << IWL_RATE_24M_INDEX)
+#define	IWL_RATE_36M_MASK  (1 << IWL_RATE_36M_INDEX)
+#define	IWL_RATE_48M_MASK  (1 << IWL_RATE_48M_INDEX)
+#define	IWL_RATE_54M_MASK  (1 << IWL_RATE_54M_INDEX)
+#define	IWL_RATE_1M_MASK   (1 << IWL_RATE_1M_INDEX)
+#define	IWL_RATE_2M_MASK   (1 << IWL_RATE_2M_INDEX)
+#define	IWL_RATE_5M_MASK   (1 << IWL_RATE_5M_INDEX)
+#define	IWL_RATE_11M_MASK  (1 << IWL_RATE_11M_INDEX)
 
 /* 3945 uCode API values for (legacy) bit rates, both OFDM and CCK */
 enum {
@@ -157,9 +157,9 @@ enum {
 	(IWL_OFDM_BASIC_RATES_MASK | \
 	 IWL_CCK_BASIC_RATES_MASK)
 
-#define IWL_RATES_MASK ((1<<IWL_RATE_COUNT)-1)
+#define IWL_RATES_MASK ((1 << IWL_RATE_COUNT) - 1)
 
-#define IWL_INVALID_VALUE    -1
+#define IWL_INV_TPT    -1
 
 #define IWL_MIN_RSSI_VAL                 -100
 #define IWL_MAX_RSSI_VAL                    0
@@ -202,7 +202,7 @@ extern void iwl3945_rate_scale_init(struct ieee80211_hw *hw, s32 sta_id);
  * ieee80211_register_hw
  *
  */
-extern void iwl3945_rate_control_register(struct ieee80211_hw *hw);
+extern int iwl3945_rate_control_register(void);
 
 /**
  * iwl3945_rate_control_unregister - Unregister the rate control callbacks
@@ -210,6 +210,6 @@ extern void iwl3945_rate_control_register(struct ieee80211_hw *hw);
  * This should be called after calling ieee80211_unregister_hw, but before
  * the driver is unloaded.
  */
-extern void iwl3945_rate_control_unregister(struct ieee80211_hw *hw);
+extern void iwl3945_rate_control_unregister(void);
 
 #endif

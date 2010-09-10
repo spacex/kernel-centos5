@@ -18,7 +18,6 @@
 #ifndef _ZD_CHIP_H
 #define _ZD_CHIP_H
 
-#include "zd_types.h"
 #include "zd_rf.h"
 #include "zd_usb.h"
 
@@ -26,6 +25,37 @@
  * (BBP). It appears that the ZD1211 wraps the old ZD1205 with USB glue and
  * adds a processor for handling the USB protocol.
  */
+
+/* Address space */
+enum {
+	/* CONTROL REGISTERS */
+	CR_START			= 0x9000,
+
+
+	/* FIRMWARE */
+	FW_START			= 0xee00,
+
+
+	/* EEPROM */
+	E2P_START			= 0xf800,
+	E2P_LEN				= 0x800,
+
+	/* EEPROM layout */
+	E2P_LOAD_CODE_LEN		= 0xe,		/* base 0xf800 */
+	E2P_LOAD_VECT_LEN		= 0x9,		/* base 0xf80e */
+	/* E2P_DATA indexes into this */
+	E2P_DATA_LEN			= 0x7e,		/* base 0xf817 */
+	E2P_BOOT_CODE_LEN		= 0x760,	/* base 0xf895 */
+	E2P_INTR_VECT_LEN		= 0xb,		/* base 0xfff5 */
+
+	/* Some precomputed offsets into the EEPROM */
+	E2P_DATA_OFFSET			= E2P_LOAD_CODE_LEN + E2P_LOAD_VECT_LEN,
+	E2P_BOOT_CODE_OFFSET		= E2P_DATA_OFFSET + E2P_DATA_LEN,
+};
+
+#define CTL_REG(offset) ((zd_addr_t)(CR_START + (offset)))
+#define E2P_DATA(offset) ((zd_addr_t)(E2P_START + E2P_DATA_OFFSET + (offset)))
+#define FWRAW_DATA(offset) ((zd_addr_t)(FW_START + (offset)))
 
 /* 8-bit hardware registers */
 #define CR0   CTL_REG(0x0000)
@@ -302,7 +332,7 @@
 
 #define CR_MAX_PHY_REG 255
 
-/* Taken from the ZYDAS driver, not all of them are relevant for the ZSD1211
+/* Taken from the ZYDAS driver, not all of them are relevant for the ZD1211
  * driver.
  */
 
@@ -337,24 +367,24 @@
 #define CR_MAC_PS_STATE			CTL_REG(0x050C)
 
 #define CR_INTERRUPT			CTL_REG(0x0510)
-#define INT_TX_COMPLETE			0x00000001
-#define INT_RX_COMPLETE			0x00000002
-#define INT_RETRY_FAIL			0x00000004
-#define INT_WAKEUP			0x00000008
-#define INT_DTIM_NOTIFY			0x00000020
-#define INT_CFG_NEXT_BCN		0x00000040
-#define INT_BUS_ABORT			0x00000080
-#define INT_TX_FIFO_READY		0x00000100
-#define INT_UART			0x00000200
-#define INT_TX_COMPLETE_EN		0x00010000
-#define INT_RX_COMPLETE_EN		0x00020000
-#define INT_RETRY_FAIL_EN		0x00040000
-#define INT_WAKEUP_EN			0x00080000
-#define INT_DTIM_NOTIFY_EN		0x00200000
-#define INT_CFG_NEXT_BCN_EN		0x00400000
-#define INT_BUS_ABORT_EN		0x00800000
-#define INT_TX_FIFO_READY_EN		0x01000000
-#define INT_UART_EN			0x02000000
+#define INT_TX_COMPLETE			(1 <<  0)
+#define INT_RX_COMPLETE			(1 <<  1)
+#define INT_RETRY_FAIL			(1 <<  2)
+#define INT_WAKEUP			(1 <<  3)
+#define INT_DTIM_NOTIFY			(1 <<  5)
+#define INT_CFG_NEXT_BCN		(1 <<  6)
+#define INT_BUS_ABORT			(1 <<  7)
+#define INT_TX_FIFO_READY		(1 <<  8)
+#define INT_UART			(1 <<  9)
+#define INT_TX_COMPLETE_EN		(1 << 16)
+#define INT_RX_COMPLETE_EN		(1 << 17)
+#define INT_RETRY_FAIL_EN		(1 << 18)
+#define INT_WAKEUP_EN			(1 << 19)
+#define INT_DTIM_NOTIFY_EN		(1 << 21)
+#define INT_CFG_NEXT_BCN_EN		(1 << 22)
+#define INT_BUS_ABORT_EN		(1 << 23)
+#define INT_TX_FIFO_READY_EN		(1 << 24)
+#define INT_UART_EN			(1 << 25)
 
 #define CR_TSF_LOW_PART			CTL_REG(0x0514)
 #define CR_TSF_HIGH_PART		CTL_REG(0x0518)
@@ -390,26 +420,35 @@
 #define CR_BSSID_P1			CTL_REG(0x0618)
 #define CR_BSSID_P2			CTL_REG(0x061C)
 #define CR_BCN_PLCP_CFG			CTL_REG(0x0620)
+
+/* Group hash table for filtering incoming packets.
+ *
+ * The group hash table is 64 bit large and split over two parts. The first
+ * part is the lower part. The upper 6 bits of the last byte of the target
+ * address are used as index. Packets are received if the hash table bit is
+ * set. This is used for multicast handling, but for broadcasts (address
+ * ff:ff:ff:ff:ff:ff) the highest bit in the second table must also be set.
+ */
 #define CR_GROUP_HASH_P1		CTL_REG(0x0624)
 #define CR_GROUP_HASH_P2		CTL_REG(0x0628)
-#define CR_RX_TIMEOUT			CTL_REG(0x062C)
 
+#define CR_RX_TIMEOUT			CTL_REG(0x062C)
 /* Basic rates supported by the BSS. When producing ACK or CTS messages, the
  * device will use a rate in this table that is less than or equal to the rate
  * of the incoming frame which prompted the response */
 #define CR_BASIC_RATE_TBL		CTL_REG(0x0630)
-#define CR_RATE_1M	0x0001	/* 802.11b */
-#define CR_RATE_2M	0x0002	/* 802.11b */
-#define CR_RATE_5_5M	0x0004	/* 802.11b */
-#define CR_RATE_11M	0x0008	/* 802.11b */
-#define CR_RATE_6M      0x0100	/* 802.11g */
-#define CR_RATE_9M      0x0200	/* 802.11g */
-#define CR_RATE_12M	0x0400	/* 802.11g */
-#define CR_RATE_18M	0x0800	/* 802.11g */
-#define CR_RATE_24M     0x1000	/* 802.11g */
-#define CR_RATE_36M     0x2000	/* 802.11g */
-#define CR_RATE_48M     0x4000	/* 802.11g */
-#define CR_RATE_54M     0x8000	/* 802.11g */
+#define CR_RATE_1M	(1 <<  0)	/* 802.11b */
+#define CR_RATE_2M	(1 <<  1)	/* 802.11b */
+#define CR_RATE_5_5M	(1 <<  2)	/* 802.11b */
+#define CR_RATE_11M	(1 <<  3)	/* 802.11b */
+#define CR_RATE_6M      (1 <<  8)	/* 802.11g */
+#define CR_RATE_9M      (1 <<  9)	/* 802.11g */
+#define CR_RATE_12M	(1 << 10)	/* 802.11g */
+#define CR_RATE_18M	(1 << 11)	/* 802.11g */
+#define CR_RATE_24M     (1 << 12)	/* 802.11g */
+#define CR_RATE_36M     (1 << 13)	/* 802.11g */
+#define CR_RATE_48M     (1 << 14)	/* 802.11g */
+#define CR_RATE_54M     (1 << 15)	/* 802.11g */
 #define CR_RATES_80211G	0xff00
 #define CR_RATES_80211B	0x000f
 
@@ -426,8 +465,9 @@
 /* register for controlling the LEDS */
 #define CR_LED				CTL_REG(0x0644)
 /* masks for controlling LEDs */
-#define LED1				0x0100
-#define LED2				0x0200
+#define LED1				(1 <<  8)
+#define LED2				(1 <<  9)
+#define LED_SW				(1 << 10)
 
 /* Seems to indicate that the configuration is over.
  */
@@ -454,18 +494,18 @@
  * registers, so one could argue it is a LOCK bit. But calling it
  * LOCK_PHY_REGS makes it confusing.
  */
-#define UNLOCK_PHY_REGS			0x0080
+#define UNLOCK_PHY_REGS			(1 << 7)
 
 #define CR_DEVICE_STATE			CTL_REG(0x0684)
 #define CR_UNDERRUN_CNT			CTL_REG(0x0688)
 
 #define CR_RX_FILTER			CTL_REG(0x068c)
-#define RX_FILTER_ASSOC_RESPONSE	0x0002
-#define RX_FILTER_REASSOC_RESPONSE	0x0008
-#define RX_FILTER_PROBE_RESPONSE	0x0020
-#define RX_FILTER_BEACON		0x0100
-#define RX_FILTER_DISASSOC		0x0400
-#define RX_FILTER_AUTH			0x0800
+#define RX_FILTER_ASSOC_RESPONSE	(1 <<  1)
+#define RX_FILTER_REASSOC_RESPONSE	(1 <<  3)
+#define RX_FILTER_PROBE_RESPONSE	(1 <<  5)
+#define RX_FILTER_BEACON		(1 <<  8)
+#define RX_FILTER_DISASSOC		(1 << 10)
+#define RX_FILTER_AUTH			(1 << 11)
 #define AP_RX_FILTER			0x0400feff
 #define STA_RX_FILTER			0x0000ffff
 
@@ -473,7 +513,15 @@
 
 #define CR_ACK_TIMEOUT_EXT		CTL_REG(0x0690)
 #define CR_BCN_FIFO_SEMAPHORE		CTL_REG(0x0694)
+
 #define CR_IFS_VALUE			CTL_REG(0x0698)
+#define IFS_VALUE_DIFS_SH		0
+#define IFS_VALUE_EIFS_SH		12
+#define IFS_VALUE_SIFS_SH		24
+#define IFS_VALUE_DEFAULT		((  50 << IFS_VALUE_DIFS_SH) | \
+					 (1148 << IFS_VALUE_EIFS_SH) | \
+					 (  10 << IFS_VALUE_SIFS_SH))
+
 #define CR_RX_TIME_OUT			CTL_REG(0x069C)
 #define CR_TOTAL_RX_FRM			CTL_REG(0x06A0)
 #define CR_CRC32_CNT			CTL_REG(0x06A4)
@@ -551,6 +599,9 @@
 #define CR_ZD1211B_TXOP			CTL_REG(0x0b20)
 #define CR_ZD1211B_RETRY_MAX		CTL_REG(0x0b28)
 
+/* Used to detect PLL lock */
+#define UW2453_INTR_REG			((zd_addr_t)0x85c1)
+
 #define CWIN_SIZE			0x007f043f
 
 
@@ -567,74 +618,69 @@
 /*
  * Upper 16 bit contains the regulatory domain.
  */
-#define E2P_SUBID		E2P_REG(0x00)
-#define E2P_POD			E2P_REG(0x02)
-#define E2P_MAC_ADDR_P1		E2P_REG(0x04)
-#define E2P_MAC_ADDR_P2		E2P_REG(0x06)
-#define E2P_PWR_CAL_VALUE1	E2P_REG(0x08)
-#define E2P_PWR_CAL_VALUE2	E2P_REG(0x0a)
-#define E2P_PWR_CAL_VALUE3	E2P_REG(0x0c)
-#define E2P_PWR_CAL_VALUE4      E2P_REG(0x0e)
-#define E2P_PWR_INT_VALUE1	E2P_REG(0x10)
-#define E2P_PWR_INT_VALUE2	E2P_REG(0x12)
-#define E2P_PWR_INT_VALUE3	E2P_REG(0x14)
-#define E2P_PWR_INT_VALUE4	E2P_REG(0x16)
+#define E2P_SUBID		E2P_DATA(0x00)
+#define E2P_POD			E2P_DATA(0x02)
+#define E2P_MAC_ADDR_P1		E2P_DATA(0x04)
+#define E2P_MAC_ADDR_P2		E2P_DATA(0x06)
+#define E2P_PWR_CAL_VALUE1	E2P_DATA(0x08)
+#define E2P_PWR_CAL_VALUE2	E2P_DATA(0x0a)
+#define E2P_PWR_CAL_VALUE3	E2P_DATA(0x0c)
+#define E2P_PWR_CAL_VALUE4      E2P_DATA(0x0e)
+#define E2P_PWR_INT_VALUE1	E2P_DATA(0x10)
+#define E2P_PWR_INT_VALUE2	E2P_DATA(0x12)
+#define E2P_PWR_INT_VALUE3	E2P_DATA(0x14)
+#define E2P_PWR_INT_VALUE4	E2P_DATA(0x16)
 
 /* Contains a bit for each allowed channel. It gives for Europe (ETSI 0x30)
  * also only 11 channels. */
-#define E2P_ALLOWED_CHANNEL	E2P_REG(0x18)
+#define E2P_ALLOWED_CHANNEL	E2P_DATA(0x18)
 
-#define E2P_PHY_REG		E2P_REG(0x1a)
-#define E2P_DEVICE_VER		E2P_REG(0x20)
-#define E2P_36M_CAL_VALUE1	E2P_REG(0x28)
-#define E2P_36M_CAL_VALUE2      E2P_REG(0x2a)
-#define E2P_36M_CAL_VALUE3      E2P_REG(0x2c)
-#define E2P_36M_CAL_VALUE4	E2P_REG(0x2e)
-#define E2P_11A_INT_VALUE1	E2P_REG(0x30)
-#define E2P_11A_INT_VALUE2	E2P_REG(0x32)
-#define E2P_11A_INT_VALUE3	E2P_REG(0x34)
-#define E2P_11A_INT_VALUE4	E2P_REG(0x36)
-#define E2P_48M_CAL_VALUE1	E2P_REG(0x38)
-#define E2P_48M_CAL_VALUE2	E2P_REG(0x3a)
-#define E2P_48M_CAL_VALUE3	E2P_REG(0x3c)
-#define E2P_48M_CAL_VALUE4	E2P_REG(0x3e)
-#define E2P_48M_INT_VALUE1	E2P_REG(0x40)
-#define E2P_48M_INT_VALUE2	E2P_REG(0x42)
-#define E2P_48M_INT_VALUE3	E2P_REG(0x44)
-#define E2P_48M_INT_VALUE4	E2P_REG(0x46)
-#define E2P_54M_CAL_VALUE1	E2P_REG(0x48)	/* ??? */
-#define E2P_54M_CAL_VALUE2	E2P_REG(0x4a)
-#define E2P_54M_CAL_VALUE3	E2P_REG(0x4c)
-#define E2P_54M_CAL_VALUE4	E2P_REG(0x4e)
-#define E2P_54M_INT_VALUE1	E2P_REG(0x50)
-#define E2P_54M_INT_VALUE2	E2P_REG(0x52)
-#define E2P_54M_INT_VALUE3	E2P_REG(0x54)
-#define E2P_54M_INT_VALUE4	E2P_REG(0x56)
+#define E2P_DEVICE_VER		E2P_DATA(0x20)
+#define E2P_PHY_REG		E2P_DATA(0x25)
+#define E2P_36M_CAL_VALUE1	E2P_DATA(0x28)
+#define E2P_36M_CAL_VALUE2      E2P_DATA(0x2a)
+#define E2P_36M_CAL_VALUE3      E2P_DATA(0x2c)
+#define E2P_36M_CAL_VALUE4	E2P_DATA(0x2e)
+#define E2P_11A_INT_VALUE1	E2P_DATA(0x30)
+#define E2P_11A_INT_VALUE2	E2P_DATA(0x32)
+#define E2P_11A_INT_VALUE3	E2P_DATA(0x34)
+#define E2P_11A_INT_VALUE4	E2P_DATA(0x36)
+#define E2P_48M_CAL_VALUE1	E2P_DATA(0x38)
+#define E2P_48M_CAL_VALUE2	E2P_DATA(0x3a)
+#define E2P_48M_CAL_VALUE3	E2P_DATA(0x3c)
+#define E2P_48M_CAL_VALUE4	E2P_DATA(0x3e)
+#define E2P_48M_INT_VALUE1	E2P_DATA(0x40)
+#define E2P_48M_INT_VALUE2	E2P_DATA(0x42)
+#define E2P_48M_INT_VALUE3	E2P_DATA(0x44)
+#define E2P_48M_INT_VALUE4	E2P_DATA(0x46)
+#define E2P_54M_CAL_VALUE1	E2P_DATA(0x48)	/* ??? */
+#define E2P_54M_CAL_VALUE2	E2P_DATA(0x4a)
+#define E2P_54M_CAL_VALUE3	E2P_DATA(0x4c)
+#define E2P_54M_CAL_VALUE4	E2P_DATA(0x4e)
+#define E2P_54M_INT_VALUE1	E2P_DATA(0x50)
+#define E2P_54M_INT_VALUE2	E2P_DATA(0x52)
+#define E2P_54M_INT_VALUE3	E2P_DATA(0x54)
+#define E2P_54M_INT_VALUE4	E2P_DATA(0x56)
 
-/* All 16 bit values */
-#define FW_FIRMWARE_VER         FW_REG(0)
-/* non-zero if USB high speed connection */
-#define FW_USB_SPEED            FW_REG(1)
-#define FW_FIX_TX_RATE          FW_REG(2)
-/* Seems to be able to control LEDs over the firmware */
-#define FW_LINK_STATUS          FW_REG(3)
-#define FW_SOFT_RESET           FW_REG(4)
-#define FW_FLASH_CHK            FW_REG(5)
+/* This word contains the base address of the FW_REG_ registers below */
+#define FWRAW_REGS_ADDR		FWRAW_DATA(0x1d)
 
+/* All 16 bit values, offset from the address in FWRAW_REGS_ADDR */
 enum {
-	CR_BASE_OFFSET			= 0x9000,
-	FW_START_OFFSET			= 0xee00,
-	FW_BASE_ADDR_OFFSET		= FW_START_OFFSET + 0x1d,
-	EEPROM_START_OFFSET		= 0xf800,
-	EEPROM_SIZE			= 0x800, /* words */
-	LOAD_CODE_SIZE			= 0xe, /* words */
-	LOAD_VECT_SIZE			= 0x10000 - 0xfff7, /* words */
-	EEPROM_REGS_OFFSET		= LOAD_CODE_SIZE + LOAD_VECT_SIZE,
-	E2P_BASE_OFFSET			= EEPROM_START_OFFSET +
-		                          EEPROM_REGS_OFFSET,
+	FW_REG_FIRMWARE_VER	= 0,
+	/* non-zero if USB high speed connection */
+	FW_REG_USB_SPEED	= 1,
+	FW_REG_FIX_TX_RATE	= 2,
+	/* Seems to be able to control LEDs over the firmware */
+	FW_REG_LED_LINK_STATUS	= 3,
+	FW_REG_SOFT_RESET	= 4,
+	FW_REG_FLASH_CHK	= 5,
 };
 
-#define FW_REG_TABLE_ADDR	USB_ADDR(FW_START_OFFSET + 0x1d)
+/* Values for FW_LINK_STATUS */
+#define FW_LINK_OFF		0x0
+#define FW_LINK_TX		0x1
+/* 0x2 - link led on? */
 
 enum {
 	/* indices for ofdm_cal_values */
@@ -647,15 +693,19 @@ struct zd_chip {
 	struct zd_usb usb;
 	struct zd_rf rf;
 	struct mutex mutex;
-	u8 e2p_mac[ETH_ALEN];
+	/* Base address of FW_REG_ registers */
+	zd_addr_t fw_regs_base;
 	/* EepSetPoint in the vendor driver */
 	u8 pwr_cal_values[E2P_CHANNEL_COUNT];
 	/* integration values in the vendor driver */
 	u8 pwr_int_values[E2P_CHANNEL_COUNT];
 	/* SetPointOFDM in the vendor driver */
 	u8 ofdm_cal_values[3][E2P_CHANNEL_COUNT];
-	u8 pa_type:4, patch_cck_gain:1, patch_cr157:1, patch_6m_band_edge:1,
-	   is_zd1211b:1;
+	u16 link_led;
+	unsigned int pa_type:4,
+		patch_cck_gain:1, patch_cr157:1, patch_6m_band_edge:1,
+		new_phy_layout:1, al2230s_bit:1,
+		supports_tx_led:1;
 };
 
 static inline struct zd_chip *zd_usb_to_chip(struct zd_usb *usb)
@@ -674,8 +724,14 @@ void zd_chip_init(struct zd_chip *chip,
 	         struct net_device *netdev,
 	         struct usb_interface *intf);
 void zd_chip_clear(struct zd_chip *chip);
-int zd_chip_init_hw(struct zd_chip *chip, u8 device_type);
+int zd_chip_read_mac_addr_fw(struct zd_chip *chip, u8 *addr);
+int zd_chip_init_hw(struct zd_chip *chip);
 int zd_chip_reset(struct zd_chip *chip);
+
+static inline int zd_chip_is_zd1211b(struct zd_chip *chip)
+{
+	return chip->usb.is_zd1211b;
+}
 
 static inline int zd_ioread16v_locked(struct zd_chip *chip, u16 *values,
 	                              const zd_addr_t *addresses,
@@ -739,8 +795,12 @@ static inline int zd_rfwrite_locked(struct zd_chip *chip, u32 value, u8 bits)
 	return zd_usb_rfwrite(&chip->usb, value, bits);
 }
 
+int zd_rfwrite_cr_locked(struct zd_chip *chip, u32 value);
+
 int zd_rfwritev_locked(struct zd_chip *chip,
 	               const u32* values, unsigned int count, u8 bits);
+int zd_rfwritev_cr_locked(struct zd_chip *chip,
+	                  const u32* values, unsigned int count);
 
 /* Locking functions for reading and writing registers.
  * The different parameters are intentional.
@@ -761,8 +821,6 @@ static inline u8 _zd_chip_get_channel(struct zd_chip *chip)
 }
 u8  zd_chip_get_channel(struct zd_chip *chip);
 int zd_read_regdomain(struct zd_chip *chip, u8 *regdomain);
-void zd_get_e2p_mac_addr(struct zd_chip *chip, u8 *mac_addr);
-int zd_read_mac_addr(struct zd_chip *chip, u8 *mac_addr);
 int zd_write_mac_addr(struct zd_chip *chip, const u8 *mac_addr);
 int zd_chip_switch_radio_on(struct zd_chip *chip);
 int zd_chip_switch_radio_off(struct zd_chip *chip);
@@ -772,6 +830,7 @@ int zd_chip_enable_rx(struct zd_chip *chip);
 void zd_chip_disable_rx(struct zd_chip *chip);
 int zd_chip_enable_hwint(struct zd_chip *chip);
 int zd_chip_disable_hwint(struct zd_chip *chip);
+int zd_chip_generic_patch_6m_band(struct zd_chip *chip, int channel);
 
 static inline int zd_get_encryption_type(struct zd_chip *chip, u32 *type)
 {
@@ -790,24 +849,16 @@ static inline int zd_chip_get_basic_rates(struct zd_chip *chip, u16 *cr_rates)
 
 int zd_chip_set_basic_rates(struct zd_chip *chip, u16 cr_rates);
 
-static inline int zd_chip_set_rx_filter(struct zd_chip *chip, u32 filter)
-{
-	return zd_iowrite32(chip, CR_RX_FILTER, filter);
-}
-
 int zd_chip_lock_phy_regs(struct zd_chip *chip);
 int zd_chip_unlock_phy_regs(struct zd_chip *chip);
 
 enum led_status {
-	LED_OFF	   = 0,
-	LED_ON     = 1,
-	LED_FLIP   = 2,
-	LED_STATUS = 3,
+	LED_OFF = 0,
+	LED_SCANNING = 1,
+	LED_ASSOCIATED = 2,
 };
 
-int zd_chip_led_status(struct zd_chip *chip, int led, enum led_status status);
-int zd_chip_led_flip(struct zd_chip *chip, int led,
-	             const unsigned int *phases_msecs, unsigned int count);
+int zd_chip_control_leds(struct zd_chip *chip, enum led_status status);
 
 int zd_set_beacon_interval(struct zd_chip *chip, u32 interval);
 
@@ -823,5 +874,37 @@ u8 zd_rx_qual_percent(const void *rx_frame, unsigned int size,
 u8 zd_rx_strength_percent(u8 rssi);
 
 u16 zd_rx_rate(const void *rx_frame, const struct rx_status *status);
+
+struct zd_mc_hash {
+	u32 low;
+	u32 high;
+};
+
+static inline void zd_mc_clear(struct zd_mc_hash *hash)
+{
+	hash->low = 0;
+	/* The interfaces must always received broadcasts.
+	 * The hash of the broadcast address ff:ff:ff:ff:ff:ff is 63.
+	 */
+	hash->high = 0x80000000;
+}
+
+static inline void zd_mc_add_all(struct zd_mc_hash *hash)
+{
+	hash->low = hash->high = 0xffffffff;
+}
+
+static inline void zd_mc_add_addr(struct zd_mc_hash *hash, u8 *addr)
+{
+	unsigned int i = addr[5] >> 2;
+	if (i < 32) {
+		hash->low |= 1 << i;
+	} else {
+		hash->high |= 1 << (i-32);
+	}
+}
+
+int zd_chip_set_multicast_hash(struct zd_chip *chip,
+	                       struct zd_mc_hash *hash);
 
 #endif /* _ZD_CHIP_H */

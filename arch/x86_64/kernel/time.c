@@ -33,6 +33,7 @@
 #include <linux/notifier.h>
 #include <linux/cpu.h>
 #include <linux/kallsyms.h>
+#include <linux/efi.h>
 #include <linux/acpi.h>
 #ifdef CONFIG_ACPI
 #include <acpi/achware.h>	/* for PM timer frequency */
@@ -233,6 +234,11 @@ static void set_rtc_mmss(unsigned long nowtime)
  */
 
 	spin_lock(&rtc_lock);
+	if (efi_enabled) {
+		efi_set_rtc_mmss(nowtime);
+		spin_unlock(&rtc_lock);
+		return;
+	}
 
 /*
  * Tell the clock it's being set and stop it.
@@ -532,10 +538,15 @@ unsigned long long sched_clock(void)
 static unsigned long get_cmos_time(void)
 {
 	unsigned int year, mon, day, hour, min, sec;
-	unsigned long flags;
+	unsigned long flags, retval;
 	unsigned extyear = 0;
 
 	spin_lock_irqsave(&rtc_lock, flags);
+ 	if (efi_enabled) {
+ 		retval = efi_get_time();
+ 		spin_unlock_irqrestore(&rtc_lock, flags);
+ 		return retval;
+ 	}
 
 	do {
 		sec = CMOS_READ(RTC_SECONDS);

@@ -56,5 +56,7 @@ void cpu_buffer_reset(struct oprofile_cpu_buffer * cpu_buf);
 #define CPU_MODE_XEN            2
 #define CPU_TRACE_BEGIN         3
 #define CPU_DOMAIN_SWITCH       4
+#define IBS_FETCH_BEGIN		5
+#define IBS_OP_BEGIN		6
 
 #endif /* OPROFILE_CPU_BUFFER_H */

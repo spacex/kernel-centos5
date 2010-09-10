@@ -38,8 +38,9 @@
 /* Device IDs */
 #define IXGBE_DEV_ID_82598AF_DUAL_PORT   0x10C6
 #define IXGBE_DEV_ID_82598AF_SINGLE_PORT 0x10C7
-#define IXGBE_DEV_ID_82598AT_DUAL_PORT   0x10C8
+#define IXGBE_DEV_ID_82598AT             0x10C8
 #define IXGBE_DEV_ID_82598EB_CX4         0x10DD
+#define IXGBE_DEV_ID_82598_CX4_DUAL_PORT 0x10EC
 
 /* General Registers */
 #define IXGBE_CTRL      0x00000
@@ -465,14 +466,17 @@
 
 /* PHY IDs*/
 #define TN1010_PHY_ID    0x00A19410
+#define TNX_FW_REV       0xB
 #define QT2022_PHY_ID    0x0043A400
 
 /* General purpose Interrupt Enable */
-#define IXGBE_GPIE_MSIX_MODE      0x00000010 /* MSI-X mode */
-#define IXGBE_GPIE_OCD            0x00000020 /* Other Clear Disable */
-#define IXGBE_GPIE_EIMEN          0x00000040 /* Immediate Interrupt Enable */
-#define IXGBE_GPIE_EIAME          0x40000000
-#define IXGBE_GPIE_PBA_SUPPORT    0x80000000
+#define IXGBE_SDP0_GPIEN         0x00000001 /* SDP0 */
+#define IXGBE_SDP1_GPIEN         0x00000002 /* SDP1 */
+#define IXGBE_GPIE_MSIX_MODE     0x00000010 /* MSI-X mode */
+#define IXGBE_GPIE_OCD           0x00000020 /* Other Clear Disable */
+#define IXGBE_GPIE_EIMEN         0x00000040 /* Immediate Interrupt Enable */
+#define IXGBE_GPIE_EIAME         0x40000000
+#define IXGBE_GPIE_PBA_SUPPORT   0x80000000
 
 /* Transmit Flow Control status */
 #define IXGBE_TFCS_TXOFF         0x00000001
@@ -546,18 +550,23 @@
 /* Extended Interrupt Cause Read */
 #define IXGBE_EICR_RTX_QUEUE    0x0000FFFF /* RTx Queue Interrupt */
 #define IXGBE_EICR_LSC          0x00100000 /* Link Status Change */
-#define IXGBE_EICR_MNG          0x00400000 /* Managability Event Interrupt */
+#define IXGBE_EICR_MNG          0x00400000 /* Manageability Event Interrupt */
+#define IXGBE_EICR_GPI_SDP0     0x01000000 /* Gen Purpose Interrupt on SDP0 */
+#define IXGBE_EICR_GPI_SDP1     0x02000000 /* Gen Purpose Interrupt on SDP1 */
 #define IXGBE_EICR_PBUR         0x10000000 /* Packet Buffer Handler Error */
 #define IXGBE_EICR_DHER         0x20000000 /* Descriptor Handler Error */
 #define IXGBE_EICR_TCP_TIMER    0x40000000 /* TCP Timer */
 #define IXGBE_EICR_OTHER        0x80000000 /* Interrupt Cause Active */
+
 
 /* Extended Interrupt Cause Set */
 #define IXGBE_EICS_RTX_QUEUE    IXGBE_EICR_RTX_QUEUE /* RTx Queue Interrupt */
 #define IXGBE_EICS_LSC          IXGBE_EICR_LSC /* Link Status Change */
 #define IXGBE_EICR_GPI_SDP0     0x01000000 /* Gen Purpose Interrupt on SDP0 */
 #define IXGBE_EICS_MNG          IXGBE_EICR_MNG /* MNG Event Interrupt */
-#define IXGBE_EICS_PBUR         IXGBE_EICR_PBUR /* Pkt Buf Handler Error */
+#define IXGBE_EIMS_GPI_SDP0     IXGBE_EICR_GPI_SDP0  /* SDP0 Gen Purpose Int */
+#define IXGBE_EIMS_GPI_SDP1     IXGBE_EICR_GPI_SDP1  /* SDP1 Gen Purpose Int */
+#define IXGBE_EIMS_PBUR         IXGBE_EICR_PBUR      /* Pkt Buf Handler Err */
 #define IXGBE_EICS_DHER         IXGBE_EICR_DHER /* Desc Handler Error */
 #define IXGBE_EICS_TCP_TIMER    IXGBE_EICR_TCP_TIMER /* TCP Timer */
 #define IXGBE_EICS_OTHER        IXGBE_EICR_OTHER     /* INT Cause Active */
@@ -1004,19 +1013,19 @@
 struct ixgbe_legacy_tx_desc {
 	u64 buffer_addr;       /* Address of the descriptor's data buffer */
 	union {
-		u32 data;
+		__le32 data;
 		struct {
-			u16 length;    /* Data buffer length */
+			__le16 length;    /* Data buffer length */
 			u8 cso; /* Checksum offset */
 			u8 cmd; /* Descriptor control */
 		} flags;
 	} lower;
 	union {
-		u32 data;
+		__le32 data;
 		struct {
 			u8 status;     /* Descriptor status */
 			u8 css; /* Checksum start */
-			u16 vlan;
+			__le16 vlan;
 		} fields;
 	} upper;
 };
@@ -1024,61 +1033,61 @@ struct ixgbe_legacy_tx_desc {
 /* Transmit Descriptor - Advanced */
 union ixgbe_adv_tx_desc {
 	struct {
-		u64 buffer_addr;       /* Address of descriptor's data buf */
-		u32 cmd_type_len;
-		u32 olinfo_status;
+		__le64 buffer_addr;       /* Address of descriptor's data buf */
+		__le32 cmd_type_len;
+		__le32 olinfo_status;
 	} read;
 	struct {
-		u64 rsvd;       /* Reserved */
-		u32 nxtseq_seed;
-		u32 status;
+		__le64 rsvd;       /* Reserved */
+		__le32 nxtseq_seed;
+		__le32 status;
 	} wb;
 };
 
 /* Receive Descriptor - Legacy */
 struct ixgbe_legacy_rx_desc {
-	u64 buffer_addr; /* Address of the descriptor's data buffer */
-	u16 length;      /* Length of data DMAed into data buffer */
+	__le64 buffer_addr; /* Address of the descriptor's data buffer */
+	__le16 length;      /* Length of data DMAed into data buffer */
 	u16 csum;        /* Packet checksum */
 	u8 status;       /* Descriptor status */
 	u8 errors;       /* Descriptor Errors */
-	u16 vlan;
+	__le16 vlan;
 };
 
 /* Receive Descriptor - Advanced */
 union ixgbe_adv_rx_desc {
 	struct {
-		u64 pkt_addr; /* Packet buffer address */
-		u64 hdr_addr; /* Header buffer address */
+		__le64 pkt_addr; /* Packet buffer address */
+		__le64 hdr_addr; /* Header buffer address */
 	} read;
 	struct {
 		struct {
 			struct {
-				u16 pkt_info; /* RSS type, Packet type */
-				u16 hdr_info; /* Split Header, header len */
+				__le16 pkt_info; /* RSS type, Packet type */
+				__le16 hdr_info; /* Split Header, header len */
 			} lo_dword;
 			union {
-				u32 rss; /* RSS Hash */
+				__le32 rss; /* RSS Hash */
 				struct {
-					u16 ip_id; /* IP id */
+					__le16 ip_id; /* IP id */
 					u16 csum; /* Packet Checksum */
 				} csum_ip;
 			} hi_dword;
 		} lower;
 		struct {
-			u32 status_error; /* ext status/error */
-			u16 length; /* Packet length */
-			u16 vlan; /* VLAN tag */
+			__le32 status_error; /* ext status/error */
+			__le16 length; /* Packet length */
+			__le16 vlan; /* VLAN tag */
 		} upper;
 	} wb;  /* writeback */
 };
 
 /* Context descriptors */
 struct ixgbe_adv_tx_context_desc {
-	u32 vlan_macip_lens;
-	u32 seqnum_seed;
-	u32 type_tucmd_mlhl;
-	u32 mss_l4len_idx;
+	__le32 vlan_macip_lens;
+	__le32 seqnum_seed;
+	__le32 type_tucmd_mlhl;
+	__le32 mss_l4len_idx;
 };
 
 /* Adv Transmit Descriptor Config Masks */
@@ -1125,7 +1134,8 @@ struct ixgbe_adv_tx_context_desc {
 #define IXGBE_LINK_SPEED_100_FULL  0x0008
 #define IXGBE_LINK_SPEED_1GB_FULL  0x0020
 #define IXGBE_LINK_SPEED_10GB_FULL 0x0080
-
+#define IXGBE_LINK_SPEED_82598_AUTONEG (IXGBE_LINK_SPEED_1GB_FULL | \
+					IXGBE_LINK_SPEED_10GB_FULL)
 
 enum ixgbe_eeprom_type {
 	ixgbe_eeprom_uninitialized = 0,
@@ -1247,6 +1257,7 @@ struct ixgbe_mac_operations {
 	enum ixgbe_media_type (*get_media_type)(struct ixgbe_hw *);
 	s32 (*setup_link)(struct ixgbe_hw *);
 	s32 (*check_link)(struct ixgbe_hw *, u32 *, bool *);
+	s32 (*get_firmware_version)(struct ixgbe_hw *, u16 *);
 	s32 (*setup_link_speed)(struct ixgbe_hw *, u32, bool, bool);
 	s32 (*get_link_settings)(struct ixgbe_hw *, u32 *, bool *);
 };
@@ -1269,6 +1280,7 @@ struct ixgbe_mac_info {
 	u32				link_attach_type;
 	u32				link_mode_select;
 	bool				link_settings_loaded;
+	bool				autoneg;
 };
 
 struct ixgbe_eeprom_info {

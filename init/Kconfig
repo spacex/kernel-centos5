@@ -373,6 +373,10 @@ config FUTEX
 	  support for "fast userspace mutexes".  The resulting kernel may not
 	  run glibc-based applications correctly.
 
+config ANON_INODES
+	bool
+	default y
+
 config EPOLL
 	bool "Enable eventpoll support" if EMBEDDED
 	default y
@@ -408,6 +412,27 @@ config VM_EVENT_COUNTERS
 	  shown. They have no function for the kernel itself. This
 	  option allows the disabling of the VM event counters.
 	  /proc/vmstat will only show page counts.
+
+config TRACEPOINTS
+	bool "Activate tracepoints"
+	default y
+	help
+	  Place an empty function call at each tracepoint site. Can be
+	  dynamically changed for a probe function.
+
+config MARKERS
+	bool "Activate markers"
+	help
+	  Place an empty function call at each marker site. Can be
+	  dynamically changed for a probe function.
+
+config TRACEPROBES
+	tristate "Compile generic tracing probes"
+	depends on MARKERS && TRACEPOINTS
+	help
+	  Compile generic tracing probes, which connect to the tracepoints when
+	  loaded and format the information collected by the tracepoints with
+	  the Markers.
 
 endmenu		# General setup
 

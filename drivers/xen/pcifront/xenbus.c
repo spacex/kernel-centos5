@@ -17,7 +17,7 @@ static struct pcifront_device *alloc_pdev(struct xenbus_device *xdev)
 {
 	struct pcifront_device *pdev;
 
-	pdev = kmalloc(sizeof(struct pcifront_device), GFP_KERNEL);
+	pdev = kzalloc(sizeof(struct pcifront_device), GFP_KERNEL);
 	if (pdev == NULL)
 		goto out;
 

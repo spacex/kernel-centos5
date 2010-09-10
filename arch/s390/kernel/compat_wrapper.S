@@ -1658,3 +1658,13 @@ compat_sys_vmsplice_wrapper:
 	llgfr	%r4,%r4			# unsigned int
 	llgfr	%r5,%r5			# unsigned int
 	jg	compat_sys_vmsplice
+
+	.globl	sys_fallocate_wrapper
+sys_fallocate_wrapper:
+	lgfr	%r2,%r2			# int
+	lgfr	%r3,%r3			# int
+	sllg	%r4,%r4,32		# get high word of 64bit loff_t
+	lr	%r4,%r5			# get low word of 64bit loff_t
+	sllg	%r5,%r6,32		# get high word of 64bit loff_t
+	l	%r5,164(%r15)		# get low word of 64bit loff_t
+	jg	sys_fallocate

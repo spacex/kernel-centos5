@@ -473,6 +473,8 @@ void sctp_retransmit(struct sctp_outq *q, struct sctp_transport *transport,
 		 */
 		if (transport == transport->asoc->peer.retran_path)
 			sctp_assoc_update_retran_path(transport->asoc);
+		transport->asoc->rtx_data_chunks +=
+			transport->asoc->unack_data;
 		break;
 	case SCTP_RTXR_FAST_RTX:
 		sctp_transport_lower_cwnd(transport, SCTP_LOWER_CWND_FAST_RTX);

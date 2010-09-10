@@ -133,8 +133,6 @@ zfcp_address_to_sg(void *address, struct scatterlist *list)
 #define ZFCP_QTCB_VERSION	FSF_QTCB_CURRENT_VERSION
 /* ATTENTION: value must not be used by hardware */
 #define FSF_QTCB_UNSOLICITED_STATUS		0x6305
-#define ZFCP_STATUS_READ_FAILED_THRESHOLD	3
-#define ZFCP_STATUS_READS_RECOM		        FSF_STATUS_READS_RECOM
 
 /* Do 1st retry in 1 second, then double the timeout for each following retry */
 #define ZFCP_EXCHANGE_CONFIG_DATA_FIRST_SLEEP	100
@@ -272,10 +270,58 @@ struct zfcp_dbf_dump {
 	u8 data[];		/* dump data */
 } __attribute__ ((packed));
 
-/* FIXME: to be inflated when reworking the erp dbf */
-struct zfcp_erp_dbf_record {
-	u8 dummy[16];
+struct zfcp_rec_dbf_record_thread {
+	u32 sema;
+	u32 total;
+	u32 ready;
+	u32 running;
 } __attribute__ ((packed));
+
+struct zfcp_rec_dbf_record_target {
+	u64 ref;
+	u32 status;
+	u32 d_id;
+	u64 wwpn;
+	u64 fcp_lun;
+	u32 erp_count;
+} __attribute__ ((packed));
+
+struct zfcp_rec_dbf_record_trigger {
+	u8 want;
+	u8 need;
+	u32 as;
+	u32 ps;
+	u32 us;
+	u64 ref;
+	u64 action;
+	u64 wwpn;
+	u64 fcp_lun;
+} __attribute__ ((packed));
+
+struct zfcp_rec_dbf_record_action {
+	u32 status;
+	u32 step;
+	u64 action;
+	u64 fsf_req;
+} __attribute__ ((packed));
+
+struct zfcp_rec_dbf_record {
+	u8 id;
+	u8 id2;
+	union {
+		struct zfcp_rec_dbf_record_action action;
+		struct zfcp_rec_dbf_record_thread thread;
+		struct zfcp_rec_dbf_record_target target;
+		struct zfcp_rec_dbf_record_trigger trigger;
+	} u;
+} __attribute__ ((packed));
+
+enum {
+	ZFCP_REC_DBF_ID_ACTION,
+	ZFCP_REC_DBF_ID_THREAD,
+	ZFCP_REC_DBF_ID_TARGET,
+	ZFCP_REC_DBF_ID_TRIGGER,
+};
 
 struct zfcp_hba_dbf_record_response {
 	u32 fsf_command;
@@ -899,7 +945,8 @@ struct zfcp_adapter {
 	rwlock_t		abort_lock;        /* Protects against SCSI
 						      stack abort/command
 						      completion races */
-	u16			status_read_failed; /* # failed status reads */
+	atomic_t		stat_miss;	   /* # missing status reads*/
+	struct work_struct	stat_work;
 	atomic_t		status;	           /* status of this adapter */
 	struct list_head	erp_ready_head;	   /* error recovery for this
 						      adapter/devices */
@@ -915,15 +962,15 @@ struct zfcp_adapter {
 	u32			erp_low_mem_count; /* nr of erp actions waiting
 						      for memory */
 	struct zfcp_port	*nameserver_port;  /* adapter's nameserver */
-	debug_info_t		*erp_dbf;
+	debug_info_t		*rec_dbf;
 	debug_info_t		*hba_dbf;
 	debug_info_t		*san_dbf;          /* debug feature areas */
 	debug_info_t		*scsi_dbf;
-	spinlock_t		erp_dbf_lock;
+	spinlock_t		rec_dbf_lock;
 	spinlock_t		hba_dbf_lock;
 	spinlock_t		san_dbf_lock;
 	spinlock_t		scsi_dbf_lock;
-	struct zfcp_erp_dbf_record	erp_dbf_buf;
+	struct zfcp_rec_dbf_record	rec_dbf_buf;
 	struct zfcp_hba_dbf_record	hba_dbf_buf;
 	struct zfcp_san_dbf_record	san_dbf_buf;
 	struct zfcp_scsi_dbf_record	scsi_dbf_buf;
@@ -1052,7 +1099,7 @@ struct zfcp_sg_list {
 #define ZFCP_POOL_FSF_REQ_ERP_NR	1
 #define ZFCP_POOL_FSF_REQ_SCSI_NR	1
 #define ZFCP_POOL_FSF_REQ_ABORT_NR	1
-#define ZFCP_POOL_STATUS_READ_NR	ZFCP_STATUS_READS_RECOM
+#define ZFCP_POOL_STATUS_READ_NR	FSF_STATUS_READS_RECOM
 #define ZFCP_POOL_DATA_GID_PN_NR	1
 
 /* struct used by memory pools for fsf_requests */
@@ -1084,6 +1131,20 @@ extern void _zfcp_hex_dump(char *, int);
 #define zfcp_get_busid_by_adapter(adapter) (adapter->ccw_device->dev.bus_id)
 #define zfcp_get_busid_by_port(port) (zfcp_get_busid_by_adapter(port->adapter))
 #define zfcp_get_busid_by_unit(unit) (zfcp_get_busid_by_port(unit->port))
+
+static inline struct zfcp_fsf_req *
+zfcp_reqlist_find_safe(struct zfcp_adapter *adapter, struct zfcp_fsf_req *req)
+{
+	struct zfcp_fsf_req *request;
+	unsigned int idx;
+
+	for (idx = 0; idx < REQUEST_LIST_SIZE; idx++) {
+		list_for_each_entry(request, &adapter->req_list[idx], list)
+			if (request == req)
+				return request;
+	}
+	return NULL;
+}
 
 /*
  *  functions needed for reference/usage counting

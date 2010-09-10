@@ -40,6 +40,7 @@
 #include <linux/tcp.h>
 #include <linux/init.h>
 #include <linux/if_arp.h>
+#include <linux/if_vlan.h>
 #include <linux/notifier.h>
 #include <linux/net.h>
 #include <linux/types.h>
@@ -394,7 +395,7 @@ int schedule_nes_timer(struct nes_cm_node *cm_node, struct sk_buff *skb,
 	}
 
 	if (type == NES_TIMER_TYPE_SEND) {
-		new_send->seq_num = htonl(tcp_hdr(skb)->seq);
+		new_send->seq_num = ntohl(tcp_hdr(skb)->seq);
 		atomic_inc(&new_send->skb->users);
 
 		ret = nes_nic_cm_xmit(new_send->skb, cm_node->netdev);
@@ -419,7 +420,7 @@ int schedule_nes_timer(struct nes_cm_node *cm_node, struct sk_buff *skb,
 		spin_unlock_irqrestore(&cm_node->retrans_list_lock, flags);
 	}
 	if (type == NES_TIMER_TYPE_RECV) {
-		new_send->seq_num = htonl(tcp_hdr(skb)->seq);
+		new_send->seq_num = ntohl(tcp_hdr(skb)->seq);
 		new_send->timetosend = jiffies;
 		spin_lock_irqsave(&cm_node->recv_list_lock, flags);
 		list_add_tail(&new_send->list, &cm_node->recv_list);
@@ -1072,7 +1073,7 @@ static struct nes_cm_node *make_cm_node(struct nes_cm_core *cm_core,
 	ts = current_kernel_time();
 	cm_node->tcp_cntxt.loc_seq_num = htonl(ts.tv_nsec);
 	cm_node->tcp_cntxt.mss = nesvnic->max_frame_size - sizeof(struct iphdr) -
-			sizeof(struct tcphdr) - ETH_HLEN;
+			sizeof(struct tcphdr) - ETH_HLEN - VLAN_HLEN;
 	cm_node->tcp_cntxt.rcv_nxt = 0;
 	/* get a unique session ID , add thread_id to an upcounter to handle race */
 	atomic_inc(&cm_core->node_cnt);
@@ -1833,8 +1834,10 @@ int mini_cm_recv_pkt(struct nes_cm_core *cm_core, struct nes_vnic *nesvnic,
 	nfo.rem_addr = ntohl(iph->saddr);
 	nfo.rem_port = ntohs(tcph->source);
 
-	nes_debug(NES_DBG_CM, "Received packet: dest=0x%08X:0x%04X src=0x%08X:0x%04X\n",
-			iph->daddr, tcph->dest, iph->saddr, tcph->source);
+	nes_debug(NES_DBG_CM, "Received packet: dest=" NIPQUAD_FMT
+		  ":0x%04X src=" NIPQUAD_FMT ":0x%04X\n",
+		  NIPQUAD(iph->daddr), tcph->dest,
+		  NIPQUAD(iph->saddr), tcph->source);
 
 	/* note: this call is going to increment cm_node ref count */
 	cm_node = find_node(cm_core,

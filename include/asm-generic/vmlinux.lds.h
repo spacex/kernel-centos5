@@ -15,6 +15,8 @@
 		VMLINUX_SYMBOL(__start_rodata) = .;			\
 		*(.rodata) *(.rodata.*)					\
 		*(__vermagic)		/* Kernel version magic */	\
+		*(__tracepoints_strings)/* Tracepoints: strings */      \
+		*(__markers_strings)    /* Markers: strings */          \
 	}								\
 									\
 	.rodata1          : AT(ADDR(.rodata1) - LOAD_OFFSET) {		\
@@ -156,6 +158,18 @@
 		VMLINUX_SYMBOL(__kprobes_text_start) = .;		\
 		*(.kprobes.text)					\
 		VMLINUX_SYMBOL(__kprobes_text_end) = .;
+
+#define MARKERS_DATA							\
+		ALIGN_FUNCTION();                                       \
+		VMLINUX_SYMBOL(__start___markers) = .;                  \
+		*(__markers)                                            \
+		VMLINUX_SYMBOL(__stop___markers) = .;
+
+#define TRACEPOINTS_DATA						\
+		ALIGN_FUNCTION();					\
+		VMLINUX_SYMBOL(__start___tracepoints) = .;		\
+		*(__tracepoints)					\
+		VMLINUX_SYMBOL(__stop___tracepoints) = .;
 
 		/* DWARF debug sections.
 		Symbols in the DWARF debugging sections are relative to

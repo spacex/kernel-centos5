@@ -842,7 +842,10 @@ void __cpuinit mp_register_lapic (
 {
 	struct mpc_config_processor processor;
 	int			boot_cpu = 0;
-	
+
+	if (!enabled)
+		return;
+
 	if (MAX_APICS - id <= 0) {
 		printk(KERN_WARNING "Processor #%d invalid (max %d)\n",
 			id, MAX_APICS);

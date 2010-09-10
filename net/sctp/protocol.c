@@ -89,6 +89,8 @@ extern int sctp_eps_proc_init(void);
 extern int sctp_eps_proc_exit(void);
 extern int sctp_assocs_proc_init(void);
 extern int sctp_assocs_proc_exit(void);
+extern int sctp_remaddr_proc_init(void);
+extern int sctp_remaddr_proc_exit(void);
 
 extern int sysctl_sctp_mem[3];
 extern int sysctl_sctp_rmem[3];
@@ -119,7 +121,8 @@ static __init int sctp_proc_init(void)
 		goto out_nomem;	
 	if (sctp_assocs_proc_init())
 		goto out_nomem;	
-
+	if (sctp_remaddr_proc_init())
+		goto out_nomem;
 	return 0;
 
 out_nomem:
@@ -135,6 +138,7 @@ static void sctp_proc_exit(void)
 	sctp_snmp_proc_exit();
 	sctp_eps_proc_exit();
 	sctp_assocs_proc_exit();
+	sctp_remaddr_proc_exit();
 
 	if (proc_net_sctp) {
 		proc_net_sctp = NULL;

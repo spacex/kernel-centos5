@@ -313,6 +313,7 @@ struct bus_type scsi_bus_type = {
 	.suspend	= scsi_bus_suspend,
 	.resume		= scsi_bus_resume,
 };
+EXPORT_SYMBOL_GPL(scsi_bus_type);
 
 int scsi_sysfs_register(void)
 {

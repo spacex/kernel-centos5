@@ -435,6 +435,50 @@ is_mca_global(peidx_table_t *peidx, pal_bus_check_info_t *pbci,
 }
 
 /**
+ * get_target_identifier - Get the valid Cache or Bus check target identifier.
+ * @peidx:	pointer of index of processor error section
+ *
+ * Return value:
+ *	target address on Success / 0 on Failue
+ */
+static u64
+get_target_identifier(peidx_table_t *peidx)
+{
+	u64 target_address = 0;
+	sal_log_mod_error_info_t *smei;
+	pal_cache_check_info_t *pcci;
+	int i, level = 9;
+
+	/*
+	 * Look through the cache checks for a valid target identifier
+	 * If more than one valid target identifier, return the one
+	 * with the lowest cache level.
+	 */
+	for (i = 0; i < peidx_cache_check_num(peidx); i++) {
+		smei = (sal_log_mod_error_info_t *)peidx_cache_check(peidx, i);
+		if (smei->valid.target_identifier && smei->target_identifier) {
+			pcci = (pal_cache_check_info_t *)&(smei->check_info);
+			if (!target_address || (pcci->level < level)) {
+				target_address = smei->target_identifier;
+				level = pcci->level;
+				continue;
+			}
+		}
+	}
+	if (target_address)
+		return target_address;
+
+	/*
+	 * Look at the bus check for a valid target identifier
+	 */
+	smei = peidx_bus_check(peidx, 0);
+	if (smei && smei->valid.target_identifier)
+		return smei->target_identifier;
+
+	return 0;
+}
+
+/**
  * recover_from_read_error - Try to recover the errors which type are "read"s.
  * @slidx:	pointer of index of SAL error record
  * @peidx:	pointer of index of processor error section
@@ -450,13 +494,14 @@ recover_from_read_error(slidx_table_t *slidx,
 			peidx_table_t *peidx, pal_bus_check_info_t *pbci,
 			struct ia64_sal_os_state *sos)
 {
-	sal_log_mod_error_info_t *smei;
+	u64 target_identifier;
 	pal_min_state_area_t *pmsa;
 	struct ia64_psr *psr1, *psr2;
 	ia64_fptr_t *mca_hdlr_bh = (ia64_fptr_t*)mca_handler_bhhook;
 
 	/* Is target address valid? */
-	if (!pbci->tv)
+	target_identifier = get_target_identifier(peidx);
+	if (!target_identifier)
 		return fatal_mca("target address not valid");
 
 	/*
@@ -487,32 +532,28 @@ recover_from_read_error(slidx_table_t *slidx,
 	pmsa = sos->pal_min_state;
 	if (psr1->cpl != 0 ||
 	   ((psr2->cpl != 0) && mca_recover_range(pmsa->pmsa_iip))) {
-		smei = peidx_bus_check(peidx, 0);
-		if (smei->valid.target_identifier) {
-			/*
-			 *  setup for resume to bottom half of MCA,
-			 * "mca_handler_bhhook"
-			 */
-			/* pass to bhhook as argument (gr8, ...) */
-			pmsa->pmsa_gr[8-1] = smei->target_identifier;
-			pmsa->pmsa_gr[9-1] = pmsa->pmsa_iip;
-			pmsa->pmsa_gr[10-1] = pmsa->pmsa_ipsr;
-			/* set interrupted return address (but no use) */
-			pmsa->pmsa_br0 = pmsa->pmsa_iip;
-			/* change resume address to bottom half */
-			pmsa->pmsa_iip = mca_hdlr_bh->fp;
-			pmsa->pmsa_gr[1-1] = mca_hdlr_bh->gp;
-			/* set cpl with kernel mode */
-			psr2 = (struct ia64_psr *)&pmsa->pmsa_ipsr;
-			psr2->cpl = 0;
-			psr2->ri  = 0;
-			psr2->bn  = 1;
-			psr2->i  = 0;
+		/*
+		 *  setup for resume to bottom half of MCA,
+		 * "mca_handler_bhhook"
+		 */
+		/* pass to bhhook as argument (gr8, ...) */
+		pmsa->pmsa_gr[8-1] = target_identifier;
+		pmsa->pmsa_gr[9-1] = pmsa->pmsa_iip;
+		pmsa->pmsa_gr[10-1] = pmsa->pmsa_ipsr;
+		/* set interrupted return address (but no use) */
+		pmsa->pmsa_br0 = pmsa->pmsa_iip;
+		/* change resume address to bottom half */
+		pmsa->pmsa_iip = mca_hdlr_bh->fp;
+		pmsa->pmsa_gr[1-1] = mca_hdlr_bh->gp;
+		/* set cpl with kernel mode */
+		psr2 = (struct ia64_psr *)&pmsa->pmsa_ipsr;
+		psr2->cpl = 0;
+		psr2->ri  = 0;
+		psr2->bn  = 1;
+		psr2->i  = 0;
 
-			return mca_recovered("user memory corruption. "
+		return mca_recovered("user memory corruption. "
 				"kill affected process - recovered.");
-		}
-
 	}
 
 	return fatal_mca("kernel context not recovered, iip 0x%lx\n",
@@ -561,9 +602,38 @@ recover_from_platform_error(slidx_table_t *slidx, peidx_table_t *peidx,
 		default:
 			break;
 		}
+	} else if (psp->cc && !psp->bc) {	/* Cache error */
+		status = recover_from_read_error(slidx, peidx, pbci, sos);
 	}
 
 	return status;
+}
+
+/*
+ * recover_from_tlb_check
+ * @peidx:     pointer of index of processor error section
+ *
+ * Return value:
+ *     1 on Success / 0 on Failure
+ */
+static int
+recover_from_tlb_check(peidx_table_t *peidx)
+{
+	sal_log_mod_error_info_t *smei;
+	pal_tlb_check_info_t *ptci;
+
+	smei = (sal_log_mod_error_info_t *)peidx_tlb_check(peidx, 0);
+	ptci = (pal_tlb_check_info_t *)&(smei->check_info);
+
+	/*
+	 * Look for signature of a duplicate TLB DTC entry, which is
+	 * a SW bug and always fatal.
+	 */
+	if (ptci->op == PAL_TLB_CHECK_OP_PURGE
+	    && !(ptci->itr || ptci->dtc || ptci->itc))
+		return fatal_mca("Duplicate TLB entry");
+
+	return mca_recovered("TLB check recovered");
 }
 
 /**
@@ -576,13 +646,6 @@ recover_from_platform_error(slidx_table_t *slidx, peidx_table_t *peidx,
  *
  * Return value:
  *	1 on Success / 0 on Failure
- */
-/*
- *  Later we try to recover when below all conditions are satisfied.
- *   1. Only one processor error section is exist.
- *   2. BUS_CHECK is exist and the others are not exist.(Except TLB_CHECK)
- *   3. The entry of BUS_CHECK_INFO is 1.
- *   4. "External bus error" flag is set and the others are not set.
  */
 
 static int
@@ -611,38 +674,39 @@ recover_from_processor_error(int platform, slidx_table_t *slidx,
 		return fatal_mca("error not contained");
 
 	/*
-	 * The cache check and bus check bits have four possible states
-	 *   cc bc
-	 *    0  0	Weird record, not recovered
-	 *    1  0	Cache error, not recovered
-	 *    0  1	I/O error, attempt recovery
-	 *    1  1	Memory error, attempt recovery
+	 * Look for recoverable TLB check
 	 */
-	if (psp->bc == 0 || pbci == NULL)
-		return fatal_mca("No bus check");
+	if (psp->tc && !(psp->cc || psp->bc || psp->rc || psp->uc))
+		return recover_from_tlb_check(peidx);
 
 	/*
-	 * Sorry, we cannot handle so many.
+	 * The cache check and bus check bits have four possible states
+	 *   cc bc
+	 *    1  1	Memory error, attempt recovery
+	 *    1  0	Cache error, attempt recovery
+	 *    0  1	I/O error, attempt recovery
+	 *    0  0	Other error type, not recovered
+	 */
+	if (psp->cc == 0 && (psp->bc == 0 || pbci == NULL))
+		return fatal_mca("No cache or bus check");
+
+	/*
+	 * Cannot handle more than one bus check.
 	 */
 	if (peidx_bus_check_num(peidx) > 1)
 		return fatal_mca("Too many bus checks");
-	/*
-	 * Well, here is only one bus error.
-	 */
+
 	if (pbci->ib)
 		return fatal_mca("Internal Bus error");
-	if (pbci->cc)
-		return fatal_mca("Cache-cache error");
 	if (pbci->eb && pbci->bsi > 0)
 		return fatal_mca("External bus check fatal status");
 
 	/*
-	 * This is a local MCA and estimated as recoverble external bus error.
-	 * (e.g. a load from poisoned memory)
-	 * This means "there are some platform errors".
+	 * This is a local MCA and estimated as a recoverable error.
 	 */
 	if (platform)
 		return recover_from_platform_error(slidx, peidx, pbci, sos);
+
 	/*
 	 * On account of strange SAL error record, we cannot recover.
 	 */

@@ -130,6 +130,7 @@ struct mem_size_stats
 	unsigned long shared_dirty;
 	unsigned long private_clean;
 	unsigned long private_dirty;
+	unsigned long swap;
 };
 
 __attribute__((weak)) const char *arch_vma_name(struct vm_area_struct *vma)
@@ -214,13 +215,15 @@ static int show_map_internal(struct seq_file *m, void *v, struct mem_size_stats 
 			   "Shared_Clean:  %8lu kB\n"
 			   "Shared_Dirty:  %8lu kB\n"
 			   "Private_Clean: %8lu kB\n"
-			   "Private_Dirty: %8lu kB\n",
+			   "Private_Dirty: %8lu kB\n"
+			   "Swap: %8lu kB\n",
 			   (vma->vm_end - vma->vm_start) >> 10,
 			   mss->resident >> 10,
 			   mss->shared_clean  >> 10,
 			   mss->shared_dirty  >> 10,
 			   mss->private_clean >> 10,
-			   mss->private_dirty >> 10);
+			   mss->private_dirty >> 10,
+			   mss->swap >> 10);
 
 	if (m->count < m->size)  /* vma is copied successfully */
 		m->version = (vma != get_gate_vma(task))? vma->vm_start: 0;
@@ -243,6 +246,12 @@ static void smaps_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 	pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
 	do {
 		ptent = *pte;
+
+		if (!pte_none(ptent) && !pte_present(ptent) && !pte_file(ptent)) {
+			mss->swap += PAGE_SIZE;
+			continue;
+		}
+
 		if (!pte_present(ptent))
 			continue;
 

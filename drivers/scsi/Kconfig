@@ -8,6 +8,7 @@ config RAID_ATTRS
 
 config SCSI
 	tristate "SCSI device support"
+	select SCSI_DMA if HAS_DMA
 	---help---
 	  If you want to use a SCSI hard disk, SCSI tape drive, SCSI CD-ROM or
 	  any other SCSI device under Linux, say Y and make sure that you know
@@ -26,6 +27,10 @@ config SCSI
 
 	  However, do not compile this as a module if your root file system
 	  (the one containing the directory /) is located on a SCSI device.
+
+config SCSI_DMA
+        bool
+        default n
 
 config SCSI_NETLINK
 	bool
@@ -254,6 +259,19 @@ endmenu
 
 menu "SCSI low-level drivers"
 	depends on SCSI!=n
+
+config LIBFC
+        tristate "LibFC module"
+	depends on SCSI && SCSI_FC_ATTRS     
+   ---help---
+          Fibre Channel library module
+
+config FCOE
+	tristate "FCoE module"
+	depends on SCSI && SCSI_FC_ATTRS
+	select LIBFC
+	---help---
+	  Fibre Channel over Ethernet module
 
 config ISCSI_TCP
 	tristate "iSCSI Initiator over TCP/IP"
@@ -525,6 +543,17 @@ config SCSI_OMIT_FLASHPOINT
 	  BusLogic SCSI driver. The FlashPoint SCCB Manager code is
 	  substantial, so users of MultiMaster Host Adapters may wish to omit
 	  it.
+
+config FCOE_FNIC
+	tristate "Cisco FNIC Driver"
+	depends PCI && X86_64
+	select LIBFC
+	help
+	  This is support for the Cisco PCI-Express FCoE HBA.
+
+	  To compile this driver as a module, choose M here and read
+	  <file:Documentation/scsi/scsi.txt>.
+	  The module will be called fnic.
 
 config SCSI_DMX3191D
 	tristate "DMX3191D SCSI support"
@@ -1742,5 +1771,7 @@ config ZFCP
 endmenu
 
 source "drivers/scsi/pcmcia/Kconfig"
+
+source "drivers/scsi/device_handler/Kconfig"
 
 endmenu

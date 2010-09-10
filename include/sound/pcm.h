@@ -609,6 +609,9 @@ do { \
 #define snd_pcm_group_substream_entry(pos) \
 	list_entry(pos, struct snd_pcm_substream, link_list)
 
+#define snd_pcm_group_for_each_entry(s, substream) \
+	list_for_each_entry(s, &substream->group->substreams, link_list)
+
 static inline int snd_pcm_running(struct snd_pcm_substream *substream)
 {
 	return (substream->runtime->status->state == SNDRV_PCM_STATE_RUNNING ||

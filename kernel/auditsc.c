@@ -72,9 +72,6 @@
 extern struct list_head audit_filter_list[];
 extern int audit_ever_enabled;
 
-/* No syscall auditing will take place unless audit_enabled != 0. */
-extern int audit_enabled;
-
 /* AUDIT_NAMES is the number of slots we reserve in the audit_context
  * for saving names from getname(). */
 #define AUDIT_NAMES    20
@@ -160,7 +157,7 @@ struct audit_aux_data_execve {
 	struct audit_aux_data	d;
 	int argc;
 	int envc;
-	char mem[0];
+	struct mm_struct *mm;
 };
 
 struct audit_aux_data_socketcall {
@@ -288,6 +285,19 @@ static int audit_match_perm(struct audit_context *ctx, int mask)
 	default:
 		return 0;
 	}
+}
+
+static int audit_match_filetype(struct audit_context *ctx, int which)
+{
+	unsigned index = which & ~S_IFMT;
+	mode_t mode = which & S_IFMT;
+	if (index >= ctx->name_count)
+		return 0;
+	if (ctx->names[index].ino == -1)
+		return 0;
+	if ((ctx->names[index].mode ^ mode) & S_IFMT)
+		return 0;
+	return 1;
 }
 
 /*
@@ -592,6 +602,10 @@ static int audit_filter_rules(struct task_struct *tsk,
 			break;
 		case AUDIT_PERM:
 			result = audit_match_perm(ctx, f->val);
+			break;
+		case AUDIT_FILETYPE:
+			if (ctx)
+				result = audit_match_filetype(ctx, f->val);
 			break;
 		}
 
@@ -987,30 +1001,70 @@ static int audit_log_single_execve_arg(struct audit_context *context,
 					struct audit_buffer **ab,
 					int arg_num,
 					size_t *len_sent,
-					const char *p)
+					const char __user *p,
+					char *buf)
 {
 	char arg_num_len_buf[12];
+	const char __user *tmp_p = p;
 	/* how many digits are in arg_num? 3 is the length of a=\n */
 	size_t arg_num_len = snprintf(arg_num_len_buf, 12, "%d", arg_num) + 3;
 	size_t len, len_left, to_send;
 	size_t max_execve_audit_len = MAX_EXECVE_AUDIT_LEN;
 	unsigned int i, has_cntl = 0, too_long = 0;
+	int ret;
 
 	/* strnlen_user includes the null we don't want to send */
-	len_left = len = strlen(p);
+	len_left = len = strnlen_user(p, MAX_ARG_STRLEN) - 1;
 
-	has_cntl = audit_string_contains_control(p, len);
-	if (has_cntl)
+	/*
+	 * We just created this mm, if we can't find the strings
+	 * we just copied into it something is _very_ wrong. Similar
+	 * for strings that are too long, we should not have created
+	 * any.
+	 */
+	if (unlikely((len == -1) || len > MAX_ARG_STRLEN - 1)) {
+		WARN_ON(1);
+		send_sig(SIGKILL, current, 0);
+		return -1;
+	}
+
+	/* walk the whole argument looking for non-ascii chars */
+	do {
+		if (len_left > MAX_EXECVE_AUDIT_LEN)
+			to_send = MAX_EXECVE_AUDIT_LEN;
+		else
+			to_send = len_left;
+		ret = copy_from_user(buf, tmp_p, to_send);
 		/*
-		 * hex messages get logged as 2 bytes, so we can only
-		 * send half as much in each message
+		 * There is no reason for this copy to be short. We just
+		 * copied them here, and the mm hasn't been exposed to user-
+		 * space yet.
 		 */
-		max_execve_audit_len = MAX_EXECVE_AUDIT_LEN / 2;
+		if (ret) {
+			WARN_ON(1);
+			send_sig(SIGKILL, current, 0);
+			return -1;
+		}
+		buf[to_send] = '\0';
+		has_cntl = audit_string_contains_control(buf, to_send);
+		if (has_cntl) {
+			/*
+			 * hex messages get logged as 2 bytes, so we can only
+			 * send half as much in each message
+			 */
+			max_execve_audit_len = MAX_EXECVE_AUDIT_LEN / 2;
+			break;
+		}
+		len_left -= to_send;
+		tmp_p += to_send;
+	} while (len_left > 0);
+
+	len_left = len;
 
 	if (len > max_execve_audit_len)
 		too_long = 1;
 
-	/* walk the argument actually logging the message */
+	/* rewalk the argument actually logging the message */
 	for (i = 0; len_left > 0; i++) {
 		int room_left;
 
@@ -1041,15 +1095,31 @@ static int audit_log_single_execve_arg(struct audit_context *context,
 			audit_log_format(*ab, "a%d_len=%zu ", arg_num,
 					 has_cntl ? 2*len : len);
 
+		/*
+		 * normally arguments are small enough to fit and we already
+		 * filled buf above when we checked for control characters
+		 * so don't bother with another copy_from_user
+		 */
+		if (len >= max_execve_audit_len)
+			ret = copy_from_user(buf, p, to_send);
+		else
+			ret = 0;
+		if (ret) {
+			WARN_ON(1);
+			send_sig(SIGKILL, current, 0);
+			return -1;
+		}
+		buf[to_send] = '\0';
+
 		/* actually log it */
 		audit_log_format(*ab, "a%d", arg_num);
 		if (too_long)
 			audit_log_format(*ab, "[%d]", i);
 		audit_log_format(*ab, "=");
 		if (has_cntl)
-			audit_log_hex(*ab, p, to_send);
+			audit_log_hex(*ab, buf, to_send);
 		else
-			audit_log_n_string(*ab, to_send, p);
+			audit_log_format(*ab, "\"%s\"", buf);
 		audit_log_format(*ab, "\n");
 
 		p += to_send;
@@ -1060,7 +1130,8 @@ static int audit_log_single_execve_arg(struct audit_context *context,
 		else
 			*len_sent += to_send;
 	}
-	return len;
+	/* include the null we didn't log */
+	return len + 1;
 }
 
 static void audit_log_execve_info(struct audit_context *context,
@@ -1069,20 +1140,38 @@ static void audit_log_execve_info(struct audit_context *context,
 {
 	int i;
 	size_t len, len_sent = 0;
-	const char *p;
+	const char __user *p;
+	char *buf;
 
-	p = axi->mem;
+	if (axi->mm != current->mm)
+		return; /* execve failed, no additional info */
+
+	p = (const char __user *)axi->mm->arg_start;
 
 	audit_log_format(*ab, "argc=%d ", axi->argc);
 
+	/*
+	 * we need some kernel buffer to hold the userspace args.  Just
+	 * allocate one big one rather than allocating one of the right size
+	 * for every single argument inside audit_log_single_execve_arg()
+	 * should be <8k allocation so should be pretty safe.
+	 */
+	buf = kmalloc(MAX_EXECVE_AUDIT_LEN + 1, GFP_KERNEL);
+	if (!buf) {
+		audit_panic("out of memory for argv string\n");
+		return;
+	}
+
 	for (i = 0; i < axi->argc; i++) {
-		len = audit_log_single_execve_arg(context, ab, i, &len_sent, p);
+		len = audit_log_single_execve_arg(context, ab, i,
+						  &len_sent, p, buf);
 		if (len <= 0)
 			break;
-		/* skip the null */
-		p += len + 1;
+		p += len;
 	}
+	kfree(buf);
 }
+
 static void audit_log_exit(struct audit_context *context, struct task_struct *tsk)
 {
 	int i, call_panic = 0;
@@ -1330,6 +1419,11 @@ static void audit_log_exit(struct audit_context *context, struct task_struct *ts
 
 		audit_log_end(ab);
 	}
+
+	/* Send end of event record to help user space know we are finished */
+	ab = audit_log_start(context, GFP_KERNEL, AUDIT_EOE);
+	if (ab)
+		audit_log_end(ab);
 	if (call_panic)
 		audit_panic("error converting sid to string");
 }
@@ -1449,6 +1543,23 @@ void audit_syscall_entry(int arch, int major,
 	context->in_syscall = 1;
 	context->auditable  = !!(state == AUDIT_RECORD_CONTEXT);
 	context->ppid       = 0;
+}
+
+void audit_finish_fork(struct task_struct *child)
+{
+	struct audit_context *ctx = current->audit_context;
+	struct audit_context *p = child->audit_context;
+	if (!p || !ctx || !ctx->auditable)
+		return;
+	p->arch = ctx->arch;
+	p->major = ctx->major;
+	memcpy(p->argv, ctx->argv, sizeof(ctx->argv));
+	p->ctime = ctx->ctime;
+	p->dummy = ctx->dummy;
+	p->auditable = ctx->auditable;
+	p->in_syscall = ctx->in_syscall;
+	p->filterkey = kstrdup(ctx->filterkey, GFP_KERNEL);
+	p->ppid = current->pid;
 }
 
 /**
@@ -2172,28 +2283,17 @@ int audit_bprm(struct linux_binprm *bprm)
 {
 	struct audit_aux_data_execve *ax;
 	struct audit_context *context = current->audit_context;
-	unsigned long p, next;
-	void *to;
 
 	if (likely(!audit_enabled || !context || context->dummy))
 		return 0;
 
-	ax = kmalloc(sizeof(*ax) + PAGE_SIZE * MAX_ARG_PAGES - bprm->p,
-				GFP_KERNEL);
+	ax = kmalloc(sizeof(*ax), GFP_KERNEL);
 	if (!ax)
 		return -ENOMEM;
 
 	ax->argc = bprm->argc;
 	ax->envc = bprm->envc;
-	for (p = bprm->p, to = ax->mem; p < MAX_ARG_PAGES*PAGE_SIZE; p = next) {
-		struct page *page = bprm->page[p / PAGE_SIZE];
-		void *kaddr = kmap(page);
-		next = (p + PAGE_SIZE) & ~(PAGE_SIZE - 1);
-		memcpy(to, kaddr + (p & (PAGE_SIZE - 1)), next - p);
-		to += next - p;
-		kunmap(page);
-	}
-
+	ax->mm = bprm->mm;
 	ax->d.type = AUDIT_EXECVE;
 	ax->d.next = context->aux;
 	context->aux = (void *)ax;
@@ -2287,7 +2387,7 @@ int __audit_signal_info(int sig, struct task_struct *t)
 	extern u32 audit_sig_sid;
 
 	if (audit_pid && t->tgid == audit_pid) {
-		if (sig == SIGTERM || sig == SIGHUP || sig == SIGUSR1) {
+		if (sig == SIGTERM || sig == SIGHUP || sig == SIGUSR1 || sig == SIGUSR2) {
 			audit_sig_pid = tsk->pid;
 			if (ctx)
 				audit_sig_uid = ctx->loginuid;

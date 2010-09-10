@@ -65,7 +65,7 @@ static int __ide_end_request(ide_drive_t *drive, struct request *rq,
 	 * if failfast is set on a request, override number of sectors and
 	 * complete the whole request right now
 	 */
-	if (blk_noretry_request(rq) && end_io_error(uptodate))
+	if (blk_noretry_ff_request(rq) && end_io_error(uptodate))
 		nr_sectors = rq->hard_nr_sectors;
 
 	if (!blk_fs_request(rq) && end_io_error(uptodate) && !rq->errors)
@@ -250,7 +250,7 @@ int ide_end_dequeued_request(ide_drive_t *drive, struct request *rq,
 	 * if failfast is set on a request, override number of sectors and
 	 * complete the whole request right now
 	 */
-	if (blk_noretry_request(rq) && end_io_error(uptodate))
+	if (blk_noretry_ff_request(rq) && end_io_error(uptodate))
 		nr_sectors = rq->hard_nr_sectors;
 
 	if (!blk_fs_request(rq) && end_io_error(uptodate) && !rq->errors)
@@ -511,7 +511,7 @@ static ide_startstop_t ide_ata_error(ide_drive_t *drive, struct request *rq, u8 
 		/* force an abort */
 		hwif->OUTB(WIN_IDLEIMMEDIATE, IDE_COMMAND_REG);
 
-	if (rq->errors >= ERROR_MAX || blk_noretry_request(rq))
+	if (rq->errors >= ERROR_MAX || blk_noretry_ff_request(rq))
 		ide_kill_rq(drive, rq);
 	else {
 		if ((rq->errors & ERROR_RESET) == ERROR_RESET) {

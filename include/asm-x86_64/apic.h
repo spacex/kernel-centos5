@@ -76,6 +76,7 @@ extern void cache_APIC_registers (void);
 extern void sync_Arb_IDs (void);
 extern void init_bsp_APIC (void);
 extern void setup_local_APIC (void);
+extern void stop_apic_nmi_watchdog(void);
 extern void init_apic_mappings (void);
 extern void smp_local_timer_interrupt (struct pt_regs * regs);
 extern void setup_boot_APIC_clock (void);
@@ -102,8 +103,13 @@ extern int disable_timer_pin_1;
 void smp_send_timer_broadcast_ipi(void);
 void switch_APIC_timer_to_ipi(void *cpumask);
 void switch_ipi_to_APIC_timer(void *cpumask);
-
 #define ARCH_APICTIMER_STOPS_ON_C3	1
+static int inline is_vsmp_box(void)
+{
+	return 0;
+}
+#else
+extern int is_vsmp_box(void);
 #endif
 
 #endif /* CONFIG_X86_LOCAL_APIC */

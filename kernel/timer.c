@@ -613,6 +613,8 @@ unsigned long next_timer_interrupt(void)
 		struct timespec tsdelta;
 		tsdelta = ktime_to_timespec(hr_delta);
 		hr_expires = timespec_to_jiffies(&tsdelta);
+		if (hr_expires < 1)
+			hr_expires = 1;
 		if (hr_expires < 3)
 			return hr_expires + jiffies;
 	}

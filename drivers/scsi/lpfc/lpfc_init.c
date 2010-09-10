@@ -44,24 +44,22 @@
 #include "lpfc_vport.h"
 #include "lpfc_version.h"
 #include "lpfc_auth_access.h"
-#include "lpfc_ioctl.h"
 #include "lpfc_security.h"
 #include "lpfc_compat.h"
 
 #include <net/sock.h>
 #include <linux/netlink.h>
 
-extern struct notifier_block lpfc_fc_netlink_notifier;
-extern char security_work_q_name[KOBJ_NAME_LEN];
+/* vendor ID used in SCSI netlink calls */
+#define LPFC_NL_VENDOR_ID (SCSI_NL_VID_TYPE_PCI | PCI_VENDOR_ID_EMULEX)
+const char *security_work_q_name = "fc_sc_wq";
 extern struct workqueue_struct *security_work_q;
-extern struct sock *fc_nl_sock;
 extern struct list_head fc_security_user_list;
 extern int fc_service_state;
 void lpfc_fc_sc_security_online(struct work_struct *work);
 void lpfc_fc_sc_security_offline(struct work_struct *work);
-void lpfc_fc_nl_rcv(struct sock *sk, int len);
 int lpfc_fc_queue_security_work(struct lpfc_vport *, struct work_struct *);
-int lpfc_fc_nl_rcv_nl_event(struct notifier_block *, unsigned long , void *);
+#include "lpfc_ioctl.h"
 static int lpfc_parse_vpd(struct lpfc_hba *, uint8_t *, int);
 static void lpfc_get_hba_model_desc(struct lpfc_hba *, uint8_t *, uint8_t *);
 static int lpfc_post_rcv_buf(struct lpfc_hba *);
@@ -107,6 +105,26 @@ void pci_release_selected_regions(struct pci_dev *pdev, int bars)
 	for (i = 0; i < 6; i++)
 		if (bars & (1 << i))
 			pci_release_region(pdev, i);
+}
+
+/*
+ * lpfc_hba_max_vpi - Get the maximum supported VPI for an HBA
+ * @device: The PCI device ID for this HBA
+ *
+ * Description:
+ * This routine will return the maximum supported VPI limit for each HBA. In
+ * most cases the maximum VPI limit will be 0xFFFF, which indicates that the
+ * driver supports whatever the HBA can support. In some cases the driver
+ * supports fewer VPI that the HBA supports.
+ */
+static inline uint16_t
+lpfc_hba_max_vpi(unsigned short device)
+{
+	if ((device == PCI_DEVICE_ID_HELIOS) ||
+	    (device == PCI_DEVICE_ID_ZEPHYR))
+		return LPFC_INTR_VPI;
+	else
+		return LPFC_MAX_VPI;
 }
 
 /************************************************************************/
@@ -202,8 +220,10 @@ lpfc_config_port_prep(struct lpfc_hba *phba)
 		return -ERESTART;
 	}
 
-	if (phba->sli_rev == 3 && !mb->un.varRdRev.v3rsp)
+	if (phba->sli_rev == 3 && !mb->un.varRdRev.v3rsp) {
+		mempool_free(pmb, phba->mbox_mem_pool);
 		return -EINVAL;
+	}
 
 	/* Save information as VPD data */
 	vp->rev.rBit = 1;
@@ -463,7 +483,7 @@ lpfc_config_port_post(struct lpfc_hba *phba)
 	if (vport->cfg_enable_auth) {
 		if (lpfc_security_service_state == SECURITY_OFFLINE) {
 			lpfc_printf_log(vport->phba, KERN_ERR, LOG_SECURITY,
-				"1029 Authentication is enabled but "
+				"1000 Authentication is enabled but "
 				"authentication service is not running\n");
 			vport->auth.auth_mode = FC_AUTHMODE_UNKNOWN;
 			phba->link_state = LPFC_HBA_ERROR;
@@ -480,7 +500,7 @@ lpfc_config_port_post(struct lpfc_hba *phba)
 		lpfc_printf_log(phba,
 				KERN_ERR,
 				LOG_INIT,
-				"1031 Adapter failed to init, mbxCmd x%x "
+				"1001 Adapter failed to init, mbxCmd x%x "
 				"INIT_LINK, mbxStatus x%x\n",
 				mb->mbxCommand, mb->mbxStatus);
 
@@ -619,18 +639,18 @@ void
 lpfc_hb_timeout(unsigned long ptr)
 {
 	struct lpfc_hba *phba;
+	uint32_t tmo_posted;
 	unsigned long iflag;
 
 	phba = (struct lpfc_hba *)ptr;
 	spin_lock_irqsave(&phba->pport->work_port_lock, iflag);
-	if (!(phba->pport->work_port_events & WORKER_HB_TMO))
+	tmo_posted = phba->pport->work_port_events & WORKER_HB_TMO;
+	if (!tmo_posted)
 		phba->pport->work_port_events |= WORKER_HB_TMO;
 	spin_unlock_irqrestore(&phba->pport->work_port_lock, iflag);
 
-	spin_lock_irqsave(&phba->hbalock, iflag);
-	if (phba->work_wait)
-		wake_up(phba->work_wait);
-	spin_unlock_irqrestore(&phba->hbalock, iflag);
+	if (!tmo_posted)
+		lpfc_worker_wake_up(phba);
 	return;
 }
 
@@ -789,6 +809,10 @@ lpfc_handle_eratt(struct lpfc_hba *phba)
 	struct temp_event temp_event_data;
 	struct Scsi_Host  *shost;
 
+	/* If the pci channel is offline, ignore possible errors,
+	 * since we cannot communicate with the pci card anyway. */
+	if (phba->pcidev->error_state != pci_channel_io_normal)
+		return;
 
 	/* If resets are disabled then leave the HBA alone and return */
 	if (!phba->cfg_enable_hba_reset)
@@ -834,7 +858,7 @@ lpfc_handle_eratt(struct lpfc_hba *phba)
 		temp_event_data.data = (uint32_t)temperature;
 
 		lpfc_printf_log(phba, KERN_ERR, LOG_INIT,
-				"0459 Adapter maximum temperature exceeded "
+				"0406 Adapter maximum temperature exceeded "
 				"(%ld), taking this port offline "
 				"Data: x%x x%x x%x\n",
 				temperature, phba->work_hs,
@@ -844,8 +868,7 @@ lpfc_handle_eratt(struct lpfc_hba *phba)
 		fc_host_post_vendor_event(shost, fc_get_event_number(),
 					  sizeof(temp_event_data),
 					  (char *) &temp_event_data,
-					  SCSI_NL_VID_TYPE_PCI
-					  | PCI_VENDOR_ID_EMULEX);
+					  LPFC_NL_VENDOR_ID);
 
 		spin_lock_irq(&phba->hbalock);
 		phba->over_temp_state = HBA_OVER_TEMP;
@@ -867,7 +890,7 @@ lpfc_handle_eratt(struct lpfc_hba *phba)
 		shost = lpfc_shost_from_vport(vport);
 		fc_host_post_vendor_event(shost, fc_get_event_number(),
 				sizeof(event_data), (char *) &event_data,
-				SCSI_NL_VID_TYPE_PCI | PCI_VENDOR_ID_EMULEX);
+				LPFC_NL_VENDOR_ID);
 
 		lpfc_offline_eratt(phba);
 	}
@@ -916,6 +939,8 @@ lpfc_handle_latt(struct lpfc_hba *phba)
 	lpfc_read_la(phba, pmb, mp);
 	pmb->mbox_cmpl = lpfc_mbx_cmpl_read_la;
 	pmb->vport = vport;
+	/* Block ELS IOCBs until we have processed this mbox command */
+	phba->sli.ring[LPFC_ELS_RING].flag |= LPFC_STOP_IOCB_EVENT;
 	rc = lpfc_sli_issue_mbox (phba, pmb, MBX_NOWAIT);
 	if (rc == MBX_NOT_FINISHED) {
 		rc = 4;
@@ -931,6 +956,7 @@ lpfc_handle_latt(struct lpfc_hba *phba)
 	return;
 
 lpfc_handle_latt_free_mbuf:
+	phba->sli.ring[LPFC_ELS_RING].flag &= ~LPFC_STOP_IOCB_EVENT;
 	lpfc_mbuf_free(phba, mp->virt, mp->phys);
 lpfc_handle_latt_free_mp:
 	kfree(mp);
@@ -1106,6 +1132,7 @@ lpfc_get_hba_model_desc(struct lpfc_hba *phba, uint8_t *mdp, uint8_t *descp)
 	lpfc_vpd_t *vp;
 	uint16_t dev_id = phba->pcidev->device;
 	int max_speed;
+	int GE = 0;
 	struct {
 		char * name;
 		int    max_speed;
@@ -1237,6 +1264,19 @@ lpfc_get_hba_model_desc(struct lpfc_hba *phba, uint8_t *mdp, uint8_t *descp)
 	case PCI_DEVICE_ID_SAT_S:
 		m = (typeof(m)){"LPe12000-S", max_speed, "PCIe"};
 		break;
+	case PCI_DEVICE_ID_HORNET:
+		m = (typeof(m)){"LP21000", max_speed, "PCIe"};
+		GE = 1;
+		break;
+	case PCI_DEVICE_ID_PROTEUS_VF:
+		m = (typeof(m)) {"LPev12000", max_speed, "PCIe IOV"};
+		break;
+	case PCI_DEVICE_ID_PROTEUS_PF:
+		m = (typeof(m)) {"LPev12000", max_speed, "PCIe IOV"};
+		break;
+	case PCI_DEVICE_ID_PROTEUS_S:
+		m = (typeof(m)) {"LPemv12002-S", max_speed, "PCIe IOV"};
+		break;
 	default:
 		m = (typeof(m)){ NULL };
 		break;
@@ -1246,8 +1286,11 @@ lpfc_get_hba_model_desc(struct lpfc_hba *phba, uint8_t *mdp, uint8_t *descp)
 		snprintf(mdp, 79,"%s", m.name);
 	if (descp && descp[0] == '\0')
 		snprintf(descp, 255,
-			 "Emulex %s %dGb %s Fibre Channel Adapter",
-			 m.name, m.max_speed, m.bus);
+			"Emulex %s %d%s %s %s",
+			m.name, m.max_speed,
+			(GE) ? "GE":"Gb",
+			m.bus,
+			(GE) ? "FCoE Adapter" : "Fibre Channel Adapter");
 }
 
 /**************************************************/
@@ -1520,6 +1563,7 @@ lpfc_cleanup(struct lpfc_vport *vport)
 
 		lpfc_disc_state_machine(vport, ndlp, NULL,
 					     NLP_EVT_DEVICE_RM);
+
 	}
 
 	/* At this point, ALL ndlp's should be gone
@@ -1535,7 +1579,7 @@ lpfc_cleanup(struct lpfc_vport *vport)
 						&vport->fc_nodes, nlp_listp) {
 				lpfc_printf_vlog(ndlp->vport, KERN_ERR,
 						LOG_NODE,
-						"0282: did:x%x ndlp:x%p "
+						"0282 did:x%x ndlp:x%p "
 						"usgmap:x%x refcnt:%d\n",
 						ndlp->nlp_DID, (void *)ndlp,
 						ndlp->nlp_usg_map,
@@ -1554,8 +1598,15 @@ lpfc_cleanup(struct lpfc_vport *vport)
 void
 lpfc_stop_vport_timers(struct lpfc_vport *vport)
 {
+	struct fc_security_request *fc_sc_req;
 	del_timer_sync(&vport->els_tmofunc);
 	del_timer_sync(&vport->fc_fdmitmo);
+	while (!list_empty(&vport->sc_response_wait_queue)) {
+		fc_sc_req = list_get_first(&vport->sc_response_wait_queue,
+					   struct fc_security_request, rlist);
+		del_timer_sync(&fc_sc_req->timer);
+		kfree(fc_sc_req);
+	}
 	lpfc_can_disctmo(vport);
 	return;
 }
@@ -1768,12 +1819,8 @@ lpfc_create_port(struct lpfc_hba *phba, int instance, struct device *dev)
 		shost = scsi_host_alloc(&lpfc_vport_template,
 					sizeof(struct lpfc_vport));
 	else
-		if (phba->cfg_enable_npiv)
-			shost = scsi_host_alloc(&lpfc_template,
-						sizeof(struct lpfc_vport));
-		else
-			shost = scsi_host_alloc(&lpfc_template_no_npiv,
-						sizeof(struct lpfc_vport));
+		shost = scsi_host_alloc(&lpfc_template,
+					sizeof(struct lpfc_vport));
 	if (!shost)
 		goto out;
 
@@ -2076,11 +2123,16 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 
 	phba->pcidev = pdev;
 
+	/* Workaround for driver backward compatibility with RHEL5.1 */
+	if (!pdev->error_state)
+		pdev->error_state = pci_channel_io_normal;
+
 	/* Assign an unused board number */
 	if ((phba->brd_no = lpfc_get_instance()) < 0)
 		goto out_free_phba;
 
 	INIT_LIST_HEAD(&phba->port_list);
+	init_waitqueue_head(&phba->wait_4_mlo_m_q);
 	/*
 	 * Get all the module params for configuring this host and then
 	 * establish the host.
@@ -2090,7 +2142,7 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 	/* Check if we need to change the DMA length */
 	lpfc_setup_max_dma_length(phba);
 
-	phba->max_vpi = LPFC_MAX_VPI;
+	phba->max_vpi = lpfc_hba_max_vpi(phba->pcidev->device);
 
 	/* Initialize timers used by driver */
 	init_timer(&phba->hb_tmofunc);
@@ -2193,7 +2245,7 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 		if (iocbq_entry == NULL) {
 			printk(KERN_ERR "%s: only allocated %d iocbs of "
 				"expected %d count. Unloading driver.\n",
-				__FUNCTION__, i, LPFC_IOCB_LIST_CNT);
+				__func__, i, LPFC_IOCB_LIST_CNT);
 			error = -ENOMEM;
 			goto out_free_iocbq;
 		}
@@ -2203,7 +2255,7 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 			kfree (iocbq_entry);
 			printk(KERN_ERR "%s: failed to allocate IOTAG. "
 			       "Unloading driver.\n",
-				__FUNCTION__);
+				__func__);
 			error = -ENOMEM;
 			goto out_free_iocbq;
 		}
@@ -2223,6 +2275,9 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 	INIT_LIST_HEAD(&phba->work_list);
 	phba->work_ha_mask = (HA_ERATT|HA_MBATT|HA_LATT);
 	phba->work_ha_mask |= (HA_RXMASK << (LPFC_ELS_RING * 4));
+
+	/* Initialize the wait queue head for the kernel thread */
+	init_waitqueue_head(&phba->work_waitq);
 
 	/* Startup the kernel thread for this host adapter. */
 	phba->worker_thread = kthread_run(lpfc_do_work, phba,
@@ -2244,6 +2299,8 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 
 	/* Initialize list of sysfs mailbox commands */
 	INIT_LIST_HEAD(&phba->sysfs_mbox_list);
+	/* Initialize list of sysfs menlo commands */
+	INIT_LIST_HEAD(&phba->sysfs_menlo_list);
 
 	vport = lpfc_create_port(phba, phba->brd_no, &phba->pcidev->dev);
 	if (!vport)
@@ -2251,14 +2308,14 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 
 	shost = lpfc_shost_from_vport(vport);
 
-	if ((lpfc_get_security_enabled)(shost)){
+	if ((lpfc_get_security_enabled)(shost)) {
 		unsigned long flags;
+		/* Triggers fcauthd to register if it is running */
+		fc_host_post_event(shost, fc_get_event_number(),
+				   FCH_EVT_PORT_ONLINE, shost->host_no);
 		spin_lock_irqsave(&fc_security_user_lock, flags);
-
 		list_add_tail(&vport->sc_users, &fc_security_user_list);
-
 		spin_unlock_irqrestore(&fc_security_user_lock, flags);
-
 		if (fc_service_state == FC_SC_SERVICESTATE_ONLINE) {
 			lpfc_fc_queue_security_work(vport,
 				&vport->sc_online_work);
@@ -2415,6 +2472,15 @@ lpfc_pci_remove_one(struct pci_dev *pdev)
 	lpfcdfc_host_del(phba->dfc_host);
 	phba->dfc_host = NULL;
 
+	/* In case PCI channel permanently disabled, rescan SCSI devices
+	 * to force all the SCSI hosts devloss timeout for terminating any
+	 * on-going SCSI sessions and user processes properly before
+	 * proceeding to fc_remove_host() and scsi_remove_host(), which
+	 * do not clean up on-going SCSI sessions and user processes.
+	 */
+	if (pdev->error_state == pci_channel_io_perm_failure)
+		lpfc_scsi_dev_rescan(phba);
+
 	spin_lock_irq(&phba->hbalock);
 	vport->load_flag |= FC_UNLOADING;
 	spin_unlock_irq(&phba->hbalock);
@@ -2504,8 +2570,15 @@ static pci_ers_result_t lpfc_io_error_detected(struct pci_dev *pdev,
 	struct lpfc_sli *psli = &phba->sli;
 	struct lpfc_sli_ring  *pring;
 
-	if (state == pci_channel_io_perm_failure)
+	if (state == pci_channel_io_perm_failure) {
+		lpfc_printf_log(phba, KERN_ERR, LOG_INIT,
+				"0472 PCI channel I/O permanent failure\n");
+		/* Block all SCSI devices' I/Os on the host */
+		lpfc_scsi_dev_block(phba);
+		/* Clean up all driver's outstanding SCSI I/Os */
+		lpfc_sli_flush_fcp_rings(phba);
 		return PCI_ERS_RESULT_DISCONNECT;
+	}
 
 	pci_disable_device(pdev);
 	/*
@@ -2543,9 +2616,6 @@ static pci_ers_result_t lpfc_io_slot_reset(struct pci_dev *pdev)
 	int bars = pci_select_bars(pdev, IORESOURCE_MEM);
 
 	dev_printk(KERN_INFO, &pdev->dev, "recovering from a slot reset.\n");
-
-	/* Workaround on core EEH code not settng pdev->error_state properly */
-	pdev->error_state = pci_channel_io_normal;
 
 	if (pci_enable_device_bars(pdev, bars)) {
 		printk(KERN_ERR "lpfc: Cannot re-enable "
@@ -2649,6 +2719,8 @@ static struct pci_device_id lpfc_id_table[] = {
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_ZEPHYR,
 		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_HORNET,
+		PCI_ANY_ID, PCI_ANY_ID, },
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_ZEPHYR_SCSP,
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_ZEPHYR_DCSP,
@@ -2678,6 +2750,12 @@ static struct pci_device_id lpfc_id_table[] = {
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_SAT_SCSP,
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_SAT_S,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_PROTEUS_VF,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_PROTEUS_PF,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_PROTEUS_S,
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{ 0 }
 };
@@ -2718,18 +2796,15 @@ lpfc_init(void)
 			return -ENOMEM;
 		}
 	}
-
-	error = netlink_register_notifier(&lpfc_fc_netlink_notifier);
+	else
+		lpfc_template.shost_attrs = lpfc_hba_attrs_no_npiv;
+	error = scsi_nl_add_driver(LPFC_NL_VENDOR_ID, &lpfc_template,
+				   lpfc_rcv_nl_msg, lpfc_rcv_nl_event);
 	if (error)
 		goto out_release_transport;
-	fc_nl_sock = netlink_kernel_create(NETLINK_FCTRANSPORT, FC_NL_GROUP_CNT,
-					   lpfc_fc_nl_rcv, THIS_MODULE);
-	if (!fc_nl_sock)
-		goto out_unregister_notifier;
-	snprintf(security_work_q_name, KOBJ_NAME_LEN, "fc_sc_wq");
 	security_work_q = create_singlethread_workqueue(security_work_q_name);
 	if (!security_work_q)
-		goto out_sock_release;
+		goto out_remove_nl;
 	INIT_LIST_HEAD(&fc_security_user_list);
 	error = pci_register_driver(&lpfc_driver);
 	if (error)
@@ -2745,11 +2820,8 @@ out_pci_unregister:
 out_destroy_workqueue:
 	destroy_workqueue(security_work_q);
 	security_work_q = NULL;
-out_sock_release:
-	sock_release(fc_nl_sock->sk_socket);
-	fc_nl_sock = NULL;
-out_unregister_notifier:
-	netlink_unregister_notifier(&lpfc_fc_netlink_notifier);
+out_remove_nl:
+	scsi_nl_remove_driver(LPFC_NL_VENDOR_ID);
 out_release_transport:
 	fc_release_transport(lpfc_transport_template);
 	if (lpfc_enable_npiv)
@@ -2765,11 +2837,7 @@ lpfc_exit(void)
 	if (security_work_q)
 		destroy_workqueue(security_work_q);
 	security_work_q = NULL;
-	if (fc_nl_sock) {
-		sock_release(fc_nl_sock->sk_socket);
-		netlink_unregister_notifier(&lpfc_fc_netlink_notifier);
-		fc_nl_sock = NULL;
-	}
+	scsi_nl_remove_driver(LPFC_NL_VENDOR_ID);
 	fc_release_transport(lpfc_transport_template);
 	if (lpfc_enable_npiv)
 		fc_release_transport(lpfc_vport_transport_template);

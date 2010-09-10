@@ -99,6 +99,9 @@ struct cpuset {
 	int mems_generation;
 
 	struct fmeter fmeter;		/* memory_pressure filter */
+
+	/* for custom sched domain */
+	int relax_domain_level;
 };
 
 /* bits in struct cpuset flags field */
@@ -751,6 +754,9 @@ static int validate_change(const struct cpuset *cur, const struct cpuset *trial)
 	return 0;
 }
 
+extern int __partition_sched_domains(cpumask_t *dom1, cpumask_t *dom2,
+					int *attr1, int *attr2);
+
 /*
  * For a given cpuset cur, partition the system as follows
  * a. All cpus in the parent cpuset's cpus_allowed that are not part of any
@@ -802,7 +808,8 @@ static void update_cpu_domains(struct cpuset *cur)
 	}
 
 	lock_cpu_hotplug();
-	partition_sched_domains(&pspan, &cspan);
+	__partition_sched_domains(&pspan, &cspan, &par->relax_domain_level,
+						  &cur->relax_domain_level);
 	unlock_cpu_hotplug();
 }
 
@@ -1022,6 +1029,40 @@ static int update_memory_pressure_enabled(struct cpuset *cs, char *buf)
 		cpuset_memory_pressure_enabled = 1;
 	else
 		cpuset_memory_pressure_enabled = 0;
+	return 0;
+}
+
+static int update_relax_domain_level(struct cpuset *cs, char *buf)
+{
+	struct cpuset *c;
+	cpumask_t span, dummy;
+	int val = simple_strtol(buf, NULL, 10);
+
+	if (val < -1 || val >= SD_LV_MAX)
+		return -EINVAL;
+
+	if (val != cs->relax_domain_level) {
+		cs->relax_domain_level = val;
+
+		/* top_cpuset always has associated sched_domain */
+		if (cs == &top_cpuset) {
+			span = cs->cpus_allowed;
+			list_for_each_entry(c, &cs->children, sibling) {
+				if (is_cpu_exclusive(c))
+					cpus_andnot(span, span,
+							c->cpus_allowed);
+			}
+			dummy = CPU_MASK_NONE;
+			lock_cpu_hotplug();
+			__partition_sched_domains(&span, &dummy,
+						&cs->relax_domain_level, NULL);
+			unlock_cpu_hotplug();
+		} else {
+			/* cpuset with cpu_exclusive has sched_domain */
+			if (is_cpu_exclusive(cs))
+				update_cpu_domains(cs);
+		}
+	}
 	return 0;
 }
 
@@ -1264,6 +1305,7 @@ typedef enum {
 	FILE_MEMLIST,
 	FILE_CPU_EXCLUSIVE,
 	FILE_MEM_EXCLUSIVE,
+	FILE_SCHED_RELAX_DOMAIN_LEVEL,
 	FILE_NOTIFY_ON_RELEASE,
 	FILE_MEMORY_PRESSURE_ENABLED,
 	FILE_MEMORY_PRESSURE,
@@ -1315,6 +1357,9 @@ static ssize_t cpuset_common_file_write(struct file *file, const char __user *us
 		break;
 	case FILE_MEM_EXCLUSIVE:
 		retval = update_flag(CS_MEM_EXCLUSIVE, cs, buffer);
+		break;
+	case FILE_SCHED_RELAX_DOMAIN_LEVEL:
+		retval = update_relax_domain_level(cs, buffer);
 		break;
 	case FILE_NOTIFY_ON_RELEASE:
 		retval = update_flag(CS_NOTIFY_ON_RELEASE, cs, buffer);
@@ -1432,6 +1477,9 @@ static ssize_t cpuset_common_file_read(struct file *file, char __user *buf,
 		break;
 	case FILE_MEM_EXCLUSIVE:
 		*s++ = is_mem_exclusive(cs) ? '1' : '0';
+		break;
+	case FILE_SCHED_RELAX_DOMAIN_LEVEL:
+		s += sprintf(s, "%d", cs->relax_domain_level);
 		break;
 	case FILE_NOTIFY_ON_RELEASE:
 		*s++ = notify_on_release(cs) ? '1' : '0';
@@ -1789,6 +1837,11 @@ static struct cftype cft_mem_exclusive = {
 	.private = FILE_MEM_EXCLUSIVE,
 };
 
+static struct cftype cft_sched_relax_domain_level = {
+	.name = "sched_relax_domain_level",
+	.private = FILE_SCHED_RELAX_DOMAIN_LEVEL,
+};
+
 static struct cftype cft_notify_on_release = {
 	.name = "notify_on_release",
 	.private = FILE_NOTIFY_ON_RELEASE,
@@ -1830,6 +1883,9 @@ static int cpuset_populate_dir(struct dentry *cs_dentry)
 	if ((err = cpuset_add_file(cs_dentry, &cft_cpu_exclusive)) < 0)
 		return err;
 	if ((err = cpuset_add_file(cs_dentry, &cft_mem_exclusive)) < 0)
+		return err;
+	if ((err = cpuset_add_file(cs_dentry,
+					&cft_sched_relax_domain_level)) < 0)
 		return err;
 	if ((err = cpuset_add_file(cs_dentry, &cft_notify_on_release)) < 0)
 		return err;
@@ -1880,6 +1936,7 @@ static long cpuset_create(struct cpuset *parent, const char *name, int mode)
 	INIT_LIST_HEAD(&cs->children);
 	cs->mems_generation = cpuset_mems_generation++;
 	fmeter_init(&cs->fmeter);
+	cs->relax_domain_level = -1;
 
 	cs->parent = parent;
 
@@ -2004,6 +2061,7 @@ int __init cpuset_init(void)
 
 	fmeter_init(&top_cpuset.fmeter);
 	top_cpuset.mems_generation = cpuset_mems_generation++;
+	top_cpuset.relax_domain_level = -1;
 
 	init_task.cpuset = &top_cpuset;
 

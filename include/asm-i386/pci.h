@@ -3,6 +3,26 @@
 
 
 #ifdef __KERNEL__
+
+struct pci_sysdata {
+	int		domain;		/* PCI domain */
+	int		node;		/* NUMA node */
+};
+
+#ifdef CONFIG_PCI_DOMAINS
+static inline int pci_domain_nr(struct pci_bus *bus)
+{
+	struct pci_sysdata *sd = bus->sysdata;
+	return sd->domain;
+}
+extern struct pci_sysdata pci_default_sysdata;
+
+static inline int pci_proc_domain(struct pci_bus *bus)
+{
+	return pci_domain_nr(bus);
+}
+#endif /* CONFIG_PCI_DOMAINS */
+
 #include <linux/mm.h>		/* for struct page */
 
 /* Can be used to override the logic in pci_scan_bus for skipping

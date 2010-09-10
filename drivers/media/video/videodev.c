@@ -17,14 +17,19 @@
  */
 
 #define dbgarg(cmd, fmt, arg...) \
-		if (vfd->debug & V4L2_DEBUG_IOCTL_ARG)			\
-			printk (KERN_DEBUG "%s: ",  vfd->name);		\
+		do {							\
+		    if (vfd->debug & V4L2_DEBUG_IOCTL_ARG) {		\
+			printk(KERN_DEBUG "%s: ",  vfd->name);		\
 			v4l_printk_ioctl(cmd);				\
-			printk (KERN_DEBUG "%s: " fmt, vfd->name, ## arg);
+			printk(" " fmt,  ## arg);			\
+		    }							\
+		} while (0)
 
 #define dbgarg2(fmt, arg...) \
-		if (vfd->debug & V4L2_DEBUG_IOCTL_ARG)			\
-			printk (KERN_DEBUG "%s: " fmt, vfd->name, ## arg);
+		do {							\
+		    if (vfd->debug & V4L2_DEBUG_IOCTL_ARG)		\
+			printk(KERN_DEBUG "%s: " fmt, vfd->name, ## arg);\
+		} while (0)
 
 #include <linux/module.h>
 #include <linux/types.h>

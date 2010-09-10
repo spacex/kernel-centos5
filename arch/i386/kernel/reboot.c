@@ -351,6 +351,12 @@ void machine_restart(char * __unused)
 
 void machine_halt(void)
 {
+	machine_shutdown();
+
+	/* stop current CPU */
+	local_irq_disable();
+	for (;;)
+		halt();
 }
 
 void machine_power_off(void)

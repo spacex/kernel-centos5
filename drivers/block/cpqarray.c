@@ -1038,7 +1038,8 @@ static inline void complete_command(cmdlist_t *cmd, int timeout)
 	if (blk_fs_request(rq)) {
 		const int rw = rq_data_dir(rq);
 
-		disk_stat_add(rq->rq_disk, sectors[rw], rq->nr_sectors);
+		all_stat_add(rq->rq_disk, sectors[rw],
+			     rq->nr_sectors, rq->sector);
 	}
 
 	add_disk_randomness(rq->rq_disk);

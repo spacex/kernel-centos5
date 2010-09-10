@@ -484,6 +484,7 @@ static struct nfs_open_context *alloc_nfs_open_context(struct vfsmount *mnt, str
 		ctx->cred = get_rpccred(cred);
 		ctx->state = NULL;
 		ctx->lockowner = current->files;
+		ctx->flags = 0;
 		ctx->error = 0;
 		ctx->dir_cookie = 0;
 	}
@@ -671,6 +672,13 @@ int nfs_attribute_timeout(struct inode *inode)
 
 	if (nfs_have_delegation(inode, FMODE_READ))
 		return 0;
+	/*
+	 * Special case: if the attribute timeout is set to 0, then we
+	 *               treat the cache as having expired (unless we
+	 *               have a delegation).
+	 */
+	if (nfsi->attrtimeo == 0)
+		return 1;
 	return time_after(jiffies, nfsi->read_cache_jiffies+nfsi->attrtimeo);
 }
 
@@ -1142,10 +1150,6 @@ static int __init init_nfs_fs(void)
 {
 	int err;
 
-	err = nfs_fscache_register();
-	if (err < 0)
-		goto out6;
-
 	err = nfs_fs_proc_init();
 	if (err)
 		goto out5;
@@ -1192,8 +1196,6 @@ out3:
 out4:
 	nfs_fs_proc_exit();
 out5:
-	nfs_fscache_unregister();
-out6:
 	return err;
 }
 
@@ -1204,7 +1206,6 @@ static void __exit exit_nfs_fs(void)
 	nfs_destroy_readpagecache();
 	nfs_destroy_inodecache();
 	nfs_destroy_nfspagecache();
-	nfs_fscache_unregister();
 #ifdef CONFIG_PROC_FS
 	rpc_proc_unregister("nfs");
 #endif

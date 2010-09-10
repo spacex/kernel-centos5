@@ -473,6 +473,7 @@ static void pseries_dedicated_idle_sleep(void)
 	unsigned int cpu = smp_processor_id();
 	unsigned long start_snooze;
 	unsigned long *smt_snooze_delay = &__get_cpu_var(smt_snooze_delay);
+	unsigned long in_purr, out_purr;
 
 	/*
 	 * Indicate to the HV that we are idle. Now would be
@@ -480,6 +481,7 @@ static void pseries_dedicated_idle_sleep(void)
 	 */
 	get_lppaca()->idle = 1;
 	get_lppaca()->cpuctls_task_attrs = 1;
+	in_purr = mfspr(SPRN_PURR);
 
 	/*
 	 * We come in with interrupts disabled, and need_resched()
@@ -513,6 +515,8 @@ static void pseries_dedicated_idle_sleep(void)
 out:
 	HMT_medium();
 	get_lppaca()->cpuctls_task_attrs = 0;
+	out_purr = mfspr(SPRN_PURR);
+	get_lppaca()->wait_state_cycles += out_purr - in_purr;
 	get_lppaca()->idle = 0;
 }
 

@@ -422,9 +422,8 @@ __qeth_eddp_fill_context_tcp(struct qeth_eddp_context *ctx,
 			       (int)(eddp->skb->len - eddp->skb_offset));
 		/* prepare qdio hdr */
 		if (eddp->qh.hdr.l2.id == QETH_HEADER_TYPE_LAYER2){
-			eddp->qh.hdr.l2.pkt_length = data_len + ETH_HLEN +
-						     eddp->nhl + eddp->thl -
-						     sizeof(struct qeth_hdr);
+			eddp->qh.hdr.l2.pkt_length =
+				 data_len + ETH_HLEN + eddp->nhl + eddp->thl;
 #ifdef CONFIG_QETH_VLAN
 			if (eddp->mac.h_proto == __constant_htons(ETH_P_8021Q))
 				eddp->qh.hdr.l2.pkt_length += VLAN_HLEN;

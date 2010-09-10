@@ -450,7 +450,7 @@ int gfs2_recover_journal(struct gfs2_jdesc *jd)
 		fs_info(sdp, "jid=%u: Trying to acquire journal lock...\n",
 			jd->jd_jid);
 
-		/* Aquire the journal lock so we can do recovery */
+		/* Acquire the journal lock so we can do recovery */
 
 		error = gfs2_glock_nq_num(sdp, jd->jd_jid, &gfs2_journal_glops,
 					  LM_ST_EXCLUSIVE,
@@ -496,7 +496,7 @@ int gfs2_recover_journal(struct gfs2_jdesc *jd)
 
 		error = gfs2_glock_nq_init(sdp->sd_trans_gl, LM_ST_SHARED,
 					   LM_FLAG_NOEXP | LM_FLAG_PRIORITY |
-					   GL_NOCANCEL | GL_NOCACHE, &t_gh);
+					   GL_NOCACHE, &t_gh);
 		if (error)
 			goto fail_gunlock_ji;
 

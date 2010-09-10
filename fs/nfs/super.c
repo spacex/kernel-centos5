@@ -547,6 +547,9 @@ static int nfs_validate_mount_data(struct nfs_mount_data *data,
 		memset(mntfh->data + mntfh->size, 0,
 		       sizeof(mntfh->data) - mntfh->size);
 
+	/* Make sure FSC stays off */
+	data->flags &= ~NFS_MOUNT_FSCACHE;
+
 	return 0;
 }
 
@@ -850,6 +853,11 @@ static int nfs_xdev_get_sb(struct file_system_type *fs_type, int flags,
 		error = PTR_ERR(mntroot);
 		goto error_splat_super;
 	}
+	if (mntroot->d_inode->i_op != NFS_SB(s)->nfs_client->rpc_ops->dir_inode_ops) {
+		dput(mntroot);
+		error = -ESTALE;
+		goto error_splat_super;
+	}
 
 	s->s_flags |= MS_ACTIVE;
 	mnt->mnt_sb = s;
@@ -1131,6 +1139,11 @@ static int nfs4_xdev_get_sb(struct file_system_type *fs_type, int flags,
 		error = PTR_ERR(mntroot);
 		goto error_splat_super;
 	}
+	if (mntroot->d_inode->i_op != NFS_SB(s)->nfs_client->rpc_ops->dir_inode_ops) {
+		dput(mntroot);
+		error = -ESTALE;
+		goto error_splat_super;
+	}
 
 	s->s_flags |= MS_ACTIVE;
 	mnt->mnt_sb = s;
@@ -1209,6 +1222,11 @@ static int nfs4_referral_get_sb(struct file_system_type *fs_type, int flags,
 	mntroot = nfs4_get_root(s, &mntfh);
 	if (IS_ERR(mntroot)) {
 		error = PTR_ERR(mntroot);
+		goto error_splat_super;
+	}
+	if (mntroot->d_inode->i_op != NFS_SB(s)->nfs_client->rpc_ops->dir_inode_ops) {
+		dput(mntroot);
+		error = -ESTALE;
 		goto error_splat_super;
 	}
 

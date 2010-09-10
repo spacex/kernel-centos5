@@ -56,9 +56,25 @@ static int hmac_setkey(struct crypto_hash *parent,
 
 	if (keylen > bs) {
 		struct scatterlist tmp;
+		int tmplen;
 
-		sg_init_one(&tmp, (u8 *)inkey, keylen);
-		crypto_digest_digest(tfm, &tmp, 1, digest);
+		crypto_digest_init(tfm);
+
+		tmplen = bs * 2 + ds;
+		sg_init_one(&tmp, ipad, tmplen);
+
+		for (; keylen > tmplen; inkey += tmplen, keylen -= tmplen) {
+			memcpy(ipad, inkey, tmplen);
+			crypto_digest_update(tfm, &tmp, 1);
+		}
+
+		if (keylen) {
+			memcpy(ipad, inkey, keylen);
+			tmp.length = keylen;
+			crypto_digest_update(tfm, &tmp, 1);
+		}
+
+		crypto_digest_final(tfm, digest);
 
 		inkey = digest;
 		keylen = ds;

@@ -30,6 +30,7 @@
 #include <asm/byteorder.h>
 #include <asm/machdep.h>
 #include <asm/ppc-pci.h>
+#include <asm/iommu.h>
 
 #ifdef DEBUG
 #include <asm/udbg.h>
@@ -70,6 +71,45 @@ int global_phb_number;		/* Global phb counter */
 /* Cached ISA bridge dev. */
 struct pci_dev *ppc64_isabridge_dev = NULL;
 EXPORT_SYMBOL_GPL(ppc64_isabridge_dev);
+
+int pci_set_dma_mask(struct pci_dev *dev, u64 mask)
+{
+	struct pci_dn *pdn = get_pdn(dev);
+
+	if (!pci_dma_supported(dev, mask))
+		return -EIO;
+
+	dev->dma_mask = mask;
+
+	if (!cell_use_iommu_fixed)
+		return 0;
+
+	if (mask == DMA_64BIT_MASK &&
+		cell_iommu_get_fixed_address(dev) != OF_BAD_ADDR)
+	{
+		dev_dbg(&dev->dev, "iommu: 64-bit OK, using fixed ops\n");
+		pdn->use_iommu_fixed = 1;
+	} else {
+		dev_dbg(&dev->dev, "iommu: not 64-bit, using default ops\n");
+		pdn->use_iommu_fixed = 0;
+	}
+
+	cell_pci_dma_dev_setup(dev);
+
+	return 0;
+}
+
+int pci_set_consistent_dma_mask(struct pci_dev *dev, u64 mask)
+{
+	int rc = pci_set_dma_mask(dev, mask);
+
+	if (!rc)
+		return rc;
+
+	dev->dev.coherent_dma_mask = dev->dma_mask;
+
+	return 0;
+}
 
 static void fixup_broken_pcnet32(struct pci_dev* dev)
 {
@@ -384,8 +424,10 @@ struct pci_dev *of_create_pci_dev(struct device_node *node,
 	sprintf(pci_name(dev), "%04x:%02x:%02x.%d", pci_domain_nr(bus),
 		dev->bus->number, PCI_SLOT(devfn), PCI_FUNC(devfn));
 	dev->class = get_int_prop(node, "class-code", 0);
+	dev->revision = get_int_prop(node, "revision-id", 0);
 
 	DBG("    class: 0x%x\n", dev->class);
+	DBG("    revision: 0x%x\n", dev->revision);
 
 	dev->current_state = 4;		/* unknown power state */
 	dev->error_state = pci_channel_io_normal;

@@ -23,7 +23,7 @@
 
 struct lpfc_sli2_slim;
 
-#define LPFC_MAX_TARGET		256	/* max number of targets supported */
+#define LPFC_MAX_TARGET		4096	/* max number of targets supported */
 #define LPFC_MAX_DISC_THREADS	64	/* max outstanding discovery els
 					   requests */
 #define LPFC_MAX_NS_RETRY	3	/* Number of retry attempts to contact
@@ -33,6 +33,12 @@ struct lpfc_sli2_slim;
 #define LPFC_MAX_SG_SEG_CNT	256	/* sg element count per scsi cmnd */
 #define LPFC_IOCB_LIST_CNT	2250	/* list of IOCBs for fast-path usage. */
 #define LPFC_Q_RAMP_UP_INTERVAL 120     /* lun q_depth ramp up interval */
+#define LPFC_VNAME_LEN		100	/* vport symbolic name length */
+#define LPFC_TGTQ_INTERVAL	40000	/* Min amount of time between tgt
+					   queue depth change in millisecs */
+#define LPFC_TGTQ_RAMPUP_PCENT	5	/* Target queue rampup in percentage */
+#define LPFC_MIN_TGT_QDEPTH	100
+#define LPFC_MAX_TGT_QDEPTH	0xFFFF
 
 /*
  * Following time intervals are used of adjusting SCSI device
@@ -58,6 +64,9 @@ struct lpfc_sli2_slim;
 #define FC_MAX_ADPTMSG		64
 
 #define MAX_HBAEVT	32
+
+/* lpfc wait event data ready flag */
+#define LPFC_DATA_READY		(1<<0)
 
 enum lpfc_polling_flags {
 	ENABLE_FCP_RING_POLLING = 0x1,
@@ -200,6 +209,22 @@ struct lpfc_stats {
 	uint32_t fcpLocalErr;
 };
 
+struct lpfc_timedout_iocb_ctxt {
+	struct lpfc_iocbq *rspiocbq;
+	struct lpfc_dmabuf *mp;
+	struct lpfc_dmabuf *bmp;
+	struct lpfc_scsi_buf *lpfc_cmd;
+	struct lpfc_dmabufext *outdmp;
+	struct lpfc_dmabufext *indmp;
+};
+
+struct lpfc_dmabufext {
+	struct lpfc_dmabuf dma;
+	uint32_t size;
+	uint32_t flag;
+};
+
+
 enum sysfs_mbox_state {
 	SMBOX_IDLE,
 	SMBOX_WRITING,
@@ -230,6 +255,44 @@ struct lpfc_sysfs_mbox {
 	struct lpfc_dmabuf *  txmit_buff;
 	struct lpfc_dmabuf *  rcv_buff;
 };
+#define MENLO_DID 0x0000FC0E
+
+enum sysfs_menlo_state {
+	SMENLO_IDLE,
+	SMENLO_WRITING,
+	SMENLO_WRITING_MBEXT,
+	SMENLO_READING
+};
+
+struct lpfc_sysfs_menlo_hdr {
+	uint32_t cmd;
+	uint32_t cmdsize;
+	uint32_t rspsize;
+};
+
+struct lpfc_menlo_genreq64 {
+	size_t				offset;
+	struct lpfc_iocbq		*cmdiocbq;
+	struct lpfc_iocbq		*rspiocbq;
+	struct lpfc_dmabuf		*bmp;
+	struct lpfc_dmabufext		*indmp;
+	struct ulp_bde64		*cmdbpl;
+	struct lpfc_dmabufext		*outdmp;
+	uint32_t			timeout;
+	struct list_head		inhead;
+	struct list_head		outhead;
+};
+
+struct lpfc_sysfs_menlo {
+	enum sysfs_menlo_state		state;
+	/* process id of the mgmt application */
+	struct lpfc_sysfs_menlo_hdr	cmdhdr;
+	struct lpfc_menlo_genreq64	cr;
+	struct lpfc_menlo_genreq64	cx;
+	pid_t				pid;
+	struct list_head		list;
+};
+
 
 struct lpfc_hba;
 
@@ -301,12 +364,17 @@ struct lpfc_auth {
 	uint32_t reauth_interval;
 
 	uint8_t security_active;
-	uint8_t auth_state;
-	uint8_t auth_msg_state;
+	enum auth_state auth_state;
+	enum auth_msg_state auth_msg_state;
 	uint32_t trans_id;              /* current transaction id. Can be set
 					   by incomming transactions as well */
 	uint32_t group_id;
 	uint32_t hash_id;
+	uint32_t direction;
+#define AUTH_DIRECTION_NONE	0
+#define AUTH_DIRECTION_REMOTE	0x1
+#define AUTH_DIRECTION_LOCAL	0x2
+#define AUTH_DIRECTION_BIDI	(AUTH_DIRECTION_LOCAL|AUTH_DIRECTION_REMOTE)
 
 	uint8_t *challenge;
 	uint32_t challenge_len;
@@ -434,6 +502,7 @@ struct lpfc_vport {
 	uint32_t cfg_max_luns;
 	uint32_t cfg_enable_da_id;
 	uint32_t cfg_enable_auth;
+	uint32_t cfg_max_scsicmpl_time;
 
 	uint32_t dev_loss_tmo_changed;
 
@@ -504,7 +573,6 @@ struct lpfc_hba {
 
 	uint16_t pci_cfg_value;
 
-
 	uint8_t fc_linkspeed;	/* Link speed after last READ_LA */
 
 	uint32_t fc_eventTag;	/* event tag for link attention */
@@ -568,8 +636,9 @@ struct lpfc_hba {
 	uint32_t              work_hs;      /* HS stored in case of ERRAT */
 	uint32_t              work_status[2]; /* Extra status from SLIM */
 
-	wait_queue_head_t    *work_wait;
+	wait_queue_head_t    work_waitq;
 	struct task_struct   *worker_thread;
+	long data_flags;
 
 	uint32_t hbq_in_use;		/* HBQs in use flag */
 	struct list_head hbqbuf_in_list;  /* in-fly hbq buffer list */
@@ -623,6 +692,7 @@ struct lpfc_hba {
 
 	/* List of mailbox commands issued through sysfs */
 	struct list_head sysfs_mbox_list;
+	struct list_head sysfs_menlo_list;
 
 	/* fastpath list. */
 	spinlock_t scsi_buf_list_lock;
@@ -649,7 +719,8 @@ struct lpfc_hba {
 	struct list_head port_list;
 	struct lpfc_vport *pport;	/* physical lpfc_vport pointer */
 	uint16_t max_vpi;		/* Maximum virtual nports */
-#define LPFC_MAX_VPI	64		/* Max number of VPI supported */
+#define LPFC_MAX_VPI	0xFFFF		/* Max number of VPI supported */
+#define LPFC_INTR_VPI	100		/* Intermediate VPI supported */
 	unsigned long *vpi_bmask;	/* vpi allocation table */
 
 	/* Data structure used by fabric iocb scheduler */
@@ -693,6 +764,8 @@ struct lpfc_hba {
 	 */
 #define QUE_BUFTAG_BIT  (1<<31)
 	uint32_t buffer_tag_count;
+	int	wait_4_mlo_maint_flg;
+	wait_queue_head_t wait_4_mlo_m_q;
 };
 
 static inline struct Scsi_Host *
@@ -716,6 +789,17 @@ lpfc_is_link_up(struct lpfc_hba *phba)
 	return  phba->link_state == LPFC_LINK_UP ||
 		phba->link_state == LPFC_CLEAR_LA ||
 		phba->link_state == LPFC_HBA_READY;
+}
+
+static inline void
+lpfc_worker_wake_up(struct lpfc_hba *phba)
+{
+	/* Set the lpfc data pending flag */
+	set_bit(LPFC_DATA_READY, &phba->data_flags);
+
+	/* Wake up worker thread */
+	wake_up(&phba->work_waitq);
+	return;
 }
 
 #define FC_REG_DUMP_EVENT		0x10	/* Register for Dump events */

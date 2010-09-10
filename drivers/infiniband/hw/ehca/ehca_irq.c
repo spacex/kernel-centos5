@@ -178,6 +178,10 @@ static void dispatch_qp_event(struct ehca_shca *shca, struct ehca_qp *qp,
 {
 	struct ib_event event;
 
+	/* PATH_MIG without the QP ever having been armed is false alarm */
+	if (event_type == IB_EVENT_PATH_MIG && !qp->mig_armed)
+		return;
+
 	event.device = &shca->ib_device;
 	event.event = event_type;
 
@@ -366,25 +370,27 @@ static void parse_ec(struct ehca_shca *shca, u64 eqe)
 	switch (ec) {
 	case 0x30: /* port availability change */
 		if (EHCA_BMASK_GET(NEQE_PORT_AVAILABILITY, eqe)) {
-			int suppress_event;
-			/* replay modify_qp for sqps */
-			spin_lock_irqsave(&sport->mod_sqp_lock, flags);
-			suppress_event = !sport->ibqp_sqp[IB_QPT_GSI];
-			if (sport->ibqp_sqp[IB_QPT_SMI])
-				ehca_recover_sqp(sport->ibqp_sqp[IB_QPT_SMI]);
-			if (!suppress_event)
-				ehca_recover_sqp(sport->ibqp_sqp[IB_QPT_GSI]);
-			spin_unlock_irqrestore(&sport->mod_sqp_lock, flags);
+			/* perform recovery only for port auto-detect mode */
+			if (ehca_nr_ports == -1) {
+				int suppress_event;
+				/* replay modify_qp for sqps */
+				spin_lock_irqsave(&sport->mod_sqp_lock, flags);
+				suppress_event = !sport->ibqp_sqp[IB_QPT_GSI];
+				if (sport->ibqp_sqp[IB_QPT_SMI])
+					ehca_recover_sqp(sport->ibqp_sqp[IB_QPT_SMI]);
+				if (!suppress_event)
+					ehca_recover_sqp(sport->ibqp_sqp[IB_QPT_GSI]);
+				spin_unlock_irqrestore(&sport->mod_sqp_lock, flags);
 
-			/* AQP1 was destroyed, ignore this event */
-			if (suppress_event)
-				break;
+				/* AQP1 was destroyed, ignore this event */
+				if (suppress_event)
+					break;
+			}
 
 			sport->port_state = IB_PORT_ACTIVE;
 			dispatch_port_event(shca, port, IB_EVENT_PORT_ACTIVE,
 					    "is active");
-			ehca_query_sma_attr(shca, port,
-					    &sport->saved_attr);
+			ehca_query_sma_attr(shca, port, &sport->saved_attr);
 		} else {
 			sport->port_state = IB_PORT_DOWN;
 			dispatch_port_event(shca, port, IB_EVENT_PORT_ERR,
@@ -531,7 +537,7 @@ void ehca_process_eq(struct ehca_shca *shca, int is_irq)
 {
 	struct ehca_eq *eq = &shca->eq;
 	struct ehca_eqe_cache_entry *eqe_cache = eq->eqe_cache;
-	u64 eqe_value;
+	u64 eqe_value, ret;
 	unsigned long flags;
 	int eqe_cnt, i;
 	int eq_empty = 0;
@@ -583,8 +589,13 @@ void ehca_process_eq(struct ehca_shca *shca, int is_irq)
 			ehca_dbg(&shca->ib_device,
 				 "No eqe found for irq event");
 		goto unlock_irq_spinlock;
-	} else if (!is_irq)
+	} else if (!is_irq) {
+		ret = hipz_h_eoi(eq->ist);
+		if (ret != H_SUCCESS)
+			ehca_err(&shca->ib_device,
+				 "bad return code EOI -rc = %ld\n", ret);
 		ehca_dbg(&shca->ib_device, "deadman found %x eqe", eqe_cnt);
+	}
 	if (unlikely(eqe_cnt == EHCA_EQE_CACHE_SIZE))
 		ehca_dbg(&shca->ib_device, "too many eqes for one irq event");
 	/* enable irq for new packets */
@@ -637,7 +648,7 @@ static inline int find_next_online_cpu(struct ehca_comp_pool *pool)
 	unsigned long flags;
 
 	WARN_ON_ONCE(!in_interrupt());
-	if (ehca_debug_level)
+	if (ehca_debug_level >= 3)
 		ehca_dmp(&cpu_online_map, sizeof(cpumask_t), "");
 
 	spin_lock_irqsave(&pool->last_cpu_lock, flags);

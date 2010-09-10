@@ -1367,7 +1367,7 @@ int fcntl_getlease(struct file *filp)
  *
  *	Called with kernel lock held.
  */
-static int __setlease(struct file *filp, long arg, struct file_lock **flp)
+int __setlease(struct file *filp, long arg, struct file_lock **flp)
 {
 	struct file_lock *fl, **before, **my_before = NULL, *lease;
 	struct dentry *dentry = filp->f_dentry;
@@ -1446,6 +1446,7 @@ static int __setlease(struct file *filp, long arg, struct file_lock **flp)
 out:
 	return error;
 }
+EXPORT_SYMBOL(__setlease);
 
  /**
  *	setlease        -       sets a lease on an open file
@@ -1454,13 +1455,31 @@ out:
  *	@lease: file_lock to use
  *
  *	Call this to establish a lease on the file.
- *	The fl_lmops fl_break function is required by break_lease
+ *	The (*lease)->fl_lmops->fl_break operation must be set; if not,
+ *	break_lease will oops!
+ *
+ *	This will call the filesystem's setlease file method, if
+ *	defined.  Note that there is no getlease method; instead, the
+ *	filesystem setlease method should call back to setlease() to
+ *	add a lease to the inode's lease list, where fcntl_getlease() can
+ *	find it.  Since fcntl_getlease() only reports whether the current
+ *	task holds a lease, a cluster filesystem need only do this for
+ *	leases held by processes on this node.
+ *
+ *	There is also no break_lease method; filesystems that
+ *	handle their own leases shoud break leases themselves from the
+ *	filesystem's open, create, and (on truncate) setattr methods.
+ *
+ *	Warning: the only current setlease methods exist only to disable
+ *	leases in certain cases.  More vfs changes may be required to
+ *	allow a full filesystem lease implementation.
  */
 
 int setlease(struct file *filp, long arg, struct file_lock **lease)
 {
 	struct dentry *dentry = filp->f_dentry;
 	struct inode *inode = dentry->d_inode;
+	struct file_operations_ext *fxops;
 	int error;
 
 	if ((current->fsuid != inode->i_uid) && !capable(CAP_LEASE))
@@ -1471,8 +1490,12 @@ int setlease(struct file *filp, long arg, struct file_lock **lease)
 	if (error)
 		return error;
 
+	fxops = (struct file_operations_ext *)filp->f_op;
 	lock_kernel();
-	error = __setlease(filp, arg, lease);
+	if (IS_SETLEASE(inode) && fxops && fxops->setlease)
+		error = fxops->setlease(filp, arg, lease);
+	else
+		error = __setlease(filp, arg, lease);
 	unlock_kernel();
 
 	return error;
@@ -1500,14 +1523,6 @@ int fcntl_setlease(unsigned int fd, struct file *filp, long arg)
 	if (IS_NO_LEASES(inode))
 		return -EINVAL;
 
-	if ((current->fsuid != inode->i_uid) && !capable(CAP_LEASE))
-		return -EACCES;
-	if (!S_ISREG(inode->i_mode))
-		return -EINVAL;
-	error = security_file_lock(filp, arg);
-	if (error)
-		return error;
-
 	locks_init_lock(&fl);
 	error = lease_init(filp, arg, &fl);
 	if (error)
@@ -1515,7 +1530,7 @@ int fcntl_setlease(unsigned int fd, struct file *filp, long arg)
 
 	lock_kernel();
 
-	error = __setlease(filp, arg, &flp);
+	error = setlease(filp, arg, &flp);
 	if (error || arg == F_UNLCK)
 		goto out_unlock;
 

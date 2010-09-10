@@ -71,6 +71,14 @@ static inline unsigned char get_nmi_reason(void)
 extern int panic_on_timeout;
 extern int unknown_nmi_panic;
 
+void lapic_watchdog_stop(void);
+int lapic_watchdog_probe(void);
+int lapic_watchdog_init(unsigned nmi_hz);
+int lapic_wd_event(unsigned nmi_hz);
+unsigned lapic_adjust_nmi_hz(unsigned hz);
+void disable_lapic_nmi_watchdog(void);
+void enable_lapic_nmi_watchdog(void);
+
 extern int check_nmi_watchdog(void);
  
 extern void setup_apic_nmi_watchdog (void);
@@ -78,7 +86,8 @@ extern int reserve_lapic_nmi(void);
 extern void release_lapic_nmi(void);
 extern void disable_timer_nmi_watchdog(void);
 extern void enable_timer_nmi_watchdog(void);
-extern void nmi_watchdog_tick (struct pt_regs * regs, unsigned reason);
+extern int nmi_watchdog_tick (struct pt_regs * regs, unsigned reason);
+extern int do_nmi_callback2(struct pt_regs *regs, int cpu);
 
 extern void nmi_watchdog_default(void);
 extern int setup_nmi_watchdog(char *);

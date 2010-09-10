@@ -17,12 +17,15 @@
 #include <linux/pci_ids.h>
 #include <linux/pci.h>
 #include <linux/bitops.h>
+#include <linux/ioport.h>
 #include <asm/e820.h>
 #include <asm/io.h>
 #include <asm/proto.h>
 #include <asm/pci-direct.h>
 #include <asm/dma.h>
 #include <asm/k8.h>
+
+extern void set_up_gart_resume(u32, u32);
 
 int iommu_aperture;
 int iommu_aperture_disabled __initdata = 0;
@@ -32,6 +35,18 @@ int fallback_aper_order __initdata = 1; /* 64MB */
 int fallback_aper_force __initdata = 0; 
 
 int fix_aperture __initdata = 1;
+
+static struct resource gart_resource = {
+	.name	= "GART",
+	.flags	= IORESOURCE_MEM,
+};
+
+static void __init insert_aperture_resource(u32 aper_base, u32 aper_size)
+{
+	gart_resource.start = aper_base;
+	gart_resource.end = aper_base + aper_size - 1;
+	insert_resource(&iomem_resource, &gart_resource);
+}
 
 /* This code runs before the PCI subsystem is initialized, so just
    access the northbridge directly. */
@@ -61,6 +76,9 @@ static u32 __init allocate_aperture(void)
 	}
 	printk("Mapping aperture over %d KB of RAM @ %lx\n",
 	       aper_size >> 10, __pa(p)); 
+	insert_aperture_resource((u32)__pa(p), aper_size);
+	e820_mark_nosave_range((u32)__pa(p), (u32)__pa(p+aper_size));
+
 	return (u32)__pa(p); 
 }
 
@@ -78,6 +96,10 @@ static int __init aperture_valid(u64 aper_base, u32 aper_size)
 	}
 	if (e820_any_mapped(aper_base, aper_base + aper_size, E820_RAM)) {
 		printk("Aperture pointing to e820 RAM. Ignoring.\n");
+		return 0; 
+	} 
+	if (e820_any_mapped(aper_base, aper_base + aper_size, E820_RUNTIME_CODE)) {
+		printk("Aperture pointing to runtime code. Ignoring.\n");
 		return 0; 
 	} 
 	return 1;
@@ -232,8 +254,13 @@ void __init iommu_hole_init(void)
 		last_aper_base = aper_base;
 	} 
 
-	if (!fix && !fallback_aper_force) 
+	if (!fix && !fallback_aper_force) {
+		if (last_aper_base) {
+			unsigned long n = (32 * 1024 * 1024) << last_aper_order;
+			insert_aperture_resource((u32)last_aper_base, n);
+		}
 		return; 
+	}
 
 	if (!fallback_aper_force)
 		aper_alloc = search_agp_bridge(&aper_order, &valid_agp); 
@@ -276,4 +303,6 @@ void __init iommu_hole_init(void)
 		write_pci_config(0, num, 3, 0x90, aper_order<<1); 
 		write_pci_config(0, num, 3, 0x94, aper_alloc>>25); 
 	} 
+	
+	set_up_gart_resume(aper_order, aper_alloc);
 } 

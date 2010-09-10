@@ -173,10 +173,15 @@ int ipoib_transport_dev_init(struct net_device *dev, struct ib_device *ca)
 		goto out_free_pd;
 	}
 
-	size = ipoib_sendq_size + ipoib_recvq_size;
+	size = ipoib_recvq_size;
 	ret = ipoib_cm_dev_init(dev);
-	if (!ret)
-		size += ipoib_recvq_size + 1; /* 1 extra for rx_drain_qp */
+	if (!ret) {
+		size += ipoib_sendq_size;
+		if (ipoib_cm_has_srq(dev))
+			size += ipoib_recvq_size + 1; /* 1 extra for rx_drain_qp */
+		else
+			size += ipoib_recvq_size * ipoib_max_conn_qp;
+	}
 
 	priv->rcq = ib_create_cq(priv->ca, ipoib_ib_rx_completion, NULL, dev, size, 0);
 	if (IS_ERR(priv->rcq)) {
@@ -228,8 +233,9 @@ int ipoib_transport_dev_init(struct net_device *dev, struct ib_device *ca)
 		priv->rx_wr_draft[i].sg_list = &priv->sglist_draft[i][0];
 		if (i < UD_POST_RCV_COUNT - 1)
 			priv->rx_wr_draft[i].next = &priv->rx_wr_draft[i + 1];
+		else
+			priv->rx_wr_draft[i].next = NULL;
 	}
-	priv->rx_wr_draft[i].next = NULL;
 
 	if (ipoib_ud_need_sg(priv->max_ib_mtu)) {
 		for (i = 0; i < UD_POST_RCV_COUNT; ++i) {

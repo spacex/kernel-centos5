@@ -671,6 +671,78 @@ static void klist_drivers_put(struct klist_node *n)
 	put_driver(drv);
 }
 
+#define NUM_BUCKETS 64
+#define MASK_BUCKETS (NUM_BUCKETS - 1)
+static struct list_head _bus_buckets[NUM_BUCKETS];
+struct bus_type_nb {
+	struct list_head list;
+	struct bus_type *bus;
+	struct blocking_notifier_head notifier;
+};
+
+static void init_buckets(struct list_head *buckets)
+{
+	unsigned int i;
+
+	for (i = 0; i < NUM_BUCKETS; i++)
+		INIT_LIST_HEAD(buckets + i);
+}
+
+static unsigned int hash_str(const void *bus)
+{
+	const unsigned int hash_mult = 2654435387U;
+	unsigned int h = 0;
+	char *str = (char *) &bus;
+	int i;
+
+	for (i = 0; i < sizeof(void *); i++)
+		h = (h + (unsigned int) str[i]) * hash_mult;
+
+	return h & MASK_BUCKETS;
+}
+
+static struct bus_type_nb *__get_cell(const void *bus)
+{
+	struct bus_type_nb *cell;
+	unsigned int h = hash_str(bus);
+
+	list_for_each_entry(cell, _bus_buckets + h, list)
+		if (cell->bus == bus)
+			return cell;
+	return NULL;
+}
+
+static struct blocking_notifier_head *alloc_save_notifier_for_bus(struct bus_type *bus)
+{
+	struct bus_type_nb *cell = __get_cell(bus);
+
+	if (cell) {
+		printk(KERN_ERR "bus %p trying to reallocate notifier head\n", bus);
+		return NULL;
+	}
+	cell = kzalloc(sizeof(*cell), GFP_KERNEL);
+	if (!cell)
+		return NULL;
+	cell->bus = bus;
+	list_add(&cell->list, _bus_buckets + hash_str(bus));
+	return &cell->notifier;
+}
+
+static void free_notifier_for_bus(struct bus_type *bus)
+{
+	struct bus_type_nb *cell = __get_cell(bus);
+	if (cell) {
+		list_del(&cell->list);
+		kfree(cell);
+	}
+}
+
+struct blocking_notifier_head *get_notifier_for_bus(struct bus_type *bus)
+{
+	struct bus_type_nb *cell = __get_cell(bus);
+	return cell ? &cell->notifier : NULL;
+}
+
 /**
  *	bus_register - register a bus with the system.
  *	@bus:	bus.
@@ -681,7 +753,14 @@ static void klist_drivers_put(struct klist_node *n)
  */
 int bus_register(struct bus_type * bus)
 {
-	int retval;
+	int retval = -ENOMEM;
+	struct blocking_notifier_head *notifier_head;
+
+	notifier_head = alloc_save_notifier_for_bus(bus);
+	if (!notifier_head)
+		goto out;
+
+	BLOCKING_INIT_NOTIFIER_HEAD(notifier_head);
 
 	retval = kobject_set_name(&bus->subsys.kset.kobj, "%s", bus->name);
 	if (retval)
@@ -720,6 +799,27 @@ out:
 	return retval;
 }
 
+int bus_register_notifier(struct bus_type *bus, struct notifier_block *nb)
+{
+	struct blocking_notifier_head *notifier_head;
+
+	notifier_head = get_notifier_for_bus(bus);
+	if (!notifier_head)
+		return 0;
+	return blocking_notifier_chain_register(notifier_head, nb);
+}
+EXPORT_SYMBOL_GPL(bus_register_notifier);
+
+int bus_unregister_notifier(struct bus_type *bus, struct notifier_block *nb)
+{
+	struct blocking_notifier_head *notifier_head;
+
+	notifier_head = get_notifier_for_bus(bus);
+	if (!notifier_head)
+		return 0;
+	return blocking_notifier_chain_unregister(notifier_head, nb);
+}
+EXPORT_SYMBOL_GPL(bus_unregister_notifier);
 
 /**
  *	bus_unregister - remove a bus from the system
@@ -731,6 +831,7 @@ out:
 void bus_unregister(struct bus_type * bus)
 {
 	pr_debug("bus %s: unregistering\n", bus->name);
+	free_notifier_for_bus(bus);
 	bus_remove_attrs(bus);
 	kset_unregister(&bus->drivers);
 	kset_unregister(&bus->devices);
@@ -739,9 +840,9 @@ void bus_unregister(struct bus_type * bus)
 
 int __init buses_init(void)
 {
+	init_buckets(_bus_buckets);
 	return subsystem_register(&bus_subsys);
 }
-
 
 EXPORT_SYMBOL_GPL(bus_for_each_dev);
 EXPORT_SYMBOL_GPL(bus_find_device);

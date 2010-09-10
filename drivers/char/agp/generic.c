@@ -54,10 +54,13 @@ EXPORT_SYMBOL_GPL(agp_memory_reserved);
 #if defined(CONFIG_X86)
 int map_page_into_agp(struct page *page)
 {
-	int i;
-	i = change_page_attr(page, 1, PAGE_KERNEL_NOCACHE);
-	/* Caller's responsibility to call global_flush_tlb() for
-	 * performance reasons */
+	int i = 0;
+#ifdef CONFIG_XEN
+	if (!xen_create_contiguous_region((unsigned long)page_address(page), 0, 32))
+#endif
+		i = change_page_attr(page, 1, PAGE_KERNEL_NOCACHE);
+		/* Caller's responsibility to call global_flush_tlb() for
+		 * performance reasons */
 	return i;
 }
 EXPORT_SYMBOL_GPL(map_page_into_agp);
@@ -65,6 +68,9 @@ EXPORT_SYMBOL_GPL(map_page_into_agp);
 int unmap_page_from_agp(struct page *page)
 {
 	int i;
+#ifdef CONFIG_XEN
+	xen_destroy_contiguous_region((unsigned long)page_address(page), 0);
+#endif
 	i = change_page_attr(page, 1, PAGE_KERNEL);
 	/* Caller's responsibility to call global_flush_tlb() for
 	 * performance reasons */

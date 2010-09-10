@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2007 QLogic Corporation. All rights reserved.
+ * Copyright (c) 2006, 2007, 2008 QLogic Corporation. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -292,7 +292,7 @@ void ipath_get_faststats(unsigned long opaque)
 	    && time_after(jiffies, dd->ipath_unmasktime)) {
 		char ebuf[256];
 		int iserr;
-		iserr = ipath_decode_err(ebuf, sizeof ebuf,
+		iserr = ipath_decode_err(dd, ebuf, sizeof ebuf,
 					 dd->ipath_maskederrs);
 		if (dd->ipath_maskederrs &
 		    ~(INFINIPATH_E_RRCVEGRFULL | INFINIPATH_E_RRCVHDRFULL |

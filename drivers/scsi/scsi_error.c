@@ -33,6 +33,7 @@
 #include <scsi/scsi_transport.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_ioctl.h>
+#include <scsi/scsi_dh.h>
 
 #include "scsi_priv.h"
 #include "scsi_logging.h"
@@ -290,7 +291,9 @@ static inline void scsi_eh_prt_fail_stats(struct Scsi_Host *shost,
  * @scmd:	Cmd to have sense checked.
  *
  * Return value:
- * 	SUCCESS or FAILED or NEEDS_RETRY
+ * 	SCSI_MLQUEUE_DIS_FINISH
+ * 	SCSI_MLQUEUE_DIS_RETRY
+ * 	SCSI_MLQUEUE_DIS_FAIL
  *
  * Notes:
  *	When a deferred error is detected the current command has
@@ -298,13 +301,25 @@ static inline void scsi_eh_prt_fail_stats(struct Scsi_Host *shost,
  **/
 static int scsi_check_sense(struct scsi_cmnd *scmd)
 {
+	struct scsi_device *sdev = scmd->device;
 	struct scsi_sense_hdr sshdr;
+	struct scsi_dh_data *scsi_dh_data = retrieve_scsi_dh_data(sdev);
 
 	if (! scsi_command_normalize_sense(scmd, &sshdr))
-		return FAILED;	/* no valid sense data */
+		return SCSI_MLQUEUE_DIS_FAIL;	/* no valid sense data */
 
 	if (scsi_sense_is_deferred(&sshdr))
-		return NEEDS_RETRY;
+		return SCSI_MLQUEUE_DIS_DEV_RETRY;
+
+	if (scsi_dh_data && scsi_dh_data->scsi_dh &&
+			scsi_dh_data->scsi_dh->check_sense) {
+		int rc;
+
+		rc = scsi_dh_data->scsi_dh->check_sense(sdev, &sshdr);
+		if (rc)
+			return rc;
+		/* handler does not care. Drop down to default handling */
+	}
 
 	/*
 	 * Previous logic looked for FILEMARK, EOM or ILI which are
@@ -313,7 +328,7 @@ static int scsi_check_sense(struct scsi_cmnd *scmd)
 	if (sshdr.response_code == 0x70) {
 		/* fixed format */
 		if (scmd->sense_buffer[2] & 0xe0)
-			return SUCCESS;
+			return SCSI_MLQUEUE_DIS_FINISH;
 	} else {
 		/*
 		 * descriptor format: look for "stream commands sense data
@@ -323,17 +338,17 @@ static int scsi_check_sense(struct scsi_cmnd *scmd)
 		if ((sshdr.additional_length > 3) &&
 		    (scmd->sense_buffer[8] == 0x4) &&
 		    (scmd->sense_buffer[11] & 0xe0))
-			return SUCCESS;
+			return SCSI_MLQUEUE_DIS_FINISH;
 	}
 
 	switch (sshdr.sense_key) {
 	case NO_SENSE:
-		return SUCCESS;
+		return SCSI_MLQUEUE_DIS_FINISH;
 	case RECOVERED_ERROR:
-		return /* soft_error */ SUCCESS;
+		return /* soft_error */ SCSI_MLQUEUE_DIS_FINISH;
 
 	case ABORTED_COMMAND:
-		return NEEDS_RETRY;
+		return SCSI_MLQUEUE_DIS_DEV_RETRY;
 	case NOT_READY:
 	case UNIT_ATTENTION:
 		/*
@@ -344,43 +359,43 @@ static int scsi_check_sense(struct scsi_cmnd *scmd)
 		 */
 		if (scmd->device->expecting_cc_ua) {
 			scmd->device->expecting_cc_ua = 0;
-			return NEEDS_RETRY;
+			return SCSI_MLQUEUE_DIS_DEV_RETRY;
 		}
 		/*
 		 * if the device is in the process of becoming ready, we 
 		 * should retry.
 		 */
 		if ((sshdr.asc == 0x04) && (sshdr.ascq == 0x01))
-			return NEEDS_RETRY;
+			return SCSI_MLQUEUE_DIS_DEV_RETRY;
 		/*
 		 * if the device is not started, we need to wake
 		 * the error handler to start the motor
 		 */
 		if (scmd->device->allow_restart &&
 		    (sshdr.asc == 0x04) && (sshdr.ascq == 0x02))
-			return FAILED;
-		return SUCCESS;
+			return SCSI_MLQUEUE_DIS_FAIL;
+		return SCSI_MLQUEUE_DIS_FINISH;
 
 		/* these three are not supported */
 	case COPY_ABORTED:
 	case VOLUME_OVERFLOW:
 	case MISCOMPARE:
-		return SUCCESS;
+		return SCSI_MLQUEUE_DIS_FINISH;
 
 	case MEDIUM_ERROR:
-		return NEEDS_RETRY;
+		return SCSI_MLQUEUE_DIS_DEV_RETRY;
 
 	case HARDWARE_ERROR:
 		if (scmd->device->retry_hwerror)
-			return NEEDS_RETRY;
+			return SCSI_MLQUEUE_DIS_DEV_RETRY;
 		else
-			return SUCCESS;
+			return SCSI_MLQUEUE_DIS_FINISH;
 
 	case ILLEGAL_REQUEST:
 	case BLANK_CHECK:
 	case DATA_PROTECT:
 	default:
-		return SUCCESS;
+		return SCSI_MLQUEUE_DIS_FINISH;
 	}
 }
 
@@ -410,13 +425,13 @@ static int scsi_eh_completed_normally(struct scsi_cmnd *scmd)
 		return scsi_check_sense(scmd);
 	}
 	if (host_byte(scmd->result) != DID_OK)
-		return FAILED;
+		return SCSI_MLQUEUE_DIS_FAIL;
 
 	/*
 	 * next, check the message byte.
 	 */
 	if (msg_byte(scmd->result) != COMMAND_COMPLETE)
-		return FAILED;
+		return SCSI_MLQUEUE_DIS_FAIL;
 
 	/*
 	 * now, check the status byte to see if this indicates
@@ -425,7 +440,7 @@ static int scsi_eh_completed_normally(struct scsi_cmnd *scmd)
 	switch (status_byte(scmd->result)) {
 	case GOOD:
 	case COMMAND_TERMINATED:
-		return SUCCESS;
+		return SCSI_MLQUEUE_DIS_FINISH;
 	case CHECK_CONDITION:
 		return scsi_check_sense(scmd);
 	case CONDITION_GOOD:
@@ -434,14 +449,14 @@ static int scsi_eh_completed_normally(struct scsi_cmnd *scmd)
 		/*
 		 * who knows?  FIXME(eric)
 		 */
-		return SUCCESS;
+		return SCSI_MLQUEUE_DIS_FINISH;
 	case BUSY:
 	case QUEUE_FULL:
 	case RESERVATION_CONFLICT:
 	default:
-		return FAILED;
+		return SCSI_MLQUEUE_DIS_FAIL;
 	}
-	return FAILED;
+	return SCSI_MLQUEUE_DIS_FAIL;
 }
 
 /**
@@ -700,15 +715,12 @@ static int scsi_send_eh_cmnd(struct scsi_cmnd *scmd, unsigned char *cmnd,
 			printk("%s: scsi_eh_completed_normally %x\n",
 			       __FUNCTION__, rtn));
 
-		switch (rtn) {
-		case SUCCESS:
-		case NEEDS_RETRY:
-		case FAILED:
-			break;
-		default:
+		if (scsi_disposition_finish(rtn))
+			rtn = SUCCESS;
+		else if (scsi_disposition_retry(rtn))
+			rtn = NEEDS_RETRY;
+		else
 			rtn = FAILED;
-			break;
-		}
 	} else {
 		scsi_abort_eh_cmnd(scmd);
 		rtn = FAILED;
@@ -720,7 +732,7 @@ static int scsi_send_eh_cmnd(struct scsi_cmnd *scmd, unsigned char *cmnd,
 	 */
 	if (copy_sense) {
 		if (!SCSI_SENSE_VALID(scmd)) {
-			memcpy(scmd->sense_buffer, scmd->request_buffer,
+			memcpy(scmd->sense_buffer, page_address(sgl.page),
 			       sizeof(scmd->sense_buffer));
 		}
 		__free_page(sgl.page);
@@ -773,6 +785,8 @@ void scsi_eh_finish_cmd(struct scsi_cmnd *scmd, struct list_head *done_q)
 {
 	scmd->device->host->host_failed--;
 	scmd->eh_eflags = 0;
+	if (!scmd->result)
+		scmd->result |= (DRIVER_TIMEOUT << 24);
 	list_move_tail(&scmd->eh_entry, done_q);
 }
 EXPORT_SYMBOL(scsi_eh_finish_cmd);
@@ -826,13 +840,13 @@ int scsi_eh_get_sense(struct list_head *work_q,
 		 * if the result was normal, then just pass it along to the
 		 * upper level.
 		 */
-		if (rtn == SUCCESS)
+		if (scsi_disposition_finish(rtn))
 			/* we don't want this command reissued, just
 			 * finished with the sense data, so set
 			 * retries to the max allowed to ensure it
 			 * won't get reissued */
 			scmd->retries = scmd->allowed;
-		else if (rtn != NEEDS_RETRY)
+		else if (!scsi_disposition_retry(rtn))
 			continue;
 
 		scsi_eh_finish_cmd(scmd, done_q);
@@ -960,7 +974,7 @@ static int scsi_eh_stu(struct Scsi_Host *shost,
 		stu_scmd = NULL;
 		list_for_each_entry(scmd, work_q, eh_entry)
 			if (scmd->device == sdev && SCSI_SENSE_VALID(scmd) &&
-			    scsi_check_sense(scmd) == FAILED ) {
+			    scsi_check_sense(scmd) == SCSI_MLQUEUE_DIS_FAIL) {
 				stu_scmd = scmd;
 				break;
 			}
@@ -1181,19 +1195,6 @@ static void scsi_eh_offline_sdevs(struct list_head *work_q,
  **/
 int scsi_decide_disposition(struct scsi_cmnd *scmd)
 {
-	int rtn;
-
-	/*
-	 * if the device is offline, then we clearly just pass the result back
-	 * up to the top level.
-	 */
-	if (!scsi_device_online(scmd->device)) {
-		SCSI_LOG_ERROR_RECOVERY(5, printk("%s: device offline - report"
-						  " as SUCCESS\n",
-						  __FUNCTION__));
-		return SUCCESS;
-	}
-
 	/*
 	 * first check the host byte, to see if there is anything in there
 	 * that would indicate what we need to do.
@@ -1206,7 +1207,7 @@ int scsi_decide_disposition(struct scsi_cmnd *scmd)
 		 * did_ok.
 		 */
 		scmd->result &= 0xff00ffff;
-		return SUCCESS;
+		return SCSI_MLQUEUE_DIS_FINISH;
 	case DID_OK:
 		/*
 		 * looks good.  drop through, and check the next byte.
@@ -1220,7 +1221,7 @@ int scsi_decide_disposition(struct scsi_cmnd *scmd)
 		 * to the top level driver, not that we actually think
 		 * that it indicates SUCCESS.
 		 */
-		return SUCCESS;
+		return SCSI_MLQUEUE_DIS_FINISH;
 		/*
 		 * when the low level driver returns did_soft_error,
 		 * it is responsible for keeping an internal retry counter 
@@ -1231,13 +1232,26 @@ int scsi_decide_disposition(struct scsi_cmnd *scmd)
 		 * and not get stuck in a loop.
 		 */
 	case DID_SOFT_ERROR:
-		goto maybe_retry;
+		return SCSI_MLQUEUE_DIS_DRV_RETRY;
 	case DID_IMM_RETRY:
-		return NEEDS_RETRY;
-
+		return SCSI_MLQUEUE_IMM_RETRY;
 	case DID_REQUEUE:
-		return ADD_TO_MLQUEUE;
-
+		return SCSI_MLQUEUE_DEVICE_BUSY2;
+	case DID_TRANSPORT_DISRUPTED:
+		/*
+		 * LLD/transport was disrupted during processing of the IO.
+		 * The transport class is now blocked/blocking,
+		 * and the transport will decide what to do with the IO
+		 * based on its timers and recovery capablilities if
+		 * cmd->retries permits.
+		 */
+		return SCSI_MLQUEUE_TARGET_COM_ERR;
+	case DID_TRANSPORT_FAILFAST:
+		/*
+		 * The transport decided to failfast the IO (most likely
+		 * the fast io fail tmo fired), so send IO directly upwards.
+		 */
+		return SCSI_MLQUEUE_DIS_FINISH;
 	case DID_ERROR:
 		if (msg_byte(scmd->result) == COMMAND_COMPLETE &&
 		    status_byte(scmd->result) == RESERVATION_CONFLICT)
@@ -1246,11 +1260,11 @@ int scsi_decide_disposition(struct scsi_cmnd *scmd)
 			 * lower down
 			 */
 			break;
-		/* fallthrough */
-
-	case DID_BUS_BUSY:
+		/* fall through */
 	case DID_PARITY:
-		goto maybe_retry;
+		return SCSI_MLQUEUE_DIS_DEV_RETRY;
+	case DID_BUS_BUSY:
+		return SCSI_MLQUEUE_DIS_XPT_RETRY;
 	case DID_TIME_OUT:
 		/*
 		 * when we scan the bus, we get timeout messages for
@@ -1259,21 +1273,21 @@ int scsi_decide_disposition(struct scsi_cmnd *scmd)
 		 */
 		if ((scmd->cmnd[0] == TEST_UNIT_READY ||
 		     scmd->cmnd[0] == INQUIRY)) {
-			return SUCCESS;
+			return SCSI_MLQUEUE_DIS_FINISH;
 		} else {
-			return FAILED;
+			return SCSI_MLQUEUE_DIS_FAIL;
 		}
 	case DID_RESET:
-		return SUCCESS;
+		return SCSI_MLQUEUE_DIS_FINISH;
 	default:
-		return FAILED;
+		return SCSI_MLQUEUE_DIS_FAIL;
 	}
 
 	/*
 	 * next, check the message byte.
 	 */
 	if (msg_byte(scmd->result) != COMMAND_COMPLETE)
-		return FAILED;
+		return SCSI_MLQUEUE_DIS_FAIL;
 
 	/*
 	 * check the status byte to see if this indicates anything special.
@@ -1291,20 +1305,13 @@ int scsi_decide_disposition(struct scsi_cmnd *scmd)
 		 * the empty queue handling to trigger a stall in the
 		 * device.
 		 */
-		return ADD_TO_MLQUEUE;
+		return SCSI_MLQUEUE_DEVICE_BUSY2;
 	case GOOD:
 	case COMMAND_TERMINATED:
 	case TASK_ABORTED:
-		return SUCCESS;
+		return SCSI_MLQUEUE_DIS_FINISH;
 	case CHECK_CONDITION:
-		rtn = scsi_check_sense(scmd);
-		if (rtn == NEEDS_RETRY)
-			goto maybe_retry;
-		/* if rtn == FAILED, we have no sense information;
-		 * returning FAILED will wake the error handler thread
-		 * to collect the sense and redo the decide
-		 * disposition */
-		return rtn;
+		return scsi_check_sense(scmd);
 	case CONDITION_GOOD:
 	case INTERMEDIATE_GOOD:
 	case INTERMEDIATE_C_GOOD:
@@ -1312,32 +1319,17 @@ int scsi_decide_disposition(struct scsi_cmnd *scmd)
 		/*
 		 * who knows?  FIXME(eric)
 		 */
-		return SUCCESS;
+		return SCSI_MLQUEUE_DIS_FINISH;
 
 	case RESERVATION_CONFLICT:
 		sdev_printk(KERN_INFO, scmd->device,
 			    "reservation conflict\n");
-		return SUCCESS; /* causes immediate i/o error */
+		return SCSI_MLQUEUE_DIS_FINISH; /* causes immediate i/o error */
 	default:
-		return FAILED;
+		return SCSI_MLQUEUE_DIS_FAIL;
 	}
-	return FAILED;
+	return SCSI_MLQUEUE_DIS_FAIL;
 
-      maybe_retry:
-
-	/* we requeue for retry because the error was retryable, and
-	 * the request was not marked fast fail.  Note that above,
-	 * even if the request is marked fast fail, we still requeue
-	 * for queue congestion conditions (QUEUE_FULL or BUSY) */
-	if ((++scmd->retries) <= scmd->allowed
-	    && !blk_noretry_request(scmd->request)) {
-		return NEEDS_RETRY;
-	} else {
-		/*
-		 * no more retries - report this one back to upper level.
-		 */
-		return SUCCESS;
-	}
 }
 
 /**
@@ -1453,27 +1445,10 @@ void scsi_eh_flush_done_q(struct list_head *done_q)
 
 	list_for_each_entry_safe(scmd, next, done_q, eh_entry) {
 		list_del_init(&scmd->eh_entry);
-		if (scsi_device_online(scmd->device) &&
-		    !blk_noretry_request(scmd->request) &&
-		    (++scmd->retries <= scmd->allowed)) {
-			SCSI_LOG_ERROR_RECOVERY(3, printk("%s: flush"
-							  " retry cmd: %p\n",
-							  current->comm,
-							  scmd));
-				scsi_queue_insert(scmd, SCSI_MLQUEUE_EH_RETRY);
-		} else {
-			/*
-			 * If just we got sense for the device (called
-			 * scsi_eh_get_sense), scmd->result is already
-			 * set, do not set DRIVER_TIMEOUT.
-			 */
-			if (!scmd->result)
-				scmd->result |= (DRIVER_TIMEOUT << 24);
-			SCSI_LOG_ERROR_RECOVERY(3, printk("%s: flush finish"
-							" cmd: %p\n",
-							current->comm, scmd));
-			scsi_finish_command(scmd);
-		}
+		SCSI_LOG_ERROR_RECOVERY(3, printk("%s: flush"
+						  "attempt retry cmd: %p\n",
+						  current->comm, scmd));
+		scsi_attempt_requeue_command(scmd, SCSI_MLQUEUE_DIS_RETRY);
 	}
 }
 EXPORT_SYMBOL(scsi_eh_flush_done_q);
@@ -1911,3 +1886,31 @@ int scsi_get_sense_info_fld(const u8 * sense_buffer, int sb_len,
 	}
 }
 EXPORT_SYMBOL(scsi_get_sense_info_fld);
+
+/**
+ * scsi_build_sense_buffer - build sense data in a buffer
+ * @desc:	Sense format (non zero == descriptor format,
+ * 		0 == fixed format)
+ * @buf:	Where to build sense data
+ * @key:	Sense key
+ * @asc:	Additional sense code
+ * @ascq:	Additional sense code qualifier
+ *
+ **/
+void scsi_build_sense_buffer(int desc, u8 *buf, u8 key, u8 asc, u8 ascq)
+{
+	if (desc) {
+		buf[0] = 0x72;	/* descriptor, current */
+		buf[1] = key;
+		buf[2] = asc;
+		buf[3] = ascq;
+		buf[7] = 0;
+	} else {
+		buf[0] = 0x70;	/* fixed, current */
+		buf[2] = key;
+		buf[7] = 0xa;
+		buf[12] = asc;
+		buf[13] = ascq;
+	}
+}
+EXPORT_SYMBOL(scsi_build_sense_buffer);

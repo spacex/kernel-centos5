@@ -136,9 +136,9 @@ int __init build_tce_table(struct pci_dev *dev, void __iomem *bbar)
 	struct iommu_table *tbl;
 	int ret;
 
-	if (dev->sysdata) {
+	if (pci_iommu(dev->bus)) {
 		printk(KERN_ERR "Calgary: dev %p has sysdata %p\n",
-		       dev, dev->sysdata);
+		       dev, pci_iommu(dev->bus));
 		BUG();
 	}
 
@@ -159,7 +159,7 @@ int __init build_tce_table(struct pci_dev *dev, void __iomem *bbar)
 	 * NUMA is already using the bus's sysdata pointer, so we use
 	 * the bus's pci_dev's sysdata instead.
 	 */
-	dev->sysdata = tbl;
+	set_pci_iommu(dev->bus, tbl);
 
 	return 0;
 

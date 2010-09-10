@@ -377,7 +377,8 @@ HYPERVISOR_add_io_space(unsigned long phys_base,
 #define HYPERVISOR_update_va_mapping(va, new_val, flags) (0)
 
 /* Use xencomm to do hypercalls.  */
-#ifdef MODULE
+/* #ifdef MODULE */
+#if defined(MODULE) || defined(CONFIG_XEN_PV_ON_HVM)
 #define HYPERVISOR_sched_op xencomm_mini_hypercall_sched_op
 #define HYPERVISOR_event_channel_op xencomm_mini_hypercall_event_channel_op
 #define HYPERVISOR_callback_op xencomm_mini_hypercall_callback_op

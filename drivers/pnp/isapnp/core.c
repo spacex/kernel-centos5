@@ -631,7 +631,7 @@ static int __init isapnp_create_device(struct pnp_card *card,
 		kfree(dev);
 		return 1;
 	}
-	pnp_add_card_device(card,dev);
+	pnp_add_card_device(card,dev, dev->number);
 
 	while (1) {
 		if (isapnp_read_tag(&type, &size)<0)
@@ -650,7 +650,7 @@ static int __init isapnp_create_device(struct pnp_card *card,
 					kfree(dev);
 					return 1;
 				}
-				pnp_add_card_device(card,dev);
+				pnp_add_card_device(card,dev, dev->number);
 			} else {
 				skip = 1;
 			}

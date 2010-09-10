@@ -46,4 +46,8 @@ s32 ixgbe_check_tnx_phy_link(struct ixgbe_hw *hw, u32 *speed, bool *link_up);
 s32 ixgbe_setup_tnx_phy_link_speed(struct ixgbe_hw *hw, u32 speed, bool autoneg,
 				  bool autoneg_wait_to_complete);
 
+/* PHY specific */
+s32 ixgbe_get_phy_firmware_version_tnx(struct ixgbe_hw *hw,
+                                       u16 *firmware_version);
+
 #endif /* _IXGBE_PHY_H_ */

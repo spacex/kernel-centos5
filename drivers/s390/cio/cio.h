@@ -112,6 +112,7 @@ struct subchannel {
 	struct ssd_info ssd_info;	/* subchannel description */
 	struct device dev;	/* entry in device tree */
 	struct css_driver *driver;
+	struct work_struct kick_work;
 } __attribute__ ((aligned(8)));
 
 #define IO_INTERRUPT_TYPE	   0 /* I/O interrupt type */

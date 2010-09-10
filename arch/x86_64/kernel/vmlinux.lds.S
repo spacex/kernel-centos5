@@ -68,6 +68,8 @@ SECTIONS
 				/* Data */
   .data : AT(ADDR(.data) - LOAD_OFFSET) {
 	*(.data)
+	MARKERS_DATA
+	TRACEPOINTS_DATA
 	CONSTRUCTORS
 	} :data
 

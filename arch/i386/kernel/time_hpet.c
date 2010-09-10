@@ -22,7 +22,7 @@
 #include <asm/hpet.h>
 #include <linux/hpet.h>
 
-static unsigned long hpet_period;	/* fsecs / HPET clock */
+unsigned long hpet_period;		/* fsecs / HPET clock */
 unsigned long hpet_tick;		/* hpet clks count per tick */
 unsigned long hpet_tick_real;		/* hpet clocks per interrupt */
 unsigned long hpet_address;		/* hpet memory map physical address */

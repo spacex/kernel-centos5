@@ -46,18 +46,21 @@
 #include <linux/blkdev.h>
 #include <linux/genhd.h>
 #include <linux/completion.h>
+#include <scsi/sg.h>
+#include <scsi/scsi_ioctl.h>
+#include <linux/cdrom.h>
 
 #define CCISS_DRIVER_VERSION(maj,min,submin) ((maj<<16)|(min<<8)|(submin))
-#define DRIVER_NAME "HP CISS Driver (v 3.6.20-RH1)"
+#define DRIVER_NAME "HP CISS Driver (v 3.6.20-RH2)"
 #define DRIVER_VERSION CCISS_DRIVER_VERSION(3,6,20)
 
 /* Embedded module documentation macros - see modules.h */
 MODULE_AUTHOR("Hewlett-Packard Company");
-MODULE_DESCRIPTION("Driver for HP Controller SA5xxx SA6xxx version 3.6.20-RH1");
+MODULE_DESCRIPTION("Driver for HP Controller SA5xxx SA6xxx version 3.6.20-RH2");
 MODULE_SUPPORTED_DEVICE("HP SA5i SA5i+ SA532 SA5300 SA5312 SA641 SA642 SA6400"
 			" SA6i P600 P800 P400 P400i E200 E200i E500 P700m"
 			" and HP Smart Array G2 SAS/SATA Controllers");
-MODULE_VERSION("3.6.20-RH1");
+MODULE_VERSION("3.6.20-RH2");
 MODULE_LICENSE("GPL");
 
 #include "cciss_cmd.h"
@@ -86,17 +89,13 @@ static const struct pci_device_id cciss_pci_device_id[] = {
 	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSD,     0x103C, 0x3215},
 	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSC,     0x103C, 0x3237},
 	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSC,     0x103C, 0x323D},
-	{PCI_VENDOR_ID_HP, 	PCI_DEVICE_ID_HP_CISSC,     0x103c, 0x323D},
-	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3240},
 	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3241},
-	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3242},
 	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3243},
-	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3244},
 	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3245},
-	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3246},
 	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3247},
-	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3248},
 	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x3249},
+	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x324A},
+	{PCI_VENDOR_ID_HP,     PCI_DEVICE_ID_HP_CISSE,     0x103C, 0x324B},
 	{PCI_VENDOR_ID_HP,     PCI_ANY_ID,      PCI_ANY_ID, PCI_ANY_ID,
 		PCI_CLASS_STORAGE_RAID << 8, 0xffff << 8, 0},
 	{0,}
@@ -107,40 +106,36 @@ MODULE_DEVICE_TABLE(pci, cciss_pci_device_id);
 /*  board_id = Subsystem Device ID & Vendor ID
  *  product = Marketing Name for the board
  *  access = Address of the struct of function pointers
- *  nr_cmds = Number of commands supported by controller
  */
 static struct board_type products[] = {
-	{0x40700E11, "Smart Array 5300", &SA5_access, 512},
-	{0x40800E11, "Smart Array 5i", &SA5B_access, 512},
-	{0x40820E11, "Smart Array 532", &SA5B_access, 512},
-	{0x40830E11, "Smart Array 5312", &SA5B_access, 512},
-	{0x409A0E11, "Smart Array 641", &SA5_access, 512},
-	{0x409B0E11, "Smart Array 642", &SA5_access, 512},
-	{0x409C0E11, "Smart Array 6400", &SA5_access, 512},
-	{0x409D0E11, "Smart Array 6400 EM", &SA5_access, 512},
-	{0x40910E11, "Smart Array 6i", &SA5_access, 512},
-	{0x3225103C, "Smart Array P600", &SA5_access, 512},
-	{0x3223103C, "Smart Array P800", &SA5_access, 512},
-	{0x3234103C, "Smart Array P400", &SA5_access, 512},
-	{0x3235103C, "Smart Array P400i", &SA5_access, 512},
-	{0x3211103C, "Smart Array E200i", &SA5_access, 120},
-	{0x3212103C, "Smart Array E200", &SA5_access, 120},
-	{0x3213103C, "Smart Array E200i", &SA5_access, 120},
-	{0x3214103C, "Smart Array E200i", &SA5_access, 120},
-	{0x3215103C, "Smart Array E200i", &SA5_access, 120},
-	{0x3237103C, "Smart Array E500", &SA5_access, 512},
-	{0x323D103C, "Smart Array P700m", &SA5_access, 512},
-	{0x3240103C, "Smart Array 344", &SA5_access, 384},
-	{0x3241103C, "Smart Array 544", &SA5_access, 384},
-	{0x3242103C, "Smart Array 380", &SA5_access, 384},
-	{0x3243103C, "Smart Array 580", &SA5_access, 384},
-	{0x3244103C, "Smart Array 380i", &SA5_access, 384},
-	{0x3245103C, "Smart Array 580i", &SA5_access, 384},
-	{0x3246103C, "Smart Array 308", &SA5_access, 384},
-	{0x3247103C, "Smart Array 508", &SA5_access, 384},
-	{0x3248103C, "Smart Array 388", &SA5_access, 384},
-	{0x3249103C, "Smart Array 588", &SA5_access, 384},
-	{0xFFFF103C, "Unknown Smart Array", &SA5_access, 120},
+	{0x40700E11, "Smart Array 5300", &SA5_access},
+	{0x40800E11, "Smart Array 5i", &SA5B_access},
+	{0x40820E11, "Smart Array 532", &SA5B_access},
+	{0x40830E11, "Smart Array 5312", &SA5B_access},
+	{0x409A0E11, "Smart Array 641", &SA5_access},
+	{0x409B0E11, "Smart Array 642", &SA5_access},
+	{0x409C0E11, "Smart Array 6400", &SA5_access},
+	{0x409D0E11, "Smart Array 6400 EM", &SA5_access},
+	{0x40910E11, "Smart Array 6i", &SA5_access},
+	{0x3225103C, "Smart Array P600", &SA5_access},
+	{0x3223103C, "Smart Array P800", &SA5_access},
+	{0x3234103C, "Smart Array P400", &SA5_access},
+	{0x3235103C, "Smart Array P400i", &SA5_access},
+	{0x3211103C, "Smart Array E200i", &SA5_access},
+	{0x3212103C, "Smart Array E200", &SA5_access},
+	{0x3213103C, "Smart Array E200i", &SA5_access},
+	{0x3214103C, "Smart Array E200i", &SA5_access},
+	{0x3215103C, "Smart Array E200i", &SA5_access},
+	{0x3237103C, "Smart Array E500", &SA5_access},
+	{0x323D103C, "Smart Array P700m", &SA5_access},
+	{0x3241103C, "Smart Array P212", &SA5_access},
+	{0x3243103C, "Smart Array P410", &SA5_access},
+	{0x3245103C, "Smart Array P410i", &SA5_access},
+	{0x3247103C, "Smart Array P411", &SA5_access},
+	{0x3249103C, "Smart Array P812", &SA5_access},
+	{0x324A103C, "Smart Array P712m", &SA5_access},
+	{0x324B103C, "Smart Array P711m", &SA5_access},
+	{0xFFFF103C, "Unknown Smart Array", &SA5_access},
 };
 
 /* How long to wait (in milliseconds) for board to go into simple mode */
@@ -336,7 +331,7 @@ static int cciss_seq_show(struct seq_file *seq, void *v)
 		drv->raid_level = RAID_UNKNOWN;
 	seq_printf(seq, "cciss/c%dd%d:"
 			"\t%4u.%02uGB\tRAID %s\n",
-			ctlr, *pos, (int)vol_sz, (int)vol_sz_frac,
+			ctlr, (int)*pos, (int)vol_sz, (int)vol_sz_frac,
 			raid_label[drv->raid_level]);
 
 	return 0;
@@ -1234,6 +1229,32 @@ static int cciss_ioctl(struct inode *inode, struct file *filep,
 			kfree(ioc);
 			return status;
 		}
+
+	/* scsi_cmd_ioctl handles these, below, though some are not
+	 * very meaningful for cciss.  SG_IO is the main one people want.
+	 */
+
+	case SG_GET_VERSION_NUM:
+	case SG_SET_TIMEOUT:
+	case SG_GET_TIMEOUT:
+	case SG_GET_RESERVED_SIZE:
+	case SG_SET_RESERVED_SIZE:
+	case SG_EMULATED_HOST:
+	case SG_IO:
+	case SCSI_IOCTL_SEND_COMMAND:
+		return scsi_cmd_ioctl(filep, disk, cmd, argp);
+
+	/* scsi_cmd_ioctl would normally handle these, below, but
+	 * they aren't a good fit for cciss, as CD-ROMs are
+	 * not supported, and we don't have any bus/target/lun
+	 * which we present to the kernel.
+	 */
+
+	case CDROM_SEND_PACKET:
+	case CDROMCLOSETRAY:
+	case CDROMEJECT:
+	case SCSI_IOCTL_GET_IDLUN:
+	case SCSI_IOCTL_GET_BUS_NUMBER:
 	default:
 		return -ENOTTY;
 	}
@@ -1247,7 +1268,7 @@ static inline void complete_buffers(struct bio *bio, int status)
 
 		bio->bi_next = NULL;
 		blk_finished_io(len);
-		bio_endio(bio, nr_sectors << 9, status ? 0 : -EIO);
+		bio_endio(bio, nr_sectors << 9, status);
 		bio = xbh;
 	}
 }
@@ -1325,7 +1346,8 @@ static void cciss_softirq_done(struct request *rq)
 	if (blk_fs_request(rq)) {
 		const int rw = rq_data_dir(rq);
 
-		disk_stat_add(rq->rq_disk, sectors[rw], rq->nr_sectors);
+		all_stat_add(rq->rq_disk, sectors[rw],
+			     rq->nr_sectors, rq->sector);
 	}
 
 #ifdef CCISS_DEBUG
@@ -1363,6 +1385,10 @@ static void cciss_update_drive_info(int ctlr, int drv_index)
 		spin_lock_irqsave(CCISS_LOCK(h->ctlr), flags);
 		h->drv[drv_index].busy_configuring = 1;
 		spin_unlock_irqrestore(CCISS_LOCK(h->ctlr), flags);
+
+		/* deregister_disk sets h->drv[drv_index].queue = NULL */
+		/* which keeps the interrupt handler from starting */
+		/* the queue. */
 		ret = deregister_disk(h->gendisk[drv_index],
 				      &h->drv[drv_index], 0);
 		h->drv[drv_index].busy_configuring = 0;
@@ -1433,6 +1459,10 @@ geo_inq:
 		blk_queue_hardsect_size(disk->queue,
 					hba[ctlr]->drv[drv_index].block_size);
 
+		/* Make sure all queue data is written out before */
+		/* setting h->drv[drv_index].queue, as setting this */
+		/* allows the interrupt handler to start the queue */
+		wmb();
 		h->drv[drv_index].queue = disk->queue;
 		add_disk(disk);
 	}
@@ -2428,6 +2458,69 @@ static inline void resend_cciss_cmd(ctlr_info_t *h, CommandList_struct *c)
 	start_io(h);
 }
 
+static inline unsigned int make_status_bytes(unsigned int scsi_status_byte,
+			unsigned int msg_byte, unsigned int host_byte,
+			unsigned int driver_byte)
+{
+	/* inverse of macros in scsi.h */
+	return (scsi_status_byte & 0xff) |
+		((msg_byte & 0xff) << 8) |
+		((host_byte & 0xff) << 16) |
+		((driver_byte & 0xff) << 24);
+}
+
+static inline int evaluate_target_status(CommandList_struct *cmd)
+{
+	unsigned char sense_key;
+	unsigned char status_byte, msg_byte, host_byte, driver_byte;
+	int error_value;
+
+	/* If we get in here, it means we got "target status", that is, scsi status */
+	status_byte = cmd->err_info->ScsiStatus;
+	driver_byte = DRIVER_OK;
+	msg_byte = cmd->err_info->CommandStatus; /* correct?  seems too device specific */
+
+	if (blk_pc_request(cmd->rq))
+		host_byte = DID_PASSTHROUGH;
+	else
+		host_byte = DID_OK;
+
+	error_value = make_status_bytes(status_byte, msg_byte,
+		host_byte, driver_byte);
+
+	if (cmd->err_info->ScsiStatus != SAM_STAT_CHECK_CONDITION) {
+		if (!blk_pc_request(cmd->rq))
+			printk(KERN_WARNING "cciss: cmd %p "
+			       "has SCSI Status 0x%x\n",
+			       cmd, cmd->err_info->ScsiStatus);
+		return error_value;
+	}
+
+	/* check the sense key */
+	sense_key = 0xf & cmd->err_info->SenseInfo[2];
+	/* no status or recovered error */
+	if (((sense_key == 0x0) || (sense_key == 0x1)) && !blk_pc_request(cmd->rq))
+		error_value = 0;
+
+	if (!blk_pc_request(cmd->rq)) { /* Not SG_IO or similar? */
+		if (error_value != 0)
+			printk(KERN_WARNING "cciss: cmd %p has CHECK CONDITION"
+			       " sense key = 0x%x\n", cmd, sense_key);
+		return error_value;
+	}
+
+	/* SG_IO or similar, copy sense data back */
+	if (cmd->rq->sense) {
+		if (cmd->rq->sense_len > cmd->err_info->SenseLen)
+			cmd->rq->sense_len = cmd->err_info->SenseLen;
+		memcpy(cmd->rq->sense, cmd->err_info->SenseInfo,
+			cmd->rq->sense_len);
+	} else
+		cmd->rq->sense_len = 0;
+
+	return error_value;
+}
+
 /* checks the status of the job and calls complete buffers to mark all
  * buffers for the completed job. Note that this function does not need
  * to hold the hba/queue lock.
@@ -2435,109 +2528,122 @@ static inline void resend_cciss_cmd(ctlr_info_t *h, CommandList_struct *c)
 static inline void complete_command(ctlr_info_t *h, CommandList_struct *cmd,
 				    int timeout)
 {
-	int status = 1;
 	int retry_cmd = 0;
+	struct request *rq = cmd->rq;
+	int ctlr = h->ctlr;
 
+	rq->errors = 0;
 	if (timeout)
-		status = 0;
+		rq->errors = make_status_bytes(0, 0, 0, DRIVER_TIMEOUT);
 
-	if (cmd->err_info->CommandStatus != 0) {	/* an error has occurred */
-		switch (cmd->err_info->CommandStatus) {
-			unsigned char sense_key;
+	if (cmd->err_info->CommandStatus == 0)	/* no error has occurred */
+		goto after_error_processing;
+
+	switch (cmd->err_info->CommandStatus) {
 		case CMD_TARGET_STATUS:
-			status = 0;
-
-			if (cmd->err_info->ScsiStatus == 0x02) {
-				printk(KERN_WARNING "cciss: cmd %p "
-				       "has CHECK CONDITION "
-				       " byte 2 = 0x%x\n", cmd,
-				       cmd->err_info->SenseInfo[2]
-				    );
-				/* check the sense key */
-				sense_key = 0xf & cmd->err_info->SenseInfo[2];
-				/* no status or recovered error */
-				if ((sense_key == 0x0) || (sense_key == 0x1)) {
-					status = 1;
-				}
-			} else {
-				printk(KERN_WARNING "cciss: cmd %p "
-				       "has SCSI Status 0x%x\n",
-				       cmd, cmd->err_info->ScsiStatus);
-			}
+			rq->errors = evaluate_target_status(cmd);
 			break;
 		case CMD_DATA_UNDERRUN:
-			printk(KERN_WARNING "cciss: cmd %p has"
-			       " completed with data underrun "
-			       "reported\n", cmd);
+			if (blk_fs_request(cmd->rq))
+				printk(KERN_WARNING "cciss: cmd %p has"
+				       " completed with data underrun "
+				       "reported\n", cmd);
 			break;
 		case CMD_DATA_OVERRUN:
-			printk(KERN_WARNING "cciss: cmd %p has"
-			       " completed with data overrun "
-			       "reported\n", cmd);
+			if (blk_fs_request(cmd->rq))
+				printk(KERN_WARNING "cciss: cmd %p has"
+				       " completed with data overrun "
+				       "reported\n", cmd);
 			break;
 		case CMD_INVALID:
 			printk(KERN_WARNING "cciss: cmd %p is "
 			       "reported invalid\n", cmd);
-			status = 0;
+			rq->errors = make_status_bytes(SAM_STAT_GOOD,
+				cmd->err_info->CommandStatus, DRIVER_OK,
+				blk_pc_request(cmd->rq) ? DID_PASSTHROUGH :
+				DID_ERROR);
 			break;
 		case CMD_PROTOCOL_ERR:
 			printk(KERN_WARNING "cciss: cmd %p has "
 			       "protocol error \n", cmd);
-			status = 0;
+			rq->errors = make_status_bytes(SAM_STAT_GOOD,
+				cmd->err_info->CommandStatus, DRIVER_OK,
+				blk_pc_request(cmd->rq) ? DID_PASSTHROUGH :
+				DID_ERROR);
 			break;
 		case CMD_HARDWARE_ERR:
-			printk(KERN_WARNING "cciss: cmd %p had "
-			       " hardware error\n", cmd);
-			status = 0;
+			printk(KERN_WARNING "cciss%d: cmd had "
+			       " hardware error\n", ctlr);
+			rq->errors = make_status_bytes(SAM_STAT_GOOD,
+				cmd->err_info->CommandStatus, DRIVER_OK,
+				blk_pc_request(cmd->rq) ? DID_PASSTHROUGH :
+				DID_ERROR);
 			break;
 		case CMD_CONNECTION_LOST:
-			printk(KERN_WARNING "cciss: cmd %p had "
-			       "connection lost\n", cmd);
-			status = 0;
+			printk(KERN_WARNING "cciss%d: cmd had "
+			       "connection lost\n", ctlr);
+			rq->errors = make_status_bytes(SAM_STAT_GOOD,
+				cmd->err_info->CommandStatus, DRIVER_OK,
+				blk_pc_request(cmd->rq) ? DID_PASSTHROUGH :
+				DID_ERROR);
 			break;
 		case CMD_ABORTED:
-			printk(KERN_WARNING "cciss: cmd %p was "
-			       "aborted\n", cmd);
-			status = 0;
+			printk(KERN_WARNING "cciss%d: cmd was "
+			       "aborted\n", ctlr);
+			rq->errors = make_status_bytes(SAM_STAT_GOOD,
+				cmd->err_info->CommandStatus, DRIVER_OK,
+				blk_pc_request(cmd->rq) ? DID_PASSTHROUGH :
+				DID_ABORT);
 			break;
 		case CMD_ABORT_FAILED:
-			printk(KERN_WARNING "cciss: cmd %p reports "
-			       "abort failed\n", cmd);
-			status = 0;
+			printk(KERN_WARNING "cciss%d: cmd reports "
+			       "abort failed\n", ctlr);
+			rq->errors = make_status_bytes(SAM_STAT_GOOD,
+				cmd->err_info->CommandStatus, DRIVER_OK,
+				blk_pc_request(cmd->rq) ? DID_PASSTHROUGH :
+				DID_ERROR);
 			break;
 		case CMD_UNSOLICITED_ABORT:
 			printk(KERN_WARNING "cciss%d: unsolicited "
-			       "abort %p\n", h->ctlr, cmd);
+			       "abort\n", ctlr);
 			if (cmd->retry_count < MAX_CMD_RETRIES) {
 				retry_cmd = 1;
 				printk(KERN_WARNING
-				       "cciss%d: retrying %p\n", h->ctlr, cmd);
+				       "cciss%d: retrying cmd\n", ctlr);
 				cmd->retry_count++;
 			} else
 				printk(KERN_WARNING
-				       "cciss%d: %p retried too "
-				       "many times\n", h->ctlr, cmd);
-			status = 0;
+				       "cciss%d: cmd retried too "
+				       "many times\n", ctlr);
+			rq->errors = make_status_bytes(SAM_STAT_GOOD,
+				cmd->err_info->CommandStatus, DRIVER_OK,
+				blk_pc_request(cmd->rq) ? DID_PASSTHROUGH : DID_ABORT);
 			break;
 		case CMD_TIMEOUT:
-			printk(KERN_WARNING "cciss: cmd %p timedout\n", cmd);
-			status = 0;
+			printk(KERN_WARNING "cciss%d: cmd timedout\n", ctlr);
+			rq->errors = make_status_bytes(SAM_STAT_GOOD,
+				cmd->err_info->CommandStatus, DRIVER_OK,
+				blk_pc_request(cmd->rq) ? DID_PASSTHROUGH : DID_ERROR);
 			break;
 		default:
-			printk(KERN_WARNING "cciss: cmd %p returned "
-			       "unknown status %x\n", cmd,
+			printk(KERN_WARNING "cciss%d: cmd returned "
+			       "unknown status %x\n", ctlr,
 			       cmd->err_info->CommandStatus);
-			status = 0;
-		}
+			rq->errors = make_status_bytes(SAM_STAT_GOOD,
+				cmd->err_info->CommandStatus, DRIVER_OK,
+				blk_pc_request(cmd->rq) ? DID_PASSTHROUGH : DID_ERROR);
 	}
-	/* We need to return this command */
+
+after_error_processing:
+
+	/* We need to retry this command */
 	if (retry_cmd) {
 		resend_cciss_cmd(h, cmd);
 		return;
 	}
 
+	cmd->rq->data_len = 0;
 	cmd->rq->completion_data = cmd;
-	cmd->rq->errors = status;
 	blk_add_trace_rq(cmd->rq->q, cmd->rq, BLK_TA_COMPLETE);
 	blk_complete_request(cmd->rq);
 }
@@ -2632,34 +2738,42 @@ static void do_cciss_request(request_queue_t *q)
 
 	c->Header.SGList = c->Header.SGTotal = seg;
 
-	if(h->cciss_read == CCISS_READ_10) {
-		c->Request.CDB[1] = 0;
-		c->Request.CDB[2] = (start_blk >> 24) & 0xff;   //MSB
-		c->Request.CDB[3] = (start_blk >> 16) & 0xff;
-		c->Request.CDB[4] = (start_blk >> 8) & 0xff;
-		c->Request.CDB[5] = start_blk & 0xff;
-		c->Request.CDB[6] = 0;  // (sect >> 24) & 0xff; MSB
-		c->Request.CDB[7] = (creq->nr_sectors >> 8) & 0xff;
-		c->Request.CDB[8] = creq->nr_sectors & 0xff;
-		c->Request.CDB[9] = c->Request.CDB[11] = c->Request.CDB[12] = 0;
+	if(likely(blk_fs_request(creq))) {
+		if(h->cciss_read == CCISS_READ_10) {
+			c->Request.CDB[1] = 0;
+			c->Request.CDB[2] = (start_blk >> 24) & 0xff;   //MSB
+			c->Request.CDB[3] = (start_blk >> 16) & 0xff;
+			c->Request.CDB[4] = (start_blk >> 8) & 0xff;
+			c->Request.CDB[5] = start_blk & 0xff;
+			c->Request.CDB[6] = 0;  // (sect >> 24) & 0xff; MSB
+			c->Request.CDB[7] = (creq->nr_sectors >> 8) & 0xff;
+			c->Request.CDB[8] = creq->nr_sectors & 0xff;
+			c->Request.CDB[9] = c->Request.CDB[11] = c->Request.CDB[12] = 0;
+		} else {
+			c->Request.CDBLen = 16;
+			c->Request.CDB[1]= 0;
+			c->Request.CDB[2]= (start_blk >> 56) & 0xff;    //MSB
+			c->Request.CDB[3]= (start_blk >> 48) & 0xff;
+			c->Request.CDB[4]= (start_blk >> 40) & 0xff;
+			c->Request.CDB[5]= (start_blk >> 32) & 0xff;
+			c->Request.CDB[6]= (start_blk >> 24) & 0xff;
+			c->Request.CDB[7]= (start_blk >> 16) & 0xff;
+			c->Request.CDB[8]= (start_blk >>  8) & 0xff;
+			c->Request.CDB[9]= start_blk & 0xff;
+			c->Request.CDB[10]= (creq->nr_sectors >>  24) & 0xff;
+			c->Request.CDB[11]= (creq->nr_sectors >>  16) & 0xff;
+			c->Request.CDB[12]= (creq->nr_sectors >>  8) & 0xff;
+			c->Request.CDB[13]= creq->nr_sectors & 0xff;
+			c->Request.CDB[14] = c->Request.CDB[15] = 0;
+		}
+	} else if (blk_pc_request(creq)) {
+		c->Request.CDBLen = creq->cmd_len;
+		memcpy(c->Request.CDB, creq->cmd, BLK_MAX_CDB);
 	} else {
-		c->Request.CDBLen = 16;
-		c->Request.CDB[1]= 0;
-		c->Request.CDB[2]= (start_blk >> 56) & 0xff;    //MSB
-		c->Request.CDB[3]= (start_blk >> 48) & 0xff;
-		c->Request.CDB[4]= (start_blk >> 40) & 0xff;
-		c->Request.CDB[5]= (start_blk >> 32) & 0xff;
-		c->Request.CDB[6]= (start_blk >> 24) & 0xff;
-		c->Request.CDB[7]= (start_blk >> 16) & 0xff;
-		c->Request.CDB[8]= (start_blk >>  8) & 0xff;
-		c->Request.CDB[9]= start_blk & 0xff;
-		c->Request.CDB[10]= (creq->nr_sectors >>  24) & 0xff;
-		c->Request.CDB[11]= (creq->nr_sectors >>  16) & 0xff;
-		c->Request.CDB[12]= (creq->nr_sectors >>  8) & 0xff;
-		c->Request.CDB[13]= creq->nr_sectors & 0xff;
-		c->Request.CDB[14] = c->Request.CDB[15] = 0;
+		printk(KERN_WARNING "cciss%d: bad request type %ld\n",
+					h->ctlr, creq->flags);
+		BUG();
 	}
-
 	spin_lock_irq(q->queue_lock);
 
 	addQ(&(h->reqQ), c);
@@ -2668,9 +2782,9 @@ static void do_cciss_request(request_queue_t *q)
 		h->maxQsinceinit = h->Qdepth;
 
 	goto queue;
-      full:
+full:
 	blk_stop_queue(q);
-      startio:
+startio:
 	/* We will already have the driver lock here so not need
 	 * to lock it.
 	 */
@@ -3015,11 +3129,20 @@ static int cciss_pci_init(ctlr_info_t *c, struct pci_dev *pdev)
 	print_cfg_table(c->cfgtable);
 #endif				/* CCISS_DEBUG */
 
+	/* Some controllers support Zero Memory Raid (ZMR).
+	 * When configured in ZMR mode the number of supported
+	 * commands drops to 64. So instead of just setting an
+	 * arbitrary value we make the driver a little smarter.
+	 * We read the config table to tell us how many commands
+	 * are supported on the controller then subtract 4 to
+	 * leave a little room for ioctl calls.
+	 */
+	c->max_commands = readl(&(c->cfgtable->CmdsOutMax));
 	for (i = 0; i < ARRAY_SIZE(products); i++) {
 		if (board_id == products[i].board_id) {
 			c->product_name = products[i].product_name;
 			c->access = *(products[i].access);
-			c->nr_cmds = products[i].nr_cmds;
+			c->nr_cmds = c->max_commands - 4;
 			break;
 		}
 	}
@@ -3039,7 +3162,7 @@ static int cciss_pci_init(ctlr_info_t *c, struct pci_dev *pdev)
 		if (subsystem_vendor_id == PCI_VENDOR_ID_HP) {
 			c->product_name = products[i-1].product_name;
 			c->access = *(products[i-1].access);
-			c->nr_cmds = products[i-1].nr_cmds;
+			c->nr_cmds = c->max_commands - 4;
 			printk(KERN_WARNING "cciss: This is an unknown "
 				"Smart Array controller.\n");
 		} else {
@@ -3676,9 +3799,20 @@ static int __devinit cciss_init_one(struct pci_dev *pdev,
 			continue;
 		blk_queue_hardsect_size(q, drv->block_size);
 		set_capacity(disk, drv->nr_blocks);
-		add_disk(disk);
 		j++;
 	} while (j <= hba[i]->highest_lun);
+
+	/* Make sure all queue data is written out before */
+	/* interrupt handler, triggered by add_disk,  */
+	/* is allowed to start them. */
+	wmb();
+
+	for (j = 0; j <= hba[i]->highest_lun; j++)
+		add_disk(hba[i]->gendisk[j]);
+
+	/* we must register the controller even if no disks exist */
+	if (hba[i]->highest_lun == -1)
+		add_disk(hba[i]->gendisk[0]);
 
 	return 1;
 

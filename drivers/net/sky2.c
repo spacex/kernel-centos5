@@ -96,10 +96,6 @@ static int disable_msi = 0;
 module_param(disable_msi, int, 0);
 MODULE_PARM_DESC(disable_msi, "Disable Message Signaled Interrupt (MSI)");
 
-static int idle_timeout = 0;
-module_param(idle_timeout, int, 0);
-MODULE_PARM_DESC(idle_timeout, "Watchdog timer for lost interrupts (ms)");
-
 static const struct pci_device_id sky2_id_table[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_SYSKONNECT, 0x9000) }, /* SK-9Sxx */
 	{ PCI_DEVICE(PCI_VENDOR_ID_SYSKONNECT, 0x9E00) }, /* SK-9Exx */
@@ -124,10 +120,7 @@ static const struct pci_device_id sky2_id_table[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_MARVELL, 0x4361) }, /* 88E8050 */
 	{ PCI_DEVICE(PCI_VENDOR_ID_MARVELL, 0x4362) }, /* 88E8053 */
 	{ PCI_DEVICE(PCI_VENDOR_ID_MARVELL, 0x4363) }, /* 88E8055 */
-#ifdef broken
-	/* This device causes data corruption problems that are not resolved */
 	{ PCI_DEVICE(PCI_VENDOR_ID_MARVELL, 0x4364) }, /* 88E8056 */
-#endif
 	{ PCI_DEVICE(PCI_VENDOR_ID_MARVELL, 0x4366) }, /* 88EC036 */
 	{ PCI_DEVICE(PCI_VENDOR_ID_MARVELL, 0x4367) }, /* 88EC032 */
 	{ PCI_DEVICE(PCI_VENDOR_ID_MARVELL, 0x4368) }, /* 88EC034 */
@@ -1269,6 +1262,8 @@ static int sky2_up(struct net_device *dev)
 	if (ramsize > 0) {
 		u32 rxspace;
 
+		hw->flags |= SKY2_HW_RAM_BUFFER;
+		pr_debug(PFX "%s: ram buffer %dK\n", dev->name, ramsize);
 		if (ramsize < 16)
 			rxspace = ramsize / 2;
 		else
@@ -1694,6 +1689,8 @@ static void sky2_link_up(struct sky2_port *sky2)
 
 	netif_carrier_on(sky2->netdev);
 	netif_wake_queue(sky2->netdev);
+
+	mod_timer(&hw->watchdog_timer, jiffies + 1);
 
 	/* Turn on link LED */
 	sky2_write8(hw, SK_REG(port, LNK_LED_REG),
@@ -2370,25 +2367,72 @@ static void sky2_le_error(struct sky2_hw *hw, unsigned port,
 	sky2_write32(hw, Q_ADDR(q, Q_CSR), BMU_CLR_IRQ_CHK);
 }
 
-/* If idle then force a fake soft NAPI poll once a second
- * to work around cases where sharing an edge triggered interrupt.
- */
-static inline void sky2_idle_start(struct sky2_hw *hw)
+static int sky2_rx_hung(struct net_device *dev)
 {
-	if (idle_timeout > 0)
-		mod_timer(&hw->idle_timer,
-			  jiffies + msecs_to_jiffies(idle_timeout));
+	struct sky2_port *sky2 = netdev_priv(dev);
+	struct sky2_hw *hw = sky2->hw;
+	unsigned port = sky2->port;
+	unsigned rxq = rxqaddr[port];
+	u32 mac_rp = sky2_read32(hw, SK_REG(port, RX_GMF_RP));
+	u8 mac_lev = sky2_read8(hw, SK_REG(port, RX_GMF_RLEV));
+	u8 fifo_rp = sky2_read8(hw, Q_ADDR(rxq, Q_RP));
+	u8 fifo_lev = sky2_read8(hw, Q_ADDR(rxq, Q_RL));
+
+	/* If idle and MAC or PCI is stuck */
+	if (sky2->check.last == dev->last_rx &&
+	    ((mac_rp == sky2->check.mac_rp &&
+	      mac_lev != 0 && mac_lev >= sky2->check.mac_lev) ||
+	     /* Check if the PCI RX hang */
+	     (fifo_rp == sky2->check.fifo_rp &&
+	      fifo_lev != 0 && fifo_lev >= sky2->check.fifo_lev))) {
+		printk(KERN_DEBUG PFX "%s: hung mac %d:%d fifo %d (%d:%d)\n",
+		       dev->name, mac_lev, mac_rp, fifo_lev, fifo_rp,
+		       sky2_read8(hw, Q_ADDR(rxq, Q_WP)));
+		return 1;
+	} else {
+		sky2->check.last = dev->last_rx;
+		sky2->check.mac_rp = mac_rp;
+		sky2->check.mac_lev = mac_lev;
+		sky2->check.fifo_rp = fifo_rp;
+		sky2->check.fifo_lev = fifo_lev;
+		return 0;
+	}
 }
 
-static void sky2_idle(unsigned long arg)
+static void sky2_watchdog(unsigned long arg)
 {
 	struct sky2_hw *hw = (struct sky2_hw *) arg;
-	struct net_device *dev = hw->dev[0];
+	struct net_device *dev;
 
-	if (__netif_rx_schedule_prep(dev))
-		__netif_rx_schedule(dev);
+	/* Check for lost IRQ once a second */
+	if (sky2_read32(hw, B0_ISRC)) {
+		dev = hw->dev[0];
+		if (__netif_rx_schedule_prep(dev))
+			__netif_rx_schedule(dev);
+	} else {
+		int i, active = 0;
 
-	mod_timer(&hw->idle_timer, jiffies + msecs_to_jiffies(idle_timeout));
+		for (i = 0; i < hw->ports; i++) {
+			dev = hw->dev[i];
+			if (!netif_running(dev))
+				continue;
+			++active;
+
+			/* For chips with Rx FIFO, check if stuck */
+			if ((hw->flags & SKY2_HW_RAM_BUFFER) &&
+			     sky2_rx_hung(dev)) {
+				pr_info(PFX "%s: receiver hang detected\n",
+					dev->name);
+				schedule_work(&hw->restart_work);
+				return;
+			}
+		}
+
+		if (active == 0)
+			return;
+	}
+
+	mod_timer(&hw->watchdog_timer, round_jiffies(jiffies + HZ));
 }
 
 /* Hardware/software error handling */
@@ -2671,8 +2715,6 @@ static void sky2_restart(void *d)
 
 	dev_dbg(&hw->pdev->dev, "restarting\n");
 
-	del_timer_sync(&hw->idle_timer);
-
 	rtnl_lock();
 	sky2_write32(hw, B0_IMSK, 0);
 	sky2_read32(hw, B0_IMSK);
@@ -2700,8 +2742,6 @@ static void sky2_restart(void *d)
 			}
 		}
 	}
-
-	sky2_idle_start(hw);
 
 	rtnl_unlock();
 }
@@ -3582,10 +3622,21 @@ static int __devinit sky2_probe(struct pci_dev *pdev,
 		goto err_out;
 	}
 
+	/* Some Gigabyte motherboards have 88e8056 but cause problems
+	 * There is some unresolved hardware related problem that causes
+	 * descriptor errors and receive data corruption.
+	 */
+	if (pdev->vendor == PCI_VENDOR_ID_MARVELL &&
+	    pdev->device == 0x4364 && pdev->subsystem_vendor == 0x1458) {
+		dev_err(&pdev->dev,
+			"88E8056 on Gigabyte motherboards not supported\n");
+		goto err_out_disable;
+	}
+
 	err = pci_request_regions(pdev, DRV_NAME);
 	if (err) {
 		dev_err(&pdev->dev, "cannot obtain PCI resources\n");
-		goto err_out;
+		goto err_out_disable;
 	}
 
 	pci_set_master(pdev);
@@ -3698,10 +3749,9 @@ static int __devinit sky2_probe(struct pci_dev *pdev,
 			sky2_show_addr(dev1);
 	}
 
-	setup_timer(&hw->idle_timer, sky2_idle, (unsigned long) hw);
-	INIT_WORK(&hw->restart_work, sky2_restart, hw);
+	setup_timer(&hw->watchdog_timer, sky2_watchdog, (unsigned long) hw);
 
-	sky2_idle_start(hw);
+	INIT_WORK(&hw->restart_work, sky2_restart, hw);
 
 	pci_set_drvdata(pdev, hw);
 
@@ -3722,6 +3772,7 @@ err_out_free_hw:
 	kfree(hw);
 err_out_free_regions:
 	pci_release_regions(pdev);
+err_out_disable:
 	pci_disable_device(pdev);
 err_out:
 	return err;
@@ -3735,7 +3786,7 @@ static void __devexit sky2_remove(struct pci_dev *pdev)
 	if (!hw)
 		return;
 
-	del_timer_sync(&hw->idle_timer);
+	del_timer_sync(&hw->watchdog_timer);
 
 	flush_scheduled_work();
 
@@ -3776,7 +3827,6 @@ static int sky2_suspend(struct pci_dev *pdev, pm_message_t state)
 	struct sky2_hw *hw = pci_get_drvdata(pdev);
 	int i, wol = 0;
 
-	del_timer_sync(&hw->idle_timer);
 	netif_poll_disable(hw->dev[0]);
 
 	for (i = 0; i < hw->ports; i++) {
@@ -3839,7 +3889,7 @@ static int sky2_resume(struct pci_dev *pdev)
 	}
 
 	netif_poll_enable(hw->dev[0]);
-	sky2_idle_start(hw);
+
 	return 0;
 out:
 	dev_err(&pdev->dev, "resume failed (%d)\n", err);
@@ -3853,7 +3903,6 @@ static void sky2_shutdown(struct pci_dev *pdev)
 	struct sky2_hw *hw = pci_get_drvdata(pdev);
 	int i, wol = 0;
 
-	del_timer_sync(&hw->idle_timer);
 	netif_poll_disable(hw->dev[0]);
 
 	for (i = 0; i < hw->ports; i++) {

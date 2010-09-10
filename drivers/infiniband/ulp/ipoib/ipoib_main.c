@@ -385,6 +385,7 @@ static void path_rec_completion(int status,
 	struct net_device *dev = path->dev;
 	struct ipoib_dev_priv *priv = netdev_priv(dev);
 	struct ipoib_ah *ah = NULL;
+	struct ipoib_ah *old_ah = NULL;
 	struct ipoib_neigh *neigh, *tn;
 	struct sk_buff_head skqueue;
 	struct sk_buff *skb;
@@ -408,10 +409,11 @@ static void path_rec_completion(int status,
 
 	spin_lock_irqsave(&priv->lock, flags);
 
-	path->ah = ah;
-
 	if (ah) {
 		path->pathrec = *pathrec;
+
+		old_ah = path->ah;
+		path->ah = ah;
 
 		ipoib_dbg(priv, "created address handle %p for LID 0x%04x, SL %d\n",
 			  ah, be16_to_cpu(pathrec->dlid), pathrec->sl);
@@ -420,6 +422,17 @@ static void path_rec_completion(int status,
 			__skb_queue_tail(&skqueue, skb);
 
 		list_for_each_entry_safe(neigh, tn, &path->neigh_list, list) {
+			if (neigh->ah) {
+				WARN_ON(neigh->ah != old_ah);
+				/*
+				 * Dropping the ah reference inside
+				 * priv->lock is safe here, because we
+				 * will hold one more reference from
+				 * the original value of path->ah (ie
+				 * old_ah).
+				 */
+				ipoib_put_ah(neigh->ah);
+			}
 			kref_get(&path->ah->ref);
 			neigh->ah = path->ah;
 			memcpy(&neigh->dgid.raw, &path->pathrec.dgid.raw,
@@ -448,6 +461,9 @@ static void path_rec_completion(int status,
 	complete(&path->done);
 
 	spin_unlock_irqrestore(&priv->lock, flags);
+
+	if (old_ah)
+		ipoib_put_ah(old_ah);
 
 	while ((skb = __skb_dequeue(&skqueue))) {
 		skb->dev = dev;
@@ -653,7 +669,7 @@ static void unicast_arp_send(struct sk_buff *skb, struct net_device *dev,
 			skb_push(skb, sizeof *phdr);
 			__skb_queue_tail(&path->queue, skb);
 
-			if (path_rec_start(dev, path)) {
+			if (!path->query && path_rec_start(dev, path)) {
 				spin_unlock(&priv->lock);
 				path_free(dev, path);
 				return;
@@ -853,6 +869,9 @@ static void ipoib_neigh_cleanup(struct neighbour *n)
 	struct ipoib_dev_priv *priv = netdev_priv(n->dev);
 	unsigned long flags;
 	struct ipoib_ah *ah = NULL;
+
+	if (n->dev->type != ARPHRD_INFINIBAND)
+		return;
 
 	neigh = *to_ipoib_neigh(n);
 	if (neigh) {

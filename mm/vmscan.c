@@ -1151,7 +1151,7 @@ loop_again:
 				continue;
 
 			if (!zone_watermark_ok(zone, order, zone->pages_high,
-					       0, 0)) {
+					       i, 0)) {
 				end_zone = i;
 				goto scan;
 			}

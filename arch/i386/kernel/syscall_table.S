@@ -326,3 +326,9 @@ ENTRY(sys_call_table)
 	.long sys_vmsplice
 	.long sys_move_pages
 	.long sys_getcpu
+	.long sys_ni_syscall		/* sys_epoll_pwait */
+	.long sys_ni_syscall		/* 320 */ /* sys_utimensat */
+	.long sys_ni_syscall		/* sys_signalfd */
+	.long sys_ni_syscall		/* sys_timerfd_create */
+	.long sys_ni_syscall		/* sys_eventfd */
+	.long sys_fallocate

@@ -633,6 +633,14 @@ config XEN_REBOOT
 
 config XEN_SMPBOOT
 	default n
+
+config XEN_DEVMEM
+	default n
 endif
 
 source "drivers/xen/Kconfig"
+
+if !XEN
+source "drivers/xenpv_hvm/Kconfig"
+endif
+

@@ -3,6 +3,7 @@
 
 #include <asm/genapic.h>
 
+void __send_IPI_shortcut(unsigned int shortcut, int vector);
 #define send_IPI_mask (genapic->send_IPI_mask)
 #define send_IPI_allbutself (genapic->send_IPI_allbutself)
 #define send_IPI_all (genapic->send_IPI_all)

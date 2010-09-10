@@ -846,8 +846,6 @@ static int ibmveth_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	unsigned int tx_map_failed = 0;
 
 	desc.fields.flags_len = IBMVETH_BUF_VALID | skb->len;
-	desc.fields.address = dma_map_single(&adapter->vdev->dev, skb->data,
-					     skb->len, DMA_TO_DEVICE);
 
 	if (skb->ip_summed == CHECKSUM_HW &&
 	    skb->nh.iph->protocol != IPPROTO_TCP && skb_checksum_help(skb, 0)) {
@@ -866,6 +864,8 @@ static int ibmveth_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		buf[1] = 0;
 	}
 
+	desc.fields.address = dma_map_single(&adapter->vdev->dev, skb->data,
+					     skb->len, DMA_TO_DEVICE);
 	if (dma_mapping_error(desc.fields.address)) {
 		ibmveth_error_printk("tx: unable to map xmit buffer\n");
 		tx_map_failed++;

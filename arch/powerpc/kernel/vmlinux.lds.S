@@ -174,12 +174,17 @@ SECTIONS
 	.data    :
 	{
 		*(.data)
+		MARKERS_DATA
+		TRACEPOINTS_DATA
 		*(.sdata)
 		*(.got.plt) *(.got)
 	}
 #else
 	.data : {
-		*(.data .data.rel* .toc1)
+		*(.data)
+		MARKERS_DATA
+		TRACEPOINTS_DATA
+		*(.data.rel* .toc1)
 		*(.branch_lt)
 	}
 

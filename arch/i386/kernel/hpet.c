@@ -12,6 +12,7 @@
 /* FSEC = 10^-15 NSEC = 10^-9 */
 #define FSEC_PER_NSEC	1000000
 
+extern unsigned long hpet_period;
 static void *hpet_ptr;
 
 static cycle_t read_hpet(void)
@@ -31,7 +32,6 @@ static struct clocksource clocksource_hpet = {
 
 static int __init init_hpet_clocksource(void)
 {
-	unsigned long hpet_period;
 	void __iomem* hpet_base;
 	u64 tmp;
 
@@ -42,9 +42,6 @@ static int __init init_hpet_clocksource(void)
 	hpet_base =
 		(void __iomem*)ioremap_nocache(hpet_address, HPET_MMAP_SIZE);
 	hpet_ptr = hpet_base + HPET_COUNTER;
-
-	/* calculate the frequency: */
-	hpet_period = readl(hpet_base + HPET_PERIOD);
 
 	/*
 	 * hpet period is in femto seconds per cycle

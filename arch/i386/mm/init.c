@@ -162,8 +162,13 @@ static void __init kernel_physical_mapping_init(pgd_t *pgd_base)
 		for (pmd_idx = 0; pmd_idx < PTRS_PER_PMD && pfn < max_low_pfn; pmd++, pmd_idx++) {
 			unsigned int address = pfn * PAGE_SIZE + PAGE_OFFSET;
 
-			/* Map with big pages if possible, otherwise create normal page tables. */
-			if (cpu_has_pse) {
+			/* Map with big pages if possible, otherwise create normal page tables. 
+			 * Don't use a large page for the first 2/4MB of memory
+			 * because there are often fixed size MTRRs in there
+			 * and overlapping MTRRs into large pages can cause
+			 * slowdowns.
+			 */
+			if (cpu_has_pse && !(pgd_idx == 0 && pmd_idx == 0)) {
 				unsigned int address2 = (pfn + PTRS_PER_PTE - 1) * PAGE_SIZE + PAGE_OFFSET + PAGE_SIZE-1;
 
 				if (is_kernel_text(address) || is_kernel_text(address2))

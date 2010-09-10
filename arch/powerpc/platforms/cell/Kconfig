@@ -12,6 +12,23 @@ config SPU_FS
 	  Units on machines implementing the Broadband Processor
 	  Architecture.
 
+config SPU_FS_64K_LS
+	bool "Use 64K pages to map SPE local  store"
+	# we depend on PPC_MM_SLICES for now rather than selecting
+	# it because we depend on hugetlbfs hooks being present. We
+	# will fix that when the generic code has been improved to
+	# not require hijacking hugetlbfs hooks.
+	# This is marked as broken as PPC_MM_SLICES is not available
+	depends on SPU_FS && PPC_MM_SLICES && !PPC_64K_PAGES && BROKEN
+	default y
+	# the select clause is disabled until PPC_HAS_HASH_64K gets available
+	# select PPC_HAS_HASH_64K
+	help
+	  This option causes SPE local stores to be mapped in process
+	  address spaces using 64K pages while the rest of the kernel
+	  uses 4K pages. This can improve performances of applications
+	  using multiple SPEs by lowering the TLB pressure on them.
+
 config SPU_BASE
 	bool
 	default n
@@ -62,5 +79,18 @@ config CBE_AXON_PCI
 	help
 	  The Axon chip delivers error conditions detected in the
 	  PCI bridge as error interrupts.
+
+config CBE_CPUFREQ_SPU_GOVERNOR
+    tristate "CBE frequency scaling based on SPU usage"
+    depends on SPU_FS && CPU_FREQ
+    default m
+    help
+      This governor checks for spu usage to adjust the cpu frequency.
+      If no spu is running on a given cpu, that cpu will be throttled to
+      the minimal possible frequency.
+
+config HAVE_DMA_ATTRS
+	def_bool y
+	depends on PPC_CELL
 
 endmenu

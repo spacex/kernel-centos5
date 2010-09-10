@@ -22,6 +22,8 @@
 #include <linux/topology.h>
 #include <linux/interrupt.h>
 #include <linux/bitops.h>
+#include <linux/sysdev.h>
+#include <linux/iommu-helper.h>
 #include <asm/atomic.h>
 #include <asm/io.h>
 #include <asm/mtrr.h>
@@ -76,37 +78,50 @@ AGPEXTERN __u32 *agp_gatt_table;
 static unsigned long next_bit;  /* protected by iommu_bitmap_lock */
 static int need_flush; 		/* global flush state. set for each gart wrap */
 
-static unsigned long alloc_iommu(int size) 
-{ 	
+static unsigned long alloc_iommu(struct device *dev, int size,
+				 unsigned long mask)
+{
 	unsigned long offset, flags;
+	unsigned long boundary_size;
+	unsigned long base_index;
 
-	spin_lock_irqsave(&iommu_bitmap_lock, flags);	
-	offset = find_next_zero_string(iommu_gart_bitmap,next_bit,iommu_pages,size);
+	base_index = ALIGN(iommu_bus_base & 0xffffffff,
+			   PAGE_SIZE) >> PAGE_SHIFT;
+	boundary_size = ALIGN((unsigned long long) 0x100000000,
+			      PAGE_SIZE) >> PAGE_SHIFT;
+
+	spin_lock_irqsave(&iommu_bitmap_lock, flags);
+	offset = iommu_area_alloc(iommu_gart_bitmap, iommu_pages, next_bit,
+				  size, base_index, boundary_size, mask);
 	if (offset == -1) {
 		need_flush = 1;
-		offset = find_next_zero_string(iommu_gart_bitmap,0,iommu_pages,size);
+		offset = iommu_area_alloc(iommu_gart_bitmap, iommu_pages, 0,
+					  size, base_index, boundary_size,
+					  mask);
 	}
-	if (offset != -1) { 
-		set_bit_string(iommu_gart_bitmap, offset, size); 
-		next_bit = offset+size; 
-		if (next_bit >= iommu_pages) { 
+	if (offset != -1) {
+		set_bit_string(iommu_gart_bitmap, offset, size);
+		next_bit = offset+size;
+		if (next_bit >= iommu_pages) {
 			next_bit = 0;
 			need_flush = 1;
-		} 
-	} 
+		}
+	}
 	if (iommu_fullflush)
 		need_flush = 1;
-	spin_unlock_irqrestore(&iommu_bitmap_lock, flags);      
+	spin_unlock_irqrestore(&iommu_bitmap_lock, flags);
+
 	return offset;
-} 
+}
 
 static void free_iommu(unsigned long offset, int size)
-{ 
+{
 	unsigned long flags;
+
 	spin_lock_irqsave(&iommu_bitmap_lock, flags);
-	__clear_bit_string(iommu_gart_bitmap, offset, size);
+	iommu_area_free(iommu_gart_bitmap, offset, size);
 	spin_unlock_irqrestore(&iommu_bitmap_lock, flags);
-} 
+}
 
 /* 
  * Use global flush state to avoid races with multiple flushers.
@@ -204,10 +219,11 @@ static inline int nonforced_iommu(struct device *dev, unsigned long addr, size_t
  * Caller needs to check if the iommu is needed and flush.
  */
 static dma_addr_t dma_map_area(struct device *dev, dma_addr_t phys_mem,
-				size_t size, int dir)
+				size_t size, int dir, u64 align_mask)
 { 
 	unsigned long npages = to_pages(phys_mem, size);
-	unsigned long iommu_page = alloc_iommu(npages);
+	unsigned long palign_mask = align_mask >> PAGE_SHIFT;
+	unsigned long iommu_page = alloc_iommu(dev, npages, palign_mask);
 	int i;
 	if (iommu_page == -1) {
 		if (!nonforced_iommu(dev, phys_mem, size))
@@ -223,13 +239,15 @@ static dma_addr_t dma_map_area(struct device *dev, dma_addr_t phys_mem,
 		SET_LEAK(iommu_page + i);
 		phys_mem += PAGE_SIZE;
 	}
+
 	return iommu_bus_base + iommu_page*PAGE_SIZE + (phys_mem & ~PAGE_MASK);
 }
 
 static dma_addr_t gart_map_simple(struct device *dev, char *buf,
 				 size_t size, int dir)
 {
-	dma_addr_t map = dma_map_area(dev, virt_to_bus(buf), size, dir);
+	dma_addr_t map = dma_map_area(dev, virt_to_bus(buf), size, dir,
+				      size - 1);
 	flush_gart();
 	return map;
 }
@@ -248,7 +266,9 @@ dma_addr_t gart_map_single(struct device *dev, void *addr, size_t size, int dir)
 	if (!need_iommu(dev, phys_mem, size))
 		return phys_mem; 
 
-	bus = gart_map_simple(dev, addr, size, dir);
+	bus = dma_map_area(dev, virt_to_bus(addr), size, dir, 0);
+	flush_gart();
+
 	return bus; 
 }
 
@@ -303,7 +323,7 @@ static int dma_map_sg_nonforce(struct device *dev, struct scatterlist *sg,
 		struct scatterlist *s = &sg[i];
 		unsigned long addr = page_to_phys(s->page) + s->offset; 
 		if (nonforced_iommu(dev, addr, s->length)) { 
-			addr = dma_map_area(dev, addr, s->length, dir);
+			addr = dma_map_area(dev, addr, s->length, dir, 0);
 			if (addr == bad_dma_address) { 
 				if (i > 0) 
 					gart_unmap_sg(dev, sg, i, dir);
@@ -320,10 +340,11 @@ static int dma_map_sg_nonforce(struct device *dev, struct scatterlist *sg,
 }
 
 /* Map multiple scatterlist entries continuous into the first. */
-static int __dma_map_cont(struct scatterlist *sg, int start, int stopat,
-		      struct scatterlist *sout, unsigned long pages)
+static int __dma_map_cont(struct device *dev, struct scatterlist *sg, int start,
+			  int stopat, struct scatterlist *sout,
+			  unsigned long pages)
 {
-	unsigned long iommu_start = alloc_iommu(pages);
+	unsigned long iommu_start = alloc_iommu(dev, pages, 0);
 	unsigned long iommu_page = iommu_start; 
 	int i;
 
@@ -358,9 +379,10 @@ static int __dma_map_cont(struct scatterlist *sg, int start, int stopat,
 	return 0;
 }
 
-static inline int dma_map_cont(struct scatterlist *sg, int start, int stopat,
-		      struct scatterlist *sout,
-		      unsigned long pages, int need)
+static inline int dma_map_cont(struct device *dev, struct scatterlist *sg,
+			       int start, int stopat,
+			       struct scatterlist *sout,
+			       unsigned long pages, int need)
 {
 	if (!need) { 
 		BUG_ON(stopat - start != 1);
@@ -368,7 +390,7 @@ static inline int dma_map_cont(struct scatterlist *sg, int start, int stopat,
 		sout->dma_length = sg[start].length; 
 		return 0;
 	} 
-	return __dma_map_cont(sg, start, stopat, sout, pages);
+	return __dma_map_cont(dev, sg, start, stopat, sout, pages);
 }
 		
 /*
@@ -407,8 +429,8 @@ int gart_map_sg(struct device *dev, struct scatterlist *sg, int nents, int dir)
 			   boundary and the new one doesn't have an offset. */
 			if (!iommu_merge || !nextneed || !need || s->offset ||
 			    (ps->offset + ps->length) % PAGE_SIZE) { 
-				if (dma_map_cont(sg, start, i, sg+out, pages,
-						 need) < 0)
+				if (dma_map_cont(dev, sg, start, i, sg+out,
+						 pages, need) < 0)
 					goto error;
 				out++;
 				pages = 0;
@@ -419,7 +441,7 @@ int gart_map_sg(struct device *dev, struct scatterlist *sg, int nents, int dir)
 		need = nextneed;
 		pages += to_pages(s->offset, s->length);
 	}
-	if (dma_map_cont(sg, start, i, sg+out, pages, need) < 0)
+	if (dma_map_cont(dev, sg, start, i, sg+out, pages, need) < 0)
 		goto error;
 	out++;
 	flush_gart();
@@ -486,6 +508,86 @@ static __init unsigned read_aperture(struct pci_dev *dev, u32 *size)
 	return aper_base;
 } 
 
+static void enable_gart_translations(void) {
+	int i;
+	struct pci_dev *dev;
+
+	for (i = 0; i < num_k8_northbridges; i++) {
+		u32 ctl; 
+		u32 gatt_reg; 
+
+		dev = k8_northbridges[i];
+		gatt_reg = __pa(agp_gatt_table) >> 12; 
+		gatt_reg <<= 4; 
+		pci_write_config_dword(dev, 0x98, gatt_reg);
+		pci_read_config_dword(dev, 0x90, &ctl); 
+
+		ctl |= 1;
+		ctl &= ~((1<<4) | (1<<5));
+
+		pci_write_config_dword(dev, 0x90, ctl); 
+	}
+}
+
+/*
+ * If fix_up_north_bridges is set, the north bridges have to be fixed up on
+ * resume in the same way as they are handled in gart_iommu_hole_init().
+ */
+static bool fix_up_north_bridges;
+static u32 aperture_order;
+static u32 aperture_alloc;
+
+void set_up_gart_resume(u32 aper_order, u32 aper_alloc)
+{
+	fix_up_north_bridges = true;
+	aperture_order = aper_order;
+	aperture_alloc = aper_alloc;
+}
+
+static int gart_resume(struct sys_device *dev)
+{
+	printk(KERN_INFO "PCI-DMA: Resuming GART IOMMU\n");
+	
+	if (fix_up_north_bridges) {
+		int i;
+		
+		printk(KERN_INFO "PCI-DMA: Restoring GART aperture settings\n");
+		
+		for (i = 0; i < num_k8_northbridges; i++) {
+			struct pci_dev *dev = k8_northbridges[i];
+			
+			/*
+			 * Don't enable translations just yet.  That is the next
+			 * step.  Restore the pre-suspend aperture settings.
+			 */
+			pci_write_config_dword(dev, 0x90,
+					       aperture_order << 1);
+			pci_write_config_dword(dev, 0x94,
+					       aperture_alloc >> 25);
+		}
+	}
+	
+	enable_gart_translations();
+	
+	return 0;
+}
+
+static int gart_suspend(struct sys_device *dev, pm_message_t state)
+{
+	return 0;
+}
+
+static struct sysdev_class gart_sysdev_class = {
+	set_kset_name("gart"),
+	.suspend = gart_suspend,
+	.resume = gart_resume,
+};
+
+static struct sys_device device_gart = {
+	.id     = 0,
+	.cls    = &gart_sysdev_class,
+};
+
 /* 
  * Private Northbridge GATT initialization in case we cannot use the
  * AGP driver for some reason.  
@@ -496,11 +598,12 @@ static __init int init_k8_gatt(struct agp_kern_info *info)
 	void *gatt;
 	unsigned aper_base, new_aper_base;
 	unsigned aper_size, gatt_size, new_aper_size;
-	int i;
+	int i, error;
 
 	printk(KERN_INFO "PCI-DMA: Disabling AGP.\n");
 	aper_size = aper_base = info->aper_size = 0;
 	dev = NULL;
+
 	for (i = 0; i < num_k8_northbridges; i++) {
 		dev = k8_northbridges[i];
 		new_aper_base = read_aperture(dev, &new_aper_size); 
@@ -530,21 +633,14 @@ static __init int init_k8_gatt(struct agp_kern_info *info)
 	memset(gatt, 0, gatt_size); 
 	agp_gatt_table = gatt;
 
-	for (i = 0; i < num_k8_northbridges; i++) {
-		u32 ctl; 
-		u32 gatt_reg; 
+	enable_gart_translations();
 
-		dev = k8_northbridges[i];
-		gatt_reg = __pa(gatt) >> 12; 
-		gatt_reg <<= 4; 
-		pci_write_config_dword(dev, 0x98, gatt_reg);
-		pci_read_config_dword(dev, 0x90, &ctl); 
+	error = sysdev_class_register(&gart_sysdev_class);
+	if (!error)
+		error = sysdev_register(&device_gart);
+	if (error)
+		panic("Could not register gart_sysdev -- would corrupt data on next suspend");
 
-		ctl |= 1;
-		ctl &= ~((1<<4) | (1<<5));
-
-		pci_write_config_dword(dev, 0x90, ctl); 
-	}
 	flush_gart();
 	
 	printk("PCI-DMA: aperture base @ %x size %u KB\n",aper_base, aper_size>>10); 

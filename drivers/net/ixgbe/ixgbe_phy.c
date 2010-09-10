@@ -492,3 +492,21 @@ s32 ixgbe_setup_tnx_phy_link_speed(struct ixgbe_hw *hw, u32 speed,
 
 	return 0;
 }
+
+/**
+ *  ixgbe_get_phy_firmware_version_tnx - Gets the PHY Firmware Version
+ *  @hw: pointer to hardware structure
+ *  @firmware_version: pointer to the PHY Firmware Version
+ **/
+s32 ixgbe_get_phy_firmware_version_tnx(struct ixgbe_hw *hw,
+                                       u16 *firmware_version)
+{
+	s32 status = 0;
+
+	status = ixgbe_read_phy_reg(hw, TNX_FW_REV,
+	                              IXGBE_MDIO_VENDOR_SPECIFIC_1_DEV_TYPE,
+	                              firmware_version);
+
+	return status;
+}
+

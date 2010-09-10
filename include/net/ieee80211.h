@@ -6,8 +6,8 @@
  * LAN access point) driver for Intersil Prism2/2.5/3.
  *
  * Copyright (c) 2001-2002, SSH Communications Security Corp and Jouni Malinen
- * <jkmaline@cc.hut.fi>
- * Copyright (c) 2002-2003, Jouni Malinen <jkmaline@cc.hut.fi>
+ * <j@w1.fi>
+ * Copyright (c) 2002-2003, Jouni Malinen <j@w1.fi>
  *
  * Adaption to a generic IEEE 802.11 stack by James Ketrenos
  * <jketreno@linux.intel.com>
@@ -115,11 +115,17 @@ extern u32 ieee80211_debug_level;
 do { if (ieee80211_debug_level & (level)) \
   printk(KERN_DEBUG "ieee80211: %c %s " fmt, \
          in_interrupt() ? 'I' : 'U', __FUNCTION__ , ## args); } while (0)
+static inline bool ieee80211_ratelimit_debug(u32 level)
+{
+	return (ieee80211_debug_level & level) && net_ratelimit();
+}
 #else
 #define IEEE80211_DEBUG(level, fmt, args...) do {} while (0)
+static inline bool ieee80211_ratelimit_debug(u32 level)
+{
+	return false;
+}
 #endif				/* CONFIG_IEEE80211_DEBUG */
-
-/* debug macros not dependent on CONFIG_IEEE80211_DEBUG */
 
 #define MAC_FMT "%02x:%02x:%02x:%02x:%02x:%02x"
 #define MAC_ARG(x) ((u8*)(x))[0],((u8*)(x))[1],((u8*)(x))[2],((u8*)(x))[3],((u8*)(x))[4],((u8*)(x))[5]
@@ -180,7 +186,6 @@ const char *escape_essid(const char *essid, u8 essid_len);
 #define IEEE80211_DEBUG_RX(f, a...)  IEEE80211_DEBUG(IEEE80211_DL_RX, f, ## a)
 #define IEEE80211_DEBUG_QOS(f, a...)  IEEE80211_DEBUG(IEEE80211_DL_QOS, f, ## a)
 #include <linux/netdevice.h>
-#include <linux/wireless.h>
 #include <linux/if_arp.h>	/* ARPHRD_ETHER */
 
 #ifndef WIRELESS_SPY
@@ -218,7 +223,7 @@ struct ieee80211_snap_hdr {
 #define WLAN_FC_GET_STYPE(fc) ((fc) & IEEE80211_FCTL_STYPE)
 
 #define WLAN_GET_SEQ_FRAG(seq) ((seq) & IEEE80211_SCTL_FRAG)
-#define WLAN_GET_SEQ_SEQ(seq)  ((seq) & IEEE80211_SCTL_SEQ)
+#define WLAN_GET_SEQ_SEQ(seq)  (((seq) & IEEE80211_SCTL_SEQ) >> 4)
 
 /* Authentication algorithms */
 #define WLAN_AUTH_OPEN 0
@@ -674,7 +679,11 @@ struct ieee80211_probe_request {
 
 struct ieee80211_probe_response {
 	struct ieee80211_hdr_3addr header;
+#ifndef __GENKSYMS__
+	__le32 time_stamp[2];
+#else
 	u32 time_stamp[2];
+#endif
 	__le16 beacon_interval;
 	__le16 capability;
 	/* SSID, supported rates, FH params, DS params,
@@ -715,8 +724,13 @@ struct ieee80211_txb {
 	u8 encrypted;
 	u8 rts_included;
 	u8 reserved;
+#ifndef __GENKSYMS__
+	u16 frag_size;
+	u16 payload_size;
+#else
 	__le16 frag_size;
 	__le16 payload_size;
+#endif
 	struct sk_buff *fragments[0];
 };
 
@@ -1259,6 +1273,8 @@ extern int ieee80211_tx_frame(struct ieee80211_device *ieee,
 			      int total_len, int encrypt_mpdu);
 
 /* ieee80211_rx.c */
+extern void ieee80211_rx_any(struct ieee80211_device *ieee,
+		     struct sk_buff *skb, struct ieee80211_rx_stats *stats);
 extern int ieee80211_rx(struct ieee80211_device *ieee, struct sk_buff *skb,
 			struct ieee80211_rx_stats *rx_stats);
 /* make sure to set stats->len */
@@ -1283,6 +1299,8 @@ extern u8 ieee80211_get_channel_flags(struct ieee80211_device *ieee,
 extern const struct ieee80211_channel *ieee80211_get_channel(struct
 							     ieee80211_device
 							     *ieee, u8 channel);
+extern u32 ieee80211_channel_to_freq(struct ieee80211_device * ieee,
+				      u8 channel);
 
 /* ieee80211_wx.c */
 extern int ieee80211_wx_get_scan(struct ieee80211_device *ieee,

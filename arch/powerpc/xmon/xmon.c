@@ -35,6 +35,7 @@
 #include <asm/rtas.h>
 #include <asm/sstep.h>
 #include <asm/bug.h>
+#include <asm/setjmp.h>
 
 #ifdef CONFIG_PPC64
 #include <asm/hvcall.h>
@@ -64,12 +65,9 @@ static unsigned long ncsum = 4096;
 static int termch;
 static char tmpstr[128];
 
-#define JMP_BUF_LEN	23
 static long bus_error_jmp[JMP_BUF_LEN];
 static int catch_memory_errors;
 static long *xmon_fault_jmp[NR_CPUS];
-#define setjmp xmon_setjmp
-#define longjmp xmon_longjmp
 
 /* Breakpoint stuff */
 struct bpt {
@@ -150,8 +148,6 @@ int xmon_no_auto_backtrace;
 extern void xmon_enter(void);
 extern void xmon_leave(void);
 
-extern long setjmp(long *);
-extern void longjmp(long *, long);
 extern void xmon_save_regs(struct pt_regs *);
 
 #ifdef CONFIG_PPC64
@@ -2496,7 +2492,7 @@ static void dump_slb(void)
 
 	printf("SLB contents of cpu %x\n", smp_processor_id());
 
-	for (i = 0; i < SLB_NUM_ENTRIES; i++) {
+	for (i = 0; i < mmu_slb_size; i++) {
 		asm volatile("slbmfee  %0,%1" : "=r" (tmp) : "r" (i));
 		printf("%02d %016lx ", i, tmp);
 

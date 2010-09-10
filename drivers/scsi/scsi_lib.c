@@ -25,6 +25,7 @@
 #include <scsi/scsi_driver.h>
 #include <scsi/scsi_eh.h>
 #include <scsi/scsi_host.h>
+#include <scsi/scsi_dh.h>
 
 #include "scsi_priv.h"
 #include "scsi_logging.h"
@@ -89,9 +90,9 @@ static void scsi_unprep_request(struct request *req)
 }
 
 /*
- * Function:    scsi_queue_insert()
+ * Function:    scsi_attempt_requeue_command()
  *
- * Purpose:     Insert a command in the midlevel queue.
+ * Purpose:     Attempt to insert a command in the midlevel queue.
  *
  * Arguments:   cmd    - command that we are adding to queue.
  *              reason - why we are inserting command to queue.
@@ -100,22 +101,43 @@ static void scsi_unprep_request(struct request *req)
  *
  * Returns:     Nothing.
  *
- * Notes:       We do this for one of two cases.  Either the host is busy
- *              and it cannot accept any more commands for the time being,
- *              or the device returned QUEUE_FULL and can accept no more
- *              commands.
+ * Notes:       We do this for multiple cases.
+ *
+ *		Host or device queueing:
+ *		Either the host or device is busy and it cannot accept any more
+ *		commands for the time being.
+ *
+ * 		SCSI error processing:
+ * 		The scsi-eh has decided to requeue a command after getting
+ * 		a command it believes ir retryable.
+ *
  * Notes:       This could be called either from an interrupt context or a
  *              normal process context.
  */
-int scsi_queue_insert(struct scsi_cmnd *cmd, int reason)
+int scsi_attempt_requeue_command(struct scsi_cmnd *cmd, int reason)
 {
 	struct Scsi_Host *host = cmd->device->host;
 	struct scsi_device *device = cmd->device;
 	struct request_queue *q = device->request_queue;
+	unsigned long wait_for = (cmd->allowed + 1) * cmd->timeout_per_command;
 	unsigned long flags;
 
 	SCSI_LOG_MLQUEUE(1,
 		 printk("Inserting command %p into mlqueue\n", cmd));
+
+	if (time_before(cmd->jiffies_at_alloc + wait_for, jiffies)) {
+		sdev_printk(KERN_ERR, cmd->device, "timing out command, "
+			    "waited %lus\n", wait_for/HZ);
+		cmd->result |= DRIVER_TIMEOUT << 24;
+		scsi_finish_command(cmd);
+		return 0;
+	}
+
+	if (!scsi_device_online(cmd->device)) {
+		cmd->result |= DRIVER_HARD << 24;
+		scsi_finish_command(cmd);
+		return 0;
+	}
 
 	/*
 	 * Set the appropriate busy bit for the device/host.
@@ -130,11 +152,60 @@ int scsi_queue_insert(struct scsi_cmnd *cmd, int reason)
 	 * if a command is requeued with no other commands outstanding
 	 * either for the device or for the host.
 	 */
-	if (reason == SCSI_MLQUEUE_HOST_BUSY)
+	switch (reason) {
+	case SCSI_MLQUEUE_HOST_BUSY:
+	case SCSI_MLQUEUE_HOST_BUSY2:
 		host->host_blocked = host->max_host_blocked;
-	else if (reason == SCSI_MLQUEUE_DEVICE_BUSY)
+		break;
+	case SCSI_MLQUEUE_DEVICE_BUSY:
+	case SCSI_MLQUEUE_DEVICE_BUSY2:
 		device->device_blocked = device->max_device_blocked;
+		break;
+	}
 
+	/*
+	 * If drivers are using the old values, then we
+	 * want to bypass the failfast and retry checks like we do
+	 * with the new ones.
+	 */
+	if (reason == SCSI_MLQUEUE_HOST_BUSY ||
+	    reason == SCSI_MLQUEUE_DEVICE_BUSY ||
+	    reason == SCSI_MLQUEUE_EH_RETRY)
+		goto cleanup;
+
+	if (!scsi_ign_failfast(reason) && scsi_disposition_retry(reason)) {
+		if (reason & SCSI_MLQUEUE_DIS_XPT_RETRY) {
+			if (!blk_failfast_transport(cmd->request))
+				goto check_retries;
+		} else if (reason & SCSI_MLQUEUE_DIS_DEV_RETRY) {
+			if (!blk_failfast_dev(cmd->request))
+				goto check_retries;
+		} else if (reason & SCSI_MLQUEUE_DIS_DRV_RETRY) {
+			if (!blk_failfast_driver(cmd->request))
+				goto check_retries;
+		} else if (reason & SCSI_MLQUEUE_DIS_RETRY) {
+			if (!blk_noretry_ff_request(cmd->request))
+				goto check_retries;
+		} else
+			goto check_retries;
+
+		if (!cmd->result)
+			cmd->result |= DRIVER_ERROR << 24;
+		scsi_finish_command(cmd);
+		return 0;
+	}
+
+check_retries:
+	if (!scsi_ign_cmd_retries(reason)) {
+		if (++cmd->retries > cmd->allowed) {
+			if (!cmd->result)
+				cmd->result |= DRIVER_ERROR << 24;
+			scsi_finish_command(cmd);
+			return 0;
+		}
+	}
+
+cleanup:
 	/*
 	 * Decrement the counters, since these commands are no longer
 	 * active on the host/device.
@@ -670,7 +741,7 @@ static struct scsi_cmnd *scsi_end_request(struct scsi_cmnd *cmd, int uptodate,
 			leftover = req->data_len;
 
 		/* kill remainder if no retrys */
-		if (!uptodate && blk_noretry_request(req))
+		if (!uptodate && blk_noretry_ff_request(req))
 			end_that_request_chunk(req, 0, leftover);
 		else {
 			if (requeue) {
@@ -1104,6 +1175,7 @@ static int scsi_prep_fn(struct request_queue *q, struct request *req)
 	struct scsi_device *sdev = q->queuedata;
 	struct scsi_cmnd *cmd;
 	int specials_only = 0;
+	struct scsi_dh_data *scsi_dh_data = retrieve_scsi_dh_data(sdev);
 
 	/*
 	 * Just check to see if the device is online.  If it isn't, we
@@ -1128,6 +1200,18 @@ static int scsi_prep_fn(struct request_queue *q, struct request *req)
 		/* OK, we only allow special commands (i.e. not
 		 * user initiated ones */
 		specials_only = sdev->sdev_state;
+	}
+
+	/*
+	 * If it is a filesystem cmd, call the prep_fn of the
+	 * hardware handler.
+	 */
+	if (blk_fs_request(req) &&
+		unlikely(scsi_dh_data && scsi_dh_data->scsi_dh
+			&& scsi_dh_data->scsi_dh->prep_fn)) {
+		int ret = scsi_dh_data->scsi_dh->prep_fn(sdev, req);
+		if (ret != BLKPREP_OK)
+			return ret;
 	}
 
 	/*
@@ -1358,36 +1442,21 @@ static void scsi_kill_request(struct request *req, request_queue_t *q)
 static void scsi_softirq_done(struct request *rq)
 {
 	struct scsi_cmnd *cmd = rq->completion_data;
-	unsigned long wait_for = (cmd->allowed + 1) * cmd->timeout_per_command;
 	int disposition;
 
 	INIT_LIST_HEAD(&cmd->eh_entry);
 
 	disposition = scsi_decide_disposition(cmd);
-	if (disposition != SUCCESS &&
-	    time_before(cmd->jiffies_at_alloc + wait_for, jiffies)) {
-		sdev_printk(KERN_ERR, cmd->device,
-			    "timing out command, waited %lus\n",
-			    wait_for/HZ);
-		disposition = SUCCESS;
-	}
 			
 	scsi_log_completion(cmd, disposition);
 
-	switch (disposition) {
-		case SUCCESS:
+	if (scsi_disposition_finish(disposition))
+		scsi_finish_command(cmd);
+	else if (scsi_disposition_retry(disposition))
+		scsi_attempt_requeue_command(cmd, disposition);
+	else
+		if (!scsi_eh_scmd_add(cmd, 0))
 			scsi_finish_command(cmd);
-			break;
-		case NEEDS_RETRY:
-			scsi_retry_command(cmd);
-			break;
-		case ADD_TO_MLQUEUE:
-			scsi_queue_insert(cmd, SCSI_MLQUEUE_DEVICE_BUSY);
-			break;
-		default:
-			if (!scsi_eh_scmd_add(cmd, 0))
-				scsi_finish_command(cmd);
-	}
 }
 
 /*

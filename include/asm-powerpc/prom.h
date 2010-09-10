@@ -214,6 +214,9 @@ static inline u64 of_read_number(u32 *cell, int size)
 #define OF_BAD_ADDR	((u64)-1)
 extern u64 of_translate_address(struct device_node *np, u32 *addr);
 
+/* Translate a DMA address from device space to CPU space */
+extern u64 of_translate_dma_address(struct device_node *dev, u32 *in_addr);
+
 /* Extract an address from a device, returns the region size and
  * the address space flags too. The PCI version uses a BAR number
  * instead of an absolute index

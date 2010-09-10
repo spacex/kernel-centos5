@@ -287,8 +287,13 @@ int netif_map(netif_t *netif, unsigned long tx_ring_ref,
 
 	netif->evtchn = bind_interdomain.local_port;
 
-	netif->irq = bind_evtchn_to_irqhandler(
+	err = bind_evtchn_to_irqhandler(
 		netif->evtchn, netif_be_int, 0, netif->dev->name, netif);
+        if (err < 0)
+                goto err_hypervisor;
+
+        netif->irq = err;
+
 	disable_irq(netif->irq);
 
 	txs = (netif_tx_sring_t *)netif->tx_comms_area->addr;

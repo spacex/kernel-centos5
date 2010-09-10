@@ -41,26 +41,22 @@ extern void pci_remove_legacy_files(struct pci_bus *bus);
 
 /* Lock for read/write access to pci device and bus lists */
 extern struct rw_semaphore pci_bus_sem;
-
 extern unsigned int pci_pm_d3_delay;
+
 #ifdef CONFIG_PCI_MSI
 void disable_msi_mode(struct pci_dev *dev, int pos, int type);
 void pci_no_msi(void);
+int pci_save_msi_state(struct pci_dev *dev);
+int pci_save_msix_state(struct pci_dev *dev);
+void pci_restore_msix_state(struct pci_dev *dev);
 #else
 static inline void disable_msi_mode(struct pci_dev *dev, int pos, int type) { }
 static inline void pci_no_msi(void) { }
-#endif
-#if defined(CONFIG_PCI_MSI) && defined(CONFIG_PM)
-int pci_save_msi_state(struct pci_dev *dev);
-int pci_save_msix_state(struct pci_dev *dev);
-void pci_restore_msi_state(struct pci_dev *dev);
-void pci_restore_msix_state(struct pci_dev *dev);
-#else
 static inline int pci_save_msi_state(struct pci_dev *dev) { return 0; }
 static inline int pci_save_msix_state(struct pci_dev *dev) { return 0; }
-static inline void pci_restore_msi_state(struct pci_dev *dev) {}
 static inline void pci_restore_msix_state(struct pci_dev *dev) {}
 #endif
+
 static inline int pci_no_d1d2(struct pci_dev *dev)
 {
 	unsigned int parent_dstates = 0;
@@ -73,7 +69,6 @@ static inline int pci_no_d1d2(struct pci_dev *dev)
 extern int pcie_mch_quirk;
 extern struct device_attribute pci_dev_attrs[];
 extern struct class_device_attribute class_device_attr_cpuaffinity;
-extern void pcibios_fix_bus_scan_quirk(struct pci_bus *bus);
 
 /**
  * pci_match_one_device - Tell if a PCI device structure has a matching

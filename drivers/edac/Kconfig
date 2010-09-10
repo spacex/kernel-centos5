@@ -10,7 +10,8 @@ menu 'EDAC - error detection and reporting (RAS) (EXPERIMENTAL)'
 
 config EDAC
 	tristate "EDAC core system error reporting (EXPERIMENTAL)"
-	depends on X86 && EXPERIMENTAL
+	depends on EXPERIMENTAL
+	depends on X86 || PPC64
 	help
 	  EDAC is designed to report errors in the core system.
 	  These are low-level errors that are reported in the CPU or
@@ -117,6 +118,14 @@ config EDAC_R82600
 	help
 	  Support for error detection and correction on the Radisys
 	  82600 embedded chipset.
+
+config EDAC_CELL
+	tristate "Cell Broadband Engine memory controller"
+	depends on EDAC_MM_EDAC && PPC_CELL_NATIVE
+	help
+	  Support for error detection and correction on the
+	  Cell Broadband Engine internal memory controller
+	  on platform without a hypervisor
 
 choice
 	prompt "Error detecting method"

@@ -45,6 +45,7 @@
 #include <linux/dmi.h>
 #include <linux/dma-mapping.h>
 #include <linux/ctype.h>
+#include <linux/efi.h>
 
 #include <asm/mtrr.h>
 #include <asm/uaccess.h>
@@ -70,6 +71,10 @@
  * Machine setup..
  */
 
+#ifdef CONFIG_EFI
+int efi_enabled = 0;
+EXPORT_SYMBOL(efi_enabled);
+#endif
 struct cpuinfo_x86 boot_cpu_data __read_mostly;
 EXPORT_SYMBOL(boot_cpu_data);
 
@@ -128,7 +133,9 @@ struct resource standard_io_resources[] = {
 		.flags = IORESOURCE_BUSY | IORESOURCE_IO },
 	{ .name = "timer1", .start = 0x50, .end = 0x53,
 		.flags = IORESOURCE_BUSY | IORESOURCE_IO },
-	{ .name = "keyboard", .start = 0x60, .end = 0x6f,
+	{ .name = "keyboard", .start = 0x60, .end = 0x60,
+		.flags = IORESOURCE_BUSY | IORESOURCE_IO },
+	{ .name = "keyboard", .start = 0x64, .end = 0x64,
 		.flags = IORESOURCE_BUSY | IORESOURCE_IO },
 	{ .name = "dma page reg", .start = 0x80, .end = 0x8f,
 		.flags = IORESOURCE_BUSY | IORESOURCE_IO },
@@ -293,7 +300,6 @@ static __init void parse_cmdline_early (char ** cmdline_p)
 {
 	char c = ' ', *to = command_line, *from = COMMAND_LINE;
 	int len = 0;
-	int userdef = 0;
 
 	for (;;) {
 		if (c != ' ') 
@@ -374,25 +380,7 @@ static __init void parse_cmdline_early (char ** cmdline_p)
 			parse_memopt(from+4, &from); 
 
 		if (!memcmp(from, "memmap=", 7)) {
-			/* exactmap option is for used defined memory */
-			if (!memcmp(from+7, "exactmap", 8)) {
-#ifdef CONFIG_CRASH_DUMP
-				/* If we are doing a crash dump, we
-				 * still need to know the real mem
-				 * size before original memory map is
-				 * reset.
-				 */
-				saved_max_pfn = e820_end_of_ram();
-#endif
-				from += 8+7;
-				end_pfn_map = 0;
-				e820.nr_map = 0;
-				userdef = 1;
-			}
-			else {
-				parse_memmapopt(from+7, &from);
-				userdef = 1;
-			}
+			parse_memmapopt(from+7, &from);
 		}
 
 #ifdef CONFIG_NUMA
@@ -452,10 +440,6 @@ static __init void parse_cmdline_early (char ** cmdline_p)
 		if (COMMAND_LINE_SIZE <= ++len)
 			break;
 		*(to++) = c;
-	}
-	if (userdef) {
-		printk(KERN_INFO "user-defined physical RAM map:\n");
-		e820_print_map("user");
 	}
 	*to = '\0';
 	*cmdline_p = command_line;
@@ -540,6 +524,10 @@ void __init setup_arch(char **cmdline_p)
 	rd_prompt = ((RAMDISK_FLAGS & RAMDISK_PROMPT_FLAG) != 0);
 	rd_doload = ((RAMDISK_FLAGS & RAMDISK_LOAD_FLAG) != 0);
 #endif
+#ifdef CONFIG_EFI
+	if (!strncmp(EFI_LOADER_SIG, "EFIL", 4))
+		efi_enabled = 1;
+#endif
 	setup_memory_region();
 	copy_edd();
 
@@ -558,6 +546,8 @@ void __init setup_arch(char **cmdline_p)
 
 	parse_cmdline_early(cmdline_p);
 
+	finish_e820_parsing();
+
 	early_identify_cpu(&boot_cpu_data);
 
 	/*
@@ -572,6 +562,8 @@ void __init setup_arch(char **cmdline_p)
 	discover_ebda();
 
 	init_memory_mapping(0, (end_pfn_map << PAGE_SHIFT));
+	if (efi_enabled)
+		efi_map_memmap();
 
 	dmi_scan_machine();
 
@@ -714,7 +706,8 @@ void __init setup_arch(char **cmdline_p)
 
 #ifdef CONFIG_VT
 #if defined(CONFIG_VGA_CONSOLE)
-	conswitchp = &vga_con;
+	if (!efi_enabled || (efi_mem_type(0xa0000) != EFI_CONVENTIONAL_MEMORY))
+		conswitchp = &vga_con;
 #elif defined(CONFIG_DUMMY_CONSOLE)
 	conswitchp = &dummy_con;
 #endif
@@ -1331,6 +1324,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		seq_printf(m, "siblings\t: %d\n", cpus_weight(cpu_core_map[cpu]));
 		seq_printf(m, "core id\t\t: %d\n", c->cpu_core_id);
 		seq_printf(m, "cpu cores\t: %d\n", c->booted_cores);
+		seq_printf(m, "apicid\t\t: %d\n", c->apicid);
 	}
 #endif	
 

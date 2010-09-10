@@ -31,14 +31,18 @@ struct pci_raw_ops *raw_pci_ops;
 int pci_noseg = 0;
 #endif
 
+struct pci_sysdata pci_default_sysdata = { .node = -1 };
+
 static int pci_read(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 *value)
 {
-	return raw_pci_ops->read(0, bus->number, devfn, where, size, value);
+	return raw_pci_ops->read(pci_domain_nr(bus), bus->number,
+				 devfn, where, size, value);
 }
 
 static int pci_write(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 value)
 {
-	return raw_pci_ops->write(0, bus->number, devfn, where, size, value);
+	return raw_pci_ops->write(pci_domain_nr(bus), bus->number,
+				  devfn, where, size, value);
 }
 
 struct pci_ops pci_root_ops = {
@@ -364,11 +368,15 @@ static struct dmi_system_id __devinitdata pciprobe_dmi_table[] = {
 	{}
 };
 
+void __init dmi_check_pciprobe(void)
+{
+	dmi_check_system(pciprobe_dmi_table);
+}
+
 struct pci_bus * __devinit pcibios_scan_root(int busnum)
 {
 	struct pci_bus *bus = NULL;
-
-	dmi_check_system(pciprobe_dmi_table);
+	struct pci_sysdata *sd;
 
 	while ((bus = pci_find_next_bus(bus)) != NULL) {
 		if (bus->number == busnum) {
@@ -377,9 +385,19 @@ struct pci_bus * __devinit pcibios_scan_root(int busnum)
 		}
 	}
 
+	/* Allocate per-root-bus (not per bus) arch-specific data.
+	 * TODO: leak; this memory is never freed.
+	 * It's arguable whether it's worth the trouble to care.
+	 */
+	sd = kzalloc(sizeof(*sd), GFP_KERNEL);
+	if (!sd) {
+		printk(KERN_ERR "PCI: OOM, not probing PCI bus %02x\n", busnum);
+		return NULL;
+	}
+
 	printk(KERN_DEBUG "PCI: Probing PCI hardware (bus %02x)\n", busnum);
 
-	return pci_scan_bus_parented(NULL, busnum, &pci_root_ops, NULL);
+	return pci_scan_bus_parented(NULL, busnum, &pci_root_ops, sd);
 }
 
 extern u8 pci_cache_line_size;
@@ -524,73 +542,4 @@ void pcibios_disable_device (struct pci_dev *dev)
 	pcibios_disable_resources(dev);
 	if (pcibios_disable_irq)
 		pcibios_disable_irq(dev);
-}
-
-/**
- * This routine traps devices not correctly responding to MMCONFIG access.
- * For each device on the current bus, compare a mmconf read of the
- * vendor/device dword with a legacy PCI config read. If they're not the same,
- * the bus serving this device must use legacy PCI config accesses instead of
- * mmconf, as must all buses descending from this bus.
- */
-void __devinit pcibios_fix_bus_scan_quirk(struct pci_bus *bus)
-{
-	int devfn;
-	int fail;
-	int found_nommconf_dev = 0;
-	static int advised;
-	u32 mcfg_vendev;
-	u32 arch_vendev;
-	struct pci_ops *save_ops = bus->ops;
-
-	/*
-	 * Return here if mmconf is NOT the default platform-wide pci config
-	 * access mechanism, or if this bus is within the range checked by
-	 * unreachable_devices().
-	 */
-	if (((pci_probe & PCI_USING_MMCONF) == 0) ||
-	    (bus->number < MAX_CHECK_BUS))
-		return;
-	/*
-	 * If the parent bus has already been programmed for legacy pci config
-	 * access, then there is no need to scan this bus.
-	 */
-	if (bus->parent != NULL)
-		if (bus->parent->ops == &pci_legacy_ops)
-			return;
-
-	if (!advised) {
-		pr_info("PCI: If a device isn't working, "
-			"try \"pci=nommconf\".\n");
-		advised = 1;
-	}
-	pr_debug("PCI: Checking bus %04x:%02x for MMCONFIG compliance.\n",
-		 pci_domain_nr(bus), bus->number);
-
-	for (devfn = 0; devfn < 256; devfn++) {
-		bus->ops = &pci_legacy_ops;
-		fail = pci_bus_read_config_dword(bus, devfn, PCI_VENDOR_ID,
-						 &arch_vendev);
-		if ((arch_vendev == 0xFFFFFFFF) || (arch_vendev == 0) || fail)
-			continue;
-
-		bus->ops = save_ops;	/* Restore to original value */
-		pci_bus_read_config_dword(bus, devfn, PCI_VENDOR_ID,
-					  &mcfg_vendev);
-		if (mcfg_vendev != arch_vendev) {
-			found_nommconf_dev = 1;
-			break;
-		}
-	}
-
-	if (found_nommconf_dev) {
-		pr_info("PCI: Device at %04x:%02x.%02x.%x is not MMCONFIG "
-			"compliant.\n", pci_domain_nr(bus), bus->number,
-			PCI_SLOT(devfn), PCI_FUNC(devfn));
-		pr_info("PCI: Bus %04x:%02x and its descendents cannot use "
-			"MMCONFIG.\n", pci_domain_nr(bus), bus->number);
-		bus->ops = &pci_legacy_ops;	/* Use Legacy PCI Config */
-	} else
-		bus->ops = save_ops;		/* Use MMCONFIG  */
-	return;
 }

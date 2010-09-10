@@ -247,6 +247,19 @@ inotify_dev_get_event(struct inotify_device *dev)
 }
 
 /*
+ * inotify_dev_get_last_event - return the last event in the given dev's queue
+ *
+ * Caller must hold dev->ev_mutex.
+ */
+static inline struct inotify_kernel_event *
+inotify_dev_get_last_event(struct inotify_device *dev)
+{
+	if (list_empty(&dev->events))
+		return NULL;
+	return list_entry(dev->events.prev, struct inotify_kernel_event, list);
+}
+
+/*
  * inotify_dev_queue_event - event handler registered with core inotify, adds
  * a new event to the given device
  *
@@ -272,7 +285,7 @@ static void inotify_dev_queue_event(struct inotify_watch *w, u32 wd, u32 mask,
 		put_inotify_watch(w); /* final put */
 
 	/* coalescing: drop this event if it is a dupe of the previous */
-	last = inotify_dev_get_event(dev);
+	last = inotify_dev_get_last_event(dev);
 	if (last && last->event.mask == mask && last->event.wd == wd &&
 			last->event.cookie == cookie) {
 		const char *lastname = last->name;

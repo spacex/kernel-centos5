@@ -42,6 +42,7 @@
 #include <linux/fs.h>
 #include "cifsglob.h"
 #include "cifs_debug.h"
+#include "cifsfs.h"
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 22)
 #include <linux/exportfs.h>
 #endif

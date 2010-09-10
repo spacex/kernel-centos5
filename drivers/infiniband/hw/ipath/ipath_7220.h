@@ -39,7 +39,6 @@
  * 7220-related files such as ipath_iba7220.c or ipath_sd7220.c.
  */
 int ipath_sd7220_presets(struct ipath_devdata *dd);
-int ipath_sd7220_enable_aeq(struct ipath_devdata *dd);
 int ipath_sd7220_init(struct ipath_devdata *dd, int was_reset);
 int ipath_sd7220_prog_ld(struct ipath_devdata *dd, int sdnum, u8 *img,
 	int len, int offset);

@@ -227,6 +227,7 @@ int lpfc_sli_issue_iocb(struct lpfc_hba *, struct lpfc_sli_ring *,
 			struct lpfc_iocbq *, uint32_t);
 void lpfc_sli_pcimem_bcopy(void *, void *, uint32_t);
 void lpfc_sli_abort_iocb_ring(struct lpfc_hba *, struct lpfc_sli_ring *);
+void lpfc_sli_flush_fcp_rings(struct lpfc_hba *);
 int lpfc_sli_ringpostbuf_put(struct lpfc_hba *, struct lpfc_sli_ring *,
 			     struct lpfc_dmabuf *);
 struct lpfc_dmabuf *lpfc_sli_ringpostbuf_get(struct lpfc_hba *,
@@ -290,7 +291,6 @@ extern struct class_device_attribute *lpfc_hba_attrs[];
 extern struct class_device_attribute *lpfc_vport_attrs[];
 extern struct scsi_host_template lpfc_template;
 extern struct class_device_attribute *lpfc_hba_attrs_no_npiv[];
-extern struct scsi_host_template lpfc_template_no_npiv;
 extern struct scsi_host_template lpfc_vport_template;
 extern struct fc_function_template lpfc_transport_functions;
 extern struct fc_function_template lpfc_vport_transport_functions;
@@ -298,6 +298,7 @@ extern int lpfc_sli_mode;
 extern int lpfc_enable_npiv;
 
 int  lpfc_vport_symbolic_node_name(struct lpfc_vport *, char *, size_t);
+int  lpfc_vport_symbolic_port_name(struct lpfc_vport *, char *, size_t);
 void lpfc_terminate_rport_io(struct fc_rport *);
 void lpfc_dev_loss_tmo_callbk(struct fc_rport *rport);
 
@@ -320,8 +321,8 @@ void lpfc_dhchap_authenticate(struct Scsi_Host *, int , void *, uint32_t);
 int lpfc_start_node_authentication(struct lpfc_nodelist *);
 int lpfc_get_auth_config(struct lpfc_nodelist *, struct lpfc_name *);
 void lpfc_start_discovery(struct lpfc_vport *vport);
-
 void lpfc_start_authentication(struct lpfc_vport *, struct lpfc_nodelist *);
+int lpfc_rcv_nl_msg(struct Scsi_Host *, void *, uint32_t, uint32_t);
 
 extern void lpfc_debugfs_initialize(struct lpfc_vport *);
 extern void lpfc_debugfs_terminate(struct lpfc_vport *);
@@ -335,6 +336,7 @@ extern uint8_t lpfc_security_service_state;
 extern spinlock_t fc_security_user_lock;
 extern struct list_head fc_security_user_list;
 extern int fc_service_state;
+void lpfc_rcv_nl_event(struct notifier_block *, unsigned long , void *);
 
 /* Interface exported by fabric iocb scheduler */
 int lpfc_issue_fabric_iocb(struct lpfc_hba *, struct lpfc_iocbq *);
@@ -347,6 +349,8 @@ void lpfc_unblock_fabric_iocbs(struct lpfc_hba *);
 void lpfc_adjust_queue_depth(struct lpfc_hba *);
 void lpfc_ramp_down_queue_handler(struct lpfc_hba *);
 void lpfc_ramp_up_queue_handler(struct lpfc_hba *);
+void lpfc_scsi_dev_block(struct lpfc_hba *);
+void lpfc_scsi_dev_rescan(struct lpfc_hba *);
 
 #define ScsiResult(host_code, scsi_code) (((host_code) << 16) | scsi_code)
 #define HBA_EVENT_RSCN                   5

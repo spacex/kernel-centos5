@@ -43,6 +43,10 @@
 #include <xen/interface/memory.h>
 #include <xen/driver_util.h>
 
+#ifdef HAVE_XEN_PLATFORM_COMPAT_H
+#include <xen/platform-compat.h>
+#endif
+
 /* External tools reserve first few grant table entries. */
 #define NR_RESERVED_ENTRIES 8
 #define GNTTAB_LIST_END 0xffffffff
@@ -56,9 +60,6 @@ static grant_ref_t gnttab_free_head;
 static DEFINE_SPINLOCK(gnttab_list_lock);
 
 static struct grant_entry *shared;
-#ifndef CONFIG_XEN
-static unsigned long resume_frames;
-#endif
 
 static struct gnttab_free_callback *gnttab_free_callback_list;
 
@@ -184,7 +185,7 @@ int gnttab_end_foreign_access_ref(grant_ref_t ref, int readonly)
 	nflags = shared[ref].flags;
 	do {
 		if ((flags = nflags) & (GTF_reading|GTF_writing)) {
-			printk(KERN_ALERT "WARNING: g.e. still in use!\n");
+			printk(KERN_DEBUG "WARNING: g.e. still in use!\n");
 			return 0;
 		}
 	} while ((nflags = synch_cmpxchg_subword(&shared[ref].flags, flags, 0)) !=
@@ -204,7 +205,7 @@ void gnttab_end_foreign_access(grant_ref_t ref, int readonly,
 	} else {
 		/* XXX This needs to be fixed so that the ref and page are
 		   placed on a list to be freed up later. */
-		printk(KERN_WARNING
+		printk(KERN_DEBUG
 		       "WARNING: leaking g.e. and page still in use!\n");
 	}
 }
@@ -514,51 +515,48 @@ int gnttab_suspend(void)
 
 #include <platform-pci.h>
 
+static unsigned long resume_frames;
+
 static int gnttab_map(unsigned int start_idx, unsigned int end_idx)
 {
 	struct xen_add_to_physmap xatp;
-	unsigned int i;
+	unsigned int i=end_idx;
 
 	/* Loop backwards, so that the first hypercall has the largest index,
 	 * ensuring that the table will grow only once.
 	 */
-	for (i = end_idx; i >= start_idx; i--) {
+	do {
 		xatp.domid = DOMID_SELF;
 		xatp.idx = i;
 		xatp.space = XENMAPSPACE_grant_table;
 		xatp.gpfn = (resume_frames >> PAGE_SHIFT) + i;
 		if (HYPERVISOR_memory_op(XENMEM_add_to_physmap, &xatp))
 			BUG();
-	}
+	} while (i-- > start_idx);
+
+	return 0;
 }
 
 int gnttab_resume(void)
 {
-	struct xen_add_to_physmap xatp;
-	unsigned int i, max_nr_gframes, nr_gframes;
+	unsigned int max_nr_gframes, nr_gframes;
 
 	nr_gframes = nr_grant_frames;
 	max_nr_gframes = max_nr_grant_frames();
 	if (max_nr_gframes < nr_gframes)
 		return -ENOSYS;
 
-	resume_frames = alloc_xen_mmio(PAGE_SIZE * max_nr_gframes);
+	if (!resume_frames) {
+		resume_frames = alloc_xen_mmio(PAGE_SIZE * max_nr_gframes);
+		shared = ioremap(resume_frames, PAGE_SIZE * max_nr_gframes);
+		if (shared == NULL) {
+			printk("error to ioremap gnttab share frames\n");
+			return -1;
+		}
+	}
 
 	gnttab_map(0, nr_gframes - 1);
 
-	shared = ioremap(resume_frames, PAGE_SIZE * max_nr_gframes);
-	if (shared == NULL) {
-		printk("error to ioremap gnttab share frames\n");
-		return -1;
-	}
-
-	return 0;
-}
-
-int gnttab_suspend(void)
-{
-	iounmap(shared);
- 	resume_frames = 0;
 	return 0;
 }
 
@@ -581,7 +579,7 @@ static int gnttab_expand(unsigned int req_entries)
 	return rc;
 }
  
-int __init gnttab_init(void)
+int __devinit gnttab_init(void)
 {
 	int i;
 	unsigned int max_nr_glist_frames, nr_glist_frames;

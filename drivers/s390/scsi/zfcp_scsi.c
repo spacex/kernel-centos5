@@ -181,14 +181,10 @@ static void zfcp_scsi_slave_destroy(struct scsi_device *sdpnt)
 	struct zfcp_unit *unit = (struct zfcp_unit *) sdpnt->hostdata;
 
 	if (unit) {
-		zfcp_erp_wait(unit->port->adapter);
-		wait_event(unit->scsi_scan_wq,
-			   atomic_test_mask(ZFCP_STATUS_UNIT_SCSI_WORK_PENDING,
-					    &unit->status) == 0);
 		atomic_clear_mask(ZFCP_STATUS_UNIT_REGISTERED, &unit->status);
 		sdpnt->hostdata = NULL;
 		unit->device = NULL;
-		zfcp_erp_unit_failed(unit);
+		zfcp_erp_unit_failed(unit, 12, 0);
 		zfcp_unit_put(unit);
 	} else {
 		ZFCP_LOG_NORMAL("bug: no unit associated with SCSI device at "
@@ -264,8 +260,9 @@ zfcp_scsi_command_async(struct zfcp_adapter *adapter, struct zfcp_unit *unit,
 		goto out;
 	}
 
-	if (unlikely(
-	     !atomic_test_mask(ZFCP_STATUS_COMMON_UNBLOCKED, &unit->status))) {
+	tmp = zfcp_fsf_send_fcp_command_task(adapter, unit, scpnt, use_timer,
+					     ZFCP_REQ_AUTO_CLEANUP);
+	if (unlikely(tmp == -EBUSY)) {
 		ZFCP_LOG_DEBUG("adapter %s not ready or unit 0x%016Lx "
 			       "on port 0x%016Lx in recovery\n",
 			       zfcp_get_busid_by_unit(unit),
@@ -273,9 +270,6 @@ zfcp_scsi_command_async(struct zfcp_adapter *adapter, struct zfcp_unit *unit,
 		zfcp_scsi_command_fail(scpnt, DID_NO_CONNECT);
 		goto out;
 	}
-
-	tmp = zfcp_fsf_send_fcp_command_task(adapter, unit, scpnt, use_timer,
-					     ZFCP_REQ_AUTO_CLEANUP);
 
 	if (unlikely(tmp < 0)) {
 		ZFCP_LOG_DEBUG("error: initiation of Send FCP Cmnd failed\n");
@@ -558,7 +552,7 @@ int zfcp_scsi_eh_host_reset_handler(struct scsi_cmnd *scpnt)
 	ZFCP_LOG_NORMAL("host/bus reset because of problems with "
 			"unit 0x%016Lx\n", unit->fcp_lun);
 
-	zfcp_erp_adapter_reopen(adapter, 0);
+	zfcp_erp_adapter_reopen(adapter, 0, 141, scpnt);
 	zfcp_erp_wait(adapter);
 
 	return SUCCESS;

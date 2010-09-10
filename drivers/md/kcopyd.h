@@ -11,7 +11,7 @@
 #ifndef DM_KCOPYD_H
 #define DM_KCOPYD_H
 
-#include "dm-io.h"
+#include <linux/dm-io.h>
 
 /* FIXME: make this configurable */
 #define KCOPYD_MAX_REGIONS 8

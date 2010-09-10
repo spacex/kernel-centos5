@@ -43,6 +43,7 @@
 #include <asm/kexec.h>
 
 #include <asm/acpi-ext.h>
+#include <asm/maddr.h>          /* range_straddles_page_boundary() */
 
 extern int swiotlb_late_init_with_default_size (size_t size);
 
@@ -911,7 +912,7 @@ sba_map_single(struct device *dev, void *addr, size_t size, int dir)
  	** Check if the PCI device can DMA to ptr... if so, just return ptr
  	*/
 	if (likely(pci_addr & ~to_pci_dev(dev)->dma_mask) == 0 &&
-		   !range_straddles_page_boundary(addr, size)) {
+		   !range_straddles_page_boundary(__pa(addr), size)) {
 		/*
  		** Device is bit capable of DMA'ing to the buffer...
 		** just return the PCI address of ptr

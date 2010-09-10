@@ -582,7 +582,7 @@ new_segment:
 		if (!(psize -= copy))
 			goto out;
 
-		if (skb->len < mss_now || (flags & MSG_OOB))
+		if (skb->len < size_goal || (flags & MSG_OOB))
 			continue;
 
 		if (forced_push(tp)) {
@@ -826,7 +826,7 @@ new_segment:
 			if ((seglen -= copy) == 0 && iovlen == 0)
 				goto out;
 
-			if (skb->len < mss_now || (flags & MSG_OOB))
+			if (skb->len < size_goal || (flags & MSG_OOB))
 				continue;
 
 			if (forced_push(tp)) {

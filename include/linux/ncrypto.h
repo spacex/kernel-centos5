@@ -55,6 +55,14 @@
 #define NCRYPTO_ALG_GENIV		0x00000200
 
 /*
+ * Set if the algorithm has passed automated run-time testing.  Note that
+ * if there is no run-time testing for a given algorithm it is considered
+ * to have passed.
+ */
+
+#define NCRYPTO_ALG_TESTED		0x00000400
+
+/*
  * The macro CRYPTO_MINALIGN_ATTR (along with the void * type in the actual
  * declaration) is used to ensure that the crypto_tfm context structure is
  * aligned correctly for the given architecture so that there are no alignment
@@ -388,6 +396,8 @@ struct crypto_attr_u32 {
 struct ncrypto_tfm *crypto_alloc_base(const char *alg_name, u32 type, u32 mask);
 void ncrypto_free_tfm(struct ncrypto_tfm *tfm);
 
+int alg_test(const char *driver, const char *alg, u32 type, u32 mask);
+
 static inline void sg_set_page(struct scatterlist *sg, struct page *page,
 			       unsigned int len, unsigned int offset)
 {
@@ -413,6 +423,16 @@ static inline void sg_init_table(struct scatterlist *sgl, unsigned int nents)
 static inline const char *ncrypto_tfm_alg_name(struct ncrypto_tfm *tfm)
 {
 	return tfm->__crt_alg->cra_name;
+}
+
+static inline const char *ncrypto_tfm_alg_driver_name(struct ncrypto_tfm *tfm)
+{
+	return tfm->__crt_alg->cra_driver_name;
+}
+
+static inline int ncrypto_tfm_alg_priority(struct ncrypto_tfm *tfm)
+{
+	return tfm->__crt_alg->cra_priority;
 }
 
 static inline u32 ncrypto_tfm_alg_type(struct ncrypto_tfm *tfm)

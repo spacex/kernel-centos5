@@ -357,7 +357,7 @@ struct pnp_protocol {
 /* device management */
 int pnp_register_protocol(struct pnp_protocol *protocol);
 void pnp_unregister_protocol(struct pnp_protocol *protocol);
-int pnp_add_device(struct pnp_dev *dev);
+int pnp_add_device(struct pnp_dev *dev, unsigned int number);
 int pnp_device_attach(struct pnp_dev *pnp_dev);
 void pnp_device_detach(struct pnp_dev *pnp_dev);
 extern struct list_head pnp_global;
@@ -365,7 +365,8 @@ extern struct list_head pnp_global;
 /* multidevice card support */
 int pnp_add_card(struct pnp_card *card);
 void pnp_remove_card(struct pnp_card *card);
-int pnp_add_card_device(struct pnp_card *card, struct pnp_dev *dev);
+int pnp_add_card_device(struct pnp_card *card, struct pnp_dev *dev,
+			unsigned int number);
 void pnp_remove_card_device(struct pnp_dev *dev);
 int pnp_add_card_id(struct pnp_id *id, struct pnp_card *card);
 struct pnp_dev * pnp_request_card_device(struct pnp_card_link *clink, const char * id, struct pnp_dev * from);
@@ -405,14 +406,14 @@ void pnp_unregister_driver(struct pnp_driver *drv);
 static inline int pnp_register_protocol(struct pnp_protocol *protocol) { return -ENODEV; }
 static inline void pnp_unregister_protocol(struct pnp_protocol *protocol) { }
 static inline int pnp_init_device(struct pnp_dev *dev) { return -ENODEV; }
-static inline int pnp_add_device(struct pnp_dev *dev) { return -ENODEV; }
+static inline int pnp_add_device(struct pnp_dev *dev, unsigned int number) { return -ENODEV; }
 static inline int pnp_device_attach(struct pnp_dev *pnp_dev) { return -ENODEV; }
 static inline void pnp_device_detach(struct pnp_dev *pnp_dev) { ; }
 
 /* multidevice card support */
 static inline int pnp_add_card(struct pnp_card *card) { return -ENODEV; }
 static inline void pnp_remove_card(struct pnp_card *card) { ; }
-static inline int pnp_add_card_device(struct pnp_card *card, struct pnp_dev *dev) { return -ENODEV; }
+static inline int pnp_add_card_device(struct pnp_card *card, struct pnp_dev *dev, unsigned int number) { return -ENODEV; }
 static inline void pnp_remove_card_device(struct pnp_dev *dev) { ; }
 static inline int pnp_add_card_id(struct pnp_id *id, struct pnp_card *card) { return -ENODEV; }
 static inline struct pnp_dev * pnp_request_card_device(struct pnp_card_link *clink, const char * id, struct pnp_dev * from) { return NULL; }

@@ -793,27 +793,27 @@ static int bcm43xx_sprom_extract(struct bcm43xx_private *bcm)
 
 	/* il0macaddr */
 	value = sprom[BCM43xx_SPROM_IL0MACADDR + 0];
-	*(((u16 *)bcm->sprom.il0macaddr) + 0) = cpu_to_be16(value);
+	*(((__be16 *)bcm->sprom.il0macaddr) + 0) = cpu_to_be16(value);
 	value = sprom[BCM43xx_SPROM_IL0MACADDR + 1];
-	*(((u16 *)bcm->sprom.il0macaddr) + 1) = cpu_to_be16(value);
+	*(((__be16 *)bcm->sprom.il0macaddr) + 1) = cpu_to_be16(value);
 	value = sprom[BCM43xx_SPROM_IL0MACADDR + 2];
-	*(((u16 *)bcm->sprom.il0macaddr) + 2) = cpu_to_be16(value);
+	*(((__be16 *)bcm->sprom.il0macaddr) + 2) = cpu_to_be16(value);
 
 	/* et0macaddr */
 	value = sprom[BCM43xx_SPROM_ET0MACADDR + 0];
-	*(((u16 *)bcm->sprom.et0macaddr) + 0) = cpu_to_be16(value);
+	*(((__be16 *)bcm->sprom.et0macaddr) + 0) = cpu_to_be16(value);
 	value = sprom[BCM43xx_SPROM_ET0MACADDR + 1];
-	*(((u16 *)bcm->sprom.et0macaddr) + 1) = cpu_to_be16(value);
+	*(((__be16 *)bcm->sprom.et0macaddr) + 1) = cpu_to_be16(value);
 	value = sprom[BCM43xx_SPROM_ET0MACADDR + 2];
-	*(((u16 *)bcm->sprom.et0macaddr) + 2) = cpu_to_be16(value);
+	*(((__be16 *)bcm->sprom.et0macaddr) + 2) = cpu_to_be16(value);
 
 	/* et1macaddr */
 	value = sprom[BCM43xx_SPROM_ET1MACADDR + 0];
-	*(((u16 *)bcm->sprom.et1macaddr) + 0) = cpu_to_be16(value);
+	*(((__be16 *)bcm->sprom.et1macaddr) + 0) = cpu_to_be16(value);
 	value = sprom[BCM43xx_SPROM_ET1MACADDR + 1];
-	*(((u16 *)bcm->sprom.et1macaddr) + 1) = cpu_to_be16(value);
+	*(((__be16 *)bcm->sprom.et1macaddr) + 1) = cpu_to_be16(value);
 	value = sprom[BCM43xx_SPROM_ET1MACADDR + 2];
-	*(((u16 *)bcm->sprom.et1macaddr) + 2) = cpu_to_be16(value);
+	*(((__be16 *)bcm->sprom.et1macaddr) + 2) = cpu_to_be16(value);
 
 	/* ethernet phy settings */
 	value = sprom[BCM43xx_SPROM_ETHPHY];
@@ -1059,7 +1059,7 @@ void bcm43xx_dummy_transmission(struct bcm43xx_private *bcm)
 }
 
 static void key_write(struct bcm43xx_private *bcm,
-		      u8 index, u8 algorithm, const u16 *key)
+		      u8 index, u8 algorithm, const __le16 *key)
 {
 	unsigned int i, basic_wep = 0;
 	u32 offset;
@@ -1077,7 +1077,7 @@ static void key_write(struct bcm43xx_private *bcm,
 	/* Write key payload, 8 little endian words */
 	offset = bcm->security_offset + (index * BCM43xx_SEC_KEYSIZE);
 	for (i = 0; i < (BCM43xx_SEC_KEYSIZE / sizeof(u16)); i++) {
-		value = cpu_to_le16(key[i]);
+		value = le16_to_cpu(key[i]);
 		bcm43xx_shm_write16(bcm, BCM43xx_SHM_SHARED,
 				    offset + (i * 2), value);
  
@@ -1091,7 +1091,7 @@ static void key_write(struct bcm43xx_private *bcm,
 }
 
 static void keymac_write(struct bcm43xx_private *bcm,
-			 u8 index, const u32 *addr)
+			 u8 index, const __be32 *addr)
 {
 	/* for keys 0-3 there is no associated mac address */
 	if (index < 4)
@@ -1102,11 +1102,11 @@ static void keymac_write(struct bcm43xx_private *bcm,
 		bcm43xx_shm_write32(bcm,
 				    BCM43xx_SHM_HWMAC,
 				    index * 2,
-				    cpu_to_be32(*addr));
+				    be32_to_cpu(*addr));
 		bcm43xx_shm_write16(bcm,
 				    BCM43xx_SHM_HWMAC,
 				    (index * 2) + 1,
-				    cpu_to_be16(*((u16 *)(addr + 1))));
+				    be16_to_cpu(*((__be16 *)(addr + 1))));
 	} else {
 		if (index < 8) {
 			TODO(); /* Put them in the macaddress filter */
@@ -1133,8 +1133,8 @@ static int bcm43xx_key_write(struct bcm43xx_private *bcm,
 		return -EINVAL;
 
 	memcpy(key, _key, key_len);
-	key_write(bcm, index, algorithm, (const u16 *)key);
-	keymac_write(bcm, index, (const u32 *)mac_addr);
+	key_write(bcm, index, algorithm, (const __le16 *)key);
+	keymac_write(bcm, index, (const __be32 *)mac_addr);
 
 	bcm->key[index].algorithm = algorithm;
 
@@ -1143,7 +1143,7 @@ static int bcm43xx_key_write(struct bcm43xx_private *bcm,
 
 static void bcm43xx_clear_keys(struct bcm43xx_private *bcm)
 {
-	static const u32 zero_mac[2] = { 0 };
+	static const __be32 zero_mac[2] = { 0 };
 	unsigned int i,j, nr_keys = 54;
 	u16 offset;
 
@@ -1815,7 +1815,7 @@ static void bcm43xx_interrupt_ack(struct bcm43xx_private *bcm, u32 reason)
 
 /* Interrupt handler top-half */
 static irqreturn_t bcm43xx_interrupt_handler(int irq, void *dev_id,
-					     struct pt_regs *regs)
+						struct pt_regs *regs)
 {
 	irqreturn_t ret = IRQ_HANDLED;
 	struct bcm43xx_private *bcm = dev_id;
@@ -2012,11 +2012,11 @@ err_noinitval:
 static void bcm43xx_upload_microcode(struct bcm43xx_private *bcm)
 {
 	struct bcm43xx_phyinfo *phy = bcm43xx_current_phy(bcm);
-	const u32 *data;
+	const __be32 *data;
 	unsigned int i, len;
 
 	/* Upload Microcode. */
-	data = (u32 *)(phy->ucode->data);
+	data = (__be32 *)(phy->ucode->data);
 	len = phy->ucode->size / sizeof(u32);
 	bcm43xx_shm_control_word(bcm, BCM43xx_SHM_UCODE, 0x0000);
 	for (i = 0; i < len; i++) {
@@ -2026,7 +2026,7 @@ static void bcm43xx_upload_microcode(struct bcm43xx_private *bcm)
 	}
 
 	/* Upload PCM data. */
-	data = (u32 *)(phy->pcm->data);
+	data = (__be32 *)(phy->pcm->data);
 	len = phy->pcm->size / sizeof(u32);
 	bcm43xx_shm_control_word(bcm, BCM43xx_SHM_PCM, 0x01ea);
 	bcm43xx_write32(bcm, BCM43xx_MMIO_SHM_DATA, 0x00004000);
@@ -2381,7 +2381,7 @@ static int bcm43xx_chip_init(struct bcm43xx_private *bcm)
 		goto err_gpio_cleanup;
 	bcm43xx_radio_turn_on(bcm);
 	bcm->radio_hw_enable = bcm43xx_is_hw_radio_enabled(bcm);
-	dprintk(KERN_INFO PFX "Radio %s by hardware\n",
+	printk(KERN_INFO PFX "Radio %s by hardware\n",
 		(bcm->radio_hw_enable == 0) ? "disabled" : "enabled");
 
 	bcm43xx_write16(bcm, 0x03E6, 0x0000);
@@ -3130,7 +3130,7 @@ static void bcm43xx_periodic_every1sec(struct bcm43xx_private *bcm)
 	radio_hw_enable = bcm43xx_is_hw_radio_enabled(bcm);
 	if (unlikely(bcm->radio_hw_enable != radio_hw_enable)) {
 		bcm->radio_hw_enable = radio_hw_enable;
-		dprintk(KERN_INFO PFX "Radio hardware status changed to %s\n",
+		printk(KERN_INFO PFX "Radio hardware status changed to %s\n",
 		       (radio_hw_enable == 0) ? "disabled" : "enabled");
 		bcm43xx_leds_update(bcm, 0);
 	}
@@ -3174,9 +3174,8 @@ static void do_periodic_work(struct bcm43xx_private *bcm)
 	schedule_delayed_work(&bcm->periodic_work, HZ);
 }
 
-static void bcm43xx_periodic_work_handler(void *d)
+static void bcm43xx_periodic_work_handler(struct bcm43xx_private *bcm)
 {
-	struct bcm43xx_private *bcm = d;
 	struct net_device *net_dev = bcm->net_dev;
 	unsigned long flags;
 	u32 savedirqs = 0;
@@ -3241,7 +3240,7 @@ void bcm43xx_periodic_tasks_setup(struct bcm43xx_private *bcm)
 	struct work_struct *work = &bcm->periodic_work;
 
 	assert(bcm43xx_status(bcm) == BCM43xx_STAT_INITIALIZED);
-	INIT_WORK(work, bcm43xx_periodic_work_handler, bcm);
+	INIT_WORK(work, (void (*)(void *))bcm43xx_periodic_work_handler, bcm);
 	schedule_delayed_work(work, 0);
 }
 
@@ -4082,7 +4081,6 @@ static int __devinit bcm43xx_init_one(struct pci_dev *pdev,
 		goto out;
 	}
 	/* initialize the net_device struct */
-	SET_MODULE_OWNER(net_dev);
 	SET_NETDEV_DEV(net_dev, &pdev->dev);
 
 	net_dev->open = bcm43xx_net_open;
@@ -4143,9 +4141,8 @@ static void __devexit bcm43xx_remove_one(struct pci_dev *pdev)
 /* Hard-reset the chip. Do not call this directly.
  * Use bcm43xx_controller_restart()
  */
-static void bcm43xx_chip_reset(void *d)
+static void bcm43xx_chip_reset(struct bcm43xx_private *bcm)
 {
-	struct bcm43xx_private *bcm = d;
 	struct bcm43xx_phyinfo *phy;
 	int err = -ENODEV;
 
@@ -4172,7 +4169,8 @@ void bcm43xx_controller_restart(struct bcm43xx_private *bcm, const char *reason)
 	if (bcm43xx_status(bcm) != BCM43xx_STAT_INITIALIZED)
 		return;
 	printk(KERN_ERR PFX "Controller RESET (%s) ...\n", reason);
-	INIT_WORK(&bcm->restart_work, bcm43xx_chip_reset, bcm);
+	INIT_WORK(&bcm->restart_work,
+		(void (*)(void *))bcm43xx_chip_reset, bcm);
 	schedule_work(&bcm->restart_work);
 }
 

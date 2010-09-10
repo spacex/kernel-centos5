@@ -462,6 +462,13 @@ static void nfs_inode_remove_request(struct nfs_page *req)
 	nfs_release_request(req);
 }
 
+static void nfs_context_set_write_error(struct nfs_open_context *ctx, int error)
+{
+	ctx->error = error;
+	smp_wmb();
+	set_bit(NFS_CONTEXT_ERROR_WRITE, &ctx->flags);
+}
+
 /*
  * Find a request
  */
@@ -1180,7 +1187,7 @@ static void nfs_writeback_done_partial(struct rpc_task *task, void *calldata)
 	if (task->tk_status < 0) {
 		ClearPageUptodate(page);
 		SetPageError(page);
-		req->wb_context->error = task->tk_status;
+		nfs_context_set_write_error(req->wb_context, task->tk_status);
 		dprintk(", error = %d\n", task->tk_status);
 	} else {
 #if defined(CONFIG_NFS_V3) || defined(CONFIG_NFS_V4)
@@ -1238,7 +1245,8 @@ static void nfs_writeback_done_full(struct rpc_task *task, void *calldata)
 		if (task->tk_status < 0) {
 			ClearPageUptodate(page);
 			SetPageError(page);
-			req->wb_context->error = task->tk_status;
+			nfs_context_set_write_error(req->wb_context,
+						    task->tk_status);
 			end_page_writeback(page);
 			nfs_inode_remove_request(req);
 			dprintk(", error = %d\n", task->tk_status);
@@ -1447,7 +1455,8 @@ static void nfs_commit_done(struct rpc_task *task, void *calldata)
 			req->wb_bytes,
 			(long long)req_offset(req));
 		if (task->tk_status < 0) {
-			req->wb_context->error = task->tk_status;
+			nfs_context_set_write_error(req->wb_context,
+						    task->tk_status);
 			nfs_inode_remove_request(req);
 			dprintk(", error = %d\n", task->tk_status);
 			goto next;

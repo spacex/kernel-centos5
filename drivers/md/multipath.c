@@ -178,6 +178,11 @@ static int multipath_make_request (request_queue_t *q, struct bio * bio)
 	mp_bh->bio = *bio;
 	mp_bh->bio.bi_sector += multipath->rdev->data_offset;
 	mp_bh->bio.bi_bdev = multipath->rdev->bdev;
+	/*
+	 * We set both incase 3rd party drivers were only checking
+	 * for BIO_RW_FAILFAST.
+	 */
+	mp_bh->bio.bi_rw |= (1 << BIO_RW_FAILFAST_TRANSPORT);
 	mp_bh->bio.bi_rw |= (1 << BIO_RW_FAILFAST);
 	mp_bh->bio.bi_end_io = multipath_end_request;
 	mp_bh->bio.bi_private = mp_bh;
@@ -400,7 +405,7 @@ static void multipathd (mddev_t *mddev)
 			*bio = *(mp_bh->master_bio);
 			bio->bi_sector += conf->multipaths[mp_bh->path].rdev->data_offset;
 			bio->bi_bdev = conf->multipaths[mp_bh->path].rdev->bdev;
-			bio->bi_rw |= (1 << BIO_RW_FAILFAST);
+			bio->bi_rw |= (1 << BIO_RW_FAILFAST_TRANSPORT);
 			bio->bi_end_io = multipath_end_request;
 			bio->bi_private = mp_bh;
 			generic_make_request(bio);

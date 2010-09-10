@@ -73,6 +73,9 @@ extern char initial_stab[];
 
 #define SLBIE_C			(0x08000000)
 
+#ifndef __ASSEMBLY__
+extern u16 mmu_slb_size;
+#endif /* ! __ASSEMBLY */
 /*
  * Hash table
  */
@@ -242,7 +245,7 @@ static inline unsigned long hpt_hash(unsigned long va, unsigned int shift)
 
 extern int __hash_page_4K(unsigned long ea, unsigned long access,
 			  unsigned long vsid, pte_t *ptep, unsigned long trap,
-			  unsigned int local);
+			  unsigned int local, int subpage_prot);
 extern int __hash_page_64K(unsigned long ea, unsigned long access,
 			   unsigned long vsid, pte_t *ptep, unsigned long trap,
 			   unsigned int local);
@@ -256,6 +259,7 @@ extern int htab_bolt_mapping(unsigned long vstart, unsigned long vend,
 			     int psize);
 extern int hash_page(unsigned long ea, unsigned long access,
 		     unsigned long trap);
+extern void demote_segment_4k(struct mm_struct *mm, unsigned long addr);
 
 extern void htab_initialize(void);
 extern void htab_initialize_secondary(void);

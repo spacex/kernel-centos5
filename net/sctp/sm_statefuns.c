@@ -2133,6 +2133,8 @@ static sctp_disposition_t sctp_sf_do_5_2_6_stale(const struct sctp_endpoint *ep,
 		return SCTP_DISPOSITION_DELETE_TCB;
 	}
 
+	((struct sctp_association *)asoc)->init_retries++;
+
 	err = (sctp_errhdr_t *)(chunk->skb->data);
 
 	/* When calculating the time extension, an implementation

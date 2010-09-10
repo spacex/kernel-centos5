@@ -14,6 +14,14 @@
 #include "rcom.h"
 #include "util.h"
 
+#define DLM_ERRNO_EDEADLK		35
+#define DLM_ERRNO_EBADR			53
+#define DLM_ERRNO_EBADSLT		57
+#define DLM_ERRNO_EPROTO		71
+#define DLM_ERRNO_EOPNOTSUPP		95
+#define DLM_ERRNO_ETIMEDOUT	       110
+#define DLM_ERRNO_EINPROGRESS	       115
+
 static void header_out(struct dlm_header *hd)
 {
 	hd->h_version		= cpu_to_le32(hd->h_version);
@@ -28,6 +36,51 @@ static void header_in(struct dlm_header *hd)
 	hd->h_lockspace		= le32_to_cpu(hd->h_lockspace);
 	hd->h_nodeid		= le32_to_cpu(hd->h_nodeid);
 	hd->h_length		= le16_to_cpu(hd->h_length);
+}
+
+/* higher errno values are inconsistent across architectures, so select
+   one set of values for on the wire */
+
+static int to_dlm_errno(int err)
+{
+	switch (err) {
+	case -EDEADLK:
+		return -DLM_ERRNO_EDEADLK;
+	case -EBADR:
+		return -DLM_ERRNO_EBADR;
+	case -EBADSLT:
+		return -DLM_ERRNO_EBADSLT;
+	case -EPROTO:
+		return -DLM_ERRNO_EPROTO;
+	case -EOPNOTSUPP:
+		return -DLM_ERRNO_EOPNOTSUPP;
+	case -ETIMEDOUT:
+		return -DLM_ERRNO_ETIMEDOUT;
+	case -EINPROGRESS:
+		return -DLM_ERRNO_EINPROGRESS;
+	}
+	return err;
+}
+
+static int from_dlm_errno(int err)
+{
+	switch (err) {
+	case -DLM_ERRNO_EDEADLK:
+		return -EDEADLK;
+	case -DLM_ERRNO_EBADR:
+		return -EBADR;
+	case -DLM_ERRNO_EBADSLT:
+		return -EBADSLT;
+	case -DLM_ERRNO_EPROTO:
+		return -EPROTO;
+	case -DLM_ERRNO_EOPNOTSUPP:
+		return -EOPNOTSUPP;
+	case -DLM_ERRNO_ETIMEDOUT:
+		return -ETIMEDOUT;
+	case -DLM_ERRNO_EINPROGRESS:
+		return -EINPROGRESS;
+	}
+	return err;
 }
 
 void dlm_message_out(struct dlm_message *ms)
@@ -53,7 +106,7 @@ void dlm_message_out(struct dlm_message *ms)
 	ms->m_rqmode		= cpu_to_le32(ms->m_rqmode);
 	ms->m_bastmode		= cpu_to_le32(ms->m_bastmode);
 	ms->m_asts		= cpu_to_le32(ms->m_asts);
-	ms->m_result		= cpu_to_le32(ms->m_result);
+	ms->m_result		= cpu_to_le32(to_dlm_errno(ms->m_result));
 }
 
 void dlm_message_in(struct dlm_message *ms)
@@ -79,7 +132,7 @@ void dlm_message_in(struct dlm_message *ms)
 	ms->m_rqmode		= le32_to_cpu(ms->m_rqmode);
 	ms->m_bastmode		= le32_to_cpu(ms->m_bastmode);
 	ms->m_asts		= le32_to_cpu(ms->m_asts);
-	ms->m_result		= le32_to_cpu(ms->m_result);
+	ms->m_result		= from_dlm_errno(le32_to_cpu(ms->m_result));
 }
 
 static void rcom_lock_out(struct rcom_lock *rl)
@@ -137,7 +190,7 @@ void dlm_rcom_out(struct dlm_rcom *rc)
 	rc->rc_seq		= cpu_to_le64(rc->rc_seq);
 	rc->rc_seq_reply	= cpu_to_le64(rc->rc_seq_reply);
 
-	if (type == DLM_RCOM_LOCK)
+	if ((type == DLM_RCOM_LOCK) || (type == DLM_RCOM_LOCK_REPLY))
 		rcom_lock_out((struct rcom_lock *) rc->rc_buf);
 
 	else if (type == DLM_RCOM_STATUS_REPLY)
@@ -147,6 +200,7 @@ void dlm_rcom_out(struct dlm_rcom *rc)
 void dlm_rcom_in(struct dlm_rcom *rc)
 {
 	struct dlm_header *hd = (struct dlm_header *) rc;
+	int type;
 
 	header_in(hd);
 
@@ -156,10 +210,12 @@ void dlm_rcom_in(struct dlm_rcom *rc)
 	rc->rc_seq		= le64_to_cpu(rc->rc_seq);
 	rc->rc_seq_reply	= le64_to_cpu(rc->rc_seq_reply);
 
-	if (rc->rc_type == DLM_RCOM_LOCK)
+	type = rc->rc_type;
+
+	if ((type == DLM_RCOM_LOCK) || (type == DLM_RCOM_LOCK_REPLY))
 		rcom_lock_in((struct rcom_lock *) rc->rc_buf);
 
-	else if (rc->rc_type == DLM_RCOM_STATUS_REPLY)
+	else if (type == DLM_RCOM_STATUS_REPLY)
 		rcom_config_in((struct rcom_config *) rc->rc_buf);
 }
 

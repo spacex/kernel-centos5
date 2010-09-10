@@ -90,7 +90,7 @@ static int mpage_end_io_write(struct bio *bio, unsigned int bytes_done, int err)
 	return 0;
 }
 
-static struct bio *mpage_bio_submit(int rw, struct bio *bio)
+struct bio *mpage_bio_submit(int rw, struct bio *bio)
 {
 	bio->bi_end_io = mpage_end_io_read;
 	if (rw == WRITE)
@@ -98,6 +98,7 @@ static struct bio *mpage_bio_submit(int rw, struct bio *bio)
 	submit_bio(rw, bio);
 	return NULL;
 }
+EXPORT_SYMBOL(mpage_bio_submit);
 
 static struct bio *
 mpage_alloc(struct block_device *bdev,
@@ -456,7 +457,7 @@ EXPORT_SYMBOL(mpage_readpage);
  * written, so it can intelligently allocate a suitably-sized BIO.  For now,
  * just allocate full-size (16-page) BIOs.
  */
-static struct bio *
+struct bio *
 __mpage_writepage(struct bio *bio, struct page *page, get_block_t get_block,
 	sector_t *last_block_in_bio, int *ret, struct writeback_control *wbc,
 	writepage_t writepage_fn)
@@ -672,6 +673,152 @@ confused:
 out:
 	return bio;
 }
+EXPORT_SYMBOL(__mpage_writepage);
+
+int __mpage_writepage_mpd(struct page *page, struct writeback_control *wbc,
+		      struct mpage_data *mpd)
+{
+	int ret;
+	struct bio *bio;
+	int (*writepage)(struct page *page, struct writeback_control *wbc);
+
+	if (mpd->use_writepage)
+		writepage = page->mapping->a_ops->writepage;
+	else
+		writepage = NULL;
+
+	bio = __mpage_writepage(mpd->bio, page, mpd->get_block,
+				&mpd->last_block_in_bio, &ret, wbc, writepage);
+
+	if (bio)
+		mpd->bio = bio;
+	
+	return ret;
+}
+EXPORT_SYMBOL(__mpage_writepage_mpd);
+
+/**
+ * write_cache_pages - walk the list of dirty pages of the given address space and write all of them.
+ * @mapping: address space structure to write
+ * @range_cont: same as @wbc->range_cont upstream ...
+ * @wbc: subtract the number of written pages from *@wbc->nr_to_write
+ * @writepage: function called for each page
+ * @data: data passed to writepage function
+ *
+ * If a page is already under I/O, write_cache_pages() skips it, even
+ * if it's dirty.  This is desirable behaviour for memory-cleaning writeback,
+ * but it is INCORRECT for data-integrity system calls such as fsync().  fsync()
+ * and msync() need to guarantee that all the data which was dirty at the time
+ * the call was made get new I/O started against them.  If wbc->sync_mode is
+ * WB_SYNC_ALL then we were called for data integrity and we must wait for
+ * existing IO to complete.
+ */
+
+/* range_cont is part of wbc upstream, but we cannot easily add to that - KABI */
+int
+write_cache_pages(struct address_space *mapping, int range_cont,
+		struct writeback_control *wbc, writepage_data_t writepage,
+		void *data)
+{
+	struct backing_dev_info *bdi = mapping->backing_dev_info;
+	int ret = 0;
+	int done = 0;
+	struct pagevec pvec;
+	int nr_pages;
+	pgoff_t index;
+	pgoff_t end;		/* Inclusive */
+	int scanned = 0;
+	int range_whole = 0;
+
+	if (wbc->nonblocking && bdi_write_congested(bdi)) {
+		wbc->encountered_congestion = 1;
+		return 0;
+	}
+
+	pagevec_init(&pvec, 0);
+	if (wbc->range_cyclic) {
+		index = mapping->writeback_index; /* Start from prev offset */
+		end = -1;
+	} else {
+		index = wbc->range_start >> PAGE_CACHE_SHIFT;
+		end = wbc->range_end >> PAGE_CACHE_SHIFT;
+		if (wbc->range_start == 0 && wbc->range_end == LLONG_MAX)
+			range_whole = 1;
+		scanned = 1;
+	}
+retry:
+	while (!done && (index <= end) &&
+			(nr_pages = pagevec_lookup_tag(&pvec, mapping, &index,
+			PAGECACHE_TAG_DIRTY,
+			min(end - index, (pgoff_t)PAGEVEC_SIZE-1) + 1))) {
+		unsigned i;
+
+		scanned = 1;
+		for (i = 0; i < nr_pages; i++) {
+			struct page *page = pvec.pages[i];
+
+			/*
+			 * At this point we hold neither mapping->tree_lock nor
+			 * lock on the page itself: the page may be truncated or
+			 * invalidated (changing page->mapping to NULL), or even
+			 * swizzled back from swapper_space to tmpfs file
+			 * mapping
+			 */
+			lock_page(page);
+
+			if (unlikely(page->mapping != mapping)) {
+				unlock_page(page);
+				continue;
+			}
+
+			if (!wbc->range_cyclic && page->index > end) {
+				done = 1;
+				unlock_page(page);
+				continue;
+			}
+
+			if (wbc->sync_mode != WB_SYNC_NONE)
+				wait_on_page_writeback(page);
+
+			if (PageWriteback(page) ||
+					!clear_page_dirty_for_io(page)) {
+				unlock_page(page);
+				continue;
+			}
+
+			ret = (*writepage)(page, wbc, data);
+
+			if (unlikely(ret == AOP_WRITEPAGE_ACTIVATE)) {
+				unlock_page(page);
+				ret = 0;
+			}
+			if (ret || (--(wbc->nr_to_write) <= 0))
+				done = 1;
+			if (wbc->nonblocking && bdi_write_congested(bdi)) {
+				wbc->encountered_congestion = 1;
+				done = 1;
+			}
+		}
+		pagevec_release(&pvec);
+		cond_resched();
+	}
+	if (!scanned && !done) {
+		/*
+		 * We hit the last page and there is more work to be done: wrap
+		 * back to the start of the file
+		 */
+		scanned = 1;
+		index = 0;
+		goto retry;
+	}
+	if (wbc->range_cyclic || (range_whole && wbc->nr_to_write > 0))
+		mapping->writeback_index = index;
+
+	if (range_cont)
+		wbc->range_start = index << PAGE_CACHE_SHIFT;
+	return ret;
+}
+EXPORT_SYMBOL(write_cache_pages);
 
 /**
  * mpage_writepages - walk the list of dirty pages of the given

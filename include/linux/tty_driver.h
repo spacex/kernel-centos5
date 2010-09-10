@@ -213,6 +213,11 @@ struct tty_driver {
 			unsigned int set, unsigned int clear);
 
 	struct list_head tty_drivers;
+#ifndef __GENKSYMS__
+	void (*shutdown)(struct tty_struct *tty);
+	int (*set_termiox)(struct tty_struct *tty, struct termiox *old);
+	void (*get_termiox)(struct tty_struct *tty, struct termiox *tx);
+#endif
 };
 
 extern struct list_head tty_drivers;
@@ -220,6 +225,8 @@ extern struct list_head tty_drivers;
 struct tty_driver *alloc_tty_driver(int lines);
 void put_tty_driver(struct tty_driver *driver);
 void tty_set_operations(struct tty_driver *driver, struct tty_operations *op);
+
+void tty_shutdown(struct tty_struct *tty);
 
 /* tty driver magic number */
 #define TTY_DRIVER_MAGIC		0x5402
@@ -254,12 +261,17 @@ void tty_set_operations(struct tty_driver *driver, struct tty_operations *op);
  * TTY_DRIVER_DEVPTS_MEM -- don't use the standard arrays, instead
  *	use dynamic memory keyed through the devpts filesystem.  This
  *	is only applicable to the pty driver.
+ * TTY_DRIVER_HAS_SHUTDOWN - if the driver implements the shutdown()
+ *	function
+ * TTY_DRIVER_HAS_TERMIOX - if the driver implements the termiox ioctls
  */
 #define TTY_DRIVER_INSTALLED		0x0001
 #define TTY_DRIVER_RESET_TERMIOS	0x0002
 #define TTY_DRIVER_REAL_RAW		0x0004
 #define TTY_DRIVER_DYNAMIC_DEV		0x0008
 #define TTY_DRIVER_DEVPTS_MEM		0x0010
+#define TTY_DRIVER_HAS_SHUTDOWN		0x0020
+#define TTY_DRIVER_HAS_TERMIOX		0x0040
 
 /* tty driver types */
 #define TTY_DRIVER_TYPE_SYSTEM		0x0001

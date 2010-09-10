@@ -162,6 +162,9 @@ that only one external action is invoked at a time.
 #include <linux/firmware.h>
 #include <linux/acpi.h>
 #include <linux/ctype.h>
+#if 0 /* Not in RHEL5... */
+#include <linux/latency.h>
+#endif
 
 #include "ipw2100.h"
 
@@ -678,7 +681,8 @@ static void schedule_reset(struct ipw2100_priv *priv)
 			queue_delayed_work(priv->workqueue, &priv->reset_work,
 					   priv->reset_backoff * HZ);
 		else
-			queue_work(priv->workqueue, &priv->reset_work);
+			queue_delayed_work(priv->workqueue, &priv->reset_work,
+					   0);
 
 		if (priv->reset_backoff < MAX_RESET_BACKOFF)
 			priv->reset_backoff++;
@@ -1265,7 +1269,7 @@ static int ipw2100_start_adapter(struct ipw2100_priv *priv)
 				       IPW2100_INTA_FATAL_ERROR |
 				       IPW2100_INTA_PARITY_ERROR);
 		}
-	} while (i--);
+	} while (--i);
 
 	/* Clear out any pending INTAs since we aren't supposed to have
 	 * interrupts enabled at this point... */
@@ -1337,7 +1341,7 @@ static int ipw2100_power_cycle_adapter(struct ipw2100_priv *priv)
 
 		if (reg & IPW_AUX_HOST_RESET_REG_MASTER_DISABLED)
 			break;
-	} while (i--);
+	} while (--i);
 
 	priv->status &= ~STATUS_RESET_PENDING;
 
@@ -1696,6 +1700,13 @@ static int ipw2100_up(struct ipw2100_priv *priv, int deferred)
 		return 0;
 	}
 
+#if 0 /* Not in RHEL5... */
+	/* the ipw2100 hardware really doesn't want power management delays
+	 * longer than 175usec
+	 */
+	modify_acceptable_latency("ipw2100", 175);
+#endif
+
 	/* If the interrupt is enabled, turn it off... */
 	spin_lock_irqsave(&priv->low_lock, flags);
 	ipw2100_disable_interrupts(priv);
@@ -1761,7 +1772,8 @@ static int ipw2100_up(struct ipw2100_priv *priv, int deferred)
 
 		if (priv->stop_rf_kill) {
 			priv->stop_rf_kill = 0;
-			queue_delayed_work(priv->workqueue, &priv->rf_kill, HZ);
+			queue_delayed_work(priv->workqueue, &priv->rf_kill,
+					   round_jiffies_relative(HZ));
 		}
 
 		deferred = 1;
@@ -1848,12 +1860,8 @@ static void ipw2100_down(struct ipw2100_priv *priv)
 	ipw2100_disable_interrupts(priv);
 	spin_unlock_irqrestore(&priv->low_lock, flags);
 
-#ifdef ACPI_CSTATE_LIMIT_DEFINED
-	if (priv->config & CFG_C3_DISABLED) {
-		IPW_DEBUG_INFO(": Resetting C3 transitions.\n");
-		acpi_set_cstate_limit(priv->cstate_limit);
-		priv->config &= ~CFG_C3_DISABLED;
-	}
+#if 0 /* Not in RHEL5... */
+	modify_acceptable_latency("ipw2100", INFINITE_LATENCY);
 #endif
 
 	/* We have to signal any supplicant if we are disassociating */
@@ -2063,9 +2071,9 @@ static void isr_indicate_association_lost(struct ipw2100_priv *priv, u32 status)
 		return;
 
 	if (priv->status & STATUS_SECURITY_UPDATED)
-		queue_work(priv->workqueue, &priv->security_work);
+		queue_delayed_work(priv->workqueue, &priv->security_work, 0);
 
-	queue_work(priv->workqueue, &priv->wx_event_work);
+	queue_delayed_work(priv->workqueue, &priv->wx_event_work, 0);
 }
 
 static void isr_indicate_rf_kill(struct ipw2100_priv *priv, u32 status)
@@ -2076,18 +2084,31 @@ static void isr_indicate_rf_kill(struct ipw2100_priv *priv, u32 status)
 	/* RF_KILL is now enabled (else we wouldn't be here) */
 	priv->status |= STATUS_RF_KILL_HW;
 
-#ifdef ACPI_CSTATE_LIMIT_DEFINED
-	if (priv->config & CFG_C3_DISABLED) {
-		IPW_DEBUG_INFO(": Resetting C3 transitions.\n");
-		acpi_set_cstate_limit(priv->cstate_limit);
-		priv->config &= ~CFG_C3_DISABLED;
-	}
-#endif
-
 	/* Make sure the RF Kill check timer is running */
 	priv->stop_rf_kill = 0;
 	cancel_delayed_work(&priv->rf_kill);
-	queue_delayed_work(priv->workqueue, &priv->rf_kill, HZ);
+	queue_delayed_work(priv->workqueue, &priv->rf_kill,
+			   round_jiffies_relative(HZ));
+}
+
+static void send_scan_event(void *data)
+{
+	struct ipw2100_priv *priv = data;
+	union iwreq_data wrqu;
+
+	wrqu.data.length = 0;
+	wrqu.data.flags = 0;
+	wireless_send_event(priv->net_dev, SIOCGIWSCAN, &wrqu, NULL);
+}
+
+static void ipw2100_scan_event_later(struct ipw2100_priv *priv)
+{
+	send_scan_event(priv);
+}
+
+static void ipw2100_scan_event_now(struct ipw2100_priv *priv)
+{
+	send_scan_event(priv);
 }
 
 static void isr_scan_complete(struct ipw2100_priv *priv, u32 status)
@@ -2096,6 +2117,18 @@ static void isr_scan_complete(struct ipw2100_priv *priv, u32 status)
 	/* Age the scan results... */
 	priv->ieee->scans++;
 	priv->status &= ~STATUS_SCANNING;
+
+	/* Only userspace-requested scan completion events go out immediately */
+	if (!priv->user_requested_scan) {
+		if (!delayed_work_pending(&priv->scan_event_later))
+			queue_delayed_work(priv->workqueue,
+					&priv->scan_event_later,
+					round_jiffies_relative(msecs_to_jiffies(4000)));
+	} else {
+		priv->user_requested_scan = 0;
+		cancel_delayed_work(&priv->scan_event_later);
+		queue_work(priv->workqueue, &priv->scan_event_now);
+	}
 }
 
 #ifdef CONFIG_IPW2100_DEBUG
@@ -2314,22 +2347,9 @@ static void ipw2100_corruption_detected(struct ipw2100_priv *priv, int i)
 	u32 match, reg;
 	int j;
 #endif
-#ifdef ACPI_CSTATE_LIMIT_DEFINED
-	int limit;
-#endif
 
 	IPW_DEBUG_INFO(": PCI latency error detected at 0x%04zX.\n",
 		       i * sizeof(struct ipw2100_status));
-
-#ifdef ACPI_CSTATE_LIMIT_DEFINED
-	IPW_DEBUG_INFO(": Disabling C3 transitions.\n");
-	limit = acpi_get_cstate_limit();
-	if (limit > 2) {
-		priv->cstate_limit = limit;
-		acpi_set_cstate_limit(2);
-		priv->config |= CFG_C3_DISABLED;
-	}
-#endif
 
 #ifdef IPW2100_DEBUG_C3
 	/* Halt the fimrware so we can get a good image */
@@ -2488,9 +2508,9 @@ static void isr_rx_monitor(struct ipw2100_priv *priv, int i,
 
 	ipw_rt->rt_hdr.it_version = PKTHDR_RADIOTAP_VERSION;
 	ipw_rt->rt_hdr.it_pad = 0; /* always good to zero */
-	ipw_rt->rt_hdr.it_len = sizeof(struct ipw_rt_hdr); /* total hdr+data */
+	ipw_rt->rt_hdr.it_len = cpu_to_le16(sizeof(struct ipw_rt_hdr)); /* total hdr+data */
 
-	ipw_rt->rt_hdr.it_present = 1 << IEEE80211_RADIOTAP_DBM_ANTSIGNAL;
+	ipw_rt->rt_hdr.it_present = cpu_to_le32(1 << IEEE80211_RADIOTAP_DBM_ANTSIGNAL);
 
 	ipw_rt->rt_dbmsignal = status->rssi + IPW2100_RSSI_TO_DBM;
 
@@ -2537,7 +2557,7 @@ static int ipw2100_corruption_check(struct ipw2100_priv *priv, int i)
 #ifdef CONFIG_IPW2100_MONITOR
 		return 0;
 #else
-		switch (WLAN_FC_GET_TYPE(u->rx_data.header.frame_ctl)) {
+		switch (WLAN_FC_GET_TYPE(le16_to_cpu(u->rx_data.header.frame_ctl))) {
 		case IEEE80211_FTYPE_MGMT:
 		case IEEE80211_FTYPE_CTL:
 			return 0;
@@ -2656,7 +2676,7 @@ static void __ipw2100_rx_process(struct ipw2100_priv *priv)
 #endif
 			if (stats.len < sizeof(struct ieee80211_hdr_3addr))
 				break;
-			switch (WLAN_FC_GET_TYPE(u->rx_data.header.frame_ctl)) {
+			switch (WLAN_FC_GET_TYPE(le16_to_cpu(u->rx_data.header.frame_ctl))) {
 			case IEEE80211_FTYPE_MGMT:
 				ieee80211_rx_mgt(priv->ieee,
 						 &u->rx_data.header, &stats);
@@ -4064,9 +4084,7 @@ static ssize_t show_bssinfo(struct device *d, struct device_attribute *attr,
 			       __LINE__);
 
 	out += sprintf(out, "ESSID: %s\n", essid);
-	out += sprintf(out, "BSSID:   %02x:%02x:%02x:%02x:%02x:%02x\n",
-		       bssid[0], bssid[1], bssid[2],
-		       bssid[3], bssid[4], bssid[5]);
+	out += sprintf(out, "BSSID:   " MAC_FMT "\n", MAC_ARG(bssid));
 	out += sprintf(out, "Channel: %d\n", chan);
 
 	return out - buf;
@@ -4222,7 +4240,8 @@ static int ipw_radio_kill_sw(struct ipw2100_priv *priv, int disable_radio)
 			/* Make sure the RF_KILL check timer is running */
 			priv->stop_rf_kill = 0;
 			cancel_delayed_work(&priv->rf_kill);
-			queue_delayed_work(priv->workqueue, &priv->rf_kill, HZ);
+			queue_delayed_work(priv->workqueue, &priv->rf_kill,
+					   round_jiffies_relative(HZ));
 		} else
 			schedule_reset(priv);
 	}
@@ -4363,6 +4382,7 @@ static void ipw2100_kill_workqueue(struct ipw2100_priv *priv)
 		cancel_delayed_work(&priv->wx_event_work);
 		cancel_delayed_work(&priv->hang_check);
 		cancel_delayed_work(&priv->rf_kill);
+		cancel_delayed_work(&priv->scan_event_later);
 		destroy_workqueue(priv->workqueue);
 		priv->workqueue = NULL;
 	}
@@ -4639,19 +4659,19 @@ static void ipw2100_rx_free(struct ipw2100_priv *priv)
 static int ipw2100_read_mac_address(struct ipw2100_priv *priv)
 {
 	u32 length = ETH_ALEN;
-	u8 mac[ETH_ALEN];
+	u8 addr[ETH_ALEN];
 
 	int err;
 
-	err = ipw2100_get_ordinal(priv, IPW_ORD_STAT_ADAPTER_MAC, mac, &length);
+	err = ipw2100_get_ordinal(priv, IPW_ORD_STAT_ADAPTER_MAC, addr, &length);
 	if (err) {
 		IPW_DEBUG_INFO("MAC address read failed\n");
 		return -EIO;
 	}
-	IPW_DEBUG_INFO("card MAC is %02X:%02X:%02X:%02X:%02X:%02X\n",
-		       mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-	memcpy(priv->net_dev->dev_addr, mac, ETH_ALEN);
+	memcpy(priv->net_dev->dev_addr, addr, ETH_ALEN);
+	IPW_DEBUG_INFO("card MAC is " MAC_FMT "\n",
+		       MAC_ARG(priv->net_dev->dev_addr));
 
 	return 0;
 }
@@ -4979,6 +4999,7 @@ int ipw2100_set_fragmentation_threshold(struct ipw2100_priv *priv,
 }
 #endif
 
+#if 0 /* Not in RHEL5... */
 static int ipw2100_set_short_retry(struct ipw2100_priv *priv, u32 retry)
 {
 	struct host_command cmd = {
@@ -5018,6 +5039,7 @@ static int ipw2100_set_long_retry(struct ipw2100_priv *priv, u32 retry)
 
 	return 0;
 }
+#endif
 
 static int ipw2100_set_mandatory_bssid(struct ipw2100_priv *priv, u8 * bssid,
 				       int batch_mode)
@@ -5031,9 +5053,8 @@ static int ipw2100_set_mandatory_bssid(struct ipw2100_priv *priv, u8 * bssid,
 
 #ifdef CONFIG_IPW2100_DEBUG
 	if (bssid != NULL)
-		IPW_DEBUG_HC("MANDATORY_BSSID: %02X:%02X:%02X:%02X:%02X:%02X\n",
-			     bssid[0], bssid[1], bssid[2], bssid[3], bssid[4],
-			     bssid[5]);
+		IPW_DEBUG_HC("MANDATORY_BSSID: " MAC_FMT "\n",
+			     MAC_ARG(bssid));
 	else
 		IPW_DEBUG_HC("MANDATORY_BSSID: <clear>\n");
 #endif
@@ -5953,7 +5974,8 @@ static void ipw2100_rf_kill(void *adapter)
 	if (rf_kill_active(priv)) {
 		IPW_DEBUG_RF_KILL("RF Kill active, rescheduling GPIO check\n");
 		if (!priv->stop_rf_kill)
-			queue_delayed_work(priv->workqueue, &priv->rf_kill, HZ);
+			queue_delayed_work(priv->workqueue, &priv->rf_kill,
+					   round_jiffies_relative(HZ));
 		goto exit_unlock;
 	}
 
@@ -6019,7 +6041,7 @@ static struct net_device *ipw2100_alloc_device(struct pci_dev *pci_dev,
 	 * ends up causing problems.  So, we just handle
 	 * the WX extensions through the ipw2100_ioctl interface */
 
-	/* memset() puts everything to 0, so we only have explicitely set
+	/* memset() puts everything to 0, so we only have explicitly set
 	 * those values that need to be something else */
 
 	/* If power management is turned on, default to AUTO mode */
@@ -6095,13 +6117,17 @@ static struct net_device *ipw2100_alloc_device(struct pci_dev *pci_dev,
 	priv->workqueue = create_workqueue(DRV_NAME);
 
 	INIT_WORK(&priv->reset_work,
-		  (void (*)(void *))ipw2100_reset_adapter, priv);
+		(void (*)(void *))ipw2100_reset_adapter, priv);
 	INIT_WORK(&priv->security_work,
-		  (void (*)(void *))ipw2100_security_work, priv);
+		(void (*)(void *))ipw2100_security_work, priv);
 	INIT_WORK(&priv->wx_event_work,
-		  (void (*)(void *))ipw2100_wx_event_work, priv);
+		(void (*)(void *))ipw2100_wx_event_work, priv);
 	INIT_WORK(&priv->hang_check, ipw2100_hang_check, priv);
 	INIT_WORK(&priv->rf_kill, ipw2100_rf_kill, priv);
+	INIT_WORK(&priv->scan_event_now,
+		(void (*)(void *))ipw2100_scan_event_now, priv);
+	INIT_WORK(&priv->scan_event_later,
+		(void (*)(void *))ipw2100_scan_event_later, priv);
 
 	tasklet_init(&priv->irq_tasklet, (void (*)(unsigned long))
 		     ipw2100_irq_tasklet, (unsigned long)priv);
@@ -6222,8 +6248,6 @@ static int ipw2100_pci_init_one(struct pci_dev *pci_dev,
 	dev->irq = pci_dev->irq;
 
 	IPW_DEBUG_INFO("Attempting to register device...\n");
-
-	SET_MODULE_OWNER(dev);
 
 	printk(KERN_INFO DRV_NAME
 	       ": Detected Intel PRO/Wireless 2100 Network Connection\n");
@@ -6528,6 +6552,9 @@ static int __init ipw2100_init(void)
 	if (ret)
 		goto out;
 
+#if 0 /* Not in RHEL5... */
+	set_acceptable_latency("ipw2100", INFINITE_LATENCY);
+#endif
 #ifdef CONFIG_IPW2100_DEBUG
 	ipw2100_debug_level = debug;
 	ret = driver_create_file(&ipw2100_pci_driver.driver,
@@ -6549,6 +6576,9 @@ static void __exit ipw2100_exit(void)
 			   &driver_attr_debug_level);
 #endif
 	pci_unregister_driver(&ipw2100_pci_driver);
+#if 0 /* Not in RHEL5... */
+	remove_acceptable_latency("ipw2100");
+#endif
 }
 
 module_init(ipw2100_init);
@@ -6563,8 +6593,7 @@ static const long ipw2100_frequencies[] = {
 	2472, 2484
 };
 
-#define FREQ_COUNT (sizeof(ipw2100_frequencies) / \
-                    sizeof(ipw2100_frequencies[0]))
+#define FREQ_COUNT	ARRAY_SIZE(ipw2100_frequencies)
 
 static const long ipw2100_rates_11b[] = {
 	1000000,
@@ -6901,13 +6930,8 @@ static int ipw2100_wx_set_wap(struct net_device *dev,
 
 	err = ipw2100_set_mandatory_bssid(priv, wrqu->ap_addr.sa_data, 0);
 
-	IPW_DEBUG_WX("SET BSSID -> %02X:%02X:%02X:%02X:%02X:%02X\n",
-		     wrqu->ap_addr.sa_data[0] & 0xff,
-		     wrqu->ap_addr.sa_data[1] & 0xff,
-		     wrqu->ap_addr.sa_data[2] & 0xff,
-		     wrqu->ap_addr.sa_data[3] & 0xff,
-		     wrqu->ap_addr.sa_data[4] & 0xff,
-		     wrqu->ap_addr.sa_data[5] & 0xff);
+	IPW_DEBUG_WX("SET BSSID -> " MAC_FMT "\n",
+		     MAC_ARG(wrqu->ap_addr.sa_data));
 
       done:
 	mutex_unlock(&priv->action_mutex);
@@ -7319,6 +7343,7 @@ static int ipw2100_wx_get_frag(struct net_device *dev,
 	return 0;
 }
 
+#if 0 /* Not in RHEL5... */
 static int ipw2100_wx_set_retry(struct net_device *dev,
 				struct iw_request_info *info,
 				union iwreq_data *wrqu, char *extra)
@@ -7394,6 +7419,7 @@ static int ipw2100_wx_get_retry(struct net_device *dev,
 
 	return 0;
 }
+#endif
 
 static int ipw2100_wx_set_scan(struct net_device *dev,
 			       struct iw_request_info *info,
@@ -7409,6 +7435,8 @@ static int ipw2100_wx_set_scan(struct net_device *dev,
 	}
 
 	IPW_DEBUG_WX("Initiating scan...\n");
+
+	priv->user_requested_scan = 1;
 	if (ipw2100_set_scan_options(priv) || ipw2100_start_scan(priv)) {
 		IPW_DEBUG_WX("Start scan failed.\n");
 
@@ -7483,7 +7511,7 @@ static int ipw2100_wx_set_power(struct net_device *dev,
 	switch (wrqu->power.flags & IW_POWER_MODE) {
 	case IW_POWER_ON:	/* If not specified */
 	case IW_POWER_MODE:	/* If set all mask */
-	case IW_POWER_ALL_R:	/* If explicitely state all */
+	case IW_POWER_ALL_R:	/* If explicitly state all */
 		break;
 	default:		/* Otherwise we don't support it */
 		IPW_DEBUG_WX("SET PM Mode: %X not supported.\n",
@@ -7549,11 +7577,10 @@ static int ipw2100_wx_set_genie(struct net_device *dev,
 		return -EINVAL;
 
 	if (wrqu->data.length) {
-		buf = kmalloc(wrqu->data.length, GFP_KERNEL);
+		buf = kmemdup(extra, wrqu->data.length, GFP_KERNEL);
 		if (buf == NULL)
 			return -ENOMEM;
 
-		memcpy(buf, extra, wrqu->data.length);
 		kfree(ieee->wpa_ie);
 		ieee->wpa_ie = buf;
 		ieee->wpa_ie_len = wrqu->data.length;
@@ -7770,7 +7797,7 @@ static int ipw2100_wx_set_mlme(struct net_device *dev,
 {
 	struct ipw2100_priv *priv = ieee80211_priv(dev);
 	struct iw_mlme *mlme = (struct iw_mlme *)extra;
-	u16 reason;
+	__le16 reason;
 
 	reason = cpu_to_le16(mlme->reason_code);
 
@@ -7851,10 +7878,10 @@ static int ipw2100_wx_set_powermode(struct net_device *dev,
 		goto done;
 	}
 
-	if ((mode < 1) || (mode > POWER_MODES))
+	if ((mode < 0) || (mode > POWER_MODES))
 		mode = IPW_POWER_AUTO;
 
-	if (priv->power_mode != mode)
+	if (IPW_POWER_LEVEL(priv->power_mode) != mode)
 		err = ipw2100_set_power_mode(priv, mode);
       done:
 	mutex_unlock(&priv->action_mutex);
@@ -7885,7 +7912,7 @@ static int ipw2100_wx_get_powermode(struct net_device *dev,
 			break;
 		case IPW_POWER_AUTO:
 			snprintf(extra, MAX_POWER_STRING,
-				 "Power save level: %d (Auto)", 0);
+				 "Power save level: %d (Auto)", level);
 			break;
 		default:
 			timeout = timeout_duration[level - 1] / 1000;
@@ -8038,8 +8065,13 @@ static iw_handler ipw2100_wx_handlers[] = {
 	ipw2100_wx_get_frag,	/* SIOCGIWFRAG */
 	ipw2100_wx_set_txpow,	/* SIOCSIWTXPOW */
 	ipw2100_wx_get_txpow,	/* SIOCGIWTXPOW */
+#if 0 /* Not in RHEL5... */
 	ipw2100_wx_set_retry,	/* SIOCSIWRETRY */
 	ipw2100_wx_get_retry,	/* SIOCGIWRETRY */
+#else
+	NULL,			/* SIOCSIWRETRY */
+	NULL,			/* SIOCGIWRETRY */
+#endif
 	ipw2100_wx_set_encode,	/* SIOCSIWENCODE */
 	ipw2100_wx_get_encode,	/* SIOCGIWENCODE */
 	ipw2100_wx_set_power,	/* SIOCSIWPOWER */
@@ -8262,10 +8294,9 @@ static struct iw_statistics *ipw2100_wx_wireless_stats(struct net_device *dev)
 
 static struct iw_handler_def ipw2100_wx_handler_def = {
 	.standard = ipw2100_wx_handlers,
-	.num_standard = sizeof(ipw2100_wx_handlers) / sizeof(iw_handler),
-	.num_private = sizeof(ipw2100_private_handler) / sizeof(iw_handler),
-	.num_private_args = sizeof(ipw2100_private_args) /
-	    sizeof(struct iw_priv_args),
+	.num_standard = ARRAY_SIZE(ipw2100_wx_handlers),
+	.num_private = ARRAY_SIZE(ipw2100_private_handler),
+	.num_private_args = ARRAY_SIZE(ipw2100_private_args),
 	.private = (iw_handler *) ipw2100_private_handler,
 	.private_args = (struct iw_priv_args *)ipw2100_private_args,
 	.get_wireless_stats = ipw2100_wx_wireless_stats,

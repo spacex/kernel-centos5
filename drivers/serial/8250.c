@@ -1320,7 +1320,7 @@ static unsigned int check_modem_status(struct uart_8250_port *up)
 		if (status & UART_MSR_TERI)
 			up->port.icount.rng++;
 		if (status & UART_MSR_DDSR)
-			up->port.icount.dsr++;
+			uart_handle_dsr_change(&up->port, status & UART_MSR_DSR);
 		if (status & UART_MSR_DDCD)
 			uart_handle_dcd_change(&up->port, status & UART_MSR_DCD);
 		if (status & UART_MSR_DCTS)
@@ -1629,8 +1629,20 @@ static inline void wait_for_xmitr(struct uart_8250_port *up, int bits)
 
 	/* Wait up to 1s for flow control if necessary */
 	if (up->port.flags & UPF_CONS_FLOW) {
+		struct uart_info *info = up->port.info;
+		unsigned int msr;
+
 		tmout = 1000000;
-		while (!(serial_in(up, UART_MSR) & UART_MSR_CTS) && --tmout) {
+		while (--tmout) {
+			msr = serial_in(up, UART_MSR);
+
+			if ((info->flags & UIF_CTS_FLOW) &&
+			    (msr & UART_MSR_CTS))
+				break;
+			else if ((info->flags & UIF_DSR_FLOW) &&
+				 (msr & UART_MSR_DSR))
+ 				break;
+
 			udelay(1);
 			touch_nmi_watchdog();
 		}

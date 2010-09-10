@@ -574,6 +574,7 @@ void pci_restore_msi_state(struct pci_dev *dev)
 	pci_remove_saved_cap(save_state);
 	kfree(save_state);
 }
+EXPORT_SYMBOL_GPL(pci_restore_msi_state);
 
 int pci_save_msix_state(struct pci_dev *dev)
 {

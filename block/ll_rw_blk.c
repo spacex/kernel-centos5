@@ -247,6 +247,8 @@ void blk_queue_make_request(request_queue_t * q, make_request_fn * mfn)
 	q->nr_requests = BLKDEV_MAX_RQ;
 	blk_queue_max_phys_segments(q, MAX_PHYS_SEGMENTS);
 	blk_queue_max_hw_segments(q, MAX_HW_SEGMENTS);
+	blk_queue_segment_boundary(q, BLK_SEG_BOUNDARY_MASK);
+	blk_queue_max_segment_size(q, MAX_SEGMENT_SIZE);
 	q->make_request_fn = mfn;
 	q->backing_dev_info.ra_pages = (VM_MAX_READAHEAD * 1024) / PAGE_CACHE_SIZE;
 	q->backing_dev_info.state = 0;
@@ -779,6 +781,7 @@ void blk_queue_stack_limits(request_queue_t *t, request_queue_t *b)
 	/* zero is "infinity" */
 	t->max_sectors = min_not_zero(t->max_sectors,b->max_sectors);
 	t->max_hw_sectors = min_not_zero(t->max_hw_sectors,b->max_hw_sectors);
+	t->seg_boundary_mask = min_not_zero(t->seg_boundary_mask, b->seg_boundary_mask);
 
 	t->max_phys_segments = min(t->max_phys_segments,b->max_phys_segments);
 	t->max_hw_segments = min(t->max_hw_segments,b->max_hw_segments);
@@ -823,6 +826,30 @@ void blk_queue_dma_alignment(request_queue_t *q, int mask)
 }
 
 EXPORT_SYMBOL(blk_queue_dma_alignment);
+
+/**
+ * blk_queue_update_dma_alignment - update dma length and memory alignment
+ * @q:     the request queue for the device
+ * @mask:  alignment mask
+ *
+ * description:
+ *    update required memory and length aligment for direct dma transactions.
+ *    If the requested alignment is larger than the current alignment, then
+ *    the current queue alignment is updated to the new value, otherwise it
+ *    is left alone.  The design of this is to allow multiple objects
+ *    (driver, device, transport etc) to set their respective
+ *    alignments without having them interfere.
+ *
+ **/
+void blk_queue_update_dma_alignment(struct request_queue *q, int mask)
+{
+	BUG_ON(mask > PAGE_SIZE);
+	
+	if (mask > q->dma_alignment)
+		q->dma_alignment = mask;
+}
+
+EXPORT_SYMBOL(blk_queue_update_dma_alignment);
 
 /**
  * blk_queue_find_tag - find a request by its tag and queue
@@ -1681,9 +1708,11 @@ EXPORT_SYMBOL(__generic_unplug_device);
  **/
 void generic_unplug_device(request_queue_t *q)
 {
-	spin_lock_irq(q->queue_lock);
-	__generic_unplug_device(q);
-	spin_unlock_irq(q->queue_lock);
+	if (blk_queue_plugged(q)) {
+		spin_lock_irq(q->queue_lock);
+		__generic_unplug_device(q);
+		spin_unlock_irq(q->queue_lock);
+	}
 }
 EXPORT_SYMBOL(generic_unplug_device);
 
@@ -2000,7 +2029,7 @@ blk_init_queue_node(request_fn_proc *rfn, spinlock_t *lock, int node_id)
 	q->queue_flags		= (1 << QUEUE_FLAG_CLUSTER);
 	q->queue_lock		= lock;
 
-	blk_queue_segment_boundary(q, 0xffffffff);
+	blk_queue_segment_boundary(q, BLK_SEG_BOUNDARY_MASK);
 
 	blk_queue_make_request(q, __make_request);
 	blk_queue_max_segment_size(q, MAX_SEGMENT_SIZE);
@@ -2655,10 +2684,15 @@ static void drive_stat_acct(struct request *rq, int nr_sectors, int new_io)
 		return;
 
 	if (!new_io) {
-		__disk_stat_inc(rq->rq_disk, merges[rw]);
+		__all_stat_inc(rq->rq_disk, merges[rw], rq->sector);
 	} else {
+		struct hd_struct *part = get_part(rq->rq_disk, rq->sector);
 		disk_round_stats(rq->rq_disk);
 		rq->rq_disk->in_flight++;
+		if (part) {
+			part_round_stats(part);
+			get_partstats(part)->in_flight++;
+		}
 	}
 }
 
@@ -2712,6 +2746,22 @@ void disk_round_stats(struct gendisk *disk)
 }
 
 EXPORT_SYMBOL_GPL(disk_round_stats);
+
+void part_round_stats(struct hd_struct *part)
+{
+	unsigned long now = jiffies;
+	struct partstats *ps = get_partstats(part);
+
+	if (now == ps->stamp)
+		return;
+
+	if (ps->in_flight) {
+		part_stat_add(part, time_in_queue,
+			ps->in_flight * (now - ps->stamp));
+		part_stat_add(part, io_ticks, (now - ps->stamp));
+	}
+	ps->stamp = now;
+}
 
 /*
  * queue lock must be held
@@ -2854,8 +2904,14 @@ static int attempt_merge(request_queue_t *q, struct request *req,
 	elv_merge_requests(q, req, next);
 
 	if (req->rq_disk) {
+		struct hd_struct *part
+			= get_part(req->rq_disk, req->sector);
 		disk_round_stats(req->rq_disk);
 		req->rq_disk->in_flight--;
+		if (part) {
+			part_round_stats(part);
+			get_partstats(part)->in_flight--;
+		}
 	}
 
 	req->ioprio = ioprio_best(req->ioprio, next->ioprio);
@@ -2891,7 +2947,16 @@ static void init_request_from_bio(struct request *req, struct bio *bio)
 	/*
 	 * inherit FAILFAST from bio (for read-ahead, and explicit FAILFAST)
 	 */
-	if (bio_rw_ahead(bio) || bio_failfast(bio))
+	if (bio_rw_ahead(bio))
+		req->flags |= (REQ_FAILFAST | REQ_FAILFAST_DEV |
+				REQ_FAILFAST_TRANSPORT | REQ_FAILFAST_DRIVER);
+	if (bio_failfast_dev(bio))
+		req->flags |= REQ_FAILFAST_DEV;
+	if (bio_failfast_transport(bio))
+		req->flags |= REQ_FAILFAST_TRANSPORT;
+	if (bio_failfast_driver(bio))
+		req->flags |= REQ_FAILFAST_DRIVER;
+	if (bio_failfast(bio))
 		req->flags |= REQ_FAILFAST;
 
 	/*
@@ -3043,10 +3108,6 @@ static inline void blk_partition_remap(struct bio *bio)
 
 	if (bdev != bdev->bd_contains) {
 		struct hd_struct *p = bdev->bd_part;
-		const int rw = bio_data_dir(bio);
-
-		p->sectors[rw] += bio_sectors(bio);
-		p->ios[rw]++;
 
 		bio->bi_sector += p->start_sect;
 		bio->bi_bdev = bdev->bd_contains;
@@ -3327,7 +3388,8 @@ static int __end_that_request_first(struct request *req, int uptodate,
 	if (blk_fs_request(req) && req->rq_disk) {
 		const int rw = rq_data_dir(req);
 
-		disk_stat_add(req->rq_disk, sectors[rw], nr_bytes >> 9);
+		all_stat_add(req->rq_disk, sectors[rw],
+			     nr_bytes >> 9, req->sector);
 	}
 
 	total_bytes = bio_nbytes = 0;
@@ -3554,11 +3616,16 @@ void end_that_request_last(struct request *req, int uptodate)
 	if (disk && blk_fs_request(req) && req != &req->q->bar_rq) {
 		unsigned long duration = jiffies - req->start_time;
 		const int rw = rq_data_dir(req);
+		struct hd_struct *part = get_part(disk, req->sector);
 
-		__disk_stat_inc(disk, ios[rw]);
-		__disk_stat_add(disk, ticks[rw], duration);
+		__all_stat_inc(disk, ios[rw], req->sector);
+		__all_stat_add(disk, ticks[rw], duration, req->sector);
 		disk_round_stats(disk);
 		disk->in_flight--;
+		if (part) {
+			part_round_stats(part);
+			get_partstats(part)->in_flight--;
+		}
 	}
 	if (req->end_io)
 		req->end_io(req, error);

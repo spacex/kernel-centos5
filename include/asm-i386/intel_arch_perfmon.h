@@ -1,5 +1,5 @@
-#ifndef X86_INTEL_ARCH_PERFMON_H
-#define X86_INTEL_ARCH_PERFMON_H 1
+#ifndef X86_64_INTEL_ARCH_PERFMON_H
+#define X86_64_INTEL_ARCH_PERFMON_H 1
 
 #define MSR_ARCH_PERFMON_PERFCTR0		0xc1
 #define MSR_ARCH_PERFMON_PERFCTR1		0xc2
@@ -14,6 +14,18 @@
 
 #define ARCH_PERFMON_UNHALTED_CORE_CYCLES_SEL	(0x3c)
 #define ARCH_PERFMON_UNHALTED_CORE_CYCLES_UMASK	(0x00 << 8)
-#define ARCH_PERFMON_UNHALTED_CORE_CYCLES_PRESENT (1 << 0)
+#define ARCH_PERFMON_UNHALTED_CORE_CYCLES_INDEX (0)
+#define ARCH_PERFMON_UNHALTED_CORE_CYCLES_PRESENT \
+	(1 << (ARCH_PERFMON_UNHALTED_CORE_CYCLES_INDEX))
 
-#endif	/* X86_INTEL_ARCH_PERFMON_H */
+
+union cpuid10_eax {
+	struct {
+		unsigned int version_id:8;
+		unsigned int num_counters:8;
+		unsigned int bit_width:8;
+		unsigned int mask_length:8;
+	} split;
+	unsigned int full;
+};
+#endif	/* X86_64_INTEL_ARCH_PERFMON_H */

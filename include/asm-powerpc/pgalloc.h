@@ -45,6 +45,7 @@ static inline pgd_t *pgd_alloc(struct mm_struct *mm)
 
 static inline void pgd_free(pgd_t *pgd)
 {
+	subpage_prot_free(pgd);
 	kmem_cache_free(pgtable_cache[PGD_CACHE_NUM], pgd);
 }
 

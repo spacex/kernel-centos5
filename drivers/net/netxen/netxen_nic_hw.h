@@ -82,19 +82,9 @@ struct netxen_adapter;
 
 #define NETXEN_PCI_MAPSIZE_BYTES  (NETXEN_PCI_MAPSIZE << 20)
 
-#define NETXEN_NIC_LOCKED_READ_REG(X, Y)	\
-	addr = pci_base_offset(adapter, X);	\
-	*(u32 *)Y = readl((void __iomem*) addr);
-
 struct netxen_port;
 void netxen_nic_set_link_parameters(struct netxen_adapter *adapter);
 void netxen_nic_flash_print(struct netxen_adapter *adapter);
-int netxen_nic_hw_write_wx(struct netxen_adapter *adapter, u64 off,
-			   void *data, int len);
-void netxen_crb_writelit_adapter(struct netxen_adapter *adapter,
-				 unsigned long off, int data);
-int netxen_nic_hw_read_wx(struct netxen_adapter *adapter, u64 off,
-			  void *data, int len);
 
 typedef u8 netxen_ethernet_macaddr_t[6];
 
@@ -183,7 +173,7 @@ typedef enum {
 #define netxen_gb_set_preamblelen(config_word, val)	\
 		((config_word) &= ~(0xf<<12), (config_word) |= (val & 0xf)<< 12)
 #define netxen_gb_set_intfmode(config_word, val)		\
-		((config_word) &= ~(0xf<<8), (config_word) |= (val & 0x3) << 8)
+		((config_word) &= ~(0x3<<8), (config_word) |= (val & 0x3) << 8)
 
 #define netxen_gb_get_stationaddress_low(config_word) ((config_word) >> 16)
 
@@ -429,11 +419,9 @@ typedef enum {
 #define netxen_get_niu_enable_ge(config_word)	\
 		_netxen_crb_get_bit(config_word, 1)
 
-/* Promiscous mode options (GbE mode only) */
-typedef enum {
-	NETXEN_NIU_PROMISC_MODE = 0,
-	NETXEN_NIU_NON_PROMISC_MODE
-} netxen_niu_prom_mode_t;
+#define NETXEN_NIU_NON_PROMISC_MODE	0
+#define NETXEN_NIU_PROMISC_MODE		1
+#define NETXEN_NIU_ALLMULTI_MODE	2
 
 /*
  * NIU GB Drop CRC Register
@@ -481,13 +469,11 @@ typedef enum {
 
 /* Set promiscuous mode for a GbE interface */
 int netxen_niu_set_promiscuous_mode(struct netxen_adapter *adapter,
-				    netxen_niu_prom_mode_t mode);
+				    u32 mode);
 int netxen_niu_xg_set_promiscuous_mode(struct netxen_adapter *adapter,
-				       netxen_niu_prom_mode_t mode);
+				       u32 mode);
 
 /* get/set the MAC address for a given MAC */
-int netxen_niu_macaddr_get(struct netxen_adapter *adapter,
-			   netxen_ethernet_macaddr_t * addr);
 int netxen_niu_macaddr_set(struct netxen_adapter *adapter,
 			   netxen_ethernet_macaddr_t addr);
 
@@ -506,5 +492,16 @@ int netxen_niu_xg_init_port(struct netxen_adapter *adapter, int port);
 int netxen_niu_disable_gbe_port(struct netxen_adapter *adapter);
 
 int netxen_niu_disable_xg_port(struct netxen_adapter *adapter);
+
+typedef struct {
+	unsigned valid;
+	unsigned start_128M;
+	unsigned end_128M;
+	unsigned start_2M;
+} crb_128M_2M_sub_block_map_t;
+
+typedef struct {
+	crb_128M_2M_sub_block_map_t sub_block[16];
+} crb_128M_2M_block_map_t;
 
 #endif				/* __NETXEN_NIC_HW_H_ */

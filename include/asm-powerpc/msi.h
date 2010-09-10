@@ -58,6 +58,4 @@ static inline int irq_has_action(unsigned int irq)
 	return desc->action != NULL;
 }
 
-extern struct pci_dn *get_pdn(struct pci_dev *pdev);
-
 #endif /* _POWERPC_MSI_H */

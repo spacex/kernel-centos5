@@ -19,12 +19,34 @@
 #include <linux/init.h>
 #include <linux/list.h>
 #include <linux/kernel.h>
+#include <linux/notifier.h>
 #include <linux/rwsem.h>
 #include <linux/slab.h>
 #include <asm/kmap_types.h>
 
+#ifdef CONFIG_CRYPTO_FIPS
+extern int fips_enabled;
+#else
+#define fips_enabled 0
+#endif
+
+/* Crypto notification events. */
+enum {
+	CRYPTO_MSG_ALG_REQUEST,
+	CRYPTO_MSG_ALG_REGISTER,
+	CRYPTO_MSG_ALG_UNREGISTER,
+	CRYPTO_MSG_TMPL_REGISTER,
+	CRYPTO_MSG_TMPL_UNREGISTER,
+};
+
+struct crypto_cipher_test {
+	struct crypto_alg *alg;
+	char name[CRYPTO_MAX_ALG_NAME];
+};
+
 extern struct list_head crypto_alg_list;
 extern struct rw_semaphore crypto_alg_sem;
+extern struct blocking_notifier_head ocrypto_chain;
 
 extern enum km_type crypto_km_types[];
 
@@ -107,6 +129,12 @@ int crypto_init_compress_ops(struct crypto_tfm *tfm);
 void crypto_exit_digest_ops(struct crypto_tfm *tfm);
 void crypto_exit_cipher_ops(struct crypto_tfm *tfm);
 void crypto_exit_compress_ops(struct crypto_tfm *tfm);
+
+int ocrypto_register_notifier(struct notifier_block *nb);
+int ocrypto_unregister_notifier(struct notifier_block *nb);
+void ocrypto_alg_tested(const char *name, int err);
+
+int digest_test(const char *driver, const char *alg);
 
 #endif	/* _CRYPTO_INTERNAL_H */
 

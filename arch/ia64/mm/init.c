@@ -63,13 +63,19 @@ static inline long
 max_pgt_pages(void)
 {
 	u64 node_free_pages, max_pgt_pages;
+	int node = numa_node_id();
+	int num_cpus_on_node;
+	cpumask_t cpumask_on_node = node_to_cpumask(node);
 
 #ifndef	CONFIG_NUMA
 	node_free_pages = nr_free_pages();
 #else
-	node_free_pages = nr_free_pages_pgdat(NODE_DATA(numa_node_id()));
+	node_free_pages = nr_free_pages_pgdat(NODE_DATA(node));
 #endif
 	max_pgt_pages = node_free_pages / PGT_FRACTION_OF_NODE_MEM;
+
+	num_cpus_on_node = cpus_weight(cpumask_on_node);
+	max_pgt_pages /= num_cpus_on_node;
 	max_pgt_pages = max(max_pgt_pages, MIN_PGT_PAGES);
 	return max_pgt_pages;
 }

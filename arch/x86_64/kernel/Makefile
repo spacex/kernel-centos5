@@ -39,8 +39,11 @@ obj-$(CONFIG_X86_PM_TIMER)	+= pmtimer.o
 obj-$(CONFIG_X86_VSMP)		+= vsmp.o
 obj-$(CONFIG_K8_NB)		+= k8.o
 obj-$(CONFIG_AUDIT)		+= audit.o
+obj-$(CONFIG_EFI)              += efi.o efi_callwrap.o
 
 obj-$(CONFIG_MODULES)		+= module.o
+obj-$(CONFIG_X86_LOCAL_APIC)	+= perfctr-watchdog.o
+obj-$(CONFIG_AMD_IOMMU)		+= amd_iommu_init.o amd_iommu.o
 
 obj-y				+= topology.o
 obj-y				+= intel_cacheinfo.o

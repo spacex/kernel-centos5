@@ -119,7 +119,6 @@ extern struct sk_buff *	    audit_make_reply(int pid, int seq, int type,
 extern void		    audit_send_reply(int pid, int seq, int type,
 					     int done, int multi,
 					     void *payload, int size);
-extern void		    audit_log_lost(const char *message);
 extern void		    audit_panic(const char *message);
 
 struct audit_netlink_list {
@@ -138,6 +137,7 @@ extern int selinux_audit_rule_update(void);
 extern struct mutex audit_filter_mutex;
 extern void audit_free_rule_rcu(struct rcu_head *);
 
+#ifdef CONFIG_AUDITSYSCALL
 extern struct audit_chunk *audit_tree_lookup(const struct inode *);
 extern void audit_put_chunk(struct audit_chunk *);
 extern int audit_tree_match(struct audit_chunk *, struct audit_tree *);
@@ -150,6 +150,15 @@ extern void audit_schedule_prune(void);
 extern void audit_prune_trees(void);
 extern const char *audit_tree_path(struct audit_tree *);
 extern void audit_put_tree(struct audit_tree *);
+#else
+#define audit_remove_tree_rule(rule) BUG()
+#define audit_add_tree_rule(rule) -EINVAL
+#define audit_make_tree(rule, str, op) -EINVAL
+#define audit_trim_trees() (void)0
+#define audit_put_tree(tree) (void)0
+#define audit_tag_tree(old, new) -EINVAL
+#define audit_tree_path(rule) ""        /* never called */
+#endif
 
 extern char *audit_unpack_string(void **, size_t *, size_t);
 

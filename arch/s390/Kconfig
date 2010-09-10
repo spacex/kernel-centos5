@@ -3,6 +3,10 @@
 # see Documentation/kbuild/kconfig-language.txt.
 #
 
+config SCHED_MC
+	def_bool y
+	depends on SMP
+
 config MMU
 	bool
 	default y
@@ -496,6 +500,8 @@ source "drivers/s390/Kconfig"
 source "drivers/net/Kconfig"
 
 source "fs/Kconfig"
+
+source "drivers/char/hw_random/Kconfig"
 
 menu "Instrumentation Support"
 	depends on EXPERIMENTAL

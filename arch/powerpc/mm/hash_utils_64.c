@@ -94,6 +94,7 @@ int mmu_linear_psize = MMU_PAGE_4K;
 int mmu_virtual_psize = MMU_PAGE_4K;
 int mmu_vmalloc_psize = MMU_PAGE_4K;
 int mmu_io_psize = MMU_PAGE_4K;
+u16 mmu_slb_size = 64;
 #ifdef CONFIG_HUGETLB_PAGE
 int mmu_huge_psize = MMU_PAGE_16M;
 unsigned int HPAGE_SHIFT;
@@ -431,7 +432,7 @@ void __init htab_initialize(void)
 	unsigned long table;
 	unsigned long pteg_count;
 	unsigned long mode_rw;
-	unsigned long base = 0, size = 0;
+	unsigned long base = 0, size = 0, limit;
 	int i;
 
 	extern unsigned long tce_alloc_start, tce_alloc_end;
@@ -456,9 +457,15 @@ void __init htab_initialize(void)
 		_SDR1 = 0; 
 	} else {
 		/* Find storage for the HPT.  Must be contiguous in
-		 * the absolute address space.
+		 * the absolute address space. On cell we want it to be
+		 * in the first 2 Gig so we can use it for IOMMU hacks.
 		 */
-		table = lmb_alloc(htab_size_bytes, htab_size_bytes);
+		if (machine_is(cell))
+			limit = 0x80000000;
+		else
+			limit = 0;
+
+		table = lmb_alloc_base(htab_size_bytes, htab_size_bytes, limit);
 
 		DBG("Hash table allocated at %lx, size: %lx\n", table,
 		    htab_size_bytes);
@@ -587,7 +594,7 @@ void demote_segment_4k(struct mm_struct *mm, unsigned long addr)
 	mm->context.sllp = SLB_VSID_USER | mmu_psize_defs[MMU_PAGE_4K].sllp;
 	get_paca()->context = mm->context;
 	slb_flush_and_rebolt();
-#ifdef CONFIG_SPU_BASE
+#ifdef CONFIG_SPE_BASE
 	spu_flush_all_slbs(mm);
 #endif
 #endif
@@ -595,10 +602,55 @@ void demote_segment_4k(struct mm_struct *mm, unsigned long addr)
 
 EXPORT_SYMBOL_GPL(demote_segment_4k);
 
+#ifdef CONFIG_PPC_SUBPAGE_PROT
+/*
+ * This looks up a 2-bit protection code for a 4k subpage of a 64k page.
+ * Userspace sets the subpage permissions using the subpage_prot system call.
+ *
+ * Result is 0: full permissions, _PAGE_RW: read-only,
+ * _PAGE_USER or _PAGE_USER|_PAGE_RW: no access.
+ */
+static int subpage_protection(pgd_t *pgdir, unsigned long ea)
+{
+	struct subpage_prot_table *spt = pgd_subpage_prot(pgdir);
+	u32 spp = 0;
+	u32 **sbpm, *sbpp;
+
+	if (ea >= spt->maxaddr)
+		return 0;
+	if (ea < 0x100000000) {
+		/* addresses below 4GB use spt->low_prot */
+		sbpm = spt->low_prot;
+	} else {
+		sbpm = spt->protptrs[ea >> SBP_L3_SHIFT];
+		if (!sbpm)
+			return 0;
+	}
+	sbpp = sbpm[(ea >> SBP_L2_SHIFT) & (SBP_L2_COUNT - 1)];
+	if (!sbpp)
+		return 0;
+	spp = sbpp[(ea >> PAGE_SHIFT) & (SBP_L1_COUNT - 1)];
+
+	/* extract 2-bit bitfield for this 4k subpage */
+	spp >>= 30 - 2 * ((ea >> 12) & 0xf);
+
+	/* turn 0,1,2,3 into combination of _PAGE_USER and _PAGE_RW */
+	spp = ((spp & 2) ? _PAGE_USER : 0) | ((spp & 1) ? _PAGE_RW : 0);
+	return spp;
+}
+
+#else /* CONFIG_PPC_SUBPAGE_PROT */
+static inline int subpage_protection(pgd_t *pgdir, unsigned long ea)
+{
+       return 0;
+}
+#endif
+
 /* Result code is:
  *  0 - handled
  *  1 - normal page fault
  * -1 - critical hash insertion error
+ * -2 - access not permitted by subpage protection mechanism
  */
 int hash_page(unsigned long ea, unsigned long access, unsigned long trap)
 {
@@ -685,7 +737,7 @@ int hash_page(unsigned long ea, unsigned long access, unsigned long trap)
 
 	/* Do actual hashing */
 #ifndef CONFIG_PPC_64K_PAGES
-	rc = __hash_page_4K(ea, access, vsid, ptep, trap, local);
+	rc = __hash_page_4K(ea, access, vsid, ptep, trap, local, 0);
 #else
 	/* If _PAGE_4K_PFN is set, make sure this is a 4k segment */
 	if (pte_val(*ptep) & _PAGE_4K_PFN) {
@@ -711,32 +763,38 @@ int hash_page(unsigned long ea, unsigned long access, unsigned long trap)
 				       "non-cacheable mapping\n");
 				psize = mmu_vmalloc_psize = MMU_PAGE_4K;
 			}
-#ifdef CONFIG_SPU_BASE
-			spu_flush_all_slbs(mm);
-#endif
-		}
-		if (user_region) {
-			if (psize != get_paca()->context.user_psize) {
-				get_paca()->context = mm->context;
-				slb_flush_and_rebolt();
-#ifdef CONFIG_SPU_BASE
-				spu_flush_all_slbs(mm);
-#endif
-			}
-		} else if (get_paca()->vmalloc_sllp !=
-			   mmu_psize_defs[mmu_vmalloc_psize].sllp) {
-			get_paca()->vmalloc_sllp =
-				mmu_psize_defs[mmu_vmalloc_psize].sllp;
-			slb_vmalloc_update();
-#ifdef CONFIG_SPU_BASE
+#ifdef CONFIG_SPE_BASE
 			spu_flush_all_slbs(mm);
 #endif
 		}
 	}
+	if (user_region) {
+		if (psize != get_paca()->context.user_psize) {
+			get_paca()->context = mm->context;
+			slb_flush_and_rebolt();
+#ifdef CONFIG_SPE_BASE
+			spu_flush_all_slbs(mm);
+#endif
+		}
+	} else if (get_paca()->vmalloc_sllp !=
+		   mmu_psize_defs[mmu_vmalloc_psize].sllp) {
+		get_paca()->vmalloc_sllp =
+			mmu_psize_defs[mmu_vmalloc_psize].sllp;
+		slb_vmalloc_update();
+#ifdef CONFIG_SPE_BASE
+		spu_flush_all_slbs(mm);
+#endif
+	}
 	if (psize == MMU_PAGE_64K)
 		rc = __hash_page_64K(ea, access, vsid, ptep, trap, local);
-	else
-		rc = __hash_page_4K(ea, access, vsid, ptep, trap, local);
+	else {
+		int spp = subpage_protection(pgdir, ea);
+		if (access & spp)
+			rc = -2;
+		else
+			rc = __hash_page_4K(ea, access, vsid, ptep, trap,
+					    local, spp);
+	}
 #endif /* CONFIG_PPC_64K_PAGES */
 
 #ifndef CONFIG_PPC_64K_PAGES
@@ -783,7 +841,7 @@ void hash_preload(struct mm_struct *mm, unsigned long ea,
 	if (cpus_equal(mm->cpu_vm_mask, mask))
 		local = 1;
 #ifndef CONFIG_PPC_64K_PAGES
-	__hash_page_4K(ea, access, vsid, ptep, trap, local);
+	__hash_page_4K(ea, access, vsid, ptep, trap, local, 0);
 #else
 	if (mmu_ci_restrictions) {
 		/* If this PTE is non-cacheable, switch to 4k */
@@ -794,7 +852,8 @@ void hash_preload(struct mm_struct *mm, unsigned long ea,
 	if (mm->context.user_psize == MMU_PAGE_64K)
 		__hash_page_64K(ea, access, vsid, ptep, trap, local);
 	else
-		__hash_page_4K(ea, access, vsid, ptep, trap, local);
+		__hash_page_4K(ea, access, vsid, ptep, trap, local,
+			       subpage_protection(pgdir, ea));
 #endif /* CONFIG_PPC_64K_PAGES */
 	local_irq_restore(flags);
 }
@@ -835,11 +894,17 @@ void flush_hash_range(unsigned long number, int local)
  * low_hash_fault is called when we the low level hash code failed
  * to instert a PTE due to an hypervisor error
  */
-void low_hash_fault(struct pt_regs *regs, unsigned long address)
+void low_hash_fault(struct pt_regs *regs, unsigned long address, int rc)
 {
 	if (user_mode(regs)) {
 		siginfo_t info;
 
+#ifdef CONFIG_PPC_SUBPAGE_PROT
+		if (rc == -2) {
+			_exception(SIGSEGV, regs, SEGV_ACCERR, address);
+			return;
+		}
+#endif
 		info.si_signo = SIGBUS;
 		info.si_errno = 0;
 		info.si_code = BUS_ADRERR;

@@ -178,6 +178,7 @@ static inline int selinux_ctxid_to_string(u32 ctxid, char **ctx, u32 *ctxlen)
        *ctxlen = 0;
        return 0;
 }
+#define selinux_sid_to_string(sid,ctx,ctxlen) selinux_ctxid_to_string((sid),(ctx),(ctxlen))
 
 static inline void selinux_get_inode_sid(const struct inode *inode, u32 *sid)
 {

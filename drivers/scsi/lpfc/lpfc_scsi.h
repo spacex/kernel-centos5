@@ -20,6 +20,10 @@
 
 #include <asm/byteorder.h>
 
+#ifndef DID_TRANSPORT_DISRUPTED
+#define DID_TRANSPORT_DISRUPTED DID_BUS_BUSY
+#endif
+
 struct lpfc_hba;
 
 #define list_remove_head(list, entry, type, member)		\
@@ -139,6 +143,7 @@ struct lpfc_scsi_buf {
 	 */
 	struct lpfc_iocbq cur_iocbq;
 	wait_queue_head_t *waitq;
+	unsigned long start_time;
 };
 
 #define LPFC_SCSI_DMA_EXT_SIZE 264

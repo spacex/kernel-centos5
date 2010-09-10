@@ -730,8 +730,14 @@ ia32_sys_call_table:
 	.quad compat_sys_get_robust_list
 	.quad sys_splice
 	.quad sys_sync_file_range
-	.quad sys_tee
+	.quad sys_tee			/* 315 */
 	.quad compat_sys_vmsplice
 	.quad compat_sys_move_pages
 	.quad sys_getcpu
+	.quad quiet_ni_syscall		/* sys_epoll_pwait */
+	.quad quiet_ni_syscall		/* 320 */ /* compat_sys_utimensat */
+	.quad quiet_ni_syscall		/* compat_sys_signalfd */
+	.quad quiet_ni_syscall		/* sys_timerfd_create */
+	.quad quiet_ni_syscall		/* sys_eventd */
+	.quad sys32_fallocate
 ia32_syscall_end:		

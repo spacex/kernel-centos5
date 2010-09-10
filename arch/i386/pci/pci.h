@@ -30,14 +30,6 @@
 #define PCI_USING_MMCONF	0x20000
 #define PCI_NOASSIGN_ROMS	0x40000
 
-/*
- * The first 16 buses are checked for MMCONF compliance. A bitmap is
- * created and checked on every pci config access to these buses in
- * systems having MMCONF as the system-wide default pci config access
- * mechanism.
- */
-#define MAX_CHECK_BUS 16
-
 extern unsigned int pci_probe;
 extern unsigned long pirq_table_addr;
 
@@ -47,6 +39,8 @@ enum pci_bf_sort_state {
        pci_force_bf,
        pci_dmi_bf,
 };
+
+extern void __init dmi_check_pciprobe(void);
 
 extern struct pci_ops pci_legacy_ops; 	/* direct.c */
 

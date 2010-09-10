@@ -207,7 +207,7 @@ SECTIONS
 
   data : { } :data
   .data : AT(ADDR(.data) - LOAD_OFFSET)
-	{ *(.data) *(.data1) *(.gnu.linkonce.d*) CONSTRUCTORS }
+	{ *(.data) MARKERS_DATA TRACEPOINTS_DATA *(.data1) *(.gnu.linkonce.d*) CONSTRUCTORS }
 
   . = ALIGN(16);	/* gp must be 16-byte aligned for exc. table */
   .got : AT(ADDR(.got) - LOAD_OFFSET)

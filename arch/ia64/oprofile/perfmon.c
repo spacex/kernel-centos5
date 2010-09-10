@@ -64,6 +64,7 @@ static char * get_cpu_type(void)
 		case 0x07:
 			return "ia64/itanium";
 		case 0x1f:
+		case 0x20:
 			return "ia64/itanium2";
 		default:
 			return "ia64/ia64";

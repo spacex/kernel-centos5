@@ -3,7 +3,7 @@
  * License.  See the file "COPYING" in the main directory of this archive
  * for more details.
  *
- * Copyright (c) 2004-2005 Silicon Graphics, Inc.  All Rights Reserved.
+ * Copyright (c) 2004-2007 Silicon Graphics, Inc.  All Rights Reserved.
  */
 
 
@@ -14,6 +14,10 @@
  * PIO read fails, the MCA handler will force the error to look
  * corrected and vector to the xp_error_PIOR which will return an error.
  *
+ * The definition of "consumption" and the time it takes for an MCA
+ * to surface is processor implementation specific.  This code
+ * may need to be adjusted for future processor implementations.
+ *
  *	extern int xp_nofault_PIOR(void *remote_register);
  */
 
@@ -21,7 +25,8 @@
 xp_nofault_PIOR:
 	mov	r8=r0			// Stage a success return value
 	ld8.acq	r9=[r32];;		// PIO Read the specified register
-	adds	r9=1,r9			// Add to force a consume
+	adds	r9=1,r9;;		// Add to force a consume
+	srlz.i;;			// Allow time for MCA to surface
 	br.ret.sptk.many b0;;		// Return success
 
 	.global xp_error_PIOR

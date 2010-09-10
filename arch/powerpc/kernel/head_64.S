@@ -543,6 +543,10 @@ instruction_access_slb_pSeries:
 	.globl	system_call_pSeries
 system_call_pSeries:
 	HMT_MEDIUM
+BEGIN_FTR_SECTION
+	cmpdi	r0,0x1ebe
+	beq-	1f
+END_FTR_SECTION_IFSET(CPU_FTR_REAL_LE)
 	mr	r9,r13
 	mfmsr	r10
 	mfspr	r13,SPRN_SPRG3
@@ -556,6 +560,13 @@ system_call_pSeries:
 	mtspr	SPRN_SRR1,r10
 	rfid
 	b	.	/* prevent speculative execution */
+
+/* Fast LE/BE switch system call */
+1:	mfspr	r12,SPRN_SRR1
+	xori	r12,r12,MSR_LE
+	mtspr	SPRN_SRR1,r12
+	rfid		/* return to userspace */
+	b	.
 
 	STD_EXCEPTION_PSERIES(0xd00, single_step)
 	STD_EXCEPTION_PSERIES(0xe00, trap_0e)
@@ -1348,8 +1359,9 @@ _GLOBAL(handle_page_fault)
  * the PTE insertion
  */
 12:	bl	.save_nvgprs
+	mr	r5,r3
 	addi	r3,r1,STACK_FRAME_OVERHEAD
-	lwz	r4,_DAR(r1)
+	ld	r4,_DAR(r1)
 	bl	.low_hash_fault
 	b	.ret_from_except
 

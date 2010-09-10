@@ -18,6 +18,7 @@
 #include <linux/crc32.h>
 #include <linux/lm_interface.h>
 #include <linux/security.h>
+#include <linux/time.h>
 
 #include "gfs2.h"
 #include "incore.h"
@@ -48,8 +49,7 @@ static int iget_test(struct inode *inode, void *opaque)
 	struct gfs2_inode *ip = GFS2_I(inode);
 	u64 *no_addr = opaque;
 
-	if (ip->i_no_addr == *no_addr &&
-	    inode->i_private != NULL)
+	if (ip->i_no_addr == *no_addr && test_bit(GIF_USER, &ip->i_flags))
 		return 1;
 
 	return 0;
@@ -62,6 +62,7 @@ static int iget_set(struct inode *inode, void *opaque)
 
 	inode->i_ino = (unsigned long)*no_addr;
 	ip->i_no_addr = *no_addr;
+	set_bit(GIF_USER, &ip->i_flags);
 	return 0;
 }
 
@@ -87,7 +88,7 @@ static int iget_skip_test(struct inode *inode, void *opaque)
 	struct gfs2_inode *ip = GFS2_I(inode);
 	struct gfs2_skip_data *data = opaque;
 
-	if (ip->i_no_addr == data->no_addr && inode->i_private != NULL){
+	if (ip->i_no_addr == data->no_addr && test_bit(GIF_USER, &ip->i_flags)){
 		if (inode->i_state & (I_FREEING|I_CLEAR|I_WILL_FREE)){
 			data->skipped = 1;
 			return 0;
@@ -106,6 +107,7 @@ static int iget_skip_set(struct inode *inode, void *opaque)
 		return 1;
 	inode->i_ino = (unsigned long)(data->no_addr);
 	ip->i_no_addr = data->no_addr;
+	set_bit(GIF_USER, &ip->i_flags);
 	return 0;
 }
 
@@ -137,20 +139,21 @@ void gfs2_set_iop(struct inode *inode)
 
 	if (S_ISREG(mode)) {
 		inode->i_op = &gfs2_file_iops;
-		if (sdp->sd_args.ar_localflocks) 
-			inode->i_fop = &gfs2_file_fops_nolock;
+		if (sdp->sd_args.ar_localflocks)
+			inode->i_fop = (struct file_operations *)&gfs2_file_fops_nolock;
 		else
-			inode->i_fop = &gfs2_file_fops;
+			inode->i_fop = (struct file_operations *)&gfs2_file_fops;
 	} else if (S_ISDIR(mode)) {
 		inode->i_op = &gfs2_dir_iops;
-		if (sdp->sd_args.ar_localflocks) 
+		if (sdp->sd_args.ar_localflocks)
 			inode->i_fop = &gfs2_dir_fops_nolock;
 		else
 			inode->i_fop = &gfs2_dir_fops;
 	} else if (S_ISLNK(mode)) {
 		inode->i_op = &gfs2_symlink_iops;
 	} else {
-		inode->i_op = &gfs2_dev_iops;
+		inode->i_op = &gfs2_file_iops;
+		init_special_inode(inode, inode->i_mode, inode->i_rdev);
 	}
 
 	unlock_new_inode(inode);
@@ -187,8 +190,8 @@ struct inode *gfs2_inode_lookup(struct super_block *sb,
 
 	if (inode->i_state & I_NEW) {
 		struct gfs2_sbd *sdp = GFS2_SB(inode);
-		inode->i_private = ip;
 		ip->i_no_formal_ino = no_formal_ino;
+		mapping_set_gfp_mask(inode->i_mapping, GFP_NOFS);
 
 		error = gfs2_glock_get(sdp, no_addr, &gfs2_inode_glops, CREATE, &ip->i_gl);
 		if (unlikely(error))
@@ -249,6 +252,7 @@ static int gfs2_dinode_in(struct gfs2_inode *ip, const void *buf)
 {
 	struct gfs2_dinode_host *di = &ip->i_di;
 	const struct gfs2_dinode *str = buf;
+	struct timespec atime;
 	u16 height;
 
 	if (unlikely(ip->i_no_addr != be64_to_cpu(str->di_num.no_addr)))
@@ -276,8 +280,10 @@ static int gfs2_dinode_in(struct gfs2_inode *ip, const void *buf)
 	i_size_write(&ip->i_inode, di->di_size);
 	di->di_blocks = be64_to_cpu(str->di_blocks);
 	gfs2_set_inode_blocks(&ip->i_inode);
-	ip->i_inode.i_atime.tv_sec = be64_to_cpu(str->di_atime);
-	ip->i_inode.i_atime.tv_nsec = be32_to_cpu(str->di_atime_nsec);
+	atime.tv_sec = be64_to_cpu(str->di_atime);
+	atime.tv_nsec = be32_to_cpu(str->di_atime_nsec);
+	if (timespec_compare(&ip->i_inode.i_atime, &atime) < 0)
+		ip->i_inode.i_atime = atime;
 	ip->i_inode.i_mtime.tv_sec = be64_to_cpu(str->di_mtime);
 	ip->i_inode.i_mtime.tv_nsec = be32_to_cpu(str->di_mtime_nsec);
 	ip->i_inode.i_ctime.tv_sec = be64_to_cpu(str->di_ctime);
@@ -1204,8 +1210,8 @@ int gfs2_readlinki(struct gfs2_inode *ip, char **buf, unsigned int *len)
 	unsigned int x;
 	int error;
 
-	gfs2_holder_init(ip->i_gl, LM_ST_SHARED, GL_ATIME, &i_gh);
-	error = gfs2_glock_nq_atime(&i_gh);
+	gfs2_holder_init(ip->i_gl, LM_ST_SHARED, 0, &i_gh);
+	error = gfs2_glock_nq(&i_gh);
 	if (error) {
 		gfs2_holder_uninit(&i_gh);
 		return error;
@@ -1237,101 +1243,6 @@ out_brelse:
 	brelse(dibh);
 out:
 	gfs2_glock_dq_uninit(&i_gh);
-	return error;
-}
-
-/**
- * gfs2_glock_nq_atime - Acquire a hold on an inode's glock, and
- *       conditionally update the inode's atime
- * @gh: the holder to acquire
- *
- * Tests atime (access time) for gfs2_read, gfs2_readdir and gfs2_mmap
- * Update if the difference between the current time and the inode's current
- * atime is greater than an interval specified at mount.
- *
- * Returns: errno
- */
-
-int gfs2_glock_nq_atime(struct gfs2_holder *gh)
-{
-	struct gfs2_glock *gl = gh->gh_gl;
-	struct gfs2_sbd *sdp = gl->gl_sbd;
-	struct gfs2_inode *ip = gl->gl_object;
-	s64 quantum = gfs2_tune_get(sdp, gt_atime_quantum);
-	unsigned int state;
-	int flags;
-	int error;
-	struct timespec tv = CURRENT_TIME;
-
-	if (gfs2_assert_warn(sdp, gh->gh_flags & GL_ATIME) ||
-	    gfs2_assert_warn(sdp, !(gh->gh_flags & GL_ASYNC)) ||
-	    gfs2_assert_warn(sdp, gl->gl_ops == &gfs2_inode_glops))
-		return -EINVAL;
-
-	state = gh->gh_state;
-	flags = gh->gh_flags;
-
-	error = gfs2_glock_nq(gh);
-	if (error)
-		return error;
-
-	if (test_bit(SDF_NOATIME, &sdp->sd_flags) ||
-	    (sdp->sd_vfs->s_flags & MS_RDONLY))
-		return 0;
-
-	if (tv.tv_sec - ip->i_inode.i_atime.tv_sec >= quantum) {
-		gfs2_glock_dq(gh);
-		gfs2_holder_reinit(LM_ST_EXCLUSIVE, gh->gh_flags & ~LM_FLAG_ANY,
-				   gh);
-		error = gfs2_glock_nq(gh);
-		if (error)
-			return error;
-
-		/* Verify that atime hasn't been updated while we were
-		   trying to get exclusive lock. */
-
-		tv = CURRENT_TIME;
-		if (tv.tv_sec - ip->i_inode.i_atime.tv_sec >= quantum) {
-			struct buffer_head *dibh;
-			struct gfs2_dinode *di;
-
-			error = gfs2_trans_begin(sdp, RES_DINODE, 0);
-			if (error == -EROFS)
-				return 0;
-			if (error)
-				goto fail;
-
-			error = gfs2_meta_inode_buffer(ip, &dibh);
-			if (error)
-				goto fail_end_trans;
-
-			ip->i_inode.i_atime = tv;
-
-			gfs2_trans_add_bh(ip->i_gl, dibh, 1);
-			di = (struct gfs2_dinode *)dibh->b_data;
-			di->di_atime = cpu_to_be64(ip->i_inode.i_atime.tv_sec);
-			di->di_atime_nsec = cpu_to_be32(ip->i_inode.i_atime.tv_nsec);
-			brelse(dibh);
-
-			gfs2_trans_end(sdp);
-		}
-
-		/* If someone else has asked for the glock,
-		   unlock and let them have it. Then reacquire
-		   in the original state. */
-		if (gfs2_glock_is_blocking(gl)) {
-			gfs2_glock_dq(gh);
-			gfs2_holder_reinit(state, flags, gh);
-			return gfs2_glock_nq(gh);
-		}
-	}
-
-	return 0;
-
-fail_end_trans:
-	gfs2_trans_end(sdp);
-fail:
-	gfs2_glock_dq(gh);
 	return error;
 }
 

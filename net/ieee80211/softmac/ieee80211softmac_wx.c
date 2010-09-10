@@ -98,11 +98,10 @@ ieee80211softmac_wx_set_essid(struct net_device *net_dev,
 				cancel_delayed_work(&authptr->work);
 			sm->associnfo.bssvalid = 0;
 			sm->associnfo.bssfixed = 0;
-			spin_unlock_irqrestore(&sm->lock,flags);
+			spin_unlock_irqrestore(&sm->lock, flags);
 			flush_scheduled_work();
 		}
 	}
-
 
 	spin_lock_irqsave(&sm->lock, flags);
 
@@ -122,7 +121,7 @@ ieee80211softmac_wx_set_essid(struct net_device *net_dev,
 	sm->associnfo.req_essid.len = length;
 
 	/* queue lower level code to do work (if necessary) */
-	schedule_work(&sm->associnfo.work);
+	schedule_delayed_work(&sm->associnfo.work, 0);
 
 	spin_unlock_irqrestore(&sm->lock, flags);
 	return 0;
@@ -143,21 +142,22 @@ ieee80211softmac_wx_get_essid(struct net_device *net_dev,
 	/* If all fails, return ANY (empty) */
 	data->essid.length = 0;
 	data->essid.flags = 0;  /* active */
-	
+
 	/* If we have a statically configured ESSID then return it */
 	if (sm->associnfo.static_essid) {
 		data->essid.length = sm->associnfo.req_essid.len;
 		data->essid.flags = 1;  /* active */
 		memcpy(extra, sm->associnfo.req_essid.data, sm->associnfo.req_essid.len);
-	}
-	
+		dprintk(KERN_INFO PFX "Getting essid from req_essid\n");
+	} else if (sm->associated || sm->associnfo.associating) {
 	/* If we're associating/associated, return that */
-	if (sm->associated || sm->associnfo.associating) {
 		data->essid.length = sm->associnfo.associate_essid.len;
 		data->essid.flags = 1;  /* active */
 		memcpy(extra, sm->associnfo.associate_essid.data, sm->associnfo.associate_essid.len);
+		dprintk(KERN_INFO PFX "Getting essid from associate_essid\n");
 	}
 	spin_unlock_irqrestore(&sm->lock, flags);
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(ieee80211softmac_wx_get_essid);
@@ -242,7 +242,7 @@ ieee80211softmac_wx_set_rate(struct net_device *net_dev,
 	ieee80211softmac_recalc_txrates(mac);
 	err = 0;
 
-out_unlock:	
+out_unlock:
 	spin_unlock_irqrestore(&mac->lock, flags);
 out:
 	return err;
@@ -358,11 +358,11 @@ ieee80211softmac_wx_set_wap(struct net_device *net_dev,
 		/* force reassociation */
 		mac->associnfo.bssvalid = 0;
 		if (mac->associated)
-			schedule_work(&mac->associnfo.work);
+			schedule_delayed_work(&mac->associnfo.work, 0);
 	} else if (is_zero_ether_addr(data->ap_addr.sa_data)) {
 		/* the bssid we have is no longer fixed */
 		mac->associnfo.bssfixed = 0;
-        } else {
+	} else {
 		if (!memcmp(mac->associnfo.bssid, data->ap_addr.sa_data, ETH_ALEN)) {
 			if (mac->associnfo.associating || mac->associated) {
 			/* bssid unchanged and associated or associating - just return */
@@ -375,8 +375,8 @@ ieee80211softmac_wx_set_wap(struct net_device *net_dev,
 		/* tell the other code that this bssid should be used no matter what */
 		mac->associnfo.bssfixed = 1;
 		/* queue associate if new bssid or (old one again and not associated) */
-		schedule_work(&mac->associnfo.work);
-        }
+		schedule_delayed_work(&mac->associnfo.work, 0);
+	}
 
  out:
 	spin_unlock_irqrestore(&mac->lock, flags);
@@ -431,7 +431,7 @@ ieee80211softmac_wx_set_genie(struct net_device *dev,
 		mac->wpa.IEbuflen = 0;
 	}
 
- out:	
+ out:
 	spin_unlock_irqrestore(&mac->lock, flags);
 	return err;
 }
@@ -449,9 +449,9 @@ ieee80211softmac_wx_get_genie(struct net_device *dev,
 	int space = wrqu->data.length;
 	
 	spin_lock_irqsave(&mac->lock, flags);
-	
+
 	wrqu->data.length = 0;
-	
+
 	if (mac->wpa.IE && mac->wpa.IElen) {
 		wrqu->data.length = mac->wpa.IElen;
 		if (mac->wpa.IElen <= space)
@@ -460,6 +460,7 @@ ieee80211softmac_wx_get_genie(struct net_device *dev,
 			err = -E2BIG;
 	}
 	spin_unlock_irqrestore(&mac->lock, flags);
+
 	return err;
 }
 EXPORT_SYMBOL_GPL(ieee80211softmac_wx_get_genie);
@@ -472,7 +473,7 @@ ieee80211softmac_wx_set_mlme(struct net_device *dev,
 {
 	struct ieee80211softmac_device *mac = ieee80211_priv(dev);
 	struct iw_mlme *mlme = (struct iw_mlme *)extra;
-	u16 reason = cpu_to_le16(mlme->reason_code);
+	u16 reason = mlme->reason_code;
 	struct ieee80211softmac_network *net;
 
 	if (memcmp(mac->associnfo.bssid, mlme->addr.sa_data, ETH_ALEN)) {

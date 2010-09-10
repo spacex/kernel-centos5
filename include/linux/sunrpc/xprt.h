@@ -303,6 +303,7 @@ static inline void xprt_clear_connecting(struct rpc_xprt *xprt)
 	smp_mb__before_clear_bit();
 	clear_bit(XPRT_CONNECTING, &xprt->state);
 	smp_mb__after_clear_bit();
+	wake_up_bit(&xprt->state, XPRT_CONNECTING);
 }
 
 static inline int xprt_connecting(struct rpc_xprt *xprt)

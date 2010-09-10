@@ -132,6 +132,10 @@ struct exception_store {
 	void *context;
 };
 
+#define DM_TRACKED_CHUNK_HASH_SIZE	16
+#define DM_TRACKED_CHUNK_HASH(x)	((unsigned long)(x) & \
+					 (DM_TRACKED_CHUNK_HASH_SIZE - 1))
+
 struct dm_snapshot {
 	uint64_t features;
 	struct rw_semaphore lock;
@@ -160,6 +164,10 @@ struct dm_snapshot {
 	/* The last percentage we notified */
 	int last_percent;
 
+	mempool_t *pending_pool;
+
+	atomic_t pending_exceptions_count;
+
 	struct exception_table pending;
 	struct exception_table complete;
 
@@ -177,6 +185,11 @@ struct dm_snapshot {
 
 	/* The on disk metadata handler */
 	struct exception_store store;
+
+	/* Chunks with outstanding reads */
+	mempool_t *tracked_chunk_pool;
+	spinlock_t tracked_chunk_lock;
+	struct hlist_head tracked_chunk_hash[DM_TRACKED_CHUNK_HASH_SIZE];
 };
 
 /*

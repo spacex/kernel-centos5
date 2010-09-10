@@ -102,5 +102,14 @@ extern void xen_machphys_update(unsigned long mfn, unsigned long pfn);
 #endif /* CONFIG_VMX_GUEST */
 
 typedef unsigned long maddr_t;	// to compile netback, netfront
+#ifndef _ASM_IA64_SN_TYPES_H /* paddr_t is defined in asm-ia64/sn/types.h */
+typedef unsigned long paddr_t;
+#endif
+
+#ifdef CONFIG_XEN
+int range_straddles_page_boundary(paddr_t p, size_t size);
+#else
+#define range_straddles_page_boundary(addr, size)	(0)
+#endif
 
 #endif /* _ASM_IA64_MADDR_H */

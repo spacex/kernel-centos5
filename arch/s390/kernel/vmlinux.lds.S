@@ -46,6 +46,8 @@ SECTIONS
 
   .data : {			/* Data */
 	*(.data)
+	MARKERS_DATA
+	TRACEPOINTS_DATA
 	CONSTRUCTORS
 	}
 

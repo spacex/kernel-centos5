@@ -299,6 +299,9 @@ enum {
     EFI_GUID(0xe429faf8, 0x3cb7, 0x11d4, 0xbc, 0xa7, 0x0, 0x80, 0xc7, 0x3c, 0x88, 0x81)
 #define SAL_PLAT_BUS_ERR_SECT_GUID  \
     EFI_GUID(0xe429faf9, 0x3cb7, 0x11d4, 0xbc, 0xa7, 0x0, 0x80, 0xc7, 0x3c, 0x88, 0x81)
+#define PROCESSOR_ABSTRACTION_LAYER_OVERWRITE_GUID \
+    EFI_GUID(0x6cb0a200, 0x893a, 0x11da, 0x96, 0xd2, 0x0, 0x10, 0x83, 0xff, \
+		0xca, 0x4d)
 
 #define MAX_CACHE_ERRORS	6
 #define MAX_TLB_ERRORS		6
@@ -665,6 +668,7 @@ ia64_sal_freq_base (unsigned long which, unsigned long *ticks_per_second,
 }
 
 extern s64 ia64_sal_cache_flush (u64 cache_type);
+extern void __init check_sal_cache_flush (void);
 
 /* Initialize all the processor and platform level instruction and data caches */
 static inline s64
@@ -901,6 +905,24 @@ extern void ia64_jump_to_sal(struct sal_to_os_boot *);
 #endif
 
 extern void ia64_sal_handler_init(void *entry_point, void *gpval);
+
+#define PALO_MAX_TLB_PURGES	0xFFFF
+#define PALO_SIG	"PALO"
+
+struct palo_table {
+	u8  signature[4];	/* Should be "PALO" */
+	u32 length;
+	u8  minor_revision;
+	u8  major_revision;
+	u8  checksum;
+	u8  reserved1[5];
+	u16 max_tlb_purges;
+	u8  reserved2[6];
+};
+
+#define NPTCG_FROM_PAL			0
+#define NPTCG_FROM_PALO			1
+#define NPTCG_FROM_KERNEL_PARAMETER	2
 
 #endif /* __ASSEMBLY__ */
 

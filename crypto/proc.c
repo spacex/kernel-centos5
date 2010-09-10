@@ -17,7 +17,45 @@
 #include <linux/rwsem.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
+#include <linux/sysctl.h>
 #include "internal.h"
+
+#ifdef CONFIG_CRYPTO_FIPS
+static struct ctl_table crypto_sysctl_table[] = {
+	{
+		.ctl_name       = CRYPTO_FIPS,
+		.procname       = "fips_enabled",
+		.data           = &fips_enabled,
+		.maxlen         = sizeof(int),
+		.mode           = 0444,
+		.proc_handler   = &proc_dointvec
+	},
+	{
+		.ctl_name = 0,
+	},
+};
+
+static struct ctl_table crypto_dir_table[] = {
+	{
+		.ctl_name       = CTL_CRYPTO,
+		.procname       = "crypto",
+		.mode           = 0555,
+		.child          = crypto_sysctl_table
+	},
+	{
+		.ctl_name = 0,
+	},
+};
+
+static struct ctl_table_header *crypto_sysctls;
+
+static void crypto_proc_fips_init(void)
+{
+	crypto_sysctls = register_sysctl_table(crypto_dir_table, 0);
+}
+#else
+#define crypto_proc_fips_init()
+#endif
 
 static void *c_start(struct seq_file *m, loff_t *pos)
 {
@@ -109,4 +147,5 @@ void __init crypto_init_proc(void)
 	proc = create_proc_entry("crypto", 0, NULL);
 	if (proc)
 		proc->proc_fops = &proc_crypto_ops;
+	crypto_proc_fips_init();
 }

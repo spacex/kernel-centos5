@@ -221,8 +221,17 @@ void discard_lazy_cpu_state(void)
 #endif /* CONFIG_SMP */
 
 #ifdef CONFIG_PPC_MERGE		/* XXX for now */
+
+#ifdef CONFIG_PPC64
+static DEFINE_PER_CPU(unsigned long, current_dabr);
+#endif
+
 int set_dabr(unsigned long dabr)
 {
+#ifdef CONFIG_PPC64
+	__get_cpu_var(current_dabr) = dabr;
+#endif
+
 	if (ppc_md.set_dabr)
 		return ppc_md.set_dabr(dabr);
 
@@ -233,7 +242,6 @@ int set_dabr(unsigned long dabr)
 
 #ifdef CONFIG_PPC64
 DEFINE_PER_CPU(struct cpu_usage, cpu_usage_array);
-static DEFINE_PER_CPU(unsigned long, current_dabr);
 #endif
 
 struct task_struct *__switch_to(struct task_struct *prev,
@@ -301,10 +309,8 @@ struct task_struct *__switch_to(struct task_struct *prev,
 #endif /* CONFIG_SMP */
 
 #ifdef CONFIG_PPC64	/* for now */
-	if (unlikely(__get_cpu_var(current_dabr) != new->thread.dabr)) {
+	if (unlikely(__get_cpu_var(current_dabr) != new->thread.dabr))
 		set_dabr(new->thread.dabr);
-		__get_cpu_var(current_dabr) = new->thread.dabr;
-	}
 
 	flush_tlb_pending();
 #endif

@@ -40,6 +40,7 @@ asmlinkage long ppc64_personality(unsigned long personality);
 asmlinkage int ppc_rtas(struct rtas_args __user *uargs);
 asmlinkage time_t sys64_time(time_t __user * tloc);
 asmlinkage long ppc_newuname(struct new_utsname __user * name);
+long sys_subpage_prot(unsigned long addr, unsigned long len, u32 __user *map);
 
 asmlinkage long sys_rt_sigsuspend(sigset_t __user *unewset,
 		size_t sigsetsize);

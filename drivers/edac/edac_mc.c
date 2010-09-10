@@ -81,6 +81,7 @@ static const char *mem_types[] = {
 	[MEM_DDR2] = "DDR2",
 	[MEM_FB_DDR2] = "Fully-Buffered-DDR2",
 	[MEM_RDDR2] = "Registered-DDR2",
+	[MEM_XDR] = "XDR",
 };
 
 static const char *dev_types[] = {

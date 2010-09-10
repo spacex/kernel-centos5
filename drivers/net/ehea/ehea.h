@@ -33,15 +33,14 @@
 #include <linux/ethtool.h>
 #include <linux/vmalloc.h>
 #include <linux/if_vlan.h>
+#include <linux/inet_lro.h>
 
 #include <asm/ibmebus.h>
 #include <asm/abs_addr.h>
 #include <asm/io.h>
 
-#include "inet_lro.h"
-
 #define DRV_NAME	"ehea"
-#define DRV_VERSION	"EHEA_0076-05"
+#define DRV_VERSION	"EHEA_0092-00"
 
 /* eHEA capability flags */
 #define DLPAR_PORT_ADD_REM 1
@@ -388,12 +387,18 @@ struct ehea_port_res {
 
 
 #define EHEA_MAX_PORTS 16
+
+#define EHEA_NUM_PORTRES_FW_HANDLES    6  /* QP handle, SendCQ handle,
+					     RecvCQ handle, EQ handle,
+					     SendMR handle, RecvMR handle */
+#define EHEA_NUM_PORT_FW_HANDLES       1  /* EQ handle */
+#define EHEA_NUM_ADAPTER_FW_HANDLES    2  /* MR handle, NEQ handle */
+
 struct ehea_adapter {
 	u64 handle;
 	struct ibmebus_dev *ebus_dev;
 	struct ehea_port *port[EHEA_MAX_PORTS];
 	struct ehea_eq *neq;       /* notification event queue */
-	struct workqueue_struct *ehea_wq;
 	struct tasklet_struct neq_tasklet;
 	struct ehea_mr mr;
 	u32 pd;                    /* protection domain */
@@ -406,6 +411,31 @@ struct ehea_adapter {
 struct ehea_mc_list {
 	struct list_head list;
 	u64 macaddr;
+};
+
+/* kdump support */
+struct ehea_fw_handle_entry {
+	u64 adh;               /* Adapter Handle */
+	u64 fwh;               /* Firmware Handle */
+};
+
+struct ehea_fw_handle_array {
+	struct ehea_fw_handle_entry *arr;
+	int num_entries;
+	struct mutex lock;
+};
+
+struct ehea_bcmc_reg_entry {
+	u64 adh;               /* Adapter Handle */
+	u32 port_id;           /* Logical Port Id */
+	u8 reg_type;           /* Registration Type */
+	u64 macaddr;
+};
+
+struct ehea_bcmc_reg_array {
+	struct ehea_bcmc_reg_entry *arr;
+	int num_entries;
+	spinlock_t lock;
 };
 
 #define EHEA_PORT_UP 1
@@ -423,7 +453,7 @@ struct ehea_port {
 	struct vlan_group *vgrp;
 	struct ehea_eq *qp_eq;
 	struct work_struct reset_task;
-	struct semaphore port_lock;
+	struct mutex port_lock;
 	char int_aff_name[EHEA_IRQ_NAME_SIZE];
 	int allmulti;			 /* Indicates IFF_ALLMULTI state */
 	int promisc;		 	 /* Indicates IFF_PROMISC state */
@@ -431,14 +461,15 @@ struct ehea_port {
 	int num_add_tx_qps;
 	int num_mcs;
 	int resets;
+	u64 flags;
 	u64 mac_addr;
 	u32 logical_port_id;
 	u32 port_speed;
 	u32 msg_enable;
 	u32 sig_comp_iv;
 	u32 state;
-	u8 phy_link;
 	u32 lro_max_aggr;
+	u8 phy_link;
 	u8 full_duplex;
 	u8 autoneg;
 	u8 num_def_qps;
@@ -454,11 +485,15 @@ struct port_res_cfg {
 };
 
 enum ehea_flag_bits {
-	__EHEA_STOP_XFER
+	__EHEA_STOP_XFER,
+	__EHEA_DISABLE_PORT_RESET
 };
 
 void ehea_set_ethtool_ops(struct net_device *netdev);
 int ehea_sense_port_attr(struct ehea_port *port);
 int ehea_set_portspeed(struct ehea_port *port, u32 port_speed);
+
+extern u64 ehea_driver_flags;
+extern struct work_struct ehea_rereg_mr_task;
 
 #endif	/* __EHEA_H__ */

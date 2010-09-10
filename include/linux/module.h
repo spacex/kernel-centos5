@@ -17,6 +17,8 @@
 #include <linux/stringify.h>
 #include <linux/kobject.h>
 #include <linux/moduleparam.h>
+#include <linux/tracepoint.h>
+#include <linux/marker.h>
 #include <asm/local.h>
 
 #include <asm/module.h>
@@ -353,7 +355,6 @@ struct module
 	/* The command line arguments (may be mangled).  People like
 	   keeping pointers to this stuff */
 	char *args;
-
 };
 
 /* FIXME: It'd be nice to isolate modules during init, too, so they
@@ -478,6 +479,11 @@ struct device_driver;
 void module_add_driver(struct module *, struct device_driver *);
 void module_remove_driver(struct device_driver *);
 
+extern void module_update_tracepoints(void);
+extern int module_get_iter_tracepoints(struct tracepoint_iter *iter);
+
+extern void module_update_markers(void);
+
 #else /* !CONFIG_MODULES... */
 #define EXPORT_SYMBOL(sym)
 #define EXPORT_SYMBOL_GPL(sym)
@@ -583,6 +589,19 @@ static inline void module_add_driver(struct module *module, struct device_driver
 }
 
 static inline void module_remove_driver(struct device_driver *driver)
+{
+}
+
+static inline void module_update_tracepoints(void)
+{
+}
+
+static inline int module_get_iter_tracepoints(struct tracepoint_iter *iter)
+{
+	return 0;
+}
+
+static inline void module_update_markers(void)
 {
 }
 

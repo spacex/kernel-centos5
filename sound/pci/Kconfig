@@ -478,10 +478,28 @@ config SND_FM801_TEA575X
 	select VIDEO_V4L1
 	select VIDEO_DEV
 
+config SND_HDA_POWER_SAVE
+	bool "Aggressive power-saving on HD-audio"
+        help
+	  Say Y here to enable more aggressive power-saving mode on
+	  HD-audio driver.  The power-saving timeout can be configured
+	  via power_save option or over sysfs on-the-fly.
+
+config SND_HDA_POWER_SAVE_DEFAULT
+	int "Default time-out for HD-audio power-save mode"
+	depends on SND_HDA_POWER_SAVE
+	default 0
+        help
+	  The default time-out value in seconds for HD-audio automatic
+	  power-save mode.  0 means to disable the power-save mode.
+
 config SND_HDA_INTEL
 	tristate "Intel HD Audio"
 	depends on SND
 	select SND_PCM
+	select SND_VMASTER
+	select SND_HDA_POWER_SAVE
+	select SND_HWDEP
 	help
 	  Say Y here to include support for Intel "High Definition
 	  Audio" (Azalia) motherboard devices.

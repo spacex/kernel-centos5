@@ -36,7 +36,7 @@ module_param(ql2xlogintimeout, int, S_IRUGO|S_IRUSR);
 MODULE_PARM_DESC(ql2xlogintimeout,
 		"Login timeout value in seconds.");
 
-int qlport_down_retry = 30;
+int qlport_down_retry;
 module_param(qlport_down_retry, int, S_IRUGO|S_IRUSR);
 MODULE_PARM_DESC(qlport_down_retry,
 		"Maximum number of command retries to a port that returns "
@@ -207,13 +207,6 @@ struct scsi_transport_template *qla2xxx_transport_template = NULL;
  * Timer routines
  */
 
-void qla2x00_timer(scsi_qla_host_t *);
-
-__inline__ void qla2x00_start_timer(scsi_qla_host_t *,
-    void *, unsigned long);
-static __inline__ void qla2x00_restart_timer(scsi_qla_host_t *, unsigned long);
-__inline__ void qla2x00_stop_timer(scsi_qla_host_t *);
-
 inline void
 qla2x00_start_timer(scsi_qla_host_t *ha, void *func, unsigned long interval)
 {
@@ -231,7 +224,7 @@ qla2x00_restart_timer(scsi_qla_host_t *ha, unsigned long interval)
 	mod_timer(&ha->timer, jiffies + interval * HZ);
 }
 
-__inline__ void
+static __inline__ void
 qla2x00_stop_timer(scsi_qla_host_t *ha)
 {
 	del_timer_sync(&ha->timer);
@@ -242,12 +235,11 @@ static int qla2x00_do_dpc(void *data);
 
 static void qla2x00_rst_aen(scsi_qla_host_t *);
 
-uint8_t qla2x00_mem_alloc(scsi_qla_host_t *);
-void qla2x00_mem_free(scsi_qla_host_t *ha);
+static uint8_t qla2x00_mem_alloc(scsi_qla_host_t *);
+static void qla2x00_mem_free(scsi_qla_host_t *ha);
 static int qla2x00_allocate_sp_pool( scsi_qla_host_t *ha);
 static void qla2x00_free_sp_pool(scsi_qla_host_t *ha);
 static void qla2x00_sp_free_dma(scsi_qla_host_t *, srb_t *);
-void qla2x00_sp_compl(scsi_qla_host_t *ha, srb_t *);
 
 /* -------------------------------------------------------------------------- */
 
@@ -381,6 +373,8 @@ qla24xx_fw_version_str(struct scsi_qla_host *ha, char *str)
 		strcat(str, "[T10 CRC] ");
 	if (ha->fw_attributes & BIT_5)
 		strcat(str, "[VI] ");
+	if (ha->fw_attributes & BIT_10)
+		strcat(str, "[84XX] ");
 	if (ha->fw_attributes & BIT_13)
 		strcat(str, "[Experimental]");
 	return str;
@@ -415,6 +409,11 @@ qla2x00_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 	srb_t *sp;
 	int rval;
 
+	if (unlikely(pci_channel_offline(ha->pdev))) {
+		cmd->result = DID_REQUEUE << 16;
+		goto qc_fail_command;
+	}
+
 	rval = fc_remote_port_chkready(rport);
 	if (rval) {
 		cmd->result = rval;
@@ -422,7 +421,7 @@ qla2x00_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 	}
 
 	/* Close window on fcport/rport state-transitioning. */
-	if (!*(fc_port_t **)rport->dd_data) {
+	if (fcport->drport) {
 		cmd->result = DID_IMM_RETRY << 16;
 		goto qc_fail_command;
 	}
@@ -477,6 +476,11 @@ qla24xx_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 	srb_t *sp;
 	int rval;
 
+	if (unlikely(pci_channel_offline(ha->pdev))) {
+		cmd->result = DID_REQUEUE << 16;
+		goto qc24_fail_command;
+	}
+
 	rval = fc_remote_port_chkready(rport);
 	if (rval) {
 		cmd->result = rval;
@@ -484,7 +488,7 @@ qla24xx_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 	}
 
 	/* Close window on fcport/rport state-transitioning. */
-	if (!*(fc_port_t **)rport->dd_data) {
+	if (fcport->drport) {
 		cmd->result = DID_IMM_RETRY << 16;
 		goto qc24_fail_command;
 	}
@@ -646,6 +650,40 @@ qla2x00_wait_for_loop_ready(scsi_qla_host_t *ha)
 		}
 	}
 	return (return_status);
+}
+
+void
+qla2x00_abort_fcport_cmds(fc_port_t *fcport)
+{
+	int cnt;
+	unsigned long flags;
+	srb_t *sp;
+	scsi_qla_host_t *ha = fcport->ha;
+	scsi_qla_host_t *pha = to_qla_parent(ha);
+
+	spin_lock_irqsave(&pha->hardware_lock, flags);
+	for (cnt = 1; cnt < MAX_OUTSTANDING_COMMANDS; cnt++) {
+		sp = pha->outstanding_cmds[cnt];
+		if (!sp)
+			continue;
+		if (sp->fcport != fcport)
+			continue;
+
+		spin_unlock_irqrestore(&pha->hardware_lock, flags);
+		if (ha->isp_ops->abort_command(ha, sp)) {
+			DEBUG2(qla_printk(KERN_WARNING, ha,
+			    "Abort failed --  %lx\n", sp->cmd->serial_number));
+		} else {
+			if (qla2x00_eh_wait_on_command(ha, sp->cmd) !=
+			    QLA_SUCCESS)
+				DEBUG2(qla_printk(KERN_WARNING, ha,
+				    "Abort failed while waiting --  %lx\n",
+				    sp->cmd->serial_number));
+
+		}
+		spin_lock_irqsave(&pha->hardware_lock, flags);
+	}
+	spin_unlock_irqrestore(&pha->hardware_lock, flags);
 }
 
 static void
@@ -1175,7 +1213,7 @@ qla2xxx_slave_configure(struct scsi_device *sdev)
 	else
 		scsi_deactivate_tcq(sdev, ha->max_q_depth);
 
-	rport->dev_loss_tmo = ha->port_down_retry_count + 5;
+	rport->dev_loss_tmo = ha->port_down_retry_count;
 
 	return 0;
 }
@@ -1479,6 +1517,13 @@ qla2x00_set_isp_flags(scsi_qla_host_t *ha)
 		ha->device_type |= DT_IIDMA;
 		ha->fw_srisc_address = RISC_START_ADDRESS_2400;
 		break;
+	case PCI_DEVICE_ID_QLOGIC_ISP8432:
+		ha->device_type |= DT_ISP8432;
+		ha->device_type |= DT_ZIO_SUPPORTED;
+		ha->device_type |= DT_FWI2;
+		ha->device_type |= DT_IIDMA;
+		ha->fw_srisc_address = RISC_START_ADDRESS_2400;
+		break;
 	case PCI_DEVICE_ID_QLOGIC_ISP5422:
 		ha->device_type |= DT_ISP5422;
 		ha->device_type |= DT_FWI2;
@@ -1502,15 +1547,12 @@ qla2x00_set_isp_flags(scsi_qla_host_t *ha)
 static int
 qla2x00_iospace_config(scsi_qla_host_t *ha)
 {
-	unsigned long	pio, pio_len, pio_flags;
-	unsigned long	mmio, mmio_len, mmio_flags;
+	resource_size_t pio;
 
 	/* We only need PIO for Flash operations on ISP2312 v2 chips. */
 	pio = pci_resource_start(ha->pdev, 0);
-	pio_len = pci_resource_len(ha->pdev, 0);
-	pio_flags = pci_resource_flags(ha->pdev, 0);
-	if (pio_flags & IORESOURCE_IO) {
-		if (pio_len < MIN_IOBASE_LEN) {
+	if (pci_resource_flags(ha->pdev, 0) & IORESOURCE_IO) {
+		if (pci_resource_len(ha->pdev, 0) < MIN_IOBASE_LEN) {
 			qla_printk(KERN_WARNING, ha,
 			    "Invalid PCI I/O region size (%s)...\n",
 				pci_name(ha->pdev));
@@ -1524,17 +1566,13 @@ qla2x00_iospace_config(scsi_qla_host_t *ha)
 	}
 
 	/* Use MMIO operations for all accesses. */
-	mmio = pci_resource_start(ha->pdev, 1);
-	mmio_len = pci_resource_len(ha->pdev, 1);
-	mmio_flags = pci_resource_flags(ha->pdev, 1);
-
-	if (!(mmio_flags & IORESOURCE_MEM)) {
+	if (!(pci_resource_flags(ha->pdev, 1) & IORESOURCE_MEM)) {
 		qla_printk(KERN_ERR, ha,
-		    "region #0 not an MMIO resource (%s), aborting\n",
+		    "region #1 not an MMIO resource (%s), aborting\n",
 		    pci_name(ha->pdev));
 		goto iospace_error_exit;
 	}
-	if (mmio_len < MIN_IOBASE_LEN) {
+	if (pci_resource_len(ha->pdev, 1) < MIN_IOBASE_LEN) {
 		qla_printk(KERN_ERR, ha,
 		    "Invalid PCI mem region size (%s), aborting\n",
 			pci_name(ha->pdev));
@@ -1550,8 +1588,7 @@ qla2x00_iospace_config(scsi_qla_host_t *ha)
 	}
 
 	ha->pio_address = pio;
-	ha->pio_length = pio_len;
-	ha->iobase = ioremap(mmio, MIN_IOBASE_LEN);
+	ha->iobase = ioremap(pci_resource_start(ha->pdev, 1), MIN_IOBASE_LEN);
 	if (!ha->iobase) {
 		qla_printk(KERN_ERR, ha,
 		    "cannot remap MMIO (%s), aborting\n", pci_name(ha->pdev));
@@ -1609,6 +1646,7 @@ qla2x00_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	sht = &qla2x00_driver_template;
 	if (pdev->device == PCI_DEVICE_ID_QLOGIC_ISP2422 ||
 	    pdev->device == PCI_DEVICE_ID_QLOGIC_ISP2432 ||
+	    pdev->device == PCI_DEVICE_ID_QLOGIC_ISP8432 ||
 	    pdev->device == PCI_DEVICE_ID_QLOGIC_ISP5422 ||
 	    pdev->device == PCI_DEVICE_ID_QLOGIC_ISP5432 ||
 	    pdev->device == PCI_DEVICE_ID_QLOGIC_ISP2532)
@@ -1682,7 +1720,7 @@ qla2x00_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 		if (IS_QLA2322(ha) || IS_QLA6322(ha))
 			ha->optrom_size = OPTROM_SIZE_2322;
 		ha->isp_ops = &qla2300_isp_ops;
-	} else if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	} else if (IS_QLA24XX_TYPE(ha)) {
 		host->max_id = MAX_TARGETS_2200;
 		ha->mbx_count = MAILBOX_REGISTER_COUNT;
 		ha->request_q_length = REQUEST_ENTRY_CNT_24XX;
@@ -1710,9 +1748,12 @@ qla2x00_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	/* load the F/W, read paramaters, and init the H/W */
 	ha->instance = num_hosts;
 
-	init_MUTEX(&ha->mbx_cmd_sem);
+	init_completion(&ha->pass_thru_intr_comp);
+
 	init_MUTEX(&ha->vport_sem);
-	init_MUTEX_LOCKED(&ha->mbx_intr_sem);
+	init_completion(&ha->mbx_cmd_comp);
+	complete(&ha->mbx_cmd_comp);
+	init_completion(&ha->mbx_intr_comp);
 
 	INIT_LIST_HEAD(&ha->list);
 	INIT_LIST_HEAD(&ha->fcports);
@@ -1826,6 +1867,8 @@ qla2x00_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	    ha->flags.enable_64bit_addressing ? '+': '-', ha->host_no,
 	    ha->isp_ops->fw_version_str(ha, fw_str));
 
+	set_bit(NPIV_CONFIG_NEEDED, &ha->dpc_flags);
+
 	return 0;
 
 probe_failed:
@@ -1879,7 +1922,29 @@ qla2x00_remove_one(struct pci_dev *pdev)
 		}
 	}
 
+	/* Disable timer */
+	if (ha->timer_active)
+		qla2x00_stop_timer(ha);
+
+	/* Kill the kernel thread for this host */
+	if (ha->dpc_thread) {
+		struct task_struct *t = ha->dpc_thread;
+
+		/*
+		 * qla2xxx_wake_dpc checks for ->dpc_thread
+		 * so we need to zero it out.
+		 */
+		ha->dpc_thread = NULL;
+		kthread_stop(t);
+	}
+
+	ha->flags.online = 0;
+
+	qla84xx_put_chip(ha);
+
 	qla2x00_free_sysfs_attr(ha);
+	
+	qla_free_nlnk_dmabuf(ha);
 
 	fc_remove_host(ha->host);
 
@@ -1889,6 +1954,7 @@ qla2x00_remove_one(struct pci_dev *pdev)
 
 	scsi_host_put(ha->host);
 
+	pci_disable_device(pdev);
 	pci_set_drvdata(pdev, NULL);
 }
 
@@ -1931,15 +1997,12 @@ qla2x00_free_device(scsi_qla_host_t *ha)
 	if (ha->iobase)
 		iounmap(ha->iobase);
 	pci_release_regions(ha->pdev);
-
-	pci_disable_device(ha->pdev);
 }
 
 static inline void
 qla2x00_schedule_rport_del(struct scsi_qla_host *ha, fc_port_t *fcport,
     int defer)
 {
-	unsigned long flags;
 	struct fc_rport *rport;
 
 	if (!fcport->rport)
@@ -1947,19 +2010,13 @@ qla2x00_schedule_rport_del(struct scsi_qla_host *ha, fc_port_t *fcport,
 
 	rport = fcport->rport;
 	if (defer) {
-		spin_lock_irqsave(&fcport->rport_lock, flags);
+		spin_lock_irq(ha->host->host_lock);
 		fcport->drport = rport;
-		fcport->rport = NULL;
-		*(fc_port_t **)rport->dd_data = NULL;
-		spin_unlock_irqrestore(&fcport->rport_lock, flags);
+		spin_unlock_irq(ha->host->host_lock);
 		set_bit(FCPORT_UPDATE_NEEDED, &ha->dpc_flags);
-	} else {
-		spin_lock_irqsave(&fcport->rport_lock, flags);
-		fcport->rport = NULL;
-		*(fc_port_t **)rport->dd_data = NULL;
-		spin_unlock_irqrestore(&fcport->rport_lock, flags);
+		qla2xxx_wake_dpc(ha);
+	} else
 		fc_remote_port_delete(rport);
-	}
 }
 
 /*
@@ -2059,7 +2116,7 @@ qla2x00_mark_all_devices_lost(scsi_qla_host_t *ha, int defer)
 *      0  = success.
 *      1  = failure.
 */
-uint8_t
+static uint8_t
 qla2x00_mem_alloc(scsi_qla_host_t *ha)
 {
 	char	name[16];
@@ -2202,6 +2259,21 @@ qla2x00_mem_alloc(scsi_qla_host_t *ha)
 			}
 			memset(ha->ct_sns, 0, sizeof(struct ct_sns_pkt));
 
+			/*Get consistent memory allocated for pass-thru commands */
+			ha->pass_thru = dma_alloc_coherent(&ha->pdev->dev,
+			    PAGE_SIZE, &ha->pass_thru_dma, GFP_KERNEL);
+			if (ha->pass_thru == NULL) {
+				/* error */
+				qla_printk(KERN_WARNING, ha,
+				    "Memory Allocation failed - pass_thru\n");
+
+				qla2x00_mem_free(ha);
+				msleep(100);
+
+				continue;
+			}
+			memset(ha->pass_thru, 0, PAGE_SIZE);
+
 			if (IS_FWI2_CAPABLE(ha)) {
 				/*
 				 * Get consistent memory allocated for SFP
@@ -2256,7 +2328,7 @@ qla2x00_mem_alloc(scsi_qla_host_t *ha)
 * Input:
 *      ha = adapter block pointer.
 */
-void
+static void
 qla2x00_mem_free(scsi_qla_host_t *ha)
 {
 	struct list_head	*fcpl, *fcptemp;
@@ -2285,6 +2357,10 @@ qla2x00_mem_free(scsi_qla_host_t *ha)
 	if (ha->ct_sns)
 		dma_free_coherent(&ha->pdev->dev, sizeof(struct ct_sns_pkt),
 		    ha->ct_sns, ha->ct_sns_dma);
+
+	if (ha->pass_thru)
+		dma_free_coherent(&ha->pdev->dev, PAGE_SIZE,
+		    ha->pass_thru, ha->pass_thru_dma);
 
 	if (ha->sfp_data)
 		dma_pool_free(ha->s_dma_pool, ha->sfp_data, ha->sfp_data_dma);
@@ -2319,6 +2395,8 @@ qla2x00_mem_free(scsi_qla_host_t *ha)
 	ha->sns_cmd_dma = 0;
 	ha->ct_sns = NULL;
 	ha->ct_sns_dma = 0;
+	ha->pass_thru = NULL;
+	ha->pass_thru_dma = 0;
 	ha->ms_iocb = NULL;
 	ha->ms_iocb_dma = 0;
 	ha->init_cb = NULL;
@@ -2577,6 +2655,12 @@ qla2x00_do_dpc(void *data)
 			    ha->host_no));
 		}
 
+		if (test_bit(NPIV_CONFIG_NEEDED, &ha->dpc_flags) &&
+		    atomic_read(&ha->loop_state) == LOOP_READY) {
+			clear_bit(NPIV_CONFIG_NEEDED, &ha->dpc_flags);
+			qla2xxx_flash_npiv_conf(ha);
+		}
+
 		if (!ha->interrupts_on)
 			ha->isp_ops->enable_intrs(ha);
 
@@ -2797,23 +2881,6 @@ qla2x00_timer(scsi_qla_host_t *ha)
 	qla2x00_restart_timer(ha, WATCH_INTERVAL);
 }
 
-/* XXX(hch): crude hack to emulate a down_timeout() */
-int
-qla2x00_down_timeout(struct semaphore *sema, unsigned long timeout)
-{
-	const unsigned int step = 100; /* msecs */
-	unsigned int iterations = jiffies_to_msecs(timeout)/100;
-
-	do {
-		if (!down_trylock(sema))
-			return 0;
-		if (msleep_interruptible(step))
-			break;
-	} while (--iterations > 0);
-
-	return -ETIMEDOUT;
-}
-
 /* Firmware interface routines. */
 
 #define FW_BLOBS	6
@@ -2852,7 +2919,7 @@ qla2x00_request_firmware(scsi_qla_host_t *ha)
 		blob = &qla_fw_blobs[FW_ISP2300];
 	} else if (IS_QLA2322(ha) || IS_QLA6322(ha)) {
 		blob = &qla_fw_blobs[FW_ISP2322];
-	} else if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	} else if (IS_QLA24XX_TYPE(ha)) {
 		blob = &qla_fw_blobs[FW_ISP24XX];
 	} else if (IS_QLA25XX(ha)) {
 		blob = &qla_fw_blobs[FW_ISP25XX];
@@ -2887,6 +2954,109 @@ qla2x00_release_firmware(void)
 	up(&qla_fw_lock);
 }
 
+static pci_ers_result_t
+qla2xxx_pci_error_detected(struct pci_dev *pdev, pci_channel_state_t state)
+{
+	scsi_qla_host_t *ha = pci_get_drvdata(pdev);
+
+	switch (state) {
+	case pci_channel_io_normal:
+		return PCI_ERS_RESULT_CAN_RECOVER;
+	case pci_channel_io_frozen:
+		pci_disable_device(pdev);
+		return PCI_ERS_RESULT_NEED_RESET;
+	case pci_channel_io_perm_failure:
+		ha->flags.pci_channel_io_perm_failure = 1;
+		return PCI_ERS_RESULT_DISCONNECT;
+	}
+	return PCI_ERS_RESULT_NEED_RESET;
+}
+
+static pci_ers_result_t
+qla2xxx_pci_mmio_enabled(struct pci_dev *pdev)
+{
+	int risc_paused = 0;
+	uint32_t stat;
+	unsigned long flags;
+	scsi_qla_host_t *ha = pci_get_drvdata(pdev);
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
+	struct device_reg_24xx __iomem *reg24 = &ha->iobase->isp24;
+
+	spin_lock_irqsave(&ha->hardware_lock, flags);
+	if (IS_QLA2100(ha) || IS_QLA2200(ha)){
+		stat = RD_REG_DWORD(&reg->hccr);
+		if (stat & HCCR_RISC_PAUSE)
+			risc_paused = 1;
+	} else if (IS_QLA23XX(ha)) {
+		stat = RD_REG_DWORD(&reg->u.isp2300.host_status);
+		if (stat & HSR_RISC_PAUSED)
+			risc_paused = 1;
+	} else if (IS_FWI2_CAPABLE(ha)) {
+		stat = RD_REG_DWORD(&reg24->host_status);
+		if (stat & HSRX_RISC_PAUSED)
+			risc_paused = 1;
+	}
+	spin_unlock_irqrestore(&ha->hardware_lock, flags);
+
+	if (risc_paused) {
+		qla_printk(KERN_INFO, ha, "RISC paused -- mmio_enabled, "
+		    "Dumping firmware!\n");
+		ha->isp_ops->fw_dump(ha, 0);
+
+		return PCI_ERS_RESULT_NEED_RESET;
+	} else
+		return PCI_ERS_RESULT_RECOVERED;
+}
+
+static pci_ers_result_t
+qla2xxx_pci_slot_reset(struct pci_dev *pdev)
+{
+	pci_ers_result_t ret = PCI_ERS_RESULT_DISCONNECT;
+	scsi_qla_host_t *ha = pci_get_drvdata(pdev);
+	int rc;
+
+	rc = pci_enable_device(pdev);
+
+	if (rc) {
+		qla_printk(KERN_WARNING, ha,
+		    "Can't re-enable PCI device after reset.\n");
+
+		return ret;
+	}
+	pci_set_master(pdev);
+
+	if (ha->isp_ops->pci_config(ha))
+		return ret;
+
+	set_bit(ABORT_ISP_ACTIVE, &ha->dpc_flags);
+	if (qla2x00_abort_isp(ha)== QLA_SUCCESS)
+		ret =  PCI_ERS_RESULT_RECOVERED;
+	clear_bit(ABORT_ISP_ACTIVE, &ha->dpc_flags);
+
+	return ret;
+}
+
+static void
+qla2xxx_pci_resume(struct pci_dev *pdev)
+{
+	scsi_qla_host_t *ha = pci_get_drvdata(pdev);
+	int ret;
+
+	ret = qla2x00_wait_for_hba_online(ha);
+	if (ret != QLA_SUCCESS) {
+		qla_printk(KERN_ERR, ha,
+		    "the device failed to resume I/O "
+		    "from slot/link_reset");
+	}
+}
+
+static struct pci_error_handlers qla2xxx_err_handler = {
+	.error_detected = qla2xxx_pci_error_detected,
+	.mmio_enabled = qla2xxx_pci_mmio_enabled,
+	.slot_reset = qla2xxx_pci_slot_reset,
+	.resume = qla2xxx_pci_resume,
+};
+
 static struct pci_device_id qla2xxx_pci_tbl[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_QLOGIC, PCI_DEVICE_ID_QLOGIC_ISP2100) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_QLOGIC, PCI_DEVICE_ID_QLOGIC_ISP2200) },
@@ -2897,6 +3067,7 @@ static struct pci_device_id qla2xxx_pci_tbl[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_QLOGIC, PCI_DEVICE_ID_QLOGIC_ISP6322) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_QLOGIC, PCI_DEVICE_ID_QLOGIC_ISP2422) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_QLOGIC, PCI_DEVICE_ID_QLOGIC_ISP2432) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_QLOGIC, PCI_DEVICE_ID_QLOGIC_ISP8432) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_QLOGIC, PCI_DEVICE_ID_QLOGIC_ISP5422) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_QLOGIC, PCI_DEVICE_ID_QLOGIC_ISP5432) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_QLOGIC, PCI_DEVICE_ID_QLOGIC_ISP2532) },
@@ -2912,6 +3083,7 @@ static struct pci_driver qla2xxx_pci_driver = {
 	.id_table	= qla2xxx_pci_tbl,
 	.probe		= qla2x00_probe_one,
 	.remove		= __devexit_p(qla2x00_remove_one),
+	.err_handler    = &qla2xxx_err_handler,
 };
 
 /**
@@ -2938,12 +3110,21 @@ qla2x00_module_init(void)
 
 	qla2xxx_transport_template =
 	    fc_attach_transport(&qla2xxx_transport_functions);
-	if (!qla2xxx_transport_template)
+	if (!qla2xxx_transport_template) {
+		kmem_cache_destroy(srb_cachep);
 		return -ENODEV;
+	}
+	if (ql_nl_register()) {
+		kmem_cache_destroy(srb_cachep);
+		fc_release_transport(qla2xxx_transport_template);
+		return -ENODEV;
+	}
+
 
 	printk(KERN_INFO "QLogic Fibre Channel HBA Driver\n");
 	ret = pci_register_driver(&qla2xxx_pci_driver);
 	if (ret) {
+		ql_nl_unregister();
 		kmem_cache_destroy(srb_cachep);
 		fc_release_transport(qla2xxx_transport_template);
 	}
@@ -2958,6 +3139,7 @@ qla2x00_module_exit(void)
 {
 	pci_unregister_driver(&qla2xxx_pci_driver);
 	/* qla2x00_release_firmware(); */
+	ql_nl_unregister();
 	kmem_cache_destroy(srb_cachep);
 	fc_release_transport(qla2xxx_transport_template);
 }

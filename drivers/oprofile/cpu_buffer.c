@@ -208,6 +208,48 @@ static int log_sample(struct oprofile_cpu_buffer * cpu_buf, unsigned long pc,
 	return 1;
 }
 
+static int log_ibs_sample(struct oprofile_cpu_buffer *cpu_buf,
+	unsigned long pc, int cpu_mode, unsigned  int *ibs, int ibs_code)
+{
+	struct task_struct *task;
+
+	cpu_buf->sample_received++;
+
+	if (nr_available_slots(cpu_buf) < 14) {
+		cpu_buf->sample_lost_overflow++;
+		return 0;
+	}
+
+	task = current;
+
+	/* notice a switch from user->kernel or vice versa */
+	if (cpu_buf->last_cpu_mode != cpu_mode) {
+		cpu_buf->last_cpu_mode = cpu_mode;
+		add_code(cpu_buf, cpu_mode);
+	}
+
+	/* notice a task switch */
+	/* if not processing other domain samples */
+	if ((cpu_buf->last_task != task) &&
+	    (current_domain == COORDINATOR_DOMAIN)) {
+		cpu_buf->last_task = task;
+		add_code(cpu_buf, (unsigned long)task);
+	}
+
+	add_code(cpu_buf, ibs_code);
+	add_sample(cpu_buf, ibs[0], ibs[1]);
+	add_sample(cpu_buf, ibs[2], ibs[3]);
+	add_sample(cpu_buf, ibs[4], ibs[5]);
+
+	if (ibs_code == IBS_OP_BEGIN) {
+	add_sample(cpu_buf, ibs[6], ibs[7]);
+	add_sample(cpu_buf, ibs[8], ibs[9]);
+	add_sample(cpu_buf, ibs[10], ibs[11]);
+	}
+
+	return 1;
+}
+
 static int oprofile_begin_trace(struct oprofile_cpu_buffer * cpu_buf)
 {
 	if (nr_available_slots(cpu_buf) < 4) {
@@ -251,6 +293,45 @@ void oprofile_add_sample(struct pt_regs * const regs, unsigned long event)
 	unsigned long pc = profile_pc(regs);
 
 	oprofile_add_ext_sample(pc, regs, event, is_kernel);
+}
+
+void oprofile_add_ibs_fetch_sample(struct pt_regs *const regs,
+				unsigned int * const ibs_fetch)
+{
+	int is_kernel = !user_mode(regs);
+	unsigned long pc = profile_pc(regs);
+
+	struct oprofile_cpu_buffer *cpu_buf = &cpu_buffer[smp_processor_id()];
+
+	if (!backtrace_depth) {
+		log_ibs_sample(cpu_buf, pc, is_kernel,
+			ibs_fetch, IBS_FETCH_BEGIN);
+		return;
+	}
+
+	/* if log_sample() fails we can't backtrace since we lost the source
+	 * of this event */
+	if (log_ibs_sample(cpu_buf, pc, is_kernel, ibs_fetch, IBS_FETCH_BEGIN))
+		oprofile_ops.backtrace(regs, backtrace_depth);
+}
+
+void oprofile_add_ibs_op_sample(struct pt_regs *const regs,
+				unsigned int * const ibs_op)
+{
+	int is_kernel = !user_mode(regs);
+	unsigned long pc = profile_pc(regs);
+
+	struct oprofile_cpu_buffer *cpu_buf = &cpu_buffer[smp_processor_id()];
+
+	if (!backtrace_depth) {
+		log_ibs_sample(cpu_buf, pc, is_kernel, ibs_op, IBS_OP_BEGIN);
+		return;
+	}
+
+	/* if log_sample() fails we can't backtrace since we lost the source
+	* of this event */
+	if (log_ibs_sample(cpu_buf, pc, is_kernel, ibs_op, IBS_OP_BEGIN))
+		oprofile_ops.backtrace(regs, backtrace_depth);
 }
 
 void oprofile_add_pc(unsigned long pc, int is_kernel, unsigned long event)

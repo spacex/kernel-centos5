@@ -535,6 +535,23 @@ struct net_device
 	struct class_device	class_dev;
 	/* space for optional statistics and wireless sysfs groups */
 	struct attribute_group  *sysfs_groups[3];
+#ifndef __GENKSYMS__
+	unsigned short priv_len;
+#endif
+};
+
+/*
+ * struct net_device can't be modified without breaking ABI, so we 
+ * add net_device_extended to the end in alloc_netdev.  Anything that 
+ * needs to be added to a net_device can be appended here
+ */
+struct ipv6_devconf_extensions {
+	s32 disable_ipv6;
+	s32 accept_dad;
+};
+
+struct net_device_extended {
+	struct ipv6_devconf_extensions ipv6_devconf_ext;
 };
 
 #define	NETDEV_ALIGN		32
@@ -545,6 +562,14 @@ static inline void *netdev_priv(struct net_device *dev)
 	return (char *)dev + ((sizeof(struct net_device)
 					+ NETDEV_ALIGN_CONST)
 				& ~NETDEV_ALIGN_CONST);
+}
+
+static inline struct net_device_extended *dev_extended(struct net_device *dev)
+{
+	if (!(dev->priv_flags & IFF_EXTENDED))
+		return NULL;
+	return (struct net_device_extended *) ((char *) netdev_priv(dev) +
+		((dev->priv_len + NETDEV_ALIGN_CONST) & ~NETDEV_ALIGN_CONST));
 }
 
 #define SET_MODULE_OWNER(dev) do { } while (0)

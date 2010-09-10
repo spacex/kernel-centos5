@@ -650,7 +650,7 @@ static void mce_remove_device(unsigned int cpu)
 {
 	int i;
 
-	for (i = 0; i < banks; i++)
+	for (i = 0; i < NR_SYSFS_BANKS; i++)
 		sysdev_remove_file(&per_cpu(device_mce,cpu),
 			bank_attributes[i]);
 	sysdev_remove_file(&per_cpu(device_mce,cpu), &attr_tolerant);

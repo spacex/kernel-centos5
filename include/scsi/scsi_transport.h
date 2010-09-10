@@ -101,6 +101,7 @@ scsi_transport_device_data(struct scsi_device *sdev)
 {
 	struct Scsi_Host *shost = sdev->host;
 	return (u8 *)sdev->sdev_data
+		+ sizeof(struct scsi_dh_data *)
 		+ shost->transportt->device_private_offset;
 }
 

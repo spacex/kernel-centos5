@@ -59,6 +59,18 @@
  */
 E1000_PARAM(TxDescriptors, "Number of transmit descriptors");
 
+/* Transmit Descriptor Power
+ *
+ * Valid Range: 6-12
+ * This value represents the size-order of each transmit descriptor.
+ * The valid size for descriptors would be 2^6 (64) to 2^12 (4096) bytes
+ * each.  As this value decreases one may want to consider increasing
+ * the TxDescriptors value to maintain the same amount of frame memory.
+ *
+ * Default Value: 12
+ */
+E1000_PARAM(TxDescPower, "Binary exponential size (2^X) of each transmit descriptor");
+
 /* Receive Descriptor Count
  *
  * Valid Range: 80-256 for 82542 and 82543 gigabit ethernet controllers
@@ -67,6 +79,8 @@ E1000_PARAM(TxDescriptors, "Number of transmit descriptors");
  * Default Value: 256
  */
 E1000_PARAM(RxDescriptors, "Number of receive descriptors");
+
+
 
 /* User Specified Speed Override
  *
@@ -314,6 +328,27 @@ e1000_check_options(struct e1000_adapter *adapter)
 		for (i = 0; i < adapter->num_tx_queues; i++)
 			tx_ring[i].count = tx_ring->count;
 	}
+	{ /* Transmit Descriptor Power */
+		struct e1000_option opt = {
+			.type = range_option,
+			.name = "Transmit Descriptor Power",
+			.err  = "using default of "
+			 	__MODULE_STRING(E1000_DEFAULT_TXD_PWR),
+			.def  = adapter->hw.mac_type < e1000_82571 ?
+				E1000_MAX_TXD_PWR : E1000_MAX_82571_TXD_PWR,
+			.arg  = { .r = { .min = E1000_MIN_TXD_PWR }}
+		};
+		opt.arg.r.max = adapter->hw.mac_type < e1000_82571 ?
+			E1000_MAX_TXD_PWR : E1000_MAX_82571_TXD_PWR;
+
+		if (num_TxDescPower > bd) {
+			adapter->tx_desc_pwr = TxDescPower[bd];
+			e1000_validate_option(&adapter->tx_desc_pwr, &opt, adapter);
+		} else {
+			adapter->tx_desc_pwr = opt.def;
+		}
+	}
+
 	{ /* Receive Descriptor Count */
 		struct e1000_option opt = {
 			.type = range_option,

@@ -44,6 +44,7 @@
 #include <asm/semaphore.h>
 #include <asm/cacheflush.h>
 #include <linux/license.h>
+#include <linux/tracepoint.h>
 #include "module-verify.h"
 
 #if 0
@@ -65,6 +66,98 @@ static DEFINE_SPINLOCK(modlist_lock);
 /* List of modules, protected by module_mutex AND modlist_lock */
 static DEFINE_MUTEX(module_mutex);
 static LIST_HEAD(modules);
+
+#ifdef CONFIG_MARKERS
+struct module_marker_data
+{
+	struct list_head list;
+	struct module *mod;
+	struct marker *markers;
+	unsigned int num_markers;
+};
+
+/* List of module marker data, protected by module_mutex */
+static LIST_HEAD(marker_data_list);
+
+/* This function only gets called from load_module(), which is
+ * protected by module_mutex. */
+static int marker_data_add(struct module *mod, struct marker *markers,
+       unsigned int num_markers)
+{
+	struct module_marker_data *data;
+
+	data = kmalloc(sizeof(struct module_marker_data), GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+
+	data->mod = mod;
+	data->markers = markers;
+	data->num_markers = num_markers;
+	list_add(&data->list, &marker_data_list);
+	return 1;
+}
+
+/* This function is called from free_module() and load_module().  Both are
+ * protected by module_mutex. */
+static void marker_data_del(struct module *mod)
+{
+	struct module_marker_data *data;
+
+	list_for_each_entry(data, &marker_data_list, list) {
+		if (mod == data->mod) {
+			list_del(&data->list);
+			kfree(data);
+			break;
+               }
+       }
+}
+#endif
+
+#ifdef CONFIG_TRACEPOINTS
+struct module_tracepoint_data
+{
+	struct list_head list;
+	struct module *mod;
+	struct tracepoint *tracepoints;
+	unsigned int num_tracepoints;
+};
+
+/* List of module marker data, protected by module_mutex */
+static LIST_HEAD(tracepoint_data_list);
+
+/* This function only gets called from load_module(), which is
+ * protected by module_mutex. */
+static int tracepoint_data_add(struct module *mod, struct tracepoint *tracepoints,
+       unsigned int num_tracepoints)
+{
+	struct module_tracepoint_data *data;
+
+	data = kmalloc(sizeof(struct module_tracepoint_data), GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+
+	data->mod = mod;
+	data->tracepoints = tracepoints;
+	data->num_tracepoints = num_tracepoints;
+	list_add(&data->list, &tracepoint_data_list);
+	return 1;
+}
+
+/* This function is called from free_module() and load_module().  Both are
+ * protected by module_mutex. */
+static void tracepoint_data_del(struct module *mod)
+{
+	struct module_tracepoint_data *data;
+
+	list_for_each_entry(data, &tracepoint_data_list, list) {
+		if (mod == data->mod) {
+			list_del(&data->list);
+			kfree(data);
+			break;
+               }
+       }
+}
+#endif
 
 static BLOCKING_NOTIFIER_HEAD(module_notify_list);
 
@@ -1150,6 +1243,12 @@ static void free_module(struct module *mod)
 	/* Delete from various lists */
 	stop_machine_run(__unlink_module, mod, NR_CPUS);
 	remove_sect_attrs(mod);
+#ifdef CONFIG_MARKERS
+	marker_data_del(mod);
+#endif
+#ifdef CONFIG_TRACEPOINTS
+	tracepoint_data_del(mod);
+#endif
 	mod_kobject_remove(mod);
 
 	unwind_remove_table(mod->unwind_info, 0);
@@ -1526,13 +1625,26 @@ static struct module *load_module(void __user *umod,
 	unsigned int unusedcrcindex;
 	unsigned int unusedgplindex;
 	unsigned int unusedgplcrcindex;
+	unsigned int tracepointsindex;
+	unsigned int tracepointsstringsindex;
+	unsigned int markersindex;
+	unsigned int markersstringsindex;
 	struct module *mod;
 	long err = 0;
 	void *percpu = NULL, *ptr = NULL; /* Stops spurious gcc warning */
 	struct exception_table_entry *extable;
 	mm_segment_t old_fs;
 	int gpgsig_ok;
-
+#ifdef CONFIG_MARKERS
+	struct marker *markers = NULL;
+	unsigned int num_markers = 0;
+	int marker_data_added = 0;
+#endif
+#ifdef CONFIG_TRACEPOINTS
+	struct tracepoint *tracepoints = NULL;
+	unsigned int num_tracepoints = 0;
+	int tracepoint_data_added = 0;
+#endif
 	DEBUGP("load_module: umod=%p, len=%lu, uargs=%p\n",
 	       umod, len, uargs);
 	if (len < sizeof(*hdr))
@@ -1630,6 +1742,13 @@ static struct module *load_module(void __user *umod,
 	versindex = find_sec(hdr, sechdrs, secstrings, "__versions");
 	infoindex = find_sec(hdr, sechdrs, secstrings, ".modinfo");
 	pcpuindex = find_pcpusec(hdr, sechdrs, secstrings);
+	tracepointsindex = find_sec(hdr, sechdrs, secstrings, "__tracepoints");
+	tracepointsstringsindex = find_sec(hdr, sechdrs, secstrings,
+					"__tracepoints_strings");
+	markersindex = find_sec(hdr, sechdrs, secstrings, "__markers");
+	markersstringsindex = find_sec(hdr, sechdrs, secstrings,
+					"__markers_strings");
+
 #ifdef ARCH_UNWIND_SECTION_NAME
 	unwindex = find_sec(hdr, sechdrs, secstrings, ARCH_UNWIND_SECTION_NAME);
 #endif
@@ -1798,6 +1917,18 @@ static struct module *load_module(void __user *umod,
 		add_taint_module(mod, TAINT_FORCED_MODULE);
 	}
 #endif
+#ifdef CONFIG_TRACEPOINTS
+	if (tracepointsindex != 0) {
+		tracepoints = (void *)sechdrs[tracepointsindex].sh_addr;
+		num_tracepoints = sechdrs[tracepointsindex].sh_size / sizeof(*tracepoints);
+	}
+#endif
+#ifdef CONFIG_MARKERS
+	if (markersindex != 0) {
+		markers = (void *)sechdrs[markersindex].sh_addr;
+		num_markers = sechdrs[markersindex].sh_size / sizeof(*markers);
+	}
+#endif
 
 	/* Now do relocations. */
 	for (i = 1; i < hdr->e_shnum; i++) {
@@ -1838,6 +1969,26 @@ static struct module *load_module(void __user *umod,
 
 	add_kallsyms(mod, sechdrs, symindex, strindex, secstrings);
 
+#ifdef CONFIG_TRACEPOINTS
+	if (tracepointsindex != 0) {
+		err = tracepoint_data_add(mod, tracepoints, num_tracepoints);
+		if (err < 0)
+			goto cleanup;
+		tracepoint_data_added = 1;
+		tracepoint_update_probe_range(tracepoints,
+			tracepoints + num_tracepoints);
+	}
+#endif
+#ifdef CONFIG_MARKERS
+	if (markersindex != 0) {
+		err = marker_data_add(mod, markers, num_markers);
+		if (err < 0)
+			goto cleanup;
+		marker_data_added = 1;
+		marker_update_probe_range(markers,
+			markers + num_markers);
+	}
+#endif
 	err = module_finalize(hdr, sechdrs, mod);
 	if (err < 0)
 		goto cleanup;
@@ -1898,6 +2049,14 @@ static struct module *load_module(void __user *umod,
  arch_cleanup:
 	module_arch_cleanup(mod);
  cleanup:
+#ifdef CONFIG_MARKERS
+	if (marker_data_added)
+		marker_data_del(mod);
+#endif
+#ifdef CONFIG_TRACEPOINTS
+	if (tracepoint_data_added)
+		tracepoint_data_del(mod);
+#endif
 	module_unload_free(mod);
 	module_free(mod, mod->module_init);
  free_core:
@@ -1951,7 +2110,6 @@ sys_init_module(void __user *umod,
 		mutex_unlock(&module_mutex);
 		return PTR_ERR(mod);
 	}
-
 	/* Now sew it into the lists.  They won't access us, since
            strong_try_module_get() will fail. */
 	stop_machine_run(__link_module, mod, NR_CPUS);
@@ -2331,4 +2489,61 @@ EXPORT_SYMBOL(module_remove_driver);
 /* Generate the signature for struct module here, too, for modversions. */
 void struct_module(struct module *mod) { return; }
 EXPORT_SYMBOL(struct_module);
+#endif
+
+#ifdef CONFIG_TRACEPOINTS
+void module_update_tracepoints(void)
+{
+	struct module_tracepoint_data *data;
+
+	mutex_lock(&module_mutex);
+	list_for_each_entry(data, &tracepoint_data_list, list)
+		tracepoint_update_probe_range(data->tracepoints,
+			data->tracepoints + data->num_tracepoints);
+	mutex_unlock(&module_mutex);
+}
+
+/*
+ * Returns 0 if current not found.
+ * Returns 1 if current found.
+ */
+int module_get_iter_tracepoints(struct tracepoint_iter *iter)
+{
+	struct module_tracepoint_data *iter_mod;
+	int found = 0;
+
+	mutex_lock(&module_mutex);
+	list_for_each_entry(iter_mod, &tracepoint_data_list, list) {
+		/*
+		 * Sorted module list
+		 */
+		if (iter_mod->mod < iter->module)
+			continue;
+		else if (iter_mod->mod > iter->module)
+			iter->tracepoint = NULL;
+		found = tracepoint_get_iter_range(&iter->tracepoint,
+			iter_mod->tracepoints,
+			iter_mod->tracepoints
+				+ iter_mod->num_tracepoints);
+		if (found) {
+			iter->module = iter_mod->mod;
+			break;
+		}
+	}
+	mutex_unlock(&module_mutex);
+	return found;
+}
+#endif
+
+#ifdef CONFIG_MARKERS
+void module_update_markers(void)
+{
+	struct module_marker_data *data;
+
+	mutex_lock(&module_mutex);
+	list_for_each_entry(data, &marker_data_list, list)
+		marker_update_probe_range(data->markers,
+			data->markers + data->num_markers);
+	mutex_unlock(&module_mutex);
+}
 #endif

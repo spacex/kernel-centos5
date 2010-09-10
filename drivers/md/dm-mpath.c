@@ -20,6 +20,7 @@
 #include <linux/slab.h>
 #include <linux/time.h>
 #include <linux/workqueue.h>
+#include <scsi/scsi_dh.h>
 #include <asm/atomic.h>
 
 #define DM_MSG_PREFIX "multipath"
@@ -62,6 +63,7 @@ struct multipath {
 	spinlock_t lock;
 
 	struct hw_handler hw_handler;
+	const char *hw_handler_name;
 	unsigned nr_priority_groups;
 	struct list_head priority_groups;
 	unsigned pg_init_required;	/* pg_init needs calling? */
@@ -84,6 +86,8 @@ struct multipath {
 	unsigned queue_size;
 
 	struct work_struct trigger_event;
+	struct work_struct activate_path;
+	struct pgpath *pgpath_to_activate;
 
 	/*
 	 * We must use a mempool of mpath_io structs so that we
@@ -106,10 +110,10 @@ typedef int (*action_fn) (struct pgpath *pgpath);
 
 static kmem_cache_t *_mpio_cache;
 
-struct workqueue_struct *kmultipathd;
+struct workqueue_struct *kmultipathd, *kmpath_handlerd;
 static void process_queued_ios(void *data);
 static void trigger_event(void *data);
-
+static void activate_path(void *data);
 
 /*-----------------------------------------------
  * Allocation routines
@@ -148,11 +152,19 @@ static struct priority_group *alloc_priority_group(void)
 
 static void free_pgpaths(struct list_head *pgpaths, struct dm_target *ti)
 {
+	unsigned long flags;
 	struct pgpath *pgpath, *tmp;
+	struct multipath *m = (struct multipath *) ti->private;
 
 	list_for_each_entry_safe(pgpath, tmp, pgpaths, list) {
 		list_del(&pgpath->list);
+		if (m->hw_handler_name)
+			scsi_dh_detach(bdev_get_queue(pgpath->path.dev->bdev));
 		dm_put_device(ti, pgpath->path.dev);
+		spin_lock_irqsave(&m->lock, flags);
+		if (m->pgpath_to_activate == pgpath)
+			m->pgpath_to_activate = NULL;
+		spin_unlock_irqrestore(&m->lock, flags);
 		free_pgpath(pgpath);
 	}
 }
@@ -183,6 +195,7 @@ static struct multipath *alloc_multipath(void)
 		m->queue_io = 1;
 		INIT_WORK(&m->process_queued_ios, process_queued_ios, m);
 		INIT_WORK(&m->trigger_event, trigger_event, m);
+		INIT_WORK(&m->activate_path, activate_path, m);
 		m->mpio_pool = mempool_create_slab_pool(MIN_IOS, _mpio_cache);
 		if (!m->mpio_pool) {
 			kfree(m);
@@ -207,7 +220,7 @@ static void free_multipath(struct multipath *m)
 		hwh->type->destroy(hwh);
 		dm_put_hw_handler(hwh->type);
 	}
-
+	kfree(m->hw_handler_name);
 	mempool_destroy(m->mpio_pool);
 	kfree(m);
 }
@@ -224,7 +237,7 @@ static void __switch_pg(struct multipath *m, struct pgpath *pgpath)
 	m->current_pg = pgpath->pg;
 
 	/* Must we initialise the PG first, and queue I/O till it's ready? */
-	if (hwh->type && hwh->type->pg_init) {
+	if ((hwh->type && hwh->type->pg_init) || m->hw_handler_name) {
 		m->pg_init_required = 1;
 		m->queue_io = 1;
 	} else {
@@ -423,7 +436,8 @@ static void process_queued_ios(void *data)
 	    (!pgpath && !m->queue_if_no_path))
 		must_queue = 0;
 
-	if (m->pg_init_required && !m->pg_init_in_progress) {
+	if (m->pg_init_required && !m->pg_init_in_progress && pgpath) {
+		m->pgpath_to_activate = pgpath;
 		m->pg_init_count++;
 		m->pg_init_required = 0;
 		m->pg_init_in_progress = 1;
@@ -433,8 +447,13 @@ static void process_queued_ios(void *data)
 out:
 	spin_unlock_irqrestore(&m->lock, flags);
 
-	if (init_required)
-		hwh->type->pg_init(hwh, pgpath->pg->bypassed, &pgpath->path);
+	if (init_required) {
+		if (hwh->type)
+			hwh->type->pg_init(hwh, pgpath->pg->bypassed,
+							 &pgpath->path);
+		else
+			queue_work(kmpath_handlerd, &m->activate_path);
+	}
 
 	if (!must_queue)
 		dispatch_queued_ios(m);
@@ -524,8 +543,10 @@ static int parse_path_selector(struct arg_set *as, struct priority_group *pg,
 	}
 
 	r = read_param(_params, shift(as), &ps_argc, &ti->error);
-	if (r)
+	if (r) {
+		dm_put_path_selector(pst);
 		return -EINVAL;
+	}
 
 	r = pst->create(&pg->ps, ps_argc, as->argv);
 	if (r) {
@@ -545,6 +566,7 @@ static struct pgpath *parse_path(struct arg_set *as, struct path_selector *ps,
 {
 	int r;
 	struct pgpath *p;
+	struct multipath *m = (struct multipath *) ti->private;
 
 	/* we need at least a path arg */
 	if (as->argc < 1) {
@@ -561,6 +583,15 @@ static struct pgpath *parse_path(struct arg_set *as, struct path_selector *ps,
 	if (r) {
 		ti->error = "error getting device";
 		goto bad;
+	}
+
+	if (m->hw_handler_name) {
+		r = scsi_dh_attach(bdev_get_queue(p->path.dev->bdev),
+				   m->hw_handler_name);
+		if (r < 0) {
+			dm_put_device(ti, p->path.dev);
+			goto bad;
+		}
 	}
 
 	r = ps->type->add_path(ps, &p->path, as->argc, as->argv, &ti->error);
@@ -622,8 +653,10 @@ static struct priority_group *parse_priority_group(struct arg_set *as,
 		struct pgpath *pgpath;
 		struct arg_set path_args;
 
-		if (as->argc < nr_params)
+		if (as->argc < nr_params) {
+			ti->error = "not enough path parameters";
 			goto bad;
+		}
 
 		path_args.argc = nr_params;
 		path_args.argv = as->argv;
@@ -662,23 +695,42 @@ static int parse_hw_handler(struct arg_set *as, struct multipath *m,
 	if (!hw_argc)
 		return 0;
 
-	hwht = dm_get_hw_handler(shift(as));
+	m->hw_handler_name = kstrdup(shift(as), GFP_KERNEL);
+	request_module("scsi_dh_%s", m->hw_handler_name);
+	if (scsi_dh_handler_exist(m->hw_handler_name)) {
+		DMINFO("Using scsi_dh module scsi_dh_%s for failover/failback "
+		       "and device management.", m->hw_handler_name);
+		if (hw_argc > 1)
+			DMWARN("No arguments accepted for this hardware "
+			       "handler");
+		goto done;
+	}
+
+	hwht = dm_get_hw_handler(m->hw_handler_name);
 	if (!hwht) {
 		ti->error = "unknown hardware handler type";
-		return -EINVAL;
+		r = -EINVAL;
+		goto free_hw_handler_name;
 	}
 
 	r = hwht->create(&m->hw_handler, hw_argc - 1, as->argv);
 	if (r) {
 		dm_put_hw_handler(hwht);
 		ti->error = "hardware handler constructor failed";
-		return r;
+		goto free_hw_handler_name;
 	}
-
 	m->hw_handler.type = hwht;
+	DMINFO("Using dm hw handler module %s for failover/failback "
+	       "and device management.", m->hw_handler_name);
+
+free_hw_handler_name:
+	kfree(m->hw_handler_name);
+	m->hw_handler_name = NULL;
+
+done:
 	consume(as, hw_argc - 1);
 
-	return 0;
+	return r;
 }
 
 static int parse_features(struct arg_set *as, struct multipath *m,
@@ -749,6 +801,7 @@ static int multipath_ctr(struct dm_target *ti, unsigned int argc,
 	}
 
 	m->ti = ti;
+	ti->private = m;
 
 	r = parse_features(&as, m, ti);
 	if (r)
@@ -790,8 +843,6 @@ static int multipath_ctr(struct dm_target *ti, unsigned int argc,
 		goto bad;
 	}
 
-	ti->private = m;
-
 	return 0;
 
  bad:
@@ -803,6 +854,7 @@ static void multipath_dtr(struct dm_target *ti)
 {
 	struct multipath *m = (struct multipath *) ti->private;
 
+	flush_workqueue(kmpath_handlerd);
 	flush_workqueue(kmultipathd);
 	free_multipath(m);
 }
@@ -817,13 +869,15 @@ static int multipath_map(struct dm_target *ti, struct bio *bio,
 	struct mpath_io *mpio;
 	struct multipath *m = (struct multipath *) ti->private;
 
-	if (bio_barrier(bio))
-		return -EOPNOTSUPP;
-
 	mpio = mempool_alloc(m->mpio_pool, GFP_NOIO);
 	dm_bio_record(&mpio->details, bio);
 
 	map_context->ptr = mpio;
+	/*
+	 * We set both incase 3rd party drivers were only checking
+	 * for BIO_RW_FAILFAST.
+	 */
+	bio->bi_rw |= (1 << BIO_RW_FAILFAST_TRANSPORT);
 	bio->bi_rw |= (1 << BIO_RW_FAILFAST);
 	r = map_io(m, bio, mpio, 0);
 	if (r < 0 || r == DM_MAPIO_REQUEUE)
@@ -881,7 +935,7 @@ static int reinstate_path(struct pgpath *pgpath)
 	if (pgpath->path.is_active)
 		goto out;
 
-	if (!pgpath->pg->ps.type) {
+	if (!pgpath->pg->ps.type->reinstate_path) {
 		DMWARN("Reinstate path not supported by path selector %s",
 		       pgpath->pg->ps.type->name);
 		r = -EINVAL;
@@ -1061,6 +1115,86 @@ void dm_pg_init_complete(struct path *path, unsigned err_flags)
 	spin_unlock_irqrestore(&m->lock, flags);
 }
 
+static void pg_init_done(struct path *path, int errors)
+{
+	struct pgpath *pgpath = path_to_pgpath(path);
+	struct priority_group *pg = pgpath->pg;
+	struct multipath *m = pg->m;
+	unsigned long flags;
+
+	/* device or driver problems */
+	switch (errors) {
+	case SCSI_DH_OK:
+		break;
+	case SCSI_DH_NOSYS:
+		if (!m->hw_handler_name) {
+			errors = 0;
+			break;
+		}
+		DMERR("Cannot failover device because scsi_dh_%s was not "
+		      "loaded.", m->hw_handler_name);
+		/*
+		 * Fail path for now, so we do not ping pong
+		 */
+		fail_path(pgpath);
+		break;
+	case SCSI_DH_DEV_TEMP_BUSY:
+		/*
+		 * Probably doing something like FW upgrade on the
+		 * controller so try the other pg.
+		 */
+		bypass_pg(m, pg, 1);
+		break;
+	/* TODO: For SCSI_DH_RETRY we should wait a couple seconds */
+	case SCSI_DH_RETRY:
+	case SCSI_DH_IMM_RETRY:
+	case SCSI_DH_RES_TEMP_UNAVAIL:
+		if (pg_init_limit_reached(m, pgpath))
+			fail_path(pgpath);
+		errors = 0;
+		break;
+	default:
+		/*
+		 * We probably do not want to fail the path for a device
+		 * error, but this is what the old dm did. In future
+		 * patches we can do more advanced handling.
+		 */
+		fail_path(pgpath);
+	}
+
+	spin_lock_irqsave(&m->lock, flags);
+	if (errors) {
+		DMERR("Could not failover device. Error %d.", errors);
+		m->current_pgpath = NULL;
+		m->current_pg = NULL;
+	} else if (!m->pg_init_required) {
+		m->queue_io = 0;
+		pg->bypassed = 0;
+	}
+
+	m->pg_init_in_progress = 0;
+	queue_work(kmultipathd, &m->process_queued_ios);
+	spin_unlock_irqrestore(&m->lock, flags);
+}
+
+static void activate_path(void *data)
+{
+	int ret;
+	struct multipath *m = (struct multipath *) data;
+	struct path *path;
+	unsigned long flags;
+
+	spin_lock_irqsave(&m->lock, flags);
+	path = &m->pgpath_to_activate->path;
+	m->pgpath_to_activate = NULL;
+	spin_unlock_irqrestore(&m->lock, flags);
+	if (!path)
+		return;
+
+	ret = scsi_dh_activate(bdev_get_queue(path->dev->bdev));
+	pg_init_done(path, ret);
+}
+
 /*
  * end_io handling
  */
@@ -1099,16 +1233,17 @@ static int do_end_io(struct multipath *m, struct bio *bio,
 		err_flags = hwh->type->error(hwh, bio);
 
 	if (mpio->pgpath) {
-		if (err_flags & MP_FAIL_PATH)
+		if (hwh->type) {
+			if (err_flags & MP_FAIL_PATH)
+				fail_path(mpio->pgpath);
+
+			if (err_flags & MP_BYPASS_PG)
+				bypass_pg(m, mpio->pgpath->pg, 1);
+		} else
 			fail_path(mpio->pgpath);
-
-		if (err_flags & MP_BYPASS_PG)
-			bypass_pg(m, mpio->pgpath->pg, 1);
 	}
-
-	if (err_flags & MP_ERROR_IO)
+	if (hwh->type && (err_flags & MP_ERROR_IO))
 		return -EIO;
-
       requeue:
 	dm_bio_restore(&mpio->details, bio);
 
@@ -1214,10 +1349,12 @@ static int multipath_status(struct dm_target *ti, status_type_t type,
 
 	if (hwh->type && hwh->type->status)
 		sz += hwh->type->status(hwh, type, result + sz, maxlen - sz);
-	else if (!hwh->type || type == STATUSTYPE_INFO)
+
+	if ((!hwh->type && !m->hw_handler_name) || type == STATUSTYPE_INFO)
 		DMEMIT("0 ");
 	else
-		DMEMIT("1 %s ", hwh->type->name);
+		DMEMIT("1 %s ", m->hw_handler_name ? m->hw_handler_name :
+				hwh->type->name);
 
 	DMEMIT("%u ", m->nr_priority_groups);
 
@@ -1422,6 +1559,21 @@ static int __init dm_multipath_init(void)
 		return -ENOMEM;
 	}
 
+	/*
+	 * A separate workqueue is used to handle the device handlers
+	 * to avoid overloading existing workqueue. Overloading the
+	 * old workqueue would also create a bottleneck in the
+	 * path of the storage hardware device activation.
+	 */
+	kmpath_handlerd = create_singlethread_workqueue("kmpath_handlerd");
+	if (!kmpath_handlerd) {
+		DMERR("failed to create workqueue kmpath_handlerd");
+		destroy_workqueue(kmultipathd);
+		dm_unregister_target(&multipath_target);
+		kmem_cache_destroy(_mpio_cache);
+		return -ENOMEM;
+	}
+
 	DMINFO("version %u.%u.%u loaded",
 	       multipath_target.version[0], multipath_target.version[1],
 	       multipath_target.version[2]);
@@ -1433,6 +1585,7 @@ static void __exit dm_multipath_exit(void)
 {
 	int r;
 
+	destroy_workqueue(kmpath_handlerd);
 	destroy_workqueue(kmultipathd);
 
 	r = dm_unregister_target(&multipath_target);

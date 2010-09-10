@@ -825,7 +825,7 @@ int dump_task_regs(struct task_struct *tsk, elf_gregset_t *regs)
 
 unsigned long arch_align_stack(unsigned long sp)
 {
-	if (randomize_va_space)
+	if (!(current->personality & ADDR_NO_RANDOMIZE) && randomize_va_space)
 		sp -= get_random_int() % 8192;
 	return sp & ~0xf;
 }
@@ -868,6 +868,6 @@ void randomize_brk(unsigned long old_brk)
 
 	new_brk = randomize_range(range_start, range_end, 0);
 	if (new_brk)
-		current->mm->brk = new_brk;
+		current->mm->brk = current->mm->start_brk = new_brk;
 
 }

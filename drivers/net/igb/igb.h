@@ -36,12 +36,20 @@
 
 struct igb_adapter;
 
+#ifdef CONFIG_IGB_LRO
+#include <linux/inet_lro.h>
+#define MAX_LRO_AGGR                      32
+#define MAX_LRO_DESCRIPTORS                8
+#endif
+
 /* Interrupt defines */
 #define IGB_MAX_TX_CLEAN 72
 
 #define IGB_MIN_DYN_ITR 3000
 #define IGB_MAX_DYN_ITR 96000
-#define IGB_START_ITR 6000
+
+/* ((1000000000ns / (6000ints/s * 1024ns)) << 2 = 648 */
+#define IGB_START_ITR 648
 
 #define IGB_DYN_ITR_PACKET_THRESHOLD 2
 #define IGB_DYN_ITR_LENGTH_LOW 200
@@ -61,7 +69,7 @@ struct igb_adapter;
 #define IGB_MIN_ITR_USECS                 10
 
 /* Transmit and receive queues */
-#define IGB_MAX_RX_QUEUES                  1
+#define IGB_MAX_RX_QUEUES                  4
 
 /* RX descriptor control thresholds.
  * PTHRESH - MAC will consider prefetch if it has fewer than this number of
@@ -124,6 +132,7 @@ struct igb_buffer {
 		struct {
 			struct page *page;
 			u64 page_dma;
+			unsigned int page_offset;
 		};
 	};
 };
@@ -150,6 +159,7 @@ struct igb_ring {
 	u16 itr_register;
 	u16 cpu;
 
+	int queue_index;
 	unsigned int total_bytes;
 	unsigned int total_packets;
 
@@ -162,13 +172,14 @@ struct igb_ring {
 		};
 		/* RX */
 		struct {
-			/* arrays of page information for packet split */
-			struct sk_buff *pending_skb;
-			int pending_skb_page;
-			int no_itr_adjust;
 			struct igb_queue_stats rx_stats;
 			struct net_device *netdev;
 			struct igb_ring *buddy;
+			int set_itr;
+#ifdef CONFIG_IGB_LRO
+			struct net_lro_mgr lro_mgr;
+			bool lro_used;
+#endif
 		};
 	};
 
@@ -211,7 +222,6 @@ struct igb_adapter {
 	u32 itr_setting;
 	u16 tx_itr;
 	u16 rx_itr;
-	int set_itr;
 
 	struct work_struct reset_task;
 	struct work_struct watchdog_task;
@@ -265,13 +275,27 @@ struct igb_adapter {
 	int msg_enable;
 	struct msix_entry *msix_entries;
 	u32 eims_enable_mask;
+	u32 eims_other;
 
 	/* to not mess up cache alignment, always add to the bottom */
 	unsigned long state;
-	unsigned int msi_enabled;
-
+	unsigned int flags;
 	u32 eeprom_wol;
+#ifdef CONFIG_IGB_LRO
+	unsigned int lro_max_aggr;
+	unsigned int lro_aggregated;
+	unsigned int lro_flushed;
+	unsigned int lro_no_desc;
+#endif
 };
+
+#define IGB_FLAG_HAS_MSI           (1 << 0)
+#define IGB_FLAG_MSI_ENABLE        (1 << 1)
+#define IGB_FLAG_HAS_DCA           (1 << 2)
+#define IGB_FLAG_DCA_ENABLED       (1 << 3)
+#define IGB_FLAG_IN_NETPOLL        (1 << 5)
+#define IGB_FLAG_QUAD_PORT_A       (1 << 6)
+#define IGB_FLAG_NEED_CTX_IDX      (1 << 7)
 
 enum e1000_state_t {
 	__IGB_TESTING,

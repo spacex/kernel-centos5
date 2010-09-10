@@ -135,6 +135,20 @@ static int ohci_init (struct ohci_hcd *ohci);
 static void ohci_stop (struct usb_hcd *hcd);
 static int ohci_reboot (struct notifier_block *, unsigned long , void *);
 
+#ifdef CONFIG_PCI
+static void quirk_amd_pll(int state);
+static void amd_iso_dev_put(void);
+#else
+static inline void quirk_amd_pll(int state)
+{
+	return;
+}
+static inline void amd_iso_dev_put(void)
+{
+	return;
+}
+#endif
+
 #include "ohci-hub.c"
 #include "ohci-dbg.c"
 #include "ohci-mem.c"
@@ -775,7 +789,10 @@ static void ohci_stop (struct usb_hcd *hcd)
 
 	ohci_usb_reset (ohci);
 	ohci_writel (ohci, OHCI_INTR_MIE, &ohci->regs->intrdisable);
-	
+
+	if (ohci->flags & OHCI_QUIRK_AMD_ISO)
+		amd_iso_dev_put();
+
 	remove_debug_files (ohci);
 	unregister_reboot_notifier (&ohci->reboot_notifier);
 	ohci_mem_cleanup (ohci);

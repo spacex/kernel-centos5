@@ -130,6 +130,21 @@ static void pci_iommu_unmap_sg(struct device *pdev, struct scatterlist *sglist,
 	iommu_unmap_sg(device_to_table(pdev), sglist, nelems, direction);
 }
 
+#ifdef CONFIG_HAVE_DMA_ATTRS
+int pci_iommu_map_sg_weak(struct device *pdev, struct scatterlist *sglist,
+		int nelems, enum dma_data_direction direction)
+{
+	return iommu_map_sg_weak(pdev, device_to_table(pdev), sglist,
+			nelems, device_to_mask(pdev), direction);
+}
+
+void pci_iommu_unmap_sg_weak(struct device *pdev, struct scatterlist *sglist,
+		int nelems, enum dma_data_direction direction)
+{
+	iommu_unmap_sg(device_to_table(pdev), sglist, nelems, direction);
+}
+#endif /* CONFIG_HAVE_DMA_ATTRS */
+
 /* We support DMA to/from any memory page via the iommu */
 static int pci_iommu_dma_supported(struct device *dev, u64 mask)
 {

@@ -29,8 +29,8 @@
 #include <asm/pmc.h>
 #include <asm/reg.h>
 #include <asm/spu.h>
+#include <asm/cell-regs.h>
 
-#include "cbe_regs.h"
 #include "interrupt.h"
 
 /*

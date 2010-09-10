@@ -91,6 +91,8 @@ extern int dir_notify_enable;
 /* public flags for file_system_type */
 #define FS_REQUIRES_DEV 1 
 #define FS_BINARY_MOUNTDATA 2
+#define HAVE_FALLOCATE
+#define FS_HAS_FALLOCATE 4
 #define FS_REVAL_DOT	16384	/* Check the paths ".", ".." for staleness */
 #define FS_RENAME_DOES_D_MOVE	32768	/* FS will handle d_move()
 					 * during rename() internally.
@@ -121,6 +123,8 @@ extern int dir_notify_enable;
 #define MS_SLAVE	(1<<19)	/* change to slave */
 #define MS_SHARED	(1<<20)	/* change to shared */
 #define MS_NO_LEASES	(1<<21)	/* fs does not support leases */
+#define MS_HAS_SETLEASE        (1<<22) /* fs supports setlease fop */
+#define MS_I_VERSION	(1<<23)	/* Update inode I_version field */
 #define MS_ACTIVE	(1<<30)
 #define MS_NOUSER	(1<<31)
 
@@ -172,6 +176,7 @@ extern int dir_notify_enable;
 #define IS_DIRSYNC(inode)	(__IS_FLG(inode, MS_SYNCHRONOUS|MS_DIRSYNC) || \
 					((inode)->i_flags & (S_SYNC|S_DIRSYNC)))
 #define IS_MANDLOCK(inode)	__IS_FLG(inode, MS_MANDLOCK)
+#define IS_I_VERSION(inode)	__IS_FLG(inode, MS_I_VERSION)
 
 #define IS_NOQUOTA(inode)	((inode)->i_flags & S_NOQUOTA)
 #define IS_APPEND(inode)	((inode)->i_flags & S_APPEND)
@@ -183,6 +188,7 @@ extern int dir_notify_enable;
 #define IS_SWAPFILE(inode)	((inode)->i_flags & S_SWAPFILE)
 #define IS_PRIVATE(inode)	((inode)->i_flags & S_PRIVATE)
 #define IS_NO_LEASES(inode)	__IS_FLG(inode, MS_NO_LEASES)
+#define IS_SETLEASE(inode)	__IS_FLG(inode, MS_HAS_SETLEASE)
 
 /* the read-only stuff doesn't really belong here, but any other place is
    probably as bad and I don't want to create yet another include file. */
@@ -398,6 +404,15 @@ struct page;
 struct address_space;
 struct writeback_control;
 
+struct iov_iter {
+        const struct iovec *iov;
+        unsigned long nr_segs;
+        size_t iov_offset;
+        size_t count;
+};
+
+size_t iov_iter_copy_from_user_atomic(struct page *page,
+                struct iov_iter *i, unsigned long offset, size_t bytes);
 struct address_space_operations {
 	int (*writepage)(struct page *page, struct writeback_control *wbc);
 	int (*readpage)(struct file *, struct page *);
@@ -858,6 +873,7 @@ extern int vfs_cancel_lock(struct file *filp, struct file_lock *fl);
 extern int flock_lock_file_wait(struct file *filp, struct file_lock *fl);
 extern int __break_lease(struct inode *inode, unsigned int flags);
 extern void lease_get_mtime(struct inode *, struct timespec *time);
+extern int __setlease(struct file *, long, struct file_lock **);
 extern int setlease(struct file *, long, struct file_lock **);
 extern int lease_modify(struct file_lock **, int);
 extern int lock_may_read(struct inode *, loff_t start, unsigned long count);
@@ -993,6 +1009,9 @@ static inline void unlock_super(struct super_block * sb)
 	mutex_unlock(&sb->s_lock);
 }
 
+#define is_owner_or_cap(inode)  \
+	((current->fsuid == (inode)->i_uid) || capable(CAP_FOWNER))
+
 /*
  * VFS helper functions..
  */
@@ -1122,6 +1141,13 @@ struct file_operations {
 	ssize_t (*splice_read)(struct file *, loff_t *, struct pipe_inode_info *, size_t, unsigned int);
 };
 
+struct file_operations_ext {
+	struct file_operations f_op_orig;
+
+	/* setlease if MS_HAS_SETLEASE is set */
+	int (*setlease)(struct file *, long, struct file_lock **);
+};
+
 struct inode_operations {
 	int (*create) (struct inode *,struct dentry *,int, struct nameidata *);
 	struct dentry * (*lookup) (struct inode *,struct dentry *, struct nameidata *);
@@ -1145,6 +1171,10 @@ struct inode_operations {
 	ssize_t (*listxattr) (struct dentry *, char *, size_t);
 	int (*removexattr) (struct dentry *, const char *);
 	void (*truncate_range)(struct inode *, loff_t, loff_t);
+#ifndef __GENKSYMS__
+	long (*fallocate)(struct inode *inode, int mode, loff_t offset,
+			  loff_t len);
+#endif
 };
 
 struct seq_file;
@@ -1212,6 +1242,14 @@ static inline void mark_inode_dirty_sync(struct inode *inode)
 	__mark_inode_dirty(inode, I_DIRTY_SYNC);
 }
 
+/**
+ * inc_nlink - directly increment an inode's link count
+ * @inode: inode
+ *
+ * This is a low-level filesystem helper to replace any
+ * direct filesystem manipulation of i_nlink.  Currently,
+ * it is only here for parity with dec_nlink().
+ */
 static inline void inc_nlink(struct inode *inode)
 {
 	inode->i_nlink++;
@@ -1223,10 +1261,55 @@ static inline void inode_inc_link_count(struct inode *inode)
 	mark_inode_dirty(inode);
 }
 
-static inline void inode_dec_link_count(struct inode *inode)
+/**
+ * drop_nlink - directly drop an inode's link count
+ * @inode: inode
+ *
+ * This is a low-level filesystem helper to replace any
+ * direct filesystem manipulation of i_nlink.  In cases
+ * where we are attempting to track writes to the
+ * filesystem, a decrement to zero means an imminent
+ * write when the file is truncated and actually unlinked
+ * on the filesystem.
+ */
+static inline void drop_nlink(struct inode *inode)
 {
 	inode->i_nlink--;
+}
+
+/**
+ * clear_nlink - directly zero an inode's link count
+ * @inode: inode
+ *
+ * This is a low-level filesystem helper to replace any
+ * direct filesystem manipulation of i_nlink.  See
+ * drop_nlink() for why we care about i_nlink hitting zero.
+ */
+static inline void clear_nlink(struct inode *inode)
+{
+	inode->i_nlink = 0;
+}
+
+
+static inline void inode_dec_link_count(struct inode *inode)
+{
+	drop_nlink(inode);
 	mark_inode_dirty(inode);
+}
+
+/**
+ * inode_inc_iversion - increments i_version
+ * @inode: inode that need to be updated
+ *
+ * Every time the inode is modified, the i_version field will be incremented.
+ * The filesystem has to be mounted with i_version flag
+ */
+
+static inline void inode_inc_iversion(struct inode *inode)
+{
+	spin_lock(&inode->i_lock);
+	inode->i_version++;
+	spin_unlock(&inode->i_lock);
 }
 
 extern void touch_atime(struct vfsmount *mnt, struct dentry *dentry);
@@ -1558,6 +1641,9 @@ extern int fs_may_remount_ro(struct super_block *);
  */
 #define bio_data_dir(bio)	((bio)->bi_rw & 1)
 
+extern void check_disk_size_change(struct gendisk *disk,
+				   struct block_device *bdev);
+extern int revalidate_disk(struct gendisk *);
 extern int check_disk_change(struct block_device *);
 extern int invalidate_inodes(struct super_block *);
 extern int __invalidate_device(struct block_device *);
@@ -1591,6 +1677,8 @@ extern int wait_on_page_writeback_range(struct address_space *mapping,
 				pgoff_t start, pgoff_t end);
 extern int __filemap_fdatawrite_range(struct address_space *mapping,
 				loff_t start, loff_t end, int sync_mode);
+extern int filemap_fdatawrite_range(struct address_space *mapping,
+				loff_t start, loff_t end);
 
 extern long do_fsync(struct file *file, int datasync);
 extern void sync_supers(void);
@@ -1617,6 +1705,9 @@ static inline void allow_write_access(struct file *file)
 		atomic_inc(&file->f_dentry->d_inode->i_writecount);
 }
 extern int do_pipe(int *);
+extern struct file *create_read_pipe(struct file *f);
+extern struct file *create_write_pipe(void);
+extern void free_write_pipe(struct file *);
 
 extern int open_namei(int dfd, const char *, int, int, struct nameidata *);
 extern int may_open(struct nameidata *, int, int);
@@ -1667,6 +1758,7 @@ static inline struct inode *iget(struct super_block *sb, unsigned long ino)
 }
 
 extern void __iget(struct inode * inode);
+extern void iget_failed(struct inode *);
 extern void clear_inode(struct inode *);
 extern void destroy_inode(struct inode *);
 extern struct inode *new_inode(struct super_block *);

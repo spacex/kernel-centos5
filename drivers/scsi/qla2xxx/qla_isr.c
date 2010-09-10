@@ -36,6 +36,7 @@ qla2100_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 	int		status;
 	unsigned long	flags;
 	unsigned long	iter;
+	uint16_t        hccr;
 	uint16_t	mb[4];
 
 	ha = (scsi_qla_host_t *) dev_id;
@@ -50,7 +51,23 @@ qla2100_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 
 	spin_lock_irqsave(&ha->hardware_lock, flags);
 	for (iter = 50; iter--; ) {
-		if ((RD_REG_WORD(&reg->istatus) & ISR_RISC_INT) == 0)
+		hccr = RD_REG_WORD(&reg->hccr);
+		if (hccr & HCCR_RISC_PAUSE) {
+			if (pci_channel_offline(ha->pdev))
+				break;
+
+			/*
+			 * Issue a "HARD" reset in order for the RISC interrupt
+			 * bit to be cleared.  Schedule a big hammmer to get
+			 * out of the RISC PAUSED state.
+			 */
+			WRT_REG_WORD(&reg->hccr, HCCR_RESET_RISC);
+			RD_REG_WORD(&reg->hccr);
+
+			ha->isp_ops->fw_dump(ha, 1);
+			set_bit(ISP_ABORT_NEEDED, &ha->dpc_flags);
+			break;
+		} else if ((RD_REG_WORD(&reg->istatus) & ISR_RISC_INT) == 0)
 			break;
 
 		if (RD_REG_WORD(&reg->semaphore) & BIT_0) {
@@ -88,7 +105,7 @@ qla2100_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 	if (test_bit(MBX_INTR_WAIT, &ha->mbx_cmd_flags) &&
 	    (status & MBX_INTERRUPT) && ha->flags.mbox_int) {
 		set_bit(MBX_INTERRUPT, &ha->mbx_cmd_flags);
-		up(&ha->mbx_intr_sem);
+		complete(&ha->mbx_intr_comp);
 	}
 
 	return (IRQ_HANDLED);
@@ -130,6 +147,9 @@ qla2300_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 	for (iter = 50; iter--; ) {
 		stat = RD_REG_DWORD(&reg->u.isp2300.host_status);
 		if (stat & HSR_RISC_PAUSED) {
+			if (pci_channel_offline(ha->pdev))
+				break;
+
 			hccr = RD_REG_WORD(&reg->hccr);
 			if (hccr & (BIT_15 | BIT_13 | BIT_11 | BIT_8))
 				qla_printk(KERN_INFO, ha, "Parity error -- "
@@ -198,7 +218,7 @@ qla2300_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 	if (test_bit(MBX_INTR_WAIT, &ha->mbx_cmd_flags) &&
 	    (status & MBX_INTERRUPT) && ha->flags.mbox_int) {
 		set_bit(MBX_INTERRUPT, &ha->mbx_cmd_flags);
-		up(&ha->mbx_intr_sem);
+		complete(&ha->mbx_intr_comp);
 	}
 
 	return (IRQ_HANDLED);
@@ -258,6 +278,9 @@ qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 	uint32_t	rscn_entry, host_pid;
 	uint8_t		rscn_queue_index;
+	unsigned long	flags;
+
+	qla2xxx_log_aen(ha, mb[0], mb[1], mb[2], mb[3]);
 
 	/* Setup to process RIO completion. */
 	handle_cnt = 0;
@@ -329,10 +352,6 @@ qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 		break;
 
 	case MBA_SYSTEM_ERR:		/* System Error */
-		mb[1] = RD_MAILBOX_REG(ha, reg, 1);
-		mb[2] = RD_MAILBOX_REG(ha, reg, 2);
-		mb[3] = RD_MAILBOX_REG(ha, reg, 3);
-
 		qla_printk(KERN_INFO, ha,
 		    "ISP System Error - mbx1=%xh mbx2=%xh mbx3=%xh.\n",
 		    mb[1], mb[2], mb[3]);
@@ -423,6 +442,10 @@ qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 		DEBUG2(printk("scsi(%ld): Asynchronous LOOP DOWN (%x).\n",
 		    ha->host_no, mb[1]));
 		qla_printk(KERN_INFO, ha, "LOOP DOWN detected (%x).\n", mb[1]);
+		DEBUG2(printk("scsi(%ld): Asynchronous LOOP DOWN "
+			"(%x %x %x).\n", ha->host_no, mb[1], mb[2], mb[3]));
+		qla_printk(KERN_INFO, ha, "LOOP DOWN detected (%x %x %x).\n",
+			mb[1], mb[2], mb[3]);
 
 		if (atomic_read(&ha->loop_state) != LOOP_DOWN) {
 			atomic_set(&ha->loop_state, LOOP_DOWN);
@@ -633,6 +656,45 @@ qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 		DEBUG2(printk("scsi(%ld): Trace Notification -- %04x %04x.\n",
 		ha->host_no, mb[1], mb[2]));
 		break;
+
+	case MBA_ISP84XX_ALERT:
+		DEBUG2(printk("scsi(%ld): ISP84XX Alert Notification -- "
+		    "%04x %04x %04x\n", ha->host_no, mb[1], mb[2], mb[3]));
+
+		/* not initialized, so don't use it. */
+		if (ha->cs84xx) {
+			spin_lock_irqsave(&ha->cs84xx->access_lock, flags);
+			switch (mb[1]) {
+			case A84_PANIC_RECOVERY:
+				qla_printk(KERN_INFO, ha, "Alert 84XX: panic recovery "
+			    	"%04x %04x\n", mb[2], mb[3]);
+				break;
+			case A84_OP_LOGIN_COMPLETE:
+				ha->cs84xx->op_fw_version = mb[3] << 16 | mb[2];
+				DEBUG2(qla_printk(KERN_INFO, ha, "Alert 84XX:"
+			    	"firmware version %x\n", ha->cs84xx->op_fw_version));
+				break;
+			case A84_DIAG_LOGIN_COMPLETE:
+				ha->cs84xx->diag_fw_version = mb[3] << 16 | mb[2];
+				DEBUG2(qla_printk(KERN_INFO, ha, "Alert 84XX:"
+			    	"diagnostic firmware version %x\n",
+			    	ha->cs84xx->diag_fw_version));
+				break;
+			case A84_GOLD_LOGIN_COMPLETE:
+				ha->cs84xx->diag_fw_version = mb[3] << 16 | mb[2];
+				ha->cs84xx->fw_update = 1;
+				DEBUG2(qla_printk(KERN_INFO, ha, "Alert 84XX: gold "
+			    	"firmware version %x\n",
+			    	ha->cs84xx->gold_fw_version));
+				break;
+			default:
+				qla_printk(KERN_ERR, ha,
+			    	"Alert 84xx: Invalid Alert %04x %04x %04x\n",
+			    	mb[1], mb[2], mb[3]);
+			}
+			spin_unlock_irqrestore(&ha->cs84xx->access_lock, flags);
+		}
+		break;
 	}
 }
 
@@ -815,6 +877,35 @@ qla2x00_process_response_queue(struct scsi_qla_host *ha)
 	WRT_REG_WORD(ISP_RSP_Q_OUT(ha, reg), ha->rsp_ring_index);
 }
 
+static inline void
+qla2x00_handle_sense(srb_t *sp, uint8_t *sense_data, uint32_t sense_len)
+{
+	struct scsi_cmnd *cp = sp->cmd;
+
+	if (sense_len >= SCSI_SENSE_BUFFERSIZE)
+		sense_len = SCSI_SENSE_BUFFERSIZE;
+
+	CMD_ACTUAL_SNSLEN(cp) = sense_len;
+	sp->request_sense_length = sense_len;
+	sp->request_sense_ptr = cp->sense_buffer;
+	if (sp->request_sense_length > 32)
+		sense_len = 32;
+
+	memcpy(cp->sense_buffer, sense_data, sense_len);
+
+	sp->request_sense_ptr += sense_len;
+	sp->request_sense_length -= sense_len;
+	if (sp->request_sense_length != 0)
+		sp->ha->status_srb = sp;
+
+	DEBUG5(printk("%s(): Check condition Sense data, scsi(%ld:%d:%d:%d) "
+	    "cmd=%p pid=%ld\n", __func__, sp->ha->host_no, cp->device->channel,
+	    cp->device->id, cp->device->lun, cp, cp->serial_number));
+	if (sense_len)
+		DEBUG5(qla2x00_dump_buffer(cp->sense_buffer,
+		    CMD_ACTUAL_SNSLEN(cp)));
+}
+
 /**
  * qla2x00_status_entry() - Process a Status IOCB entry.
  * @ha: SCSI driver HA context
@@ -934,19 +1025,19 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 		}
 		if (scsi_status & (SS_RESIDUAL_UNDER | SS_RESIDUAL_OVER)) {
 			resid = resid_len;
-			cp->resid = resid;
+			scsi_set_resid(cp, resid);
 			CMD_RESID_LEN(cp) = resid;
 
 			if (!lscsi_status &&
-			    ((unsigned)(cp->request_bufflen - resid) <
+			    ((unsigned)(scsi_bufflen(cp) - resid) <
 			     cp->underflow)) {
 				qla_printk(KERN_INFO, ha,
-				    "scsi(%ld:%d:%d:%d): Mid-layer underflow "
-				    "detected (%x of %x bytes)...returning "
-				    "error status.\n", ha->host_no,
-				    cp->device->channel, cp->device->id,
-				    cp->device->lun, resid,
-				    cp->request_bufflen);
+					   "scsi(%ld:%d:%d:%d): Mid-layer underflow "
+					   "detected (%x of %x bytes)...returning "
+					   "error status.\n", ha->host_no,
+					   cp->device->channel, cp->device->id,
+					   cp->device->lun, resid,
+					   scsi_bufflen(cp));
 
 				cp->result = DID_ERROR << 16;
 				break;
@@ -969,36 +1060,11 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 		if (lscsi_status != SS_CHECK_CONDITION)
 			break;
 
-		/* Copy Sense Data into sense buffer. */
 		memset(cp->sense_buffer, 0, sizeof(cp->sense_buffer));
-
 		if (!(scsi_status & SS_SENSE_LEN_VALID))
 			break;
 
-		if (sense_len >= sizeof(cp->sense_buffer))
-			sense_len = sizeof(cp->sense_buffer);
-
-		CMD_ACTUAL_SNSLEN(cp) = sense_len;
-		sp->request_sense_length = sense_len;
-		sp->request_sense_ptr = cp->sense_buffer;
-
-		if (sp->request_sense_length > 32)
-			sense_len = 32;
-
-		memcpy(cp->sense_buffer, sense_data, sense_len);
-
-		sp->request_sense_ptr += sense_len;
-		sp->request_sense_length -= sense_len;
-		if (sp->request_sense_length != 0)
-			ha->status_srb = sp;
-
-		DEBUG5(printk("%s(): Check condition Sense data, "
-		    "scsi(%ld:%d:%d:%d) cmd=%p pid=%ld\n", __func__,
-		    ha->host_no, cp->device->channel, cp->device->id,
-		    cp->device->lun, cp, cp->serial_number));
-		if (sense_len)
-			DEBUG5(qla2x00_dump_buffer(cp->sense_buffer,
-			    CMD_ACTUAL_SNSLEN(cp)));
+		qla2x00_handle_sense(sp, sense_data, sense_len);
 		break;
 
 	case CS_DATA_UNDERRUN:
@@ -1015,7 +1081,7 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 		}
 
 		if (scsi_status & SS_RESIDUAL_UNDER) {
-			cp->resid = resid;
+			scsi_set_resid(cp, resid);
 			CMD_RESID_LEN(cp) = resid;
 		} else {
 			DEBUG2(printk(KERN_INFO
@@ -1054,34 +1120,11 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 			if (lscsi_status != SS_CHECK_CONDITION)
 				break;
 
-			/* Copy Sense Data into sense buffer */
 			memset(cp->sense_buffer, 0, sizeof(cp->sense_buffer));
-
 			if (!(scsi_status & SS_SENSE_LEN_VALID))
 				break;
 
-			if (sense_len >= sizeof(cp->sense_buffer))
-				sense_len = sizeof(cp->sense_buffer);
-
-			CMD_ACTUAL_SNSLEN(cp) = sense_len;
-			sp->request_sense_length = sense_len;
-			sp->request_sense_ptr = cp->sense_buffer;
-
-			if (sp->request_sense_length > 32)
-				sense_len = 32;
-
-			memcpy(cp->sense_buffer, sense_data, sense_len);
-
-			sp->request_sense_ptr += sense_len;
-			sp->request_sense_length -= sense_len;
-			if (sp->request_sense_length != 0)
-				ha->status_srb = sp;
-
-			DEBUG5(printk("%s(): Check condition Sense data, "
-			    "scsi(%ld:%d:%d:%d) cmd=%p pid=%ld\n",
-			    __func__, ha->host_no, cp->device->channel,
-			    cp->device->id, cp->device->lun, cp,
-			    cp->serial_number));
+			qla2x00_handle_sense(sp, sense_data, sense_len);
 
 			/*
 			 * In case of a Underrun condition, set both the lscsi
@@ -1089,7 +1132,7 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 			 * values.
 			 */
 			if (resid &&
-			    ((unsigned)(cp->request_bufflen - resid) <
+			    ((unsigned)(scsi_bufflen(cp) - resid) <
 			     cp->underflow)) {
 				DEBUG2(qla_printk(KERN_INFO, ha,
 				    "scsi(%ld:%d:%d:%d): Mid-layer underflow "
@@ -1097,14 +1140,10 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 				    "error status.\n", ha->host_no,
 				    cp->device->channel, cp->device->id,
 				    cp->device->lun, resid,
-				    cp->request_bufflen));
+				    scsi_bufflen(cp)));
 
 				cp->result = DID_ERROR << 16 | lscsi_status;
 			}
-
-			if (sense_len)
-				DEBUG5(qla2x00_dump_buffer(cp->sense_buffer,
-				    CMD_ACTUAL_SNSLEN(cp)));
 		} else {
 			/*
 			 * If RISC reports underrun and target does not report
@@ -1113,26 +1152,26 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 			 */
 			if (!(scsi_status & SS_RESIDUAL_UNDER)) {
 				DEBUG2(printk("scsi(%ld:%d:%d:%d) Dropped "
-				    "frame(s) detected (%x of %x bytes)..."
-				    "retrying command.\n", ha->host_no,
-				    cp->device->channel, cp->device->id,
-				    cp->device->lun, resid,
-				    cp->request_bufflen));
+					      "frame(s) detected (%x of %x bytes)..."
+					      "retrying command.\n", ha->host_no,
+					      cp->device->channel, cp->device->id,
+					      cp->device->lun, resid,
+					      scsi_bufflen(cp)));
 
 				cp->result = DID_BUS_BUSY << 16;
 				break;
 			}
 
 			/* Handle mid-layer underflow */
-			if ((unsigned)(cp->request_bufflen - resid) <
+			if ((unsigned)(scsi_bufflen(cp) - resid) <
 			    cp->underflow) {
 				qla_printk(KERN_INFO, ha,
-				    "scsi(%ld:%d:%d:%d): Mid-layer underflow "
-				    "detected (%x of %x bytes)...returning "
-				    "error status.\n", ha->host_no,
-				    cp->device->channel, cp->device->id,
-				    cp->device->lun, resid,
-				    cp->request_bufflen);
+					   "scsi(%ld:%d:%d:%d): Mid-layer underflow "
+					   "detected (%x of %x bytes)...returning "
+					   "error status.\n", ha->host_no,
+					   cp->device->channel, cp->device->id,
+					   cp->device->lun, resid,
+					   scsi_bufflen(cp));
 
 				cp->result = DID_ERROR << 16;
 				break;
@@ -1155,7 +1194,7 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 		DEBUG2(printk(KERN_INFO
 		    "PID=0x%lx req=0x%x xtra=0x%x -- returning DID_ERROR "
 		    "status!\n",
-		    cp->serial_number, cp->request_bufflen, resid_len));
+		    cp->serial_number, scsi_bufflen(cp), resid_len));
 
 		cp->result = DID_ERROR << 16;
 		break;
@@ -1462,7 +1501,30 @@ qla24xx_process_response_queue(struct scsi_qla_host *ha)
 			qla2x00_status_cont_entry(ha, (sts_cont_entry_t *)pkt);
 			break;
 		case MS_IOCB_TYPE:
-			qla24xx_ms_entry(ha, (struct ct_entry_24xx *)pkt);
+			if (ha->outstanding_cmds[pkt->handle])
+				qla24xx_ms_entry(ha, (void *)pkt);
+			else {
+				if (ha->pass_thru_cmd_result)
+					qla_printk(KERN_INFO, ha,
+					    "Passthru cmd result on.\n");
+				if (!ha->pass_thru_cmd_in_process)
+					qla_printk(KERN_INFO, ha,
+					    "Passthru in process off.\n");
+
+				ha->pass_thru_cmd_result = 1;
+				complete(&ha->pass_thru_intr_comp);
+			}
+			break;
+		case ELS_IOCB_TYPE:
+			if (ha->pass_thru_cmd_result)
+				qla_printk(KERN_INFO, ha,
+				    "Passthru cmd result on.\n");
+			if (!ha->pass_thru_cmd_in_process)
+				qla_printk(KERN_INFO, ha,
+				    "Passthru in process off.\n");
+
+			ha->pass_thru_cmd_result = 1;
+			complete(&ha->pass_thru_intr_comp);
 			break;
 		case VP_RPT_ID_IOCB_TYPE:
 			qla24xx_report_id_acquisition(ha,
@@ -1566,6 +1628,9 @@ qla24xx_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 	for (iter = 50; iter--; ) {
 		stat = RD_REG_DWORD(&reg->host_status);
 		if (stat & HSRX_RISC_PAUSED) {
+			if (pci_channel_offline(ha->pdev))
+				break;
+
 			hccr = RD_REG_DWORD(&reg->hccr);
 
 			qla_printk(KERN_INFO, ha, "RISC paused -- HCCR=%x, "
@@ -1612,7 +1677,7 @@ qla24xx_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 	if (test_bit(MBX_INTR_WAIT, &ha->mbx_cmd_flags) &&
 	    (status & MBX_INTERRUPT) && ha->flags.mbox_int) {
 		set_bit(MBX_INTERRUPT, &ha->mbx_cmd_flags);
-		up(&ha->mbx_intr_sem);
+		complete(&ha->mbx_intr_comp);
 	}
 
 	return IRQ_HANDLED;
@@ -1701,6 +1766,9 @@ qla24xx_msix_default(int irq, void *dev_id, struct pt_regs *regs)
 	do {
 		stat = RD_REG_DWORD(&reg->host_status);
 		if (stat & HSRX_RISC_PAUSED) {
+			if (pci_channel_offline(ha->pdev))
+				break;
+
 			hccr = RD_REG_DWORD(&reg->hccr);
 
 			qla_printk(KERN_INFO, ha, "RISC paused -- HCCR=%x, "
@@ -1746,7 +1814,7 @@ qla24xx_msix_default(int irq, void *dev_id, struct pt_regs *regs)
 	if (test_bit(MBX_INTR_WAIT, &ha->mbx_cmd_flags) &&
 	    (status & MBX_INTERRUPT) && ha->flags.mbox_int) {
 		set_bit(MBX_INTERRUPT, &ha->mbx_cmd_flags);
-		up(&ha->mbx_intr_sem);
+		complete(&ha->mbx_intr_comp);
 	}
 
 	return IRQ_HANDLED;
@@ -1758,7 +1826,7 @@ struct qla_init_msix_entry {
 	uint16_t entry;
 	uint16_t index;
 	const char *name;
-	irqreturn_t (*handler)(int, void *, struct pt_regs *);
+	irq_handler_t handler;
 };
 
 static struct qla_init_msix_entry imsix_entries[QLA_MSIX_ENTRIES] = {
@@ -1829,8 +1897,9 @@ qla2x00_request_irqs(scsi_qla_host_t *ha)
 	int ret;
 
 	/* If possible, enable MSI-X. */
-	if ((!IS_QLA2432(ha) && !IS_QLA2532(ha)) || !ql2xenablemsix)
-		goto skip_msix;
+	if ((!IS_QLA2432(ha) && !IS_QLA2532(ha) && !IS_QLA8432(ha))
+	    || !ql2xenablemsix)
+		goto skip_msi;
 
 	if (IS_QLA2432(ha) && (ha->chip_revision < QLA_MSIX_CHIP_REV_24XX ||
 	    !QLA_MSIX_FW_MODE_1(ha->fw_attributes))) {
@@ -1861,17 +1930,15 @@ qla2x00_request_irqs(scsi_qla_host_t *ha)
 	}
 	qla_printk(KERN_WARNING, ha,
 	    "MSI-X: Falling back-to INTa mode -- %d.\n", ret);
-skip_msix:
-	if (!IS_QLA24XX(ha) && !IS_QLA2532(ha))
-		goto skip_msi;
 
+skip_msix:
 	ret = pci_enable_msi(ha->pdev);
 	if (!ret) {
 		DEBUG2(qla_printk(KERN_INFO, ha, "MSI: Enabled.\n"));
 		ha->flags.msi_enabled = 1;
 	}
-skip_msi:
 
+skip_msi:
 	ret = request_irq(ha->pdev->irq, ha->isp_ops->intr_handler,
 	    IRQF_DISABLED|IRQF_SHARED, QLA2XXX_DRIVER_NAME, ha);
 	if (!ret) {
@@ -1892,6 +1959,8 @@ qla2x00_free_irqs(scsi_qla_host_t *ha)
 
 	if (ha->flags.msix_enabled)
 		qla24xx_disable_msix(ha);
-	else if (ha->flags.inta_enabled)
+	else if (ha->flags.inta_enabled) {
 		free_irq(ha->host->irq, ha);
+		pci_disable_msi(ha->pdev);
+	}
 }

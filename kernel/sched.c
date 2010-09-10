@@ -52,7 +52,9 @@
 #include <linux/acct.h>
 #include <linux/kprobes.h>
 #include <linux/delayacct.h>
+#include <linux/hash.h>
 #include <asm/tlb.h>
+#include <trace/sched.h>
 
 #include <asm/unistd.h>
 
@@ -843,6 +845,7 @@ static void __activate_task(struct task_struct *p, struct rq *rq)
 {
 	struct prio_array *target = rq->active;
 
+	trace_activate_task(p, rq);
 	if (batch_task(p))
 		target = rq->expired;
 	enqueue_task(p, target);
@@ -985,6 +988,7 @@ static void deactivate_task(struct task_struct *p, struct rq *rq)
 {
 	dec_nr_running(p, rq);
 	dequeue_task(p, p->array);
+	trace_deactivate_task(p, rq);
 	p->array = NULL;
 }
 
@@ -1315,6 +1319,9 @@ nextlevel:
 	return cpu;
 }
 
+static inline int task_hot(struct task_struct *p, unsigned long long now,
+			   struct sched_domain *sd);
+
 #endif /* CONFIG_SMP */
 
 /*
@@ -1331,12 +1338,25 @@ static int wake_idle(int cpu, struct task_struct *p)
 	cpumask_t tmp;
 	struct sched_domain *sd;
 	int i;
+	unsigned long long now;
 
-	if (idle_cpu(cpu))
+	/*
+	 * If it is idle, then it is the best cpu to run this task.
+	 *
+	 * This cpu is also the best, if it has more than one task already.
+	 * Siblings must be also busy(in most cases) as they didn't already
+	 * pickup the extra load from this cpu and hence we need not check
+	 * sibling runqueue info. This will avoid the checks and cache miss
+	 * penalities associated with that.
+	 */
+	if (idle_cpu(cpu) || cpu_rq(cpu)->nr_running > 1)
 		return cpu;
 
+	now = sched_clock();
 	for_each_domain(cpu, sd) {
-		if (sd->flags & SD_WAKE_IDLE) {
+		if ((sd->flags & SD_WAKE_IDLE)
+		    || ((sd->flags & SD_WAKE_IDLE_FAR)
+			&& !task_hot(p, now, sd))) {
 			cpus_and(tmp, sd->span, p->cpus_allowed);
 			for_each_cpu_mask(i, tmp) {
 				if (idle_cpu(i))
@@ -1354,6 +1374,48 @@ static inline int wake_idle(int cpu, struct task_struct *p)
 	return cpu;
 }
 #endif
+
+/*
+ * Change a given task's CPU affinity. Migrate the thread to a
+ * proper CPU and schedule it away if the CPU it's executing on
+ * is removed from the allowed bitmask.
+ *
+ * NOTE: the caller must have a valid reference to the task, the
+ * task must not exit() & deallocate itself prematurely. The
+ * call is not atomic; no spinlocks may be held.
+ */
+int set_cpus_allowed_ptr(struct task_struct *p, const cpumask_t *new_mask)
+{
+	struct migration_req req;
+	unsigned long flags;
+	struct rq *rq;
+	int ret = 0;
+
+	rq = task_rq_lock(p, &flags);
+	if (!cpus_intersects(*new_mask, cpu_online_map)) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	p->cpus_allowed = *new_mask;
+
+	/* Can the task run on the task's current CPU? If so, we're done */
+	if (cpu_isset(task_cpu(p), *new_mask))
+		goto out;
+
+	if (migrate_task(p, any_online_cpu(*new_mask), &req)) {
+		/* Need help from migration thread: drop lock and wait. */
+		task_rq_unlock(rq, &flags);
+		wake_up_process(rq->migration_thread);
+		wait_for_completion(&req.done);
+		tlb_migrate_finish(p->mm);
+		return 0;
+	}
+out:
+	task_rq_unlock(rq, &flags);
+
+	return ret;
+}
 
 /***
  * try_to_wake_up - wake up a thread
@@ -1520,6 +1582,7 @@ out_activate:
 	success = 1;
 
 out_running:
+	trace_sched_wakeup(rq, p);
 	p->state = TASK_RUNNING;
 out:
 	task_rq_unlock(rq, &flags);
@@ -1644,6 +1707,7 @@ void fastcall wake_up_new_task(struct task_struct *p, unsigned long clone_flags)
 			if (unlikely(!current->array))
 				__activate_task(p, rq);
 			else {
+				trace_activate_task(p, rq);
 				p->prio = current->prio;
 				p->normal_prio = current->normal_prio;
 				list_add_tail(&p->run_list, &current->run_list);
@@ -1684,6 +1748,7 @@ void fastcall wake_up_new_task(struct task_struct *p, unsigned long clone_flags)
 	}
 	current->sleep_avg = JIFFIES_TO_NS(CURRENT_BONUS(current) *
 		PARENT_PENALTY / 100 * MAX_SLEEP_AVG / MAX_BONUS);
+	trace_sched_wakeup_new(this_rq, p);
 	task_rq_unlock(this_rq, &flags);
 }
 
@@ -1723,6 +1788,146 @@ void fastcall sched_exit(struct task_struct *p)
         }
 }
 
+#ifdef CONFIG_PREEMPT_NOTIFIERS
+
+#define NOTIFIER_HASH_BITS	5
+#define NOTIFIER_HASH_SIZE	(1<<NOTIFIER_HASH_BITS)
+
+struct notifier_hbucket
+{
+	spinlock_t lock;
+	struct hlist_head notifiers;
+};
+
+static struct notifier_hbucket notifier_hash[NOTIFIER_HASH_SIZE];
+
+
+static inline
+struct notifier_hbucket *task_hbucket(struct task_struct *task)
+{
+	unsigned long h = hash_ptr(task, NOTIFIER_HASH_BITS);
+	return &notifier_hash[h];
+}
+
+/**
+ * preempt_notifier_register - tell me when current is being being preempted
+ *                         and rescheduled
+ */
+void preempt_notifier_register(struct preempt_notifier *notifier)
+{
+	struct task_struct *task = current;
+	struct notifier_hbucket *b;
+	unsigned long flags;
+
+	BUG_ON(task->flags & PF_PREEMPT_NOTIFIER);
+	task->flags |= PF_PREEMPT_NOTIFIER;
+	notifier->task = task;
+
+	b = task_hbucket(task);
+	spin_lock_irqsave(&b->lock, flags);
+	hlist_add_head(&notifier->link, &b->notifiers);
+	spin_unlock_irqrestore(&b->lock, flags);
+}
+EXPORT_SYMBOL_GPL(preempt_notifier_register);
+
+/**
+ * preempt_notifier_unregister - no longer interested in preemption notifications
+ *
+ * This is safe to call from within a preemption notifier.
+ */
+void preempt_notifier_unregister(struct preempt_notifier *notifier)
+{
+	struct task_struct *task = notifier->task;
+	struct notifier_hbucket *b = task_hbucket(task);
+	unsigned long flags;
+
+	spin_lock_irqsave(&b->lock, flags);
+	hlist_del(&notifier->link);
+	spin_unlock_irqrestore(&b->lock, flags);
+
+	notifier->task = NULL;
+	task->flags &= ~PF_PREEMPT_NOTIFIER;
+}
+EXPORT_SYMBOL_GPL(preempt_notifier_unregister);
+
+static void
+fire_sched_in_preempt_notifiers(struct task_struct *curr)
+{
+	struct preempt_notifier *notifier = NULL;
+	int found = 0;
+	struct hlist_node *node;
+	struct notifier_hbucket *b;
+	unsigned long flags;
+
+	if (!(curr->flags & PF_PREEMPT_NOTIFIER))
+		return;
+
+	b = task_hbucket(curr);
+	spin_lock_irqsave(&b->lock, flags);
+	hlist_for_each_entry(notifier, node, &b->notifiers, link)
+		if (notifier->task == curr) {
+			found = 1;
+			break;
+		}
+	spin_unlock_irqrestore(&b->lock, flags);
+
+	if (found)
+		notifier->ops->sched_in(notifier, raw_smp_processor_id());
+}
+
+static void
+fire_sched_out_preempt_notifiers(struct task_struct *curr,
+				 struct task_struct *next)
+{
+	struct preempt_notifier *notifier = NULL;
+	int found = 0;
+	struct hlist_node *node;
+	struct notifier_hbucket *b;
+	unsigned long flags;
+
+	if (!(curr->flags & PF_PREEMPT_NOTIFIER))
+		return;
+
+	b = task_hbucket(curr);
+	spin_lock_irqsave(&b->lock, flags);
+	hlist_for_each_entry(notifier, node, &b->notifiers, link)
+		if (notifier->task == curr) {
+			found = 1;
+			break;
+		}
+	spin_unlock_irqrestore(&b->lock, flags);
+
+	if (found)
+		notifier->ops->sched_out(notifier, next);
+}
+
+void init_preempt_notifiers(void)
+{
+	int i;
+	struct notifier_hbucket *b = notifier_hash;
+
+	for (i = 0; i < NOTIFIER_HASH_SIZE; i++,b++) {
+		spin_lock_init(&b->lock);
+		INIT_HLIST_HEAD(&b->notifiers);
+	}
+}
+
+#else /* CONFIG_PREEMPT_NOTIFIERS */
+
+static inline void
+fire_sched_in_preempt_notifiers(struct task_struct *curr) { }
+
+
+static inline void
+fire_sched_out_preempt_notifiers(struct task_struct *curr,
+				 struct task_struct *next) { }
+
+static void inline
+init_preempt_notifiers(void) { }
+
+#endif /* !CONFIG_PREEMPT_NOTIFIERS */
+
+
 /**
  * prepare_task_switch - prepare to switch tasks
  * @rq: the runqueue preparing to switch
@@ -1735,8 +1940,11 @@ void fastcall sched_exit(struct task_struct *p)
  * prepare_task_switch sets up locking and calls architecture specific
  * hooks.
  */
-static inline void prepare_task_switch(struct rq *rq, struct task_struct *next)
+static inline void
+prepare_task_switch(struct rq *rq, struct task_struct *prev,
+		    struct task_struct *next)
 {
+	fire_sched_out_preempt_notifiers(prev, next);
 	prepare_lock_switch(rq, next);
 	prepare_arch_switch(next);
 }
@@ -1778,6 +1986,7 @@ static inline void finish_task_switch(struct rq *rq, struct task_struct *prev)
 	prev_task_flags = prev->flags;
 	finish_arch_switch(prev);
 	finish_lock_switch(rq, prev);
+	fire_sched_in_preempt_notifiers(current);
 	if (mm)
 		mmdrop(mm);
 	if (unlikely(prev_task_flags & PF_DEAD)) {
@@ -1818,6 +2027,8 @@ context_switch(struct rq *rq, struct task_struct *prev,
 {
 	struct mm_struct *mm = next->mm;
 	struct mm_struct *oldmm = prev->active_mm;
+
+	trace_sched_switch(rq, prev, next);
 
 	if (unlikely(!mm)) {
 		next->active_mm = oldmm;
@@ -3441,7 +3652,7 @@ switch_tasks:
 		rq->curr = next;
 		++*switch_count;
 
-		prepare_task_switch(rq, next);
+		prepare_task_switch(rq, prev, next);
 		prev = context_switch(rq, prev, next);
 		barrier();
 		/*
@@ -6245,11 +6456,45 @@ next_sg:
 	}
 }
 
+static int default_relax_domain_level = -1;
+
+static int __init setup_relax_domain_level(char *str)
+{
+	unsigned long val;
+
+	val = simple_strtoul(str, NULL, 0);
+	if (val < SD_LV_MAX)
+		default_relax_domain_level = val;
+
+	return 1;
+}
+__setup("relax_domain_level=", setup_relax_domain_level);
+
+static void set_domain_attribute(struct sched_domain *sd, int level, int *attr)
+{
+	int request;
+
+	if (!attr || *attr < 0) {
+		if (default_relax_domain_level < 0)
+			return;
+		else
+			request = default_relax_domain_level;
+	} else
+		request = *attr;
+	if (request < level) {
+		/* turn off idle balance on this domain */
+		sd->flags &= ~(SD_WAKE_IDLE|SD_BALANCE_NEWIDLE);
+	} else {
+		/* turn on idle balance on this domain */
+		sd->flags |= (SD_WAKE_IDLE_FAR|SD_BALANCE_NEWIDLE);
+	}
+}
+
 /*
  * Build sched domains for a given set of cpus and attach the sched domains
  * to the individual cpus
  */
-static int build_sched_domains(const cpumask_t *cpu_map)
+static int __build_sched_domains(const cpumask_t *cpu_map, int *attr)
 {
 	int i;
 	struct sched_group *sched_group_phys = NULL;
@@ -6300,6 +6545,7 @@ static int build_sched_domains(const cpumask_t *cpu_map)
 			}
 			sd = &per_cpu(allnodes_domains, i);
 			*sd = SD_ALLNODES_INIT;
+			set_domain_attribute(sd, SD_LV_ALLNODES, attr);
 			sd->span = *cpu_map;
 			group = cpu_to_allnodes_group(i);
 			sd->groups = &sched_group_allnodes[group];
@@ -6309,6 +6555,7 @@ static int build_sched_domains(const cpumask_t *cpu_map)
 
 		sd = &per_cpu(node_domains, i);
 		*sd = SD_NODE_INIT;
+		set_domain_attribute(sd, SD_LV_NODE, attr);
 		sd->span = sched_domain_node_span(cpu_to_node(i));
 		sd->parent = p;
 		cpus_and(sd->span, sd->span, *cpu_map);
@@ -6330,6 +6577,7 @@ static int build_sched_domains(const cpumask_t *cpu_map)
 		sd = &per_cpu(phys_domains, i);
 		group = cpu_to_phys_group(i);
 		*sd = SD_CPU_INIT;
+		set_domain_attribute(sd, SD_LV_CPU, attr);
 		sd->span = nodemask;
 		sd->parent = p;
 		sd->groups = &sched_group_phys[group];
@@ -6351,6 +6599,7 @@ static int build_sched_domains(const cpumask_t *cpu_map)
 		sd = &per_cpu(core_domains, i);
 		group = cpu_to_core_group(i);
 		*sd = SD_MC_INIT;
+		set_domain_attribute(sd, SD_LV_MC, attr);
 		sd->span = cpu_coregroup_map(i);
 		cpus_and(sd->span, sd->span, *cpu_map);
 		sd->parent = p;
@@ -6362,6 +6611,7 @@ static int build_sched_domains(const cpumask_t *cpu_map)
 		sd = &per_cpu(cpu_domains, i);
 		group = cpu_to_cpu_group(i);
 		*sd = SD_SIBLING_INIT;
+		set_domain_attribute(sd, SD_LV_SIBLING, attr);
 		sd->span = cpu_sibling_map[i];
 		cpus_and(sd->span, sd->span, *cpu_map);
 		sd->parent = p;
@@ -6586,6 +6836,12 @@ error:
 	free_sched_groups(cpu_map);
 	return -ENOMEM;
 }
+
+static int build_sched_domains(const cpumask_t *cpu_map)
+{
+	return __build_sched_domains(cpu_map, NULL);
+}
+
 /*
  * Set up scheduler domains and groups.  Callers must hold the hotplug lock.
  */
@@ -6625,6 +6881,10 @@ static void detach_destroy_domains(const cpumask_t *cpu_map)
 	arch_destroy_sched_domains(cpu_map);
 }
 
+void __attribute__((weak)) arch_update_cpu_topology(void)
+{
+}
+
 /*
  * Partition sched domains as specified by the cpumasks below.
  * This attaches all cpus from the cpumasks to the NULL domain,
@@ -6633,7 +6893,8 @@ static void detach_destroy_domains(const cpumask_t *cpu_map)
  * correct sched domains
  * Call with hotplug lock held
  */
-int partition_sched_domains(cpumask_t *partition1, cpumask_t *partition2)
+int __partition_sched_domains(cpumask_t *partition1, cpumask_t *partition2,
+				int *attr1, int *attr2)
 {
 	cpumask_t change_map;
 	int err = 0;
@@ -6645,11 +6906,16 @@ int partition_sched_domains(cpumask_t *partition1, cpumask_t *partition2)
 	/* Detach sched domains from all of the affected cpus */
 	detach_destroy_domains(&change_map);
 	if (!cpus_empty(*partition1))
-		err = build_sched_domains(partition1);
+		err = __build_sched_domains(partition1, attr1);
 	if (!err && !cpus_empty(*partition2))
-		err = build_sched_domains(partition2);
+		err = __build_sched_domains(partition2, attr2);
 
 	return err;
+}
+
+int partition_sched_domains(cpumask_t *partition1, cpumask_t *partition2)
+{
+	return __partition_sched_domains(partition1, partition2, NULL, NULL);
 }
 
 #if defined(CONFIG_SCHED_MC) || defined(CONFIG_SCHED_SMT)
@@ -6842,6 +7108,9 @@ void __init sched_init(void)
 	plist_head_init(&init_task.pi_waiters, &init_task.pi_lock);
 #endif
 
+	init_preempt_notifiers();
+
+	arch_update_cpu_topology();
 	/*
 	 * The boot idle thread does lazy MMU switching as well:
 	 */

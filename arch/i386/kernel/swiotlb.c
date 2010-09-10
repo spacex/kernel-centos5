@@ -225,8 +225,11 @@ __sync_single(struct phys_addr buffer, char *dma_addr, size_t size, int dir)
 		char *dev, *host, *kmp;
 		len = size;
 		while (len != 0) {
+			unsigned long flags;
+
 			if (((bytes = len) + buffer.offset) > PAGE_SIZE)
 				bytes = PAGE_SIZE - buffer.offset;
+			local_irq_save(flags); /* protects KM_SWIOTLB */
 			kmp  = kmap_atomic(buffer.page, KM_SWIOTLB);
 			dev  = dma_addr + size - len;
 			host = kmp + buffer.offset;
@@ -236,6 +239,7 @@ __sync_single(struct phys_addr buffer, char *dma_addr, size_t size, int dir)
 			} else
 				memcpy(dev, host, bytes);
 			kunmap_atomic(kmp, KM_SWIOTLB);
+			local_irq_restore(flags);
 			len -= bytes;
 			buffer.page++;
 			buffer.offset = 0;

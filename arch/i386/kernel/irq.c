@@ -46,6 +46,26 @@ static union irq_ctx *hardirq_ctx[NR_CPUS] __read_mostly;
 static union irq_ctx *softirq_ctx[NR_CPUS] __read_mostly;
 #endif
 
+static void stack_overflow(void)
+{
+	printk(KERN_WARNING "low stack detected by irq handler\n");
+	dump_stack();
+}
+
+static inline void call_on_stack2(void *func, void *stack,
+			   unsigned long arg1, unsigned long arg2)
+{
+	unsigned long bx;
+	asm volatile(
+			"	xchgl  %%ebx,%%esp    \n"
+			"	call   *%%edi	      \n"
+			"	movl   %%ebx,%%esp    \n"
+			: "=a" (arg1), "=d" (arg2), "=b" (bx)
+			:  "0" (arg1),	 "1" (arg2),  "2" (stack),
+			   "D" (func)
+			: "memory", "cc", "ecx");
+}
+
 /*
  * do_IRQ handles all normal device IRQ's (the special
  * SMP cross-CPU interrupts have their own specific
@@ -59,6 +79,7 @@ fastcall unsigned int do_IRQ(struct pt_regs *regs)
 	union irq_ctx *curctx, *irqctx;
 	u32 *isp;
 #endif
+	int overflow = 0;
 
 	if (unlikely((unsigned)irq >= NR_IRQS)) {
 		printk(KERN_EMERG "%s: cannot handle IRQ %d\n",
@@ -74,11 +95,8 @@ fastcall unsigned int do_IRQ(struct pt_regs *regs)
 
 		__asm__ __volatile__("andl %%esp,%0" :
 					"=r" (esp) : "0" (THREAD_SIZE - 1));
-		if (unlikely(esp < (sizeof(struct thread_info) + STACK_WARN))) {
-			printk("do_IRQ: stack overflow: %ld\n",
-				esp - sizeof(struct thread_info));
-			dump_stack();
-		}
+		if (unlikely(esp < (sizeof(struct thread_info) + STACK_WARN)))
+			overflow = 1;
 	}
 #endif
 
@@ -94,8 +112,6 @@ fastcall unsigned int do_IRQ(struct pt_regs *regs)
 	 * current stack (which is the irq stack already after all)
 	 */
 	if (curctx != irqctx) {
-		int arg1, arg2, ebx;
-
 		/* build the stack frame on the IRQ stack */
 		isp = (u32*) ((char*)irqctx + sizeof(*irqctx));
 		irqctx->tinfo.task = curctx->tinfo.task;
@@ -109,17 +125,19 @@ fastcall unsigned int do_IRQ(struct pt_regs *regs)
 			(irqctx->tinfo.preempt_count & ~SOFTIRQ_MASK) |
 			(curctx->tinfo.preempt_count & SOFTIRQ_MASK);
 
-		asm volatile(
-			"       xchgl   %%ebx,%%esp      \n"
-			"       call    __do_IRQ         \n"
-			"       movl   %%ebx,%%esp      \n"
-			: "=a" (arg1), "=d" (arg2), "=b" (ebx)
-			:  "0" (irq),   "1" (regs),  "2" (isp)
-			: "memory", "cc", "ecx"
-		);
+		/* Execute warning on interrupt stack */
+		if (unlikely(overflow))
+			call_on_stack2(stack_overflow, isp, 0, 0);
+
+		call_on_stack2(__do_IRQ, isp, irq, (unsigned long)regs);
 	} else
 #endif
+	{
+		/* AK: Slightly bogus here */
+		if (overflow)
+			stack_overflow();
 		__do_IRQ(irq, regs);
+	}
 
 	irq_exit();
 

@@ -30,12 +30,12 @@ static void ieee80211softmac_auth_queue(void *data);
 
 /* Queues an auth request to the desired AP */
 int
-ieee80211softmac_auth_req(struct ieee80211softmac_device *mac, 
+ieee80211softmac_auth_req(struct ieee80211softmac_device *mac,
 	struct ieee80211softmac_network *net)
 {
 	struct ieee80211softmac_auth_queue_item *auth;
 	unsigned long flags;
-	
+
 	if (net->authenticating || net->authenticated)
 		return 0;
 	net->authenticating = 1;
@@ -43,7 +43,8 @@ ieee80211softmac_auth_req(struct ieee80211softmac_device *mac,
 	/* Add the network if it's not already added */
 	ieee80211softmac_add_network(mac, net);
 
-	dprintk(KERN_NOTICE PFX "Queueing Authentication Request to "MAC_FMT"\n", MAC_ARG(net->bssid));
+	dprintk(KERN_NOTICE PFX "Queueing Authentication Request to "
+		MAC_FMT "\n", MAC_ARG(net->bssid));
 	/* Queue the auth request */
 	auth = (struct ieee80211softmac_auth_queue_item *)
 		kmalloc(sizeof(struct ieee80211softmac_auth_queue_item), GFP_KERNEL);
@@ -55,15 +56,15 @@ ieee80211softmac_auth_req(struct ieee80211softmac_device *mac,
 	auth->retry = IEEE80211SOFTMAC_AUTH_RETRY_LIMIT;
 	auth->state = IEEE80211SOFTMAC_AUTH_OPEN_REQUEST;
 	INIT_WORK(&auth->work, &ieee80211softmac_auth_queue, (void *)auth);
-	
+
 	/* Lock (for list) */
 	spin_lock_irqsave(&mac->lock, flags);
 
 	/* add to list */
 	list_add_tail(&auth->list, &mac->auth_queue);
-	schedule_work(&auth->work);
+	schedule_delayed_work(&auth->work, 0);
 	spin_unlock_irqrestore(&mac->lock, flags);
-	
+
 	return 0;
 }
 
@@ -84,7 +85,7 @@ ieee80211softmac_auth_queue(void *data)
 	if(auth->retry > 0) {
 		/* Switch to correct channel for this network */
 		mac->set_channel(mac->dev, net->channel);
-		
+
 		/* Lock and set flags */
 		spin_lock_irqsave(&mac->lock, flags);
 		if (unlikely(!mac->running)) {
@@ -98,13 +99,14 @@ ieee80211softmac_auth_queue(void *data)
 		auth->retry--;
 		spin_unlock_irqrestore(&mac->lock, flags);
 		if (ieee80211softmac_send_mgt_frame(mac, auth->net, IEEE80211_STYPE_AUTH, auth->state))
-			dprintk(KERN_NOTICE PFX "Sending Authentication Request to "MAC_FMT" failed (this shouldn't happen, wait for the timeout).\n", MAC_ARG(net->bssid));
+			dprintk(KERN_NOTICE PFX "Sending Authentication Request to " MAC_FMT " failed (this shouldn't happen, wait for the timeout).\n",
+				MAC_ARG(net->bssid));
 		else
-			dprintk(KERN_NOTICE PFX "Sent Authentication Request to "MAC_FMT".\n", MAC_ARG(net->bssid));
+			dprintk(KERN_NOTICE PFX "Sent Authentication Request to " MAC_FMT ".\n", MAC_ARG(net->bssid));
 		return;
 	}
 
-	printkl(KERN_WARNING PFX "Authentication timed out with "MAC_FMT"\n", MAC_ARG(net->bssid));
+	printkl(KERN_WARNING PFX "Authentication timed out with " MAC_FMT "\n", MAC_ARG(net->bssid));
 	/* Remove this item from the queue */
 	spin_lock_irqsave(&mac->lock, flags);
 	net->authenticating = 0;
@@ -127,11 +129,11 @@ ieee80211softmac_auth_challenge_response(void *_aq)
 }
 
 /* Handle the auth response from the AP
- * This should be registered with ieee80211 as handle_auth 
+ * This should be registered with ieee80211 as handle_auth
  */
-int 
+int
 ieee80211softmac_auth_resp(struct net_device *dev, struct ieee80211_auth *auth)
-{	
+{
 
 	struct list_head *list_ptr;
 	struct ieee80211softmac_device *mac = ieee80211_priv(dev);
@@ -139,7 +141,7 @@ ieee80211softmac_auth_resp(struct net_device *dev, struct ieee80211_auth *auth)
 	struct ieee80211softmac_network *net = NULL;
 	unsigned long flags;
 	u8 * data;
-	
+
 	if (unlikely(!mac->running))
 		return -ENODEV;
 
@@ -154,37 +156,37 @@ ieee80211softmac_auth_resp(struct net_device *dev, struct ieee80211_auth *auth)
 			aq = NULL;
 	}
 	spin_unlock_irqrestore(&mac->lock, flags);
-	
+
 	/* Make sure that we've got an auth queue item for this request */
 	if(aq == NULL)
 	{
-		dprintkl(KERN_DEBUG PFX "Authentication response received from "MAC_FMT" but no queue item exists.\n", MAC_ARG(auth->header.addr2));
+		dprintkl(KERN_DEBUG PFX "Authentication response received from " MAC_FMT " but no queue item exists.\n", MAC_ARG(auth->header.addr2));
 		/* Error #? */
 		return -1;
-	}			
-	
+	}
+
 	/* Check for out of order authentication */
 	if(!net->authenticating)
 	{
-		dprintkl(KERN_DEBUG PFX "Authentication response received from "MAC_FMT" but did not request authentication.\n",MAC_ARG(auth->header.addr2));
+		dprintkl(KERN_DEBUG PFX "Authentication response received from " MAC_FMT " but did not request authentication.\n", MAC_ARG(auth->header.addr2));
 		return -1;
 	}
 
 	/* Parse the auth packet */
-	switch(auth->algorithm) {
+	switch(le16_to_cpu(auth->algorithm)) {
 	case WLAN_AUTH_OPEN:
 		/* Check the status code of the response */
 
-		switch(auth->status) {
+		switch(le16_to_cpu(auth->status)) {
 		case WLAN_STATUS_SUCCESS:
 			/* Update the status to Authenticated */
 			spin_lock_irqsave(&mac->lock, flags);
-		        net->authenticating = 0;
+			net->authenticating = 0;
 			net->authenticated = 1;
 			spin_unlock_irqrestore(&mac->lock, flags);
-			
+
 			/* Send event */
-			printkl(KERN_NOTICE PFX "Open Authentication completed with "MAC_FMT"\n", MAC_ARG(net->bssid));
+			printkl(KERN_NOTICE PFX "Open Authentication completed with " MAC_FMT "\n", MAC_ARG(net->bssid));
 			ieee80211softmac_call_events(mac, IEEE80211SOFTMAC_EVENT_AUTHENTICATED, net);
 			break;
 		default:
@@ -193,8 +195,8 @@ ieee80211softmac_auth_resp(struct net_device *dev, struct ieee80211_auth *auth)
 			net->authenticated = 0;
 			net->authenticating = 0;
 			spin_unlock_irqrestore(&mac->lock, flags);
-			
-			printkl(KERN_NOTICE PFX "Open Authentication with "MAC_FMT" failed, error code: %i\n", 
+
+			printkl(KERN_NOTICE PFX "Open Authentication with " MAC_FMT " failed, error code: %i\n",
 				MAC_ARG(net->bssid), le16_to_cpup(&auth->status));
 			/* Count the error? */
 			break;
@@ -203,23 +205,22 @@ ieee80211softmac_auth_resp(struct net_device *dev, struct ieee80211_auth *auth)
 		break;
 	case WLAN_AUTH_SHARED_KEY:
 		/* Figure out where we are in the process */
-		switch(auth->transaction) {
+		switch(le16_to_cpu(auth->transaction)) {
 		case IEEE80211SOFTMAC_AUTH_SHARED_CHALLENGE:
 			/* Check to make sure we have a challenge IE */
 			data = (u8 *)auth->info_element;
 			if (*data++ != MFIE_TYPE_CHALLENGE) {
 				printkl(KERN_NOTICE PFX "Shared Key Authentication failed due to a missing challenge.\n");
-				break;	
+				break;
 			}
 			/* Save the challenge */
 			spin_lock_irqsave(&mac->lock, flags);
-			net->challenge_len = *data++; 	
+			net->challenge_len = *data++;
 			if (net->challenge_len > WLAN_AUTH_CHALLENGE_LEN)
 				net->challenge_len = WLAN_AUTH_CHALLENGE_LEN;
 			kfree(net->challenge);
-			net->challenge = kmalloc(net->challenge_len,
+			net->challenge = kmemdup(data, net->challenge_len,
 						 GFP_ATOMIC);
-			memcpy(net->challenge, data, net->challenge_len);
 			if (net->challenge == NULL) {
 				printkl(KERN_NOTICE PFX "Shared Key "
 					"Authentication failed due to "
@@ -227,7 +228,7 @@ ieee80211softmac_auth_resp(struct net_device *dev, struct ieee80211_auth *auth)
 				spin_unlock_irqrestore(&mac->lock, flags);
 				break;
 			}
-			aq->state = IEEE80211SOFTMAC_AUTH_SHARED_RESPONSE; 
+			aq->state = IEEE80211SOFTMAC_AUTH_SHARED_RESPONSE;
 
 			/* We reuse the work struct from the auth request here.
 			 * It is safe to do so as each one is per-request, and
@@ -236,7 +237,7 @@ ieee80211softmac_auth_resp(struct net_device *dev, struct ieee80211_auth *auth)
 			 * request. */
 			cancel_delayed_work(&aq->work);
 			INIT_WORK(&aq->work, &ieee80211softmac_auth_challenge_response, (void *)aq);
-			schedule_work(&aq->work);
+			schedule_delayed_work(&aq->work, 0);
 			spin_unlock_irqrestore(&mac->lock, flags);
 			return 0;
 		case IEEE80211SOFTMAC_AUTH_SHARED_PASS:
@@ -246,22 +247,22 @@ ieee80211softmac_auth_resp(struct net_device *dev, struct ieee80211_auth *auth)
 			/* Check the status code of the response */
 			switch(auth->status) {
 			case WLAN_STATUS_SUCCESS:
-				/* Update the status to Authenticated */	
+				/* Update the status to Authenticated */
 				spin_lock_irqsave(&mac->lock, flags);
 				net->authenticating = 0;
 				net->authenticated = 1;
 				spin_unlock_irqrestore(&mac->lock, flags);
-				printkl(KERN_NOTICE PFX "Shared Key Authentication completed with "MAC_FMT"\n", 
+				printkl(KERN_NOTICE PFX "Shared Key Authentication completed with " MAC_FMT "\n",
 					MAC_ARG(net->bssid));
 				ieee80211softmac_call_events(mac, IEEE80211SOFTMAC_EVENT_AUTHENTICATED, net);
 				break;
 			default:
-				printkl(KERN_NOTICE PFX "Shared Key Authentication with "MAC_FMT" failed, error code: %i\n", 
+				printkl(KERN_NOTICE PFX "Shared Key Authentication with " MAC_FMT " failed, error code: %i\n",
 					MAC_ARG(net->bssid), le16_to_cpup(&auth->status));
 				/* Lock and reset flags */
 				spin_lock_irqsave(&mac->lock, flags);
- 				net->authenticating = 0;
- 				net->authenticated = 0;
+				net->authenticating = 0;
+				net->authenticated = 0;
 				spin_unlock_irqrestore(&mac->lock, flags);
 				/* Count the error? */
 				break;
@@ -275,7 +276,7 @@ ieee80211softmac_auth_resp(struct net_device *dev, struct ieee80211_auth *auth)
 		goto free_aq;
 		break;
 	default:
-		/* ERROR */	
+		/* ERROR */
 		goto free_aq;
 		break;
 	}
@@ -311,7 +312,7 @@ ieee80211softmac_deauth_from_net(struct ieee80211softmac_device *mac,
 	spin_lock_irqsave(&mac->lock, flags);
 	net->authenticating = 0;
 	net->authenticated = 0;
-	
+
 	/* Find correct auth queue item, if it exists */
 	list_for_each(list_ptr, &mac->auth_queue) {
 		aq = list_entry(list_ptr, struct ieee80211softmac_auth_queue_item, list);
@@ -320,7 +321,7 @@ ieee80211softmac_deauth_from_net(struct ieee80211softmac_device *mac,
 		else
 			aq = NULL;
 	}
-	
+
 	/* Cancel pending work */
 	if(aq != NULL)
 		/* Not entirely safe?  What about running work? */
@@ -331,7 +332,7 @@ ieee80211softmac_deauth_from_net(struct ieee80211softmac_device *mac,
 	if(net->challenge != NULL)
 		kfree(net->challenge);
 	kfree(net);
-	
+
 	/* can't transmit data right now... */
 	netif_carrier_off(mac->dev);
 	spin_unlock_irqrestore(&mac->lock, flags);
@@ -339,15 +340,15 @@ ieee80211softmac_deauth_from_net(struct ieee80211softmac_device *mac,
 	ieee80211softmac_try_reassoc(mac);
 }
 
-/* 
+/*
  * Sends a deauth request to the desired AP
  */
-int 
-ieee80211softmac_deauth_req(struct ieee80211softmac_device *mac, 
+int
+ieee80211softmac_deauth_req(struct ieee80211softmac_device *mac,
 	struct ieee80211softmac_network *net, int reason)
 {
 	int ret;
-	
+
 	/* Make sure the network is authenticated */
 	if (!net->authenticated)
 	{
@@ -355,25 +356,25 @@ ieee80211softmac_deauth_req(struct ieee80211softmac_device *mac,
 		/* Error okay? */
 		return -EPERM;
 	}
-	
+
 	/* Send the de-auth packet */
 	if((ret = ieee80211softmac_send_mgt_frame(mac, net, IEEE80211_STYPE_DEAUTH, reason)))
 		return ret;
-	
+
 	ieee80211softmac_deauth_from_net(mac, net);
 	return 0;
 }
- 
+
 /*
  * This should be registered with ieee80211 as handle_deauth
  */
-int 
+int
 ieee80211softmac_deauth_resp(struct net_device *dev, struct ieee80211_deauth *deauth)
 {
-	
+
 	struct ieee80211softmac_network *net = NULL;
 	struct ieee80211softmac_device *mac = ieee80211_priv(dev);
-	
+
 	if (unlikely(!mac->running))
 		return -ENODEV;
 
@@ -383,9 +384,9 @@ ieee80211softmac_deauth_resp(struct net_device *dev, struct ieee80211_deauth *de
 	}
 
 	net = ieee80211softmac_get_network_by_bssid(mac, deauth->header.addr2);
-	
+
 	if (net == NULL) {
-		dprintkl(KERN_DEBUG PFX "Received deauthentication packet from "MAC_FMT", but that network is unknown.\n",
+		dprintkl(KERN_DEBUG PFX "Received deauthentication packet from " MAC_FMT ", but that network is unknown.\n",
 			MAC_ARG(deauth->header.addr2));
 		return 0;
 	}
@@ -401,6 +402,6 @@ ieee80211softmac_deauth_resp(struct net_device *dev, struct ieee80211_deauth *de
 	ieee80211softmac_deauth_from_net(mac, net);
 
 	/* let's try to re-associate */
-	schedule_work(&mac->associnfo.work);
+	schedule_delayed_work(&mac->associnfo.work, 0);
 	return 0;
 }

@@ -15,14 +15,30 @@
 #include <linux/pci_regs.h>
 #include <asm/pci-direct.h>
 
+static int vsmp = -1;
+
+int is_vsmp_box(void)
+{
+	if (vsmp != -1)
+		return vsmp;
+
+	vsmp = 0;
+
+	/* Check if we are running on a ScaleMP vSMP box */
+	if (read_pci_config(0, 0x1f, 0, PCI_VENDOR_ID) ==
+	     (PCI_VENDOR_ID_SCALEMP || (PCI_DEVICE_ID_SCALEMP_VSMP_CTL << 16)))
+		vsmp = 1;
+
+	return vsmp;
+}
+
 static int __init vsmp_init(void)
 {
 	void *address;
 	unsigned int cap, ctl;
 
-	/* Check if we are running on a ScaleMP vSMP box */
-	if ((read_pci_config_16(0, 0x1f, 0, PCI_VENDOR_ID) != PCI_VENDOR_ID_SCALEMP) ||
-	    (read_pci_config_16(0, 0x1f, 0, PCI_DEVICE_ID) != PCI_DEVICE_ID_SCALEMP_VSMP_CTL))
+
+	if (!is_vsmp_box())
 		return 0;
 
 	/* set vSMP magic bits to indicate vSMP capable kernel */

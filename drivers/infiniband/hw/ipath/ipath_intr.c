@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2007 QLogic Corporation. All rights reserved.
+ * Copyright (c) 2006, 2007, 2008 QLogic Corporation. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -38,42 +38,12 @@
 #include "ipath_verbs.h"
 #include "ipath_common.h"
 
-/*
- * clear (write) a pio buffer, to clear a parity error.   This routine
- * should only be called when in freeze mode, and the buffer should be
- * canceled afterwards.
- */
-static void ipath_clrpiobuf(struct ipath_devdata *dd, u32 pnum)
-{
-	u32 __iomem *pbuf;
-	u32 dwcnt; /* dword count to write */
-	if (pnum < dd->ipath_piobcnt2k) {
-		pbuf = (u32 __iomem *) (dd->ipath_pio2kbase + pnum *
-			dd->ipath_palign);
-		dwcnt = dd->ipath_piosize2k >> 2;
-	}
-	else {
-		pbuf = (u32 __iomem *) (dd->ipath_pio4kbase +
-			(pnum - dd->ipath_piobcnt2k) * dd->ipath_4kalign);
-		dwcnt = dd->ipath_piosize4k >> 2;
-	}
-	dev_info(&dd->pcidev->dev,
-		"Rewrite PIO buffer %u, to recover from parity error\n",
-		pnum);
-
-	/* no flush required, since already in freeze */
-	writel(dwcnt + 1, pbuf);
-	while (--dwcnt)
-		writel(0, pbuf++);
-}
 
 /*
  * Called when we might have an error that is specific to a particular
  * PIO buffer, and may need to cancel that buffer, so it can be re-used.
- * If rewrite is true, and bits are set in the sendbufferror registers,
- * we'll write to the buffer, for error recovery on parity errors.
  */
-void ipath_disarm_senderrbufs(struct ipath_devdata *dd, int rewrite)
+void ipath_disarm_senderrbufs(struct ipath_devdata *dd)
 {
 	u32 piobcnt;
 	unsigned long sbuf[4];
@@ -109,11 +79,8 @@ void ipath_disarm_senderrbufs(struct ipath_devdata *dd, int rewrite)
 		}
 
 		for (i = 0; i < piobcnt; i++)
-			if (test_bit(i, sbuf)) {
-				if (rewrite)
-					ipath_clrpiobuf(dd, i);
+			if (test_bit(i, sbuf))
 				ipath_disarm_piobufs(dd, i, 1);
-			}
 		/* ignore armlaunch errs for a bit */
 		dd->ipath_lastcancel = jiffies+3;
 	}
@@ -164,7 +131,7 @@ static u64 handle_e_sum_errs(struct ipath_devdata *dd, ipath_err_t errs)
 {
 	u64 ignore_this_time = 0;
 
-	ipath_disarm_senderrbufs(dd, 0);
+	ipath_disarm_senderrbufs(dd);
 	if ((errs & E_SUM_LINK_PKTERRS) &&
 	    !(dd->ipath_flags & IPATH_LINKACTIVE)) {
 		/*
@@ -302,6 +269,17 @@ static void handle_e_ibstatuschanged(struct ipath_devdata *dd,
 	lastlstate = ipath_ib_linkstate(dd, dd->ipath_lastibcstat);
 	ltstate = ipath_ib_linktrstate(dd, ibcs); /* linktrainingtate */
 
+	/* Since going into a recovery state causes the link state to go
+	 * down and since recovery is transitory, it is better if we "miss"
+	 * ever seeing the link training state go into recovery (i.e.,
+	 * ignore this transition for link state special handling purposes)
+	 * without even updating ipath_lastibcstat.
+	 */
+	if ((ltstate == INFINIPATH_IBCS_LT_STATE_RECOVERRETRAIN) ||
+	    (ltstate == INFINIPATH_IBCS_LT_STATE_RECOVERWAITRMT) ||
+	    (ltstate == INFINIPATH_IBCS_LT_STATE_RECOVERIDLE))
+		goto done;
+
 	/*
 	 * if linkstate transitions into INIT from any of the various down
 	 * states, or if it transitions from any of the up (INIT or better)
@@ -312,12 +290,14 @@ static void handle_e_ibstatuschanged(struct ipath_devdata *dd,
 		lastlstate == INFINIPATH_IBCS_L_STATE_DOWN) {
 		/* transitioned to UP */
 		if (dd->ipath_f_ib_updown(dd, 1, ibcs)) {
+			/* link came up, so we must no longer be disabled */
+			dd->ipath_flags &= ~IPATH_IB_LINK_DISABLED;
 			ipath_cdbg(LINKVERB, "LinkUp handled, skipped\n");
 			goto skip_ibchange; /* chip-code handled */
 		}
 	} else if ((lastlstate >= INFINIPATH_IBCS_L_STATE_INIT ||
 		(dd->ipath_flags & IPATH_IB_FORCE_NOTIFY)) &&
-		ltstate <= INFINIPATH_IBCS_LT_STATE_CFGDEBOUNCE &&
+		ltstate <= INFINIPATH_IBCS_LT_STATE_CFGWAITRMT &&
 		ltstate != INFINIPATH_IBCS_LT_STATE_LINKUP) {
 		int handled;
 		handled = dd->ipath_f_ib_updown(dd, 0, ibcs);
@@ -354,7 +334,8 @@ static void handle_e_ibstatuschanged(struct ipath_devdata *dd,
 		 */
 		if (lastlts == INFINIPATH_IBCS_LT_STATE_POLLACTIVE
 		    || lastlts == INFINIPATH_IBCS_LT_STATE_POLLQUIET) {
-			if (++dd->ipath_ibpollcnt == 40) {
+			if (!(dd->ipath_flags & IPATH_IB_AUTONEG_INPROG) &&
+			     (++dd->ipath_ibpollcnt == 40)) {
 				dd->ipath_flags |= IPATH_NOCABLE;
 				*dd->ipath_statusp |=
 					IPATH_STATUS_IB_NOCABLE;
@@ -420,6 +401,8 @@ static void handle_e_ibstatuschanged(struct ipath_devdata *dd,
 			dd->ipath_flags &= ~(IPATH_LINKUNK | IPATH_LINKINIT
 				| IPATH_LINKDOWN | IPATH_LINKARMED |
 				IPATH_NOCABLE);
+			if (dd->ipath_flags & IPATH_HAS_SEND_DMA)
+				ipath_restart_sdma(dd);
 			signal_ib_event(dd, IB_EVENT_PORT_ACTIVE);
 			/* LED active not handled in chip _f_updown */
 			dd->ipath_f_setextled(dd, lstate, ltstate);
@@ -462,6 +445,8 @@ static void handle_e_ibstatuschanged(struct ipath_devdata *dd,
 
 skip_ibchange:
 	dd->ipath_lastibcstat = ibcs;
+done:
+	return;
 }
 
 
@@ -474,12 +459,19 @@ static void handle_supp_msgs(struct ipath_devdata *dd,
 	 */
 	if (dd->ipath_lasterror & ~INFINIPATH_E_IBSTATUSCHANGED) {
 		int iserr;
-		iserr = ipath_decode_err(msg, msgsz,
+		ipath_err_t mask;
+		iserr = ipath_decode_err(dd, msg, msgsz,
 				dd->ipath_lasterror &
 				~INFINIPATH_E_IBSTATUSCHANGED);
-		if (dd->ipath_lasterror &
-			~(INFINIPATH_E_RRCVEGRFULL |
-			INFINIPATH_E_RRCVHDRFULL | INFINIPATH_E_PKTERRS))
+
+		mask = INFINIPATH_E_RRCVEGRFULL | INFINIPATH_E_RRCVHDRFULL |
+			INFINIPATH_E_PKTERRS | INFINIPATH_E_SDMADISABLED;
+
+		/* if we're in debug, then don't mask SDMADISABLED msgs */
+		if (ipath_debug & __IPATH_DBG)
+			mask &= ~INFINIPATH_E_SDMADISABLED;
+
+		if (dd->ipath_lasterror & ~mask)
 			ipath_dev_err(dd, "Suppressed %u messages for "
 				      "fast-repeating errors (%s) (%llx)\n",
 				      supp_msgs, msg,
@@ -543,7 +535,7 @@ static void handle_sdma_errors(struct ipath_devdata *dd, ipath_err_t errs)
 
 	if (ipath_debug & __IPATH_DBG) {
 		char msg[128];
-		ipath_decode_err(msg, sizeof msg, errs &
+		ipath_decode_err(dd, msg, sizeof msg, errs &
 			INFINIPATH_E_SDMAERRS);
 		ipath_dbg("errors %lx (%s)\n", (unsigned long)errs, msg);
 	}
@@ -706,7 +698,7 @@ static int handle_errors(struct ipath_devdata *dd, ipath_err_t errs)
 		dd->ipath_errormask &= ~dd->ipath_maskederrs;
 		ipath_write_kreg(dd, dd->ipath_kregs->kr_errormask,
 				 dd->ipath_errormask);
-		s_iserr = ipath_decode_err(msg, sizeof msg,
+		s_iserr = ipath_decode_err(dd, msg, sizeof msg,
 					   dd->ipath_maskederrs);
 
 		if (dd->ipath_maskederrs &
@@ -776,16 +768,23 @@ static int handle_errors(struct ipath_devdata *dd, ipath_err_t errs)
 	if (!errs)
 		return 0;
 
-	if (!noprint)
+	if (!noprint) {
+		ipath_err_t mask;
 		/*
-		 * the ones we mask off are handled specially below or above
+		 * The ones we mask off are handled specially below
+		 * or above.  Also mask SDMADISABLED by default as it
+		 * is too chatty.
 		 */
-		ipath_decode_err(msg, sizeof msg,
-				 errs & ~(INFINIPATH_E_IBSTATUSCHANGED |
-					  INFINIPATH_E_RRCVEGRFULL |
-					  INFINIPATH_E_RRCVHDRFULL |
-					  INFINIPATH_E_HARDWARE));
-	else
+		mask = INFINIPATH_E_IBSTATUSCHANGED |
+			INFINIPATH_E_RRCVEGRFULL | INFINIPATH_E_RRCVHDRFULL |
+			INFINIPATH_E_HARDWARE | INFINIPATH_E_SDMADISABLED;
+
+		/* if we're in debug, then don't mask SDMADISABLED msgs */
+		if (ipath_debug & __IPATH_DBG)
+			mask &= ~INFINIPATH_E_SDMADISABLED;
+
+		ipath_decode_err(dd, msg, sizeof msg, errs & ~mask);
+	} else
 		/* so we don't need if (!noprint) at strlcat's below */
 		*msg = 0;
 
@@ -879,8 +878,8 @@ static int handle_errors(struct ipath_devdata *dd, ipath_err_t errs)
  * processes (causing armlaunch), send errors due to going into freeze mode,
  * etc., and try to avoid causing extra interrupts while doing so.
  * Forcibly update the in-memory pioavail register copies after cleanup
- * because the chip won't do it for anything changing while in freeze mode
- * (we don't want to wait for the next pio buffer state change).
+ * because the chip won't do it while in freeze mode (the register values
+ * themselves are kept correct).
  * Make sure that we don't lose any important interrupts by using the chip
  * feature that says that writing 0 to a bit in *clear that is set in
  * *status will cause an interrupt to be generated again (if allowed by
@@ -888,42 +887,21 @@ static int handle_errors(struct ipath_devdata *dd, ipath_err_t errs)
  */
 void ipath_clear_freeze(struct ipath_devdata *dd)
 {
-	int i, im;
-	__le64 val;
-
 	/* disable error interrupts, to avoid confusion */
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_errormask, 0ULL);
 
 	/* also disable interrupts; errormask is sometimes overwriten */
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_intmask, 0ULL);
 
-	/*
-	 * clear all sends, because they have may been
-	 * completed by usercode while in freeze mode, and
-	 * therefore would not be sent, and eventually
-	 * might cause the process to run out of bufs
-	 */
-	ipath_cancel_sends(dd, 0);
+	ipath_cancel_sends(dd, 1);
+
+	/* clear the freeze, and be sure chip saw it */
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_control,
 			 dd->ipath_control);
+	ipath_read_kreg64(dd, dd->ipath_kregs->kr_scratch);
 
-	/* ensure pio avail updates continue */
+	/* force in-memory update now we are out of freeze */
 	ipath_force_pio_avail_update(dd);
-
-	/*
-	 * We just enabled pioavailupdate, so dma copy is almost certainly
-	 * not yet right, so read the registers directly.  Similar to init
-	 */
-	for (i = 0; i < dd->ipath_pioavregs; i++) {
-		/* deal with 6110 chip bug */
-		im = (i > 3 && (dd->ipath_flags & IPATH_SWAP_PIOBUFS)) ?
-			i ^ 1 : i;
-		val = ipath_read_kreg64(dd, (0x1000 / sizeof(u64)) + im);
-		dd->ipath_pioavailregs_dma[i] = dd->ipath_pioavailshadow[i]
-			= le64_to_cpu(val) |
-			(~dd->ipath_pioavailkernel[i] <<
-			INFINIPATH_SENDPIOAVAIL_BUSY_SHIFT);
-	}
 
 	/*
 	 * force new interrupt if any hwerr, error or interrupt bits are
@@ -1286,10 +1264,8 @@ irqreturn_t ipath_intr(int irq, void *data)
 		ipath_read_kreg64(dd, dd->ipath_kregs->kr_scratch);
 		spin_unlock_irqrestore(&dd->ipath_sendctrl_lock, flags);
 
-		if (!(dd->ipath_flags & IPATH_HAS_SEND_DMA))
-			handle_layer_pioavail(dd);
-		else
-			ipath_dbg("unexpected BUFAVAIL intr\n");
+		/* always process; sdma verbs uses PIO for acks and VL15  */
+		handle_layer_pioavail(dd);
 	}
 
 	ret = IRQ_HANDLED;

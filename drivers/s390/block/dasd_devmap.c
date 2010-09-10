@@ -872,7 +872,8 @@ dasd_vendor_show(struct device *dev, struct device_attribute *attr, char *buf)
 static DEVICE_ATTR(vendor, 0444, dasd_vendor_show, NULL);
 
 #define UID_STRLEN ( /* vendor */ 3 + 1 + /* serial    */ 14 + 1 +\
-		     /* SSID   */ 4 + 1 + /* unit addr */ 2 + 1)
+		     /* SSID   */ 4 + 1 + /* unit addr */ 2 + 1 +\
+		     /* vduit  */ 32 + 1)
 
 static ssize_t
 dasd_uid_show(struct device *dev, struct device_attribute *attr, char *buf)
@@ -882,11 +883,17 @@ dasd_uid_show(struct device *dev, struct device_attribute *attr, char *buf)
 
 	devmap = dasd_find_busid(dev->bus_id);
 	spin_lock(&dasd_devmap_lock);
-	if (!IS_ERR(devmap) && strlen(devmap->uid.vendor) > 0)
-		snprintf(uid, sizeof(uid), "%s.%s.%04x.%02x",
-			 devmap->uid.vendor, devmap->uid.serial,
-			 devmap->uid.ssid, devmap->uid.unit_addr);
-	else
+	if (!IS_ERR(devmap) && strlen(devmap->uid.vendor) > 0) {
+		if (strlen(devmap->uid.vduit) > 0)
+			snprintf(uid, sizeof(uid), "%s.%s.%04x.%02x.%s",
+				 devmap->uid.vendor, devmap->uid.serial,
+				 devmap->uid.ssid, devmap->uid.unit_addr,
+				 devmap->uid.vduit);
+		else
+			snprintf(uid, sizeof(uid), "%s.%s.%04x.%02x",
+				 devmap->uid.vendor, devmap->uid.serial,
+				 devmap->uid.ssid, devmap->uid.unit_addr);
+	} else
 		uid[0] = 0;
 	spin_unlock(&dasd_devmap_lock);
 

@@ -64,6 +64,11 @@
 #include <xen/interface/grant_table.h>
 #include <xen/gnttab.h>
 
+
+#ifdef HAVE_XEN_PLATFORM_COMPAT_H
+#include <xen/platform-compat.h>
+#endif
+
 /*
  * Mutually-exclusive module options to select receive data path:
  *  rx_copy : Packets are copied by network backend into local memory
@@ -120,6 +125,7 @@ static inline int netif_needs_gso(struct net_device *dev, struct sk_buff *skb)
                 unlikely(skb->ip_summed != CHECKSUM_HW));
 }
 #else
+#define HAVE_NO_CSUM_OFFLOAD           1
 #define netif_needs_gso(dev, skb)	0
 #define dev_disable_gso_features(dev)	((void)0)
 #endif
@@ -234,12 +240,11 @@ static struct net_device *create_netdev(struct xenbus_device *);
 
 static void end_access(int, void *);
 static void netif_disconnect_backend(struct netfront_info *);
-static void netif_free(struct netfront_info *);
 
 static int network_connect(struct net_device *);
 static void network_tx_buf_gc(struct net_device *);
 static void network_alloc_rx_buffers(struct net_device *);
-static int send_fake_arp(struct net_device *);
+static void send_fake_arp(struct net_device *);
 
 static irqreturn_t netif_int(int irq, void *dev_id, struct pt_regs *ptregs);
 
@@ -416,6 +421,14 @@ again:
 		goto abort_transaction;
 	}
 
+#ifdef HAVE_NO_CSUM_OFFLOAD
+	err = xenbus_printf(xbt, dev->nodename, "feature-no-csum-offload", "%d", 1);
+	if (err) {
+		message = "writing feature-no-csum-offload";
+		goto abort_transaction;
+	}
+#endif
+
 	err = xenbus_printf(xbt, dev->nodename, "feature-sg", "%d", 1);
 	if (err) {
 		message = "writing feature-sg";
@@ -463,7 +476,7 @@ static int setup_device(struct xenbus_device *dev, struct netfront_info *info)
 	info->tx.sring = NULL;
 	info->irq = 0;
 
-	txs = (struct netif_tx_sring *)get_zeroed_page(GFP_KERNEL);
+	txs = (struct netif_tx_sring *)get_zeroed_page(GFP_NOIO|__GFP_HIGH);
 	if (!txs) {
 		err = -ENOMEM;
 		xenbus_dev_fatal(dev, err, "allocating tx ring page");
@@ -479,7 +492,7 @@ static int setup_device(struct xenbus_device *dev, struct netfront_info *info)
 	}
 	info->tx_ring_ref = err;
 
-	rxs = (struct netif_rx_sring *)get_zeroed_page(GFP_KERNEL);
+	rxs = (struct netif_rx_sring *)get_zeroed_page(GFP_NOIO|__GFP_HIGH);
 	if (!rxs) {
 		err = -ENOMEM;
 		xenbus_dev_fatal(dev, err, "allocating rx ring page");
@@ -509,7 +522,6 @@ static int setup_device(struct xenbus_device *dev, struct netfront_info *info)
 	return 0;
 
  fail:
-	netif_free(info);
 	return err;
 }
 
@@ -533,18 +545,20 @@ static void backend_changed(struct xenbus_device *dev,
 		break;
 
 	case XenbusStateConnected:
-		(void)send_fake_arp(netdev);
+		send_fake_arp(netdev);
 		break;
 
 	case XenbusStateInitWait:
-		if (network_connect(netdev) != 0) {
-			netif_free(np);
+		if (dev->state != XenbusStateInitialising)
 			break;
-		}
+		if (network_connect(netdev) != 0)
+			break;
 		xenbus_switch_state(dev, XenbusStateConnected);
 		break;
 
 	case XenbusStateClosing:
+		if (dev->state == XenbusStateClosed)
+			break;
  		xenbus_frontend_closed(dev);
 		break;
 	}
@@ -555,9 +569,8 @@ static void backend_changed(struct xenbus_device *dev,
  * MAC. We send a fake ARP request.
  *
  * @param dev device
- * @return 0 on success, error code otherwise
  */
-static int send_fake_arp(struct net_device *dev)
+static void send_fake_arp(struct net_device *dev)
 {
 	struct sk_buff *skb;
 	u32             src_ip, dst_ip;
@@ -567,16 +580,16 @@ static int send_fake_arp(struct net_device *dev)
 
 	/* No IP? Then nothing to do. */
 	if (src_ip == 0)
-		return 0;
+		return;
 
 	skb = arp_create(ARPOP_REPLY, ETH_P_ARP,
 			 dst_ip, dev, src_ip,
 			 /*dst_hw*/ NULL, /*src_hw*/ NULL,
 			 /*target_hw*/ dev->dev_addr);
 	if (skb == NULL)
-		return -ENOMEM;
+		return;
 
-	return dev_queue_xmit(skb);
+	dev_queue_xmit(skb);
 }
 
 
@@ -1160,6 +1173,7 @@ static int xennet_get_responses(struct netfront_info *np,
 							pfn_pte_ma(mfn,
 								   PAGE_KERNEL),
 							0);
+
 				mmu->ptr = ((maddr_t)mfn << PAGE_SHIFT)
 					| MMU_MACHPHYS_UPDATE;
 				mmu->val = pfn;
@@ -1486,7 +1500,7 @@ static void netif_release_tx_bufs(struct netfront_info *np)
 	}
 }
 
-static void netif_release_rx_bufs(struct netfront_info *np)
+static void netif_release_rx_bufs_flip(struct netfront_info *np)
 {
 	struct mmu_update      *mmu = np->rx_mmu;
 	struct multicall_entry *mcl = np->rx_mcl;
@@ -1495,11 +1509,6 @@ static void netif_release_rx_bufs(struct netfront_info *np)
 	unsigned long mfn;
 	int xfer = 0, noxfer = 0, unused = 0;
 	int id, ref;
-
-	if (np->copying_receiver) {
-		printk("%s: fix me for copying receiver.\n", __FUNCTION__);
-		return;
-	}
 
 	skb_queue_head_init(&free_list);
 
@@ -1535,6 +1544,7 @@ static void netif_release_rx_bufs(struct netfront_info *np)
 			MULTI_update_va_mapping(mcl, (unsigned long)vaddr,
 						pfn_pte_ma(mfn, PAGE_KERNEL),
 						0);
+
 			mcl++;
 			mmu->ptr = ((maddr_t)mfn << PAGE_SHIFT)
 				| MMU_MACHPHYS_UPDATE;
@@ -1547,7 +1557,7 @@ static void netif_release_rx_bufs(struct netfront_info *np)
 		xfer++;
 	}
 
-	printk("%s: %d xfer, %d noxfer, %d unused\n",
+	printk(KERN_DEBUG "%s: %d xfer, %d noxfer, %d unused\n",
 	       __FUNCTION__, xfer, noxfer, unused);
 
 	if (xfer) {
@@ -1570,6 +1580,45 @@ static void netif_release_rx_bufs(struct netfront_info *np)
 		dev_kfree_skb(skb);
 
 	spin_unlock(&np->rx_lock);
+}
+
+static void netif_release_rx_bufs_copy(struct netfront_info *np)
+{
+	struct sk_buff *skb;
+	int i, ref;
+	int busy = 0, inuse = 0;
+
+	spin_lock_bh(&np->rx_lock);
+
+	for (i = 0; i < NET_RX_RING_SIZE; i++) {
+		ref = np->grant_rx_ref[i];
+
+		if (ref == GRANT_INVALID_REF)
+			continue;
+
+		inuse++;
+
+		skb = np->rx_skbs[i];
+
+		if (!gnttab_end_foreign_access_ref(ref, 0))
+		{
+			busy++;
+			continue;
+		}
+
+		gnttab_release_grant_reference(&np->gref_rx_head, ref);
+		np->grant_rx_ref[i] = GRANT_INVALID_REF;
+		add_id_to_freelist(np->rx_skbs, i);
+
+/*		skb_shinfo(skb)->nr_frags = 0; */ /* bz 452370, 452303 */
+		dev_kfree_skb(skb);
+	}
+
+	if (busy)
+		DPRINTK("%s: Unable to release %d of %d inuse grant references out of %ld total.\n",
+			__FUNCTION__, busy, inuse, NET_RX_RING_SIZE);
+
+	spin_unlock_bh(&np->rx_lock);
 }
 
 static int network_close(struct net_device *dev)
@@ -1744,7 +1793,10 @@ static void netif_uninit(struct net_device *dev)
 {
 	struct netfront_info *np = netdev_priv(dev);
 	netif_release_tx_bufs(np);
-	netif_release_rx_bufs(np);
+	if (np->copying_receiver)
+		netif_release_rx_bufs_copy(np);
+	else
+		netif_release_rx_bufs_flip(np);
 	gnttab_free_grant_references(np->gref_tx_head);
 	gnttab_free_grant_references(np->gref_rx_head);
 }
@@ -1996,7 +2048,7 @@ inetdev_notify(struct notifier_block *this, unsigned long event, void *ptr)
 
 	/* UP event and is it one of our devices? */
 	if (event == NETDEV_UP && dev->open == network_open)
-		(void)send_fake_arp(dev);
+		send_fake_arp(dev);
 
 	return NOTIFY_DONE;
 }
@@ -2012,7 +2064,7 @@ netdev_notify(struct notifier_block *this, unsigned long event, void *ptr)
 	/* Carrier up event and is it one of our devices? */
 	if (event == NETDEV_CHANGE && netif_carrier_ok(dev) &&
 	    dev->open == network_open)
-		(void)send_fake_arp(dev);
+		send_fake_arp(dev);
 
 	return NOTIFY_DONE;
 }
@@ -2040,13 +2092,6 @@ static void netif_disconnect_backend(struct netfront_info *info)
 }
 
 
-static void netif_free(struct netfront_info *info)
-{
-	netif_disconnect_backend(info);
-	free_netdev(info->netdev);
-}
-
-
 static void end_access(int ref, void *page)
 {
 	if (ref != GRANT_INVALID_REF)
@@ -2061,7 +2106,7 @@ static struct xenbus_device_id netfront_ids[] = {
 	{ "vif" },
 	{ "" }
 };
-
+MODULE_ALIAS("xen:vif");
 
 static struct xenbus_driver netfront = {
 	.name = "vif",

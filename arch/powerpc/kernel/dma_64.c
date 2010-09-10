@@ -7,18 +7,26 @@
 
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
+#include <linux/dma-attrs.h>
 /* Include the busses we support */
 #include <linux/pci.h>
 #include <asm/vio.h>
 #include <asm/ibmebus.h>
 #include <asm/scatterlist.h>
 #include <asm/bug.h>
+#include <asm/iommu.h>
 
 static struct dma_mapping_ops *get_dma_ops(struct device *dev)
 {
 #ifdef CONFIG_PCI
-	if (dev->bus == &pci_bus_type)
+	struct pci_dn *pdn;
+
+	if (dev->bus == &pci_bus_type) {
+		pdn = get_pdn(to_pci_dev(dev));
+		if (cell_use_iommu_fixed && pdn && pdn->use_iommu_fixed)
+			return &pci_fixed_ops;
 		return &pci_dma_ops;
+	}
 #endif
 #ifdef CONFIG_IBMVIO
 	if (dev->bus == &vio_bus_type)
@@ -161,3 +169,33 @@ void dma_unmap_sg(struct device *dev, struct scatterlist *sg, int nhwentries,
 		BUG();
 }
 EXPORT_SYMBOL(dma_unmap_sg);
+
+#ifdef CONFIG_HAVE_DMA_ATTRS
+int dma_map_sg_attrs(struct device *dev, struct scatterlist *sg, int nents,
+		enum dma_data_direction direction, struct dma_attrs *attrs)
+{
+	struct dma_mapping_ops *dma_ops = get_dma_ops(dev);
+
+	if (dma_get_attr(DMA_ATTR_WEAK_ORDERING, attrs) && (dma_ops == &pci_fixed_ops))
+		return pci_iommu_map_sg_weak(dev, sg, nents, direction);
+	if (dma_ops)
+		return dma_ops->map_sg(dev, sg, nents, direction);
+	BUG();
+	return 0;
+}
+EXPORT_SYMBOL(dma_map_sg_attrs);
+
+void dma_unmap_sg_attrs(struct device *dev, struct scatterlist *sg, int nhwentries,
+		enum dma_data_direction direction, struct dma_attrs *attrs)
+{
+	struct dma_mapping_ops *dma_ops = get_dma_ops(dev);
+
+	if (dma_get_attr(DMA_ATTR_WEAK_ORDERING, attrs) && (dma_ops == &pci_fixed_ops))
+		return pci_iommu_unmap_sg_weak(dev, sg, nhwentries, direction);
+	if (dma_ops)
+		dma_ops->unmap_sg(dev, sg, nhwentries, direction);
+	else
+		BUG();
+}
+EXPORT_SYMBOL(dma_unmap_sg_attrs);
+#endif /* CONFIG_HAVE_DMA_ATTRS */

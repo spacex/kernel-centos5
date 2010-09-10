@@ -36,6 +36,7 @@
 #include <linux/list.h>
 #include <linux/scatterlist.h>
 #include <linux/workqueue.h>
+#include <linux/dma-attrs.h>
 
 struct ib_ucontext;
 
@@ -63,7 +64,10 @@ struct ib_umem_chunk {
 
 struct ib_umem *ib_umem_get(struct ib_ucontext *context, unsigned long addr,
 			    size_t size, int access);
+struct ib_umem *ib_umem_get_dmasync(struct ib_ucontext *context, unsigned long addr,
+			    size_t size, int access);
 void ib_umem_release(struct ib_umem *umem);
+void ib_umem_release_dmasync(struct ib_umem *umem);
 int ib_umem_page_count(struct ib_umem *umem);
 
 #else /* CONFIG_INFINIBAND_USER_MEM */
@@ -75,7 +79,13 @@ static inline struct ib_umem *ib_umem_get(struct ib_ucontext *context,
 					  int access) {
 	return ERR_PTR(-EINVAL);
 }
+static inline struct ib_umem *ib_umem_get_dmasync(struct ib_ucontext *context,
+					  unsigned long addr, size_t size,
+					  int access) {
+	return ERR_PTR(-EINVAL);
+}
 static inline void ib_umem_release(struct ib_umem *umem) { }
+static inline void ib_umem_release_dmasync(struct ib_umem *umem) { }
 static inline int ib_umem_page_count(struct ib_umem *umem) { return 0; }
 
 #endif /* CONFIG_INFINIBAND_USER_MEM */

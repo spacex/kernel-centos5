@@ -678,5 +678,6 @@ int sas_eh_bus_reset_handler(struct scsi_cmnd *cmd);
 extern void sas_target_destroy(struct scsi_target *);
 extern int sas_slave_alloc(struct scsi_device *);
 extern int sas_ioctl(struct scsi_device *sdev, int cmd, void __user *arg);
+struct sas_phy *sas_find_local_phy(struct domain_device *dev);
 
 #endif /* _SASLIB_H_ */

@@ -144,7 +144,11 @@ extern int css_sch_device_register(struct subchannel *);
 extern void css_sch_device_unregister(struct subchannel *);
 extern struct subchannel * get_subchannel_by_schid(struct subchannel_id);
 extern int css_init_done;
+int for_each_subchannel_staged(int (*fn_known)(struct subchannel *, void *),
+			       int (*fn_unknown)(struct subchannel_id,
+			       void *), void *data);
 extern int for_each_subchannel(int(*fn)(struct subchannel_id, void *), void *);
+extern void css_process_crw(int, int);
 
 #define __MAX_SUBCHANNEL 65535
 #define __MAX_SSID 3
@@ -177,17 +181,17 @@ void device_kill_io(struct subchannel *);
 void device_set_waiting(struct subchannel *);
 void device_set_intretry(struct subchannel *sch);
 int device_trigger_verify(struct subchannel *sch);
+int device_in_grace_period(struct subchannel *sch);
+void device_wait_for_final_state(struct subchannel *sch);
+void device_wake_up_wait_q(struct subchannel *sch);
 
 /* Machine check helper function. */
 void device_kill_pending_timer(struct subchannel *);
 
 /* Helper functions to build lists for the slow path. */
-extern int css_enqueue_subchannel_slow(struct subchannel_id schid);
-void css_walk_subchannel_slow_list(void (*fn)(unsigned long));
-void css_clear_subchannel_slow_list(void);
-int css_slow_subchannels_exist(void);
-extern int need_rescan;
+void css_schedule_eval(struct subchannel_id schid);
+void css_schedule_eval_all(void);
 
 extern struct workqueue_struct *slow_path_wq;
-extern struct work_struct slow_path_work;
+void css_wait_for_slow_path(void);
 #endif

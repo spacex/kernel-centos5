@@ -55,7 +55,7 @@ struct addr_req {
 	int status;
 };
 
-static void process_req(struct work_struct *work);
+static void process_req(void *work);
 
 static DEFINE_MUTEX(lock);
 static LIST_HEAD(req_list);
@@ -214,7 +214,7 @@ out:
 	return ret;
 }
 
-static void process_req(struct work_struct *work)
+static void process_req(void *work)
 {
 	struct addr_req *req, *temp_req;
 	struct sockaddr_in *src_in, *dst_in;

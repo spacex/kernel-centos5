@@ -2,6 +2,7 @@
 #define __E1000E_COMPAT_H__
 
 #include <linux/if_vlan.h>
+#include <linux/pci.h>
 
 #define ETH_FCS_LEN               4
 

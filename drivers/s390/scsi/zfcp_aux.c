@@ -165,7 +165,6 @@ void zfcp_reqlist_remove(struct zfcp_adapter *adapter, unsigned long req_id)
 {
 	struct zfcp_fsf_req *request, *tmp;
 	unsigned int i, counter;
-	u64 dbg_tmp[2];
 
 	i = req_id % REQUEST_LIST_SIZE;
 	BUG_ON(list_empty(&adapter->req_list[i]));
@@ -173,9 +172,6 @@ void zfcp_reqlist_remove(struct zfcp_adapter *adapter, unsigned long req_id)
 	counter = 0;
 	list_for_each_entry_safe(request, tmp, &adapter->req_list[i], list) {
 		if (request->req_id == req_id) {
-			dbg_tmp[0] = (u64) atomic_read(&adapter->reqs_active);
-			dbg_tmp[1] = (u64) counter;
-			debug_event(adapter->erp_dbf, 4, (void *) dbg_tmp, 16);
 			list_del(&request->list);
 			break;
 		}
@@ -1010,6 +1006,26 @@ zfcp_dummy_release(struct device *dev)
 	return;
 }
 
+int zfcp_status_read_refill(struct zfcp_adapter *adapter)
+{
+	while (atomic_read(&adapter->stat_miss) > 0)
+		if (zfcp_fsf_status_read(adapter, ZFCP_WAIT_FOR_SBAL)) {
+			if (atomic_read(&adapter->stat_miss) >= 16) {
+				zfcp_erp_adapter_reopen(adapter, 0, 103, NULL);
+				return 1;
+			}
+			break;
+		}
+		else
+			atomic_dec(&adapter->stat_miss);
+	return 0;
+}
+
+static void _zfcp_status_read_scheduler(void *ptr)
+{
+	zfcp_status_read_refill((struct zfcp_adapter *)ptr);
+}
+
 /*
  * Enqueues an adapter at the end of the adapter list in the driver data.
  * All adapter internal structures are set up.
@@ -1078,10 +1094,10 @@ zfcp_adapter_enqueue(struct ccw_device *ccw_device)
 
 	/* initialize debug locks */
 
-	spin_lock_init(&adapter->erp_dbf_lock);
 	spin_lock_init(&adapter->hba_dbf_lock);
 	spin_lock_init(&adapter->san_dbf_lock);
 	spin_lock_init(&adapter->scsi_dbf_lock);
+	spin_lock_init(&adapter->rec_dbf_lock);
 
 	/* initialize error recovery stuff */
 
@@ -1099,6 +1115,8 @@ zfcp_adapter_enqueue(struct ccw_device *ccw_device)
 
 	/* initialize lock of associated request queue */
 	rwlock_init(&adapter->request_queue.queue_lock);
+	INIT_WORK(&adapter->stat_work, _zfcp_status_read_scheduler,
+		  adapter);
 
 	/* mark adapter unusable as long as sysfs registration is not complete */
 	atomic_set_mask(ZFCP_STATUS_COMMON_REMOVE, &adapter->status);
@@ -1366,10 +1384,10 @@ zfcp_nameserver_enqueue(struct zfcp_adapter *adapter)
 
 #define ZFCP_LOG_AREA                   ZFCP_LOG_AREA_FC
 
-void
-zfcp_fsf_incoming_els_rscn(struct zfcp_adapter *adapter,
-			   struct fsf_status_read_buffer *status_buffer)
+void zfcp_fsf_incoming_els_rscn(struct zfcp_fsf_req *fsf_req)
 {
+	struct fsf_status_read_buffer *status_buffer = (void*)fsf_req->data;
+	struct zfcp_adapter *adapter = fsf_req->adapter;
 	struct fcp_rscn_head *fcp_rscn_head;
 	struct fcp_rscn_element *fcp_rscn_element;
 	struct zfcp_port *port;
@@ -1416,7 +1434,8 @@ zfcp_fsf_incoming_els_rscn(struct zfcp_adapter *adapter,
 				ZFCP_LOG_INFO("incoming RSCN, trying to open "
 					      "port 0x%016Lx\n", port->wwpn);
 				zfcp_erp_port_reopen(port,
-						     ZFCP_STATUS_COMMON_ERP_FAILED);
+						     ZFCP_STATUS_COMMON_ERP_FAILED,
+						     82, fsf_req);
 				continue;
 			}
 
@@ -1447,10 +1466,10 @@ zfcp_fsf_incoming_els_rscn(struct zfcp_adapter *adapter,
 	}
 }
 
-static void
-zfcp_fsf_incoming_els_plogi(struct zfcp_adapter *adapter,
-			    struct fsf_status_read_buffer *status_buffer)
+static void zfcp_fsf_incoming_els_plogi(struct zfcp_fsf_req *fsf_req)
 {
+	struct fsf_status_read_buffer *status_buffer = (void*)fsf_req->data;
+	struct zfcp_adapter *adapter = fsf_req->adapter;
 	struct fsf_plogi *els_plogi;
 	struct zfcp_port *port;
 	unsigned long flags;
@@ -1469,14 +1488,14 @@ zfcp_fsf_incoming_els_plogi(struct zfcp_adapter *adapter,
 			       status_buffer->d_id,
 			       zfcp_get_busid_by_adapter(adapter));
 	} else {
-		zfcp_erp_port_forced_reopen(port, 0);
+		zfcp_erp_port_forced_reopen(port, 0, 83, fsf_req);
 	}
 }
 
-static void
-zfcp_fsf_incoming_els_logo(struct zfcp_adapter *adapter,
-			   struct fsf_status_read_buffer *status_buffer)
+static void zfcp_fsf_incoming_els_logo(struct zfcp_fsf_req *fsf_req)
 {
+	struct fsf_status_read_buffer *status_buffer = (void*)fsf_req->data;
+	struct zfcp_adapter *adapter = fsf_req->adapter;
 	struct fcp_logo *els_logo = (struct fcp_logo *) status_buffer->payload;
 	struct zfcp_port *port;
 	unsigned long flags;
@@ -1494,7 +1513,7 @@ zfcp_fsf_incoming_els_logo(struct zfcp_adapter *adapter,
 			       status_buffer->d_id,
 			       zfcp_get_busid_by_adapter(adapter));
 	} else {
-		zfcp_erp_port_forced_reopen(port, 0);
+		zfcp_erp_port_forced_reopen(port, 0, 84, fsf_req);
 	}
 }
 
@@ -1521,12 +1540,12 @@ zfcp_fsf_incoming_els(struct zfcp_fsf_req *fsf_req)
 
 	zfcp_san_dbf_event_incoming_els(fsf_req);
 	if (els_type == LS_PLOGI)
-		zfcp_fsf_incoming_els_plogi(adapter, status_buffer);
+		zfcp_fsf_incoming_els_plogi(fsf_req);
 	else if (els_type == LS_LOGO)
-		zfcp_fsf_incoming_els_logo(adapter, status_buffer);
+		zfcp_fsf_incoming_els_logo(fsf_req);
 	else if ((els_type & 0xffff0000) == LS_RSCN)
 		/* we are only concerned with the command, not the length */
-		zfcp_fsf_incoming_els_rscn(adapter, status_buffer);
+		zfcp_fsf_incoming_els_rscn(fsf_req);
 	else
 		zfcp_fsf_incoming_els_unknown(adapter, status_buffer);
 }
@@ -1542,19 +1561,16 @@ zfcp_gid_pn_buffers_alloc(struct zfcp_gid_pn_data **gid_pn, mempool_t *pool)
 {
 	struct zfcp_gid_pn_data *data;
 
-	if (pool != NULL) {
+	if (pool)
 		data = mempool_alloc(pool, GFP_ATOMIC);
-		if (likely(data != NULL)) {
-			data->ct.pool = pool;
-		}
-	} else {
+	else
 		data = kmalloc(sizeof(struct zfcp_gid_pn_data), GFP_ATOMIC);
-	}
 
         if (NULL == data)
                 return -ENOMEM;
 
 	memset(data, 0, sizeof(*data));
+	data->ct.pool = pool;
         data->ct.req = &data->req;
         data->ct.resp = &data->resp;
 	data->ct.req_count = data->ct.resp_count = 1;

@@ -15,8 +15,7 @@
 #include <asm/prom.h>
 #include <asm/ptrace.h>
 #include <asm/of_device.h>
-
-#include "cbe_regs.h"
+#include <asm/cell-regs.h>
 
 /*
  * Current implementation uses "cpu" nodes. We build our own mapping

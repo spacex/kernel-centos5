@@ -96,20 +96,6 @@ struct lpfcdfc_host {
 };
 
 
-struct lpfc_timedout_iocb_ctxt {
-	struct lpfc_iocbq *rspiocbq;
-	struct lpfc_dmabuf *mp;
-	struct lpfc_dmabuf *bmp;
-	struct lpfc_scsi_buf *lpfc_cmd;
-	struct lpfc_dmabufext *outdmp;
-	struct lpfc_dmabufext *indmp;
-};
-
-struct lpfc_dmabufext {
-	struct lpfc_dmabuf dma;
-	uint32_t size;
-	uint32_t flag;
-};
 
 
 static void lpfc_ioctl_timeout_iocb_cmpl(struct lpfc_hba *,
@@ -536,7 +522,7 @@ lpfc_ioctl_send_mgmt_rsp(struct lpfc_hba * phba,
 	int rc = 0;
 	unsigned long iflag;
 
-	if (!reqbfrcnt || (reqbfrcnt > (80 * 4096))) {
+	if (!reqbfrcnt || (reqbfrcnt > (80 * BUF_SZ_4K))) {
 		rc = ERANGE;
 		return rc;
 	}
@@ -608,7 +594,8 @@ lpfc_ioctl_send_mgmt_cmd(struct lpfc_hba * phba,
 	reqbfrcnt = cip->lpfc_arg4;
 	snsbfrcnt = cip->lpfc_arg5;
 
-	if (!reqbfrcnt || !snsbfrcnt || (reqbfrcnt + snsbfrcnt > 80 * 4096)) {
+	if (!reqbfrcnt || !snsbfrcnt
+		|| (reqbfrcnt + snsbfrcnt > 80 * BUF_SZ_4K)) {
 		rc = ERANGE;
 		goto send_mgmt_cmd_exit;
 	}
@@ -829,7 +816,7 @@ lpfc_ioctl_send_mgmt_cmd(struct lpfc_hba * phba,
 		rc = ERANGE;
 		lpfc_printf_log(phba, KERN_INFO, LOG_LIBDFC,
 				"1209 C_CT Request error Data: x%x x%x\n",
-				outdmp->flag, 4096);
+				outdmp->flag, BUF_SZ_4K);
 		goto send_mgmt_cmd_free_outdmp;
 	}
 
@@ -1328,7 +1315,7 @@ static int lpfcdfc_loop_get_xri(struct lpfc_hba *phba, uint16_t rpi,
 	ctreq->FsType = SLI_CT_ELX_LOOPBACK;
 	ctreq->FsSubType = 0;
 	ctreq->CommandResponse.bits.CmdRsp = ELX_LOOPBACK_XRI_SETUP;
-	ctreq->CommandResponse.bits.Size   = 0;
+	ctreq->CommandResponse.bits.Size = 0;
 
 
 	cmd->un.xseq64.bdl.addrHigh = putPaddrHigh(dmabuf->phys);
@@ -1550,7 +1537,7 @@ lpfc_ioctl_loopback_test(struct lpfc_hba *phba,
 	if (!lpfc_is_link_up(phba) || !(phba->link_flag & LS_LOOPBACK_MODE))
 		return EACCES;
 
-	if ((size == 0) || (size > 80 * 4096))
+	if ((size == 0) || (size > 80 * BUF_SZ_4K))
 		return  ERANGE;
 
 	mutex_lock(&lpfcdfc_lock);
@@ -1634,6 +1621,7 @@ lpfc_ioctl_loopback_test(struct lpfc_hba *phba,
 				    + current_offset,
 				    segment_len - segment_offset)) {
 			rc = EIO;
+			list_del(&head);
 			goto err_loopback_test_exit;
 		}
 
@@ -1750,8 +1738,8 @@ dfc_rsp_data_copy(struct lpfc_hba * phba,
 			break;
 
 		/* We copy chucks of 4K */
-		if (size > 4096)
-			cnt = 4096;
+		if (size > BUF_SZ_4K)
+			cnt = BUF_SZ_4K;
 		else
 			cnt = size;
 
@@ -2029,9 +2017,10 @@ error_unsol_ct_exit:
 }
 
 
-static struct lpfc_dmabufext *
-dfc_cmd_data_alloc(struct lpfc_hba * phba,
-		   char *indataptr, struct ulp_bde64 * bpl, uint32_t size)
+struct lpfc_dmabufext *
+__dfc_cmd_data_alloc(struct lpfc_hba * phba,
+		   char *indataptr, struct ulp_bde64 * bpl, uint32_t size,
+		   int nocopydata)
 {
 	struct lpfc_dmabufext *mlist = NULL;
 	struct lpfc_dmabufext *dmp;
@@ -2041,9 +2030,9 @@ dfc_cmd_data_alloc(struct lpfc_hba * phba,
 	pcidev = phba->pcidev;
 
 	while (size) {
-		/* We get chucks of 4K */
-		if (size > 4096)
-			cnt = 4096;
+		/* We get chunks of 4K */
+		if (size > BUF_SZ_4K)
+			cnt = BUF_SZ_4K;
 		else
 			cnt = size;
 
@@ -2071,13 +2060,14 @@ dfc_cmd_data_alloc(struct lpfc_hba * phba,
 
 		dmp->size = cnt;
 
-		if (indataptr) {
-			/* Copy data from user space in */
-			if (copy_from_user
-			    ((uint8_t *) dmp->dma.virt,
-			     (void __user *) (indataptr + offset), cnt)) {
-				goto out;
-			}
+		if (indataptr || nocopydata) {
+			if (indataptr)
+				/* Copy data from user space in */
+				if (copy_from_user ((uint8_t *) dmp->dma.virt,
+					(void __user *) (indataptr + offset),
+					cnt)) {
+					goto out;
+				}
 			bpl->tus.f.bdeFlags = 0;
 
 			pci_dma_sync_single_for_device(phba->pcidev,
@@ -2107,6 +2097,20 @@ out:
 	return NULL;
 }
 
+static struct lpfc_dmabufext *
+dfc_cmd_data_alloc(struct lpfc_hba * phba,
+		   char *indataptr, struct ulp_bde64 * bpl, uint32_t size)
+{
+	/* if indataptr is null it is a rsp buffer. */
+	return __dfc_cmd_data_alloc(phba, indataptr, bpl, size,
+					0 /* don't copy user data */);
+}
+
+int
+__dfc_cmd_data_free(struct lpfc_hba * phba, struct lpfc_dmabufext * mlist)
+{
+	return dfc_cmd_data_free(phba, mlist);
+}
 static int
 dfc_cmd_data_free(struct lpfc_hba * phba, struct lpfc_dmabufext * mlist)
 {
@@ -2297,7 +2301,7 @@ lpfcdfc_do_ioctl(struct lpfcCmdInput *cip)
 	if (dfchba)
 		dfchba->ref_count++;
 	mutex_unlock(&lpfcdfc_lock);
-	if (cip->lpfc_outsz >= 4096) {
+	if (cip->lpfc_outsz >= BUF_SZ_4K) {
 
 		/*
 		 * Allocate memory for ioctl data. If buffer is bigger than 64k,
@@ -2312,7 +2316,7 @@ lpfcdfc_do_ioctl(struct lpfcCmdInput *cip)
 			total_mem = 64 * 1024;
 	} else {
 		/* Allocate memory for ioctl data */
-		total_mem = 4096;
+		total_mem = BUF_SZ_4K;
 	}
 
 	/*
@@ -2502,7 +2506,7 @@ lpfc_cdev_init(void)
 	lpfcdfc_major = register_chrdev(0,  LPFC_CHAR_DEV_NAME, &lpfc_fops);
 	if (lpfcdfc_major < 0) {
 		printk(KERN_ERR "%s:%d Unable to register \"%s\" device.\n",
-				__FUNCTION__, __LINE__, LPFC_CHAR_DEV_NAME);
+		       __func__, __LINE__, LPFC_CHAR_DEV_NAME);
 		return lpfcdfc_major;
 	}
 

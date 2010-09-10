@@ -34,7 +34,11 @@ struct kprobe;
 
 typedef u8 kprobe_opcode_t;
 #define BREAKPOINT_INSTRUCTION	0xcc
-#define MAX_INSN_SIZE 15
+#define RELATIVEJUMP_INSTRUCTION 0xe9
+/* Use the last byte of insn slot as a flag for preserving kABI compatibility */
+#define __MAX_INSN_SIZE 15
+#define MAX_INSN_SIZE (__MAX_INSN_SIZE + 1)
+#define BOOSTABLE_FLAG (MAX_INSN_SIZE - 1)
 #define MAX_STACK_SIZE 64
 #define MIN_STACK_SIZE(ADDR) (((MAX_STACK_SIZE) < \
 	(((unsigned long)current_thread_info()) + THREAD_SIZE - (ADDR))) \

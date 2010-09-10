@@ -472,7 +472,7 @@ static int __devinit xenfb_probe(struct xenbus_device *dev,
 
 	ret = register_framebuffer(fb_info);
 	if (ret) {
-		fb_dealloc_cmap(&info->fb_info->cmap);
+		fb_dealloc_cmap(&fb_info->cmap);
 		framebuffer_release(fb_info);
 		xenbus_dev_fatal(dev, ret, "register_framebuffer");
 		goto error;

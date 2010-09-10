@@ -247,10 +247,7 @@ static void acpi_processor_idle(void)
 
 	cx = pr->power.state;
 	if (!cx) {
-		if (pm_idle_save)
-			pm_idle_save();
-		else
-			acpi_safe_halt();
+		acpi_safe_halt();
 		return;
 	}
 
@@ -340,13 +337,8 @@ static void acpi_processor_idle(void)
 	case ACPI_STATE_C1:
 		/*
 		 * Invoke C1.
-		 * Use the appropriate idle routine, the one that would
-		 * be used without acpi C-states.
 		 */
-		if (pm_idle_save)
-			pm_idle_save();
-		else
-			acpi_safe_halt();
+		acpi_safe_halt();
 
 		/*
 		 * TBD: Can't get time duration while in C1, as resumes
@@ -382,7 +374,17 @@ static void acpi_processor_idle(void)
 
 	case ACPI_STATE_C3:
 
-		if (pr->flags.bm_check) {
+		/*
+		 * disable bus master
+		 * bm_check implies we need ARB_DIS
+		 * !bm_check implies we need cache flush
+		 * bm_control implies whether we can do ARB_DIS
+		 *
+		 * That leaves a case where bm_check is set and bm_control is
+		 * not set. In that case we cannot do much, we enter C3
+		 * without doing anything.
+		 */
+		if (pr->flags.bm_check && pr->flags.bm_control) {
 			if (atomic_inc_return(&c3_cpu_count) ==
 			    num_online_cpus()) {
 				/*
@@ -392,7 +394,7 @@ static void acpi_processor_idle(void)
 				acpi_set_register(ACPI_BITREG_ARB_DISABLE, 1,
 						  ACPI_MTX_DO_NOT_LOCK);
 			}
-		} else {
+		} else if (!pr->flags.bm_check) {
 			/* SMP with no shared cache... Invalidate cache  */
 			ACPI_FLUSH_CPU_CACHE();
 		}
@@ -405,7 +407,7 @@ static void acpi_processor_idle(void)
 		t2 = inl(acpi_fadt.xpm_tmr_blk.address);
 		/* Get end time (ticks) */
 		t2 = inl(acpi_fadt.xpm_tmr_blk.address);
-		if (pr->flags.bm_check) {
+		if (pr->flags.bm_check && pr->flags.bm_control) {
 			/* Enable bus master arbitration */
 			atomic_dec(&c3_cpu_count);
 			acpi_set_register(ACPI_BITREG_ARB_DISABLE, 0,
@@ -841,11 +843,17 @@ static void acpi_processor_power_verify_c3(struct acpi_processor *pr,
 	}
 
 	if (pr->flags.bm_check) {
-		/* bus mastering control is necessary */
 		if (!pr->flags.bm_control) {
-			ACPI_DEBUG_PRINT((ACPI_DB_INFO,
-					  "C3 support requires bus mastering control\n"));
-			return;
+			if (pr->flags.has_cst != 1) {
+				/* bus mastering control is necessary */
+				ACPI_DEBUG_PRINT((ACPI_DB_INFO,
+					"C3 support requires BM control\n"));
+				return;
+			} else {
+				/* Here we enter C3 without bus mastering */
+				ACPI_DEBUG_PRINT((ACPI_DB_INFO,
+					"C3 support without BM control\n"));
+			}
 		}
 	} else {
 		/*
@@ -896,10 +904,7 @@ static int acpi_processor_power_verify(struct acpi_processor *pr)
 		case ACPI_STATE_C2:
 			acpi_processor_power_verify_c2(cx);
 #ifdef ARCH_APICTIMER_STOPS_ON_C3
-			/* Some AMD systems fake C3 as C2, but still
-			   have timer troubles */
-			if (cx->valid && 
-				boot_cpu_data.x86_vendor == X86_VENDOR_AMD)
+			if (cx->valid)
 				timer_broadcast++;
 #endif
 			break;

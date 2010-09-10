@@ -288,6 +288,7 @@ rpc_clone_client(struct rpc_clnt *clnt)
 	if (new->cl_auth)
 		atomic_inc(&new->cl_auth->au_count);
 	new->cl_pmap		= &new->cl_pmap_default;
+	new->cl_pmap_result	= NULL;
 	rpciod_up();
 	return new;
 out_no_stats:
@@ -343,6 +344,10 @@ rpc_destroy_client(struct rpc_clnt *clnt)
 
 	dprintk("RPC: destroying %s client for %s\n",
 			clnt->cl_protname, clnt->cl_server);
+	if (clnt->cl_pmap_result) {
+		pmap_result_put(clnt->cl_pmap_result);
+		clnt->cl_pmap_result = NULL;
+	}
 	if (clnt->cl_auth) {
 		rpcauth_destroy(clnt->cl_auth);
 		clnt->cl_auth = NULL;
@@ -729,7 +734,7 @@ call_allocate(struct rpc_task *task)
 
 	if (xprt->ops->buf_alloc(task, bufsiz << 1) != NULL)
 		return;
-	printk(KERN_INFO "RPC: buffer allocation failed for task %p\n", task); 
+	dprintk("RPC: buffer allocation failed for task %p\n", task); 
 
 	if (RPC_IS_ASYNC(task) || !signalled()) {
 		xprt_release(task);
@@ -815,7 +820,7 @@ call_bind(struct rpc_task *task)
 				task->tk_pid, task->tk_status);
 
 	task->tk_action = call_connect;
-	if (!clnt->cl_port) {
+	if (!clnt->cl_port || clnt->cl_pmap->pm_binding) {
 		task->tk_action = call_bind_status;
 		task->tk_timeout = task->tk_xprt->bind_timeout;
 		rpc_getport(task, clnt);

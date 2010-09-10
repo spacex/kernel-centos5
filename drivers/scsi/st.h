@@ -117,7 +117,7 @@ struct scsi_tape {
 	unsigned char cln_sense_value;
 	unsigned char cln_sense_mask;
 	unsigned char use_pf;			/* Set Page Format bit in all mode selects? */
-	unsigned char try_dio;			/* try direct i/o? */
+	unsigned char try_dio;			/* try direct i/o in general? */
 	unsigned char c_algo;			/* compression algorithm */
 	unsigned char pos_unknown;			/* after reset position unknown */
 	int tape_type;
@@ -168,6 +168,7 @@ struct scsi_tape {
 #endif
 	struct gendisk *disk;
 	struct kref     kref;
+	unsigned char try_dio_now;	/* try direct i/o before next close? */
 };
 
 /* Bit masks for use_pf */

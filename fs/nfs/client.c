@@ -939,6 +939,9 @@ static int nfs4_init_server(struct nfs_server *server,
 
 	/* Initialise the client representation from the mount data */
 	server->flags = data->flags & NFS_MOUNT_FLAGMASK;
+	/* Make sure FSC stays off */
+	server->flags &= ~NFS4_MOUNT_FSCACHE;
+
 	server->caps |= NFS_CAP_ATOMIC_OPEN;
 
 	if (data->rsize)

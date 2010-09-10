@@ -52,6 +52,8 @@ struct dma_mapping_ops* dma_ops;
 EXPORT_SYMBOL(dma_ops);
 
 static unsigned long dma_reserve __initdata;
+/* Flag indicating EFI runtime executable code area */
+static int efi_runtime_code_area = 0;
 
 DEFINE_PER_CPU(struct mmu_gather, mmu_gathers);
 
@@ -96,6 +98,7 @@ void show_mem(void)
 }
 
 int after_bootmem;
+EXPORT_SYMBOL(after_bootmem);
 
 static __init void *spp_getpage(void)
 { 
@@ -235,11 +238,16 @@ phys_pmd_init(pmd_t *pmd, unsigned long address, unsigned long end)
 		unsigned long entry;
 
 		if (address >= end) {
-			for (; i < PTRS_PER_PMD; i++, pmd++)
-				set_pmd(pmd, __pmd(0));
+			if (!after_bootmem && !efi_runtime_code_area)
+				for (; i < PTRS_PER_PMD; i++, pmd++)
+					set_pmd(pmd, __pmd(0));
 			break;
 		}
 		entry = _PAGE_NX|_PAGE_PSE|_KERNPG_TABLE|_PAGE_GLOBAL|address;
+ 		if (efi_runtime_code_area) {
+ 			entry = pmd_val(*pmd);
+ 			entry &= ~_PAGE_NX;
+ 		} else entry = _PAGE_NX|_PAGE_PSE|_KERNPG_TABLE|_PAGE_GLOBAL|address;
 		entry &= __supported_pte_mask;
 		set_pmd(pmd, __pmd(entry));
 	}

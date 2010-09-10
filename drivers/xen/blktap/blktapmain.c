@@ -132,7 +132,12 @@ typedef struct domid_translate {
 	unsigned short busid;
 } domid_translate_t ;
 
-static domid_translate_t  translate_domid[MAX_TAP_DEV];
+typedef struct domid_translate_ext {
+	unsigned short domid;
+	u32 busid;
+} domid_translate_ext_t ;
+
+static domid_translate_ext_t  translate_domid[MAX_TAP_DEV];
 static tap_blkif_t *tapfds[MAX_TAP_DEV];
 
 static int __init set_blkif_reqs(char *str)
@@ -238,6 +243,7 @@ static int blktap_major;
 #define BLKTAP_IOCTL_MAJOR	     7
 #define BLKTAP_QUERY_ALLOC_REQS      8
 #define BLKTAP_IOCTL_FREEINTF        9
+#define BLKTAP_IOCTL_NEWINTF_EXT     50
 #define BLKTAP_IOCTL_PRINT_IDXS      100  
 
 /* blktap switching modes: (Set with BLKTAP_IOCTL_SETMODE)             */
@@ -394,6 +400,13 @@ void signal_tapdisk(int idx)
 {
 	tap_blkif_t *info;
 	struct task_struct *ptask;
+
+	/*
+	 * if the userland tools set things up wrong, this could be negative;
+	 * just don't try to signal in this case
+	 */
+	if (idx < 0)
+		return;
 
 	info = tapfds[idx];
 	if ( (idx > 0) && (idx < MAX_TAP_DEV) && (info->pid > 0) ) {
@@ -633,6 +646,27 @@ static int blktap_ioctl(struct inode *inode, struct file *filp,
 		}
 		translate_domid[newdev].domid = tr->domid;
 		translate_domid[newdev].busid = tr->busid;
+		return newdev;
+	}
+	case BLKTAP_IOCTL_NEWINTF_EXT:
+	{
+		void __user *udata = (void __user *) arg;
+		domid_translate_ext_t tr;
+		int newdev;
+
+		if (copy_from_user(&tr, udata, sizeof(domid_translate_ext_t)))
+			return -EFAULT;
+
+		DPRINTK("NEWINTF_EXT Req for domid %d and bus id %d\n", 
+		       tr.domid, tr.busid);
+		newdev = get_next_free_dev();
+		if (newdev < 1) {
+			WPRINTK("Error initialising /dev/xen/blktap - "
+				"No more devices\n");
+			return -1;
+		}
+		translate_domid[newdev].domid = tr.domid;
+		translate_domid[newdev].busid = tr.busid;
 		return newdev;
 	}
 	case BLKTAP_IOCTL_FREEINTF:
@@ -1151,7 +1185,7 @@ static void dispatch_rw_block_io(blkif_t *blkif,
 	int op, operation = (req->operation == BLKIF_OP_WRITE) ? WRITE : READ;
 	struct gnttab_map_grant_ref map[BLKIF_MAX_SEGMENTS_PER_REQUEST*2];
 	unsigned int nseg;
-	int ret, i;
+	int ret, i, nr_sects = 0;
 	tap_blkif_t *info = tapfds[blkif->dev_num];
 	
 	blkif_request_t *target;
@@ -1226,6 +1260,9 @@ static void dispatch_rw_block_io(blkif_t *blkif,
 					  req->seg[i].gref, blkif->domid);
 			op++;
 		}
+
+		nr_sects += (req->seg[i].last_sect - 
+			     req->seg[i].first_sect + 1);
 	}
 
 	ret = HYPERVISOR_grant_table_op(GNTTABOP_map_grant_ref, map, op);
@@ -1347,6 +1384,13 @@ static void dispatch_rw_block_io(blkif_t *blkif,
 	target->id = usr_idx;
 	wmb(); /* blktap_poll() reads req_prod_pvt asynchronously */
 	info->ufe_ring.req_prod_pvt++;
+
+	if (operation == READ) {
+		blkif->st_rd_sect += nr_sects;
+	} else if (operation == WRITE) {
+		blkif->st_wr_sect += nr_sects;
+	}
+
 	return;
 
  fail_flush:

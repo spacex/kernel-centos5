@@ -136,10 +136,20 @@ static void __init pirq_peer_trick(void)
 		busmap[e->bus] = 1;
 	}
 	for(i = 1; i < 256; i++) {
+		struct pci_sysdata *sd;
 		if (!busmap[i] || pci_find_bus(0, i))
 			continue;
-		if (pci_scan_bus(i, &pci_root_ops, NULL))
+		/* Continuation of the gross hack.
+		   sysdata cannot be NULL here because of PCI_DOMAIN support.
+		   Let's assume we're part of the same domain and node */
+		sd = kzalloc(sizeof(*sd), GFP_KERNEL);
+		if (!sd)
+			panic("Cannot allocate PCI domain sysdata");
+		if (pci_scan_bus(i, &pci_root_ops, sd))
 			printk(KERN_INFO "PCI: Discovered primary peer bus %02x [IRQ]\n", i);
+		else
+			kfree(sd);
+
 	}
 	pcibios_last_bus = -1;
 }
@@ -559,6 +569,15 @@ static __init int intel_router_probe(struct irq_router *r, struct pci_dev *route
 			r->set = pirq_piix_set;
 			return 1;
 	}
+
+	if ((device >= PCI_DEVICE_ID_INTEL_PCH_LPC_MIN) && 
+		(device <= PCI_DEVICE_ID_INTEL_PCH_LPC_MAX)) {
+		r->name = "PIIX/ICH";
+		r->get = pirq_piix_get;
+		r->set = pirq_piix_set;
+		return 1;
+	}
+
 	return 0;
 }
 

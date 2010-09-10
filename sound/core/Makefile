@@ -10,6 +10,9 @@ endif
 ifeq ($(CONFIG_SND_OSSEMUL),y)
 snd-objs     += sound_oss.o info_oss.o
 endif
+ifeq ($(CONFIG_SND_VMASTER),y)
+snd-objs     += vmaster.o
+endif
 
 snd-pcm-objs := pcm.o pcm_native.o pcm_lib.o pcm_timer.o pcm_misc.o \
 		pcm_memory.o

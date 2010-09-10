@@ -38,6 +38,8 @@ config FUSION_FC
 	  LSIFC929
 	  LSIFC929X
 	  LSIFC929XL
+	  LSIFC949X
+	  LSIFC949E
 	  Brocade FC 410/420
 
 config FUSION_SAS
@@ -54,6 +56,7 @@ config FUSION_SAS
 	  LSISAS1068
 	  LSISAS1064E
 	  LSISAS1068E
+	  LSISAS1078
 
 config FUSION_MAX_SGE
 	int "Maximum number of scatter gather entries (16 - 128)"
@@ -114,7 +117,7 @@ config FUSION_LOGGING
 
 	  echo [level] > /sys/class/scsi_host/host#/debug_level
 
-	  There are various debug levels that an be found in the source:
+	  There are various debug levels that can be found in the source:
 	  file:drivers/message/fusion/mptdebug.h
 
 endmenu

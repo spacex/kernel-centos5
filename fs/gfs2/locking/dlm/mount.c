@@ -28,15 +28,11 @@ static struct gdlm_ls *init_gdlm(lm_callback_t cb, struct gfs2_sbd *sdp,
 	ls->sdp = sdp;
 	ls->fsflags = flags;
 	spin_lock_init(&ls->async_lock);
-	INIT_LIST_HEAD(&ls->complete);
-	INIT_LIST_HEAD(&ls->blocking);
 	INIT_LIST_HEAD(&ls->delayed);
 	INIT_LIST_HEAD(&ls->submit);
 	INIT_LIST_HEAD(&ls->all_locks);
 	init_waitqueue_head(&ls->thread_wait);
 	init_waitqueue_head(&ls->wait_control);
-	ls->thread1 = NULL;
-	ls->thread2 = NULL;
 	ls->drop_time = jiffies;
 	ls->jid = -1;
 
@@ -66,6 +62,11 @@ static int make_args(struct gdlm_ls *ls, char *data_arg, int *nodir)
 
 	memset(data, 0, 256);
 	strncpy(data, data_arg, 255);
+
+	if (!strlen(data)) {
+		log_error("no mount options, (u)mount helpers not installed");
+		return -EINVAL;
+	}
 
 	for (options = data; (x = strsep(&options, ":")); ) {
 		if (!*x)
@@ -154,6 +155,8 @@ static int gdlm_mount(char *table_name, char *host_data,
 		goto out_kobj;
 	}
 
+	dlm_posix_set_fsid(ls->dlm_lockspace, ls->id);
+
 	lockstruct->ls_jid = ls->jid;
 	lockstruct->ls_first = ls->first;
 	lockstruct->ls_lockspace = ls;
@@ -229,6 +232,27 @@ static void gdlm_withdraw(void *lockspace)
 	gdlm_release_threads(ls);
 	gdlm_release_all_locks(ls);
 	gdlm_kobject_release(ls);
+}
+
+static int gdlm_plock(void *lockspace, struct lm_lockname *name,
+		struct file *file, int cmd, struct file_lock *fl)
+{
+	struct gdlm_ls *ls = lockspace;
+	return dlm_posix_lock(ls->dlm_lockspace, name->ln_number, file, cmd, fl);
+}
+
+static int gdlm_punlock(void *lockspace, struct lm_lockname *name,
+		struct file *file, struct file_lock *fl)
+{
+	struct gdlm_ls *ls = lockspace;
+	return dlm_posix_unlock(ls->dlm_lockspace, name->ln_number, file, fl);
+}
+
+static int gdlm_plock_get(void *lockspace, struct lm_lockname *name,
+		struct file *file, struct file_lock *fl)
+{
+	struct gdlm_ls *ls = lockspace;
+	return dlm_posix_get(ls->dlm_lockspace, name->ln_number, file, fl);
 }
 
 const struct lm_lockops gdlm_ops = {

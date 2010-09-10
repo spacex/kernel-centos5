@@ -249,7 +249,8 @@ fpregs_set(struct task_struct *target,
 		u32 fpc[2] = { target->thread.fp_regs.fpc, 0 };
 		BUILD_BUG_ON(offsetof(s390_fp_regs, fprs) != sizeof(fpc));
 		ret = utrace_regset_copyin(&pos, &count, &kbuf, &ubuf,
-					   &fpc, 0, sizeof(fpc));
+					   &fpc, 0,
+					   offsetof(s390_fp_regs, fprs));
 		if (ret)
 			return ret;
 
@@ -261,7 +262,8 @@ fpregs_set(struct task_struct *target,
 
 	if (ret == 0 && count > 0)
 		ret = utrace_regset_copyin(&pos, &count, &kbuf, &ubuf,
-					   target->thread.fp_regs.fprs, 0, -1);
+					   target->thread.fp_regs.fprs,
+					   offsetof(s390_fp_regs, fprs), -1);
 
 	if (ret == 0 && target == current)
 		restore_fp_regs(&target->thread.fp_regs);

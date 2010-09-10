@@ -25,8 +25,6 @@
 /* The base address of the last MMCONFIG device accessed */
 static u32 mmcfg_last_accessed_device;
 
-static DECLARE_BITMAP(fallback_slots, MAX_CHECK_BUS*32);
-
 /*
  * Functions for accessing PCI configuration space with MMCONFIG accesses
  */
@@ -34,10 +32,6 @@ static u32 get_base_addr(unsigned int seg, int bus, unsigned devfn)
 {
 	int cfg_num = -1;
 	struct acpi_table_mcfg_config *cfg;
-
-	if (seg == 0 && bus < MAX_CHECK_BUS &&
-	    test_bit(PCI_SLOT(devfn) + 32*bus, fallback_slots))
-		return 0;
 
 	while (1) {
 		++cfg_num;
@@ -81,13 +75,16 @@ static int pci_mmcfg_read(unsigned int seg, unsigned int bus,
 	u32 base;
 
 	if ((bus > 255) || (devfn > 255) || (reg > 4095)) {
-		*value = -1;
+err:		*value = -1;
 		return -EINVAL;
 	}
 
+	if (reg < 256)
+		return pci_conf1_read(seg,bus,devfn,reg,len,value);
+
 	base = get_base_addr(seg, bus, devfn);
 	if (!base)
-		return pci_conf1_read(seg,bus,devfn,reg,len,value);
+		goto err;
 
 	spin_lock_irqsave(&pci_config_lock, flags);
 
@@ -119,9 +116,12 @@ static int pci_mmcfg_write(unsigned int seg, unsigned int bus,
 	if ((bus > 255) || (devfn > 255) || (reg > 4095)) 
 		return -EINVAL;
 
+	if (reg < 256)
+		return pci_conf1_write(seg,bus,devfn,reg,len,value);
+
 	base = get_base_addr(seg, bus, devfn);
 	if (!base)
-		return pci_conf1_write(seg,bus,devfn,reg,len,value);
+		return -EINVAL;
 
 	spin_lock_irqsave(&pci_config_lock, flags);
 
@@ -149,87 +149,8 @@ static struct pci_raw_ops pci_mmcfg = {
 	.write =	pci_mmcfg_write,
 };
 
-/* K8 systems have some devices (typically in the builtin northbridge)
-   that are only accessible using type1
-   Normally this can be expressed in the MCFG by not listing them
-   and assigning suitable _SEGs, but this isn't implemented in some BIOS.
-   Instead try to discover all devices on bus 0 that are unreachable using MM
-   and fallback for them. */
-static __init void unreachable_devices(void)
-{
-	int i, k;
-	unsigned long flags;
-
-	for (k = 0; k < MAX_CHECK_BUS; k++) {
-		for (i = 0; i < 32; i++) {
-			u32 val1;
-			u32 addr;
-
-			pci_conf1_read(0, k, PCI_DEVFN(i, 0), 0, 4, &val1);
-			if (val1 == 0xffffffff)
-				continue;
-
-			/* Locking probably not needed, but safer */
-			spin_lock_irqsave(&pci_config_lock, flags);
-			addr = get_base_addr(0, k, PCI_DEVFN(i, 0));
-			if (addr != 0)
-				pci_exp_set_dev_base(addr, k, PCI_DEVFN(i, 0));
-			if (addr == 0 ||
-			    readl((u32 __iomem *)mmcfg_virt_addr) != val1) {
-				set_bit(i + 32*k, fallback_slots);
-				printk(KERN_NOTICE
-			"PCI: No mmconfig possible on %x:%x\n", k, i);
-			}
-			spin_unlock_irqrestore(&pci_config_lock, flags);
-		}
-	}
-}
-
-static int __devinit disable_mmconf(struct dmi_system_id *d)
-{
-	pci_probe &= ~PCI_PROBE_MMCONF;
-	printk(KERN_INFO "%s detected: disabling PCI MMCONFIG\n", d->ident);
-	return 0;
-}
-
-
-/*
- * Systems which cannot use PCI MMCONFIG at this time...
- */
-static struct dmi_system_id __devinitdata nommconf_dmi_table[] = {
-	{
-		.callback = disable_mmconf,
-		.ident = "HP Compaq dc5700 Microtower",
-		.matches = {
-			DMI_MATCH(DMI_PRODUCT_NAME, 
-				"HP Compaq dc5700 Microtower"),
-		},
-	},
-	{
-		.callback = disable_mmconf,
-		.ident = "DQ35MPE",
-		.matches = {
-			DMI_MATCH(DMI_BOARD_NAME,
-				  "DQ35MPE"),
-		},
-	},
-	{
-		.callback = disable_mmconf,
-		.ident = "DQ35JO",
-		.matches = {
-			DMI_MATCH(DMI_BOARD_NAME,
-				  "DQ35JO"),
-		},
-	},
-
-	{}
-};
-
-
 void __init pci_mmcfg_init(void)
 {
-	dmi_check_system(nommconf_dmi_table);
-
 	if ((pci_probe & PCI_PROBE_MMCONF) == 0)
 		return;
 
@@ -252,5 +173,4 @@ void __init pci_mmcfg_init(void)
 	raw_pci_ops = &pci_mmcfg;
 	pci_probe = pci_probe & ~PCI_PROBE_MASK;
 	pci_probe = pci_probe | PCI_PROBE_MMCONF | PCI_USING_MMCONF;
-	unreachable_devices();
 }

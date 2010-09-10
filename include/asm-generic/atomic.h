@@ -66,6 +66,12 @@ static inline void atomic_long_sub(long i, atomic_long_t *l)
 	atomic64_sub(i, v);
 }
 
+static inline int atomic_long_dec_and_test(atomic_long_t *l)
+{
+	atomic64_t *v = (atomic64_t *)l;
+
+	return atomic64_dec_and_test(v);
+}
 #else
 
 typedef atomic_t atomic_long_t;
@@ -111,6 +117,13 @@ static inline void atomic_long_sub(long i, atomic_long_t *l)
 	atomic_t *v = (atomic_t *)l;
 
 	atomic_sub(i, v);
+}
+
+static inline int atomic_long_dec_and_test(atomic_long_t *l)
+{
+	atomic_t *v = (atomic_t *)l;
+
+	return atomic_dec_and_test(v);
 }
 
 #endif

@@ -1620,6 +1620,10 @@ int sdp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 
 		iov++;
 
+		/* Limiting the size_goal is required when using 64K pages*/
+		if (size_goal > SDP_MAX_PAYLOAD)
+			size_goal = SDP_MAX_PAYLOAD;
+
 		bz = sdp_bz_setup(ssk, from, seglen, size_goal);
 
 		while (seglen > 0) {
@@ -2346,9 +2350,6 @@ static int __init sdp_proc_init(void)
 	sdp_seq_afinfo.seq_fops->llseek        = seq_lseek;
 	sdp_seq_afinfo.seq_fops->release       = seq_release_private;
 
-	p = proc_net_fops_create(sdp_seq_afinfo.name, S_IRUGO, sdp_seq_afinfo.seq_fops);
-	if (p)
-		p->data = &sdp_seq_afinfo;
 	p = proc_net_fops_create(sdp_seq_afinfo.name, S_IRUGO, sdp_seq_afinfo.seq_fops);
 	if (p)
 		p->data = &sdp_seq_afinfo;

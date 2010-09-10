@@ -43,9 +43,30 @@ static int connect_ring(struct backend_info *);
 static void backend_changed(struct xenbus_watch *, const char **,
 			    unsigned int);
 
+static int blkback_name(blkif_t *blkif, char *buf)
+{
+	char *devpath, *devname;
+	struct xenbus_device *dev = blkif->be->dev;
+
+	devpath = xenbus_read(XBT_NIL, dev->nodename, "dev", NULL);
+	if (IS_ERR(devpath)) 
+		return PTR_ERR(devpath);
+	
+	if ((devname = strstr(devpath, "/dev/")) != NULL)
+		devname += strlen("/dev/");
+	else
+		devname  = devpath;
+
+	snprintf(buf, TASK_COMM_LEN, "blkback.%d.%s", blkif->domid, devname);
+	kfree(devpath);
+	
+	return 0;
+}
+
 static void update_blkif_status(blkif_t *blkif)
 { 
 	int err;
+	char name[TASK_COMM_LEN];
 
 	/* Not ready to connect? */
 	if (!blkif->irq || !blkif->vbd.bdev)
@@ -60,10 +81,13 @@ static void update_blkif_status(blkif_t *blkif)
 	if (blkif->be->dev->state != XenbusStateConnected)
 		return;
 
-	blkif->xenblkd = kthread_run(blkif_schedule, blkif,
-				     "xvd %d %02x:%02x",
-				     blkif->domid,
-				     blkif->be->major, blkif->be->minor);
+	err = blkback_name(blkif, name);
+	if (err) {
+		xenbus_dev_error(blkif->be->dev, err, "get blkback dev name");
+		return;
+	}
+
+	blkif->xenblkd = kthread_run(blkif_schedule, blkif, name);
 	if (IS_ERR(blkif->xenblkd)) {
 		err = PTR_ERR(blkif->xenblkd);
 		blkif->xenblkd = NULL;
@@ -86,16 +110,20 @@ static void update_blkif_status(blkif_t *blkif)
 									\
 		return sprintf(buf, format, ##args);			\
 	}								\
-	DEVICE_ATTR(name, S_IRUGO, show_##name, NULL)
+	static DEVICE_ATTR(name, S_IRUGO, show_##name, NULL)
 
-VBD_SHOW(oo_req, "%d\n", be->blkif->st_oo_req);
-VBD_SHOW(rd_req, "%d\n", be->blkif->st_rd_req);
-VBD_SHOW(wr_req, "%d\n", be->blkif->st_wr_req);
+VBD_SHOW(oo_req,  "%d\n", be->blkif->st_oo_req);
+VBD_SHOW(rd_req,  "%d\n", be->blkif->st_rd_req);
+VBD_SHOW(wr_req,  "%d\n", be->blkif->st_wr_req);
+VBD_SHOW(rd_sect, "%d\n", be->blkif->st_rd_sect);
+VBD_SHOW(wr_sect, "%d\n", be->blkif->st_wr_sect);
 
 static struct attribute *vbdstat_attrs[] = {
 	&dev_attr_oo_req.attr,
 	&dev_attr_rd_req.attr,
 	&dev_attr_wr_req.attr,
+	&dev_attr_rd_sect.attr,
+	&dev_attr_wr_sect.attr,
 	NULL
 };
 
@@ -144,6 +172,9 @@ static int blkback_remove(struct xenbus_device *dev)
 
 	DPRINTK("");
 
+	if (be->major || be->minor)
+		xenvbd_sysfs_delif(dev);
+
 	if (be->backend_watch.node) {
 		unregister_xenbus_watch(&be->backend_watch);
 		kfree(be->backend_watch.node);
@@ -156,9 +187,6 @@ static int blkback_remove(struct xenbus_device *dev)
 		blkif_free(be->blkif);
 		be->blkif = NULL;
 	}
-
-	if (be->major || be->minor)
-		xenvbd_sysfs_delif(dev);
 
 	kfree(be);
 	dev->dev.driver_data = NULL;

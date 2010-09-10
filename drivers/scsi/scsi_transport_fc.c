@@ -1569,8 +1569,7 @@ fc_attach_transport(struct fc_function_template *ft)
 	SETUP_PRIVATE_RPORT_ATTRIBUTE_RD(roles);
 	SETUP_PRIVATE_RPORT_ATTRIBUTE_RD(port_state);
 	SETUP_PRIVATE_RPORT_ATTRIBUTE_RD(scsi_target_id);
-	if (ft->terminate_rport_io)
-		SETUP_PRIVATE_RPORT_ATTRIBUTE_RW(fast_io_fail_tmo);
+	SETUP_PRIVATE_RPORT_ATTRIBUTE_RW(fast_io_fail_tmo);
 
 	BUG_ON(count > FC_RPORT_NUM_ATTRS);
 
@@ -1739,6 +1738,22 @@ fc_remove_host(struct Scsi_Host *shost)
 }
 EXPORT_SYMBOL(fc_remove_host);
 
+static void fc_terminate_rport_io(struct fc_rport *rport)
+{
+	struct Scsi_Host *shost = rport_to_shost(rport);
+	struct fc_internal *i = to_fc_internal(shost->transportt);
+
+	/* Involve the LLDD if possible to terminate all io on the rport. */
+	if (i->f->terminate_rport_io)
+		i->f->terminate_rport_io(rport);
+
+	/*
+	 * must unblock to flush queued IO. The caller will have set
+	 * the port_state or flags, so that fc_remote_port_chkready will
+	 * fail IO.
+	 */
+	scsi_target_unblock(&rport->dev);
+}
 
 /**
  * fc_starget_delete - called to delete the scsi decendents of an rport
@@ -1761,8 +1776,8 @@ fc_starget_delete(void *data)
 	 */
 	if (i->f->dev_loss_tmo_callbk)
 		i->f->dev_loss_tmo_callbk(rport);
-	else if (i->f->terminate_rport_io)
-		i->f->terminate_rport_io(rport);
+	else
+		fc_terminate_rport_io(rport);
 
 	spin_lock_irqsave(shost->host_lock, flags);
 	if (rport->flags & FC_RPORT_DEVLOSS_PENDING) {
@@ -1806,8 +1821,8 @@ fc_rport_final_delete(void *data)
 		fc_starget_delete(data);
 	else if (i->f->dev_loss_tmo_callbk)
 		i->f->dev_loss_tmo_callbk(rport);
-	else if (i->f->terminate_rport_io)
-		i->f->terminate_rport_io(rport);
+	else
+		fc_terminate_rport_io(rport);
 
 	transport_remove_device(dev);
 	device_del(dev);
@@ -2039,7 +2054,8 @@ fc_remote_port_add(struct Scsi_Host *shost, int channel,
 
 				spin_lock_irqsave(shost->host_lock, flags);
 
-				rport->flags &= ~FC_RPORT_DEVLOSS_PENDING;
+				rport->flags &= ~(FC_RPORT_FAST_FAIL_TIMEDOUT |
+						  FC_RPORT_DEVLOSS_PENDING);
 
 				/* initiate a scan of the target */
 				rport->flags |= FC_RPORT_SCAN_PENDING;
@@ -2095,6 +2111,7 @@ fc_remote_port_add(struct Scsi_Host *shost, int channel,
 			rport->port_id = ids->port_id;
 			rport->roles = ids->roles;
 			rport->port_state = FC_PORTSTATE_ONLINE;
+			rport->flags &= ~FC_RPORT_FAST_FAIL_TIMEDOUT;
 
 			if (fci->f->dd_fcrport_size)
 				memset(rport->dd_data, 0,
@@ -2177,7 +2194,6 @@ void
 fc_remote_port_delete(struct fc_rport  *rport)
 {
 	struct Scsi_Host *shost = rport_to_shost(rport);
-	struct fc_internal *i = to_fc_internal(shost->transportt);
 	int timeout = rport->dev_loss_tmo;
 	unsigned long flags;
 
@@ -2210,7 +2226,7 @@ fc_remote_port_delete(struct fc_rport  *rport)
 
 	/* see if we need to kill io faster than waiting for device loss */
 	if ((rport->fast_io_fail_tmo != -1) &&
-	    (rport->fast_io_fail_tmo < timeout) && (i->f->terminate_rport_io))
+	    (rport->fast_io_fail_tmo < timeout))
 		fc_queue_devloss_work(shost, &rport->fail_io_work,
 					rport->fast_io_fail_tmo * HZ);
 
@@ -2279,7 +2295,8 @@ fc_remote_port_rolechg(struct fc_rport  *rport, u32 roles)
 			fc_flush_devloss(shost);
 
 		spin_lock_irqsave(shost->host_lock, flags);
-		rport->flags &= ~FC_RPORT_DEVLOSS_PENDING;
+		rport->flags &= ~(FC_RPORT_FAST_FAIL_TIMEDOUT |
+				  FC_RPORT_DEVLOSS_PENDING);
 		spin_unlock_irqrestore(shost->host_lock, flags);
 
 		/* ensure any stgt delete functions are done */
@@ -2369,6 +2386,7 @@ fc_timeout_deleted_rport(void  *data)
 	rport->supported_classes = FC_COS_UNSPECIFIED;
 	rport->roles = FC_RPORT_ROLE_UNKNOWN;
 	rport->port_state = FC_PORTSTATE_NOTPRESENT;
+	rport->flags &= ~FC_RPORT_FAST_FAIL_TIMEDOUT;
 
 	/* remove the identifiers that aren't used in the consisting binding */
 	switch (fc_host->tgtid_bind_type) {
@@ -2412,13 +2430,12 @@ static void
 fc_timeout_fail_rport_io(void  *data)
 {
 	struct fc_rport *rport = (struct fc_rport *)data;
-	struct Scsi_Host *shost = rport_to_shost(rport);
-	struct fc_internal *i = to_fc_internal(shost->transportt);
 
 	if (rport->port_state != FC_PORTSTATE_BLOCKED)
 		return;
 
-	i->f->terminate_rport_io(rport);
+	rport->flags |= FC_RPORT_FAST_FAIL_TIMEDOUT;
+	fc_terminate_rport_io(rport);
 }
 
 /**

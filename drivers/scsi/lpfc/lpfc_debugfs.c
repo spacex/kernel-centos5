@@ -863,7 +863,7 @@ lpfc_debugfs_initialize(struct lpfc_vport *vport)
 		atomic_set(&lpfc_debugfs_hba_count, 0);
 		if (!lpfc_debugfs_root) {
 			lpfc_printf_vlog(vport, KERN_ERR, LOG_INIT,
-					 "0409 Cannot create debugfs root\n");
+					 "0408 Cannot create debugfs root\n");
 			goto debug_failed;
 		}
 	}
@@ -877,7 +877,7 @@ lpfc_debugfs_initialize(struct lpfc_vport *vport)
 			debugfs_create_dir(name, lpfc_debugfs_root);
 		if (!phba->hba_debugfs_root) {
 			lpfc_printf_vlog(vport, KERN_ERR, LOG_INIT,
-					 "0409 Cannot create debugfs hba\n");
+					 "0412 Cannot create debugfs hba\n");
 			goto debug_failed;
 		}
 		atomic_inc(&lpfc_debugfs_hba_count);
@@ -891,7 +891,7 @@ lpfc_debugfs_initialize(struct lpfc_vport *vport)
 				 phba, &lpfc_debugfs_op_hbqinfo);
 		if (!phba->debug_hbqinfo) {
 			lpfc_printf_vlog(vport, KERN_ERR, LOG_INIT,
-				"0409 Cannot create debugfs hbqinfo\n");
+				"0411 Cannot create debugfs hbqinfo\n");
 			goto debug_failed;
 		}
 
@@ -903,7 +903,7 @@ lpfc_debugfs_initialize(struct lpfc_vport *vport)
 				 phba, &lpfc_debugfs_op_dumpHBASlim);
 		if (!phba->debug_dumpHBASlim) {
 			lpfc_printf_vlog(vport, KERN_ERR, LOG_INIT,
-				"0409 Cannot create debugfs dumpHBASlim\n");
+				"0413 Cannot create debugfs dumpHBASlim\n");
 			goto debug_failed;
 		}
 
@@ -915,7 +915,7 @@ lpfc_debugfs_initialize(struct lpfc_vport *vport)
 				 phba, &lpfc_debugfs_op_dumpHostSlim);
 		if (!phba->debug_dumpHostSlim) {
 			lpfc_printf_vlog(vport, KERN_ERR, LOG_INIT,
-				"0409 Cannot create debugfs dumpHostSlim\n");
+				"0414 Cannot create debugfs dumpHostSlim\n");
 			goto debug_failed;
 		}
 
@@ -945,7 +945,7 @@ lpfc_debugfs_initialize(struct lpfc_vport *vport)
 				 phba, &lpfc_debugfs_op_slow_ring_trc);
 		if (!phba->debug_slow_ring_trc) {
 			lpfc_printf_vlog(vport, KERN_ERR, LOG_INIT,
-					 "0409 Cannot create debugfs "
+					 "0415 Cannot create debugfs "
 					 "slow_ring_trace\n");
 			goto debug_failed;
 		}
@@ -956,7 +956,7 @@ lpfc_debugfs_initialize(struct lpfc_vport *vport)
 				GFP_KERNEL);
 			if (!phba->slow_ring_trc) {
 				lpfc_printf_vlog(vport, KERN_ERR, LOG_INIT,
-						 "0409 Cannot create debugfs "
+						 "0416 Cannot create debugfs "
 						 "slow_ring buffer\n");
 				goto debug_failed;
 			}
@@ -973,7 +973,7 @@ lpfc_debugfs_initialize(struct lpfc_vport *vport)
 			debugfs_create_dir(name, phba->hba_debugfs_root);
 		if (!vport->vport_debugfs_root) {
 			lpfc_printf_vlog(vport, KERN_ERR, LOG_INIT,
-					 "0409 Cant create debugfs");
+					 "0417 Cant create debugfs");
 			goto debug_failed;
 		}
 		atomic_inc(&phba->debugfs_vport_count);
@@ -1002,7 +1002,7 @@ lpfc_debugfs_initialize(struct lpfc_vport *vport)
 
 	if (!vport->disc_trc) {
 		lpfc_printf_vlog(vport, KERN_ERR, LOG_INIT,
-				 "0409 Cannot create debugfs disc trace "
+				 "0418 Cannot create debugfs disc trace "
 				 "buffer\n");
 		goto debug_failed;
 	}
@@ -1015,7 +1015,7 @@ lpfc_debugfs_initialize(struct lpfc_vport *vport)
 				 vport, &lpfc_debugfs_op_disc_trc);
 	if (!vport->debug_disc_trc) {
 		lpfc_printf_vlog(vport, KERN_ERR, LOG_INIT,
-				 "0409 Cannot create debugfs "
+				 "0419 Cannot create debugfs "
 				 "discovery_trace\n");
 		goto debug_failed;
 	}

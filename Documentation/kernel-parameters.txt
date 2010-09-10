@@ -226,6 +226,18 @@ running once the system is up.
 	aic79xx=	[HW,SCSI]
 			See Documentation/scsi/aic79xx.txt.
 
+        amd_iommu=      [HW, X86_64]
+			Pass parameter to the AMD IOMMU driver in the system
+			Note that enabling the driver is done by passing in iommu=
+			Enable use iommu="amd" 
+			isolate - enable device isolation (each device could get 
+			it's own protection domain
+
+	amd_iommu_size= [HW,X86-64]
+			Define the size of the aperture for the AMD IOMMU
+			driver.  Possible values are:
+			'32M', '64M' (default), '128M', '256M', '512M', '1G'
+
 	amijoy.map=	[HW,JOY] Amiga joystick support
 			Map of devices attached to JOY0DAT and JOY1DAT
 			Format: <a>,<b>
@@ -457,6 +469,10 @@ running once the system is up.
 	digiepca=	[HW,SERIAL]
 			See drivers/char/README.epca and
 			Documentation/digiepca.txt.
+
+	divider=	[IA-32,X86-64]
+			divide kernel HZ rate by given value.
+			Format: <num>, where <num> is between 1 and 25
 
 	dmascc=		[HW,AX25,SERIAL] AX.25 Z80SCC driver with DMA
 			support available.
@@ -775,6 +791,52 @@ running once the system is up.
 
 	llsc*=		[IA64] See function print_params() in
 			arch/ia64/sn/kernel/llsc4.c.
+	libata.dma=	[LIBATA] DMA control
+			libata.dma=0	  Disable all PATA and SATA DMA
+			libata.dma=1	  PATA and SATA Disk DMA only
+			libata.dma=2	  ATAPI (CDROM) DMA only
+			libata.dma=4	  Compact Flash DMA only 
+			Combinations also work, so libata.dma=3 enables DMA
+			for disks and CDROMs, but not CFs.
+
+	libata.noacpi	[LIBATA] Disables use of ACPI in libata suspend/resume
+			when set.
+			Format: <int>
+
+	libata.force=	[LIBATA] Force configurations.  The format is comma
+			separated list of "[ID:]VAL" where ID is
+			PORT[:DEVICE].  PORT and DEVICE are decimal numbers
+			matching port, link or device.  Basically, it matches
+			the ATA ID string printed on console by libata.  If
+			the whole ID part is omitted, the last PORT and DEVICE
+			values are used.  If ID hasn't been specified yet, the
+			configuration applies to all ports, links and devices.
+
+			If only DEVICE is omitted, the parameter applies to
+			the port and all links and devices behind it.  DEVICE
+			number of 0 either selects the first device or the
+			first fan-out link behind PMP device.  It does not
+			select the host link.  DEVICE number of 15 selects the
+			host link and device attached to it.
+
+			The VAL specifies the configuration to force.  As long
+			as there's no ambiguity shortcut notation is allowed.
+			For example, both 1.5 and 1.5G would work for 1.5Gbps.
+			The following configurations can be forced.
+
+			* Cable type: 40c, 80c, short40c, unk, ign or sata.
+			  Any ID with matching PORT is used.
+
+			* SATA link speed limit: 1.5Gbps or 3.0Gbps.
+
+			* Transfer mode: pio[0-7], mwdma[0-4] and udma[0-7].
+			  udma[/][16,25,33,44,66,100,133] notation is also
+			  allowed.
+
+			* [no]ncq: Turn on or off NCQ.
+
+			If there are multiple matching configurations changing
+			the same attribute, the last one is used.
 
 	load_ramdisk=	[RAM] List of ramdisks to load from floppy
 			See Documentation/ramdisk.txt.
@@ -1630,6 +1692,9 @@ running once the system is up.
 
 	sonycd535=	[HW,CD]
 			Format: <io>[,<irq>]
+
+	softlockup_panic=
+			[KNL] Should the soft-lockup detector generate panics.
 
 	sonypi.*=	[HW] Sony Programmable I/O Control Device driver
 			See Documentation/sonypi.txt

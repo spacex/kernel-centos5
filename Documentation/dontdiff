@@ -86,6 +86,7 @@ filelist
 fixdep
 fore200e_mkfirm
 fore200e_pca_fw.c*
+gate.lds
 gen-devlist
 gen-kdb_cmds.c*
 gen_crc32table

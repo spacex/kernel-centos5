@@ -385,6 +385,18 @@ ahd_pci_config(struct ahd_softc *ahd, struct ahd_pci_identity *entry)
 	error = ahd_pci_map_int(ahd);
 	if (!error)
 		ahd->init_level++;
+
+	/*
+	 * If we are a kdump kernel rebooting the box, this controller was not
+	 * shut down properly, and as a result its possible for I/O operations
+	 * to be left in flight that can cause the device to stop responding
+	 * specifically the card can be in a paused state, and requests can
+	 * be queued to it prior to it being unpaused in ahd_resume, leading to
+	 * panic.  Handle this by resetting the card here, as we do in shutdown
+	 */
+	if (reset_devices)
+		error = ahd_reset(ahd, TRUE);
+
 	return error;
 }
 

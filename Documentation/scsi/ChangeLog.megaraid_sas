@@ -1,3 +1,53 @@
+1 Release Date    : Thur.July. 24 11:41:51 PST 2008 -
+			(emaild-id:megaraidlinux@lsi.com)
+			Sumant Patro
+			Bo Yang 
+
+2 Current Version : 00.00.04.01-RH1
+3 Older Version   : 00.00.03.22
+
+1. Add the new controller (0078, 0079) support to the driver
+	Those controllers are LSI's next generatation(gen2) SAS controllers. 
+
+1 Release Date    : Mon.June. 23 10:12:45 PST 2008 -
+			(emaild-id:megaraidlinux@lsi.com)
+			Sumant Patro
+			Bo Yang 
+
+2 Current Version : 00.00.03.22
+3 Older Version   : 00.00.03.20
+
+1. Add shutdown DCMD cmd to the shutdown routine to make FW shutdown proper.
+2. Unexpected interrupt occurs in HWR Linux driver, add the dumy readl pci flush will fix this issue.
+
+1 Release Date    : Mon. May 15 11:02:31 PDT 2008 -
+			(emaild-id:megaraidlinux@lsi.com)
+			Sumant Patro
+			Bo Yang
+
+2 Current Version : 00.00.03.20-RH1
+3 Older Version   : 00.00.03.16
+
+1. Fixed the driver frame count.
+	When Driver sent wrong frame count to firmware.  As this
+	particular command is sent to drive, FW is seeing continuous
+	chip resets and so the command will timeout.
+
+2. Add the new controller(1078DE) support to the driver
+	and Increase the max_wait to 60 from 10 in the controller
+	operational status.  With this max_wait increase, driver will
+	make sure the FW will 	finish the pending cmd for KDUMP case.
+
+1 Release Date    : Thur. Nov. 07 16:30:43 PST 2007 -
+			(emaild-id:megaraidlinux@lsi.com)
+			Sumant Patro
+			Bo Yang
+
+2 Current Version : 00.00.03.16
+3 Older Version   : 00.00.03.15
+
+1. Increased MFI_POLL_TIMEOUT_SECS to 60 seconds from 10. FW may take
+	a max of 60 seconds to respond to the INIT cmd.
 
 1 Release Date    : Wed. Nov. 21 10:29:45 PST 2007 -
 			(emaild-id:megaraidlinux@lsi.com)

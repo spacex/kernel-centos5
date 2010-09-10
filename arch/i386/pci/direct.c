@@ -175,31 +175,6 @@ static struct pci_raw_ops pci_direct_conf2 = {
 	.write =	pci_conf2_write,
 };
 
-/*
- * Legacy PCI Config read and write routines for buses that can't use
- * MMCONFIG accesses in systems where MMCONFIG is the default PCI config
- * access mechanism.
- */
-static struct pci_raw_ops *pci_legacy_conf;
-
-static int pci_ops_legacy_read(struct pci_bus *bus, unsigned int devfn,
-			      int where, int size, u32 *value)
-{
-	return pci_legacy_conf->read(0, bus->number, devfn, where,
-				     size, value);
-}
-
-static int pci_ops_legacy_write(struct pci_bus *bus, unsigned int devfn,
-			       int where, int size, u32 value)
-{
-	return pci_legacy_conf->write(0, bus->number, devfn, where,
-				      size, value);
-}
-
-struct pci_ops pci_legacy_ops = {
-	.read =		pci_ops_legacy_read,
-	.write =	pci_ops_legacy_write,
-};
 
 /*
  * Before we decide to use direct hardware access mechanisms, we try to do some
@@ -282,27 +257,22 @@ static int __init pci_check_type2(void)
 void __init pci_direct_init(void)
 {
 	struct resource *region, *region2;
-	int type;
 
-	if (((pci_probe & PCI_PROBE_CONF1) == 0) &&
-	    ((pci_probe & PCI_USING_MMCONF) == 0))
+	if ((pci_probe & PCI_PROBE_CONF1) == 0)
 		goto type2;
 	region = request_region(0xCF8, 8, "PCI conf1");
 	if (!region)
 		goto type2;
 
 	if (pci_check_type1()) {
-		type = 1;
+		printk(KERN_INFO "PCI: Using configuration type 1\n");
 		raw_pci_ops = &pci_direct_conf1;
-		pci_legacy_conf = &pci_direct_conf1;
-		goto pass;
+		return;
 	}
 	release_resource(region);
 
  type2:
-	if (((pci_probe & PCI_PROBE_CONF2) == 0) &&
-	    ((pci_probe & PCI_USING_MMCONF) == 0))
-
+	if ((pci_probe & PCI_PROBE_CONF2) == 0)
 		return;
 	region = request_region(0xCF8, 4, "PCI conf2");
 	if (!region)
@@ -312,21 +282,12 @@ void __init pci_direct_init(void)
 		goto fail2;
 
 	if (pci_check_type2()) {
-		type = 2;
+		printk(KERN_INFO "PCI: Using configuration type 2\n");
 		raw_pci_ops = &pci_direct_conf2;
-		pci_legacy_conf = &pci_direct_conf2;
-		goto pass;
+		return;
 	}
 
 	release_resource(region2);
  fail2:
 	release_resource(region);
-	return;
- pass:
-	if (pci_probe & PCI_USING_MMCONF)
-		pr_info("PCI: Buses that can't use MMCONFIG will use type %x "
-			"PCI conf access.\n", type);
-	else
-		pr_info("PCI: Using configuration type %x\n", type);
-	return;
 }

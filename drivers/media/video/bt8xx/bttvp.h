@@ -74,8 +74,6 @@
 
 #define UNSET (-1U)
 
-#define clamp(x, low, high) min (max (low, x), high)
-
 /* ---------------------------------------------------------- */
 
 struct bttv_tvnorm {

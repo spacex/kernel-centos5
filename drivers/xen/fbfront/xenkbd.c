@@ -52,7 +52,7 @@ static irqreturn_t input_handler(int rq, void *dev_id, struct pt_regs *regs)
 	__u32 cons, prod;
 
 	prod = page->in_prod;
-	if (prod == page->out_cons)
+	if (prod == page->in_cons)
 		return IRQ_HANDLED;
 	rmb();			/* ensure we see ring contents up to prod */
 	for (cons = page->in_cons; cons != prod; cons++) {
@@ -61,6 +61,9 @@ static irqreturn_t input_handler(int rq, void *dev_id, struct pt_regs *regs)
 
 		switch (event->type) {
 		case XENKBD_TYPE_MOTION:
+			if (event->motion.rel_z)
+				input_report_rel(info->dev, REL_WHEEL,
+						 -event->motion.rel_z);
 			input_report_rel(info->dev, REL_X, event->motion.rel_x);
 			input_report_rel(info->dev, REL_Y, event->motion.rel_y);
 			break;
@@ -68,6 +71,9 @@ static irqreturn_t input_handler(int rq, void *dev_id, struct pt_regs *regs)
 			input_report_key(info->dev, event->key.keycode, event->key.pressed);
 			break;
 		case XENKBD_TYPE_POS:
+			if (event->pos.rel_z)
+				input_report_rel(info->dev, REL_WHEEL,
+						 -event->pos.rel_z);
 			input_report_abs(info->dev, ABS_X, event->pos.abs_x);
 			input_report_abs(info->dev, ABS_Y, event->pos.abs_y);
 			break;
@@ -95,12 +101,11 @@ int __devinit xenkbd_probe(struct xenbus_device *dev,
 	}
 	dev->dev.driver_data = info;
 	info->xbdev = dev;
+	info->irq = -1;
 
-	info->page = (void *)__get_free_page(GFP_KERNEL);
+	info->page = (void *)__get_free_page(GFP_KERNEL | __GFP_ZERO);
 	if (!info->page)
 		goto error_nomem;
-	info->page->in_cons = info->page->in_prod = 0;
-	info->page->out_cons = info->page->out_prod = 0;
 
 	input_dev = input_allocate_device();
 	if (!input_dev)
@@ -110,7 +115,7 @@ int __devinit xenkbd_probe(struct xenbus_device *dev,
 	input_dev->keybit[LONG(BTN_MOUSE)]
 		= BIT(BTN_LEFT) | BIT(BTN_MIDDLE) | BIT(BTN_RIGHT);
 	/* TODO additional buttons */
-	input_dev->relbit[0] = BIT(REL_X) | BIT(REL_Y);
+	input_dev->relbit[0] = BIT(REL_X) | BIT(REL_Y) | BIT(REL_WHEEL);
 
 	/* FIXME not sure this is quite right */
 	for (i = 0; i < 256; i++)
@@ -148,6 +153,7 @@ static int xenkbd_resume(struct xenbus_device *dev)
 	struct xenkbd_info *info = dev->dev.driver_data;
 
 	xenkbd_disconnect_backend(info);
+	memset(info->page, 0, PAGE_SIZE);
 	return xenkbd_connect_backend(dev, info);
 }
 
@@ -156,7 +162,8 @@ static int xenkbd_remove(struct xenbus_device *dev)
 	struct xenkbd_info *info = dev->dev.driver_data;
 
 	xenkbd_disconnect_backend(info);
-	input_unregister_device(info->dev);
+	if (info->dev)
+		input_unregister_device(info->dev);
 	free_page((unsigned long)info->page);
 	kfree(info);
 	return 0;

@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2006-2007 Emulex.  All rights reserved.           *
+ * Copyright (C) 2006-2008 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -171,6 +171,7 @@ lpfc_dhchap_authenticate(struct Scsi_Host *shost,
 		lpfc_issue_els_auth(vport, ndlp, DHCHAP_SUCCESS,
 				    suc_payload, suc_payload_len);
 		kfree(suc_payload);
+		vport->auth.direction |= AUTH_DIRECTION_LOCAL;
 	} else {
 		lpfc_printf_vlog(vport, KERN_ERR, LOG_SECURITY,
 				 "1005 AUTHENTICATION_FAILURE Nport:x%x\n",

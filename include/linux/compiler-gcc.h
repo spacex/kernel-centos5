@@ -23,10 +23,12 @@
     (typeof(ptr)) (__ptr + (off)); })
 
 
+#define __aligned(x)			__attribute__((aligned(x)))
 #define inline		inline		__attribute__((always_inline))
 #define __inline__	__inline__	__attribute__((always_inline))
 #define __inline	__inline	__attribute__((always_inline))
 #define __deprecated			__attribute__((deprecated))
+#define __packed                       __attribute__((packed))
 #define  noinline			__attribute__((noinline))
 #define __attribute_pure__		__attribute__((pure))
 #define __attribute_const__		__attribute__((__const__))

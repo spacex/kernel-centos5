@@ -433,6 +433,7 @@ struct dlm_ls {
 	struct list_head	ls_list;	/* list of lockspaces */
 	dlm_lockspace_t		*ls_local_handle;
 	uint32_t		ls_global_id;	/* global unique lockspace ID */
+	uint32_t		ls_fsid;
 	uint32_t		ls_exflags;
 	int			ls_lvblen;
 	int			ls_count;	/* reference count */
@@ -569,6 +570,9 @@ static inline int dlm_no_directory(struct dlm_ls *ls)
 {
 	return (ls->ls_exflags & DLM_LSFL_NODIR) ? 1 : 0;
 }
+
+int dlm_plock_init(void);
+void dlm_plock_exit(void);
 
 #endif				/* __DLM_INTERNAL_DOT_H__ */
 

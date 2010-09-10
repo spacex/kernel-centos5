@@ -60,4 +60,55 @@ do { \
 
 #endif
 
+
+#ifdef CONFIG_PREEMPT_NOTIFIERS
+
+#include <linux/list.h>
+
+
+struct preempt_notifier;
+struct task_struct;
+
+/**
+ * preempt_ops - notifiers called when a task is preempted and rescheduled
+ * @sched_in: we're about to be rescheduled:
+ *    notifier: struct preempt_notifier for the task being scheduled
+ *    cpu:  cpu we're scheduled on
+ * @sched_out: we've just been preempted
+ *    notifier: struct preempt_notifier for the task being preempted
+ *    next: the task that's kicking us out
+ */
+struct preempt_ops {
+	void (*sched_in)(struct preempt_notifier *notifier, int cpu);
+	void (*sched_out)(struct preempt_notifier *notifier,
+			  struct task_struct *next);
+};
+
+/**
+ * preempt_notifier - key for installing preemption notifiers
+ * @link: internal use
+ * @ops: defines the notifier functions to be called
+ * @task: the task this notifier is associated to
+ *
+ * Usually used in conjunction with container_of().
+ */
+struct preempt_notifier {
+	struct hlist_node link;
+	struct preempt_ops *ops;
+	struct task_struct *task;
+};
+
+void preempt_notifier_register(struct preempt_notifier *notifier);
+void preempt_notifier_unregister(struct preempt_notifier *notifier);
+
+static inline void preempt_notifier_init(struct preempt_notifier *notifier,
+				     struct preempt_ops *ops)
+{
+	INIT_HLIST_NODE(&notifier->link);
+	notifier->task = NULL;
+	notifier->ops = ops;
+}
+
+#endif /* !CONFIG_PREEMPT_NOTIFIERS */
+
 #endif /* __LINUX_PREEMPT_H */

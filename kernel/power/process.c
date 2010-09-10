@@ -106,7 +106,7 @@ int freeze_processes(void)
 				 * Freeze it unless there's a vfork completion
 				 * pending
 				 */
-				if (!p->vfork_done)
+				if (!task_aux(p)->vfork_done)
 					freeze_process(p);
 				nr_user++;
 			} else {

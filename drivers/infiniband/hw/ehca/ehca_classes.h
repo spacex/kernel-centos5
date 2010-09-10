@@ -128,6 +128,8 @@ struct ehca_shca {
 	/* MR pgsize: bit 0-3 means 4K, 64K, 1M, 16M respectively */
 	u32 hca_cap_mr_pgsize;
 	int max_mtu;
+	int max_num_qps;
+	int max_num_cqs;
 	atomic_t num_cqs;
 	atomic_t num_qps;
 };
@@ -135,7 +137,6 @@ struct ehca_shca {
 struct ehca_pd {
 	struct ib_pd ib_pd;
 	struct ipz_pd fw_pd;
-	u32 ownpid;
 	/* small queue mgmt */
 	struct mutex lock;
 	struct list_head free[2];
@@ -157,6 +158,30 @@ struct ehca_mod_qp_parm {
 
 #define EHCA_MOD_QP_PARM_MAX 4
 
+#define QMAP_IDX_MASK 0xFFFFULL
+
+/* struct for tracking if cqes have been reported to the application */
+struct ehca_qmap_entry {
+	u16 app_wr_id;
+	u8 reported;
+	u8 cqe_req;
+};
+
+struct ehca_queue_map {
+	struct ehca_qmap_entry *map; /* list of qmap entries */
+	unsigned int entries;        /* number of qmap entries */
+	unsigned int tail;           /* tail pointer */
+	unsigned int left_to_poll;   /* CQEs to poll before gen. flush CQEs */
+	unsigned int next_wqe_idx;   /* Idx to first wqe to be flushed */
+};
+
+/* function to calculate the next index for the qmap */
+static inline unsigned int next_index(unsigned int cur_index, unsigned int limit)
+{
+	unsigned int temp = cur_index + 1;
+	return (temp == limit) ? 0 : temp;
+}
+
 struct ehca_qp {
 	union {
 		struct ib_qp ib_qp;
@@ -164,8 +189,11 @@ struct ehca_qp {
 	};
 	u32 qp_type;
 	enum ehca_ext_qp_type ext_type;
+	enum ib_qp_state state;
 	struct ipz_queue ipz_squeue;
+	struct ehca_queue_map sq_map;
 	struct ipz_queue ipz_rqueue;
+	struct ehca_queue_map rq_map;
 	struct h_galpas galpas;
 	u32 qkey;
 	u32 real_qp_num;
@@ -194,6 +222,9 @@ struct ehca_qp {
 	u32 packet_count;
 	atomic_t nr_events; /* events seen */
 	wait_queue_head_t wait_completion;
+	int mig_armed;
+	struct list_head sq_err_node;
+	struct list_head rq_err_node;
 };
 
 #define IS_SRQ(qp) (qp->ext_type == EQPT_SRQ)
@@ -220,10 +251,11 @@ struct ehca_cq {
 	atomic_t nr_events; /* #events seen */
 	wait_queue_head_t wait_completion;
 	spinlock_t task_lock;
-	u32 ownpid;
 	/* mmap counter for resources mapped into user space */
 	u32 mm_count_queue;
 	u32 mm_count_galpa;
+	struct list_head sqp_err_list;
+	struct list_head rqp_err_list;
 };
 
 enum ehca_mr_flag {

@@ -8,6 +8,7 @@ obj-$(CONFIG_CBE_THERM)			+= cbe_thermal.o
 obj-$(CONFIG_CBE_CPUFREQ_PMI)           += cbe_cpufreq_pmi.o
 obj-$(CONFIG_CBE_CPUFREQ)               += cbe-cpufreq.o
 cbe-cpufreq-y                           += cbe_cpufreq_pervasive.o cbe_cpufreq.o
+obj-$(CONFIG_CBE_CPUFREQ_SPU_GOVERNOR)    += cpufreq_spudemand.o
 
 obj-$(CONFIG_CBE_AXON_UTL)		+= axon_utl.o
 obj-$(CONFIG_CBE_AXON_PCI)		+= axon_pci-error.o
@@ -23,7 +24,7 @@ spu-manage-$(CONFIG_PPC_CELLEB)		+= spu_manage.o
 spu-manage-$(CONFIG_PPC_CELL_NATIVE)	+= spu_manage.o
 obj-$(CONFIG_SPU_BASE)			+= spu_callbacks.o spu_base.o \
 					   spu_notify.o \
-					   spu_syscalls.o \
+					   spu_syscalls.o spu_fault.o \
 					   $(spu-priv1-y) \
 					   $(spu-manage-y) \
 					   spufs/

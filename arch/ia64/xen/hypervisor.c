@@ -52,152 +52,6 @@ static int p2m_expose_init(void);
 
 EXPORT_SYMBOL(__hypercall);
 
-//XXX same as i386, x86_64 contiguous_bitmap_set(), contiguous_bitmap_clear()
-// move those to lib/contiguous_bitmap?
-//XXX discontigmem/sparsemem
-
-/*
- * Bitmap is indexed by page number. If bit is set, the page is part of a
- * xen_create_contiguous_region() area of memory.
- */
-unsigned long *contiguous_bitmap;
-
-#ifdef CONFIG_VIRTUAL_MEM_MAP
-/* Following logic is stolen from create_mem_map_table() for virtual memmap */
-static int
-create_contiguous_bitmap(u64 start, u64 end, void *arg)
-{
-	unsigned long address, start_page, end_page;
-	unsigned long bitmap_start, bitmap_end;
-	unsigned char *bitmap;
-	int node;
-	pgd_t *pgd;
-	pud_t *pud;
-	pmd_t *pmd;
-	pte_t *pte;
-
-	bitmap_start = (unsigned long)contiguous_bitmap +
-	               ((__pa(start) >> PAGE_SHIFT) >> 3);
-	bitmap_end = (unsigned long)contiguous_bitmap +
-	             (((__pa(end) >> PAGE_SHIFT) + 2 * BITS_PER_LONG) >> 3);
-
-	start_page = bitmap_start & PAGE_MASK;
-	end_page = PAGE_ALIGN(bitmap_end);
-	node = paddr_to_nid(__pa(start));
-
-	bitmap = alloc_bootmem_pages_node(NODE_DATA(node),
-	                                  end_page - start_page);
-	BUG_ON(!bitmap);
-	memset(bitmap, 0, end_page - start_page);
-
-	for (address = start_page; address < end_page; address += PAGE_SIZE) {
-		pgd = pgd_offset_k(address);
-		if (pgd_none(*pgd))
-			pgd_populate(&init_mm, pgd,
-			             alloc_bootmem_pages_node(NODE_DATA(node),
-			                                      PAGE_SIZE));
-		pud = pud_offset(pgd, address);
-
-		if (pud_none(*pud))
-			pud_populate(&init_mm, pud,
-			             alloc_bootmem_pages_node(NODE_DATA(node),
-			                                      PAGE_SIZE));
-		pmd = pmd_offset(pud, address);
-
-		if (pmd_none(*pmd))
-			pmd_populate_kernel(&init_mm, pmd,
-			                    alloc_bootmem_pages_node
-			                    (NODE_DATA(node), PAGE_SIZE));
-		pte = pte_offset_kernel(pmd, address);
-
-		if (pte_none(*pte))
-			set_pte(pte,
-			        pfn_pte(__pa(bitmap + (address - start_page))
-			                >> PAGE_SHIFT, PAGE_KERNEL));
-	}
-	return 0;
-}
-#endif
-
-static void
-__contiguous_bitmap_init(unsigned long size)
-{
-	contiguous_bitmap = alloc_bootmem_pages(size);
-	BUG_ON(!contiguous_bitmap);
-	memset(contiguous_bitmap, 0, size);
-}
-
-void
-xen_contiguous_bitmap_init(unsigned long end_pfn)
-{
-	unsigned long size = (end_pfn + 2 * BITS_PER_LONG) >> 3;
-#ifndef CONFIG_VIRTUAL_MEM_MAP
-	__contiguous_bitmap_init(size);
-#else
-	unsigned long max_gap = 0;
-
-	efi_memmap_walk(find_largest_hole, (u64*)&max_gap);
-	if (max_gap < LARGE_GAP) {
-		__contiguous_bitmap_init(size);
-	} else {
-		unsigned long map_size = PAGE_ALIGN(size);
-		vmalloc_end -= map_size;
-		contiguous_bitmap = (unsigned long*)vmalloc_end;
-		efi_memmap_walk(create_contiguous_bitmap, NULL);
-	}
-#endif
-}
-
-#if 0
-int
-contiguous_bitmap_test(void* p)
-{
-	return test_bit(__pa(p) >> PAGE_SHIFT, contiguous_bitmap);
-}
-#endif
-
-static void contiguous_bitmap_set(
-	unsigned long first_page, unsigned long nr_pages)
-{
-	unsigned long start_off, end_off, curr_idx, end_idx;
-
-	curr_idx  = first_page / BITS_PER_LONG;
-	start_off = first_page & (BITS_PER_LONG-1);
-	end_idx   = (first_page + nr_pages) / BITS_PER_LONG;
-	end_off   = (first_page + nr_pages) & (BITS_PER_LONG-1);
-
-	if (curr_idx == end_idx) {
-		contiguous_bitmap[curr_idx] |=
-			((1UL<<end_off)-1) & -(1UL<<start_off);
-	} else {
-		contiguous_bitmap[curr_idx] |= -(1UL<<start_off);
-		while ( ++curr_idx < end_idx )
-			contiguous_bitmap[curr_idx] = ~0UL;
-		contiguous_bitmap[curr_idx] |= (1UL<<end_off)-1;
-	}
-}
-
-static void contiguous_bitmap_clear(
-	unsigned long first_page, unsigned long nr_pages)
-{
-	unsigned long start_off, end_off, curr_idx, end_idx;
-
-	curr_idx  = first_page / BITS_PER_LONG;
-	start_off = first_page & (BITS_PER_LONG-1);
-	end_idx   = (first_page + nr_pages) / BITS_PER_LONG;
-	end_off   = (first_page + nr_pages) & (BITS_PER_LONG-1);
-
-	if (curr_idx == end_idx) {
-		contiguous_bitmap[curr_idx] &=
-			-(1UL<<end_off) | ((1UL<<start_off)-1);
-	} else {
-		contiguous_bitmap[curr_idx] &= (1UL<<start_off)-1;
-		while ( ++curr_idx != end_idx )
-			contiguous_bitmap[curr_idx] = 0;
-		contiguous_bitmap[curr_idx] &= -(1UL<<end_off);
-	}
-}
-
 // __xen_create_contiguous_region(), __xen_destroy_contiguous_region()
 // are based on i386 xen_create_contiguous_region(),
 // xen_destroy_contiguous_region()
@@ -273,8 +127,6 @@ __xen_create_contiguous_region(unsigned long vstart,
 		} else
 			success = 1;
 	}
-	if (success)
-		contiguous_bitmap_set(start_gpfn, num_gpfn);
 #if 0
 	if (success) {
 		unsigned long mfn;
@@ -333,9 +185,6 @@ __xen_destroy_contiguous_region(unsigned long vstart, unsigned int order)
         };
 	
 
-	if (!test_bit(start_gpfn, contiguous_bitmap))
-		return;
-
 	if (unlikely(order > MAX_CONTIG_ORDER))
 		return;
 
@@ -345,8 +194,6 @@ __xen_destroy_contiguous_region(unsigned long vstart, unsigned int order)
 	scrub_pages(vstart, num_gpfn);
 
 	balloon_lock(flags);
-
-	contiguous_bitmap_clear(start_gpfn, num_gpfn);
 
         /* Do the exchange for non-contiguous MFNs. */
 	in_frame = start_gpfn;

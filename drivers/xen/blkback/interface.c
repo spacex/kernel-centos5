@@ -150,8 +150,16 @@ int blkif_map(blkif_t *blkif, unsigned long shared_page, unsigned int evtchn)
 		BUG();
 	}
 
-	blkif->irq = bind_evtchn_to_irqhandler(
+	err = bind_evtchn_to_irqhandler(
 		blkif->evtchn, blkif_be_int, 0, "blkif-backend", blkif);
+
+        if (err < 0) {
+ 		unmap_frontend_page(blkif);
+		free_vm_area(blkif->blk_ring_area);
+		blkif->blk_rings.common.sring = NULL;
+		return err;
+        }
+        blkif->irq = err;
 
 	return 0;
 }

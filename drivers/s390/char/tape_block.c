@@ -177,11 +177,11 @@ tapeblock_requeue(void *data) {
 			tapeblock_end_request(req, 0);
 			continue;
 		}
+		blkdev_dequeue_request(req);
+		nr_queued++;
 		spin_unlock_irq(&device->blk_data.request_queue_lock);
 		rc = tapeblock_start_request(device, req);
 		spin_lock_irq(&device->blk_data.request_queue_lock);
-		blkdev_dequeue_request(req);
-		nr_queued++;
 	}
 	spin_unlock_irq(&device->blk_data.request_queue_lock);
 	atomic_set(&device->blk_data.requeue_scheduled, 0);

@@ -195,7 +195,17 @@ xencomm_privcmd_sysctl(privcmd_hypercall_t *hypercall)
 		return -EFAULT;
 
 	if (kern_op.interface_version != XEN_SYSCTL_INTERFACE_VERSION)
-		return -EACCES;
+	{
+	    /*
+	     * RHEL5 ABI compat: Allow through physinfo calls with
+	     * newer versions for NUMA extensions
+	     */
+	    if (kern_op.cmd == XEN_SYSCTL_physinfo &&
+		kern_op.interface_version == (XEN_SYSCTL_INTERFACE_VERSION+1))
+	      printk(KERN_DEBUG "Allowing physinfo call with newer ABI version\n");
+	    else
+	      return -EACCES;
+	}
 
 	op_desc = xencomm_create_inline(&kern_op);
 
@@ -209,7 +219,6 @@ xencomm_privcmd_sysctl(privcmd_hypercall_t *hypercall)
 		                     (void *)desc);
 		break;
 	case XEN_SYSCTL_tbuf_op:
-	case XEN_SYSCTL_physinfo:
 	case XEN_SYSCTL_sched_id:
 		break;
 	case XEN_SYSCTL_perfc_op:
@@ -265,6 +274,17 @@ xencomm_privcmd_sysctl(privcmd_hypercall_t *hypercall)
 		set_xen_guest_handle(kern_op.u.getdomaininfolist.buffer,
 				     (void *)desc);
 		break;
+	case XEN_SYSCTL_physinfo:
+		ret = xencomm_create(
+			xen_guest_handle(kern_op.u.physinfo.cpu_to_node),
+			kern_op.u.physinfo.max_cpu_id * sizeof(uint32_t),
+			&desc, GFP_KERNEL);
+		if (ret)
+			return ret;
+
+		set_xen_guest_handle(kern_op.u.physinfo.cpu_to_node,
+		                     (void *)desc);
+		break;
 	default:
 		printk("%s: unknown sysctl cmd %d\n", __func__, kern_op.cmd);
 		return -ENOSYS;
@@ -277,7 +297,7 @@ xencomm_privcmd_sysctl(privcmd_hypercall_t *hypercall)
 
 	ret = xencomm_arch_hypercall_sysctl(op_desc);
 
-	/* FIXME: should we restore the handle?  */
+	/* FIXME: should we restore the handles?  */
 	if (copy_to_user(user_op, &kern_op, sizeof(xen_sysctl_t)))
 		ret = -EFAULT;
 

@@ -50,6 +50,15 @@
 #define LPFC_LINK_SPEED_BITMAP 0x00000117
 #define LPFC_LINK_SPEED_STRING "0, 1, 2, 4, 8"
 
+extern struct bin_attribute sysfs_menlo_attr;
+
+/*
+ * Write key size should be multiple of 4. If write key is changed
+ * make sure that library write key is also changed.
+ */
+#define LPFC_REG_WRITE_KEY_SIZE	4
+#define LPFC_REG_WRITE_KEY	"EMLX"
+
 static void
 lpfc_jedec_to_ascii(int incr, char hdw[])
 {
@@ -135,6 +144,16 @@ lpfc_programtype_show(struct class_device *cdev, char *buf)
 	return snprintf(buf, PAGE_SIZE, "%s\n",phba->ProgramType);
 }
 
+static ssize_t
+lpfc_mlomgmt_show(struct class_device *cdev, char *buf)
+{
+	struct Scsi_Host  *shost = class_to_shost(cdev);
+	struct lpfc_vport *vport = (struct lpfc_vport *) shost->hostdata;
+	struct lpfc_hba   *phba = vport->phba;
+
+	return snprintf(buf, PAGE_SIZE, "%d\n",
+		(phba->sli.sli_flag & LPFC_MENLO_MAINT));
+}
 static ssize_t
 lpfc_vportnum_show(struct class_device *cdev, char *buf)
 {
@@ -228,8 +247,10 @@ lpfc_state_show(struct class_device *cdev, char *buf)
 					"Unknown\n");
 			break;
 		}
-
-		if (phba->fc_topology == TOPOLOGY_LOOP) {
+		if (phba->sli.sli_flag & LPFC_MENLO_MAINT)
+			len += snprintf(buf + len, PAGE_SIZE-len,
+					"   Menlo Maint Mode\n");
+		else if (phba->fc_topology == TOPOLOGY_LOOP) {
 			if (vport->fc_flag & FC_PUBLIC_LOOP)
 				len += snprintf(buf + len, PAGE_SIZE-len,
 						"   Public Loop\n");
@@ -679,6 +700,134 @@ lpfc_poll_store(struct class_device *cdev, const char *buf,
 	return strlen(buf);
 }
 
+static ssize_t
+lpfc_auth_state_show(struct class_device *cdev, char *buf)
+{
+	struct Scsi_Host  *shost = class_to_shost(cdev);
+	struct lpfc_vport *vport = (struct lpfc_vport *) shost->hostdata;
+	switch (vport->auth.auth_state) {
+	case LPFC_AUTH_UNKNOWN:
+		if (vport->auth.auth_msg_state == LPFC_AUTH_NEGOTIATE ||
+		    vport->auth.auth_msg_state == LPFC_DHCHAP_CHALLENGE ||
+		    vport->auth.auth_msg_state == LPFC_DHCHAP_REPLY ||
+		    vport->auth.auth_msg_state == LPFC_DHCHAP_SUCCESS_REPLY)
+			return snprintf(buf, PAGE_SIZE, "Authenticating\n");
+		else
+			return snprintf(buf, PAGE_SIZE, "Not Authenticated\n");
+	case LPFC_AUTH_FAIL:
+		return snprintf(buf, PAGE_SIZE, "Failed\n");
+	case LPFC_AUTH_SUCCESS:
+		if (vport->auth.auth_msg_state == LPFC_AUTH_NEGOTIATE ||
+		    vport->auth.auth_msg_state == LPFC_DHCHAP_CHALLENGE ||
+		    vport->auth.auth_msg_state == LPFC_DHCHAP_REPLY ||
+		    vport->auth.auth_msg_state == LPFC_DHCHAP_SUCCESS_REPLY)
+			return snprintf(buf, PAGE_SIZE, "Authenticating\n");
+		else if (vport->auth.auth_msg_state == LPFC_DHCHAP_SUCCESS)
+			return snprintf(buf, PAGE_SIZE, "Authenticated\n");
+	}
+	return snprintf(buf, PAGE_SIZE, "Unknown\n");
+}
+
+static ssize_t
+lpfc_auth_dir_show(struct class_device *cdev, char *buf)
+{
+	struct Scsi_Host  *shost = class_to_shost(cdev);
+	struct lpfc_vport *vport = (struct lpfc_vport *) shost->hostdata;
+	if (!vport->cfg_enable_auth ||
+	    vport->auth.auth_state != LPFC_AUTH_SUCCESS)
+		return snprintf(buf, PAGE_SIZE, "Unknown\n");
+	if (vport->auth.direction == AUTH_DIRECTION_LOCAL)
+		return snprintf(buf, PAGE_SIZE, "Local Authenticated\n");
+	else if (vport->auth.direction == AUTH_DIRECTION_REMOTE)
+		return snprintf(buf, PAGE_SIZE, "Remote Authenticated\n");
+	else if (vport->auth.direction == AUTH_DIRECTION_BIDI)
+		return snprintf(buf, PAGE_SIZE, "Bidi Authentication\n");
+	return snprintf(buf, PAGE_SIZE, "Unknown\n");
+}
+
+static ssize_t
+lpfc_auth_protocol_show(struct class_device *cdev, char *buf)
+{
+	struct Scsi_Host  *shost = class_to_shost(cdev);
+	struct lpfc_vport *vport = (struct lpfc_vport *) shost->hostdata;
+	if (vport->cfg_enable_auth &&
+	    vport->auth.auth_state == LPFC_AUTH_SUCCESS)
+		return snprintf(buf, PAGE_SIZE, "1 (DH-CHAP)\n");
+	else
+		return snprintf(buf, PAGE_SIZE, "Unknown\n");
+}
+
+static ssize_t
+lpfc_auth_dhgroup_show(struct class_device *cdev, char *buf)
+{
+	struct Scsi_Host  *shost = class_to_shost(cdev);
+	struct lpfc_vport *vport = (struct lpfc_vport *) shost->hostdata;
+	if (!vport->cfg_enable_auth ||
+	    vport->auth.auth_state != LPFC_AUTH_SUCCESS)
+		return snprintf(buf, PAGE_SIZE, "Unknown\n");
+	switch (vport->auth.group_id) {
+	case DH_GROUP_NULL:
+		return snprintf(buf, PAGE_SIZE, "0 (NULL)\n");
+	case DH_GROUP_1024:
+		return snprintf(buf, PAGE_SIZE, "1 (1024)\n");
+	case DH_GROUP_1280:
+		return snprintf(buf, PAGE_SIZE, "2 (1280)\n");
+	case DH_GROUP_1536:
+		return snprintf(buf, PAGE_SIZE, "3 (1536)\n");
+	case DH_GROUP_2048:
+		return snprintf(buf, PAGE_SIZE, "4 (2048)\n");
+	}
+	return snprintf(buf, PAGE_SIZE, "%d (Unrecognized)\n",
+			vport->auth.group_id);
+}
+
+static ssize_t
+lpfc_auth_hash_show(struct class_device *cdev, char *buf)
+{
+	struct Scsi_Host  *shost = class_to_shost(cdev);
+	struct lpfc_vport *vport = (struct lpfc_vport *) shost->hostdata;
+	if (!vport->cfg_enable_auth ||
+	    vport->auth.auth_state != LPFC_AUTH_SUCCESS)
+		return snprintf(buf, PAGE_SIZE, "Unknown\n");
+	switch (vport->auth.hash_id) {
+	case FC_SP_HASH_MD5:
+		return snprintf(buf, PAGE_SIZE, "5 (MD5)\n");
+	case FC_SP_HASH_SHA1:
+		return snprintf(buf, PAGE_SIZE, "6 (SHA1)\n");
+	}
+	return snprintf(buf, PAGE_SIZE, "%d (Unrecognized)\n",
+			vport->auth.hash_id);
+}
+static ssize_t
+lpfc_auth_last_show(struct class_device *cdev, char *buf)
+{
+	struct Scsi_Host  *shost = class_to_shost(cdev);
+	struct lpfc_vport *vport = (struct lpfc_vport *) shost->hostdata;
+	struct timeval last_time;
+	if (!vport->cfg_enable_auth || vport->auth.last_auth == 0)
+		return snprintf(buf, PAGE_SIZE, "%d\n", -1);
+	jiffies_to_timeval((jiffies - vport->auth.last_auth), &last_time);
+	return snprintf(buf, PAGE_SIZE, "%ld\n", last_time.tv_sec);
+}
+
+static ssize_t
+lpfc_auth_next_show(struct class_device *cdev, char *buf)
+{
+	struct Scsi_Host  *shost = class_to_shost(cdev);
+	struct lpfc_vport *vport = (struct lpfc_vport *) shost->hostdata;
+	unsigned long next_jiff;
+	struct timeval next_time;
+	if (!vport->cfg_enable_auth ||
+	    vport->auth.last_auth == 0 ||
+	    vport->auth.reauth_interval == 0)
+		return snprintf(buf, PAGE_SIZE, "%d\n", -1);
+	/* calculate the amount of time left until next auth */
+	next_jiff = (msecs_to_jiffies(vport->auth.reauth_interval * 60000) +
+		     vport->auth.last_auth) - jiffies;
+	jiffies_to_timeval(next_jiff, &next_time);
+	return snprintf(buf, PAGE_SIZE, "%ld\n", next_time.tv_sec);
+}
+
 #define lpfc_param_show(attr)	\
 static ssize_t \
 lpfc_##attr##_show(struct class_device *cdev, char *buf) \
@@ -783,7 +932,7 @@ lpfc_##attr##_init(struct lpfc_vport *vport, int val) \
 		return 0;\
 	}\
 	lpfc_printf_vlog(vport, KERN_ERR, LOG_INIT, \
-			 "0449 lpfc_"#attr" attribute cannot be set to %d, "\
+			 "0423 lpfc_"#attr" attribute cannot be set to %d, "\
 			 "allowed range is ["#minval", "#maxval"]\n", val); \
 	vport->cfg_##attr = default;\
 	return -EINVAL;\
@@ -798,7 +947,7 @@ lpfc_##attr##_set(struct lpfc_vport *vport, int val) \
 		return 0;\
 	}\
 	lpfc_printf_vlog(vport, KERN_ERR, LOG_INIT, \
-			 "0450 lpfc_"#attr" attribute cannot be set to %d, "\
+			 "0424 lpfc_"#attr" attribute cannot be set to %d, "\
 			 "allowed range is ["#minval", "#maxval"]\n", val); \
 	return -EINVAL;\
 }
@@ -922,6 +1071,7 @@ static CLASS_DEVICE_ATTR(option_rom_version, S_IRUGO,
 					lpfc_option_rom_version_show, NULL);
 static CLASS_DEVICE_ATTR(num_discovered_ports, S_IRUGO,
 					lpfc_num_discovered_ports_show, NULL);
+static CLASS_DEVICE_ATTR(menlo_mgmt_mode, S_IRUGO, lpfc_mlomgmt_show, NULL);
 static CLASS_DEVICE_ATTR(nport_evt_cnt, S_IRUGO, lpfc_nport_evt_cnt_show, NULL);
 static CLASS_DEVICE_ATTR(lpfc_drvr_version, S_IRUGO, lpfc_drvr_version_show,
 			 NULL);
@@ -939,6 +1089,13 @@ static CLASS_DEVICE_ATTR(used_xri, S_IRUGO, lpfc_used_xri_show, NULL);
 static CLASS_DEVICE_ATTR(npiv_info, S_IRUGO, lpfc_npiv_info_show, NULL);
 static CLASS_DEVICE_ATTR(lpfc_temp_sensor, S_IRUGO, lpfc_temp_sensor_show,
 			 NULL);
+static CLASS_DEVICE_ATTR(auth_state, S_IRUGO, lpfc_auth_state_show, NULL);
+static CLASS_DEVICE_ATTR(auth_dir, S_IRUGO, lpfc_auth_dir_show, NULL);
+static CLASS_DEVICE_ATTR(auth_protocol, S_IRUGO, lpfc_auth_protocol_show, NULL);
+static CLASS_DEVICE_ATTR(auth_dhgroup, S_IRUGO, lpfc_auth_dhgroup_show, NULL);
+static CLASS_DEVICE_ATTR(auth_hash, S_IRUGO, lpfc_auth_hash_show, NULL);
+static CLASS_DEVICE_ATTR(auth_last, S_IRUGO, lpfc_auth_last_show, NULL);
+static CLASS_DEVICE_ATTR(auth_next, S_IRUGO, lpfc_auth_next_show, NULL);
 
 static int
 lpfc_parse_wwn(const char *ns, uint8_t *nm)
@@ -964,21 +1121,37 @@ lpfc_parse_wwn(const char *ns, uint8_t *nm)
 
 	return 0;
 }
+
 static ssize_t
 lpfc_create_vport(struct class_device *cdev, const char *buf, size_t count)
 {
 	struct Scsi_Host  *shost = class_to_shost(cdev);
 	uint8_t wwnn[8];
 	uint8_t wwpn[8];
+	char vname[LPFC_VNAME_LEN + 1];
 	uint8_t stat;
+	int i = 0;
+	int vname_length = 0;
 
-	stat = lpfc_parse_wwn(&buf[0], wwpn);
+	stat = lpfc_parse_wwn(&buf[i], wwpn);
 	if (stat)
 		return stat;
-	stat = lpfc_parse_wwn(&buf[17], wwnn);
+	/* The wwnn starts one character after the wwpn */
+	i += (sizeof(wwpn) * 2) + 1;
+	stat = lpfc_parse_wwn(&buf[i], wwnn);
 	if (stat)
 		return stat;
-	if (lpfc_vport_create(shost, wwnn, wwpn))
+	/* The vname starts one character after the wwnn */
+	i += (sizeof(wwpn) * 2) + 1;
+	/* Skip the null terminator at the end and see how long the vname is */
+	if (count > (i + 1)) {
+		vname_length = count - (i + 1);
+		if (vname_length > LPFC_VNAME_LEN)
+			vname_length = LPFC_VNAME_LEN;
+		memcpy(vname, &buf[i], vname_length);
+	}
+	vname[vname_length] = '\0';
+	if (lpfc_vport_create(shost, wwnn, wwpn, vname))
 		return -EIO;
 	return count;
 }
@@ -994,11 +1167,14 @@ lpfc_delete_vport(struct class_device *cdev, const char *buf, size_t count)
 	uint8_t wwnn[8];
 	uint8_t wwpn[8];
 	struct lpfc_vport *vport;
+	int i = 0;
 
-	stat = lpfc_parse_wwn(&buf[0], wwpn);
+	stat = lpfc_parse_wwn(&buf[i], wwpn);
 	if (stat)
 		return stat;
-	stat = lpfc_parse_wwn(&buf[17], wwnn);
+	/* The wwnn starts one character after the wwpn */
+	i += (sizeof(wwpn) * 2) + 1;
+	stat = lpfc_parse_wwn(&buf[i], wwnn);
 	if (stat)
 		return stat;
 
@@ -1044,6 +1220,21 @@ lpfc_npiv_vports_inuse_show(struct class_device *cdev, char *buf)
 static CLASS_DEVICE_ATTR(npiv_vports_inuse, S_IRUGO,
 			 lpfc_npiv_vports_inuse_show, NULL);
 static CLASS_DEVICE_ATTR(max_npiv_vports, S_IRUGO, lpfc_max_vpi_show, NULL);
+
+static ssize_t
+lpfc_symbolic_name_show(struct class_device *cdev, char *buf)
+{
+	struct Scsi_Host  *shost = class_to_shost(cdev);
+	struct lpfc_vport *vport = (struct lpfc_vport *) shost->hostdata;
+	int length;
+	char symbname[256];
+
+	length = lpfc_vport_symbolic_port_name(vport, symbname, 256);
+	return snprintf(buf, PAGE_SIZE, "%s\n", symbname);
+}
+
+static CLASS_DEVICE_ATTR(lpfc_symbolic_name, S_IRUGO,
+			 lpfc_symbolic_name_show, NULL);
 
 static char *lpfc_soft_wwn_key = "C99G71SL8032A";
 
@@ -1280,7 +1471,7 @@ lpfc_nodev_tmo_init(struct lpfc_vport *vport, int val)
 		vport->cfg_nodev_tmo = vport->cfg_devloss_tmo;
 		if (val != LPFC_DEF_DEVLOSS_TMO)
 			lpfc_printf_vlog(vport, KERN_ERR, LOG_INIT,
-					 "0402 Ignoring nodev_tmo module "
+					 "0407 Ignoring nodev_tmo module "
 					 "parameter because devloss_tmo is "
 					 "set.\n");
 		return 0;
@@ -1534,7 +1725,7 @@ lpfc_restrict_login_init(struct lpfc_vport *vport, int val)
 {
 	if (val < 0 || val > 1) {
 		lpfc_printf_vlog(vport, KERN_ERR, LOG_INIT,
-				 "0449 lpfc_restrict_login attribute cannot "
+				 "0422 lpfc_restrict_login attribute cannot "
 				 "be set to %d, allowed range is [0, 1]\n",
 				 val);
 		vport->cfg_restrict_login = 1;
@@ -1553,7 +1744,7 @@ lpfc_restrict_login_set(struct lpfc_vport *vport, int val)
 {
 	if (val < 0 || val > 1) {
 		lpfc_printf_vlog(vport, KERN_ERR, LOG_INIT,
-				 "0450 lpfc_restrict_login attribute cannot "
+				 "0425 lpfc_restrict_login attribute cannot "
 				 "be set to %d, allowed range is [0, 1]\n",
 				 val);
 		vport->cfg_restrict_login = 1;
@@ -1685,7 +1876,7 @@ lpfc_link_speed_init(struct lpfc_hba *phba, int val)
 		return 0;
 	}
 	lpfc_printf_log(phba, KERN_ERR, LOG_INIT,
-			"0454 lpfc_link_speed attribute cannot "
+			"0405 lpfc_link_speed attribute cannot "
 			"be set to %d, allowed values are "
 			"["LPFC_LINK_SPEED_STRING"]\n", val);
 	phba->cfg_link_speed = 0;
@@ -1709,6 +1900,48 @@ LPFC_VPORT_ATTR_R(fcp_class, 3, 2, 3,
 */
 LPFC_VPORT_ATTR_RW(use_adisc, 0, 0, 1,
 		   "Use ADISC on rediscovery to authenticate FCP devices");
+
+/*
+# lpfc_max_scsicmpl_time: Use scsi command completion time to control I/O queue
+# depth. Default value is 0. When the value of this parameter is zero the
+# SCSI command completion time is not used for controlling I/O queue depth. When
+# the parameter is set to a non-zero value, the I/O queue depth is controlled
+# to limit the I/O completion time to the parameter value.
+# The value is set in milliseconds.
+*/
+static int lpfc_max_scsicmpl_time = 0;
+module_param(lpfc_max_scsicmpl_time, int, 0);
+MODULE_PARM_DESC(lpfc_max_scsicmpl_time,
+	"Use command completion time to control queue depth");
+lpfc_vport_param_show(max_scsicmpl_time);
+lpfc_vport_param_init(max_scsicmpl_time, 0, 0, 60000);
+static int
+lpfc_max_scsicmpl_time_set(struct lpfc_vport *vport, int val)
+{
+	struct Scsi_Host *shost = lpfc_shost_from_vport(vport);
+	struct lpfc_nodelist *ndlp, *next_ndlp;
+
+	if (val == vport->cfg_max_scsicmpl_time)
+		return 0;
+	if ((val < 0) || (val > 60000))
+		return -EINVAL;
+	vport->cfg_max_scsicmpl_time = val;
+
+	spin_lock_irq(shost->host_lock);
+	list_for_each_entry_safe(ndlp, next_ndlp, &vport->fc_nodes, nlp_listp) {
+		if (!NLP_CHK_NODE_ACT(ndlp))
+			continue;
+		if (ndlp->nlp_state == NLP_STE_UNUSED_NODE)
+			continue;
+		ndlp->cmd_qdepth = LPFC_MAX_TGT_QDEPTH;
+	}
+	spin_unlock_irq(shost->host_lock);
+	return 0;
+}
+lpfc_vport_param_store(max_scsicmpl_time);
+static CLASS_DEVICE_ATTR(lpfc_max_scsicmpl_time, S_IRUGO | S_IWUSR,
+			 lpfc_max_scsicmpl_time_show,
+			 lpfc_max_scsicmpl_time_store);
 
 /*
 # lpfc_ack0: Use ACK0, instead of ACK1 for class 2 acknowledgement. Value
@@ -1828,7 +2061,7 @@ lpfc_enable_auth_set(struct lpfc_vport *vport, int val)
 		return 0;
 	}
 	lpfc_printf_vlog(vport, KERN_ERR, LOG_INIT,
-			 "0450 lpfc_enable_auth attribute cannot be set to %d, "
+			 "0426 lpfc_enable_auth attribute cannot be set to %d, "
 			 "allowed range is [0, 1]\n", val);
 	return -EINVAL;
 }
@@ -1932,6 +2165,7 @@ struct class_device_attribute *lpfc_hba_attrs[] = {
 	&class_device_attr_option_rom_version,
 	&class_device_attr_state,
 	&class_device_attr_num_discovered_ports,
+	&class_device_attr_menlo_mgmt_mode,
 	&class_device_attr_lpfc_drvr_version,
 	&class_device_attr_lpfc_temp_sensor,
 	&class_device_attr_lpfc_log_verbose,
@@ -1977,12 +2211,21 @@ struct class_device_attribute *lpfc_hba_attrs[] = {
 	&class_device_attr_max_npiv_vports,
 	&class_device_attr_vport_delete,
 	&class_device_attr_vport_create,
+	&class_device_attr_auth_state,
+	&class_device_attr_auth_dir,
+	&class_device_attr_auth_protocol,
+	&class_device_attr_auth_dhgroup,
+	&class_device_attr_auth_hash,
+	&class_device_attr_auth_last,
+	&class_device_attr_auth_next,
+	&class_device_attr_lpfc_symbolic_name,
 	&class_device_attr_lpfc_soft_wwnn,
 	&class_device_attr_lpfc_soft_wwpn,
 	&class_device_attr_lpfc_soft_wwn_enable,
 	&class_device_attr_lpfc_enable_hba_reset,
 	&class_device_attr_lpfc_enable_hba_heartbeat,
 	&class_device_attr_lpfc_sg_seg_cnt,
+	&class_device_attr_lpfc_max_scsicmpl_time,
 	NULL,
 };
 
@@ -1998,6 +2241,7 @@ struct class_device_attribute *lpfc_hba_attrs_no_npiv[] = {
 	&class_device_attr_option_rom_version,
 	&class_device_attr_state,
 	&class_device_attr_num_discovered_ports,
+	&class_device_attr_menlo_mgmt_mode,
 	&class_device_attr_lpfc_drvr_version,
 	&class_device_attr_lpfc_temp_sensor,
 	&class_device_attr_lpfc_log_verbose,
@@ -2042,6 +2286,15 @@ struct class_device_attribute *lpfc_hba_attrs_no_npiv[] = {
 	&class_device_attr_lpfc_soft_wwnn,
 	&class_device_attr_lpfc_soft_wwpn,
 	&class_device_attr_lpfc_soft_wwn_enable,
+	&class_device_attr_auth_state,
+	&class_device_attr_auth_dir,
+	&class_device_attr_auth_protocol,
+	&class_device_attr_auth_dhgroup,
+	&class_device_attr_auth_hash,
+	&class_device_attr_auth_last,
+	&class_device_attr_auth_next,
+	&class_device_attr_lpfc_symbolic_name,
+	&class_device_attr_lpfc_max_scsicmpl_time,
 	NULL,
 };
 
@@ -2066,7 +2319,16 @@ struct class_device_attribute *lpfc_vport_attrs[] = {
 	&class_device_attr_management_version,
 	&class_device_attr_npiv_info,
 	&class_device_attr_lpfc_enable_da_id,
+	&class_device_attr_lpfc_max_scsicmpl_time,
 	&class_device_attr_lpfc_dev_loss_initiator,
+	&class_device_attr_auth_state,
+	&class_device_attr_auth_dir,
+	&class_device_attr_auth_protocol,
+	&class_device_attr_auth_dhgroup,
+	&class_device_attr_auth_hash,
+	&class_device_attr_auth_last,
+	&class_device_attr_auth_next,
+	&class_device_attr_lpfc_symbolic_name,
 	NULL,
 };
 
@@ -2080,21 +2342,23 @@ sysfs_ctlreg_write(struct kobject *kobj, char *buf, loff_t off, size_t count)
 	struct lpfc_vport *vport = (struct lpfc_vport *) shost->hostdata;
 	struct lpfc_hba   *phba = vport->phba;
 
-	if ((off + count) > FF_REG_AREA_SIZE)
+	if ((off + count) > FF_REG_AREA_SIZE + LPFC_REG_WRITE_KEY_SIZE)
 		return -ERANGE;
 
-	if (count == 0) return 0;
+	if (count <= LPFC_REG_WRITE_KEY_SIZE)
+		return 0;
 
 	if (off % 4 || count % 4 || (unsigned long)buf % 4)
 		return -EINVAL;
 
-	if (!(vport->fc_flag & FC_OFFLINE_MODE)) {
-		return -EPERM;
-	}
+	/* This is to protect HBA registers from accidental writes. */
+	if (memcmp(buf, LPFC_REG_WRITE_KEY, LPFC_REG_WRITE_KEY_SIZE))
+		return -EINVAL;
 
 	spin_lock_irq(&phba->hbalock);
-	for (buf_off = 0; buf_off < count; buf_off += sizeof(uint32_t))
-		writel(*((uint32_t *)(buf + buf_off)),
+	for (buf_off = 0; buf_off < count - LPFC_REG_WRITE_KEY_SIZE;
+			buf_off += sizeof(uint32_t))
+		writel(*((uint32_t *)(buf + buf_off + LPFC_REG_WRITE_KEY_SIZE)),
 		       phba->ctrl_regs_memmap_p + off + buf_off);
 
 	spin_unlock_irq(&phba->hbalock);
@@ -2167,7 +2431,7 @@ lpfc_get_sysfs_mbox(struct lpfc_hba *phba, uint8_t create)
 		return NULL;
 	}
 	spin_unlock_irq(&phba->hbalock);
-	sysfs_mbox = kzalloc(sizeof( struct lpfc_sysfs_mbox),
+	sysfs_mbox = kzalloc(sizeof(struct lpfc_sysfs_mbox),
 			GFP_KERNEL);
 	if (!sysfs_mbox)
 		return NULL;
@@ -2228,20 +2492,24 @@ lpfc_syfs_mbox_copy_rcv_buff(struct lpfc_hba *phba,
 		return -EAGAIN;
 	}
 
-	size = sysfs_mbox->mbox->mb.un.varBIUdiag.un.s2.rcv_bde64.tus.f.bdeSize;
+	if (sysfs_mbox->mbox->mb.mbxCommand == MBX_READ_EVENT_LOG)
+		size = sysfs_mbox->mbox->mb.un.
+			varRdEventLog.rcv_bde64.tus.f.bdeSize;
+	else
+		size = sysfs_mbox->mbox->mb.un.
+			varBIUdiag.un.s2.rcv_bde64.tus.f.bdeSize;
+
 
 	if ((count + off) > size) {
 		sysfs_mbox_idle(phba, sysfs_mbox);
 		spin_unlock_irq(&phba->hbalock);
 		return -ERANGE;
 	}
-
-	if (size > LPFC_BPL_SIZE) {
+	if (count > LPFC_BPL_SIZE) {
 		sysfs_mbox_idle(phba, sysfs_mbox);
 		spin_unlock_irq(&phba->hbalock);
 		return -ERANGE;
 	}
-
 	if (sysfs_mbox->extoff != off) {
 		sysfs_mbox_idle(phba, sysfs_mbox);
 		spin_unlock_irq(&phba->hbalock);
@@ -2375,7 +2643,8 @@ sysfs_mbox_write(struct kobject *kobj, char *buf, loff_t off, size_t count)
 		 * app doesnot know how to do it, use a different
 		 * context.
 		 */
-		if (sysfs_mbox->state == SMBOX_READING_BUFF) {
+		if (sysfs_mbox->state == SMBOX_READING_BUFF ||
+		    sysfs_mbox->state == SMBOX_READING_MBEXT) {
 			spin_lock_irq(&phba->hbalock);
 			sysfs_mbox_idle(phba, sysfs_mbox);
 			spin_unlock_irq(&phba->hbalock);
@@ -2567,6 +2836,33 @@ sysfs_mbox_write(struct kobject *kobj, char *buf, loff_t off, size_t count)
 			}
 			return count;
 	}
+	if ((sysfs_mbox->offset == sizeof(struct lpfc_sysfs_mbox_data)) &&
+		(sysfs_mbox->mbox->mb.mbxCommand == MBX_READ_EVENT_LOG)) {
+		sysfs_mbox->state = SMBOX_WRITING;
+		spin_unlock_irq(&phba->hbalock);
+
+
+		/* Allocate rcv buffer */
+		sysfs_mbox->rcv_buff =
+			kzalloc(sizeof(struct lpfc_dmabuf), GFP_KERNEL);
+		if (!sysfs_mbox->rcv_buff) {
+			spin_lock_irq(&phba->hbalock);
+			sysfs_mbox_idle(phba, sysfs_mbox);
+			spin_unlock_irq(&phba->hbalock);
+			return -ENOMEM;
+		}
+		INIT_LIST_HEAD(&sysfs_mbox->rcv_buff->list);
+		sysfs_mbox->rcv_buff->virt =
+			lpfc_mbuf_alloc(phba, 0,
+				&(sysfs_mbox->rcv_buff->phys));
+		if (!sysfs_mbox->rcv_buff->virt) {
+			spin_lock_irq(&phba->hbalock);
+			sysfs_mbox_idle(phba, sysfs_mbox);
+			spin_unlock_irq(&phba->hbalock);
+			return -ENOMEM;
+		}
+		return count;
+	}
 
 	spin_unlock_irq(&phba->hbalock);
 
@@ -2582,6 +2878,7 @@ sysfs_mbox_read(struct kobject *kobj, char *buf, loff_t off, size_t count)
 	struct lpfc_vport *vport = (struct lpfc_vport *) shost->hostdata;
 	struct lpfc_hba   *phba = vport->phba;
 	int rc;
+	int wait_4_menlo_maint = 0;
 	struct lpfc_sysfs_mbox *sysfs_mbox;
 	ssize_t ret;
 	sysfs_mbox = lpfc_get_sysfs_mbox(phba, 0);
@@ -2604,6 +2901,11 @@ sysfs_mbox_read(struct kobject *kobj, char *buf, loff_t off, size_t count)
 	if (sysfs_mbox->state == SMBOX_READING_BUFF) {
 		ret = lpfc_syfs_mbox_copy_rcv_buff(phba, sysfs_mbox,
 					buf, off, count);
+		lpfc_printf_log(phba, KERN_INFO, LOG_INIT,
+				"1245 mbox: cmd 0x%x, 0x%x ret %x\n",
+				sysfs_mbox->mbox->mb.mbxCommand,
+				sysfs_mbox->mbox->mb.un.varWords[0],
+				(uint32_t)ret);
 		return ret;
 	}
 
@@ -2678,7 +2980,21 @@ sysfs_mbox_read(struct kobject *kobj, char *buf, loff_t off, size_t count)
 		case MBX_BEACON:
 		case MBX_DEL_LD_ENTRY:
 		case MBX_SET_DEBUG:
+			break;
+		case MBX_READ_EVENT_LOG_STATUS:
+			break;
 		case MBX_SET_VARIABLE:
+			lpfc_printf_log(phba, KERN_INFO, LOG_INIT,
+				"1226 mbox: set_variable 0x%x, 0x%x\n",
+				sysfs_mbox->mbox->mb.un.varWords[0],
+				sysfs_mbox->mbox->mb.un.varWords[1]);
+			if ((sysfs_mbox->mbox->mb.un.varWords[0]
+				== SETVAR_MLOMNT)
+				&& (sysfs_mbox->mbox->mb.un.varWords[1]
+				== 1)) {
+				wait_4_menlo_maint = 1;
+				phba->wait_4_mlo_maint_flg = 1;
+				}
 		case MBX_WRITE_WWN:
 		case MBX_UPDATE_CFG:
 			break;
@@ -2702,6 +3018,21 @@ sysfs_mbox_read(struct kobject *kobj, char *buf, loff_t off, size_t count)
 					putPaddrHigh(sysfs_mbox->
 						rcv_buff->phys);
 				sysfs_mbox->mbox->mb.un.varBIUdiag.un.s2.
+				rcv_bde64.addrLow =
+				putPaddrLow(sysfs_mbox->rcv_buff->phys);
+			}
+			break;
+		case MBX_WRITE_EVENT_LOG:
+			break;
+		case MBX_READ_EVENT_LOG:
+
+			if (sysfs_mbox->mbox->mb.un.varRdEventLog.
+				rcv_bde64.tus.f.bdeSize) {
+				sysfs_mbox->mbox->mb.un.varRdEventLog.
+					rcv_bde64.addrHigh =
+					putPaddrHigh(sysfs_mbox->
+						rcv_buff->phys);
+				sysfs_mbox->mbox->mb.un.varRdEventLog.
 				rcv_bde64.addrLow =
 				putPaddrLow(sysfs_mbox->rcv_buff->phys);
 			}
@@ -2743,22 +3074,22 @@ sysfs_mbox_read(struct kobject *kobj, char *buf, loff_t off, size_t count)
 		/* If HBA encountered an error attention, allow only DUMP
 		 * or RESTART mailbox commands until the HBA is restarted.
 		 */
-		if ((phba->pport->stopped) &&
-			(sysfs_mbox->mbox->mb.mbxCommand != MBX_DUMP_MEMORY &&
-			 sysfs_mbox->mbox->mb.mbxCommand != MBX_RESTART &&
-			 sysfs_mbox->mbox->mb.mbxCommand != MBX_WRITE_VPARMS)) {
-			sysfs_mbox_idle(phba,sysfs_mbox);
-			spin_unlock_irq(&phba->hbalock);
-			return -EPERM;
-		}
+		if (phba->pport->stopped &&
+		    sysfs_mbox->mbox->mb.mbxCommand != MBX_DUMP_MEMORY &&
+		    sysfs_mbox->mbox->mb.mbxCommand != MBX_RESTART &&
+		    sysfs_mbox->mbox->mb.mbxCommand != MBX_WRITE_VPARMS &&
+		    sysfs_mbox->mbox->mb.mbxCommand != MBX_WRITE_WWN)
+			lpfc_printf_log(phba, KERN_WARNING, LOG_MBOX,
+					"1259 mbox: Issued mailbox cmd "
+					"0x%x while in stopped state.\n",
+					sysfs_mbox->mbox->mb.mbxCommand);
 
 		sysfs_mbox->mbox->vport = vport;
 
 		/* Don't allow mailbox commands to be sent when blocked
 		 * or when in the middle of discovery
 		 */
-		if (phba->sli.sli_flag & LPFC_BLOCK_MGMT_IO ||
-		    vport->fc_flag & FC_NDISC_ACTIVE) {
+		if (phba->sli.sli_flag & LPFC_BLOCK_MGMT_IO) {
 			sysfs_mbox_idle(phba,sysfs_mbox);
 			spin_unlock_irq(&phba->hbalock);
 			return  -EAGAIN;
@@ -2790,6 +3121,33 @@ sysfs_mbox_read(struct kobject *kobj, char *buf, loff_t off, size_t count)
 			spin_unlock_irq(&phba->hbalock);
 			return  (rc == MBX_TIMEOUT) ? -ETIME : -ENODEV;
 		}
+		if (wait_4_menlo_maint) {
+			lpfc_printf_log(phba, KERN_WARNING, LOG_LIBDFC,
+				"1229 waiting for menlo mnt\n");
+			spin_unlock_irq(&phba->hbalock);
+			if (phba->wait_4_mlo_maint_flg)
+				wait_event_interruptible_timeout(
+					phba->wait_4_mlo_m_q,
+					phba->wait_4_mlo_maint_flg ==0,
+					60 * HZ);
+			spin_lock_irq(&phba->hbalock);
+			if (phba->wait_4_mlo_maint_flg) {
+				sysfs_mbox_idle(phba,sysfs_mbox);
+				phba->wait_4_mlo_maint_flg = 0;
+				spin_unlock_irq(&phba->hbalock);
+				return -EINTR;
+			} else
+				spin_unlock_irq(&phba->hbalock);
+
+			spin_lock_irq(&phba->hbalock);
+			if (phba->wait_4_mlo_maint_flg != 0) {
+				sysfs_mbox_idle(phba,sysfs_mbox);
+				phba->wait_4_mlo_maint_flg = 0;
+				spin_unlock_irq(&phba->hbalock);
+				return -ETIME;
+			}
+
+		}
 		sysfs_mbox->state = SMBOX_READING;
 	}
 	else if (sysfs_mbox->offset != off ||
@@ -2804,7 +3162,8 @@ sysfs_mbox_read(struct kobject *kobj, char *buf, loff_t off, size_t count)
 	sysfs_mbox->offset = off + count;
 
 	if ((sysfs_mbox->offset == MAILBOX_CMD_SIZE) &&
-		(sysfs_mbox->mbox->mb.mbxCommand == MBX_RUN_BIU_DIAG64)) {
+		((sysfs_mbox->mbox->mb.mbxCommand == MBX_RUN_BIU_DIAG64) ||
+		(sysfs_mbox->mbox->mb.mbxCommand == MBX_READ_EVENT_LOG))) {
 		sysfs_mbox->state  = SMBOX_READING_BUFF;
 		sysfs_mbox->extoff = 0;
 		spin_unlock_irq(&phba->hbalock);
@@ -2854,6 +3213,11 @@ lpfc_alloc_sysfs_attr(struct lpfc_vport *vport)
 	if (error)
 		goto out_remove_ctlreg_attr;
 
+	error = sysfs_create_bin_file(&shost->shost_classdev.kobj,
+				      &sysfs_menlo_attr);
+	if (error)
+		goto out_remove_ctlreg_attr;
+
 	return 0;
 out_remove_ctlreg_attr:
 	sysfs_remove_bin_file(&shost->shost_classdev.kobj, &sysfs_ctlreg_attr);
@@ -2868,6 +3232,7 @@ lpfc_free_sysfs_attr(struct lpfc_vport *vport)
 
 	sysfs_remove_bin_file(&shost->shost_classdev.kobj, &sysfs_mbox_attr);
 	sysfs_remove_bin_file(&shost->shost_classdev.kobj, &sysfs_ctlreg_attr);
+	sysfs_remove_bin_file(&shost->shost_classdev.kobj, &sysfs_menlo_attr);
 }
 
 
@@ -3425,6 +3790,7 @@ lpfc_get_vport_cfgparam(struct lpfc_vport *vport)
 	lpfc_restrict_login_init(vport, lpfc_restrict_login);
 	lpfc_fcp_class_init(vport, lpfc_fcp_class);
 	lpfc_use_adisc_init(vport, lpfc_use_adisc);
+	lpfc_max_scsicmpl_time_init(vport, lpfc_max_scsicmpl_time);
 	lpfc_fdmi_on_init(vport, lpfc_fdmi_on);
 	lpfc_discovery_threads_init(vport, lpfc_discovery_threads);
 	lpfc_max_luns_init(vport, lpfc_max_luns);

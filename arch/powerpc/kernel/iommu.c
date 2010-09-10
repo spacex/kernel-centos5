@@ -271,9 +271,10 @@ static void iommu_free(struct iommu_table *tbl, dma_addr_t dma_addr,
 	spin_unlock_irqrestore(&(tbl->it_lock), flags);
 }
 
-int iommu_map_sg(struct device *dev, struct iommu_table *tbl,
+static int __iommu_map_sg(struct device *dev, struct iommu_table *tbl,
 		struct scatterlist *sglist, int nelems,
-		unsigned long mask, enum dma_data_direction direction)
+		unsigned long mask, enum dma_data_direction direction,
+		int weak)
 {
 	dma_addr_t dma_next = 0, dma_addr;
 	unsigned long flags;
@@ -336,7 +337,14 @@ int iommu_map_sg(struct device *dev, struct iommu_table *tbl,
 			    npages, entry, dma_addr);
 
 		/* Insert into HW table */
-		ppc_md.tce_build(tbl, entry, npages, vaddr & IOMMU_PAGE_MASK, direction);
+#ifdef CONFIG_HAVE_DMA_ATTRS /* Hack */
+		if (weak && machine_is(cell))
+			tce_build_cell_weak(tbl, entry, npages,
+					vaddr & IOMMU_PAGE_MASK, direction);
+		else
+#endif
+			ppc_md.tce_build(tbl, entry, npages,
+					vaddr & IOMMU_PAGE_MASK, direction);
 
 		/* If we are in an open segment, try merging */
 		if (segstart != s) {
@@ -406,6 +414,21 @@ int iommu_map_sg(struct device *dev, struct iommu_table *tbl,
 	return 0;
 }
 
+int iommu_map_sg(struct device *dev, struct iommu_table *tbl,
+		struct scatterlist *sglist, int nelems,
+		unsigned long mask, enum dma_data_direction direction)
+{
+	return __iommu_map_sg(dev, tbl, sglist, nelems, mask, direction, 0);
+}
+
+#ifdef CONFIG_HAVE_DMA_ATTRS
+int iommu_map_sg_weak(struct device *dev, struct iommu_table *tbl,
+		struct scatterlist *sglist, int nelems,
+		unsigned long mask, enum dma_data_direction direction)
+{
+	return __iommu_map_sg(dev, tbl, sglist, nelems, mask, direction, 1);
+}
+#endif
 
 void iommu_unmap_sg(struct iommu_table *tbl, struct scatterlist *sglist,
 		int nelems, enum dma_data_direction direction)

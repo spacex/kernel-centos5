@@ -30,6 +30,15 @@
 #include <asm/irq.h>
 #include <asm/hw_irq.h>
 
+#ifdef CONFIG_XEN
+struct ioremap_issue_list {
+	struct list_head		listp;
+	unsigned long			start;
+	unsigned long			end;
+};
+typedef struct ioremap_issue_list	ioremap_issue_list_t;
+#endif /* CONFIG_XEN */
+
 /*
  * Low-level SAL-based PCI configuration access functions. Note that SAL
  * calls are already serialized (via sal_lock), so we don't need another
@@ -337,6 +346,169 @@ pcibios_setup_root_windows(struct pci_bus *bus, struct pci_controller *ctrl)
 	}
 }
 
+#ifdef CONFIG_XEN
+static void __devinit
+__cleanup_issue_list(struct list_head *top)
+{
+	ioremap_issue_list_t *ptr, *tmp_ptr;
+
+	list_for_each_entry_safe(ptr, tmp_ptr, top, listp) {
+		list_del(&(ptr->listp));
+		kfree(ptr);
+	}
+}
+
+static int __devinit
+__add_issue_list(unsigned long start, unsigned long end, struct list_head *top)
+{
+	ioremap_issue_list_t *ptr, *new;
+
+	if (start > end) {
+		printk(KERN_ERR "%s: Internal error (start addr > end addr)\n",
+		       __FUNCTION__);
+		return 0;
+	}
+
+	/*
+	 * Head of the resource structure list contains
+	 * dummy val.(start=0, end=~0), so skip it
+	 */
+	if ((start == 0) && (end == ~0))
+		return 0;
+
+	start &= PAGE_MASK;
+	end |= ~PAGE_MASK;
+
+	/* We can merge specified address range into existing entry */
+	list_for_each_entry(ptr, top, listp) {
+		if ((ptr->start > end + 1) || (ptr->end + 1 < start))
+			continue;
+		ptr->start = min(start, ptr->start);
+		ptr->end = max(end, ptr->end);
+		return 0;
+	}
+
+	/* We could not merge, so create new entry */
+	new = kmalloc(sizeof(ioremap_issue_list_t), GFP_KERNEL);
+	if (new == NULL) {
+		printk(KERN_ERR "%s: Could not allocate memory. "
+		       "HYPERVISOR_ioremap will not be issued\n",
+		       __FUNCTION__);
+		return -ENOMEM;
+	}
+
+	new->start = start;
+	new->end = end;
+
+	/* Insert the new entry to the list by ascending order */
+	if (list_empty(top)) {
+		list_add_tail(&(new->listp), top);
+		return 0;
+	}
+	list_for_each_entry(ptr, top, listp) {
+		if (new->start > ptr->start)
+			continue;
+		list_add(&(new->listp), ((struct list_head *)ptr)->prev);
+		return 0;
+	}
+	list_add_tail(&(new->listp), top);
+
+	return 0;
+}
+
+static int __devinit
+__make_issue_list(struct resource *ptr, struct list_head *top)
+{
+	int ret;
+
+	if (ptr->child) {
+		ret = __make_issue_list(ptr->child, top);
+		if (ret)
+			return ret;
+	}
+	if (ptr->sibling) {
+		ret = __make_issue_list(ptr->sibling, top);
+		if (ret)
+			return ret;
+	}
+
+	if (ptr->flags & IORESOURCE_MEM) {
+		ret = __add_issue_list(ptr->start, ptr->end, top);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+static void __devinit
+__compress_issue_list(struct list_head *top)
+{
+	ioremap_issue_list_t *ptr, *tmp_ptr, *next;
+	int compressed;
+
+	/*
+	 * Merge adjacent entries, if overlapped
+	 * (entries are sorted by ascending order)
+	 */
+	list_for_each_entry_safe(ptr, tmp_ptr, top, listp) {
+		if (list_is_last((struct list_head *)ptr, top))
+			continue;
+
+		next = (ioremap_issue_list_t *)
+			(((struct list_head *)ptr)->next);
+		if (next->start <= (ptr->end) + 1) {
+			next->start = min(ptr->start, next->start);
+			next->end   = max(ptr->end, next->end);
+
+			list_del(&(ptr->listp));
+			kfree(ptr);
+		}
+	}
+}
+
+static int __devinit
+__issue_ioremap(struct list_head *top)
+{
+	ioremap_issue_list_t *ptr, *tmp_ptr;
+	unsigned int offset;
+
+	list_for_each_entry_safe(ptr, tmp_ptr, top, listp) {
+		offset = HYPERVISOR_ioremap(ptr->start,
+					    ptr->end - ptr->start + 1);
+		if (offset == ~0) {
+			printk(KERN_ERR "%s: HYPERVISOR_ioremap() failed. "
+			       "Address Range: 0x%016lx-0x%016lx\n",
+			       __FUNCTION__, ptr->start, ptr->end);
+		}
+
+		list_del(&(ptr->listp));
+		kfree(ptr);
+	}
+	
+	return 0;
+}
+
+static int __devinit
+do_ioremap_on_resource_list(struct resource *top)
+{
+	LIST_HEAD(ioremap_issue_list_top);
+	int ret;
+
+	ret = __make_issue_list(top, &ioremap_issue_list_top);
+	if (ret) {
+		__cleanup_issue_list(&ioremap_issue_list_top);
+		return ret;
+	}
+
+	__compress_issue_list(&ioremap_issue_list_top);
+
+	(void)__issue_ioremap(&ioremap_issue_list_top);
+
+	return 0;
+}
+#endif /* CONFIG_XEN */
+
 struct pci_bus * __devinit
 pci_acpi_scan_root(struct acpi_device *device, int domain, int bus)
 {
@@ -379,6 +551,18 @@ pci_acpi_scan_root(struct acpi_device *device, int domain, int bus)
 	pbus = pci_scan_bus_parented(NULL, bus, &pci_root_ops, controller);
 	if (pbus)
 		pcibios_setup_root_windows(pbus, controller);
+
+#ifdef CONFIG_XEN
+	if (is_initial_xendomain()) {
+		if (do_ioremap_on_resource_list(&iomem_resource) != 0) {
+			printk(KERN_ERR
+			       "%s: Counld not issue HYPERVISOR_ioremap "
+			       "due to lack of memory or hypercall failure\n",
+			       __FUNCTION__);
+			goto out3;
+		}
+	}
+#endif /* CONFIG_XEN */
 
 	return pbus;
 
@@ -615,14 +799,6 @@ pci_mmap_page_range (struct pci_dev *dev, struct vm_area_struct *vma,
 	else
 		vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 
-	if (is_initial_xendomain()) {
-		unsigned long addr = vma->vm_pgoff << PAGE_SHIFT;
-		size_t size = vma->vm_end - vma->vm_start;
-		unsigned long offset = HYPERVISOR_ioremap(addr, size);
-		if (IS_ERR_VALUE(offset))
-			return offset;
-	}
-
 	if (remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
 			     vma->vm_end - vma->vm_start, vma->vm_page_prot))
 		return -EAGAIN;
@@ -677,14 +853,6 @@ pci_mmap_legacy_page_range(struct pci_bus *bus, struct vm_area_struct *vma)
 
 	vma->vm_pgoff += (unsigned long)addr >> PAGE_SHIFT;
 	vma->vm_page_prot = prot;
-
-	if (is_initial_xendomain()) {
-		unsigned long addr = vma->vm_pgoff << PAGE_SHIFT;
-		size_t size = vma->vm_end - vma->vm_start;
-		unsigned long offset = HYPERVISOR_ioremap(addr, size);
-		if (IS_ERR_VALUE(offset))
-			return offset;
-	}
 
 	if (remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
 			    size, vma->vm_page_prot))

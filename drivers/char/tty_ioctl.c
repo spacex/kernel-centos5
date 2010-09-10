@@ -418,6 +418,62 @@ static int set_ltchars(struct tty_struct * tty, struct ltchars __user * ltchars)
 }
 #endif
 
+static int get_termiox(struct tty_struct *tty, void __user *arg)
+{
+	struct termiox tx;
+
+	if (!(tty->driver->flags & TTY_DRIVER_HAS_TERMIOX))
+		return -EINVAL;
+
+	memset(&tx, 0, sizeof(tx));
+	tty->driver->get_termiox(tty, &tx);
+	if (copy_to_user(arg, &tx, sizeof(struct termiox)))
+		return -EFAULT;
+
+	return 0;
+}
+
+/**
+ *	set_termiox	-	set termiox fields if possible
+ *	@tty: terminal
+ *	@arg: termiox structure from user
+ *	@opt: option flags for ioctl type
+ *
+ *	Implement the device calling points for the SYS5 termiox ioctl
+ *	interface in Linux
+ */
+
+static int set_termiox(struct tty_struct *tty, void __user *arg, int opt)
+{
+	struct termiox tnew;
+	struct tty_ldisc *ld;
+	int ret, i;
+
+	if (!(tty->driver->flags & TTY_DRIVER_HAS_TERMIOX))
+		return -EINVAL;
+
+	if (copy_from_user(&tnew, arg, sizeof(struct termiox)))
+		return -EFAULT;
+
+	ld = tty_ldisc_ref(tty);
+	if (ld != NULL) {
+		if ((opt & TERMIOS_FLUSH) && ld->flush_buffer)
+			ld->flush_buffer(tty);
+		tty_ldisc_deref(ld);
+	}
+	if (opt & TERMIOS_WAIT) {
+		tty_wait_until_sent(tty, 0);
+		if (signal_pending(current))
+			return -EINTR;
+	}
+
+	mutex_lock(&tty->termios_mutex);
+	ret = tty->driver->set_termiox(tty, &tnew);
+	mutex_unlock(&tty->termios_mutex);
+
+	return ret;
+}
+
 /**
  *	send_prio_char		-	send priority character
  *
@@ -592,6 +648,16 @@ int n_tty_ioctl(struct tty_struct * tty, struct file * file,
 				tty->packet = 0;
 			return 0;
 		}
+#ifdef TCGETX
+		case TCGETX:
+			return get_termiox(tty, p);
+		case TCSETX:
+			return set_termiox(tty, p, 0);
+		case TCSETXW:
+			return set_termiox(tty, p, TERMIOS_WAIT);
+		case TCSETXF:
+			return set_termiox(tty, p, TERMIOS_FLUSH);
+#endif
 		case TIOCGSOFTCAR:
 			return put_user(C_CLOCAL(tty) ? 1 : 0, (int __user *)arg);
 		case TIOCSSOFTCAR:

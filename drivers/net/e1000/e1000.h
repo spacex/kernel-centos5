@@ -103,6 +103,11 @@ struct e1000_adapter;
 #define E1000_MIN_TXD                       80
 #define E1000_MAX_82544_TXD               4096
 
+#define E1000_DEFAULT_TXD_PWR               12
+#define E1000_MAX_TXD_PWR                   12
+#define E1000_MIN_TXD_PWR                    6
+#define E1000_MAX_82571_TXD_PWR             13
+
 #define E1000_DEFAULT_RXD                  256
 #define E1000_MAX_RXD                      256
 #define E1000_MIN_RXD                       80
@@ -286,6 +291,7 @@ struct e1000_adapter {
 	atomic_t tx_fifo_stall;
 	boolean_t pcix_82544;
 	boolean_t detect_tx_hung;
+	uint32_t tx_desc_pwr;
 
 	/* RX */
 #ifdef CONFIG_E1000_NAPI

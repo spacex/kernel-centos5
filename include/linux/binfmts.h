@@ -6,11 +6,14 @@
 struct pt_regs;
 
 /*
- * MAX_ARG_PAGES defines the number of pages allocated for arguments
- * and envelope for the new program. 32 should suffice, this gives
- * a maximum env+arg of 128kB w/4KB pages!
+ * These are the maximum length and maximum number of strings passed to the
+ * execve() system call.  MAX_ARG_STRLEN is essentially random but serves to
+ * prevent the kernel from being unduly impacted by misaddressed pointers.
+ * MAX_ARG_STRINGS is chosen to fit in a signed 32-bit integer.
  */
 #define MAX_ARG_PAGES 32
+#define MAX_ARG_STRLEN (PAGE_SIZE * 32)
+#define MAX_ARG_STRINGS 0x7FFFFFFF
 
 /* sizeof(linux_binprm->buf) */
 #define BINPRM_BUF_SIZE 128
@@ -38,6 +41,12 @@ struct linux_binprm{
 	unsigned interp_flags;
 	unsigned interp_data;
 	unsigned long loader, exec;
+#ifndef __GENKSYMS__
+	unsigned long argv_len;
+#ifdef CONFIG_MMU
+	struct vm_area_struct *vma;
+#endif
+#endif
 };
 
 #define BINPRM_FLAGS_ENFORCE_NONDUMP_BIT 0
@@ -57,7 +66,7 @@ struct linux_binfmt {
 	struct module *module;
 	int (*load_binary)(struct linux_binprm *, struct  pt_regs * regs);
 	int (*load_shlib)(struct file *);
-	int (*core_dump)(long signr, struct pt_regs * regs, struct file * file);
+	int (*core_dump)(long signr, struct pt_regs *regs, struct file *file);
 	unsigned long min_coredump;	/* minimal dump size */
 };
 
@@ -65,7 +74,7 @@ extern int register_binfmt(struct linux_binfmt *);
 extern int unregister_binfmt(struct linux_binfmt *);
 
 extern int prepare_binprm(struct linux_binprm *);
-extern void remove_arg_zero(struct linux_binprm *);
+extern int __must_check remove_arg_zero(struct linux_binprm *);
 extern int search_binary_handler(struct linux_binprm *,struct pt_regs *);
 extern int flush_old_exec(struct linux_binprm * bprm);
 
@@ -79,9 +88,12 @@ extern int suid_dumpable;
 #define EXSTACK_DISABLE_X 1	/* Disable executable stacks */
 #define EXSTACK_ENABLE_X  2	/* Enable executable stacks */
 
+extern struct page *get_arg_page(struct linux_binprm *bprm, unsigned long pos,
+				 int write);
 extern int setup_arg_pages(struct linux_binprm * bprm,
 			   unsigned long stack_top,
 			   int executable_stack);
+extern int bprm_mm_init(struct linux_binprm *bprm);
 extern int copy_strings_kernel(int argc,char ** argv,struct linux_binprm *bprm);
 extern void compute_creds(struct linux_binprm *binprm);
 extern int do_coredump(long signr, int exit_code, struct pt_regs * regs);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2007 QLogic Corporation. All rights reserved.
+ * Copyright (c) 2006, 2007, 2008 QLogic Corporation. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -600,7 +600,7 @@ static void ipath_7220_txe_recover(struct ipath_devdata *dd)
 
 	dev_info(&dd->pcidev->dev,
 		"Recovering from TXE PIO parity error\n");
-	ipath_disarm_senderrbufs(dd, 1);
+	ipath_disarm_senderrbufs(dd);
 }
 
 
@@ -674,13 +674,14 @@ static void ipath_7220_handle_hwerrors(struct ipath_devdata *dd, char *msg,
 			      "%llx set\n", (unsigned long long)
 			      (hwerrs & ~dd->ipath_hwe_bitsextant));
 
+	if (hwerrs & INFINIPATH_HWE_IB_UC_MEMORYPARITYERR)
+		ipath_sd7220_clr_ibpar(dd);
+
 	ctrl = ipath_read_kreg32(dd, dd->ipath_kregs->kr_control);
 	if ((ctrl & INFINIPATH_C_FREEZEMODE) && !ipath_diag_inuse) {
 		/*
-		 * Parity errors in send memory are recoverable,
-		 * just cancel the send (if indicated in * sendbuffererror),
-		 * count the occurrence, unfreeze (if no other handled
-		 * hardware error bits are set), and continue.
+		 * Parity errors in send memory are recoverable by h/w
+		 * just do housekeeping, exit freeze mode and continue.
 		 */
 		if (hwerrs & ((INFINIPATH_HWE_TXEMEMPARITYERR_PIOBUF |
 			       INFINIPATH_HWE_TXEMEMPARITYERR_PIOPBC)
@@ -689,13 +690,6 @@ static void ipath_7220_handle_hwerrors(struct ipath_devdata *dd, char *msg,
 			hwerrs &= ~((INFINIPATH_HWE_TXEMEMPARITYERR_PIOBUF |
 				     INFINIPATH_HWE_TXEMEMPARITYERR_PIOPBC)
 				    << INFINIPATH_HWE_TXEMEMPARITYERR_SHIFT);
-			if (!hwerrs) {
-				/* else leave in freeze mode */
-				ipath_write_kreg(dd,
-						 dd->ipath_kregs->kr_control,
-						 dd->ipath_control);
-				goto bail;
-			}
 		}
 		if (hwerrs) {
 			/*
@@ -725,8 +719,8 @@ static void ipath_7220_handle_hwerrors(struct ipath_devdata *dd, char *msg,
 			*dd->ipath_statusp |= IPATH_STATUS_HWERROR;
 			dd->ipath_flags &= ~IPATH_INITTED;
 		} else {
-			ipath_dbg("Clearing freezemode on ignored hardware "
-				  "error\n");
+			ipath_dbg("Clearing freezemode on ignored or "
+				"recovered hardware error\n");
 			ipath_clear_freeze(dd);
 		}
 	}
@@ -875,11 +869,19 @@ static int ipath_7220_boardname(struct ipath_devdata *dd, char *name,
 			snprintf(name, namelen, "%s", n);
 	}
 
-	if (dd->ipath_majrev < 4 || !dd->ipath_minrev || dd->ipath_minrev > 2) {
+	if (dd->ipath_majrev != 5 || !dd->ipath_minrev ||
+		dd->ipath_minrev > 2) {
 		ipath_dev_err(dd, "Unsupported InfiniPath hardware "
 			      "revision %u.%u!\n",
 			      dd->ipath_majrev, dd->ipath_minrev);
 		ret = 1;
+	} else if (dd->ipath_minrev == 1 &&
+		!(dd->ipath_flags & IPATH_INITTED)) {
+		/* Rev1 chips are prototype. Complain at init, but allow use */
+		ipath_dev_err(dd, "Unsupported hardware "
+			      "revision %u.%u, Contact support@qlogic.com\n",
+			      dd->ipath_majrev, dd->ipath_minrev);
+		ret = 0;
 	} else
 		ret = 0;
 
@@ -923,6 +925,7 @@ static void ipath_7220_init_hwerrors(struct ipath_devdata *dd)
 	if (dd->ipath_minrev == 1)
 		val &= ~(1ULL << 42); /* TXE LaunchFIFO Parity rev1 issue */
 
+	val &= ~INFINIPATH_HWE_IB_UC_MEMORYPARITYERR;
 	dd->ipath_hwerrmask = val;
 
 	/*
@@ -1030,9 +1033,13 @@ static int ipath_7220_bringup_serdes(struct ipath_devdata *dd)
 
 	val = ipath_read_kreg64(dd, dd->ipath_kregs->kr_xgxsconfig);
 	prev_val = val;
+	val |= INFINIPATH_XGXS_FC_SAFE;
+	if (val != prev_val) {
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_xgxsconfig, val);
+		ipath_read_kreg32(dd, dd->ipath_kregs->kr_scratch);
+	}
 	if (val & INFINIPATH_XGXS_RESET)
 		val &= ~INFINIPATH_XGXS_RESET;
-	val |= INFINIPATH_XGXS_FC_SAFE;
 	if (val != prev_val)
 		ipath_write_kreg(dd, dd->ipath_kregs->kr_xgxsconfig, val);
 
@@ -1089,10 +1096,15 @@ static void ipath_7220_config_jint(struct ipath_devdata *dd,
  */
 static void ipath_7220_quiet_serdes(struct ipath_devdata *dd)
 {
+	u64 val;
 	dd->ipath_flags &= ~IPATH_IB_AUTONEG_INPROG;
 	wake_up(&dd->ipath_autoneg_wait);
 	cancel_delayed_work(&dd->ipath_autoneg_work);
 	flush_scheduled_work();
+	ipath_shutdown_relock_poll(dd);
+	val = ipath_read_kreg64(dd, dd->ipath_kregs->kr_xgxsconfig);
+	val |= INFINIPATH_XGXS_RESET;
+	ipath_write_kreg(dd, dd->ipath_kregs->kr_xgxsconfig, val);
 }
 
 static int ipath_7220_intconfig(struct ipath_devdata *dd)
@@ -1953,7 +1965,7 @@ static void ipath_7220_config_ports(struct ipath_devdata *dd, ushort cfgports)
 			 dd->ipath_rcvctrl);
 	dd->ipath_p0_rcvegrcnt = 2048; /* always */
 	if (dd->ipath_flags & IPATH_HAS_SEND_DMA)
-		dd->ipath_pioreserved = 1; /* reserve a buffer */
+		dd->ipath_pioreserved = 3; /* kpiobufs used for PIO */
 }
 
 
@@ -2305,7 +2317,7 @@ static void try_auto_neg(struct ipath_devdata *dd)
 	dd->ipath_flags |= IPATH_IB_AUTONEG_INPROG;
 	ipath_autoneg_send(dd, 0);
 	set_speed_fast(dd, IPATH_IB_DDR);
-	ipath_set_linkstate(dd, IPATH_IB_LINKDOWN);
+	ipath_toggle_rclkrls(dd);
 	/* 2 msec is minimum length of a poll cycle */
 	schedule_delayed_work(&dd->ipath_autoneg_work,
 		msecs_to_jiffies(2));
@@ -2338,9 +2350,11 @@ static int ipath_7220_ib_updown(struct ipath_devdata *dd, int ibup, u64 ibcs)
 			IPATH_IB_AUTONEG_INPROG)))
 			set_speed_fast(dd, dd->ipath_link_speed_enabled);
 		if (!(dd->ipath_flags & IPATH_IB_AUTONEG_INPROG)) {
-			ipath_cdbg(VERBOSE, "Disabling AEQ\n");
+			ipath_cdbg(VERBOSE, "Setting RXEQ defaults\n");
 			ipath_sd7220_presets(dd);
 		}
+		/* this might better in ipath_sd7220_presets() */
+		ipath_set_relock_poll(dd, ibup);
 	} else {
 		if (ipath_compat_ddr_negotiate &&
 		    !(dd->ipath_flags & (IPATH_IB_AUTONEG_FAILED |
@@ -2362,7 +2376,7 @@ static int ipath_7220_ib_updown(struct ipath_devdata *dd, int ibup, u64 ibcs)
 			ipath_autoneg_send(dd, 1);
 			set_speed_fast(dd, IPATH_IB_DDR);
 			udelay(2);
-			ipath_set_linkstate(dd, IPATH_IB_LINKDOWN);
+			ipath_toggle_rclkrls(dd);
 			ret = 1; /* no other IB status change processing */
 		} else {
 			if ((dd->ipath_flags & IPATH_IB_AUTONEG_INPROG) &&
@@ -2423,8 +2437,7 @@ static int ipath_7220_ib_updown(struct ipath_devdata *dd, int ibup, u64 ibcs)
 			    [(ibcs >> IBA7220_IBCS_LINKSPEED_SHIFT) & 1]
 			    [(ibcs >> IBA7220_IBCS_LINKWIDTH_SHIFT) & 1];
 
-			ipath_cdbg(VERBOSE, "enabling AEQ\n");
-			ipath_sd7220_enable_aeq(dd);
+			ipath_set_relock_poll(dd, ibup);
 		}
 	}
 
@@ -2443,7 +2456,7 @@ static void autoneg_work(struct work_struct *work)
 {
 	struct ipath_devdata *dd;
 	u64 startms;
-	u32 ltstate, lastlts, i;
+	u32 lastlts, i;
 
 	dd = container_of(work, struct ipath_devdata,
 		ipath_autoneg_work.work);
@@ -2455,8 +2468,6 @@ static void autoneg_work(struct work_struct *work)
 	 * few hundred usec, since we scheduled ourselves for 2msec.
 	 */
 	for (i = 0; i < 25; i++) {
-		ltstate = ipath_ib_linktrstate(dd, ipath_read_kreg64(dd,
-			dd->ipath_kregs->kr_ibcstatus));
 		lastlts = ipath_ib_linktrstate(dd, dd->ipath_lastibcstat);
 		if (lastlts == INFINIPATH_IBCS_LT_STATE_POLLQUIET) {
 			ipath_set_linkstate(dd, IPATH_IB_LINKDOWN_DISABLE);
@@ -2474,7 +2485,7 @@ static void autoneg_work(struct work_struct *work)
 		msecs_to_jiffies(90)))
 		goto done;
 
-	ipath_set_linkstate(dd, IPATH_IB_LINKDOWN);
+	ipath_toggle_rclkrls(dd);
 
 	/* we expect this to timeout */
 	if (wait_event_timeout(dd->ipath_autoneg_wait,
@@ -2483,6 +2494,7 @@ static void autoneg_work(struct work_struct *work)
 		goto done;
 
 	set_speed_fast(dd, IPATH_IB_SDR);
+	ipath_toggle_rclkrls(dd);
 
 	/*
 	 * wait up to 250 msec for link to train and get to INIT at DDR;
@@ -2504,16 +2516,6 @@ done:
 			dd->ipath_autoneg_tries = 0;
 		}
 		set_speed_fast(dd, dd->ipath_link_speed_enabled);
-
-		/*
-		 * we may be in a stuck state, where we won't get another
-		 * link transition.  If so forcibly bounce the link.
-		 */
-		if (lastlts >= INFINIPATH_IBCS_LT_STATE_CFGDEBOUNCE) {
-			ipath_dbg("Bouncing IB link, lastibcstat %LX\n",
-				 dd->ipath_lastibcstat);
-			ipath_set_linkstate(dd, IPATH_IB_LINKDOWN);
-		}
 	}
 }
 

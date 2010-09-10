@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2007 QLogic Corporation. All rights reserved.
+ * Copyright (c) 2006, 2007, 2008 QLogic Corporation. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -74,11 +74,11 @@ module_param_named(debug, ipath_debug, uint, S_IWUSR | S_IRUGO);
 MODULE_PARM_DESC(debug, "mask for debug prints");
 EXPORT_SYMBOL_GPL(ipath_debug);
 
-unsigned ipath_mtu4096 = 1; /* max 2KB IB mtu by default */
+unsigned ipath_mtu4096 = 1; /* max 4KB IB mtu by default, if supported */
 module_param_named(mtu4096, ipath_mtu4096, uint, S_IRUGO);
 MODULE_PARM_DESC(mtu4096, "enable MTU of 4096 bytes, if supported");
 
-static unsigned ipath_hol_timeout_ms = 30000;
+static unsigned ipath_hol_timeout_ms = 13000;
 module_param_named(hol_timeout_ms, ipath_hol_timeout_ms, uint, S_IRUGO);
 MODULE_PARM_DESC(hol_timeout_ms,
 	"duration of user app suspension after link failure");
@@ -924,7 +924,8 @@ int ipath_wait_linkstate(struct ipath_devdata *dd, u32 state, int msecs)
 	return (dd->ipath_flags & state) ? 0 : -ETIMEDOUT;
 }
 
-static void decode_sdma_errs(ipath_err_t err, char *buf, size_t blen)
+static void decode_sdma_errs(struct ipath_devdata *dd, ipath_err_t err,
+	char *buf, size_t blen)
 {
 	static const struct {
 		ipath_err_t err;
@@ -944,12 +945,16 @@ static void decode_sdma_errs(ipath_err_t err, char *buf, size_t blen)
 		{ INFINIPATH_E_SDMADISABLED, "SDmaDisabled" },
 	};
 	int i;
+	int expected;
 	size_t bidx = 0;
 
-	for (i = 0; i < ARRAY_SIZE(errs); i++)
-		if (err & errs[i].err)
+	for (i = 0; i < ARRAY_SIZE(errs); i++) {
+		expected = (errs[i].err != INFINIPATH_E_SDMADISABLED) ? 0 :
+			test_bit(IPATH_SDMA_ABORTING, &dd->ipath_sdma_status);
+		if ((err & errs[i].err) && !expected)
 			bidx += snprintf(buf + bidx, blen - bidx,
 					 "%s ", errs[i].msg);
+	}
 }
 
 /*
@@ -958,7 +963,8 @@ static void decode_sdma_errs(ipath_err_t err, char *buf, size_t blen)
  * else.   Return 1 if "real" errors, otherwise 0 if only packet
  * errors, so caller can decide what to print with the string.
  */
-int ipath_decode_err(char *buf, size_t blen, ipath_err_t err)
+int ipath_decode_err(struct ipath_devdata *dd, char *buf, size_t blen,
+	ipath_err_t err)
 {
 	int iserr = 1;
 	*buf = '\0';
@@ -1041,7 +1047,7 @@ int ipath_decode_err(char *buf, size_t blen, ipath_err_t err)
 	if (err & INFINIPATH_E_RESET)
 		strlcat(buf, "reset ", blen);
 	if (err & INFINIPATH_E_SDMAERRS)
-		decode_sdma_errs(err, buf, blen);
+		decode_sdma_errs(dd, err, buf, blen);
 	if (err & INFINIPATH_E_INVALIDEEPCMD)
 		strlcat(buf, "invalideepromcmd ", blen);
 done:
@@ -1218,7 +1224,7 @@ void ipath_kreceive(struct ipath_portdata *pd)
 	}
 
 reloop:
-	for (last = 0, i = 1; !last; i++) {
+	for (last = 0, i = 1; !last; i += !last) {
 		hdr = dd->ipath_f_get_msgheader(dd, rhf_addr);
 		eflags = ipath_hdrget_err_flags(rhf_addr);
 		etype = ipath_hdrget_rcv_type(rhf_addr);
@@ -1449,6 +1455,41 @@ static void ipath_update_pio_bufs(struct ipath_devdata *dd)
 	spin_unlock_irqrestore(&ipath_pioavail_lock, flags);
 }
 
+
+/*
+ * used to force update of pioavailshadow if we can't get a pio buffer.
+ * Needed primarily due to exitting freeze mode after recovering
+ * from errors.  Done lazily, because it's safer (known to not
+ * be writing pio buffers).
+ */
+static void ipath_reset_availshadow(struct ipath_devdata *dd)
+{
+	int i, im;
+	unsigned long flags;
+
+	spin_lock_irqsave(&ipath_pioavail_lock, flags);
+	for (i = 0; i < dd->ipath_pioavregs; i++) {
+		u64 val, oldval;
+		/* deal with 6110 chip bug on high register #s */
+		im = (i > 3 && (dd->ipath_flags & IPATH_SWAP_PIOBUFS)) ?
+			i ^ 1 : i;
+		val = le64_to_cpu(dd->ipath_pioavailregs_dma[im]);
+		/*
+		 * busy out the buffers not in the kernel avail list,
+		 * without changing the generation bits.
+		 */
+		oldval = dd->ipath_pioavailshadow[i];
+		dd->ipath_pioavailshadow[i] = val |
+			((~dd->ipath_pioavailkernel[i] <<
+			INFINIPATH_SENDPIOAVAIL_BUSY_SHIFT) &
+			0xaaaaaaaaaaaaaaaaULL); /* All BUSY bits in qword */
+		if (oldval != dd->ipath_pioavailshadow[i])
+			ipath_dbg("shadow[%d] was %Lx, now %lx\n",
+				i, oldval, dd->ipath_pioavailshadow[i]);
+	}
+	spin_unlock_irqrestore(&ipath_pioavail_lock, flags);
+}
+
 /**
  * ipath_setrcvhdrsize - set the receive header size
  * @dd: the infinipath device
@@ -1503,9 +1544,12 @@ static noinline void no_pio_bufs(struct ipath_devdata *dd)
 	 */
 	ipath_stats.sps_nopiobufs++;
 	if (!(++dd->ipath_consec_nopiobuf % 100000)) {
-		ipath_dbg("%u pio sends with no bufavail; dmacopy: "
-			"%llx %llx %llx %llx; shadow:  %lx %lx %lx %lx\n",
+		ipath_force_pio_avail_update(dd); /* at start */
+		ipath_dbg("%u tries no piobufavail ts%lx; dmacopy: "
+			"%llx %llx %llx %llx\n"
+			"ipath  shadow:  %lx %lx %lx %lx\n",
 			dd->ipath_consec_nopiobuf,
+			(unsigned long)get_cycles(),
 			(unsigned long long) le64_to_cpu(dma[0]),
 			(unsigned long long) le64_to_cpu(dma[1]),
 			(unsigned long long) le64_to_cpu(dma[2]),
@@ -1517,14 +1561,17 @@ static noinline void no_pio_bufs(struct ipath_devdata *dd)
 		 */
 		if ((dd->ipath_piobcnt2k + dd->ipath_piobcnt4k) >
 		    (sizeof(shadow[0]) * 4 * 4))
-			ipath_dbg("2nd group: dmacopy: %llx %llx "
-				  "%llx %llx; shadow: %lx %lx %lx %lx\n",
+			ipath_dbg("2nd group: dmacopy: "
+				  "%llx %llx %llx %llx\n"
+				  "ipath  shadow:  %lx %lx %lx %lx\n",
 				  (unsigned long long)le64_to_cpu(dma[4]),
 				  (unsigned long long)le64_to_cpu(dma[5]),
 				  (unsigned long long)le64_to_cpu(dma[6]),
 				  (unsigned long long)le64_to_cpu(dma[7]),
-				  shadow[4], shadow[5], shadow[6],
-				  shadow[7]);
+				  shadow[4], shadow[5], shadow[6], shadow[7]);
+
+		/* at end, so update likely happened */
+		ipath_reset_availshadow(dd);
 	}
 }
 
@@ -1648,7 +1695,7 @@ u32 __iomem *ipath_getpiobuf(struct ipath_devdata *dd, u32 plen, u32 *pbufnum)
 		 * Set next starting place.  It's just an optimization,
 		 * it doesn't matter who wins on this, so no locking
 		 */
-		if (plen >= IPATH_SMALLBUF_DWORDS)
+		if (plen + 1 >= IPATH_SMALLBUF_DWORDS)
 			dd->ipath_lastpioindexl = pnum + 1;
 		else
 			dd->ipath_lastpioindex = pnum + 1;
@@ -1676,19 +1723,46 @@ void ipath_chg_pioavailkernel(struct ipath_devdata *dd, unsigned start,
 			      unsigned len, int avail)
 {
 	unsigned long flags;
-	unsigned end;
+	unsigned end, cnt = 0, next;
 
 	/* There are two bits per send buffer (busy and generation) */
 	start *= 2;
-	len *= 2;
-	end = start + len;
+	end = start + len * 2;
 
-	/* Set or clear the generation bits. */
 	spin_lock_irqsave(&ipath_pioavail_lock, flags);
+	/* Set or clear the busy bit in the shadow. */
 	while (start < end) {
 		if (avail) {
-			__clear_bit(start + INFINIPATH_SENDPIOAVAIL_BUSY_SHIFT,
-				dd->ipath_pioavailshadow);
+			unsigned long dma;
+			int i, im;
+			/*
+			 * the BUSY bit will never be set, because we disarm
+			 * the user buffers before we hand them back to the
+			 * kernel.  We do have to make sure the generation
+			 * bit is set correctly in shadow, since it could
+			 * have changed many times while allocated to user.
+			 * We can't use the bitmap functions on the full
+			 * dma array because it is always little-endian, so
+			 * we have to flip to host-order first.
+			 * BITS_PER_LONG is slightly wrong, since it's
+			 * always 64 bits per register in chip...
+			 * We only work on 64 bit kernels, so that's OK.
+			 */
+			/* deal with 6110 chip bug on high register #s */
+			i = start / BITS_PER_LONG;
+			im = (i > 3 && (dd->ipath_flags & IPATH_SWAP_PIOBUFS)) ?
+				i ^ 1 : i;
+			__clear_bit(INFINIPATH_SENDPIOAVAIL_BUSY_SHIFT
+				+ start, dd->ipath_pioavailshadow);
+			dma = (unsigned long) le64_to_cpu(
+				dd->ipath_pioavailregs_dma[im]);
+			if (test_bit((INFINIPATH_SENDPIOAVAIL_CHECK_SHIFT
+				+ start) % BITS_PER_LONG, &dma))
+				__set_bit(INFINIPATH_SENDPIOAVAIL_CHECK_SHIFT
+					+ start, dd->ipath_pioavailshadow);
+			else
+				__clear_bit(INFINIPATH_SENDPIOAVAIL_CHECK_SHIFT
+					+ start, dd->ipath_pioavailshadow);
 			__set_bit(start, dd->ipath_pioavailkernel);
 		} else {
 			__set_bit(start + INFINIPATH_SENDPIOAVAIL_BUSY_SHIFT,
@@ -1697,7 +1771,44 @@ void ipath_chg_pioavailkernel(struct ipath_devdata *dd, unsigned start,
 		}
 		start += 2;
 	}
+
+	if (dd->ipath_pioupd_thresh) {
+		end = 2 * (dd->ipath_piobcnt2k + dd->ipath_piobcnt4k);
+		next = find_first_bit(dd->ipath_pioavailkernel, end);
+		while (next < end) {
+			cnt++;
+			next = find_next_bit(dd->ipath_pioavailkernel, end,
+					next + 1);
+		}
+	}
 	spin_unlock_irqrestore(&ipath_pioavail_lock, flags);
+
+	/*
+	 * When moving buffers from kernel to user, if number assigned to
+	 * the user is less than the pio update threshold, and threshold
+	 * is supported (cnt was computed > 0), drop the update threshold
+	 * so we update at least once per allocated number of buffers.
+	 * In any case, if the kernel buffers are less than the threshold,
+	 * drop the threshold.  We don't bother increasing it, having once
+	 * decreased it, since it would typically just cycle back and forth.
+	 * If we don't decrease below buffers in use, we can wait a long
+	 * time for an update, until some other context uses PIO buffers.
+	 */
+	if (!avail && len < cnt)
+		cnt = len;
+	if (cnt < dd->ipath_pioupd_thresh) {
+		dd->ipath_pioupd_thresh = cnt;
+		ipath_dbg("Decreased pio update threshold to %u\n",
+			dd->ipath_pioupd_thresh);
+		spin_lock_irqsave(&dd->ipath_sendctrl_lock, flags);
+		dd->ipath_sendctrl &= ~(INFINIPATH_S_UPDTHRESH_MASK
+			<< INFINIPATH_S_UPDTHRESH_SHIFT);
+		dd->ipath_sendctrl |= dd->ipath_pioupd_thresh
+			<< INFINIPATH_S_UPDTHRESH_SHIFT;
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_sendctrl,
+			dd->ipath_sendctrl);
+		spin_unlock_irqrestore(&dd->ipath_sendctrl_lock, flags);
+	}
 }
 
 /**
@@ -1807,12 +1918,23 @@ void ipath_cancel_sends(struct ipath_devdata *dd, int restore_sendctrl)
 		goto bail;
 	}
 	/*
-	 * If we have SDMA, we have to kick off the abort state machine
-	 * and make sure we aren't already aborting.
+	 * If we have SDMA, and it's not disabled, we have to kick off the
+	 * abort state machine, provided we aren't already aborting.
+	 * If we are in the process of aborting SDMA (!DISABLED, but ABORTING),
+	 * we skip the rest of this routine. It is already "in progress"
 	 */
-	if ((dd->ipath_flags & IPATH_HAS_SEND_DMA) &&
-	    (test_and_set_bit(IPATH_SDMA_ABORTING, &dd->ipath_sdma_status)))
-		goto bail;
+	if (dd->ipath_flags & IPATH_HAS_SEND_DMA) {
+		int skip_cancel;
+		u64 *statp = &dd->ipath_sdma_status;
+
+		spin_lock_irqsave(&dd->ipath_sdma_lock, flags);
+		skip_cancel =
+			test_and_set_bit(IPATH_SDMA_ABORTING, statp)
+			&& !test_bit(IPATH_SDMA_DISABLED, statp);
+		spin_unlock_irqrestore(&dd->ipath_sdma_lock, flags);
+		if (skip_cancel)
+			goto bail;
+	}
 
 	ipath_dbg("Cancelling all in-progress send buffers\n");
 
@@ -1839,6 +1961,9 @@ void ipath_cancel_sends(struct ipath_devdata *dd, int restore_sendctrl)
 	ipath_disarm_piobufs(dd, 0,
 		dd->ipath_piobcnt2k + dd->ipath_piobcnt4k);
 
+	if (dd->ipath_flags & IPATH_HAS_SEND_DMA)
+		set_bit(IPATH_SDMA_DISARMED, &dd->ipath_sdma_status);
+
 	if (restore_sendctrl) {
 		/* else done by caller later if needed */
 		spin_lock_irqsave(&dd->ipath_sendctrl_lock, flags);
@@ -1852,12 +1977,12 @@ void ipath_cancel_sends(struct ipath_devdata *dd, int restore_sendctrl)
 	}
 
 	if ((dd->ipath_flags & IPATH_HAS_SEND_DMA) &&
+	    !test_bit(IPATH_SDMA_DISABLED, &dd->ipath_sdma_status) &&
 	    test_bit(IPATH_SDMA_RUNNING, &dd->ipath_sdma_status)) {
 		spin_lock_irqsave(&dd->ipath_sdma_lock, flags);
 	    	/* only wait so long for intr */
 		dd->ipath_sdma_abort_intr_timeout = jiffies + HZ;
 		dd->ipath_sdma_reset_wait = 200;
-		__set_bit(IPATH_SDMA_DISARMED, &dd->ipath_sdma_status);
 		if (!test_bit(IPATH_SDMA_SHUTDOWN, &dd->ipath_sdma_status))
 			tasklet_hi_schedule(&dd->ipath_sdma_abort_task);
 		spin_unlock_irqrestore(&dd->ipath_sdma_lock, flags);
@@ -1906,6 +2031,24 @@ static void ipath_set_ib_lstate(struct ipath_devdata *dd, int linkcmd,
 		[INFINIPATH_IBCC_LINKCMD_ARMED] = "ARMED",
 		[INFINIPATH_IBCC_LINKCMD_ACTIVE] = "ACTIVE"
 	};
+	if (linitcmd == INFINIPATH_IBCC_LINKINITCMD_DISABLE) {
+		/*
+		 * If we are told to disable, note that so link-recovery
+		 * code does not attempt to bring us back up.
+		 */
+		preempt_disable();
+		dd->ipath_flags |= IPATH_IB_LINK_DISABLED;
+		preempt_enable();
+	} else if (linitcmd) {
+		/*
+		 * Any other linkinitcmd will lead to LINKDOWN< and then
+		 * to INIT (if all is well), so clear flag to let ink-recovery
+		 * code attempt to bring us back up.
+		 */
+		preempt_disable();
+		dd->ipath_flags &= ~IPATH_IB_LINK_DISABLED;
+		preempt_enable();
+	}
 
 	mod_wd = (linkcmd << dd->ibcc_lc_shift) |
 		(linitcmd << INFINIPATH_IBCC_LINKINITCMD_SHIFT);
@@ -2249,7 +2392,7 @@ void ipath_shutdown_device(struct ipath_devdata *dd)
 
 	ipath_dbg("Shutting down the device\n");
 
-	ipath_hol_up(dd);
+	ipath_hol_up(dd); /* make sure user processes aren't suspended */
 
 	dd->ipath_flags |= IPATH_LINKUNK;
 	dd->ipath_flags &= ~(IPATH_INITTED | IPATH_LINKDOWN |
@@ -2592,48 +2735,76 @@ int ipath_signal_procs(struct ipath_devdata *dd, int sig)
 	return any;
 }
 
+static void ipath_hol_signal_down(struct ipath_devdata *dd)
+{
+	if (ipath_signal_procs(dd, SIGSTOP))
+		ipath_dbg("Stopped some processes\n");
+	ipath_cancel_sends(dd, 1);
+}
+
+
+static void ipath_hol_signal_up(struct ipath_devdata *dd)
+{
+	if (ipath_signal_procs(dd, SIGCONT))
+		ipath_dbg("Continued some processes\n");
+}
+
+/*
+ * link is down, stop any users processes, and flush pending sends
+ * to prevent HoL blocking, then start the HoL timer that
+ * periodically continues, then stop procs, so they can detect
+ * link down if they want, and do something about it.
+ * Timer may already be running, so use __mod_timer, not add_timer.
+ */
 void ipath_hol_down(struct ipath_devdata *dd)
 {
-	del_timer_sync(&dd->ipath_hol_timer);
-	dd->ipath_hol_state = IPATH_HOL_DOWNCONT;
-	ipath_hol_event((unsigned long)dd);
+	dd->ipath_hol_state = IPATH_HOL_DOWN;
+	ipath_hol_signal_down(dd);
+	dd->ipath_hol_next = IPATH_HOL_DOWNCONT;
+	dd->ipath_hol_timer.expires = jiffies +
+		msecs_to_jiffies(ipath_hol_timeout_ms);
+	__mod_timer(&dd->ipath_hol_timer, dd->ipath_hol_timer.expires);
 }
 
+/*
+ * link is up, continue any user processes, and ensure timer
+ * is a nop, if running.  Let timer keep running, if set; it
+ * will nop when it sees the link is up
+ */
 void ipath_hol_up(struct ipath_devdata *dd)
 {
-	del_timer_sync(&dd->ipath_hol_timer);
+	ipath_hol_signal_up(dd);
 	dd->ipath_hol_state = IPATH_HOL_UP;
-	ipath_hol_event((unsigned long)dd);
 }
 
+/*
+ * toggle the running/not running state of user proceses
+ * to prevent HoL blocking on chip resources, but still allow
+ * user processes to do link down special case handling.
+ * Should only be called via the timer
+ */
 void ipath_hol_event(unsigned long opaque)
 {
 	struct ipath_devdata *dd = (struct ipath_devdata *)opaque;
-	unsigned oldstate = dd->ipath_hol_state;
-	unsigned newstate = IPATH_HOL_UP;
 
-	if (!(dd->ipath_flags & IPATH_LINKACTIVE)) {
-		if (oldstate == IPATH_HOL_DOWNSTOP)
-			newstate = IPATH_HOL_DOWNCONT;
-		else
-			newstate = IPATH_HOL_DOWNSTOP;
+	if (dd->ipath_hol_next == IPATH_HOL_DOWNSTOP
+		&& dd->ipath_hol_state != IPATH_HOL_UP) {
+		dd->ipath_hol_next = IPATH_HOL_DOWNCONT;
+		ipath_dbg("Stopping processes\n");
+		ipath_hol_signal_down(dd);
+	} else { /* may do "extra" if also in ipath_hol_up() */
+		dd->ipath_hol_next = IPATH_HOL_DOWNSTOP;
+		ipath_dbg("Continuing processes\n");
+		ipath_hol_signal_up(dd);
 	}
-
-	if (newstate == IPATH_HOL_DOWNSTOP) {
-		if (ipath_signal_procs(dd, SIGSTOP))
-			ipath_dbg("Stopped some processes\n");
-		ipath_cancel_sends(dd, 1);
-	} else
-		if (ipath_signal_procs(dd, SIGCONT))
-			ipath_dbg("Continued some processes\n");
-
-	if ((oldstate != newstate) || (newstate != IPATH_HOL_UP)) {
+	if (dd->ipath_hol_state == IPATH_HOL_UP)
+		ipath_dbg("link's up, don't resched timer\n");
+	else {
 		dd->ipath_hol_timer.expires = jiffies +
 			msecs_to_jiffies(ipath_hol_timeout_ms);
-		add_timer(&dd->ipath_hol_timer);
+		__mod_timer(&dd->ipath_hol_timer,
+			dd->ipath_hol_timer.expires);
 	}
-
-	dd->ipath_hol_state = newstate;
 }
 
 int ipath_set_rx_pol_inv(struct ipath_devdata *dd, u8 new_pol_inv)

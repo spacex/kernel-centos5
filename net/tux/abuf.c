@@ -130,7 +130,8 @@ repeat:
 			TDprintk("ret: %d, req->error = TUX_ERROR_CONN_CLOSE.\n", ret);
 			req->error = TUX_ERROR_CONN_CLOSE;
 			req->atom_idx = 0;
-			req->in_file->f_pos = 0;
+			if (req->in_file)
+				req->in_file->f_pos = 0;
 			__free_page(req->abuf.page);
 			memset(&req->abuf, 0, sizeof(req->abuf));
 			zap_request(req, cachemiss);

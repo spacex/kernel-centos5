@@ -75,18 +75,4 @@ dma_cache_sync (void *vaddr, size_t size, enum dma_data_direction dir)
 
 #define dma_is_consistent(dma_handle)	(1)	/* all we do is coherent memory... */
 
-#define contiguous_bitmap_init(end_pfn)	((void)end_pfn)
-
-static inline int
-range_straddles_page_boundary(void *p, size_t size)
-{
-	extern unsigned long *contiguous_bitmap;
-
-	if (!is_running_on_xen())
-		return 0;
-
-	return (((((unsigned long)p & ~PAGE_MASK) + size) > PAGE_SIZE) &&
-	        !test_bit(__pa(p) >> PAGE_SHIFT, contiguous_bitmap));
-}
-
 #endif /* _ASM_IA64_DMA_MAPPING_H */

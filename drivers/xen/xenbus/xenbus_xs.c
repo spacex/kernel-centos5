@@ -45,6 +45,10 @@
 #include <xen/xenbus.h>
 #include "xenbus_comms.h"
 
+#ifdef HAVE_XEN_PLATFORM_COMPAT_H
+#include <xen/platform-compat.h>
+#endif
+
 struct xs_stored_msg {
 	struct list_head list;
 
@@ -286,9 +290,9 @@ static char *join(const char *dir, const char *name)
 	char *buffer;
 
 	if (strlen(name) == 0)
-		buffer = kasprintf(GFP_KERNEL, "%s", dir);
+		buffer = kasprintf(GFP_NOIO | __GFP_HIGH, "%s", dir);
 	else
-		buffer = kasprintf(GFP_KERNEL, "%s/%s", dir, name);
+		buffer = kasprintf(GFP_NOIO | __GFP_HIGH, "%s/%s", dir, name);
 	return (!buffer) ? ERR_PTR(-ENOMEM) : buffer;
 }
 
@@ -300,7 +304,7 @@ static char **split(char *strings, unsigned int len, unsigned int *num)
 	*num = count_strings(strings, len);
 
 	/* Transfer to one big alloc for easy freeing. */
-	ret = kmalloc(*num * sizeof(char *) + len, GFP_KERNEL);
+	ret = kmalloc(*num * sizeof(char *) + len, GFP_NOIO | __GFP_HIGH);
 	if (!ret) {
 		kfree(strings);
 		return ERR_PTR(-ENOMEM);
@@ -501,7 +505,7 @@ int xenbus_printf(struct xenbus_transaction t,
 #define PRINTF_BUFFER_SIZE 4096
 	char *printf_buffer;
 
-	printf_buffer = kmalloc(PRINTF_BUFFER_SIZE, GFP_KERNEL);
+	printf_buffer = kmalloc(PRINTF_BUFFER_SIZE, GFP_NOIO | __GFP_HIGH);
 	if (printf_buffer == NULL)
 		return -ENOMEM;
 
@@ -692,6 +696,14 @@ void xs_resume(void)
 	up_write(&xs_state.suspend_mutex);
 }
 
+#ifdef CONFIG_XEN_PV_ON_HVM
+void xs_suspend_cancel(void)
+{
+	mutex_unlock(&xs_state.request_mutex);
+	up_write(&xs_state.suspend_mutex);
+}
+#endif
+
 static int xenwatch_handle_callback(void *data)
 {
 	struct xs_stored_msg *msg = data;
@@ -751,7 +763,7 @@ static int process_msg(void)
 	char *body;
 	int err;
 
-	msg = kmalloc(sizeof(*msg), GFP_KERNEL);
+	msg = kmalloc(sizeof(*msg), GFP_NOIO | __GFP_HIGH);
 	if (msg == NULL)
 		return -ENOMEM;
 
@@ -761,7 +773,7 @@ static int process_msg(void)
 		return err;
 	}
 
-	body = kmalloc(msg->hdr.len + 1, GFP_KERNEL);
+	body = kmalloc(msg->hdr.len + 1, GFP_NOIO | __GFP_HIGH);
 	if (body == NULL) {
 		kfree(msg);
 		return -ENOMEM;

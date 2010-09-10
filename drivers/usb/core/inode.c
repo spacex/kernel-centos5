@@ -529,6 +529,7 @@ static void fs_remove_file (struct dentry *dentry)
 	mutex_lock_nested(&parent->d_inode->i_mutex, I_MUTEX_PARENT);
 	if (usbfs_positive(dentry)) {
 		if (dentry->d_inode) {
+			dentry->d_inode->i_private = NULL;
 			if (S_ISDIR(dentry->d_inode->i_mode))
 				usbfs_rmdir(parent->d_inode, dentry);
 			else

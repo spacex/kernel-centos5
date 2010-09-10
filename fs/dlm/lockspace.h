@@ -20,6 +20,7 @@ struct dlm_ls *dlm_find_lockspace_global(uint32_t id);
 struct dlm_ls *dlm_find_lockspace_local(void *id);
 struct dlm_ls *dlm_find_lockspace_device(int minor);
 void dlm_put_lockspace(struct dlm_ls *ls);
+void dlm_global_to_fsid(uint32_t global_id, uint32_t *fsid);
 
 #endif				/* __LOCKSPACE_DOT_H__ */
 

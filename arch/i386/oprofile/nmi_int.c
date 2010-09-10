@@ -30,6 +30,8 @@ static void nmi_stop(void);
 
 /* 0 == registered but off, 1 == registered and on */
 static int nmi_enabled = 0;
+int ibs_allowed = 0;	/* AMD Family 10h+ */
+extern unsigned long driver_version;	/* driver version in oprof.c */
 
 #ifdef CONFIG_PM
 
@@ -185,6 +187,11 @@ static int nmi_setup(void)
 		free_msrs();
 		return -EBUSY;
 	}
+
+	/*setup AMD Family10h IBS irq if needed */
+	if (ibs_allowed)
+		setup_ibs_nmi();
+
 	/* We need to serialize save and setup for HT because the subset
 	 * of msrs are distinct for save and setup operations
 	 */
@@ -244,6 +251,10 @@ static void nmi_shutdown(void)
 	unset_nmi_callback();
 	release_lapic_nmi();
 	free_msrs();
+
+	/*clear AMD Family 10h IBS irq if needed */
+	if (ibs_allowed)
+		clear_ibs_nmi();
 }
 
  
@@ -275,13 +286,14 @@ static void nmi_stop(void)
 
 
 struct op_counter_config counter_config[OP_MAX_COUNTER];
+struct op_ibs_config ibs_config;
 
 static int nmi_create_files(struct super_block * sb, struct dentry * root)
 {
 	unsigned int i;
-
+	struct dentry *dir;
+	
 	for (i = 0; i < model->num_counters; ++i) {
-		struct dentry * dir;
 		char buf[4];
  
 		snprintf(buf,  sizeof(buf), "%d", i);
@@ -289,11 +301,43 @@ static int nmi_create_files(struct super_block * sb, struct dentry * root)
 		oprofilefs_create_ulong(sb, dir, "enabled", &counter_config[i].enabled); 
 		oprofilefs_create_ulong(sb, dir, "event", &counter_config[i].event); 
 		oprofilefs_create_ulong(sb, dir, "count", &counter_config[i].count); 
-		oprofilefs_create_ulong(sb, dir, "unit_mask", &counter_config[i].unit_mask); 
+		oprofilefs_create_ulong(sb, dir, "unit_mask", &counter_config [i].unit_mask); 
 		oprofilefs_create_ulong(sb, dir, "kernel", &counter_config[i].kernel); 
 		oprofilefs_create_ulong(sb, dir, "user", &counter_config[i].user); 
 	}
 
+	/* Setup AMD Family 10h IBS control if needed */
+	if (ibs_allowed) {
+		char buf[12];
+
+		/* setup some reasonable defaults */
+		ibs_config.max_cnt_fetch = 250000;
+		ibs_config.FETCH_enabled = 0;
+		ibs_config.max_cnt_op = 250000;
+		ibs_config.OP_enabled = 0;
+		ibs_config.dispatched_ops = 1;
+		ibs_config.rand_en = 1;
+
+		oprofilefs_create_ulong(sb,root, "version",
+					&driver_version);
+
+		snprintf(buf,  sizeof(buf), "ibs_fetch");
+		dir = oprofilefs_mkdir(sb, root, buf);
+		oprofilefs_create_ulong(sb, dir, "rand_enable",
+					&ibs_config.rand_en);
+		oprofilefs_create_ulong(sb, dir, "enable",
+					&ibs_config.FETCH_enabled);
+		oprofilefs_create_ulong(sb, dir, "max_count",
+					&ibs_config.max_cnt_fetch);
+		snprintf(buf,  sizeof(buf), "ibs_op");
+		dir = oprofilefs_mkdir(sb, root, buf);
+		oprofilefs_create_ulong(sb, dir, "enable",
+					&ibs_config.OP_enabled);
+		oprofilefs_create_ulong(sb, dir, "max_count",
+					&ibs_config.max_cnt_op);
+		oprofilefs_create_ulong(sb, dir, "dispatched_ops",
+					&ibs_config.dispatched_ops);
+	}
 	return 0;
 }
  
@@ -331,24 +375,38 @@ static int __init p4_init(char ** cpu_type)
 }
 
 
-static int __init ppro_init(char ** cpu_type)
+static int __init ppro_init(char **cpu_type)
 {
 	__u8 cpu_model = boot_cpu_data.x86_model;
 
-	if (cpu_model == 14)
-		*cpu_type = "i386/core";
-	else if (cpu_model == 15 || cpu_model == 23)
-		*cpu_type = "i386/core_2";
-	else if (cpu_model > 0xd)
-		return 0;
-	else if (cpu_model == 9) {
-		*cpu_type = "i386/p6_mobile";
-	} else if (cpu_model > 5) {
-		*cpu_type = "i386/piii";
-	} else if (cpu_model > 2) {
-		*cpu_type = "i386/pii";
-	} else {
+	switch (cpu_model) {
+	case 0 ... 2:
 		*cpu_type = "i386/ppro";
+		break;
+	case 3 ... 5:
+		*cpu_type = "i386/pii";
+		break;
+	case 6 ... 8:
+		*cpu_type = "i386/piii";
+		break;
+	case 9:
+		*cpu_type = "i386/p6_mobile";
+		break;
+	case 10 ... 13:
+		*cpu_type = "i386/p6";
+		break;
+	case 14:
+		*cpu_type = "i386/core";
+		break;
+	case 15: case 23:
+		*cpu_type = "i386/core_2";
+		break;
+	case 26:
+		*cpu_type = "i386/core_2";
+		break;
+	default:
+		/* Unknown */
+	    return 0;
 	}
 
 	model = &op_ppro_spec;
@@ -363,6 +421,7 @@ int __init op_nmi_init(struct oprofile_operations *ops)
 	__u8 vendor = boot_cpu_data.x86_vendor;
 	__u8 family = boot_cpu_data.x86;
 	char *cpu_type;
+	uint32_t eax, ebx, ecx, edx;
 
 	if (!cpu_has_apic)
 		return -ENODEV;
@@ -388,9 +447,20 @@ int __init op_nmi_init(struct oprofile_operations *ops)
 				model = &op_athlon_spec;
 				cpu_type = "x86-64/family10";
 				break;
+			case 0x11:
+				model = &op_athlon_spec;
+				cpu_type = "x86-64/family11h";
+				break;
+			}
+			/* see if IBS is available */
+			if (family >= 0x10) {
+				cpuid(0x80000001, &eax, &ebx, &ecx, &edx);
+				if (ecx & 0x40)
+					/* This CPU has IBS capability */
+					ibs_allowed = 1;
 			}
 			break;
- 
+
 		case X86_VENDOR_INTEL:
 			switch (family) {
 				/* Pentium IV */

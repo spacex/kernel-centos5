@@ -627,10 +627,22 @@ __SYSCALL(__NR_sync_file_range, sys_sync_file_range)
 __SYSCALL(__NR_vmsplice, sys_vmsplice)
 #define __NR_move_pages		279
 __SYSCALL(__NR_move_pages, sys_move_pages)
+#define __NR_utimensat		280
+__SYSCALL(__NR_utimensat, sys_ni_syscall)
+#define __NR_epoll_pwait	281
+__SYSCALL(__NR_epoll_pwait, sys_ni_syscall)
+#define __NR_signalfd		282
+__SYSCALL(__NR_signalfd, sys_ni_syscall)
+#define __NR_timerfd_create	283
+__SYSCALL(__NR_timerfd_create, sys_ni_syscall)
+#define __NR_eventfd		284
+__SYSCALL(__NR_eventfd, sys_ni_syscall)
+#define __NR_fallocate		285
+__SYSCALL(__NR_fallocate, sys_fallocate)
 
 #ifdef __KERNEL__
 
-#define __NR_syscall_max __NR_move_pages
+#define __NR_syscall_max __NR_fallocate
 
 #ifndef __NO_STUBS
 

@@ -93,6 +93,25 @@ extern int iommu_map_sg(struct device *dev, struct iommu_table *tbl,
 extern void iommu_unmap_sg(struct iommu_table *tbl, struct scatterlist *sglist,
 		int nelems, enum dma_data_direction direction);
 
+#ifdef CONFIG_HAVE_DMA_ATTRS
+/*
+ * Hack: we drill a hole all the way through the powerpc IOMMU support in order
+ *       to pass down the 'weak ordering' flag from struct dma_attrs in a way
+ *       that does not impact the kABI. The mainline kernel has redefined
+ *       all these functions to take an extra struct dma_attrs argument.
+ *       Instead, we defined a minimal set of extra functions.
+ */
+extern int pci_iommu_map_sg_weak(struct device *pdev, struct scatterlist *sglist,
+		int nelems, enum dma_data_direction direction);
+extern void pci_iommu_unmap_sg_weak(struct device *pdev, struct scatterlist *sglist,
+		int nelems, enum dma_data_direction direction);
+extern int iommu_map_sg_weak(struct device *dev, struct iommu_table *tbl,
+		struct scatterlist *sglist, int nelems, unsigned long mask,
+		enum dma_data_direction direction);
+extern void tce_build_cell_weak(struct iommu_table *tbl, long index, long npages,
+	unsigned long uaddr, enum dma_data_direction direction);
+#endif /* CONFIG_HAVE_DMA_ATTRS */
+
 extern void *iommu_alloc_coherent(struct iommu_table *tbl, size_t size,
 		dma_addr_t *dma_handle, unsigned long mask,
 		gfp_t flag, int node);
@@ -111,7 +130,11 @@ extern void iommu_init_early_dart(void);
 #ifdef CONFIG_PCI
 extern void pci_iommu_init(void);
 extern void pci_direct_iommu_init(void);
+extern struct dma_mapping_ops pci_fixed_ops;
 extern unsigned long pci_direct_dma_offset;
+extern int cell_use_iommu_fixed;
+extern u64 cell_iommu_get_fixed_address(struct pci_dev *dev);
+extern void cell_pci_dma_dev_setup(struct pci_dev *dev);
 #else
 static inline void pci_iommu_init(void) { }
 #endif

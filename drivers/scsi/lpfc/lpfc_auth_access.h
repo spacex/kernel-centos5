@@ -206,7 +206,7 @@ int lpfc_fc_queue_security_work(struct lpfc_vport *,
 #define FC_NL_SC_DHCHAP_MAKE_RESPONSE_RSP	0x0008
 #define FC_NL_SC_DHCHAP_AUTHENTICATE_RSP	0x0009
 	/* kernel -> user */
-#define FC_NL_ASYNC_EVENT			0x0010
+#define FC_NL_ASYNC_EVENT			0x0100
 #define FC_NL_SC_GET_CONFIG_REQ			0x0020
 #define FC_NL_SC_SET_CONFIG_REQ			0x0030
 #define FC_NL_SC_DHCHAP_MAKE_CHALLENGE_REQ	0x0040
@@ -235,9 +235,10 @@ struct scsi_nl_hdr {
 	uint16_t msglen;
 } __attribute__((aligned(sizeof(uint64_t))));
 */
+
 struct fc_nl_sc_message {
-	struct scsi_nl_hdr snlh;              /* must be 1st element ! */
-	uint32_t host_no;
+	uint16_t msgtype;
+	uint16_t rsvd;
 	uint32_t tran_id;
 	uint32_t data_len;
 	uint8_t data[0];

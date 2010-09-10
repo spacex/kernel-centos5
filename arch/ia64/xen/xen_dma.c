@@ -35,6 +35,38 @@ do {								\
 	}							\
 } while (0)
 
+static int check_pages_physically_contiguous(unsigned long pfn, 
+					     unsigned int offset,
+					     size_t length)
+{
+	unsigned long next_bus;
+	int i;
+	int nr_pages;
+
+	next_bus = pfn_to_mfn_for_dma(pfn);
+	nr_pages = (offset + length + PAGE_SIZE-1) >> PAGE_SHIFT;
+
+	for (i = 1; i < nr_pages; i++) {
+		if (pfn_to_mfn_for_dma(++pfn) != ++next_bus) 
+			return 0;
+	}
+	return 1;
+}
+
+int range_straddles_page_boundary(paddr_t p, size_t size)
+{
+	unsigned long pfn = p >> PAGE_SHIFT;
+	unsigned int offset = p & ~PAGE_MASK;
+
+	if (!is_running_on_xen())
+		return 0;
+
+	if (offset + size <= PAGE_SIZE)
+		return 0;
+	if (check_pages_physically_contiguous(pfn, offset, size))
+		return 0;
+	return 1;
+}
 
 /*
  * This should be broken out of swiotlb and put in a common place
@@ -62,6 +94,9 @@ xen_map_sg(struct device *dev, struct scatterlist *sg, int nents,
 		sg[i].dma_length  = sg[i].length;
 
 		IOMMU_BUG_ON(address_needs_mapping(dev, sg[i].dma_address));
+		IOMMU_BUG_ON(range_straddles_page_boundary( 
+			page_to_pseudophys(sg[i].page) + sg[i].offset,
+			sg[i].length));
 	}
 
 	return nents;
@@ -131,7 +166,7 @@ xen_map_single(struct device *dev, void *ptr, size_t size,
 {
 	dma_addr_t dma_addr = virt_to_bus(ptr);
 
-	IOMMU_BUG_ON(range_straddles_page_boundary(ptr, size));
+	IOMMU_BUG_ON(range_straddles_page_boundary(__pa(ptr), size));
 	IOMMU_BUG_ON(address_needs_mapping(dev, dma_addr));
 
 	return dma_addr;

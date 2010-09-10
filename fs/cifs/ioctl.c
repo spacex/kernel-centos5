@@ -39,7 +39,7 @@
 #define FS_FL_USER_VISIBLE              0x0003DFFF /* User visible flags */
 #endif
 
-int cifs_ioctl (struct inode *inode, struct file *filep,
+int cifs_ioctl(struct inode *inode, struct file *filep,
 		unsigned int command, unsigned long arg)
 {
 	int rc = -ENOTTY; /* strange error - but the precedent */

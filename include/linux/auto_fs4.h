@@ -29,6 +29,11 @@
 #define AUTOFS_EXP_IMMEDIATE		1
 #define AUTOFS_EXP_LEAVES		2
 
+#define AUTOFS_TYPE_ANY			0x0000
+#define AUTOFS_TYPE_INDIRECT		0x0001
+#define AUTOFS_TYPE_DIRECT		0x0002
+#define AUTOFS_TYPE_OFFSET		0x0004
+
 /* Daemon notification packet types */
 enum autofs_notify {
 	NFY_NONE,
@@ -90,8 +95,6 @@ union autofs_packet_union {
 #define AUTOFS_IOC_EXPIRE_INDIRECT	AUTOFS_IOC_EXPIRE_MULTI
 #define AUTOFS_IOC_EXPIRE_DIRECT	AUTOFS_IOC_EXPIRE_MULTI
 #define AUTOFS_IOC_PROTOSUBVER		_IOR(0x93,0x67,int)
-#define AUTOFS_IOC_ASKREGHOST           _IOR(0x93,0x68,int)
-#define AUTOFS_IOC_TOGGLEREGHOST        _IOR(0x93,0x69,int)
 #define AUTOFS_IOC_ASKUMOUNT		_IOR(0x93,0x70,int)
 
 

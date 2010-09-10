@@ -27,12 +27,12 @@
 #include <asm/machdep.h>
 #include <asm/hw_irq.h>
 #include <asm/io.h>
+#include <asm/cell-regs.h>
 
 #ifdef DEBUG
 #include <asm/time.h>
 #endif
 
-#include "cbe_regs.h"
 #include "cbe_cpufreq.h"
 
 /* to write to MIC register */

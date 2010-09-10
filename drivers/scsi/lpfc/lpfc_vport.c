@@ -193,9 +193,80 @@ lpfc_unique_wwpn(struct lpfc_hba *phba, struct lpfc_vport *new_vport)
 	return 1;
 }
 
+/**
+ * lpfc_discovery_wait: Wait for driver discovery to quiesce.
+ * @vport: The virtual port for which this call is being executed.
+ *
+ * This driver calls this routine specifically from lpfc_vport_delete
+ * to enforce a synchronous execution of vport
+ * delete relative to discovery activities.  The
+ * lpfc_vport_delete routine should not return until it
+ * can reasonably guarantee that discovery has quiesced.
+ * Post FDISC LOGO, the driver must wait until its SAN teardown is
+ * complete and all resources recovered before allowing
+ * cleanup.
+ *
+ * This routine does not require any locks held.
+ **/
+static void lpfc_discovery_wait(struct lpfc_vport *vport)
+{
+	struct lpfc_hba *phba = vport->phba;
+	uint32_t wait_flags = 0;
+	unsigned long wait_time_max;
+	unsigned long start_time;
+
+	wait_flags = FC_RSCN_MODE | FC_RSCN_DISCOVERY | FC_NLP_MORE |
+		     FC_RSCN_DEFERRED | FC_NDISC_ACTIVE | FC_DISC_TMO;
+
+	/*
+	 * The time constraint on this loop is a balance between the
+	 * fabric RA_TOV value and dev_loss tmo.  The driver's
+	 * devloss_tmo is 10 giving this loop a 3x multiplier minimally.
+	 */
+	wait_time_max = msecs_to_jiffies(((phba->fc_ratov * 3) + 3) * 1000);
+	wait_time_max += jiffies;
+	start_time = jiffies;
+	while (time_before(jiffies, wait_time_max)) {
+		if ((vport->num_disc_nodes > 0)    ||
+		    (vport->fc_flag & wait_flags)  ||
+		    ((vport->port_state > LPFC_VPORT_FAILED) &&
+		     (vport->port_state < LPFC_VPORT_READY))) {
+			lpfc_printf_log(phba, KERN_INFO, LOG_VPORT,
+					"1833 Vport discovery quiesce Wait:"
+					" vpi x%x state x%x fc_flags x%x"
+					" num_nodes x%x, waiting 1000 msecs"
+					" total wait msecs x%x\n",
+					vport->vpi, vport->port_state,
+					vport->fc_flag, vport->num_disc_nodes,
+					jiffies_to_msecs(jiffies - start_time));
+			msleep(1000);
+		} else {
+			/* Base case.  Wait variants satisfied.  Break out */
+			lpfc_printf_log(phba, KERN_INFO, LOG_VPORT,
+					 "1834 Vport discovery quiesced:"
+					 " vpi x%x state x%x fc_flags x%x"
+					 " wait msecs x%x\n",
+					 vport->vpi, vport->port_state,
+					 vport->fc_flag,
+					 jiffies_to_msecs(jiffies
+						- start_time));
+			break;
+		}
+	}
+
+	if (time_after(jiffies, wait_time_max))
+		lpfc_printf_log(phba, KERN_ERR, LOG_VPORT,
+				"1835 Vport discovery quiesce failed:"
+				" vpi x%x state x%x fc_flags x%x"
+				" wait msecs x%x\n",
+				vport->vpi, vport->port_state,
+				vport->fc_flag,
+				jiffies_to_msecs(jiffies - start_time));
+}
+
 int
 lpfc_vport_create(struct Scsi_Host *shost, const uint8_t *wwnn,
-		  const uint8_t *wwpn)
+		  const uint8_t *wwpn, char *vname)
 {
 	struct lpfc_nodelist *ndlp;
 	static uint8_t null_name[8] = { 0, 0, 0, 0, 0, 0, 0, 0, };
@@ -206,6 +277,7 @@ lpfc_vport_create(struct Scsi_Host *shost, const uint8_t *wwnn,
 	int vpi;
 	int rc = VPORT_ERROR;
 	int status;
+	int size;
 
 	if ((phba->sli_rev < 3) || !phba->cfg_enable_npiv) {
 		lpfc_printf_log(phba, KERN_ERR, LOG_VPORT,
@@ -267,7 +339,20 @@ lpfc_vport_create(struct Scsi_Host *shost, const uint8_t *wwnn,
 
 	memcpy(vport->fc_portname.u.wwn, vport->fc_sparam.portName.u.wwn, 8);
 	memcpy(vport->fc_nodename.u.wwn, vport->fc_sparam.nodeName.u.wwn, 8);
-
+	size = strnlen(vname, LPFC_VNAME_LEN);
+	if (size) {
+		vport->vname = kzalloc(size+1, GFP_KERNEL);
+		if (!vport->vname) {
+			lpfc_printf_vlog(vport, KERN_ERR, LOG_VPORT,
+					 "1814 Create VPORT failed. "
+					 "vname allocation failed.\n");
+			rc = VPORT_ERROR;
+			lpfc_free_vpi(phba, vpi);
+			destroy_port(vport);
+			goto error_out;
+		}
+		memcpy(vport->vname, vname, size+1);
+	}
 	if (wwnn && memcmp(wwnn, null_name, 8))
 		memcpy(vport->fc_nodename.u.wwn, wwnn, 8);
 	if (wwpn && memcmp(wwpn, null_name, 8))
@@ -536,6 +621,9 @@ lpfc_vport_delete(struct Scsi_Host *shost)
 			while (vport->unreg_vpi_cmpl == VPORT_INVAL && timeout)
 				timeout = schedule_timeout(timeout);
 	}
+
+	if (!(phba->pport->load_flag & FC_UNLOADING))
+		lpfc_discovery_wait(vport);
 
 skip_logo:
 	lpfc_cleanup(vport);

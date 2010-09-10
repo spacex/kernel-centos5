@@ -1,7 +1,7 @@
 /*******************************************************************************
 
   Intel(R) Gigabit Ethernet Linux driver
-  Copyright(c) 2007 Intel Corporation.
+  Copyright(c) 2007 - 2008 Intel Corporation.
 
   This program is free software; you can redistribute it and/or modify it
   under the terms and conditions of the GNU General Public License,
@@ -28,7 +28,12 @@
 #ifndef _E1000_82575_H_
 #define _E1000_82575_H_
 
+void igb_update_mc_addr_list_82575(struct e1000_hw*, u8*, u32, u32, u32);
+extern void igb_shutdown_fiber_serdes_link_82575(struct e1000_hw *hw);
+extern void igb_rx_fifo_flush_82575(struct e1000_hw *hw);
+
 #define E1000_RAR_ENTRIES_82575   16
+#define E1000_RAR_ENTRIES_82576   24
 
 /* SRRCTL bit definitions */
 #define E1000_SRRCTL_BSIZEPKT_SHIFT                     10 /* Shift _right_ */
@@ -56,33 +61,33 @@
 #define E1000_EIMS_RX_QUEUE E1000_EICR_RX_QUEUE
 #define E1000_EIMS_TX_QUEUE E1000_EICR_TX_QUEUE
 
-/* Immediate Interrupt RX (A.K.A. Low Latency Interrupt) */
+/* Immediate Interrupt Rx (A.K.A. Low Latency Interrupt) */
 
 /* Receive Descriptor - Advanced */
 union e1000_adv_rx_desc {
 	struct {
-		u64 pkt_addr;             /* Packet buffer address */
-		u64 hdr_addr;             /* Header buffer address */
+		__le64 pkt_addr;             /* Packet buffer address */
+		__le64 hdr_addr;             /* Header buffer address */
 	} read;
 	struct {
 		struct {
 			struct {
-				u16 pkt_info;   /* RSS type, Packet type */
-				u16 hdr_info;   /* Split Header,
-						 * header buffer length */
+				__le16 pkt_info;   /* RSS type, Packet type */
+				__le16 hdr_info;   /* Split Header,
+						    * header buffer length */
 			} lo_dword;
 			union {
-				u32 rss;          /* RSS Hash */
+				__le32 rss;          /* RSS Hash */
 				struct {
-					u16 ip_id;    /* IP id */
-					u16 csum;     /* Packet Checksum */
+					__le16 ip_id;    /* IP id */
+					__le16 csum;     /* Packet Checksum */
 				} csum_ip;
 			} hi_dword;
 		} lower;
 		struct {
-			u32 status_error;     /* ext status/error */
-			u16 length;           /* Packet length */
-			u16 vlan;             /* VLAN tag */
+			__le32 status_error;     /* ext status/error */
+			__le16 length;           /* Packet length */
+			__le16 vlan;             /* VLAN tag */
 		} upper;
 	} wb;  /* writeback */
 };
@@ -93,18 +98,20 @@ union e1000_adv_rx_desc {
 /* RSS Hash results */
 
 /* RSS Packet Types as indicated in the receive descriptor */
+#define E1000_RXDADV_PKTTYPE_IPV4        0x00000010 /* IPV4 hdr present */
+#define E1000_RXDADV_PKTTYPE_TCP         0x00000100 /* TCP hdr present */
 
 /* Transmit Descriptor - Advanced */
 union e1000_adv_tx_desc {
 	struct {
-		u64 buffer_addr;    /* Address of descriptor's data buf */
-		u32 cmd_type_len;
-		u32 olinfo_status;
+		__le64 buffer_addr;    /* Address of descriptor's data buf */
+		__le32 cmd_type_len;
+		__le32 olinfo_status;
 	} read;
 	struct {
-		u64 rsvd;       /* Reserved */
-		u32 nxtseq_seed;
-		u32 status;
+		__le64 rsvd;       /* Reserved */
+		__le32 nxtseq_seed;
+		__le32 status;
 	} wb;
 };
 
@@ -119,10 +126,10 @@ union e1000_adv_tx_desc {
 
 /* Context descriptors */
 struct e1000_adv_tx_context_desc {
-	u32 vlan_macip_lens;
-	u32 seqnum_seed;
-	u32 type_tucmd_mlhl;
-	u32 mss_l4len_idx;
+	__le32 vlan_macip_lens;
+	__le32 seqnum_seed;
+	__le32 type_tucmd_mlhl;
+	__le32 mss_l4len_idx;
 };
 
 #define E1000_ADVTXD_MACLEN_SHIFT    9  /* Adv ctxt desc mac len shift */
@@ -145,6 +152,6 @@ struct e1000_adv_tx_context_desc {
 
 
 
-#define E1000_DCA_TXCTRL_TX_WB_RO_EN (1 << 11) /* TX Desc writeback RO bit */
+#define E1000_DCA_TXCTRL_TX_WB_RO_EN (1 << 11) /* Tx Desc writeback RO bit */
 
 #endif

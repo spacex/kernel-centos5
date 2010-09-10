@@ -30,6 +30,7 @@
 #include <linux/console.h>
 #include <linux/mutex.h>
 #include <linux/memory_hotplug.h>
+#include <linux/platform_device.h>
 
 #include <asm/mmu.h>
 #include <asm/processor.h>
@@ -52,9 +53,9 @@
 #include <asm/udbg.h>
 #include <asm/mpic.h>
 #include <asm/of_device.h>
+#include <asm/cell-regs.h>
 
 #include "interrupt.h"
-#include "cbe_regs.h"
 #include "pervasive.h"
 #include "ras.h"
 
@@ -91,8 +92,20 @@ static void __init cell_pcibios_fixup(void)
 
 static int __init cell_publish_devices(void)
 {
+	int node;
+
 	if (machine_is(cell))
 		of_platform_bus_probe(NULL, NULL, NULL);
+
+	/* There is no device for the MIC memory controller, thus we create
+	 * a platform device for it to attach the EDAC driver to.
+	 */
+	for_each_online_node(node) {
+		if (cbe_get_cpu_mic_tm_regs(cbe_node_to_cpu(node)) == NULL)
+			continue;
+		platform_device_register_simple("cbe-mic", node, NULL, 0);
+	}
+
 	return 0;
 }
 subsys_initcall(cell_publish_devices);

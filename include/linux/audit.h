@@ -65,9 +65,12 @@
 #define AUDIT_LIST_RULES	1013	/* List syscall filtering rules */
 #define AUDIT_TRIM		1014	/* Trim junk from watched tree */
 #define AUDIT_MAKE_EQUIV	1015	/* Append to watched tree */
+#define AUDIT_TTY_GET		1016	/* Get TTY auditing status */
+#define AUDIT_TTY_SET		1017	/* Set TTY auditing status */
 
 #define AUDIT_FIRST_USER_MSG	1100	/* Userspace messages mostly uninteresting to kernel */
 #define AUDIT_USER_AVC		1107	/* We filter this differently */
+#define AUDIT_USER_TTY		1124	/* Non-ICANON TTY input meaning */
 #define AUDIT_LAST_USER_MSG	1199
 #define AUDIT_FIRST_USER_MSG2	2100	/* More user space messages */
 #define AUDIT_LAST_USER_MSG2	2999
@@ -93,6 +96,8 @@
 #define AUDIT_MQ_GETSETATTR	1315	/* POSIX MQ get/set attribute record type */
 #define AUDIT_KERNEL_OTHER	1316	/* For use by 3rd party modules */
 #define AUDIT_OBJ_PID		1318	/* signal target */
+#define AUDIT_TTY		1319	/* Input on an administrative TTY */
+#define AUDIT_EOE		1320	/* End of multi-record event */
 
 #define AUDIT_AVC		1400	/* SE Linux avc denial or grant */
 #define AUDIT_SELINUX_ERR	1401	/* Internal SE Linux Errors */
@@ -201,6 +206,7 @@
 #define AUDIT_WATCH	105
 #define AUDIT_PERM	106
 #define AUDIT_DIR	107
+#define AUDIT_FILETYPE	108
 
 #define AUDIT_ARG0      200
 #define AUDIT_ARG1      (AUDIT_ARG0+1)
@@ -296,6 +302,10 @@ struct audit_status {
 	__u32		backlog;	/* messages waiting in queue */
 };
 
+struct audit_tty_status {
+	__u32		enabled; /* 1 = enabled, 0 = disabled */
+};
+
 /* audit_rule_data supports filter rules with both integer and string
  * fields.  It corresponds with AUDIT_ADD_RULE, AUDIT_DEL_RULE and
  * AUDIT_LIST_RULES requests.
@@ -352,6 +362,7 @@ extern int audit_classify_arch(int arch);
 #ifdef CONFIG_AUDITSYSCALL
 /* These are defined in auditsc.c */
 				/* Public API */
+extern void audit_finish_fork(struct task_struct *child);
 extern int  audit_alloc(struct task_struct *task);
 extern void audit_free(struct task_struct *task);
 extern void audit_syscall_entry(int arch,
@@ -458,6 +469,7 @@ static inline int audit_mq_getsetattr(mqd_t mqdes, struct mq_attr *mqstat)
 extern int audit_n_rules;
 extern int audit_signals;
 #else
+#define audit_finish_fork(t)
 #define audit_alloc(t) ({ 0; })
 #define audit_free(t) do { ; } while (0)
 #define audit_syscall_entry(ta,a,b,c,d,e) do { ; } while (0)
@@ -516,11 +528,13 @@ extern void		    audit_log_d_path(struct audit_buffer *ab,
 					     const char *prefix,
 					     struct dentry *dentry,
 					     struct vfsmount *vfsmnt);
+extern void		    audit_log_lost(const char *message);
 				/* Private API (for audit.c only) */
 extern int audit_filter_user(struct netlink_skb_parms *cb, int type);
 extern int audit_filter_type(int type);
 extern int  audit_receive_filter(int type, int pid, int uid, int seq,
 			 void *data, size_t datasz, uid_t loginuid, u32 sid);
+extern int audit_enabled;
 #else
 #define audit_log(c,g,t,f,...) do { ; } while (0)
 #define audit_log_start(c,g,t) ({ NULL; })
@@ -531,6 +545,7 @@ extern int  audit_receive_filter(int type, int pid, int uid, int seq,
 #define audit_log_untrustedstring(a,s) do { ; } while (0)
 #define audit_log_n_untrustedstring(a,n,s) do { ; } while (0)
 #define audit_log_d_path(b,p,d,v) do { ; } while (0)
+#define audit_enabled 0
 #endif
 #endif
 #endif

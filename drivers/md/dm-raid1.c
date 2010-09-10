@@ -7,8 +7,6 @@
 #include "dm.h"
 #include "dm-bio-list.h"
 #include "dm-bio-record.h"
-#include "dm-io.h"
-#include "dm-log.h"
 #include "kcopyd.h"
 
 #include <linux/ctype.h>
@@ -20,6 +18,8 @@
 #include <linux/time.h>
 #include <linux/vmalloc.h>
 #include <linux/workqueue.h>
+#include <linux/dm-io.h>
+#include <linux/dm-dirty-log.h>
 
 #define DM_MSG_PREFIX "raid1"
 #define DM_IO_PAGES 64
@@ -69,7 +69,7 @@ struct region_hash {
 	unsigned region_shift;
 
 	/* holds persistent region state */
-	struct dirty_log *log;
+	struct dm_dirty_log *log;
 
 	/* hash table */
 	rwlock_t hash_lock;
@@ -110,8 +110,15 @@ struct region {
 /*-----------------------------------------------------------------
  * Mirror set structures.
  *---------------------------------------------------------------*/
+enum dm_raid1_error {
+	DM_RAID1_WRITE_ERROR,
+	DM_RAID1_SYNC_ERROR,
+	DM_RAID1_READ_ERROR
+};
+
 struct mirror {
 	atomic_t error_count;  /* Error counter to flag mirror failure */
+	unsigned long error_type;
 	struct mirror_set *ms;
 	struct dm_dev *dev;
 	sector_t offset;
@@ -145,6 +152,11 @@ struct mirror_set {
 	struct workqueue_struct *kmirrord_wq;
 	struct work_struct kmirrord_work;
 
+	struct timer_list timer;
+	unsigned long timer_pending;
+
+	struct work_struct trigger_event;
+
 	struct mirror mirror[0];
 };
 
@@ -161,9 +173,28 @@ static inline sector_t region_to_sector(struct region_hash *rh, region_t region)
 	return region << rh->region_shift;
 }
 
-static inline void wake(struct mirror_set *ms)
+static void wake(struct mirror_set *ms)
 {
 	queue_work(ms->kmirrord_wq, &ms->kmirrord_work);
+}
+
+static void delayed_wake_fn(unsigned long data)
+{
+	struct mirror_set *ms = (struct mirror_set *) data;
+
+	clear_bit(0, &ms->timer_pending);
+	wake(ms);
+}
+
+static void delayed_wake(struct mirror_set *ms)
+{
+	if (test_and_set_bit(0, &ms->timer_pending))
+		return;
+
+	ms->timer.expires = jiffies + HZ / 5;
+	ms->timer.data = (unsigned long) ms;
+	ms->timer.function = delayed_wake_fn;
+	add_timer(&ms->timer);
 }
 
 /* FIXME move this */
@@ -172,7 +203,7 @@ static void queue_bio(struct mirror_set *ms, struct bio *bio, int rw);
 #define MIN_REGIONS 64
 #define MAX_RECOVERY 1
 static int rh_init(struct region_hash *rh, struct mirror_set *ms,
-		   struct dirty_log *log, uint32_t region_size,
+		   struct dm_dirty_log *log, uint32_t region_size,
 		   region_t nr_regions)
 {
 	unsigned int nr_buckets, max_buckets;
@@ -237,7 +268,7 @@ static void rh_exit(struct region_hash *rh)
 	}
 
 	if (rh->log)
-		dm_destroy_dirty_log(rh->log);
+		dm_dirty_log_destroy(rh->log);
 	if (rh->region_pool)
 		mempool_destroy(rh->region_pool);
 	vfree(rh->buckets);
@@ -683,7 +714,7 @@ static void bio_set_m(struct bio *bio, struct mirror *m)
  * are in the no-sync state.  We have to recover these by
  * recopying from the default mirror to all the others.
  *---------------------------------------------------------------*/
-static void fail_mirror(struct mirror *m);
+static void fail_mirror(struct mirror *m, enum dm_raid1_error error_type);
 static void recovery_complete(int read_err, unsigned int write_err,
 			      void *context)
 {
@@ -695,7 +726,7 @@ static void recovery_complete(int read_err, unsigned int write_err,
 	if (read_err) {
 		/* Read error means the failure of default mirror. */
 		DMERR("Unable to read from primary mirror during recovery");
-		fail_mirror(ms->default_mirror);
+		fail_mirror(ms->default_mirror, DM_RAID1_SYNC_ERROR);
 	}
 
 	if (write_error) {
@@ -709,7 +740,7 @@ static void recovery_complete(int read_err, unsigned int write_err,
 			if (&ms->mirror[m] == ms->default_mirror)
 				continue;
 			if (test_bit(bit, &write_error))
-				fail_mirror(ms->mirror + m);
+				fail_mirror(ms->mirror + m, DM_RAID1_SYNC_ERROR);
 			bit++;
 		}
 	}
@@ -766,7 +797,7 @@ static void do_recovery(struct mirror_set *ms)
 {
 	int r;
 	struct region *reg;
-	struct dirty_log *log = ms->rh.log;
+	struct dm_dirty_log *log = ms->rh.log;
 
 	/*
 	 * Start quiescing some regions.
@@ -839,26 +870,35 @@ use_mirror:
 
 /* fail_mirror
  * @m: mirror device to fail
+ * @error_type: one of the enum's, DM_RAID1_*_ERROR
  *
- * If the device is valid, mark it invalid.  Also,
- * if this is the default mirror device (i.e. the primary
- * device) and the mirror set is in-sync, choose an
- * alternate primary device.
+ * If errors are being handled, record the type of
+ * error encountered for this device.  If this type
+ * of error has already been recorded, we can return;
+ * otherwise, we must signal userspace by triggering
+ * an event.  Additionally, if the device is the
+ * primary device, we must choose a new primary, but
+ * only if the mirror is in-sync.
  *
  * This function cannot block.
  */
-static void fail_mirror(struct mirror *m)
+static void fail_mirror(struct mirror *m, enum dm_raid1_error error_type)
 {
 	struct mirror_set *ms = m->ms;
 	struct mirror *new;
+	struct dm_dirty_log *log = ms->rh.log;
 
 	atomic_inc(&m->error_count);
 
-	if (atomic_read(&m->error_count) > 1)
+	if (test_and_set_bit(error_type, &m->error_type))
+		return;
+
+	if (!log->type->get_failure_response ||
+	    (log->type->get_failure_response(log) != DMLOG_IOERR_BLOCK))
 		return;
 
 	if (m != ms->default_mirror)
-		return;
+		goto out;
 
 	/*
 	 * If the default mirror fails, change it.
@@ -873,7 +913,7 @@ static void fail_mirror(struct mirror *m)
 		 */
 		DMERR("Primary mirror device has failed while mirror is not in-sync");
 		DMERR("Unable to choose alternative primary device");
-		return;
+		goto out;
 	}
 
 	for (new = ms->mirror; new < ms->mirror + ms->nr_mirrors; new++)
@@ -884,6 +924,9 @@ static void fail_mirror(struct mirror *m)
 
 	if (unlikely(new == ms->mirror + ms->nr_mirrors))
 		DMWARN("All sides of mirror have failed.");
+
+out:
+	schedule_work(&ms->trigger_event);
 }
 
 static int default_ok(struct mirror *m)
@@ -936,7 +979,7 @@ static void read_callback(unsigned long error, void *context)
 
 	if (unlikely(error)) {
 		DMWARN("A read failure occurred on a mirror device.");
-		fail_mirror(m);
+		fail_mirror(m, DM_RAID1_READ_ERROR);
 		if (likely(default_ok(m)) || mirror_available(m->ms, bio)) {
 			DMWARN("Trying different device.");
 			queue_bio(m->ms, bio, bio_rw(bio));
@@ -1021,7 +1064,7 @@ static void __bio_mark_nosync(struct mirror_set *ms,
 {
 	unsigned long flags;
 	struct region_hash *rh = &ms->rh;
-	struct dirty_log *log = ms->rh.log;
+	struct dm_dirty_log *log = ms->rh.log;
 	struct region *reg;
 	region_t region = bio_to_region(rh, bio);
 	int recovering = 0;
@@ -1077,7 +1120,7 @@ static void write_callback(unsigned long error, void *context)
 	if (unlikely(error)) {
 		for (i = 0; i < ms->nr_mirrors; i++) {
 			if (test_bit(i, &error))
-				fail_mirror(ms->mirror + i);
+				fail_mirror(ms->mirror + i, DM_RAID1_WRITE_ERROR);
 			else
 				uptodate = 1;
 		}
@@ -1138,7 +1181,7 @@ static void do_writes(struct mirror_set *ms, struct bio_list *writes)
 	struct bio *bio;
 	struct bio_list sync, nosync, recover, *this_list = NULL;
 	struct bio_list requeue;
-	struct dirty_log *log = ms->rh.log;
+	struct dm_dirty_log *log = ms->rh.log;
 	region_t region;
 
 	if (!writes->head)
@@ -1184,9 +1227,12 @@ static void do_writes(struct mirror_set *ms, struct bio_list *writes)
 	 * Add bios that are delayed due to remote recovery
 	 * back on to the write queue
 	 */
-	spin_lock_irq(&ms->lock);
-	bio_list_merge(&ms->writes, &requeue);
-	spin_unlock_irq(&ms->lock);
+	if (requeue.head) {
+		spin_lock_irq(&ms->lock);
+		bio_list_merge(&ms->writes, &requeue);
+		spin_unlock_irq(&ms->lock);
+		delayed_wake(ms);
+	}
 
 	/*
 	 * Increment the pending counts for any regions that will
@@ -1201,14 +1247,14 @@ static void do_writes(struct mirror_set *ms, struct bio_list *writes)
 	/*
 	 * Dispatch io.
 	 */
-	if (ms->log_failure) {
+	if (unlikely(ms->log_failure)) {
 		spin_lock_irq(&ms->lock);
 		bio_list_merge(&ms->failures, &sync);
 		spin_unlock_irq(&ms->lock);
-	} else {
+		wake(ms);
+	} else
 		while ((bio = bio_list_pop(&sync)))
 			do_write(ms, bio);
-	}
 
 	while ((bio = bio_list_pop(&recover)))
 		rh_delay(&ms->rh, bio);
@@ -1222,7 +1268,6 @@ static void do_writes(struct mirror_set *ms, struct bio_list *writes)
 static void do_failures(struct mirror_set *ms, struct bio_list *failures)
 {
 	struct bio *bio;
-	struct dirty_log *log = ms->rh.log;
 
 	if (!failures->head)
 		return;
@@ -1255,23 +1300,29 @@ static void do_failures(struct mirror_set *ms, struct bio_list *failures)
 			spin_lock_irq(&ms->lock);
 			bio_list_merge(&ms->failures, failures);
 			spin_unlock_irq(&ms->lock);
-			wake(ms);
+			delayed_wake(ms);
 		}
 		return;
 	}
-
-	if (log->type->get_failure_response(log) == DMLOG_IOERR_BLOCK)
-		dm_table_event(ms->ti->table);
 
 	while ((bio = bio_list_pop(failures)))
 		__bio_mark_nosync(ms, bio, bio->bi_size, 0);
 }
 
+static void trigger_event(void *data)
+{
+	struct mirror_set *ms = data;
+
+	dm_table_event(ms->ti->table);
+}
+
+
 /*-----------------------------------------------------------------
  * kmirrord
  *---------------------------------------------------------------*/
-static int do_mirror(struct mirror_set *ms)
+static void do_mirror(void *data)
 {
+	struct mirror_set *ms = data;
 	struct bio_list reads, writes, failures;
 
 	spin_lock_irq(&ms->lock);
@@ -1289,13 +1340,7 @@ static int do_mirror(struct mirror_set *ms)
 	do_writes(ms, &writes);
 	do_failures(ms, &failures);
 
-	return (ms->writes.head || ms->failures.head) ? 1 : 0;
-}
-
-static void do_work(void *data)
-{
-	while (do_mirror(data))
-		schedule();
+	dm_table_unplug_all(ms->ti->table);
 }
 
 /*-----------------------------------------------------------------
@@ -1304,7 +1349,7 @@ static void do_work(void *data)
 static struct mirror_set *alloc_context(unsigned int nr_mirrors,
 					uint32_t region_size,
 					struct dm_target *ti,
-					struct dirty_log *dl)
+					struct dm_dirty_log *dl)
 {
 	size_t len;
 	struct mirror_set *ms = NULL;
@@ -1388,6 +1433,7 @@ static int get_mirror(struct mirror_set *ms, struct dm_target *ti,
 
 	ms->mirror[mirror].offset = offset;
 	atomic_set(&(ms->mirror[mirror].error_count), 0);
+	ms->mirror[mirror].error_type = 0;
 	ms->mirror[mirror].ms = ms;
 
 	return 0;
@@ -1396,12 +1442,12 @@ static int get_mirror(struct mirror_set *ms, struct dm_target *ti,
 /*
  * Create dirty log: log_type #log_params <log_params>
  */
-static struct dirty_log *create_dirty_log(struct dm_target *ti,
+static struct dm_dirty_log *create_dirty_log(struct dm_target *ti,
 					  unsigned int argc, char **argv,
 					  unsigned int *args_used)
 {
 	unsigned int param_count;
-	struct dirty_log *dl;
+	struct dm_dirty_log *dl;
 
 	if (argc < 2) {
 		ti->error = "Insufficient mirror log arguments";
@@ -1420,7 +1466,7 @@ static struct dirty_log *create_dirty_log(struct dm_target *ti,
 		return NULL;
 	}
 
-	dl = dm_create_dirty_log(argv[0], ti, param_count, argv + 2);
+	dl = dm_dirty_log_create(argv[0], ti, param_count, argv + 2);
 	if (!dl) {
 		ti->error = "Error creating mirror dirty log";
 		return NULL;
@@ -1428,7 +1474,7 @@ static struct dirty_log *create_dirty_log(struct dm_target *ti,
 
 	if (!_check_region_size(ti, dl->type->get_region_size(dl))) {
 		ti->error = "Invalid region size";
-		dm_destroy_dirty_log(dl);
+		dm_dirty_log_destroy(dl);
 		return NULL;
 	}
 
@@ -1449,7 +1495,7 @@ static int mirror_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	int r;
 	unsigned int nr_mirrors, m, args_used;
 	struct mirror_set *ms;
-	struct dirty_log *dl;
+	struct dm_dirty_log *dl;
 
 	dl = create_dirty_log(ti, argc, argv, &args_used);
 	if (!dl)
@@ -1461,7 +1507,7 @@ static int mirror_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	if (!argc || sscanf(argv[0], "%u", &nr_mirrors) != 1 ||
 	    nr_mirrors < 2 || nr_mirrors > KCOPYD_MAX_REGIONS + 1) {
 		ti->error = "Invalid number of mirrors";
-		dm_destroy_dirty_log(dl);
+		dm_dirty_log_destroy(dl);
 		return -EINVAL;
 	}
 
@@ -1469,13 +1515,13 @@ static int mirror_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	if (argc != nr_mirrors * 2) {
 		ti->error = "Wrong number of mirror arguments";
-		dm_destroy_dirty_log(dl);
+		dm_dirty_log_destroy(dl);
 		return -EINVAL;
 	}
 
 	ms = alloc_context(nr_mirrors, dl->type->get_region_size(dl), ti, dl);
 	if (!ms) {
-		dm_destroy_dirty_log(dl);
+		dm_dirty_log_destroy(dl);
 		return -ENOMEM;
 	}
 
@@ -1499,7 +1545,10 @@ static int mirror_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		free_context(ms, ti, ms->nr_mirrors);
 		return -ENOMEM;
 	}
-	INIT_WORK(&ms->kmirrord_work, do_work, ms);
+	INIT_WORK(&ms->kmirrord_work, do_mirror, ms);
+	init_timer(&ms->timer);
+	ms->timer_pending = 0;
+	INIT_WORK(&ms->trigger_event, trigger_event, ms);
 
 	r = kcopyd_client_create(DM_IO_PAGES, &ms->kcopyd_client);
 	if (r) {
@@ -1516,7 +1565,9 @@ static void mirror_dtr(struct dm_target *ti)
 {
 	struct mirror_set *ms = (struct mirror_set *) ti->private;
 
+	del_timer_sync(&ms->timer);
 	flush_workqueue(ms->kmirrord_wq);
+	flush_scheduled_work();
 	kcopyd_client_destroy(ms->kcopyd_client);
 	destroy_workqueue(ms->kmirrord_wq);
 	free_context(ms, ti, ms->nr_mirrors);
@@ -1641,7 +1692,7 @@ static int mirror_end_io(struct dm_target *ti, struct bio *bio,
 			return -EIO;
 		}
 		m = ((struct bio_map_info *)map_context->ptr)->bmi_m;
-		fail_mirror(m); /* Flag error on mirror. */
+		fail_mirror(m, DM_RAID1_READ_ERROR); /* Flag error on mirror. */
 
 		/*
 		 * A failed read needs to get queued
@@ -1649,8 +1700,7 @@ static int mirror_end_io(struct dm_target *ti, struct bio *bio,
 		 * one (if any) intact mirrors.
 		 */
 		if (default_ok(m) || mirror_available(ms, bio)) {
-			bd = &(((struct bio_map_info *)map_context->ptr)->bmi_bd
-				);
+			bd = &(((struct bio_map_info *)map_context->ptr)->bmi_bd);
 
 			DMWARN("Trying different device.");
 			dm_bio_restore(bd, bio);
@@ -1672,7 +1722,7 @@ out:
 static void mirror_presuspend(struct dm_target *ti)
 {
 	struct mirror_set *ms = (struct mirror_set *) ti->private;
-	struct dirty_log *log = ms->rh.log;
+	struct dm_dirty_log *log = ms->rh.log;
 
 	atomic_set(&ms->suspend, 1);
 
@@ -1701,7 +1751,7 @@ static void mirror_presuspend(struct dm_target *ti)
 static void mirror_postsuspend(struct dm_target *ti)
 {
 	struct mirror_set *ms = (struct mirror_set *) ti->private;
-	struct dirty_log *log = ms->rh.log;
+	struct dm_dirty_log *log = ms->rh.log;
 
 	if (log->type->postsuspend && log->type->postsuspend(log))
 		/* FIXME: need better error handling */
@@ -1711,13 +1761,36 @@ static void mirror_postsuspend(struct dm_target *ti)
 static void mirror_resume(struct dm_target *ti)
 {
 	struct mirror_set *ms = (struct mirror_set *) ti->private;
-	struct dirty_log *log = ms->rh.log;
+	struct dm_dirty_log *log = ms->rh.log;
 
 	atomic_set(&ms->suspend, 0);
 	if (log->type->resume && log->type->resume(log))
 		/* FIXME: need better error handling */
 		DMWARN("log resume failed");
 	rh_start_recovery(&ms->rh);
+}
+
+/*
+ * device_status_char
+ * @m: mirror device/leg we want the status of
+ *
+ * We return one character representing the most severe error
+ * we have encountered.
+ *    A => Alive - No failures
+ *    D => Dead - A write failure occurred leaving mirror out-of-sync
+ *    S => Sync - A sychronization failure occurred, mirror out-of-sync
+ *    R => Read - A read failure occurred, mirror data unaffected
+ *
+ * Returns: <char>
+ */
+static char device_status_char(struct mirror *m)
+{
+	if (!atomic_read(&(m->error_count)))
+		return 'A';
+
+	return (test_bit(DM_RAID1_WRITE_ERROR, &(m->error_type))) ? 'D' :
+		(test_bit(DM_RAID1_SYNC_ERROR, &(m->error_type))) ? 'S' :
+		(test_bit(DM_RAID1_READ_ERROR, &(m->error_type))) ? 'R' : 'U';
 }
 
 static int mirror_status(struct dm_target *ti, status_type_t type,
@@ -1732,8 +1805,7 @@ static int mirror_status(struct dm_target *ti, status_type_t type,
 		DMEMIT("%d ", ms->nr_mirrors);
 		for (m = 0; m < ms->nr_mirrors; m++) {
 			DMEMIT("%s ", ms->mirror[m].dev->name);
-			buffer[m] = atomic_read(&(ms->mirror[m].error_count)) ?
-				'D' : 'A';
+			buffer[m] = device_status_char(&(ms->mirror[m]));
 		}
 		buffer[m] = '\0';
 
@@ -1777,16 +1849,10 @@ static int __init dm_mirror_init(void)
 	if (!bio_map_info_pool)
 		return -ENOMEM;
 
-	r = dm_dirty_log_init();
-	if (r)
-		return r;
-
 	r = dm_register_target(&mirror_target);
-	if (r < 0) {
+	if (r < 0)
 		DMERR("%s: Failed to register mirror target",
 		      mirror_target.name);
-		dm_dirty_log_exit();
-	}
 
 	return r;
 }
@@ -1798,8 +1864,6 @@ static void __exit dm_mirror_exit(void)
 	r = dm_unregister_target(&mirror_target);
 	if (r < 0)
 		DMERR("%s: unregister failed %d", mirror_target.name, r);
-
-	dm_dirty_log_exit();
 }
 
 /* Module hooks */

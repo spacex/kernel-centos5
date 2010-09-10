@@ -128,24 +128,20 @@ struct gfs2_bufdata {
 
 struct gfs2_glock_operations {
 	void (*go_xmote_th) (struct gfs2_glock *gl);
-	void (*go_xmote_bh) (struct gfs2_glock *gl);
-	void (*go_drop_th) (struct gfs2_glock *gl);
+	int (*go_xmote_bh) (struct gfs2_glock *gl, struct gfs2_holder *gh);
 	void (*go_inval) (struct gfs2_glock *gl, int flags);
 	int (*go_demote_ok) (struct gfs2_glock *gl);
 	int (*go_lock) (struct gfs2_holder *gh);
 	void (*go_unlock) (struct gfs2_holder *gh);
+	int (*go_dump)(struct seq_file *seq, const struct gfs2_glock *gl);
 	const int go_type;
 	const unsigned long go_min_hold_time;
 };
 
 enum {
-	/* Actions */
-	HIF_PROMOTE		= 1,
-
 	/* States */
-	HIF_HOLDER		= 6,
+	HIF_HOLDER		= 6,  /* Set for gh that "holds" the glock */
 	HIF_FIRST		= 7,
-	HIF_ABORTED		= 9,
 	HIF_WAIT		= 10,
 };
 
@@ -158,19 +154,20 @@ struct gfs2_holder {
 	unsigned gh_flags;
 
 	int gh_error;
-	unsigned long gh_iflags;
+	unsigned long gh_iflags; /* HIF_... */
 	unsigned long gh_ip;
 };
 
 enum {
-	GLF_LOCK		= 1,
-	GLF_STICKY		= 2,
-	GLF_DEMOTE		= 3,
-	GLF_PENDING_DEMOTE	= 4,
-	GLF_DIRTY		= 5,
-	GLF_DEMOTE_IN_PROGRESS	= 6,
-	GLF_LFLUSH              = 7,
-	GLF_WAITERS2            = 8,
+	GLF_LOCK			= 1,
+	GLF_STICKY			= 2,
+	GLF_DEMOTE			= 3,
+	GLF_PENDING_DEMOTE		= 4,
+	GLF_DEMOTE_IN_PROGRESS		= 5,
+	GLF_DIRTY			= 6,
+	GLF_LFLUSH			= 7,
+	GLF_INVALIDATE_IN_PROGRESS	= 8,
+	GLF_REPLY_PENDING		= 9,
 };
 
 struct gfs2_glock {
@@ -182,19 +179,14 @@ struct gfs2_glock {
 	spinlock_t gl_spin;
 
 	unsigned int gl_state;
+	unsigned int gl_target;
+	unsigned int gl_reply;
 	unsigned int gl_hash;
 	unsigned int gl_demote_state; /* state requested by remote node */
 	unsigned long gl_demote_time; /* time of first demote request */
-	pid_t gl_owner_pid;
-	unsigned long gl_ip;
 	struct list_head gl_holders;
-	struct list_head gl_waiters1;	/* HIF_MUTEX */
-	struct list_head gl_waiters3;	/* HIF_PROMOTE */
 
 	const struct gfs2_glock_operations *gl_ops;
-
-	struct gfs2_holder *gl_req_gh;
-
 	void *gl_lock;
 	char *gl_lvb;
 	atomic_t gl_lvb_count;
@@ -239,6 +231,7 @@ enum {
 	GIF_QD_LOCKED		= 1,
 	GIF_PAGED		= 2,
 	GIF_SW_PAGED		= 3,
+	GIF_USER                = 4, /* user inode, not metadata addr space */
 };
 
 struct gfs2_dinode_host {
@@ -266,6 +259,7 @@ struct gfs2_inode {
 	struct gfs2_alloc *i_alloc;
 	u64 i_goal;	/* goal block for allocations */
 	struct rw_semaphore i_rw_mutex;
+	struct list_head i_trunc_list;
 	u8 i_height;
 };
 
@@ -415,14 +409,12 @@ struct gfs2_args {
 	int ar_quota; /* off/account/on */
 	int ar_suiddir; /* suiddir support */
 	int ar_data; /* ordered/writeback */
+	int ar_meta; /* mount metafs */
 };
 
 struct gfs2_tune {
 	spinlock_t gt_spin;
 
-	unsigned int gt_ilimit;
-	unsigned int gt_ilimit_tries;
-	unsigned int gt_ilimit_min;
 	unsigned int gt_demote_secs; /* Cache retention for unheld glock */
 	unsigned int gt_incore_log_blocks;
 	unsigned int gt_log_flush_secs;
@@ -430,7 +422,6 @@ struct gfs2_tune {
 
 	unsigned int gt_recoverd_secs;
 	unsigned int gt_logd_secs;
-	unsigned int gt_quotad_secs;
 
 	unsigned int gt_quota_simul_sync; /* Max quotavals to sync at once */
 	unsigned int gt_quota_warn_period; /* Secs between quota warn msgs */
@@ -438,14 +429,11 @@ struct gfs2_tune {
 	unsigned int gt_quota_scale_den; /* Denominator */
 	unsigned int gt_quota_cache_secs;
 	unsigned int gt_quota_quantum; /* Secs between syncs to quota file */
-	unsigned int gt_atime_quantum; /* Min secs between atime updates */
 	unsigned int gt_new_files_jdata;
 	unsigned int gt_new_files_directio;
 	unsigned int gt_max_readahead; /* Max bytes to read-ahead from disk */
-	unsigned int gt_lockdump_size;
 	unsigned int gt_stall_secs; /* Detects trouble! */
 	unsigned int gt_complain_secs;
-	unsigned int gt_reclaim_limit; /* Max num of glocks in reclaim list */
 	unsigned int gt_statfs_quantum;
 	unsigned int gt_statfs_slow;
 };
@@ -454,7 +442,6 @@ enum {
 	SDF_JOURNAL_CHECKED	= 0,
 	SDF_JOURNAL_LIVE	= 1,
 	SDF_SHUTDOWN		= 2,
-	SDF_NOATIME		= 3,
 };
 
 #define GFS2_FSNAME_LEN		256
@@ -483,7 +470,6 @@ struct gfs2_sb_host {
 
 struct gfs2_sbd {
 	struct super_block *sd_vfs;
-	struct super_block *sd_vfs_meta;
 	struct kobject sd_kobj;
 	unsigned long sd_flags;	/* SDF_... */
 	struct gfs2_sb_host sd_sb;
@@ -521,7 +507,9 @@ struct gfs2_sbd {
 
 	/* Inode Stuff */
 
-	struct inode *sd_master_dir;
+	struct dentry *sd_master_dir;
+	struct dentry *sd_root_dir;
+
 	struct inode *sd_jindex;
 	struct inode *sd_inum_inode;
 	struct inode *sd_statfs_inode;
@@ -540,7 +528,6 @@ struct gfs2_sbd {
 	spinlock_t sd_statfs_spin;
 	struct gfs2_statfs_change_host sd_statfs_master;
 	struct gfs2_statfs_change_host sd_statfs_local;
-	unsigned long sd_statfs_sync_time;
 
 	/* Resource group stuff */
 
@@ -583,13 +570,15 @@ struct gfs2_sbd {
 	atomic_t sd_quota_count;
 	spinlock_t sd_quota_spin;
 	struct mutex sd_quota_mutex;
+	wait_queue_head_t sd_quota_wait;
+	struct list_head sd_trunc_list;
+	spinlock_t sd_trunc_lock;
 
 	unsigned int sd_quota_slots;
 	unsigned int sd_quota_chunks;
 	unsigned char **sd_quota_bitmap;
 
 	u64 sd_quota_sync_gen;
-	unsigned long sd_quota_sync_time;
 
 	/* Log stuff */
 
@@ -659,7 +648,6 @@ struct gfs2_sbd {
 	/* Debugging crud */
 
 	unsigned long sd_last_warning;
-	struct vfsmount *sd_gfs2mnt;
 	struct dentry *debugfs_dir;    /* debugfs directory */
 	struct dentry *debugfs_dentry_glocks; /* for debugfs */
 };

@@ -127,7 +127,7 @@ static int cell_spu_pc_collection(int cpu)
 }
 
 
-static enum hrtimer_restart profile_spus(struct hrtimer *timer)
+static int profile_spus(struct hrtimer *timer)
 {
 	ktime_t kt;
 	int cpu, node, k, num_samples, spu_num;

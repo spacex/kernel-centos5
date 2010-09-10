@@ -151,8 +151,16 @@ int tap_blkif_map(blkif_t *blkif, unsigned long shared_page,
 		BUG();
 	}
 
-	blkif->irq = bind_evtchn_to_irqhandler(
+	err = bind_evtchn_to_irqhandler(
 		blkif->evtchn, tap_blkif_be_int, 0, "blkif-backend", blkif);
+
+        if (err < 0) {
+ 		unmap_frontend_page(blkif);
+		free_vm_area(blkif->blk_ring_area);
+		blkif->blk_rings.common.sring = NULL;
+		return err;
+        }
+        blkif->irq = err;
 
 	return 0;
 }
@@ -174,8 +182,15 @@ void tap_blkif_free(blkif_t *blkif)
 {
 	atomic_dec(&blkif->refcnt);
 	wait_event(blkif->waiting_to_free, atomic_read(&blkif->refcnt) == 0);
+	atomic_inc(&blkif->refcnt);
 
 	tap_blkif_unmap(blkif);
+}
+
+void tap_blkif_kmem_cache_free(blkif_t *blkif)
+{
+	if (!atomic_dec_and_test(&blkif->refcnt))
+		BUG();
 	kmem_cache_free(blkif_cachep, blkif);
 }
 

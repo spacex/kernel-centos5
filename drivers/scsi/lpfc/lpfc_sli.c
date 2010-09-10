@@ -219,7 +219,7 @@ lpfc_sli_iocb_cmd_type(uint8_t iocb_cmnd)
 	case CMD_IOCB_LOGENTRY_CN:
 	case CMD_IOCB_LOGENTRY_ASYNC_CN:
 		printk("%s - Unhandled SLI-3 Command x%x\n",
-				__FUNCTION__, iocb_cmnd);
+				__func__, iocb_cmnd);
 		type = LPFC_UNKNOWN_IOCB;
 		break;
 	default:
@@ -324,9 +324,7 @@ lpfc_sli_next_iocb_slot (struct lpfc_hba *phba, struct lpfc_sli_ring *pring)
 			phba->work_ha |= HA_ERATT;
 			phba->work_hs = HS_FFER3;
 
-			/* hbalock should already be held */
-			if (phba->work_wait)
-				lpfc_worker_wake_up(phba);
+			lpfc_worker_wake_up(phba);
 
 			return NULL;
 		}
@@ -789,6 +787,9 @@ lpfc_sli_chk_mbx_command(uint8_t mbxCommand)
 	case MBX_REG_VPI:
 	case MBX_UNREG_VPI:
 	case MBX_HEARTBEAT:
+	case MBX_READ_EVENT_LOG_STATUS:
+	case MBX_READ_EVENT_LOG:
+	case MBX_WRITE_EVENT_LOG:
 		ret = mbxCommand;
 		break;
 	default:
@@ -1311,9 +1312,7 @@ lpfc_sli_rsp_pointers_error(struct lpfc_hba *phba, struct lpfc_sli_ring *pring)
 	phba->work_ha |= HA_ERATT;
 	phba->work_hs = HS_FFER3;
 
-	/* hbalock should already be held */
-	if (phba->work_wait)
-		lpfc_worker_wake_up(phba);
+	lpfc_worker_wake_up(phba);
 
 	return;
 }
@@ -1719,7 +1718,7 @@ lpfc_sli_handle_slow_ring_event(struct lpfc_hba *phba,
 		rspiocbp = __lpfc_sli_get_iocbq(phba);
 		if (rspiocbp == NULL) {
 			printk(KERN_ERR "%s: out of buffers! Failing "
-			       "completion.\n", __FUNCTION__);
+			       "completion.\n", __func__);
 			break;
 		}
 
@@ -1947,6 +1946,73 @@ lpfc_sli_abort_iocb_ring(struct lpfc_hba *phba, struct lpfc_sli_ring *pring)
 	}
 }
 
+void
+lpfc_sli_flush_fcp_rings(struct lpfc_hba *phba)
+{
+	LIST_HEAD(txq);
+	LIST_HEAD(txcmplq);
+	struct lpfc_iocbq *iocb;
+	IOCB_t *cmd = NULL;
+	struct lpfc_sli *psli = &phba->sli;
+	struct lpfc_sli_ring  *pring;
+
+	/* Currently, only one fcp ring */
+	pring = &psli->ring[psli->fcp_ring];
+
+	spin_lock_irq(&phba->hbalock);
+	/* Retrieve everything on txq */
+	list_splice_init(&pring->txq, &txq);
+	pring->txq_cnt = 0;
+
+	/* Retrieve everything on the txcmplq */
+	list_splice_init(&pring->txcmplq, &txcmplq);
+	pring->txcmplq_cnt = 0;
+	spin_unlock_irq(&phba->hbalock);
+
+	/* Flush the txq */
+	while (!list_empty(&txq)) {
+		iocb = list_get_first(&txq, struct lpfc_iocbq, list);
+		cmd = &iocb->iocb;
+		list_del_init(&iocb->list);
+
+		if (!iocb->iocb_cmpl)
+			lpfc_sli_release_iocbq(phba, iocb);
+		else {
+			cmd->ulpStatus = IOSTAT_LOCAL_REJECT;
+			cmd->un.ulpWord[4] = IOERR_SLI_DOWN;
+			(iocb->iocb_cmpl) (phba, iocb, iocb);
+		}
+	}
+
+	/* Flush the txcmpq */
+	while (!list_empty(&txcmplq)) {
+		iocb = list_get_first(&txcmplq, struct lpfc_iocbq, list);
+		cmd = &iocb->iocb;
+		list_del_init(&iocb->list);
+
+		if (!iocb->iocb_cmpl)
+			lpfc_sli_release_iocbq(phba, iocb);
+		else {
+			cmd->ulpStatus = IOSTAT_LOCAL_REJECT;
+			cmd->un.ulpWord[4] = IOERR_SLI_DOWN;
+			(iocb->iocb_cmpl) (phba, iocb, iocb);
+		}
+	}
+}
+
+/**
+ * lpfc_sli_brdready: Check for host status bits.
+ * @phba: Pointer to HBA context object.
+ * @mask: Bit mask to be checked.
+ *
+ * This function reads the host status register and compares
+ * with the provided bit mask to check if HBA completed
+ * the restart. This function will wait in a loop for the
+ * HBA to complete restart. If the HBA does not restart within
+ * 15 iterations, the function will reset the HBA again. The
+ * function returns 1 when HBA fail to restart otherwise returns
+ * zero.
+ **/
 int
 lpfc_sli_brdready(struct lpfc_hba *phba, uint32_t mask)
 {
@@ -2670,12 +2736,9 @@ lpfc_mbox_timeout(unsigned long ptr)
 		phba->pport->work_port_events |= WORKER_MBOX_TMO;
 	spin_unlock_irqrestore(&phba->pport->work_port_lock, iflag);
 
-	if (!tmo_posted) {
-		spin_lock_irqsave(&phba->hbalock, iflag);
-		if (phba->work_wait)
-			lpfc_worker_wake_up(phba);
-		spin_unlock_irqrestore(&phba->hbalock, iflag);
-	}
+	if (!tmo_posted)
+		lpfc_worker_wake_up(phba);
+	return;
 }
 
 void
@@ -2761,6 +2824,7 @@ lpfc_sli_issue_mbox(struct lpfc_hba *phba, LPFC_MBOXQ_t *pmbox, uint32_t flag)
 	if (pmbox->mbox_cmpl && pmbox->mbox_cmpl != lpfc_sli_def_mbox_cmpl &&
 		pmbox->mbox_cmpl != lpfc_sli_wake_mbox_wait) {
 		if(!pmbox->vport) {
+			spin_unlock_irqrestore(&phba->hbalock, drvr_flag);
 			lpfc_printf_log(phba, KERN_ERR,
 					LOG_MBOX | LOG_VPORT,
 					"1806 Mbox x%x failed. No vport\n",
@@ -2770,6 +2834,11 @@ lpfc_sli_issue_mbox(struct lpfc_hba *phba, LPFC_MBOXQ_t *pmbox, uint32_t flag)
 		}
 	}
 
+	/* If the PCI channel is in offline state, do not post mbox. */
+	if (unlikely(phba->pcidev->error_state != pci_channel_io_normal)) {
+		spin_unlock_irqrestore(&phba->hbalock, drvr_flag);
+		goto out_not_finished;
+	}
 
 	psli = &phba->sli;
 
@@ -3122,6 +3191,9 @@ __lpfc_sli_issue_iocb(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 		return IOCB_ERROR;
 	}
 
+	/* If the PCI channel is in offline state, do not post iocbs. */
+	if (unlikely(phba->pcidev->error_state != pci_channel_io_normal))
+		return IOCB_ERROR;
 
 	/*
 	 * We should never get an IOCB if we are in a < LINK_DOWN state
@@ -3142,6 +3214,17 @@ __lpfc_sli_issue_iocb(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 		 * can be issued if the link is not up.
 		 */
 		switch (piocb->iocb.ulpCommand) {
+		case CMD_GEN_REQUEST64_CR:
+		case CMD_GEN_REQUEST64_CX:
+			if (!(phba->sli.sli_flag & LPFC_MENLO_MAINT) ||
+				(piocb->iocb.un.genreq64.w5.hcsw.Rctl !=
+					FC_FCP_CMND) ||
+				(piocb->iocb.un.genreq64.w5.hcsw.Type !=
+					MENLO_TRANSPORT_TYPE))
+
+				goto iocb_busy;
+			break;
+
 		case CMD_QUE_RING_BUF_CN:
 		case CMD_QUE_RING_BUF64_CN:
 			/*
@@ -3457,8 +3540,12 @@ lpfc_sli_host_down(struct lpfc_vport *vport)
 	for (i = 0; i < psli->num_rings; i++) {
 		pring = &psli->ring[i];
 		prev_pring_flag = pring->flag;
-		if (pring->ringno == LPFC_ELS_RING) /* Only slow rings */
+		/* Only slow rings */
+		if (pring->ringno == LPFC_ELS_RING) {
 			pring->flag |= LPFC_DEFERRED_RING_EVENT;
+			/* Set the lpfc data pending flag */
+			set_bit(LPFC_DATA_READY, &phba->data_flags);
+		}
 		/*
 		 * Error everything on the txq since these iocbs have not been
 		 * given to the FW yet.
@@ -3517,8 +3604,12 @@ lpfc_sli_hba_down(struct lpfc_hba *phba)
 	spin_lock_irqsave(&phba->hbalock, flags);
 	for (i = 0; i < psli->num_rings; i++) {
 		pring = &psli->ring[i];
-		if (pring->ringno == LPFC_ELS_RING) /* Only slow rings */
+		/* Only slow rings */
+		if (pring->ringno == LPFC_ELS_RING) {
 			pring->flag |= LPFC_DEFERRED_RING_EVENT;
+			/* Set the lpfc data pending flag */
+			set_bit(LPFC_DATA_READY, &phba->data_flags);
+		}
 
 		/*
 		 * Error everything on the txq since these iocbs have not been
@@ -3647,7 +3738,7 @@ lpfc_sli_ring_taggedbuf_get(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 
 	spin_unlock_irq(&phba->hbalock);
 	lpfc_printf_log(phba, KERN_ERR, LOG_INIT,
-			"0410 Cannot find virtual addr for buffer tag on "
+			"0402 Cannot find virtual addr for buffer tag on "
 			"ring %d Data x%lx x%p x%p x%x\n",
 			pring->ringno, (unsigned long) tag,
 			slp->next, slp->prev, pring->postbufq_cnt);
@@ -3755,7 +3846,7 @@ lpfc_ignore_els_cmpl(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 
 	/* ELS cmd tag <ulpIoTag> completes */
 	lpfc_printf_log(phba, KERN_INFO, LOG_ELS,
-			"0133 Ignoring ELS cmd tag x%x completion Data: "
+			"0139 Ignoring ELS cmd tag x%x completion Data: "
 			"x%x x%x x%x\n",
 			irsp->ulpIoTag, irsp->ulpStatus,
 			irsp->un.ulpWord[4], irsp->ulpTimeout);
@@ -3850,7 +3941,7 @@ lpfc_sli_validate_fcp_iocb(struct lpfc_iocbq *iocbq, struct lpfc_vport *vport,
 			   lpfc_ctx_cmd ctx_cmd)
 {
 	struct lpfc_scsi_buf *lpfc_cmd;
-	struct scsi_cmnd *cmnd;
+	struct scsi_lun fcp_lun;
 	int rc = 1;
 
 	if (!(iocbq->iocb_flag &  LPFC_IO_FCP))
@@ -3860,21 +3951,22 @@ lpfc_sli_validate_fcp_iocb(struct lpfc_iocbq *iocbq, struct lpfc_vport *vport,
 		return rc;
 
 	lpfc_cmd = container_of(iocbq, struct lpfc_scsi_buf, cur_iocbq);
-	cmnd = lpfc_cmd->pCmd;
 
-	if (cmnd == NULL)
+	if (lpfc_cmd->pCmd == NULL)
 		return rc;
 
 	switch (ctx_cmd) {
 	case LPFC_CTX_LUN:
-		if (cmnd->device &&
-		    (cmnd->device->id == tgt_id) &&
-		    (cmnd->device->lun == lun_id))
+		int_to_scsilun(lun_id, &fcp_lun);
+		if ((lpfc_cmd->rdata->pnode) &&
+		    (lpfc_cmd->rdata->pnode->nlp_sid == tgt_id) &&
+		    (!memcmp(&lpfc_cmd->fcp_cmnd->fcp_lun, &fcp_lun,
+			     sizeof(fcp_lun))))
 			rc = 0;
 		break;
 	case LPFC_CTX_TGT:
-		if (cmnd->device &&
-			(cmnd->device->id == tgt_id))
+		if ((lpfc_cmd->rdata->pnode) &&
+		    (lpfc_cmd->rdata->pnode->nlp_sid == tgt_id))
 			rc = 0;
 		break;
 	case LPFC_CTX_HOST:
@@ -3882,7 +3974,7 @@ lpfc_sli_validate_fcp_iocb(struct lpfc_iocbq *iocbq, struct lpfc_vport *vport,
 		break;
 	default:
 		printk(KERN_ERR "%s: Unknown context cmd type, value %d\n",
-			__FUNCTION__, ctx_cmd);
+			__func__, ctx_cmd);
 		break;
 	}
 
@@ -4052,7 +4144,7 @@ lpfc_sli_issue_iocb_wait(struct lpfc_hba *phba,
 		}
 	} else {
 		lpfc_printf_log(phba, KERN_INFO, LOG_SLI,
-				":0332 IOCB wait issue failed, Data x%x\n",
+				"0332 IOCB wait issue failed, Data x%x\n",
 				retval);
 		retval = IOCB_ERROR;
 	}
@@ -4084,6 +4176,7 @@ lpfc_sli_issue_mbox_wait(struct lpfc_hba *phba, LPFC_MBOXQ_t *pmboxq,
 	if (pmboxq->context1)
 		return MBX_NOT_FINISHED;
 
+	pmboxq->mbox_flag &= ~LPFC_MBX_WAKE;
 	/* setup wake call as IOCB callback */
 	pmboxq->mbox_cmpl = lpfc_sli_wake_mbox_wait;
 	/* setup context field to pass wait_queue pointer to wake function  */
@@ -4171,6 +4264,9 @@ lpfc_intr_handler(int irq, void *dev_id, struct pt_regs * regs)
 	if (unlikely(!phba))
 		return IRQ_NONE;
 
+	/* If the pci channel is offline, ignore all the interrupts. */
+	if (unlikely(phba->pcidev->error_state != pci_channel_io_normal))
+		return IRQ_NONE;
 
 	phba->sli.slistat.sli_intr++;
 
@@ -4246,7 +4342,7 @@ lpfc_intr_handler(int irq, void *dev_id, struct pt_regs * regs)
 						"pwork:x%x hawork:x%x wait:x%x",
 						phba->work_ha, work_ha_copy,
 						(uint32_t)((unsigned long)
-						phba->work_wait));
+						&phba->work_waitq));
 
 					control &=
 					    ~(HC_R0INT_ENA << LPFC_ELS_RING);
@@ -4259,7 +4355,7 @@ lpfc_intr_handler(int irq, void *dev_id, struct pt_regs * regs)
 						"x%x hawork:x%x wait:x%x",
 						phba->work_ha, work_ha_copy,
 						(uint32_t)((unsigned long)
-						phba->work_wait));
+						&phba->work_waitq));
 				}
 				spin_unlock(&phba->hbalock);
 			}
@@ -4365,7 +4461,7 @@ lpfc_intr_handler(int irq, void *dev_id, struct pt_regs * regs)
 							lpfc_printf_log(phba,
 							KERN_ERR,
 							LOG_MBOX | LOG_SLI,
-							"0306 rc should have"
+							"0350 rc should have"
 							"been MBX_BUSY");
 						goto send_current_mbox;
 					}
@@ -4394,9 +4490,8 @@ send_current_mbox:
 
 		spin_lock(&phba->hbalock);
 		phba->work_ha |= work_ha_copy;
-		if (phba->work_wait)
-			lpfc_worker_wake_up(phba);
 		spin_unlock(&phba->hbalock);
+		lpfc_worker_wake_up(phba);
 	}
 
 	ha_copy &= ~(phba->work_ha_mask);

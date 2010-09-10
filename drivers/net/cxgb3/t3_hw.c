@@ -522,7 +522,7 @@ struct t3_vpd {
 	u32 pad;		/* for multiple-of-4 sizing and alignment */
 };
 
-#define EEPROM_MAX_POLL   4
+#define EEPROM_MAX_POLL   40
 #define EEPROM_STAT_ADDR  0x4000
 #define VPD_BASE          0xc00
 
@@ -537,10 +537,11 @@ struct t3_vpd {
  *	addres is written to the control register.  The hardware device will
  *	set the flag to 1 when 4 bytes have been read into the data register.
  */
-int t3_seeprom_read(struct adapter *adapter, u32 addr, u32 *data)
+int t3_seeprom_read(struct adapter *adapter, u32 addr, __le32 *data)
 {
 	u16 val;
 	int attempts = EEPROM_MAX_POLL;
+	u32 v;
 	unsigned int base = adapter->params.pci.vpd_cap_addr;
 
 	if ((addr >= EEPROMSIZE && addr != EEPROM_STAT_ADDR) || (addr & 3))
@@ -556,8 +557,8 @@ int t3_seeprom_read(struct adapter *adapter, u32 addr, u32 *data)
 		CH_ERR(adapter, "reading EEPROM address 0x%x failed\n", addr);
 		return -EIO;
 	}
-	pci_read_config_dword(adapter->pdev, base + PCI_VPD_DATA, data);
-	*data = le32_to_cpu(*data);
+	pci_read_config_dword(adapter->pdev, base + PCI_VPD_DATA, &v);
+	*data = cpu_to_le32(v);
 	return 0;
 }
 
@@ -570,7 +571,7 @@ int t3_seeprom_read(struct adapter *adapter, u32 addr, u32 *data)
  *	Write a 32-bit word to a location in VPD EEPROM using the card's PCI
  *	VPD ROM capability.
  */
-int t3_seeprom_write(struct adapter *adapter, u32 addr, u32 data)
+int t3_seeprom_write(struct adapter *adapter, u32 addr, __le32 data)
 {
 	u16 val;
 	int attempts = EEPROM_MAX_POLL;
@@ -580,7 +581,7 @@ int t3_seeprom_write(struct adapter *adapter, u32 addr, u32 data)
 		return -EINVAL;
 
 	pci_write_config_dword(adapter->pdev, base + PCI_VPD_DATA,
-			       cpu_to_le32(data));
+			       le32_to_cpu(data));
 	pci_write_config_word(adapter->pdev,base + PCI_VPD_ADDR,
 			      addr | PCI_VPD_ADDR_F);
 	do {
@@ -631,14 +632,14 @@ static int get_vpd_params(struct adapter *adapter, struct vpd_params *p)
 	 * Card information is normally at VPD_BASE but some early cards had
 	 * it at 0.
 	 */
-	ret = t3_seeprom_read(adapter, VPD_BASE, (u32 *)&vpd);
+	ret = t3_seeprom_read(adapter, VPD_BASE, (__le32 *)&vpd);
 	if (ret)
 		return ret;
 	addr = vpd.id_tag == 0x82 ? VPD_BASE : 0;
 
 	for (i = 0; i < sizeof(vpd); i += 4) {
 		ret = t3_seeprom_read(adapter, addr + i,
-				      (u32 *)((u8 *)&vpd + i));
+				      (__le32 *)((u8 *)&vpd + i));
 		if (ret)
 			return ret;
 	}
@@ -922,11 +923,12 @@ int t3_check_tpsram_version(struct adapter *adapter, int *must_load)
  *	Checks if an adapter's tp sram is compatible with the driver.
  *	Returns 0 if the versions are compatible, a negative error otherwise.
  */
-int t3_check_tpsram(struct adapter *adapter, u8 *tp_sram, unsigned int size)
+int t3_check_tpsram(struct adapter *adapter, const u8 *tp_sram,
+		    unsigned int size)
 {
 	u32 csum;
 	unsigned int i;
-	const u32 *p = (const u32 *)tp_sram;
+	const __be32 *p = (const __be32 *)tp_sram;
 
 	/* Verify checksum */
 	for (csum = 0, i = 0; i < size / sizeof(csum); i++)
@@ -1040,7 +1042,7 @@ int t3_load_fw(struct adapter *adapter, const u8 *fw_data, unsigned int size)
 {
 	u32 csum;
 	unsigned int i;
-	const u32 *p = (const u32 *)fw_data;
+	const __be32 *p = (const __be32 *)fw_data;
 	int ret, addr, fw_sector = FW_FLASH_BOOT_ADDR >> 16;
 
 	if ((size & 3) || size < FW_MIN_SIZE)
@@ -2674,7 +2676,7 @@ void t3_tp_set_max_rxsize(struct adapter *adap, unsigned int size)
 		     V_PMMAXXFERLEN0(size) | V_PMMAXXFERLEN1(size));
 }
 
-static void __devinit init_mtus(unsigned short mtus[])
+static void init_mtus(unsigned short mtus[])
 {
 	/*
 	 * See draft-mathis-plpmtud-00.txt for the values.  The min is 88 so
@@ -2702,7 +2704,7 @@ static void __devinit init_mtus(unsigned short mtus[])
 /*
  * Initial congestion control parameters.
  */
-static void __devinit init_cong_ctrl(unsigned short *a, unsigned short *b)
+static void init_cong_ctrl(unsigned short *a, unsigned short *b)
 {
 	a[0] = a[1] = a[2] = a[3] = a[4] = a[5] = a[6] = a[7] = a[8] = 1;
 	a[9] = 2;
@@ -2874,17 +2876,17 @@ static void ulp_config(struct adapter *adap, const struct tp_params *p)
  *
  *	Write the contents of the protocol SRAM.
  */
-int t3_set_proto_sram(struct adapter *adap, u8 *data)
+int t3_set_proto_sram(struct adapter *adap, const u8 *data)
 {
 	int i;
-	u32 *buf = (u32 *)data;
+	const __be32 *buf = (const __be32 *)data;
 
 	for (i = 0; i < PROTO_SRAM_LINES; i++) {
-		t3_write_reg(adap, A_TP_EMBED_OP_FIELD5, cpu_to_be32(*buf++));
-		t3_write_reg(adap, A_TP_EMBED_OP_FIELD4, cpu_to_be32(*buf++));
-		t3_write_reg(adap, A_TP_EMBED_OP_FIELD3, cpu_to_be32(*buf++));
-		t3_write_reg(adap, A_TP_EMBED_OP_FIELD2, cpu_to_be32(*buf++));
-		t3_write_reg(adap, A_TP_EMBED_OP_FIELD1, cpu_to_be32(*buf++));
+		t3_write_reg(adap, A_TP_EMBED_OP_FIELD5, be32_to_cpu(*buf++));
+		t3_write_reg(adap, A_TP_EMBED_OP_FIELD4, be32_to_cpu(*buf++));
+		t3_write_reg(adap, A_TP_EMBED_OP_FIELD3, be32_to_cpu(*buf++));
+		t3_write_reg(adap, A_TP_EMBED_OP_FIELD2, be32_to_cpu(*buf++));
+		t3_write_reg(adap, A_TP_EMBED_OP_FIELD1, be32_to_cpu(*buf++));
 
 		t3_write_reg(adap, A_TP_EMBED_OP_FIELD0, i << 1 | 1 << 31);
 		if (t3_wait_op_done(adap, A_TP_EMBED_OP_FIELD0, 1, 1, 5, 1))
@@ -3263,6 +3265,7 @@ static void config_pcie(struct adapter *adap)
 
 	t3_write_reg(adap, A_PCIE_PEX_ERR, 0xffffffff);
 	t3_set_reg_field(adap, A_PCIE_CFG, 0,
+			 F_ENABLELINKDWNDRST | F_ENABLELINKDOWNRST |
 			 F_PCIE_DMASTOPEN | F_PCIE_CLIDECEN);
 }
 
@@ -3355,8 +3358,7 @@ out_err:
  *	Determines a card's PCI mode and associated parameters, such as speed
  *	and width.
  */
-static void __devinit get_pci_mode(struct adapter *adapter,
-				   struct pci_params *p)
+static void get_pci_mode(struct adapter *adapter, struct pci_params *p)
 {
 	static unsigned short speed_map[] = { 33, 66, 100, 133 };
 	u32 pci_mode, pcie_cap;
@@ -3396,8 +3398,7 @@ static void __devinit get_pci_mode(struct adapter *adapter,
  *	capabilities and default speed/duplex/flow-control/autonegotiation
  *	settings.
  */
-static void __devinit init_link_config(struct link_config *lc,
-				       unsigned int caps)
+static void init_link_config(struct link_config *lc, unsigned int caps)
 {
 	lc->supported = caps;
 	lc->requested_speed = lc->speed = SPEED_INVALID;
@@ -3420,7 +3421,7 @@ static void __devinit init_link_config(struct link_config *lc,
  *	Calculates the size of an MC7 memory in bytes from the value of its
  *	configuration register.
  */
-static unsigned int __devinit mc7_calc_size(u32 cfg)
+static unsigned int mc7_calc_size(u32 cfg)
 {
 	unsigned int width = G_WIDTH(cfg);
 	unsigned int banks = !!(cfg & F_BKS) + 1;
@@ -3431,8 +3432,8 @@ static unsigned int __devinit mc7_calc_size(u32 cfg)
 	return MBs << 20;
 }
 
-static void __devinit mc7_prep(struct adapter *adapter, struct mc7 *mc7,
-			       unsigned int base_addr, const char *name)
+static void mc7_prep(struct adapter *adapter, struct mc7 *mc7,
+		     unsigned int base_addr, const char *name)
 {
 	u32 cfg;
 
@@ -3518,7 +3519,7 @@ static int t3_reset_adapter(struct adapter *adapter)
 	return 0;
 }
 
-static int __devinit init_parity(struct adapter *adap)
+static int init_parity(struct adapter *adap)
 {
 		int i, err, addr;
 
@@ -3553,8 +3554,8 @@ static int __devinit init_parity(struct adapter *adap)
  * for some adapter tunables, take PHYs out of reset, and initialize the MDIO
  * interface.
  */
-int __devinit t3_prep_adapter(struct adapter *adapter,
-			      const struct adapter_info *ai, int reset)
+int t3_prep_adapter(struct adapter *adapter, const struct adapter_info *ai,
+		    int reset)
 {
 	int ret;
 	unsigned int i, j = 0;
@@ -3627,6 +3628,12 @@ int __devinit t3_prep_adapter(struct adapter *adapter,
 			++j;
 
 		p->port_type = &port_types[adapter->params.vpd.port_type[j]];
+		if (!p->port_type->phy_prep) {
+			CH_ALERT(adapter, "Invalid port type index %d\n",
+				 adapter->params.vpd.port_type[j]);
+			return -EINVAL;
+		}
+
 		p->port_type->phy_prep(&p->phy, adapter, ai->phy_base_addr + j,
 				       ai->mdio_ops);
 		mac_prep(&p->mac, adapter, j);
@@ -3658,3 +3665,30 @@ void t3_led_ready(struct adapter *adapter)
 	t3_set_reg_field(adapter, A_T3DBG_GPIO_EN, F_GPIO0_OUT_VAL,
 			 F_GPIO0_OUT_VAL);
 }
+
+int t3_replay_prep_adapter(struct adapter *adapter)
+{
+	const struct adapter_info *ai = adapter->params.info;
+	unsigned int i, j = 0;
+	int ret;
+
+	early_hw_init(adapter, ai);
+	ret = init_parity(adapter);
+	if (ret)
+		return ret;
+
+	for_each_port(adapter, i) {
+		struct port_info *p = adap2pinfo(adapter, i);
+		while (!adapter->params.vpd.port_type[j])
+			++j;
+
+		p->port_type->phy_prep(&p->phy, adapter, ai->phy_base_addr + j,
+					ai->mdio_ops);
+
+		p->phy.ops->power_down(&p->phy, 1);
+		++j;
+	}
+
+	return 0;
+}
+

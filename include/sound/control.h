@@ -161,4 +161,19 @@ static inline struct snd_ctl_elem_id *snd_ctl_build_ioff(struct snd_ctl_elem_id 
 	return dst_id;
 }
 
+/*
+ * Frequently used control callbacks
+ */
+int snd_ctl_boolean_mono_info(struct snd_kcontrol *kcontrol,
+			      struct snd_ctl_elem_info *uinfo);
+int snd_ctl_boolean_stereo_info(struct snd_kcontrol *kcontrol,
+			      struct snd_ctl_elem_info *uinfo);
+
+/*
+ * virtual master control
+ */
+struct snd_kcontrol *snd_ctl_make_virtual_master(char *name,
+						 const unsigned int *tlv);
+int snd_ctl_add_slave(struct snd_kcontrol *master, struct snd_kcontrol *slave);
+
 #endif	/* __SOUND_CONTROL_H */

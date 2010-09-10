@@ -349,6 +349,8 @@ struct input_absinfo {
 
 #define KEY_BATTERY		236
 
+#define KEY_WLAN                238
+
 #define KEY_UNKNOWN		240
 
 #define KEY_VIDEO_NEXT          241     /* drive next video source */
@@ -590,6 +592,7 @@ struct input_absinfo {
 #define SW_LID			0x00  /* set = lid shut */
 #define SW_TABLET_MODE		0x01  /* set = tablet mode */
 #define SW_HEADPHONE_INSERT	0x02  /* set = inserted */
+#define SW_RADIO                0x03  /* set = radio enabled */
 #define SW_MAX			0x0f
 
 /*

@@ -269,13 +269,13 @@ check_dead_utrace(struct task_struct *tsk, struct utrace *utrace,
 		 * parent can't see it in EXIT_ZOMBIE momentarily and reap
 		 * it.  If tsk was the group_leader, an exec by another
 		 * thread can release_task it despite our NOREAP.  Holding
-		 * tasklist_lock for reading excludes de_thread until we
-		 * decide what to do.
+		 * tasklist_lock excludes de_thread until we decide what
+		 * to do.
 		 */
-		read_lock(&tasklist_lock);
+		write_lock_irq(&tasklist_lock);
 		if (tsk->exit_signal == -1) { /* Self-reaping thread.  */
 			exit_state = xchg(&tsk->exit_state, EXIT_DEAD);
-			read_unlock(&tasklist_lock);
+			write_unlock_irq(&tasklist_lock);
 
 			BUG_ON(exit_state != EXIT_ZOMBIE);
 			exit_state = EXIT_DEAD;	/* Reap it below.  */
@@ -294,9 +294,9 @@ check_dead_utrace(struct task_struct *tsk, struct utrace *utrace,
 			 * the UTRACE_ACTION_NOREAP bit is cleared.  It's
 			 * safe for that to do everything it does until its
 			 * release_task call starts tearing things down.
-			 * Holding tasklist_lock for reading prevents
-			 * release_task from proceeding until we've done
-			 * everything we need to do.
+			 * Holding tasklist_lock for writing prevents
+			 * release_task/do_wait from proceeding until
+			 * we've done everything we need to do.
 			 */
 			exit_state = EXIT_ZOMBIE;
 		else
@@ -306,7 +306,7 @@ check_dead_utrace(struct task_struct *tsk, struct utrace *utrace,
 			 * group leader in an exec by another thread,
 			 * which will call release_task itself.
 			 */
-			read_unlock(&tasklist_lock);
+			write_unlock_irq(&tasklist_lock);
 	}
 
 	/*
@@ -345,7 +345,7 @@ check_dead_utrace(struct task_struct *tsk, struct utrace *utrace,
 			BUG_ON(exit_state != EXIT_ZOMBIE);
 			exit_state = EXIT_DEAD;	/* Reap it below.  */
 		}
-		read_unlock(&tasklist_lock); /* See comment above.  */
+		write_unlock_irq(&tasklist_lock); /* See comment above.  */
 	}
 	if (exit_state == EXIT_DEAD)
 		/*
@@ -2114,8 +2114,15 @@ utrace_get_signal(struct task_struct *tsk, struct pt_regs *regs,
 		 * The handler will run.  We do the SA_ONESHOT work here
 		 * since the normal path will only touch *return_ka now.
 		 */
-		if (return_ka->sa.sa_flags & SA_ONESHOT)
-			ka->sa.sa_handler = SIG_DFL;
+		signal.signr = info->si_signo;
+		if (likely(signal.signr) &&
+		    unlikely(return_ka->sa.sa_flags & SA_ONESHOT)) {
+			return_ka->sa.sa_flags &= ~SA_ONESHOT;
+			if (likely(valid_signal(signal.signr))) {
+				ka = &tsk->sighand->action[signal.signr - 1];
+				ka->sa.sa_handler = SIG_DFL;
+			}
+		}
 		break;
 
 	case UTRACE_SIGNAL_TSTP:

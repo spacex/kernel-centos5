@@ -1,5 +1,5 @@
 /* Copyright (c) 2004 Coraid, Inc.  See COPYING for GPL terms. */
-#define VERSION "22"
+#define VERSION "22i"
 #define AOE_MAJOR 152
 #define DEVICE_NAME "aoe"
 

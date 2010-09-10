@@ -315,6 +315,7 @@ struct uart_info {
  * Definitions for info->flags.  These are _private_ to serial_core, and
  * are specific to this structure.  They may be queried by low level drivers.
  */
+#define UIF_DSR_FLOW		((__force uif_t) (1 << 24))
 #define UIF_CHECK_CD		((__force uif_t) (1 << 25))
 #define UIF_CTS_FLOW		((__force uif_t) (1 << 26))
 #define UIF_NORMAL_ACTIVE	((__force uif_t) (1 << 29))
@@ -474,32 +475,46 @@ uart_handle_dcd_change(struct uart_port *port, unsigned int status)
 }
 
 /**
- *	uart_handle_cts_change - handle a change of clear-to-send state
+ *	uart_handle_flow_control_change - handle a change of CTS or DSR
  *	@port: uart_port structure for the open port
- *	@status: new clear to send status, nonzero if active
+ *	@status: new CTS/DTR status, nonzero if active
  */
 static inline void
-uart_handle_cts_change(struct uart_port *port, unsigned int status)
+uart_handle_flow_control_change(struct uart_port *port, unsigned int status)
 {
 	struct uart_info *info = port->info;
 	struct tty_struct *tty = info->tty;
 
-	port->icount.cts++;
-
-	if (info->flags & UIF_CTS_FLOW) {
-		if (tty->hw_stopped) {
-			if (status) {
-				tty->hw_stopped = 0;
-				port->ops->start_tx(port);
-				uart_write_wakeup(port);
-			}
-		} else {
-			if (!status) {
-				tty->hw_stopped = 1;
-				port->ops->stop_tx(port);
-			}
+	if (tty->hw_stopped) {
+		if (status) {
+			tty->hw_stopped = 0;
+			port->ops->start_tx(port);
+			uart_write_wakeup(port);
+		}
+	} else {
+		if (!status) {
+			tty->hw_stopped = 1;
+			port->ops->stop_tx(port);
 		}
 	}
+}
+
+static inline void
+uart_handle_cts_change(struct uart_port *port, unsigned int status)
+{
+	struct uart_info *info = port->info;
+	port->icount.cts++;
+	if (info->flags & UIF_CTS_FLOW)
+		uart_handle_flow_control_change(port, status);
+}
+
+static inline void
+uart_handle_dsr_change(struct uart_port *port, unsigned int status)
+{
+	struct uart_info *info = port->info;
+	port->icount.dsr++;
+	if (info->flags & UIF_DSR_FLOW)
+		uart_handle_flow_control_change(port, status);
 }
 
 #include <linux/tty_flip.h>
@@ -526,6 +541,7 @@ uart_insert_char(struct uart_port *port, unsigned int status,
  */
 #define UART_ENABLE_MS(port,cflag)	((port)->flags & UPF_HARDPPS_CD || \
 					 (cflag) & CRTSCTS || \
+					 ((port)->info && ((port)->info->flags & UIF_DSR_FLOW)) || \
 					 !((cflag) & CLOCAL))
 
 #endif

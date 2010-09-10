@@ -1913,6 +1913,14 @@ struct sky2_port {
 	u16		     rx_tag;
 	struct vlan_group    *vlgrp;
 #endif
+	struct {
+		unsigned long last;
+		u32	mac_rp;
+		u8	mac_lev;
+		u8	fifo_rp;
+		u8	fifo_lev;
+	} check;
+
 
 	dma_addr_t	     rx_le_map;
 	dma_addr_t	     tx_le_map;
@@ -1933,6 +1941,15 @@ struct sky2_hw {
 	void __iomem  	     *regs;
 	struct pci_dev	     *pdev;
 	struct net_device    *dev[2];
+	unsigned long        flags;
+#define SKY2_HW_USE_MSI         0x00000001
+#define SKY2_HW_FIBRE_PHY       0x00000002
+#define SKY2_HW_GIGABIT         0x00000004
+#define SKY2_HW_NEWER_PHY       0x00000008
+#define SKY2_HW_RAM_BUFFER      0x00000010
+#define SKY2_HW_NEW_LE          0x00000020	/* new LSOv2 format */
+#define SKY2_HW_AUTO_TX_SUM     0x00000040	/* new IP decode for Tx */
+#define SKY2_HW_ADV_POWER_CTL   0x00000080	/* additional PHY power regs */
 
 	u8	     	     chip_id;
 	u8		     chip_rev;
@@ -1943,7 +1960,7 @@ struct sky2_hw {
 	u32		     st_idx;
 	dma_addr_t   	     st_dma;
 
-	struct timer_list    idle_timer;
+	struct timer_list    watchdog_timer;
 	struct work_struct   restart_work;
 	int		     msi;
 	wait_queue_head_t    msi_wait;

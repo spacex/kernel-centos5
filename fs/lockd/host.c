@@ -272,8 +272,13 @@ nlm_shutdown_hosts(void)
 	/* First, make all hosts eligible for gc */
 	dprintk("lockd: nuking all hosts...\n");
 	for (i = 0; i < NLM_HOST_NRHASH; i++) {
-		for (host = nlm_hosts[i]; host; host = host->h_next)
+		for (host = nlm_hosts[i]; host; host = host->h_next) {
 			host->h_expires = jiffies - 1;
+			if (host->h_rpcclnt) {
+				rpc_shutdown_client(host->h_rpcclnt);
+				host->h_rpcclnt = NULL;
+			}
+		}
 	}
 
 	/* Then, perform a garbage collection pass */

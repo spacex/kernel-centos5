@@ -84,7 +84,8 @@ struct vport_data {
 #define VPORT_NOMEM	-3
 #define VPORT_NORESOURCES	-4
 
-int lpfc_vport_create(struct Scsi_Host *, const uint8_t *, const uint8_t *);
+int lpfc_vport_create(struct Scsi_Host *, const uint8_t *, const uint8_t *,
+		      char *);
 int lpfc_vport_delete(struct Scsi_Host *);
 int lpfc_vport_getinfo(struct Scsi_Host *, struct vport_info *);
 int lpfc_vport_tgt_remove(struct Scsi_Host *, uint, uint);

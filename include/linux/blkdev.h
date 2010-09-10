@@ -237,10 +237,16 @@ enum rq_flag_bits {
 	__REQ_ORDERED_COLOR,	/* is before or after barrier */
 	__REQ_RW_SYNC,		/* request is sync (O_DIRECT) */
 	__REQ_NR_BITS,		/* stops here */
+	__REQ_FAILFAST_DEV,	/* no driver retries of device errors */
+	__REQ_FAILFAST_TRANSPORT, /* no driver retries of transport errors */
+	__REQ_FAILFAST_DRIVER,	/* no driver retries of driver errors */
 };
 
 #define REQ_RW		(1 << __REQ_RW)
 #define REQ_FAILFAST	(1 << __REQ_FAILFAST)
+#define REQ_FAILFAST_DEV	(1 << __REQ_FAILFAST_DEV)
+#define REQ_FAILFAST_TRANSPORT	(1 << __REQ_FAILFAST_TRANSPORT)
+#define REQ_FAILFAST_DRIVER	(1 << __REQ_FAILFAST_DRIVER)
 #define REQ_SORTED	(1 << __REQ_SORTED)
 #define REQ_SOFTBARRIER	(1 << __REQ_SOFTBARRIER)
 #define REQ_HARDBARRIER	(1 << __REQ_HARDBARRIER)
@@ -492,8 +498,24 @@ enum {
 
 #define blk_fs_request(rq)	((rq)->flags & REQ_CMD)
 #define blk_pc_request(rq)	((rq)->flags & REQ_BLOCK_PC)
-#define blk_noretry_request(rq)	((rq)->flags & REQ_FAILFAST)
 #define blk_rq_started(rq)	((rq)->flags & REQ_STARTED)
+
+#define blk_noretry_request(rq)	((rq)->flags & REQ_FAILFAST)
+#define blk_failfast_dev(rq)	((rq)->flags & REQ_FAILFAST_DEV)
+#define blk_failfast_transport(rq) ((rq)->flags & REQ_FAILFAST_TRANSPORT)
+#define blk_failfast_driver(rq)	((rq)->flags & REQ_FAILFAST_DRIVER)
+/*
+ * For KABI compat reasons blk_noretry_request only checks REQ_FAILFAST.
+ * 3rd part SCSI drivers can continue to use this to check for
+ * upper layers requesting failfast for muliptath or read ahead.
+ *
+ * Drivers that are updated should use blk_noretry_ff_request or
+ * one of the macros for a specific type of failfast request.
+ */
+#define blk_noretry_ff_request(rq) (blk_failfast_dev(rq) ||		\
+					blk_failfast_transport(rq) ||	\
+					blk_failfast_driver(rq) ||	\
+					blk_noretry_request(rq))
 
 #define blk_account_rq(rq)	(blk_rq_started(rq) && blk_fs_request(rq))
 
@@ -712,6 +734,7 @@ extern void blk_queue_segment_boundary(request_queue_t *, unsigned long);
 extern void blk_queue_prep_rq(request_queue_t *, prep_rq_fn *pfn);
 extern void blk_queue_merge_bvec(request_queue_t *, merge_bvec_fn *);
 extern void blk_queue_dma_alignment(request_queue_t *, int);
+extern void blk_queue_update_dma_alignment(request_queue_t *, int);
 extern void blk_queue_softirq_done(request_queue_t *, softirq_done_fn *);
 extern struct backing_dev_info *blk_get_backing_dev_info(struct block_device *bdev);
 extern int blk_queue_ordered(request_queue_t *, unsigned, prepare_flush_fn *);
@@ -758,6 +781,8 @@ extern int blkdev_issue_flush(struct block_device *, sector_t *);
 #define BLK_DEF_MAX_SECTORS 1024
 
 #define MAX_SEGMENT_SIZE	65536
+
+#define BLK_SEG_BOUNDARY_MASK	0xFFFFFFFFUL
 
 #define blkdev_entry_to_request(entry) list_entry((entry), struct request, queuelist)
 

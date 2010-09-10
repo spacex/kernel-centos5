@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2007 QLogic Corporation. All rights reserved.
+ * Copyright (c) 2006, 2007, 2008 QLogic Corporation. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -68,28 +68,321 @@
 #define EPB_IB_QUAD0_CS (1U <<  EPB_IB_QUAD0_CS_SHF)
 #define EPB_IB_UC_CS_SHF (26)
 #define EPB_PCIE_UC_CS_SHF (27)
+#define EPB_GLOBAL_WR (1U << (EPB_ADDR_SHF + 8))
 
 /* Forward declarations. */
 static int ipath_sd7220_reg_mod(struct ipath_devdata *dd, int sdnum, u32 loc,
 				u32 data, u32 mask);
+static int ibsd_mod_allchnls(struct ipath_devdata *dd, int loc, int val,
+			     int mask);
 static int ipath_sd_trimdone_poll(struct ipath_devdata *dd);
+static void ipath_sd_trimdone_monitor(struct ipath_devdata *dd,
+				      const char *where);
 static int ipath_sd_setvals(struct ipath_devdata *dd);
 static int ipath_sd_early(struct ipath_devdata *dd);
 static int ipath_sd_dactrim(struct ipath_devdata *dd);
 /* Set the registers that IBC may muck with to their default "preset" values */
 int ipath_sd7220_presets(struct ipath_devdata *dd);
+static int ipath_internal_presets(struct ipath_devdata *dd);
 /* Tweak the register (CMUCTRL5) that contains the TRIMSELF controls */
 static int ipath_sd_trimself(struct ipath_devdata *dd, int val);
+static int epb_access(struct ipath_devdata *dd, int sdnum, int claim);
+
+void ipath_set_relock_poll(struct ipath_devdata *dd, int ibup);
+
+/*
+ * Below keeps track of whether the "once per power-on" initialization has
+ * been done, because uC code Version 1.32.17 or higher allows the uC to
+ * be reset at will, and Automatic Equalization may requore it. So the
+ * state of the reset "pin", as reflected in was_reset parameter to
+ * ipath_sd7220_init() is no longer valid. Instead, we check for the
+ * actual uC code having been loaded.
+ */
+static int ipath_ibsd_ucode_loaded(struct ipath_devdata *dd)
+{
+	if (!dd->serdes_first_init_done && (ipath_sd7220_ib_vfy(dd) > 0))
+		dd->serdes_first_init_done = 1;
+	return dd->serdes_first_init_done;
+}
+
+/* repeat #define for local use. "Real" #define is in ipath_iba7220.c */
+#define INFINIPATH_HWE_IB_UC_MEMORYPARITYERR      0x0000004000000000ULL
+#define IB_MPREG5 (EPB_LOC(6, 0, 0xE) | (1L << EPB_IB_UC_CS_SHF))
+#define IB_MPREG6 (EPB_LOC(6, 0, 0xF) | (1U << EPB_IB_UC_CS_SHF))
+#define UC_PAR_CLR_D 8
+#define UC_PAR_CLR_M 0xC
+#define IB_CTRL2(chn) (EPB_LOC(chn, 7, 3) | EPB_IB_QUAD0_CS)
+#define START_EQ1(chan) EPB_LOC(chan, 7, 0x27)
+
+void ipath_sd7220_clr_ibpar(struct ipath_devdata *dd)
+{
+	int ret;
+
+	/* clear, then re-enable parity errs */
+	ret = ipath_sd7220_reg_mod(dd, IB_7220_SERDES, IB_MPREG6,
+		UC_PAR_CLR_D, UC_PAR_CLR_M);
+	if (ret < 0) {
+		ipath_dev_err(dd, "Failed clearing IBSerDes Parity err\n");
+		goto bail;
+	}
+	ret = ipath_sd7220_reg_mod(dd, IB_7220_SERDES, IB_MPREG6, 0,
+		UC_PAR_CLR_M);
+
+	ipath_read_kreg32(dd, dd->ipath_kregs->kr_scratch);
+	udelay(4);
+	ipath_write_kreg(dd, dd->ipath_kregs->kr_hwerrclear,
+		INFINIPATH_HWE_IB_UC_MEMORYPARITYERR);
+	ipath_read_kreg32(dd, dd->ipath_kregs->kr_scratch);
+bail:
+	return;
+}
+
+/* After a reset or other unusual event, the epb interface may need
+ * to be re-synchronized, between the host and the uC.
+ * returns <0 for failure
+ * (which can only happen if we fail IBSD_RESYNC_TRIES times)
+ */
+#define IBSD_RESYNC_TRIES 3
+#define IB_PGUDP(chn) (EPB_LOC((chn), 2, 1) | EPB_IB_QUAD0_CS)
+#define IB_CMUDONE(chn) (EPB_LOC((chn), 7, 0xF) | EPB_IB_QUAD0_CS)
+
+static int ipath_resync_ibepb(struct ipath_devdata *dd)
+{
+	int ret, pat, tries, chn;
+	u32 loc;
+
+	ret = -1;
+	chn = 0;
+	for (tries = 0; tries < (4 * IBSD_RESYNC_TRIES); ++tries) {
+		loc = IB_PGUDP(chn);
+		ret = ipath_sd7220_reg_mod(dd, IB_7220_SERDES, loc, 0, 0);
+		if (ret < 0) {
+			ipath_dev_err(dd, "Failed read in resync\n");
+			continue;
+		}
+		if (ret != 0xF0 && ret != 0x55 && tries == 0)
+			ipath_dev_err(dd, "unexpected pattern in resync\n");
+		pat = ret ^ 0xA5; /* alternate F0 and 55 */
+		ret = ipath_sd7220_reg_mod(dd, IB_7220_SERDES, loc, pat, 0xFF);
+		if (ret < 0) {
+			ipath_dev_err(dd, "Failed write in resync\n");
+			continue;
+		}
+		ret = ipath_sd7220_reg_mod(dd, IB_7220_SERDES, loc, 0, 0);
+		if (ret < 0) {
+			ipath_dev_err(dd, "Failed re-read in resync\n");
+			continue;
+		}
+		if (ret != pat) {
+			ipath_dev_err(dd, "Failed compare1 in resync\n");
+			continue;
+		}
+		loc = IB_CMUDONE(chn);
+		ret = ipath_sd7220_reg_mod(dd, IB_7220_SERDES, loc, 0, 0);
+		if (ret < 0) {
+			ipath_dev_err(dd, "Failed CMUDONE rd in resync\n");
+			continue;
+		}
+		if ((ret & 0x70) != ((chn << 4) | 0x40)) {
+			ipath_dev_err(dd, "Bad CMUDONE value %02X, chn %d\n",
+				ret, chn);
+			continue;
+		}
+		if (++chn == 4)
+			break;  /* Success */
+	}
+	ipath_cdbg(VERBOSE, "Resync in %d tries\n", tries);
+	return (ret > 0) ? 0 : ret;
+}
+
+/*
+ * Localize the stuff that should be done to change IB uC reset
+ * returns <0 for errors.
+ */
+static int ipath_ibsd_reset(struct ipath_devdata *dd, int assert_rst)
+{
+	u64 rst_val;
+	int ret = 0;
+	unsigned long flags;
+
+	rst_val = ipath_read_kreg64(dd, dd->ipath_kregs->kr_ibserdesctrl);
+	if (assert_rst) {
+		/*
+		 * Vendor recommends "interrupting" uC before reset, to
+		 * minimize possible glitches.
+		 */
+		spin_lock_irqsave(&dd->ipath_sdepb_lock, flags);
+		epb_access(dd, IB_7220_SERDES, 1);
+		rst_val |= 1ULL;
+		/* Squelch possible parity error from _asserting_ reset */
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_hwerrmask,
+			dd->ipath_hwerrmask &
+			~INFINIPATH_HWE_IB_UC_MEMORYPARITYERR);
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_ibserdesctrl, rst_val);
+		/* flush write, delay to ensure it took effect */
+		ipath_read_kreg32(dd, dd->ipath_kregs->kr_scratch);
+		udelay(2);
+		/* once it's reset, can remove interrupt */
+		epb_access(dd, IB_7220_SERDES, -1);
+		spin_unlock_irqrestore(&dd->ipath_sdepb_lock, flags);
+	} else {
+		/*
+		 * Before we de-assert reset, we need to deal with
+		 * possible glitch on the Parity-error line.
+		 * Suppress it around the reset, both in chip-level
+		 * hwerrmask and in IB uC control reg. uC will allow
+		 * it again during startup.
+		 */
+		u64 val;
+		rst_val &= ~(1ULL);
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_hwerrmask,
+			dd->ipath_hwerrmask &
+			~INFINIPATH_HWE_IB_UC_MEMORYPARITYERR);
+
+		ret = ipath_resync_ibepb(dd);
+		if (ret < 0)
+			ipath_dev_err(dd, "unable to re-sync IB EPB\n");
+
+		/* set uC control regs to suppress parity errs */
+		ret = ipath_sd7220_reg_mod(dd, IB_7220_SERDES, IB_MPREG5, 1, 1);
+		if (ret < 0)
+			goto bail;
+		/* IB uC code past Version 1.32.17 allow suppression of wdog */
+		ret = ipath_sd7220_reg_mod(dd, IB_7220_SERDES, IB_MPREG6, 0x80,
+			0x80);
+		if (ret < 0) {
+			ipath_dev_err(dd, "Failed to set WDOG disable\n");
+			goto bail;
+		}
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_ibserdesctrl, rst_val);
+		/* flush write, delay for startup */
+		ipath_read_kreg32(dd, dd->ipath_kregs->kr_scratch);
+		udelay(1);
+		/* clear, then re-enable parity errs */
+		ipath_sd7220_clr_ibpar(dd);
+		val = ipath_read_kreg64(dd, dd->ipath_kregs->kr_hwerrstatus);
+		if (val & INFINIPATH_HWE_IB_UC_MEMORYPARITYERR) {
+			ipath_dev_err(dd, "IBUC Parity still set after RST\n");
+			dd->ipath_hwerrmask &=
+				~INFINIPATH_HWE_IB_UC_MEMORYPARITYERR;
+		}
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_hwerrmask,
+			dd->ipath_hwerrmask);
+	}
+
+bail:
+	return ret;
+}
+
+static void ipath_sd_trimdone_monitor(struct ipath_devdata *dd,
+       const char *where)
+{
+	int ret, chn, baduns;
+	u64 val;
+
+	if (!where)
+		where = "?";
+
+	/* give time for reset to settle out in EPB */
+	udelay(2);
+
+	ret = ipath_resync_ibepb(dd);
+	if (ret < 0)
+		ipath_dev_err(dd, "not able to re-sync IB EPB (%s)\n", where);
+
+	/* Do "sacrificial read" to get EPB in sane state after reset */
+	ret = ipath_sd7220_reg_mod(dd, IB_7220_SERDES, IB_CTRL2(0), 0, 0);
+	if (ret < 0)
+		ipath_dev_err(dd, "Failed TRIMDONE 1st read, (%s)\n", where);
+
+	/* Check/show "summary" Trim-done bit in IBCStatus */
+	val = ipath_read_kreg64(dd, dd->ipath_kregs->kr_ibcstatus);
+	if (val & (1ULL << 11))
+		ipath_cdbg(VERBOSE, "IBCS TRIMDONE set (%s)\n", where);
+	else
+		ipath_dev_err(dd, "IBCS TRIMDONE clear (%s)\n", where);
+	/*
+	* Do "dummy read/mod/wr" to get EPB in sane state after reset
+	* The default (and hopefully only, D6..0) value for MPREG6 is 0, and
+	* we want to set to 0x80. Since we can't trust read, or we wouldn't
+	* be doing this, hope for the best
+	*/
+	udelay(2);
+
+	ret = ipath_sd7220_reg_mod(dd, IB_7220_SERDES, IB_MPREG6, 0x80, 0x80);
+	if (ret < 0)
+		ipath_dev_err(dd, "Failed Dummy RMW, (%s)\n", where);
+	udelay(10);
+
+	baduns = 0;
+
+	for (chn = 3; chn >= 0; --chn) {
+		/* Read CTRL reg for each channel to check TRIMDONE */
+		ret = ipath_sd7220_reg_mod(dd, IB_7220_SERDES,
+			IB_CTRL2(chn), 0, 0);
+		if (ret < 0)
+			ipath_dev_err(dd, "Failed checking TRIMDONE, chn %d"
+				" (%s)\n", chn, where);
+
+		if (!(ret & 0x10)) {
+			int probe;
+			baduns |= (1 << chn);
+			ipath_dev_err(dd, "TRIMDONE cleared on chn %d (%02X)."
+				" (%s)\n", chn, ret, where);
+			probe = ipath_sd7220_reg_mod(dd, IB_7220_SERDES,
+				IB_PGUDP(0), 0, 0);
+			ipath_dev_err(dd, "probe is %d (%02X)\n",
+				probe, probe);
+			probe = ipath_sd7220_reg_mod(dd, IB_7220_SERDES,
+				IB_CTRL2(chn), 0, 0);
+			ipath_dev_err(dd, "re-read: %d (%02X)\n",
+				probe, probe);
+			ret = ipath_sd7220_reg_mod(dd, IB_7220_SERDES,
+				IB_CTRL2(chn), 0x10, 0x10);
+			if (ret < 0)
+				ipath_dev_err(dd,
+					"Err on TRIMDONE rewrite1\n");
+		}
+	}
+	for (chn = 3; chn >= 0; --chn) {
+		/* Read CTRL reg for each channel to check TRIMDONE */
+		if (baduns & (1 << chn)) {
+			ipath_dev_err(dd,
+				"Reseting TRIMDONE on chn %d (%s)\n",
+				chn, where);
+			ret = ipath_sd7220_reg_mod(dd, IB_7220_SERDES,
+				IB_CTRL2(chn), 0x10, 0x10);
+			if (ret < 0)
+				ipath_dev_err(dd, "Failed re-setting "
+					"TRIMDONE, chn %d (%s)\n",
+					chn, where);
+		}
+	}
+}
 
 /*
  * Below is portion of IBA7220-specific bringup_serdes() that actually
  * deals with registers and memory within the SerDes itself.
+ * Post IB uC code version 1.32.17, was_reset being 1 is not really
+ * informative, so we double-check.
  */
 int ipath_sd7220_init(struct ipath_devdata *dd, int was_reset)
 {
-	u64 val;
-	int ret = 0;
+	int ret = 1; /* default to failure */
+	int first_reset;
 
+	if (!was_reset) {
+		/* entered with reset not asserted, we need to do it */
+		ipath_ibsd_reset(dd, 1);
+		ipath_sd_trimdone_monitor(dd, "Driver-reload");
+	}
+	/* Substitute our deduced value for was_reset */
+	ret = ipath_ibsd_ucode_loaded(dd);
+	if (ret < 0) {
+		ret = 1;
+		goto done;
+	}
+	first_reset = !ret; /* First reset if IBSD uCode not yet loaded */
 	do {
 		/*
 		 * Alter some regs per vendor latest doc, reset-defaults
@@ -105,9 +398,8 @@ int ipath_sd7220_init(struct ipath_devdata *dd, int was_reset)
 		/* Set DAC manual trim IB.
 		 * We only do this once after chip has been reset (usually
 		 * same as once per system boot).
-		 * Relies on quiet_serdes() not putting uC in reset.
 		 */
-		if (was_reset) {
+		if (first_reset) {
 			ret = ipath_sd_dactrim(dd);
 			if (ret < 0) {
 				ipath_dev_err(dd,
@@ -116,12 +408,13 @@ int ipath_sd7220_init(struct ipath_devdata *dd, int was_reset)
 				break;
 			}
 		}
-		/* Set various registers (DDS and RXEQ) that will be
-		 * controlled by IBC (in 1.2 mode) to reasonable
-		 * preset values; set needed to force, because init
+		/*
+		 * Set various registers (DDS and RXEQ) that will be
+		 * controlled by IBC (in 1.2 mode) to reasonable preset values
+		 * Calling the "internal" version avoids the "check for needed"
+		 * and "trimdone monitor" that might be counter-productive.
 		 */
-		dd->ipath_presets_needed = 1;
-		ret = ipath_sd7220_presets(dd);
+		ret = ipath_internal_presets(dd);
 		if (ret < 0) {
 			ipath_dev_err(dd, "Failed to set IB SERDES presets\n");
 			ret = 1;
@@ -136,7 +429,7 @@ int ipath_sd7220_init(struct ipath_devdata *dd, int was_reset)
 
 		/* Load image, then try to verify */
 		ret = 0;	/* Assume success */
-		if (was_reset) {
+		if (first_reset) {
 			ipath_dbg("SerDes uC was reset, reloading PRAM\n");
 			ret = ipath_sd7220_ib_load(dd);
 			if (ret < 0) {
@@ -160,22 +453,53 @@ int ipath_sd7220_init(struct ipath_devdata *dd, int was_reset)
 					ret = 0;
 				} /* end if verified */
 			} /* end if loaded */
-		} /* end if was_reset */
+		} /* end if first_reset */
 	} while (0) ; /* do_while for goto-less bailing */
 
-	if (ret == 0) {
-		/* Prev steps all worked, continue bringup */
-		/* De-assert RESET to uC */
+	if (ret == 0 && first_reset) {
+		/*
+		 * Prev steps all worked, continue bringup
+		 * De-assert RESET to uC, only in first reset, to allow
+		 * trimming.
+		 */
 		int trim_done;
 
-		val = ipath_read_kreg64(dd, dd->ipath_kregs->kr_ibserdesctrl);
-		val &= ~(1ULL);
-		ipath_write_kreg(dd, dd->ipath_kregs->kr_ibserdesctrl, val);
+		/*
+		 * Since our default setup sets START_EQ1 to
+		 * PRESET, we need to clear that for this very first run.
+		 */
+		ret = ibsd_mod_allchnls(dd, START_EQ1(0), 0, 0x38);
+		if (ret < 0) {
+			ipath_dev_err(dd, "Failed clearing START_EQ1\n");
+			ret = 1;
+			goto done;
+		}
+
+		ipath_ibsd_reset(dd, 0);
+		/*
+		 * If this is not the first reset, trimdone should be set
+		 * already. We may need to check about this.
+		 */
 		trim_done = ipath_sd_trimdone_poll(dd);
+		/*
+		 * Whether or not trimdone succeeded, we need to put the
+		 * uC back into reset to avoid a possible fight with the
+		 * IBC state-machine.
+		 */
+		ipath_ibsd_reset(dd, 1);
+
 		if (!trim_done) {
 			ipath_dev_err(dd, "No TRIMDONE seen\n");
 			ret = 1;
+			goto done;
 		}
+		/*
+		 * DEBUG: check each time we reset if trimdone bits have
+		 * gotten cleared, and re-set them.
+		 */
+		ipath_sd_trimdone_monitor(dd, "First-reset");
+		/* Remember so we do not re-do the load, dactrim, etc. */
+		dd->serdes_first_init_done = 1;
 	}
 	if (ret == 0) {
 		/*
@@ -188,6 +512,9 @@ int ipath_sd7220_init(struct ipath_devdata *dd, int was_reset)
 		if (val_stat < 0)
 			ret = 1;
 	}
+done:
+	/* start relock timer regardless, but start at 1 second */
+	ipath_set_relock_poll(dd, -1);
 	return ret;
 }
 
@@ -237,7 +564,7 @@ static int epb_access(struct ipath_devdata *dd, int sdnum, int claim)
 	accval = ipath_read_kreg32(dd, acc);
 
 	owned = !!(accval & EPB_ACC_GNT);
-	if (owned && claim < 0) {
+	if (claim < 0) {
 		/* Need to release */
 		u64 pollval;
 		/*
@@ -255,7 +582,7 @@ static int epb_access(struct ipath_devdata *dd, int sdnum, int claim)
 		pollval = ipath_read_kreg32(dd, acc);
 		if (pollval & EPB_ACC_GNT)
 			owned = -1;
-	} else if (!owned && claim > 0) {
+	} else if (claim > 0) {
 		/* Need to claim */
 		u64 pollval;
 		u64 newval = EPB_ACC_REQ | oct_sel;
@@ -717,6 +1044,11 @@ static struct dds_init {
 #define RXEQ_SDR_G1CNT_Z1CNT 0x11
 #define RXEQ_SDR_ZCNT 23
 
+/*
+ * The values below (as opposed to what "was") were experimentally determined
+ * to reduce IB Symbol errors, but currently all four "sets" are the same.
+ * with more experimentation, we will derive a range.
+ */
 static struct rxeq_init {
 	u16 rdesc;	/* in form used in SerDesDDSRXEQ */
 	u8  rdata[4];
@@ -724,23 +1056,20 @@ static struct rxeq_init {
 	/* Set Rcv Eq. to Preset node */
 	RXEQ_VAL_ALL(7, 0x27, 0x10),
 	/* Set DFELTHFDR/HDR thresholds */
-	RXEQ_VAL(7, 8,    0, 1, 2, 3), /* FDR */
+	RXEQ_VAL(7, 8,    0, 0, 0, 0), /* FDR, was 0, 1, 2, 3 */
 	RXEQ_VAL(7, 0x21, 0, 0, 0, 0), /* HDR */
 	/* Set TLTHFDR/HDR theshold */
-	RXEQ_VAL(7, 9,    0, 2, 4, 6), /* FDR */
-	RXEQ_VAL(7, 0x23, 0, 1, 2, 3), /* HDR */
+	RXEQ_VAL(7, 9,    2, 2, 2, 2), /* FDR, was 0, 2, 4, 6 */
+	RXEQ_VAL(7, 0x23, 2, 2, 2, 2), /* HDR, was  0, 1, 2, 3 */
 	/* Set Preamp setting 2 (ZFR/ZCNT) */
-	RXEQ_VAL(7, 0x1B, 12, 16, 20, 24), /* FDR */
-	RXEQ_VAL(7, 0x1C, 12, 16, 20, 24), /* HDR */
+	RXEQ_VAL(7, 0x1B, 12, 12, 12, 12), /* FDR, was 12, 16, 20, 24 */
+	RXEQ_VAL(7, 0x1C, 12, 12, 12, 12), /* HDR, was 12, 16, 20, 24 */
 	/* Set Preamp DC gain and Setting 1 (GFR/GHR) */
-	RXEQ_VAL(7, 0x1E, 0x10, 0x11, 0x12, 0x14), /* FDR */
-	RXEQ_VAL(7, 0x1F, 0x10, 0x11, 0x12, 0x14), /* HDR */
+	RXEQ_VAL(7, 0x1E, 0x10, 0x10, 0x10, 0x10), /* FDR, was 0x10, 0x11, 0x12, 0x14 */
+	RXEQ_VAL(7, 0x1F, 0x10, 0x10, 0x10, 0x10), /* HDR, was 0x10, 0x11, 0x12, 0x14 */
 	/* Toggle RELOCK (in VCDL_CTRL0) to lock to data */
 	RXEQ_VAL_ALL(6, 6, 0x20), /* Set D5 High */
 	RXEQ_VAL_ALL(6, 6, 0), /* Set D5 Low */
-	/* Enable parallel output data and clock, RCLKRLS */
-	RXEQ_VAL_ALL(0, 2, 0x50), /* Set D7 Low */
-	RXEQ_VAL_ALL(0, 2, 0xD0) /* Set D7 High */
 };
 
 /* There are 17 values from vendor, but IBC only accesses the first 16 */
@@ -821,8 +1150,8 @@ static int ipath_sd_setvals(struct ipath_devdata *dd)
 #define CMUCTRL5 EPB_LOC(7, 0, 0x15)
 #define RXHSCTRL0(chan) EPB_LOC(chan, 6, 0)
 #define VCDL_DAC2(chan) EPB_LOC(chan, 6, 5)
+#define VCDL_CTRL0(chan) EPB_LOC(chan, 6, 6)
 #define VCDL_CTRL2(chan) EPB_LOC(chan, 6, 8)
-#define START_EQ1(chan) EPB_LOC(chan, 7, 0x27)
 #define START_EQ2(chan) EPB_LOC(chan, 7, 0x28)
 
 static int ibsd_sto_noisy(struct ipath_devdata *dd, int loc, int val, int mask)
@@ -837,10 +1166,6 @@ static int ibsd_sto_noisy(struct ipath_devdata *dd, int loc, int val, int mask)
 	if (ret < 0)
 		ipath_dev_err(dd, "Write failed: elt %d,"
 			" addr 0x%X, chnl %d, val 0x%02X, mask 0x%02X\n",
-			(sloc & 0xF), (sloc >> 9) & 0x3f, (sloc >> 4) & 7,
-			val & 0xFF, mask & 0xFF);
-	else
-		ipath_cdbg(VERBOSE, "IBSD(%d,0x%02X,%d) <- 0x%02X (%02X)\n",
 			(sloc & 0xF), (sloc >> 9) & 0x3f, (sloc >> 4) & 7,
 			val & 0xFF, mask & 0xFF);
 	return ret;
@@ -860,6 +1185,36 @@ static int ibsd_mod_allchnls(struct ipath_devdata *dd, int loc, int val,
 	int ret = -1;
 	int chnl;
 
+	if (loc & EPB_GLOBAL_WR) {
+		/* our caller has assured us that we can set all four
+		 * channels at once. Trust that. If mask is not 0xFF,
+		 * we will read the _specified_ channel for our starting
+		 * value.
+		 */
+		loc |= (1U << EPB_IB_QUAD0_CS_SHF);
+		chnl = (loc >> (4 + EPB_ADDR_SHF)) & 7;
+		if (mask != 0xFF) {
+			ret = ipath_sd7220_reg_mod(dd, IB_7220_SERDES,
+				loc & ~EPB_GLOBAL_WR, 0, 0);
+			if (ret < 0) {
+				int sloc = loc >> EPB_ADDR_SHF;
+				ipath_dev_err(dd, "pre-read failed: elt %d,"
+					" addr 0x%X, chnl %d\n", (sloc & 0xF),
+					(sloc >> 9) & 0x3f, chnl);
+				return ret;
+			}
+			val = (ret & ~mask) | (val & mask);
+		}
+		loc &=  ~(7 << (4+EPB_ADDR_SHF));
+		ret = ipath_sd7220_reg_mod(dd, IB_7220_SERDES, loc, val, 0xFF);
+		if (ret < 0) {
+			int sloc = loc >> EPB_ADDR_SHF;
+			ipath_dev_err(dd, "Global WR failed: elt %d,"
+				" addr 0x%X, val %02X\n",
+				(sloc & 0xF), (sloc >> 9) & 0x3f, val);
+		}
+		return ret;
+	}
 	/* Clear "channel" and set CS so we can simply iterate */
 	loc &=  ~(7 << (4+EPB_ADDR_SHF));
 	loc |= (1U << EPB_IB_QUAD0_CS_SHF);
@@ -875,12 +1230,6 @@ static int ibsd_mod_allchnls(struct ipath_devdata *dd, int loc, int val,
 				(sloc & 0xF), (sloc >> 9) & 0x3f, chnl,
 				val & 0xFF, mask & 0xFF);
 			break;
-		} else {
-			int sloc = loc >> EPB_ADDR_SHF;
-			ipath_cdbg(VERBOSE,
-				   "IBSD(%d,0x%02X,%d) <- 0x%02X (%02X)\n",
-				   (sloc & 0xF), (sloc >> 9) & 0x3f, chnl,
-				   val & 0xFF, mask & 0xFF);
 		}
 	}
 	return ret;
@@ -933,11 +1282,35 @@ static int set_rxeq_vals(struct ipath_devdata *dd, int vsel)
 	return ret;
 }
 
-/* Set the default values (row 0) for DDR Driver Demphasis.
+/*
+ * Set the default values (row 0) for DDR Driver Demphasis.
  * we do this initially and whenever we turn off IB-1.2
  * Vendor recommends non-default presets, depending on
  * cable length. Initial testing will assume 3 meter cables.
+ * The "default" values for Rx equalization are also stored to
+ * SerDes registers. Formerly (and still default), we used set 2.
+ * For experimenting with cables and link-partners, we allow changing
+ * that via a module parameter.
  */
+static unsigned ipath_rxeq_set = 2;
+module_param_named(rxeq_default_set, ipath_rxeq_set, uint,
+	S_IWUSR | S_IRUGO);
+MODULE_PARM_DESC(rxeq_default_set, "Which set [0..3] of Rx Equalization values is default");
+
+static int ipath_internal_presets(struct ipath_devdata *dd)
+{
+	int ret = 0;
+
+	ret = set_dds_vals(dd, dds_init_vals + DDS_3M);
+
+	if (ret < 0)
+		ipath_dev_err(dd, "Failed to set default DDS values\n");
+	ret = set_rxeq_vals(dd, ipath_rxeq_set & 3);
+	if (ret < 0)
+		ipath_dev_err(dd, "Failed to set default RXEQ values\n");
+	return ret;
+}
+
 int ipath_sd7220_presets(struct ipath_devdata *dd)
 {
 	int ret = 0;
@@ -945,14 +1318,13 @@ int ipath_sd7220_presets(struct ipath_devdata *dd)
 	if (!dd->ipath_presets_needed)
 		return ret;
 	dd->ipath_presets_needed = 0;
-	ret = set_dds_vals(dd, dds_init_vals + DDS_3M);
+	/* Assert uC reset, so we don't clash with it. */
+	ipath_ibsd_reset(dd, 1);
+	udelay(2);
+	ipath_sd_trimdone_monitor(dd, "link-down");
 
-	if (ret < 0)
-		ipath_dev_err(dd, "Failed to set default DDS values\n");
-	ret = set_rxeq_vals(dd, 2);
-	if (ret < 0)
-		ipath_dev_err(dd, "Failed to set default RXEQ values\n");
-	return ret;
+	ret = ipath_internal_presets(dd);
+return ret;
 }
 
 static int ipath_sd_trimself(struct ipath_devdata *dd, int val)
@@ -1054,30 +1426,130 @@ static int ipath_sd_dactrim(struct ipath_devdata *dd)
 	return ret;
 }
 
-/*
- * ipath_sd7220_enable_aeq - Enable Auto-Equalization.
- * @dd: the infinipath device
- *
- * Function to turn on adaptive equalization. On IBA7220, the only chip
- * so far to support it, we do this by setting START_EQ1 (elt 7 reg 0x27)
- * PRESET to zero and STEADY_STATE to 1 (bits 4:3 = 01)
- * Returns <0 for errors, 0 for "not enabled", >0 for "enabled"
- */
-int ipath_sd7220_enable_aeq(struct ipath_devdata *dd)
+#define RELOCK_FIRST_MS 3
+#define RXLSPPM(chan) EPB_LOC(chan, 0, 2)
+void ipath_toggle_rclkrls(struct ipath_devdata *dd)
 {
-	int regval, chnl;
+	int loc = RXLSPPM(0) | EPB_GLOBAL_WR;
+	int ret;
 
-	if (dd->ipath_presets_needed)
-		return 1;
-	dd->ipath_presets_needed = 1;
-	/* Clear PRESET and set STEADY_STATE, for all channels */
-	for (chnl = 0; chnl < 4; ++chnl) {
-		regval = ipath_sd7220_reg_mod(dd, IB_7220_SERDES,
-			START_EQ1(chnl) | EPB_IB_QUAD0_CS,
-			8, 0x18);
-		if (regval < 0)
-			return regval;
+	ret = ibsd_mod_allchnls(dd, loc, 0, 0x80);
+	if (ret < 0)
+		ipath_dev_err(dd, "RCLKRLS failed to clear D7\n");
+	else {
+		udelay(1);
+		ibsd_mod_allchnls(dd, loc, 0x80, 0x80);
 	}
-	return 1;
+	/* And again for good measure */
+	udelay(1);
+	ret = ibsd_mod_allchnls(dd, loc, 0, 0x80);
+	if (ret < 0)
+		ipath_dev_err(dd, "RCLKRLS failed to clear D7\n");
+	else {
+		udelay(1);
+		ibsd_mod_allchnls(dd, loc, 0x80, 0x80);
+	}
+	/* Now reset xgxs and IBC to complete the recovery */
+	dd->ipath_f_xgxs_reset(dd);
+}
+
+/*
+ * Shut down the timer that polls for relock occasions, if needed
+ * this is "hooked" from ipath_7220_quiet_serdes(), which is called
+ * just before ipath_shutdown_device() in ipath_driver.c shuts down all
+ * the other timers
+ */
+void ipath_shutdown_relock_poll(struct ipath_devdata *dd)
+{
+	struct ipath_relock *irp = &dd->ipath_relock_singleton;
+	if (atomic_read(&irp->ipath_relock_timer_active)) {
+		del_timer_sync(&irp->ipath_relock_timer);
+		atomic_set(&irp->ipath_relock_timer_active, 0);
+	}
+}
+
+static unsigned ipath_relock_by_timer = 1;
+module_param_named(relock_by_timer, ipath_relock_by_timer, uint,
+	S_IWUSR | S_IRUGO);
+MODULE_PARM_DESC(relock_by_timer, "Allow relock attempt if link not up");
+
+static void ipath_run_relock(unsigned long opaque)
+{
+	struct ipath_devdata *dd = (struct ipath_devdata *)opaque;
+	struct ipath_relock *irp = &dd->ipath_relock_singleton;
+	u64 val, ltstate;
+
+	if (!(dd->ipath_flags & IPATH_INITTED)) {
+		/* Not yet up, just reenable the timer for later */
+		irp->ipath_relock_interval = HZ;
+		mod_timer(&irp->ipath_relock_timer, jiffies + HZ);
+		return;
+	}
+
+	/*
+	 * Check link-training state for "stuck" state.
+	 * if found, try relock and schedule another try at
+	 * exponentially growing delay, maxed at one second.
+	 * if not stuck, our work is done.
+	 */
+	val = ipath_read_kreg64(dd, dd->ipath_kregs->kr_ibcstatus);
+	ltstate = ipath_ib_linktrstate(dd, val);
+
+	/* Below check was <= CFGDEBOUNCE, JBR requests change for test */
+	if (ltstate <= INFINIPATH_IBCS_LT_STATE_CFGWAITRMT
+		&& ltstate != INFINIPATH_IBCS_LT_STATE_LINKUP) {
+		int timeoff;
+		/* Not up yet. Try again, if allowed by module-param */
+		if (ipath_relock_by_timer) {
+			if (dd->ipath_flags & IPATH_IB_AUTONEG_INPROG) {
+				ipath_cdbg(VERBOSE, "Skip RELOCK in AUTONEG\n");
+			} else if (!(dd->ipath_flags &
+					IPATH_IB_LINK_DISABLED)) {
+				ipath_cdbg(VERBOSE, "RELOCK\n");
+				ipath_toggle_rclkrls(dd);
+
+			}
+		}
+		/* re-set timer for next check */
+		timeoff = irp->ipath_relock_interval << 1;
+		if (timeoff > HZ)
+			timeoff = HZ;
+		irp->ipath_relock_interval = timeoff;
+
+		mod_timer(&irp->ipath_relock_timer, jiffies + timeoff);
+	} else {
+		/* Up, so no more need to check so often */
+		mod_timer(&irp->ipath_relock_timer, jiffies + HZ);
+	}
+}
+
+void ipath_set_relock_poll(struct ipath_devdata *dd, int ibup)
+{
+	struct ipath_relock *irp = &dd->ipath_relock_singleton;
+
+	if (ibup > 0) {
+		/* we are now up, so squelch timer */
+		if (atomic_read(&irp->ipath_relock_timer_active))
+			mod_timer(&irp->ipath_relock_timer, jiffies + HZ);
+	} else {
+		/* Transition to down, (re-)set timer to short interval. */
+		int timeout;
+		timeout = (HZ * ((ibup == -1) ? 1000 : RELOCK_FIRST_MS))/1000;
+		if (timeout == 0)
+			timeout = 1;
+		/* If timer has not yet been started, do so. */
+		if (atomic_inc_return(&irp->ipath_relock_timer_active) == 1) {
+			init_timer(&irp->ipath_relock_timer);
+			irp->ipath_relock_timer.function = ipath_run_relock;
+			irp->ipath_relock_timer.data = (unsigned long) dd;
+			irp->ipath_relock_interval = timeout;
+			irp->ipath_relock_timer.expires = jiffies + timeout;
+			add_timer(&irp->ipath_relock_timer);
+		} else {
+			irp->ipath_relock_interval = timeout;
+			mod_timer(&irp->ipath_relock_timer, jiffies + timeout);
+			atomic_dec(&irp->ipath_relock_timer_active);
+		}
+	}
 }
 

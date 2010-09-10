@@ -25,6 +25,26 @@ void percpu_counter_mod(struct percpu_counter *fbc, s32 amount)
 }
 EXPORT_SYMBOL(percpu_counter_mod);
 
+void percpu_counter_mod64(struct percpu_counter *fbc, s64 amount)
+{
+	s64 count;
+	s32 *pcount;
+	int cpu = get_cpu();
+
+	pcount = per_cpu_ptr(fbc->counters, cpu);
+	count = *pcount + amount;
+	if (count >= FBC_BATCH || count <= -FBC_BATCH) {
+		spin_lock(&fbc->lock);
+		fbc->count += count;
+		*pcount = 0;
+		spin_unlock(&fbc->lock);
+	} else {
+		*pcount = count;
+	}
+	put_cpu();
+}
+EXPORT_SYMBOL(percpu_counter_mod64);
+
 /*
  * Add up all the per-cpu counts, return the result.  This is a more accurate
  * but much slower version of percpu_counter_read_positive()

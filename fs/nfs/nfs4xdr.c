@@ -3360,7 +3360,7 @@ static int decode_readdir(struct xdr_stream *xdr, struct rpc_rqst *req, struct n
 	struct xdr_buf	*rcvbuf = &req->rq_rcv_buf;
 	struct page	*page = *rcvbuf->pages;
 	struct kvec	*iov = rcvbuf->head;
-	unsigned int	nr, pglen = rcvbuf->page_len;
+	unsigned int	nr = 0, pglen = rcvbuf->page_len;
 	uint32_t	*end, *entry, *p, *kaddr;
 	uint32_t	len, attrlen, xlen;
 	int 		hdrlen, recvd, status;
@@ -3386,7 +3386,12 @@ static int decode_readdir(struct xdr_stream *xdr, struct rpc_rqst *req, struct n
 	kaddr = p = (uint32_t *) kmap_atomic(page, KM_USER0);
 	end = p + ((pglen + readdir->pgbase) >> 2);
 	entry = p;
-	for (nr = 0; *p++; nr++) {
+
+	/* Make sure the packet actually has a value_follows and EOF entry */
+	if ((entry + 1) > end)
+		goto short_pkt;
+
+	for (; *p++; nr++) {
 		if (end - p < 3)
 			goto short_pkt;
 		dprintk("cookie = %Lu, ", *((unsigned long long *)p));
@@ -3411,20 +3416,32 @@ static int decode_readdir(struct xdr_stream *xdr, struct rpc_rqst *req, struct n
 		p += attrlen;		/* attributes */
 		entry = p;
 	}
-	if (!nr && (entry[0] != 0 || entry[1] == 0))
-		goto short_pkt;
+	/*
+	 * Apparently some server sends responses that are a valid size, but
+	 * contain no entries, and have value_follows==0 and EOF==0. For
+	 * those, just set the EOF marker.
+	 */
+	if (!nr && entry[1] == 0) {
+		dprintk("NFS: readdir reply truncated!\n");
+		entry[1] = 1;
+	}
 out:	
 	kunmap_atomic(kaddr, KM_USER0);
 	return 0;
 short_pkt:
+	/*
+	 * When we get a short packet there are 2 possibilities. We can
+	 * return an error, or fix up the response to look like a valid
+	 * response and return what we have so far. If there are no
+	 * entries and the packet was short, then return -EIO. If there
+	 * are valid entries in the response, return them and pretend that
+	 * the call was successful, but incomplete. The caller can retry the
+	 * readdir starting at the last cookie.
+	 */
 	dprintk("%s: short packet at entry %d\n", __FUNCTION__, nr);
 	entry[0] = entry[1] = 0;
-	/* truncate listing ? */
-	if (!nr) {
-		printk(KERN_NOTICE "NFS: readdir reply truncated!\n");
-		entry[1] = 1;
-	}
-	goto out;
+	if (nr)
+		goto out;
 err_unmap:
 	kunmap_atomic(kaddr, KM_USER0);
 	return -errno_NFSERR_IO;

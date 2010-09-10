@@ -2063,23 +2063,6 @@ config R8169
 	  To compile this driver as a module, choose M here: the module
 	  will be called r8169.  This is recommended.
 
-config R8169_NAPI
-	bool "Use Rx and Tx Polling (NAPI) (EXPERIMENTAL)"
-	depends on R8169 && EXPERIMENTAL
-	help
-	  NAPI is a new driver API designed to reduce CPU and interrupt load
-	  when the driver is receiving lots of packets from the card. It is
-	  still somewhat experimental and thus not yet enabled by default.
-
-	  If your estimated Rx load is 10kpps or more, or if the card will be
-	  deployed on potentially unfriendly networks (e.g. in a firewall),
-	  then say Y here.
-
-	  See <file:Documentation/networking/NAPI_HOWTO.txt> for more
-	  information.
-
-	  If in doubt, say N.
-
 config R8169_VLAN
 	bool "VLAN support"
 	depends on R8169 && VLAN_8021Q
@@ -2241,6 +2224,7 @@ config VIA_VELOCITY
 config TIGON3
 	tristate "Broadcom Tigon3 support"
 	depends on PCI
+	select PHYLIB
 	help
 	  This driver supports Broadcom Tigon3 based gigabit Ethernet cards.
 
@@ -2375,7 +2359,8 @@ config CHELSIO_T1
 config CHELSIO_T3
         tristate "Chelsio Communications T3 10Gb Ethernet support"
         depends on PCI
-        help
+	select INET_LRO
+	---help---
           This driver supports Chelsio T3-based gigabit and 10Gb Ethernet
           adapters.
 
@@ -2393,6 +2378,7 @@ config CHELSIO_T3
 config EHEA
 	tristate "eHEA Ethernet support"
 	depends on IBMEBUS
+	select INET_LRO
 	---help---
 	  This driver supports the IBM pSeries eHEA ethernet adapter.
 
@@ -2502,11 +2488,25 @@ config MYRI10GE
 	  <file:Documentation/networking/net-modules.txt>.  The module
 	  will be called myri10ge.
 
+config ENIC
+	tristate "Cisco 10G Ethernet NIC"
+	depends on PCI && INET
+	select INET_LRO
+	help
+	  This enables the support for Cisco 10G Ethernet card.
+
 config NETXEN_NIC
 	tristate "NetXen Multi port (1/10) Gigabit Ethernet NIC"
 	depends on PCI
 	help
 	  This enables the support for NetXen's Gigabit Ethernet card.
+
+config NIU
+	tristate "Sun Neptune 10Gbit Ethernet support"
+	depends on PCI
+	help
+	  This enables support for cards based upon Sun's
+	  Neptune chipset.
 
 config BNX2X
 	tristate "Broadcom NetXtremeII 10Gb support"
@@ -2946,5 +2946,12 @@ config NETPOLL_TRAP
 
 config NET_POLL_CONTROLLER
 	def_bool NETPOLL
+
+config VIRTIO_NET
+	tristate "Virtio network driver (EXPERIMENTAL)"
+	depends on EXPERIMENTAL && VIRTIO
+	---help---
+	  This is the virtual network driver for virtio.  It can be used with
+          lguest or QEMU based VMMs (like KVM or Xen).  Say Y or M.
 
 endmenu

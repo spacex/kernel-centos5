@@ -372,6 +372,9 @@ static __inline__ int get_dma_residue(unsigned int dmanr)
 	    ? count : (count << 1);
 }
 
+/* We have our own implementation of pci_set_dma_mask() */
+#define HAVE_ARCH_PCI_SET_DMA_MASK
+
 /* These are in kernel/dma.c: */
 
 /* reserve a DMA channel */

@@ -39,9 +39,13 @@
 
 #include <linux/string.h> /* memcpy() */
 
-#ifndef __HYPERVISOR_H__
-# error "please don't include this file directly"
+#ifdef CONFIG_XEN_PV_ON_HVM
+#include <xen/interface/dom0_ops.h>
 #endif
+#include <xen/interface/xen.h>
+#include <xen/interface/sched.h>
+#include <xen/interface/nmi.h>
+#include <linux/errno.h>
 
 #define __STR(x) #x
 #define STR(x) __STR(x)
@@ -294,6 +298,7 @@ HYPERVISOR_physdev_op(
 	int cmd, void *arg)
 {
 	int rc = _hypercall2(int, physdev_op, cmd, arg);
+#ifndef CONFIG_XEN_PV_ON_HVM
 	if (unlikely(rc == -ENOSYS)) {
 		struct physdev_op op;
 		op.cmd = cmd;
@@ -301,6 +306,7 @@ HYPERVISOR_physdev_op(
 		rc = _hypercall1(int, physdev_op_compat, &op);
 		memcpy(arg, &op.u, sizeof(op.u));
 	}
+#endif
 	return rc;
 }
 

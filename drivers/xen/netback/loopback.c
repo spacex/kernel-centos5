@@ -298,9 +298,20 @@ static void __exit clean_loopback(int i)
 static int __init loopback_init(void)
 {
 	int i, err = 0;
+	struct net_device *tmp;
 
-	if (nloopbacks == -1)
-		nloopbacks = is_initial_xendomain() ? 4 : 0;
+	if (nloopbacks == -1) {
+		nloopbacks = 0;
+
+		if (is_initial_xendomain()) {
+			for(i = 1; (tmp = dev_get_by_index(i)); i++) {
+				nloopbacks++;
+				dev_put(tmp);
+			}
+		}
+	}
+
+	nloopbacks = max(nloopbacks, 4);
 
 	for (i = 0; i < nloopbacks; i++)
 		if ((err = make_loopback(i)) != 0)

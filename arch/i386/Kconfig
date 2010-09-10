@@ -1107,7 +1107,14 @@ config XEN_PCIDEV_FE_DEBUG
 	help
 	  Enables some debug statements within the PCI Frontend.
 
+source "drivers/virtio/Kconfig"
+
 source "drivers/pci/pcie/Kconfig"
+
+config PCI_DOMAINS
+	bool "Support multiple PCI domains"
+	depends on PCI
+	default y
 
 source "drivers/pci/Kconfig"
 
@@ -1221,6 +1228,10 @@ source "security/Kconfig"
 source "crypto/Kconfig"
 
 source "drivers/xen/Kconfig"
+
+if !X86_XEN
+source "drivers/xenpv_hvm/Kconfig"
+endif
 
 source "lib/Kconfig"
 

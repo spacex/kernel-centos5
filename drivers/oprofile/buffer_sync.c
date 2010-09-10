@@ -5,6 +5,7 @@
  * @remark Read the file COPYING
  *
  * @author John Levon <levon@movementarian.org>
+ * @author Barry Kasindorf
  *
  * Modified by Aravind Menon for Xen
  * These modifications are:
@@ -37,6 +38,12 @@
 #include "cpu_buffer.h"
 #include "buffer_sync.h"
  
+#ifndef IBS_FETCH_CODE
+/* in case the kernel headers were not patched yet */
+#define IBS_FETCH_CODE			13
+#define IBS_OP_CODE			14
+#endif
+
 static LIST_HEAD(dying_tasks);
 static LIST_HEAD(dead_tasks);
 static cpumask_t marked_cpus = CPU_MASK_NONE;
@@ -275,6 +282,17 @@ static unsigned long lookup_dcookie(struct mm_struct * mm, unsigned long addr, o
 	return cookie;
 }
 
+static void increment_tail(struct oprofile_cpu_buffer *b)
+{
+	unsigned long new_tail = b->tail_pos + 1;
+
+	rmb();	/* be sure fifo pointers are synchromized */
+
+	if (new_tail < b->buffer_size)
+		b->tail_pos = new_tail;
+	else
+		b->tail_pos = 0;
+}
 
 static unsigned long last_cookie = INVALID_COOKIE;
  
@@ -339,6 +357,68 @@ static void add_trace_begin(void)
 	add_event_entry(TRACE_BEGIN_CODE);
 }
 
+/*
+ * Add IBS fetch and op entries to event buffer
+ */
+static void add_ibs_begin(struct oprofile_cpu_buffer *cpu_buf, int code,
+	int in_kernel, struct mm_struct *mm)
+{	
+	unsigned long rip;
+	int i, count;
+	unsigned long ibs_cookie = 0;
+	off_t offset;
+
+	increment_tail(cpu_buf);	/* move to RIP entry */
+
+	rip = ((struct op_sample *)&cpu_buf->buffer[cpu_buf->tail_pos])->eip;
+
+#ifdef __LP64__ 
+	rip += ((struct op_sample *)&cpu_buf->buffer[cpu_buf->tail_pos])->event << 32;
+#endif
+
+	if (mm) {
+		ibs_cookie = lookup_dcookie(mm, rip, &offset);
+
+		if(ibs_cookie == NO_COOKIE)
+		{
+			offset = rip;
+		}
+		if (ibs_cookie == INVALID_COOKIE) {
+			atomic_inc(&oprofile_stats.sample_lost_no_mapping);
+			offset = rip;
+		}
+		if (ibs_cookie != last_cookie) {
+			add_cookie_switch(ibs_cookie);
+			last_cookie = ibs_cookie;
+		}
+	}
+
+	else
+		offset = rip;
+
+	add_event_entry(ESCAPE_CODE);
+	add_event_entry(code);
+	add_event_entry(offset);	/* Offset from Dcookie */
+
+	/* even though we send the Dcookie offset, send the raw Linear Address as well */
+	add_event_entry(
+		((struct op_sample *)&cpu_buf->buffer[cpu_buf->tail_pos])->eip);
+	add_event_entry(
+		((struct op_sample *)&cpu_buf->buffer[cpu_buf->tail_pos])->event);
+
+	if (code == IBS_FETCH_CODE)
+		count = 2;	/*IBS FETCH is 2 int64s long */
+	else
+		count = 5;	/*IBS OP is 5 int64s long */
+
+	for (i = 0; i < count; i++) {
+		increment_tail(cpu_buf);
+		add_event_entry(
+		((struct op_sample *)&cpu_buf->buffer[cpu_buf->tail_pos])->eip);
+		add_event_entry(
+		((struct op_sample *)&cpu_buf->buffer[cpu_buf->tail_pos])->event);
+	}
+}
 
 static void add_sample_entry(unsigned long offset, unsigned long event)
 {
@@ -440,19 +520,6 @@ static unsigned long get_slots(struct oprofile_cpu_buffer * b)
 }
 
 
-static void increment_tail(struct oprofile_cpu_buffer * b)
-{
-	unsigned long new_tail = b->tail_pos + 1;
-
-	rmb();
-
-	if (new_tail < b->buffer_size)
-		b->tail_pos = new_tail;
-	else
-		b->tail_pos = 0;
-}
-
-
 /* Move tasks along towards death. Any tasks on dead_tasks
  * will definitely have no remaining references in any
  * CPU buffers at this point, because we use two lists,
@@ -542,7 +609,7 @@ void sync_buffer(int cpu)
 
 	available = get_slots(cpu_buf);
 
-	for (i = 0; i < available; ++i) {
+	while (get_slots(cpu_buf)) {
 		struct op_sample * s = &cpu_buf->buffer[cpu_buf->tail_pos];
  
 		if (is_code(s->eip) && !domain_switch) {
@@ -556,7 +623,15 @@ void sync_buffer(int cpu)
 				state = sb_bt_start;
 				add_trace_begin();
 			} else if (s->event == CPU_DOMAIN_SWITCH) {
-					domain_switch = 1;				
+					domain_switch = 1;
+ 			} else if (s->event == IBS_FETCH_BEGIN) {
+				state = sb_bt_start;
+ 				add_ibs_begin(cpu_buf,
+ 					IBS_FETCH_CODE, cpu_mode, mm);
+ 			} else if (s->event == IBS_OP_BEGIN) {
+ 				state = sb_bt_start;
+ 				add_ibs_begin(cpu_buf,
+ 					IBS_OP_CODE, cpu_mode, mm);			
 			} else {
 				struct mm_struct * oldmm = mm;
 

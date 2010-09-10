@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2007 QLogic Corporation. All rights reserved.
+ * Copyright (c) 2006, 2007, 2008 QLogic Corporation. All rights reserved.
  * Copyright (c) 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -591,6 +591,10 @@ static int recv_subn_set_portinfo(struct ib_smp *smp,
 		else
 			goto err;
 		ipath_set_linkstate(dd, lstate);
+		if (lstate == IPATH_IB_LINKDOWN_DISABLE) {
+			ret = IB_MAD_RESULT_SUCCESS | IB_MAD_RESULT_CONSUMED;
+			goto done;
+		}
 		ipath_wait_linkstate(dd, IPATH_LINKINIT | IPATH_LINKARMED |
 				IPATH_LINKACTIVE, 1000);
 		break;

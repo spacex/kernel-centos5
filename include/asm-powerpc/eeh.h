@@ -44,6 +44,13 @@ static inline void mmio_read_fixup(const volatile void __iomem *addr)
 
 extern int eeh_subsystem_enabled;
 
+/* Add new of_find_property macro from mainline 2.6.26 include/linux/of.h
+ * Remove when of.h is available
+ */
+#define for_each_child_of_node(parent, child) \
+	for (child = of_get_next_child(parent, NULL); child != NULL; \
+	     child = of_get_next_child(parent, child))
+
 /* Values for eeh_mode bits in device_node */
 #define EEH_MODE_SUPPORTED     (1<<0)
 #define EEH_MODE_NOCHECK       (1<<1)

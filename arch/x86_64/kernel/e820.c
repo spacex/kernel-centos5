@@ -17,6 +17,7 @@
 #include <linux/kexec.h>
 #include <linux/module.h>
 #include <linux/mm.h>
+#include <linux/efi.h>
 
 #include <asm/pgtable.h>
 #include <asm/page.h>
@@ -278,6 +279,7 @@ void __init e820_reserve_resources(void)
 		case E820_RAM:	res->name = "System RAM"; break;
 		case E820_ACPI:	res->name = "ACPI Tables"; break;
 		case E820_NVS:	res->name = "ACPI Non-volatile Storage"; break;
+		case E820_RUNTIME_CODE:	res->name = "EFI runtime code"; break;
 		default:	res->name = "reserved";
 		}
 		res->start = e820.map[i].addr;
@@ -300,7 +302,7 @@ void __init e820_reserve_resources(void)
 }
 
 /* Mark pages corresponding to given address range as nosave */
-static void __init
+void __init
 e820_mark_nosave_range(unsigned long start, unsigned long end)
 {
 	unsigned long pfn, max_pfn;
@@ -383,6 +385,9 @@ void __init e820_print_map(char *who)
 				break;
 		case E820_NVS:
 				printk("(ACPI NVS)\n");
+				break;
+		case E820_RUNTIME_CODE:
+				printk("(runtime code)\n");
 				break;
 		default:	printk("type %u\n", e820.map[i].type);
 				break;
@@ -624,6 +629,8 @@ void __init setup_memory_region(void)
 	 * Otherwise fake a memory map; one section from 0k->640k,
 	 * the next section from 1mb->appropriate_mem_k
 	 */
+	if (efi_enabled)
+		efi_init();
 	sanitize_e820_map(E820_MAP, &E820_MAP_NR);
 	if (copy_e820_map(E820_MAP, E820_MAP_NR) < 0) {
 		unsigned long mem_size;
@@ -651,12 +658,34 @@ void __init parse_memopt(char *p, char **from)
 	end_user_pfn >>= PAGE_SHIFT;	
 } 
 
+static int userdef __initdata;
+
 void __init parse_memmapopt(char *p, char **from)
 {
+	char *oldp;
 	unsigned long long start_at, mem_size;
 
-	mem_size = memparse(p, from);
-	p = *from;
+	if (!strncmp(p, "exactmap", 8)) {
+#ifdef CONFIG_CRASH_DUMP
+		/*
+		 * If we are doing a crash dump, we still need to know
+		 * the real mem size before original memory map is
+		 * reset.
+		 */
+		saved_max_pfn = e820_end_of_ram();
+#endif
+		end_pfn_map = 0;
+		e820.nr_map = 0;
+		userdef = 1;
+		return;
+	}
+
+	oldp = p;
+	mem_size = memparse(p, &p);
+	if (p == oldp)
+		return;
+
+	userdef = 1;
 	if (*p == '@') {
 		start_at = memparse(p+1, from);
 		add_memory_region(start_at, mem_size, E820_RAM);
@@ -670,6 +699,19 @@ void __init parse_memmapopt(char *p, char **from)
 		end_user_pfn = (mem_size >> PAGE_SHIFT);
 	}
 	p = *from;
+}
+
+void __init finish_e820_parsing(void)
+{
+	if (userdef) {
+		char nr = e820.nr_map;
+
+		sanitize_e820_map(e820.map, &nr);
+		e820.nr_map = nr;
+
+		printk(KERN_INFO "user-defined physical RAM map:\n");
+		e820_print_map("user");
+	}
 }
 
 unsigned long pci_mem_start = 0xaeedbabe;

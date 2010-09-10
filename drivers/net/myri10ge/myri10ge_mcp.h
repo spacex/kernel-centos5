@@ -6,23 +6,23 @@
 
 /* 8 Bytes */
 struct mcp_dma_addr {
-	u32 high;
-	u32 low;
+	__be32 high;
+	__be32 low;
 };
 
 /* 4 Bytes */
 struct mcp_slot {
-	u16 checksum;
-	u16 length;
+	__sum16 checksum;
+	__be16 length;
 };
 
 /* 64 Bytes */
 struct mcp_cmd {
-	u32 cmd;
-	u32 data0;		/* will be low portion if data > 32 bits */
+	__be32 cmd;
+	__be32 data0;		/* will be low portion if data > 32 bits */
 	/* 8 */
-	u32 data1;		/* will be high portion if data > 32 bits */
-	u32 data2;		/* currently unused.. */
+	__be32 data1;		/* will be high portion if data > 32 bits */
+	__be32 data2;		/* currently unused.. */
 	/* 16 */
 	struct mcp_dma_addr response_addr;
 	/* 24 */
@@ -31,8 +31,8 @@ struct mcp_cmd {
 
 /* 8 Bytes */
 struct mcp_cmd_response {
-	u32 data;
-	u32 result;
+	__be32 data;
+	__be32 result;
 };
 
 /*
@@ -73,10 +73,10 @@ union mcp_pso_or_cumlen {
 
 /* 16 Bytes */
 struct mcp_kreq_ether_send {
-	u32 addr_high;
-	u32 addr_low;
-	u16 pseudo_hdr_offset;
-	u16 length;
+	__be32 addr_high;
+	__be32 addr_low;
+	__be16 pseudo_hdr_offset;
+	__be16 length;
 	u8 pad;
 	u8 rdma_count;
 	u8 cksum_offset;	/* where to start computing cksum */
@@ -85,13 +85,25 @@ struct mcp_kreq_ether_send {
 
 /* 8 Bytes */
 struct mcp_kreq_ether_recv {
-	u32 addr_high;
-	u32 addr_low;
+	__be32 addr_high;
+	__be32 addr_low;
 };
 
 /* Commands */
 
-#define MXGEFW_CMD_OFFSET 0xf80000
+#define	MXGEFW_BOOT_HANDOFF	0xfc0000
+#define	MXGEFW_BOOT_DUMMY_RDMA	0xfc01c0
+
+#define	MXGEFW_ETH_CMD		0xf80000
+#define	MXGEFW_ETH_SEND_4	0x200000
+#define	MXGEFW_ETH_SEND_1	0x240000
+#define	MXGEFW_ETH_SEND_2	0x280000
+#define	MXGEFW_ETH_SEND_3	0x2c0000
+#define	MXGEFW_ETH_RECV_SMALL	0x300000
+#define	MXGEFW_ETH_RECV_BIG	0x340000
+
+#define	MXGEFW_ETH_SEND(n)		(0x200000 + (((n) & 0x03) * 0x40000))
+#define	MXGEFW_ETH_SEND_OFFSET(n)	(MXGEFW_ETH_SEND(n) - MXGEFW_ETH_SEND_4)
 
 enum myri10ge_mcp_cmd_type {
 	MXGEFW_CMD_NONE = 0,
@@ -154,7 +166,7 @@ enum myri10ge_mcp_cmd_type {
 	MXGEFW_CMD_SET_MTU,
 	MXGEFW_CMD_GET_INTR_COAL_DELAY_OFFSET,	/* in microseconds */
 	MXGEFW_CMD_SET_STATS_INTERVAL,	/* in microseconds */
-	MXGEFW_CMD_SET_STATS_DMA,
+	MXGEFW_CMD_SET_STATS_DMA_OBSOLETE,	/* replaced by SET_STATS_DMA_V2 */
 
 	MXGEFW_ENABLE_PROMISC,
 	MXGEFW_DISABLE_PROMISC,
@@ -168,7 +180,33 @@ enum myri10ge_mcp_cmd_type {
 	 * data2       = RDMA length (MSH), WDMA length (LSH)
 	 * command return data = repetitions (MSH), 0.5-ms ticks (LSH)
 	 */
-	MXGEFW_DMA_TEST
+	MXGEFW_DMA_TEST,
+
+	MXGEFW_ENABLE_ALLMULTI,
+	MXGEFW_DISABLE_ALLMULTI,
+
+	/* returns MXGEFW_CMD_ERROR_MULTICAST
+	 * if there is no room in the cache
+	 * data0,MSH(data1) = multicast group address */
+	MXGEFW_JOIN_MULTICAST_GROUP,
+	/* returns MXGEFW_CMD_ERROR_MULTICAST
+	 * if the address is not in the cache,
+	 * or is equal to FF-FF-FF-FF-FF-FF
+	 * data0,MSH(data1) = multicast group address */
+	MXGEFW_LEAVE_MULTICAST_GROUP,
+	MXGEFW_LEAVE_ALL_MULTICAST_GROUPS,
+
+	MXGEFW_CMD_SET_STATS_DMA_V2,
+	/* data0, data1 = bus addr,
+	 * data2 = sizeof(struct mcp_irq_data) from driver point of view, allows
+	 * adding new stuff to mcp_irq_data without changing the ABI */
+
+	MXGEFW_CMD_UNALIGNED_TEST,
+	/* same than DMA_TEST (same args) but abort with UNALIGNED on unaligned
+	 * chipset */
+
+	MXGEFW_CMD_UNALIGNED_STATUS
+	    /* return data = boolean, true if the chipset is known to be unaligned */
 };
 
 enum myri10ge_mcp_cmd_status {
@@ -180,21 +218,36 @@ enum myri10ge_mcp_cmd_status {
 	MXGEFW_CMD_ERROR_CLOSED,
 	MXGEFW_CMD_ERROR_HASH_ERROR,
 	MXGEFW_CMD_ERROR_BAD_PORT,
-	MXGEFW_CMD_ERROR_RESOURCES
+	MXGEFW_CMD_ERROR_RESOURCES,
+	MXGEFW_CMD_ERROR_MULTICAST,
+	MXGEFW_CMD_ERROR_UNALIGNED
 };
 
-/* 40 Bytes */
-struct mcp_irq_data {
-	u32 send_done_count;
+#define MXGEFW_OLD_IRQ_DATA_LEN 40
 
-	u32 link_up;
-	u32 dropped_link_overflow;
-	u32 dropped_link_error_or_filtered;
-	u32 dropped_runt;
-	u32 dropped_overrun;
-	u32 dropped_no_small_buffer;
-	u32 dropped_no_big_buffer;
-	u32 rdma_tags_available;
+struct mcp_irq_data {
+	/* add new counters at the beginning */
+	__be32 future_use[1];
+	__be32 dropped_pause;
+	__be32 dropped_unicast_filtered;
+	__be32 dropped_bad_crc32;
+	__be32 dropped_bad_phy;
+	__be32 dropped_multicast_filtered;
+	/* 40 Bytes */
+	__be32 send_done_count;
+
+#define MXGEFW_LINK_DOWN 0
+#define MXGEFW_LINK_UP 1
+#define MXGEFW_LINK_MYRINET 2
+#define MXGEFW_LINK_UNKNOWN 3
+	__be32 link_up;
+	__be32 dropped_link_overflow;
+	__be32 dropped_link_error_or_filtered;
+	__be32 dropped_runt;
+	__be32 dropped_overrun;
+	__be32 dropped_no_small_buffer;
+	__be32 dropped_no_big_buffer;
+	__be32 rdma_tags_available;
 
 	u8 tx_stopped;
 	u8 link_down;

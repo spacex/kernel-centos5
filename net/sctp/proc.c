@@ -286,8 +286,10 @@ static void * sctp_assocs_seq_start(struct seq_file *seq, loff_t *pos)
 		*pos = 0;
 
 	if (*pos == 0)
-		seq_printf(seq, " ASSOC     SOCK   STY SST ST HBKT ASSOC-ID TX_QUEUE RX_QUEUE UID INODE LPORT "
-				"RPORT LADDRS <-> RADDRS\n");
+		seq_printf(seq, " ASSOC     SOCK   STY SST ST HBKT "
+				"ASSOC-ID TX_QUEUE RX_QUEUE UID INODE LPORT "
+				"RPORT LADDRS <-> RADDRS "
+				"HBINT INS OUTS MAXRT T1X T2X RTXC\n");
 
 	return (void *)pos;
 }
@@ -325,9 +327,11 @@ static int sctp_assocs_seq_show(struct seq_file *seq, void *v)
 		assoc = sctp_assoc(epb);
 		sk = epb->sk;
 		seq_printf(seq,
-			   "%8p %8p %-3d %-3d %-2d %-4d %4d %8d %8d %7d %5lu %-5d %5d ",
+			   "%8p %8p %-3d %-3d %-2d %-4d "
+			   "%4d %8d %8d %7d %5lu %-5d %5d ",
 			   assoc, sk, sctp_sk(sk)->type, sk->sk_state,
-			   assoc->state, hash, assoc->assoc_id,
+			   assoc->state, hash,
+			   assoc->assoc_id,
 			   (sk->sk_rcvbuf - assoc->rwnd),
 			   assoc->sndbuf_used,
 			   sock_i_uid(sk), sock_i_ino(sk),
@@ -338,6 +342,12 @@ static int sctp_assocs_seq_show(struct seq_file *seq, void *v)
 		sctp_seq_dump_local_addrs(seq, epb);
 		seq_printf(seq, "<-> ");
 		sctp_seq_dump_remote_addrs(seq, assoc);
+		seq_printf(seq, "\t%8lu %5d %5d %4d %4d %4d %8d",
+			assoc->hbinterval, assoc->c.sinit_max_instreams,
+			assoc->c.sinit_num_ostreams, assoc->max_retrans,
+			assoc->init_retries, assoc->shutdown_retries,
+			assoc->rtx_data_chunks);
+
 		seq_printf(seq, "\n");
 	}
 	read_unlock(&head->lock);
@@ -384,4 +394,145 @@ int __init sctp_assocs_proc_init(void)
 void sctp_assocs_proc_exit(void)
 {
 	remove_proc_entry("assocs", proc_net_sctp);
+}
+
+static void *sctp_remaddr_seq_start(struct seq_file *seq, loff_t *pos)
+{
+	if (*pos >= sctp_assoc_hashsize)
+		return NULL;
+
+	if (*pos < 0)
+		*pos = 0;
+
+	if (*pos == 0)
+		seq_printf(seq, "ADDR ASSOC_ID HB_ACT RTO MAX_PATH_RTX "
+				"REM_ADDR_RTX  START\n");
+
+	return (void *)pos;
+}
+
+static void *sctp_remaddr_seq_next(struct seq_file *seq, void *v, loff_t *pos)
+{
+	if (++*pos >= sctp_assoc_hashsize)
+		return NULL;
+
+	return pos;
+}
+
+static void sctp_remaddr_seq_stop(struct seq_file *seq, void *v)
+{
+	return;
+}
+
+static int sctp_remaddr_seq_show(struct seq_file *seq, void *v)
+{
+	struct sctp_hashbucket *head;
+	struct sctp_ep_common *epb;
+	struct sctp_association *assoc;
+	struct hlist_node *node;
+	struct sctp_transport *tsp;
+	int    hash = *(loff_t *)v;
+
+	if (hash >= sctp_assoc_hashsize)
+		return -ENOMEM;
+
+	head = &sctp_assoc_hashtable[hash];
+	sctp_local_bh_disable();
+	read_lock(&head->lock);
+	for (epb = head->chain; epb; epb = epb->next) {
+		assoc = sctp_assoc(epb);
+		list_for_each_entry(tsp, &assoc->peer.transport_addr_list,
+					transports) {
+			/*
+			 * The remote address (ADDR)
+			 */
+			tsp->af_specific->seq_dump_addr(seq, &tsp->ipaddr);
+			seq_printf(seq, " ");
+
+			/*
+			 * The association ID (ASSOC_ID)
+			 */
+			seq_printf(seq, "%d ", tsp->asoc->assoc_id);
+
+			/*
+			 * If the Heartbeat is active (HB_ACT)
+			 * Note: 1 = Active, 0 = Inactive
+			 */
+			seq_printf(seq, "%d ", timer_pending(&tsp->hb_timer));
+
+			/*
+			 * Retransmit time out (RTO)
+			 */
+			seq_printf(seq, "%lu ", tsp->rto);
+
+			/*
+			 * Maximum path retransmit count (PATH_MAX_RTX)
+			 */
+			seq_printf(seq, "%d ", tsp->pathmaxrxt);
+
+			/*
+			 * remote address retransmit count (REM_ADDR_RTX)
+			 * Note: We don't have a way to tally this at the moment
+			 * so lets just leave it as zero for the moment
+			 */
+			seq_printf(seq, "0 ");
+
+			/*
+			 * remote address start time (START).  This is also not
+			 * currently implemented, but we can record it with a
+			 * jiffies marker in a subsequent patch
+			 */
+			seq_printf(seq, "0");
+
+			seq_printf(seq, "\n");
+		}
+	}
+
+	read_unlock(&head->lock);
+	sctp_local_bh_enable();
+
+	return 0;
+
+}
+
+static struct seq_operations sctp_remaddr_ops = {
+	.start = sctp_remaddr_seq_start,
+	.next  = sctp_remaddr_seq_next,
+	.stop  = sctp_remaddr_seq_stop,
+	.show  = sctp_remaddr_seq_show,
+};
+
+/* Cleanup the proc fs entry for 'remaddr' object. */
+void sctp_remaddr_proc_exit(void)
+{
+	remove_proc_entry("remaddr", proc_net_sctp);
+}
+
+static int sctp_remaddr_seq_open(struct inode *inode, struct file *file)
+{
+	return seq_open(file, &sctp_remaddr_ops);
+}
+
+static const struct file_operations sctp_remaddr_seq_fops = {
+	.open = sctp_remaddr_seq_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = seq_release,
+};
+
+int __init sctp_remaddr_proc_init(void)
+{
+	struct proc_dir_entry *p;
+
+	p = create_proc_entry("remaddr", S_IRUGO, proc_net_sctp);
+	if (!p)
+		return -ENOMEM;
+	p->proc_fops = &sctp_remaddr_seq_fops;
+
+	return 0;
+}
+
+void sctp_assoc_proc_exit(void)
+{
+	remove_proc_entry("remaddr", proc_net_sctp);
 }

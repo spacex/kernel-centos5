@@ -317,6 +317,7 @@ static inline int inode_doinit(struct inode *inode)
 }
 
 enum {
+	Opt_error = -1,
 	Opt_context = 1,
 	Opt_fscontext = 2,
 	Opt_defcontext = 4,
@@ -328,6 +329,7 @@ static match_table_t tokens = {
 	{Opt_fscontext, "fscontext=%s"},
 	{Opt_defcontext, "defcontext=%s"},
 	{Opt_rootcontext, "rootcontext=%s"},
+	{Opt_error, NULL},
 };
 
 #define SEL_MOUNT_FAIL_MSG "SELinux:  duplicate or incompatible mount options\n"
@@ -1573,7 +1575,7 @@ static int selinux_syslog(int type)
  * Do not audit the selinux permission check, as this is applied to all
  * processes that allocate mappings.
  */
-static int selinux_vm_enough_memory(long pages)
+static int selinux_vm_enough_memory_mm(struct mm_struct *mm, long pages)
 {
 	int rc, cap_sys_admin = 0;
 	struct task_security_struct *tsec = current->security;
@@ -1588,7 +1590,12 @@ static int selinux_vm_enough_memory(long pages)
 	if (rc == 0)
 		cap_sys_admin = 1;
 
-	return __vm_enough_memory(pages, cap_sys_admin);
+	return __vm_enough_memory(mm, pages, cap_sys_admin);
+}
+
+static int selinux_vm_enough_memory(long pages)
+{
+	return selinux_vm_enough_memory_mm(current->mm, pages);
 }
 
 /* binprm security operations */
@@ -4655,6 +4662,7 @@ static struct security_operations selinux_ops = {
 	.quota_on =			selinux_quota_on,
 	.syslog =			selinux_syslog,
 	.vm_enough_memory =		selinux_vm_enough_memory,
+	.vm_enough_memory_mm =		selinux_vm_enough_memory_mm,
 
 	.netlink_send =			selinux_netlink_send,
         .netlink_recv =			selinux_netlink_recv,

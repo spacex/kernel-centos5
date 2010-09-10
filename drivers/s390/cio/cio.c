@@ -522,6 +522,7 @@ cio_validate_subchannel (struct subchannel *sch, struct subchannel_id schid)
 
 	spin_lock_init(&sch->lock);
 	mutex_init(&sch->reg_mutex);
+	INIT_WORK(&sch->kick_work, NULL, NULL);
 
 	/* Set a name for the subchannel */
 	snprintf (sch->dev.bus_id, BUS_ID_SIZE, "0.%x.%04x", schid.ssid,

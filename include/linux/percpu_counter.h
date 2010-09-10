@@ -39,6 +39,7 @@ static inline void percpu_counter_destroy(struct percpu_counter *fbc)
 }
 
 void percpu_counter_mod(struct percpu_counter *fbc, s32 amount);
+void percpu_counter_mod64(struct percpu_counter *fbc, s64 amount);
 s64 percpu_counter_sum(struct percpu_counter *fbc);
 
 static inline s64 percpu_counter_read(struct percpu_counter *fbc)
@@ -84,6 +85,14 @@ percpu_counter_mod(struct percpu_counter *fbc, s32 amount)
 	preempt_enable();
 }
 
+static inline void
+percpu_counter_mod64(struct percpu_counter *fbc, s64 amount)
+{
+	preempt_disable();
+	fbc->count += amount;
+	preempt_enable();
+}
+
 static inline s64 percpu_counter_read(struct percpu_counter *fbc)
 {
 	return fbc->count;
@@ -109,6 +118,16 @@ static inline void percpu_counter_inc(struct percpu_counter *fbc)
 static inline void percpu_counter_dec(struct percpu_counter *fbc)
 {
 	percpu_counter_mod(fbc, -1);
+}
+
+static inline void percpu_counter_add(struct percpu_counter *fbc, s64 amount)
+{
+	percpu_counter_mod64(fbc, amount);
+}
+
+static inline void percpu_counter_sub(struct percpu_counter *fbc, s64 amount)
+{
+	percpu_counter_mod64(fbc, -amount);
 }
 
 #endif /* _LINUX_PERCPU_COUNTER_H */

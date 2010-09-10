@@ -22,7 +22,21 @@ static DEFINE_PER_CPU(unsigned long, print_timestamp);
 static DEFINE_PER_CPU(struct task_struct *, watchdog_task);
 
 static int did_panic = 0;
-int softlockup_thresh = 10;
+unsigned long softlockup_thresh = 10;
+
+/*
+ * Should we panic (and reboot, if panic_timeout= is set) when a
+ * soft-lockup occurs:
+ */
+unsigned int __read_mostly softlockup_panic = 0;
+
+static int __init softlockup_panic_setup(char *str)
+{
+	softlockup_panic = simple_strtoul(str, NULL, 0);
+
+	return 1;
+}
+__setup("softlockup_panic=", softlockup_panic_setup);
 
 static int
 softlock_panic(struct notifier_block *this, unsigned long event, void *ptr)
@@ -117,6 +131,8 @@ void softlockup_tick(struct pt_regs *regs)
 		dump_stack();
 	spin_unlock(&print_lock);
 
+	if (softlockup_panic)
+		panic("softlockup: hung tasks");
 }
 
 /*

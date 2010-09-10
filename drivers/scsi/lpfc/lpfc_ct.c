@@ -437,7 +437,7 @@ lpfc_ns_rsp(struct lpfc_vport *vport, struct lpfc_dmabuf *mp, uint32_t Size)
 				    (!(vport->ct_flags & FC_CT_RFF_ID)) ||
 				    (!vport->cfg_restrict_login)) {
 					ndlp = lpfc_setup_disc_node(vport, Did);
-					if (ndlp) {
+					if (ndlp && NLP_CHK_NODE_ACT(ndlp)) {
 						lpfc_debugfs_disc_trc(vport,
 						LPFC_DISC_TRC_CT,
 						"Parse GID_FTrsp: "
@@ -763,7 +763,7 @@ lpfc_cmpl_ct_cmd_gff_id(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 
 	/* This is a target port, unregistered port, or the GFF_ID failed */
 	ndlp = lpfc_setup_disc_node(vport, did);
-	if (ndlp) {
+	if (ndlp && NLP_CHK_NODE_ACT(ndlp)) {
 		lpfc_printf_vlog(vport, KERN_INFO, LOG_DISCOVERY,
 				 "0242 Process x%x GFF "
 				 "NameServer Rsp Data: x%x x%x x%x\n",
@@ -860,7 +860,7 @@ lpfc_cmpl_ct(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 
 		retry++;
 		lpfc_printf_vlog(vport, KERN_INFO, LOG_DISCOVERY,
-				 "0216 Retrying NS cmd %x\n", cmdcode);
+				 "0250 Retrying NS cmd %x\n", cmdcode);
 		rc = lpfc_ns_cmd(vport, cmdcode, retry, 0);
 		if (rc == 0)
 			goto out;
@@ -989,7 +989,7 @@ lpfc_cmpl_ct_cmd_rff_id(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 	return;
 }
 
-static int
+int
 lpfc_vport_symbolic_port_name(struct lpfc_vport *vport, char *symbol,
 	size_t size)
 {
@@ -1678,20 +1678,18 @@ lpfc_fdmi_tmo(unsigned long ptr)
 {
 	struct lpfc_vport *vport = (struct lpfc_vport *)ptr;
 	struct lpfc_hba   *phba = vport->phba;
+	uint32_t tmo_posted;
 	unsigned long iflag;
 
 	spin_lock_irqsave(&vport->work_port_lock, iflag);
-	if (!(vport->work_port_events & WORKER_FDMI_TMO)) {
+	tmo_posted = vport->work_port_events & WORKER_FDMI_TMO;
+	if (!tmo_posted)
 		vport->work_port_events |= WORKER_FDMI_TMO;
-		spin_unlock_irqrestore(&vport->work_port_lock, iflag);
+	spin_unlock_irqrestore(&vport->work_port_lock, iflag);
 
-		spin_lock_irqsave(&phba->hbalock, iflag);
-		if (phba->work_wait)
-			lpfc_worker_wake_up(phba);
-		spin_unlock_irqrestore(&phba->hbalock, iflag);
-	}
-	else
-		spin_unlock_irqrestore(&vport->work_port_lock, iflag);
+	if (!tmo_posted)
+		lpfc_worker_wake_up(phba);
+	return;
 }
 
 void

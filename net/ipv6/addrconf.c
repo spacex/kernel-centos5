@@ -131,6 +131,7 @@ static void addrconf_leave_anycast(struct inet6_ifaddr *ifp);
 
 static int addrconf_ifdown(struct net_device *dev, int how);
 
+static int ipv6_generate_eui64(u8 *eui, struct net_device *dev);
 static void addrconf_dad_start(struct inet6_ifaddr *ifp, u32 flags);
 static void addrconf_dad_timer(unsigned long data);
 static void addrconf_dad_completed(struct inet6_ifaddr *ifp);
@@ -176,6 +177,11 @@ struct ipv6_devconf ipv6_devconf = {
 #endif
 };
 
+struct ipv6_devconf_extensions ipv6_devconf_extensions = {
+	.disable_ipv6 = 0,
+	.accept_dad = 1,
+};
+
 static struct ipv6_devconf ipv6_devconf_dflt = {
 	.forwarding		= 0,
 	.hop_limit		= IPV6_DEFAULT_HOPLIMIT,
@@ -206,12 +212,15 @@ static struct ipv6_devconf ipv6_devconf_dflt = {
 #endif
 };
 
+static struct ipv6_devconf_extensions ipv6_devconf_extensions_dflt = {
+	.disable_ipv6		= 0,
+	.accept_dad		= 1,
+};
+
 int sysctl_ip6_odad = 0;
 
 /* IPv6 Wildcard Address and Loopback Address defined by RFC2553 */
-#if 0
 const struct in6_addr in6addr_any = IN6ADDR_ANY_INIT;
-#endif
 const struct in6_addr in6addr_loopback = IN6ADDR_LOOPBACK_INIT;
 
 #define IPV6_ADDR_SCOPE_TYPE(scope)	((scope) << 16)
@@ -347,6 +356,7 @@ static struct inet6_dev * ipv6_add_dev(struct net_device *dev)
 {
 	struct inet6_dev *ndev;
 	struct in6_addr maddr;
+	struct net_device_extended *ext = dev_extended(dev);
 
 	ASSERT_RTNL();
 
@@ -361,6 +371,10 @@ static struct inet6_dev * ipv6_add_dev(struct net_device *dev)
 	rwlock_init(&ndev->lock);
 	ndev->dev = dev;
 	memcpy(&ndev->cnf, &ipv6_devconf_dflt, sizeof(ndev->cnf));
+	if (ext != NULL) {
+		memcpy(&ext->ipv6_devconf_ext, &ipv6_devconf_extensions_dflt,
+			sizeof(ext->ipv6_devconf_ext));
+	}
 	ndev->cnf.mtu6 = dev->mtu;
 	ndev->cnf.sysctl = NULL;
 	ndev->nd_parms = neigh_parms_alloc(dev, &nd_tbl);
@@ -395,6 +409,9 @@ static struct inet6_dev * ipv6_add_dev(struct net_device *dev)
 	 * we invoke __ipv6_regen_rndid().
 	 */
 	in6_dev_hold(ndev);
+
+	if (ext && (dev->flags & (IFF_NOARP | IFF_LOOPBACK)))
+		ext->ipv6_devconf_ext.accept_dad = -1;
 
 #ifdef CONFIG_IPV6_PRIVACY
 	init_timer(&ndev->regen_timer);
@@ -909,35 +926,6 @@ static int inline ipv6_saddr_preferred(int type)
 	return 0;
 }
 
-/* static matching label */
-static int inline ipv6_saddr_label(const struct in6_addr *addr, int type)
-{
- /*
-  * 	prefix (longest match)	label
-  * 	-----------------------------
-  * 	::1/128			0
-  * 	::/0			1
-  * 	2002::/16		2
-  * 	::/96			3
-  * 	::ffff:0:0/96		4
-  *	fc00::/7		5
-  * 	2001::/32		6
-  */
-	if (type & IPV6_ADDR_LOOPBACK)
-		return 0;
-	else if (type & IPV6_ADDR_COMPATv4)
-		return 3;
-	else if (type & IPV6_ADDR_MAPPED)
-		return 4;
-	else if (addr->s6_addr32[0] == htonl(0x20010000))
-		return 6;
-	else if (addr->s6_addr16[0] == htons(0x2002))
-		return 2;
-	else if ((addr->s6_addr[0] & 0xfe) == 0xfc)
-		return 5;
-	return 1;
-}
-
 int ipv6_dev_get_saddr(struct net_device *daddr_dev,
 		       struct in6_addr *daddr, struct in6_addr *saddr)
 {
@@ -945,7 +933,8 @@ int ipv6_dev_get_saddr(struct net_device *daddr_dev,
 	struct inet6_ifaddr *ifa_result = NULL;
 	int daddr_type = __ipv6_addr_type(daddr);
 	int daddr_scope = __ipv6_addr_src_scope(daddr_type);
-	u32 daddr_label = ipv6_saddr_label(daddr, daddr_type);
+	int daddr_ifindex = daddr_dev ? daddr_dev->ifindex : 0;
+	u32 daddr_label = ipv6_addr_label(daddr, daddr_type, daddr_ifindex);
 	struct net_device *dev;
 
 	memset(&hiscore, 0, sizeof(hiscore));
@@ -1100,11 +1089,15 @@ int ipv6_dev_get_saddr(struct net_device *daddr_dev,
 
 			/* Rule 6: Prefer matching label */
 			if (hiscore.rule < 6) {
-				if (ipv6_saddr_label(&ifa_result->addr, hiscore.addr_type) == daddr_label)
+				if (ipv6_addr_label(&ifa_result->addr,
+						    hiscore.addr_type,
+						    ifa_result->idev->dev->ifindex) == daddr_label)
 					hiscore.attrs |= IPV6_SADDR_SCORE_LABEL;
 				hiscore.rule++;
 			}
-			if (ipv6_saddr_label(&ifa->addr, score.addr_type) == daddr_label) {
+			if (ipv6_addr_label(&ifa->addr,
+					    score.addr_type,
+					    ifa->idev->dev->ifindex) == daddr_label) {
 				score.attrs |= IPV6_SADDR_SCORE_LABEL;
 				if (!(hiscore.attrs & IPV6_SADDR_SCORE_LABEL)) {
 					score.rule = 6;
@@ -1339,6 +1332,25 @@ static void addrconf_dad_stop(struct inet6_ifaddr *ifp)
 
 void addrconf_dad_failure(struct inet6_ifaddr *ifp)
 {
+	struct inet6_dev *idev = ifp->idev;
+	struct net_device_extended *ext;
+
+	ext = (idev->dev == NULL) ? NULL : dev_extended(idev->dev);
+
+	if (ext && ext->ipv6_devconf_ext.accept_dad > 1 && 
+	    !ext->ipv6_devconf_ext.disable_ipv6) {
+		struct in6_addr addr;
+
+		addr.s6_addr32[0] = htonl(0xfe800000);
+		addr.s6_addr32[1] = 0;
+
+		if (!ipv6_generate_eui64(addr.s6_addr + 8, idev->dev) &&
+		    ipv6_addr_equal(&ifp->addr, &addr)) {
+			/* DAD failed for link-local based on MAC address */
+			ext->ipv6_devconf_ext.disable_ipv6 = 1;
+		}
+	}
+
 	if (net_ratelimit())
 		printk(KERN_INFO "%s: duplicate address detected!\n", ifp->idev->dev->name);
 	addrconf_dad_stop(ifp);
@@ -2268,6 +2280,9 @@ static int addrconf_notify(struct notifier_block *this, unsigned long event,
 	switch(event) {
 	case NETDEV_UP:
 	case NETDEV_CHANGE:
+		if (dev->flags & IFF_SLAVE)
+			break;
+
 		if (event == NETDEV_UP) {
 			if (!netif_carrier_ok(dev)) {
 				/* device is not ready yet. */
@@ -2620,12 +2635,21 @@ static void addrconf_dad_timer(unsigned long data)
 	struct inet6_dev *idev = ifp->idev;
 	struct in6_addr unspec;
 	struct in6_addr mcaddr;
+	struct net_device_extended *ext = (idev == NULL) ? NULL : dev_extended(idev->dev);
 
 	read_lock_bh(&idev->lock);
 	if (idev->dead) {
 		read_unlock_bh(&idev->lock);
 		goto out;
 	}
+
+	if (ext && ext->ipv6_devconf_ext.accept_dad > 1 &&
+	    ext->ipv6_devconf_ext.disable_ipv6) {
+		read_unlock_bh(&idev->lock);
+		addrconf_dad_failure(ifp);
+		return;
+	}
+
 	spin_lock_bh(&ifp->lock);
 	if (ifp->probes == 0) {
 		/*
@@ -3371,7 +3395,7 @@ static void inet6_ifa_notify(int event, struct inet6_ifaddr *ifa)
 	netlink_broadcast(rtnl, skb, 0, RTNLGRP_IPV6_IFADDR, GFP_ATOMIC);
 }
 
-static void inline ipv6_store_devconf(struct ipv6_devconf *cnf,
+static void inline ipv6_store_devconf(struct ipv6_devconf *cnf, struct ipv6_devconf_extensions *xcnf,
 				__s32 *array, int bytes)
 {
 	memset(array, 0, bytes);
@@ -3403,6 +3427,10 @@ static void inline ipv6_store_devconf(struct ipv6_devconf *cnf,
 	array[DEVCONF_ACCEPT_RA_RT_INFO_MAX_PLEN] = cnf->accept_ra_rt_info_max_plen;
 #endif
 #endif
+	if (xcnf) {
+		array[DEVCONF_DISABLE_IPV6] = xcnf->disable_ipv6;
+		array[DEVCONF_ACCEPT_DAD] = xcnf->accept_dad;
+	}
 }
 
 /* Maximum length of ifinfomsg attributes */
@@ -3427,6 +3455,8 @@ static int inet6_fill_ifinfo(struct sk_buff *skb, struct inet6_dev *idev,
 	struct rtattr		*subattr;
 	__u32			mtu = dev->mtu;
 	struct ifla_cacheinfo	ci;
+	struct net_device_extended *ext = (dev == NULL) ? NULL : dev_extended(dev);
+	struct ipv6_devconf_extensions *xcnf = (ext == NULL) ? NULL : &ext->ipv6_devconf_ext;
 
 	nlh = NLMSG_NEW(skb, pid, seq, event, sizeof(*r), flags);
 	r = NLMSG_DATA(nlh);
@@ -3464,7 +3494,7 @@ static int inet6_fill_ifinfo(struct sk_buff *skb, struct inet6_dev *idev,
 	/* return the device sysctl params */
 	if ((array = kmalloc(DEVCONF_MAX * sizeof(*array), GFP_ATOMIC)) == NULL)
 		goto rtattr_failure;
-	ipv6_store_devconf(&idev->cnf, array, DEVCONF_MAX * sizeof(*array));
+	ipv6_store_devconf(&idev->cnf, xcnf, array, DEVCONF_MAX * sizeof(*array));
 	RTA_PUT(skb, IFLA_INET6_CONF, DEVCONF_MAX * sizeof(*array), array);
 
 	/* XXX - Statistics/MC not implemented */
@@ -3605,6 +3635,10 @@ static struct rtnetlink_link inet6_rtnetlink_table[RTM_NR_MSGTYPES] = {
 #ifdef CONFIG_IPV6_MULTIPLE_TABLES
 	[RTM_GETRULE  - RTM_BASE] = { .dumpit   = fib6_rules_dump,   },
 #endif
+	[RTM_NEWADDRLABEL - RTM_BASE] = { .doit = ip6addrlbl_newdel, },
+	[RTM_DELADDRLABEL - RTM_BASE] = { .doit = ip6addrlbl_newdel, },
+	[RTM_GETADDRLABEL - RTM_BASE] = { .doit = ip6addrlbl_get,
+					  .dumpit = ip6addrlbl_dump, },
 };
 
 static void __ipv6_ifa_notify(int event, struct inet6_ifaddr *ifp)
@@ -3832,6 +3866,22 @@ static struct addrconf_sysctl_table
 			.mode		=	0644,
          		.proc_handler	=	&proc_dointvec,
 		},
+		{
+			.ctl_name	=	NET_IPV6_DISABLE,
+			.procname	=	"disable_ipv6",
+			.data		=	&ipv6_devconf_extensions.disable_ipv6,
+			.maxlen		=	sizeof(int),
+			.mode		=	0644,
+			.proc_handler	=	&proc_dointvec,
+		},
+		{
+			.ctl_name	=	NET_IPV6_ACCEPT_DAD,
+			.procname	=	"accept_dad",
+			.data		=	&ipv6_devconf_extensions.accept_dad,
+			.maxlen		=	sizeof(int),
+			.mode		=	0644,
+			.proc_handler	=	&proc_dointvec,
+		},
 #ifdef CONFIG_IPV6_PRIVACY
 		{
 			.ctl_name	=	NET_IPV6_USE_TEMPADDR,
@@ -3982,6 +4032,8 @@ static void addrconf_sysctl_register(struct inet6_dev *idev, struct ipv6_devconf
 	int i;
 	struct net_device *dev = idev ? idev->dev : NULL;
 	struct addrconf_sysctl_table *t;
+	struct net_device_extended *ext;
+	struct ipv6_devconf_extensions *dext;
 	char *dev_name = NULL;
 
 	t = kmalloc(sizeof(*t), GFP_KERNEL);
@@ -3989,9 +4041,44 @@ static void addrconf_sysctl_register(struct inet6_dev *idev, struct ipv6_devconf
 		return;
 	memcpy(t, &addrconf_sysctl, sizeof(*t));
 	for (i=0; t->addrconf_vars[i].data; i++) {
-		t->addrconf_vars[i].data += (char*)p - (char*)&ipv6_devconf;
-		t->addrconf_vars[i].de = NULL;
-		t->addrconf_vars[i].extra1 = idev; /* embedded; no ref */
+		if (t->addrconf_vars[i].ctl_name <= NET_IPV6_SYSCTL_EXTENDED_BOUNDARY) {
+			t->addrconf_vars[i].data += (char*)p - (char*)&ipv6_devconf;
+			t->addrconf_vars[i].de = NULL;
+			t->addrconf_vars[i].extra1 = idev; /* embedded; no ref */
+		} else {
+			ext = (dev == NULL) ? NULL : dev_extended(dev);
+			if (ext == NULL) {
+				dext = &ipv6_devconf_extensions_dflt;
+				if (p != &ipv6_devconf_dflt)
+					/*
+					 * We're registering an interface here that 
+					 * doesn't have an extended segment, so we
+					 * register the extra sysctls, but we give them
+					 * no permissions so that we can't write to them
+					 */
+					t->addrconf_vars[i].mode = 0444;
+			} else
+				dext = &ext->ipv6_devconf_ext;
+
+			if (dext == NULL)
+				continue;
+			/*
+			 * Common settings for the extensions
+			 */
+			t->addrconf_vars[i].de = NULL;
+			t->addrconf_vars[i].extra1 = idev;
+			switch (t->addrconf_vars[i].ctl_name) {
+			case NET_IPV6_DISABLE:
+				t->addrconf_vars[i].data = &dext->disable_ipv6;
+				break;
+			case NET_IPV6_ACCEPT_DAD:
+				t->addrconf_vars[i].data = &dext->accept_dad;
+				break;
+			default:
+				BUG();
+			}
+		}
+
 	}
 	if (dev) {
 		dev_name = dev->name; 
@@ -4071,7 +4158,13 @@ int unregister_inet6addr_notifier(struct notifier_block *nb)
 
 int __init addrconf_init(void)
 {
-	int err = 0;
+	int err;
+
+	if ((err = ipv6_addr_label_init()) < 0) {
+		printk(KERN_CRIT "IPv6 Addrconf: cannot initialize default policy table: %d.\n",
+			err);
+		return err;
+	}
 
 	/* The addrconf netdev notifier requires that loopback_dev
 	 * has it's ipv6 private information allocated and setup
@@ -4104,6 +4197,7 @@ int __init addrconf_init(void)
 
 	addrconf_verify(0);
 	rtnetlink_links[PF_INET6] = inet6_rtnetlink_table;
+
 #ifdef CONFIG_SYSCTL
 	addrconf_sysctl.sysctl_header =
 		register_sysctl_table(addrconf_sysctl.addrconf_root_dir, 0);

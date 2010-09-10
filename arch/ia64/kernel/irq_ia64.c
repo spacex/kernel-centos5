@@ -41,6 +41,7 @@
 #include <asm/machvec.h>
 #include <asm/pgtable.h>
 #include <asm/system.h>
+#include <asm/tlbflush.h>
 
 #ifdef CONFIG_PERFMON
 # include <asm/perfmon.h>
@@ -124,8 +125,10 @@ reserve_irq_vector (int vector)
 
 #ifdef CONFIG_SMP
 #	define IS_RESCHEDULE(vec)	(vec == IA64_IPI_RESCHEDULE)
+#	define IS_LOCAL_TLB_FLUSH(vec)	(vec == IA64_IPI_LOCAL_TLB_FLUSH)
 #else
 #	define IS_RESCHEDULE(vec)	(0)
+#	define IS_LOCAL_TLB_FLUSH(vec)	(0)
 #endif
 /*
  * That's where the IVT branches when we get an external
@@ -176,7 +179,10 @@ ia64_handle_irq (ia64_vector vector, struct pt_regs *regs)
 	saved_tpr = ia64_getreg(_IA64_REG_CR_TPR);
 	ia64_srlz_d();
 	while (vector != IA64_SPURIOUS_INT_VECTOR) {
-		if (!IS_RESCHEDULE(vector)) {
+		if (IS_LOCAL_TLB_FLUSH(vector)) {
+			smp_local_flush_tlb();
+			kstat_this_cpu.irqs[vector]++;
+		} else if (!IS_RESCHEDULE(vector)) {
 			ia64_setreg(_IA64_REG_CR_TPR, vector);
 			ia64_srlz_d();
 
@@ -220,7 +226,9 @@ void ia64_process_pending_intr(void)
 	  * Perform normal interrupt style processing
 	  */
 	while (vector != IA64_SPURIOUS_INT_VECTOR) {
-		if (!IS_RESCHEDULE(vector)) {
+		if (IS_LOCAL_TLB_FLUSH(vector))
+			smp_local_flush_tlb();
+		else if (!IS_RESCHEDULE(vector)) {
 			ia64_setreg(_IA64_REG_CR_TPR, vector);
 			ia64_srlz_d();
 
@@ -249,6 +257,16 @@ void ia64_process_pending_intr(void)
 
 #ifdef CONFIG_SMP
 extern irqreturn_t handle_IPI (int irq, void *dev_id, struct pt_regs *regs);
+static irqreturn_t dummy_handler (int irq, void *dev_id, struct pt_regs *regs)
+{
+	BUG();
+}
+
+static struct irqaction tlb_irqaction = {
+	.handler =	dummy_handler,
+	.flags =	SA_INTERRUPT,
+	.name =		"tlb_flush"
+};
 
 static struct irqaction ipi_irqaction = {
 	.handler =	handle_IPI,
@@ -554,6 +572,7 @@ init_IRQ (void)
 	register_percpu_irq(IA64_SPURIOUS_INT_VECTOR, NULL);
 #ifdef CONFIG_SMP
 	register_percpu_irq(IA64_IPI_VECTOR, &ipi_irqaction);
+	register_percpu_irq(IA64_IPI_LOCAL_TLB_FLUSH, &tlb_irqaction);
 #endif
 #ifdef CONFIG_PERFMON
 	pfm_init_percpu();
@@ -567,6 +586,7 @@ ia64_send_ipi (int cpu, int vector, int delivery_mode, int redirect)
 	void __iomem *ipi_addr;
 	unsigned long ipi_data;
 	unsigned long phys_cpu_id;
+	extern void xen_send_ipi (int cpu, int vec);
 
 #ifdef CONFIG_XEN
         if (is_running_on_xen()) {
@@ -575,7 +595,6 @@ ia64_send_ipi (int cpu, int vector, int delivery_mode, int redirect)
 #ifdef CONFIG_SMP
 		/* TODO: we need to call vcpu_up here */
 		if (unlikely(vector == ap_wakeup_vector)) {
-			extern void xen_send_ipi (int cpu, int vec);
 			xen_send_ipi (cpu, vector);
 			//vcpu_prepare_and_up(cpu);
 			return;
@@ -595,6 +614,9 @@ ia64_send_ipi (int cpu, int vector, int delivery_mode, int redirect)
 		case IA64_CPEP_VECTOR:
 			irq = per_cpu(ipi_to_irq, cpu)[CPEP_VECTOR];
 			break;
+		case IA64_TIMER_VECTOR:
+			xen_send_ipi(cpu,vector);
+			return;
 		default:
 			printk(KERN_WARNING "Unsupported IPI type 0x%x\n",
 			       vector);

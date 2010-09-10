@@ -55,7 +55,7 @@ void mlx4_qp_event(struct mlx4_dev *dev, u32 qpn, int event_type)
 	spin_unlock(&qp_table->lock);
 
 	if (!qp) {
-		mlx4_dbg(dev, "Async event %d for bogus QP %08x\n",
+		mlx4_warn(dev, "Async event %d for bogus QP %08x\n",
 			 event_type, qpn);
 		return;
 	}

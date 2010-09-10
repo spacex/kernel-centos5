@@ -1416,6 +1416,13 @@ static int __cpuinit powernowk8_init(void)
 {
 	unsigned int i, supported_cpus = 0;
 
+#ifdef CONFIG_XEN
+	if (!is_initial_xendomain()) {
+		/* Xen PV domU's can't possibly do powersaving; bail */
+		return -EPERM;
+	}
+#endif
+
 	for_each_online_cpu(i) {
 		if (check_supported_cpu(i))
 			supported_cpus++;
@@ -1439,16 +1446,9 @@ static int __cpuinit powernowk8_init(void)
 	if (preregister_acpi_perf == 1 && cpu_family == CPU_OPTERON) {
 		char * dmi_data = dmi_get_system_info(DMI_BIOS_VENDOR);
 		if (dmi_data && !strncmp(dmi_data, "Hewlett-Packard", 15)) {
-#ifdef CONFIG_XEN
-	   		/* Disable cpufreq for HP AMD Opteron systems */
-			printk("%s: This BIOS is %s .... disabling cpufreq "
-			       "support\n", __FUNCTION__, dmi_data);
-			return -EPERM;
-#else
 			/* Disable preregistering ACPI data for HP AMD Opteron
 			   systems */
 			preregister_acpi_perf = 0;
-#endif
 		}
 	}
 

@@ -407,6 +407,41 @@ out:
 	return 0;
 }
 
+/**
+ * iscsi_data_in_rsp - SCSI Data-In Response processing
+ * @conn: iscsi connection
+ * @hdr:  iscsi pdu
+ * @ctask: scsi command task
+ */
+static void
+iscsi_data_in_rsp(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
+		  struct iscsi_cmd_task *ctask)
+{
+	struct iscsi_data_rsp *rhdr = (struct iscsi_data_rsp *)hdr;
+	struct scsi_cmnd *sc = ctask->sc;
+
+	if (!(rhdr->flags & ISCSI_FLAG_DATA_STATUS))
+		return;
+
+	sc->result = (DID_OK << 16) | rhdr->cmd_status;
+	conn->exp_statsn = be32_to_cpu(rhdr->statsn) + 1;
+	if (rhdr->flags & (ISCSI_FLAG_DATA_UNDERFLOW |
+	                   ISCSI_FLAG_DATA_OVERFLOW)) {
+		int res_count = be32_to_cpu(rhdr->residual_count);
+
+		if (res_count > 0 &&
+		    (rhdr->flags & ISCSI_FLAG_CMD_OVERFLOW ||
+		     res_count <= sc->request_bufflen))
+			sc->resid = res_count;
+		else
+			sc->result = (DID_BAD_TARGET << 16) |
+				rhdr->cmd_status;
+	}
+
+	conn->scsirsp_pdus_cnt++;
+	__iscsi_put_ctask(ctask);
+}
+
 static void iscsi_tmf_rsp(struct iscsi_conn *conn, struct iscsi_hdr *hdr)
 {
 	struct iscsi_tm_rsp *tmf = (struct iscsi_tm_rsp *)hdr;
@@ -523,10 +558,7 @@ int __iscsi_complete_pdu(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
 			break;
 		case ISCSI_OP_SCSI_DATA_IN:
 			BUG_ON((void*)ctask != ctask->sc->SCp.ptr);
-			if (hdr->flags & ISCSI_FLAG_DATA_STATUS) {
-				conn->scsirsp_pdus_cnt++;
-				__iscsi_put_ctask(ctask);
-			}
+			iscsi_data_in_rsp(conn, hdr, ctask);
 			break;
 		case ISCSI_OP_R2T:
 			/* LLD handles this for now */
@@ -584,7 +616,9 @@ int __iscsi_complete_pdu(struct iscsi_conn *conn, struct iscsi_hdr *hdr,
 				if (iscsi_recv_pdu(conn->cls_conn, hdr, data,
 						   datalen))
 					rc = ISCSI_ERR_CONN_FAILED;
-			}
+			} else
+				mod_timer(&conn->transport_timer,
+					  jiffies + conn->recv_timeout);
 			iscsi_free_mgmt_task(conn, mtask);
 			break;
 		default:
@@ -1306,19 +1340,20 @@ static void iscsi_check_transport_timeouts(unsigned long data)
 {
 	struct iscsi_conn *conn = (struct iscsi_conn *)data;	
 	struct iscsi_session *session = conn->session;
-	unsigned long timeout, next_timeout = 0, last_recv;
+	unsigned long recv_timeout, next_timeout = 0, last_recv;
 
 	spin_lock(&session->lock);
 	if (session->state != ISCSI_STATE_LOGGED_IN)
 		goto done;
 
-	timeout = conn->recv_timeout;
-	if (!timeout)
+	recv_timeout = conn->recv_timeout;
+	if (!recv_timeout)
 		goto done;
 
-	timeout *= HZ;
+	recv_timeout *= HZ;
 	last_recv = conn->last_recv;
-	if (time_before_eq(last_recv + timeout + (conn->ping_timeout * HZ),
+	if (conn->ping_mtask &&
+	    time_before_eq(conn->last_ping + (conn->ping_timeout * HZ),
 			   jiffies)) {
 		printk(KERN_ERR "ping timeout of %d secs expired, "
 		       "last rx %lu, last ping %lu, now %lu\n",
@@ -1329,15 +1364,13 @@ static void iscsi_check_transport_timeouts(unsigned long data)
 		return;
 	}
 
-	if (time_before_eq(last_recv + timeout, jiffies)) {
-		if (time_before_eq(conn->last_ping, last_recv)) {
-			/* send a ping to try to provoke some traffic */
-			debug_scsi("Sending nopout as ping on conn %p\n", conn);
-			iscsi_send_nopout(conn, NULL);
-		}
-		next_timeout = last_recv + timeout + (conn->ping_timeout * HZ);
+	if (time_before_eq(last_recv + recv_timeout, jiffies)) {
+		/* send a ping to try to provoke some traffic */
+		debug_scsi("Sending nopout as ping on conn %p\n", conn);
+		iscsi_send_nopout(conn, NULL);
+		next_timeout = conn->last_ping + (conn->ping_timeout * HZ);
 	} else
-		next_timeout = last_recv + timeout;
+		next_timeout = last_recv + recv_timeout;
 
 	debug_scsi("Setting next tmo %lu\n", next_timeout);
 	mod_timer(&conn->transport_timer, next_timeout);
@@ -1969,7 +2002,7 @@ flush_control_queues(struct iscsi_session *session, struct iscsi_conn *conn)
 }
 
 /* Fail commands. Mutex and session lock held and recv side suspended */
-static void fail_all_commands(struct iscsi_conn *conn)
+static void fail_all_commands(struct iscsi_conn *conn, int error)
 {
 	struct iscsi_cmd_task *ctask, *tmp;
 
@@ -1977,14 +2010,14 @@ static void fail_all_commands(struct iscsi_conn *conn)
 	list_for_each_entry_safe(ctask, tmp, &conn->xmitqueue, running) {
 		debug_scsi("failing pending sc %p itt 0x%x\n", ctask->sc,
 			   ctask->itt);
-		fail_command(conn, ctask, DID_BUS_BUSY << 16);
+		fail_command(conn, ctask, error << 16);
 	}
 
 	/* fail all other running */
 	list_for_each_entry_safe(ctask, tmp, &conn->run_list, running) {
 		debug_scsi("failing in progress sc %p itt 0x%x\n",
 			   ctask->sc, ctask->itt);
-		fail_command(conn, ctask, DID_BUS_BUSY << 16);
+		fail_command(conn, ctask, error << 16);
 	}
 
 	conn->ctask = NULL;
@@ -2057,7 +2090,10 @@ static void iscsi_start_session_recovery(struct iscsi_session *session,
 	 * flush queues.
 	 */
 	spin_lock_bh(&session->lock);
-	fail_all_commands(conn);
+	if (flag == STOP_CONN_RECOVER)
+		fail_all_commands(conn, DID_TRANSPORT_DISRUPTED);
+	else
+		fail_all_commands(conn, DID_ERROR);
 	flush_control_queues(session, conn);
 	spin_unlock_bh(&session->lock);
 	mutex_unlock(&session->eh_mutex);

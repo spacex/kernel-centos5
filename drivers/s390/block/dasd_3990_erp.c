@@ -49,7 +49,7 @@ struct DCTL_data {
  *   dasd_era_recover	for all others.
  */
 static dasd_era_t
-dasd_3990_erp_examine_24(struct dasd_ccw_req * cqr, char *sense)
+dasd_3990_erp_examine_24(struct dasd_ccw_req *cqr, char *sense)
 {
 
 	struct dasd_device *device = cqr->device;
@@ -313,7 +313,7 @@ dasd_3990_erp_alternate_path(struct dasd_ccw_req * erp)
 		/* reset status to queued to handle the request again... */
 		if (erp->status > DASD_CQR_QUEUED)
 			erp->status = DASD_CQR_QUEUED;
-		erp->retries = 1;
+		erp->retries = 10;
 	} else {
 		DEV_MESSAGE(KERN_ERR, device,
 			    "No alternate channel path left (lpum=%x / "
@@ -2110,6 +2110,36 @@ dasd_3990_erp_compound(struct dasd_ccw_req * erp, char *sense)
 }				/* end dasd_3990_erp_compound */
 
 /*
+ *DASD_3990_ERP_HANDLE_SIM
+ *
+ *DESCRIPTION
+ *  inspects the SIM SENSE data and starts an appropriate action
+ *
+ * PARAMETER
+ *   sense         sense data of the actual error
+ *
+ * RETURN VALUES
+ *   none
+ */
+void
+dasd_3990_erp_handle_sim(struct dasd_device *device, char *sense)
+{
+	/* print message according to log or message to operator mode */
+	if ((sense[24] & DASD_SIM_MSG_TO_OP) || (sense[1] & 0x10)) {
+
+		/* print SIM SRC from RefCode */
+		DEV_MESSAGE(KERN_ERR, device, "SIM - SRC: "
+			    "%02x%02x%02x%02x", sense[22],
+			    sense[23], sense[11], sense[12]);
+	} else if (sense[24] & DASD_SIM_LOG) {
+		/* print SIM SRC Refcode */
+		DEV_MESSAGE(KERN_WARNING, device, "SIM - SRC: "
+			    "%02x%02x%02x%02x", sense[22],
+			    sense[23], sense[11], sense[12]);
+	}
+}
+
+/*
  * DASD_3990_ERP_INSPECT_32
  *
  * DESCRIPTION
@@ -2131,6 +2161,10 @@ dasd_3990_erp_inspect_32(struct dasd_ccw_req * erp, char *sense)
 	struct dasd_device *device = erp->device;
 
 	erp->function = dasd_3990_erp_inspect_32;
+
+	/* check for SIM sense data */
+	if ((sense[6] & DASD_SIM_SENSE) == DASD_SIM_SENSE)
+		dasd_3990_erp_handle_sim(device, sense);
 
 	if (sense[25] & DASD_SENSE_BIT_0) {
 
@@ -2234,6 +2268,34 @@ dasd_3990_erp_inspect_32(struct dasd_ccw_req * erp, char *sense)
  */
 
 /*
+ * DASD_3990_ERP_CONTROL_CHECK
+ *
+ * DESCRIPTION
+ *   Does a generic inspection if a control check occurs and set up
+ *   the related error recovery procedure
+ *
+ * PARAMETER
+ *   erp		pointer to the currently created default ERP
+ *   sense              sense data of the actual error
+ * RETURN VALUES
+ *   erp_filled		pointer to the erp
+ */
+
+static struct dasd_ccw_req *
+dasd_3990_erp_control_check(struct dasd_ccw_req *erp)
+{
+	struct dasd_device *device = erp->device;
+
+	if (erp->refers->irb.scsw.cstat & (SCHN_STAT_INTF_CTRL_CHK
+					   | SCHN_STAT_CHN_CTRL_CHK)) {
+		DEV_MESSAGE(KERN_DEBUG, device, "%s",
+			    "channel or interface control check");
+		erp = dasd_3990_erp_action_4(erp, NULL);
+	}
+	return erp;
+}
+
+/*
  * DASD_3990_ERP_INSPECT
  *
  * DESCRIPTION
@@ -2254,8 +2316,11 @@ dasd_3990_erp_inspect(struct dasd_ccw_req * erp)
 	/* already set up new ERP !			      */
 	char *sense = erp->refers->irb.ecw;
 
+	/* check if no concurrent sens is available */
+	if (!erp->refers->irb.esw.esw0.erw.cons)
+		erp_new = dasd_3990_erp_control_check(erp);
 	/* distinguish between 24 and 32 byte sense data */
-	if (sense[27] & DASD_SENSE_BIT_0) {
+	else if (sense[27] & DASD_SENSE_BIT_0) {
 
 		/* inspect the 24 byte sense data */
 		erp_new = dasd_3990_erp_inspect_24(erp, sense);

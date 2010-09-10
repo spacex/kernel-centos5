@@ -565,6 +565,8 @@ int
 pci_save_state(struct pci_dev *dev)
 {
 	int i;
+
+	save_pcie_reg(dev);
 	/* XXX: 100% dword access ok here? */
 	for (i = 0; i < 16; i++)
 		pci_read_config_dword(dev, i * 4,&dev->saved_config_space[i]);
@@ -600,6 +602,7 @@ pci_restore_state(struct pci_dev *dev)
 				dev->saved_config_space[i]);
 		}
 	}
+	restore_pcie_reg(dev);
 	pci_restore_msi_state(dev);
 	pci_restore_msix_state(dev);
 	return 0;
@@ -724,7 +727,8 @@ int pcim_enable_device(struct pci_dev *pdev)
 	dr = get_pci_dr(pdev);
 	if (unlikely(!dr))
 		return -ENOMEM;
-	WARN_ON(!!dr->enabled);
+	if (dr->enabled)
+		return 0;
 
 	rc = pci_enable_device(pdev);
 	if (!rc) {
@@ -751,15 +755,6 @@ void pcim_pin_device(struct pci_dev *pdev)
 	if (dr)
 		dr->pinned = 1;
 }
-
-/**
- * pcibios_fix_bus_scan_quirk - provide for arch-specific bus scan quirks
- * @bus: the PCI bus to scan
- *
- * Scans the bus for arch-specific quirks. This is the default implementation.
- * Architecture implementations can override this.
- */
-void __attribute__ ((weak)) pcibios_fix_bus_scan_quirk(struct pci_bus *bus) {}
 
 /**
  * pcibios_disable_device - disable arch specific PCI resources for device dev
@@ -1125,6 +1120,21 @@ pci_set_mwi(struct pci_dev *dev)
 }
 
 /**
+ * pci_try_set_mwi - enables memory-write-invalidate PCI transaction
+ * @dev: the PCI device for which MWI is enabled
+ *
+ * Enables the Memory-Write-Invalidate transaction in %PCI_COMMAND.
+ * Callers are not required to check the return value.
+ *
+ * RETURNS: An appropriate -ERRNO error value on error, or zero for success.
+ */
+int pci_try_set_mwi(struct pci_dev *dev)
+{
+	int rc = pci_set_mwi(dev);
+	return rc;
+}
+
+/**
  * pci_clear_mwi - disables Memory-Write-Invalidate for device dev
  * @dev: the PCI device to disable
  *
@@ -1419,6 +1429,7 @@ EXPORT_SYMBOL(pci_release_region);
 EXPORT_SYMBOL(pci_request_region);
 EXPORT_SYMBOL(pci_set_master);
 EXPORT_SYMBOL(pci_set_mwi);
+EXPORT_SYMBOL(pci_try_set_mwi);
 EXPORT_SYMBOL(pci_clear_mwi);
 EXPORT_SYMBOL_GPL(pci_intx);
 EXPORT_SYMBOL(pci_set_dma_mask);

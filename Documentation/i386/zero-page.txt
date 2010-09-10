@@ -31,11 +31,11 @@ Offset	Type		Description
  0xb0 - 0x13f		Free. Add more parameters here if you really need them.
  0x140- 0x1be		EDID_INFO Video mode setup
 
-0x1c4	unsigned long	EFI system table pointer
-0x1c8	unsigned long	EFI memory descriptor size
-0x1cc	unsigned long	EFI memory descriptor version
+0x1c4	unsigned long	EFI system table pointer*
+0x1c8	unsigned long	EFI memory descriptor size*
+0x1cc	unsigned long	EFI memory descriptor version*
 0x1d0	unsigned long	EFI memory descriptor map pointer
-0x1d4	unsigned long	EFI memory descriptor map size
+0x1d4	unsigned long	EFI memory descriptor map size*
 0x1e0	unsigned long	ALT_MEM_K, alternative mem check, in Kb
 0x1e8	char		number of entries in E820MAP (below)
 0x1e9	unsigned char	number of entries in EDDBUF (below)
@@ -86,3 +86,13 @@ Offset	Type		Description
 0x2d0 - 0xd00		E820MAP
 0xd00 - 0xeff		EDDBUF (edd.S) for disk signature read sector
 0xd00 - 0xeeb		EDDBUF (edd.S) for edd data
+
+Changes for x86_64 implementation:
+---------------------------------
+For alignment purposes, the following parameters are rearranged.
+
+0x1b8	unsigned long	EFI system table pointer
+0x1c0	unsigned long	EFI Loader signature
+0x1c4	unsigned long	EFI memory descriptor size
+0x1c8	unsigned long	EFI memory descriptor version
+0x1cc	unsigned long	EFI memory descriptor map size

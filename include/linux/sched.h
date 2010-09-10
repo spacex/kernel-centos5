@@ -221,7 +221,8 @@ extern void softlockup_tick(struct pt_regs *regs);
 extern void spawn_softlockup_task(void);
 extern void touch_softlockup_watchdog(void);
 extern void touch_all_softlockup_watchdogs(void);
-extern int softlockup_thresh;
+extern unsigned int  softlockup_panic;
+extern unsigned long softlockup_thresh;
 #else
 static inline unsigned long softlockup_get_next_event(void)
 {
@@ -506,6 +507,12 @@ struct signal_struct {
 	spinlock_t stats_lock;
 	struct taskstats *stats;
 #endif
+#ifndef __GENKSYMS__
+#ifdef CONFIG_AUDIT
+	unsigned audit_tty;
+	struct tty_audit_buf *tty_audit_buf;
+#endif
+#endif
 };
 
 /* Context switch must be unlocked if interrupts are to be enabled */
@@ -662,6 +669,7 @@ enum idle_type
 #define SD_WAKE_BALANCE		64	/* Perform balancing at task wakeup */
 #define SD_SHARE_CPUPOWER	128	/* Domain members share cpu power */
 #define SD_POWERSAVINGS_BALANCE	256	/* Balance for power savings */
+#define SD_WAKE_IDLE_FAR	2048	/* Gain latency sacrificing cache hit */
 
 #define BALANCE_FOR_POWER	((sched_mc_power_savings || sched_smt_power_savings) \
 				 ? SD_POWERSAVINGS_BALANCE : 0)
@@ -676,6 +684,16 @@ struct sched_group {
 	 * single CPU. This is read only (except for setup, hotplug CPU).
 	 */
 	unsigned long cpu_power;
+};
+
+enum sched_domain_level {
+	SD_LV_NONE = 0,
+	SD_LV_SIBLING,
+	SD_LV_MC,
+	SD_LV_CPU,
+	SD_LV_NODE,
+	SD_LV_ALLNODES,
+	SD_LV_MAX
 };
 
 struct sched_domain {
@@ -744,6 +762,8 @@ extern int partition_sched_domains(cpumask_t *partition1,
  */
 extern unsigned int max_cache_size;
 
+extern int arch_reinit_sched_domains(void);
+
 #endif	/* CONFIG_SMP */
 
 
@@ -802,6 +822,14 @@ enum sleep_type {
 };
 
 struct prio_array;
+
+/* auxilliary task structure to avoid KABI breakage */
+struct task_struct_aux {
+	struct completion *vfork_done;  /* for vfork() [displaced from task_struct] */
+	struct list_head  *scm_work_list; /*displaced from task_struct for abi compat*/
+};
+
+#define task_aux(tsk) ((tsk)->auxilliary)
 
 struct task_struct {
 	volatile long state;	/* -1 unrunnable, 0 runnable, >0 stopped */
@@ -867,8 +895,11 @@ struct task_struct {
 	/* PID/PID hash table linkage. */
 	struct pid_link pids[PIDTYPE_MAX];
 	struct list_head thread_group;
-
+#ifndef __GENKSYMS__
+	struct task_struct_aux *auxilliary;	/* KABI-resistant auxilliary task data */
+#else
 	struct completion *vfork_done;		/* for vfork() */
+#endif
 	int __user *set_child_tid;		/* CLONE_CHILD_SETTID */
 	int __user *clear_child_tid;		/* CLONE_CHILD_CLEARTID */
 
@@ -1099,6 +1130,7 @@ static inline void put_task_struct(struct task_struct *t)
 #define PF_SPREAD_SLAB	0x02000000	/* Spread some slab caches over cpuset */
 #define PF_MEMPOLICY	0x10000000	/* Non-default NUMA mempolicy */
 #define PF_MUTEX_TESTER	0x20000000	/* Thread belongs to the rt mutex tester */
+#define PF_PREEMPT_NOTIFIER 0x40000000  /* preempt notifier attached to the task */
 
 /*
  * Only the _current_ task can read/write to tsk->flags, but other
@@ -1124,6 +1156,20 @@ static inline void put_task_struct(struct task_struct *t)
 /* NOTE: this will return 0 or PF_USED_MATH, it will never return 1 */
 #define tsk_used_math(p) ((p)->flags & PF_USED_MATH)
 #define used_math() tsk_used_math(current)
+
+
+#ifdef CONFIG_SMP
+extern int set_cpus_allowed_ptr(struct task_struct *p,
+                                const cpumask_t *new_mask);
+#else
+static inline int set_cpus_allowed_ptr(struct task_struct *p,
+                                       const cpumask_t *new_mask)
+{
+        if (!cpu_isset(0, *new_mask))
+                return -EINVAL;
+        return 0;
+}
+#endif
 
 #ifdef CONFIG_SMP
 extern int set_cpus_allowed(struct task_struct *p, cpumask_t new_mask);

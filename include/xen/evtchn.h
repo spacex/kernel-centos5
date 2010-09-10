@@ -53,6 +53,13 @@
  * Returns IRQ or negative errno.
  * UNBIND: Takes IRQ to unbind from; automatically closes the event channel.
  */
+/*
+ * To enable RHEL to build w/o porting bind_evtchn_to_irqhandler
+ * to bind_caller_port_to_irqhandler
+ */
+#ifdef CONFIG_XEN_PV_ON_HVM
+#define bind_evtchn_to_irqhandler bind_caller_port_to_irqhandler
+#endif
 extern int bind_evtchn_to_irqhandler(
 	unsigned int evtchn,
 	irqreturn_t (*handler)(int, void *, struct pt_regs *),

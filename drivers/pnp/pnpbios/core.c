@@ -359,7 +359,7 @@ static int insert_device(struct pnp_dev *dev, struct pnp_bios_node * node)
 	if (!dev->active)
 		pnp_init_resource_table(&dev->res);
 
-	pnp_add_device(dev);
+	pnp_add_device(dev, dev->number);
 	pnpbios_interface_attach_device(node);
 
 	return 0;

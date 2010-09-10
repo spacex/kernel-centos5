@@ -61,6 +61,7 @@ static void do_kick_device(void *data);
  */
 static wait_queue_head_t dasd_init_waitq;
 static wait_queue_head_t dasd_flush_wq;
+static wait_queue_head_t generic_waitq;
 
 /*
  * Allocate memory for a new device structure.
@@ -885,6 +886,8 @@ dasd_handle_killed_request(struct ccw_device *cdev, unsigned long intparm)
 	struct dasd_ccw_req *cqr;
 	struct dasd_device *device;
 
+	if (!intparm)
+		return;
 	cqr = (struct dasd_ccw_req *) intparm;
 	if (cqr->status != DASD_CQR_IN_IO) {
 		MESSAGE(KERN_DEBUG,
@@ -950,17 +953,16 @@ dasd_int_handler(struct ccw_device *cdev, unsigned long intparm,
 	if (IS_ERR(irb)) {
 		switch (PTR_ERR(irb)) {
 		case -EIO:
-			dasd_handle_killed_request(cdev, intparm);
 			break;
 		case -ETIMEDOUT:
 			printk(KERN_WARNING"%s(%s): request timed out\n",
 			       __FUNCTION__, cdev->dev.bus_id);
-			//FIXME - dasd uses own timeout interface...
 			break;
 		default:
 			printk(KERN_WARNING"%s(%s): unknown error %ld\n",
 			       __FUNCTION__, cdev->dev.bus_id, PTR_ERR(irb));
 		}
+		dasd_handle_killed_request(cdev, intparm);
 		return;
 	}
 
@@ -1104,6 +1106,18 @@ __dasd_process_erp(struct dasd_device *device, struct dasd_ccw_req *cqr)
 }
 
 /*
+ * check if specific recovery is possible
+ */
+static inline int
+generic_check_erp(struct dasd_ccw_req *cqr)
+{
+	return ((cqr->irb.esw.esw0.erw.cons &&
+		 test_bit(DASD_CQR_FLAGS_USE_ERP, &cqr->flags))
+		|| (cqr->irb.scsw.cstat & (SCHN_STAT_INTF_CTRL_CHK
+					   | SCHN_STAT_CHN_CTRL_CHK)));
+}
+
+/*
  * Process ccw request queue.
  */
 static inline void
@@ -1129,9 +1143,7 @@ restart:
 				cqr->status = DASD_CQR_FAILED;
 				cqr->stopclk = get_clock();
 			} else {
-				if (cqr->irb.esw.esw0.erw.cons &&
-				    test_bit(DASD_CQR_FLAGS_USE_ERP,
-					     &cqr->flags)) {
+				if (generic_check_erp(cqr)) {
 					erp_fn = device->discipline->
 						erp_action(cqr);
 					erp_fn(cqr);
@@ -1538,16 +1550,14 @@ _wait_for_wakeup(struct dasd_ccw_req *cqr)
 int
 dasd_sleep_on(struct dasd_ccw_req * cqr)
 {
-	wait_queue_head_t wait_q;
 	struct dasd_device *device;
 	int rc;
 
 	device = cqr->device;
 	spin_lock_irq(get_ccwdev_lock(device->cdev));
 
-	init_waitqueue_head (&wait_q);
 	cqr->callback = dasd_wakeup_cb;
-	cqr->callback_data = (void *) &wait_q;
+	cqr->callback_data = (void *) &generic_waitq;
 	cqr->status = DASD_CQR_QUEUED;
 	list_add_tail(&cqr->list, &device->ccw_queue);
 
@@ -1556,7 +1566,7 @@ dasd_sleep_on(struct dasd_ccw_req * cqr)
 
 	spin_unlock_irq(get_ccwdev_lock(device->cdev));
 
-	wait_event(wait_q, _wait_for_wakeup(cqr));
+	wait_event(generic_waitq, _wait_for_wakeup(cqr));
 
 	/* Request status is either done or failed. */
 	rc = (cqr->status == DASD_CQR_FAILED) ? -EIO : 0;
@@ -1570,16 +1580,14 @@ dasd_sleep_on(struct dasd_ccw_req * cqr)
 int
 dasd_sleep_on_interruptible(struct dasd_ccw_req * cqr)
 {
-	wait_queue_head_t wait_q;
 	struct dasd_device *device;
 	int rc, finished;
 
 	device = cqr->device;
 	spin_lock_irq(get_ccwdev_lock(device->cdev));
 
-	init_waitqueue_head (&wait_q);
 	cqr->callback = dasd_wakeup_cb;
-	cqr->callback_data = (void *) &wait_q;
+	cqr->callback_data = (void *) &generic_waitq;
 	cqr->status = DASD_CQR_QUEUED;
 	list_add_tail(&cqr->list, &device->ccw_queue);
 
@@ -1589,7 +1597,8 @@ dasd_sleep_on_interruptible(struct dasd_ccw_req * cqr)
 
 	finished = 0;
 	while (!finished) {
-		rc = wait_event_interruptible(wait_q, _wait_for_wakeup(cqr));
+		rc = wait_event_interruptible(generic_waitq,
+					      _wait_for_wakeup(cqr));
 		if (rc != -ERESTARTSYS) {
 			/* Request is final (done or failed) */
 			rc = (cqr->status == DASD_CQR_DONE) ? 0 : -EIO;
@@ -1605,7 +1614,8 @@ dasd_sleep_on_interruptible(struct dasd_ccw_req * cqr)
 				/* wait (non-interruptible) for final status
 				 * because signal ist still pending */
 				spin_unlock_irq(get_ccwdev_lock(device->cdev));
-				wait_event(wait_q, _wait_for_wakeup(cqr));
+				wait_event(generic_waitq,
+					   _wait_for_wakeup(cqr));
 				spin_lock_irq(get_ccwdev_lock(device->cdev));
 				rc = (cqr->status == DASD_CQR_DONE) ? 0 : -EIO;
 				finished = 1;
@@ -1669,7 +1679,7 @@ dasd_sleep_on_immediatly(struct dasd_ccw_req * cqr)
 
 	spin_unlock_irq(get_ccwdev_lock(device->cdev));
 
-	wait_event(wait_q, _wait_for_wakeup(cqr));
+	wait_event(generic_waitq, _wait_for_wakeup(cqr));
 
 	/* Request status is either done or failed. */
 	rc = (cqr->status == DASD_CQR_FAILED) ? -EIO : 0;
@@ -2172,6 +2182,7 @@ dasd_init(void)
 
 	init_waitqueue_head(&dasd_init_waitq);
 	init_waitqueue_head(&dasd_flush_wq);
+	init_waitqueue_head(&generic_waitq);
 
 	/* register 'common' DASD debug area, used for all DBF_XXX calls */
 	dasd_debug_area = debug_register("dasd", 1, 2, 8 * sizeof (long));

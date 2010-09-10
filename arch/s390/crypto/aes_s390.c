@@ -215,6 +215,8 @@ static unsigned int aes_decrypt_cbc(const struct cipher_desc *desc, u8 *out,
 		BUG_ON((ret < 0) || (ret != nbytes));
 		break;
 	}
+	memcpy(desc->info, &sctx->iv, AES_BLOCK_SIZE);
+
 	return nbytes;
 }
 

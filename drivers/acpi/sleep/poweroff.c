@@ -33,7 +33,6 @@ int acpi_sleep_prepare(u32 acpi_state)
 	ACPI_FLUSH_CPU_CACHE();
 	acpi_enable_wakeup_device_prep(acpi_state);
 #endif
-	acpi_gpe_sleep_prepare(acpi_state);
 	acpi_enter_sleep_state_prep(acpi_state);
 	return 0;
 }
@@ -46,6 +45,9 @@ void acpi_power_off(void)
 	printk("%s called\n", __FUNCTION__);
 	local_irq_disable();
 	/* Some SMP machines only can poweroff in boot CPU */
+#ifdef CONFIG_ACPI_SLEEP
+	acpi_enable_wakeup_device(ACPI_STATE_S5);
+#endif
 	acpi_enter_sleep_state(ACPI_STATE_S5);
 }
 

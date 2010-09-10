@@ -605,59 +605,60 @@ int hrtimer_get_res(const clockid_t which_clock, struct timespec *tp)
 EXPORT_SYMBOL_GPL(hrtimer_get_res);
 
 /*
- * Expire the per base hrtimer-queue:
- */
-static inline void run_hrtimer_queue(struct hrtimer_base *base)
-{
-	struct rb_node *node;
-
-	if (!base->first)
-		return;
-
-	if (base->get_softirq_time)
-		base->softirq_time = base->get_softirq_time();
-
-	spin_lock_irq(&base->lock);
-
-	while ((node = base->first)) {
-		struct hrtimer *timer;
-		int (*fn)(struct hrtimer *);
-		int restart;
-
-		timer = rb_entry(node, struct hrtimer, node);
-		if (base->softirq_time.tv64 <= timer->expires.tv64)
-			break;
-
-		fn = timer->function;
-		set_curr_timer(base, timer);
-		__remove_hrtimer(timer, base);
-		spin_unlock_irq(&base->lock);
-
-		restart = fn(timer);
-
-		spin_lock_irq(&base->lock);
-
-		if (restart != HRTIMER_NORESTART) {
-			BUG_ON(hrtimer_active(timer));
-			enqueue_hrtimer(timer, base);
-		}
-	}
-	set_curr_timer(base, NULL);
-	spin_unlock_irq(&base->lock);
-}
-
-/*
- * Called from timer softirq every jiffy, expire hrtimers:
+ * Called from timer softirq every jiffy, expire hrtimers.
+ *
+ * Expire the per base hrtimer-queues:
  */
 void hrtimer_run_queues(void)
 {
-	struct hrtimer_base *base = __get_cpu_var(hrtimer_bases);
-	int i;
+	struct rb_node *node;
+	struct hrtimer_base *cpu_base = __get_cpu_var(hrtimer_bases);
+	struct hrtimer_base *base;
+	int index;
+	int gst = 1;
 
-	hrtimer_get_softirq_time(base);
 
-	for (i = 0; i < MAX_HRTIMER_BASES; i++)
-		run_hrtimer_queue(&base[i]);
+	for (index = 0; index < MAX_HRTIMER_BASES; index++) {
+		base = &cpu_base[index];
+
+		if (!base->first)
+			continue;
+
+		if (base->get_softirq_time)
+			base->softirq_time = base->get_softirq_time();
+		else if (gst) {
+			hrtimer_get_softirq_time(cpu_base);
+			gst = 0;
+		}
+
+		spin_lock_irq(&base->lock);
+
+		while ((node = base->first)) {
+			struct hrtimer *timer;
+			int (*fn)(struct hrtimer *);
+			int restart;
+
+			timer = rb_entry(node, struct hrtimer, node);
+			if (base->softirq_time.tv64 <= timer->expires.tv64)
+				break;
+
+			fn = timer->function;
+			set_curr_timer(base, timer);
+			__remove_hrtimer(timer, base);
+			spin_unlock_irq(&base->lock);
+
+			restart = fn(timer);
+
+			spin_lock_irq(&base->lock);
+
+			if (restart != HRTIMER_NORESTART) {
+				BUG_ON(hrtimer_active(timer));
+				enqueue_hrtimer(timer, base);
+			}
+		}
+		set_curr_timer(base, NULL);
+		spin_unlock_irq(&base->lock);
+	}
 }
 
 /*

@@ -4,13 +4,14 @@
  * This file is released under the GPL.
  */
 
-#include "dm-io.h"
+#include "dm.h"
 
 #include <linux/bio.h>
 #include <linux/mempool.h>
 #include <linux/module.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
+#include <linux/dm-io.h>
 
 static struct bio_set *_bios;
 
@@ -421,7 +422,7 @@ static int sync_io(struct dm_io_client *client, unsigned int num_regions,
 {
 	struct io io;
 
-	if (num_regions > 1 && rw != WRITE) {
+	if (num_regions > 1 && (rw & RW_MASK) != WRITE) {
 		WARN_ON(1);
 		return -EIO;
 	}
@@ -458,7 +459,7 @@ static int async_io(struct dm_io_client *client, unsigned int num_regions,
 {
 	struct io *io;
 
-	if (num_regions > 1 && rw != WRITE) {
+	if (num_regions > 1 && (rw & RW_MASK) != WRITE) {
 		WARN_ON(1);
 		fn(1, context);
 		return -EIO;
@@ -555,6 +556,11 @@ static int dp_init(struct dm_io_request *io_req, struct dpages *dp)
 
 /*
  * New collapsed (a)synchronous interface
+ *
+ * If the IO is asynchronous (i.e. it has notify.fn), you must either unplug the
+ * queue with blk_unplug() some time later or you must set the BIO_RW_SYNC bit in
+ * io_req->bi_rw. If you fail to do one of these, the IO will be submitted to
+ * the disk after q->unplug_delay, which defaults to 3ms in blk-settings.c.
  */
 int dm_io(struct dm_io_request *io_req, unsigned num_regions,
 	  struct io_region *where, unsigned long *sync_error_bits)

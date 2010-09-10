@@ -46,6 +46,7 @@ static struct security_operations capability_ops = {
 	.syslog =                       cap_syslog,
 
 	.vm_enough_memory =             cap_vm_enough_memory,
+	.vm_enough_memory_mm =          cap_vm_enough_memory_mm,
 };
 
 /* flag to keep track of how we were registered */

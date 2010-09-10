@@ -545,13 +545,14 @@ static void nfs_direct_write_result(struct rpc_task *task, void *calldata)
 
 	spin_lock(&dreq->lock);
 
-	if (unlikely(dreq->error != 0))
-		goto out_unlock;
-	if (unlikely(status < 0)) {
+	if (unlikely(status < 0) || unlikely(task->tk_status < 0)) {
 		/* An error has occured, so we should not commit */
 		dreq->flags = 0;
-		dreq->error = status;
+		/* Use the first error */
+		dreq->error = ((status < 0) ? status : task->tk_status);
 	}
+	if (unlikely(dreq->error != 0))
+		goto out_unlock;
 
 	dreq->count += data->res.count;
 

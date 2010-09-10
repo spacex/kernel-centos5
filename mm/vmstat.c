@@ -330,6 +330,8 @@ void refresh_cpu_vm_stats(int cpu)
 				pcp->vm_stat_diff[i] = 0;
 				local_irq_restore(flags);
 			}
+
+		cond_resched();
 	}
 }
 

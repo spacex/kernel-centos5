@@ -179,7 +179,7 @@ static inline u16 Mk16(u8 hi, u8 lo)
 	return lo | (((u16) hi) << 8);
 }
 
-static inline u16 Mk16_le(u16 * v)
+static inline u16 Mk16_le(__le16 * v)
 {
 	return le16_to_cpu(*v);
 }
@@ -265,15 +265,15 @@ static void tkip_mixing_phase2(u8 * WEPSeed, const u8 * TK, const u16 * TTAK,
 	PPK[5] = TTAK[4] + IV16;
 
 	/* Step 2 - 96-bit bijective mixing using S-box */
-	PPK[0] += _S_(PPK[5] ^ Mk16_le((u16 *) & TK[0]));
-	PPK[1] += _S_(PPK[0] ^ Mk16_le((u16 *) & TK[2]));
-	PPK[2] += _S_(PPK[1] ^ Mk16_le((u16 *) & TK[4]));
-	PPK[3] += _S_(PPK[2] ^ Mk16_le((u16 *) & TK[6]));
-	PPK[4] += _S_(PPK[3] ^ Mk16_le((u16 *) & TK[8]));
-	PPK[5] += _S_(PPK[4] ^ Mk16_le((u16 *) & TK[10]));
+	PPK[0] += _S_(PPK[5] ^ Mk16_le((__le16 *) & TK[0]));
+	PPK[1] += _S_(PPK[0] ^ Mk16_le((__le16 *) & TK[2]));
+	PPK[2] += _S_(PPK[1] ^ Mk16_le((__le16 *) & TK[4]));
+	PPK[3] += _S_(PPK[2] ^ Mk16_le((__le16 *) & TK[6]));
+	PPK[4] += _S_(PPK[3] ^ Mk16_le((__le16 *) & TK[8]));
+	PPK[5] += _S_(PPK[4] ^ Mk16_le((__le16 *) & TK[10]));
 
-	PPK[0] += RotR1(PPK[5] ^ Mk16_le((u16 *) & TK[12]));
-	PPK[1] += RotR1(PPK[0] ^ Mk16_le((u16 *) & TK[14]));
+	PPK[0] += RotR1(PPK[5] ^ Mk16_le((__le16 *) & TK[12]));
+	PPK[1] += RotR1(PPK[0] ^ Mk16_le((__le16 *) & TK[14]));
 	PPK[2] += RotR1(PPK[1]);
 	PPK[3] += RotR1(PPK[2]);
 	PPK[4] += RotR1(PPK[3]);
@@ -284,7 +284,7 @@ static void tkip_mixing_phase2(u8 * WEPSeed, const u8 * TK, const u16 * TTAK,
 	WEPSeed[0] = Hi8(IV16);
 	WEPSeed[1] = (Hi8(IV16) | 0x20) & 0x7F;
 	WEPSeed[2] = Lo8(IV16);
-	WEPSeed[3] = Lo8((PPK[5] ^ Mk16_le((u16 *) & TK[0])) >> 1);
+	WEPSeed[3] = Lo8((PPK[5] ^ Mk16_le((__le16 *) & TK[0])) >> 1);
 
 #ifdef __BIG_ENDIAN
 	{
@@ -454,8 +454,8 @@ static int ieee80211_tkip_decrypt(struct sk_buff *skb, int hdr_len, void *priv)
 	pos += 8;
 
 	if (tkip_replay_check(iv32, iv16, tkey->rx_iv32, tkey->rx_iv16)) {
-		if (net_ratelimit()) {
-			printk(KERN_DEBUG "TKIP: replay detected: STA=" MAC_FMT
+		if (ieee80211_ratelimit_debug(IEEE80211_DL_DROP)) {
+			IEEE80211_DEBUG_DROP("TKIP: replay detected: STA=" MAC_FMT
 			       " previous TSC %08x%04x received TSC "
 			       "%08x%04x\n", MAC_ARG(hdr->addr2),
 			       tkey->rx_iv32, tkey->rx_iv16, iv32, iv16);
@@ -489,8 +489,8 @@ static int ieee80211_tkip_decrypt(struct sk_buff *skb, int hdr_len, void *priv)
 			 * it needs to be recalculated for the next packet. */
 			tkey->rx_phase1_done = 0;
 		}
-		if (net_ratelimit()) {
-			printk(KERN_DEBUG "TKIP: ICV error detected: STA="
+		if (ieee80211_ratelimit_debug(IEEE80211_DL_DROP)) {
+			IEEE80211_DEBUG_DROP("TKIP: ICV error detected: STA="
 			       MAC_FMT "\n", MAC_ARG(hdr->addr2));
 		}
 		tkey->dot11RSNAStatsTKIPICVErrors++;
@@ -566,7 +566,7 @@ static void michael_mic_hdr(struct sk_buff *skb, u8 * hdr)
 	if (stype & IEEE80211_STYPE_QOS_DATA) {
 		const struct ieee80211_hdr_3addrqos *qoshdr =
 			(struct ieee80211_hdr_3addrqos *)skb->data;
-		hdr[12] = qoshdr->qos_ctl & cpu_to_le16(IEEE80211_QCTL_TID);
+		hdr[12] = le16_to_cpu(qoshdr->qos_ctl) & IEEE80211_QCTL_TID;
 	} else
 		hdr[12] = 0;		/* priority */
 

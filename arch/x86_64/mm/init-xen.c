@@ -54,8 +54,6 @@
 struct dma_mapping_ops* dma_ops;
 EXPORT_SYMBOL(dma_ops);
 
-extern unsigned long *contiguous_bitmap;
-
 static unsigned long dma_reserve __initdata;
 
 DEFINE_PER_CPU(struct mmu_gather, mmu_gathers);
@@ -1057,11 +1055,6 @@ void __init mem_init(void)
 {
 	long codesize, reservedpages, datasize, initsize;
 	unsigned long pfn;
-
-	contiguous_bitmap = alloc_bootmem_low_pages(
-		(end_pfn + 2*BITS_PER_LONG) >> 3);
-	BUG_ON(!contiguous_bitmap);
-	memset(contiguous_bitmap, 0, (end_pfn + 2*BITS_PER_LONG) >> 3);
 
 	pci_iommu_alloc();
 

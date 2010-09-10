@@ -15,6 +15,14 @@ config CRYPTO_API
 	help
 	  This option provides the (backported) core Cryptographic API.
 
+config CRYPTO_FIPS
+	bool "FIPS 200 compliance"
+	help
+	  This options enables the fips boot option which is
+	  required if you want to system to operate in a FIPS 200
+	  certification.  You should say no unless you know what
+	  this is.
+
 config CRYPTO_ALGAPI
 	tristate
 	depends on CRYPTO
@@ -31,6 +39,7 @@ config CRYPTO_BLKCIPHER
 	tristate
 	depends on CRYPTO
 	select CRYPTO_ALGAPI
+	select CRYPTO_RNG
 
 config CRYPTO_SEQIV
 	tristate "Sequence Number IV Generator"
@@ -47,10 +56,17 @@ config CRYPTO_HASH
 	depends on CRYPTO
 	select CRYPTO_ALGAPI
 
+config CRYPTO_RNG
+	tristate
+	select CRYPTO_ALGAPI
+
 config CRYPTO_MANAGER
 	tristate "Cryptographic algorithm manager"
 	depends on CRYPTO
-	select CRYPTO_ALGAPI
+	select CRYPTO_AEAD
+	select CRYPTO_HASH
+	select CRYPTO_BLKCIPHER
+	select CRYPTO_RNG
 	help
 	  Create default cryptographic template instantiations such as
 	  cbc(aes).
@@ -453,8 +469,7 @@ config CRYPTO_CRC32C
 config CRYPTO_TEST
 	tristate "Testing module"
 	depends on CRYPTO && m
-	select CRYPTO_ALGAPI
-	select CRYPTO_AEAD
+	select CRYPTO_MANAGER
 	help
 	  Quick & dirty crypto test module.
 
@@ -496,6 +511,18 @@ config S390_PRNG
           and uses triple-DES to generate secure random numbers like the
           ANSI X9.17 standard. The PRNG is usable via the char device
           /dev/prandom.
+
+comment "Random Number Generation"
+
+config CRYPTO_ANSI_CPRNG
+	tristate "Pseudo Random Number Generation for Cryptographic modules"
+	select CRYPTO_AES
+	select CRYPTO_RNG
+	select CRYPTO_FIPS
+	help
+	  This option enables the generic pseudo random number generator
+	  for cryptographic modules.  Uses the Algorithm specified in
+	  ANSI X9.31 A.2.4
 
 source "drivers/crypto/Kconfig"
 endmenu

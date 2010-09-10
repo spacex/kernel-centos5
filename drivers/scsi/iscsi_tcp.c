@@ -205,18 +205,17 @@ iscsi_tcp_cleanup_ctask(struct iscsi_conn *conn, struct iscsi_cmd_task *ctask)
 }
 
 /**
- * iscsi_data_rsp - SCSI Data-In Response processing
+ * iscsi_data_in - SCSI Data-In Response processing
  * @conn: iscsi connection
  * @ctask: scsi command task
  **/
 static int
-iscsi_data_rsp(struct iscsi_conn *conn, struct iscsi_cmd_task *ctask)
+iscsi_data_in(struct iscsi_conn *conn, struct iscsi_cmd_task *ctask)
 {
 	struct iscsi_tcp_conn *tcp_conn = conn->dd_data;
 	struct iscsi_tcp_cmd_task *tcp_ctask = ctask->dd_data;
 	struct iscsi_data_rsp *rhdr = (struct iscsi_data_rsp *)tcp_conn->in.hdr;
 	struct iscsi_session *session = conn->session;
-	struct scsi_cmnd *sc = ctask->sc;
 	int datasn = be32_to_cpu(rhdr->datasn);
 
 	iscsi_update_cmdsn(session, (struct iscsi_nopin*)rhdr);
@@ -239,25 +238,6 @@ iscsi_data_rsp(struct iscsi_conn *conn, struct iscsi_cmd_task *ctask)
 	tcp_ctask->data_offset = be32_to_cpu(rhdr->offset);
 	if (tcp_ctask->data_offset + tcp_conn->in.datalen > ctask->total_length)
 		return ISCSI_ERR_DATA_OFFSET;
-
-	if (rhdr->flags & ISCSI_FLAG_DATA_STATUS) {
-		conn->exp_statsn = be32_to_cpu(rhdr->statsn) + 1;
-		if (rhdr->flags & ISCSI_FLAG_DATA_UNDERFLOW) {
-			int res_count = be32_to_cpu(rhdr->residual_count);
-
-			if (res_count > 0 &&
-			    res_count <= sc->request_bufflen) {
-				sc->resid = res_count;
-				sc->result = (DID_OK << 16) | rhdr->cmd_status;
-			} else
-				sc->result = (DID_BAD_TARGET << 16) |
-					rhdr->cmd_status;
-		} else if (rhdr->flags & ISCSI_FLAG_DATA_OVERFLOW) {
-			sc->resid = be32_to_cpu(rhdr->residual_count);
-			sc->result = (DID_OK << 16) | rhdr->cmd_status;
-		} else
-			sc->result = (DID_OK << 16) | rhdr->cmd_status;
-	}
 
 	conn->datain_pdus_cnt++;
 	return 0;
@@ -493,7 +473,7 @@ iscsi_tcp_hdr_recv(struct iscsi_conn *conn)
 	switch(opcode) {
 	case ISCSI_OP_SCSI_DATA_IN:
 		tcp_conn->in.ctask = session->cmds[itt];
-		rc = iscsi_data_rsp(conn, tcp_conn->in.ctask);
+		rc = iscsi_data_in(conn, tcp_conn->in.ctask);
 		if (rc)
 			return rc;
 		/* fall through */

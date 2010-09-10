@@ -47,8 +47,6 @@
 #include <asm/hypervisor.h>
 #include <asm/swiotlb.h>
 
-extern unsigned long *contiguous_bitmap;
-
 unsigned int __VMALLOC_RESERVE = 128 << 20;
 
 DEFINE_PER_CPU(struct mmu_gather, mmu_gathers);
@@ -646,11 +644,6 @@ void __init mem_init(void)
 	int tmp;
 	int bad_ppro;
 	unsigned long pfn;
-
-	contiguous_bitmap = alloc_bootmem_low_pages(
-		(max_low_pfn + 2*BITS_PER_LONG) >> 3);
-	BUG_ON(!contiguous_bitmap);
-	memset(contiguous_bitmap, 0, (max_low_pfn + 2*BITS_PER_LONG) >> 3);
 
 #if defined(CONFIG_SWIOTLB)
 	swiotlb_init();	

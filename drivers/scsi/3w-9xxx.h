@@ -4,7 +4,7 @@
    Written By: Adam Radford <linuxraid@amcc.com>
    Modifications By: Tom Couch <linuxraid@amcc.com>
 
-   Copyright (C) 2004-2006 Applied Micro Circuits Corporation.
+   Copyright (C) 2004-2007 Applied Micro Circuits Corporation.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -319,8 +319,8 @@ static twa_message_type twa_error_table[] = {
 
 /* Compatibility defines */
 #define TW_9000_ARCH_ID 0x5
-#define TW_CURRENT_DRIVER_SRL 30
-#define TW_CURRENT_DRIVER_BUILD 80
+#define TW_CURRENT_DRIVER_SRL 35
+#define TW_CURRENT_DRIVER_BUILD 0
 #define TW_CURRENT_DRIVER_BRANCH 0
 
 /* Phase defines */
@@ -352,7 +352,7 @@ static twa_message_type twa_error_table[] = {
 #define TW_MAX_RESET_TRIES		      2
 #define TW_MAX_CMDS_PER_LUN		      254
 #define TW_MAX_RESPONSE_DRAIN		      256
-#define TW_MAX_AEN_DRAIN		      40
+#define TW_MAX_AEN_DRAIN		      255
 #define TW_IN_RESET                           2
 #define TW_IN_ATTENTION_LOOP		      4
 #define TW_MAX_SECTORS                        256
@@ -418,6 +418,9 @@ static twa_message_type twa_error_table[] = {
 #endif
 #ifndef PCI_DEVICE_ID_3WARE_9650SE
 #define PCI_DEVICE_ID_3WARE_9650SE 0x1004
+#endif
+#ifndef PCI_DEVICE_ID_3WARE_9690SA
+#define PCI_DEVICE_ID_3WARE_9690SA 0x1005
 #endif
 
 /* Bitmask macros to eliminate bitfields */

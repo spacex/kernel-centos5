@@ -19,7 +19,9 @@
 #include <xen/xencons.h>
 #include <xen/cpu_hotplug.h>
 
-extern void ctrl_alt_del(void);
+#ifdef HAVE_XEN_PLATFORM_COMPAT_H
+#include <xen/platform-compat.h>
+#endif
 
 #define SHUTDOWN_INVALID  -1
 #define SHUTDOWN_POWEROFF  0
@@ -31,6 +33,7 @@ extern void ctrl_alt_del(void);
  */
 #define SHUTDOWN_HALT      4
 
+#ifdef CONFIG_XEN /* non-pv-on-hvm */
 #if defined(__i386__) || defined(__x86_64__)
 
 /*
@@ -71,6 +74,7 @@ EXPORT_SYMBOL(machine_halt);
 EXPORT_SYMBOL(machine_power_off);
 
 #endif /* defined(__i386__) || defined(__x86_64__) */
+#endif /* CONFIG_XEN */
 
 /******************************************************************************
  * Stop/pickle callback handling.
@@ -78,9 +82,14 @@ EXPORT_SYMBOL(machine_power_off);
 
 /* Ignore multiple shutdown requests. */
 static int shutting_down = SHUTDOWN_INVALID;
+
+/* Can we leave APs online when we suspend? */
+static int fast_suspend;
+
 static void __shutdown_handler(void *unused);
 static DECLARE_WORK(shutdown_work, __shutdown_handler, NULL);
 
+#ifdef CONFIG_XEN
 #if defined(__i386__) || defined(__x86_64__)
 
 /* Ensure we run on the idle task page tables so that we will
@@ -214,6 +223,9 @@ static int __do_suspend(void *ignore)
 
 	return err;
 }
+#endif /* CONFIG_XEN */
+
+extern int __xen_suspend(int fast_suspend);
 
 static int shutdown_process(void *__unused)
 {
@@ -221,16 +233,21 @@ static int shutdown_process(void *__unused)
 				"PATH=/sbin:/usr/sbin:/bin:/usr/bin", NULL };
 	static char *poweroff_argv[] = { "/sbin/poweroff", NULL };
 
+#ifdef CONFIG_XEN
 	extern asmlinkage long sys_reboot(int magic1, int magic2,
 					  unsigned int cmd, void *arg);
+#endif
 
 	if ((shutting_down == SHUTDOWN_POWEROFF) ||
 	    (shutting_down == SHUTDOWN_HALT)) {
-		if (execve("/sbin/poweroff", poweroff_argv, envp) < 0) {
+		if (call_usermodehelper("/sbin/poweroff", poweroff_argv,
+					envp, 0) < 0) {
+#ifdef CONFIG_XEN
 			sys_reboot(LINUX_REBOOT_MAGIC1,
 				   LINUX_REBOOT_MAGIC2,
 				   LINUX_REBOOT_CMD_POWER_OFF,
 				   NULL);
+#endif /* CONFIG_XEN */
 		}
 	}
 
@@ -238,6 +255,17 @@ static int shutdown_process(void *__unused)
 
 	return 0;
 }
+
+#ifndef CONFIG_XEN /* pv-on-hvm */
+static int xen_suspend(void *__unused)
+{
+	int err = __xen_suspend(fast_suspend);
+	if (err)
+		printk(KERN_ERR "Xen suspend failed (%d)\n", err);
+	shutting_down = SHUTDOWN_INVALID;
+	return 0;
+}
+#endif
 
 static int kthread_create_on_cpu(int (*f)(void *arg),
 				 void *arg,
@@ -261,7 +289,11 @@ static void __shutdown_handler(void *unused)
 		err = kernel_thread(shutdown_process, NULL,
 				    CLONE_FS | CLONE_FILES);
 	else
+#ifndef CONFIG_XEN /* pv-on-hvm */
+		err = kthread_create_on_cpu(xen_suspend, NULL, "suspend", 0);
+#else /* domU */
 		err = kthread_create_on_cpu(__do_suspend, NULL, "suspend", 0);
+#endif
 
 	if (err < 0) {
 		printk(KERN_WARNING "Error creating shutdown process (%d): "
@@ -273,6 +305,7 @@ static void __shutdown_handler(void *unused)
 static void shutdown_handler(struct xenbus_watch *watch,
 			     const char **vec, unsigned int len)
 {
+	extern void ctrl_alt_del(void);
 	char *str;
 	struct xenbus_transaction xbt;
 	int err;
@@ -359,30 +392,59 @@ static struct xenbus_watch sysrq_watch = {
 	.callback = sysrq_handler
 };
 
-static int setup_shutdown_watcher(struct notifier_block *notifier,
-				  unsigned long event,
-				  void *data)
+
+static int setup_shutdown_watcher(void)
+
+
 {
 	int err;
 
+	xenbus_scanf(XBT_NIL, "control",
+		     "platform-feature-multiprocessor-suspend",
+		     "%d", &fast_suspend);
+
 	err = register_xenbus_watch(&shutdown_watch);
-	if (err)
+	if (err) {
 		printk(KERN_ERR "Failed to set shutdown watcher\n");
+		return err;
+	}
 
 	err = register_xenbus_watch(&sysrq_watch);
-	if (err)
+	if (err) {
 		printk(KERN_ERR "Failed to set sysrq watcher\n");
+		return err;
+	}
 
+	return 0;
+}
+
+#ifdef CONFIG_XEN
+
+static int shutdown_event(struct notifier_block *notifier,
+			  unsigned long event,
+			  void *data)
+{
+	setup_shutdown_watcher();
 	return NOTIFY_DONE;
 }
 
 static int __init setup_shutdown_event(void)
 {
 	static struct notifier_block xenstore_notifier = {
-		.notifier_call = setup_shutdown_watcher
+		.notifier_call = shutdown_event
 	};
 	register_xenstore_notifier(&xenstore_notifier);
+
 	return 0;
 }
 
 subsys_initcall(setup_shutdown_event);
+
+#else /* !defined(CONFIG_XEN) */
+
+int xen_reboot_init(void)
+{
+	return setup_shutdown_watcher();
+}
+
+#endif /* !defined(CONFIG_XEN) */

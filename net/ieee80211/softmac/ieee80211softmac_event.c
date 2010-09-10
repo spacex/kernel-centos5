@@ -77,7 +77,7 @@ ieee80211softmac_notify_callback(void *d)
 {
 	struct ieee80211softmac_event event = *(struct ieee80211softmac_event*) d;
 	kfree(d);
-	
+
 	event.fun(event.mac->dev, event.event_type, event.context);
 }
 
@@ -90,14 +90,14 @@ ieee80211softmac_notify_internal(struct ieee80211softmac_device *mac,
 
 	if (event < -1 || event > IEEE80211SOFTMAC_EVENT_LAST)
 		return -ENOSYS;
-	
+
 	if (!fun)
 		return -EINVAL;
-	
+
 	eventptr = kmalloc(sizeof(struct ieee80211softmac_event), gfp_mask);
 	if (!eventptr)
 		return -ENOMEM;
-	
+
 	eventptr->event_type = event;
 	INIT_WORK(&eventptr->work, ieee80211softmac_notify_callback, eventptr);
 	eventptr->fun = fun;
@@ -120,7 +120,7 @@ ieee80211softmac_notify_gfp(struct net_device *dev,
 
 	if (event < 0 || event > IEEE80211SOFTMAC_EVENT_LAST)
 		return -ENOSYS;
-	
+
 	return ieee80211softmac_notify_internal(mac, event, NULL, fun, context, gfp_mask);
 }
 EXPORT_SYMBOL_GPL(ieee80211softmac_notify_gfp);
@@ -131,7 +131,7 @@ ieee80211softmac_call_events_locked(struct ieee80211softmac_device *mac, int eve
 {
 	struct ieee80211softmac_event *eventptr, *tmp;
 	struct ieee80211softmac_network *network;
-	
+
 	if (event >= 0) {
 		union iwreq_data wrqu;
 		int we_event;
@@ -170,7 +170,7 @@ ieee80211softmac_call_events_locked(struct ieee80211softmac_device *mac, int eve
 				/* User may have subscribed to ANY event, so
 				 * we tell them which event triggered it. */
 				eventptr->event_type = event;
-				schedule_work(&eventptr->work);
+				schedule_delayed_work(&eventptr->work, 0);
 			}
 		}
 }

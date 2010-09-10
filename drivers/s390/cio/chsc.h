@@ -78,7 +78,7 @@ extern int chsc_secm(struct channel_subsystem *, int);
 int chsc_chp_vary(struct chp_id chpid, int on);
 int chsc_determine_channel_path_description(struct chp_id chpid,
 					    struct channel_path_desc *desc);
-int chsc_chp_online(struct chp_id chpid);
+void chsc_chp_online(struct chp_id chpid);
 void chsc_chp_offline(struct chp_id chpid);
 int chsc_get_channel_measurement_chars(struct channel_path *chp);
 

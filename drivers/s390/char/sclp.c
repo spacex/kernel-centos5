@@ -381,7 +381,7 @@ sclp_interrupt_handler(struct pt_regs *regs, __u16 code)
 		}
 		sclp_running_state = sclp_running_state_idle;
 	}
-	if (evbuf_pending && sclp_receive_mask != 0 &&
+	if (evbuf_pending &&
 	    sclp_activation_state == sclp_activation_state_active)
 		__sclp_queue_read_req();
 	spin_unlock(&sclp_lock);
@@ -488,14 +488,14 @@ sclp_dispatch_state_change(void)
 struct sclp_statechangebuf {
 	struct evbuf_header	header;
 	u8		validity_sclp_active_facility_mask : 1;
-	u8		validity_sclp_receive_mask : 1;
 	u8		validity_sclp_send_mask : 1;
+	u8		validity_sclp_receive_mask : 1;
 	u8		validity_read_data_function_mask : 1;
 	u16		_zeros : 12;
 	u16		mask_length;
 	u64		sclp_active_facility_mask;
-	sccb_mask_t	sclp_receive_mask;
 	sccb_mask_t	sclp_send_mask;
+	sccb_mask_t	sclp_receive_mask;
 	u32		read_data_function_mask;
 } __attribute__((packed));
 

@@ -57,6 +57,7 @@
 #include <linux/netlink.h>
 #include <linux/selinux.h>
 #include <linux/inotify.h>
+#include <linux/tty.h>
 
 #include "audit.h"
 
@@ -151,6 +152,11 @@ struct audit_buffer {
 	struct sk_buff       *skb;	/* formatted skb ready to send */
 	struct audit_context *ctx;	/* NULL or associated context */
 	gfp_t		     gfp_mask;
+};
+
+struct audit_reply {
+	pid_t pid;
+	struct sk_buff *skb;
 };
 
 static void audit_set_pid(struct audit_buffer *ab, pid_t pid)
@@ -451,6 +457,31 @@ static int kauditd_thread(void *dummy)
 	return 0;
 }
 
+static int audit_prepare_user_tty(pid_t pid, uid_t loginuid)
+{
+	struct task_struct *tsk;
+	int err;
+
+	read_lock(&tasklist_lock);
+	tsk = find_task_by_pid(pid);
+	err = -ESRCH;
+	if (!tsk)
+		goto out;
+	err = 0;
+
+	spin_lock_irq(&tsk->sighand->siglock);
+	if (!tsk->signal->audit_tty)
+		err = -EPERM;
+	spin_unlock_irq(&tsk->sighand->siglock);
+	if (err)
+		goto out;
+
+	tty_audit_push_task(tsk, loginuid);
+out:
+	read_unlock(&tasklist_lock);
+	return err;
+}
+
 int audit_send_list(void *_dest)
 {
 	struct audit_netlink_list *dest = _dest;
@@ -469,6 +500,7 @@ int audit_send_list(void *_dest)
 	return 0;
 }
 
+#ifdef CONFIG_AUDITSYSCALL
 static int prune_tree_thread(void *unused)
 {
 	mutex_lock(&audit_cmd_mutex);
@@ -481,6 +513,7 @@ void audit_schedule_prune(void)
 {
 	kthread_run(prune_tree_thread, NULL, "audit_prune_tree");
 }
+#endif
 
 struct sk_buff *audit_make_reply(int pid, int seq, int type, int done,
 				 int multi, void *payload, int size)
@@ -508,6 +541,19 @@ nlmsg_failure:			/* Used by NLMSG_PUT */
 	return NULL;
 }
 
+static int audit_send_reply_thread(void *arg)
+{
+	struct audit_reply *reply = (struct audit_reply *)arg;
+
+	mutex_lock(&audit_cmd_mutex);
+	mutex_unlock(&audit_cmd_mutex);
+
+	/* Ignore failure. It'll only happen if the sender goes away,
+	   because our timeout is set to infinite. */
+	netlink_unicast(audit_sock, reply->skb, reply->pid, 0);
+	kfree(reply);
+	return 0;
+}
 /**
  * audit_send_reply - send an audit reply message via netlink
  * @pid: process id to send reply to
@@ -524,14 +570,26 @@ nlmsg_failure:			/* Used by NLMSG_PUT */
 void audit_send_reply(int pid, int seq, int type, int done, int multi,
 		      void *payload, int size)
 {
-	struct sk_buff	*skb;
+	struct sk_buff *skb;
+	struct task_struct *tsk;
+	struct audit_reply *reply = kmalloc(sizeof(struct audit_reply),
+					    GFP_KERNEL);
+
+	if (!reply)
+		return;
+
 	skb = audit_make_reply(pid, seq, type, done, multi, payload, size);
 	if (!skb)
 		return;
-	/* Ignore failure. It'll only happen if the sender goes away,
-	   because our timeout is set to infinite. */
-	netlink_unicast(audit_sock, skb, pid, 0);
-	return;
+
+	reply->pid = pid;
+	reply->skb = skb;
+
+	tsk = kthread_run(audit_send_reply_thread, reply, "audit_send_reply");
+	if (IS_ERR(tsk)) {
+		kfree(reply);
+		kfree_skb(skb);
+	}
 }
 
 /*
@@ -554,6 +612,8 @@ static int audit_netlink_ok(struct sk_buff *skb, u16 msg_type)
 	case AUDIT_SIGNAL_INFO:
 	case AUDIT_TRIM:
 	case AUDIT_MAKE_EQUIV:
+	case AUDIT_TTY_GET:
+	case AUDIT_TTY_SET:
 		if (security_netlink_recv(skb, CAP_AUDIT_CONTROL))
 			err = -EPERM;
 		break;
@@ -670,6 +730,11 @@ static int audit_receive_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 		err = audit_filter_user(&NETLINK_CB(skb), msg_type);
 		if (err == 1) {
 			err = 0;
+			if (msg_type == AUDIT_USER_TTY) {
+				err = audit_prepare_user_tty(pid, loginuid);
+				if (err)
+					break;
+			}
 			ab = audit_log_start(NULL, GFP_KERNEL, msg_type);
 			if (ab) {
 				audit_log_format(ab,
@@ -686,8 +751,20 @@ static int audit_receive_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 							" subj=%s", ctx);
 					kfree(ctx);
 				}
-				audit_log_format(ab, " msg='%.1024s'",
-					 (char *)data);
+				if (msg_type != AUDIT_USER_TTY)
+					audit_log_format(ab, " msg='%.1024s'",
+							 (char *)data);
+				else {
+					int size;
+
+					audit_log_format(ab, " msg=");
+					size = nlmsg_len(nlh);
+					if (size > 0 &&
+					    ((unsigned char *)data)[size - 1] == '\0')
+						size--;
+					audit_log_n_untrustedstring(ab, size,
+								    data);
+				}
 				audit_set_pid(ab, pid);
 				audit_log_end(ab);
 			}
@@ -843,6 +920,45 @@ static int audit_receive_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 				0, 0, sig_data, sizeof(*sig_data) + len);
 		kfree(sig_data);
 		break;
+	case AUDIT_TTY_GET: {
+		struct audit_tty_status s;
+		struct task_struct *tsk;
+
+		read_lock(&tasklist_lock);
+		tsk = find_task_by_pid(pid);
+		if (!tsk)
+			err = -ESRCH;
+		else {
+			spin_lock_irq(&tsk->sighand->siglock);
+			s.enabled = tsk->signal->audit_tty != 0;
+			spin_unlock_irq(&tsk->sighand->siglock);
+		}
+		read_unlock(&tasklist_lock);
+		audit_send_reply(NETLINK_CB(skb).pid, seq, AUDIT_TTY_GET, 0, 0,
+				 &s, sizeof(s));
+		break;
+	}
+	case AUDIT_TTY_SET: {
+		struct audit_tty_status *s;
+		struct task_struct *tsk;
+
+		if (nlh->nlmsg_len < sizeof(struct audit_tty_status))
+			return -EINVAL;
+		s = data;
+		if (s->enabled != 0 && s->enabled != 1)
+			return -EINVAL;
+		read_lock(&tasklist_lock);
+		tsk = find_task_by_pid(pid);
+		if (!tsk)
+			err = -ESRCH;
+		else {
+			spin_lock_irq(&tsk->sighand->siglock);
+			tsk->signal->audit_tty = s->enabled != 0;
+			spin_unlock_irq(&tsk->sighand->siglock);
+		}
+		read_unlock(&tasklist_lock);
+		break;
+	}
 	default:
 		err = -EINVAL;
 		break;
@@ -1312,7 +1428,7 @@ void audit_log_n_string(struct audit_buffer *ab, size_t slen,
 int audit_string_contains_control(const char *string, size_t len)
 {
 	const unsigned char *p;
-	for (p = string; p < (const unsigned char *)string + len && *p; p++) {
+	for (p = string; p < (const unsigned char *)string + len; p++) {
 		if (*p == '"' || *p < 0x21 || *p > 0x7f)
 			return 1;
 	}
@@ -1395,16 +1511,19 @@ void audit_log_end(struct audit_buffer *ab)
 	if (!audit_rate_check()) {
 		audit_log_lost("rate limit exceeded");
 	} else {
+		struct nlmsghdr *nlh = (struct nlmsghdr *)ab->skb->data;
 		if (audit_pid) {
-			struct nlmsghdr *nlh = (struct nlmsghdr *)ab->skb->data;
 			nlh->nlmsg_len = ab->skb->len - NLMSG_SPACE(0);
 			skb_queue_tail(&audit_skb_queue, ab->skb);
 			ab->skb = NULL;
 			wake_up_interruptible(&kauditd_wait);
-		} else if (printk_ratelimit())
-			printk(KERN_NOTICE "%s\n", ab->skb->data + NLMSG_SPACE(0));
-		else
-			audit_log_lost("printk limit exceeded\n");
+		} else if (nlh->nlmsg_type != AUDIT_EOE) {
+			if (printk_ratelimit())
+				printk(KERN_NOTICE "type=%d %s\n", nlh->nlmsg_type,
+					ab->skb->data + NLMSG_SPACE(0));
+			else
+				audit_log_lost("printk limit exceeded\n");
+		}
 	}
 	audit_buffer_free(ab);
 }
