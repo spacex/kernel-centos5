@@ -3,7 +3,7 @@
  *
  *   SMB/CIFS session setup handling routines
  *
- *   Copyright (c) International Business Machines  Corp., 2006, 2007
+ *   Copyright (c) International Business Machines  Corp., 2006, 2009
  *   Author(s): Steve French (sfrench@us.ibm.com)
  *
  *   This library is free software; you can redistribute it and/or modify
@@ -203,85 +203,51 @@ static void ascii_ssetup_strings(char **pbcc_area, struct cifsSesInfo *ses,
 	*pbcc_area = bcc_ptr;
 }
 
-static int decode_unicode_ssetup(char **pbcc_area, int bleft,
-				 struct cifsSesInfo *ses,
-				 const struct nls_table *nls_cp)
+static void
+decode_unicode_ssetup(char **pbcc_area, int bleft, struct cifsSesInfo *ses,
+		      const struct nls_table *nls_cp)
 {
-	int rc = 0;
-	int words_left, len;
+	int len;
 	char *data = *pbcc_area;
-
-
 
 	cFYI(1, ("bleft %d", bleft));
 
-
-	/* SMB header is unaligned, so cifs servers word align start of
-	   Unicode strings */
-	data++;
-	bleft--; /* Windows servers do not always double null terminate
-		    their final Unicode string - in which case we
-		    now will not attempt to decode the byte of junk
-		    which follows it */
-
-	words_left = bleft / 2;
-
-	/* save off server operating system */
-	len = UniStrnlen((wchar_t *) data, words_left);
-
-/* We look for obvious messed up bcc or strings in response so we do not go off
-   the end since (at least) WIN2K and Windows XP have a major bug in not null
-   terminating last Unicode string in response  */
-	if (len >= words_left)
-		return rc;
+	/*
+	 * Windows servers do not always double null terminate their final
+	 * Unicode string. Check to see if there are an uneven number of bytes
+	 * left. If so, then add an extra NULL pad byte to the end of the
+	 * response.
+	 *
+	 * See section 2.7.2 in "Implementing CIFS" for details
+	 */
+	if (bleft % 2) {
+		data[bleft] = 0;
+		++bleft;
+	}
 
 	kfree(ses->serverOS);
-	/* UTF-8 string will not grow more than four times as big as UCS-16 */
-	ses->serverOS = kzalloc(4 * len, GFP_KERNEL);
-	if (ses->serverOS != NULL)
-		cifs_strfromUCS_le(ses->serverOS, (__le16 *)data, len, nls_cp);
-	data += 2 * (len + 1);
-	words_left -= len + 1;
-
-	/* save off server network operating system */
-	len = UniStrnlen((wchar_t *) data, words_left);
-
-	if (len >= words_left)
-		return rc;
+	ses->serverOS = cifs_strndup_from_ucs(data, bleft, true, nls_cp);
+	cFYI(1, ("serverOS=%s", ses->serverOS));
+	len = (UniStrnlen((wchar_t *) data, bleft / 2) * 2) + 2;
+	data += len;
+	bleft -= len;
+	if (bleft <= 0)
+		return;
 
 	kfree(ses->serverNOS);
-	ses->serverNOS = kzalloc(4 * len, GFP_KERNEL); /* BB this is wrong length FIXME BB */
-	if (ses->serverNOS != NULL) {
-		cifs_strfromUCS_le(ses->serverNOS, (__le16 *)data, len,
-				   nls_cp);
-		if (strncmp(ses->serverNOS, "NT LAN Manager 4", 16) == 0) {
-			cFYI(1, ("NT4 server"));
-			ses->flags |= CIFS_SES_NT4;
-		}
-	}
-	data += 2 * (len + 1);
-	words_left -= len + 1;
-
-	/* save off server domain */
-	len = UniStrnlen((wchar_t *) data, words_left);
-
-	if (len > words_left)
-		return rc;
+	ses->serverNOS = cifs_strndup_from_ucs(data, bleft, true, nls_cp);
+	cFYI(1, ("serverNOS=%s", ses->serverNOS));
+	len = (UniStrnlen((wchar_t *) data, bleft / 2) * 2) + 2;
+	data += len;
+	bleft -= len;
+	if (bleft <= 0)
+		return;
 
 	kfree(ses->serverDomain);
-	ses->serverDomain = kzalloc(2 * (len + 1), GFP_KERNEL); /* BB FIXME wrong length */
-	if (ses->serverDomain != NULL) {
-		cifs_strfromUCS_le(ses->serverDomain, (__le16 *)data, len,
-				   nls_cp);
-		ses->serverDomain[2*len] = 0;
-		ses->serverDomain[(2*len) + 1] = 0;
-	}
-	data += 2 * (len + 1);
-	words_left -= len + 1;
+	ses->serverDomain = cifs_strndup_from_ucs(data, bleft, true, nls_cp);
+	cFYI(1, ("serverDomain=%s", ses->serverDomain));
 
-	cFYI(1, ("words left: %d", words_left));
-
-	return rc;
+	return;
 }
 
 static int decode_ascii_ssetup(char **pbcc_area, int bleft,
@@ -623,12 +589,17 @@ CIFS_SessSetup(unsigned int xid, struct cifsSesInfo *ses, int first_time,
 	}
 
 	/* BB check if Unicode and decode strings */
-	if (smb_buf->Flags2 & SMBFLG2_UNICODE)
-		rc = decode_unicode_ssetup(&bcc_ptr, bytes_remaining,
-						   ses, nls_cp);
-	else
+	if (smb_buf->Flags2 & SMBFLG2_UNICODE) {
+		/* unicode string area must be word-aligned */
+		if (((unsigned long) bcc_ptr - (unsigned long) smb_buf) % 2) {
+			++bcc_ptr;
+			--bytes_remaining;
+		}
+		decode_unicode_ssetup(&bcc_ptr, bytes_remaining, ses, nls_cp);
+	} else {
 		rc = decode_ascii_ssetup(&bcc_ptr, bytes_remaining,
 					 ses, nls_cp);
+	}
 
 ssetup_exit:
 	if (spnego_key) {

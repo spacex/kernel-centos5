@@ -735,11 +735,15 @@ ENTRY(hypervisor_callback)
 	pushl %eax
 	CFI_ADJUST_CFA_OFFSET 4
 	SAVE_ALL
+	testb $2,CS(%esp)
 	movl EIP(%esp),%eax
+	jnz  11f
 	cmpl $scrit,%eax
-	jb   11f
+	jb   0f
 	cmpl $ecrit,%eax
 	jb   critical_region_fixup
+0:
+#ifdef CONFIG_XEN_SUPERVISOR_MODE_KERNEL
 	cmpl $sysexit_scrit,%eax
 	jb   11f
 	cmpl $sysexit_ecrit,%eax
@@ -748,6 +752,7 @@ ENTRY(hypervisor_callback)
 	addl $0x34,%esp			# Remove cs...ebx from stack frame.
 	# this popped off new frame to reuse the old one, therefore no 
 	# CFI_ADJUST_CFA_OFFSET here
+#endif
 11:	push %esp
 	CFI_ADJUST_CFA_OFFSET 4
 	call evtchn_do_upcall

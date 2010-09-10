@@ -357,17 +357,23 @@ static void set_huge_ptep_writable(struct vm_area_struct *vma,
 }
 
 
+static int hugetlb_cow(struct mm_struct *mm, struct vm_area_struct *vma,
+		       unsigned long address, pte_t *ptep, pte_t pte,
+		       int cannot_race);
+
 int copy_hugetlb_page_range(struct mm_struct *dst, struct mm_struct *src,
-			    struct vm_area_struct *vma)
+			    struct vm_area_struct *dst_vma,
+			    struct vm_area_struct *src_vma)
 {
-	pte_t *src_pte, *dst_pte, entry;
+	pte_t *src_pte, *dst_pte, entry, orig_entry;
 	struct page *ptepage;
 	unsigned long addr;
-	int cow;
+	int cow, forcecow, oom;
 
-	cow = (vma->vm_flags & (VM_SHARED | VM_MAYWRITE)) == VM_MAYWRITE;
+	cow = (src_vma->vm_flags & (VM_SHARED | VM_MAYWRITE)) == VM_MAYWRITE;
 
-	for (addr = vma->vm_start; addr < vma->vm_end; addr += HPAGE_SIZE) {
+	for (addr = src_vma->vm_start; addr < src_vma->vm_end;
+	     addr += HPAGE_SIZE) {
 		src_pte = huge_pte_offset(src, addr);
 		if (!src_pte)
 			continue;
@@ -377,18 +383,48 @@ int copy_hugetlb_page_range(struct mm_struct *dst, struct mm_struct *src,
 		/* if the page table is shared dont copy or take references */
 		if (dst_pte == src_pte)
 			continue;
+		oom = 0;
 		spin_lock(&dst->page_table_lock);
 		spin_lock(&src->page_table_lock);
-		if (!huge_pte_none(huge_ptep_get(src_pte))) {
-			if (cow)
-				huge_ptep_set_wrprotect(src, addr, src_pte);
-			entry = huge_ptep_get(src_pte);
+		orig_entry = entry = huge_ptep_get(src_pte);
+		if (!huge_pte_none(entry)) {
+			forcecow = 0;
 			ptepage = pte_page(entry);
 			get_page(ptepage);
+			if (cow && pte_write(entry)) {
+				if (PageGUP(ptepage))
+					forcecow = 1;
+				huge_ptep_set_wrprotect(src, addr,
+							src_pte);
+				entry = huge_ptep_get(src_pte);
+			}
 			set_huge_pte_at(dst, addr, dst_pte, entry);
+			if (forcecow) {
+				int cow_ret;
+				/* force atomic copy from parent to child */
+				flush_tlb_range(src_vma, addr, addr+HPAGE_SIZE);
+				/*
+				 * We hold mmap_sem in write mode and
+				 * the VM doesn't know about hugepages
+				 * so the src_pte/dst_pte can't change
+				 * from under us even if hugetlb_cow
+				 * will release the lock.
+				 */
+				cow_ret = hugetlb_cow(dst, dst_vma, addr,
+						      dst_pte, entry, 1);
+				BUG_ON(!pte_same(huge_ptep_get(src_pte),
+						 entry));
+				set_huge_pte_at(src, addr,
+						src_pte,
+						orig_entry);
+				if (cow_ret != VM_FAULT_MINOR)
+					oom = 1;
+			}
 		}
 		spin_unlock(&src->page_table_lock);
 		spin_unlock(&dst->page_table_lock);
+		if (oom)
+			goto nomem;
 	}
 	return 0;
 
@@ -448,7 +484,8 @@ void unmap_hugepage_range(struct vm_area_struct *vma, unsigned long start,
 }
 
 static int hugetlb_cow(struct mm_struct *mm, struct vm_area_struct *vma,
-			unsigned long address, pte_t *ptep, pte_t pte)
+		       unsigned long address, pte_t *ptep, pte_t pte,
+		       int cannot_race)
 {
 	struct page *old_page, *new_page;
 	int avoidcopy;
@@ -483,7 +520,8 @@ static int hugetlb_cow(struct mm_struct *mm, struct vm_area_struct *vma,
 				make_huge_pte(vma, new_page, 1));
 		/* Make the old page be freed below */
 		new_page = old_page;
-	}
+	} else
+		BUG_ON(cannot_race);
 	page_cache_release(new_page);
 	page_cache_release(old_page);
 	return VM_FAULT_MINOR;
@@ -553,7 +591,7 @@ retry:
 
 	if (write_access && !(vma->vm_flags & VM_SHARED)) {
 		/* Optimization, do the COW without a second fault */
-		ret = hugetlb_cow(mm, vma, address, ptep, new_pte);
+		ret = hugetlb_cow(mm, vma, address, ptep, new_pte, 0);
 	}
 
 	spin_unlock(&mm->page_table_lock);
@@ -600,7 +638,7 @@ int hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	/* Check for a racing update before calling hugetlb_cow */
 	if (likely(pte_same(entry, huge_ptep_get(ptep))))
 		if (write_access && !pte_write(entry))
-			ret = hugetlb_cow(mm, vma, address, ptep, entry);
+			ret = hugetlb_cow(mm, vma, address, ptep, entry, 0);
 	spin_unlock(&mm->page_table_lock);
 	mutex_unlock(&hugetlb_instantiation_mutex);
 
@@ -649,6 +687,8 @@ int follow_hugetlb_page(struct mm_struct *mm, struct vm_area_struct *vma,
 same_page:
 		if (pages) {
 			get_page(page);
+			if (write && !PageGUP(page))
+				SetPageGUP(page);
 			pages[i] = page + pfn_offset;
 		}
 

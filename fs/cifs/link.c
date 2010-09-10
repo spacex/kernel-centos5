@@ -105,81 +105,56 @@ cifs_hl_exit:
 	FreeXid(xid);
 	return rc;
 }
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,12)
+
 void *
 cifs_follow_link(struct dentry *direntry, struct nameidata *nd)
-#else
-int
-cifs_follow_link(struct dentry *direntry, struct nameidata *nd)
-#endif
 {
 	struct inode *inode = direntry->d_inode;
-	int rc = -EACCES;
+	int rc = -ENOMEM;
 	int xid;
 	char *full_path = NULL;
-	char *target_path = ERR_PTR(-ENOMEM);
-	struct cifs_sb_info *cifs_sb;
-	struct cifsTconInfo *pTcon;
+	char *target_path = NULL;
+	struct cifs_sb_info *cifs_sb = CIFS_SB(inode->i_sb);
+	struct cifsTconInfo *tcon = cifs_sb->tcon;
 
 	xid = GetXid();
 
-	full_path = build_path_from_dentry(direntry);
-
-	if (!full_path)
-		goto out_no_free;
-
-	cFYI(1, ("Full path: %s inode = 0x%p", full_path, inode));
-	cifs_sb = CIFS_SB(inode->i_sb);
-	pTcon = cifs_sb->tcon;
-	target_path = kmalloc(PATH_MAX, GFP_KERNEL);
-	if (!target_path) {
-		target_path = ERR_PTR(-ENOMEM);
+	/*
+	 * For now, we just handle symlinks with unix extensions enabled.
+	 * Eventually we should handle NTFS reparse points, and MacOS
+	 * symlink support. For instance...
+	 *
+	 * rc = CIFSSMBQueryReparseLinkInfo(...)
+	 *
+	 * For now, just return -EACCES when the server doesn't support posix
+	 * extensions. Note that we still allow querying symlinks when posix
+	 * extensions are manually disabled. We could disable these as well
+	 * but there doesn't seem to be any harm in allowing the client to
+	 * read them.
+	 */
+	if (!(tcon->ses->capabilities & CAP_UNIX)) {
+		rc = -EACCES;
 		goto out;
 	}
 
-	/* We could change this to:
-		if (pTcon->unix_ext)
-	   but there does not seem any point in refusing to
-	   get symlink info if we can, even if unix extensions
-	   turned off for this mount */
+	full_path = build_path_from_dentry(direntry);
+	if (!full_path)
+		goto out;
 
-	if (pTcon->ses->capabilities & CAP_UNIX)
-		rc = CIFSSMBUnixQuerySymLink(xid, pTcon, full_path,
-					     target_path,
-					     PATH_MAX-1,
-					     cifs_sb->local_nls);
-	else {
-		/* BB add read reparse point symlink code here */
-		/* rc = CIFSSMBQueryReparseLinkInfo */
-		/* BB Add code to Query ReparsePoint info */
-		/* BB Add MAC style xsymlink check here if enabled */
-	}
+	cFYI(1, ("Full path: %s inode = 0x%p", full_path, inode));
 
-	if (rc == 0) {
-
-/* BB Add special case check for Samba DFS symlinks */
-
-		target_path[PATH_MAX-1] = 0;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,9) 
-		rc = vfs_follow_link(nd, target_path);
-#endif
-	} else {
+	rc = CIFSSMBUnixQuerySymLink(xid, tcon, full_path, &target_path,
+				     cifs_sb->local_nls);
+	kfree(full_path);
+out:
+	if (rc != 0) {
 		kfree(target_path);
 		target_path = ERR_PTR(rc);
 	}
 
-out:
-	kfree(full_path);
-out_no_free:
 	FreeXid(xid);
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,8) 
 	nd_set_link(nd, target_path);
-#endif
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,12)
-	return NULL;	/* No cookie */
-#else
-	return 0;
-#endif
+	return NULL;
 }
 
 int
@@ -285,13 +260,8 @@ cifs_readlink(struct dentry *direntry, char __user *pBuffer, int buflen)
 
 /* BB add read reparse point symlink code and
 	Unix extensions symlink code here BB */
-/* We could disable this based on pTcon->unix_ext flag instead ... but why? */
-	if (cifs_sb->tcon->ses->capabilities & CAP_UNIX)
-		rc = CIFSSMBUnixQuerySymLink(xid, pTcon, full_path,
-				tmpbuffer,
-				len - 1,
-				cifs_sb->local_nls);
-	else if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_UNX_EMUL) {
+
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_UNX_EMUL) {
 		cERROR(1, ("SFU style symlinks not implemented yet"));
 		/* add open and read as in fs/cifs/inode.c */
 	} else {

@@ -1475,7 +1475,7 @@ static int ep_events_transfer(struct eventpoll *ep,
 	 * We need to lock this because we could be hit by
 	 * eventpoll_release_file() and epoll_ctl(EPOLL_CTL_DEL).
 	 */
-	down_read(&ep->sem);
+	down_write(&ep->sem);
 
 	/* Collect/extract ready items */
 	if (ep_collect_ready_items(ep, &txlist, maxevents) > 0) {
@@ -1486,7 +1486,7 @@ static int ep_events_transfer(struct eventpoll *ep,
 		ep_reinject_items(ep, &txlist);
 	}
 
-	up_read(&ep->sem);
+	up_write(&ep->sem);
 
 	return eventcnt;
 }

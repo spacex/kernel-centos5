@@ -37,6 +37,7 @@
 #include <linux/notifier.h>
 #include <linux/syscalls.h>
 #include <linux/interrupt.h>
+#include <linux/timex.h>
 
 #include <asm/uaccess.h>
 
@@ -63,11 +64,7 @@ static ktime_t ktime_get_real(void)
 {
 	struct timespec now;
 
-#ifdef CONFIG_TIME_INTERPOLATION
-	now = current_kernel_time();
-#else
 	getnstimeofday(&now);
-#endif
 
 	return timespec_to_ktime(now);
 }
@@ -115,11 +112,7 @@ void ktime_get_ts(struct timespec *ts)
 
 	do {
 		seq = read_seqbegin(&xtime_lock);
-#ifdef CONFIG_TIME_INTERPOLATION
-		*ts = xtime;
-#else
 		getnstimeofday(ts);
-#endif
 		tomono = wall_to_monotonic;
 
 	} while (read_seqretry(&xtime_lock, seq));
@@ -137,10 +130,20 @@ static void hrtimer_get_softirq_time(struct hrtimer_base *base)
 {
 	ktime_t xtim, tomono;
 	unsigned long seq;
+	struct timespec ts;
 
 	do {
 		seq = read_seqbegin(&xtime_lock);
-		xtim = timespec_to_ktime(xtime);
+#ifdef CONFIG_TIME_INTERPOLATION
+		if (time_interpolator) {
+			getnstimeofday(&ts);
+			xtim = timespec_to_ktime(ts);
+		} else {
+			xtim = timespec_to_ktime(xtime);
+		}
+#else
+ 		xtim = timespec_to_ktime(xtime);
+#endif
 		tomono = timespec_to_ktime(wall_to_monotonic);
 
 	} while (read_seqretry(&xtime_lock, seq));

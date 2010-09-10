@@ -77,6 +77,7 @@
 #include <linux/rcupdate.h>
 #include <linux/delayacct.h>
 #include <linux/resource.h>
+#include <linux/ptrace.h>
 
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
@@ -331,6 +332,7 @@ static int do_task_stat(struct task_struct *task, char * buffer, int whole)
 	int res;
  	pid_t ppid, pgid = -1, sid = -1;
 	int num_threads = 0;
+	int permitted;
 	struct mm_struct *mm;
 	unsigned long long start_time;
 	unsigned long cmin_flt = 0, cmaj_flt = 0;
@@ -342,11 +344,14 @@ static int do_task_stat(struct task_struct *task, char * buffer, int whole)
 
 	state = *get_task_state(task);
 	vsize = eip = esp = 0;
+	permitted = ptrace_may_attach(task);
 	mm = get_task_mm(task);
 	if (mm) {
 		vsize = task_vsize(mm);
-		eip = KSTK_EIP(task);
-		esp = KSTK_ESP(task);
+		if (permitted) {
+			eip = KSTK_EIP(task);
+			esp = KSTK_ESP(task);
+		}
 	}
 
 	get_task_comm(tcomm, task);
@@ -399,7 +404,7 @@ static int do_task_stat(struct task_struct *task, char * buffer, int whole)
 	read_unlock(&tasklist_lock);
 	mutex_unlock(&tty_mutex);
 
-	if (!whole || num_threads<2) {
+	if (permitted && (!whole || num_threads<2)) {
 		wchan = 0;
 		if (current->uid == task->uid || current->euid == task->uid ||
 				capable(CAP_SYS_NICE))
@@ -453,7 +458,7 @@ static int do_task_stat(struct task_struct *task, char * buffer, int whole)
 	        rsslim,
 		mm ? mm->start_code : 0,
 		mm ? mm->end_code : 0,
-		mm ? mm->start_stack : 0,
+		(permitted && mm) ? mm->start_stack : 0,
 		esp,
 		eip,
 		/* The signal information here is obsolete.

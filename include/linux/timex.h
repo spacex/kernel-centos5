@@ -294,6 +294,7 @@ extern void register_time_interpolator(struct time_interpolator *);
 extern void unregister_time_interpolator(struct time_interpolator *);
 extern void time_interpolator_reset(void);
 extern unsigned long time_interpolator_get_offset(void);
+extern struct time_interpolator *time_interpolator;
 
 #else /* !CONFIG_TIME_INTERPOLATION */
 

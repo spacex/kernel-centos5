@@ -1426,9 +1426,11 @@ ptrace_do_wait(struct task_struct *tsk,
 		 * races the same wait that vanilla do_wait (exit.c) is:
 		 * wait_chldexit is woken after p->state is set to TASK_STOPPED.
 		 */
-		if (p->state == TASK_STOPPED)
-			goto found;
-
+		if (exit_code != 0) {
+			if (p->state == TASK_STOPPED)
+				goto found;
+			xchg(&p->exit_code, exit_code);
+		}
 		// XXX should handle WCONTINUED
 
 		pr_debug("%d ptrace_do_wait leaving %d state %lu code %x\n",
