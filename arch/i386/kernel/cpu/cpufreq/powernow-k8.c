@@ -55,7 +55,7 @@ static DEFINE_MUTEX(fidvid_mutex);
 
 static struct powernow_k8_data *powernow_data[NR_CPUS];
 static int *req_state = NULL;
-static int tscsync __initdata = 0;
+static int tscsync = 0;
 
 static int cpu_family = CPU_OPTERON;
 
