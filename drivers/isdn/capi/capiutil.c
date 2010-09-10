@@ -712,8 +712,12 @@ static char *p = NULL;
 static void bufprint(char *fmt,...)
 {
 	va_list f;
+	size_t remain = (p >= buf && p < buf+sizeof(buf)) 
+		        ? buf+sizeof(buf)-p 
+		        : 0;
+
 	va_start(f, fmt);
-	vsprintf(p, fmt, f);
+	vsnprintf(p, remain, fmt, f);
 	va_end(f);
 	p += strlen(p);
 }
