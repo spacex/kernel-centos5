@@ -272,10 +272,19 @@ ptrace_update(struct task_struct *target,
 			state->u.live.u.siginfo = NULL;
 
 		if (target->state == TASK_STOPPED) {
-			spin_lock_irq(&target->sighand->siglock);
-			if (target->state == TASK_STOPPED)
-				target->signal->flags &= ~SIGNAL_STOP_STOPPED;
-			spin_unlock_irq(&target->sighand->siglock);
+			/*
+			 * We have to double-check for naughty de_thread
+			 * reaping despite NOREAP, before we can get siglock.
+			 */
+			read_lock(&tasklist_lock);
+			if (!target->exit_state) {
+				spin_lock_irq(&target->sighand->siglock);
+				if (target->state == TASK_STOPPED)
+					target->signal->flags &=
+						~SIGNAL_STOP_STOPPED;
+				spin_unlock_irq(&target->sighand->siglock);
+			}
+			read_unlock(&tasklist_lock);
 		}
 	}
 
@@ -401,13 +410,23 @@ static int ptrace_attach(struct task_struct *task)
 	if (retval)
 		(void) utrace_detach(task, engine);
 	else {
-		int stopped;
+		int stopped = 0;
 
-		force_sig_specific(SIGSTOP, task);
+		/*
+		 * We must double-check that task has not just died and
+		 * been reaped (after ptrace_update succeeded).
+		 * This happens when exec (de_thread) ignores NOREAP.
+		 * We cannot call into the signal code if it's dead.
+		 */
+		read_lock(&tasklist_lock);
+		if (likely(!task->exit_state)) {
+			force_sig_specific(SIGSTOP, task);
 
-		spin_lock_irq(&task->sighand->siglock);
-		stopped = (task->state == TASK_STOPPED);
-		spin_unlock_irq(&task->sighand->siglock);
+			spin_lock_irq(&task->sighand->siglock);
+			stopped = (task->state == TASK_STOPPED);
+			spin_unlock_irq(&task->sighand->siglock);
+		}
+		read_unlock(&tasklist_lock);
 
 		if (stopped) {
 			/*
