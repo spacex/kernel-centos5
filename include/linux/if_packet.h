@@ -1,6 +1,8 @@
 #ifndef __LINUX_IF_PACKET_H
 #define __LINUX_IF_PACKET_H
 
+#include <linux/types.h>
+
 struct sockaddr_pkt
 {
 	unsigned short spkt_family;

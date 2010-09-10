@@ -37,6 +37,9 @@ struct fib6_node
 	__u16			fn_bit;		/* bit key */
 	__u16			fn_flags;
 	__u32			fn_sernum;
+#ifndef __GENKSYMS__
+	struct rt6_info		*rr_ptr;
+#endif
 };
 
 #ifndef CONFIG_IPV6_SUBTREES

@@ -491,7 +491,7 @@ __build_packet_message(struct nfulnl_instance *inst,
 			 * for physical device (when called from ipv4) */
 			NFA_PUT(inst->skb, NFULA_IFINDEX_OUTDEV,
 				sizeof(tmp_uint), &tmp_uint);
-			if (skb->nf_bridge) {
+			if (skb->nf_bridge && skb->nf_bridge->physoutdev) {
 				tmp_uint = 
 				    htonl(skb->nf_bridge->physoutdev->ifindex);
 				NFA_PUT(inst->skb, NFULA_IFINDEX_PHYSOUTDEV,
@@ -566,6 +566,7 @@ __build_packet_message(struct nfulnl_instance *inst,
 	}
 		
 	nlh->nlmsg_len = inst->skb->tail - old_tail;
+	inst->lastnlh = nlh;
 	return 0;
 
 nlmsg_failure:
@@ -857,6 +858,9 @@ nfulnl_recv_config(struct sock *ctnl, struct sk_buff *skb,
 			ret = -EINVAL;
 			break;
 		}
+
+		if (!inst)
+			goto out;
 	} else {
 		if (!inst) {
 			UDEBUG("no config command, and no instance for "
@@ -910,6 +914,7 @@ nfulnl_recv_config(struct sock *ctnl, struct sk_buff *skb,
 
 out_put:
 	instance_put(inst);
+out:
 	return ret;
 }
 

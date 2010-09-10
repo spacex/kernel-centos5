@@ -235,6 +235,20 @@ static int ipv6_rthdr_rcv(struct sk_buff **skbp)
 
 	hdr = (struct ipv6_rt_hdr *) skb->h.raw;
 
+	switch (hdr->type) {
+	case IPV6_SRCRT_TYPE_0:
+		/* Completely disallow routing header type 0 for now, it can be
+		 * made conditional at a later point if needed. Even though the
+		 * code is non functional at the moment, it is left intact to
+		 * allow backporting Mobile IPv6 later on. */
+		kfree_skb(skb);
+		return -1;
+	default:
+		IP6_INC_STATS_BH(IPSTATS_MIB_INHDRERRORS);
+		icmpv6_param_prob(skb, ICMPV6_HDR_FIELD, (&hdr->type) - skb->nh.raw);
+		return -1;
+	}
+
 	if (ipv6_addr_is_multicast(&skb->nh.ipv6h->daddr) ||
 	    skb->pkt_type != PACKET_HOST) {
 		IP6_INC_STATS_BH(IPSTATS_MIB_INADDRERRORS);
@@ -253,12 +267,6 @@ looped_back:
 		return 1;
 	}
 
-	if (hdr->type != IPV6_SRCRT_TYPE_0) {
-		IP6_INC_STATS_BH(IPSTATS_MIB_INHDRERRORS);
-		icmpv6_param_prob(skb, ICMPV6_HDR_FIELD, (&hdr->type) - skb->nh.raw);
-		return -1;
-	}
-	
 	if (hdr->hdrlen & 0x01) {
 		IP6_INC_STATS_BH(IPSTATS_MIB_INHDRERRORS);
 		icmpv6_param_prob(skb, ICMPV6_HDR_FIELD, (&hdr->hdrlen) - skb->nh.raw);
