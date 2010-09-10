@@ -1104,6 +1104,9 @@ static void init_once(void * foo, kmem_cache_t * cachep, unsigned long flags)
 		nfsi->ndirty = 0;
 		nfsi->ncommit = 0;
 		nfsi->npages = 0;
+		atomic_set(&nfsi->silly_count, 1);
+		INIT_HLIST_HEAD(&nfsi->silly_list);
+		init_waitqueue_head(&nfsi->waitqueue);
 		nfs4_init_once(nfsi);
 	}
 }

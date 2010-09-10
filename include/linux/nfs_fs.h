@@ -182,6 +182,12 @@ struct nfs_inode {
 	/* Open contexts for shared mmap writes */
 	struct list_head	open_files;
 
+	/* Number of in-flight sillydelete RPC calls */
+	atomic_t		silly_count;
+	/* List of deferred sillydelete requests */
+	struct hlist_head	silly_list;
+	wait_queue_head_t	waitqueue;
+
 #ifdef CONFIG_NFS_V4
 	struct nfs4_cached_acl	*nfs4_acl;
         /* NFSv4 state */
@@ -274,6 +280,11 @@ static inline int nfs_server_capable(struct inode *inode, int cap)
 static inline int NFS_USE_READDIRPLUS(struct inode *inode)
 {
 	return test_bit(NFS_INO_ADVISE_RDPLUS, &NFS_FLAGS(inode));
+}
+
+static inline void nfs_set_verifier(struct dentry * dentry, unsigned long verf)
+{
+	dentry->d_time = verf;
 }
 
 /**
@@ -430,8 +441,10 @@ extern void nfs_release_automount_timer(void);
 /*
  * linux/fs/nfs/unlink.c
  */
-extern int  nfs_async_unlink(struct dentry *);
-extern void nfs_complete_unlink(struct dentry *);
+extern int  nfs_async_unlink(struct inode *dir, struct dentry *dentry);
+extern void nfs_complete_unlink(struct dentry *dentry, struct inode *);
+extern void nfs_block_sillyrename(struct dentry *dentry);
+extern void nfs_unblock_sillyrename(struct dentry *dentry);
 
 /*
  * linux/fs/nfs/write.c

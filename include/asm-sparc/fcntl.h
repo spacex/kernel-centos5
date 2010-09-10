@@ -14,7 +14,6 @@
 #define O_NDELAY	(0x0004 | O_NONBLOCK)
 #define O_NOCTTY	0x8000	/* not fcntl */
 #define O_LARGEFILE	0x40000
-#define O_ATOMICLOOKUP	0x80000 /* do atomic file lookup */
 #define O_DIRECT        0x100000 /* direct disk access hint */
 #define O_NOATIME	0x200000
 

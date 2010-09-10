@@ -166,6 +166,7 @@ do_notify_resume_user (sigset_t *oldset, struct sigscratch *scr, long in_syscall
 		return;
 	}
 
+	clear_thread_flag(TIF_NOTIFY_RESUME);
 #ifdef CONFIG_PERFMON
 	if (current->thread.pfm_needs_checking)
 		pfm_handle_work();
@@ -174,6 +175,10 @@ do_notify_resume_user (sigset_t *oldset, struct sigscratch *scr, long in_syscall
 	/* deal with pending signal delivery */
 	if (test_thread_flag(TIF_SIGPENDING))
 		ia64_do_signal(oldset, scr, in_syscall);
+
+	/* copy user rbs to kernel rbs */
+	if (unlikely(test_thread_flag(TIF_RESTORE_RSE)))
+		ia64_sync_krbs();
 }
 
 static int pal_halt        = 1;

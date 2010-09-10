@@ -44,6 +44,7 @@
 #define NFS_entry_sz		(NFS_filename_sz+3)
 
 #define NFS_diropargs_sz	(NFS_fhandle_sz+NFS_filename_sz)
+#define NFS_removeargs_sz	(NFS_fhandle_sz+NFS_filename_sz)
 #define NFS_sattrargs_sz	(NFS_fhandle_sz+NFS_sattr_sz)
 #define NFS_readlinkargs_sz	(NFS_fhandle_sz)
 #define NFS_readargs_sz		(NFS_fhandle_sz+3)
@@ -67,7 +68,7 @@
  * Common NFS XDR functions as inlines
  */
 static inline u32 *
-xdr_encode_fhandle(u32 *p, struct nfs_fh *fhandle)
+xdr_encode_fhandle(u32 *p, const struct nfs_fh *fhandle)
 {
 	memcpy(p, fhandle->data, NFS2_FHSIZE);
 	return p + XDR_QUADLEN(NFS2_FHSIZE);
@@ -205,13 +206,25 @@ nfs_xdr_sattrargs(struct rpc_rqst *req, u32 *p, struct nfs_sattrargs *args)
 
 /*
  * Encode directory ops argument
- * LOOKUP, REMOVE, RMDIR
+ * LOOKUP, RMDIR
  */
 static int
 nfs_xdr_diropargs(struct rpc_rqst *req, u32 *p, struct nfs_diropargs *args)
 {
 	p = xdr_encode_fhandle(p, args->fh);
 	p = xdr_encode_array(p, args->name, args->len);
+	req->rq_slen = xdr_adjust_iovec(req->rq_svec, p);
+	return 0;
+}
+
+/*
+ * Encode REMOVE argument
+ */
+static int
+nfs_xdr_removeargs(struct rpc_rqst *req, __be32 *p, const struct nfs_removeargs *args)
+{
+	p = xdr_encode_fhandle(p, args->fh);
+	p = xdr_encode_array(p, args->name.name, args->name.len);
 	req->rq_slen = xdr_adjust_iovec(req->rq_svec, p);
 	return 0;
 }
@@ -709,7 +722,7 @@ struct rpc_procinfo	nfs_procedures[] = {
     PROC(READ,		readargs,	readres, 3),
     PROC(WRITE,		writeargs,	writeres, 4),
     PROC(CREATE,	createargs,	diropres, 0),
-    PROC(REMOVE,	diropargs,	stat, 0),
+    PROC(REMOVE,	removeargs,	stat, 0),
     PROC(RENAME,	renameargs,	stat, 0),
     PROC(LINK,		linkargs,	stat, 0),
     PROC(SYMLINK,	symlinkargs,	stat, 0),

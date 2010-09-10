@@ -1445,8 +1445,6 @@ static inline int lookup_flags(unsigned int f)
 	
 	if (f & O_DIRECTORY)
 		retval |= LOOKUP_DIRECTORY;
-	if (f & O_ATOMICLOOKUP)
-		retval |= LOOKUP_ATOMIC;
 
 	return retval;
 }
@@ -1529,7 +1527,7 @@ int may_open(struct nameidata *nd, int acc_mode, int flag)
 	if (S_ISLNK(inode->i_mode))
 		return -ELOOP;
 	
-	if (S_ISDIR(inode->i_mode) && (flag & FMODE_WRITE))
+	if (S_ISDIR(inode->i_mode) && (acc_mode & MAY_WRITE))
 		return -EISDIR;
 
 	error = vfs_permission(nd, acc_mode);
@@ -1548,7 +1546,7 @@ int may_open(struct nameidata *nd, int acc_mode, int flag)
 			return -EACCES;
 
 		flag &= ~O_TRUNC;
-	} else if (IS_RDONLY(inode) && (flag & FMODE_WRITE))
+	} else if (IS_RDONLY(inode) && (acc_mode & MAY_WRITE))
 		return -EROFS;
 	/*
 	 * An append-only file must be opened in append mode for writing.

@@ -555,6 +555,7 @@ static int nfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 	nfs_fattr_init(&fattr);
 	desc->entry = &my_entry;
 
+	nfs_block_sillyrename(dentry);
 	while(!desc->entry->eof) {
 		res = readdir_search_pagecache(desc);
 
@@ -585,6 +586,7 @@ static int nfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 			break;
 		}
 	}
+	nfs_unblock_sillyrename(dentry);
 	unlock_kernel();
 	if (res > 0)
 		res = 0;
@@ -642,20 +644,6 @@ static inline int nfs_check_verifier(struct inode *dir, struct dentry *dentry)
 			|| nfs_attribute_timeout(dir))
 		return 0;
 	return nfs_verify_change_attribute(dir, (unsigned long)dentry->d_fsdata);
-}
-
-static inline void nfs_set_verifier(struct dentry * dentry, unsigned long verf)
-{
-	dentry->d_fsdata = (void *)verf;
-}
-
-/*
- * Whenever an NFS operation succeeds, we know that the dentry
- * is valid, so we update the revalidation timestamp.
- */
-static inline void nfs_renew_times(struct dentry * dentry)
-{
-	dentry->d_time = jiffies;
 }
 
 /*
@@ -781,7 +769,6 @@ static int nfs_lookup_revalidate(struct dentry * dentry, struct nameidata *nd)
 	if ((error = nfs_refresh_inode(inode, &fattr)) != 0)
 		goto out_bad;
 
-	nfs_renew_times(dentry);
 	nfs_set_verifier(dentry, verifier);
  out_valid:
 	unlock_kernel();
@@ -843,11 +830,10 @@ static void nfs_dentry_iput(struct dentry *dentry, struct inode *inode)
 	if (dentry->d_flags & DCACHE_NFSFS_RENAMED) {
 		lock_kernel();
 		inode->i_nlink--;
-		nfs_complete_unlink(dentry);
+		nfs_complete_unlink(dentry, inode);
 		unlock_kernel();
 	}
 	/* When creating a negative dentry, we want to renew d_time */
-	nfs_renew_times(dentry);
 	iput(inode);
 }
 
@@ -884,6 +870,7 @@ static inline int nfs_reval_fsid(struct inode *dir, const struct nfs_fattr *fatt
 static struct dentry *nfs_lookup(struct inode *dir, struct dentry * dentry, struct nameidata *nd)
 {
 	struct dentry *res;
+	struct dentry *parent;
 	struct inode *inode = NULL;
 	int error;
 	struct nfs_fh fhandle;
@@ -912,32 +899,36 @@ static struct dentry *nfs_lookup(struct inode *dir, struct dentry * dentry, stru
 		goto out_unlock;
 	}
 
+	parent = dentry->d_parent;
+	/* Protect against concurrent sillydeletes */
+	nfs_block_sillyrename(parent);
 	error = NFS_PROTO(dir)->lookup(dir, &dentry->d_name, &fhandle, &fattr);
 	if (error == -ENOENT)
 		goto no_entry;
 	if (error < 0) {
 		res = ERR_PTR(error);
-		goto out_unlock;
+		goto out_unblock_sillyrename;
 	}
 	error = nfs_reval_fsid(dir, &fattr);
 	if (error < 0) {
 		res = ERR_PTR(error);
-		goto out_unlock;
+		goto out_unblock_sillyrename;
 	}
 	inode = nfs_fhget(dentry->d_sb, &fhandle, &fattr);
 	res = (struct dentry *)inode;
 	if (IS_ERR(res))
-		goto out_unlock;
+		goto out_unblock_sillyrename;
 
 no_entry:
 	res = d_materialise_unique(dentry, inode);
 	if (res != NULL) {
 		if (IS_ERR(res))
-			goto out_unlock;
+			goto out_unblock_sillyrename;
 		dentry = res;
 	}
-	nfs_renew_times(dentry);
 	nfs_set_verifier(dentry, nfs_save_change_attribute(dir));
+out_unblock_sillyrename:
+	nfs_unblock_sillyrename(parent);
 out_unlock:
 	unlock_kernel();
 out:
@@ -1031,8 +1022,6 @@ static struct dentry *nfs_atomic_lookup(struct inode *dir, struct dentry *dentry
 		}
 	} else if (res != NULL)
 		dentry = res;
-	nfs_renew_times(dentry);
-	nfs_set_verifier(dentry, nfs_save_change_attribute(dir));
 out:
 	return res;
 no_open:
@@ -1074,8 +1063,6 @@ static int nfs_open_revalidate(struct dentry *dentry, struct nameidata *nd)
 	lock_kernel();
 	verifier = nfs_save_change_attribute(dir);
 	ret = nfs4_open_revalidate(dir, dentry, openflags, nd);
-	if (!ret)
-		nfs_set_verifier(dentry, verifier);
 	unlock_kernel();
 out:
 	dput(parent);
@@ -1150,7 +1137,6 @@ static struct dentry *nfs_readdir_lookup(nfs_readdir_descriptor_t *desc)
 	}
 
 out_renew:
-	nfs_renew_times(dentry);
 	nfs_set_verifier(dentry, nfs_save_change_attribute(dir));
 	return dentry;
 }
@@ -1217,7 +1203,6 @@ static int nfs_create(struct inode *dir, struct dentry *dentry, int mode,
 	nfs_end_data_update(dir);
 	if (error != 0)
 		goto out_err;
-	nfs_renew_times(dentry);
 	nfs_set_verifier(dentry, nfs_save_change_attribute(dir));
 	unlock_kernel();
 	return 0;
@@ -1251,7 +1236,6 @@ nfs_mknod(struct inode *dir, struct dentry *dentry, int mode, dev_t rdev)
 	nfs_end_data_update(dir);
 	if (status != 0)
 		goto out_err;
-	nfs_renew_times(dentry);
 	nfs_set_verifier(dentry, nfs_save_change_attribute(dir));
 	unlock_kernel();
 	return 0;
@@ -1281,7 +1265,6 @@ static int nfs_mkdir(struct inode *dir, struct dentry *dentry, int mode)
 	nfs_end_data_update(dir);
 	if (error != 0)
 		goto out_err;
-	nfs_renew_times(dentry);
 	nfs_set_verifier(dentry, nfs_save_change_attribute(dir));
 	unlock_kernel();
 	return 0;
@@ -1378,10 +1361,9 @@ dentry->d_parent->d_name.name, dentry->d_name.name);
 				dir, &qsilly);
 	nfs_end_data_update(dir);
 	if (!error) {
-		nfs_renew_times(dentry);
 		nfs_set_verifier(dentry, nfs_save_change_attribute(dir));
 		d_move(dentry, sdentry);
-		error = nfs_async_unlink(dentry);
+		error = nfs_async_unlink(dir, dentry);
  		/* If we return 0 we don't unlink */
 	}
 	dput(sdentry);
@@ -1459,7 +1441,6 @@ static int nfs_unlink(struct inode *dir, struct dentry *dentry)
 	spin_unlock(&dcache_lock);
 	error = nfs_safe_remove(dentry);
 	if (!error) {
-		nfs_renew_times(dentry);
 		nfs_set_verifier(dentry, nfs_save_change_attribute(dir));
 	} else if (need_rehash)
 		d_rehash(dentry);
@@ -1689,7 +1670,6 @@ out:
 	if (!error) {
 		if (!S_ISDIR(old_inode->i_mode))
 			d_move(old_dentry, new_dentry);
-		nfs_renew_times(new_dentry);
 		nfs_set_verifier(new_dentry, nfs_save_change_attribute(new_dir));
 	}
 

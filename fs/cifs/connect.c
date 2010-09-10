@@ -2298,7 +2298,7 @@ CIFSSessSetup(unsigned int xid, struct cifsSesInfo *ses,
 	pSMB->req_no_secext.ByteCount = cpu_to_le16(count);
 
 	rc = SendReceive(xid, ses, smb_buffer, smb_buffer_response,
-			 &bytes_returned, 1);
+			 &bytes_returned, CIFS_LONG_OP);
 	if (rc) {
 /* rc = map_smb_to_linux_error(smb_buffer_response); now done in SendReceive */
 	} else if ((smb_buffer_response->WordCount == 3)
@@ -2595,7 +2595,7 @@ CIFSNTLMSSPNegotiateSessSetup(unsigned int xid,
 	pSMB->req.ByteCount = cpu_to_le16(count);
 
 	rc = SendReceive(xid, ses, smb_buffer, smb_buffer_response,
-			 &bytes_returned, 1);
+			 &bytes_returned, CIFS_LONG_OP);
 
 	if (smb_buffer_response->Status.CifsError ==
 	    cpu_to_le32(NT_STATUS_MORE_PROCESSING_REQUIRED))
@@ -3032,7 +3032,7 @@ CIFSNTLMSSPAuthSessSetup(unsigned int xid, struct cifsSesInfo *ses,
 	pSMB->req.ByteCount = cpu_to_le16(count);
 
 	rc = SendReceive(xid, ses, smb_buffer, smb_buffer_response,
-			 &bytes_returned, 1);
+			 &bytes_returned, CIFS_LONG_OP);
 	if (rc) {
 /*    rc = map_smb_to_linux_error(smb_buffer_response);  *//* done in SendReceive now */
 	} else if ((smb_buffer_response->WordCount == 3)
@@ -3303,7 +3303,8 @@ CIFSTCon(unsigned int xid, struct cifsSesInfo *ses,
 	pSMB->hdr.smb_buf_length += count;
 	pSMB->ByteCount = cpu_to_le16(count);
 
-	rc = SendReceive(xid, ses, smb_buffer, smb_buffer_response, &length, 0);
+	rc = SendReceive(xid, ses, smb_buffer, smb_buffer_response, &length,
+			CIFS_STD_OP);
 
 	/* if (rc) rc = map_smb_to_linux_error(smb_buffer_response); */
 	/* above now done in SendReceive */

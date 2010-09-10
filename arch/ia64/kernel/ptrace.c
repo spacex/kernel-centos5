@@ -554,6 +554,78 @@ ia64_sync_user_rbs (struct task_struct *child, struct switch_stack *sw,
 	return 0;
 }
 
+static long
+ia64_sync_kernel_rbs (struct task_struct *child, struct switch_stack *sw,
+		unsigned long user_rbs_start, unsigned long user_rbs_end)
+{
+	unsigned long addr, val;
+	long ret;
+
+	/* now copy word for word from user rbs to kernel rbs: */
+	for (addr = user_rbs_start; addr < user_rbs_end; addr += 8) {
+		if (access_process_vm(child, addr, &val, sizeof(val), 0)
+				!= sizeof(val))
+			return -EIO;
+
+		ret = ia64_poke(child, sw, user_rbs_end, addr, val);
+		if (ret < 0)
+			return ret;
+	}
+	return 0;
+}
+
+typedef long (*syncfunc_t)(struct task_struct *, struct switch_stack *,
+			    unsigned long, unsigned long);
+
+static void do_sync_rbs(struct unw_frame_info *info, void *arg)
+{
+	struct pt_regs *pt;
+	unsigned long urbs_end;
+	syncfunc_t fn = arg;
+
+	if (unw_unwind_to_user(info) < 0)
+		return;
+	pt = task_pt_regs(info->task);
+	urbs_end = ia64_get_user_rbs_end(info->task, pt, NULL);
+
+	fn(info->task, info->sw, pt->ar_bspstore, urbs_end);
+}
+
+/*
+ * when a thread is stopped (ptraced), debugger might change thread's user
+ * stack (change memory directly), and we must avoid the RSE stored in kernel
+ * to override user stack (user space's RSE is newer than kernel's in the
+ * case). To workaround the issue, we copy kernel RSE to user RSE before the
+ * task is stopped, so user RSE has updated data.  we then copy user RSE to
+ * kernel after the task is resummed from traced stop and kernel will use the
+ * newer RSE to return to user. TIF_RESTORE_RSE is the flag to indicate we need
+ * synchronize user RSE to kernel.
+ */
+static int gpregs_writeback(struct task_struct *tsk,
+			    const struct utrace_regset *regset,
+			    int now)
+{
+	if (test_and_set_tsk_thread_flag(tsk, TIF_RESTORE_RSE))
+		return 0;
+	set_tsk_thread_flag(tsk, TIF_NOTIFY_RESUME);
+	unw_init_running(do_sync_rbs, ia64_sync_user_rbs);
+	return 0;		/* Ignore EFAULT.  */
+}
+
+/*
+ * This is called to read back the register backing store.
+ */
+void ia64_sync_krbs(void)
+{
+	clear_tsk_thread_flag(current, TIF_RESTORE_RSE);
+#ifdef CONFIG_PERFMON
+	if (!current->thread.pfm_needs_checking)
+		clear_thread_flag(TIF_NOTIFY_RESUME);
+#endif
+
+	unw_init_running(do_sync_rbs, ia64_sync_kernel_rbs);
+}
+
 /*
  * Write f32-f127 back to task->thread.fph if it has been modified.
  */
@@ -728,6 +800,10 @@ syscall_trace_enter (long arg0, long arg1, long arg2, long arg3,
 	if (test_thread_flag(TIF_SYSCALL_TRACE))
 		tracehook_report_syscall(&regs, 0);
 
+	/* copy user rbs to kernel rbs */
+	if (test_thread_flag(TIF_RESTORE_RSE))
+		ia64_sync_krbs();
+
 	if (unlikely(current->audit_context)) {
 		long syscall;
 		int arch;
@@ -768,6 +844,10 @@ syscall_trace_leave (long arg0, long arg1, long arg2, long arg3,
 		force_sig(SIGTRAP, current); /* XXX */
 		tracehook_report_syscall_step(&regs);
 	}
+
+	/* copy user rbs to kernel rbs */
+	if (test_thread_flag(TIF_RESTORE_RSE))
+		ia64_sync_krbs();
 }
 
 
@@ -1392,31 +1472,6 @@ static int gpregs_set(struct task_struct *target,
 		const void *kbuf, const void __user *ubuf)
 {
 	return do_regset_call(do_gpregs_set, target, regset, pos, count, kbuf, ubuf);
-}
-
-static void do_gpregs_writeback(struct unw_frame_info *info, void *arg)
-{
-	struct pt_regs *pt;
-	utrace_getset_t *dst = arg;
-	unsigned long urbs_end;
-
-	if (unw_unwind_to_user(info) < 0)
-		return;
-	pt = task_pt_regs(dst->target);
-	urbs_end = ia64_get_user_rbs_end(dst->target, pt, NULL);
-	dst->ret = ia64_sync_user_rbs(dst->target, info->sw, pt->ar_bspstore, urbs_end);
-}
-/*
- * This is called to write back the register backing store.
- * ptrace does this before it stops, so that a tracer reading the user
- * memory after the thread stops will get the current register data.
- */
-static int
-gpregs_writeback(struct task_struct *target,
-		 const struct utrace_regset *regset,
-		 int now)
-{
-	return do_regset_call(do_gpregs_writeback, target, regset, 0, 0, NULL, NULL);
 }
 
 static int

@@ -48,9 +48,6 @@
 #ifndef O_NOATIME
 #define O_NOATIME	01000000
 #endif
-#ifndef O_ATOMICLOOKUP
-#define O_ATOMICLOOKUP	02000000	/* do atomic file lookup */
-#endif
 
 #ifndef O_NDELAY
 #define O_NDELAY	O_NONBLOCK
