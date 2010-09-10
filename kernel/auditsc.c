@@ -82,6 +82,9 @@ extern int audit_enabled;
 /* Indicates that audit should log the full pathname. */
 #define AUDIT_NAME_FULL -1
 
+/* no execve audit message should be longer than this (userspace limits) */
+#define MAX_EXECVE_AUDIT_LEN 7500
+
 /* number of audit rules */
 int audit_n_rules;
 
@@ -942,6 +945,117 @@ static int audit_log_pid_context(struct audit_context *context, pid_t pid,
 	return rc;
 }
 
+/*
+ * to_send and len_sent accounting are very loose estimates.  We aren't
+ * really worried about a hard cap to MAX_EXECVE_AUDIT_LEN so much as being
+ * within about 500 bytes (next page boundry)
+ *
+ * why snprintf?  an int is up to 12 digits long.  if we just assumed when
+ * logging that a[%d]= was going to be 16 characters long we would be wasting
+ * space in every audit message.  In one 7500 byte message we can log up to
+ * about 1000 min size arguments.  That comes down to about 50% waste of space
+ * if we didn't do the snprintf to find out how long arg_num_len was.
+ */
+static int audit_log_single_execve_arg(struct audit_context *context,
+					struct audit_buffer **ab,
+					int arg_num,
+					size_t *len_sent,
+					const char *p)
+{
+	char arg_num_len_buf[12];
+	/* how many digits are in arg_num? 3 is the length of a=\n */
+	size_t arg_num_len = snprintf(arg_num_len_buf, 12, "%d", arg_num) + 3;
+	size_t len, len_left, to_send;
+	size_t max_execve_audit_len = MAX_EXECVE_AUDIT_LEN;
+	unsigned int i, has_cntl = 0, too_long = 0;
+
+	/* strnlen_user includes the null we don't want to send */
+	len_left = len = strlen(p);
+
+	has_cntl = audit_string_contains_control(p, len);
+	if (has_cntl)
+		/*
+		 * hex messages get logged as 2 bytes, so we can only
+		 * send half as much in each message
+		 */
+		max_execve_audit_len = MAX_EXECVE_AUDIT_LEN / 2;
+
+	if (len > max_execve_audit_len)
+		too_long = 1;
+
+	/* walk the argument actually logging the message */
+	for (i = 0; len_left > 0; i++) {
+		int room_left;
+
+		if (len_left > max_execve_audit_len)
+			to_send = max_execve_audit_len;
+		else
+			to_send = len_left;
+
+		/* do we have space left to send this argument in this ab? */
+		room_left = MAX_EXECVE_AUDIT_LEN - arg_num_len - *len_sent;
+		if (has_cntl)
+			room_left -= (to_send * 2);
+		else
+			room_left -= to_send;
+		if (room_left < 0) {
+			*len_sent = 0;
+			audit_log_end(*ab);
+			*ab = audit_log_start(context, GFP_KERNEL, AUDIT_EXECVE);
+			if (!*ab)
+				return 0;
+		}
+
+		/*
+		 * first record needs to say how long the original string was
+		 * so we can be sure nothing was lost.
+		 */
+		if ((i == 0) && (too_long))
+			audit_log_format(*ab, "a%d_len=%ld ", arg_num,
+					 has_cntl ? 2*len : len);
+
+		/* actually log it */
+		audit_log_format(*ab, "a%d", arg_num);
+		if (too_long)
+			audit_log_format(*ab, "[%d]", i);
+		audit_log_format(*ab, "=");
+		if (has_cntl)
+			audit_log_hex(*ab, p, to_send);
+		else
+			audit_log_n_string(*ab, to_send, p);
+		audit_log_format(*ab, "\n");
+
+		p += to_send;
+		len_left -= to_send;
+		*len_sent += arg_num_len;
+		if (has_cntl)
+			*len_sent += to_send * 2;
+		else
+			*len_sent += to_send;
+	}
+	return len;
+}
+
+static void audit_log_execve_info(struct audit_context *context,
+				  struct audit_buffer **ab,
+				  struct audit_aux_data_execve *axi)
+{
+	int i;
+	size_t len, len_sent = 0;
+	const char *p;
+
+	p = axi->mem;
+
+	audit_log_format(*ab, "argc=%d ", axi->argc);
+
+	for (i = 0; i < axi->argc; i++) {
+		len = audit_log_single_execve_arg(context, ab, i, &len_sent, p);
+		if (len <= 0)
+			break;
+		/* skip the null */
+		p += len + 1;
+	}
+}
 static void audit_log_exit(struct audit_context *context, struct task_struct *tsk)
 {
 	int i, call_panic = 0;
@@ -1080,13 +1194,7 @@ static void audit_log_exit(struct audit_context *context, struct task_struct *ts
 
 		case AUDIT_EXECVE: {
 			struct audit_aux_data_execve *axi = (void *)aux;
-			int i;
-			const char *p;
-			for (i = 0, p = axi->mem; i < axi->argc; i++) {
-				audit_log_format(ab, "a%d=", i);
-				p = audit_log_untrustedstring(ab, p);
-				audit_log_format(ab, "\n");
-			}
+			audit_log_execve_info(context, &ab, axi);
 			break; }
 
 		case AUDIT_SOCKETCALL: {

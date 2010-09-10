@@ -1296,19 +1296,30 @@ static void cciss_update_drive_info(int ctlr, int drv_index)
 	if (inq_buff == NULL)
 		goto mem_msg;
 
-	cciss_read_capacity(ctlr, drv_index, 1, &total_size, &block_size);
+	/* testing to see if 16-byte CDBs are already being used */
+	if (h->cciss_read == CCISS_READ_16) {
+		cciss_read_capacity_16(h->ctlr, drv_index, 1,
+				       &total_size, &block_size);
+		goto geo_inq;
+	}
 
-	/* If read_capacity returns all F's the logical is >2TB
-	 * so we switch to 16-byte CDBs for all read/write ops */
+	cciss_read_capacity(ctlr, drv_index, 1, 
+			    &total_size, &block_size);
+
+	/* If read_capacity returns all F's the logical is >2TB in size */
+	/* so we switch to 16-byte CDBs for all read/write ops */
 	if (total_size == 0xFFFFFFFFULL) {
 		cciss_read_capacity_16(ctlr, drv_index, 1,
-				&total_size, &block_size);
+				       &total_size, &block_size);
 		h->cciss_read = CCISS_READ_16;
 		h->cciss_write = CCISS_WRITE_16;
 	} else {
 		h->cciss_read = CCISS_READ_10;
 		h->cciss_write = CCISS_WRITE_10;
 	}
+geo_inq:
+	cciss_geometry_inquiry(ctlr, drv_index, 1, total_size, block_size,
+			       inq_buff, &h->drv[drv_index]);
 
 	++h->num_luns;
 	disk = h->gendisk[drv_index];
@@ -1891,7 +1902,7 @@ static void cciss_geometry_inquiry(int ctlr, int logvol,
 				   drive_info_struct *drv)
 {
 	int return_code;
-	unsigned long t, rem;
+	unsigned long t;
 
 	memset(inq_buff, 0, sizeof(InquiryData_struct));
 	if (withirq)
@@ -1909,6 +1920,7 @@ static void cciss_geometry_inquiry(int ctlr, int logvol,
 			       "does not support reading geometry\n");
 			drv->heads = 255;
 			drv->sectors = 32;	/* Sectors per track */
+			drv->cylinders = total_size + 1;
 			drv->raid_level = RAID_UNKNOWN;
 		} else {
 			drv->heads = inq_buff->data_byte[6];
@@ -1922,7 +1934,7 @@ static void cciss_geometry_inquiry(int ctlr, int logvol,
 		t = drv->heads * drv->sectors;
 		if(t > 1) {
 			sector_t real_size = total_size + 1;
-			rem = sector_div(total_size, t);
+			unsigned long rem = sector_div(real_size, t);
 			if(rem)
 				real_size++;
 			drv->cylinders = real_size;
@@ -1963,9 +1975,9 @@ cciss_read_capacity(int ctlr, int logvol, int withirq, sector_t *total_size,
 		*total_size = 0;
 		*block_size = BLOCK_SIZE;
 	}
-	if (*total_size != (__u32) 0)
+	if (*total_size != 0)
 		printk(KERN_INFO "      blocks= %lld block_size= %d\n",
-						*total_size+1, *block_size);
+		       (unsigned long long)*total_size+1, *block_size);
 	kfree(buf);
 	return;
 }
@@ -2000,7 +2012,7 @@ cciss_read_capacity_16(int ctlr, int logvol, int withirq, sector_t *total_size, 
 		*block_size = BLOCK_SIZE;
 	}
 	printk(KERN_INFO "      blocks= %lld block_size= %d\n",
-		*total_size+1, *block_size);
+	       (unsigned long long)*total_size+1, *block_size);
 	kfree(buf);
 	return;
 }
@@ -3128,9 +3140,10 @@ static void cciss_getgeometry(int cntl_num)
 		cciss_read_capacity(cntl_num, i, 0, &total_size, &block_size);
 
 		/* If read_capacity returns all F's the volume is >2TB */
+		/* so we switch to 16-byte CDBs for all read/write ops */
 		if(total_size == 0xFFFFFFFFULL) {
 			cciss_read_capacity_16(cntl_num, i, 0,
-					    &total_size, &block_size);
+					       &total_size, &block_size);
 			hba[cntl_num]->cciss_read = CCISS_READ_16;
 			hba[cntl_num]->cciss_write = CCISS_WRITE_16;
 		} else {

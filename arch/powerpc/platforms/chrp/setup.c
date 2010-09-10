@@ -97,11 +97,15 @@ void chrp_show_cpuinfo(struct seq_file *m)
 	int i, sdramen;
 	unsigned int t;
 	struct device_node *root;
-	const char *model = "";
+	const char *model = NULL;
 
 	root = find_path_device("/");
 	if (root)
 		model = get_property(root, "model", NULL);
+
+	if (!model)
+		model = "";
+
 	seq_printf(m, "machine\t\t: CHRP %s\n", model);
 
 	/* longtrail (goldengate) stuff */
@@ -191,10 +195,17 @@ static void __init sio_fixup_irq(const char *name, u8 device, u8 level,
 
 static void __init sio_init(void)
 {
-	struct device_node *root;
+	struct device_node *root = find_path_device("/");
+	const char *model;
 
-	if ((root = find_path_device("/")) &&
-	    !strncmp(get_property(root, "model", NULL), "IBM,LongTrail", 13)) {
+	if (!root)
+		return;
+
+	model = get_property(root, model, NULL);
+	if (!model)
+		return;
+
+	if (!strncmp(model, "IBM,LongTrail", 13)) {
 		/* logical device 0 (KBC/Keyboard) */
 		sio_fixup_irq("keyboard", 0, 1, 2);
 		/* select logical device 1 (KBC/Mouse) */

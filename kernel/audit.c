@@ -1256,8 +1256,8 @@ void audit_log_hex(struct audit_buffer *ab, const unsigned char *buf,
  * Format a string of no more than slen characters into the audit buffer,
  * enclosed in quote marks.
  */
-static void audit_log_n_string(struct audit_buffer *ab, size_t slen,
-			       const char *string)
+void audit_log_n_string(struct audit_buffer *ab, size_t slen,
+			const char *string)
 {
 	int avail, new_len;
 	unsigned char *ptr;
@@ -1285,7 +1285,22 @@ static void audit_log_n_string(struct audit_buffer *ab, size_t slen,
 }
 
 /**
- * audit_log_n_unstrustedstring - log a string that may contain random characters
+ * audit_string_contains_control - does a string need to be logged in hex
+ * @string - string to be checked
+ * @len - max length of the string to check
+ */
+int audit_string_contains_control(const char *string, size_t len)
+{
+	const unsigned char *p;
+	for (p = string; p < (const unsigned char *)string + len && *p; p++) {
+		if (*p == '"' || *p < 0x21 || *p > 0x7f)
+			return 1;
+	}
+	return 0;
+}
+
+/**
+ * audit_log_n_untrustedstring - log a string that may contain random characters
  * @ab: audit_buffer
  * @len: lenth of string (not including trailing null)
  * @string: string to be logged
@@ -1298,33 +1313,26 @@ static void audit_log_n_string(struct audit_buffer *ab, size_t slen,
  * The caller specifies the number of characters in the string to log, which may
  * or may not be the entire string.
  */
-const char *audit_log_n_untrustedstring(struct audit_buffer *ab, size_t len,
-					const char *string)
+void audit_log_n_untrustedstring(struct audit_buffer *ab, size_t len,
+				 const char *string)
 {
-	const unsigned char *p = string;
-
-	while (*p) {
-		if (*p == '"' || *p < 0x21 || *p > 0x7f) {
-			audit_log_hex(ab, string, len);
-			return string + len + 1;
-		}
-		p++;
-	}
-	audit_log_n_string(ab, len, string);
-	return p + 1;
+	if (audit_string_contains_control(string, len))
+		audit_log_hex(ab, string, len);
+	else
+		audit_log_n_string(ab, len, string);
 }
 
 /**
- * audit_log_unstrustedstring - log a string that may contain random characters
+ * audit_log_untrustedstring - log a string that may contain random characters
  * @ab: audit_buffer
  * @string: string to be logged
  *
- * Same as audit_log_n_unstrustedstring(), except that strlen is used to
+ * Same as audit_log_n_untrustedstring(), except that strlen is used to
  * determine string length.
  */
-const char *audit_log_untrustedstring(struct audit_buffer *ab, const char *string)
+void audit_log_untrustedstring(struct audit_buffer *ab, const char *string)
 {
-	return audit_log_n_untrustedstring(ab, strlen(string), string);
+	audit_log_n_untrustedstring(ab, strlen(string), string);
 }
 
 /* This is a helper-function to print the escaped d_path */

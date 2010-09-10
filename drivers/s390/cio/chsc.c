@@ -214,6 +214,39 @@ css_get_ssd_info(struct subchannel *sch)
 }
 
 static int
+check_for_io_on_path(struct subchannel *sch, int mask)
+{
+	int cc;
+
+	cc = stsch(sch->schid, &sch->schib);
+	if (cc)
+		return 0;
+	if (sch->schib.scsw.actl && sch->schib.pmcw.lpum == mask)
+		return 1;
+	return 0;
+}
+
+static void
+terminate_internal_io(struct subchannel *sch)
+{
+	if (cio_clear(sch)) {
+		/* Recheck device in case clear failed */
+		sch->lpm = 0;
+		if (css_enqueue_subchannel_slow(sch->schid)) {
+			css_clear_subchannel_slow_list();
+			need_rescan = 1;
+		}
+		return;
+	}
+	/* Request retry of internal operation. */
+	device_set_intretry(sch);
+
+	/* Call termination handler. */
+	if (sch->driver && sch->driver->termination)
+		sch->driver->termination(&sch->dev);
+}
+
+static int
 s390_subchannel_remove_chpid(struct device *dev, void *data)
 {
 	int j;
@@ -243,37 +276,33 @@ s390_subchannel_remove_chpid(struct device *dev, void *data)
 	if (sch->schib.pmcw.pim == 0x80)
 		goto out_unreg;
 
-	if ((sch->schib.scsw.actl & SCSW_ACTL_DEVACT) &&
-	    (sch->schib.scsw.actl & SCSW_ACTL_SCHACT) &&
-	    (sch->schib.pmcw.lpum == mask)) {
-		int cc;
-
-		cc = cio_clear(sch);
-		if (cc == -ENODEV)
+	if (check_for_io_on_path(sch, mask)) {
+		if (device_is_online(sch))
+			device_kill_io(sch);
+		else {
+			terminate_internal_io(sch);
+			/* Re-start path verification. */
+			if (sch->driver && sch->driver->verify)
+				sch->driver->verify(&sch->dev);
+		}
+	} else {
+		/* trigger path verification. */
+		if (sch->driver && sch->driver->verify)
+			sch->driver->verify(&sch->dev);
+		else if (sch->lpm == mask)
 			goto out_unreg;
-		/* Request retry of internal operation. */
-		device_set_intretry(sch);
-		/* Call handler. */
-		if (sch->driver && sch->driver->termination)
-			sch->driver->termination(&sch->dev);
-		goto out_unlock;
 	}
 
-	/* trigger path verification. */
-	if (sch->driver && sch->driver->verify)
-		sch->driver->verify(&sch->dev);
-	else if (sch->lpm == mask)
-		goto out_unreg;
-out_unlock:
 	spin_unlock_irq(&sch->lock);
 	return 0;
+
 out_unreg:
-	spin_unlock_irq(&sch->lock);
 	sch->lpm = 0;
 	if (css_enqueue_subchannel_slow(sch->schid)) {
 		css_clear_subchannel_slow_list();
 		need_rescan = 1;
 	}
+	spin_unlock_irq(&sch->lock);
 	return 0;
 }
 
@@ -709,42 +738,11 @@ chp_process_crw(int chpid, int on)
 	return chp_add(chpid);
 }
 
-static inline int
-check_for_io_on_path(struct subchannel *sch, int index)
-{
-	int cc;
-
-	cc = stsch(sch->schid, &sch->schib);
-	if (cc)
-		return 0;
-	if (sch->schib.scsw.actl && sch->schib.pmcw.lpum == (0x80 >> index))
-		return 1;
-	return 0;
-}
-
-static void
-terminate_internal_io(struct subchannel *sch)
-{
-	if (cio_clear(sch)) {
-		/* Recheck device in case clear failed */
-		sch->lpm = 0;
-		if (css_enqueue_subchannel_slow(sch->schid)) {
-			css_clear_subchannel_slow_list();
-			need_rescan = 1;
-		}
-		return;
-	}
-	/* Request retry of internal operation. */
-	device_set_intretry(sch);
-	/* Call handler. */
-	if (sch->driver && sch->driver->termination)
-		sch->driver->termination(&sch->dev);
-}
-
 static inline void
 __s390_subchannel_vary_chpid(struct subchannel *sch, __u8 chpid, int on)
 {
 	int chp, old_lpm;
+	int mask;
 	unsigned long flags;
 
 	if (!sch->ssd_info.valid)
@@ -753,39 +751,46 @@ __s390_subchannel_vary_chpid(struct subchannel *sch, __u8 chpid, int on)
 	spin_lock_irqsave(&sch->lock, flags);
 	old_lpm = sch->lpm;
 	for (chp = 0; chp < 8; chp++) {
+		mask = 0x80 >> chp;
 		if (sch->ssd_info.chpid[chp] != chpid)
 			continue;
 
 		if (on) {
-			sch->opm |= (0x80 >> chp);
-			sch->lpm |= (0x80 >> chp);
+			sch->opm |= mask;
+			sch->lpm |= mask;
 			if (!old_lpm)
 				device_trigger_reprobe(sch);
 			else if (sch->driver && sch->driver->verify)
 				sch->driver->verify(&sch->dev);
-		} else {
-			sch->opm &= ~(0x80 >> chp);
-			sch->lpm &= ~(0x80 >> chp);
-			/*
-			 * Give running I/O a grace period in which it
-			 * can successfully terminate, even using the
-			 * just varied off path. Then kill it.
-			 */
-			if (check_for_io_on_path(sch, chp)) {
-				if (device_is_online(sch))
-					/* Wait for I/O to finish */
-					device_set_waiting(sch);
-				else
-					/* Kill and retry internal I/O */
-					terminate_internal_io(sch);
-			} else if (!sch->lpm) {
+			break;
+		}
+		sch->opm &= ~mask;
+		sch->lpm &= ~mask;
+		/*
+		 * Give running I/O a grace period in which it
+		 * can successfully terminate, even using the
+		 * just varied off path. Then kill it.
+		 */
+		if (check_for_io_on_path(sch, chp)) {
+			if (device_is_online(sch))
+				/* Wait for I/O to finish */
+				device_set_waiting(sch);
+			else {
+				/* Kill and retry internal I/O */
+				terminate_internal_io(sch);
+				/* Re-start path verification. */
+				if (sch->driver && sch->driver->verify)
+					sch->driver->verify(&sch->dev);
+			}
+		} else if (!sch->lpm) {
+			if (device_trigger_verify(sch) != 0) {
 				if (css_enqueue_subchannel_slow(sch->schid)) {
 					css_clear_subchannel_slow_list();
 					need_rescan = 1;
 				}
-			} else if (sch->driver && sch->driver->verify)
-				sch->driver->verify(&sch->dev);
-		}
+			}
+		} else if (sch->driver && sch->driver->verify)
+			sch->driver->verify(&sch->dev);
 		break;
 	}
 	spin_unlock_irqrestore(&sch->lock, flags);

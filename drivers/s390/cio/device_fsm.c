@@ -83,6 +83,18 @@ device_set_intretry(struct subchannel *sch)
 	cdev->private->flags.intretry = 1;
 }
 
+int
+device_trigger_verify(struct subchannel *sch)
+{
+	struct ccw_device *cdev;
+
+	cdev = sch->dev.driver_data;
+	if (!cdev || !cdev->online)
+		return -EINVAL;
+	dev_fsm_event(cdev, DEV_EVENT_VERIFY);
+	return 0;
+}
+
 /*
  * Timeout function. It just triggers a DEV_EVENT_TIMEOUT.
  */
@@ -1003,6 +1015,38 @@ ccw_device_killing_timeout(struct ccw_device *cdev, enum dev_event dev_event)
 	if (cdev->handler)
 		cdev->handler(cdev, cdev->private->intparm,
 			      ERR_PTR(-ETIMEDOUT));
+}
+
+void device_kill_io(struct subchannel *sch)
+{
+	int ret;
+	struct ccw_device *cdev = sch->dev.driver_data;
+
+	ret = ccw_device_cancel_halt_clear(cdev);
+	if (ret == -EBUSY) {
+		ccw_device_set_timeout(cdev, 3*HZ);
+		cdev->private->state = DEV_STATE_TIMEOUT_KILL;
+		return;
+	}
+	if (ret == -ENODEV) {
+		if (!sch->lpm) {
+			PREPARE_WORK(&cdev->private->kick_work,
+				ccw_device_nopath_notify, cdev);
+			queue_work(ccw_device_notify_work,
+				&cdev->private->kick_work);
+		} else
+			dev_fsm_event(cdev, DEV_EVENT_NOTOPER);
+		return;
+	}
+	if (cdev->handler)
+		cdev->handler(cdev, cdev->private->intparm, ERR_PTR(-EIO));
+	if (!sch->lpm) {
+		PREPARE_WORK(&cdev->private->kick_work,
+			ccw_device_nopath_notify, cdev);
+		queue_work(ccw_device_notify_work, &cdev->private->kick_work);
+	} else
+		/* Start delayed path verification. */
+		ccw_device_online_verify(cdev, 0);
 }
 
 static void
