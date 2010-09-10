@@ -25,7 +25,10 @@
 #include <linux/bootmem.h>
 #include <linux/module.h>
 #include <linux/vmalloc.h>
+#include <linux/efi.h>
 #include <asm/page.h>
+#include <asm/pgalloc.h>
+#include <asm/meminit.h>
 #include <asm/hypervisor.h>
 #include <asm/hypercall.h>
 #include <xen/interface/memory.h>
@@ -44,7 +47,10 @@ EXPORT_SYMBOL(running_on_xen);
 static int p2m_expose_init(void);
 #else
 #define p2m_expose_init() (-ENOSYS)
+#define p2m_expose_resume() ((void)0)
 #endif
+
+EXPORT_SYMBOL(__hypercall);
 
 //XXX same as i386, x86_64 contiguous_bitmap_set(), contiguous_bitmap_clear()
 // move those to lib/contiguous_bitmap?
@@ -56,13 +62,90 @@ static int p2m_expose_init(void);
  */
 unsigned long *contiguous_bitmap;
 
-void
-contiguous_bitmap_init(unsigned long end_pfn)
+#ifdef CONFIG_VIRTUAL_MEM_MAP
+/* Following logic is stolen from create_mem_map_table() for virtual memmap */
+static int
+create_contiguous_bitmap(u64 start, u64 end, void *arg)
 {
-	unsigned long size = (end_pfn + 2 * BITS_PER_LONG) >> 3;
-	contiguous_bitmap = alloc_bootmem_low_pages(size);
+	unsigned long address, start_page, end_page;
+	unsigned long bitmap_start, bitmap_end;
+	unsigned char *bitmap;
+	int node;
+	pgd_t *pgd;
+	pud_t *pud;
+	pmd_t *pmd;
+	pte_t *pte;
+
+	bitmap_start = (unsigned long)contiguous_bitmap +
+	               ((__pa(start) >> PAGE_SHIFT) >> 3);
+	bitmap_end = (unsigned long)contiguous_bitmap +
+	             (((__pa(end) >> PAGE_SHIFT) + 2 * BITS_PER_LONG) >> 3);
+
+	start_page = bitmap_start & PAGE_MASK;
+	end_page = PAGE_ALIGN(bitmap_end);
+	node = paddr_to_nid(__pa(start));
+
+	bitmap = alloc_bootmem_pages_node(NODE_DATA(node),
+	                                  end_page - start_page);
+	BUG_ON(!bitmap);
+	memset(bitmap, 0, end_page - start_page);
+
+	for (address = start_page; address < end_page; address += PAGE_SIZE) {
+		pgd = pgd_offset_k(address);
+		if (pgd_none(*pgd))
+			pgd_populate(&init_mm, pgd,
+			             alloc_bootmem_pages_node(NODE_DATA(node),
+			                                      PAGE_SIZE));
+		pud = pud_offset(pgd, address);
+
+		if (pud_none(*pud))
+			pud_populate(&init_mm, pud,
+			             alloc_bootmem_pages_node(NODE_DATA(node),
+			                                      PAGE_SIZE));
+		pmd = pmd_offset(pud, address);
+
+		if (pmd_none(*pmd))
+			pmd_populate_kernel(&init_mm, pmd,
+			                    alloc_bootmem_pages_node
+			                    (NODE_DATA(node), PAGE_SIZE));
+		pte = pte_offset_kernel(pmd, address);
+
+		if (pte_none(*pte))
+			set_pte(pte,
+			        pfn_pte(__pa(bitmap + (address - start_page))
+			                >> PAGE_SHIFT, PAGE_KERNEL));
+	}
+	return 0;
+}
+#endif
+
+static void
+__contiguous_bitmap_init(unsigned long size)
+{
+	contiguous_bitmap = alloc_bootmem_pages(size);
 	BUG_ON(!contiguous_bitmap);
 	memset(contiguous_bitmap, 0, size);
+}
+
+void
+xen_contiguous_bitmap_init(unsigned long end_pfn)
+{
+	unsigned long size = (end_pfn + 2 * BITS_PER_LONG) >> 3;
+#ifndef CONFIG_VIRTUAL_MEM_MAP
+	__contiguous_bitmap_init(size);
+#else
+	unsigned long max_gap = 0;
+
+	efi_memmap_walk(find_largest_hole, (u64*)&max_gap);
+	if (max_gap < LARGE_GAP) {
+		__contiguous_bitmap_init(size);
+	} else {
+		unsigned long map_size = PAGE_ALIGN(size);
+		vmalloc_end -= map_size;
+		contiguous_bitmap = (unsigned long*)vmalloc_end;
+		efi_memmap_walk(create_contiguous_bitmap, NULL);
+	}
+#endif
 }
 
 #if 0
@@ -497,7 +580,7 @@ xen_ia64_privcmd_entry_mmap(struct vm_area_struct* vma,
 			    unsigned long addr,
 			    struct xen_ia64_privcmd_range* privcmd_range,
 			    int i,
-			    unsigned long mfn,
+			    unsigned long gmfn,
 			    pgprot_t prot,
 			    domid_t domid)
 {
@@ -506,7 +589,7 @@ xen_ia64_privcmd_entry_mmap(struct vm_area_struct* vma,
 	unsigned long gpfn;
 	unsigned long flags;
 
-	if ((addr & ~PAGE_MASK) != 0 || mfn == INVALID_MFN) {
+	if ((addr & ~PAGE_MASK) != 0 || gmfn == INVALID_MFN) {
 		error = -EINVAL;
 		goto out;
 	}
@@ -521,7 +604,7 @@ xen_ia64_privcmd_entry_mmap(struct vm_area_struct* vma,
 	if (pgprot_val(prot) == PROT_READ) {
 		flags = ASSIGN_readonly;
 	}
-	error = HYPERVISOR_add_physmap(gpfn, mfn, flags, domid);
+	error = HYPERVISOR_add_physmap_with_gmfn(gpfn, gmfn, flags, domid);
 	if (error != 0) {
 		goto out;
 	}
@@ -732,7 +815,7 @@ out_enomem0:
 int
 direct_remap_pfn_range(struct vm_area_struct *vma,
 		       unsigned long address,	// process virtual address
-		       unsigned long mfn,	// mfn, mfn + 1, ... mfn + size/PAGE_SIZE
+		       unsigned long gmfn,	// gmfn, gmfn + 1, ... gmfn + size/PAGE_SIZE
 		       unsigned long size,
 		       pgprot_t prot,
 		       domid_t  domid)		// target domain
@@ -755,13 +838,13 @@ direct_remap_pfn_range(struct vm_area_struct *vma,
 
 	i = (address - vma->vm_start) >> PAGE_SHIFT;
 	for (offset = 0; offset < size; offset += PAGE_SIZE) {
-		error = xen_ia64_privcmd_entry_mmap(vma, (address + offset) & PAGE_MASK, privcmd_range, entry_offset + i, mfn, prot, domid);
+		error = xen_ia64_privcmd_entry_mmap(vma, (address + offset) & PAGE_MASK, privcmd_range, entry_offset + i, gmfn, prot, domid);
 		if (error != 0) {
 			break;
 		}
 
 		i++;
-		mfn++;
+		gmfn++;
         }
 
 	return error;
@@ -776,6 +859,9 @@ time_resume(void)
 
 	/* Just trigger a tick.  */
 	ia64_cpu_local_tick();
+
+	/* Time interpolator remembers the last timer status.  Forget it */
+	time_interpolator_reset();
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -797,6 +883,8 @@ static struct resource p2m_resource = {
 };
 static unsigned long p2m_assign_start_pfn __read_mostly;
 static unsigned long p2m_assign_end_pfn __read_mostly;
+static unsigned long p2m_expose_size;	// this is referenced only when resume.
+					// so __read_mostly doesn't make sense.
 volatile const pte_t* p2m_pte __read_mostly;
 
 #define GRNULE_PFN	PTRS_PER_PTE
@@ -857,8 +945,15 @@ p2m_expose_dtr_call(struct notifier_block *self,
 	unsigned int cpu = (unsigned int)(long)ptr;
 	if (event != CPU_ONLINE)
 		return 0;
-	if (!(p2m_initialized && xen_ia64_p2m_expose_use_dtr))
-		smp_call_function_single(cpu, &p2m_itr, &p2m_itr_arg, 1, 1);
+	if (p2m_initialized && xen_ia64_p2m_expose_use_dtr) {
+		unsigned int me = get_cpu();
+		if (cpu == me)
+			p2m_itr(&p2m_itr_arg);
+		else
+			smp_call_function_single(cpu, &p2m_itr, &p2m_itr_arg,
+						 1, 1);
+		put_cpu();
+	}
 	return 0;
 }
 
@@ -873,7 +968,6 @@ static int
 p2m_expose_init(void)
 {
 	unsigned long num_pfn;
-	unsigned long size = 0;
 	unsigned long p2m_size = 0;
 	unsigned long align = ~0UL;
 	int error = 0;
@@ -909,7 +1003,8 @@ p2m_expose_init(void)
 #ifdef CONFIG_XEN_IA64_EXPOSE_P2M_USE_DTR
 	if (xen_ia64_p2m_expose_use_dtr) {
 		unsigned long granule_pfn = 0;
-		p2m_size = p2m_max_low_pfn - p2m_min_low_pfn;
+		p2m_size = ((p2m_max_low_pfn - p2m_min_low_pfn +
+			     PTRS_PER_PTE - 1) / PTRS_PER_PTE) << PAGE_SHIFT;
 		for (i = 0;
 		     i < sizeof(p2m_page_shifts)/sizeof(p2m_page_shifts[0]);
 		     i++) {
@@ -925,8 +1020,9 @@ p2m_expose_init(void)
 			p2m_convert_max_pfn = ROUNDUP(p2m_max_low_pfn,
 			                              granule_pfn);
 			num_pfn = p2m_convert_max_pfn - p2m_convert_min_pfn;
-			size = num_pfn << PAGE_SHIFT;
-			p2m_size = num_pfn / PTRS_PER_PTE;
+			p2m_expose_size = num_pfn << PAGE_SHIFT;
+			p2m_size = ((num_pfn + PTRS_PER_PTE - 1) /
+				    PTRS_PER_PTE) << PAGE_SHIFT;
 			p2m_size = ROUNDUP(p2m_size, granule_pfn << PAGE_SHIFT);
 			if (p2m_size == page_size)
 				break;
@@ -945,8 +1041,9 @@ p2m_expose_init(void)
 		                                p2m_granule_pfn);
 		p2m_convert_max_pfn = ROUNDUP(p2m_max_low_pfn, p2m_granule_pfn);
 		num_pfn = p2m_convert_max_pfn - p2m_convert_min_pfn;
-		size = num_pfn << PAGE_SHIFT;
-		p2m_size = num_pfn / PTRS_PER_PTE;
+		p2m_expose_size = num_pfn << PAGE_SHIFT;
+		p2m_size = ((num_pfn + PTRS_PER_PTE - 1) / PTRS_PER_PTE) <<
+			PAGE_SHIFT;
 		p2m_size = ROUNDUP(p2m_size, p2m_granule_pfn << PAGE_SHIFT);
 		align = max(privcmd_resource_align,
 		            p2m_granule_pfn << PAGE_SHIFT);
@@ -959,7 +1056,7 @@ p2m_expose_init(void)
 	if (error) {
 		printk(KERN_ERR P2M_PREFIX
 		       "can't allocate region for p2m exposure "
-		       "[0x%016lx, 0x%016lx) 0x%016lx\n",
+		       "[0x%016lx, 0x%016lx] 0x%016lx\n",
 		       p2m_convert_min_pfn, p2m_convert_max_pfn, p2m_size);
 		goto out;
 	}
@@ -969,14 +1066,14 @@ p2m_expose_init(void)
 	
 	error = HYPERVISOR_expose_p2m(p2m_convert_min_pfn,
 	                              p2m_assign_start_pfn,
-	                              size, p2m_granule_pfn);
+	                              p2m_expose_size, p2m_granule_pfn);
 	if (error) {
 		printk(KERN_ERR P2M_PREFIX "failed expose p2m hypercall %d\n",
 		       error);
 		printk(KERN_ERR P2M_PREFIX "conv 0x%016lx assign 0x%016lx "
-		       "size 0x%016lx granule 0x%016lx\n",
+		       "expose_size 0x%016lx granule 0x%016lx\n",
 		       p2m_convert_min_pfn, p2m_assign_start_pfn,
-		       size, p2m_granule_pfn);;
+		       p2m_expose_size, p2m_granule_pfn);;
 		release_resource(&p2m_resource);
 		goto out;
 	}
@@ -997,10 +1094,10 @@ p2m_expose_init(void)
 	p2m_initialized = 1;
 	printk(P2M_PREFIX "assign p2m table of [0x%016lx, 0x%016lx)\n",
 	       p2m_convert_min_pfn << PAGE_SHIFT,
-	       p2m_convert_max_pfn << PAGE_SHIFT);
+	       (p2m_convert_max_pfn << PAGE_SHIFT) + PAGE_SIZE);
 	printk(P2M_PREFIX "to [0x%016lx, 0x%016lx) (%ld KBytes)\n",
 	       p2m_assign_start_pfn << PAGE_SHIFT,
-	       p2m_assign_end_pfn << PAGE_SHIFT,
+	       (p2m_assign_end_pfn << PAGE_SHIFT) + PAGE_SIZE,
 	       p2m_size / 1024);
 out:
 	unlock_cpu_hotplug();
@@ -1018,6 +1115,49 @@ p2m_expose_cleanup(void)
 	release_resource(&p2m_resource);
 }
 #endif
+
+static void
+p2m_expose_resume(void)
+{
+	int error;
+
+	if (!xen_ia64_p2m_expose || !p2m_initialized)
+		return;
+
+	/*
+	 * We can't call {lock, unlock}_cpu_hotplug() because
+	 * they require process context.
+	 * We don't need them because we're the only one cpu and
+	 * interrupts are masked when resume.
+	 */
+	error = HYPERVISOR_expose_p2m(p2m_convert_min_pfn,
+	                              p2m_assign_start_pfn,
+	                              p2m_expose_size, p2m_granule_pfn);
+	if (error) {
+		printk(KERN_ERR P2M_PREFIX "failed expose p2m hypercall %d\n",
+		       error);
+		printk(KERN_ERR P2M_PREFIX "conv 0x%016lx assign 0x%016lx "
+		       "expose_size 0x%016lx granule 0x%016lx\n",
+		       p2m_convert_min_pfn, p2m_assign_start_pfn,
+		       p2m_expose_size, p2m_granule_pfn);;
+		p2m_initialized = 0;
+		smp_mb();
+		ia64_ptr(0x2, p2m_itr_arg.vaddr, p2m_itr_arg.log_page_size);
+		
+		/*
+		 * We can't call those clean up functions because they
+		 * require process context.
+		 */
+#if 0
+#ifdef CONFIG_XEN_IA64_EXPOSE_P2M_USE_DTR
+		if (xen_ia64_p2m_expose_use_dtr)
+			unregister_cpu_notifier(
+				&p2m_expose_dtr_hotplug_notifier);
+#endif
+		release_resource(&p2m_resource);
+#endif
+	}
+}
 
 //XXX inlinize?
 unsigned long

@@ -2607,8 +2607,7 @@ static int myri10ge_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 			status);
 		goto abort_with_netdev;
 	}
-	val = (val & ~PCI_EXP_DEVCTL_READRQ) | (5 << 12);
-	status = pci_write_config_word(pdev, cap + PCI_EXP_DEVCTL, val);
+	status = pcie_set_readrq(pdev, 4096);
 	if (status != 0) {
 		dev_err(&pdev->dev, "Error %d writing PCI_EXP_DEVCTL\n",
 			status);

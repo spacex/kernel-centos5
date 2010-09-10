@@ -79,6 +79,7 @@ extern char initial_stab[];
 
 #define HPTES_PER_GROUP 8
 
+#define HPTE_V_SSIZE_SHIFT      62
 #define HPTE_V_AVPN_SHIFT	7
 #define HPTE_V_AVPN		ASM_CONST(0xffffffffffffff80)
 #define HPTE_V_AVPN_VAL(x)	(((x) & HPTE_V_AVPN) >> HPTE_V_AVPN_SHIFT)
@@ -156,6 +157,15 @@ struct mmu_psize_def
 #define MMU_PAGE_16M		4	/* 16M */
 #define MMU_PAGE_16G		5	/* 16G */
 #define MMU_PAGE_COUNT		6
+
+/*
+ * Segment sizes.
+ * These are the values used by hardware in the B field of
+ * SLB entries and the first dword of MMU hashtable entries.
+ * The B field is 2 bits; the values 2 and 3 are unused and reserved.
+ */
+#define MMU_SEGSIZE_256M        0
+#define MMU_SEGSIZE_1T		1
 
 #ifndef __ASSEMBLY__
 
@@ -241,6 +251,8 @@ extern int hash_huge_page(struct mm_struct *mm, unsigned long access,
 extern int htab_bolt_mapping(unsigned long vstart, unsigned long vend,
 			     unsigned long pstart, unsigned long mode,
 			     int psize);
+extern int hash_page(unsigned long ea, unsigned long access,
+		     unsigned long trap);
 
 extern void htab_initialize(void);
 extern void htab_initialize_secondary(void);

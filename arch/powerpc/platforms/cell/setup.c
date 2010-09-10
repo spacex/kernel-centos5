@@ -50,6 +50,8 @@
 #include <asm/spu.h>
 #include <asm/spu_priv1.h>
 #include <asm/udbg.h>
+#include <asm/mpic.h>
+#include <asm/of_device.h>
 
 #include "interrupt.h"
 #include "iommu.h"
@@ -88,16 +90,125 @@ static void __init cell_pcibios_fixup(void)
 		pci_read_irq_line(dev);
 }
 
+static int __init cell_publish_devices(void)
+{
+	if (machine_is(cell))
+		of_platform_bus_probe(NULL, NULL, NULL);
+	return 0;
+}
+device_initcall(cell_publish_devices);
+
+static void cell_mpic_cascade(unsigned int irq, struct irq_desc *desc,
+			      struct pt_regs *regs)
+{
+	struct mpic *mpic = desc->handler_data;
+	unsigned int virq;
+
+	virq = mpic_get_one_irq(mpic, regs);
+	if (virq != NO_IRQ)
+		generic_handle_irq(virq, regs);
+	desc->chip->eoi(irq);
+}
+
+static void __init cell_add_phb(struct device_node *node, int index)
+{
+	struct pci_controller *phb;
+	struct resource r;
+
+	phb = pcibios_alloc_controller(node);
+	if (!phb)
+		return;
+	setup_phb(node, phb);
+	if (of_address_to_resource(node, 0, &r) == 0)
+		phb->buid = r.start;
+	pci_process_bridge_OF_ranges(phb, node, 0);
+	pci_setup_phb_io(phb, index == 0);
+}
+
+static void __init cell_find_and_init_phbs(void)
+{
+	struct device_node *axon, *plb5, *plb4, *np;
+	int index = 0;
+
+	/* Old blades, use generic code */
+	axon = of_find_node_by_name(NULL, "axon");
+	if (axon == NULL) {
+		find_and_init_phbs();
+		return;
+	}
+
+	/* New blades, manually instanciate bridges for now as
+	 * RHEL5 doesn't have the infrastructure to do it from
+	 * of_platform
+	 */
+	for (; axon; axon = of_find_node_by_name(axon, "axon")) {
+		for (plb5 = NULL; !!(plb5 = of_get_next_child(axon, plb5));)
+			if (strcmp(plb5->name, "plb5") == 0)
+				break;
+		if (plb5 == NULL)
+			continue;
+		for (np = NULL; !!(np = of_get_next_child(plb5, np));)
+			if ((strcmp(np->name, "pcie") == 0) ||
+			    (strcmp(np->name, "pciex") == 0))
+				cell_add_phb(np, index++);
+		for (plb4 = NULL; !!(plb4 = of_get_next_child(plb5, plb4));)
+			if (strcmp(plb4->name, "plb4") == 0)
+				break;
+		of_node_put(plb5);
+		if (plb4 == NULL)
+			continue;
+		for (np = NULL; !!(np = of_get_next_child(plb4, np));)
+			if (strcmp(np->name, "pcix") == 0)
+				cell_add_phb(np, index++);
+		of_node_put(plb4);
+	}
+
+	pci_devs_phb_init();
+}
+
+static void __init mpic_init_IRQ(void)
+{
+	struct device_node *dn;
+	struct mpic *mpic;
+	unsigned int virq;
+
+	for (dn = NULL;
+	     (dn = of_find_node_by_name(dn, "interrupt-controller"));) {
+		if (!device_is_compatible(dn, "CBEA,platform-open-pic"))
+			continue;
+
+		/* The MPIC driver will get everything it needs from the
+		 * device-tree, just pass 0 to all arguments
+		 */
+		mpic = mpic_alloc(dn, 0, 0, 0, 0, " MPIC     ");
+		if (mpic == NULL)
+			continue;
+		mpic_init(mpic);
+
+		virq = irq_of_parse_and_map(dn, 0);
+		if (virq == NO_IRQ)
+			continue;
+
+		printk(KERN_INFO "%s : hooking up to IRQ %d\n",
+		       dn->full_name, virq);
+		set_irq_data(virq, mpic);
+		set_irq_chained_handler(virq, cell_mpic_cascade);
+	}
+}
+
+
 static void __init cell_init_irq(void)
 {
 	iic_init_IRQ();
 	spider_init_IRQ();
+	mpic_init_IRQ();
 }
 
 static void __init cell_setup_arch(void)
 {
 #ifdef CONFIG_SPU_BASE
-	spu_priv1_ops         = &spu_priv1_mmio_ops;
+	spu_priv1_ops = &spu_priv1_mmio_ops;
+	spu_management_ops = &spu_management_of_ops;
 #endif
 
 	cbe_regs_init();
@@ -120,7 +231,7 @@ static void __init cell_setup_arch(void)
 
 	/* Find and initialize PCI host bridges */
 	init_pci_config_tokens();
-	find_and_init_phbs();
+	cell_find_and_init_phbs();
 	cbe_pervasive_init();
 #ifdef CONFIG_DUMMY_CONSOLE
 	conswitchp = &dummy_con;

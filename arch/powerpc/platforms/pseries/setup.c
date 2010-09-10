@@ -470,6 +470,7 @@ static void pseries_dedicated_idle_sleep(void)
 	 * a good time to find other work to dispatch.
 	 */
 	get_lppaca()->idle = 1;
+	get_lppaca()->cpuctls_task_attrs = 1;
 
 	/*
 	 * We come in with interrupts disabled, and need_resched()
@@ -498,27 +499,11 @@ static void pseries_dedicated_idle_sleep(void)
 			goto out;
 	}
 
-	/*
-	 * If not SMT, cede processor.  If CPU is running SMT
-	 * cede if the other thread is not idle, so that it can
-	 * go single-threaded.  If the other thread is idle,
-	 * we ask the hypervisor if it has pending work it
-	 * wants to do and cede if it does.  Otherwise we keep
-	 * polling in order to reduce interrupt latency.
-	 *
-	 * Doing the cede when the other thread is active will
-	 * result in this thread going dormant, meaning the other
-	 * thread gets to run in single-threaded (ST) mode, which
-	 * is slightly faster than SMT mode with this thread at
-	 * very low priority.  The cede enables interrupts, which
-	 * doesn't matter here.
-	 */
-	if (!cpu_has_feature(CPU_FTR_SMT) || !lppaca[cpu ^ 1].idle
-	    || poll_pending() == H_PENDING)
-		cede_processor();
+	cede_processor();
 
 out:
 	HMT_medium();
+	get_lppaca()->cpuctls_task_attrs = 0;
 	get_lppaca()->idle = 0;
 }
 
@@ -549,6 +534,34 @@ static int pSeries_pci_probe_mode(struct pci_bus *bus)
 	return PCI_PROBE_NORMAL;
 }
 
+/**
+ * pSeries_power_off - tell firmware about how to power off the system.
+ *
+ * This function calls either the power-off rtas token in normal cases
+ * or the ibm,power-off-ups token (if present & requested) in case of
+ * a power failure. If power-off token is used, power on will only be
+ * possible with power button press. If ibm,power-off-ups token is used
+ * it will allow auto poweron after power is restored.
+ */
+void pSeries_power_off(void)
+{
+	int rc;
+	int rtas_poweroff_ups_token = rtas_token("ibm,power-off-ups");
+
+	if (rtas_flash_term_hook)
+		rtas_flash_term_hook(SYS_POWER_OFF);
+
+	if (rtas_poweron_auto == 0 ||
+		rtas_poweroff_ups_token == RTAS_UNKNOWN_SERVICE) {
+		rc = rtas_call(rtas_token("power-off"), 2, 1, NULL, -1, -1);
+		printk(KERN_INFO "RTAS power-off returned %d\n", rc);
+	} else {
+		rc = rtas_call(rtas_poweroff_ups_token, 0, 1, NULL);
+		printk(KERN_INFO "RTAS ibm,power-off-ups returned %d\n", rc);
+	}
+	for (;;);
+}
+
 define_machine(pseries) {
 	.name			= "pSeries",
 	.probe			= pSeries_probe,
@@ -560,7 +573,7 @@ define_machine(pseries) {
 	.pci_probe_mode		= pSeries_pci_probe_mode,
 	.irq_bus_setup		= pSeries_irq_bus_setup,
 	.restart		= rtas_restart,
-	.power_off		= rtas_power_off,
+	.power_off		= pSeries_power_off,
 	.halt			= rtas_halt,
 	.panic			= rtas_os_term,
 	.cpu_die		= pSeries_mach_cpu_die,

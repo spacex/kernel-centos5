@@ -25,15 +25,22 @@ struct gfs2_glock;
 #define RES_STATFS	1
 #define RES_QUOTA	2
 
-int gfs2_trans_begin(struct gfs2_sbd *sdp, unsigned int blocks,
-		     unsigned int revokes);
+int gfs2_do_trans_begin(struct gfs2_sbd *sdp, unsigned int blocks,
+			unsigned int revokes, int wait);
 
 void gfs2_trans_end(struct gfs2_sbd *sdp);
 
 void gfs2_trans_add_gl(struct gfs2_glock *gl);
 void gfs2_trans_add_bh(struct gfs2_glock *gl, struct buffer_head *bh, int meta);
-void gfs2_trans_add_revoke(struct gfs2_sbd *sdp, u64 blkno);
+void gfs2_trans_add_revoke(struct gfs2_sbd *sdp, struct gfs2_bufdata *bd);
 void gfs2_trans_add_unrevoke(struct gfs2_sbd *sdp, u64 blkno);
 void gfs2_trans_add_rg(struct gfs2_rgrpd *rgd);
+
+
+static inline int gfs2_trans_begin(struct gfs2_sbd *sdp, unsigned int blocks,
+                     unsigned int revokes)
+{
+        return gfs2_do_trans_begin(sdp, blocks, revokes, 1);
+}
 
 #endif /* __TRANS_DOT_H__ */

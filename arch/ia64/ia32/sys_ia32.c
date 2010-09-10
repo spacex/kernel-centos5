@@ -2332,10 +2332,8 @@ static const struct utrace_regset ia32_regsets[] = {
 
 const struct utrace_regset_view utrace_ia32_view = {
 	.name = "i386", .e_machine = EM_386,
-	.regsets = ia32_regsets,
-	.n = sizeof ia32_regsets / sizeof ia32_regsets[0],
+	.regsets = ia32_regsets, .n = ARRAY_SIZE(ia32_regsets)
 };
-EXPORT_SYMBOL_GPL(utrace_ia32_view);
 #endif
 
 #ifdef CONFIG_PTRACE

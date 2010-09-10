@@ -1090,9 +1090,10 @@ EXPORT_SYMBOL (usb_release_bandwidth);
 
 /*-------------------------------------------------------------------------*/
 
-static void urb_unlink (struct urb *urb)
+static void urb_unlink(struct usb_hcd *hcd, struct urb *urb)
 {
 	unsigned long		flags;
+	int at_root_hub = (urb->dev == hcd->self.root_hub);
 
 	/* Release any periodic transfer bandwidth */
 	if (urb->bandwidth)
@@ -1100,12 +1101,27 @@ static void urb_unlink (struct urb *urb)
 			usb_pipeisoc (urb->pipe));
 
 	/* clear all state linking urb to this dev (and hcd) */
-
 	spin_lock_irqsave (&hcd_data_lock, flags);
 	list_del_init (&urb->urb_list);
 	spin_unlock_irqrestore (&hcd_data_lock, flags);
-}
 
+	/* lower level hcd code should use *_dma exclusively */
+	if (hcd->self.controller->dma_mask && !at_root_hub) {
+		if (usb_pipecontrol (urb->pipe)
+			&& !(urb->transfer_flags & URB_NO_SETUP_DMA_MAP))
+			dma_unmap_single (hcd->self.controller, urb->setup_dma,
+					sizeof (struct usb_ctrlrequest),
+					DMA_TO_DEVICE);
+		if (urb->transfer_buffer_length != 0
+			&& !(urb->transfer_flags & URB_NO_TRANSFER_DMA_MAP))
+			dma_unmap_single (hcd->self.controller, 
+					urb->transfer_dma,
+					urb->transfer_buffer_length,
+					usb_pipein (urb->pipe)
+					    ? DMA_FROM_DEVICE
+					    : DMA_TO_DEVICE);
+	}
+}
 
 /* may be called in any context with a valid urb->dev usecount
  * caller surrenders "ownership" of urb
@@ -1208,7 +1224,7 @@ doit:
 	status = hcd->driver->urb_enqueue (hcd, ep, urb, mem_flags);
 done:
 	if (unlikely (status)) {
-		urb_unlink (urb);
+		urb_unlink(hcd, urb);
 		atomic_dec (&urb->use_count);
 		if (urb->reject)
 			wake_up (&usb_kill_urb_queue);
@@ -1612,28 +1628,7 @@ static struct usb_operations usb_hcd_operations = {
  */
 void usb_hcd_giveback_urb (struct usb_hcd *hcd, struct urb *urb, struct pt_regs *regs)
 {
-	int at_root_hub;
-
-	at_root_hub = (urb->dev == hcd->self.root_hub);
-	urb_unlink (urb);
-
-	/* lower level hcd code should use *_dma exclusively */
-	if (hcd->self.controller->dma_mask && !at_root_hub) {
-		if (usb_pipecontrol (urb->pipe)
-			&& !(urb->transfer_flags & URB_NO_SETUP_DMA_MAP))
-			dma_unmap_single (hcd->self.controller, urb->setup_dma,
-					sizeof (struct usb_ctrlrequest),
-					DMA_TO_DEVICE);
-		if (urb->transfer_buffer_length != 0
-			&& !(urb->transfer_flags & URB_NO_TRANSFER_DMA_MAP))
-			dma_unmap_single (hcd->self.controller, 
-					urb->transfer_dma,
-					urb->transfer_buffer_length,
-					usb_pipein (urb->pipe)
-					    ? DMA_FROM_DEVICE
-					    : DMA_TO_DEVICE);
-	}
-
+	urb_unlink(hcd, urb);
 	usbmon_urb_complete (&hcd->self, urb);
 	/* pass ownership to the completion handler */
 	urb->complete (urb, regs);

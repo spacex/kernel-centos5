@@ -208,7 +208,7 @@ static struct pid_entry tgid_base_stuff[] = {
 	E(PROC_TGID_CMDLINE,   "cmdline", S_IFREG|S_IRUGO),
 	E(PROC_TGID_STAT,      "stat",    S_IFREG|S_IRUGO),
 	E(PROC_TGID_STATM,     "statm",   S_IFREG|S_IRUGO),
-	E(PROC_TGID_MAPS,      "maps",    S_IFREG|S_IRUSR),
+	E(PROC_TGID_MAPS,      "maps",    S_IFREG|S_IRUGO),
 #ifdef CONFIG_NUMA
 	E(PROC_TGID_NUMA_MAPS, "numa_maps", S_IFREG|S_IRUGO),
 #endif
@@ -363,6 +363,46 @@ static int get_nr_threads(struct task_struct *tsk)
 	}
 	return count;
 }
+
+static int __ptrace_may_attach(struct task_struct *task)
+{
+	/* May we inspect the given task?
+	 * This check is used both for attaching with ptrace
+	 * and for allowing access to sensitive information in /proc.
+	 *
+	 * ptrace_attach denies several cases that /proc allows
+	 * because setting up the necessary parent/child relationship
+	 * or halting the specified task is impossible.
+	 */
+	int dumpable = 0;
+	/* Don't let security modules deny introspection */
+	if (task == current)
+		return 0;
+	if (((current->uid != task->euid) ||
+	     (current->uid != task->suid) ||
+	     (current->uid != task->uid) ||
+	     (current->gid != task->egid) ||
+	     (current->gid != task->sgid) ||
+	     (current->gid != task->gid)) && !capable(CAP_SYS_PTRACE))
+		return -EPERM;
+	smp_rmb();
+	if (task->mm)
+		dumpable = task->mm->dumpable;
+	if (!dumpable && !capable(CAP_SYS_PTRACE))
+		return -EPERM;
+
+	return security_ptrace(current, task);
+}
+
+int ptrace_may_attach(struct task_struct *task)
+{
+	int err;
+	task_lock(task);
+	err = __ptrace_may_attach(task);
+	task_unlock(task);
+	return !err;
+}
+
 
 static int proc_cwd_link(struct inode *inode, struct dentry **dentry, struct vfsmount **mnt)
 {

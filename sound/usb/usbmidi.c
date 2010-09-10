@@ -181,9 +181,9 @@ static int snd_usbmidi_urb_error(int status)
 	case -ENODEV:
 		return -ENODEV;
 	/* errors that might occur during unplugging */
-	case -EPROTO:    /* EHCI */
-	case -ETIMEDOUT: /* OHCI */
-	case -EILSEQ:    /* UHCI */
+	case -EPROTO:
+	case -ETIME:
+	case -EILSEQ:
 		return -EIO;
 	default:
 		snd_printk(KERN_ERR "urb status %d\n", status);
@@ -247,7 +247,7 @@ static void snd_usbmidi_in_urb_complete(struct urb* urb, struct pt_regs *regs)
 	snd_usbmidi_submit_urb(urb, GFP_ATOMIC);
 }
 
-static void snd_usbmidi_out_urb_complete(struct urb* urb, struct pt_regs *regs)
+static void snd_usbmidi_out_urb_complete(struct urb* urb)
 {
 	struct snd_usb_midi_out_endpoint* ep = urb->context;
 
@@ -982,7 +982,7 @@ void snd_usbmidi_disconnect(struct list_head* p)
 			if (umidi->usb_protocol_ops->finish_out_endpoint)
 				umidi->usb_protocol_ops->finish_out_endpoint(ep->out);
 		}
-		if (ep->in && ep->in->urb)
+		if (ep->in)
 			usb_kill_urb(ep->in->urb);
 	}
 }

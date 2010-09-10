@@ -60,6 +60,7 @@
 #include "ice1712.h"
 #include "envy24ht.h"
 #include "aureon.h"
+#include <sound/tlv.h>
 
 /* WM8770 registers */
 #define WM_DAC_ATTEN		0x00	/* DAC1-8 analog attenuation */
@@ -293,7 +294,7 @@ static unsigned short aureon_ac97_read(struct snd_ice1712 *ice, unsigned short r
 static int aureon_ac97_init (struct snd_ice1712 *ice)
 {
 	int i;
-	static unsigned short ac97_defaults[] = {
+	static const unsigned short ac97_defaults[] = {
 		0x00, 0x9640,
 		0x02, 0x8000,
 		0x04, 0x8000,
@@ -473,7 +474,8 @@ static void aureon_spi_write(struct snd_ice1712 *ice, unsigned int cs, unsigned 
 
 	tmp = snd_ice1712_gpio_read(ice);
 
-	if (ice->eeprom.subvendor == VT1724_SUBDEVICE_PRODIGY71LT) {
+	if (ice->eeprom.subvendor == VT1724_SUBDEVICE_PRODIGY71LT ||
+	    ice->eeprom.subvendor == VT1724_SUBDEVICE_PRODIGY71XT) {
 		snd_ice1712_gpio_set_mask(ice, ~(PRODIGY_SPI_MOSI|PRODIGY_SPI_CLK|PRODIGY_WM_CS));
 		mosi = PRODIGY_SPI_MOSI;
 		clk = PRODIGY_SPI_CLK;
@@ -600,7 +602,9 @@ static unsigned short wm_get(struct snd_ice1712 *ice, int reg)
 static void wm_put_nocache(struct snd_ice1712 *ice, int reg, unsigned short val)
 {
 	aureon_spi_write(ice,
-			(ice->eeprom.subvendor == VT1724_SUBDEVICE_PRODIGY71LT ? PRODIGY_WM_CS : AUREON_WM_CS),
+			 ((ice->eeprom.subvendor == VT1724_SUBDEVICE_PRODIGY71LT ||
+			   ice->eeprom.subvendor == VT1724_SUBDEVICE_PRODIGY71XT) ?
+			 PRODIGY_WM_CS : AUREON_WM_CS),
 			(reg << 9) | (val & 0x1ff), 16);
 }
 
@@ -660,11 +664,17 @@ static int aureon_ac97_mmute_put(struct snd_kcontrol *kcontrol, struct snd_ctl_e
 	return change;
 }
 
+static const DECLARE_TLV_DB_SCALE(db_scale_wm_dac, -12700, 100, 1);
+static const DECLARE_TLV_DB_SCALE(db_scale_wm_pcm, -6400, 50, 1);
+static const DECLARE_TLV_DB_SCALE(db_scale_wm_adc, -1200, 100, 0);
+static const DECLARE_TLV_DB_SCALE(db_scale_ac97_master, -4650, 150, 0);
+static const DECLARE_TLV_DB_SCALE(db_scale_ac97_gain, -3450, 150, 0);
+
 /*
  * Logarithmic volume values for WM8770
  * Computed as 20 * Log10(255 / x)
  */
-static unsigned char wm_vol[256] = {
+static const unsigned char wm_vol[256] = {
 	127, 48, 42, 39, 36, 34, 33, 31, 30, 29, 28, 27, 27, 26, 25, 25, 24, 24, 23,
 	23, 22, 22, 21, 21, 21, 20, 20, 20, 19, 19, 19, 18, 18, 18, 18, 17, 17, 17,
 	17, 16, 16, 16, 16, 15, 15, 15, 15, 15, 15, 14, 14, 14, 14, 14, 13, 13, 13,
@@ -1057,14 +1067,14 @@ static int wm_adc_vol_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_val
  */
 static int wm_adc_mux_info(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_info *uinfo)
 {
-	static char *texts[] = {
+	static const char * const texts[] = {
 		"CD",		//AIN1
 		"Aux",		//AIN2
 		"Line",		//AIN3
 		"Mic",		//AIN4
 		"AC97"		//AIN5
 	};
-	static char *universe_texts[] = {
+	static const char * const universe_texts[] = {
 		"Aux1",		//AIN1
 		"CD",		//AIN2
 		"Phono",	//AIN3
@@ -1130,11 +1140,11 @@ static int wm_adc_mux_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_val
 static int aureon_cs8415_mux_info(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_info *uinfo)
 {
 	struct snd_ice1712 *ice = snd_kcontrol_chip(kcontrol);
-	static char *aureon_texts[] = {
+	static const char * const aureon_texts[] = {
 		"CD",		//RXP0
 		"Optical"	//RXP1
 	};
-	static char *prodigy_texts[] = {
+	static const char * const prodigy_texts[] = {
 		"CD",
 		"Coax"
 	};
@@ -1281,12 +1291,14 @@ static int aureon_set_headphone_amp(struct snd_ice1712 *ice, int enable)
 
 	tmp2 = tmp = snd_ice1712_gpio_read(ice);
 	if (enable)
-		if (ice->eeprom.subvendor != VT1724_SUBDEVICE_PRODIGY71LT)
+		if (ice->eeprom.subvendor != VT1724_SUBDEVICE_PRODIGY71LT &&
+		    ice->eeprom.subvendor != VT1724_SUBDEVICE_PRODIGY71XT)
 			tmp |= AUREON_HP_SEL;
 		else
 			tmp |= PRODIGY_HP_SEL;
 	else
-		if (ice->eeprom.subvendor != VT1724_SUBDEVICE_PRODIGY71LT)
+		if (ice->eeprom.subvendor != VT1724_SUBDEVICE_PRODIGY71LT &&
+		    ice->eeprom.subvendor != VT1724_SUBDEVICE_PRODIGY71XT)
 			tmp &= ~ AUREON_HP_SEL;
 		else
 			tmp &= ~ PRODIGY_HP_SEL;
@@ -1356,7 +1368,7 @@ static int aureon_deemp_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_v
  */
 static int aureon_oversampling_info(struct snd_kcontrol *k, struct snd_ctl_elem_info *uinfo)
 {
-	static char *texts[2] = { "128x", "64x"	};
+	static const char * const texts[2] = { "128x", "64x"	};
 
 	uinfo->type = SNDRV_CTL_ELEM_TYPE_ENUMERATED;
 	uinfo->count = 1;
@@ -1399,7 +1411,7 @@ static int aureon_oversampling_put(struct snd_kcontrol *kcontrol, struct snd_ctl
  * mixers
  */
 
-static struct snd_kcontrol_new aureon_dac_controls[] __devinitdata = {
+static const struct snd_kcontrol_new aureon_dac_controls[] __devinitdata = {
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 		.name = "Master Playback Switch",
@@ -1409,10 +1421,13 @@ static struct snd_kcontrol_new aureon_dac_controls[] __devinitdata = {
 	},
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			   SNDRV_CTL_ELEM_ACCESS_TLV_READ),
 		.name = "Master Playback Volume",
 		.info = wm_master_vol_info,
 		.get = wm_master_vol_get,
-		.put = wm_master_vol_put
+		.put = wm_master_vol_put,
+		.tlv = { .p = db_scale_wm_dac }
 	},
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1424,11 +1439,14 @@ static struct snd_kcontrol_new aureon_dac_controls[] __devinitdata = {
 	},
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			   SNDRV_CTL_ELEM_ACCESS_TLV_READ),
 		.name = "Front Playback Volume",
 		.info = wm_vol_info,
 		.get = wm_vol_get,
 		.put = wm_vol_put,
-		.private_value = (2 << 8) | 0
+		.private_value = (2 << 8) | 0,
+		.tlv = { .p = db_scale_wm_dac }
 	},
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1440,11 +1458,14 @@ static struct snd_kcontrol_new aureon_dac_controls[] __devinitdata = {
 	},
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			   SNDRV_CTL_ELEM_ACCESS_TLV_READ),
 		.name = "Rear Playback Volume",
 		.info = wm_vol_info,
 		.get = wm_vol_get,
 		.put = wm_vol_put,
-		.private_value = (2 << 8) | 2
+		.private_value = (2 << 8) | 2,
+		.tlv = { .p = db_scale_wm_dac }
 	},
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1456,11 +1477,14 @@ static struct snd_kcontrol_new aureon_dac_controls[] __devinitdata = {
 	},
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			   SNDRV_CTL_ELEM_ACCESS_TLV_READ),
 		.name = "Center Playback Volume",
 		.info = wm_vol_info,
 		.get = wm_vol_get,
 		.put = wm_vol_put,
-		.private_value = (1 << 8) | 4
+		.private_value = (1 << 8) | 4,
+		.tlv = { .p = db_scale_wm_dac }
 	},
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1472,11 +1496,14 @@ static struct snd_kcontrol_new aureon_dac_controls[] __devinitdata = {
 	},
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			   SNDRV_CTL_ELEM_ACCESS_TLV_READ),
 		.name = "LFE Playback Volume",
 		.info = wm_vol_info,
 		.get = wm_vol_get,
 		.put = wm_vol_put,
-		.private_value = (1 << 8) | 5
+		.private_value = (1 << 8) | 5,
+		.tlv = { .p = db_scale_wm_dac }
 	},
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1488,15 +1515,18 @@ static struct snd_kcontrol_new aureon_dac_controls[] __devinitdata = {
 	},
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			   SNDRV_CTL_ELEM_ACCESS_TLV_READ),
 		.name = "Side Playback Volume",
 		.info = wm_vol_info,
 		.get = wm_vol_get,
 		.put = wm_vol_put,
-		.private_value = (2 << 8) | 6
+		.private_value = (2 << 8) | 6,
+		.tlv = { .p = db_scale_wm_dac }
 	}
 };
 
-static struct snd_kcontrol_new wm_controls[] __devinitdata = {
+static const struct snd_kcontrol_new wm_controls[] __devinitdata = {
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 		.name = "PCM Playback Switch",
@@ -1506,10 +1536,13 @@ static struct snd_kcontrol_new wm_controls[] __devinitdata = {
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			   SNDRV_CTL_ELEM_ACCESS_TLV_READ),
 		.name = "PCM Playback Volume",
 		.info = wm_pcm_vol_info,
 		.get = wm_pcm_vol_get,
-		.put = wm_pcm_vol_put
+		.put = wm_pcm_vol_put,
+		.tlv = { .p = db_scale_wm_pcm }
  	},
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1520,10 +1553,13 @@ static struct snd_kcontrol_new wm_controls[] __devinitdata = {
 	},
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			   SNDRV_CTL_ELEM_ACCESS_TLV_READ),
 		.name = "Capture Volume",
 		.info = wm_adc_vol_info,
 		.get = wm_adc_vol_get,
-		.put = wm_adc_vol_put
+		.put = wm_adc_vol_put,
+		.tlv = { .p = db_scale_wm_adc }
 	},
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1556,7 +1592,7 @@ static struct snd_kcontrol_new wm_controls[] __devinitdata = {
 	}
 };
 
-static struct snd_kcontrol_new ac97_controls[] __devinitdata = {
+static const struct snd_kcontrol_new ac97_controls[] __devinitdata = {
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 		.name = "AC97 Playback Switch",
@@ -1567,11 +1603,14 @@ static struct snd_kcontrol_new ac97_controls[] __devinitdata = {
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			   SNDRV_CTL_ELEM_ACCESS_TLV_READ),
  		.name = "AC97 Playback Volume",
  		.info = aureon_ac97_vol_info,
  		.get = aureon_ac97_vol_get,
  		.put = aureon_ac97_vol_put,
- 		.private_value = AC97_MASTER|AUREON_AC97_STEREO
+ 		.private_value = AC97_MASTER|AUREON_AC97_STEREO,
+		.tlv = { .p = db_scale_ac97_master }
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1583,11 +1622,14 @@ static struct snd_kcontrol_new ac97_controls[] __devinitdata = {
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			   SNDRV_CTL_ELEM_ACCESS_TLV_READ),
  		.name = "CD Playback Volume",
  		.info = aureon_ac97_vol_info,
  		.get = aureon_ac97_vol_get,
  		.put = aureon_ac97_vol_put,
- 		.private_value = AC97_CD|AUREON_AC97_STEREO
+ 		.private_value = AC97_CD|AUREON_AC97_STEREO,
+		.tlv = { .p = db_scale_ac97_gain }
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1599,11 +1641,14 @@ static struct snd_kcontrol_new ac97_controls[] __devinitdata = {
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			   SNDRV_CTL_ELEM_ACCESS_TLV_READ),
  		.name = "Aux Playback Volume",
  		.info = aureon_ac97_vol_info,
  		.get = aureon_ac97_vol_get,
  		.put = aureon_ac97_vol_put,
- 		.private_value = AC97_AUX|AUREON_AC97_STEREO
+ 		.private_value = AC97_AUX|AUREON_AC97_STEREO,
+		.tlv = { .p = db_scale_ac97_gain }
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1615,11 +1660,14 @@ static struct snd_kcontrol_new ac97_controls[] __devinitdata = {
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			   SNDRV_CTL_ELEM_ACCESS_TLV_READ),
  		.name = "Line Playback Volume",
  		.info = aureon_ac97_vol_info,
  		.get = aureon_ac97_vol_get,
  		.put = aureon_ac97_vol_put,
- 		.private_value = AC97_LINE|AUREON_AC97_STEREO
+ 		.private_value = AC97_LINE|AUREON_AC97_STEREO,
+		.tlv = { .p = db_scale_ac97_gain }
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1631,11 +1679,14 @@ static struct snd_kcontrol_new ac97_controls[] __devinitdata = {
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			   SNDRV_CTL_ELEM_ACCESS_TLV_READ),
  		.name = "Mic Playback Volume",
  		.info = aureon_ac97_vol_info,
  		.get = aureon_ac97_vol_get,
  		.put = aureon_ac97_vol_put,
- 		.private_value = AC97_MIC
+ 		.private_value = AC97_MIC,
+		.tlv = { .p = db_scale_ac97_gain }
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1646,7 +1697,7 @@ static struct snd_kcontrol_new ac97_controls[] __devinitdata = {
  	}
 };
 
-static struct snd_kcontrol_new universe_ac97_controls[] __devinitdata = {
+static const struct snd_kcontrol_new universe_ac97_controls[] __devinitdata = {
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 		.name = "AC97 Playback Switch",
@@ -1657,11 +1708,14 @@ static struct snd_kcontrol_new universe_ac97_controls[] __devinitdata = {
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			   SNDRV_CTL_ELEM_ACCESS_TLV_READ),
  		.name = "AC97 Playback Volume",
  		.info = aureon_ac97_vol_info,
  		.get = aureon_ac97_vol_get,
  		.put = aureon_ac97_vol_put,
- 		.private_value = AC97_MASTER|AUREON_AC97_STEREO
+ 		.private_value = AC97_MASTER|AUREON_AC97_STEREO,
+		.tlv = { .p = db_scale_ac97_master }
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1673,11 +1727,14 @@ static struct snd_kcontrol_new universe_ac97_controls[] __devinitdata = {
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			   SNDRV_CTL_ELEM_ACCESS_TLV_READ),
  		.name = "CD Playback Volume",
  		.info = aureon_ac97_vol_info,
  		.get = aureon_ac97_vol_get,
  		.put = aureon_ac97_vol_put,
- 		.private_value = AC97_AUX|AUREON_AC97_STEREO
+ 		.private_value = AC97_AUX|AUREON_AC97_STEREO,
+		.tlv = { .p = db_scale_ac97_gain }
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1685,15 +1742,18 @@ static struct snd_kcontrol_new universe_ac97_controls[] __devinitdata = {
  		.info = aureon_ac97_mute_info,
  		.get = aureon_ac97_mute_get,
  		.put = aureon_ac97_mute_put,
- 		.private_value = AC97_CD,
+ 		.private_value = AC97_CD
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			   SNDRV_CTL_ELEM_ACCESS_TLV_READ),
  		.name = "Phono Playback Volume",
  		.info = aureon_ac97_vol_info,
  		.get = aureon_ac97_vol_get,
  		.put = aureon_ac97_vol_put,
- 		.private_value = AC97_CD|AUREON_AC97_STEREO
+ 		.private_value = AC97_CD|AUREON_AC97_STEREO,
+		.tlv = { .p = db_scale_ac97_gain }
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1705,11 +1765,14 @@ static struct snd_kcontrol_new universe_ac97_controls[] __devinitdata = {
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			   SNDRV_CTL_ELEM_ACCESS_TLV_READ),
  		.name = "Line Playback Volume",
  		.info = aureon_ac97_vol_info,
  		.get = aureon_ac97_vol_get,
  		.put = aureon_ac97_vol_put,
- 		.private_value = AC97_LINE|AUREON_AC97_STEREO
+ 		.private_value = AC97_LINE|AUREON_AC97_STEREO,
+		.tlv = { .p = db_scale_ac97_gain }
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1721,11 +1784,14 @@ static struct snd_kcontrol_new universe_ac97_controls[] __devinitdata = {
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			   SNDRV_CTL_ELEM_ACCESS_TLV_READ),
  		.name = "Mic Playback Volume",
  		.info = aureon_ac97_vol_info,
  		.get = aureon_ac97_vol_get,
  		.put = aureon_ac97_vol_put,
- 		.private_value = AC97_MIC
+ 		.private_value = AC97_MIC,
+		.tlv = { .p = db_scale_ac97_gain }
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1744,11 +1810,14 @@ static struct snd_kcontrol_new universe_ac97_controls[] __devinitdata = {
  	},
  	{
  		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			   SNDRV_CTL_ELEM_ACCESS_TLV_READ),
  		.name = "Aux Playback Volume",
  		.info = aureon_ac97_vol_info,
  		.get = aureon_ac97_vol_get,
  		.put = aureon_ac97_vol_put,
- 		.private_value = AC97_VIDEO|AUREON_AC97_STEREO
+ 		.private_value = AC97_VIDEO|AUREON_AC97_STEREO,
+		.tlv = { .p = db_scale_ac97_gain }
  	},
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1760,8 +1829,7 @@ static struct snd_kcontrol_new universe_ac97_controls[] __devinitdata = {
 
 };
 
-	
-static struct snd_kcontrol_new cs8415_controls[] __devinitdata = {
+static const struct snd_kcontrol_new cs8415_controls[] __devinitdata = {
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 		.name = SNDRV_CTL_NAME_IEC958("",CAPTURE,SWITCH),
@@ -1806,7 +1874,6 @@ static struct snd_kcontrol_new cs8415_controls[] __devinitdata = {
 	}
 };
 
- 
 static int __devinit aureon_add_controls(struct snd_ice1712 *ice)
 {
 	unsigned int i, counts;
@@ -1834,7 +1901,8 @@ static int __devinit aureon_add_controls(struct snd_ice1712 *ice)
 				return err;
 		}
 	}
-	else if (ice->eeprom.subvendor != VT1724_SUBDEVICE_PRODIGY71LT) {
+	else if (ice->eeprom.subvendor != VT1724_SUBDEVICE_PRODIGY71LT &&
+		 ice->eeprom.subvendor != VT1724_SUBDEVICE_PRODIGY71XT) {
 		for (i = 0; i < ARRAY_SIZE(ac97_controls); i++) {
 			err = snd_ctl_add(ice->card, snd_ctl_new1(&ac97_controls[i], ice));
 			if (err < 0)
@@ -1842,7 +1910,8 @@ static int __devinit aureon_add_controls(struct snd_ice1712 *ice)
 		}
 	}
 
-	if (ice->eeprom.subvendor != VT1724_SUBDEVICE_PRODIGY71LT) {
+	if (ice->eeprom.subvendor != VT1724_SUBDEVICE_PRODIGY71LT &&
+	    ice->eeprom.subvendor != VT1724_SUBDEVICE_PRODIGY71XT) {
 		unsigned char id;
 		snd_ice1712_save_gpio_status(ice);
 		id = aureon_cs8415_get(ice, CS8415_ID);
@@ -1872,7 +1941,7 @@ static int __devinit aureon_add_controls(struct snd_ice1712 *ice)
  */
 static int __devinit aureon_init(struct snd_ice1712 *ice)
 {
-	static unsigned short wm_inits_aureon[] = {
+	static const unsigned short wm_inits_aureon[] = {
 		/* These come first to reduce init pop noise */
 		0x1b, 0x044,		/* ADC Mux (AC'97 source) */
 		0x1c, 0x00B,		/* Out Mux1 (VOUT1 = DAC+AUX, VOUT2 = DAC) */
@@ -1908,7 +1977,7 @@ static int __devinit aureon_init(struct snd_ice1712 *ice)
 		0x1a, 0x000,		/* -12dB ADC/R */
 		(unsigned short)-1
 	};
-	static unsigned short wm_inits_prodigy[] = {
+	static const unsigned short wm_inits_prodigy[] = {
 
 		/* These come first to reduce init pop noise */
 		0x1b, 0x000,		/* ADC Mux */
@@ -1950,7 +2019,7 @@ static int __devinit aureon_init(struct snd_ice1712 *ice)
 		(unsigned short)-1
 
 	};
-	static unsigned short cs_inits[] = {
+	static const unsigned short cs_inits[] = {
 		0x0441, /* RUN */
 		0x0180, /* no mute, OMCK output on RMCK pin */
 		0x0201, /* S/PDIF source on RXP1 */
@@ -1958,7 +2027,7 @@ static int __devinit aureon_init(struct snd_ice1712 *ice)
 		(unsigned short)-1
 	};
 	unsigned int tmp;
-	unsigned short *p;
+	const unsigned short *p;
 	int err, i;
 
 	if (ice->eeprom.subvendor == VT1724_SUBDEVICE_AUREON51_SKY) {
@@ -1998,7 +2067,8 @@ static int __devinit aureon_init(struct snd_ice1712 *ice)
 
 	/* initialize WM8770 codec */
 	if (ice->eeprom.subvendor == VT1724_SUBDEVICE_PRODIGY71 ||
-		ice->eeprom.subvendor == VT1724_SUBDEVICE_PRODIGY71LT)
+		ice->eeprom.subvendor == VT1724_SUBDEVICE_PRODIGY71LT ||
+	        ice->eeprom.subvendor == VT1724_SUBDEVICE_PRODIGY71XT)
 		p = wm_inits_prodigy;
 	else
 		p = wm_inits_aureon;
@@ -2006,7 +2076,8 @@ static int __devinit aureon_init(struct snd_ice1712 *ice)
 		wm_put(ice, p[0], p[1]);
 
 	/* initialize CS8415A codec */
-	if (ice->eeprom.subvendor != VT1724_SUBDEVICE_PRODIGY71LT) {
+	if (ice->eeprom.subvendor != VT1724_SUBDEVICE_PRODIGY71LT &&
+	    ice->eeprom.subvendor != VT1724_SUBDEVICE_PRODIGY71XT) {
 		for (p = cs_inits; *p != (unsigned short)-1; p++)
 			aureon_spi_write(ice, AUREON_CS8415_CS, *p | 0x200000, 24);
 		ice->spec.aureon.cs8415_mux = 1;
@@ -2036,73 +2107,58 @@ static int __devinit aureon_init(struct snd_ice1712 *ice)
  * hence the driver needs to sets up it properly.
  */
 
-static unsigned char aureon51_eeprom[] __devinitdata = {
-	0x0a,	/* SYSCONF: clock 512, spdif-in/ADC, 3DACs */
-	0x80,	/* ACLINK: I2S */
-	0xfc,	/* I2S: vol, 96k, 24bit, 192k */
-	0xc3,	/* SPDIF: out-en, out-int, spdif-in */
-	0xff,	/* GPIO_DIR */
-	0xff,	/* GPIO_DIR1 */
-	0x5f,	/* GPIO_DIR2 */
-	0x00,	/* GPIO_MASK */
-	0x00,	/* GPIO_MASK1 */
-	0x00,	/* GPIO_MASK2 */
-	0x00,	/* GPIO_STATE */
-	0x00,	/* GPIO_STATE1 */
-	0x00,	/* GPIO_STATE2 */
+static const unsigned char aureon51_eeprom[] __devinitdata = {
+	[ICE_EEP2_SYSCONF]     = 0x0a,	/* clock 512, spdif-in/ADC, 3DACs */
+	[ICE_EEP2_ACLINK]      = 0x80,	/* I2S */
+	[ICE_EEP2_I2S]         = 0xfc,	/* vol, 96k, 24bit, 192k */
+	[ICE_EEP2_SPDIF]       = 0xc3,	/* out-en, out-int, spdif-in */
+	[ICE_EEP2_GPIO_DIR]    = 0xff,
+	[ICE_EEP2_GPIO_DIR1]   = 0xff,
+	[ICE_EEP2_GPIO_DIR2]   = 0x5f,
+	[ICE_EEP2_GPIO_MASK]   = 0x00,
+	[ICE_EEP2_GPIO_MASK1]  = 0x00,
+	[ICE_EEP2_GPIO_MASK2]  = 0x00,
+	[ICE_EEP2_GPIO_STATE]  = 0x00,
+	[ICE_EEP2_GPIO_STATE1] = 0x00,
+	[ICE_EEP2_GPIO_STATE2] = 0x00,
 };
 
-static unsigned char aureon71_eeprom[] __devinitdata = {
-	0x0b,	/* SYSCONF: clock 512, spdif-in/ADC, 4DACs */
-	0x80,	/* ACLINK: I2S */
-	0xfc,	/* I2S: vol, 96k, 24bit, 192k */
-	0xc3,	/* SPDIF: out-en, out-int, spdif-in */
-	0xff,	/* GPIO_DIR */
-	0xff,	/* GPIO_DIR1 */
-	0x5f,	/* GPIO_DIR2 */
-	0x00,	/* GPIO_MASK */
-	0x00,	/* GPIO_MASK1 */
-	0x00,	/* GPIO_MASK2 */
-	0x00,	/* GPIO_STATE */
-	0x00,	/* GPIO_STATE1 */
-	0x00,	/* GPIO_STATE2 */
+static const unsigned char aureon71_eeprom[] __devinitdata = {
+	[ICE_EEP2_SYSCONF]     = 0x0b,	/* clock 512, spdif-in/ADC, 4DACs */
+	[ICE_EEP2_ACLINK]      = 0x80,	/* I2S */
+	[ICE_EEP2_I2S]         = 0xfc,	/* vol, 96k, 24bit, 192k */
+	[ICE_EEP2_SPDIF]       = 0xc3,	/* out-en, out-int, spdif-in */
+	[ICE_EEP2_GPIO_DIR]    = 0xff,
+	[ICE_EEP2_GPIO_DIR1]   = 0xff,
+	[ICE_EEP2_GPIO_DIR2]   = 0x5f,
+	[ICE_EEP2_GPIO_MASK]   = 0x00,
+	[ICE_EEP2_GPIO_MASK1]  = 0x00,
+	[ICE_EEP2_GPIO_MASK2]  = 0x00,
+	[ICE_EEP2_GPIO_STATE]  = 0x00,
+	[ICE_EEP2_GPIO_STATE1] = 0x00,
+	[ICE_EEP2_GPIO_STATE2] = 0x00,
 };
+#define prodigy71_eeprom aureon71_eeprom
 
-static unsigned char prodigy71_eeprom[] __devinitdata = {
-	0x0b,	/* SYSCONF: clock 512, spdif-in/ADC, 4DACs */
-	0x80,	/* ACLINK: I2S */
-	0xfc,	/* I2S: vol, 96k, 24bit, 192k */
-	0xc3,	/* SPDIF: out-en, out-int, spdif-in */
-	0xff,	/* GPIO_DIR */
-	0xff,	/* GPIO_DIR1 */
-	0x5f,	/* GPIO_DIR2 */
-	0x00,	/* GPIO_MASK */
-	0x00,	/* GPIO_MASK1 */
-	0x00,	/* GPIO_MASK2 */
-	0x00,	/* GPIO_STATE */
-	0x00,	/* GPIO_STATE1 */
-	0x00,	/* GPIO_STATE2 */
+static const unsigned char prodigy71lt_eeprom[] __devinitdata = {
+	[ICE_EEP2_SYSCONF]     = 0x4b,	/* clock 384, spdif-in/ADC, 4DACs */
+	[ICE_EEP2_ACLINK]      = 0x80,	/* I2S */
+	[ICE_EEP2_I2S]         = 0xfc,	/* vol, 96k, 24bit, 192k */
+	[ICE_EEP2_SPDIF]       = 0xc3,	/* out-en, out-int, spdif-in */
+	[ICE_EEP2_GPIO_DIR]    = 0xff,
+	[ICE_EEP2_GPIO_DIR1]   = 0xff,
+	[ICE_EEP2_GPIO_DIR2]   = 0x5f,
+	[ICE_EEP2_GPIO_MASK]   = 0x00,
+	[ICE_EEP2_GPIO_MASK1]  = 0x00,
+	[ICE_EEP2_GPIO_MASK2]  = 0x00,
+	[ICE_EEP2_GPIO_STATE]  = 0x00,
+	[ICE_EEP2_GPIO_STATE1] = 0x00,
+	[ICE_EEP2_GPIO_STATE2] = 0x00,
 };
-
-static unsigned char prodigy71lt_eeprom[] __devinitdata = {
-	0x4b,	/* SYSCINF: clock 512, spdif-in/ADC, 4DACs */
-	0x80,	/* ACLINK: I2S */
-	0xfc,	/* I2S: vol, 96k, 24bit, 192k */
-	0xc3,	/* SPDIF: out-en, out-int, spdif-in */
-	0xff,	/* GPIO_DIR */
-	0xff,	/* GPIO_DIR1 */
-	0x5f,	/* GPIO_DIR2 */
-	0x00,	/* GPIO_MASK */
-	0x00,	/* GPIO_MASK1 */
-	0x00,	/* GPIO_MASK2 */
-	0x00,	/* GPIO_STATE */
-	0x00,	/* GPIO_STATE1 */
-	0x00,	/* GPIO_STATE2 */
-};
-	
+#define prodigy71xt_eeprom prodigy71lt_eeprom
 
 /* entry point */
-struct snd_ice1712_card_info snd_vt1724_aureon_cards[] __devinitdata = {
+const struct snd_ice1712_card_info snd_vt1724_aureon_cards[] __devinitdata = {
 	{
 		.subvendor = VT1724_SUBDEVICE_AUREON51_SKY,
 		.name = "Terratec Aureon 5.1-Sky",
@@ -2151,6 +2207,16 @@ struct snd_ice1712_card_info snd_vt1724_aureon_cards[] __devinitdata = {
 		.build_controls = aureon_add_controls,
 		.eeprom_size = sizeof(prodigy71lt_eeprom),
 		.eeprom_data = prodigy71lt_eeprom,
+		.driver = "Prodigy71LT",
+	},
+	{
+		.subvendor = VT1724_SUBDEVICE_PRODIGY71XT,
+		.name = "Audiotrak Prodigy 7.1 XT",
+		.model = "prodigy71xt",
+		.chip_init = aureon_init,
+		.build_controls = aureon_add_controls,
+		.eeprom_size = sizeof(prodigy71xt_eeprom),
+		.eeprom_data = prodigy71xt_eeprom,
 		.driver = "Prodigy71LT",
 	},
 	{ } /* terminator */

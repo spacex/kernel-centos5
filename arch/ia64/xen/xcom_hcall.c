@@ -32,6 +32,7 @@
 #include <xen/interface/callback.h>
 #include <xen/interface/acm_ops.h>
 #include <xen/interface/hvm/params.h>
+#include <xen/interface/vcpu.h>
 #include <asm/hypercall.h>
 #include <asm/page.h>
 #include <asm/uaccess.h>
@@ -221,10 +222,17 @@ xencommize_memory_reservation (xen_memory_reservation_t *mop)
 int
 xencomm_hypercall_memory_op(unsigned int cmd, void *arg)
 {
+	XEN_GUEST_HANDLE(xen_pfn_t) extent_start_va[2];
+	xen_memory_reservation_t *xmr = NULL, *xme_in = NULL, *xme_out = NULL;
+	int rc;
+
 	switch (cmd) {
 	case XENMEM_increase_reservation:
 	case XENMEM_decrease_reservation:
 	case XENMEM_populate_physmap:
+		xmr = (xen_memory_reservation_t *)arg;
+		xen_guest_handle(extent_start_va[0]) =
+			xen_guest_handle(xmr->extent_start);
 		xencommize_memory_reservation((xen_memory_reservation_t *)arg);
 		break;
 		
@@ -232,6 +240,12 @@ xencomm_hypercall_memory_op(unsigned int cmd, void *arg)
 		break;
 
 	case XENMEM_exchange:
+		xme_in  = &((xen_memory_exchange_t *)arg)->in;
+		xme_out = &((xen_memory_exchange_t *)arg)->out;
+		xen_guest_handle(extent_start_va[0]) =
+			xen_guest_handle(xme_in->extent_start);
+		xen_guest_handle(extent_start_va[1]) =
+			xen_guest_handle(xme_out->extent_start);
 		xencommize_memory_reservation
 			(&((xen_memory_exchange_t *)arg)->in);
 		xencommize_memory_reservation
@@ -243,8 +257,25 @@ xencomm_hypercall_memory_op(unsigned int cmd, void *arg)
 		return -ENOSYS;
 	}
 
-	return xencomm_arch_hypercall_memory_op
-		(cmd, xencomm_create_inline(arg));
+	rc =  xencomm_arch_hypercall_memory_op(cmd, xencomm_create_inline(arg));
+
+	switch (cmd) {
+	case XENMEM_increase_reservation:
+	case XENMEM_decrease_reservation:
+	case XENMEM_populate_physmap:
+		xen_guest_handle(xmr->extent_start) =
+			xen_guest_handle(extent_start_va[0]);
+		break;
+
+	case XENMEM_exchange:
+		xen_guest_handle(xme_in->extent_start) =
+			xen_guest_handle(extent_start_va[0]);
+		xen_guest_handle(xme_out->extent_start) =
+			xen_guest_handle(extent_start_va[1]);
+		break;
+	}
+
+	return rc;
 }
 
 unsigned long
@@ -270,4 +301,21 @@ xencomm_hypercall_suspend(unsigned long srec)
 	arg.reason = SHUTDOWN_suspend;
 
 	return xencomm_arch_hypercall_suspend(xencomm_create_inline(&arg));
+}
+
+long
+xencomm_hypercall_vcpu_op(int cmd, int cpu, void *arg)
+{
+	switch (cmd) {
+	case VCPUOP_register_runstate_memory_area:
+		xencommize_memory_reservation((xen_memory_reservation_t *)arg);
+		break;
+
+	default:
+		printk("%s: unknown vcpu op %d\n", __func__, cmd);
+		return -ENOSYS;
+	}
+
+	return xencomm_arch_hypercall_vcpu_op(cmd, cpu,
+					      xencomm_create_inline(arg));
 }

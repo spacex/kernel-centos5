@@ -1195,7 +1195,7 @@ static int snd_sonicvibes_free(struct sonicvibes *sonic)
 	pci_write_config_dword(sonic->pci, 0x40, sonic->dmaa_port);
 	pci_write_config_dword(sonic->pci, 0x48, sonic->dmac_port);
 	if (sonic->irq >= 0)
-		free_irq(sonic->irq, (void *)sonic);
+		free_irq(sonic->irq, sonic);
 	release_and_free_resource(sonic->res_dmaa);
 	release_and_free_resource(sonic->res_dmac);
 	pci_release_regions(sonic->pci);

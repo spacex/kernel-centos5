@@ -46,6 +46,8 @@ extern unsigned long xencomm_hypercall_hvm_op(int cmd, void *arg);
 
 extern int xencomm_hypercall_suspend(unsigned long srec);
 
+extern long xencomm_hypercall_vcpu_op(int cmd, int cpu, void *arg);
+
 /* Using mini xencomm.  */
 extern int xencomm_mini_hypercall_console_io(int cmd, int count, char *str);
 

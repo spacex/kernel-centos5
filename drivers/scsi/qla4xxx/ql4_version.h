@@ -5,9 +5,5 @@
  * See LICENSE.qla4xxx for copyright and licensing details.
  */
 
-#define QLA4XXX_DRIVER_VERSION	"5.00.05b9-k"
+#define QLA4XXX_DRIVER_VERSION	"5.01.00-k8_rhel5"
 
-#define QL4_DRIVER_MAJOR_VER	5
-#define QL4_DRIVER_MINOR_VER	0
-#define QL4_DRIVER_PATCH_VER	5
-#define QL4_DRIVER_BETA_VER	9

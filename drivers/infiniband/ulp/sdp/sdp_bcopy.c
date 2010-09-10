@@ -37,9 +37,52 @@
 #include <rdma/rdma_cm.h>
 #include "sdp.h"
 
+#define SDP_RESIZE_WAIT 16
+
+struct sdp_chrecvbuf {
+	u32 size;
+};
+
 static int rcvbuf_scale = 0x10;
+
 module_param_named(rcvbuf_scale, rcvbuf_scale, int, 0644);
-MODULE_PARM_DESC(srcvbuf_scale, "Receive buffer size scale factor.");
+MODULE_PARM_DESC(rcvbuf_scale, "Receive buffer size scale factor.");
+
+static int top_mem_usage = 0;
+module_param_named(top_mem_usage, top_mem_usage, int, 0644);
+MODULE_PARM_DESC(top_mem_usage, "Top system wide sdp memory usage for recv (in MB).");
+
+#ifdef CONFIG_PPC
+static int max_large_sockets = 100;
+#else
+static int max_large_sockets = 1000;
+#endif
+module_param_named(max_large_sockets, max_large_sockets, int, 0644);
+MODULE_PARM_DESC(max_large_sockets, "Max number of large sockets (32k buffers).");
+
+static int curr_large_sockets = 0;
+atomic_t sdp_current_mem_usage;
+spinlock_t sdp_large_sockets_lock;
+
+static int sdp_can_resize(void)
+{
+	int count, ret;
+	spin_lock_irq(&sdp_large_sockets_lock);
+	count = curr_large_sockets;
+	ret = curr_large_sockets < max_large_sockets;
+	if (ret)
+		curr_large_sockets++;
+	spin_unlock_irq(&sdp_large_sockets_lock);
+
+	return ret;
+}
+
+void sdp_remove_large_sock(void)
+{
+	spin_lock_irq(&sdp_large_sockets_lock);
+	curr_large_sockets--;
+	spin_unlock_irq(&sdp_large_sockets_lock);
+}
 
 /* Like tcp_fin */
 static void sdp_fin(struct sock *sk)
@@ -70,8 +113,8 @@ void sdp_post_send(struct sdp_sock *ssk, struct sk_buff *skb, u8 mid)
 	struct sdp_bsdh *h = (struct sdp_bsdh *)skb_push(skb, sizeof *h);
 	unsigned mseq = ssk->tx_head;
 	int i, rc, frags;
-	dma_addr_t addr;
-	struct device *hwdev;
+	u64 addr;
+	struct ib_device *dev;
 	struct ib_sge *sge;
 	struct ib_send_wr *bad_wr;
 
@@ -80,6 +123,7 @@ void sdp_post_send(struct sdp_sock *ssk, struct sk_buff *skb, u8 mid)
 		h->flags = SDP_OOB_PRES | SDP_OOB_PEND;
 	else
 		h->flags = 0;
+
 	h->bufs = htons(ssk->rx_head - ssk->rx_tail);
 	h->len = htonl(skb->len);
 	h->mseq = htonl(mseq);
@@ -87,27 +131,26 @@ void sdp_post_send(struct sdp_sock *ssk, struct sk_buff *skb, u8 mid)
 
 	tx_req = &ssk->tx_ring[mseq & (SDP_TX_SIZE - 1)];
 	tx_req->skb = skb;
-	hwdev = ssk->dma_device;
+	dev = ssk->ib_device;
 	sge = ssk->ibsge;
-	addr = dma_map_single(hwdev,
-			      skb->data, skb->len - skb->data_len,
-			      DMA_TO_DEVICE);
+	addr = ib_dma_map_single(dev, skb->data, skb->len - skb->data_len,
+				 DMA_TO_DEVICE);
 	tx_req->mapping[0] = addr;
 
 	/* TODO: proper error handling */
-	BUG_ON(dma_mapping_error(addr));
+	BUG_ON(ib_dma_mapping_error(dev, addr));
 
-	sge->addr = (u64)addr;
+	sge->addr = addr;
 	sge->length = skb->len - skb->data_len;
 	sge->lkey = ssk->mr->lkey;
 	frags = skb_shinfo(skb)->nr_frags;
 	for (i = 0; i < frags; ++i) {
 		++sge;
-		addr = dma_map_page(hwdev, skb_shinfo(skb)->frags[i].page,
-				    skb_shinfo(skb)->frags[i].page_offset,
-				    skb_shinfo(skb)->frags[i].size,
-				    DMA_TO_DEVICE);
-		BUG_ON(dma_mapping_error(addr));
+		addr = ib_dma_map_page(dev, skb_shinfo(skb)->frags[i].page,
+				       skb_shinfo(skb)->frags[i].page_offset,
+				       skb_shinfo(skb)->frags[i].size,
+				       DMA_TO_DEVICE);
+		BUG_ON(ib_dma_mapping_error(dev, addr));
 		tx_req->mapping[i + 1] = addr;
 		sge->addr = addr;
 		sge->length = skb_shinfo(skb)->frags[i].size;
@@ -120,7 +163,8 @@ void sdp_post_send(struct sdp_sock *ssk, struct sk_buff *skb, u8 mid)
 	ssk->tx_wr.num_sge = frags + 1;
 	ssk->tx_wr.opcode = IB_WR_SEND;
 	ssk->tx_wr.send_flags = IB_SEND_SIGNALED;
-	if (unlikely(mid != SDP_MID_DATA))
+	if (unlikely(mid != SDP_MID_DATA) ||
+	    unlikely(TCP_SKB_CB(skb)->flags & TCPCB_URG))
 		ssk->tx_wr.send_flags |= IB_SEND_SOLICITED;
 	rc = ib_post_send(ssk->qp, &ssk->tx_wr, &bad_wr);
 	++ssk->tx_head;
@@ -135,7 +179,7 @@ void sdp_post_send(struct sdp_sock *ssk, struct sk_buff *skb, u8 mid)
 
 struct sk_buff *sdp_send_completion(struct sdp_sock *ssk, int mseq)
 {
-	struct device *hwdev;
+	struct ib_device *dev;
 	struct sdp_buf *tx_req;
 	struct sk_buff *skb;
 	int i, frags;
@@ -146,18 +190,19 @@ struct sk_buff *sdp_send_completion(struct sdp_sock *ssk, int mseq)
 		return NULL;
 	}
 
-	hwdev = ssk->dma_device;
+	dev = ssk->ib_device;
         tx_req = &ssk->tx_ring[mseq & (SDP_TX_SIZE - 1)];
 	skb = tx_req->skb;
-	dma_unmap_single(hwdev, tx_req->mapping[0], skb->len - skb->data_len,
-			 DMA_TO_DEVICE);
+	ib_dma_unmap_single(dev, tx_req->mapping[0], skb->len - skb->data_len,
+			    DMA_TO_DEVICE);
 	frags = skb_shinfo(skb)->nr_frags;
 	for (i = 0; i < frags; ++i) {
-		dma_unmap_page(hwdev, tx_req->mapping[i + 1],
-			       skb_shinfo(skb)->frags[i].size,
-			       DMA_TO_DEVICE);
+		ib_dma_unmap_page(dev, tx_req->mapping[i + 1],
+				  skb_shinfo(skb)->frags[i].size,
+				  DMA_TO_DEVICE);
 	}
 
+	ssk->snd_una += TCP_SKB_CB(skb)->end_seq;
 	++ssk->tx_tail;
 	return skb;
 }
@@ -167,8 +212,8 @@ static void sdp_post_recv(struct sdp_sock *ssk)
 {
 	struct sdp_buf *rx_req;
 	int i, rc, frags;
-	dma_addr_t addr;
-	struct device *hwdev;
+	u64 addr;
+	struct ib_device *dev;
 	struct ib_sge *sge;
 	struct ib_recv_wr *bad_wr;
 	struct sk_buff *skb;
@@ -179,12 +224,12 @@ static void sdp_post_recv(struct sdp_sock *ssk)
 
 	/* Now, allocate and repost recv */
 	/* TODO: allocate from cache */
-	skb = sk_stream_alloc_skb(&ssk->isk.sk, sizeof(struct sdp_bsdh),
+	skb = sk_stream_alloc_skb(&ssk->isk.sk, SDP_HEAD_SIZE,
 				  GFP_KERNEL);
 	/* FIXME */
 	BUG_ON(!skb);
-	h = (struct sdp_bsdh *)skb_push(skb, sizeof *h);
-	for (i = 0; i < SDP_MAX_SEND_SKB_FRAGS; ++i) {
+	h = (struct sdp_bsdh *)skb->head;
+	for (i = 0; i < ssk->recv_frags; ++i) {
 		page = alloc_pages(GFP_HIGHUSER, 0);
 		BUG_ON(!page);
 		frag = &skb_shinfo(skb)->frags[i];
@@ -199,26 +244,25 @@ static void sdp_post_recv(struct sdp_sock *ssk)
 
         rx_req = ssk->rx_ring + (id & (SDP_RX_SIZE - 1));
 	rx_req->skb = skb;
-	hwdev = ssk->dma_device;
+	dev = ssk->ib_device;
 	sge = ssk->ibsge;
-	addr = dma_map_single(hwdev, h, skb_headlen(skb),
-			      DMA_FROM_DEVICE);
-	BUG_ON(dma_mapping_error(addr));
+	addr = ib_dma_map_single(dev, h, SDP_HEAD_SIZE, DMA_FROM_DEVICE);
+	BUG_ON(ib_dma_mapping_error(dev, addr));
 
 	rx_req->mapping[0] = addr;
 
 	/* TODO: proper error handling */
 	sge->addr = (u64)addr;
-	sge->length = skb_headlen(skb);
+	sge->length = SDP_HEAD_SIZE;
 	sge->lkey = ssk->mr->lkey;
 	frags = skb_shinfo(skb)->nr_frags;
 	for (i = 0; i < frags; ++i) {
 		++sge;
-		addr = dma_map_page(hwdev, skb_shinfo(skb)->frags[i].page,
-				    skb_shinfo(skb)->frags[i].page_offset,
-				    skb_shinfo(skb)->frags[i].size,
-				    DMA_FROM_DEVICE);
-		BUG_ON(dma_mapping_error(addr));
+		addr = ib_dma_map_page(dev, skb_shinfo(skb)->frags[i].page,
+				       skb_shinfo(skb)->frags[i].page_offset,
+				       skb_shinfo(skb)->frags[i].size,
+				       DMA_FROM_DEVICE);
+		BUG_ON(ib_dma_mapping_error(dev, addr));
 		rx_req->mapping[i + 1] = addr;
 		sge->addr = addr;
 		sge->length = skb_shinfo(skb)->frags[i].size;
@@ -235,17 +279,25 @@ static void sdp_post_recv(struct sdp_sock *ssk)
 		sdp_dbg(&ssk->isk.sk, "ib_post_recv failed with status %d\n", rc);
 		sdp_reset(&ssk->isk.sk);
 	}
+
+	atomic_add(SDP_MAX_SEND_SKB_FRAGS, &sdp_current_mem_usage);
 }
 
 void sdp_post_recvs(struct sdp_sock *ssk)
 {
+	int scale = ssk->rcvbuf_scale;
 	if (unlikely(!ssk->id))
 		return;
 
+	if (top_mem_usage &&
+	    (top_mem_usage * 0x100000) < atomic_read(&sdp_current_mem_usage) * PAGE_SIZE)
+		scale = 1;
+
 	while ((likely(ssk->rx_head - ssk->rx_tail < SDP_RX_SIZE) &&
 		(ssk->rx_head - ssk->rx_tail - SDP_MIN_BUFS) *
-		SDP_MAX_SEND_SKB_FRAGS * PAGE_SIZE + ssk->rcv_nxt - ssk->copied_seq <
-		ssk->isk.sk.sk_rcvbuf * rcvbuf_scale) ||
+		(SDP_HEAD_SIZE + ssk->recv_frags * PAGE_SIZE) +
+		ssk->rcv_nxt - ssk->copied_seq <
+		ssk->isk.sk.sk_rcvbuf * scale) ||
 	       unlikely(ssk->rx_head - ssk->rx_tail < SDP_MIN_BUFS))
 		sdp_post_recv(ssk);
 }
@@ -253,7 +305,7 @@ void sdp_post_recvs(struct sdp_sock *ssk)
 struct sk_buff *sdp_recv_completion(struct sdp_sock *ssk, int id)
 {
 	struct sdp_buf *rx_req;
-	struct device *hwdev;
+	struct ib_device *dev;
 	struct sk_buff *skb;
 	int i, frags;
 
@@ -263,26 +315,28 @@ struct sk_buff *sdp_recv_completion(struct sdp_sock *ssk, int id)
 		return NULL;
 	}
 
-	hwdev = ssk->dma_device;
+	dev = ssk->ib_device;
         rx_req = &ssk->rx_ring[id & (SDP_RX_SIZE - 1)];
 	skb = rx_req->skb;
-	dma_unmap_single(hwdev, rx_req->mapping[0], skb_headlen(skb),
-			 DMA_FROM_DEVICE);
+	ib_dma_unmap_single(dev, rx_req->mapping[0], SDP_HEAD_SIZE,
+			    DMA_FROM_DEVICE);
 	frags = skb_shinfo(skb)->nr_frags;
 	for (i = 0; i < frags; ++i)
-		dma_unmap_page(hwdev, rx_req->mapping[i + 1],
-			       skb_shinfo(skb)->frags[i].size,
-			       DMA_TO_DEVICE);
+		ib_dma_unmap_page(dev, rx_req->mapping[i + 1],
+				  skb_shinfo(skb)->frags[i].size,
+				  DMA_FROM_DEVICE);
 	++ssk->rx_tail;
 	--ssk->remote_credits;
 	return skb;
 }
 
 /* Here because I do not want queue to fail. */
-static inline int sdp_sock_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
+static inline struct sk_buff *sdp_sock_queue_rcv_skb(struct sock *sk,
+						     struct sk_buff *skb)
 {
 	int skb_len;
 	struct sdp_sock *ssk = sdp_sk(sk);
+	struct sk_buff *tail;
 
 	/* not needed since sk_rmem_alloc is not currently used
 	 * TODO - remove this?
@@ -293,11 +347,17 @@ static inline int sdp_sock_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
 	TCP_SKB_CB(skb)->seq = ssk->rcv_nxt;
 	ssk->rcv_nxt += skb_len;
 
-	skb_queue_tail(&sk->sk_receive_queue, skb);
+	if (likely(skb_len && (tail = skb_peek_tail(&sk->sk_receive_queue))) &&
+	    unlikely(skb_tailroom(tail) >= skb_len)) {
+		skb_copy_bits(skb, 0, skb_put(tail, skb_len), skb_len);
+		__kfree_skb(skb);
+		skb = tail;
+	} else
+		skb_queue_tail(&sk->sk_receive_queue, skb);
 
 	if (!sock_flag(sk, SOCK_DEAD))
 		sk->sk_data_ready(sk, skb_len);
-	return 0;
+	return skb;
 }
 
 static inline void update_send_head(struct sock *sk, struct sk_buff *skb)
@@ -355,6 +415,23 @@ void sdp_post_sends(struct sdp_sock *ssk, int nonagle)
 		return;
 	}
 
+	if (ssk->recv_request &&
+	    ssk->rx_tail >= ssk->recv_request_head &&
+	    ssk->bufs >= SDP_MIN_BUFS &&
+	    ssk->tx_head - ssk->tx_tail < SDP_TX_SIZE) {
+		struct sdp_chrecvbuf *resp_size;
+		ssk->recv_request = 0;
+		skb = sk_stream_alloc_skb(&ssk->isk.sk,
+					  sizeof(struct sdp_bsdh) +
+					  sizeof(*resp_size),
+					  GFP_KERNEL);
+		/* FIXME */
+		BUG_ON(!skb);
+		resp_size = (struct sdp_chrecvbuf *)skb_put(skb, sizeof *resp_size);
+		resp_size->size = htons(ssk->recv_frags * PAGE_SIZE);
+		sdp_post_send(ssk, skb, SDP_MID_CHRCVBUF_ACK);
+	}
+
 	while (ssk->bufs > SDP_MIN_BUFS &&
 	       ssk->tx_head - ssk->tx_tail < SDP_TX_SIZE &&
 	       (skb = ssk->isk.sk.sk_send_head) &&
@@ -363,6 +440,25 @@ void sdp_post_sends(struct sdp_sock *ssk, int nonagle)
 		__skb_dequeue(&ssk->isk.sk.sk_write_queue);
 		sdp_post_send(ssk, skb, SDP_MID_DATA);
 	}
+
+	if (ssk->bufs == SDP_MIN_BUFS &&
+	    !ssk->sent_request &&
+	    ssk->tx_head > ssk->sent_request_head + SDP_RESIZE_WAIT &&
+	    ssk->tx_head - ssk->tx_tail < SDP_TX_SIZE) {
+		struct sdp_chrecvbuf *req_size;
+		skb = sk_stream_alloc_skb(&ssk->isk.sk,
+					  sizeof(struct sdp_bsdh) +
+					  sizeof(*req_size),
+					  GFP_KERNEL);
+		/* FIXME */
+		BUG_ON(!skb);
+		ssk->sent_request = SDP_MAX_SEND_SKB_FRAGS * PAGE_SIZE;
+		ssk->sent_request_head = ssk->tx_head;
+		req_size = (struct sdp_chrecvbuf *)skb_put(skb, sizeof *req_size);
+		req_size->size = htons(ssk->sent_request);
+		sdp_post_send(ssk, skb, SDP_MID_CHRCVBUF);
+	}
+
 	c = ssk->remote_credits;
 	if (likely(c > SDP_MIN_BUFS))
 		c *= 2;
@@ -395,6 +491,13 @@ void sdp_post_sends(struct sdp_sock *ssk, int nonagle)
 	}
 }
 
+static inline void sdp_resize(struct sdp_sock *ssk, u32 new_size)
+{
+	ssk->recv_frags = PAGE_ALIGN(new_size - SDP_HEAD_SIZE)	/ PAGE_SIZE;
+	if (ssk->recv_frags > SDP_MAX_SEND_SKB_FRAGS)
+		ssk->recv_frags = SDP_MAX_SEND_SKB_FRAGS;
+}
+
 static void sdp_handle_wc(struct sdp_sock *ssk, struct ib_wc *wc)
 {
 	struct sk_buff *skb;
@@ -406,6 +509,8 @@ static void sdp_handle_wc(struct sdp_sock *ssk, struct ib_wc *wc)
 		if (unlikely(!skb))
 			return;
 
+		atomic_sub(SDP_MAX_SEND_SKB_FRAGS, &sdp_current_mem_usage);
+
 		if (unlikely(wc->status)) {
 			if (wc->status != IB_WC_WR_FLUSH_ERR) {
 				sdp_dbg(&ssk->isk.sk,
@@ -415,15 +520,24 @@ static void sdp_handle_wc(struct sdp_sock *ssk, struct ib_wc *wc)
 			}
 			__kfree_skb(skb);
 		} else {
-			/* TODO: handle msg < bsdh */
+			int frags;
+
 			sdp_dbg_data(&ssk->isk.sk,
 				     "Recv completion. ID %d Length %d\n",
 				     (int)wc->wr_id, wc->byte_len);
-			skb->len = wc->byte_len;
-			skb->data_len = wc->byte_len - sizeof(struct sdp_bsdh);
-			if (unlikely(skb->data_len < 0)) {
-				printk("SDP: FIXME len %d\n", wc->byte_len);
+			if (unlikely(wc->byte_len < sizeof(struct sdp_bsdh))) {
+				printk("SDP BUG! byte_len %d < %zd\n",
+				       wc->byte_len, sizeof(struct sdp_bsdh));
+				__kfree_skb(skb);
+				return;
 			}
+			skb->len = wc->byte_len;
+			if (likely(wc->byte_len > SDP_HEAD_SIZE))
+				skb->data_len = wc->byte_len - SDP_HEAD_SIZE;
+			else
+				skb->data_len = 0;
+			skb->data = skb->head;
+			skb->tail = skb->head + skb_headlen(skb);
 			h = (struct sdp_bsdh *)skb->data;
 			skb->h.raw = skb->data;
 			ssk->mseq_ack = ntohl(h->mseq);
@@ -433,11 +547,12 @@ static void sdp_handle_wc(struct sdp_sock *ssk, struct ib_wc *wc)
 			ssk->bufs = ntohl(h->mseq_ack) - ssk->tx_head + 1 +
 				ntohs(h->bufs);
 
+			frags = skb_shinfo(skb)->nr_frags;
 			pagesz = PAGE_ALIGN(skb->data_len);
 			skb_shinfo(skb)->nr_frags = pagesz / PAGE_SIZE;
 
 			for (i = skb_shinfo(skb)->nr_frags;
-			     i < SDP_MAX_SEND_SKB_FRAGS; ++i) {
+			     i < frags; ++i) {
 				put_page(skb_shinfo(skb)->frags[i].page);
 				skb->truesize -= PAGE_SIZE;
 			}
@@ -445,26 +560,49 @@ static void sdp_handle_wc(struct sdp_sock *ssk, struct ib_wc *wc)
 			if (unlikely(h->flags & SDP_OOB_PEND))
 				sk_send_sigurg(&ssk->isk.sk);
 
+			skb_pull(skb, sizeof(struct sdp_bsdh));
+
 			if (likely(h->mid == SDP_MID_DATA) &&
-			    likely(skb->data_len > 0)) {
-				skb_pull(skb, sizeof(struct sdp_bsdh));
-				/* TODO: queue can fail? */
-				sdp_sock_queue_rcv_skb(&ssk->isk.sk, skb);
-				if (unlikely(h->flags & SDP_OOB_PRES))
+			    likely(skb->len > 0)) {
+				int oob = h->flags & SDP_OOB_PRES;
+				skb = sdp_sock_queue_rcv_skb(&ssk->isk.sk, skb);
+				if (unlikely(oob))
 					sdp_urg(ssk, skb);
 			} else if (likely(h->mid == SDP_MID_DATA)) {
 				__kfree_skb(skb);
 			} else if (h->mid == SDP_MID_DISCONN) {
-				skb_pull(skb, sizeof(struct sdp_bsdh));
 				/* this will wake recvmsg */
 				sdp_sock_queue_rcv_skb(&ssk->isk.sk, skb);
 				sdp_fin(&ssk->isk.sk);
+			} else if (h->mid == SDP_MID_CHRCVBUF) {
+				u32 new_size = *(u32 *)skb->data;
+
+				if (ssk->recv_request || sdp_can_resize()) {
+					ssk->rcvbuf_scale = rcvbuf_scale;
+					sdp_resize(ssk, ntohs(new_size));
+					ssk->recv_request_head = ssk->rx_head + 1;
+				} else
+					ssk->recv_request_head = ssk->rx_tail;
+				ssk->recv_request = 1;
+				__kfree_skb(skb);
+			} else if (h->mid == SDP_MID_CHRCVBUF_ACK) {
+				u32 new_size = *(u32 *)skb->data;
+				new_size = ntohs(new_size);
+
+				if (new_size > ssk->xmit_size_goal) {
+					ssk->sent_request = -1;
+					ssk->xmit_size_goal = new_size;
+					ssk->send_frags =
+						PAGE_ALIGN(ssk->xmit_size_goal) /
+						PAGE_SIZE;
+				} else
+					ssk->sent_request = 0;
+				__kfree_skb(skb);
 			} else {
 				/* TODO: Handle other messages */
 				printk("SDP: FIXME MID %d\n", h->mid);
 				__kfree_skb(skb);
 			}
-			sdp_post_recvs(ssk);
 		}
 	} else {
 		skb = sdp_send_completion(ssk, wc->wr_id);
@@ -518,10 +656,10 @@ int sdp_poll_cq(struct sdp_sock *ssk, struct ib_cq *cq)
 	return ret;
 }
 
-void sdp_work(void *data)
+void sdp_work(void *_work)
 {
-	struct sock *sk = (struct sock *)data;
-	struct sdp_sock *ssk = sdp_sk(sk);
+	struct sdp_sock *ssk = container_of(_work, struct sdp_sock, work);
+	struct sock *sk = &ssk->isk.sk;
 	struct ib_cq *cq;
 
 	sdp_dbg_data(sk, "%s\n", __func__);
@@ -534,7 +672,7 @@ void sdp_work(void *data)
 	if (unlikely(!ssk->poll_cq)) {
 		struct rdma_cm_id *id = ssk->id;
 		if (id && id->qp)
-			rdma_establish(id);
+			rdma_notify(id, RDMA_CM_EVENT_ESTABLISHED);
 		goto out;
 	}
 

@@ -51,6 +51,7 @@
 #include <asm/cputable.h>
 #include <asm/abs_addr.h>
 #include <asm/sections.h>
+#include <asm/spu.h>
 
 #ifdef DEBUG
 #define DBG(fmt...) udbg_printf(fmt)
@@ -586,7 +587,7 @@ void demote_segment_4k(struct mm_struct *mm, unsigned long addr)
 	mm->context.sllp = SLB_VSID_USER | mmu_psize_defs[MMU_PAGE_4K].sllp;
 	get_paca()->context = mm->context;
 	slb_flush_and_rebolt();
-#ifdef CONFIG_SPE_BASE
+#ifdef CONFIG_SPU_BASE
 	spu_flush_all_slbs(mm);
 #endif
 #endif
@@ -710,17 +711,26 @@ int hash_page(unsigned long ea, unsigned long access, unsigned long trap)
 				       "non-cacheable mapping\n");
 				psize = mmu_vmalloc_psize = MMU_PAGE_4K;
 			}
+#ifdef CONFIG_SPU_BASE
+			spu_flush_all_slbs(mm);
+#endif
 		}
 		if (user_region) {
 			if (psize != get_paca()->context.user_psize) {
 				get_paca()->context = mm->context;
 				slb_flush_and_rebolt();
+#ifdef CONFIG_SPU_BASE
+				spu_flush_all_slbs(mm);
+#endif
 			}
 		} else if (get_paca()->vmalloc_sllp !=
 			   mmu_psize_defs[mmu_vmalloc_psize].sllp) {
 			get_paca()->vmalloc_sllp =
 				mmu_psize_defs[mmu_vmalloc_psize].sllp;
 			slb_flush_and_rebolt();
+#ifdef CONFIG_SPU_BASE
+			spu_flush_all_slbs(mm);
+#endif
 		}
 	}
 	if (psize == MMU_PAGE_64K)

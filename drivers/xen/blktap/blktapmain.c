@@ -89,8 +89,9 @@ int setup_xen_class(void)
  * mmap_alloc is initialised to 2 and should be adjustable on the fly via
  * sysfs.
  */
-#define MAX_DYNAMIC_MEM 64
-#define MAX_PENDING_REQS 64   
+#define BLK_RING_SIZE		__RING_SIZE((blkif_sring_t *)0, PAGE_SIZE)
+#define MAX_DYNAMIC_MEM		BLK_RING_SIZE
+#define MAX_PENDING_REQS	BLK_RING_SIZE
 #define MMAP_PAGES (MAX_PENDING_REQS * BLKIF_MAX_SEGMENTS_PER_REQUEST)
 #define MMAP_VADDR(_start, _req,_seg)                                   \
         (_start +                                                       \
@@ -155,7 +156,7 @@ module_param(debug_lvl, int, 0644);
  */
 typedef struct {
 	blkif_t       *blkif;
-	unsigned long  id;
+	u64            id;
 	unsigned short mem_idx;
 	int            nr_pages;
 	atomic_t       pendcnt;
@@ -211,6 +212,7 @@ struct grant_handle_pair
         grant_handle_t kernel;
         grant_handle_t user;
 };
+#define INVALID_GRANT_HANDLE	0xFFFF
 
 static struct grant_handle_pair 
     pending_grant_handles[MAX_DYNAMIC_MEM][MMAP_PAGES];
@@ -289,10 +291,11 @@ static inline int GET_NEXT_REQ(unsigned long *idx_map)
 
 
 #define BLKTAP_INVALID_HANDLE(_g) \
-    (((_g->kernel) == 0xFFFF) && ((_g->user) == 0xFFFF))
+    (((_g->kernel) == INVALID_GRANT_HANDLE) &&  \
+     ((_g->user) == INVALID_GRANT_HANDLE))
 
 #define BLKTAP_INVALIDATE_HANDLE(_g) do {       \
-    (_g)->kernel = 0xFFFF; (_g)->user = 0xFFFF; \
+    (_g)->kernel = INVALID_GRANT_HANDLE; (_g)->user = INVALID_GRANT_HANDLE; \
     } while(0)
 
 
@@ -479,8 +482,10 @@ static int blktap_release(struct inode *inode, struct file *filp)
 	}
 	
 	if ( (info->status != CLEANSHUTDOWN) && (info->blkif != NULL) ) {
-		kthread_stop(info->blkif->xenblkd);
-		info->blkif->xenblkd = NULL;
+		if (info->blkif->xenblkd != NULL) {
+			kthread_stop(info->blkif->xenblkd);
+			info->blkif->xenblkd = NULL;
+		}
 		info->status = CLEANSHUTDOWN;
 	}	
 	return 0;
@@ -532,8 +537,6 @@ static int blktap_mmap(struct file *filp, struct vm_area_struct *vma)
 	info->user_vstart  = info->rings_vstart + (RING_PAGES << PAGE_SHIFT);
     
 	/* Map the ring pages to the start of the region and reserve it. */
-	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
-
 	if (remap_pfn_range(vma, vma->vm_start, 
 			    __pa(info->ufe_ring.sring) >> PAGE_SHIFT, 
 			    PAGE_SIZE, vma->vm_page_prot)) {
@@ -718,7 +721,7 @@ static int do_block_io_op(blkif_t *blkif);
 static void dispatch_rw_block_io(blkif_t *blkif,
 				 blkif_request_t *req,
 				 pending_req_t *pending_req);
-static void make_response(blkif_t *blkif, unsigned long id, 
+static void make_response(blkif_t *blkif, u64 id,
                           unsigned short op, int st);
 
 /******************************************************************
@@ -837,6 +840,16 @@ static void fast_flush_area(pending_req_t *req, int k_idx, int u_idx, int
 		WPRINTK("fast_flush: Couldn't get info!\n");
 		return;
 	}
+
+	if (info->vma != NULL &&
+	    xen_feature(XENFEAT_auto_translated_physmap)) {
+		down_write(&info->vma->vm_mm->mmap_sem);
+		zap_page_range(info->vma,
+			       MMAP_VADDR(info->user_vstart, u_idx, 0),
+			       req->nr_pages << PAGE_SHIFT, NULL);
+		up_write(&info->vma->vm_mm->mmap_sem);
+	}
+
 	mmap_idx = req->mem_idx;
 
 	for (i = 0; i < req->nr_pages; i++) {
@@ -845,14 +858,15 @@ static void fast_flush_area(pending_req_t *req, int k_idx, int u_idx, int
 
 		khandle = &pending_handle(mmap_idx, k_idx, i);
 
-		if (khandle->kernel != 0xFFFF) {
+		if (khandle->kernel != INVALID_GRANT_HANDLE) {
 			gnttab_set_unmap_op(&unmap[invcount],
 				    idx_to_kaddr(mmap_idx, k_idx, i), 
 				    GNTMAP_host_map, khandle->kernel);
 			invcount++;
 		}
 
-		if (khandle->user != 0xFFFF) {
+		if (khandle->user != INVALID_GRANT_HANDLE) {
+			BUG_ON(xen_feature(XENFEAT_auto_translated_physmap));
 			if (create_lookup_pte_addr(
 		    		info->vma->vm_mm,
 		    		MMAP_VADDR(info->user_vstart, u_idx, i),
@@ -875,7 +889,7 @@ static void fast_flush_area(pending_req_t *req, int k_idx, int u_idx, int
 		GNTTABOP_unmap_grant_ref, unmap, invcount);
 	BUG_ON(ret);
 	
-	if (info->vma != NULL)
+	if (info->vma != NULL && !xen_feature(XENFEAT_auto_translated_physmap))
 		zap_page_range(info->vma, 
 			       MMAP_VADDR(info->user_vstart, u_idx, 0), 
 			       req->nr_pages << PAGE_SHIFT, NULL);
@@ -959,11 +973,14 @@ static int blktap_read_ufe_ring(tap_blkif_t *info)
 	rmb();
         
 	for (i = info->ufe_ring.rsp_cons; i != rp; i++) {
+		blkif_response_t res;
 		resp = RING_GET_RESPONSE(&info->ufe_ring, i);
+		memcpy(&res, resp, sizeof(res));
+		mb(); /* rsp_cons read by RING_FULL() in do_block_io_op(). */
 		++info->ufe_ring.rsp_cons;
 
 		/*retrieve [usr_idx] to [mmap_idx,pending_idx] mapping*/
-		usr_idx = (int)resp->id;
+		usr_idx = (int)res.id;
 		pending_idx = MASK_PEND_IDX(ID_TO_IDX(info->idx_map[usr_idx]));
 		mmap_idx = ID_TO_MIDX(info->idx_map[usr_idx]);
 
@@ -996,9 +1013,9 @@ static int blktap_read_ufe_ring(tap_blkif_t *info)
 			map[offset] = NULL;
 		}
 		fast_flush_area(pending_req, pending_idx, usr_idx, info->minor);
-		make_response(blkif, pending_req->id, resp->operation,
-			      resp->status);
 		info->idx_map[usr_idx] = INVALID_REQ;
+		make_response(blkif, pending_req->id, res.operation,
+			      res.status);
 		blkif_put(pending_req->blkif);
 		free_req(pending_req);
 	}
@@ -1031,15 +1048,15 @@ irqreturn_t tap_blkif_be_int(int irq, void *dev_id, struct pt_regs *regs)
 static int print_dbug = 1;
 static int do_block_io_op(blkif_t *blkif)
 {
-	blkif_back_ring_t *blk_ring = &blkif->blk_ring;
+	blkif_back_rings_t *blk_rings = &blkif->blk_rings;
 	blkif_request_t req;
 	pending_req_t *pending_req;
 	RING_IDX rc, rp;
 	int more_to_do = 0;
 	tap_blkif_t *info;
 
-	rc = blk_ring->req_cons;
-	rp = blk_ring->sring->req_prod;
+	rc = blk_rings->common.req_cons;
+	rp = blk_rings->common.sring->req_prod;
 	rmb(); /* Ensure we see queued requests up to 'rp'. */
 
 	/*Check blkif has corresponding UE ring*/
@@ -1069,8 +1086,8 @@ static int do_block_io_op(blkif_t *blkif)
 			more_to_do = 1;
 			break;
 		}
-		
-		if (RING_REQUEST_CONS_OVERFLOW(blk_ring, rc)) {
+
+		if (RING_REQUEST_CONS_OVERFLOW(&blk_rings->common, rc)) {
 			WPRINTK("RING_REQUEST_CONS_OVERFLOW!"
 			       " More to do\n");
 			more_to_do = 1;
@@ -1084,8 +1101,21 @@ static int do_block_io_op(blkif_t *blkif)
 			break;
 		}
 
-		memcpy(&req, RING_GET_REQUEST(blk_ring, rc), sizeof(req));
-		blk_ring->req_cons = ++rc; /* before make_response() */	
+		switch (blkif->blk_protocol) {
+		case BLKIF_PROTOCOL_NATIVE:
+			memcpy(&req, RING_GET_REQUEST(&blk_rings->native, rc),
+			       sizeof(req));
+			break;
+		case BLKIF_PROTOCOL_X86_32:
+			blkif_get_x86_32_req(&req, RING_GET_REQUEST(&blk_rings->x86_32, rc));
+			break;
+		case BLKIF_PROTOCOL_X86_64:
+			blkif_get_x86_64_req(&req, RING_GET_REQUEST(&blk_rings->x86_64, rc));
+			break;
+		default:
+			BUG();
+		}
+		blk_rings->common.req_cons = ++rc; /* before make_response() */
 
 		switch (req.operation) {
 		case BLKIF_OP_READ:
@@ -1123,16 +1153,16 @@ static void dispatch_rw_block_io(blkif_t *blkif,
 	unsigned int nseg;
 	int ret, i;
 	tap_blkif_t *info = tapfds[blkif->dev_num];
-	uint64_t sector;
 	
 	blkif_request_t *target;
 	int pending_idx = RTN_PEND_IDX(pending_req,pending_req->mem_idx);
 	int usr_idx = GET_NEXT_REQ(info->idx_map);
 	uint16_t mmap_idx = pending_req->mem_idx;
 
-	/*Check we have space on user ring - should never fail*/
-	if(usr_idx == INVALID_REQ) goto fail_flush;
-	
+	/* Check we have space on user ring - should never fail. */
+	if (usr_idx == INVALID_REQ)
+		goto fail_response;
+
 	/* Check that number of segments is sane. */
 	nseg = req->nr_segments;
 	if ( unlikely(nseg == 0) || 
@@ -1151,7 +1181,7 @@ static void dispatch_rw_block_io(blkif_t *blkif,
 		WPRINTK("blktap: fe_ring is full, can't add "
 			"IO Request will be dropped. %d %d\n",
 			RING_SIZE(&info->ufe_ring),
-			RING_SIZE(&blkif->blk_ring));
+			RING_SIZE(&blkif->blk_rings.common));
 		goto fail_response;
 	}
 
@@ -1165,25 +1195,10 @@ static void dispatch_rw_block_io(blkif_t *blkif,
 		unsigned long uvaddr;
 		unsigned long kvaddr;
 		uint64_t ptep;
-		struct page *page;
 		uint32_t flags;
 
 		uvaddr = MMAP_VADDR(info->user_vstart, usr_idx, i);
 		kvaddr = idx_to_kaddr(mmap_idx, pending_idx, i);
-		page = virt_to_page(kvaddr);
-
-		sector = req->sector_number + (8*i);
-		if( (blkif->sectors > 0) && (sector >= blkif->sectors) ) {
-			WPRINTK("BLKTAP: Sector request greater" 
-			       "than size\n");
-			WPRINTK("BLKTAP: %s request sector" 
-			       "[%llu,%llu], Total [%llu]\n",
-			       (req->operation == 
-				BLKIF_OP_WRITE ? "WRITE" : "READ"),
-				(long long unsigned) sector,
-				(long long unsigned) sector>>9,
-				blkif->sectors);
-		}
 
 		flags = GNTMAP_host_map;
 		if (operation == WRITE)
@@ -1192,69 +1207,104 @@ static void dispatch_rw_block_io(blkif_t *blkif,
 				  req->seg[i].gref, blkif->domid);
 		op++;
 
-		/* Now map it to user. */
-		ret = create_lookup_pte_addr(info->vma->vm_mm, 
-					     uvaddr, &ptep);
-		if (ret) {
-			WPRINTK("Couldn't get a pte addr!\n");
-			fast_flush_area(pending_req, pending_idx, usr_idx, 
-					blkif->dev_num);
-			goto fail_flush;
-		}
+		if (!xen_feature(XENFEAT_auto_translated_physmap)) {
+			/* Now map it to user. */
+			ret = create_lookup_pte_addr(info->vma->vm_mm, 
+						     uvaddr, &ptep);
+			if (ret) {
+				WPRINTK("Couldn't get a pte addr!\n");
+				fast_flush_area(pending_req, pending_idx, usr_idx, 
+						blkif->dev_num);
+				goto fail_flush;
+			}
 
-		flags = GNTMAP_host_map | GNTMAP_application_map
-			| GNTMAP_contains_pte;
-		if (operation == WRITE)
-			flags |= GNTMAP_readonly;
-		gnttab_set_map_op(&map[op], ptep, flags,
-				  req->seg[i].gref, blkif->domid);
-		op++;
+			flags = GNTMAP_host_map | GNTMAP_application_map
+				| GNTMAP_contains_pte;
+			if (operation == WRITE)
+				flags |= GNTMAP_readonly;
+			gnttab_set_map_op(&map[op], ptep, flags,
+					  req->seg[i].gref, blkif->domid);
+			op++;
+		}
 	}
 
 	ret = HYPERVISOR_grant_table_op(GNTTABOP_map_grant_ref, map, op);
 	BUG_ON(ret);
 
-	for (i = 0; i < (nseg*2); i+=2) {
-		unsigned long uvaddr;
-		unsigned long kvaddr;
-		unsigned long offset;
-		struct page *pg;
+	if (!xen_feature(XENFEAT_auto_translated_physmap)) {
+		for (i = 0; i < (nseg*2); i+=2) {
+			unsigned long uvaddr;
+			unsigned long kvaddr;
+			unsigned long offset;
+			struct page *pg;
 
-		uvaddr = MMAP_VADDR(info->user_vstart, usr_idx, i/2);
-		kvaddr = idx_to_kaddr(mmap_idx, pending_idx, i/2);
+			uvaddr = MMAP_VADDR(info->user_vstart, usr_idx, i/2);
+			kvaddr = idx_to_kaddr(mmap_idx, pending_idx, i/2);
 
-		if (unlikely(map[i].status != 0)) {
-			WPRINTK("invalid kernel buffer -- "
-				"could not remap it\n");
-			ret |= 1;
-			map[i].handle = 0xFFFF;
+			if (unlikely(map[i].status != 0)) {
+				WPRINTK("invalid kernel buffer -- "
+					"could not remap it\n");
+				ret |= 1;
+				map[i].handle = INVALID_GRANT_HANDLE;
+			}
+
+			if (unlikely(map[i+1].status != 0)) {
+				WPRINTK("invalid user buffer -- "
+					"could not remap it\n");
+				ret |= 1;
+				map[i+1].handle = INVALID_GRANT_HANDLE;
+			}
+
+			pending_handle(mmap_idx, pending_idx, i/2).kernel 
+				= map[i].handle;
+			pending_handle(mmap_idx, pending_idx, i/2).user   
+				= map[i+1].handle;
+
+			if (ret)
+				continue;
+
+			set_phys_to_machine(__pa(kvaddr) >> PAGE_SHIFT,
+				FOREIGN_FRAME(map[i].dev_bus_addr >> PAGE_SHIFT));
+			offset = (uvaddr - info->vma->vm_start) >> PAGE_SHIFT;
+			pg = pfn_to_page(__pa(kvaddr) >> PAGE_SHIFT);
+			((struct page **)info->vma->vm_private_data)[offset] =
+				pg;
 		}
+	} else {
+		for (i = 0; i < nseg; i++) {
+			unsigned long uvaddr;
+			unsigned long kvaddr;
+			unsigned long offset;
+			struct page *pg;
 
-		if (unlikely(map[i+1].status != 0)) {
-			WPRINTK("invalid user buffer -- "
-				"could not remap it\n");
-			ret |= 1;
-			map[i+1].handle = 0xFFFF;
+			uvaddr = MMAP_VADDR(info->user_vstart, usr_idx, i);
+			kvaddr = idx_to_kaddr(mmap_idx, pending_idx, i);
+
+			if (unlikely(map[i].status != 0)) {
+				WPRINTK("invalid kernel buffer -- "
+					"could not remap it\n");
+				ret |= 1;
+				map[i].handle = INVALID_GRANT_HANDLE;
+			}
+
+			pending_handle(mmap_idx, pending_idx, i).kernel 
+				= map[i].handle;
+
+			if (ret)
+				continue;
+
+			offset = (uvaddr - info->vma->vm_start) >> PAGE_SHIFT;
+			pg = pfn_to_page(__pa(kvaddr) >> PAGE_SHIFT);
+			((struct page **)info->vma->vm_private_data)[offset] =
+				pg;
 		}
-
-		pending_handle(mmap_idx, pending_idx, i/2).kernel 
-			= map[i].handle;
-		pending_handle(mmap_idx, pending_idx, i/2).user   
-			= map[i+1].handle;
-
-		if (ret)
-			continue;
-
-		set_phys_to_machine(__pa(kvaddr) >> PAGE_SHIFT,
-			FOREIGN_FRAME(map[i].dev_bus_addr >> PAGE_SHIFT));
-		offset = (uvaddr - info->vma->vm_start) >> PAGE_SHIFT;
-		pg = pfn_to_page(__pa(kvaddr) >> PAGE_SHIFT);
-		((struct page **)info->vma->vm_private_data)[offset] =
-			pg;
 	}
 
 	if (ret)
 		goto fail_flush;
+
+	if (xen_feature(XENFEAT_auto_translated_physmap))
+		down_write(&info->vma->vm_mm->mmap_sem);
 
 	/* Mark mapped pages as reserved: */
 	for (i = 0; i < req->nr_segments; i++) {
@@ -1264,7 +1314,27 @@ static void dispatch_rw_block_io(blkif_t *blkif,
 		kvaddr = idx_to_kaddr(mmap_idx, pending_idx, i);
 		pg = pfn_to_page(__pa(kvaddr) >> PAGE_SHIFT);
 		SetPageReserved(pg);
+		if (xen_feature(XENFEAT_auto_translated_physmap)) {
+			ret = vm_insert_page(info->vma,
+					     MMAP_VADDR(info->user_vstart,
+							usr_idx, i), pg);
+			if (ret) {
+				up_write(&info->vma->vm_mm->mmap_sem);
+				goto fail_flush;
+			}
+
+			/*
+			 * kludge
+			 * vm_insert_page() increments file_rss but
+			 * we don't want to increment so that compensate here.
+			 * The right fix is to our own vm_insert_page() which
+			 * doesn't increment file_rss.
+			 */
+			dec_mm_counter(info->vma->vm_mm, file_rss);
+		}
 	}
+	if (xen_feature(XENFEAT_auto_translated_physmap))
+		up_write(&info->vma->vm_mm->mmap_sem);
 	
 	/*record [mmap_idx,pending_idx] to [usr_idx] mapping*/
 	info->idx_map[usr_idx] = MAKE_ID(mmap_idx, pending_idx);
@@ -1275,6 +1345,7 @@ static void dispatch_rw_block_io(blkif_t *blkif,
 				  info->ufe_ring.req_prod_pvt);
 	memcpy(target, req, sizeof(*req));
 	target->id = usr_idx;
+	wmb(); /* blktap_poll() reads req_prod_pvt asynchronously */
 	info->ufe_ring.req_prod_pvt++;
 	return;
 
@@ -1293,35 +1364,54 @@ static void dispatch_rw_block_io(blkif_t *blkif,
  */
 
 
-static void make_response(blkif_t *blkif, unsigned long id, 
+static void make_response(blkif_t *blkif, u64 id,
                           unsigned short op, int st)
 {
-	blkif_response_t *resp;
+	blkif_response_t  resp;
 	unsigned long     flags;
-	blkif_back_ring_t *blk_ring = &blkif->blk_ring;
+	blkif_back_rings_t *blk_rings = &blkif->blk_rings;
 	int more_to_do = 0;
 	int notify;
 
-	spin_lock_irqsave(&blkif->blk_ring_lock, flags);
-	/* Place on the response ring for the relevant domain. */ 
-	resp = RING_GET_RESPONSE(blk_ring, blk_ring->rsp_prod_pvt);
-	resp->id        = id;
-	resp->operation = op;
-	resp->status    = st;
-	blk_ring->rsp_prod_pvt++;
-	RING_PUSH_RESPONSES_AND_CHECK_NOTIFY(blk_ring, notify);
+	resp.id        = id;
+	resp.operation = op;
+	resp.status    = st;
 
-	if (blk_ring->rsp_prod_pvt == blk_ring->req_cons) {
+	spin_lock_irqsave(&blkif->blk_ring_lock, flags);
+	/* Place on the response ring for the relevant domain. */
+	switch (blkif->blk_protocol) {
+	case BLKIF_PROTOCOL_NATIVE:
+		memcpy(RING_GET_RESPONSE(&blk_rings->native,
+					 blk_rings->native.rsp_prod_pvt),
+		       &resp, sizeof(resp));
+		break;
+	case BLKIF_PROTOCOL_X86_32:
+		memcpy(RING_GET_RESPONSE(&blk_rings->x86_32,
+					 blk_rings->x86_32.rsp_prod_pvt),
+		       &resp, sizeof(resp));
+		break;
+	case BLKIF_PROTOCOL_X86_64:
+		memcpy(RING_GET_RESPONSE(&blk_rings->x86_64,
+					 blk_rings->x86_64.rsp_prod_pvt),
+		       &resp, sizeof(resp));
+		break;
+	default:
+		BUG();
+	}
+	blk_rings->common.rsp_prod_pvt++;
+	RING_PUSH_RESPONSES_AND_CHECK_NOTIFY(&blk_rings->common, notify);
+
+	if (blk_rings->common.rsp_prod_pvt == blk_rings->common.req_cons) {
 		/*
 		 * Tail check for pending requests. Allows frontend to avoid
 		 * notifications if requests are already in flight (lower
 		 * overheads and promotes batching).
 		 */
-		RING_FINAL_CHECK_FOR_REQUESTS(blk_ring, more_to_do);
-	} else if (RING_HAS_UNCONSUMED_REQUESTS(blk_ring)) {
+		RING_FINAL_CHECK_FOR_REQUESTS(&blk_rings->common, more_to_do);
+	} else if (RING_HAS_UNCONSUMED_REQUESTS(&blk_rings->common)) {
 		more_to_do = 1;
+	}
 
-	}	
 	spin_unlock_irqrestore(&blkif->blk_ring_lock, flags);
 	if (more_to_do)
 		blkif_notify_work(blkif);

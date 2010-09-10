@@ -342,12 +342,10 @@ static const struct utrace_regset native_regsets[] = {
 #endif
 };
 
-const struct utrace_regset_view utrace_ppc_native_view = {
+static const struct utrace_regset_view utrace_ppc_native_view = {
 	.name = UTS_MACHINE, .e_machine = ELF_ARCH,
-	.regsets = native_regsets,
-	.n = sizeof native_regsets / sizeof native_regsets[0],
+	.regsets = native_regsets, .n = ARRAY_SIZE(native_regsets)
 };
-EXPORT_SYMBOL_GPL(utrace_ppc_native_view);
 
 
 #ifdef CONFIG_PPC64
@@ -455,13 +453,20 @@ static const struct utrace_regset ppc32_regsets[] = {
 	},
 };
 
-const struct utrace_regset_view utrace_ppc32_view = {
+static const struct utrace_regset_view utrace_ppc32_view = {
 	.name = "ppc", .e_machine = EM_PPC,
-	.regsets = ppc32_regsets,
-	.n = sizeof ppc32_regsets / sizeof ppc32_regsets[0],
+	.regsets = ppc32_regsets, .n = ARRAY_SIZE(ppc32_regsets)
 };
-EXPORT_SYMBOL_GPL(utrace_ppc32_view);
 #endif
+
+const struct utrace_regset_view *utrace_native_view(struct task_struct *tsk)
+{
+#ifdef CONFIG_PPC64
+	if (test_tsk_thread_flag(tsk, TIF_32BIT))
+		return &utrace_ppc32_view;
+#endif
+	return &utrace_ppc_native_view;
+}
 
 
 #ifdef CONFIG_PTRACE
@@ -471,9 +476,9 @@ static const struct ptrace_layout_segment ppc_uarea[] = {
 	{0, 0, -1, 0}
 };
 
-fastcall int arch_ptrace(long *request, struct task_struct *child,
-			 struct utrace_attached_engine *engine,
-			 unsigned long addr, unsigned long data, long *val)
+int arch_ptrace(long *request, struct task_struct *child,
+		struct utrace_attached_engine *engine,
+		unsigned long addr, unsigned long data, long *val)
 {
 	switch (*request) {
 	case PTRACE_PEEKUSR:
@@ -533,11 +538,11 @@ static const struct ptrace_layout_segment ppc32_uarea[] = {
 	{0, 0, -1, 0}
 };
 
-fastcall int arch_compat_ptrace(compat_long_t *request,
-				struct task_struct *child,
-				struct utrace_attached_engine *engine,
-				compat_ulong_t addr, compat_ulong_t data,
-				compat_long_t *val)
+int arch_compat_ptrace(compat_long_t *request,
+		       struct task_struct *child,
+		       struct utrace_attached_engine *engine,
+		       compat_ulong_t addr, compat_ulong_t data,
+		       compat_long_t *val)
 {
 	void __user *uaddr = (void __user *) (unsigned long) addr;
 	int ret = -ENOSYS;

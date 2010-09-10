@@ -36,8 +36,9 @@
  * $Id: mthca_cq.c 1369 2004-12-20 16:17:07Z roland $
  */
 
-#include <linux/init.h>
 #include <linux/hardirq.h>
+
+#include <asm/io.h>
 
 #include <rdma/ib_pack.h>
 
@@ -51,6 +52,10 @@ enum {
 
 enum {
 	MTHCA_CQ_ENTRY_SIZE = 0x20
+};
+
+enum {
+	MTHCA_ATOMIC_BYTE_LEN = 8
 };
 
 /*
@@ -210,6 +215,11 @@ static inline void update_cons_index(struct mthca_dev *dev, struct mthca_cq *cq,
 		mthca_write64(doorbell,
 			      dev->kar + MTHCA_CQ_DOORBELL,
 			      MTHCA_GET_DOORBELL_LOCK(&dev->doorbell_lock));
+		/*
+		 * Make sure doorbells don't leak out of CQ spinlock
+		 * and reach the HCA out of order:
+		 */
+		mmiowb();
 	}
 }
 
@@ -269,14 +279,12 @@ static inline int is_recv_cqe(struct mthca_cqe *cqe)
 		return !(cqe->is_send & 0x80);
 }
 
-void mthca_cq_clean(struct mthca_dev *dev, struct mthca_cq *cq, u32 qpn,
-		    struct mthca_srq *srq)
+void __mthca_cq_clean(struct mthca_dev *dev, struct mthca_cq *cq, u32 qpn,
+		      struct mthca_srq *srq)
 {
 	struct mthca_cqe *cqe;
 	u32 prod_index;
-	int nfreed = 0;
-
-	spin_lock_irq(&cq->lock);
+	int i, nfreed = 0;
 
 	/*
 	 * First we need to find the current producer index, so we
@@ -311,11 +319,19 @@ void mthca_cq_clean(struct mthca_dev *dev, struct mthca_cq *cq, u32 qpn,
 	}
 
 	if (nfreed) {
+		for (i = 0; i < nfreed; ++i)
+			set_cqe_hw(get_cqe(cq, (cq->cons_index + i) & cq->ibcq.cqe));
 		wmb();
 		cq->cons_index += nfreed;
 		update_cons_index(dev, cq, nfreed);
 	}
+}
 
+void mthca_cq_clean(struct mthca_dev *dev, struct mthca_cq *cq, u32 qpn,
+		    struct mthca_srq *srq)
+{
+	spin_lock_irq(&cq->lock);
+	__mthca_cq_clean(dev, cq, qpn, srq);
 	spin_unlock_irq(&cq->lock);
 }
 
@@ -524,14 +540,13 @@ static inline int mthca_poll_one(struct mthca_dev *dev,
 		}
 	}
 
-	entry->qp_num = (*cur_qp)->qpn;
+	entry->qp = &(*cur_qp)->ibqp;
 
 	if (is_send) {
 		wq = &(*cur_qp)->sq;
 		wqe_index = ((be32_to_cpu(cqe->wqe) - (*cur_qp)->send_wqe_offset)
 			     >> wq->wqe_shift);
-		entry->wr_id = (*cur_qp)->wrid[wqe_index +
-					       (*cur_qp)->rq.max];
+		entry->wr_id = (*cur_qp)->wrid[wqe_index];
 	} else if ((*cur_qp)->ibqp.srq) {
 		struct mthca_srq *srq = to_msrq((*cur_qp)->ibqp.srq);
 		u32 wqe = be32_to_cpu(cqe->wqe);
@@ -544,14 +559,14 @@ static inline int mthca_poll_one(struct mthca_dev *dev,
 		wq = &(*cur_qp)->rq;
 		wqe = be32_to_cpu(cqe->wqe);
 		wqe_index = wqe >> wq->wqe_shift;
-               /*
-		* WQE addr == base - 1 might be reported in receive completion
-		* with error instead of (rq size - 1) by Sinai FW 1.0.800 and
-		* Arbel FW 5.1.400.  This bug should be fixed in later FW revs.
-		*/
+		/*
+		 * WQE addr == base - 1 might be reported in receive completion
+		 * with error instead of (rq size - 1) by Sinai FW 1.0.800 and
+		 * Arbel FW 5.1.400.  This bug should be fixed in later FW revs.
+		 */
 		if (unlikely(wqe_index < 0))
 			wqe_index = wq->max - 1;
-		entry->wr_id = (*cur_qp)->wrid[wqe_index];
+		entry->wr_id = (*cur_qp)->wrid[wqe_index + (*cur_qp)->sq.max];
 	}
 
 	if (wq) {
@@ -593,11 +608,11 @@ static inline int mthca_poll_one(struct mthca_dev *dev,
 			break;
 		case MTHCA_OPCODE_ATOMIC_CS:
 			entry->opcode    = IB_WC_COMP_SWAP;
-			entry->byte_len  = be32_to_cpu(cqe->byte_cnt);
+			entry->byte_len  = MTHCA_ATOMIC_BYTE_LEN;
 			break;
 		case MTHCA_OPCODE_ATOMIC_FA:
 			entry->opcode    = IB_WC_FETCH_ADD;
-			entry->byte_len  = be32_to_cpu(cqe->byte_cnt);
+			entry->byte_len  = MTHCA_ATOMIC_BYTE_LEN;
 			break;
 		case MTHCA_OPCODE_BIND_MW:
 			entry->opcode    = IB_WC_BIND_MW;
@@ -963,7 +978,7 @@ void mthca_free_cq(struct mthca_dev *dev,
 	mthca_free_mailbox(dev, mailbox);
 }
 
-int __devinit mthca_init_cq_table(struct mthca_dev *dev)
+int mthca_init_cq_table(struct mthca_dev *dev)
 {
 	int err;
 

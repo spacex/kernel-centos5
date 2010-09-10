@@ -81,6 +81,11 @@ struct sdp_hah {
 	__u32 actrcvsz;
 };
 
+enum {
+	SDP_HH_SIZE = 76,
+	SDP_HAH_SIZE = 180,
+};
+
 static void sdp_cq_event_handler(struct ib_event *event, void *data)
 {
 }
@@ -146,7 +151,7 @@ int sdp_init_qp(struct sock *sk, struct rdma_cm_id *id)
         }
 
 	sdp_sk(sk)->mr = mr;
-	INIT_WORK(&sdp_sk(sk)->work, sdp_work, sdp_sk(sk));
+	INIT_WORK(&sdp_sk(sk)->work, sdp_work, &sdp_sk(sk)->work);
 
 	cq = ib_create_cq(device, sdp_completion_handler, sdp_cq_event_handler,
 			  sk, SDP_TX_SIZE + SDP_RX_SIZE);
@@ -168,10 +173,12 @@ int sdp_init_qp(struct sock *sk, struct rdma_cm_id *id)
 	}
 	sdp_sk(sk)->cq = cq;
 	sdp_sk(sk)->qp = id->qp;
-	sdp_sk(sk)->dma_device = device->dma_device;
+	sdp_sk(sk)->ib_device = device;
 
 	init_waitqueue_head(&sdp_sk(sk)->wq);
 
+	sdp_sk(sk)->recv_frags = 0;
+	sdp_sk(sk)->rcvbuf_scale = 1;
 	sdp_post_recvs(sdp_sk(sk));
 
 	sdp_dbg(sk, "%s done\n", __func__);
@@ -196,20 +203,25 @@ int sdp_connect_handler(struct sock *sk, struct rdma_cm_id *id,
 {
 	struct sockaddr_in *dst_addr;
 	struct sock *child;
-	struct sdp_hh *h;
+	const struct sdp_hh *h;
 	int rc;
 
 	sdp_dbg(sk, "%s %p -> %p\n", __func__, sdp_sk(sk)->id, id);
 
-        child = sk_clone(sk, GFP_KERNEL);
-        if (!child) {
-                return -ENOMEM;
-	}
+	h = event->param.conn.private_data;
 
+	if (!h->max_adverts)
+		return -EINVAL;
+
+	child = sk_clone(sk, GFP_KERNEL);
+	if (!child)
+		return -ENOMEM;
+
+	sdp_add_sock(sdp_sk(child));
 	INIT_LIST_HEAD(&sdp_sk(child)->accept_queue);
 	INIT_LIST_HEAD(&sdp_sk(child)->backlog_queue);
-	INIT_WORK(&sdp_sk(child)->time_wait_work, sdp_time_wait_work, child);
-	INIT_WORK(&sdp_sk(child)->destroy_work, sdp_destroy_work, child);
+	INIT_WORK(&sdp_sk(child)->time_wait_work, sdp_time_wait_work, &sdp_sk(child)->time_wait_work);
+	INIT_WORK(&sdp_sk(child)->destroy_work, sdp_destroy_work, &sdp_sk(child)->destroy_work);
 
 	dst_addr = (struct sockaddr_in *)&id->route.addr.dst_addr;
 	inet_sk(child)->dport = dst_addr->sin_port;
@@ -224,10 +236,11 @@ int sdp_connect_handler(struct sock *sk, struct rdma_cm_id *id,
 		return rc;
 	}
 
-	h = event->private_data;
 	sdp_sk(child)->bufs = ntohs(h->bsdh.bufs);
 	sdp_sk(child)->xmit_size_goal = ntohl(h->localrcvsz) -
 		sizeof(struct sdp_bsdh);
+	sdp_sk(child)->send_frags = PAGE_ALIGN(sdp_sk(child)->xmit_size_goal) /
+		PAGE_SIZE;
 
 	sdp_dbg(child, "%s bufs %d xmit_size_goal %d\n", __func__,
 		sdp_sk(child)->bufs,
@@ -239,6 +252,8 @@ int sdp_connect_handler(struct sock *sk, struct rdma_cm_id *id,
 	list_add_tail(&sdp_sk(child)->backlog_queue, &sdp_sk(sk)->backlog_queue);
 	sdp_sk(child)->parent = sk;
 
+	child->sk_state = TCP_SYN_RECV;
+
 	/* child->sk_write_space(child); */
 	/* child->sk_data_ready(child, 0); */
 	sk->sk_data_ready(sk, 0);
@@ -249,7 +264,7 @@ int sdp_connect_handler(struct sock *sk, struct rdma_cm_id *id,
 static int sdp_response_handler(struct sock *sk, struct rdma_cm_id *id,
 				struct rdma_cm_event *event)
 {
-	struct sdp_hah *h;
+	const struct sdp_hah *h;
 	struct sockaddr_in *dst_addr;
 	sdp_dbg(sk, "%s\n", __func__);
 
@@ -261,10 +276,12 @@ static int sdp_response_handler(struct sock *sk, struct rdma_cm_id *id,
 	if (sock_flag(sk, SOCK_DEAD))
 		return 0;
 
-	h = event->private_data;
+	h = event->param.conn.private_data;
 	sdp_sk(sk)->bufs = ntohs(h->bsdh.bufs);
 	sdp_sk(sk)->xmit_size_goal = ntohl(h->actrcvsz) -
 		sizeof(struct sdp_bsdh);
+	sdp_sk(sk)->send_frags = PAGE_ALIGN(sdp_sk(sk)->xmit_size_goal) /
+		PAGE_SIZE;
 
 	sdp_dbg(sk, "%s bufs %d xmit_size_goal %d\n", __func__,
 		sdp_sk(sk)->bufs,
@@ -326,9 +343,23 @@ done:
 	return 0;
 }
 
-void sdp_disconnected_handler(struct sock *sk)
+int sdp_disconnected_handler(struct sock *sk)
 {
+	struct sdp_sock *ssk = sdp_sk(sk);
+
 	sdp_dbg(sk, "%s\n", __func__);
+
+	if (ssk->cq)
+		sdp_poll_cq(ssk, ssk->cq);
+
+	if (sk->sk_state == TCP_SYN_RECV) {
+		sdp_connected_handler(sk, NULL);
+
+		if (ssk->rcv_nxt)
+			return 0;
+	}
+
+	return -ECONNRESET;
 }
 
 int sdp_cma_handler(struct rdma_cm_id *id, struct rdma_cm_event *event)
@@ -379,9 +410,11 @@ int sdp_cma_handler(struct rdma_cm_id *id, struct rdma_cm_event *event)
 		memset(&hh, 0, sizeof hh);
 		hh.bsdh.mid = SDP_MID_HELLO;
 		hh.bsdh.bufs = htons(sdp_sk(sk)->remote_credits);
+		hh.bsdh.len = htonl(sizeof(struct sdp_bsdh) + SDP_HH_SIZE);
+		hh.max_adverts = 1;
 		hh.majv_minv = SDP_MAJV_MINV;
-		hh.localrcvsz = hh.desremrcvsz = htonl(SDP_MAX_SEND_SKB_FRAGS *
-			PAGE_SIZE + sizeof(struct sdp_bsdh));
+		hh.localrcvsz = hh.desremrcvsz = htonl(sdp_sk(sk)->recv_frags *
+						       PAGE_SIZE + SDP_HEAD_SIZE);
 		hh.max_adverts = 0x1;
 		inet_sk(sk)->saddr = inet_sk(sk)->rcv_saddr =
 			((struct sockaddr_in *)&id->route.addr.src_addr)->sin_addr.s_addr;
@@ -410,9 +443,11 @@ int sdp_cma_handler(struct rdma_cm_id *id, struct rdma_cm_event *event)
 		memset(&hah, 0, sizeof hah);
 		hah.bsdh.mid = SDP_MID_HELLO_ACK;
 		hah.bsdh.bufs = htons(sdp_sk(child)->remote_credits);
+		hah.bsdh.len = htonl(sizeof(struct sdp_bsdh) + SDP_HAH_SIZE);
 		hah.majv_minv = SDP_MAJV_MINV;
-		hah.actrcvsz = htonl(SDP_MAX_SEND_SKB_FRAGS * PAGE_SIZE +
-				     sizeof(struct sdp_bsdh));
+		hah.ext_max_adverts = 1; /* Doesn't seem to be mandated by spec,
+					    but just in case */
+		hah.actrcvsz = htonl(sdp_sk(child)->recv_frags * PAGE_SIZE + SDP_HEAD_SIZE);
 		memset(&conn_param, 0, sizeof conn_param);
 		conn_param.private_data_len = sizeof hah;
 		conn_param.private_data = &hah;
@@ -459,12 +494,10 @@ int sdp_cma_handler(struct rdma_cm_id *id, struct rdma_cm_event *event)
 	case RDMA_CM_EVENT_DISCONNECTED:
 		sdp_dbg(sk, "RDMA_CM_EVENT_DISCONNECTED\n");
 		rdma_disconnect(id);
-		sdp_disconnected_handler(sk);
-		rc = -ECONNRESET;
+		rc = sdp_disconnected_handler(sk);
 		break;
 	case RDMA_CM_EVENT_DEVICE_REMOVAL:
 		sdp_warn(sk, "RDMA_CM_EVENT_DEVICE_REMOVAL\n");
-		sdp_disconnected_handler(sk);
 		rc = -ENETRESET;
 		break;
 	default:

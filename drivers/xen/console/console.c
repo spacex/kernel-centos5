@@ -194,7 +194,11 @@ static int __init xen_console_init(void)
 
 	if (is_initial_xendomain()) {
 		if (xc_mode == XC_DEFAULT)
+#if defined(__i386__) || defined(__x86_64__)
 			xc_mode = XC_SERIAL;
+#else
+			xc_mode = XC_XVC;
+#endif
 		kcons_info.write = kcons_write_dom0;
 	} else {
 		if (!xen_start_info->console.domU.evtchn)

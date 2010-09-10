@@ -74,7 +74,7 @@ extern const char vsyscall_int80_start, vsyscall_int80_end;
 extern const char vsyscall_sysenter_start, vsyscall_sysenter_end;
 static void *syscall_page;
 
-int __init sysenter_setup(void)
+int __cpuinit sysenter_setup(void)
 {
 	syscall_page = (void *)get_zeroed_page(GFP_ATOMIC);
 

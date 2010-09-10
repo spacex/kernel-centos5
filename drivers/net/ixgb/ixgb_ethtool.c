@@ -1,27 +1,27 @@
 /*******************************************************************************
 
-  
-  Copyright(c) 1999 - 2006 Intel Corporation. All rights reserved.
-  
-  This program is free software; you can redistribute it and/or modify it 
-  under the terms of the GNU General Public License as published by the Free 
-  Software Foundation; either version 2 of the License, or (at your option) 
-  any later version.
-  
-  This program is distributed in the hope that it will be useful, but WITHOUT 
-  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or 
-  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for 
+  Intel PRO/10GbE Linux driver
+  Copyright(c) 1999 - 2006 Intel Corporation.
+
+  This program is free software; you can redistribute it and/or modify it
+  under the terms and conditions of the GNU General Public License,
+  version 2, as published by the Free Software Foundation.
+
+  This program is distributed in the hope it will be useful, but WITHOUT
+  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
   more details.
-  
+
   You should have received a copy of the GNU General Public License along with
-  this program; if not, write to the Free Software Foundation, Inc., 59 
-  Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-  
-  The full GNU General Public License is included in this distribution in the
-  file called LICENSE.
-  
+  this program; if not, write to the Free Software Foundation, Inc.,
+  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
+
+  The full GNU General Public License is included in this distribution in
+  the file called "COPYING".
+
   Contact Information:
   Linux NICS <linux.nics@intel.com>
+  e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
   Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
 
 *******************************************************************************/
@@ -79,12 +79,11 @@ static struct ixgb_stats ixgb_gstrings_stats[] = {
 	{"tx_window_errors", IXGB_STAT(net_stats.tx_window_errors)},
 	{"tx_deferred_ok", IXGB_STAT(stats.dc)},
 	{"tx_timeout_count", IXGB_STAT(tx_timeout_count) },
+	{"tx_restart_queue", IXGB_STAT(restart_queue) },
 	{"rx_long_length_errors", IXGB_STAT(stats.roc)},
 	{"rx_short_length_errors", IXGB_STAT(stats.ruc)},
-#ifdef NETIF_F_TSO
 	{"tx_tcp_seg_good", IXGB_STAT(stats.tsctc)},
 	{"tx_tcp_seg_failed", IXGB_STAT(stats.tsctfc)},
-#endif
 	{"rx_flow_control_xon", IXGB_STAT(stats.xonrxc)},
 	{"rx_flow_control_xoff", IXGB_STAT(stats.xoffrxc)},
 	{"tx_flow_control_xon", IXGB_STAT(stats.xontxc)},
@@ -239,7 +238,6 @@ ixgb_set_tx_csum(struct net_device *netdev, uint32_t data)
 	return 0;
 }
 
-#ifdef NETIF_F_TSO
 static int
 ixgb_set_tso(struct net_device *netdev, uint32_t data)
 {
@@ -249,7 +247,6 @@ ixgb_set_tso(struct net_device *netdev, uint32_t data)
 		netdev->features &= ~NETIF_F_TSO;
 	return 0;
 } 
-#endif /* NETIF_F_TSO */
 
 static uint32_t
 ixgb_get_msglevel(struct net_device *netdev)
@@ -580,11 +577,11 @@ ixgb_set_ringparam(struct net_device *netdev,
 
 	rxdr->count = max(ring->rx_pending,(uint32_t)MIN_RXD);
 	rxdr->count = min(rxdr->count,(uint32_t)MAX_RXD);
-	IXGB_ROUNDUP(rxdr->count, IXGB_REQ_RX_DESCRIPTOR_MULTIPLE); 
+	rxdr->count = ALIGN(rxdr->count, IXGB_REQ_RX_DESCRIPTOR_MULTIPLE);
 
 	txdr->count = max(ring->tx_pending,(uint32_t)MIN_TXD);
 	txdr->count = min(txdr->count,(uint32_t)MAX_TXD);
-	IXGB_ROUNDUP(txdr->count, IXGB_REQ_TX_DESCRIPTOR_MULTIPLE); 
+	txdr->count = ALIGN(txdr->count, IXGB_REQ_TX_DESCRIPTOR_MULTIPLE);
 
 	if(netif_running(adapter->netdev)) {
 		/* Try to get new resources before deleting old */
@@ -654,11 +651,7 @@ ixgb_phys_id(struct net_device *netdev, uint32_t data)
 
 	mod_timer(&adapter->blink_timer, jiffies);
 
-	if (data)
-		schedule_timeout_interruptible(data * HZ);
-	else
-		schedule_timeout_interruptible(MAX_SCHEDULE_TIMEOUT);
-
+	msleep_interruptible(data * 1000);
 	del_timer_sync(&adapter->blink_timer);
 	ixgb_led_off(&adapter->hw);
 	clear_bit(IXGB_LED_ON, &adapter->led_status);
@@ -725,10 +718,8 @@ static struct ethtool_ops ixgb_ethtool_ops = {
 	.set_sg	= ethtool_op_set_sg,
 	.get_msglevel = ixgb_get_msglevel,
 	.set_msglevel = ixgb_set_msglevel,
-#ifdef NETIF_F_TSO
 	.get_tso = ethtool_op_get_tso,
 	.set_tso = ixgb_set_tso,
-#endif
 	.get_strings = ixgb_get_strings,
 	.phys_id = ixgb_phys_id,
 	.get_stats_count = ixgb_get_stats_count,

@@ -102,20 +102,6 @@ enum sas_dev_type {
 	SATA_PM_PORT= 8,
 };
 
-enum sas_phy_linkrate {
-	PHY_LINKRATE_NONE = 0,
-	PHY_LINKRATE_UNKNOWN = 0,
-	PHY_DISABLED,
-	PHY_RESET_PROBLEM,
-	PHY_SPINUP_HOLD,
-	PHY_PORT_SELECTOR,
-	PHY_LINKRATE_1_5 = 0x08,
-	PHY_LINKRATE_G1  = PHY_LINKRATE_1_5,
-	PHY_LINKRATE_3   = 0x09,
-	PHY_LINKRATE_G2  = PHY_LINKRATE_3,
-	PHY_LINKRATE_6   = 0x0A,
-};
-
 /* Partly from IDENTIFY address frame. */
 enum sas_proto {
 	SATA_PROTO    = 1,
@@ -135,6 +121,9 @@ enum phy_func {
 	PHY_FUNC_CLEAR_AFFIL,
 	PHY_FUNC_TX_SATA_PS_SIGNAL,
 	PHY_FUNC_RELEASE_SPINUP_HOLD = 0x10, /* LOCAL PORT ONLY! */
+#ifndef __GENKSYMS__
+	PHY_FUNC_SET_LINK_RATE,
+#endif
 };
 
 /* SAS LLDD would need to report only _very_few_ of those, like BROADCAST.

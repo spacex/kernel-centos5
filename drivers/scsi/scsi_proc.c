@@ -82,7 +82,7 @@ out:
 
 void scsi_proc_hostdir_add(struct scsi_host_template *sht)
 {
-	if (!sht->proc_info)
+	if (!sht->proc_info || sht->proc_info == (void *) RH_EXTENDED_MAGIC)
 		return;
 
 	mutex_lock(&global_host_template_mutex);
@@ -99,7 +99,7 @@ void scsi_proc_hostdir_add(struct scsi_host_template *sht)
 
 void scsi_proc_hostdir_rm(struct scsi_host_template *sht)
 {
-	if (!sht->proc_info)
+	if (!sht->proc_info || sht->proc_info == (void *) RH_EXTENDED_MAGIC)
 		return;
 
 	mutex_lock(&global_host_template_mutex);

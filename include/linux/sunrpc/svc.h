@@ -42,6 +42,12 @@ struct svc_serv {
 	int			sv_tmpcnt;	/* count of temporary sockets */
 
 	char *			sv_name;	/* service name */
+#ifndef __GENKSYMS__
+	void			(*sv_shutdown)(struct svc_serv *serv);
+						/* Callback to use when last thread
+						 * exits.
+						 */
+#endif
 };
 
 /*
@@ -245,6 +251,13 @@ static inline void svc_free_allpages(struct svc_rqst *rqstp)
 	}
 }
 
+static inline void
+svc_shutdown(struct svc_serv *serv, void (*shutdown)(struct svc_serv *serv))
+{
+	if (serv)
+		serv->sv_shutdown = shutdown;
+}
+
 struct svc_deferred_req {
 	u32			prot;	/* protocol (UDP or TCP) */
 	struct sockaddr_in	addr;
@@ -319,5 +332,24 @@ int		   svc_process(struct svc_serv *, struct svc_rqst *);
 int		   svc_register(struct svc_serv *, int, unsigned short);
 void		   svc_wake_up(struct svc_serv *);
 void		   svc_reserve(struct svc_rqst *rqstp, int space);
+
+/*
+ * When we want to reduce the size of the reserved space in the response
+ * buffer, we need to take into account the size of any checksum data that
+ * may be at the end of the packet. This is difficult to determine exactly
+ * for all cases without actually generating the checksum, so we just use a
+ * static value.
+ */
+static inline void 
+svc_reserve_auth(struct svc_rqst *rqstp, int space)
+{
+	int			added_space = 0;
+
+	switch(rqstp->rq_authop->flavour) {
+		case RPC_AUTH_GSS:
+			added_space = RPC_MAX_AUTH_SIZE;
+	}
+	return svc_reserve(rqstp, space + added_space);
+}
 
 #endif /* SUNRPC_SVC_H */

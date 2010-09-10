@@ -57,12 +57,6 @@ GLOBAL_ENTRY(ia64_switch_to)
 	shr.u r26=r20,IA64_GRANULE_SHIFT
 	cmp.eq p7,p6=r25,in0
 	;;
-#ifdef CONFIG_XEN
-	movl r8=XSI_PSR_IC
-	;;
-	st4 [r8]=r0	// force psr.ic off for hyperprivop(s)
-	;;
-#endif
 	/*
 	 * If we've already mapped this task's page, we can skip doing it again.
 	 */
@@ -70,19 +64,13 @@ GLOBAL_ENTRY(ia64_switch_to)
 (p6)	br.cond.dpnt .map
 	;;
 .done:
+	ld8 sp=[r21]			// load kernel stack pointer of new task
 #ifdef CONFIG_XEN
-	// psr.ic already off
 	// update "current" application register
 	mov r8=IA64_KR_CURRENT
 	mov r9=in0;;
 	XEN_HYPER_SET_KR
-	ld8 sp=[r21]			// load kernel stack pointer of new task
-	movl r27=XSI_PSR_IC
-	mov r8=1
-	;;
-	st4 [r27]=r8			// psr.ic back on
 #else
-	ld8 sp=[r21]			// load kernel stack pointer of new task
 	mov IA64_KR(CURRENT)=in0	// update "current" application register
 #endif
 	mov r8=r13			// return pointer to previously running task
@@ -97,7 +85,10 @@ GLOBAL_ENTRY(ia64_switch_to)
 
 .map:
 #ifdef CONFIG_XEN
-	// psr.ic already off
+    movl r25=XSI_PSR_IC			// clear psr.ic
+    ;;
+    st4 [r25]=r0
+    ;;
 #else
 	rsm psr.ic			// interrupts (psr.i) are already disabled here
 #endif
@@ -130,7 +121,13 @@ GLOBAL_ENTRY(ia64_switch_to)
 #endif
 	;;
 	itr.d dtr[r25]=r23		// wire in new mapping...
-#ifndef CONFIG_XEN
+#ifdef CONFIG_XEN
+	mov r9=1
+	movl r8=XSI_PSR_IC
+	;;
+	st4 [r8]=r9
+	;;
+#else
 	ssm psr.ic			// reenable the psr.ic bit
 	;;
 	srlz.d
@@ -413,7 +410,16 @@ ENTRY(ia64_leave_syscall)
 (pUStk) add r14=IA64_TASK_THREAD_ON_USTACK_OFFSET,r13
 	;;
 	ld8 r26=[r2],PT(B0)-PT(AR_PFS)	// M0|1 load ar.pfs
+#ifdef CONFIG_XEN
+(pKStk)	mov r21=r8
+(pKStk)	XEN_HYPER_GET_PSR
+	;;
+(pKStk)	mov r22=r8
+(pKStk)	mov r8=r21
+	;;
+#else
 (pKStk)	mov r22=psr			// M2   read PSR now that interrupts are disabled
+#endif
 	nop 0
 	;;
 	ld8 r21=[r2],PT(AR_RNAT)-PT(B0) // M0|1 load b0
@@ -606,6 +612,7 @@ GLOBAL_ENTRY(ia64_leave_kernel)
 #ifdef CONFIG_XEN
 	;;
 	// r16-r31 all now hold bank1 values
+	mov r15=ar.unat
 	movl r2=XSI_BANK1_R16
 	movl r3=XSI_BANK1_R16+8
 	;;
@@ -633,6 +640,11 @@ GLOBAL_ENTRY(ia64_leave_kernel)
 .mem.offset 0,0; st8.spill [r2]=r30,16
 .mem.offset 8,0; st8.spill [r3]=r31,16
 	;;
+	mov r3=ar.unat
+	movl r2=XSI_B1NAT
+	;;
+	st8 [r2]=r3
+	mov ar.unat=r15
 	movl r2=XSI_BANKNUM;;
 	st4 [r2]=r0;
 #else
@@ -643,7 +655,16 @@ GLOBAL_ENTRY(ia64_leave_kernel)
 	adds r16=PT(CR_IPSR)+16,r12
 	adds r17=PT(CR_IIP)+16,r12
 
+#ifdef CONFIG_XEN
+(pKStk)	mov r29=r8
+(pKStk)	XEN_HYPER_GET_PSR
+	;;
+(pKStk)	mov r22=r8
+(pKStk)	mov r8=r29
+	;;
+#else
 (pKStk)	mov r22=psr		// M2 read PSR now that interrupts are disabled
+#endif
 	nop.i 0
 	nop.i 0
 	;;

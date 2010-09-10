@@ -195,6 +195,20 @@ ENTRY(secondary_startup_64)
 	 */
 	lgdt	cpu_gdt_descr(%rip)
 
+	/* set up data segments. actually 0 would do too */
+	movl $__KERNEL_DS,%eax
+	movl %eax,%ds	
+	movl %eax,%ss
+	movl %eax,%es
+
+	/*
+	 * We don't really need to load %fs or %gs, but load them anyway
+	 * to kill any stale realmode selectors.  This allows execution
+	 * under VT hardware.
+	 */
+	movl %eax,%fs
+	movl %eax,%gs
+			
 	/* 
 	 * Setup up a dummy PDA. this is just for some early bootup code
 	 * that does in_interrupt() 
@@ -205,12 +219,6 @@ ENTRY(secondary_startup_64)
 	shrq	$32,%rdx
 	wrmsr	
 
-	/* set up data segments. actually 0 would do too */
-	movl $__KERNEL_DS,%eax
-	movl %eax,%ds	
-	movl %eax,%ss
-	movl %eax,%es
-			
 	/* esi is pointer to real mode structure with interesting info.
 	   pass it to C */
 	movl	%esi, %edi
@@ -327,9 +335,7 @@ NEXT_PAGE(level2_spare_pgt)
 
 	.data
 
-#ifndef CONFIG_HOTPLUG_CPU
-	__INITDATA
-#endif
+	__CPUINITDATA
 
 	.align 16
 	.globl cpu_gdt_descr
@@ -371,7 +377,7 @@ ENTRY(cpu_gdt_table)
 	.quad	0,0			/* TSS */
 	.quad	0,0			/* LDT */
 	.quad   0,0,0			/* three TLS descriptors */
-	.quad	0			/* unused */
+ 	.quad	0x0000f40000000000	/* node/CPU stored in limit */
 gdt_end:	
 	/* asm/segment.h:GDT_ENTRIES must match this */	
 	/* This should be a multiple of the cache line size */

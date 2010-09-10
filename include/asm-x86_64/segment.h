@@ -25,9 +25,11 @@
 #define GDT_ENTRY_LDT 10 /* needs two entries */
 #define GDT_ENTRY_TLS_MIN 12
 #define GDT_ENTRY_TLS_MAX 14
-/* 15 free */
 
 #define GDT_ENTRY_TLS_ENTRIES 3
+
+#define GDT_ENTRY_PER_CPU 15	/* Abused to load per CPU data from limit */
+#define __PER_CPU_SEG	(GDT_ENTRY_PER_CPU * 8 + 3)
 
 /* TLS indexes for 64bit - hardcoded in arch_prctl */
 #define FS_TLS 0	

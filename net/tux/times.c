@@ -30,8 +30,11 @@
 #include <linux/slab.h>
 #include <linux/ctype.h>
 
-
-#include "times.h"
+#define EPOCH_YEAR	1970
+#define DAY		(24 * 60 * 60)
+#define YEAR		(365 * DAY)
+#define LEAP_YEAR	(YEAR + DAY)
+#define FOUR_CYCLE	(3 * YEAR + LEAP_YEAR)
 
 char *dayName[7] = {
 	"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
@@ -40,6 +43,33 @@ char *dayName[7] = {
 static char *monthName[12] = {
 	"Jan", "Feb", "Mar", "Apr", "May", "Jun",
 	"Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+};
+
+unsigned int month_table[2][12] = {
+        { 31 * DAY,
+	  (31 + 28) * DAY,
+	  (31 + 28 + 31) * DAY,
+	  (31 + 28 + 31 + 30) * DAY,
+	  (31 + 28 + 31 + 30 + 31) * DAY,
+	  (31 + 28 + 31 + 30 + 31 + 30) * DAY,
+	  (31 + 28 + 31 + 30 + 31 + 30 + 31) * DAY,
+	  (31 + 28 + 31 + 30 + 31 + 30 + 31 + 31) * DAY,
+	  (31 + 28 + 31 + 30 + 31 + 30 + 31 + 31 + 30) * DAY,
+	  (31 + 28 + 31 + 30 + 31 + 30 + 31 + 31 + 30 + 31) * DAY,
+	  (31 + 28 + 31 + 30 + 31 + 30 + 31 + 31 + 30 + 31 + 30) * DAY,
+	  (31 + 28 + 31 + 30 + 31 + 30 + 31 + 31 + 30 + 31 + 30 + 31) * DAY },
+        { 31 * DAY,
+	  (31 + 29) * DAY,
+	  (31 + 29 + 31) * DAY,
+	  (31 + 29 + 31 + 30) * DAY,
+	  (31 + 29 + 31 + 30 + 31) * DAY,
+	  (31 + 29 + 31 + 30 + 31 + 30) * DAY,
+	  (31 + 29 + 31 + 30 + 31 + 30 + 31) * DAY,
+	  (31 + 29 + 31 + 30 + 31 + 30 + 31 + 31) * DAY,
+	  (31 + 29 + 31 + 30 + 31 + 30 + 31 + 31 + 30) * DAY,
+	  (31 + 29 + 31 + 30 + 31 + 30 + 31 + 31 + 30 + 31) * DAY,
+	  (31 + 29 + 31 + 30 + 31 + 30 + 31 + 31 + 30 + 31 + 30) * DAY,
+	  (31 + 29 + 31 + 30 + 31 + 30 + 31 + 31 + 30 + 31 + 30 + 31) * DAY },
 };
 
 char itoa_h[60]={'0','0','0','0','0','0','0','0','0','0',
@@ -58,119 +88,56 @@ char itoa_l[60]={'0','1','2','3','4','5','6','7','8','9',
 
 int time_unix2ls(time_t zulu, char *buf)
 {
-	int Y=0,M=0,D=0;
-	int H=0,Min=0,S=0,WD=0;
-	int I,I2;
-	time_t rest, delta;
+	unsigned int i, year, month, day, hour, minute, leap_year, cycles, *mtp;
+	unsigned long offset;
+	time_t delta;
 
-	if (zulu > xtime.tv_sec)
+	if ((unsigned long)zulu > (unsigned long)xtime.tv_sec)
 		zulu = xtime.tv_sec;
 
-	I=0;
-	while (I<TUX_NUMYEARS) {
-		if (TimeDays[I][0]>zulu)
-		   break;
-		I++;
+	offset = (unsigned long)zulu;
+
+	/* calculate the year */
+	offset += YEAR + LEAP_YEAR;
+	year = EPOCH_YEAR - 2;
+	cycles = offset / FOUR_CYCLE;
+	offset -= cycles * FOUR_CYCLE;
+	year += 4 * cycles;
+	if (offset >= LEAP_YEAR) {
+		offset -= LEAP_YEAR;
+		i = offset / YEAR;
+		offset -= i * YEAR;
+		year += i + 1;
+		leap_year = 0;
+	} else
+		leap_year = 1;
+
+	/* next we calculate the month */
+	mtp = &month_table[leap_year][0];
+	for (i = 0; i < 11; i++, mtp++) {
+		if (offset < *mtp)
+			break;
 	}
+	month = i;
+	if (month != 0)
+		offset -= *(mtp - 1);
 
-	Y=--I;
-	if (I<0) {
-		Y=0;
-		goto BuildYear;
-	}
-	I2=0;
-	while (I2<=12) {
-		if (TimeDays[I][I2]>zulu)
-		   break;
-		I2++;
-	}
-
-	M=I2-1;
-
-	rest=zulu - TimeDays[Y][M];
-	WD=WeekDays[Y][M];
-	D=rest/86400;
-	rest=rest%86400;
-	WD+=D;
-	WD=WD%7;
-	H=rest/3600;
-	rest=rest%3600;
-	Min=rest/60;
-	rest=rest%60;
-	S=rest;
-
-BuildYear:
-	Y+=TUX_YEAROFFSET;
-
+	/* finally, calculate day, hour, minute */
+	day = offset / DAY;
+	offset -= day * DAY;
+	hour = offset / 3600;
+	offset -= hour * 3600;
+	minute = offset / 60;
 
 	/* Format:  Day, 01 Mon 1999 01:01:01 GMT */
-
 	delta = xtime.tv_sec - zulu;
-	if (delta > 6*30*24*60)
+	if (delta > YEAR / 2)
 		//               "May 23   2000"
-		return sprintf( buf, "%s %02i  %04i", monthName[M], D+1, Y);
+		return sprintf( buf, "%s %02i  %04i", monthName[month], day + 1, year);
 	else
 		//                "May 23 10:14"
 		return sprintf( buf, "%s %02i %02i:%02i",
-			monthName[M], D+1, H, Min);
-}
-
-static int MonthHash[32] =
-	{0,0,7,0,0,0,0,0,0,0,0,3,0,0,0,2,6,0,5,0,9,8,4,0,0,11,1,10,0,0,0,0};
-
-#define is_digit(c)	((c) >= '0' && (c) <= '9')
-
-static inline int skip_atoi(char **s)
-{
-	int i=0;
-
-	while (is_digit(**s))
-		i = i*10 + *((*s)++) - '0';
-	return i;
-}
-
-time_t mimetime_to_unixtime(char *Q)
-{
-	int Y,M,D,H,Min,S;
-	unsigned int Hash;
-	time_t Temp;
-	char *s,**s2;
-
-	s=Q;
-	s2=&s;
-
-	if (strlen(s)<30) return 0;
-	if (s[3]!=',') return 0;
-	if (s[19]!=':') return 0;
-
-	s+=5; /* Skip day of week */
-	D = skip_atoi(s2);  /*  Day of month */
-	s++;
-	Hash = (char)s[0]+(char)s[2];
-	Hash = (Hash<<1) + (char)s[1];
-	Hash = (Hash&63)>>1;
-	M = MonthHash[Hash];
-	s+=4;
-	Y = skip_atoi(s2); /* Year */
-	s++;
-	H = skip_atoi(s2); /* Hour */
-	s++;
-	Min = skip_atoi(s2); /* Minutes */
-	s++;
-	S = skip_atoi(s2); /* Seconds */
-	s++;
-	if ((s[0]!='G')||(s[1]!='M')||(s[2]!='T'))
-	{
-		return 0; /* No GMT */
-	}
-
-	if (Y<TUX_YEAROFFSET) Y = TUX_YEAROFFSET;
-	if (Y>TUX_YEAROFFSET+9) Y = TUX_YEAROFFSET+9;
-
-	Temp = TimeDays[Y-TUX_YEAROFFSET][M];
-	Temp += D*86400+H*3600+Min*60+S;
-
-	return Temp;
+			monthName[month], day + 1, hour, minute);
 }
 
 // writes the full http date, corresponding to time_t received

@@ -59,8 +59,13 @@ extern struct UniCaseRange UniLowerRange[];
 #endif				/* UNIUPR_NOLOWER */
 
 #ifdef __KERNEL__
+#ifndef __le16
+int cifs_strfromUCS_le(char *, const __u16 *, int, const struct nls_table *);
+int cifs_strtoUCS(__u16 *, const char *, int, const struct nls_table *);
+#else
 int cifs_strfromUCS_le(char *, const __le16 *, int, const struct nls_table *);
 int cifs_strtoUCS(__le16 *, const char *, int, const struct nls_table *);
+#endif
 #endif
 
 /*

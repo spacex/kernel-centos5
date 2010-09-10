@@ -27,10 +27,16 @@
 #include <linux/pagemap.h>
 #include <linux/ctype.h>
 #include <linux/utsname.h>
-#include <linux/mempool.h>
 #include <linux/delay.h>
 #include <linux/completion.h>
+#include <linux/version.h>
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
+#include <linux/mempool.h>
 #include <linux/pagevec.h>
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,19)
+#include <linux/freezer.h>
+#endif /* 2.6.19 */
+#endif
 #include <asm/uaccess.h>
 #include <asm/processor.h>
 #include "cifspdu.h"
@@ -47,12 +53,21 @@
 #define CIFS_PORT 445
 #define RFC1001_PORT 139
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 7)
+#define sock_create_kern sock_create
+#endif
 static DECLARE_COMPLETION(cifsd_complete);
 
 extern void SMBNTencrypt(unsigned char *passwd, unsigned char *c8,
 			 unsigned char *p24);
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 extern mempool_t *cifs_req_poolp;
+#else /* old 2.4 kernel */
+#ifndef PAGEVEC_SIZE
+#define PAGEVEC_SIZE 14
+#endif
+#endif
 
 struct smb_vol {
 	char *username;
@@ -89,6 +104,7 @@ struct smb_vol {
 	unsigned int wsize;
 	unsigned int sockopt;
 	unsigned short int port;
+	char * prepath;
 };
 
 static int ipv4_connect(struct sockaddr_in *psin_server, 
@@ -182,7 +198,9 @@ cifs_reconnect(struct TCP_Server_Info *server)
 
 	while ((server->tcpStatus != CifsExiting) && (server->tcpStatus != CifsGood))
 	{
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 12)
 		try_to_freeze();
+#endif
 		if(server->protocolType == IPV6) {
 			rc = ipv6_connect(&server->addr.sockAddr6,&server->ssocket);
 		} else {
@@ -342,9 +360,17 @@ cifs_demultiplex_thread(struct TCP_Server_Info *server)
 	int isLargeBuf = FALSE;
 	int isMultiRsp;
 	int reconnect;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 8)
+	mm_segment_t temp_fs;
+#endif
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 5, 0)
+	daemonize();
+	sprintf(current->comm,"cifsd");
+#else
 	daemonize("cifsd");
 	allow_signal(SIGKILL);
+#endif
 	current->flags |= PF_MEMALLOC;
 	server->tsk = current;	/* save process info to wake at shutdown */
 	cFYI(1, ("Demultiplex PID: %d", current->pid));
@@ -353,15 +379,24 @@ cifs_demultiplex_thread(struct TCP_Server_Info *server)
 	length = tcpSesAllocCount.counter;
 	write_unlock(&GlobalSMBSeslock);
 	complete(&cifsd_complete);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 10)
 	if(length  > 1) {
 		mempool_resize(cifs_req_poolp,
 			length + cifs_min_rcv,
 			GFP_KERNEL);
 	}
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 8)
+	temp_fs = get_fs();	/* we must turn off socket api parm checking */
+	set_fs(get_ds());
+#endif
 
 	while (server->tcpStatus != CifsExiting) {
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 12)
 		if (try_to_freeze())
 			continue;
+#endif
 		if (bigbuf == NULL) {
 			bigbuf = cifs_buf_get();
 			if (!bigbuf) {
@@ -394,10 +429,15 @@ cifs_demultiplex_thread(struct TCP_Server_Info *server)
 		iov.iov_len = 4;
 		smb_msg.msg_control = NULL;
 		smb_msg.msg_controllen = 0;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 8)
+		smb_msg.msg_iov = &iov;
+		smb_msg.msg_iovlen = 1;
 		length =
-		    kernel_recvmsg(csocket, &smb_msg,
+			sock_recvmsg(csocket, &smb_msg, 4 /* RFC1001 len */, 0);
+#else
+		length = kernel_recvmsg(csocket, &smb_msg,
 				 &iov, 1, 4, 0 /* BB see socket.h flags */);
-
+#endif
 		if (server->tcpStatus == CifsExiting) {
 			break;
 		} else if (server->tcpStatus == CifsNeedReconnect) {
@@ -420,7 +460,11 @@ cifs_demultiplex_thread(struct TCP_Server_Info *server)
 				   and so simply return error to mount */
 				break;
 			}
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 12)
 			if (!try_to_freeze() && (length == -EINTR)) {
+#else
+			if (length == -EINTR) {
+#endif
 				cFYI(1,("cifsd thread killed"));
 				break;
 			}
@@ -520,8 +564,13 @@ cifs_demultiplex_thread(struct TCP_Server_Info *server)
 		iov.iov_len = pdu_length;
 		for (total_read = 0; total_read < pdu_length; 
 		     total_read += length) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 8)
+			length = sock_recvmsg(csocket, &smb_msg,
+				pdu_length - total_read, 0);
+#else
 			length = kernel_recvmsg(csocket, &smb_msg, &iov, 1,
 						pdu_length - total_read, 0);
+#endif
 			if((server->tcpStatus == CifsExiting) ||
 			    (length == -EINTR)) {
 				/* then will exit */
@@ -668,6 +717,10 @@ multi_t2_fnd:
 		sock_release(csocket);
 		server->ssocket = NULL;
 	}
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 8)
+	set_fs(temp_fs);
+#endif
 	/* buffer usuallly freed in free_mid - need to free it here on exit */
 	if (bigbuf != NULL)
 		cifs_buf_release(bigbuf);
@@ -749,11 +802,13 @@ multi_t2_fnd:
 	write_unlock(&GlobalSMBSeslock);
 
 	kfree(server);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 	if(length  > 0) {
 		mempool_resize(cifs_req_poolp,
 			length + cifs_min_rcv,
 			GFP_KERNEL);
 	}
+#endif
 	
 	complete_and_exit(&cifsd_complete, 0);
 	return 0;
@@ -771,12 +826,21 @@ cifs_parse_mount_options(char *options, const char *devname,struct smb_vol *vol)
 	separator[1] = 0; 
 
 	memset(vol->source_rfc1001_name,0x20,15);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 18)
+	for(i=0;i < strnlen(utsname()->nodename,15);i++) {
+		/* does not have to be a perfect mapping since the field is
+		informational, only used for servers that do not support
+		port 445 and it can be overridden at mount time */
+		vol->source_rfc1001_name[i] = 
+			toupper(utsname()->nodename[i]);
+#else
 	for(i=0;i < strnlen(system_utsname.nodename,15);i++) {
 		/* does not have to be a perfect mapping since the field is
 		informational, only used for servers that do not support
 		port 445 and it can be overridden at mount time */
 		vol->source_rfc1001_name[i] = 
 			toupper(system_utsname.nodename[i]);
+#endif
 	}
 	vol->source_rfc1001_name[15] = 0;
 	/* null target name indicates to use *SMBSERVR default called name
@@ -816,10 +880,13 @@ cifs_parse_mount_options(char *options, const char *devname,struct smb_vol *vol)
 		} else if (strnicmp(data, "nouser_xattr",12) == 0) {
 			vol->no_xattr = 1;
 		} else if (strnicmp(data, "user", 4) == 0) {
-			if (!value || !*value) {
+			if (!value) {
 				printk(KERN_WARNING
 				       "CIFS: invalid or missing username\n");
 				return 1;	/* needs_arg; */
+			} else if(!*value) {
+				/* null user, ie anonymous, authentication */
+				vol->nullauth = 1;
 			}
 			if (strnlen(value, 200) < 200) {
 				vol->username = value;
@@ -993,6 +1060,28 @@ cifs_parse_mount_options(char *options, const char *devname,struct smb_vol *vol)
 				printk(KERN_WARNING "CIFS: domain name too long\n");
 				return 1;
 			}
+                } else if (strnicmp(data, "prefixpath", 10) == 0) {
+                        if (!value || !*value) {
+                                printk(KERN_WARNING
+                                       "CIFS: invalid path prefix\n");
+                                return 1;       /* needs_arg; */
+                        }
+                        if ((temp_len = strnlen(value, 1024)) < 1024) {
+				if(value[0] != '/')
+					temp_len++;  /* missing leading slash */
+                                vol->prepath = kmalloc(temp_len+1,GFP_KERNEL);
+                                if(vol->prepath == NULL)
+                                        return 1;
+				if(value[0] != '/') {
+					vol->prepath[0] = '/';
+	                                strcpy(vol->prepath+1,value);
+				} else
+					strcpy(vol->prepath,value);
+				cFYI(1,("prefix path %s",vol->prepath));
+                        } else {
+                                printk(KERN_WARNING "CIFS: prefix too long\n");
+                                return 1;
+                        }
 		} else if (strnicmp(data, "iocharset", 9) == 0) {
 			if (!value || !*value) {
 				printk(KERN_WARNING "CIFS: invalid iocharset specified\n");
@@ -1397,7 +1486,11 @@ ipv4_connect(struct sockaddr_in *psin_server, struct socket **csocket,
 		} else {
 		/* BB other socket options to set KEEPALIVE, NODELAY? */
 			cFYI(1,("Socket created"));
-			(*csocket)->sk->sk_allocation = GFP_NOFS; 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
+			(*csocket)->sk->sk_allocation = GFP_NOFS;
+#else
+			(*csocket)->sk->allocation = GFP_NOFS;
+#endif
 		}
 	}
 
@@ -1447,6 +1540,7 @@ ipv4_connect(struct sockaddr_in *psin_server, struct socket **csocket,
 	/* Eventually check for other socket options to change from 
 		the default. sock_setsockopt not used because it expects 
 		user space buffer */
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 	 cFYI(1,("sndbuf %d rcvbuf %d rcvtimeo 0x%lx",(*csocket)->sk->sk_sndbuf,
 		 (*csocket)->sk->sk_rcvbuf, (*csocket)->sk->sk_rcvtimeo));
 	(*csocket)->sk->sk_rcvtimeo = 7 * HZ;
@@ -1455,7 +1549,16 @@ ipv4_connect(struct sockaddr_in *psin_server, struct socket **csocket,
 		(*csocket)->sk->sk_sndbuf = 200 * 1024;
 	if((*csocket)->sk->sk_rcvbuf < (140 * 1024))
 		(*csocket)->sk->sk_rcvbuf = 140 * 1024;
-
+#else
+         cFYI(1,("sndbuf %d rcvbuf %d rcvtimeo 0x%lx",(*csocket)->sk->sndbuf,
+                 (*csocket)->sk->rcvbuf, (*csocket)->sk->rcvtimeo));
+        (*csocket)->sk->rcvtimeo = 7 * HZ;
+        /* make the bufsizes depend on wsize/rsize and max requests */
+        if((*csocket)->sk->sndbuf < (200 * 1024))
+                (*csocket)->sk->sndbuf = 200 * 1024;
+        if((*csocket)->sk->rcvbuf < (140 * 1024))
+                (*csocket)->sk->rcvbuf = 140 * 1024;
+#endif
 	/* send RFC1001 sessinit */
 	if(psin_server->sin_port == htons(RFC1001_PORT)) {
 		/* some servers require RFC1001 sessinit before sending
@@ -1525,7 +1628,11 @@ ipv6_connect(struct sockaddr_in6 *psin_server, struct socket **csocket)
 		} else {
 		/* BB other socket options to set KEEPALIVE, NODELAY? */
 			 cFYI(1,("ipv6 Socket created"));
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 			(*csocket)->sk->sk_allocation = GFP_NOFS;
+#else
+			(*csocket)->sk->allocation = GFP_NOFS;
+#endif
 		}
 	}
 
@@ -1576,7 +1683,11 @@ ipv6_connect(struct sockaddr_in6 *psin_server, struct socket **csocket)
 	/* Eventually check for other socket options to change from 
 		the default. sock_setsockopt not used because it expects 
 		user space buffer */
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 	(*csocket)->sk->sk_rcvtimeo = 7 * HZ;
+#else
+	(*csocket)->sk->rcvtimeo = 7 * HZ;
+#endif
 		
 	return rc;
 }
@@ -1605,11 +1716,15 @@ cifs_mount(struct super_block *sb, struct cifs_sb_info *cifs_sb,
 	if (cifs_parse_mount_options(mount_data, devname, &volume_info)) {
 		kfree(volume_info.UNC);
 		kfree(volume_info.password);
+		kfree(volume_info.prepath);
 		FreeXid(xid);
 		return -EINVAL;
 	}
 
-	if (volume_info.username) {
+	if (volume_info.nullauth) {
+		cFYI(1,("null user"));
+		volume_info.username = NULL;
+	} else if (volume_info.username) {
 		/* BB fixme parse for domain name here */
 		cFYI(1, ("Username: %s ", volume_info.username));
 
@@ -1619,6 +1734,7 @@ cifs_mount(struct super_block *sb, struct cifs_sb_info *cifs_sb,
            locations such as env variables and files on disk */
 		kfree(volume_info.UNC);
 		kfree(volume_info.password);
+		kfree(volume_info.prepath);
 		FreeXid(xid);
 		return -EINVAL;
 	}
@@ -1639,6 +1755,7 @@ cifs_mount(struct super_block *sb, struct cifs_sb_info *cifs_sb,
 			/* we failed translating address */
 			kfree(volume_info.UNC);
 			kfree(volume_info.password);
+			kfree(volume_info.prepath);
 			FreeXid(xid);
 			return -EINVAL;
 		}
@@ -1651,6 +1768,7 @@ cifs_mount(struct super_block *sb, struct cifs_sb_info *cifs_sb,
 		cERROR(1,("Connecting to DFS root not implemented yet"));
 		kfree(volume_info.UNC);
 		kfree(volume_info.password);
+		kfree(volume_info.prepath);
 		FreeXid(xid);
 		return -EINVAL;
 	} else /* which servers DFS root would we conect to */ {
@@ -1658,6 +1776,7 @@ cifs_mount(struct super_block *sb, struct cifs_sb_info *cifs_sb,
 		       ("CIFS mount error: No UNC path (e.g. -o unc=//192.168.1.100/public) specified"));
 		kfree(volume_info.UNC);
 		kfree(volume_info.password);
+		kfree(volume_info.prepath);
 		FreeXid(xid);
 		return -EINVAL;
 	}
@@ -1672,6 +1791,7 @@ cifs_mount(struct super_block *sb, struct cifs_sb_info *cifs_sb,
 			cERROR(1,("CIFS mount error: iocharset %s not found",volume_info.iocharset));
 			kfree(volume_info.UNC);
 			kfree(volume_info.password);
+			kfree(volume_info.prepath);
 			FreeXid(xid);
 			return -ELIBACC;
 		}
@@ -1688,6 +1808,7 @@ cifs_mount(struct super_block *sb, struct cifs_sb_info *cifs_sb,
 	else {
 		kfree(volume_info.UNC);
 		kfree(volume_info.password);
+		kfree(volume_info.prepath);
 		FreeXid(xid);
 		return -EINVAL;
 	}
@@ -1710,6 +1831,7 @@ cifs_mount(struct super_block *sb, struct cifs_sb_info *cifs_sb,
 				sock_release(csocket);
 			kfree(volume_info.UNC);
 			kfree(volume_info.password);
+			kfree(volume_info.prepath);
 			FreeXid(xid);
 			return rc;
 		}
@@ -1720,6 +1842,7 @@ cifs_mount(struct super_block *sb, struct cifs_sb_info *cifs_sb,
 			sock_release(csocket);
 			kfree(volume_info.UNC);
 			kfree(volume_info.password);
+			kfree(volume_info.prepath);
 			FreeXid(xid);
 			return rc;
 		} else {
@@ -1744,6 +1867,7 @@ cifs_mount(struct super_block *sb, struct cifs_sb_info *cifs_sb,
 				sock_release(csocket);
 				kfree(volume_info.UNC);
 				kfree(volume_info.password);
+				kfree(volume_info.prepath);
 				FreeXid(xid);
 				return rc;
 			}
@@ -1831,6 +1955,14 @@ cifs_mount(struct super_block *sb, struct cifs_sb_info *cifs_sb,
 			/* Windows ME may prefer this */
 			cFYI(1,("readsize set to minimum 2048"));
 		}
+		/* calculate prepath */
+		cifs_sb->prepath = volume_info.prepath;
+		if(cifs_sb->prepath) {
+			cifs_sb->prepathlen = strlen(cifs_sb->prepath);
+			cifs_sb->prepath[0] = CIFS_DIR_SEP(cifs_sb);
+			volume_info.prepath = NULL;
+		} else 
+			cifs_sb->prepathlen = 0;
 		cifs_sb->mnt_uid = volume_info.linux_uid;
 		cifs_sb->mnt_gid = volume_info.linux_gid;
 		cifs_sb->mnt_file_mode = volume_info.file_mode;
@@ -1909,8 +2041,9 @@ cifs_mount(struct super_block *sb, struct cifs_sb_info *cifs_sb,
 		} else
 			sb->s_maxbytes = (u64) 1 << 31;	/* 2 GB */
 	}
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 10)
 	sb->s_time_gran = 100;
+#endif
 
 /* on error free sesinfo and tcon struct if needed */
 	if (rc) {
@@ -1963,8 +2096,12 @@ cifs_mount(struct super_block *sb, struct cifs_sb_info *cifs_sb,
 				if(volume_info.no_psx_acl)
 					cap &= ~CIFS_UNIX_POSIX_ACL_CAP;
 				else if(CIFS_UNIX_POSIX_ACL_CAP & cap) {
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 					cFYI(1,("negotiated posix acl support"));
 					sb->s_flags |= MS_POSIXACL;
+#else
+					cFYI(1,("ACLs not supported"));
+#endif
 				}
 
 				if(volume_info.posix_paths == 0)
@@ -2008,6 +2145,7 @@ cifs_mount(struct super_block *sb, struct cifs_sb_info *cifs_sb,
 	the password ptr is put in the new session structure (in which case the
 	password will be freed at unmount time) */
 	kfree(volume_info.UNC);
+	kfree(volume_info.prepath);
 	FreeXid(xid);
 	return rc;
 }
@@ -2111,8 +2249,14 @@ CIFSSessSetup(unsigned int xid, struct cifsSesInfo *ses,
 				  32, nls_codepage);
 		bcc_ptr += 2 * bytes_returned;
 		bytes_returned =
-		    cifs_strtoUCS((__le16 *) bcc_ptr, system_utsname.release,
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 18)
+			cifs_strtoUCS((__le16 *)bcc_ptr, utsname()->release,
+                                  32, nls_codepage);
+
+#else
+			cifs_strtoUCS((__le16 *)bcc_ptr, system_utsname.release,
 				  32, nls_codepage);
+#endif
 		bcc_ptr += 2 * bytes_returned;
 		bcc_ptr += 2;
 		bytes_returned =
@@ -2138,8 +2282,13 @@ CIFSSessSetup(unsigned int xid, struct cifsSesInfo *ses,
 		}
 		strcpy(bcc_ptr, "Linux version ");
 		bcc_ptr += strlen("Linux version ");
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 18)
+                strcpy(bcc_ptr, utsname()->release);
+                bcc_ptr += strlen(utsname()->release) + 1;
+#else
 		strcpy(bcc_ptr, system_utsname.release);
 		bcc_ptr += strlen(system_utsname.release) + 1;
+#endif
 		strcpy(bcc_ptr, CIFS_NETWORK_OPSYS);
 		bcc_ptr += strlen(CIFS_NETWORK_OPSYS) + 1;
 	}
@@ -2403,8 +2552,14 @@ CIFSNTLMSSPNegotiateSessSetup(unsigned int xid,
 				  32, nls_codepage);
 		bcc_ptr += 2 * bytes_returned;
 		bytes_returned =
-		    cifs_strtoUCS((__le16 *) bcc_ptr, system_utsname.release, 32,
-				  nls_codepage);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 18)
+		    cifs_strtoUCS((__le16 *)bcc_ptr, utsname()->release, 32,
+				nls_codepage);
+
+#else
+		    cifs_strtoUCS((__le16 *)bcc_ptr, system_utsname.release, 32,
+				nls_codepage);
+#endif
 		bcc_ptr += 2 * bytes_returned;
 		bcc_ptr += 2;	/* null terminate Linux version */
 		bytes_returned =
@@ -2420,8 +2575,13 @@ CIFSNTLMSSPNegotiateSessSetup(unsigned int xid,
 	} else {		/* ASCII */
 		strcpy(bcc_ptr, "Linux version ");
 		bcc_ptr += strlen("Linux version ");
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 18)
+		strcpy(bcc_ptr, utsname()->release);
+		bcc_ptr += strlen(utsname()->release) + 1;
+#else
 		strcpy(bcc_ptr, system_utsname.release);
 		bcc_ptr += strlen(system_utsname.release) + 1;
+#endif
 		strcpy(bcc_ptr, CIFS_NETWORK_OPSYS);
 		bcc_ptr += strlen(CIFS_NETWORK_OPSYS) + 1;
 		bcc_ptr++;	/* empty domain field */
@@ -2794,8 +2954,14 @@ CIFSNTLMSSPAuthSessSetup(unsigned int xid, struct cifsSesInfo *ses,
 				  32, nls_codepage);
 		bcc_ptr += 2 * bytes_returned;
 		bytes_returned =
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 18)
+		    cifs_strtoUCS((__le16 *) bcc_ptr, utsname()->release, 32,
+                                  nls_codepage);
+#else
 		    cifs_strtoUCS((__le16 *) bcc_ptr, system_utsname.release, 32,
 				  nls_codepage);
+#endif
 		bcc_ptr += 2 * bytes_returned;
 		bcc_ptr += 2;	/* null term version string */
 		bytes_returned =
@@ -2846,8 +3012,13 @@ CIFSNTLMSSPAuthSessSetup(unsigned int xid, struct cifsSesInfo *ses,
 
 		strcpy(bcc_ptr, "Linux version ");
 		bcc_ptr += strlen("Linux version ");
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 18)
+		strcpy(bcc_ptr, utsname()->release);
+		bcc_ptr += strlen(utsname()->release) + 1;
+#else
 		strcpy(bcc_ptr, system_utsname.release);
 		bcc_ptr += strlen(system_utsname.release) + 1;
+#endif
 		strcpy(bcc_ptr, CIFS_NETWORK_OPSYS);
 		bcc_ptr += strlen(CIFS_NETWORK_OPSYS) + 1;
 		bcc_ptr++;	/* null domain */
@@ -3173,7 +3344,9 @@ CIFSTCon(unsigned int xid, struct cifsSesInfo *ses,
 			}
 			/* else do not bother copying these informational fields */
 		}
-		if(smb_buffer_response->WordCount == 3)
+		if((smb_buffer_response->WordCount == 3) ||
+			 (smb_buffer_response->WordCount == 7))
+			/* field is in same location */
 			tcon->Flags = le16_to_cpu(pSMBr->OptionalSupport);
 		else
 			tcon->Flags = 0;
@@ -3195,6 +3368,7 @@ cifs_umount(struct super_block *sb, struct cifs_sb_info *cifs_sb)
 	int xid;
 	struct cifsSesInfo *ses = NULL;
 	struct task_struct *cifsd_task;
+	char * tmp;
 
 	xid = GetXid();
 
@@ -3228,8 +3402,17 @@ cifs_umount(struct super_block *sb, struct cifs_sb_info *cifs_sb)
 	}
 	
 	cifs_sb->tcon = NULL;
+	tmp = cifs_sb->prepath;
+	cifs_sb->prepathlen = 0;
+	cifs_sb->prepath = NULL;
+	kfree(tmp);
 	if (ses)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 14)
+		set_current_state(TASK_INTERRUPTIBLE);
+		schedule_timeout(HZ / 2);
+#else
 		schedule_timeout_interruptible(msecs_to_jiffies(500));
+#endif
 	if (ses)
 		sesInfoFree(ses);
 
@@ -3265,19 +3448,21 @@ int cifs_setup_session(unsigned int xid, struct cifsSesInfo *pSesInfo,
 		first_time = 1;
 	}
 	if (!rc) {
+		pSesInfo->flags = 0;
 		pSesInfo->capabilities = pSesInfo->server->capabilities;
 		if(linuxExtEnabled == 0)
 			pSesInfo->capabilities &= (~CAP_UNIX);
 	/*	pSesInfo->sequence_number = 0;*/
-		cFYI(1,("Security Mode: 0x%x Capabilities: 0x%x Time Zone: %d",
+		cFYI(1,("Security Mode: 0x%x Capabilities: 0x%x TimeAdjust: %d",
 			pSesInfo->server->secMode,
 			pSesInfo->server->capabilities,
-			pSesInfo->server->timeZone));
+			pSesInfo->server->timeAdj));
 		if(experimEnabled < 2)
 			rc = CIFS_SessSetup(xid, pSesInfo,
 					    first_time, nls_info);
 		else if (extended_security
-				&& (pSesInfo->capabilities & CAP_EXTENDED_SECURITY)
+				&& (pSesInfo->capabilities 
+					& CAP_EXTENDED_SECURITY)
 				&& (pSesInfo->server->secType == NTLMSSP)) {
 			rc = -EOPNOTSUPP;
 		} else if (extended_security
@@ -3291,7 +3476,7 @@ int cifs_setup_session(unsigned int xid, struct cifsSesInfo *pSesInfo,
 			if (!rc) {
 				if(ntlmv2_flag) {
 					char * v2_response;
-					cFYI(1,("Can use more secure NTLM version 2 password hash"));
+					cFYI(1,("more secure NTLM ver2 hash"));
 					if(CalcNTLMv2_partial_mac_key(pSesInfo, 
 						nls_info)) {
 						rc = -ENOMEM;

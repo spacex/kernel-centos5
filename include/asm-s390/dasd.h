@@ -74,6 +74,7 @@ typedef struct dasd_information2_t {
 #define DASD_FEATURE_READONLY	     0x01
 #define DASD_FEATURE_USEDIAG	     0x02
 #define DASD_FEATURE_INITIAL_ONLINE  0x04
+#define DASD_FEATURE_ERPLOG	     0x08
 
 #define DASD_PARTN_BITS 2
 

@@ -29,6 +29,17 @@ struct pci_dev;
 struct pci_bus;
 struct device_node;
 
+#ifdef CONFIG_PPC_CELL_NATIVE
+extern void (*ppc_mmio_read_fixup)(const volatile void __iomem *addr);
+static inline void mmio_read_fixup(const volatile void __iomem *addr)
+{
+	if (ppc_mmio_read_fixup)
+		ppc_mmio_read_fixup(addr);
+}
+#else
+define mmio_read_fixup(addr)	do { } while(0)
+#endif
+
 #ifdef CONFIG_EEH
 
 extern int eeh_subsystem_enabled;
@@ -116,6 +127,7 @@ static inline void eeh_remove_bus_device(struct pci_dev *dev) { }
 static inline u8 eeh_readb(const volatile void __iomem *addr)
 {
 	u8 val = in_8(addr);
+	mmio_read_fixup(addr);
 	if (EEH_POSSIBLE_ERROR(val, u8))
 		return eeh_check_failure(addr, val);
 	return val;
@@ -128,6 +140,7 @@ static inline void eeh_writeb(u8 val, volatile void __iomem *addr)
 static inline u16 eeh_readw(const volatile void __iomem *addr)
 {
 	u16 val = in_le16(addr);
+	mmio_read_fixup(addr);
 	if (EEH_POSSIBLE_ERROR(val, u16))
 		return eeh_check_failure(addr, val);
 	return val;
@@ -139,6 +152,7 @@ static inline void eeh_writew(u16 val, volatile void __iomem *addr)
 static inline u16 eeh_raw_readw(const volatile void __iomem *addr)
 {
 	u16 val = in_be16(addr);
+	mmio_read_fixup(addr);
 	if (EEH_POSSIBLE_ERROR(val, u16))
 		return eeh_check_failure(addr, val);
 	return val;
@@ -151,6 +165,7 @@ static inline void eeh_raw_writew(u16 val, volatile void __iomem *addr) {
 static inline u32 eeh_readl(const volatile void __iomem *addr)
 {
 	u32 val = in_le32(addr);
+	mmio_read_fixup(addr);
 	if (EEH_POSSIBLE_ERROR(val, u32))
 		return eeh_check_failure(addr, val);
 	return val;
@@ -162,6 +177,7 @@ static inline void eeh_writel(u32 val, volatile void __iomem *addr)
 static inline u32 eeh_raw_readl(const volatile void __iomem *addr)
 {
 	u32 val = in_be32(addr);
+	mmio_read_fixup(addr);
 	if (EEH_POSSIBLE_ERROR(val, u32))
 		return eeh_check_failure(addr, val);
 	return val;
@@ -174,6 +190,7 @@ static inline void eeh_raw_writel(u32 val, volatile void __iomem *addr)
 static inline u64 eeh_readq(const volatile void __iomem *addr)
 {
 	u64 val = in_le64(addr);
+	mmio_read_fixup(addr);
 	if (EEH_POSSIBLE_ERROR(val, u64))
 		return eeh_check_failure(addr, val);
 	return val;
@@ -185,6 +202,7 @@ static inline void eeh_writeq(u64 val, volatile void __iomem *addr)
 static inline u64 eeh_raw_readq(const volatile void __iomem *addr)
 {
 	u64 val = in_be64(addr);
+	mmio_read_fixup(addr);
 	if (EEH_POSSIBLE_ERROR(val, u64))
 		return eeh_check_failure(addr, val);
 	return val;
@@ -254,6 +272,8 @@ static inline void eeh_memcpy_fromio(void *dest, const volatile void __iomem *sr
 	}
 	__asm__ __volatile__ ("sync" : : : "memory");
 
+	mmio_read_fixup(src);
+
 	/* Look for ffff's here at dest[n].  Assume that at least 4 bytes
 	 * were copied. Check all four bytes.
 	 */
@@ -296,6 +316,7 @@ static inline u8 eeh_inb(unsigned long port)
 {
 	u8 val;
 	val = in_8((u8 __iomem *)(port+pci_io_base));
+	mmio_read_fixup((u8 __iomem *)(port+pci_io_base));
 	if (EEH_POSSIBLE_ERROR(val, u8))
 		return eeh_check_failure((void __iomem *)(port), val);
 	return val;
@@ -310,6 +331,7 @@ static inline u16 eeh_inw(unsigned long port)
 {
 	u16 val;
 	val = in_le16((u16 __iomem *)(port+pci_io_base));
+	mmio_read_fixup((u16 __iomem *)(port+pci_io_base));
 	if (EEH_POSSIBLE_ERROR(val, u16))
 		return eeh_check_failure((void __iomem *)(port), val);
 	return val;
@@ -324,6 +346,7 @@ static inline u32 eeh_inl(unsigned long port)
 {
 	u32 val;
 	val = in_le32((u32 __iomem *)(port+pci_io_base));
+	mmio_read_fixup((u32 __iomem *)(port+pci_io_base));
 	if (EEH_POSSIBLE_ERROR(val, u32))
 		return eeh_check_failure((void __iomem *)(port), val);
 	return val;
@@ -338,6 +361,7 @@ static inline void eeh_outl(u32 val, unsigned long port)
 static inline void eeh_insb(unsigned long port, void * buf, int ns)
 {
 	_insb((u8 __iomem *)(port+pci_io_base), buf, ns);
+	mmio_read_fixup((u8 __iomem *)(port+pci_io_base));
 	if (EEH_POSSIBLE_ERROR((*(((u8*)buf)+ns-1)), u8))
 		eeh_check_failure((void __iomem *)(port), *(u8*)buf);
 }
@@ -345,6 +369,7 @@ static inline void eeh_insb(unsigned long port, void * buf, int ns)
 static inline void eeh_insw_ns(unsigned long port, void * buf, int ns)
 {
 	_insw_ns((u16 __iomem *)(port+pci_io_base), buf, ns);
+	mmio_read_fixup((u16 __iomem *)(port+pci_io_base));
 	if (EEH_POSSIBLE_ERROR((*(((u16*)buf)+ns-1)), u16))
 		eeh_check_failure((void __iomem *)(port), *(u16*)buf);
 }
@@ -352,6 +377,7 @@ static inline void eeh_insw_ns(unsigned long port, void * buf, int ns)
 static inline void eeh_insl_ns(unsigned long port, void * buf, int nl)
 {
 	_insl_ns((u32 __iomem *)(port+pci_io_base), buf, nl);
+	mmio_read_fixup((u32 __iomem *)(port+pci_io_base));
 	if (EEH_POSSIBLE_ERROR((*(((u32*)buf)+nl-1)), u32))
 		eeh_check_failure((void __iomem *)(port), *(u32*)buf);
 }

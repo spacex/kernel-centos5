@@ -23,12 +23,13 @@
 #define SPUFS_H
 
 #include <linux/kref.h>
-#include <linux/rwsem.h>
+#include <linux/mutex.h>
 #include <linux/spinlock.h>
 #include <linux/fs.h>
 
 #include <asm/spu.h>
 #include <asm/spu_csa.h>
+#include <asm/spu_info.h>
 
 /* The magic number for our file system */
 enum {
@@ -36,8 +37,13 @@ enum {
 };
 
 struct spu_context_ops;
+struct spu_gang;
 
-#define SPU_CONTEXT_PREEMPT          0UL
+/* ctx->sched_flags */
+enum {
+	SPU_SCHED_EXITING = 0,
+	SPU_SCHED_NOTIFY_ACTIVE,
+};
 
 struct spu_context {
 	struct spu *spu;		  /* pointer to a physical SPU */
@@ -48,9 +54,13 @@ struct spu_context {
 	struct address_space *cntl; 	   /* 'control' area mappings. */
 	struct address_space *signal1; 	   /* 'signal1' area mappings. */
 	struct address_space *signal2; 	   /* 'signal2' area mappings. */
+	struct address_space *mss;	   /* 'mss' area mappings. */
+	struct address_space *psmap;	   /* 'psmap' area mappings. */
+	spinlock_t mapping_lock;
+	u64 object_id;		   /* user space pointer for oprofile */
 
 	enum { SPU_STATE_RUNNABLE, SPU_STATE_SAVED } state;
-	struct rw_semaphore state_sema;
+	struct mutex state_mutex;
 	struct semaphore run_sema;
 
 	struct mm_struct *owner;
@@ -66,8 +76,44 @@ struct spu_context {
 	u32 tagwait;
 	struct spu_context_ops *ops;
 	struct work_struct reap_work;
-	u64 flags;
+	unsigned long flags;
+	unsigned long event_return;
+
+	struct list_head gang_list;
+	struct spu_gang *gang;
+	struct kref * prof_priv_kref;
+	void (* prof_priv_release) (struct kref *kref);
+
+	/* scheduler fields */
+	struct list_head rq;
+	struct work_struct sched_work;
+	unsigned long sched_flags;
+	unsigned long rt_priority;
+	int policy;
+	int prio;
+
+	struct list_head aff_list;
+	int aff_head;
+	int aff_offset;
 };
+
+struct spu_gang {
+	struct list_head list;
+	struct mutex mutex;
+	struct kref kref;
+	int contexts;
+
+	struct spu_context *aff_ref_ctx;
+	struct list_head aff_list_head;
+	struct mutex aff_mutex;
+	int aff_flags;
+	struct spu *aff_ref_spu;
+	atomic_t aff_sched_count;
+};
+
+/* Flag bits for spu_gang aff_flags */
+#define AFF_OFFSETS_SET		1
+#define AFF_MERGED		2
 
 struct mfc_dma_command {
 	int32_t pad;	/* reserved */
@@ -100,13 +146,20 @@ struct spu_context_ops {
 	void (*npc_write) (struct spu_context * ctx, u32 data);
 	 u32(*status_read) (struct spu_context * ctx);
 	char*(*get_ls) (struct spu_context * ctx);
+	 u32 (*runcntl_read) (struct spu_context * ctx);
 	void (*runcntl_write) (struct spu_context * ctx, u32 data);
-	void (*runcntl_stop) (struct spu_context * ctx);
+	void (*master_start) (struct spu_context * ctx);
+	void (*master_stop) (struct spu_context * ctx);
 	int (*set_mfc_query)(struct spu_context * ctx, u32 mask, u32 mode);
 	u32 (*read_mfc_tagstatus)(struct spu_context * ctx);
 	u32 (*get_mfc_free_elements)(struct spu_context *ctx);
-	int (*send_mfc_command)(struct spu_context *ctx,
-					struct mfc_dma_command *cmd);
+	int (*send_mfc_command)(struct spu_context * ctx,
+				struct mfc_dma_command * cmd);
+	void (*dma_info_read) (struct spu_context * ctx,
+			       struct spu_dma_info * info);
+	void (*proxydma_info_read) (struct spu_context * ctx,
+				    struct spu_proxydma_info * info);
+	void (*restart_dma)(struct spu_context *ctx);
 };
 
 extern struct spu_context_ops spu_hw_ops;
@@ -114,38 +167,69 @@ extern struct spu_context_ops spu_backing_ops;
 
 struct spufs_inode_info {
 	struct spu_context *i_ctx;
+	struct spu_gang *i_gang;
 	struct inode vfs_inode;
+	int i_openers;
 };
 #define SPUFS_I(inode) \
 	container_of(inode, struct spufs_inode_info, vfs_inode)
 
 extern struct tree_descr spufs_dir_contents[];
+extern struct tree_descr spufs_dir_nosched_contents[];
 
 /* system call implementation */
 long spufs_run_spu(struct file *file,
 		   struct spu_context *ctx, u32 *npc, u32 *status);
-long spufs_create_thread(struct nameidata *nd,
-			 unsigned int flags, mode_t mode);
+long spufs_create(struct nameidata *nd,
+			 unsigned int flags, mode_t mode, struct file *filp);
 extern struct file_operations spufs_context_fops;
 
+/* gang management */
+struct spu_gang *alloc_spu_gang(void);
+struct spu_gang *get_spu_gang(struct spu_gang *gang);
+int put_spu_gang(struct spu_gang *gang);
+void spu_gang_remove_ctx(struct spu_gang *gang, struct spu_context *ctx);
+void spu_gang_add_ctx(struct spu_gang *gang, struct spu_context *ctx);
+
+/* fault handling */
+int spufs_handle_class1(struct spu_context *ctx);
+
+/* affinity */
+struct spu *affinity_check(struct spu_context *ctx);
+
 /* context management */
-struct spu_context * alloc_spu_context(void);
+static inline void spu_acquire(struct spu_context *ctx)
+{
+	mutex_lock(&ctx->state_mutex);
+}
+
+static inline void spu_release(struct spu_context *ctx)
+{
+	mutex_unlock(&ctx->state_mutex);
+}
+
+struct spu_context * alloc_spu_context(struct spu_gang *gang);
 void destroy_spu_context(struct kref *kref);
 struct spu_context * get_spu_context(struct spu_context *ctx);
 int put_spu_context(struct spu_context *ctx);
 void spu_unmap_mappings(struct spu_context *ctx);
 
 void spu_forget(struct spu_context *ctx);
-void spu_acquire(struct spu_context *ctx);
-void spu_release(struct spu_context *ctx);
-int spu_acquire_runnable(struct spu_context *ctx);
+int spu_acquire_runnable(struct spu_context *ctx, unsigned long flags);
 void spu_acquire_saved(struct spu_context *ctx);
+int spu_acquire_exclusive(struct spu_context *ctx);
 
-int spu_activate(struct spu_context *ctx, u64 flags);
+int spu_activate(struct spu_context *ctx, unsigned long flags);
 void spu_deactivate(struct spu_context *ctx);
 void spu_yield(struct spu_context *ctx);
+void spu_switch_notify(struct spu *spu, struct spu_context *ctx);
+void spu_start_tick(struct spu_context *ctx);
+void spu_stop_tick(struct spu_context *ctx);
+void spu_sched_tick(void *data);
 int __init spu_sched_init(void);
 void __exit spu_sched_exit(void);
+
+extern char *isolated_loader;
 
 /*
  * spufs_wait
@@ -183,5 +267,17 @@ void spufs_ibox_callback(struct spu *spu);
 void spufs_wbox_callback(struct spu *spu);
 void spufs_stop_callback(struct spu *spu);
 void spufs_mfc_callback(struct spu *spu);
+void spufs_dma_callback(struct spu *spu, int type);
+
+extern struct spu_coredump_calls spufs_coredump_calls;
+struct spufs_coredump_reader {
+	char *name;
+	ssize_t (*read)(struct spu_context *ctx,
+			char __user *buffer, size_t size, loff_t *pos);
+	u64 (*get)(void *data);
+	size_t size;
+};
+extern struct spufs_coredump_reader spufs_coredump_read[];
+extern int spufs_coredump_num_notes;
 
 #endif

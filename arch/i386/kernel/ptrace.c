@@ -29,6 +29,7 @@
 #include <asm/debugreg.h>
 #include <asm/ldt.h>
 #include <asm/desc.h>
+#include <asm/tracehook.h>
 
 
 /*
@@ -85,33 +86,45 @@ static int putreg(struct task_struct *child,
 	unsigned long regno, unsigned long value)
 {
 	switch (regno >> 2) {
-		case FS:
-			if (value && (value & 3) != 3)
-				return -EIO;
-			child->thread.fs = value;
-			return 0;
-		case GS:
-			if (value && (value & 3) != 3)
-				return -EIO;
-			child->thread.gs = value;
-			return 0;
-		case DS:
-		case ES:
-			if (value && (value & 3) != 3)
-				return -EIO;
-			value &= 0xffff;
-			break;
-		case SS:
-		case CS:
-			if ((value & 3) != 3)
-				return -EIO;
-			value &= 0xffff;
-			break;
-		case EFL:
-			value &= FLAG_MASK;
-			value |= get_stack_long(child, EFL_OFFSET) & ~FLAG_MASK;
-			clear_tsk_thread_flag(child, TIF_FORCED_TF);
-			break;
+	case FS:
+		if (value && (value & 3) != 3)
+			return -EIO;
+		child->thread.fs = value;
+		if (child == current)
+			/*
+			 * The user-mode %gs is not affected by
+			 * kernel entry, so we must update the CPU.
+			 */
+			loadsegment(fs, value);
+		return 0;
+	case GS:
+		if (value && (value & 3) != 3)
+			return -EIO;
+		child->thread.gs = value;
+		if (child == current)
+			/*
+			 * The user-mode %gs is not affected by
+			 * kernel entry, so we must update the CPU.
+			 */
+			loadsegment(gs, value);
+		return 0;
+	case DS:
+	case ES:
+		if (value && (value & 3) != 3)
+			return -EIO;
+		value &= 0xffff;
+		break;
+	case SS:
+	case CS:
+		if ((value & 3) != 3)
+			return -EIO;
+		value &= 0xffff;
+		break;
+	case EFL:
+		value &= FLAG_MASK;
+		value |= get_stack_long(child, EFL_OFFSET) & ~FLAG_MASK;
+		clear_tsk_thread_flag(child, TIF_FORCED_TF);
+		break;
 	}
 	if (regno > GS*4)
 		regno -= 2*4;
@@ -125,29 +138,27 @@ static unsigned long getreg(struct task_struct *child,
 	unsigned long retval = ~0UL;
 
 	switch (regno >> 2) {
-		case FS:
-			retval = child->thread.fs;
-			break;
-		case GS:
-			retval = child->thread.gs;
-			break;
-		case EFL:
-			if (test_tsk_thread_flag(child, TIF_FORCED_TF))
-				retval &= ~X86_EFLAGS_TF;
-			goto fetch;
-		case DS:
-		case ES:
-		case SS:
-		case CS:
-			retval = 0xffff;
-			/* fall through */
-		default:
-		fetch:
-			if (regno > GS*4)
-				regno -= 2*4;
-			regno = regno - sizeof(struct pt_regs);
-			retval &= get_stack_long(child, regno);
-			break;
+	case FS:
+		retval = child->thread.fs;
+		if (child == current)
+			savesegment(fs, retval);
+		break;
+	case GS:
+		retval = child->thread.gs;
+		if (child == current)
+			savesegment(gs, retval);
+		break;
+	case DS:
+	case ES:
+	case SS:
+	case CS:
+		retval = 0xffff;
+		/* fall through */
+	default:
+		if (regno > GS*4)
+			regno -= 2*4;
+		regno = regno - sizeof(struct pt_regs);
+		retval &= get_stack_long(child, regno);
 	}
 	return retval;
 }
@@ -321,7 +332,6 @@ genregs_set(struct task_struct *target,
 		}
 	}
 	else {
-		int ret = 0;
 		const unsigned long __user *up = ubuf;
 		while (!ret && count > 0) {
 			unsigned long val;
@@ -548,7 +558,7 @@ dbregs_set(struct task_struct *target,
 		else
 			clear_tsk_thread_flag(target, TIF_DEBUG);
 
-	set:
+set:
 		target->thread.debugreg[pos] = val;
 		if (target == current)
 			switch (pos) {
@@ -732,24 +742,29 @@ static const struct utrace_regset native_regsets[] = {
 	},
 };
 
-const struct utrace_regset_view utrace_i386_native = {
+
+static const struct utrace_regset_view utrace_i386_native = {
 	.name = "i386", .e_machine = EM_386,
-	.regsets = native_regsets,
-	.n = sizeof native_regsets / sizeof native_regsets[0],
+	.regsets = native_regsets, .n = ARRAY_SIZE(native_regsets)
 };
-EXPORT_SYMBOL_GPL(utrace_i386_native);
+
+const struct utrace_regset_view *utrace_native_view(struct task_struct *tsk)
+{
+	return &utrace_i386_native;
+}
 
 #ifdef CONFIG_PTRACE
 static const struct ptrace_layout_segment i386_uarea[] = {
 	{0, FRAME_SIZE*4, 0, 0},
+	{FRAME_SIZE*4, offsetof(struct user, u_debugreg[0]), -1, 0},
 	{offsetof(struct user, u_debugreg[0]),
 	 offsetof(struct user, u_debugreg[8]), 4, 0},
 	{0, 0, -1, 0}
 };
 
-fastcall int arch_ptrace(long *req, struct task_struct *child,
-			 struct utrace_attached_engine *engine,
-			 unsigned long addr, unsigned long data, long *val)
+int arch_ptrace(long *req, struct task_struct *child,
+		struct utrace_attached_engine *engine,
+		unsigned long addr, unsigned long data, long *val)
 {
 	switch (*req) {
 	case PTRACE_PEEKUSR:

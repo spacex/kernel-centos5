@@ -22,6 +22,7 @@
 #include <linux/acpi.h>
 #include <linux/pnp.h>
 #include <acpi/acpi_bus.h>
+#include <linux/dmi.h>
 #include "pnpacpi.h"
 
 static int num = 0;
@@ -236,10 +237,29 @@ static acpi_status __init pnpacpi_add_device_handler(acpi_handle handle,
 	return AE_OK;
 }
 
+static int __init disable_pnpacpi(struct dmi_system_id *d)
+{
+        printk(KERN_WARNING "%s detected. Disabling PnP-ACPI\n", d->ident);
+	pnpacpi_disabled = 1;
+        return 0;
+}
+
+static struct dmi_system_id pnpacpi_dmi_table[] __initdata = {
+        {       /* PnPBIOS GPF on boot */
+                .callback = disable_pnpacpi,
+                .ident = "IBM x460/x3950",
+                .matches = {
+                        DMI_MATCH(DMI_SYS_VENDOR, "IBM"),
+                        DMI_MATCH(DMI_PRODUCT_NAME, "IBM x3950-[88722RU]-"),
+                },
+        },
+        { }
+};
+
 int pnpacpi_disabled __initdata;
 static int __init pnpacpi_init(void)
 {
-	if (acpi_disabled || pnpacpi_disabled) {
+	if (acpi_disabled || pnpacpi_disabled || dmi_check_system(pnpacpi_dmi_table)) {
 		pnp_info("PnP ACPI: disabled");
 		return 0;
 	}

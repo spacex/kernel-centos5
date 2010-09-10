@@ -6,20 +6,24 @@
 
 static inline void do_timer_interrupt_hook(struct pt_regs *regs)
 {
+	int i;
 	/* Clear the interrupt */
 	co_cpu_write(CO_CPU_STAT,co_cpu_read(CO_CPU_STAT) & ~CO_STAT_TIMEINTR);
 
-	do_timer(regs);
+	for (i = 0; i < tick_divider; i++) {
+		do_timer(regs);
 #ifndef CONFIG_SMP
-	update_process_times(user_mode_vm(regs));
+		update_process_times(user_mode_vm(regs));
 #endif
+	}
 /*
  * In the SMP case we use the local APIC timer interrupt to do the
  * profiling, except when we simulate SMP mode on a uniprocessor
  * system, in that case we have to call the local interrupt handler.
  */
 #ifndef CONFIG_X86_LOCAL_APIC
-	profile_tick(CPU_PROFILING, regs);
+	for (i = 0; i < tick_divider; i++)
+		profile_tick(CPU_PROFILING, regs);
 #else
 	if (!using_apic_timer)
 		smp_local_timer_interrupt(regs);

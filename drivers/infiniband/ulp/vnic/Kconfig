@@ -1,0 +1,28 @@
+config INFINIBAND_VNIC
+	tristate "VNIC - Support for QLogic Virtual Ethernet I/O Controller"
+	depends on INFINIBAND && NETDEVICES && INET
+	---help---
+	  Support for the QLogic Virtual Ethernet I/O Controller
+	  (VEx). In conjunction with the VEx, this provides virtual
+	  ethernet interfaces and transports ethernet packets over
+	  InfiniBand so that you can communicate with Ethernet networks
+	  using your IB device.
+
+config INFINIBAND_VNIC_DEBUG
+	bool "VNIC Verbose debugging"
+	depends on INFINIBAND_VNIC
+	default n
+	---help---
+	  This option causes verbose debugging code to be compiled
+	  into the VNIC driver.  The output can be turned on via the
+	  vnic_debug module parameter.
+
+config INFINIBAND_VNIC_STATS
+	bool "VNIC Statistics"
+	depends on INFINIBAND_VNIC
+	default n
+	---help---
+	  This option compiles statistics collecting code into the
+	  data path of the VNIC driver to help in profiling and fine
+	  tuning. This adds some overhead in the interest of gathering
+	  data.

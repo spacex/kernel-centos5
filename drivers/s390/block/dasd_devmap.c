@@ -202,6 +202,8 @@ dasd_feature_list(char *str, char **endp)
 			features |= DASD_FEATURE_READONLY;
 		else if (len == 4 && !strncmp(str, "diag", 4))
 			features |= DASD_FEATURE_USEDIAG;
+		else if (len == 6 && !strncmp(str, "erplog", 6))
+			features |= DASD_FEATURE_ERPLOG;
 		else {
 			MESSAGE(KERN_WARNING,
 				"unsupported feature: %*s, "
@@ -681,6 +683,53 @@ dasd_ro_store(struct device *dev, struct device_attribute *attr,
 static DEVICE_ATTR(readonly, 0644, dasd_ro_show, dasd_ro_store);
 
 /*
+ * erplog controls the logging of ERP related data
+ * (e.g. failing channel programs).
+ */
+static ssize_t
+dasd_erplog_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct dasd_devmap *devmap;
+	int erplog;
+
+	devmap = dasd_find_busid(dev->bus_id);
+	if (!IS_ERR(devmap))
+		erplog = (devmap->features & DASD_FEATURE_ERPLOG) != 0;
+	else
+		erplog = (DASD_FEATURE_DEFAULT & DASD_FEATURE_ERPLOG) != 0;
+	return snprintf(buf, PAGE_SIZE, erplog ? "1\n" : "0\n");
+}
+
+static ssize_t
+dasd_erplog_store(struct device *dev, struct device_attribute *attr,
+	      const char *buf, size_t count)
+{
+	struct dasd_devmap *devmap;
+	int val;
+	char *endp;
+
+	devmap = dasd_devmap_from_cdev(to_ccwdev(dev));
+	if (IS_ERR(devmap))
+		return PTR_ERR(devmap);
+
+	val = simple_strtoul(buf, &endp, 0);
+	if (((endp + 1) < (buf + count)) || (val > 1))
+		return -EINVAL;
+
+	spin_lock(&dasd_devmap_lock);
+	if (val)
+		devmap->features |= DASD_FEATURE_ERPLOG;
+	else
+		devmap->features &= ~DASD_FEATURE_ERPLOG;
+	if (devmap->device)
+		devmap->device->features = devmap->features;
+	spin_unlock(&dasd_devmap_lock);
+	return count;
+}
+
+static DEVICE_ATTR(erplog, 0644, dasd_erplog_show, dasd_erplog_store);
+
+/*
  * use_diag controls whether the driver should use diag rather than ssch
  * to talk to the device
  */
@@ -743,6 +792,46 @@ dasd_discipline_show(struct device *dev, struct device_attribute *attr,
 }
 
 static DEVICE_ATTR(discipline, 0444, dasd_discipline_show, NULL);
+
+static ssize_t
+dasd_device_status_show(struct device *dev, struct device_attribute *attr,
+		     char *buf)
+{
+	struct dasd_device *device;
+	ssize_t len;
+
+	device = dasd_device_from_cdev(to_ccwdev(dev));
+	if (!IS_ERR(device)) {
+		switch (device->state) {
+		case DASD_STATE_NEW:
+			len = snprintf(buf, PAGE_SIZE, "new\n");
+			break;
+		case DASD_STATE_KNOWN:
+			len = snprintf(buf, PAGE_SIZE, "detected\n");
+			break;
+		case DASD_STATE_BASIC:
+			len = snprintf(buf, PAGE_SIZE, "basic\n");
+			break;
+		case DASD_STATE_UNFMT:
+			len = snprintf(buf, PAGE_SIZE, "unformatted\n");
+			break;
+		case DASD_STATE_READY:
+			len = snprintf(buf, PAGE_SIZE, "ready\n");
+			break;
+		case DASD_STATE_ONLINE:
+			len = snprintf(buf, PAGE_SIZE, "online\n");
+			break;
+		default:
+			len = snprintf(buf, PAGE_SIZE, "no stat\n");
+			break;
+		}
+		dasd_put_device(device);
+	} else
+		len = snprintf(buf, PAGE_SIZE, "unknown\n");
+	return len;
+}
+
+static DEVICE_ATTR(status, 0444, dasd_device_status_show, NULL);
 
 static ssize_t
 dasd_alias_show(struct device *dev, struct device_attribute *attr, char *buf)
@@ -849,11 +938,13 @@ static DEVICE_ATTR(eer_enabled, 0644, dasd_eer_show, dasd_eer_store);
 static struct attribute * dasd_attrs[] = {
 	&dev_attr_readonly.attr,
 	&dev_attr_discipline.attr,
+	&dev_attr_status.attr,
 	&dev_attr_alias.attr,
 	&dev_attr_vendor.attr,
 	&dev_attr_uid.attr,
 	&dev_attr_use_diag.attr,
 	&dev_attr_eer_enabled.attr,
+	&dev_attr_erplog.attr,
 	NULL,
 };
 

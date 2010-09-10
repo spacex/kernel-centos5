@@ -24,6 +24,7 @@
 #include <asm/machdep.h>
 #include <asm/cputable.h>
 #include <asm/tlb.h>
+#include <asm/spu.h>
 
 #include <linux/sysctl.h>
 
@@ -144,6 +145,11 @@ pte_t *huge_pte_alloc(struct mm_struct *mm, unsigned long addr)
 		return NULL;
 
 	return hugepte_offset(hpdp, addr);
+}
+
+int huge_pmd_unshare(struct mm_struct *mm, unsigned long *addr, pte_t *ptep)
+{
+	return 0;
 }
 
 static void free_hugepte_range(struct mmu_gather *tlb, hugepd_t *hpdp)
@@ -507,6 +513,9 @@ int prepare_hugepage_range(unsigned long addr, unsigned long len)
 	if ((addr + len) > 0x100000000UL)
 		err = open_high_hpage_areas(current->mm,
 					    HTLB_AREA_MASK(addr, len));
+#ifdef CONFIG_SPU_BASE
+	spu_flush_all_slbs(current->mm);
+#endif
 	if (err) {
 		printk(KERN_DEBUG "prepare_hugepage_range(%lx, %lx)"
 		       " failed (lowmask: 0x%04hx, highmask: 0x%04hx)\n",
@@ -738,7 +747,8 @@ static int htlb_check_hinted_area(unsigned long addr, unsigned long len)
 	struct vm_area_struct *vma;
 
 	vma = find_vma(current->mm, addr);
-	if (!vma || ((addr + len) <= vma->vm_start))
+	if ((TASK_SIZE - len >= addr) && 
+		(!vma || ((addr + len) <= vma->vm_start)))
 		return 0;
 
 	return -ENOMEM;
@@ -809,6 +819,8 @@ unsigned long hugetlb_get_unmapped_area(struct file *file, unsigned long addr,
 		return -EINVAL;
 	if (len & ~HPAGE_MASK)
 		return -EINVAL;
+	if (len > TASK_SIZE)
+		return -ENOMEM;
 
 	if (!cpu_has_feature(CPU_FTR_16M_PAGE))
 		return -EINVAL;
@@ -817,9 +829,6 @@ unsigned long hugetlb_get_unmapped_area(struct file *file, unsigned long addr,
 	BUG_ON((addr + len)  < addr);
 
 	if (test_thread_flag(TIF_32BIT)) {
-		/* Paranoia, caller should have dealt with this */
-		BUG_ON((addr + len) > 0x100000000UL);
-
 		curareas = current->mm->context.low_htlb_areas;
 
 		/* First see if we can use the hint address */

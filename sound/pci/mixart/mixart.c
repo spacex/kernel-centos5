@@ -472,7 +472,7 @@ static int snd_mixart_prepare(struct snd_pcm_substream *subs)
 	struct snd_mixart *chip = snd_pcm_substream_chip(subs);
 	struct mixart_stream *stream = subs->runtime->private_data;
 
-	/* TODO de façon non bloquante, réappliquer les hw_params (rate, bits, codec) */
+	/* TODO de faÃ§on non bloquante, rÃ©appliquer les hw_params (rate, bits, codec) */
 
 	snd_printdd("snd_mixart_prepare\n");
 
@@ -1066,7 +1066,7 @@ static int snd_mixart_free(struct mixart_mgr *mgr)
 
 	/* release irq  */
 	if (mgr->irq >= 0)
-		free_irq(mgr->irq, (void *)mgr);
+		free_irq(mgr->irq, mgr);
 
 	/* reset board if some firmware was loaded */
 	if(mgr->dsp_loaded) {
@@ -1109,13 +1109,13 @@ static long long snd_mixart_BA0_llseek(struct snd_info_entry *entry,
 	offset = offset & ~3; /* 4 bytes aligned */
 
 	switch(orig) {
-	case 0:  /* SEEK_SET */
+	case SEEK_SET:
 		file->f_pos = offset;
 		break;
-	case 1:  /* SEEK_CUR */
+	case SEEK_CUR:
 		file->f_pos += offset;
 		break;
-	case 2:  /* SEEK_END, offset is negative */
+	case SEEK_END: /* offset is negative */
 		file->f_pos = MIXART_BA0_SIZE + offset;
 		break;
 	default:
@@ -1135,13 +1135,13 @@ static long long snd_mixart_BA1_llseek(struct snd_info_entry *entry,
 	offset = offset & ~3; /* 4 bytes aligned */
 
 	switch(orig) {
-	case 0:  /* SEEK_SET */
+	case SEEK_SET:
 		file->f_pos = offset;
 		break;
-	case 1:  /* SEEK_CUR */
+	case SEEK_CUR:
 		file->f_pos += offset;
 		break;
-	case 2: /* SEEK_END, offset is negative */
+	case SEEK_END: /* offset is negative */
 		file->f_pos = MIXART_BA1_SIZE + offset;
 		break;
 	default:

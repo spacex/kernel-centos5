@@ -35,125 +35,6 @@
 
 static kmem_cache_t *sigqueue_cachep;
 
-/*
- * In POSIX a signal is sent either to a specific thread (Linux task)
- * or to the process as a whole (Linux thread group).  How the signal
- * is sent determines whether it's to one thread or the whole group,
- * which determines which signal mask(s) are involved in blocking it
- * from being delivered until later.  When the signal is delivered,
- * either it's caught or ignored by a user handler or it has a default
- * effect that applies to the whole thread group (POSIX process).
- *
- * The possible effects an unblocked signal set to SIG_DFL can have are:
- *   ignore	- Nothing Happens
- *   terminate	- kill the process, i.e. all threads in the group,
- * 		  similar to exit_group.  The group leader (only) reports
- *		  WIFSIGNALED status to its parent.
- *   coredump	- write a core dump file describing all threads using
- *		  the same mm and then kill all those threads
- *   stop 	- stop all the threads in the group, i.e. TASK_STOPPED state
- *
- * SIGKILL and SIGSTOP cannot be caught, blocked, or ignored.
- * Other signals when not blocked and set to SIG_DFL behaves as follows.
- * The job control signals also have other special effects.
- *
- *	+--------------------+------------------+
- *	|  POSIX signal      |  default action  |
- *	+--------------------+------------------+
- *	|  SIGHUP            |  terminate	|
- *	|  SIGINT            |	terminate	|
- *	|  SIGQUIT           |	coredump 	|
- *	|  SIGILL            |	coredump 	|
- *	|  SIGTRAP           |	coredump 	|
- *	|  SIGABRT/SIGIOT    |	coredump 	|
- *	|  SIGBUS            |	coredump 	|
- *	|  SIGFPE            |	coredump 	|
- *	|  SIGKILL           |	terminate(+)	|
- *	|  SIGUSR1           |	terminate	|
- *	|  SIGSEGV           |	coredump 	|
- *	|  SIGUSR2           |	terminate	|
- *	|  SIGPIPE           |	terminate	|
- *	|  SIGALRM           |	terminate	|
- *	|  SIGTERM           |	terminate	|
- *	|  SIGCHLD           |	ignore   	|
- *	|  SIGCONT           |	ignore(*)	|
- *	|  SIGSTOP           |	stop(*)(+)  	|
- *	|  SIGTSTP           |	stop(*)  	|
- *	|  SIGTTIN           |	stop(*)  	|
- *	|  SIGTTOU           |	stop(*)  	|
- *	|  SIGURG            |	ignore   	|
- *	|  SIGXCPU           |	coredump 	|
- *	|  SIGXFSZ           |	coredump 	|
- *	|  SIGVTALRM         |	terminate	|
- *	|  SIGPROF           |	terminate	|
- *	|  SIGPOLL/SIGIO     |	terminate	|
- *	|  SIGSYS/SIGUNUSED  |	coredump 	|
- *	|  SIGSTKFLT         |	terminate	|
- *	|  SIGWINCH          |	ignore   	|
- *	|  SIGPWR            |	terminate	|
- *	|  SIGRTMIN-SIGRTMAX |	terminate       |
- *	+--------------------+------------------+
- *	|  non-POSIX signal  |  default action  |
- *	+--------------------+------------------+
- *	|  SIGEMT            |  coredump	|
- *	+--------------------+------------------+
- *
- * (+) For SIGKILL and SIGSTOP the action is "always", not just "default".
- * (*) Special job control effects:
- * When SIGCONT is sent, it resumes the process (all threads in the group)
- * from TASK_STOPPED state and also clears any pending/queued stop signals
- * (any of those marked with "stop(*)").  This happens regardless of blocking,
- * catching, or ignoring SIGCONT.  When any stop signal is sent, it clears
- * any pending/queued SIGCONT signals; this happens regardless of blocking,
- * catching, or ignored the stop signal, though (except for SIGSTOP) the
- * default action of stopping the process may happen later or never.
- */
-
-#ifdef SIGEMT
-#define M_SIGEMT	M(SIGEMT)
-#else
-#define M_SIGEMT	0
-#endif
-
-#if SIGRTMIN > BITS_PER_LONG
-#define M(sig) (1ULL << ((sig)-1))
-#else
-#define M(sig) (1UL << ((sig)-1))
-#endif
-#define T(sig, mask) (M(sig) & (mask))
-
-#define SIG_KERNEL_ONLY_MASK (\
-	M(SIGKILL)   |  M(SIGSTOP)                                   )
-
-#define SIG_KERNEL_STOP_MASK (\
-	M(SIGSTOP)   |  M(SIGTSTP)   |  M(SIGTTIN)   |  M(SIGTTOU)   )
-
-#define SIG_KERNEL_COREDUMP_MASK (\
-        M(SIGQUIT)   |  M(SIGILL)    |  M(SIGTRAP)   |  M(SIGABRT)   | \
-        M(SIGFPE)    |  M(SIGSEGV)   |  M(SIGBUS)    |  M(SIGSYS)    | \
-        M(SIGXCPU)   |  M(SIGXFSZ)   |  M_SIGEMT                     )
-
-#define SIG_KERNEL_IGNORE_MASK (\
-        M(SIGCONT)   |  M(SIGCHLD)   |  M(SIGWINCH)  |  M(SIGURG)    )
-
-#define sig_kernel_only(sig) \
-		(((sig) < SIGRTMIN)  && T(sig, SIG_KERNEL_ONLY_MASK))
-#define sig_kernel_coredump(sig) \
-		(((sig) < SIGRTMIN)  && T(sig, SIG_KERNEL_COREDUMP_MASK))
-#define sig_kernel_ignore(sig) \
-		(((sig) < SIGRTMIN)  && T(sig, SIG_KERNEL_IGNORE_MASK))
-#define sig_kernel_stop(sig) \
-		(((sig) < SIGRTMIN)  && T(sig, SIG_KERNEL_STOP_MASK))
-
-#define sig_needs_tasklist(sig)	((sig) == SIGCONT)
-
-#define sig_user_defined(t, signr) \
-	(((t)->sighand->action[(signr)-1].sa.sa_handler != SIG_DFL) &&	\
-	 ((t)->sighand->action[(signr)-1].sa.sa_handler != SIG_IGN))
-
-#define sig_fatal(t, signr) \
-	(!T(signr, SIG_KERNEL_IGNORE_MASK|SIG_KERNEL_STOP_MASK) && \
-	 (t)->sighand->action[(signr)-1].sa.sa_handler == SIG_DFL)
 
 static int sig_ignored(struct task_struct *t, int sig)
 {
@@ -209,16 +90,28 @@ static inline int has_pending_signals(sigset_t *signal, sigset_t *blocked)
 
 #define PENDING(p,b) has_pending_signals(&(p)->signal, (b))
 
-fastcall void recalc_sigpending_tsk(struct task_struct *t)
+static int recalc_sigpending_tsk(struct task_struct *t)
 {
 	if (t->signal->group_stop_count > 0 ||
 	    (freezing(t)) ||
 	    PENDING(&t->pending, &t->blocked) ||
 	    PENDING(&t->signal->shared_pending, &t->blocked) ||
-	    tracehook_induce_sigpending(t))
+	    tracehook_induce_sigpending(t)) {
 		set_tsk_thread_flag(t, TIF_SIGPENDING);
-	else
-		clear_tsk_thread_flag(t, TIF_SIGPENDING);
+		return 1;
+	}
+	clear_tsk_thread_flag(t, TIF_SIGPENDING);
+	return 0;
+}
+
+/*
+ * After recalculating TIF_SIGPENDING, we need to make sure the task wakes up.
+ * This is superfluous when called on current, the wakeup is a harmless no-op.
+ */
+void recalc_sigpending_and_wake(struct task_struct *t)
+{
+	if (recalc_sigpending_tsk(t))
+		signal_wake_up(t, 0);
 }
 
 void recalc_sigpending(void)
@@ -574,6 +467,11 @@ static int check_kill_permission(int sig, struct siginfo *info,
 	int error = -EINVAL;
 	if (!valid_signal(sig))
 		return error;
+
+	error = audit_signal_info(sig, t); /* Let audit system see the signal */
+	if (error)
+		return error;
+
 	error = -EPERM;
 	if ((info == SEND_SIG_NOINFO || (!is_si_special(info) && SI_FROMUSER(info)))
 	    && ((sig != SIGCONT) ||
@@ -583,10 +481,7 @@ static int check_kill_permission(int sig, struct siginfo *info,
 	    && !capable(CAP_KILL))
 		return error;
 
-	error = security_task_kill(t, info, sig, 0);
-	if (!error)
-		audit_signal_info(sig, t); /* Let audit system see the signal */
-	return error;
+	return security_task_kill(t, info, sig, 0);
 }
 
 
@@ -842,7 +737,7 @@ force_sig_info(int sig, struct siginfo *info, struct task_struct *t)
 		action->sa.sa_handler = SIG_DFL;
 		if (blocked) {
 			sigdelset(&t->blocked, sig);
-			recalc_sigpending_tsk(t);
+			recalc_sigpending_and_wake(t);
 		}
 	}
 	ret = specific_send_sig_info(sig, info, t);
@@ -2229,7 +2124,7 @@ int do_sigaction(int sig, struct k_sigaction *act, struct k_sigaction *oact)
 			rm_from_queue_full(&mask, &t->signal->shared_pending);
 			do {
 				rm_from_queue_full(&mask, &t->pending);
-				recalc_sigpending_tsk(t);
+				recalc_sigpending_and_wake(t);
 				t = next_thread(t);
 			} while (t != current);
 		}

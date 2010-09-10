@@ -89,6 +89,8 @@ int bootloader_type;
 
 unsigned long saved_video_mode;
 
+int force_mwait __initdata;
+
 /* 
  * Early DMI memory
  */
@@ -416,9 +418,6 @@ static __init void parse_cmdline_early (char ** cmdline_p)
 			size = memparse(from+12, &from);
 			if (*from == '@') {
 				base = memparse(from+1, &from);
-				/* FIXME: Do I want a sanity check
-				 * to validate the memory range?
-				 */
 				crashk_res.start = base;
 				crashk_res.end   = base + size - 1;
 			}
@@ -643,9 +642,17 @@ void __init setup_arch(char **cmdline_p)
 	}
 #endif
 #ifdef CONFIG_KEXEC
-	if (crashk_res.start != crashk_res.end) {
+	if ((crashk_res.start < crashk_res.end) &&
+	    (crashk_res.end <= (end_pfn << PAGE_SHIFT))) {
 		reserve_bootmem_generic(crashk_res.start,
-			crashk_res.end - crashk_res.start + 1);
+					crashk_res.end - crashk_res.start + 1);
+	}
+	else {
+		printk(KERN_ERR "Memory for crash kernel (0x%lx to 0x%lx) not"
+		       "within permissible range\ndisabling kdump\n",
+		       crashk_res.start, crashk_res.end);
+		crashk_res.end = 0;
+		crashk_res.start = 0;
 	}
 #endif
 
@@ -887,8 +894,15 @@ static void __init init_amd(struct cpuinfo_x86 *c)
 	if (c->extended_cpuid_level >= 0x80000008)
 		amd_detect_cmp(c);
 
-	/* Fix cpuid4 emulation for more */
-	num_cache_leaves = 3;
+	if (c->extended_cpuid_level >= 0x80000006 &&
+		(cpuid_edx(0x80000006) & 0xf000))
+		num_cache_leaves = 4;
+	else
+		num_cache_leaves = 3;
+
+	/* Family 10 doesn't support C states in MWAIT so don't use it */
+	if (c->x86 == 0x10 && !force_mwait)
+		clear_bit(X86_FEATURE_MWAIT, &c->x86_capability);
 }
 
 static void __cpuinit detect_ht(struct cpuinfo_x86 *c)
@@ -1076,6 +1090,7 @@ void __cpuinit early_identify_cpu(struct cpuinfo_x86 *c)
 			c->x86_model += ((tfms >> 16) & 0xF) << 4;
 		if (c->x86_capability[0] & (1<<19)) 
 			c->x86_clflush_size = ((misc >> 8) & 0xff) * 8;
+		c->extended_cpuid_level = cpuid_eax(0x80000000);
 	} else {
 		/* Have CPUID level 0 only - unheard of */
 		c->x86 = 4;
@@ -1084,6 +1099,12 @@ void __cpuinit early_identify_cpu(struct cpuinfo_x86 *c)
 #ifdef CONFIG_SMP
 	c->phys_proc_id = (cpuid_ebx(1) >> 24) & 0xff;
 #endif
+
+	/* power flags are 8000_0007 edx. Bit 8 is constant TSC */
+	if ((c->x86_vendor == X86_VENDOR_AMD) &&
+	    (c->extended_cpuid_level >= 0x80000007) &&
+	    (cpuid_edx(0x80000007) & (1<<8)))
+		set_bit(X86_FEATURE_CONSTANT_TSC, &c->x86_capability);
 }
 
 /*
@@ -1209,7 +1230,8 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL, "syscall", NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL, NULL, "nx", NULL, "mmxext", NULL,
-		NULL, "fxsr_opt", NULL, "rdtscp", NULL, "lm", "3dnowext", "3dnow",
+		NULL, "fxsr_opt", "pdpe1gb", "rdtscp", NULL, "lm", 
+		"3dnowext", "3dnow",
 
 		/* Transmeta-defined */
 		"recovery", "longrun", NULL, "lrti", NULL, NULL, NULL, NULL,
@@ -1227,7 +1249,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		/* Intel-defined (#2) */
 		"pni", NULL, NULL, "monitor", "ds_cpl", "vmx", "smx", "est",
 		"tm2", NULL, "cid", NULL, NULL, "cx16", "xtpr", NULL,
-		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+		NULL, NULL, NULL, NULL, NULL, NULL, NULL, "popcnt",
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 
 		/* VIA/Cyrix/Centaur-defined */
@@ -1237,8 +1259,9 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 
 		/* AMD-defined (#2) */
-		"lahf_lm", "cmp_legacy", "svm", NULL, "cr8_legacy", NULL, NULL, NULL,
-		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+		"lahf_lm", "cmp_legacy", "svm", "extapic", "cr8_legacy",
+		"altmovcr8", "abm", "sse4a",
+		"misalignsse", "3dnowprefetch", "osvw", "ibs", NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 	};
@@ -1249,6 +1272,9 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		"ttp",  /* thermal trip */
 		"tm",
 		"stc",
+		"100mhzsteps",
+		"hwpstate",
+		NULL,   /* tsc invariant mapped to constant_tsc */
 		NULL,
 		/* nothing */	/* constant_tsc - moved to flags */
 	};

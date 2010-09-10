@@ -366,3 +366,22 @@ void __init time_init(void)
 
 	time_init_hook();
 }
+
+#ifdef CONFIG_TICK_DIVIDER
+
+unsigned int tick_divider = 1;
+
+static int __init divider_setup(char *s)
+{
+	unsigned int divider = 1;
+	get_option(&s, &divider);
+	if (divider >= 1 && HZ/divider >= 25)
+		tick_divider = divider;
+	else
+		printk(KERN_ERR "tick_divider: %d is out of range.\n", divider);
+	return 1;
+}
+
+__setup("divider=", divider_setup);
+
+#endif

@@ -100,10 +100,16 @@ static void set_msi_affinity(unsigned int vector, cpumask_t cpu_mask)
 	u32 address_hi, address_lo;
 	unsigned int irq = vector;
 	unsigned int dest_cpu = first_cpu(cpu_mask);
+	unsigned long flags;
+
+	spin_lock_irqsave(&msi_lock, flags);
 
 	entry = (struct msi_desc *)msi_desc[vector];
 	if (!entry || !entry->dev)
-		return;
+		goto out_unlock;
+
+	if (entry->msi_attrib.state == 0)
+		goto out_unlock;
 
 	switch (entry->msi_attrib.type) {
 	case PCI_CAP_ID_MSI:
@@ -111,7 +117,7 @@ static void set_msi_affinity(unsigned int vector, cpumask_t cpu_mask)
 		int pos = pci_find_capability(entry->dev, PCI_CAP_ID_MSI);
 
 		if (!pos)
-			return;
+			goto out_unlock;
 
 		pci_read_config_dword(entry->dev, msi_upper_address_reg(pos),
 			&address_hi);
@@ -149,6 +155,9 @@ static void set_msi_affinity(unsigned int vector, cpumask_t cpu_mask)
 	default:
 		break;
 	}
+
+out_unlock:
+	spin_unlock_irqrestore(&msi_lock, flags);
 }
 #else
 #define set_msi_affinity NULL
@@ -350,13 +359,6 @@ static int msi_init(void)
 
 	if (!status)
 		return status;
-
-	if (pci_msi_quirk) {
-		pci_msi_enable = 0;
-		printk(KERN_WARNING "PCI: MSI quirk detected. MSI disabled.\n");
-		status = -EINVAL;
-		return status;
-	}
 
 	status = msi_arch_init();
 	if (status < 0) {

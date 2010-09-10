@@ -107,6 +107,10 @@ zfcp_address_to_sg(void *address, struct scatterlist *list)
 	(ZFCP_MAX_SBALS_PER_REQ * ZFCP_MAX_SBALES_PER_SBAL - 2)
         /* request ID + QTCB in SBALE 0 + 1 of first SBAL in chain */
 
+#define ZFCP_MAX_SECTORS (ZFCP_MAX_SBALES_PER_REQ * 8)
+        /* max. number of (data buffer) SBALEs in largest SBAL chain
+           multiplied with number of sectors per 4k block */
+
 /* FIXME(tune): free space should be one max. SBAL chain plus what? */
 #define ZFCP_QDIO_PCI_INTERVAL		(QDIO_MAX_BUFFERS_PER_Q \
                                          - (ZFCP_MAX_SBALS_PER_REQ + 4))
@@ -137,7 +141,7 @@ zfcp_address_to_sg(void *address, struct scatterlist *list)
 #define ZFCP_EXCHANGE_CONFIG_DATA_RETRIES	7
 
 /* timeout value for "default timer" for fsf requests */
-#define ZFCP_FSF_REQUEST_TIMEOUT (60*HZ);
+#define ZFCP_FSF_REQUEST_TIMEOUT (60*HZ)
 
 /*************** FIBRE CHANNEL PROTOCOL SPECIFIC DEFINES ********************/
 
@@ -633,6 +637,7 @@ do { \
 #define ZFCP_STATUS_UNIT_SHARED			0x00000004
 #define ZFCP_STATUS_UNIT_READONLY		0x00000008
 #define ZFCP_STATUS_UNIT_REGISTERED		0x00000010
+#define ZFCP_STATUS_UNIT_SCSI_WORK_PENDING	0x00000020
 
 /* FSF request status (this does not have a common part) */
 #define ZFCP_STATUS_FSFREQ_NOT_INIT		0x00000000
@@ -779,7 +784,6 @@ typedef void (*zfcp_send_ct_handler_t)(unsigned long);
  * @handler_data: data passed to handler function
  * @pool: pointer to memory pool for ct request structure
  * @timeout: FSF timeout for this request
- * @timer: timer (e.g. for request initiated by erp)
  * @completion: completion for synchronization purposes
  * @status: used to pass error status to calling function
  */
@@ -793,7 +797,6 @@ struct zfcp_send_ct {
 	unsigned long handler_data;
 	mempool_t *pool;
 	int timeout;
-	struct timer_list *timer;
 	struct completion *completion;
 	int status;
 };
@@ -821,7 +824,6 @@ typedef void (*zfcp_send_els_handler_t)(unsigned long);
  * @resp_count: number of elements in response scatter-gather list
  * @handler: handler function (called for response to the request)
  * @handler_data: data passed to handler function
- * @timer: timer (e.g. for request initiated by erp)
  * @completion: completion for synchronization purposes
  * @ls_code: hex code of ELS command
  * @status: used to pass error status to calling function
@@ -836,7 +838,6 @@ struct zfcp_send_els {
 	unsigned int resp_count;
 	zfcp_send_els_handler_t handler;
 	unsigned long handler_data;
-	struct timer_list *timer;
 	struct completion *completion;
 	int ls_code;
 	int status;
@@ -886,7 +887,6 @@ struct zfcp_adapter {
 	struct list_head        port_remove_lh;    /* head of ports to be
 						      removed */
 	u32			ports;	           /* number of remote ports */
-	struct timer_list	scsi_er_timer;     /* SCSI err recovery watch */
 	atomic_t		reqs_active;	   /* # active FSF reqs */
 	unsigned long		req_no;		   /* unique FSF req number */
 	struct list_head	*req_list;	   /* list of pending reqs */
@@ -981,6 +981,10 @@ struct zfcp_unit {
         struct scsi_device     *device;        /* scsi device struct pointer */
 	struct zfcp_erp_action erp_action;     /* pending error recovery */
         atomic_t               erp_counter;
+	wait_queue_head_t      scsi_scan_wq;   /* can be used to wait until
+						  all scsi_scan_target
+						  requests have been
+						  completed */
 };
 
 /* FSF request */
@@ -1003,6 +1007,7 @@ struct zfcp_fsf_req {
 	struct fsf_qtcb	       *qtcb;	       /* address of associated QTCB */
 	u32		       seq_no;         /* Sequence number of request */
         unsigned long          data;           /* private data of request */ 
+	struct timer_list      timer;	       /* used for erp or scsi er */
 	struct zfcp_erp_action *erp_action;    /* used if this request is
 						  issued on behalf of erp */
 	mempool_t	       *pool;	       /* used if request was alloacted

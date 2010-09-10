@@ -22,6 +22,7 @@
 #include <linux/signal.h>
 #include <linux/module.h>
 
+#include <asm/tracehook.h>
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
 #include <asm/system.h>
@@ -234,53 +235,61 @@ static int putreg(struct task_struct *child,
 	unsigned long tmp; 
 	
 	switch (regno) {
-		case offsetof(struct user_regs_struct,fs):
-			if (value && (value & 3) != 3)
-				return -EIO;
-			child->thread.fsindex = value & 0xffff; 
-			return 0;
-		case offsetof(struct user_regs_struct,gs):
-			if (value && (value & 3) != 3)
-				return -EIO;
-			child->thread.gsindex = value & 0xffff;
-			return 0;
-		case offsetof(struct user_regs_struct,ds):
-			if (value && (value & 3) != 3)
-				return -EIO;
-			child->thread.ds = value & 0xffff;
-			return 0;
-		case offsetof(struct user_regs_struct,es): 
-			if (value && (value & 3) != 3)
-				return -EIO;
-			child->thread.es = value & 0xffff;
-			return 0;
-		case offsetof(struct user_regs_struct,ss):
-			if ((value & 3) != 3)
-				return -EIO;
-			value &= 0xffff;
-			return 0;
-		case offsetof(struct user_regs_struct,fs_base):
-			if (value >= TASK_SIZE_OF(child))
-				return -EIO;
-			child->thread.fs = value;
-			return 0;
-		case offsetof(struct user_regs_struct,gs_base):
-			if (value >= TASK_SIZE_OF(child))
-				return -EIO;
-			child->thread.gs = value;
-			return 0;
-		case offsetof(struct user_regs_struct, eflags):
-			value &= FLAG_MASK;
-			tmp = get_stack_long(child, EFL_OFFSET); 
-			tmp &= ~FLAG_MASK; 
-			value |= tmp;
-			clear_tsk_thread_flag(child, TIF_FORCED_TF);
-			break;
-		case offsetof(struct user_regs_struct,cs): 
-			if ((value & 3) != 3)
-				return -EIO;
-			value &= 0xffff;
-			break;
+	case offsetof(struct user_regs_struct,fs):
+		if (value && (value & 3) != 3)
+			return -EIO;
+		child->thread.fsindex = value &= 0xffff;
+		if (child == current)
+			loadsegment(fs, value);
+		return 0;
+	case offsetof(struct user_regs_struct,gs):
+		if (value && (value & 3) != 3)
+			return -EIO;
+		child->thread.gsindex = value &= 0xffff;
+		if (child == current)
+			loadsegment(gs, value);
+		return 0;
+	case offsetof(struct user_regs_struct,ds):
+		if (value && (value & 3) != 3)
+			return -EIO;
+		child->thread.ds = value &= 0xffff;
+		if (child == current)
+			loadsegment(ds, value);
+		return 0;
+	case offsetof(struct user_regs_struct,es):
+		if (value && (value & 3) != 3)
+			return -EIO;
+		child->thread.es = value &= 0xffff;
+		if (child == current)
+			loadsegment(es, value);
+		return 0;
+	case offsetof(struct user_regs_struct,ss):
+		if ((value & 3) != 3)
+			return -EIO;
+		value &= 0xffff;
+		return 0;
+	case offsetof(struct user_regs_struct,fs_base):
+		if (value >= TASK_SIZE_OF(child))
+			return -EIO;
+		child->thread.fs = value;
+		return 0;
+	case offsetof(struct user_regs_struct,gs_base):
+		if (value >= TASK_SIZE_OF(child))
+			return -EIO;
+		child->thread.gs = value;
+		return 0;
+	case offsetof(struct user_regs_struct, eflags):
+		value &= FLAG_MASK;
+		tmp = get_stack_long(child, EFL_OFFSET);
+		tmp &= ~FLAG_MASK;
+		value |= tmp;
+		clear_tsk_thread_flag(child, TIF_FORCED_TF);
+		break;
+	case offsetof(struct user_regs_struct,cs):
+		if ((value & 3) != 3)
+			return -EIO;
+		value &= 0xffff;
+		break;
 	}
 	put_stack_long(child, regno - sizeof(struct pt_regs), value);
 	return 0;
@@ -289,29 +298,47 @@ static int putreg(struct task_struct *child,
 static unsigned long getreg(struct task_struct *child, unsigned long regno)
 {
 	unsigned long val;
+	unsigned int seg;
 	switch (regno) {
-		case offsetof(struct user_regs_struct, fs):
-			return child->thread.fsindex;
-		case offsetof(struct user_regs_struct, gs):
-			return child->thread.gsindex;
-		case offsetof(struct user_regs_struct, ds):
-			return child->thread.ds;
-		case offsetof(struct user_regs_struct, es):
-			return child->thread.es; 
-		case offsetof(struct user_regs_struct, fs_base):
-			return child->thread.fs;
-		case offsetof(struct user_regs_struct, gs_base):
-			return child->thread.gs;
-		default:
-			regno = regno - sizeof(struct pt_regs);
-			val = get_stack_long(child, regno);
-			if (test_tsk_thread_flag(child, TIF_IA32))
-				val &= 0xffffffff;
-			if (regno == (offsetof(struct user_regs_struct, eflags)
-				      - sizeof(struct pt_regs))
-			    && test_tsk_thread_flag(child, TIF_FORCED_TF))
-				val &= ~X86_EFLAGS_TF;
-			return val;
+	case offsetof(struct user_regs_struct, fs):
+		if (child == current) {
+			/* Older gas can't assemble movq %?s,%r?? */
+			asm("movl %%fs,%0" : "=r" (seg));
+			return seg;
+		}
+		return child->thread.fsindex;
+	case offsetof(struct user_regs_struct, gs):
+		if (child == current) {
+			asm("movl %%gs,%0" : "=r" (seg));
+			return seg;
+		}
+		return child->thread.gsindex;
+	case offsetof(struct user_regs_struct, ds):
+		if (child == current) {
+			asm("movl %%ds,%0" : "=r" (seg));
+			return seg;
+		}
+		return child->thread.ds;
+	case offsetof(struct user_regs_struct, es):
+		if (child == current) {
+			asm("movl %%es,%0" : "=r" (seg));
+			return seg;
+		}
+		return child->thread.es;
+	case offsetof(struct user_regs_struct, fs_base):
+		return child->thread.fs;
+	case offsetof(struct user_regs_struct, gs_base):
+		return child->thread.gs;
+	default:
+		regno = regno - sizeof(struct pt_regs);
+		val = get_stack_long(child, regno);
+		if (test_tsk_thread_flag(child, TIF_IA32))
+			val &= 0xffffffff;
+		if (regno == (offsetof(struct user_regs_struct, eflags)
+			      - sizeof(struct pt_regs))
+		    && test_tsk_thread_flag(child, TIF_FORCED_TF))
+			val &= ~X86_EFLAGS_TF;
+		return val;
 	}
 
 }
@@ -428,6 +455,7 @@ dbregs_set(struct task_struct *target,
 	   unsigned int pos, unsigned int count,
 	   const void *kbuf, const void __user *ubuf)
 {
+
 	unsigned long maxaddr = TASK_SIZE_OF(target);
 	maxaddr -= test_tsk_thread_flag(target, TIF_IA32) ? 3 : 7;
 
@@ -673,25 +701,32 @@ static const struct utrace_regset native_regsets[] = {
 
 const struct utrace_regset_view utrace_x86_64_native = {
 	.name = "x86-64", .e_machine = EM_X86_64,
-	.regsets = native_regsets,
-	.n = sizeof native_regsets / sizeof native_regsets[0],
+	.regsets = native_regsets, .n = ARRAY_SIZE(native_regsets)
 };
-EXPORT_SYMBOL_GPL(utrace_x86_64_native);
+
+const struct utrace_regset_view *utrace_native_view(struct task_struct *tsk)
+{
+#ifdef CONFIG_IA32_EMULATION
+	if (test_tsk_thread_flag(tsk, TIF_IA32))
+		return &utrace_ia32_view;
+#endif
+	return &utrace_x86_64_native;
+}
 
 
 #ifdef CONFIG_PTRACE
 static const struct ptrace_layout_segment x86_64_uarea[] = {
 	{0, sizeof(struct user_regs_struct), 0, 0},
+	{sizeof(struct user_regs_struct),
+	 offsetof(struct user, u_debugreg[0]), -1, 0},
 	{offsetof(struct user, u_debugreg[0]),
-	 offsetof(struct user, u_debugreg[4]), 3, 0},
-	{offsetof(struct user, u_debugreg[6]),
-	 offsetof(struct user, u_debugreg[8]), 3, 6 * sizeof(long)},
+	 offsetof(struct user, u_debugreg[8]), 3, 0},
 	{0, 0, -1, 0}
 };
 
-fastcall int arch_ptrace(long *req, struct task_struct *child,
-			 struct utrace_attached_engine *engine,
-			 unsigned long addr, unsigned long data, long *val)
+int arch_ptrace(long *req, struct task_struct *child,
+		struct utrace_attached_engine *engine,
+		unsigned long addr, unsigned long data, long *val)
 {
 	switch (*req) {
 	case PTRACE_PEEKUSR:

@@ -1486,6 +1486,9 @@ int fcntl_setlease(unsigned int fd, struct file *filp, long arg)
 	struct inode *inode = dentry->d_inode;
 	int error;
 
+	if (IS_NO_LEASES(inode))
+		return -EINVAL;
+
 	if ((current->fsuid != inode->i_uid) && !capable(CAP_LEASE))
 		return -EACCES;
 	if (!S_ISREG(inode->i_mode))

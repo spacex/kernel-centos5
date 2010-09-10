@@ -54,6 +54,8 @@ static inline struct ipath_fmr *to_ifmr(struct ib_fmr *ibfmr)
  * @acc: access flags
  *
  * Returns the memory region on success, otherwise returns an errno.
+ * Note that all DMA addresses should be created via the
+ * struct ib_dma_mapping_ops functions (see ipath_dma.c).
  */
 struct ib_mr *ipath_get_dma_mr(struct ib_pd *pd, int acc)
 {
@@ -138,6 +140,7 @@ struct ib_mr *ipath_reg_phys_mr(struct ib_pd *pd,
 		goto bail;
 	}
 
+	mr->mr.pd = pd;
 	mr->mr.user_base = *iova_start;
 	mr->mr.iova = *iova_start;
 	mr->mr.length = 0;
@@ -148,8 +151,7 @@ struct ib_mr *ipath_reg_phys_mr(struct ib_pd *pd,
 	m = 0;
 	n = 0;
 	for (i = 0; i < num_phys_buf; i++) {
-		mr->mr.map[m]->segs[n].vaddr =
-			phys_to_virt(buffer_list[i].addr);
+		mr->mr.map[m]->segs[n].vaddr = (void *) buffer_list[i].addr;
 		mr->mr.map[m]->segs[n].length = buffer_list[i].size;
 		mr->mr.length += buffer_list[i].size;
 		n++;
@@ -197,6 +199,7 @@ struct ib_mr *ipath_reg_user_mr(struct ib_pd *pd, struct ib_umem *region,
 		goto bail;
 	}
 
+	mr->mr.pd = pd;
 	mr->mr.user_base = region->user_base;
 	mr->mr.iova = region->virt_base;
 	mr->mr.length = region->length;
@@ -207,9 +210,15 @@ struct ib_mr *ipath_reg_user_mr(struct ib_pd *pd, struct ib_umem *region,
 	m = 0;
 	n = 0;
 	list_for_each_entry(chunk, &region->chunk_list, list) {
-		for (i = 0; i < chunk->nmap; i++) {
-			mr->mr.map[m]->segs[n].vaddr =
-				page_address(chunk->page_list[i].page);
+		for (i = 0; i < chunk->nents; i++) {
+			void *vaddr;
+
+			vaddr = page_address(chunk->page_list[i].page);
+			if (!vaddr) {
+				ret = ERR_PTR(-EINVAL);
+				goto bail;
+			}
+			mr->mr.map[m]->segs[n].vaddr = vaddr;
 			mr->mr.map[m]->segs[n].length = region->page_size;
 			n++;
 			if (n == IPATH_SEGSZ) {
@@ -289,6 +298,7 @@ struct ib_fmr *ipath_alloc_fmr(struct ib_pd *pd, int mr_access_flags,
 	 * Resources are allocated but no valid mapping (RKEY can't be
 	 * used).
 	 */
+	fmr->mr.pd = pd;
 	fmr->mr.user_base = 0;
 	fmr->mr.iova = 0;
 	fmr->mr.length = 0;
@@ -344,7 +354,7 @@ int ipath_map_phys_fmr(struct ib_fmr *ibfmr, u64 * page_list,
 	n = 0;
 	ps = 1 << fmr->page_shift;
 	for (i = 0; i < list_len; i++) {
-		fmr->mr.map[m]->segs[n].vaddr = phys_to_virt(page_list[i]);
+		fmr->mr.map[m]->segs[n].vaddr = (void *) page_list[i];
 		fmr->mr.map[m]->segs[n].length = ps;
 		if (++n == IPATH_SEGSZ) {
 			m++;

@@ -16,7 +16,7 @@
 
 #include "xen.h"
 
-#define XEN_DOMCTL_INTERFACE_VERSION 0x00000003
+#define XEN_DOMCTL_INTERFACE_VERSION 0x00000005
 
 struct xenctl_cpumap {
     XEN_GUEST_HANDLE(uint8_t) bitmap;
@@ -348,6 +348,20 @@ struct xen_domctl_settimeoffset {
 typedef struct xen_domctl_settimeoffset xen_domctl_settimeoffset_t;
 DEFINE_XEN_GUEST_HANDLE(xen_domctl_settimeoffset_t);
 
+#define XEN_DOMCTL_gethvmcontext     33
+#define XEN_DOMCTL_sethvmcontext     34
+
+#define XEN_DOMCTL_sendtrigger       28
+#define XEN_DOMCTL_SENDTRIGGER_NMI    0
+#define XEN_DOMCTL_SENDTRIGGER_RESET  1
+#define XEN_DOMCTL_SENDTRIGGER_INIT   2
+struct xen_domctl_sendtrigger {
+    uint32_t  trigger;  /* IN */
+    uint32_t  vcpu;     /* IN */
+};
+typedef struct xen_domctl_sendtrigger xen_domctl_sendtrigger_t;
+DEFINE_XEN_GUEST_HANDLE(xen_domctl_sendtrigger_t);
+
 struct xen_domctl {
     uint32_t cmd;
     uint32_t interface_version; /* XEN_DOMCTL_INTERFACE_VERSION */
@@ -373,6 +387,7 @@ struct xen_domctl {
         struct xen_domctl_hypercall_init    hypercall_init;
         struct xen_domctl_arch_setup        arch_setup;
         struct xen_domctl_settimeoffset     settimeoffset;
+        struct xen_domctl_sendtrigger       sendtrigger;
         uint8_t                             pad[128];
     } u;
 };

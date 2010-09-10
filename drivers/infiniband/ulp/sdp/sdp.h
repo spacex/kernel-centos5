@@ -47,7 +47,7 @@ extern int sdp_data_debug_level;
 #define SDP_RX_SIZE 0x40
 
 #define SDP_MAX_SEND_SKB_FRAGS (PAGE_SIZE > 0x8000 ? 1 : 0x8000 / PAGE_SIZE)
-
+#define SDP_HEAD_SIZE (PAGE_SIZE / 2 + sizeof(struct sdp_bsdh))
 #define SDP_NUM_WC 4
 
 #define SDP_OP_RECV 0x800000000LL
@@ -56,6 +56,8 @@ enum sdp_mid {
 	SDP_MID_HELLO = 0x0,
 	SDP_MID_HELLO_ACK = 0x1,
 	SDP_MID_DISCONN = 0x2,
+	SDP_MID_CHRCVBUF = 0xB,
+	SDP_MID_CHRCVBUF_ACK = 0xC,
 	SDP_MID_DATA = 0xFF,
 };
 
@@ -82,12 +84,13 @@ struct sdp_bsdh {
 
 struct sdp_buf {
         struct sk_buff *skb;
-        dma_addr_t      mapping[SDP_MAX_SEND_SKB_FRAGS + 1];
+        u64             mapping[SDP_MAX_SEND_SKB_FRAGS + 1];
 };
 
 struct sdp_sock {
 	/* sk has to be the first member of inet_sock */
 	struct inet_sock isk;
+	struct list_head sock_list;
 	struct list_head accept_queue;
 	struct list_head backlog_queue;
 	struct sock *parent;
@@ -105,6 +108,7 @@ struct sdp_sock {
 	u32 rcv_nxt;
 
 	int write_seq;
+	int snd_una;
 	int pushed_seq;
 	int xmit_size_goal;
 	int nonagle;
@@ -117,7 +121,7 @@ struct sdp_sock {
 	struct ib_qp *qp;
 	struct ib_cq *cq;
 	struct ib_mr *mr;
-	struct device *dma_device;
+	struct ib_device *ib_device;
 
 	/* SDP specific */
 	struct sdp_buf *rx_ring;
@@ -135,12 +139,39 @@ struct sdp_sock {
 	unsigned          tx_tail;
 	struct ib_send_wr tx_wr;
 
+	/* SDP slow start */
+	int rcvbuf_scale;
+	int sent_request;
+	int sent_request_head;
+	int recv_request_head;
+	int recv_request;
+	int recv_frags;
+	int send_frags;
+
 	struct ib_sge ibsge[SDP_MAX_SEND_SKB_FRAGS + 1];
 	struct ib_wc  ibwc[SDP_NUM_WC];
 };
 
 extern struct proto sdp_proto;
 extern struct workqueue_struct *sdp_workqueue;
+
+extern atomic_t sdp_current_mem_usage;
+extern spinlock_t sdp_large_sockets_lock;
+
+/* just like TCP fs */
+struct sdp_seq_afinfo {
+	struct module           *owner;
+	char                    *name;
+	sa_family_t             family;
+	int                     (*seq_show) (struct seq_file *m, void *v);
+	struct file_operations  *seq_fops;
+};
+
+struct sdp_iter_state {
+	sa_family_t             family;
+	int                     num;
+	struct seq_operations   seq_ops;
+};
 
 static inline struct sdp_sock *sdp_sk(const struct sock *sk)
 {
@@ -176,16 +207,19 @@ void sdp_reset(struct sock *sk);
 void sdp_reset_sk(struct sock *sk, int rc);
 void sdp_time_wait_destroy_sk(struct sdp_sock *ssk);
 void sdp_completion_handler(struct ib_cq *cq, void *cq_context);
-void sdp_work(void *);
+void sdp_work(void *_work);
 int sdp_post_credits(struct sdp_sock *ssk);
 void sdp_post_send(struct sdp_sock *ssk, struct sk_buff *skb, u8 mid);
 void sdp_post_recvs(struct sdp_sock *ssk);
 int sdp_poll_cq(struct sdp_sock *ssk, struct ib_cq *cq);
 void sdp_post_sends(struct sdp_sock *ssk, int nonagle);
-void sdp_destroy_work(void *data);
-void sdp_time_wait_work(void *data);
+void sdp_destroy_work(void *_work);
+void sdp_time_wait_work(void *_work);
 struct sk_buff *sdp_recv_completion(struct sdp_sock *ssk, int id);
 struct sk_buff *sdp_send_completion(struct sdp_sock *ssk, int mseq);
 void sdp_urg(struct sdp_sock *ssk, struct sk_buff *skb);
+void sdp_add_sock(struct sdp_sock *ssk);
+void sdp_remove_sock(struct sdp_sock *ssk);
+void sdp_remove_large_sock(void);
 
 #endif

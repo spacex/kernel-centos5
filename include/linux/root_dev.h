@@ -16,9 +16,6 @@ enum {
 	Root_SDA2 = MKDEV(SCSI_DISK0_MAJOR, 2),
 	Root_HDC1 = MKDEV(IDE1_MAJOR, 1),
 	Root_SR0 = MKDEV(SCSI_CDROM_MAJOR, 0),
-#ifdef CONFIG_MAMBO_DISK
-	Root_Mambo = MKDEV(112, 0),
-#endif
 };
 
 extern dev_t ROOT_DEV;

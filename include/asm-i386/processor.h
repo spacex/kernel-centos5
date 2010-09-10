@@ -737,4 +737,6 @@ extern unsigned long boot_option_idle_override;
 extern void enable_sep_cpu(void);
 extern int sysenter_setup(void);
 
+extern int force_mwait;
+
 #endif /* __ASM_I386_PROCESSOR_H */

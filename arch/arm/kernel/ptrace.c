@@ -812,18 +812,19 @@ asmlinkage int syscall_trace(int why, struct pt_regs *regs, int scno)
 {
 	unsigned long ip;
 
-	if (test_thread_flag(TIF_SYSCALL_TRACE)) {
-		/*
-		 * Save IP.  IP is used to denote syscall entry/exit:
-		 *  IP = 0 -> entry, = 1 -> exit
-		 */
-		ip = regs->ARM_ip;
-		regs->ARM_ip = why;
+	if (!test_thread_flag(TIF_SYSCALL_TRACE))
+		return scno;
 
-		tracehook_report_syscall(regs, why);
+	/*
+	 * Save IP.  IP is used to denote syscall entry/exit:
+	 *  IP = 0 -> entry, = 1 -> exit
+	 */
+	ip = regs->ARM_ip;
+	regs->ARM_ip = why;
 
-		regs->ARM_ip = ip;
-	}
+	current->ptrace_message = scno;
 
-	return scno;
+	tracehook_report_syscall(regs, why);
+
+	return current->ptrace_message;
 }

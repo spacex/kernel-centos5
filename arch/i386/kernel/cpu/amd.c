@@ -22,6 +22,8 @@
 extern void vide(void);
 __asm__(".align 4\nvide: ret");
 
+int force_mwait __initdata;
+
 static void __init init_amd(struct cpuinfo_x86 *c)
 {
 	u32 l, h;
@@ -242,8 +244,16 @@ static void __init init_amd(struct cpuinfo_x86 *c)
 	}
 #endif
 
-	if (cpuid_eax(0x80000000) >= 0x80000006)
-		num_cache_leaves = 3;
+	if (cpuid_eax(0x80000000) >= 0x80000006) {
+		if ((c->x86 == 0x10) && (cpuid_edx(0x80000006) &
+0xf000))
+			num_cache_leaves = 4;
+		else
+			num_cache_leaves = 3;
+	}
+
+	if ((c->x86 == 0x10 || c->x86 == 0x11) && !force_mwait)
+		clear_bit(X86_FEATURE_MWAIT, &c->x86_capability);
 }
 
 static unsigned int amd_size_cache(struct cpuinfo_x86 * c, unsigned int size)

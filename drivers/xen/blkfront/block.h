@@ -124,6 +124,7 @@ struct blkfront_info
 	struct gnttab_free_callback callback;
 	struct blk_shadow shadow[BLK_RING_SIZE];
 	unsigned long shadow_free;
+	int is_ready;
 
 	/**
 	 * The number of people holding this device open.  We won't allow a

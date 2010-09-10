@@ -887,6 +887,18 @@ smbCalcSize_LE(struct smb_hdr *ptr)
      * Convert the NT UTC (based 1601-01-01, in hundred nanosecond units)
      * into Unix UTC (based 1970-01-01, in seconds).
      */
+
+
+static int total_days_of_prev_months[] =
+{0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+
+
+__le64 cnvrtDosCifsTm(__u16 date, __u16 time)
+{
+	return cpu_to_le64(cifs_UnixTimeToNT(cnvrtDosUnixTm(date, time)));
+}
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,5,0)
 struct timespec
 cifs_NTtimeToUnix(u64 ntutc)
 {
@@ -909,3 +921,129 @@ cifs_UnixTimeToNT(struct timespec t)
 	/* Convert to 100ns intervals and then add the NTFS time offset. */
 	return (u64) t.tv_sec * 10000000 + t.tv_nsec/100 + NTFS_TIME_OFFSET;
 }
+
+struct timespec cnvrtDosUnixTm(__u16 date, __u16 time)
+{
+	struct timespec ts;
+	int sec, min, days, month, year;
+	SMB_TIME * st = (SMB_TIME *)&time;
+	SMB_DATE * sd = (SMB_DATE *)&date;
+
+	cFYI(1,("date %d time %d",date, time));
+
+	sec = 2 * st->TwoSeconds;
+	min = st->Minutes;
+	if((sec > 59) || (min > 59))
+		cERROR(1,("illegal time min %d sec %d", min, sec));
+	sec += (min * 60);
+	sec += 60 * 60 * st->Hours;
+	if(st->Hours > 24)
+		cERROR(1,("illegal hours %d",st->Hours));
+	days = sd->Day;
+	month = sd->Month;
+	if((days > 31) || (month > 12))
+		cERROR(1,("illegal date, month %d day: %d", month, days));
+	month -= 1;
+	days += total_days_of_prev_months[month];
+	days += 3652; /* account for difference in days between 1980 and 1970 */
+	year = sd->Year;
+	days += year * 365;
+	days += (year/4); /* leap year */
+	/* generalized leap year calculation is more complex, ie no leap year
+	for years/100 except for years/400, but since the maximum number for DOS
+	 year is 2**7, the last year is 1980+127, which means we need only
+	 consider 2 special case years, ie the years 2000 and 2100, and only
+	 adjust for the lack of leap year for the year 2100, as 2000 was a 
+	 leap year (divisable by 400) */
+	if(year >= 120)  /* the year 2100 */
+		days = days - 1;  /* do not count leap year for the year 2100 */
+
+	/* adjust for leap year where we are still before leap day */
+	if(year != 120)
+		days -= ((year & 0x03) == 0) && (month < 2 ? 1 : 0);
+	sec += 24 * 60 * 60 * days; 
+
+	ts.tv_sec = sec;
+
+	/* cFYI(1,("sec after cnvrt dos to unix time %d",sec)); */
+
+	ts.tv_nsec = 0;
+	return ts;	
+}
+#else
+/* Did not merge changeset 268f3be177ce93791da38facc34126b5038cd851
+ * and related time fixes into this function for 2.4 case
+ */
+time_t
+cifs_NTtimeToUnix(__u64 ntutc)
+{
+	/* BB what about the timezone? BB */
+
+	/* Subtract the NTFS time offset, then convert to 1s intervals.  */
+	u64 t;
+
+	t = ntutc - NTFS_TIME_OFFSET;
+	do_div(t, 10000000);
+	return (time_t)t;
+}
+
+/* Convert the Unix UTC into NT UTC. */
+__u64
+cifs_UnixTimeToNT(time_t t)
+{
+	__u64 dce_time;
+   /* Convert to 100ns intervals and then add the NTFS time offset. */
+	dce_time = (__u64) t * 10000000;
+	dce_time += NTFS_TIME_OFFSET;
+	return dce_time;
+}
+time_t cnvrtDosUnixTm(__u16 date, __u16 time)
+{
+	__u8  dt[2];
+	__u8  tm[2];
+	time_t ts;
+	int sec,min, days, month, year;
+/*    SMB_TIME * st = (SMB_TIME *)&time;*/
+
+	cFYI(1,("date %d time %d",date, time));
+
+	dt[0] = date & 0xFF;
+	dt[1] = (date & 0xFF00) >> 8;
+	tm[0] = time & 0xFF;
+	tm[1] = (time & 0xFF00) >> 8;
+
+	sec = tm[0] & 0x1F;
+	sec = 2 * sec;
+	min = ((tm[0] >>5)&0xFF) + ((tm[1] & 0x7)<<3);
+
+	sec += (min * 60);
+	sec += 60 * 60 * ((tm[1] >> 3) &0xFF) /* hours */;
+	days = (dt[0] & 0x1F) - 1;
+	month = ((dt[0] >> 5) & 0xFF) + ((dt[1] & 0x1) <<3);
+	if(month > 12)
+		cERROR(1,("illegal month %d in date", month));
+	month -= 1;
+	days += total_days_of_prev_months[month];
+	days += 3653; /* account for difference in days between 1980 and 1970 */
+	year = (dt[1]>>1) & 0xFF;
+	days += year * 365;
+	days += (year/4); /* leap year */
+	/* generalized leap year calculation is more complex, ie no leap year
+	for years/100 except for years/400, but since the maximum number for DOS
+	 year is 2**7, the last year is 1980+127, which means we need only
+	 consider 2 special case years, ie the years 2000 and 2100, and only
+	 adjust for the lack of leap year for the year 2100, as 2000 was a 
+	 leap year (divisable by 400) */
+	if(year >= 120)  /* the year 2100 */
+		days = days - 1;  /* do not count leap year for the year 2100 */
+
+	/* adjust for leap year where we are still before leap day */
+	days -= ((year & 0x03) == 0) && (month < 2 ? 1 : 0);
+	sec += 24 * 60 * 60 * days;
+
+	ts = (time_t)sec;
+
+	return ts;
+}
+#endif
+

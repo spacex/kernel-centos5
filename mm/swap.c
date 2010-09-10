@@ -34,6 +34,15 @@
 /* How many pages do we try to swap or page in/out together? */
 int page_cluster;
 
+/*
+ * When the pagecache is over /proc/sys/vm/pagecache does the following:
+ * - mark_page_accessed() keeps unmapped pages on the inactive_list.
+ * - moves munmap()'d pages to the inactive_list.
+ * - shrink_list() wont activate unmapped and referenced pages from
+ *   mapped object.
+ */
+int pagecache_maxpercent = 100;
+
 static void put_compound_page(struct page *page)
 {
 	page = (struct page *)page_private(page);
@@ -132,18 +141,112 @@ void fastcall activate_page(struct page *page)
 	spin_unlock_irq(&zone->lru_lock);
 }
 
+static DEFINE_PER_CPU(struct pagevec, deactivate_pvecs) = { 0, };
+
+static void __pagevec_deactivate(struct pagevec *pvec)
+{
+	int i;
+	struct zone *zone = NULL;
+
+	for (i = 0; i < pagevec_count(pvec); i++) {
+		struct page *page = pvec->pages[i];
+		struct zone *pagezone = page_zone(page);
+
+		if (pagezone != zone) {
+			if (zone)
+				spin_unlock_irq(&zone->lru_lock);
+			zone = pagezone;
+			spin_lock_irq(&zone->lru_lock);
+		}
+
+		/*
+		 * Deactivate the page if it is unmapped.
+		 */
+		if (PageLRU(page) && PageActive(page) && !page_mapped(page)) {
+			ClearPageActive(page);
+			del_page_from_active_list(zone, page);
+			add_page_to_inactive_list(zone, page);
+			__count_vm_events(PGDEACTIVATE, 1);
+		}
+	}
+	if (zone)
+		spin_unlock_irq(&zone->lru_lock);
+	release_pages(pvec->pages, pvec->nr, pvec->cold);
+	pagevec_reinit(pvec);
+}
+
+void fastcall deactivate_unmapped_page(struct page *page)
+{
+	struct pagevec *pvec;
+
+	if (PageActive(page) && PageLRU(page)) {
+		pvec = &get_cpu_var(deactivate_pvecs);
+		page_cache_get(page);
+		if (!pagevec_add(pvec, page))
+			__pagevec_deactivate(pvec);
+		put_cpu_var(deactivate_pvecs);
+	}
+}
+
+static DEFINE_PER_CPU(struct pagevec, mark_accessed_pvecs) = { 0, };
+
+static void __pagevec_mark_accessed(struct pagevec *pvec)
+{
+	int i;
+	struct zone *zone = NULL;
+
+	for (i = 0; i < pagevec_count(pvec); i++) {
+		struct page *page = pvec->pages[i];
+		struct zone *pagezone = page_zone(page);
+
+		if (pagezone != zone) {
+			if (zone)
+				spin_unlock_irq(&zone->lru_lock);
+			zone = pagezone;
+			spin_lock_irq(&zone->lru_lock);
+		}
+		if (PageLRU(page) && !PageActive(page)) {
+			/*
+			 * Move unmapped pages to the head of the
+			 * inactive list.  Move mapped pages to the
+			 * head of the active list.
+			 */
+			if (!page_mapped(page) && pagecache_over_max()) {
+				list_move(&page->lru, &zone->inactive_list);
+			} else {
+				del_page_from_inactive_list(zone, page);
+				SetPageActive(page);
+				add_page_to_active_list(zone, page);
+				__count_vm_events(PGACTIVATE, 1);
+				ClearPageReferenced(page);
+			}
+		}
+	}
+	if (zone)
+		spin_unlock_irq(&zone->lru_lock);
+	release_pages(pvec->pages, pvec->nr, pvec->cold);
+	pagevec_reinit(pvec);
+}
+
 /*
  * Mark a page as having seen activity.
  *
  * inactive,unreferenced	->	inactive,referenced
  * inactive,referenced		->	active,unreferenced
  * active,unreferenced		->	active,referenced
+ * 	When pagecache_over_max() is true:
+ * inactive,referenced,unmapped	->	head of inactive,referenced
  */
 void fastcall mark_page_accessed(struct page *page)
 {
 	if (!PageActive(page) && PageReferenced(page) && PageLRU(page)) {
-		activate_page(page);
-		ClearPageReferenced(page);
+		struct pagevec *pvec;
+
+		pvec = &get_cpu_var(mark_accessed_pvecs);
+		page_cache_get(page);
+		if (!pagevec_add(pvec, page))
+			__pagevec_mark_accessed(pvec);
+		put_cpu_var(mark_accessed_pvecs);
 	} else if (!PageReferenced(page)) {
 		SetPageReferenced(page);
 	}
@@ -188,6 +291,12 @@ static void __lru_add_drain(int cpu)
 	pvec = &per_cpu(lru_add_active_pvecs, cpu);
 	if (pagevec_count(pvec))
 		__pagevec_lru_add_active(pvec);
+	pvec = &__get_cpu_var(mark_accessed_pvecs);
+	if (pagevec_count(pvec))
+		__pagevec_mark_accessed(pvec);
+	pvec = &__get_cpu_var(deactivate_pvecs);
+	if (pagevec_count(pvec))
+		__pagevec_deactivate(pvec);
 }
 
 void lru_add_drain(void)

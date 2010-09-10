@@ -498,6 +498,7 @@ static void setup_timer_hardware(void)
 {
 	outb_p(0x34,0x43);		/* binary, mode 2, LSB/MSB, ch 0 */
 	udelay(10);
+	/* LATCH is in physical clocks */
 	outb_p(LATCH & 0xff , 0x40);	/* LSB */
 	udelay(10);
 	outb(LATCH >> 8 , 0x40);	/* MSB */

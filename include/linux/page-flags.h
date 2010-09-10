@@ -72,6 +72,7 @@
 #define PG_slab			 7	/* slab debug (Suparna wants this) */
 
 #define PG_fs_misc		 8
+#define PG_owner_priv_1          8      /* Owner use. If pagecache, fs may use*/
 #define PG_arch_1		 9
 #define PG_reserved		10
 #define PG_private		11	/* Has something at ->private */
@@ -86,6 +87,8 @@
 #define PG_nosave_free		18	/* Free, should not be written */
 #define PG_buddy		19	/* Page is free, on buddy lists */
 
+/* PG_owner_priv_1 users should have descriptive aliases */
+#define PG_checked              PG_owner_priv_1 /* Used by some filesystems */
 
 #if (BITS_PER_LONG > 32)
 /*
@@ -160,6 +163,10 @@
 #else
 #define PageHighMem(page)	0 /* needed to optimize away at compile time */
 #endif
+
+#define PageChecked(page)       test_bit(PG_checked, &(page)->flags)
+#define SetPageChecked(page)    set_bit(PG_checked, &(page)->flags)
+#define ClearPageChecked(page)  clear_bit(PG_checked, &(page)->flags)
 
 #define PageReserved(page)	test_bit(PG_reserved, &(page)->flags)
 #define SetPageReserved(page)	set_bit(PG_reserved, &(page)->flags)

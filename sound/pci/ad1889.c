@@ -860,7 +860,7 @@ snd_ad1889_free(struct snd_ad1889 *chip)
 	synchronize_irq(chip->irq);
 	
 	if (chip->irq >= 0)
-		free_irq(chip->irq, (void*)chip);
+		free_irq(chip->irq, chip);
 
 skip_hw:
 	if (chip->iobase)

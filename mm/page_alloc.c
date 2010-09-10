@@ -1026,7 +1026,7 @@ rebalance:
 		if (page)
 			goto got_pg;
 
-		out_of_memory(zonelist, gfp_mask, order);
+		out_of_memory(zonelist, gfp_mask, order, 0);
 		goto restart;
 	}
 
@@ -1289,7 +1289,7 @@ void show_free_areas(void)
 		K(nr_free_highpages()));
 
 	printk("Active:%lu inactive:%lu dirty:%lu writeback:%lu "
-		"unstable:%lu free:%u slab:%lu mapped:%lu pagetables:%lu\n",
+		"unstable:%lu free:%u slab:%lu mapped-file:%lu mapped-anon:%lu pagetables:%lu\n",
 		active,
 		inactive,
 		global_page_state(NR_FILE_DIRTY),
@@ -1298,6 +1298,7 @@ void show_free_areas(void)
 		nr_free_pages(),
 		global_page_state(NR_SLAB),
 		global_page_state(NR_FILE_MAPPED),
+		global_page_state(NR_ANON_PAGES),
 		global_page_state(NR_PAGETABLE));
 
 	for_each_zone(zone) {

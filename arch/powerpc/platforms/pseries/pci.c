@@ -87,6 +87,10 @@ void __devinit pSeries_irq_bus_setup(struct pci_bus *bus)
 					dev->irq);
 			}
 		}
+#ifdef CONFIG_PCI_MSI
+		if (ppc_msi_md.pci_irq_fixup)
+			ppc_msi_md.pci_irq_fixup(dev);
+#endif /* CONFIG_PCI_MSI */
 	}
 }
 

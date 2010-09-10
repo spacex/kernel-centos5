@@ -64,6 +64,8 @@
 #define SA_TRIGGER_RISING	IRQF_TRIGGER_RISING
 #define SA_TRIGGER_MASK		IRQF_TRIGGER_MASK
 
+typedef irqreturn_t (*irq_handler_t)(int, void *, struct pt_regs *);
+
 struct irqaction {
 	irqreturn_t (*handler)(int, void *, struct pt_regs *);
 	unsigned long flags;
@@ -80,6 +82,11 @@ extern int request_irq(unsigned int,
 		       irqreturn_t (*handler)(int, void *, struct pt_regs *),
 		       unsigned long, const char *, void *);
 extern void free_irq(unsigned int, void *);
+
+extern int __must_check devm_request_irq(struct device *dev, unsigned int irq,
+			    irq_handler_t handler, unsigned long irqflags,
+			    const char *devname, void *dev_id);
+extern void devm_free_irq(struct device *dev, unsigned int irq, void *dev_id);
 
 /*
  * On lockdep we dont want to enable hardirqs in hardirq

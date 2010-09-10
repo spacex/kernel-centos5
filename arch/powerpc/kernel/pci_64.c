@@ -1003,10 +1003,7 @@ void __devinit pci_process_bridge_OF_ranges(struct pci_controller *hose,
 		pci_space = ranges[0];
 		pci_addr = ((unsigned long)ranges[1] << 32) | ranges[2];
 
-		cpu_phys_addr = ranges[3];
-		if (na >= 2)
-			cpu_phys_addr = (cpu_phys_addr << 32) | ranges[4];
-
+		cpu_phys_addr = of_translate_address(dev, &ranges[3]);
 		size = ((unsigned long)ranges[na+3] << 32) | ranges[na+4];
 		ranges += np;
 		if (size == 0)
@@ -1034,8 +1031,9 @@ void __devinit pci_process_bridge_OF_ranges(struct pci_controller *hose,
 
 		switch ((pci_space >> 24) & 0x3) {
 		case 1:		/* I/O space */
-			hose->io_base_phys = cpu_phys_addr;
-			hose->pci_io_size = size;
+			hose->io_base_phys = cpu_phys_addr - pci_addr;
+			/* handle from 0 to top of I/O window */
+			hose->pci_io_size = pci_addr + size;
 
 			res = &hose->io_resource;
 			res->flags = IORESOURCE_IO;
@@ -1125,35 +1123,24 @@ static int get_bus_io_range(struct pci_bus *bus, unsigned long *start_phys,
 				unsigned long *start_virt, unsigned long *size)
 {
 	struct pci_controller *hose = pci_bus_to_host(bus);
-	struct pci_bus_region region;
 	struct resource *res;
 
-	if (bus->self) {
+	if (bus->self)
 		res = bus->resource[0];
-		pcibios_resource_to_bus(bus->self, &region, res);
-		*start_phys = hose->io_base_phys + region.start;
-		*start_virt = (unsigned long) hose->io_base_virt + 
-				region.start;
-		if (region.end > region.start) 
-			*size = region.end - region.start + 1;
-		else {
-			printk("%s(): unexpected region 0x%lx->0x%lx\n", 
-					__FUNCTION__, region.start, region.end);
-			return 1;
-		}
-		
-	} else {
+	else
 		/* Root Bus */
 		res = &hose->io_resource;
-		*start_phys = hose->io_base_phys;
-		*start_virt = (unsigned long) hose->io_base_virt;
-		if (res->end > res->start)
-			*size = res->end - res->start + 1;
-		else {
-			printk("%s(): unexpected region 0x%lx->0x%lx\n", 
-					__FUNCTION__, res->start, res->end);
-			return 1;
-		}
+
+	*start_virt = pci_io_base + res->start;
+	*start_phys = *start_virt + hose->io_base_phys
+		- (unsigned long) hose->io_base_virt;
+
+	if (res->end > res->start)
+		*size = res->end - res->start + 1;
+	else {
+		printk("%s(): unexpected region 0x%lx->0x%lx\n", 
+			__FUNCTION__, res->start, res->end);
+		return 1;
 	}
 
 	return 0;
@@ -1452,3 +1439,20 @@ int pcibus_to_node(struct pci_bus *bus)
 }
 EXPORT_SYMBOL(pcibus_to_node);
 #endif
+
+int pcibios_vaddr_is_ioport(void __iomem *address)
+{
+	int ret = 0;
+	struct pci_controller *hose;
+
+	spin_lock(&hose_spinlock);
+	list_for_each_entry(hose, &hose_list, list_node) {
+		if (address >= hose->io_base_virt &&
+		    address < (hose->io_base_virt + hose->pci_io_size)) {
+			ret = 1;
+			break;
+		}
+	}
+	spin_unlock(&hose_spinlock);
+	return ret;
+}

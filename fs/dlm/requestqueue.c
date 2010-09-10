@@ -192,6 +192,7 @@ void dlm_purge_requestqueue(struct dlm_ls *ls)
 			list_del(&e->list);
 			kfree(e);
 		}
+		schedule();
 	}
 	mutex_unlock(&ls->ls_requestqueue_mutex);
 }

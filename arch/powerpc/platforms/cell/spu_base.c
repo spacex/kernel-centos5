@@ -29,38 +29,93 @@
 #include <linux/ptrace.h>
 #include <linux/slab.h>
 #include <linux/wait.h>
+#include <linux/mm.h>
+#include <linux/io.h>
+#include <linux/mutex.h>
 
 #include <asm/io.h>
 #include <asm/prom.h>
-#include <linux/mutex.h>
 #include <asm/spu.h>
 #include <asm/spu_priv1.h>
+#include <asm/prom.h>
+#include "spu_priv1_mmio.h"
 #include <asm/mmu_context.h>
 
-#include "interrupt.h"
-
+const struct spu_management_ops *spu_management_ops;
 const struct spu_priv1_ops *spu_priv1_ops;
 
+static spinlock_t spu_list_lock = SPIN_LOCK_UNLOCKED;
+static LIST_HEAD(spu_full_list);
+static DEFINE_MUTEX(spu_mutex);
+
 EXPORT_SYMBOL_GPL(spu_priv1_ops);
+
+void spu_invalidate_slbs(struct spu *spu)
+{
+	struct spu_priv2 __iomem *priv2 = spu->priv2;
+
+	if (spu_mfc_sr1_get(spu) & MFC_STATE1_RELOCATE_MASK)
+		out_be64(&priv2->slb_invalidate_all_W, 0UL);
+}
+EXPORT_SYMBOL_GPL(spu_invalidate_slbs);
+
+/* This is called by the MM core when a segment size is changed, to
+ * request a flush of all the SPEs using a given mm
+ */
+void spu_flush_all_slbs(struct mm_struct *mm)
+{
+	struct spu *spu;
+	unsigned long flags;
+
+	spin_lock_irqsave(&spu_list_lock, flags);
+	list_for_each_entry(spu, &spu_full_list, full_list) {
+		if (spu->mm == mm)
+			spu_invalidate_slbs(spu);
+	}
+	spin_unlock_irqrestore(&spu_list_lock, flags);
+}
+
+/* The hack below stinks... try to do something better one of
+ * these days... Does it even work properly with NR_CPUS == 1 ?
+ */
+static inline void mm_needs_global_tlbie(struct mm_struct *mm)
+{
+	int nr = (NR_CPUS > 1) ? NR_CPUS : NR_CPUS + 1;
+
+	/* Global TLBIE broadcast required with SPEs. */
+	__cpus_setall(&mm->cpu_vm_mask, nr);
+}
+
+void spu_associate_mm(struct spu *spu, struct mm_struct *mm)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&spu_list_lock, flags);
+	spu->mm = mm;
+	spin_unlock_irqrestore(&spu_list_lock, flags);
+	if (mm)
+		mm_needs_global_tlbie(mm);
+}
+EXPORT_SYMBOL_GPL(spu_associate_mm);
 
 static int __spu_trap_invalid_dma(struct spu *spu)
 {
 	pr_debug("%s\n", __FUNCTION__);
-	force_sig(SIGBUS, /* info, */ current);
+	spu->dma_callback(spu, SPE_EVENT_INVALID_DMA);
 	return 0;
 }
 
 static int __spu_trap_dma_align(struct spu *spu)
 {
 	pr_debug("%s\n", __FUNCTION__);
-	force_sig(SIGBUS, /* info, */ current);
+	spu->dma_callback(spu, SPE_EVENT_DMA_ALIGNMENT);
 	return 0;
 }
 
 static int __spu_trap_error(struct spu *spu)
 {
 	pr_debug("%s\n", __FUNCTION__);
-	force_sig(SIGILL, /* info, */ current);
+	spu->dma_callback(spu, SPE_EVENT_SPE_ERROR);
 	return 0;
 }
 
@@ -77,6 +132,7 @@ static int __spu_trap_data_seg(struct spu *spu, unsigned long ea)
 	struct spu_priv2 __iomem *priv2 = spu->priv2;
 	struct mm_struct *mm = spu->mm;
 	u64 esid, vsid, llp;
+	int psize;
 
 	pr_debug("%s\n", __FUNCTION__);
 
@@ -87,26 +143,42 @@ static int __spu_trap_data_seg(struct spu *spu, unsigned long ea)
 		printk("%s: invalid access during switch!\n", __func__);
 		return 1;
 	}
-	if (!mm || (REGION_ID(ea) != USER_REGION_ID)) {
+	esid = (ea & ESID_MASK) | SLB_ESID_V;
+
+	switch(REGION_ID(ea)) {
+	case USER_REGION_ID:
+		psize = mm->context.user_psize;
+#ifdef CONFIG_HUGETLB_PAGE
+		if (in_hugepage_area(mm->context, ea))
+			psize = mmu_huge_psize;
+#endif
+		vsid = (get_vsid(mm->context.id, ea) << SLB_VSID_SHIFT) |
+				SLB_VSID_USER;
+		break;
+	case VMALLOC_REGION_ID:
+		if (ea < VMALLOC_END)
+			psize = mmu_vmalloc_psize;
+		else
+			psize = mmu_io_psize;
+		vsid = (get_kernel_vsid(ea) << SLB_VSID_SHIFT) |
+			SLB_VSID_KERNEL;
+		break;
+	case KERNEL_REGION_ID:
+		psize = mmu_linear_psize;
+		vsid = (get_kernel_vsid(ea) << SLB_VSID_SHIFT) |
+			SLB_VSID_KERNEL;
+		break;
+	default:
 		/* Future: support kernel segments so that drivers
 		 * can use SPUs.
 		 */
 		pr_debug("invalid region access at %016lx\n", ea);
 		return 1;
 	}
-
-	esid = (ea & ESID_MASK) | SLB_ESID_V;
-#ifdef CONFIG_HUGETLB_PAGE
-	if (in_hugepage_area(mm->context, ea))
-		llp = mmu_psize_defs[mmu_huge_psize].sllp;
-	else
-#endif
-		llp = mmu_psize_defs[mmu_virtual_psize].sllp;
-	vsid = (get_vsid(mm->context.id, ea) << SLB_VSID_SHIFT) |
-			SLB_VSID_USER | llp;
+	llp = mmu_psize_defs[psize].sllp;
 
 	out_be64(&priv2->slb_index_W, spu->slb_replace);
-	out_be64(&priv2->slb_vsid_RW, vsid);
+	out_be64(&priv2->slb_vsid_RW, vsid | llp);
 	out_be64(&priv2->slb_esid_RW, esid);
 
 	spu->slb_replace++;
@@ -219,7 +291,6 @@ spu_irq_class_1(int irq, void *data, struct pt_regs *regs)
 
 	return stat ? IRQ_HANDLED : IRQ_NONE;
 }
-EXPORT_SYMBOL_GPL(spu_irq_class_1_bottom);
 
 static irqreturn_t
 spu_irq_class_2(int irq, void *data, struct pt_regs *regs)
@@ -317,9 +388,6 @@ static void spu_free_irqs(struct spu *spu)
 		free_irq(spu->irqs[2], spu);
 }
 
-static LIST_HEAD(spu_list);
-static DEFINE_MUTEX(spu_mutex);
-
 static void spu_init_channels(struct spu *spu)
 {
 	static const struct {
@@ -354,301 +422,120 @@ static void spu_init_channels(struct spu *spu)
 	}
 }
 
-struct spu *spu_alloc(void)
+struct spu *spu_alloc_spu(struct spu *req_spu)
 {
-	struct spu *spu;
+	struct spu *spu, *ret = NULL;
 
 	mutex_lock(&spu_mutex);
-	if (!list_empty(&spu_list)) {
-		spu = list_entry(spu_list.next, struct spu, list);
+	list_for_each_entry(spu, &be_spu_info[req_spu->node].free_spus, list) {
+		if (spu == req_spu) {
+			list_del_init(&spu->list);
+			pr_debug("Got SPU %d %d\n", spu->number, spu->node);
+			spu_init_channels(spu);
+			ret = spu;
+			break;
+		}
+	}
+	mutex_unlock(&spu_mutex);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(spu_alloc_spu);
+
+struct spu *spu_alloc_node(int node)
+{
+	struct spu *spu = NULL;
+
+	mutex_lock(&spu_mutex);
+	if (!list_empty(&be_spu_info[node].free_spus)) {
+		spu = list_entry(be_spu_info[node].free_spus.next, struct spu,
+									list);
 		list_del_init(&spu->list);
-		pr_debug("Got SPU %x %d\n", spu->isrc, spu->number);
-	} else {
-		pr_debug("No SPU left\n");
-		spu = NULL;
+		pr_debug("Got SPU %d %d\n", spu->number, spu->node);
 	}
 	mutex_unlock(&spu_mutex);
 
 	if (spu)
 		spu_init_channels(spu);
+	return spu;
+}
+EXPORT_SYMBOL_GPL(spu_alloc_node);
+
+struct spu *spu_alloc(void)
+{
+	struct spu *spu = NULL;
+	int node;
+
+	for (node = 0; node < MAX_NUMNODES; node++) {
+		spu = spu_alloc_node(node);
+		if (spu)
+			break;
+	}
 
 	return spu;
 }
-EXPORT_SYMBOL_GPL(spu_alloc);
 
 void spu_free(struct spu *spu)
 {
 	mutex_lock(&spu_mutex);
-	list_add_tail(&spu->list, &spu_list);
+	list_add_tail(&spu->list, &be_spu_info[spu->node].free_spus);
 	mutex_unlock(&spu_mutex);
 }
 EXPORT_SYMBOL_GPL(spu_free);
-
-static int spu_handle_mm_fault(struct spu *spu)
-{
-	struct mm_struct *mm = spu->mm;
-	struct vm_area_struct *vma;
-	u64 ea, dsisr, is_write;
-	int ret;
-
-	ea = spu->dar;
-	dsisr = spu->dsisr;
-#if 0
-	if (!IS_VALID_EA(ea)) {
-		return -EFAULT;
-	}
-#endif /* XXX */
-	if (mm == NULL) {
-		return -EFAULT;
-	}
-	if (mm->pgd == NULL) {
-		return -EFAULT;
-	}
-
-	down_read(&mm->mmap_sem);
-	vma = find_vma(mm, ea);
-	if (!vma)
-		goto bad_area;
-	if (vma->vm_start <= ea)
-		goto good_area;
-	if (!(vma->vm_flags & VM_GROWSDOWN))
-		goto bad_area;
-#if 0
-	if (expand_stack(vma, ea))
-		goto bad_area;
-#endif /* XXX */
-good_area:
-	is_write = dsisr & MFC_DSISR_ACCESS_PUT;
-	if (is_write) {
-		if (!(vma->vm_flags & VM_WRITE))
-			goto bad_area;
-	} else {
-		if (dsisr & MFC_DSISR_ACCESS_DENIED)
-			goto bad_area;
-		if (!(vma->vm_flags & (VM_READ | VM_EXEC)))
-			goto bad_area;
-	}
-	ret = 0;
-	switch (handle_mm_fault(mm, vma, ea, is_write)) {
-	case VM_FAULT_MINOR:
-		current->min_flt++;
-		break;
-	case VM_FAULT_MAJOR:
-		current->maj_flt++;
-		break;
-	case VM_FAULT_SIGBUS:
-		ret = -EFAULT;
-		goto bad_area;
-	case VM_FAULT_OOM:
-		ret = -ENOMEM;
-		goto bad_area;
-	default:
-		BUG();
-	}
-	up_read(&mm->mmap_sem);
-	return ret;
-
-bad_area:
-	up_read(&mm->mmap_sem);
-	return -EFAULT;
-}
-
-int spu_irq_class_1_bottom(struct spu *spu)
-{
-	u64 ea, dsisr, access, error = 0UL;
-	int ret = 0;
-
-	ea = spu->dar;
-	dsisr = spu->dsisr;
-	if (dsisr & (MFC_DSISR_PTE_NOT_FOUND | MFC_DSISR_ACCESS_DENIED)) {
-		u64 flags;
-
-		access = (_PAGE_PRESENT | _PAGE_USER);
-		access |= (dsisr & MFC_DSISR_ACCESS_PUT) ? _PAGE_RW : 0UL;
-		local_irq_save(flags);
-		if (hash_page(ea, access, 0x300) != 0)
-			error |= CLASS1_ENABLE_STORAGE_FAULT_INTR;
-		local_irq_restore(flags);
-	}
-	if (error & CLASS1_ENABLE_STORAGE_FAULT_INTR) {
-		if ((ret = spu_handle_mm_fault(spu)) != 0)
-			error |= CLASS1_ENABLE_STORAGE_FAULT_INTR;
-		else
-			error &= ~CLASS1_ENABLE_STORAGE_FAULT_INTR;
-	}
-	spu->dar = 0UL;
-	spu->dsisr = 0UL;
-	if (!error) {
-		spu_restart_dma(spu);
-	} else {
-		__spu_trap_invalid_dma(spu);
-	}
-	return ret;
-}
-
-static int __init find_spu_node_id(struct device_node *spe)
-{
-	unsigned int *id;
-	struct device_node *cpu;
-	cpu = spe->parent->parent;
-	id = (unsigned int *)get_property(cpu, "node-id", NULL);
-	return id ? *id : 0;
-}
-
-static int __init cell_spuprop_present(struct spu *spu, struct device_node *spe,
-		const char *prop)
-{
-	static DEFINE_MUTEX(add_spumem_mutex);
-
-	struct address_prop {
-		unsigned long address;
-		unsigned int len;
-	} __attribute__((packed)) *p;
-	int proplen;
-
-	unsigned long start_pfn, nr_pages;
-	struct pglist_data *pgdata;
-	struct zone *zone;
-	int ret;
-
-	p = (void*)get_property(spe, prop, &proplen);
-	WARN_ON(proplen != sizeof (*p));
-
-	start_pfn = p->address >> PAGE_SHIFT;
-	nr_pages = ((unsigned long)p->len + PAGE_SIZE - 1) >> PAGE_SHIFT;
-
-	pgdata = NODE_DATA(spu->nid);
-	zone = pgdata->node_zones;
-
-	/* XXX rethink locking here */
-	mutex_lock(&add_spumem_mutex);
-	ret = __add_pages(zone, start_pfn, nr_pages);
-	mutex_unlock(&add_spumem_mutex);
-
-	return ret;
-}
-
-static void __iomem * __init map_spe_prop(struct spu *spu,
-		struct device_node *n, const char *name)
-{
-	struct address_prop {
-		unsigned long address;
-		unsigned int len;
-	} __attribute__((packed)) *prop;
-
-	void *p;
-	int proplen;
-	void* ret = NULL;
-	int err = 0;
-
-	p = get_property(n, name, &proplen);
-	if (proplen != sizeof (struct address_prop))
-		return NULL;
-
-	prop = p;
-
-	err = cell_spuprop_present(spu, n, name);
-	if (err && (err != -EEXIST))
-		goto out;
-
-	ret = ioremap(prop->address, prop->len);
-
- out:
-	return ret;
-}
-
-static void spu_unmap(struct spu *spu)
-{
-	iounmap(spu->priv2);
-	iounmap(spu->priv1);
-	iounmap(spu->problem);
-	iounmap((u8 __iomem *)spu->local_store);
-}
-
-/* This function shall be abstracted for HV platforms */
-static int __init spu_map_interrupts(struct spu *spu, struct device_node *np)
-{
-	struct irq_host *host;
-	unsigned int isrc;
-	u32 *tmp;
-
-	host = iic_get_irq_host(spu->node);
-	if (host == NULL)
-		return -ENODEV;
-
-	/* Get the interrupt source from the device-tree */
-	tmp = (u32 *)get_property(np, "isrc", NULL);
-	if (!tmp)
-		return -ENODEV;
-	spu->isrc = isrc = tmp[0];
-
-	/* Now map interrupts of all 3 classes */
-	spu->irqs[0] = irq_create_mapping(host, 0x00 | isrc);
-	spu->irqs[1] = irq_create_mapping(host, 0x10 | isrc);
-	spu->irqs[2] = irq_create_mapping(host, 0x20 | isrc);
-
-	/* Right now, we only fail if class 2 failed */
-	return spu->irqs[2] == NO_IRQ ? -EINVAL : 0;
-}
-
-static int __init spu_map_device(struct spu *spu, struct device_node *node)
-{
-	char *prop;
-	int ret;
-
-	ret = -ENODEV;
-	spu->name = get_property(node, "name", NULL);
-	if (!spu->name)
-		goto out;
-
-	prop = get_property(node, "local-store", NULL);
-	if (!prop)
-		goto out;
-	spu->local_store_phys = *(unsigned long *)prop;
-
-	/* we use local store as ram, not io memory */
-	spu->local_store = (void __force *)
-		map_spe_prop(spu, node, "local-store");
-	if (!spu->local_store)
-		goto out;
-
-	prop = get_property(node, "problem", NULL);
-	if (!prop)
-		goto out_unmap;
-	spu->problem_phys = *(unsigned long *)prop;
-
-	spu->problem= map_spe_prop(spu, node, "problem");
-	if (!spu->problem)
-		goto out_unmap;
-
-	spu->priv1= map_spe_prop(spu, node, "priv1");
-	/* priv1 is not available on a hypervisor */
-
-	spu->priv2= map_spe_prop(spu, node, "priv2");
-	if (!spu->priv2)
-		goto out_unmap;
-	ret = 0;
-	goto out;
-
-out_unmap:
-	spu_unmap(spu);
-out:
-	return ret;
-}
 
 struct sysdev_class spu_sysdev_class = {
 	set_kset_name("spu")
 };
 
-static ssize_t spu_show_isrc(struct sys_device *sysdev, char *buf)
+int spu_add_sysdev_attr(struct sysdev_attribute *attr)
 {
-	struct spu *spu = container_of(sysdev, struct spu, sysdev);
-	return sprintf(buf, "%d\n", spu->isrc);
+	struct spu *spu;
+	mutex_lock(&spu_mutex);
 
+	list_for_each_entry(spu, &spu_full_list, full_list)
+		sysdev_create_file(&spu->sysdev, attr);
+
+	mutex_unlock(&spu_mutex);
+	return 0;
 }
-static SYSDEV_ATTR(isrc, 0400, spu_show_isrc, NULL);
+EXPORT_SYMBOL_GPL(spu_add_sysdev_attr);
 
-extern int attach_sysdev_to_node(struct sys_device *dev, int nid);
+int spu_add_sysdev_attr_group(struct attribute_group *attrs)
+{
+	struct spu *spu;
+	mutex_lock(&spu_mutex);
+
+	list_for_each_entry(spu, &spu_full_list, full_list)
+		sysfs_create_group(&spu->sysdev.kobj, attrs);
+
+	mutex_unlock(&spu_mutex);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(spu_add_sysdev_attr_group);
+
+
+void spu_remove_sysdev_attr(struct sysdev_attribute *attr)
+{
+	struct spu *spu;
+	mutex_lock(&spu_mutex);
+
+	list_for_each_entry(spu, &spu_full_list, full_list)
+		sysdev_remove_file(&spu->sysdev, attr);
+
+	mutex_unlock(&spu_mutex);
+}
+EXPORT_SYMBOL_GPL(spu_remove_sysdev_attr);
+
+void spu_remove_sysdev_attr_group(struct attribute_group *attrs)
+{
+	struct spu *spu;
+	mutex_lock(&spu_mutex);
+
+	list_for_each_entry(spu, &spu_full_list, full_list)
+		sysfs_remove_group(&spu->sysdev.kobj, attrs);
+
+	mutex_unlock(&spu_mutex);
+}
+EXPORT_SYMBOL_GPL(spu_remove_sysdev_attr_group);
 
 static int spu_create_sysdev(struct spu *spu)
 {
@@ -663,70 +550,66 @@ static int spu_create_sysdev(struct spu *spu)
 		return ret;
 	}
 
-	if (spu->isrc != 0)
-		sysdev_create_file(&spu->sysdev, &attr_isrc);
-	sysfs_add_device_to_node(&spu->sysdev, spu->nid);
+	sysfs_add_device_to_node(&spu->sysdev, spu->node);
 
 	return 0;
 }
 
 static void spu_destroy_sysdev(struct spu *spu)
 {
-	sysdev_remove_file(&spu->sysdev, &attr_isrc);
-	sysfs_remove_device_from_node(&spu->sysdev, spu->nid);
+	sysfs_remove_device_from_node(&spu->sysdev, spu->node);
 	sysdev_unregister(&spu->sysdev);
 }
 
-static int __init create_spu(struct device_node *spe)
+static int __init create_spu(void *data)
 {
 	struct spu *spu;
 	int ret;
 	static int number;
+	unsigned long flags;
 
 	ret = -ENOMEM;
 	spu = kzalloc(sizeof (*spu), GFP_KERNEL);
 	if (!spu)
 		goto out;
 
-	ret = spu_map_device(spu, spe);
+	spin_lock_init(&spu->register_lock);
+	mutex_lock(&spu_mutex);
+	spu->number = number++;
+	mutex_unlock(&spu_mutex);
+
+	ret = spu_create_spu(spu, data);
+
 	if (ret)
 		goto out_free;
 
-	spu->node = find_spu_node_id(spe);
-	spu->nid = of_node_to_nid(spe);
-	if (spu->nid == -1)
-		spu->nid = 0;
-	ret = spu_map_interrupts(spu, spe);
-	if (ret)
-		goto out_unmap;
-	spin_lock_init(&spu->register_lock);
-	spu_mfc_sdr_set(spu, mfspr(SPRN_SDR1));
+	spu_mfc_sdr_setup(spu);
 	spu_mfc_sr1_set(spu, 0x33);
-	mutex_lock(&spu_mutex);
-
-	spu->number = number++;
 	ret = spu_request_irqs(spu);
 	if (ret)
-		goto out_unmap;
+		goto out_destroy;
 
 	ret = spu_create_sysdev(spu);
 	if (ret)
 		goto out_free_irqs;
 
-	list_add(&spu->list, &spu_list);
+	mutex_lock(&spu_mutex);
+	spin_lock_irqsave(&spu_list_lock, flags);
+	list_add(&spu->list, &be_spu_info[spu->node].free_spus);
+	list_add(&spu->be_list, &be_spu_info[spu->node].spus);
+	be_spu_info[spu->node].n_spus++;
+	list_add(&spu->full_list, &spu_full_list);
+	spin_unlock_irqrestore(&spu_list_lock, flags);
 	mutex_unlock(&spu_mutex);
 
-	pr_debug(KERN_DEBUG "Using SPE %s %02x %p %p %p %p %d\n",
-		spu->name, spu->isrc, spu->local_store,
-		spu->problem, spu->priv1, spu->priv2, spu->number);
+	INIT_LIST_HEAD(&spu->aff_list);
+
 	goto out;
 
 out_free_irqs:
 	spu_free_irqs(spu);
-
-out_unmap:
-	mutex_unlock(&spu_mutex);
-	spu_unmap(spu);
+out_destroy:
+	spu_destroy_spu(spu);
 out_free:
 	kfree(spu);
 out:
@@ -736,57 +619,200 @@ out:
 static void destroy_spu(struct spu *spu)
 {
 	list_del_init(&spu->list);
+	list_del_init(&spu->be_list);
+	list_del_init(&spu->full_list);
 
 	spu_destroy_sysdev(spu);
 	spu_free_irqs(spu);
-	spu_unmap(spu);
+	spu_destroy_spu(spu);
 	kfree(spu);
 }
 
 static void cleanup_spu_base(void)
 {
 	struct spu *spu, *tmp;
+	int node;
+
 	mutex_lock(&spu_mutex);
-	list_for_each_entry_safe(spu, tmp, &spu_list, list)
-		destroy_spu(spu);
+	for (node = 0; node < MAX_NUMNODES; node++) {
+		list_for_each_entry_safe(spu, tmp, &be_spu_info[node].free_spus,
+									list)
+			destroy_spu(spu);
+	}
 	mutex_unlock(&spu_mutex);
 	sysdev_class_unregister(&spu_sysdev_class);
 }
 module_exit(cleanup_spu_base);
 
+struct be_spu_info be_spu_info[MAX_NUMNODES];
+EXPORT_SYMBOL_GPL(be_spu_info);
+
+/* Hardcoded affinity idxs for QS20 */
+#define SPES_PER_BE 8
+static int QS20_reg_idxs[SPES_PER_BE] =   { 0, 2, 4, 6, 7, 5, 3, 1 };
+static int QS20_reg_memory[SPES_PER_BE] = { 1, 1, 0, 0, 0, 0, 0, 0 };
+
+static struct spu *spu_lookup_reg(int node, u32 reg)
+{
+	struct spu *spu;
+
+	list_for_each_entry(spu, &be_spu_info[node].spus, be_list) {
+		if (*(u32 *)get_property(spu_devnode(spu), "reg", NULL) == reg)
+			return spu;
+	}
+	return NULL;
+}
+
+static void init_aff_QS20_harcoded(void)
+{
+	int node, i;
+	struct spu *last_spu, *spu;
+	u32 reg;
+
+	for (node = 0; node < MAX_NUMNODES; node++) {
+		last_spu = NULL;
+		for (i = 0; i < SPES_PER_BE; i++) {
+			reg = QS20_reg_idxs[i];
+			spu = spu_lookup_reg(node, reg);
+			if (!spu)
+				continue;
+			spu->has_mem_affinity = QS20_reg_memory[reg];
+			if (last_spu)
+				list_add_tail(&spu->aff_list,
+						&last_spu->aff_list);
+			last_spu = spu;
+		}
+	}
+}
+
+static int of_has_vicinity(void)
+{
+	struct spu* spu;
+
+	spu = list_entry(be_spu_info[0].spus.next, struct spu, be_list);
+	return of_find_property(spu_devnode(spu), "vicinity", NULL) != NULL;
+}
+
+static struct spu *aff_devnode_spu(int be, struct device_node *dn)
+{
+	struct spu *spu;
+
+	list_for_each_entry(spu, &be_spu_info[be].spus, be_list)
+		if (spu_devnode(spu) == dn)
+			return spu;
+	return NULL;
+}
+
+static struct spu *
+aff_node_next_to(int be, struct device_node *target, struct device_node *avoid)
+{
+	struct spu *spu;
+	const phandle *vic_handles;
+	int lenp, i;
+
+	list_for_each_entry(spu, &be_spu_info[be].spus, be_list) {
+		if (spu_devnode(spu) == avoid)
+			continue;
+		vic_handles = get_property(spu_devnode(spu), "vicinity", &lenp);
+		for (i=0; i < (lenp / sizeof(phandle)); i++) {
+			if (vic_handles[i] == target->linux_phandle)
+				return spu;
+		}
+	}
+	return NULL;
+}
+
+static void init_aff_fw_vicinity_node(int be)
+{
+	struct spu *spu, *last_spu;
+	struct device_node *vic_dn, *last_spu_dn;
+	phandle avoid_ph;
+	const phandle *vic_handles;
+	const char *name;
+	int lenp, i, added, mem_aff;
+
+	last_spu = list_entry(be_spu_info[be].spus.next, struct spu, be_list);
+	avoid_ph = 0;
+	for (added = 1; added < be_spu_info[be].n_spus; added++) {
+		last_spu_dn = spu_devnode(last_spu);
+		vic_handles = get_property(last_spu_dn, "vicinity", &lenp);
+
+		for (i = 0; i < (lenp / sizeof(phandle)); i++) {
+			if (vic_handles[i] == avoid_ph)
+				continue;
+
+			vic_dn = of_find_node_by_phandle(vic_handles[i]);
+			if (!vic_dn)
+				continue;
+
+			name = get_property(vic_dn, "name", NULL);
+			if (strcmp(name, "spe") == 0) {
+				spu = aff_devnode_spu(be, vic_dn);
+				avoid_ph = last_spu_dn->linux_phandle;
+			}
+			else {
+				mem_aff = strcmp(name, "mic-tm") == 0;
+				spu = aff_node_next_to(be, vic_dn, last_spu_dn);
+				if (!spu)
+					continue;
+				if (mem_aff) {
+					last_spu->has_mem_affinity = 1;
+					spu->has_mem_affinity = 1;
+				}
+				avoid_ph = vic_dn->linux_phandle;
+			}
+			list_add_tail(&spu->aff_list, &last_spu->aff_list);
+			last_spu = spu;
+			break;
+		}
+	}
+}
+
+static void init_aff_fw_vicinity(void)
+{
+	int be;
+
+	/* sets has_mem_affinity for each spu, as long as the
+	 * spu->aff_list list, linking each spu to its neighbors
+	 */
+	for (be = 0; be < MAX_NUMNODES; be++)
+		init_aff_fw_vicinity_node(be);
+}
+
 static int __init init_spu_base(void)
 {
-	struct device_node *node;
-	int ret;
+	int i, ret;
+	long root;
+
+	if (!spu_management_ops)
+		return 0;
 
 	/* create sysdev class for spus */
 	ret = sysdev_class_register(&spu_sysdev_class);
 	if (ret)
 		return ret;
 
-	ret = -ENODEV;
-	for (node = of_find_node_by_type(NULL, "spe");
-			node; node = of_find_node_by_type(node, "spe")) {
-		ret = create_spu(node);
-		if (ret) {
-			printk(KERN_WARNING "%s: Error initializing %s\n",
-				__FUNCTION__, node->name);
-			cleanup_spu_base();
-			break;
-		}
+	for (i = 0; i < MAX_NUMNODES; i++) {
+		INIT_LIST_HEAD(&be_spu_info[i].spus);
+		INIT_LIST_HEAD(&be_spu_info[i].free_spus);
 	}
-	/* in some old firmware versions, the spe is called 'spc', so we
-	   look for that as well */
-	for (node = of_find_node_by_type(NULL, "spc");
-			node; node = of_find_node_by_type(node, "spc")) {
-		ret = create_spu(node);
-		if (ret) {
-			printk(KERN_WARNING "%s: Error initializing %s\n",
-				__FUNCTION__, node->name);
-			cleanup_spu_base();
-			break;
-		}
+
+	ret = spu_enumerate_spus(create_spu);
+	if (ret) {
+		printk(KERN_WARNING "%s: Error initializing spus\n",
+			__FUNCTION__);
+		cleanup_spu_base();
+		return ret;
 	}
+
+	if (of_has_vicinity()) {
+		init_aff_fw_vicinity();
+	} else {
+		root = of_get_flat_dt_root();
+		if (of_flat_dt_is_compatible(root, "IBM,CPBW-1.0"))
+			init_aff_QS20_harcoded();
+	}
+
 	return ret;
 }
 module_init(init_spu_base);

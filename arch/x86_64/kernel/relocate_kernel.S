@@ -7,31 +7,195 @@
  */
 
 #include <linux/linkage.h>
+#include <asm/page.h>
+#include <asm/kexec.h>
 
-	/*
-	 * Must be relocatable PIC code callable as a C function, that once
-	 * it starts can not use the previous processes stack.
-	 */
-	.globl relocate_new_kernel
+/*
+ * Must be relocatable PIC code callable as a C function
+ */
+
+#define PTR(x) (x << 3)
+#define PAGE_ALIGNED (1 << PAGE_SHIFT)
+#define PAGE_ATTR 0x63 /* _PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED|_PAGE_DIRTY */
+
+	.text
+	.align PAGE_ALIGNED
 	.code64
-relocate_new_kernel:
-	/* %rdi page_list
-	 * %rsi reboot_code_buffer
+	.globl relocate_kernel
+relocate_kernel:
+	/* %rdi indirection_page
+	 * %rsi page_list
 	 * %rdx start address
-	 * %rcx page_table
-	 * %r8  arg5
-	 * %r9  arg6
+	 */
+
+	/* map the control page at its virtual address */
+
+	movq	$0x0000ff8000000000, %r10        /* mask */
+	mov	$(39 - 3), %cl                   /* bits to shift */
+	movq	PTR(VA_CONTROL_PAGE)(%rsi), %r11 /* address to map */
+
+	movq	%r11, %r9
+	andq	%r10, %r9
+	shrq	%cl, %r9
+
+	movq	PTR(VA_PGD)(%rsi), %r8
+	addq	%r8, %r9
+	movq	PTR(PA_PUD_0)(%rsi), %r8
+	orq	$PAGE_ATTR, %r8
+	movq	%r8, (%r9)
+
+	shrq	$9, %r10
+	sub	$9, %cl
+
+	movq	%r11, %r9
+	andq	%r10, %r9
+	shrq	%cl, %r9
+
+	movq	PTR(VA_PUD_0)(%rsi), %r8
+	addq	%r8, %r9
+	movq	PTR(PA_PMD_0)(%rsi), %r8
+	orq	$PAGE_ATTR, %r8
+	movq	%r8, (%r9)
+
+	shrq	$9, %r10
+	sub	$9, %cl
+
+	movq	%r11, %r9
+	andq	%r10, %r9
+	shrq	%cl, %r9
+
+	movq	PTR(VA_PMD_0)(%rsi), %r8
+	addq	%r8, %r9
+	movq	PTR(PA_PTE_0)(%rsi), %r8
+	orq	$PAGE_ATTR, %r8
+	movq	%r8, (%r9)
+
+	shrq	$9, %r10
+	sub	$9, %cl
+
+	movq	%r11, %r9
+	andq	%r10, %r9
+	shrq	%cl, %r9
+
+	movq	PTR(VA_PTE_0)(%rsi), %r8
+	addq	%r8, %r9
+	movq	PTR(PA_CONTROL_PAGE)(%rsi), %r8
+	orq	$PAGE_ATTR, %r8
+	movq	%r8, (%r9)
+
+	/* identity map the control page at its physical address */
+
+	movq	$0x0000ff8000000000, %r10        /* mask */
+	mov	$(39 - 3), %cl                   /* bits to shift */
+	movq	PTR(PA_CONTROL_PAGE)(%rsi), %r11 /* address to map */
+
+	movq	%r11, %r9
+	andq	%r10, %r9
+	shrq	%cl, %r9
+
+	movq	PTR(VA_PGD)(%rsi), %r8
+	addq	%r8, %r9
+	movq	PTR(PA_PUD_1)(%rsi), %r8
+	orq	$PAGE_ATTR, %r8
+	movq	%r8, (%r9)
+
+	shrq	$9, %r10
+	sub	$9, %cl
+
+	movq	%r11, %r9
+	andq	%r10, %r9
+	shrq	%cl, %r9
+
+	movq	PTR(VA_PUD_1)(%rsi), %r8
+	addq	%r8, %r9
+	movq	PTR(PA_PMD_1)(%rsi), %r8
+	orq	$PAGE_ATTR, %r8
+	movq	%r8, (%r9)
+
+	shrq	$9, %r10
+	sub	$9, %cl
+
+	movq	%r11, %r9
+	andq	%r10, %r9
+	shrq	%cl, %r9
+
+	movq	PTR(VA_PMD_1)(%rsi), %r8
+	addq	%r8, %r9
+	movq	PTR(PA_PTE_1)(%rsi), %r8
+	orq	$PAGE_ATTR, %r8
+	movq	%r8, (%r9)
+
+	shrq	$9, %r10
+	sub	$9, %cl
+
+	movq	%r11, %r9
+	andq	%r10, %r9
+	shrq	%cl, %r9
+
+	movq	PTR(VA_PTE_1)(%rsi), %r8
+	addq	%r8, %r9
+	movq	PTR(PA_CONTROL_PAGE)(%rsi), %r8
+	orq	$PAGE_ATTR, %r8
+	movq	%r8, (%r9)
+
+relocate_new_kernel:
+	/* %rdi indirection_page
+	 * %rsi page_list
+	 * %rdx start address
 	 */
 
 	/* zero out flags, and disable interrupts */
 	pushq $0
 	popfq
 
-	/* set a new stack at the bottom of our page... */
-	lea   4096(%rsi), %rsp
+	/* get physical address of control page now */
+	/* this is impossible after page table switch */
+	movq	PTR(PA_CONTROL_PAGE)(%rsi), %r8
 
-	/* store the parameters back on the stack */
-	pushq	%rdx /* store the start address */
+	/* get physical address of page table now too */
+	movq	PTR(PA_TABLE_PAGE)(%rsi), %rcx
+
+	/* switch to new set of page tables */
+	movq	PTR(PA_PGD)(%rsi), %r9
+	movq	%r9, %cr3
+
+	/* setup idt */
+	movq    %r8, %rax
+	addq    $(idt_80 - relocate_kernel), %rax
+	lidtq   (%rax)
+
+	/* setup gdt */
+	movq    %r8, %rax
+	addq    $(gdt - relocate_kernel), %rax
+	movq    %r8, %r9
+	addq    $((gdt_80 - relocate_kernel) + 2), %r9
+	movq    %rax, (%r9)
+
+	movq    %r8, %rax
+	addq    $(gdt_80 - relocate_kernel), %rax
+	lgdtq   (%rax)
+
+	/* setup data segment registers */
+	xorl	%eax, %eax
+	movl    %eax, %ds
+	movl    %eax, %es
+	movl    %eax, %fs
+	movl    %eax, %gs
+	movl    %eax, %ss
+
+	/* setup a new stack at the end of the physical control page */
+	lea	4096(%r8), %rsp
+
+	/* load new code segment and jump to identity mapped page */
+	movq	%r8, %rax
+	addq    $(identity_mapped - relocate_kernel), %rax
+	pushq	$(gdt_cs - gdt)
+	pushq	%rax
+	lretq
+
+identity_mapped:
+	/* store the start address on the stack */
+	pushq   %rdx
 
 	/* Set cr0 to a known state:
 	 * 31 1 == Paging enabled
@@ -134,10 +298,19 @@ relocate_new_kernel:
 	xorq	%r13, %r13
 	xorq	%r14, %r14
 	xorq	%r15, %r15
-
 	ret
-relocate_new_kernel_end:
 
-	.globl relocate_new_kernel_size
-relocate_new_kernel_size:
-	.quad relocate_new_kernel_end - relocate_new_kernel
+	.align  16
+gdt:
+	.quad	0x0000000000000000	/* NULL descriptor */
+gdt_cs:
+	.quad   0x00af9a000000ffff
+gdt_end:
+
+gdt_80:
+	.word	gdt_end - gdt - 1	/* limit */
+	.quad	0			/* base - filled in by code above */
+
+idt_80:
+	.word	0			/* limit */
+	.quad	0			/* base */

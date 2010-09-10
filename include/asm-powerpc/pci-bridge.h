@@ -80,6 +80,9 @@ struct pci_dn {
 	struct	pci_dev *pcidev;	/* back-pointer to the pci device */
 	struct	device_node *node;	/* back-pointer to the device_node */
 	u32	config_space[16];	/* saved PCI config space */
+#ifdef CONFIG_PCI_MSI
+	struct list_head msi_list;
+#endif
 };
 
 /* Get the pointer to a device_node's pci_dn */
@@ -154,12 +157,18 @@ extern void pcibios_free_controller(struct pci_controller *phb);
 
 #ifdef CONFIG_PCI
 extern unsigned long pci_address_to_pio(phys_addr_t address);
+extern int pcibios_vaddr_is_ioport(void __iomem *address);
 #else
 static inline unsigned long pci_address_to_pio(phys_addr_t address)
 {
 	return (unsigned long)-1;
 }
+static inline int pcibios_vaddr_is_ioport(void __iomem *address)
+{
+	return 0;
+}
 #endif
+
 
 /* Return values for ppc_md.pci_probe_mode function */
 #define PCI_PROBE_NONE		-1	/* Don't look at this bus at all */

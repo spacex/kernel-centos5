@@ -127,8 +127,13 @@ typedef struct _drm_i810_init {
 /* This is the init structure prior to v1.2 */
 typedef struct _drm_i810_pre12_init {
 	drm_i810_init_func_t func;
+#if CONFIG_XFREE86_VERSION < XFREE86_VERSION(4,1,0,0)
+	int ring_map_idx;
+	int buffer_map_idx;
+#else
 	unsigned int mmio_offset;
 	unsigned int buffers_offset;
+#endif
 	int sarea_priv_offset;
 	unsigned int ring_start;
 	unsigned int ring_end;

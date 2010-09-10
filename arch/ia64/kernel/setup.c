@@ -79,10 +79,18 @@ EXPORT_SYMBOL(__per_cpu_offset);
 #endif
 
 #ifdef CONFIG_XEN
+static void
+xen_panic_hypercall(struct unw_frame_info *info, void *arg)
+{
+	current->thread.ksp = (__u64)info->sw - 16;
+	HYPERVISOR_shutdown(SHUTDOWN_crash);
+	/* we're never actually going to get here... */
+}
+
 static int
 xen_panic_event(struct notifier_block *this, unsigned long event, void *ptr)
 {
-	HYPERVISOR_shutdown(SHUTDOWN_crash);
+	unw_init_running(xen_panic_hypercall, NULL);
 	/* we're never actually going to get here... */
 	return NOTIFY_DONE;
 }
@@ -92,6 +100,13 @@ static struct notifier_block xen_panic_block = {
 	.next		= NULL,
 	.priority	= 0	/* try to go last */
 };
+
+void xen_pm_power_off(void)
+{
+	printk("%s called\n", __FUNCTION__);
+	local_irq_disable();
+	HYPERVISOR_shutdown(SHUTDOWN_poweroff);
+}
 #endif
 
 extern void ia64_setup_printk_clock(void);
@@ -539,6 +554,7 @@ setup_arch (char **cmdline_p)
 		setup_xen_features();
 		/* Register a call for panic conditions. */
 		atomic_notifier_chain_register(&panic_notifier_list, &xen_panic_block);
+		pm_power_off = xen_pm_power_off;
 	}
 #endif
 
@@ -634,19 +650,25 @@ setup_arch (char **cmdline_p)
 #if !defined(CONFIG_VT) || !defined(CONFIG_DUMMY_CONSOLE)
 			conswitchp = NULL;
 #endif
+			/* force set tty for RHEL5 */
+			add_preferred_console("tty", 0, NULL);
 		}
 	}
 #endif
 #endif
 
 	/* enable IA-64 Machine Check Abort Handling unless disabled */
+#ifdef CONFIG_XEN
+	if (is_running_on_xen() && !is_initial_xendomain())
+		nomca = 1;
+#endif
 	if (!nomca)
 		ia64_mca_init();
 
 	platform_setup(cmdline_p);
 	paging_init();
 #ifdef CONFIG_XEN
-	contiguous_bitmap_init(max_pfn);
+	xen_contiguous_bitmap_init(max_pfn);
 #endif
 }
 

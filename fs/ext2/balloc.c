@@ -323,7 +323,7 @@ got_it:
  * bitmap, and then for any free bit if that fails.
  * This function also updates quota and i_blocks field.
  */
-int ext2_new_block(struct inode *inode, unsigned long goal,
+unsigned long ext2_new_block(struct inode *inode, unsigned long goal,
 			u32 *prealloc_count, u32 *prealloc_block, int *err)
 {
 	struct buffer_head *bitmap_bh = NULL;
@@ -332,8 +332,8 @@ int ext2_new_block(struct inode *inode, unsigned long goal,
 	int group_no;			/* i */
 	int ret_block;			/* j */
 	int group_idx;			/* k */
-	int target_block;		/* tmp */
-	int block = 0;
+	unsigned long target_block;	/* tmp */
+	unsigned long block = 0;
 	struct super_block *sb = inode->i_sb;
 	struct ext2_sb_info *sbi = EXT2_SB(sb);
 	struct ext2_super_block *es = sbi->s_es;
@@ -460,7 +460,7 @@ got_block:
 		      sbi->s_itb_per_group))
 		ext2_error (sb, "ext2_new_block",
 			    "Allocating block in system zone - "
-			    "block = %u", target_block);
+			    "block = %lu", target_block);
 
 	if (target_block >= le32_to_cpu(es->s_blocks_count)) {
 		ext2_error (sb, "ext2_new_block",

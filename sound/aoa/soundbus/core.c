@@ -34,7 +34,7 @@ void soundbus_dev_put(struct soundbus_dev *dev)
 }
 EXPORT_SYMBOL_GPL(soundbus_dev_put);
 
-static int soundbus_probe(struct device *dev)
+static int __devinit soundbus_probe(struct device *dev)
 {
 	int error = -ENODEV;
 	struct soundbus_driver *drv;
@@ -134,7 +134,7 @@ static int soundbus_uevent(struct device *dev, char **envp, int num_envp,
 	return 0;
 }
 
-static int soundbus_device_remove(struct device *dev)
+static int __devexit soundbus_device_remove(struct device *dev)
 {
 	struct soundbus_dev * soundbus_dev = to_soundbus_device(dev);
 	struct soundbus_driver * drv = to_soundbus_driver(dev->driver);
@@ -185,7 +185,7 @@ static struct bus_type soundbus_bus_type = {
 	.name		= "aoa-soundbus",
 	.probe		= soundbus_probe,
 	.uevent		= soundbus_uevent,
-	.remove		= soundbus_device_remove,
+	.remove		= __devexit_p(soundbus_device_remove),
 	.shutdown	= soundbus_device_shutdown,
 #ifdef CONFIG_PM
 	.suspend	= soundbus_device_suspend,

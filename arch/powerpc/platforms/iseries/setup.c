@@ -654,6 +654,11 @@ static int __init iseries_probe(void)
 	if (!of_flat_dt_is_compatible(root, "IBM,iSeries"))
 		return 0;
 
+	/* Identify CPU type. This is done again by the common code later
+	 * on but calling this function multiple times is fine.
+	 */
+	identify_cpu(0, mfspr(SPRN_PVR));
+
 	powerpc_firmware_features |= FW_FEATURE_ISERIES;
 	powerpc_firmware_features |= FW_FEATURE_LPAR;
 

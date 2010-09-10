@@ -40,6 +40,16 @@ void touch_softlockup_watchdog(void)
 }
 EXPORT_SYMBOL(touch_softlockup_watchdog);
 
+void touch_all_softlockup_watchdogs(void)
+{
+	int cpu;
+
+	/* Cause each CPU to re-update its timestamp rather than complain */
+	for_each_online_cpu(cpu)
+		per_cpu(touch_timestamp, cpu) = 0;
+}
+EXPORT_SYMBOL(touch_all_softlockup_watchdogs);
+
 /*
  * This callback runs from the timer interrupt, and checks
  * whether the watchdog thread has hung or not:

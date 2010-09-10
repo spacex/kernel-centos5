@@ -21,6 +21,7 @@ This driver is known to work with the following cards:
 	* SA E200
 	* SA E200i
 	* SA E500
+	* SA P700m
 
 If nodes are not already created in the /dev/cciss directory, run as root:
 

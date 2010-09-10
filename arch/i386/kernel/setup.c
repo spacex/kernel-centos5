@@ -82,7 +82,7 @@ EXPORT_SYMBOL(efi_enabled);
 #endif
 
 /* cpu data as detected by the assembly code in head.S */
-struct cpuinfo_x86 new_cpu_data __initdata = { 0, 0, 0, 0, -1, 1, 0, 0, -1 };
+struct cpuinfo_x86 new_cpu_data __cpuinitdata = { 0, 0, 0, 0, -1, 1, 0, 0, -1 };
 /* common cpu data for all cpus */
 struct cpuinfo_x86 boot_cpu_data __read_mostly = { 0, 0, 0, 0, -1, 1, 0, 0, -1 };
 EXPORT_SYMBOL(boot_cpu_data);
@@ -408,6 +408,26 @@ static void __init limit_regions(unsigned long long size)
 		return;
 	}
 }
+
+/*
+ * This function checks if any part of the range <start,end> is mapped
+ * with type.
+ */
+int
+e820_any_mapped(u64 start, u64 end, unsigned type)
+{
+	int i;
+	for (i = 0; i < e820.nr_map; i++) {
+		const struct e820entry *ei = &e820.map[i];
+		if (type && ei->type != type)
+			continue;
+		if (ei->addr >= end || ei->addr + ei->size <= start)
+			continue;
+		return 1;
+	}
+	return 0;
+}
+EXPORT_SYMBOL_GPL(e820_any_mapped);
 
 void __init add_memory_region(unsigned long long start,
 			      unsigned long long size, int type)
@@ -885,9 +905,6 @@ static void __init parse_cmdline_early (char ** cmdline_p)
 			size = memparse(from+12, &from);
 			if (*from == '@') {
 				base = memparse(from+1, &from);
-				/* FIXME: Do I want a sanity check
-				 * to validate the memory range?
-				 */
 				crashk_res.start = base;
 				crashk_res.end   = base + size - 1;
 			}
@@ -1277,9 +1294,18 @@ void __init setup_bootmem_allocator(void)
 	}
 #endif
 #ifdef CONFIG_KEXEC
-	if (crashk_res.start != crashk_res.end)
+	if ((crashk_res.start < crashk_res.end) &&
+	    (crashk_res.end <= (max_low_pfn << PAGE_SHIFT))) {
 		reserve_bootmem(crashk_res.start,
-			crashk_res.end - crashk_res.start + 1);
+				crashk_res.end - crashk_res.start + 1);
+	}
+	else {
+		printk(KERN_ERR "Memory for crash kernel (0x%lx to 0x%lx) not"
+		       "within permissible range\ndisabling kdump\n",
+		       crashk_res.start, crashk_res.end);
+		crashk_res.end = 0;
+		crashk_res.start = 0;
+	}
 #endif
 }
 

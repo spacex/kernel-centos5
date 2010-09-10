@@ -43,7 +43,7 @@ static struct pci_device_id pciidlist[] = {
 
 static struct drm_driver driver = {
 	.driver_features =
-	    DRIVER_USE_AGP | DRIVER_REQUIRE_AGP | DRIVER_USE_MTRR |
+	    DRIVER_USE_AGP | DRIVER_REQUIRE_AGP | /* DRIVER_USE_MTRR | */
 	    DRIVER_HAVE_DMA | DRIVER_DMA_QUEUE,
 	.dev_priv_size = sizeof(drm_i810_buf_priv_t),
 	.load = i810_driver_load,

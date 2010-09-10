@@ -23,6 +23,26 @@ enum sas_protocol {
 	SAS_PROTOCOL_SSP		= 0x08,
 };
 
+/* The following two enums are pretty much a mess, but before 5.1
+   sas_phy_linkrate existed in sas.h, and sas_linkrate existed in
+   scsi_transport_sas.h. These were merged into one with standard
+   values. In order to not break function CRCs, we need to have a
+   copy of each for genksyms.
+*/
+enum sas_phy_linkrate {
+	PHY_LINKRATE_NONE = 0,
+	PHY_LINKRATE_UNKNOWN = 0,
+	PHY_DISABLED,
+	PHY_RESET_PROBLEM,
+	PHY_SPINUP_HOLD,
+	PHY_PORT_SELECTOR,
+	PHY_LINKRATE_1_5 = 0x08,
+	PHY_LINKRATE_G1  = PHY_LINKRATE_1_5,
+	PHY_LINKRATE_3   = 0x09,
+	PHY_LINKRATE_G2  = PHY_LINKRATE_3,
+	PHY_LINKRATE_6   = 0x0A,
+};
+
 enum sas_linkrate {
 	SAS_LINK_RATE_UNKNOWN,
 	SAS_PHY_DISABLED,
@@ -65,6 +85,11 @@ struct sas_phy {
 
 	/* for the list of phys belonging to a port */
 	struct list_head	port_siblings;
+
+#ifndef __GENKSYMS__
+	struct work_struct      reset_work;
+	int			enabled;
+#endif
 };
 
 #define dev_to_phy(d) \
@@ -142,12 +167,21 @@ struct sas_port {
 #define transport_class_to_sas_port(cdev) \
 	dev_to_sas_port((cdev)->dev)
 
+struct sas_phy_linkrates {
+	enum sas_phy_linkrate maximum_linkrate;
+	enum sas_phy_linkrate minimum_linkrate;
+};
+
 /* The functions by which the transport class and the driver communicate */
 struct sas_function_template {
 	int (*get_linkerrors)(struct sas_phy *);
 	int (*get_enclosure_identifier)(struct sas_rphy *, u64 *);
 	int (*get_bay_identifier)(struct sas_rphy *);
 	int (*phy_reset)(struct sas_phy *, int);
+#ifndef __GENKSYMS__
+	int (*set_phy_speed)(struct sas_phy *, struct sas_phy_linkrates *);
+	int (*phy_enable)(struct sas_phy *, int);
+#endif
 };
 
 
@@ -164,6 +198,7 @@ extern struct sas_rphy *sas_end_device_alloc(struct sas_port *);
 extern struct sas_rphy *sas_expander_alloc(struct sas_port *, enum sas_device_type);
 void sas_rphy_free(struct sas_rphy *);
 extern int sas_rphy_add(struct sas_rphy *);
+extern void sas_rphy_remove(struct sas_rphy *);
 extern void sas_rphy_delete(struct sas_rphy *);
 extern int scsi_is_sas_rphy(const struct device *);
 
@@ -194,5 +229,54 @@ scsi_is_sas_expander_device(struct device *dev)
 }
 
 #define scsi_is_sas_phy_local(phy)	scsi_is_host_device((phy)->dev.parent)
+
+static inline enum sas_linkrate
+phy_linkrate_to_linkrate(enum sas_phy_linkrate lr)
+{
+	switch(lr) {
+	case PHY_LINKRATE_UNKNOWN:
+		return SAS_LINK_RATE_UNKNOWN;
+	case PHY_DISABLED:
+		return SAS_PHY_DISABLED;
+	case PHY_SPINUP_HOLD:
+		return SAS_SATA_SPINUP_HOLD;
+	case PHY_PORT_SELECTOR:
+		return SAS_SATA_PORT_SELECTOR;
+	case PHY_LINKRATE_1_5:
+		return SAS_LINK_RATE_1_5_GBPS;
+	case PHY_LINKRATE_3:
+		return SAS_LINK_RATE_3_0_GBPS;
+	case PHY_LINKRATE_6:
+		return SAS_LINK_RATE_6_0_GBPS;
+	case PHY_RESET_PROBLEM:
+	default:
+		return SAS_LINK_RATE_UNKNOWN;
+	}
+}
+	
+static inline enum sas_phy_linkrate
+linkrate_to_phy_linkrate(enum sas_linkrate lr)
+{
+	switch(lr) {
+	case SAS_LINK_RATE_UNKNOWN:
+		return PHY_LINKRATE_UNKNOWN;
+	case SAS_PHY_DISABLED:
+		return PHY_DISABLED;
+	case SAS_SATA_SPINUP_HOLD:
+		return PHY_SPINUP_HOLD;
+	case SAS_SATA_PORT_SELECTOR:
+		return PHY_PORT_SELECTOR;
+	case SAS_LINK_RATE_1_5_GBPS:
+		return PHY_LINKRATE_1_5;
+	case SAS_LINK_RATE_3_0_GBPS:
+		return PHY_LINKRATE_3;
+	case SAS_LINK_RATE_6_0_GBPS:
+		return PHY_LINKRATE_6;
+	case SAS_LINK_RATE_FAILED:
+	case SAS_LINK_VIRTUAL:
+	default:
+		return PHY_LINKRATE_UNKNOWN;
+	}
+}
 
 #endif /* SCSI_TRANSPORT_SAS_H */

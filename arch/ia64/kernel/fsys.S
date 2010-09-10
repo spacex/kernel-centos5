@@ -10,6 +10,8 @@
  *			probably broke it along the way... ;-)
  * 13-Jul-04 clameter   Implement fsys_clock_gettime and revise fsys_gettimeofday to make
  *                      it capable of using memory based clocks without falling back to C code.
+ * 08-Feb-07 Fenghua Yu Implement fsys_getcpu.
+ *
  */
 
 #include <asm/asmmacro.h>
@@ -245,6 +247,9 @@ ENTRY(fsys_gettimeofday)
 .time_redo:
 	.pred.rel.mutex p8,p9,p10
 	ld4.acq r28 = [r29]	// xtime_lock.sequence. Must come first for locking purposes
+	;;
+	and r28 = ~1,r28	// Make sequence even to force retry if odd
+	;;
 (p8)	mov r2 = ar.itc		// CPU_TIMER. 36 clocks latency!!!
 	add r22 = IA64_TIME_INTERPOLATOR_LAST_COUNTER_OFFSET,r20
 (p9)	ld8 r2 = [r30]		// readq(ti->address). Could also have latency issues..
@@ -282,7 +287,6 @@ EX(.fail_efault, probe.w.fault r31, 3)	// This takes 5 cycles and we have spare 
 (p15)	ld8 r17 = [r19],-IA64_TIMESPEC_TV_NSEC_OFFSET
 (p7)	cmp.ne p7,p0 = r25,r3	// if cmpxchg not successful redo
 	// simulate tbit.nz.or p7,p0 = r28,0
-	and r28 = ~1,r28	// Make sequence even to force retry if odd
 	getf.sig r2 = f8
 	mf
 	add r8 = r8,r18		// Add time interpolator offset
@@ -505,6 +509,59 @@ EX(.fail_efault, (p15) st8 [r34]=r3)
 #endif
 END(fsys_rt_sigprocmask)
 
+/*
+ * fsys_getcpu doesn't use the third parameter in this implementation. It reads
+ * current_thread_info()->cpu and corresponding node in cpu_to_node_map.
+ */
+ENTRY(fsys_getcpu)
+	.prologue
+	.altrp b6
+	.body
+	;;
+	add r2=TI_FLAGS+IA64_TASK_SIZE,r16
+	tnat.nz p6,p0 = r32			// guard against NaT argument
+	add r3=TI_CPU+IA64_TASK_SIZE,r16
+	;;
+	ld4 r3=[r3]				// M r3 = thread_info->cpu
+	ld4 r2=[r2]				// M r2 = thread_info->flags
+(p6)    br.cond.spnt.few .fail_einval		// B
+	;;
+	tnat.nz p7,p0 = r33			// I guard against NaT argument
+(p7)    br.cond.spnt.few .fail_einval		// B
+#ifdef CONFIG_NUMA
+	movl r17=cpu_to_node_map
+	;;
+EX(.fail_efault, probe.w.fault r32, 3)		// M This takes 5 cycles
+EX(.fail_efault, probe.w.fault r33, 3)		// M This takes 5 cycles
+	shladd r18=r3,1,r17
+	;;
+	ld2 r20=[r18]				// r20 = cpu_to_node_map[cpu]
+	and r2 = TIF_ALLWORK_MASK,r2
+	;;
+	cmp.ne p8,p0=0,r2
+(p8)	br.spnt.many fsys_fallback_syscall
+	;;
+	;;
+EX(.fail_efault, st4 [r32] = r3)
+EX(.fail_efault, st2 [r33] = r20)
+	mov r8=0
+	;;
+#else
+EX(.fail_efault, probe.w.fault r32, 3)		// M This takes 5 cycles
+EX(.fail_efault, probe.w.fault r33, 3)		// M This takes 5 cycles
+	and r2 = TIF_ALLWORK_MASK,r2
+	;;
+	cmp.ne p8,p0=0,r2
+(p8)	br.spnt.many fsys_fallback_syscall
+	;;
+EX(.fail_efault, st4 [r32] = r3)
+EX(.fail_efault, st2 [r33] = r0)
+	mov r8=0
+	;;
+#endif
+	FSYS_RETURN
+END(fsys_getcpu)
+
 ENTRY(fsys_fallback_syscall)
 	.prologue
 	.altrp b6
@@ -516,11 +573,34 @@ ENTRY(fsys_fallback_syscall)
 	adds r17=-1024,r15
 	movl r14=sys_call_table
 	;;
+#ifdef CONFIG_XEN
+	movl r18=running_on_xen;;
+	ld4 r18=[r18];;
+	// p14 = running_on_xen
+	// p15 = !running_on_xen
+	cmp.ne p14,p15=r0,r18
+	;;
+(p14)	movl r18=XSI_PSR_I_ADDR;;
+(p14)	ld8 r18=[r18]
+(p14)	mov r29=1;;
+(p14)	st1 [r18]=r29
+(p15)	rsm psr.i
+#else
 	rsm psr.i
+#endif
 	shladd r18=r17,3,r14
 	;;
 	ld8 r18=[r18]				// load normal (heavy-weight) syscall entry-point
+#ifdef CONFIG_XEN
+(p14)	mov r27=r8
+(p14)	XEN_HYPER_GET_PSR
+	;;
+(p14)	mov r29=r8
+(p14)	mov r8=r27
+(p15)	mov r29=psr				// read psr (12 cyc load latency)
+#else
 	mov r29=psr				// read psr (12 cyc load latency)
+#endif
 	mov r27=ar.rsc
 	mov r21=ar.fpsr
 	mov r26=ar.pfs
@@ -632,7 +712,25 @@ GLOBAL_ENTRY(fsys_bubble_down)
 	mov rp=r14				// I0   set the real return addr
 	and r3=_TIF_SYSCALL_TRACEAUDIT,r3	// A
 	;;
+#ifdef CONFIG_XEN
+	movl r14=running_on_xen;;
+	ld4 r14=[r14];;
+	// p14 = running_on_xen
+	// p15 = !running_on_xen
+	cmp.ne p14,p15=r0,r14
+	;;
+(p14)	movl r28=XSI_PSR_I_ADDR;;
+(p14)	ld8 r28=[r28];;
+(p14)	adds r28=-1,r28;;			// event_pending
+(p14)	ld1 r14=[r28];;
+(p14)	cmp.ne.unc p13,p14=r14,r0;;
+(p13)	XEN_HYPER_SSM_I
+(p14)	adds r28=1,r28;;			// event_mask
+(p14)	st1 [r28]=r0;;
+(p15)	ssm psr.i
+#else
 	ssm psr.i				// M2   we're on kernel stacks now, reenable irqs
+#endif
 	cmp.eq p8,p0=r3,r0			// A
 (p10)	br.cond.spnt.many ia64_ret_from_syscall	// B    return if bad call-frame or r15 is a NaT
 
@@ -878,6 +976,56 @@ fsyscall_table:
 	data8 0				// timer_delete
 	data8 0				// clock_settime
 	data8 fsys_clock_gettime	// clock_gettime
+	data8 0				// clock_getres		// 1255
+	data8 0				// clock_nanosleep
+	data8 0				// fstatfs64
+	data8 0				// statfs64
+	data8 0				// mbind
+	data8 0				// get_mempolicy	// 1260
+	data8 0				// set_mempolicy
+	data8 0				// mq_open
+	data8 0				// mq_unlink
+	data8 0				// mq_timedsend
+	data8 0				// mq_timedreceive	// 1265
+	data8 0				// mq_notify
+	data8 0				// mq_getsetattr
+	data8 0				// kexec_load
+	data8 0				// vserver
+	data8 0				// waitid		// 1270
+	data8 0				// add_key
+	data8 0				// request_key
+	data8 0				// keyctl
+	data8 0				// ioprio_set
+	data8 0				// ioprio_get		// 1275
+	data8 0				// move_pages
+	data8 0				// inotify_init
+	data8 0				// inotify_add_watch
+	data8 0				// inotify_rm_watch
+	data8 0				// migrate_pages	// 1280
+	data8 0				// openat
+	data8 0				// mkdirat
+	data8 0				// mknodat
+	data8 0				// fchownat
+	data8 0				// futimesat		// 1285
+	data8 0				// newfstatat
+	data8 0				// unlinkat
+	data8 0				// renameat
+	data8 0				// linkat
+	data8 0				// symlinkat		// 1290
+	data8 0				// readlinkat
+	data8 0				// fchmodat
+	data8 0				// faccessat
+	data8 0
+	data8 0							// 1295
+	data8 0				// unshare
+	data8 0				// splice
+	data8 0				// set_robust_list
+	data8 0				// get_robust_list
+	data8 0				// sync_file_range	// 1300
+	data8 0				// tee
+	data8 0				// vmsplice
+	data8 0
+	data8 fsys_getcpu		// getcpu		// 1304
 
 	// fill in zeros for the remaining entries
 	.zero:

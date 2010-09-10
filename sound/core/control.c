@@ -75,6 +75,8 @@ static int snd_ctl_open(struct inode *inode, struct file *file)
 	init_waitqueue_head(&ctl->change_sleep);
 	spin_lock_init(&ctl->read_lock);
 	ctl->card = card;
+	ctl->prefer_pcm_subdevice = -1;
+	ctl->prefer_rawmidi_subdevice = -1;
 	ctl->pid = current->pid;
 	file->private_data = ctl;
 	write_lock_irqsave(&card->ctl_files_rwlock, flags);
@@ -106,7 +108,6 @@ static void snd_ctl_empty_read_queue(struct snd_ctl_file * ctl)
 static int snd_ctl_release(struct inode *inode, struct file *file)
 {
 	unsigned long flags;
-	struct list_head *list;
 	struct snd_card *card;
 	struct snd_ctl_file *ctl;
 	struct snd_kcontrol *control;
@@ -120,12 +121,10 @@ static int snd_ctl_release(struct inode *inode, struct file *file)
 	list_del(&ctl->list);
 	write_unlock_irqrestore(&card->ctl_files_rwlock, flags);
 	down_write(&card->controls_rwsem);
-	list_for_each(list, &card->controls) {
-		control = snd_kcontrol(list);
+	list_for_each_entry(control, &card->controls, list)
 		for (idx = 0; idx < control->count; idx++)
 			if (control->vd[idx].owner == ctl)
 				control->vd[idx].owner = NULL;
-	}
 	up_write(&card->controls_rwsem);
 	snd_ctl_empty_read_queue(ctl);
 	kfree(ctl);
@@ -138,7 +137,6 @@ void snd_ctl_notify(struct snd_card *card, unsigned int mask,
 		    struct snd_ctl_elem_id *id)
 {
 	unsigned long flags;
-	struct list_head *flist;
 	struct snd_ctl_file *ctl;
 	struct snd_kctl_event *ev;
 	
@@ -147,14 +145,11 @@ void snd_ctl_notify(struct snd_card *card, unsigned int mask,
 #if defined(CONFIG_SND_MIXER_OSS) || defined(CONFIG_SND_MIXER_OSS_MODULE)
 	card->mixer_oss_change_count++;
 #endif
-	list_for_each(flist, &card->ctl_files) {
-		struct list_head *elist;
-		ctl = snd_ctl_file(flist);
+	list_for_each_entry(ctl, &card->ctl_files, list) {
 		if (!ctl->subscribed)
 			continue;
 		spin_lock_irqsave(&ctl->read_lock, flags);
-		list_for_each(elist, &ctl->events) {
-			ev = snd_kctl_event(elist);
+		list_for_each_entry(ev, &ctl->events, list) {
 			if (ev->id.numid == id->numid) {
 				ev->mask |= mask;
 				goto _found;
@@ -188,7 +183,8 @@ EXPORT_SYMBOL(snd_ctl_notify);
  *
  * Returns the pointer of the new instance, or NULL on failure.
  */
-struct snd_kcontrol *snd_ctl_new(struct snd_kcontrol *control, unsigned int access)
+static struct snd_kcontrol *snd_ctl_new(struct snd_kcontrol *control,
+					unsigned int access)
 {
 	struct snd_kcontrol *kctl;
 	unsigned int idx;
@@ -205,8 +201,6 @@ struct snd_kcontrol *snd_ctl_new(struct snd_kcontrol *control, unsigned int acce
 		kctl->vd[idx].access = access;
 	return kctl;
 }
-
-EXPORT_SYMBOL(snd_ctl_new);
 
 /**
  * snd_ctl_new1 - create a control instance from the template
@@ -236,11 +230,16 @@ struct snd_kcontrol *snd_ctl_new1(const struct snd_kcontrol_new *ncontrol,
 	kctl.id.index = ncontrol->index;
 	kctl.count = ncontrol->count ? ncontrol->count : 1;
 	access = ncontrol->access == 0 ? SNDRV_CTL_ELEM_ACCESS_READWRITE :
-		 (ncontrol->access & (SNDRV_CTL_ELEM_ACCESS_READWRITE|SNDRV_CTL_ELEM_ACCESS_INACTIVE|
-		 		      SNDRV_CTL_ELEM_ACCESS_DINDIRECT|SNDRV_CTL_ELEM_ACCESS_INDIRECT));
+		 (ncontrol->access & (SNDRV_CTL_ELEM_ACCESS_READWRITE|
+				      SNDRV_CTL_ELEM_ACCESS_INACTIVE|
+		 		      SNDRV_CTL_ELEM_ACCESS_DINDIRECT|
+		 		      SNDRV_CTL_ELEM_ACCESS_INDIRECT|
+		 		      SNDRV_CTL_ELEM_ACCESS_TLV_READWRITE|
+		 		      SNDRV_CTL_ELEM_ACCESS_TLV_CALLBACK));
 	kctl.info = ncontrol->info;
 	kctl.get = ncontrol->get;
 	kctl.put = ncontrol->put;
+	kctl.tlv.p = ncontrol->tlv.p;
 	kctl.private_value = ncontrol->private_value;
 	kctl.private_data = private_data;
 	return snd_ctl_new(&kctl, access);
@@ -270,11 +269,9 @@ EXPORT_SYMBOL(snd_ctl_free_one);
 static unsigned int snd_ctl_hole_check(struct snd_card *card,
 				       unsigned int count)
 {
-	struct list_head *list;
 	struct snd_kcontrol *kctl;
 
-	list_for_each(list, &card->controls) {
-		kctl = snd_kcontrol(list);
+	list_for_each_entry(kctl, &card->controls, list) {
 		if ((kctl->id.numid <= card->last_numid &&
 		     kctl->id.numid + kctl->count > card->last_numid) ||
 		    (kctl->id.numid <= card->last_numid + count - 1 &&
@@ -491,12 +488,10 @@ EXPORT_SYMBOL(snd_ctl_rename_id);
  */
 struct snd_kcontrol *snd_ctl_find_numid(struct snd_card *card, unsigned int numid)
 {
-	struct list_head *list;
 	struct snd_kcontrol *kctl;
 
 	snd_assert(card != NULL && numid != 0, return NULL);
-	list_for_each(list, &card->controls) {
-		kctl = snd_kcontrol(list);
+	list_for_each_entry(kctl, &card->controls, list) {
 		if (kctl->id.numid <= numid && kctl->id.numid + kctl->count > numid)
 			return kctl;
 	}
@@ -520,14 +515,12 @@ EXPORT_SYMBOL(snd_ctl_find_numid);
 struct snd_kcontrol *snd_ctl_find_id(struct snd_card *card,
 				     struct snd_ctl_elem_id *id)
 {
-	struct list_head *list;
 	struct snd_kcontrol *kctl;
 
 	snd_assert(card != NULL && id != NULL, return NULL);
 	if (id->numid != 0)
 		return snd_ctl_find_numid(card, id->numid);
-	list_for_each(list, &card->controls) {
-		kctl = snd_kcontrol(list);
+	list_for_each_entry(kctl, &card->controls, list) {
 		if (kctl->id.iface != id->iface)
 			continue;
 		if (kctl->id.device != id->device)
@@ -882,6 +875,8 @@ struct user_element {
 	struct snd_ctl_elem_info info;
 	void *elem_data;		/* element data */
 	unsigned long elem_data_size;	/* size of element data in bytes */
+	void *tlv_data;			/* TLV data */
+	unsigned long tlv_data_size;	/* TLV data size */
 	void *priv_data;		/* private data (like strings for enumerated type) */
 	unsigned long priv_data_size;	/* size of private data in bytes */
 };
@@ -916,9 +911,48 @@ static int snd_ctl_elem_user_put(struct snd_kcontrol *kcontrol,
 	return change;
 }
 
+static int snd_ctl_elem_user_tlv(struct snd_kcontrol *kcontrol,
+				 int op_flag,
+				 unsigned int size,
+				 unsigned int __user *tlv)
+{
+	struct user_element *ue = kcontrol->private_data;
+	int change = 0;
+	void *new_data;
+
+	if (op_flag > 0) {
+		if (size > 1024 * 128)	/* sane value */
+			return -EINVAL;
+		new_data = kmalloc(size, GFP_KERNEL);
+		if (new_data == NULL)
+			return -ENOMEM;
+		if (copy_from_user(new_data, tlv, size)) {
+			kfree(new_data);
+			return -EFAULT;
+		}
+		change = ue->tlv_data_size != size;
+		if (!change)
+			change = memcmp(ue->tlv_data, new_data, size);
+		kfree(ue->tlv_data);
+		ue->tlv_data = new_data;
+		ue->tlv_data_size = size;
+	} else {
+		if (! ue->tlv_data_size || ! ue->tlv_data)
+			return -ENXIO;
+		if (size < ue->tlv_data_size)
+			return -ENOSPC;
+		if (copy_to_user(tlv, ue->tlv_data, ue->tlv_data_size))
+			return -EFAULT;
+	}
+	return change;
+}
+
 static void snd_ctl_elem_user_free(struct snd_kcontrol *kcontrol)
 {
-	kfree(kcontrol->private_data);
+	struct user_element *ue = kcontrol->private_data;
+	if (ue->tlv_data)
+		kfree(ue->tlv_data);
+	kfree(ue);
 }
 
 static int snd_ctl_elem_add(struct snd_ctl_file *file,
@@ -937,7 +971,8 @@ static int snd_ctl_elem_add(struct snd_ctl_file *file,
 		return -EINVAL;
 	access = info->access == 0 ? SNDRV_CTL_ELEM_ACCESS_READWRITE :
 		(info->access & (SNDRV_CTL_ELEM_ACCESS_READWRITE|
-				 SNDRV_CTL_ELEM_ACCESS_INACTIVE));
+				 SNDRV_CTL_ELEM_ACCESS_INACTIVE|
+				 SNDRV_CTL_ELEM_ACCESS_TLV_READWRITE));
 	info->id.numid = 0;
 	memset(&kctl, 0, sizeof(kctl));
 	down_write(&card->controls_rwsem);
@@ -963,12 +998,12 @@ static int snd_ctl_elem_add(struct snd_ctl_file *file,
 		kctl.get = snd_ctl_elem_user_get;
 	if (access & SNDRV_CTL_ELEM_ACCESS_WRITE)
 		kctl.put = snd_ctl_elem_user_put;
+	if (access & SNDRV_CTL_ELEM_ACCESS_TLV_READWRITE) {
+		kctl.tlv.c = snd_ctl_elem_user_tlv;
+		access |= SNDRV_CTL_ELEM_ACCESS_TLV_CALLBACK;
+	}
 	switch (info->type) {
 	case SNDRV_CTL_ELEM_TYPE_BOOLEAN:
-		private_size = sizeof(char);
-		if (info->count > 128)
-			return -EINVAL;
-		break;
 	case SNDRV_CTL_ELEM_TYPE_INTEGER:
 		private_size = sizeof(long);
 		if (info->count > 128)
@@ -1068,11 +1103,71 @@ static int snd_ctl_subscribe_events(struct snd_ctl_file *file, int __user *ptr)
 	return 0;
 }
 
+static int snd_ctl_tlv_ioctl(struct snd_ctl_file *file,
+                             struct snd_ctl_tlv __user *_tlv,
+                             int op_flag)
+{
+	struct snd_card *card = file->card;
+	struct snd_ctl_tlv tlv;
+	struct snd_kcontrol *kctl;
+	struct snd_kcontrol_volatile *vd;
+	unsigned int len;
+	int err = 0;
+
+	if (copy_from_user(&tlv, _tlv, sizeof(tlv)))
+		return -EFAULT;
+	if (tlv.length < sizeof(unsigned int) * 3)
+		return -EINVAL;
+	down_read(&card->controls_rwsem);
+	kctl = snd_ctl_find_numid(card, tlv.numid);
+	if (kctl == NULL) {
+		err = -ENOENT;
+		goto __kctl_end;
+	}
+	if (kctl->tlv.p == NULL) {
+		err = -ENXIO;
+		goto __kctl_end;
+	}
+	vd = &kctl->vd[tlv.numid - kctl->id.numid];
+	if ((op_flag == 0 && (vd->access & SNDRV_CTL_ELEM_ACCESS_TLV_READ) == 0) ||
+	    (op_flag > 0 && (vd->access & SNDRV_CTL_ELEM_ACCESS_TLV_WRITE) == 0) ||
+	    (op_flag < 0 && (vd->access & SNDRV_CTL_ELEM_ACCESS_TLV_COMMAND) == 0)) {
+	    	err = -ENXIO;
+	    	goto __kctl_end;
+	}
+	if (vd->access & SNDRV_CTL_ELEM_ACCESS_TLV_CALLBACK) {
+		if (file && vd->owner != NULL && vd->owner != file) {
+			err = -EPERM;
+			goto __kctl_end;
+		}
+		err = kctl->tlv.c(kctl, op_flag, tlv.length, _tlv->tlv); 
+		if (err > 0) {
+			up_read(&card->controls_rwsem);
+			snd_ctl_notify(card, SNDRV_CTL_EVENT_MASK_TLV, &kctl->id);
+			return 0;
+		}
+	} else {
+		if (op_flag) {
+			err = -ENXIO;
+			goto __kctl_end;
+		}
+		len = kctl->tlv.p[1] + 2 * sizeof(unsigned int);
+		if (tlv.length < len) {
+			err = -ENOMEM;
+			goto __kctl_end;
+		}
+		if (copy_to_user(_tlv->tlv, kctl->tlv.p, len))
+			err = -EFAULT;
+	}
+      __kctl_end:
+	up_read(&card->controls_rwsem);
+	return err;
+}
+
 static long snd_ctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct snd_ctl_file *ctl;
 	struct snd_card *card;
-	struct list_head *list;
 	struct snd_kctl_ioctl *p;
 	void __user *argp = (void __user *)arg;
 	int __user *ip = argp;
@@ -1087,11 +1182,11 @@ static long snd_ctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 	case SNDRV_CTL_IOCTL_CARD_INFO:
 		return snd_ctl_card_info(card, ctl, cmd, argp);
 	case SNDRV_CTL_IOCTL_ELEM_LIST:
-		return snd_ctl_elem_list(ctl->card, argp);
+		return snd_ctl_elem_list(card, argp);
 	case SNDRV_CTL_IOCTL_ELEM_INFO:
 		return snd_ctl_elem_info_user(ctl, argp);
 	case SNDRV_CTL_IOCTL_ELEM_READ:
-		return snd_ctl_elem_read_user(ctl->card, argp);
+		return snd_ctl_elem_read_user(card, argp);
 	case SNDRV_CTL_IOCTL_ELEM_WRITE:
 		return snd_ctl_elem_write_user(ctl, argp);
 	case SNDRV_CTL_IOCTL_ELEM_LOCK:
@@ -1106,6 +1201,12 @@ static long snd_ctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 		return snd_ctl_elem_remove(ctl, argp);
 	case SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS:
 		return snd_ctl_subscribe_events(ctl, ip);
+	case SNDRV_CTL_IOCTL_TLV_READ:
+		return snd_ctl_tlv_ioctl(ctl, argp, 0);
+	case SNDRV_CTL_IOCTL_TLV_WRITE:
+		return snd_ctl_tlv_ioctl(ctl, argp, 1);
+	case SNDRV_CTL_IOCTL_TLV_COMMAND:
+		return snd_ctl_tlv_ioctl(ctl, argp, -1);
 	case SNDRV_CTL_IOCTL_POWER:
 		return -ENOPROTOOPT;
 	case SNDRV_CTL_IOCTL_POWER_STATE:
@@ -1116,8 +1217,7 @@ static long snd_ctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 #endif
 	}
 	down_read(&snd_ioctl_rwsem);
-	list_for_each(list, &snd_control_ioctls) {
-		p = list_entry(list, struct snd_kctl_ioctl, list);
+	list_for_each_entry(p, &snd_control_ioctls, list) {
 		err = p->fioctl(card, ctl, cmd, arg);
 		if (err != -ENOIOCTLCMD) {
 			up_read(&snd_ioctl_rwsem);
@@ -1159,7 +1259,7 @@ static ssize_t snd_ctl_read(struct file *file, char __user *buffer,
 			schedule();
 			remove_wait_queue(&ctl->change_sleep, &wait);
 			if (signal_pending(current))
-				return result > 0 ? result : -ERESTARTSYS;
+				return -ERESTARTSYS;
 			spin_lock_irq(&ctl->read_lock);
 		}
 		kev = snd_kctl_event(ctl->events.next);
@@ -1241,13 +1341,11 @@ EXPORT_SYMBOL(snd_ctl_register_ioctl_compat);
 static int _snd_ctl_unregister_ioctl(snd_kctl_ioctl_func_t fcn,
 				     struct list_head *lists)
 {
-	struct list_head *list;
 	struct snd_kctl_ioctl *p;
 
 	snd_assert(fcn != NULL, return -EINVAL);
 	down_write(&snd_ioctl_rwsem);
-	list_for_each(list, lists) {
-		p = list_entry(list, struct snd_kctl_ioctl, list);
+	list_for_each_entry(p, lists, list) {
 		if (p->fioctl == fcn) {
 			list_del(&p->list);
 			up_write(&snd_ioctl_rwsem);
@@ -1300,7 +1398,7 @@ static int snd_ctl_fasync(int fd, struct file * file, int on)
  *  INIT PART
  */
 
-static struct file_operations snd_ctl_f_ops =
+static const struct file_operations snd_ctl_f_ops =
 {
 	.owner =	THIS_MODULE,
 	.read =		snd_ctl_read,
@@ -1337,16 +1435,23 @@ static int snd_ctl_dev_register(struct snd_device *device)
 static int snd_ctl_dev_disconnect(struct snd_device *device)
 {
 	struct snd_card *card = device->device_data;
-	struct list_head *flist;
 	struct snd_ctl_file *ctl;
+	int err, cardnum;
+
+	snd_assert(card != NULL, return -ENXIO);
+	cardnum = card->number;
+	snd_assert(cardnum >= 0 && cardnum < SNDRV_CARDS, return -ENXIO);
 
 	down_read(&card->controls_rwsem);
-	list_for_each(flist, &card->ctl_files) {
-		ctl = snd_ctl_file(flist);
+	list_for_each_entry(ctl, &card->ctl_files, list) {
 		wake_up(&ctl->change_sleep);
 		kill_fasync(&ctl->fasync, SIGIO, POLL_ERR);
 	}
 	up_read(&card->controls_rwsem);
+
+	if ((err = snd_unregister_device(SNDRV_DEVICE_TYPE_CONTROL,
+					 card, -1)) < 0)
+		return err;
 	return 0;
 }
 
@@ -1368,23 +1473,6 @@ static int snd_ctl_dev_free(struct snd_device *device)
 }
 
 /*
- * de-registration of the control device
- */
-static int snd_ctl_dev_unregister(struct snd_device *device)
-{
-	struct snd_card *card = device->device_data;
-	int err, cardnum;
-
-	snd_assert(card != NULL, return -ENXIO);
-	cardnum = card->number;
-	snd_assert(cardnum >= 0 && cardnum < SNDRV_CARDS, return -ENXIO);
-	if ((err = snd_unregister_device(SNDRV_DEVICE_TYPE_CONTROL,
-					 card, -1)) < 0)
-		return err;
-	return snd_ctl_dev_free(device);
-}
-
-/*
  * create control core:
  * called from init.c
  */
@@ -1394,7 +1482,6 @@ int snd_ctl_create(struct snd_card *card)
 		.dev_free = snd_ctl_dev_free,
 		.dev_register =	snd_ctl_dev_register,
 		.dev_disconnect = snd_ctl_dev_disconnect,
-		.dev_unregister = snd_ctl_dev_unregister
 	};
 
 	snd_assert(card != NULL, return -ENXIO);

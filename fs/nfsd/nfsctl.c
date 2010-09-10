@@ -23,10 +23,14 @@
 #include <linux/pagemap.h>
 #include <linux/init.h>
 #include <linux/string.h>
+#include <linux/smp_lock.h>
+#include <linux/ctype.h>
 
 #include <linux/nfs.h>
 #include <linux/nfsd_idmap.h>
+#include <linux/lockd/bind.h>
 #include <linux/sunrpc/svc.h>
+#include <linux/sunrpc/svcsock.h>
 #include <linux/nfsd/nfsd.h>
 #include <linux/nfsd/cache.h>
 #include <linux/nfsd/xdr.h>
@@ -37,7 +41,6 @@
 
 int nfsd_port = 2049;
 unsigned int nfsd_portbits = 0;
-unsigned int nfsd_versbits = ~0;
 
 /*
  *	We have a single directory with 9 nodes in it.
@@ -362,60 +365,65 @@ static ssize_t write_threads(struct file *file, char *buf, size_t size)
 	sprintf(buf, "%d\n", nfsd_nrthreads());
 	return strlen(buf);
 }
+
 static ssize_t write_ports(struct file *file, char *buf, size_t size)
 {
-	/*
-	 * Format:
-	 *   family proto proto address port
-	 */
-	char *mesg = buf;
-	char *family, *udp, *tcp, *addr; 
-	int len, port = 0;
-	ssize_t tlen = 0;
-
-	if (buf[size-1] != '\n')
-		return -EINVAL;
-	buf[size-1] = 0;
-
-	family = mesg;
-	len = qword_get(&mesg, family, size);
-	if (len <= 0) return -EINVAL;
-
-	tlen += len;
-	udp = family+len+1;
-	len = qword_get(&mesg, udp, size);
-	if (len <= 0) return -EINVAL;
-
-	tlen += len;
-	tcp = udp+len+1;
-	len = qword_get(&mesg, tcp, size);
-	if (len <= 0) return -EINVAL;
-
-	tlen += len;
-	addr = tcp+len+1;
-	len = qword_get(&mesg, addr, size);
-	if (len <= 0) return -EINVAL;
-
-	len = get_int(&mesg, &port);
-	if (len)
+	if (size == 0) {
+		int len = 0;
+		lock_kernel();
+		if (nfsd_serv)
+			len = svc_sock_names(buf, nfsd_serv, NULL);
+		unlock_kernel();
 		return len;
-
-	tlen += sizeof(port);
-	if (port)
-		nfsd_port = port;
-
-	if (strcmp(tcp, "tcp") == 0 || strcmp(tcp, "TCP") == 0)
-		NFSCTL_TCPSET(nfsd_portbits);
-	else
-		NFSCTL_TCPUNSET(nfsd_portbits);
-
-	if (strcmp(udp, "udp") == 0 || strcmp(udp, "UDP") == 0)
-		NFSCTL_UDPSET(nfsd_portbits);
-	else
-		NFSCTL_UDPUNSET(nfsd_portbits);
-
-	return tlen;
+	}
+	/* Either a single 'fd' number is written, in which
+	 * case it must be for a socket of a supported family/protocol,
+	 * and we use it as an nfsd socket, or
+	 * A '-' followed by the 'name' of a socket in which case
+	 * we close the socket.
+	 */
+	if (isdigit(buf[0])) {
+		char *mesg = buf;
+		int fd;
+		int err;
+		err = get_int(&mesg, &fd);
+		if (err)
+			return -EINVAL;
+		if (fd < 0)
+			return -EINVAL;
+		err = nfsd_create_serv();
+		if (!err) {
+			int proto = 0;
+			err = svc_addsock(nfsd_serv, fd, buf, &proto);
+			if (err >= 0) {
+				err = lockd_up_proto(proto);
+				if (err < 0)
+					svc_sock_names(buf+strlen(buf)+1, nfsd_serv, buf);
+			}
+			/* Decrease the count, but don't shutdown the
+			 * the service
+			 */
+			nfsd_serv->sv_nrthreads--;
+		}
+		return err < 0 ? err : size;
+	}
+	if (buf[0] == '-') {
+		char *toclose = kstrdup(buf+1, GFP_KERNEL);
+		int len = 0;
+		if (!toclose)
+			return -ENOMEM;
+		lock_kernel();
+		if (nfsd_serv)
+			len = svc_sock_names(buf, nfsd_serv, toclose);
+		unlock_kernel();
+		if (len >= 0)
+			lockd_down();
+		kfree(toclose);
+		return len;
+	}
+	return -EINVAL;
 }
+
 static ssize_t write_versions(struct file *file, char *buf, size_t size)
 {
 	/*
@@ -430,6 +438,10 @@ static ssize_t write_versions(struct file *file, char *buf, size_t size)
 
 	if (size>0) {
 		if (nfsd_serv)
+			/* Cannot change versions without updating
+			 * nfsd_serv->sv_xdrsize, and reallocing
+			 * rq_argp and rq_resp
+			 */
 			return -EBUSY;
 		if (buf[size-1] != '\n')
 			return -EINVAL;
@@ -448,10 +460,7 @@ static ssize_t write_versions(struct file *file, char *buf, size_t size)
 			case 2:
 			case 3:
 			case 4:
-				if (sign != '-')
-					NFSCTL_VERSET(nfsd_versbits, num);
-				else
-					NFSCTL_VERUNSET(nfsd_versbits, num);
+				nfsd_vers(num, sign == '-' ? NFSD_CLEAR : NFSD_SET);
 				break;
 			default:
 				return -EINVAL;
@@ -462,16 +471,15 @@ static ssize_t write_versions(struct file *file, char *buf, size_t size)
 		/* If all get turned off, turn them back on, as
 		 * having no versions is BAD
 		 */
-		if ((nfsd_versbits & NFSCTL_VERALL)==0)
-			nfsd_versbits = NFSCTL_VERALL;
+		nfsd_reset_versions();
 	}
 	/* Now write current state into reply buffer */
 	len = 0;
 	sep = "";
 	for (num=2 ; num <= 4 ; num++)
-		if (NFSCTL_VERISSET(NFSCTL_VERALL, num)) {
+		if (nfsd_vers(num, NFSD_AVAIL)) {
 			len += sprintf(buf+len, "%s%c%d", sep,
-				       NFSCTL_VERISSET(nfsd_versbits, num)?'+':'-',
+				       nfsd_vers(num, NFSD_TEST)?'+':'-',
 				       num);
 			sep = " ";
 		}
@@ -542,7 +550,7 @@ static int nfsd_fill_super(struct super_block * sb, void * data, int silent)
 		[NFSD_Fh] = {"filehandle", &transaction_ops, S_IWUSR|S_IRUSR},
 		[NFSD_Threads] = {"threads", &transaction_ops, S_IWUSR|S_IRUSR},
 		[NFSD_Versions] = {"versions", &transaction_ops, S_IWUSR|S_IRUSR},
-		[NFSD_Ports] = {"ports", &transaction_ops, S_IWUSR|S_IRUSR},
+		[NFSD_Ports] = {"portlist", &transaction_ops, S_IWUSR|S_IRUSR},
 #ifdef CONFIG_NFSD_V4
 		[NFSD_Leasetime] = {"nfsv4leasetime", &transaction_ops, S_IWUSR|S_IRUSR},
 		[NFSD_RecoveryDir] = {"nfsv4recoverydir", &transaction_ops, S_IWUSR|S_IRUSR},

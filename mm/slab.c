@@ -303,7 +303,7 @@ struct kmem_list3 {
  * Need this for bootstrapping a per node allocator.
  */
 #define NUM_INIT_LISTS (2 * MAX_NUMNODES + 1)
-struct kmem_list3 __initdata initkmem_list3[NUM_INIT_LISTS];
+struct kmem_list3 initkmem_list3[NUM_INIT_LISTS];
 #define	CACHE_CACHE 0
 #define	SIZE_AC 1
 #define	SIZE_L3 (1 + MAX_NUMNODES)
@@ -730,7 +730,10 @@ static inline void init_lock_keys(void)
 }
 #endif
 
-/* Guard access to the cache-chain. */
+/*
+ * 1. Guard access to the cache-chain.
+ * 2. Protect sanity of cpu_online_map against cpu hotplug events
+ */
 static DEFINE_MUTEX(cache_chain_mutex);
 static struct list_head cache_chain;
 
@@ -1224,12 +1227,18 @@ static int __cpuinit cpuup_callback(struct notifier_block *nfb,
 			kfree(shared);
 			free_alien_cache(alien);
 		}
-		mutex_unlock(&cache_chain_mutex);
 		break;
 	case CPU_ONLINE:
+		mutex_unlock(&cache_chain_mutex);
 		start_cpu_timer(cpu);
 		break;
 #ifdef CONFIG_HOTPLUG_CPU
+	case CPU_DOWN_PREPARE:
+		mutex_lock(&cache_chain_mutex);
+		break;
+	case CPU_DOWN_FAILED:
+		mutex_unlock(&cache_chain_mutex);
+		break;
 	case CPU_DEAD:
 		/*
 		 * Even if all the cpus of a node are down, we don't free the
@@ -1240,8 +1249,8 @@ static int __cpuinit cpuup_callback(struct notifier_block *nfb,
 		 * gets destroyed at kmem_cache_destroy().
 		 */
 		/* fall thru */
+#endif
 	case CPU_UP_CANCELED:
-		mutex_lock(&cache_chain_mutex);
 		list_for_each_entry(cachep, &cache_chain, next) {
 			struct array_cache *nc;
 			struct array_cache *shared;
@@ -1302,11 +1311,9 @@ free_array_cache:
 		}
 		mutex_unlock(&cache_chain_mutex);
 		break;
-#endif
 	}
 	return NOTIFY_OK;
 bad:
-	mutex_unlock(&cache_chain_mutex);
 	return NOTIFY_BAD;
 }
 
@@ -2054,11 +2061,9 @@ kmem_cache_create (const char *name, size_t size, size_t align,
 	}
 
 	/*
-	 * Prevent CPUs from coming and going.
-	 * lock_cpu_hotplug() nests outside cache_chain_mutex
+	 * We use cache_chain_mutex to ensure a consistent view of
+	 * cpu_online_map as well.  Please see cpuup_callback
 	 */
-	lock_cpu_hotplug();
-
 	mutex_lock(&cache_chain_mutex);
 
 	list_for_each_entry(pc, &cache_chain, next) {
@@ -2263,7 +2268,6 @@ oops:
 		panic("kmem_cache_create(): failed to create slab `%s'\n",
 		      name);
 	mutex_unlock(&cache_chain_mutex);
-	unlock_cpu_hotplug();
 	return cachep;
 }
 EXPORT_SYMBOL(kmem_cache_create);
@@ -2381,6 +2385,7 @@ out:
 	return nr_freed;
 }
 
+/* Called with cache_chain_mutex held to protect against cpu hotplug */
 static int __cache_shrink(struct kmem_cache *cachep)
 {
 	int ret = 0, i = 0;
@@ -2411,9 +2416,13 @@ static int __cache_shrink(struct kmem_cache *cachep)
  */
 int kmem_cache_shrink(struct kmem_cache *cachep)
 {
+	int ret;
 	BUG_ON(!cachep || in_interrupt());
 
-	return __cache_shrink(cachep);
+	mutex_lock(&cache_chain_mutex);
+	ret = __cache_shrink(cachep);
+	mutex_unlock(&cache_chain_mutex);
+	return ret;
 }
 EXPORT_SYMBOL(kmem_cache_shrink);
 
@@ -2441,23 +2450,17 @@ int kmem_cache_destroy(struct kmem_cache *cachep)
 
 	BUG_ON(!cachep || in_interrupt());
 
-	/* Don't let CPUs to come and go */
-	lock_cpu_hotplug();
-
 	/* Find the cache in the chain of caches. */
 	mutex_lock(&cache_chain_mutex);
 	/*
 	 * the chain is never empty, cache_cache is never destroyed
 	 */
 	list_del(&cachep->next);
-	mutex_unlock(&cache_chain_mutex);
 
 	if (__cache_shrink(cachep)) {
 		slab_error(cachep, "Can't free all objects");
-		mutex_lock(&cache_chain_mutex);
 		list_add(&cachep->next, &cache_chain);
 		mutex_unlock(&cache_chain_mutex);
-		unlock_cpu_hotplug();
 		return 1;
 	}
 
@@ -2477,7 +2480,7 @@ int kmem_cache_destroy(struct kmem_cache *cachep)
 		}
 	}
 	kmem_cache_free(&cache_cache, cachep);
-	unlock_cpu_hotplug();
+	mutex_unlock(&cache_chain_mutex);
 	return 0;
 }
 EXPORT_SYMBOL(kmem_cache_destroy);

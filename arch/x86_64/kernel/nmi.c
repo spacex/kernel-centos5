@@ -100,7 +100,7 @@ static __cpuinit inline int nmi_known_cpu(void)
 {
 	switch (boot_cpu_data.x86_vendor) {
 	case X86_VENDOR_AMD:
-		return boot_cpu_data.x86 == 15;
+		return boot_cpu_data.x86 == 15 || boot_cpu_data.x86 == 16;
 	case X86_VENDOR_INTEL:
 		if (cpu_has(&boot_cpu_data, X86_FEATURE_ARCH_PERFMON))
 			return 1;
@@ -141,6 +141,23 @@ static __init void nmi_cpu_busy(void *data)
 }
 #endif
 
+static unsigned int adjust_for_32bit_ctr(unsigned int hz)
+{
+	unsigned int retval = hz;
+
+	/*
+	 * On Intel CPUs with ARCH_PERFMON only 32 bits in the counter
+	 * are writable, with higher bits sign extending from bit 31.
+	 * So, we can only program the counter with 31 bit values and
+	 * 32nd bit should be 1, for 33.. to be 1.
+	 * Find the appropriate nmi_hz
+	 */
+	if ((((u64)cpu_khz * 1000) / retval) > 0x7fffffffULL) {
+		retval = ((u64)cpu_khz * 1000) / 0x7fffffffUL + 1;
+	}
+	return retval;
+}
+
 int __init check_nmi_watchdog (void)
 {
 	volatile int endflag = 0;
@@ -161,7 +178,7 @@ int __init check_nmi_watchdog (void)
 	for (cpu = 0; cpu < NR_CPUS; cpu++)
 		counts[cpu] = cpu_pda(cpu)->__nmi_count;
 	local_irq_enable();
-	mdelay((10*1000)/nmi_hz); // wait 10 ticks
+	mdelay((20*1000)/nmi_hz); // wait 20 ticks
 
 	for_each_online_cpu(cpu) {
 		if (cpu_pda(cpu)->__nmi_count - counts[cpu] <= 5) {
@@ -182,8 +199,13 @@ int __init check_nmi_watchdog (void)
 
 	/* now that we know it works we can reduce NMI frequency to
 	   something more reasonable; makes a difference in some configs */
-	if (nmi_watchdog == NMI_LOCAL_APIC)
+	if (nmi_watchdog == NMI_LOCAL_APIC) {
+
 		nmi_hz = 1;
+		if (nmi_perfctr_msr == MSR_ARCH_PERFMON_PERFCTR0) {
+			nmi_hz = adjust_for_32bit_ctr(nmi_hz);
+		}
+	}
 
 	kfree(counts);
 	return 0;
@@ -419,7 +441,10 @@ static int setup_intel_arch_watchdog(void)
 		| ARCH_PERFMON_NMI_EVENT_UMASK;
 
 	wrmsr(MSR_ARCH_PERFMON_EVENTSEL0, evntsel, 0);
-	wrmsrl(MSR_ARCH_PERFMON_PERFCTR0, -((u64)cpu_khz * 1000 / nmi_hz));
+
+	nmi_hz = adjust_for_32bit_ctr(nmi_hz);
+	wrmsr(nmi_perfctr_msr, (u32)(-((u64)cpu_khz * 1000 / nmi_hz)), 0);
+
 	apic_write(APIC_LVTPC, APIC_DM_NMI);
 	evntsel |= ARCH_PERFMON_EVENTSEL0_ENABLE;
 	wrmsr(MSR_ARCH_PERFMON_EVENTSEL0, evntsel, 0);
@@ -472,7 +497,7 @@ void setup_apic_nmi_watchdog(void)
 {
 	switch (boot_cpu_data.x86_vendor) {
 	case X86_VENDOR_AMD:
-		if (boot_cpu_data.x86 != 15)
+		if ((boot_cpu_data.x86 != 15) || (boot_cpu_data.x86 != 16))
 			return;
 		if (strstr(boot_cpu_data.x86_model_id, "Screwdriver"))
 			return;
@@ -573,6 +598,8 @@ void __kprobes nmi_watchdog_tick(struct pt_regs * regs, unsigned reason)
  			 */
  			wrmsr(MSR_P4_IQ_CCCR0, nmi_p4_cccr_val, 0);
  			apic_write(APIC_LVTPC, APIC_DM_NMI);
+			wrmsrl(nmi_perfctr_msr,
+			       -((u64)cpu_khz * 1000 / nmi_hz));
  		} else if (nmi_perfctr_msr == MSR_ARCH_PERFMON_PERFCTR0) {
 			/*
 			 * For Intel based architectural perfmon
@@ -580,8 +607,13 @@ void __kprobes nmi_watchdog_tick(struct pt_regs * regs, unsigned reason)
 			 *   unmasked by the LVTPC handler.
 			 */
 			apic_write(APIC_LVTPC, APIC_DM_NMI);
+			/* ARCH PERFMON has 32 bit counter writes */
+			wrmsr(nmi_perfctr_msr,
+			       (u32)(-((u64)cpu_khz * 1000 / nmi_hz)), 0);
+		} else {
+			wrmsrl(nmi_perfctr_msr,
+			       -((u64)cpu_khz * 1000 / nmi_hz));
 		}
-		wrmsrl(nmi_perfctr_msr, -((u64)cpu_khz * 1000 / nmi_hz));
 	}
 }
 

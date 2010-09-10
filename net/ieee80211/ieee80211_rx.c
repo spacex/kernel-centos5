@@ -1067,7 +1067,10 @@ static int ieee80211_parse_info_param(struct ieee80211_info_element
 					     info_element->len +
 					     sizeof(*info_element),
 					     length, info_element->id);
-			return 1;
+			/* We stop processing but don't return an error here
+			 * because some misbehaviour APs break this rule. ie.
+			 * Orinoco AP1000. */
+			break;
 		}
 
 		switch (info_element->id) {
@@ -1166,6 +1169,7 @@ static int ieee80211_parse_info_param(struct ieee80211_info_element
 
 		case MFIE_TYPE_ERP_INFO:
 			network->erp_value = info_element->data[0];
+			network->flags |= NETWORK_HAS_ERP_VALUE;
 			IEEE80211_DEBUG_MGMT("MFIE_TYPE_ERP_SET: %d\n",
 					     network->erp_value);
 			break;
@@ -1234,12 +1238,12 @@ static int ieee80211_parse_info_param(struct ieee80211_info_element
 		case MFIE_TYPE_IBSS_DFS:
 			if (network->ibss_dfs)
 				break;
-			network->ibss_dfs =
-			    kmalloc(info_element->len, GFP_ATOMIC);
-			if (!network->ibss_dfs)
-				return 1;
+			network->ibss_dfs = kmalloc(info_element->len,
+						    GFP_ATOMIC);
 			memcpy(network->ibss_dfs, info_element->data,
 			       info_element->len);
+			if (!network->ibss_dfs)
+				return 1;
 			network->flags |= NETWORK_HAS_IBSS_DFS;
 			break;
 

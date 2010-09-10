@@ -403,8 +403,9 @@ swiotlb_full(struct device *dev, size_t size, int dir, int do_panic)
 	 * When the mapping is small enough return a static buffer to limit
 	 * the damage, or panic when the transfer is too big.
 	 */
-	printk(KERN_ERR "PCI-DMA: Out of SW-IOMMU space for %lu bytes at "
-	       "device %s\n", (unsigned long)size, dev ? dev->bus_id : "?");
+	if (printk_ratelimit())
+		printk(KERN_ERR "PCI-DMA: Out of SW-IOMMU space for %lu bytes at "
+		       "device %s\n", (unsigned long)size, dev ? dev->bus_id : "?");
 
 	if (size > io_tlb_overflow && do_panic) {
 		if (dir == PCI_DMA_FROMDEVICE || dir == PCI_DMA_BIDIRECTIONAL)

@@ -2034,8 +2034,10 @@ static int ali_suspend(struct pci_dev *pci, pm_message_t state)
 	outl(0xffffffff, ALI_REG(chip, ALI_STOP));
 
 	spin_unlock_irq(&chip->reg_lock);
+
 	pci_disable_device(pci);
 	pci_save_state(pci);
+	pci_set_power_state(pci, pci_choose_state(pci, state));
 	return 0;
 }
 
@@ -2050,8 +2052,15 @@ static int ali_resume(struct pci_dev *pci)
 	if (! im)
 		return 0;
 
+	pci_set_power_state(pci, PCI_D0);
 	pci_restore_state(pci);
-	pci_enable_device(pci);
+	if (pci_enable_device(pci) < 0) {
+		printk(KERN_ERR "ali5451: pci_enable_device failed, "
+		       "disabling device\n");
+		snd_card_disconnect(card);
+		return -EIO;
+	}
+	pci_set_master(pci);
 
 	spin_lock_irq(&chip->reg_lock);
 	
@@ -2088,7 +2097,7 @@ static int snd_ali_free(struct snd_ali * codec)
 		snd_ali_disable_address_interrupt(codec);
 	if (codec->irq >= 0) {
 		synchronize_irq(codec->irq);
-		free_irq(codec->irq, (void *)codec);
+		free_irq(codec->irq, codec);
 	}
 	if (codec->port)
 		pci_release_regions(codec->pci);
@@ -2303,6 +2312,8 @@ static int __devinit snd_ali_create(struct snd_card *card,
 		snd_ali_free(codec);
 		return err;
 	}
+
+	snd_card_set_dev(card, &pci->dev);
 
 	/* initialise synth voices*/
 	for (i = 0; i < ALI_CHANNELS; i++ ) {

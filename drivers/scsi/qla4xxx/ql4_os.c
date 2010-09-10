@@ -11,6 +11,10 @@
 
 #include <linux/klist.h>
 #include "ql4_def.h"
+#include "ql4_version.h"
+#include "ql4_glbl.h"
+#include "ql4_dbg.h"
+#include "ql4_inline.h"
 
 /*
  * Driver version
@@ -52,6 +56,7 @@ MODULE_PARM_DESC(extended_error_logging,
 		 "Option to enable extended error logging, "
 		 "Default is 0 - no logging, 1 - debug logging");
 
+int ql4_mod_unload = 0;
 /*
  * SCSI host template entry points
  */
@@ -433,6 +438,9 @@ static int qla4xxx_queuecommand(struct scsi_cmnd *cmd,
 		goto qc_host_busy;
 	}
 
+	if (test_bit(DPC_RESET_HA_INTR, &ha->dpc_flags))
+		goto qc_host_busy;
+
 	spin_unlock_irq(ha->host->host_lock);
 
 	srb = qla4xxx_get_new_srb(ha, ddb_entry, cmd, done);
@@ -716,19 +724,14 @@ static int qla4xxx_cmd_wait(struct scsi_qla_host *ha)
 	return stat;
 }
 
-/**
- * qla4xxx_soft_reset - performs soft reset.
- * @ha: Pointer to host adapter structure.
- **/
-int qla4xxx_soft_reset(struct scsi_qla_host *ha)
+void qla4xxx_hw_reset(struct scsi_qla_host *ha)
 {
-	uint32_t max_wait_time;
-	unsigned long flags = 0;
-	int status = QLA_ERROR;
 	uint32_t ctrl_status;
+	unsigned long flags = 0;
+
+	DEBUG2(printk(KERN_ERR "scsi%ld: %s\n", ha->host_no, __func__));
 
 	spin_lock_irqsave(&ha->hardware_lock, flags);
-
 	/*
 	 * If the SCSI Reset Interrupt bit is set, clear it.
 	 * Otherwise, the Soft Reset won't work.
@@ -742,6 +745,20 @@ int qla4xxx_soft_reset(struct scsi_qla_host *ha)
 	readl(&ha->reg->ctrl_status);
 
 	spin_unlock_irqrestore(&ha->hardware_lock, flags);
+}
+
+/**
+ * qla4xxx_soft_reset - performs soft reset.
+ * @ha: Pointer to host adapter structure.
+ **/
+int qla4xxx_soft_reset(struct scsi_qla_host *ha)
+{
+	uint32_t max_wait_time;
+	unsigned long flags = 0;
+	int status = QLA_ERROR;
+	uint32_t ctrl_status;
+
+	qla4xxx_hw_reset(ha);
 
 	/* Wait until the Network Reset Intr bit is cleared */
 	max_wait_time = RESET_INTR_TOV;
@@ -883,7 +900,7 @@ static int qla4xxx_recover_adapter(struct scsi_qla_host *ha,
 	 * returns with ISP interrupts enabled.
 	 */
 	if (status == QLA_SUCCESS) {
-		DEBUG2(printk("scsi%ld: %s - Performing soft reset..\n",
+		DEBUG2(printk(KERN_ERR "scsi%ld: %s - Performing soft reset..\n",
 			      ha->host_no, __func__));
 		qla4xxx_flush_active_srbs(ha);
 		if (ql4xxx_lock_drvr_wait(ha) == QLA_SUCCESS)
@@ -974,14 +991,13 @@ static void qla4xxx_do_dpc(void *data)
 {
 	struct scsi_qla_host *ha = (struct scsi_qla_host *) data;
 	struct ddb_entry *ddb_entry, *dtemp;
+	int status = QLA_ERROR;
 
-	DEBUG2(printk("scsi%ld: %s: DPC handler waking up.\n",
-		      ha->host_no, __func__));
-
-	DEBUG2(printk("scsi%ld: %s: ha->flags = 0x%08lx\n",
-		      ha->host_no, __func__, ha->flags));
-	DEBUG2(printk("scsi%ld: %s: ha->dpc_flags = 0x%08lx\n",
-		      ha->host_no, __func__, ha->dpc_flags));
+	DEBUG2(printk("scsi%ld: %s: DPC handler waking up."
+		"ha->flags=0x%08lx ha->dpc_flags=0x%08lx"
+		" ctrl_status=0x%08x\n",
+		ha->host_no, __func__, ha->flags, ha->dpc_flags,
+		readw(&ha->reg->ctrl_status)));
 
 	/* Initialization not yet finished. Don't do anything yet. */
 	if (!test_bit(AF_INIT_DONE, &ha->flags))
@@ -991,43 +1007,33 @@ static void qla4xxx_do_dpc(void *data)
 	    test_bit(DPC_RESET_HA, &ha->dpc_flags) ||
 	    test_bit(DPC_RESET_HA_INTR, &ha->dpc_flags) ||
 	    test_bit(DPC_RESET_HA_DESTROY_DDB_LIST, &ha->dpc_flags)) {
-		if (test_bit(DPC_RESET_HA_DESTROY_DDB_LIST, &ha->dpc_flags))
-			/*
-			 * dg 09/23 Never initialize ddb list
-			 * once we up and running
-			 * qla4xxx_recover_adapter(ha,
-			 *    REBUILD_DDB_LIST);
-			 */
+		if (test_bit(DPC_RESET_HA_DESTROY_DDB_LIST, &ha->dpc_flags) ||
+		    test_bit(DPC_RESET_HA, &ha->dpc_flags))
 			qla4xxx_recover_adapter(ha, PRESERVE_DDB_LIST);
 
-		if (test_bit(DPC_RESET_HA, &ha->dpc_flags))
-			qla4xxx_recover_adapter(ha, PRESERVE_DDB_LIST);
-
-		if (test_and_clear_bit(DPC_RESET_HA_INTR, &ha->dpc_flags)) {
+		if (test_bit(DPC_RESET_HA_INTR, &ha->dpc_flags)) {
 			uint8_t wait_time = RESET_INTR_TOV;
-			unsigned long flags = 0;
 
-			qla4xxx_flush_active_srbs(ha);
-
-			spin_lock_irqsave(&ha->hardware_lock, flags);
 			while ((readw(&ha->reg->ctrl_status) &
 				(CSR_SOFT_RESET | CSR_FORCE_SOFT_RESET)) != 0) {
 				if (--wait_time == 0)
 					break;
-
-				spin_unlock_irqrestore(&ha->hardware_lock,
-						       flags);
-
 				msleep(1000);
-
-				spin_lock_irqsave(&ha->hardware_lock, flags);
 			}
-			spin_unlock_irqrestore(&ha->hardware_lock, flags);
 
 			if (wait_time == 0)
 				DEBUG2(printk("scsi%ld: %s: SR|FSR "
 					      "bit not cleared-- resetting\n",
 					      ha->host_no, __func__));
+			qla4xxx_flush_active_srbs(ha);
+			if (ql4xxx_lock_drvr_wait(ha) == QLA_SUCCESS) {
+				qla4xxx_process_aen(ha, FLUSH_DDB_CHANGED_AENS);
+				status = qla4xxx_initialize_adapter(ha, 
+						PRESERVE_DDB_LIST);
+			}
+			clear_bit(DPC_RESET_HA_INTR, &ha->dpc_flags);
+			if (status == QLA_SUCCESS)
+				qla4xxx_enable_intrs(ha);
 		}
 	}
 
@@ -1082,21 +1088,20 @@ static void qla4xxx_free_adapter(struct scsi_qla_host *ha)
 
 	/* Issue Soft Reset to put firmware in unknown state */
 	if (ql4xxx_lock_drvr_wait(ha) == QLA_SUCCESS)
-		qla4xxx_soft_reset(ha);
+		qla4xxx_hw_reset(ha);
 
 	/* Remove timer thread, if present */
 	if (ha->timer_active)
 		qla4xxx_stop_timer(ha);
 
-	/* free extra memory */
-	qla4xxx_mem_free(ha);
-
 	/* Detach interrupts */
 	if (test_and_clear_bit(AF_IRQ_ATTACHED, &ha->flags))
 		free_irq(ha->pdev->irq, ha);
 
-	pci_disable_device(ha->pdev);
+	/* free extra memory */
+	qla4xxx_mem_free(ha);
 
+	pci_disable_device(ha->pdev);
 }
 
 /***
@@ -1165,6 +1170,14 @@ iospace_error_exit:
 	return -ENOMEM;
 }
 
+static void ql4_get_aen_log(struct scsi_qla_host *ha, struct ql4_aen_log *aenl)
+{
+	if (aenl) {
+		memcpy(aenl, &ha->aen_log, sizeof (ha->aen_log));
+		ha->aen_log.count = 0;
+	}
+}
+
 /**
  * qla4xxx_probe_adapter - callback function to probe HBA
  * @pdev: pointer to pci_dev structure
@@ -1205,6 +1218,7 @@ static int __devinit qla4xxx_probe_adapter(struct pci_dev *pdev,
 
 	ha->ql4mbx = qla4xxx_mailbox_command;
 	ha->ql4cmd = qla4xxx_send_command_to_isp;
+	ha->ql4getaenlog = ql4_get_aen_log;
 
 	/* Configure PCI I/O space. */
 	ret = qla4xxx_iospace_config(ha);
@@ -1242,8 +1256,8 @@ static int __devinit qla4xxx_probe_adapter(struct pci_dev *pdev,
 	 */
 	status = qla4xxx_initialize_adapter(ha, REBUILD_DDB_LIST);
 	while (status == QLA_ERROR && init_retry_count++ < MAX_INIT_RETRIES) {
-		DEBUG2(printk("scsi: %s: retrying adapter initialization "
-			      "(%d)\n", __func__, init_retry_count));
+		DEBUG2(printk(KERN_ERR "scsi%ld: %s: retrying adapter initialization "
+			      "(%d)\n", ha->host_no, __func__, init_retry_count));
 		qla4xxx_soft_reset(ha);
 		status = qla4xxx_initialize_adapter(ha, REBUILD_DDB_LIST);
 	}
@@ -1344,6 +1358,11 @@ static void __devexit qla4xxx_remove_adapter(struct pci_dev *pdev)
 	struct scsi_qla_host *ha;
 
 	ha = pci_get_drvdata(pdev);
+
+	qla4xxx_disable_intrs(ha);
+
+	while (test_bit(DPC_RESET_HA_INTR, &ha->dpc_flags))
+		ssleep(1);
 
 	klist_remove(&ha->node);
 	atomic_dec(&qla4xxx_hba_count);
@@ -1704,6 +1723,7 @@ no_srp_cache:
 
 static void __exit qla4xxx_module_exit(void)
 {
+	ql4_mod_unload = 1;
 	pci_unregister_driver(&qla4xxx_pci_driver);
 	iscsi_unregister_transport(&qla4xxx_iscsi_transport);
 	kmem_cache_destroy(srb_cachep);

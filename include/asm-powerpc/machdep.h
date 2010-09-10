@@ -239,12 +239,18 @@ struct machdep_calls {
 	 */
 	void (*machine_kexec)(struct kimage *image);
 #endif /* CONFIG_KEXEC */
+};
 
 #ifdef CONFIG_PCI_MSI
-	int (*enable_msi)(struct pci_dev *pdev);
-	void (*disable_msi)(struct pci_dev *pdev);
-#endif /* CONFIG_PCI_MSI */
+struct msi_machdep_calls {
+	void	(*pci_irq_fixup)(struct pci_dev *dev);
+	int	(*msi_check_device)(struct pci_dev* dev, int nvec, int type);
+	int	(*setup_msi_irqs)(struct pci_dev *dev, int nvec, int type);
+	void	(*teardown_msi_irqs)(struct pci_dev *dev);
 };
+
+extern struct msi_machdep_calls ppc_msi_md;
+#endif /* CONFIG_PCI_MSI */
 
 extern void power4_idle(void);
 extern void ppc6xx_idle(void);

@@ -59,7 +59,6 @@
 #define B44_DEF_TX_RING_PENDING		(B44_TX_RING_SIZE - 1)
 #define B44_TX_RING_BYTES	(sizeof(struct dma_desc) * \
 				 B44_TX_RING_SIZE)
-#define B44_DMA_MASK 0x3fffffff
 
 #define TX_RING_GAP(BP)	\
 	(B44_TX_RING_SIZE - (BP)->tx_pending)
@@ -666,7 +665,7 @@ static int b44_alloc_rx_skb(struct b44 *bp, int src_idx, u32 dest_idx_unmasked)
 	/* Hardware bug work-around, the chip is unable to do PCI DMA
 	   to/from anything above 1GB :-( */
 	if (dma_mapping_error(mapping) ||
-		mapping + RX_PKT_BUF_SZ > B44_DMA_MASK) {
+		mapping + RX_PKT_BUF_SZ > DMA_30BIT_MASK) {
 		/* Sigh... */
 		if (!dma_mapping_error(mapping))
 			pci_unmap_single(bp->pdev, mapping, RX_PKT_BUF_SZ,PCI_DMA_FROMDEVICE);
@@ -678,7 +677,7 @@ static int b44_alloc_rx_skb(struct b44 *bp, int src_idx, u32 dest_idx_unmasked)
 					 RX_PKT_BUF_SZ,
 					 PCI_DMA_FROMDEVICE);
 		if (dma_mapping_error(mapping) ||
-			mapping + RX_PKT_BUF_SZ > B44_DMA_MASK) {
+			mapping + RX_PKT_BUF_SZ > DMA_30BIT_MASK) {
 			if (!dma_mapping_error(mapping))
 				pci_unmap_single(bp->pdev, mapping, RX_PKT_BUF_SZ,PCI_DMA_FROMDEVICE);
 			dev_kfree_skb_any(skb);
@@ -722,7 +721,7 @@ static void b44_recycle_rx(struct b44 *bp, int src_idx, u32 dest_idx_unmasked)
 	struct ring_info *src_map, *dest_map;
 	struct rx_header *rh;
 	int dest_idx;
-	u32 ctrl;
+	__le32 ctrl;
 
 	dest_idx = dest_idx_unmasked & (B44_RX_RING_SIZE - 1);
 	dest_desc = &bp->rx_ring[dest_idx];
@@ -758,7 +757,7 @@ static void b44_recycle_rx(struct b44 *bp, int src_idx, u32 dest_idx_unmasked)
 		                             dest_idx * sizeof(dest_desc),
 		                             DMA_BIDIRECTIONAL);
 
-	pci_dma_sync_single_for_device(bp->pdev, src_desc->addr,
+	pci_dma_sync_single_for_device(bp->pdev, le32_to_cpu(src_desc->addr),
 				       RX_PKT_BUF_SZ,
 				       PCI_DMA_FROMDEVICE);
 }
@@ -784,7 +783,7 @@ static int b44_rx(struct b44 *bp, int budget)
 					    RX_PKT_BUF_SZ,
 					    PCI_DMA_FROMDEVICE);
 		rh = (struct rx_header *) skb->data;
-		len = cpu_to_le16(rh->len);
+		len = le16_to_cpu(rh->len);
 		if ((len > (RX_PKT_BUF_SZ - bp->rx_offset)) ||
 		    (rh->flags & cpu_to_le16(RX_FLAG_ERRORS))) {
 		drop_it:
@@ -800,7 +799,7 @@ static int b44_rx(struct b44 *bp, int budget)
 			do {
 				udelay(2);
 				barrier();
-				len = cpu_to_le16(rh->len);
+				len = le16_to_cpu(rh->len);
 			} while (len == 0 && i++ < 5);
 			if (len == 0)
 				goto drop_it;
@@ -831,8 +830,8 @@ static int b44_rx(struct b44 *bp, int budget)
 			skb_reserve(copy_skb, 2);
 			skb_put(copy_skb, len);
 			/* DMA sync done above, copy just the actual packet */
-			memcpy(copy_skb->data, skb->data+bp->rx_offset, len);
-
+			skb_copy_from_linear_data_offset(skb, bp->rx_offset,
+							 copy_skb->data, len);
 			skb = copy_skb;
 		}
 		skb->ip_summed = CHECKSUM_NONE;
@@ -885,12 +884,14 @@ static int b44_poll(struct net_device *netdev, int *budget)
 	}
 
 	if (bp->istat & ISTAT_ERRORS) {
-		spin_lock_irq(&bp->lock);
+		unsigned long flags;
+
+		spin_lock_irqsave(&bp->lock, flags);
 		b44_halt(bp);
 		b44_init_rings(bp);
 		b44_init_hw(bp, B44_FULL_RESET_SKIP_PHY);
 		netif_wake_queue(bp->dev);
-		spin_unlock_irq(&bp->lock);
+		spin_unlock_irqrestore(&bp->lock, flags);
 		done = 1;
 	}
 
@@ -914,8 +915,9 @@ static irqreturn_t b44_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	istat = br32(bp, B44_ISTAT);
 	imask = br32(bp, B44_IMASK);
 
-	/* ??? What the fuck is the purpose of the interrupt mask
-	 * ??? register if we have to mask it out by hand anyways?
+	/* The interrupt mask register controls which interrupt bits
+	 * will actually raise an interrupt to the CPU when set by hw/firmware,
+	 * but doesn't mask off the bits.
 	 */
 	istat &= imask;
 	if (istat) {
@@ -986,7 +988,7 @@ static int b44_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	}
 
 	mapping = pci_map_single(bp->pdev, skb->data, len, PCI_DMA_TODEVICE);
-	if (dma_mapping_error(mapping) || mapping + len > B44_DMA_MASK) {
+	if (dma_mapping_error(mapping) || mapping + len > DMA_30BIT_MASK) {
 		/* Chip can't handle DMA to/from >1GB, use bounce buffer */
 		if (!dma_mapping_error(mapping))
 			pci_unmap_single(bp->pdev, mapping, len, PCI_DMA_TODEVICE);
@@ -998,7 +1000,7 @@ static int b44_start_xmit(struct sk_buff *skb, struct net_device *dev)
 
 		mapping = pci_map_single(bp->pdev, bounce_skb->data,
 					 len, PCI_DMA_TODEVICE);
-		if (dma_mapping_error(mapping) || mapping + len > B44_DMA_MASK) {
+		if (dma_mapping_error(mapping) || mapping + len > DMA_30BIT_MASK) {
 			if (!dma_mapping_error(mapping))
 				pci_unmap_single(bp->pdev, mapping,
 					 len, PCI_DMA_TODEVICE);
@@ -1006,7 +1008,8 @@ static int b44_start_xmit(struct sk_buff *skb, struct net_device *dev)
 			goto err_out;
 		}
 
-		memcpy(skb_put(bounce_skb, len), skb->data, skb->len);
+		skb_copy_from_linear_data(skb, skb_put(bounce_skb, len),
+					  skb->len);
 		dev_kfree_skb_any(skb);
 		skb = bounce_skb;
 	}
@@ -1225,7 +1228,7 @@ static int b44_alloc_consistent(struct b44 *bp)
 		                             DMA_BIDIRECTIONAL);
 
 		if (dma_mapping_error(rx_ring_dma) ||
-			rx_ring_dma + size > B44_DMA_MASK) {
+			rx_ring_dma + size > DMA_30BIT_MASK) {
 			kfree(rx_ring);
 			goto out_err;
 		}
@@ -1252,7 +1255,7 @@ static int b44_alloc_consistent(struct b44 *bp)
 		                             DMA_TO_DEVICE);
 
 		if (dma_mapping_error(tx_ring_dma) ||
-			tx_ring_dma + size > B44_DMA_MASK) {
+			tx_ring_dma + size > DMA_30BIT_MASK) {
 			kfree(tx_ring);
 			goto out_err;
 		}
@@ -1287,7 +1290,7 @@ static void b44_chip_reset(struct b44 *bp)
 	if (ssb_is_core_up(bp)) {
 		bw32(bp, B44_RCV_LAZY, 0);
 		bw32(bp, B44_ENET_CTRL, ENET_CTRL_DISABLE);
-		b44_wait_bit(bp, B44_ENET_CTRL, ENET_CTRL_DISABLE, 100, 1);
+		b44_wait_bit(bp, B44_ENET_CTRL, ENET_CTRL_DISABLE, 200, 1);
 		bw32(bp, B44_DMATX_CTRL, 0);
 		bp->tx_prod = bp->tx_cons = 0;
 		if (br32(bp, B44_DMARX_STAT) & DMARX_STAT_EMASK) {
@@ -1708,18 +1711,19 @@ static void __b44_set_rx_mode(struct net_device *dev)
 		bw32(bp, B44_RXCONFIG, val);
 	} else {
 		unsigned char zero[6] = {0, 0, 0, 0, 0, 0};
-		int i = 0;
+		int i = 1;
 
 		__b44_set_mac_addr(bp);
 
-		if (dev->flags & IFF_ALLMULTI)
+		if ((dev->flags & IFF_ALLMULTI) ||
+		    (dev->mc_count > B44_MCAST_TABLE_SIZE))
 			val |= RXCONFIG_ALLMULTI;
 		else
 			i = __b44_load_mcast(bp, dev);
 
-		for (; i < 64; i++) {
+		for (; i < 64; i++)
 			__b44_cam_write(bp, zero, i);
-		}
+
 		bw32(bp, B44_RXCONFIG, val);
         	val = br32(bp, B44_CAM_CTRL);
 	        bw32(bp, B44_CAM_CTRL, val | CAM_CTRL_ENABLE);
@@ -2058,10 +2062,10 @@ out:
 static int b44_read_eeprom(struct b44 *bp, u8 *data)
 {
 	long i;
-	u16 *ptr = (u16 *) data;
+	__le16 *ptr = (__le16 *) data;
 
 	for (i = 0; i < 128; i += 2)
-		ptr[i / 2] = readw(bp->regs + 4096 + i);
+		ptr[i / 2] = cpu_to_le16(readw(bp->regs + 4096 + i));
 
 	return 0;
 }
@@ -2148,13 +2152,13 @@ static int __devinit b44_init_one(struct pci_dev *pdev,
 
 	pci_set_master(pdev);
 
-	err = pci_set_dma_mask(pdev, (u64) B44_DMA_MASK);
+	err = pci_set_dma_mask(pdev, (u64) DMA_30BIT_MASK);
 	if (err) {
 		dev_err(&pdev->dev, "No usable DMA configuration, aborting.\n");
 		goto err_out_free_res;
 	}
 
-	err = pci_set_consistent_dma_mask(pdev, (u64) B44_DMA_MASK);
+	err = pci_set_consistent_dma_mask(pdev, (u64) DMA_30BIT_MASK);
 	if (err) {
 		dev_err(&pdev->dev, "No usable DMA configuration, aborting.\n");
 		goto err_out_free_res;
@@ -2317,16 +2321,27 @@ static int b44_resume(struct pci_dev *pdev)
 {
 	struct net_device *dev = pci_get_drvdata(pdev);
 	struct b44 *bp = netdev_priv(dev);
+	int rc = 0;
 
 	pci_restore_state(pdev);
-	pci_enable_device(pdev);
+	rc = pci_enable_device(pdev);
+	if (rc) {
+		printk(KERN_ERR PFX "%s: pci_enable_device failed\n",
+			dev->name);
+		return rc;
+	}
+
 	pci_set_master(pdev);
 
 	if (!netif_running(dev))
 		return 0;
 
-	if (request_irq(dev->irq, b44_interrupt, IRQF_SHARED, dev->name, dev))
+	rc = request_irq(dev->irq, b44_interrupt, IRQF_SHARED, dev->name, dev);
+	if (rc) {
 		printk(KERN_ERR PFX "%s: request_irq failed\n", dev->name);
+		pci_disable_device(pdev);
+		return rc;
+	}
 
 	spin_lock_irq(&bp->lock);
 
@@ -2360,7 +2375,7 @@ static int __init b44_init(void)
 	dma_desc_align_mask = ~(dma_desc_align_size - 1);
 	dma_desc_sync_size = max_t(unsigned int, dma_desc_align_size, sizeof(struct dma_desc));
 
-	return pci_module_init(&b44_driver);
+	return pci_register_driver(&b44_driver);
 }
 
 static void __exit b44_cleanup(void)

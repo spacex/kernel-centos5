@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2004-2006 Emulex.  All rights reserved.           *
+ * Copyright (C) 2004-2007 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  * Portions Copyright (C) 2004-2005 Christoph Hellwig              *
@@ -528,6 +528,7 @@ lpfc_sli_wake_mbox_wait(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmboxq)
 	 * If pdone_q is empty, the driver thread gave up waiting and
 	 * continued running.
 	 */
+	pmboxq->mbox_flag |= LPFC_MBX_WAKE;
 	pdone_q = (wait_queue_head_t *) pmboxq->context1;
 	if (pdone_q)
 		wake_up_interruptible(pdone_q);
@@ -538,11 +539,32 @@ void
 lpfc_sli_def_mbox_cmpl(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 {
 	struct lpfc_dmabuf *mp;
+	uint16_t rpi;
+	int rc;
+
 	mp = (struct lpfc_dmabuf *) (pmb->context1);
+
 	if (mp) {
 		lpfc_mbuf_free(phba, mp->virt, mp->phys);
 		kfree(mp);
 	}
+
+	/*
+	 * If a REG_LOGIN succeeded  after node is destroyed or node
+	 * is in re-discovery driver need to cleanup the RPI.
+	 */
+	if (!(phba->fc_flag & FC_UNLOADING) &&
+		(pmb->mb.mbxCommand == MBX_REG_LOGIN64) &&
+		(!pmb->mb.mbxStatus)) {
+
+		rpi = pmb->mb.un.varWords[0];
+		lpfc_unreg_login(phba, rpi, pmb);
+		pmb->mbox_cmpl=lpfc_sli_def_mbox_cmpl;
+		rc = lpfc_sli_issue_mbox(phba, pmb, MBX_NOWAIT);
+		if (rc != MBX_NOT_FINISHED)
+			return;
+	}
+
 	mempool_free( pmb, phba->mbox_mem_pool);
 	return;
 }
@@ -833,6 +855,14 @@ lpfc_sli_process_sol_iocb(struct lpfc_hba * phba, struct lpfc_sli_ring * pring,
 			 * All other are passed to the completion callback.
 			 */
 			if (pring->ringno == LPFC_ELS_RING) {
+				if (cmdiocbp->iocb_flag & LPFC_DRIVER_ABORTED) {
+					cmdiocbp->iocb_flag &=
+						~LPFC_DRIVER_ABORTED;
+					saveq->iocb.ulpStatus =
+						IOSTAT_LOCAL_REJECT;
+					saveq->iocb.un.ulpWord[4] =
+						IOERR_SLI_ABORTED;
+				}
 				spin_unlock_irqrestore(phba->host->host_lock,
 						       iflag);
 				(cmdiocbp->iocb_cmpl) (phba, cmdiocbp, saveq);
@@ -1588,6 +1618,7 @@ void lpfc_reset_barrier(struct lpfc_hba * phba)
 	hc_copy = readl(phba->HCregaddr);
 	writel((hc_copy & ~HC_ERINT_ENA), phba->HCregaddr);
 	readl(phba->HCregaddr); /* flush */
+	phba->fc_flag |= FC_IGNORE_ERATT;
 
 	if (readl(phba->HAregaddr) & HA_ERATT) {
 		/* Clear Chip error bit */
@@ -1630,6 +1661,7 @@ clear_errat:
 	}
 
 restore_hc:
+	phba->fc_flag &= ~FC_IGNORE_ERATT;
 	writel(hc_copy, phba->HCregaddr);
 	readl(phba->HCregaddr); /* flush */
 }
@@ -1665,6 +1697,7 @@ lpfc_sli_brdkill(struct lpfc_hba * phba)
 	status &= ~HC_ERINT_ENA;
 	writel(status, phba->HCregaddr);
 	readl(phba->HCregaddr); /* flush */
+	phba->fc_flag |= FC_IGNORE_ERATT;
 	spin_unlock_irq(phba->host->host_lock);
 
 	lpfc_kill_board(phba, pmb);
@@ -1674,6 +1707,9 @@ lpfc_sli_brdkill(struct lpfc_hba * phba)
 	if (retval != MBX_SUCCESS) {
 		if (retval != MBX_BUSY)
 			mempool_free(pmb, phba->mbox_mem_pool);
+		spin_lock_irq(phba->host->host_lock);
+		phba->fc_flag &= ~FC_IGNORE_ERATT;
+		spin_unlock_irq(phba->host->host_lock);
 		return 1;
 	}
 
@@ -1700,6 +1736,7 @@ lpfc_sli_brdkill(struct lpfc_hba * phba)
 	}
 	spin_lock_irq(phba->host->host_lock);
 	psli->sli_flag &= ~LPFC_SLI_MBOX_ACTIVE;
+	phba->fc_flag &= ~FC_IGNORE_ERATT;
 	spin_unlock_irq(phba->host->host_lock);
 
 	psli->mbox_active = NULL;
@@ -1965,6 +2002,29 @@ lpfc_sli_hba_setup(struct lpfc_hba * phba)
 	}
 	if (!done)
 		goto lpfc_sli_hba_setup_error;
+
+	if (phba->pci_max_read) {
+		lpfc_set_slim(phba, pmb, SLIM_VAR_MAX_DMA_LENGTH,
+			SLIM_VAL_MAX_DMA_1024);
+		if (lpfc_sli_issue_mbox(phba, pmb, MBX_POLL) != MBX_SUCCESS)
+			if (pmb->mb.mbxStatus != MBXERR_UNKNOWN_CMD) {
+				lpfc_printf_log(phba, KERN_ERR, LOG_INIT,
+					"%d:0443 Adapter failed to set maximum"
+					" DMA length mbxStatus x%x \n",
+					phba->brd_no, pmb->mb.mbxStatus);
+			} else {
+				lpfc_printf_log(phba, KERN_WARNING, LOG_INIT,
+					"%d:0444 Adapter does not support "
+					"setting maximum DMA length mbxStatus "
+					"x%x \n", phba->brd_no,
+					pmb->mb.mbxStatus);
+			}
+		else
+				lpfc_printf_log(phba, KERN_INFO, LOG_INIT,
+					"%d:0445 Adapter set maximum"
+					" DMA length to 1024 bytes.\n",
+					phba->brd_no);
+	}
 
 	rc = lpfc_sli_ring_map(phba, pmb);
 
@@ -2316,9 +2376,7 @@ lpfc_sli_issue_mbox(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmbox, uint32_t flag)
 			spin_unlock_irqrestore(phba->host->host_lock,
 					       drvr_flag);
 
-			/* Can be in interrupt context, do not sleep */
-			/* (or might be called with interrupts disabled) */
-			mdelay(1);
+			msleep(1);
 
 			spin_lock_irqsave(phba->host->host_lock, drvr_flag);
 
@@ -2760,85 +2818,81 @@ lpfc_sli_ringpostbuf_get(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 }
 
 static void
-lpfc_sli_abort_elsreq_cmpl(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
-			   struct lpfc_iocbq * rspiocb)
+lpfc_sli_abort_els_cmpl(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
+			struct lpfc_iocbq * rspiocb)
 {
-	struct lpfc_dmabuf *buf_ptr, *buf_ptr1;
-	/* Free the resources associated with the ELS_REQUEST64 IOCB the driver
-	 * just aborted.
-	 * In this case, context2  = cmd,  context2->next = rsp, context3 = bpl
-	 */
-	if (cmdiocb->context2) {
-		buf_ptr1 = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-		/* Free the response IOCB before completing the abort
-		   command.  */
-		buf_ptr = NULL;
-		list_remove_head((&buf_ptr1->list), buf_ptr,
-				 struct lpfc_dmabuf, list);
-		if (buf_ptr) {
-			lpfc_mbuf_free(phba, buf_ptr->virt, buf_ptr->phys);
-			kfree(buf_ptr);
-		}
-		lpfc_mbuf_free(phba, buf_ptr1->virt, buf_ptr1->phys);
-		kfree(buf_ptr1);
-	}
-
-	if (cmdiocb->context3) {
-		buf_ptr = (struct lpfc_dmabuf *) cmdiocb->context3;
-		lpfc_mbuf_free(phba, buf_ptr->virt, buf_ptr->phys);
-		kfree(buf_ptr);
-	}
-
+	spin_lock_irq(phba->host->host_lock);
 	lpfc_sli_release_iocbq(phba, cmdiocb);
+	spin_unlock_irq(phba->host->host_lock);
 	return;
 }
 
 int
-lpfc_sli_issue_abort_iotag32(struct lpfc_hba * phba,
-			     struct lpfc_sli_ring * pring,
-			     struct lpfc_iocbq * cmdiocb)
+lpfc_sli_issue_abort_iotag(struct lpfc_hba * phba,
+			   struct lpfc_sli_ring * pring,
+			   struct lpfc_iocbq * cmdiocb)
 {
 	struct lpfc_iocbq *abtsiocbp;
 	IOCB_t *icmd = NULL;
 	IOCB_t *iabt = NULL;
+	int retval = IOCB_ERROR;
+
+	/* There are certain command types we don't want
+	 * to abort.
+	 */
+	icmd = &cmdiocb->iocb;
+	if ((icmd->ulpCommand == CMD_ABORT_XRI_CN) ||
+	    (icmd->ulpCommand == CMD_CLOSE_XRI_CN))
+		return 0;
+
+	/* If we're unloading, interrupts are disabled so we
+	 * need to cleanup the iocb here.
+	 */
+	if (phba->fc_flag & FC_UNLOADING)
+		goto abort_iotag_exit;
 
 	/* issue ABTS for this IOCB based on iotag */
 	abtsiocbp = lpfc_sli_get_iocbq(phba);
 	if (abtsiocbp == NULL)
 		return 0;
 
+	/* This signals the response to set the correct status
+	 * before calling the completion handler.
+	 */
+	cmdiocb->iocb_flag |= LPFC_DRIVER_ABORTED;
+
 	iabt = &abtsiocbp->iocb;
-	icmd = &cmdiocb->iocb;
-	switch (icmd->ulpCommand) {
-	case CMD_ELS_REQUEST64_CR:
-		/* Even though we abort the ELS command, the firmware may access
-		 * the BPL or other resources before it processes our
-		 * ABORT_MXRI64. Thus we must delay reusing the cmdiocb
-		 * resources till the actual abort request completes.
-		 */
-		abtsiocbp->context1 = (void *)((unsigned long)icmd->ulpCommand);
-		abtsiocbp->context2 = cmdiocb->context2;
-		abtsiocbp->context3 = cmdiocb->context3;
-		cmdiocb->context2 = NULL;
-		cmdiocb->context3 = NULL;
-		abtsiocbp->iocb_cmpl = lpfc_sli_abort_elsreq_cmpl;
-		break;
-	default:
-		lpfc_sli_release_iocbq(phba, abtsiocbp);
-		return 0;
-	}
-
-	iabt->un.amxri.abortType = ABORT_TYPE_ABTS;
-	iabt->un.amxri.iotag32 = icmd->un.elsreq64.bdl.ulpIoTag32;
-
+	iabt->un.acxri.abortType = ABORT_TYPE_ABTS;
+	iabt->un.acxri.abortContextTag = icmd->ulpContext;
+	iabt->un.acxri.abortIoTag = icmd->ulpIoTag;
 	iabt->ulpLe = 1;
-	iabt->ulpClass = CLASS3;
-	iabt->ulpCommand = CMD_ABORT_MXRI64_CN;
+	iabt->ulpClass = icmd->ulpClass;
 
-	if (lpfc_sli_issue_iocb(phba, pring, abtsiocbp, 0) == IOCB_ERROR) {
-		lpfc_sli_release_iocbq(phba, abtsiocbp);
-		return 0;
+	if (phba->hba_state >= LPFC_LINK_UP)
+		iabt->ulpCommand = CMD_ABORT_XRI_CN;
+	else
+		iabt->ulpCommand = CMD_CLOSE_XRI_CN;
+
+	abtsiocbp->iocb_cmpl = lpfc_sli_abort_els_cmpl;
+	retval = lpfc_sli_issue_iocb(phba, pring, abtsiocbp, 0);
+
+abort_iotag_exit:
+
+	/* If we could not issue an abort dequeue the iocb and handle
+	 * the completion here.
+	 */
+	if (retval == IOCB_ERROR) {
+		list_del(&cmdiocb->list);
+		pring->txcmplq_cnt--;
+
+		if (cmdiocb->iocb_cmpl) {
+			icmd->ulpStatus = IOSTAT_LOCAL_REJECT;
+			icmd->un.ulpWord[4] = IOERR_SLI_ABORTED;
+			spin_unlock_irq(phba->host->host_lock);
+			(cmdiocb->iocb_cmpl) (phba, cmdiocb, cmdiocb);
+			spin_lock_irq(phba->host->host_lock);
+		} else
+			lpfc_sli_release_iocbq(phba, cmdiocb);
 	}
 
 	return 1;
@@ -3000,7 +3054,7 @@ lpfc_sli_issue_iocb_wait(struct lpfc_hba * phba,
 			 struct lpfc_iocbq * prspiocbq,
 			 uint32_t timeout)
 {
-	DECLARE_WAIT_QUEUE_HEAD(done_q);
+	DECLARE_WAIT_QUEUE_HEAD_ONSTACK(done_q);
 	long timeleft, timeout_req = 0;
 	int retval = IOCB_SUCCESS;
 	uint32_t creg_val;
@@ -3035,22 +3089,22 @@ lpfc_sli_issue_iocb_wait(struct lpfc_hba * phba,
 				timeout_req);
 		spin_lock_irq(phba->host->host_lock);
 
-		if (timeleft == 0) {
+		if (piocb->iocb_flag & LPFC_IO_WAKE) {
+			lpfc_printf_log(phba, KERN_INFO, LOG_SLI,
+					"%d:0331 IOCB wake signaled\n",
+					phba->brd_no);
+		} else if (timeleft == 0) {
 			lpfc_printf_log(phba, KERN_ERR, LOG_SLI,
 					"%d:0338 IOCB wait timeout error - no "
 					"wake response Data x%x\n",
 					phba->brd_no, timeout);
 			retval = IOCB_TIMEDOUT;
-		} else if (!(piocb->iocb_flag & LPFC_IO_WAKE)) {
+		} else {
 			lpfc_printf_log(phba, KERN_ERR, LOG_SLI,
 					"%d:0330 IOCB wake NOT set, "
 					"Data x%x x%lx\n", phba->brd_no,
 					timeout, (timeleft / jiffies));
 			retval = IOCB_TIMEDOUT;
-		} else {
-			lpfc_printf_log(phba, KERN_INFO, LOG_SLI,
-					"%d:0331 IOCB wake signaled\n",
-					phba->brd_no);
 		}
 	} else {
 		lpfc_printf_log(phba, KERN_INFO, LOG_SLI,
@@ -3078,9 +3132,7 @@ int
 lpfc_sli_issue_mbox_wait(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmboxq,
 			 uint32_t timeout)
 {
-	DECLARE_WAIT_QUEUE_HEAD(done_q);
-	DECLARE_WAITQUEUE(wq_entry, current);
-	uint32_t timeleft = 0;
+	DECLARE_WAIT_QUEUE_HEAD_ONSTACK(done_q);
 	int retval;
 
 	/* The caller must leave context1 empty. */
@@ -3093,27 +3145,25 @@ lpfc_sli_issue_mbox_wait(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmboxq,
 	/* setup context field to pass wait_queue pointer to wake function  */
 	pmboxq->context1 = &done_q;
 
-	/* start to sleep before we wait, to avoid races */
-	set_current_state(TASK_INTERRUPTIBLE);
-	add_wait_queue(&done_q, &wq_entry);
-
 	/* now issue the command */
 	retval = lpfc_sli_issue_mbox(phba, pmboxq, MBX_NOWAIT);
 
 	if (retval == MBX_BUSY || retval == MBX_SUCCESS) {
-		timeleft = schedule_timeout(timeout * HZ);
+		wait_event_interruptible_timeout(done_q,
+				pmboxq->mbox_flag & LPFC_MBX_WAKE,
+				timeout * HZ);
+
 		pmboxq->context1 = NULL;
-		/* if schedule_timeout returns 0, we timed out and were not
-		   woken up */
-		if ((timeleft == 0) || signal_pending(current))
-			retval = MBX_TIMEOUT;
-		else
+		/*
+		 * if LPFC_MBX_WAKE flag is set the mailbox is completed
+		 * else do not free the resources.
+		 */
+		if (pmboxq->mbox_flag & LPFC_MBX_WAKE)
 			retval = MBX_SUCCESS;
+		else
+			retval = MBX_TIMEOUT;
 	}
 
-
-	set_current_state(TASK_RUNNING);
-	remove_wait_queue(&done_q, &wq_entry);
 	return retval;
 }
 
@@ -3172,6 +3222,11 @@ lpfc_intr_handler(int irq, void *dev_id, struct pt_regs * regs)
 	 */
 	spin_lock(phba->host->host_lock);
 	ha_copy = readl(phba->HAregaddr);
+	/* If somebody is waiting to handle an eratt don't process it
+	 * here.  The brdkill function will do this.
+	 */
+	if (phba->fc_flag & FC_IGNORE_ERATT)
+		ha_copy &= ~HA_ERATT;
 	writel((ha_copy & ~(HA_LATT | HA_ERATT)), phba->HAregaddr);
 	readl(phba->HAregaddr); /* flush */
 	spin_unlock(phba->host->host_lock);

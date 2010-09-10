@@ -184,7 +184,7 @@ static int tlb_initialize(struct bonding *bond)
 
 	spin_lock_init(&(bond_info->tx_hashtbl_lock));
 
-	new_hashtbl = kmalloc(size, GFP_KERNEL);
+	new_hashtbl = kzalloc(size, GFP_KERNEL);
 	if (!new_hashtbl) {
 		printk(KERN_ERR DRV_NAME
 		       ": %s: Error: Failed to allocate TLB hash table\n",
@@ -194,8 +194,6 @@ static int tlb_initialize(struct bonding *bond)
 	_lock_tx_hashtbl(bond);
 
 	bond_info->tx_hashtbl = new_hashtbl;
-
-	memset(bond_info->tx_hashtbl, 0, size);
 
 	for (i = 0; i < TLB_HASH_TABLE_SIZE; i++) {
 		tlb_init_table_entry(&bond_info->tx_hashtbl[i], 1);
@@ -1433,7 +1431,7 @@ void bond_alb_monitor(struct bonding *bond)
 		 * write lock to protect from other code that also
 		 * sets the promiscuity.
 		 */
-		write_lock(&bond->curr_slave_lock);
+		write_lock_bh(&bond->curr_slave_lock);
 
 		if (bond_info->primary_is_promisc &&
 		    (++bond_info->rlb_promisc_timeout_counter >= RLB_PROMISC_TIMEOUT)) {
@@ -1448,7 +1446,7 @@ void bond_alb_monitor(struct bonding *bond)
 			bond_info->primary_is_promisc = 0;
 		}
 
-		write_unlock(&bond->curr_slave_lock);
+		write_unlock_bh(&bond->curr_slave_lock);
 
 		if (bond_info->rlb_rebalance) {
 			bond_info->rlb_rebalance = 0;

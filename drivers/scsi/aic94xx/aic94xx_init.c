@@ -38,7 +38,7 @@
 #include "aic94xx_seq.h"
 
 /* The format is "version.release.patchlevel" */
-#define ASD_DRIVER_VERSION "1.0.2"
+#define ASD_DRIVER_VERSION "1.0.2-1"
 
 static int use_msi = 0;
 module_param_named(use_msi, use_msi, int, S_IRUGO);
@@ -57,6 +57,8 @@ MODULE_PARM_DESC(collector, "\n"
 char sas_addr_str[2*SAS_ADDR_SIZE + 1] = "";
 
 static struct scsi_transport_template *aic94xx_transport_template;
+static int asd_scan_finished(struct Scsi_Host *, unsigned long);
+static void asd_scan_start(struct Scsi_Host *);
 
 static struct scsi_host_template aic94xx_sht = {
 	.module			= THIS_MODULE,
@@ -66,6 +68,8 @@ static struct scsi_host_template aic94xx_sht = {
 	.target_alloc		= sas_target_alloc,
 	.slave_configure	= sas_slave_configure,
 	.slave_destroy		= sas_slave_destroy,
+	.scan_finished		= asd_scan_finished,
+	.scan_start		= asd_scan_start,
 	.change_queue_depth	= sas_change_queue_depth,
 	.change_queue_type	= sas_change_queue_type,
 	.bios_param		= sas_bios_param,
@@ -75,6 +79,8 @@ static struct scsi_host_template aic94xx_sht = {
 	.sg_tablesize		= SG_ALL,
 	.max_sectors		= SCSI_DEFAULT_MAX_SECTORS,
 	.use_clustering		= ENABLE_CLUSTERING,
+	.eh_device_reset_handler	= sas_eh_device_reset_handler,
+	.eh_bus_reset_handler	= sas_eh_bus_reset_handler,
 };
 
 static int __devinit asd_map_memio(struct asd_ha_struct *asd_ha)
@@ -234,15 +240,19 @@ static int __devinit asd_common_setup(struct asd_ha_struct *asd_ha)
 	}
 	/* Provide some sane default values. */
 	asd_ha->hw_prof.max_scbs = 512;
-	asd_ha->hw_prof.max_ddbs = 128;
+	asd_ha->hw_prof.max_ddbs = ASD_MAX_DDBS;
 	asd_ha->hw_prof.num_phys = ASD_MAX_PHYS;
 	/* All phys are enabled, by default. */
 	asd_ha->hw_prof.enabled_phys = 0xFF;
 	for (i = 0; i < ASD_MAX_PHYS; i++) {
-		asd_ha->hw_prof.phy_desc[i].max_sas_lrate = PHY_LINKRATE_3;
-		asd_ha->hw_prof.phy_desc[i].min_sas_lrate = PHY_LINKRATE_1_5;
-		asd_ha->hw_prof.phy_desc[i].max_sata_lrate= PHY_LINKRATE_1_5;
-		asd_ha->hw_prof.phy_desc[i].min_sata_lrate= PHY_LINKRATE_1_5;
+		asd_ha->hw_prof.phy_desc[i].max_sas_lrate =
+			PHY_LINKRATE_3;
+		asd_ha->hw_prof.phy_desc[i].min_sas_lrate =
+			PHY_LINKRATE_1_5;
+		asd_ha->hw_prof.phy_desc[i].max_sata_lrate =
+			PHY_LINKRATE_1_5;
+		asd_ha->hw_prof.phy_desc[i].min_sata_lrate =
+			PHY_LINKRATE_1_5;
 	}
 
 	return 0;
@@ -305,11 +315,29 @@ static ssize_t asd_show_dev_pcba_sn(struct device *dev,
 }
 static DEVICE_ATTR(pcba_sn, S_IRUGO, asd_show_dev_pcba_sn, NULL);
 
-static void asd_create_dev_attrs(struct asd_ha_struct *asd_ha)
+static int asd_create_dev_attrs(struct asd_ha_struct *asd_ha)
 {
-	device_create_file(&asd_ha->pcidev->dev, &dev_attr_revision);
-	device_create_file(&asd_ha->pcidev->dev, &dev_attr_bios_build);
-	device_create_file(&asd_ha->pcidev->dev, &dev_attr_pcba_sn);
+	int err;
+
+	err = device_create_file(&asd_ha->pcidev->dev, &dev_attr_revision);
+	if (err)
+		return err;
+
+	err = device_create_file(&asd_ha->pcidev->dev, &dev_attr_bios_build);
+	if (err)
+		goto err_rev;
+
+	err = device_create_file(&asd_ha->pcidev->dev, &dev_attr_pcba_sn);
+	if (err)
+		goto err_biosb;
+
+	return 0;
+
+err_biosb:
+	device_remove_file(&asd_ha->pcidev->dev, &dev_attr_bios_build);
+err_rev:
+	device_remove_file(&asd_ha->pcidev->dev, &dev_attr_revision);
+	return err;
 }
 
 static void asd_remove_dev_attrs(struct asd_ha_struct *asd_ha)
@@ -428,8 +456,8 @@ static inline void asd_destroy_ha_caches(struct asd_ha_struct *asd_ha)
 	asd_ha->scb_pool = NULL;
 }
 
-kmem_cache_t *asd_dma_token_cache;
-kmem_cache_t *asd_ascb_cache;
+struct kmem_cache *asd_dma_token_cache;
+struct kmem_cache *asd_ascb_cache;
 
 static int asd_create_global_caches(void)
 {
@@ -504,6 +532,7 @@ static int asd_register_sas_ha(struct asd_ha_struct *asd_ha)
 	asd_ha->sas_ha.num_phys= ASD_MAX_PHYS;
 
 	asd_ha->sas_ha.lldd_queue_size = asd_ha->seq.can_queue;
+	asd_ha->sas_ha.lldd_max_execute_num = lldd_max_execute_num;
 
 	return sas_register_ha(&asd_ha->sas_ha);
 }
@@ -641,7 +670,9 @@ static int __devinit asd_pci_probe(struct pci_dev *dev,
 	}
 	ASD_DPRINTK("escbs posted\n");
 
-	asd_create_dev_attrs(asd_ha);
+	err = asd_create_dev_attrs(asd_ha);
+	if (err)
+		goto Err_dev_attrs;
 
 	err = asd_register_sas_ha(asd_ha);
 	if (err)
@@ -664,6 +695,7 @@ Err_en_phys:
 	asd_unregister_sas_ha(asd_ha);
 Err_reg_sas:
 	asd_remove_dev_attrs(asd_ha);
+Err_dev_attrs:
 Err_escbs:
 	asd_disable_ints(asd_ha);
 	free_irq(dev->irq, asd_ha);
@@ -699,6 +731,15 @@ static void asd_free_queues(struct asd_ha_struct *asd_ha)
 
 	list_for_each_safe(pos, n, &pending) {
 		struct asd_ascb *ascb = list_entry(pos, struct asd_ascb, list);
+		/*
+		 * Delete unexpired ascb timers.  This may happen if we issue
+		 * a CONTROL PHY scb to an adapter and rmmod before the scb
+		 * times out.  Apparently we don't wait for the CONTROL PHY
+		 * to complete, so it doesn't matter if we kill the timer.
+		 */
+		del_timer_sync(&ascb->timer);
+		WARN_ON(ascb->scb->header.opcode != CONTROL_PHY);
+
 		list_del_init(pos);
 		ASD_DPRINTK("freeing from pending\n");
 		asd_ascb_free(ascb);
@@ -744,15 +785,37 @@ static void __devexit asd_pci_remove(struct pci_dev *dev)
 	return;
 }
 
+static void asd_scan_start(struct Scsi_Host *shost)
+{
+	struct asd_ha_struct *asd_ha;
+	int err;
+
+	asd_ha = SHOST_TO_SAS_HA(shost)->lldd_ha;
+	err = asd_enable_phys(asd_ha, asd_ha->hw_prof.enabled_phys);
+	if (err)
+		asd_printk("Couldn't enable phys, err:%d\n", err);
+}
+
+static int asd_scan_finished(struct Scsi_Host *shost, unsigned long time)
+{
+	/* give the phy enabling interrupt event time to come in (1s
+	 * is empirically about all it takes) */
+	if (time < HZ)
+		return 0;
+	/* Wait for discovery to finish */
+	scsi_flush_work(shost);
+	return 1;
+}
+
 static ssize_t asd_version_show(struct device_driver *driver, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%s\n", ASD_DRIVER_VERSION);
 }
 static DRIVER_ATTR(version, S_IRUGO, asd_version_show, NULL);
 
-static void asd_create_driver_attrs(struct device_driver *driver)
+static int asd_create_driver_attrs(struct device_driver *driver)
 {
-	driver_create_file(driver, &driver_attr_version);
+	return driver_create_file(driver, &driver_attr_version);
 }
 
 static void asd_remove_driver_attrs(struct device_driver *driver)
@@ -761,8 +824,6 @@ static void asd_remove_driver_attrs(struct device_driver *driver)
 }
 
 static struct sas_domain_function_template aic94xx_transport_functions = {
-	.lldd_port_formed	= asd_update_port_links,
-
 	.lldd_dev_found		= asd_dev_found,
 	.lldd_dev_gone		= asd_dev_gone,
 
@@ -779,7 +840,8 @@ static struct sas_domain_function_template aic94xx_transport_functions = {
 	.lldd_clear_nexus_port	= asd_clear_nexus_port,
 	.lldd_clear_nexus_ha	= asd_clear_nexus_ha,
 
-	.lldd_control_phy	= asd_control_phy,
+	.lldd_control_phy	= asd_control_phy_wrap,
+	.lldd_control_phy_new	= asd_control_phy,
 };
 
 static const struct pci_device_id aic94xx_pci_table[] __devinitdata = {
@@ -787,7 +849,11 @@ static const struct pci_device_id aic94xx_pci_table[] __devinitdata = {
 	 0, 0, 1},
 	{PCI_DEVICE(PCI_VENDOR_ID_ADAPTEC2, PCI_DEVICE_ID_ADAPTEC2_RAZOR12),
 	 0, 0, 1},
+	{PCI_DEVICE(PCI_VENDOR_ID_ADAPTEC2, PCI_DEVICE_ID_ADAPTEC2_RAZOR16),
+	 0, 0, 1},
 	{PCI_DEVICE(PCI_VENDOR_ID_ADAPTEC2, PCI_DEVICE_ID_ADAPTEC2_RAZOR1E),
+	 0, 0, 1},
+	{PCI_DEVICE(PCI_VENDOR_ID_ADAPTEC2, PCI_DEVICE_ID_ADAPTEC2_RAZOR1F),
 	 0, 0, 1},
 	{PCI_DEVICE(PCI_VENDOR_ID_ADAPTEC2, PCI_DEVICE_ID_ADAPTEC2_RAZOR30),
 	 0, 0, 2},
@@ -823,17 +889,21 @@ static int __init aic94xx_init(void)
 
 	aic94xx_transport_template =
 		sas_domain_attach_transport(&aic94xx_transport_functions);
-	if (err)
+	if (!aic94xx_transport_template)
 		goto out_destroy_caches;
 
 	err = pci_register_driver(&aic94xx_pci_driver);
 	if (err)
 		goto out_release_transport;
 
-	asd_create_driver_attrs(&aic94xx_pci_driver.driver);
+	err = asd_create_driver_attrs(&aic94xx_pci_driver.driver);
+	if (err)
+		goto out_unregister_pcidrv;
 
 	return err;
 
+ out_unregister_pcidrv:
+	pci_unregister_driver(&aic94xx_pci_driver);
  out_release_transport:
 	sas_release_transport(aic94xx_transport_template);
  out_destroy_caches:

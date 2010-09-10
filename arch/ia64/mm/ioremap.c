@@ -18,6 +18,8 @@ __ioremap (unsigned long offset, unsigned long size)
 {
 #ifdef CONFIG_XEN
 	offset = HYPERVISOR_ioremap(offset, size);
+	if (IS_ERR_VALUE(offset))
+		return (void __iomem*)offset;
 #endif
 	return (void __iomem *) (__IA64_UNCACHED_OFFSET | offset);
 }

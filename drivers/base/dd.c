@@ -77,17 +77,20 @@ int driver_probe_device(struct device_driver * drv, struct device * dev)
 
 	pr_debug("%s: Matched Device %s with Driver %s\n",
 		 drv->bus->name, dev->bus_id, drv->name);
+
 	dev->driver = drv;
 	if (dev->bus->probe) {
 		ret = dev->bus->probe(dev);
 		if (ret) {
 			dev->driver = NULL;
+			devres_release_all(dev);
 			goto ProbeFailed;
 		}
 	} else if (drv->probe) {
 		ret = drv->probe(dev);
 		if (ret) {
 			dev->driver = NULL;
+			devres_release_all(dev);
 			goto ProbeFailed;
 		}
 	}
@@ -213,6 +216,7 @@ static void __device_release_driver(struct device * dev)
 			dev->bus->remove(dev);
 		else if (drv->remove)
 			drv->remove(dev);
+		devres_release_all(dev);
 		dev->driver = NULL;
 		put_driver(drv);
 	}

@@ -293,6 +293,27 @@ long plpar_hcall_9arg_9ret(unsigned long opcode,
 			   unsigned long *out8,
 			   unsigned long *out9);
 
+#define PLPAR_HCALL9_BUFSIZE 9
+inline static long plpar_hcall9(unsigned long opcode,
+				unsigned long *retbuf,
+				unsigned long arg1,
+				unsigned long arg2,
+				unsigned long arg3,
+				unsigned long arg4,
+				unsigned long arg5,
+				unsigned long arg6,
+				unsigned long arg7,
+				unsigned long arg8,
+				unsigned long arg9)
+{
+	return plpar_hcall_9arg_9ret(opcode,
+				     arg1, arg2, arg3, arg4, arg5,
+				     arg6, arg7, arg8, arg9,
+				     retbuf,
+				     retbuf+1, retbuf+2, retbuf+3, retbuf+4,
+				     retbuf+5, retbuf+6, retbuf+7, retbuf+8);
+}
+
 #endif /* __ASSEMBLY__ */
 #endif /* __KERNEL__ */
 #endif /* _ASM_POWERPC_HVCALL_H */

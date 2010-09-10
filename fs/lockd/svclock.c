@@ -611,9 +611,7 @@ callback:
 
 	/* Call the client */
 	kref_get(&block->b_count);
-	if (nlm_async_call(block->b_call, NLMPROC_GRANTED_MSG,
-						&nlmsvc_grant_ops) < 0)
-		nlmsvc_release_block(block);
+	nlm_async_call(block->b_call, NLMPROC_GRANTED_MSG, &nlmsvc_grant_ops);
 }
 
 /*

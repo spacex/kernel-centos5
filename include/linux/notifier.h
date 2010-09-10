@@ -154,5 +154,13 @@ extern int raw_notifier_call_chain(struct raw_notifier_head *,
 #define CPU_DOWN_FAILED		0x0006 /* CPU (unsigned)v NOT going down */
 #define CPU_DEAD		0x0007 /* CPU (unsigned)v dead */
 
+/* Used for CPU hotplug events occuring while tasks are frozen due to a suspend
+ * operation in progress
+ */
+#define CPU_TASKS_FROZEN	0x0010
+
+#define CPU_ONLINE_FROZEN	(CPU_ONLINE | CPU_TASKS_FROZEN)
+#define CPU_DEAD_FROZEN		(CPU_DEAD | CPU_TASKS_FROZEN)
+
 #endif /* __KERNEL__ */
 #endif /* _LINUX_NOTIFIER_H */

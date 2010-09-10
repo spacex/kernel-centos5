@@ -125,7 +125,6 @@ static void _snd_mpu401_uart_interrupt(struct snd_mpu401 *mpu)
  * snd_mpu401_uart_interrupt - generic MPU401-UART interrupt handler
  * @irq: the irq number
  * @dev_id: mpu401 instance
- * @regs: the reigster
  *
  * Processes the interrupt for MPU401-UART i/o.
  */
@@ -146,7 +145,6 @@ EXPORT_SYMBOL(snd_mpu401_uart_interrupt);
  * snd_mpu401_uart_interrupt_tx - generic MPU401-UART transmit irq handler
  * @irq: the irq number
  * @dev_id: mpu401 instance
- * @regs: the reigster
  *
  * Processes the interrupt for MPU401-UART output.
  */

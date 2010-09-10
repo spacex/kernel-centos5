@@ -119,7 +119,7 @@ static void smp_snoop(struct ib_device *ibdev,
 
 			mthca_update_rate(to_mdev(ibdev), port_num);
 			update_sm_ah(to_mdev(ibdev), port_num,
-				     be16_to_cpu(pinfo->lid),
+				     be16_to_cpu(pinfo->sm_lid),
 				     pinfo->neighbormtu_mastersmsl & 0xf);
 
 			event.device           = ibdev;
@@ -317,7 +317,7 @@ err:
 	return ret;
 }
 
-void __devexit mthca_free_agents(struct mthca_dev *dev)
+void mthca_free_agents(struct mthca_dev *dev)
 {
 	struct ib_mad_agent *agent;
 	int p, q;

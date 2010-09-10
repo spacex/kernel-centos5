@@ -88,13 +88,13 @@ MODULE_PARM_DESC(kpiobufs, "Set number of PIO buffers for driver");
 static int create_port0_egr(struct ipath_devdata *dd)
 {
 	unsigned e, egrcnt;
-	struct sk_buff **skbs;
+	struct ipath_skbinfo *skbinfo;
 	int ret;
 
 	egrcnt = dd->ipath_rcvegrcnt;
 
-	skbs = vmalloc(sizeof(*dd->ipath_port0_skbs) * egrcnt);
-	if (skbs == NULL) {
+	skbinfo = vmalloc(sizeof(*dd->ipath_port0_skbinfo) * egrcnt);
+	if (skbinfo == NULL) {
 		ipath_dev_err(dd, "allocation error for eager TID "
 			      "skb array\n");
 		ret = -ENOMEM;
@@ -109,13 +109,13 @@ static int create_port0_egr(struct ipath_devdata *dd)
 		 * 4 bytes so that the data buffer stays word aligned.
 		 * See ipath_kreceive() for more details.
 		 */
-		skbs[e] = ipath_alloc_skb(dd, GFP_KERNEL);
-		if (!skbs[e]) {
+		skbinfo[e].skb = ipath_alloc_skb(dd, GFP_KERNEL);
+		if (!skbinfo[e].skb) {
 			ipath_dev_err(dd, "SKB allocation error for "
 				      "eager TID %u\n", e);
 			while (e != 0)
-				dev_kfree_skb(skbs[--e]);
-			vfree(skbs);
+				dev_kfree_skb(skbinfo[--e].skb);
+			vfree(skbinfo);
 			ret = -ENOMEM;
 			goto bail;
 		}
@@ -124,14 +124,17 @@ static int create_port0_egr(struct ipath_devdata *dd)
 	 * After loop above, so we can test non-NULL to see if ready
 	 * to use at receive, etc.
 	 */
-	dd->ipath_port0_skbs = skbs;
+	dd->ipath_port0_skbinfo = skbinfo;
 
 	for (e = 0; e < egrcnt; e++) {
-		unsigned long phys =
-			virt_to_phys(dd->ipath_port0_skbs[e]->data);
+		dd->ipath_port0_skbinfo[e].phys =
+		  ipath_map_single(dd->pcidev,
+				   dd->ipath_port0_skbinfo[e].skb->data,
+				   dd->ipath_ibmaxlen, PCI_DMA_FROMDEVICE);
 		dd->ipath_f_put_tid(dd, e + (u64 __iomem *)
 				    ((char __iomem *) dd->ipath_kregbase +
-				     dd->ipath_rcvegrbase), 0, phys);
+				     dd->ipath_rcvegrbase), 0,
+				    dd->ipath_port0_skbinfo[e].phys);
 	}
 
 	ret = 0;
@@ -344,10 +347,9 @@ done:
 static int init_chip_reset(struct ipath_devdata *dd,
 			   struct ipath_portdata **pdp)
 {
-	struct ipath_portdata *pd;
 	u32 rtmp;
 
-	*pdp = pd = dd->ipath_pd[0];
+	*pdp = dd->ipath_pd[0];
 	/* ensure chip does no sends or receives while we re-initialize */
 	dd->ipath_control = dd->ipath_sendctrl = dd->ipath_rcvctrl = 0U;
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_rcvctrl, 0);
@@ -432,16 +434,33 @@ done:
  */
 static void init_shadow_tids(struct ipath_devdata *dd)
 {
-	dd->ipath_pageshadow = (struct page **)
-		vmalloc(dd->ipath_cfgports * dd->ipath_rcvtidcnt *
+	struct page **pages;
+	dma_addr_t *addrs;
+
+	pages = vmalloc(dd->ipath_cfgports * dd->ipath_rcvtidcnt *
 			sizeof(struct page *));
-	if (!dd->ipath_pageshadow)
+	if (!pages) {
 		ipath_dev_err(dd, "failed to allocate shadow page * "
 			      "array, no expected sends!\n");
-	else
-		memset(dd->ipath_pageshadow, 0,
-		       dd->ipath_cfgports * dd->ipath_rcvtidcnt *
-		       sizeof(struct page *));
+		dd->ipath_pageshadow = NULL;
+		return;
+	}
+
+	addrs = vmalloc(dd->ipath_cfgports * dd->ipath_rcvtidcnt *
+			sizeof(dma_addr_t));
+	if (!addrs) {
+		ipath_dev_err(dd, "failed to allocate shadow dma handle "
+			      "array, no expected sends!\n");
+		vfree(dd->ipath_pageshadow);
+		dd->ipath_pageshadow = NULL;
+		return;
+	}
+
+	memset(pages, 0, dd->ipath_cfgports * dd->ipath_rcvtidcnt *
+	       sizeof(struct page *));
+
+	dd->ipath_pageshadow = pages;
+	dd->ipath_physshadow = addrs;
 }
 
 static void enable_chip(struct ipath_devdata *dd,
@@ -649,6 +668,7 @@ int ipath_init_chip(struct ipath_devdata *dd, int reinit)
 {
 	int ret = 0, i;
 	u32 val32, kpiobufs;
+	u32 piobufs, uports;
 	u64 val;
 	struct ipath_portdata *pd = NULL; /* keep gcc4 happy */
 	gfp_t gfp_flags = GFP_USER | __GFP_COMP;
@@ -683,16 +703,17 @@ int ipath_init_chip(struct ipath_devdata *dd, int reinit)
 	 * the in memory DMA'ed copies of the registers.  This has to
 	 * be done early, before we calculate lastport, etc.
 	 */
-	val = dd->ipath_piobcnt2k + dd->ipath_piobcnt4k;
+	piobufs = dd->ipath_piobcnt2k + dd->ipath_piobcnt4k;
 	/*
 	 * calc number of pioavail registers, and save it; we have 2
 	 * bits per buffer.
 	 */
-	dd->ipath_pioavregs = ALIGN(val, sizeof(u64) * BITS_PER_BYTE / 2)
+	dd->ipath_pioavregs = ALIGN(piobufs, sizeof(u64) * BITS_PER_BYTE / 2)
 		/ (sizeof(u64) * BITS_PER_BYTE / 2);
+	uports = dd->ipath_cfgports ? dd->ipath_cfgports - 1 : 0;
 	if (ipath_kpiobufs == 0) {
 		/* not set by user (this is default) */
-		if ((dd->ipath_piobcnt2k + dd->ipath_piobcnt4k) > 128)
+		if (piobufs >= (uports * IPATH_MIN_USER_PORT_BUFCNT) + 32)
 			kpiobufs = 32;
 		else
 			kpiobufs = 16;
@@ -700,31 +721,25 @@ int ipath_init_chip(struct ipath_devdata *dd, int reinit)
 	else
 		kpiobufs = ipath_kpiobufs;
 
-	if (kpiobufs >
-	    (dd->ipath_piobcnt2k + dd->ipath_piobcnt4k -
-	     (dd->ipath_cfgports * IPATH_MIN_USER_PORT_BUFCNT))) {
-		i = dd->ipath_piobcnt2k + dd->ipath_piobcnt4k -
-			(dd->ipath_cfgports * IPATH_MIN_USER_PORT_BUFCNT);
+	if (kpiobufs + (uports * IPATH_MIN_USER_PORT_BUFCNT) > piobufs) {
+		i = (int) piobufs -
+			(int) (uports * IPATH_MIN_USER_PORT_BUFCNT);
 		if (i < 0)
 			i = 0;
-		dev_info(&dd->pcidev->dev, "Allocating %d PIO bufs for "
-			 "kernel leaves too few for %d user ports "
+		dev_info(&dd->pcidev->dev, "Allocating %d PIO bufs of "
+			 "%d for kernel leaves too few for %d user ports "
 			 "(%d each); using %u\n", kpiobufs,
-			 dd->ipath_cfgports - 1,
-			 IPATH_MIN_USER_PORT_BUFCNT, i);
+			 piobufs, uports, IPATH_MIN_USER_PORT_BUFCNT, i);
 		/*
 		 * shouldn't change ipath_kpiobufs, because could be
 		 * different for different devices...
 		 */
 		kpiobufs = i;
 	}
-	dd->ipath_lastport_piobuf =
-		dd->ipath_piobcnt2k + dd->ipath_piobcnt4k - kpiobufs;
-	dd->ipath_pbufsport = dd->ipath_cfgports > 1
-		? dd->ipath_lastport_piobuf / (dd->ipath_cfgports - 1)
-		: 0;
-	val32 = dd->ipath_lastport_piobuf -
-		(dd->ipath_pbufsport * (dd->ipath_cfgports - 1));
+	dd->ipath_lastport_piobuf = piobufs - kpiobufs;
+	dd->ipath_pbufsport =
+		uports ? dd->ipath_lastport_piobuf / uports : 0;
+	val32 = dd->ipath_lastport_piobuf - (dd->ipath_pbufsport * uports);
 	if (val32 > 0) {
 		ipath_dbg("allocating %u pbufs/port leaves %u unused, "
 			  "add to kernel\n", dd->ipath_pbufsport, val32);
@@ -735,8 +750,7 @@ int ipath_init_chip(struct ipath_devdata *dd, int reinit)
 	dd->ipath_lastpioindex = dd->ipath_lastport_piobuf;
 	ipath_cdbg(VERBOSE, "%d PIO bufs for kernel out of %d total %u "
 		   "each for %u user ports\n", kpiobufs,
-		   dd->ipath_piobcnt2k + dd->ipath_piobcnt4k,
-		   dd->ipath_pbufsport, dd->ipath_cfgports - 1);
+		   piobufs, dd->ipath_pbufsport, uports);
 
 	dd->ipath_f_early_init(dd);
 

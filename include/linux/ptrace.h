@@ -49,21 +49,22 @@
 #include <asm/ptrace.h>
 
 #ifdef __KERNEL__
-#include <linux/compiler.h>
+#include <linux/compiler.h>		/* For unlikely.  */
+#include <linux/sched.h>		/* For struct task_struct.  */
 #include <linux/types.h>
-struct task_struct;
+#include <linux/errno.h>
 struct siginfo;
 struct rusage;
 
 
 extern int ptrace_may_attach(struct task_struct *task);
-extern int __ptrace_may_attach(struct task_struct *task);
 
 
 #ifdef CONFIG_PTRACE
 #include <asm/tracehook.h>
-struct utrace_attached_engine;
-struct utrace_regset_view;
+#ifndef __GENKSYMS__
+#include <linux/tracehook.h>
+#endif
 
 /*
  * These must be defined by arch code to handle machine-specific ptrace
@@ -80,30 +81,21 @@ struct utrace_regset_view;
  * and sets *retval to the value--which might have any bit pattern at all,
  * including one that looks like -ENOSYS or another error code.
  */
-extern fastcall int arch_ptrace(long *request, struct task_struct *child,
-				struct utrace_attached_engine *engine,
-				unsigned long addr, unsigned long data,
-				long *retval);
-#ifdef CONFIG_COMPAT
-#include <linux/compat.h>
-
-extern fastcall int arch_compat_ptrace(compat_long_t *request,
-				       struct task_struct *child,
-				       struct utrace_attached_engine *engine,
-				       compat_ulong_t a, compat_ulong_t d,
-				       compat_long_t *retval);
-#endif
+extern int arch_ptrace(long *request, struct task_struct *child,
+		       struct utrace_attached_engine *engine,
+		       unsigned long addr, unsigned long data,
+		       long *retval);
 
 /*
  * Convenience function doing access to a single utrace_regset for ptrace.
  * The offset and size are in bytes, giving the location in the regset data.
  */
-extern fastcall int ptrace_regset_access(struct task_struct *child,
-					 struct utrace_attached_engine *engine,
-					 const struct utrace_regset_view *view,
-					 int setno, unsigned long offset,
-					 unsigned int size, void __user *data,
-					 int write);
+extern int ptrace_regset_access(struct task_struct *child,
+				struct utrace_attached_engine *engine,
+				const struct utrace_regset_view *view,
+				int setno, unsigned long offset,
+				unsigned int size, void __user *data,
+				int write);
 
 /*
  * Convenience wrapper for doing access to a whole utrace_regset for ptrace.
@@ -121,11 +113,11 @@ static inline int ptrace_whole_regset(struct task_struct *child,
  * The regno value gives a slot number plus regset->bias.
  * The value accessed is regset->size bytes long.
  */
-extern fastcall int ptrace_onereg_access(struct task_struct *child,
-					 struct utrace_attached_engine *engine,
-					 const struct utrace_regset_view *view,
-					 int setno, unsigned long regno,
-					 void __user *data, int write);
+extern int ptrace_onereg_access(struct task_struct *child,
+				struct utrace_attached_engine *engine,
+				const struct utrace_regset_view *view,
+				int setno, unsigned long regno,
+				void __user *data, int write);
 
 
 /*
@@ -135,7 +127,9 @@ extern fastcall int ptrace_onereg_access(struct task_struct *child,
  * An element describes the range [.start, .end) of struct user offsets,
  * measured in bytes; it maps to the regset in the view's regsets array
  * at the index given by .regset, at .offset bytes into that regset's data.
- * If .regset is -1, then the [.start, .end) range reads as zero.
+ * If .regset is -1, then the [.start, .end) range reads as zero
+ * if .offset is zero, and is skipped on read (user's buffer unchanged)
+ * if .offset is -1.
  */
 struct ptrace_layout_segment {
 	unsigned int start, end, regset, offset;
@@ -145,12 +139,12 @@ struct ptrace_layout_segment {
  * Convenience function for doing access to a ptrace compatibility layout.
  * The offset and size are in bytes.
  */
-extern fastcall int ptrace_layout_access(
-	struct task_struct *child, struct utrace_attached_engine *engine,
-	const struct utrace_regset_view *view,
-	const struct ptrace_layout_segment layout[],
-	unsigned long offset, unsigned int size,
-	void __user *data, void *kdata, int write);
+extern int ptrace_layout_access(struct task_struct *child,
+				struct utrace_attached_engine *engine,
+				const struct utrace_regset_view *view,
+				const struct ptrace_layout_segment layout[],
+				unsigned long offset, unsigned int size,
+				void __user *data, void *kdata, int write);
 
 
 /* Convenience wrapper for the common PTRACE_PEEKUSR implementation.  */
@@ -175,7 +169,41 @@ static inline int ptrace_pokeusr(struct task_struct *child,
 				    NULL, &data, 1);
 }
 
+/*
+ * Called in copy_process.
+ */
+static inline void ptrace_init_task(struct task_struct *tsk)
+{
+	INIT_LIST_HEAD(&tsk->ptracees);
+}
+
+/*
+ * Called in do_exit, after setting PF_EXITING, no locks are held.
+ */
+void ptrace_exit(struct task_struct *tsk);
+
+/*
+ * Called in do_wait, with tasklist_lock held for reading.
+ * This reports any ptrace-child that is ready as do_wait would a normal child.
+ * If there are no ptrace children, returns -ECHILD.
+ * If there are some ptrace children but none reporting now, returns 0.
+ * In those cases the tasklist_lock is still held so next_thread(tsk) works.
+ * For any other return value, tasklist_lock is released before return.
+ */
+int ptrace_do_wait(struct task_struct *tsk,
+		   pid_t pid, int options, struct siginfo __user *infop,
+		   int __user *stat_addr, struct rusage __user *rusagep);
+
+
 #ifdef CONFIG_COMPAT
+#include <linux/compat.h>
+
+extern int arch_compat_ptrace(compat_long_t *request,
+			      struct task_struct *child,
+			      struct utrace_attached_engine *engine,
+			      compat_ulong_t a, compat_ulong_t d,
+			      compat_long_t *retval);
+
 /* Convenience wrapper for the common PTRACE_PEEKUSR implementation.  */
 static inline int ptrace_compat_peekusr(
 	struct task_struct *child, struct utrace_attached_engine *engine,
@@ -198,26 +226,10 @@ static inline int ptrace_compat_pokeusr(
 				    layout, addr, sizeof(compat_ulong_t),
 				    NULL, &data, 1);
 }
-#endif
+#endif	/* CONFIG_COMPAT */
 
-
-/*
- * Called in do_exit, after setting PF_EXITING, no locks are held.
- */
-void ptrace_exit(struct task_struct *tsk);
-
-/*
- * Called in do_wait, with tasklist_lock held for reading.
- * This reports any ptrace-child that is ready as do_wait would a normal child.
- * If there are no ptrace children, returns -ECHILD.
- * If there are some ptrace children but none reporting now, returns 0.
- * In those cases the tasklist_lock is still held so next_thread(tsk) works.
- * For any other return value, tasklist_lock is released before return.
- */
-int ptrace_do_wait(struct task_struct *tsk,
-		   pid_t pid, int options, struct siginfo __user *infop,
-		   int __user *stat_addr, struct rusage __user *rusagep);
-#else
+#else  /* no CONFIG_PTRACE */
+static inline void ptrace_init_task(struct task_struct *tsk) { }
 static inline void ptrace_exit(struct task_struct *tsk) { }
 static inline int ptrace_do_wait(struct task_struct *tsk,
 				 pid_t pid, int options,
@@ -227,7 +239,7 @@ static inline int ptrace_do_wait(struct task_struct *tsk,
 {
 	return -ECHILD;
 }
-#endif
+#endif	/* CONFIG_PTRACE */
 
 
 #ifndef force_successful_syscall_return

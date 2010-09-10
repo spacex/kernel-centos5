@@ -2233,12 +2233,12 @@ static void vwsnd_audio_write_intr(vwsnd_dev_t *devc, unsigned int status)
 		pcm_output(devc, underflown, 0);
 }
 
-static irqreturn_t vwsnd_audio_intr(int irq, void *dev_id, struct pt_regs *regs)
+static irqreturn_t vwsnd_audio_intr(int irq, void *dev_id)
 {
-	vwsnd_dev_t *devc = (vwsnd_dev_t *) dev_id;
+	vwsnd_dev_t *devc = dev_id;
 	unsigned int status;
 
-	DBGEV("(irq=%d, dev_id=0x%p, regs=0x%p)\n", irq, dev_id, regs);
+	DBGEV("(irq=%d, dev_id=0x%p)\n", irq, dev_id);
 
 	status = li_get_clear_intr_status(&devc->lith);
 	vwsnd_audio_read_intr(devc, status);
@@ -3035,7 +3035,7 @@ static int vwsnd_audio_release(struct inode *inode, struct file *file)
 	return err;
 }
 
-static struct file_operations vwsnd_audio_fops = {
+static const struct file_operations vwsnd_audio_fops = {
 	.owner =	THIS_MODULE,
 	.llseek =	no_llseek,
 	.read =		vwsnd_audio_read,
@@ -3225,7 +3225,7 @@ static int vwsnd_mixer_ioctl(struct inode *ioctl,
 	return retval;
 }
 
-static struct file_operations vwsnd_mixer_fops = {
+static const struct file_operations vwsnd_mixer_fops = {
 	.owner =	THIS_MODULE,
 	.llseek =	no_llseek,
 	.ioctl =	vwsnd_mixer_ioctl,

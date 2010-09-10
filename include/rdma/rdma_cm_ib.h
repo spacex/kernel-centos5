@@ -44,26 +44,7 @@
 int rdma_set_ib_paths(struct rdma_cm_id *id,
 		      struct ib_sa_path_rec *path_rec, int num_paths);
 
-struct ib_cm_req_opt {
-	u8	remote_cm_response_timeout;
-	u8	local_cm_response_timeout;
-	u8	max_cm_retries;
-};
-
-/**
- * rdma_get_ib_req_info - Retrieves the current IB CM REQ / SIDR REQ values
- *   that will be used when connection, or performing service ID resolution.
- * @id: Connection identifier associated with the request.
- * @info: Current values for CM REQ messages.
- */
-int rdma_get_ib_req_info(struct rdma_cm_id *id, struct ib_cm_req_opt *info);
-
-/**
- * rdma_set_ib_req_info - Sets the current IB CM REQ / SIDR REQ values
- *   that will be used when connection, or performing service ID resolution.
- * @id: Connection identifier associated with the request.
- * @info: New values for CM REQ messages.
- */
-int rdma_set_ib_req_info(struct rdma_cm_id *id, struct ib_cm_req_opt *info);
+/* Global qkey for UDP QPs and multicast groups. */
+#define RDMA_UDP_QKEY 0x01234567
 
 #endif /* RDMA_CM_IB_H */

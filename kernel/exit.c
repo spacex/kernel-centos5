@@ -20,8 +20,8 @@
 #include <linux/acct.h>
 #include <linux/file.h>
 #include <linux/binfmts.h>
-#include <linux/ptrace.h>
 #include <linux/tracehook.h>
+#include <linux/ptrace.h>
 #include <linux/profile.h>
 #include <linux/mount.h>
 #include <linux/proc_fs.h>
@@ -139,11 +139,12 @@ void release_task(struct task_struct * p)
 {
 	struct task_struct *leader;
 	int zap_leader;
+	int inhibited_leader;
 repeat:
 	tracehook_release_task(p);
 	atomic_dec(&p->user->processes);
-	write_lock_irq(&tasklist_lock);
 	BUG_ON(tracehook_check_released(p));
+	write_lock_irq(&tasklist_lock);
 	__exit_signal(p);
 
 	/*
@@ -152,10 +153,14 @@ repeat:
 	 * group leader's parent process. (if it wants notification.)
 	 */
 	zap_leader = 0;
+	inhibited_leader = 0;
 	leader = p->group_leader;
 	if (leader != p && thread_group_empty(leader) && leader->exit_state == EXIT_ZOMBIE) {
 		BUG_ON(leader->exit_signal == -1);
-		do_notify_parent(leader, leader->exit_signal);
+		if (tracehook_inhibit_wait_zombie(leader))
+			inhibited_leader = 1;
+		else
+			do_notify_parent(leader, leader->exit_signal);
 		/*
 		 * If we were the last child thread and the leader has
 		 * exited already, and the leader's parent ignores SIGCHLD,
@@ -165,6 +170,14 @@ repeat:
 		 * that case.
 		 */
 		zap_leader = (leader->exit_signal == -1);
+		if (zap_leader) {
+			/*
+			 * Preserve the invariant that release_task()
+			 * can only be called on a task in EXIT_DEAD.
+			 */
+			zap_leader = xchg(&leader->exit_state, EXIT_DEAD);
+			BUG_ON(zap_leader != EXIT_ZOMBIE);
+		}
 	}
 
 	sched_exit(p);
@@ -176,6 +189,13 @@ repeat:
 	p = leader;
 	if (unlikely(zap_leader))
 		goto repeat;
+
+	/*
+	 * If tracing usurps normal reaping of the leader, tracing needs
+	 * to be notified it would normally be reapable now.
+	 */
+	if (unlikely(inhibited_leader))
+		tracehook_report_delayed_group_leader(leader);
 }
 
 /*
@@ -601,7 +621,8 @@ reparent_thread(struct task_struct *p, struct task_struct *father)
 	/* If we'd notified the old parent about this child's death,
 	 * also notify the new parent.
 	 */
-	if (p->exit_state == EXIT_ZOMBIE && p->exit_signal != -1 &&
+	if (!tracehook_inhibit_wait_zombie(p) &&
+	    p->exit_state == EXIT_ZOMBIE && p->exit_signal != -1 &&
 	    thread_group_empty(p))
 		do_notify_parent(p, p->exit_signal);
 
@@ -674,11 +695,8 @@ static void exit_notify(struct task_struct *tsk)
 		read_lock(&tasklist_lock);
 		spin_lock_irq(&tsk->sighand->siglock);
 		for (t = next_thread(tsk); t != tsk; t = next_thread(t))
-			if (!signal_pending(t) && !(t->flags & PF_EXITING)) {
-				recalc_sigpending_tsk(t);
-				if (signal_pending(t))
-					signal_wake_up(t, 0);
-			}
+			if (!signal_pending(t) && !(t->flags & PF_EXITING))
+				recalc_sigpending_and_wake(t);
 		spin_unlock_irq(&tsk->sighand->siglock);
 		read_unlock(&tasklist_lock);
 	}

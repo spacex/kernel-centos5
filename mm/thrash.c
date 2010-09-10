@@ -54,6 +54,10 @@ void grab_swap_token(void)
 	struct mm_struct *mm;
 	int reason;
 
+	/* Some kernel threads without mm can fault on behalf of others. */
+	if (unlikely(!current->mm))
+		return;
+
 	/* We have the token. Let others know we still need it. */
 	if (has_swap_token(current->mm)) {
 		current->mm->recent_pagein = 1;

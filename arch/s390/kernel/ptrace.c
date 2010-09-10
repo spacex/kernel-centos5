@@ -311,12 +311,10 @@ static const struct utrace_regset native_regsets[] = {
 	},
 };
 
-const struct utrace_regset_view utrace_s390_native_view = {
+static const struct utrace_regset_view utrace_s390_native_view = {
 	.name = UTS_MACHINE, .e_machine = ELF_ARCH,
-	.regsets = native_regsets,
-	.n = sizeof native_regsets / sizeof native_regsets[0],
+	.regsets = native_regsets, .n = ARRAY_SIZE(native_regsets)
 };
-EXPORT_SYMBOL_GPL(utrace_s390_native_view);
 
 
 #ifdef CONFIG_COMPAT
@@ -561,13 +559,20 @@ static const struct utrace_regset s390_compat_regsets[] = {
 	},
 };
 
-const struct utrace_regset_view utrace_s390_compat_view = {
+static const struct utrace_regset_view utrace_s390_compat_view = {
 	.name = "s390", .e_machine = EM_S390,
-	.regsets = s390_compat_regsets,
-	.n = sizeof s390_compat_regsets / sizeof s390_compat_regsets[0],
+	.regsets = s390_compat_regsets, .n = ARRAY_SIZE(s390_compat_regsets)
 };
-EXPORT_SYMBOL_GPL(utrace_s390_compat_view);
 #endif	/* CONFIG_COMPAT */
+
+const struct utrace_regset_view *utrace_native_view(struct task_struct *tsk)
+{
+#ifdef CONFIG_COMPAT
+        if (test_tsk_thread_flag(tsk, TIF_31BIT))
+                return &utrace_s390_compat_view;
+#endif
+        return &utrace_s390_native_view;
+}
 
 
 #ifdef CONFIG_PTRACE
@@ -579,9 +584,9 @@ static const struct ptrace_layout_segment s390_uarea[] = {
 	{0, 0, -1, 0}
 };
 
-fastcall int arch_ptrace(long *request, struct task_struct *child,
-			 struct utrace_attached_engine *engine,
-			 unsigned long addr, unsigned long data, long *val)
+int arch_ptrace(long *request, struct task_struct *child,
+		struct utrace_attached_engine *engine,
+		unsigned long addr, unsigned long data, long *val)
 {
 	ptrace_area parea;
 	unsigned long tmp;
@@ -589,8 +594,49 @@ fastcall int arch_ptrace(long *request, struct task_struct *child,
 
 	switch (*request) {
 	case PTRACE_PEEKUSR:
+#ifdef CONFIG_64BIT
+		/*
+		 * Stupid gdb peeks/pokes the access registers in 64 bit with
+		 * an alignment of 4. Programmers from hell...
+		 */
+		if (addr >= PT_ACR0 && addr < PT_ACR15) {
+			if (addr & 3)
+				return -EIO;
+			tmp = *(unsigned long *)
+				((char *) child->thread.acrs + addr - PT_ACR0);
+			return put_user(tmp, (unsigned long __user *) data);
+		}
+		else if (addr == PT_ACR15) {
+			/*
+			 * Very special case: old & broken 64 bit gdb reading
+			 * from acrs[15]. Result is a 64 bit value. Read the
+			 * 32 bit acrs[15] value and shift it by 32. Sick...
+			 */
+			tmp = ((unsigned long) child->thread.acrs[15]) << 32;
+			return put_user(tmp, (unsigned long __user *) data);
+		}
+#endif
 		return ptrace_peekusr(child, engine, s390_uarea, addr, data);
 	case PTRACE_POKEUSR:
+#ifdef CONFIG_64BIT
+		if (addr >= PT_ACR0 && addr < PT_ACR15) {
+			if (addr & 3)
+				return -EIO;
+			*(unsigned long *) ((char *) child->thread.acrs
+					    + addr - PT_ACR0) = data;
+			return 0;
+		}
+		else if (addr == PT_ACR15) {
+			/*
+			 * Very special case: old & broken 64 bit gdb writing
+			 * to acrs[15] with a 64 bit value. Ignore the lower
+			 * half of the value and write the upper 32 bit to
+			 * acrs[15]. Sick...
+			 */
+			child->thread.acrs[15] = data >> 32;
+			return 0;
+		}
+#endif
 		return ptrace_pokeusr(child, engine, s390_uarea, addr, data);
 
 	case PTRACE_PEEKUSR_AREA:
@@ -641,11 +687,11 @@ static const struct ptrace_layout_segment s390_compat_uarea[] = {
 	{0, 0, -1, 0}
 };
 
-fastcall int arch_compat_ptrace(compat_long_t *request,
-				struct task_struct *child,
-				struct utrace_attached_engine *engine,
-				compat_ulong_t addr, compat_ulong_t data,
-				compat_long_t *val)
+int arch_compat_ptrace(compat_long_t *request,
+		       struct task_struct *child,
+		       struct utrace_attached_engine *engine,
+		       compat_ulong_t addr, compat_ulong_t data,
+		       compat_long_t *val)
 {
 	ptrace_area_emu31 parea;
 

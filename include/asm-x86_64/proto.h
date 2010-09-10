@@ -105,6 +105,7 @@ extern int exception_trace;
 extern int using_apic_timer;
 extern int disable_apic;
 extern unsigned cpu_khz;
+extern unsigned tsc_khz;
 extern int ioapic_force;
 extern int skip_ioapic_setup;
 extern int acpi_ht;
@@ -133,6 +134,8 @@ extern int notsc_setup(char *);
 extern int setup_additional_cpus(char *);
 
 extern void smp_local_timer_interrupt(struct pt_regs * regs);
+
+extern int force_mwait;
 
 long do_arch_prctl(struct task_struct *task, int code, unsigned long addr);
 

@@ -355,7 +355,7 @@ static struct mtrr_ops cyrix_mtrr_ops = {
 	.have_wrcomb       = positive_have_wrcomb,
 };
 
-int __init cyrix_init_mtrr(void)
+int __cpuinit cyrix_init_mtrr(void)
 {
 	set_mtrr_ops(&cyrix_mtrr_ops);
 	return 0;

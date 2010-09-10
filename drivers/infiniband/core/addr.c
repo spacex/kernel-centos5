@@ -47,6 +47,7 @@ struct addr_req {
 	struct sockaddr src_addr;
 	struct sockaddr dst_addr;
 	struct rdma_dev_addr *addr;
+	struct rdma_addr_client *client;
 	void *context;
 	void (*callback)(int status, struct sockaddr *src_addr,
 			 struct rdma_dev_addr *addr, void *context);
@@ -61,12 +62,35 @@ static LIST_HEAD(req_list);
 static DECLARE_WORK(work, process_req, NULL);
 static struct workqueue_struct *addr_wq;
 
-static int copy_addr(struct rdma_dev_addr *dev_addr, struct net_device *dev,
-		     unsigned char *dst_dev_addr)
+void rdma_addr_register_client(struct rdma_addr_client *client)
+{
+	atomic_set(&client->refcount, 1);
+	init_completion(&client->comp);
+}
+EXPORT_SYMBOL(rdma_addr_register_client);
+
+static inline void put_client(struct rdma_addr_client *client)
+{
+	if (atomic_dec_and_test(&client->refcount))
+		complete(&client->comp);
+}
+
+void rdma_addr_unregister_client(struct rdma_addr_client *client)
+{
+	put_client(client);
+	wait_for_completion(&client->comp);
+}
+EXPORT_SYMBOL(rdma_addr_unregister_client);
+
+int rdma_copy_addr(struct rdma_dev_addr *dev_addr, struct net_device *dev,
+		     const unsigned char *dst_dev_addr)
 {
 	switch (dev->type) {
 	case ARPHRD_INFINIBAND:
-		dev_addr->dev_type = IB_NODE_CA;
+		dev_addr->dev_type = RDMA_NODE_IB_CA;
+		break;
+	case ARPHRD_ETHER:
+		dev_addr->dev_type = RDMA_NODE_RNIC;
 		break;
 	default:
 		return -EADDRNOTAVAIL;
@@ -78,18 +102,19 @@ static int copy_addr(struct rdma_dev_addr *dev_addr, struct net_device *dev,
 		memcpy(dev_addr->dst_dev_addr, dst_dev_addr, MAX_ADDR_LEN);
 	return 0;
 }
+EXPORT_SYMBOL(rdma_copy_addr);
 
 int rdma_translate_ip(struct sockaddr *addr, struct rdma_dev_addr *dev_addr)
 {
 	struct net_device *dev;
-	u32 ip = ((struct sockaddr_in *) addr)->sin_addr.s_addr;
+	__be32 ip = ((struct sockaddr_in *) addr)->sin_addr.s_addr;
 	int ret;
 
 	dev = ip_dev_find(ip);
 	if (!dev)
 		return -EADDRNOTAVAIL;
 
-	ret = copy_addr(dev_addr, dev, NULL);
+	ret = rdma_copy_addr(dev_addr, dev, NULL);
 	dev_put(dev);
 	return ret;
 }
@@ -114,7 +139,7 @@ static void queue_req(struct addr_req *req)
 
 	mutex_lock(&lock);
 	list_for_each_entry_reverse(temp_req, &req_list, list) {
-		if (time_after(req->timeout, temp_req->timeout))
+		if (time_after_eq(req->timeout, temp_req->timeout))
 			break;
 	}
 
@@ -161,7 +186,7 @@ static int addr_resolve_remote(struct sockaddr_in *src_in,
 
 	/* If the device does ARP internally, return 'done' */
 	if (rt->idev->dev->flags & IFF_NOARP) {
-		copy_addr(addr, rt->idev->dev, NULL);
+		rdma_copy_addr(addr, rt->idev->dev, NULL);
 		goto put;
 	}
 
@@ -181,7 +206,7 @@ static int addr_resolve_remote(struct sockaddr_in *src_in,
 		src_in->sin_addr.s_addr = rt->rt_src;
 	}
 
-	ret = copy_addr(addr, neigh->dev, neigh->ha);
+	ret = rdma_copy_addr(addr, neigh->dev, neigh->ha);
 release:
 	neigh_release(neigh);
 put:
@@ -200,19 +225,17 @@ static void process_req(void *data)
 
 	mutex_lock(&lock);
 	list_for_each_entry_safe(req, temp_req, &req_list, list) {
-		if (req->status) {
+		if (req->status == -ENODATA) {
 			src_in = (struct sockaddr_in *) &req->src_addr;
 			dst_in = (struct sockaddr_in *) &req->dst_addr;
 			req->status = addr_resolve_remote(src_in, dst_in,
 							  req->addr);
+			if (req->status && time_after_eq(jiffies, req->timeout))
+				req->status = -ETIMEDOUT;
+			else if (req->status == -ENODATA)
+				continue;
 		}
-		if (req->status && time_after(jiffies, req->timeout))
-			req->status = -ETIMEDOUT;
-		else if (req->status == -ENODATA)
-			continue;
-
-		list_del(&req->list);
-		list_add_tail(&req->list, &done_list);
+		list_move_tail(&req->list, &done_list);
 	}
 
 	if (!list_empty(&req_list)) {
@@ -225,6 +248,7 @@ static void process_req(void *data)
 		list_del(&req->list);
 		req->callback(req->status, &req->src_addr, req->addr,
 			      req->context);
+		put_client(req->client);
 		kfree(req);
 	}
 }
@@ -235,7 +259,7 @@ static int addr_resolve_local(struct sockaddr_in *src_in,
 {
 	struct net_device *dev;
 	u32 src_ip = src_in->sin_addr.s_addr;
-	u32 dst_ip = dst_in->sin_addr.s_addr;
+	__be32 dst_ip = dst_in->sin_addr.s_addr;
 	int ret;
 
 	dev = ip_dev_find(dst_ip);
@@ -245,7 +269,7 @@ static int addr_resolve_local(struct sockaddr_in *src_in,
 	if (ZERONET(src_ip)) {
 		src_in->sin_family = dst_in->sin_family;
 		src_in->sin_addr.s_addr = dst_ip;
-		ret = copy_addr(addr, dev, dev->dev_addr);
+		ret = rdma_copy_addr(addr, dev, dev->dev_addr);
 	} else if (LOOPBACK(src_ip)) {
 		ret = rdma_translate_ip((struct sockaddr *)dst_in, addr);
 		if (!ret)
@@ -260,7 +284,8 @@ static int addr_resolve_local(struct sockaddr_in *src_in,
 	return ret;
 }
 
-int rdma_resolve_ip(struct sockaddr *src_addr, struct sockaddr *dst_addr,
+int rdma_resolve_ip(struct rdma_addr_client *client,
+		    struct sockaddr *src_addr, struct sockaddr *dst_addr,
 		    struct rdma_dev_addr *addr, int timeout_ms,
 		    void (*callback)(int status, struct sockaddr *src_addr,
 				     struct rdma_dev_addr *addr, void *context),
@@ -281,6 +306,8 @@ int rdma_resolve_ip(struct sockaddr *src_addr, struct sockaddr *dst_addr,
 	req->addr = addr;
 	req->callback = callback;
 	req->context = context;
+	req->client = client;
+	atomic_inc(&client->refcount);
 
 	src_in = (struct sockaddr_in *) &req->src_addr;
 	dst_in = (struct sockaddr_in *) &req->dst_addr;
@@ -301,6 +328,7 @@ int rdma_resolve_ip(struct sockaddr *src_addr, struct sockaddr *dst_addr,
 		break;
 	default:
 		ret = req->status;
+		atomic_dec(&client->refcount);
 		kfree(req);
 		break;
 	}
@@ -317,8 +345,7 @@ void rdma_addr_cancel(struct rdma_dev_addr *addr)
 		if (req->addr == addr) {
 			req->status = -ECANCELED;
 			req->timeout = jiffies;
-			list_del(&req->list);
-			list_add(&req->list, &req_list);
+			list_move(&req->list, &req_list);
 			set_timeout(req->timeout);
 			break;
 		}
@@ -327,14 +354,13 @@ void rdma_addr_cancel(struct rdma_dev_addr *addr)
 }
 EXPORT_SYMBOL(rdma_addr_cancel);
 
-static int netevent_callback(struct notifier_block *self, unsigned long event, 
+static int netevent_callback(struct notifier_block *self, unsigned long event,
 	void *ctx)
 {
-	if (event == NETEVENT_NEIGH_UPDATE) {  
+	if (event == NETEVENT_NEIGH_UPDATE) {
 		struct neighbour *neigh = ctx;
 
-		if (neigh->dev->type == ARPHRD_INFINIBAND &&
-		    (neigh->nud_state & NUD_VALID)) {
+		if (neigh->nud_state & NUD_VALID) {
 			set_timeout(jiffies);
 		}
 	}

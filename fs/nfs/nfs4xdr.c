@@ -128,7 +128,7 @@ static int nfs4_stat_to_errno(int);
 #define decode_link_maxsz	(op_decode_hdr_maxsz + 5)
 #define encode_symlink_maxsz	(op_encode_hdr_maxsz + \
 				1 + nfs4_name_maxsz + \
-				nfs4_path_maxsz + \
+				1 + \
 				nfs4_fattr_maxsz)
 #define decode_symlink_maxsz	(op_decode_hdr_maxsz + 8)
 #define encode_create_maxsz	(op_encode_hdr_maxsz + \
@@ -387,8 +387,10 @@ static int nfs4_stat_to_errno(int);
 				decode_putfh_maxsz + \
 				op_decode_hdr_maxsz + 12)
 #define NFS4_enc_server_caps_sz (compound_encode_hdr_maxsz + \
+				encode_putfh_maxsz + \
 				encode_getattr_maxsz)
 #define NFS4_dec_server_caps_sz (compound_decode_hdr_maxsz + \
+				decode_putfh_maxsz + \
 				decode_getattr_maxsz)
 #define NFS4_enc_delegreturn_sz	(compound_encode_hdr_maxsz + \
 				encode_putfh_maxsz + \
@@ -673,9 +675,9 @@ static int encode_create(struct xdr_stream *xdr, const struct nfs4_create_arg *c
 
 	switch (create->ftype) {
 	case NF4LNK:
-		RESERVE_SPACE(4 + create->u.symlink->len);
-		WRITE32(create->u.symlink->len);
-		WRITEMEM(create->u.symlink->name, create->u.symlink->len);
+		RESERVE_SPACE(4);
+		WRITE32(create->u.symlink.len);
+		xdr_write_pages(xdr, create->u.symlink.pages, 0, create->u.symlink.len);
 		break;
 
 	case NF4BLK: case NF4CHR:

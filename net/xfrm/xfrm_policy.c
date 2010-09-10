@@ -26,6 +26,8 @@
 #include <net/ip.h>
 #include <linux/audit.h>
 
+int sysctl_xfrm_larval_drop;
+
 DEFINE_MUTEX(xfrm_cfg_mutex);
 EXPORT_SYMBOL(xfrm_cfg_mutex);
 
@@ -495,16 +497,23 @@ int xfrm_policy_insert(int dir, struct xfrm_policy *policy, int excl)
 EXPORT_SYMBOL(xfrm_policy_insert);
 
 struct xfrm_policy *xfrm_policy_bysel_ctx(int dir, struct xfrm_selector *sel,
-					  struct xfrm_sec_ctx *ctx, int delete)
+					  struct xfrm_sec_ctx *ctx, int delete,
+					  int *err)
 {
 	struct xfrm_policy *pol, **p;
 
+	*err = 0;
 	write_lock_bh(&xfrm_policy_lock);
 	for (p = &xfrm_policy_list[dir]; (pol=*p)!=NULL; p = &pol->next) {
 		if ((memcmp(sel, &pol->selector, sizeof(*sel)) == 0) &&
 		    (xfrm_sec_ctx_match(ctx, pol->security))) {
 			xfrm_pol_hold(pol);
 			if (delete)
+				*err = security_xfrm_policy_delete(pol);
+				if (*err) {
+					write_unlock_bh(&xfrm_policy_lock);
+					return pol;
+				}
 				*p = pol->next;
 			break;
 		}
@@ -519,15 +528,21 @@ struct xfrm_policy *xfrm_policy_bysel_ctx(int dir, struct xfrm_selector *sel,
 }
 EXPORT_SYMBOL(xfrm_policy_bysel_ctx);
 
-struct xfrm_policy *xfrm_policy_byid(int dir, u32 id, int delete)
+struct xfrm_policy *xfrm_policy_byid(int dir, u32 id, int delete, int *err)
 {
 	struct xfrm_policy *pol, **p;
 
+	*err = 0;
 	write_lock_bh(&xfrm_policy_lock);
 	for (p = &xfrm_policy_list[dir]; (pol=*p)!=NULL; p = &pol->next) {
 		if (pol->index == id) {
 			xfrm_pol_hold(pol);
 			if (delete)
+				*err = security_xfrm_policy_delete(pol);
+				if (*err) {
+					write_unlock_bh(&xfrm_policy_lock);
+					return pol;
+				}
 				*p = pol->next;
 			break;
 		}
@@ -542,12 +557,46 @@ struct xfrm_policy *xfrm_policy_byid(int dir, u32 id, int delete)
 }
 EXPORT_SYMBOL(xfrm_policy_byid);
 
-void xfrm_policy_flush(struct xfrm_audit *audit_info)
+#ifdef CONFIG_SECURITY_NETWORK_XFRM
+static inline int
+xfrm_policy_flush_secctx_check(struct xfrm_audit *audit_info)
+{
+	int dir, err = 0;
+	struct xfrm_policy *xp;
+
+	for (dir = 0; dir < XFRM_POLICY_MAX; dir++) {
+		xp = xfrm_policy_list[dir];
+		while (xp) {
+			err = security_xfrm_policy_delete(xp);
+			if (err) {
+				xfrm_audit_log(audit_info->loginuid, audit_info->secid,
+					AUDIT_MAC_IPSEC_DELSPD, 0, xp, NULL);
+				return err;
+			}
+			xp = xp->next;
+		}
+	}
+	return err;
+}
+#else
+static inline int
+xfrm_policy_flush_secctx_check(struct xfrm_audit *audit_info)
+{
+	return 0;
+}
+#endif
+
+int xfrm_policy_flush(struct xfrm_audit *audit_info)
 {
 	struct xfrm_policy *xp;
-	int dir;
+	int dir, err = 0;
 
 	write_lock_bh(&xfrm_policy_lock);
+
+	err = xfrm_policy_flush_secctx_check(audit_info);
+	if (err)
+		goto out;
+
 	for (dir = 0; dir < XFRM_POLICY_MAX; dir++) {
 		while ((xp = xfrm_policy_list[dir]) != NULL) {
 			xfrm_policy_list[dir] = xp->next;
@@ -562,7 +611,9 @@ void xfrm_policy_flush(struct xfrm_audit *audit_info)
 		}
 	}
 	atomic_inc(&flow_cache_genid);
+out:
 	write_unlock_bh(&xfrm_policy_lock);
+	return err;
 }
 EXPORT_SYMBOL(xfrm_policy_flush);
 
@@ -871,8 +922,8 @@ static int stale_bundle(struct dst_entry *dst);
  * At the moment we eat a raw IP route. Mostly to speed up lookups
  * on interfaces with disabled IPsec.
  */
-int xfrm_lookup(struct dst_entry **dst_p, struct flowi *fl,
-		struct sock *sk, int flags)
+int __xfrm_lookup(struct dst_entry **dst_p, struct flowi *fl,
+		  struct sock *sk, int flags)
 {
 	struct xfrm_policy *policy;
 	struct xfrm_state *xfrm[XFRM_MAX_DEPTH];
@@ -940,6 +991,13 @@ restart:
 
 		if (unlikely(nx<0)) {
 			err = nx;
+			if (err == -EAGAIN && sysctl_xfrm_larval_drop) {
+				/* EREMOTE tells the caller to generate
+				 * a one-shot blackhole route.
+				 */
+				xfrm_pol_put(policy);
+				return -EREMOTE;
+			}
 			if (err == -EAGAIN && flags) {
 				DECLARE_WAITQUEUE(wait, current);
 
@@ -1009,6 +1067,21 @@ error:
 	dst_release(dst_orig);
 	xfrm_pol_put(policy);
 	*dst_p = NULL;
+	return err;
+}
+EXPORT_SYMBOL(__xfrm_lookup);
+
+int xfrm_lookup(struct dst_entry **dst_p, struct flowi *fl,
+		struct sock *sk, int flags)
+{
+	int err = __xfrm_lookup(dst_p, fl, sk, flags);
+
+	if (err == -EREMOTE) {
+		dst_release(*dst_p);
+		*dst_p = NULL;
+		err = -EAGAIN;
+	}
+
 	return err;
 }
 EXPORT_SYMBOL(xfrm_lookup);
@@ -1396,9 +1469,14 @@ void xfrm_audit_log(uid_t auid, u32 sid, int type, int result,
 	if ((x == NULL) && (xp == NULL))
 		return;
 
+	BUG_ON((type == AUDIT_MAC_IPSEC_ADDSA ||
+		type == AUDIT_MAC_IPSEC_DELSA) && !x);
+	BUG_ON((type == AUDIT_MAC_IPSEC_ADDSPD ||
+		type == AUDIT_MAC_IPSEC_DELSPD) && !xp);
+
 	audit_buf = audit_log_start(current->audit_context, GFP_ATOMIC, type);
 	if (audit_buf == NULL)
-	return;
+		return;
 
 	switch(type) {
 	case AUDIT_MAC_IPSEC_ADDSA:
@@ -1469,7 +1547,7 @@ void xfrm_audit_log(uid_t auid, u32 sid, int type, int result,
 					sizeof(struct in6_addr));
 			}
 			audit_log_format(audit_buf,
-					 " src=" NIP6_FMT "dst=" NIP6_FMT,
+					 " src=" NIP6_FMT " dst=" NIP6_FMT,
 					 NIP6(saddr6), NIP6(daddr6));
 		}
 		break;

@@ -154,7 +154,11 @@ rpc_new_client(struct rpc_xprt *xprt, char *servname,
 	clnt->cl_prot     = xprt->prot;
 	clnt->cl_stats    = program->stats;
 	clnt->cl_metrics  = rpc_alloc_iostats(clnt);
+	err = -ENOMEM;
+	if (clnt->cl_metrics == NULL)
+		goto out_no_stats;
 	clnt->cl_program  = program;
+
 	rpc_init_wait_queue(&clnt->cl_pmap_default.pm_bindwait, "bindwait");
 
 	if (!clnt->cl_port)
@@ -188,6 +192,8 @@ out_no_auth:
 		rpc_put_mount();
 	}
 out_no_path:
+	rpc_free_iostats(clnt->cl_metrics);
+out_no_stats:
 	if (clnt->cl_server != clnt->cl_inline_name)
 		kfree(clnt->cl_server);
 	kfree(clnt);
@@ -244,6 +250,9 @@ rpc_clone_client(struct rpc_clnt *clnt)
 	memcpy(new, clnt, sizeof(*new));
 	atomic_set(&new->cl_count, 1);
 	atomic_set(&new->cl_users, 0);
+	new->cl_metrics = rpc_alloc_iostats(clnt);
+	if (new->cl_metrics == NULL)
+		goto out_no_stats;
 	if (clnt->cl_server != clnt->cl_inline_name) {
 		new->cl_server = kstrdup(clnt->cl_server, GFP_KERNEL);
 		if (new->cl_server == NULL) {
@@ -274,8 +283,9 @@ rpc_clone_client(struct rpc_clnt *clnt)
 	if (new->cl_auth)
 		atomic_inc(&new->cl_auth->au_count);
 	new->cl_pmap		= &new->cl_pmap_default;
-	new->cl_metrics         = rpc_alloc_iostats(clnt);
 	return new;
+out_no_stats:
+	kfree(new);
 out_no_clnt:
 	printk(KERN_INFO "RPC: out of memory in %s\n", __FUNCTION__);
 	return ERR_PTR(-ENOMEM);
@@ -529,8 +539,7 @@ rpc_call_async(struct rpc_clnt *clnt, struct rpc_message *msg, int flags,
 	rpc_restore_sigmask(&oldset);		
 	return status;
 out_release:
-	if (tk_ops->rpc_release != NULL)
-		tk_ops->rpc_release(data);
+	rpc_release_calldata(tk_ops, data);
 	return status;
 }
 

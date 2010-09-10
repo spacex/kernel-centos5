@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2006 Emulex.  All rights reserved.                *
+ * Copyright (C) 2006-2007 Emulex.  All rights reserved.                *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -169,11 +169,11 @@ lpfc_ioctl_hba_rnid(struct lpfc_hba * phba,
 	if (idn.idType == LPFC_WWNN_TYPE)
 		pndl = lpfc_findnode_wwnn(phba,
 					NLP_SEARCH_MAPPED | NLP_SEARCH_UNMAPPED,
-					(struct lpfc_name *) &idn);
+					(struct lpfc_name *) idn.wwpn);
 	else
 		pndl = lpfc_findnode_wwpn(phba,
 					NLP_SEARCH_MAPPED | NLP_SEARCH_UNMAPPED,
-					(struct lpfc_name *) &idn);
+					(struct lpfc_name *) idn.wwpn);
 
 	if (!pndl)
 		return ENODEV;
@@ -303,12 +303,16 @@ lpfc_ioctl_timeout_iocb_cmpl(struct lpfc_hba * phba,
 			     struct lpfc_iocbq * rsp_iocb_q)
 {
 	struct lpfc_timedout_iocb_ctxt *iocb_ctxt = cmd_iocb_q->context1;
+	unsigned long iflag;
 
 	if (!iocb_ctxt) {
 		if (cmd_iocb_q->context2)
 			lpfc_els_free_iocb(phba, cmd_iocb_q);
-		else
+		else {
+			spin_lock_irqsave(phba->host->host_lock, iflag);
 			lpfc_sli_release_iocbq(phba,cmd_iocb_q);
+			spin_unlock_irqrestore(phba->host->host_lock, iflag);
+		}
 		return;
 	}
 
@@ -332,10 +336,12 @@ lpfc_ioctl_timeout_iocb_cmpl(struct lpfc_hba * phba,
 		kfree(iocb_ctxt->bmp);
 	}
 
+	spin_lock_irqsave(phba->host->host_lock, iflag);
 	lpfc_sli_release_iocbq(phba,cmd_iocb_q);
 
 	if (iocb_ctxt->rspiocbq)
 			lpfc_sli_release_iocbq(phba, iocb_ctxt->rspiocbq);
+	spin_unlock_irqrestore(phba->host->host_lock, iflag);
 
 	kfree(iocb_ctxt);
 }
@@ -361,6 +367,7 @@ lpfc_ioctl_send_els(struct lpfc_hba * phba,
 	uint32_t cmdsize;
 	uint32_t rspsize;
 	uint32_t elscmd;
+	int iocb_status;
 
 	elscmd = *(uint32_t *)cip->lpfc_arg2;
 	cmdsize = cip->lpfc_arg4;
@@ -370,8 +377,12 @@ lpfc_ioctl_send_els(struct lpfc_hba * phba,
 			   sizeof(struct nport_id)))
 		return EIO;
 
-	if ((rspiocbq = lpfc_sli_get_iocbq(phba)) == NULL)
+	spin_lock_irqsave(phba->host->host_lock, iflag);
+	if ((rspiocbq = lpfc_sli_get_iocbq(phba)) == NULL) {
+		spin_unlock_irqrestore(phba->host->host_lock, iflag);
 		return ENOMEM;
+	}
+	spin_unlock_irqrestore(phba->host->host_lock, iflag);
 
 	rsp = &rspiocbq->iocb;
 
@@ -410,7 +421,9 @@ lpfc_ioctl_send_els(struct lpfc_hba * phba,
 		kfree(pndl);
 
 	if (cmdiocbq == NULL) {
+		spin_lock_irqsave(phba->host->host_lock, iflag);
 		lpfc_sli_release_iocbq(phba, rspiocbq);
+		spin_unlock_irqrestore(phba->host->host_lock, iflag);
 		return EIO;
 	}
 
@@ -468,8 +481,9 @@ lpfc_ioctl_send_els(struct lpfc_hba * phba,
 	cmdiocbq->context2 = NULL;
 
 	spin_lock_irqsave(phba->host->host_lock, iflag);
-	rc = lpfc_sli_issue_iocb_wait(phba, pring, cmdiocbq, rspiocbq,
+	iocb_status = lpfc_sli_issue_iocb_wait(phba, pring, cmdiocbq, rspiocbq,
 				      (phba->fc_ratov*2) + LPFC_DRVR_TIMEOUT);
+	rc = iocb_status;
 
 	spin_unlock_irqrestore(phba->host->host_lock, iflag);
 	if (rc == IOCB_SUCCESS) {
@@ -532,7 +546,9 @@ lpfc_ioctl_send_els(struct lpfc_hba * phba,
 	} else
 		cmdiocbq->context2 = (uint8_t *) pcmd;
 
-	lpfc_els_free_iocb(phba, cmdiocbq);
+	if (iocb_status != IOCB_TIMEDOUT)
+		lpfc_els_free_iocb(phba, cmdiocbq);
+
 	spin_lock_irqsave(phba->host->host_lock, iflag);
 	lpfc_sli_release_iocbq(phba, rspiocbq);
 	spin_unlock_irqrestore(phba->host->host_lock, iflag);
@@ -888,16 +904,14 @@ static inline void lpfcdfc_event_free(struct lpfcdfc_event * evt)
 	while(!list_empty(&evt->events_to_get)) {
 		ed = list_entry(evt->events_to_get.next, typeof(*ed), node);
 		list_del(&ed->node);
-		if(ed->data != NULL)
-			kfree(ed->data);
+		kfree(ed->data);
 		kfree(ed);
 	}
 
 	while(!list_empty(&evt->events_to_see)) {
 		ed = list_entry(evt->events_to_see.next, typeof(*ed), node);
 		list_del(&ed->node);
-		if(ed->data != NULL)
-			kfree(ed->data);
+		kfree(ed->data);
 		kfree(ed);
 	}
 
@@ -913,7 +927,7 @@ static inline void lpfcdfc_event_free(struct lpfcdfc_event * evt)
 static int
 lpfc_ioctl_hba_get_event(struct lpfc_hba * phba,
 			 struct lpfcCmdInput * cip,
-			 void *dataout, int data_size)
+			 void **dataout, int *data_size)
 {
 	uint32_t ev_mask   = ((uint32_t)(unsigned long)cip->lpfc_arg3 &
 			      FC_REG_EVENT_MASK);
@@ -971,13 +985,21 @@ lpfc_ioctl_hba_get_event(struct lpfc_hba * phba,
 		goto error_get_event_exit;
 	}
 
-	if(evt_dat->len > 0)
-		memcpy(dataout, evt_dat->data, evt_dat->len);
+	if (evt_dat->len > 0) {
+		*data_size = evt_dat->len;
+		*dataout = kmalloc(*data_size, GFP_KERNEL);
+		if (*dataout)
+			memcpy(*dataout, evt_dat->data, *data_size);
+		else
+			*data_size = 0;
 
+	} else
+		*data_size = 0;
 	ret_val = 0;
 
 error_get_event_exit:
 
+	kfree(evt_dat->data);
 	kfree(evt_dat);
 	mutex_lock(&lpfcdfc_lock);
 	lpfcdfc_event_unref(evt);
@@ -1039,13 +1061,23 @@ lpfc_ioctl_hba_set_event(struct lpfc_hba * phba,
 
 	evt->waiting = 1;
 	if (wait_event_interruptible(evt->wq,
-				     !list_empty(&evt->events_to_see))) {
+				     (!list_empty(&evt->events_to_see) ||
+					dfchba->blocked))) {
 		mutex_lock(&lpfcdfc_lock);
 		lpfcdfc_event_unref(evt); /* release ref */
 		lpfcdfc_event_unref(evt); /* delete */
 		mutex_unlock(&lpfcdfc_lock);
 		return EINTR;
 	}
+
+	mutex_lock(&lpfcdfc_lock);
+	if (dfchba->blocked) {
+		lpfcdfc_event_unref(evt);
+		lpfcdfc_event_unref(evt);
+		mutex_unlock(&lpfcdfc_lock);
+		return ENODEV;
+	}
+	mutex_unlock(&lpfcdfc_lock);
 
 	evt->wait_time_stamp = jiffies;
 	evt->waiting = 0;
@@ -1074,6 +1106,7 @@ lpfc_ioctl_loopback_mode(struct lpfc_hba *phba,
 	int rc = 0;
 
 	if ((phba->hba_state == LPFC_HBA_ERROR) ||
+	    (phba->fc_flag & FC_BLOCK_MGMT_IO) ||
 	    (!(psli->sli_flag & LPFC_SLI2_ACTIVE)))
 		return EACCES;
 
@@ -1123,6 +1156,7 @@ lpfc_ioctl_loopback_mode(struct lpfc_hba *phba,
 		if ((mbxstatus != MBX_SUCCESS) || (pmboxq->mb.mbxStatus))
 			rc = ENODEV;
 		else {
+			phba->fc_flag |= FC_LOOPBACK_MODE;
 			/* wait for the link attention interrupt */
 			msleep(100);
 
@@ -1176,7 +1210,10 @@ static int lpfcdfc_loop_self_reg(struct lpfc_hba *phba, uint16_t * rpi)
 	if ((status != MBX_SUCCESS) || (mbox->mb.mbxStatus)) {
 		lpfc_mbuf_free(phba, dmabuff->virt, dmabuff->phys);
 		kfree(dmabuff);
-		mempool_free(mbox, phba->mbox_mem_pool);
+		if (status == MBX_TIMEOUT)
+			mbox->mbox_cmpl = lpfc_sli_def_mbox_cmpl;
+		else
+			mempool_free(mbox, phba->mbox_mem_pool);
 		return ENODEV;
 	}
 
@@ -1247,8 +1284,10 @@ static int lpfcdfc_loop_get_xri(struct lpfc_hba *phba, uint16_t rpi,
 	evt = lpfcdfc_event_new(FC_REG_CT_EVENT, current->pid,
 				SLI_CT_ELX_LOOPBACK);
 
+	spin_lock_irq(phba->host->host_lock);
 	cmdiocbq = lpfc_sli_get_iocbq(phba);
 	rspiocbq = lpfc_sli_get_iocbq(phba);
+	spin_unlock_irq(phba->host->host_lock);
 
 	dmabuf = kmalloc(sizeof (struct lpfc_dmabuf), GFP_KERNEL);
 	if (dmabuf) {
@@ -1353,10 +1392,12 @@ err_get_xri_exit:
 		kfree(dmabuf);
 	}
 
-	if (cmdiocbq)
+	spin_lock_irq(phba->host->host_lock);
+	if (cmdiocbq && (ret_val != IOCB_TIMEDOUT))
 		lpfc_sli_release_iocbq(phba, cmdiocbq);
 	if (rspiocbq)
 		lpfc_sli_release_iocbq(phba, rspiocbq);
+	spin_unlock_irq(phba->host->host_lock);
 
 	return ret_val;
 }
@@ -1378,7 +1419,10 @@ static int lpfcdfc_loop_post_rxbufs(struct lpfc_hba *phba, uint16_t rxxri,
 	int ret_val = 0;
 	int i = 0;
 
+	spin_lock_irq(phba->host->host_lock);
 	cmdiocbq = lpfc_sli_get_iocbq(phba);
+	spin_unlock_irq(phba->host->host_lock);
+
 	rxbmp = kmalloc(sizeof (struct lpfc_dmabuf), GFP_KERNEL);
 	if (rxbmp != NULL) {
 		rxbmp->virt = lpfc_mbuf_alloc(phba, 0, &rxbmp->phys);
@@ -1462,8 +1506,10 @@ err_post_rxbufs_exit:
 		kfree(rxbmp);
 	}
 
+	spin_lock_irq(phba->host->host_lock);
 	if (cmdiocbq)
 		lpfc_sli_release_iocbq(phba, cmdiocbq);
+	spin_unlock_irq(phba->host->host_lock);
 
 	return ret_val;
 }
@@ -1495,8 +1541,9 @@ lpfc_ioctl_loopback_test(struct lpfc_hba *phba,
 	int rc = 0;
 
 	if ((phba->hba_state == LPFC_HBA_ERROR) ||
+	    (phba->fc_flag & FC_BLOCK_MGMT_IO) ||
 	    (!(psli->sli_flag & LPFC_SLI2_ACTIVE)))
-	        return EACCES;
+		return EACCES;
 
 	if ((size == 0) || (size > 80 * 4096))
 		return  ERANGE;
@@ -1528,8 +1575,11 @@ lpfc_ioctl_loopback_test(struct lpfc_hba *phba,
 	evt = lpfcdfc_event_new(FC_REG_CT_EVENT, current->pid,
 				SLI_CT_ELX_LOOPBACK);
 
+	spin_lock_irq(phba->host->host_lock);
 	cmdiocbq = lpfc_sli_get_iocbq(phba);
 	rspiocbq = lpfc_sli_get_iocbq(phba);
+	spin_unlock_irq(phba->host->host_lock);
+
 	txbmp = kmalloc(sizeof (struct lpfc_dmabuf), GFP_KERNEL);
 
 	if (txbmp) {
@@ -1651,11 +1701,13 @@ lpfc_ioctl_loopback_test(struct lpfc_hba *phba,
 err_loopback_test_exit:
 	lpfcdfc_loop_self_unreg(phba, rpi);
 
-	if (cmdiocbq != NULL)
+	spin_lock_irq(phba->host->host_lock);
+	if ((rc != IOCB_TIMEDOUT) && (cmdiocbq != NULL))
 		lpfc_sli_release_iocbq(phba, cmdiocbq);
 
 	if(rspiocbq != NULL)
 		lpfc_sli_release_iocbq(phba, rspiocbq);
+	spin_unlock_irq(phba->host->host_lock);
 
 	if (txbmp != NULL) {
 		if (txbpl != NULL) {
@@ -2131,9 +2183,14 @@ lpfcdfc_host_del (struct lpfcdfc_host *  dfchba)
 	struct Scsi_Host * host;
 	struct lpfc_hba * phba = NULL;
 	struct lpfc_sli_ring_mask * prt = NULL;
+	struct lpfcdfc_event * evt;
 
 	mutex_lock(&lpfcdfc_lock);
 	dfchba->blocked = 1;
+
+	list_for_each_entry(evt, &dfchba->ev_waiters, node) {
+		wake_up_interruptible(&evt->wq);
+	}
 
 	while (dfchba->ref_count) {
 		mutex_unlock(&lpfcdfc_lock);
@@ -2186,8 +2243,9 @@ lpfcdfc_get_phba_by_inst(int inst)
 					return dfchba;
 				}
 			}
+			mutex_unlock(&lpfcdfc_lock);
 			lpfcdfc_host_del (dfchba);
-			break;
+			return NULL;
 		}
 	}
 	mutex_unlock(&lpfcdfc_lock);
@@ -2253,13 +2311,23 @@ lpfcdfc_do_ioctl(struct lpfcCmdInput *cip)
 		total_mem = 4096;
 	}
 
-	dataout = kmalloc(total_mem, GFP_KERNEL);
-	if (!dataout && dfchba != NULL) {
-		mutex_lock(&lpfcdfc_lock);
-		if (dfchba)
-			dfchba->ref_count--;
-		mutex_unlock(&lpfcdfc_lock);
-		return ENOMEM;
+	/*
+	 * For LPFC_HBA_GET_EVENT allocate memory which is needed to store
+	 * event info. Allocating maximum possible buffer size (64KB) can fail
+	 * some times under heavy IO.
+	 */
+	if (cip->lpfc_cmd == LPFC_HBA_GET_EVENT) {
+		dataout = NULL;
+	} else {
+		dataout = kmalloc(total_mem, GFP_KERNEL);
+
+		if (!dataout && dfchba != NULL) {
+			mutex_lock(&lpfcdfc_lock);
+			if (dfchba)
+				dfchba->ref_count--;
+			mutex_unlock(&lpfcdfc_lock);
+			return ENOMEM;
+		}
 	}
 
 	switch (cip->lpfc_cmd) {
@@ -2285,7 +2353,12 @@ lpfcdfc_do_ioctl(struct lpfcCmdInput *cip)
 		break;
 
 	case LPFC_HBA_GET_EVENT:
-		rc = lpfc_ioctl_hba_get_event(phba, cip, dataout, total_mem);
+		rc = lpfc_ioctl_hba_get_event(phba, cip, &dataout, &total_mem);
+		if ((total_mem) &&  (copy_to_user ((void __user *)
+			cip->lpfc_dataout, (uint8_t *) dataout, total_mem)))
+				rc = EIO;
+		/* This is to prevent copy_to_user at end of the function. */
+		cip->lpfc_outsz = 0;
 		break;
 
 	case LPFC_HBA_SET_EVENT:

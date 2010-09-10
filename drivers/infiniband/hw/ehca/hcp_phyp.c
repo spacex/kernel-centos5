@@ -44,14 +44,13 @@
 
 int hcall_map_page(u64 physaddr, u64 *mapaddr)
 {
-	*mapaddr = (u64)ioremap((physaddr & PAGE_MASK), PAGE_SIZE) +
-		(physaddr & (~PAGE_MASK));
+	*mapaddr = (u64)(ioremap(physaddr, EHCA_PAGESIZE));
 	return 0;
 }
 
 int hcall_unmap_page(u64 mapaddr)
 {
-	iounmap((void __iomem*)(mapaddr & PAGE_MASK));
+	iounmap((volatile void __iomem*)mapaddr);
 	return 0;
 }
 

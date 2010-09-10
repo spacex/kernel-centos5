@@ -49,35 +49,34 @@ enum {
 
 static DEFINE_SPINLOCK(catas_lock);
 
+static LIST_HEAD(catas_list);
 static struct workqueue_struct *catas_wq;
-static struct list_head catas_list;
 static struct work_struct catas_work;
 
-static int catas_reset_disable = 0;
+static int catas_reset_disable;
 module_param_named(catas_reset_disable, catas_reset_disable, int, 0644);
-MODULE_PARM_DESC(catas_reset_disable, "disable reset on catastrophic event if > 0");
+MODULE_PARM_DESC(catas_reset_disable, "disable reset on catastrophic event if nonzero");
 
 static void catas_reset(void *work_ptr)
 {
 	struct mthca_dev *dev, *tmpdev;
-	LIST_HEAD(local_catas);
-	unsigned long flags;
-	int rc;
+	LIST_HEAD(tlist);
+	int ret;
 
 	mutex_lock(&mthca_device_mutex);
 
-	spin_lock_irqsave(&catas_lock, flags);
-	list_for_each_entry_safe(dev, tmpdev, &catas_list, catas_err.list)
-		list_move_tail(&dev->catas_err.list, &local_catas);
-	spin_unlock_irqrestore(&catas_lock, flags);
+	spin_lock_irq(&catas_lock);
+	list_splice_init(&catas_list, &tlist);
+	spin_unlock_irq(&catas_lock);
 
-	list_for_each_entry_safe(dev, tmpdev, &local_catas, catas_err.list) {
-		rc = mthca_restart_one(dev->pdev);
-		if (rc)
-			mthca_err(dev, "Reset failed (%d)\n", rc);
+	list_for_each_entry_safe(dev, tmpdev, &tlist, catas_err.list) {
+		ret = __mthca_restart_one(dev->pdev);
+		if (ret)
+			mthca_err(dev, "Reset failed (%d)\n", ret);
 		else
 			mthca_dbg(dev, "Reset succeeded\n");
 	}
+
 	mutex_unlock(&mthca_device_mutex);
 }
 
@@ -183,8 +182,6 @@ void mthca_start_catas_poll(struct mthca_dev *dev)
 
 void mthca_stop_catas_poll(struct mthca_dev *dev)
 {
-	unsigned long flags;
-
 	spin_lock_irq(&catas_lock);
 	dev->catas_err.stop = 1;
 	spin_unlock_irq(&catas_lock);
@@ -199,18 +196,19 @@ void mthca_stop_catas_poll(struct mthca_dev *dev)
 				   dev->catas_err.size * 4);
 	}
 
-	spin_lock_irqsave(&catas_lock, flags);
+	spin_lock_irq(&catas_lock);
 	list_del(&dev->catas_err.list);
-	spin_unlock_irqrestore(&catas_lock, flags);
+	spin_unlock_irq(&catas_lock);
 }
 
 int __init mthca_catas_init(void)
 {
-	INIT_LIST_HEAD(&catas_list);
 	INIT_WORK(&catas_work, catas_reset, NULL);
+
 	catas_wq = create_singlethread_workqueue("mthcacatas");
 	if (!catas_wq)
 		return -ENOMEM;
+
 	return 0;
 }
 

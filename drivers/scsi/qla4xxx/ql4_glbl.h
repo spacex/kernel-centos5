@@ -10,6 +10,7 @@
 
 struct iscsi_cls_conn;
 
+void qla4xxx_hw_reset(struct scsi_qla_host *ha);
 int ql4xxx_lock_drvr_wait(struct scsi_qla_host *a);
 int qla4xxx_conn_start(struct iscsi_cls_conn *conn);
 int qla4xxx_send_tgts(struct scsi_qla_host *ha, char *ip, uint16_t port);
@@ -84,4 +85,5 @@ int qla4xxx_mailbox_command(struct scsi_qla_host *ha, uint8_t inCount,
 extern int extended_error_logging;
 extern int ql4xdiscoverywait;
 extern int ql4xdontresethba;
+extern int ql4_mod_unload;
 #endif				/* _QLA4x_GBL_H */

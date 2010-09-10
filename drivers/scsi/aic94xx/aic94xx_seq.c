@@ -757,7 +757,7 @@ static void asd_init_lseq_mdp(struct asd_ha_struct *asd_ha,  int lseq)
 	asd_write_reg_word(asd_ha, LmSEQ_FIRST_INV_SCB_SITE(lseq),
 			   (u16)last_scb_site_no+1);
 	asd_write_reg_word(asd_ha, LmSEQ_INTEN_SAVE(lseq),
-			    (u16) LmM0INTEN_MASK & 0xFFFF0000 >> 16);
+			    (u16) ((LmM0INTEN_MASK & 0xFFFF0000) >> 16));
 	asd_write_reg_word(asd_ha, LmSEQ_INTEN_SAVE(lseq) + 2,
 			    (u16) LmM0INTEN_MASK & 0xFFFF);
 	asd_write_reg_byte(asd_ha, LmSEQ_LINK_RST_FRM_LEN(lseq), 0);
@@ -900,6 +900,16 @@ static void asd_init_scb_sites(struct asd_ha_struct *asd_ha)
 		for (i = 0; i < ASD_SCB_SIZE; i += 4)
 			asd_scbsite_write_dword(asd_ha, site_no, i, 0);
 
+		/* Initialize SCB Site Opcode field to invalid. */
+		asd_scbsite_write_byte(asd_ha, site_no,
+				       offsetof(struct scb_header, opcode),
+				       0xFF);
+
+		/* Initialize SCB Site Flags field to mean a response
+		 * frame has been received.  This means inadvertent
+		 * frames received to be dropped. */
+		asd_scbsite_write_byte(asd_ha, site_no, 0x49, 0x01);
+
 		/* Workaround needed by SEQ to fix a SATA issue is to exclude
 		 * certain SCB sites from the free list. */
 		if (!SCB_SITE_VALID(site_no))
@@ -914,16 +924,6 @@ static void asd_init_scb_sites(struct asd_ha_struct *asd_ha)
 
 		/* Q_NEXT field of the last SCB is invalidated. */
 		asd_scbsite_write_word(asd_ha, site_no, 0, first_scb_site_no);
-
-		/* Initialize SCB Site Opcode field to invalid. */
-		asd_scbsite_write_byte(asd_ha, site_no,
-				       offsetof(struct scb_header, opcode),
-				       0xFF);
-
-		/* Initialize SCB Site Flags field to mean a response
-		 * frame has been received.  This means inadvertent
-		 * frames received to be dropped. */
-		asd_scbsite_write_byte(asd_ha, site_no, 0x49, 0x01);
 
 		first_scb_site_no = site_no;
 		max_scbs++;
@@ -1166,6 +1166,16 @@ static void asd_init_ddb_0(struct asd_ha_struct *asd_ha)
 	set_bit(0, asd_ha->hw_prof.ddb_bitmap);
 }
 
+static void asd_seq_init_ddb_sites(struct asd_ha_struct *asd_ha)
+{
+	unsigned int i;
+	unsigned int ddb_site;
+
+	for (ddb_site = 0 ; ddb_site < ASD_MAX_DDBS; ddb_site++)
+		for (i = 0; i < sizeof(struct asd_ddb_ssp_smp_target_port); i+= 4)
+			asd_ddbsite_write_dword(asd_ha, ddb_site, i, 0);
+}
+
 /**
  * asd_seq_setup_seqs -- setup and initialize central and link sequencers
  * @asd_ha: pointer to host adapter structure
@@ -1174,6 +1184,9 @@ static void asd_seq_setup_seqs(struct asd_ha_struct *asd_ha)
 {
 	int 		lseq;
 	u8		lseq_mask;
+
+	/* Initialize DDB sites */
+	asd_seq_init_ddb_sites(asd_ha);
 
 	/* Initialize SCB sites. Done first to compute some values which
 	 * the rest of the init code depends on. */
@@ -1285,14 +1298,15 @@ int asd_start_seqs(struct asd_ha_struct *asd_ha)
  * port_map_by_links is also used as the conn_mask byte in the
  * initiator/target port DDB.
  */
-void asd_update_port_links(struct asd_sas_phy *sas_phy)
+void asd_update_port_links(struct asd_ha_struct *asd_ha, struct asd_phy *phy)
 {
-	struct asd_ha_struct *asd_ha = sas_phy->ha->lldd_ha;
-	const u8 phy_mask = (u8) sas_phy->port->phy_mask;
+	const u8 phy_mask = (u8) phy->asd_port->phy_mask;
 	u8  phy_is_up;
 	u8  mask;
 	int i, err;
+	unsigned long flags;
 
+	spin_lock_irqsave(&asd_ha->hw_prof.ddb_lock, flags);
 	for_each_phy(phy_mask, mask, i)
 		asd_ddbsite_write_byte(asd_ha, 0,
 				       offsetof(struct asd_ddb_seq_shared,
@@ -1312,6 +1326,7 @@ void asd_update_port_links(struct asd_sas_phy *sas_phy)
 			break;
 		}
 	}
+	spin_unlock_irqrestore(&asd_ha->hw_prof.ddb_lock, flags);
 
 	if (err)
 		asd_printk("couldn't update DDB 0:error:%d\n", err);

@@ -1970,7 +1970,8 @@ unsigned long do_brk(unsigned long addr, unsigned long len)
 	if (!len)
 		return addr;
 
-	if ((addr + len) > TASK_SIZE || (addr + len) < addr)
+	if (((addr + len) > TASK_SIZE) || ((addr + len) < addr) ||
+			is_hugepage_only_range(mm, addr, len))
 		return -EINVAL;
 
 	flags = VM_DATA_DEFAULT_FLAGS | VM_ACCOUNT | mm->def_flags;

@@ -630,6 +630,15 @@ void rpc_exit_task(struct rpc_task *task)
 }
 EXPORT_SYMBOL(rpc_exit_task);
 
+void rpc_release_calldata(const struct rpc_call_ops *ops, void *calldata)
+{
+	if (ops->rpc_release != NULL) {
+		lock_kernel();
+		ops->rpc_release(calldata);
+		unlock_kernel();
+	}
+}
+
 /*
  * This is the RPC `scheduler' (or rather, the finite state machine).
  */
@@ -905,8 +914,7 @@ void rpc_put_task(struct rpc_task *task)
 	}
 	if (task->tk_flags & RPC_TASK_DYNAMIC)
 		call_rcu_bh(&task->u.tk_rcu, rpc_free_task);
-	if (tk_ops->rpc_release)
-		tk_ops->rpc_release(calldata);
+	rpc_release_calldata(tk_ops, calldata);
 }
 EXPORT_SYMBOL(rpc_put_task);
 
@@ -950,8 +958,7 @@ struct rpc_task *rpc_run_task(struct rpc_clnt *clnt, int flags,
 	struct rpc_task *task;
 	task = rpc_new_task(clnt, flags, ops, data);
 	if (task == NULL) {
-		if (ops->rpc_release != NULL)
-			ops->rpc_release(data);
+		rpc_release_calldata(ops, data);
 		return ERR_PTR(-ENOMEM);
 	}
 	atomic_inc(&task->tk_count);

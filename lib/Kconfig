@@ -97,4 +97,19 @@ config TEXTSEARCH_FSM
 config PLIST
 	boolean
 
+config HAS_IOMEM
+	boolean
+	depends on !NO_IOMEM
+	default y
+
+config HAS_IOPORT
+	boolean
+	depends on HAS_IOMEM && !NO_IOPORT
+	default y
+
+config HAS_DMA
+	boolean
+	depends on !NO_DMA
+	default y
+
 endmenu

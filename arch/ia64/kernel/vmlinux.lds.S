@@ -163,6 +163,7 @@ SECTIONS
 	}
 #endif
 
+  . = ALIGN(16);
    __con_initcall_start = .;
   .con_initcall.init : AT(ADDR(.con_initcall.init) - LOAD_OFFSET)
 	{ *(.con_initcall.init) }

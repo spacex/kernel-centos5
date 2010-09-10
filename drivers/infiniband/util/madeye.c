@@ -372,17 +372,17 @@ static void print_smp(struct ib_smp *smp)
 
 	if (data) {
 		for (i = 0; i < IB_SMP_DATA_SIZE; i++) {
-			if (i % 16 == 0) 
+			if (i % 16 == 0)
 				printk("\nSMP Data.......");
 			printk("%01x ", smp->data[i]);
 		}
 		for (i = 0; i < IB_SMP_MAX_PATH_HOPS; i++) {
-			if (i % 16 == 0) 
+			if (i % 16 == 0)
 				printk("\nInitial path...");
 			printk("%01x ", smp->initial_path[i]);
 		}
 		for (i = 0; i < IB_SMP_MAX_PATH_HOPS; i++) {
-			if (i % 16 == 0) 
+			if (i % 16 == 0)
 				printk("\nReturn path....");
 			printk("%01x ", smp->return_path[i]);
 		}
@@ -503,7 +503,7 @@ static void recv_gsi_handler(struct ib_mad_agent *mad_agent,
 			}
 		}
 		for (i = 0; i < j; i++) {
-			if (i % 16 == 0) 
+			if (i % 16 == 0)
 				printk("\nData...........");
 			printk("%01x ", mad_data[i]);
 		}
@@ -517,7 +517,7 @@ static void madeye_add_one(struct ib_device *device)
 	int reg_flags;
 	u8 i, s, e;
 
-	if (device->node_type == IB_NODE_SWITCH) {
+	if (device->node_type == RDMA_NODE_IB_SWITCH) {
 		s = 0;
 		e = 0;
 	} else {
@@ -530,7 +530,7 @@ static void madeye_add_one(struct ib_device *device)
 		goto out;
 
 	reg_flags = IB_MAD_SNOOP_SEND_COMPLETIONS | IB_MAD_SNOOP_RECVS;
-	for (i = s; i <= e; i++) {
+	for (i = 0; i <= e - s; i++) {
 		port[i].smi_agent = ib_register_mad_snoop(device, i,
 							  IB_QPT_SMI,
 							  reg_flags,
@@ -559,7 +559,7 @@ static void madeye_remove_one(struct ib_device *device)
 	if (!port)
 		return;
 
-	if (device->node_type == IB_NODE_SWITCH) {
+	if (device->node_type == RDMA_NODE_IB_SWITCH) {
 		s = 0;
 		e = 0;
 	} else {
@@ -567,7 +567,7 @@ static void madeye_remove_one(struct ib_device *device)
 		e = device->phys_port_cnt;
 	}
 
-	for (i = s; i <= e; i++) {
+	for (i = 0; i <= e - s; i++) {
 		if (!IS_ERR(port[i].smi_agent))
 			ib_unregister_mad_agent(port[i].smi_agent);
 		if (!IS_ERR(port[i].gsi_agent))

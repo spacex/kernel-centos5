@@ -1292,7 +1292,8 @@ static unsigned int check_modem_status(struct uart_8250_port *up)
 {
 	unsigned int status = serial_in(up, UART_MSR);
 
-	if (status & UART_MSR_ANY_DELTA && up->ier & UART_IER_MSI) {
+	if (status & UART_MSR_ANY_DELTA && up->ier & UART_IER_MSI &&
+	    up->port.info != NULL) {
 		if (status & UART_MSR_TERI)
 			up->port.icount.rng++;
 		if (status & UART_MSR_DDSR)
@@ -2312,7 +2313,7 @@ serial8250_console_write(struct console *co, const char *s, unsigned int count)
 	local_irq_restore(flags);
 }
 
-static int serial8250_console_setup(struct console *co, char *options)
+static int __init serial8250_console_setup(struct console *co, char *options)
 {
 	struct uart_port *port;
 	int baud = 9600;

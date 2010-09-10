@@ -148,6 +148,18 @@ static int alloc_name(char *name)
 	return 0;
 }
 
+static inline int start_port(struct ib_device *device)
+{
+	return (device->node_type == RDMA_NODE_IB_SWITCH) ? 0 : 1;
+}
+
+
+static inline int end_port(struct ib_device *device)
+{
+	return (device->node_type == RDMA_NODE_IB_SWITCH) ?
+		0 : device->phys_port_cnt;
+}
+
 /**
  * ib_alloc_device - allocate an IB device struct
  * @size:size of structure to allocate
@@ -207,6 +219,55 @@ static int add_client_context(struct ib_device *device, struct ib_client *client
 	return 0;
 }
 
+/* read the lengths of pkey,gid tables on each port */
+static int read_port_table_lengths(struct ib_device *device)
+{
+	struct ib_port_attr *tprops = NULL;
+	int num_ports, ret = -ENOMEM;
+	u8 port_index;
+
+	tprops = kmalloc(sizeof *tprops, GFP_KERNEL);
+	if (!tprops)
+		goto out;
+
+	num_ports = end_port(device) - start_port(device) + 1;
+
+	device->pkey_tbl_len = kmalloc(sizeof *device->pkey_tbl_len *
+						num_ports, GFP_KERNEL);
+	if (!device->pkey_tbl_len)
+		goto out;
+
+	device->gid_tbl_len = kmalloc(sizeof *device->gid_tbl_len *
+						num_ports, GFP_KERNEL);
+	if (!device->gid_tbl_len)
+		goto err1;
+
+	for (port_index = 0; port_index < num_ports; ++port_index) {
+		ret = ib_query_port(device, port_index + start_port(device),
+					tprops);
+		if (ret)
+			goto err2;
+		device->pkey_tbl_len[port_index] = tprops->pkey_tbl_len;
+		device->gid_tbl_len[port_index] = tprops->gid_tbl_len;
+	}
+
+	ret = 0;
+	goto out;
+err2:
+	kfree(device->gid_tbl_len);
+err1:
+	kfree(device->pkey_tbl_len);
+out:
+	kfree(tprops);
+	return ret;
+}
+
+static inline void free_port_table_lengths(struct ib_device *device)
+{
+	kfree(device->gid_tbl_len);
+	kfree(device->pkey_tbl_len);
+}
+
 /**
  * ib_register_device - Register an IB device with IB core
  * @device:Device to register
@@ -237,6 +298,13 @@ int ib_register_device(struct ib_device *device)
 	INIT_LIST_HEAD(&device->client_data_list);
 	spin_lock_init(&device->event_handler_lock);
 	spin_lock_init(&device->client_data_lock);
+
+	ret = read_port_table_lengths(device);
+	if (ret) {
+		printk(KERN_WARNING "Couldn't create table lengths cache for device %s\n",
+		       device->name);
+		goto out;
+	}
 
 	ret = ib_device_register_sysfs(device);
 	if (ret) {
@@ -282,6 +350,8 @@ void ib_unregister_device(struct ib_device *device)
 			client->remove(device);
 
 	list_del(&device->core_list);
+
+	free_port_table_lengths(device);
 
 	mutex_unlock(&device_mutex);
 
@@ -385,7 +455,7 @@ void *ib_get_client_data(struct ib_device *device, struct ib_client *client)
 EXPORT_SYMBOL(ib_get_client_data);
 
 /**
- * ib_set_client_data - Get IB client context
+ * ib_set_client_data - Set IB client context
  * @device:Device to set context for
  * @client:Client to set context for
  * @data:Context to set
@@ -505,7 +575,7 @@ int ib_query_port(struct ib_device *device,
 		  u8 port_num,
 		  struct ib_port_attr *port_attr)
 {
-	if (device->node_type == IB_NODE_SWITCH) {
+	if (device->node_type == RDMA_NODE_IB_SWITCH) {
 		if (port_num)
 			return -EINVAL;
 	} else if (port_num < 1 || port_num > device->phys_port_cnt)
@@ -580,7 +650,7 @@ int ib_modify_port(struct ib_device *device,
 		   u8 port_num, int port_modify_mask,
 		   struct ib_port_modify *port_modify)
 {
-	if (device->node_type == IB_NODE_SWITCH) {
+	if (device->node_type == RDMA_NODE_IB_SWITCH) {
 		if (port_num)
 			return -EINVAL;
 	} else if (port_num < 1 || port_num > device->phys_port_cnt)
@@ -590,6 +660,74 @@ int ib_modify_port(struct ib_device *device,
 				   port_modify);
 }
 EXPORT_SYMBOL(ib_modify_port);
+
+/**
+ * ib_find_gid - Returns the port number and GID table index where
+ *   a specified GID value occurs.
+ * @device: The device to query.
+ * @gid: The GID value to search for.
+ * @port_num: The port number of the device where the GID value was found.
+ * @index: The index into the GID table where the GID was found.  This
+ *   parameter may be NULL.
+ */
+int ib_find_gid(struct ib_device *device, union ib_gid *gid,
+			u8 *port_num, u16 *index)
+{
+	union ib_gid tmp_gid;
+	int ret, port, i, tbl_len;
+
+	for (port = start_port(device); port <= end_port(device); ++port) {
+		tbl_len = device->gid_tbl_len[port - start_port(device)];
+		for (i = 0; i < tbl_len; ++i) {
+			ret = ib_query_gid(device, port, i, &tmp_gid);
+			if (ret)
+				goto out;
+			if (!memcmp(&tmp_gid, gid, sizeof *gid)) {
+				*port_num = port;
+				*index = i;
+				ret = 0;
+				goto out;
+			}
+		}
+	}
+	ret = -ENOENT;
+out:
+	return ret;
+}
+EXPORT_SYMBOL(ib_find_gid);
+
+/**
+ * ib_find_pkey - Returns the PKey table index where a specified
+ *   PKey value occurs.
+ * @device: The device to query.
+ * @port_num: The port number of the device to search for the PKey.
+ * @pkey: The PKey value to search for.
+ * @index: The index into the PKey table where the PKey was found.
+ */
+int ib_find_pkey(struct ib_device *device,
+			u8 port_num, u16 pkey, u16 *index)
+{
+	int ret, i, tbl_len;
+	u16 tmp_pkey;
+
+	tbl_len = device->pkey_tbl_len[port_num - start_port(device)];
+	for (i = 0; i < tbl_len; ++i) {
+		ret = ib_query_pkey(device, port_num, i, &tmp_pkey);
+		if (ret)
+			goto out;
+
+		if (pkey == tmp_pkey) {
+			*index = i;
+			ret = 0;
+			goto out;
+		}
+	}
+	ret = -ENOENT;
+
+out:
+	return ret;
+}
+EXPORT_SYMBOL(ib_find_pkey);
 
 static int __init ib_core_init(void)
 {

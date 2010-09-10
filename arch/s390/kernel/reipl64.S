@@ -8,13 +8,32 @@
  */
 
 #include <asm/lowcore.h>
-		.globl	do_reipl
-do_reipl:	basr	%r13,0
-.Lpg0:		lpswe   .Lnewpsw-.Lpg0(%r13)
+		.globl	do_reipl_asm
+do_reipl_asm:	basr	%r13,0
+
+		# do store status of all registers to absolute 0
+
+.Lpg0:		stg     %r1,.Lregsave-.Lpg0(%r13)
+		stpx    .Lprefix-.Lpg0(%r13)
+		llgf    %r1,.Lprefix-.Lpg0(%r13)
+		aghi    %r1,0x1000
+		stmg    %r0,%r15,__LC_GPREGS_SAVE_AREA-0x1000(%r1)
+		lg      %r0,.Lregsave-.Lpg0(%r13)
+		stg     %r0,__LC_GPREGS_SAVE_AREA-0x1000+8(%r1)
+		stctg   %c0,%c15,__LC_CREGS_SAVE_AREA-0x1000(%r1)
+		stam    %a0,%a15,__LC_AREGS_SAVE_AREA-0x1000(%r1)
+		stpx    __LC_PREFIX_SAVE_AREA-0x1000(%r1)
+		stfpc   __LC_FP_CREG_SAVE_AREA-0x1000(%r1)
+		stckc   .Lclkcmp-.Lpg0(%r13)
+		mvc     __LC_CLOCK_COMP_SAVE_AREA-0x1000(8,%r1),.Lclkcmp-.Lpg0(%r13)
+		stpt    __LC_CPU_TIMER_SAVE_AREA-0x1000(%r1)
+		stg     %r13, __LC_PSW_SAVE_AREA-0x1000+8(%r1)
+
+		lpswe   .Lnewpsw-.Lpg0(%r13)
 .Lpg1:		lctlg	%c6,%c6,.Lall-.Lpg0(%r13)
-                stctg   %c0,%c0,.Lctlsave-.Lpg0(%r13)
-                ni      .Lctlsave+4-.Lpg0(%r13),0xef
-                lctlg   %c0,%c0,.Lctlsave-.Lpg0(%r13)
+                stctg   %c0,%c0,.Lregsave-.Lpg0(%r13)
+                ni      .Lregsave+4-.Lpg0(%r13),0xef
+                lctlg   %c0,%c0,.Lregsave-.Lpg0(%r13)
                 lgr     %r1,%r2
         	mvc     __LC_PGM_NEW_PSW(16),.Lpcnew-.Lpg0(%r13)
                 stsch   .Lschib-.Lpg0(%r13)                                    
@@ -39,7 +58,16 @@ do_reipl:	basr	%r13,0
 .L002:		tm	.Liplirb+8-.Lpg0(%r13),0xf3    
                 jz      .L003
                 bas     %r14,.Ldisab-.Lpg0(%r13)	
-.L003:		spx	.Lnull-.Lpg0(%r13)
+
+		# restore lowcore for dump case
+.L003:		lghi    %r5,8192
+		lghi    %r7,8192
+		la      %r6,lowcore_save-.Lpg0(%r13)
+		lghi    %r4,0x0
+0:		mvcle   %r4,%r6,0x0
+		jo      0b
+
+		spx	.Lnull-.Lpg0(%r13)
 		st 	%r1,__LC_SUBCHANNEL_ID
                 lhi     %r1,0            # mode 0 = esa
                 slr     %r0,%r0          # set cpuid to zero
@@ -50,8 +78,10 @@ do_reipl:	basr	%r13,0
 		st     %r14,.Ldispsw+12-.Lpg0(%r13)
 		lpswe	.Ldispsw-.Lpg0(%r13)
                 .align 	8
+.Lclkcmp:       .quad   0x0000000000000000
 .Lall:		.quad	0x00000000ff000000
-.Lctlsave:      .quad   0x0000000000000000
+.Lregsave:      .quad   0x0000000000000000
+.Lprefix:	.long   0x00000000
 .Lnull:		.long   0x0000000000000000
                 .align 	16
 /*
@@ -91,6 +121,6 @@ do_reipl:	basr	%r13,0
 		.long	0x00000000,0x00000000
 		.long	0x00000000,0x00000000
 		.long	0x00000000,0x00000000
-	
-
-	
+	.globl lowcore_save
+lowcore_save:
+		.fill 8192,1,0

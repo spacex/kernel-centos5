@@ -214,7 +214,7 @@ static struct mtrr_ops centaur_mtrr_ops = {
 	.have_wrcomb       = positive_have_wrcomb,
 };
 
-int __init centaur_init_mtrr(void)
+int __cpuinit centaur_init_mtrr(void)
 {
 	set_mtrr_ops(&centaur_mtrr_ops);
 	return 0;

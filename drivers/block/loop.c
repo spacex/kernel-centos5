@@ -519,7 +519,7 @@ static int loop_make_request(request_queue_t *q, struct bio *old_bio)
 
 	spin_lock_irq(&lo->lo_lock);
 	if (lo->lo_state != Lo_bound)
-		goto out;
+		goto out_not_bound;
 	if (unlikely(rw == WRITE && (lo->lo_flags & LO_FLAGS_READ_ONLY)))
 		goto out;
 	lo->lo_pending++;
@@ -531,6 +531,7 @@ static int loop_make_request(request_queue_t *q, struct bio *old_bio)
 out:
 	if (lo->lo_pending == 0)
 		complete(&lo->lo_bh_done);
+out_not_bound:
 	spin_unlock_irq(&lo->lo_lock);
 	bio_io_error(old_bio, old_bio->bi_size);
 	return 0;

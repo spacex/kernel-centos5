@@ -546,7 +546,8 @@ repeat:
  */
 struct inode *new_inode(struct super_block *sb)
 {
-	static unsigned long last_ino;
+	/* 32 bits for compatability mode stat calls */
+	static unsigned int last_ino;
 	struct inode * inode;
 
 	spin_lock_prefetch(&inode_lock);
@@ -705,7 +706,8 @@ static inline unsigned long hash(struct super_block *sb, unsigned long hashval)
  */
 ino_t iunique(struct super_block *sb, ino_t max_reserved)
 {
-	static ino_t counter;
+	/* 32 bits for compatability mode stat calls */
+	static unsigned int counter;
 	struct inode *inode;
 	struct hlist_head * head;
 	ino_t res;
@@ -731,7 +733,7 @@ EXPORT_SYMBOL(iunique);
 struct inode *igrab(struct inode *inode)
 {
 	spin_lock(&inode_lock);
-	if (!(inode->i_state & (I_FREEING|I_WILL_FREE)))
+	if (!(inode->i_state & (I_FREEING|I_CLEAR|I_WILL_FREE)))
 		__iget(inode);
 	else
 		/*

@@ -27,6 +27,7 @@
 #ifndef _AIC94XX_SEQ_H_
 #define _AIC94XX_SEQ_H_
 
+#ifdef __KERNEL__
 int asd_pause_cseq(struct asd_ha_struct *asd_ha);
 int asd_unpause_cseq(struct asd_ha_struct *asd_ha);
 int asd_pause_lseq(struct asd_ha_struct *asd_ha, u8 lseq_mask);
@@ -34,6 +35,7 @@ int asd_unpause_lseq(struct asd_ha_struct *asd_ha, u8 lseq_mask);
 int asd_init_seqs(struct asd_ha_struct *asd_ha);
 int asd_start_seqs(struct asd_ha_struct *asd_ha);
 
-void asd_update_port_links(struct asd_sas_phy *phy);
+void asd_update_port_links(struct asd_ha_struct *asd_ha, struct asd_phy *phy);
+#endif
 
 #endif

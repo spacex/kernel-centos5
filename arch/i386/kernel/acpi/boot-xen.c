@@ -63,7 +63,7 @@ static inline int gsi_irq_sharing(int gsi) { return gsi; }
 
 #define PREFIX			"ACPI: "
 
-int acpi_noirq __initdata;	/* skip ACPI IRQ initialization */
+int acpi_noirq;	/* skip ACPI IRQ initialization */
 int acpi_pci_disabled __initdata;	/* skip ACPI PCI scan and IRQ initialization */
 int acpi_ht __initdata = 1;	/* enable HT */
 
@@ -327,7 +327,7 @@ acpi_parse_ioapic(acpi_table_entry_header * header, const unsigned long end)
 /*
  * Parse Interrupt Source Override for the ACPI SCI
  */
-static void acpi_sci_ioapic_setup(u32 gsi, u16 polarity, u16 trigger)
+static void __init acpi_sci_ioapic_setup(u32 gsi, u16 polarity, u16 trigger)
 {
 	if (trigger == 0)	/* compatible SCI trigger is level */
 		trigger = 3;

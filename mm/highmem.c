@@ -150,7 +150,7 @@ void kmap_flush_unused(void)
 	spin_unlock(&kmap_lock);
 }
 
-EXPORT_SYMBOL(kmap_flush_unused);
+EXPORT_SYMBOL_GPL(kmap_flush_unused);
 #endif
 
 void fastcall *kmap_high(struct page *page)

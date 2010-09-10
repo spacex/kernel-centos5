@@ -20,7 +20,6 @@
 
 #include <sound/driver.h>
 #include <linux/wait.h>
-#include <linux/sched.h>
 #include <linux/slab.h>
 #include <sound/core.h>
 #include <sound/emux_synth.h>
@@ -128,10 +127,8 @@ void snd_emux_proc_init(struct snd_emux *emu, struct snd_card *card, int device)
 
 void snd_emux_proc_free(struct snd_emux *emu)
 {
-	if (emu->proc) {
-		snd_info_unregister(emu->proc);
-		emu->proc = NULL;
-	}
+	snd_info_free_entry(emu->proc);
+	emu->proc = NULL;
 }
 
 #endif /* CONFIG_PROC_FS */

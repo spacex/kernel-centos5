@@ -871,14 +871,13 @@ int nfs_is_exclusive_create(struct inode *dir, struct nameidata *nd)
 	return (nd->intent.open.flags & O_EXCL) != 0;
 }
 
-static inline int nfs_reval_fsid(struct vfsmount *mnt, struct inode *dir,
-				 struct nfs_fh *fh, struct nfs_fattr *fattr)
+static inline int nfs_reval_fsid(struct inode *dir, const struct nfs_fattr *fattr)
 {
 	struct nfs_server *server = NFS_SERVER(dir);
 
 	if (!nfs_fsid_equal(&server->fsid, &fattr->fsid))
-		/* Revalidate fsid on root dir */
-		return __nfs_revalidate_inode(server, mnt->mnt_root->d_inode);
+		/* Revalidate fsid using the parent directory */
+		return __nfs_revalidate_inode(server, dir);
 	return 0;
 }
 
@@ -920,7 +919,7 @@ static struct dentry *nfs_lookup(struct inode *dir, struct dentry * dentry, stru
 		res = ERR_PTR(error);
 		goto out_unlock;
 	}
-	error = nfs_reval_fsid(nd->mnt, dir, &fhandle, &fattr);
+	error = nfs_reval_fsid(dir, &fattr);
 	if (error < 0) {
 		res = ERR_PTR(error);
 		goto out_unlock;
@@ -932,8 +931,11 @@ static struct dentry *nfs_lookup(struct inode *dir, struct dentry * dentry, stru
 
 no_entry:
 	res = d_materialise_unique(dentry, inode);
-	if (res != NULL)
+	if (res != NULL) {
+		if (IS_ERR(res))
+			goto out_unlock;
 		dentry = res;
+	}
 	nfs_renew_times(dentry);
 	nfs_set_verifier(dentry, nfs_save_change_attribute(dir));
 out_unlock:
@@ -1111,8 +1113,21 @@ static struct dentry *nfs_readdir_lookup(nfs_readdir_descriptor_t *desc)
 	}
 	name.hash = full_name_hash(name.name, name.len);
 	dentry = d_lookup(parent, &name);
-	if (dentry != NULL)
-		return dentry;
+	if (dentry != NULL) {
+		/* Is this a positive dentry that matches the readdir info? */
+		if (dentry->d_inode != NULL &&
+				(NFS_FILEID(dentry->d_inode) == entry->ino ||
+				d_mountpoint(dentry))) {
+			if (!desc->plus || entry->fh->size == 0)
+				return dentry;
+			if (nfs_compare_fh(NFS_FH(dentry->d_inode),
+						entry->fh) == 0)
+				goto out_renew;
+		}
+		/* No, so d_drop to allow one to be created */
+		d_drop(dentry);
+		dput(dentry);
+	}
 	if (!desc->plus || !(entry->fattr->valid & NFS_ATTR_FATTR))
 		return NULL;
 	/* Note: caller is already holding the dir->i_mutex! */
@@ -1129,9 +1144,12 @@ static struct dentry *nfs_readdir_lookup(nfs_readdir_descriptor_t *desc)
 	alias = d_materialise_unique(dentry, inode);
 	if (alias != NULL) {
 		dput(dentry);
+		if (IS_ERR(alias))
+			return NULL;
 		dentry = alias;
 	}
 
+out_renew:
 	nfs_renew_times(dentry);
 	nfs_set_verifier(dentry, nfs_save_change_attribute(dir));
 	return dentry;
@@ -1449,43 +1467,83 @@ static int nfs_unlink(struct inode *dir, struct dentry *dentry)
 	return error;
 }
 
-static int
-nfs_symlink(struct inode *dir, struct dentry *dentry, const char *symname)
+/*
+ * To create a symbolic link, most file systems instantiate a new inode,
+ * add a page to it containing the path, then write it out to the disk
+ * using prepare_write/commit_write.
+ *
+ * Unfortunately the NFS client can't create the in-core inode first
+ * because it needs a file handle to create an in-core inode (see
+ * fs/nfs/inode.c:nfs_fhget).  We only have a file handle *after* the
+ * symlink request has completed on the server.
+ *
+ * So instead we allocate a raw page, copy the symname into it, then do
+ * the SYMLINK request with the page as the buffer.  If it succeeds, we
+ * now have a new file handle and can instantiate an in-core NFS inode
+ * and move the raw page into its mapping.
+ */
+static int nfs_symlink(struct inode *dir, struct dentry *dentry, const char *symname)
+
 {
+	struct pagevec lru_pvec;
+	struct page *page;
+	char *kaddr;
 	struct iattr attr;
-	struct qstr qsymname;
+	unsigned int pathlen = strlen(symname);
 	int error;
 
 	dfprintk(VFS, "NFS: symlink(%s/%ld, %s, %s)\n", dir->i_sb->s_id,
 		dir->i_ino, dentry->d_name.name, symname);
 
-#ifdef NFS_PARANOIA
-if (dentry->d_inode)
-printk("nfs_proc_symlink: %s/%s not negative!\n",
-dentry->d_parent->d_name.name, dentry->d_name.name);
-#endif
-	/*
-	 * Fill in the sattr for the call.
- 	 * Note: SunOS 4.1.2 crashes if the mode isn't initialized!
-	 */
-	attr.ia_valid = ATTR_MODE;
-	attr.ia_mode = S_IFLNK | S_IRWXUGO;
+	if (pathlen > PAGE_SIZE)
+		return -ENAMETOOLONG;
 
-	qsymname.name = symname;
-	qsymname.len  = strlen(symname);
+	attr.ia_mode = S_IFLNK | S_IRWXUGO;
+	attr.ia_valid = ATTR_MODE;
 
 	lock_kernel();
-	nfs_begin_data_update(dir);
-	error = NFS_PROTO(dir)->symlink(dir, dentry, &qsymname, &attr);
-	nfs_end_data_update(dir);
-	if (!error) {
-		if (error == -EEXIST)
-			printk("nfs_proc_symlink: %s/%s already exists??\n",
-			       dentry->d_parent->d_name.name, dentry->d_name.name);
-		d_drop(dentry);
+
+	page = alloc_page(GFP_KERNEL);
+	if (!page) {
+		unlock_kernel();
+		return -ENOMEM;
 	}
+
+	kaddr = kmap_atomic(page, KM_USER0);
+	memcpy(kaddr, symname, pathlen);
+	if (pathlen < PAGE_SIZE)
+		memset(kaddr + pathlen, 0, PAGE_SIZE - pathlen);
+	kunmap_atomic(kaddr, KM_USER0);
+
+	nfs_begin_data_update(dir);
+	error = NFS_PROTO(dir)->symlink(dir, dentry, page, pathlen, &attr);
+	nfs_end_data_update(dir);
+	if (error != 0) {
+		dfprintk(VFS, "NFS: symlink(%s/%ld, %s, %s) error %d\n",
+			dir->i_sb->s_id, dir->i_ino,
+			dentry->d_name.name, symname, error);
+		d_drop(dentry);
+		__free_page(page);
+		unlock_kernel();
+		return error;
+	}
+
+	/*
+	 * No big deal if we can't add this page to the page cache here.
+	 * READLINK will get the missing page from the server if needed.
+	 */
+	pagevec_init(&lru_pvec, 0);
+	if (!add_to_page_cache(page, dentry->d_inode->i_mapping, 0,
+							GFP_KERNEL)) {
+		pagevec_add(&lru_pvec, page);
+		pagevec_lru_add(&lru_pvec);
+		SetPageUptodate(page);
+		unlock_page(page);
+	} else
+		__free_page(page);
+
 	unlock_kernel();
-	return error;
+	return 0;
 }
 
 static int 

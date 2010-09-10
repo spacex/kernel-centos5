@@ -225,6 +225,7 @@ static void __eeh_mark_slot (struct device_node *dn, int mode_flag)
 
 void eeh_mark_slot (struct device_node *dn, int mode_flag)
 {
+	struct pci_dev *dev;
 	dn = find_device_pe (dn);
 
 	/* Back up one, since config addrs might be shared */
@@ -232,6 +233,12 @@ void eeh_mark_slot (struct device_node *dn, int mode_flag)
 		dn = dn->parent;
 
 	PCI_DN(dn)->eeh_mode |= mode_flag;
+
+	/* Mark the pci device too */
+	dev = PCI_DN(dn)->pcidev;
+	if (dev)
+		dev->error_state = pci_channel_io_frozen;
+
 	__eeh_mark_slot (dn->child, mode_flag);
 }
 
@@ -449,7 +456,11 @@ EXPORT_SYMBOL(eeh_check_failure);
 /* ------------------------------------------------------------- */
 /* The code below deals with error recovery */
 
-/** Return negative value if a permanent error, else return
+/**
+ * eeh_slot_availability - returns error status of slot
+ * @pdn pci device node
+ *
+ * Return negative value if a permanent error, else return
  * a number of milliseconds to wait until the PCI slot is
  * ready to be used.
  */
@@ -474,11 +485,42 @@ eeh_slot_availability(struct pci_dn *pdn)
 
 	printk (KERN_ERR "EEH: Slot unavailable: rc=%d, rets=%d %d %d\n",
 		rc, rets[0], rets[1], rets[2]);
-	return -1;
+	return -2;
 }
 
-/** rtas_pci_slot_reset raises/lowers the pci #RST line
- *  state: 1/0 to raise/lower the #RST
+/**
+ * rtas_pci_enable - enable MMIO or DMA transfers for this slot
+ * @pdn pci device node
+ */
+
+int
+rtas_pci_enable(struct pci_dn *pdn, int function)
+{
+	int config_addr;
+	int rc;
+
+	/* Use PE configuration address, if present */
+	config_addr = pdn->eeh_config_addr;
+	if (pdn->eeh_pe_config_addr)
+		config_addr = pdn->eeh_pe_config_addr;
+
+	rc = rtas_call(ibm_set_eeh_option, 4, 1, NULL,
+	               config_addr,
+	               BUID_HI(pdn->phb->buid),
+	               BUID_LO(pdn->phb->buid),
+		            function);
+
+	if (rc)
+		printk(KERN_WARNING "EEH: Cannot enable function %d, err=%d dn=%s\n",
+		        function, rc, pdn->node->full_name);
+
+	return rc;
+}
+
+/**
+ * rtas_pci_slot_reset - raises/lowers the pci #RST line
+ * @pdn pci device node
+ * @state: 1/0 to raise/lower the #RST
  *
  * Clear the EEH-frozen condition on a slot.  This routine
  * asserts the PCI #RST line if the 'state' argument is '1',
@@ -511,24 +553,51 @@ rtas_pci_slot_reset(struct pci_dn *pdn, int state)
 	               BUID_HI(pdn->phb->buid),
 	               BUID_LO(pdn->phb->buid),
 	               state);
-	if (rc) {
-		printk (KERN_WARNING "EEH: Unable to reset the failed slot, (%d) #RST=%d dn=%s\n", 
+	if (rc)
+		printk (KERN_WARNING "EEH: Unable to reset the failed slot,"
+		        " (%d) #RST=%d dn=%s\n",
 		        rc, state, pdn->node->full_name);
-		return;
-	}
 }
 
-/** rtas_set_slot_reset -- assert the pci #RST line for 1/4 second
- *  dn -- device node to be reset.
+/**
+ * pcibios_set_pcie_slot_reset - Set PCI-E reset state
+ * @dev:	pci device struct
+ * @state:	reset state to enter
+ *
+ * Return value:
+ * 	0 if success
+ **/
+int pcibios_set_pcie_reset_state(struct pci_dev *dev, enum pcie_reset_state state)
+{
+	struct device_node *dn = pci_device_to_OF_node(dev);
+	struct pci_dn *pdn = PCI_DN(dn);
+
+	switch (state) {
+	case pci_reset_normal:
+		rtas_pci_slot_reset(pdn, 0);
+		break;
+	case pci_reset_pcie_hot_reset:
+		rtas_pci_slot_reset(pdn, 1);
+		break;
+	case pci_reset_pcie_warm_reset:
+		rtas_pci_slot_reset(pdn, 3);
+		break;
+	default:
+		return -EINVAL;
+	};
+
+	return 0;
+}
+
+/**
+ * rtas_set_slot_reset -- assert the pci #RST line for 1/4 second
+ * @pdn: pci device node to be reset.
  *
  *  Return 0 if success, else a non-zero value.
  */
 
-int
-rtas_set_slot_reset(struct pci_dn *pdn)
+static void __rtas_set_slot_reset(struct pci_dn *pdn)
 {
-	int i, rc;
-
 	rtas_pci_slot_reset (pdn, 1);
 
 	/* The PCI bus requires that the reset be held high for at least
@@ -549,17 +618,33 @@ rtas_set_slot_reset(struct pci_dn *pdn)
 	 * up traffic. */
 #define PCI_BUS_SETTLE_TIME_MSEC 1800
 	msleep (PCI_BUS_SETTLE_TIME_MSEC);
+}
+
+int rtas_set_slot_reset(struct pci_dn *pdn)
+{
+	int i, rc;
+
+	__rtas_set_slot_reset(pdn);
 
 	/* Now double check with the firmware to make sure the device is
 	 * ready to be used; if not, wait for recovery. */
 	for (i=0; i<10; i++) {
 		rc = eeh_slot_availability (pdn);
-		if (rc < 0)
-			printk (KERN_ERR "EEH: failed (%d) to reset slot %s\n", rc, pdn->node->full_name);
 		if (rc == 0)
 			return 0;
-		if (rc < 0)
+
+		if (rc == -2) {
+			printk (KERN_ERR "EEH: failed (%d) to reset slot %s\n",
+			        i, pdn->node->full_name);
+			__rtas_set_slot_reset(pdn);
+			continue;
+		}
+
+		if (rc < 0) {
+			printk (KERN_ERR "EEH: unrecoverable slot failure %s\n",
+			        pdn->node->full_name);
 			return -1;
+		}
 
 		msleep (rc+100);
 	}
@@ -582,6 +667,8 @@ rtas_set_slot_reset(struct pci_dn *pdn)
 
 /**
  * __restore_bars - Restore the Base Address Registers
+ * @pdn: pci device node
+ *
  * Loads the PCI configuration space base address registers,
  * the expansion ROM base address, the latency timer, and etc.
  * from the saved values in the device node.
@@ -689,6 +776,7 @@ struct eeh_early_enable_info {
 /* Enable eeh for the given device node. */
 static void *early_enable_eeh(struct device_node *dn, void *data)
 {
+	unsigned int rets[3];
 	struct eeh_early_enable_info *info = data;
 	int ret;
 	char *status = get_property(dn, "status", NULL);
@@ -704,7 +792,7 @@ static void *early_enable_eeh(struct device_node *dn, void *data)
 	pdn->eeh_check_count = 0;
 	pdn->eeh_freeze_count = 0;
 
-	if (status && strcmp(status, "ok") != 0)
+	if (status && strncmp(status, "ok",2) != 0)
 		return NULL;	/* ignore devices with bad status */
 
 	/* Ignore bad nodes. */
@@ -718,23 +806,6 @@ static void *early_enable_eeh(struct device_node *dn, void *data)
 	}
 	pdn->class_code = *class_code;
 
-	/*
-	 * Now decide if we are going to "Disable" EEH checking
-	 * for this device.  We still run with the EEH hardware active,
-	 * but we won't be checking for ff's.  This means a driver
-	 * could return bad data (very bad!), an interrupt handler could
-	 * hang waiting on status bits that won't change, etc.
-	 * But there are a few cases like display devices that make sense.
-	 */
-	enable = 1;	/* i.e. we will do checking */
-#if 0
-	if ((*class_code >> 16) == PCI_BASE_CLASS_DISPLAY)
-		enable = 0;
-#endif
-
-	if (!enable)
-		pdn->eeh_mode |= EEH_MODE_NOCHECK;
-
 	/* Ok... see if this device supports EEH.  Some do, some don't,
 	 * and the only way to find out is to check each and every one. */
 	regs = (u32 *)get_property(dn, "reg", NULL);
@@ -745,16 +816,14 @@ static void *early_enable_eeh(struct device_node *dn, void *data)
 		                regs[0], info->buid_hi, info->buid_lo,
 		                EEH_ENABLE);
 
+		enable = 0;
 		if (ret == 0) {
-			eeh_subsystem_enabled = 1;
-			pdn->eeh_mode |= EEH_MODE_SUPPORTED;
 			pdn->eeh_config_addr = regs[0];
 
 			/* If the newer, better, ibm,get-config-addr-info is supported, 
 			 * then use that instead. */
 			pdn->eeh_pe_config_addr = 0;
 			if (ibm_get_config_addr_info != RTAS_UNKNOWN_SERVICE) {
-				unsigned int rets[2];
 				ret = rtas_call (ibm_get_config_addr_info, 4, 2, rets, 
 					pdn->eeh_config_addr, 
 					info->buid_hi, info->buid_lo,
@@ -762,6 +831,20 @@ static void *early_enable_eeh(struct device_node *dn, void *data)
 				if (ret == 0)
 					pdn->eeh_pe_config_addr = rets[0];
 			}
+
+			/* Some older systems (Power4) allow the
+			 * ibm,set-eeh-option call to succeed even on nodes
+			 * where EEH is not supported. Verify support
+			 * explicitly. */
+			ret = read_slot_reset_state(pdn, rets);
+			if ((ret == 0) && (rets[1] == 1))
+				enable = 1;
+		}
+
+		if (enable) {
+			eeh_subsystem_enabled = 1;
+			pdn->eeh_mode |= EEH_MODE_SUPPORTED;
+
 #ifdef DEBUG
 			printk(KERN_DEBUG "EEH: %s: eeh enabled, config=%x pe_config=%x\n",
 			       dn->full_name, pdn->eeh_config_addr, pdn->eeh_pe_config_addr);

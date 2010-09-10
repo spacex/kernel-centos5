@@ -254,6 +254,7 @@ void		rpc_init_task(struct rpc_task *task, struct rpc_clnt *clnt,
 				void *data);
 void		rpc_put_task(struct rpc_task *);
 void		rpc_exit_task(struct rpc_task *);
+void		rpc_release_calldata(const struct rpc_call_ops *, void *);
 void		rpc_killall_tasks(struct rpc_clnt *);
 int		rpc_execute(struct rpc_task *);
 void		rpc_run_child(struct rpc_task *parent, struct rpc_task *child,

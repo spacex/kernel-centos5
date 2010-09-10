@@ -21,6 +21,8 @@
 #include <linux/timex.h>
 #include <linux/jiffies.h>
 #include <linux/cpuset.h>
+#include <linux/module.h>
+#include <linux/notifier.h>
 
 int sysctl_panic_on_oom;
 /* #define DEBUG */
@@ -171,7 +173,14 @@ static inline int constrained_alloc(struct zonelist *zonelist, gfp_t gfp_mask)
 {
 #ifdef CONFIG_NUMA
 	struct zone **z;
-	nodemask_t nodes = node_online_map;
+	nodemask_t nodes;
+	int node;
+
+	nodes_clear(nodes);
+	/* node has memory ? */
+	for_each_online_node(node)
+		if (NODE_DATA(node)->node_present_pages)
+			node_set(node, nodes);
 
 	for (z = zonelist->zones; *z; z++)
 		if (cpuset_zone_allowed(*z, gfp_mask))
@@ -302,15 +311,23 @@ static int oom_kill_task(struct task_struct *p, const char *message)
 	if (mm == NULL || mm == &init_mm)
 		return 1;
 
+	/*
+	 * Don't kill the process if any threads are set to OOM_DISABLE
+	 */
+	do_each_thread(g, q) {
+		if (q->mm == mm && p->oomkilladj == OOM_DISABLE)
+			return 1;
+	} while_each_thread(g, q);
+
 	__oom_kill_task(p, message);
 	/*
 	 * kill all processes that share the ->mm (i.e. all threads),
 	 * but are in a different thread group
 	 */
-	do_each_thread(g, q)
+	do_each_thread(g, q) {
 		if (q->mm == mm && q->tgid != p->tgid)
 			__oom_kill_task(q, message);
-	while_each_thread(g, q);
+	} while_each_thread(g, q);
 
 	return 0;
 }
@@ -404,6 +421,20 @@ out_unlock:
 	return ret;
 }
 
+static BLOCKING_NOTIFIER_HEAD(oom_notify_list);
+
+int register_oom_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_register(&oom_notify_list, nb);
+}
+EXPORT_SYMBOL_GPL(register_oom_notifier);
+
+int unregister_oom_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_unregister(&oom_notify_list, nb);
+}
+EXPORT_SYMBOL_GPL(unregister_oom_notifier);
+
 /**
  * out_of_memory - kill the "best" process when we run out of memory
  *
@@ -412,10 +443,19 @@ out_unlock:
  * OR try to be smart about which process to kill. Note that we
  * don't have to be perfect here, we just have to be good.
  */
-void out_of_memory(struct zonelist *zonelist, gfp_t gfp_mask, int order)
+void out_of_memory(struct zonelist *zonelist, gfp_t gfp_mask, int order, int force)
 {
 	struct task_struct *p;
 	unsigned long points = 0;
+	unsigned long freed = 0;
+
+	blocking_notifier_call_chain(&oom_notify_list, 0, &freed);
+	if (freed > 0)
+		/* Got some memory back in the last second. */
+		return;
+
+	if (!should_oom_kill() && !force)
+		return;
 
 	if (printk_ratelimit()) {
 		printk(KERN_WARNING "%s invoked oom-killer: "
@@ -424,9 +464,6 @@ void out_of_memory(struct zonelist *zonelist, gfp_t gfp_mask, int order)
 		dump_stack();
 		show_mem();
 	}
-
-	if (!should_oom_kill())
-		return;
 
 	cpuset_lock();
 	read_lock(&tasklist_lock);

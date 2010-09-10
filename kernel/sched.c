@@ -4803,6 +4803,8 @@ void show_state(void)
 		show_task(p);
 	} while_each_thread(g, p);
 
+	touch_all_softlockup_watchdogs();
+
 	read_unlock(&tasklist_lock);
 	debug_show_all_locks();
 }
@@ -5457,7 +5459,7 @@ static void cpu_attach_domain(struct sched_domain *sd, int cpu)
 }
 
 /* cpus with isolated domains */
-static cpumask_t __devinitdata cpu_isolated_map = CPU_MASK_NONE;
+static cpumask_t cpu_isolated_map = CPU_MASK_NONE;
 
 /* Setup the mask of cpus configured for isolated domains */
 static int __init isolated_cpu_setup(char *str)

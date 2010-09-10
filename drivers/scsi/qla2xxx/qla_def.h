@@ -608,6 +608,7 @@ typedef struct {
  */
 #define MBC_SERDES_PARAMS		0x10	/* Serdes Tx Parameters. */
 #define MBC_GET_IOCB_STATUS		0x12	/* Get IOCB status command. */
+#define MBC_PORT_PARAMS			0x1A	/* Port iDMA Parameters. */
 #define MBC_GET_TIMEOUT_PARAMS		0x22	/* Get FW timeouts. */
 #define MBC_TRACE_CONTROL		0x27	/* Trace control command. */
 #define MBC_GEN_SYSTEM_ERROR		0x2a	/* Generate System Error. */
@@ -1477,14 +1478,17 @@ typedef union {
 	uint32_t b24 : 24;
 
 	struct {
-		uint8_t d_id[3];
-		uint8_t rsvd_1;
-	} r;
-
-	struct {
+#ifdef __BIG_ENDIAN
+		uint8_t domain;
+		uint8_t area;
+		uint8_t al_pa;
+#elif __LITTLE_ENDIAN
 		uint8_t al_pa;
 		uint8_t area;
 		uint8_t domain;
+#else
+#error "__BIG_ENDIAN or __LITTLE_ENDIAN must be defined!"
+#endif
 		uint8_t rsvd_1;
 	} b;
 } port_id_t;
@@ -1497,6 +1501,9 @@ typedef struct {
 	port_id_t d_id;
 	uint8_t node_name[WWN_SIZE];
 	uint8_t port_name[WWN_SIZE];
+	uint8_t fabric_port_name[WWN_SIZE];
+	uint16_t fp_speeds;
+	uint16_t fp_speed;
 } sw_info_t;
 
 /*
@@ -1524,6 +1531,9 @@ typedef struct fc_port {
 	uint16_t loop_id;
 	uint16_t old_loop_id;
 
+	uint8_t fabric_port_name[WWN_SIZE];
+	uint16_t fp_speed;
+
 	fc_port_type_t port_type;
 
 	atomic_t state;
@@ -1538,6 +1548,9 @@ typedef struct fc_port {
 	spinlock_t rport_lock;
 	struct fc_rport *rport, *drport;
 	u32 supported_classes;
+
+	unsigned long last_queue_full;
+	unsigned long last_ramp_up;
 } fc_port_t;
 
 /*
@@ -1592,6 +1605,7 @@ typedef struct fc_port {
 
 #define CT_REJECT_RESPONSE	0x8001
 #define CT_ACCEPT_RESPONSE	0x8002
+#define CT_REASON_INVALID_COMMAND_CODE	0x01
 #define CT_REASON_CANNOT_PERFORM	0x09
 #define CT_EXPL_ALREADY_REGISTERED	0x10
 
@@ -1634,6 +1648,15 @@ typedef struct fc_port {
 #define	RSNN_NN_CMD	 0x239
 #define	RSNN_NN_REQ_SIZE (16 + 8 + 1 + 255)
 #define	RSNN_NN_RSP_SIZE 16
+
+#define	GFPN_ID_CMD	0x11C
+#define	GFPN_ID_REQ_SIZE (16 + 4)
+#define	GFPN_ID_RSP_SIZE (16 + 8)
+
+#define	GPSC_CMD	0x127
+#define	GPSC_REQ_SIZE	(16 + 8)
+#define	GPSC_RSP_SIZE	(16 + 2 + 2)
+
 
 /*
  * HBA attribute types.
@@ -1748,7 +1771,7 @@ struct ct_sns_req {
 	uint8_t reserved[3];
 
 	union {
-		/* GA_NXT, GPN_ID, GNN_ID, GFT_ID */
+		/* GA_NXT, GPN_ID, GNN_ID, GFT_ID, GFPN_ID */
 		struct {
 			uint8_t reserved;
 			uint8_t port_id[3];
@@ -1823,6 +1846,10 @@ struct ct_sns_req {
 		struct {
 			uint8_t port_name[8];
 		} dpa;
+
+		struct {
+			uint8_t port_name[8];
+		} gpsc;
 	} req;
 };
 
@@ -1886,6 +1913,15 @@ struct ct_sns_rsp {
 			uint8_t port_name[8];
 			struct ct_fdmi_hba_attributes attrs;
 		} ghat;
+
+		struct {
+			uint8_t port_name[8];
+		} gfpn_id;
+
+		struct {
+			uint16_t speeds;
+			uint16_t speed;
+		} gpsc;
 	} rsp;
 };
 
@@ -2012,6 +2048,29 @@ struct isp_operations {
 		uint32_t, uint32_t);
 	int (*write_optrom) (struct scsi_qla_host *, uint8_t *, uint32_t,
 		uint32_t);
+
+	int (*get_flash_version) (struct scsi_qla_host *, void *);
+};
+
+/* MSI-X Support *************************************************************/
+
+#define QLA_MSIX_CHIP_REV_24XX	3
+#define QLA_MSIX_FW_MODE(m)	(((m) & (BIT_7|BIT_8|BIT_9)) >> 7)
+#define QLA_MSIX_FW_MODE_1(m)	(QLA_MSIX_FW_MODE(m) == 1)
+
+#define QLA_MSIX_DEFAULT	0x00
+#define QLA_MSIX_RSP_Q		0x01
+
+#define QLA_MSIX_ENTRIES	2
+#define QLA_MIDX_DEFAULT	0
+#define QLA_MIDX_RSP_Q		1
+
+struct scsi_qla_host;
+
+struct qla_msix_entry {
+	int have_irq;
+	uint16_t msix_vector;
+	uint16_t msix_entry;
 };
 
 /*
@@ -2044,9 +2103,11 @@ typedef struct scsi_qla_host {
 		uint32_t	enable_lip_full_login	:1;
 		uint32_t	enable_target_reset	:1;
 		uint32_t	enable_led_scheme	:1;
+		uint32_t	inta_enabled		:1;
 		uint32_t	msi_enabled		:1;
 		uint32_t	msix_enabled		:1;
 		uint32_t	disable_serdes		:1;
+		uint32_t	gpsc_supported		:1;
 	} flags;
 
 	atomic_t	loop_state;
@@ -2182,11 +2243,11 @@ typedef struct scsi_qla_host {
 	uint16_t	max_public_loop_ids;
 	uint16_t	min_external_loopid;	/* First external loop Id */
 
+#define PORT_SPEED_UNKNOWN 0xFFFF
+#define PORT_SPEED_1GB	0x00
+#define PORT_SPEED_2GB	0x01
+#define PORT_SPEED_4GB	0x03
 	uint16_t	link_data_rate;		/* F/W operating speed */
-#define LDR_1GB		0
-#define LDR_2GB		1
-#define LDR_4GB		3
-#define LDR_UNKNOWN	0xFFFF
 
 	uint8_t		current_topology;
 	uint8_t		prev_topology;
@@ -2211,10 +2272,14 @@ typedef struct scsi_qla_host {
 	uint8_t		serial2;
 
 	/* NVRAM configuration data */
+#define MAX_NVRAM_SIZE	4096
+#define VPD_OFFSET	MAX_NVRAM_SIZE / 2
 	uint16_t	nvram_size;
 	uint16_t	nvram_base;
+	void		*nvram;
 	uint16_t	vpd_size;
 	uint16_t	vpd_base;
+	void		*vpd;
 
 	uint16_t	loop_reset_delay;
 	uint8_t		retry_count;
@@ -2226,6 +2291,7 @@ typedef struct scsi_qla_host {
 	uint16_t	mgmt_svr_loop_id;
 
         uint32_t	login_retry_count;
+	int		max_q_depth;
 
 	/* Fibre Channel Device List. */
 	struct list_head	fcports;
@@ -2281,8 +2347,6 @@ typedef struct scsi_qla_host {
 #define MBX_INTR_WAIT	2
 #define MBX_UPDATE_FLASH_ACTIVE	3
 
-	spinlock_t	mbx_reg_lock;   /* Mbx Cmd Register Lock */
-
 	struct semaphore mbx_cmd_sem;	/* Serialialize mbx access */
 	struct semaphore mbx_intr_sem;  /* Used for completion notification */
 
@@ -2323,6 +2387,7 @@ typedef struct scsi_qla_host {
 
 	uint8_t		host_str[16];
 	uint32_t	pci_attr;
+	uint16_t	chip_revision;
 
 	uint16_t	product_id[4];
 
@@ -2333,6 +2398,7 @@ typedef struct scsi_qla_host {
 
 	uint8_t		*node_name;
 	uint8_t		*port_name;
+	uint8_t		fabric_node_name[WWN_SIZE];
 	uint32_t    isp_abort_cnt;
 
 	/* Option ROM information. */
@@ -2342,6 +2408,15 @@ typedef struct scsi_qla_host {
 #define QLA_SWAITING	0
 #define QLA_SREADING	1
 #define QLA_SWRITING	2
+
+        /* PCI expansion ROM image information. */
+#define ROM_CODE_TYPE_BIOS	0
+#define ROM_CODE_TYPE_FCODE	1
+#define ROM_CODE_TYPE_EFI	3
+	uint8_t		bios_revision[2];
+	uint8_t		efi_revision[2];
+	uint8_t		fcode_revision[16];
+	uint32_t	fw_revision[4];
 
 	/* Needed for BEACON */
 	uint16_t	beacon_blink_led;
@@ -2355,6 +2430,8 @@ typedef struct scsi_qla_host {
 	uint16_t	zio_mode;
 	uint16_t	zio_timer;
 	struct fc_host_statistics fc_host_stat;
+
+	struct qla_msix_entry msix_entries[QLA_MSIX_ENTRIES];
 } scsi_qla_host_t;
 
 

@@ -32,7 +32,7 @@
  */
 #define IO_SPACE_LIMIT		0xffffffffffffffffUL
 
-#define MAX_IO_SPACES_BITS		4
+#define MAX_IO_SPACES_BITS		8
 #define MAX_IO_SPACES			(1UL << MAX_IO_SPACES_BITS)
 #define IO_SPACE_BITS			24
 #define IO_SPACE_SIZE			(1UL << IO_SPACE_BITS)
@@ -132,6 +132,11 @@ extern int valid_mmap_phys_addr_range (unsigned long pfn, size_t count);
 	(((bvec_to_bus((vec1)) + (vec1)->bv_len) == bvec_to_bus((vec2))) && \
 	 ((bvec_to_pseudophys((vec1)) + (vec1)->bv_len) ==		\
 	  bvec_to_pseudophys((vec2))))
+
+/* We will be supplying our own /dev/mem implementation */
+#define ARCH_HAS_DEV_MEM
+#define ARCH_HAS_DEV_MEM_MMAP_MEM
+int xen_mmap_mem(struct file * file, struct vm_area_struct * vma);
 #endif /* CONFIG_XEN */
 
 # endif /* KERNEL */

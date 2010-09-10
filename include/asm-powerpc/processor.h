@@ -273,23 +273,6 @@ static inline void prefetchw(const void *x)
 #define HAVE_ARCH_PICK_MMAP_LAYOUT
 #endif
 
-#ifdef CONFIG_PPC_CELL /* MAMBO SIMULATION code */
-#define MSR_SIM_LG      29
-#define MSR_SIM         __MASK(MSR_SIM_LG)
-
-static __inline__ int __onsim(void)
-{
-        unsigned long msr;
-        __asm__ __volatile__ ("mfmsr    %0" : "=&r" (msr));
-        return ((msr & MSR_SIM) ? 1 : 0);
-}
-#endif /* CONFIG_PPC_CELL */
-
 #endif /* __KERNEL__ */
-#else
-/* must be given a register to perform the compare, set cr0 = 1
- * Usage: __onsim(r0); bne _if_onsim
- */
-#define __onsim(r) mfmsr        r; rldicl. r,r,35,63
 #endif /* __ASSEMBLY__ */
 #endif /* _ASM_POWERPC_PROCESSOR_H */

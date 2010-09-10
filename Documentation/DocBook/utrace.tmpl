@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE book PUBLIC "-//OASIS//DTD DocBook XML V4.1.2//EN"
+	"http://www.oasis-open.org/docbook/xml/4.1.2/docbookx.dtd" []>
+
+<book id="utrace">
+ <bookinfo>
+  <title>The utrace User Debugging Infrastructure</title>
+ </bookinfo>
+
+<toc></toc>
+
+<chapter><title>The utrace core API</title>
+!Iinclude/linux/utrace.h
+!Ekernel/utrace.c
+    </chapter>
+
+<chapter><title>Machine state access via utrace</title>
+!Finclude/linux/tracehook.h struct utrace_regset
+!Finclude/linux/tracehook.h struct utrace_regset_view
+!Finclude/linux/tracehook.h utrace_native_view
+    </chapter>
+
+</book>

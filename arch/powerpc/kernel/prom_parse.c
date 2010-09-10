@@ -978,3 +978,15 @@ int of_irq_map_pci(struct pci_dev *pdev, struct of_irq *out_irq)
 }
 EXPORT_SYMBOL_GPL(of_irq_map_pci);
 #endif /* CONFIG_PCI */
+
+void __iomem *of_iomap(struct device_node *np, int index)
+{
+	struct resource res;
+
+	if (of_address_to_resource(np, index, &res))
+		return NULL;
+
+	return ioremap(res.start, 1 + res.end - res.start);
+}
+EXPORT_SYMBOL(of_iomap);
+

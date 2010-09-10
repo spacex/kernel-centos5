@@ -1185,10 +1185,13 @@ EXPORT_SYMBOL(switch_ipi_to_APIC_timer);
 
 inline void smp_local_timer_interrupt(struct pt_regs * regs)
 {
-	profile_tick(CPU_PROFILING, regs);
+	int i;
+	for (i = 0; i < tick_divider; i++) {
+		profile_tick(CPU_PROFILING, regs);
 #ifdef CONFIG_SMP
-	update_process_times(user_mode_vm(regs));
+		update_process_times(user_mode_vm(regs));
 #endif
+	}
 
 	/*
 	 * We take the 'long' return path, and there every subsystem

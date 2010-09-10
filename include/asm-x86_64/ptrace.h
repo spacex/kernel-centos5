@@ -80,6 +80,9 @@ struct pt_regs {
 
 #define PTRACE_ARCH_PRCTL	  30	/* arch_prctl for child */
 
+#define PTRACE_SYSEMU		  31
+#define PTRACE_SYSEMU_SINGLESTEP  32
+
 #if defined(__KERNEL__) && !defined(__ASSEMBLY__) 
 #define user_mode(regs) (!!((regs)->cs & 3))
 #define user_mode_vm(regs) user_mode(regs)

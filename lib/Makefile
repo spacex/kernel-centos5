@@ -11,13 +11,14 @@ lib-$(CONFIG_SMP) += cpumask.o
 
 lib-y	+= kobject.o kref.o kobject_uevent.o klist.o
 
-obj-y += sort.o parser.o halfmd4.o iomap_copy.o debug_locks.o
+obj-y += sort.o parser.o halfmd4.o debug_locks.o
 
 ifeq ($(CONFIG_DEBUG_KOBJECT),y)
 CFLAGS_kobject.o += -DDEBUG
 CFLAGS_kobject_uevent.o += -DDEBUG
 endif
 
+obj-$(CONFIG_HAS_IOMEM) += iomap_copy.o devres.o
 obj-$(CONFIG_DEBUG_LOCKING_API_SELFTESTS) += locking-selftest.o
 obj-$(CONFIG_DEBUG_SPINLOCK) += spinlock_debug.o
 lib-$(CONFIG_RWSEM_GENERIC_SPINLOCK) += rwsem-spinlock.o
@@ -53,7 +54,12 @@ obj-$(CONFIG_SMP) += percpu_counter.o
 obj-$(CONFIG_AUDIT_GENERIC) += audit.o
 
 obj-$(CONFIG_SWIOTLB) += swiotlb.o
+ifeq ($(CONFIG_X86),y)
 swiotlb-$(CONFIG_XEN) := ../arch/i386/kernel/swiotlb.o
+endif
+ifeq ($(CONFIG_IA64),y)
+swiotlb-$(CONFIG_XEN) := ../arch/ia64/xen/swiotlb.o
+endif
 
 hostprogs-y	:= gen_crc32table
 clean-files	:= crc32table.h

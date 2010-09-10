@@ -49,22 +49,30 @@ static int putreg32(struct task_struct *child, unsigned regno, u32 val)
 	switch (regno) {
 	case offsetof(struct user_regs_struct32, fs):
 		if (val && (val & 3) != 3) return -EIO; 
-		child->thread.fsindex = val & 0xffff;
+		child->thread.fsindex = val &= 0xffff;
+		if (child == current)
+			loadsegment(fs, val);
 		break;
 	case offsetof(struct user_regs_struct32, gs):
 		if (val && (val & 3) != 3) return -EIO; 
-		child->thread.gsindex = val & 0xffff;
+		child->thread.gsindex = val &= 0xffff;
+		if (child == current)
+			loadsegment(gs, val);
 		break;
 	case offsetof(struct user_regs_struct32, ds):
 		if (val && (val & 3) != 3) return -EIO; 
-		child->thread.ds = val & 0xffff;
+		child->thread.ds = val &= 0xffff;
+		if (child == current)
+			loadsegment(ds, val);
 		break;
 	case offsetof(struct user_regs_struct32, es):
-		child->thread.es = val & 0xffff;
+		child->thread.es = val &= 0xffff;
+		if (child == current)
+			loadsegment(ds, val);
 		break;
 	case offsetof(struct user_regs_struct32, ss):
 		if ((val & 3) != 3) return -EIO;
-        	stack[offsetof(struct pt_regs, ss)/8] = val & 0xffff;
+		stack[offsetof(struct pt_regs, ss)/8] = val & 0xffff;
 		break;
 	case offsetof(struct user_regs_struct32, cs):
 		if ((val & 3) != 3) return -EIO;
@@ -108,16 +116,24 @@ static int getreg32(struct task_struct *child, unsigned regno)
 
 	switch (regno) {
 	case offsetof(struct user_regs_struct32, fs):
-	        val = child->thread.fsindex;
+		val = child->thread.fsindex;
+		if (child == current)
+			asm("movl %%fs,%0" : "=r" (val));
 		break;
 	case offsetof(struct user_regs_struct32, gs):
 		val = child->thread.gsindex;
+		if (child == current)
+			asm("movl %%gs,%0" : "=r" (val));
 		break;
 	case offsetof(struct user_regs_struct32, ds):
 		val = child->thread.ds;
+		if (child == current)
+			asm("movl %%ds,%0" : "=r" (val));
 		break;
 	case offsetof(struct user_regs_struct32, es):
 		val = child->thread.es;
+		if (child == current)
+			asm("movl %%es,%0" : "=r" (val));
 		break;
 
 	R32(cs, cs);
@@ -381,8 +397,7 @@ ia32_dbregs_set(struct task_struct *target,
 	/*
 	 * We'll just hijack the native setter to do the real work for us.
 	 */
-	const struct utrace_regset *dbregset = &utrace_x86_64_native.regsets[2];
-
+	const struct utrace_regset *dbregset = &utrace_x86_64_native.regsets[3];
 	int ret = 0;
 
 	for (pos >>= 2, count >>= 2; count > 0; --count, ++pos) {
@@ -428,7 +443,7 @@ ia32_tls_get(struct task_struct *target,
 #define GET_BASE(desc) ( \
 	(((desc)->a >> 16) & 0x0000ffff) | \
 	(((desc)->b << 16) & 0x00ff0000) | \
-	( (desc)->b        & 0xff000000)   )
+	( (desc)->b    	   & 0xff000000)   )
 
 #define GET_LIMIT(desc) ( \
 	((desc)->a & 0x0ffff) | \
@@ -578,10 +593,8 @@ static const struct utrace_regset ia32_regsets[] = {
 
 const struct utrace_regset_view utrace_ia32_view = {
 	.name = "i386", .e_machine = EM_386,
-	.regsets = ia32_regsets,
-	.n = sizeof ia32_regsets / sizeof ia32_regsets[0],
+	.regsets = ia32_regsets, .n = ARRAY_SIZE(ia32_regsets)
 };
-EXPORT_SYMBOL_GPL(utrace_ia32_view);
 
 
 #ifdef CONFIG_PTRACE
@@ -591,15 +604,17 @@ EXPORT_SYMBOL_GPL(utrace_ia32_view);
 
 static const struct ptrace_layout_segment ia32_uarea[] = {
 	{0, sizeof(struct user_regs_struct32), 0, 0},
+	{sizeof(struct user_regs_struct32),
+	 offsetof(struct user32, u_debugreg[0]), -1, 0},
 	{offsetof(struct user32, u_debugreg[0]),
 	 offsetof(struct user32, u_debugreg[8]), 4, 0},
 	{0, 0, -1, 0}
 };
 
-fastcall int arch_compat_ptrace(compat_long_t *req, struct task_struct *child,
-				struct utrace_attached_engine *engine,
-				compat_ulong_t addr, compat_ulong_t data,
-				compat_long_t *val)
+int arch_compat_ptrace(compat_long_t *req, struct task_struct *child,
+		       struct utrace_attached_engine *engine,
+		       compat_ulong_t addr, compat_ulong_t data,
+		       compat_long_t *val)
 {
 	switch (*req) {
 	case PTRACE_PEEKUSR:

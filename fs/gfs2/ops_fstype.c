@@ -27,7 +27,6 @@
 #include "inode.h"
 #include "lm.h"
 #include "mount.h"
-#include "ops_export.h"
 #include "ops_fstype.h"
 #include "ops_super.h"
 #include "recovery.h"
@@ -35,6 +34,7 @@
 #include "super.h"
 #include "sys.h"
 #include "util.h"
+#include "log.h"
 
 #define DO 0
 #define UNDO 1
@@ -83,13 +83,15 @@ static struct gfs2_sbd *init_sbd(struct super_block *sb)
 	INIT_LIST_HEAD(&sdp->sd_log_le_revoke);
 	INIT_LIST_HEAD(&sdp->sd_log_le_rg);
 	INIT_LIST_HEAD(&sdp->sd_log_le_databuf);
+	INIT_LIST_HEAD(&sdp->sd_log_le_ordered);
 
 	mutex_init(&sdp->sd_log_reserve_mutex);
 	INIT_LIST_HEAD(&sdp->sd_ail1_list);
 	INIT_LIST_HEAD(&sdp->sd_ail2_list);
 
 	init_rwsem(&sdp->sd_log_flush_lock);
-	INIT_LIST_HEAD(&sdp->sd_log_flush_list);
+	atomic_set(&sdp->sd_log_in_flight, 0);
+	init_waitqueue_head(&sdp->sd_log_flush_wait);
 
 	INIT_LIST_HEAD(&sdp->sd_revoke_list);
 
@@ -105,6 +107,7 @@ static void init_vfs(struct super_block *sb, unsigned noatime)
 	sb->s_magic = GFS2_MAGIC;
 	sb->s_op = &gfs2_super_ops;
 	sb->s_export_op = &gfs2_export_ops;
+	sb->s_time_gran = 1;
 	sb->s_maxbytes = MAX_LFS_FILESIZE;
 
 	if (sb->s_flags & (MS_NOATIME | MS_NODIRATIME))
@@ -116,7 +119,6 @@ static void init_vfs(struct super_block *sb, unsigned noatime)
 
 static int init_names(struct gfs2_sbd *sdp, int silent)
 {
-	struct gfs2_sb *sb = NULL;
 	char *proto, *table;
 	int error = 0;
 
@@ -126,37 +128,18 @@ static int init_names(struct gfs2_sbd *sdp, int silent)
 	/*  Try to autodetect  */
 
 	if (!proto[0] || !table[0]) {
-		struct buffer_head *bh;
-		bh = sb_getblk(sdp->sd_vfs,
-			       GFS2_SB_ADDR >> sdp->sd_fsb2bb_shift);
-		lock_buffer(bh);
-		clear_buffer_uptodate(bh);
-		clear_buffer_dirty(bh);
-		unlock_buffer(bh);
-		ll_rw_block(READ, 1, &bh);
-		wait_on_buffer(bh);
+		error = gfs2_read_super(sdp, GFS2_SB_ADDR >> sdp->sd_fsb2bb_shift);
+		if (error)
+			return error;
 
-		if (!buffer_uptodate(bh)) {
-			brelse(bh);
-			return -EIO;
-		}
-
-		sb = kmalloc(sizeof(struct gfs2_sb), GFP_KERNEL);
-		if (!sb) {
-			brelse(bh);
-			return -ENOMEM;
-		}
-		gfs2_sb_in(sb, bh->b_data);
-		brelse(bh);
-
-		error = gfs2_check_sb(sdp, sb, silent);
+		error = gfs2_check_sb(sdp, &sdp->sd_sb, silent);
 		if (error)
 			goto out;
 
 		if (!proto[0])
-			proto = sb->sb_lockproto;
+			proto = sdp->sd_sb.sb_lockproto;
 		if (!table[0])
-			table = sb->sb_locktable;
+			table = sdp->sd_sb.sb_locktable;
 	}
 
 	if (!table[0])
@@ -165,8 +148,10 @@ static int init_names(struct gfs2_sbd *sdp, int silent)
 	snprintf(sdp->sd_proto_name, GFS2_FSNAME_LEN, "%s", proto);
 	snprintf(sdp->sd_table_name, GFS2_FSNAME_LEN, "%s", table);
 
+	while ((table = strchr(sdp->sd_table_name, '/')))
+		*table = '_';
+
 out:
-	kfree(sb);
 	return error;
 }
 
@@ -178,14 +163,6 @@ static int init_locking(struct gfs2_sbd *sdp, struct gfs2_holder *mount_gh,
 
 	if (undo)
 		goto fail_trans;
-
-	p = kthread_run(gfs2_scand, sdp, "gfs2_scand");
-	error = IS_ERR(p);
-	if (error) {
-		fs_err(sdp, "can't start scand thread: %d\n", error);
-		return error;
-	}
-	sdp->sd_scand_process = p;
 
 	for (sdp->sd_glockd_num = 0;
 	     sdp->sd_glockd_num < sdp->sd_args.ar_num_glockd;
@@ -247,21 +224,20 @@ fail:
 	while (sdp->sd_glockd_num--)
 		kthread_stop(sdp->sd_glockd_process[sdp->sd_glockd_num]);
 
-	kthread_stop(sdp->sd_scand_process);
 	return error;
 }
 
-static struct inode *gfs2_lookup_root(struct super_block *sb,
-				      struct gfs2_inum *inum)
+static inline struct inode *gfs2_lookup_root(struct super_block *sb,
+					     u64 no_addr)
 {
-	return gfs2_inode_lookup(sb, inum, DT_DIR);
+	return gfs2_inode_lookup(sb, DT_DIR, no_addr, 0, 0);
 }
 
 static int init_sb(struct gfs2_sbd *sdp, int silent, int undo)
 {
 	struct super_block *sb = sdp->sd_vfs;
 	struct gfs2_holder sb_gh;
-	struct gfs2_inum *inum;
+	u64 no_addr;
 	struct inode *inode;
 	int error = 0;
 
@@ -304,10 +280,10 @@ static int init_sb(struct gfs2_sbd *sdp, int silent, int undo)
 	sb_set_blocksize(sb, sdp->sd_sb.sb_bsize);
 
 	/* Get the root inode */
-	inum = &sdp->sd_sb.sb_root_dir;
+	no_addr = sdp->sd_sb.sb_root_dir.no_addr;
 	if (sb->s_type == &gfs2meta_fs_type)
-		inum = &sdp->sd_sb.sb_master_dir;
-	inode = gfs2_lookup_root(sb, inum);
+		no_addr = sdp->sd_sb.sb_master_dir.no_addr;
+	inode = gfs2_lookup_root(sb, no_addr);
 	if (IS_ERR(inode)) {
 		error = PTR_ERR(inode);
 		fs_err(sdp, "can't read in root inode: %d\n", error);
@@ -386,7 +362,7 @@ static int init_journal(struct gfs2_sbd *sdp, int undo)
 
 		ip = GFS2_I(sdp->sd_jdesc->jd_inode);
 		error = gfs2_glock_nq_init(ip->i_gl, LM_ST_SHARED,
-					   LM_FLAG_NOEXP | GL_EXACT,
+					   LM_FLAG_NOEXP | GL_EXACT | GL_NOCACHE,
 					   &sdp->sd_jinode_gh);
 		if (error) {
 			fs_err(sdp, "can't acquire journal inode glock: %d\n",
@@ -464,7 +440,7 @@ static int init_inodes(struct gfs2_sbd *sdp, int undo)
 	if (undo)
 		goto fail_qinode;
 
-	inode = gfs2_lookup_root(sdp->sd_vfs, &sdp->sd_sb.sb_master_dir);
+	inode = gfs2_lookup_root(sdp->sd_vfs, sdp->sd_sb.sb_master_dir.no_addr);
 	if (IS_ERR(inode)) {
 		error = PTR_ERR(inode);
 		fs_err(sdp, "can't read in master directory: %d\n", error);
@@ -705,6 +681,8 @@ static int fill_super(struct super_block *sb, void *data, int silent)
 	if (error)
 		goto fail;
 
+	gfs2_create_debugfs_file(sdp);
+
 	error = gfs2_sys_fs_add(sdp);
 	if (error)
 		goto fail;
@@ -769,6 +747,7 @@ fail_lm:
 fail_sys:
 	gfs2_sys_fs_del(sdp);
 fail:
+	gfs2_delete_debugfs_file(sdp);
 	kfree(sdp);
 	sb->s_fs_info = NULL;
 	return error;
@@ -809,8 +788,8 @@ static int fill_super_meta(struct super_block *sb, struct super_block *new,
 		fs_err(sdp, "can't get root dentry\n");
 		error = -ENOMEM;
 		iput(inode);
-	}
-	new->s_root->d_op = &gfs2_dops;
+	} else
+		new->s_root->d_op = &gfs2_dops;
 
 	return error;
 }
@@ -855,7 +834,7 @@ static struct super_block* get_gfs2_sb(const char *dev_name)
 	}
 
 	printk(KERN_WARNING "GFS2: Unrecognized block device or "
-	       "mount point %s", dev_name);
+	       "mount point %s\n", dev_name);
 
 free_nd:
 	path_release(&nd);
@@ -869,7 +848,6 @@ static int gfs2_get_sb_meta(struct file_system_type *fs_type, int flags,
 	int error = 0;
 	struct super_block *sb = NULL, *new;
 	struct gfs2_sbd *sdp;
-	char *gfs2mnt = NULL;
 
 	sb = get_gfs2_sb(dev_name);
 	if (!sb) {
@@ -907,13 +885,15 @@ static int gfs2_get_sb_meta(struct file_system_type *fs_type, int flags,
 	atomic_inc(&sdp->sd_gfs2mnt->mnt_count);
 	return simple_set_mnt(mnt, new);
 error:
-	if (gfs2mnt)
-		kfree(gfs2mnt);
 	return error;
 }
 
 static void gfs2_kill_sb(struct super_block *sb)
 {
+	if (sb->s_fs_info) {
+		gfs2_delete_debugfs_file(sb->s_fs_info);
+		gfs2_meta_syncfs(sb->s_fs_info);
+	}
 	kill_block_super(sb);
 }
 

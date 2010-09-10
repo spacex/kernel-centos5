@@ -1159,7 +1159,7 @@ out:
 	if (likely(retval == 0)) {
 		if (unlikely(!audit_dummy_context() && nd && nd->dentry &&
 				nd->dentry->d_inode))
-		audit_inode(name, nd->dentry->d_inode);
+		audit_inode(name, nd->dentry);
 	}
 out_fail:
 	return retval;
@@ -1693,7 +1693,7 @@ do_last:
 	 * It already exists.
 	 */
 	mutex_unlock(&dir->d_inode->i_mutex);
-	audit_inode_update(path.dentry->d_inode);
+	audit_inode(pathname, path.dentry);
 
 	error = -EEXIST;
 	if (flag & O_EXCL)

@@ -90,7 +90,7 @@
 /*
  * Alter this version for the K8 module when modifications are made
  */
-#define EDAC_K8_VERSION    " Ver: 2.0.0 " __DATE__
+#define EDAC_K8_VERSION    " Ver: 2.0.2 " __DATE__
 #define EDAC_MOD_STR	"k8_edac"
 
 #ifndef PCI_DEVICE_ID_AMD_OPT_0_HT
@@ -113,6 +113,11 @@
 #define OPTERON_CPU_LE_REV_C    0
 #define OPTERON_CPU_REV_D       1
 #define OPTERON_CPU_REV_E       2
+/* Unknown Extended Model value */
+#define OPTERON_CPU_REV_X	3
+/* NPT processors have the following Extended Models */
+#define OPTERON_CPU_REV_F	4
+#define OPTERON_CPU_REV_FA	5
 
 #define K8_NR_CSROWS 8
 #define MAX_K8_NODES 8
@@ -151,12 +156,42 @@
 /* K8 register addresses - device 0 function 2 - DRAM controller */
 #define K8_DCSB		0x40	/* DRAM Chip-Select Base (8 x 32b)
 				 *
+				 * For Rev E and prior
 				 * 31:21 Base addr high 35:25
 				 * 20:16 reserved
 				 * 15:9  Base addr low 19:13 (interlvd)
 				 *  8:1  reserved
 				 *  0    chip-select bank enable
+				 *
+				 * For Rev F (NPT) and later
+				 * 31:29 reserved
+				 * 28:19 Base address (36:27)
+				 * 18:14 reserved
+				 * 13:5  Base address (21:13)
+				 * 4:3   reserved
+				 * 2     TestFail
+				 * 1     Spare Rank
+				 * 0     CESenable
 				 */
+#define K8_DCSB_CS_ENABLE	0x1
+#define K8_DCSB_NPT_SPARE	0x2
+#define K8_DCSB_NPT_TESTFAIL	0x4
+
+/* REV E: selects bits 31-21 and 15-9 from DCSB
+ * and the shift amount to form address
+ */
+#define REV_E_DCSB_BASE_BITS	(0xFFE0FE00ULL)
+#define REV_E_DCS_SHIFT		4
+#define REV_E_DCSM_SHIFT	0
+#define REF_E_DCSM_COUNT	4
+
+/* REV F: selects bits 28-19 and 13-5 from DCSB
+ * and the shift amount to form address
+ */
+#define REV_F_DCSB_BASE_BITS	(0x1FF83FE0ULL)
+#define REV_F_DCS_SHIFT		8
+#define REV_F_DCSM_SHIFT	1
+#define REF_F_DCSM_COUNT	8
 
 #define K8_DCSM		0x60	/* DRAM Chip-Select Mask (8 x 32b)
 				 *
@@ -167,12 +202,21 @@
 				 *  8:0  reserved
 				 */
 
-/* selects bits 29-21 and 15-9 from DCSM */
-#define DCSM_MASK_BITS 0x3fe0fe00
+/* REV E: selects bits 29-21 and 15-9 from DCSM */
+#define REV_E_DCSM_MASK_BITS	0x3FE0FE00
+/*     represents unused bits [24-20] and [12-0] */
+#define REV_E_DCS_NOTUSED_BITS	0x1f01fff
+
+/* REV F: selects bits 28-19 and 13-5 from DCSM */
+#define REV_F_DCSM_MASK_BITS	0x1FF83FC0
+/*     represents unused bits [26-22] and [12-0] */
+#define REV_F_DCS_NOTUSED_BITS	0x03c1fff
 
 #define K8_DBAM		0x80	/* DRAM Base Addr Mapping (32b) */
 
 #define K8_DCL		0x90	/* DRAM configuration low reg (32b)
+				 *
+				 * Rev E and earlier CPUS:
 				 *
 				 * 31:28 reserved
 				 * 27:25 Bypass Max: 000b=respect
@@ -194,6 +238,24 @@
 				 *  2    QFC enabled
 				 *  1    DRAM drive strength
 				 *  0    Digital Locked Loop disable
+				 *
+				 * Rev F and later CPUs:
+				 *
+				 * 31:20 reserved
+				 * 19    DIMM ECC Enable
+				 * 18:17 reserved
+				 * 16    Unbuffered DIMM
+				 * 15:12 x4 DIMMs
+				 * 11    Width128 bits
+				 * 10    burstLength32
+				 *  9    SelRefRateEn
+				 *  8    ParEn
+				 *  7    DramDrvWeak
+				 *  6    reserved
+				 * 5:4   DramTerm
+				 * 3:2   reserved
+				 *  1    ExitSelfRef
+				 *  0    InitDram
 				 */
 
 /* K8 register addresses - device 0 function 3 - Misc Control */
@@ -209,6 +271,8 @@
 				 * 22    ECC enable
 				 *  1    CPU ECC enable
 				 */
+#define			K8_NBCFG_CHIPKILL	23
+#define			K8_NBCFG_ECC_ENABLE	22
 
 #define K8_NBSL		0x48	/* MCA NB Status Low (32b)
 				 *
@@ -260,6 +324,8 @@
 				 *  4    S4ECD4ED capable
 				 *  3    SECDED capable
 				 */
+#define K8_NBCAP_CHIPKILL	4
+#define K8_NBCAP_SECDED		3
 
 				/* MSR's */
 
@@ -317,9 +383,9 @@
 #define K8_MSR_MC4STAT	0x0411	/* North Bridge status (64b) */
 #define K8_MSR_MC4ADDR	0x0412	/* North Bridge Address (64b) */
 
-static inline int MCI_TO_NODE_ID(struct mem_ctl_info *mci)
+static inline int MCI_TO_NODE_ID(struct pci_dev *pdev)
 {
-	return PCI_SLOT(to_pci_dev(mci->dev)->devfn) - 0x18;
+	return PCI_SLOT(pdev->devfn) - 0x18;
 }
 
 /* Ugly hack that allows module to compile when built as part of a 32-bit
@@ -372,6 +438,7 @@ struct k8_pvt {
 	struct pci_dev *misc_ctl;
 
 	int node_id;  /* ID of this node */
+	int ext_model;
 
 	/* The values of these registers will remain constant so we might as
 	 * well cache them here.
@@ -380,8 +447,27 @@ struct k8_pvt {
 	u32 dbr[MAX_K8_NODES];
 	u32 dlr[MAX_K8_NODES];
 	u32 nbcap;
+	u32 nbcfg;
 	u32 dcsb[K8_NR_CSROWS];
 	u32 dcsm[K8_NR_CSROWS];
+
+	/* The following 3 fields are set at run time, after Revision has
+	 * been determine, since the dcsb and dcsm registers vary
+	 * by CPU Revsion
+	 */
+	u32 dcsb_mask;			/* DCSB mask bits */
+	u32 dcsm_mask;			/* DCSM mask bits */
+	u32 num_dcsm;			/* Number of DCSM registers */
+	u32 dcs_mask_notused;		/* DCSM notused mask bits */
+	u32 dcs_shift;			/* DCSB and DCSM shift value */
+
+	/* On Rev E there are 8 DCSM registers,
+	 * On Rev F there are 4 DCSM registers.
+	 * This field is set as a 0 (Rev E) or 1 (Rev F) to indicate
+	 * number of bits to shift the index for DCSM array look ups
+	 */
+	u32 dcsm_shift_bit;
+
 	u32 dhar;
 	u32 dbam;
 };
@@ -395,7 +481,6 @@ struct k8_error_info_regs {
 
 struct k8_error_info {
 	struct k8_error_info_regs error_info;
-	u32 nbcfg;
 	int race_condition_detected;
 };
 
@@ -663,30 +748,150 @@ static const char *htlink_msgs[] = {
 	"1 2 3"
 };
 
-static inline u64 base_from_dcsb(u32 dcsb)
+/*
+ * The DCSB and DCSM registers differ between Rev E and Rev F CPUs
+ * The following several functions intialize and extract information
+ * from this registers
+ */
+
+/*
+ * set_dcsb_dcsm_rev_specific(pvt)
+ *
+ *	NOTE: CPU Revision Dependent code
+ *
+ *	Set the DCSB and DCSM mask values depending on the
+ *	CPU revision value.
+ *	Also set the shift factor for the DCSB and DCSM values
+ *
+ *	member dcs_mask_notused, REV E:
+ *
+ *	To find the max InputAddr for the csrow, start with the base
+ *	address and set all bits that are "don't care" bits in the test at
+ *	the start of section 3.5.4 (p. 84).
+ *
+ *	The "don't care" bits are all set bits in the mask and
+ *	all bits in the gaps between bit ranges [35-25] and [19-13].
+ *	The value REV_E_DCS_NOTUSED_BITS represents bits [24-20] and [12-0],
+ *	which are all bits in the above-mentioned gaps.
+ *
+ *	member dcs_mask_notused, REV F:
+ *
+ *	To find the max InputAddr for the csrow, start with the base
+ *	address and set all bits that are "don't care" bits in the test at
+ *	the start of NPT section 4.5.4 (p. 87).
+ *
+ *	The "don't care" bits are all set bits in the mask and
+ *	all bits in the gaps between bit ranges [36-27] and [21-13].
+ *	The value REV_F_DCS_NOTUSED_BITS represents bits [26-22] and [12-0],
+ *	which are all bits in the above-mentioned gaps.
+ */
+static void set_dcsb_dcsm_rev_specific(struct k8_pvt *pvt)
+{
+	if ( pvt->ext_model >= OPTERON_CPU_REV_F) {
+		pvt->dcsb_mask		= REV_F_DCSB_BASE_BITS;
+		pvt->dcsm_mask		= REV_F_DCSM_MASK_BITS;
+		pvt->dcs_mask_notused	= REV_F_DCS_NOTUSED_BITS;
+		pvt->dcs_shift		= REV_F_DCS_SHIFT;
+		pvt->dcsm_shift_bit	= REV_F_DCSM_SHIFT;
+		pvt->num_dcsm		= REF_F_DCSM_COUNT;
+	} else {
+		pvt->dcsb_mask		= REV_E_DCSB_BASE_BITS;
+		pvt->dcsm_mask		= REV_E_DCSM_MASK_BITS;
+		pvt->dcs_mask_notused	= REV_E_DCS_NOTUSED_BITS;
+		pvt->dcs_shift		= REV_E_DCS_SHIFT;
+		pvt->dcsm_shift_bit	= REV_E_DCSM_SHIFT;
+		pvt->num_dcsm		= REF_E_DCSM_COUNT;
+	}
+}
+
+/*
+ * get_dcsb()
+ *
+ *	getter function to return the 'base' address the i'th CS entry.
+ */
+static u32 get_dcsb(struct k8_pvt *pvt, int csrow)
 {
 	/* 0xffe0fe00 selects bits 31-21 and 15-9 of a DRAM CS Base Address
 	 * Register (section 3.5.4).  Shifting the bits left 4 puts them in
 	 * their proper bit positions of 35-25 and 19-13.
 	 */
-	return ((u64) (dcsb & 0xffe0fe00)) << 4;
+	return pvt->dcsb[csrow];
 }
 
-static u64 mask_from_dcsm(u32 dcsm)
+/*
+ * get_dcsm()
+ *
+ *	getter function to return the 'mask' address the i'th CS entry.
+ *	This getter function is needed because there different number
+ *	of DCSM registers on Rev E and prior vs Rev F and later
+ */
+static u32 get_dcsm(struct k8_pvt *pvt, int csrow)
+{
+	return pvt->dcsm[csrow >> pvt->dcsm_shift_bit];
+}
+
+
+/*
+ * base_from_dcsb
+ *
+ *	Extract the DRAM CS base address from selected csrow register
+ */
+static u64 base_from_dcsb(struct k8_pvt *pvt, int csrow)
+{
+	return ((u64)(get_dcsb(pvt, csrow) & pvt->dcsb_mask)) <<
+		 pvt->dcs_shift;
+}
+
+static u64 mask_from_dcsm(struct k8_pvt *pvt, int csrow)
 {
 	u64 dcsm_bits, other_bits;
 
 	/* Extract bits bits 29-21 and 15-9 from DCSM (section 3.5.5). */
-	dcsm_bits = dcsm & DCSM_MASK_BITS;
+	dcsm_bits = get_dcsm(pvt, csrow) & pvt->dcsm_mask;
 
 	/* Set all bits except bits 33-25 and 19-13. */
-	other_bits = DCSM_MASK_BITS;
-	other_bits = ~(other_bits << 4);
+	other_bits = pvt->dcsm_mask;
+	other_bits = ~(other_bits << pvt->dcs_shift);
 
 	/* The extracted bits from DCSM belong in the spaces represented by
 	 * the cleared bits in other_bits.
 	 */
-	return (dcsm_bits << 4) | other_bits;
+	return (dcsm_bits << pvt->dcs_shift) | other_bits;
+}
+
+/*
+ * setup_dcsb_dcsm()
+ *
+ *	Setup the DCSB and DCSM arrays from hardware
+ */
+static void setup_dcsb_dcsm(struct k8_pvt *pvt, struct pci_dev *pdev)
+{
+	int i;
+
+	/* Set the dcsb and dcsm mask bits and their shift value */
+	set_dcsb_dcsm_rev_specific(pvt);
+
+	/* Retrieve the DRAM CS Base Address Registers from hardware
+	 */
+	for (i = 0; i < K8_NR_CSROWS; i++) {
+		pci_read_config_dword(pdev, K8_DCSB + (i * 4), &pvt->dcsb[i]);
+		debugf1("    dcsb[%d]: 0x%x\n", i, pvt->dcsb[i]);
+	}
+
+	/* The number of DCSMs differents at the Rev E/Rev F boundary
+	 * so we retrieve the number of registers defined for this processor
+	 */
+	for (i = 0; i < pvt->num_dcsm; i++) {
+		pci_read_config_dword(pdev, K8_DCSM + (i * 4), &pvt->dcsm[i]);
+		debugf1("    dcsm[%d]: 0x%x\n", i, pvt->dcsm[i]);
+	}
+
+	/* Debug dump only of DCSB and DCSM registers */
+	for (i = 0; i < K8_NR_CSROWS; i++) {
+		debugf1("  dcsb[%d]: 0x%8.8x  dcsm[%d]: 0x%x\n",
+				i, get_dcsb(pvt,i),
+				i>> pvt->dcsm_shift_bit, get_dcsm(pvt,i));
+	}
 }
 
 /* In *base and *limit, pass back the full 40-bit base and limit physical
@@ -844,9 +1049,9 @@ static int get_dram_hole_info(struct mem_ctl_info *mci, u64 *hole_base,
 
 	pvt = mci->pvt_info;
 
-	if (node_rev(pvt->node_id) < OPTERON_CPU_REV_E) {
+	if (pvt->ext_model < OPTERON_CPU_REV_E) {
 		debugf2("revision %d for node %d does not support DHAR\n",
-			node_rev(pvt->node_id), pvt->node_id);
+			pvt->ext_model, pvt->node_id);
 		return 1;
 	}
 
@@ -1031,15 +1236,15 @@ static int input_addr_to_csrow(struct mem_ctl_info *mci, u64 input_addr)
 		dcsb = pvt->dcsb[i];
 		dcsm = pvt->dcsm[i];
 
-		if ((dcsb & 0x01) == 0) {
+		if ((dcsb & K8_DCSB_CS_ENABLE) == 0) {
 			debugf2("input_addr_to_csrow: CSBE bit is cleared "
 				"for csrow %d (node %d)\n", i,
 				pvt->node_id);
 			continue;  /* CSBE bit is cleared */
 		}
 
-		base = base_from_dcsb(dcsb);
-		mask = ~mask_from_dcsm(dcsm);
+		base = base_from_dcsb(pvt, i);
+		mask = ~mask_from_dcsm(pvt, i);
 
 		if ((input_addr & mask) == (base & mask)) {
 			debugf2("InputAddr 0x%lx matches csrow %d "
@@ -1158,8 +1363,8 @@ static void find_csrow_limits(struct mem_ctl_info *mci, int csrow,
 
 	pvt = mci->pvt_info;
 	BUG_ON((csrow < 0) || (csrow >= K8_NR_CSROWS));
-	base = base_from_dcsb(pvt->dcsb[csrow]);
-	mask = mask_from_dcsm(pvt->dcsm[csrow]);
+	base = base_from_dcsb(pvt, csrow);
+	mask = mask_from_dcsm(pvt, csrow);
 	*input_addr_min = base & ~mask;
 
 	/* To find the max InputAddr for the csrow, start with the base
@@ -1169,7 +1374,7 @@ static void find_csrow_limits(struct mem_ctl_info *mci, int csrow,
 	 * [35-25] and [19-13].  The value 0x1f01fff represents bits [24-20]
 	 * and [12-0], which are all bits in the above-mentioned gaps.
 	 */
-	*input_addr_max = base | mask | 0x1f01fff;
+	*input_addr_max = base | mask | pvt->dcs_mask_notused;
 }
 
 /* Extract error address from MCA NB Address Low (section 3.6.4.5) and
@@ -1264,7 +1469,7 @@ static void k8_get_error_info(struct mem_ctl_info *mci,
 	/* clear the error */
 	pci_write_bits32(pvt->misc_ctl, K8_NBSH, 0, K8_NBSH_VALID_BIT);
 
-	pci_read_config_dword(pvt->misc_ctl, K8_NBCFG, &info->nbcfg);
+	pci_read_config_dword(pvt->misc_ctl, K8_NBCFG, &pvt->nbcfg);
 	info->race_condition_detected =
 	    ((regs.nbsh != info->error_info.nbsh) ||
 	     (regs.nbsl != info->error_info.nbsl) ||
@@ -1345,7 +1550,7 @@ static void k8_handle_ce(struct mem_ctl_info *mci, struct k8_error_info *info)
 	error_address = error_address_from_k8_error_info(info);
 	syndrome = ((info->error_info.nbsh >> 15) & 0xff);
 
-	if (info->nbcfg & BIT(23)) {
+	if (pvt->nbcfg & BIT(K8_NBCFG_CHIPKILL)) {
 		/* chipkill ecc mode */
 		syndrome += (info->error_info.nbsl >> 16) & 0xff00;
 		channel = chan_from_chipkill_syndrome(syndrome);
@@ -1544,8 +1749,12 @@ static int k8_process_error_info(struct mem_ctl_info *mci,
 		edac_mc_handle_ue_no_info(mci, "UE bit is set\n");
 	}
 
-	if (regs->nbsh & BIT(25))
-		panic("MC%d: processor context corrupt", mci->mc_idx);
+	if (regs->nbsh & BIT(25)) {
+		if (reset_devices == 0)
+			panic("MC%d: processor context corrupt", mci->mc_idx);
+		else
+			k8_mc_printk(mci, KERN_CRIT, "processor context corrupt\n");
+	}
 
 	return 1;
 }
@@ -1612,7 +1821,10 @@ static void k8_get_mc_regs(struct mem_ctl_info *mci)
 
 	pdev = to_pci_dev(mci->dev);
 	pvt = mci->pvt_info;
-	debugf1("k8 regs:\n");
+	debugf1("%s(MC node-id=%d): (ExtModel=%d) %s\n",
+		__func__, pvt->node_id, pvt->ext_model,
+		(pvt->ext_model >= OPTERON_CPU_REV_F) ?
+		"Rev F or later" : "Rev E or earlier");
 
 	for (i = 0; i < MAX_K8_NODES; i++) {
 		pci_read_config_dword(pvt->addr_map, K8_DBR + (i * 8),
@@ -1623,46 +1835,173 @@ static void k8_get_mc_regs(struct mem_ctl_info *mci)
 		debugf1("    dlr[%d]: 0x%x\n", i, pvt->dlr[i]);
 	}
 
-	pci_read_config_dword(pvt->misc_ctl, K8_NBCAP, &pvt->nbcap);
-	debugf1("    nbcap: %u\n", pvt->nbcap);
-
-	for (i = 0; i < K8_NR_CSROWS; i++) {
-		pci_read_config_dword(pdev, K8_DCSB + (i * 4), &pvt->dcsb[i]);
-		pci_read_config_dword(pdev, K8_DCSM + (i * 4), &pvt->dcsm[i]);
-		debugf1("    dcsb[%d]: 0x%x\n", i, pvt->dcsb[i]);
-		debugf1("    dcsm[%d]: 0x%x\n", i, pvt->dcsm[i]);
-	}
+	/* Setup the DCSB and DCSM arrays from hardware */
+	setup_dcsb_dcsm(pvt,pdev);
 
 	pci_read_config_dword(pvt->addr_map, K8_DHAR, &pvt->dhar);
 	pci_read_config_dword(pdev, K8_DBAM, &pvt->dbam);
+	pci_read_config_dword(pvt->misc_ctl, K8_NBCAP, &pvt->nbcap);
 	debugf1("    dhar: 0x%x\n", pvt->dhar);
 	debugf1("    dbam: 0x%x\n", pvt->dbam);
+	debugf1("    dcl:  0x%x\n", pvt->dcl);
+	debugf1("    nbcap: %u\n", pvt->nbcap);
 }
 
 /* Return 1 if dual channel mode is active.  Else return 0. */
-static inline int dual_channel_active(u32 dcl)
+static inline int dual_channel_active(u32 dcl, int mc_device_index)
 {
-	return (dcl >> 16) & 0x1;
+	int flag;
+	int ext_model = node_rev(mc_device_index);
+
+	if (ext_model >= OPTERON_CPU_REV_F) {
+		/* Rev F (NPT) and later */
+		flag = (dcl >> 11) & 0x1;
+	} else {
+		/* Rev E and earlier */
+		flag = (dcl >> 16) & 0x1;
+	}
+
+	return flag;
 }
 
 static u32 csrow_nr_pages(int csrow_nr, struct k8_pvt *pvt)
 {
-	u32 cs;
+	u32 shift, nr_pages;
+	int ext_model = pvt->ext_model;
 
 	/* The math on this doesn't look right on the surface because x/2*4
 	 * can be simplified to x*2 but this expression makes use of the fact
 	 * that it is integral math where 1/2=0
 	 */
-	cs = (pvt->dbam >> ((csrow_nr / 2) * 4)) & 0xF;  /* PG88 */
-
-	/* This line is tricky. It collapses the table used by revision D and
-	 * later to one that matches revision CG and earlier
+	shift = (pvt->dbam >> ((csrow_nr / 2) * 4)) & 0xF; /*PG88 */
+	debugf0("   %s(csrow=%d) DBAM index= %d\n", __func__, csrow_nr,
+		shift);
+	/* First step is to calc the number of bits to shift a value of 1
+	 * left to indicate show many pages. Start with the DBAM value
+	 * as the starting bits, then proceed to adjust those shift
+	 * bits, based on CPU REV and the table. See BKDG on the DBAM
 	 */
-	cs -= (node_rev(pvt->node_id) >= OPTERON_CPU_REV_D) ?
-	      (cs > 8 ? 4 : (cs > 5 ? 3 : (cs > 2 ? 1 : 0))) : 0;
 
-	/* 25 is 32MiB minimum DIMM size */
-	return 1 << (cs + 25 - PAGE_SHIFT + dual_channel_active(pvt->dcl));
+	if (ext_model >= OPTERON_CPU_REV_F) {
+		/* 27 shift, is 128Mib minimum DIMM size in REV F and later
+		 * upto 8 Gb, in a step function progression
+		 */
+		static u32 rev_f_shift[] = { 27, 28, 29, 29, 29, 30, 30, 31,
+					     31, 32, 32, 33,  0,  0,  0,  0 };
+		nr_pages = 1 << (rev_f_shift[shift] - PAGE_SHIFT);
+	} else {
+		/* REV E and less section This line is tricky.
+		 * It collapses the table used by revision D and later to one
+		 * that matches revision CG and earlier
+		 */
+		shift -= (ext_model >= OPTERON_CPU_REV_D)?
+			(shift > 8 ? 4:
+				(shift > 5 ? 3:
+					(shift > 2 ? 1 : 0))): 0;
+		/* 25 shift, is 32MiB minimum DIMM size in REV E and prior */
+		nr_pages = 1 << (shift + 25 - PAGE_SHIFT);
+	}
+
+	/* If dual channel then double thememory size of single channel */
+	nr_pages <<= dual_channel_active(pvt->dcl, pvt->node_id);
+
+	debugf0("   nr_pages= %u  dual channel_active = %d\n",
+		nr_pages, dual_channel_active(pvt->dcl, pvt->node_id));
+
+	return nr_pages;
+}
+
+/*
+ * determine_parity_enabled()
+ *
+ *     NOTE: CPU Revision Dependent code
+ *
+ *     determine if Parity is Enabled
+ */
+static int determine_parity_enabled(struct k8_pvt *pvt)
+{
+	int rc = 0;
+
+	if (pvt->ext_model >= OPTERON_CPU_REV_F) {
+		if (pvt->dcl & BIT(8))
+			rc = 1;
+	}
+
+	return rc;
+}
+
+/*
+* determine_memory_type()
+*
+*     NOTE: CPU Revision Dependent code
+*
+*     determine the memory type in operation on this controller
+*/
+static enum mem_type determine_memory_type(struct k8_pvt *pvt)
+{
+	enum mem_type type;
+
+	if (pvt->ext_model >= OPTERON_CPU_REV_F) {
+		/* Rev F and later */
+		type = ((pvt->dcl >> 16) & 0x1) ? MEM_DDR2 : MEM_RDDR2;
+	} else {
+		/* Rev E and earlier */
+		type = ((pvt->dcl >> 18) & 0x1) ? MEM_DDR : MEM_RDDR;
+	}
+
+	debugf1("  Memory type is: %s\n",
+		(type == MEM_DDR2) ? "MEM_DDR2" :
+		(type == MEM_RDDR2) ? "MEM_RDDR2" :
+		(type == MEM_DDR) ? "MEM_DDR" : "MEM_RDDR");
+
+	return type;
+}
+
+/*
+ * determine_dram_type()
+ *
+ *     NOTE: CPU Revision Dependent code
+ *
+ *     determine the DRAM type in operation
+ *     There are K8_NR_CSROWS  (8) and 2 CSROWS per DIMM, therefore
+ *     there are 4 Logical DIMMs possible, thus 4 bits in the
+ *     configuration register indicating whether there are
+ *     X4 or X8 devices, one per logical DIMM
+ */
+static enum dev_type determine_dram_type(struct k8_pvt *pvt, int row)
+{
+	int bit;
+	enum dev_type type;
+
+	/* the starting bit depends on Revision value */
+	bit = (pvt->ext_model >= OPTERON_CPU_REV_F) ? 12 : 20;
+	type = ((pvt->dcl >> (bit + (row / 2))) & 0x01) ? DEV_X4 : DEV_X8;
+
+	debugf1("  DRAM type is: %s\n", (type == DEV_X4) ? "DEV-x4" : "DEV-x8");
+
+	return type;
+}
+
+/*
+ * determine_edac_cap()
+ *
+ *     NOTE: CPU Revision Dependent code
+ *
+ *     determine if the DIMMs have ECC enabled
+ *     ECC is enabled ONLY if all the DIMMs are ECC capable
+ */
+static enum edac_type determine_edac_cap(struct k8_pvt *pvt)
+{
+	int bit;
+	enum dev_type edac_cap = EDAC_NONE;
+
+	bit = (pvt->ext_model >= OPTERON_CPU_REV_F) ? 19 : 17;
+	if ((pvt->dcl >> bit) & 0x1) {
+		debugf1("  edac_type is: EDAC_FLAG_SECDED\n");
+		edac_cap = EDAC_FLAG_SECDED;
+	}
+
+	return edac_cap;
 }
 
 static int k8_init_csrows(struct mem_ctl_info *mci)
@@ -1671,16 +2010,15 @@ static int k8_init_csrows(struct mem_ctl_info *mci)
 	struct k8_pvt *pvt;
 	int i, empty;
 	u64 input_addr_min, input_addr_max, sys_addr;
-	u32 nbcfg;
 
 	pvt = mci->pvt_info;
-	pci_read_config_dword(pvt->misc_ctl, K8_NBCFG, &nbcfg);
+	pci_read_config_dword(pvt->misc_ctl, K8_NBCFG, &pvt->nbcfg);
 	empty = 1;
 
 	for (i = 0; i < K8_NR_CSROWS; i++) {
 		csrow = &mci->csrows[i];
 
-		if ((pvt->dcsb[i] & 0x01) == 0) {
+		if ((pvt->dcsb[i] & K8_DCSB_CS_ENABLE) == 0) {
 			debugf1("csrow %d empty for node %d\n", i,
 				pvt->node_id);
 			continue;  /* empty */
@@ -1695,11 +2033,10 @@ static int k8_init_csrows(struct mem_ctl_info *mci)
 		csrow->first_page = (u32) (sys_addr >> PAGE_SHIFT);
 		sys_addr = input_addr_to_sys_addr(mci, input_addr_max);
 		csrow->last_page = (u32) (sys_addr >> PAGE_SHIFT);
-		csrow->page_mask = ~mask_from_dcsm(pvt->dcsm[i]);
+		csrow->page_mask = ~mask_from_dcsm(pvt, i);
 		csrow->grain = 8;  /* 8 bytes of resolution */
-		csrow->mtype = ((pvt->dcl >> 18) & 0x1) ? MEM_DDR : MEM_RDDR;
-		csrow->dtype = ((pvt->dcl >> (20 + (i / 2))) & 0x01) ?
-			       DEV_X4 : DEV_UNKNOWN;
+		csrow->mtype = determine_memory_type(pvt);
+		csrow->dtype = determine_dram_type(pvt, i);
 		debugf1("for node %d csrow %d:\n    nr_pages: %u "
 			"input_addr_min: 0x%lx input_addr_max: 0x%lx "
 			"sys_addr: 0x%lx first_page: 0x%lx last_page: 0x%lx "
@@ -1711,8 +2048,8 @@ static int k8_init_csrows(struct mem_ctl_info *mci)
 			csrow->first_page, csrow->last_page,
 			csrow->page_mask);
 
-		if (nbcfg & BIT(22))
-			csrow->edac_mode = (nbcfg & BIT(23)) ?
+		if (pvt->nbcfg & BIT(K8_NBCFG_ECC_ENABLE))
+			csrow->edac_mode = (pvt->nbcfg & BIT(K8_NBCFG_CHIPKILL)) ?
 					   EDAC_S4ECD4ED : EDAC_SECDED;
 		else
 			csrow->edac_mode = EDAC_NONE;
@@ -1743,15 +2080,17 @@ static int k8_probe1(struct pci_dev *pdev, int dev_idx)
 	struct mem_ctl_info *mci;
 	struct k8_pvt *pvt;
 	u32 dcl, dual_channel;
+	int parity_enable;
 
 	debugf0("%s()\n", __func__);
 	build_node_revision_table();
 	debugf1("pdev bus %u devfn %u\n", pdev->bus->number, pdev->devfn);
 	pci_read_config_dword(pdev, K8_DCL, &dcl);
-	dual_channel = dual_channel_active(dcl);
+	dual_channel = dual_channel_active(dcl,
+					   MCI_TO_NODE_ID(pdev));
 	debugf1("dual_channel is %u (dcl is 0x%x)\n", dual_channel, dcl);
-	mci = edac_mc_alloc(sizeof(*pvt), K8_NR_CSROWS, dual_channel + 1);
 
+	mci = edac_mc_alloc(sizeof(*pvt), K8_NR_CSROWS, dual_channel + 1);
 	if (mci == NULL)
 		return -ENOMEM;
 
@@ -1759,33 +2098,40 @@ static int k8_probe1(struct pci_dev *pdev, int dev_idx)
 	pvt = mci->pvt_info;
 	pvt->dcl = dcl;
 	mci->dev = &pdev->dev;
-	pvt->node_id = MCI_TO_NODE_ID(mci);
+	pvt->node_id = MCI_TO_NODE_ID(pdev);
+	pvt->ext_model = node_rev(pvt->node_id);
 
 	if (k8_get_devs(mci, dev_idx))
 		goto fail0;
 
 	k8_get_mc_regs(mci);
-	mci->mtype_cap = MEM_FLAG_DDR | MEM_FLAG_RDDR;
+	mci->mtype_cap = MEM_FLAG_DDR2 | MEM_FLAG_RDDR2;
 	mci->edac_ctl_cap = EDAC_FLAG_NONE;
 	debugf1("Initializing mci->edac_cap to EDAC_FLAG_NONE\n");
 	mci->edac_cap = EDAC_FLAG_NONE;
 
-	if ((pvt->nbcap >> 3) & 0x1)
+	if (pvt->nbcap & BIT(K8_NBCAP_SECDED))
 		mci->edac_ctl_cap |= EDAC_FLAG_SECDED;
 
-	if ((pvt->nbcap >> 4) & 0x1)
+	if (pvt->nbcap & BIT(K8_NBCAP_CHIPKILL))
 		mci->edac_ctl_cap |= EDAC_FLAG_S4ECD4ED;
 
-	if ((pvt->dcl >> 17) & 0x1) {
+	mci->edac_cap = determine_edac_cap(pvt);
+	if (mci->edac_cap & EDAC_FLAG_SECDED) {
 		debugf1("setting EDAC_FLAG_SECDED in mci->edac_cap\n");
 		mci->edac_cap |= EDAC_FLAG_SECDED;
 
+#if 0
 		if (dual_channel) {
 			debugf1("setting EDAC_FLAG_S4ECD4ED in "
 				"mci->edac_cap\n");
 			mci->edac_cap |= EDAC_FLAG_S4ECD4ED;
 		}
+#endif
 	}
+
+	parity_enable = determine_parity_enabled(pvt);
+	debugf1("   Parity is %s\n", parity_enable ? "Enabled" : "Disabled");
 
 	mci->mod_name = EDAC_MOD_STR;
 	mci->mod_ver = EDAC_K8_VERSION;
@@ -1877,5 +2223,6 @@ module_init(k8_init);
 module_exit(k8_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Linux Networx (http://lnxi.com) Thayne Harbaugh");
+MODULE_AUTHOR("Linux Networx (http://lnxi.com) Thayne Harbaugh, Doug Thompson, Dave Peterson");
 MODULE_DESCRIPTION("MC support for AMD K8 memory controllers - " EDAC_K8_VERSION );
+

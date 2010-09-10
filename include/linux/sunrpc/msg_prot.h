@@ -34,6 +34,9 @@ enum rpc_auth_flavors {
 	RPC_AUTH_GSS_SPKMP = 390011,
 };
 
+/* Maximum size (in bytes) of an rpc credential or verifier */
+#define RPC_MAX_AUTH_SIZE (400)
+
 enum rpc_msg_type {
 	RPC_CALL = 0,
 	RPC_REPLY = 1

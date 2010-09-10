@@ -1,3 +1,34 @@
+Verison 1.48
+------------
+Fix mtime bouncing around from local idea of last write times to remote time.
+Fix hang (in i_size_read) when simultaneous size update of same remote file
+on smp system corrupts sequence number. Do not reread unnecessarily partial page
+(which we are about to overwrite anyway) when writing out file opened rw.
+When DOS attribute of file on non-Unix server's file changes on the server side
+from read-only back to read-write, reflect this change in default file mode
+(we had been leaving a file's mode read-only until the inode were reloaded).
+Allow setting of attribute back to ATTR_NORMAL (removing readonly dos attribute
+when archive dos attribute not set and we are changing mode back to writeable
+on server which does not support the Unix Extensions).
+
+Version 1.47
+------------
+Fix oops in list_del during mount caused by unaligned string.
+Fix file corruption which could occur on some large file
+copies caused by writepages page i/o completion bug.
+Seek to SEEK_END forces check for update of file size for non-cached
+files.
+
+Version 1.46
+------------
+Support deep tree mounts.  Better support OS/2, Win9x (DOS) time stamps.
+Allow null user to be specified on mount ("username="). Do not return
+EINVAL on readdir when filldir fails due to overwritten blocksize
+(fixes FC problem).  Return error in rename 2nd attempt retry (ie report
+if rename by handle also fails, after rename by path fails, we were
+not reporting whether the retry worked or not). Fix NTLMv2 to
+work to Windows servers (mount with option "sec=ntlmv2").
+
 Version 1.45
 ------------
 Do not time out lockw calls when using posix extensions. Do not
@@ -6,11 +37,8 @@ on requests on other threads.  Improve POSIX locking emulation,
 (lock cancel now works, and unlock of merged range works even
 to Windows servers now).  Fix oops on mount to lanman servers
 (win9x, os/2 etc.) when null password.  Do not send listxattr
-(SMB to query all EAs) if nouser_xattr specified.  Return error
-in rename 2nd attempt retry (ie report if rename by handle also
-fails, after rename by path fails, we were not reporting whether
-the retry worked or not).
-
+(SMB to query all EAs) if nouser_xattr specified.  Fix SE Linux
+problem (instantiate inodes/dentries in right order for readdir).
 
 Version 1.44
 ------------
@@ -218,7 +246,7 @@ improperly zeroed buffer in CIFS Unix extensions set times call.
 Version 1.25
 ------------
 Fix internationalization problem in cifs readdir with filenames that map to 
-longer UTF-8 strings than the string on the wire was in Unicode.  Add workaround
+longer UTF8 strings than the string on the wire was in Unicode.  Add workaround
 for readdir to netapp servers. Fix search rewind (seek into readdir to return 
 non-consecutive entries).  Do not do readdir when server negotiates 
 buffer size to small to fit filename. Add support for reading POSIX ACLs from

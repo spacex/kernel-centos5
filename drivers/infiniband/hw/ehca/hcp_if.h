@@ -107,7 +107,7 @@ u64 hipz_h_register_rpage_eq(const struct ipz_adapter_handle adapter_handle,
 			     const u64 logical_address_of_page,
 			     const u64 count);
 
-u32 hipz_h_query_int_state(const struct ipz_adapter_handle
+u64 hipz_h_query_int_state(const struct ipz_adapter_handle
 			   hcp_adapter_handle,
 			   u32 ist);
 

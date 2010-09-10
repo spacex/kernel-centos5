@@ -42,15 +42,12 @@ static int snd_pcm_free(struct snd_pcm *pcm);
 static int snd_pcm_dev_free(struct snd_device *device);
 static int snd_pcm_dev_register(struct snd_device *device);
 static int snd_pcm_dev_disconnect(struct snd_device *device);
-static int snd_pcm_dev_unregister(struct snd_device *device);
 
 static struct snd_pcm *snd_pcm_search(struct snd_card *card, int device)
 {
-	struct list_head *p;
 	struct snd_pcm *pcm;
 
-	list_for_each(p, &snd_pcm_devices) {
-		pcm = list_entry(p, struct snd_pcm, list);
+	list_for_each_entry(pcm, &snd_pcm_devices, list) {
 		if (pcm->card == card && pcm->device == device)
 			return pcm;
 	}
@@ -494,19 +491,13 @@ static int snd_pcm_stream_proc_init(struct snd_pcm_str *pstr)
 static int snd_pcm_stream_proc_done(struct snd_pcm_str *pstr)
 {
 #ifdef CONFIG_SND_PCM_XRUN_DEBUG
-	if (pstr->proc_xrun_debug_entry) {
-		snd_info_unregister(pstr->proc_xrun_debug_entry);
-		pstr->proc_xrun_debug_entry = NULL;
-	}
+	snd_info_free_entry(pstr->proc_xrun_debug_entry);
+	pstr->proc_xrun_debug_entry = NULL;
 #endif
-	if (pstr->proc_info_entry) {
-		snd_info_unregister(pstr->proc_info_entry);
-		pstr->proc_info_entry = NULL;
-	}
-	if (pstr->proc_root) {
-		snd_info_unregister(pstr->proc_root);
-		pstr->proc_root = NULL;
-	}
+	snd_info_free_entry(pstr->proc_info_entry);
+	pstr->proc_info_entry = NULL;
+	snd_info_free_entry(pstr->proc_root);
+	pstr->proc_root = NULL;
 	return 0;
 }
 
@@ -570,29 +561,19 @@ static int snd_pcm_substream_proc_init(struct snd_pcm_substream *substream)
 
 	return 0;
 }
-		
+
 static int snd_pcm_substream_proc_done(struct snd_pcm_substream *substream)
 {
-	if (substream->proc_info_entry) {
-		snd_info_unregister(substream->proc_info_entry);
-		substream->proc_info_entry = NULL;
-	}
-	if (substream->proc_hw_params_entry) {
-		snd_info_unregister(substream->proc_hw_params_entry);
-		substream->proc_hw_params_entry = NULL;
-	}
-	if (substream->proc_sw_params_entry) {
-		snd_info_unregister(substream->proc_sw_params_entry);
-		substream->proc_sw_params_entry = NULL;
-	}
-	if (substream->proc_status_entry) {
-		snd_info_unregister(substream->proc_status_entry);
-		substream->proc_status_entry = NULL;
-	}
-	if (substream->proc_root) {
-		snd_info_unregister(substream->proc_root);
-		substream->proc_root = NULL;
-	}
+	snd_info_free_entry(substream->proc_info_entry);
+	substream->proc_info_entry = NULL;
+	snd_info_free_entry(substream->proc_hw_params_entry);
+	substream->proc_hw_params_entry = NULL;
+	snd_info_free_entry(substream->proc_sw_params_entry);
+	substream->proc_sw_params_entry = NULL;
+	snd_info_free_entry(substream->proc_status_entry);
+	substream->proc_status_entry = NULL;
+	snd_info_free_entry(substream->proc_root);
+	substream->proc_root = NULL;
 	return 0;
 }
 #else /* !CONFIG_SND_VERBOSE_PROCFS */
@@ -646,6 +627,9 @@ int snd_pcm_new_stream(struct snd_pcm *pcm, int stream, int substream_count)
 		substream->number = idx;
 		substream->stream = stream;
 		sprintf(substream->name, "subdevice #%i", idx);
+		snprintf(substream->latency_id, sizeof(substream->latency_id),
+			 "ALSA-PCM%d-%d%c%d", pcm->card->number, pcm->device,
+			 (stream ? 'c' : 'p'), idx);
 		substream->buffer_bytes_max = UINT_MAX;
 		if (prev == NULL)
 			pstr->substream = substream;
@@ -654,6 +638,10 @@ int snd_pcm_new_stream(struct snd_pcm *pcm, int stream, int substream_count)
 		err = snd_pcm_substream_proc_init(substream);
 		if (err < 0) {
 			snd_printk(KERN_ERR "Error in snd_pcm_stream_proc_init\n");
+			if (prev == NULL)
+				pstr->substream = NULL;
+			else
+				prev->next = NULL;
 			kfree(substream);
 			return err;
 		}
@@ -696,7 +684,6 @@ int snd_pcm_new(struct snd_card *card, char *id, int device,
 		.dev_free = snd_pcm_dev_free,
 		.dev_register =	snd_pcm_dev_register,
 		.dev_disconnect = snd_pcm_dev_disconnect,
-		.dev_unregister = snd_pcm_dev_unregister
 	};
 
 	snd_assert(rpcm != NULL, return -EINVAL);
@@ -740,6 +727,7 @@ static void snd_pcm_free_stream(struct snd_pcm_str * pstr)
 	substream = pstr->substream;
 	while (substream) {
 		substream_next = substream->next;
+		snd_pcm_timer_done(substream);
 		snd_pcm_substream_proc_done(substream);
 		kfree(substream);
 		substream = substream_next;
@@ -756,7 +744,12 @@ static void snd_pcm_free_stream(struct snd_pcm_str * pstr)
 
 static int snd_pcm_free(struct snd_pcm *pcm)
 {
+	struct snd_pcm_notify *notify;
+
 	snd_assert(pcm != NULL, return -ENXIO);
+	list_for_each_entry(notify, &snd_pcm_notify_list, list) {
+		notify->n_unregister(pcm);
+	}
 	if (pcm->private_free)
 		pcm->private_free(pcm);
 	snd_pcm_lib_preallocate_free_for_all(pcm);
@@ -787,7 +780,6 @@ int snd_pcm_attach_substream(struct snd_pcm *pcm, int stream,
 	struct snd_pcm_runtime *runtime;
 	struct snd_ctl_file *kctl;
 	struct snd_card *card;
-	struct list_head *list;
 	int prefer_subdevice = -1;
 	size_t size;
 
@@ -800,11 +792,11 @@ int snd_pcm_attach_substream(struct snd_pcm *pcm, int stream,
 
 	card = pcm->card;
 	down_read(&card->controls_rwsem);
-	list_for_each(list, &card->ctl_files) {
-		kctl = snd_ctl_file(list);
+	list_for_each_entry(kctl, &card->ctl_files, list) {
 		if (kctl->pid == current->pid) {
 			prefer_subdevice = kctl->prefer_pcm_subdevice;
-			break;
+			if (prefer_subdevice != -1)
+				break;
 		}
 	}
 	up_read(&card->controls_rwsem);
@@ -918,11 +910,12 @@ void snd_pcm_detach_substream(struct snd_pcm_substream *substream)
 	substream->pstr->substream_opened--;
 }
 
+
 static int snd_pcm_dev_register(struct snd_device *device)
 {
 	int cidx, err;
 	struct snd_pcm_substream *substream;
-	struct list_head *list;
+	struct snd_pcm_notify *notify;
 	char str[16];
 	struct snd_pcm *pcm = device->device_data;
 
@@ -959,11 +952,10 @@ static int snd_pcm_dev_register(struct snd_device *device)
 		for (substream = pcm->streams[cidx].substream; substream; substream = substream->next)
 			snd_pcm_timer_init(substream);
 	}
-	list_for_each(list, &snd_pcm_notify_list) {
-		struct snd_pcm_notify *notify;
-		notify = list_entry(list, struct snd_pcm_notify, list);
+
+	list_for_each_entry(notify, &snd_pcm_notify_list, list)
 		notify->n_register(pcm);
-	}
+
 	mutex_unlock(&register_mutex);
 	return 0;
 }
@@ -971,35 +963,22 @@ static int snd_pcm_dev_register(struct snd_device *device)
 static int snd_pcm_dev_disconnect(struct snd_device *device)
 {
 	struct snd_pcm *pcm = device->device_data;
-	struct list_head *list;
+	struct snd_pcm_notify *notify;
 	struct snd_pcm_substream *substream;
-	int cidx;
+	int cidx, devtype;
 
 	mutex_lock(&register_mutex);
+	if (list_empty(&pcm->list))
+		goto unlock;
+
 	list_del_init(&pcm->list);
 	for (cidx = 0; cidx < 2; cidx++)
 		for (substream = pcm->streams[cidx].substream; substream; substream = substream->next)
 			if (substream->runtime)
 				substream->runtime->status->state = SNDRV_PCM_STATE_DISCONNECTED;
-	list_for_each(list, &snd_pcm_notify_list) {
-		struct snd_pcm_notify *notify;
-		notify = list_entry(list, struct snd_pcm_notify, list);
+	list_for_each_entry(notify, &snd_pcm_notify_list, list) {
 		notify->n_disconnect(pcm);
 	}
-	mutex_unlock(&register_mutex);
-	return 0;
-}
-
-static int snd_pcm_dev_unregister(struct snd_device *device)
-{
-	int cidx, devtype;
-	struct snd_pcm_substream *substream;
-	struct list_head *list;
-	struct snd_pcm *pcm = device->device_data;
-
-	snd_assert(pcm != NULL, return -ENXIO);
-	mutex_lock(&register_mutex);
-	list_del(&pcm->list);
 	for (cidx = 0; cidx < 2; cidx++) {
 		devtype = -1;
 		switch (cidx) {
@@ -1011,33 +990,29 @@ static int snd_pcm_dev_unregister(struct snd_device *device)
 			break;
 		}
 		snd_unregister_device(devtype, pcm->card, pcm->device);
-		for (substream = pcm->streams[cidx].substream; substream; substream = substream->next)
-			snd_pcm_timer_done(substream);
 	}
-	list_for_each(list, &snd_pcm_notify_list) {
-		struct snd_pcm_notify *notify;
-		notify = list_entry(list, struct snd_pcm_notify, list);
-		notify->n_unregister(pcm);
-	}
+ unlock:
 	mutex_unlock(&register_mutex);
-	return snd_pcm_free(pcm);
+	return 0;
 }
 
 int snd_pcm_notify(struct snd_pcm_notify *notify, int nfree)
 {
-	struct list_head *p;
+	struct snd_pcm *pcm;
 
-	snd_assert(notify != NULL && notify->n_register != NULL && notify->n_unregister != NULL, return -EINVAL);
+	snd_assert(notify != NULL &&
+		   notify->n_register != NULL &&
+		   notify->n_unregister != NULL &&
+		   notify->n_disconnect, return -EINVAL);
 	mutex_lock(&register_mutex);
 	if (nfree) {
 		list_del(&notify->list);
-		list_for_each(p, &snd_pcm_devices)
-			notify->n_unregister(list_entry(p,
-							struct snd_pcm, list));
+		list_for_each_entry(pcm, &snd_pcm_devices, list)
+			notify->n_unregister(pcm);
 	} else {
 		list_add_tail(&notify->list, &snd_pcm_notify_list);
-		list_for_each(p, &snd_pcm_devices)
-			notify->n_register(list_entry(p, struct snd_pcm, list));
+		list_for_each_entry(pcm, &snd_pcm_devices, list)
+			notify->n_register(pcm);
 	}
 	mutex_unlock(&register_mutex);
 	return 0;
@@ -1053,12 +1028,10 @@ EXPORT_SYMBOL(snd_pcm_notify);
 static void snd_pcm_proc_read(struct snd_info_entry *entry,
 			      struct snd_info_buffer *buffer)
 {
-	struct list_head *p;
 	struct snd_pcm *pcm;
 
 	mutex_lock(&register_mutex);
-	list_for_each(p, &snd_pcm_devices) {
-		pcm = list_entry(p, struct snd_pcm, list);
+	list_for_each_entry(pcm, &snd_pcm_devices, list) {
 		snd_iprintf(buffer, "%02i-%02i: %s : %s",
 			    pcm->card->number, pcm->device, pcm->id, pcm->name);
 		if (pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream)
@@ -1090,8 +1063,7 @@ static void snd_pcm_proc_init(void)
 
 static void snd_pcm_proc_done(void)
 {
-	if (snd_pcm_proc_entry)
-		snd_info_unregister(snd_pcm_proc_entry);
+	snd_info_free_entry(snd_pcm_proc_entry);
 }
 
 #else /* !CONFIG_PROC_FS */

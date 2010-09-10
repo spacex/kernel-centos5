@@ -34,7 +34,7 @@ struct mtrr_ops *mtrr_if = &generic_mtrr_ops;
 unsigned int num_var_ranges;
 unsigned int *usage_table;
 
-static void __init set_num_var_ranges(void)
+static void __cpuinit set_num_var_ranges(void)
 {
 	dom0_op_t op;
 
@@ -46,7 +46,7 @@ static void __init set_num_var_ranges(void)
 	}
 }
 
-static void __init init_table(void)
+static void __cpuinit init_table(void)
 {
 	int i, max;
 
@@ -167,7 +167,7 @@ mtrr_del(int reg, unsigned long base, unsigned long size)
 EXPORT_SYMBOL(mtrr_add);
 EXPORT_SYMBOL(mtrr_del);
 
-void __init mtrr_bp_init(void)
+void __cpuinit mtrr_bp_init(void)
 {
 }
 

@@ -635,6 +635,7 @@ static void __init early_cmdline_parse(void)
 /* ibm,dynamic-reconfiguration-memory property supported */
 #define OV5_DRCONF_MEMORY	0x20
 #define OV5_LARGE_PAGES		0x10	/* large pages supported */
+#define OV5_DONATE_DEDICATE_CPU 0x02   /* donate dedicated CPU support */
 
 /*
  * The architecture vector has an array of PVR mask/value pairs,
@@ -643,6 +644,7 @@ static void __init early_cmdline_parse(void)
 static unsigned char ibm_architecture_vec[] = {
 	W(0xfffe0000), W(0x003a0000),	/* POWER5/POWER5+ */
 	W(0xffff0000), W(0x003e0000),	/* POWER6 */
+	W(0xffffffff), W(0x0f000002),	/* all 2.05-compliant */
 	W(0xfffffffe), W(0x0f000001),	/* all 2.04-compliant and earlier */
 	5 - 1,				/* 5 option vectors */
 
@@ -678,7 +680,7 @@ static unsigned char ibm_architecture_vec[] = {
 	/* option vector 5: PAPR/OF options */
 	3 - 2,				/* length */
 	0,				/* don't ignore, don't halt */
-	OV5_LPAR | OV5_SPLPAR | OV5_LARGE_PAGES,
+	OV5_LPAR | OV5_SPLPAR | OV5_LARGE_PAGES | OV5_DONATE_DEDICATE_CPU,
 };
 
 /* Old method - ELF header with PT_NOTE sections */

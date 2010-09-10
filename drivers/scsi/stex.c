@@ -11,15 +11,12 @@
  *	Written By:
  *		Ed Lin <promise_linux@promise.com>
  *
- *	Version: 3.0.0.1
- *
  */
 
 #include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/delay.h>
-#include <linux/sched.h>
 #include <linux/time.h>
 #include <linux/pci.h>
 #include <linux/blkdev.h>
@@ -35,11 +32,12 @@
 #include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_tcq.h>
+#include <scsi/scsi_dbg.h>
 
 #define DRV_NAME "stex"
-#define ST_DRIVER_VERSION "3.0.0.1"
+#define ST_DRIVER_VERSION "3.6.0000.1"
 #define ST_VER_MAJOR 		3
-#define ST_VER_MINOR 		0
+#define ST_VER_MINOR 		6
 #define ST_OEM 			0
 #define ST_BUILD_VER 		1
 
@@ -76,8 +74,10 @@ enum {
 	MU_STATE_STARTED			= 4,
 	MU_STATE_RESETTING			= 5,
 
-	MU_MAX_DELAY_TIME			= 240000,
+	MU_MAX_DELAY				= 120,
 	MU_HANDSHAKE_SIGNATURE			= 0x55aaaa55,
+	MU_HANDSHAKE_SIGNATURE_HALF		= 0x5a5a0000,
+	MU_HARD_RESET_WAIT			= 30000,
 	HMU_PARTNER_TYPE			= 2,
 
 	/* firmware returned values */
@@ -115,13 +115,10 @@ enum {
 	SG_CF_64B				= 0x40,	/* 64 bit item */
 	SG_CF_HOST				= 0x20,	/* sg in host memory */
 
-	ST_MAX_ARRAY_SUPPORTED			= 16,
-	ST_MAX_TARGET_NUM			= (ST_MAX_ARRAY_SUPPORTED+1),
-	ST_MAX_LUN_PER_TARGET			= 16,
-
 	st_shasta				= 0,
 	st_vsc					= 1,
-	st_yosemite				= 2,
+	st_vsc1					= 2,
+	st_yosemite				= 3,
 
 	PASSTHRU_REQ_TYPE			= 0x00000001,
 	PASSTHRU_REQ_NO_WAKEUP			= 0x00000100,
@@ -151,6 +148,8 @@ enum {
 	MGT_CMD_SIGNATURE			= 0xba,
 
 	INQUIRY_EVPD				= 0x01,
+
+	ST_ADDITIONAL_MEM			= 0x200000,
 };
 
 /* SCSI inquiry data */
@@ -212,7 +211,9 @@ struct handshake_frame {
 	__le32 partner_ver_minor;
 	__le32 partner_ver_oem;
 	__le32 partner_ver_build;
-	u32 reserved1[4];
+	__le32 extra_offset;	/* NEW */
+	__le32 extra_size;	/* NEW */
+	u32 reserved1[2];
 };
 
 struct req_msg {
@@ -303,6 +304,7 @@ struct st_hba {
 	void __iomem *mmio_base;	/* iomapped PCI memory space */
 	void *dma_mem;
 	dma_addr_t dma_handle;
+	size_t dma_size;
 
 	struct Scsi_Host *host;
 	struct pci_dev *pdev;
@@ -350,6 +352,7 @@ static void stex_gettime(__le32 *time)
 	*time = cpu_to_le32(tv.tv_sec & 0xffffffff);
 	*(time + 1) = cpu_to_le32((tv.tv_sec >> 16) >> 16);
 }
+
 static u16 stex_alloc_tag(unsigned long *bitmap) {
 	int i;
 	i = find_first_zero_bit(bitmap, TAG_BITMAP_LENGTH);
@@ -361,7 +364,6 @@ static u16 stex_alloc_tag(unsigned long *bitmap) {
 static void stex_free_tag(unsigned long *bitmap, u16 tag) {
 	__clear_bit((int)tag, bitmap);
 }
-
 
 static struct status_msg *stex_get_status(struct st_hba *hba)
 {
@@ -521,6 +523,7 @@ static void stex_controller_info(struct st_hba *hba, struct st_ccb *ccb)
 	size_t count = sizeof(struct st_frame);
 
 	p = hba->copy_buffer;
+	stex_internal_copy(ccb->cmd, p, &count, ccb->sg_count, ST_FROM_CMD);
 	memset(p->base, 0, sizeof(u32)*6);
 	*(unsigned long *)(p->base) = pci_resource_start(hba->pdev, 0);
 	p->rom_addr = 0;
@@ -594,7 +597,7 @@ stex_queuecommand(struct scsi_cmnd *cmd, void (* done)(struct scsi_cmnd *))
 	u16 tag;
 	host = cmd->device->host;
 	id = cmd->device->id;
-	lun = cmd->device->channel; /* firmware lun issue work around */
+	lun = cmd->device->lun;
 	hba = (struct st_hba *) &host->hostdata[0];
 
 	switch (cmd->cmnd[0]) {
@@ -613,8 +616,26 @@ stex_queuecommand(struct scsi_cmnd *cmd, void (* done)(struct scsi_cmnd *))
 			stex_invalid_field(cmd, done);
 		return 0;
 	}
+	case REPORT_LUNS:
+		/*
+		 * The shasta firmware does not report actual luns in the
+		 * target, so fail the command to force sequential lun scan.
+		 * Also, the console device does not support this command.
+		 */
+		if (hba->cardtype == st_shasta || id == host->max_id - 1) {
+			stex_invalid_field(cmd, done);
+			return 0;
+		}
+		break;
+	case TEST_UNIT_READY:
+		if (id == host->max_id - 1) {
+			cmd->result = DID_OK << 16 | COMMAND_COMPLETE << 8;
+			done(cmd);
+			return 0;
+		}
+		break;
 	case INQUIRY:
-		if (id != ST_MAX_ARRAY_SUPPORTED)
+		if (id != host->max_id - 1)
 			break;
 		if (lun == 0 && (cmd->cmnd[1] & INQUIRY_EVPD) == 0) {
 			stex_direct_copy(cmd, console_inq_page,
@@ -632,7 +653,7 @@ stex_queuecommand(struct scsi_cmnd *cmd, void (* done)(struct scsi_cmnd *))
 			ver.oem = ST_OEM;
 			ver.build = ST_BUILD_VER;
 			ver.signature[0] = PASSTHRU_SIGNATURE;
-			ver.console_id = ST_MAX_ARRAY_SUPPORTED;
+			ver.console_id = host->max_id - 1;
 			ver.host_no = hba->host->host_no;
 			cmd->result = stex_direct_copy(cmd, &ver, sizeof(ver)) ?
 				DID_OK << 16 | COMMAND_COMPLETE << 8 :
@@ -647,18 +668,13 @@ stex_queuecommand(struct scsi_cmnd *cmd, void (* done)(struct scsi_cmnd *))
 	cmd->scsi_done = done;
 
 	if (unlikely((tag = stex_alloc_tag((unsigned long *)&hba->tag))
-		== TAG_BITMAP_LENGTH))
+		>= host->can_queue))
 		return SCSI_MLQUEUE_HOST_BUSY;
 
 	req = stex_alloc_req(hba);
 
-	if (hba->cardtype == st_yosemite) {
-		req->lun = lun * (ST_MAX_TARGET_NUM - 1) + id;
-		req->target = 0;
-	} else {
-		req->lun = lun;
-		req->target = id;
-	}
+	req->lun = lun;
+	req->target = id;
 
 	/* cdb */
 	memcpy(req->cdb, cmd->cmnd, STEX_CDB_LENGTH);
@@ -774,18 +790,6 @@ static void stex_ys_commands(struct st_hba *hba,
 			ccb->srb_status = SRB_STATUS_SELECTION_TIMEOUT;
 		else
 			ccb->srb_status = SRB_STATUS_SUCCESS;
-	} else if (ccb->cmd->cmnd[0] == REPORT_LUNS) {
-		u8 *report_lun_data = (u8 *)hba->copy_buffer;
-
-		count = STEX_EXTRA_SIZE;
-		stex_internal_copy(ccb->cmd, report_lun_data,
-			&count, ccb->sg_count, ST_FROM_CMD);
-		if (report_lun_data[2] || report_lun_data[3]) {
-			report_lun_data[2] = 0x00;
-			report_lun_data[3] = 0x08;
-			stex_internal_copy(ccb->cmd, report_lun_data,
-				&count, ccb->sg_count, ST_TO_CMD);
-		}
 	}
 }
 
@@ -915,26 +919,33 @@ static int stex_handshake(struct st_hba *hba)
 	void __iomem *base = hba->mmio_base;
 	struct handshake_frame *h;
 	dma_addr_t status_phys;
-	int i;
+	u32 data;
+	unsigned long before;
 
 	if (readl(base + OMR0) != MU_HANDSHAKE_SIGNATURE) {
 		writel(MU_INBOUND_DOORBELL_HANDSHAKE, base + IDBL);
 		readl(base + IDBL);
-		for (i = 0; readl(base + OMR0) != MU_HANDSHAKE_SIGNATURE
-			&& i < MU_MAX_DELAY_TIME; i++) {
+		before = jiffies;
+		while (readl(base + OMR0) != MU_HANDSHAKE_SIGNATURE) {
+			if (time_after(jiffies, before + MU_MAX_DELAY * HZ)) {
+				printk(KERN_ERR DRV_NAME
+					"(%s): no handshake signature\n",
+					pci_name(hba->pdev));
+				return -1;
+			}
 			rmb();
 			msleep(1);
-		}
-
-		if (i == MU_MAX_DELAY_TIME) {
-			printk(KERN_ERR DRV_NAME
-				"(%s): no handshake signature\n",
-				pci_name(hba->pdev));
-			return -1;
 		}
 	}
 
 	udelay(10);
+
+	data = readl(base + OMR1);
+	if ((data & 0xffff0000) == MU_HANDSHAKE_SIGNATURE_HALF) {
+		data &= 0x0000ffff;
+		if (hba->host->can_queue > data)
+			hba->host->can_queue = data;
+	}
 
 	h = (struct handshake_frame *)(hba->dma_mem + MU_REQ_BUFFER_SIZE);
 	h->rb_phy = cpu_to_le32(hba->dma_handle);
@@ -945,6 +956,11 @@ static int stex_handshake(struct st_hba *hba)
 	h->status_cnt = cpu_to_le16(MU_STATUS_COUNT);
 	stex_gettime(&h->hosttime);
 	h->partner_type = HMU_PARTNER_TYPE;
+	if (hba->dma_size > STEX_BUFFER_SIZE) {
+		h->extra_offset = cpu_to_le32(STEX_BUFFER_SIZE);
+		h->extra_size = cpu_to_le32(ST_ADDITIONAL_MEM);
+	} else
+		h->extra_offset = h->extra_size = 0;
 
 	status_phys = hba->dma_handle + MU_REQ_BUFFER_SIZE;
 	writel(status_phys, base + IMR0);
@@ -958,17 +974,16 @@ static int stex_handshake(struct st_hba *hba)
 	readl(base + IDBL); /* flush */
 
 	udelay(10);
-	for (i = 0; readl(base + OMR0) != MU_HANDSHAKE_SIGNATURE
-		&& i < MU_MAX_DELAY_TIME; i++) {
+	before = jiffies;
+	while (readl(base + OMR0) != MU_HANDSHAKE_SIGNATURE) {
+		if (time_after(jiffies, before + MU_MAX_DELAY * HZ)) {
+			printk(KERN_ERR DRV_NAME
+				"(%s): no signature after handshake frame\n",
+				pci_name(hba->pdev));
+			return -1;
+		}
 		rmb();
 		msleep(1);
-	}
-
-	if (i == MU_MAX_DELAY_TIME) {
-		printk(KERN_ERR DRV_NAME
-			"(%s): no signature after handshake frame\n",
-			pci_name(hba->pdev));
-		return -1;
 	}
 
 	writel(0, base + IMR0);
@@ -992,6 +1007,11 @@ static int stex_abort(struct scsi_cmnd *cmd)
 	u32 data;
 	int result = SUCCESS;
 	unsigned long flags;
+
+	printk(KERN_INFO DRV_NAME
+		"(%s): aborting command\n", pci_name(hba->pdev));
+	scsi_print_command(cmd);
+
 	base = hba->mmio_base;
 	spin_lock_irqsave(host->host_lock, flags);
 	if (tag < host->can_queue && hba->ccb[tag].cmd == cmd)
@@ -1048,13 +1068,18 @@ static void stex_hard_reset(struct st_hba *hba)
 	pci_read_config_byte(bus->self, PCI_BRIDGE_CONTROL, &pci_bctl);
 	pci_bctl |= PCI_BRIDGE_CTL_BUS_RESET;
 	pci_write_config_byte(bus->self, PCI_BRIDGE_CONTROL, pci_bctl);
-	msleep(1);
+
+	/*
+	 * 1 ms may be enough for 8-port controllers. But 16-port controllers
+	 * require more time to finish bus reset. Use 100 ms here for safety
+	 */
+	msleep(100);
 	pci_bctl &= ~PCI_BRIDGE_CTL_BUS_RESET;
 	pci_write_config_byte(bus->self, PCI_BRIDGE_CONTROL, pci_bctl);
 
-	for (i = 0; i < MU_MAX_DELAY_TIME; i++) {
+	for (i = 0; i < MU_HARD_RESET_WAIT; i++) {
 		pci_read_config_word(hba->pdev, PCI_COMMAND, &pci_cmd);
-		if (pci_cmd & PCI_COMMAND_MASTER)
+		if (pci_cmd != 0xffff && (pci_cmd & PCI_COMMAND_MASTER))
 			break;
 		msleep(1);
 	}
@@ -1071,6 +1096,10 @@ static int stex_reset(struct scsi_cmnd *cmd)
 	unsigned long flags;
 	unsigned long before;
 	hba = (struct st_hba *) &cmd->device->host->hostdata[0];
+
+	printk(KERN_INFO DRV_NAME
+		"(%s): resetting host\n", pci_name(hba->pdev));
+	scsi_print_command(cmd);
 
 	hba->mu_status = MU_STATE_RESETTING;
 
@@ -1114,18 +1143,18 @@ static int stex_reset(struct scsi_cmnd *cmd)
 static int stex_biosparam(struct scsi_device *sdev,
 	struct block_device *bdev, sector_t capacity, int geom[])
 {
-	int heads = 255, sectors = 63, cylinders;
+	int heads = 255, sectors = 63;
 
 	if (capacity < 0x200000) {
 		heads = 64;
 		sectors = 32;
 	}
 
-	cylinders = sector_div(capacity, heads * sectors);
+	sector_div(capacity, heads * sectors);
 
 	geom[0] = heads;
 	geom[1] = sectors;
-	geom[2] = cylinders;
+	geom[2] = capacity;
 
 	return 0;
 }
@@ -1191,7 +1220,7 @@ stex_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto out_scsi_host_put;
 	}
 
-	hba->mmio_base = ioremap(pci_resource_start(pdev, 0),
+	hba->mmio_base = ioremap_nocache(pci_resource_start(pdev, 0),
 		pci_resource_len(pdev, 0));
 	if ( !hba->mmio_base) {
 		printk(KERN_ERR DRV_NAME "(%s): memory map failed\n",
@@ -1207,8 +1236,13 @@ stex_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto out_iounmap;
 	}
 
+	hba->cardtype = (unsigned int) id->driver_data;
+	if (hba->cardtype == st_vsc && (pdev->subsystem_device & 0xf) == 0x1)
+		hba->cardtype = st_vsc1;
+	hba->dma_size = (hba->cardtype == st_vsc1) ?
+		(STEX_BUFFER_SIZE + ST_ADDITIONAL_MEM) : (STEX_BUFFER_SIZE);
 	hba->dma_mem = dma_alloc_coherent(&pdev->dev,
-		STEX_BUFFER_SIZE, &hba->dma_handle, GFP_KERNEL);
+		hba->dma_size, &hba->dma_handle, GFP_KERNEL);
 	if (!hba->dma_mem) {
 		err = -ENOMEM;
 		printk(KERN_ERR DRV_NAME "(%s): dma mem alloc failed\n",
@@ -1221,14 +1255,18 @@ stex_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	hba->copy_buffer = hba->dma_mem + MU_BUFFER_SIZE;
 	hba->mu_status = MU_STATE_STARTING;
 
-	hba->cardtype = (unsigned int) id->driver_data;
-
-	/* firmware uses id/lun pair for a logical drive, but lun would be
-	   always 0 if CONFIG_SCSI_MULTI_LUN not configured, so we use
-	   channel to map lun here */
-	host->max_channel = ST_MAX_LUN_PER_TARGET - 1;
-	host->max_id = ST_MAX_TARGET_NUM;
-	host->max_lun = 1;
+	if (hba->cardtype == st_shasta) {
+		host->max_lun = 8;
+		host->max_id = 16 + 1;
+	} else if (hba->cardtype == st_yosemite) {
+		host->max_lun = 128;
+		host->max_id = 1 + 1;
+	} else {
+		/* st_vsc and st_vsc1 */
+		host->max_lun = 1;
+		host->max_id = 128 + 1;
+	}
+	host->max_channel = 0;
 	host->unique_id = host->host_no;
 	host->max_cmd_len = STEX_CDB_LENGTH;
 
@@ -1263,7 +1301,7 @@ stex_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 out_free_irq:
 	free_irq(pdev->irq, hba);
 out_pci_free:
-	dma_free_coherent(&pdev->dev, STEX_BUFFER_SIZE,
+	dma_free_coherent(&pdev->dev, hba->dma_size,
 			  hba->dma_mem, hba->dma_handle);
 out_iounmap:
 	iounmap(hba->mmio_base);
@@ -1286,7 +1324,7 @@ static void stex_hba_stop(struct st_hba *hba)
 
 	spin_lock_irqsave(hba->host->host_lock, flags);
 	if ((tag = stex_alloc_tag((unsigned long *)&hba->tag))
-		== TAG_BITMAP_LENGTH) {
+		>= hba->host->can_queue) {
 		spin_unlock_irqrestore(hba->host->host_lock, flags);
 		printk(KERN_ERR DRV_NAME "(%s): unable to alloc tag\n",
 			pci_name(hba->pdev));
@@ -1335,7 +1373,7 @@ static void stex_hba_free(struct st_hba *hba)
 
 	pci_release_regions(hba->pdev);
 
-	dma_free_coherent(&hba->pdev->dev, STEX_BUFFER_SIZE,
+	dma_free_coherent(&hba->pdev->dev, hba->dma_size,
 			  hba->dma_mem, hba->dma_handle);
 }
 
@@ -1364,15 +1402,32 @@ static void stex_shutdown(struct pci_dev *pdev)
 }
 
 static struct pci_device_id stex_pci_tbl[] = {
-	{ 0x105a, 0x8350, PCI_ANY_ID, PCI_ANY_ID, 0, 0, st_shasta },
-	{ 0x105a, 0xc350, PCI_ANY_ID, PCI_ANY_ID, 0, 0, st_shasta },
-	{ 0x105a, 0xf350, PCI_ANY_ID, PCI_ANY_ID, 0, 0, st_shasta },
-	{ 0x105a, 0x4301, PCI_ANY_ID, PCI_ANY_ID, 0, 0, st_shasta },
-	{ 0x105a, 0x4302, PCI_ANY_ID, PCI_ANY_ID, 0, 0, st_shasta },
-	{ 0x105a, 0x8301, PCI_ANY_ID, PCI_ANY_ID, 0, 0, st_shasta },
-	{ 0x105a, 0x8302, PCI_ANY_ID, PCI_ANY_ID, 0, 0, st_shasta },
-	{ 0x1725, 0x7250, PCI_ANY_ID, PCI_ANY_ID, 0, 0, st_vsc },
-	{ 0x105a, 0x8650, PCI_ANY_ID, PCI_ANY_ID, 0, 0, st_yosemite },
+	/* st_shasta */
+	{ 0x105a, 0x8350, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+		st_shasta }, /* SuperTrak EX8350/8300/16350/16300 */
+	{ 0x105a, 0xc350, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+		st_shasta }, /* SuperTrak EX12350 */
+	{ 0x105a, 0x4302, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+		st_shasta }, /* SuperTrak EX4350 */
+	{ 0x105a, 0xe350, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+		st_shasta }, /* SuperTrak EX24350 */
+
+	/* st_vsc */
+	{ 0x105a, 0x7250, PCI_ANY_ID, PCI_ANY_ID, 0, 0, st_vsc },
+
+	/* st_yosemite */
+	{ 0x105a, 0x8650, PCI_ANY_ID, 0x4600, 0, 0,
+		st_yosemite }, /* SuperTrak EX4650 */
+	{ 0x105a, 0x8650, PCI_ANY_ID, 0x4610, 0, 0,
+		st_yosemite }, /* SuperTrak EX4650o */
+	{ 0x105a, 0x8650, PCI_ANY_ID, 0x8600, 0, 0,
+		st_yosemite }, /* SuperTrak EX8650EL */
+	{ 0x105a, 0x8650, PCI_ANY_ID, 0x8601, 0, 0,
+		st_yosemite }, /* SuperTrak EX8650 */
+	{ 0x105a, 0x8650, PCI_ANY_ID, 0x8602, 0, 0,
+		st_yosemite }, /* SuperTrak EX8654 */
+	{ 0x105a, 0x8650, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+		st_yosemite }, /* generic st_yosemite */
 	{ }	/* terminate list */
 };
 MODULE_DEVICE_TABLE(pci, stex_pci_tbl);

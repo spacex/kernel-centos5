@@ -763,6 +763,11 @@ syscall_trace_leave (long arg0, long arg1, long arg2, long arg3,
 
 	if (test_thread_flag(TIF_SYSCALL_TRACE))
 		tracehook_report_syscall(&regs, 1);
+
+	if (test_thread_flag(TIF_SINGLESTEP)) {
+		force_sig(SIGTRAP, current); /* XXX */
+		tracehook_report_syscall_step(&regs);
+	}
 }
 
 
@@ -1540,14 +1545,21 @@ static const struct utrace_regset native_regsets[] = {
 	}
 };
 
-const struct utrace_regset_view utrace_ia64_native = {
+static const struct utrace_regset_view utrace_ia64_native = {
 	.name = "ia64",
 	.e_machine = EM_IA_64,
-	.regsets = native_regsets,
-	.n = sizeof native_regsets / sizeof native_regsets[0],
+	.regsets = native_regsets, .n = ARRAY_SIZE(native_regsets)
 };
-EXPORT_SYMBOL_GPL(utrace_ia64_native);
 
+const struct utrace_regset_view *utrace_native_view(struct task_struct *tsk)
+{
+#ifdef CONFIG_IA32_SUPPORT
+	extern const struct utrace_regset_view utrace_ia32_view;
+	if (IS_IA32_PROCESS(task_pt_regs(tsk)))
+		return &utrace_ia32_view;
+#endif
+	return &utrace_ia64_native;
+}
 #endif	/* CONFIG_UTRACE */
 
 
@@ -1562,22 +1574,26 @@ static const struct ptrace_layout_segment pt_all_user_regs_layout[] = {
 	{WORD(cfm, 1),			0,	ELF_CFM_OFFSET},
 	{WORD(cr_ipsr, 1),		0,	ELF_CR_IPSR_OFFSET},
 	{WORD(pr, 1),			0,	ELF_PR_OFFSET},
-	{WORD(gr[0], 32),		0,	ELF_GR_OFFSET(0)},
+	{WORD(gr[0], 1),		-1,	-1},
+	{WORD(gr[1], 31),		0,	ELF_GR_OFFSET(1)},
 	{WORD(br[0], 8),		0, 	ELF_BR_OFFSET(0)},
-	{WORD(ar[0], 16),		-1,	0},
+	{WORD(ar[0], 16),		-1,	-1},
 	{WORD(ar[PT_AUR_RSC], 4),	0,	ELF_AR_RSC_OFFSET},
-	{WORD(ar[PT_AUR_RNAT+1], 12),	-1,	0},
+	{WORD(ar[PT_AUR_RNAT+1], 12),	-1,	-1},
 	{WORD(ar[PT_AUR_CCV], 1),	0,	ELF_AR_CCV_OFFSET},
-	{WORD(ar[PT_AUR_CCV+1], 3),	-1,	0},
+	{WORD(ar[PT_AUR_CCV+1], 3),	-1,	-1},
 	{WORD(ar[PT_AUR_UNAT], 1), 	0,	ELF_AR_UNAT_OFFSET},
-	{WORD(ar[PT_AUR_UNAT+1], 3),	-1,	0},
+	{WORD(ar[PT_AUR_UNAT+1], 3),	-1,	-1},
 	{WORD(ar[PT_AUR_FPSR], 1), 	0,	ELF_AR_FPSR_OFFSET},
-	{WORD(ar[PT_AUR_FPSR+1], 24), 	-1,	0},
+	{WORD(ar[PT_AUR_FPSR+1], 23), 	-1,	-1},
 	{WORD(ar[PT_AUR_PFS], 3),  	0,	ELF_AR_PFS_OFFSET},
-	{WORD(ar[PT_AUR_EC+1], 62),	-1,	0},
+	{WORD(ar[PT_AUR_EC+1], 62),	-1,	-1},
 	{offsetof(struct pt_all_user_regs, fr[0]),
+	 offsetof(struct pt_all_user_regs, fr[2]),
+	 -1, -1},
+	{offsetof(struct pt_all_user_regs, fr[2]),
 	 offsetof(struct pt_all_user_regs, fr[128]),
-	 1, 0},
+	 1, 2 * sizeof(elf_fpreg_t)},
 	{0, 0, -1, 0}
 };
 #undef WORD
@@ -1618,9 +1634,9 @@ static const struct ptrace_layout_segment pt_uarea_layout[] = {
 };
 #undef NEXT
 
-fastcall int arch_ptrace(long *request, struct task_struct *child,
-			 struct utrace_attached_engine *engine,
-			 unsigned long addr, unsigned long data, long *val)
+int arch_ptrace(long *request, struct task_struct *child,
+		struct utrace_attached_engine *engine,
+		unsigned long addr, unsigned long data, long *val)
 {
 	int ret = -ENOSYS;
 	switch (*request) {

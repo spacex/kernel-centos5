@@ -19,7 +19,7 @@
 #include "autofs_i.h"
 #include <linux/module.h>
 
-void autofs4_kill_sb(struct super_block *sb)
+void autofs_kill_sb(struct super_block *sb)
 {
 	struct autofs_sb_info *sbi = autofs_sbi(sb);
 	unsigned int n;

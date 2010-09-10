@@ -298,17 +298,17 @@ badsys:
 tracesys:			 
 	CFI_RESTORE_STATE
 	SAVE_REST
-	movq $-ENOSYS,RAX(%rsp)
+	movq $-ENOSYS,RAX(%rsp) /* ptrace can change this for a bad syscall */
 	FIXUP_TOP_OF_STACK %rdi
 	movq %rsp,%rdi
 	call syscall_trace_enter
 	LOAD_ARGS ARGOFFSET  /* reload args from stack in case ptrace changed it */
 	RESTORE_REST
 	cmpq $__NR_syscall_max,%rax
-	ja  1f
+	ja   int_ret_from_sys_call	/* -ENOSYS already in RAX(%rsp) */
 	movq %r10,%rcx	/* fixup for C */
 	call *sys_call_table(,%rax,8)
-1:	movq %rax,RAX-ARGOFFSET(%rsp)
+	movq %rax,RAX-ARGOFFSET(%rsp)
 	/* Use IRET because user could have changed frame */
 	jmp int_ret_from_sys_call
 	CFI_ENDPROC

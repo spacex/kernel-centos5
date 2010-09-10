@@ -35,6 +35,7 @@ void foo(void)
 	BLANK();
 
 	DEFINE(TI_FLAGS, offsetof(struct thread_info, flags));
+	DEFINE(TI_CPU, offsetof(struct thread_info, cpu));
 	DEFINE(TI_PRE_COUNT, offsetof(struct thread_info, preempt_count));
 
 	BLANK();
@@ -287,10 +288,10 @@ void foo(void)
 	DEFINE_MAPPED_REG_OFS(XSI_IHA_OFS, iha);
 	DEFINE_MAPPED_REG_OFS(XSI_ITIR_OFS, itir);
 	DEFINE_MAPPED_REG_OFS(XSI_PSR_IC_OFS, interrupt_collection_enabled);
-	DEFINE_MAPPED_REG_OFS(XSI_PEND_OFS, pending_interruption);
-	DEFINE_MAPPED_REG_OFS(XSI_INCOMPL_REGFR_OFS, incomplete_regframe);
 	DEFINE_MAPPED_REG_OFS(XSI_BANKNUM_OFS, banknum);
 	DEFINE_MAPPED_REG_OFS(XSI_BANK0_R16_OFS, bank0_regs[0]);
 	DEFINE_MAPPED_REG_OFS(XSI_BANK1_R16_OFS, bank1_regs[0]);
+	DEFINE_MAPPED_REG_OFS(XSI_B0NATS_OFS, vbnat);
+	DEFINE_MAPPED_REG_OFS(XSI_B1NATS_OFS, vnat);
 #endif /* CONFIG_XEN */
 }

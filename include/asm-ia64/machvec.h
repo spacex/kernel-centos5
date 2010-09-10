@@ -35,9 +35,10 @@ typedef int ia64_mv_pci_legacy_read_t (struct pci_bus *, u16 port, u32 *val,
 typedef int ia64_mv_pci_legacy_write_t (struct pci_bus *, u16 port, u32 val,
 					u8 size);
 typedef void ia64_mv_migrate_t(struct task_struct * task);
+typedef void ia64_mv_pci_fixup_bus_t (struct pci_bus *);
 typedef void ia64_mv_kernel_launch_event_t(void);
 
-/* DMA-mapping interface: */
+/*ADMA-mapping interface: */
 typedef void ia64_mv_dma_init (void);
 typedef void *ia64_mv_dma_alloc_coherent (struct device *, size_t, dma_addr_t *, gfp_t);
 typedef void ia64_mv_dma_free_coherent (struct device *, size_t, void *, dma_addr_t);
@@ -93,6 +94,11 @@ machvec_noop_task (struct task_struct *task)
 {
 }
 
+static inline void
+machvec_noop_bus (struct pci_bus *bus)
+{
+}
+
 extern void machvec_setup (char **);
 extern void machvec_timer_interrupt (int, void *, struct pt_regs *);
 extern void machvec_dma_sync_single (struct device *, dma_addr_t, size_t, int);
@@ -109,6 +115,8 @@ extern void machvec_tlb_migrate_finish (struct mm_struct *);
 #  include <asm/machvec_hpzx1_swiotlb.h>
 # elif defined (CONFIG_IA64_SGI_SN2)
 #  include <asm/machvec_sn2.h>
+# elif defined (CONFIG_IA64_XEN)
+#  include <asm/machvec_xen.h>
 # elif defined (CONFIG_IA64_GENERIC)
 
 # ifdef MACHVEC_PLATFORM_HEADER
@@ -156,6 +164,8 @@ extern void machvec_tlb_migrate_finish (struct mm_struct *);
 #  define platform_readq_relaxed        ia64_mv.readq_relaxed
 #  define platform_migrate		ia64_mv.migrate
 #  define platform_msi_init		ia64_mv.msi_init
+#  define platform_kernel_launch_event	ia64_mv.kernel_launch_event
+#  define platform_pci_fixup_bus	ia64_mv.pci_fixup_bus
 # endif
 
 /* __attribute__((__aligned__(16))) is required to make size of the
@@ -207,6 +217,9 @@ struct ia64_machine_vector {
 	ia64_mv_migrate_t *migrate;
 	ia64_mv_msi_init_t *msi_init;
 	ia64_mv_kernel_launch_event_t *kernel_launch_event;
+#ifndef __GENKSYMS__
+	ia64_mv_pci_fixup_bus_t *pci_fixup_bus;
+#endif
 } __attribute__((__aligned__(16))); /* align attrib? see above comment */
 
 #define MACHVEC_INIT(name)			\
@@ -254,6 +267,7 @@ struct ia64_machine_vector {
 	platform_migrate,			\
 	platform_msi_init,			\
 	platform_kernel_launch_event,		\
+ 	platform_pci_fixup_bus,			\
 }
 
 extern struct ia64_machine_vector ia64_mv;
@@ -412,6 +426,9 @@ extern int ia64_pci_legacy_write(struct pci_bus *bus, u16 port, u32 val, u8 size
 #endif
 #ifndef platform_msi_init
 # define platform_msi_init	((ia64_mv_msi_init_t*)NULL)
+#endif
+#ifndef platform_pci_fixup_bus
+# define platform_pci_fixup_bus	machvec_noop_bus
 #endif
 
 #endif /* _ASM_IA64_MACHVEC_H */

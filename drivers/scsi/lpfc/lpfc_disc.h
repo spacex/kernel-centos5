@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2004-2006 Emulex.  All rights reserved.           *
+ * Copyright (C) 2004-2007 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -31,6 +31,7 @@
 /* worker thread events */
 enum lpfc_work_type {
 	LPFC_EVT_ONLINE,
+	LPFC_EVT_OFFLINE_PREP,
 	LPFC_EVT_OFFLINE,
 	LPFC_EVT_WARM_START,
 	LPFC_EVT_KILL,

@@ -4,6 +4,7 @@
 
 #include <linux/device.h>
 #include <linux/mod_devicetable.h>
+#include <linux/dma-mapping.h>
 #include <asm/prom.h>
 
 /*
@@ -12,6 +13,7 @@
  * mechanism
  */
 extern struct bus_type of_platform_bus_type;
+extern struct dma_mapping_ops of_platform_dma_ops;
 
 /*
  * The of_device is a kind of "base class" that is a superset of
@@ -26,6 +28,8 @@ struct of_device
 };
 #define	to_of_device(d) container_of(d, struct of_device, dev)
 
+extern const struct of_device_id *of_match_node(
+	const struct of_device_id *matches, const struct device_node *node);
 extern const struct of_device_id *of_match_device(
 	const struct of_device_id *matches, const struct of_device *dev);
 
@@ -53,14 +57,26 @@ struct of_platform_driver
 };
 #define	to_of_platform_driver(drv) container_of(drv,struct of_platform_driver, driver)
 
-extern int of_register_driver(struct of_platform_driver *drv);
-extern void of_unregister_driver(struct of_platform_driver *drv);
+extern int of_register_platform_driver(struct of_platform_driver *drv);
+#define of_register_driver of_register_platform_driver
+extern void of_unregister_platform_driver(struct of_platform_driver *drv);
+#define of_unregister_driver of_unregister_platform_driver
 extern int of_device_register(struct of_device *ofdev);
 extern void of_device_unregister(struct of_device *ofdev);
 extern struct of_device *of_platform_device_create(struct device_node *np,
 						   const char *bus_id,
 						   struct device *parent);
 extern void of_release_dev(struct device *dev);
+
+/* pseudo "matches" value to not do deep probe */
+#define OF_NO_DEEP_PROBE ((struct of_device_id *)-1)
+
+extern int of_platform_bus_probe(struct device_node *root,
+				 struct of_device_id *matches,
+				 struct device *parent);
+
+extern struct of_device *of_find_device_by_node(struct device_node *np);
+extern struct of_device *of_find_device_by_phandle(phandle ph);
 
 #endif /* __KERNEL__ */
 #endif /* _ASM_POWERPC_OF_DEVICE_H */

@@ -31,6 +31,7 @@
 #include <linux/slab.h>
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
+#include <linux/file.h>
 #include <net/sock.h>
 #include <net/checksum.h>
 #include <net/ip.h>
@@ -458,6 +459,56 @@ out:
 
 	return len;
 }
+
+/*
+ * Report socket names for nfsdfs
+ */
+static int one_sock_name(char *buf, struct svc_sock *svsk)
+{
+	int len;
+
+	switch(svsk->sk_sk->sk_family) {
+	case AF_INET:
+		len = sprintf(buf, "ipv4 %s %u.%u.%u.%u %d\n",
+			      svsk->sk_sk->sk_protocol==IPPROTO_UDP?
+			      "udp" : "tcp",
+			      NIPQUAD(inet_sk(svsk->sk_sk)->rcv_saddr),
+			      inet_sk(svsk->sk_sk)->num);
+		break;
+	default:
+		len = sprintf(buf, "*unknown-%d*\n",
+			       svsk->sk_sk->sk_family);
+	}
+	return len;
+}
+
+int
+svc_sock_names(char *buf, struct svc_serv *serv, char *toclose)
+{
+	struct svc_sock *svsk, *closesk = NULL;
+	int len = 0;
+
+	if (!serv)
+		return 0;
+	spin_lock(&serv->sv_lock);
+	list_for_each_entry(svsk, &serv->sv_permsocks, sk_list) {
+		int onelen = one_sock_name(buf+len, svsk);
+		if (toclose && strcmp(toclose, buf+len) == 0)
+			closesk = svsk;
+		else
+			len += onelen;
+	}
+	spin_unlock(&serv->sv_lock);
+	if (closesk)
+		/* Should unregister with portmap, but you cannot
+		 * unregister just one protocol...
+		 */
+		svc_delete_socket(closesk);
+	else if (toclose)
+		return -ENOENT;
+	return len;
+}
+EXPORT_SYMBOL(svc_sock_names);
 
 /*
  * Check input queue length
@@ -1408,6 +1459,38 @@ svc_setup_socket(struct svc_serv *serv, struct socket *sock,
 	return svsk;
 }
 
+int svc_addsock(struct svc_serv *serv,
+		int fd,
+		char *name_return,
+		int *proto)
+{
+	int err = 0;
+	struct socket *so = sockfd_lookup(fd, &err);
+	struct svc_sock *svsk = NULL;
+
+	if (!so)
+		return err;
+	if (so->sk->sk_family != AF_INET)
+		err =  -EAFNOSUPPORT;
+	else if (so->sk->sk_protocol != IPPROTO_TCP &&
+	    so->sk->sk_protocol != IPPROTO_UDP)
+		err =  -EPROTONOSUPPORT;
+	else if (so->state > SS_UNCONNECTED)
+		err = -EISCONN;
+	else {
+		svsk = svc_setup_socket(serv, so, &err, 1);
+		if (svsk)
+			err = 0;
+	}
+	if (err) {
+		sockfd_put(so);
+		return err;
+	}
+	if (proto) *proto = so->sk->sk_protocol;
+	return one_sock_name(name_return, svsk);
+}
+EXPORT_SYMBOL_GPL(svc_addsock);
+
 /*
  * Create socket for RPC service.
  */
@@ -1487,7 +1570,10 @@ svc_delete_socket(struct svc_sock *svsk)
 
 	if (!svsk->sk_inuse) {
 		spin_unlock_bh(&serv->sv_lock);
-		sock_release(svsk->sk_sock);
+		if (svsk->sk_sock->file)
+			sockfd_put(svsk->sk_sock);
+		else
+			sock_release(svsk->sk_sock);
 		kfree(svsk);
 	} else {
 		spin_unlock_bh(&serv->sv_lock);

@@ -87,7 +87,8 @@ static int recv_subn_get_nodeinfo(struct ib_smp *smp,
 	struct ipath_devdata *dd = to_idev(ibdev)->dd;
 	u32 vendor, majrev, minrev;
 
-	if (smp->attr_mod)
+	/* GUID 0 is illegal */
+	if (smp->attr_mod || (dd->ipath_guid == 0))
 		smp->status |= IB_SMP_INVALID_FIELD;
 
 	nip->base_version = 1;
@@ -102,7 +103,7 @@ static int recv_subn_get_nodeinfo(struct ib_smp *smp,
 	/* This is already in network order */
 	nip->sys_guid = to_idev(ibdev)->sys_image_guid;
 	nip->node_guid = dd->ipath_guid;
-	nip->port_guid = nip->sys_guid;
+	nip->port_guid = dd->ipath_guid;
 	nip->partition_cap = cpu_to_be16(ipath_get_npkeys(dd));
 	nip->device_id = cpu_to_be16(dd->ipath_deviceid);
 	majrev = dd->ipath_majrev;
@@ -131,10 +132,15 @@ static int recv_subn_get_guidinfo(struct ib_smp *smp,
 	 * We only support one GUID for now.  If this changes, the
 	 * portinfo.guid_cap field needs to be updated too.
 	 */
-	if (startgx == 0)
-		/* The first is a copy of the read-only HW GUID. */
-		*p = to_idev(ibdev)->dd->ipath_guid;
-	else
+	if (startgx == 0) {
+		__be64 g = to_idev(ibdev)->dd->ipath_guid;
+		if (g == 0)
+			/* GUID 0 is illegal */
+			smp->status |= IB_SMP_INVALID_FIELD;
+		else
+			/* The first is a copy of the read-only HW GUID. */
+			*p = g;
+	} else
 		smp->status |= IB_SMP_INVALID_FIELD;
 
 	return reply(smp);

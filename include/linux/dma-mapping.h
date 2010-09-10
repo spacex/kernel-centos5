@@ -24,6 +24,13 @@ enum dma_data_direction {
 #define DMA_28BIT_MASK	0x000000000fffffffULL
 #define DMA_24BIT_MASK	0x0000000000ffffffULL
 
+static inline int valid_dma_direction(int dma_direction)
+{
+	return ((dma_direction == DMA_BIDIRECTIONAL) ||
+		(dma_direction == DMA_TO_DEVICE) ||
+		(dma_direction == DMA_FROM_DEVICE));
+}
+
 #include <asm/dma-mapping.h>
 
 /* Backwards compat, remove in 2.7.x */
@@ -59,6 +66,33 @@ dma_mark_declared_memory_occupied(struct device *dev,
 }
 #endif
 
+/*
+ * Managed DMA API
+ */
+extern void *dmam_alloc_coherent(struct device *dev, size_t size,
+				 dma_addr_t *dma_handle, gfp_t gfp);
+extern void dmam_free_coherent(struct device *dev, size_t size, void *vaddr,
+			       dma_addr_t dma_handle);
+extern void *dmam_alloc_noncoherent(struct device *dev, size_t size,
+				    dma_addr_t *dma_handle, gfp_t gfp);
+extern void dmam_free_noncoherent(struct device *dev, size_t size, void *vaddr,
+				  dma_addr_t dma_handle);
+#ifdef ARCH_HAS_DMA_DECLARE_COHERENT_MEMORY
+extern int dmam_declare_coherent_memory(struct device *dev, dma_addr_t bus_addr,
+					dma_addr_t device_addr, size_t size,
+					int flags);
+extern void dmam_release_declared_memory(struct device *dev);
+#else /* ARCH_HAS_DMA_DECLARE_COHERENT_MEMORY */
+static inline int dmam_declare_coherent_memory(struct device *dev,
+				dma_addr_t bus_addr, dma_addr_t device_addr,
+				size_t size, gfp_t gfp)
+{
+	return 0;
+}
+
+static inline void dmam_release_declared_memory(struct device *dev)
+{
+}
+#endif /* ARCH_HAS_DMA_DECLARE_COHERENT_MEMORY */
+
 #endif
-
-

@@ -62,6 +62,9 @@ struct nfs_mount_data {
 #define NFS_MOUNT_STRICTLOCK	0x1000	/* reserved for NFSv4 */
 #define NFS_MOUNT_SECFLAVOUR	0x2000	/* 5 */
 #define NFS_MOUNT_FSCACHE	0x4000
-#define NFS_MOUNT_FLAGMASK	0xFFFF
+#define NFS_MOUNT_NORDIRPLUS	0x8000	/* 5 */
+#define NFS_MOUNT_UNSHARED  0x10000  /* 5 */
+#define NFS_MOUNT_FLAGMASK	0xFFFFF
+
 
 #endif

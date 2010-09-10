@@ -30,10 +30,10 @@
 #include <scsi/scsi_transport_iscsi.h>
 #include <scsi/iscsi_if.h>
 
-#define ISCSI_SESSION_ATTRS 11
+#define ISCSI_SESSION_ATTRS 15
 #define ISCSI_CONN_ATTRS 11
-#define ISCSI_HOST_ATTRS 0
-#define ISCSI_TRANSPORT_VERSION "2.0-685"
+#define ISCSI_HOST_ATTRS 4
+#define ISCSI_TRANSPORT_VERSION "2.0-724"
 
 struct iscsi_internal {
 	int daemon_pid;
@@ -49,7 +49,7 @@ struct iscsi_internal {
 	struct class_device_attribute *session_attrs[ISCSI_SESSION_ATTRS + 1];
 };
 
-static int iscsi_session_nr;	/* sysfs session id for next new session */
+static atomic_t iscsi_session_nr; /* sysfs session id for next new session */
 
 /*
  * list of registered transports and lock that must
@@ -298,7 +298,7 @@ int iscsi_add_session(struct iscsi_cls_session *session, unsigned int target_id)
 	int err;
 
 	ihost = shost->shost_data;
-	session->sid = iscsi_session_nr++;
+	session->sid = atomic_add_return(1, &iscsi_session_nr);
 	session->target_id = target_id;
 
 	snprintf(session->dev.bus_id, BUS_ID_SIZE, "session%u",
@@ -606,13 +606,11 @@ iscsi_if_send_reply(int pid, int seq, int type, int done, int multi,
 	int flags = multi ? NLM_F_MULTI : 0;
 	int t = done ? NLMSG_DONE : type;
 
-	skb = alloc_skb(len, GFP_KERNEL);
-	/*
-	 * FIXME:
-	 * user is supposed to react on iferror == -ENOMEM;
-	 * see iscsi_if_rx().
-	 */
-	BUG_ON(!skb);
+	skb = alloc_skb(len, GFP_ATOMIC);
+	if (!skb) {
+		printk(KERN_ERR "Could not allocate skb to send reply.\n");
+		return -ENOMEM;
+	}
 
 	nlh = __nlmsg_put(skb, pid, seq, t, (len - sizeof(*nlh)), 0);
 	nlh->nlmsg_flags = flags;
@@ -647,7 +645,7 @@ iscsi_if_get_stats(struct iscsi_transport *transport, struct nlmsghdr *nlh)
 	do {
 		int actual_size;
 
-		skbstat = alloc_skb(len, GFP_KERNEL);
+		skbstat = alloc_skb(len, GFP_ATOMIC);
 		if (!skbstat) {
 			dev_printk(KERN_ERR, &conn->dev, "iscsi: can not "
 				   "deliver stats: OOM\n");
@@ -957,6 +955,30 @@ iscsi_tgt_dscvr(struct iscsi_transport *transport,
 }
 
 static int
+iscsi_set_host_param(struct iscsi_transport *transport,
+                     struct iscsi_uevent *ev)
+{
+	char *data = (char*)ev + sizeof(*ev);
+	struct Scsi_Host *shost;
+	int err;
+
+	if (!transport->set_host_param)
+		return -ENOSYS;
+
+	shost = scsi_host_lookup(ev->u.set_host_param.host_no);
+	if (IS_ERR(shost)) {
+		printk(KERN_ERR "set_host_param could not find host no %u\n",
+		       ev->u.set_host_param.host_no);
+		return -ENODEV;
+	}
+
+	err = transport->set_host_param(shost, ev->u.set_host_param.param,
+					data, ev->u.set_host_param.len);
+	scsi_host_put(shost);
+	return err;
+}
+
+static int
 iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 {
 	int err = 0;
@@ -1046,6 +1068,9 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 		break;
 	case ISCSI_UEVENT_TGT_DSCVR:
 		err = iscsi_tgt_dscvr(transport, ev);
+		break;
+	case ISCSI_UEVENT_SET_HOST_PARAM:
+		err = iscsi_set_host_param(transport, ev);
 		break;
 	default:
 		err = -EINVAL;
@@ -1158,30 +1183,37 @@ iscsi_conn_attr(address, ISCSI_PARAM_CONN_ADDRESS);
 /*
  * iSCSI session attrs
  */
-#define iscsi_session_attr_show(param)					\
+#define iscsi_session_attr_show(param, perm)				\
 static ssize_t								\
 show_session_param_##param(struct class_device *cdev, char *buf)	\
 {									\
 	struct iscsi_cls_session *session = iscsi_cdev_to_session(cdev); \
 	struct iscsi_transport *t = session->transport;			\
+									\
+	if (perm && !capable(CAP_SYS_ADMIN))				\
+		return -EACCES;						\
 	return t->get_session_param(session, param, buf);		\
 }
 
-#define iscsi_session_attr(field, param)				\
-	iscsi_session_attr_show(param)					\
+#define iscsi_session_attr(field, param, perm)				\
+	iscsi_session_attr_show(param, perm)				\
 static ISCSI_CLASS_ATTR(sess, field, S_IRUGO, show_session_param_##param, \
 			NULL);
 
-iscsi_session_attr(targetname, ISCSI_PARAM_TARGET_NAME);
-iscsi_session_attr(initial_r2t, ISCSI_PARAM_INITIAL_R2T_EN);
-iscsi_session_attr(max_outstanding_r2t, ISCSI_PARAM_MAX_R2T);
-iscsi_session_attr(immediate_data, ISCSI_PARAM_IMM_DATA_EN);
-iscsi_session_attr(first_burst_len, ISCSI_PARAM_FIRST_BURST);
-iscsi_session_attr(max_burst_len, ISCSI_PARAM_MAX_BURST);
-iscsi_session_attr(data_pdu_in_order, ISCSI_PARAM_PDU_INORDER_EN);
-iscsi_session_attr(data_seq_in_order, ISCSI_PARAM_DATASEQ_INORDER_EN);
-iscsi_session_attr(erl, ISCSI_PARAM_ERL);
-iscsi_session_attr(tpgt, ISCSI_PARAM_TPGT);
+iscsi_session_attr(targetname, ISCSI_PARAM_TARGET_NAME, 0);
+iscsi_session_attr(initial_r2t, ISCSI_PARAM_INITIAL_R2T_EN, 0);
+iscsi_session_attr(max_outstanding_r2t, ISCSI_PARAM_MAX_R2T, 0);
+iscsi_session_attr(immediate_data, ISCSI_PARAM_IMM_DATA_EN, 0);
+iscsi_session_attr(first_burst_len, ISCSI_PARAM_FIRST_BURST, 0);
+iscsi_session_attr(max_burst_len, ISCSI_PARAM_MAX_BURST, 0);
+iscsi_session_attr(data_pdu_in_order, ISCSI_PARAM_PDU_INORDER_EN, 0);
+iscsi_session_attr(data_seq_in_order, ISCSI_PARAM_DATASEQ_INORDER_EN, 0);
+iscsi_session_attr(erl, ISCSI_PARAM_ERL, 0);
+iscsi_session_attr(tpgt, ISCSI_PARAM_TPGT, 0);
+iscsi_session_attr(username, ISCSI_PARAM_USERNAME, 1);
+iscsi_session_attr(username_in, ISCSI_PARAM_USERNAME_IN, 1);
+iscsi_session_attr(password, ISCSI_PARAM_PASSWORD, 1);
+iscsi_session_attr(password_in, ISCSI_PARAM_PASSWORD_IN, 1);
 
 #define iscsi_priv_session_attr_show(field, format)			\
 static ssize_t								\
@@ -1197,12 +1229,33 @@ static ISCSI_CLASS_ATTR(priv_sess, field, S_IRUGO, show_priv_session_##field, \
 			NULL)
 iscsi_priv_session_attr(recovery_tmo, "%d");
 
+/*
+ * iSCSI host attrs
+ */
+#define iscsi_host_attr_show(param)					\
+static ssize_t								\
+show_host_param_##param(struct class_device *cdev, char *buf)		\
+{									\
+	struct Scsi_Host *shost = transport_class_to_shost(cdev);	\
+	struct iscsi_internal *priv = to_iscsi_internal(shost->transportt); \
+	return priv->iscsi_transport->get_host_param(shost, param, buf); \
+}
+
+#define iscsi_host_attr(field, param)					\
+	iscsi_host_attr_show(param)					\
+static ISCSI_CLASS_ATTR(host, field, S_IRUGO, show_host_param_##param,	\
+			NULL);
+
+iscsi_host_attr(netdev, ISCSI_HOST_PARAM_NETDEV_NAME);
+iscsi_host_attr(hwaddress, ISCSI_HOST_PARAM_HWADDRESS);
+iscsi_host_attr(ipaddress, ISCSI_HOST_PARAM_IPADDRESS);
+iscsi_host_attr(initiatorname, ISCSI_HOST_PARAM_INITIATOR_NAME);
+
 #define SETUP_PRIV_SESSION_RD_ATTR(field)				\
 do {									\
 	priv->session_attrs[count] = &class_device_attr_priv_sess_##field; \
 	count++;							\
 } while (0)
-
 
 #define SETUP_SESSION_RD_ATTR(field, param_flag)			\
 do {									\
@@ -1216,6 +1269,14 @@ do {									\
 do {									\
 	if (tt->param_mask & param_flag) {				\
 		priv->conn_attrs[count] = &class_device_attr_conn_##field; \
+		count++;						\
+	}								\
+} while (0)
+
+#define SETUP_HOST_RD_ATTR(field, param_flag)				\
+do {									\
+	if (tt->host_param_mask & param_flag) {				\
+		priv->host_attrs[count] = &class_device_attr_host_##field; \
 		count++;						\
 	}								\
 } while (0)
@@ -1321,8 +1382,16 @@ iscsi_register_transport(struct iscsi_transport *tt)
 	priv->t.host_attrs.ac.class = &iscsi_host_class.class;
 	priv->t.host_attrs.ac.match = iscsi_host_match;
 	priv->t.host_size = sizeof(struct iscsi_host);
-	priv->host_attrs[0] = NULL;
 	transport_container_register(&priv->t.host_attrs);
+
+	SETUP_HOST_RD_ATTR(netdev, ISCSI_HOST_NETDEV_NAME);
+	SETUP_HOST_RD_ATTR(ipaddress, ISCSI_HOST_IPADDRESS);
+	SETUP_HOST_RD_ATTR(hwaddress, ISCSI_HOST_HWADDRESS);
+	SETUP_HOST_RD_ATTR(initiatorname, ISCSI_HOST_INITIATOR_NAME);
+
+	BUG_ON(count > ISCSI_HOST_ATTRS);
+	priv->host_attrs[count] = NULL;
+	count = 0;
 
 	/* connection parameters */
 	priv->conn_cont.ac.attrs = &priv->conn_attrs[0];
@@ -1362,6 +1431,10 @@ iscsi_register_transport(struct iscsi_transport *tt)
 	SETUP_SESSION_RD_ATTR(erl, ISCSI_ERL);
 	SETUP_SESSION_RD_ATTR(targetname, ISCSI_TARGET_NAME);
 	SETUP_SESSION_RD_ATTR(tpgt, ISCSI_TPGT);
+	SETUP_SESSION_RD_ATTR(password, ISCSI_USERNAME);
+	SETUP_SESSION_RD_ATTR(password_in, ISCSI_USERNAME_IN);
+	SETUP_SESSION_RD_ATTR(username, ISCSI_PASSWORD);
+	SETUP_SESSION_RD_ATTR(username_in, ISCSI_PASSWORD_IN);
 	SETUP_PRIV_SESSION_RD_ATTR(recovery_tmo);
 
 	BUG_ON(count > ISCSI_SESSION_ATTRS);
@@ -1414,8 +1487,10 @@ static __init int iscsi_transport_init(void)
 {
 	int err;
 
-	printk(KERN_INFO "Loading iSCSI transport class v%s.",
+	printk(KERN_INFO "Loading iSCSI transport class v%s.\n",
 		ISCSI_TRANSPORT_VERSION);
+
+	atomic_set(&iscsi_session_nr, 0);
 
 	err = class_register(&iscsi_transport_class);
 	if (err)

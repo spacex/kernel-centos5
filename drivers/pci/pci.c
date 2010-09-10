@@ -68,6 +68,29 @@ pci_max_busnr(void)
 
 #endif  /*  0  */
 
+#define PCI_FIND_CAP_TTL	48
+
+static int __pci_find_next_cap_ttl(struct pci_bus *bus, unsigned int devfn,
+				   u8 pos, int cap, int *ttl)
+{
+	u8 id;
+
+	while ((*ttl)--) {
+		pci_bus_read_config_byte(bus, devfn, pos, &pos);
+		if (pos < 0x40)
+			break;
+		pos &= ~3;
+		pci_bus_read_config_byte(bus, devfn, pos + PCI_CAP_LIST_ID,
+					 &id);
+		if (id == 0xff)
+			break;
+		if (id == cap)
+			return pos;
+		pos += PCI_CAP_LIST_NEXT;
+	}
+	return 0;
+}
+
 static int __pci_find_next_cap(struct pci_bus *bus, unsigned int devfn, u8 pos, int cap)
 {
 	u8 id;
@@ -117,6 +140,28 @@ static int __pci_bus_find_cap(struct pci_bus *bus, unsigned int devfn, u8 hdr_ty
 		return 0;
 	}
 	return __pci_find_next_cap(bus, devfn, pos, cap);
+}
+
+static int __pci_bus_find_cap_start(struct pci_bus *bus,
+				    unsigned int devfn, u8 hdr_type)
+{
+	u16 status;
+
+	pci_bus_read_config_word(bus, devfn, PCI_STATUS, &status);
+	if (!(status & PCI_STATUS_CAP_LIST))
+		return 0;
+
+	switch (hdr_type) {
+	case PCI_HEADER_TYPE_NORMAL:
+	case PCI_HEADER_TYPE_BRIDGE:
+		return PCI_CAPABILITY_LIST;
+	case PCI_HEADER_TYPE_CARDBUS:
+		return PCI_CB_CAPABILITY_LIST;
+	default:
+		return 0;
+	}
+
+	return 0;
 }
 
 /**
@@ -213,6 +258,75 @@ int pci_find_ext_capability(struct pci_dev *dev, int cap)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(pci_find_ext_capability);
+
+static int __pci_find_next_ht_cap(struct pci_dev *dev, int pos, int ht_cap)
+{
+	int rc, ttl = PCI_FIND_CAP_TTL;
+	u8 cap, mask;
+
+	if (ht_cap == HT_CAPTYPE_SLAVE || ht_cap == HT_CAPTYPE_HOST)
+		mask = HT_3BIT_CAP_MASK;
+	else
+		mask = HT_5BIT_CAP_MASK;
+
+	pos = __pci_find_next_cap_ttl(dev->bus, dev->devfn, pos,
+				      PCI_CAP_ID_HT, &ttl);
+	while (pos) {
+		rc = pci_read_config_byte(dev, pos + 3, &cap);
+		if (rc != PCIBIOS_SUCCESSFUL)
+			return 0;
+
+		if ((cap & mask) == ht_cap)
+			return pos;
+
+		pos = __pci_find_next_cap_ttl(dev->bus, dev->devfn,
+					      pos + PCI_CAP_LIST_NEXT,
+					      PCI_CAP_ID_HT, &ttl);
+	}
+
+	return 0;
+}
+/**
+ * pci_find_next_ht_capability - query a device's Hypertransport capabilities
+ * @dev: PCI device to query
+ * @pos: Position from which to continue searching
+ * @ht_cap: Hypertransport capability code
+ *
+ * To be used in conjunction with pci_find_ht_capability() to search for
+ * all capabilities matching @ht_cap. @pos should always be a value returned
+ * from pci_find_ht_capability().
+ *
+ * NB. To be 100% safe against broken PCI devices, the caller should take
+ * steps to avoid an infinite loop.
+ */
+int pci_find_next_ht_capability(struct pci_dev *dev, int pos, int ht_cap)
+{
+	return __pci_find_next_ht_cap(dev, pos + PCI_CAP_LIST_NEXT, ht_cap);
+}
+EXPORT_SYMBOL_GPL(pci_find_next_ht_capability);
+
+/**
+ * pci_find_ht_capability - query a device's Hypertransport capabilities
+ * @dev: PCI device to query
+ * @ht_cap: Hypertransport capability code
+ *
+ * Tell if a device supports a given Hypertransport capability.
+ * Returns an address within the device's PCI configuration space
+ * or 0 in case the device does not support the request capability.
+ * The address points to the PCI capability, of type PCI_CAP_ID_HT,
+ * which has a Hypertransport capability matching @ht_cap.
+ */
+int pci_find_ht_capability(struct pci_dev *dev, int ht_cap)
+{
+	int pos;
+
+	pos = __pci_bus_find_cap_start(dev->bus, dev->devfn, dev->hdr_type);
+	if (pos)
+		pos = __pci_find_next_ht_cap(dev, pos, ht_cap);
+
+	return pos;
+}
+EXPORT_SYMBOL_GPL(pci_find_ht_capability);
 
 /**
  * pci_find_parent_resource - return resource region of parent bus of given region
@@ -539,6 +653,105 @@ pci_enable_device(struct pci_dev *dev)
 	return 0;
 }
 
+/*
+ * Managed PCI resources.  This manages device on/off, intx/msi/msix
+ * on/off and BAR regions.  pci_dev itself records msi/msix status, so
+ * there's no need to track it separately.  pci_devres is initialized
+ * when a device is enabled using managed PCI device enable interface.
+ */
+struct pci_devres {
+	unsigned int enabled:1;
+	unsigned int pinned:1;
+	unsigned int orig_intx:1;
+	unsigned int restore_intx:1;
+	u32 region_mask;
+};
+
+static void pcim_release(struct device *gendev, void *res)
+{
+	struct pci_dev *dev = container_of(gendev, struct pci_dev, dev);
+	struct pci_devres *this = res;
+	int i;
+
+	if (dev->msi_enabled)
+		pci_disable_msi(dev);
+	if (dev->msix_enabled)
+		pci_disable_msix(dev);
+
+	for (i = 0; i < DEVICE_COUNT_RESOURCE; i++)
+		if (this->region_mask & (1 << i))
+			pci_release_region(dev, i);
+
+	if (this->restore_intx)
+		pci_intx(dev, this->orig_intx);
+
+	if (this->enabled && !this->pinned)
+		pci_disable_device(dev);
+}
+
+static struct pci_devres * get_pci_dr(struct pci_dev *pdev)
+{
+	struct pci_devres *dr, *new_dr;
+
+	dr = devres_find(&pdev->dev, pcim_release, NULL, NULL);
+	if (dr)
+		return dr;
+
+	new_dr = devres_alloc(pcim_release, sizeof(*new_dr), GFP_KERNEL);
+	if (!new_dr)
+		return NULL;
+	return devres_get(&pdev->dev, new_dr, NULL, NULL);
+}
+
+static struct pci_devres * find_pci_dr(struct pci_dev *pdev)
+{
+	if (pci_is_managed(pdev))
+		return devres_find(&pdev->dev, pcim_release, NULL, NULL);
+	return NULL;
+}
+
+/**
+ * pcim_enable_device - Managed pci_enable_device()
+ * @pdev: PCI device to be initialized
+ *
+ * Managed pci_enable_device().
+ */
+int pcim_enable_device(struct pci_dev *pdev)
+{
+	struct pci_devres *dr;
+	int rc;
+
+	dr = get_pci_dr(pdev);
+	if (unlikely(!dr))
+		return -ENOMEM;
+	WARN_ON(!!dr->enabled);
+
+	rc = pci_enable_device(pdev);
+	if (!rc) {
+		pdev->is_managed = 1;
+		dr->enabled = 1;
+	}
+	return rc;
+}
+
+/**
+ * pcim_pin_device - Pin managed PCI device
+ * @pdev: PCI device to pin
+ *
+ * Pin managed PCI device @pdev.  Pinned device won't be disabled on
+ * driver detach.  @pdev must have been enabled with
+ * pcim_enable_device().
+ */
+void pcim_pin_device(struct pci_dev *pdev)
+{
+	struct pci_devres *dr;
+
+	dr = find_pci_dr(pdev);
+	WARN_ON(!dr || !dr->enabled);
+	if (dr)
+		dr->pinned = 1;
+}
+
 /**
  * pcibios_disable_device - disable arch specific PCI resources for device dev
  * @dev: the PCI device to disable
@@ -559,7 +772,12 @@ void __attribute__ ((weak)) pcibios_disable_device (struct pci_dev *dev) {}
 void
 pci_disable_device(struct pci_dev *dev)
 {
+	struct pci_devres *dr;
 	u16 pci_command;
+
+	dr = find_pci_dr(dev);
+	if (dr)
+		dr->enabled = 0;
 
 	if (dev->msi_enabled)
 		disable_msi_mode(dev, pci_find_capability(dev, PCI_CAP_ID_MSI),
@@ -577,6 +795,34 @@ pci_disable_device(struct pci_dev *dev)
 
 	pcibios_disable_device(dev);
 	dev->is_enabled = 0;
+}
+
+/**
+ * pcibios_set_pcie_reset_state - set reset state for device dev
+ * @dev: the PCI-E device reset
+ * @state: Reset state to enter into
+ *
+ *
+ * Sets the PCI reset state for the device. This is the default
+ * implementation. Architecture implementations can override this.
+ */
+int __attribute__ ((weak)) pcibios_set_pcie_reset_state (struct pci_dev *dev,
+							 enum pcie_reset_state state)
+{
+	return -EINVAL;
+}
+
+/**
+ * pci_set_pcie_reset_state - set reset state for device dev
+ * @dev: the PCI-E device reset
+ * @state: Reset state to enter into
+ *
+ *
+ * Sets the PCI reset state for the device.
+ */
+int pci_set_pcie_reset_state(struct pci_dev *dev, enum pcie_reset_state state)
+{
+	return pcibios_set_pcie_reset_state(dev, state);
 }
 
 /**
@@ -657,6 +903,8 @@ pci_get_interrupt_pin(struct pci_dev *dev, struct pci_dev **bridge)
  */
 void pci_release_region(struct pci_dev *pdev, int bar)
 {
+	struct pci_devres *dr;
+
 	if (pci_resource_len(pdev, bar) == 0)
 		return;
 	if (pci_resource_flags(pdev, bar) & IORESOURCE_IO)
@@ -665,6 +913,10 @@ void pci_release_region(struct pci_dev *pdev, int bar)
 	else if (pci_resource_flags(pdev, bar) & IORESOURCE_MEM)
 		release_mem_region(pci_resource_start(pdev, bar),
 				pci_resource_len(pdev, bar));
+
+	dr = find_pci_dr(pdev);
+	if (dr)
+		dr->region_mask &= ~(1 << bar);
 }
 
 /**
@@ -683,6 +935,8 @@ void pci_release_region(struct pci_dev *pdev, int bar)
  */
 int pci_request_region(struct pci_dev *pdev, int bar, const char *res_name)
 {
+	struct pci_devres *dr;
+
 	if (pci_resource_len(pdev, bar) == 0)
 		return 0;
 		
@@ -696,7 +950,11 @@ int pci_request_region(struct pci_dev *pdev, int bar, const char *res_name)
 				        pci_resource_len(pdev, bar), res_name))
 			goto err_out;
 	}
-	
+
+	dr = find_pci_dr(pdev);
+	if (dr)
+		dr->region_mask |= 1 << bar;
+
 	return 0;
 
 err_out:
@@ -896,7 +1154,15 @@ pci_intx(struct pci_dev *pdev, int enable)
 	}
 
 	if (new != pci_command) {
+		struct pci_devres *dr;
+
 		pci_write_config_word(pdev, PCI_COMMAND, new);
+
+		dr = find_pci_dr(pdev);
+		if (dr && !dr->restore_intx) {
+			dr->restore_intx = 1;
+			dr->orig_intx = !enable;
+		}
 	}
 }
 
@@ -926,7 +1192,171 @@ pci_set_consistent_dma_mask(struct pci_dev *dev, u64 mask)
 	return 0;
 }
 #endif
-     
+
+/**
+ * pcix_get_max_mmrbc - get PCI-X maximum designed memory read byte count
+ * @dev: PCI device to query
+ *
+ * Returns mmrbc: maximum designed memory read count in bytes
+ *    or appropriate error value.
+ */
+int
+pcix_get_max_mmrbc(struct pci_dev *dev)
+{
+	int ret, err, cap;
+	u32 stat;
+	
+	cap = pci_find_capability(dev, PCI_CAP_ID_PCIX);
+	if (!cap)
+		return -EINVAL;
+
+	err = pci_read_config_dword(dev, cap + PCI_X_STATUS, &stat);
+	if (err)
+		return -EINVAL;
+
+	ret = (stat & PCI_X_STATUS_MAX_READ) >> 12;
+
+	return ret;
+}
+EXPORT_SYMBOL(pcix_get_max_mmrbc);
+
+/**
+ * pcix_get_mmrbc - get PCI-X maximum memory read byte count
+ * @dev: PCI device to query
+ *
+ * Returns mmrbc: maximum memory read count in bytes
+ *    or appropriate error value.
+ */
+int
+pcix_get_mmrbc(struct pci_dev *dev)
+{
+	int ret, cap;
+	u32 cmd;
+	
+	cap = pci_find_capability(dev, PCI_CAP_ID_PCIX);
+	if (!cap)
+		return -EINVAL;
+	
+	ret = pci_read_config_dword(dev, cap + PCI_X_CMD, &cmd);
+	if (!ret)
+		ret = 512 << ((cmd & PCI_X_CMD_MAX_READ) >> 2);
+	
+	return ret;
+}
+EXPORT_SYMBOL(pcix_get_mmrbc);
+
+/**
+ * pcix_set_mmrbc - set PCI-X maximum memory read byte count
+ * @dev: PCI device to query
+ * @mmrbc: maximum memory read count in bytes
+ *    valid values are 512, 1024, 2048, 4096
+ *
+ * If possible sets maximum memory read byte count, some bridges have erratas
+ * that prevent this.
+ */
+int
+pcix_set_mmrbc(struct pci_dev *dev, int mmrbc)
+{
+	int cap, err = -EINVAL;
+	u32 stat, cmd, v, o;
+		
+	if (mmrbc < 512 || mmrbc > 4096 || (mmrbc & (mmrbc-1)))
+		goto out;
+	
+	v = ffs(mmrbc) - 10;
+	
+	cap = pci_find_capability(dev, PCI_CAP_ID_PCIX);
+	if (!cap)
+		goto out;
+	
+	err = pci_read_config_dword(dev, cap + PCI_X_STATUS, &stat);
+	if (err)
+		goto out;
+	
+	if (v > (stat & PCI_X_STATUS_MAX_READ) >> 21)
+		return -E2BIG;
+	
+	err = pci_read_config_dword(dev, cap + PCI_X_CMD, &cmd);
+	if (err)
+		goto out;
+	
+	o = (cmd & PCI_X_CMD_MAX_READ) >> 2;
+	if (o != v) {
+		if (v > o && dev->bus && 
+		   (dev->bus->bus_flags & PCI_BUS_FLAGS_NO_MMRBC))
+			return -EIO;
+		
+		cmd &= ~PCI_X_CMD_MAX_READ;
+		cmd |= v << 2;
+		err = pci_write_config_dword(dev, cap + PCI_X_CMD, cmd);
+	}
+out:
+	return err;
+}
+EXPORT_SYMBOL(pcix_set_mmrbc);
+
+/**
+ * pcie_get_readrq - get PCI Express read request size
+ * @dev: PCI device to query
+ *
+ * Returns maximum memory read request in bytes
+ *    or appropriate error value.
+ */
+int pcie_get_readrq(struct pci_dev *dev)
+{
+	int ret, cap;
+	u16 ctl;
+
+	cap = pci_find_capability(dev, PCI_CAP_ID_EXP);
+	if (!cap)
+		return -EINVAL;
+
+	ret = pci_read_config_word(dev, cap + PCI_EXP_DEVCTL, &ctl);
+	if (!ret)
+	ret = 128 << ((ctl & PCI_EXP_DEVCTL_READRQ) >> 12);
+
+	return ret;
+}
+EXPORT_SYMBOL(pcie_get_readrq);
+
+/**
+ * pcie_set_readrq - set PCI Express maximum memory read request
+ * @dev: PCI device to query
+ * @count: maximum memory read count in bytes
+ *    valid values are 128, 256, 512, 1024, 2048, 4096
+ *
+ * If possible sets maximum read byte count
+ */
+int
+pcie_set_readrq(struct pci_dev *dev, int rq)
+{
+	int cap, err = -EINVAL;
+	u16 ctl, v;
+	
+	if (rq < 128 || rq > 4096 || (rq & (rq-1)))
+		goto out;
+	
+	v = (ffs(rq) - 8) << 12;
+	
+	cap = pci_find_capability(dev, PCI_CAP_ID_EXP);
+	if (!cap)
+		goto out;
+
+	err = pci_read_config_word(dev, cap + PCI_EXP_DEVCTL, &ctl);
+	if (err)
+		goto out;
+	
+	if ((ctl & PCI_EXP_DEVCTL_READRQ) != v) {
+		ctl &= ~PCI_EXP_DEVCTL_READRQ;
+		ctl |= v;
+		err = pci_write_config_dword(dev, cap + PCI_EXP_DEVCTL, ctl);
+	}
+	
+out:
+	return err;
+}
+EXPORT_SYMBOL(pcie_set_readrq);
+
 static int __devinit pci_init(void)
 {
 	struct pci_dev *dev = NULL;
@@ -969,6 +1399,8 @@ EXPORT_SYMBOL(isa_bridge);
 EXPORT_SYMBOL_GPL(pci_restore_bars);
 EXPORT_SYMBOL(pci_enable_device_bars);
 EXPORT_SYMBOL(pci_enable_device);
+EXPORT_SYMBOL(pcim_enable_device);
+EXPORT_SYMBOL(pcim_pin_device);
 EXPORT_SYMBOL(pci_disable_device);
 EXPORT_SYMBOL(pci_find_capability);
 EXPORT_SYMBOL(pci_bus_find_capability);
@@ -989,6 +1421,7 @@ EXPORT_SYMBOL(pci_set_power_state);
 EXPORT_SYMBOL(pci_save_state);
 EXPORT_SYMBOL(pci_restore_state);
 EXPORT_SYMBOL(pci_enable_wake);
+EXPORT_SYMBOL_GPL(pci_set_pcie_reset_state);
 
 /* Quirk info */
 

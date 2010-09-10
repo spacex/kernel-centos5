@@ -143,6 +143,8 @@ static void sd_rw_intr(struct scsi_cmnd * SCpnt);
 static int sd_probe(struct device *);
 static int sd_remove(struct device *);
 static void sd_shutdown(struct device *dev);
+static int sd_suspend(struct device *dev, pm_message_t state);
+static int sd_resume(struct device *dev);
 static void sd_rescan(struct device *);
 static int sd_init_command(struct scsi_cmnd *);
 static int sd_issue_flush(struct device *, sector_t *);
@@ -150,6 +152,15 @@ static void sd_prepare_flush(request_queue_t *, struct request *);
 static void sd_read_capacity(struct scsi_disk *sdkp, char *diskname,
 			     unsigned char *buffer);
 static void scsi_disk_release(struct class_device *cdev);
+static void sd_print_result(struct scsi_disk *sdkp, int result);
+static void sd_print_sense_hdr(struct scsi_disk *sdkp,
+			       struct scsi_sense_hdr *sshdr);
+
+#define sd_printk(prefix, sdsk, fmt, a...)				\
+        (sdsk)->disk ?							\
+	sdev_printk(prefix, (sdsk)->device, "[%s] " fmt,		\
+		    (sdsk)->disk->disk_name, ##a) :			\
+	sdev_printk(prefix, (sdsk)->device, fmt, ##a)
 
 static const char *sd_cache_types[] = {
 	"write through", "none", "write back",
@@ -207,6 +218,20 @@ static ssize_t sd_store_cache_type(struct class_device *cdev, const char *buf,
 	return count;
 }
 
+static ssize_t sd_store_manage_start_stop(struct class_device *cdev,
+					  const char *buf, size_t count)
+{
+	struct scsi_disk *sdkp = to_scsi_disk(cdev);
+	struct scsi_device *sdp = sdkp->device;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EACCES;
+
+	sdp->manage_start_stop = simple_strtoul(buf, NULL, 10);
+
+	return count;
+}
+
 static ssize_t sd_store_allow_restart(struct class_device *cdev, const char *buf,
 				      size_t count)
 {
@@ -239,6 +264,14 @@ static ssize_t sd_show_fua(struct class_device *cdev, char *buf)
 	return snprintf(buf, 20, "%u\n", sdkp->DPOFUA);
 }
 
+static ssize_t sd_show_manage_start_stop(struct class_device *cdev, char *buf)
+{
+	struct scsi_disk *sdkp = to_scsi_disk(cdev);
+	struct scsi_device *sdp = sdkp->device;
+
+	return snprintf(buf, 20, "%u\n", sdp->manage_start_stop);
+}
+
 static ssize_t sd_show_allow_restart(struct class_device *cdev, char *buf)
 {
 	struct scsi_disk *sdkp = to_scsi_disk(cdev);
@@ -252,6 +285,8 @@ static struct class_device_attribute sd_disk_attrs[] = {
 	__ATTR(FUA, S_IRUGO, sd_show_fua, NULL),
 	__ATTR(allow_restart, S_IRUGO|S_IWUSR, sd_show_allow_restart,
 	       sd_store_allow_restart),
+	__ATTR(manage_start_stop, S_IRUGO|S_IWUSR, sd_show_manage_start_stop,
+	       sd_store_manage_start_stop),
 	__ATTR_NULL,
 };
 
@@ -268,6 +303,8 @@ static struct scsi_driver sd_template = {
 		.name		= "sd",
 		.probe		= sd_probe,
 		.remove		= sd_remove,
+		.suspend	= sd_suspend,
+		.resume		= sd_resume,
 		.shutdown	= sd_shutdown,
 	},
 	.rescan			= sd_rescan,
@@ -1766,6 +1803,31 @@ static void scsi_disk_release(struct class_device *cdev)
 	kfree(sdkp);
 }
 
+static int sd_start_stop_device(struct scsi_disk *sdkp, int start)
+{
+	unsigned char cmd[6] = { START_STOP };	/* START_VALID */
+	struct scsi_sense_hdr sshdr;
+	struct scsi_device *sdp = sdkp->device;
+	int res;
+
+	if (start)
+		cmd[4] |= 1;	/* START */
+
+	if (!scsi_device_online(sdp))
+		return -ENODEV;
+
+	res = scsi_execute_req(sdp, cmd, DMA_NONE, NULL, 0, &sshdr,
+			       SD_TIMEOUT, SD_MAX_RETRIES);
+	if (res) {
+		sd_printk(KERN_WARNING, sdkp, "START_STOP FAILED\n");
+		sd_print_result(sdkp, res);
+		if (driver_byte(res) & DRIVER_SENSE)
+			sd_print_sense_hdr(sdkp, &sshdr);
+	}
+
+	return res;
+}
+
 /*
  * Send a SYNCHRONIZE CACHE instruction down to the device through
  * the normal SCSI command structure.  Wait for the command to
@@ -1784,7 +1846,56 @@ static void sd_shutdown(struct device *dev)
 				sdkp->disk->disk_name);
 		sd_sync_cache(sdp);
 	}
+
+	if (system_state != SYSTEM_RESTART && sdkp->device->manage_start_stop) {
+		sd_printk(KERN_NOTICE, sdkp, "Stopping disk\n");
+		sd_start_stop_device(sdkp, 0);
+	}
+
 	scsi_disk_put(sdkp);
+}
+
+static int sd_suspend(struct device *dev, pm_message_t mesg)
+{
+	struct scsi_device *sdp = to_scsi_device(dev);
+	struct scsi_disk *sdkp = scsi_disk_get_from_dev(dev);
+	int ret = 0;
+
+	if (!sdkp)
+		return 0;	/* this can happen */
+
+	if (sdkp->WCE) {
+		sd_printk(KERN_NOTICE, sdkp, "Synchronizing SCSI cache\n");
+		ret = sd_sync_cache(sdp);
+		if (ret)
+			goto done;
+	}
+
+	if (mesg.event == PM_EVENT_SUSPEND &&
+	    sdkp->device->manage_start_stop) {
+		sd_printk(KERN_NOTICE, sdkp, "Stopping disk\n");
+		ret = sd_start_stop_device(sdkp, 0);
+	}
+
+done:
+	scsi_disk_put(sdkp);
+	return ret;
+}
+
+static int sd_resume(struct device *dev)
+{
+	struct scsi_disk *sdkp = scsi_disk_get_from_dev(dev);
+	int ret = 0;
+
+	if (!sdkp->device->manage_start_stop)
+		goto done;
+
+	sd_printk(KERN_NOTICE, sdkp, "Starting disk\n");
+	ret = sd_start_stop_device(sdkp, 1);
+
+done:
+	scsi_disk_put(sdkp);
+	return ret;
 }
 
 /**
@@ -1831,3 +1942,19 @@ static void __exit exit_sd(void)
 
 module_init(init_sd);
 module_exit(exit_sd);
+
+static void sd_print_sense_hdr(struct scsi_disk *sdkp,
+			       struct scsi_sense_hdr *sshdr)
+{
+	sd_printk(KERN_INFO, sdkp, "");
+	scsi_show_sense_hdr(sshdr);
+	sd_printk(KERN_INFO, sdkp, "");
+	scsi_show_extd_sense(sshdr->asc, sshdr->ascq);
+}
+
+static void sd_print_result(struct scsi_disk *sdkp, int result)
+{
+	sd_printk(KERN_INFO, sdkp, "");
+	scsi_show_result(result);
+}
+

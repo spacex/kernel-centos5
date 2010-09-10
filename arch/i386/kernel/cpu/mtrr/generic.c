@@ -22,14 +22,14 @@ static unsigned long smp_changes_mask;
 static struct mtrr_state mtrr_state = {};
 
 /*  Get the MSR pair relating to a var range  */
-static void __init
+static void __cpuinit
 get_mtrr_var_range(unsigned int index, struct mtrr_var_range *vr)
 {
 	rdmsr(MTRRphysBase_MSR(index), vr->base_lo, vr->base_hi);
 	rdmsr(MTRRphysMask_MSR(index), vr->mask_lo, vr->mask_hi);
 }
 
-static void __init
+static void __cpuinit
 get_fixed_ranges(mtrr_type * frs)
 {
 	unsigned int *p = (unsigned int *) frs;
@@ -44,7 +44,7 @@ get_fixed_ranges(mtrr_type * frs)
 }
 
 /*  Grab all of the MTRR state for this CPU into *state  */
-void __init get_mtrr_state(void)
+void __cpuinit get_mtrr_state(void)
 {
 	unsigned int i;
 	struct mtrr_var_range *vrs;

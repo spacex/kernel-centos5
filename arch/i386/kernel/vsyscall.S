@@ -1,6 +1,6 @@
 #include <linux/init.h>
 
-__INITDATA
+__CPUINITDATA
 
 	.globl vsyscall_int80_start, vsyscall_int80_end
 vsyscall_int80_start:

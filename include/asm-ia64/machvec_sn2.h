@@ -69,7 +69,7 @@ extern ia64_mv_dma_supported		sn_dma_supported;
 extern ia64_mv_migrate_t		sn_migrate;
 extern ia64_mv_kernel_launch_event_t	sn_kernel_launch_event;
 extern ia64_mv_msi_init_t		sn_msi_init;
-
+extern ia64_mv_pci_fixup_bus_t		sn_pci_fixup_bus;
 
 /*
  * This stuff has dual use!
@@ -126,6 +126,7 @@ extern ia64_mv_msi_init_t		sn_msi_init;
 #else
 #define platform_msi_init		((ia64_mv_msi_init_t*)NULL)
 #endif
+#define platform_pci_fixup_bus		sn_pci_fixup_bus
 
 #include <asm/sn/io.h>
 

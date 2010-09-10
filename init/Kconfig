@@ -530,9 +530,21 @@ endmenu
 
 menu "Process debugging support"
 
+config PTRACE
+	bool "Legacy ptrace system call interface"
+	default y
+	select UTRACE
+	depends on PROC_FS
+	help
+	  Enable the ptrace system call.
+	  This is traditionally used by debuggers like GDB,
+	  and is used by UML and some other applications.
+	  Unless you are very sure you won't run anything that needs it,
+	  say Y.
+
 config UTRACE
 	bool "Infrastructure for tracing and debugging user processes"
-	default y
+	default y if MODULES || PTRACE
 	help
 	  Enable the utrace process tracing interface.
 	  This is an internal kernel interface to track events in user
@@ -543,18 +555,6 @@ config UTRACE
 	  applications.  Unless you are making a specially stripped-down
 	  kernel and are very sure you don't need these facilitiies,
 	  say Y.
-
-config PTRACE
-	bool "Legacy ptrace system call interface"
-	default y
-	depends on UTRACE
-	help
-	  Enable the ptrace system call.
-	  This is traditionally used by debuggers like GDB,
-	  and is used by UML and some other applications.
-	  Unless you are very sure you won't run anything that needs it,
-	  say Y.
-
 endmenu
 
 menu "Block layer"

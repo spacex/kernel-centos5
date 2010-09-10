@@ -20,15 +20,19 @@
 #include <linux/module.h>
 #include <asm/uaccess.h>
 #include <linux/audit.h>
+#include <linux/cache.h>
 
 struct sock *xfrm_nl;
 EXPORT_SYMBOL(xfrm_nl);
 
-u32 sysctl_xfrm_aevent_etime = XFRM_AE_ETIME;
+u32 sysctl_xfrm_aevent_etime __read_mostly = XFRM_AE_ETIME;
 EXPORT_SYMBOL(sysctl_xfrm_aevent_etime);
 
-u32 sysctl_xfrm_aevent_rseqth = XFRM_AE_SEQT_SIZE;
+u32 sysctl_xfrm_aevent_rseqth __read_mostly = XFRM_AE_SEQT_SIZE;
 EXPORT_SYMBOL(sysctl_xfrm_aevent_rseqth);
+
+u32 sysctl_xfrm_acq_expires __read_mostly = 30;
+EXPORT_SYMBOL_GPL(sysctl_xfrm_acq_expires);
 
 /* Each xfrm_state may be linked to two tables:
 
@@ -291,13 +295,48 @@ int xfrm_state_delete(struct xfrm_state *x)
 }
 EXPORT_SYMBOL(xfrm_state_delete);
 
-void xfrm_state_flush(u8 proto, struct xfrm_audit *audit_info)
+#ifdef CONFIG_SECURITY_NETWORK_XFRM
+static int xfrm_state_flush_secctx_check(u8 proto, struct xfrm_audit *audit_info)
+{
+	int i;
+	int err = 0;
+	struct xfrm_state *x;
+
+	for (i = 0; i < XFRM_DST_HSIZE; i++) {
+		list_for_each_entry(x, xfrm_state_bydst+i, bydst) {
+			if (!xfrm_state_kern(x) &&
+			    (proto == IPSEC_PROTO_ANY || x->id.proto == proto) &&
+			    (err = security_xfrm_state_delete(x)) != 0) {
+
+				xfrm_audit_log(audit_info->loginuid,
+					       audit_info->secid,
+					       AUDIT_MAC_IPSEC_DELSA,
+					       0, NULL, x);
+				return err;
+			}
+		}
+	}
+
+	return err;
+}
+#else
+static int xfrm_state_flush_secctx_check(u8 proto, struct xfrm_audit *audit_info)
+{
+	return 0;
+}
+#endif /* CONFIG_SECURITY_NETWORK_XFRM */
+
+int xfrm_state_flush(u8 proto, struct xfrm_audit *audit_info)
 {
 	int i;
 	int err = 0;
 	struct xfrm_state *x;
 
 	spin_lock_bh(&xfrm_state_lock);
+
+	err = xfrm_state_flush_secctx_check(proto, audit_info);
+	if (err)
+		goto out;
 	for (i = 0; i < XFRM_DST_HSIZE; i++) {
 restart:
 		list_for_each_entry(x, xfrm_state_bydst+i, bydst) {
@@ -318,8 +357,12 @@ restart:
 			}
 		}
 	}
+	err = 0;
+
+out:
 	spin_unlock_bh(&xfrm_state_lock);
 	wake_up(&km_waitq);
+	return err;
 }
 EXPORT_SYMBOL(xfrm_state_flush);
 
@@ -432,9 +475,9 @@ xfrm_state_find(xfrm_address_t *daddr, xfrm_address_t *saddr,
 				list_add(&x->byspi, xfrm_state_byspi+h);
 				xfrm_state_hold(x);
 			}
-			x->lft.hard_add_expires_seconds = XFRM_ACQ_EXPIRES;
+			x->lft.hard_add_expires_seconds = sysctl_xfrm_acq_expires;
 			xfrm_state_hold(x);
-			x->timer.expires = jiffies + XFRM_ACQ_EXPIRES*HZ;
+			x->timer.expires = jiffies + sysctl_xfrm_acq_expires*HZ;
 			add_timer(&x->timer);
 		} else {
 			x->km.state = XFRM_STATE_DEAD;
@@ -511,7 +554,8 @@ int xfrm_state_add(struct xfrm_state *x)
 
 	if (x->km.seq) {
 		x1 = __xfrm_find_acq_byseq(x->km.seq);
-		if (x1 && xfrm_addr_cmp(&x1->id.daddr, &x->id.daddr, family)) {
+		if (x1 && ((x1->id.proto != x->id.proto) ||
+		    xfrm_addr_cmp(&x1->id.daddr, &x->id.daddr, family))) {
 			xfrm_state_put(x1);
 			x1 = NULL;
 		}

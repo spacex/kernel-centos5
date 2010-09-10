@@ -40,6 +40,7 @@
 #include <sound/core.h>
 #include <sound/info.h>
 #include <sound/control.h>
+#include <sound/tlv.h>
 #include <sound/trident.h>
 #include <sound/asoundef.h>
 
@@ -2627,6 +2628,8 @@ static int snd_trident_vol_control_get(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
+static const DECLARE_TLV_DB_SCALE(db_scale_gvol, -6375, 25, 0);
+
 static int snd_trident_vol_control_put(struct snd_kcontrol *kcontrol,
 				       struct snd_ctl_elem_value *ucontrol)
 {
@@ -2653,6 +2656,7 @@ static struct snd_kcontrol_new snd_trident_vol_music_control __devinitdata =
 	.get =		snd_trident_vol_control_get,
 	.put =		snd_trident_vol_control_put,
 	.private_value = 16,
+	.tlv = { .p = db_scale_gvol },
 };
 
 static struct snd_kcontrol_new snd_trident_vol_wave_control __devinitdata =
@@ -2663,6 +2667,7 @@ static struct snd_kcontrol_new snd_trident_vol_wave_control __devinitdata =
 	.get =		snd_trident_vol_control_get,
 	.put =		snd_trident_vol_control_put,
 	.private_value = 0,
+	.tlv = { .p = db_scale_gvol },
 };
 
 /*---------------------------------------------------------------------------
@@ -2730,6 +2735,7 @@ static struct snd_kcontrol_new snd_trident_pcm_vol_control __devinitdata =
 	.info =		snd_trident_pcm_vol_control_info,
 	.get =		snd_trident_pcm_vol_control_get,
 	.put =		snd_trident_pcm_vol_control_put,
+	/* FIXME: no tlv yet */
 };
 
 /*---------------------------------------------------------------------------
@@ -2839,6 +2845,8 @@ static int snd_trident_pcm_rvol_control_put(struct snd_kcontrol *kcontrol,
 	return change;
 }
 
+static const DECLARE_TLV_DB_SCALE(db_scale_crvol, -3175, 25, 1);
+
 static struct snd_kcontrol_new snd_trident_pcm_rvol_control __devinitdata =
 {
 	.iface =	SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -2848,6 +2856,7 @@ static struct snd_kcontrol_new snd_trident_pcm_rvol_control __devinitdata =
 	.info =		snd_trident_pcm_rvol_control_info,
 	.get =		snd_trident_pcm_rvol_control_get,
 	.put =		snd_trident_pcm_rvol_control_put,
+	.tlv = { .p = db_scale_crvol },
 };
 
 /*---------------------------------------------------------------------------
@@ -2903,6 +2912,7 @@ static struct snd_kcontrol_new snd_trident_pcm_cvol_control __devinitdata =
 	.info =		snd_trident_pcm_cvol_control_info,
 	.get =		snd_trident_pcm_cvol_control_get,
 	.put =		snd_trident_pcm_cvol_control_put,
+	.tlv = { .p = db_scale_crvol },
 };
 
 static void snd_trident_notify_pcm_change1(struct snd_card *card,
@@ -3371,8 +3381,8 @@ static int __devinit snd_trident_tlb_alloc(struct snd_trident *trident)
 		snd_printk(KERN_ERR "trident: unable to allocate TLB buffer\n");
 		return -ENOMEM;
 	}
-	trident->tlb.entries = (unsigned int*)(((unsigned long)trident->tlb.buffer.area + SNDRV_TRIDENT_MAX_PAGES * 4 - 1) & ~(SNDRV_TRIDENT_MAX_PAGES * 4 - 1));
-	trident->tlb.entries_dmaaddr = (trident->tlb.buffer.addr + SNDRV_TRIDENT_MAX_PAGES * 4 - 1) & ~(SNDRV_TRIDENT_MAX_PAGES * 4 - 1);
+	trident->tlb.entries = (unsigned int*)ALIGN((unsigned long)trident->tlb.buffer.area, SNDRV_TRIDENT_MAX_PAGES * 4);
+	trident->tlb.entries_dmaaddr = ALIGN(trident->tlb.buffer.addr, SNDRV_TRIDENT_MAX_PAGES * 4);
 	/* allocate shadow TLB page table (virtual addresses) */
 	trident->tlb.shadow_entries = vmalloc(SNDRV_TRIDENT_MAX_PAGES*sizeof(unsigned long));
 	if (trident->tlb.shadow_entries == NULL) {
@@ -3957,15 +3967,9 @@ int snd_trident_suspend(struct pci_dev *pci, pm_message_t state)
 	snd_ac97_suspend(trident->ac97);
 	snd_ac97_suspend(trident->ac97_sec);
 
-	switch (trident->device) {
-	case TRIDENT_DEVICE_ID_DX:
-	case TRIDENT_DEVICE_ID_NX:
-		break;			/* TODO */
-	case TRIDENT_DEVICE_ID_SI7018:
-		break;
-	}
 	pci_disable_device(pci);
 	pci_save_state(pci);
+	pci_set_power_state(pci, pci_choose_state(pci, state));
 	return 0;
 }
 
@@ -3974,9 +3978,15 @@ int snd_trident_resume(struct pci_dev *pci)
 	struct snd_card *card = pci_get_drvdata(pci);
 	struct snd_trident *trident = card->private_data;
 
+	pci_set_power_state(pci, PCI_D0);
 	pci_restore_state(pci);
-	pci_enable_device(pci);
-	pci_set_master(pci); /* to be sure */
+	if (pci_enable_device(pci) < 0) {
+		printk(KERN_ERR "trident: pci_enable_device failed, "
+		       "disabling device\n");
+		snd_card_disconnect(card);
+		return -EIO;
+	}
+	pci_set_master(pci);
 
 	switch (trident->device) {
 	case TRIDENT_DEVICE_ID_DX:

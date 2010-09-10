@@ -124,6 +124,11 @@ struct scsi_device {
 	unsigned fix_capacity:1;	/* READ_CAPACITY is too high by 1 */
 	unsigned retry_hwerror:1;	/* Retry HARDWARE_ERROR */
 
+#ifndef __GENKSYMS__
+	/* added at end for kABI */
+	unsigned manage_start_stop:1;   /* Let HLD (sd) manage start/stop */
+#endif
+
 	unsigned int device_blocked;	/* Device returned QUEUE_FULL. */
 
 	unsigned int max_device_blocked; /* what device_blocked counts down from  */

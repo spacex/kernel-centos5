@@ -51,7 +51,7 @@ code.  Using the UTRACE starts out by attaching an engine to a thread.
 
 	struct utrace_attached_engine *
 	utrace_attach(struct task_struct *target, int flags,
-		      const struct utrace_engine_ops *ops, unsigned long data);
+		      const struct utrace_engine_ops *ops, void *data);
 
 Calling utrace_attach is what sets up a tracing engine to trace a
 thread.  Use UTRACE_ATTACH_CREATE in flags, and pass your engine's ops.

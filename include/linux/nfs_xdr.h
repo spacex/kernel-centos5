@@ -359,8 +359,8 @@ struct nfs_symlinkargs {
 	struct nfs_fh *		fromfh;
 	const char *		fromname;
 	unsigned int		fromlen;
-	const char *		topath;
-	unsigned int		tolen;
+	struct page **		pages;
+	unsigned int		pathlen;
 	struct iattr *		sattr;
 };
 
@@ -435,8 +435,8 @@ struct nfs3_symlinkargs {
 	struct nfs_fh *		fromfh;
 	const char *		fromname;
 	unsigned int		fromlen;
-	const char *		topath;
-	unsigned int		tolen;
+	struct page **		pages;
+	unsigned int		pathlen;
 	struct iattr *		sattr;
 };
 
@@ -534,7 +534,10 @@ struct nfs4_accessres {
 struct nfs4_create_arg {
 	u32				ftype;
 	union {
-		struct qstr *		symlink;    /* NF4LNK */
+		struct {
+			struct page **	pages;
+			unsigned int	len;
+		} symlink;   /* NF4LNK */
 		struct {
 			u32		specdata1;
 			u32		specdata2;
@@ -794,8 +797,8 @@ struct nfs_rpc_ops {
 	int	(*rename)  (struct inode *, struct qstr *,
 			    struct inode *, struct qstr *);
 	int	(*link)    (struct inode *, struct inode *, struct qstr *);
-	int	(*symlink) (struct inode *, struct dentry *, struct qstr *,
-			    struct iattr *);
+	int	(*symlink) (struct inode *, struct dentry *, struct page *,
+			    unsigned int, struct iattr *);
 	int	(*mkdir)   (struct inode *, struct dentry *, struct iattr *);
 	int	(*rmdir)   (struct inode *, struct qstr *);
 	int	(*readdir) (struct dentry *, struct rpc_cred *,

@@ -131,10 +131,6 @@ sn_msi_setup(struct pci_dev *pdev, unsigned int vector,
 	 */
 	*data = 0x100 + (unsigned int)vector;
 
-#ifdef CONFIG_SMP
-	set_irq_affinity_info((vector & 0xff), sn_irq_info->irq_cpuid, 0);
-#endif
-
 	return 0;
 }
 

@@ -45,6 +45,9 @@
 #include <linux/cn_proc.h>
 #include <linux/delayacct.h>
 #include <linux/taskstats_kern.h>
+#ifndef __GENKSYMS__
+#include <linux/ptrace.h>
+#endif
 
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
@@ -1026,9 +1029,7 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 	INIT_LIST_HEAD(&p->sibling);
 	p->vfork_done = NULL;
 	spin_lock_init(&p->alloc_lock);
-#ifdef CONFIG_PTRACE
-	INIT_LIST_HEAD(&p->ptracees);
-#endif
+	ptrace_init_task(p);
 
 	clear_tsk_thread_flag(p, TIF_SIGPENDING);
 	init_sigpending(&p->pending);
@@ -1345,6 +1346,10 @@ long do_fork(unsigned long clone_flags,
 	 * might get invalid after that point, if the thread exits quickly.
 	 */
 	if (!IS_ERR(p)) {
+		/*
+		 * When called from kernel_thread, don't do user tracing stuff.
+		 */
+		int is_user = likely(user_mode(regs));
 		struct completion vfork;
 
 		if (clone_flags & CLONE_VFORK) {
@@ -1352,7 +1357,8 @@ long do_fork(unsigned long clone_flags,
 			init_completion(&vfork);
 		}
 
-		tracehook_report_clone(clone_flags, p);
+		if (likely(is_user))
+			tracehook_report_clone(clone_flags, p);
 
 		p->flags &= ~PF_STARTING;
 
@@ -1367,11 +1373,13 @@ long do_fork(unsigned long clone_flags,
 		else
 			wake_up_new_task(p, clone_flags);
 
-		tracehook_report_clone_complete(clone_flags, nr, p);
+		if (likely(is_user))
+			tracehook_report_clone_complete(clone_flags, nr, p);
 
 		if (clone_flags & CLONE_VFORK) {
 			wait_for_completion(&vfork);
-			tracehook_report_vfork_done(p, nr);
+			if (likely(is_user))
+				tracehook_report_vfork_done(p, nr);
 		}
 	} else {
 		free_pid(pid);

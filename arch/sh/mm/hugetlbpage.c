@@ -83,6 +83,11 @@ pte_t huge_ptep_get_and_clear(struct mm_struct *mm, unsigned long addr,
 	return entry;
 }
 
+int huge_pmd_unshare(struct mm_struct *mm, unsigned long *addr, pte_t *ptep)
+{
+	return 0;
+}
+
 struct page *follow_huge_addr(struct mm_struct *mm,
 			      unsigned long address, int write)
 {

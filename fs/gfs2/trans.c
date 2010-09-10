@@ -25,8 +25,8 @@
 #include "trans.h"
 #include "util.h"
 
-int gfs2_trans_begin(struct gfs2_sbd *sdp, unsigned int blocks,
-		     unsigned int revokes)
+int gfs2_do_trans_begin(struct gfs2_sbd *sdp, unsigned int blocks,
+		     unsigned int revokes, int wait)
 {
 	struct gfs2_trans *tr;
 	int error;
@@ -61,7 +61,7 @@ int gfs2_trans_begin(struct gfs2_sbd *sdp, unsigned int blocks,
 		goto fail_gunlock;
 	}
 
-	error = gfs2_log_reserve(sdp, tr->tr_reserved);
+	error = gfs2_log_reserve(sdp, tr->tr_reserved, wait);
 	if (error)
 		goto fail_gunlock;
 
@@ -142,25 +142,25 @@ void gfs2_trans_add_bh(struct gfs2_glock *gl, struct buffer_head *bh, int meta)
 	lops_add(sdp, &bd->bd_le);
 }
 
-void gfs2_trans_add_revoke(struct gfs2_sbd *sdp, u64 blkno)
+void gfs2_trans_add_revoke(struct gfs2_sbd *sdp, struct gfs2_bufdata *bd)
 {
-	struct gfs2_revoke *rv = kmalloc(sizeof(struct gfs2_revoke),
-					 GFP_NOFS | __GFP_NOFAIL);
-	lops_init_le(&rv->rv_le, &gfs2_revoke_lops);
-	rv->rv_blkno = blkno;
-	lops_add(sdp, &rv->rv_le);
+	BUG_ON(!list_empty(&bd->bd_le.le_list));
+	BUG_ON(!list_empty(&bd->bd_ail_st_list));
+	BUG_ON(!list_empty(&bd->bd_ail_gl_list));
+	lops_init_le(&bd->bd_le, &gfs2_revoke_lops);
+	lops_add(sdp, &bd->bd_le);
 }
 
 void gfs2_trans_add_unrevoke(struct gfs2_sbd *sdp, u64 blkno)
 {
-	struct gfs2_revoke *rv;
+	struct gfs2_bufdata *bd;
 	int found = 0;
 
 	gfs2_log_lock(sdp);
 
-	list_for_each_entry(rv, &sdp->sd_log_le_revoke, rv_le.le_list) {
-		if (rv->rv_blkno == blkno) {
-			list_del(&rv->rv_le.le_list);
+	list_for_each_entry(bd, &sdp->sd_log_le_revoke, bd_le.le_list) {
+		if (bd->bd_blkno == blkno) {
+			list_del_init(&bd->bd_le.le_list);
 			gfs2_assert_withdraw(sdp, sdp->sd_log_num_revoke);
 			sdp->sd_log_num_revoke--;
 			found = 1;
@@ -172,7 +172,7 @@ void gfs2_trans_add_unrevoke(struct gfs2_sbd *sdp, u64 blkno)
 
 	if (found) {
 		struct gfs2_trans *tr = current->journal_info;
-		kfree(rv);
+		kmem_cache_free(gfs2_bufdata_cachep, bd);
 		tr->tr_num_revoke_rm++;
 	}
 }

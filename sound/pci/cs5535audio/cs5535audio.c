@@ -203,8 +203,7 @@ static void process_bm1_irq(struct cs5535audio *cs5535au)
 	}
 }
 
-static irqreturn_t snd_cs5535audio_interrupt(int irq, void *dev_id,
-					     struct pt_regs *regs)
+static irqreturn_t snd_cs5535audio_interrupt(int irq, void *dev_id)
 {
 	u16 acc_irq_stat;
 	u8 bm_stat;
@@ -321,7 +320,7 @@ static int __devinit snd_cs5535audio_create(struct snd_card *card,
 	cs5535au->port = pci_resource_start(pci, 0);
 
 	if (request_irq(pci->irq, snd_cs5535audio_interrupt,
-			IRQF_DISABLED|IRQF_SHARED, "CS5535 Audio", cs5535au)) {
+			IRQF_SHARED, "CS5535 Audio", cs5535au)) {
 		snd_printk("unable to grab IRQ %d\n", pci->irq);
 		err = -EBUSY;
 		goto sndfail;

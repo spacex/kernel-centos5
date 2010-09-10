@@ -25,6 +25,7 @@
 
 #include <linux/init.h>
 #include <linux/module.h>
+#include <linux/jiffies.h>
 #include <linux/err.h>
 #include <linux/slab.h>
 #include <linux/string.h>
@@ -77,6 +78,24 @@ get_sas_##title##_names(u32 table_key, char *buf)		\
 	return len;						\
 }
 
+#define sas_bitfield_name_set(title, table)			\
+static ssize_t							\
+set_sas_##title##_names(u32 *table_key, const char *buf)	\
+{								\
+	ssize_t len = 0;					\
+	int i;							\
+								\
+	for (i = 0; i < ARRAY_SIZE(table); i++) {		\
+		len = strlen(table[i].name);			\
+		if (strncmp(buf, table[i].name, len) == 0 &&	\
+		    (buf[len] == '\n' || buf[len] == '\0')) {	\
+			*table_key = table[i].value;		\
+			return 0;				\
+		}						\
+	}							\
+	return -EINVAL;						\
+}
+
 #define sas_bitfield_name_search(title, table)			\
 static ssize_t							\
 get_sas_##title##_names(u32 table_key, char *buf)		\
@@ -122,16 +141,16 @@ static struct {
 	u32		value;
 	char		*name;
 } sas_linkspeed_names[] = {
-	{ SAS_LINK_RATE_UNKNOWN,	"Unknown" },
-	{ SAS_PHY_DISABLED,		"Phy disabled" },
-	{ SAS_LINK_RATE_FAILED,		"Link Rate failed" },
-	{ SAS_SATA_SPINUP_HOLD,		"Spin-up hold" },
-	{ SAS_LINK_RATE_1_5_GBPS,	"1.5 Gbit" },
-	{ SAS_LINK_RATE_3_0_GBPS,	"3.0 Gbit" },
-	{ SAS_LINK_RATE_6_0_GBPS,	"6.0 Gbit" },
+	{ PHY_LINKRATE_UNKNOWN,	"Unknown" },
+	{ PHY_DISABLED,		"Phy disabled" },
+	{ 0x10,			"Link Rate failed" },
+	{ PHY_SPINUP_HOLD,	"Spin-up hold" },
+	{ PHY_LINKRATE_1_5,	"1.5 Gbit" },
+	{ PHY_LINKRATE_3,	"3.0 Gbit" },
+	{ PHY_LINKRATE_6,	"6.0 Gbit" },
 };
 sas_bitfield_name_search(linkspeed, sas_linkspeed_names)
-
+sas_bitfield_name_set(linkspeed, sas_linkspeed_names)
 
 /*
  * SAS host attributes
@@ -253,9 +272,38 @@ show_sas_phy_##field(struct class_device *cdev, char *buf)		\
 	return get_sas_linkspeed_names(phy->field, buf);		\
 }
 
+/* Fudge to tell if we're minimum or maximum */
+#define sas_phy_store_linkspeed(field)					\
+static ssize_t								\
+store_sas_phy_##field(struct class_device *cdev, const char *buf,	\
+		      size_t count)					\
+{									\
+	struct sas_phy *phy = transport_class_to_phy(cdev);		\
+	struct Scsi_Host *shost = dev_to_shost(phy->dev.parent);	\
+	struct sas_internal *i = to_sas_internal(shost->transportt);	\
+	u32 value;							\
+	struct sas_phy_linkrates rates = {0};				\
+	int error;							\
+									\
+	error = set_sas_linkspeed_names(&value, buf);			\
+	if (error)							\
+		return error;						\
+	rates.field = value;						\
+	error = i->f->set_phy_speed(phy, &rates);			\
+									\
+	return error ? error : count;					\
+}
+
+#define sas_phy_linkspeed_rw_attr(field)				\
+	sas_phy_show_linkspeed(field)					\
+	sas_phy_store_linkspeed(field)					\
+static CLASS_DEVICE_ATTR(field, S_IRUGO, show_sas_phy_##field,		\
+	store_sas_phy_##field)
+
 #define sas_phy_linkspeed_attr(field)					\
 	sas_phy_show_linkspeed(field)					\
 static CLASS_DEVICE_ATTR(field, S_IRUGO, show_sas_phy_##field, NULL)
+
 
 #define sas_phy_show_linkerror(field)					\
 static ssize_t								\
@@ -287,6 +335,51 @@ show_sas_device_type(struct class_device *cdev, char *buf)
 	return get_sas_device_type_names(phy->identify.device_type, buf);
 }
 static CLASS_DEVICE_ATTR(device_type, S_IRUGO, show_sas_device_type, NULL);
+
+static ssize_t do_sas_phy_enable(struct class_device *cdev,
+		size_t count, int enable)
+{
+	struct sas_phy *phy = transport_class_to_phy(cdev);
+	struct Scsi_Host *shost = dev_to_shost(phy->dev.parent);
+	struct sas_internal *i = to_sas_internal(shost->transportt);
+	int error;
+
+	error = i->f->phy_enable(phy, enable);
+	if (error)
+		return error;
+	phy->enabled = enable;
+	return count;
+};
+
+static ssize_t store_sas_phy_enable(struct class_device *cdev,
+		const char *buf, size_t count)
+{
+	if (count < 1)
+		return -EINVAL;
+
+	switch (buf[0]) {
+	case '0':
+		do_sas_phy_enable(cdev, count, 0);
+		break;
+	case '1':
+		do_sas_phy_enable(cdev, count, 1);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return count;
+}
+
+static ssize_t show_sas_phy_enable(struct class_device *cdev, char *buf)
+{
+	struct sas_phy *phy = transport_class_to_phy(cdev);
+
+	return snprintf(buf, 20, "%d", phy->enabled);
+}
+
+static CLASS_DEVICE_ATTR(enable, S_IRUGO | S_IWUSR, show_sas_phy_enable,
+			 store_sas_phy_enable);
 
 static ssize_t do_sas_phy_reset(struct class_device *cdev,
 		size_t count, int hard_reset)
@@ -326,9 +419,9 @@ sas_phy_simple_attr(identify.phy_identifier, phy_identifier, "%d\n", u8);
 //sas_phy_simple_attr(port_identifier, port_identifier, "%d\n", int);
 sas_phy_linkspeed_attr(negotiated_linkrate);
 sas_phy_linkspeed_attr(minimum_linkrate_hw);
-sas_phy_linkspeed_attr(minimum_linkrate);
+sas_phy_linkspeed_rw_attr(minimum_linkrate);
 sas_phy_linkspeed_attr(maximum_linkrate_hw);
-sas_phy_linkspeed_attr(maximum_linkrate);
+sas_phy_linkspeed_rw_attr(maximum_linkrate);
 sas_phy_linkerror_attr(invalid_dword_count);
 sas_phy_linkerror_attr(running_disparity_error_count);
 sas_phy_linkerror_attr(loss_of_dword_sync_count);
@@ -387,6 +480,7 @@ struct sas_phy *sas_phy_alloc(struct device *parent, int number)
 		return NULL;
 
 	phy->number = number;
+	phy->enabled = 1;
 
 	device_initialize(&phy->dev);
 	phy->dev.parent = get_device(parent);
@@ -531,8 +625,19 @@ static void sas_port_release(struct device *dev)
 static void sas_port_create_link(struct sas_port *port,
 				 struct sas_phy *phy)
 {
-	sysfs_create_link(&port->dev.kobj, &phy->dev.kobj, phy->dev.bus_id);
-	sysfs_create_link(&phy->dev.kobj, &port->dev.kobj, "port");
+	int res;
+
+	res = sysfs_create_link(&port->dev.kobj, &phy->dev.kobj,
+				phy->dev.bus_id);
+	if (res)
+		goto err;
+	res = sysfs_create_link(&phy->dev.kobj, &port->dev.kobj, "port");
+	if (res)
+		goto err;
+	return;
+err:
+	printk(KERN_ERR "%s: Cannot create port links, err=%d\n",
+	       __FUNCTION__, res);
 }
 
 static void sas_port_delete_link(struct sas_port *port,
@@ -770,13 +875,20 @@ EXPORT_SYMBOL(sas_port_delete_phy);
 
 void sas_port_mark_backlink(struct sas_port *port)
 {
+	int res;
 	struct device *parent = port->dev.parent->parent->parent;
 
 	if (port->is_backlink)
 		return;
 	port->is_backlink = 1;
-	sysfs_create_link(&port->dev.kobj, &parent->kobj,
-			  parent->bus_id);
+	res = sysfs_create_link(&port->dev.kobj, &parent->kobj,
+				parent->bus_id);
+	if (res)
+		goto err;
+	return;
+err:
+	printk(KERN_ERR "%s: Cannot create port backlink, err=%d\n",
+	       __FUNCTION__, res);
 
 }
 EXPORT_SYMBOL(sas_port_mark_backlink);
@@ -1189,7 +1301,7 @@ int sas_rphy_add(struct sas_rphy *rphy)
 	if (identify->device_type == SAS_END_DEVICE &&
 	    rphy->scsi_target_id != -1) {
 		scsi_scan_target(&rphy->dev, 0,
-				rphy->scsi_target_id, ~0, 0);
+				rphy->scsi_target_id, SCAN_WILD_CARD, 0);
 	}
 
 	return 0;
@@ -1205,7 +1317,7 @@ EXPORT_SYMBOL(sas_rphy_add);
  * Note:
  *   This function must only be called on a remote
  *   PHY that has not sucessfully been added using
- *   sas_rphy_add().
+ *   sas_rphy_add() (or has been sas_rphy_remove()'d)
  */
 void sas_rphy_free(struct sas_rphy *rphy)
 {
@@ -1224,18 +1336,30 @@ void sas_rphy_free(struct sas_rphy *rphy)
 EXPORT_SYMBOL(sas_rphy_free);
 
 /**
- * sas_rphy_delete  --  remove SAS remote PHY
- * @rphy:	SAS remote PHY to remove
+ * sas_rphy_delete  --  remove and free SAS remote PHY
+ * @rphy:	SAS remote PHY to remove and free
  *
- * Removes the specified SAS remote PHY.
+ * Removes the specified SAS remote PHY and frees it.
  */
 void
 sas_rphy_delete(struct sas_rphy *rphy)
 {
+	sas_rphy_remove(rphy);
+	sas_rphy_free(rphy);
+}
+EXPORT_SYMBOL(sas_rphy_delete);
+
+/**
+ * sas_rphy_remove  --  remove SAS remote PHY
+ * @rphy:	SAS remote phy to remove
+ *
+ * Removes the specified SAS remote PHY.
+ */
+void
+sas_rphy_remove(struct sas_rphy *rphy)
+{
 	struct device *dev = &rphy->dev;
 	struct sas_port *parent = dev_to_sas_port(dev->parent);
-	struct Scsi_Host *shost = dev_to_shost(parent->dev.parent);
-	struct sas_host_attrs *sas_host = to_sas_host_attrs(shost);
 
 	switch (rphy->identify.device_type) {
 	case SAS_END_DEVICE:
@@ -1251,17 +1375,10 @@ sas_rphy_delete(struct sas_rphy *rphy)
 
 	transport_remove_device(dev);
 	device_del(dev);
-	transport_destroy_device(dev);
-
-	mutex_lock(&sas_host->lock);
-	list_del(&rphy->list);
-	mutex_unlock(&sas_host->lock);
 
 	parent->rphy = NULL;
-
-	put_device(dev);
 }
-EXPORT_SYMBOL(sas_rphy_delete);
+EXPORT_SYMBOL(sas_rphy_remove);
 
 /**
  * scsi_is_sas_rphy  --  check if a struct device represents a SAS remote PHY
@@ -1310,13 +1427,23 @@ static int sas_user_scan(struct Scsi_Host *shost, uint channel,
  * Setup / Teardown code
  */
 
-#define SETUP_TEMPLATE(attrb, field, perm, test)				\
+#define SETUP_TEMPLATE(attrb, field, perm, test)			\
 	i->private_##attrb[count] = class_device_attr_##field;		\
 	i->private_##attrb[count].attr.mode = perm;			\
 	i->attrb[count] = &i->private_##attrb[count];			\
 	if (test)							\
 		count++
 
+#define SETUP_TEMPLATE_RW(attrb, field, perm, test, ro_test, ro_perm)	\
+	i->private_##attrb[count] = class_device_attr_##field;		\
+	i->private_##attrb[count].attr.mode = perm;			\
+	if (ro_test) {							\
+		i->private_##attrb[count].attr.mode = ro_perm;		\
+		i->private_##attrb[count].store = NULL;			\
+	}								\
+	i->attrb[count] = &i->private_##attrb[count];			\
+	if (test)							\
+		count++
 
 #define SETUP_RPORT_ATTRIBUTE(field) 					\
 	SETUP_TEMPLATE(rphy_attrs, field, S_IRUGO, 1)
@@ -1327,6 +1454,14 @@ static int sas_user_scan(struct Scsi_Host *shost, uint channel,
 #define SETUP_PHY_ATTRIBUTE(field)					\
 	SETUP_TEMPLATE(phy_attrs, field, S_IRUGO, 1)
 
+#define SETUP_PHY_ATTRIBUTE_RW(field)					\
+	SETUP_TEMPLATE_RW(phy_attrs, field, S_IRUGO | S_IWUSR, 1,	\
+			!i->f->set_phy_speed, S_IRUGO)
+
+#define SETUP_OPTIONAL_PHY_ATTRIBUTE_RW(field, func)			\
+	SETUP_TEMPLATE_RW(phy_attrs, field, S_IRUGO | S_IWUSR, 1,	\
+			  !i->f->func, S_IRUGO)
+
 #define SETUP_PORT_ATTRIBUTE(field)					\
 	SETUP_TEMPLATE(port_attrs, field, S_IRUGO, 1)
 
@@ -1334,10 +1469,10 @@ static int sas_user_scan(struct Scsi_Host *shost, uint channel,
 	SETUP_TEMPLATE(phy_attrs, field, S_IRUGO, i->f->func)
 
 #define SETUP_PHY_ATTRIBUTE_WRONLY(field)				\
-	SETUP_TEMPLATE(phy_attrs, field, S_IWUGO, 1)
+	SETUP_TEMPLATE(phy_attrs, field, S_IWUSR, 1)
 
 #define SETUP_OPTIONAL_PHY_ATTRIBUTE_WRONLY(field, func)		\
-	SETUP_TEMPLATE(phy_attrs, field, S_IWUGO, i->f->func)
+	SETUP_TEMPLATE(phy_attrs, field, S_IWUSR, i->f->func)
 
 #define SETUP_END_DEV_ATTRIBUTE(field)					\
 	SETUP_TEMPLATE(end_dev_attrs, field, S_IRUGO, 1)
@@ -1407,9 +1542,9 @@ sas_attach_transport(struct sas_function_template *ft)
 	//SETUP_PHY_ATTRIBUTE(port_identifier);
 	SETUP_PHY_ATTRIBUTE(negotiated_linkrate);
 	SETUP_PHY_ATTRIBUTE(minimum_linkrate_hw);
-	SETUP_PHY_ATTRIBUTE(minimum_linkrate);
+	SETUP_PHY_ATTRIBUTE_RW(minimum_linkrate);
 	SETUP_PHY_ATTRIBUTE(maximum_linkrate_hw);
-	SETUP_PHY_ATTRIBUTE(maximum_linkrate);
+	SETUP_PHY_ATTRIBUTE_RW(maximum_linkrate);
 
 	SETUP_PHY_ATTRIBUTE(invalid_dword_count);
 	SETUP_PHY_ATTRIBUTE(running_disparity_error_count);
@@ -1417,6 +1552,7 @@ sas_attach_transport(struct sas_function_template *ft)
 	SETUP_PHY_ATTRIBUTE(phy_reset_problem_count);
 	SETUP_OPTIONAL_PHY_ATTRIBUTE_WRONLY(link_reset, phy_reset);
 	SETUP_OPTIONAL_PHY_ATTRIBUTE_WRONLY(hard_reset, phy_reset);
+	SETUP_OPTIONAL_PHY_ATTRIBUTE_RW(enable, phy_enable);
 	i->phy_attrs[count] = NULL;
 
 	count = 0;

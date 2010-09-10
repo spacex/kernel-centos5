@@ -3516,6 +3516,7 @@ static int __init slgt_init(void)
 
 	if (!slgt_device_list) {
 		printk("%s no devices found\n",driver_name);
+		pci_unregister_driver(&pci_driver);
 		return -ENODEV;
 	}
 

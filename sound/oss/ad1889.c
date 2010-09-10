@@ -230,9 +230,8 @@ static ad1889_dev_t *ad1889_alloc_dev(struct pci_dev *pci)
 	struct dmabuf *dmabuf;
 	int i;
 
-	if ((dev = kmalloc(sizeof(ad1889_dev_t), GFP_KERNEL)) == NULL) 
+	if ((dev = kzalloc(sizeof(ad1889_dev_t), GFP_KERNEL)) == NULL)
 		return NULL;
-	memset(dev, 0, sizeof(ad1889_dev_t));
 	spin_lock_init(&dev->lock);
 	dev->pci = pci;
 
@@ -778,7 +777,7 @@ static int ad1889_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static struct file_operations ad1889_fops = {
+static const struct file_operations ad1889_fops = {
 	.owner		= THIS_MODULE,
 	.llseek		= no_llseek,
 	.read		= ad1889_read,
@@ -812,7 +811,7 @@ static int ad1889_mixer_ioctl(struct inode *inode, struct file *file,
 	return codec->mixer_ioctl(codec, cmd, arg);
 }
 
-static struct file_operations ad1889_mixer_fops = {
+static const struct file_operations ad1889_mixer_fops = {
 	.owner		= THIS_MODULE,
 	.llseek		= no_llseek,
 	.ioctl		= ad1889_mixer_ioctl,
@@ -929,7 +928,7 @@ static struct pci_device_id ad1889_id_tbl[] = {
 };
 MODULE_DEVICE_TABLE(pci, ad1889_id_tbl);
 
-static irqreturn_t ad1889_interrupt(int irq, void *dev_id, struct pt_regs *regs)
+static irqreturn_t ad1889_interrupt(int irq, void *dev_id)
 {
 	u32 stat;
 	ad1889_dev_t *dev = (ad1889_dev_t *)dev_id;

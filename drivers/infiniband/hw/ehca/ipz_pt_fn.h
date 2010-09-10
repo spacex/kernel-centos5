@@ -150,6 +150,21 @@ static inline void *ipz_qeit_reset(struct ipz_queue *queue)
 	return ipz_qeit_get(queue);
 }
 
+/*
+ * return the q_offset corresponding to an absolute address
+ */
+int ipz_queue_abs_to_offset(struct ipz_queue *queue, u64 addr, u64 *q_offset);
+
+/*
+ * return the next queue offset. don't modify the queue.
+ */
+static inline u64 ipz_queue_advance_offset(struct ipz_queue *queue, u64 offset)
+{
+	offset += queue->qe_size;
+	if (offset >= queue->queue_length) offset = 0;
+	return offset;
+}
+
 /* struct generic page table */
 struct ipz_pt {
 	u64 entries[EHCA_PT_ENTRIES];
@@ -226,10 +241,18 @@ static inline void *ipz_eqit_eq_get_inc_valid(struct ipz_queue *queue)
 {
 	void *ret = ipz_qeit_get(queue);
 	u32 qe = *(u8 *) ret;
-	if ((qe >> 7) == (queue->toggle_state & 1))
-		ipz_qeit_eq_get_inc(queue); /* this is a good one */
-	else
-		ret = NULL;
+	if ((qe >> 7) != (queue->toggle_state & 1))
+		return NULL;
+	ipz_qeit_eq_get_inc(queue); /* this is a good one */
+	return ret;
+}
+
+static inline void *ipz_eqit_eq_peek_valid(struct ipz_queue *queue)
+{
+	void *ret = ipz_qeit_get(queue);
+	u32 qe = *(u8 *) ret;
+	if ((qe >> 7) != (queue->toggle_state & 1))
+		return NULL;
 	return ret;
 }
 

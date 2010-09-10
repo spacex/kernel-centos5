@@ -23,7 +23,7 @@
 #define NUM_CONTROLS 2
 
 #define CTR_READ(l,h,msrs,c) do {rdmsr(msrs->counters[(c)].addr, (l), (h));} while (0)
-#define CTR_WRITE(l,msrs,c) do {wrmsr(msrs->counters[(c)].addr, -(u32)(l), -1);} while (0)
+#define CTR_32BIT_WRITE(l,msrs,c) do {wrmsr(msrs->counters[(c)].addr, -(u32)(l), 0);} while (0)
 #define CTR_OVERFLOWED(n) (!((n) & (1U<<31)))
 
 #define CTRL_READ(l,h,msrs,c) do {rdmsr((msrs->controls[(c)].addr), (l), (h));} while (0)
@@ -63,7 +63,7 @@ static void ppro_setup_ctrs(struct op_msrs const * const msrs)
 	
 	/* avoid a false detection of ctr overflows in NMI handler */
 	for (i = 0; i < NUM_COUNTERS; ++i) {
-		CTR_WRITE(1, msrs, i);
+		CTR_32BIT_WRITE(1, msrs, i);
 	}
 
 	/* enable active counters */
@@ -71,7 +71,7 @@ static void ppro_setup_ctrs(struct op_msrs const * const msrs)
 		if (counter_config[i].enabled) {
 			reset_value[i] = counter_config[i].count;
 
-			CTR_WRITE(counter_config[i].count, msrs, i);
+			CTR_32BIT_WRITE(counter_config[i].count, msrs, i);
 
 			CTRL_READ(low, high, msrs, i);
 			CTRL_CLEAR(low);
@@ -96,7 +96,7 @@ static int ppro_check_ctrs(struct pt_regs * const regs,
 		CTR_READ(low, high, msrs, i);
 		if (CTR_OVERFLOWED(low)) {
 			oprofile_add_sample(regs, i);
-			CTR_WRITE(reset_value[i], msrs, i);
+			CTR_32BIT_WRITE(reset_value[i], msrs, i);
 		}
 	}
 

@@ -45,9 +45,9 @@ extern void qla2x00_update_fcports(scsi_qla_host_t *);
 extern int qla2x00_abort_isp(scsi_qla_host_t *);
 
 extern void qla2x00_update_fcport(scsi_qla_host_t *, fc_port_t *);
-extern void qla2x00_reg_remote_port(scsi_qla_host_t *, fc_port_t *);
 
 extern void qla2x00_alloc_fw_dump(scsi_qla_host_t *);
+extern void qla2x00_try_to_stop_firmware(scsi_qla_host_t *);
 
 /*
  * Global Data in qla_os.c source file.
@@ -60,7 +60,9 @@ extern int ql2xplogiabsentdevice;
 extern int ql2xloginretrycount;
 extern int ql2xfdmienable;
 extern int ql2xallocfwdump;
-extern int extended_error_logging;
+extern int ql2xextended_error_logging;
+extern int ql2xqfullrampup;
+extern int ql2x_enable_msix;
 
 extern void qla2x00_sp_compl(scsi_qla_host_t *, srb_t *);
 
@@ -208,6 +210,12 @@ qla2x00_trace_control(scsi_qla_host_t *, uint16_t, dma_addr_t, uint16_t);
 extern int
 qla2x00_read_sfp(scsi_qla_host_t *, dma_addr_t, uint16_t, uint16_t, uint16_t);
 
+extern int
+qla2x00_get_idma_speed(scsi_qla_host_t *, uint16_t, uint16_t *, uint16_t *);
+
+extern int
+qla2x00_set_idma_speed(scsi_qla_host_t *, uint16_t, uint16_t, uint16_t *);
+
 /*
  * Global Function Prototypes in qla_isr.c source file.
  */
@@ -216,6 +224,9 @@ extern irqreturn_t qla2300_intr_handler(int, void *, struct pt_regs *);
 extern irqreturn_t qla24xx_intr_handler(int, void *, struct pt_regs *);
 extern void qla2x00_process_response_queue(struct scsi_qla_host *);
 extern void qla24xx_process_response_queue(struct scsi_qla_host *);
+
+extern int qla2x00_request_irqs(scsi_qla_host_t *);
+extern void qla2x00_free_irqs(scsi_qla_host_t *);
 
 /*
  * Global Function Prototypes in qla_sup.c source file.
@@ -252,6 +263,9 @@ extern uint8_t *qla24xx_read_optrom_data(struct scsi_qla_host *, uint8_t *,
 extern int qla24xx_write_optrom_data(struct scsi_qla_host *, uint8_t *,
     uint32_t, uint32_t);
 
+extern int qla2x00_get_flash_version(scsi_qla_host_t *, void *);
+extern int qla24xx_get_flash_version(scsi_qla_host_t *, void *);
+
 /*
  * Global Function Prototypes in qla_dbg.c source file.
  */
@@ -279,6 +293,9 @@ extern int qla2x00_rsnn_nn(scsi_qla_host_t *);
 extern void *qla2x00_prep_ms_fdmi_iocb(scsi_qla_host_t *, uint32_t, uint32_t);
 extern void *qla24xx_prep_ms_fdmi_iocb(scsi_qla_host_t *, uint32_t, uint32_t);
 extern int qla2x00_fdmi_register(scsi_qla_host_t *);
+extern int qla2x00_gfpn_id(scsi_qla_host_t *, sw_info_t *);
+extern int qla2x00_gpsc(scsi_qla_host_t *, sw_info_t *);
+extern void qla2x00_get_sym_node_name(scsi_qla_host_t *, uint8_t *);
 
 /*
  * Global Function Prototypes in qla_attr.c source file.

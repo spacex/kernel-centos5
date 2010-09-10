@@ -23,7 +23,7 @@ obj-$(CONFIG_PPC64)		+= setup_64.o binfmt_elf32.o sys_ppc32.o \
 obj-$(CONFIG_PPC64)		+= vdso64/
 obj-$(CONFIG_ALTIVEC)		+= vecemu.o vector.o
 obj-$(CONFIG_PPC_970_NAP)	+= idle_power4.o
-obj-$(CONFIG_PPC_OF)		+= of_device.o prom_parse.o
+obj-$(CONFIG_PPC_OF)		+= of_device.o of_platform.o prom_parse.o
 procfs-$(CONFIG_PPC64)		:= proc_ppc64.o
 obj-$(CONFIG_PROC_FS)		+= $(procfs-y)
 rtaspci-$(CONFIG_PPC64)		:= rtas_pci.o
@@ -62,8 +62,13 @@ obj-$(CONFIG_BOOTX_TEXT)	+= btext.o
 obj-$(CONFIG_SMP)		+= smp.o
 obj-$(CONFIG_KPROBES)		+= kprobes.o
 obj-$(CONFIG_PPC_UDBG_16550)	+= legacy_serial.o udbg_16550.o
+
 module-$(CONFIG_PPC64)		+= module_64.o
 obj-$(CONFIG_MODULES)		+= $(module-y)
+
+ifeq ($(CONFIG_PPC_PSERIES),y)
+obj-$(CONFIG_PCI_MSI)		+= msi.o msi-rtas.o
+endif
 
 pci64-$(CONFIG_PPC64)		+= pci_64.o pci_dn.o pci_iommu.o \
 				   pci_direct_iommu.o iomap.o

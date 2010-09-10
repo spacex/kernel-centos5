@@ -79,7 +79,10 @@ static u32 find_khz_freq_from_fid(u32 fid)
 /* Return a frequency in MHz, given an input fid and did */
 static u32 find_freq_from_fiddid(u32 fid, u32 did)
 {
-	return 100 * (fid + 0x10) >> did;
+	if (current_cpu_data.x86 == 0x10)
+		return 100 * (fid + 0x10) >> did;
+	else
+		return 100 * (fid + 0x8) >> did;
 }
 
 static u32 find_khz_freq_from_fiddid(u32 fid, u32 did)
@@ -840,7 +843,8 @@ static int powernow_k8_cpu_init_acpi(struct powernow_k8_data *data)
 
 	/* fill in data */
 	data->numps = data->acpi_data.state_count;
-	print_basics(data);
+	if (first_cpu(cpu_core_map[data->cpu]) == data->cpu)
+		print_basics(data);
 	powernow_k8_acpi_pst_values(data, 0);
 
 	/* notify BIOS that we exist */
@@ -1275,9 +1279,6 @@ static int __cpuinit powernowk8_cpu_init(struct cpufreq_policy *pol)
 	if (cpu_family == CPU_OPTERON)
 		fidvid_msr_init();
 
-	if (tscsync && (cpu_family == CPU_OPTERON))
-		req_state[pol->cpu] = 0;
-
 	/* run on any CPU again */
 	set_cpus_allowed(current, oldmask);
 
@@ -1379,7 +1380,10 @@ static unsigned int powernowk8_get (unsigned int cpu)
 	if (query_current_values_with_pending_wait(data))
 		goto out;
 
-	khz = find_khz_freq_from_fid(data->currfid);
+	if (cpu_family == CPU_HW_PSTATE)
+		khz = find_khz_freq_from_fiddid(data->currfid, data->currdid);
+	else
+		khz = find_khz_freq_from_fid(data->currfid);
 
 out:
 	set_cpus_allowed(current, oldmask);
@@ -1423,10 +1427,13 @@ static int __cpuinit powernowk8_init(void)
 				printk(KERN_ERR PFX "Unable to allocate memory!\n");
 				return -ENOMEM;
 			}
+			/* necessary for dual-cores (99=just a large number) */
+			for(i=0; i < num_possible_cpus(); i++)
+				req_state[i] = 99;
 		}
 		printk(KERN_INFO PFX "Found %d %s "
-			"processors (" VERSION ")\n", supported_cpus,
-			boot_cpu_data.x86_model_id);
+			"processors (%d cpu cores) (" VERSION ")\n", supported_cpus/cpu_data[0].booted_cores,
+			boot_cpu_data.x86_model_id, supported_cpus);
 		return cpufreq_register_driver(&cpufreq_amd64_driver);
 	}
 

@@ -17,11 +17,28 @@
 #define PCI_DEVICE_ID_INTEL_82965Q_IG       0x2992
 #define PCI_DEVICE_ID_INTEL_82965G_HB       0x29A0
 #define PCI_DEVICE_ID_INTEL_82965G_IG       0x29A2
+#define PCI_DEVICE_ID_INTEL_82965GM_HB      0x2A00
+#define PCI_DEVICE_ID_INTEL_82965GM_IG      0x2A02
+#define PCI_DEVICE_ID_INTEL_82965GME_HB     0x2A10
+#define PCI_DEVICE_ID_INTEL_82965GME_IG     0x2A12
+#define PCI_DEVICE_ID_INTEL_82945GME_HB     0x27AC
+#define PCI_DEVICE_ID_INTEL_G33_HB          0x29C0
+#define PCI_DEVICE_ID_INTEL_G33_IG          0x29C2
+#define PCI_DEVICE_ID_INTEL_Q35_HB          0x29B0
+#define PCI_DEVICE_ID_INTEL_Q35_IG          0x29B2
+#define PCI_DEVICE_ID_INTEL_Q33_HB          0x29D0
+#define PCI_DEVICE_ID_INTEL_Q33_IG          0x29D2
 
 #define IS_I965 (agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82946GZ_HB || \
                  agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82965G_1_HB || \
                  agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82965Q_HB || \
-                 agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82965G_HB)
+                 agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82965G_HB || \
+                 agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82965GM_HB || \
+                 agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82965GME_HB)
+
+#define IS_G33	(agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_G33_HB || \
+                 agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_Q35_HB || \
+                 agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_Q33_HB)
 
 
 /* Intel 815 register */
@@ -46,6 +63,8 @@
 #define I915_PTEADDR	0x1C
 #define I915_GMCH_GMS_STOLEN_48M	(0x6 << 4)
 #define I915_GMCH_GMS_STOLEN_64M	(0x7 << 4)
+#define G33_GMCH_GMS_STOLEN_128M	(0x8 << 4)
+#define G33_GMCH_GMS_STOLEN_256M	(0x9 << 4)
 
 /* Intel 965G registers */
 #define I965_MSAC 0x62
@@ -117,13 +136,15 @@ static int intel_i810_configure(void)
 
 	current_size = A_SIZE_FIX(agp_bridge->current_size);
 
-	pci_read_config_dword(intel_i810_private.i810_dev, I810_MMADDR, &temp);
-	temp &= 0xfff80000;
-
-	intel_i810_private.registers = ioremap(temp, 128 * 4096);
 	if (!intel_i810_private.registers) {
-		printk(KERN_ERR PFX "Unable to remap memory.\n");
-		return -ENOMEM;
+		pci_read_config_dword(intel_i810_private.i810_dev, I810_MMADDR, &temp);
+		temp &= 0xfff80000;
+
+		intel_i810_private.registers = ioremap(temp, 128 * 4096);
+		if (!intel_i810_private.registers) {
+			printk(KERN_ERR PFX "Unable to remap memory.\n");
+			return -ENOMEM;
+		}
 	}
 
 	if ((readl(intel_i810_private.registers+I810_DRAM_CTL)
@@ -370,6 +391,11 @@ static struct _intel_i830_private {
 	struct pci_dev *i830_dev;		/* device one */
 	volatile u8 __iomem *registers;
 	volatile u32 __iomem *gtt;		/* I915G */
+	/* gtt_entries is the number of gtt entries that are already mapped
+	* to stolen memory.  Stolen memory is larger than the memory mapped
+	* through gtt_entries, as it includes some reserved space for the BIOS
+	* popup and for the GTT.
+	*/
 	int gtt_entries;
 } intel_i830_private;
 
@@ -380,14 +406,57 @@ static void intel_i830_init_gtt_entries(void)
 	u8 rdct;
 	int local = 0;
 	static const int ddt[4] = { 0, 16, 32, 64 };
-	int size;
+	int size = 0; /* reserved space (in kb) at the top of stolen memory */
 
 	pci_read_config_word(agp_bridge->dev,I830_GMCH_CTRL,&gmch_ctrl);
 
-	/* We obtain the size of the GTT, which is also stored (for some
-	 * reason) at the top of stolen memory. Then we add 4KB to that
-	 * for the video BIOS popup, which is also stored in there. */
-	size = agp_bridge->driver->fetch_size() + 4;
+	if (IS_I965) {
+		u32 pgetbl_ctl;
+		pgetbl_ctl = readl(intel_i830_private.registers+I810_PGETBL_CTL);
+
+		/* The 965 has a field telling us the size of the GTT,
+		* which may be larger than what is necessary to map the
+		* aperture.
+		*/
+		switch (pgetbl_ctl & I965_PGETBL_SIZE_MASK) {
+		case I965_PGETBL_SIZE_128KB:
+			size = 128;
+			break;
+		case I965_PGETBL_SIZE_256KB:
+			size = 256;
+			break;
+		case I965_PGETBL_SIZE_512KB:
+			size = 512;
+			break;
+		default:
+			printk(KERN_INFO PFX "Unknown page table size 0x%x, "
+				"assuming 512KB\n", (pgetbl_ctl & I965_PGETBL_SIZE_MASK));
+			size = 512;
+		}
+		size += 4; /* add in BIOS popup space */
+	} else if (IS_G33) {
+		/* G33's GTT size defined in gmch_ctrl, which has two options:
+		* 1M (no VT-d mode) and 2M (VT-d mode)
+		*/
+		switch (gmch_ctrl & G33_PGETBL_SIZE_MASK) {
+		case G33_PGETBL_SIZE_1M:
+			size = 1024;
+			break;
+		case G33_PGETBL_SIZE_2M:
+			size = 2048;
+			break;
+		default:
+			printk(KERN_INFO PFX "Unknown page table size 0x%x, "
+				"assuming 512KB\n", (gmch_ctrl & G33_PGETBL_SIZE_MASK));
+			size = 512;
+		}
+		size += 4;
+	} else {
+		/* On previous hardware, the GTT size was just what was
+		* required to map the aperture.
+		*/
+		size = agp_bridge->driver->fetch_size() + 4;
+	}
 
 	if (agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82830_HB ||
 	    agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82845G_HB) {
@@ -433,7 +502,9 @@ static void intel_i830_init_gtt_entries(void)
 			if (agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82915G_HB ||
 			    agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82915GM_HB ||
 			    agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82945G_HB ||
-			    agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82945GM_HB || IS_I965 )
+			    agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82945GM_HB ||
+			    agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82945GME_HB ||
+			    IS_I965 || IS_G33)
 				gtt_entries = MB(48) - KB(size);
 			else
 				gtt_entries = 0;
@@ -443,10 +514,25 @@ static void intel_i830_init_gtt_entries(void)
 			if (agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82915G_HB ||
 			    agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82915GM_HB ||
 			    agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82945G_HB ||
-			    agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82945GM_HB || IS_I965)
+			    agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82945GM_HB ||
+			    agp_bridge->dev->device == PCI_DEVICE_ID_INTEL_82945GME_HB ||
+			    IS_I965 || IS_G33)
 				gtt_entries = MB(64) - KB(size);
 			else
 				gtt_entries = 0;
+			break;
+		case G33_GMCH_GMS_STOLEN_128M:
+			if (IS_G33)
+				gtt_entries = MB(128) - KB(size);
+			else
+				gtt_entries = 0;
+			break;
+		case G33_GMCH_GMS_STOLEN_256M:
+			if (IS_G33)
+				gtt_entries = MB(256) - KB(size);
+			else
+				gtt_entries = 0;
+			break;
 		default:
 			gtt_entries = 0;
 			break;
@@ -743,22 +829,27 @@ static int intel_i915_remove_entries(struct agp_memory *mem,off_t pg_start,
 	return 0;
 }
 
-static int intel_i915_fetch_size(void)
+/* Return the aperture size by just checking the resource length.  The effect
+ * described in the spec of the MSAC registers is just changing of the
+ * resource size.
+ */
+static int intel_i9xx_fetch_size(void)
 {
-	struct aper_size_info_fixed *values;
-	u32 temp, offset;
+	int num_sizes = sizeof(intel_i830_sizes) / sizeof(*intel_i830_sizes);
+	int aper_size; /* size in megabytes */
+	int i;
 
-#define I915_256MB_ADDRESS_MASK (1<<27)
+	aper_size = pci_resource_len(intel_i830_private.i830_dev, 2) / MB(1);
 
-	values = A_SIZE_FIX(agp_bridge->driver->aperture_sizes);
+	for (i = 0; i < num_sizes; i++) {
+		if (aper_size == intel_i830_sizes[i].size) {
+			agp_bridge->current_size = intel_i830_sizes + i;
+			agp_bridge->previous_size = agp_bridge->current_size;
+			return aper_size;
+		}
+	}	
 
-	pci_read_config_dword(intel_i830_private.i830_dev, I915_GMADDR, &temp);
-	if (temp & I915_256MB_ADDRESS_MASK)
-		offset = 0;	/* 128MB aperture */
-	else
-		offset = 2;	/* 256MB aperture */
-	agp_bridge->previous_size = agp_bridge->current_size = (void *)(values + offset);
-	return values[offset].size;
+	return 0;
 }
 
 /* The intel i915 automatically initializes the agp aperture during POST.
@@ -819,37 +910,6 @@ static unsigned long intel_i965_mask_memory(struct agp_bridge_data *bridge,
 
 	/* Type checking must be done elsewhere */
 	return addr | bridge->driver->masks[type].mask;
-}
-
-static int intel_i965_fetch_size(void)
-{
-       struct aper_size_info_fixed *values;
-       u32 offset = 0;
-       u8 temp;
-
-#define I965_512MB_ADDRESS_MASK (3<<1)
-
-       values = A_SIZE_FIX(agp_bridge->driver->aperture_sizes);
-
-       pci_read_config_byte(intel_i830_private.i830_dev, I965_MSAC, &temp);
-       temp &= I965_512MB_ADDRESS_MASK;
-       switch (temp) {
-       case 0x00:
-               offset = 0; /* 128MB */
-               break;
-       case 0x06:
-               offset = 3; /* 512MB */
-               break;
-       default:
-       case 0x02:
-               offset = 2; /* 256MB */
-               break;
-       }
-
-       agp_bridge->previous_size = agp_bridge->current_size = (void *)(values + offset);
-
-	/* The i965 GTT is always sized as if it had a 512kB aperture size */
-	return 512;
 }
 
 /* The intel i965 automatically initializes the agp aperture during POST.
@@ -1574,7 +1634,7 @@ static struct agp_bridge_driver intel_915_driver = {
 	.num_aperture_sizes	= 4,
 	.needs_scratch_page	= TRUE,
 	.configure		= intel_i915_configure,
-	.fetch_size		= intel_i915_fetch_size,
+	.fetch_size		= intel_i9xx_fetch_size,
 	.cleanup		= intel_i915_cleanup,
 	.tlb_flush		= intel_i810_tlbflush,
 	.mask_memory		= intel_i810_mask_memory,
@@ -1598,7 +1658,7 @@ static struct agp_bridge_driver intel_i965_driver = {
        .num_aperture_sizes     = 4,
        .needs_scratch_page     = TRUE,
        .configure              = intel_i915_configure,
-       .fetch_size             = intel_i965_fetch_size,
+       .fetch_size             = intel_i9xx_fetch_size,
        .cleanup                = intel_i915_cleanup,
        .tlb_flush              = intel_i810_tlbflush,
        .mask_memory            = intel_i965_mask_memory,
@@ -1606,6 +1666,30 @@ static struct agp_bridge_driver intel_i965_driver = {
        .agp_enable             = intel_i810_agp_enable,
        .cache_flush            = global_cache_flush,
        .create_gatt_table      = intel_i965_create_gatt_table,
+       .free_gatt_table        = intel_i830_free_gatt_table,
+       .insert_memory          = intel_i915_insert_entries,
+       .remove_memory          = intel_i915_remove_entries,
+       .alloc_by_type          = intel_i830_alloc_by_type,
+       .free_by_type           = intel_i810_free_by_type,
+       .agp_alloc_page         = agp_generic_alloc_page,
+       .agp_destroy_page       = agp_generic_destroy_page,
+};
+
+static struct agp_bridge_driver intel_g33_driver = {
+       .owner                  = THIS_MODULE,
+       .aperture_sizes         = intel_i830_sizes,
+       .size_type              = FIXED_APER_SIZE,
+       .num_aperture_sizes     = 4,
+       .needs_scratch_page     = TRUE,
+       .configure              = intel_i915_configure,
+       .fetch_size             = intel_i9xx_fetch_size,
+       .cleanup                = intel_i915_cleanup,
+       .tlb_flush              = intel_i810_tlbflush,
+       .mask_memory            = intel_i965_mask_memory,
+       .masks                  = intel_i810_masks,
+       .agp_enable             = intel_i810_agp_enable,
+       .cache_flush            = global_cache_flush,
+       .create_gatt_table      = intel_i915_create_gatt_table,
        .free_gatt_table        = intel_i830_free_gatt_table,
        .insert_memory          = intel_i915_insert_entries,
        .remove_memory          = intel_i915_remove_entries,
@@ -1782,60 +1866,102 @@ static int __devinit agp_intel_probe(struct pci_dev *pdev,
 		name = "i875";
 		break;
 	case PCI_DEVICE_ID_INTEL_82915G_HB:
-		if (find_i830(PCI_DEVICE_ID_INTEL_82915G_IG))
+		if (find_i830(PCI_DEVICE_ID_INTEL_82915G_IG)) {
 			bridge->driver = &intel_915_driver;
-		else
-			bridge->driver = &intel_845_driver;
-		name = "915G";
+			name = "915G";
+		} else
+			bridge->driver = NULL;
 		break;
 	case PCI_DEVICE_ID_INTEL_82915GM_HB:
-		if (find_i830(PCI_DEVICE_ID_INTEL_82915GM_IG))
+		if (find_i830(PCI_DEVICE_ID_INTEL_82915GM_IG)) {
 			bridge->driver = &intel_915_driver;
-		else
-			bridge->driver = &intel_845_driver;
-		name = "915GM";
+			name = "915GM";
+		} else
+			bridge->driver = NULL;
 		break;
 	case PCI_DEVICE_ID_INTEL_82945G_HB:
-		if (find_i830(PCI_DEVICE_ID_INTEL_82945G_IG))
+		if (find_i830(PCI_DEVICE_ID_INTEL_82945G_IG)) {
 			bridge->driver = &intel_915_driver;
-		else
-			bridge->driver = &intel_845_driver;
-		name = "945G";
+			name = "945G";
+		} else
+			bridge->driver = NULL;
 		break;
 	case PCI_DEVICE_ID_INTEL_82945GM_HB:
-		if (find_i830(PCI_DEVICE_ID_INTEL_82945GM_IG))
+		if (find_i830(PCI_DEVICE_ID_INTEL_82945GM_IG)) {
 			bridge->driver = &intel_915_driver;
-		else
-			bridge->driver = &intel_845_driver;
-		name = "945GM";
+			name = "945GM";
+		} else
+			bridge->driver = NULL;
+		break;
+	case PCI_DEVICE_ID_INTEL_82945GME_HB:
+		if (find_i830(PCI_DEVICE_ID_INTEL_82945GME_IG)) {
+			bridge->driver = &intel_915_driver;
+			name = "945GME";
+		} else
+			bridge->driver = NULL;
 		break;
 	case PCI_DEVICE_ID_INTEL_82946GZ_HB:
-		if (find_i830(PCI_DEVICE_ID_INTEL_82946GZ_IG))
+		if (find_i830(PCI_DEVICE_ID_INTEL_82946GZ_IG)) {
 			bridge->driver = &intel_i965_driver;
-		else
-			bridge->driver = &intel_845_driver;
-		name = "946GZ";
+			name = "946GZ";
+		} else
+			bridge->driver = NULL;
 		break;
 	case PCI_DEVICE_ID_INTEL_82965G_1_HB:
-		if (find_i830(PCI_DEVICE_ID_INTEL_82965G_1_IG))
+		if (find_i830(PCI_DEVICE_ID_INTEL_82965G_1_IG)) {
 			bridge->driver = &intel_i965_driver;
-		else
-			bridge->driver = &intel_845_driver;
-		name = "965G";
+			name = "965G";
+		} else
+			bridge->driver = NULL;
 		break;
 	case PCI_DEVICE_ID_INTEL_82965Q_HB:
-		if (find_i830(PCI_DEVICE_ID_INTEL_82965Q_IG))
+		if (find_i830(PCI_DEVICE_ID_INTEL_82965Q_IG)) {
 			bridge->driver = &intel_i965_driver;
-		else
-			bridge->driver = &intel_845_driver;
-		name = "965Q";
+			name = "965Q";
+		} else
+			bridge->driver = NULL;
 		break;
 	case PCI_DEVICE_ID_INTEL_82965G_HB:
-		if (find_i830(PCI_DEVICE_ID_INTEL_82965G_IG))
+		if (find_i830(PCI_DEVICE_ID_INTEL_82965G_IG)) {
 			bridge->driver = &intel_i965_driver;
-		else
-			bridge->driver = &intel_845_driver;
-		name = "965G";
+			name = "965G";
+		} else
+			bridge->driver = NULL;
+		break;
+	case PCI_DEVICE_ID_INTEL_82965GM_HB:
+		if (find_i830(PCI_DEVICE_ID_INTEL_82965GM_IG)) {
+			bridge->driver = &intel_i965_driver;
+			name = "965GM";
+		} else
+			bridge->driver = NULL;
+		break;
+	case PCI_DEVICE_ID_INTEL_82965GME_HB:
+		if (find_i830(PCI_DEVICE_ID_INTEL_82965GME_IG)) {
+			bridge->driver = &intel_i965_driver;
+			name = "965GME/GLE";
+		} else
+			bridge->driver = NULL;
+		break;
+	case PCI_DEVICE_ID_INTEL_G33_HB:
+		if (find_i830(PCI_DEVICE_ID_INTEL_G33_IG)) {
+			bridge->driver = &intel_g33_driver;
+			name = "G33";
+		} else
+			bridge->driver = NULL;
+		break;
+	case PCI_DEVICE_ID_INTEL_Q35_HB:
+		if (find_i830(PCI_DEVICE_ID_INTEL_Q35_IG)) {
+			bridge->driver = &intel_g33_driver;
+			name = "Q35";
+		} else
+			bridge->driver = NULL;
+		break;
+	case PCI_DEVICE_ID_INTEL_Q33_HB:
+		if (find_i830(PCI_DEVICE_ID_INTEL_Q33_IG)) {
+			bridge->driver = &intel_g33_driver;
+			name = "Q33";
+		} else
+			bridge->driver = NULL;
 		break;
 
 	case PCI_DEVICE_ID_INTEL_7505_0:
@@ -1853,6 +1979,14 @@ static int __devinit agp_intel_probe(struct pci_dev *pdev,
 		agp_put_bridge(bridge);
 		return -ENODEV;
 	};
+
+	if (bridge->driver == NULL) {
+		/* bridge has no AGP and no IGD detected */
+		if (cap_ptr)
+			printk(KERN_WARNING PFX "Failed to find bridge device. \n");
+		agp_put_bridge(bridge);
+		return -ENODEV;
+	}
 
 	bridge->dev = pdev;
 	bridge->capndx = cap_ptr;
@@ -1927,6 +2061,15 @@ static int agp_intel_resume(struct pci_dev *pdev)
 
 	pci_restore_state(pdev);
 
+	/* We should restore our graphics device's config space,
+	* as host bridge (00:00) resumes before graphics device (02:00),
+	* then our access to its pci space can work right. 
+	*/
+	if (intel_i810_private.i810_dev)
+		pci_restore_state(intel_i810_private.i810_dev);
+	if (intel_i830_private.i830_dev)
+		pci_restore_state(intel_i830_private.i830_dev);
+
 	if (bridge->driver == &intel_generic_driver)
 		intel_configure();
 	else if (bridge->driver == &intel_850_driver)
@@ -1983,10 +2126,16 @@ static struct pci_device_id agp_intel_pci_table[] = {
 	ID(PCI_DEVICE_ID_INTEL_82915GM_HB),
 	ID(PCI_DEVICE_ID_INTEL_82945G_HB),
 	ID(PCI_DEVICE_ID_INTEL_82945GM_HB),
+	ID(PCI_DEVICE_ID_INTEL_82945GME_HB),
 	ID(PCI_DEVICE_ID_INTEL_82946GZ_HB),
 	ID(PCI_DEVICE_ID_INTEL_82965G_1_HB),
 	ID(PCI_DEVICE_ID_INTEL_82965Q_HB),
 	ID(PCI_DEVICE_ID_INTEL_82965G_HB),
+	ID(PCI_DEVICE_ID_INTEL_82965GM_HB),
+	ID(PCI_DEVICE_ID_INTEL_82965GME_HB),
+	ID(PCI_DEVICE_ID_INTEL_G33_HB),
+	ID(PCI_DEVICE_ID_INTEL_Q35_HB),
+	ID(PCI_DEVICE_ID_INTEL_Q33_HB),
 	{ }
 };
 

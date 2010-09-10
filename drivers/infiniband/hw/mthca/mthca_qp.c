@@ -35,9 +35,11 @@
  * $Id: mthca_qp.c 1355 2004-12-17 15:23:43Z roland $
  */
 
-#include <linux/init.h>
 #include <linux/string.h>
 #include <linux/slab.h>
+#include <linux/hardirq.h>
+
+#include <asm/io.h>
 
 #include <rdma/ib_verbs.h>
 #include <rdma/ib_cache.h>
@@ -47,6 +49,10 @@
 #include "mthca_cmd.h"
 #include "mthca_memfree.h"
 #include "mthca_wqe.h"
+
+static int mthca_qos_support = 0;
+module_param_named(qos_support, mthca_qos_support, int, 0644);
+MODULE_PARM_DESC(qos_support, "Enable QoS support if > 0");
 
 enum {
 	MTHCA_MAX_DIRECT_QP_SIZE = 4 * PAGE_SIZE,
@@ -294,7 +300,7 @@ static int to_mthca_st(int transport)
 	}
 }
 
-static void store_attrs(struct mthca_sqp *sqp, struct ib_qp_attr *attr,
+static void store_attrs(struct mthca_sqp *sqp, const struct ib_qp_attr *attr,
 			int attr_mask)
 {
 	if (attr_mask & IB_QP_PKEY_INDEX)
@@ -326,7 +332,7 @@ static void init_port(struct mthca_dev *dev, int port)
 		mthca_warn(dev, "INIT_IB returned status %02x.\n", status);
 }
 
-static __be32 get_hw_access_flags(struct mthca_qp *qp, struct ib_qp_attr *attr,
+static __be32 get_hw_access_flags(struct mthca_qp *qp, const struct ib_qp_attr *attr,
 				  int attr_mask)
 {
 	u8 dest_rd_atomic;
@@ -428,12 +434,17 @@ int mthca_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *qp_attr, int qp_attr_m
 {
 	struct mthca_dev *dev = to_mdev(ibqp->device);
 	struct mthca_qp *qp = to_mqp(ibqp);
-	int err;
-	struct mthca_mailbox *mailbox;
+	int err = 0;
+	struct mthca_mailbox *mailbox = NULL;
 	struct mthca_qp_param *qp_param;
 	struct mthca_qp_context *context;
 	int mthca_state;
 	u8 status;
+
+	if (qp->state == IB_QPS_RESET) {
+		qp_attr->qp_state = IB_QPS_RESET;
+		goto done;
+	}
 
 	mailbox = mthca_alloc_mailbox(dev, GFP_KERNEL);
 	if (IS_ERR(mailbox))
@@ -453,7 +464,6 @@ int mthca_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *qp_attr, int qp_attr_m
 	mthca_state = be32_to_cpu(context->flags) >> 28;
 
 	qp_attr->qp_state 	     = to_ib_qp_state(mthca_state);
-	qp_attr->cur_qp_state 	     = qp_attr->qp_state;
 	qp_attr->path_mtu 	     = context->mtu_msgmax >> 5;
 	qp_attr->path_mig_state      =
 		to_ib_mig_state((be32_to_cpu(context->flags) >> 11) & 0x3);
@@ -463,11 +473,6 @@ int mthca_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *qp_attr, int qp_attr_m
 	qp_attr->dest_qp_num 	     = be32_to_cpu(context->remote_qpn) & 0xffffff;
 	qp_attr->qp_access_flags     =
 		to_ib_qp_access_flags(be32_to_cpu(context->params2));
-	qp_attr->cap.max_send_wr     = qp->sq.max;
-	qp_attr->cap.max_recv_wr     = qp->rq.max;
-	qp_attr->cap.max_send_sge    = qp->sq.max_gs;
-	qp_attr->cap.max_recv_sge    = qp->rq.max_gs;
-	qp_attr->cap.max_inline_data = qp->max_inline_data;
 
 	if (qp->transport == RC || qp->transport == UC) {
 		to_ib_ah_attr(dev, &qp_attr->ah_attr, &context->pri_path);
@@ -494,14 +499,23 @@ int mthca_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *qp_attr, int qp_attr_m
 	qp_attr->retry_cnt 	    = (be32_to_cpu(context->params1) >> 16) & 0x7;
 	qp_attr->rnr_retry 	    = context->pri_path.rnr_retry >> 5;
 	qp_attr->alt_timeout 	    = context->alt_path.ackto >> 3;
-	qp_init_attr->cap 	    = qp_attr->cap;
+
+done:
+	qp_attr->cur_qp_state	     = qp_attr->qp_state;
+	qp_attr->cap.max_send_wr     = qp->sq.max;
+	qp_attr->cap.max_recv_wr     = qp->rq.max;
+	qp_attr->cap.max_send_sge    = qp->sq.max_gs;
+	qp_attr->cap.max_recv_sge    = qp->rq.max_gs;
+	qp_attr->cap.max_inline_data = qp->max_inline_data;
+
+	qp_init_attr->cap	     = qp_attr->cap;
 
 out:
 	mthca_free_mailbox(dev, mailbox);
 	return err;
 }
 
-static int mthca_path_set(struct mthca_dev *dev, struct ib_ah_attr *ah,
+static int mthca_path_set(struct mthca_dev *dev, const struct ib_ah_attr *ah,
 			  struct mthca_qp_path *path, u8 port)
 {
 	path->g_mylmc     = ah->src_path_bits & 0x7f;
@@ -529,66 +543,18 @@ static int mthca_path_set(struct mthca_dev *dev, struct ib_ah_attr *ah,
 	return 0;
 }
 
-int mthca_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr, int attr_mask)
+static int __mthca_modify_qp(struct ib_qp *ibqp,
+			     const struct ib_qp_attr *attr, int attr_mask,
+			     enum ib_qp_state cur_state, enum ib_qp_state new_state)
 {
 	struct mthca_dev *dev = to_mdev(ibqp->device);
 	struct mthca_qp *qp = to_mqp(ibqp);
-	enum ib_qp_state cur_state, new_state;
 	struct mthca_mailbox *mailbox;
 	struct mthca_qp_param *qp_param;
 	struct mthca_qp_context *qp_context;
 	u32 sqd_event = 0;
 	u8 status;
 	int err = -EINVAL;
-
-	mutex_lock(&qp->mutex);
-
-	if (attr_mask & IB_QP_CUR_STATE) {
-		cur_state = attr->cur_qp_state;
-	} else {
-		spin_lock_irq(&qp->sq.lock);
-		spin_lock(&qp->rq.lock);
-		cur_state = qp->state;
-		spin_unlock(&qp->rq.lock);
-		spin_unlock_irq(&qp->sq.lock);
-	}
-
-	new_state = attr_mask & IB_QP_STATE ? attr->qp_state : cur_state;
-
-	if (!ib_modify_qp_is_ok(cur_state, new_state, ibqp->qp_type, attr_mask)) {
-		mthca_dbg(dev, "Bad QP transition (transport %d) "
-			  "%d->%d with attr 0x%08x\n",
-			  qp->transport, cur_state, new_state,
-			  attr_mask);
-		goto out;
-	}
-
-	if ((attr_mask & IB_QP_PKEY_INDEX) &&
-	     attr->pkey_index >= dev->limits.pkey_table_len) {
-		mthca_dbg(dev, "P_Key index (%u) too large. max is %d\n",
-			  attr->pkey_index, dev->limits.pkey_table_len-1);
-		goto out;
-	}
-
-	if ((attr_mask & IB_QP_PORT) &&
-	    (attr->port_num == 0 || attr->port_num > dev->limits.num_ports)) {
-		mthca_dbg(dev, "Port number (%u) is invalid\n", attr->port_num);
-		goto out;
-	}
-
-	if (attr_mask & IB_QP_MAX_QP_RD_ATOMIC &&
-	    attr->max_rd_atomic > dev->limits.max_qp_init_rdma) {
-		mthca_dbg(dev, "Max rdma_atomic as initiator %u too large (max is %d)\n",
-			  attr->max_rd_atomic, dev->limits.max_qp_init_rdma);
-		goto out;
-	}
-
-	if (attr_mask & IB_QP_MAX_DEST_RD_ATOMIC &&
-	    attr->max_dest_rd_atomic > 1 << dev->qp_table.rdb_shift) {
-		mthca_dbg(dev, "Max rdma_atomic as responder %u too large (max %d)\n",
-			  attr->max_dest_rd_atomic, 1 << dev->qp_table.rdb_shift);
-		goto out;
-	}
 
 	mailbox = mthca_alloc_mailbox(dev, GFP_KERNEL);
 	if (IS_ERR(mailbox)) {
@@ -634,11 +600,11 @@ int mthca_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr, int attr_mask)
 
 	if (mthca_is_memfree(dev)) {
 		if (qp->rq.max)
-			qp_context->rq_size_stride = long_log2(qp->rq.max) << 3;
+			qp_context->rq_size_stride = ilog2(qp->rq.max) << 3;
 		qp_context->rq_size_stride |= qp->rq.wqe_shift - 4;
 
 		if (qp->sq.max)
-			qp_context->sq_size_stride = long_log2(qp->sq.max) << 3;
+			qp_context->sq_size_stride = ilog2(qp->sq.max) << 3;
 		qp_context->sq_size_stride |= qp->sq.wqe_shift - 4;
 	}
 
@@ -684,6 +650,32 @@ int mthca_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr, int attr_mask)
 			goto out_mailbox;
 
 		qp_param->opt_param_mask |= cpu_to_be32(MTHCA_QP_OPTPAR_PRIMARY_ADDR_PATH);
+		if (mthca_qos_support) {
+			u8 sl = attr->ah_attr.sl;
+			u8 sched_queue = (sl & 0x8) | (sl & (~(sl >> 1)) & 0x4) |
+				((sl >> 1) & (sl >> 2) & 0x2) | ((sl >> 1) & 0x1);
+
+			if (mthca_is_memfree(dev)) {
+				qp_context->rlkey_arbel_sched_queue |= sched_queue;
+			} else {
+				qp_context->tavor_sched_queue |= cpu_to_be32(sched_queue);
+			}
+			qp_param->opt_param_mask |=
+				cpu_to_be32(MTHCA_QP_OPTPAR_SCHED_QUEUE);
+		}
+	}
+
+	if (ibqp->qp_type == IB_QPT_RC &&
+	    cur_state == IB_QPS_INIT && new_state == IB_QPS_RTR) {
+		u8 sched_queue = ibqp->uobject ? 0x2 : 0x1;
+
+		if (mthca_is_memfree(dev))
+			qp_context->rlkey_arbel_sched_queue |= sched_queue;
+		else
+			qp_context->tavor_sched_queue |= cpu_to_be32(sched_queue);
+
+		qp_param->opt_param_mask |=
+			cpu_to_be32(MTHCA_QP_OPTPAR_SCHED_QUEUE);
 	}
 
 	if (attr_mask & IB_QP_TIMEOUT) {
@@ -844,11 +836,15 @@ int mthca_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr, int attr_mask)
 	 * entries and reinitialize the QP.
 	 */
 	if (new_state == IB_QPS_RESET && !qp->ibqp.uobject) {
-		mthca_cq_clean(dev, to_mcq(qp->ibqp.send_cq), qp->qpn,
+		mthca_cq_clean(dev, to_mcq(qp->ibqp.recv_cq), qp->qpn,
 			       qp->ibqp.srq ? to_msrq(qp->ibqp.srq) : NULL);
 		if (qp->ibqp.send_cq != qp->ibqp.recv_cq)
-			mthca_cq_clean(dev, to_mcq(qp->ibqp.recv_cq), qp->qpn,
-				       qp->ibqp.srq ? to_msrq(qp->ibqp.srq) : NULL);
+			mthca_cq_clean(dev, to_mcq(qp->ibqp.send_cq), qp->qpn, NULL);
+
+		if (dev->mthca_flags & MTHCA_FLAG_MSI_X)
+			synchronize_irq(dev->eq_table.eq[MTHCA_EQ_COMP].msi_x_vector);
+		else
+			synchronize_irq(dev->pdev->irq);
 
 		mthca_wq_reset(&qp->sq);
 		qp->sq.last = get_send_wqe(qp, qp->sq.max - 1);
@@ -864,7 +860,98 @@ int mthca_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr, int attr_mask)
 
 out_mailbox:
 	mthca_free_mailbox(dev, mailbox);
+out:
+	return err;
+}
 
+static const struct ib_qp_attr mthca_qp_attr = { .port_num = 1};
+static const int mthca_qp_attr_mask_table[IB_QPT_UD + 1] = {
+		[IB_QPT_UD]  = (IB_QP_PKEY_INDEX		|
+				IB_QP_PORT			|
+				IB_QP_QKEY),
+		[IB_QPT_UC]  = (IB_QP_PKEY_INDEX		|
+				IB_QP_PORT			|
+				IB_QP_ACCESS_FLAGS),
+		[IB_QPT_RC]  = (IB_QP_PKEY_INDEX		|
+				IB_QP_PORT			|
+				IB_QP_ACCESS_FLAGS),
+		[IB_QPT_SMI] = (IB_QP_PKEY_INDEX		|
+				IB_QP_QKEY),
+		[IB_QPT_GSI] = (IB_QP_PKEY_INDEX		|
+				IB_QP_QKEY),
+};
+
+int mthca_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr, int attr_mask,
+		    struct ib_udata *udata)
+{
+	struct mthca_dev *dev = to_mdev(ibqp->device);
+	struct mthca_qp *qp = to_mqp(ibqp);
+	enum ib_qp_state cur_state, new_state;
+	int err = -EINVAL;
+
+	mutex_lock(&qp->mutex);
+	if (attr_mask & IB_QP_CUR_STATE) {
+		cur_state = attr->cur_qp_state;
+	} else {
+		spin_lock_irq(&qp->sq.lock);
+		spin_lock(&qp->rq.lock);
+		cur_state = qp->state;
+		spin_unlock(&qp->rq.lock);
+		spin_unlock_irq(&qp->sq.lock);
+	}
+
+	new_state = attr_mask & IB_QP_STATE ? attr->qp_state : cur_state;
+
+	if (!ib_modify_qp_is_ok(cur_state, new_state, ibqp->qp_type, attr_mask)) {
+		mthca_dbg(dev, "Bad QP transition (transport %d) "
+			  "%d->%d with attr 0x%08x\n",
+			  qp->transport, cur_state, new_state,
+			  attr_mask);
+		goto out;
+	}
+
+	if ((attr_mask & IB_QP_PKEY_INDEX) &&
+	     attr->pkey_index >= dev->limits.pkey_table_len) {
+		mthca_dbg(dev, "P_Key index (%u) too large. max is %d\n",
+			  attr->pkey_index, dev->limits.pkey_table_len-1);
+		goto out;
+	}
+
+	if ((attr_mask & IB_QP_PORT) &&
+	    (attr->port_num == 0 || attr->port_num > dev->limits.num_ports)) {
+		mthca_dbg(dev, "Port number (%u) is invalid\n", attr->port_num);
+		goto out;
+	}
+
+	if (attr_mask & IB_QP_MAX_QP_RD_ATOMIC &&
+	    attr->max_rd_atomic > dev->limits.max_qp_init_rdma) {
+		mthca_dbg(dev, "Max rdma_atomic as initiator %u too large (max is %d)\n",
+			  attr->max_rd_atomic, dev->limits.max_qp_init_rdma);
+		goto out;
+	}
+
+	if (attr_mask & IB_QP_MAX_DEST_RD_ATOMIC &&
+	    attr->max_dest_rd_atomic > 1 << dev->qp_table.rdb_shift) {
+		mthca_dbg(dev, "Max rdma_atomic as responder %u too large (max %d)\n",
+			  attr->max_dest_rd_atomic, 1 << dev->qp_table.rdb_shift);
+		goto out;
+	}
+
+	if (cur_state == new_state && cur_state == IB_QPS_RESET) {
+		err = 0;
+		goto out;
+	}
+
+	if (cur_state == IB_QPS_RESET && new_state == IB_QPS_ERR) {
+		err = __mthca_modify_qp(ibqp, &mthca_qp_attr,
+					mthca_qp_attr_mask_table[ibqp->qp_type],
+					IB_QPS_RESET, IB_QPS_INIT);
+		if (err)
+			goto out;
+		cur_state = IB_QPS_INIT;
+	}
+
+	err = __mthca_modify_qp(ibqp, attr, attr_mask, cur_state, new_state);
 out:
 	mutex_unlock(&qp->mutex);
 	return err;
@@ -1376,6 +1463,10 @@ void mthca_free_qp(struct mthca_dev *dev,
 	struct mthca_cq *send_cq;
 	struct mthca_cq *recv_cq;
 
+	if (qp->state != IB_QPS_RESET)
+		mthca_MODIFY_QP(dev, qp->state, IB_QPS_RESET, qp->qpn, 0,
+				NULL, 0, &status);
+
 	send_cq = to_mcq(qp->ibqp.send_cq);
 	recv_cq = to_mcq(qp->ibqp.recv_cq);
 
@@ -1389,15 +1480,25 @@ void mthca_free_qp(struct mthca_dev *dev,
 	mthca_array_clear(&dev->qp_table.qp,
 			  qp->qpn & (dev->limits.num_qps - 1));
 	--qp->refcount;
+
+	if (!qp->ibqp.uobject) {
+		__mthca_cq_clean(dev, send_cq, qp->qpn,
+			       qp->ibqp.srq ? to_msrq(qp->ibqp.srq) : NULL);
+		if (send_cq != recv_cq)
+			__mthca_cq_clean(dev, recv_cq, qp->qpn,
+					 qp->ibqp.srq ? to_msrq(qp->ibqp.srq) : NULL);
+	}
+
 	spin_unlock(&dev->qp_table.lock);
 
 	mthca_unlock_cqs(send_cq, recv_cq);
 
-	wait_event(qp->wait, !get_qp_refcount(dev, qp));
+	if (dev->mthca_flags & MTHCA_FLAG_MSI_X)
+		synchronize_irq(dev->eq_table.eq[MTHCA_EQ_COMP].msi_x_vector);
+	else
+		synchronize_irq(dev->pdev->irq);
 
-	if (qp->state != IB_QPS_RESET)
-		mthca_MODIFY_QP(dev, qp->state, IB_QPS_RESET, qp->qpn, 0,
-				NULL, 0, &status);
+	wait_event(qp->wait, !get_qp_refcount(dev, qp));
 
 	/*
 	 * If this is a userspace QP, the buffers, MR, CQs and so on
@@ -1405,12 +1506,6 @@ void mthca_free_qp(struct mthca_dev *dev,
 	 * unref the mem-free tables and free the QPN in our table.
 	 */
 	if (!qp->ibqp.uobject) {
-		mthca_cq_clean(dev, to_mcq(qp->ibqp.send_cq), qp->qpn,
-			       qp->ibqp.srq ? to_msrq(qp->ibqp.srq) : NULL);
-		if (qp->ibqp.send_cq != qp->ibqp.recv_cq)
-			mthca_cq_clean(dev, to_mcq(qp->ibqp.recv_cq), qp->qpn,
-				       qp->ibqp.srq ? to_msrq(qp->ibqp.srq) : NULL);
-
 		mthca_free_memfree(dev, qp);
 		mthca_free_wqe_buf(dev, qp);
 	}
@@ -1688,7 +1783,7 @@ int mthca_tavor_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 			size += sizeof (struct mthca_data_seg) / 16;
 		}
 
-		qp->wrid[ind + qp->rq.max] = wr->wr_id;
+		qp->wrid[ind] = wr->wr_id;
 
 		if (wr->opcode >= ARRAY_SIZE(mthca_opcode)) {
 			mthca_err(dev, "opcode invalid\n");
@@ -1732,6 +1827,11 @@ out:
 		mthca_write64(doorbell,
 			      dev->kar + MTHCA_SEND_DOORBELL,
 			      MTHCA_GET_DOORBELL_LOCK(&dev->doorbell_lock));
+		/*
+		 * Make sure doorbells don't leak out of SQ spinlock
+		 * and reach the HCA out of order:
+		 */
+		mmiowb();
 	}
 
 	qp->sq.next_ind = ind;
@@ -1803,7 +1903,7 @@ int mthca_tavor_post_receive(struct ib_qp *ibqp, struct ib_recv_wr *wr,
 			size += sizeof (struct mthca_data_seg) / 16;
 		}
 
-		qp->wrid[ind] = wr->wr_id;
+		qp->wrid[ind + qp->sq.max] = wr->wr_id;
 
 		((struct mthca_next_seg *) prev_wqe)->nda_op =
 			cpu_to_be32((ind << qp->rq.wqe_shift) | 1);
@@ -1850,6 +1950,12 @@ out:
 
 	qp->rq.next_ind = ind;
 	qp->rq.head    += nreq;
+
+	/*
+	 * Make sure doorbells don't leak out of RQ spinlock and reach
+	 * the HCA out of order:
+	 */
+	mmiowb();
 
 	spin_unlock_irqrestore(&qp->rq.lock, flags);
 	return err;
@@ -2055,7 +2161,7 @@ int mthca_arbel_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 			size += sizeof (struct mthca_data_seg) / 16;
 		}
 
-		qp->wrid[ind + qp->rq.max] = wr->wr_id;
+		qp->wrid[ind] = wr->wr_id;
 
 		if (wr->opcode >= ARRAY_SIZE(mthca_opcode)) {
 			mthca_err(dev, "opcode invalid\n");
@@ -2111,6 +2217,12 @@ out:
 			      dev->kar + MTHCA_SEND_DOORBELL,
 			      MTHCA_GET_DOORBELL_LOCK(&dev->doorbell_lock));
 	}
+
+	/*
+	 * Make sure doorbells don't leak out of SQ spinlock and reach
+	 * the HCA out of order:
+	 */
+	mmiowb();
 
 	spin_unlock_irqrestore(&qp->sq.lock, flags);
 	return err;
@@ -2173,7 +2285,7 @@ int mthca_arbel_post_receive(struct ib_qp *ibqp, struct ib_recv_wr *wr,
 			((struct mthca_data_seg *) wqe)->addr = 0;
 		}
 
-		qp->wrid[ind] = wr->wr_id;
+		qp->wrid[ind + qp->sq.max] = wr->wr_id;
 
 		++ind;
 		if (unlikely(ind >= qp->rq.max))
@@ -2204,7 +2316,7 @@ void mthca_free_err_wqe(struct mthca_dev *dev, struct mthca_qp *qp, int is_send,
 	 * For SRQs, all WQEs generate a CQE, so we're always at the
 	 * end of the doorbell chain.
 	 */
-	if (qp->ibqp.srq) {
+	if (qp->ibqp.srq && !is_send) {
 		*new_wqe = 0;
 		return;
 	}
@@ -2222,7 +2334,7 @@ void mthca_free_err_wqe(struct mthca_dev *dev, struct mthca_qp *qp, int is_send,
 		*new_wqe = 0;
 }
 
-int __devinit mthca_init_qp_table(struct mthca_dev *dev)
+int mthca_init_qp_table(struct mthca_dev *dev)
 {
 	int err;
 	u8 status;

@@ -45,6 +45,8 @@
 
 #include "ehca_tools.h"
 
+#define EHCA_MAX_MTU 4
+
 /* QP Table Entry Memory Map */
 struct hipz_qptemm {
 	u64 qpx_hcr;
@@ -183,8 +185,6 @@ struct hipz_mrmwmm {
 	u64 mrx_ctl[64];
 
 };
-
-#define MRX_HCR_LPARID_VALID EHCA_BMASK_IBM(0,0)
 
 #define MRMWMM_OFFSET(x) offsetof(struct hipz_mrmwmm,x)
 

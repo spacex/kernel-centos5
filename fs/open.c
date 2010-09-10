@@ -546,7 +546,8 @@ asmlinkage long sys_chdir(const char __user * filename)
 	struct nameidata nd;
 	int error;
 
-	error = __user_walk(filename, LOOKUP_FOLLOW|LOOKUP_DIRECTORY, &nd);
+	error = __user_walk(filename,
+			    LOOKUP_FOLLOW|LOOKUP_DIRECTORY|LOOKUP_CHDIR, &nd);
 	if (error)
 		goto out;
 
@@ -637,7 +638,7 @@ asmlinkage long sys_fchmod(unsigned int fd, mode_t mode)
 	dentry = file->f_dentry;
 	inode = dentry->d_inode;
 
-	audit_inode(NULL, inode);
+	audit_inode(NULL, dentry);
 
 	err = -EROFS;
 	if (IS_RDONLY(inode))
@@ -790,7 +791,7 @@ asmlinkage long sys_fchown(unsigned int fd, uid_t user, gid_t group)
 	if (file) {
 		struct dentry * dentry;
 		dentry = file->f_dentry;
-		audit_inode(NULL, dentry->d_inode);
+		audit_inode(NULL, dentry);
 		error = chown_common(dentry, user, group);
 		fput(file);
 	}

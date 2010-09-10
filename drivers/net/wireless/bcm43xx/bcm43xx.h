@@ -21,7 +21,7 @@
 #define PFX				KBUILD_MODNAME ": "
 
 #define BCM43xx_SWITCH_CORE_MAX_RETRIES	50
-#define BCM43xx_IRQWAIT_MAX_RETRIES	50
+#define BCM43xx_IRQWAIT_MAX_RETRIES	100
 
 #define BCM43xx_IO_SIZE			8192
 
@@ -33,14 +33,18 @@
 #define BCM43xx_PCICFG_ICR		0x94
 
 /* MMIO offsets */
-#define BCM43xx_MMIO_DMA1_REASON	0x20
-#define BCM43xx_MMIO_DMA1_IRQ_MASK	0x24
-#define BCM43xx_MMIO_DMA2_REASON	0x28
-#define BCM43xx_MMIO_DMA2_IRQ_MASK	0x2C
-#define BCM43xx_MMIO_DMA3_REASON	0x30
-#define BCM43xx_MMIO_DMA3_IRQ_MASK	0x34
-#define BCM43xx_MMIO_DMA4_REASON	0x38
-#define BCM43xx_MMIO_DMA4_IRQ_MASK	0x3C
+#define BCM43xx_MMIO_DMA0_REASON	0x20
+#define BCM43xx_MMIO_DMA0_IRQ_MASK	0x24
+#define BCM43xx_MMIO_DMA1_REASON	0x28
+#define BCM43xx_MMIO_DMA1_IRQ_MASK	0x2C
+#define BCM43xx_MMIO_DMA2_REASON	0x30
+#define BCM43xx_MMIO_DMA2_IRQ_MASK	0x34
+#define BCM43xx_MMIO_DMA3_REASON	0x38
+#define BCM43xx_MMIO_DMA3_IRQ_MASK	0x3C
+#define BCM43xx_MMIO_DMA4_REASON	0x40
+#define BCM43xx_MMIO_DMA4_IRQ_MASK	0x44
+#define BCM43xx_MMIO_DMA5_REASON	0x48
+#define BCM43xx_MMIO_DMA5_IRQ_MASK	0x4C
 #define BCM43xx_MMIO_STATUS_BITFIELD	0x120
 #define BCM43xx_MMIO_STATUS2_BITFIELD	0x124
 #define BCM43xx_MMIO_GEN_IRQ_REASON	0x128
@@ -56,14 +60,27 @@
 #define BCM43xx_MMIO_XMITSTAT_1		0x174
 #define BCM43xx_MMIO_REV3PLUS_TSF_LOW	0x180 /* core rev >= 3 only */
 #define BCM43xx_MMIO_REV3PLUS_TSF_HIGH	0x184 /* core rev >= 3 only */
-#define BCM43xx_MMIO_DMA1_BASE		0x200
-#define BCM43xx_MMIO_DMA2_BASE		0x220
-#define BCM43xx_MMIO_DMA3_BASE		0x240
-#define BCM43xx_MMIO_DMA4_BASE		0x260
+
+/* 32-bit DMA */
+#define BCM43xx_MMIO_DMA32_BASE0	0x200
+#define BCM43xx_MMIO_DMA32_BASE1	0x220
+#define BCM43xx_MMIO_DMA32_BASE2	0x240
+#define BCM43xx_MMIO_DMA32_BASE3	0x260
+#define BCM43xx_MMIO_DMA32_BASE4	0x280
+#define BCM43xx_MMIO_DMA32_BASE5	0x2A0
+/* 64-bit DMA */
+#define BCM43xx_MMIO_DMA64_BASE0	0x200
+#define BCM43xx_MMIO_DMA64_BASE1	0x240
+#define BCM43xx_MMIO_DMA64_BASE2	0x280
+#define BCM43xx_MMIO_DMA64_BASE3	0x2C0
+#define BCM43xx_MMIO_DMA64_BASE4	0x300
+#define BCM43xx_MMIO_DMA64_BASE5	0x340
+/* PIO */
 #define BCM43xx_MMIO_PIO1_BASE		0x300
 #define BCM43xx_MMIO_PIO2_BASE		0x310
 #define BCM43xx_MMIO_PIO3_BASE		0x320
 #define BCM43xx_MMIO_PIO4_BASE		0x330
+
 #define BCM43xx_MMIO_PHY_VER		0x3E0
 #define BCM43xx_MMIO_PHY_RADIO		0x3E2
 #define BCM43xx_MMIO_ANTENNA		0x3E8
@@ -142,6 +159,7 @@
 
 /* Chipcommon registers. */
 #define BCM43xx_CHIPCOMMON_CAPABILITIES 	0x04
+#define BCM43xx_CHIPCOMMON_CTL			0x28
 #define BCM43xx_CHIPCOMMON_PLLONDELAY		0xB0
 #define BCM43xx_CHIPCOMMON_FREFSELDELAY		0xB4
 #define BCM43xx_CHIPCOMMON_SLOWCLKCTL		0xB8
@@ -155,6 +173,33 @@
 /* SBTOPCI2 values. */
 #define BCM43xx_SBTOPCI2_PREFETCH	0x4
 #define BCM43xx_SBTOPCI2_BURST		0x8
+#define BCM43xx_SBTOPCI2_MEMREAD_MULTI	0x20
+
+/* PCI-E core registers. */
+#define BCM43xx_PCIECORE_REG_ADDR      0x0130
+#define BCM43xx_PCIECORE_REG_DATA      0x0134
+#define BCM43xx_PCIECORE_MDIO_CTL      0x0128
+#define BCM43xx_PCIECORE_MDIO_DATA     0x012C
+
+/* PCI-E registers. */
+#define BCM43xx_PCIE_TLP_WORKAROUND    0x0004
+#define BCM43xx_PCIE_DLLP_LINKCTL      0x0100
+
+/* PCI-E MDIO bits. */
+#define BCM43xx_PCIE_MDIO_ST   0x40000000
+#define BCM43xx_PCIE_MDIO_WT   0x10000000
+#define BCM43xx_PCIE_MDIO_DEV  22
+#define BCM43xx_PCIE_MDIO_REG  18
+#define BCM43xx_PCIE_MDIO_TA   0x00020000
+#define BCM43xx_PCIE_MDIO_TC   0x0100
+
+/* MDIO devices. */
+#define BCM43xx_MDIO_SERDES_RX	0x1F
+
+/* SERDES RX registers. */
+#define BCM43xx_SERDES_RXTIMER	0x2
+#define BCM43xx_SERDES_CDR	0x6
+#define BCM43xx_SERDES_CDR_BW	0x7
 
 /* Chipcommon capabilities. */
 #define BCM43xx_CAPABILITIES_PCTL		0x00040000
@@ -204,6 +249,7 @@
 #define BCM43xx_COREID_USB20_HOST       0x819
 #define BCM43xx_COREID_USB20_DEV        0x81a
 #define BCM43xx_COREID_SDIO_HOST        0x81b
+#define BCM43xx_COREID_PCIE		0x820
 
 /* Core Information Registers */
 #define BCM43xx_CIR_BASE		0xf00
@@ -231,10 +277,19 @@
 #define BCM43xx_SBTMSTATELOW_REJECT		0x02
 #define BCM43xx_SBTMSTATELOW_CLOCK		0x10000
 #define BCM43xx_SBTMSTATELOW_FORCE_GATE_CLOCK	0x20000
+#define BCM43xx_SBTMSTATELOW_G_MODE_ENABLE	0x20000000
 
 /* sbtmstatehigh state flags */
-#define BCM43xx_SBTMSTATEHIGH_SERROR		0x1
-#define BCM43xx_SBTMSTATEHIGH_BUSY		0x4
+#define BCM43xx_SBTMSTATEHIGH_SERROR		0x00000001
+#define BCM43xx_SBTMSTATEHIGH_BUSY		0x00000004
+#define BCM43xx_SBTMSTATEHIGH_TIMEOUT		0x00000020
+#define BCM43xx_SBTMSTATEHIGH_G_PHY_AVAIL	0x00010000
+#define BCM43xx_SBTMSTATEHIGH_A_PHY_AVAIL	0x00020000
+#define BCM43xx_SBTMSTATEHIGH_COREFLAGS		0x1FFF0000
+#define BCM43xx_SBTMSTATEHIGH_DMA64BIT		0x10000000
+#define BCM43xx_SBTMSTATEHIGH_GATEDCLK		0x20000000
+#define BCM43xx_SBTMSTATEHIGH_BISTFAILED	0x40000000
+#define BCM43xx_SBTMSTATEHIGH_BISTCOMPLETE	0x80000000
 
 /* sbimstate flags */
 #define BCM43xx_SBIMSTATE_IB_ERROR		0x20000
@@ -281,7 +336,14 @@
 #define BCM43xx_SBF_PS2			0x04000000
 #define BCM43xx_SBF_NO_SSID_BCAST	0x08000000
 #define BCM43xx_SBF_TIME_UPDATE		0x10000000
-#define BCM43xx_SBF_80000000		0x80000000 /*FIXME: fix name*/
+#define BCM43xx_SBF_MODE_G		0x80000000
+
+/* Microcode */
+#define BCM43xx_UCODE_REVISION		0x0000
+#define BCM43xx_UCODE_PATCHLEVEL	0x0002
+#define BCM43xx_UCODE_DATE		0x0004
+#define BCM43xx_UCODE_TIME		0x0006
+#define BCM43xx_UCODE_STATUS		0x0040
 
 /* MicrocodeFlagsBitfield (addr + lo-word values?)*/
 #define BCM43xx_UCODEFLAGS_OFFSET	0x005E
@@ -292,6 +354,10 @@
 #define BCM43xx_UCODEFLAG_UNKGPHY	0x0020
 #define BCM43xx_UCODEFLAG_UNKPACTRL	0x0040
 #define BCM43xx_UCODEFLAG_JAPAN		0x0080
+
+/* Hardware Radio Enable masks */
+#define BCM43xx_MMIO_RADIO_HWENABLED_HI_MASK (1 << 16)
+#define BCM43xx_MMIO_RADIO_HWENABLED_LO_MASK (1 << 4)
 
 /* Generic-Interrupt reasons. */
 #define BCM43xx_IRQ_READY		(1 << 0)
@@ -334,6 +400,9 @@
 
 #define BCM43xx_DEFAULT_SHORT_RETRY_LIMIT	7
 #define BCM43xx_DEFAULT_LONG_RETRY_LIMIT	4
+
+/* FIXME: the next line is a guess as to what the maximum RSSI value might be */
+#define RX_RSSI_MAX				60
 
 /* Max size of a security key */
 #define BCM43xx_SEC_KEYSIZE			16
@@ -441,8 +510,6 @@ struct bcm43xx_sprominfo {
 	u8 et1macaddr[6];
 	u8 et0phyaddr:5;
 	u8 et1phyaddr:5;
-	u8 et0mdcport:1;
-	u8 et1mdcport:1;
 	u8 boardrev;
 	u8 locale:4;
 	u8 antennas_aphy:2;
@@ -476,7 +543,7 @@ struct bcm43xx_lopair {
 
 struct bcm43xx_phyinfo {
 	/* Hardware Data */
-	u8 version;
+	u8 analog;
 	u8 type;
 	u8 rev;
 	u16 antenna_diversity;
@@ -504,6 +571,12 @@ struct bcm43xx_phyinfo {
 	 * This lock is only used by bcm43xx_phy_{un}lock()
 	 */
 	spinlock_t lock;
+
+	/* Firmware. */
+	const struct firmware *ucode;
+	const struct firmware *pcm;
+	const struct firmware *initvals0;
+	const struct firmware *initvals1;
 };
 
 
@@ -568,8 +641,11 @@ struct bcm43xx_dma {
 	struct bcm43xx_dmaring *tx_ring1;
 	struct bcm43xx_dmaring *tx_ring2;
 	struct bcm43xx_dmaring *tx_ring3;
+	struct bcm43xx_dmaring *tx_ring4;
+	struct bcm43xx_dmaring *tx_ring5;
+
 	struct bcm43xx_dmaring *rx_ring0;
-	struct bcm43xx_dmaring *rx_ring1; /* only available on core.rev < 5 */
+	struct bcm43xx_dmaring *rx_ring3; /* only available on core.rev < 5 */
 };
 
 /* Data structures for PIO transmission, per 80211 core. */
@@ -582,23 +658,19 @@ struct bcm43xx_pio {
 
 #define BCM43xx_MAX_80211_CORES		2
 
-#ifdef CONFIG_BCM947XX
-#define core_offset(bcm) (bcm)->current_core_offset
-#else
-#define core_offset(bcm) 0
-#endif
-
 /* Generic information about a core. */
 struct bcm43xx_coreinfo {
 	u8 available:1,
 	   enabled:1,
 	   initialized:1;
-	/** core_id ID number */
-	u16 id;
 	/** core_rev revision number */
 	u8 rev;
 	/** Index number for _switch_core() */
 	u8 index;
+	/** core_id ID number */
+	u16 id;
+	/** Core-specific data. */
+	void *priv;
 };
 
 /* Additional information for each 80211 core. */
@@ -625,7 +697,6 @@ struct bcm43xx_noise_calculation {
 };
 
 struct bcm43xx_stats {
-	u8 link_quality;
 	u8 noise;
 	struct iw_statistics wstats;
 	/* Store the last TX/RX times here for updating the leds. */
@@ -647,7 +718,23 @@ enum {
 	BCM43xx_STAT_RESTARTING,	/* controller_restart() called. */
 };
 #define bcm43xx_status(bcm)		atomic_read(&(bcm)->init_status)
-#define bcm43xx_set_status(bcm, stat)	atomic_set(&(bcm)->init_status, (stat))
+#define bcm43xx_set_status(bcm, stat)	do {			\
+		atomic_set(&(bcm)->init_status, (stat));	\
+		smp_wmb();					\
+					} while (0)
+
+/*    *** THEORY OF LOCKING ***
+ *
+ * We have two different locks in the bcm43xx driver.
+ * => bcm->mutex:    General sleeping mutex. Protects struct bcm43xx_private
+ *                   and the device registers. This mutex does _not_ protect
+ *                   against concurrency from the IRQ handler.
+ * => bcm->irq_lock: IRQ spinlock. Protects against IRQ handler concurrency.
+ *
+ * Please note that, if you only take the irq_lock, you are not protected
+ * against concurrency from the periodic work handlers.
+ * Most times you want to take _both_ locks.
+ */
 
 struct bcm43xx_private {
 	struct ieee80211_device *ieee;
@@ -659,7 +746,6 @@ struct bcm43xx_private {
 
 	void __iomem *mmio_addr;
 
-	/* Locking, see "theory of locking" text below. */
 	spinlock_t irq_lock;
 	struct mutex mutex;
 
@@ -671,7 +757,8 @@ struct bcm43xx_private {
 	    bad_frames_preempt:1,	/* Use "Bad Frames Preemption" (default off) */
 	    reg124_set_0x4:1,		/* Some variable to keep track of IRQ stuff. */
 	    short_preamble:1,		/* TRUE, if short preamble is enabled. */
-	    firmware_norelease:1;	/* Do not release the firmware. Used on suspend. */
+	    firmware_norelease:1,	/* Do not release the firmware. Used on suspend. */
+	    radio_hw_enable:1;		/* TRUE if radio is hardware enabled */
 
 	struct bcm43xx_stats stats;
 
@@ -679,6 +766,7 @@ struct bcm43xx_private {
 	 * This is currently always BCM43xx_BUSTYPE_PCI
 	 */
 	u8 bustype;
+	u64 dma_mask;
 
 	u16 board_vendor;
 	u16 board_type;
@@ -691,13 +779,10 @@ struct bcm43xx_private {
 	struct bcm43xx_sprominfo sprom;
 #define BCM43xx_NR_LEDS		4
 	struct bcm43xx_led leds[BCM43xx_NR_LEDS];
+	spinlock_t leds_lock;
 
 	/* The currently active core. */
 	struct bcm43xx_coreinfo *current_core;
-#ifdef CONFIG_BCM947XX
-	/** current core memory offset */
-	u32 current_core_offset;
-#endif
 	struct bcm43xx_coreinfo *active_80211_core;
 	/* coreinfo structs for all possible cores follow.
 	 * Note that a core might not exist.
@@ -708,10 +793,6 @@ struct bcm43xx_private {
 	struct bcm43xx_coreinfo core_80211[ BCM43xx_MAX_80211_CORES ];
 	/* Additional information, specific to the 80211 cores. */
 	struct bcm43xx_coreinfo_80211 core_80211_ext[ BCM43xx_MAX_80211_CORES ];
-	/* Index of the current 80211 core. If current_core is not
-	 * an 80211 core, this is -1.
-	 */
-	int current_80211_core_idx;
 	/* Number of available 80211 cores. */
 	int nr_80211_available;
 
@@ -719,11 +800,13 @@ struct bcm43xx_private {
 
 	/* Reason code of the last interrupt. */
 	u32 irq_reason;
-	u32 dma_reason[4];
+	u32 dma_reason[6];
 	/* saved irq enable/disable state bitfield. */
 	u32 irq_savedstate;
 	/* Link Quality calculation context. */
 	struct bcm43xx_noise_calculation noisecalc;
+	/* if > 0 MAC is suspended. if == 0 MAC is enabled. */
+	int mac_suspended;
 
 	/* Threshold values. */
 	//TODO: The RTS thr has to be _used_. Currently, it is only set via WX.
@@ -746,12 +829,6 @@ struct bcm43xx_private {
 	struct bcm43xx_key key[54];
 	u8 default_key_idx;
 
-	/* Firmware. */
-	const struct firmware *ucode;
-	const struct firmware *pcm;
-	const struct firmware *initvals0;
-	const struct firmware *initvals1;
-
 	/* Random Number Generator. */
 	struct hwrng rng;
 	char rng_name[20 + 1];
@@ -761,55 +838,6 @@ struct bcm43xx_private {
 	struct bcm43xx_dfsentry *dfsentry;
 #endif
 };
-
-
-/*    *** THEORY OF LOCKING ***
- *
- * We have two different locks in the bcm43xx driver.
- * => bcm->mutex:    General sleeping mutex. Protects struct bcm43xx_private
- *                   and the device registers.
- * => bcm->irq_lock: IRQ spinlock. Protects against IRQ handler concurrency.
- *
- * We have three types of helper function pairs to utilize these locks.
- *     (Always use the helper functions.)
- * 1) bcm43xx_{un}lock_noirq():
- *     Takes bcm->mutex. Does _not_ protect against IRQ concurrency,
- *     so it is almost always unsafe, if device IRQs are enabled.
- *     So only use this, if device IRQs are masked.
- *     Locking may sleep.
- *     You can sleep within the critical section.
- * 2) bcm43xx_{un}lock_irqonly():
- *     Takes bcm->irq_lock. Does _not_ protect against
- *     bcm43xx_lock_noirq() critical sections.
- *     Does only protect against the IRQ handler path and other
- *     irqonly() critical sections.
- *     Locking does not sleep.
- *     You must not sleep within the critical section.
- * 3) bcm43xx_{un}lock_irqsafe():
- *     This is the cummulative lock and takes both, mutex and irq_lock.
- *     Protects against noirq() and irqonly() critical sections (and
- *     the IRQ handler path).
- *     Locking may sleep.
- *     You must not sleep within the critical section.
- */
-
-/* Lock type 1 */
-#define bcm43xx_lock_noirq(bcm)		mutex_lock(&(bcm)->mutex)
-#define bcm43xx_unlock_noirq(bcm)	mutex_unlock(&(bcm)->mutex)
-/* Lock type 2 */
-#define bcm43xx_lock_irqonly(bcm, flags)	\
-	spin_lock_irqsave(&(bcm)->irq_lock, flags)
-#define bcm43xx_unlock_irqonly(bcm, flags)	\
-	spin_unlock_irqrestore(&(bcm)->irq_lock, flags)
-/* Lock type 3 */
-#define bcm43xx_lock_irqsafe(bcm, flags) do {	\
-	bcm43xx_lock_noirq(bcm);		\
-	bcm43xx_lock_irqonly(bcm, flags);	\
-		} while (0)
-#define bcm43xx_unlock_irqsafe(bcm, flags) do {	\
-	bcm43xx_unlock_irqonly(bcm, flags);	\
-	bcm43xx_unlock_noirq(bcm);		\
-		} while (0)
 
 
 static inline
@@ -863,34 +891,33 @@ int bcm43xx_using_pio(struct bcm43xx_private *bcm)
  * any of these functions.
  */
 static inline
+struct bcm43xx_coreinfo_80211 *
+bcm43xx_current_80211_priv(struct bcm43xx_private *bcm)
+{
+	assert(bcm->current_core->id == BCM43xx_COREID_80211);
+	return bcm->current_core->priv;
+}
+static inline
 struct bcm43xx_pio * bcm43xx_current_pio(struct bcm43xx_private *bcm)
 {
 	assert(bcm43xx_using_pio(bcm));
-	assert(bcm->current_80211_core_idx >= 0);
-	assert(bcm->current_80211_core_idx < BCM43xx_MAX_80211_CORES);
-	return &(bcm->core_80211_ext[bcm->current_80211_core_idx].pio);
+	return &(bcm43xx_current_80211_priv(bcm)->pio);
 }
 static inline
 struct bcm43xx_dma * bcm43xx_current_dma(struct bcm43xx_private *bcm)
 {
 	assert(!bcm43xx_using_pio(bcm));
-	assert(bcm->current_80211_core_idx >= 0);
-	assert(bcm->current_80211_core_idx < BCM43xx_MAX_80211_CORES);
-	return &(bcm->core_80211_ext[bcm->current_80211_core_idx].dma);
+	return &(bcm43xx_current_80211_priv(bcm)->dma);
 }
 static inline
 struct bcm43xx_phyinfo * bcm43xx_current_phy(struct bcm43xx_private *bcm)
 {
-	assert(bcm->current_80211_core_idx >= 0);
-	assert(bcm->current_80211_core_idx < BCM43xx_MAX_80211_CORES);
-	return &(bcm->core_80211_ext[bcm->current_80211_core_idx].phy);
+	return &(bcm43xx_current_80211_priv(bcm)->phy);
 }
 static inline
 struct bcm43xx_radioinfo * bcm43xx_current_radio(struct bcm43xx_private *bcm)
 {
-	assert(bcm->current_80211_core_idx >= 0);
-	assert(bcm->current_80211_core_idx < BCM43xx_MAX_80211_CORES);
-	return &(bcm->core_80211_ext[bcm->current_80211_core_idx].radio);
+	return &(bcm43xx_current_80211_priv(bcm)->radio);
 }
 
 
@@ -906,25 +933,25 @@ struct bcm43xx_lopair * bcm43xx_get_lopair(struct bcm43xx_phyinfo *phy,
 static inline
 u16 bcm43xx_read16(struct bcm43xx_private *bcm, u16 offset)
 {
-	return ioread16(bcm->mmio_addr + core_offset(bcm) + offset);
+	return ioread16(bcm->mmio_addr + offset);
 }
 
 static inline
 void bcm43xx_write16(struct bcm43xx_private *bcm, u16 offset, u16 value)
 {
-	iowrite16(value, bcm->mmio_addr + core_offset(bcm) + offset);
+	iowrite16(value, bcm->mmio_addr + offset);
 }
 
 static inline
 u32 bcm43xx_read32(struct bcm43xx_private *bcm, u16 offset)
 {
-	return ioread32(bcm->mmio_addr + core_offset(bcm) + offset);
+	return ioread32(bcm->mmio_addr + offset);
 }
 
 static inline
 void bcm43xx_write32(struct bcm43xx_private *bcm, u16 offset, u32 value)
 {
-	iowrite32(value, bcm->mmio_addr + core_offset(bcm) + offset);
+	iowrite32(value, bcm->mmio_addr + offset);
 }
 
 static inline

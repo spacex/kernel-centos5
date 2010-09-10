@@ -1,5 +1,13 @@
 /*
  * Tracing hooks, SPARC64 CPU support
+ *
+ * Copyright (C) 2006, 2007 Red Hat, Inc.  All rights reserved.
+ *
+ * This copyrighted material is made available to anyone wishing to use,
+ * modify, copy, or redistribute it subject to the terms and conditions
+ * of the GNU General Public License v.2.
+ *
+ * Red Hat Author: Roland McGrath.
  */
 
 #ifndef _ASM_TRACEHOOK_H
@@ -27,18 +35,6 @@ static inline void tracehook_disable_syscall_trace(struct task_struct *tsk)
 static inline void tracehook_abort_syscall(struct pt_regs *regs)
 {
 	regs->u_regs[UREG_G1] = -1L;
-}
-
-extern const struct utrace_regset_view utrace_sparc64_native_view;
-static inline const struct utrace_regset_view *
-utrace_native_view(struct task_struct *tsk)
-{
-#ifdef CONFIG_COMPAT
-	extern const struct utrace_regset_view utrace_sparc32_view;
-	if (test_tsk_thread_flag(tsk, TIF_32BIT))
-		return &utrace_sparc32_view;
-#endif
-	return &utrace_sparc64_native_view;
 }
 
 #endif

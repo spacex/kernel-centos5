@@ -193,7 +193,7 @@ harmony_set_control(struct snd_harmony *h)
 }
 
 static irqreturn_t
-snd_harmony_interrupt(int irq, void *dev, struct pt_regs *regs)
+snd_harmony_interrupt(int irq, void *dev)
 {
 	u32 dstatus;
 	struct snd_harmony *h = dev;
@@ -854,7 +854,7 @@ static struct snd_kcontrol_new snd_harmony_controls[] = {
 		       HARMONY_GAIN_HE_SHIFT, 1, 0),
 };
 
-static void __init 
+static void __devinit
 snd_harmony_mixer_reset(struct snd_harmony *h)
 {
 	harmony_mute(h);
@@ -863,7 +863,7 @@ snd_harmony_mixer_reset(struct snd_harmony *h)
 	harmony_unmute(h);
 }
 
-static int __init 
+static int __devinit
 snd_harmony_mixer_init(struct snd_harmony *h)
 {
 	struct snd_card *card = h->card;

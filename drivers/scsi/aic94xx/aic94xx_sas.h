@@ -34,6 +34,7 @@
  * domain that this sequencer can maintain low-level connections for
  * us.  They are be 64 bytes.
  */
+#define ASD_MAX_DDBS	128
 
 struct asd_ddb_ssp_smp_target_port {
 	u8     conn_type;	  /* byte 0 */
@@ -733,6 +734,7 @@ struct asd_phy {
 
 	struct sas_identify_frame *identify_frame;
 	struct asd_dma_tok  *id_frm_tok;
+	struct asd_port     *asd_port;
 
 	u8         frame_rcvd[ASD_EDB_SIZE];
 };

@@ -57,7 +57,7 @@ static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	/* Index 0-MAX */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
 static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable switches */
 static long mpu_port[SNDRV_CARDS];
-static long fm_port[SNDRV_CARDS];
+static long fm_port[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS-1)]=1};
 static int soft_ac3[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS-1)]=1};
 #ifdef SUPPORT_JOYSTICK
 static int joystick_port[SNDRV_CARDS];
@@ -2198,7 +2198,8 @@ static int _snd_cmipci_uswitch_put(struct snd_kcontrol *kcontrol,
 		val = inb(cm->iobase + args->reg);
 	else
 		val = snd_cmipci_read(cm, args->reg);
-	change = (val & args->mask) != (ucontrol->value.integer.value[0] ? args->mask : 0);
+	change = (val & args->mask) != (ucontrol->value.integer.value[0] ? 
+			args->mask_on : (args->mask & ~args->mask_on));
 	if (change) {
 		val &= ~args->mask;
 		if (ucontrol->value.integer.value[0])
@@ -2778,6 +2779,9 @@ static int __devinit snd_cmipci_create_fm(struct cmipci *cm, long fm_port)
 	struct snd_opl3 *opl3;
 	int err;
 
+	if (!fm_port)
+		goto disable_fm;
+
 	/* first try FM regs in PCI port range */
 	iosynth = cm->iobase + CM_REG_FM_PCI;
 	err = snd_opl3_create(cm->card, iosynth, iosynth + 2,
@@ -2792,7 +2796,7 @@ static int __devinit snd_cmipci_create_fm(struct cmipci *cm, long fm_port)
 		case 0x3C8: val |= CM_FMSEL_3C8; break;
 		case 0x388: val |= CM_FMSEL_388; break;
 		default:
-			    return 0;
+			goto disable_fm;
 		}
 		snd_cmipci_write(cm, CM_REG_LEGACY_CTRL, val);
 		/* enable FM */
@@ -2802,17 +2806,18 @@ static int __devinit snd_cmipci_create_fm(struct cmipci *cm, long fm_port)
 				    OPL3_HW_OPL3, 0, &opl3) < 0) {
 			printk(KERN_ERR "cmipci: no OPL device at %#lx, "
 			       "skipping...\n", iosynth);
-			/* disable FM */
-			snd_cmipci_write(cm, CM_REG_LEGACY_CTRL,
-					 val & ~CM_FMSEL_MASK);
-			snd_cmipci_clear_bit(cm, CM_REG_MISC_CTRL, CM_FM_EN);
-			return 0;
+			goto disable_fm;
 		}
 	}
 	if ((err = snd_opl3_hwdep_new(opl3, 0, 1, NULL)) < 0) {
 		printk(KERN_ERR "cmipci: cannot create OPL3 hwdep\n");
 		return err;
 	}
+	return 0;
+
+ disable_fm:
+	snd_cmipci_clear_bit(cm, CM_REG_LEGACY_CTRL, CM_FMSEL_MASK);
+	snd_cmipci_clear_bit(cm, CM_REG_MISC_CTRL, CM_FM_EN);
 	return 0;
 }
 
@@ -2862,7 +2867,7 @@ static int __devinit snd_cmipci_create(struct snd_card *card, struct pci_dev *pc
 	cm->iobase = pci_resource_start(pci, 0);
 
 	if (request_irq(pci->irq, snd_cmipci_interrupt,
-			IRQF_DISABLED|IRQF_SHARED, card->driver, cm)) {
+			IRQF_SHARED, card->driver, cm)) {
 		snd_printk(KERN_ERR "unable to grab IRQ %d\n", pci->irq);
 		snd_cmipci_free(cm);
 		return -EBUSY;
@@ -3122,9 +3127,9 @@ static int snd_cmipci_suspend(struct pci_dev *pci, pm_message_t state)
 	/* disable ints */
 	snd_cmipci_write(cm, CM_REG_INT_HLDCLR, 0);
 
-	pci_set_power_state(pci, PCI_D3hot);
 	pci_disable_device(pci);
 	pci_save_state(pci);
+	pci_set_power_state(pci, pci_choose_state(pci, state));
 	return 0;
 }
 
@@ -3134,9 +3139,14 @@ static int snd_cmipci_resume(struct pci_dev *pci)
 	struct cmipci *cm = card->private_data;
 	int i;
 
-	pci_restore_state(pci);
-	pci_enable_device(pci);
 	pci_set_power_state(pci, PCI_D0);
+	pci_restore_state(pci);
+	if (pci_enable_device(pci) < 0) {
+		printk(KERN_ERR "cmipci: pci_enable_device failed, "
+		       "disabling device\n");
+		snd_card_disconnect(card);
+		return -EIO;
+	}
 	pci_set_master(pci);
 
 	/* reset / initialize to a sane state */

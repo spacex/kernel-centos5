@@ -491,7 +491,8 @@ static unsigned long load_elf_interp(struct elfhdr *interp_elf_ex,
 			goto out_close;
 	}
 
-	error = load_addr;
+	*interp_map_addr = load_addr;
+	error = ((unsigned long)interp_elf_ex->e_entry) + load_addr;
 
 out_close:
 	kfree(elf_phdata);
@@ -555,7 +556,7 @@ out:
 #define INTERPRETER_ELF 2
 
 #ifndef STACK_RND_MASK
-#define STACK_RND_MASK 0x7ff		/* with 4K pages 8MB of VA */
+#define STACK_RND_MASK (0x7ff >> (PAGE_SHIFT - 12))	/* 8MB of VA */
 #endif
 
 static unsigned long randomize_stack_top(unsigned long stack_top)
@@ -1010,13 +1011,8 @@ static int load_elf_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 		else {
 			elf_entry = load_elf_interp(&loc->interp_elf_ex,
 						    interpreter,
-						    &interp_map_addr,
+						    &interp_load_addr,
 						    load_bias);
-			if (!BAD_ADDR(elf_entry)) {
-				/* load_elf_interp() returns relocation adjustment */
-				interp_load_addr = elf_entry;
-				elf_entry += loc->interp_elf_ex.e_entry;
-			}
 		}
 		if (BAD_ADDR(elf_entry)) {
 			force_sig(SIGSEGV, current);
@@ -1648,6 +1644,10 @@ static int elf_core_dump(long signr, struct pt_regs *regs, struct file *file)
 		
 		sz += thread_status_size;
 
+#ifdef ELF_CORE_WRITE_EXTRA_NOTES
+		sz += ELF_CORE_EXTRA_NOTES_SIZE;
+#endif
+
 		fill_elf_note_phdr(&phdr, sz, offset);
 		offset += sz;
 		DUMP_WRITE(&phdr, sizeof(phdr));
@@ -1688,6 +1688,10 @@ static int elf_core_dump(long signr, struct pt_regs *regs, struct file *file)
 	for (i = 0; i < numnote; i++)
 		if (!writenote(notes + i, file))
 			goto end_coredump;
+
+#ifdef ELF_CORE_WRITE_EXTRA_NOTES
+	ELF_CORE_WRITE_EXTRA_NOTES;
+#endif
 
 	/* write out the thread status notes section */
 	list_for_each(t, &thread_list) {

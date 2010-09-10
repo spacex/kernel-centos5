@@ -112,7 +112,7 @@ static struct mtrr_ops amd_mtrr_ops = {
 	.have_wrcomb       = positive_have_wrcomb,
 };
 
-int __init amd_init_mtrr(void)
+int __cpuinit amd_init_mtrr(void)
 {
 	set_mtrr_ops(&amd_mtrr_ops);
 	return 0;

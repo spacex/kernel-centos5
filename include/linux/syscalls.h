@@ -53,6 +53,7 @@ struct mq_attr;
 struct compat_stat;
 struct compat_timeval;
 struct robust_list_head;
+struct getcpu_cache;
 
 #include <linux/types.h>
 #include <linux/aio_abi.h>
@@ -544,7 +545,8 @@ asmlinkage long sys_inotify_rm_watch(int fd, u32 wd);
 asmlinkage long sys_spu_run(int fd, __u32 __user *unpc,
 				 __u32 __user *ustatus);
 asmlinkage long sys_spu_create(const char __user *name,
-		unsigned int flags, mode_t mode);
+			       unsigned int flags, mode_t mode,
+			       int neighbor_fd);
 
 asmlinkage long sys_mknodat(int dfd, const char __user * filename, int mode,
 			    unsigned dev);
@@ -596,5 +598,6 @@ asmlinkage long sys_get_robust_list(int pid,
 				    size_t __user *len_ptr);
 asmlinkage long sys_set_robust_list(struct robust_list_head __user *head,
 				    size_t len);
+asmlinkage long sys_getcpu(unsigned *cpu, unsigned *node, struct getcpu_cache *cache);
 
 #endif

@@ -680,6 +680,7 @@ asmlinkage long sys_mq_open(const char __user *u_name, int oflag, mode_t mode,
 
 	if (oflag & O_CREAT) {
 		if (dentry->d_inode) {	/* entry already exists */
+        		audit_inode(name, dentry);
 			error = -EEXIST;
 			if (oflag & O_EXCL)
 				goto out;
@@ -692,6 +693,7 @@ asmlinkage long sys_mq_open(const char __user *u_name, int oflag, mode_t mode,
 		error = -ENOENT;
 		if (!dentry->d_inode)
 			goto out;
+        	audit_inode(name, dentry);
 		filp = do_open(dentry, oflag);
 	}
 
@@ -729,7 +731,8 @@ asmlinkage long sys_mq_unlink(const char __user *u_name)
 	if (IS_ERR(name))
 		return PTR_ERR(name);
 
-	mutex_lock(&mqueue_mnt->mnt_root->d_inode->i_mutex);
+	mutex_lock_nested(&mqueue_mnt->mnt_root->d_inode->i_mutex,
+			I_MUTEX_PARENT);
 	dentry = lookup_one_len(name, mqueue_mnt->mnt_root, strlen(name));
 	if (IS_ERR(dentry)) {
 		err = PTR_ERR(dentry);
@@ -838,6 +841,7 @@ asmlinkage long sys_mq_timedsend(mqd_t mqdes, const char __user *u_msg_ptr,
 	if (unlikely(filp->f_op != &mqueue_file_operations))
 		goto out_fput;
 	info = MQUEUE_I(inode);
+	audit_inode(NULL, filp->f_dentry);
 
 	if (unlikely(!(filp->f_mode & FMODE_WRITE)))
 		goto out_fput;
@@ -921,6 +925,7 @@ asmlinkage ssize_t sys_mq_timedreceive(mqd_t mqdes, char __user *u_msg_ptr,
 	if (unlikely(filp->f_op != &mqueue_file_operations))
 		goto out_fput;
 	info = MQUEUE_I(inode);
+	audit_inode(NULL, filp->f_dentry);
 
 	if (unlikely(!(filp->f_mode & FMODE_READ)))
 		goto out_fput;

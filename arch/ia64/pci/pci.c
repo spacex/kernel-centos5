@@ -469,10 +469,11 @@ pcibios_fixup_resources(struct pci_dev *dev, int start, int limit)
 	}
 }
 
-static void __devinit pcibios_fixup_device_resources(struct pci_dev *dev)
+void __devinit pcibios_fixup_device_resources(struct pci_dev *dev)
 {
 	pcibios_fixup_resources(dev, 0, PCI_BRIDGE_RESOURCES);
 }
+EXPORT_SYMBOL_GPL(pcibios_fixup_device_resources);
 
 static void __devinit pcibios_fixup_bridge_resources(struct pci_dev *dev)
 {
@@ -493,6 +494,7 @@ pcibios_fixup_bus (struct pci_bus *b)
 	}
 	list_for_each_entry(dev, &b->devices, bus_list)
 		pcibios_fixup_device_resources(dev);
+	platform_pci_fixup_bus(b);
 
 	return;
 }
@@ -608,6 +610,14 @@ pci_mmap_page_range (struct pci_dev *dev, struct vm_area_struct *vma,
 	else
 		vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 
+	if (is_initial_xendomain()) {
+		unsigned long addr = vma->vm_pgoff << PAGE_SHIFT;
+		size_t size = vma->vm_end - vma->vm_start;
+		unsigned long offset = HYPERVISOR_ioremap(addr, size);
+		if (IS_ERR_VALUE(offset))
+			return offset;
+	}
+
 	if (remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
 			     vma->vm_end - vma->vm_start, vma->vm_page_prot))
 		return -EAGAIN;
@@ -664,6 +674,14 @@ pci_mmap_legacy_page_range(struct pci_bus *bus, struct vm_area_struct *vma)
 
 	vma->vm_pgoff += (unsigned long)addr >> PAGE_SHIFT;
 	vma->vm_page_prot = prot;
+
+	if (is_initial_xendomain()) {
+		unsigned long addr = vma->vm_pgoff << PAGE_SHIFT;
+		size_t size = vma->vm_end - vma->vm_start;
+		unsigned long offset = HYPERVISOR_ioremap(addr, size);
+		if (IS_ERR_VALUE(offset))
+			return offset;
+	}
 
 	if (remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
 			    size, vma->vm_page_prot))

@@ -54,6 +54,7 @@
 #define HPET_TICK_RATE (HZ * 100000UL)
 
 extern int is_hpet_enabled(void);
+extern int is_hpet_legacy_int_enabled(void);
 extern int hpet_rtc_timer_init(void);
 extern int apic_is_clustered_box(void);
 

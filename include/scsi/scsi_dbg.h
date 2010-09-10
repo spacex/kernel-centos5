@@ -5,12 +5,15 @@ struct scsi_cmnd;
 struct scsi_sense_hdr;
 
 extern void scsi_print_command(struct scsi_cmnd *);
+extern void scsi_show_extd_sense(unsigned char, unsigned char);
+extern void scsi_show_sense_hdr(struct scsi_sense_hdr *);
 extern void scsi_print_sense_hdr(const char *, struct scsi_sense_hdr *);
 extern void __scsi_print_command(unsigned char *);
 extern void scsi_print_sense(const char *, struct scsi_cmnd *);
 extern void __scsi_print_sense(const char *name,
 			       const unsigned char *sense_buffer,
 			       int sense_len);
+extern void scsi_show_result(int);
 extern void scsi_print_driverbyte(int);
 extern void scsi_print_hostbyte(int);
 extern void scsi_print_status(unsigned char);

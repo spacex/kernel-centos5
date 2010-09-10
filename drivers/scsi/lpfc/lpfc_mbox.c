@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2004-2006 Emulex.  All rights reserved.           *
+ * Copyright (C) 2004-2007 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  * Portions Copyright (C) 2004-2005 Christoph Hellwig              *
@@ -212,6 +212,7 @@ lpfc_init_link(struct lpfc_hba * phba,
 			case LINK_SPEED_1G:
 			case LINK_SPEED_2G:
 			case LINK_SPEED_4G:
+			case LINK_SPEED_8G:
 				mb->un.varInitLnk.link_flags |=
 							FLAGS_LINK_SPEED;
 				mb->un.varInitLnk.link_speed = linkspeed;
@@ -291,6 +292,26 @@ lpfc_unreg_did(struct lpfc_hba * phba, uint32_t did, LPFC_MBOXQ_t * pmb)
 	mb->un.varUnregDID.did = did;
 
 	mb->mbxCommand = MBX_UNREG_D_ID;
+	mb->mbxOwner = OWN_HOST;
+	return;
+}
+
+/***********************************************/
+/*                  command to write slim      */
+/***********************************************/
+void
+lpfc_set_slim(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb, uint32_t addr,
+		uint32_t value)
+{
+	MAILBOX_t *mb;
+
+	mb = &pmb->mb;
+	memset(pmb, 0, sizeof (LPFC_MBOXQ_t));
+
+	mb->un.varWords[0] = addr;
+	mb->un.varWords[1] = value;
+
+	mb->mbxCommand = MBX_SET_SLIM;
 	mb->mbxOwner = OWN_HOST;
 	return;
 }

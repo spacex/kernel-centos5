@@ -384,7 +384,25 @@ static int try_context_mount(struct super_block *sb, void *data)
 		if (!strcmp(name, "nfs")) {
 			struct nfs_mount_data *d = data;
 
-			if (d->version <  NFS_MOUNT_VERSION)
+			/*
+ 			* ***FIX ME**** This is a terrible ugly ugly hack.
+ 			* when try_context_mount comes from changing FS on the
+ 			* server because of nohide (or maybe a referal??) the
+ 			* data is actually struct nfs_clone_mount and so that
+ 			* cast is wrong.  bit for bit the version field from
+ 			* *data lines up with a pointer in the other possible
+ 			* structure.  This hack will make sure the ->version
+ 			* field looks like a version rather than a pointer.
+ 			* If its a pointer bail cleanly and let things keep
+ 			* working.  Should get fixed correctly upstream but the
+ 			* issue isn't simple or straightforward.
+ 			*
+ 			* There have only been 6 nfs_mount_data versions so far
+ 			* so if over one update we increate the version 50 times
+ 			* I think we have other problems.....
+ 			*/
+			if (d->version < NFS_MOUNT_VERSION ||
+			    d->version > NFS_MOUNT_VERSION + 50)
 				goto out;
 
 			if (d->context[0]) {
@@ -653,11 +671,11 @@ static int superblock_doinit(struct super_block *sb, void *data)
 	sbsec->initialized = 1;
 
 	if (sbsec->behavior > ARRAY_SIZE(labeling_behaviors)) {
-		printk(KERN_INFO "SELinux: initialized (dev %s, type %s), unknown behavior\n",
+		printk(KERN_ERR "SELinux: initialized (dev %s, type %s), unknown behavior\n",
 		       sb->s_id, sb->s_type->name);
 	}
 	else {
-		printk(KERN_INFO "SELinux: initialized (dev %s, type %s), %s\n",
+		printk(KERN_DEBUG "SELinux: initialized (dev %s, type %s), %s\n",
 		       sb->s_id, sb->s_type->name,
 		       labeling_behaviors[sbsec->behavior-1]);
 	}
@@ -4353,7 +4371,7 @@ static int selinux_ipc_permission(struct kern_ipc_perm *ipcp, short flag)
 static int selinux_register_security (const char *name, struct security_operations *ops)
 {
 	if (secondary_ops != original_ops) {
-		printk(KERN_INFO "%s:  There is already a secondary security "
+		printk(KERN_ERR "%s:  There is already a secondary security "
 		       "module registered.\n", __FUNCTION__);
 		return -EINVAL;
  	}
@@ -4370,7 +4388,7 @@ static int selinux_register_security (const char *name, struct security_operatio
 static int selinux_unregister_security (const char *name, struct security_operations *ops)
 {
 	if (ops != secondary_ops) {
-		printk (KERN_INFO "%s:  trying to unregister a security module "
+		printk(KERN_ERR "%s:  trying to unregister a security module "
 		        "that is not registered.\n", __FUNCTION__);
 		return -EINVAL;
 	}
@@ -4815,9 +4833,9 @@ static __init int selinux_init(void)
 		panic("SELinux: Unable to register with kernel.\n");
 
 	if (selinux_enforcing) {
-		printk(KERN_INFO "SELinux:  Starting in enforcing mode\n");
+		printk(KERN_DEBUG "SELinux:  Starting in enforcing mode\n");
 	} else {
-		printk(KERN_INFO "SELinux:  Starting in permissive mode\n");
+		printk(KERN_DEBUG "SELinux:  Starting in permissive mode\n");
 	}
 
 #ifdef CONFIG_KEYS
@@ -4833,10 +4851,10 @@ static __init int selinux_init(void)
 
 void selinux_complete_init(void)
 {
-	printk(KERN_INFO "SELinux:  Completing initialization.\n");
+	printk(KERN_DEBUG "SELinux:  Completing initialization.\n");
 
 	/* Set up any superblocks initialized prior to the policy load. */
-	printk(KERN_INFO "SELinux:  Setting up existing superblocks.\n");
+	printk(KERN_DEBUG "SELinux:  Setting up existing superblocks.\n");
 	spin_lock(&sb_lock);
 	spin_lock(&sb_security_lock);
 next_sb:
@@ -4894,9 +4912,9 @@ static int __init selinux_nf_ip_init(void)
 
 	if (!selinux_enabled)
 		goto out;
-		
-	printk(KERN_INFO "SELinux:  Registering netfilter hooks\n");
-	
+
+	printk(KERN_DEBUG "SELinux:  Registering netfilter hooks\n");
+
 	err = nf_register_hook(&selinux_ipv4_op);
 	if (err)
 		panic("SELinux: nf_register_hook for IPv4: error %d\n", err);
@@ -4918,7 +4936,7 @@ __initcall(selinux_nf_ip_init);
 #ifdef CONFIG_SECURITY_SELINUX_DISABLE
 static void selinux_nf_ip_exit(void)
 {
-	printk(KERN_INFO "SELinux:  Unregistering netfilter hooks\n");
+	printk(KERN_DEBUG "SELinux:  Unregistering netfilter hooks\n");
 
 	nf_unregister_hook(&selinux_ipv4_op);
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)

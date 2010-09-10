@@ -1,25 +1,24 @@
 /*******************************************************************************
 
-  
-  Copyright(c) 1999 - 2006 Intel Corporation. All rights reserved.
-  
-  This program is free software; you can redistribute it and/or modify it 
-  under the terms of the GNU General Public License as published by the Free 
-  Software Foundation; either version 2 of the License, or (at your option) 
-  any later version.
-  
-  This program is distributed in the hope that it will be useful, but WITHOUT 
-  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or 
-  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for 
+  Intel PRO/1000 Linux driver
+  Copyright(c) 1999 - 2006 Intel Corporation.
+
+  This program is free software; you can redistribute it and/or modify it
+  under the terms and conditions of the GNU General Public License,
+  version 2, as published by the Free Software Foundation.
+
+  This program is distributed in the hope it will be useful, but WITHOUT
+  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
   more details.
-  
+
   You should have received a copy of the GNU General Public License along with
-  this program; if not, write to the Free Software Foundation, Inc., 59 
-  Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-  
-  The full GNU General Public License is included in this distribution in the
-  file called LICENSE.
-  
+  this program; if not, write to the Free Software Foundation, Inc.,
+  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
+
+  The full GNU General Public License is included in this distribution in
+  the file called "COPYING".
+
   Contact Information:
   Linux NICS <linux.nics@intel.com>
   e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
@@ -314,7 +313,7 @@ int32_t e1000_setup_link(struct e1000_hw *hw);
 int32_t e1000_phy_setup_autoneg(struct e1000_hw *hw);
 void e1000_config_collision_dist(struct e1000_hw *hw);
 int32_t e1000_check_for_link(struct e1000_hw *hw);
-int32_t e1000_get_speed_and_duplex(struct e1000_hw *hw, uint16_t * speed, uint16_t * duplex);
+int32_t e1000_get_speed_and_duplex(struct e1000_hw *hw, uint16_t *speed, uint16_t *duplex);
 int32_t e1000_force_mac_fc(struct e1000_hw *hw);
 
 /* PHY */
@@ -322,9 +321,10 @@ int32_t e1000_read_phy_reg(struct e1000_hw *hw, uint32_t reg_addr, uint16_t *phy
 int32_t e1000_write_phy_reg(struct e1000_hw *hw, uint32_t reg_addr, uint16_t data);
 int32_t e1000_phy_hw_reset(struct e1000_hw *hw);
 int32_t e1000_phy_reset(struct e1000_hw *hw);
-void e1000_phy_powerdown_workaround(struct e1000_hw *hw);
 int32_t e1000_phy_get_info(struct e1000_hw *hw, struct e1000_phy_info *phy_info);
 int32_t e1000_validate_mdi_setting(struct e1000_hw *hw);
+
+void e1000_phy_powerdown_workaround(struct e1000_hw *hw);
 
 /* EEPROM Functions */
 int32_t e1000_init_eeprom_params(struct e1000_hw *hw);
@@ -388,12 +388,10 @@ int32_t e1000_mng_write_dhcp_info(struct e1000_hw *hw, uint8_t *buffer,
                                   uint16_t length);
 boolean_t e1000_check_mng_mode(struct e1000_hw *hw);
 boolean_t e1000_enable_tx_pkt_filtering(struct e1000_hw *hw);
-
 int32_t e1000_read_eeprom(struct e1000_hw *hw, uint16_t reg, uint16_t words, uint16_t *data);
 int32_t e1000_validate_eeprom_checksum(struct e1000_hw *hw);
 int32_t e1000_update_eeprom_checksum(struct e1000_hw *hw);
 int32_t e1000_write_eeprom(struct e1000_hw *hw, uint16_t reg, uint16_t words, uint16_t *data);
-int32_t e1000_read_part_num(struct e1000_hw *hw, uint32_t * part_num);
 int32_t e1000_read_mac_addr(struct e1000_hw * hw);
 
 /* Filters (multicast, vlan, receive) */
@@ -420,6 +418,9 @@ void e1000_pci_set_mwi(struct e1000_hw *hw);
 void e1000_pci_clear_mwi(struct e1000_hw *hw);
 void e1000_read_pci_cfg(struct e1000_hw *hw, uint32_t reg, uint16_t * value);
 void e1000_write_pci_cfg(struct e1000_hw *hw, uint32_t reg, uint16_t * value);
+int32_t e1000_read_pcie_cap_reg(struct e1000_hw *hw, uint32_t reg, uint16_t *value);
+void e1000_pcix_set_mmrbc(struct e1000_hw *hw, int mmrbc);
+int e1000_pcix_get_mmrbc(struct e1000_hw *hw);
 /* Port I/O is only supported on 82544 and newer */
 void e1000_io_write(struct e1000_hw *hw, unsigned long port, uint32_t value);
 int32_t e1000_disable_pciex_master(struct e1000_hw *hw);
@@ -471,7 +472,10 @@ int32_t e1000_check_phy_reset_block(struct e1000_hw *hw);
 #define E1000_DEV_ID_82571EB_FIBER       0x105F
 #define E1000_DEV_ID_82571EB_SERDES      0x1060
 #define E1000_DEV_ID_82571EB_QUAD_COPPER 0x10A4
+#define E1000_DEV_ID_82571EB_QUAD_FIBER  0x10A5
 #define E1000_DEV_ID_82571EB_QUAD_COPPER_LOWPROFILE  0x10BC
+#define E1000_DEV_ID_82571EB_SERDES_DUAL 0x10D9
+#define E1000_DEV_ID_82571EB_SERDES_QUAD 0x10DA
 #define E1000_DEV_ID_82572EI_COPPER      0x107D
 #define E1000_DEV_ID_82572EI_FIBER       0x107E
 #define E1000_DEV_ID_82572EI_SERDES      0x107F
@@ -1296,6 +1300,7 @@ struct e1000_ffvt_entry {
 #define E1000_82542_RSSIR       E1000_RSSIR
 #define E1000_82542_KUMCTRLSTA E1000_KUMCTRLSTA
 #define E1000_82542_SW_FW_SYNC E1000_SW_FW_SYNC
+#define E1000_82542_MANC2H      E1000_MANC2H
 
 /* Statistics counters collected by the MAC */
 struct e1000_hw_stats {
@@ -1303,6 +1308,7 @@ struct e1000_hw_stats {
     uint64_t algnerrc;
     uint64_t symerrs;
     uint64_t rxerrc;
+    uint64_t txerrc;
     uint64_t mpc;
     uint64_t scc;
     uint64_t ecol;
@@ -1337,6 +1343,7 @@ struct e1000_hw_stats {
     uint64_t ruc;
     uint64_t rfc;
     uint64_t roc;
+    uint64_t rlerrc;
     uint64_t rjc;
     uint64_t mgprc;
     uint64_t mgpdc;
@@ -1443,15 +1450,20 @@ struct e1000_hw {
     boolean_t tbi_compatibility_on;
     boolean_t laa_is_present;
     boolean_t phy_reset_disable;
+    boolean_t initialize_hw_bits_disable;
     boolean_t fc_send_xon;
     boolean_t fc_strict_ieee;
     boolean_t report_tx_early;
     boolean_t adaptive_ifs;
     boolean_t ifs_params_forced;
     boolean_t in_ifs_mode;
-    boolean_t mng_reg_access_disabled;
-    boolean_t leave_av_bit_off;
-    boolean_t kmrn_lock_loss_workaround_disabled;
+	boolean_t		mng_reg_access_disabled;
+	boolean_t		leave_av_bit_off;
+	boolean_t		kmrn_lock_loss_workaround_disabled;
+	boolean_t		bad_tx_carr_stats_fd;
+	boolean_t		has_manc2h;
+	boolean_t		rx_needs_kicking;
+	boolean_t		has_smbus;
 };
 
 
@@ -1616,16 +1628,17 @@ struct e1000_hw {
 #define E1000_CTRL_EXT_LINK_MODE_MASK 0x00C00000
 #define E1000_CTRL_EXT_LINK_MODE_GMII 0x00000000
 #define E1000_CTRL_EXT_LINK_MODE_TBI  0x00C00000
-#define E1000_CTRL_EXT_LINK_MODE_KMRN    0x00000000
+#define E1000_CTRL_EXT_LINK_MODE_KMRN 0x00000000
 #define E1000_CTRL_EXT_LINK_MODE_SERDES  0x00C00000
+#define E1000_CTRL_EXT_LINK_MODE_SGMII   0x00800000
 #define E1000_CTRL_EXT_WR_WMARK_MASK  0x03000000
 #define E1000_CTRL_EXT_WR_WMARK_256   0x00000000
 #define E1000_CTRL_EXT_WR_WMARK_320   0x01000000
 #define E1000_CTRL_EXT_WR_WMARK_384   0x02000000
 #define E1000_CTRL_EXT_WR_WMARK_448   0x03000000
-#define E1000_CTRL_EXT_DRV_LOAD       0x10000000  /* Driver loaded bit for FW */
-#define E1000_CTRL_EXT_IAME           0x08000000  /* Interrupt acknowledge Auto-mask */
-#define E1000_CTRL_EXT_INT_TIMER_CLR  0x20000000  /* Clear Interrupt timers after IMS clear */
+#define E1000_CTRL_EXT_DRV_LOAD       0x10000000 /* Driver loaded bit for FW */
+#define E1000_CTRL_EXT_IAME           0x08000000 /* Interrupt acknowledge Auto-mask */
+#define E1000_CTRL_EXT_INT_TIMER_CLR  0x20000000 /* Clear Interrupt timers after IMS clear */
 #define E1000_CRTL_EXT_PB_PAREN       0x01000000 /* packet buffer parity error detection enabled */
 #define E1000_CTRL_EXT_DF_PAREN       0x02000000 /* descriptor FIFO parity error detection enable */
 #define E1000_CTRL_EXT_GHOST_PAREN    0x40000000
@@ -2197,6 +2210,7 @@ struct e1000_host_command_info {
 #define PCI_EX_82566_SNOOP_ALL PCI_EX_NO_SNOOP_ALL
 
 #define E1000_GCR_L1_ACT_WITHOUT_L0S_RX 0x08000000
+#define E1000_GCR_DISABLE_TIMEOUT_MECHANISM 0x80000000
 /* Function Active and Power State to MNG */
 #define E1000_FACTPS_FUNC0_POWER_STATE_MASK         0x00000003
 #define E1000_FACTPS_LAN0_VALID                     0x00000004
@@ -2220,6 +2234,11 @@ struct e1000_host_command_info {
 #define E1000_FACTPS_MNGCG                          0x20000000
 #define E1000_FACTPS_LAN_FUNC_SEL                   0x40000000
 #define E1000_FACTPS_PM_STATE_CHANGED               0x80000000
+
+/* PCI-Ex Config Space */
+#define PCI_EX_LINK_STATUS           0x12
+#define PCI_EX_LINK_WIDTH_MASK       0x3F0
+#define PCI_EX_LINK_WIDTH_SHIFT      4
 
 /* EEPROM Commands - Microwire */
 #define EEPROM_READ_OPCODE_MICROWIRE  0x6  /* EEPROM read opcode */
@@ -2404,6 +2423,7 @@ struct e1000_host_command_info {
 #define E1000_PBA_8K 0x0008    /* 8KB, default Rx allocation */
 #define E1000_PBA_12K 0x000C    /* 12KB, default Rx allocation */
 #define E1000_PBA_16K 0x0010    /* 16KB, default TX allocation */
+#define E1000_PBA_20K 0x0014
 #define E1000_PBA_22K 0x0016
 #define E1000_PBA_24K 0x0018
 #define E1000_PBA_30K 0x001E
@@ -3231,7 +3251,7 @@ struct e1000_host_command_info {
 #define IFE_PMC_AUTO_MDIX                    0x0080  /* 1=enable MDI/MDI-X feature, default 0=disabled */
 #define IFE_PMC_FORCE_MDIX                   0x0040  /* 1=force MDIX-X, 0=force MDI */
 #define IFE_PMC_MDIX_STATUS                  0x0020  /* 1=MDI-X, 0=MDI */
-#define IFE_PMC_AUTO_MDIX_COMPLETE           0x0010  /* Resolution algorthm is completed */
+#define IFE_PMC_AUTO_MDIX_COMPLETE           0x0010  /* Resolution algorithm is completed */
 #define IFE_PMC_MDIX_MODE_SHIFT              6
 #define IFE_PHC_MDIX_RESET_ALL_MASK          0x0000  /* Disable auto MDI-X */
 

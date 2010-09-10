@@ -128,6 +128,9 @@ extern struct device_node *of_find_node_by_type(struct device_node *from,
 	     dn = of_find_node_by_type(dn, type))
 extern struct device_node *of_find_compatible_node(struct device_node *from,
 	const char *type, const char *compat);
+#define for_each_compatible_node(dn, type, compatible) \
+	for (dn = of_find_compatible_node(NULL, type, compatible); dn; \
+		dn = of_find_compatible_node(dn, type, compatible))
 extern struct device_node *of_find_node_by_path(const char *path);
 extern struct device_node *of_find_node_by_phandle(phandle handle);
 extern struct device_node *of_find_all_nodes(struct device_node *prev);
@@ -320,6 +323,15 @@ extern int of_irq_map_one(struct device_node *device, int index,
  */
 struct pci_dev;
 extern int of_irq_map_pci(struct pci_dev *pdev, struct of_irq *out_irq);
+
+/**
+ * of_iomap - Maps the memory mapped IO for a given device_node
+ * @device:  the device whose io range will be mapped
+ * @index:   index of the io range
+ *
+ * Returns a pointer to the mapped memory
+ */
+extern void __iomem *of_iomap(struct device_node *np, int index);
 
 
 #endif /* __KERNEL__ */

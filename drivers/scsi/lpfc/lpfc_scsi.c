@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2004-2006 Emulex.  All rights reserved.           *
+ * Copyright (C) 2004-2007 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  * Portions Copyright (C) 2004-2005 Christoph Hellwig              *
@@ -146,6 +146,10 @@ lpfc_get_scsi_buf(struct lpfc_hba * phba)
 
 	spin_lock_irqsave(&phba->scsi_buf_list_lock, iflag);
 	list_remove_head(scsi_buf_list, lpfc_cmd, struct lpfc_scsi_buf, list);
+	if (lpfc_cmd) {
+		lpfc_cmd->seg_cnt = 0;
+		lpfc_cmd->nonsg_phys = 0;
+	}
 	spin_unlock_irqrestore(&phba->scsi_buf_list_lock, iflag);
 	return  lpfc_cmd;
 }
@@ -288,13 +292,13 @@ lpfc_scsi_unprep_dma_buf(struct lpfc_hba * phba, struct lpfc_scsi_buf * psb)
 }
 
 static void
-lpfc_handle_fcp_err(struct lpfc_scsi_buf *lpfc_cmd)
+lpfc_handle_fcp_err(struct lpfc_scsi_buf *lpfc_cmd, struct lpfc_iocbq *rsp_iocb)
 {
 	struct scsi_cmnd *cmnd = lpfc_cmd->pCmd;
 	struct fcp_cmnd *fcpcmd = lpfc_cmd->fcp_cmnd;
 	struct fcp_rsp *fcprsp = lpfc_cmd->fcp_rsp;
 	struct lpfc_hba *phba = lpfc_cmd->scsi_hba;
-	uint32_t fcpi_parm = lpfc_cmd->cur_iocbq.iocb.un.fcpi.fcpi_parm;
+	uint32_t fcpi_parm = rsp_iocb->iocb.un.fcpi.fcpi_parm;
 	uint32_t resp_info = fcprsp->rspStatus2;
 	uint32_t scsi_status = fcprsp->rspStatus3;
 	uint32_t *lp;
@@ -355,6 +359,24 @@ lpfc_handle_fcp_err(struct lpfc_scsi_buf *lpfc_cmd)
 				be32_to_cpu(fcpcmd->fcpDl), cmnd->resid,
 				fcpi_parm, cmnd->cmnd[0], cmnd->underflow);
 
+		/*
+		 * If there is an under run check if under run reported by
+		 * storage array is same as the under run reported by HBA.
+		 * If this is not same, there is a dropped frame.
+		 */
+		if ((cmnd->sc_data_direction == DMA_FROM_DEVICE) &&
+			fcpi_parm &&
+			(cmnd->resid != fcpi_parm)) {
+			lpfc_printf_log(phba, KERN_WARNING,
+				LOG_FCP | LOG_FCP_ERROR,
+				"%d:0735 FCP Read Check Error and Underrun "
+				"Data: x%x x%x x%x x%x\n", phba->brd_no,
+				be32_to_cpu(fcpcmd->fcpDl),
+				cmnd->resid,
+				fcpi_parm, cmnd->cmnd[0]);
+			cmnd->resid = cmnd->request_bufflen;
+			host_status = DID_ERROR;
+		}
 		/*
 		 * The cmnd->underflow is the minimum number of bytes that must
 		 * be transfered for this command.  Provided a sense condition
@@ -435,7 +457,7 @@ lpfc_scsi_cmd_iocb_cmpl(struct lpfc_hba *phba, struct lpfc_iocbq *pIocbIn,
 		switch (lpfc_cmd->status) {
 		case IOSTAT_FCP_RSP_ERROR:
 			/* Call FCP RSP handler to determine result */
-			lpfc_handle_fcp_err(lpfc_cmd);
+			lpfc_handle_fcp_err(lpfc_cmd,pIocbOut);
 			break;
 		case IOSTAT_NPORT_BSY:
 		case IOSTAT_FABRIC_BSY:
@@ -466,10 +488,10 @@ lpfc_scsi_cmd_iocb_cmpl(struct lpfc_hba *phba, struct lpfc_iocbq *pIocbIn,
 
 	result = cmd->result;
 	sdev = cmd->device;
+	lpfc_scsi_unprep_dma_buf(phba, lpfc_cmd);
 	cmd->scsi_done(cmd);
 
 	if (phba->cfg_poll & ENABLE_FCP_RING_POLLING) {
-		lpfc_scsi_unprep_dma_buf(phba, lpfc_cmd);
 		lpfc_release_scsi_buf(phba, lpfc_cmd);
 		return;
 	}
@@ -527,7 +549,6 @@ lpfc_scsi_cmd_iocb_cmpl(struct lpfc_hba *phba, struct lpfc_iocbq *pIocbIn,
 		}
 	}
 
-	lpfc_scsi_unprep_dma_buf(phba, lpfc_cmd);
 	lpfc_release_scsi_buf(phba, lpfc_cmd);
 }
 
@@ -670,6 +691,18 @@ lpfc_scsi_prep_task_mgmt_cmd(struct lpfc_hba *phba,
 	return (1);
 }
 
+static void
+lpfc_tskmgmt_def_cmpl(struct lpfc_hba *phba,
+			struct lpfc_iocbq *cmdiocbq,
+			struct lpfc_iocbq *rspiocbq)
+{
+	struct lpfc_scsi_buf *lpfc_cmd =
+		(struct lpfc_scsi_buf *) cmdiocbq->context1;
+	if (lpfc_cmd)
+		lpfc_release_scsi_buf(phba, lpfc_cmd);
+	return;
+}
+
 static int
 lpfc_scsi_tgt_reset(struct lpfc_scsi_buf * lpfc_cmd, struct lpfc_hba * phba,
 		    unsigned  tgt_id, unsigned int lun,
@@ -706,8 +739,9 @@ lpfc_scsi_tgt_reset(struct lpfc_scsi_buf * lpfc_cmd, struct lpfc_hba * phba,
 				       &phba->sli.ring[phba->sli.fcp_ring],
 				       iocbq, iocbqrsp, lpfc_cmd->timeout);
 	if (ret != IOCB_SUCCESS) {
+		if (ret == IOCB_TIMEDOUT)
+			iocbq->iocb_cmpl = lpfc_tskmgmt_def_cmpl;
 		lpfc_cmd->status = IOSTAT_DRIVER_REJECT;
-		ret = FAILED;
 	} else {
 		ret = SUCCESS;
 		lpfc_cmd->result = iocbqrsp->iocb.un.ulpWord[4];
@@ -984,6 +1018,7 @@ lpfc_reset_lun_handler(struct scsi_cmnd *cmnd)
 	struct lpfc_nodelist *pnode = rdata->pnode;
 	uint32_t cmd_result = 0, cmd_status = 0;
 	int ret = FAILED;
+	int iocb_status = IOCB_SUCCESS;
 	int cnt, loopcnt;
 
 	lpfc_block_error_handler(cmnd);
@@ -995,7 +1030,7 @@ lpfc_reset_lun_handler(struct scsi_cmnd *cmnd)
 	 */
 	while ( 1 ) {
 		if (!pnode)
-			return FAILED;
+			goto out;
 
 		if (pnode->nlp_state != NLP_STE_MAPPED_NODE) {
 			spin_unlock_irq(phba->host->host_lock);
@@ -1013,7 +1048,7 @@ lpfc_reset_lun_handler(struct scsi_cmnd *cmnd)
 			}
 			pnode = rdata->pnode;
 			if (!pnode)
-				return FAILED;
+				goto out;
 		}
 		if (pnode->nlp_state == NLP_STE_MAPPED_NODE)
 			break;
@@ -1044,12 +1079,17 @@ lpfc_reset_lun_handler(struct scsi_cmnd *cmnd)
 			"Data: x%x x%x\n", phba->brd_no, cmnd->device->id,
 			cmnd->device->lun, pnode->nlp_rpi, pnode->nlp_flag);
 
-	ret = lpfc_sli_issue_iocb_wait(phba,
+	iocb_status = lpfc_sli_issue_iocb_wait(phba,
 				       &phba->sli.ring[phba->sli.fcp_ring],
 				       iocbq, iocbqrsp, lpfc_cmd->timeout);
-	if (ret == IOCB_SUCCESS)
-		ret = SUCCESS;
 
+	if (iocb_status == IOCB_TIMEDOUT)
+		iocbq->iocb_cmpl = lpfc_tskmgmt_def_cmpl;
+
+	if (iocb_status == IOCB_SUCCESS)
+		ret = SUCCESS;
+	else
+		ret = iocb_status;
 
 	cmd_result = iocbqrsp->iocb.un.ulpWord[4];
 	cmd_status = iocbqrsp->iocb.ulpStatus;
@@ -1093,8 +1133,9 @@ lpfc_reset_lun_handler(struct scsi_cmnd *cmnd)
 	}
 
 out_free_scsi_buf:
-	lpfc_release_scsi_buf(phba, lpfc_cmd);
-
+	if (iocb_status != IOCB_TIMEDOUT) {
+		lpfc_release_scsi_buf(phba, lpfc_cmd);
+	}
 	lpfc_printf_log(phba, KERN_ERR, LOG_FCP,
 			"%d:0713 SCSI layer issued LUN reset (%d, %d) "
 			"Data: x%x x%x x%x\n",
@@ -1152,13 +1193,17 @@ lpfc_reset_bus_handler(struct scsi_cmnd *cmnd)
 				"%d:0700 Bus Reset on target %d failed\n",
 				phba->brd_no, i);
 			err_count++;
+			break;
 		}
 	}
 
+	if (ret != IOCB_TIMEDOUT)
+		lpfc_release_scsi_buf(phba, lpfc_cmd);
+
 	if (err_count == 0)
 		ret = SUCCESS;
-
-	lpfc_release_scsi_buf(phba, lpfc_cmd);
+	else
+		ret = FAILED;
 
 	/*
 	 * All outstanding txcmplq I/Os should have been aborted by

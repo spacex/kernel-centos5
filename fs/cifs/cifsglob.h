@@ -18,6 +18,7 @@
  */
 #include <linux/in.h>
 #include <linux/in6.h>
+#include <linux/version.h>
 #include "cifs_fs_sb.h"
 /*
  * The sizes of various internal tables and strings
@@ -66,6 +67,14 @@
 
 #ifndef XATTR_DOS_ATTRIB
 #define XATTR_DOS_ATTRIB "user.DOSATTRIB"
+#endif
+
+#ifndef SLAB_NOFS
+#define SLAB_NOFS GFP_NOFS
+#endif
+
+#ifndef SLAB_KERNEL
+#define SLAB_KERNEL GFP_KERNEL
 #endif
 
 /*
@@ -153,7 +162,7 @@ struct TCP_Server_Info {
 	char sessid[4];		/* unique token id for this session */
 	/* (returned on Negotiate */
 	int capabilities; /* allow selective disabling of caps by smb sess */
-	__u16 timeZone;
+	int timeAdj;  /* Adjust for difference in server time zone in sec */
 	__u16 CurrentMid;         /* multiplex id - rotating counter */
 	char cryptKey[CIFS_CRYPTO_KEY_SIZE];
 	/* 16th byte of RFC1001 workstation name is always null */
@@ -203,9 +212,14 @@ struct cifsSesInfo {
 	char * domainName;
 	char * password;
 };
-/* session flags */
+/* no more than one of the following three session flags may be set */
 #define CIFS_SES_NT4 1
-
+#define CIFS_SES_OS2 2
+#define CIFS_SES_W9X 4
+/* following flag is set for old servers such as OS2 (and Win95?)
+   which do not negotiate NTLM or POSIX dialects, but instead
+   negotiate one of the older LANMAN dialects */
+#define CIFS_SES_LANMAN 8
 /*
  * there is one of these for each connection to a resource on a particular
  * session 
@@ -331,9 +345,12 @@ struct cifsInodeInfo {
 	unsigned clientCanCacheRead:1; /* read oplock */
 	unsigned clientCanCacheAll:1;  /* read and writebehind oplock */
 	unsigned oplockPending:1;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 	struct inode vfs_inode;
+#endif
 };
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 static inline struct cifsInodeInfo *
 CIFS_I(struct inode *inode)
 {
@@ -345,6 +362,21 @@ CIFS_SB(struct super_block *sb)
 {
 	return sb->s_fs_info;
 }
+#else
+static inline struct cifsInodeInfo *
+CIFS_I(struct inode *inode)
+{
+	return (struct cifsInodeInfo *)&(inode->u);
+}
+
+static inline struct cifs_sb_info *
+CIFS_SB(struct super_block *sb)
+{
+	return (struct cifs_sb_info *) &(sb->u);
+}
+
+extern struct inode * get_cifs_inode(struct super_block * sb);
+#endif
 
 static inline char CIFS_DIR_SEP(const struct cifs_sb_info *cifs_sb)
 {
@@ -519,15 +551,17 @@ GLOBAL_EXTERN struct servers_not_supported *NotSuppList;	/*@z4a */
  */
 GLOBAL_EXTERN struct smbUidInfo *GlobalUidList[UID_HASH];
 
-GLOBAL_EXTERN struct list_head GlobalServerList; /* BB not implemented yet */
+/* GLOBAL_EXTERN struct list_head GlobalServerList; BB not implemented yet */
 GLOBAL_EXTERN struct list_head GlobalSMBSessionList;
 GLOBAL_EXTERN struct list_head GlobalTreeConnectionList;
 GLOBAL_EXTERN rwlock_t GlobalSMBSeslock;  /* protects list inserts on 3 above */
 
 GLOBAL_EXTERN struct list_head GlobalOplock_Q;
 
-GLOBAL_EXTERN struct list_head GlobalDnotifyReqList; /* Outstanding dir notify requests */
-GLOBAL_EXTERN struct list_head GlobalDnotifyRsp_Q;/* DirNotify response queue */
+/* Outstanding dir notify requests */
+GLOBAL_EXTERN struct list_head GlobalDnotifyReqList;
+/* DirNotify response queue */
+GLOBAL_EXTERN struct list_head GlobalDnotifyRsp_Q;
 
 /*
  * Global transaction id (XID) information

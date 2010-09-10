@@ -1,25 +1,24 @@
 /*******************************************************************************
 
-  
-  Copyright(c) 1999 - 2006 Intel Corporation. All rights reserved.
-  
-  This program is free software; you can redistribute it and/or modify it 
-  under the terms of the GNU General Public License as published by the Free 
-  Software Foundation; either version 2 of the License, or (at your option) 
-  any later version.
-  
-  This program is distributed in the hope that it will be useful, but WITHOUT 
-  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or 
-  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for 
+  Intel PRO/1000 Linux driver
+  Copyright(c) 1999 - 2006 Intel Corporation.
+
+  This program is free software; you can redistribute it and/or modify it
+  under the terms and conditions of the GNU General Public License,
+  version 2, as published by the Free Software Foundation.
+
+  This program is distributed in the hope it will be useful, but WITHOUT
+  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
   more details.
-  
+
   You should have received a copy of the GNU General Public License along with
-  this program; if not, write to the Free Software Foundation, Inc., 59 
-  Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-  
-  The full GNU General Public License is included in this distribution in the
-  file called LICENSE.
-  
+  this program; if not, write to the Free Software Foundation, Inc.,
+  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
+
+  The full GNU General Public License is included in this distribution in
+  the file called "COPYING".
+
   Contact Information:
   Linux NICS <linux.nics@intel.com>
   e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
@@ -219,19 +218,19 @@ E1000_PARAM(KumeranLockLoss, "Enable Kumeran lock loss workaround");
 #define MAX_RXDELAY               0xFFFF
 #define MIN_RXDELAY                    0
 
-#define DEFAULT_RADV                 128
+#define DEFAULT_RADV                   8
 #define MAX_RXABSDELAY            0xFFFF
 #define MIN_RXABSDELAY                 0
 
-#define DEFAULT_TIDV                  64
+#define DEFAULT_TIDV                   8
 #define MAX_TXDELAY               0xFFFF
 #define MIN_TXDELAY                    0
 
-#define DEFAULT_TADV                  64
+#define DEFAULT_TADV                   8
 #define MAX_TXABSDELAY            0xFFFF
 #define MIN_TXABSDELAY                 0
 
-#define DEFAULT_ITR                 8000
+#define DEFAULT_ITR                    3
 #define MAX_ITR                   100000
 #define MIN_ITR                      100
 
@@ -344,7 +343,7 @@ e1000_check_options(struct e1000_adapter *adapter)
 		if (num_TxDescriptors > bd) {
 			tx_ring->count = TxDescriptors[bd];
 			e1000_validate_option(&tx_ring->count, &opt, adapter);
-			E1000_ROUNDUP(tx_ring->count,
+			tx_ring->count = ALIGN(tx_ring->count,
 						REQ_TX_DESCRIPTOR_MULTIPLE);
 		} else {
 			tx_ring->count = opt.def;
@@ -370,7 +369,7 @@ e1000_check_options(struct e1000_adapter *adapter)
 		if (num_RxDescriptors > bd) {
 			rx_ring->count = RxDescriptors[bd];
 			e1000_validate_option(&rx_ring->count, &opt, adapter);
-			E1000_ROUNDUP(rx_ring->count,
+			rx_ring->count = ALIGN(rx_ring->count,
 						REQ_RX_DESCRIPTOR_MULTIPLE);
 		} else {
 			rx_ring->count = opt.def;
@@ -511,15 +510,29 @@ e1000_check_options(struct e1000_adapter *adapter)
 				break;
 			case 1:
 				DPRINTK(PROBE, INFO, "%s set to dynamic mode\n",
-				        opt.name);
+					opt.name);
+				adapter->itr_setting = adapter->itr;
+				adapter->itr = 20000;
+				break;
+			case 3:
+				DPRINTK(PROBE, INFO,
+				        "%s set to dynamic conservative mode\n",
+					opt.name);
+				adapter->itr_setting = adapter->itr;
+				adapter->itr = 20000;
 				break;
 			default:
 				e1000_validate_option(&adapter->itr, &opt,
-				                      adapter);
+				        adapter);
+				/* save the setting, because the dynamic bits change itr */
+				/* clear the lower two bits because they are
+				 * used as control */
+				adapter->itr_setting = adapter->itr & ~3;
 				break;
 			}
 		} else {
-			adapter->itr = opt.def;
+			adapter->itr_setting = opt.def;
+			adapter->itr = 20000;
 		}
 	}
 	{ /* Smart Power Down */
@@ -785,22 +798,13 @@ e1000_check_copper_options(struct e1000_adapter *adapter)
 	case SPEED_1000:
 		DPRINTK(PROBE, INFO, "1000 Mbps Speed specified without "
 			"Duplex\n");
-		DPRINTK(PROBE, INFO,
-			"Using Autonegotiation at 1000 Mbps "
-			"Full Duplex only\n");
-		adapter->hw.autoneg = adapter->fc_autoneg = 1;
-		adapter->hw.autoneg_advertised = ADVERTISE_1000_FULL;
-		break;
+		goto full_duplex_only;
 	case SPEED_1000 + HALF_DUPLEX:
 		DPRINTK(PROBE, INFO,
 			"Half Duplex is not supported at 1000 Mbps\n");
-		DPRINTK(PROBE, INFO,
-			"Using Autonegotiation at 1000 Mbps "
-			"Full Duplex only\n");
-		adapter->hw.autoneg = adapter->fc_autoneg = 1;
-		adapter->hw.autoneg_advertised = ADVERTISE_1000_FULL;
-		break;
+		/* fall through */
 	case SPEED_1000 + FULL_DUPLEX:
+full_duplex_only:
 		DPRINTK(PROBE, INFO,
 		       "Using Autonegotiation at 1000 Mbps Full Duplex only\n");
 		adapter->hw.autoneg = adapter->fc_autoneg = 1;

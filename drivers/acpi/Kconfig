@@ -138,6 +138,15 @@ config ACPI_DOCK
 	help
 	  This driver adds support for ACPI controlled docking stations
 
+config ACPI_BAY
+	tristate "Removable Drive Bay (EXPERIMENTAL)"
+	depends on EXPERIMENTAL
+	depends on ACPI_DOCK
+	help
+	  This driver adds support for ACPI controlled removable drive
+	  bays such as the IBM ultrabay or the Dell Module Bay.
+
+
 config ACPI_PROCESSOR
 	tristate "Processor"
 	default y
@@ -221,6 +230,17 @@ config ACPI_IBM_DOCK
 	  but will not properly connect PCI devices.
 
 	  If you are not sure, say N here.
+
+config ACPI_IBM_BAY
+	bool "Legacy Removable Bay Support"
+	depends on ACPI_IBM
+	default y
+	---help---
+	  Allows the ibm_acpi driver to handle removable bays.  It will allow
+	  disabling the device in the bay, and also generate notifications when
+	  the bay lever is ejected or inserted.
+
+	  If you are not sure, say Y here.
 
 config ACPI_TOSHIBA
 	tristate "Toshiba Laptop Extras"

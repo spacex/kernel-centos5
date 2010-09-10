@@ -27,13 +27,19 @@
 #include <linux/delay.h>
 #include <asm/uaccess.h>
 #include <asm/processor.h>
-#include <linux/mempool.h>
 #include "cifspdu.h"
 #include "cifsglob.h"
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
+#include <linux/mempool.h>
+#else
+extern kmem_cache_t *cifs_mid_cachep;
+#endif
 #include "cifsproto.h"
 #include "cifs_debug.h"
-  
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 extern mempool_t *cifs_mid_poolp;
+#endif
 extern kmem_cache_t *cifs_oplock_cachep;
 
 static struct mid_q_entry *
@@ -49,9 +55,16 @@ AllocMidQEntry(const struct smb_hdr *smb_buffer, struct cifsSesInfo *ses)
 		cERROR(1, ("Null TCP session in AllocMidQEntry"));
 		return NULL;
 	}
-	
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 	temp = (struct mid_q_entry *) mempool_alloc(cifs_mid_poolp,
 						    SLAB_KERNEL | SLAB_NOFS);
+#else
+	temp = (struct mid_q_entry *) kmem_cache_alloc(cifs_mid_cachep,
+							SLAB_KERNEL);
+
+#endif
+
 	if (temp == NULL)
 		return temp;
 	else {
@@ -106,7 +119,11 @@ DeleteMidQEntry(struct mid_q_entry *midEntry)
 		}
 	}
 #endif
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 	mempool_free(midEntry, cifs_mid_poolp);
+#else
+	kmem_cache_free(cifs_mid_cachep, midEntry);
+#endif
 }
 
 struct oplock_q_entry *
@@ -151,6 +168,9 @@ smb_send(struct socket *ssocket, struct smb_hdr *smb_buffer,
 	struct msghdr smb_msg;
 	struct kvec iov;
 	unsigned len = smb_buf_length + 4;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 8)
+	mm_segment_t temp_fs;
+#endif
 
 	if(ssocket == NULL)
 		return -ENOTSOCK; /* BB eventually add reconnect code here */
@@ -159,6 +179,10 @@ smb_send(struct socket *ssocket, struct smb_hdr *smb_buffer,
 
 	smb_msg.msg_name = sin;
 	smb_msg.msg_namelen = sizeof (struct sockaddr);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 8)
+	smb_msg.msg_iov = &iov;
+	smb_msg.msg_iovlen = 1;
+#endif
 	smb_msg.msg_control = NULL;
 	smb_msg.msg_controllen = 0;
 	smb_msg.msg_flags = MSG_DONTWAIT + MSG_NOSIGNAL; /* BB add more flags?*/
@@ -172,8 +196,16 @@ smb_send(struct socket *ssocket, struct smb_hdr *smb_buffer,
 	cFYI(1, ("Sending smb of length %d", smb_buf_length));
 	dump_smb(smb_buffer, len);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 8)
+	temp_fs = get_fs();	/* we must turn off socket api parm checking */
+	set_fs(get_ds());
+#endif
 	while (len > 0) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 8)
+		rc = sock_sendmsg(ssocket, &smb_msg, len);
+#else
 		rc = kernel_sendmsg(ssocket, &smb_msg, &iov, 1, len);
+#endif
 		if ((rc == -ENOSPC) || (rc == -EAGAIN)) {
 			i++;
 		/* smaller timeout here than send2 since smaller size */
@@ -197,6 +229,9 @@ smb_send(struct socket *ssocket, struct smb_hdr *smb_buffer,
 		iov.iov_len -= rc;
 		len -= rc;
 	}
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 8)
+	set_fs(temp_fs);
+#endif
 
 	if (rc < 0) {
 		cERROR(1,("Error %d sending data on socket to server", rc));
@@ -223,6 +258,9 @@ smb_send2(struct socket *ssocket, struct kvec *iov, int n_vec,
 	unsigned int total_len;
 	int first_vec = 0;
 	unsigned int smb_buf_length = smb_buffer->smb_buf_length;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 8)
+	mm_segment_t temp_fs;
+#endif
 	
 	if(ssocket == NULL)
 		return -ENOTSOCK; /* BB eventually add reconnect code here */
@@ -247,9 +285,19 @@ smb_send2(struct socket *ssocket, struct kvec *iov, int n_vec,
 	cFYI(1, ("Sending smb:  total_len %d", total_len));
 	dump_smb(smb_buffer, len);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 8)
+	temp_fs = get_fs();	/* we must turn off socket api parm checking */
+	set_fs(get_ds());
+#endif
 	while (total_len) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 8)
+		smb_msg.msg_iov = &iov[first_vec];
+		smb_msg.msg_iovlen = n_vec - first_vec;
+		rc = sock_sendmsg(ssocket, &smb_msg, total_len);
+#else
 		rc = kernel_sendmsg(ssocket, &smb_msg, &iov[first_vec],
 				    n_vec - first_vec, total_len);
+#endif
 		if ((rc == -ENOSPC) || (rc == -EAGAIN)) {
 			i++;
 			if(i >= 14) {
@@ -266,7 +314,12 @@ smb_send2(struct socket *ssocket, struct kvec *iov, int n_vec,
 			break;
 
 		if (rc >= total_len) {
-			WARN_ON(rc > total_len);
+			if(rc > total_len) {
+				cERROR(1,("unexpected length received"));
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 4, 19)
+				dump_stack();
+#endif
+			}
 			break;
 		}
 		if(rc == 0) {
@@ -293,6 +346,9 @@ smb_send2(struct socket *ssocket, struct kvec *iov, int n_vec,
 		}
 		i = 0; /* in case we get ENOSPC on the next send */
 	}
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 8)
+	set_fs(temp_fs);
+#endif
 
 	if (rc < 0) {
 		cERROR(1,("Error %d sending data on socket to server", rc));
@@ -499,7 +555,7 @@ SendReceive2(const unsigned int xid, struct cifsSesInfo *ses,
 	   due to last connection to this server being unmounted */
 	if (signal_pending(current)) {
 		/* if signal pending do not hold up user for full smb timeout
-		but we still give response a change to complete */
+		but we still give response a chance to complete */
 		timeout = 2 * HZ;
 	}   
 
@@ -587,7 +643,6 @@ SendReceive2(const unsigned int xid, struct cifsSesInfo *ses,
 	}
 
 out:
-
 	DeleteMidQEntry(midQ);
 	atomic_dec(&ses->server->inFlight); 
 	wake_up(&ses->server->request_q);
@@ -681,7 +736,7 @@ SendReceive(const unsigned int xid, struct cifsSesInfo *ses,
 	   due to last connection to this server being unmounted */
 	if (signal_pending(current)) {
 		/* if signal pending do not hold up user for full smb timeout
-		but we still give response a change to complete */
+		but we still give response a chance to complete */
 		timeout = 2 * HZ;
 	}   
 
@@ -765,7 +820,6 @@ SendReceive(const unsigned int xid, struct cifsSesInfo *ses,
 	}
 
 out:
-
 	DeleteMidQEntry(midQ);
 	atomic_dec(&ses->server->inFlight); 
 	wake_up(&ses->server->request_q);

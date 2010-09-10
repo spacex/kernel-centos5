@@ -12,10 +12,6 @@
 #endif /* CONFIG_QDIO_DEBUG */
 #define QDIO_USE_PROCESSING_STATE
 
-#ifdef CONFIG_QDIO_PERF_STATS
-#define QDIO_PERFORMANCE_STATS
-#endif /* CONFIG_QDIO_PERF_STATS */
-
 #define QDIO_MINIMAL_BH_RELIEF_TIME 16
 #define QDIO_TIMER_POLL_VALUE 1
 #define IQDIO_TIMER_POLL_VALUE 1
@@ -64,6 +60,7 @@
 #define QDIO_ACTIVATE_TIMEOUT ((5*HZ)>>10)
 #define QDIO_CLEANUP_CLEAR_TIMEOUT (20*HZ)
 #define QDIO_CLEANUP_HALT_TIMEOUT (10*HZ)
+#define QDIO_FORCE_CHECK_TIMEOUT (10*HZ)
 
 enum qdio_irq_states {
 	QDIO_IRQ_STATE_INACTIVE,
@@ -503,25 +500,45 @@ do_clear_global_summary(void)
 #define CHSC_FLAG_SIGA_SYNC_DONE_ON_THININTS 0x08
 #define CHSC_FLAG_SIGA_SYNC_DONE_ON_OUTB_PCIS 0x04
 
-#ifdef QDIO_PERFORMANCE_STATS
 struct qdio_perf_stats {
-	unsigned int tl_runs;
+#ifdef CONFIG_64BIT
+	atomic64_t tl_runs;
+	atomic64_t outbound_tl_runs;
+	atomic64_t outbound_tl_runs_resched;
+	atomic64_t inbound_tl_runs;
+	atomic64_t inbound_tl_runs_resched;
+	atomic64_t inbound_thin_tl_runs;
+	atomic64_t inbound_thin_tl_runs_resched;
 
-	unsigned int siga_outs;
-	unsigned int siga_ins;
-	unsigned int siga_syncs;
-	unsigned int pcis;
-	unsigned int thinints;
-	unsigned int fast_reqs;
+	atomic64_t siga_outs;
+	atomic64_t siga_ins;
+	atomic64_t siga_syncs;
+	atomic64_t pcis;
+	atomic64_t thinints;
+	atomic64_t fast_reqs;
 
-	__u64 start_time_outbound;
-	unsigned int outbound_cnt;
-	unsigned int outbound_time;
-	__u64 start_time_inbound;
-	unsigned int inbound_cnt;
-	unsigned int inbound_time;
+	atomic64_t outbound_cnt;
+	atomic64_t inbound_cnt;
+#else /* CONFIG_64BIT */
+	atomic_t tl_runs;
+	atomic_t outbound_tl_runs;
+	atomic_t outbound_tl_runs_resched;
+	atomic_t inbound_tl_runs;
+	atomic_t inbound_tl_runs_resched;
+	atomic_t inbound_thin_tl_runs;
+	atomic_t inbound_thin_tl_runs_resched;
+
+	atomic_t siga_outs;
+	atomic_t siga_ins;
+	atomic_t siga_syncs;
+	atomic_t pcis;
+	atomic_t thinints;
+	atomic_t fast_reqs;
+
+	atomic_t outbound_cnt;
+	atomic_t inbound_cnt;
+#endif /* CONFIG_64BIT */
 };
-#endif /* QDIO_PERFORMANCE_STATS */
 
 #define atomic_swap(a,b) xchg((int*)a.counter,b)
 
@@ -591,8 +608,10 @@ struct qdio_q {
 
 	void *irq_ptr;
 
-#ifdef QDIO_USE_TIMERS_FOR_POLLING
+#ifndef __GENKSYMS__
 	struct timer_list timer;
+#endif
+#ifdef QDIO_USE_TIMERS_FOR_POLLING
 	atomic_t timer_already_set;
 	spinlock_t timer_lock;
 #else /* QDIO_USE_TIMERS_FOR_POLLING */
@@ -638,6 +657,9 @@ struct qdio_q {
 	} timing;
 	atomic_t busy_siga_counter;
         unsigned int queue_type;
+#ifndef __GENKSYMS__
+	unsigned int is_pci_out;
+#endif
 
 	/* leave this member at the end. won't be cleared in qdio_fill_qs */
 	struct slib *slib; /* a page is allocated under this pointer,

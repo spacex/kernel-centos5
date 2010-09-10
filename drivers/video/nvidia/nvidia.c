@@ -1332,7 +1332,7 @@ err_out:
 	return -ENODEV;
 }
 
-static void __exit nvidiafb_remove(struct pci_dev *pd)
+static void __devexit nvidiafb_remove(struct pci_dev *pd)
 {
 	struct fb_info *info = pci_get_drvdata(pd);
 	struct nvidia_par *par = info->par;
@@ -1418,7 +1418,7 @@ static struct pci_driver nvidiafb_driver = {
 	.probe    = nvidiafb_probe,
 	.suspend  = nvidiafb_suspend,
 	.resume   = nvidiafb_resume,
-	.remove   = __exit_p(nvidiafb_remove),
+	.remove   = __devexit_p(nvidiafb_remove),
 };
 
 /* ------------------------------------------------------------------------- *

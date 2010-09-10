@@ -1552,11 +1552,6 @@ _STATIC(__start_initialization_iSeries)
 	li	r0,0
 	stdu	r0,-STACK_FRAME_OVERHEAD(r1)
 
-	LOAD_REG_IMMEDIATE(r3,cpu_specs)
-	LOAD_REG_IMMEDIATE(r4,cur_cpu_spec)
-	li	r5,0
-	bl	.identify_cpu
-
 	LOAD_REG_IMMEDIATE(r2,__toc_start)
 	addi	r2,r2,0x4000
 	addi	r2,r2,0x4000
@@ -1925,13 +1920,6 @@ _STATIC(start_here_multiplatform)
 	addi	r2,r2,0x4000
 	add	r2,r2,r26
 
-	LOAD_REG_IMMEDIATE(r3, cpu_specs)
-	add	r3,r3,r26
-	LOAD_REG_IMMEDIATE(r4,cur_cpu_spec)
-	add	r4,r4,r26
-	mr	r5,r26
-	bl	.identify_cpu
-
 	/* Save some low level config HIDs of CPU0 to be copied to
 	 * other CPUs later on, or used for suspend/resume
 	 */
@@ -1966,12 +1954,6 @@ _STATIC(start_here_common)
 	addi	r1,r3,THREAD_SIZE
 	li	r0,0
 	stdu	r0,-STACK_FRAME_OVERHEAD(r1)
-
-	/* Apply the CPUs-specific fixups (nop out sections not relevant
-	 * to this CPU
-	 */
-	li	r3,0
-	bl	.do_cpu_ftr_fixups
 
 	/* ptr to current */
 	LOAD_REG_IMMEDIATE(r4, init_task)

@@ -38,7 +38,7 @@ static int create_rcom(struct dlm_ls *ls, int to_nodeid, int type, int len,
 	char *mb;
 	int mb_len = sizeof(struct dlm_rcom) + len;
 
-	mh = dlm_lowcomms_get_buffer(to_nodeid, mb_len, GFP_KERNEL, &mb);
+	mh = dlm_lowcomms_get_buffer(to_nodeid, mb_len, ls->ls_allocation, &mb);
 	if (!mh) {
 		log_print("create_rcom to %d type %d len %d ENOBUFS",
 			  to_nodeid, type, len);
@@ -90,7 +90,7 @@ static int check_config(struct dlm_ls *ls, struct dlm_rcom *rc, int nodeid)
 		log_error(ls, "version mismatch: %x nodeid %d: %x",
 			  DLM_HEADER_MAJOR | DLM_HEADER_MINOR, nodeid,
 			  rc->rc_header.h_version);
-		return -EINVAL;
+		return -EPROTO;
 	}
 
 	if (rf->rf_lvblen != ls->ls_lvblen ||
@@ -98,7 +98,7 @@ static int check_config(struct dlm_ls *ls, struct dlm_rcom *rc, int nodeid)
 		log_error(ls, "config mismatch: %d,%x nodeid %d: %d,%x",
 			  ls->ls_lvblen, ls->ls_exflags,
 			  nodeid, rf->rf_lvblen, rf->rf_lsflags);
-		return -EINVAL;
+		return -EPROTO;
 	}
 	return 0;
 }
@@ -138,7 +138,7 @@ int dlm_rcom_status(struct dlm_ls *ls, int nodeid)
 		goto out;
 
 	allow_sync_reply(ls, &rc->rc_id);
-	memset(ls->ls_recover_buf, 0, dlm_config.buffer_size);
+	memset(ls->ls_recover_buf, 0, dlm_config.ci_buffer_size);
 
 	send_rcom(ls, mh, rc);
 
@@ -212,7 +212,7 @@ int dlm_rcom_names(struct dlm_ls *ls, int nodeid, char *last_name, int last_len)
 	if (nodeid == dlm_our_nodeid()) {
 		dlm_copy_master_names(ls, last_name, last_len,
 		                      ls->ls_recover_buf + len,
-		                      dlm_config.buffer_size - len, nodeid);
+		                      dlm_config.ci_buffer_size - len, nodeid);
 		goto out;
 	}
 
@@ -222,7 +222,7 @@ int dlm_rcom_names(struct dlm_ls *ls, int nodeid, char *last_name, int last_len)
 	memcpy(rc->rc_buf, last_name, last_len);
 
 	allow_sync_reply(ls, &rc->rc_id);
-	memset(ls->ls_recover_buf, 0, dlm_config.buffer_size);
+	memset(ls->ls_recover_buf, 0, dlm_config.ci_buffer_size);
 
 	send_rcom(ls, mh, rc);
 
@@ -240,7 +240,7 @@ static void receive_rcom_names(struct dlm_ls *ls, struct dlm_rcom *rc_in)
 
 	nodeid = rc_in->rc_header.h_nodeid;
 	inlen = rc_in->rc_header.h_length - sizeof(struct dlm_rcom);
-	outlen = dlm_config.buffer_size - sizeof(struct dlm_rcom);
+	outlen = dlm_config.ci_buffer_size - sizeof(struct dlm_rcom);
 
 	error = create_rcom(ls, nodeid, DLM_RCOM_NAMES_REPLY, outlen, &rc, &mh);
 	if (error)
@@ -393,7 +393,7 @@ static int send_ls_not_ready(int nodeid, struct dlm_rcom *rc_in)
 	char *mb;
 	int mb_len = sizeof(struct dlm_rcom) + sizeof(struct rcom_config);
 
-	mh = dlm_lowcomms_get_buffer(nodeid, mb_len, GFP_KERNEL, &mb);
+	mh = dlm_lowcomms_get_buffer(nodeid, mb_len, GFP_NOFS, &mb);
 	if (!mh)
 		return -ENOBUFS;
 	memset(mb, 0, mb_len);

@@ -28,6 +28,9 @@ static struct dma_mapping_ops *get_dma_ops(struct device *dev)
 	if (dev->bus == &ibmebus_bus_type)
 		return &ibmebus_dma_ops;
 #endif
+	if (dev->bus == &of_platform_bus_type)
+		return &of_platform_dma_ops;
+
 	return NULL;
 }
 

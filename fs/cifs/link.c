@@ -20,7 +20,10 @@
  */
 #include <linux/fs.h>
 #include <linux/stat.h>
+#include <linux/version.h>
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,5,0)
 #include <linux/namei.h>
+#endif
 #include "cifsfs.h"
 #include "cifspdu.h"
 #include "cifsglob.h"
@@ -69,17 +72,31 @@ cifs_hardlink(struct dentry *old_file, struct inode *inode,
 			rc = -EOPNOTSUPP;  
 	}
 
-/* if (!rc)     */
-	{
-		/*   renew_parental_timestamps(old_file);
-		   inode->i_nlink++;
-		   mark_inode_dirty(inode);
-		   d_instantiate(direntry, inode); */
-		/* BB add call to either mark inode dirty or refresh its data and timestamp to current time */
+	d_drop(direntry);	/* force new lookup from server of target */
+
+	/* if source file is cached (oplocked) revalidate will not go to server
+	   until the file is closed or oplock broken so update nlinks locally */
+	if(old_file->d_inode) {
+		cifsInode = CIFS_I(old_file->d_inode);
+		if(rc == 0) {
+			old_file->d_inode->i_nlink++;
+/* BB should we make this contingent on superblock flag NOATIME? */
+/*			old_file->d_inode->i_ctime = CURRENT_TIME;*/
+			/* parent dir timestamps will update from srv
+			within a second, would it really be worth it
+			to set the parent dir cifs inode time to zero
+			to force revalidate (faster) for it too? */
+		}
+		/* if not oplocked will force revalidate to get info 
+		   on source file from srv */
+		cifsInode->time = 0;
+
+                /* Will update parent dir timestamps from srv within a second.
+		   Would it really be worth it to set the parent dir (cifs
+		   inode) time field to zero to force revalidate on parent
+		   directory faster ie 
+			CIFS_I(inode)->time = 0;  */
 	}
-	d_drop(direntry);	/* force new lookup from server */
-	cifsInode = CIFS_I(old_file->d_inode);
-	cifsInode->time = 0;	/* will force revalidate to go get info when needed */
 
 cifs_hl_exit:
 	kfree(fromName);
@@ -87,9 +104,13 @@ cifs_hl_exit:
 	FreeXid(xid);
 	return rc;
 }
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,12)
 void *
 cifs_follow_link(struct dentry *direntry, struct nameidata *nd)
+#else
+int
+cifs_follow_link(struct dentry *direntry, struct nameidata *nd)
+#endif
 {
 	struct inode *inode = direntry->d_inode;
 	int rc = -EACCES;
@@ -132,6 +153,9 @@ cifs_follow_link(struct dentry *direntry, struct nameidata *nd)
 /* BB Add special case check for Samba DFS symlinks */
 
 		target_path[PATH_MAX-1] = 0;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,9) 
+		rc = vfs_follow_link(nd, target_path);
+#endif
 	} else {
 		kfree(target_path);
 		target_path = ERR_PTR(rc);
@@ -141,8 +165,14 @@ out:
 	kfree(full_path);
 out_no_free:
 	FreeXid(xid);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,8) 
 	nd_set_link(nd, target_path);
+#endif
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,12)
 	return NULL;	/* No cookie */
+#else
+	return 0;
+#endif
 }
 
 int
@@ -225,9 +255,9 @@ cifs_readlink(struct dentry *direntry, char __user *pBuffer, int buflen)
 
 /* BB would it be safe against deadlock to grab this sem 
       even though rename itself grabs the sem and calls lookup? */
-/*       mutex_lock(&inode->i_sb->s_vfs_rename_mutex);*/
+/*       down(&inode->i_sb->s_vfs_rename_sem);*/
 	full_path = build_path_from_dentry(direntry);
-/*       mutex_unlock(&inode->i_sb->s_vfs_rename_mutex);*/
+/*       up(&inode->i_sb->s_vfs_rename_sem);*/
 
 	if(full_path == NULL) {
 		FreeXid(xid);
@@ -254,7 +284,11 @@ cifs_readlink(struct dentry *direntry, char __user *pBuffer, int buflen)
 				tmpbuffer,
 				len - 1,
 				cifs_sb->local_nls);
-	else {
+	else if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_UNX_EMUL) {
+		cERROR(1,("SFU style symlinks not implemented yet"));
+		/* add open and read as in fs/cifs/inode.c */
+	
+	} else {
 		rc = CIFSSMBOpen(xid, pTcon, full_path, FILE_OPEN, GENERIC_READ,
 				OPEN_REPARSE_POINT,&fid, &oplock, NULL, 
 				cifs_sb->local_nls, 
@@ -317,9 +351,15 @@ cifs_readlink(struct dentry *direntry, char __user *pBuffer, int buflen)
 	return rc;
 }
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,12)
 void cifs_put_link(struct dentry *direntry, struct nameidata *nd, void *cookie)
+#else
+void cifs_put_link(struct dentry *direntry, struct nameidata *nd)
+#endif
 {
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,8)
 	char *p = nd_get_link(nd);
 	if (!IS_ERR(p))
 		kfree(p);
+#endif
 }

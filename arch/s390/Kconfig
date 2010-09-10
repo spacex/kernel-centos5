@@ -33,6 +33,12 @@ config GENERIC_CALIBRATE_DELAY
 config GENERIC_BUST_SPINLOCK
 	bool
 
+config NO_DMA
+	def_bool y
+
+config NO_IOPORT
+	def_bool y
+
 mainmenu "Linux Kernel Configuration"
 
 config S390
@@ -249,14 +255,6 @@ config QDIO
 	  module will be called qdio.
 
 	  If unsure, say Y.
-
-config QDIO_PERF_STATS
-	bool "Performance statistics in /proc"
-	depends on QDIO
-	help
-	  Say Y here to get performance statistics in /proc/qdio_perf
-
-	  If unsure, say N.
 
 config QDIO_DEBUG
 	bool "Extended debugging information"

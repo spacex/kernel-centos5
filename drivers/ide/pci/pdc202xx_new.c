@@ -355,6 +355,18 @@ static void __devinit init_hwif_pdc202new(ide_hwif_t *hwif)
 
 static int __devinit init_setup_pdcnew(struct pci_dev *dev, ide_pci_device_t *d)
 {
+#ifdef __powerpc64__
+	/* Skip using the IDE device driver on IBM p5 machines
+	 * to load the libata hotplug driver instead later
+	 */
+	if (dev->bus->self &&
+	    dev->bus->self->vendor == PCI_VENDOR_ID_IBM &&
+	    dev->bus->self->device == 0x0188) {
+		printk(KERN_INFO "ide: Skipping Promise PDC20275 "
+		       "on IBM p5 machines.\n");
+		return -ENODEV;
+	}
+#endif
 	return ide_setup_pci_device(dev, d);
 }
 

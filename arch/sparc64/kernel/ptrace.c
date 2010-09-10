@@ -254,12 +254,10 @@ static const struct utrace_regset native_regsets[] = {
 	},
 };
 
-const struct utrace_regset_view utrace_sparc64_native_view = {
+static const struct utrace_regset_view utrace_sparc64_native_view = {
 	.name = UTS_MACHINE, .e_machine = ELF_ARCH,
-	.regsets = native_regsets,
-	.n = sizeof native_regsets / sizeof native_regsets[0],
+	.regsets = native_regsets, .n = ARRAY_SIZE(native_regsets)
 };
-EXPORT_SYMBOL_GPL(utrace_sparc64_native_view);
 
 #ifdef CONFIG_COMPAT
 
@@ -593,14 +591,22 @@ static const struct utrace_regset sparc32_regsets[] = {
 	},
 };
 
-const struct utrace_regset_view utrace_sparc32_view = {
+static const struct utrace_regset_view utrace_sparc32_view = {
 	.name = "sparc", .e_machine = EM_SPARC,
-	.regsets = sparc32_regsets,
-	.n = sizeof sparc32_regsets / sizeof sparc32_regsets[0],
+	.regsets = sparc32_regsets, .n = ARRAY_SIZE(sparc32_regsets)
 };
-EXPORT_SYMBOL_GPL(utrace_sparc32_view);
 
 #endif	/* CONFIG_COMPAT */
+
+const struct utrace_regset_view *utrace_native_view(struct task_struct *tsk)
+{
+#ifdef CONFIG_COMPAT
+	if (test_tsk_thread_flag(tsk, TIF_32BIT))
+		return &utrace_sparc32_view;
+#endif
+	return &utrace_sparc64_native_view;
+}
+
 
 /* To get the necessary page struct, access_process_vm() first calls
  * get_user_pages().  This has done a flush_dcache_page() on the

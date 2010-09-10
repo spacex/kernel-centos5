@@ -37,7 +37,7 @@
 
 #define DRIVER_NAME		"i915"
 #define DRIVER_DESC		"Intel Graphics"
-#define DRIVER_DATE		"20060119"
+#define DRIVER_DATE		"20060929"
 
 /* Interface history:
  *
@@ -46,9 +46,10 @@
  * 1.3: Add vblank support
  * 1.4: Fix cmdbuffer path, add heap destroy
  * 1.5: Add vblank pipe configuration
+ * 1.8: New ioctl for ARB_Occlusion_Query
  */
 #define DRIVER_MAJOR		1
-#define DRIVER_MINOR		5
+#define DRIVER_MINOR		8
 #define DRIVER_PATCHLEVEL	0
 
 typedef struct _drm_i915_ring_buffer {
@@ -71,6 +72,13 @@ struct mem_block {
 	DRMFILE filp;		/* 0: free, -1: heap, other: real files */
 };
 
+typedef struct _drm_i915_vbl_swap {
+	struct list_head head;
+	drm_drawable_t drw_id;
+	unsigned int pipe;
+	unsigned int sequence;
+} drm_i915_vbl_swap_t;
+
 typedef struct drm_i915_private {
 	drm_local_map_t *sarea;
 	drm_local_map_t *mmio_map;
@@ -81,12 +89,13 @@ typedef struct drm_i915_private {
 	drm_dma_handle_t *status_page_dmah;
 	void *hw_status_page;
 	dma_addr_t dma_status_page;
-	unsigned long counter;
+	uint32_t counter;
+	unsigned int status_gfx_addr;
+	drm_local_map_t hws_map;
 
 	int back_offset;
 	int front_offset;
 	int current_page;
-	int page_flipping;
 	int use_mi_batchbuffer_start;
 
 	wait_queue_head_t irq_queue;
@@ -98,7 +107,23 @@ typedef struct drm_i915_private {
 	struct mem_block *agp_heap;
 	unsigned int sr01, adpa, ppcr, dvob, dvoc, lvds;
 	int vblank_pipe;
+
+	spinlock_t user_irq_lock;
+	int user_irq_refcount;
+	uint32_t irq_enable_reg;
+	int irq_enabled;
+
+	spinlock_t swaps_lock;
+	drm_i915_vbl_swap_t vbl_swaps;
+	unsigned int swaps_pending;
 } drm_i915_private_t;
+
+enum intel_chip_family {
+	CHIP_I8XX = 0X01,
+	CHIP_I9XX = 0X02,
+	CHIP_I915 = 0X04,
+	CHIP_I965 = 0X08,
+};
 
 extern drm_ioctl_desc_t i915_ioctls[];
 extern int i915_max_ioctl;
@@ -111,6 +136,7 @@ extern void i915_driver_preclose(drm_device_t * dev, DRMFILE filp);
 extern int i915_driver_device_is_agp(drm_device_t * dev);
 extern long i915_compat_ioctl(struct file *filp, unsigned int cmd,
 			      unsigned long arg);
+extern void i915_emit_breadcrumb(drm_device_t *dev);
 
 /* i915_irq.c */
 extern int i915_irq_emit(DRM_IOCTL_ARGS);
@@ -123,6 +149,10 @@ extern void i915_driver_irq_postinstall(drm_device_t * dev);
 extern void i915_driver_irq_uninstall(drm_device_t * dev);
 extern int i915_vblank_pipe_set(DRM_IOCTL_ARGS);
 extern int i915_vblank_pipe_get(DRM_IOCTL_ARGS);
+extern int i915_emit_irq(drm_device_t * dev);
+
+extern void i915_user_irq_on(drm_i915_private_t *dev_priv);
+extern void i915_user_irq_off(drm_i915_private_t *dev_priv);
 
 /* i915_mem.c */
 extern int i915_mem_alloc(DRM_IOCTL_ARGS);
@@ -191,6 +221,7 @@ extern int i915_wait_ring(drm_device_t * dev, int n, const char *caller);
 #define I915REG_INT_IDENTITY_R	0x020a4
 #define I915REG_INT_MASK_R 	0x020a8
 #define I915REG_INT_ENABLE_R	0x020a0
+#define I915REG_INSTPM		0x020c0
 
 #define SRX_INDEX		0x3c4
 #define SRX_DATA		0x3c5
@@ -273,6 +304,7 @@ extern int i915_wait_ring(drm_device_t * dev, int n, const char *caller);
 
 #define CMD_OP_DESTBUFFER_INFO	 ((0x3<<29)|(0x1d<<24)|(0x8e<<16)|1)
 
-#define READ_BREADCRUMB(dev_priv) (((u32 *)(dev_priv->hw_status_page))[5])
+#define READ_BREADCRUMB(dev_priv) (((volatile u32*)(dev_priv->hw_status_page))[5])
+#define READ_HWSP(dev_priv, reg)  (((volatile u32*)(dev_priv->hw_status_page))[reg])
 
 #endif

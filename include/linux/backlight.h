@@ -51,8 +51,14 @@ struct backlight_device {
 	struct notifier_block fb_notif;
 	/* The class device structure */
 	struct class_device class_dev;
+
 };
 
+static inline void backlight_update_status(struct backlight_device *bd)
+{
+	if (bd->props && bd->props->update_status)
+		bd->props->update_status(bd);
+}
 extern struct backlight_device *backlight_device_register(const char *name,
 	void *devdata, struct backlight_properties *bp);
 extern void backlight_device_unregister(struct backlight_device *bd);

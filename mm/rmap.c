@@ -601,6 +601,12 @@ void page_remove_rmap(struct page *page)
 			set_page_dirty(page);
 		__dec_zone_page_state(page,
 				PageAnon(page) ? NR_ANON_PAGES : NR_FILE_MAPPED);
+		/*
+		 * Deactivate the page when the last munmap() occurs.
+		 */
+		if (pagecache_over_max() && !PageAnon(page))
+			deactivate_unmapped_page(page);
+ 
 	}
 }
 

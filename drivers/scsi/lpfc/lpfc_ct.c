@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2004-2006 Emulex.  All rights reserved.           *
+ * Copyright (C) 2004-2007 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -334,21 +334,22 @@ lpfc_ns_rsp(struct lpfc_hba * phba, struct lpfc_dmabuf * mp, uint32_t Size)
 
 	lpfc_set_disctmo(phba);
 
-	Cnt = Size  > FCELSSIZE ? FCELSSIZE : Size;
 
 	list_add_tail(&head, &mp->list);
 	list_for_each_entry_safe(mp, next_mp, &head, list) {
 		mlast = mp;
 
+		Cnt = Size  > FCELSSIZE ? FCELSSIZE : Size;
+
 		Size -= Cnt;
 
-		if (!ctptr)
+		if (!ctptr) {
 			ctptr = (uint32_t *) mlast->virt;
-		else
+		} else
 			Cnt -= 16;	/* subtract length of CT header */
 
 		/* Loop through entire NameServer list of DIDs */
-		while (Cnt) {
+		while (Cnt >= sizeof (uint32_t)) {
 
 			/* Get next DID from NameServer List */
 			CTentry = *ctptr++;
@@ -1037,6 +1038,9 @@ lpfc_fdmi_cmd(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp, int cmdcode)
 				break;
 				case LA_4GHZ_LINK:
 					ae->un.PortSpeed = HBA_PORTSPEED_4GBIT;
+				break;
+				case LA_8GHZ_LINK:
+					ae->un.PortSpeed = HBA_PORTSPEED_8GBIT;
 				break;
 				default:
 					ae->un.PortSpeed =

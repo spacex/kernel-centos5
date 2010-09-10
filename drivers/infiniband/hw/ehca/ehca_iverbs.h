@@ -143,7 +143,8 @@ struct ib_qp *ehca_create_qp(struct ib_pd *pd,
 
 int ehca_destroy_qp(struct ib_qp *qp);
 
-int ehca_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr, int attr_mask);
+int ehca_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr, int attr_mask,
+		   struct ib_udata *udata);
 
 int ehca_query_qp(struct ib_qp *qp, struct ib_qp_attr *qp_attr,
 		  int qp_attr_mask, struct ib_qp_init_attr *qp_init_attr);
@@ -170,19 +171,11 @@ int ehca_mmap(struct ib_ucontext *context, struct vm_area_struct *vma);
 
 void ehca_poll_eqs(unsigned long data);
 
-int ehca_mmap_nopage(u64 foffset,u64 length,void **mapped,
-		     struct vm_area_struct **vma);
-
-int ehca_mmap_register(u64 physical,void **mapped,
-		       struct vm_area_struct **vma);
-
-int ehca_munmap(unsigned long addr, size_t len);
-
 #ifdef CONFIG_PPC_64K_PAGES
-void *ehca_alloc_fw_ctrlblock(void);
+void *ehca_alloc_fw_ctrlblock(gfp_t flags);
 void ehca_free_fw_ctrlblock(void *ptr);
 #else
-#define ehca_alloc_fw_ctrlblock() ((void*)get_zeroed_page(GFP_KERNEL))
+#define ehca_alloc_fw_ctrlblock(flags) ((void*) get_zeroed_page(flags))
 #define ehca_free_fw_ctrlblock(ptr) free_page((unsigned long)(ptr))
 #endif
 

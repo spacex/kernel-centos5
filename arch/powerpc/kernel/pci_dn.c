@@ -51,6 +51,9 @@ static void * __devinit update_dn_pci_info(struct device_node *dn, void *data)
 	if (pdn == NULL)
 		return NULL;
 	memset(pdn, 0, sizeof(*pdn));
+#ifdef CONFIG_PCI_MSI
+	INIT_LIST_HEAD(&pdn->msi_list);
+#endif
 	dn->data = pdn;
 	pdn->node = dn;
 	pdn->phb = phb;

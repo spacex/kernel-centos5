@@ -32,10 +32,10 @@
 #include <scsi/sas.h>
 #include <linux/list.h>
 #include <asm/semaphore.h>
-#include <asm/scatterlist.h>
 #include <scsi/scsi_device.h>
 #include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_transport_sas.h>
+#include <asm/scatterlist.h>
 
 struct block_device;
 
@@ -171,9 +171,9 @@ struct sata_device {
 struct domain_device {
         enum sas_dev_type dev_type;
 
-        enum sas_phy_linkrate linkrate;
-        enum sas_phy_linkrate min_linkrate;
-        enum sas_phy_linkrate max_linkrate;
+	enum sas_phy_linkrate linkrate;
+	enum sas_phy_linkrate min_linkrate;
+	enum sas_phy_linkrate max_linkrate;
 
         int  pathways;
 
@@ -249,6 +249,11 @@ struct asd_sas_port {
 	void *lldd_port;	  /* not touched by the sas class code */
 };
 
+struct asd_sas_event {
+	struct work_struct work;
+	struct asd_sas_phy *phy;
+};
+
 /* The phy pretty much is controlled by the LLDD.
  * The class only reads those fields.
  */
@@ -308,6 +313,11 @@ struct scsi_core {
 	int               queue_thread_kill;
 };
 
+enum sas_ha_state {
+	SAS_HA_REGISTERED,
+	SAS_HA_UNREGISTERED
+};
+
 struct sas_ha_struct {
 /* private: */
 	spinlock_t       event_lock;
@@ -339,6 +349,14 @@ struct sas_ha_struct {
 	void (*notify_phy_event)(struct asd_sas_phy *, enum phy_event);
 
 	void *lldd_ha;		  /* not touched by sas class code */
+
+#ifndef __GENKSYMS__
+	struct list_head eh_done_q;
+	
+	enum sas_ha_state state;
+	spinlock_t 	  state_lock;
+#endif
+
 };
 
 #define SHOST_TO_SAS_HA(_shost) (*(struct sas_ha_struct **)(_shost)->hostdata)
@@ -369,7 +387,7 @@ void sas_hash_addr(u8 *hashed, const u8 *sas_addr);
 static inline void sas_phy_disconnected(struct asd_sas_phy *phy)
 {
 	phy->oob_mode = OOB_NOT_CONNECTED;
-	phy->linkrate = PHY_LINKRATE_NONE;
+	phy->linkrate = SAS_LINK_RATE_UNKNOWN;
 }
 
 /* ---------- Tasks ---------- */
@@ -527,17 +545,22 @@ struct sas_task {
 
 	void   *lldd_task;	  /* for use by LLDDs */
 	void   *uldd_task;
+#ifndef __GENKSYMS__
+	struct work_struct abort_work;
+#endif
 };
 
 
 
-#define SAS_TASK_STATE_PENDING  1
-#define SAS_TASK_STATE_DONE     2
-#define SAS_TASK_STATE_ABORTED  4
+#define SAS_TASK_STATE_PENDING      1
+#define SAS_TASK_STATE_DONE         2
+#define SAS_TASK_STATE_ABORTED      4
+#define SAS_TASK_NEED_DEV_RESET     8
+#define SAS_TASK_AT_INITIATOR       16
 
-static inline struct sas_task *sas_alloc_task(unsigned long flags)
+static inline struct sas_task *sas_alloc_task(gfp_t flags)
 {
-	extern kmem_cache_t *sas_task_cache;
+	extern struct kmem_cache *sas_task_cache;
 	struct sas_task *task = kmem_cache_alloc(sas_task_cache, flags);
 
 	if (task) {
@@ -555,7 +578,7 @@ static inline struct sas_task *sas_alloc_task(unsigned long flags)
 static inline void sas_free_task(struct sas_task *task)
 {
 	if (task) {
-		extern kmem_cache_t *sas_task_cache;
+		extern struct kmem_cache *sas_task_cache;
 		BUG_ON(!list_empty(&task->list));
 		kmem_cache_free(sas_task_cache, task);
 	}
@@ -588,11 +611,18 @@ struct sas_domain_function_template {
 
 	/* Phy management */
 	int (*lldd_control_phy)(struct asd_sas_phy *, enum phy_func);
+#ifndef __GENKSYMS__
+	int (*lldd_control_phy_new)(struct asd_sas_phy *, enum phy_func, void *);
+#endif
 };
 
 extern int sas_register_ha(struct sas_ha_struct *);
 extern int sas_unregister_ha(struct sas_ha_struct *);
 
+int sas_set_phy_speed(struct sas_phy *phy,
+		      struct sas_phy_linkrates *rates);
+int sas_phy_enable(struct sas_phy *phy, int enabled);
+int sas_phy_reset(struct sas_phy *phy, int hard_reset);
 extern int sas_queuecommand(struct scsi_cmnd *,
 		     void (*scsi_done)(struct scsi_cmnd *));
 extern int sas_target_alloc(struct scsi_target *);
@@ -624,5 +654,10 @@ int  sas_discover_end_dev(struct domain_device *);
 void sas_unregister_dev(struct domain_device *);
 
 void sas_init_dev(struct domain_device *);
+
+void sas_task_abort(struct sas_task *);
+int __sas_task_abort(struct sas_task *);
+int sas_eh_device_reset_handler(struct scsi_cmnd *cmd);
+int sas_eh_bus_reset_handler(struct scsi_cmnd *cmd);
 
 #endif /* _SASLIB_H_ */

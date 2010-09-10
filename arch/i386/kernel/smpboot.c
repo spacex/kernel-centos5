@@ -152,7 +152,7 @@ void __init smp_alloc_memory(void)
  * a given CPU
  */
 
-static void __devinit smp_store_cpu_info(int id)
+static void __cpuinit smp_store_cpu_info(int id)
 {
 	struct cpuinfo_x86 *c = cpu_data + id;
 
@@ -217,7 +217,7 @@ static struct {
 	atomic_t count_start;
 	atomic_t count_stop;
 	unsigned long long values[NR_CPUS];
-} tsc __initdata = {
+} tsc __cpuinitdata = {
 	.start_flag = ATOMIC_INIT(0),
 	.count_start = ATOMIC_INIT(0),
 	.count_stop = ATOMIC_INIT(0),
@@ -322,7 +322,7 @@ static void __init synchronize_tsc_bp(void)
 		printk("passed.\n");
 }
 
-static void __init synchronize_tsc_ap(void)
+static void __cpuinit synchronize_tsc_ap(void)
 {
 	int i;
 
@@ -354,7 +354,7 @@ extern void calibrate_delay(void);
 
 static atomic_t init_deasserted;
 
-static void __devinit smp_callin(void)
+static void __cpuinit smp_callin(void)
 {
 	int cpuid, phys_id;
 	unsigned long timeout;
@@ -528,7 +528,7 @@ set_cpu_sibling_map(int cpu)
 /*
  * Activate a secondary processor.
  */
-static void __devinit start_secondary(void *unused)
+static void __cpuinit start_secondary(void *unused)
 {
 	/*
 	 * Dont put anything before smp_callin(), SMP
@@ -917,7 +917,7 @@ static inline struct task_struct * alloc_idle_task(int cpu)
 #define alloc_idle_task(cpu) fork_idle(cpu)
 #endif
 
-static int __devinit do_boot_cpu(int apicid, int cpu)
+static int __cpuinit do_boot_cpu(int apicid, int cpu)
 /*
  * NOTE - on most systems this is a PHYSICAL apic ID, but on multiquad
  * (ie clustered apic addressing mode), this is a LOGICAL apic ID.
@@ -1422,7 +1422,7 @@ void __cpu_die(unsigned int cpu)
 }
 #endif /* CONFIG_HOTPLUG_CPU */
 
-int __devinit __cpu_up(unsigned int cpu)
+int __cpuinit __cpu_up(unsigned int cpu)
 {
 #ifdef CONFIG_HOTPLUG_CPU
 	int ret=0;

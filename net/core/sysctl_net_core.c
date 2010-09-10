@@ -28,6 +28,8 @@ extern char sysctl_divert_version[];
 #ifdef CONFIG_XFRM
 extern u32 sysctl_xfrm_aevent_etime;
 extern u32 sysctl_xfrm_aevent_rseqth;
+extern int sysctl_xfrm_larval_drop;
+extern u32 sysctl_xfrm_acq_expires;
 #endif
 
 ctl_table core_table[] = {
@@ -129,6 +131,22 @@ ctl_table core_table[] = {
 		.procname	= "xfrm_aevent_rseqth",
 		.data		= &sysctl_xfrm_aevent_rseqth,
 		.maxlen		= sizeof(u32),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec
+	},
+	{
+		.ctl_name	= NET_CORE_XFRM_ACQ_EXPIRES,
+		.procname	= "xfrm_acq_expires",
+		.data		= &sysctl_xfrm_acq_expires,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec
+	},
+	{
+		.ctl_name	= NET_CORE_XFRM_LARVAL_DROP,
+		.procname	= "xfrm_larval_drop",
+		.data		= &sysctl_xfrm_larval_drop,
+		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec
 	},

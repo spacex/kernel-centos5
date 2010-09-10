@@ -73,6 +73,12 @@ struct machdep_calls ppc_md;
 EXPORT_SYMBOL(ppc_md);
 struct machdep_calls *machine_id;
 EXPORT_SYMBOL(machine_id);
+/*
+ * ppc_msi_md should not be exported
+ */
+#ifdef CONFIG_PCI_MSI
+struct msi_machdep_calls ppc_msi_md;
+#endif /* CONFIG_PCI_MSI */
 
 unsigned long klimit = (unsigned long) _end;
 
@@ -441,27 +447,6 @@ void __init smp_setup_cpu_maps(void)
 #endif /* CONFIG_PPC64 */
 }
 #endif /* CONFIG_SMP */
-
-int __initdata do_early_xmon;
-#ifdef CONFIG_XMON
-static int __init early_xmon(char *p)
-{
-	/* ensure xmon is enabled */
-	if (p) {
-		if (strncmp(p, "on", 2) == 0)
-			xmon_init(1);
-		if (strncmp(p, "off", 3) == 0)
-			xmon_init(0);
-		if (strncmp(p, "early", 5) != 0)
-			return 0;
-	}
-	xmon_init(1);
-	do_early_xmon = 1;
-
-	return 0;
-}
-early_param("xmon", early_xmon);
-#endif
 
 static __init int add_pcspkr(void)
 {

@@ -392,7 +392,7 @@ enum {
 static inline long snd_ctl_ioctl_compat(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct snd_ctl_file *ctl;
-	struct list_head *list;
+	struct snd_kctl_ioctl *p;
 	void __user *argp = compat_ptr(arg);
 	int err;
 
@@ -407,6 +407,10 @@ static inline long snd_ctl_ioctl_compat(struct file *file, unsigned int cmd, uns
 	case SNDRV_CTL_IOCTL_POWER_STATE:
 	case SNDRV_CTL_IOCTL_ELEM_LOCK:
 	case SNDRV_CTL_IOCTL_ELEM_UNLOCK:
+	case SNDRV_CTL_IOCTL_ELEM_REMOVE:
+	case SNDRV_CTL_IOCTL_TLV_READ:
+	case SNDRV_CTL_IOCTL_TLV_WRITE:
+	case SNDRV_CTL_IOCTL_TLV_COMMAND:
 		return snd_ctl_ioctl(file, cmd, (unsigned long)argp);
 	case SNDRV_CTL_IOCTL_ELEM_LIST32:
 		return snd_ctl_elem_list_compat(ctl->card, argp);
@@ -423,8 +427,7 @@ static inline long snd_ctl_ioctl_compat(struct file *file, unsigned int cmd, uns
 	}
 
 	down_read(&snd_ioctl_rwsem);
-	list_for_each(list, &snd_control_compat_ioctls) {
-		struct snd_kctl_ioctl *p = list_entry(list, struct snd_kctl_ioctl, list);
+	list_for_each_entry(p, &snd_control_compat_ioctls, list) {
 		if (p->fioctl) {
 			err = p->fioctl(ctl->card, ctl, cmd, arg);
 			if (err != -ENOIOCTLCMD) {

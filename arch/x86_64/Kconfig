@@ -443,6 +443,13 @@ config HPET_EMULATE_RTC
 	bool "Provide RTC interrupt"
 	depends on HPET_TIMER && RTC=y
 
+config TICK_DIVIDER
+	bool "Support clock division"
+	default n
+	help
+	  Supports the use of clock division allowing the real interrupt
+	  rate to be lower than the HZ setting.
+
 # Mark as embedded because too many people got it wrong.
 # The code disables itself when not needed.
 config IOMMU
@@ -524,7 +531,7 @@ config X86_MCE_AMD
 
 config KEXEC
 	bool "kexec system call (EXPERIMENTAL)"
-	depends on EXPERIMENTAL && !X86_64_XEN
+	depends on EXPERIMENTAL && !XEN_UNPRIVILEGED_GUEST
 	help
 	  kexec is a system call that implements the ability to shutdown your
 	  current kernel, and to start another kernel.  It is like a reboot

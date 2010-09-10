@@ -26,6 +26,7 @@
 */
 
 #include "bcm43xx_leds.h"
+#include "bcm43xx_radio.h"
 #include "bcm43xx.h"
 
 #include <asm/bitops.h>
@@ -51,12 +52,12 @@ static void bcm43xx_led_blink(unsigned long d)
 	struct bcm43xx_private *bcm = led->bcm;
 	unsigned long flags;
 
-	bcm43xx_lock_irqonly(bcm, flags);
+	spin_lock_irqsave(&bcm->leds_lock, flags);
 	if (led->blink_interval) {
 		bcm43xx_led_changestate(led);
 		mod_timer(&led->blink_timer, jiffies + led->blink_interval);
 	}
-	bcm43xx_unlock_irqonly(bcm, flags);
+	spin_unlock_irqrestore(&bcm->leds_lock, flags);
 }
 
 static void bcm43xx_led_blink_start(struct bcm43xx_led *led,
@@ -108,6 +109,7 @@ static void bcm43xx_led_init_hardcoded(struct bcm43xx_private *bcm,
 	switch (led_index) {
 	case 0:
 		led->behaviour = BCM43xx_LED_ACTIVITY;
+		led->activelow = 1;
 		if (bcm->board_vendor == PCI_VENDOR_ID_COMPAQ)
 			led->behaviour = BCM43xx_LED_RADIO_ALL;
 		break;
@@ -177,7 +179,9 @@ void bcm43xx_leds_update(struct bcm43xx_private *bcm, int activity)
 	int i, turn_on;
 	unsigned long interval = 0;
 	u16 ledctl;
+	unsigned long flags;
 
+	spin_lock_irqsave(&bcm->leds_lock, flags);
 	ledctl = bcm43xx_read16(bcm, BCM43xx_MMIO_GPIO_CONTROL);
 	for (i = 0; i < BCM43xx_NR_LEDS; i++) {
 		led = &(bcm->leds[i]);
@@ -187,26 +191,31 @@ void bcm43xx_leds_update(struct bcm43xx_private *bcm, int activity)
 		case BCM43xx_LED_INACTIVE:
 			continue;
 		case BCM43xx_LED_OFF:
+		case BCM43xx_LED_BCM4303_3:
 			break;
 		case BCM43xx_LED_ON:
 			turn_on = 1;
 			break;
 		case BCM43xx_LED_ACTIVITY:
+		case BCM43xx_LED_BCM4303_0:
 			turn_on = activity;
 			break;
 		case BCM43xx_LED_RADIO_ALL:
-			turn_on = radio->enabled;
+			turn_on = radio->enabled && bcm43xx_is_hw_radio_enabled(bcm);
 			break;
 		case BCM43xx_LED_RADIO_A:
-			turn_on = (radio->enabled && phy->type == BCM43xx_PHYTYPE_A);
+		case BCM43xx_LED_BCM4303_2:
+			turn_on = (radio->enabled && bcm43xx_is_hw_radio_enabled(bcm) &&
+				   phy->type == BCM43xx_PHYTYPE_A);
 			break;
 		case BCM43xx_LED_RADIO_B:
-			turn_on = (radio->enabled &&
+		case BCM43xx_LED_BCM4303_1:
+			turn_on = (radio->enabled && bcm43xx_is_hw_radio_enabled(bcm) &&
 				   (phy->type == BCM43xx_PHYTYPE_B ||
 				    phy->type == BCM43xx_PHYTYPE_G));
 			break;
 		case BCM43xx_LED_MODE_BG:
-			if (phy->type == BCM43xx_PHYTYPE_G &&
+			if (phy->type == BCM43xx_PHYTYPE_G && bcm43xx_is_hw_radio_enabled(bcm) &&
 			    1/*FIXME: using G rates.*/)
 				turn_on = 1;
 			break;
@@ -255,7 +264,8 @@ void bcm43xx_leds_update(struct bcm43xx_private *bcm, int activity)
 			continue;
 #endif /* CONFIG_BCM43XX_DEBUG */
 		default:
-			assert(0);
+			dprintkl(KERN_INFO PFX "Bad value in leds_update,"
+				" led->behaviour: 0x%x\n", led->behaviour);
 		};
 
 		if (led->activelow)
@@ -266,6 +276,7 @@ void bcm43xx_leds_update(struct bcm43xx_private *bcm, int activity)
 			ledctl &= ~(1 << i);
 	}
 	bcm43xx_write16(bcm, BCM43xx_MMIO_GPIO_CONTROL, ledctl);
+	spin_unlock_irqrestore(&bcm->leds_lock, flags);
 }
 
 void bcm43xx_leds_switch_all(struct bcm43xx_private *bcm, int on)
@@ -274,7 +285,9 @@ void bcm43xx_leds_switch_all(struct bcm43xx_private *bcm, int on)
 	u16 ledctl;
 	int i;
 	int bit_on;
+	unsigned long flags;
 
+	spin_lock_irqsave(&bcm->leds_lock, flags);
 	ledctl = bcm43xx_read16(bcm, BCM43xx_MMIO_GPIO_CONTROL);
 	for (i = 0; i < BCM43xx_NR_LEDS; i++) {
 		led = &(bcm->leds[i]);
@@ -290,4 +303,5 @@ void bcm43xx_leds_switch_all(struct bcm43xx_private *bcm, int on)
 			ledctl &= ~(1 << i);
 	}
 	bcm43xx_write16(bcm, BCM43xx_MMIO_GPIO_CONTROL, ledctl);
+	spin_unlock_irqrestore(&bcm->leds_lock, flags);
 }

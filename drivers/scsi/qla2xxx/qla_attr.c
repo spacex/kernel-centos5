@@ -86,18 +86,20 @@ qla2x00_sysfs_read_nvram(struct kobject *kobj, char *buf, loff_t off,
 {
 	struct scsi_qla_host *ha = to_qla_host(dev_to_shost(container_of(kobj,
 	    struct device, kobj)));
-	unsigned long	flags;
+	int		size = ha->nvram_size;
+	char		*nvram_cache = ha->nvram;
 
-	if (!capable(CAP_SYS_ADMIN) || off != 0)
+	if (!capable(CAP_SYS_ADMIN) || off > size || count == 0)
 		return 0;
+	if (off + count > size) {
+		size -= off;
+		count = size;
+	}
 
-	/* Read NVRAM. */
-	spin_lock_irqsave(&ha->hardware_lock, flags);
-	ha->isp_ops.read_nvram(ha, (uint8_t *)buf, ha->nvram_base,
-	    ha->nvram_size);
-	spin_unlock_irqrestore(&ha->hardware_lock, flags);
+	/* Read NVRAM data from cache. */
+	memcpy(buf, &nvram_cache[off], count);
 
-	return ha->nvram_size;
+	return count;
 }
 
 static ssize_t
@@ -138,7 +140,11 @@ qla2x00_sysfs_write_nvram(struct kobject *kobj, char *buf, loff_t off,
 	/* Write NVRAM. */
 	spin_lock_irqsave(&ha->hardware_lock, flags);
 	ha->isp_ops.write_nvram(ha, (uint8_t *)buf, ha->nvram_base, count);
+	ha->isp_ops.read_nvram(ha, (uint8_t *)ha->nvram, ha->nvram_base,
+	    count);
 	spin_unlock_irqrestore(&ha->hardware_lock, flags);
+
+	set_bit(ISP_ABORT_NEEDED, &ha->dpc_flags);
 
 	return (count);
 }
@@ -289,17 +295,20 @@ qla2x00_sysfs_read_vpd(struct kobject *kobj, char *buf, loff_t off,
 {
 	struct scsi_qla_host *ha = to_qla_host(dev_to_shost(container_of(kobj,
 	    struct device, kobj)));
-	unsigned long flags;
+	int           size = ha->vpd_size;
+	char          *vpd_cache = ha->vpd;
 
-	if (!capable(CAP_SYS_ADMIN) || off != 0)
+	if (!capable(CAP_SYS_ADMIN) || off > size || count == 0)
 		return 0;
+	if (off + count > size) {
+		size -= off;
+		count = size;
+	}
 
-	/* Read NVRAM. */
-	spin_lock_irqsave(&ha->hardware_lock, flags);
-	ha->isp_ops.read_nvram(ha, (uint8_t *)buf, ha->vpd_base, ha->vpd_size);
-	spin_unlock_irqrestore(&ha->hardware_lock, flags);
+	/* Read NVRAM data from cache. */
+	memcpy(buf, &vpd_cache[off], count);
 
-	return ha->vpd_size;
+	return count;
 }
 
 static ssize_t
@@ -316,6 +325,7 @@ qla2x00_sysfs_write_vpd(struct kobject *kobj, char *buf, loff_t off,
 	/* Write NVRAM. */
 	spin_lock_irqsave(&ha->hardware_lock, flags);
 	ha->isp_ops.write_nvram(ha, (uint8_t *)buf, ha->vpd_base, count);
+	ha->isp_ops.read_nvram(ha, (uint8_t *)ha->vpd, ha->vpd_base, count);
 	spin_unlock_irqrestore(&ha->hardware_lock, flags);
 
 	return count;
@@ -379,21 +389,37 @@ static struct bin_attribute sysfs_sfp_attr = {
 	.read = qla2x00_sysfs_read_sfp,
 };
 
+static struct sysfs_entry {
+	char *name;
+	struct bin_attribute *attr;
+	int is4GBp_only;
+} bin_file_entries[] = {
+	{ "fw_dump", &sysfs_fw_dump_attr, },
+	{ "nvram", &sysfs_nvram_attr, },
+	{ "optrom", &sysfs_optrom_attr, },
+	{ "optrom_ctl", &sysfs_optrom_ctl_attr, },
+	{ "vpd", &sysfs_vpd_attr, 1 },
+	{ "sfp", &sysfs_sfp_attr, 1 },
+	{ NULL },
+};
+
 void
 qla2x00_alloc_sysfs_attr(scsi_qla_host_t *ha)
 {
 	struct Scsi_Host *host = ha->host;
+	struct sysfs_entry *iter;
+	int ret;
 
-	sysfs_create_bin_file(&host->shost_gendev.kobj, &sysfs_fw_dump_attr);
-	sysfs_create_bin_file(&host->shost_gendev.kobj, &sysfs_nvram_attr);
-	sysfs_create_bin_file(&host->shost_gendev.kobj, &sysfs_optrom_attr);
-	sysfs_create_bin_file(&host->shost_gendev.kobj,
-	    &sysfs_optrom_ctl_attr);
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
-		sysfs_create_bin_file(&host->shost_gendev.kobj,
-		    &sysfs_vpd_attr);
-		sysfs_create_bin_file(&host->shost_gendev.kobj,
-		    &sysfs_sfp_attr);
+	for (iter = bin_file_entries; iter->name; iter++) {
+		if (iter->is4GBp_only && (!IS_QLA24XX(ha) && !IS_QLA54XX(ha)))
+			continue;
+
+		ret = sysfs_create_bin_file(&host->shost_gendev.kobj,
+		    iter->attr);
+		if (ret)
+			qla_printk(KERN_INFO, ha,
+			    "Unable to create sysfs %s binary attribute "
+			    "(%d).\n", iter->name, ret);
 	}
 }
 
@@ -401,17 +427,14 @@ void
 qla2x00_free_sysfs_attr(scsi_qla_host_t *ha)
 {
 	struct Scsi_Host *host = ha->host;
+	struct sysfs_entry *iter;
 
-	sysfs_remove_bin_file(&host->shost_gendev.kobj, &sysfs_fw_dump_attr);
-	sysfs_remove_bin_file(&host->shost_gendev.kobj, &sysfs_nvram_attr);
-	sysfs_remove_bin_file(&host->shost_gendev.kobj, &sysfs_optrom_attr);
-	sysfs_remove_bin_file(&host->shost_gendev.kobj,
-	    &sysfs_optrom_ctl_attr);
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	for (iter = bin_file_entries; iter->name; iter++) {
+		if (iter->is4GBp_only && (!IS_QLA24XX(ha) && !IS_QLA54XX(ha)))
+			continue;
+
 		sysfs_remove_bin_file(&host->shost_gendev.kobj,
-		    &sysfs_vpd_attr);
-		sysfs_remove_bin_file(&host->shost_gendev.kobj,
-		    &sysfs_sfp_attr);
+		    iter->attr);
 	}
 
 	if (ha->beacon_blink_led == 1)
@@ -640,6 +663,43 @@ qla2x00_beacon_store(struct class_device *cdev, const char *buf,
 	return count;
 }
 
+static ssize_t
+qla2x00_optrom_bios_version_show(struct class_device *cdev, char *buf)
+{
+	scsi_qla_host_t *ha = to_qla_host(class_to_shost(cdev));
+
+	return snprintf(buf, PAGE_SIZE, "%d.%02d\n", ha->bios_revision[1],
+	    ha->bios_revision[0]);
+}
+
+static ssize_t
+qla2x00_optrom_efi_version_show(struct class_device *cdev, char *buf)
+{
+	scsi_qla_host_t *ha = to_qla_host(class_to_shost(cdev));
+
+	return snprintf(buf, PAGE_SIZE, "%d.%02d\n", ha->efi_revision[1],
+	    ha->efi_revision[0]);
+}
+
+static ssize_t
+qla2x00_optrom_fcode_version_show(struct class_device *cdev, char *buf)
+{
+	scsi_qla_host_t *ha = to_qla_host(class_to_shost(cdev));
+
+	return snprintf(buf, PAGE_SIZE, "%d.%02d\n", ha->fcode_revision[1],
+	    ha->fcode_revision[0]);
+}
+
+static ssize_t
+qla2x00_optrom_fw_version_show(struct class_device *cdev, char *buf)
+{
+	scsi_qla_host_t *ha = to_qla_host(class_to_shost(cdev));
+
+	return snprintf(buf, PAGE_SIZE, "%d.%02d.%02d %d\n",
+	    ha->fw_revision[0], ha->fw_revision[1], ha->fw_revision[2],
+	    ha->fw_revision[3]);
+}
+
 static CLASS_DEVICE_ATTR(driver_version, S_IRUGO, qla2x00_drvr_version_show,
 	NULL);
 static CLASS_DEVICE_ATTR(fw_version, S_IRUGO, qla2x00_fw_version_show, NULL);
@@ -656,6 +716,14 @@ static CLASS_DEVICE_ATTR(zio_timer, S_IRUGO | S_IWUSR, qla2x00_zio_timer_show,
     qla2x00_zio_timer_store);
 static CLASS_DEVICE_ATTR(beacon, S_IRUGO | S_IWUSR, qla2x00_beacon_show,
     qla2x00_beacon_store);
+static CLASS_DEVICE_ATTR(optrom_bios_version, S_IRUGO,
+    qla2x00_optrom_bios_version_show, NULL);
+static CLASS_DEVICE_ATTR(optrom_efi_version, S_IRUGO,
+    qla2x00_optrom_efi_version_show, NULL);
+static CLASS_DEVICE_ATTR(optrom_fcode_version, S_IRUGO,
+    qla2x00_optrom_fcode_version_show, NULL);
+static CLASS_DEVICE_ATTR(optrom_fw_version, S_IRUGO,
+    qla2x00_optrom_fw_version_show, NULL);
 
 struct class_device_attribute *qla2x00_host_attrs[] = {
 	&class_device_attr_driver_version,
@@ -670,6 +738,10 @@ struct class_device_attribute *qla2x00_host_attrs[] = {
 	&class_device_attr_zio,
 	&class_device_attr_zio_timer,
 	&class_device_attr_beacon,
+	&class_device_attr_optrom_bios_version,
+	&class_device_attr_optrom_efi_version,
+	&class_device_attr_optrom_fcode_version,
+	&class_device_attr_optrom_fw_version,
 	NULL,
 };
 
@@ -691,13 +763,13 @@ qla2x00_get_host_speed(struct Scsi_Host *shost)
 	uint32_t speed = 0;
 
 	switch (ha->link_data_rate) {
-	case LDR_1GB:
+	case PORT_SPEED_1GB:
 		speed = 1;
 		break;
-	case LDR_2GB:
+	case PORT_SPEED_2GB:
 		speed = 2;
 		break;
-	case LDR_4GB:
+	case PORT_SPEED_4GB:
 		speed = 4;
 		break;
 	}
@@ -823,21 +895,24 @@ qla2x00_get_fc_host_stats(struct Scsi_Host *shost)
 	link_stat_t stat_buf;
 	struct fc_host_statistics *pfc_host_stat;
 
+	rval = QLA_FUNCTION_FAILED;
 	pfc_host_stat = &ha->fc_host_stat;
 	memset(pfc_host_stat, -1, sizeof(struct fc_host_statistics));
 
 	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
 		rval = qla24xx_get_isp_stats(ha, (uint32_t *)&stat_buf,
 		    sizeof(stat_buf) / 4, mb_stat);
-	} else {
+	} else if (atomic_read(&ha->loop_state) == LOOP_READY &&
+		    !test_bit(ABORT_ISP_ACTIVE, &ha->dpc_flags) &&
+		    !test_bit(ISP_ABORT_NEEDED, &ha->dpc_flags) &&
+		    !ha->dpc_active) {
+		/* Must be in a 'READY' state for statistics retrieval. */
 		rval = qla2x00_get_link_status(ha, ha->loop_id, &stat_buf,
 		    mb_stat);
 	}
-	if (rval != 0) {
-		qla_printk(KERN_WARNING, ha,
-		    "Unable to retrieve host statistics (%d).\n", mb_stat[0]);
-		return pfc_host_stat;
-	}
+
+	if (rval != QLA_SUCCESS)
+		goto done;
 
 	pfc_host_stat->link_failure_count = stat_buf.link_fail_cnt;
 	pfc_host_stat->loss_of_sync_count = stat_buf.loss_sync_cnt;
@@ -845,8 +920,51 @@ qla2x00_get_fc_host_stats(struct Scsi_Host *shost)
 	pfc_host_stat->prim_seq_protocol_err_count = stat_buf.prim_seq_err_cnt;
 	pfc_host_stat->invalid_tx_word_count = stat_buf.inval_xmit_word_cnt;
 	pfc_host_stat->invalid_crc_count = stat_buf.inval_crc_cnt;
-
+done:
 	return pfc_host_stat;
+}
+
+static void
+qla2x00_get_host_symbolic_name(struct Scsi_Host *shost)
+{
+	scsi_qla_host_t *ha = to_qla_host(shost);
+
+	qla2x00_get_sym_node_name(ha, fc_host_symbolic_name(shost));
+}
+
+static void
+qla2x00_set_host_system_hostname(struct Scsi_Host *shost)
+{
+	scsi_qla_host_t *ha = to_qla_host(shost);
+
+	set_bit(REGISTER_FDMI_NEEDED, &ha->dpc_flags);
+}
+
+static void
+qla2x00_get_host_fabric_name(struct Scsi_Host *shost)
+{
+	scsi_qla_host_t *ha = to_qla_host(shost);
+	u64 node_name;
+
+	if (ha->device_flags & SWITCH_FOUND)
+		node_name = wwn_to_u64(ha->fabric_node_name);
+	else
+		node_name = wwn_to_u64(ha->node_name);
+
+	fc_host_fabric_name(shost) = node_name;
+}
+
+static void
+qla2x00_get_host_port_state(struct Scsi_Host *shost)
+{
+	scsi_qla_host_t *ha = to_qla_host(shost);
+
+	if (!ha->flags.online)
+		fc_host_port_state(shost) = FC_PORTSTATE_OFFLINE;
+	else if (atomic_read(&ha->loop_state) == LOOP_TIMEOUT)
+		fc_host_port_state(shost) = FC_PORTSTATE_UNKNOWN;
+	else
+		fc_host_port_state(shost) = FC_PORTSTATE_ONLINE;
 }
 
 struct fc_function_template qla2xxx_transport_functions = {
@@ -861,6 +979,14 @@ struct fc_function_template qla2xxx_transport_functions = {
 	.show_host_speed = 1,
 	.get_host_port_type = qla2x00_get_host_port_type,
 	.show_host_port_type = 1,
+	.get_host_symbolic_name = qla2x00_get_host_symbolic_name,
+	.show_host_symbolic_name = 1,
+	.set_host_system_hostname = qla2x00_set_host_system_hostname,
+	.show_host_system_hostname = 1,
+	.get_host_fabric_name = qla2x00_get_host_fabric_name,
+	.show_host_fabric_name = 1,
+	.get_host_port_state = qla2x00_get_host_port_state,
+	.show_host_port_state = 1,
 
 	.dd_fcrport_size = sizeof(struct fc_port *),
 	.show_rport_supported_classes = 1,

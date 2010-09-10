@@ -358,7 +358,7 @@ int
 nfs3svc_decode_writeargs(struct svc_rqst *rqstp, u32 *p,
 					struct nfsd3_writeargs *args)
 {
-	unsigned int len, v, hdr;
+	unsigned int len, v, hdr, dlen;
 
 	if (!(p = decode_fh(p, &args->fh))
 	 || !(p = xdr_decode_hyper(p, &args->offset)))
@@ -367,18 +367,34 @@ nfs3svc_decode_writeargs(struct svc_rqst *rqstp, u32 *p,
 	args->count = ntohl(*p++);
 	args->stable = ntohl(*p++);
 	len = args->len = ntohl(*p++);
-
-	hdr = (void*)p - rqstp->rq_arg.head[0].iov_base;
-	if (rqstp->rq_arg.len < hdr ||
-	    rqstp->rq_arg.len - hdr < len)
+	/*
+	 * The count must equal the amount of data passed.
+	 */
+	if (args->count != args->len)
 		return 0;
 
+	/*
+	 * Check to make sure that we got the right number of
+	 * bytes.
+	 */
+	hdr = (void*)p - rqstp->rq_arg.head[0].iov_base;
+	dlen = rqstp->rq_arg.head[0].iov_len + rqstp->rq_arg.page_len
+		- hdr;
+	/*
+	 * Round the length of the data which was specified up to
+	 * the next multiple of XDR units and then compare that
+	 * against the length which was actually received.
+	 */
+	if (dlen != XDR_QUADLEN(len) * 4)
+		return 0;
+
+	if (args->count > NFSSVC_MAXBLKSIZE) {
+		args->count = NFSSVC_MAXBLKSIZE;
+		len = args->len = NFSSVC_MAXBLKSIZE;
+	}
 	args->vec[0].iov_base = (void*)p;
 	args->vec[0].iov_len = rqstp->rq_arg.head[0].iov_len - hdr;
-
-	if (len > NFSSVC_MAXBLKSIZE)
-		len = NFSSVC_MAXBLKSIZE;
-	v=  0;
+	v = 0;
 	while (len > args->vec[v].iov_len) {
 		len -= args->vec[v].iov_len;
 		v++;
@@ -386,9 +402,8 @@ nfs3svc_decode_writeargs(struct svc_rqst *rqstp, u32 *p,
 		args->vec[v].iov_len = PAGE_SIZE;
 	}
 	args->vec[v].iov_len = len;
-	args->vlen = v+1;
-
-	return args->count == args->len && args->vec[0].iov_len > 0;
+	args->vlen = v + 1;
+	return 1;
 }
 
 int

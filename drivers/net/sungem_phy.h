@@ -14,6 +14,7 @@ struct mii_phy_ops
 	int		(*read_link)(struct mii_phy *phy);
 	int		(*enable_fiber)(struct mii_phy *phy);
 };
+extern int mii_phy_enable_fiber_autoneg;
 
 /* Structure used to statically define an mii/gii based PHY */
 struct mii_phy_def
@@ -24,6 +25,14 @@ struct mii_phy_def
 	int				magic_aneg;	/* Autoneg does all speed test for us */
 	const char*			name;
 	const struct mii_phy_ops*	ops;
+};
+
+enum {
+	BCM54XX_COPPER,
+	BCM54XX_FIBER,
+	BCM54XX_GBIC,
+	BCM54XX_SGMII,
+	BCM54XX_UNKNOWN,
 };
 
 /* An instance of a PHY, partially borrowed from mii_if_info */
@@ -85,6 +94,9 @@ extern int mii_phy_probe(struct mii_phy *phy, int mii_id);
 #define MII_BCM5221_SHDOW_AUX_MODE4_IDDQMODE	0x0001
 #define MII_BCM5221_SHDOW_AUX_MODE4_CLKLOPWR	0x0004
 
+/* MII BCM5241 Additional registers */
+#define MII_BCM5241_SHDOW_AUX_MODE4_STANDBYPWR	0x0008
+
 /* MII BCM5400 1000-BASET Control register */
 #define MII_BCM5400_GB_CONTROL			0x09
 #define MII_BCM5400_GB_CONTROL_FULLDUPLEXCAP	0x0200
@@ -96,7 +108,7 @@ extern int mii_phy_probe(struct mii_phy *phy, int mii_id);
 /* MII BCM5400 AUXSTATUS register */
 #define MII_BCM5400_AUXSTATUS                   0x19
 #define MII_BCM5400_AUXSTATUS_LINKMODE_MASK     0x0700
-#define MII_BCM5400_AUXSTATUS_LINKMODE_SHIFT    8  
+#define MII_BCM5400_AUXSTATUS_LINKMODE_SHIFT    8
 
 /* 1000BT control (Marvell & BCM54xx at least) */
 #define MII_1000BASETCONTROL			0x09
@@ -115,5 +127,7 @@ extern int mii_phy_probe(struct mii_phy *phy, int mii_id);
 #define MII_M1011_PHY_SPEC_STATUS_SPD_MASK	0xc000
 #define MII_M1011_PHY_SPEC_STATUS_FULLDUPLEX	0x2000
 #define MII_M1011_PHY_SPEC_STATUS_RESOLVED	0x0800
+#define MII_M1011_PHY_SPEC_STATUS_TX_PAUSE	0x0008
+#define MII_M1011_PHY_SPEC_STATUS_RX_PAUSE	0x0004
 
 #endif /* __SUNGEM_PHY_H__ */

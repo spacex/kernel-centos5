@@ -285,6 +285,10 @@ struct scsi_host_template {
 	 *
 	 * Status: OBSOLETE
 	 */
+	/* Red Hat KABI: set proc_info to RH_EXTENDED_MAGIC to enable
+	   Red Hat extensions of the scsi_host_template structure, namely
+	   the eh_timed_out function pointer. */
+#define RH_EXTENDED_MAGIC 0x1dead1af
 	int (*proc_info)(struct Scsi_Host *, char *, char **, off_t, int, int);
 
 	/*
@@ -429,6 +433,21 @@ struct scsi_host_template {
 	 * module_init/module_exit.
 	 */
 	struct list_head legacy_hosts;
+
+#ifndef __GENKSYMS__
+	/*
+	 * This is an optional routine that allows the transport to become
+	 * involved when a scsi io timer fires. The return value tells the
+	 * timer routine how to finish the io timeout handling:
+	 * EH_HANDLED:		I fixed the error, please complete the command
+	 * EH_RESET_TIMER:	I need more time, reset the timer and
+	 *			begin counting again
+	 * EH_NOT_HANDLED	Begin normal error recovery
+	 *
+	 * Status: OPTIONAL
+	 */
+	enum scsi_eh_timer_return (* eh_timed_out)(struct scsi_cmnd *);
+#endif
 };
 
 /*

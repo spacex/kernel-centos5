@@ -1126,7 +1126,7 @@ enum ipw_prom_filter {
 	IPW_PROM_CTL_HEADER_ONLY = (1 << 0),
 	IPW_PROM_MGMT_HEADER_ONLY = (1 << 1),
 	IPW_PROM_DATA_HEADER_ONLY = (1 << 2),
-	IPW_PROM_ALL_HEADER_ONLY = 0xf,	/* bits 0..3 */
+	IPW_PROM_ALL_HEADER_ONLY = 0xf, /* bits 0..3 */
 	IPW_PROM_NO_TX = (1 << 4),
 	IPW_PROM_NO_RX = (1 << 5),
 	IPW_PROM_NO_CTL = (1 << 6),
@@ -1154,15 +1154,15 @@ struct ipw_prom_priv {
  */
 struct ipw_rt_hdr {
 	struct ieee80211_radiotap_header rt_hdr;
-	u64 rt_tsf;		/* TSF */
-	u8 rt_flags;		/* radiotap packet flags */
-	u8 rt_rate;		/* rate in 500kb/s */
-	u16 rt_channel;		/* channel in mhz */
+	u64 rt_tsf;      /* TSF */
+	u8 rt_flags;	/* radiotap packet flags */
+	u8 rt_rate;	/* rate in 500kb/s */
+	u16 rt_channel;	/* channel in mhz */
 	u16 rt_chbitmask;	/* channel bitfield */
 	s8 rt_dbmsignal;	/* signal in dbM, kluged to signed */
 	s8 rt_dbmnoise;
-	u8 rt_antenna;		/* antenna number */
-	u8 payload[0];		/* payload... */
+	u8 rt_antenna;	/* antenna number */
+	u8 payload[0];  /* payload... */
 } __attribute__ ((packed));
 #endif
 
@@ -1296,7 +1296,7 @@ struct ipw_priv {
 	struct work_struct system_config;
 	struct work_struct rx_replenish;
 	struct work_struct request_scan;
-	struct work_struct request_passive_scan;
+  	struct work_struct request_passive_scan;
 	struct work_struct adapter_restart;
 	struct work_struct rf_kill;
 	struct work_struct up;
@@ -1379,6 +1379,7 @@ BITC(x,27),BITC(x,26),BITC(x,25),BITC(x,24),\
 BITC(x,23),BITC(x,22),BITC(x,21),BITC(x,20),\
 BITC(x,19),BITC(x,18),BITC(x,17),BITC(x,16),\
 BIT_ARG16(x)
+
 
 #define IPW_DEBUG(level, fmt, args...) \
 do { if (ipw_debug_level & (level)) \

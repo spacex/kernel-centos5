@@ -478,68 +478,21 @@ config SCSI_IN2000
 	  To compile this driver as a module, choose M here: the
 	  module will be called in2000.
 
+config SCSI_ARCMSR
+	tristate "ARECA ARC11X0[PCI-X]/ARC12X0[PCI-EXPRESS] SATA-RAID support"
+	depends on PCI && SCSI
+	help
+	  This driver supports all of ARECA's SATA RAID controller cards.
+	  This is an ARECA-maintained driver by Erich Chen.
+	  If you have any problems, please mail to: < erich@areca.com.tw >
+	  Areca supports Linux RAID config tools.
+
+	  < http://www.areca.com.tw >
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called arcmsr (modprobe arcmsr).
+
 source "drivers/scsi/megaraid/Kconfig.megaraid"
-
-config SCSI_SATA
-	tristate "Serial ATA (SATA) support"
-	depends on SCSI
-	help
-	  This driver family supports Serial ATA host controllers
-	  and devices.
-
-	  If unsure, say N.
-
-config SCSI_SATA_AHCI
-	tristate "AHCI SATA support"
-	depends on SCSI_SATA && PCI
-	help
-	  This option enables support for AHCI Serial ATA.
-
-	  If unsure, say N.
-
-config SCSI_SATA_SVW
-	tristate "ServerWorks Frodo / Apple K2 SATA support"
-	depends on SCSI_SATA && PCI
-	help
-	  This option enables support for Broadcom/Serverworks/Apple K2
-	  SATA support.
-
-	  If unsure, say N.
-
-config SCSI_ATA_PIIX
-	tristate "Intel PIIX/ICH SATA support"
-	depends on SCSI_SATA && PCI
-	help
-	  This option enables support for ICH5/6/7/8 Serial ATA.
-	  If PATA support was enabled previously, this enables
-	  support for select Intel PIIX/ICH PATA host controllers.
-
-	  If unsure, say N.
-
-config SCSI_SATA_MV
-	tristate "Marvell SATA support (HIGHLY EXPERIMENTAL)"
-	depends on SCSI_SATA && PCI && EXPERIMENTAL
-	help
-	  This option enables support for the Marvell Serial ATA family.
-	  Currently supports 88SX[56]0[48][01] chips.
-
-	  If unsure, say N.
-
-config SCSI_SATA_NV
-	tristate "NVIDIA SATA support"
-	depends on SCSI_SATA && PCI && EXPERIMENTAL
-	help
-	  This option enables support for NVIDIA Serial ATA.
-
-	  If unsure, say N.
-
-config SCSI_PDC_ADMA
-	tristate "Pacific Digital ADMA support"
-	depends on SCSI_SATA && PCI
-	help
-	  This option enables support for Pacific Digital ADMA controllers
-
-	  If unsure, say N.
 
 config SCSI_HPTIOP
 	tristate "HighPoint RocketRAID 3xxx Controller support"
@@ -550,83 +503,6 @@ config SCSI_HPTIOP
 
 	  To compile this driver as a module, choose M here; the module
 	  will be called hptiop. If unsure, say N.
-
-config SCSI_SATA_QSTOR
-	tristate "Pacific Digital SATA QStor support"
-	depends on SCSI_SATA && PCI
-	help
-	  This option enables support for Pacific Digital Serial ATA QStor.
-
-	  If unsure, say N.
-
-config SCSI_SATA_PROMISE
-	tristate "Promise SATA TX2/TX4 support"
-	depends on SCSI_SATA && PCI
-	help
-	  This option enables support for Promise Serial ATA TX2/TX4.
-
-	  If unsure, say N.
-
-config SCSI_SATA_SX4
-	tristate "Promise SATA SX4 support"
-	depends on SCSI_SATA && PCI && EXPERIMENTAL
-	help
-	  This option enables support for Promise Serial ATA SX4.
-
-	  If unsure, say N.
-
-config SCSI_SATA_SIL
-	tristate "Silicon Image SATA support"
-	depends on SCSI_SATA && PCI && EXPERIMENTAL
-	help
-	  This option enables support for Silicon Image Serial ATA.
-
-	  If unsure, say N.
-
-config SCSI_SATA_SIL24
-	tristate "Silicon Image 3124/3132 SATA support"
-	depends on SCSI_SATA && PCI && EXPERIMENTAL
-	help
-	  This option enables support for Silicon Image 3124/3132 Serial ATA.
-
-	  If unsure, say N.
-
-config SCSI_SATA_SIS
-	tristate "SiS 964/180 SATA support"
-	depends on SCSI_SATA && PCI && EXPERIMENTAL
-	help
-	  This option enables support for SiS Serial ATA 964/180.
-
-	  If unsure, say N.
-
-config SCSI_SATA_ULI
-	tristate "ULi Electronics SATA support"
-	depends on SCSI_SATA && PCI && EXPERIMENTAL
-	help
-	  This option enables support for ULi Electronics SATA.
-
-	  If unsure, say N.
-
-config SCSI_SATA_VIA
-	tristate "VIA SATA support"
-	depends on SCSI_SATA && PCI
-	help
-	  This option enables support for VIA Serial ATA.
-
-	  If unsure, say N.
-
-config SCSI_SATA_VITESSE
-	tristate "VITESSE VSC-7174 / INTEL 31244 SATA support"
-	depends on SCSI_SATA && PCI
-	help
-	  This option enables support for Vitesse VSC7174 and Intel 31244 Serial ATA.
-
-	  If unsure, say N.
-
-config SCSI_SATA_INTEL_COMBINED
-	bool
-	depends on IDE=y && !BLK_DEV_IDE_SATA && (SCSI_SATA_AHCI || SCSI_ATA_PIIX)
-	default y
 
 config SCSI_BUSLOGIC
 	tristate "BusLogic SCSI support"
@@ -1066,8 +942,13 @@ config SCSI_STEX
 	tristate "Promise SuperTrak EX Series support"
 	depends on PCI && SCSI
 	---help---
-	  This driver supports Promise SuperTrak EX8350/8300/16350/16300
-	  Storage controllers.
+	  This driver supports Promise SuperTrak EX series storage controllers.
+
+	  Promise provides Linux RAID configuration utility for these
+	  controllers. Please visit <http://www.promise.com> to download.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called stex.
 
 config SCSI_SYM53C8XX_2
 	tristate "SYM53C8XX Version 2 SCSI support"
@@ -1138,9 +1019,8 @@ config SCSI_SYM53C8XX_MMIO
 
 config SCSI_IPR
 	tristate "IBM Power Linux RAID adapter support"
-	depends on PCI && SCSI
+	depends on PCI && SCSI && ATA
 	select FW_LOADER
-	select SCSI_SATA
 	---help---
 	  This driver supports the IBM Power Linux family RAID adapters.
 	  This includes IBM pSeries 5712, 5703, 5709, and 570A, as well
@@ -1149,6 +1029,7 @@ config SCSI_IPR
 config SCSI_IPR_TRACE
 	bool "enable driver internal trace"
 	depends on SCSI_IPR
+	default y
 	help
 	  If you say Y here, the driver will trace all commands issued
 	  to the adapter. Performance impact is minimal. Trace can be
@@ -1157,6 +1038,7 @@ config SCSI_IPR_TRACE
 config SCSI_IPR_DUMP
 	bool "enable adapter dump support"
 	depends on SCSI_IPR
+	default y
 	help
 	  If you say Y here, the driver will support adapter crash dump.
 	  If you enable this support, the iprdump daemon can be used

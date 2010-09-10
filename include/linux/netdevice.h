@@ -42,6 +42,8 @@ struct divert_blk;
 struct vlan_group;
 struct ethtool_ops;
 struct netpoll_info;
+/* 802.11 specific */
+struct wireless_dev;
 					/* source back-compat hooks */
 #define SET_ETHTOOL_OPS(netdev,ops) \
 	( (netdev)->ethtool_ops = (ops) )
@@ -389,7 +391,11 @@ struct net_device
 	void                    *ip6_ptr;       /* IPv6 specific data */
 	void			*ec_ptr;	/* Econet specific data	*/
 	void			*ax25_ptr;	/* AX.25 specific data */
+#ifndef __GENKSYMS__
+	struct wireless_dev	*ieee80211_ptr;	/* IEEE 802.11 specific data */
+#else
 	void			*ieee80211_ptr;	/* IEEE 802.11 specific data */
+#endif
 
 /*
  * Cache line mostly used on receive path (including eth_type_trans())

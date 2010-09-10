@@ -39,6 +39,58 @@
 
 #include "uverbs.h"
 
+#ifdef __ia64__
+extern int dma_map_sg_hp_wa;
+
+static int dma_map_sg_ia64(struct ib_device *ibdev,
+			   struct scatterlist *sg,
+			   int nents,
+			   enum dma_data_direction dir)
+{
+	int i, rc, j, lents = 0;
+	struct device *dev;
+
+	if (!dma_map_sg_hp_wa)
+		return ib_dma_map_sg(ibdev, sg, nents, dir);
+
+	dev = ibdev->dma_device;
+	for (i = 0; i < nents; ++i) {
+		rc = dma_map_sg(dev, sg + i, 1, dir);
+		if (rc <= 0) {
+			for (j = 0; j < i; ++j)
+				dma_unmap_sg(dev, sg + j, 1, dir);
+
+			return 0;
+		}
+		lents += rc;
+	}
+
+	return lents;
+}
+
+static void dma_unmap_sg_ia64(struct ib_device *ibdev,
+			      struct scatterlist *sg,
+			      int nents,
+			      enum dma_data_direction dir)
+{
+	int i;
+	struct device *dev;
+
+	if (!dma_map_sg_hp_wa)
+		return ib_dma_unmap_sg(ibdev, sg, nents, dir);
+
+	dev = ibdev->dma_device;
+	for (i = 0; i < nents; ++i)
+		dma_unmap_sg(dev, sg + i, 1, dir);
+}
+
+
+
+#define ib_dma_map_sg(dev, sg, nents, dir) dma_map_sg_ia64(dev, sg, nents, dir)
+#define ib_dma_unmap_sg(dev, sg, nents, dir) dma_unmap_sg_ia64(dev, sg, nents, dir)
+
+#endif
+
 struct ib_umem_account_work {
 	struct work_struct work;
 	struct mm_struct  *mm;
@@ -52,8 +104,8 @@ static void __ib_umem_release(struct ib_device *dev, struct ib_umem *umem, int d
 	int i;
 
 	list_for_each_entry_safe(chunk, tmp, &umem->chunk_list, list) {
-		dma_unmap_sg(dev->dma_device, chunk->page_list,
-			     chunk->nents, DMA_BIDIRECTIONAL);
+		ib_dma_unmap_sg(dev, chunk->page_list,
+				chunk->nents, DMA_BIDIRECTIONAL);
 		for (i = 0; i < chunk->nents; ++i) {
 			if (umem->writable && dirty)
 				set_page_dirty_lock(chunk->page_list[i].page);
@@ -136,10 +188,10 @@ int ib_umem_get(struct ib_device *dev, struct ib_umem *mem,
 				chunk->page_list[i].length = PAGE_SIZE;
 			}
 
-			chunk->nmap = dma_map_sg(dev->dma_device,
-						 &chunk->page_list[0],
-						 chunk->nents,
-						 DMA_BIDIRECTIONAL);
+			chunk->nmap = ib_dma_map_sg(dev,
+						    &chunk->page_list[0],
+						    chunk->nents,
+						    DMA_BIDIRECTIONAL);
 			if (chunk->nmap <= 0) {
 				for (i = 0; i < chunk->nents; ++i)
 					put_page(chunk->page_list[i].page);

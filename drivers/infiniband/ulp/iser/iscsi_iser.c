@@ -134,19 +134,9 @@ iscsi_iser_cmd_init(struct iscsi_cmd_task *ctask)
 {
 	struct iscsi_iser_conn     *iser_conn  = ctask->conn->dd_data;
 	struct iscsi_iser_cmd_task *iser_ctask = ctask->dd_data;
-	struct scsi_cmnd  *sc = ctask->sc;
 
 	iser_ctask->command_sent = 0;
 	iser_ctask->iser_conn    = iser_conn;
-
-	if (sc->sc_data_direction == DMA_TO_DEVICE) {
-		BUG_ON(ctask->total_length == 0);
-
-		debug_scsi("cmd [itt %x total %d imm %d unsol_data %d\n",
-			   ctask->itt, ctask->total_length, ctask->imm_count,
-			   ctask->unsol_count);
-	}
-
 	iser_ctask_rdma_init(iser_ctask);
 }
 
@@ -177,7 +167,7 @@ iscsi_iser_mtask_xmit(struct iscsi_conn *conn,
 	 * - if yes, the mtask is recycled at iscsi_complete_pdu
 	 * - if no,  the mtask is recycled at iser_snd_completion
 	 */
-	if (error && error != -EAGAIN)
+	if (error && error != -ENOBUFS)
 		iscsi_conn_failure(conn, ISCSI_ERR_CONN_FAILED);
 
 	return error;
@@ -219,6 +209,14 @@ iscsi_iser_ctask_xmit(struct iscsi_conn *conn,
 	struct iscsi_iser_cmd_task *iser_ctask = ctask->dd_data;
 	int error = 0;
 
+	if (ctask->sc->sc_data_direction == DMA_TO_DEVICE) {
+		BUG_ON(ctask->total_length == 0);
+
+		debug_scsi("cmd [itt %x total %d imm %d unsol_data %d\n",
+			   ctask->itt, ctask->total_length,
+			   ctask->imm_count, ctask->unsol_count);
+	}
+
 	debug_scsi("ctask deq [cid %d itt 0x%x]\n",
 		   conn->id, ctask->itt);
 
@@ -241,7 +239,7 @@ iscsi_iser_ctask_xmit(struct iscsi_conn *conn,
 		error = iscsi_iser_ctask_xmit_unsol_data(conn, ctask);
 
  iscsi_iser_ctask_xmit_exit:
-	if (error && error != -EAGAIN)
+	if (error && error != -ENOBUFS)
 		iscsi_conn_failure(conn, ISCSI_ERR_CONN_FAILED);
 	return error;
 }
@@ -317,6 +315,8 @@ iscsi_iser_conn_destroy(struct iscsi_cls_conn *cls_conn)
 	struct iscsi_iser_conn *iser_conn = conn->dd_data;
 
 	iscsi_conn_teardown(cls_conn);
+	if (iser_conn->ib_conn)
+		iser_conn->ib_conn->iser_conn = NULL;
 	kfree(iser_conn);
 }
 
@@ -361,11 +361,11 @@ iscsi_iser_conn_start(struct iscsi_cls_conn *cls_conn)
 	struct iscsi_conn *conn = cls_conn->dd_data;
 	int err;
 
-	err = iscsi_conn_start(cls_conn);
+	err = iser_conn_set_full_featured_mode(conn);
 	if (err)
 		return err;
 
-	return iser_conn_set_full_featured_mode(conn);
+	return iscsi_conn_start(cls_conn);
 }
 
 static struct iscsi_transport iscsi_iser_transport;
@@ -545,6 +545,7 @@ static struct scsi_host_template iscsi_iser_sht = {
 	.queuecommand           = iscsi_queuecommand,
 	.can_queue		= ISCSI_XMIT_CMDS_MAX - 1,
 	.sg_tablesize           = ISCSI_ISER_SG_TABLESIZE,
+	.max_sectors		= 1024,
 	.cmd_per_lun            = ISCSI_MAX_CMD_PER_LUN,
 	.eh_abort_handler       = iscsi_eh_abort,
 	.eh_host_reset_handler	= iscsi_eh_host_reset,
@@ -571,8 +572,12 @@ static struct iscsi_transport iscsi_iser_transport = {
 				  ISCSI_EXP_STATSN |
 				  ISCSI_PERSISTENT_PORT |
 				  ISCSI_PERSISTENT_ADDRESS |
-				  ISCSI_TARGET_NAME |
-				  ISCSI_TPGT,
+				  ISCSI_TARGET_NAME | ISCSI_TPGT |
+				  ISCSI_USERNAME | ISCSI_PASSWORD |
+				  ISCSI_USERNAME_IN | ISCSI_PASSWORD_IN,
+	.host_param_mask	= ISCSI_HOST_HWADDRESS |
+				  ISCSI_HOST_NETDEV_NAME |
+				  ISCSI_HOST_INITIATOR_NAME,
 	.host_template          = &iscsi_iser_sht,
 	.conndata_size		= sizeof(struct iscsi_conn),
 	.max_lun                = ISCSI_ISER_MAX_LUN,
@@ -589,6 +594,9 @@ static struct iscsi_transport iscsi_iser_transport = {
 	.get_session_param	= iscsi_session_get_param,
 	.start_conn             = iscsi_iser_conn_start,
 	.stop_conn              = iscsi_conn_stop,
+	/* iscsi host params */
+	.get_host_param		= iscsi_host_get_param,
+	.set_host_param		= iscsi_host_set_param,
 	/* IO */
 	.send_pdu		= iscsi_conn_send_pdu,
 	.get_stats		= iscsi_iser_conn_get_stats,

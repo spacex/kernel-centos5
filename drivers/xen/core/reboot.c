@@ -117,6 +117,10 @@ static void post_suspend(void)
 	extern unsigned long *pfn_to_mfn_frame_list_list;
 	extern unsigned long *pfn_to_mfn_frame_list[];
 
+#ifdef CONFIG_SMP
+	cpu_initialized_map = cpu_online_map;
+#endif
+
 	set_fixmap(FIX_SHARED_INFO, xen_start_info->shared_info);
 
 	HYPERVISOR_shared_info = (shared_info_t *)fix_to_virt(FIX_SHARED_INFO);

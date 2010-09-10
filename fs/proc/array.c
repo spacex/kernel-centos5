@@ -165,12 +165,10 @@ static inline char * task_state(struct task_struct *p, char *buffer)
 	int g;
 	struct fdtable *fdt = NULL;
 
-	rcu_read_lock();
+	read_lock(&tasklist_lock);
 	tracer = tracehook_tracer_task(p);
 	tracer_pid = tracer == NULL ? 0 : tracer->pid;
-	rcu_read_unlock();
 
-	read_lock(&tasklist_lock);
 	buffer += sprintf(buffer,
 		"State:\t%s\n"
 		"SleepAVG:\t%lu%%\n"

@@ -197,6 +197,23 @@ static inline void *kcalloc(size_t n, size_t size, gfp_t flags)
 	return kzalloc(n * size, flags);
 }
 
+/**
+ * kmemdup - duplicates region of memory
+ *
+ * @src: memory region to duplicate
+ * @len: memory region length
+ * @gfp: GFP mask to use
+ */
+static inline void *kmemdup(const void *src, size_t len, gfp_t gfp)
+{
+	void *p;
+
+	p = kmalloc(len, gfp);
+	if (p)
+		memcpy(p, src, len);
+	return p;
+}
+
 extern void kfree(const void *);
 extern unsigned int ksize(const void *);
 extern int slab_is_available(void);
@@ -265,6 +282,8 @@ extern kmem_cache_t	*bio_cachep;
 
 extern atomic_t slab_reclaim_pages;
 
-#endif	/* __KERNEL__ */
+#define kmalloc_track_caller(size, flags) \
+	__kmalloc(size, flags)
 
+#endif	/* __KERNEL__ */
 #endif	/* _LINUX_SLAB_H */

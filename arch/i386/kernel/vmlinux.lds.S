@@ -30,9 +30,14 @@ SECTIONS
   . = LOAD_OFFSET + LOAD_PHYSICAL_ADDR;
 #endif
   phys_startup_32 = startup_32 - LOAD_OFFSET;
+
+  .text.head : AT(ADDR(.text.head) - LOAD_OFFSET) {
+  	_text = .;			/* Text and read-only data */
+	*(.text.head)
+  } :text = 0x9090
+
   /* read-only */
   .text : AT(ADDR(.text) - LOAD_OFFSET) {
-	_text = .;		/* Text and read-only data */
 	*(.text)
 	SCHED_TEXT
 	LOCK_TEXT
@@ -59,6 +64,7 @@ SECTIONS
   }
 
   /* writeable */
+  . = ALIGN(4096);
   .data : AT(ADDR(.data) - LOAD_OFFSET) {	/* Data */
 	*(.data)
 	CONSTRUCTORS
@@ -110,12 +116,16 @@ SECTIONS
 	__smp_alt_instructions = .;
 	*(.smp_altinstructions)
 	__smp_alt_instructions_end = .;
-  	. = ALIGN(4);
+  }
+  . = ALIGN(4);
+  .smp_locks : AT(ADDR(.smp_locks) - LOAD_OFFSET) {
 	__smp_locks = .;
 	*(.smp_locks)
 	__smp_locks_end = .;
+  }
+  . = ALIGN(4);
+  .smp_altinstr_replacement : AT(ADDR(.smp_altinstr_replacement) - LOAD_OFFSET) {
 	*(.smp_altinstr_replacement)
-	. = ALIGN(4096);
 	__smp_alt_end = .;
   }
 

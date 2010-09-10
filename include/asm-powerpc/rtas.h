@@ -225,6 +225,9 @@ extern char rtas_data_buf[RTAS_DATA_BUF_SIZE];
 
 extern void rtas_stop_self(void);
 
+/* Poweron buffer used for enabling auto ups restart */
+extern unsigned long rtas_poweron_auto;
+
 /* RMO buffer reserved for user-space RTAS use */
 extern unsigned long rtas_rmo_buf;
 

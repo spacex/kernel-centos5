@@ -40,11 +40,6 @@ static inline void gfs2_buffer_copy_tail(struct buffer_head *to_bh,
 struct inode *gfs2_aspace_get(struct gfs2_sbd *sdp);
 void gfs2_aspace_put(struct inode *aspace);
 
-void gfs2_ail1_start_one(struct gfs2_sbd *sdp, struct gfs2_ail *ai);
-int gfs2_ail1_empty_one(struct gfs2_sbd *sdp, struct gfs2_ail *ai, int flags);
-void gfs2_ail2_empty_one(struct gfs2_sbd *sdp, struct gfs2_ail *ai);
-void gfs2_ail_empty_gl(struct gfs2_glock *gl);
-
 void gfs2_meta_inval(struct gfs2_glock *gl);
 void gfs2_meta_sync(struct gfs2_glock *gl);
 
@@ -55,9 +50,9 @@ int gfs2_meta_wait(struct gfs2_sbd *sdp, struct buffer_head *bh);
 
 void gfs2_attach_bufdata(struct gfs2_glock *gl, struct buffer_head *bh,
 			 int meta);
-void gfs2_pin(struct gfs2_sbd *sdp, struct buffer_head *bh);
-void gfs2_unpin(struct gfs2_sbd *sdp, struct buffer_head *bh,
-		struct gfs2_ail *ai);
+
+void gfs2_remove_from_journal(struct buffer_head *bh, struct gfs2_trans *tr,
+			      int meta);
 
 void gfs2_meta_wipe(struct gfs2_inode *ip, u64 bstart, u32 blen);
 
@@ -68,11 +63,15 @@ int gfs2_meta_indirect_buffer(struct gfs2_inode *ip, int height, u64 num,
 static inline int gfs2_meta_inode_buffer(struct gfs2_inode *ip,
 					 struct buffer_head **bhp)
 {
-	return gfs2_meta_indirect_buffer(ip, 0, ip->i_num.no_addr, 0, bhp);
+	return gfs2_meta_indirect_buffer(ip, 0, ip->i_no_addr, 0, bhp);
 }
 
 struct buffer_head *gfs2_meta_ra(struct gfs2_glock *gl, u64 dblock, u32 extlen);
-void gfs2_meta_syncfs(struct gfs2_sbd *sdp);
+
+#define buffer_busy(bh) \
+((bh)->b_state & ((1ul << BH_Dirty) | (1ul << BH_Lock) | (1ul << BH_Pinned)))
+#define buffer_in_io(bh) \
+((bh)->b_state & ((1ul << BH_Dirty) | (1ul << BH_Lock)))
 
 #endif /* __DIO_DOT_H__ */
 

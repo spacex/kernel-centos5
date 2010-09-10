@@ -45,7 +45,7 @@ irqreturn_t i915_driver_irq_handler(DRM_IRQ_ARGS)
 
 	temp = I915_READ16(I915REG_INT_IDENTITY_R);
 
-	temp &= (USER_INT_FLAG | VSYNC_PIPEA_FLAG | VSYNC_PIPEB_FLAG);
+	temp &= (dev_priv->irq_enable_reg | USER_INT_FLAG);
 
 	DRM_DEBUG("%s flag=%08x\n", __FUNCTION__, temp);
 
@@ -53,6 +53,8 @@ irqreturn_t i915_driver_irq_handler(DRM_IRQ_ARGS)
 		return IRQ_NONE;
 
 	I915_WRITE16(I915REG_INT_IDENTITY_R, temp);
+	(void) I915_READ16(I915REG_INT_IDENTITY_R);
+	DRM_READMEMORYBARRIER();
 
 	dev_priv->sarea_priv->last_dispatch = READ_BREADCRUMB(dev_priv);
 
@@ -68,7 +70,7 @@ irqreturn_t i915_driver_irq_handler(DRM_IRQ_ARGS)
 	return IRQ_HANDLED;
 }
 
-static int i915_emit_irq(drm_device_t * dev)
+int i915_emit_irq(drm_device_t * dev)
 {
 
 	drm_i915_private_t *dev_priv = dev->dev_private;
@@ -78,17 +80,9 @@ static int i915_emit_irq(drm_device_t * dev)
 
 	DRM_DEBUG("%s\n", __FUNCTION__);
 
-	dev_priv->sarea_priv->last_enqueue = ++dev_priv->counter;
+	i915_emit_breadcrumb(dev);
 
-	if (dev_priv->counter > 0x7FFFFFFFUL)
-		 dev_priv->sarea_priv->last_enqueue = dev_priv->counter = 1;
-
-	BEGIN_LP_RING(6);
-	OUT_RING(CMD_STORE_DWORD_IDX);
-	OUT_RING(20);
-	OUT_RING(dev_priv->counter);
-
-	OUT_RING(0);
+	BEGIN_LP_RING(2);
 	OUT_RING(0);
 	OUT_RING(GFX_OP_USER_INTERRUPT);
 	ADVANCE_LP_RING();
@@ -96,6 +90,26 @@ static int i915_emit_irq(drm_device_t * dev)
 	return dev_priv->counter;
 
 
+}
+
+void i915_user_irq_on(drm_i915_private_t *dev_priv)
+{
+	spin_lock(&dev_priv->user_irq_lock);
+	if (dev_priv->irq_enabled && (++dev_priv->user_irq_refcount == 1)){
+		dev_priv->irq_enable_reg |= USER_INT_FLAG;
+		I915_WRITE16(I915REG_INT_ENABLE_R, dev_priv->irq_enable_reg);
+	}
+	spin_unlock(&dev_priv->user_irq_lock);
+}
+
+void i915_user_irq_off(drm_i915_private_t *dev_priv)
+{
+	spin_lock(&dev_priv->user_irq_lock);
+	if (dev_priv->irq_enabled && (--dev_priv->user_irq_refcount == 0)) {
+		//dev_priv->irq_enable_reg &= ~USER_INT_FLAG;
+		//I915_WRITE16(I915REG_INT_ENABLE_R, dev_priv->irq_enable_reg);
+	}
+	spin_unlock(&dev_priv->user_irq_lock);
 }
 
 static int i915_wait_irq(drm_device_t * dev, int irq_nr)
@@ -111,8 +125,10 @@ static int i915_wait_irq(drm_device_t * dev, int irq_nr)
 
 	dev_priv->sarea_priv->perf_boxes |= I915_BOX_WAIT;
 
+	i915_user_irq_on(dev_priv);
 	DRM_WAIT_ON(ret, dev_priv->irq_queue, 3 * DRM_HZ,
 		    READ_BREADCRUMB(dev_priv) >= irq_nr);
+	i915_user_irq_off(dev_priv);
 
 	if (ret == DRM_ERR(EBUSY)) {
 		DRM_ERROR("%s: EBUSY -- rec: %d emitted: %d\n",
@@ -193,23 +209,18 @@ int i915_irq_wait(DRM_IOCTL_ARGS)
 	return i915_wait_irq(dev, irqwait.irq_seq);
 }
 
-static int i915_enable_interrupt (drm_device_t *dev)
+static void i915_enable_interrupt (drm_device_t *dev)
 {
 	drm_i915_private_t *dev_priv = (drm_i915_private_t *) dev->dev_private;
-	u16 flag;
 
-	flag = 0;
+	dev_priv->irq_enable_reg = USER_INT_FLAG;
 	if (dev_priv->vblank_pipe & DRM_I915_VBLANK_PIPE_A)
-		flag |= VSYNC_PIPEA_FLAG;
+		dev_priv->irq_enable_reg |= VSYNC_PIPEA_FLAG;
 	if (dev_priv->vblank_pipe & DRM_I915_VBLANK_PIPE_B)
-		flag |= VSYNC_PIPEB_FLAG;
-	if (dev_priv->vblank_pipe & ~(DRM_I915_VBLANK_PIPE_A|DRM_I915_VBLANK_PIPE_B)) {
-		DRM_ERROR("%s called with invalid pipe 0x%x\n",
-			  __FUNCTION__, dev_priv->vblank_pipe);
-		return DRM_ERR(EINVAL);
-	}
-	I915_WRITE16(I915REG_INT_ENABLE_R, USER_INT_FLAG | flag);
-	return 0;
+		dev_priv->irq_enable_reg |= VSYNC_PIPEB_FLAG;
+
+	I915_WRITE16(I915REG_INT_ENABLE_R, dev_priv->irq_enable_reg);
+	dev_priv->irq_enabled = 1;
 }
 
 /* Set the vblank monitor pipe
@@ -228,8 +239,17 @@ int i915_vblank_pipe_set(DRM_IOCTL_ARGS)
 	DRM_COPY_FROM_USER_IOCTL(pipe, (drm_i915_vblank_pipe_t __user *) data,
 				 sizeof(pipe));
 
+	if (pipe.pipe & ~ (DRM_I915_VBLANK_PIPE_A|DRM_I915_VBLANK_PIPE_B)) {
+		DRM_ERROR("%s called with invalid pipe 0x%x\n",
+			  __FUNCTION__, pipe.pipe);
+		return DRM_ERR(EINVAL);
+	}
+
 	dev_priv->vblank_pipe = pipe.pipe;
-	return i915_enable_interrupt (dev);
+
+	i915_enable_interrupt (dev);
+
+	return 0;
 }
 
 int i915_vblank_pipe_get(DRM_IOCTL_ARGS)
@@ -270,8 +290,25 @@ void i915_driver_irq_postinstall(drm_device_t * dev)
 {
 	drm_i915_private_t *dev_priv = (drm_i915_private_t *) dev->dev_private;
 
+	dev_priv->swaps_lock = SPIN_LOCK_UNLOCKED;
+	INIT_LIST_HEAD(&dev_priv->vbl_swaps.head);
+	dev_priv->swaps_pending = 0;
+
+	dev_priv->swaps_lock = SPIN_LOCK_UNLOCKED;
+	INIT_LIST_HEAD(&dev_priv->vbl_swaps.head);
+	dev_priv->swaps_pending = 0;
+
+	dev_priv->user_irq_lock = SPIN_LOCK_UNLOCKED;
+	dev_priv->user_irq_refcount = 0;
+
 	i915_enable_interrupt(dev);
 	DRM_INIT_WAITQUEUE(&dev_priv->irq_queue);
+
+	/*
+	 * Initialize the hardware status page IRQ location.
+	 */
+
+	I915_WRITE(I915REG_INSTPM, ( 1 << 5) | ( 1 << 21));
 }
 
 void i915_driver_irq_uninstall(drm_device_t * dev)
@@ -282,6 +319,7 @@ void i915_driver_irq_uninstall(drm_device_t * dev)
 	if (!dev_priv)
 		return;
 
+	dev_priv->irq_enabled = 0;
 	I915_WRITE16(I915REG_HWSTAM, 0xffff);
 	I915_WRITE16(I915REG_INT_MASK_R, 0xffff);
 	I915_WRITE16(I915REG_INT_ENABLE_R, 0x0);

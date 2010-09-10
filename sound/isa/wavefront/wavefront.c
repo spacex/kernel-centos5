@@ -263,9 +263,7 @@ snd_wavefront_pnp (int dev, snd_wavefront_card_t *acard, struct pnp_card_link *c
 
 #endif /* CONFIG_PNP */
 
-static irqreturn_t snd_wavefront_ics2115_interrupt(int irq, 
-					    void *dev_id, 
-					    struct pt_regs *regs)
+static irqreturn_t snd_wavefront_ics2115_interrupt(int irq, void *dev_id)
 {
 	snd_wavefront_card_t *acard;
 
@@ -404,6 +402,7 @@ static struct snd_card *snd_wavefront_card_new(int dev)
 	init_waitqueue_head(&acard->wavefront.interrupt_sleeper);
 	spin_lock_init(&acard->wavefront.midi.open);
 	spin_lock_init(&acard->wavefront.midi.virtual);
+	acard->wavefront.card = card;
 	card->private_free = snd_wavefront_free;
 
 	return card;

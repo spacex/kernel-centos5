@@ -26,13 +26,12 @@
 #include <asm/io.h>
 #include <asm/hypervisor.h>
 
-static inline int uncached_access(struct file *file)
+#ifndef ARCH_HAS_VALID_PHYS_ADDR_RANGE
+static inline int valid_phys_addr_range(unsigned long addr, size_t count)
 {
-	if (file->f_flags & O_SYNC)
-		return 1;
-	/* Xen sets correct MTRR type on non-RAM for us. */
-	return 0;
+	return 1;
 }
+#endif
 
 /*
  * This funcion reads the *physical* memory. The f_pos points directly to the 
@@ -45,6 +44,9 @@ static ssize_t read_mem(struct file * file, char __user * buf,
 	ssize_t read = 0, sz;
 	void __iomem *v;
 
+	if (!valid_phys_addr_range(p, count))
+		return -EFAULT;
+
 	while (count > 0) {
 		/*
 		 * Handle first page in case it's not aligned
@@ -56,13 +58,15 @@ static ssize_t read_mem(struct file * file, char __user * buf,
 
 		sz = min_t(unsigned long, sz, count);
 
-		if ((v = ioremap(p, sz)) == NULL) {
+		v = xlate_dev_mem_ptr(p, sz);
+		if (IS_ERR(v) || v == NULL) {
 			/*
-			 * Some programs (e.g., dmidecode) groove off into weird RAM
-			 * areas where no tables can possibly exist (because Xen will
-			 * have stomped on them!). These programs get rather upset if
-			 * we let them know that Xen failed their access, so we fake
-			 * out a read of all zeroes. :-)
+			 * Some programs (e.g., dmidecode) groove off into
+			 * weird RAM areas where no tables can possibly exist
+			 * (because Xen will have stomped on them!). These
+			 * programs get rather upset if we let them know that
+			 * Xen failed their access, so we fake out a read of
+			 * all zeroes.
 			 */
 			if (clear_user(buf, count))
 				return -EFAULT;
@@ -71,7 +75,7 @@ static ssize_t read_mem(struct file * file, char __user * buf,
 		}
 
 		ignored = copy_to_user(buf, v, sz);
-		iounmap(v);
+		xlate_dev_mem_ptr_unmap(v);
 		if (ignored)
 			return -EFAULT;
 		buf += sz;
@@ -91,6 +95,9 @@ static ssize_t write_mem(struct file * file, const char __user * buf,
 	ssize_t written = 0, sz;
 	void __iomem *v;
 
+	if (!valid_phys_addr_range(p, count))
+		return -EFAULT;
+
 	while (count > 0) {
 		/*
 		 * Handle first page in case it's not aligned
@@ -102,11 +109,17 @@ static ssize_t write_mem(struct file * file, const char __user * buf,
 
 		sz = min_t(unsigned long, sz, count);
 
-		if ((v = ioremap(p, sz)) == NULL)
+		v = xlate_dev_mem_ptr(p, sz);
+		if (v == NULL)
 			break;
+		if (IS_ERR(v)) {
+			if (written == 0)
+				return PTR_ERR(v);
+			break;
+		}
 
 		ignored = copy_from_user(v, buf, sz);
-		iounmap(v);
+		xlate_dev_mem_ptr_unmap(v);
 		if (ignored) {
 			written += sz - ignored;
 			if (written)
@@ -123,7 +136,16 @@ static ssize_t write_mem(struct file * file, const char __user * buf,
 	return written;
 }
 
-static int mmap_mem(struct file * file, struct vm_area_struct * vma)
+#ifndef ARCH_HAS_DEV_MEM_MMAP_MEM
+static inline int uncached_access(struct file *file)
+{
+	if (file->f_flags & O_SYNC)
+		return 1;
+	/* Xen sets correct MTRR type on non-RAM for us. */
+	return 0;
+}
+
+static int xen_mmap_mem(struct file * file, struct vm_area_struct * vma)
 {
 	size_t size = vma->vm_end - vma->vm_start;
 
@@ -134,6 +156,7 @@ static int mmap_mem(struct file * file, struct vm_area_struct * vma)
 	return direct_remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
 				      size, vma->vm_page_prot, DOMID_IO);
 }
+#endif
 
 /*
  * The memory devices use the full 32/64 bits of the offset, and so we cannot
@@ -175,6 +198,6 @@ struct file_operations mem_fops = {
 	.llseek		= memory_lseek,
 	.read		= read_mem,
 	.write		= write_mem,
-	.mmap		= mmap_mem,
+	.mmap		= xen_mmap_mem,
 	.open		= open_mem,
 };

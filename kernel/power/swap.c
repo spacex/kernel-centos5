@@ -40,6 +40,12 @@ static struct swsusp_header {
 	char	sig[10];
 } __attribute__((packed, aligned(PAGE_SIZE))) swsusp_header;
 
+#if defined(__pa_symbol)
+#define SWSUSP_HEADER_VIRT (__va(__pa_symbol(&swsusp_header)))
+#else
+#define SWSUSP_HEADER_VIRT (&swsusp_header)
+#endif
+
 /*
  * Saving part...
  */
@@ -51,14 +57,14 @@ static int mark_swapfiles(swp_entry_t start)
 	int error;
 
 	rw_swap_page_sync(READ, swp_entry(root_swap, 0),
-			  virt_to_page((unsigned long)&swsusp_header), NULL);
+			  virt_to_page(SWSUSP_HEADER_VIRT), NULL);
 	if (!memcmp("SWAP-SPACE",swsusp_header.sig, 10) ||
 	    !memcmp("SWAPSPACE2",swsusp_header.sig, 10)) {
 		memcpy(swsusp_header.orig_sig,swsusp_header.sig, 10);
 		memcpy(swsusp_header.sig,SWSUSP_SIG, 10);
 		swsusp_header.image = start;
 		error = rw_swap_page_sync(WRITE, swp_entry(root_swap, 0),
-				virt_to_page((unsigned long)&swsusp_header),
+				virt_to_page(SWSUSP_HEADER_VIRT),
 				NULL);
 	} else {
 		pr_debug("swsusp: Partition is not swap space.\n");
@@ -599,12 +605,12 @@ int swsusp_check(void)
 	if (!IS_ERR(resume_bdev)) {
 		set_blocksize(resume_bdev, PAGE_SIZE);
 		memset(&swsusp_header, 0, sizeof(swsusp_header));
-		if ((error = bio_read_page(0, &swsusp_header, NULL)))
+		if ((error = bio_read_page(0, SWSUSP_HEADER_VIRT, NULL)))
 			return error;
 		if (!memcmp(SWSUSP_SIG, swsusp_header.sig, 10)) {
 			memcpy(swsusp_header.sig, swsusp_header.orig_sig, 10);
 			/* Reset swap signature now */
-			error = bio_write_page(0, &swsusp_header);
+			error = bio_write_page(0, SWSUSP_HEADER_VIRT);
 		} else {
 			return -EINVAL;
 		}

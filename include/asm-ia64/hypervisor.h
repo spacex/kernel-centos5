@@ -64,7 +64,6 @@ extern start_info_t *xen_start_info;
 
 void force_evtchn_callback(void);
 
-#ifndef CONFIG_VMX_GUEST
 /* Turn jiffies into Xen system time. XXX Implement me. */
 #define jiffies_to_st(j)	0
 
@@ -118,6 +117,7 @@ HYPERVISOR_poll(
 
 #include <asm/hypercall.h>
 
+#ifndef CONFIG_VMX_GUEST
 // for drivers/xen/privcmd/privcmd.c
 #define machine_to_phys_mapping 0
 struct vm_area_struct;
@@ -147,6 +147,7 @@ int privcmd_mmap(struct file * file, struct vm_area_struct * vma);
 #define pfn_pte_ma(_x,_y)	__pte_ma(0)     /* unmodified use */
 
 #ifndef CONFIG_VMX_GUEST
+void xen_contiguous_bitmap_init(unsigned long end_pfn);
 int __xen_create_contiguous_region(unsigned long vstart, unsigned int order, unsigned int address_bits);
 static inline int
 xen_create_contiguous_region(unsigned long vstart,
@@ -168,6 +169,9 @@ xen_destroy_contiguous_region(unsigned long vstart, unsigned int order)
 		__xen_destroy_contiguous_region(vstart, order);
 }
 
+/* For drivers/xen/core/machine_reboot.c */
+#define HAVE_XEN_POST_SUSPEND
+void xen_post_suspend(int suspend_cancelled);
 #endif /* !CONFIG_VMX_GUEST */
 
 // for netfront.c, netback.c
@@ -191,6 +195,22 @@ MULTI_grant_table_op(multicall_entry_t *mcl, unsigned int cmd,
 	mcl->args[1] = (unsigned long)uop;
 	mcl->args[2] = count;
 }
+
+/*
+ * for blktap.c
+ * int create_lookup_pte_addr(struct mm_struct *mm, 
+ *                            unsigned long address,
+ *                            uint64_t *ptep);
+ */
+#define create_lookup_pte_addr(mm, address, ptep)			\
+	({								\
+		printk(KERN_EMERG					\
+		       "%s:%d "						\
+		       "create_lookup_pte_addr() isn't supported.\n",	\
+		       __func__, __LINE__);				\
+		BUG();							\
+		(-ENOSYS);						\
+	})
 
 // for debug
 asmlinkage int xprintk(const char *fmt, ...);

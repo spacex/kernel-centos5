@@ -354,8 +354,14 @@ typedef struct elf64_shdr {
 #define NT_AUXV		6
 #define NT_PRXFPREG     0x46e62b7f      /* copied from gdb5.1/include/elf/common.h */
 
-
 #ifndef __ASSEMBLY__
+#ifndef ARCH_HAVE_EXTRA_ELF_NOTES
+static inline int arch_notes_size(void) { return 0; }
+static inline void arch_write_notes(struct file *file) { }
+
+#define ELF_CORE_EXTRA_NOTES_SIZE arch_notes_size()
+#define ELF_CORE_WRITE_EXTRA_NOTES arch_write_notes(file)
+#endif /* ARCH_HAVE_EXTRA_ELF_NOTES */
 
 /* Note header in a PT_NOTE section */
 typedef struct elf32_note {

@@ -118,6 +118,28 @@ static __init void nmi_cpu_busy(void *data)
 }
 #endif
 
+static unsigned int adjust_for_32bit_ctr(unsigned int hz)
+{
+	u64 counter_val;
+	unsigned int retval = hz;
+
+	/*
+	 * On Intel CPUs with P6/ARCH_PERFMON only 32 bits in the counter
+	 * are writable, with higher bits sign extending from bit 31.
+	 * So, we can only program the counter with 31 bit values and
+	 * 32nd bit should be 1, for 33.. to be 1.
+	 * Find the appropriate nmi_hz
+	 */
+	counter_val = (u64)cpu_khz * 1000;
+	do_div(counter_val, retval);
+	if (counter_val > 0x7fffffffULL) {
+		u64 count = (u64)cpu_khz * 1000;
+		do_div(count, 0x7fffffffUL);
+		retval = count + 1;
+	}
+	return retval;
+}
+
 static int __init check_nmi_watchdog(void)
 {
 	volatile int endflag = 0;
@@ -139,7 +161,7 @@ static int __init check_nmi_watchdog(void)
 	for_each_possible_cpu(cpu)
 		prev_nmi_count[cpu] = per_cpu(irq_stat, cpu).__nmi_count;
 	local_irq_enable();
-	mdelay((10*1000)/nmi_hz); // wait 10 ticks
+	mdelay((20*1000)/nmi_hz); // wait 20 ticks
 
 	for_each_possible_cpu(cpu) {
 #ifdef CONFIG_SMP
@@ -165,8 +187,14 @@ static int __init check_nmi_watchdog(void)
 
 	/* now that we know it works we can reduce NMI frequency to
 	   something more reasonable; makes a difference in some configs */
-	if (nmi_watchdog == NMI_LOCAL_APIC)
+	if (nmi_watchdog == NMI_LOCAL_APIC) {
+
 		nmi_hz = 1;
+		if (nmi_perfctr_msr == MSR_P6_PERFCTR0 ||
+		    nmi_perfctr_msr == MSR_ARCH_PERFMON_PERFCTR0) {
+			nmi_hz = adjust_for_32bit_ctr(nmi_hz);
+		}
+	}
 
 	kfree(prev_nmi_count);
 	return 0;
@@ -191,11 +219,13 @@ static int __init setup_nmi_watchdog(char *str)
 	 */
 	if ((nmi == NMI_LOCAL_APIC) &&
 			(boot_cpu_data.x86_vendor == X86_VENDOR_INTEL) &&
-			(boot_cpu_data.x86 == 6 || boot_cpu_data.x86 == 15))
+			(boot_cpu_data.x86 == 6 || boot_cpu_data.x86 == 15 
+			|| boot_cpu_data.x86 == 16))
 		nmi_watchdog = nmi;
 	if ((nmi == NMI_LOCAL_APIC) &&
 			(boot_cpu_data.x86_vendor == X86_VENDOR_AMD) &&
-	  		(boot_cpu_data.x86 == 6 || boot_cpu_data.x86 == 15))
+	  		(boot_cpu_data.x86 == 6 || boot_cpu_data.x86 == 15
+			|| boot_cpu_data.x86 == 16))
 		nmi_watchdog = nmi;
 	/*
 	 * We can enable the IO-APIC watchdog
@@ -371,6 +401,16 @@ static void write_watchdog_counter(const char *descr)
 	wrmsrl(nmi_perfctr_msr, 0 - count);
 }
 
+static void write_watchdog_counter32(const char *descr)
+{
+	u64 count = (u64)cpu_khz * 1000;
+
+	do_div(count, nmi_hz);
+	if(descr)
+		Dprintk("setting %s to -0x%08Lx\n", descr, count);
+	wrmsr(nmi_perfctr_msr, (u32)(-count), 0);
+}
+
 static void setup_k7_watchdog(void)
 {
 	unsigned int evntsel;
@@ -407,7 +447,8 @@ static void setup_p6_watchdog(void)
 		| P6_NMI_EVENT;
 
 	wrmsr(MSR_P6_EVNTSEL0, evntsel, 0);
-	write_watchdog_counter("P6_PERFCTR0");
+	nmi_hz = adjust_for_32bit_ctr(nmi_hz);
+	write_watchdog_counter32("P6_PERFCTR0");
 	apic_write(APIC_LVTPC, APIC_DM_NMI);
 	evntsel |= P6_EVNTSEL0_ENABLE;
 	wrmsr(MSR_P6_EVNTSEL0, evntsel, 0);
@@ -493,7 +534,8 @@ static int setup_intel_arch_watchdog(void)
 		| ARCH_PERFMON_NMI_EVENT_UMASK;
 
 	wrmsr(MSR_ARCH_PERFMON_EVENTSEL0, evntsel, 0);
-	write_watchdog_counter("INTEL_ARCH_PERFCTR0");
+	nmi_hz = adjust_for_32bit_ctr(nmi_hz);
+	write_watchdog_counter32("INTEL_ARCH_PERFCTR0");
 	apic_write(APIC_LVTPC, APIC_DM_NMI);
 	evntsel |= ARCH_PERFMON_EVENTSEL0_ENABLE;
 	wrmsr(MSR_ARCH_PERFMON_EVENTSEL0, evntsel, 0);
@@ -504,7 +546,7 @@ void setup_apic_nmi_watchdog (void)
 {
 	switch (boot_cpu_data.x86_vendor) {
 	case X86_VENDOR_AMD:
-		if (boot_cpu_data.x86 != 6 && boot_cpu_data.x86 != 15)
+		if (boot_cpu_data.x86 != 6 && boot_cpu_data.x86 != 15 && boot_cpu_data.x86 != 16)
 			return;
 		setup_k7_watchdog();
 		break;
@@ -617,6 +659,7 @@ void nmi_watchdog_tick (struct pt_regs * regs)
 			 */
 			wrmsr(MSR_P4_IQ_CCCR0, nmi_p4_cccr_val, 0);
 			apic_write(APIC_LVTPC, APIC_DM_NMI);
+			write_watchdog_counter(NULL);
 		}
 		else if (nmi_perfctr_msr == MSR_P6_PERFCTR0 ||
 		         nmi_perfctr_msr == MSR_ARCH_PERFMON_PERFCTR0) {
@@ -624,8 +667,10 @@ void nmi_watchdog_tick (struct pt_regs * regs)
 			 * the apic vector but it doesn't hurt
 			 * other P6 variant */
 			apic_write(APIC_LVTPC, APIC_DM_NMI);
+			write_watchdog_counter32(NULL);
+		} else {
+			write_watchdog_counter(NULL);
 		}
-		write_watchdog_counter(NULL);
 	}
 }
 

@@ -247,7 +247,7 @@ static inline int page_mapping_inuse(struct page *page)
 		return 0;
 
 	/* File is mmap'd by somebody? */
-	return mapping_mapped(mapping);
+	return mapping_mapped(mapping) && !pagecache_over_max();
 }
 
 static inline int is_page_cache_freeable(struct page *page)

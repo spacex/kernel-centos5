@@ -21,6 +21,7 @@
  *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
+#include <linux/fs.h>
 #include "cifspdu.h"
 #include "cifsglob.h"
 #include "cifsproto.h"
@@ -116,8 +117,13 @@ static void unicode_ssetup_strings(char ** pbcc_area, struct cifsSesInfo *ses,
 	bytes_ret = cifs_strtoUCS((__le16 *)bcc_ptr, "Linux version ", 32,
 				  nls_cp);
 	bcc_ptr += 2 * bytes_ret;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 18)
+	bytes_ret = cifs_strtoUCS((__le16 *) bcc_ptr, utsname()->release,
+				  32, nls_cp);
+#else
 	bytes_ret = cifs_strtoUCS((__le16 *) bcc_ptr, system_utsname.release,
 				  32, nls_cp);
+#endif
 	bcc_ptr += 2 * bytes_ret;
 	bcc_ptr += 2; /* trailing null */
 
@@ -161,8 +167,13 @@ static void ascii_ssetup_strings(char ** pbcc_area, struct cifsSesInfo *ses,
 
 	strcpy(bcc_ptr, "Linux version ");
 	bcc_ptr += strlen("Linux version ");
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 18)
+	strcpy(bcc_ptr, utsname()->release);
+	bcc_ptr += strlen(utsname()->release) + 1;
+#else
 	strcpy(bcc_ptr, system_utsname.release);
 	bcc_ptr += strlen(system_utsname.release) + 1;
+#endif
 
 	strcpy(bcc_ptr, CIFS_NETWORK_OPSYS);
 	bcc_ptr += strlen(CIFS_NETWORK_OPSYS) + 1;
@@ -182,11 +193,14 @@ static int decode_unicode_ssetup(char ** pbcc_area, int bleft, struct cifsSesInf
 	cFYI(1,("bleft %d",bleft));
 
 
-	/* word align, if bytes remaining is not even */
-	if(bleft % 2) {
-		bleft--;
-		data++;
-	}
+	/* SMB header is unaligned, so cifs servers word align start of
+	   Unicode strings */
+	data++;
+	bleft--; /* Windows servers do not always double null terminate
+		    their final Unicode string - in which case we
+		    now will not attempt to decode the byte of junk
+		    which follows it */
+		    
 	words_left = bleft / 2;
 
 	/* save off server operating system */
@@ -271,6 +285,10 @@ static int decode_ascii_ssetup(char ** pbcc_area, int bleft, struct cifsSesInfo 
 	ses->serverOS = kzalloc(len + 1, GFP_KERNEL);
 	if(ses->serverOS)
 		strncpy(ses->serverOS, bcc_ptr, len);
+	if(strncmp(ses->serverOS, "OS/2",4) == 0) {
+			cFYI(1,("OS/2 server"));
+			ses->flags |= CIFS_SES_OS2;
+	}
 
 	bcc_ptr += len + 1;
 	bleft -= len + 1;
@@ -293,16 +311,11 @@ static int decode_ascii_ssetup(char ** pbcc_area, int bleft, struct cifsSesInfo 
         if(len > bleft)
                 return rc;
 
-        if(ses->serverDomain)
-                kfree(ses->serverDomain);
-
-        ses->serverDomain = kzalloc(len + 1, GFP_KERNEL);
-        if(ses->serverOS)
-                strncpy(ses->serverOS, bcc_ptr, len);
-
-        bcc_ptr += len + 1;
-	bleft -= len + 1;
-
+	/* No domain field in LANMAN case. Domain is
+	   returned by old servers in the SMB negprot response */
+	/* BB For newer servers which do not support Unicode,
+	   but thus do return domain here we could add parsing
+	   for it later, but it is not very important */
 	cFYI(1,("ascii: bytes left %d",bleft));
 
 	return rc;
@@ -369,18 +382,20 @@ CIFS_SessSetup(unsigned int xid, struct cifsSesInfo *ses, int first_time,
 	str_area = kmalloc(2000, GFP_KERNEL);
 	bcc_ptr = str_area;
 
+	ses->flags &= ~CIFS_SES_LANMAN;
+
 	if(type == LANMAN) {
 #ifdef CONFIG_CIFS_WEAK_PW_HASH
 		char lnm_session_key[CIFS_SESS_KEY_SIZE];
 
 		/* no capabilities flags in old lanman negotiation */
 
-		pSMB->old_req.PasswordLength = cpu_to_le16(CIFS_SESS_KEY_SIZE); 
+		pSMB->old_req.PasswordLength = CIFS_SESS_KEY_SIZE; 
 		/* BB calculate hash with password */
 		/* and copy into bcc */
 
 		calc_lanman_hash(ses, lnm_session_key);
-
+		ses->flags |= CIFS_SES_LANMAN; 
 /* #ifdef CONFIG_CIFS_DEBUG2
 		cifs_dump_mem("cryptkey: ",ses->server->cryptKey,
 			CIFS_SESS_KEY_SIZE);

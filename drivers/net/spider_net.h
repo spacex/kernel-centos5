@@ -1,7 +1,8 @@
 /*
- * Network device driver for Cell Processor-Based Blade
+ * Network device driver for Cell Processor-Based Blade and Celleb platform
  *
  * (C) Copyright IBM Corp. 2005
+ * (C) Copyright 2006 TOSHIBA CORPORATION
  *
  * Authors : Utz Bacher <utz.bacher@de.ibm.com>
  *           Jens Osterkamp <Jens.Osterkamp@de.ibm.com>
@@ -23,6 +24,8 @@
 
 #ifndef _SPIDER_NET_H
 #define _SPIDER_NET_H
+
+#define VERSION "2.0 B"
 
 #include "sungem_phy.h"
 
@@ -47,12 +50,19 @@ extern char spider_net_driver_name[];
 #define SPIDER_NET_TX_DESCRIPTORS_MIN		16
 #define SPIDER_NET_TX_DESCRIPTORS_MAX		512
 
-#define SPIDER_NET_TX_TIMER			20
+#define SPIDER_NET_TX_TIMER			(HZ/5)
+#define SPIDER_NET_ANEG_TIMER			(HZ)
+#define SPIDER_NET_ANEG_TIMEOUT			2
 
 #define SPIDER_NET_RX_CSUM_DEFAULT		1
 
-#define SPIDER_NET_WATCHDOG_TIMEOUT		50*HZ
-#define SPIDER_NET_NAPI_WEIGHT			64
+#define SPIDER_NET_WATCHDOG_TIMEOUT		3*HZ
+
+/* We really really want to empty the ring buffer every time,
+ * so as to avoid the RX ram full bug. So set te napi wieght
+ * to the ring size.
+ */
+#define SPIDER_NET_NAPI_WEIGHT	SPIDER_NET_RX_DESCRIPTORS_DEFAULT
 
 #define SPIDER_NET_FIRMWARE_SEQS	6
 #define SPIDER_NET_FIRMWARE_SEQWORDS	1024
@@ -102,6 +112,7 @@ extern char spider_net_driver_name[];
 
 #define SPIDER_NET_GMACOPEMD		0x00000100
 #define SPIDER_NET_GMACLENLMT		0x00000108
+#define SPIDER_NET_GMACST		0x00000110
 #define SPIDER_NET_GMACINTEN		0x00000118
 #define SPIDER_NET_GMACPHYCTRL		0x00000120
 
@@ -153,7 +164,7 @@ extern char spider_net_driver_name[];
 
 /** interrupt mask registers */
 #define SPIDER_NET_INT0_MASK_VALUE	0x3f7fe2c7
-#define SPIDER_NET_INT1_MASK_VALUE	0xffff7ff7
+#define SPIDER_NET_INT1_MASK_VALUE	0xffff5ff5
 /* no MAC aborts -> auto retransmission */
 #define SPIDER_NET_INT2_MASK_VALUE	0xffef7ff1
 
@@ -179,7 +190,8 @@ extern char spider_net_driver_name[];
 
 /* pause frames: automatic, no upper retransmission count */
 /* outside loopback mode: ETOMOD signal dont matter, not connected */
-#define SPIDER_NET_OPMODE_VALUE		0x00000063
+/* ETOMOD signal is brought to PHY reset. bit 2 must be 1 in Celleb */
+#define SPIDER_NET_OPMODE_VALUE		0x00000067
 /*#define SPIDER_NET_OPMODE_VALUE		0x001b0062*/
 #define SPIDER_NET_LENLMT_VALUE		0x00000908
 
@@ -189,7 +201,9 @@ extern char spider_net_driver_name[];
 #define SPIDER_NET_MACMODE_VALUE	0x00000001
 #define SPIDER_NET_BURSTLMT_VALUE	0x00000200 /* about 16 us */
 
-/* 1(0)					enable r/tx dma
+/* DMAC control register GDMACCNTR
+ *
+ * 1(0)				enable r/tx dma
  *  0000000				fixed to 0
  *
  *         000000			fixed to 0
@@ -198,6 +212,7 @@ extern char spider_net_driver_name[];
  *
  *                 000000		fixed to 0
  *                       00		burst alignment: 128 bytes
+ *                       11		burst alignment: 1024 bytes
  *
  *                         00000	fixed to 0
  *                              0	descr writeback size 32 bytes
@@ -208,10 +223,13 @@ extern char spider_net_driver_name[];
 #define SPIDER_NET_DMA_RX_VALUE		0x80000000
 #define SPIDER_NET_DMA_RX_FEND_VALUE	0x00030003
 /* to set TX_DMA_EN */
-#define SPIDER_NET_TX_DMA_EN		0x80000000
-#define SPIDER_NET_GDTDCEIDIS		0x00000002
-#define SPIDER_NET_DMA_TX_VALUE		SPIDER_NET_TX_DMA_EN | \
-					SPIDER_NET_GDTDCEIDIS
+#define SPIDER_NET_TX_DMA_EN           0x80000000
+#define SPIDER_NET_GDTBSTA             0x00000300
+#define SPIDER_NET_GDTDCEIDIS          0x00000002
+#define SPIDER_NET_DMA_TX_VALUE        SPIDER_NET_TX_DMA_EN | \
+                                       SPIDER_NET_GDTDCEIDIS | \
+                                       SPIDER_NET_GDTBSTA
+
 #define SPIDER_NET_DMA_TX_FEND_VALUE	0x00030003
 
 /* SPIDER_NET_UA_DESCR_VALUE is OR'ed with the unicast address */
@@ -320,23 +338,23 @@ enum spider_net_int2_status {
 	SPIDER_NET_GRISPDNGINT
 };
 
-#define SPIDER_NET_TXINT	( (1 << SPIDER_NET_GTTEDINT) | \
-				  (1 << SPIDER_NET_GDTDCEINT) | \
-				  (1 << SPIDER_NET_GDTFDCINT) )
+#define SPIDER_NET_TXINT	(1 << SPIDER_NET_GDTFDCINT)
 
-/* we rely on flagged descriptor interrupts*/
-#define SPIDER_NET_RXINT	( (1 << SPIDER_NET_GDAFDCINT) | \
-				  (1 << SPIDER_NET_GRMFLLINT) )
+/* We rely on flagged descriptor interrupts */
+#define SPIDER_NET_RXINT	( (1 << SPIDER_NET_GDAFDCINT) )
+
+#define SPIDER_NET_LINKINT	( 1 << SPIDER_NET_GMAC2INT )
 
 #define SPIDER_NET_ERRINT	( 0xffffffff & \
 				  (~SPIDER_NET_TXINT) & \
-				  (~SPIDER_NET_RXINT) )
+				  (~SPIDER_NET_RXINT) & \
+				  (~SPIDER_NET_LINKINT) )
 
 #define SPIDER_NET_GPREXEC			0x80000000
 #define SPIDER_NET_GPRDAT_MASK			0x0000ffff
 
 #define SPIDER_NET_DMAC_NOINTR_COMPLETE		0x00800000
-#define SPIDER_NET_DMAC_NOCS			0x00040000
+#define SPIDER_NET_DMAC_TXFRMTL		0x00040000
 #define SPIDER_NET_DMAC_TCP			0x00020000
 #define SPIDER_NET_DMAC_UDP			0x00030000
 #define SPIDER_NET_TXDCEST			0x08000000
@@ -349,9 +367,10 @@ enum spider_net_int2_status {
 #define SPIDER_NET_DESCR_FORCE_END		0x50000000 /* used in rx and tx */
 #define SPIDER_NET_DESCR_CARDOWNED		0xA0000000 /* used in rx and tx */
 #define SPIDER_NET_DESCR_NOT_IN_USE		0xF0000000
+#define SPIDER_NET_DESCR_TXDESFLG		0x00800000
 
-struct spider_net_descr {
-	/* as defined by the hardware */
+/* Descriptor, as defined by the hardware */
+struct spider_net_hw_descr {
 	u32 buf_addr;
 	u32 buf_size;
 	u32 next_descr_addr;
@@ -360,18 +379,24 @@ struct spider_net_descr {
 	u32 valid_size;	/* all zeroes for tx */
 	u32 data_status;
 	u32 data_error;	/* all zeroes for tx */
+} __attribute__((aligned(32)));
 
-	/* used in the driver */
+struct spider_net_descr {
+	struct spider_net_hw_descr *hwdescr;
 	struct sk_buff *skb;
 	u32 bus_addr;
 	struct spider_net_descr *next;
 	struct spider_net_descr *prev;
-} __attribute__((aligned(32)));
+};
 
 struct spider_net_descr_chain {
 	spinlock_t lock;
 	struct spider_net_descr *head;
 	struct spider_net_descr *tail;
+	struct spider_net_descr *ring;
+	int num_desc;
+	struct spider_net_hw_descr *hwring;
+	dma_addr_t dma_addr;
 };
 
 /* descriptor data_status bits */
@@ -390,8 +415,6 @@ struct spider_net_descr_chain {
 /* the cases we don't pass the packet to the stack.
  * 701b8000 would be correct, but every packets gets that flag */
 #define SPIDER_NET_DESTROY_RX_FLAGS	0x700b8000
-
-#define SPIDER_NET_DESCR_SIZE		32
 
 /* this will be bigger some time */
 struct spider_net_options {
@@ -415,35 +438,45 @@ struct spider_net_options {
 					  NETIF_MSG_HW | \
 					  NETIF_MSG_WOL )
 
+struct spider_net_extra_stats {
+	unsigned long rx_desc_error;
+	unsigned long tx_timeouts;
+	unsigned long alloc_rx_skb_error;
+	unsigned long rx_iommu_map_error;
+	unsigned long tx_iommu_map_error;
+	unsigned long rx_desc_unk_state;
+};
+
 struct spider_net_card {
 	struct net_device *netdev;
 	struct pci_dev *pdev;
 	struct mii_phy phy;
 
+	int medium;
+
 	void __iomem *regs;
 
 	struct spider_net_descr_chain tx_chain;
 	struct spider_net_descr_chain rx_chain;
+	struct spider_net_descr *low_watermark;
 
-	struct net_device_stats netdev_stats;
-
-	struct spider_net_options options;
-
-	spinlock_t intmask_lock;
-	struct tasklet_struct rxram_full_tl;
+	int aneg_count;
+	struct timer_list aneg_timer;
 	struct timer_list tx_timer;
-
 	struct work_struct tx_timeout_task;
 	atomic_t tx_timeout_task_counter;
 	wait_queue_head_t waitq;
+	int num_rx_ints;
+	int ignore_rx_ramfull;
 
 	/* for ethtool */
 	int msg_enable;
+	struct net_device_stats netdev_stats;
+	struct spider_net_extra_stats spider_stats;
+	struct spider_net_options options;
 
-	int rx_desc;
-	int tx_desc;
-
-	struct spider_net_descr descr[0];
+	/* Must be last item in struct */
+	struct spider_net_descr darray[0];
 };
 
 #define pr_err(fmt,arg...) \

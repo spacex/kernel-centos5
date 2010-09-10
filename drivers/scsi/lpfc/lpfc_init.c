@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2004-2006 Emulex.  All rights reserved.           *
+ * Copyright (C) 2004-2007 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  * Portions Copyright (C) 2004-2005 Christoph Hellwig              *
@@ -42,6 +42,7 @@
 #include "lpfc_crtn.h"
 #include "lpfc_version.h"
 #include "lpfc_ioctl.h"
+#include "lpfc_compat.h"
 
 static int lpfc_parse_vpd(struct lpfc_hba *, uint8_t *, int);
 static void lpfc_get_hba_model_desc(struct lpfc_hba *, uint8_t *, uint8_t *);
@@ -387,12 +388,12 @@ lpfc_config_port_post(struct lpfc_hba * phba)
 	 * Setup the ring 0 (els)  timeout handler
 	 */
 	timeout = phba->fc_ratov << 1;
-	phba->els_tmofunc.expires = jiffies + HZ * timeout;
-	add_timer(&phba->els_tmofunc);
+	mod_timer(&phba->els_tmofunc, jiffies + HZ * timeout);
 
 	lpfc_init_link(phba, pmb, phba->cfg_topology, phba->cfg_link_speed);
 	pmb->mbox_cmpl = lpfc_sli_def_mbox_cmpl;
 	rc = lpfc_sli_issue_mbox(phba, pmb, MBX_NOWAIT);
+	lpfc_set_loopback_flag(phba);
 	if (rc != MBX_SUCCESS) {
 		lpfc_printf_log(phba,
 				KERN_ERR,
@@ -547,12 +548,15 @@ lpfc_handle_eratt(struct lpfc_hba * phba)
 		 * There was a firmware error.  Take the hba offline and then
 		 * attempt to restart it.
 		 */
+		lpfc_offline_prep(phba);
 		lpfc_offline(phba);
 		lpfc_sli_brdrestart(phba);
 		if (lpfc_online(phba) == 0) {	/* Initialize the HBA */
 			mod_timer(&phba->fc_estabtmo, jiffies + HZ * 60);
+			lpfc_unblock_mgmt_io(phba);
 			return;
 		}
+		lpfc_unblock_mgmt_io(phba);
 	} else {
 		/* The if clause above forces this code path when the status
 		 * failure is a value other than FFER6.  Do not call the offline
@@ -570,7 +574,9 @@ lpfc_handle_eratt(struct lpfc_hba * phba)
 				SCSI_NL_VID_TYPE_PCI | PCI_VENDOR_ID_EMULEX);
 
 		psli->sli_flag &= ~LPFC_SLI2_ACTIVE;
+		lpfc_offline_prep(phba);
 		lpfc_offline(phba);
+		lpfc_unblock_mgmt_io(phba);
 		phba->hba_state = LPFC_HBA_ERROR;
 		lpfc_hba_down_post(phba);
 	}
@@ -630,7 +636,7 @@ lpfc_handle_latt_free_mbuf:
 lpfc_handle_latt_free_mp:
 	kfree(mp);
 lpfc_handle_latt_free_pmb:
-	kfree(pmb);
+	mempool_free(pmb, phba->mbox_mem_pool);
 lpfc_handle_latt_err_exit:
 	/* Enable Link attention interrupts */
 	spin_lock_irq(phba->host->host_lock);
@@ -922,6 +928,24 @@ lpfc_get_hba_model_desc(struct lpfc_hba * phba, uint8_t * mdp, uint8_t * descp)
 		m = (typeof(m)){"LPe11000-S", max_speed,
 			"PCIe"};
 		break;
+	case PCI_DEVICE_ID_SAT:
+		m = (typeof(m)){"LPe12000", max_speed, "PCIe"};
+		break;
+	case PCI_DEVICE_ID_SAT_MID:
+		m = (typeof(m)){"LPe1250", max_speed, "PCIe"};
+		break;
+	case PCI_DEVICE_ID_SAT_SMB:
+		m = (typeof(m)){"LPe121", max_speed, "PCIe"};
+		break;
+	case PCI_DEVICE_ID_SAT_DCSP:
+		m = (typeof(m)){"LPe12002-SP", max_speed, "PCIe"};
+		break;
+	case PCI_DEVICE_ID_SAT_SCSP:
+		m = (typeof(m)){"LPe12000-SP", max_speed, "PCIe"};
+		break;
+	case PCI_DEVICE_ID_SAT_S:
+		m = (typeof(m)){"LPe12000-S", max_speed, "PCIe"};
+		break;
 	default:
 		m = (typeof(m)){ NULL };
 		break;
@@ -1171,7 +1195,7 @@ lpfc_hba_init(struct lpfc_hba *phba, uint32_t *hbainit)
 }
 
 static void
-lpfc_cleanup(struct lpfc_hba * phba, uint32_t save_bind)
+lpfc_cleanup(struct lpfc_hba * phba)
 {
 	struct lpfc_nodelist *ndlp, *next_ndlp;
 
@@ -1299,60 +1323,90 @@ lpfc_online(struct lpfc_hba * phba)
 		       "%d:0458 Bring Adapter online\n",
 		       phba->brd_no);
 
-	if (!lpfc_sli_queue_setup(phba))
-		return 1;
+	lpfc_block_mgmt_io(phba);
 
-	if (lpfc_sli_hba_setup(phba))	/* Initialize the HBA */
+	if (!lpfc_sli_queue_setup(phba)) {
+		lpfc_unblock_mgmt_io(phba);
 		return 1;
+	}
+
+	if (lpfc_sli_hba_setup(phba)) {	/* Initialize the HBA */
+		lpfc_unblock_mgmt_io(phba);
+		return 1;
+	}
 
 	spin_lock_irq(phba->host->host_lock);
 	phba->fc_flag &= ~FC_OFFLINE_MODE;
 	spin_unlock_irq(phba->host->host_lock);
 
+	lpfc_unblock_mgmt_io(phba);
 	return 0;
 }
 
-int
-lpfc_offline(struct lpfc_hba * phba)
+void
+lpfc_block_mgmt_io(struct lpfc_hba * phba)
 {
-	struct lpfc_sli_ring *pring;
-	struct lpfc_sli *psli;
 	unsigned long iflag;
-	int i;
-	int cnt = 0;
 
-	if (!phba)
-		return 0;
+	spin_lock_irqsave(phba->host->host_lock, iflag);
+	phba->fc_flag |= FC_BLOCK_MGMT_IO;
+	spin_unlock_irqrestore(phba->host->host_lock, iflag);
+}
+
+void
+lpfc_unblock_mgmt_io(struct lpfc_hba * phba)
+{
+	unsigned long iflag;
+
+	spin_lock_irqsave(phba->host->host_lock, iflag);
+	phba->fc_flag &= ~FC_BLOCK_MGMT_IO;
+	spin_unlock_irqrestore(phba->host->host_lock, iflag);
+}
+
+void
+lpfc_offline_prep(struct lpfc_hba * phba)
+{
+	struct lpfc_nodelist  *ndlp, *next_ndlp;
+	struct list_head *listp, *node_list[7];
+	int i;
 
 	if (phba->fc_flag & FC_OFFLINE_MODE)
-		return 0;
+		return;
 
-	psli = &phba->sli;
+	lpfc_block_mgmt_io(phba);
 
 	lpfc_linkdown(phba);
-	lpfc_sli_flush_mbox_queue(phba);
 
-	for (i = 0; i < psli->num_rings; i++) {
-		pring = &psli->ring[i];
-		/* The linkdown event takes 30 seconds to timeout. */
-		while (pring->txcmplq_cnt) {
-			mdelay(10);
-			if (cnt++ > 3000) {
-				lpfc_printf_log(phba,
-					KERN_WARNING, LOG_INIT,
-					"%d:0466 Outstanding IO when "
-					"bringing Adapter offline\n",
-					phba->brd_no);
-				break;
-			}
-		}
+	/* Issue an unreg_login to all nodes */
+	node_list[0] = &phba->fc_npr_list;  /* MUST do this list first */
+	node_list[1] = &phba->fc_nlpmap_list;
+	node_list[2] = &phba->fc_nlpunmap_list;
+	node_list[3] = &phba->fc_prli_list;
+	node_list[4] = &phba->fc_reglogin_list;
+	node_list[5] = &phba->fc_adisc_list;
+	node_list[6] = &phba->fc_plogi_list;
+	for (i = 0; i < 7; i++) {
+		listp = node_list[i];
+		if (list_empty(listp))
+			continue;
+
+		list_for_each_entry_safe(ndlp, next_ndlp, listp, nlp_listp)
+			lpfc_unreg_rpi(phba, ndlp);
 	}
 
+	lpfc_sli_flush_mbox_queue(phba);
+}
+
+void
+lpfc_offline(struct lpfc_hba * phba)
+{
+	unsigned long iflag;
+
+	if (phba->fc_flag & FC_OFFLINE_MODE)
+		return;
 
 	/* stop all timers associated with this hba */
 	lpfc_stop_timer(phba);
-	phba->work_hba_events = 0;
-	phba->work_ha = 0;
 
 	lpfc_printf_log(phba,
 		       KERN_WARNING,
@@ -1363,11 +1417,12 @@ lpfc_offline(struct lpfc_hba * phba)
 	/* Bring down the SLI Layer and cleanup.  The HBA is offline
 	   now.  */
 	lpfc_sli_hba_down(phba);
-	lpfc_cleanup(phba, 1);
+	lpfc_cleanup(phba);
 	spin_lock_irqsave(phba->host->host_lock, iflag);
+	phba->work_hba_events = 0;
+	phba->work_ha = 0;
 	phba->fc_flag |= FC_OFFLINE_MODE;
 	spin_unlock_irqrestore(phba->host->host_lock, iflag);
-	return 0;
 }
 
 /******************************************************************************
@@ -1404,6 +1459,31 @@ lpfc_scsi_free(struct lpfc_hba * phba)
 	return 0;
 }
 
+static void
+lpfc_setup_max_dma_length(struct lpfc_hba * phba)
+{
+	struct pci_dev *pdev = phba->pcidev;
+	struct pci_bus *bus = pdev->bus;
+	uint8_t rev;
+
+	while(bus) {
+		/*
+		 * 0x7450 == PCI_DEVICE_ID_AMD_8131_BRIDGE for 2.6 kernels
+		 * 0x7450 == PCI_DEVICE_ID_AMD_8131_APIC   for 2.4 kernels
+		 */
+		if ( bus->self &&
+			(bus->self->vendor == PCI_VENDOR_ID_AMD) &&
+			(bus->self->device == PCI_DEVICE_ID_AMD_8131_BRIDGE)) {
+				pci_read_config_byte(bus->self, 0x08, &rev);
+				if (rev == 0x13) {
+					phba->pci_max_read = 1024;
+					return;
+				}
+		}
+		bus = bus->parent;
+	}
+	return;
+}
 
 static int __devinit
 lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
@@ -1432,6 +1512,9 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 
 	phba->fc_flag |= FC_LOADING;
 	phba->pcidev = pdev;
+
+	/* Check if we need to change the DMA length */
+	lpfc_setup_max_dma_length(phba);
 
 	/* Assign an unused board number */
 	if (!idr_pre_get(&lpfc_hba_index, GFP_KERNEL))
@@ -1686,6 +1769,8 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 	fc_host_supported_speeds(host) = 0;
 	if (phba->lmt & LMT_10Gb)
 		fc_host_supported_speeds(host) |= FC_PORTSPEED_10GBIT;
+	if (phba->lmt & LMT_8Gb)
+		fc_host_supported_speeds(host) |= FC_PORTSPEED_8GBIT;
 	if (phba->lmt & LMT_4Gb)
 		fc_host_supported_speeds(host) |= FC_PORTSPEED_4GBIT;
 	if (phba->lmt & LMT_2Gb)
@@ -1709,6 +1794,8 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 	return 0;
 
 out_free_irq:
+	if (phba->dfc_host)
+		lpfcdfc_host_del(phba->dfc_host);
 	lpfc_stop_timer(phba);
 	phba->work_hba_events = 0;
 	free_irq(phba->pcidev->irq, phba);
@@ -1784,7 +1871,7 @@ lpfc_pci_remove_one(struct pci_dev *pdev)
 	free_irq(phba->pcidev->irq, phba);
 	pci_disable_msi(phba->pcidev);
 
-	lpfc_cleanup(phba, 0);
+	lpfc_cleanup(phba);
 	lpfc_stop_timer(phba);
 	phba->work_hba_events = 0;
 
@@ -1866,6 +1953,18 @@ static struct pci_device_id lpfc_id_table[] = {
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_LP11000S,
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_LPE11000S,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_SAT,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_SAT_MID,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_SAT_SMB,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_SAT_DCSP,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_SAT_SCSP,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_SAT_S,
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{ 0 }
 };

@@ -47,8 +47,10 @@ struct iscsi_nopin;
 #endif
 
 #define ISCSI_XMIT_CMDS_MAX	128	/* must be power of 2 */
-#define ISCSI_MGMT_CMDS_MAX	32	/* must be power of 2 */
+#define ISCSI_MGMT_CMDS_MAX	16	/* must be power of 2 */
 #define ISCSI_CONN_MAX			1
+
+#define ISCSI_ADDRESS_BUF_LEN          64
 
 #define ISCSI_MGMT_ITT_OFFSET	0xa00
 
@@ -88,6 +90,9 @@ enum {
 	ISCSI_TASK_COMPLETED,
 	ISCSI_TASK_PENDING,
 	ISCSI_TASK_RUNNING,
+#ifndef __GENKSYMS__
+	ISCSI_TASK_ABORTING,
+#endif
 };
 
 struct iscsi_cmd_task {
@@ -196,6 +201,14 @@ struct iscsi_conn {
 
 	/* custom statistics */
 	uint32_t		eh_abort_cnt;
+#ifndef __GENKSYMS__
+	/* remote portal currently connected to */
+	int			portal_port;
+	char			portal_address[ISCSI_ADDRESS_BUF_LEN];
+	/* local address */
+	int			local_port;
+	char			local_address[ISCSI_ADDRESS_BUF_LEN];
+#endif
 };
 
 struct iscsi_queue {
@@ -245,6 +258,25 @@ struct iscsi_session {
 	int			mgmtpool_max;	/* size of mgmt array */
 	struct iscsi_mgmt_task	**mgmt_cmds;	/* Original mgmt arr */
 	struct iscsi_queue	mgmtpool;	/* Mgmt PDU's pool */
+#ifndef __GENKSYMS__
+	/* This tracks the reqs queued into the initiator */
+	uint32_t		queued_cmdsn;
+	/*
+	 * Syncs up the scsi eh thread with the iscsi eh thread when sending
+	 * task management functions. This must be taken before the session
+	 * and recv lock.
+	 */
+	struct mutex		eh_mutex;
+
+	char			*username;
+	char			*username_in;
+	char			*password;
+	char			*password_in;
+	char			*initiatorname;
+	/* hw address or netdev iscsi connection is bound to */
+	char			*hwaddress;
+	char			*netdev;
+#endif
 };
 
 /*
@@ -255,6 +287,15 @@ extern int iscsi_eh_abort(struct scsi_cmnd *sc);
 extern int iscsi_eh_host_reset(struct scsi_cmnd *sc);
 extern int iscsi_queuecommand(struct scsi_cmnd *sc,
 			      void (*done)(struct scsi_cmnd *));
+
+/*
+ * iSCSI host helpers.
+ */
+extern int iscsi_host_set_param(struct Scsi_Host *shost,
+				enum iscsi_host_param param, char *buf,
+				int buflen);
+extern int iscsi_host_get_param(struct Scsi_Host *shost,
+				enum iscsi_host_param param, char *buf);
 
 /*
  * session management
@@ -302,6 +343,8 @@ extern int __iscsi_complete_pdu(struct iscsi_conn *, struct iscsi_hdr *,
 				char *, int);
 extern int iscsi_verify_itt(struct iscsi_conn *, struct iscsi_hdr *,
 			    uint32_t *);
+extern void iscsi_update_cmdsn(struct iscsi_session *,
+				struct iscsi_nopin *);;
 
 /*
  * generic helpers

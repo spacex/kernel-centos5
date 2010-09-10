@@ -41,12 +41,16 @@
 #if !defined(IB_VERBS_H)
 #define IB_VERBS_H
 
+#include <linux/pci.h>
 #include <linux/types.h>
 #include <linux/device.h>
+#include <linux/mm.h>
+#include <linux/dma-mapping.h>
 
 #include <asm/atomic.h>
 #include <asm/scatterlist.h>
 #include <asm/uaccess.h>
+#include <linux/kref.h>
 
 union ib_gid {
 	u8	raw[16];
@@ -56,11 +60,21 @@ union ib_gid {
 	} global;
 };
 
-enum ib_node_type {
-	IB_NODE_CA 	= 1,
-	IB_NODE_SWITCH,
-	IB_NODE_ROUTER
+enum rdma_node_type {
+	/* IB values map to NodeInfo:NodeType. */
+	RDMA_NODE_IB_CA 	= 1,
+	RDMA_NODE_IB_SWITCH,
+	RDMA_NODE_IB_ROUTER,
+	RDMA_NODE_RNIC
 };
+
+enum rdma_transport_type {
+	RDMA_TRANSPORT_IB,
+	RDMA_TRANSPORT_IWARP
+};
+
+enum rdma_transport_type
+rdma_node_get_transport(enum rdma_node_type node_type) __attribute_const__;
 
 enum ib_device_cap_flags {
 	IB_DEVICE_RESIZE_MAX_WR		= 1,
@@ -78,6 +92,9 @@ enum ib_device_cap_flags {
 	IB_DEVICE_RC_RNR_NAK_GEN	= (1<<12),
 	IB_DEVICE_SRQ_RESIZE		= (1<<13),
 	IB_DEVICE_N_NOTIFY_CQ		= (1<<14),
+	IB_DEVICE_ZERO_STAG		= (1<<15),
+	IB_DEVICE_SEND_W_INV		= (1<<16),
+	IB_DEVICE_MEM_WINDOW		= (1<<17)
 };
 
 enum ib_atomic_cap {
@@ -404,8 +421,8 @@ struct ib_wc {
 	enum ib_wc_opcode	opcode;
 	u32			vendor_err;
 	u32			byte_len;
+	struct ib_qp	       *qp;
 	__be32			imm_data;
-	u32			qp_num;
 	u32			src_qp;
 	int			wc_flags;
 	u16			pkey_index;
@@ -835,6 +852,51 @@ struct ib_cache {
 	u8                     *lmc_cache;
 };
 
+struct ib_dma_mapping_ops {
+	int		(*mapping_error)(struct ib_device *dev,
+					 u64 dma_addr);
+	u64		(*map_single)(struct ib_device *dev,
+				      void *ptr, size_t size,
+				      enum dma_data_direction direction);
+	void		(*unmap_single)(struct ib_device *dev,
+					u64 addr, size_t size,
+					enum dma_data_direction direction);
+	u64		(*map_page)(struct ib_device *dev,
+				    struct page *page, unsigned long offset,
+				    size_t size,
+				    enum dma_data_direction direction);
+	void		(*unmap_page)(struct ib_device *dev,
+				      u64 addr, size_t size,
+				      enum dma_data_direction direction);
+	int		(*map_sg)(struct ib_device *dev,
+				  struct scatterlist *sg, int nents,
+				  enum dma_data_direction direction);
+	void		(*unmap_sg)(struct ib_device *dev,
+				    struct scatterlist *sg, int nents,
+				    enum dma_data_direction direction);
+	u64		(*dma_address)(struct ib_device *dev,
+				       struct scatterlist *sg);
+	unsigned int	(*dma_len)(struct ib_device *dev,
+				   struct scatterlist *sg);
+	void		(*sync_single_for_cpu)(struct ib_device *dev,
+					       u64 dma_handle,
+					       size_t size,
+				               enum dma_data_direction dir);
+	void		(*sync_single_for_device)(struct ib_device *dev,
+						  u64 dma_handle,
+						  size_t size,
+						  enum dma_data_direction dir);
+	void		*(*alloc_coherent)(struct ib_device *dev,
+					   size_t size,
+					   u64 *dma_handle,
+					   gfp_t flag);
+	void		(*free_coherent)(struct ib_device *dev,
+					 size_t size, void *cpu_addr,
+					 u64 dma_handle);
+};
+
+struct iw_cm_verbs;
+
 struct ib_device {
 	struct device                *dma_device;
 
@@ -850,6 +912,8 @@ struct ib_device {
 	struct ib_cache               cache;
 
 	u32                           flags;
+
+	struct iw_cm_verbs	     *iwcm;
 
 	int		           (*query_device)(struct ib_device *device,
 						   struct ib_device_attr *device_attr);
@@ -888,7 +952,8 @@ struct ib_device {
 						 struct ib_udata *udata);
 	int                        (*modify_srq)(struct ib_srq *srq,
 						 struct ib_srq_attr *srq_attr,
-						 enum ib_srq_attr_mask srq_attr_mask);
+						 enum ib_srq_attr_mask srq_attr_mask,
+						 struct ib_udata *udata);
 	int                        (*query_srq)(struct ib_srq *srq,
 						struct ib_srq_attr *srq_attr);
 	int                        (*destroy_srq)(struct ib_srq *srq);
@@ -900,7 +965,8 @@ struct ib_device {
 						struct ib_udata *udata);
 	int                        (*modify_qp)(struct ib_qp *qp,
 						struct ib_qp_attr *qp_attr,
-						int qp_attr_mask);
+						int qp_attr_mask,
+						struct ib_udata *udata);
 	int                        (*query_qp)(struct ib_qp *qp,
 					       struct ib_qp_attr *qp_attr,
 					       int qp_attr_mask,
@@ -973,6 +1039,8 @@ struct ib_device {
 						  struct ib_mad *in_mad,
 						  struct ib_mad *out_mad);
 
+	struct ib_dma_mapping_ops   *dma_ops;
+
 	struct module               *owner;
 	struct class_device          class_dev;
 	struct kobject               ports_parent;
@@ -991,6 +1059,8 @@ struct ib_device {
 	__be64			     node_guid;
 	u8                           node_type;
 	u8                           phys_port_cnt;
+	int                          *pkey_tbl_len;
+	int                          *gid_tbl_len;
 };
 
 struct ib_client {
@@ -1065,6 +1135,29 @@ int ib_modify_device(struct ib_device *device,
 int ib_modify_port(struct ib_device *device,
 		   u8 port_num, int port_modify_mask,
 		   struct ib_port_modify *port_modify);
+
+/**
+ * ib_find_gid - Returns the port number and GID table index where
+ *   a specified GID value occurs.
+ * @device: The device to query.
+ * @gid: The GID value to search for.
+ * @port_num: The port number of the device where the GID value was found.
+ * @index: The index into the GID table where the GID was found.  This
+ *   parameter may be NULL.
+ */
+int ib_find_gid(struct ib_device *device, union ib_gid *gid,
+			u8 *port_num, u16 *index);
+
+/**
+ * ib_find_pkey - Returns the PKey table index where a specified
+ *   PKey value occurs.
+ * @device: The device to query.
+ * @port_num: The port number of the device to search for the PKey.
+ * @pkey: The PKey value to search for.
+ * @index: The index into the PKey table where the PKey was found.
+ */
+int ib_find_pkey(struct ib_device *device,
+			u8 port_num, u16 pkey, u16 *index);
 
 /**
  * ib_alloc_pd - Allocates an unused protection domain.
@@ -1376,8 +1469,229 @@ static inline int ib_req_ncomp_notif(struct ib_cq *cq, int wc_cnt)
  *   usable for DMA.
  * @pd: The protection domain associated with the memory region.
  * @mr_access_flags: Specifies the memory access rights.
+ *
+ * Note that the ib_dma_*() functions defined below must be used
+ * to create/destroy addresses used with the Lkey or Rkey returned
+ * by ib_get_dma_mr().
  */
 struct ib_mr *ib_get_dma_mr(struct ib_pd *pd, int mr_access_flags);
+
+/**
+ * ib_dma_mapping_error - check a DMA addr for error
+ * @dev: The device for which the dma_addr was created
+ * @dma_addr: The DMA address to check
+ */
+static inline int ib_dma_mapping_error(struct ib_device *dev, u64 dma_addr)
+{
+	if (dev->dma_ops)
+		return dev->dma_ops->mapping_error(dev, dma_addr);
+	return dma_mapping_error(dma_addr);
+}
+
+/**
+ * ib_dma_map_single - Map a kernel virtual address to DMA address
+ * @dev: The device for which the dma_addr is to be created
+ * @cpu_addr: The kernel virtual address
+ * @size: The size of the region in bytes
+ * @direction: The direction of the DMA
+ */
+static inline u64 ib_dma_map_single(struct ib_device *dev,
+				    void *cpu_addr, size_t size,
+				    enum dma_data_direction direction)
+{
+	if (dev->dma_ops)
+		return dev->dma_ops->map_single(dev, cpu_addr, size, direction);
+	return dma_map_single(dev->dma_device, cpu_addr, size, direction);
+}
+
+/**
+ * ib_dma_unmap_single - Destroy a mapping created by ib_dma_map_single()
+ * @dev: The device for which the DMA address was created
+ * @addr: The DMA address
+ * @size: The size of the region in bytes
+ * @direction: The direction of the DMA
+ */
+static inline void ib_dma_unmap_single(struct ib_device *dev,
+				       u64 addr, size_t size,
+				       enum dma_data_direction direction)
+{
+	if (dev->dma_ops)
+		dev->dma_ops->unmap_single(dev, addr, size, direction);
+	else
+		dma_unmap_single(dev->dma_device, addr, size, direction);
+}
+
+/**
+ * ib_dma_map_page - Map a physical page to DMA address
+ * @dev: The device for which the dma_addr is to be created
+ * @page: The page to be mapped
+ * @offset: The offset within the page
+ * @size: The size of the region in bytes
+ * @direction: The direction of the DMA
+ */
+static inline u64 ib_dma_map_page(struct ib_device *dev,
+				  struct page *page,
+				  unsigned long offset,
+				  size_t size,
+					 enum dma_data_direction direction)
+{
+	if (dev->dma_ops)
+		return dev->dma_ops->map_page(dev, page, offset, size, direction);
+	return dma_map_page(dev->dma_device, page, offset, size, direction);
+}
+
+/**
+ * ib_dma_unmap_page - Destroy a mapping created by ib_dma_map_page()
+ * @dev: The device for which the DMA address was created
+ * @addr: The DMA address
+ * @size: The size of the region in bytes
+ * @direction: The direction of the DMA
+ */
+static inline void ib_dma_unmap_page(struct ib_device *dev,
+				     u64 addr, size_t size,
+				     enum dma_data_direction direction)
+{
+	if (dev->dma_ops)
+		dev->dma_ops->unmap_page(dev, addr, size, direction);
+	else
+		dma_unmap_page(dev->dma_device, addr, size, direction);
+}
+
+/**
+ * ib_dma_map_sg - Map a scatter/gather list to DMA addresses
+ * @dev: The device for which the DMA addresses are to be created
+ * @sg: The array of scatter/gather entries
+ * @nents: The number of scatter/gather entries
+ * @direction: The direction of the DMA
+ */
+static inline int ib_dma_map_sg(struct ib_device *dev,
+				struct scatterlist *sg, int nents,
+				enum dma_data_direction direction)
+{
+	if (dev->dma_ops)
+		return dev->dma_ops->map_sg(dev, sg, nents, direction);
+	return dma_map_sg(dev->dma_device, sg, nents, direction);
+}
+
+/**
+ * ib_dma_unmap_sg - Unmap a scatter/gather list of DMA addresses
+ * @dev: The device for which the DMA addresses were created
+ * @sg: The array of scatter/gather entries
+ * @nents: The number of scatter/gather entries
+ * @direction: The direction of the DMA
+ */
+static inline void ib_dma_unmap_sg(struct ib_device *dev,
+				   struct scatterlist *sg, int nents,
+				   enum dma_data_direction direction)
+{
+	if (dev->dma_ops)
+		dev->dma_ops->unmap_sg(dev, sg, nents, direction);
+	else
+		dma_unmap_sg(dev->dma_device, sg, nents, direction);
+}
+
+/**
+ * ib_sg_dma_address - Return the DMA address from a scatter/gather entry
+ * @dev: The device for which the DMA addresses were created
+ * @sg: The scatter/gather entry
+ */
+static inline u64 ib_sg_dma_address(struct ib_device *dev,
+				    struct scatterlist *sg)
+{
+	if (dev->dma_ops)
+		return dev->dma_ops->dma_address(dev, sg);
+	return sg_dma_address(sg);
+}
+
+/**
+ * ib_sg_dma_len - Return the DMA length from a scatter/gather entry
+ * @dev: The device for which the DMA addresses were created
+ * @sg: The scatter/gather entry
+ */
+static inline unsigned int ib_sg_dma_len(struct ib_device *dev,
+					 struct scatterlist *sg)
+{
+	if (dev->dma_ops)
+		return dev->dma_ops->dma_len(dev, sg);
+	return sg_dma_len(sg);
+}
+
+/**
+ * ib_dma_sync_single_for_cpu - Prepare DMA region to be accessed by CPU
+ * @dev: The device for which the DMA address was created
+ * @addr: The DMA address
+ * @size: The size of the region in bytes
+ * @dir: The direction of the DMA
+ */
+static inline void ib_dma_sync_single_for_cpu(struct ib_device *dev,
+					      u64 addr,
+					      size_t size,
+					      enum dma_data_direction dir)
+{
+	if (dev->dma_ops)
+		dev->dma_ops->sync_single_for_cpu(dev, addr, size, dir);
+	else
+		dma_sync_single_for_cpu(dev->dma_device, addr, size, dir);
+}
+
+/**
+ * ib_dma_sync_single_for_device - Prepare DMA region to be accessed by device
+ * @dev: The device for which the DMA address was created
+ * @addr: The DMA address
+ * @size: The size of the region in bytes
+ * @dir: The direction of the DMA
+ */
+static inline void ib_dma_sync_single_for_device(struct ib_device *dev,
+						 u64 addr,
+						 size_t size,
+						 enum dma_data_direction dir)
+{
+	if (dev->dma_ops)
+		dev->dma_ops->sync_single_for_device(dev, addr, size, dir);
+	else
+		dma_sync_single_for_device(dev->dma_device, addr, size, dir);
+}
+
+/**
+ * ib_dma_alloc_coherent - Allocate memory and map it for DMA
+ * @dev: The device for which the DMA address is requested
+ * @size: The size of the region to allocate in bytes
+ * @dma_handle: A pointer for returning the DMA address of the region
+ * @flag: memory allocator flags
+ */
+static inline void *ib_dma_alloc_coherent(struct ib_device *dev,
+					   size_t size,
+					   u64 *dma_handle,
+					   gfp_t flag)
+{
+	if (dev->dma_ops)
+		return dev->dma_ops->alloc_coherent(dev, size, dma_handle, flag);
+	else {
+		dma_addr_t handle;
+		void *ret;
+
+		ret = dma_alloc_coherent(dev->dma_device, size, &handle, flag);
+		*dma_handle = handle;
+		return ret;
+	}
+}
+
+/**
+ * ib_dma_free_coherent - Free memory allocated by ib_dma_alloc_coherent()
+ * @dev: The device for which the DMA addresses were allocated
+ * @size: The size of the region
+ * @cpu_addr: the address returned by ib_dma_alloc_coherent()
+ * @dma_handle: the DMA address returned by ib_dma_alloc_coherent()
+ */
+static inline void ib_dma_free_coherent(struct ib_device *dev,
+					size_t size, void *cpu_addr,
+					u64 dma_handle)
+{
+	if (dev->dma_ops)
+		dev->dma_ops->free_coherent(dev, size, cpu_addr, dma_handle);
+	else
+		dma_free_coherent(dev->dma_device, size, cpu_addr, dma_handle);
+}
 
 /**
  * ib_reg_phys_mr - Prepares a virtually addressed memory region for use

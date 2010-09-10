@@ -128,6 +128,7 @@ struct snd_vx_hardware {
 	unsigned int num_ins;
 	unsigned int num_outs;
 	unsigned int output_level_max;
+	const unsigned int *output_level_db_scale;
 };
 
 /* hwdep id string */

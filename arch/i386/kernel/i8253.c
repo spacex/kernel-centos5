@@ -26,6 +26,7 @@ void setup_pit_timer(void)
 	spin_lock_irqsave(&i8253_lock, flags);
 	outb_p(0x34,PIT_MODE);		/* binary, mode 2, LSB/MSB, ch 0 */
 	udelay(10);
+	/* Physical HZ */
 	outb_p(LATCH & 0xff , PIT_CH0);	/* LSB */
 	udelay(10);
 	outb(LATCH >> 8 , PIT_CH0);	/* MSB */
@@ -94,8 +95,11 @@ static cycle_t pit_read(void)
 	spin_unlock_irqrestore(&i8253_lock, flags);
 
 	count = (LATCH - 1) - count;
-
-	return (cycle_t)(jifs * LATCH) + count;
+	/* Adjust to logical ticks */	
+	count *= tick_divider;
+	
+	/* Keep the jiffies in terms of logical ticks not physical */
+	return (cycle_t)(jifs * LOGICAL_LATCH) + count;
 }
 
 static struct clocksource clocksource_pit = {

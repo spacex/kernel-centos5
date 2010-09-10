@@ -69,6 +69,37 @@ int gen_pool_add(struct gen_pool *pool, unsigned long addr, size_t size,
 }
 EXPORT_SYMBOL(gen_pool_add);
 
+/**
+ * gen_pool_destroy - destroy a special memory pool
+ * @pool: pool to destroy
+ *
+ * Destroy the specified special memory pool. Verifies that there are no
+ * outstanding allocations.
+ */
+void gen_pool_destroy(struct gen_pool *pool)
+{
+	struct list_head *_chunk, *_next_chunk;
+	struct gen_pool_chunk *chunk;
+	int order = pool->min_alloc_order;
+	int bit, end_bit;
+
+
+	write_lock(&pool->lock);
+	list_for_each_safe(_chunk, _next_chunk, &pool->chunks) {
+		chunk = list_entry(_chunk, struct gen_pool_chunk, next_chunk);
+		list_del(&chunk->next_chunk);
+
+		end_bit = (chunk->end_addr - chunk->start_addr) >> order;
+		bit = find_next_bit(chunk->bits, end_bit, 0);
+		BUG_ON(bit < end_bit);
+
+		kfree(chunk);
+	}
+	kfree(pool);
+	return;
+}
+EXPORT_SYMBOL(gen_pool_destroy);
+
 
 /*
  * Allocate the requested number of bytes from the specified pool.

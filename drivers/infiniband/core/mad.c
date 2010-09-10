@@ -46,7 +46,7 @@ MODULE_DESCRIPTION("kernel IB MAD API");
 MODULE_AUTHOR("Hal Rosenstock");
 MODULE_AUTHOR("Sean Hefty");
 
-static kmem_cache_t *ib_mad_cache;
+static struct kmem_cache *ib_mad_cache;
 
 static struct list_head ib_mad_port_list;
 static u32 ib_mad_client_id = 0;
@@ -643,7 +643,8 @@ static void snoop_recv(struct ib_mad_qp_info *qp_info,
 	spin_unlock_irqrestore(&qp_info->snoop_lock, flags);
 }
 
-static void build_smp_wc(u64 wr_id, u16 slid, u16 pkey_index, u8 port_num,
+static void build_smp_wc(struct ib_qp *qp,
+			 u64 wr_id, u16 slid, u16 pkey_index, u8 port_num,
 			 struct ib_wc *wc)
 {
 	memset(wc, 0, sizeof *wc);
@@ -653,7 +654,7 @@ static void build_smp_wc(u64 wr_id, u16 slid, u16 pkey_index, u8 port_num,
 	wc->pkey_index = pkey_index;
 	wc->byte_len = sizeof(struct ib_mad) + sizeof(struct ib_grh);
 	wc->src_qp = IB_QP0;
-	wc->qp_num = IB_QP0;
+	wc->qp = qp;
 	wc->slid = slid;
 	wc->sl = 0;
 	wc->dlid_path_bits = 0;
@@ -714,7 +715,8 @@ static int handle_outgoing_dr_smp(struct ib_mad_agent_private *mad_agent_priv,
 		goto out;
 	}
 
-	build_smp_wc(send_wr->wr_id, be16_to_cpu(smp->dr_slid),
+	build_smp_wc(mad_agent_priv->agent.qp,
+		     send_wr->wr_id, be16_to_cpu(smp->dr_slid),
 		     send_wr->wr.ud.pkey_index,
 		     send_wr->wr.ud.port_num, &mad_wc);
 
@@ -999,17 +1001,17 @@ int ib_send_mad(struct ib_mad_send_wr_private *mad_send_wr)
 
 	mad_agent = mad_send_wr->send_buf.mad_agent;
 	sge = mad_send_wr->sg_list;
-	sge[0].addr = dma_map_single(mad_agent->device->dma_device,
-				     mad_send_wr->send_buf.mad,
-				     sge[0].length,
-				     DMA_TO_DEVICE);
-	pci_unmap_addr_set(mad_send_wr, header_mapping, sge[0].addr);
+	sge[0].addr = ib_dma_map_single(mad_agent->device,
+					mad_send_wr->send_buf.mad,
+					sge[0].length,
+					DMA_TO_DEVICE);
+	mad_send_wr->header_mapping = sge[0].addr;
 
-	sge[1].addr = dma_map_single(mad_agent->device->dma_device,
-				     ib_get_payload(mad_send_wr),
-				     sge[1].length,
-				     DMA_TO_DEVICE);
-	pci_unmap_addr_set(mad_send_wr, payload_mapping, sge[1].addr);
+	sge[1].addr = ib_dma_map_single(mad_agent->device,
+					ib_get_payload(mad_send_wr),
+					sge[1].length,
+					DMA_TO_DEVICE);
+	mad_send_wr->payload_mapping = sge[1].addr;
 
 	spin_lock_irqsave(&qp_info->send_queue.lock, flags);
 	if (qp_info->send_queue.count < qp_info->send_queue.max_active) {
@@ -1027,12 +1029,12 @@ int ib_send_mad(struct ib_mad_send_wr_private *mad_send_wr)
 	}
 	spin_unlock_irqrestore(&qp_info->send_queue.lock, flags);
 	if (ret) {
-		dma_unmap_single(mad_agent->device->dma_device,
-				 pci_unmap_addr(mad_send_wr, header_mapping),
-				 sge[0].length, DMA_TO_DEVICE);
-		dma_unmap_single(mad_agent->device->dma_device,
-				 pci_unmap_addr(mad_send_wr, payload_mapping),
-				 sge[1].length, DMA_TO_DEVICE);
+		ib_dma_unmap_single(mad_agent->device,
+				    mad_send_wr->header_mapping,
+				    sge[0].length, DMA_TO_DEVICE);
+		ib_dma_unmap_single(mad_agent->device,
+				    mad_send_wr->payload_mapping,
+				    sge[1].length, DMA_TO_DEVICE);
 	}
 	return ret;
 }
@@ -1246,8 +1248,8 @@ static int find_vendor_oui(struct ib_mad_mgmt_vendor_class *vendor_class,
 	int i;
 
 	for (i = 0; i < MAX_MGMT_OUI; i++)
-                /* Is there matching OUI for this vendor class ? */
-                if (!memcmp(vendor_class->oui[i], oui, 3))
+		/* Is there matching OUI for this vendor class ? */
+		if (!memcmp(vendor_class->oui[i], oui, 3))
 			return i;
 
 	return -1;
@@ -1750,7 +1752,7 @@ ib_find_send_mad(struct ib_mad_agent_private *mad_agent_priv,
 		     */
 		    (is_direct(wc->recv_buf.mad->mad_hdr.mgmt_class) ||
 		     rcv_has_same_gid(mad_agent_priv, wr, wc)))
-			return wr;
+			return (wr->status == IB_WC_SUCCESS) ? wr : NULL;
 	}
 
 	/*
@@ -1851,11 +1853,11 @@ static void ib_mad_recv_done_handler(struct ib_mad_port_private *port_priv,
 	mad_priv_hdr = container_of(mad_list, struct ib_mad_private_header,
 				    mad_list);
 	recv = container_of(mad_priv_hdr, struct ib_mad_private, header);
-	dma_unmap_single(port_priv->device->dma_device,
-			 pci_unmap_addr(&recv->header, mapping),
-			 sizeof(struct ib_mad_private) -
-			 sizeof(struct ib_mad_private_header),
-			 DMA_FROM_DEVICE);
+	ib_dma_unmap_single(port_priv->device,
+			    recv->header.mapping,
+			    sizeof(struct ib_mad_private) -
+			      sizeof(struct ib_mad_private_header),
+			    DMA_FROM_DEVICE);
 
 	/* Setup MAD receive work completion from "normal" work completion */
 	recv->header.wc = *wc;
@@ -2081,12 +2083,12 @@ static void ib_mad_send_done_handler(struct ib_mad_port_private *port_priv,
 	qp_info = send_queue->qp_info;
 
 retry:
-	dma_unmap_single(mad_send_wr->send_buf.mad_agent->device->dma_device,
-			 pci_unmap_addr(mad_send_wr, header_mapping),
-			 mad_send_wr->sg_list[0].length, DMA_TO_DEVICE);
-	dma_unmap_single(mad_send_wr->send_buf.mad_agent->device->dma_device,
-			 pci_unmap_addr(mad_send_wr, payload_mapping),
-			 mad_send_wr->sg_list[1].length, DMA_TO_DEVICE);
+	ib_dma_unmap_single(mad_send_wr->send_buf.mad_agent->device,
+			    mad_send_wr->header_mapping,
+			    mad_send_wr->sg_list[0].length, DMA_TO_DEVICE);
+	ib_dma_unmap_single(mad_send_wr->send_buf.mad_agent->device,
+			    mad_send_wr->payload_mapping,
+			    mad_send_wr->sg_list[1].length, DMA_TO_DEVICE);
 	queued_send_wr = NULL;
 	spin_lock_irqsave(&send_queue->lock, flags);
 	list_del(&mad_list->list);
@@ -2237,7 +2239,7 @@ static void cancel_mads(struct ib_mad_agent_private *mad_agent_priv)
 	list_for_each_entry_safe(mad_send_wr, temp_mad_send_wr,
 				 &mad_agent_priv->send_list, agent_list) {
 		if (mad_send_wr->status == IB_WC_SUCCESS) {
- 			mad_send_wr->status = IB_WC_WR_FLUSH_ERR;
+			mad_send_wr->status = IB_WC_WR_FLUSH_ERR;
 			mad_send_wr->refcount -= (mad_send_wr->timeout > 0);
 		}
 	}
@@ -2355,7 +2357,8 @@ static void local_completions(void *data)
 			 * Defined behavior is to complete response
 			 * before request
 			 */
-			build_smp_wc((unsigned long) local->mad_send_wr,
+			build_smp_wc(recv_mad_agent->agent.qp,
+				     (unsigned long) local->mad_send_wr,
 				     be16_to_cpu(IB_LID_PERMISSIVE),
 				     0, recv_mad_agent->agent.port_num, &wc);
 
@@ -2527,13 +2530,12 @@ static int ib_mad_post_receive_mads(struct ib_mad_qp_info *qp_info,
 				break;
 			}
 		}
-		sg_list.addr = dma_map_single(qp_info->port_priv->
-					      	device->dma_device,
-					      &mad_priv->grh,
-					      sizeof *mad_priv -
-					      	sizeof mad_priv->header,
-					      DMA_FROM_DEVICE);
-		pci_unmap_addr_set(&mad_priv->header, mapping, sg_list.addr);
+		sg_list.addr = ib_dma_map_single(qp_info->port_priv->device,
+						 &mad_priv->grh,
+						 sizeof *mad_priv -
+						   sizeof mad_priv->header,
+						 DMA_FROM_DEVICE);
+		mad_priv->header.mapping = sg_list.addr;
 		recv_wr.wr_id = (unsigned long)&mad_priv->header.mad_list;
 		mad_priv->header.mad_list.mad_queue = recv_queue;
 
@@ -2548,12 +2550,11 @@ static int ib_mad_post_receive_mads(struct ib_mad_qp_info *qp_info,
 			list_del(&mad_priv->header.mad_list.list);
 			recv_queue->count--;
 			spin_unlock_irqrestore(&recv_queue->lock, flags);
-			dma_unmap_single(qp_info->port_priv->device->dma_device,
-					 pci_unmap_addr(&mad_priv->header,
-							mapping),
-					 sizeof *mad_priv -
-					   sizeof mad_priv->header,
-					 DMA_FROM_DEVICE);
+			ib_dma_unmap_single(qp_info->port_priv->device,
+					    mad_priv->header.mapping,
+					    sizeof *mad_priv -
+					      sizeof mad_priv->header,
+					    DMA_FROM_DEVICE);
 			kmem_cache_free(ib_mad_cache, mad_priv);
 			printk(KERN_ERR PFX "ib_post_recv failed: %d\n", ret);
 			break;
@@ -2585,11 +2586,11 @@ static void cleanup_recv_queue(struct ib_mad_qp_info *qp_info)
 		/* Remove from posted receive MAD list */
 		list_del(&mad_list->list);
 
-		dma_unmap_single(qp_info->port_priv->device->dma_device,
-				 pci_unmap_addr(&recv->header, mapping),
-				 sizeof(struct ib_mad_private) -
-				 sizeof(struct ib_mad_private_header),
-				 DMA_FROM_DEVICE);
+		ib_dma_unmap_single(qp_info->port_priv->device,
+				    recv->header.mapping,
+				    sizeof(struct ib_mad_private) -
+				      sizeof(struct ib_mad_private_header),
+				    DMA_FROM_DEVICE);
 		kmem_cache_free(ib_mad_cache, recv);
 	}
 
@@ -2606,7 +2607,7 @@ static int ib_mad_port_start(struct ib_mad_port_private *port_priv)
 	struct ib_qp *qp;
 
 	attr = kmalloc(sizeof *attr, GFP_KERNEL);
- 	if (!attr) {
+	if (!attr) {
 		printk(KERN_ERR PFX "Couldn't kmalloc ib_qp_attr\n");
 		return -ENOMEM;
 	}
@@ -2876,7 +2877,10 @@ static void ib_mad_init_device(struct ib_device *device)
 {
 	int start, end, i;
 
-	if (device->node_type == IB_NODE_SWITCH) {
+	if (rdma_node_get_transport(device->node_type) != RDMA_TRANSPORT_IB)
+		return;
+
+	if (device->node_type == RDMA_NODE_IB_SWITCH) {
 		start = 0;
 		end   = 0;
 	} else {
@@ -2923,7 +2927,7 @@ static void ib_mad_remove_device(struct ib_device *device)
 {
 	int i, num_ports, cur_port;
 
-	if (device->node_type == IB_NODE_SWITCH) {
+	if (device->node_type == RDMA_NODE_IB_SWITCH) {
 		num_ports = 1;
 		cur_port = 0;
 	} else {
@@ -2984,10 +2988,7 @@ error1:
 static void __exit ib_mad_cleanup_module(void)
 {
 	ib_unregister_client(&mad_client);
-
-	if (kmem_cache_destroy(ib_mad_cache)) {
-		printk(KERN_DEBUG PFX "Failed to destroy ib_mad cache\n");
-	}
+	kmem_cache_destroy(ib_mad_cache);
 }
 
 module_init(ib_mad_init_module);

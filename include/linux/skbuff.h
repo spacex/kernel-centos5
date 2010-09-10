@@ -36,6 +36,8 @@
 #define CHECKSUM_NONE 0
 #define CHECKSUM_HW 1
 #define CHECKSUM_UNNECESSARY 2
+#define CHECKSUM_PARTIAL CHECKSUM_HW
+#define CHECKSUM_COMPLETE CHECKSUM_HW
 
 #define SKB_DATA_ALIGN(X)	(((X) + (SMP_CACHE_BYTES - 1)) & \
 				 ~(SMP_CACHE_BYTES - 1))
@@ -1374,6 +1376,35 @@ static inline void *skb_header_pointer(const struct sk_buff *skb, int offset,
 		return NULL;
 
 	return buffer;
+}
+
+static inline void skb_copy_from_linear_data(const struct sk_buff *skb,
+					     void *to,
+					     const unsigned int len)
+{
+	memcpy(to, skb->data, len);
+}
+
+static inline void skb_copy_from_linear_data_offset(const struct sk_buff *skb,
+						    const int offset, void *to,
+						    const unsigned int len)
+{
+	memcpy(to, skb->data + offset, len);
+}
+
+static inline void skb_copy_to_linear_data(struct sk_buff *skb,
+					   const void *from,
+					   const unsigned int len)
+{
+	memcpy(skb->data, from, len);
+}
+
+static inline void skb_copy_to_linear_data_offset(struct sk_buff *skb,
+						  const int offset,
+						  const void *from,
+						  const unsigned int len)
+{
+	memcpy(skb->data + offset, from, len);
 }
 
 extern void skb_init(void);

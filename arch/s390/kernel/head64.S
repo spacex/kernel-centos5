@@ -41,6 +41,7 @@ startup_continue:
         srl   %r13,1
 	GET_IPL_DEVICE
         lhi   %r1,1                      # mode 1 = esame
+	mvi   __LC_AR_MODE_ID,1		 # set esame flag
         slr   %r0,%r0                    # set cpuid to zero
         sigp  %r1,%r0,0x12               # switch to esame mode
 	sam64				 # switch to 64 bit mode
@@ -239,6 +240,17 @@ startup_continue:
 	oi	7(%r12),0x80		# set IDTE flag
 0:
 
+#
+# find out if the diag 0x9c is available
+#
+	la     %r1,0f-.LPG1(%r13)	# set program check address
+	stg    %r1,__LC_PGM_NEW_PSW+8
+	stap   __LC_CPUID+4		# store cpu address
+	lh     %r1,__LC_CPUID+4
+	diag   %r1,0,0x9c		# test diag 0x9c
+	oi     6(%r12),1		# set diag9c flag
+0:
+
         lpswe .Lentry-.LPG1(13)         # jump to _stext in primary-space,
                                         # virtual and never return ...
         .align 16
@@ -269,6 +281,8 @@ startup_continue:
 	.quad	PARMAREA
 
 	.org	0x12000
+.globl s390_readinfo_sccb
+s390_readinfo_sccb:
 .Lsccb:
 	.hword 0x1000			# length, one page
 	.byte 0x00,0x00,0x00

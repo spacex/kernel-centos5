@@ -39,8 +39,7 @@
 #include <asm/pgalloc.h>
 #include <xen/evtchn.h>
 #include <asm/hypervisor.h>
-#include <xen/interface/io/blkif.h>
-#include <xen/interface/io/ring.h>
+#include <xen/blkif.h>
 #include <xen/gnttab.h>
 #include <xen/driver_util.h>
 
@@ -66,7 +65,8 @@ typedef struct blkif_st {
 	unsigned int      evtchn;
 	unsigned int      irq;
 	/* Comms information. */
-	blkif_back_ring_t blk_ring;
+	enum blkif_protocol blk_protocol;
+	blkif_back_rings_t blk_rings;
 	struct vm_struct *blk_ring_area;
 	/* The VBD attached to this interface. */
 	struct vbd        vbd;

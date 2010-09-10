@@ -126,6 +126,32 @@ struct svc_program		nfsd_program = {
 
 };
 
+int nfsd_vers(int vers, enum vers_op change)
+{
+	if (vers < NFSD_MINVERS || vers >= NFSD_NRVERS)
+		return -1;
+	switch(change) {
+	case NFSD_SET:
+		nfsd_versions[vers] = nfsd_version[vers];
+		break;
+#if defined(CONFIG_NFSD_V2_ACL) || defined(CONFIG_NFSD_V3_ACL)
+		if (vers < NFSD_ACL_NRVERS)
+			nfsd_acl_version[vers] = nfsd_acl_version[vers];
+#endif
+	case NFSD_CLEAR:
+		nfsd_versions[vers] = NULL;
+#if defined(CONFIG_NFSD_V2_ACL) || defined(CONFIG_NFSD_V3_ACL)
+		if (vers < NFSD_ACL_NRVERS)
+			nfsd_acl_version[vers] = NULL;
+#endif
+		break;
+	case NFSD_TEST:
+		return nfsd_versions[vers] != NULL;
+	case NFSD_AVAIL:
+		return nfsd_version[vers] != NULL;
+	}
+	return 0;
+}
 /*
  * Maximum number of nfsd processes
  */
@@ -139,16 +165,98 @@ int nfsd_nrthreads(void)
 		return nfsd_serv->sv_nrthreads;
 }
 
+static int killsig;	/* signal that was used to kill last nfsd */
+static void nfsd_last_thread(struct svc_serv *serv)
+{
+	/* When last nfsd thread exits we need to do some clean-up */
+	struct svc_sock *svsk;
+	list_for_each_entry(svsk, &serv->sv_permsocks, sk_list)
+		lockd_down();
+	nfsd_serv = NULL;
+	nfsd_racache_shutdown();
+	nfs4_state_shutdown();
+
+	printk(KERN_WARNING "nfsd: last server has exited\n");
+	if (killsig != SIG_NOCLEAN) {
+		printk(KERN_WARNING "nfsd: unexporting all filesystems\n");
+		nfsd_export_flush();
+	}
+}
+void nfsd_reset_versions(void)
+{
+	int found_one = 0;
+	int i;
+
+	for (i = NFSD_MINVERS; i < NFSD_NRVERS; i++) {
+		if (nfsd_program.pg_vers[i])
+			found_one = 1;
+	}
+
+	if (!found_one) {
+		for (i = NFSD_MINVERS; i < NFSD_NRVERS; i++)
+			nfsd_program.pg_vers[i] = nfsd_version[i];
+#if defined(CONFIG_NFSD_V2_ACL) || defined(CONFIG_NFSD_V3_ACL)
+		for (i = NFSD_ACL_MINVERS; i < NFSD_ACL_NRVERS; i++)
+			nfsd_acl_program.pg_vers[i] =
+				nfsd_acl_version[i];
+#endif
+	}
+}
+
+int nfsd_create_serv(void)
+{
+	int err = 0;
+	lock_kernel();
+	if (nfsd_serv) {
+		nfsd_serv->sv_nrthreads++;
+		unlock_kernel();
+		return 0;
+	}
+
+	atomic_set(&nfsd_busy, 0);
+	nfsd_serv = svc_create(&nfsd_program, NFSD_BUFSIZE);
+	if (nfsd_serv == NULL)
+		err = -ENOMEM;
+	svc_shutdown(nfsd_serv, nfsd_last_thread);
+	unlock_kernel();
+	do_gettimeofday(&nfssvc_boot);		/* record boot time */
+	return err;
+}
+
+static int nfsd_init_socks(int port)
+{
+	int error;
+	if (!list_empty(&nfsd_serv->sv_permsocks))
+		return 0;
+
+	error = svc_makesock(nfsd_serv, IPPROTO_UDP, port);
+	if (error < 0)
+		return error;
+	error = lockd_up_proto(IPPROTO_UDP);
+	if (error < 0)
+		return error;
+
+#ifdef CONFIG_NFSD_TCP
+	error = svc_makesock(nfsd_serv, IPPROTO_TCP, port);
+	if (error < 0)
+		return error;
+	error = lockd_up_proto(IPPROTO_TCP);
+	if (error < 0)
+		return error;
+#endif
+	return 0;
+}
+
 int
 nfsd_svc(unsigned short port, int nrservs)
 {
 	int	error;
-	int	none_left, found_one, i;
 	struct list_head *victim;
 	
 	lock_kernel();
-	dprintk("nfsd: creating service: port %d vers 0x%x proto 0x%x\n",
-		nfsd_port, nfsd_versbits, nfsd_portbits);
+	dprintk("nfsd: creating service: port %d tcp %d udp %d\n",
+		nfsd_port, NFSCTL_TCPISSET(nfsd_portbits), 
+		NFSCTL_UDPISSET(nfsd_portbits));
 	error = -EINVAL;
 	if (nrservs <= 0)
 		nrservs = 0;
@@ -162,69 +270,17 @@ nfsd_svc(unsigned short port, int nrservs)
 	error = nfs4_state_start();
 	if (error<0)
 		goto out;
-	if (!nfsd_serv) {
-		/*
-		 * Use the nfsd_ctlbits to define which
-		 * versions that will be advertised.
-		 * If nfsd_ctlbits doesn't list any version,
-		 * export them all.
-		 */
-		found_one = 0;
 
-		for (i = NFSD_MINVERS; i < NFSD_NRVERS; i++) {
-			if (NFSCTL_VERISSET(nfsd_versbits, i)) {
-				nfsd_program.pg_vers[i] = nfsd_version[i];
-				found_one = 1;
-			} else
-				nfsd_program.pg_vers[i] = NULL;
-		}
+	nfsd_reset_versions();
 
-		if (!found_one) {
-			for (i = NFSD_MINVERS; i < NFSD_NRVERS; i++)
-				nfsd_program.pg_vers[i] = nfsd_version[i];
-		}
+	error = nfsd_create_serv();
 
+	if (error)
+		goto out;
+	error = nfsd_init_socks(port);
+	if (error)
+		goto failure;
 
-#if defined(CONFIG_NFSD_V2_ACL) || defined(CONFIG_NFSD_V3_ACL)
-		found_one = 0;
-
-		for (i = NFSD_ACL_MINVERS; i < NFSD_ACL_NRVERS; i++) {
-			if (NFSCTL_VERISSET(nfsd_versbits, i)) {
-				nfsd_acl_program.pg_vers[i] =
-					nfsd_acl_version[i];
-				found_one = 1;
-			} else
-				nfsd_acl_program.pg_vers[i] = NULL;
-		}
-
-		if (!found_one) {
-			for (i = NFSD_ACL_MINVERS; i < NFSD_ACL_NRVERS; i++)
-				nfsd_acl_program.pg_vers[i] =
-					nfsd_acl_version[i];
-		}
-#endif
-
-		atomic_set(&nfsd_busy, 0);
-		error = -ENOMEM;
-		nfsd_serv = svc_create(&nfsd_program, NFSD_BUFSIZE);
-		if (nfsd_serv == NULL)
-			goto out;
-		if (NFSCTL_UDPISSET(nfsd_portbits))
-			port = nfsd_port;
-		error = svc_makesock(nfsd_serv, IPPROTO_UDP, port);
-		if (error < 0)
-			goto failure;
-
-#ifdef CONFIG_NFSD_TCP
-		if (NFSCTL_TCPISSET(nfsd_portbits))
-			port = nfsd_port;
-		error = svc_makesock(nfsd_serv, IPPROTO_TCP, port);
-		if (error < 0)
-			goto failure;
-#endif
-		do_gettimeofday(&nfssvc_boot);		/* record boot time */
-	} else
-		nfsd_serv->sv_nrthreads++;
 	nrservs -= (nfsd_serv->sv_nrthreads-1);
 	while (nrservs > 0) {
 		nrservs--;
@@ -244,13 +300,7 @@ nfsd_svc(unsigned short port, int nrservs)
 		nrservs++;
 	}
  failure:
-	none_left = (nfsd_serv->sv_nrthreads == 1);
 	svc_destroy(nfsd_serv);		/* Release server */
-	if (none_left) {
-		nfsd_serv = NULL;
-		nfsd_racache_shutdown();
-		nfs4_state_shutdown();
-	}
  out:
 	unlock_kernel();
 	return error;
@@ -310,8 +360,6 @@ nfsd(struct svc_rqst *rqstp)
 
 	nfsdstats.th_cnt++;
 
-	lockd_up();				/* start lockd */
-
 	me.task = current;
 	list_add(&me.list, &nfsd_list);
 
@@ -366,28 +414,13 @@ nfsd(struct svc_rqst *rqstp)
 			if (sigismember(&current->pending.signal, signo) &&
 			    !sigismember(&current->blocked, signo))
 				break;
-		err = signo;
+		killsig = signo;
 	}
-	/* Clear signals before calling lockd_down() and svc_exit_thread() */
+	/* Clear signals before calling svc_exit_thread() */
 	flush_signals(current);
 
 	lock_kernel();
 
-	/* Release lockd */
-	lockd_down();
-
-	/* Check if this is last thread */
-	if (serv->sv_nrthreads==1) {
-		
-		printk(KERN_WARNING "nfsd: last server has exited\n");
-		if (err != SIG_NOCLEAN) {
-			printk(KERN_WARNING "nfsd: unexporting all filesystems\n");
-			nfsd_export_flush();
-		}
-		nfsd_serv = NULL;
-	        nfsd_racache_shutdown();	/* release read-ahead cache */
-		nfs4_state_shutdown();
-	}
 	list_del(&me.list);
 	nfsdstats.th_cnt --;
 

@@ -35,7 +35,7 @@
 
 /* Have we found an MP table */
 int smp_found_config;
-unsigned int __initdata maxcpus = NR_CPUS;
+unsigned int __cpuinitdata maxcpus = NR_CPUS;
 
 /*
  * Various Linux-internal data structures created from the
@@ -101,7 +101,7 @@ static int __init mpf_checksum(unsigned char *mp, int len)
  */
 
 static int mpc_record; 
-static struct mpc_config_translation *translation_table[MAX_MPC_ENTRY] __initdata;
+static struct mpc_config_translation *translation_table[MAX_MPC_ENTRY] __cpuinitdata;
 
 #ifndef CONFIG_XEN
 static void __devinit MP_processor_info (struct mpc_config_processor *m)

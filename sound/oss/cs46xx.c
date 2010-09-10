@@ -91,12 +91,13 @@
 #include <linux/poll.h>
 #include <linux/ac97_codec.h>
 #include <linux/mutex.h>
+#include <linux/mm.h>
 
 #include <asm/io.h>
 #include <asm/dma.h>
 #include <asm/uaccess.h>
 
-#include "cs46xxpm-24.h"
+#include "cs46xxpm.h"
 #include "cs46xx_wrapper-24.h"
 #include "cs461x.h"
 
@@ -389,8 +390,10 @@ static int cs_hardware_init(struct cs_card *card);
 static int cs46xx_powerup(struct cs_card *card, unsigned int type);
 static int cs461x_powerdown(struct cs_card *card, unsigned int type, int suspendflag);
 static void cs461x_clear_serial_FIFOs(struct cs_card *card, int type);
+#ifdef CONFIG_PM
 static int cs46xx_suspend_tbl(struct pci_dev *pcidev, pm_message_t state);
 static int cs46xx_resume_tbl(struct pci_dev *pcidev);
+#endif
 
 #if CSDEBUG
 
@@ -777,7 +780,7 @@ static unsigned int cs_set_adc_rate(struct cs_state *state, unsigned int rate)
 		rate = 48000 / 9;
 
 	/*
-	 *  We can not capture at at rate greater than the Input Rate (48000).
+	 *  We cannot capture at at rate greater than the Input Rate (48000).
 	 *  Return an error if an attempt is made to stray outside that limit.
 	 */
 	if (rate > 48000)
@@ -1611,7 +1614,7 @@ static void cs_handle_midi(struct cs_card *card)
                 wake_up(&card->midi.owait);
 }
 
-static irqreturn_t cs_interrupt(int irq, void *dev_id, struct pt_regs *regs)
+static irqreturn_t cs_interrupt(int irq, void *dev_id)
 {
 	struct cs_card *card = (struct cs_card *)dev_id;
 	/* Single channel card */
@@ -2980,7 +2983,7 @@ static void clkrun_hack(struct cs_card *card, int change)
 	
 	card->active+=change;
 	
-	acpi_dev = pci_find_device(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_82371AB_3, NULL);
+	acpi_dev = pci_get_device(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_82371AB_3, NULL);
 	if (acpi_dev == NULL)
 		return;		/* Not a thinkpad thats for sure */
 
@@ -3006,6 +3009,7 @@ static void clkrun_hack(struct cs_card *card, int change)
 				change,card->active));
 		outw(control&~0x2000, port+0x10);
 	}
+	pci_dev_put(acpi_dev);
 }
 
 	
@@ -3044,10 +3048,9 @@ static int cs_open(struct inode *inode, struct file *file)
 		CS_DBGOUT(CS_WAVE_READ, 2, printk("cs46xx: cs_open() FMODE_READ\n") );
 		if (card->states[0] == NULL) {
 			state = card->states[0] =
-				kmalloc(sizeof(struct cs_state), GFP_KERNEL);
+				kzalloc(sizeof(struct cs_state), GFP_KERNEL);
 			if (state == NULL)
 				return -ENOMEM;
-			memset(state, 0, sizeof(struct cs_state));
 			mutex_init(&state->sem);
 			dmabuf = &state->dmabuf;
 			dmabuf->pbuf = (void *)get_zeroed_page(GFP_KERNEL | GFP_DMA);
@@ -3110,10 +3113,9 @@ static int cs_open(struct inode *inode, struct file *file)
 		CS_DBGOUT(CS_OPEN, 2, printk("cs46xx: cs_open() FMODE_WRITE\n") );
 		if (card->states[1] == NULL) {
 			state = card->states[1] =
-				kmalloc(sizeof(struct cs_state), GFP_KERNEL);
+				kzalloc(sizeof(struct cs_state), GFP_KERNEL);
 			if (state == NULL)
 				return -ENOMEM;
-			memset(state, 0, sizeof(struct cs_state));
 			mutex_init(&state->sem);
 			dmabuf = &state->dmabuf;
 			dmabuf->pbuf = (void *)get_zeroed_page(GFP_KERNEL | GFP_DMA);
@@ -4751,8 +4753,8 @@ static int cs_hardware_init(struct cs_card *card)
 	mdelay(5 * cs_laptop_wait);		/* Shouldnt be needed ?? */
 	
 /*
-* If we are resuming under 2.2.x then we can not schedule a timeout.
-* so, just spin the CPU.
+* If we are resuming under 2.2.x then we cannot schedule a timeout,
+* so just spin the CPU.
 */
 	if (card->pm.flags & CS46XX_PM_IDLE) {
 	/*
@@ -5071,11 +5073,10 @@ static int __devinit cs46xx_probe(struct pci_dev *pci_dev,
 	pci_read_config_word(pci_dev, PCI_SUBSYSTEM_VENDOR_ID, &ss_vendor);
 	pci_read_config_word(pci_dev, PCI_SUBSYSTEM_ID, &ss_card);
 
-	if ((card = kmalloc(sizeof(struct cs_card), GFP_KERNEL)) == NULL) {
+	if ((card = kzalloc(sizeof(struct cs_card), GFP_KERNEL)) == NULL) {
 		printk(KERN_ERR "cs46xx: out of memory\n");
 		return -ENOMEM;
 	}
-	memset(card, 0, sizeof(*card));
 	card->ba0_addr = RSRCADDRESS(pci_dev, 0);
 	card->ba1_addr = RSRCADDRESS(pci_dev, 1);
 	card->pci_dev = pci_dev;
@@ -5389,8 +5390,10 @@ static struct pci_driver cs46xx_pci_driver = {
 	.id_table = cs46xx_pci_tbl,
 	.probe	  = cs46xx_probe,
 	.remove	  = __devexit_p(cs46xx_remove),
-	.suspend  = CS46XX_SUSPEND_TBL,
-	.resume	  = CS46XX_RESUME_TBL,
+#ifdef CONFIG_PM
+	.suspend  = cs46xx_suspend_tbl,
+	.resume	  = cs46xx_resume_tbl,
+#endif
 };
 
 static int __init cs46xx_init_module(void)
@@ -5420,7 +5423,7 @@ static void __exit cs46xx_cleanup_module(void)
 module_init(cs46xx_init_module);
 module_exit(cs46xx_cleanup_module);
 
-#if CS46XX_ACPI_SUPPORT
+#ifdef CONFIG_PM
 static int cs46xx_suspend_tbl(struct pci_dev *pcidev, pm_message_t state)
 {
 	struct cs_card *s = PCI_GET_DRIVER_DATA(pcidev);

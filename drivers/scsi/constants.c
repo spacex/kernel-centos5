@@ -1177,26 +1177,52 @@ scsi_extd_sense_format(unsigned char asc, unsigned char ascq) {
 EXPORT_SYMBOL(scsi_extd_sense_format);
 
 /* Print extended sense information; no leadin, no linefeed */
-static void
+void
 scsi_show_extd_sense(unsigned char asc, unsigned char ascq)
 {
-	const char *extd_sense_fmt = scsi_extd_sense_format(asc, ascq);
+        const char *extd_sense_fmt = scsi_extd_sense_format(asc, ascq);
 
 	if (extd_sense_fmt) {
 		if (strstr(extd_sense_fmt, "%x")) {
-			printk("Additional sense: ");
+			printk("Add. Sense: ");
 			printk(extd_sense_fmt, ascq);
 		} else
-			printk("Additional sense: %s", extd_sense_fmt);
+			printk("Add. Sense: %s", extd_sense_fmt);
 	} else {
 		if (asc >= 0x80)
-			printk("<<vendor>> ASC=0x%x ASCQ=0x%x", asc, ascq);
+			printk("<<vendor>> ASC=0x%x ASCQ=0x%x", asc,
+			       ascq);
 		if (ascq >= 0x80)
-			printk("ASC=0x%x <<vendor>> ASCQ=0x%x", asc, ascq);
+			printk("ASC=0x%x <<vendor>> ASCQ=0x%x", asc,
+			       ascq);
 		else
 			printk("ASC=0x%x ASCQ=0x%x", asc, ascq);
 	}
+
+	printk("\n");
 }
+EXPORT_SYMBOL(scsi_show_extd_sense);
+
+void
+scsi_show_sense_hdr(struct scsi_sense_hdr *sshdr)
+{
+	const char *sense_txt;
+
+	sense_txt = scsi_sense_key_string(sshdr->sense_key);
+	if (sense_txt)
+		printk("Sense Key : %s ", sense_txt);
+	else
+		printk("Sense Key : 0x%x ", sshdr->sense_key);
+
+	printk("%s", scsi_sense_is_deferred(sshdr) ? "[deferred] " :
+	       "[current] ");
+
+	if (sshdr->response_code >= 0x72)
+		printk("[descriptor]");
+
+	printk("\n");
+}
+EXPORT_SYMBOL(scsi_show_sense_hdr);
 
 void
 scsi_print_sense_hdr(const char *name, struct scsi_sense_hdr *sshdr)
@@ -1366,9 +1392,32 @@ void scsi_print_driverbyte(int scsiresult)
 	       (dr < NUM_DRIVERBYTE_STRS ? driverbyte_table[dr] : "invalid"),
 	       (su < NUM_SUGGEST_STRS ? driversuggest_table[su] : "invalid"));
 }
+
+void scsi_show_result(int result)
+{
+	int hb = host_byte(result);
+	int db = (driver_byte(result) & DRIVER_MASK);
+	int su = ((driver_byte(result) & SUGGEST_MASK) >> 4);
+
+	printk("Result: hostbyte=%s driverbyte=%s,%s\n",
+	       (hb < NUM_HOSTBYTE_STRS ? hostbyte_table[hb]     : "invalid"),
+	       (db < NUM_DRIVERBYTE_STRS ? driverbyte_table[db] : "invalid"),
+	       (su < NUM_SUGGEST_STRS ? driversuggest_table[su] : "invalid"));
+}
+
 #else
+
 void scsi_print_driverbyte(int scsiresult)
 {
 	printk("Driverbyte=0x%02x ", driver_byte(scsiresult));
 }
+
+void scsi_show_result(int result)
+{
+	printk("Result: hostbyte=0x%02x driverbyte=0x%02x\n",
+	       host_byte(result), driver_byte(result));
+}
+
 #endif
+
+EXPORT_SYMBOL(scsi_show_result);

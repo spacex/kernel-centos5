@@ -62,6 +62,8 @@
 #define AUDIT_ADD_RULE		1011	/* Add syscall filtering rule */
 #define AUDIT_DEL_RULE		1012	/* Delete syscall filtering rule */
 #define AUDIT_LIST_RULES	1013	/* List syscall filtering rules */
+#define AUDIT_TRIM		1014	/* Trim junk from watched tree */
+#define AUDIT_MAKE_EQUIV	1015	/* Append to watched tree */
 
 #define AUDIT_FIRST_USER_MSG	1100	/* Userspace messages mostly uninteresting to kernel */
 #define AUDIT_USER_AVC		1107	/* We filter this differently */
@@ -89,6 +91,7 @@
 #define AUDIT_MQ_NOTIFY		1314	/* POSIX MQ notify record type */
 #define AUDIT_MQ_GETSETATTR	1315	/* POSIX MQ get/set attribute record type */
 #define AUDIT_KERNEL_OTHER	1316	/* For use by 3rd party modules */
+#define AUDIT_OBJ_PID		1318	/* signal target */
 
 #define AUDIT_AVC		1400	/* SE Linux avc denial or grant */
 #define AUDIT_SELINUX_ERR	1401	/* Internal SE Linux Errors */
@@ -146,12 +149,14 @@
 #define AUDIT_CLASS_READ_32 5
 #define AUDIT_CLASS_WRITE 6
 #define AUDIT_CLASS_WRITE_32 7
+#define AUDIT_CLASS_SIGNAL 8
+#define AUDIT_CLASS_SIGNAL_32 9
 
 /* This bitmask is used to validate user input.  It represents all bits that
  * are currently used in an audit field constant understood by the kernel.
  * If you are adding a new #define AUDIT_<whatever>, please ensure that
  * AUDIT_UNUSED_BITS is updated if need be. */
-#define AUDIT_UNUSED_BITS	0x0FFFFC00
+#define AUDIT_UNUSED_BITS	0x07FFFC00
 
 
 /* Rule fields */
@@ -192,6 +197,7 @@
 #define AUDIT_SUCCESS   104	/* exit >= 0; value ignored */
 #define AUDIT_WATCH	105
 #define AUDIT_PERM	106
+#define AUDIT_DIR	107
 
 #define AUDIT_ARG0      200
 #define AUDIT_ARG1      (AUDIT_ARG0+1)
@@ -203,25 +209,29 @@
 #define AUDIT_NEGATE			0x80000000
 
 /* These are the supported operators.
- *	4  2  1
- *	=  >  <
- *	-------
- *	0  0  0		0	nonsense
- *	0  0  1		1	<
- *	0  1  0		2	>
- *	0  1  1		3	!=
- *	1  0  0		4	=
- *	1  0  1		5	<=
- *	1  1  0		6	>=
- *	1  1  1		7	all operators
+ *	4  2  1  8
+ *	=  >  <  ?
+ *	----------
+ *	0  0  0	 0	00	nonsense
+ *	0  0  0	 1	08	&  bit mask
+ *	0  0  1	 0	10	<
+ *	0  1  0	 0	20	>
+ *	0  1  1	 0	30	!=
+ *	1  0  0	 0	40	=
+ *	1  0  0	 1	48	&=  bit test
+ *	1  0  1	 0	50	<=
+ *	1  1  0	 0	60	>=
+ *	1  1  1	 1	78	all operators
  */
+#define AUDIT_BIT_MASK			0x08000000
 #define AUDIT_LESS_THAN			0x10000000
 #define AUDIT_GREATER_THAN		0x20000000
 #define AUDIT_NOT_EQUAL			0x30000000
 #define AUDIT_EQUAL			0x40000000
+#define AUDIT_BIT_TEST			(AUDIT_BIT_MASK|AUDIT_EQUAL)
 #define AUDIT_LESS_THAN_OR_EQUAL	(AUDIT_LESS_THAN|AUDIT_EQUAL)
 #define AUDIT_GREATER_THAN_OR_EQUAL	(AUDIT_GREATER_THAN|AUDIT_EQUAL)
-#define AUDIT_OPERATORS			(AUDIT_EQUAL|AUDIT_NOT_EQUAL)
+#define AUDIT_OPERATORS			(AUDIT_EQUAL|AUDIT_NOT_EQUAL|AUDIT_BIT_MASK)
 
 /* Status symbols */
 				/* Mask values */
@@ -335,6 +345,7 @@ struct mqstat;
 #define AUDITSC_RESULT(x) ( ((long)(x))<0?AUDITSC_FAILURE:AUDITSC_SUCCESS )
 extern int __init audit_register_class(int class, unsigned *list);
 extern int audit_classify_syscall(int abi, unsigned syscall);
+extern int audit_classify_arch(int arch);
 #ifdef CONFIG_AUDITSYSCALL
 /* These are defined in auditsc.c */
 				/* Public API */
@@ -346,10 +357,11 @@ extern void audit_syscall_entry(int arch,
 extern void audit_syscall_exit(int failed, long return_code);
 extern void __audit_getname(const char *name);
 extern void audit_putname(const char *name);
-extern void __audit_inode(const char *name, const struct inode *inode);
+extern void __audit_inode(const char *name, const struct dentry *dentry);
 extern void __audit_inode_child(const char *dname, const struct inode *inode,
 				const struct inode *parent);
-extern void __audit_inode_update(const struct inode *inode);
+extern void __audit_ptrace(struct task_struct *t);
+
 static inline int audit_dummy_context(void)
 {
 	void *p = current->audit_context;
@@ -360,9 +372,9 @@ static inline void audit_getname(const char *name)
 	if (unlikely(!audit_dummy_context()))
 		__audit_getname(name);
 }
-static inline void audit_inode(const char *name, const struct inode *inode) {
+static inline void audit_inode(const char *name, const struct dentry *dentry) {
 	if (unlikely(!audit_dummy_context()))
-		__audit_inode(name, inode);
+		__audit_inode(name, dentry);
 }
 static inline void audit_inode_child(const char *dname, 
 				     const struct inode *inode,
@@ -370,9 +382,11 @@ static inline void audit_inode_child(const char *dname,
 	if (unlikely(!audit_dummy_context()))
 		__audit_inode_child(dname, inode, parent);
 }
-static inline void audit_inode_update(const struct inode *inode) {
+
+static inline void audit_ptrace(struct task_struct *t)
+{
 	if (unlikely(!audit_dummy_context()))
-		__audit_inode_update(inode);
+		__audit_ptrace(t);
 }
 
 				/* Private API (for audit.c only) */
@@ -387,7 +401,6 @@ extern int __audit_ipc_set_perm(unsigned long qbytes, uid_t uid, gid_t gid, mode
 extern int audit_bprm(struct linux_binprm *bprm);
 extern int audit_socketcall(int nargs, unsigned long *args);
 extern int audit_sockaddr(int len, void *addr);
-extern int audit_avc_path(struct dentry *dentry, struct vfsmount *mnt);
 extern int audit_set_macxattr(const char *name);
 extern int __audit_mq_open(int oflag, mode_t mode, struct mq_attr __user *u_attr);
 extern int __audit_mq_timedsend(mqd_t mqdes, size_t msg_len, unsigned int msg_prio, const struct timespec __user *u_abs_timeout);
@@ -438,6 +451,7 @@ static inline int audit_mq_getsetattr(mqd_t mqdes, struct mq_attr *mqstat)
 	return 0;
 }
 extern int audit_n_rules;
+extern int audit_signals;
 #else
 #define audit_alloc(t) ({ 0; })
 #define audit_free(t) do { ; } while (0)
@@ -446,12 +460,10 @@ extern int audit_n_rules;
 #define audit_dummy_context() 1
 #define audit_getname(n) do { ; } while (0)
 #define audit_putname(n) do { ; } while (0)
-#define __audit_inode(n,i) do { ; } while (0)
+#define __audit_inode(n,d) do { ; } while (0)
 #define __audit_inode_child(d,i,p) do { ; } while (0)
-#define __audit_inode_update(i) do { ; } while (0)
-#define audit_inode(n,i) do { ; } while (0)
+#define audit_inode(n,d) do { ; } while (0)
 #define audit_inode_child(d,i,p) do { ; } while (0)
-#define audit_inode_update(i) do { ; } while (0)
 #define auditsc_get_stamp(c,t,s) do { BUG(); } while (0)
 #define audit_get_loginuid(c) ({ -1; })
 #define audit_log_task_context(b) do { ; } while (0)
@@ -460,14 +472,15 @@ extern int audit_n_rules;
 #define audit_bprm(p) ({ 0; })
 #define audit_socketcall(n,a) ({ 0; })
 #define audit_sockaddr(len, addr) ({ 0; })
-#define audit_avc_path(dentry, mnt) ({ 0; })
 #define audit_set_macxattr(n) do { ; } while (0)
 #define audit_mq_open(o,m,a) ({ 0; })
 #define audit_mq_timedsend(d,l,p,t) ({ 0; })
 #define audit_mq_timedreceive(d,l,p,t) ({ 0; })
 #define audit_mq_notify(d,n) ({ 0; })
 #define audit_mq_getsetattr(d,s) ({ 0; })
+#define audit_ptrace(t) ((void)0)
 #define audit_n_rules 0
+#define audit_signals 0
 #endif
 
 #ifdef CONFIG_AUDIT

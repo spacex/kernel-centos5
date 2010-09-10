@@ -122,7 +122,7 @@
 
 #define ISCSI_IPADDR_SIZE		4	/* IP address size */
 #define ISCSI_ALIAS_SIZE		32	/* ISCSI Alais name size */
-#define ISCSI_NAME_SIZE			255	/* ISCSI Name size -
+#define ISCSI_NAME_SIZE			0xE0	/* ISCSI Name size -
 						 * usually a string */
 
 #define LSDW(x) ((u32)((u64)(x)))
@@ -262,6 +262,10 @@ struct aen {
 	uint32_t mbox_sts[MBOX_AEN_REG_COUNT];
 };
 
+struct ql4_aen_log {
+	int count;
+	struct aen entry[MAX_AEN_ENTRIES];
+};
 
 #include "ql4_fw.h"
 #include "ql4_nvram.h"
@@ -277,25 +281,24 @@ struct scsi_qla_host {
 	/* exported functions */
 	int (*ql4cmd)(struct scsi_qla_host *ha, struct srb * srb);
 	int (*ql4mbx)(struct scsi_qla_host *ha, uint8_t inCount,
-                            uint8_t outCount, uint32_t *mbx_cmd,
-                            uint32_t *mbx_sts);
+		uint8_t outCount, uint32_t *mbx_cmd, uint32_t *mbx_sts);
 
 	/* Linux adapter configuration data */
 	struct Scsi_Host *host; /* pointer to host data */
 	uint32_t tot_ddbs;
 	unsigned long flags;
 
-#define AF_ONLINE		      0 /* 0x00000001 */
-#define AF_INIT_DONE		      1 /* 0x00000002 */
-#define AF_MBOX_COMMAND		      2 /* 0x00000004 */
-#define AF_MBOX_COMMAND_DONE	      3 /* 0x00000008 */
-#define AF_INTERRUPTS_ON	      6 /* 0x00000040 Not Used */
-#define AF_GET_CRASH_RECORD	      7 /* 0x00000080 */
-#define AF_LINK_UP		      8 /* 0x00000100 */
-#define AF_TOPCAT_CHIP_PRESENT	      9 /* 0x00000200 */
-#define AF_IRQ_ATTACHED		     10 /* 0x00000400 */
-#define AF_ISNS_CMD_IN_PROCESS	     12 /* 0x00001000 */
 #define AF_ISNS_CMD_DONE	     13 /* 0x00002000 */
+#define AF_ONLINE			0 /* 0x00000001 */
+#define AF_INIT_DONE			1 /* 0x00000002 */
+#define AF_MBOX_COMMAND			2 /* 0x00000004 */
+#define AF_MBOX_COMMAND_DONE		3 /* 0x00000008 */
+#define AF_INTERRUPTS_ON		6 /* 0x00000040 Not Used */
+#define AF_GET_CRASH_RECORD		7 /* 0x00000080 */
+#define AF_LINK_UP			8 /* 0x00000100 */
+#define AF_TOPCAT_CHIP_PRESENT		9 /* 0x00000200 */
+#define AF_IRQ_ATTACHED			10 /* 0x00000400 */
+#define AF_DISABLE_ACB_COMPLETE		11 /* 0x00000800 */
 
 	unsigned long dpc_flags;
 
@@ -455,6 +458,8 @@ struct scsi_qla_host {
 
 	/* Map ddb_list entry by FW ddb index */
 	struct ddb_entry *fw_ddb_index_map[MAX_DDB_ENTRIES];
+	struct ql4_aen_log aen_log;
+	void (*ql4getaenlog)(struct scsi_qla_host *ha, struct ql4_aen_log *aenl);
 };
 
 static inline int is_qla4010(struct scsi_qla_host *ha)
@@ -611,11 +616,5 @@ static inline void ql4xxx_unlock_drvr(struct scsi_qla_host *a)
 #define PROCESS_ALL_AENS	 0
 #define FLUSH_DDB_CHANGED_AENS	 1
 #define RELOGIN_DDB_CHANGED_AENS 2
-
-#include "ql4_version.h"
-#include "ql4_glbl.h"
-#include "ql4_dbg.h"
-#include "ql4_inline.h"
-
 
 #endif	/*_QLA4XXX_H */

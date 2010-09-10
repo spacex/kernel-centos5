@@ -67,6 +67,10 @@
 #include "setup_arch.h"
 #include <bios_ebda.h>
 
+#ifdef CONFIG_XEN
+#include <xen/interface/kexec.h>
+#endif
+
 /* Forward Declaration. */
 void __init find_max_pfn(void);
 
@@ -90,7 +94,7 @@ EXPORT_SYMBOL(efi_enabled);
 #endif
 
 /* cpu data as detected by the assembly code in head.S */
-struct cpuinfo_x86 new_cpu_data __initdata = { 0, 0, 0, 0, -1, 1, 0, 0, -1 };
+struct cpuinfo_x86 new_cpu_data __cpuinitdata = { 0, 0, 0, 0, -1, 1, 0, 0, -1 };
 /* common cpu data for all cpus */
 struct cpuinfo_x86 boot_cpu_data __read_mostly = { 0, 0, 0, 0, -1, 1, 0, 0, -1 };
 EXPORT_SYMBOL(boot_cpu_data);
@@ -394,6 +398,25 @@ EXPORT_SYMBOL(phys_to_machine_mapping);
 /* Raw start-of-day parameters from the hypervisor. */
 start_info_t *xen_start_info;
 EXPORT_SYMBOL(xen_start_info);
+
+/*
+ * This function checks if any part of the range <start,end> is mapped
+ * with type.
+ */
+int
+e820_any_mapped(u64 start, u64 end, unsigned type)
+{
+        int i;
+        for (i = 0; i < e820.nr_map; i++) {
+                const struct e820entry *ei = &e820.map[i];
+                if (type && ei->type != type)
+                        continue;
+                if (ei->addr >= end || ei->addr + ei->size <= start)
+                        continue;
+                return 1;
+        }
+        return 0;
+}
 
 void __init add_memory_region(unsigned long long start,
                                   unsigned long long size, int type)
@@ -934,16 +957,18 @@ static void __init parse_cmdline_early (char ** cmdline_p)
 		 * after a kernel panic.
 		 */
 		else if (!memcmp(from, "crashkernel=", 12)) {
+#ifndef CONFIG_XEN
 			unsigned long size, base;
 			size = memparse(from+12, &from);
 			if (*from == '@') {
 				base = memparse(from+1, &from);
-				/* FIXME: Do I want a sanity check
-				 * to validate the memory range?
-				 */
 				crashk_res.start = base;
 				crashk_res.end   = base + size - 1;
 			}
+#else
+			printk("Ignoring crashkernel command line, "
+			       "parameter will be supplied by xen\n");
+#endif
 		}
 #endif
 #ifdef CONFIG_PROC_VMCORE
@@ -1345,9 +1370,22 @@ void __init setup_bootmem_allocator(void)
 	}
 #endif
 #ifdef CONFIG_KEXEC
-	if (crashk_res.start != crashk_res.end)
+#ifdef CONFIG_XEN
+	xen_machine_kexec_setup_resources();
+#else
+	if ((crashk_res.start < crashk_res.end) &&
+	    (crashk_res.end <= (max_low_pfn << PAGE_SHIFT))) {
 		reserve_bootmem(crashk_res.start,
-			crashk_res.end - crashk_res.start + 1);
+				crashk_res.end - crashk_res.start + 1);
+	}
+	else {
+		printk(KERN_ERR "Memory for crash kernel (0x%lx to 0x%lx) not"
+		       "within permissible range\ndisabling kdump\n",
+		       crashk_res.start, crashk_res.end);
+		crashk_res.end = 0;
+		crashk_res.start = 0;
+	}
+#endif
 #endif
 
 	if (!xen_feature(XENFEAT_auto_translated_physmap))
@@ -1402,8 +1440,10 @@ legacy_init_iomem_resources(struct resource *code_resource, struct resource *dat
 
 	for (i = 0; i < nr_map; i++) {
 		struct resource *res;
+#ifndef CONFIG_RESOURCES_64BIT
 		if (map[i].addr + map[i].size > 0x100000000ULL)
 			continue;
+#endif
 		res = kzalloc(sizeof(struct resource), GFP_ATOMIC);
 		switch (map[i].type) {
 		case E820_RAM:	res->name = "System RAM"; break;
@@ -1429,7 +1469,11 @@ legacy_init_iomem_resources(struct resource *code_resource, struct resource *dat
 			request_resource(res, data_resource);
 #endif
 #ifdef CONFIG_KEXEC
-			request_resource(res, &crashk_res);
+			if (crashk_res.start != crashk_res.end)
+			     request_resource(res, &crashk_res);
+#ifdef CONFIG_XEN
+			xen_machine_kexec_register_resources(res);
+#endif
 #endif
 		}
 	}

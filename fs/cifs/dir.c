@@ -23,15 +23,21 @@
 #include <linux/fs.h>
 #include <linux/stat.h>
 #include <linux/slab.h>
+#include <linux/version.h>
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 #include <linux/namei.h>
+#endif
 #include "cifsfs.h"
 #include "cifspdu.h"
 #include "cifsglob.h"
 #include "cifsproto.h"
 #include "cifs_debug.h"
 #include "cifs_fs_sb.h"
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,9)
+#include <linux/ctype.h>
+#endif
 
-void
+static void
 renew_parental_timestamps(struct dentry *direntry)
 {
 	/* BB check if there is a way to get the kernel to do this or if we really need this */
@@ -46,7 +52,8 @@ char *
 build_path_from_dentry(struct dentry *direntry)
 {
 	struct dentry *temp;
-	int namelen = 0;
+	int namelen;
+	int pplen;
 	char *full_path;
 	char dirsep;
 
@@ -56,7 +63,9 @@ build_path_from_dentry(struct dentry *direntry)
 		when the server crashed */
 
 	dirsep = CIFS_DIR_SEP(CIFS_SB(direntry->d_sb));
+	pplen = CIFS_SB(direntry->d_sb)->prepathlen;
 cifs_bp_rename_retry:
+	namelen = pplen; 
 	for (temp = direntry; !IS_ROOT(temp);) {
 		namelen += (1 + temp->d_name.len);
 		temp = temp->d_parent;
@@ -70,7 +79,6 @@ cifs_bp_rename_retry:
 	if(full_path == NULL)
 		return full_path;
 	full_path[namelen] = 0;	/* trailing null */
-
 	for (temp = direntry; !IS_ROOT(temp);) {
 		namelen -= 1 + temp->d_name.len;
 		if (namelen < 0) {
@@ -79,7 +87,7 @@ cifs_bp_rename_retry:
 			full_path[namelen] = dirsep;
 			strncpy(full_path + namelen + 1, temp->d_name.name,
 				temp->d_name.len);
-			cFYI(0, (" name: %s ", full_path + namelen));
+			cFYI(0, ("name: %s", full_path + namelen));
 		}
 		temp = temp->d_parent;
 		if(temp == NULL) {
@@ -88,18 +96,23 @@ cifs_bp_rename_retry:
 			return NULL;
 		}
 	}
-	if (namelen != 0) {
+	if (namelen != pplen) {
 		cERROR(1,
-		       ("We did not end path lookup where we expected namelen is %d",
+		       ("did not end path lookup where expected namelen is %d",
 			namelen));
-		/* presumably this is only possible if we were racing with a rename 
+		/* presumably this is only possible if racing with a rename 
 		of one of the parent directories  (we can not lock the dentries
 		above us to prevent this, but retrying should be harmless) */
 		kfree(full_path);
-		namelen = 0;
 		goto cifs_bp_rename_retry;
 	}
-
+	/* DIR_SEP already set for byte  0 / vs \ but not for
+	   subsequent slashes in prepath which currently must
+	   be entered the right way - not sure if there is an alternative
+	   since the '\' is a valid posix character so we can not switch
+	   those safely to '/' if any are found in the middle of the prepath */
+	/* BB test paths to Windows with '/' in the midst of prepath */
+	strncpy(full_path,CIFS_SB(direntry->d_sb)->prepath,pplen);
 	return full_path;
 }
 
@@ -116,8 +129,12 @@ BB remove above eight lines BB */
 /* Inode operations in similar order to how they appear in Linux file fs.h */
 
 int
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 cifs_create(struct inode *inode, struct dentry *direntry, int mode,
 		struct nameidata *nd)
+#else
+cifs_create(struct inode *inode, struct dentry *direntry, int mode)
+#endif
 {
 	int rc = -ENOENT;
 	int xid;
@@ -129,10 +146,12 @@ cifs_create(struct inode *inode, struct dentry *direntry, int mode,
 	char *full_path = NULL;
 	FILE_ALL_INFO * buf = NULL;
 	struct inode *newinode = NULL;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 	struct cifsFileInfo * pCifsFile = NULL;
 	struct cifsInodeInfo * pCifsInode;
-	int disposition = FILE_OVERWRITE_IF;
 	int write_only = FALSE;
+#endif
+	int disposition = FILE_OVERWRITE_IF;
 
 	xid = GetXid();
 
@@ -145,8 +164,13 @@ cifs_create(struct inode *inode, struct dentry *direntry, int mode,
 		return -ENOMEM;
 	}
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 	if(nd && (nd->flags & LOOKUP_OPEN)) {
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,5) /* SUSE included Lustre patch */
+		int oflags = nd->intent.it_flags;
+#else
 		int oflags = nd->intent.open.flags;
+#endif
 
 		desiredAccess = 0;
 		if (oflags & FMODE_READ)
@@ -171,6 +195,9 @@ cifs_create(struct inode *inode, struct dentry *direntry, int mode,
 	/* BB add processing to set equivalent of mode - e.g. via CreateX with ACLs */
 	if (oplockEnabled)
 		oplock = REQ_OPLOCK;
+#else
+	desiredAccess = GENERIC_WRITE;
+#endif
 
 	buf = kmalloc(sizeof(FILE_ALL_INFO),GFP_KERNEL);
 	if(buf == NULL) {
@@ -253,6 +280,7 @@ cifs_create(struct inode *inode, struct dentry *direntry, int mode,
 				direntry->d_op = &cifs_dentry_ops;
 			d_instantiate(direntry, newinode);
 		}
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 		if((nd->flags & LOOKUP_OPEN) == FALSE) {
 			/* mknod case - do not leave file open */
 			CIFSSMBClose(xid, pTcon, fileHandle);
@@ -296,16 +324,24 @@ cifs_create(struct inode *inode, struct dentry *direntry, int mode,
 			}
 			write_unlock(&GlobalSMBSeslock);
 		}
-	} 
+	}
 cifs_create_out:
+#else /* 2.4 does not pass open flags so must reopen on cifs_open */
+		CIFSSMBClose(xid, pTcon, fileHandle);
+	}
+#endif
 	kfree(buf);
 	kfree(full_path);
 	FreeXid(xid);
 	return rc;
 }
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 int cifs_mknod(struct inode *inode, struct dentry *direntry, int mode, 
-		dev_t device_number) 
+		dev_t device_number)
+#else
+int cifs_mknod(struct inode *inode, struct dentry *direntry, int mode, int device_number)
+#endif
 {
 	int rc = -EPERM;
 	int xid;
@@ -314,8 +350,10 @@ int cifs_mknod(struct inode *inode, struct dentry *direntry, int mode,
 	char *full_path = NULL;
 	struct inode * newinode = NULL;
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 	if (!old_valid_dev(device_number))
 		return -EINVAL;
+#endif
 
 	xid = GetXid();
 
@@ -425,9 +463,13 @@ int cifs_mknod(struct inode *inode, struct dentry *direntry, int mode,
 	return rc;
 }
 
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 struct dentry *
 cifs_lookup(struct inode *parent_dir_inode, struct dentry *direntry, struct nameidata *nd)
+#else
+struct dentry *
+cifs_lookup(struct inode *parent_dir_inode, struct dentry *direntry)
+#endif
 {
 	int xid;
 	int rc = 0; /* to get around spurious gcc warning, set to zero here */
@@ -521,8 +563,13 @@ cifs_lookup(struct inode *parent_dir_inode, struct dentry *direntry, struct name
 	return ERR_PTR(rc);
 }
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 static int
 cifs_d_revalidate(struct dentry *direntry, struct nameidata *nd)
+#else
+static int
+cifs_d_revalidate(struct dentry *direntry, int flags)
+#endif
 {
 	int isValid = 1;
 
@@ -558,6 +605,10 @@ struct dentry_operations cifs_dentry_ops = {
 	/* no need for d_hash, d_compare, d_release, d_iput ... yet. BB confirm this BB */
 };
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,9)
+#define nls_tolower(cp, name) tolower(name)
+#define nls_strnicmp(cp, name1, name2, len) strnicmp(name1, name2, len)
+#endif
 static int cifs_ci_hash(struct dentry *dentry, struct qstr *q)
 {
 	struct nls_table *codepage = CIFS_SB(dentry->d_inode->i_sb)->local_nls;

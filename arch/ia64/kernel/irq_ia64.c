@@ -257,9 +257,15 @@ static struct irqaction ipi_irqaction = {
 static DEFINE_PER_CPU(int, timer_irq) = -1;
 static DEFINE_PER_CPU(int, ipi_irq) = -1;
 static DEFINE_PER_CPU(int, resched_irq) = -1;
+static DEFINE_PER_CPU(int, cmc_irq) = -1;
+static DEFINE_PER_CPU(int, cmcp_irq) = -1;
+static DEFINE_PER_CPU(int, cpep_irq) = -1;
 static char timer_name[NR_CPUS][15];
 static char ipi_name[NR_CPUS][15];
 static char resched_name[NR_CPUS][15];
+static char cmc_name[NR_CPUS][15];
+static char cmcp_name[NR_CPUS][15];
+static char cpep_name[NR_CPUS][15];
 
 struct saved_irq {
 	unsigned int irq;
@@ -306,44 +312,85 @@ static struct irqaction resched_irqaction = {
  * required.
  */
 static void
-xen_register_percpu_irq (unsigned int irq, struct irqaction *action, int save)
+xen_register_percpu_irq (unsigned int vec, struct irqaction *action, int save)
 {
 	unsigned int cpu = smp_processor_id();
-	int ret = 0;
+	irq_desc_t *desc;
+	int irq = 0;
 
 	if (xen_slab_ready) {
-		switch (irq) {
+		switch (vec) {
 		case IA64_TIMER_VECTOR:
 			sprintf(timer_name[cpu], "%s%d", action->name, cpu);
-			ret = bind_virq_to_irqhandler(VIRQ_ITC, cpu,
+			irq = bind_virq_to_irqhandler(VIRQ_ITC, cpu,
 				action->handler, action->flags,
 				timer_name[cpu], action->dev_id);
-			per_cpu(timer_irq,cpu) = ret;
-			printk(KERN_INFO "register VIRQ_ITC (%s) to xen irq (%d)\n", timer_name[cpu], ret);
+			per_cpu(timer_irq,cpu) = irq;
 			break;
 		case IA64_IPI_RESCHEDULE:
 			sprintf(resched_name[cpu], "%s%d", action->name, cpu);
-			ret = bind_ipi_to_irqhandler(RESCHEDULE_VECTOR, cpu,
+			irq = bind_ipi_to_irqhandler(RESCHEDULE_VECTOR, cpu,
 				action->handler, action->flags,
 				resched_name[cpu], action->dev_id);
-			per_cpu(resched_irq,cpu) = ret;
-			printk(KERN_INFO "register RESCHEDULE_VECTOR (%s) to xen irq (%d)\n", resched_name[cpu], ret);
+			per_cpu(resched_irq,cpu) = irq;
 			break;
 		case IA64_IPI_VECTOR:
 			sprintf(ipi_name[cpu], "%s%d", action->name, cpu);
-			ret = bind_ipi_to_irqhandler(IPI_VECTOR, cpu,
+			irq = bind_ipi_to_irqhandler(IPI_VECTOR, cpu,
 				action->handler, action->flags,
 				ipi_name[cpu], action->dev_id);
-			per_cpu(ipi_irq,cpu) = ret;
-			printk(KERN_INFO "register IPI_VECTOR (%s) to xen irq (%d)\n", ipi_name[cpu], ret);
+			per_cpu(ipi_irq,cpu) = irq;
 			break;
+		case IA64_CMC_VECTOR:
+			sprintf(cmc_name[cpu], "%s%d", action->name, cpu);
+			irq = bind_virq_to_irqhandler(VIRQ_MCA_CMC, cpu,
+			                              action->handler,
+			                              action->flags,
+			                              cmc_name[cpu],
+			                              action->dev_id);
+			per_cpu(cmc_irq,cpu) = irq;
+			break;
+		case IA64_CMCP_VECTOR:
+			sprintf(cmcp_name[cpu], "%s%d", action->name, cpu);
+			irq = bind_ipi_to_irqhandler(CMCP_VECTOR, cpu,
+			                             action->handler,
+			                             action->flags,
+			                             cmcp_name[cpu],
+			                             action->dev_id);
+			per_cpu(cmcp_irq,cpu) = irq;
+			break;
+		case IA64_CPEP_VECTOR:
+			sprintf(cpep_name[cpu], "%s%d", action->name, cpu);
+			irq = bind_ipi_to_irqhandler(CPEP_VECTOR, cpu,
+			                             action->handler,
+			                             action->flags,
+			                             cpep_name[cpu],
+			                             action->dev_id);
+			per_cpu(cpep_irq,cpu) = irq;
+			break;
+		case IA64_CPE_VECTOR:
+		case IA64_MCA_RENDEZ_VECTOR:
+		case IA64_PERFMON_VECTOR:
+		case IA64_MCA_WAKEUP_VECTOR:
 		case IA64_SPURIOUS_INT_VECTOR:
+			/* No need to complain, these aren't supported. */
 			break;
 		default:
-			printk(KERN_WARNING "Percpu irq %d is unsupported by xen!\n", irq);
+			printk(KERN_WARNING "Percpu irq %d is unsupported "
+			       "by xen!\n", vec);
 			break;
 		}
-		BUG_ON(ret < 0);
+		BUG_ON(irq < 0);
+
+		if (irq > 0) {
+			/*
+			 * Mark percpu.  Without this, migrate_irqs() will
+			 * mark the interrupt for migrations and trigger it
+			 * on cpu hotplug.
+			 */
+			desc = irq_desc + irq;
+			desc->status |= IRQ_PER_CPU;
+		}
 	} 
 
 	/* For BSP, we cache registered percpu irqs, and then re-walk
@@ -351,7 +398,7 @@ xen_register_percpu_irq (unsigned int irq, struct irqaction *action, int save)
 	 */
 	if (!cpu && save) {
 		BUG_ON(saved_irq_cnt == MAX_LATE_IRQ);
-		saved_percpu_irqs[saved_irq_cnt].irq = irq;
+		saved_percpu_irqs[saved_irq_cnt].irq = vec;
 		saved_percpu_irqs[saved_irq_cnt].action = action;
 		saved_irq_cnt++;
 		if (!xen_slab_ready)
@@ -389,6 +436,18 @@ unbind_evtchn_callback(struct notifier_block *nfb,
 
 	if (action == CPU_DEAD) {
 		/* Unregister evtchn.  */
+		if (per_cpu(cpep_irq,cpu) >= 0) {
+			unbind_from_irqhandler(per_cpu(cpep_irq, cpu), NULL);
+			per_cpu(cpep_irq, cpu) = -1;
+		}
+		if (per_cpu(cmcp_irq,cpu) >= 0) {
+			unbind_from_irqhandler(per_cpu(cmcp_irq, cpu), NULL);
+			per_cpu(cmcp_irq, cpu) = -1;
+		}
+		if (per_cpu(cmc_irq,cpu) >= 0) {
+			unbind_from_irqhandler(per_cpu(cmc_irq, cpu), NULL);
+			per_cpu(cmc_irq, cpu) = -1;
+		}
 		if (per_cpu(ipi_irq,cpu) >= 0) {
 			unbind_from_irqhandler (per_cpu(ipi_irq, cpu), NULL);
 			per_cpu(ipi_irq, cpu) = -1;
@@ -523,8 +582,15 @@ ia64_send_ipi (int cpu, int vector, int delivery_mode, int redirect)
 		case IA64_IPI_RESCHEDULE:
 			irq = per_cpu(ipi_to_irq, cpu)[RESCHEDULE_VECTOR];
 			break;
+		case IA64_CMCP_VECTOR:
+			irq = per_cpu(ipi_to_irq, cpu)[CMCP_VECTOR];
+			break;
+		case IA64_CPEP_VECTOR:
+			irq = per_cpu(ipi_to_irq, cpu)[CPEP_VECTOR];
+			break;
 		default:
-			printk(KERN_WARNING"Unsupported IPI type 0x%x\n", vector);
+			printk(KERN_WARNING "Unsupported IPI type 0x%x\n",
+			       vector);
 			irq = 0;
 			break;
 		}		

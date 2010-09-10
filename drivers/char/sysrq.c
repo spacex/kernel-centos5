@@ -252,7 +252,7 @@ static struct sysrq_key_op sysrq_term_op = {
 static void moom_callback(void *ignored)
 {
 	out_of_memory(&NODE_DATA(0)->node_zonelists[ZONE_NORMAL],
-			GFP_KERNEL, 0);
+			GFP_KERNEL, 0, 1);
 }
 
 static DECLARE_WORK(moom_work, moom_callback, NULL);

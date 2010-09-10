@@ -120,6 +120,9 @@ static DEFINE_PER_CPU(struct shadow_time_info, shadow_time);
 static struct timespec shadow_tv;
 static u32 shadow_tv_version;
 
+static struct timeval monotonic_tv;
+static spinlock_t monotonic_lock = SPIN_LOCK_UNLOCKED;
+
 /* Keep track of last time we did processing/updating of jiffies and xtime. */
 static u64 processed_system_time;   /* System time (ns) at last processing. */
 static DEFINE_PER_CPU(u64, processed_system_time);
@@ -374,6 +377,7 @@ void do_gettimeofday(struct timeval *tv)
 	unsigned long seq;
 	unsigned long usec, sec;
 	unsigned long max_ntp_tick;
+	unsigned long flags;
 	s64 nsec;
 	unsigned int cpu;
 	struct shadow_time_info *shadow;
@@ -434,6 +438,18 @@ void do_gettimeofday(struct timeval *tv)
 		sec++;
 	}
 
+	spin_lock_irqsave(&monotonic_lock, flags);
+	if ((sec > monotonic_tv.tv_sec) ||
+	    ((sec == monotonic_tv.tv_sec) && (usec > monotonic_tv.tv_usec)))
+	{
+		monotonic_tv.tv_sec = sec;
+		monotonic_tv.tv_usec = usec;
+	} else {
+		sec = monotonic_tv.tv_sec;
+		usec = monotonic_tv.tv_usec;
+	}
+	spin_unlock_irqrestore(&monotonic_lock, flags);
+
 	tv->tv_sec = sec;
 	tv->tv_usec = usec;
 }
@@ -482,6 +498,12 @@ int do_settimeofday(struct timespec *tv)
 		__normalize_time(&sec, &nsec);
 		__update_wallclock(sec, nsec);
 	}
+
+	/* Reset monotonic gettimeofday() timeval. */
+	spin_lock(&monotonic_lock);
+	monotonic_tv.tv_sec = 0;
+	monotonic_tv.tv_usec = 0;
+	spin_unlock(&monotonic_lock);
 
 	write_sequnlock_irq(&xtime_lock);
 

@@ -54,12 +54,16 @@ MODULE_AUTHOR("Sean Hefty");
 MODULE_DESCRIPTION("InfiniBand CM");
 MODULE_LICENSE("Dual BSD/GPL");
 
-static int mra_timeout_limit = 30000;
+#define PFX    "ib_cm: "
 
-module_param(mra_timeout_limit, int, 0444);
-MODULE_PARM_DESC(mra_timeout_limit,
-                 "Limit the MRA timeout according to this value if != 0");
-
+/*
+ * Limit CM message timeouts to something reasonable:
+ * 8 seconds per message, with up to 15 retries
+ */
+static int max_timeout = 21;
+module_param(max_timeout, int, 0644);
+MODULE_PARM_DESC(max_timeout, "Maximum IB CM per message timeout "
+                             "(default=21, or ~8 seconds)");
 
 static void cm_add_one(struct ib_device *device);
 static void cm_remove_one(struct ib_device *device);
@@ -154,12 +158,12 @@ struct cm_id_private {
 	__be32 rq_psn;
 	int timeout_ms;
 	enum ib_mtu path_mtu;
+	__be16 pkey;
 	u8 private_data_len;
 	u8 max_cm_retries;
 	u8 peer_to_peer;
 	u8 responder_resources;
 	u8 initiator_depth;
-	u8 local_ack_timeout;
 	u8 retry_count;
 	u8 rnr_retry_count;
 	u8 service_timeout;
@@ -188,7 +192,7 @@ static int cm_alloc_msg(struct cm_id_private *cm_id_priv,
 	if (IS_ERR(ah))
 		return PTR_ERR(ah);
 
-	m = ib_create_send_mad(mad_agent, cm_id_priv->id.remote_cm_qpn, 
+	m = ib_create_send_mad(mad_agent, cm_id_priv->id.remote_cm_qpn,
 			       cm_id_priv->av.pkey_index,
 			       0, IB_MGMT_MAD_HDR, IB_MGMT_MAD_DATA,
 			       GFP_ATOMIC);
@@ -247,11 +251,10 @@ static void * cm_copy_private_data(const void *private_data,
 	if (!private_data || !private_data_len)
 		return NULL;
 
-	data = kmalloc(private_data_len, GFP_KERNEL);
+	data = kmemdup(private_data, private_data_len, GFP_KERNEL);
 	if (!data)
 		return ERR_PTR(-ENOMEM);
 
-	memcpy(data, private_data, private_data_len);
 	return data;
 }
 
@@ -316,7 +319,9 @@ static int cm_alloc_id(struct cm_id_private *cm_id_priv)
 	do {
 		spin_lock_irqsave(&cm.lock, flags);
 		ret = idr_get_new_above(&cm.local_id_table, cm_id_priv,
-					next_id++, &id);
+					next_id, &id);
+		if (!ret)
+			next_id = ((unsigned) id + 1) & MAX_ID_MASK;
 		spin_unlock_irqrestore(&cm.lock, flags);
 	} while( (ret == -EAGAIN) && idr_pre_get(&cm.local_id_table, GFP_KERNEL) );
 
@@ -698,7 +703,7 @@ static void cm_enter_timewait(struct cm_id_private *cm_id_priv)
 	 * timewait before notifying the user that we've exited timewait.
 	 */
 	cm_id_priv->id.state = IB_CM_TIMEWAIT;
-	wait_time = cm_convert_to_ms(cm_id_priv->local_ack_timeout);
+	wait_time = cm_convert_to_ms(cm_id_priv->av.packet_life_time + 1);
 	queue_delayed_work(cm.wq, &cm_id_priv->timewait_info->work.work,
 			   msecs_to_jiffies(wait_time));
 	cm_id_priv->timewait_info = NULL;
@@ -898,11 +903,23 @@ static void cm_format_req(struct cm_req_msg *req_msg,
 	cm_req_set_init_depth(req_msg, param->initiator_depth);
 	cm_req_set_remote_resp_timeout(req_msg,
 				       param->remote_cm_response_timeout);
+       if (param->remote_cm_response_timeout > (u8) max_timeout) {
+               printk(KERN_WARNING PFX "req remote_cm_response_timeout %d > "
+                      "%d, decreasing\n", param->remote_cm_response_timeout,
+                      max_timeout);
+               cm_req_set_remote_resp_timeout(req_msg, (u8) max_timeout);
+       }
 	cm_req_set_qp_type(req_msg, param->qp_type);
 	cm_req_set_flow_ctrl(req_msg, param->flow_control);
 	cm_req_set_starting_psn(req_msg, cpu_to_be32(param->starting_psn));
 	cm_req_set_local_resp_timeout(req_msg,
 				      param->local_cm_response_timeout);
+       if (param->local_cm_response_timeout > (u8) max_timeout) {
+               printk(KERN_WARNING PFX "req local_cm_response_timeout %d > "
+                      "%d, decreasing\n", param->local_cm_response_timeout,
+                      max_timeout);
+               cm_req_set_local_resp_timeout(req_msg, (u8) max_timeout);
+       }
 	cm_req_set_retry_count(req_msg, param->retry_count);
 	req_msg->pkey = param->primary_path->pkey;
 	cm_req_set_path_mtu(req_msg, param->primary_path->mtu);
@@ -1012,11 +1029,17 @@ int ib_send_cm_req(struct ib_cm_id *cm_id,
 				    param->primary_path->packet_life_time) * 2 +
 				 cm_convert_to_ms(
 				    param->remote_cm_response_timeout);
+       if (cm_id_priv->timeout_ms > cm_convert_to_ms(max_timeout)) {
+               printk(KERN_WARNING PFX "req timeout_ms %d > %d, decreasing\n",
+                      cm_id_priv->timeout_ms, cm_convert_to_ms(max_timeout));
+               cm_id_priv->timeout_ms = cm_convert_to_ms(max_timeout);
+       }
 	cm_id_priv->max_cm_retries = param->max_cm_retries;
 	cm_id_priv->initiator_depth = param->initiator_depth;
 	cm_id_priv->responder_resources = param->responder_resources;
 	cm_id_priv->retry_count = param->retry_count;
 	cm_id_priv->path_mtu = param->primary_path->mtu;
+	cm_id_priv->pkey = param->primary_path->pkey;
 	cm_id_priv->qp_type = param->qp_type;
 
 	ret = cm_alloc_msg(cm_id_priv, &cm_id_priv->msg);
@@ -1031,8 +1054,6 @@ int ib_send_cm_req(struct ib_cm_id *cm_id,
 
 	cm_id_priv->local_qpn = cm_req_get_local_qpn(req_msg);
 	cm_id_priv->rq_psn = cm_req_get_starting_psn(req_msg);
-	cm_id_priv->local_ack_timeout =
-				cm_req_get_primary_local_ack_timeout(req_msg);
 
 	spin_lock_irqsave(&cm_id_priv->lock, flags);
 	ret = ib_post_send_mad(cm_id_priv->msg, NULL);
@@ -1307,26 +1328,29 @@ static struct cm_id_private * cm_match_req(struct cm_work *work,
 
 	req_msg = (struct cm_req_msg *)work->mad_recv_wc->recv_buf.mad;
 
-	/* Check for duplicate REQ and stale connections. */
+	/* Check for possible duplicate REQ. */
 	spin_lock_irqsave(&cm.lock, flags);
 	timewait_info = cm_insert_remote_id(cm_id_priv->timewait_info);
-	if (!timewait_info)
-		timewait_info = cm_insert_remote_qpn(cm_id_priv->timewait_info);
-
 	if (timewait_info) {
 		cur_cm_id_priv = cm_get_id(timewait_info->work.local_id,
 					   timewait_info->work.remote_id);
-		cm_cleanup_timewait(cm_id_priv->timewait_info);
 		spin_unlock_irqrestore(&cm.lock, flags);
 		if (cur_cm_id_priv) {
 			cm_dup_req_handler(work, cur_cm_id_priv);
 			cm_deref_id(cur_cm_id_priv);
-		} else
-			cm_issue_rej(work->port, work->mad_recv_wc,
-				     IB_CM_REJ_STALE_CONN, CM_MSG_RESPONSE_REQ,
-				     NULL, 0);
-		listen_cm_id_priv = NULL;
-		goto out;
+		}
+		return NULL;
+	}
+
+	/* Check for stale connections. */
+	timewait_info = cm_insert_remote_qpn(cm_id_priv->timewait_info);
+	if (timewait_info) {
+		cm_cleanup_timewait(cm_id_priv->timewait_info);
+		spin_unlock_irqrestore(&cm.lock, flags);
+		cm_issue_rej(work->port, work->mad_recv_wc,
+			     IB_CM_REJ_STALE_CONN, CM_MSG_RESPONSE_REQ,
+			     NULL, 0);
+		return NULL;
 	}
 
 	/* Find matching listen request. */
@@ -1372,7 +1396,7 @@ static int cm_req_handler(struct cm_work *work)
 							    id.local_id);
 	if (IS_ERR(cm_id_priv->timewait_info)) {
 		ret = PTR_ERR(cm_id_priv->timewait_info);
-		goto error1;
+		goto destroy;
 	}
 	cm_id_priv->timewait_info->work.remote_id = req_msg->local_comm_id;
 	cm_id_priv->timewait_info->remote_ca_guid = req_msg->local_ca_guid;
@@ -1381,7 +1405,8 @@ static int cm_req_handler(struct cm_work *work)
 	listen_cm_id_priv = cm_match_req(work, cm_id_priv);
 	if (!listen_cm_id_priv) {
 		ret = -EINVAL;
-		goto error2;
+		kfree(cm_id_priv->timewait_info);
+		goto destroy;
 	}
 
 	cm_id_priv->id.cm_handler = listen_cm_id_priv->id.cm_handler;
@@ -1391,24 +1416,40 @@ static int cm_req_handler(struct cm_work *work)
 
 	cm_format_paths_from_req(req_msg, &work->path[0], &work->path[1]);
 	ret = cm_init_av_by_path(&work->path[0], &cm_id_priv->av);
-	if (ret)
-		goto error3;
+	if (ret) {
+		ib_get_cached_gid(work->port->cm_dev->device,
+				  work->port->port_num, 0, &work->path[0].sgid);
+		ib_send_cm_rej(cm_id, IB_CM_REJ_INVALID_GID,
+			       &work->path[0].sgid, sizeof work->path[0].sgid,
+			       NULL, 0);
+		goto rejected;
+	}
 	if (req_msg->alt_local_lid) {
 		ret = cm_init_av_by_path(&work->path[1], &cm_id_priv->alt_av);
-		if (ret)
-			goto error3;
+		if (ret) {
+			ib_send_cm_rej(cm_id, IB_CM_REJ_INVALID_ALT_GID,
+				       &work->path[0].sgid,
+				       sizeof work->path[0].sgid, NULL, 0);
+			goto rejected;
+		}
 	}
 	cm_id_priv->tid = req_msg->hdr.tid;
 	cm_id_priv->timeout_ms = cm_convert_to_ms(
 					cm_req_get_local_resp_timeout(req_msg));
+       if (cm_req_get_local_resp_timeout(req_msg) > (u8) max_timeout) {
+               printk(KERN_WARNING PFX "rcvd cm_local_resp_timeout %d > %d, "
+                      "decreasing used timeout_ms\n",
+                      cm_req_get_local_resp_timeout(req_msg), max_timeout);
+               cm_id_priv->timeout_ms = cm_convert_to_ms(max_timeout);
+       }
+
 	cm_id_priv->max_cm_retries = cm_req_get_max_cm_retries(req_msg);
 	cm_id_priv->remote_qpn = cm_req_get_local_qpn(req_msg);
 	cm_id_priv->initiator_depth = cm_req_get_resp_res(req_msg);
 	cm_id_priv->responder_resources = cm_req_get_init_depth(req_msg);
 	cm_id_priv->path_mtu = cm_req_get_path_mtu(req_msg);
+	cm_id_priv->pkey = req_msg->pkey;
 	cm_id_priv->sq_psn = cm_req_get_starting_psn(req_msg);
-	cm_id_priv->local_ack_timeout =
-				cm_req_get_primary_local_ack_timeout(req_msg);
 	cm_id_priv->retry_count = cm_req_get_retry_count(req_msg);
 	cm_id_priv->rnr_retry_count = cm_req_get_rnr_retry_count(req_msg);
 	cm_id_priv->qp_type = cm_req_get_qp_type(req_msg);
@@ -1418,12 +1459,11 @@ static int cm_req_handler(struct cm_work *work)
 	cm_deref_id(listen_cm_id_priv);
 	return 0;
 
-error3:	atomic_dec(&cm_id_priv->refcount);
+rejected:
+	atomic_dec(&cm_id_priv->refcount);
 	cm_deref_id(listen_cm_id_priv);
-	cm_cleanup_timewait(cm_id_priv->timewait_info);
-error2:	kfree(cm_id_priv->timewait_info);
-	cm_id_priv->timewait_info = NULL;
-error1:	ib_destroy_cm_id(&cm_id_priv->id);
+destroy:
+	ib_destroy_cm_id(cm_id);
 	return ret;
 }
 
@@ -1713,7 +1753,7 @@ static int cm_establish_handler(struct cm_work *work)
 	unsigned long flags;
 	int ret;
 
-	/* See comment in ib_cm_establish about lookup. */
+	/* See comment in cm_establish about lookup. */
 	cm_id_priv = cm_acquire_id(work->local_id, work->remote_id);
 	if (!cm_id_priv)
 		return -EINVAL;
@@ -2306,9 +2346,12 @@ static int cm_mra_handler(struct cm_work *work)
 					cm_mra_get_service_timeout(mra_msg);
 	timeout = cm_convert_to_ms(cm_mra_get_service_timeout(mra_msg)) +
 		  cm_convert_to_ms(cm_id_priv->av.packet_life_time);
-
-	if (mra_timeout_limit && timeout > mra_timeout_limit)
-		timeout = mra_timeout_limit;
+       if (timeout > cm_convert_to_ms(max_timeout)) {
+               printk(KERN_WARNING PFX "calculated mra timeout %d > %d, "
+                      "decreasing used timeout_ms\n", timeout,
+                      cm_convert_to_ms(max_timeout));
+               timeout = cm_convert_to_ms(max_timeout);
+       }
 
 	spin_lock_irqsave(&cm_id_priv->lock, flags);
 	switch (cm_id_priv->id.state) {
@@ -2402,10 +2445,15 @@ int ib_send_cm_lap(struct ib_cm_id *cm_id,
 	cm_id_priv = container_of(cm_id, struct cm_id_private, id);
 	spin_lock_irqsave(&cm_id_priv->lock, flags);
 	if (cm_id->state != IB_CM_ESTABLISHED ||
-	    cm_id->lap_state != IB_CM_LAP_IDLE) {
+	    (cm_id->lap_state != IB_CM_LAP_UNINIT &&
+	     cm_id->lap_state != IB_CM_LAP_IDLE)) {
 		ret = -EINVAL;
 		goto out;
 	}
+
+	ret = cm_init_av_by_path(alternate_path, &cm_id_priv->alt_av);
+	if (ret)
+		goto out;
 
 	ret = cm_alloc_msg(cm_id_priv, &msg);
 	if (ret)
@@ -2431,7 +2479,8 @@ out:	spin_unlock_irqrestore(&cm_id_priv->lock, flags);
 }
 EXPORT_SYMBOL(ib_send_cm_lap);
 
-static void cm_format_path_from_lap(struct ib_sa_path_rec *path,
+static void cm_format_path_from_lap(struct cm_id_private *cm_id_priv,
+				    struct ib_sa_path_rec *path,
 				    struct cm_lap_msg *lap_msg)
 {
 	memset(path, 0, sizeof *path);
@@ -2443,10 +2492,10 @@ static void cm_format_path_from_lap(struct ib_sa_path_rec *path,
 	path->hop_limit = lap_msg->alt_hop_limit;
 	path->traffic_class = cm_lap_get_traffic_class(lap_msg);
 	path->reversible = 1;
-	/* pkey is same as in REQ */
+	path->pkey = cm_id_priv->pkey;
 	path->sl = cm_lap_get_sl(lap_msg);
 	path->mtu_selector = IB_SA_EQ;
-	/* mtu is same as in REQ */
+	path->mtu = cm_id_priv->path_mtu;
 	path->rate_selector = IB_SA_EQ;
 	path->rate = cm_lap_get_packet_rate(lap_msg);
 	path->packet_life_time_selector = IB_SA_EQ;
@@ -2472,7 +2521,7 @@ static int cm_lap_handler(struct cm_work *work)
 
 	param = &work->cm_event.param.lap_rcvd;
 	param->alternate_path = &work->path[0];
-	cm_format_path_from_lap(param->alternate_path, lap_msg);
+	cm_format_path_from_lap(cm_id_priv, param->alternate_path, lap_msg);
 	work->cm_event.private_data = &lap_msg->private_data;
 
 	spin_lock_irqsave(&cm_id_priv->lock, flags);
@@ -2480,6 +2529,7 @@ static int cm_lap_handler(struct cm_work *work)
 		goto unlock;
 
 	switch (cm_id_priv->id.lap_state) {
+	case IB_CM_LAP_UNINIT:
 	case IB_CM_LAP_IDLE:
 		break;
 	case IB_CM_MRA_LAP_SENT:
@@ -2502,6 +2552,10 @@ static int cm_lap_handler(struct cm_work *work)
 
 	cm_id_priv->id.lap_state = IB_CM_LAP_RCVD;
 	cm_id_priv->tid = lap_msg->hdr.tid;
+	cm_init_av_for_response(work->port, work->mad_recv_wc->wc,
+				work->mad_recv_wc->recv_buf.grh,
+				&cm_id_priv->av);
+	cm_init_av_by_path(param->alternate_path, &cm_id_priv->alt_av);
 	ret = atomic_inc_and_test(&cm_id_priv->work_count);
 	if (!ret)
 		list_add_tail(&work->list, &cm_id_priv->work_list);
@@ -2701,6 +2755,12 @@ int ib_send_cm_sidr_req(struct ib_cm_id *cm_id,
 	cm_id->service_id = param->service_id;
 	cm_id->service_mask = __constant_cpu_to_be64(~0ULL);
 	cm_id_priv->timeout_ms = param->timeout_ms;
+       if (cm_id_priv->timeout_ms > cm_convert_to_ms(max_timeout)) {
+               printk(KERN_WARNING PFX "sidr req timeout_ms %d > %d, "
+                      "decreasing used timeout_ms\n", param->timeout_ms,
+                      cm_convert_to_ms(max_timeout));
+               cm_id_priv->timeout_ms = cm_convert_to_ms(max_timeout);
+       }
 	cm_id_priv->max_cm_retries = param->max_cm_retries;
 	ret = cm_alloc_msg(cm_id_priv, &msg);
 	if (ret)
@@ -3040,7 +3100,7 @@ static void cm_work_handler(void *data)
 		cm_free_work(work);
 }
 
-int ib_cm_establish(struct ib_cm_id *cm_id)
+static int cm_establish(struct ib_cm_id *cm_id)
 {
 	struct cm_id_private *cm_id_priv;
 	struct cm_work *work;
@@ -3088,7 +3148,44 @@ int ib_cm_establish(struct ib_cm_id *cm_id)
 out:
 	return ret;
 }
-EXPORT_SYMBOL(ib_cm_establish);
+
+static int cm_migrate(struct ib_cm_id *cm_id)
+{
+	struct cm_id_private *cm_id_priv;
+	unsigned long flags;
+	int ret = 0;
+
+	cm_id_priv = container_of(cm_id, struct cm_id_private, id);
+	spin_lock_irqsave(&cm_id_priv->lock, flags);
+	if (cm_id->state == IB_CM_ESTABLISHED &&
+	    (cm_id->lap_state == IB_CM_LAP_UNINIT ||
+	     cm_id->lap_state == IB_CM_LAP_IDLE)) {
+		cm_id->lap_state = IB_CM_LAP_IDLE;
+		cm_id_priv->av = cm_id_priv->alt_av;
+	} else
+		ret = -EINVAL;
+	spin_unlock_irqrestore(&cm_id_priv->lock, flags);
+
+	return ret;
+}
+
+int ib_cm_notify(struct ib_cm_id *cm_id, enum ib_event_type event)
+{
+	int ret;
+
+	switch (event) {
+	case IB_EVENT_COMM_EST:
+		ret = cm_establish(cm_id);
+		break;
+	case IB_EVENT_PATH_MIG:
+		ret = cm_migrate(cm_id);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+	return ret;
+}
+EXPORT_SYMBOL(ib_cm_notify);
 
 static void cm_recv_handler(struct ib_mad_agent *mad_agent,
 			    struct ib_mad_recv_wc *mad_recv_wc)
@@ -3173,10 +3270,10 @@ static int cm_init_qp_init_attr(struct cm_id_private *cm_id_priv,
 	case IB_CM_ESTABLISHED:
 		*qp_attr_mask = IB_QP_STATE | IB_QP_ACCESS_FLAGS |
 				IB_QP_PKEY_INDEX | IB_QP_PORT;
-		qp_attr->qp_access_flags = IB_ACCESS_LOCAL_WRITE |
-					   IB_ACCESS_REMOTE_WRITE;
+		qp_attr->qp_access_flags = IB_ACCESS_REMOTE_WRITE;
 		if (cm_id_priv->responder_resources)
-			qp_attr->qp_access_flags |= IB_ACCESS_REMOTE_READ;
+			qp_attr->qp_access_flags |= IB_ACCESS_REMOTE_READ |
+						    IB_ACCESS_REMOTE_ATOMIC;
 		qp_attr->pkey_index = cm_id_priv->av.pkey_index;
 		qp_attr->port_num = cm_id_priv->av.port->port_num;
 		ret = 0;
@@ -3221,6 +3318,9 @@ static int cm_init_qp_rtr_attr(struct cm_id_private *cm_id_priv,
 		if (cm_id_priv->alt_av.ah_attr.dlid) {
 			*qp_attr_mask |= IB_QP_ALT_PATH;
 			qp_attr->alt_port_num = cm_id_priv->alt_av.port->port_num;
+			qp_attr->alt_pkey_index = cm_id_priv->alt_av.pkey_index;
+			qp_attr->alt_timeout =
+					cm_id_priv->alt_av.packet_life_time + 1;
 			qp_attr->alt_ah_attr = cm_id_priv->alt_av.ah_attr;
 		}
 		ret = 0;
@@ -3251,19 +3351,31 @@ static int cm_init_qp_rts_attr(struct cm_id_private *cm_id_priv,
 	case IB_CM_REP_SENT:
 	case IB_CM_MRA_REP_RCVD:
 	case IB_CM_ESTABLISHED:
-		*qp_attr_mask = IB_QP_STATE | IB_QP_SQ_PSN;
-		qp_attr->sq_psn = be32_to_cpu(cm_id_priv->sq_psn);
-		if (cm_id_priv->qp_type == IB_QPT_RC) {
-			*qp_attr_mask |= IB_QP_TIMEOUT | IB_QP_RETRY_CNT |
-					 IB_QP_RNR_RETRY |
-					 IB_QP_MAX_QP_RD_ATOMIC;
-			qp_attr->timeout = cm_id_priv->local_ack_timeout;
-			qp_attr->retry_cnt = cm_id_priv->retry_count;
-			qp_attr->rnr_retry = cm_id_priv->rnr_retry_count;
-			qp_attr->max_rd_atomic = cm_id_priv->initiator_depth;
-		}
-		if (cm_id_priv->alt_av.ah_attr.dlid) {
-			*qp_attr_mask |= IB_QP_PATH_MIG_STATE;
+		if (cm_id_priv->id.lap_state == IB_CM_LAP_UNINIT) {
+			*qp_attr_mask = IB_QP_STATE | IB_QP_SQ_PSN;
+			qp_attr->sq_psn = be32_to_cpu(cm_id_priv->sq_psn);
+			if (cm_id_priv->qp_type == IB_QPT_RC) {
+				*qp_attr_mask |= IB_QP_TIMEOUT | IB_QP_RETRY_CNT |
+						 IB_QP_RNR_RETRY |
+						 IB_QP_MAX_QP_RD_ATOMIC;
+				qp_attr->timeout =
+					cm_id_priv->av.packet_life_time + 1;
+				qp_attr->retry_cnt = cm_id_priv->retry_count;
+				qp_attr->rnr_retry = cm_id_priv->rnr_retry_count;
+				qp_attr->max_rd_atomic =
+					cm_id_priv->initiator_depth;
+			}
+			if (cm_id_priv->alt_av.ah_attr.dlid) {
+				*qp_attr_mask |= IB_QP_PATH_MIG_STATE;
+				qp_attr->path_mig_state = IB_MIG_REARM;
+			}
+		} else {
+			*qp_attr_mask = IB_QP_ALT_PATH | IB_QP_PATH_MIG_STATE;
+			qp_attr->alt_port_num = cm_id_priv->alt_av.port->port_num;
+			qp_attr->alt_pkey_index = cm_id_priv->alt_av.pkey_index;
+			qp_attr->alt_timeout =
+				cm_id_priv->alt_av.packet_life_time + 1;
+			qp_attr->alt_ah_attr = cm_id_priv->alt_av.ah_attr;
 			qp_attr->path_mig_state = IB_MIG_REARM;
 		}
 		ret = 0;
@@ -3316,6 +3428,9 @@ static void cm_add_one(struct ib_device *device)
 	unsigned long flags;
 	int ret;
 	u8 i;
+
+	if (rdma_node_get_transport(device->node_type) != RDMA_TRANSPORT_IB)
+		return;
 
 	cm_dev = kmalloc(sizeof(*cm_dev) + sizeof(*port) *
 			 device->phys_port_cnt, GFP_KERNEL);

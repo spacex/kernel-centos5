@@ -14,8 +14,9 @@
 
 void gfs2_tune_init(struct gfs2_tune *gt);
 
-int gfs2_check_sb(struct gfs2_sbd *sdp, struct gfs2_sb *sb, int silent);
+int gfs2_check_sb(struct gfs2_sbd *sdp, struct gfs2_sb_host *sb, int silent);
 int gfs2_read_sb(struct gfs2_sbd *sdp, struct gfs2_glock *gl, int silent);
+int gfs2_read_super(struct gfs2_sbd *sdp, sector_t sector);
 
 static inline unsigned int gfs2_jindex_size(struct gfs2_sbd *sdp)
 {
@@ -44,8 +45,8 @@ int gfs2_statfs_init(struct gfs2_sbd *sdp);
 void gfs2_statfs_change(struct gfs2_sbd *sdp,
 			s64 total, s64 free, s64 dinodes);
 int gfs2_statfs_sync(struct gfs2_sbd *sdp);
-int gfs2_statfs_i(struct gfs2_sbd *sdp, struct gfs2_statfs_change *sc);
-int gfs2_statfs_slow(struct gfs2_sbd *sdp, struct gfs2_statfs_change *sc);
+int gfs2_statfs_i(struct gfs2_sbd *sdp, struct gfs2_statfs_change_host *sc);
+int gfs2_statfs_slow(struct gfs2_sbd *sdp, struct gfs2_statfs_change_host *sc);
 
 int gfs2_freeze_fs(struct gfs2_sbd *sdp);
 void gfs2_unfreeze_fs(struct gfs2_sbd *sdp);

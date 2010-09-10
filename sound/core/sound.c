@@ -61,9 +61,6 @@ EXPORT_SYMBOL(snd_ecards_limit);
 static struct snd_minor *snd_minors[SNDRV_OS_MINORS];
 static DEFINE_MUTEX(sound_mutex);
 
-extern struct class *sound_class;
-
-
 #ifdef CONFIG_KMOD
 
 /**
@@ -171,7 +168,7 @@ static int snd_open(struct inode *inode, struct file *file)
 	return err;
 }
 
-static struct file_operations snd_fops =
+static const struct file_operations snd_fops =
 {
 	.owner =	THIS_MODULE,
 	.open =		snd_open
@@ -387,8 +384,8 @@ int __init snd_minor_info_init(void)
 
 int __exit snd_minor_info_done(void)
 {
-	if (snd_minor_info_entry)
-		snd_info_unregister(snd_minor_info_entry);
+	//if (snd_minor_info_entry)
+		//snd_info_unregister(snd_minor_info_entry);
 	return 0;
 }
 #endif /* CONFIG_PROC_FS */

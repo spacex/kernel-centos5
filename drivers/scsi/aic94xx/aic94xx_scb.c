@@ -25,6 +25,7 @@
  */
 
 #include <linux/pci.h>
+#include <scsi/scsi_host.h>
 
 #include "aic94xx.h"
 #include "aic94xx_reg.h"
@@ -52,6 +53,8 @@
 
 static inline void get_lrate_mode(struct asd_phy *phy, u8 oob_mode)
 {
+	struct sas_phy *sas_phy = phy->sas_phy.phy;
+
 	switch (oob_mode & 7) {
 	case PHY_SPEED_60:
 		/* FIXME: sas transport class doesn't have this */
@@ -59,7 +62,7 @@ static inline void get_lrate_mode(struct asd_phy *phy, u8 oob_mode)
 		phy->sas_phy.phy->negotiated_linkrate = SAS_LINK_RATE_6_0_GBPS;
 		break;
 	case PHY_SPEED_30:
-		phy->sas_phy.linkrate = PHY_LINKRATE_3;
+		phy->sas_phy.linkrate = PHY_LINKRATE_6;
 		phy->sas_phy.phy->negotiated_linkrate = SAS_LINK_RATE_3_0_GBPS;
 		break;
 	case PHY_SPEED_15:
@@ -67,6 +70,12 @@ static inline void get_lrate_mode(struct asd_phy *phy, u8 oob_mode)
 		phy->sas_phy.phy->negotiated_linkrate = SAS_LINK_RATE_1_5_GBPS;
 		break;
 	}
+	sas_phy->negotiated_linkrate = phy_linkrate_to_linkrate(phy->sas_phy.linkrate);
+	sas_phy->maximum_linkrate_hw = SAS_LINK_RATE_3_0_GBPS;
+	sas_phy->minimum_linkrate_hw = SAS_LINK_RATE_1_5_GBPS;
+	sas_phy->maximum_linkrate = phy_linkrate_to_linkrate(phy->phy_desc->max_sas_lrate);
+	sas_phy->minimum_linkrate = phy_linkrate_to_linkrate(phy->phy_desc->min_sas_lrate);
+
 	if (oob_mode & SAS_MODE)
 		phy->sas_phy.oob_mode = SAS_OOB_MODE;
 	else if (oob_mode & SATA_MODE)
@@ -160,6 +169,70 @@ static inline void asd_get_attached_sas_addr(struct asd_phy *phy, u8 *sas_addr)
 	}
 }
 
+static void asd_form_port(struct asd_ha_struct *asd_ha, struct asd_phy *phy)
+{
+	int i;
+	struct asd_port *free_port = NULL;
+	struct asd_port *port;
+	struct asd_sas_phy *sas_phy = &phy->sas_phy;
+	unsigned long flags;
+
+	spin_lock_irqsave(&asd_ha->asd_ports_lock, flags);
+	if (!phy->asd_port) {
+		for (i = 0; i < ASD_MAX_PHYS; i++) {
+			port = &asd_ha->asd_ports[i];
+
+			/* Check for wide port */
+			if (port->num_phys > 0 &&
+			    memcmp(port->sas_addr, sas_phy->sas_addr,
+				   SAS_ADDR_SIZE) == 0 &&
+			    memcmp(port->attached_sas_addr,
+				   sas_phy->attached_sas_addr,
+				   SAS_ADDR_SIZE) == 0) {
+				break;
+			}
+
+			/* Find a free port */
+			if (port->num_phys == 0 && free_port == NULL) {
+				free_port = port;
+			}
+		}
+
+		/* Use a free port if this doesn't form a wide port */
+		if (i >= ASD_MAX_PHYS) {
+			port = free_port;
+			BUG_ON(!port);
+			memcpy(port->sas_addr, sas_phy->sas_addr,
+			       SAS_ADDR_SIZE);
+			memcpy(port->attached_sas_addr,
+			       sas_phy->attached_sas_addr,
+			       SAS_ADDR_SIZE);
+		}
+		port->num_phys++;
+		port->phy_mask |= (1U << sas_phy->id);
+		phy->asd_port = port;
+	}
+	ASD_DPRINTK("%s: updating phy_mask 0x%x for phy%d\n",
+		    __FUNCTION__, phy->asd_port->phy_mask, sas_phy->id);
+	asd_update_port_links(asd_ha, phy);
+	spin_unlock_irqrestore(&asd_ha->asd_ports_lock, flags);
+}
+
+static void asd_deform_port(struct asd_ha_struct *asd_ha, struct asd_phy *phy)
+{
+	struct asd_port *port = phy->asd_port;
+	struct asd_sas_phy *sas_phy = &phy->sas_phy;
+	unsigned long flags;
+
+	spin_lock_irqsave(&asd_ha->asd_ports_lock, flags);
+	if (port) {
+		port->num_phys--;
+		port->phy_mask &= ~(1U << sas_phy->id);
+		phy->asd_port = NULL;
+	}
+	spin_unlock_irqrestore(&asd_ha->asd_ports_lock, flags);
+}
+
 static inline void asd_bytes_dmaed_tasklet(struct asd_ascb *ascb,
 					   struct done_list_struct *dl,
 					   int edb_id, int phy_id)
@@ -179,6 +252,7 @@ static inline void asd_bytes_dmaed_tasklet(struct asd_ascb *ascb,
 	asd_get_attached_sas_addr(phy, phy->sas_phy.attached_sas_addr);
 	spin_unlock_irqrestore(&phy->sas_phy.frame_rcvd_lock, flags);
 	asd_dump_frame_rcvd(phy, dl);
+	asd_form_port(ascb->ha, phy);
 	sas_ha->notify_port_event(&phy->sas_phy, PORTE_BYTES_DMAED);
 }
 
@@ -189,6 +263,7 @@ static inline void asd_link_reset_err_tasklet(struct asd_ascb *ascb,
 	struct asd_ha_struct *asd_ha = ascb->ha;
 	struct sas_ha_struct *sas_ha = &asd_ha->sas_ha;
 	struct asd_sas_phy *sas_phy = sas_ha->sas_phy[phy_id];
+	struct asd_phy *phy = &asd_ha->phys[phy_id];
 	u8 lr_error = dl->status_block[1];
 	u8 retries_left = dl->status_block[2];
 
@@ -213,6 +288,7 @@ static inline void asd_link_reset_err_tasklet(struct asd_ascb *ascb,
 
 	asd_turn_led(asd_ha, phy_id, 0);
 	sas_phy_disconnected(sas_phy);
+	asd_deform_port(asd_ha, phy);
 	sas_ha->notify_port_event(sas_phy, PORTE_LINK_RESET_ERR);
 
 	if (retries_left == 0) {
@@ -240,6 +316,8 @@ static inline void asd_primitive_rcvd_tasklet(struct asd_ascb *ascb,
 	unsigned long flags;
 	struct sas_ha_struct *sas_ha = &ascb->ha->sas_ha;
 	struct asd_sas_phy *sas_phy = sas_ha->sas_phy[phy_id];
+	struct asd_ha_struct *asd_ha = ascb->ha;
+	struct asd_phy *phy = &asd_ha->phys[phy_id];
 	u8  reg  = dl->status_block[1];
 	u32 cont = dl->status_block[2] << ((reg & 3)*8);
 
@@ -276,6 +354,7 @@ static inline void asd_primitive_rcvd_tasklet(struct asd_ascb *ascb,
 				    phy_id);
 			/* The sequencer disables all phys on that port.
 			 * We have to re-enable the phys ourselves. */
+			asd_deform_port(asd_ha, phy);
 			sas_ha->notify_port_event(sas_phy, PORTE_HARD_RESET);
 			break;
 
@@ -343,6 +422,7 @@ static void escb_tasklet_complete(struct asd_ascb *ascb,
 	u8  sb_opcode = dl->status_block[0];
 	int phy_id = sb_opcode & DL_PHY_MASK;
 	struct asd_sas_phy *sas_phy = sas_ha->sas_phy[phy_id];
+	struct asd_phy *phy = &asd_ha->phys[phy_id];
 
 	if (edb > 6 || edb < 0) {
 		ASD_DPRINTK("edb is 0x%x! dl->opcode is 0x%x\n",
@@ -358,6 +438,118 @@ static void escb_tasklet_complete(struct asd_ascb *ascb,
 			    le64_to_cpu(ascb->scb->header.next_scb),
 			    le16_to_cpu(ascb->scb->header.index),
 			    ascb->scb->header.opcode);
+	}
+
+	/* Catch these before we mask off the sb_opcode bits */
+	switch (sb_opcode) {
+	case REQ_TASK_ABORT: {
+		struct asd_ascb *a, *b;
+		u16 tc_abort;
+		struct domain_device *failed_dev = NULL;
+
+		ASD_DPRINTK("%s: REQ_TASK_ABORT, reason=0x%X\n",
+			    __FUNCTION__, dl->status_block[3]);
+
+		/*
+		 * Find the task that caused the abort and abort it first.
+		 * The sequencer won't put anything on the done list until
+		 * that happens.
+		 */
+		tc_abort = *((u16*)(&dl->status_block[1]));
+		tc_abort = le16_to_cpu(tc_abort);
+
+		list_for_each_entry_safe(a, b, &asd_ha->seq.pend_q, list) {
+			struct sas_task *task = ascb->uldd_task;
+
+			if (task && a->tc_index == tc_abort) {
+				failed_dev = task->dev;
+				sas_task_abort(task);
+				break;
+			}
+		}
+
+		if (!failed_dev) {
+			ASD_DPRINTK("%s: Can't find task (tc=%d) to abort!\n",
+				    __FUNCTION__, tc_abort);
+			goto out;
+		}
+
+		/*
+		 * Now abort everything else for that device (hba?) so
+		 * that the EH will wake up and do something.
+		 */
+		list_for_each_entry_safe(a, b, &asd_ha->seq.pend_q, list) {
+			struct sas_task *task = ascb->uldd_task;
+
+			if (task &&
+			    task->dev == failed_dev &&
+			    a->tc_index != tc_abort)
+				sas_task_abort(task);
+		}
+
+		goto out;
+	}
+	case REQ_DEVICE_RESET: {
+		struct asd_ascb *a;
+		u16 conn_handle;
+		unsigned long flags;
+		struct sas_task *last_dev_task = NULL;
+
+		conn_handle = *((u16*)(&dl->status_block[1]));
+		conn_handle = le16_to_cpu(conn_handle);
+
+		ASD_DPRINTK("%s: REQ_DEVICE_RESET, reason=0x%X\n", __FUNCTION__,
+			    dl->status_block[3]);
+
+		/* Find the last pending task for the device... */
+		list_for_each_entry(a, &asd_ha->seq.pend_q, list) {
+			u16 x;
+			struct domain_device *dev;
+			struct sas_task *task = a->uldd_task;
+
+			if (!task)
+				continue;
+			dev = task->dev;
+
+			x = (unsigned long)dev->lldd_dev;
+			if (x == conn_handle)
+				last_dev_task = task;
+		}
+
+		if (!last_dev_task) {
+			ASD_DPRINTK("%s: Device reset for idle device %d?\n",
+				    __FUNCTION__, conn_handle);
+			goto out;
+		}
+
+		/* ...and set the reset flag */
+		spin_lock_irqsave(&last_dev_task->task_state_lock, flags);
+		last_dev_task->task_state_flags |= SAS_TASK_NEED_DEV_RESET;
+		spin_unlock_irqrestore(&last_dev_task->task_state_lock, flags);
+
+		/* Kill all pending tasks for the device */
+		list_for_each_entry(a, &asd_ha->seq.pend_q, list) {
+			u16 x;
+			struct domain_device *dev;
+			struct sas_task *task = a->uldd_task;
+
+			if (!task)
+				continue;
+			dev = task->dev;
+
+			x = (unsigned long)dev->lldd_dev;
+			if (x == conn_handle)
+				sas_task_abort(task);
+		}
+
+		goto out;
+	}
+	case SIGNAL_NCQ_ERROR:
+		ASD_DPRINTK("%s: SIGNAL_NCQ_ERROR\n", __FUNCTION__);
+		goto out;
+	case CLEAR_NCQ_ERROR:
+		ASD_DPRINTK("%s: CLEAR_NCQ_ERROR\n", __FUNCTION__);
+		goto out;
 	}
 
 	sb_opcode &= ~DL_PHY_MASK;
@@ -387,23 +579,8 @@ static void escb_tasklet_complete(struct asd_ascb *ascb,
 		asd_turn_led(asd_ha, phy_id, 0);
 		/* the device is gone */
 		sas_phy_disconnected(sas_phy);
+		asd_deform_port(asd_ha, phy);
 		sas_ha->notify_port_event(sas_phy, PORTE_TIMER_EVENT);
-		break;
-	case REQ_TASK_ABORT:
-		ASD_DPRINTK("%s: phy%d: REQ_TASK_ABORT\n", __FUNCTION__,
-			    phy_id);
-		break;
-	case REQ_DEVICE_RESET:
-		ASD_DPRINTK("%s: phy%d: REQ_DEVICE_RESET\n", __FUNCTION__,
-			    phy_id);
-		break;
-	case SIGNAL_NCQ_ERROR:
-		ASD_DPRINTK("%s: phy%d: SIGNAL_NCQ_ERROR\n", __FUNCTION__,
-			    phy_id);
-		break;
-	case CLEAR_NCQ_ERROR:
-		ASD_DPRINTK("%s: phy%d: CLEAR_NCQ_ERROR\n", __FUNCTION__,
-			    phy_id);
 		break;
 	default:
 		ASD_DPRINTK("%s: phy%d: unknown event:0x%x\n", __FUNCTION__,
@@ -424,7 +601,7 @@ static void escb_tasklet_complete(struct asd_ascb *ascb,
 
 		break;
 	}
-
+out:
 	asd_invalidate_edb(ascb, edb);
 }
 
@@ -710,14 +887,37 @@ static const int phy_func_table[] = {
 	[PHY_FUNC_RELEASE_SPINUP_HOLD] = RELEASE_SPINUP_HOLD,
 };
 
-int asd_control_phy(struct asd_sas_phy *phy, enum phy_func func)
+int asd_control_phy_wrap(struct asd_sas_phy *phy, enum phy_func func)
+{
+	return asd_control_phy(phy, func, NULL);
+}
+
+int asd_control_phy(struct asd_sas_phy *phy, enum phy_func func, void *arg)
 {
 	struct asd_ha_struct *asd_ha = phy->ha->lldd_ha;
+	struct asd_phy_desc *pd = asd_ha->phys[phy->id].phy_desc;
 	struct asd_ascb *ascb;
+	struct sas_phy_linkrates *rates;
 	int res = 1;
 
-	if (func == PHY_FUNC_CLEAR_ERROR_LOG)
+	switch (func) {
+	case PHY_FUNC_CLEAR_ERROR_LOG:
 		return -ENOSYS;
+	case PHY_FUNC_SET_LINK_RATE:
+		rates = arg;
+		if (rates->minimum_linkrate) {
+			pd->min_sas_lrate = rates->minimum_linkrate;
+			pd->min_sata_lrate = rates->minimum_linkrate;
+		}
+		if (rates->maximum_linkrate) {
+			pd->max_sas_lrate = rates->maximum_linkrate;
+			pd->max_sata_lrate = rates->maximum_linkrate;
+		}
+		func = PHY_FUNC_LINK_RESET;
+		break;
+	default:
+		break;
+	}
 
 	ascb = asd_ascb_alloc_list(asd_ha, &res, GFP_KERNEL);
 	if (!ascb)

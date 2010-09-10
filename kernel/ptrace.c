@@ -18,58 +18,15 @@
 #include <linux/ptrace.h>
 #include <linux/security.h>
 #include <linux/signal.h>
+#include <linux/syscalls.h>
+#include <linux/utrace.h>
+#include <linux/tracehook.h>
+#include <linux/audit.h>
 
+#include <asm/tracehook.h>
 #include <asm/pgtable.h>
 #include <asm/uaccess.h>
 
-#ifdef CONFIG_PTRACE
-#include <linux/utrace.h>
-#include <linux/tracehook.h>
-#include <asm/tracehook.h>
-#endif
-
-int getrusage(struct task_struct *, int, struct rusage __user *);
-
-//#define PTRACE_DEBUG
-
-int __ptrace_may_attach(struct task_struct *task)
-{
-	/* May we inspect the given task?
-	 * This check is used both for attaching with ptrace
-	 * and for allowing access to sensitive information in /proc.
-	 *
-	 * ptrace_attach denies several cases that /proc allows
-	 * because setting up the necessary parent/child relationship
-	 * or halting the specified task is impossible.
-	 */
-	int dumpable = 0;
-	/* Don't let security modules deny introspection */
-	if (task == current)
-		return 0;
-	if (((current->uid != task->euid) ||
-	     (current->uid != task->suid) ||
-	     (current->uid != task->uid) ||
-	     (current->gid != task->egid) ||
-	     (current->gid != task->sgid) ||
-	     (current->gid != task->gid)) && !capable(CAP_SYS_PTRACE))
-		return -EPERM;
-	smp_rmb();
-	if (task->mm)
-		dumpable = task->mm->dumpable;
-	if (!dumpable && !capable(CAP_SYS_PTRACE))
-		return -EPERM;
-
-	return security_ptrace(current, task);
-}
-
-int ptrace_may_attach(struct task_struct *task)
-{
-	int err;
-	task_lock(task);
-	err = __ptrace_may_attach(task);
-	task_unlock(task);
-	return !err;
-}
 
 /*
  * Access another process' address space.
@@ -126,17 +83,32 @@ int access_process_vm(struct task_struct *tsk, unsigned long addr, void *buf, in
 }
 
 
-#ifndef CONFIG_PTRACE
-
-asmlinkage long sys_ptrace(long request, long pid, long addr, long data)
-{
-	return -ENOSYS;
-}
-
+#ifdef CONFIG_DEBUG_PREEMPT
+#define NO_LOCKS	WARN_ON(preempt_count() != 0)
+#define START_CHECK	do { int _dbg_preempt = preempt_count()
+#define	END_CHECK	BUG_ON(preempt_count() != _dbg_preempt); } while (0)
 #else
+#define NO_LOCKS	do { } while (0)
+#define START_CHECK	do { } while (0)
+#define	END_CHECK	do { } while (0)
+#endif
+
+#define PTRACE_DEBUG 1
+#ifdef PTRACE_DEBUG
+#define CHECK_INIT(p)	atomic_set(&(p)->check_dead, 1)
+#define CHECK_DEAD(p)	BUG_ON(!atomic_dec_and_test(&(p)->check_dead))
+#else
+#define CHECK_INIT(p)	do { } while (0)
+#define CHECK_DEAD(p)	do { } while (0)
+#endif
 
 struct ptrace_state
 {
+	struct rcu_head rcu;
+#ifdef PTRACE_DEBUG
+	atomic_t check_dead;
+#endif
+
 	/*
 	 * These elements are always available, even when the struct is
 	 * awaiting destruction at the next RCU callback point.
@@ -146,23 +118,18 @@ struct ptrace_state
 	struct task_struct *parent; /* Whom we report to.  */
 	struct list_head entry;	/* Entry on parent->ptracees list.  */
 
-	union {
-		struct rcu_head dead;
-		struct {
-			u8 options; /* PTRACE_SETOPTIONS bits.  */
-			unsigned int syscall:1;	/* Reporting for syscall.  */
+	u8 options;		/* PTRACE_SETOPTIONS bits.  */
+	unsigned int syscall:1;	/* Reporting for syscall.  */
 #ifdef PTRACE_SYSEMU
-			unsigned int sysemu:1; /* PTRACE_SYSEMU in progress. */
+	unsigned int sysemu:1;	/* PTRACE_SYSEMU in progress. */
 #endif
-			unsigned int have_eventmsg:1; /* u.eventmsg valid. */
-			unsigned int cap_sys_ptrace:1; /* Tracer capable.  */
+	unsigned int have_eventmsg:1; /* u.eventmsg valid. */
+	unsigned int cap_sys_ptrace:1; /* Tracer capable.  */
 
-			union
-			{
-				unsigned long eventmsg;
-				siginfo_t *siginfo;
-			} u;
-		} live;
+	union
+	{
+		unsigned long eventmsg;
+		siginfo_t *siginfo;
 	} u;
 };
 
@@ -178,32 +145,47 @@ ptrace_state_unlink(struct ptrace_state *state)
 
 static struct ptrace_state *
 ptrace_setup(struct task_struct *target, struct utrace_attached_engine *engine,
-	     struct task_struct *parent, u8 options, int cap_sys_ptrace,
-	     struct ptrace_state *state)
+	     struct task_struct *parent, u8 options, int cap_sys_ptrace)
 {
-	if (state == NULL) {
-		state = kzalloc(sizeof *state, GFP_USER);
-		if (unlikely(state == NULL))
-			return ERR_PTR(-ENOMEM);
-	}
+	struct ptrace_state *state;
 
-	state->engine = engine;
+	NO_LOCKS;
+
+	state = kzalloc(sizeof *state, GFP_USER);
+	if (unlikely(state == NULL))
+		return ERR_PTR(-ENOMEM);
+
+	INIT_RCU_HEAD(&state->rcu);
+	CHECK_INIT(state);
 	state->task = target;
+	state->engine = engine;
+	state->options = options;
+	state->cap_sys_ptrace = cap_sys_ptrace;
+
+	rcu_read_lock();
+
+	/*
+	 * In ptrace_traceme, it's only safe to use this inside rcu_read_lock.
+	 */
+	if (parent == NULL)
+		parent = current->parent;
+
 	state->parent = parent;
-	state->u.live.options = options;
-	state->u.live.cap_sys_ptrace = cap_sys_ptrace;
 
 	task_lock(parent);
 	if (unlikely(parent->flags & PF_EXITING)) {
 		task_unlock(parent);
 		kfree(state);
-		return ERR_PTR(-EALREADY);
+		state = ERR_PTR(-EALREADY);
 	}
-	list_add_rcu(&state->entry, &state->parent->ptracees);
-	task_unlock(state->parent);
+	else {
+		list_add_rcu(&state->entry, &state->parent->ptracees);
+		task_unlock(state->parent);
+	}
 
-	BUG_ON(engine->data != 0);
-	rcu_assign_pointer(engine->data, (unsigned long) state);
+	rcu_read_unlock();
+
+	NO_LOCKS;
 
 	return state;
 }
@@ -212,26 +194,29 @@ static void
 ptrace_state_free(struct rcu_head *rhead)
 {
 	struct ptrace_state *state = container_of(rhead,
-						  struct ptrace_state, u.dead);
+						  struct ptrace_state, rcu);
 	kfree(state);
 }
 
 static void
 ptrace_done(struct ptrace_state *state)
 {
-	INIT_RCU_HEAD(&state->u.dead);
-	call_rcu(&state->u.dead, ptrace_state_free);
+	CHECK_DEAD(state);
+	BUG_ON(state->rcu.func);
+	BUG_ON(state->rcu.next);
+	call_rcu(&state->rcu, ptrace_state_free);
 }
 
 /*
  * Update the tracing engine state to match the new ptrace state.
  */
 static int __must_check
-ptrace_update(struct task_struct *target,
-	      struct utrace_attached_engine *engine,
-	      unsigned long flags)
+ptrace_update(struct task_struct *target, struct ptrace_state *state,
+	      unsigned long flags, int from_stopped)
 {
-	struct ptrace_state *state = (struct ptrace_state *) engine->data;
+	int ret;
+
+	START_CHECK;
 
 	/*
 	 * These events are always reported.
@@ -247,9 +232,9 @@ ptrace_update(struct task_struct *target,
 	/*
 	 * PTRACE_SETOPTIONS can request more events.
 	 */
-	if (state->u.live.options & PTRACE_O_TRACEEXIT)
+	if (state->options & PTRACE_O_TRACEEXIT)
 		flags |= UTRACE_EVENT(EXIT);
-	if (state->u.live.options & PTRACE_O_TRACEVFORKDONE)
+	if (state->options & PTRACE_O_TRACEVFORKDONE)
 		flags |= UTRACE_EVENT(VFORK_DONE);
 
 	/*
@@ -258,7 +243,7 @@ ptrace_update(struct task_struct *target,
 	 */
 	flags |= UTRACE_ACTION_NOREAP | UTRACE_EVENT(REAP);
 
-	if (!(flags & UTRACE_ACTION_QUIESCE)) {
+	if (from_stopped && !(flags & UTRACE_ACTION_QUIESCE)) {
 		/*
 		 * We're letting the thread resume from ptrace stop.
 		 * If SIGKILL is waking it up, it can be racing with us here
@@ -268,8 +253,8 @@ ptrace_update(struct task_struct *target,
 		if (!unlikely(target->flags & PF_SIGNALED))
 			target->exit_code = 0;
 
-		if (!state->u.live.have_eventmsg)
-			state->u.live.u.siginfo = NULL;
+		if (!state->have_eventmsg)
+			state->u.siginfo = NULL;
 
 		if (target->state == TASK_STOPPED) {
 			/*
@@ -288,20 +273,56 @@ ptrace_update(struct task_struct *target,
 		}
 	}
 
-	return utrace_set_flags(target, engine, flags);
+	ret = utrace_set_flags(target, state->engine, flags);
+
+	END_CHECK;
+
+	return ret;
 }
+
+/*
+ * This does ptrace_update and also installs state in engine->data.
+ * Only after utrace_set_flags succeeds (in ptrace_update) inside
+ * rcu_read_lock() can we be sure state->engine is still valid.
+ * Otherwise a quick death could have come along and cleaned it up
+ * already.  Note that from ptrace_update we can get event callbacks
+ * that will see engine->data still NULL before we set it.  This is
+ * fine, as they will just act as if we had not been attached yet.
+ */
+static int __must_check
+ptrace_setup_finish(struct task_struct *target, struct ptrace_state *state)
+{
+	int ret;
+
+	NO_LOCKS;
+
+	rcu_read_lock();
+	ret = ptrace_update(target, state, 0, 0);
+	if (likely(ret == 0)) {
+		struct utrace_attached_engine *engine = state->engine;
+		BUG_ON(engine->data != NULL);
+		rcu_assign_pointer(engine->data, state);
+	}
+	rcu_read_unlock();
+
+	NO_LOCKS;
+
+	return ret;
+}
+
 
 static int ptrace_traceme(void)
 {
 	struct utrace_attached_engine *engine;
 	struct ptrace_state *state;
-	struct task_struct *parent;
 	int retval;
+
+	NO_LOCKS;
 
 	engine = utrace_attach(current, (UTRACE_ATTACH_CREATE
 					 | UTRACE_ATTACH_EXCLUSIVE
 					 | UTRACE_ATTACH_MATCH_OPS),
-			       &ptrace_utrace_ops, 0UL);
+			       &ptrace_utrace_ops, NULL);
 
 	if (IS_ERR(engine)) {
 		retval = PTR_ERR(engine);
@@ -309,45 +330,25 @@ static int ptrace_traceme(void)
 			retval = -EPERM;
 	}
 	else {
-		/*
-		 * We need to preallocate so that we can hold
-		 * rcu_read_lock from extracting ->parent through
-		 * ptrace_setup using it.
-		 */
-		state = kzalloc(sizeof *state, GFP_USER);
-		if (unlikely(state == NULL)) {
-			(void) utrace_detach(current, engine);
-			printk(KERN_ERR
-			       "ptrace out of memory, lost child %d of %d",
-			       current->pid, current->parent->pid);
-			return -ENOMEM;
-		}
-
-		rcu_read_lock();
-		parent = rcu_dereference(current->parent);
-
 		task_lock(current);
-		retval = security_ptrace(parent, current);
+		retval = security_ptrace(current->parent, current);
 		task_unlock(current);
 
 		if (retval) {
-			kfree(state);
 			(void) utrace_detach(current, engine);
 		}
 		else {
-			state = ptrace_setup(current, engine, parent, 0, 0,
-					     state);
+			state = ptrace_setup(current, engine, NULL, 0, 0);
 			if (IS_ERR(state))
 				retval = PTR_ERR(state);
 		}
-		rcu_read_unlock();
 
 		if (!retval) {
 			/*
 			 * This can't fail because we can't die while we
 			 * are here doing this.
 			 */
-			retval = ptrace_update(current, engine, 0);
+			retval = ptrace_setup_finish(current, state);
 			BUG_ON(retval);
 		}
 		else if (unlikely(retval == -EALREADY))
@@ -360,6 +361,8 @@ static int ptrace_traceme(void)
 			retval = 0;
 	}
 
+	NO_LOCKS;
+
 	return retval;
 }
 
@@ -369,6 +372,10 @@ static int ptrace_attach(struct task_struct *task)
 	struct ptrace_state *state;
 	int retval;
 
+	audit_ptrace(task);
+
+	NO_LOCKS;
+
 	retval = -EPERM;
 	if (task->pid <= 1)
 		goto bad;
@@ -377,10 +384,13 @@ static int ptrace_attach(struct task_struct *task)
 	if (!task->mm)		/* kernel threads */
 		goto bad;
 
+	pr_debug("%d ptrace_attach %d state %lu exit_code %x\n",
+		 current->pid, task->pid, task->state, task->exit_code);
+
 	engine = utrace_attach(task, (UTRACE_ATTACH_CREATE
 				      | UTRACE_ATTACH_EXCLUSIVE
 				      | UTRACE_ATTACH_MATCH_OPS),
-			       &ptrace_utrace_ops, 0);
+			       &ptrace_utrace_ops, NULL);
 	if (IS_ERR(engine)) {
 		retval = PTR_ERR(engine);
 		if (retval == -EEXIST)
@@ -388,13 +398,23 @@ static int ptrace_attach(struct task_struct *task)
 		goto bad;
 	}
 
+	pr_debug("%d ptrace_attach %d after utrace_attach: %lu exit_code %x\n",
+		 current->pid, task->pid, task->state, task->exit_code);
+
+	NO_LOCKS;
 	if (ptrace_may_attach(task)) {
 		state = ptrace_setup(task, engine, current, 0,
-				     capable(CAP_SYS_PTRACE), NULL);
+				     capable(CAP_SYS_PTRACE));
 		if (IS_ERR(state))
 			retval = PTR_ERR(state);
 		else {
-			retval = ptrace_update(task, engine, 0);
+			retval = ptrace_setup_finish(task, state);
+
+			pr_debug("%d ptrace_attach %d after ptrace_update (%d)"
+				 " %lu exit_code %x\n",
+				 current->pid, task->pid, retval,
+				 task->state, task->exit_code);
+
 			if (retval) {
 				/*
 				 * It died before we enabled any callbacks.
@@ -407,10 +427,13 @@ static int ptrace_attach(struct task_struct *task)
 			}
 		}
 	}
+	NO_LOCKS;
 	if (retval)
 		(void) utrace_detach(task, engine);
 	else {
 		int stopped = 0;
+
+		NO_LOCKS;
 
 		/*
 		 * We must double-check that task has not just died and
@@ -429,29 +452,89 @@ static int ptrace_attach(struct task_struct *task)
 		read_unlock(&tasklist_lock);
 
 		if (stopped) {
+			const struct utrace_regset *regset;
+
+			/*
+			 * Set QUIESCE immediately, so we can allow
+			 * ptrace requests while he's in TASK_STOPPED.
+			 */
+			retval = ptrace_update(task, state, /* XXX child death+other thread waits race could have freed state already */
+					       UTRACE_ACTION_QUIESCE, 0);
+			if (retval)
+				/*
+				 * Anything is possible here.  It might not
+				 * really have been quiescent yet.  It
+				 * might have just woken up and died.
+				 */
+				BUG_ON(retval != -ESRCH && retval != -EALREADY);
+			retval = 0;
+
 			/*
 			 * Do now the regset 0 writeback that we do on every
 			 * stop, since it's never been done.  On register
 			 * window machines, this makes sure the user memory
 			 * backing the register data is up to date.
 			 */
-			const struct utrace_regset *regset;
 			regset = utrace_regset(task, engine,
 					       utrace_native_view(task), 0);
 			if (regset->writeback)
 				(*regset->writeback)(task, regset, 1);
 		}
+
+		pr_debug("%d ptrace_attach %d complete (%sstopped)"
+			 " state %lu code %x",
+			 current->pid, task->pid, stopped ? "" : "not ",
+			 task->state, task->exit_code);
 	}
 
 bad:
+	NO_LOCKS;
 	return retval;
 }
 
+/*
+ * The task might be dying or being reaped in parallel, in which case
+ * engine and state may no longer be valid.  utrace_detach checks for us.
+ */
 static int ptrace_detach(struct task_struct *task,
-			 struct utrace_attached_engine *engine)
+			 struct utrace_attached_engine *engine,
+			 struct ptrace_state *state)
 {
-	struct ptrace_state *state = (struct ptrace_state *) engine->data;
-	int error = utrace_detach(task, engine);
+
+	int error;
+
+	NO_LOCKS;
+
+#ifdef HAVE_ARCH_PTRACE_DETACH
+	/*
+	 * Some funky compatibility code in arch_ptrace may have
+	 * needed to install special state it should clean up now.
+	 */
+	arch_ptrace_detach(task);
+#endif
+
+	/*
+	 * Traditional ptrace behavior does wake_up_process no matter what
+	 * in ptrace_detach.  But utrace_detach will not do a wakeup if
+	 * it's in a proper job control stop.  We need it to wake up from
+	 * TASK_STOPPED and either resume or process more signals.  A
+	 * pending stop signal will just leave it stopped again, but will
+	 * consume the signal, and reset task->exit_code for the next wait
+	 * call to see.  This is important to userland if ptrace_do_wait
+	 * "stole" the previous unwaited-for-ness (clearing exit_code), but
+	 * there is a pending SIGSTOP, e.g. sent by a PTRACE_ATTACH done
+	 * while already in job control stop.
+	 */
+	read_lock(&tasklist_lock);
+	if (likely(task->signal != NULL)) {
+		spin_lock_irq(&task->sighand->siglock);
+		task->signal->flags &= ~SIGNAL_STOP_STOPPED;
+		spin_unlock_irq(&task->sighand->siglock);
+	}
+	read_unlock(&tasklist_lock);
+
+	error = utrace_detach(task, engine);
+	NO_LOCKS;
 	if (!error) {
 		/*
 		 * We can only get here from the ptracer itself or via
@@ -485,6 +568,9 @@ void
 ptrace_exit(struct task_struct *tsk)
 {
 	struct list_head *pos, *n;
+	int restart;
+
+	NO_LOCKS;
 
 	/*
 	 * Taking the task_lock after PF_EXITING is set ensures that a
@@ -498,40 +584,58 @@ ptrace_exit(struct task_struct *tsk)
 	}
 	task_unlock(tsk);
 
-restart:
-	rcu_read_lock();
+	restart = 0;
+	do {
+		struct ptrace_state *state;
+		int error;
 
-	list_for_each_safe_rcu(pos, n, &tsk->ptracees) {
-		struct ptrace_state *state = list_entry(pos,
-							struct ptrace_state,
-							entry);
-		int error = utrace_detach(state->task, state->engine);
-		BUG_ON(state->parent != tsk);
-		if (likely(error == 0)) {
-			ptrace_state_unlink(state);
-			ptrace_done(state);
+		START_CHECK;
+
+		rcu_read_lock();
+
+		list_for_each_safe_rcu(pos, n, &tsk->ptracees) {
+			state = list_entry(pos, struct ptrace_state, entry);
+			error = utrace_detach(state->task, state->engine);
+			BUG_ON(state->parent != tsk);
+			if (likely(error == 0)) {
+				ptrace_state_unlink(state);
+				ptrace_done(state);
+			}
+			else if (unlikely(error == -EALREADY)) {
+				/*
+				 * It's still doing report_death callbacks.
+				 * Just wait for it to settle down.
+				 * Since wait_task_inactive might yield,
+				 * we must go out of rcu_read_lock and restart.
+				 */
+				struct task_struct *p = state->task;
+				get_task_struct(p);
+				rcu_read_unlock();
+				wait_task_inactive(p);
+				put_task_struct(p);
+				restart = 1;
+				break;
+			}
+			else {
+				BUG_ON(error != -ESRCH);
+				restart = -1;
+			}
 		}
-		else if (unlikely(error == -EALREADY)) {
-			/*
-			 * It's still doing report_death callbacks.
-			 * Just wait for it to settle down.
-			 * Since wait_task_inactive might yield,
-			 * we must go out of rcu_read_lock and restart.
-			 */
-			struct task_struct *p = state->task;
-			get_task_struct(p);
-			rcu_read_unlock();
-			wait_task_inactive(p);
-			put_task_struct(p);
-			goto restart;
-		}
-		else
-			BUG_ON(error != -ESRCH);
-	}
 
-	rcu_read_unlock();
+		rcu_read_unlock();
 
-	BUG_ON(!list_empty(&tsk->ptracees));
+		END_CHECK;
+
+		cond_resched();
+	} while (restart > 0);
+
+	if (likely(restart == 0))
+		/*
+		 * If we had an -ESRCH error from utrace_detach, we might
+		 * still be racing with the thread in ptrace_state_unlink,
+		 * but things are OK.
+		 */
+		BUG_ON(!list_empty(&tsk->ptracees));
 }
 
 static int
@@ -539,7 +643,7 @@ ptrace_induce_signal(struct task_struct *target,
 		     struct utrace_attached_engine *engine,
 		     long signr)
 {
-	struct ptrace_state *state = (struct ptrace_state *) engine->data;
+	struct ptrace_state *state = engine->data;
 
 	if (signr == 0)
 		return 0;
@@ -547,15 +651,15 @@ ptrace_induce_signal(struct task_struct *target,
 	if (!valid_signal(signr))
 		return -EIO;
 
-	if (state->u.live.syscall) {
+	if (state->syscall) {
 		/*
 		 * This is the traditional ptrace behavior when given
 		 * a signal to resume from a syscall tracing stop.
 		 */
 		send_sig(signr, target, 1);
 	}
-	else if (!state->u.live.have_eventmsg && state->u.live.u.siginfo) {
-		siginfo_t *info = state->u.live.u.siginfo;
+	else if (!state->have_eventmsg && state->u.siginfo) {
+		siginfo_t *info = state->u.siginfo;
 
 		/* Update the siginfo structure if the signal has
 		   changed.  If the debugger wanted something
@@ -576,7 +680,7 @@ ptrace_induce_signal(struct task_struct *target,
 	return 0;
 }
 
-fastcall int
+int
 ptrace_regset_access(struct task_struct *target,
 		     struct utrace_attached_engine *engine,
 		     const struct utrace_regset_view *view,
@@ -611,7 +715,7 @@ ptrace_regset_access(struct task_struct *target,
 	return ret;
 }
 
-fastcall int
+int
 ptrace_onereg_access(struct task_struct *target,
 		     struct utrace_attached_engine *engine,
 		     const struct utrace_regset_view *view,
@@ -649,7 +753,7 @@ ptrace_onereg_access(struct task_struct *target,
 	return ret;
 }
 
-fastcall int
+int
 ptrace_layout_access(struct task_struct *target,
 		     struct utrace_attached_engine *engine,
 		     const struct utrace_regset_view *view,
@@ -682,7 +786,7 @@ ptrace_layout_access(struct task_struct *target,
 			 * This is a no-op/zero-fill portion of struct user.
 			 */
 			ret = 0;
-			if (!write) {
+			if (!write && seg->offset == 0) {
 				if (kdata)
 					memset(kdata, 0, n);
 				else if (clear_user(udata, n))
@@ -740,6 +844,8 @@ ptrace_start(long pid, long request,
 	struct ptrace_state *state;
 	int ret;
 
+	NO_LOCKS;
+
 	if (request == PTRACE_TRACEME)
 		return ptrace_traceme();
 
@@ -749,9 +855,7 @@ ptrace_start(long pid, long request,
 	if (child)
 		get_task_struct(child);
 	read_unlock(&tasklist_lock);
-#ifdef PTRACE_DEBUG
-	printk("ptrace pid %ld => %p\n", pid, child);
-#endif
+	pr_debug("ptrace pid %ld => %p\n", pid, child);
 	if (!child)
 		goto out;
 
@@ -766,26 +870,51 @@ ptrace_start(long pid, long request,
 
 	rcu_read_lock();
 	engine = utrace_attach(child, UTRACE_ATTACH_MATCH_OPS,
-			       &ptrace_utrace_ops, 0);
+			       &ptrace_utrace_ops, NULL);
 	ret = -ESRCH;
 	if (IS_ERR(engine) || engine == NULL)
 		goto out_tsk_rcu;
-	state = rcu_dereference((struct ptrace_state *) engine->data);
+	state = rcu_dereference(engine->data);
 	if (state == NULL || state->parent != current)
 		goto out_tsk_rcu;
-	rcu_read_unlock();
-
 	/*
 	 * Traditional ptrace behavior demands that the target already be
 	 * quiescent, but not dead.
 	 */
 	if (request != PTRACE_KILL
 	    && !(engine->flags & UTRACE_ACTION_QUIESCE)) {
-#ifdef PTRACE_DEBUG
-		printk("%d not stopped (%lx)\n", child->pid, child->state);
-#endif
-		goto out_tsk;
+		/*
+		 * If it's in job control stop, turn it into proper quiescence.
+		 */
+		struct sighand_struct *sighand;
+		unsigned long flags;
+		sighand = lock_task_sighand(child, &flags);
+		if (likely(sighand != NULL)) {
+			if (child->state == TASK_STOPPED)
+				ret = 0;
+			unlock_task_sighand(child, &flags);
+		}
+		if (ret == 0) {
+			ret = ptrace_update(child, state,
+					    UTRACE_ACTION_QUIESCE, 0);
+			if (unlikely(ret == -EALREADY))
+				ret = -ESRCH;
+			if (unlikely(ret))
+				BUG_ON(ret != -ESRCH);
+		}
+
+		if (ret) {
+			pr_debug("%d not stopped (%lu)\n",
+				 child->pid, child->state);
+			goto out_tsk_rcu;
+		}
+
+		ret = -ESRCH;  /* Return value for exit_state bail-out.  */
 	}
+
+	rcu_read_unlock();
+
+	NO_LOCKS;
 
 	/*
 	 * We do this for all requests to match traditional ptrace behavior.
@@ -812,9 +941,41 @@ ptrace_start(long pid, long request,
 out_tsk_rcu:
 	rcu_read_unlock();
 out_tsk:
+	NO_LOCKS;
 	put_task_struct(child);
 out:
 	return ret;
+}
+
+static inline int is_sysemu(long req)
+{
+#ifdef PTRACE_SYSEMU
+	if (req == PTRACE_SYSEMU || req == PTRACE_SYSEMU_SINGLESTEP)
+		return 1;
+#endif
+	return 0;
+}
+
+static inline int is_singlestep(long req)
+{
+#ifdef PTRACE_SYSEMU_SINGLESTEP
+	if (req == PTRACE_SYSEMU_SINGLESTEP)
+		return 1;
+#endif
+#ifdef PTRACE_SINGLESTEP
+	if (req == PTRACE_SINGLESTEP)
+		return 1;
+#endif
+	return 0;
+}
+
+static inline int is_blockstep(long req)
+{
+#ifdef PTRACE_SINGLEBLOCK
+	if (req == PTRACE_SINGLEBLOCK)
+		return 1;
+#endif
+	return 0;
 }
 
 static int
@@ -826,6 +987,8 @@ ptrace_common(long request, struct task_struct *child,
 	unsigned long flags;
 	int ret = -EIO;
 
+	NO_LOCKS;
+
 	switch (request) {
 	case PTRACE_DETACH:
 		/*
@@ -833,7 +996,7 @@ ptrace_common(long request, struct task_struct *child,
 		 */
 		ret = ptrace_induce_signal(child, engine, data);
 		if (!ret) {
-			ret = ptrace_detach(child, engine);
+			ret = ptrace_detach(child, engine, state);
 			if (ret == -EALREADY) /* Already a zombie.  */
 				ret = -ESRCH;
 			if (ret)
@@ -857,51 +1020,34 @@ ptrace_common(long request, struct task_struct *child,
 # ifdef ARCH_HAS_BLOCK_STEP
 		if (! ARCH_HAS_BLOCK_STEP)
 # endif
-			if (request == PTRACE_SINGLEBLOCK)
+			if (is_blockstep(request))
 				break;
 #endif
 	case PTRACE_SINGLESTEP:
 #ifdef ARCH_HAS_SINGLE_STEP
 		if (! ARCH_HAS_SINGLE_STEP)
 #endif
-			if (request == PTRACE_SINGLESTEP
-#ifdef PTRACE_SYSEMU_SINGLESTEP
-			    || request == PTRACE_SYSEMU_SINGLESTEP
-#endif
-				)
+			if (is_singlestep(request))
 				break;
 
 		ret = ptrace_induce_signal(child, engine, data);
 		if (ret)
 			break;
 
-
 		/*
 		 * Reset the action flags without QUIESCE, so it resumes.
 		 */
 		flags = 0;
 #ifdef PTRACE_SYSEMU
-		state->u.live.sysemu = (request == PTRACE_SYSEMU_SINGLESTEP
-					|| request == PTRACE_SYSEMU);
+		state->sysemu = is_sysemu(request);
 #endif
-		if (request == PTRACE_SINGLESTEP
-#ifdef PTRACE_SYSEMU
-		    || request == PTRACE_SYSEMU_SINGLESTEP
-#endif
-			)
-			flags |= UTRACE_ACTION_SINGLESTEP;
-#ifdef PTRACE_SINGLEBLOCK
-		else if (request == PTRACE_SINGLEBLOCK)
-			flags |= UTRACE_ACTION_BLOCKSTEP;
-#endif
-		if (request == PTRACE_SYSCALL)
+		if (request == PTRACE_SYSCALL || is_sysemu(request))
 			flags |= UTRACE_EVENT_SYSCALL;
-#ifdef PTRACE_SYSEMU
-		else if (request == PTRACE_SYSEMU
-			 || request == PTRACE_SYSEMU_SINGLESTEP)
-			flags |= UTRACE_EVENT(SYSCALL_ENTRY);
-#endif
-		ret = ptrace_update(child, engine, flags);
+		if (is_singlestep(request))
+			flags |= UTRACE_ACTION_SINGLESTEP;
+		else if (is_blockstep(request))
+			flags |= UTRACE_ACTION_BLOCKSTEP;
+		ret = ptrace_update(child, state, flags, 1);
 		if (ret)
 			BUG_ON(ret != -ESRCH);
 		ret = 0;
@@ -914,13 +1060,15 @@ ptrace_common(long request, struct task_struct *child,
 		ret = -EINVAL;
 		if (data & ~PTRACE_O_MASK)
 			break;
-		state->u.live.options = data;
-		ret = ptrace_update(child, engine, UTRACE_ACTION_QUIESCE);
+		state->options = data;
+		ret = ptrace_update(child, state, UTRACE_ACTION_QUIESCE, 1);
 		if (ret)
 			BUG_ON(ret != -ESRCH);
 		ret = 0;
 		break;
 	}
+
+	NO_LOCKS;
 
 	return ret;
 }
@@ -928,15 +1076,13 @@ ptrace_common(long request, struct task_struct *child,
 
 asmlinkage long sys_ptrace(long request, long pid, long addr, long data)
 {
-	struct task_struct *child;
-	struct utrace_attached_engine *engine;
-	struct ptrace_state *state;
+	struct task_struct *child = NULL;
+	struct utrace_attached_engine *engine = NULL;
+	struct ptrace_state *state = NULL;
 	long ret, val;
 
-#ifdef PTRACE_DEBUG
-	printk("%d sys_ptrace(%ld, %ld, %lx, %lx)\n",
-	       current->pid, request, pid, addr, data);
-#endif
+	pr_debug("%d sys_ptrace(%ld, %ld, %lx, %lx)\n",
+		 current->pid, request, pid, addr, data);
 
 	ret = ptrace_start(pid, request, &child, &engine, &state);
 	if (ret != -EIO)
@@ -979,21 +1125,21 @@ asmlinkage long sys_ptrace(long request, long pid, long addr, long data)
 		break;
 
 	case PTRACE_GETEVENTMSG:
-		ret = put_user(state->u.live.have_eventmsg
-			       ? state->u.live.u.eventmsg : 0L,
+		ret = put_user(state->have_eventmsg
+			       ? state->u.eventmsg : 0L,
 			       (unsigned long __user *) data);
 		break;
 	case PTRACE_GETSIGINFO:
 		ret = -EINVAL;
-		if (!state->u.live.have_eventmsg && state->u.live.u.siginfo)
+		if (!state->have_eventmsg && state->u.siginfo)
 			ret = copy_siginfo_to_user((siginfo_t __user *) data,
-						   state->u.live.u.siginfo);
+						   state->u.siginfo);
 		break;
 	case PTRACE_SETSIGINFO:
 		ret = -EINVAL;
-		if (!state->u.live.have_eventmsg && state->u.live.u.siginfo) {
+		if (!state->have_eventmsg && state->u.siginfo) {
 			ret = 0;
-			if (copy_from_user(state->u.live.u.siginfo,
+			if (copy_from_user(state->u.siginfo,
 					   (siginfo_t __user *) data,
 					   sizeof(siginfo_t)))
 				ret = -EFAULT;
@@ -1002,11 +1148,10 @@ asmlinkage long sys_ptrace(long request, long pid, long addr, long data)
 	}
 
 out_tsk:
+	NO_LOCKS;
 	put_task_struct(child);
 out:
-#ifdef PTRACE_DEBUG
-	printk("%d ptrace -> %lx\n", current->pid, ret);
-#endif
+	pr_debug("%d ptrace -> %lx\n", current->pid, ret);
 	return ret;
 }
 
@@ -1023,10 +1168,8 @@ asmlinkage long compat_sys_ptrace(compat_long_t request, compat_long_t pid,
 	struct ptrace_state *state;
 	compat_long_t ret, val;
 
-#ifdef PTRACE_DEBUG
-	printk("%d compat_sys_ptrace(%d, %d, %x, %x)\n",
-	       current->pid, request, pid, addr, cdata);
-#endif
+	pr_debug("%d compat_sys_ptrace(%d, %d, %x, %x)\n",
+		 current->pid, request, pid, addr, cdata);
 	ret = ptrace_start(pid, request, &child, &engine, &state);
 	if (ret != -EIO)
 		goto out;
@@ -1068,22 +1211,22 @@ asmlinkage long compat_sys_ptrace(compat_long_t request, compat_long_t pid,
 		break;
 
 	case PTRACE_GETEVENTMSG:
-		ret = put_user(state->u.live.have_eventmsg
-			       ? state->u.live.u.eventmsg : 0L,
+		ret = put_user(state->have_eventmsg
+			       ? state->u.eventmsg : 0L,
 			       (compat_long_t __user *) data);
 		break;
 	case PTRACE_GETSIGINFO:
 		ret = -EINVAL;
-		if (!state->u.live.have_eventmsg && state->u.live.u.siginfo)
+		if (!state->have_eventmsg && state->u.siginfo)
 			ret = copy_siginfo_to_user32(
 				(struct compat_siginfo __user *) data,
-				state->u.live.u.siginfo);
+				state->u.siginfo);
 		break;
 	case PTRACE_SETSIGINFO:
 		ret = -EINVAL;
-		if (!state->u.live.have_eventmsg && state->u.live.u.siginfo
+		if (!state->have_eventmsg && state->u.siginfo
 		    && copy_siginfo_from_user32(
-			    state->u.live.u.siginfo,
+			    state->u.siginfo,
 			    (struct compat_siginfo __user *) data))
 			ret = -EFAULT;
 		break;
@@ -1092,9 +1235,7 @@ asmlinkage long compat_sys_ptrace(compat_long_t request, compat_long_t pid,
 out_tsk:
 	put_task_struct(child);
 out:
-#ifdef PTRACE_DEBUG
-	printk("%d ptrace -> %lx\n", current->pid, ret);
-#endif
+	pr_debug("%d ptrace -> %lx\n", current->pid, (long)ret);
 	return ret;
 }
 #endif
@@ -1108,35 +1249,38 @@ detach_zombie(struct task_struct *tsk,
 	      struct task_struct *p, struct ptrace_state *state)
 {
 	int detach_error;
+	struct utrace_attached_engine *engine;
+
 restart:
+	NO_LOCKS;
 	detach_error = 0;
 	rcu_read_lock();
-	if (tsk != current) {
+	if (tsk == current)
+		engine = state->engine;
+	else {
 		/*
 		 * We've excluded other ptrace_do_wait calls.  But the
 		 * ptracer itself might have done ptrace_detach while we
 		 * did not have rcu_read_lock.  So double-check that state
 		 * is still valid.
 		 */
-		struct utrace_attached_engine *engine;
-		engine = utrace_attach(
-			p, (UTRACE_ATTACH_MATCH_OPS
-			    | UTRACE_ATTACH_MATCH_DATA),
-			&ptrace_utrace_ops,
-			(unsigned long) state);
+		engine = utrace_attach(p, (UTRACE_ATTACH_MATCH_OPS
+					   | UTRACE_ATTACH_MATCH_DATA),
+				       &ptrace_utrace_ops, state);
 		if (IS_ERR(engine) || state->parent != tsk)
 			detach_error = -ESRCH;
 		else
 			BUG_ON(state->engine != engine);
 	}
+	rcu_read_unlock();
+	NO_LOCKS;
 	if (likely(!detach_error))
-		detach_error = ptrace_detach(p, state->engine);
+		detach_error = ptrace_detach(p, engine, state);
 	if (unlikely(detach_error == -EALREADY)) {
 		/*
 		 * It's still doing report_death callbacks.
 		 * Just wait for it to settle down.
 		 */
-		rcu_read_unlock();
 		wait_task_inactive(p); /* Might block.  */
 		goto restart;
 	}
@@ -1149,7 +1293,7 @@ restart:
 	 */
 	if (detach_error)
 		BUG_ON(detach_error != -ESRCH);
-	rcu_read_unlock();
+	NO_LOCKS;
 }
 
 /*
@@ -1162,6 +1306,7 @@ int
 ptrace_do_wait(struct task_struct *tsk,
 	       pid_t pid, int options, struct siginfo __user *infop,
 	       int __user *stat_addr, struct rusage __user *rusagep)
+	__releases(tasklist_lock)
 {
 	struct ptrace_state *state;
 	struct task_struct *p;
@@ -1201,8 +1346,15 @@ ptrace_do_wait(struct task_struct *tsk,
 		case EXIT_ZOMBIE:
 			if (!likely(options & WEXITED))
 				continue;
-			if (delay_group_leader(p))
+			if (delay_group_leader(p)) {
+				struct task_struct *next = next_thread(p);
+				pr_debug("%d ptrace_do_wait leaving %d "
+					 "zombie code %x "
+					 "delay_group_leader (%d/%lu)\n",
+					 current->pid, p->pid, p->exit_code,
+					 next->pid, next->state);
 				continue;
+			}
 			exit_code = p->exit_code;
 			goto found;
 		case EXIT_DEAD:
@@ -1214,6 +1366,14 @@ ptrace_do_wait(struct task_struct *tsk,
 			 * guaranteed a wakeup on wait_chldexit after
 			 * any new deaths.
 			 */
+			if (p->flags & PF_EXITING)
+				/*
+				 * It's in do_exit and might have set
+				 * p->exit_code already, but it's not quite
+				 * dead yet.  It will get to report_death
+				 * and wakes us up when it finishes.
+				 */
+				continue;
 			break;
 		}
 
@@ -1228,20 +1388,26 @@ ptrace_do_wait(struct task_struct *tsk,
 			goto found;
 
 		// XXX should handle WCONTINUED
+
+		pr_debug("%d ptrace_do_wait leaving %d state %lu code %x\n",
+			 current->pid, p->pid, p->state, p->exit_code);
 	}
 	rcu_read_unlock();
+	if (err == 0)
+		pr_debug("%d ptrace_do_wait blocking\n", current->pid);
+
 	return err;
 
 found:
 	BUG_ON(state->parent != tsk);
 	rcu_read_unlock();
 
-#ifdef PTRACE_DEBUG
-	printk("%d ptrace_do_wait (%d) found %d code %x (%lu)\n", current->pid, tsk->pid, p->pid, exit_code, p->exit_state);
-#endif
+	pr_debug("%d ptrace_do_wait (%d) found %d code %x (%u/%d)\n",
+		 current->pid, tsk->pid, p->pid, exit_code,
+		 p->exit_state, p->exit_signal);
 
 	if (p->exit_state) {
-		if (unlikely(p->parent == tsk))
+		if (unlikely(p->parent == tsk && p->exit_signal != -1))
 			/*
 			 * This is our natural child we were ptracing.
 			 * When it dies it detaches (see ptrace_report_death).
@@ -1250,6 +1416,14 @@ found:
 			 * the normal wait_task_zombie path instead.
 			 */
 			return 0;
+
+		/*
+		 * If there was a group exit in progress, all threads
+		 * report that status.  Most have SIGKILL in their exit_code.
+		 */
+		if (p->signal->flags & SIGNAL_GROUP_EXIT)
+			exit_code = p->signal->group_exit_code;
+
 		if ((exit_code & 0x7f) == 0) {
 			why = CLD_EXITED;
 			status = exit_code >> 8;
@@ -1271,6 +1445,8 @@ found:
 	 */
 	get_task_struct(p);
 	read_unlock(&tasklist_lock);
+
+	NO_LOCKS;
 
 	if (rusagep)
 		err = getrusage(p, RUSAGE_BOTH, rusagep);
@@ -1306,6 +1482,41 @@ found:
 
 	return err;
 }
+
+
+/*
+ * All the report callbacks (except death and reap) are subject to a race
+ * with ptrace_exit doing a quick detach and ptrace_done.  It can do this
+ * even when the target is not quiescent, so a callback may already be in
+ * progress when it does ptrace_done.  Callbacks use this function to fetch
+ * the struct ptrace_state while ensuring it doesn't disappear until
+ * put_ptrace_state is called.  This just uses RCU, since state and
+ * anything we try to do to state->parent is safe under rcu_read_lock.
+ */
+static struct ptrace_state *
+get_ptrace_state(struct utrace_attached_engine *engine,
+		 struct task_struct *tsk)
+	__acquires(RCU)
+{
+	struct ptrace_state *state;
+
+	rcu_read_lock();
+	state = rcu_dereference(engine->data);
+	if (likely(state != NULL))
+		return state;
+
+	rcu_read_unlock();
+	return NULL;
+}
+
+static inline void
+put_ptrace_state(struct ptrace_state *state)
+	__releases(RCU)
+{
+	BUG_ON(state == NULL);
+	rcu_read_unlock();
+}
+
 
 static void
 do_notify(struct task_struct *tsk, struct task_struct *parent, int why)
@@ -1343,6 +1554,10 @@ do_notify(struct task_struct *tsk, struct task_struct *parent, int why)
 		}
 	}
 
+	read_lock(&tasklist_lock);
+	if (unlikely(parent->signal == NULL))
+		goto out;
+
 	sighand = parent->sighand;
 	spin_lock_irqsave(&sighand->siglock, flags);
 	if (sighand->action[SIGCHLD-1].sa.sa_handler != SIG_IGN &&
@@ -1353,26 +1568,30 @@ do_notify(struct task_struct *tsk, struct task_struct *parent, int why)
 	 */
 	wake_up_interruptible_sync(&parent->signal->wait_chldexit);
 	spin_unlock_irqrestore(&sighand->siglock, flags);
+
+out:
+	read_unlock(&tasklist_lock);
 }
 
 static u32
-ptrace_report(struct utrace_attached_engine *engine, struct task_struct *tsk,
+ptrace_report(struct utrace_attached_engine *engine,
+	      struct task_struct *tsk,
+	      struct ptrace_state *state,
 	      int code)
+	__releases(RCU)
 {
-	struct ptrace_state *state = (struct ptrace_state *) engine->data;
 	const struct utrace_regset *regset;
 
-#ifdef PTRACE_DEBUG
-	printk("%d ptrace_report %d engine %p state %p code %x parent %d (%p)\n",
-	       current->pid, tsk->pid, engine, state, code,
-	       state->parent->pid, state->parent);
-	if (!state->u.live.have_eventmsg && state->u.live.u.siginfo) {
-		const siginfo_t *si = state->u.live.u.siginfo;
-		printk("  si %d code %x errno %d addr %p\n",
-		       si->si_signo, si->si_code, si->si_errno,
-		       si->si_addr);
+	pr_debug("%d ptrace_report %d engine %p"
+		 " state %p code %x parent %d (%p)\n",
+		 current->pid, tsk->pid, engine, state, code,
+		 state->parent->pid, state->parent);
+	if (!state->have_eventmsg && state->u.siginfo) {
+		const siginfo_t *si = state->u.siginfo;
+		pr_debug("  si %d code %x errno %d addr %p\n",
+			 si->si_signo, si->si_code, si->si_errno,
+			 si->si_addr);
 	}
-#endif
 
 	/*
 	 * Set our QUIESCE flag right now, before notifying the tracer.
@@ -1382,6 +1601,17 @@ ptrace_report(struct utrace_attached_engine *engine, struct task_struct *tsk,
 	 * try to resume us with PTRACE_CONT before we set the flag.
 	 */
 	utrace_set_flags(tsk, engine, engine->flags | UTRACE_ACTION_QUIESCE);
+
+	BUG_ON(code == 0);
+	tsk->exit_code = code;
+	do_notify(tsk, state->parent, CLD_TRAPPED);
+
+	pr_debug("%d ptrace_report quiescing exit_code %x\n",
+		 current->pid, current->exit_code);
+
+	put_ptrace_state(state);
+
+	NO_LOCKS;
 
 	/*
 	 * If regset 0 has a writeback call, do it now.  On register window
@@ -1393,33 +1623,29 @@ ptrace_report(struct utrace_attached_engine *engine, struct task_struct *tsk,
 	if (regset->writeback)
 		(*regset->writeback)(tsk, regset, 0);
 
-	BUG_ON(code == 0);
-	tsk->exit_code = code;
-	do_notify(tsk, state->parent, CLD_TRAPPED);
-
-#ifdef PTRACE_DEBUG
-	printk("%d ptrace_report quiescing exit_code %x\n",
-	       current->pid, current->exit_code);
-#endif
-
 	return UTRACE_ACTION_RESUME;
 }
 
 static inline u32
-ptrace_event(struct utrace_attached_engine *engine, struct task_struct *tsk,
+ptrace_event(struct utrace_attached_engine *engine,
+	     struct task_struct *tsk,
+	     struct ptrace_state *state,
 	     int event)
+	__releases(RCU)
 {
-	struct ptrace_state *state = (struct ptrace_state *) engine->data;
-	state->u.live.syscall = 0;
-	return ptrace_report(engine, tsk, (event << 8) | SIGTRAP);
+	state->syscall = 0;
+	return ptrace_report(engine, tsk, state, (event << 8) | SIGTRAP);
 }
 
-
+/*
+ * Unlike other report callbacks, this can't be called while ptrace_exit
+ * is doing ptrace_done in parallel, so we don't need get_ptrace_state.
+ */
 static u32
 ptrace_report_death(struct utrace_attached_engine *engine,
 		    struct task_struct *tsk)
 {
-	struct ptrace_state *state = (struct ptrace_state *) engine->data;
+	struct ptrace_state *state = engine->data;
 
 	if (tsk->exit_code == 0 && unlikely(tsk->flags & PF_SIGNALED))
 		/*
@@ -1429,22 +1655,44 @@ ptrace_report_death(struct utrace_attached_engine *engine,
 		 */
 		tsk->exit_code = SIGKILL;
 
-	if (tsk->parent == state->parent) {
+	if (unlikely(state == NULL)) {
 		/*
-		 * This is a natural child, so we detach and let the normal
+		 * We can be called before ptrace_setup_finish is done,
+		 * if we're dying before attaching really finished.
+		 */
+		printk("XXX ptrace_report_death leak\n");
+		return UTRACE_ACTION_RESUME;
+	}
+
+	if (tsk->parent == state->parent && tsk->exit_signal != -1) {
+		/*
+		 * This is a natural child (excluding clone siblings of a
+		 * child group_leader), so we detach and let the normal
 		 * reporting happen once our NOREAP action is gone.  But
 		 * first, generate a SIGCHLD for those cases where normal
 		 * behavior won't.  A ptrace'd child always generates SIGCHLD.
 		 */
-		if (tsk->exit_signal == -1 || !thread_group_empty(tsk))
+		pr_debug("ptrace %d death natural parent %d exit_code %x\n",
+			 tsk->pid, state->parent->pid, tsk->exit_code);
+		if (!thread_group_empty(tsk))
 			do_notify(tsk, state->parent, CLD_EXITED);
 		ptrace_state_unlink(state);
-		rcu_assign_pointer(engine->data, 0UL);
+		rcu_assign_pointer(engine->data, NULL);
 		ptrace_done(state);
 		return UTRACE_ACTION_DETACH;
 	}
 
+	/*
+	 * This might be a second report_death callback for a group leader
+	 * that was delayed when its original report_death callback was made.
+	 * Repeating do_notify is exactly what we need for that case too.
+	 * After the wakeup, ptrace_do_wait will see delay_group_leader false.
+	 */
+
+	pr_debug("ptrace %d death notify %d exit_code %x: ",
+		 tsk->pid, state->parent->pid, tsk->exit_code);
 	do_notify(tsk, state->parent, CLD_EXITED);
+	pr_debug("%d notified %d\n", tsk->pid, state->parent->pid);
 	return UTRACE_ACTION_RESUME;
 }
 
@@ -1456,36 +1704,116 @@ static void
 ptrace_report_reap(struct utrace_attached_engine *engine,
 		   struct task_struct *tsk)
 {
-	struct ptrace_state *state;
-	rcu_read_lock();
-	state = rcu_dereference((struct ptrace_state *) engine->data);
-	if (state != NULL) {
-		ptrace_state_unlink(state);
-		rcu_assign_pointer(engine->data, 0UL);
-		ptrace_done(state);
+	struct ptrace_state *state = engine->data;
+
+	if (unlikely(state == NULL)) { /* Not fully attached.  */
+		printk("XXX ptrace_report_reap leak\n");
+		return;
 	}
-	rcu_read_unlock();
+
+	NO_LOCKS;
+
+	ptrace_state_unlink(state);
+	rcu_assign_pointer(engine->data, NULL);
+	ptrace_done(state);
+
+	NO_LOCKS;
 }
 
+/*
+ * Start tracing the child.  This has to do put_ptrace_state before it can
+ * do allocation that might block.
+ */
+static void
+ptrace_clone_setup(struct utrace_attached_engine *engine,
+		   struct task_struct *parent,
+		   struct ptrace_state *state,
+		   struct task_struct *child)
+	__releases(RCU)
+{
+	struct task_struct *tracer;
+	struct utrace_attached_engine *child_engine;
+	struct ptrace_state *child_state;
+	int ret;
+	u8 options;
+	int cap_sys_ptrace;
+
+	tracer = state->parent;
+	options = state->options;
+	cap_sys_ptrace = state->cap_sys_ptrace;
+	get_task_struct(tracer);
+	put_ptrace_state(state);
+
+	NO_LOCKS;
+
+	child_engine = utrace_attach(child, (UTRACE_ATTACH_CREATE
+					     | UTRACE_ATTACH_EXCLUSIVE
+					     | UTRACE_ATTACH_MATCH_OPS),
+				     &ptrace_utrace_ops, NULL);
+	if (unlikely(IS_ERR(child_engine))) {
+		BUG_ON(PTR_ERR(child_engine) != -ENOMEM);
+		put_task_struct(tracer);
+		goto nomem;
+	}
+
+	child_state = ptrace_setup(child, child_engine,
+				   tracer, options, cap_sys_ptrace);
+
+	put_task_struct(tracer);
+
+	if (unlikely(IS_ERR(child_state))) {
+		(void) utrace_detach(child, child_engine);
+
+		if (PTR_ERR(child_state) == -ENOMEM)
+			goto nomem;
+
+		/*
+		 * Our tracer has started exiting.  It's
+		 * too late to set it up tracing the child.
+		 */
+		BUG_ON(PTR_ERR(child_state) != -EALREADY);
+	}
+	else {
+		sigaddset(&child->pending.signal, SIGSTOP);
+		set_tsk_thread_flag(child, TIF_SIGPENDING);
+		ret = ptrace_setup_finish(child, child_state);
+
+		/*
+		 * The child hasn't run yet, it can't have died already.
+		 */
+		BUG_ON(ret);
+	}
+
+	NO_LOCKS;
+
+	return;
+
+nomem:
+	NO_LOCKS;
+	printk(KERN_ERR "ptrace out of memory, lost child %d of %d",
+	       child->pid, parent->pid);
+}
 
 static u32
 ptrace_report_clone(struct utrace_attached_engine *engine,
 		    struct task_struct *parent,
 		    unsigned long clone_flags, struct task_struct *child)
 {
-	struct ptrace_state *state = (struct ptrace_state *) engine->data;
-	struct utrace_attached_engine *child_engine;
-	int event = PTRACE_EVENT_FORK;
-	int option = PTRACE_O_TRACEFORK;
+	int event, option;
+	struct ptrace_state *state;
 
-#ifdef PTRACE_DEBUG
-	printk("%d (%p) engine %p ptrace_report_clone child %d (%p) fl %lx\n",
-	       parent->pid, parent, engine, child->pid, child, clone_flags);
-#endif
+	NO_LOCKS;
 
-	if (clone_flags & CLONE_UNTRACED)
-		goto out;
+	state = get_ptrace_state(engine, parent);
+	if (unlikely(state == NULL))
+		return UTRACE_ACTION_RESUME;
 
+	pr_debug("%d (%p) engine %p"
+		 " ptrace_report_clone child %d (%p) fl %lx\n",
+		 parent->pid, parent, engine, child->pid, child, clone_flags);
+
+	event = PTRACE_EVENT_FORK;
+	option = PTRACE_O_TRACEFORK;
 	if (clone_flags & CLONE_VFORK) {
 		event = PTRACE_EVENT_VFORK;
 		option = PTRACE_O_TRACEVFORK;
@@ -1495,53 +1823,38 @@ ptrace_report_clone(struct utrace_attached_engine *engine,
 		option = PTRACE_O_TRACECLONE;
 	}
 
-	if (!(clone_flags & CLONE_PTRACE) && !(state->u.live.options & option))
-		goto out;
-
-	child_engine = utrace_attach(child, (UTRACE_ATTACH_CREATE
-					     | UTRACE_ATTACH_EXCLUSIVE
-					     | UTRACE_ATTACH_MATCH_OPS),
-				     &ptrace_utrace_ops, 0UL);
-	if (unlikely(IS_ERR(child_engine))) {
-		BUG_ON(PTR_ERR(child_engine) != -ENOMEM);
-		printk(KERN_ERR
-		       "ptrace out of memory, lost child %d of %d",
-		       child->pid, parent->pid);
+	if (state->options & option) {
+		state->have_eventmsg = 1;
+		state->u.eventmsg = child->pid;
 	}
-	else {
-		struct ptrace_state *child_state;
-		child_state = ptrace_setup(child, child_engine,
-					   state->parent,
-					   state->u.live.options,
-					   state->u.live.cap_sys_ptrace,
-					   NULL);
-		if (unlikely(IS_ERR(child_state))) {
-			BUG_ON(PTR_ERR(child_state) != -ENOMEM);
-			(void) utrace_detach(child, child_engine);
-			printk(KERN_ERR
-			       "ptrace out of memory, lost child %d of %d",
-			       child->pid, parent->pid);
-		}
-		else {
-			int ret;
-			sigaddset(&child->pending.signal, SIGSTOP);
-			set_tsk_thread_flag(child, TIF_SIGPENDING);
-			ret = ptrace_update(child, child_engine, 0);
-			/*
-			 * The child hasn't run yet,
-			 * it can't have died already.
-			 */
-			BUG_ON(ret);
-		}
+	else
+		event = 0;
+
+	if (!(clone_flags & CLONE_UNTRACED)
+	    && (event || (clone_flags & CLONE_PTRACE))) {
+		/*
+		 * Have our tracer start following the child too.
+		 */
+		ptrace_clone_setup(engine, parent, state, child);
+
+		NO_LOCKS;
+
+		/*
+		 * That did put_ptrace_state, so we have to check
+		 * again in case our tracer just started exiting.
+		 */
+		state = get_ptrace_state(engine, parent);
+		if (unlikely(state == NULL))
+			return UTRACE_ACTION_RESUME;
 	}
 
-	if (state->u.live.options & option) {
-		state->u.live.have_eventmsg = 1;
-		state->u.live.u.eventmsg = child->pid;
-		return ptrace_event(engine, parent, event);
-	}
+	if (event)
+		return ptrace_event(engine, parent, state, event);
 
-out:
+	put_ptrace_state(state);
+
+	NO_LOCKS;
+
 	return UTRACE_ACTION_RESUME;
 }
 
@@ -1550,10 +1863,13 @@ static u32
 ptrace_report_vfork_done(struct utrace_attached_engine *engine,
 			 struct task_struct *parent, pid_t child_pid)
 {
-	struct ptrace_state *state = (struct ptrace_state *) engine->data;
-	state->u.live.have_eventmsg = 1;
-	state->u.live.u.eventmsg = child_pid;
-	return ptrace_event(engine, parent, PTRACE_EVENT_VFORK_DONE);
+	struct ptrace_state *state = get_ptrace_state(engine, parent);
+	if (unlikely(state == NULL))
+		return UTRACE_ACTION_RESUME;
+
+	state->have_eventmsg = 1;
+	state->u.eventmsg = child_pid;
+	return ptrace_event(engine, parent, state, PTRACE_EVENT_VFORK_DONE);
 }
 
 
@@ -1564,24 +1880,31 @@ ptrace_report_signal(struct utrace_attached_engine *engine,
 		     const struct k_sigaction *orig_ka,
 		     struct k_sigaction *return_ka)
 {
-	struct ptrace_state *state = (struct ptrace_state *) engine->data;
 	int signo = info == NULL ? SIGTRAP : info->si_signo;
-	state->u.live.syscall = 0;
-	state->u.live.have_eventmsg = 0;
-	state->u.live.u.siginfo = info;
-	return ptrace_report(engine, tsk, signo) | UTRACE_SIGNAL_IGN;
+	struct ptrace_state *state = get_ptrace_state(engine, tsk);
+	if (unlikely(state == NULL))
+		return UTRACE_ACTION_RESUME;
+
+	state->syscall = 0;
+	state->have_eventmsg = 0;
+	state->u.siginfo = info;
+	return ptrace_report(engine, tsk, state, signo) | UTRACE_SIGNAL_IGN;
 }
 
 static u32
 ptrace_report_jctl(struct utrace_attached_engine *engine,
 		   struct task_struct *tsk, int type)
 {
-	struct ptrace_state *state = (struct ptrace_state *) engine->data;
-#ifdef PTRACE_DEBUG
-	printk("ptrace %d jctl notify %d type %x exit_code %x\n",
-	       tsk->pid, state->parent->pid, type, tsk->exit_code);
-#endif
+	struct ptrace_state *state = get_ptrace_state(engine, tsk);
+	if (unlikely(state == NULL))
+		return UTRACE_ACTION_RESUME;
+
+	pr_debug("ptrace %d jctl notify %d type %x exit_code %x\n",
+		 tsk->pid, state->parent->pid, type, tsk->exit_code);
+
 	do_notify(tsk, state->parent, type);
+	put_ptrace_state(state);
+
 	return UTRACE_JCTL_NOSIGCHLD;
 }
 
@@ -1591,11 +1914,13 @@ ptrace_report_exec(struct utrace_attached_engine *engine,
 		   const struct linux_binprm *bprm,
 		   struct pt_regs *regs)
 {
-	struct ptrace_state *state = (struct ptrace_state *) engine->data;
-	if (state->u.live.options & PTRACE_O_TRACEEXEC)
-		return ptrace_event(engine, tsk, PTRACE_EVENT_EXEC);
-	state->u.live.syscall = 0;
-	return ptrace_report(engine, tsk, SIGTRAP);
+	struct ptrace_state *state = get_ptrace_state(engine, tsk);
+	if (unlikely(state == NULL))
+		return UTRACE_ACTION_RESUME;
+
+	return ptrace_event(engine, tsk, state,
+			    (state->options & PTRACE_O_TRACEEXEC)
+			    ? PTRACE_EVENT_EXEC : 0);
 }
 
 static u32
@@ -1603,14 +1928,43 @@ ptrace_report_syscall(struct utrace_attached_engine *engine,
 		      struct task_struct *tsk, struct pt_regs *regs,
 		      int entry)
 {
-	struct ptrace_state *state = (struct ptrace_state *) engine->data;
+	struct ptrace_state *state = get_ptrace_state(engine, tsk);
+	if (unlikely(state == NULL))
+		return UTRACE_ACTION_RESUME;
+
 #ifdef PTRACE_SYSEMU
-	if (entry && state->u.live.sysemu)
-		tracehook_abort_syscall(regs);
+	if (state->sysemu) {
+		/*
+		 * A syscall under PTRACE_SYSEMU gets just one stop and
+		 * report.  But at that stop, the syscall number is
+		 * expected to reside in the pseudo-register.  We need to
+		 * reset it to prevent the actual syscall from happening.
+		 *
+		 * At the entry tracing stop, the return value register has
+		 * been primed to -ENOSYS, and the syscall pseudo-register
+		 * has the syscall number.  We squirrel away the syscall
+		 * number in the return value register long enough to skip
+		 * the actual syscall and get to the exit tracing stop.
+		 * There, we swap the registers back and do ptrace_report.
+		 */
+
+		long *scno = tracehook_syscall_callno(regs);
+		long *retval = tracehook_syscall_retval(regs);
+		if (entry) {
+			*retval = *scno;
+			*scno = -1;
+			return UTRACE_ACTION_RESUME;
+		}
+		else {
+			*scno = *retval;
+			*retval = -ENOSYS;
+		}
+	}
 #endif
-	state->u.live.syscall = 1;
-	return ptrace_report(engine, tsk,
-			     ((state->u.live.options & PTRACE_O_TRACESYSGOOD)
+
+	state->syscall = 1;
+	return ptrace_report(engine, tsk, state,
+			     ((state->options & PTRACE_O_TRACESYSGOOD)
 			      ? 0x80 : 0) | SIGTRAP);
 }
 
@@ -1623,7 +1977,7 @@ ptrace_report_syscall_entry(struct utrace_attached_engine *engine,
 
 static u32
 ptrace_report_syscall_exit(struct utrace_attached_engine *engine,
-			    struct task_struct *tsk, struct pt_regs *regs)
+			   struct task_struct *tsk, struct pt_regs *regs)
 {
 	return ptrace_report_syscall(engine, tsk, regs, 0);
 }
@@ -1632,20 +1986,33 @@ static u32
 ptrace_report_exit(struct utrace_attached_engine *engine,
 		   struct task_struct *tsk, long orig_code, long *code)
 {
-	struct ptrace_state *state = (struct ptrace_state *) engine->data;
-	state->u.live.have_eventmsg = 1;
-	state->u.live.u.eventmsg = *code;
-	return ptrace_event(engine, tsk, PTRACE_EVENT_EXIT);
+	struct ptrace_state *state = get_ptrace_state(engine, tsk);
+	if (unlikely(state == NULL))
+		return UTRACE_ACTION_RESUME;
+
+	state->have_eventmsg = 1;
+	state->u.eventmsg = *code;
+	return ptrace_event(engine, tsk, state, PTRACE_EVENT_EXIT);
 }
 
 static int
 ptrace_unsafe_exec(struct utrace_attached_engine *engine,
 		   struct task_struct *tsk)
 {
-	struct ptrace_state *state = (struct ptrace_state *) engine->data;
 	int unsafe = LSM_UNSAFE_PTRACE;
-	if (state->u.live.cap_sys_ptrace)
-		unsafe = LSM_UNSAFE_PTRACE_CAP;
+	struct ptrace_state *state;
+
+	START_CHECK;
+
+	state = get_ptrace_state(engine, tsk);
+	if (likely(state != NULL)) {
+		if (state->cap_sys_ptrace)
+			unsafe = LSM_UNSAFE_PTRACE_CAP;
+		put_ptrace_state(state);
+	}
+
+	END_CHECK;
+
 	return unsafe;
 }
 
@@ -1653,16 +2020,20 @@ static struct task_struct *
 ptrace_tracer_task(struct utrace_attached_engine *engine,
 		   struct task_struct *target)
 {
+	struct task_struct *parent = NULL;
 	struct ptrace_state *state;
 
-	/*
-	 * This call is not necessarily made by the target task,
-	 * so ptrace might be getting detached while we run here.
-	 * The state pointer will be NULL if that happens.
-	 */
-	state = rcu_dereference((struct ptrace_state *) engine->data);
+	START_CHECK;
 
-	return state == NULL ? NULL : state->parent;
+	state = get_ptrace_state(engine, target);
+	if (likely(state != NULL)) {
+		parent = state->parent;
+		put_ptrace_state(state);
+	}
+
+	END_CHECK;
+
+	return parent;
 }
 
 static int
@@ -1671,22 +2042,24 @@ ptrace_allow_access_process_vm(struct utrace_attached_engine *engine,
 			       struct task_struct *caller)
 {
 	struct ptrace_state *state;
-	int ours;
+	int ours = 0;
 
-	/*
-	 * This call is not necessarily made by the target task,
-	 * so ptrace might be getting detached while we run here.
-	 * The state pointer will be NULL if that happens.
-	 */
-	rcu_read_lock();
-	state = rcu_dereference((struct ptrace_state *) engine->data);
-	ours = (state != NULL
-		&& ((engine->flags & UTRACE_ACTION_QUIESCE)
-		    || (target->state == TASK_STOPPED))
-		&& state->parent == caller);
-	rcu_read_unlock();
+	START_CHECK;
 
-	return ours && security_ptrace(caller, target) == 0;
+	state = get_ptrace_state(engine, target);
+	if (likely(state != NULL)) {
+		ours = (((engine->flags & UTRACE_ACTION_QUIESCE)
+			 || target->state == TASK_STOPPED)
+			&& state->parent == caller);
+		put_ptrace_state(state);
+	}
+
+	if (ours)
+		ours = security_ptrace(caller, target) == 0;
+
+	END_CHECK;
+
+	return ours;
 }
 
 
@@ -1706,5 +2079,3 @@ static const struct utrace_engine_ops ptrace_utrace_ops =
 	.tracer_task = ptrace_tracer_task,
 	.allow_access_process_vm = ptrace_allow_access_process_vm,
 };
-
-#endif

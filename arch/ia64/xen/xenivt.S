@@ -707,11 +707,23 @@ ENTRY(page_fault)
 	;;
 #endif
 #ifdef CONFIG_XEN
-	br.cond.sptk.many	xen_page_fault
+
+#define MASK_TO_PEND_OFS    (-1)
+
+(p15)	movl r14=XSI_PSR_I_ADDR
 	;;
-done_xen_page_fault:
-#endif
+(p15)	ld8 r14=[r14]
+	;;
+(p15)	st1 [r14]=r0,MASK_TO_PEND_OFS		// if (p15) vpsr.i = 1
+	;;		// if (p15) (vcpu->vcpu_info->evtchn_upcall_mask)=0
+(p15)	ld1 r14=[r14]	// if (vcpu->vcpu_info->evtchn_upcall_pending)
+	;;
+(p15)	cmp.ne	p15,p0=r14,r0
+	;;
+(p15)	XEN_HYPER_SSM_I
+#else
 (p15)	ssm psr.i				// restore psr.i
+#endif
 	movl r14=ia64_leave_kernel
 	;;
 	SAVE_REST
@@ -727,25 +739,6 @@ END(page_fault)
 ENTRY(dkey_miss)
 	DBG_FAULT(7)
 	FAULT(7)
-#ifdef CONFIG_XEN
-	// Leaving this code inline above results in an IVT section overflow
-	// There is no particular reason for this code to be here...
-xen_page_fault:
-(p15)	movl r3=XSI_PSR_I_ADDR
-	;;
-(p15)	ld8 r3=[r3]
-	;;
-(p15)	st1 [r3]=r0,XSI_PEND_OFS-XSI_PSR_I_ADDR_OFS	// if (p15) vpsr.i = 1
-	mov r14=r0
-	;;
-(p15)	ld4 r14=[r3]				// if (pending_interrupts)
-	adds r3=8,r2				// re-set up second base pointer
-	;;
-(p15)	cmp.ne	p15,p0=r14,r0
-	;;
-	br.cond.sptk.many done_xen_page_fault
-	;;
-#endif
 END(dkey_miss)
 
 	.org ia64_ivt+0x2000
@@ -1168,14 +1161,13 @@ ENTRY(break_fault)
 #ifdef CONFIG_XEN
 (p15)	ld8 r16=[r16]				// vpsr.i
 	;;
-(p15)	st1 [r16]=r0,XSI_PEND_OFS-XSI_PSR_I_ADDR_OFS	// if (p15) vpsr.i = 1
-	mov r2=r0
+(p15)	st1 [r16]=r0,MASK_TO_PEND_OFS		// if (p15) vpsr.i = 1
+	;;		// if (p15) (vcpu->vcpu_info->evtchn_upcall_mask)=0
+(p15)	ld1 r2=[r16]	// if (vcpu->vcpu_info->evtchn_upcall_pending)
 	;;
-(p15)	ld4 r2=[r16]				// if (pending_interrupts)
+(p15)	cmp.ne.unc p6,p0=r2,r0
 	;;
-	cmp.ne	p6,p0=r2,r0
-	;;
-(p6)	ssm	psr.i				//   do a real ssm psr.i
+(p6)	XEN_HYPER_SSM_I				//   do a real ssm psr.i
 #else
 (p15)	ssm psr.i				// M2   restore psr.i
 #endif
@@ -2021,33 +2013,6 @@ END(ia32_interrupt)
 	DBG_FAULT(66)
 	FAULT(66)
 
-#ifdef CONFIG_XEN
-	/*
-	 * There is no particular reason for this code to be here, other than that
-	 * there happens to be space here that would go unused otherwise.  If this
-	 * fault ever gets "unreserved", simply moved the following code to a more
-	 * suitable spot...
-	 */
-
-GLOBAL_ENTRY(xen_bsw1)
-	/* FIXME: THIS CODE IS NOT NaT SAFE! */
-	movl r30=XSI_BANKNUM;
-	mov r31=1;;
-	st4 [r30]=r31;
-	movl r30=XSI_BANK1_R16;
-	movl r31=XSI_BANK1_R16+8;;
-	ld8 r16=[r30],16; ld8 r17=[r31],16;;
-	ld8 r18=[r30],16; ld8 r19=[r31],16;;
-	ld8 r20=[r30],16; ld8 r21=[r31],16;;
-	ld8 r22=[r30],16; ld8 r23=[r31],16;;
-	ld8 r24=[r30],16; ld8 r25=[r31],16;;
-	ld8 r26=[r30],16; ld8 r27=[r31],16;;
-	ld8 r28=[r30],16; ld8 r29=[r31],16;;
-	ld8 r30=[r30]; ld8 r31=[r31];;
-	br.ret.sptk.many b0
-END(xen_bsw1)
-#endif
-
 	.org ia64_ivt+0x7f00
 /////////////////////////////////////////////////////////////////////////////////////////
 // 0x7f00 Entry 67 (size 16 bundles) Reserved
@@ -2157,13 +2122,56 @@ GLOBAL_ENTRY(xen_event_callback)
 	;;
 	SAVE_REST
 	;;
+1:
 	alloc r14=ar.pfs,0,0,1,0 // must be first in an insn group
 	add out0=16,sp		// pass pointer to pt_regs as first arg
 	;;
-	srlz.d			// make sure we see the effect of cr.ivr
-	movl r14=ia64_leave_kernel
+	br.call.sptk.many b0=evtchn_do_upcall
 	;;
-	mov rp=r14
-	br.call.sptk.many b6=evtchn_do_upcall
+	movl r20=XSI_PSR_I_ADDR
+	;;
+	ld8 r20=[r20]
+	;;
+	adds r20=-1,r20		// vcpu_info->evtchn_upcall_pending
+	;;
+	ld1 r20=[r20]
+	;;
+	cmp.ne p6,p0=r20,r0	// if there are pending events,
+	(p6) br.spnt.few 1b	// call evtchn_do_upcall again.
+	br.sptk.many ia64_leave_kernel
 END(xen_event_callback)
+
+
+	/*
+	 * There is no particular reason for this code to be here, other than that
+	 * there happens to be space here that would go unused otherwise.  If this
+	 * fault ever gets "unreserved", simply moved the following code to a more
+	 * suitable spot...
+	 */
+
+GLOBAL_ENTRY(xen_bsw1)
+	/* FIXME: THIS CODE IS NOT NaT SAFE! */
+	mov r14=ar.unat
+	movl r30=XSI_B1NAT
+	;;
+	ld8 r30=[r30];;
+	mov ar.unat=r30
+	movl r30=XSI_BANKNUM;
+	mov r31=1;;
+	st4 [r30]=r31;
+	movl r30=XSI_BANK1_R16;
+	movl r31=XSI_BANK1_R16+8;;
+	ld8.fill r16=[r30],16; ld8.fill r17=[r31],16;;
+	ld8.fill r18=[r30],16; ld8.fill r19=[r31],16;;
+	ld8.fill r20=[r30],16; ld8.fill r21=[r31],16;;
+	ld8.fill r22=[r30],16; ld8.fill r23=[r31],16;;
+	ld8.fill r24=[r30],16; ld8.fill r25=[r31],16;;
+	ld8.fill r26=[r30],16; ld8.fill r27=[r31],16;;
+	ld8.fill r28=[r30],16; ld8.fill r29=[r31],16;;
+	ld8.fill r30=[r30]; ld8.fill r31=[r31];;
+	mov ar.unat=r14
+	br.ret.sptk.many b0
+END(xen_bsw1)
+
+
 #endif

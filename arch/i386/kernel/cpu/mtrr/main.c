@@ -99,7 +99,7 @@ static int have_wrcomb(void)
 }
 
 /*  This function returns the number of variable MTRRs  */
-static void __init set_num_var_ranges(void)
+static void __cpuinit set_num_var_ranges(void)
 {
 	unsigned long config = 0, dummy;
 
@@ -112,7 +112,7 @@ static void __init set_num_var_ranges(void)
 	num_var_ranges = config & 0xff;
 }
 
-static void __init init_table(void)
+static void __cpuinit init_table(void)
 {
 	int i, max;
 
@@ -542,7 +542,7 @@ extern void amd_init_mtrr(void);
 extern void cyrix_init_mtrr(void);
 extern void centaur_init_mtrr(void);
 
-static void __init init_ifs(void)
+static void __cpuinit init_ifs(void)
 {
 	amd_init_mtrr();
 	cyrix_init_mtrr();
@@ -610,7 +610,7 @@ static struct sysdev_driver mtrr_sysdev_driver = {
  * initialized (i.e. before smp_init()).
  * 
  */
-void __init mtrr_bp_init(void)
+void __cpuinit mtrr_bp_init(void)
 {
 	init_ifs();
 

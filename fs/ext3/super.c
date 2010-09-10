@@ -1264,6 +1264,12 @@ static void ext3_orphan_cleanup (struct super_block * sb,
 		return;
 	}
 
+	if (bdev_read_only(sb->s_bdev)) {
+		printk(KERN_ERR "EXT3-fs: write access "
+			"unavailable, skipping orphan cleanup.\n");
+		return;
+	}
+
 	if (EXT3_SB(sb)->s_mount_state & EXT3_ERROR_FS) {
 		if (es->s_last_orphan)
 			jbd_debug(1, "Errors on filesystem, "
@@ -2337,6 +2343,20 @@ static int ext3_remount (struct super_block * sb, int * flags, char * data)
 				       "optional features (%x).\n",
 				       sb->s_id, le32_to_cpu(ret));
 				err = -EROFS;
+				goto restore_opts;
+			}
+ 			/*
+			 * If we have an unprocessed orphan list hanging
+			 * around from a previously readonly bdev mount,
+			 * require a full umount/remount for now.
+			 */
+			if (es->s_last_orphan) {
+				printk(KERN_WARNING "EXT3-fs: %s: couldn't "
+				       "remount RDWR because of unprocessed "
+				       "orphan inode list.  Please "
+				       "umount/remount instead.\n",
+				       sb->s_id);
+				err = -EINVAL;
 				goto restore_opts;
 			}
 			/*

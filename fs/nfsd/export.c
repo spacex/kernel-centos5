@@ -319,12 +319,25 @@ svc_expkey_update(struct svc_expkey *new, struct svc_expkey *old)
 
 static struct cache_head *export_table[EXPORT_HASHMAX];
 
+static void nfsd4_fslocs_free(struct nfsd4_fs_locations *fsloc)
+{
+	int i;
+
+	for (i = 0; i < fsloc->locations_count; i++) {
+		kfree(fsloc->locations[i].path);
+		kfree(fsloc->locations[i].hosts);
+	}
+	kfree(fsloc->locations);
+}
+
 static void svc_export_put(struct kref *ref)
 {
 	struct svc_export *exp = container_of(ref, struct svc_export, h.ref);
 	dput(exp->ex_dentry);
 	mntput(exp->ex_mnt);
 	auth_domain_put(exp->ex_client);
+	kfree(exp->ex_path);
+	nfsd4_fslocs_free(&exp->ex_fslocs);
 	kfree(exp);
 }
 
@@ -386,6 +399,69 @@ static int check_export(struct inode *inode, int flags)
 
 }
 
+#ifdef CONFIG_NFSD_V4
+
+static int
+fsloc_parse(char **mesg, char *buf, struct nfsd4_fs_locations *fsloc)
+{
+	int len;
+	int migrated, i, err;
+
+	len = qword_get(mesg, buf, PAGE_SIZE);
+	if (len != 5 || memcmp(buf, "fsloc", 5))
+		return 0;
+
+	/* listsize */
+	err = get_int(mesg, &fsloc->locations_count);
+	if (err)
+		return err;
+	if (fsloc->locations_count > MAX_FS_LOCATIONS)
+		return -EINVAL;
+	if (fsloc->locations_count == 0)
+		return 0;
+
+	fsloc->locations = kzalloc(fsloc->locations_count
+			* sizeof(struct nfsd4_fs_location), GFP_KERNEL);
+	if (!fsloc->locations)
+		return -ENOMEM;
+	for (i=0; i < fsloc->locations_count; i++) {
+		/* colon separated host list */
+		err = -EINVAL;
+		len = qword_get(mesg, buf, PAGE_SIZE);
+		if (len <= 0)
+			goto out_free_all;
+		err = -ENOMEM;
+		fsloc->locations[i].hosts = kstrdup(buf, GFP_KERNEL);
+		if (!fsloc->locations[i].hosts)
+			goto out_free_all;
+		err = -EINVAL;
+		/* slash separated path component list */
+		len = qword_get(mesg, buf, PAGE_SIZE);
+		if (len <= 0)
+			goto out_free_all;
+		err = -ENOMEM;
+		fsloc->locations[i].path = kstrdup(buf, GFP_KERNEL);
+		if (!fsloc->locations[i].path)
+			goto out_free_all;
+	}
+	/* migrated */
+	err = get_int(mesg, &migrated);
+	if (err)
+		goto out_free_all;
+	err = -EINVAL;
+	if (migrated < 0 || migrated > 1)
+		goto out_free_all;
+	fsloc->migrated = migrated;
+	return 0;
+out_free_all:
+	nfsd4_fslocs_free(fsloc);
+	return err;
+}
+
+#else /* CONFIG_NFSD_V4 */
+static inline int fsloc_parse(char **mesg, char *buf, struct nfsd4_fs_locations *fsloc) { return 0; }
+#endif
+
 static int svc_export_parse(struct cache_detail *cd, char *mesg, int mlen)
 {
 	/* client path expiry [flags anonuid anongid fsid] */
@@ -398,6 +474,12 @@ static int svc_export_parse(struct cache_detail *cd, char *mesg, int mlen)
 	int an_int;
 
 	nd.dentry = NULL;
+	exp.ex_path = NULL;
+
+	/* fs locations */
+	exp.ex_fslocs.locations = NULL;
+	exp.ex_fslocs.locations_count = 0;
+	exp.ex_fslocs.migrated = 0;
 
 	if (mesg[mlen-1] != '\n')
 		return -EINVAL;
@@ -428,6 +510,10 @@ static int svc_export_parse(struct cache_detail *cd, char *mesg, int mlen)
 	exp.ex_client = dom;
 	exp.ex_mnt = nd.mnt;
 	exp.ex_dentry = nd.dentry;
+	exp.ex_path = kstrdup(buf, GFP_KERNEL);
+	err = -ENOMEM;
+	if (!exp.ex_path)
+		goto out;
 
 	/* expiry */
 	err = -EINVAL;
@@ -460,6 +546,10 @@ static int svc_export_parse(struct cache_detail *cd, char *mesg, int mlen)
 
 		err = check_export(nd.dentry->d_inode, exp.ex_flags);
 		if (err) goto out;
+
+		err = fsloc_parse(&mesg, buf, &exp.ex_fslocs);
+		if (err)
+			goto out;
 	}
 
 	expp = svc_export_lookup(&exp);
@@ -473,6 +563,7 @@ static int svc_export_parse(struct cache_detail *cd, char *mesg, int mlen)
 	else
 		exp_put(expp);
  out:
+ 	kfree(exp.ex_path);
 	if (nd.dentry)
 		path_release(&nd);
  out_no_path:
@@ -482,7 +573,8 @@ static int svc_export_parse(struct cache_detail *cd, char *mesg, int mlen)
 	return err;
 }
 
-static void exp_flags(struct seq_file *m, int flag, int fsid, uid_t anonu, uid_t anong);
+static void exp_flags(struct seq_file *m, int flag, int fsid,
+		uid_t anonu, uid_t anong, struct nfsd4_fs_locations *fslocs);
 
 static int svc_export_show(struct seq_file *m,
 			   struct cache_detail *cd,
@@ -501,8 +593,8 @@ static int svc_export_show(struct seq_file *m,
 	seq_putc(m, '(');
 	if (test_bit(CACHE_VALID, &h->flags) && 
 	    !test_bit(CACHE_NEGATIVE, &h->flags))
-		exp_flags(m, exp->ex_flags, exp->ex_fsid, 
-			  exp->ex_anon_uid, exp->ex_anon_gid);
+		exp_flags(m, exp->ex_flags, exp->ex_fsid,
+			  exp->ex_anon_uid, exp->ex_anon_gid, &exp->ex_fslocs);
 	seq_puts(m, ")\n");
 	return 0;
 }
@@ -524,6 +616,10 @@ static void svc_export_init(struct cache_head *cnew, struct cache_head *citem)
 	new->ex_client = item->ex_client;
 	new->ex_dentry = dget(item->ex_dentry);
 	new->ex_mnt = mntget(item->ex_mnt);
+	new->ex_path = NULL;
+	new->ex_fslocs.locations = NULL;
+	new->ex_fslocs.locations_count = 0;
+	new->ex_fslocs.migrated = 0;
 }
 
 static void export_update(struct cache_head *cnew, struct cache_head *citem)
@@ -535,6 +631,14 @@ static void export_update(struct cache_head *cnew, struct cache_head *citem)
 	new->ex_anon_uid = item->ex_anon_uid;
 	new->ex_anon_gid = item->ex_anon_gid;
 	new->ex_fsid = item->ex_fsid;
+	new->ex_path = item->ex_path;
+	item->ex_path = NULL;
+	new->ex_fslocs.locations = item->ex_fslocs.locations;
+	item->ex_fslocs.locations = NULL;
+	new->ex_fslocs.locations_count = item->ex_fslocs.locations_count;
+	item->ex_fslocs.locations_count = 0;
+	new->ex_fslocs.migrated = item->ex_fslocs.migrated;
+	item->ex_fslocs.migrated = 0;
 }
 
 static struct cache_head *svc_export_alloc(void)
@@ -846,6 +950,8 @@ exp_export(struct nfsctl_export *nxp)
 
 	exp = exp_get_by_name(clp, nd.mnt, nd.dentry, NULL);
 
+	memset(&new, 0, sizeof(new));
+
 	/* must make sure there won't be an ex_fsid clash */
 	if ((nxp->ex_flags & NFSEXP_FSID) &&
 	    (fsid_key = exp_get_fsid_key(clp, nxp->ex_dev)) &&
@@ -876,6 +982,9 @@ exp_export(struct nfsctl_export *nxp)
 
 	new.h.expiry_time = NEVER;
 	new.h.flags = 0;
+	new.ex_path = kstrdup(nxp->ex_path, GFP_KERNEL);
+	if (!new.ex_path)
+		goto finish;
 	new.ex_client = clp;
 	new.ex_mnt = nd.mnt;
 	new.ex_dentry = nd.dentry;
@@ -896,10 +1005,11 @@ exp_export(struct nfsctl_export *nxp)
 		/* failed to create at least one index */
 		exp_do_unexport(exp);
 		cache_flush();
-		err = -ENOMEM;
-	}
-
+	} else
+		err = 0;
 finish:
+	if (new.ex_path)
+		kfree(new.ex_path);
 	if (exp)
 		exp_put(exp);
 	if (fsid_key && !IS_ERR(fsid_key))
@@ -1156,7 +1266,8 @@ static struct flags {
 	{ 0, {"", ""}}
 };
 
-static void exp_flags(struct seq_file *m, int flag, int fsid, uid_t anonu, uid_t anong)
+static void exp_flags(struct seq_file *m, int flag, int fsid,
+		uid_t anonu, uid_t anong, struct nfsd4_fs_locations *fsloc)
 {
 	int first = 0;
 	struct flags *flg;
@@ -1172,6 +1283,21 @@ static void exp_flags(struct seq_file *m, int flag, int fsid, uid_t anonu, uid_t
 		seq_printf(m, "%sanonuid=%d", first++?",":"", anonu);
 	if (anong != (gid_t)-2 && anong != (0x10000-2))
 		seq_printf(m, "%sanongid=%d", first++?",":"", anong);
+	if (fsloc && fsloc->locations_count > 0) {
+		char *loctype = (fsloc->migrated) ? "refer" : "replicas";
+		int i;
+
+		seq_printf(m, "%s%s=", first++?",":"", loctype);
+		seq_escape(m, fsloc->locations[0].path, ",;@ \t\n\\");
+		seq_putc(m, '@');
+		seq_escape(m, fsloc->locations[0].hosts, ",;@ \t\n\\");
+		for (i = 1; i < fsloc->locations_count; i++) {
+			seq_putc(m, ';');
+			seq_escape(m, fsloc->locations[i].path, ",;@ \t\n\\");
+			seq_putc(m, '@');
+			seq_escape(m, fsloc->locations[i].hosts, ",;@ \t\n\\");
+		}
+	}
 }
 
 static int e_show(struct seq_file *m, void *p)

@@ -109,6 +109,10 @@ const char *acpi_get_sysname(void)
 		return "hpzx1";
 	} else if (!strcmp(hdr->oem_id, "SGI")) {
 		return "sn2";
+#ifdef CONFIG_XEN
+	} else if (is_running_on_xen() && !strcmp(hdr->oem_id, "XEN")) {
+		return "xen";
+#endif
 	}
 
 	return "dig";
@@ -123,6 +127,8 @@ const char *acpi_get_sysname(void)
 	return "sn2";
 # elif defined (CONFIG_IA64_DIG)
 	return "dig";
+# elif defined (CONFIG_IA64_XEN)
+	return "xen";
 # else
 #	error Unknown platform.  Fix acpi.c.
 # endif
@@ -593,6 +599,9 @@ void __init acpi_numa_arch_fixup(void)
  */
 int acpi_register_gsi(u32 gsi, int triggering, int polarity)
 {
+	if (acpi_irq_model == ACPI_IRQ_MODEL_PLATFORM)
+		return gsi;
+
 	if (has_8259 && gsi < 16)
 		return isa_irq_to_vector(gsi);
 
@@ -609,6 +618,9 @@ EXPORT_SYMBOL(acpi_register_gsi);
 
 void acpi_unregister_gsi(u32 gsi)
 {
+	if (acpi_irq_model == ACPI_IRQ_MODEL_PLATFORM)
+		return;
+
 	iosapic_unregister_intr(gsi);
 }
 

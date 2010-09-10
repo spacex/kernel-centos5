@@ -36,7 +36,7 @@
 
 #include "../scsi_sas_internal.h"
 
-kmem_cache_t *sas_task_cache;
+struct kmem_cache *sas_task_cache;
 
 /*------------ SAS addr hash -----------*/
 void sas_hash_addr(u8 *hashed, const u8 *sas_addr)
@@ -85,6 +85,9 @@ int sas_register_ha(struct sas_ha_struct *sas_ha)
 	else if (sas_ha->lldd_queue_size == -1)
 		sas_ha->lldd_queue_size = 128; /* Sanity */
 
+	sas_ha->state = SAS_HA_REGISTERED;
+	spin_lock_init(&sas_ha->state_lock);
+
 	error = sas_register_phys(sas_ha);
 	if (error) {
 		printk(KERN_NOTICE "couldn't register sas phys:%d\n", error);
@@ -112,6 +115,8 @@ int sas_register_ha(struct sas_ha_struct *sas_ha)
 		}
 	}
 
+	INIT_LIST_HEAD(&sas_ha->eh_done_q);
+
 	return 0;
 
 Undo_ports:
@@ -123,11 +128,21 @@ Undo_phys:
 
 int sas_unregister_ha(struct sas_ha_struct *sas_ha)
 {
-	if (sas_ha->lldd_max_execute_num > 1) {
-		sas_shutdown_queue(sas_ha);
-	}
+	unsigned long flags;
+
+	/* Set the state to unregistered to avoid further
+	 * events to be queued */
+	spin_lock_irqsave(&sas_ha->state_lock, flags);
+	sas_ha->state = SAS_HA_UNREGISTERED;
+	spin_unlock_irqrestore(&sas_ha->state_lock, flags);
+	scsi_flush_work(sas_ha->core.shost);
 
 	sas_unregister_ports(sas_ha);
+
+	if (sas_ha->lldd_max_execute_num > 1) {
+		sas_shutdown_queue(sas_ha);
+		sas_ha->lldd_max_execute_num = 1;
+	}
 
 	return 0;
 }
@@ -142,7 +157,37 @@ static int sas_get_linkerrors(struct sas_phy *phy)
 	return sas_smp_get_phy_events(phy);
 }
 
-static int sas_phy_reset(struct sas_phy *phy, int hard_reset)
+int sas_phy_enable(struct sas_phy *phy, int enable)
+{
+	int ret;
+	enum phy_func command;
+
+	if (enable)
+		command = PHY_FUNC_LINK_RESET;
+	else
+		command = PHY_FUNC_DISABLE;
+
+	if (scsi_is_sas_phy_local(phy)) {
+		struct Scsi_Host *shost = dev_to_shost(phy->dev.parent);
+		struct sas_ha_struct *sas_ha = SHOST_TO_SAS_HA(shost);
+		struct asd_sas_phy *asd_phy = sas_ha->sas_phy[phy->number];
+		struct sas_internal *i =
+			to_sas_internal(sas_ha->core.shost->transportt);
+
+		if (!enable) {
+			sas_phy_disconnected(asd_phy);
+			sas_ha->notify_phy_event(asd_phy, PHYE_LOSS_OF_SIGNAL);
+		}
+		ret = i->dft->lldd_control_phy_new(asd_phy, command, NULL);
+	} else {
+		struct sas_rphy *rphy = dev_to_rphy(phy->dev.parent);
+		struct domain_device *ddev = sas_find_dev_by_rphy(rphy);
+		ret = sas_smp_phy_control(ddev, phy->number, command, NULL);
+	}
+	return ret;
+}
+
+int sas_phy_reset(struct sas_phy *phy, int hard_reset)
 {
 	int ret;
 	enum phy_func reset_type;
@@ -158,18 +203,56 @@ static int sas_phy_reset(struct sas_phy *phy, int hard_reset)
 		struct asd_sas_phy *asd_phy = sas_ha->sas_phy[phy->number];
 		struct sas_internal *i =
 			to_sas_internal(sas_ha->core.shost->transportt);
-
-		ret = i->dft->lldd_control_phy(asd_phy, reset_type);
+		ret = i->dft->lldd_control_phy_new(asd_phy, reset_type, NULL);
 	} else {
 		struct sas_rphy *rphy = dev_to_rphy(phy->dev.parent);
 		struct domain_device *ddev = sas_find_dev_by_rphy(rphy);
-		ret = sas_smp_phy_control(ddev, phy->number, reset_type);
+		ret = sas_smp_phy_control(ddev, phy->number, reset_type, NULL);
 	}
 	return ret;
 }
 
+int sas_set_phy_speed(struct sas_phy *phy,
+		      struct sas_phy_linkrates *rates)
+{
+	int ret;
+
+	if ((rates->minimum_linkrate &&
+	     rates->minimum_linkrate > linkrate_to_phy_linkrate(phy->maximum_linkrate)) ||
+	    (rates->maximum_linkrate &&
+	     rates->maximum_linkrate < linkrate_to_phy_linkrate(phy->minimum_linkrate)))
+		return -EINVAL;
+
+	if (rates->minimum_linkrate &&
+	    rates->minimum_linkrate < linkrate_to_phy_linkrate(phy->minimum_linkrate_hw))
+		rates->minimum_linkrate = linkrate_to_phy_linkrate(phy->minimum_linkrate_hw);
+
+	if (rates->maximum_linkrate &&
+	    rates->maximum_linkrate > linkrate_to_phy_linkrate(phy->maximum_linkrate_hw))
+		rates->maximum_linkrate = linkrate_to_phy_linkrate(phy->maximum_linkrate_hw);
+
+	if (scsi_is_sas_phy_local(phy)) {
+		struct Scsi_Host *shost = dev_to_shost(phy->dev.parent);
+		struct sas_ha_struct *sas_ha = SHOST_TO_SAS_HA(shost);
+		struct asd_sas_phy *asd_phy = sas_ha->sas_phy[phy->number];
+		struct sas_internal *i =
+			to_sas_internal(sas_ha->core.shost->transportt);
+		ret = i->dft->lldd_control_phy_new(asd_phy, PHY_FUNC_SET_LINK_RATE, rates);
+	} else {
+		struct sas_rphy *rphy = dev_to_rphy(phy->dev.parent);
+		struct domain_device *ddev = sas_find_dev_by_rphy(rphy);
+		ret = sas_smp_phy_control(ddev, phy->number,
+					  PHY_FUNC_LINK_RESET, rates);
+
+	}
+
+	return ret;
+}
+
 static struct sas_function_template sft = {
+	.phy_enable = sas_phy_enable,
 	.phy_reset = sas_phy_reset,
+	.set_phy_speed = sas_set_phy_speed,
 	.get_linkerrors = sas_get_linkerrors,
 };
 

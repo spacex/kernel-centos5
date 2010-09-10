@@ -20,7 +20,10 @@
  */
 
 #include <linux/fs.h>
+#include <linux/version.h>
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 #include <linux/posix_acl_xattr.h>
+#endif
 #include "cifsfs.h"
 #include "cifspdu.h"
 #include "cifsglob.h"
@@ -269,7 +272,7 @@ ssize_t cifs_getxattr(struct dentry * direntry, const char * ea_name,
 				rc = CIFSSMBGetCIFSACL(xid, pTcon, fid,
 					ea_value, buf_size,
 					ACL_TYPE_ACCESS);
-				CIFSSMBClose(xid, pTcon, fid)
+				CIFSSMBClose(xid, pTcon, fid);
 			}
 		} */  /* BB enable after fixing up return data */
                   		

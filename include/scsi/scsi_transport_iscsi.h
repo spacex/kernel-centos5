@@ -126,6 +126,14 @@ struct iscsi_transport {
 	void (*ep_disconnect) (uint64_t ep_handle);
 	int (*tgt_dscvr) (enum iscsi_tgt_dscvr type, uint32_t host_no,
 			  uint32_t enable, struct sockaddr *dst_addr);
+#ifndef __GENKSYMS__
+	uint64_t host_param_mask;
+	int (*get_host_param) (struct Scsi_Host *shost,
+			       enum iscsi_host_param param, char *buf);
+	int (*set_host_param) (struct Scsi_Host *shost,
+			      enum iscsi_host_param param, char *buf,
+			      int buflen);
+#endif
 };
 
 /*

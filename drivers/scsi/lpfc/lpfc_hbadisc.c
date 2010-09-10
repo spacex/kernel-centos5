@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2004-2006 Emulex.  All rights reserved.           *
+ * Copyright (C) 2004-2007 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  * Portions Copyright (C) 2004-2005 Christoph Hellwig              *
@@ -110,6 +110,9 @@ lpfc_dev_loss_tmo_callbk(struct fc_rport *rport)
 		return;
 	}
 
+	if (ndlp->nlp_state == NLP_STE_MAPPED_NODE)
+		return;
+
 	name = (uint8_t *)&ndlp->nlp_portname;
 	phba = ndlp->nlp_phba;
 
@@ -148,11 +151,15 @@ lpfc_dev_loss_tmo_callbk(struct fc_rport *rport)
 				ndlp->nlp_state, ndlp->nlp_rpi);
 	}
 
-	ndlp->rport = NULL;
-	rdata->pnode = NULL;
-
-	if (!(phba->fc_flag & FC_UNLOADING))
+	if (!(phba->fc_flag & FC_UNLOADING) &&
+	    !(ndlp->nlp_flag & NLP_DELAY_TMO) &&
+	    !(ndlp->nlp_flag & NLP_NPR_2B_DISC) &&
+	    (ndlp->nlp_state != NLP_STE_UNMAPPED_NODE))
 		lpfc_disc_state_machine(phba, ndlp, NULL, NLP_EVT_DEVICE_RM);
+	else {
+		rdata->pnode = NULL;
+		ndlp->rport = NULL;
+	}
 
 	return;
 }
@@ -183,29 +190,35 @@ lpfc_work_list_done(struct lpfc_hba * phba)
 				*(int *)(evtp->evt_arg1)  = 0;
 			complete((struct completion *)(evtp->evt_arg2));
 			break;
-		case LPFC_EVT_OFFLINE:
+		case LPFC_EVT_OFFLINE_PREP:
 			if (phba->hba_state >= LPFC_LINK_DOWN)
-				lpfc_offline(phba);
+				lpfc_offline_prep(phba);
+			*(int *)(evtp->evt_arg1) = 0;
+			complete((struct completion *)(evtp->evt_arg2));
+			break;
+		case LPFC_EVT_OFFLINE:
+			lpfc_offline(phba);
 			lpfc_sli_brdrestart(phba);
 			*(int *)(evtp->evt_arg1) =
-				lpfc_sli_brdready(phba,HS_FFRDY | HS_MBRDY);
+				lpfc_sli_brdready(phba, HS_FFRDY | HS_MBRDY);
+			lpfc_unblock_mgmt_io(phba);
 			complete((struct completion *)(evtp->evt_arg2));
 			break;
 		case LPFC_EVT_WARM_START:
-			if (phba->hba_state >= LPFC_LINK_DOWN)
-				lpfc_offline(phba);
+			lpfc_offline(phba);
 			lpfc_reset_barrier(phba);
 			lpfc_sli_brdreset(phba);
 			lpfc_hba_down_post(phba);
 			*(int *)(evtp->evt_arg1) =
 				lpfc_sli_brdready(phba, HS_MBRDY);
+			lpfc_unblock_mgmt_io(phba);
 			complete((struct completion *)(evtp->evt_arg2));
 			break;
 		case LPFC_EVT_KILL:
-			if (phba->hba_state >= LPFC_LINK_DOWN)
-				lpfc_offline(phba);
+			lpfc_offline(phba);
 			*(int *)(evtp->evt_arg1)
 				= (phba->stopped) ? 0 : lpfc_sli_brdkill(phba);
+			lpfc_unblock_mgmt_io(phba);
 			complete((struct completion *)(evtp->evt_arg2));
 			break;
 		}
@@ -306,7 +319,7 @@ lpfc_do_work(void *p)
 {
 	struct lpfc_hba *phba = p;
 	int rc;
-	DECLARE_WAIT_QUEUE_HEAD(work_waitq);
+	DECLARE_WAIT_QUEUE_HEAD_ONSTACK(work_waitq);
 
 	set_user_nice(current, -20);
 	phba->work_wait = &work_waitq;
@@ -735,6 +748,9 @@ lpfc_mbx_process_link_up(struct lpfc_hba *phba, READ_LA_VAR *la)
 		case LA_4GHZ_LINK:
 			phba->fc_linkspeed = LA_4GHZ_LINK;
 			break;
+		case LA_8GHZ_LINK:
+			phba->fc_linkspeed = LA_8GHZ_LINK;
+			break;
 		default:
 			phba->fc_linkspeed = LA_UNKNW_LINK;
 			break;
@@ -890,12 +906,21 @@ lpfc_mbx_cmpl_read_la(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 
 	if (la->attType == AT_LINK_UP) {
 		phba->fc_stat.LinkUp++;
-		lpfc_printf_log(phba, KERN_ERR, LOG_LINK_EVENT,
+		if (phba->fc_flag & FC_LOOPBACK_MODE) {
+			lpfc_printf_log(phba, KERN_INFO, LOG_LINK_EVENT,
+				"%d:1306 Link Up Event in loop back mode "
+				"x%x received Data: x%x x%x x%x x%x\n",
+				phba->brd_no, la->eventTag, phba->fc_eventTag,
+				la->granted_AL_PA, la->UlnkSpeed,
+				phba->alpa_map[0]);
+		} else {
+			lpfc_printf_log(phba, KERN_ERR, LOG_LINK_EVENT,
 				"%d:1303 Link Up Event x%x received "
 				"Data: x%x x%x x%x x%x\n",
 				phba->brd_no, la->eventTag, phba->fc_eventTag,
 				la->granted_AL_PA, la->UlnkSpeed,
 				phba->alpa_map[0]);
+		}
 		lpfc_mbx_process_link_up(phba, la);
 	} else {
 		phba->fc_stat.LinkDown++;
@@ -1331,9 +1356,7 @@ lpfc_nlp_list(struct lpfc_hba * phba, struct lpfc_nodelist * nlp, int list)
 			 * already. If we have, and it's a scsi entity, be
 			 * sure to unblock any attached scsi devices
 			 */
-			if ((!nlp->rport) || (nlp->rport->port_state ==
-					FC_PORTSTATE_BLOCKED))
-				lpfc_register_remote_port(phba, nlp);
+			lpfc_register_remote_port(phba, nlp);
 
 			/*
 			 * if we added to Mapped list, but the remote port
@@ -1570,16 +1593,6 @@ lpfc_freenode(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp)
 
 	lpfc_nlp_list(phba, ndlp, NLP_JUST_DQ);
 
-	/*
-	 * if unloading the driver - just leave the remote port in place.
-	 * The driver unload will force the attached devices to detach
-	 * and flush cache's w/o generating flush errors.
-	 */
-	if ((ndlp->rport) && !(phba->fc_flag & FC_UNLOADING)) {
-		lpfc_unregister_remote_port(phba, ndlp);
-		ndlp->nlp_sid = NLP_NO_SID;
-	}
-
 	/* cleanup any ndlp on mbox q waiting for reglogin cmpl */
 	if ((mb = phba->sli.mbox_active)) {
 		if ((mb->mb.mbxCommand == MBX_REG_LOGIN64) &&
@@ -1604,7 +1617,7 @@ lpfc_freenode(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp)
 	}
 	spin_unlock_irq(phba->host->host_lock);
 
-	lpfc_els_abort(phba,ndlp,0);
+	lpfc_els_abort(phba,ndlp);
 	spin_lock_irq(phba->host->host_lock);
 	ndlp->nlp_flag &= ~NLP_DELAY_TMO;
 	spin_unlock_irq(phba->host->host_lock);
@@ -1628,6 +1641,7 @@ lpfc_freenode(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp)
 int
 lpfc_nlp_remove(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp)
 {
+	struct lpfc_rport_data *rdata;
 
 	if (ndlp->nlp_flag & NLP_DELAY_TMO) {
 		lpfc_cancel_retry_delay_tmo(phba, ndlp);
@@ -1639,6 +1653,13 @@ lpfc_nlp_remove(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp)
 		spin_unlock_irq(phba->host->host_lock);
 	} else {
 		lpfc_freenode(phba, ndlp);
+
+		if ((ndlp->rport) && !(phba->fc_flag & FC_UNLOADING)) {
+			rdata = ndlp->rport->dd_data;
+			rdata->pnode = NULL;
+			ndlp->rport = NULL;
+		}
+
 		mempool_free( ndlp, phba->nlp_mem_pool);
 	}
 	return 0;
@@ -2221,6 +2242,7 @@ lpfc_disc_timeout_handler(struct lpfc_hba *phba)
 		initlinkmbox->mb.un.varInitLnk.lipsr_AL_PA = 0;
 		rc = lpfc_sli_issue_mbox(phba, initlinkmbox,
 					 (MBX_NOWAIT | MBX_STOP_IOCB));
+		lpfc_set_loopback_flag(phba);
 		if (rc == MBX_NOT_FINISHED)
 			mempool_free(initlinkmbox, phba->mbox_mem_pool);
 

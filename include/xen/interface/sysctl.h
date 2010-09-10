@@ -16,7 +16,7 @@
 #include "xen.h"
 #include "domctl.h"
 
-#define XEN_SYSCTL_INTERFACE_VERSION 0x00000002
+#define XEN_SYSCTL_INTERFACE_VERSION 0x00000003
 
 /*
  * Read console content from Xen buffer ring.

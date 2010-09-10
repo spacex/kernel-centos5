@@ -238,6 +238,13 @@ config HPET_EMULATE_RTC
 	depends on HPET_TIMER && RTC=y
 	default y
 
+config TICK_DIVIDER
+	bool "Support clock division"
+	default n
+	help
+	  Supports the use of clock division allowing the real interrupt
+	  rate to be lower than the HZ setting.
+
 config NR_CPUS
 	int "Maximum number of CPUs (2-255)"
 	range 2 255
@@ -770,7 +777,7 @@ source kernel/Kconfig.hz
 
 config KEXEC
 	bool "kexec system call (EXPERIMENTAL)"
-	depends on EXPERIMENTAL && !X86_XEN
+	depends on EXPERIMENTAL && !XEN_UNPRIVILEGED_GUEST
 	help
 	  kexec is a system call that implements the ability to shutdown your
 	  current kernel, and to start another kernel.  It is like a reboot

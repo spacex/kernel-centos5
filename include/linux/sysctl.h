@@ -197,6 +197,7 @@ enum
 	VM_PANIC_ON_OOM=33,	/* panic at out-of-memory */
 	VM_VDSO_ENABLED=34,	/* map VDSO into new processes? */
 	VM_MIN_SLAB=35,		 /* Percent pages ignored by zone reclaim */
+	VM_PAGECACHE=37,        /* favor reclaiming unmapped pagecache pages */
 };
 
 
@@ -276,6 +277,8 @@ enum
 	NET_CORE_BUDGET=19,
 	NET_CORE_AEVENT_ETIME=20,
 	NET_CORE_AEVENT_RSEQTH=21,
+	NET_CORE_XFRM_LARVAL_DROP=22,
+	NET_CORE_XFRM_ACQ_EXPIRES=23,
 };
 
 /* /proc/sys/net/ethernet */

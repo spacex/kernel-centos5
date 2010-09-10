@@ -3,12 +3,14 @@
 
 static inline void do_timer_interrupt_hook(struct pt_regs *regs)
 {
-	do_timer(regs);
+	int i;
+	for (i = 0; i < tick_divider; i++) {
+		do_timer(regs);
 #ifndef CONFIG_SMP
-	update_process_times(user_mode_vm(regs));
+		update_process_times(user_mode_vm(regs));
 #endif
-
-	voyager_timer_interrupt(regs);
+		voyager_timer_interrupt(regs);
+	}
 }
 
 static inline int do_timer_overflow(int count)

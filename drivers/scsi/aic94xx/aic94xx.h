@@ -56,8 +56,8 @@
 /* 2*ITNL timeout + 1 second */
 #define AIC94XX_SCB_TIMEOUT  (5*HZ)
 
-extern kmem_cache_t *asd_dma_token_cache;
-extern kmem_cache_t *asd_ascb_cache;
+extern struct kmem_cache *asd_dma_token_cache;
+extern struct kmem_cache *asd_ascb_cache;
 extern char sas_addr_str[2*SAS_ADDR_SIZE + 1];
 
 static inline void asd_stringify_sas_addr(char *p, const u8 *sas_addr)
@@ -109,6 +109,7 @@ int  asd_clear_nexus_port(struct asd_sas_port *port);
 int  asd_clear_nexus_ha(struct sas_ha_struct *sas_ha);
 
 /* ---------- Phy Management ---------- */
-int  asd_control_phy(struct asd_sas_phy *phy, enum phy_func func);
+int  asd_control_phy_wrap(struct asd_sas_phy *phy, enum phy_func func);
+int  asd_control_phy(struct asd_sas_phy *phy, enum phy_func func, void *arg);
 
 #endif

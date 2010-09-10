@@ -3,7 +3,7 @@
  * License.  See the file "COPYING" in the main directory of this archive
  * for more details.
  *
- * Copyright (C) 2001-2004 Silicon Graphics, Inc. All rights reserved.
+ * Copyright (C) 2001-2004, 2006 Silicon Graphics, Inc. All rights reserved.
  */
 
 #include <linux/interrupt.h>
@@ -33,6 +33,26 @@ sal_pcibr_slot_enable(struct pcibus_info *soft, int device, void *resp)
 	busnum = soft->pbi_buscommon.bs_persist_busnum;
 	SAL_CALL_NOLOCK(ret_stuff, (u64) SN_SAL_IOIF_SLOT_ENABLE, segment,
 			busnum, (u64) device, (u64) resp, 0, 0, 0);
+
+	return (int)ret_stuff.v0;
+}
+
+int
+sal_pcibr_slot_enable2(struct pcibus_info *soft, int device, void *resp,
+                      char **ssdt)
+{
+	struct ia64_sal_retval ret_stuff;
+	u64 busnum;
+	u64 segment;
+
+	ret_stuff.status = 0;
+	ret_stuff.v0 = 0;
+
+	segment = soft->pbi_buscommon.bs_persist_segment;
+	busnum = soft->pbi_buscommon.bs_persist_busnum;
+	SAL_CALL_NOLOCK(ret_stuff, (u64) SN_SAL_IOIF_SLOT_ENABLE, segment,
+			busnum, (u64) device, (u64) resp, (u64)ia64_tpa(ssdt),
+			0, 0);
 
 	return (int)ret_stuff.v0;
 }
@@ -109,7 +129,6 @@ void *
 pcibr_bus_fixup(struct pcibus_bussoft *prom_bussoft, struct pci_controller *controller)
 {
 	int nasid, cnode, j;
-	cnodeid_t near_cnode;
 	struct hubdev_info *hubdev_info;
 	struct pcibus_info *soft;
 	struct sn_flush_device_kernel *sn_flush_device_kernel;
@@ -186,20 +205,6 @@ pcibr_bus_fixup(struct pcibus_bussoft *prom_bussoft, struct pci_controller *cont
 		return NULL;
 	}
 
-	if (prom_bussoft->bs_asic_type == PCIIO_ASIC_TYPE_TIOCP) {
-		/* TIO PCI Bridge: find nearest node with CPUs */
-		int e = sn_hwperf_get_nearest_node(cnode, NULL, &near_cnode);
-
-		if (e < 0) {
-			near_cnode = (cnodeid_t)-1; /* use any node */
-			printk(KERN_WARNING "pcibr_bus_fixup: failed to find "
-				"near node with CPUs to TIO node %d, err=%d\n",
-				cnode, e);
-		}
-		controller->node = near_cnode;
-	}
-	else
-		controller->node = cnode;
 	return soft;
 }
 
@@ -270,5 +275,6 @@ pcibr_init_provider(void)
 }
 
 EXPORT_SYMBOL_GPL(sal_pcibr_slot_enable);
+EXPORT_SYMBOL_GPL(sal_pcibr_slot_enable2);
 EXPORT_SYMBOL_GPL(sal_pcibr_slot_disable);
 EXPORT_SYMBOL_GPL(sn_ioboard_to_pci_bus);

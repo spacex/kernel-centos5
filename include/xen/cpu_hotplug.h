@@ -4,13 +4,11 @@
 #include <linux/kernel.h>
 #include <linux/cpumask.h>
 
-#if defined(CONFIG_HOTPLUG_CPU)
-
-#if defined(CONFIG_X86)
-void cpu_initialize_context(unsigned int cpu);
-#else
-#define cpu_initialize_context(cpu)	((void)0)
+#if defined(CONFIG_X86) && defined(CONFIG_SMP)
+extern cpumask_t cpu_initialized_map;
 #endif
+
+#if defined(CONFIG_HOTPLUG_CPU)
 
 int cpu_up_check(unsigned int cpu);
 void init_xenbus_allowed_cpumask(void);

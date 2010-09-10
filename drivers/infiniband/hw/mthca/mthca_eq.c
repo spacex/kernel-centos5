@@ -33,7 +33,6 @@
  * $Id: mthca_eq.c 1382 2004-12-24 02:21:02Z roland $
  */
 
-#include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/interrupt.h>
 #include <linux/pci.h>
@@ -111,11 +110,11 @@ enum {
 				(1ULL << MTHCA_EVENT_TYPE_WQ_ACCESS_ERROR)    | \
 				(1ULL << MTHCA_EVENT_TYPE_LOCAL_CATAS_ERROR)  | \
 				(1ULL << MTHCA_EVENT_TYPE_PORT_CHANGE)        | \
-				(1ULL << MTHCA_EVENT_TYPE_ECC_DETECT))
+				(1ULL << MTHCA_EVENT_TYPE_ECC_DETECT))        | \
+				(1ULL << MTHCA_EVENT_TYPE_CMD)
 #define MTHCA_SRQ_EVENT_MASK   ((1ULL << MTHCA_EVENT_TYPE_SRQ_CATAS_ERROR)    | \
 				(1ULL << MTHCA_EVENT_TYPE_SRQ_QP_LAST_WQE)    | \
 				(1ULL << MTHCA_EVENT_TYPE_SRQ_LIMIT))
-#define MTHCA_CMD_EVENT_MASK    (1ULL << MTHCA_EVENT_TYPE_CMD)
 
 #define MTHCA_EQ_DB_INC_CI     (1 << 24)
 #define MTHCA_EQ_DB_REQ_NOT    (2 << 24)
@@ -405,7 +404,7 @@ static int mthca_eq_int(struct mthca_dev *dev, struct mthca_eq *eq)
 	return eqes_found;
 }
 
-static irqreturn_t mthca_tavor_interrupt(int irq, void *dev_ptr, struct pt_regs *regs)
+static irqreturn_t mthca_tavor_interrupt(int irq, void *dev_ptr)
 {
 	struct mthca_dev *dev = dev_ptr;
 	u32 ecr;
@@ -432,8 +431,7 @@ static irqreturn_t mthca_tavor_interrupt(int irq, void *dev_ptr, struct pt_regs 
 	return IRQ_HANDLED;
 }
 
-static irqreturn_t mthca_tavor_msi_x_interrupt(int irq, void *eq_ptr,
-					 struct pt_regs *regs)
+static irqreturn_t mthca_tavor_msi_x_interrupt(int irq, void *eq_ptr)
 {
 	struct mthca_eq  *eq  = eq_ptr;
 	struct mthca_dev *dev = eq->dev;
@@ -446,7 +444,7 @@ static irqreturn_t mthca_tavor_msi_x_interrupt(int irq, void *eq_ptr,
 	return IRQ_HANDLED;
 }
 
-static irqreturn_t mthca_arbel_interrupt(int irq, void *dev_ptr, struct pt_regs *regs)
+static irqreturn_t mthca_arbel_interrupt(int irq, void *dev_ptr)
 {
 	struct mthca_dev *dev = dev_ptr;
 	int work = 0;
@@ -467,8 +465,7 @@ static irqreturn_t mthca_arbel_interrupt(int irq, void *dev_ptr, struct pt_regs 
 	return IRQ_RETVAL(work);
 }
 
-static irqreturn_t mthca_arbel_msi_x_interrupt(int irq, void *eq_ptr,
-					       struct pt_regs *regs)
+static irqreturn_t mthca_arbel_msi_x_interrupt(int irq, void *eq_ptr)
 {
 	struct mthca_eq  *eq  = eq_ptr;
 	struct mthca_dev *dev = eq->dev;
@@ -481,10 +478,10 @@ static irqreturn_t mthca_arbel_msi_x_interrupt(int irq, void *eq_ptr,
 	return IRQ_HANDLED;
 }
 
-static int __devinit mthca_create_eq(struct mthca_dev *dev,
-				     int nent,
-				     u8 intr,
-				     struct mthca_eq *eq)
+static int mthca_create_eq(struct mthca_dev *dev,
+			   int nent,
+			   u8 intr,
+			   struct mthca_eq *eq)
 {
 	int npages;
 	u64 *dma_list = NULL;
@@ -666,9 +663,9 @@ static void mthca_free_irqs(struct mthca_dev *dev)
 				 dev->eq_table.eq + i);
 }
 
-static int __devinit mthca_map_reg(struct mthca_dev *dev,
-				   unsigned long offset, unsigned long size,
-				   void __iomem **map)
+static int mthca_map_reg(struct mthca_dev *dev,
+			 unsigned long offset, unsigned long size,
+			 void __iomem **map)
 {
 	unsigned long base = pci_resource_start(dev->pdev, 0);
 
@@ -693,7 +690,7 @@ static void mthca_unmap_reg(struct mthca_dev *dev, unsigned long offset,
 	iounmap(map);
 }
 
-static int __devinit mthca_map_eq_regs(struct mthca_dev *dev)
+static int mthca_map_eq_regs(struct mthca_dev *dev)
 {
 	if (mthca_is_memfree(dev)) {
 		/*
@@ -783,7 +780,7 @@ static void mthca_unmap_eq_regs(struct mthca_dev *dev)
 	}
 }
 
-int __devinit mthca_map_eq_icm(struct mthca_dev *dev, u64 icm_virt)
+int mthca_map_eq_icm(struct mthca_dev *dev, u64 icm_virt)
 {
 	int ret;
 	u8 status;
@@ -827,7 +824,7 @@ void mthca_unmap_eq_icm(struct mthca_dev *dev)
 	__free_page(dev->eq_table.icm_page);
 }
 
-int __devinit mthca_init_eq_table(struct mthca_dev *dev)
+int mthca_init_eq_table(struct mthca_dev *dev)
 {
 	int err;
 	u8 status;
@@ -866,23 +863,17 @@ int __devinit mthca_init_eq_table(struct mthca_dev *dev)
 	if (err)
 		goto err_out_unmap;
 
-	err = mthca_create_eq(dev, MTHCA_NUM_ASYNC_EQE + MTHCA_NUM_SPARE_EQE,
+	err = mthca_create_eq(dev, MTHCA_NUM_CMD_EQE + MTHCA_NUM_ASYNC_EQE +
+			      MTHCA_NUM_SPARE_EQE,
 			      (dev->mthca_flags & MTHCA_FLAG_MSI_X) ? 129 : intr,
 			      &dev->eq_table.eq[MTHCA_EQ_ASYNC]);
 	if (err)
 		goto err_out_comp;
 
-	err = mthca_create_eq(dev, MTHCA_NUM_CMD_EQE + MTHCA_NUM_SPARE_EQE,
-			      (dev->mthca_flags & MTHCA_FLAG_MSI_X) ? 130 : intr,
-			      &dev->eq_table.eq[MTHCA_EQ_CMD]);
-	if (err)
-		goto err_out_async;
-
 	if (dev->mthca_flags & MTHCA_FLAG_MSI_X) {
 		static const char *eq_name[] = {
 			[MTHCA_EQ_COMP]  = DRV_NAME " (comp)",
 			[MTHCA_EQ_ASYNC] = DRV_NAME " (async)",
-			[MTHCA_EQ_CMD]   = DRV_NAME " (cmd)"
 		};
 
 		for (i = 0; i < MTHCA_NUM_EQ; ++i) {
@@ -892,7 +883,7 @@ int __devinit mthca_init_eq_table(struct mthca_dev *dev)
 					  mthca_tavor_msi_x_interrupt,
 					  0, eq_name[i], dev->eq_table.eq + i);
 			if (err)
-				goto err_out_cmd;
+				goto err_out_async;
 			dev->eq_table.eq[i].have_irq = 1;
 		}
 	} else {
@@ -902,7 +893,7 @@ int __devinit mthca_init_eq_table(struct mthca_dev *dev)
 				  mthca_tavor_interrupt,
 				  IRQF_SHARED, DRV_NAME, dev);
 		if (err)
-			goto err_out_cmd;
+			goto err_out_async;
 		dev->eq_table.have_irq = 1;
 	}
 
@@ -915,15 +906,6 @@ int __devinit mthca_init_eq_table(struct mthca_dev *dev)
 		mthca_warn(dev, "MAP_EQ for async EQ %d returned status 0x%02x\n",
 			   dev->eq_table.eq[MTHCA_EQ_ASYNC].eqn, status);
 
-	err = mthca_MAP_EQ(dev, MTHCA_CMD_EVENT_MASK,
-			   0, dev->eq_table.eq[MTHCA_EQ_CMD].eqn, &status);
-	if (err)
-		mthca_warn(dev, "MAP_EQ for cmd EQ %d failed (%d)\n",
-			   dev->eq_table.eq[MTHCA_EQ_CMD].eqn, err);
-	if (status)
-		mthca_warn(dev, "MAP_EQ for cmd EQ %d returned status 0x%02x\n",
-			   dev->eq_table.eq[MTHCA_EQ_CMD].eqn, status);
-
 	for (i = 0; i < MTHCA_NUM_EQ; ++i)
 		if (mthca_is_memfree(dev))
 			arbel_eq_req_not(dev, dev->eq_table.eq[i].eqn_mask);
@@ -932,11 +914,8 @@ int __devinit mthca_init_eq_table(struct mthca_dev *dev)
 
 	return 0;
 
-err_out_cmd:
-	mthca_free_irqs(dev);
-	mthca_free_eq(dev, &dev->eq_table.eq[MTHCA_EQ_CMD]);
-
 err_out_async:
+	mthca_free_irqs(dev);
 	mthca_free_eq(dev, &dev->eq_table.eq[MTHCA_EQ_ASYNC]);
 
 err_out_comp:
@@ -959,8 +938,6 @@ void mthca_cleanup_eq_table(struct mthca_dev *dev)
 
 	mthca_MAP_EQ(dev, async_mask(dev),
 		     1, dev->eq_table.eq[MTHCA_EQ_ASYNC].eqn, &status);
-	mthca_MAP_EQ(dev, MTHCA_CMD_EVENT_MASK,
-		     1, dev->eq_table.eq[MTHCA_EQ_CMD].eqn, &status);
 
 	for (i = 0; i < MTHCA_NUM_EQ; ++i)
 		mthca_free_eq(dev, &dev->eq_table.eq[i]);

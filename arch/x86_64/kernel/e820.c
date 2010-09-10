@@ -94,7 +94,7 @@ static inline int bad_addr(unsigned long *addrp, unsigned long size)
  * This function checks if any part of the range <start,end> is mapped
  * with type.
  */
-int __meminit
+int
 e820_any_mapped(unsigned long start, unsigned long end, unsigned type)
 { 
 	int i;
@@ -108,6 +108,7 @@ e820_any_mapped(unsigned long start, unsigned long end, unsigned type)
 	} 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(e820_any_mapped);
 
 /*
  * This function checks if the entire range <start,end> is mapped with type.

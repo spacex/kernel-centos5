@@ -454,7 +454,8 @@ static int nfs_start_lockd(struct nfs_server *server)
 		goto out;
 	if (server->flags & NFS_MOUNT_NONLM)
 		goto out;
-	error = lockd_up();
+	error = lockd_up_proto((server->flags & NFS_MOUNT_TCP) ?
+			IPPROTO_TCP : IPPROTO_UDP);
 	if (error < 0)
 		server->flags |= NFS_MOUNT_NONLM;
 	else
@@ -619,7 +620,8 @@ static int nfs_init_server(struct nfs_server *server, const struct nfs_mount_dat
 	if (clp->cl_nfsversion == 3) {
 		if (server->namelen == 0 || server->namelen > NFS3_MAXNAMLEN)
 			server->namelen = NFS3_MAXNAMLEN;
-		server->caps |= NFS_CAP_READDIRPLUS;
+		if (!(data->flags & NFS_MOUNT_NORDIRPLUS))
+			server->caps |= NFS_CAP_READDIRPLUS;
 	} else {
 		if (server->namelen == 0 || server->namelen > NFS2_MAXNAMLEN)
 			server->namelen = NFS2_MAXNAMLEN;
@@ -1026,7 +1028,7 @@ error:
  * Create an NFS4 referral server record
  */
 struct nfs_server *nfs4_create_referral_server(struct nfs_clone_mount *data,
-					       struct nfs_fh *fh)
+					       struct nfs_fh *mntfh)
 {
 	struct nfs_client *parent_client;
 	struct nfs_server *server, *parent_server;
@@ -1062,8 +1064,13 @@ struct nfs_server *nfs4_create_referral_server(struct nfs_clone_mount *data,
 	BUG_ON(!server->nfs_client->rpc_ops);
 	BUG_ON(!server->nfs_client->rpc_ops->file_inode_ops);
 
+	/* Probe the root fh to retrieve its FSID and filehandle */
+	error = nfs4_path_walk(server, mntfh, data->mnt_path);
+	if (error < 0)
+		goto error;
+
 	/* probe the filesystem info for this server filesystem */
-	error = nfs_probe_fsinfo(server, fh, &fattr);
+	error = nfs_probe_fsinfo(server, mntfh, &fattr);
 	if (error < 0)
 		goto error;
 

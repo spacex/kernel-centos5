@@ -64,6 +64,12 @@ enum {
 
 #define IB_UVERBS_BASE_DEV	MKDEV(IB_UVERBS_MAJOR, IB_UVERBS_BASE_MINOR)
 
+#ifdef __ia64__
+/* workaround for a bug in hp chipset that would cause kernel
+   panic when dma resources are exhaused */
+int dma_map_sg_hp_wa = 0;
+#endif
+
 static struct class *uverbs_class;
 
 DEFINE_SPINLOCK(ib_uverbs_idr_lock);
@@ -841,6 +847,11 @@ static int __init ib_uverbs_init(void)
 	int ret;
 
 	spin_lock_init(&map_lock);
+
+#ifdef __ia64__
+	if (ia64_platform_is("hpzx1"))
+		dma_map_sg_hp_wa = 1;
+#endif
 
 	ret = register_chrdev_region(IB_UVERBS_BASE_DEV, IB_UVERBS_MAX_DEVICES,
 				     "infiniband_verbs");

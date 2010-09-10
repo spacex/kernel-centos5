@@ -24,6 +24,7 @@
 
 static unsigned long hpet_period;	/* fsecs / HPET clock */
 unsigned long hpet_tick;		/* hpet clks count per tick */
+unsigned long hpet_tick_real;		/* hpet clocks per interrupt */
 unsigned long hpet_address;		/* hpet memory map physical address */
 int hpet_use_timer;
 
@@ -156,7 +157,8 @@ int __init hpet_enable(void)
 
 	hpet_use_timer = id & HPET_ID_LEGSUP;
 
-	if (hpet_timer_stop_set_go(hpet_tick))
+	hpet_tick_real = hpet_tick * tick_divider;
+	if (hpet_timer_stop_set_go(hpet_tick_real))
 		return -1;
 
 	use_hpet = 1;
@@ -220,6 +222,11 @@ int hpet_reenable(void)
 int is_hpet_enabled(void)
 {
 	return use_hpet;
+}
+
+int is_hpet_legacy_int_enabled()
+{
+	return (is_hpet_enabled() && hpet_use_timer);
 }
 
 int is_hpet_capable(void)
@@ -290,7 +297,7 @@ int hpet_rtc_timer_init(void)
 	unsigned int cfg, cnt;
 	unsigned long flags;
 
-	if (!is_hpet_enabled())
+	if (!is_hpet_legacy_int_enabled())
 		return 0;
 	/*
 	 * Set the counter 1 and enable the interrupts.
@@ -345,7 +352,7 @@ static void hpet_rtc_timer_reinit(void)
  */
 int hpet_mask_rtc_irq_bit(unsigned long bit_mask)
 {
-	if (!is_hpet_enabled())
+	if (!is_hpet_legacy_int_enabled())
 		return 0;
 
 	if (bit_mask & RTC_UIE)
@@ -362,7 +369,7 @@ int hpet_set_rtc_irq_bit(unsigned long bit_mask)
 {
 	int timer_init_reqd = 0;
 
-	if (!is_hpet_enabled())
+	if (!is_hpet_legacy_int_enabled())
 		return 0;
 
 	if (!(PIE_on | AIE_on | UIE_on))
@@ -387,7 +394,7 @@ int hpet_set_rtc_irq_bit(unsigned long bit_mask)
 
 int hpet_set_alarm_time(unsigned char hrs, unsigned char min, unsigned char sec)
 {
-	if (!is_hpet_enabled())
+	if (!is_hpet_legacy_int_enabled())
 		return 0;
 
 	alarm_time.tm_hour = hrs;
@@ -399,7 +406,7 @@ int hpet_set_alarm_time(unsigned char hrs, unsigned char min, unsigned char sec)
 
 int hpet_set_periodic_freq(unsigned long freq)
 {
-	if (!is_hpet_enabled())
+	if (!is_hpet_legacy_int_enabled())
 		return 0;
 
 	PIE_freq = freq;
@@ -410,7 +417,7 @@ int hpet_set_periodic_freq(unsigned long freq)
 
 int hpet_rtc_dropped_irq(void)
 {
-	if (!is_hpet_enabled())
+	if (!is_hpet_legacy_int_enabled())
 		return 0;
 
 	return 1;

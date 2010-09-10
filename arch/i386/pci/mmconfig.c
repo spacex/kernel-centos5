@@ -98,13 +98,13 @@ static int pci_mmcfg_read(unsigned int seg, unsigned int bus,
 
 	switch (len) {
 	case 1:
-		*value = readb(mmcfg_virt_addr + reg);
+		*value = mmio_config_readb(mmcfg_virt_addr + reg);
 		break;
 	case 2:
-		*value = readw(mmcfg_virt_addr + reg);
+		*value = mmio_config_readw(mmcfg_virt_addr + reg);
 		break;
 	case 4:
-		*value = readl(mmcfg_virt_addr + reg);
+		*value = mmio_config_readl(mmcfg_virt_addr + reg);
 		break;
 	}
 
@@ -132,13 +132,13 @@ static int pci_mmcfg_write(unsigned int seg, unsigned int bus,
 
 	switch (len) {
 	case 1:
-		writeb(value, mmcfg_virt_addr + reg);
+		mmio_config_writeb(mmcfg_virt_addr + reg, value);
 		break;
 	case 2:
-		writew(value, mmcfg_virt_addr + reg);
+		mmio_config_writew(mmcfg_virt_addr + reg, value);
 		break;
 	case 4:
-		writel(value, mmcfg_virt_addr + reg);
+		mmio_config_writel(mmcfg_virt_addr + reg, value);
 		break;
 	}
 
@@ -212,6 +212,21 @@ static struct dmi_system_id __devinitdata nommconf_dmi_table[] = {
 		.ident = "HP xw9400 Workstation",
 		.matches = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "HP xw9400 Workstation"),
+		},
+	},
+	{
+		.callback = disable_mmconf,
+		.ident = "ProLiant DL585 G2",
+		.matches = {
+			DMI_MATCH(DMI_PRODUCT_NAME, "ProLiant DL585 G2"),
+		},
+	},
+	{
+		.callback = disable_mmconf,
+		.ident = "HP Compaq dc5700 Microtower",
+		.matches = {
+			DMI_MATCH(DMI_PRODUCT_NAME, 
+				"HP Compaq dc5700 Microtower"),
 		},
 	},
 

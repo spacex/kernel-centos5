@@ -106,7 +106,7 @@ static int rtc_has_irq = 1;
 #endif
 
 #ifndef CONFIG_HPET_EMULATE_RTC
-#define is_hpet_enabled()			0
+#define is_hpet_legacy_int_enabled()		0
 #define hpet_set_alarm_time(hrs, min, sec) 	0
 #define hpet_set_periodic_freq(arg) 		0
 #define hpet_mask_rtc_irq_bit(arg) 		0
@@ -241,7 +241,7 @@ irqreturn_t rtc_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	spin_lock (&rtc_lock);
 	rtc_irq_data += 0x100;
 	rtc_irq_data &= ~0xff;
-	if (is_hpet_enabled()) {
+	if (is_hpet_legacy_int_enabled()) {
 		/*
 		 * In this case it is HPET RTC interrupt handler
 		 * calling us, with the interrupt information
@@ -988,7 +988,7 @@ no_irq:
 	}
 
 #ifdef RTC_IRQ
-	if (is_hpet_enabled()) {
+	if (is_hpet_legacy_int_enabled()) {
 		rtc_int_handler_ptr = hpet_rtc_interrupt;
 	} else {
 		rtc_int_handler_ptr = rtc_interrupt;

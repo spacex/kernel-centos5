@@ -152,7 +152,7 @@ static void pxa2xx_ac97_reset(struct snd_ac97 *ac97)
 	GCR |= GCR_SDONE_IE|GCR_CDONE_IE;
 }
 
-static irqreturn_t pxa2xx_ac97_irq(int irq, void *dev_id, struct pt_regs *regs)
+static irqreturn_t pxa2xx_ac97_irq(int irq, void *dev_id)
 {
 	long status;
 
@@ -305,7 +305,7 @@ static int pxa2xx_ac97_resume(struct platform_device *dev)
 #define pxa2xx_ac97_resume	NULL
 #endif
 
-static int pxa2xx_ac97_probe(struct platform_device *dev)
+static int __devinit pxa2xx_ac97_probe(struct platform_device *dev)
 {
 	struct snd_card *card;
 	struct snd_ac97_bus *ac97_bus;
@@ -369,7 +369,7 @@ static int pxa2xx_ac97_probe(struct platform_device *dev)
 	return ret;
 }
 
-static int pxa2xx_ac97_remove(struct platform_device *dev)
+static int __devexit pxa2xx_ac97_remove(struct platform_device *dev)
 {
 	struct snd_card *card = platform_get_drvdata(dev);
 
@@ -386,7 +386,7 @@ static int pxa2xx_ac97_remove(struct platform_device *dev)
 
 static struct platform_driver pxa2xx_ac97_driver = {
 	.probe		= pxa2xx_ac97_probe,
-	.remove		= pxa2xx_ac97_remove,
+	.remove		= __devexit_p(pxa2xx_ac97_remove),
 	.suspend	= pxa2xx_ac97_suspend,
 	.resume		= pxa2xx_ac97_resume,
 	.driver		= {

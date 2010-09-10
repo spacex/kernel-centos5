@@ -65,6 +65,7 @@
 #include <linux/selinux.h>
 #include <linux/binfmts.h>
 #include <linux/syscalls.h>
+#include <linux/inotify.h>
 
 #include "audit.h"
 
@@ -77,16 +78,14 @@ extern int audit_enabled;
  * for saving names from getname(). */
 #define AUDIT_NAMES    20
 
-/* AUDIT_NAMES_RESERVED is the number of slots we reserve in the
- * audit_context from being used for nameless inodes from
- * path_lookup. */
-#define AUDIT_NAMES_RESERVED 7
-
 /* Indicates that audit should log the full pathname. */
 #define AUDIT_NAME_FULL -1
 
 /* number of audit rules */
 int audit_n_rules;
+
+/* determines whether we collect data for signals sent */
+int audit_signals;
 
 /* When fs/namei.c:getname() is called, we store the pointer in name and
  * we don't let putname() free it (instead we free all of the saved
@@ -112,6 +111,9 @@ struct audit_aux_data {
 };
 
 #define AUDIT_AUX_IPCPERM	0
+
+/* Number of target pids per aux struct. */
+#define AUDIT_AUX_PIDS	16
 
 struct audit_aux_data_mq_open {
 	struct audit_aux_data	d;
@@ -169,10 +171,16 @@ struct audit_aux_data_sockaddr {
 	char			a[0];
 };
 
-struct audit_aux_data_path {
+struct audit_aux_data_pids {
 	struct audit_aux_data	d;
-	struct dentry		*dentry;
-	struct vfsmount		*mnt;
+	pid_t			target_pid[AUDIT_AUX_PIDS];
+	u32			target_sid[AUDIT_AUX_PIDS];
+	int			pid_count;
+};
+
+struct audit_tree_refs {
+	struct audit_tree_refs *next;
+	struct audit_chunk *c[31];
 };
 
 /* The per-task audit context. */
@@ -195,6 +203,9 @@ struct audit_context {
 	struct vfsmount *   pwdmnt;
 	struct audit_context *previous; /* For nested syscalls */
 	struct audit_aux_data *aux;
+#ifndef __GENKSYMS__
+	struct audit_aux_data *aux_pids;
+#endif
 
 				/* Save things to print about task_struct */
 	pid_t		    pid, ppid;
@@ -202,6 +213,14 @@ struct audit_context {
 	gid_t		    gid, egid, sgid, fsgid;
 	unsigned long	    personality;
 	int		    arch;
+
+#ifndef __GENKSYMS__
+	pid_t		    target_pid;
+	u32		    target_sid;
+
+	struct audit_tree_refs *trees, *first_trees;
+	int tree_count;
+#endif
 
 #if AUDIT_DEBUG
 	int		    put_count;
@@ -255,6 +274,111 @@ static int audit_match_perm(struct audit_context *ctx, int mask)
 	default:
 		return 0;
 	}
+}
+
+/*
+ * We keep a linked list of fixed-sized (31 pointer) arrays of audit_chunk *;
+ * ->first_trees points to its beginning, ->trees - to the current end of data.
+ * ->tree_count is the number of free entries in array pointed to by ->trees.
+ * Original condition is (NULL, NULL, 0); as soon as it grows we never revert to NULL,
+ * "empty" becomes (p, p, 31) afterwards.  We don't shrink the list (and seriously,
+ * it's going to remain 1-element for almost any setup) until we free context itself.
+ * References in it _are_ dropped - at the same time we free/drop aux stuff.
+ */
+
+static int put_tree_ref(struct audit_context *ctx, struct audit_chunk *chunk)
+{
+	struct audit_tree_refs *p = ctx->trees;
+	int left = ctx->tree_count;
+	if (likely(left)) {
+		p->c[--left] = chunk;
+		ctx->tree_count = left;
+		return 1;
+	}
+	if (!p)
+		return 0;
+	p = p->next;
+	if (p) {
+		p->c[30] = chunk;
+		ctx->trees = p;
+		ctx->tree_count = 30;
+		return 1;
+	}
+	return 0;
+}
+
+static int grow_tree_refs(struct audit_context *ctx)
+{
+	struct audit_tree_refs *p = ctx->trees;
+	ctx->trees = kzalloc(sizeof(struct audit_tree_refs), GFP_KERNEL);
+	if (!ctx->trees) {
+		ctx->trees = p;
+		return 0;
+	}
+	if (p)
+		p->next = ctx->trees;
+	else
+		ctx->first_trees = ctx->trees;
+	ctx->tree_count = 31;
+	return 1;
+}
+
+static void unroll_tree_refs(struct audit_context *ctx,
+		      struct audit_tree_refs *p, int count)
+{
+	struct audit_tree_refs *q;
+	int n;
+	if (!p) {
+		/* we started with empty chain */
+		p = ctx->first_trees;
+		count = 31;
+		/* if the very first allocation has failed, nothing to do */
+		if (!p)
+			return;
+	}
+	n = count;
+	for (q = p; q != ctx->trees; q = q->next, n = 31) {
+		while (n--) {
+			audit_put_chunk(q->c[n]);
+			q->c[n] = NULL;
+		}
+	}
+	while (n-- > ctx->tree_count) {
+		audit_put_chunk(q->c[n]);
+		q->c[n] = NULL;
+	}
+	ctx->trees = p;
+	ctx->tree_count = count;
+}
+
+static void free_tree_refs(struct audit_context *ctx)
+{
+	struct audit_tree_refs *p, *q;
+	for (p = ctx->first_trees; p; p = q) {
+		q = p->next;
+		kfree(p);
+	}
+}
+
+static int match_tree_refs(struct audit_context *ctx, struct audit_tree *tree)
+{
+	struct audit_tree_refs *p;
+	int n;
+	if (!tree)
+		return 0;
+	/* full ones */
+	for (p = ctx->first_trees; p != ctx->trees; p = p->next) {
+		for (n = 0; n < 31; n++)
+			if (audit_tree_match(p->c[n], tree))
+				return 1;
+	}
+	/* partial */
+	if (p) {
+		for (n = ctx->tree_count; n < 31; n++)
+			if (audit_tree_match(p->c[n], tree))
+				return 1;
+	}
+	return 0;
 }
 
 /* Determine if any context name data matches a rule's watch data */
@@ -370,6 +494,10 @@ static int audit_filter_rules(struct task_struct *tsk,
 			if (name && rule->watch->ino != (unsigned long)-1)
 				result = (name->dev == rule->watch->dev &&
 					  name->ino == rule->watch->ino);
+			break;
+		case AUDIT_DIR:
+			if (ctx)
+				result = match_tree_refs(ctx, rule->tree);
 			break;
 		case AUDIT_LOGINUID:
 			result = 0;
@@ -639,13 +767,11 @@ static inline void audit_free_aux(struct audit_context *context)
 	struct audit_aux_data *aux;
 
 	while ((aux = context->aux)) {
-		if (aux->type == AUDIT_AVC_PATH) {
-			struct audit_aux_data_path *axi = (void *)aux;
-			dput(axi->dentry);
-			mntput(axi->mnt);
-		}
-
 		context->aux = aux->next;
+		kfree(aux);
+	}
+	while ((aux = context->aux_pids)) {
+		context->aux_pids = aux->next;
 		kfree(aux);
 	}
 }
@@ -721,6 +847,8 @@ static inline void audit_free_context(struct audit_context *context)
 			       context->name_count, count);
 		}
 		audit_free_names(context);
+		unroll_tree_refs(context, NULL, 0);
+		free_tree_refs(context);
 		audit_free_aux(context);
 		kfree(context->filterkey);
 		kfree(context);
@@ -787,6 +915,29 @@ static void audit_log_task_info(struct audit_buffer *ab, struct task_struct *tsk
 		up_read(&mm->mmap_sem);
 	}
 	audit_log_task_context(ab);
+}
+
+static int audit_log_pid_context(struct audit_context *context, pid_t pid,
+				 u32 sid)
+{
+	struct audit_buffer *ab;
+	char *s = NULL;
+	u32 len;
+	int rc = 0;
+
+	ab = audit_log_start(context, GFP_KERNEL, AUDIT_OBJ_PID);
+	if (!ab)
+		return 1;
+
+	if (selinux_ctxid_to_string(sid, &s, &len)) {
+		audit_log_format(ab, "opid=%d obj=(none)", pid);
+		rc = 1;
+	} else
+		audit_log_format(ab, "opid=%d  obj=%s", pid, s);
+	audit_log_end(ab);
+	kfree(s);
+
+	return rc;
 }
 
 static void audit_log_exit(struct audit_context *context, struct task_struct *tsk)
@@ -951,14 +1102,24 @@ static void audit_log_exit(struct audit_context *context, struct task_struct *ts
 			audit_log_hex(ab, axs->a, axs->len);
 			break; }
 
-		case AUDIT_AVC_PATH: {
-			struct audit_aux_data_path *axi = (void *)aux;
-			audit_log_d_path(ab, "path=", axi->dentry, axi->mnt);
-			break; }
-
 		}
 		audit_log_end(ab);
 	}
+
+	for (aux = context->aux_pids; aux; aux = aux->next) {
+		struct audit_aux_data_pids *axs = (void *)aux;
+		int i;
+
+		for (i = 0; i < axs->pid_count; i++)
+			if (audit_log_pid_context(context, axs->target_pid[i],
+						  axs->target_sid[i]))
+				call_panic = 1;
+	}
+
+	if (context->target_pid &&
+	    audit_log_pid_context(context, context->target_pid,
+				  context->target_sid))
+			call_panic = 1;
 
 	if (context->pwd && context->pwdmnt) {
 		ab = audit_log_start(context, GFP_KERNEL, AUDIT_CWD);
@@ -1179,11 +1340,101 @@ void audit_syscall_exit(int valid, long return_code)
 		tsk->audit_context = new_context;
 	} else {
 		audit_free_names(context);
+		unroll_tree_refs(context, NULL, 0);
 		audit_free_aux(context);
+		context->aux = NULL;
+		context->aux_pids = NULL;
+		context->target_pid = 0;
+		context->target_sid = 0;
 		kfree(context->filterkey);
 		context->filterkey = NULL;
 		tsk->audit_context = context;
 	}
+}
+
+static inline void handle_one(const struct inode *inode)
+{
+	struct audit_context *context;
+	struct audit_tree_refs *p;
+	struct audit_chunk *chunk;
+	int count;
+	if (likely(list_empty(&inode->inotify_watches)))
+		return;
+	context = current->audit_context;
+	p = context->trees;
+	count = context->tree_count;
+	rcu_read_lock();
+	chunk = audit_tree_lookup(inode);
+	rcu_read_unlock();
+	if (!chunk)
+		return;
+	if (likely(put_tree_ref(context, chunk)))
+		return;
+	if (unlikely(!grow_tree_refs(context))) {
+		printk(KERN_WARNING "out of memory, audit has lost a tree reference");
+		audit_set_auditable(context);
+		audit_put_chunk(chunk);
+		unroll_tree_refs(context, p, count);
+		return;
+	}
+	put_tree_ref(context, chunk);
+}
+
+static void handle_path(const struct dentry *dentry)
+{
+	struct audit_context *context;
+	struct audit_tree_refs *p;
+	const struct dentry *d, *parent;
+	struct audit_chunk *drop;
+	unsigned long seq;
+	int count;
+
+	context = current->audit_context;
+	p = context->trees;
+	count = context->tree_count;
+retry:
+	drop = NULL;
+	d = dentry;
+	rcu_read_lock();
+	seq = read_seqbegin(&rename_lock);
+	for(;;) {
+		struct inode *inode = d->d_inode;
+		if (inode && unlikely(!list_empty(&inode->inotify_watches))) {
+			struct audit_chunk *chunk;
+			chunk = audit_tree_lookup(inode);
+			if (chunk) {
+				if (unlikely(!put_tree_ref(context, chunk))) {
+					drop = chunk;
+					break;
+				}
+			}
+		}
+		parent = d->d_parent;
+		if (parent == d)
+			break;
+		d = parent;
+	}
+	if (unlikely(read_seqretry(&rename_lock, seq) || drop)) {  /* in this order */
+		rcu_read_unlock();
+		if (!drop) {
+			/* just a race with rename */
+			unroll_tree_refs(context, p, count);
+			goto retry;
+		}
+		audit_put_chunk(drop);
+		if (grow_tree_refs(context)) {
+			/* OK, got more space */
+			unroll_tree_refs(context, p, count);
+			goto retry;
+		}
+		/* too bad */
+		printk(KERN_WARNING
+			"out of memory, audit has lost a tree reference");
+		unroll_tree_refs(context, p, count);
+		audit_set_auditable(context);
+		return;
+	}
+	rcu_read_unlock();
 }
 
 /**
@@ -1213,6 +1464,7 @@ void __audit_getname(const char *name)
 	context->names[context->name_count].name_len = AUDIT_NAME_FULL;
 	context->names[context->name_count].name_put = 1;
 	context->names[context->name_count].ino  = (unsigned long)-1;
+	context->names[context->name_count].osid = 0;
 	++context->name_count;
 	if (!context->pwd) {
 		read_lock(&current->fs->lock);
@@ -1266,6 +1518,28 @@ void audit_putname(const char *name)
 #endif
 }
 
+static int audit_inc_name_count(struct audit_context *context,
+				const struct inode *inode)
+{
+	if (context->name_count >= AUDIT_NAMES) {
+		if (inode)
+			printk(KERN_DEBUG "name_count maxed, losing inode data: "
+			       "dev=%02x:%02x, inode=%lu",
+			       MAJOR(inode->i_sb->s_dev),
+			       MINOR(inode->i_sb->s_dev),
+			       inode->i_ino);
+
+		else
+			printk(KERN_DEBUG "name_count maxed, losing inode data");
+		return 1;
+	}
+	context->name_count++;
+#if AUDIT_DEBUG
+	context->ino_count++;
+#endif
+	return 0;
+}
+
 /* Copy inode data into an audit_names. */
 static void audit_copy_inode(struct audit_names *name, const struct inode *inode)
 {
@@ -1285,10 +1559,11 @@ static void audit_copy_inode(struct audit_names *name, const struct inode *inode
  *
  * Called from fs/namei.c:path_lookup().
  */
-void __audit_inode(const char *name, const struct inode *inode)
+void __audit_inode(const char *name, const struct dentry *dentry)
 {
 	int idx;
 	struct audit_context *context = current->audit_context;
+	const struct inode *inode = dentry->d_inode;
 
 	if (!context->in_syscall)
 		return;
@@ -1303,14 +1578,12 @@ void __audit_inode(const char *name, const struct inode *inode)
 	else {
 		/* FIXME: how much do we care about inodes that have no
 		 * associated name? */
-		if (context->name_count >= AUDIT_NAMES - AUDIT_NAMES_RESERVED)
+		if (audit_inc_name_count(context, inode))
 			return;
-		idx = context->name_count++;
+		idx = context->name_count - 1;
 		context->names[idx].name = NULL;
-#if AUDIT_DEBUG
-		++context->ino_count;
-#endif
 	}
+	handle_path(dentry);
 	audit_copy_inode(&context->names[idx], inode);
 }
 
@@ -1333,96 +1606,83 @@ void __audit_inode_child(const char *dname, const struct inode *inode,
 {
 	int idx;
 	struct audit_context *context = current->audit_context;
-	const char *found_name = NULL;
+	const char *found_parent = NULL, *found_child = NULL;
 	int dirlen = 0;
 
 	if (!context->in_syscall)
 		return;
 
-	/* determine matching parent */
+	if (inode)
+		handle_one(inode);
+
 	if (!dname)
-		goto update_context;
-	for (idx = 0; idx < context->name_count; idx++)
-		if (context->names[idx].ino == parent->i_ino) {
-			const char *name = context->names[idx].name;
+		goto add_names;
 
-			if (!name)
-				continue;
+	/* parent is more likely, look for it first */
+	for (idx = 0; idx < context->name_count; idx++) {
+		struct audit_names *n = &context->names[idx];
 
-			if (audit_compare_dname_path(dname, name, &dirlen) == 0) {
-				context->names[idx].name_len = dirlen;
-				found_name = name;
-				break;
-			}
+		if (!n->name)
+			continue;
+
+		if ((n->ino == parent->i_ino) &&
+		    !audit_compare_dname_path(dname, n->name, &dirlen)) {
+			n->name_len = dirlen; /* update parent data in place */
+			found_parent = n->name;
+			goto add_names;
 		}
+	}
 
-update_context:
-	idx = context->name_count;
-	if (context->name_count == AUDIT_NAMES) {
-		printk(KERN_DEBUG "name_count maxed and losing %s\n",
-			found_name ?: "(null)");
-		return;
-	} 
-	context->name_count++;
-#if AUDIT_DEBUG
-	context->ino_count++;
-#endif
-	/* Re-use the name belonging to the slot for a matching parent directory.
-	 * All names for this context are relinquished in audit_free_names() */
-	context->names[idx].name = found_name;
-	context->names[idx].name_len = AUDIT_NAME_FULL;
-	context->names[idx].name_put = 0;	/* don't call __putname() */
+	/* no matching parent, look for matching child */
+	for (idx = 0; idx < context->name_count; idx++) {
+		struct audit_names *n = &context->names[idx];
 
-	if (!inode)
-		context->names[idx].ino = (unsigned long)-1;
-	else
-		audit_copy_inode(&context->names[idx], inode);
+		if (!n->name)
+			continue;
 
-	/* A parent was not found in audit_names, so copy the inode data for the
-	 * provided parent. */
-	if (!found_name) {
-		idx = context->name_count;
-		if (context->name_count == AUDIT_NAMES) {
-			printk(KERN_DEBUG 
-				"name_count maxed and losing parent inode data: dev=%02x:%02x, inode=%lu",
-				MAJOR(parent->i_sb->s_dev),
-				MINOR(parent->i_sb->s_dev),
-				parent->i_ino);
+		/* strcmp() is the more likely scenario */
+		if (!strcmp(dname, n->name) ||
+		     !audit_compare_dname_path(dname, n->name, &dirlen)) {
+			if (inode)
+				audit_copy_inode(n, inode);
+			else
+				n->ino = (unsigned long)-1;
+			found_child = n->name;
+			goto add_names;
+		}
+	}
+
+add_names:
+	if (!found_parent) {
+		if (audit_inc_name_count(context, parent))
 			return;
-		}
-		context->name_count++;
-#if AUDIT_DEBUG
-		context->ino_count++;
-#endif
+		idx = context->name_count - 1;
+		context->names[idx].name = NULL;
 		audit_copy_inode(&context->names[idx], parent);
 	}
-}
 
-/**
- * audit_inode_update - update inode info for last collected name
- * @inode: inode being audited
- *
- * When open() is called on an existing object with the O_CREAT flag, the inode
- * data audit initially collects is incorrect.  This additional hook ensures
- * audit has the inode data for the actual object to be opened.
- */
-void __audit_inode_update(const struct inode *inode)
-{
-	struct audit_context *context = current->audit_context;
-	int idx;
+	if (!found_child) {
+		if (audit_inc_name_count(context, inode))
+			return;
+		idx = context->name_count - 1;
 
-	if (!context->in_syscall || !inode)
-		return;
+		/* Re-use the name belonging to the slot for a matching parent
+		 * directory. All names for this context are relinquished in
+		 * audit_free_names() */
+		if (found_parent) {
+			context->names[idx].name = found_parent;
+			context->names[idx].name_len = AUDIT_NAME_FULL;
+			/* don't call __putname() */
+			context->names[idx].name_put = 0;
+		} else {
+			context->names[idx].name = NULL;
+		}
 
-	if (context->name_count == 0) {
-		context->name_count++;
-#if AUDIT_DEBUG
-		context->ino_count++;
-#endif
+		if (inode)
+			audit_copy_inode(&context->names[idx], inode);
+		else
+			context->names[idx].ino = (unsigned long)-1;
 	}
-	idx = context->name_count - 1;
-
-	audit_copy_inode(&context->names[idx], inode);
 }
 
 EXPORT_SYMBOL_GPL(__audit_inode_child);
@@ -1839,34 +2099,12 @@ int audit_sockaddr(int len, void *a)
 	return 0;
 }
 
-/**
- * audit_avc_path - record the granting or denial of permissions
- * @dentry: dentry to record
- * @mnt: mnt to record
- *
- * Returns 0 for success or NULL context or < 0 on error.
- *
- * Called from security/selinux/avc.c::avc_audit()
- */
-int audit_avc_path(struct dentry *dentry, struct vfsmount *mnt)
+void __audit_ptrace(struct task_struct *t)
 {
-	struct audit_aux_data_path *ax;
 	struct audit_context *context = current->audit_context;
 
-	if (likely(!context))
-		return 0;
-
-	ax = kmalloc(sizeof(*ax), GFP_ATOMIC);
-	if (!ax)
-		return -ENOMEM;
-
-	ax->dentry = dget(dentry);
-	ax->mnt = mntget(mnt);
-
-	ax->d.type = AUDIT_AVC_PATH;
-	ax->d.next = context->aux;
-	context->aux = (void *)ax;
-	return 0;
+	context->target_pid = t->pid;
+	selinux_task_ctxid(t, &context->target_sid);
 }
 
 /**
@@ -1877,20 +2115,51 @@ int audit_avc_path(struct dentry *dentry, struct vfsmount *mnt)
  * If the audit subsystem is being terminated, record the task (pid)
  * and uid that is doing that.
  */
-void __audit_signal_info(int sig, struct task_struct *t)
+int __audit_signal_info(int sig, struct task_struct *t)
 {
+	struct audit_aux_data_pids *axp;
+	struct task_struct *tsk = current;
+	struct audit_context *ctx = tsk->audit_context;
 	extern pid_t audit_sig_pid;
 	extern uid_t audit_sig_uid;
 	extern u32 audit_sig_sid;
 
-	if (sig == SIGTERM || sig == SIGHUP || sig == SIGUSR1) {
-		struct task_struct *tsk = current;
-		struct audit_context *ctx = tsk->audit_context;
-		audit_sig_pid = tsk->pid;
-		if (ctx)
-			audit_sig_uid = ctx->loginuid;
-		else
-			audit_sig_uid = tsk->uid;
-		selinux_get_task_sid(tsk, &audit_sig_sid);
+	if (audit_pid && t->tgid == audit_pid) {
+		if (sig == SIGTERM || sig == SIGHUP || sig == SIGUSR1) {
+			audit_sig_pid = tsk->pid;
+			if (ctx)
+				audit_sig_uid = ctx->loginuid;
+			else
+				audit_sig_uid = tsk->uid;
+			selinux_get_task_sid(tsk, &audit_sig_sid);
+		}
+		if (!audit_signals || audit_dummy_context())
+			return 0;
 	}
+
+	/* optimize the common case by putting first signal recipient directly
+	 * in audit_context */
+	if (!ctx->target_pid) {
+		ctx->target_pid = t->tgid;
+		selinux_get_task_sid(t, &ctx->target_sid);
+		return 0;
+	}
+
+	axp = (void *)ctx->aux_pids;
+	if (!axp || axp->pid_count == AUDIT_AUX_PIDS) {
+		axp = kzalloc(sizeof(*axp), GFP_ATOMIC);
+		if (!axp)
+			return -ENOMEM;
+
+		axp->d.type = AUDIT_OBJ_PID;
+		axp->d.next = ctx->aux_pids;
+		ctx->aux_pids = (void *)axp;
+	}
+	BUG_ON(axp->pid_count > AUDIT_AUX_PIDS);
+
+	axp->target_pid[axp->pid_count] = t->tgid;
+	selinux_get_task_sid(t, &axp->target_sid[axp->pid_count]);
+	axp->pid_count++;
+
+	return 0;
 }

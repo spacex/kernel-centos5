@@ -580,9 +580,19 @@ static int strrcmp(const char *s, const char *sub)
  *   tosec   = .init.text | .exit.text | .init.data
  *   fromsec = .data
  *   atsym = *driver, *_template, *_sht, *_ops, *_probe, *probe_one
+ *
+ * Pattern 3:
+ *   Some symbols belong to init section but still it is ok to reference
+ *   these from non-init sections as these symbols don't have any memory
+ *   allocated for them and symbol address and value are same. So even
+ *   if init section is freed, its ok to reference those symbols.
+ *   For ex. symbols marking the init section boundaries.
+ *   This pattern is identified by
+ *   refsymname = __init_begin, _sinittext, _einittext
  **/
-static int secref_whitelist(const char *tosec, const char *fromsec,
-			    const char *atsym)
+static int secref_whitelist(const char *modname, const char *tosec,
+			    const char *fromsec, const char *atsym,
+			    const char *refsymname)
 {
 	int f1 = 1, f2 = 1;
 	const char **s;
@@ -593,6 +603,15 @@ static int secref_whitelist(const char *tosec, const char *fromsec,
 		"_ops",
 		"_probe",
 		"_probe_one",
+		"_console",
+		"apic_es7000",
+		NULL
+	};
+
+	const char *pat3refsym[] = {
+		"__init_begin",
+		"_sinittext",
+		"_einittext",
 		NULL
 	};
 
@@ -618,8 +637,29 @@ static int secref_whitelist(const char *tosec, const char *fromsec,
 	for (s = pat2sym; *s; s++)
 		if (strrcmp(atsym, *s) == 0)
 			f1 = 1;
+	if (f1 && f2)
+		return 1;
 
-	return f1 && f2;
+	/* Whitelist all references from .pci_fixup section if vmlinux
+	 * Whitelist all refereces from .text.head to .init.data if vmlinux
+	 * Whitelist all refereces from .text.head to .init.text if vmlinux
+	 */
+	if (is_vmlinux(modname)) {
+		if ((strcmp(fromsec, ".pci_fixup") == 0) &&
+		    (strcmp(tosec, ".init.text") == 0))
+		return 1;
+
+		if ((strcmp(fromsec, ".text.head") == 0) &&
+		    ((strcmp(tosec, ".init.data") == 0) ||
+		    (strcmp(tosec, ".init.text") == 0)))
+			return 1;
+
+		/* Check for pattern 3 */
+		for (s = pat3refsym; *s; s++)
+			if (strcmp(refsymname, *s) == 0)
+				return 1;
+	}
+	return 0;
 }
 
 /**
@@ -726,7 +766,8 @@ static void warn_sec_mismatch(const char *modname, const char *fromsec,
 
 	/* check whitelist - we may ignore it */
 	if (before &&
-	    secref_whitelist(secname, fromsec, elf->strtab + before->st_name))
+	    secref_whitelist(modname, secname, fromsec,
+			     elf->strtab + before->st_name, refsymname))
 		return;
 
 	if (before && after) {
@@ -910,6 +951,7 @@ static int init_section_ref_ok(const char *name)
 		".fixup",
 		".smp_locks",
 		".plt",  /* seen on ARCH=um build on x86_64. Harmless */
+		"__ftr_fixup",		/* powerpc cpu feature fixup */
 		NULL
 	};
 	/* Start of section names */
