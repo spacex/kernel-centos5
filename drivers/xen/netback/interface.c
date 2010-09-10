@@ -33,6 +33,7 @@
 #include "common.h"
 #include <linux/ethtool.h>
 #include <linux/rtnetlink.h>
+#include <xen/xenbus.h>
 
 /*
  * Module parameter 'queue_length':
@@ -346,4 +347,32 @@ void netif_disconnect(netif_t *netif)
 	}
 
 	free_netdev(netif->dev);
+}
+
+
+static int
+netdev_notify(struct notifier_block *this, unsigned long event, void *ptr)
+{
+	struct net_device *dev = ptr;
+
+	/* Carrier up event and is it one of our devices? */
+	if (event == NETDEV_CHANGE && netif_carrier_ok(dev) &&
+	    dev->open == net_open) {
+		netif_t *netif = netdev_priv(dev);
+
+		xenbus_switch_state(netif->xendev, XenbusStateConnected);
+	}
+
+	return NOTIFY_DONE;
+}
+
+
+static struct notifier_block notifier_netdev = {
+	.notifier_call  = netdev_notify,
+};
+
+
+void netif_interfaces_init(void)
+{
+	(void)register_netdevice_notifier(&notifier_netdev);
 }

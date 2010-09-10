@@ -39,7 +39,7 @@ extern void ia32_syscall(void);
 extern int pmtimer_mark_offset(void);
 extern void pmtimer_resume(void);
 extern void pmtimer_wait(unsigned);
-extern unsigned int do_gettimeoffset_pm(void);
+extern long do_gettimeoffset_pm(void);
 #ifdef CONFIG_X86_PM_TIMER
 extern u32 pmtmr_ioport;
 #else
@@ -85,7 +85,6 @@ extern void swap_low_mappings(void);
 extern void __show_regs(struct pt_regs * regs);
 extern void show_regs(struct pt_regs * regs);
 
-extern char *syscall32_page;
 extern void syscall32_cpu_init(void);
 
 extern void setup_node_bootmem(int nodeid, unsigned long start, unsigned long end);

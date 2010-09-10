@@ -1029,8 +1029,7 @@ static inline unsigned long get_unmapped_area(struct file * file, unsigned long 
 
 extern int install_special_mapping(struct mm_struct *mm,
 				   unsigned long addr, unsigned long len,
-				   unsigned long vm_flags, pgprot_t pgprot,
-				   struct page **pages);
+				   unsigned long vm_flags, struct page **pages);
 
 extern unsigned long do_mmap_pgoff(struct file *file, unsigned long addr,
 	unsigned long len, unsigned long prot,

@@ -52,6 +52,8 @@ int __vgetcpu_mode __section_vgetcpu_mode;
 	  asm("" : "=r" (v) : "0" (x)); \
 	  ((v - fix_to_virt(VSYSCALL_FIRST_PAGE)) + __pa_symbol(&__vsyscall_0)); })
 
+#define NS_SCALE	10 /* 2^10, carefully chosen */
+
 static __always_inline void timeval_normalize(struct timeval * tv)
 {
 	time_t __sec;
@@ -66,30 +68,34 @@ static __always_inline void timeval_normalize(struct timeval * tv)
 static __always_inline void do_vgettimeofday(struct timeval * tv)
 {
 	long sequence, t;
-	unsigned long sec, usec;
+	long sec, nsec;
 
 	do {
 		sequence = read_seqbegin(&__xtime_lock);
-		
+
 		sec = __xtime.tv_sec;
-		usec = (__xtime.tv_nsec / 1000) +
-			(__jiffies - __wall_jiffies) * (1000000 / HZ);
+		nsec = __xtime.tv_nsec +
+			(__jiffies - __wall_jiffies) * (NSEC_PER_SEC / HZ);
 
 		if (__vxtime.mode != VXTIME_HPET) {
 			t = get_cycles_sync();
 			if (t < __vxtime.last_tsc)
 				t = __vxtime.last_tsc;
-			usec += ((t - __vxtime.last_tsc) *
-				 __vxtime.tsc_quot) >> 32;
-			/* See comment in x86_64 do_gettimeofday. */
+			nsec += ((t - __vxtime.last_tsc) *
+				 __vxtime.tsc_quot) >> NS_SCALE;
 		} else {
-			usec += ((readl((void *)fix_to_virt(VSYSCALL_HPET) + 0xf0) -
-				  __vxtime.last) * __vxtime.quot) >> 32;
+			nsec += ((readl((void *)fix_to_virt(VSYSCALL_HPET) +
+					0xf0) -
+				  __vxtime.last) * __vxtime.quot) >> NS_SCALE;
 		}
 	} while (read_seqretry(&__xtime_lock, sequence));
 
-	tv->tv_sec = sec + usec / 1000000;
-	tv->tv_usec = usec % 1000000;
+	tv->tv_sec = sec;
+	while (nsec >= NSEC_PER_SEC) {
+		tv->tv_sec += 1;
+		nsec -= NSEC_PER_SEC;
+	}
+	tv->tv_usec = nsec / NSEC_PER_USEC;
 }
 
 /* RED-PEN may want to readd seq locking, but then the variable should be write-once. */
@@ -134,7 +140,8 @@ time_t __vsyscall(1) vtime(time_t *t)
 	if (!__sysctl_vsyscall)
 		return time_syscall(t);
 	else if (t)
-		*t = __xtime.tv_sec;		
+		*t = __xtime.tv_sec;
+
 	return __xtime.tv_sec;
 }
 

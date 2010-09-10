@@ -1504,6 +1504,7 @@ static int __init netback_init(void)
 	spin_lock_init(&net_schedule_list_lock);
 	INIT_LIST_HEAD(&net_schedule_list);
 
+	netif_interfaces_init();
 	netif_xenbus_init();
 
 #ifdef NETBE_DEBUG_INTERRUPT

@@ -187,6 +187,10 @@ NMI_MASK = 0x80000000
 /* rdi:	prev */	
 ENTRY(ret_from_fork)
 	CFI_DEFAULT_STACK
+	push kernel_eflags(%rip)
+	CFI_ADJUST_CFA_OFFSET 4
+	popf                # reset kernel eflags
+	CFI_ADJUST_CFA_OFFSET -4
 	call schedule_tail
 	GET_THREAD_INFO(%rcx)
 	testl $(_TIF_SYSCALL_TRACE|_TIF_SYSCALL_AUDIT|_TIF_SECCOMP),threadinfo_flags(%rcx)

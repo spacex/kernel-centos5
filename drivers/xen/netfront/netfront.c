@@ -528,9 +528,12 @@ static void backend_changed(struct xenbus_device *dev,
 	switch (backend_state) {
 	case XenbusStateInitialising:
 	case XenbusStateInitialised:
-	case XenbusStateConnected:
 	case XenbusStateUnknown:
 	case XenbusStateClosed:
+		break;
+
+	case XenbusStateConnected:
+		(void)send_fake_arp(netdev);
 		break;
 
 	case XenbusStateInitWait:
@@ -539,7 +542,6 @@ static void backend_changed(struct xenbus_device *dev,
 			break;
 		}
 		xenbus_switch_state(dev, XenbusStateConnected);
-		(void)send_fake_arp(netdev);
 		break;
 
 	case XenbusStateClosing:

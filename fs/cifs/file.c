@@ -940,6 +940,10 @@ ssize_t cifs_user_write(struct file *file, const char __user *write_data,
 		return -EBADF;
 	open_file = (struct cifsFileInfo *) file->private_data;
 
+	rc = generic_write_checks(file, poffset, &write_size, 0);
+	if (rc)
+		return rc;
+
 	xid = GetXid();
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 20)

@@ -98,6 +98,7 @@ typedef struct netif_st {
 	/* Miscellaneous private stuff. */
 	struct list_head list;  /* scheduling list */
 	atomic_t         refcnt;
+	struct xenbus_device *xendev;
 	struct net_device *dev;
 	struct net_device_stats stats;
 
@@ -121,6 +122,7 @@ int netif_map(netif_t *netif, unsigned long tx_ring_ref,
 	} while (0)
 
 void netif_xenbus_init(void);
+void netif_interfaces_init(void);
 
 #define netif_schedulable(dev) (netif_running(dev) && netif_carrier_ok(dev))
 

@@ -2223,11 +2223,16 @@ special_mapping_nopage(struct vm_area_struct *vma,
 	return NOPAGE_SIGBUS;
 }
 
+static void special_mapping_close(struct vm_area_struct *vma)
+{
+}
+
 static struct vm_operations_struct special_mapping_vmops = {
+	.close = special_mapping_close,
 	.nopage	= special_mapping_nopage,
 };
 
-unsigned int vdso_populate = 1;
+unsigned int vdso_populate = 0;
 
 /*
  * Insert a new vma covering the given region, with the given flags and
@@ -2238,8 +2243,7 @@ unsigned int vdso_populate = 1;
  */
 int install_special_mapping(struct mm_struct *mm,
 			    unsigned long addr, unsigned long len,
-			    unsigned long vm_flags, pgprot_t pgprot,
-			    struct page **pages)
+			    unsigned long vm_flags, struct page **pages)
 {
 	struct vm_area_struct *vma;
 	int err;
@@ -2253,13 +2257,16 @@ int install_special_mapping(struct mm_struct *mm,
 	vma->vm_start = addr;
 	vma->vm_end = addr + len;
 
-	vma->vm_flags = vm_flags | VM_DONTEXPAND;
-	vma->vm_page_prot = pgprot;
+	vma->vm_flags = vm_flags | mm->def_flags | VM_DONTEXPAND;
+	vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
 
 	vma->vm_ops = &special_mapping_vmops;
 	vma->vm_private_data = pages;
 
-	insert_vm_struct(mm, vma);
+	if (unlikely(insert_vm_struct(mm, vma))) {
+		kmem_cache_free(vm_area_cachep, vma);
+		return -ENOMEM;
+	}
 	mm->total_vm += len >> PAGE_SHIFT;
 
 	if (!vdso_populate)

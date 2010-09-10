@@ -42,6 +42,9 @@ enum {Enabled, Magic};
 #define MISC_FMT_OPEN_BINARY (1<<30)
 #define MISC_FMT_CREDENTIALS (1<<29)
 
+/* Marker for breaking misc - > script -> misc loop */
+#define MISC_BANG (1<<1)
+
 typedef struct {
 	struct list_head list;
 	unsigned long flags;		/* type, status, etc. */
@@ -114,6 +117,10 @@ static int load_misc_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 
 	retval = -ENOEXEC;
 	if (!enabled)
+		goto _ret;
+
+	retval = -ENOEXEC;
+	if (bprm->sh_bang & MISC_BANG)
 		goto _ret;
 
 	/* to keep locking time low, we copy the interpreter string */
@@ -198,6 +205,8 @@ static int load_misc_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 
 	if (retval < 0)
 		goto _error;
+
+	bprm->sh_bang |= MISC_BANG;
 
 	retval = search_binary_handler (bprm, regs);
 	if (retval < 0)

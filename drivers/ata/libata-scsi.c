@@ -1605,9 +1605,10 @@ static unsigned int ata_scsi_rbuf_get(struct scsi_cmnd *cmd, u8 **buf_out)
 	u8 *buf;
 	unsigned int buflen;
 
-	struct scatterlist *sg = scsi_sglist(cmd);
-
-	if (sg) {
+	if (cmd->use_sg) {
+		struct scatterlist *sg;
+		
+		sg = (struct scatterlist *) cmd->request_buffer;
 		buf = kmap_atomic(sg_page(sg), KM_IRQ0) + sg->offset;
 		buflen = sg->length;
 	} else {
@@ -1632,9 +1633,12 @@ static unsigned int ata_scsi_rbuf_get(struct scsi_cmnd *cmd, u8 **buf_out)
 
 static inline void ata_scsi_rbuf_put(struct scsi_cmnd *cmd, u8 *buf)
 {
-	struct scatterlist *sg = scsi_sglist(cmd);
-	if (sg)
+	if (cmd->use_sg) {
+		struct scatterlist *sg;
+
+		sg = (struct scatterlist *) cmd->request_buffer;
 		kunmap_atomic(buf - sg->offset, KM_IRQ0);
+	}
 }
 
 /**

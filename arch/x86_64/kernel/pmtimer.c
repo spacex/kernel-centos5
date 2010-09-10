@@ -106,7 +106,7 @@ void pmtimer_resume(void)
 	last_pmtmr_tick = inl(pmtmr_ioport);
 }
 
-unsigned int do_gettimeoffset_pm(void)
+long do_gettimeoffset_pm(void)
 {
 	u32 now, offset, delta = 0;
 
@@ -114,7 +114,9 @@ unsigned int do_gettimeoffset_pm(void)
 	now = inl(pmtmr_ioport);
 	delta = (now - offset) & ACPI_PM_MASK;
 
-	return offset_delay + cyc2us(delta);
+	/* seems crazy to do with PM timer resolution but we need nsec
+	   resolution in arch/x86_64/kernel/time.c code */
+	return ((offset_delay + cyc2us(delta)) * NSEC_PER_USEC);
 }
 
 

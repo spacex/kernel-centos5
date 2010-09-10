@@ -186,6 +186,7 @@ static void backend_create_netif(struct backend_info *be)
 		return;
 	}
 
+	be->netif->xendev = dev;
 	kobject_uevent(&dev->dev.kobj, KOBJ_ONLINE);
 }
 
@@ -310,10 +311,6 @@ static void connect(struct backend_info *be)
 	int err;
 	struct xenbus_device *dev = be->dev;
 
-	err = connect_rings(be);
-	if (err)
-		return;
-
 	err = xen_net_read_mac(dev, be->netif->fe_dev_addr);
 	if (err) {
 		xenbus_dev_fatal(dev, err, "parsing %s/mac", dev->nodename);
@@ -324,7 +321,9 @@ static void connect(struct backend_info *be)
 			  &be->netif->credit_usec);
 	be->netif->remaining_credit = be->netif->credit_bytes;
 
-	xenbus_switch_state(dev, XenbusStateConnected);
+	err = connect_rings(be);
+	if (err)
+		return;
 
 	/* May not get a kick from the frontend, so start the tx_queue now. */
 	if (!netbk_can_queue(be->netif->dev))
