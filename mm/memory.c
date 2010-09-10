@@ -589,11 +589,16 @@ again:
 					&_dst_pte, &_src_pte,
 					&dst_ptl, &src_ptl,
 					dst_pmd, src_pmd);
+		/*
+		 * After the page copy set the parent pte writeable again
+		 * unless the src pte was unmapped by the VM while we released
+		 * the PT lock in fork_pre_cow. 
+		 */
+		if (likely(pte_present(*_src_pte)))
+			set_pte_at(src_mm, addr-PAGE_SIZE, _src_pte,
+				   pte_mkwrite(*_src_pte));
 		src_pte = _src_pte + 1;
 		dst_pte = _dst_pte + 1;
-		/* after the page copy set the parent pte writeable again */
-		set_pte_at(src_mm, addr-PAGE_SIZE, src_pte-1,
-			   pte_mkwrite(*(src_pte-1)));
 		if (unlikely(forcecow == -EAGAIN)) {
 			dst_pte--;
 			src_pte--;

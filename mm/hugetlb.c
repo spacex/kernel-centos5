@@ -56,6 +56,16 @@ static void copy_huge_page(struct page *dst, struct page *src,
 	}
 }
 
+static void copy_huge_page_locked(struct page *dst, struct page *src,
+			   unsigned long addr)
+{
+	int i;
+
+	for (i = 0; i < HPAGE_SIZE/PAGE_SIZE; i++) {
+		copy_user_highpage(dst + i, src + i, addr + i*PAGE_SIZE);
+	}
+}
+
 static void enqueue_huge_page(struct page *page)
 {
 	int nid = page_to_nid(page);
@@ -358,8 +368,10 @@ static void set_huge_ptep_writable(struct vm_area_struct *vma,
 
 
 static int hugetlb_cow(struct mm_struct *mm, struct vm_area_struct *vma,
-		       unsigned long address, pte_t *ptep, pte_t pte,
-		       int cannot_race);
+		       unsigned long address, pte_t *ptep, pte_t pte);
+
+static int hugetlb_cow_locked(struct mm_struct *mm, struct vm_area_struct *vma,
+		       unsigned long address, pte_t *ptep, pte_t pte);
 
 int copy_hugetlb_page_range(struct mm_struct *dst, struct mm_struct *src,
 			    struct vm_area_struct *dst_vma,
@@ -403,17 +415,12 @@ int copy_hugetlb_page_range(struct mm_struct *dst, struct mm_struct *src,
 				int cow_ret;
 				/* force atomic copy from parent to child */
 				flush_tlb_range(src_vma, addr, addr+HPAGE_SIZE);
+				cow_ret = hugetlb_cow_locked(dst, dst_vma, addr,
+						      dst_pte, entry);
 				/*
-				 * We hold mmap_sem in write mode and
-				 * the VM doesn't know about hugepages
-				 * so the src_pte/dst_pte can't change
-				 * from under us even if hugetlb_cow
-				 * will release the lock.
+				 * Shouldnt happen!!!
 				 */
-				cow_ret = hugetlb_cow(dst, dst_vma, addr,
-						      dst_pte, entry, 1);
-				BUG_ON(!pte_same(huge_ptep_get(src_pte),
-						 entry));
+				BUG_ON(pte_pfn(huge_ptep_get(src_pte)) != pte_pfn(entry));
 				set_huge_pte_at(src, addr,
 						src_pte,
 						orig_entry);
@@ -484,8 +491,7 @@ void unmap_hugepage_range(struct vm_area_struct *vma, unsigned long start,
 }
 
 static int hugetlb_cow(struct mm_struct *mm, struct vm_area_struct *vma,
-		       unsigned long address, pte_t *ptep, pte_t pte,
-		       int cannot_race)
+		       unsigned long address, pte_t *ptep, pte_t pte)
 {
 	struct page *old_page, *new_page;
 	int avoidcopy;
@@ -520,8 +526,47 @@ static int hugetlb_cow(struct mm_struct *mm, struct vm_area_struct *vma,
 				make_huge_pte(vma, new_page, 1));
 		/* Make the old page be freed below */
 		new_page = old_page;
-	} else
-		BUG_ON(cannot_race);
+	}
+	page_cache_release(new_page);
+	page_cache_release(old_page);
+	return VM_FAULT_MINOR;
+}
+
+static int hugetlb_cow_locked(struct mm_struct *mm, struct vm_area_struct *vma,
+			unsigned long address, pte_t *ptep, pte_t pte)
+{
+	struct page *old_page, *new_page;
+	int avoidcopy;
+
+	old_page = pte_page(pte);
+
+	/* If no-one else is actually using this page, avoid the copy
+	 * and just make the page writable */
+	avoidcopy = (page_count(old_page) == 1);
+	if (avoidcopy) {
+		set_huge_ptep_writable(vma, address, ptep);
+		return VM_FAULT_MINOR;
+	}
+
+	page_cache_get(old_page);
+	new_page = alloc_huge_page(vma, address);
+
+	if (!new_page) {
+		page_cache_release(old_page);
+		return VM_FAULT_OOM;
+	}
+
+	copy_huge_page_locked(new_page, old_page, address);
+
+	ptep = huge_pte_offset(mm, address & HPAGE_MASK);
+	if (likely(pte_same(huge_ptep_get(ptep), pte))) {
+		/* Break COW */
+		huge_ptep_clear_flush(vma, address, ptep);
+		set_huge_pte_at(mm, address, ptep,
+				make_huge_pte(vma, new_page, 1));
+		/* Make the old page be freed below */
+		new_page = old_page;
+	}
 	page_cache_release(new_page);
 	page_cache_release(old_page);
 	return VM_FAULT_MINOR;
@@ -591,7 +636,7 @@ retry:
 
 	if (write_access && !(vma->vm_flags & VM_SHARED)) {
 		/* Optimization, do the COW without a second fault */
-		ret = hugetlb_cow(mm, vma, address, ptep, new_pte, 0);
+		ret = hugetlb_cow(mm, vma, address, ptep, new_pte);
 	}
 
 	spin_unlock(&mm->page_table_lock);
@@ -638,7 +683,7 @@ int hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	/* Check for a racing update before calling hugetlb_cow */
 	if (likely(pte_same(entry, huge_ptep_get(ptep))))
 		if (write_access && !pte_write(entry))
-			ret = hugetlb_cow(mm, vma, address, ptep, entry, 0);
+			ret = hugetlb_cow(mm, vma, address, ptep, entry);
 	spin_unlock(&mm->page_table_lock);
 	mutex_unlock(&hugetlb_instantiation_mutex);
 
