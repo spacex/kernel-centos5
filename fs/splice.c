@@ -1154,6 +1154,9 @@ static int get_iovec_page_array(const struct iovec __user *iov,
 		if (unlikely(!base))
 			break;
 
+		if (unlikely(!access_ok(VERIFY_READ, base, len)))
+			break;
+
 		/*
 		 * Get this base offset and number of pages, then map
 		 * in the user pages.
