@@ -175,8 +175,13 @@ static long restore_sigcontext(struct pt_regs *regs, sigset_t *set, int sig,
 	 * and another task grabs the FPU/Altivec, it won't be
 	 * tempted to save the current CPU state into the thread_struct
 	 * and corrupt what we are writing there.
+	 * Note that we have to clear MSR_FP and MSR_VEC explicitly
+	 * since discard_lazy_cpu_state does nothing on SMP.
 	 */
 	discard_lazy_cpu_state();
+
+	/* Force reload of FP/VEC */
+	regs->msr &= ~(MSR_FP | MSR_FE0 | MSR_FE1 | MSR_VEC);
 
 	err |= __copy_from_user(&current->thread.fpr, &sc->fp_regs, FP_REGS_SIZE);
 
@@ -198,9 +203,6 @@ static long restore_sigcontext(struct pt_regs *regs, sigset_t *set, int sig,
 	else
 		current->thread.vrsave = 0;
 #endif /* CONFIG_ALTIVEC */
-
-	/* Force reload of FP/VEC */
-	regs->msr &= ~(MSR_FP | MSR_FE0 | MSR_FE1 | MSR_VEC);
 
 	return err;
 }
