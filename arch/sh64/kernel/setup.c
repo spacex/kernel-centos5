@@ -231,7 +231,8 @@ void __init setup_arch(char **cmdline_p)
 	 * Reserve all kernel sections + bootmem bitmap + a guard page.
 	 */
 	reserve_bootmem_node(NODE_DATA(0), PFN_PHYS(first_pfn),
-		        (PFN_PHYS(start_pfn) + bootmap_size + PAGE_SIZE) - PFN_PHYS(first_pfn));
+		        (PFN_PHYS(start_pfn) + bootmap_size + PAGE_SIZE) - PFN_PHYS(first_pfn),
+			BOOTMEM_DEFAULT);
 
 	/*
 	 * Reserve platform dependent sections
@@ -241,7 +242,8 @@ void __init setup_arch(char **cmdline_p)
 #ifdef CONFIG_BLK_DEV_INITRD
 	if (LOADER_TYPE && INITRD_START) {
 		if (INITRD_START + INITRD_SIZE <= (PFN_PHYS(last_pfn))) {
-		        reserve_bootmem_node(NODE_DATA(0), INITRD_START + __MEMORY_START, INITRD_SIZE);
+		        reserve_bootmem_node(NODE_DATA(0), INITRD_START + __MEMORY_START,
+						INITRD_SIZE, BOOTMEM_DEFAULT);
 
 			initrd_start =
 			  (long) INITRD_START ? INITRD_START + PAGE_OFFSET +  __MEMORY_START : 0;

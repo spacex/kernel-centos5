@@ -600,44 +600,80 @@ ptep_clear_flush_dirty(struct vm_area_struct *vma,
 	return ptep_test_and_clear_dirty(vma, address, ptep);
 }
 
-static inline pte_t ptep_get_and_clear(struct mm_struct *mm, unsigned long addr, pte_t *ptep)
-{
-	pte_t pte = *ptep;
-	pte_clear(mm, addr, ptep);
-	return pte;
-}
-
 static inline void __ptep_ipte(unsigned long address, pte_t *ptep)
 {
 	if (!(pte_val(*ptep) & _PAGE_INVALID)) {
 #ifndef __s390x__
-		/* S390 has 1mb segments, we are emulating 4MB segments */
+		/* pto must point to the start of the segment table */
 		pte_t *pto = (pte_t *) (((unsigned long) ptep) & 0x7ffffc00);
 #else
 		/* ipte in zarch mode can do the math */
 		pte_t *pto = ptep;
 #endif
-		asm volatile ("ipte %2,%3"
-			      : "=m" (*ptep) : "m" (*ptep),
-				"a" (pto), "a" (address) );
+		asm volatile(
+			"       ipte    %2,%3"
+			: "=m" (*ptep) : "m" (*ptep),
+			"a" (pto), "a" (address));
 	}
+}
+
+static inline void ptep_invalidate(unsigned long address, pte_t *ptep)
+{
+	__ptep_ipte(address, ptep);
 	pte_val(*ptep) = _PAGE_TYPE_EMPTY;
 }
+
+/*
+ * This is hard to understand. ptep_get_and_clear and ptep_clear_flush
+ * both clear the TLB for the unmapped pte. The reason is that
+ * ptep_get_and_clear is used in common code (e.g. change_pte_range)
+ * to modify an active pte. The sequence is
+ *   1) ptep_get_and_clear
+ *   2) set_pte_at
+ *   3) flush_tlb_range
+ * On s390 the tlb needs to get flushed with the modification of the pte
+ * if the pte is active. The only way how this can be implemented is to
+ * have ptep_get_and_clear do the tlb flush. In exchange flush_tlb_range
+ * is a nop.
+ */
+#define ptep_get_and_clear(__mm, __address, __ptep)			\
+({									\
+	pte_t __pte = *(__ptep);					\
+	if (atomic_read(&(__mm)->mm_users) > 1 ||			\
+	    (__mm) != current->active_mm)				\
+		ptep_invalidate(__address, __ptep);			\
+	else								\
+		pte_clear((__mm), (__address), (__ptep));		\
+	__pte;								\
+})
 
 static inline pte_t
 ptep_clear_flush(struct vm_area_struct *vma,
 		 unsigned long address, pte_t *ptep)
 {
 	pte_t pte = *ptep;
-
-	__ptep_ipte(address, ptep);
+	ptep_invalidate(address, ptep);
 	return pte;
 }
 
-static inline void ptep_set_wrprotect(struct mm_struct *mm, unsigned long addr, pte_t *ptep)
+/*
+ * The batched pte unmap code uses ptep_get_and_clear_full to clear the
+ * ptes. Here an optimization is possible. tlb_gather_mmu flushes all
+ * tlbs of an mm if it can guarantee that the ptes of the mm_struct
+ * cannot be accessed while the batched unmap is running. In this case
+ * full==1 and a simple pte_clear is enough. See tlb.h.
+ */
+static inline pte_t ptep_get_and_clear_full(struct mm_struct *mm,
+					    unsigned long addr,
+					    pte_t *ptep, int full)
 {
-	pte_t old_pte = *ptep;
-	set_pte_at(mm, addr, ptep, pte_wrprotect(old_pte));
+	pte_t pte = *ptep;
+
+	if (full)
+		pte_clear(mm, addr, ptep);
+	else
+		ptep_invalidate(addr, ptep);
+	return pte;
 }
 
 static inline void
@@ -648,6 +684,17 @@ ptep_establish(struct vm_area_struct *vma,
 	ptep_clear_flush(vma, address, ptep);
 	set_pte(ptep, entry);
 }
+
+#define ptep_set_wrprotect(__mm, __addr, __ptep)			\
+({									\
+	pte_t __pte = *(__ptep);					\
+	if (pte_write(__pte)) {						\
+		if (atomic_read(&(__mm)->mm_users) > 1 ||		\
+		    (__mm) != current->active_mm)			\
+			ptep_invalidate(__addr, __ptep);		\
+		set_pte_at(__mm, __addr, __ptep, pte_wrprotect(__pte));	\
+	}								\
+})
 
 #define ptep_set_access_flags(__vma, __address, __ptep, __entry, __dirty) \
 	ptep_establish(__vma, __address, __ptep, __entry)
@@ -979,6 +1026,7 @@ static inline pte_t mk_swap_pte(unsigned long type, unsigned long offset)
 #define __HAVE_ARCH_PTEP_TEST_AND_CLEAR_DIRTY
 #define __HAVE_ARCH_PTEP_CLEAR_DIRTY_FLUSH
 #define __HAVE_ARCH_PTEP_GET_AND_CLEAR
+#define __HAVE_ARCH_PTEP_GET_AND_CLEAR_FULL
 #define __HAVE_ARCH_PTEP_CLEAR_FLUSH
 #define __HAVE_ARCH_PTEP_SET_WRPROTECT
 #define __HAVE_ARCH_PTE_SAME

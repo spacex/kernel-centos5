@@ -188,9 +188,9 @@ static __init void reserve_node_zero(pg_data_t *pgdat)
 	 * Note that this can only be in node 0.
 	 */
 #ifdef CONFIG_XIP_KERNEL
-	reserve_bootmem_node(pgdat, __pa(&__data_start), &_end - &__data_start);
+	reserve_bootmem_node(pgdat, __pa(&__data_start), &_end - &__data_start, BOOTMEM_DEFAULT);
 #else
-	reserve_bootmem_node(pgdat, __pa(&_stext), &_end - &_stext);
+	reserve_bootmem_node(pgdat, __pa(&_stext), &_end - &_stext, BOOTMEM_DEFAULT);
 #endif
 
 	/*
@@ -198,7 +198,7 @@ static __init void reserve_node_zero(pg_data_t *pgdat)
 	 * and can only be in node 0.
 	 */
 	reserve_bootmem_node(pgdat, __pa(swapper_pg_dir),
-			     PTRS_PER_PGD * sizeof(pgd_t));
+			     PTRS_PER_PGD * sizeof(pgd_t), BOOTMEM_DEFAULT);
 
 	/*
 	 * Hmm... This should go elsewhere, but we really really need to
@@ -226,7 +226,7 @@ static __init void reserve_node_zero(pg_data_t *pgdat)
 	res_size = __pa(swapper_pg_dir) - PHYS_OFFSET;
 #endif
 	if (res_size)
-		reserve_bootmem_node(pgdat, PHYS_OFFSET, res_size);
+		reserve_bootmem_node(pgdat, PHYS_OFFSET, res_size, BOOTMEM_DEFAULT);
 }
 
 void __init build_mem_type_table(void);
@@ -294,7 +294,7 @@ bootmem_init_node(int node, int initrd_node, struct meminfo *mi)
 	 * Reserve the bootmem bitmap for this node.
 	 */
 	reserve_bootmem_node(pgdat, boot_pfn << PAGE_SHIFT,
-			     boot_pages << PAGE_SHIFT);
+			     boot_pages << PAGE_SHIFT, BOOTMEM_DEFAULT);
 
 #ifdef CONFIG_BLK_DEV_INITRD
 	/*
@@ -302,7 +302,7 @@ bootmem_init_node(int node, int initrd_node, struct meminfo *mi)
 	 */
 	if (node == initrd_node) {
 		reserve_bootmem_node(pgdat, phys_initrd_start,
-				     phys_initrd_size);
+				     phys_initrd_size, BOOTMEM_EXCLUSIVE);
 		initrd_start = __phys_to_virt(phys_initrd_start);
 		initrd_end = initrd_start + phys_initrd_size;
 	}

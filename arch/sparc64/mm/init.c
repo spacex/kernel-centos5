@@ -965,7 +965,7 @@ static unsigned long __init bootmem_init(unsigned long *pages_avail,
 		prom_printf("reserve_bootmem(initrd): base[%llx] size[%lx]\n",
 			initrd_start, initrd_end);
 #endif
-		reserve_bootmem(initrd_start, size);
+		reserve_bootmem(initrd_start, size, BOOTMEM_DEFAULT);
 		*pages_avail -= PAGE_ALIGN(size) >> PAGE_SHIFT;
 
 		initrd_start += PAGE_OFFSET;
@@ -976,7 +976,7 @@ static unsigned long __init bootmem_init(unsigned long *pages_avail,
 #ifdef CONFIG_DEBUG_BOOTMEM
 	prom_printf("reserve_bootmem(kernel): base[%lx] size[%lx]\n", kern_base, kern_size);
 #endif
-	reserve_bootmem(kern_base, kern_size);
+	reserve_bootmem(kern_base, kern_size, BOOTMEM_DEFAULT);
 	*pages_avail -= PAGE_ALIGN(kern_size) >> PAGE_SHIFT;
 
 	/* Reserve the bootmem map.   We do not account for it
@@ -988,7 +988,7 @@ static unsigned long __init bootmem_init(unsigned long *pages_avail,
 	prom_printf("reserve_bootmem(bootmap): base[%lx] size[%lx]\n",
 		    (bootmap_pfn << PAGE_SHIFT), size);
 #endif
-	reserve_bootmem((bootmap_pfn << PAGE_SHIFT), size);
+	reserve_bootmem((bootmap_pfn << PAGE_SHIFT), size, BOOTMEM_DEFAULT);
 	*pages_avail -= PAGE_ALIGN(size) >> PAGE_SHIFT;
 
 	for (i = 0; i < pavail_ents; i++) {
@@ -1409,7 +1409,7 @@ static void __init taint_real_pages(void)
 					goto do_next_page;
 				}
 			}
-			reserve_bootmem(old_start, PAGE_SIZE);
+			reserve_bootmem(old_start, PAGE_SIZE, BOOTMEM_DEFAULT);
 
 		do_next_page:
 			old_start += PAGE_SIZE;

@@ -254,8 +254,6 @@ static int iscsi_sw_tcp_xmit_segment(struct iscsi_tcp_conn *tcp_conn,
 
 		if (r < 0) {
 			iscsi_tcp_segment_unmap(segment);
-			if (copied || r == -EAGAIN)
-				break;
 			return r;
 		}
 		copied += r;
@@ -276,11 +274,17 @@ static int iscsi_sw_tcp_xmit(struct iscsi_conn *conn)
 
 	while (1) {
 		rc = iscsi_sw_tcp_xmit_segment(tcp_conn, segment);
-		if (rc < 0) {
+		/*
+		 * We may not have been able to send data because the conn
+		 * is getting stopped. libiscsi will know so propogate err
+		 * for it to do the right thing.
+		 */
+		if (rc == -EAGAIN)
+			return rc;
+		else if (rc < 0) {
 			rc = ISCSI_ERR_XMIT_FAILED;
 			goto error;
-		}
-		if (rc == 0)
+		} else if (rc == 0)
 			break;
 
 		consumed += rc;
@@ -561,9 +565,10 @@ static void iscsi_sw_tcp_conn_stop(struct iscsi_cls_conn *cls_conn, int flag)
 	struct iscsi_conn *conn = cls_conn->dd_data;
 	struct iscsi_tcp_conn *tcp_conn = conn->dd_data;
 	struct iscsi_sw_tcp_conn *tcp_sw_conn = tcp_conn->dd_data;
+	struct socket *sock = tcp_sw_conn->sock;
 
 	/* userspace may have goofed up and not bound us */
-	if (!tcp_sw_conn->sock)
+	if (!sock)
 		return;
 	/*
 	 * Make sure our recv side is stopped.
@@ -573,6 +578,11 @@ static void iscsi_sw_tcp_conn_stop(struct iscsi_cls_conn *cls_conn, int flag)
 	write_lock_bh(&tcp_sw_conn->sock->sk->sk_callback_lock);
 	set_bit(ISCSI_SUSPEND_BIT, &conn->suspend_rx);
 	write_unlock_bh(&tcp_sw_conn->sock->sk->sk_callback_lock);
+
+	if (sock->sk->sk_sleep) {
+		sock->sk->sk_err = EIO;
+		wake_up_interruptible(sock->sk->sk_sleep);
+	}
 
 	iscsi2_conn_stop(cls_conn, flag);
 	iscsi_sw_tcp_release_conn(conn);

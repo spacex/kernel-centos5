@@ -211,14 +211,12 @@ elf_core_copy_task_xfpregs(struct task_struct *t, elf_fpxregset_t *xfpu)
 #define ELF_PLATFORM  ("i686")
 #define SET_PERSONALITY(ex, ibcs2)			\
 do {							\
-	unsigned long new_flags = 0;				\
-	if ((ex).e_ident[EI_CLASS] == ELFCLASS32)		\
-		new_flags = _TIF_IA32;				\
-	if ((current_thread_info()->flags & _TIF_IA32)		\
-	    != new_flags)					\
-		set_thread_flag(TIF_ABI_PENDING);		\
+	if ((ex).e_ident[EI_CLASS] == ELFCLASS32) {		\
+		set_thread_flag(TIF_IA32);		\
+		current_thread_info()->status |= TS_COMPAT;	\
+	}						\
 	else							\
-		clear_thread_flag(TIF_ABI_PENDING);		\
+		clear_thread_flag(TIF_IA32);		\
 } while (0)
 
 /* Override some function names */

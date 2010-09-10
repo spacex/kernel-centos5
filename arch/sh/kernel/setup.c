@@ -331,13 +331,14 @@ void __init setup_arch(char **cmdline_p)
 	 * an invalid RAM area.
 	 */
 	reserve_bootmem_node(NODE_DATA(0), __MEMORY_START+PAGE_SIZE,
-		(PFN_PHYS(start_pfn)+bootmap_size+PAGE_SIZE-1)-__MEMORY_START);
+		(PFN_PHYS(start_pfn)+bootmap_size+PAGE_SIZE-1)-__MEMORY_START,
+		BOOTMEM_DEFAULT);
 
 	/*
 	 * reserve physical page 0 - it's a special BIOS page on many boxes,
 	 * enabling clean reboots, SMP operation, laptop functions.
 	 */
-	reserve_bootmem_node(NODE_DATA(0), __MEMORY_START, PAGE_SIZE);
+	reserve_bootmem_node(NODE_DATA(0), __MEMORY_START, PAGE_SIZE, BOOTMEM_DEFAULT);
 
 #ifdef CONFIG_BLK_DEV_INITRD
 	ROOT_DEV = MKDEV(RAMDISK_MAJOR, 0);
@@ -349,7 +350,8 @@ void __init setup_arch(char **cmdline_p)
 
 	if (LOADER_TYPE && INITRD_START) {
 		if (INITRD_START + INITRD_SIZE <= (max_low_pfn << PAGE_SHIFT)) {
-			reserve_bootmem_node(NODE_DATA(0), INITRD_START+__MEMORY_START, INITRD_SIZE);
+			reserve_bootmem_node(NODE_DATA(0), INITRD_START+__MEMORY_START,
+					     INITRD_SIZE, BOOTMEM_DEFAULT);
 			initrd_start =
 				INITRD_START ? INITRD_START + PAGE_OFFSET + __MEMORY_START : 0;
 			initrd_end = initrd_start + INITRD_SIZE;

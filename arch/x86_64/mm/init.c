@@ -768,8 +768,10 @@ void free_initrd_mem(unsigned long start, unsigned long end)
 }
 #endif
 
-void __init reserve_bootmem_generic(unsigned long phys, unsigned len) 
+int __init reserve_bootmem_generic(unsigned long phys, unsigned len,
+				    unsigned long flags)
 { 
+	int ret;
 #ifdef CONFIG_NUMA
 	int nid = phys_to_nid(phys);
 #endif
@@ -778,20 +780,21 @@ void __init reserve_bootmem_generic(unsigned long phys, unsigned len)
 		/* This can happen with kdump kernels when accessing firmware
 		   tables. */
 		if (pfn < end_pfn_map)
-			return;
+			return -1;
 		printk(KERN_ERR "reserve_bootmem: illegal reserve %lx %u\n",
 				phys, len);
-		return;
+		return -1;
 	}
 
 	/* Should check here against the e820 map to avoid double free */
 #ifdef CONFIG_NUMA
-  	reserve_bootmem_node(NODE_DATA(nid), phys, len);
+	ret = reserve_bootmem_node(NODE_DATA(nid), phys, len, flags);
 #else       		
-	reserve_bootmem(phys, len);    
+	ret = reserve_bootmem(phys, len, flags);
 #endif
 	if (phys+len <= MAX_DMA_PFN*PAGE_SIZE)
 		dma_reserve += len / PAGE_SIZE;
+	return ret;
 }
 
 int kern_addr_valid(unsigned long addr) 

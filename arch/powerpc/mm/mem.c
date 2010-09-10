@@ -275,7 +275,8 @@ void __init do_init_bootmem(void)
 	/* reserve the sections we're already using */
 	for (i = 0; i < lmb.reserved.cnt; i++)
 		reserve_bootmem(lmb.reserved.region[i].base,
-				lmb_size_bytes(&lmb.reserved, i));
+				lmb_size_bytes(&lmb.reserved, i),
+				BOOTMEM_DEFAULT);
 
 	/* XXX need to clip this if using highmem? */
 	for (i = 0; i < lmb.memory.cnt; i++)

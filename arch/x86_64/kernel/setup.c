@@ -468,7 +468,7 @@ contig_initmem_init(unsigned long start_pfn, unsigned long end_pfn)
 		panic("Cannot find bootmem map of size %ld\n",bootmap_size);
 	bootmap_size = init_bootmem(bootmap >> PAGE_SHIFT, end_pfn);
 	e820_bootmem_free(NODE_DATA(0), 0, end_pfn << PAGE_SHIFT);
-	reserve_bootmem(bootmap, bootmap_size);
+	reserve_bootmem(bootmap, bootmap_size, BOOTMEM_DEFAULT);
 } 
 #endif
 
@@ -615,25 +615,29 @@ void __init setup_arch(char **cmdline_p)
 
 	/* Reserve direct mapping */
 	reserve_bootmem_generic(table_start << PAGE_SHIFT, 
-				(table_end - table_start) << PAGE_SHIFT);
+				(table_end - table_start) << PAGE_SHIFT,
+				BOOTMEM_DEFAULT);
 
 	/* reserve kernel */
 	reserve_bootmem_generic(__pa_symbol(&_text),
-				__pa_symbol(&_end) - __pa_symbol(&_text));
+				__pa_symbol(&_end) - __pa_symbol(&_text),
+				BOOTMEM_DEFAULT);
 
 	/*
 	 * reserve physical page 0 - it's a special BIOS page on many boxes,
 	 * enabling clean reboots, SMP operation, laptop functions.
 	 */
-	reserve_bootmem_generic(0, PAGE_SIZE);
+	reserve_bootmem_generic(0, PAGE_SIZE, BOOTMEM_DEFAULT);
 
 	/* reserve ebda region */
 	if (ebda_addr)
-		reserve_bootmem_generic(ebda_addr, ebda_size);
+		reserve_bootmem_generic(ebda_addr, ebda_size,
+					BOOTMEM_DEFAULT);
 
 #ifdef CONFIG_SMP
 	/* Reserve SMP trampoline */
-	reserve_bootmem_generic(SMP_TRAMPOLINE_BASE, 2*PAGE_SIZE);
+	reserve_bootmem_generic(SMP_TRAMPOLINE_BASE, 2*PAGE_SIZE,
+				BOOTMEM_DEFAULT);
 #endif
 
 #ifdef CONFIG_ACPI_SLEEP
@@ -651,7 +655,8 @@ void __init setup_arch(char **cmdline_p)
 #ifdef CONFIG_BLK_DEV_INITRD
 	if (LOADER_TYPE && INITRD_START) {
 		if (INITRD_START + INITRD_SIZE <= (end_pfn << PAGE_SHIFT)) {
-			reserve_bootmem_generic(INITRD_START, INITRD_SIZE);
+			reserve_bootmem_generic(INITRD_START, INITRD_SIZE,
+						BOOTMEM_DEFAULT);
 			initrd_start =
 				INITRD_START ? INITRD_START + PAGE_OFFSET : 0;
 			initrd_end = initrd_start+INITRD_SIZE;
@@ -668,8 +673,13 @@ void __init setup_arch(char **cmdline_p)
 #ifdef CONFIG_KEXEC
 	if ((crashk_res.start < crashk_res.end) &&
 	    (crashk_res.end <= (end_pfn << PAGE_SHIFT))) {
-		reserve_bootmem_generic(crashk_res.start,
-					crashk_res.end - crashk_res.start + 1);
+		if (reserve_bootmem_generic(crashk_res.start,
+					crashk_res.end - crashk_res.start + 1,
+					BOOTMEM_EXCLUSIVE) < 0) {
+			printk(KERN_ERR "crashkernel reservation failed - "
+					"memory is in use\n");
+			crashk_res.start = crashk_res.end = 0;
+		}
 	}
 	else {
 		printk(KERN_ERR "Memory for crash kernel (0x%lx to 0x%lx) not"

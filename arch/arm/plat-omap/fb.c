@@ -50,7 +50,8 @@ void omapfb_reserve_mem(void)
 			pr_info("Reserving %u bytes SDRAM for frame buffer\n",
 				fbmem_conf->fb_sdram_size);
 			reserve_bootmem(fbmem_conf->fb_sdram_start,
-					fbmem_conf->fb_sdram_size);
+					fbmem_conf->fb_sdram_size,
+					BOOTMEM_DEFAULT);
 		}
 	}
 }

@@ -1857,6 +1857,15 @@ static int azx_position_ok(struct azx *chip, struct azx_dev *azx_dev)
 
 	if (!bdl_pos_adj[chip->dev_index])
 		return 1; /* no delayed ack */
+	if (azx_dev->period_bytes == 0) {
+		static int once;
+		if (!once)
+			printk(KERN_WARNING
+			       "hda-intel: Divide by zero was avoided "
+			       "in azx_dev->period_bytes.\n");
+		once = 1;
+		return 0;
+	}
 	if (pos % azx_dev->period_bytes > azx_dev->period_bytes / 2)
 		return 0; /* NG - it's below the period boundary */
 	return 1; /* OK, it's fine */

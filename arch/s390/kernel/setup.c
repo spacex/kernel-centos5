@@ -734,12 +734,13 @@ setup_memory(void)
 	 * the (very unlikely) case of us accidentally initializing the
 	 * bootmem allocator with an invalid RAM area.
 	 */
-	reserve_bootmem(start_pfn << PAGE_SHIFT, bootmap_size);
+	reserve_bootmem(start_pfn << PAGE_SHIFT, bootmap_size, BOOTMEM_DEFAULT);
 
 #ifdef CONFIG_BLK_DEV_INITRD
 	if (INITRD_START) {
 		if (INITRD_START + INITRD_SIZE <= memory_end) {
-			reserve_bootmem(INITRD_START, INITRD_SIZE);
+			reserve_bootmem(INITRD_START, INITRD_SIZE,
+					BOOTMEM_DEFAULT);
 			initrd_start = INITRD_START;
 			initrd_end = initrd_start + INITRD_SIZE;
 		} else {

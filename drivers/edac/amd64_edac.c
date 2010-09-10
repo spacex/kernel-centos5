@@ -1077,7 +1077,7 @@ static void f10_read_dram_base_limit(struct amd64_pvt *pvt, int dram)
        pvt->dram_IntlvEn[dram] = (low_base >> 8) & 0x7;
 
        pvt->dram_base[dram] = (((u64)high_base & 0x000000FF) << 40) |
-                              (((u64)low_base  & 0xFFFF0000) << 24);
+                              (((u64)low_base  & 0xFFFF0000) << 8);
 
        low_offset = K8_DRAM_LIMIT_LOW + (dram << 3);
        high_offset = F10_DRAM_LIMIT_HIGH + (dram << 3);
@@ -1099,7 +1099,7 @@ static void f10_read_dram_base_limit(struct amd64_pvt *pvt, int dram)
         * memory location of the region, so low 24 bits need to be all ones.
         */
        pvt->dram_limit[dram] = (((u64)high_limit & 0x000000FF) << 40) |
-                               (((u64) low_limit & 0xFFFF0000) << 24) |
+                               (((u64) low_limit & 0xFFFF0000) << 8) |
                                0x00FFFFFF;
 }
 
@@ -1431,7 +1431,7 @@ static void f10_map_sysaddr_to_csrow(struct mem_ctl_info *mci,
 
        csrow = f10_translate_sysaddr_to_cs(pvt, sys_addr, &nid, &chan);
 
-       if (csrow >= 0) {
+       if (csrow < 0) {
 		edac_mc_handle_ce_no_info(mci, EDAC_MOD_STR);
 		return;
 	}

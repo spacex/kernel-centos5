@@ -17,6 +17,7 @@
 #include <linux/bootmem.h>
 #include <linux/mmzone.h>
 #include <linux/module.h>
+#include <linux/pfn.h>
 #include <asm/dma.h>
 #include <asm/io.h>
 #include "internal.h"
@@ -102,29 +103,74 @@ static unsigned long __init init_bootmem_core (pg_data_t *pgdat,
  * might be used for boot-time allocations - or it might get added
  * to the free page pool later on.
  */
-static void __init reserve_bootmem_core(bootmem_data_t *bdata, unsigned long addr, unsigned long size)
+static int __init can_reserve_bootmem_core(bootmem_data_t *bdata,
+			unsigned long addr, unsigned long size, int flags)
 {
+	unsigned long sidx, eidx;
 	unsigned long i;
-	/*
-	 * round up, partially reserved pages are considered
-	 * fully reserved.
-	 */
-	unsigned long sidx = (addr - bdata->node_boot_start)/PAGE_SIZE;
-	unsigned long eidx = (addr + size - bdata->node_boot_start + 
-							PAGE_SIZE-1)/PAGE_SIZE;
-	unsigned long end = (addr + size + PAGE_SIZE-1)/PAGE_SIZE;
 
 	BUG_ON(!size);
-	BUG_ON(sidx >= eidx);
-	BUG_ON((addr >> PAGE_SHIFT) >= bdata->node_low_pfn);
-	BUG_ON(end > bdata->node_low_pfn);
 
-	for (i = sidx; i < eidx; i++)
+	/* out of range, don't hold other */
+	if (addr + size < bdata->node_boot_start ||
+		PFN_DOWN(addr) > bdata->node_low_pfn)
+		return 0;
+
+	/*
+	 * Round up to index to the range.
+	 */
+	if (addr > bdata->node_boot_start)
+		sidx= PFN_DOWN(addr - bdata->node_boot_start);
+	else
+		sidx = 0;
+
+	eidx = PFN_UP(addr + size - bdata->node_boot_start);
+	if (eidx > bdata->node_low_pfn - PFN_DOWN(bdata->node_boot_start))
+		eidx = bdata->node_low_pfn - PFN_DOWN(bdata->node_boot_start);
+
+	for (i = sidx; i < eidx; i++) {
+		if (test_bit(i, bdata->node_bootmem_map)) {
+			if (flags & BOOTMEM_EXCLUSIVE)
+				return -EBUSY;
+		}
+	}
+
+	return 0;
+}
+
+static int __init reserve_bootmem_core(bootmem_data_t *bdata,
+			unsigned long addr, unsigned long size, int flags)
+{
+	unsigned long sidx, eidx;
+	unsigned long i;
+
+	BUG_ON(!size);
+
+	/* out of range */
+	if (addr + size < bdata->node_boot_start ||
+		PFN_DOWN(addr) > bdata->node_low_pfn)
+		return -1;
+
+	/*
+	 * Round up to index to the range.
+	 */
+	if (addr > bdata->node_boot_start)
+		sidx= PFN_DOWN(addr - bdata->node_boot_start);
+	else
+		sidx = 0;
+
+	eidx = PFN_UP(addr + size - bdata->node_boot_start);
+	if (eidx > bdata->node_low_pfn - PFN_DOWN(bdata->node_boot_start))
+		eidx = bdata->node_low_pfn - PFN_DOWN(bdata->node_boot_start);
+
+	for (i = sidx; i < eidx; i++) {
 		if (test_and_set_bit(i, bdata->node_bootmem_map)) {
 #ifdef CONFIG_DEBUG_BOOTMEM
 			printk("hm, page %08lx reserved twice.\n", i*PAGE_SIZE);
 #endif
 		}
+	}
+	return 0;
 }
 
 static void __init free_bootmem_core(bootmem_data_t *bdata, unsigned long addr, unsigned long size)
@@ -360,9 +406,16 @@ unsigned long __init init_bootmem_node (pg_data_t *pgdat, unsigned long freepfn,
 	return(init_bootmem_core(pgdat, freepfn, startpfn, endpfn));
 }
 
-void __init reserve_bootmem_node (pg_data_t *pgdat, unsigned long physaddr, unsigned long size)
+int __init reserve_bootmem_node (pg_data_t *pgdat, unsigned long physaddr,
+				  unsigned long size, unsigned long flags)
 {
-	reserve_bootmem_core(pgdat->bdata, physaddr, size);
+	int ret;
+
+	ret = can_reserve_bootmem_core(pgdat->bdata, physaddr, size, flags);
+	if (ret < 0)
+		return ret;
+
+	return reserve_bootmem_core(pgdat->bdata, physaddr, size, flags);
 }
 
 void __init free_bootmem_node (pg_data_t *pgdat, unsigned long physaddr, unsigned long size)
@@ -383,9 +436,20 @@ unsigned long __init init_bootmem (unsigned long start, unsigned long pages)
 }
 
 #ifndef CONFIG_HAVE_ARCH_BOOTMEM_NODE
-void __init reserve_bootmem (unsigned long addr, unsigned long size)
+int __init reserve_bootmem (unsigned long addr, unsigned long size,
+			    unsigned long flags)
 {
-	reserve_bootmem_core(NODE_DATA(0)->bdata, addr, size);
+	bootmem_data_t *bdata;
+	int ret;
+
+	list_for_each_entry(bdata, &bdata_list, list) {
+		ret = can_reserve_bootmem_core(bdata, addr, size, flags);
+		if (ret < 0)
+			return ret;
+	}
+	list_for_each_entry(bdata, &bdata_list, list)
+		reserve_bootmem_core(bdata, addr, size, flags);
+	return 0;
 }
 #endif /* !CONFIG_HAVE_ARCH_BOOTMEM_NODE */
 

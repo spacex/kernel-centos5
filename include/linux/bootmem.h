@@ -58,8 +58,16 @@ extern void * __init __alloc_bootmem_core(struct bootmem_data *bdata,
 		unsigned long limit);
 extern void *alloc_bootmem_high_node(pg_data_t *pgdat, unsigned long size);
 
+/*
+ * flags for reserve_bootmem (also if CONFIG_HAVE_ARCH_BOOTMEM_NODE,
+ * the architecture-specific code should honor this)
+ */
+#define BOOTMEM_DEFAULT         0
+#define BOOTMEM_EXCLUSIVE       (1<<0)
+
 #ifndef CONFIG_HAVE_ARCH_BOOTMEM_NODE
-extern void __init reserve_bootmem (unsigned long addr, unsigned long size);
+extern int __init reserve_bootmem (unsigned long addr, unsigned long size,
+				    unsigned long flags);
 #define alloc_bootmem(x) \
 	__alloc_bootmem((x), SMP_CACHE_BYTES, __pa(MAX_DMA_ADDRESS))
 #define alloc_bootmem_low(x) \
@@ -72,7 +80,7 @@ extern void __init reserve_bootmem (unsigned long addr, unsigned long size);
 extern unsigned long __init free_all_bootmem (void);
 extern void * __init __alloc_bootmem_node (pg_data_t *pgdat, unsigned long size, unsigned long align, unsigned long goal);
 extern unsigned long __init init_bootmem_node (pg_data_t *pgdat, unsigned long freepfn, unsigned long startpfn, unsigned long endpfn);
-extern void __init reserve_bootmem_node (pg_data_t *pgdat, unsigned long physaddr, unsigned long size);
+extern int __init reserve_bootmem_node (pg_data_t *pgdat, unsigned long physaddr, unsigned long size, unsigned long flags);
 extern void __init free_bootmem_node (pg_data_t *pgdat, unsigned long addr, unsigned long size);
 extern unsigned long __init free_all_bootmem_node (pg_data_t *pgdat);
 #ifndef CONFIG_HAVE_ARCH_BOOTMEM_NODE

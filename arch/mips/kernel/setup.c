@@ -411,7 +411,8 @@ static inline void bootmem_init(void)
 	}
 
 	/* Reserve the bootmap memory.  */
-	reserve_bootmem(PFN_PHYS(first_usable_pfn), bootmap_size);
+	reserve_bootmem(PFN_PHYS(first_usable_pfn), bootmap_size,
+			BOOTMEM_DEFAULT);
 #endif /* CONFIG_SGI_IP27 */
 
 #ifdef CONFIG_BLK_DEV_INITRD
@@ -436,7 +437,8 @@ static inline void bootmem_init(void)
 		}
 
 		if (initrd_reserve_bootmem)
-			reserve_bootmem(CPHYSADDR(initrd_start), initrd_size);
+			reserve_bootmem(CPHYSADDR(initrd_start), initrd_size,
+					BOOTMEM_DEFAULT);
 	}
 #endif /* CONFIG_BLK_DEV_INITRD  */
 }

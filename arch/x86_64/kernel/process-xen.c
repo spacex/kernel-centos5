@@ -299,13 +299,6 @@ void flush_thread(void)
 	struct task_struct *tsk = current;
 	struct thread_info *t = current_thread_info();
 
-	if (t->flags & _TIF_ABI_PENDING) {
-		t->flags ^= (_TIF_ABI_PENDING | _TIF_IA32);
-		if (t->flags & _TIF_IA32)
-			current_thread_info()->status |= TS_COMPAT;
-	}
-
-
 	tsk->thread.debugreg0 = 0;
 	tsk->thread.debugreg1 = 0;
 	tsk->thread.debugreg2 = 0;
@@ -793,7 +786,7 @@ void randomize_brk(unsigned long old_brk)
 	/* randomize_brk is called after SET_PERSONALITY, but before
 	   flush_thread.  So, the test if the process will be 32-bit
 	   or 64-bit is uglier.  */
-	if (test_thread_flag(TIF_ABI_PENDING) ^ test_thread_flag(TIF_IA32))
+	if (test_thread_flag(TIF_IA32))
 	{
 		/* i?86 ELF32 binaries start at 0x8048000 or sometimes
 		   a little bit lower when prelinked.  */

@@ -1274,7 +1274,7 @@ static void __init reserve_ebda_region(void)
 	unsigned int addr;
 	addr = get_bios_ebda();
 	if (addr)
-		reserve_bootmem(addr, PAGE_SIZE);	
+		reserve_bootmem(addr, PAGE_SIZE, BOOTMEM_DEFAULT);
 }
 #endif
 
@@ -1357,14 +1357,15 @@ void __init setup_bootmem_allocator(void)
 	 * bootmem allocator with an invalid RAM area.
 	 */
 	reserve_bootmem(__pa_symbol(_text), (PFN_PHYS(min_low_pfn) +
-			 bootmap_size + PAGE_SIZE-1) - __pa_symbol(_text));
+			 bootmap_size + PAGE_SIZE-1) - __pa_symbol(_text),
+			 BOOTMEM_DEFAULT);
 
 #ifndef CONFIG_XEN
 	/*
 	 * reserve physical page 0 - it's a special BIOS page on many boxes,
 	 * enabling clean reboots, SMP operation, laptop functions.
 	 */
-	reserve_bootmem(0, PAGE_SIZE);
+	reserve_bootmem(0, PAGE_SIZE, BOOTMEM_DEFAULT);
 
 	/* reserve EBDA region, it's a 4K region */
 	reserve_ebda_region();
@@ -1374,7 +1375,7 @@ void __init setup_bootmem_allocator(void)
        unless you have no PS/2 mouse plugged in. */
 	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
 	    boot_cpu_data.x86 == 6)
-	     reserve_bootmem(0xa0000 - 4096, 4096);
+	     reserve_bootmem(0xa0000 - 4096, 4096, BOOTMEM_DEFAULT);
 
 #ifdef CONFIG_SMP
 	/*
@@ -1382,7 +1383,7 @@ void __init setup_bootmem_allocator(void)
 	 * FIXME: Don't need the extra page at 4K, but need to fix
 	 * trampoline before removing it. (see the GDT stuff)
 	 */
-	reserve_bootmem(PAGE_SIZE, PAGE_SIZE);
+	reserve_bootmem(PAGE_SIZE, PAGE_SIZE, BOOTMEM_DEFAULT);
 #endif
 #ifdef CONFIG_ACPI_SLEEP
 	/*
@@ -1415,8 +1416,13 @@ void __init setup_bootmem_allocator(void)
 #else
 	if ((crashk_res.start < crashk_res.end) &&
 	    (crashk_res.end <= (max_low_pfn << PAGE_SHIFT))) {
-		reserve_bootmem(crashk_res.start,
-				crashk_res.end - crashk_res.start + 1);
+		if (reserve_bootmem(crashk_res.start,
+				crashk_res.end - crashk_res.start + 1,
+				BOOTMEM_EXCLUSIVE) < 0) {
+			printk(KERN_ERR "crashkernel reservation failed - "
+				"memory is in use\n");
+			crashk_res.start = crashk_res.end = 0;
+		}
 	}
 	else {
 		printk(KERN_ERR "Memory for crash kernel (0x%lx to 0x%lx) not"
