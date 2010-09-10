@@ -1999,6 +1999,22 @@ inetdev_notify(struct notifier_block *this, unsigned long event, void *ptr)
 	return NOTIFY_DONE;
 }
 
+/*
+ * We also send a fake ARP if the link gets carrier.
+ */
+static int
+netdev_notify(struct notifier_block *this, unsigned long event, void *ptr)
+{
+	struct net_device *dev = ptr;
+
+	/* Carrier up event and is it one of our devices? */
+	if (event == NETDEV_CHANGE && netif_carrier_ok(dev) &&
+	    dev->open == network_open)
+		(void)send_fake_arp(dev);
+
+	return NOTIFY_DONE;
+}
+
 
 static void netif_disconnect_backend(struct netfront_info *info)
 {
@@ -2062,6 +2078,10 @@ static struct notifier_block notifier_inetdev = {
 	.priority       = 0
 };
 
+static struct notifier_block notifier_netdev = {
+	.notifier_call  = netdev_notify,
+};
+
 static int __init netif_init(void)
 {
 	if (!is_running_on_xen())
@@ -2083,6 +2103,7 @@ static int __init netif_init(void)
 	IPRINTK("Initialising virtual ethernet driver.\n");
 
 	(void)register_inetaddr_notifier(&notifier_inetdev);
+	(void)register_netdevice_notifier(&notifier_netdev);
 
 	return xenbus_register_frontend(&netfront);
 }
@@ -2096,6 +2117,7 @@ static void __exit netif_exit(void)
 	if (is_initial_xendomain())
 		return;
 
+	unregister_netdevice_notifier(&notifier_netdev);
 	unregister_inetaddr_notifier(&notifier_inetdev);
 
 	return xenbus_unregister_driver(&netfront);

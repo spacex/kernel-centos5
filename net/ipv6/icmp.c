@@ -413,10 +413,10 @@ void icmpv6_send(struct sk_buff *skb, int type, int code, __u32 info,
 
 	xfrm6_decode_session_reverse(skb, &fl2);
 
-	if (ip6_dst_lookup(sk, &dst2, &fl))
+	if (ip6_dst_lookup(sk, &dst2, &fl2))
 		goto out;
 
-	err = xfrm_nlookup(&dst2, &fl, sk, XFRM_LOOKUP_ICMP);
+	err = xfrm_nlookup(&dst2, &fl2, sk, XFRM_LOOKUP_ICMP);
 	if (err == -ENOENT || err == -ENOSYS) {
 		err = -ENOENT;
 		if (!dst)

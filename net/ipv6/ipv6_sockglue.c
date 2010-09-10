@@ -52,6 +52,9 @@
 #include <net/tcp.h>
 #include <net/udp.h>
 #include <net/xfrm.h>
+#ifndef __GENKSYMS__
+#include <net/compat.h>
+#endif
 
 #include <asm/uaccess.h>
 
@@ -769,6 +772,10 @@ int compat_ipv6_setsockopt(struct sock *sk, int level, int optname,
 	if (level != SOL_IPV6)
 		return -ENOPROTOOPT;
 
+	if (optname >= MCAST_JOIN_GROUP && optname <= MCAST_MSFILTER)
+		return compat_mc_setsockopt(sk, level, optname, optval, optlen,
+			ipv6_setsockopt);
+
 	err = do_ipv6_setsockopt(sk, level, optname, optval, optlen);
 #ifdef CONFIG_NETFILTER
 	/* we need to exclude all possible ENOPROTOOPTs except default case */
@@ -1056,6 +1063,10 @@ int compat_ipv6_getsockopt(struct sock *sk, int level, int optname,
 
 	if (level != SOL_IPV6)
 		return -ENOPROTOOPT;
+
+	if (optname == MCAST_MSFILTER)
+		return compat_mc_getsockopt(sk, level, optname, optval, optlen,
+			ipv6_getsockopt);
 
 	err = do_ipv6_getsockopt(sk, level, optname, optval, optlen);
 #ifdef CONFIG_NETFILTER
