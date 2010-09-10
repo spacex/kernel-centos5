@@ -1,0 +1,357 @@
+			  ==========================
+			  FS-CACHE CACHE BACKEND API
+			  ==========================
+
+The FS-Cache system provides an API by which actual caches can be supplied to
+FS-Cache for it to then serve out to network filesystems and other interested
+parties.
+
+This API is declared in <linux/fscache-cache.h>.
+
+
+====================================
+INITIALISING AND REGISTERING A CACHE
+====================================
+
+To start off, a cache definition must be initialised and registered for each
+cache the backend wants to make available.  For instance, CacheFS does this in
+the fill_super() operation on mounting.
+
+The cache definition (struct fscache_cache) should be initialised by calling:
+
+	void fscache_init_cache(struct fscache_cache *cache,
+				struct fscache_cache_ops *ops,
+				const char *idfmt,
+				...)
+
+Where:
+
+ (*) "cache" is a pointer to the cache definition;
+
+ (*) "ops" is a pointer to the table of operations that the backend supports on
+     this cache;
+
+ (*) and a format and printf-style arguments for constructing a label for the
+     cache.
+
+
+The cache should then be registered with FS-Cache by passing a pointer to the
+previously initialised cache definition to:
+
+	int fscache_add_cache(struct fscache_cache *cache,
+			      struct fscache_object *fsdef,
+			      const char *tagname);
+
+Two extra arguments should also be supplied:
+
+ (*) "fsdef" which should point to the object representation for the FS-Cache
+     master index in this cache.  Netfs primary index entries will be created
+     here.
+
+ (*) "tagname" which, if given, should be a text string naming this cache.  If
+     this is NULL, the identifier will be used instead.  For CacheFS, the
+     identifier is set to name the underlying block device and the tag can be
+     supplied by mount.
+
+This function may return -ENOMEM if it ran out of memory or -EEXIST if the tag
+is already in use.  0 will be returned on success.
+
+
+=====================
+UNREGISTERING A CACHE
+=====================
+
+A cache can be withdrawn from the system by calling this function with a
+pointer to the cache definition:
+
+	void fscache_withdraw_cache(struct fscache_cache *cache)
+
+In CacheFS's case, this is called by put_super().
+
+
+==================
+FS-CACHE UTILITIES
+==================
+
+FS-Cache provides some utilities that a cache backend may make use of:
+
+ (*) Find the parent of an object:
+
+	struct fscache_object *
+	fscache_find_parent_object(struct fscache_object *object)
+
+     This allows a backend to find the logical parent of an index or data file
+     in the cache hierarchy.
+
+ (*) Note occurrence of an I/O error in a cache:
+
+	void fscache_io_error(struct fscache_cache *cache)
+
+     This tells FS-Cache that an I/O error occurred in the cache.  After this
+     has been called, only resource dissociation operations (object and page
+     release) will be passed from the netfs to the cache backend for the
+     specified cache.
+
+     This does not actually withdraw the cache.  That must be done separately.
+
+ (*) Get an extra reference to a read or write context:
+
+	void *fscache_get_context(struct fscache_cookie *cookie, void *context)
+
+     and release a reference:
+
+	void *fscache_put_context(struct fscache_cookie *cookie, void *context)
+
+     These should be used to maintain the presence of the read or write context
+     passed to the cache read/write functions.  This context must then be
+     passed to the I/O completion function.
+
+
+========================
+RELEVANT DATA STRUCTURES
+========================
+
+ (*) Index/Data file FS-Cache representation cookie:
+
+	struct fscache_cookie {
+		struct fscache_object_def	*def;
+		struct fscache_netfs		*netfs;
+		void				*netfs_data;
+		...
+	};
+
+     The fields that might be of use to the backend describe the object
+     definition, the netfs definition and the netfs's data for this cookie.
+     The object definition contain functions supplied by the netfs for loading
+     and matching index entries; these are required to provide some of the
+     cache operations.
+
+ (*) In-cache object representation:
+
+	struct fscache_object {
+		struct fscache_cache		*cache;
+		struct fscache_cookie		*cookie;
+		unsigned long			flags;
+	#define FSCACHE_OBJECT_RECYCLING	1
+		...
+	};
+
+     Structures of this type should be allocated by the cache backend and
+     passed to FS-Cache when requested by the appropriate cache operation.  In
+     the case of CacheFS, they're embedded in CacheFS's internal object
+     structures.
+
+     Each object contains a pointer to the cookie that represents the object it
+     is backing.  It also contains a flag that indicates whether the object is
+     being retired when put_object() is called.  This should be initialised by
+     calling fscache_object_init(object).
+
+
+================
+CACHE OPERATIONS
+================
+
+The cache backend provides FS-Cache with a table of operations that can be
+performed on the denizens of the cache.  These are held in a structure of type:
+
+	struct fscache_cache_ops
+
+ (*) Name of cache provider [mandatory]:
+
+	const char *name
+
+     This isn't strictly an operation, but should be pointed at a string naming
+     the backend.
+
+ (*) Object lookup [mandatory]:
+
+	struct fscache_object *(*lookup_object)(struct fscache_cache *cache,
+						struct fscache_object *parent,
+						struct fscache_cookie *cookie)
+
+     This method is used to look up an object in the specified cache, given a
+     pointer to the parent object and the cookie to which the object will be
+     attached.  This should instantiate that object in the cache if it can, or
+     return -ENOBUFS or -ENOMEM if it can't.
+
+ (*) Increment object refcount [mandatory]:
+
+	struct fscache_object *(*grab_object)(struct fscache_object *object)
+
+     This method is called to increment the reference count on an object.  It
+     may fail (for instance if the cache is being withdrawn) by returning NULL.
+     It should return the object pointer if successful.
+
+ (*) Lock/Unlock object [mandatory]:
+
+	void (*lock_object)(struct fscache_object *object)
+	void (*unlock_object)(struct fscache_object *object)
+
+     These methods are used to exclusively lock an object.  It must be possible
+     to schedule with the lock held, so a spinlock isn't sufficient.
+
+ (*) Pin/Unpin object [optional]:
+
+	int (*pin_object)(struct fscache_object *object)
+	void (*unpin_object)(struct fscache_object *object)
+
+     These methods are used to pin an object into the cache.  Once pinned an
+     object cannot be reclaimed to make space.  Return -ENOSPC if there's not
+     enough space in the cache to permit this.
+
+ (*) Update object [mandatory]:
+
+	int (*update_object)(struct fscache_object *object)
+
+     This is called to update the index entry for the specified object.  The
+     new information should be in object->cookie->netfs_data.  This can be
+     obtained by calling object->cookie->def->get_aux()/get_attr().
+
+ (*) Release object reference [mandatory]:
+
+	void (*put_object)(struct fscache_object *object)
+
+     This method is used to discard a reference to an object.  The object may
+     be destroyed when all the references held by FS-Cache are released.
+
+ (*) Synchronise a cache [mandatory]:
+
+	void (*sync)(struct fscache_cache *cache)
+
+     This is called to ask the backend to synchronise a cache with its backing
+     device.
+
+ (*) Dissociate a cache [mandatory]:
+
+	void (*dissociate_pages)(struct fscache_cache *cache)
+
+     This is called to ask a cache to perform any page dissociations as part of
+     cache withdrawal.
+
+ (*) Set the data size on a cache file [mandatory]:
+
+	int (*set_i_size)(struct fscache_object *object, loff_t i_size);
+
+     This is called to indicate to the cache the maximum size a file may reach.
+     The cache may use this to reserve space on the cache.  It may also return
+     -ENOBUFS to indicate that insufficient space is available to expand the
+     metadata used to track the data.  It should return 0 if successful or
+     -ENOMEM or -EIO on error.
+
+ (*) Reserve cache space for an object's data [optional]:
+
+	int (*reserve_space)(struct fscache_object *object, loff_t size);
+
+     This is called to request that cache space be reserved to hold the data
+     for an object and the metadata used to track it.  Zero size should be
+     taken as request to cancel a reservation.
+
+     This should return 0 if successful, -ENOSPC if there isn't enough space
+     available, or -ENOMEM or -EIO on other errors.
+
+     The reservation may exceed the size of the object, thus permitting future
+     expansion.  If the amount of space consumed by an object would exceed the
+     reservation, it's permitted to refuse requests to allocate pages, but not
+     required.  An object may be pruned down to its reservation size if larger
+     than that already.
+
+ (*) Request page be read from cache [mandatory]:
+
+	int (*read_or_alloc_page)(struct fscache_object *object,
+				  struct page *page,
+				  fscache_rw_complete_t end_io_func,
+				  void *end_io_data,
+				  gfp_t gfp)
+
+     This is called to attempt to read a netfs page from the cache, or to
+     reserve a backing block if not.  FS-Cache will have done as much checking
+     as it can before calling, but most of the work belongs to the backend.
+
+     If there's no page in the cache, then -ENODATA should be returned if the
+     backend managed to reserve a backing block; -ENOBUFS, -ENOMEM or -EIO if
+     it didn't.
+
+     If there is a page in the cache, then a read operation should be queued
+     and 0 returned.  When the read finishes, end_io_func() should be called
+     with the following arguments:
+
+	(*end_io_func)(object->cookie->netfs_data,
+		       page,
+		       end_io_data,
+		       error);
+
+     The mark_pages_cached() cookie operation should be called for the page if
+     any cache metadata is retained.  This will indicate to the netfs that the
+     page needs explicit uncaching.  This operation takes a pagevec, thus
+     allowing several pages to be marked at once.
+
+ (*) Request pages be read from cache [mandatory]:
+
+	int (*read_or_alloc_pages)(struct fscache_object *object,
+				   struct address_space *mapping,
+				   struct list_head *pages,
+				   unsigned *nr_pages,
+				   fscache_rw_complete_t end_io_func,
+				   void *end_io_data,
+				   gfp_t gfp)
+
+     This is like the previous operation, except it will be handed a list of
+     pages instead of one page.  Any pages on which a read operation is started
+     must be added to the page cache for the specified mapping and also to the
+     LRU.  Such pages must also be removed from the pages list and nr_pages
+     decremented per page.
+
+     If there was an error such as -ENOMEM, then that should be returned; else
+     if one or more pages couldn't be read or allocated, then -ENOBUFS should
+     be returned; else if one or more pages couldn't be read, then -ENODATA
+     should be returned.  If all the pages are dispatched then 0 should be
+     returned.
+
+ (*) Request page be allocated in the cache [mandatory]:
+
+	int (*allocate_page)(struct fscache_object *object,
+			     struct page *page,
+			     gfp_t gfp)
+
+     This is like read_or_alloc_page(), except that it shouldn't read from the
+     cache, even if there's data there that could be retrieved.  It should,
+     however, set up any internal metadata required such that write_page() can
+     write to the cache.
+
+     If there's no backing block available, then -ENOBUFS should be returned
+     (or -ENOMEM or -EIO if there were other problems).  If a block is
+     successfully allocated, then the netfs page should be marked and 0
+     returned.
+
+ (*) Request page be written to cache [mandatory]:
+
+	int (*write_page)(struct fscache_object *object,
+			  struct page *page,
+			  fscache_rw_complete_t end_io_func,
+			  void *end_io_data,
+			  gfp_t gfp)
+
+     This is called to write from a page on which there was a previously
+     successful read_or_alloc_page() call.  FS-Cache filters out pages that
+     don't have mappings.
+
+     If there's no backing block available, then -ENOBUFS should be returned
+     (or -ENOMEM or -EIO if there were other problems).
+
+     If the write operation could be queued, then 0 should be returned.  When
+     the write completes, end_io_func() should be called with the following
+     arguments:
+
+	(*end_io_func)(object->cookie->netfs_data,
+		       page,
+		       end_io_data,
+		       error);
+
+ (*) Discard retained per-page metadata [mandatory]:
+
+	void (*uncache_pages)(struct fscache_object *object,
+			      struct pagevec *pagevec)
+
+     This is called when one or more netfs pages are being evicted from the
+     pagecache.  The cache backend should tear down any internal representation
+     or tracking it maintains.

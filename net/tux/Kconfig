@@ -1,0 +1,25 @@
+
+config TUX
+	tristate "TUX: Threaded linUX application protocol accelerator layer"
+	default y if INET=y
+	select ZLIB_DEFLATE
+	help
+	  This is the TUX content-accelerator/server
+
+menu "TUX options"
+	depends on TUX
+
+config TUX_EXTCGI
+	bool "External CGI module"
+	default y
+
+config TUX_EXTENDED_LOG
+	bool "extended TUX logging format"
+	default n
+
+config TUX_DEBUG
+	bool "debug TUX"
+	default n
+
+endmenu
+

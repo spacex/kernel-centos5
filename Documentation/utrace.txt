@@ -1,0 +1,579 @@
+DRAFT DRAFT DRAFT	WORK IN PROGRESS	DRAFT DRAFT DRAFT
+
+This is work in progress and likely to change.
+
+
+	Roland McGrath <roland@redhat.com>
+
+---
+
+		User Debugging Data & Event Rendezvous
+		---- --------- ---- - ----- ----------
+
+See linux/utrace.h for all the declarations used here.
+See also linux/tracehook.h for the utrace_regset declarations.
+
+The UTRACE is infrastructure code for tracing and controlling user
+threads.  This is the foundation for writing tracing engines, which
+can be loadable kernel modules.  The UTRACE interfaces provide three
+basic facilities:
+
+* Thread event reporting
+
+  Tracing engines can request callbacks for events of interest in
+  the thread: signals, system calls, exit, exec, clone, etc.
+
+* Core thread control
+
+  Tracing engines can prevent a thread from running (keeping it in
+  TASK_TRACED state), or make it single-step or block-step (when
+  hardware supports it).  Engines can cause a thread to abort system
+  calls, they change the behaviors of signals, and they can inject
+  signal-style actions at will.
+
+* Thread machine state access
+
+  Tracing engines can read and write a thread's registers and
+  similar per-thread CPU state.
+
+
+	Tracing engines
+	------- -------
+
+The basic actors in UTRACE are the thread and the tracing engine.
+A tracing engine is some body of code that calls into the utrace_*
+interfaces, represented by a struct utrace_engine_ops.  (Usually it's a
+kernel module, though the legacy ptrace support is a tracing engine
+that is not in a kernel module.)  The UTRACE interface operates on
+individual threads (struct task_struct).  If an engine wants to
+treat several threads as a group, that is up to its higher-level
+code.  Using the UTRACE starts out by attaching an engine to a thread.
+
+	struct utrace_attached_engine *
+	utrace_attach(struct task_struct *target, int flags,
+		      const struct utrace_engine_ops *ops, unsigned long data);
+
+Calling utrace_attach is what sets up a tracing engine to trace a
+thread.  Use UTRACE_ATTACH_CREATE in flags, and pass your engine's ops.
+Check the return value with IS_ERR.  If successful, it returns a
+struct pointer that is the handle used in all other utrace_* calls.
+The data argument is stored in the utrace_attached_engine structure,
+for your code to use however it wants.
+
+	int utrace_detach(struct task_struct *target,
+			  struct utrace_attached_engine *engine);
+
+The utrace_detach call removes an engine from a thread.
+No more callbacks will be made after this returns success.
+
+
+An attached engine does nothing by default.
+An engine makes something happen by setting its flags.
+
+	int utrace_set_flags(struct task_struct *target,
+			     struct utrace_attached_engine *engine,
+			     unsigned long flags);
+
+The synchronization issues related to these two calls
+are discussed further below in "Teardown Races".
+
+
+	Action Flags
+	------ -----
+
+There are two kinds of flags that an attached engine can set: event
+flags, and action flags.  Event flags register interest in particular
+events; when an event happens and an engine has the right event flag
+set, it gets a callback.  Action flags change the normal behavior of
+the thread.  The action flags available are:
+
+	UTRACE_ACTION_QUIESCE
+
+		The thread will stay quiescent (see below).  As long as
+		any engine asserts the QUIESCE action flag, the thread
+		will not resume running in user mode.  (Usually it will
+		be in TASK_TRACED state.)  Nothing will wake the thread
+		up except for SIGKILL (and implicit SIGKILLs such as a
+		core dump in another thread sharing the same address
+		space, or a group exit, fatal signal, or exec in another
+		thread in the same thread group).
+
+	UTRACE_ACTION_SINGLESTEP
+
+		When the thread runs, it will run one instruction and
+		then trap.  (Exiting a system call or entering a signal
+		handler is considered "an instruction" for this.)  This
+		is available on most machines.  This can be used only if
+		ARCH_HAS_SINGLE_STEP is #define'd by <asm/tracehook.h>
+		and evaluates to nonzero.
+
+	UTRACE_ACTION_BLOCKSTEP
+
+		When the thread runs, it will run until the next branch
+		taken, and then trap.  (Exiting a system call or
+		entering a signal handler is considered taking a branch
+		for this.)  When the SINGLESTEP flag is set, BLOCKSTEP
+		has no effect.  This is only available on some machines.
+		This can be used only if ARCH_HAS_BLOCK_STEP is
+		#define'd by <asm/tracehook.h> and evaluates to nonzero.
+
+	UTRACE_ACTION_NOREAP
+
+		When the thread exits or stops for job control, its
+		parent process will not receive a SIGCHLD and the
+		parent's wait calls will not wake up or report the child
+		as dead.  Even a self-reaping thread will remain a
+		zombie.  Note that this cannot prevent the reaping done
+		when an exec is done by another thread in the same
+		thread group; in that event, a REAP event (and callback
+		if requested) will happen regardless of this flag.
+		A well-behaved tracing engine does not want to interfere
+		with the parent's normal notifications.  This is
+		provided mainly for the ptrace compatibility code to
+		implement the traditional behavior.
+
+Event flags are specified using the macro UTRACE_EVENT(TYPE).
+Each event type is associated with a report_* callback in struct
+utrace_engine_ops.  A tracing engine can leave unused callbacks NULL.
+The only callbacks required are those used by the event flags it sets.
+
+Many engines can be attached to each thread.  When a thread has an
+event, each engine gets a report_* callback if it has set the event flag
+for that event type.  Engines are called in the order they attached.
+
+Each callback takes arguments giving the details of the particular
+event.  The first two arguments two every callback are the struct
+utrace_attached_engine and struct task_struct pointers for the engine
+and the thread producing the event.  Usually this will be the current
+thread that is running the callback functions.
+
+The return value of report_* callbacks is a bitmask.  Some bits are
+common to all callbacks, and some are particular to that callback and
+event type.  The value zero (UTRACE_ACTION_RESUME) always means the
+simplest thing: do what would have happened with no tracing engine here.
+These are the flags that can be set in any report_* return value:
+
+	UTRACE_ACTION_NEWSTATE
+
+		Update the action state flags, described above.  Those
+		bits from the return value (UTRACE_ACTION_STATE_MASK)
+		replace those bits in the engine's flags.  This has the
+		same effect as calling utrace_set_flags, but is a more
+		efficient short-cut.  To change the event flags, you must
+		call utrace_set_flags.
+
+	UTRACE_ACTION_DETACH
+
+		Detach this engine.  This has the effect of calling
+		utrace_detach, but is a more efficient short-cut.
+
+	UTRACE_ACTION_HIDE
+
+		Hide this event from other tracing engines.  This is
+		only appropriate to do when the event was induced by
+		some action of this engine, such as a breakpoint trap.
+		Some events cannot be hidden, since every engine has to
+		know about them: exit, death, reap.
+
+The return value bits in UTRACE_ACTION_OP_MASK indicate a change to the
+normal behavior of the event taking place.  If zero, the thread does
+whatever that event normally means.  For report_signal, other values
+control the disposition of the signal.
+
+
+	Quiescence
+	----------
+
+To control another thread and access its state, it must be "quiescent".
+This means that it is stopped and won't start running again while we access
+it.  A quiescent thread is stopped in a place close to user mode, where the
+user state can be accessed safely; either it's about to return to user
+mode, or it's just entered the kernel from user mode, or it has already
+finished exiting (EXIT_ZOMBIE).  Setting the UTRACE_ACTION_QUIESCE action
+flag will force the attached thread to become quiescent soon.  After
+setting the flag, an engine must wait for an event callback when the thread
+becomes quiescent.  The thread may be running on another CPU, or may be in
+an uninterruptible wait.  When it is ready to be examined, it will make
+callbacks to engines that set the UTRACE_EVENT(QUIESCE) event flag.
+
+As long as some engine has UTRACE_ACTION_QUIESCE set, then the thread will
+remain stopped.  SIGKILL will wake it up, but it will not run user code.
+When the flag is cleared via utrace_set_flags or a callback return value,
+the thread starts running again.  (See also "Teardown Races", below.)
+
+During the event callbacks (report_*), the thread in question makes the
+callback from a safe place.  It is not quiescent, but it can safely access
+its own state.  Callbacks can access thread state directly without setting
+the QUIESCE action flag.  If a callback does want to prevent the thread
+from resuming normal execution, it *must* use the QUIESCE action state
+rather than simply blocking; see "Core Events & Callbacks", below.
+
+
+	Thread control
+	------ -------
+
+These calls must be made on a quiescent thread (or the current thread):
+
+	int utrace_inject_signal(struct task_struct *target,
+				 struct utrace_attached_engine *engine,
+				 u32 action, siginfo_t *info,
+				 const struct k_sigaction *ka);
+
+Cause a specified signal delivery in the target thread.  This is not
+like kill, which generates a signal to be dequeued and delivered later.
+Injection directs the thread to deliver a signal now, before it next
+resumes in user mode or dequeues any other pending signal.  It's as if
+the tracing engine intercepted a signal event and its report_signal
+callback returned the action argument as its value (see below).  The
+info and ka arguments serve the same purposes as their counterparts in
+a report_signal callback.
+
+	const struct utrace_regset *
+	utrace_regset(struct task_struct *target,
+		      struct utrace_attached_engine *engine,
+		      const struct utrace_regset_view *view,
+		      int which);
+
+Get access to machine state for the thread.  The struct utrace_regset_view
+indicates a view of machine state, corresponding to a user mode
+architecture personality (such as 32-bit or 64-bit versions of a machine).
+The which argument selects one of the register sets available in that view.
+The utrace_regset call must be made before accessing any machine state,
+each time the thread has been running and has then become quiescent.
+It ensures that the thread's state is ready to be accessed, and returns
+the struct utrace_regset giving its accessor functions.
+
+XXX needs front ends for argument checks, export utrace_native_view
+
+
+	Core Events & Callbacks
+	---- ------ - ---------
+
+Event reporting callbacks have details particular to the event type, but
+are all called in similar environments and have the same constraints.
+Callbacks are made from safe spots, where no locks are held, no special
+resources are pinned, and the user-mode state of the thread is accessible.
+So, callback code has a pretty free hand.  But to be a good citizen,
+callback code should never block for long periods.  It is fine to block in
+kmalloc and the like, but never wait for i/o or for user mode to do
+something.  If you need the thread to wait, set UTRACE_ACTION_QUIESCE and
+return from the callback quickly.  When your i/o finishes or whatever, you
+can use utrace_set_flags to resume the thread.
+
+Well-behaved callbacks are important to maintain two essential properties
+of the interface.  The first of these is that unrelated tracing engines not
+interfere with each other.  If your engine's event callback does not return
+quickly, then another engine won't get the event notification in a timely
+manner.  The second important property is that tracing be as noninvasive as
+possible to the normal operation of the system overall and of the traced
+thread in particular.  That is, attached tracing engines should not perturb
+a thread's behavior, except to the extent that changing its user-visible
+state is explicitly what you want to do.  (Obviously some perturbation is
+unavoidable, primarily timing changes, ranging from small delays due to the
+overhead of tracing, to arbitrary pauses in user code execution when a user
+stops a thread with a debugger for examination.  When doing asynchronous
+utrace_attach to a thread doing a system call, more troublesome side
+effects are possible.)  Even when you explicitly want the pertrubation of
+making the traced thread block, just blocking directly in your callback has
+more unwanted effects.  For example, the CLONE event callbacks are called
+when the new child thread has been created but not yet started running; the
+child can never be scheduled until the CLONE tracing callbacks return.
+(This allows engines tracing the parent to attach to the child.)  If a
+CLONE event callback blocks the parent thread, it also prevents the child
+thread from running (even to process a SIGKILL).  If what you want is to
+make both the parent and child block, then use utrace_attach on the child
+and then set the QUIESCE action state flag on both threads.  A more crucial
+problem with blocking in callbacks is that it can prevent SIGKILL from
+working.  A thread that is blocking due to UTRACE_ACTION_QUIESCE will still
+wake up and die immediately when sent a SIGKILL, as all threads should.
+Relying on the utrace infrastructure rather than on private synchronization
+calls in event callbacks is an important way to help keep tracing robustly
+noninvasive.
+
+
+EVENT(REAP)		Dead thread has been reaped
+Callback:
+	void (*report_reap)(struct utrace_attached_engine *engine,
+			    struct task_struct *tsk);
+
+This means the parent called wait, or else this was a detached thread or
+a process whose parent ignores SIGCHLD.  This cannot happen while the
+UTRACE_ACTION_NOREAP flag is set.  This is the only callback you are
+guaranteed to get (if you set the flag; but see "Teardown Races", below).
+
+Unlike other callbacks, this can be called from the parent's context
+rather than from the traced thread itself--it must not delay the parent by
+blocking.  This callback is different from all others, it returns void.
+Once you get this callback, your engine is automatically detached and you
+cannot access this thread or use this struct utrace_attached_engine handle
+any longer.  This is the place to clean up your data structures and
+synchronize with your code that might try to make utrace_* calls using this
+engine data structure.  The struct is still valid during this callback,
+but will be freed soon after it returns (via RCU).
+
+In all other callbacks, the return value is as described above.
+The common UTRACE_ACTION_* flags in the return value are always observed.
+Unless otherwise specified below, other bits in the return value are ignored.
+
+
+EVENT(QUIESCE)		Thread is quiescent
+Callback:
+	u32 (*report_quiesce)(struct utrace_attached_engine *engine,
+			      struct task_struct *tsk);
+
+This is the least interesting callback.  It happens at any safe spot,
+including after any other event callback.  This lets the tracing engine
+know that it is safe to access the thread's state, or to report to users
+that it has stopped running user code.
+
+EVENT(CLONE)		Thread is creating a child
+Callback:
+	u32 (*report_clone)(struct utrace_attached_engine *engine,
+			    struct task_struct *parent,
+			    unsigned long clone_flags,
+			    struct task_struct *child);
+
+A clone/clone2/fork/vfork system call has succeeded in creating a new
+thread or child process.  The new process is fully formed, but not yet
+running.  During this callback, other tracing engines are prevented from
+using utrace_attach asynchronously on the child, so that engines tracing
+the parent get the first opportunity to attach.  After this callback
+returns, the child will start and the parent's system call will return.
+If CLONE_VFORK is set, the parent will block before returning.
+
+EVENT(VFORK_DONE)	Finished waiting for CLONE_VFORK child
+Callback:
+	u32 (*report_vfork_done)(struct utrace_attached_engine *engine,
+				 struct task_struct *parent, pid_t child_pid);
+
+Event reported for parent using CLONE_VFORK or vfork system call.
+The child has died or exec'd, so the vfork parent has unblocked
+and is about to return child_pid.
+
+UTRACE_EVENT(EXEC)		Completed exec
+Callback:
+	u32 (*report_exec)(struct utrace_attached_engine *engine,
+			   struct task_struct *tsk,
+			   const struct linux_binprm *bprm,
+			   struct pt_regs *regs);
+
+An execve system call has succeeded and the new program is about to
+start running.  The initial user register state is handy to be tweaked
+directly, or utrace_regset can be used for full machine state access.
+
+UTRACE_EVENT(EXIT)		Thread is exiting
+Callback:
+	u32 (*report_exit)(struct utrace_attached_engine *engine,
+			   struct task_struct *tsk,
+			   long orig_code, long *code);
+
+The thread is exiting and cannot be prevented from doing so, but all its
+state is still live.  The *code value will be the wait result seen by
+the parent, and can be changed by this engine or others.  The orig_code
+value is the real status, not changed by any tracing engine.
+
+UTRACE_EVENT(DEATH)		Thread has finished exiting
+Callback:
+	u32 (*report_death)(struct utrace_attached_engine *engine,
+			    struct task_struct *tsk);
+
+The thread is really dead now.  If the UTRACE_ACTION_NOREAP flag remains
+set after this callback, it remains an unreported zombie; If the flag was
+not set already, then it is too late to set it now--its parent has already
+been sent SIGCHLD.  Otherwise, it might be reaped by its parent, or
+self-reap immediately.  Though the actual reaping may happen in parallel, a
+report_reap callback will always be ordered after a report_death callback.
+
+UTRACE_EVENT(SYSCALL_ENTRY)	Thread has entered kernel for a system call
+Callback:
+	u32 (*report_syscall_entry)(struct utrace_attached_engine *engine,
+				    struct task_struct *tsk,
+				    struct pt_regs *regs);
+
+The system call number and arguments can be seen and modified in the
+registers.  The return value register has -ENOSYS, which will be
+returned for an invalid system call.  The macro tracehook_abort_syscall(regs)
+will abort the system call so that we go immediately to syscall exit,
+and return -ENOSYS (or whatever the register state is changed to).  If
+tracing enginges keep the thread quiescent here, the system call will
+not be performed until it resumes.
+
+UTRACE_EVENT(SYSCALL_EXIT)	Thread is leaving kernel after a system call
+Callback:
+	u32 (*report_syscall_exit)(struct utrace_attached_engine *engine,
+				   struct task_struct *tsk,
+				   struct pt_regs *regs);
+
+The return value can be seen and modified in the registers.  If the
+thread is allowed to resume, it will see any pending signals and then
+return to user mode.
+
+UTRACE_EVENT(SIGNAL)		Signal caught by user handler
+UTRACE_EVENT(SIGNAL_IGN)		Signal with no effect (SIG_IGN or default)
+UTRACE_EVENT(SIGNAL_STOP)	Job control stop signal
+UTRACE_EVENT(SIGNAL_TERM)	Fatal termination signal
+UTRACE_EVENT(SIGNAL_CORE)	Fatal core-dump signal
+UTRACE_EVENT_SIGNAL_ALL		All of the above (bitmask)
+Callback:
+	u32 (*report_signal)(struct utrace_attached_engine *engine,
+			     struct task_struct *tsk,
+			     u32 action, siginfo_t *info,
+			     const struct k_sigaction *orig_ka,
+			     struct k_sigaction *return_ka);
+
+There are five types of signal events, but all use the same callback.
+These happen when a thread is dequeuing a signal to be delivered.
+(Not immediately when the signal is sent, and not when the signal is
+blocked.)  No signal event is reported for SIGKILL; no tracing engine
+can prevent it from killing the thread immediately.  The specific
+event types allow an engine to trace signals based on what they do.
+UTRACE_EVENT_SIGNAL_ALL is all of them OR'd together, to trace all
+signals (except SIGKILL).  A subset of these event flags can be used
+e.g. to catch only fatal signals, not handled ones, or to catch only
+core-dump signals, not normal termination signals.
+
+The action argument says what the signal's default disposition is:
+
+	UTRACE_SIGNAL_DELIVER	Run the user handler from sigaction.
+	UTRACE_SIGNAL_IGN	Do nothing, ignore the signal.
+	UTRACE_SIGNAL_TERM	Terminate the process.
+	UTRACE_SIGNAL_CORE	Terminate the process a write a core dump.
+	UTRACE_SIGNAL_STOP	Absolutely stop the process, a la SIGSTOP.
+	UTRACE_SIGNAL_TSTP	Job control stop (no stop if orphaned).
+
+This selection is made from consulting the process's sigaction and the
+default action for the signal number, but may already have been changed by
+an earlier tracing engine (in which case you see its override).  A return
+value of UTRACE_ACTION_RESUME means to carry out this action.  If instead
+UTRACE_SIGNAL_* bits are in the return value, that overrides the normal
+behavior of the signal.
+
+The signal number and other details of the signal are in info, and
+this data can be changed to make the thread see a different signal.
+A return value of UTRACE_SIGNAL_DELIVER says to follow the sigaction in
+return_ka, which can specify a user handler or SIG_IGN to ignore the
+signal or SIG_DFL to follow the default action for info->si_signo.
+The orig_ka parameter shows the process's sigaction at the time the
+signal was dequeued, and return_ka initially contains this.  Tracing
+engines can modify return_ka to change the effects of delivery.
+For other UTRACE_SIGNAL_* return values, return_ka is ignored.
+
+UTRACE_SIGNAL_HOLD is a flag bit that can be OR'd into the return
+value.  It says to push the signal back on the thread's queue, with
+the signal number and details possibly changed in info.  When the
+thread is allowed to resume, it will dequeue and report it again.
+
+
+	Teardown Races
+	-------- -----
+
+Ordinarily synchronization issues for tracing engines are kept fairly
+straightforward by using quiescence (see above): you make a thread
+quiescent and then once it makes the report_quiesce callback it cannot
+do anything else that would result in another callback, until you let
+it.  This simple arrangement avoids complex and error-prone code in
+each one of a tracing engine's event callbacks to keep them serialized
+with the engine's other operations done on that thread from another
+thread of control.  However, giving tracing engines complete power to
+keep a traced thread stuck in place runs afoul of a more important
+kind of simplicity that the kernel overall guarantees: nothing can
+prevent or delay SIGKILL from making a thread die and release its
+resources.  To preserve this important property of SIGKILL, it as a
+special case can break quiescence like nothing else normally can.
+This includes both explicit SIGKILL signals and the implicit SIGKILL
+sent to each other thread in the same thread group by a thread doing
+an exec, or processing a fatal signal, or making an exit_group system
+call.  A tracing engine can prevent a thread from beginning the exit
+or exec or dying by signal (other than SIGKILL) if it is attached to
+that thread, but once the operation begins, no tracing engine can
+prevent or delay all other threads in the same thread group dying.
+
+As described above, the report_reap callback is always the final event
+in the life cycle of a traced thread.  Tracing engines can use this as
+the trigger to clean up their own data structures.  The report_death
+callback is always the penultimate event a tracing engine might see,
+except when the thread was already in the midst of dying when the
+engine attached.  Many tracing engines will have no interest in when a
+parent reaps a dead process, and nothing they want to do with a zombie
+thread once it dies; for them, the report_death callback is the
+natural place to clean up data structures and detach.  To facilitate
+writing such engines robustly, given the asynchrony of SIGKILL, and
+without error-prone manual implementation of synchronization schemes,
+the utrace infrastructure provides some special guarantees about the
+report_death and report_reap callbacks.  It still takes some care to
+be sure your tracing engine is robust to teardown races, but these
+rules make it reasonably straightforward and concise to handle a lot
+of corner cases correctly.
+
+The first sort of guarantee concerns the core data structures
+themselves.  struct utrace_attached_engine is allocated using RCU, as
+is task_struct.  If you call utrace_attach under rcu_read_lock, then
+the pointer it returns will always be valid while in the RCU critical
+section.  (Note that utrace_attach can block doing memory allocation,
+so you must consider the real critical section to start when
+utrace_attach returns.  utrace_attach can never block when not given
+the UTRACE_ATTACH_CREATE flag bit).  Conversely, you can call
+utrace_attach outside of rcu_read_lock and though the pointer can
+become stale asynchronously if the thread dies and is reaped, you can
+safely pass it to a subsequent utrace_set_flags or utrace_detach call
+and will just get an -ESRCH error return.  However, you must be sure
+the task_struct remains valid, either via get_task_struct or via RCU.
+The utrace infrastructure never holds task_struct references of its
+own.  Though neither rcu_read_lock nor any other lock is held while
+making a callback, it's always guaranteed that the task_struct and
+the struct utrace_attached_engine passed as arguments remain valid
+until the callback function returns.
+
+The second guarantee is the serialization of death and reap event
+callbacks for a given thread.  The actual reaping by the parent
+(release_task call) can occur simultaneously while the thread is
+still doing the final steps of dying, including the report_death
+callback.  If a tracing engine has requested both DEATH and REAP
+event reports, it's guaranteed that the report_reap callback will not
+be made until after the report_death callback has returned.  If the
+report_death callback itself detaches from the thread (with
+utrace_detach or with UTRACE_ACTION_DETACH in its return value), then
+the report_reap callback will never be made.  Thus it is safe for a
+report_death callback to clean up data structures and detach.
+
+The final sort of guarantee is that a tracing engine will know for
+sure whether or not the report_death and/or report_reap callbacks
+will be made for a certain thread.  These teardown races are
+disambiguated by the error return values of utrace_set_flags and
+utrace_detach.  Normally utrace_detach returns zero, and this means
+that no more callbacks will be made.  If the thread is in the midst
+of dying, utrace_detach returns -EALREADY to indicate that the
+report_death callback may already be in progress; when you get this
+error, you know that any cleanup your report_death callback does is
+about to happen or has just happened--note that if the report_death
+callback does not detach, the engine remains attached until the
+thread gets reaped.  If the thread is in the midst of being reaped,
+utrace_detach returns -ESRCH to indicate that the report_reap
+callback may already be in progress; this means the engine is
+implicitly detached when the callback completes.  This makes it
+possible for a tracing engine that has decided asynchronously to
+detach from a thread to safely clean up its data structures, knowing
+that no report_death or report_reap callback will try to do the
+same.  utrace_detach returns -ESRCH when the struct
+utrace_attached_engine has already been detached, but is still a
+valid pointer because of rcu_read_lock.  If RCU is used properly, a
+tracing engine can use this to safely synchronize its own
+independent multiple threads of control with each other and with its
+event callbacks that detach.
+
+In the same vein, utrace_set_flags normally returns zero; if the
+target thread was quiescent before the call, then after a successful
+call, no event callbacks not requested in the new flags will be made,
+and a report_quiesce callback will always be made if requested.  It
+fails with -EALREADY if you try to clear UTRACE_EVENT(DEATH) when the
+report_death callback may already have begun, if you try to clear
+UTRACE_EVENT(REAP) when the report_reap callback may already have
+begun, if you try to newly set UTRACE_ACTION_NOREAP when the target
+may already have sent its parent SIGCHLD, or if you try to newly set
+UTRACE_EVENT(DEATH), UTRACE_EVENT(QUIESCE), or UTRACE_ACTION_QUIESCE,
+when the target is already dead or dying.  Like utrace_detach, it
+returns -ESRCH when the thread has already been detached (including
+forcible detach on reaping).  This lets the tracing engine know for
+sure which event callbacks it will or won't see after utrace_set_flags
+has returned.  By checking for errors, it can know whether to clean up
+its data structures immediately or to let its callbacks do the work.
