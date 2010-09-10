@@ -213,18 +213,18 @@ ENTRY(copy_user_generic)
 	.quad .Ls2,.Ls2e
 	.quad .Ls3,.Ls3e
 	.quad .Ls4,.Ls4e
-	.quad .Ld1,.Ls1e
-	.quad .Ld2,.Ls2e
-	.quad .Ld3,.Ls3e
-	.quad .Ld4,.Ls4e
+	.quad .Ld1,.Ld1e
+	.quad .Ld2,.Ld2e
+	.quad .Ld3,.Ld3e
+	.quad .Ld4,.Ld4e
 	.quad .Ls5,.Ls5e
 	.quad .Ls6,.Ls6e
 	.quad .Ls7,.Ls7e
 	.quad .Ls8,.Ls8e
-	.quad .Ld5,.Ls5e
-	.quad .Ld6,.Ls6e
-	.quad .Ld7,.Ls7e
-	.quad .Ld8,.Ls8e
+	.quad .Ld5,.Ld5e
+	.quad .Ld6,.Ld6e
+	.quad .Ld7,.Ld7e
+	.quad .Ld8,.Ld8e
 	.quad .Ls9,.Le_quad
 	.quad .Ld9,.Le_quad
 	.quad .Ls10,.Le_byte
@@ -236,18 +236,44 @@ ENTRY(copy_user_generic)
 	.quad .Le5,.Le_zero
 	.previous
 
+	/* Don't forget to store registers, which were loaded before fault.
+	   Otherwise we will have up to 24 bytes of garbage and possible
+	   security leak */
+.Ls8e:	addl $8,%eax
+	movq %r9,6*8(%rdi)
+.Ls7e:	addl $8,%eax
+	movq %r8,5*8(%rdi)
+.Ls6e:	addl $8,%eax
+	movq %r11,4*8(%rdi)
+.Ls5e:	addl $32,%eax
+	jmp .Ls1e
+
+.Ls4e:	addl $8,%eax
+	movq %r9,2*8(%rdi)
+.Ls3e:	addl $8,%eax
+	movq %r8,1*8(%rdi)
+.Ls2e:	addl $8,%eax
+	movq %r11,(%rdi)
+.Ls1e:	addq %rax,%rdi
+	shlq $6,%rdx
+	addq %rbx,%rdx
+	subq %rax,%rdx
+	andl $63,%ecx
+	addq %rcx,%rdx
+	jmp .Lzero_rest
+
 	/* compute 64-offset for main loop. 8 bytes accuracy with error on the
 	   pessimistic side. this is gross. it would be better to fix the
 	   interface. */
 	/* eax: zero, ebx: 64 */
-.Ls1e: 	addl $8,%eax
-.Ls2e: 	addl $8,%eax
-.Ls3e: 	addl $8,%eax
-.Ls4e: 	addl $8,%eax
-.Ls5e: 	addl $8,%eax
-.Ls6e: 	addl $8,%eax
-.Ls7e: 	addl $8,%eax
-.Ls8e: 	addl $8,%eax
+.Ld1e: 	addl $8,%eax
+.Ld2e: 	addl $8,%eax
+.Ld3e: 	addl $8,%eax
+.Ld4e: 	addl $8,%eax
+.Ld5e: 	addl $8,%eax
+.Ld6e: 	addl $8,%eax
+.Ld7e: 	addl $8,%eax
+.Ld8e: 	addl $8,%eax
 	addq %rbx,%rdi	/* +64 */
 	subq %rax,%rdi  /* correct destination with computed offset */
 
@@ -299,22 +325,32 @@ ENDPROC(copy_user_generic)
    */
 copy_user_generic_c:
 	CFI_STARTPROC
+	xorq %rax,%rax
 	movl %edx,%ecx
 	shrl $3,%ecx
-	andl $7,%edx	
-1:	rep 
+	andl $7,%edx
+.Lc1:	rep 
 	movsq 
 	movl %edx,%ecx
-2:	rep
+.Lc2:	rep
 	movsb
-4:	movl %ecx,%eax
 	ret
-3:	lea (%rdx,%rcx,8),%rax
+
+.Lc1e:	movq %rcx,%rsi
+.Lc3:	rep
+	stosq
+.Lc2e:	movl %edx,%ecx
+.Lc4:	rep
+	stosb
+.Lc3e:	leaq (%rdx,%rsi,8),%rax
 	ret
 	CFI_ENDPROC
 END(copy_user_generic_c)
 
 	.section __ex_table,"a"
-	.quad 1b,3b
-	.quad 2b,4b
+	.align 8
+	.quad .Lc1,.Lc1e
+	.quad .Lc2,.Lc2e
+	.quad .Lc3,.Lc3e
+	.quad .Lc4,.Lc3e
 	.previous

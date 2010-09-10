@@ -182,6 +182,11 @@ asn1_length_decode(struct asn1_ctx *ctx, unsigned int *def, unsigned int *len)
 			}
 		}
 	}
+
+	/* don't trust len bigger than ctx buffer */
+	if (*len > ctx->end - ctx->pointer)
+		return 0;
+
 	return 1;
 }
 
