@@ -64,6 +64,9 @@ dns_resolver_instantiate(struct key *key, const void *data,
 	int rc = 0;
 	char *ip;
 
+	if (test_bit(KEY_FLAG_ADDED, &key->flags))
+		return -EACCES;
+
 	ip = kmalloc(datalen + 1, GFP_KERNEL);
 	if (!ip)
 		return -ENOMEM;

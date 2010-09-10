@@ -95,6 +95,9 @@ struct io_context {
 
 	struct as_io_context *aic;
 	struct rb_root cic_root;
+#ifndef __GENKSYMS__
+	unsigned int ioprio_changed;
+#endif
 };
 
 void put_io_context(struct io_context *ioc);

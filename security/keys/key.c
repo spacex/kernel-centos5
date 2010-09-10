@@ -826,6 +826,9 @@ key_ref_t key_create_or_update(key_ref_t keyring_ref,
 		goto error_3;
 	}
 
+	/* this is an unsolicited add_key() call from userspace */
+	set_bit(KEY_FLAG_ADDED, &key->flags);
+
 	/* instantiate it and link it into the target keyring */
 	ret = __key_instantiate_and_link(key, payload, plen, keyring, NULL);
 	if (ret < 0) {

@@ -1098,10 +1098,8 @@ mptsas_target_reset_queue(MPT_ADAPTER *ioc,
 	id = sas_event_data->TargetID;
 	channel = sas_event_data->Bus;
 
-	if (!(vtarget = mptsas_find_vtarget(ioc, channel, id)))
-		return;
-
-	vtarget->deleted = 1; /* block IO */
+	if ((vtarget = mptsas_find_vtarget(ioc, channel, id)))
+		vtarget->deleted = 1; /* block IO */
 
 	target_reset_list = kzalloc(sizeof(struct mptsas_target_reset_event),
 	    GFP_ATOMIC);
@@ -1207,7 +1205,7 @@ mptsas_taskmgmt_complete(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *mr)
 	 * enable work queue to remove device from upper layers
 	 */
 	list_del(&target_reset_list->list);
-	if ((mptsas_find_vtarget(ioc, channel, id)) && !ioc->fw_events_off)
+	if (!ioc->fw_events_off)
 		mptsas_queue_device_delete(ioc,
 			&target_reset_list->sas_event_data);
 

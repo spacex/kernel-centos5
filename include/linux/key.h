@@ -147,6 +147,7 @@ struct key {
 #define KEY_FLAG_IN_QUOTA	3	/* set if key consumes quota */
 #define KEY_FLAG_USER_CONSTRUCT	4	/* set if key is being constructed in userspace */
 #define KEY_FLAG_NEGATIVE	5	/* set if key is negative */
+#define KEY_FLAG_ADDED		6	/* set if key is being added via userspace add_key */
 
 	/* the description string
 	 * - this is used to match a key against search criteria
