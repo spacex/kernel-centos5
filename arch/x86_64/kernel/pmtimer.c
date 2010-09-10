@@ -64,8 +64,8 @@ int pmtimer_mark_offset(void)
 
 	delta += offset_delay;
 
-	lost = delta / (USEC_PER_SEC / HZ);
-	offset_delay = delta % (USEC_PER_SEC / HZ);
+	lost = delta / (USEC_PER_SEC / REAL_HZ);
+	offset_delay = delta % (USEC_PER_SEC / REAL_HZ);
 
 	rdtscll(tsc);
 	vxtime.last_tsc = tsc - offset_delay * (u64)cpu_khz / 1000;

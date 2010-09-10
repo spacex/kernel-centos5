@@ -957,7 +957,7 @@ static void nv_enable_irq(struct net_device *dev)
 		if (np->msi_flags & NV_MSI_X_ENABLED)
 			enable_irq(np->msi_x_entry[NV_MSI_X_VECTOR_ALL].vector);
 		else
-			enable_irq(dev->irq);
+			enable_irq(np->pci_dev->irq);
 	} else {
 		enable_irq(np->msi_x_entry[NV_MSI_X_VECTOR_RX].vector);
 		enable_irq(np->msi_x_entry[NV_MSI_X_VECTOR_TX].vector);
@@ -973,7 +973,7 @@ static void nv_disable_irq(struct net_device *dev)
 		if (np->msi_flags & NV_MSI_X_ENABLED)
 			disable_irq(np->msi_x_entry[NV_MSI_X_VECTOR_ALL].vector);
 		else
-			disable_irq(dev->irq);
+			disable_irq(np->pci_dev->irq);
 	} else {
 		disable_irq(np->msi_x_entry[NV_MSI_X_VECTOR_RX].vector);
 		disable_irq(np->msi_x_entry[NV_MSI_X_VECTOR_TX].vector);
@@ -1438,7 +1438,7 @@ static void nv_do_rx_refill(unsigned long data)
 		if (np->msi_flags & NV_MSI_X_ENABLED)
 			disable_irq(np->msi_x_entry[NV_MSI_X_VECTOR_ALL].vector);
 		else
-			disable_irq(dev->irq);
+			disable_irq(np->pci_dev->irq);
 	} else {
 		disable_irq(np->msi_x_entry[NV_MSI_X_VECTOR_RX].vector);
 	}
@@ -1456,7 +1456,7 @@ static void nv_do_rx_refill(unsigned long data)
 		if (np->msi_flags & NV_MSI_X_ENABLED)
 			enable_irq(np->msi_x_entry[NV_MSI_X_VECTOR_ALL].vector);
 		else
-			enable_irq(dev->irq);
+			enable_irq(np->pci_dev->irq);
 	} else {
 		enable_irq(np->msi_x_entry[NV_MSI_X_VECTOR_RX].vector);
 	}
@@ -3393,10 +3393,12 @@ static int nv_request_irq(struct net_device *dev, int intr_test)
 	if (ret != 0 && np->msi_flags & NV_MSI_CAPABLE) {
 		if ((ret = pci_enable_msi(np->pci_dev)) == 0) {
 			np->msi_flags |= NV_MSI_ENABLED;
+			dev->irq = np->pci_dev->irq;
 			if (request_irq(np->pci_dev->irq, handler, IRQF_SHARED, dev->name, dev) != 0) {
 				printk(KERN_INFO "forcedeth: request_irq failed %d\n", ret);
 				pci_disable_msi(np->pci_dev);
 				np->msi_flags &= ~NV_MSI_ENABLED;
+				dev->irq = np->pci_dev->irq;
 				goto out_err;
 			}
 
@@ -3459,7 +3461,7 @@ static void nv_do_nic_poll(unsigned long data)
 		if (np->msi_flags & NV_MSI_X_ENABLED)
 			disable_irq_lockdep(np->msi_x_entry[NV_MSI_X_VECTOR_ALL].vector);
 		else
-			disable_irq_lockdep(dev->irq);
+			disable_irq_lockdep(np->pci_dev->irq);
 		mask = np->irqmask;
 	} else {
 		if (np->nic_poll_irq & NVREG_IRQ_RX_ALL) {
@@ -3476,6 +3478,8 @@ static void nv_do_nic_poll(unsigned long data)
 		}
 	}
 	np->nic_poll_irq = 0;
+
+	/* disable_irq() contains synchronize_irq, thus no irq handler can run now */
 
 	if (np->recover_error) {
 		np->recover_error = 0;
@@ -3513,7 +3517,6 @@ static void nv_do_nic_poll(unsigned long data)
 		}
 	}
 
-	/* FIXME: Do we need synchronize_irq(dev->irq) here? */
 
 	writel(mask, base + NvRegIrqMask);
 	pci_push(base);
@@ -3526,7 +3529,7 @@ static void nv_do_nic_poll(unsigned long data)
 		if (np->msi_flags & NV_MSI_X_ENABLED)
 			enable_irq_lockdep(np->msi_x_entry[NV_MSI_X_VECTOR_ALL].vector);
 		else
-			enable_irq_lockdep(dev->irq);
+			enable_irq_lockdep(np->pci_dev->irq);
 	} else {
 		if (np->nic_poll_irq & NVREG_IRQ_RX_ALL) {
 			nv_nic_irq_rx(0, dev, NULL);
@@ -4764,7 +4767,7 @@ static int nv_close(struct net_device *dev)
 	np->in_shutdown = 1;
 	spin_unlock_irq(&np->lock);
 	netif_poll_disable(dev);
-	synchronize_irq(dev->irq);
+	synchronize_irq(np->pci_dev->irq);
 
 	del_timer_sync(&np->oom_kick);
 	del_timer_sync(&np->nic_poll);
@@ -5413,7 +5416,8 @@ MODULE_DESCRIPTION("Reverse Engineered nForce ethernet driver"
 "fcc5f2665c81e087fb95143325ed769a41128d50 forcedeth: fix nic poll\n"
 "6fedae1f6e66ab5f169bf58064e23e015fc1307d forcedeth: fix checksum feature in mcp65\n"
 "caf96469e8ab57170cc8ca9c59809132d38e529e forcedeth: disable msix\n"
-"e0379a14fc80cb98978fa86989dab77b522a8106 forcedeth: fixed missing call in napi poll"
+"e0379a14fc80cb98978fa86989dab77b522a8106 forcedeth: fixed missing call in napi poll\n"
+"a7475906bc496456ded9e4b062f94067fb93057a forcedeth: msi bugfix"
 );
 MODULE_LICENSE("GPL");
 

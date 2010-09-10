@@ -54,7 +54,7 @@
 
 #define DRV_MODULE_NAME		"bnx2"
 #define PFX DRV_MODULE_NAME	": "
-#define DRV_MODULE_VERSION	"1.5.11"
+#define DRV_MODULE_VERSION	"1.5.11-rh"
 #define DRV_MODULE_RELDATE	"June 4, 2007"
 
 #define RUN_AT(x) (jiffies + (x))
@@ -66,7 +66,11 @@ static const char version[] __devinitdata =
 	"Broadcom NetXtreme II Gigabit Ethernet Driver " DRV_MODULE_NAME " v" DRV_MODULE_VERSION " (" DRV_MODULE_RELDATE ")\n";
 
 MODULE_AUTHOR("Michael Chan <mchan@broadcom.com>");
-MODULE_DESCRIPTION("Broadcom NetXtreme II BCM5706/5708 Driver");
+MODULE_DESCRIPTION("Broadcom NetXtreme II BCM5706/5708 Driver"
+"\nRHEL driver based on upstream driver version " DRV_MODULE_VERSION "\n"
+"Also includes additional upstream commits:\n"
+"cd46171c7297739dc7e46d885862e98023eab9c7	Add PHY workaround for 5709 A1\n"
+);
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_MODULE_VERSION);
 
@@ -6343,7 +6347,8 @@ bnx2_init_board(struct pci_dev *pdev, struct net_device *dev)
 	} else if (CHIP_NUM(bp) == CHIP_NUM_5706 ||
 		   CHIP_NUM(bp) == CHIP_NUM_5708)
 		bp->phy_flags |= PHY_CRC_FIX_FLAG;
-	else if (CHIP_ID(bp) == CHIP_ID_5709_A0)
+	else if (CHIP_ID(bp) == CHIP_ID_5709_A0 ||
+		 CHIP_ID(bp) == CHIP_ID_5709_A1)
 		bp->phy_flags |= PHY_DIS_EARLY_DAC_FLAG;
 
 	if ((CHIP_ID(bp) == CHIP_ID_5708_A0) ||

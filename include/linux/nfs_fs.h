@@ -79,10 +79,14 @@ struct nfs_access_entry {
 };
 
 struct nfs4_state;
+
+struct path {
+	struct vfsmount *mnt;
+	struct dentry *dentry;
+};
 struct nfs_open_context {
 	atomic_t count;
-	struct vfsmount *vfsmnt;
-	struct dentry *dentry;
+	struct path path;
 	struct rpc_cred *cred;
 	struct nfs4_state *state;
 	fl_owner_t lockowner;

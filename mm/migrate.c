@@ -172,6 +172,7 @@ static void remove_migration_pte(struct vm_area_struct *vma,
 	pte = pte_mkold(mk_pte(new, vma->vm_page_prot));
 	if (is_write_migration_entry(entry))
 		pte = pte_mkwrite(pte);
+	lazy_mmu_prot_update(pte);
 	set_pte_at(mm, addr, ptep, pte);
 
 	if (PageAnon(new))
@@ -181,7 +182,6 @@ static void remove_migration_pte(struct vm_area_struct *vma,
 
 	/* No need to invalidate - it was non-present before */
 	update_mmu_cache(vma, addr, pte);
-	lazy_mmu_prot_update(pte);
 
 out:
 	pte_unmap_unlock(ptep, ptl);

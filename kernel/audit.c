@@ -68,6 +68,7 @@ static int	audit_initialized;
  * 1 - auditing enabled
  * 2 - auditing enabled and configuration is locked/unchangeable. */
 int		audit_enabled;
+int		audit_ever_enabled;
 
 /* Default state when kernel boots without any parameters. */
 static int	audit_default;
@@ -252,8 +253,6 @@ static int audit_set_rate_limit(int limit, uid_t loginuid, u32 sid)
 		struct audit_buffer *ab;
 
 		ab = audit_log_start(NULL, GFP_KERNEL, AUDIT_CONFIG_CHANGE);
-		if (!ab)
-			return -ENOMEM;
 		audit_log_format(ab, "audit_rate_limit=%d old=%d by auid=%u",
 				limit, old, loginuid);
 		if (sid) {
@@ -292,8 +291,6 @@ static int audit_set_backlog_limit(int limit, uid_t loginuid, u32 sid)
 		struct audit_buffer *ab;
 
 		ab = audit_log_start(NULL, GFP_KERNEL, AUDIT_CONFIG_CHANGE);
-		if (!ab)
-			return -ENOMEM;
 		audit_log_format(ab, "audit_backlog_limit=%d old=%d by auid=%u",
 				limit, old, loginuid);
 		if (sid) {
@@ -335,8 +332,6 @@ static int audit_set_enabled(int state, uid_t loginuid, u32 sid)
 		struct audit_buffer *ab;
 
 		ab = audit_log_start(NULL, GFP_KERNEL, AUDIT_CONFIG_CHANGE);
-		if (!ab)
-			return -ENOMEM;
 		audit_log_format(ab, "audit_enabled=%d old=%d by auid=%u",
 				state, old, loginuid);
 		if (sid) {
@@ -353,8 +348,10 @@ static int audit_set_enabled(int state, uid_t loginuid, u32 sid)
 	}
 
 	/* If we are allowed, make the change */
-	if (res == 1)
+	if (res == 1) {
 		audit_enabled = state;
+		audit_ever_enabled |= !!state;
+	}
 	/* Not allowed, update reason */
 	else if (rc == 0)
 		rc = -EPERM;
@@ -380,8 +377,6 @@ static int audit_set_failure(int state, uid_t loginuid, u32 sid)
 		struct audit_buffer *ab;
 
 		ab = audit_log_start(NULL, GFP_KERNEL, AUDIT_CONFIG_CHANGE);
-		if (!ab)
-			return -ENOMEM;
 		audit_log_format(ab, "audit_failure=%d old=%d by auid=%u",
 				state, old, loginuid);
 		if (sid) {
@@ -795,8 +790,6 @@ static int audit_receive_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 		err = audit_tag_tree(old, new);
 
 		ab = audit_log_start(NULL, GFP_KERNEL, AUDIT_CONFIG_CHANGE);
-		if (!ab)
-			break;
 		audit_log_format(ab, "auid=%u", loginuid);
 		if (sid) {
 			u32 len;
@@ -908,6 +901,7 @@ static int __init audit_init(void)
 	skb_queue_head_init(&audit_skb_queue);
 	audit_initialized = 1;
 	audit_enabled = audit_default;
+	audit_ever_enabled |= !!audit_default;
 
 	/* Register the callback with selinux.  This callback will be invoked
 	 * when a new policy is loaded. */
@@ -935,8 +929,10 @@ static int __init audit_enable(char *str)
 	printk(KERN_INFO "audit: %s%s\n",
 	       audit_default ? "enabled" : "disabled",
 	       audit_initialized ? "" : " (after initialization)");
-	if (audit_initialized)
+	if (audit_initialized) {
 		audit_enabled = audit_default;
+		audit_ever_enabled |= !!audit_default;
+	}
 	return 1;
 }
 

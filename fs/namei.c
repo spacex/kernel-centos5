@@ -788,8 +788,10 @@ need_lookup:
 	goto done;
 
 need_revalidate:
-	if (atomic)
+	if (atomic) {
+		dput(dentry);
 		return -EWOULDBLOCKIO;
+	}
 	dentry = do_revalidate(dentry, nd);
 	if (!dentry)
 		goto need_lookup;

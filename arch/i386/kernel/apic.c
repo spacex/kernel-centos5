@@ -1027,7 +1027,7 @@ static int __init calibrate_APIC_clock(void)
 	long tt1, tt2;
 	long result;
 	int i;
-	const int LOOPS = HZ/10;
+	const int LOOPS = REAL_HZ/10;
 
 	apic_printk(APIC_VERBOSE, "calibrating APIC timer ...\n");
 
@@ -1076,13 +1076,13 @@ static int __init calibrate_APIC_clock(void)
 	if (cpu_has_tsc)
 		apic_printk(APIC_VERBOSE, "..... CPU clock speed is "
 			"%ld.%04ld MHz.\n",
-			((long)(t2-t1)/LOOPS)/(1000000/HZ),
-			((long)(t2-t1)/LOOPS)%(1000000/HZ));
+			((long)(t2-t1)/LOOPS)/(1000000/REAL_HZ),
+			((long)(t2-t1)/LOOPS)%(1000000/REAL_HZ));
 
 	apic_printk(APIC_VERBOSE, "..... host bus clock speed is "
 		"%ld.%04ld MHz.\n",
-		result/(1000000/HZ),
-		result%(1000000/HZ));
+		result/(1000000/REAL_HZ),
+		result%(1000000/REAL_HZ));
 
 	return result;
 }

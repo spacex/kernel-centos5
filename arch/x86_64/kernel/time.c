@@ -65,6 +65,8 @@ static int notsc __initdata = 0;
 #define NSEC_PER_TICK (NSEC_PER_SEC / HZ)
 #define FSEC_PER_TICK (FSEC_PER_SEC / HZ)
 
+#define USEC_PER_REAL_TICK (USEC_PER_SEC / REAL_HZ)
+
 #define NS_SCALE	10 /* 2^10, carefully chosen */
 #define US_SCALE	32 /* 2^32, arbitralrily chosen */
 
@@ -304,7 +306,7 @@ unsigned long long monotonic_clock(void)
 			this_offset = hpet_readl(HPET_COUNTER);
 		} while (read_seqretry(&xtime_lock, seq));
 		offset = (this_offset - last_offset);
-		offset *= NSEC_PER_TICK / hpet_tick;
+		offset *= NSEC_PER_TICK / hpet_tick_real;
 	} else {
 		do {
 			seq = read_seqbegin(&xtime_lock);
@@ -406,7 +408,7 @@ void main_timer_handler(struct pt_regs *regs)
 		}
 
 		monotonic_base += 
-			(offset - vxtime.last) * NSEC_PER_TICK / hpet_tick;
+			(offset - vxtime.last) * NSEC_PER_TICK / hpet_tick_real;
 
 		vxtime.last = offset;
 #ifdef CONFIG_X86_PM_TIMER
@@ -415,14 +417,14 @@ void main_timer_handler(struct pt_regs *regs)
 #endif
 	} else {
 		offset = (((tsc - vxtime.last_tsc) *
-			   vxtime.tsc_quot) >> US_SCALE) - USEC_PER_TICK;
+			   vxtime.tsc_quot) >> US_SCALE) - USEC_PER_REAL_TICK;
 
 		if (offset < 0)
 			offset = 0;
 
-		if (offset > USEC_PER_TICK) {
-			lost = offset / USEC_PER_TICK;
-			offset %= USEC_PER_TICK;
+		if (offset > USEC_PER_REAL_TICK) {
+			lost = offset / USEC_PER_REAL_TICK;
+			offset %= USEC_PER_REAL_TICK;
 		}
 
 		/* FIXME: 1000 or 1000000? */

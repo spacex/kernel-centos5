@@ -553,8 +553,10 @@ static int ibmvscsi_send_srp_event(struct srp_event_struct *evt_struct,
 		 */
 		if (request_status < -1)
 			goto send_error;
-		/* Otherwise, if we have run out of requests */
-		else if (request_status < 0)
+		/* Otherwise, if we have run out of requests return host_busy */
+		/* Unless we have a login request, allow that to be sent. */
+		else if (request_status < 0 &&
+		         evt_struct->iu.srp.login_req.opcode != SRP_LOGIN_REQ)
 			goto send_busy;
 	}
 
@@ -571,6 +573,17 @@ static int ibmvscsi_send_srp_event(struct srp_event_struct *evt_struct,
 	if ((rc =
 	     ibmvscsi_send_crq(hostdata, crq_as_u64[0], crq_as_u64[1])) != 0) {
 		list_del(&evt_struct->list);
+
+		/* If send_crq returns H_CLOSED, return SCSI_MLQUEUE_HOST_BUSY.
+		 * Firmware will send a CRQ with a transport event (0xFF) to
+		 * tell this client what has happened to the transport.  This
+		 * will be handled in ibmvscsi_handle_crq()
+		 */
+		if (rc == H_CLOSED) {
+			printk(KERN_WARNING "ibmvscsi: send warning. "
+			       "Receive queue closed, will retry.\n");
+			goto send_busy;
+		}
 
 		printk(KERN_ERR "ibmvscsi: send error %d\n",
 		       rc);
@@ -887,10 +900,11 @@ static int send_srp_login(struct ibmvscsi_host_data *hostdata)
 	login->req_buf_fmt = SRP_BUF_FORMAT_DIRECT | SRP_BUF_FORMAT_INDIRECT;
 	
 	spin_lock_irqsave(hostdata->host->host_lock, flags);
-	/* Start out with a request limit of 1, since this is negotiated in
-	 * the login request we are just sending
+	/* Start out with a request limit of 0, since this is negotiated in
+	 * the login request we are just sending and a login request always
+	 * gets sent by the driver regardless of request_limit.
 	 */
-	atomic_set(&hostdata->request_limit, 1);
+	atomic_set(&hostdata->request_limit, 0);
 
 	rc = ibmvscsi_send_srp_event(evt_struct, hostdata);
 	spin_unlock_irqrestore(hostdata->host->host_lock, flags);
@@ -928,56 +942,70 @@ static int ibmvscsi_eh_abort_handler(struct scsi_cmnd *cmd)
 	int rsp_rc;
 	unsigned long flags;
 	u16 lun = lun_from_dev(cmd->device);
+	unsigned long wait_switch = 0;
 
 	/* First, find this command in our sent list so we can figure
 	 * out the correct tag
 	 */
 	spin_lock_irqsave(hostdata->host->host_lock, flags);
-	found_evt = NULL;
-	list_for_each_entry(tmp_evt, &hostdata->sent, list) {
-		if (tmp_evt->cmnd == cmd) {
-			found_evt = tmp_evt;
-			break;
+	wait_switch = jiffies + (init_timeout * HZ);
+	do {
+		found_evt = NULL;
+		list_for_each_entry(tmp_evt, &hostdata->sent, list) {
+			if (tmp_evt->cmnd == cmd) {
+				found_evt = tmp_evt;
+				break;
+			}
 		}
-	}
 
-	if (!found_evt) {
-		spin_unlock_irqrestore(hostdata->host->host_lock, flags);
-		return FAILED;
-	}
+		if (!found_evt) {
+			spin_unlock_irqrestore(hostdata->host->host_lock, flags);
+			return FAILED;
+		}
 
-	evt = get_event_struct(&hostdata->pool);
-	if (evt == NULL) {
-		spin_unlock_irqrestore(hostdata->host->host_lock, flags);
-		printk(KERN_ERR "ibmvscsi: failed to allocate abort event\n");
-		return FAILED;
-	}
+		evt = get_event_struct(&hostdata->pool);
+		if (evt == NULL) {
+			spin_unlock_irqrestore(hostdata->host->host_lock, flags);
+			printk(KERN_ERR "ibmvscsi: failed to allocate abort event\n");
+			return FAILED;
+		}
 	
-	init_event_struct(evt,
-			  sync_completion,
-			  VIOSRP_SRP_FORMAT,
-			  init_timeout * HZ);
+		init_event_struct(evt,
+				  sync_completion,
+				  VIOSRP_SRP_FORMAT,
+				  init_timeout * HZ);
 
-	tsk_mgmt = &evt->iu.srp.tsk_mgmt;
+		tsk_mgmt = &evt->iu.srp.tsk_mgmt;
 	
-	/* Set up an abort SRP command */
-	memset(tsk_mgmt, 0x00, sizeof(*tsk_mgmt));
-	tsk_mgmt->opcode = SRP_TSK_MGMT;
-	tsk_mgmt->lun = ((u64) lun) << 48;
-	tsk_mgmt->tsk_mgmt_func = SRP_TSK_ABORT_TASK;
-	tsk_mgmt->task_tag = (u64) found_evt;
+		/* Set up an abort SRP command */
+		memset(tsk_mgmt, 0x00, sizeof(*tsk_mgmt));
+		tsk_mgmt->opcode = SRP_TSK_MGMT;
+		tsk_mgmt->lun = ((u64) lun) << 48;
+		tsk_mgmt->tsk_mgmt_func = SRP_TSK_ABORT_TASK;
+		tsk_mgmt->task_tag = (u64) found_evt;
 
-	printk(KERN_INFO "ibmvscsi: aborting command. lun 0x%lx, tag 0x%lx\n",
-	       tsk_mgmt->lun, tsk_mgmt->task_tag);
+		evt->sync_srp = &srp_rsp;
 
-	evt->sync_srp = &srp_rsp;
-	init_completion(&evt->comp);
-	rsp_rc = ibmvscsi_send_srp_event(evt, hostdata);
+		init_completion(&evt->comp);
+		rsp_rc = ibmvscsi_send_srp_event(evt, hostdata);
+
+		if (rsp_rc != SCSI_MLQUEUE_HOST_BUSY)
+			break;
+
+		spin_unlock_irqrestore(hostdata->host->host_lock, flags);
+		msleep(10);
+		spin_lock_irqsave(hostdata->host->host_lock, flags);
+	} while (time_before(jiffies, wait_switch));
+
 	spin_unlock_irqrestore(hostdata->host->host_lock, flags);
+
 	if (rsp_rc != 0) {
 		printk(KERN_ERR "ibmvscsi: failed to send abort() event\n");
 		return FAILED;
 	}
+
+	printk(KERN_INFO "ibmvscsi: aborting command. lun 0x%lx, tag 0x%lx\n",
+	       (((u64) lun) << 48), (u64) found_evt);
 
 	wait_for_completion(&evt->comp);
 
@@ -1056,39 +1084,53 @@ static int ibmvscsi_eh_device_reset_handler(struct scsi_cmnd *cmd)
 	int rsp_rc;
 	unsigned long flags;
 	u16 lun = lun_from_dev(cmd->device);
+	unsigned long wait_switch = 0;
 
 	spin_lock_irqsave(hostdata->host->host_lock, flags);
-	evt = get_event_struct(&hostdata->pool);
-	if (evt == NULL) {
-		spin_unlock_irqrestore(hostdata->host->host_lock, flags);
-		printk(KERN_ERR "ibmvscsi: failed to allocate reset event\n");
-		return FAILED;
-	}
+	wait_switch = jiffies + (init_timeout * HZ);
+	do {
+		evt = get_event_struct(&hostdata->pool);
+		if (evt == NULL) {
+			spin_unlock_irqrestore(hostdata->host->host_lock, flags);
+			printk(KERN_ERR "ibmvscsi: failed to allocate reset event\n");
+			return FAILED;
+		}
 	
-	init_event_struct(evt,
-			  sync_completion,
-			  VIOSRP_SRP_FORMAT,
-			  init_timeout * HZ);
+		init_event_struct(evt,
+				  sync_completion,
+				  VIOSRP_SRP_FORMAT,
+				  init_timeout * HZ);
 
-	tsk_mgmt = &evt->iu.srp.tsk_mgmt;
+		tsk_mgmt = &evt->iu.srp.tsk_mgmt;
 
-	/* Set up a lun reset SRP command */
-	memset(tsk_mgmt, 0x00, sizeof(*tsk_mgmt));
-	tsk_mgmt->opcode = SRP_TSK_MGMT;
-	tsk_mgmt->lun = ((u64) lun) << 48;
-	tsk_mgmt->tsk_mgmt_func = SRP_TSK_LUN_RESET;
+		/* Set up a lun reset SRP command */
+		memset(tsk_mgmt, 0x00, sizeof(*tsk_mgmt));
+		tsk_mgmt->opcode = SRP_TSK_MGMT;
+		tsk_mgmt->lun = ((u64) lun) << 48;
+		tsk_mgmt->tsk_mgmt_func = SRP_TSK_LUN_RESET;
 
-	printk(KERN_INFO "ibmvscsi: resetting device. lun 0x%lx\n",
-	       tsk_mgmt->lun);
+		evt->sync_srp = &srp_rsp;
 
-	evt->sync_srp = &srp_rsp;
-	init_completion(&evt->comp);
-	rsp_rc = ibmvscsi_send_srp_event(evt, hostdata);
+		init_completion(&evt->comp);
+		rsp_rc = ibmvscsi_send_srp_event(evt, hostdata);
+
+		if (rsp_rc != SCSI_MLQUEUE_HOST_BUSY)
+			break;
+
+		spin_unlock_irqrestore(hostdata->host->host_lock, flags);
+		msleep(10);
+		spin_lock_irqsave(hostdata->host->host_lock, flags);
+	} while (time_before(jiffies, wait_switch));
+
 	spin_unlock_irqrestore(hostdata->host->host_lock, flags);
+
 	if (rsp_rc != 0) {
 		printk(KERN_ERR "ibmvscsi: failed to send reset event\n");
 		return FAILED;
 	}
+
+	printk(KERN_INFO "ibmvscsi: resetting device. lun 0x%lx\n",
+	       (((u64) lun) << 48));
 
 	wait_for_completion(&evt->comp);
 
@@ -1339,6 +1381,27 @@ static int ibmvscsi_do_host_config(struct ibmvscsi_host_data *hostdata,
 	return rc;
 }
 
+/**
+ * ibmvscsi_slave_configure: Set the "allow_restart" flag for each disk.
+ * @sdev:	struct scsi_device device to configure
+ *
+ * Enable allow_restart for a device if it is a disk.  Adjust the
+ * queue_depth here also as is required by the documentation for
+ * struct scsi_host_template.
+ */
+static int ibmvscsi_slave_configure(struct scsi_device *sdev)
+{
+	struct Scsi_Host *shost = sdev->host;
+	unsigned long lock_flags = 0;
+
+	spin_lock_irqsave(shost->host_lock, lock_flags);
+	if(sdev->type == TYPE_DISK)
+		sdev->allow_restart = 1;
+	scsi_adjust_queue_depth(sdev, 0, shost->cmd_per_lun);
+	spin_unlock_irqrestore(shost->host_lock, lock_flags);
+	return 0;
+}
+
 /* ------------------------------------------------------------
  * sysfs attributes
  */
@@ -1484,6 +1547,7 @@ static struct scsi_host_template driver_template = {
 	.queuecommand = ibmvscsi_queuecommand,
 	.eh_abort_handler = ibmvscsi_eh_abort_handler,
 	.eh_device_reset_handler = ibmvscsi_eh_device_reset_handler,
+	.slave_configure = ibmvscsi_slave_configure,
 	.cmd_per_lun = 16,
 	.can_queue = 1,		/* Updated after SRP_LOGIN */
 	.this_id = -1,

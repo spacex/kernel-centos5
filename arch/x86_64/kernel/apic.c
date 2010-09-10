@@ -811,7 +811,7 @@ static int __init calibrate_APIC_clock(void)
 	printk(KERN_INFO "Detected %d.%03d MHz APIC timer.\n",
 		result / 1000 / 1000, result / 1000 % 1000);
 
-	return result * APIC_DIVISOR / HZ;
+	return result * APIC_DIVISOR / REAL_HZ;
 }
 
 static unsigned int calibration_result;
@@ -941,10 +941,13 @@ void setup_APIC_extened_lvt(unsigned char lvt_off, unsigned char vector,
 
 void smp_local_timer_interrupt(struct pt_regs *regs)
 {
-	profile_tick(CPU_PROFILING, regs);
+	int i;
+	for (i = 0; i < tick_divider; i++) {
+		profile_tick(CPU_PROFILING, regs);
 #ifdef CONFIG_SMP
-	update_process_times(user_mode(regs));
+		update_process_times(user_mode(regs));
 #endif
+	}
 	if (apic_runs_main_timer > 1 && smp_processor_id() == boot_cpu_id)
 		main_timer_handler(regs);
 	/*

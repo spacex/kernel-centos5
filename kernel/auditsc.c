@@ -70,6 +70,7 @@
 #include "audit.h"
 
 extern struct list_head audit_filter_list[];
+extern int audit_ever_enabled;
 
 /* No syscall auditing will take place unless audit_enabled != 0. */
 extern int audit_enabled;
@@ -810,7 +811,7 @@ int audit_alloc(struct task_struct *tsk)
 	struct audit_context *context;
 	enum audit_state     state;
 
-	if (likely(!audit_enabled))
+	if (likely(!audit_ever_enabled))
 		return 0; /* Return if not auditing. */
 
 	state = audit_filter_task(tsk);
@@ -926,8 +927,9 @@ static int audit_log_pid_context(struct audit_context *context, pid_t pid,
 	int rc = 0;
 
 	ab = audit_log_start(context, GFP_KERNEL, AUDIT_OBJ_PID);
+	/* audit_panic called if needed, don't make caller panic as well */
 	if (!ab)
-		return 1;
+		return 0;
 
 	if (selinux_ctxid_to_string(sid, &s, &len)) {
 		audit_log_format(ab, "opid=%d obj=(none)", pid);

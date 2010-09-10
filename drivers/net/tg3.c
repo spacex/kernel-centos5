@@ -63,7 +63,7 @@
 
 #define DRV_MODULE_NAME		"tg3"
 #define PFX DRV_MODULE_NAME	": "
-#define DRV_MODULE_VERSION	"3.80"
+#define DRV_MODULE_VERSION	"3.80-rh"
 #define DRV_MODULE_RELDATE	"August 2, 2007"
 
 #define TG3_DEF_MAC_MODE	0
@@ -135,7 +135,11 @@ static char version[] __devinitdata =
 	DRV_MODULE_NAME ".c:v" DRV_MODULE_VERSION " (" DRV_MODULE_RELDATE ")\n";
 
 MODULE_AUTHOR("David S. Miller (davem@redhat.com) and Jeff Garzik (jgarzik@pobox.com)");
-MODULE_DESCRIPTION("Broadcom Tigon3 ethernet driver");
+MODULE_DESCRIPTION("Broadcom Tigon3 ethernet driver\n"
+"\nRHEL driver based on upstream driver version " DRV_MODULE_VERSION "\n"
+"Also includes additional upstream commits:\n"
+"114342f2d38439cb1a54f1f724fa38729b093c48	fix performance regression on 5705"
+);
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_MODULE_VERSION);
 
@@ -4934,6 +4938,12 @@ static void tg3_restore_pci_state(struct tg3 *tp)
 
 	pci_write_config_dword(tp->pdev, TG3PCI_COMMAND, tp->pci_cmd);
 
+	if (!(tp->tg3_flags2 & TG3_FLG2_PCI_EXPRESS)) {
+		pci_write_config_byte(tp->pdev, PCI_CACHE_LINE_SIZE,
+				      tp->pci_cacheline_sz);
+		pci_write_config_byte(tp->pdev, PCI_LATENCY_TIMER,
+				      tp->pci_lat_timer);
+	}
 	/* Make sure PCI-X relaxed ordering bit is clear. */
 	pci_read_config_dword(tp->pdev, TG3PCI_X_CAPS, &val);
 	val &= ~PCIX_CAPS_RELAXED_ORDERING;
