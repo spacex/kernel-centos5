@@ -719,7 +719,7 @@ static int htb_enqueue(struct sk_buff *skb, struct Qdisc *sch)
     } else if (cl->un.leaf.q->enqueue(skb, cl->un.leaf.q) != NET_XMIT_SUCCESS) {
 	sch->qstats.drops++;
 	cl->qstats.drops++;
-	return NET_XMIT_DROP;
+	return ret;
     } else {
 	cl->bstats.packets++; cl->bstats.bytes += skb->len;
 	htb_activate (q,cl);
@@ -753,7 +753,7 @@ static int htb_requeue(struct sk_buff *skb, struct Qdisc *sch)
     } else if (cl->un.leaf.q->ops->requeue(skb, cl->un.leaf.q) != NET_XMIT_SUCCESS) {
 	sch->qstats.drops++;
 	cl->qstats.drops++;
-	return NET_XMIT_DROP;
+	return ret;
     } else 
 	    htb_activate (q,cl);
 

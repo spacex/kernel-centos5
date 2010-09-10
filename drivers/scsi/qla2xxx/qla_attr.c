@@ -1889,8 +1889,8 @@ static CLASS_DEVICE_ATTR(total_isp_aborts, S_IRUGO,
     qla2x00_total_isp_aborts_show, NULL);
 static CLASS_DEVICE_ATTR(84xx_fw_version, S_IRUGO,
     qla24xx_84xx_fw_version_show, NULL);
-static CLASS_DEVICE_ATTR(vport_create, S_IWUGO, NULL, qla24xx_vport_create_cdev);
-static CLASS_DEVICE_ATTR(vport_delete, S_IWUGO, NULL, qla24xx_vport_delete);
+static CLASS_DEVICE_ATTR(vport_create, S_IWUSR, NULL, qla24xx_vport_create_cdev);
+static CLASS_DEVICE_ATTR(vport_delete, S_IWUSR, NULL, qla24xx_vport_delete);
 static CLASS_DEVICE_ATTR(max_npiv_vports, S_IRUGO,
 	qla24xx_max_npiv_vports_show, NULL);
 static CLASS_DEVICE_ATTR(npiv_vports_inuse, S_IRUGO,
@@ -1899,10 +1899,10 @@ static CLASS_DEVICE_ATTR(node_name, S_IRUGO, qla24xx_node_name,
 	NULL);
 static CLASS_DEVICE_ATTR(port_name, S_IRUGO, qla24xx_port_name,
 	NULL);
-static CLASS_DEVICE_ATTR(vport_id, S_IRUGO|S_IWUGO, qla24xx_vport_id_show,
+static CLASS_DEVICE_ATTR(vport_id, S_IRUGO|S_IWUSR, qla24xx_vport_id_show,
 	qla24xx_vport_id_store);
-static CLASS_DEVICE_ATTR(vport_disable, S_IWUGO, NULL, qla24xx_vport_disable);
-static CLASS_DEVICE_ATTR(symbolic_port_name, S_IRUGO|S_IWUGO,
+static CLASS_DEVICE_ATTR(vport_disable, S_IWUSR, NULL, qla24xx_vport_disable);
+static CLASS_DEVICE_ATTR(symbolic_port_name, S_IRUGO|S_IWUSR,
 	qla24xx_symbolic_port_name_show, qla24xx_symbolic_port_name_store);
 static CLASS_DEVICE_ATTR(vport_state, S_IRUGO, qla24xx_vport_state_show,
 	NULL);

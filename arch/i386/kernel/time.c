@@ -63,6 +63,7 @@
 #include <linux/timex.h>
 
 #include <asm/hpet.h>
+#include <linux/hpet.h>
 
 #include <asm/arch_hooks.h>
 

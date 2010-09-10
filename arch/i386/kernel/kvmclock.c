@@ -76,6 +76,26 @@ cycle_t kvm_clock_read(void)
 	return ret;
 }
 
+/*
+ * If we don't do that, there is the possibility that the guest
+ * will calibrate under heavy load - thus, getting a lower lpj -
+ * and execute the delays themselves without load. This is wrong,
+ * because no delay loop can finish beforehand.
+ * Any heuristics is subject to fail, because ultimately, a large
+ * poll of guests can be running and trouble each other. So we preset
+ * lpj here
+ */
+unsigned long kvm_get_tsc_khz(void)
+{
+	if (use_kvm_time > 0) {
+		struct pvclock_vcpu_time_info *src;
+		src = &per_cpu(hv_clock, 0);
+		return pvclock_tsc_khz(src);
+	} else
+		return 0; /* indicates we should not use this value */
+}
+
+
 #ifdef CONFIG_X86_32
 static struct clocksource kvm_clock = {
 	.name = "kvm-clock",

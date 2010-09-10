@@ -68,6 +68,7 @@
 #include <asm/dmi.h>
 #include <asm/generic-hypervisor.h>
 #include <asm/pci-direct.h>
+#include <asm/k8.h>
 
 /*
  * Machine setup..
@@ -123,6 +124,7 @@ EXPORT_SYMBOL_GPL(edid_info);
 struct e820map e820;
 
 extern int root_mountflags;
+extern int avoid_smi;
 
 char command_line[COMMAND_LINE_SIZE];
 
@@ -306,6 +308,9 @@ static __init void parse_cmdline_early (char ** cmdline_p)
 	for (;;) {
 		if (c != ' ') 
 			goto next_char; 
+
+		else if (!memcmp(from, "avoid_smi", 9))
+			avoid_smi = 1;
 
 #ifdef  CONFIG_SMP
 		/*
@@ -806,6 +811,12 @@ static void __cpuinit amd_fixup_dcm(struct cpuinfo_x86 *c)
 
 	/* fixup topology information only once for a core */
 	if (cpu_has(c, X86_FEATURE_AMD_DCM))
+		return;
+
+	/* proceed only is there is a valid AMD northbridge
+	 * (not in virtualized environments!)
+	 */
+	if (!early_is_k8_nb(read_pci_config(0, 24, 3, 0x00)))
 		return;
 
 	/* check for multi-node processor on boot cpu */

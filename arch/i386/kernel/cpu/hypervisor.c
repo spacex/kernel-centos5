@@ -27,7 +27,7 @@
 #include <asm/processor.h>
 #include <asm/vmware.h>
 #include <asm/generic-hypervisor.h>
-#include <asm/kvm_hypervisor.h>
+#include <linux/jiffies.h>
 
 static inline void __cpuinit
 detect_hypervisor_vendor(struct cpuinfo_x86 *c)

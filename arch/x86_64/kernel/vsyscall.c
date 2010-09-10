@@ -76,16 +76,7 @@ static __always_inline void do_vgettimeofday(struct timeval * tv)
 		sec = __xtime.tv_sec;
 		nsec = __xtime.tv_nsec +
 			(__jiffies - __wall_jiffies) * (NSEC_PER_SEC / HZ);
-		if (__vxtime.mode == VXTIME_KVM) {
-			long delta;
-			t = get_cycles_sync();
-			if (t < __vxtime.last_tsc)
-				t = __vxtime.last_tsc;
-
-			delta = ((t * __vxtime.tsc_quot) >> NS_SCALE) - __vxtime.last_kvm;
-			if (delta > 0)
-				nsec += delta;
-		} else if (__vxtime.mode != VXTIME_HPET) {
+		if (__vxtime.mode != VXTIME_HPET) {
 			t = get_cycles_sync();
 			if (t < __vxtime.last_tsc)
 				t = __vxtime.last_tsc;
@@ -132,7 +123,7 @@ static __always_inline long time_syscall(long *t)
 
 int __vsyscall(0) vgettimeofday(struct timeval * tv, struct timezone * tz)
 {
-	if (!__sysctl_vsyscall)
+	if (!__sysctl_vsyscall || (__vxtime.mode == VXTIME_KVM))
 		return gettimeofday(tv,tz);
 	if (tv)
 		do_vgettimeofday(tv);

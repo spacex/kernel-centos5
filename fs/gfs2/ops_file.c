@@ -980,6 +980,18 @@ __gfs2_file_aio_write_nolock(struct kiocb *iocb, const struct iovec *iov,
 	current->backing_dev_info = mapping->backing_dev_info;
 	written = 0;
 
+	if (file->f_flags & O_APPEND) {
+		struct dentry *dentry = file->f_dentry;
+		struct gfs2_inode *ip = GFS2_I(dentry->d_inode);
+		struct gfs2_holder gh;
+		ssize_t ret;
+
+		ret = gfs2_glock_nq_init(ip->i_gl, LM_ST_SHARED, 0, &gh);
+		if (ret)
+			return ret;
+		gfs2_glock_dq_uninit(&gh);
+	}
+
 	err = generic_write_checks(file, &pos, &count, S_ISBLK(inode->i_mode));
 	if (err)
 		goto out;

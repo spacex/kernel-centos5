@@ -7746,7 +7746,7 @@ irqreturn_t
 lpfc_sli_sp_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 {
 	struct lpfc_hba  *phba;
-	uint32_t ha_copy;
+	uint32_t ha_copy, hc_copy;
 	uint32_t work_ha_copy;
 	unsigned long status;
 	unsigned long iflag;
@@ -7804,8 +7804,13 @@ lpfc_sli_sp_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 		}
 
 		/* Clear up only attention source related to slow-path */
+		hc_copy = readl(phba->HCregaddr);
+		writel(hc_copy & ~(HC_MBINT_ENA | HC_R2INT_ENA |
+			HC_LAINT_ENA | HC_ERINT_ENA),
+			phba->HCregaddr);
 		writel((ha_copy & (HA_MBATT | HA_R2_CLR_MSK)),
 			phba->HAregaddr);
+		writel(hc_copy, phba->HCregaddr);
 		readl(phba->HAregaddr); /* flush */
 		spin_unlock_irqrestore(&phba->hbalock, iflag);
 	} else
@@ -8128,6 +8133,7 @@ lpfc_sli_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 	struct lpfc_hba  *phba;
 	irqreturn_t sp_irq_rc, fp_irq_rc;
 	unsigned long status1, status2;
+	uint32_t hc_copy;
 
 	/*
 	 * Get the driver's phba structure from the dev_id and
@@ -8165,7 +8171,12 @@ lpfc_sli_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 	}
 
 	/* Clear attention sources except link and error attentions */
+	hc_copy = readl(phba->HCregaddr);
+	writel(hc_copy & ~(HC_MBINT_ENA | HC_R0INT_ENA | HC_R1INT_ENA
+		| HC_R2INT_ENA | HC_LAINT_ENA | HC_ERINT_ENA),
+		phba->HCregaddr);
 	writel((phba->ha_copy & ~(HA_LATT | HA_ERATT)), phba->HAregaddr);
+	writel(hc_copy, phba->HCregaddr);
 	readl(phba->HAregaddr); /* flush */
 	spin_unlock(&phba->hbalock);
 

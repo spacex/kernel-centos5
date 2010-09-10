@@ -55,6 +55,7 @@ extern unsigned long kvm_get_wallclock(void);
 #include <linux/clocksource.h> // for cycle_t
 cycle_t kvm_clock_read(void);
 extern unsigned int use_kvm_time;
+unsigned long kvm_get_tsc_khz(void);
 
 /* This instruction is vmcall.  On non-VT architectures, it will generate a
  * trap that we will then rewrite to the appropriate instruction.

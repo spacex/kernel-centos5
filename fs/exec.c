@@ -1765,7 +1765,8 @@ int do_coredump(long signr, int exit_code, struct pt_regs * regs)
 		}
 	} else
 		file = filp_open(corename,
-				 O_CREAT | 2 | O_NOFOLLOW | O_LARGEFILE, 0600);
+				 O_CREAT | 2 | O_NOFOLLOW | O_LARGEFILE | flag,
+				 0600);
 
 	if (IS_ERR(file))
 		goto fail_unlock;

@@ -732,7 +732,8 @@ static ssize_t fuse_direct_io(struct file *file, const char __user *buf,
 				break;
 		}
 	}
-	fuse_put_request(fc, req);
+	if (!IS_ERR(req))
+		fuse_put_request(fc, req);
 	if (res > 0) {
 		if (write)
 			fuse_write_update_size(inode, pos);

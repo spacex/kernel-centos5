@@ -53,6 +53,7 @@ extern int kvm_register_clock(char *txt);
 extern void kvmclock_disable(void);
 extern unsigned long kvm_get_wallclock(void);
 extern unsigned int use_kvm_time;
+unsigned long kvm_get_tsc_khz(void);
 
 
 /* This instruction is vmcall.  On non-VT architectures, it will generate a

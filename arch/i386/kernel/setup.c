@@ -156,6 +156,7 @@ struct e820map e820;
 extern void early_cpu_init(void);
 extern void generic_apic_probe(char *);
 extern int root_mountflags;
+extern int avoid_smi;
 
 unsigned long saved_videomode;
 
@@ -830,6 +831,8 @@ static void __init parse_cmdline_early (char ** cmdline_p)
 		else if (!memcmp(from, "noexec=", 7))
 			noexec_setup(from + 7);
 
+		else if (!memcmp(from, "avoid_smi", 9))
+			avoid_smi = 1;
 
 #ifdef  CONFIG_X86_SMP
 		/*

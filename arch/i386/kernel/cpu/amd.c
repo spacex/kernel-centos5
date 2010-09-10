@@ -4,6 +4,7 @@
 #include <asm/io.h>
 #include <asm/processor.h>
 #include <asm/pci-direct.h>
+#include <asm/k8.h>
 
 #include "cpu.h"
 
@@ -41,6 +42,12 @@ static void __cpuinit amd_fixup_dcm(struct cpuinfo_x86 *c)
 
 	/* fixup topology information only once for a core */
 	if (cpu_has(c, X86_FEATURE_AMD_DCM))
+		return;
+
+	/* proceed only is there is a valid AMD northbridge
+	 * (not in virtualized environments!)
+	 */
+	if (!early_is_k8_nb(read_pci_config(0, 24, 3, 0x00)))
 		return;
 
 	/* check for multi-node processor on boot cpu */

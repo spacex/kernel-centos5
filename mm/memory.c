@@ -1776,14 +1776,13 @@ static int do_wp_page(struct mm_struct *mm, struct vm_area_struct *vma,
 		unlock_page(old_page);
 	} else if (unlikely((vma->vm_flags & (VM_WRITE|VM_SHARED)) ==
 					(VM_WRITE|VM_SHARED))) {
-		/*
-		 * Only catch write-faults on shared writable pages,
-		 * read-only shared pages can get COWed by
-		 * get_user_pages(.write=1, .force=1).
-		 */
-		vfs_check_frozen(vma->vm_file->f_dentry->d_inode->i_sb,
-				 SB_FREEZE_WRITE);
-		if (vma->vm_ops && vma->vm_ops->page_mkwrite) {
+		struct super_block *sb;
+		int (*mkwrite)(struct vm_area_struct *vma, struct page *page);
+
+		sb = vma->vm_file->f_dentry->d_inode->i_sb;
+		mkwrite = vma->vm_ops ? vma->vm_ops->page_mkwrite : NULL;
+
+		if (mkwrite || sb->s_frozen != SB_UNFROZEN) {
 			/*
 			 * Notify the address space that the page is about to
 			 * become writable so that it can prohibit this or wait
@@ -1795,7 +1794,13 @@ static int do_wp_page(struct mm_struct *mm, struct vm_area_struct *vma,
 			page_cache_get(old_page);
 			pte_unmap_unlock(page_table, ptl);
 
-			if (vma->vm_ops->page_mkwrite(vma, old_page) < 0)
+			/*
+			 * Only catch write-faults on shared writable pages,
+			 * read-only shared pages can get COWed by
+			 * get_user_pages(.write=1, .force=1).
+			 */
+			vfs_check_frozen(sb, SB_FREEZE_WRITE);
+			if (mkwrite && mkwrite(vma, old_page) < 0)
 				goto unwritable_page;
 
 			page_cache_release(old_page);
