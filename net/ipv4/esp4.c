@@ -147,7 +147,7 @@ static int esp_input(struct xfrm_state *x, struct sk_buff *skb)
 	struct scatterlist *sg;
 	int padlen;
 
-	if (!pskb_may_pull(skb, sizeof(struct ip_esp_hdr)))
+	if (!pskb_may_pull(skb, sizeof(struct ip_esp_hdr) + esp->conf.ivec))
 		goto out;
 
 	if (elen <= 0 || (elen & (blksize-1)))

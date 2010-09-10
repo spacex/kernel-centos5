@@ -616,7 +616,9 @@ unsigned long next_timer_interrupt(void)
 		if (hr_expires < 3)
 			return hr_expires + jiffies;
 	}
-	hr_expires += jiffies;
+	hr_expires = min_t(unsigned long,
+			   softlockup_get_next_event(),
+			   hr_expires) + jiffies;
 
 	base = __get_cpu_var(tvec_bases);
 	spin_lock(&base->lock);

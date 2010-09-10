@@ -47,15 +47,17 @@ static unsigned int def_sampling_rate;
 #define DEF_SAMPLING_RATE_LATENCY_MULTIPLIER	(1000)
 #define TRANSITION_LATENCY_LIMIT		(10 * 1000)
 
-static void do_dbs_timer(void *data);
-
 struct cpu_dbs_info_s {
 	cputime64_t prev_cpu_idle;
 	cputime64_t prev_cpu_wall;
 	struct cpufreq_policy *cur_policy;
  	struct work_struct work;
+	int cpu;
 	unsigned int enable;
 };
+
+static void do_dbs_timer(struct cpu_dbs_info_s *dbs_info);
+
 static DEFINE_PER_CPU(struct cpu_dbs_info_s, cpu_dbs_info);
 
 static unsigned int dbs_enable;	/* number of CPUs using this policy */
@@ -301,27 +303,29 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 	}
 }
 
-static void do_dbs_timer(void *data)
+static void do_dbs_timer(struct cpu_dbs_info_s *dbs_info)
 {
-	unsigned int cpu = smp_processor_id();
-	struct cpu_dbs_info_s *dbs_info = &per_cpu(cpu_dbs_info, cpu);
+	unsigned int cpu = dbs_info->cpu;
 
-	if (!dbs_info->enable)
+	if (lock_policy_rwsem_write(cpu) < 0)
 		return;
 
-	lock_cpu_hotplug();
+	if (!dbs_info->enable){
+		unlock_policy_rwsem_write(cpu);
+		return;
+	}
+
 	dbs_check_cpu(dbs_info);
-	unlock_cpu_hotplug();
 	queue_delayed_work_on(cpu, kondemand_wq, &dbs_info->work,
 			usecs_to_jiffies(dbs_tuners_ins.sampling_rate));
+	unlock_policy_rwsem_write(cpu);
 }
 
-static inline void dbs_timer_init(unsigned int cpu)
+static inline void dbs_timer_init(struct cpu_dbs_info_s *dbs_info)
 {
-	struct cpu_dbs_info_s *dbs_info = &per_cpu(cpu_dbs_info, cpu);
-
-	INIT_WORK(&dbs_info->work, do_dbs_timer, 0);
-	queue_delayed_work_on(cpu, kondemand_wq, &dbs_info->work,
+	dbs_info->enable = 1;
+	INIT_WORK(&dbs_info->work, do_dbs_timer, dbs_info);
+	queue_delayed_work_on(dbs_info->cpu, kondemand_wq, &dbs_info->work,
 			usecs_to_jiffies(dbs_tuners_ins.sampling_rate));
 	return;
 }
@@ -330,7 +334,6 @@ static inline void dbs_timer_exit(struct cpu_dbs_info_s *dbs_info)
 {
 	dbs_info->enable = 0;
 	cancel_delayed_work(&dbs_info->work);
-	flush_workqueue(kondemand_wq);
 }
 
 static int cpufreq_governor_dbs(struct cpufreq_policy *policy,
@@ -358,15 +361,7 @@ static int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 
 		mutex_lock(&dbs_mutex);
 		dbs_enable++;
-		if (dbs_enable == 1) {
-			kondemand_wq = create_workqueue("kondemand");
-			if (!kondemand_wq) {
-				printk(KERN_ERR "Creation of kondemand failed\n");
-				dbs_enable--;
-				mutex_unlock(&dbs_mutex);
-				return -ENOSPC;
-			}
-		}
+
 		for_each_cpu_mask(j, policy->cpus) {
 			struct cpu_dbs_info_s *j_dbs_info;
 			j_dbs_info = &per_cpu(cpu_dbs_info, j);
@@ -375,7 +370,7 @@ static int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 			j_dbs_info->prev_cpu_idle = get_cpu_idle_time(j);
 			j_dbs_info->prev_cpu_wall = get_jiffies_64();
 		}
-		this_dbs_info->enable = 1;
+		this_dbs_info->cpu = cpu;
 		sysfs_create_group(&policy->kobj, &dbs_attr_group);
 		/*
 		 * Start the timerschedule work, when this governor
@@ -396,7 +391,7 @@ static int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 
 			dbs_tuners_ins.sampling_rate = def_sampling_rate;
 		}
-		dbs_timer_init(policy->cpu);
+		dbs_timer_init(this_dbs_info);
 
 		mutex_unlock(&dbs_mutex);
 		break;
@@ -406,9 +401,6 @@ static int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 		dbs_timer_exit(this_dbs_info);
 		sysfs_remove_group(&policy->kobj, &dbs_attr_group);
 		dbs_enable--;
-		if (dbs_enable == 0)
-			destroy_workqueue(kondemand_wq);
-
 		mutex_unlock(&dbs_mutex);
 
 		break;
@@ -437,12 +429,18 @@ static struct cpufreq_governor cpufreq_gov_dbs = {
 
 static int __init cpufreq_gov_dbs_init(void)
 {
+	kondemand_wq = create_workqueue("kondemand");
+	if (!kondemand_wq) {
+		printk(KERN_ERR "Creation of kondemand failed\n");
+		return -EFAULT;
+	}
 	return cpufreq_register_governor(&cpufreq_gov_dbs);
 }
 
 static void __exit cpufreq_gov_dbs_exit(void)
 {
 	cpufreq_unregister_governor(&cpufreq_gov_dbs);
+	destroy_workqueue(kondemand_wq);
 }
 
 

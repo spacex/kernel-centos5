@@ -143,7 +143,7 @@ static int esp6_input(struct xfrm_state *x, struct sk_buff *skb)
 	int nfrags;
 	int ret = 0;
 
-	if (!pskb_may_pull(skb, sizeof(struct ipv6_esp_hdr))) {
+	if (!pskb_may_pull(skb, sizeof(struct ipv6_esp_hdr) + esp->conf.ivec)) {
 		ret = -EINVAL;
 		goto out;
 	}

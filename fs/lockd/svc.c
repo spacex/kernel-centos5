@@ -234,9 +234,13 @@ static int make_socks(struct svc_serv *serv, int proto)
 	 * options, make those sockets unconditionally
 	 */
 	int err = 0;
-	if (proto == IPPROTO_UDP || nlm_udpport)
-		if (!find_socket(serv, IPPROTO_UDP))
-			err = svc_makesock(serv, IPPROTO_UDP, nlm_udpport);
+	
+	/*
+	 * Note: a UDP socket needs to always exist for statd
+	 * to make callback on.
+	 */
+	if (!find_socket(serv, IPPROTO_UDP))
+		err = svc_makesock(serv, IPPROTO_UDP, nlm_udpport);
 	if (err)
 		return err;
 	if (proto == IPPROTO_TCP || nlm_tcpport)

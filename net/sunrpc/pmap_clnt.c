@@ -144,11 +144,9 @@ pmap_getport_done(struct rpc_task *task)
 
 	xprt->ops->set_port(xprt, 0);
 	if (task->tk_status < 0) {
-		/* Make the calling task exit with an error */
-		task->tk_action = rpc_exit_task;
+		clnt->cl_port = 0;
 	} else if (clnt->cl_port == 0) {
-		/* Program not registered */
-		rpc_exit(task, -EACCES);
+		task->tk_status = -EACCES;
 	} else {
 		xprt->ops->set_port(xprt, clnt->cl_port);
 		clnt->cl_port = htons(clnt->cl_port);
