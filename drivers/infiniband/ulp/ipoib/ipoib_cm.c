@@ -375,7 +375,7 @@ struct ib_sge *sge)
 			sge[i].length = PAGE_SIZE;
 
 	wr->next    = NULL;
-	wr->sg_list = priv->cm.rx_sge;
+	wr->sg_list = sge;
 	wr->num_sge = priv->cm.num_frags;
 }
 
@@ -1563,7 +1563,7 @@ destory_srq:
 int ipoib_cm_dev_init(struct net_device *dev)
 {
 	struct ipoib_dev_priv *priv = netdev_priv(dev);
-	int i, ret;
+	int i, ret, j;
 	struct ib_device_attr attr;
 
 	INIT_LIST_HEAD(&priv->cm.passive_ids);
@@ -1599,6 +1599,25 @@ int ipoib_cm_dev_init(struct net_device *dev)
 	} else {
 		priv->cm.max_cm_mtu = IPOIB_CM_MTU;
 		priv->cm.num_frags  = IPOIB_CM_RX_SG;
+	}
+
+	if (ipoib_cm_has_srq(dev)) {
+		for (j = 0; j < ipoib_recvq_size; ++j) {
+			for (i = 0; i < priv->cm.num_frags; ++i)
+				priv->cm.rx_wr_arr[j].rx_sge[i].lkey =
+				priv->mr->lkey;
+
+			priv->cm.rx_wr_arr[j].rx_sge[0].length =
+			IPOIB_CM_HEAD_SIZE;
+			for (i = 1; i < priv->cm.num_frags; ++i)
+				priv->cm.rx_wr_arr[j].rx_sge[i].length =
+				PAGE_SIZE;
+
+			priv->cm.rx_wr_arr[j].wr.sg_list =
+			priv->cm.rx_wr_arr[j].rx_sge;
+			priv->cm.rx_wr_arr[j].wr.num_sge = priv->cm.num_frags;
+		}
+		priv->cm.head = &priv->cm.rx_wr_arr[0];
 	}
 
 	ipoib_cm_init_rx_wr(dev, &priv->cm.rx_wr, priv->cm.rx_sge);

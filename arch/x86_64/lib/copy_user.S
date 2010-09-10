@@ -339,11 +339,14 @@ copy_user_generic_c:
 .Lc1e:	movq %rcx,%rsi
 .Lc3:	rep
 	stosq
-.Lc2e:	movl %edx,%ecx
+.Lc2ec:	movl %edx,%ecx
 .Lc4:	rep
 	stosb
 .Lc3e:	leaq (%rdx,%rsi,8),%rax
 	ret
+	/* %rsi contains source address - clear it */
+.Lc2e:  xorq %rsi,%rsi
+	jmp .Lc2ec
 	CFI_ENDPROC
 END(copy_user_generic_c)
 

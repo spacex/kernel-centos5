@@ -412,16 +412,11 @@ struct zfcp_san_dbf_record_ct {
 		} response;
 	} type;
 	u32 payload_size;
-#define ZFCP_DBF_CT_PAYLOAD	24
-	u8 payload[ZFCP_DBF_CT_PAYLOAD];
 } __attribute__ ((packed));
 
 struct zfcp_san_dbf_record_els {
 	u8 ls_code;
 	u32 payload_size;
-#define ZFCP_DBF_ELS_PAYLOAD	32
-#define ZFCP_DBF_ELS_MAX_PAYLOAD 1024
-	u8 payload[ZFCP_DBF_ELS_PAYLOAD];
 } __attribute__ ((packed));
 
 struct zfcp_san_dbf_record {
@@ -434,6 +429,8 @@ struct zfcp_san_dbf_record {
 		struct zfcp_san_dbf_record_ct ct;
 		struct zfcp_san_dbf_record_els els;
 	} type;
+#define ZFCP_DBF_SAN_MAX_PAYLOAD 1024
+	 u8 payload[32];
 } __attribute__ ((packed));
 
 struct zfcp_scsi_dbf_record {

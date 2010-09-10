@@ -183,11 +183,25 @@ requeue:
 
 void __qdisc_run(struct net_device *dev)
 {
+	unsigned long start_time = jiffies;
+
 	if (unlikely(dev->qdisc == &noop_qdisc))
 		goto out;
 
-	while (qdisc_restart(dev) < 0 && !netif_queue_stopped(dev))
-		/* NOTHING */;
+	while (qdisc_restart(dev) < 0) {
+		if (netif_queue_stopped(dev))
+			break;
+
+		/*
+		 * Postpone processing if
+		 * 1. another process needs the CPU;
+		 * 2. we've been doing it for too long.
+		 */
+		if (need_resched() || jiffies != start_time) {
+			netif_schedule(dev);
+			break;
+		}
+	}
 
 out:
 	clear_bit(__LINK_STATE_QDISC_RUNNING, &dev->state);

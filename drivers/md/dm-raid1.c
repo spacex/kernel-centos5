@@ -146,7 +146,11 @@ struct mirror_set {
 	struct mirror *default_mirror;	/* Default mirror */
 
 	unsigned int nr_mirrors;
-	atomic_t read_count;      /* Read counter for read balancing */
+
+	/* Round robin read balancing. */
+	spinlock_t choose_lock;
+	atomic_t rr_ios_set; /* Adjustable default ios. */
+	atomic_t rr_ios;     /* Round robin read ios. */
 	struct mirror *read_mirror; /* Last mirror read. */
 
 	struct workqueue_struct *kmirrord_wq;
@@ -839,33 +843,41 @@ static void do_recovery(struct mirror_set *ms)
  */
 static struct mirror *choose_mirror(struct mirror_set *ms)
 {
-	struct mirror *start_mirror = ms->read_mirror;
+	long flags;
+	struct mirror *start_mirror, *ret;
+
+	/* Can get called in interrupt from mirror_end_io(). */
+	spin_lock_irqsave(&ms->choose_lock, flags);
 
 	/*
 	 * Perform MIN_READS on each working mirror then
 	 * advance to the next one.  start_mirror stores
 	 * the first we tried, so we know when we're done.
 	 */
+	ret = start_mirror = ms->read_mirror;
 	do {
-		if (likely(!atomic_read(&ms->read_mirror->error_count)) &&
-		    !atomic_dec_and_test(&ms->read_count))
+		if (likely(!atomic_read(&ret->error_count) &&
+			   !atomic_dec_and_test(&ms->rr_ios)))
 			goto use_mirror;
 
-		atomic_set(&ms->read_count, MIN_READS);
+		atomic_set(&ms->rr_ios, atomic_read(&ms->rr_ios_set));
 
 		if (ms->read_mirror-- == ms->mirror)
 			ms->read_mirror += ms->nr_mirrors;
-	} while (ms->read_mirror != start_mirror);
+
+		ret = ms->read_mirror;
+	} while (ret != start_mirror);
 
 	/*
 	 * We've rejected every mirror.
 	 * Confirm the start_mirror can be used.
 	 */
-	if (unlikely(atomic_read(&ms->read_mirror->error_count)))
-		return NULL;
+	if (unlikely(atomic_read(&ret->error_count)))
+	      ret = NULL;
 
 use_mirror:
-	return ms->read_mirror;
+	spin_unlock_irqrestore(&ms->choose_lock, flags);
+	return ret;
 }
 
 /* fail_mirror
@@ -1374,6 +1386,8 @@ static struct mirror_set *alloc_context(unsigned int nr_mirrors,
 	ms->in_sync = 0;
 	ms->log_failure = 0;
 	atomic_set(&ms->suspend, 0);
+
+	spin_lock_init(&ms->choose_lock);
 	ms->read_mirror = &ms->mirror[DEFAULT_MIRROR];
 	ms->default_mirror = &ms->mirror[DEFAULT_MIRROR];
 
@@ -1390,7 +1404,8 @@ static struct mirror_set *alloc_context(unsigned int nr_mirrors,
 		return NULL;
 	}
 
-	atomic_set(&ms->read_count, MIN_READS);
+	atomic_set(&ms->rr_ios_set, MIN_READS);
+	atomic_set(&ms->rr_ios, MIN_READS);
 
 	bio_list_init(&ms->failures);
 
@@ -1770,6 +1785,34 @@ static void mirror_resume(struct dm_target *ti)
 	rh_start_recovery(&ms->rh);
 }
 
+/* Set round robin ios via message. */
+static int mirror_message(struct dm_target *ti, unsigned argc, char **argv)
+{
+	unsigned rr_ios_set;
+	struct mirror_set *ms = ti->private;
+	struct mapped_device *md;
+
+	if (argc != 4 ||
+	    strncmp(argv[0], "io_balance", strlen(argv[0])) ||
+	    strncmp(argv[1], "round_robin", strlen(argv[1])) ||
+	    strncmp(argv[2], "ios", strlen(argv[2])))
+		return -EINVAL;
+
+	if (sscanf(argv[3], "%u", &rr_ios_set) != 1 ||
+	    rr_ios_set < 2) {
+		DMERR("Round robin read ios have to be > 1");
+		return -EINVAL;
+	}
+
+	md = dm_table_get_md(ti->table);
+	DMINFO("Setting round robin read ios for \"%s\" to %u",
+	        dm_device_name(md), rr_ios_set);
+	dm_put(md);
+	atomic_set(&ms->rr_ios_set, rr_ios_set);
+	atomic_set(&ms->rr_ios, rr_ios_set);
+	return 0;
+}
+
 /*
  * device_status_char
  * @m: mirror device/leg we want the status of
@@ -1837,6 +1880,7 @@ static struct target_type mirror_target = {
 	.presuspend = mirror_presuspend,
 	.postsuspend = mirror_postsuspend,
 	.resume	 = mirror_resume,
+	.message = mirror_message,
 	.status	 = mirror_status,
 };
 

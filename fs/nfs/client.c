@@ -414,7 +414,7 @@ static int nfs_create_rpc_client(struct nfs_client *clp, int proto,
 	xprt->resvport = 1;
 	/* Create the client RPC handle */
 	clnt = rpc_create_client(xprt, clp->cl_hostname, &nfs_program,
-				 clp->rpc_ops->version, RPC_AUTH_UNIX);
+				 clp->rpc_ops->version, flavor);
 	if (IS_ERR(clnt)) {
 		dprintk("%s: cannot create RPC client. Error = %ld\n",
 				__FUNCTION__, PTR_ERR(clnt));

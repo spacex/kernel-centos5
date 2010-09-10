@@ -3550,6 +3550,7 @@ need_resched_nonpreemptible:
 	}
 
 	schedstat_inc(rq, sched_cnt);
+	spin_lock_irq(&rq->lock);
 	now = sched_clock();
 	if (likely((long long)(now - prev->timestamp) < NS_MAX_SLEEP_AVG)) {
 		run_time = now - prev->timestamp;
@@ -3563,8 +3564,6 @@ need_resched_nonpreemptible:
 	 * delay them losing their interactive status
 	 */
 	run_time /= (CURRENT_BONUS(prev) ? : 1);
-
-	spin_lock_irq(&rq->lock);
 
 	if (unlikely(prev->flags & PF_DEAD))
 		prev->state = EXIT_DEAD;
@@ -3581,6 +3580,8 @@ need_resched_nonpreemptible:
 			deactivate_task(prev, rq);
 		}
 	}
+
+	update_cpu_clock(prev, rq, now);
 
 	cpu = smp_processor_id();
 	if (unlikely(!rq->nr_running)) {
@@ -3637,8 +3638,6 @@ switch_tasks:
 	prefetch_stack(next);
 	clear_tsk_need_resched(prev);
 	rcu_qsctr_inc(task_cpu(prev));
-
-	update_cpu_clock(prev, rq, now);
 
 	prev->sleep_avg -= run_time;
 	if ((long)prev->sleep_avg <= 0)

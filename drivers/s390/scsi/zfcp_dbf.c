@@ -76,7 +76,7 @@ static void zfcp_dbf_hexdump(debug_info_t *dbf, void *to, int to_len,
 		dump->offset = offset;
 		dump->size = min(from_len - offset, room);
 		memcpy(dump->data, from + offset, dump->size);
-		debug_event(dbf, level, dump, dump->size);
+		debug_event(dbf, level, dump, dump->size + sizeof(*dump));
 	}
 }
 
@@ -153,7 +153,7 @@ zfcp_dbf_view_header(debug_info_t * id, struct debug_view *view, int area,
 		len += zfcp_dbf_view(out_buf + len, "cpu", "%02i",
 				     entry->id.fields.cpuid);
 	} else {
-		len += zfcp_dbf_view_dump(out_buf + len, NULL,
+		len += zfcp_dbf_view_dump(out_buf + len, "",
 					  dump->data,
 					  dump->size,
 					  dump->offset, dump->total_size);
@@ -401,6 +401,7 @@ zfcp_hba_dbf_view_response(char *out_buf,
 				     rec->data.send_fcp.scsi_cmnd);
 		len += zfcp_dbf_view(out_buf + len, "scsi_serial", "0x%016Lx",
 				     rec->data.send_fcp.scsi_serial);
+		len += sprintf(out_buf + len, "\n");
 		break;
 
 	case FSF_QTCB_OPEN_PORT_WITH_DID:
@@ -506,7 +507,8 @@ zfcp_hba_dbf_view_format(debug_info_t * id, struct debug_view *view,
 	else if (strncmp(rec->tag, "qdio", ZFCP_DBF_TAG_SIZE) == 0)
 		len += zfcp_hba_dbf_view_qdio(out_buf + len, &rec->type.qdio);
 
-	len += sprintf(out_buf + len, "\n");
+	if (strncmp(rec->tag, "resp", ZFCP_DBF_TAG_SIZE) != 0)
+		len += sprintf(out_buf + len, "\n");
 
 	return len;
 }
@@ -906,6 +908,7 @@ _zfcp_san_dbf_event_common_ct(const char *tag, struct zfcp_fsf_req *fsf_req,
 	struct ct_hdr *header = (struct ct_hdr *)buffer;
 	struct zfcp_san_dbf_record *rec = &adapter->san_dbf_buf;
 	struct zfcp_san_dbf_record_ct *ct = &rec->type.ct;
+	int level = 3;
 	unsigned long flags;
 
 	spin_lock_irqsave(&adapter->san_dbf_lock, flags);
@@ -930,10 +933,12 @@ _zfcp_san_dbf_event_common_ct(const char *tag, struct zfcp_fsf_req *fsf_req,
 		ct->type.response.vendor_unique = header->vendor_unique;
 	}
 	ct->payload_size =
-	    min(buflen - (int)sizeof(struct ct_hdr), ZFCP_DBF_CT_PAYLOAD);
-	memcpy(ct->payload, buffer + sizeof(struct ct_hdr), ct->payload_size);
-	debug_event(adapter->san_dbf, 3,
+	    min(buflen - (int)sizeof(struct ct_hdr), ZFCP_DBF_SAN_MAX_PAYLOAD);
+	debug_event(adapter->san_dbf, level,
 		    rec, sizeof(struct zfcp_san_dbf_record));
+	zfcp_dbf_hexdump(adapter->san_dbf, rec, sizeof(*rec), level,
+			 (void*)buffer + sizeof(struct ct_hdr),
+			 ct->payload_size);
 	spin_unlock_irqrestore(&adapter->san_dbf_lock, flags);
 }
 
@@ -980,7 +985,7 @@ _zfcp_san_dbf_event_common_els(const char *tag, int level,
 	rec->type.els.ls_code = ls_code;
 	debug_event(adapter->san_dbf, level, rec, sizeof(*rec));
 	zfcp_dbf_hexdump(adapter->san_dbf, rec, sizeof(*rec), level,
-			 buffer, min(buflen, ZFCP_DBF_ELS_MAX_PAYLOAD));
+			 buffer, min(buflen, ZFCP_DBF_SAN_MAX_PAYLOAD));
 	spin_unlock_irqrestore(&adapter->san_dbf_lock, flags);
 }
 
@@ -1026,8 +1031,6 @@ zfcp_san_dbf_view_format(debug_info_t * id, struct debug_view *view,
 			 char *out_buf, const char *in_buf)
 {
 	struct zfcp_san_dbf_record *rec = (struct zfcp_san_dbf_record *)in_buf;
-	char *buffer = NULL;
-	int buflen = 0, total = 0;
 	int len = 0;
 
 	if (strncmp(rec->tag, "dump", ZFCP_DBF_TAG_SIZE) == 0)
@@ -1054,9 +1057,6 @@ zfcp_san_dbf_view_format(debug_info_t * id, struct debug_view *view,
 				     rec->type.ct.type.request.options);
 		len += zfcp_dbf_view(out_buf + len, "max_res_size", "0x%04x",
 				     rec->type.ct.type.request.max_res_size);
-		total = rec->type.ct.payload_size;
-		buffer = rec->type.ct.payload;
-		buflen = min(total, ZFCP_DBF_CT_PAYLOAD);
 	} else if (strncmp(rec->tag, "rctc", ZFCP_DBF_TAG_SIZE) == 0) {
 		len += zfcp_dbf_view(out_buf + len, "cmd_rsp_code", "0x%04x",
 				     rec->type.ct.type.response.cmd_rsp_code);
@@ -1070,24 +1070,12 @@ zfcp_san_dbf_view_format(debug_info_t * id, struct debug_view *view,
 		len +=
 		    zfcp_dbf_view(out_buf + len, "vendor_unique", "0x%02x",
 				  rec->type.ct.type.response.vendor_unique);
-		total = rec->type.ct.payload_size;
-		buffer = rec->type.ct.payload;
-		buflen = min(total, ZFCP_DBF_CT_PAYLOAD);
 	} else if (strncmp(rec->tag, "oels", ZFCP_DBF_TAG_SIZE) == 0 ||
 		   strncmp(rec->tag, "rels", ZFCP_DBF_TAG_SIZE) == 0 ||
 		   strncmp(rec->tag, "iels", ZFCP_DBF_TAG_SIZE) == 0) {
 		len += zfcp_dbf_view(out_buf + len, "ls_code", "0x%02x",
 				     rec->type.els.ls_code);
-		total = rec->type.els.payload_size;
-		buffer = rec->type.els.payload;
-		buflen = min(total, ZFCP_DBF_ELS_PAYLOAD);
 	}
-
-	len += zfcp_dbf_view_dump(out_buf + len, "payload",
-				  buffer, buflen, 0, total);
-
-	if (buflen == total)
-		len += sprintf(out_buf + len, "\n");
 
 	return len;
 }

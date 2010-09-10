@@ -1275,7 +1275,7 @@ asmlinkage long sys_setpgid(pid_t pid, pid_t pgid)
 	if (!thread_group_leader(p))
 		goto out;
 
-	if (p->parent == group_leader) {
+	if (p->parent->tgid == group_leader->tgid) {
 		err = -EPERM;
 		if (p->signal->session != group_leader->signal->session)
 			goto out;
