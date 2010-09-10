@@ -144,6 +144,7 @@ static void e1000_clean_rx_ring(struct e1000_adapter *adapter,
 static void e1000_set_multi(struct net_device *netdev);
 static void e1000_update_phy_info(unsigned long data);
 static void e1000_watchdog(unsigned long data);
+static void e1000_watchdog_task(struct net_device *netdev);
 static void e1000_82547_tx_fifo_stall(unsigned long data);
 static int e1000_xmit_frame(struct sk_buff *skb, struct net_device *netdev);
 static struct net_device_stats * e1000_get_stats(struct net_device *netdev);
@@ -469,13 +470,14 @@ e1000_up(struct e1000_adapter *adapter)
 
 	adapter->tx_queue_len = netdev->tx_queue_len;
 
-	mod_timer(&adapter->watchdog_timer, jiffies);
-
 #ifdef CONFIG_E1000_NAPI
 	netif_poll_enable(netdev);
 #endif
 	e1000_irq_enable(adapter);
 
+	clear_bit(__E1000_DOWN, &adapter->flags);
+
+	mod_timer(&adapter->watchdog_timer, jiffies + 2 * HZ);
 	return 0;
 }
 
@@ -530,6 +532,10 @@ void
 e1000_down(struct e1000_adapter *adapter)
 {
 	struct net_device *netdev = adapter->netdev;
+
+	/* signal that we're down so the interrupt handler does not
+	 * reschedule our watchdog timer */
+	set_bit(__E1000_DOWN, &adapter->flags);
 
 	e1000_irq_disable(adapter);
 
@@ -865,11 +871,8 @@ e1000_probe(struct pci_dev *pdev,
 
 	INIT_WORK(&adapter->reset_task,
 		(void (*)(void *))e1000_reset_task, netdev);
-
-	/* we're going to reset, so assume we have no link for now */
-
-	netif_carrier_off(netdev);
-	netif_stop_queue(netdev);
+	INIT_WORK(&adapter->watchdog_task,
+		(void (*)(void *))e1000_watchdog_task, netdev);
 
 	e1000_check_options(adapter);
 
@@ -978,6 +981,10 @@ e1000_probe(struct pci_dev *pdev,
 	if ((err = register_netdev(netdev)))
 		goto err_register;
 
+	/* tell the stack to leave us alone until e1000_open() is called */
+	netif_carrier_off(netdev);
+	netif_stop_queue(netdev);
+
 	DPRINTK(PROBE, INFO, "Intel(R) PRO/1000 Network Connection\n");
 
 	cards_found++;
@@ -1033,6 +1040,13 @@ e1000_remove(struct pci_dev *pdev)
 #ifdef CONFIG_E1000_NAPI
 	int i;
 #endif
+
+	/* flush_scheduled work may reschedule our watchdog task, so
+	 * explicitly disable watchdog tasks from being rescheduled  */
+	set_bit(__E1000_DOWN, &adapter->flags);
+	del_timer_sync(&adapter->tx_fifo_stall_timer);
+	del_timer_sync(&adapter->watchdog_timer);
+	del_timer_sync(&adapter->phy_info_timer);
 
 	flush_scheduled_work();
 
@@ -1165,6 +1179,8 @@ e1000_sw_init(struct e1000_adapter *adapter)
 	atomic_set(&adapter->irq_sem, 1);
 	spin_lock_init(&adapter->stats_lock);
 
+	set_bit(__E1000_DOWN, &adapter->flags);
+
 	return 0;
 }
 
@@ -1230,7 +1246,7 @@ e1000_open(struct net_device *netdev)
 	int err;
 
 	/* disallow open during test */
-	if (test_bit(__E1000_DRIVER_TESTING, &adapter->flags))
+	if (test_bit(__E1000_TESTING, &adapter->flags))
 		return -EBUSY;
 
 	/* allocate transmit descriptors */
@@ -2353,9 +2369,8 @@ e1000_82547_tx_fifo_stall(unsigned long data)
 			adapter->tx_fifo_head = 0;
 			atomic_set(&adapter->tx_fifo_stall, 0);
 			netif_wake_queue(netdev);
-		} else {
+		} else if (!test_bit(__E1000_DOWN, &adapter->flags))
 			mod_timer(&adapter->tx_fifo_stall_timer, jiffies + 1);
-		}
 	}
 }
 
@@ -2367,10 +2382,22 @@ static void
 e1000_watchdog(unsigned long data)
 {
 	struct e1000_adapter *adapter = (struct e1000_adapter *) data;
-	struct net_device *netdev = adapter->netdev;
+
+	/* Do the rest outside of interrupt context */
+	schedule_work(&adapter->watchdog_task);
+}
+
+static void
+e1000_watchdog_task(struct net_device *netdev)
+{
+	struct e1000_adapter *adapter = netdev_priv(netdev);
 	struct e1000_tx_ring *txdr = adapter->tx_ring;
 	uint32_t link, tctl;
 	int32_t ret_val;
+
+	if ((netif_carrier_ok(netdev)) &&
+	    (E1000_READ_REG(&adapter->hw, STATUS) & E1000_STATUS_LU))
+		goto link_up;
 
 	ret_val = e1000_check_for_link(&adapter->hw);
 	if ((ret_val == E1000_ERR_PHY) &&
@@ -2461,7 +2488,8 @@ e1000_watchdog(unsigned long data)
 
 			netif_carrier_on(netdev);
 			netif_wake_queue(netdev);
-			mod_timer(&adapter->phy_info_timer, jiffies + 2 * HZ);
+			if (!test_bit(__E1000_DOWN, &adapter->flags))
+				mod_timer(&adapter->phy_info_timer, jiffies + 2 * HZ);
 			adapter->smartspeed = 0;
 		}
 	} else {
@@ -2471,7 +2499,8 @@ e1000_watchdog(unsigned long data)
 			DPRINTK(LINK, INFO, "NIC Link is Down\n");
 			netif_carrier_off(netdev);
 			netif_stop_queue(netdev);
-			mod_timer(&adapter->phy_info_timer, jiffies + 2 * HZ);
+			if (!test_bit(__E1000_DOWN, &adapter->flags))
+				mod_timer(&adapter->phy_info_timer, jiffies + 2 * HZ);
 
 			/* 80003ES2LAN workaround--
 			 * For packet buffer work-around on link down event;
@@ -2486,6 +2515,7 @@ e1000_watchdog(unsigned long data)
 		e1000_smartspeed(adapter);
 	}
 
+link_up:
 	e1000_update_stats(adapter);
 
 	adapter->hw.tx_packet_delta = adapter->stats.tpt - adapter->tpt_old;
@@ -2536,7 +2566,8 @@ e1000_watchdog(unsigned long data)
 		e1000_rar_set(&adapter->hw, adapter->hw.mac_addr, 0);
 
 	/* Reset the timer */
-	mod_timer(&adapter->watchdog_timer, jiffies + 2 * HZ);
+	if (!test_bit(__E1000_DOWN, &adapter->flags))
+		mod_timer(&adapter->watchdog_timer, jiffies + 2 * HZ);
 }
 
 #define E1000_TX_FLAGS_CSUM		0x00000001
@@ -3028,7 +3059,9 @@ e1000_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 	if (unlikely(adapter->hw.mac_type == e1000_82547)) {
 		if (unlikely(e1000_82547_fifo_workaround(adapter, skb))) {
 			netif_stop_queue(netdev);
-			mod_timer(&adapter->tx_fifo_stall_timer, jiffies);
+			if (!test_bit(__E1000_DOWN, &adapter->flags))
+				mod_timer(&adapter->tx_fifo_stall_timer,
+					jiffies + 1);
 			spin_unlock_irqrestore(&tx_ring->tx_lock, flags);
 			return NETDEV_TX_BUSY;
 		}
@@ -3422,7 +3455,9 @@ e1000_intr(int irq, void *data, struct pt_regs *regs)
 			rctl = E1000_READ_REG(hw, RCTL);
 			E1000_WRITE_REG(hw, RCTL, rctl & ~E1000_RCTL_EN);
 		}
-		mod_timer(&adapter->watchdog_timer, jiffies);
+		/* guard against interrupt when we're going down */
+		if (!test_bit(__E1000_DOWN, &adapter->flags))
+			mod_timer(&adapter->watchdog_timer, jiffies + 1);
 	}
 
 #ifdef CONFIG_E1000_NAPI
