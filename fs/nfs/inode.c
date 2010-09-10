@@ -152,6 +152,15 @@ void nfs_zap_caches(struct inode *inode)
 	nfs_fscache_zap_cookie(inode);
 }
 
+void nfs_zap_mapping(struct inode *inode, struct address_space *mapping)
+{
+	if (mapping->nrpages != 0) {
+		spin_lock(&inode->i_lock);
+		NFS_I(inode)->cache_validity |= NFS_INO_INVALID_DATA;
+		spin_unlock(&inode->i_lock);
+	}
+}
+
 static void nfs_zap_acl_cache(struct inode *inode)
 {
 	void (*clear_acl_cache)(struct inode *);
@@ -717,13 +726,20 @@ int nfs_revalidate_mapping(struct inode *inode, struct address_space *mapping)
 	if ((nfsi->cache_validity & NFS_INO_REVAL_PAGECACHE)
 			|| nfs_attribute_timeout(inode))
 		ret = __nfs_revalidate_inode(NFS_SERVER(inode), inode);
+	if (ret < 0)
+		goto out;
 
 	if (nfsi->cache_validity & NFS_INO_INVALID_DATA) {
-		nfs_inc_stats(inode, NFSIOS_DATAINVALIDATE);
-		if (S_ISREG(inode->i_mode))
-			nfs_sync_mapping(mapping);
-		invalidate_inode_pages3(mapping);
-
+		if (mapping->nrpages != 0) {
+			if (S_ISREG(inode->i_mode)) {
+				ret = nfs_sync_mapping(mapping);
+				if (ret < 0)
+					goto out;
+			}
+			ret = invalidate_inode_pages3(mapping);
+			if (ret < 0)
+				goto out;
+		}
 		spin_lock(&inode->i_lock);
 		nfsi->cache_validity &= ~NFS_INO_INVALID_DATA;
 		if (S_ISDIR(inode->i_mode))
@@ -732,10 +748,12 @@ int nfs_revalidate_mapping(struct inode *inode, struct address_space *mapping)
 
 		nfs_fscache_renew_cookie(inode);
 
+		nfs_inc_stats(inode, NFSIOS_DATAINVALIDATE);
 		dfprintk(PAGECACHE, "NFS: (%s/%Ld) data cache invalidated\n",
 				inode->i_sb->s_id,
 				(long long)NFS_FILEID(inode));
 	}
+out:
 	return ret;
 }
 

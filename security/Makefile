@@ -5,6 +5,8 @@
 obj-$(CONFIG_KEYS)			+= keys/
 subdir-$(CONFIG_SECURITY_SELINUX)	+= selinux
 
+obj-y		+= min_addr.o
+
 # if we don't select a security model, use the default capabilities
 ifneq ($(CONFIG_SECURITY),y)
 obj-y		+= commoncap.o

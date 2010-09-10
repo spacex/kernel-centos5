@@ -278,15 +278,21 @@ static void ip_vs_process_message(const char *buffer, const size_t buflen)
 	struct ip_vs_sync_mesg *m = (struct ip_vs_sync_mesg *)buffer;
 	struct ip_vs_sync_conn *s;
 	struct ip_vs_sync_conn_options *opt;
+	struct ip_vs_protocol *pp;
 	struct ip_vs_conn *cp;
 	char *p;
 	int i;
+
+	if (buflen < sizeof(struct ip_vs_sync_mesg)) {
+		IP_VS_ERR_RL("sync message header too short\n");
+		return;
+	}
 
 	/* Convert size back to host byte order */
 	m->size = ntohs(m->size);
 
 	if (buflen != m->size) {
-		IP_VS_ERR("bogus message\n");
+		IP_VS_ERR_RL("bogus sync message size\n");
 		return;
 	}
 
@@ -299,10 +305,52 @@ static void ip_vs_process_message(const char *buffer, const size_t buflen)
 
 	p = (char *)buffer + sizeof(struct ip_vs_sync_mesg);
 	for (i=0; i<m->nr_conns; i++) {
-		unsigned flags;
+		unsigned flags, state;
 
-		s = (struct ip_vs_sync_conn *)p;
-		flags = ntohs(s->flags);
+		if (p + SIMPLE_CONN_SIZE > buffer+buflen) {
+			IP_VS_ERR_RL("bogus conn in sync message\n");
+			return;
+		}
+		s = (struct ip_vs_sync_conn *) p;
+
+		flags = ntohs(s->flags) | IP_VS_CONN_F_SYNC;
+		flags &= ~IP_VS_CONN_F_HASHED;
+		if (flags & IP_VS_CONN_F_SEQ_MASK) {
+			opt = (struct ip_vs_sync_conn_options *)&s[1];
+			p += FULL_CONN_SIZE;
+			if (p > buffer+buflen) {
+				IP_VS_ERR_RL("bogus conn options in sync message\n");
+				return;
+			}
+		} else {
+			opt = NULL;
+			p += SIMPLE_CONN_SIZE;
+		}
+
+		state = ntohs(s->state);
+
+		if (!(flags & IP_VS_CONN_F_TEMPLATE)) {
+			pp = ip_vs_proto_get(s->protocol);
+			if (!pp) {
+				IP_VS_ERR_RL("Unsupported protocol %u in sync msg\n",
+					s->protocol);
+				continue;
+			}
+			if (state >= pp->num_states) {
+				IP_VS_DBG(2, "Invalid %s state %u in sync msg\n",
+					pp->name, state);
+				continue;
+			}
+		} else {
+			/* protocol in templates is not used for state/timeout */
+			pp = NULL;
+			if (state > 0) {
+				IP_VS_DBG(2, "Invalid template state %u in sync msg\n",
+					state);
+				state = 0;
+			}
+		}
+  
 		if (!(flags & IP_VS_CONN_F_TEMPLATE))
 			cp = ip_vs_conn_in_get(s->protocol,
 					       s->caddr, s->cport,
@@ -321,7 +369,6 @@ static void ip_vs_process_message(const char *buffer, const size_t buflen)
 				IP_VS_ERR("ip_vs_conn_new failed\n");
 				return;
 			}
-			cp->state = ntohs(s->state);
 		} else if (!cp->dest) {
 			/* it is an entry created by the synchronization */
 			cp->state = ntohs(s->state);
@@ -329,21 +376,23 @@ static void ip_vs_process_message(const char *buffer, const size_t buflen)
 		}	/* Note that we don't touch its state and flags
 			   if it is a normal entry. */
 
-		if (flags & IP_VS_CONN_F_SEQ_MASK) {
-			opt = (struct ip_vs_sync_conn_options *)&s[1];
+		if (opt)
 			memcpy(&cp->in_seq, opt, sizeof(*opt));
-			p += FULL_CONN_SIZE;
-		} else
-			p += SIMPLE_CONN_SIZE;
 
 		atomic_set(&cp->in_pkts, sysctl_ip_vs_sync_threshold[0]);
-		cp->timeout = IP_VS_SYNC_CONN_TIMEOUT;
+		cp->state = state;
+		/*
+		 * We can not recover the right timeout for templates
+		 * in all cases, we can not find the right fwmark
+		 * virtual service. If needed, we can do it for
+		 * non-fwmark persistent services.
+		 */
+		if (!(flags & IP_VS_CONN_F_TEMPLATE) && pp->timeout_table)
+			cp->timeout = pp->timeout_table[state];
+		else
+			cp->timeout = (3*60*HZ);
 		ip_vs_conn_put(cp);
 
-		if (p > buffer+buflen) {
-			IP_VS_ERR("bogus message\n");
-			return;
-		}
 	}
 }
 

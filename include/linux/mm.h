@@ -39,10 +39,6 @@ extern int sysctl_legacy_va_layout;
 #include <asm/pgtable.h>
 #include <asm/processor.h>
 
-#ifdef CONFIG_SECURITY
-extern unsigned long mmap_min_addr;
-#endif
-
 #define nth_page(page,n) pfn_to_page(page_to_pfn((page)) + (n))
 
 /*
@@ -564,21 +560,6 @@ static inline void set_page_links(struct page *page, unsigned long zone,
 	set_page_zone(page, zone);
 	set_page_node(page, node);
 	set_page_section(page, pfn_to_section_nr(pfn));
-}
-
-/*
- * If a hint addr is less than mmap_min_addr change hint to be as
- * low as possible but still greater than mmap_min_addr
- */
-static inline unsigned long round_hint_to_min(unsigned long hint)
-{
-#ifdef CONFIG_SECURITY
-	hint &= PAGE_MASK;
-	if (((void *)hint != NULL) &&
-	    (hint < mmap_min_addr))
-		return PAGE_ALIGN(mmap_min_addr);
-#endif
-	return hint;
 }
 
 /*

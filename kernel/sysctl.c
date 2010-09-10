@@ -899,16 +899,14 @@ static ctl_table vm_table[] = {
 		.extra1		= &zero,
 		.extra2		= &one_hundred,
 	},
-#ifdef CONFIG_SECURITY
 	{
 		.ctl_name	= VM_MMAP_MIN_ADDR,
 		.procname	= "mmap_min_addr",
-		.data		= &mmap_min_addr,
-		.maxlen         = sizeof(unsigned long),
+		.data		= &dac_mmap_min_addr,
+		.maxlen		= sizeof(unsigned long),
 		.mode		= 0644,
-		.proc_handler	= &proc_doulongvec_minmax,
+		.proc_handler	= &mmap_min_addr_handler,
 	},
-#endif
 	{
 		.ctl_name	= VM_DIRTY_WB_CS,
 		.procname	= "dirty_writeback_centisecs",

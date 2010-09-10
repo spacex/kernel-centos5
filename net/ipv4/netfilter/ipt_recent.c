@@ -246,6 +246,8 @@ ipt_recent_checkentry(const char *tablename, const void *ip,
 	if ((info->check_set & (IPT_RECENT_SET | IPT_RECENT_REMOVE)) &&
 	    (info->seconds || info->hit_count))
 		return 0;
+	if (info->hit_count > ip_pkt_list_tot)
+		return 0;
 	if (info->name[0] == '\0' ||
 	    strnlen(info->name, IPT_RECENT_NAME_LEN) == IPT_RECENT_NAME_LEN)
 		return 0;

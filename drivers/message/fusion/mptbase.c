@@ -80,6 +80,11 @@ MODULE_VERSION(my_VERSION);
  *  cmd line parameters
  */
 
+static int mpt_msi_enable;
+module_param(mpt_msi_enable, int, 0);
+MODULE_PARM_DESC(mpt_msi_enable, " MSI Support Enable (default=0)");
+
+
 static int mpt_msi_enable_spi;
 module_param(mpt_msi_enable_spi, int, 0);
 MODULE_PARM_DESC(mpt_msi_enable_spi, " Enable MSI Support for SPI \
@@ -1959,15 +1964,15 @@ mpt_attach(struct pci_dev *pdev, const struct pci_device_id *id)
 	switch (ioc->bus_type) {
 
 	case SAS:
-		ioc->msi_enable = mpt_msi_enable_sas;
+		ioc->msi_enable = mpt_msi_enable_sas | mpt_msi_enable;
 		break;
 
 	case SPI:
-		ioc->msi_enable = mpt_msi_enable_spi;
+		ioc->msi_enable = mpt_msi_enable_spi | mpt_msi_enable;
 		break;
 
 	case FC:
-		ioc->msi_enable = mpt_msi_enable_fc;
+		ioc->msi_enable = mpt_msi_enable_fc | mpt_msi_enable;
 		break;
 
 	default:

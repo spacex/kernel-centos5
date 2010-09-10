@@ -700,9 +700,14 @@ static int dummy_file_mmap_addr (struct file *file, unsigned long reqprot,
 				 unsigned long addr,
 				 unsigned long addr_only)
 {
-	if ((addr < mmap_min_addr) && !capable(CAP_SYS_RAWIO))
-		return -EACCES;
-	return 0;
+	int ret = 0;
+
+	if (addr < dac_mmap_min_addr) {
+		ret = dummy_capable(current, CAP_SYS_RAWIO);
+		if (ret == 0)
+			current->flags |= PF_SUPERPRIV;
+	}
+	return ret;
 }
 
 #ifdef CONFIG_SECURITY_NETWORK

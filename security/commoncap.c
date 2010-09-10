@@ -277,7 +277,7 @@ int cap_task_post_setuid (uid_t old_ruid, uid_t old_euid, uid_t old_suid,
 
 			/*
 			 * FIXME - is fsuser used for all CAP_FS_MASK capabilities?
-			 *          if not, we might be a bit too harsh here.
+			 *	  if not, we might be a bit too harsh here.
 			 */
 
 			if (!issecure (SECURE_NO_SETUID_FIXUP)) {
@@ -330,6 +330,35 @@ int cap_vm_enough_memory(long pages)
 	return cap_vm_enough_memory_mm(current->mm, pages);
 }
 
+/*
+ * cap_file_mmap - check if able to map given addr
+ * @file: unused
+ * @reqprot: unused
+ * @prot: unused
+ * @flags: unused
+ * @addr: address attempting to be mapped
+ * @addr_only: unused
+ *
+ * If the process is attempting to map memory below mmap_min_addr they need
+ * CAP_SYS_RAWIO.  The other parameters to this function are unused by the
+ * capability security module.  Returns 0 if this mapping should be allowed
+ * -EPERM if not.
+ */
+int cap_file_mmap(struct file *file, unsigned long reqprot,
+		  unsigned long prot, unsigned long flags,
+		  unsigned long addr, unsigned long addr_only)
+{
+	int ret = 0;
+
+	if (addr < dac_mmap_min_addr) {
+		ret = cap_capable(current, CAP_SYS_RAWIO);
+		/* set PF_SUPERPRIV if it turns out we allow the low mmap */
+		if (ret == 0)
+			current->flags |= PF_SUPERPRIV;
+	}
+	return ret;
+}
+
 EXPORT_SYMBOL(cap_capable);
 EXPORT_SYMBOL(cap_settime);
 EXPORT_SYMBOL(cap_ptrace);
@@ -346,6 +375,7 @@ EXPORT_SYMBOL(cap_task_reparent_to_init);
 EXPORT_SYMBOL(cap_syslog);
 EXPORT_SYMBOL(cap_vm_enough_memory);
 EXPORT_SYMBOL(cap_vm_enough_memory_mm);
+EXPORT_SYMBOL(cap_file_mmap);
 
 MODULE_DESCRIPTION("Standard Linux Common Capabilities Security Module");
 MODULE_LICENSE("GPL");

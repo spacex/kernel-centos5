@@ -1241,7 +1241,7 @@ int
 nfsd_create_v3(struct svc_rqst *rqstp, struct svc_fh *fhp,
 		char *fname, int flen, struct iattr *iap,
 		struct svc_fh *resfhp, int createmode, u32 *verifier,
-	        int *truncp)
+	        int *truncp, int *created)
 {
 	struct dentry	*dentry, *dchild = NULL;
 	struct inode	*dirp;
@@ -1330,6 +1330,8 @@ nfsd_create_v3(struct svc_rqst *rqstp, struct svc_fh *fhp,
 	err = vfs_create(dirp, dchild, iap->ia_mode, NULL);
 	if (err < 0)
 		goto out_nfserr;
+	if (created)
+		*created = 1;
 
 	if (EX_ISSYNC(fhp->fh_export)) {
 		err = nfserrno(nfsd_sync_dir(dentry));
