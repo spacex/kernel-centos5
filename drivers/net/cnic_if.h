@@ -12,8 +12,8 @@
 #ifndef CNIC_IF_H
 #define CNIC_IF_H
 
-#define CNIC_MODULE_VERSION	"2.0.0"
-#define CNIC_MODULE_RELDATE	"March 21, 2009"
+#define CNIC_MODULE_VERSION	"2.0.1"
+#define CNIC_MODULE_RELDATE	"Oct 01, 2009"
 
 #define CNIC_ULP_RDMA		0
 #define CNIC_ULP_ISCSI		1
@@ -290,10 +290,13 @@ struct cnic_ulp_ops {
 	void (*iscsi_nl_send_msg)(struct cnic_dev *dev, u32 msg_type,
 				  char *data, u16 data_size);
 	struct module *owner;
+	atomic_t ref_count;
 };
 
 extern int cnic_register_driver(int ulp_type, struct cnic_ulp_ops *ulp_ops);
 
 extern int cnic_unregister_driver(int ulp_type);
+
+extern struct cnic_eth_dev *bnx2_cnic_probe(struct net_device *dev);
 
 #endif

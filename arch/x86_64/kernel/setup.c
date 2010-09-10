@@ -67,6 +67,7 @@
 #include <asm/sections.h>
 #include <asm/dmi.h>
 #include <asm/generic-hypervisor.h>
+#include <asm/pci-direct.h>
 
 /*
  * Machine setup..
@@ -790,6 +791,64 @@ static int nearby_node(int apicid)
 #endif
 
 /*
+ * Fixup core topology information for AMD multi-node processors.
+ * Assumption 1: Number of cores in each internal node is the same.
+ * Assumption 2: Mixed systems with both single-node and dual-node
+ * processors are not supported.
+ */
+#ifdef CONFIG_X86_HT
+static void __cpuinit amd_fixup_dcm(struct cpuinfo_x86 *c)
+{
+#ifdef CONFIG_PCI
+	u32 t, cpn;
+	u8 n, n_id;
+	int cpu = smp_processor_id();
+
+	/* fixup topology information only once for a core */
+	if (cpu_has(c, X86_FEATURE_AMD_DCM))
+		return;
+
+	/* check for multi-node processor on boot cpu */
+	t = read_pci_config(0, 24, 3, 0xe8);
+	if (!(t & (1 << 29)))
+		return;
+
+	set_bit(X86_FEATURE_AMD_DCM, c->x86_capability);
+
+	/* cores per node: each internal node has half the number of cores */
+	cpn = c->x86_max_cores >> 1;
+
+	/* even-numbered NB_id of this dual-node processor */
+	n = c->phys_proc_id << 1;
+
+	/*
+	 * determine internal node id and assign cores fifty-fifty to
+	 * each node of the dual-node processor
+	 */
+	t = read_pci_config(0, 24 + n, 3, 0xe8);
+	n = (t >> 30) & 0x3;
+	if (n == 0) {
+		if (c->cpu_core_id < cpn)
+			n_id = 0;
+		else
+			n_id = 1;
+	} else {
+		if (c->cpu_core_id < cpn)
+			n_id = 1;
+		else
+			n_id = 0;
+	}
+
+	/* compute entire NodeID, use llc_shared_map to store sibling info */
+	cpu_llc_id[cpu] = (c->phys_proc_id << 1) + n_id;
+
+	/* fixup core id to be in range from 0 to cpn */
+	c->cpu_core_id = c->cpu_core_id % cpn;
+#endif
+}
+#endif
+
+/*
  * On a AMD dual core setup the lower bits of the APIC id distingush the cores.
  * Assumes number of cores is a power of two.
  */
@@ -820,8 +879,15 @@ static void __init amd_detect_cmp(struct cpuinfo_x86 *c)
 	/* Convert the APIC ID into the socket ID */
 	c->phys_proc_id = phys_pkg_id(bits);
 
+	/* use socket ID also for last level cache */
+	cpu_llc_id[cpu] = c->phys_proc_id;
+
+	/* fixup topology information on multi-node processors */
+	if ((c->x86 == 0x10) && (c->x86_model == 9))
+		amd_fixup_dcm(c);
+
 #ifdef CONFIG_NUMA
-  	node = c->phys_proc_id;
+	node = cpu_llc_id[cpu];
  	if (apicid_to_node[apicid] != NUMA_NO_NODE)
  		node = apicid_to_node[apicid];
  	if (!node_online(node)) {

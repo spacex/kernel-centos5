@@ -457,7 +457,8 @@ cpumask_t cpu_coregroup_map(int cpu)
 	 * For perf, we return last level cache shared map.
 	 * And for power savings, we return cpu_core_map
 	 */
-	if (sched_mc_power_savings || sched_smt_power_savings)
+	if ((sched_mc_power_savings || sched_smt_power_savings) &&
+		!(cpu_has(c, X86_FEATURE_AMD_DCM)))
 		return cpu_core_map[cpu];
 	else
 		return c->llc_shared_map;
@@ -1254,6 +1255,8 @@ int __cpu_disable(void)
 	if (cpu == 0)
 		return -EBUSY;
 
+	if (nmi_watchdog == NMI_LOCAL_APIC)
+		stop_apic_nmi_watchdog();
 	clear_local_APIC();
 
 	/*

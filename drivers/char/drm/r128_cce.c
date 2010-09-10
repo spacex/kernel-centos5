@@ -353,6 +353,11 @@ static int r128_do_init_cce(drm_device_t * dev, drm_r128_init_t * init)
 
 	DRM_DEBUG("\n");
 
+	if (dev->dev_private) {
+		DRM_DEBUG("called when already initialized\n");
+		return DRM_ERR(EINVAL);
+	}
+
 	dev_priv = drm_alloc(sizeof(drm_r128_private_t), DRM_MEM_DRIVER);
 	if (dev_priv == NULL)
 		return DRM_ERR(ENOMEM);
@@ -655,6 +660,8 @@ int r128_cce_start(DRM_IOCTL_ARGS)
 
 	LOCK_TEST_WITH_RETURN(dev, filp);
 
+	DEV_INIT_TEST_WITH_RETURN(dev_priv);
+
 	if (dev_priv->cce_running || dev_priv->cce_mode == R128_PM4_NONPM4) {
 		DRM_DEBUG("%s while CCE running\n", __FUNCTION__);
 		return 0;
@@ -677,6 +684,8 @@ int r128_cce_stop(DRM_IOCTL_ARGS)
 	DRM_DEBUG("\n");
 
 	LOCK_TEST_WITH_RETURN(dev, filp);
+
+	DEV_INIT_TEST_WITH_RETURN(dev_priv);
 
 	DRM_COPY_FROM_USER_IOCTL(stop, (drm_r128_cce_stop_t __user *) data,
 				 sizeof(stop));
@@ -719,10 +728,7 @@ int r128_cce_reset(DRM_IOCTL_ARGS)
 
 	LOCK_TEST_WITH_RETURN(dev, filp);
 
-	if (!dev_priv) {
-		DRM_DEBUG("%s called before init done\n", __FUNCTION__);
-		return DRM_ERR(EINVAL);
-	}
+	DEV_INIT_TEST_WITH_RETURN(dev_priv);
 
 	r128_do_cce_reset(dev_priv);
 
@@ -740,6 +746,8 @@ int r128_cce_idle(DRM_IOCTL_ARGS)
 
 	LOCK_TEST_WITH_RETURN(dev, filp);
 
+	DEV_INIT_TEST_WITH_RETURN(dev_priv);
+
 	if (dev_priv->cce_running) {
 		r128_do_cce_flush(dev_priv);
 	}
@@ -753,6 +761,8 @@ int r128_engine_reset(DRM_IOCTL_ARGS)
 	DRM_DEBUG("\n");
 
 	LOCK_TEST_WITH_RETURN(dev, filp);
+
+	DEV_INIT_TEST_WITH_RETURN(dev->dev_private);
 
 	return r128_do_engine_reset(dev);
 }

@@ -218,7 +218,232 @@ static void acpi_safe_halt(void)
 
 static atomic_t c3_cpu_count;
 
-static void acpi_processor_idle(void)
+
+static void acpi_processor_idle_simple(void)
+{
+	struct acpi_processor *pr = NULL;
+	struct acpi_processor_cx *cx = NULL;
+	struct acpi_processor_cx *next_state = NULL;
+	int sleep_ticks = 0;
+	u32 t1, t2 = 0;
+
+	pr = processors[smp_processor_id()];
+	if (!pr)
+		return;
+
+	/*
+	 * Interrupts must be disabled during bus mastering calculations and
+	 * for C2/C3 transitions.
+	 */
+	local_irq_disable();
+
+	/*
+	 * Check whether we truly need to go idle, or should
+	 * reschedule:
+	 */
+	if (unlikely(need_resched())) {
+		local_irq_enable();
+		return;
+	}
+
+	cx = pr->power.state;
+	if (!cx) {
+		acpi_safe_halt();
+		return;
+	}
+
+#ifdef CONFIG_HOTPLUG_CPU
+	/*
+	 * Check for P_LVL2_UP flag before entering C2 and above on
+	 * an SMP system. We do it here instead of doing it at _CST/P_LVL
+	 * detection phase, to work cleanly with logical CPU hotplug.
+	 */
+	if ((cx->type != ACPI_STATE_C1) && (num_online_cpus() > 1) && 
+	    !pr->flags.has_cst && !acpi_fadt.plvl2_up)
+		cx = &pr->power.states[ACPI_STATE_C1];
+#endif
+
+	/*
+	 * Sleep:
+	 * ------
+	 * Invoke the current Cx state to put the processor to sleep.
+	 */
+	if (cx->type == ACPI_STATE_C2 || cx->type == ACPI_STATE_C3) {
+		current_thread_info()->status &= ~TS_POLLING;
+		smp_mb__after_clear_bit();
+		if (need_resched()) {
+			current_thread_info()->status |= TS_POLLING;
+			local_irq_enable();
+			return;
+		}
+	}
+
+	switch (cx->type) {
+
+	case ACPI_STATE_C1:
+		/*
+		 * Invoke C1.
+		 */
+		acpi_safe_halt();
+
+		/*
+		 * TBD: Can't get time duration while in C1, as resumes
+		 *      go to an ISR rather than here.  Need to instrument
+		 *      base interrupt handler.
+		 */
+		sleep_ticks = 0xFFFFFFFF;
+		break;
+
+	case ACPI_STATE_C2:
+		/* Get start time (ticks) */
+		t1 = inl(acpi_fadt.xpm_tmr_blk.address);
+		/* Invoke C2 */
+		inb(cx->address);
+		/* Dummy wait op - must do something useless after P_LVL2 read
+		   because chipsets cannot guarantee that STPCLK# signal
+		   gets asserted in time to freeze execution properly. */
+		t2 = inl(acpi_fadt.xpm_tmr_blk.address);
+		/* Get end time (ticks) */
+		t2 = inl(acpi_fadt.xpm_tmr_blk.address);
+
+#ifdef CONFIG_GENERIC_TIME
+		/* TSC halts in C2, so notify users */
+		if (!boot_cpu_has(X86_FEATURE_NONSTOP_TSC))
+			mark_tsc_unstable();
+#endif
+		/* Re-enable interrupts */
+		local_irq_enable();
+		current_thread_info()->status |= TS_POLLING;
+		/* Compute time (ticks) that we were actually asleep */
+		sleep_ticks =
+		    ticks_elapsed(t1, t2) - cx->latency_ticks - C2_OVERHEAD;
+		break;
+
+	case ACPI_STATE_C3:
+		/* Get start time (ticks) */
+		t1 = inl(acpi_fadt.xpm_tmr_blk.address);
+		/* Invoke C3 */
+		inb(cx->address);
+		/* Dummy wait op (see above) */
+		t2 = inl(acpi_fadt.xpm_tmr_blk.address);
+		/* Get end time (ticks) */
+		t2 = inl(acpi_fadt.xpm_tmr_blk.address);
+		if (pr->flags.bm_check && pr->flags.bm_control) {
+			/* Enable bus master arbitration */
+			atomic_dec(&c3_cpu_count);
+			acpi_set_register(ACPI_BITREG_ARB_DISABLE, 0,
+					  ACPI_MTX_DO_NOT_LOCK);
+		}
+
+#ifdef CONFIG_GENERIC_TIME
+		/* TSC halts in C3, so notify users */
+		if (!boot_cpu_has(X86_FEATURE_NONSTOP_TSC))
+			mark_tsc_unstable();
+#endif
+		/* Re-enable interrupts */
+		local_irq_enable();
+		current_thread_info()->status |= TS_POLLING;
+		/* Compute time (ticks) that we were actually asleep */
+		sleep_ticks =
+		    ticks_elapsed(t1, t2) - cx->latency_ticks - C3_OVERHEAD;
+		break;
+
+	default:
+		local_irq_enable();
+		return;
+	}
+	cx->usage++;
+	if ((cx->type != ACPI_STATE_C1) && (sleep_ticks > 0))
+		cx->time += sleep_ticks;
+
+	if (sleep_ticks != 0xFFFFFFFF && sleep_ticks < 0)
+		sleep_ticks = 0;
+
+	next_state = pr->power.state;
+
+#ifdef CONFIG_HOTPLUG_CPU
+	/* Don't do promotion/demotion */
+	if ((cx->type == ACPI_STATE_C1) && (num_online_cpus() > 1) &&
+	    !pr->flags.has_cst && !acpi_fadt.plvl2_up) {
+		next_state = cx;
+		goto end;
+	}
+#endif
+
+	/*
+	 * Promotion?
+	 * ----------
+	 * Track the number of longs (time asleep is greater than threshold)
+	 * and promote when the count threshold is reached.  Note that bus
+	 * mastering activity may prevent promotions.
+	 * Do not promote above max_cstate.
+	 */
+	if (cx->promotion.state &&
+	    ((cx->promotion.state - pr->power.states) <= max_cstate)) {
+		if (sleep_ticks > cx->promotion.threshold.ticks) {
+			cx->promotion.count++;
+			cx->demotion.count = 0;
+			if (cx->promotion.count >=
+			    cx->promotion.threshold.count) {
+				if (pr->flags.bm_check) {
+					if (!
+					    (pr->power.bm_activity & cx->
+					     promotion.threshold.bm)) {
+						next_state =
+						    cx->promotion.state;
+						goto end;
+					}
+				} else {
+					next_state = cx->promotion.state;
+					goto end;
+				}
+			}
+		} else {
+			if (cx->promotion.count > 0)
+				cx->promotion.count--;
+		}
+	}
+
+	/*
+	 * Demotion?
+	 * ---------
+	 * Track the number of shorts (time asleep is less than time threshold)
+	 * and demote when the usage threshold is reached.
+	 */
+	if (cx->demotion.state) {
+		if (sleep_ticks < cx->demotion.threshold.ticks) {
+			cx->demotion.count++;
+			cx->promotion.count = 0;
+			if (cx->demotion.count >= cx->demotion.threshold.count) {
+				next_state = cx->demotion.state;
+				goto end;
+			}
+		} else {
+			if (cx->demotion.count > 0)
+				cx->demotion.count--;
+		}
+	}
+
+      end:
+	/*
+	 * Demote if current state exceeds max_cstate
+	 */
+	if ((pr->power.state - pr->power.states) > max_cstate) {
+		if (cx->demotion.state)
+			next_state = cx->demotion.state;
+	}
+
+	/*
+	 * New Cx State?
+	 * -------------
+	 * If we're going to start using a new Cx state we must clean up
+	 * from the previous and prepare to use the new.
+	 */
+	if (next_state != pr->power.state)
+		acpi_processor_power_activate(pr, next_state);
+}
+
+static void acpi_processor_idle_bm(void)
 {
 	struct acpi_processor *pr = NULL;
 	struct acpi_processor_cx *cx = NULL;
@@ -522,6 +747,7 @@ static void acpi_processor_idle(void)
 	if (next_state != pr->power.state)
 		acpi_processor_power_activate(pr, next_state);
 }
+static void (*acpi_processor_idle)(void) = acpi_processor_idle_bm;
 
 static int acpi_processor_set_power_policy(struct acpi_processor *pr)
 {
@@ -815,7 +1041,8 @@ static void acpi_processor_power_verify_c2(struct acpi_processor_cx *cx)
 static void acpi_processor_power_verify_c3(struct acpi_processor *pr,
 					   struct acpi_processor_cx *cx)
 {
-	static int bm_check_flag;
+	static int bm_check_flag = -1;
+	static int bm_control_flag = -1;
 
 
 	if (!cx->address)
@@ -845,12 +1072,14 @@ static void acpi_processor_power_verify_c3(struct acpi_processor *pr,
 	}
 
 	/* All the logic here assumes flags.bm_check is same across all CPUs */
-	if (!bm_check_flag) {
+	if (bm_check_flag == -1) {
 		/* Determine whether bm_check is needed based on CPU  */
 		acpi_processor_power_init_bm_check(&(pr->flags), pr->id);
 		bm_check_flag = pr->flags.bm_check;
+		bm_control_flag = pr->flags.bm_control;
 	} else {
 		pr->flags.bm_check = bm_check_flag;
+		pr->flags.bm_control = bm_control_flag;
 	}
 
 	if (pr->flags.bm_check) {
@@ -903,6 +1132,9 @@ static int acpi_processor_power_verify(struct acpi_processor *pr)
 	cpumask_t mask = cpumask_of_cpu(pr->id);
 	on_each_cpu(switch_ipi_to_APIC_timer, &mask, 1, 1);
 #endif
+	acpi_processor_power_init_bm_check(&(pr->flags), pr->id);
+	if (pr->flags.bm_check && !pr->flags.bm_control)
+		acpi_processor_idle = acpi_processor_idle_simple;
 
 	for (i = 1; i < ACPI_PROCESSOR_MAX_POWER; i++) {
 		struct acpi_processor_cx *cx = &pr->power.states[i];

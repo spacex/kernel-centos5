@@ -101,6 +101,8 @@ extern void pci_pcbios_init(void);
 extern void pci_mmcfg_init(void);
 extern void pcibios_sort(void);
 
+/* scan a bus after allocating a pci_sysdata for it */
+extern struct pci_bus *pci_scan_bus_with_sysdata(int busno);
 
 /*
  * AMD Fam10h CPUs are buggy, and cannot access MMIO config space

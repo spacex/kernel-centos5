@@ -13,17 +13,12 @@ static void __devinit pcibios_fixup_peer_bridges(void)
 {
 	int n, devfn;
 
-	if (pcibios_last_bus <= 0 || pcibios_last_bus >= 0xff)
+	if (pcibios_last_bus <= 0 || pcibios_last_bus > 0xff)
 		return;
 	DBG("PCI: Peer bridge fixup\n");
 
 	for (n=0; n <= pcibios_last_bus; n++) {
 		u32 l;
-		struct pci_sysdata *sd;
-
-		sd = kzalloc(sizeof(&sd), GFP_KERNEL);
-		if (!sd)
-			panic("Cannot allocate PCI domain sysdata");
 		if (pci_find_bus(0, n))
 			continue;
 		for (devfn = 0; devfn < 256; devfn += 8) {
@@ -31,8 +26,7 @@ static void __devinit pcibios_fixup_peer_bridges(void)
 			    l != 0x0000 && l != 0xffff) {
 				DBG("Found device at %02x:%02x [%04x]\n", n, devfn, l);
 				printk(KERN_INFO "PCI: Discovered peer bus %02x\n", n);
-				if (!pci_scan_bus(n, &pci_root_ops, sd))
-					kfree(sd);
+				pci_scan_bus_with_sysdata(n);
 				break;
 			}
 		}
@@ -47,13 +41,14 @@ static int __init pci_legacy_init(void)
 	}
 
 	if (pcibios_scanned++)
-		return 0;
+		goto end;
 
 	printk("PCI: Probing PCI hardware\n");
 	pci_root_bus = pcibios_scan_root(0);
 	if (pci_root_bus)
 		pci_bus_add_devices(pci_root_bus);
 
+end:
 	pcibios_fixup_peer_bridges();
 
 	return 0;

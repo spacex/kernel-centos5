@@ -388,6 +388,8 @@ static void prune_one_dentry(struct dentry * dentry)
  * @count: number of entries to try and free
  * @sb: if given, ignore dentries for other superblocks
  *         which are being unmounted.
+ * @dispose_list: the list to go through and remove dentrys
+ * 	   from.  If null we use the dentry_unused list
  *
  * Shrink the dcache. This is done when we need
  * more memory, or simply when we need to unmount
@@ -398,7 +400,8 @@ static void prune_one_dentry(struct dentry * dentry)
  * all the dentries are in use.
  */
  
-static void prune_dcache(int count, struct super_block *sb)
+static void prune_dcache(int count, struct super_block *sb,
+			struct list_head *dispose_list)
 {
 	spin_lock(&dcache_lock);
 	for (; count ; count--) {
@@ -408,24 +411,19 @@ static void prune_dcache(int count, struct super_block *sb)
 
 		cond_resched_lock(&dcache_lock);
 
-		tmp = dentry_unused.prev;
-		if (sb) {
-			/* Try to find a dentry for this sb, but don't try
-			 * too hard, if they aren't near the tail they will
-			 * be moved down again soon
-			 */
-			int skip = count;
-			while (skip && tmp != &dentry_unused &&
-			    list_entry(tmp, struct dentry, d_lru)->d_sb != sb) {
-				skip--;
-				tmp = tmp->prev;
-			}
-		}
-		if (tmp == &dentry_unused)
-			break;
+		if (dispose_list) {
+			tmp = dispose_list->prev;
+			if (tmp == dispose_list)
+				break;
+		} else {
+			tmp = dentry_unused.prev;
+			if (tmp == &dentry_unused)
+				break;
+ 			dentry_stat.nr_unused--;
+ 		}
+
+		prefetch(tmp->prev);
 		list_del_init(tmp);
-		prefetch(dentry_unused.prev);
- 		dentry_stat.nr_unused--;
 		dentry = list_entry(tmp, struct dentry, d_lru);
 
  		spin_lock(&dentry->d_lock);
@@ -746,7 +744,8 @@ positive:
  * drop the lock and return early due to latency
  * constraints.
  */
-static int select_parent(struct dentry * parent)
+static int select_parent(struct dentry * parent,
+			struct list_head *dispose_list)
 {
 	struct dentry *this_parent = parent;
 	struct list_head *next;
@@ -770,8 +769,7 @@ resume:
 		 * of the unused list for prune_dcache
 		 */
 		if (!atomic_read(&dentry->d_count)) {
-			list_add_tail(&dentry->d_lru, &dentry_unused);
-			dentry_stat.nr_unused++;
+			list_add_tail(&dentry->d_lru, dispose_list);
 			found++;
 		}
 
@@ -814,9 +812,14 @@ out:
 void shrink_dcache_parent(struct dentry * parent)
 {
 	int found;
+	LIST_HEAD(dispose_list);
 
-	while ((found = select_parent(parent)) != 0)
-		prune_dcache(found, parent->d_sb);
+	/*
+	 * select parent will populate dispose_list with the
+	 * dentry's that we are removing
+	 */
+	while ((found = select_parent(parent, &dispose_list)) != 0)
+		prune_dcache(found, parent->d_sb, &dispose_list);
 }
 
 /*
@@ -836,7 +839,7 @@ static int shrink_dcache_memory(int nr, gfp_t gfp_mask)
 	if (nr) {
 		if (!(gfp_mask & __GFP_FS))
 			return -1;
-		prune_dcache(nr, NULL);
+		prune_dcache(nr, NULL, NULL);
 	}
 	return (dentry_stat.nr_unused / 100) * sysctl_vfs_cache_pressure;
 }
@@ -1504,9 +1507,6 @@ void d_delete(struct dentry * dentry)
 	if (atomic_read(&dentry->d_count) == 1) {
 		dentry_iput(dentry);
 		fsnotify_nameremove(dentry, isdir);
-
-		/* remove this and other inotify debug checks after 2.6.18 */
-		dentry->d_flags &= ~DCACHE_INOTIFY_PARENT_WATCHED;
 		return;
 	}
 

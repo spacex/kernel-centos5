@@ -3,6 +3,7 @@
 #include <linux/mm.h>
 #include <asm/io.h>
 #include <asm/processor.h>
+#include <asm/pci-direct.h>
 
 #include "cpu.h"
 
@@ -22,9 +23,67 @@
 extern void vide(void);
 __asm__(".align 4\nvide: ret");
 
-int force_mwait __initdata;
+int force_mwait __cpuinitdata;
 
-static void __init init_amd(struct cpuinfo_x86 *c)
+/*
+ * Fixup core topology information for AMD multi-node processors.
+ * Assumption 1: Number of cores in each internal node is the same.
+ * Assumption 2: Mixed systems with both single-node and dual-node
+ * processors are not supported.
+ */
+#ifdef CONFIG_X86_HT
+static void __cpuinit amd_fixup_dcm(struct cpuinfo_x86 *c)
+{
+#ifdef CONFIG_PCI
+	u32 t, cpn;
+	u8 n, n_id;
+	int cpu = smp_processor_id();
+
+	/* fixup topology information only once for a core */
+	if (cpu_has(c, X86_FEATURE_AMD_DCM))
+		return;
+
+	/* check for multi-node processor on boot cpu */
+	t = read_pci_config(0, 24, 3, 0xe8);
+	if (!(t & (1 << 29)))
+		return;
+
+	set_bit(X86_FEATURE_AMD_DCM, c->x86_capability);
+
+	/* cores per node: each internal node has half the number of cores */
+	cpn = c->x86_max_cores >> 1;
+
+	/* even-numbered NB_id of this dual-node processor */
+	n = c->phys_proc_id << 1;
+
+	/*
+	 * determine internal node id and assign cores fifty-fifty to
+	 * each node of the dual-node processor
+	 */
+	t = read_pci_config(0, 24 + n, 3, 0xe8);
+	n = (t>>30) & 0x3;
+	if (n == 0) {
+		if (c->cpu_core_id < cpn)
+			n_id = 0;
+		else
+			n_id = 1;
+	} else {
+		if (c->cpu_core_id < cpn)
+			n_id = 1;
+		else
+			n_id = 0;
+	}
+
+	/* compute entire NodeID, use llc_shared_map to store sibling info */
+	cpu_llc_id[cpu] = (c->phys_proc_id << 1) + n_id;
+
+	/* fixup core id to be in range from 0 to cpn */
+	c->cpu_core_id = c->cpu_core_id % cpn;
+#endif
+}
+#endif
+
+static void __cpuinit init_amd(struct cpuinfo_x86 *c)
 {
 	u32 l, h;
 	int mbytes = num_physpages >> (20-PAGE_SHIFT);
@@ -46,6 +105,15 @@ static void __init init_amd(struct cpuinfo_x86 *c)
 	}
 #endif
 
+#if defined(CONFIG_X86_LOCAL_APIC) && defined(CONFIG_PCI)
+	/* check CPU config space for extended APIC ID */
+	if (cpu_has_apic && c->x86 >= 0xf) {
+		unsigned int val;
+		val = read_pci_config(0, 24, 0, 0x68);
+		if ((val & ((1 << 17) | (1 << 18))) == ((1 << 17) | (1 << 18)))
+			set_bit(X86_FEATURE_EXTD_APICID, c->x86_capability);
+	}
+#endif
 	/*
 	 *	FIXME: We should handle the K5 here. Set up the write
 	 *	range and also turn on MSR 83 bits 4 and 31 (write alloc,
@@ -240,6 +308,11 @@ static void __init init_amd(struct cpuinfo_x86 *c)
 		}
 		c->cpu_core_id = c->phys_proc_id & ((1<<bits)-1);
 		c->phys_proc_id >>= bits;
+		/* use socket ID also for last level cache */
+		cpu_llc_id[cpu] = c->phys_proc_id;
+		/* fixup topology information on multi-node processors */
+		if ((c->x86 == 0x10) && (c->x86_model == 9))
+			amd_fixup_dcm(c);
 		printk(KERN_INFO "CPU %d(%d) -> Core %d\n",
 		       cpu, c->x86_max_cores, c->cpu_core_id);
 	}
@@ -257,7 +330,7 @@ static void __init init_amd(struct cpuinfo_x86 *c)
 		clear_bit(X86_FEATURE_MWAIT, &c->x86_capability);
 }
 
-static unsigned int amd_size_cache(struct cpuinfo_x86 * c, unsigned int size)
+static unsigned int __cpuinit amd_size_cache(struct cpuinfo_x86 * c, unsigned int size)
 {
 	/* AMD errata T13 (order #21922) */
 	if ((c->x86 == 6)) {
@@ -270,7 +343,7 @@ static unsigned int amd_size_cache(struct cpuinfo_x86 * c, unsigned int size)
 	return size;
 }
 
-static struct cpu_dev amd_cpu_dev __initdata = {
+static struct cpu_dev amd_cpu_dev __cpuinitdata = {
 	.c_vendor	= "AMD",
 	.c_ident 	= { "AuthenticAMD" },
 	.c_models = {
@@ -298,10 +371,3 @@ int __init amd_init_cpu(void)
 
 //early_arch_initcall(amd_init_cpu);
 
-static int __init amd_exit_cpu(void)
-{
-	cpu_devs[X86_VENDOR_AMD] = NULL;
-	return 0;
-}
-
-late_initcall(amd_exit_cpu);

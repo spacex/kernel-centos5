@@ -450,10 +450,7 @@ static int new_lockspace(char *name, int namelen, void **lockspace,
 	if (flags & DLM_LSFL_TIMEWARN)
 		set_bit(LSFL_TIMEWARN, &ls->ls_flags);
 
-	if (flags & DLM_LSFL_FS)
-		ls->ls_allocation = GFP_NOFS;
-	else
-		ls->ls_allocation = GFP_KERNEL;
+	ls->ls_allocation = GFP_NOFS;
 
 	/* ls_exflags are forced to match among nodes, and we don't
 	   need to require all nodes to have TIMEWARN or FS set */

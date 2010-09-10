@@ -19,6 +19,7 @@
 #include <linux/mm.h>
 #include <linux/delay.h>
 #include <linux/bootmem.h>
+#include <linux/dmi.h>
 #include <linux/smp_lock.h>
 #include <linux/interrupt.h>
 #include <linux/mc146818rtc.h>
@@ -895,6 +896,7 @@ void disable_APIC_timer(void)
 		 */
 		v |= (APIC_LVT_MASKED | LOCAL_TIMER_VECTOR);
 		apic_write(APIC_LVTT, v);
+		apic_write(APIC_TMICT, 0xffffffff);
 	}
 }
 
@@ -926,18 +928,11 @@ EXPORT_SYMBOL(switch_APIC_timer_to_ipi);
 
 void smp_send_timer_broadcast_ipi(void)
 {
-	cpumask_t mask;
-
-	if (cpus_equal(cpu_online_map, timer_interrupt_broadcast_ipi_mask)) {
-		__send_IPI_shortcut(APIC_DEST_ALLINC, LOCAL_TIMER_VECTOR,
-					APIC_DEST_LOGICAL);
+	/* If none of the CPUs are using IPI then no need to continue */
+	if (cpus_empty(timer_interrupt_broadcast_ipi_mask))
 		return;
-	}
-
-	cpus_and(mask, cpu_online_map, timer_interrupt_broadcast_ipi_mask);
-	if (!cpus_empty(mask)) {
-		send_IPI_mask(mask, LOCAL_TIMER_VECTOR);
-	}
+	__send_IPI_shortcut(APIC_DEST_ALLINC, LOCAL_TIMER_VECTOR,
+				APIC_DEST_LOGICAL);
 }
 
 void switch_ipi_to_APIC_timer(void *cpumask)
@@ -1032,16 +1027,7 @@ void smp_apic_timer_interrupt(struct pt_regs *regs)
 	irq_exit();
 }
 
-/*
- * apic_is_clustered_box() -- Check if we can expect good TSC
- *
- * Thus far, the major user of this is IBM's Summit2 series:
- *
- * Clustered boxes may have unsynced TSC problems if they are
- * multi-chassis. Use available data to take a good guess.
- * If in doubt, go HPET.
- */
-__cpuinit int apic_is_clustered_box(void)
+static int __cpuinit apic_cluster_num(void)
 {
 	int i, clusters, zeros;
 	unsigned id;
@@ -1080,12 +1066,68 @@ __cpuinit int apic_is_clustered_box(void)
 			++zeros;
 	}
 
+	return clusters;
+}
+
+
+static int __cpuinitdata multi_checked;
+static int __cpuinitdata multi;
+
+static int __cpuinit set_multi(struct dmi_system_id *d)
+{
+	if (multi)
+		return 0;
+	printk(KERN_INFO "APIC: %s detected, Multi Chassis\n", d->ident);
+	multi = 1;
+	return 0;
+}
+
+static const struct dmi_system_id multi_dmi_table[] = {
+	{
+		.callback = set_multi,
+		.ident = "IBM System Summit2",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "IBM"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "Summit2"),
+		},
+	},
+	{}
+};
+
+static void __cpuinit dmi_check_multi(void)
+{
+	if (multi_checked)
+		return;
+
+	dmi_check_system(multi_dmi_table);
+	multi_checked = 1;
+}
+
+/*
+ * apic_is_clustered_box() -- Check if we can expect good TSC
+ *
+ * Thus far, the major user of this is IBM's Summit2 series:
+ * Clustered boxes may have unsynced TSC problems if they are
+ * multi-chassis.
+ * Use DMI to check them
+ */
+__cpuinit int apic_is_clustered_box(void)
+{
+	dmi_check_multi();
+	if (multi)
+		return 1;
+
+	if (!is_vsmp_box())
+		return 0;
+
 	/*
-	 * If clusters > 2, then should be multi-chassis.
-	 * May have to revisit this when multi-core + hyperthreaded CPUs come
-	 * out, but AFAIK this will work even for them.
+	 * ScaleMP vSMPowered boxes have one cluster per board and TSCs are
+	 * not guaranteed to be synced between boards
 	 */
-	return (clusters > 2);
+	if (apic_cluster_num() > 1)
+		return 1;
+
+	return 0;
 }
 
 /*

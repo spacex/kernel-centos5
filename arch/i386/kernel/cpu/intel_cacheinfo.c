@@ -172,11 +172,19 @@ union l3_cache {
 };
 
 static const unsigned short assocs[] = {
-	[1] = 1, [2] = 2, [4] = 4, [6] = 8,
-	[8] = 16, [0xa] = 32, [0xb] = 48,
+	[1] = 1,
+	[2] = 2,
+	[4] = 4,
+	[6] = 8,
+	[8] = 16,
+	[0xa] = 32,
+	[0xb] = 48,
 	[0xc] = 64,
-	[0xf] = 0xffff // ??
+	[0xd] = 96,
+	[0xe] = 128,
+	[0xf] = 0xffff /* fully associative - no way to show this currently */
 };
+
 static const unsigned char levels[] = { 1, 1, 2, 3 };
 static const unsigned char types[] = { 1, 2, 3, 3 };
 
@@ -204,14 +212,15 @@ static void __cpuinit amd_cpuid4(int leaf, union _cpuid4_leaf_eax *eax,
 	case 0:
 		if (!l1->val)
 			return;
-		assoc = l1->assoc;
+		assoc = assocs[l1->assoc];
 		line_size = l1->line_size;
 		lines_per_tag = l1->lines_per_tag;
 		size_in_kb = l1->size_in_kb;
+		break;
 	case 2:
 		if (!l2.val)
 			return;
-		assoc = l2.assoc;
+		assoc = assocs[l2.assoc];
 		line_size = l2.line_size;
 		lines_per_tag = l2.lines_per_tag;
 		/* cpu_data has errata corrections for K7 applied */
@@ -220,14 +229,13 @@ static void __cpuinit amd_cpuid4(int leaf, union _cpuid4_leaf_eax *eax,
 	case 3:
 		if (!l3.val)
 			return;
-		assoc = l3.assoc;
+		assoc = assocs[l3.assoc];
 		line_size = l3.line_size;
 		lines_per_tag = l3.lines_per_tag;
-		switch (l3.size_encoded) {
-		case 4:  size_in_kb = 2 * 1024; break;
-		case 8:  size_in_kb = 4 * 1024; break;
-		case 12: size_in_kb = 6 * 1024; break;
-		default: size_in_kb = 0; break;
+		size_in_kb = l3.size_encoded * 512;
+		if (boot_cpu_has(X86_FEATURE_AMD_DCM)) {
+			size_in_kb = size_in_kb >> 1;
+			assoc = assoc >> 1;
 		}
 		break;
 	default:
@@ -241,10 +249,10 @@ static void __cpuinit amd_cpuid4(int leaf, union _cpuid4_leaf_eax *eax,
 	eax->split.num_cores_on_die = current_cpu_data.x86_max_cores - 1;
 
 
-	if (assoc == 0xf)
+	if (assoc == 0xffff)
 		eax->split.is_fully_associative = 1;
 	ebx->split.coherency_line_size = line_size - 1;
-	ebx->split.ways_of_associativity = assocs[assoc] - 1;
+	ebx->split.ways_of_associativity = assoc - 1;
 	ebx->split.physical_line_partition = lines_per_tag - 1;
 	ecx->split.number_of_sets = (size_in_kb * 1024) / line_size /
 		(ebx->split.ways_of_associativity + 1) - 1;
@@ -460,8 +468,22 @@ static void __cpuinit cache_shared_cpu_map_setup(unsigned int cpu, int index)
 {
 	struct _cpuid4_info	*this_leaf, *sibling_leaf;
 	unsigned long num_threads_sharing;
-	int index_msb, i;
+	int index_msb, i, sibling;
 	struct cpuinfo_x86 *c = cpu_data;
+
+	if ((index == 3) && (c->x86_vendor == X86_VENDOR_AMD)) {
+		for_each_cpu_mask(i, c[cpu].llc_shared_map) {
+			if (cpuid4_info[i] == NULL)
+				continue;
+			this_leaf = CPUID4_INFO_IDX(i, index);
+			for_each_cpu_mask(sibling, c[cpu].llc_shared_map) {
+				if (!cpu_online(sibling))
+					continue;
+				cpu_set(sibling, this_leaf->shared_cpu_map);
+			}
+		}
+		return;
+	}
 
 	this_leaf = CPUID4_INFO_IDX(cpu, index);
 	num_threads_sharing = 1 + this_leaf->eax.split.num_threads_sharing;
@@ -490,7 +512,7 @@ static void __cpuinit cache_remove_shared_cpu_map(unsigned int cpu, int index)
 
 	this_leaf = CPUID4_INFO_IDX(cpu, index);
 	for_each_cpu_mask(sibling, this_leaf->shared_cpu_map) {
-		sibling_leaf = CPUID4_INFO_IDX(sibling, index);	
+		sibling_leaf = CPUID4_INFO_IDX(sibling, index);
 		cpu_clear(cpu, sibling_leaf->shared_cpu_map);
 	}
 }

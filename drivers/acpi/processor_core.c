@@ -411,7 +411,7 @@ static int convert_acpiid_to_cpu(u8 acpi_id)
                                  Driver Interface
    -------------------------------------------------------------------------- */
 
-static int acpi_processor_get_info(struct acpi_processor *pr)
+static int acpi_processor_get_info(struct acpi_processor *pr, struct acpi_device *device)
 {
 	acpi_status status = 0;
 	union acpi_object object = { 0 };
@@ -481,6 +481,17 @@ static int acpi_processor_get_info(struct acpi_processor *pr)
 		}
 	}
 
+	/*
+	 * On some boxes several processors use the same processor bus id.
+	* But they are located in different scope. For example:
+	* \_SB.SCK0.CPU0
+	* \_SB.SCK1.CPU0
+	* Rename the processor device bus id. And the new bus id will be
+	* generated as the following format:
+	* CPU+CPU ID.
+	*/
+       sprintf(acpi_device_bid(device), "CPU%X", pr->id);
+
 	ACPI_DEBUG_PRINT((ACPI_DB_INFO, "Processor [%d:%d]\n", pr->id,
 			  pr->acpi_id));
 
@@ -526,7 +537,7 @@ static int acpi_processor_start(struct acpi_device *device)
 
 	pr = acpi_driver_data(device);
 
-	result = acpi_processor_get_info(pr);
+	result = acpi_processor_get_info(pr, device);
 	if (result) {
 		/* Processor is physically not present */
 		return 0;

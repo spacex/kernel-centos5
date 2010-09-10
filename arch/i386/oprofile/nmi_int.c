@@ -100,15 +100,19 @@ static void nmi_cpu_save_registers(struct op_msrs * msrs)
 	unsigned int i;
 
 	for (i = 0; i < nr_ctrs; ++i) {
-		rdmsr(counters[i].addr,
-			counters[i].saved.low,
-			counters[i].saved.high);
+		if (counters[i].addr){
+			rdmsr(counters[i].addr,
+				counters[i].saved.low,
+				counters[i].saved.high);
+		}
 	}
- 
+
 	for (i = 0; i < nr_ctrls; ++i) {
-		rdmsr(controls[i].addr,
-			controls[i].saved.low,
-			controls[i].saved.high);
+		if (controls[i].addr){
+			rdmsr(controls[i].addr,
+				controls[i].saved.low,
+				controls[i].saved.high);
+		}
 	}
 }
 
@@ -117,7 +121,6 @@ static void nmi_save_registers(void * dummy)
 {
 	int cpu = smp_processor_id();
 	struct op_msrs * msrs = &cpu_msrs[cpu];
-	model->fill_in_addresses(msrs);
 	nmi_cpu_save_registers(msrs);
 }
 
@@ -141,7 +144,7 @@ static int allocate_msrs(void)
 	size_t counters_size = sizeof(struct op_msr) * model->num_counters;
 
 	int i;
-	for_each_online_cpu(i) {
+	for_each_possible_cpu(i) {
 		cpu_msrs[i].counters = kmalloc(counters_size, GFP_KERNEL);
 		if (!cpu_msrs[i].counters) {
 			success = 0;
@@ -175,6 +178,8 @@ static void nmi_cpu_setup(void * dummy)
 
 static int nmi_setup(void)
 {
+	int cpu;
+
 	if (!allocate_msrs())
 		return -ENOMEM;
 
@@ -195,6 +200,19 @@ static int nmi_setup(void)
 	/* We need to serialize save and setup for HT because the subset
 	 * of msrs are distinct for save and setup operations
 	 */
+
+	/* Assume saved/restored counters are the same on all CPUs */
+	model->fill_in_addresses(&cpu_msrs[0]);
+	for_each_possible_cpu(cpu) {
+		if (cpu != 0) {
+			memcpy(cpu_msrs[cpu].counters, cpu_msrs[0].counters,
+				sizeof(struct op_msr) * model->num_counters);
+
+			memcpy(cpu_msrs[cpu].controls, cpu_msrs[0].controls,
+				sizeof(struct op_msr) * model->num_controls);
+		}
+
+	}
 	on_each_cpu(nmi_save_registers, NULL, 0, 1);
 	on_each_cpu(nmi_cpu_setup, NULL, 0, 1);
 	set_nmi_callback(nmi_callback);
@@ -212,15 +230,19 @@ static void nmi_restore_registers(struct op_msrs * msrs)
 	unsigned int i;
 
 	for (i = 0; i < nr_ctrls; ++i) {
-		wrmsr(controls[i].addr,
-			controls[i].saved.low,
-			controls[i].saved.high);
+		if (controls[i].addr){
+			wrmsr(controls[i].addr,
+				controls[i].saved.low,
+				controls[i].saved.high);
+		}
 	}
  
 	for (i = 0; i < nr_ctrs; ++i) {
-		wrmsr(counters[i].addr,
-			counters[i].saved.low,
-			counters[i].saved.high);
+		if (counters[i].addr){
+			wrmsr(counters[i].addr,
+				counters[i].saved.low,
+				counters[i].saved.high);
+		}
 	}
 }
  
@@ -249,6 +271,7 @@ static void nmi_shutdown(void)
 	nmi_enabled = 0;
 	on_each_cpu(nmi_cpu_shutdown, NULL, 0, 1);
 	unset_nmi_callback();
+	model->shutdown(cpu_msrs);
 	release_lapic_nmi();
 	free_msrs();
 
@@ -295,7 +318,15 @@ static int nmi_create_files(struct super_block * sb, struct dentry * root)
 	
 	for (i = 0; i < model->num_counters; ++i) {
 		char buf[4];
- 
+
+		/* quick little hack to _not_ expose a counter if it is not
+		 * available for use.  This should protect userspace app.
+		 * NOTE:  assumes 1:1 mapping here (that counters are organized
+		 *        sequentially in their struct assignment).
+		 */
+		if (unlikely(!avail_to_resrv_perfctr_nmi_bit(i)))
+			continue;
+
 		snprintf(buf,  sizeof(buf), "%d", i);
 		dir = oprofilefs_mkdir(sb, root, buf);
 		oprofilefs_create_ulong(sb, dir, "enabled", &counter_config[i].enabled); 
@@ -413,6 +444,16 @@ static int __init ppro_init(char **cpu_type)
 	return 1;
 }
 
+static int __init arch_perfmon_init(char **cpu_type)
+{
+	if (!cpu_has_arch_perfmon)
+		return 0;
+	*cpu_type = "i386/arch_perfmon";
+	model = &op_arch_perfmon_spec;
+	arch_perfmon_setup_counters();
+	return 1;
+}
+
 /* in order to get driverfs right */
 static int using_nmi;
 
@@ -420,7 +461,7 @@ int __init op_nmi_init(struct oprofile_operations *ops)
 {
 	__u8 vendor = boot_cpu_data.x86_vendor;
 	__u8 family = boot_cpu_data.x86;
-	char *cpu_type;
+	char *cpu_type = NULL;
 	uint32_t eax, ebx, ecx, edx;
 
 	if (!cpu_has_apic)
@@ -465,19 +506,20 @@ int __init op_nmi_init(struct oprofile_operations *ops)
 			switch (family) {
 				/* Pentium IV */
 				case 0xf:
-					if (!p4_init(&cpu_type))
-						return -ENODEV;
+					p4_init(&cpu_type);
 					break;
 
 				/* A P6-class processor */
 				case 6:
-					if (!ppro_init(&cpu_type))
-						return -ENODEV;
+					ppro_init(&cpu_type);
 					break;
 
 				default:
-					return -ENODEV;
+					break;
 			}
+
+			if (!cpu_type && !arch_perfmon_init(&cpu_type))
+				return -ENODEV;
 			break;
 
 		default:

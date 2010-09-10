@@ -1181,6 +1181,7 @@ void disable_APIC_timer(void)
 		 */
 		v |= (APIC_LVT_MASKED | LOCAL_TIMER_VECTOR);
 		apic_write_around(APIC_LVTT, v);
+		apic_write(APIC_TMICT, 0xffffffff);
 	}
 }
 
@@ -1307,16 +1308,10 @@ static void up_apic_timer_interrupt_call(struct pt_regs *regs)
 void smp_send_timer_broadcast_ipi(struct pt_regs *regs)
 {
 #ifdef CONFIG_SMP
-	cpumask_t mask;
-
-	if (cpus_equal(cpu_online_map, timer_bcast_ipi)) {
-		__send_IPI_shortcut(APIC_DEST_ALLINC, LOCAL_TIMER_VECTOR);
+	/* If none of the CPUs are using IPI then no need to continue */
+	if (cpus_empty(timer_bcast_ipi))
 		return;
-	}
-	cpus_and(mask, cpu_online_map, timer_bcast_ipi);
-	if (!cpus_empty(mask)) {
-		send_IPI_mask(mask, LOCAL_TIMER_VECTOR);
-	}
+	__send_IPI_shortcut(APIC_DEST_ALLINC, LOCAL_TIMER_VECTOR);
 #else
 	if (!cpus_empty(timer_bcast_ipi)) {
 		/*

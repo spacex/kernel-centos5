@@ -1308,9 +1308,9 @@ int pciehp_acpi_get_hp_hw_control_from_firmware(struct pci_dev *dev)
 		 * This hotplug controller was not listed in the ACPI name
 		 * space at all. Try to get acpi handle of parent pci bus.
 		 */
-		if (!pdev || !pdev->bus->parent)
+		if (!pdev)
 			break;
-		parent = pdev->bus->parent;
+		parent = pdev->bus;
 		dbg("Could not find %s in acpi namespace, trying parent\n",
 				pci_name(pdev));
 		if (!parent->self)

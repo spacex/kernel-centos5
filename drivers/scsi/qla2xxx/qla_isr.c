@@ -1985,25 +1985,10 @@ qla2x00_request_irqs(scsi_qla_host_t *ha)
 {
 	int ret;
 
-	/* If possible, enable MSI-X. */
-	if (!IS_QLA2432(ha) && !IS_QLA2532(ha) && !IS_QLA8432(ha)
-	    && !IS_QLA8001(ha))
+	/* If possible, enable MSI-X, MSI. */
+	if ( ql2xenablemsix == 0 || (!IS_QLA2432(ha) && !IS_QLA2532(ha)
+	    && !IS_QLA8432(ha) && !IS_QLA8001(ha)))
 		goto skip_msi;
-
-	if (ql2xenablemsix == 2)
-		goto skip_msix;
-
-	if (ql2xenablemsix != 1)
-		goto skip_msi;
-
-	if (IS_QLA2432(ha) && (ha->chip_revision < QLA_MSIX_CHIP_REV_24XX ||
-	    !QLA_MSIX_FW_MODE_1(ha->fw_attributes))) {
-		DEBUG2(qla_printk(KERN_WARNING, ha,
-		    "MSI-X: Unsupported ISP2432 (0x%X, 0x%X).\n",
-		    ha->chip_revision, ha->fw_attributes));
-
-		goto skip_msix;
-	}
 
 	if (ha->pdev->subsystem_vendor == PCI_VENDOR_ID_HP &&
 	    (ha->pdev->subsystem_device == 0x7040 ||
@@ -2014,6 +1999,17 @@ qla2x00_request_irqs(scsi_qla_host_t *ha)
 		    ha->pdev->subsystem_vendor,
 		    ha->pdev->subsystem_device));
 		goto skip_msi;
+	}
+
+	if (ql2xenablemsix == 2)
+		goto skip_msix;
+
+	if (IS_QLA2432(ha) && (ha->chip_revision < QLA_MSIX_CHIP_REV_24XX ||
+	    !QLA_MSIX_FW_MODE_1(ha->fw_attributes))) {
+		DEBUG2(qla_printk(KERN_WARNING, ha,
+		    "MSI-X: Unsupported ISP2432 (0x%X, 0x%X).\n",
+		    ha->chip_revision, ha->fw_attributes));
+		goto skip_msix;
 	}
 
 	ret = qla24xx_enable_msix(ha);

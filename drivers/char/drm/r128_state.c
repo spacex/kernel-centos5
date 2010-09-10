@@ -1244,11 +1244,15 @@ static int r128_cce_clear(DRM_IOCTL_ARGS)
 {
 	DRM_DEVICE;
 	drm_r128_private_t *dev_priv = dev->dev_private;
-	drm_r128_sarea_t *sarea_priv = dev_priv->sarea_priv;
+	drm_r128_sarea_t *sarea_priv;
 	drm_r128_clear_t clear;
 	DRM_DEBUG("\n");
 
 	LOCK_TEST_WITH_RETURN(dev, filp);
+
+	DEV_INIT_TEST_WITH_RETURN(dev_priv);
+
+	sarea_priv = dev_priv->sarea_priv;
 
 	DRM_COPY_FROM_USER_IOCTL(clear, (drm_r128_clear_t __user *) data,
 				 sizeof(clear));
@@ -1316,6 +1320,8 @@ static int r128_cce_flip(DRM_IOCTL_ARGS)
 
 	LOCK_TEST_WITH_RETURN(dev, filp);
 
+	DEV_INIT_TEST_WITH_RETURN(dev_priv);
+
 	RING_SPACE_TEST_WITH_RETURN(dev_priv);
 
 	if (!dev_priv->page_flipping)
@@ -1335,6 +1341,8 @@ static int r128_cce_swap(DRM_IOCTL_ARGS)
 	DRM_DEBUG("%s\n", __FUNCTION__);
 
 	LOCK_TEST_WITH_RETURN(dev, filp);
+
+	DEV_INIT_TEST_WITH_RETURN(dev_priv);
 
 	RING_SPACE_TEST_WITH_RETURN(dev_priv);
 
@@ -1360,10 +1368,7 @@ static int r128_cce_vertex(DRM_IOCTL_ARGS)
 
 	LOCK_TEST_WITH_RETURN(dev, filp);
 
-	if (!dev_priv) {
-		DRM_ERROR("%s called with no initialization\n", __FUNCTION__);
-		return DRM_ERR(EINVAL);
-	}
+	DEV_INIT_TEST_WITH_RETURN(dev_priv);
 
 	DRM_COPY_FROM_USER_IOCTL(vertex, (drm_r128_vertex_t __user *) data,
 				 sizeof(vertex));
@@ -1420,10 +1425,7 @@ static int r128_cce_indices(DRM_IOCTL_ARGS)
 
 	LOCK_TEST_WITH_RETURN(dev, filp);
 
-	if (!dev_priv) {
-		DRM_ERROR("%s called with no initialization\n", __FUNCTION__);
-		return DRM_ERR(EINVAL);
-	}
+	DEV_INIT_TEST_WITH_RETURN(dev_priv);
 
 	DRM_COPY_FROM_USER_IOCTL(elts, (drm_r128_indices_t __user *) data,
 				 sizeof(elts));
@@ -1489,6 +1491,8 @@ static int r128_cce_blit(DRM_IOCTL_ARGS)
 
 	LOCK_TEST_WITH_RETURN(dev, filp);
 
+	DEV_INIT_TEST_WITH_RETURN(dev_priv);
+
 	DRM_COPY_FROM_USER_IOCTL(blit, (drm_r128_blit_t __user *) data,
 				 sizeof(blit));
 
@@ -1517,6 +1521,8 @@ static int r128_cce_depth(DRM_IOCTL_ARGS)
 	int ret;
 
 	LOCK_TEST_WITH_RETURN(dev, filp);
+
+	DEV_INIT_TEST_WITH_RETURN(dev_priv);
 
 	DRM_COPY_FROM_USER_IOCTL(depth, (drm_r128_depth_t __user *) data,
 				 sizeof(depth));
@@ -1552,6 +1558,8 @@ static int r128_cce_stipple(DRM_IOCTL_ARGS)
 
 	LOCK_TEST_WITH_RETURN(dev, filp);
 
+	DEV_INIT_TEST_WITH_RETURN(dev_priv);
+
 	DRM_COPY_FROM_USER_IOCTL(stipple, (drm_r128_stipple_t __user *) data,
 				 sizeof(stipple));
 
@@ -1580,10 +1588,7 @@ static int r128_cce_indirect(DRM_IOCTL_ARGS)
 
 	LOCK_TEST_WITH_RETURN(dev, filp);
 
-	if (!dev_priv) {
-		DRM_ERROR("%s called with no initialization\n", __FUNCTION__);
-		return DRM_ERR(EINVAL);
-	}
+	DEV_INIT_TEST_WITH_RETURN(dev_priv);
 
 	DRM_COPY_FROM_USER_IOCTL(indirect, (drm_r128_indirect_t __user *) data,
 				 sizeof(indirect));
@@ -1648,10 +1653,7 @@ static int r128_getparam(DRM_IOCTL_ARGS)
 	drm_r128_getparam_t param;
 	int value;
 
-	if (!dev_priv) {
-		DRM_ERROR("%s called with no initialization\n", __FUNCTION__);
-		return DRM_ERR(EINVAL);
-	}
+	DEV_INIT_TEST_WITH_RETURN(dev_priv);
 
 	DRM_COPY_FROM_USER_IOCTL(param, (drm_r128_getparam_t __user *) data,
 				 sizeof(param));

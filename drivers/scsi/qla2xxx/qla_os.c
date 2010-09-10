@@ -105,11 +105,12 @@ MODULE_PARM_DESC(ql2xqfullrampup,
 		"depth for a device after a queue-full condition has been "
 		"detected.  Default is 120 seconds.");
 
-int ql2xenablemsix = 0;
+int ql2xenablemsix = 1;
 module_param(ql2xenablemsix, int, S_IRUGO|S_IRUSR);
 MODULE_PARM_DESC(ql2xenablemsix,
                 "Set to enable MSI or MSI-X interrupt mechanism."
-                " Default is 0, enable traditional pin-based interrupt mechanism."
+                " Default is 1, enable MSI-X interrupt mechanism."
+                " 0 = enable traditional pin-based mechanism."
                 " 1 = enable MSI-X interrupt mechanism."
                 " 2 = enable MSI interrupt mechanism.");
 
