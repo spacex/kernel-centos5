@@ -107,7 +107,7 @@ static const struct sctp_paramhdr prsctp_param = {
 	__constant_htons(sizeof(struct sctp_paramhdr)),
 };
 
-/* A helper to initialize to initialize an op error inside a
+/* A helper to initialize an op error inside a
  * provided chunk, as most cause codes will be embedded inside an
  * abort chunk.
  */
@@ -128,6 +128,29 @@ void  sctp_init_cause(struct sctp_chunk *chunk, __u16 cause_code,
 	chunk->subh.err_hdr = sctp_addto_chunk(chunk, paylen, payload);
 }
 
+/* A helper to initialize an op error inside a
+ * provided chunk, as most cause codes will be embedded inside an
+ * abort chunk.  Differs from sctp_init_cause in that it won't oops
+ * if there isn't enough space in the op error chunk
+ */
+int sctp_init_cause_fixed(struct sctp_chunk *chunk, __be16 cause_code,
+		      size_t paylen)
+{
+	sctp_errhdr_t err;
+	__u16 len;
+
+	/* Cause code constants are now defined in network order.  */
+	err.cause = cause_code;
+	len = sizeof(sctp_errhdr_t) + paylen;
+	err.length  = htons(len);
+
+	if (skb_tailroom(chunk->skb) >  len)
+		return -ENOSPC;
+	chunk->subh.err_hdr = sctp_addto_chunk_fixed(chunk,
+						     sizeof(sctp_errhdr_t),
+						     &err);
+	return 0;
+}
 /* 3.3.2 Initiation (INIT) (1)
  *
  * This chunk is used to initiate a SCTP association between two
@@ -948,6 +971,24 @@ nodata:
 	return retval;
 }
 
+/* Create an Operation Error chunk of a fixed size,
+ * specifically, max(asoc->pathmtu, SCTP_DEFAULT_MAXSEGMENT)
+ * This is a helper function to allocate an error chunk for
+ * for those invalid parameter codes in which we may not want
+ * to report all the errors, if the incomming chunk is large
+ */
+static inline struct sctp_chunk *sctp_make_op_error_fixed(
+	const struct sctp_association *asoc,
+	const struct sctp_chunk *chunk)
+{
+	size_t size = asoc ? asoc->pathmtu : 0;
+
+	if (!size)
+		size = SCTP_DEFAULT_MAXSEGMENT;
+
+	return sctp_make_op_error_space(asoc, chunk, size);
+}
+
 /* Create an Operation Error chunk.  */
 struct sctp_chunk *sctp_make_op_error(const struct sctp_association *asoc,
 				 const struct sctp_chunk *chunk,
@@ -1147,6 +1188,18 @@ void *sctp_addto_chunk(struct sctp_chunk *chunk, int len, const void *data)
 	chunk->chunk_end = chunk->skb->tail;
 
 	return target;
+}
+
+/* Append bytes to the end of a chunk. Returns NULL if there isn't sufficient
+ * space in the chunk
+ */
+void *sctp_addto_chunk_fixed(struct sctp_chunk *chunk,
+			     int len, const void *data)
+{
+	if (skb_tailroom(chunk->skb) > len)
+		return sctp_addto_chunk(chunk, len, data);
+	else
+		return NULL;
 }
 
 /* Append bytes from user space to the end of a chunk.  Will panic if
@@ -1654,12 +1707,10 @@ static int sctp_process_unk_param(const struct sctp_association *asoc,
 		 * returning multiple unknown parameters.
 		 */
 		if (NULL == *errp)
-			*errp = sctp_make_op_error_space(asoc, chunk,
-					ntohs(chunk->chunk_hdr->length));
+			*errp = sctp_make_op_error_fixed(asoc, chunk);
 
 		if (*errp)
-			sctp_init_cause(*errp, SCTP_ERROR_UNKNOWN_PARAM,
-					param.v,
+			sctp_init_cause_fixed(*errp, SCTP_ERROR_UNKNOWN_PARAM,
 					WORD_ROUND(ntohs(param.p->length)));
 
 		break;
@@ -1670,12 +1721,10 @@ static int sctp_process_unk_param(const struct sctp_association *asoc,
 		 * returning multiple unknown parameters.
 		 */
 		if (NULL == *errp)
-			*errp = sctp_make_op_error_space(asoc, chunk,
-					ntohs(chunk->chunk_hdr->length));
+			*errp = sctp_make_op_error_fixed(asoc, chunk);
 
 		if (*errp) {
-			sctp_init_cause(*errp, SCTP_ERROR_UNKNOWN_PARAM,
-					param.v,
+			sctp_init_cause_fixed(*errp, SCTP_ERROR_UNKNOWN_PARAM,
 					WORD_ROUND(ntohs(param.p->length)));
 		} else {
 			/* If there is no memory for generating the ERROR

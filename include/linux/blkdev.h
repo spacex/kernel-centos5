@@ -540,6 +540,11 @@ static inline int blk_do_io_stat(struct request *rq)
 
 #define rq_data_dir(rq)		((rq)->flags & 1)
 
+/*
+ * We regard a request as sync, if it's a READ or a SYNC write.
+ */
+#define rq_is_sync(rq)		(rq_data_dir((rq)) == READ || (rq)->flags & REQ_RW_SYNC)
+
 static inline int blk_queue_full(struct request_queue *q, int rw)
 {
 	if (rw == READ)

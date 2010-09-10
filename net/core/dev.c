@@ -90,6 +90,9 @@
 #include <linux/if_ether.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
+#ifndef __GENKSYMS__
+#include <linux/ethtool.h>
+#endif
 #include <linux/notifier.h>
 #include <linux/skbuff.h>
 #include <net/sock.h>
@@ -3327,6 +3330,119 @@ static int dev_new_index(void)
 			return ifindex;
 	}
 }
+
+
+struct netdev_lro_entry {
+	struct list_head list;
+	struct net_device *dev;
+	lro_func_t func;
+};
+
+static LIST_HEAD(lro_list);
+static DEFINE_SPINLOCK(lro_list_lock);
+
+struct netdev_lro_entry *find_lro_entry(struct net_device *dev)
+{
+	struct netdev_lro_entry *entry;
+	unsigned long flags;
+
+	spin_lock_irqsave(&lro_list_lock, flags);
+
+	list_for_each_entry(entry, &lro_list, list) {
+		if (entry->dev == dev) {
+			dev_hold(dev);
+			goto out;
+		}
+	}
+	entry = NULL;
+out:
+	spin_unlock_irqrestore(&lro_list_lock, flags);
+
+	return entry;
+}
+
+/**
+ *	dev_disable_lro - disable Large Receive Offload on a device
+ *	@dev: device
+ *
+ *	Disable Large Receive Offload (LRO) on a net device.  Must be
+ *	called under RTNL.  This is needed if received packets may be
+ *	forwarded to another interface.
+ */
+void dev_disable_lro(struct net_device *dev)
+{
+	struct netdev_lro_entry *entry;
+	int rc;
+
+	entry = find_lro_entry(dev);
+	if (entry) {
+		rc = entry->func(dev);
+		dev_put(dev);
+		if (rc)
+			printk(KERN_WARNING "Failed to disable lro on %s\n", dev->name);
+		else
+			printk(KERN_INFO "Disabled lro on %s\n", dev->name);
+	}
+}
+EXPORT_SYMBOL(dev_disable_lro);
+
+/**
+ *	register_lro_netdev - register a driver with the lro_disable routine
+ *	@dev: The device being registered
+ *	@func: The function to call when disabling lro
+ *
+ *	Adds a netdevice to the list of registered lro using devices
+ *	and associates it with a function to call disabling that device
+ */
+int register_lro_netdev(struct net_device *dev, lro_func_t func)
+{
+	struct netdev_lro_entry *entry;
+	unsigned long flags;
+
+	if (find_lro_entry(dev) != NULL) {
+		/*
+		 * already registered
+		 */
+		dev_put(dev);
+		return -EEXIST;
+	}
+
+	entry = kmalloc(sizeof(struct netdev_lro_entry), GFP_KERNEL);
+	if (!entry)
+		return -ENOMEM;
+
+	entry->dev = dev;
+	entry->func = func;
+
+	spin_lock_irqsave(&lro_list_lock, flags);
+	list_add(&entry->list, &lro_list);
+	spin_unlock_irqrestore(&lro_list_lock, flags);
+	return 0;
+}
+EXPORT_SYMBOL(register_lro_netdev);
+
+/**
+ *	unregister_lro_netdev - register a driver with the lro_disable routine
+ *	@dev: The device being unregistered
+ *
+ *	Removes a netdevice from the list of registered lro using devices
+ */
+void unregister_lro_netdev(struct net_device *dev)
+{
+	struct netdev_lro_entry *entry;
+	unsigned long flags;
+
+	entry = find_lro_entry(dev);
+	if (entry) {
+		spin_lock_irqsave(&lro_list_lock, flags);
+		list_del(&entry->list);
+		spin_unlock_irqrestore(&lro_list_lock, flags);
+		dev_put(dev);
+		kfree(entry);
+	}
+	return;
+}
+EXPORT_SYMBOL(unregister_lro_netdev);
 
 static int dev_boot_phase = 1;
 

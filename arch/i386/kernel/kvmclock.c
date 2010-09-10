@@ -147,5 +147,7 @@ void __cpuinit kvmclock_init(void)
 #ifdef CONFIG_X86_32
 		clocksource_register(&kvm_clock);
 #endif
+		if (kvm_para_has_feature(KVM_FEATURE_CLOCKSOURCE_STABLE_BIT))
+			pvclock_set_flags(PVCLOCK_TSC_STABLE_BIT);
 	}
 }

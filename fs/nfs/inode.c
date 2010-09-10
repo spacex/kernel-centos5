@@ -734,14 +734,9 @@ int nfs_revalidate_mapping(struct inode *inode, struct address_space *mapping)
 
 	if (nfsi->cache_validity & NFS_INO_INVALID_DATA) {
 		if (mapping->nrpages != 0) {
-			if (S_ISREG(inode->i_mode)) {
-				ret = nfs_sync_mapping(mapping);
-				if (ret < 0)
-					goto out;
-			}
-			ret = invalidate_inode_pages3(mapping);
-			if (ret < 0)
-				goto out;
+			if (S_ISREG(inode->i_mode))
+				nfs_sync_mapping(mapping);
+			invalidate_inode_pages3(mapping);
 		}
 		spin_lock(&inode->i_lock);
 		nfsi->cache_validity &= ~NFS_INO_INVALID_DATA;

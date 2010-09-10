@@ -551,7 +551,7 @@ static int fasync_remove_entry(struct file *filp, struct fasync_struct **fapp)
 {
 	struct fasync_struct *fa, **fp;
 	int result = 0;
-	spin_lock(&filp->f_ep_lock);
+
 	write_lock_irq(&fasync_lock);
 	for (fp = fapp; (fa = *fp) != NULL; fp = &fa->fa_next) {
 		if (fa->fa_file != filp)
@@ -563,7 +563,6 @@ static int fasync_remove_entry(struct file *filp, struct fasync_struct **fapp)
 		break;
 	}
 	write_unlock_irq(&fasync_lock);
-	spin_unlock(&filp->f_ep_lock);
 	return result;
 }
 
@@ -584,7 +583,6 @@ static int fasync_add_entry(int fd, struct file *filp,
 	if (!new)
 		return -ENOMEM;
 
-	spin_lock(&filp->f_ep_lock);
 	write_lock_irq(&fasync_lock);
 	for (fp = fapp; (fa = *fp) != NULL; fp = &fa->fa_next) {
 		if (fa->fa_file != filp)
@@ -604,7 +602,6 @@ static int fasync_add_entry(int fd, struct file *filp,
 
 out:
 	write_unlock_irq(&fasync_lock);
-	spin_unlock(&filp->f_ep_lock);
 	return result;
 }
 

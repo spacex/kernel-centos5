@@ -434,10 +434,7 @@ static void do_timer_account_lost_ticks(struct pt_regs *regs)
 		delay = inb_p(0x40);
 		delay |= inb(0x40) << 8;
 		spin_unlock(&i8253_lock);
-		/* We are in physical not logical ticks */
 		delay = LATCH - 1 - delay;
-		/* True ticks of delay elapsed */
-		delay *= tick_divider;
 	}
 
 	tsc = get_cycles_sync();
@@ -445,8 +442,6 @@ static void do_timer_account_lost_ticks(struct pt_regs *regs)
 	if (vxtime.mode == VXTIME_HPET) {
 		if (offset - vxtime.last > hpet_tick_real) {
 			lost = (offset - vxtime.last) / hpet_tick_real - 1;
-			/* Lost is now in real ticks but we want logical */
-			lost *= tick_divider;
 		}
 
 		monotonic_base += 
@@ -480,10 +475,11 @@ static void do_timer_account_lost_ticks(struct pt_regs *regs)
 			vxtime.last_tsc = tsc -
 				(((long) offset << NS_SCALE) / vxtime.tsc_quot) - 1;
 	}
-	/* SCALE: We expect tick_divider - 1 lost, ie 0 for normal behaviour */
-	if (lost > (int)tick_divider - 1)  {
+	if (lost > 0) {
+		/* Lost is now in real ticks but we want logical */
+		lost *= tick_divider;
 		handle_lost_ticks(lost, regs);
-		jiffies += (u64)lost - (tick_divider - 1);
+		jiffies += lost;
 	}
 
 	/* Do the timer stuff */

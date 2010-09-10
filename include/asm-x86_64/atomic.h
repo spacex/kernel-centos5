@@ -391,6 +391,8 @@ static __inline__ long atomic64_sub_return(long i, atomic64_t *v)
 #define atomic_cmpxchg(v, old, new) ((int)cmpxchg(&((v)->counter), old, new))
 #define atomic_xchg(v, new) (xchg(&((v)->counter), new))
 
+#define atomic64_cmpxchg(v, old, new) (cmpxchg(&((v)->counter), old, new))
+
 /**
  * atomic_add_unless - add unless the number is a given value
  * @v: pointer of type atomic_t

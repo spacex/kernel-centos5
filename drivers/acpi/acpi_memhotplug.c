@@ -31,6 +31,7 @@
 #include <linux/types.h>
 #include <linux/memory_hotplug.h>
 #include <acpi/acpi_drivers.h>
+#include <linux/dma-mapping.h>
 
 #define ACPI_MEMORY_DEVICE_COMPONENT		0x08000000UL
 #define ACPI_MEMORY_DEVICE_CLASS		"memory"
@@ -240,6 +241,18 @@ static int acpi_memory_enable_device(struct acpi_memory_device *mem_device)
 			num_enabled++;
 			continue;
 		}
+#ifdef CONFIG_X86
+		/* Systems that boot with lt 4G of memory cannot add memory
+		 * to exceed 4G because bounce-buffering is disabled by
+		 * default. */
+		if (!swiotlb &&
+		    (info->start_addr + info->length >= 0x100000000)) {
+			printk(KERN_ERR "Adding memory would exceed the 4G "
+			       "boundary.  If you need to do this, please "
+			       "reboot with 'iommu=soft'.\n");
+			continue;
+		}
+#endif
 		if (node < 0)
 			node =  memory_add_physaddr_to_nid(info->start_addr);
 		result = add_memory(node, info->start_addr, info->length);

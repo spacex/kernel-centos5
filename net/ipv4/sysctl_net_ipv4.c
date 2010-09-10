@@ -44,8 +44,12 @@ int ipv4_sysctl_forward(ctl_table *ctl, int write, struct file * filp,
 
 	ret = proc_dointvec(ctl, write, filp, buffer, lenp, ppos);
 
-	if (write && ipv4_devconf.forwarding != val)
+	if (write && ipv4_devconf.forwarding != val) {
+		rtnl_lock();
 		inet_forward_change();
+		rtnl_unlock();
+		rt_cache_flush(0);
+	}
 
 	return ret;
 }
@@ -88,7 +92,10 @@ static int ipv4_sysctl_forward_strategy(ctl_table *table,
 	}
 
 	*valp = new;
+	rtnl_lock();
 	inet_forward_change();
+	rtnl_unlock();
+	rt_cache_flush(0);
 	return 1;
 }
 

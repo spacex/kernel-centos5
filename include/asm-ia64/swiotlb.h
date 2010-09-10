@@ -35,10 +35,4 @@ extern void swiotlb_init(void);
 /* Width of DMA addresses in the IO TLB. 30 bits is a b44 limitation. */
 #define IO_TLB_DMA_BITS 30
 
-#ifdef CONFIG_SWIOTLB
-extern int swiotlb;
-#else
-#define swiotlb 0
-#endif
-
 #endif

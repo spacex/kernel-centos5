@@ -584,17 +584,6 @@ static void gfs2_quota_in(struct gfs2_quota_host *qu, const void *buf)
 	qu->qu_ll_next = be32_to_cpu(str->qu_ll_next);
 }
 
-static void gfs2_quota_out(const struct gfs2_quota_host *qu, void *buf)
-{
-	struct gfs2_quota *str = buf;
-
-	str->qu_limit = cpu_to_be64(qu->qu_limit);
-	str->qu_warn = cpu_to_be64(qu->qu_warn);
-	str->qu_value = cpu_to_be64(qu->qu_value);
-	str->qu_ll_next = cpu_to_be32(qu->qu_ll_next);
-	memset(&str->qu_reserved, 0, sizeof(str->qu_reserved));
-}
-
 /**
  * gfs2_adjust_quota
  *
@@ -613,7 +602,6 @@ static int gfs2_adjust_quota(struct gfs2_inode *ip, loff_t loc,
 	struct page *page;
 	void *kaddr;
 	char *ptr;
-	struct gfs2_quota_host qp;
 	s64 value;
 	int err = -EIO;
 
@@ -642,6 +630,9 @@ static int gfs2_adjust_quota(struct gfs2_inode *ip, loff_t loc,
 		gfs2_block_map(inode, iblock, bh, 1);
 		if (!buffer_mapped(bh))
 			goto unlock;
+		/* If it's a newly allocated disk block for quota, zero it */
+		if (buffer_new(bh))
+			memset(bh->b_data, 0, bh->b_size);
 	}
 
 	if (PageUptodate(page))
@@ -654,14 +645,30 @@ static int gfs2_adjust_quota(struct gfs2_inode *ip, loff_t loc,
 			goto unlock;
 	}
 
+	if ((loc + sizeof(__be64)) > inode->i_size) {
+		struct buffer_head *dibh;
+		err = gfs2_meta_inode_buffer(ip, &dibh);
+		if (err == 0) {
+			gfs2_trans_add_bh(ip->i_gl, dibh, 1);
+			/* Bump up size to nearest quota boundary */
+			inode->i_size = loc + sizeof(struct gfs2_quota) -
+				offsetof(struct gfs2_quota, qu_value);
+			inode->i_mtime = inode->i_ctime = CURRENT_TIME;
+			if (inode->i_size > ip->i_disksize)
+				ip->i_disksize = inode->i_size;
+			gfs2_dinode_out(ip, dibh->b_data);
+			mark_inode_dirty(inode);
+			brelse(dibh);
+		}
+	}
+
 	gfs2_trans_add_bh(ip->i_gl, bh, 0);
 
 	kaddr = kmap_atomic(page, KM_USER0);
 	ptr = kaddr + offset;
-	gfs2_quota_in(&qp, ptr);
-	qp.qu_value += change;
-	value = qp.qu_value;
-	gfs2_quota_out(&qp, ptr);
+	value = be64_to_cpu(*(__be64*)ptr);
+	value += change;
+	*(__be64*)ptr = cpu_to_be64(value);
 	flush_dcache_page(page);
 	kunmap_atomic(kaddr, KM_USER0);
 	err = 0;
@@ -733,8 +740,8 @@ static int do_sync(unsigned int num_qd, struct gfs2_quota_data **qda)
 	 * rgrp since it won't be allocated during the transaction
 	 */
 	al->al_requested = 1;
-	/* +1 in the end for block requested above for unstuffing */
-	blocks = num_qd * data_blocks + RES_DINODE + num_qd + 1;
+	/* +2 in the end for unstuffing block and inode size update block */
+	blocks = num_qd * data_blocks + RES_DINODE + num_qd + 2;
 
 	if (nalloc)
 		al->al_requested += nalloc * (data_blocks + ind_blocks);
@@ -753,6 +760,10 @@ static int do_sync(unsigned int num_qd, struct gfs2_quota_data **qda)
 	for (x = 0; x < num_qd; x++) {
 		qd = qda[x];
 		offset = qd2offset(qd);
+		/* gfs2_adjust_quota() only updates qu_value field of a 
+		 * gfs2_quota struct. Move the offset accordingly.
+		 */
+		offset += offsetof(struct gfs2_quota, qu_value);
 		error = gfs2_adjust_quota(ip, offset, qd->qd_change_sync,
 					  (struct gfs2_quota_data *)
 					  qd);

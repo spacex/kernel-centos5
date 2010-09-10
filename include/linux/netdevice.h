@@ -675,6 +675,8 @@ struct packet_type {
 	struct list_head	list;
 };
 
+typedef int (*lro_func_t)(struct net_device *);
+
 #include <linux/interrupt.h>
 #include <linux/notifier.h>
 
@@ -699,6 +701,9 @@ extern struct net_device	*__dev_get_by_name(const char *name);
 extern int		dev_alloc_name(struct net_device *dev, const char *name);
 extern int		dev_open(struct net_device *dev);
 extern int		dev_close(struct net_device *dev);
+extern void		dev_disable_lro(struct net_device *dev);
+extern int 	register_lro_netdev(struct net_device *dev, lro_func_t func);
+extern void 	unregister_lro_netdev(struct net_device *dev);
 extern int		dev_queue_xmit(struct sk_buff *skb);
 extern int		register_netdevice(struct net_device *dev);
 extern int		unregister_netdevice(struct net_device *dev);

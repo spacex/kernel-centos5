@@ -426,6 +426,8 @@ void __unmap_hugepage_range(struct vm_area_struct *vma, unsigned long start,
 			continue;
 
 		page = pte_page(pte);
+		if (pte_dirty(pte))
+			set_page_dirty(page);
 		put_page(page);
 	}
 	spin_unlock(&mm->page_table_lock);

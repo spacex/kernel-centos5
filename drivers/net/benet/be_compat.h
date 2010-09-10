@@ -77,8 +77,6 @@ extern void be_netdev_ops_init(struct net_device *netdev,
 			struct net_device_ops *ops);
 extern int eth_validate_addr(struct net_device *);
 
-#define dma_mapping_error(dev, map) dma_mapping_error(map)
-
 /*
  * Back port of new NAPI: simulate polling on multiple napi instances
  * using tasklets

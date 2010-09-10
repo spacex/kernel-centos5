@@ -149,6 +149,8 @@ struct in_device *inetdev_init(struct net_device *dev)
 	in_dev->dev = dev;
 	if ((in_dev->arp_parms = neigh_parms_alloc(dev, &arp_tbl)) == NULL)
 		goto out_kfree;
+	if (in_dev->cnf.forwarding)
+		dev_disable_lro(dev);
 	/* Reference in_dev->dev */
 	dev_hold(dev);
 #ifdef CONFIG_SYSCTL
@@ -1170,6 +1172,8 @@ void inet_forward_change(void)
 	read_lock(&dev_base_lock);
 	for (dev = dev_base; dev; dev = dev->next) {
 		struct in_device *in_dev;
+		if (on)
+			dev_disable_lro(dev);
 		rcu_read_lock();
 		in_dev = __in_dev_get_rcu(dev);
 		if (in_dev)
@@ -1177,8 +1181,6 @@ void inet_forward_change(void)
 		rcu_read_unlock();
 	}
 	read_unlock(&dev_base_lock);
-
-	rt_cache_flush(0);
 }
 
 static int devinet_sysctl_forward(ctl_table *ctl, int write,
@@ -1190,10 +1192,19 @@ static int devinet_sysctl_forward(ctl_table *ctl, int write,
 	int ret = proc_dointvec(ctl, write, filp, buffer, lenp, ppos);
 
 	if (write && *valp != val) {
-		if (valp == &ipv4_devconf.forwarding)
-			inet_forward_change();
-		else if (valp != &ipv4_devconf_dflt.forwarding)
+		if (valp != &ipv4_devconf_dflt.forwarding) {
+			rtnl_lock();
+			if (valp == &ipv4_devconf.forwarding) {
+				inet_forward_change();
+			} else if (*valp) {
+				struct ipv4_devconf *cnf = ctl->extra1;
+				struct in_device *idev =
+					container_of(cnf, struct in_device, cnf);
+				dev_disable_lro(idev->dev);
+			}
+			rtnl_unlock();
 			rt_cache_flush(0);
+		}
 	}
 
 	return ret;

@@ -2171,15 +2171,16 @@ static void freed_request(request_queue_t *q, int rw, int priv)
  * Returns NULL on failure, with queue_lock held.
  * Returns !NULL on success, with queue_lock *not held*.
  */
-static struct request *get_request(request_queue_t *q, int rw, struct bio *bio,
-				   gfp_t gfp_mask)
+static struct request *get_request(request_queue_t *q, int rw_flags,
+				   struct bio *bio, gfp_t gfp_mask)
 {
 	struct request *rq = NULL;
 	struct request_list *rl = &q->rq;
 	struct io_context *ioc = NULL;
+	const int rw = rw_flags & 0x01;
 	int may_queue, priv;
 
-	may_queue = elv_may_queue(q, rw, bio);
+	may_queue = elv_may_queue(q, rw_flags, bio);
 	if (may_queue == ELV_MQUEUE_NO)
 		goto rq_starved;
 
@@ -2226,10 +2227,10 @@ static struct request *get_request(request_queue_t *q, int rw, struct bio *bio,
 		rl->elvpriv++;
 
 	if (blk_queue_io_stat(q))
-		rw |= REQ_IO_STAT;
+		rw_flags |= REQ_IO_STAT;
 	spin_unlock_irq(q->queue_lock);
 
-	rq = blk_alloc_request(q, rw, bio, priv, gfp_mask);
+	rq = blk_alloc_request(q, rw_flags, bio, priv, gfp_mask);
 	if (unlikely(!rq)) {
 		/*
 		 * Allocation failed presumably due to memory. Undo anything
@@ -2278,12 +2279,13 @@ out:
  *
  * Called with q->queue_lock held, and returns with it unlocked.
  */
-static struct request *get_request_wait(request_queue_t *q, int rw,
+static struct request *get_request_wait(request_queue_t *q, int rw_flags,
 					struct bio *bio)
 {
+	const int rw = rw_flags & 0x01;
 	struct request *rq;
 
-	rq = get_request(q, rw, bio, GFP_NOIO);
+	rq = get_request(q, rw_flags, bio, GFP_NOIO);
 	while (!rq) {
 		DEFINE_WAIT(wait);
 		struct request_list *rl = &q->rq;
@@ -2291,7 +2293,7 @@ static struct request *get_request_wait(request_queue_t *q, int rw,
 		prepare_to_wait_exclusive(&rl->wait[rw], &wait,
 				TASK_UNINTERRUPTIBLE);
 
-		rq = get_request(q, rw, bio, GFP_NOIO);
+		rq = get_request(q, rw_flags, bio, GFP_NOIO);
 
 		if (!rq) {
 			struct io_context *ioc;
@@ -3005,6 +3007,7 @@ static int __make_request(request_queue_t *q, struct bio *bio)
 	int el_ret, rw, nr_sectors, cur_nr_sectors, barrier, err, sync;
 	unsigned short prio;
 	sector_t sector;
+	int rw_flags;
 
 	sector = bio->bi_sector;
 	nr_sectors = bio_sectors(bio);
@@ -3087,10 +3090,19 @@ static int __make_request(request_queue_t *q, struct bio *bio)
 
 get_rq:
 	/*
+	 * This sync check and mask will be re-done in init_request_from_bio(),
+	 * but we need to set it earlier to expose the sync flag to the
+	 * rq allocator and io schedulers.
+	 */
+	rw_flags = bio_data_dir(bio);
+	if (sync)
+		rw_flags |= REQ_RW_SYNC;
+
+	/*
 	 * Grab a free request. This is might sleep but can not fail.
 	 * Returns with the queue unlocked.
 	 */
-	req = get_request_wait(q, rw, bio);
+	req = get_request_wait(q, rw_flags, bio);
 
 	/*
 	 * After dropping the lock and possibly sleeping here, our request

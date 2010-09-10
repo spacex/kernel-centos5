@@ -867,6 +867,13 @@ static void acpi_power_meter_notify(acpi_handle handle, u32 event, void *data)
 	mutex_unlock(&resource->lock);
 }
 
+static void power_meter_resource_release(struct device *dev)
+{
+	struct acpi_device *acpi_dev = to_acpi_device(dev);
+	struct acpi_power_meter_resource *resource = acpi_dev->driver_data;
+	kfree(resource);
+}
+
 static int acpi_power_meter_add(struct acpi_device *device)
 {
 	int res;
@@ -891,6 +898,7 @@ static int acpi_power_meter_add(struct acpi_device *device)
 
 	snprintf(device->dev.bus_id, sizeof (device->dev.bus_id),
 		 "power_meter%d", meter_count);
+	device->dev.release = power_meter_resource_release;
 	res = device_register(&device->dev);
 	if (res)
 		goto exit_free;
@@ -911,7 +919,7 @@ static int acpi_power_meter_add(struct acpi_device *device)
 
 	res = setup_attrs(resource);
 	if (res)
-		goto exit_free;
+		goto exit_unregister;
 
 	resource->hwmon_dev = hwmon_device_register(&device->dev);
 	if (IS_ERR(resource->hwmon_dev)) {
@@ -927,6 +935,7 @@ exit_remove:
 	remove_attrs(resource);
 exit_unregister:
 	device_unregister(&device->dev);
+	return res;
 exit_free:
 	kfree(resource);
 exit:

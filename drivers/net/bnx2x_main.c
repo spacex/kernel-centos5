@@ -12182,6 +12182,23 @@ request_firmware_exit:
 	return rc;
 }
 
+static int bnx2x_disable_lro(struct net_device *dev)
+{
+	struct bnx2x *bp = netdev_priv(dev);
+
+	if (!(bp->flags & TPA_ENABLE_FLAG))
+		return 0;
+
+	bp->flags &= ~TPA_ENABLE_FLAG;
+
+	if (netif_running(dev)) {
+		bnx2x_nic_unload(bp, UNLOAD_NORMAL);
+		bnx2x_nic_load(bp, LOAD_NORMAL);
+	}
+
+	return 0;
+}
+
 
 static int __devinit bnx2x_init_one(struct pci_dev *pdev,
 				    const struct pci_device_id *ent)
@@ -12229,6 +12246,13 @@ static int __devinit bnx2x_init_one(struct pci_dev *pdev,
 		goto init_one_exit;
 	}
 
+	rc = register_lro_netdev(dev, bnx2x_disable_lro);
+	if (rc) {
+		dev_err(&pdev->dev, "Cannot register lro disable function\n");
+		unregister_netdev(dev);
+		goto init_one_exit;
+	}
+
 	bnx2x_get_pcie_width_speed(bp, &pcie_width, &pcie_speed);
 	printk(KERN_INFO "%s: %s (%c%d) PCI-E x%d %s found at mem %lx,"
 	       " IRQ %d, ", dev->name, board_info[ent->driver_data].name,
@@ -12271,6 +12295,7 @@ static void __devexit bnx2x_remove_one(struct pci_dev *pdev)
 	}
 	bp = netdev_priv(dev);
 
+	unregister_lro_netdev(dev);
 	unregister_netdev(dev);
 
 	kfree(bp->init_ops_offsets);
