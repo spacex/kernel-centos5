@@ -1091,6 +1091,10 @@ running once the system is up.
 	mpu401=		[HW,OSS]
 			Format: <io>,<irq>
 
+	msi_nolock	[MSI] Don't acquire pci_lock on msi interrupts,
+			improves throughput but may cause issues for some
+			devices
+
 	MTD_Partition=	[MTD]
 			Format: <name>,<region-number>,<size>,<offset>
 

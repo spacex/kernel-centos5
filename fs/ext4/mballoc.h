@@ -255,8 +255,6 @@ static inline void ext4_mb_store_history(struct ext4_allocation_context *ac)
 }
 #endif
 
-#define in_range(b, first, len)	((b) >= (first) && (b) <= (first) + (len) - 1)
-
 static inline ext4_fsblk_t ext4_grp_offs_to_block(struct super_block *sb,
 					struct ext4_free_extent *fex)
 {

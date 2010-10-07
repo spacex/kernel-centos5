@@ -202,7 +202,7 @@ static void shutdown_msi_irq(unsigned int vector)
 	spin_unlock_irqrestore(&msi_lock, flags);
 }
 
-static void end_msi_irq_wo_maskbit(unsigned int vector)
+static void end_msi_irq(unsigned int vector)
 {
 	move_native_irq(vector);
 	ack_APIC_irq();
@@ -262,7 +262,7 @@ static struct hw_interrupt_type msi_irq_wo_maskbit_type = {
 	.enable		= do_nothing,
 	.disable	= do_nothing,
 	.ack		= do_nothing,
-	.end		= end_msi_irq_wo_maskbit,
+	.end		= end_msi_irq,
 	.set_affinity	= set_msi_affinity
 };
 
@@ -1266,6 +1266,18 @@ int pci_msi_enabled(void)
 	return pci_msi_enable;
 }
 EXPORT_SYMBOL(pci_msi_enabled);
+
+static int __init enable_msi_nolock(char *str)
+{
+	printk(KERN_INFO "Enabling MSI without pci_lock on interrupts\n");
+	msix_irq_type.ack = do_nothing;
+	msix_irq_type.end = end_msi_irq;
+	msi_irq_w_maskbit_type.ack = do_nothing;
+	msi_irq_w_maskbit_type.end = end_msi_irq;
+
+	return 0;
+}
+__setup("msi_nolock", enable_msi_nolock);
 
 EXPORT_SYMBOL(pci_enable_msi);
 EXPORT_SYMBOL(pci_disable_msi);

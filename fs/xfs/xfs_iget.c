@@ -202,7 +202,7 @@ finish_inode:
 	 * a new vnode for it. This should also initialize i_ino and i_mount.
 	 */
 	error = xfs_iread(mp, tp, ino, &ip, bno,
-			  (flags & XFS_IGET_BULKSTAT) ? XFS_IMAP_BULKSTAT : 0);
+			(flags & XFS_IGET_UNTRUSTED) ? XFS_IMAP_UNTRUSTED : 0);
 	if (error) {
 		xfs_put_perag(mp, pag);
 		return error;

@@ -214,6 +214,7 @@ enum
 	VM_ZONE_RECLAIM_INTERVAL=41, /* interval between zone_reclaim failures */
 	VM_TOPDOWN_ALLOCATE_FAST=42, /* optimize speed over fragmentation in topdown alloc */
 	VM_MAX_RECLAIMS=43,     /* max reclaims allowed */
+	VM_DEVZERO_OPTIMIZED=44, /* pagetables initialized with ZERO_PAGE at mmmap time */
 };
 
 

@@ -34,6 +34,8 @@
 # include <linux/efi.h>
 #endif
 
+int vm_devzero_optimized = 1;
+
 static inline int range_is_allowed(unsigned long pfn, unsigned long size)
 {
 	u64 from = ((u64)pfn) << PAGE_SHIFT;
@@ -595,7 +597,8 @@ static int mmap_zero(struct file * file, struct vm_area_struct * vma)
 {
 	if (vma->vm_flags & VM_SHARED)
 		return shmem_zero_setup(vma);
-	if (zeromap_page_range(vma, vma->vm_start, vma->vm_end - vma->vm_start, vma->vm_page_prot))
+	if (vm_devzero_optimized &&
+	    zeromap_page_range(vma, vma->vm_start, vma->vm_end - vma->vm_start, vma->vm_page_prot))
 		return -EAGAIN;
 	return 0;
 }

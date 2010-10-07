@@ -231,9 +231,20 @@ xfs_vget_fsop_handlereq(
 	/*
 	 * Get the XFS inode, building a Linux inode to go with it.
 	 */
-	error = xfs_iget(mp, NULL, ino, 0, XFS_ILOCK_SHARED, &ip, 0);
-	if (error)
+	error = xfs_iget(mp, NULL, ino, XFS_IGET_UNTRUSTED,
+				XFS_ILOCK_SHARED, &ip, 0);
+	if (error) {
+		/*
+		 * EINVAL means the inode cluster doesn't exist anymore.
+		 * This implies the filehandle is stale, so we should
+		 * translate it here.
+		 * We don't use ENOENT directly down the chain to not
+		 * confuse applications using bulkstat that expect EINVAL.
+		 */
+		if (error == EINVAL)
+			error = ENOENT;
 		return error;
+	}
 	if (ip == NULL)
 		return XFS_ERROR(EIO);
 	if (ip->i_d.di_gen != igen) {
@@ -727,10 +738,9 @@ xfs_ioc_bulkstat(
 		error = xfs_bulkstat_single(mp, &inlast,
 						bulkreq.ubuffer, &done);
 	else	/* XFS_IOC_FSBULKSTAT */
-		error = xfs_bulkstat(mp, &inlast, &count,
-			(bulkstat_one_pf)xfs_bulkstat_one, NULL,
-			sizeof(xfs_bstat_t), bulkreq.ubuffer,
-			BULKSTAT_FG_QUICK, &done);
+		error = xfs_bulkstat(mp, &inlast, &count, xfs_bulkstat_one,
+				     sizeof(xfs_bstat_t), bulkreq.ubuffer,
+				     &done);
 
 	if (error)
 		return -error;

@@ -149,10 +149,25 @@ xfs_fs_get_dentry(
 	 */
 	if (xfid->fid_ino == 0)
 		return ERR_PTR(-ESTALE);
-
-	error = xfs_iget(mp, NULL, xfid->fid_ino, 0, XFS_ILOCK_SHARED, &ip, 0);
-	if (error)
+	/*
+	 * The XFS_IGET_UNTRUSTED means that an invalid inode number is just
+	 * fine and not an indication of a corrupted filesystem as clients can
+	 * send invalid file handles and we have to handle it gracefully..
+	 */
+	error = xfs_iget(mp, NULL, xfid->fid_ino, XFS_IGET_UNTRUSTED,
+					XFS_ILOCK_SHARED, &ip, 0);
+	if (error) {
+		/*
+		 * EINVAL means the inode cluster doesn't exist anymore.
+		 * This implies the filehandle is stale, so we should
+		 * translate it here.
+		 * We don't use ESTALE directly down the chain to not
+		 * confuse applications using bulkstat that expect EINVAL.
+		 */
+		if (error == EINVAL)
+			error = ESTALE;
 		return ERR_PTR(-error);
+	}
 	if (!ip)
 		return ERR_PTR(-EIO) ;
 

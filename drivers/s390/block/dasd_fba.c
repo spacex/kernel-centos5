@@ -55,6 +55,15 @@ static struct ccw_driver dasd_fba_driver; /* see below */
 static int
 dasd_fba_probe(struct ccw_device *cdev)
 {
+	int ret;
+
+	ret = ccw_device_set_options(cdev, CCWDEV_DO_PATHGROUP);
+	if (ret) {
+		printk(KERN_WARNING
+		       "dasd_fba_probe: could not set ccw-device options "
+		       "for %s\n", cdev->dev.bus_id);
+		return ret;
+	}
 	return dasd_generic_probe(cdev, &dasd_fba_discipline);
 }
 

@@ -80,6 +80,7 @@ extern int compat_log;
 extern int flush_mmap_pages;
 extern int max_writeback_pages;
 extern int blk_iopoll_enabled;
+extern int vm_devzero_optimized;
 
 #if defined(CONFIG_X86_LOCAL_APIC) && defined(CONFIG_X86)
 extern int proc_unknown_nmi_panic(ctl_table *, int, struct file *,
@@ -1216,6 +1217,16 @@ static ctl_table vm_table[] = {
 		.procname	= "max_reclaims_in_progress",
 		.data		= &max_reclaims_in_progress,
 		.maxlen		= sizeof(flush_mmap_pages),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+		.strategy	= &sysctl_intvec,
+		.extra1		= &zero,
+	},
+	{
+		.ctl_name	= VM_DEVZERO_OPTIMIZED,
+		.procname	= "vm_devzero_optimized",
+		.data		= &vm_devzero_optimized,
+		.maxlen		= sizeof(vm_devzero_optimized),
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec,
 		.strategy	= &sysctl_intvec,

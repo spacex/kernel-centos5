@@ -18,6 +18,7 @@
 #include <linux/bio.h>
 #include <linux/module.h>
 #include <linux/init.h>
+#include <linux/mutex.h>
 
 #include <asm/debug.h>
 #include <asm/idals.h>
@@ -91,6 +92,14 @@ MODULE_DEVICE_TABLE(ccw, dasd_eckd_ids);
 
 static struct ccw_driver dasd_eckd_driver; /* see below */
 
+/* emergency request for reserve/release */
+static struct {
+	struct dasd_ccw_req cqr;
+	struct ccw1 ccw;
+	char data[32];
+} *dasd_reserve_req;
+static DEFINE_MUTEX(dasd_reserve_mutex);
+
 /* initial attempt at a probe function. this can be simplified once
  * the other detection code is gone */
 static int
@@ -99,7 +108,8 @@ dasd_eckd_probe (struct ccw_device *cdev)
 	int ret;
 
 	/* set ECKD specific ccw-device options */
-	ret = ccw_device_set_options(cdev, CCWDEV_ALLOW_FORCE);
+	ret = ccw_device_set_options(cdev,
+				     CCWDEV_ALLOW_FORCE | CCWDEV_DO_PATHGROUP);
 	if (ret) {
 		printk(KERN_WARNING
 		       "dasd_eckd_probe: could not set ccw-device options "
@@ -1521,16 +1531,25 @@ dasd_eckd_release(struct dasd_device *device)
 {
 	struct dasd_ccw_req *cqr;
 	int rc;
+	int useglobal;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EACCES;
 
+	useglobal = 0;
 	cqr = dasd_smalloc_request(dasd_eckd_discipline.name,
 				   1, 32, device);
 	if (IS_ERR(cqr)) {
-		DEV_MESSAGE(KERN_WARNING, device, "%s",
-			    "Could not allocate initialization request");
-		return PTR_ERR(cqr);
+		mutex_lock(&dasd_reserve_mutex);
+		useglobal = 1;
+		cqr = &dasd_reserve_req->cqr;
+		memset(cqr, 0, sizeof(*cqr));
+		memset(&dasd_reserve_req->ccw, 0,
+		       sizeof(dasd_reserve_req->ccw));
+		cqr->cpaddr = &dasd_reserve_req->ccw;
+		cqr->data = &dasd_reserve_req->data;
+		strncpy((char *) &cqr->magic, dasd_eckd_discipline.name, 4);
+		ASCEBC((char *) &cqr->magic, 4);
 	}
 	cqr->cpaddr->cmd_code = DASD_ECKD_CCW_RELEASE;
         cqr->cpaddr->flags |= CCW_FLAG_SLI;
@@ -1546,7 +1565,10 @@ dasd_eckd_release(struct dasd_device *device)
 
 	rc = dasd_sleep_on_immediatly(cqr);
 
-	dasd_sfree_request(cqr, cqr->device);
+	if (useglobal)
+		mutex_unlock(&dasd_reserve_mutex);
+	else
+		dasd_sfree_request(cqr, cqr->device);
 	return rc;
 }
 
@@ -1561,16 +1583,25 @@ dasd_eckd_reserve(struct dasd_device *device)
 {
 	struct dasd_ccw_req *cqr;
 	int rc;
+	int useglobal;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EACCES;
 
+	useglobal = 0;
 	cqr = dasd_smalloc_request(dasd_eckd_discipline.name,
 				   1, 32, device);
 	if (IS_ERR(cqr)) {
-		DEV_MESSAGE(KERN_WARNING, device, "%s",
-			    "Could not allocate initialization request");
-		return PTR_ERR(cqr);
+		mutex_lock(&dasd_reserve_mutex);
+		useglobal = 1;
+		cqr = &dasd_reserve_req->cqr;
+		memset(cqr, 0, sizeof(*cqr));
+		memset(&dasd_reserve_req->ccw, 0,
+		       sizeof(dasd_reserve_req->ccw));
+		cqr->cpaddr = &dasd_reserve_req->ccw;
+		cqr->data = &dasd_reserve_req->data;
+		strncpy((char *) &cqr->magic, dasd_eckd_discipline.name, 4);
+		ASCEBC((char *) &cqr->magic, 4);
 	}
 	cqr->cpaddr->cmd_code = DASD_ECKD_CCW_RESERVE;
         cqr->cpaddr->flags |= CCW_FLAG_SLI;
@@ -1586,7 +1617,10 @@ dasd_eckd_reserve(struct dasd_device *device)
 
 	rc = dasd_sleep_on_immediatly(cqr);
 
-	dasd_sfree_request(cqr, cqr->device);
+	if (useglobal)
+		mutex_unlock(&dasd_reserve_mutex);
+	else
+		dasd_sfree_request(cqr, cqr->device);
 	return rc;
 }
 
@@ -1600,16 +1634,25 @@ dasd_eckd_steal_lock(struct dasd_device *device)
 {
 	struct dasd_ccw_req *cqr;
 	int rc;
+	int useglobal;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EACCES;
 
+	useglobal = 0;
 	cqr = dasd_smalloc_request(dasd_eckd_discipline.name,
 				   1, 32, device);
 	if (IS_ERR(cqr)) {
-		DEV_MESSAGE(KERN_WARNING, device, "%s",
-			    "Could not allocate initialization request");
-		return PTR_ERR(cqr);
+		mutex_lock(&dasd_reserve_mutex);
+		useglobal = 1;
+		cqr = &dasd_reserve_req->cqr;
+		memset(cqr, 0, sizeof(*cqr));
+		memset(&dasd_reserve_req->ccw, 0,
+		       sizeof(dasd_reserve_req->ccw));
+		cqr->cpaddr = &dasd_reserve_req->ccw;
+		cqr->data = &dasd_reserve_req->data;
+		strncpy((char *) &cqr->magic, dasd_eckd_discipline.name, 4);
+		ASCEBC((char *) &cqr->magic, 4);
 	}
 	cqr->cpaddr->cmd_code = DASD_ECKD_CCW_SLCK;
         cqr->cpaddr->flags |= CCW_FLAG_SLI;
@@ -1625,7 +1668,10 @@ dasd_eckd_steal_lock(struct dasd_device *device)
 
 	rc = dasd_sleep_on_immediatly(cqr);
 
-	dasd_sfree_request(cqr, cqr->device);
+	if (useglobal)
+		mutex_unlock(&dasd_reserve_mutex);
+	else
+		dasd_sfree_request(cqr, cqr->device);
 	return rc;
 }
 
@@ -2030,14 +2076,25 @@ static struct dasd_discipline dasd_eckd_discipline = {
 static int __init
 dasd_eckd_init(void)
 {
+	int ret;
+
 	ASCEBC(dasd_eckd_discipline.ebcname, 4);
-	return ccw_driver_register(&dasd_eckd_driver);
+	dasd_reserve_req = kmalloc(sizeof(*dasd_reserve_req),
+				   GFP_KERNEL | GFP_DMA);
+	if (!dasd_reserve_req)
+		return -ENOMEM;
+	ret = ccw_driver_register(&dasd_eckd_driver);
+	if (ret)
+		kfree(dasd_reserve_req);
+	return ret;
+
 }
 
 static void __exit
 dasd_eckd_cleanup(void)
 {
 	ccw_driver_unregister(&dasd_eckd_driver);
+	kfree(dasd_reserve_req);
 }
 
 module_init(dasd_eckd_init);

@@ -1938,13 +1938,6 @@ dasd_generic_probe (struct ccw_device *cdev,
 {
 	int ret;
 
-	ret = ccw_device_set_options(cdev, CCWDEV_DO_PATHGROUP);
-	if (ret) {
-		printk(KERN_WARNING
-		       "dasd_generic_probe: could not set ccw-device options "
-		       "for %s\n", cdev->dev.bus_id);
-		return ret;
-	}
 	ret = dasd_add_sysfs_files(cdev);
 	if (ret) {
 		printk(KERN_WARNING

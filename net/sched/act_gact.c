@@ -162,21 +162,24 @@ static int
 tcf_gact_dump(struct sk_buff *skb, struct tc_action *a, int bind, int ref)
 {
 	unsigned char *b = skb->tail;
-	struct tc_gact opt;
 	struct tcf_gact *p = PRIV(a, gact);
+	struct tc_gact opt = {
+		.index   = p->index,
+		.refcnt  = p->refcnt - ref,
+		.bindcnt = p->bindcnt - bind,
+		.action  = p->action,
+	};
 	struct tcf_t t;
 
-	opt.index = p->index;
-	opt.refcnt = p->refcnt - ref;
-	opt.bindcnt = p->bindcnt - bind;
-	opt.action = p->action;
 	RTA_PUT(skb, TCA_GACT_PARMS, sizeof(opt), &opt);
 #ifdef CONFIG_GACT_PROB
 	if (p->ptype) {
-		struct tc_gact_p p_opt;
-		p_opt.paction = p->paction;
-		p_opt.pval = p->pval;
-		p_opt.ptype = p->ptype;
+		struct tc_gact_p p_opt = {
+			.paction = p->paction,
+			.pval    = p->pval,
+			.ptype   = p->ptype,
+		};
+
 		RTA_PUT(skb, TCA_GACT_PROB, sizeof(p_opt), &p_opt);
 	}
 #endif

@@ -101,7 +101,7 @@ typedef struct xfs_ifork {
  * Flags for xfs_itobp(), xfs_imap() and xfs_dilocate().
  */
 #define XFS_IMAP_LOOKUP		0x1
-#define XFS_IMAP_BULKSTAT	0x2
+#define XFS_IMAP_UNTRUSTED	0x2
 
 #ifdef __KERNEL__
 struct bhv_desc;
@@ -463,7 +463,7 @@ xfs_iflags_test_and_clear(xfs_inode_t *ip, unsigned short flags)
  * Flags for xfs_iget()
  */
 #define XFS_IGET_CREATE		0x1
-#define XFS_IGET_BULKSTAT	0x2
+#define XFS_IGET_UNTRUSTED	0x2
 
 /*
  * xfs_iget.c prototypes.

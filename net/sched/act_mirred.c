@@ -216,16 +216,17 @@ static int
 tcf_mirred_dump(struct sk_buff *skb, struct tc_action *a, int bind, int ref)
 {
 	unsigned char *b = skb->tail;
-	struct tc_mirred opt;
 	struct tcf_mirred *p = PRIV(a, mirred);
+	struct tc_mirred opt = {
+		.index   = p->index,
+		.action  = p->action,
+		.refcnt  = p->refcnt - ref,
+		.bindcnt = p->bindcnt - bind,
+		.eaction = p->eaction,
+		.ifindex = p->ifindex,
+	};
 	struct tcf_t t;
 
-	opt.index = p->index;
-	opt.action = p->action;
-	opt.refcnt = p->refcnt - ref;
-	opt.bindcnt = p->bindcnt - bind;
-	opt.eaction = p->eaction;
-	opt.ifindex = p->ifindex;
 	DPRINTK("tcf_mirred_dump index %d action %d eaction %d ifindex %d\n",
 	         p->index, p->action, p->eaction, p->ifindex);
 	RTA_PUT(skb, TCA_MIRRED_PARMS, sizeof(opt), &opt);
