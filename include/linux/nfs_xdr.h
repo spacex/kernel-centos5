@@ -224,6 +224,10 @@ struct nfs_lockt_res {
 	struct file_lock *	denied; /* LOCK, LOCKT failed */
 };
 
+struct nfs_release_lockowner_args {
+	struct nfs_lowner	lock_owner;
+};
+
 struct nfs4_delegreturnargs {
 	const struct nfs_fh *fhandle;
 	const nfs4_stateid *stateid;
@@ -241,6 +245,7 @@ struct nfs4_delegreturnres {
 struct nfs_readargs {
 	struct nfs_fh *		fh;
 	struct nfs_open_context *context;
+	struct nfs_lock_context *lock_context;
 	__u64			offset;
 	__u32			count;
 	unsigned int		pgbase;
@@ -259,6 +264,7 @@ struct nfs_readres {
 struct nfs_writeargs {
 	struct nfs_fh *		fh;
 	struct nfs_open_context *context;
+	struct nfs_lock_context *lock_context;
 	__u64			offset;
 	__u32			count;
 	enum nfs3_stable_how	stable;

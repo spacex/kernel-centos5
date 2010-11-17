@@ -47,7 +47,8 @@ struct pnp_dev;
 #define pnp_mem_end(dev,bar)     ((dev)->res.mem_resource[(bar)].end)
 #define pnp_mem_flags(dev,bar)   ((dev)->res.mem_resource[(bar)].flags)
 #define pnp_mem_valid(dev,bar) \
-	((pnp_mem_flags((dev),(bar)) & (IORESOURCE_MEM | IORESOURCE_UNSET)) \
+	((pnp_mem_flags((dev),(bar)) & \
+	 (IORESOURCE_MEM | IORESOURCE_UNSET | IORESOURCE_DISABLED)) \
 		== IORESOURCE_MEM)
 #define pnp_mem_len(dev,bar) \
 	((pnp_mem_start((dev),(bar)) == 0 &&	\

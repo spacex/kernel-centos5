@@ -76,12 +76,20 @@ struct path {
 	struct vfsmount *mnt;
 	struct dentry *dentry;
 };
-struct nfs_open_context {
+
+struct nfs_lock_context {
 	atomic_t count;
+	struct list_head list;
+	struct nfs_open_context *open_context;
+	fl_owner_t lockowner;
+	pid_t pid;
+};
+
+struct nfs_open_context {
+	struct nfs_lock_context lock_context;
 	struct path path;
 	struct rpc_cred *cred;
 	struct nfs4_state *state;
-	fl_owner_t lockowner;
 	int mode;
 
 	unsigned long flags;
@@ -327,6 +335,8 @@ extern void nfs_setattr_update_inode(struct inode *inode, struct iattr *attr);
 extern struct nfs_open_context *get_nfs_open_context(struct nfs_open_context *ctx);
 extern void put_nfs_open_context(struct nfs_open_context *ctx);
 extern struct nfs_open_context *nfs_find_open_context(struct inode *inode, struct rpc_cred *cred, int mode);
+extern struct nfs_lock_context *nfs_get_lock_context(struct nfs_open_context *ctx);
+extern void nfs_put_lock_context(struct nfs_lock_context *l_ctx);
 extern struct vfsmount *nfs_do_submount(const struct vfsmount *mnt_parent,
 					const struct dentry *dentry,
 					struct nfs_fh *fh,

@@ -345,17 +345,25 @@ static void rlb_update_entry_from_arp(struct bonding *bond, struct arp_pkt *arp)
 
 static int rlb_arp_recv(struct sk_buff *skb, struct net_device *bond_dev, struct packet_type *ptype, struct net_device *orig_dev)
 {
-	struct bonding *bond = bond_dev->priv;
+	struct bonding *bond;
 	struct arp_pkt *arp = (struct arp_pkt *)skb->data;
 	int res = NET_RX_DROP;
 
-	if (!(bond_dev->flags & IFF_MASTER))
+	while (bond_dev->priv_flags & IFF_802_1Q_VLAN)
+		bond_dev = VLAN_DEV_INFO(bond_dev)->real_dev;
+
+	if (!(bond_dev->priv_flags & IFF_BONDING) ||
+	    !(bond_dev->flags & IFF_MASTER))
 		goto out;
 
 	if (!arp) {
 		dprintk("Packet has no ARP data\n");
 		goto out;
 	}
+
+	if (!pskb_may_pull(skb, sizeof(struct arphdr) +
+				2 * (skb->dev->addr_len + 4)))
+		goto out;
 
 	if (skb->len < sizeof(struct arp_pkt)) {
 		dprintk("Packet is too small to be an ARP\n");
@@ -364,6 +372,7 @@ static int rlb_arp_recv(struct sk_buff *skb, struct net_device *bond_dev, struct
 
 	if (arp->op_code == htons(ARPOP_REPLY)) {
 		/* update rx hash table for this ARP */
+		bond = bond_dev->priv;
 		rlb_update_entry_from_arp(bond, arp);
 		dprintk("Server received an ARP Reply from client\n");
 	}

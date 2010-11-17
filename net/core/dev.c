@@ -3803,6 +3803,11 @@ struct net_device *alloc_netdev(int sizeof_priv, const char *name,
 	struct net_device *dev;
 	int alloc_size;
 
+	if (sizeof_priv > NETDEV_PRIV_LEN_MAX) {
+		printk(KERN_ERR "alloc_dev: Private data too big.\n");
+		return NULL;
+	}
+
 	/* ensure 32-byte alignment of both the device and private area */
 	alloc_size = (sizeof(*dev) + NETDEV_ALIGN_CONST) & ~NETDEV_ALIGN_CONST;
 	alloc_size += (sizeof_priv + NETDEV_ALIGN_CONST) & ~NETDEV_ALIGN_CONST;

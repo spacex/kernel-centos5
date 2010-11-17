@@ -2185,8 +2185,6 @@ qla2x00_dev_loss_tmo_callbk(struct fc_rport *rport)
 		fcport->loop_id = FC_NO_LOOP_ID;
 	}
 
-	qla2x00_abort_fcport_cmds(fcport);
-
 	/*
 	 * Transport has effectively 'deleted' the rport, clear
 	 * all local references.
@@ -2228,7 +2226,6 @@ qla2x00_terminate_rport_io(struct fc_rport *rport)
 		fcport->loop_id = FC_NO_LOOP_ID;
 	}
 
-	qla2x00_abort_fcport_cmds(fcport);
 	scsi_target_unblock(&rport->dev);
 }
 

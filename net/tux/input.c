@@ -163,7 +163,7 @@ int lookup_object (tux_req_t *req, const unsigned int flag)
 		req->status = 403;
 		goto abort;
 	}
-	req->total_file_len = dentry->d_inode->i_size;
+	req->total_file_len = i_size_read(dentry->d_inode);
 out:
 	install_req_dentry(req, dentry, mnt);
 	return 0;

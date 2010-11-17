@@ -822,7 +822,9 @@ int nfs_flush_incompatible(struct file *file, struct page *page)
 	 */
 	req = nfs_find_request(inode, page->index);
 	if (req) {
-		if (req->wb_page != page || ctx != req->wb_context)
+		if (req->wb_page != page || ctx != req->wb_context || 
+			req->wb_lock_context->lockowner != current->files ||
+			req->wb_lock_context->pid != current->tgid)
 			status = nfs_wb_page(inode, page);
 		nfs_release_request(req);
 	}
@@ -988,6 +990,7 @@ static void nfs_write_rpcsetup(struct nfs_page *req,
 	data->args.pages  = data->pagevec;
 	data->args.count  = count;
 	data->args.context = get_nfs_open_context(req->wb_context);
+	data->args.lock_context = req->wb_lock_context;
 
 	data->res.fattr   = &data->fattr;
 	data->res.count   = count;

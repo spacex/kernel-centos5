@@ -337,7 +337,7 @@ static struct block2mtd_dev *add_device(char *devname, int erase_size)
 
 	sprintf(dev->mtd.name, "block2mtd: %s", devname);
 
-	dev->mtd.size = dev->blkdev->bd_inode->i_size & PAGE_MASK;
+	dev->mtd.size = i_size_read(dev->blkdev->bd_inode) & PAGE_MASK;
 	dev->mtd.erasesize = erase_size;
 	dev->mtd.writesize = 1;
 	dev->mtd.type = MTD_RAM;

@@ -210,7 +210,6 @@ lpfc_ioctl_hba_rnid(struct lpfc_hba * phba,
 	memset((void *) pcmd, 0, sizeof (RNID));
 	((RNID *) pcmd)->Format = 0;
 	((RNID *) pcmd)->Format = RNID_TOPOLOGY_DISC;
-	cmdiocbq->context1 = NULL;
 	cmdiocbq->context2 = NULL;
 	cmdiocbq->iocb_flag |= LPFC_IO_LIBDFC;
 
@@ -380,6 +379,11 @@ lpfc_ioctl_send_els(struct lpfc_hba * phba,
 			}
 			lpfc_nlp_init(phba->pport, pndl, destID.d_id);
 			lpfc_nlp_set_state(phba->pport, pndl, NLP_STE_NPR_NODE);
+			/*
+			 * Indicate to free the application allocated memory
+			 * for ndlp after it's use.
+			 */
+			NLP_SET_FREE_REQ(pndl);
 		} else {
 			pndl = lpfc_enable_node(phba->pport, pndl,
 						NLP_STE_NPR_NODE);
@@ -389,7 +393,11 @@ lpfc_ioctl_send_els(struct lpfc_hba * phba,
 			}
 		}
 	} else {
-		lpfc_nlp_get(pndl);
+		pndl = lpfc_nlp_get(pndl);
+		if (!pndl) {
+			lpfc_sli_release_iocbq(phba, rspiocbq);
+			return ENODEV;
+		}
 		rpi = pndl->nlp_rpi;
 	}
 
@@ -627,8 +635,11 @@ lpfc_ioctl_send_mgmt_cmd(struct lpfc_hba * phba,
 		/* Do additional get to pndl found so that at the end of the
 		 * function we can do unditional lpfc_nlp_put on it.
 		 */
-		if (pndl && NLP_CHK_NODE_ACT(pndl))
-			lpfc_nlp_get(pndl);
+		pndl = lpfc_nlp_get(pndl);
+		if (!pndl) {
+			rc = ENODEV;
+			goto send_mgmt_cmd_exit;
+		}
 	} else {
 		finddid = (uint32_t)(unsigned long)cip->lpfc_arg3;
 		pndl = lpfc_findnode_did(phba->pport, finddid);
@@ -646,13 +657,31 @@ lpfc_ioctl_send_mgmt_cmd(struct lpfc_hba * phba,
 							finddid);
 					lpfc_nlp_set_state(phba->pport,
 						pndl, NLP_STE_PLOGI_ISSUE);
-					/* Indicate free ioctl allocated
-					 * memory for ndlp after it's done
+					/* Hold the pndl to the end of this
+					 * function.
+					 */
+					pndl = lpfc_nlp_get(pndl);
+					if (!pndl) {
+						rc = ENODEV;
+						goto send_mgmt_cmd_exit;
+					}
+					/* Indicate to free the application
+					 * allocated memory for ndlp after
+					 * it's use.
 					 */
 					NLP_SET_FREE_REQ(pndl);
-				} else
-					lpfc_enable_node(phba->pport,
+				} else {
+					pndl = lpfc_enable_node(phba->pport,
 						pndl, NLP_STE_PLOGI_ISSUE);
+					/* Hold the pndl to the end of this
+					 * function.
+					 */
+					pndl = lpfc_nlp_get(pndl);
+					if (!pndl) {
+						rc = ENODEV;
+						goto send_mgmt_cmd_exit;
+					}
+				}
 
 				if (lpfc_issue_els_plogi(phba->pport,
 							 pndl->nlp_DID, 0)) {
@@ -676,16 +705,14 @@ lpfc_ioctl_send_mgmt_cmd(struct lpfc_hba * phba,
 				rc = ENODEV;
 				goto send_mgmt_cmd_exit;
 			}
-		} else
-			/* Do additional get to pndl found so at the end of
-			 * the function we can do unconditional lpfc_nlp_put.
-			 */
-			lpfc_nlp_get(pndl);
-	}
-
-	if (!pndl || !NLP_CHK_NODE_ACT(pndl)) {
-		rc = ENODEV;
-		goto send_mgmt_cmd_exit;
+		} else {
+			/* Hold the pndl to the end of this function. */
+			pndl = lpfc_nlp_get(pndl);
+			if (!pndl) {
+				rc = ENODEV;
+				goto send_mgmt_cmd_exit;
+			}
+		}
 	}
 
 	if (pndl->nlp_flag & NLP_ELS_SND_MASK) {

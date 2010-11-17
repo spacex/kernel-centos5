@@ -103,6 +103,10 @@ struct timezone __sys_tz __section_sys_tz;
 
 /* -1=>disabled, 0=>autoconfigure, 1=>enabled */
 int timekeeping_use_tsc;
+
+/* 0=>disabled, 1=>enabled (default) */
+static unsigned int pmtimer_fine_grained = 1;
+
 static cycles_t cycles_per_tick, cycles_accounted_limit;
 
 /*
@@ -415,6 +419,7 @@ static void do_timer_account_lost_ticks(struct pt_regs *regs)
 {
 	unsigned long tsc;
 	int delay = 0, offset = 0, lost = 0, i;
+	unsigned int njiffies = tick_divider;
 
 	if (vxtime.hpet_address)
 		offset = hpet_readl(HPET_COUNTER);
@@ -450,7 +455,19 @@ static void do_timer_account_lost_ticks(struct pt_regs *regs)
 		vxtime.last = offset;
 #ifdef CONFIG_X86_PM_TIMER
 	} else if (vxtime.mode == VXTIME_PMTMR) {
-		lost = pmtimer_mark_offset();
+		if (tick_divider == 1) {
+			lost = pmtimer_mark_offset();
+		} else {
+			/*
+			 * Fine-grained accounting with tick_divider > 1 is
+			 * enabled by default. It can be disabled by setting
+			 * the kernel parameter 'pmtimer_fine_grained=0'.
+			 */
+			if (pmtimer_fine_grained)
+				lost = pmtimer_mark_offset_return_njiffies(&njiffies);
+			else
+				lost = pmtimer_mark_offset();
+		}
 #endif
 	} else {
 		offset = (((tsc - vxtime.last_tsc) *
@@ -482,8 +499,19 @@ static void do_timer_account_lost_ticks(struct pt_regs *regs)
 		jiffies += lost;
 	}
 
-	/* Do the timer stuff */
-	for (i = 0; i < tick_divider; i++)
+	/*
+	 * Do the timer stuff.
+	 *
+	 * On entry to this routine, 'njiffies' is set to 'tick_divider'.
+	 * However, if 'tick_divider' is greater than 1 and if the actual
+	 * length of the current real tick is not equal to the expected
+	 * length of a real tick, pmtimer_mark_offset_return_njiffies()
+	 * returns the actual tick length in 'njiffies' so that we can do
+	 * a fine-grained accounting. 'njiffies' can even be zero if the
+	 * current real tick is shorter than a jiffy. Accounting is being
+	 * postponed in this case.
+	 */
+	for (i = 0; i < njiffies; i++)
 		do_timer_jiffy(regs);
 }
 
@@ -1381,6 +1409,25 @@ void __init time_init(void)
 {
 	unsigned int hypervisor_khz;
 
+	/*
+	 * 'tick_nsec' is set to TICK_NSEC at compile time. The value of
+	 * TICK_NSEC depends on HZ. The kernel parameter 'tick_divider'
+	 * allows to change REAL_HZ at boottime, so 'tick_nsec' needs to
+	 * be adjusted to REAL_HZ. Otherwise time will drift backwards.
+	 *
+	 * For example, with HZ=1000 the initial value of 'tick_nsec'
+	 * is 999848 and with HZ=100 the initial value of 'tick_nsec'
+	 * is 10000000. Therefore, with 'tick_divider=10' the value of
+	 * 'tick_nsec' needs to be adjusted to 10000000 / 10 = 1000000.
+	 * Otherwise time drifts backwards by 1000000 - 999848 = 152 ns
+	 * per logical tick. This accumulates to 152 * 1000 * 3600 =
+	 * 547200000 ns = 0.5472 seconds per hour.
+	 */
+	if (tick_divider > 1 && pmtimer_fine_grained) {
+		unsigned long acthz = SH_DIV(CLOCK_TICK_RATE, LATCH, 8);
+		tick_nsec = SH_DIV(NSEC_PER_SEC, acthz, 8) / tick_divider;
+	}
+
 	if (nohpet)
 		vxtime.hpet_address = 0;
 
@@ -1938,3 +1985,29 @@ static int __init divider_setup(char *s)
 
 __setup("divider=", divider_setup);
 #endif
+
+
+/*
+ * If the kernel parameter 'divider' is set to a value greater than 1,
+ * the kernel parameter 'pmtimer_fine_grained' enables / disables the
+ * functionality of pmtimer_mark_offset_return_njiffies() as well as
+ * the divider-specific initialization of 'tick_nsec' in time_init().
+ */
+
+static int __init pmtimer_fine_grained_setup(char *s)
+{
+	unsigned int fine_grained = 1;
+	int ret = get_option(&s, (int *)&fine_grained);
+
+	if (ret == 1 && fine_grained < 2)
+		pmtimer_fine_grained = fine_grained;
+	else
+		printk(KERN_ERR "pmtimer_fine_grained: incorrect value\n");
+
+	if (!pmtimer_fine_grained)
+		printk(KERN_INFO "PM timer fine grained accounting disabled\n");
+
+	return 1;
+}
+
+__setup("pmtimer_fine_grained=", pmtimer_fine_grained_setup);

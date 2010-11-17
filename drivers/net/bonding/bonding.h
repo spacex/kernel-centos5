@@ -138,6 +138,7 @@ struct bond_params {
 	char primary[IFNAMSIZ];
 	int primary_reselect;
 	__be32 arp_targets[BOND_MAX_ARP_TARGETS];
+	int resend_igmp;
 };
 
 struct bond_parm_tbl {
@@ -205,6 +206,7 @@ struct bonding {
 	s32      slave_cnt; /* never change this value outside the attach/detach wrappers */
 	rwlock_t lock;
 	rwlock_t curr_slave_lock;
+	s8       igmp_retrans;
 	s8       kill_timers;
 	s8	 send_grat_arp;
 	s8	 send_unsol_na;
@@ -231,6 +233,7 @@ struct bonding {
 	struct   work_struct arp_work;
 	struct   work_struct alb_work;
 	struct   work_struct ad_work;
+	struct   work_struct mcast_work;
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
 	struct   in6_addr master_ipv6;
 #endif

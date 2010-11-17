@@ -585,6 +585,10 @@ struct net_device
 	/* space for optional statistics and wireless sysfs groups */
 	struct attribute_group  *sysfs_groups[3];
 #ifndef __GENKSYMS__
+	/*
+	 * Private data size is limited to 64kB
+	 */
+#define NETDEV_PRIV_LEN_MAX	0X0000FFFF
 	unsigned short priv_len;
 #endif
 };

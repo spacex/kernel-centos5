@@ -182,6 +182,12 @@ struct netfront_info {
 	struct mmu_update rx_mmu[NET_RX_RING_SIZE];
 };
 
+struct netfront_info_wrapper {
+	struct netfront_info *info;
+};
+
+#define get_netfront_info(x) (((struct netfront_info_wrapper *)netdev_priv((x)))->info)
+
 struct netfront_rx_info {
 	struct netif_rx_response rx;
 	struct netif_extra_info extras[XEN_NETIF_EXTRA_TYPE_MAX - 1];
@@ -280,7 +286,7 @@ static int __devinit netfront_probe(struct xenbus_device *dev,
 		return err;
 	}
 
-	info = netdev_priv(netdev);
+	info = get_netfront_info(netdev);
 	dev->dev.driver_data = info;
 
 	err = register_netdev(info->netdev);
@@ -301,6 +307,7 @@ static int __devinit netfront_probe(struct xenbus_device *dev,
 	return 0;
 
  fail:
+	kfree(get_netfront_info(netdev));
 	free_netdev(netdev);
 	dev->dev.driver_data = NULL;
 	return err;
@@ -320,6 +327,7 @@ static int __devexit netfront_remove(struct xenbus_device *dev)
 
 	unregister_netdev(info->netdev);
 
+	kfree(get_netfront_info(info->netdev));
 	free_netdev(info->netdev);
 
 	return 0;
@@ -595,7 +603,7 @@ static void send_fake_arp(struct net_device *dev)
 
 static int network_open(struct net_device *dev)
 {
-	struct netfront_info *np = netdev_priv(dev);
+	struct netfront_info *np = get_netfront_info(dev);
 
 	memset(&np->stats, 0, sizeof(np->stats));
 
@@ -621,7 +629,7 @@ static inline int netfront_tx_slot_available(struct netfront_info *np)
 
 static inline void network_maybe_wake_tx(struct net_device *dev)
 {
-	struct netfront_info *np = netdev_priv(dev);
+	struct netfront_info *np = get_netfront_info(dev);
 
 	if (unlikely(netif_queue_stopped(dev)) &&
 	    netfront_tx_slot_available(np) &&
@@ -633,7 +641,7 @@ static void network_tx_buf_gc(struct net_device *dev)
 {
 	RING_IDX cons, prod;
 	unsigned short id;
-	struct netfront_info *np = netdev_priv(dev);
+	struct netfront_info *np = get_netfront_info(dev);
 	struct sk_buff *skb;
 
 	BUG_ON(!netif_carrier_ok(dev));
@@ -696,7 +704,7 @@ static void rx_refill_timeout(unsigned long data)
 static void network_alloc_rx_buffers(struct net_device *dev)
 {
 	unsigned short id;
-	struct netfront_info *np = netdev_priv(dev);
+	struct netfront_info *np = get_netfront_info(dev);
 	struct sk_buff *skb;
 	struct page *page;
 	int i, batch_target, notify;
@@ -854,7 +862,7 @@ no_skb:
 static void xennet_make_frags(struct sk_buff *skb, struct net_device *dev,
 			      struct netif_tx_request *tx)
 {
-	struct netfront_info *np = netdev_priv(dev);
+	struct netfront_info *np = get_netfront_info(dev);
 	char *data = skb->data;
 	unsigned long mfn;
 	RING_IDX prod = np->tx.req_prod_pvt;
@@ -917,7 +925,7 @@ static void xennet_make_frags(struct sk_buff *skb, struct net_device *dev,
 static int network_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	unsigned short id;
-	struct netfront_info *np = netdev_priv(dev);
+	struct netfront_info *np = get_netfront_info(dev);
 	struct netif_tx_request *tx;
 	struct netif_extra_info *extra;
 	char *data = skb->data;
@@ -1025,7 +1033,7 @@ static int network_start_xmit(struct sk_buff *skb, struct net_device *dev)
 static irqreturn_t netif_int(int irq, void *dev_id, struct pt_regs *ptregs)
 {
 	struct net_device *dev = dev_id;
-	struct netfront_info *np = netdev_priv(dev);
+	struct netfront_info *np = get_netfront_info(dev);
 	unsigned long flags;
 
 	spin_lock_irqsave(&np->tx_lock, flags);
@@ -1287,7 +1295,7 @@ static int xennet_set_skb_gso(struct sk_buff *skb,
 
 static int netif_poll(struct net_device *dev, int *pbudget)
 {
-	struct netfront_info *np = netdev_priv(dev);
+	struct netfront_info *np = get_netfront_info(dev);
 	struct sk_buff *skb;
 	struct netfront_rx_info rinfo;
 	struct netif_rx_response *rx = &rinfo.rx;
@@ -1622,7 +1630,7 @@ static void netif_release_rx_bufs_copy(struct netfront_info *np)
 
 static int network_close(struct net_device *dev)
 {
-	struct netfront_info *np = netdev_priv(dev);
+	struct netfront_info *np = get_netfront_info(dev);
 	netif_stop_queue(np->netdev);
 	return 0;
 }
@@ -1630,7 +1638,7 @@ static int network_close(struct net_device *dev)
 
 static struct net_device_stats *network_get_stats(struct net_device *dev)
 {
-	struct netfront_info *np = netdev_priv(dev);
+	struct netfront_info *np = get_netfront_info(dev);
 	return &np->stats;
 }
 
@@ -1647,7 +1655,7 @@ static int xennet_change_mtu(struct net_device *dev, int mtu)
 static int xennet_set_sg(struct net_device *dev, u32 data)
 {
 	if (data) {
-		struct netfront_info *np = netdev_priv(dev);
+		struct netfront_info *np = get_netfront_info(dev);
 		int val;
 
 		if (xenbus_scanf(XBT_NIL, np->xbdev->otherend, "feature-sg",
@@ -1665,7 +1673,7 @@ static int xennet_set_tso(struct net_device *dev, u32 data)
 {
 #ifdef HAVE_TSO
 	if (data) {
-		struct netfront_info *np = netdev_priv(dev);
+		struct netfront_info *np = get_netfront_info(dev);
 		int val;
 
 		if (xenbus_scanf(XBT_NIL, np->xbdev->otherend,
@@ -1696,7 +1704,7 @@ static void xennet_set_features(struct net_device *dev)
 
 static int network_connect(struct net_device *dev)
 {
-	struct netfront_info *np = netdev_priv(dev);
+	struct netfront_info *np = get_netfront_info(dev);
 	int i, requeue_idx, err;
 	struct sk_buff *skb;
 	grant_ref_t ref;
@@ -1790,7 +1798,7 @@ static int network_connect(struct net_device *dev)
 
 static void netif_uninit(struct net_device *dev)
 {
-	struct netfront_info *np = netdev_priv(dev);
+	struct netfront_info *np = get_netfront_info(dev);
 	netif_release_tx_bufs(np);
 	if (np->copying_receiver)
 		netif_release_rx_bufs_copy(np);
@@ -1816,7 +1824,7 @@ static ssize_t show_rxbuf_min(struct class_device *cd, char *buf)
 {
 	struct net_device *netdev = container_of(cd, struct net_device,
 						 class_dev);
-	struct netfront_info *info = netdev_priv(netdev);
+	struct netfront_info *info = get_netfront_info(netdev);
 
 	return sprintf(buf, "%u\n", info->rx_min_target);
 }
@@ -1826,7 +1834,7 @@ static ssize_t store_rxbuf_min(struct class_device *cd,
 {
 	struct net_device *netdev = container_of(cd, struct net_device,
 						 class_dev);
-	struct netfront_info *np = netdev_priv(netdev);
+	struct netfront_info *np = get_netfront_info(netdev);
 	char *endp;
 	unsigned long target;
 
@@ -1859,7 +1867,7 @@ static ssize_t show_rxbuf_max(struct class_device *cd, char *buf)
 {
 	struct net_device *netdev = container_of(cd, struct net_device,
 						 class_dev);
-	struct netfront_info *info = netdev_priv(netdev);
+	struct netfront_info *info = get_netfront_info(netdev);
 
 	return sprintf(buf, "%u\n", info->rx_max_target);
 }
@@ -1869,7 +1877,7 @@ static ssize_t store_rxbuf_max(struct class_device *cd,
 {
 	struct net_device *netdev = container_of(cd, struct net_device,
 						 class_dev);
-	struct netfront_info *np = netdev_priv(netdev);
+	struct netfront_info *np = get_netfront_info(netdev);
 	char *endp;
 	unsigned long target;
 
@@ -1902,7 +1910,7 @@ static ssize_t show_rxbuf_cur(struct class_device *cd, char *buf)
 {
 	struct net_device *netdev = container_of(cd, struct net_device,
 						 class_dev);
-	struct netfront_info *info = netdev_priv(netdev);
+	struct netfront_info *info = get_netfront_info(netdev);
 
 	return sprintf(buf, "%u\n", info->rx_target);
 }
@@ -1956,18 +1964,24 @@ static void network_set_multicast_list(struct net_device *dev)
 
 static struct net_device * __devinit create_netdev(struct xenbus_device *dev)
 {
-	int i, err = 0;
+	int i, err = -ENOMEM;
 	struct net_device *netdev = NULL;
+	struct netfront_info_wrapper *niwp = NULL;
 	struct netfront_info *np = NULL;
 
-	netdev = alloc_etherdev(sizeof(struct netfront_info));
+	netdev = alloc_etherdev(sizeof(struct netfront_info_wrapper));
 	if (!netdev) {
 		printk(KERN_WARNING "%s> alloc_etherdev failed.\n",
 		       __FUNCTION__);
 		return ERR_PTR(-ENOMEM);
 	}
 
-	np                   = netdev_priv(netdev);
+	niwp		     = netdev_priv(netdev);
+	niwp->info = kzalloc(sizeof(struct netfront_info), GFP_KERNEL);
+	if (!niwp->info)
+		goto exit;
+
+	np                   = niwp->info;
 	np->xbdev            = dev;
 
 	netif_carrier_off(netdev);
@@ -2032,6 +2046,7 @@ static struct net_device * __devinit create_netdev(struct xenbus_device *dev)
 	gnttab_free_grant_references(np->gref_tx_head);
  exit:
 	free_netdev(netdev);
+	kfree(np);
 	return ERR_PTR(err);
 }
 

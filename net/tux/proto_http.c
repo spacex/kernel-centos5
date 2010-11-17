@@ -765,6 +765,7 @@ static int lookup_url (tux_req_t *req, const unsigned int flag)
 	struct vfsmount *mnt = NULL;
 	struct inode *inode;
 	const char *filename;
+	loff_t i_siz;
 
 	/*
 	 * Do not do any etag or last_modified header checking
@@ -846,12 +847,13 @@ repeat_lookup:
 		dentry = NULL;
 		goto repeat_lookup;
 	}
-	if (tux_max_object_size && (inode->i_size > tux_max_object_size)) {
-		TDprintk("too big object, %Ld bytes.\n", inode->i_size);
+	i_siz = i_size_read(inode);
+	if (tux_max_object_size && (i_siz > tux_max_object_size)) {
+		TDprintk("too big object, %Ld bytes.\n", i_siz);
 		req->status = 403;
 		goto abort;
 	}
-	req->total_file_len = inode->i_size;
+	req->total_file_len = i_siz;
 	req->mtime = inode->i_mtime.tv_sec;
 
 	{
@@ -991,9 +993,9 @@ int handle_gzip_req (tux_req_t *req, unsigned int flags)
 	}
 
 	inode = dentry->d_inode;
-	size = inode->i_size;
+	size = i_size_read(inode);
 	orig_inode = req->dentry->d_inode;
-	orig_size = orig_inode->i_size;
+	orig_size = i_size_read(orig_inode);
 
 	if (!tux_permission(inode)
 			&& (size < orig_size)
@@ -2152,7 +2154,7 @@ static char * http_print_dir_line (tux_req_t *req, char *tmp, char *d_name, int 
 		COPY_STR("        - ");
 		goto out_size;
 	}
-	size = inode->i_size >> 10;
+	size = i_size_read(inode) >> 10;
 	if (size < 1024) {
 		tmp += sprintf(tmp, "%8Lik ", size);
 		goto out_size;

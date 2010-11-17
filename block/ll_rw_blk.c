@@ -3155,7 +3155,7 @@ static void handle_bad_sector(struct bio *bio)
 			bdevname(bio->bi_bdev, b),
 			bio->bi_rw,
 			(unsigned long long)bio->bi_sector + bio_sectors(bio),
-			(long long)(bio->bi_bdev->bd_inode->i_size >> 9));
+			(long long)(i_size_read(bio->bi_bdev->bd_inode) >> 9));
 
 	set_bit(BIO_EOF, &bio->bi_flags);
 }
@@ -3194,7 +3194,7 @@ void generic_make_request(struct bio *bio)
 
 	might_sleep();
 	/* Test device or partition size, when known. */
-	maxsector = bio->bi_bdev->bd_inode->i_size >> 9;
+	maxsector = i_size_read(bio->bi_bdev->bd_inode) >> 9;
 	if (maxsector) {
 		sector_t sector = bio->bi_sector;
 
@@ -3260,7 +3260,7 @@ end_io:
 		old_sector = bio->bi_sector;
 		old_dev = bio->bi_bdev->bd_dev;
 
-		maxsector = bio->bi_bdev->bd_inode->i_size >> 9;
+		maxsector = i_size_read(bio->bi_bdev->bd_inode) >> 9;
 		if (maxsector) {
 			sector_t sector = bio->bi_sector;
 

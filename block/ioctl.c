@@ -185,11 +185,11 @@ static int blkdev_locked_ioctl(struct file *file, struct block_device *bdev,
 	case BLKRRPART:
 		return blkdev_reread_part(bdev);
 	case BLKGETSIZE:
-		if ((bdev->bd_inode->i_size >> 9) > ~0UL)
+		if ((i_size_read(bdev->bd_inode) >> 9) > ~0UL)
 			return -EFBIG;
-		return put_ulong(arg, bdev->bd_inode->i_size >> 9);
+		return put_ulong(arg, i_size_read(bdev->bd_inode) >> 9);
 	case BLKGETSIZE64:
-		return put_u64(arg, bdev->bd_inode->i_size);
+		return put_u64(arg, i_size_read(bdev->bd_inode));
 	case BLKTRACESTART:
 	case BLKTRACESTOP:
 	case BLKTRACESETUP:

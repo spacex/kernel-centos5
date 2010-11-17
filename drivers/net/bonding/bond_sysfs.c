@@ -1439,6 +1439,48 @@ static CLASS_DEVICE_ATTR(ad_partner_mac, S_IRUGO, bonding_show_ad_partner_mac, N
 
 
 
+/*
+ * Show and set the number of IGMP membership reports to send on link failure
+ */
+static ssize_t bonding_show_resend_igmp(struct class_device *d, char *buf)
+{
+	struct bonding *bond = to_bond(d);
+
+	return sprintf(buf, "%d\n", bond->params.resend_igmp);
+}
+
+static ssize_t bonding_store_resend_igmp(struct class_device *d,
+					  const char *buf, size_t count)
+{
+	int new_value, ret = count;
+	struct bonding *bond = to_bond(d);
+
+	if (sscanf(buf, "%d", &new_value) != 1) {
+		printk(KERN_INFO DRV_NAME
+		       ": %s: no resend_igmp value specified.\n",
+		       bond->dev->name);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	if (new_value < 0) {
+		printk(KERN_INFO DRV_NAME
+		       ": %s: Invalid resend_igmp value %d not in range 0-255; rejected.\n",
+		       bond->dev->name, new_value);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	printk(KERN_INFO DRV_NAME ": %s: Setting resend_igmp to %d.\n",
+		bond->dev->name, new_value);
+	bond->params.resend_igmp = new_value;
+out:
+	return ret;
+}
+
+static CLASS_DEVICE_ATTR(resend_igmp, S_IRUGO | S_IWUSR,
+		   bonding_show_resend_igmp, bonding_store_resend_igmp);
+
 static struct attribute *per_bond_attrs[] = {
 	&class_device_attr_slaves.attr,
 	&class_device_attr_mode.attr,
@@ -1463,6 +1505,7 @@ static struct attribute *per_bond_attrs[] = {
 	&class_device_attr_ad_actor_key.attr,
 	&class_device_attr_ad_partner_key.attr,
 	&class_device_attr_ad_partner_mac.attr,
+	&class_device_attr_resend_igmp.attr,
 	NULL,
 };
 

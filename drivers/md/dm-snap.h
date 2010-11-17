@@ -211,7 +211,7 @@ int dm_create_transient(struct exception_store *store);
  */
 static inline sector_t get_dev_size(struct block_device *bdev)
 {
-	return bdev->bd_inode->i_size >> SECTOR_SHIFT;
+	return i_size_read(bdev->bd_inode) >> SECTOR_SHIFT;
 }
 
 static inline chunk_t sector_to_chunk(struct dm_snapshot *s, sector_t sector)

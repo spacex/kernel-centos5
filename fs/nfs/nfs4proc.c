@@ -70,12 +70,17 @@ static int nfs4_wait_clnt_recover(struct rpc_clnt *clnt, struct nfs_client *clp)
 /* Prevent leaks of NFSv4 errors into userland */
 int nfs4_map_errors(int err)
 {
-	if (err < -1000) {
+	if (err >= -1000)
+		return err;
+	switch (err) {
+	case -NFS4ERR_RESOURCE:
+		return -EREMOTEIO;
+	default:
 		dprintk("%s could not handle NFSv4 error %d\n",
 				__FUNCTION__, -err);
-		return -EIO;
+		break;
 	}
-	return err;
+	return -EIO;
 }
 
 /*
@@ -295,19 +300,6 @@ static void nfs4_opendata_free(struct nfs4_opendata *p)
 		mntput(p->path.mnt);
 		kfree(p);
 	}
-}
-
-/* Helper for asynchronous RPC calls */
-static int nfs4_call_async(struct rpc_clnt *clnt,
-		const struct rpc_call_ops *tk_ops, void *calldata)
-{
-	struct rpc_task *task;
-
-	if (!(task = rpc_new_task_wq(clnt, RPC_TASK_ASYNC, tk_ops, calldata,
-				     nfsiod_workqueue)))
-		return -ENOMEM;
-	rpc_execute(task);
-	return 0;
 }
 
 static int nfs4_wait_for_completion_rpc_task(struct rpc_task *task)
@@ -1096,7 +1088,7 @@ static int _nfs4_do_setattr(struct inode *inode, struct nfs_fattr *fattr,
 		/* Use that stateid */
 	} else if (state != NULL) {
 		msg.rpc_cred = state->owner->so_cred;
-		nfs4_copy_stateid(&arg.stateid, state, current->files);
+		nfs4_copy_stateid(&arg.stateid, state, current->files, current->tgid);
 	} else
 		memcpy(&arg.stateid, &zero_stateid, sizeof(arg.stateid));
 
@@ -1233,10 +1225,12 @@ static const struct rpc_call_ops nfs4_close_ops = {
  *
  * NOTE: Caller must be holding the sp->so_owner semaphore!
  */
-int nfs4_do_close(struct path *path, struct nfs4_state *state)
+int nfs4_do_close(struct path *path, struct nfs4_state *state, int wait)
 {
 	struct nfs_server *server = NFS_SERVER(state->inode);
 	struct nfs4_closedata *calldata;
+	struct nfs4_state_owner *sp = state->owner;
+	struct rpc_task *task;
 	int status = -ENOMEM;
 
 	calldata = kmalloc(sizeof(*calldata), GFP_KERNEL);
@@ -1256,14 +1250,20 @@ int nfs4_do_close(struct path *path, struct nfs4_state *state)
 	calldata->path.mnt = mntget(path->mnt);
 	calldata->path.dentry = dget(path->dentry);
 
-	status = nfs4_call_async(server->client, &nfs4_close_ops, calldata);
-	if (status == 0)
-		goto out;
-
-	nfs_free_seqid(calldata->arg.seqid);
+	task = rpc_run_task_wq(server->client, RPC_TASK_ASYNC, &nfs4_close_ops,
+				calldata, nfsiod_workqueue);
+	if (IS_ERR(task))
+		return PTR_ERR(task);
+	status = 0;
+	if (wait)
+		status = rpc_wait_for_completion_task(task);
+	rpc_put_task(task);
+	return status;
 out_free_calldata:
 	kfree(calldata);
 out:
+	nfs4_put_open_state(state);
+	nfs4_put_state_owner(sp);
 	return status;
 }
 
@@ -1278,7 +1278,7 @@ static int nfs4_intent_set_file(struct nameidata *nd, struct path *path, struct 
 		ctx->state = state;
 		return 0;
 	}
-	nfs4_close_state(path, state, nd->intent.open.flags);
+	nfs4_close_sync(path, state, nd->intent.open.flags);
 	return PTR_ERR(filp);
 }
 
@@ -1367,7 +1367,7 @@ nfs4_open_revalidate(struct inode *dir, struct dentry *dentry, int openflags, st
 		nfs4_intent_set_file(nd, &path, state);
 		return 1;
 	}
-	nfs4_close_state(&path, state, openflags);
+	nfs4_close_sync(&path, state, openflags);
 out_drop:
 	d_drop(dentry);
 	return 0;
@@ -1955,7 +1955,7 @@ nfs4_proc_create(struct inode *dir, struct dentry *dentry, struct iattr *sattr,
 	if (status == 0 && (nd->flags & LOOKUP_OPEN))
 		status = nfs4_intent_set_file(nd, &path, state);
 	else
-		nfs4_close_state(&path, state, flags);
+		nfs4_close_sync(&path, state, flags);
 out:
 	return status;
 }
@@ -3677,6 +3677,32 @@ int nfs4_lock_delegation_recall(struct nfs4_state *state, struct file_lock *fl)
 	} while (exception.retry);
 out:
 	return err;
+}
+
+static void nfs4_release_lockowner_release(void *calldata)
+{
+	kfree(calldata);
+}
+
+const struct rpc_call_ops nfs4_release_lockowner_ops = {
+	.rpc_release = nfs4_release_lockowner_release,
+};
+
+void nfs4_release_lockowner(const struct nfs4_lock_state *lsp)
+{
+	struct nfs_server *server = NFS_SERVER(lsp->ls_state->inode);
+	struct nfs_release_lockowner_args *args;
+	struct rpc_message msg = {
+		.rpc_proc = &nfs4_procedures[NFSPROC4_CLNT_RELEASE_LOCKOWNER],
+	};
+
+	args = kmalloc(sizeof(*args), GFP_NOFS);
+	if (!args)
+		return;
+	args->lock_owner.clientid = server->nfs_client->cl_clientid;
+	args->lock_owner.id = lsp->ls_id;
+	msg.rpc_argp = args;
+	rpc_call_async(server->client, &msg, 0, &nfs4_release_lockowner_ops, args);
 }
 
 #define XATTR_NAME_NFSV4_ACL "system.nfs4_acl"

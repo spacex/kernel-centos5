@@ -34,6 +34,9 @@ u32 pmtmr_ioport __read_mostly;
 /* value of the Power timer at last timer interrupt */
 static u32 offset_delay;
 static u32 last_pmtmr_tick;
+static u32 cycles_not_accounted_HZ;
+
+#define PM_TIMER_FREQUENCY 3579545UL
 
 #define ACPI_PM_MASK 0xFFFFFF /* limit it to 24 bits */
 
@@ -80,6 +83,110 @@ int pmtimer_mark_offset(void)
 	}
 
 	return lost - 1;
+}
+
+/*
+ * This function facilitates fine-grained accounting of 'jiffies' in the
+ * timer interrupt handler if the actual length of the current real tick
+ * is not equal to the expected length of a real tick. This is useful if
+ * 'tick_divider' is greater than 1 because 'tick_divider' specifies the
+ * number of logical ticks ('jiffies') per real tick. The actual length
+ * of the current real tick is returned in the location which is pointed
+ * to by the argument 'njiffies'.
+ *
+ * In order to avoid inexact results due to the error margin of cyc2us(),
+ * the number of 'jiffies' to account is computed based on the PM timer
+ * frequency. Conceptually, this is being done as follows:
+ *
+ *   -  Determine the number of PM timer cycles that have elapsed between
+ *      the current PM timer sample and the previous PM timer sample.
+ *      This is the 'delta'.
+ *
+ *   -  The number of jiffies to account is equal to the 'delta' divided
+ *      by the number of PM timer cycles per jiffy.
+ *
+ * In order to avoid rounding errors by scaling the PM timer frequency
+ * down to a jiffy (i.e. PM_TIMER_FREQUENCY/HZ), the 'delta' is instead
+ * scaled up to HZ (i.e. delta*HZ).
+ */
+int pmtimer_mark_offset_return_njiffies(unsigned int *njiffies)
+{
+	unsigned long tsc;
+	u64 delta;
+	u32 real_ticks;
+	u32 jiffies_to_account;
+	u32 prev_offset_delay = offset_delay;
+	u32 tick = inl(pmtmr_ioport);
+
+	/*
+	 * Determine the number of elapsed cycles, scale up to HZ,
+	 * and add the unaccounted amount from the previous tick.
+	 */
+	delta = (u64)((tick - last_pmtmr_tick) & ACPI_PM_MASK) * HZ;
+	delta += cycles_not_accounted_HZ;
+
+	/*
+	 * Postpone accounting if the delta is less than a jiffy.
+	 */
+	if (delta < PM_TIMER_FREQUENCY) {
+		*njiffies = 0;
+		return -1;
+	}
+
+	last_pmtmr_tick = tick;
+
+	/*
+	 * Compute the number of jiffies to account.
+	 */
+	jiffies_to_account = (u32)(delta / PM_TIMER_FREQUENCY);
+
+	/*
+	 * Remember the unaccounted amount and compute the 'offset_delay'
+	 * for use by do_gettimeoffset_pm(). The unaccounted amount needs
+	 * to be scaled down (divided by HZ) to compute the 'offset_delay'.
+	 */
+	cycles_not_accounted_HZ = (u32)(delta % PM_TIMER_FREQUENCY);
+	offset_delay = cyc2us(cycles_not_accounted_HZ / HZ);
+
+	/*
+	 * Compute the number of real ticks that have elapsed.
+	 * Consider three cases:
+	 *
+	 * 1. If 'real_ticks' is less than 1, the current real tick is
+	 *    shorter than expected. Return the actual length in jiffies
+	 *    where 1 <= *njiffies < tick_divider.
+	 *
+	 * 2. If 'real_ticks' is equal 1, the current real tick may be
+	 *    longer than expected. Return the actual length in jiffies
+	 *    where tick_divider <= *njiffies < tick_divider*2.
+	 *
+	 * 3. If 'real_ticks' is greater than 1, we lost some real ticks.
+	 *    Return one full real tick plus a fraction of a real tick
+	 *    where tick_divider <= *njiffies < tick_divider*2 (similar
+	 *    to case 2.) and where the function's return value reflects
+	 *    the number of lost real ticks.
+	 */
+	real_ticks = jiffies_to_account / tick_divider;
+	if (real_ticks < 1)
+		*njiffies = jiffies_to_account;
+	else
+		*njiffies = tick_divider + (jiffies_to_account % tick_divider);
+
+	/*
+	 * Account the elapsed jiffies plus the current 'offset_delay' in
+	 * 'monotonic_base' and set a time stamp in 'vxtime.last_tsc' for
+	 * use by monotonic_clock(). The previous 'offset_delay' which was
+	 * accounted in 'monotonic_base' at the previous real tick must be
+	 * un-accounted (subtracted) during the current real tick because
+	 * it is now included in the current 'jiffies_to_account' and/or
+	 * in the current 'offset_delay'.
+	 */
+	monotonic_base += (u64)jiffies_to_account * (u64)(NSEC_PER_SEC / HZ) +
+	    ((u64)offset_delay - (u64)prev_offset_delay) * (u64)NSEC_PER_USEC;
+	rdtscll(tsc);
+	vxtime.last_tsc = tsc;
+
+	return real_ticks - 1;
 }
 
 static unsigned pmtimer_wait_tick(void)

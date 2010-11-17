@@ -32,6 +32,9 @@
  */
 #define DASD_CHANQ_MAX_SIZE 4
 
+#define DASD_SLEEPON_START_TAG  (void *) 1
+#define DASD_SLEEPON_END_TAG    (void *) 2
+
 /*
  * SECTION: exported variables of dasd.c
  */
@@ -1524,7 +1527,10 @@ dasd_add_request_tail(struct dasd_ccw_req *req)
 static void
 dasd_wakeup_cb(struct dasd_ccw_req *cqr, void *data)
 {
-	wake_up((wait_queue_head_t *) data);
+	spin_lock_irq(get_ccwdev_lock(cqr->device->cdev));
+	cqr->callback_data = DASD_SLEEPON_END_TAG;
+	spin_unlock_irq(get_ccwdev_lock(cqr->device->cdev));
+	wake_up(&generic_waitq);
 }
 
 static inline int
@@ -1535,9 +1541,7 @@ _wait_for_wakeup(struct dasd_ccw_req *cqr)
 
 	device = cqr->device;
 	spin_lock_irq(get_ccwdev_lock(device->cdev));
-	rc = ((cqr->status == DASD_CQR_DONE ||
-	       cqr->status == DASD_CQR_FAILED) &&
-	      list_empty(&cqr->list));
+	rc = (cqr->callback_data == DASD_SLEEPON_END_TAG);
 	spin_unlock_irq(get_ccwdev_lock(device->cdev));
 	return rc;
 }
@@ -1555,7 +1559,7 @@ dasd_sleep_on(struct dasd_ccw_req * cqr)
 	spin_lock_irq(get_ccwdev_lock(device->cdev));
 
 	cqr->callback = dasd_wakeup_cb;
-	cqr->callback_data = (void *) &generic_waitq;
+	cqr->callback_data = DASD_SLEEPON_START_TAG;
 	cqr->status = DASD_CQR_QUEUED;
 	list_add_tail(&cqr->list, &device->ccw_queue);
 
@@ -1585,7 +1589,7 @@ dasd_sleep_on_interruptible(struct dasd_ccw_req * cqr)
 	spin_lock_irq(get_ccwdev_lock(device->cdev));
 
 	cqr->callback = dasd_wakeup_cb;
-	cqr->callback_data = (void *) &generic_waitq;
+	cqr->callback_data = DASD_SLEEPON_START_TAG;
 	cqr->status = DASD_CQR_QUEUED;
 	list_add_tail(&cqr->list, &device->ccw_queue);
 
@@ -1666,7 +1670,7 @@ dasd_sleep_on_immediatly(struct dasd_ccw_req * cqr)
 	}
 
 	cqr->callback = dasd_wakeup_cb;
-	cqr->callback_data = (void *) &generic_waitq;
+	cqr->callback_data = DASD_SLEEPON_START_TAG;
 	cqr->status = DASD_CQR_QUEUED;
 	list_add(&cqr->list, &device->ccw_queue);
 

@@ -3989,6 +3989,7 @@ static int __devinit ql3xxx_probe(struct pci_dev *pdev,
 {
 	struct net_device *ndev = NULL;
 	struct ql3_adapter *qdev = NULL;
+	struct ql_tx_buf_cb *tx_buf = NULL;
 	static int cards_found = 0;
 	int pci_using_dac, err;
 
@@ -4022,12 +4023,20 @@ static int __devinit ql3xxx_probe(struct pci_dev *pdev,
 		goto err_out_free_regions;
 	}
 
+	tx_buf = kzalloc(sizeof(struct ql_tx_buf_cb)*NUM_REQ_Q_ENTRIES, GFP_KERNEL);
+	if (!tx_buf) {
+		printk(KERN_ERR PFX "%s could not allocate tx_buf_cb\n",
+		       pci_name(pdev));
+		err = -ENOMEM;
+		goto err_out_free_regions;
+	}
+
 	ndev = alloc_etherdev(sizeof(struct ql3_adapter));
 	if (!ndev) {
 		printk(KERN_ERR PFX "%s could not alloc etherdev\n",
 		       pci_name(pdev));
 		err = -ENOMEM;
-		goto err_out_free_regions;
+		goto err_out_free_txb;
 	}
 
 	SET_MODULE_OWNER(ndev);
@@ -4036,6 +4045,7 @@ static int __devinit ql3xxx_probe(struct pci_dev *pdev,
 	pci_set_drvdata(pdev, ndev);
 
 	qdev = netdev_priv(ndev);
+	qdev->tx_buf = tx_buf;
 	qdev->index = cards_found;
 	qdev->ndev = ndev;
 	qdev->pdev = pdev;
@@ -4157,6 +4167,8 @@ err_out_iounmap:
 	iounmap(qdev->mem_map_registers);
 err_out_free_ndev:
 	free_netdev(ndev);
+err_out_free_txb:
+	kfree(tx_buf);
 err_out_free_regions:
 	pci_release_regions(pdev);
 err_out_disable_pdev:
@@ -4186,6 +4198,7 @@ static void __devexit ql3xxx_remove(struct pci_dev *pdev)
 	iounmap(qdev->mem_map_registers);
 	pci_release_regions(pdev);
 	pci_set_drvdata(pdev, NULL);
+	kfree(qdev->tx_buf);
 	free_netdev(ndev);
 }
 

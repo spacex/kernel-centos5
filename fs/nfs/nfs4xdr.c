@@ -71,6 +71,7 @@ static int nfs4_stat_to_errno(int);
  * we currently use size 1 (u32) out of (NFS4_OPAQUE_LIMIT  >> 2)
  */
 #define owner_id_maxsz          (1 + 1)
+#define decode_lockowner_maxsz  (1 + XDR_QUADLEN(IDMAP_NAMESZ))
 #define compound_encode_hdr_maxsz	(3 + (NFS4_MAXTAGLEN >> 2))
 #define compound_decode_hdr_maxsz	(3 + (NFS4_MAXTAGLEN >> 2))
 #define op_encode_hdr_maxsz	(1)
@@ -126,6 +127,7 @@ static int nfs4_stat_to_errno(int);
 #define encode_link_maxsz	(op_encode_hdr_maxsz + \
 				nfs4_name_maxsz)
 #define decode_link_maxsz	(op_decode_hdr_maxsz + 5)
+#define encode_lockowner_maxsz  (7)
 #define encode_symlink_maxsz	(op_encode_hdr_maxsz + \
 				1 + nfs4_name_maxsz + \
 				1 + \
@@ -278,6 +280,12 @@ static int nfs4_stat_to_errno(int);
 				decode_putfh_maxsz + \
 				decode_getattr_maxsz + \
 				op_decode_hdr_maxsz + 4)
+#define NFS4_enc_release_lockowner_sz \
+                (compound_encode_hdr_maxsz + \
+                 encode_lockowner_maxsz)
+#define NFS4_dec_release_lockowner_sz \
+                (compound_decode_hdr_maxsz + \
+                 decode_lockowner_maxsz)
 #define NFS4_enc_access_sz	(compound_encode_hdr_maxsz + \
 				encode_putfh_maxsz + \
 				op_encode_hdr_maxsz + 1)
@@ -775,6 +783,16 @@ static inline uint64_t nfs4_lock_length(struct file_lock *fl)
 		return ~(uint64_t)0;
 	return fl->fl_end - fl->fl_start + 1;
 }
+static void 
+encode_lockowner(struct xdr_stream *xdr, const struct nfs_lowner *lowner)
+{
+	uint32_t *p;
+
+	RESERVE_SPACE(16);
+	WRITE64(lowner->clientid);
+	WRITE32(4);
+	WRITE32(lowner->id);
+}
 
 /*
  * opcode,type,reclaim,offset,length,new_lock_owner = 32
@@ -792,13 +810,11 @@ static int encode_lock(struct xdr_stream *xdr, const struct nfs_lock_args *args)
 	WRITE64(nfs4_lock_length(args->fl));
 	WRITE32(args->new_lock_owner);
 	if (args->new_lock_owner){
-		RESERVE_SPACE(40);
+		RESERVE_SPACE(24);
 		WRITE32(args->open_seqid->sequence->counter);
 		WRITEMEM(args->open_stateid->data, sizeof(args->open_stateid->data));
 		WRITE32(args->lock_seqid->sequence->counter);
-		WRITE64(args->lock_owner.clientid);
-		WRITE32(4);
-		WRITE32(args->lock_owner.id);
+		encode_lockowner(xdr, &args->lock_owner);
 	}
 	else {
 		RESERVE_SPACE(20);
@@ -813,14 +829,12 @@ static int encode_lockt(struct xdr_stream *xdr, const struct nfs_lockt_args *arg
 {
 	uint32_t *p;
 
-	RESERVE_SPACE(40);
+	RESERVE_SPACE(24);
 	WRITE32(OP_LOCKT);
 	WRITE32(nfs4_lock_type(args->fl, 0));
 	WRITE64(args->fl->fl_start);
 	WRITE64(nfs4_lock_length(args->fl));
-	WRITE64(args->lock_owner.clientid);
-	WRITE32(4);
-	WRITE32(args->lock_owner.id);
+	encode_lockowner(xdr, &args->lock_owner);
 
 	return 0;
 }
@@ -838,6 +852,14 @@ static int encode_locku(struct xdr_stream *xdr, const struct nfs_locku_args *arg
 	WRITE64(nfs4_lock_length(args->fl));
 
 	return 0;
+}
+static void encode_release_lockowner(struct xdr_stream *xdr, const struct nfs_lowner *lowner)
+{
+	uint32_t *p;
+
+	RESERVE_SPACE(4);
+	WRITE32(OP_RELEASE_LOCKOWNER);
+	encode_lockowner(xdr, lowner);
 }
 
 static int encode_lookup(struct xdr_stream *xdr, const struct qstr *name)
@@ -1039,14 +1061,14 @@ static int encode_putrootfh(struct xdr_stream *xdr)
         return 0;
 }
 
-static void encode_stateid(struct xdr_stream *xdr, const struct nfs_open_context *ctx)
+static void encode_stateid(struct xdr_stream *xdr, const struct nfs_open_context *ctx, const struct nfs_lock_context *l_ctx)
 {
 	nfs4_stateid stateid;
 	uint32_t *p;
 
 	RESERVE_SPACE(16);
 	if (ctx->state != NULL) {
-		nfs4_copy_stateid(&stateid, ctx->state, ctx->lockowner);
+		nfs4_copy_stateid(&stateid, ctx->state, l_ctx->lockowner, l_ctx->pid);
 		WRITEMEM(stateid.data, sizeof(stateid.data));
 	} else
 		WRITEMEM(zero_stateid.data, sizeof(zero_stateid.data));
@@ -1059,7 +1081,7 @@ static int encode_read(struct xdr_stream *xdr, const struct nfs_readargs *args)
 	RESERVE_SPACE(4);
 	WRITE32(OP_READ);
 
-	encode_stateid(xdr, args->context);
+	encode_stateid(xdr, args->context, args->lock_context);
 
 	RESERVE_SPACE(12);
 	WRITE64(args->offset);
@@ -1267,7 +1289,7 @@ static int encode_write(struct xdr_stream *xdr, const struct nfs_writeargs *args
 	RESERVE_SPACE(4);
 	WRITE32(OP_WRITE);
 
-	encode_stateid(xdr, args->context);
+	encode_stateid(xdr, args->context, args->lock_context);
 
 	RESERVE_SPACE(16);
 	WRITE64(args->offset);
@@ -1685,6 +1707,19 @@ static int nfs4_xdr_enc_locku(struct rpc_rqst *req, uint32_t *p, struct nfs_lock
 	status = encode_locku(&xdr, args);
 out:
 	return status;
+}
+
+static int nfs4_xdr_enc_release_lockowner(struct rpc_rqst *req, __be32 *p, struct nfs_release_lockowner_args *args)
+{
+	struct xdr_stream xdr;
+	struct compound_hdr hdr = {
+		.nops = 1,
+	};
+
+	xdr_init_encode(&xdr, &req->rq_snd_buf, p);
+	encode_compound_hdr(&xdr, &hdr);
+	encode_release_lockowner(&xdr, &args->lock_owner);
+	return 0;
 }
 
 /*
@@ -3208,6 +3243,11 @@ static int decode_locku(struct xdr_stream *xdr, struct nfs_locku_res *res)
 	return status;
 }
 
+static int decode_release_lockowner(struct xdr_stream *xdr)
+{
+	return decode_op_hdr(xdr, OP_RELEASE_LOCKOWNER);
+}
+
 static int decode_lookup(struct xdr_stream *xdr)
 {
 	return decode_op_hdr(xdr, OP_LOOKUP);
@@ -4149,6 +4189,19 @@ out:
 	return status;
 }
 
+static int nfs4_xdr_dec_release_lockowner(struct rpc_rqst *rqstp, __be32 *p, void *dummy)
+{
+	struct xdr_stream xdr;
+	struct compound_hdr hdr;
+	int status;
+
+	xdr_init_decode(&xdr, &rqstp->rq_rcv_buf, p);
+	status = decode_compound_hdr(&xdr, &hdr);
+	if (!status)
+		status = decode_release_lockowner(&xdr);
+	return status;
+}
+
 /*
  * Decode READLINK response
  */
@@ -4529,7 +4582,6 @@ static struct {
 	{ NFS4ERR_SERVERFAULT,	ESERVERFAULT	},
 	{ NFS4ERR_BADTYPE,	EBADTYPE	},
 	{ NFS4ERR_LOCKED,	EAGAIN		},
-	{ NFS4ERR_RESOURCE,	EREMOTEIO	},
 	{ NFS4ERR_SYMLINK,	ELOOP		},
 	{ NFS4ERR_OP_ILLEGAL,	EOPNOTSUPP	},
 	{ NFS4ERR_DEADLOCK,	EDEADLK		},
@@ -4613,6 +4665,7 @@ struct rpc_procinfo	nfs4_procedures[] = {
   PROC(GETACL,		enc_getacl,	dec_getacl),
   PROC(SETACL,		enc_setacl,	dec_setacl),
   PROC(FS_LOCATIONS,	enc_fs_locations, dec_fs_locations),
+  PROC(RELEASE_LOCKOWNER, enc_release_lockowner, dec_release_lockowner),
 };
 
 struct rpc_version		nfs_version4 = {

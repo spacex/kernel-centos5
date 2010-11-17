@@ -37,6 +37,7 @@ struct nfs_page {
 				*wb_list_head;	/*      read/write/commit */
 	struct page		*wb_page;	/* page to read in/write out */
 	struct nfs_open_context	*wb_context;	/* File state context info */
+	struct nfs_lock_context	*wb_lock_context;	/* lock context info */
 	atomic_t		wb_complete;	/* i/os we're waiting for */
 	unsigned long		wb_index;	/* Offset >> PAGE_CACHE_SHIFT */
 	unsigned int		wb_offset,	/* Offset & ~PAGE_CACHE_MASK */

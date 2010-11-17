@@ -1211,7 +1211,7 @@ struct ql3_adapter {
 	u32 req_consumer_index_phy_addr_high;
 	u32 req_consumer_index_phy_addr_low;
 	atomic_t tx_count;
-	struct ql_tx_buf_cb tx_buf[NUM_REQ_Q_ENTRIES];
+	struct ql_tx_buf_cb *tx_buf;
 
 	/* Net Response Queue */
 	u32 rsp_q_size;

@@ -37,6 +37,7 @@ extern void config_acpi_tables(void);
 extern void ia32_syscall(void);
 
 extern int pmtimer_mark_offset(void);
+extern int pmtimer_mark_offset_return_njiffies(unsigned int *);
 extern void pmtimer_resume(void);
 extern void pmtimer_wait(unsigned);
 extern int pmtimer_calibrate_apic(unsigned, int *tries);

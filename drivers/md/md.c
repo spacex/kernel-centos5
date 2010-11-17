@@ -341,7 +341,7 @@ static struct mdk_personality *find_pers(int level, char *clevel)
 
 static inline sector_t calc_dev_sboffset(struct block_device *bdev)
 {
-	sector_t size = bdev->bd_inode->i_size >> BLOCK_SIZE_BITS;
+	sector_t size = i_size_read(bdev->bd_inode) >> BLOCK_SIZE_BITS;
 	return MD_NEW_SIZE_BLOCKS(size);
 }
 
@@ -1010,7 +1010,7 @@ static int super_1_load(mdk_rdev_t *rdev, mdk_rdev_t *refdev, int minor_version)
 	 */
 	switch(minor_version) {
 	case 0:
-		sb_offset = rdev->bdev->bd_inode->i_size >> 9;
+		sb_offset = i_size_read(rdev->bdev->bd_inode) >> 9;
 		sb_offset -= 8*2;
 		sb_offset &= ~(sector_t)(4*2-1);
 		/* convert from sectors to K */
@@ -1093,7 +1093,7 @@ static int super_1_load(mdk_rdev_t *rdev, mdk_rdev_t *refdev, int minor_version)
 			ret = 0;
 	}
 	if (minor_version) 
-		rdev->size = ((rdev->bdev->bd_inode->i_size>>9) - le64_to_cpu(sb->data_offset)) / 2;
+		rdev->size = ((i_size_read(rdev->bdev->bd_inode)>>9) - le64_to_cpu(sb->data_offset)) / 2;
 	else
 		rdev->size = rdev->sb_offset;
 	if (rdev->size < le64_to_cpu(sb->data_size)/2)
@@ -2030,7 +2030,7 @@ static mdk_rdev_t *md_import_device(dev_t newdev, int super_format, int super_mi
 	atomic_set(&rdev->read_errors, 0);
 	atomic_set(&rdev->corrected_errors, 0);
 
-	size = rdev->bdev->bd_inode->i_size >> BLOCK_SIZE_BITS;
+	size = i_size_read(rdev->bdev->bd_inode) >> BLOCK_SIZE_BITS;
 	if (!size) {
 		printk(KERN_WARNING 
 			"md: %s has zero or unknown size, marking faulty!\n",
@@ -3841,7 +3841,7 @@ static int add_new_disk(mddev_t * mddev, mdu_disk_info_t *info)
 
 		if (!mddev->persistent) {
 			printk(KERN_INFO "md: nonpersistent superblock ...\n");
-			rdev->sb_offset = rdev->bdev->bd_inode->i_size >> BLOCK_SIZE_BITS;
+			rdev->sb_offset = i_size_read(rdev->bdev->bd_inode) >> BLOCK_SIZE_BITS;
 		} else 
 			rdev->sb_offset = calc_dev_sboffset(rdev->bdev);
 		rdev->size = calc_dev_size(rdev, mddev->chunk_size);
@@ -3917,7 +3917,7 @@ static int hot_add_disk(mddev_t * mddev, dev_t dev)
 		rdev->sb_offset = calc_dev_sboffset(rdev->bdev);
 	else
 		rdev->sb_offset =
-			rdev->bdev->bd_inode->i_size >> BLOCK_SIZE_BITS;
+			i_size_read(rdev->bdev->bd_inode) >> BLOCK_SIZE_BITS;
 
 	size = calc_dev_size(rdev, mddev->chunk_size);
 	rdev->size = size;

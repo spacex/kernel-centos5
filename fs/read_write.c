@@ -36,7 +36,7 @@ loff_t generic_file_llseek(struct file *file, loff_t offset, int origin)
 	mutex_lock(&inode->i_mutex);
 	switch (origin) {
 		case 2:
-			offset += inode->i_size;
+			offset += i_size_read(inode);
 			break;
 		case 1:
 			offset += file->f_pos;

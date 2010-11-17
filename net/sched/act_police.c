@@ -342,23 +342,20 @@ static int
 tcf_act_police_dump(struct sk_buff *skb, struct tc_action *a, int bind, int ref)
 {
 	unsigned char	 *b = skb->tail;
-	struct tc_police opt;
 	struct tcf_police *p = PRIV(a);
+	struct tc_police opt = {
+		.index = p->index,
+		.action = p->action,
+		.mtu = p->mtu,
+		.burst = p->burst,
+		.refcnt = p->refcnt - ref,
+		.bindcnt = p->bindcnt - bind,
+	};
 
-	opt.index = p->index;
-	opt.action = p->action;
-	opt.mtu = p->mtu;
-	opt.burst = p->burst;
-	opt.refcnt = p->refcnt - ref;
-	opt.bindcnt = p->bindcnt - bind;
 	if (p->R_tab)
 		opt.rate = p->R_tab->rate;
-	else
-		memset(&opt.rate, 0, sizeof(opt.rate));
 	if (p->P_tab)
 		opt.peakrate = p->P_tab->rate;
-	else
-		memset(&opt.peakrate, 0, sizeof(opt.peakrate));
 	RTA_PUT(skb, TCA_POLICE_TBF, sizeof(opt), &opt);
 	if (p->result)
 		RTA_PUT(skb, TCA_POLICE_RESULT, sizeof(int), &p->result);

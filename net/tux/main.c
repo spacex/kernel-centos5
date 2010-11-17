@@ -970,7 +970,7 @@ fetch_missed:
 			return;
 		}
 	}
-	req->total_file_len = req->dentry->d_inode->i_size;
+	req->total_file_len = i_size_read(req->dentry->d_inode);
 	if (!req->output_len)
 		req->output_len = req->total_file_len;
 	if (tux_fetch_file(req, !cachemiss)) {

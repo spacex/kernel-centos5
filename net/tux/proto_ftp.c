@@ -737,7 +737,7 @@ void ftp_get_size (tux_req_t *req, int cachemiss)
 		}
 	}
 	req->in_file->f_pos = 0;
-	len = sprintf(file_size, "213 %Li\r\n", req->dentry->d_inode->i_size);
+	len = sprintf(file_size, "213 %Li\r\n", i_size_read(req->dentry->d_inode));
 	__ftp_send_async_message(req, file_size, 200, len);
 }
 
@@ -1050,7 +1050,7 @@ static char * ftp_print_dir_line (tux_req_t *req, char *tmp, char *d_name, int d
 	memset(tmp, ' ', size);
 	tmp += size;
 
-	tmp += sprintf(tmp, "%8Li", inode->i_size);
+	tmp += sprintf(tmp, "%8Li", i_size_read(inode));
 	*tmp++ = ' ';
 
 	tmp += time_unix2ls(inode->i_mtime.tv_sec, tmp);

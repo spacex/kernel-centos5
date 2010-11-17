@@ -164,6 +164,7 @@ enum {
 	GLF_LFLUSH			= 7,
 	GLF_INVALIDATE_IN_PROGRESS	= 8,
 	GLF_REPLY_PENDING		= 9,
+	GLF_QUEUED			= 12,
 };
 
 struct gfs2_glock {

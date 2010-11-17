@@ -703,40 +703,6 @@ qla2x00_wait_for_loop_ready(scsi_qla_host_t *ha)
 	return (return_status);
 }
 
-void
-qla2x00_abort_fcport_cmds(fc_port_t *fcport)
-{
-	int cnt;
-	unsigned long flags;
-	srb_t *sp;
-	scsi_qla_host_t *ha = fcport->ha;
-	scsi_qla_host_t *pha = to_qla_parent(ha);
-
-	spin_lock_irqsave(&pha->hardware_lock, flags);
-	for (cnt = 1; cnt < MAX_OUTSTANDING_COMMANDS; cnt++) {
-		sp = pha->outstanding_cmds[cnt];
-		if (!sp)
-			continue;
-		if (sp->fcport != fcport)
-			continue;
-
-		spin_unlock_irqrestore(&pha->hardware_lock, flags);
-		if (ha->isp_ops->abort_command(ha, sp)) {
-			DEBUG2(qla_printk(KERN_WARNING, ha,
-			    "Abort failed --  %lx\n", sp->cmd->serial_number));
-		} else {
-			if (qla2x00_eh_wait_on_command(ha, sp->cmd) !=
-			    QLA_SUCCESS)
-				DEBUG2(qla_printk(KERN_WARNING, ha,
-				    "Abort failed while waiting --  %lx\n",
-				    sp->cmd->serial_number));
-
-		}
-		spin_lock_irqsave(&pha->hardware_lock, flags);
-	}
-	spin_unlock_irqrestore(&pha->hardware_lock, flags);
-}
-
 static int
 qla2x00_is_eh_active(struct Scsi_Host *shost)
 {
