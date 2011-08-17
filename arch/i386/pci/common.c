@@ -354,6 +354,14 @@ static struct dmi_system_id __devinitdata pciprobe_dmi_table[] = {
 	},
 	{
 		.callback = set_bf_sort,
+		.ident = "HP ProLiant DL580 G7",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HP"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "ProLiant DL580 G7"),
+		},
+	},
+	{
+		.callback = set_bf_sort,
 		.ident = "HP ProLiant xw460c",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "HP"),

@@ -48,6 +48,7 @@
 #include <linux/major.h>
 #include <linux/gfp.h>
 #include <linux/poll.h>
+#include <linux/delay.h>
 #include <asm/tlbflush.h>
 
 #define MAX_TAP_DEV 100     /*the maximum number of tapdisk ring devices    */
@@ -1135,6 +1136,11 @@ static int do_block_io_op(blkif_t *blkif)
 			break;
 		}
 
+		if (kthread_should_stop()) {
+			more_to_do = 1;
+			break;
+		}
+
 		switch (blkif->blk_protocol) {
 		case BLKIF_PROTOCOL_NATIVE:
 			memcpy(&req, RING_GET_REQUEST(&blk_rings->native, rc),
@@ -1163,6 +1169,9 @@ static int do_block_io_op(blkif_t *blkif)
 			break;
 
 		default:
+			/* A good sign something is wrong: sleep for a while to
+			 * avoid excessive CPU consumption by a bad guest. */
+			msleep(1);
 			WPRINTK("unknown operation [%d]\n",
 				req.operation);
 			make_response(blkif, req.id, req.operation,
@@ -1170,6 +1179,9 @@ static int do_block_io_op(blkif_t *blkif)
 			free_req(pending_req);
 			break;
 		}
+
+		/* Yield point for this unbounded loop. */
+		cond_resched();
 	}
 		
 	blktap_kick_user(blkif->dev_num);
@@ -1399,7 +1411,8 @@ static void dispatch_rw_block_io(blkif_t *blkif,
  fail_response:
 	make_response(blkif, req->id, req->operation, BLKIF_RSP_ERROR);
 	free_req(pending_req);
-} 
+	msleep(1); /* back off a bit */
+}
 
 
 

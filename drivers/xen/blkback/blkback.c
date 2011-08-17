@@ -38,6 +38,7 @@
 #include <linux/spinlock.h>
 #include <linux/kthread.h>
 #include <linux/list.h>
+#include <linux/delay.h>
 #include <xen/balloon.h>
 #include <asm/hypervisor.h>
 #include <asm/hypercall.h>
@@ -303,7 +304,7 @@ static int do_block_io_op(blkif_t *blkif)
 	rp = blk_rings->common.sring->req_prod;
 	rmb(); /* Ensure we see queued requests up to 'rp'. */
 
-	while ((rc != rp)) {
+	while (rc != rp) {
 
 		if (RING_REQUEST_CONS_OVERFLOW(&blk_rings->common, rc))
 			break;
@@ -311,6 +312,11 @@ static int do_block_io_op(blkif_t *blkif)
 		pending_req = alloc_req();
 		if (NULL == pending_req) {
 			blkif->st_oo_req++;
+			more_to_do = 1;
+			break;
+		}
+
+		if (kthread_should_stop()) {
 			more_to_do = 1;
 			break;
 		}
@@ -340,6 +346,9 @@ static int do_block_io_op(blkif_t *blkif)
 			dispatch_rw_block_io(blkif, &req, pending_req);
 			break;
 		default:
+			/* A good sign something is wrong: sleep for a while to
+			 * avoid excessive CPU consumption by a bad guest. */
+			msleep(1);
 			DPRINTK("error: unknown block io operation [%d]\n",
 				req.operation);
 			make_response(blkif, req.id, req.operation,
@@ -347,7 +356,11 @@ static int do_block_io_op(blkif_t *blkif)
 			free_req(pending_req);
 			break;
 		}
+
+		/* Yield point for this unbounded loop. */
+		cond_resched();
 	}
+
 	return more_to_do;
 }
 
@@ -484,6 +497,7 @@ static void dispatch_rw_block_io(blkif_t *blkif,
  fail_response:
 	make_response(blkif, req->id, req->operation, BLKIF_RSP_ERROR);
 	free_req(pending_req);
+	msleep(1); /* back off a bit */
 } 
 
 

@@ -26,16 +26,14 @@ static unsigned int stopmachine_num_threads;
 static atomic_t stopmachine_thread_ack;
 static DECLARE_MUTEX(stopmachine_mutex);
 
+static struct completion migration_done;
+
 static int stopmachine(void *cpu)
 {
 	int irqs_disabled = 0;
 	int prepared = 0;
 
-	set_cpus_allowed(current, cpumask_of_cpu((int)(long)cpu));
-
-	/* Ack: we are alive */
-	smp_mb(); /* Theoretically the ack = 0 might not be on this CPU yet. */
-	atomic_inc(&stopmachine_thread_ack);
+	wait_for_completion(&migration_done);
 
 	/* Simple state machine */
 	while (stopmachine_state != STOPMACHINE_EXIT) {
@@ -54,12 +52,8 @@ static int stopmachine(void *cpu)
 			smp_mb(); /* Must read state first. */
 			atomic_inc(&stopmachine_thread_ack);
 		}
-		/* Yield in first stage: migration threads need to
-		 * help our sisters onto their CPUs. */
-		if (!prepared && !irqs_disabled)
-			yield();
-		else
-			cpu_relax();
+
+		cpu_relax();
 	}
 
 	/* Ack: we are exiting. */
@@ -92,18 +86,19 @@ static int stop_machine(void)
 	stopmachine_num_threads = 0;
 	stopmachine_state = STOPMACHINE_WAIT;
 
+	init_completion(&migration_done);
+
 	for_each_online_cpu(i) {
 		if (i == raw_smp_processor_id())
 			continue;
 		ret = kernel_thread(stopmachine, (void *)(long)i,CLONE_KERNEL);
 		if (ret < 0)
 			break;
+		set_cpus_allowed(find_task_by_pid(ret), cpumask_of_cpu(i));
 		stopmachine_num_threads++;
 	}
 
-	/* Wait for them all to come to life. */
-	while (atomic_read(&stopmachine_thread_ack) != stopmachine_num_threads)
-		yield();
+	complete_all(&migration_done);
 
 	/* If some failed, kill them all. */
 	if (ret < 0) {

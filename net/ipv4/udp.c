@@ -1014,7 +1014,7 @@ static int __udp_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
 {
 	int rc;
 
-	if ((rc = sock_queue_rcv_skb(sk, skb)) < 0) {
+	if ((rc = sock_queue_rcv_skb_nolock(sk, skb)) < 0) {
 		/* Note that an ENOMEM error is charged twice */
 		if (rc == -ENOMEM)
 			UDP_INC_STATS_BH(UDP_MIB_INERRORS);

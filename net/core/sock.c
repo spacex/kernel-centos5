@@ -245,8 +245,7 @@ static void sock_disable_timestamp(struct sock *sk)
 	}
 }
 
-
-int sock_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
+static int __sock_queue_rcv_skb(struct sock *sk, struct sk_buff *skb, int needlock)
 {
 	int err = 0;
 	int skb_len;
@@ -260,11 +259,7 @@ int sock_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
 		goto out;
 	}
 
-	/* It would be deadlock, if sock_queue_rcv_skb is used
-	   with socket lock! We assume that users of this
-	   function are lock free.
-	*/
-	err = sk_filter(sk, skb, 1);
+	err = sk_filter(sk, skb, needlock);
 	if (err)
 		goto out;
 
@@ -289,6 +284,24 @@ int sock_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
 		sk->sk_data_ready(sk, skb_len);
 out:
 	return err;
+}
+
+/*
+ * sock_queue_rcv_skb_nolock should be used with socket lock
+ */
+int sock_queue_rcv_skb_nolock(struct sock *sk, struct sk_buff *skb)
+{
+	return __sock_queue_rcv_skb(sk, skb, 0);
+}
+EXPORT_SYMBOL(sock_queue_rcv_skb_nolock);
+
+/* It would be deadlock, if sock_queue_rcv_skb is used
+ * with socket lock! We assume that users of this
+ * function are lock free.
+ */
+int sock_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
+{
+	return __sock_queue_rcv_skb(sk, skb, 1);
 }
 EXPORT_SYMBOL(sock_queue_rcv_skb);
 

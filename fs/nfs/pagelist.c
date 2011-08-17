@@ -60,22 +60,18 @@ nfs_create_request(struct nfs_open_context *ctx, struct inode *inode,
 		   struct page *page,
 		   unsigned int offset, unsigned int count)
 {
-	struct nfs_server *server = NFS_SERVER(inode);
 	struct nfs_page		*req;
 
-	/* Deal with hard limits.  */
-	for (;;) {
-		/* try to allocate the request struct */
-		req = nfs_page_alloc();
-		if (req != NULL)
-			break;
+	/* try to allocate the request struct */
+	req = nfs_page_alloc();
+	if (req == NULL)
+		return ERR_PTR(-ENOMEM);
 
-		/* Try to free up at least one request in order to stay
-		 * below the hard limit
-		 */
-		if (signalled() && (server->flags & NFS_MOUNT_INTR))
-			return ERR_PTR(-ERESTARTSYS);
-		yield();
+	/* get lock context early so we can deal with alloc failures */
+	req->wb_lock_context = nfs_get_lock_context(ctx);
+	if (req->wb_lock_context == NULL) {
+		nfs_page_free(req);
+		return ERR_PTR(-ENOMEM);
 	}
 
 	/* Initialize the request struct. Initially, we assume a
@@ -93,7 +89,6 @@ nfs_create_request(struct nfs_open_context *ctx, struct inode *inode,
 	req->wb_bytes   = count;
 	atomic_set(&req->wb_count, 1);
 	req->wb_context = get_nfs_open_context(ctx);
-	req->wb_lock_context = nfs_get_lock_context(ctx);
 
 	return req;
 }
@@ -136,7 +131,7 @@ void nfs_clear_page_writeback(struct nfs_page *req)
 {
 	struct nfs_inode *nfsi = NFS_I(req->wb_context->path.dentry->d_inode);
 
-	if (req->wb_page != NULL) {
+	if (test_bit(PG_MAPPED, &req->wb_flags)) {
 		spin_lock(&nfsi->req_lock);
 		radix_tree_tag_clear(&nfsi->nfs_page_tree, req->wb_index, NFS_PAGE_TAG_WRITEBACK);
 		spin_unlock(&nfsi->req_lock);

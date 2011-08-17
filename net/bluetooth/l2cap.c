@@ -1825,7 +1825,7 @@ static inline int l2cap_data_channel(struct l2cap_conn *conn, u16 cid, struct sk
 	 * But we don't have any other choice. L2CAP doesn't
 	 * provide flow control mechanism. */
 
-	if (!sock_queue_rcv_skb(sk, skb))
+	if (!sock_queue_rcv_skb_nolock(sk, skb))
 		goto done;
 
 drop:
@@ -1854,7 +1854,7 @@ static inline int l2cap_conless_channel(struct l2cap_conn *conn, u16 psm, struct
 	if (l2cap_pi(sk)->imtu < skb->len)
 		goto drop;
 
-	if (!sock_queue_rcv_skb(sk, skb))
+	if (!sock_queue_rcv_skb_nolock(sk, skb))
 		goto done;
 
 drop:

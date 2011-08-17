@@ -224,6 +224,12 @@ static int nfs_writepage_sync(struct nfs_open_context *ctx, struct inode *inode,
 	if (!wdata)
 		return -ENOMEM;
 
+	wdata->args.lock_context = nfs_get_lock_context(ctx);
+	if (wdata->args.lock_context == NULL) {
+		nfs_writedata_free(wdata);
+		return -ENOMEM;
+	}
+
 	wdata->flags = how;
 	wdata->cred = ctx->cred;
 	wdata->inode = inode;
@@ -274,6 +280,7 @@ static int nfs_writepage_sync(struct nfs_open_context *ctx, struct inode *inode,
 
 io_error:
 	end_page_writeback(page);
+	nfs_put_lock_context(wdata->args.lock_context);
 	nfs_writedata_release(wdata);
 	return written ? written : result;
 }
@@ -436,6 +443,7 @@ static int nfs_inode_add_request(struct inode *inode, struct nfs_page *req)
 		if (nfs_have_delegation(inode, FMODE_WRITE))
 			nfsi->change_attr++;
 	}
+	set_bit(PG_MAPPED, &req->wb_flags);
 	SetPageNfsWriting(req->wb_page);
 	nfsi->npages++;
 	atomic_inc(&req->wb_count);
@@ -454,6 +462,7 @@ static void nfs_inode_remove_request(struct nfs_page *req)
 
 	spin_lock(&nfsi->req_lock);
 	ClearPageNfsWriting(req->wb_page);
+	clear_bit(PG_MAPPED, &req->wb_flags);
 	radix_tree_delete(&nfsi->nfs_page_tree, req->wb_index);
 	nfsi->npages--;
 	if (!nfsi->npages) {
@@ -461,7 +470,6 @@ static void nfs_inode_remove_request(struct nfs_page *req)
 		iput(inode);
 	} else
 		spin_unlock(&nfsi->req_lock);
-	nfs_clear_request(req);
 	nfs_release_request(req);
 }
 

@@ -419,9 +419,9 @@ static void prune_dcache(int count, struct super_block *sb,
 			tmp = dentry_unused.prev;
 			if (tmp == &dentry_unused)
 				break;
- 			dentry_stat.nr_unused--;
  		}
 
+		dentry_stat.nr_unused--;
 		prefetch(tmp->prev);
 		list_del_init(tmp);
 		dentry = list_entry(tmp, struct dentry, d_lru);
@@ -769,6 +769,7 @@ resume:
 		 * of the unused list for prune_dcache
 		 */
 		if (!atomic_read(&dentry->d_count)) {
+			dentry_stat.nr_unused++;
 			list_add_tail(&dentry->d_lru, dispose_list);
 			found++;
 		}

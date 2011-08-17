@@ -125,6 +125,10 @@ static int tun_net_xmit(struct sk_buff *skb, struct net_device *dev)
 		}
 	}
 
+       /* Orphan the skb - required as we might hang on to it
+        * for indefinite time. */
+	skb_orphan(skb);
+
 	/* Queue packet */
 	skb_queue_tail(&tun->readq, skb);
 	dev->trans_start = jiffies;

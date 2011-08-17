@@ -60,6 +60,9 @@
 
 #define NEEDED_RMEM (4*1024*1024)
 
+/* Number of messages to send before rescheduling */
+#define MAX_SEND_MSG_COUNT 25
+
 struct cbuf {
 	unsigned int base;
 	unsigned int len;
@@ -885,6 +888,7 @@ static void tcp_connect_to_sock(struct connection *con)
 	struct sockaddr_storage saddr, src_addr;
 	int addr_len;
 	struct socket *sock = NULL;
+	int one = 1;
 
 	if (con->nodeid == 0) {
 		log_print("attempt to connect sock 0 foiled");
@@ -930,6 +934,11 @@ static void tcp_connect_to_sock(struct connection *con)
 	make_sockaddr(&saddr, dlm_config.ci_tcp_port, &addr_len);
 
 	log_print("connecting to %d", con->nodeid);
+
+	/* Turn off Nagle's algorithm */
+	kernel_setsockopt(sock, SOL_TCP, TCP_NODELAY, (char *)&one,
+			  sizeof(one));
+
 	result =
 		sock->ops->connect(sock, (struct sockaddr *)&saddr, addr_len,
 				   O_NONBLOCK);
@@ -980,6 +989,10 @@ static struct socket *tcp_create_listen_sock(struct connection *con,
 		log_print("Can't create listening comms socket");
 		goto create_out;
 	}
+
+	/* Turn off Nagle's algorithm */
+	kernel_setsockopt(sock, SOL_TCP, TCP_NODELAY, (char *)&one,
+			  sizeof(one));
 
 	result = kernel_setsockopt(sock, SOL_SOCKET, SO_REUSEADDR,
 				   (char *)&one, sizeof(one));
@@ -1271,6 +1284,7 @@ static void send_to_sock(struct connection *con)
 	const int msg_flags = MSG_DONTWAIT | MSG_NOSIGNAL;
 	struct writequeue_entry *e;
 	int len, offset;
+	int count = 0;
 
 	mutex_lock(&con->sock_mutex);
 	if (con->sock == NULL)
@@ -1302,8 +1316,12 @@ static void send_to_sock(struct connection *con)
 			if (ret <= 0)
 				goto send_error;
 		}
+
 		/* Don't starve people filling buffers */
-		cond_resched();
+		if (++count >= MAX_SEND_MSG_COUNT) {
+			cond_resched();
+			count = 0;
+		}
 
 		spin_lock(&con->writequeue_lock);
 		e->offset += ret;

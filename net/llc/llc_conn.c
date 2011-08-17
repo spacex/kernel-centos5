@@ -94,7 +94,7 @@ int llc_conn_state_process(struct sock *sk, struct sk_buff *skb)
 	switch (ev->ind_prim) {
 	case LLC_DATA_PRIM:
 		llc_save_primitive(sk, skb, LLC_DATA_PRIM);
-		if (unlikely(sock_queue_rcv_skb(sk, skb))) {
+		if (unlikely(sock_queue_rcv_skb_nolock(sk, skb))) {
 			/*
 			 * shouldn't happen
 			 */

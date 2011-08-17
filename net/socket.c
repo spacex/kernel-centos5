@@ -1627,6 +1627,8 @@ asmlinkage long sys_sendto(int fd, void __user * buff, size_t len, unsigned flag
 	int fput_needed;
 	struct file *sock_file;
 
+	if (len > INT_MAX)
+		len = INT_MAX;
 	sock_file = fget_light(fd, &fput_needed);
 	if (!sock_file)
 		return -EBADF;
@@ -1685,6 +1687,8 @@ asmlinkage long sys_recvfrom(int fd, void __user * ubuf, size_t size, unsigned f
 	struct file *sock_file;
 	int fput_needed;
 
+	if (size > INT_MAX)
+		size = INT_MAX;
 	sock_file = fget_light(fd, &fput_needed);
 	if (!sock_file)
 		return -EBADF;

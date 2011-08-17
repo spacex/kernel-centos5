@@ -359,7 +359,8 @@ netdev_notify(struct notifier_block *this, unsigned long event, void *ptr)
 	struct net_device *dev = ptr;
 
 	/* Carrier up event and is it one of our devices? */
-	if (event == NETDEV_CHANGE && netif_carrier_ok(dev) &&
+	if ((event == NETDEV_CHANGE || event == NETDEV_UP) &&
+	    netif_carrier_ok(dev) &&
 	    dev->open == net_open) {
 		netif_t *netif = netdev_priv(dev);
 

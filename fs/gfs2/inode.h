@@ -76,8 +76,10 @@ static inline void gfs2_inum_out(const struct gfs2_inode *ip,
 void gfs2_inode_attr_in(struct gfs2_inode *ip);
 void gfs2_set_iop(struct inode *inode);
 struct inode *gfs2_inode_lookup(struct super_block *sb, unsigned type,
-				u64 no_addr, u64 no_formal_ino,
-				int skip_freeing);
+				u64 no_addr, u64 no_formal_ino);
+extern struct inode *gfs2_lookup_by_inum(struct gfs2_sbd *sdp, u64 no_addr,
+					 u64 *no_formal_ino,
+					 unsigned int blktype);
 struct inode *gfs2_ilookup(struct super_block *sb, u64 no_addr);
 
 int gfs2_inode_refresh(struct gfs2_inode *ip);

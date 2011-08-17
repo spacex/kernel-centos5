@@ -3926,6 +3926,8 @@ static int ixgbe_set_interrupt_capability(struct ixgbe_adapter *adapter)
 	int err = 0;
 	int vector, v_budget;
 
+	if (!(adapter->flags & IXGBE_FLAG_MSIX_CAPABLE))
+		goto try_msi;
 	/*
 	 * It's easy to be greedy for MSI-X vectors, but it really
 	 * doesn't do us much good if we have a lot more vectors
@@ -3967,6 +3969,9 @@ static int ixgbe_set_interrupt_capability(struct ixgbe_adapter *adapter)
 		ixgbe_disable_sriov(adapter);
 
 	ixgbe_set_num_queues(adapter);
+try_msi:
+	if (!(adapter->flags & IXGBE_FLAG_MSI_CAPABLE))
+		goto out;
 
 	err = pci_enable_msi(adapter->pdev);
 	if (!err) {
@@ -6006,6 +6011,9 @@ static int __devinit ixgbe_probe(struct pci_dev *pdev,
 		dev_err(&adapter->pdev->dev, "HW Init failed: %d\n", err);
 		goto err_sw_init;
 	}
+
+	/* check module options */
+	ixgbe_check_options(adapter);
 
 	ixgbe_probe_vf(adapter, ii);
 

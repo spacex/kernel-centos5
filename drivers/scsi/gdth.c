@@ -5098,6 +5098,14 @@ static int ioc_general(void __user *arg, char *cmnd)
     if (copy_from_user(&gen, arg, sizeof(gdth_ioctl_general)) ||
         gen.ionode >= gdth_ctr_count)
         return -EFAULT;
+
+    if (gen.data_len > INT_MAX)
+        return -EINVAL;
+    if (gen.sense_len > INT_MAX)
+        return -EINVAL;
+    if (gen.data_len + gen.sense_len > INT_MAX)
+        return -EINVAL;
+
     hanum = gen.ionode; 
     ha = HADATA(gdth_ctr_tab[hanum]);
     if (gen.data_len + gen.sense_len != 0) {

@@ -157,6 +157,12 @@ static int nfs_readpage_sync(struct nfs_open_context *ctx, struct inode *inode,
 		goto out_unlock;
 
 	memset(rdata, 0, sizeof(*rdata));
+
+	rdata->args.lock_context = nfs_get_lock_context(ctx);
+	if (rdata->args.lock_context == NULL) {
+		nfs_readdata_free(rdata);
+		goto out_unlock;
+	}
 	rdata->flags = (IS_SWAPFILE(inode)? NFS_RPC_SWAPFLAGS : 0);
 	rdata->cred = ctx->cred;
 	rdata->inode = inode;
@@ -219,12 +225,8 @@ static int nfs_readpage_sync(struct nfs_open_context *ctx, struct inode *inode,
 	result = 0;
 
 	nfs_readpage_to_fscache(inode, page, 1);
-	nfs_readdata_release(rdata);
-	unlock_page(page);
-
-	return result;
-
 io_error:
+	nfs_put_lock_context(rdata->args.lock_context);
 	nfs_readdata_release(rdata);
 out_unlock:
 	unlock_page(page);
@@ -268,7 +270,6 @@ static void nfs_readpage_release(struct nfs_page *req)
 			(long long)NFS_FILEID(req->wb_context->path.dentry->d_inode),
 			req->wb_bytes,
 			(long long)req_offset(req));
-	nfs_clear_request(req);
 	nfs_release_request(req);
 }
 

@@ -3416,11 +3416,17 @@ static int bnx2_poll_msix(struct net_device *dev, int *budget)
 	struct bnx2_napi *bnapi = dev->priv;
 	struct bnx2 *bp = bnapi->bp;
 	int work_done = 0;
+	int work_to_do = min(dev->quota, *budget);
+
 	struct status_block_msix *sblk = bnapi->status_blk.msix;
 
 	while (1) {
-		work_done = bnx2_poll_work(bp, bnapi, work_done, *budget);
-		if (unlikely(work_done >= *budget))
+		work_done = bnx2_poll_work(bp, bnapi, work_done, work_to_do);
+
+		*budget -= work_done;
+		dev->quota -= work_done;
+
+		if (unlikely(work_done >= work_to_do))
 			return 1;
 
 		bnapi->last_status_idx = sblk->status_idx;
@@ -3443,16 +3449,19 @@ static int bnx2_poll(struct net_device *dev, int *budget)
 	struct bnx2_napi *bnapi = dev->priv;
 	struct bnx2 *bp = bnapi->bp;
 	int work_done = 0;
+	int work_to_do = min(dev->quota, *budget);
 	struct status_block *sblk = bnapi->status_blk.msi;
 
 	while (1) {
 		bnx2_poll_link(bp, bnapi);
 
-		work_done = bnx2_poll_work(bp, bnapi, work_done, *budget);
+		work_done = bnx2_poll_work(bp, bnapi, work_done, work_to_do);
 
 #ifdef BCM_CNIC
 		bnx2_poll_cnic(bp, bnapi);
 #endif
+		*budget -= work_done;
+		dev->quota -= work_done;
 
 		/* bnapi->last_status_idx is used below to tell the hw how
 		 * much work has been processed, so we must read it before
@@ -3460,7 +3469,7 @@ static int bnx2_poll(struct net_device *dev, int *budget)
 		 */
 		bnapi->last_status_idx = sblk->status_idx;
 
-		if (unlikely(work_done >= *budget))
+		if (unlikely(work_done >= work_to_do))
 			break;
 
 		rmb();
