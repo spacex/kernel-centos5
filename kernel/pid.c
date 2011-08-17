@@ -183,10 +183,13 @@ static int alloc_pidmap(void)
 	return -1;
 }
 
-static int next_pidmap(int last)
+static int next_pidmap(unsigned int last)
 {
 	int offset;
 	pidmap_t *map;
+
+	if (last >= PID_MAX_LIMIT)
+		return -1;
 
 	offset = (last + 1) & BITS_PER_PAGE_MASK;
 	map = &pidmap_array[(last + 1)/BITS_PER_PAGE];

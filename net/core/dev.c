@@ -2256,7 +2256,8 @@ int napi_frags_finish(struct napi_struct *napi, struct sk_buff *skb, int ret)
 
 	case GRO_DROP:
 		err = NET_RX_DROP;
-		/* fall through */
+		kfree_skb(skb);
+		break;
 
 	case GRO_MERGED_FREE:
 		napi_reuse_skb(napi, skb);

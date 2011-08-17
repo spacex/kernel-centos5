@@ -396,10 +396,19 @@ failed:
 
 static void sriov_release(struct pci_dev *dev)
 {
+	int i;
+
 	BUG_ON(dev->sriov->nr_virtfn);
 
 	if (dev != dev->sriov->dev)
 		pci_dev_put(dev->sriov->dev);
+
+	for (i = 0; i < PCI_SRIOV_NUM_BARS; i++) {
+		struct resource *res = dev->sriov->res + i;
+		if (!res->parent)
+			continue;
+		release_resource(res);
+	}
 
 	mutex_destroy(&dev->sriov->lock);
 

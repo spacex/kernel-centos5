@@ -2118,9 +2118,11 @@ sys_rt_sigqueueinfo(int pid, int sig, siginfo_t __user *uinfo)
 	if (copy_from_user(&info, uinfo, sizeof(siginfo_t)))
 		return -EFAULT;
 
-	/* Not even root can pretend to send signals from the kernel.
-	   Nor can they impersonate a kill(), which adds source info.  */
-	if (info.si_code >= 0)
+	/*
+	 * Not even root can pretend to send signals from the kernel.
+	 * Nor can they impersonate a kill()/tkill(), which adds source info.
+	 */
+	if (info.si_code >= 0 || info.si_code == SI_TKILL)
 		return -EPERM;
 	info.si_signo = sig;
 

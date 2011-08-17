@@ -2609,9 +2609,13 @@ retry:
 int proc_pid_readdir(struct file * filp, void * dirent, filldir_t filldir)
 {
 	char buf[PROC_NUMBUF];
-	unsigned int nr = filp->f_pos - FIRST_PROCESS_ENTRY;
+	unsigned int nr;
 	struct task_struct *task;
 	int tgid;
+
+	if (filp->f_pos >= PID_MAX_LIMIT + TGID_OFFSET)
+		goto out;
+	nr = filp->f_pos - FIRST_PROCESS_ENTRY;
 
 	if (!nr) {
 		ino_t ino = fake_ino(0,PROC_TGID_INO);

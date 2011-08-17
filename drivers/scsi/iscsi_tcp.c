@@ -102,11 +102,17 @@ static int iscsi_sw_tcp_recv(read_descriptor_t *rd_desc, struct sk_buff *skb,
 
 static void iscsi_sw_tcp_data_ready(struct sock *sk, int flag)
 {
-	struct iscsi_conn *conn = sk->sk_user_data;
-	struct iscsi_tcp_conn *tcp_conn = conn->dd_data;
+	struct iscsi_conn *conn;
+	struct iscsi_tcp_conn *tcp_conn;
 	read_descriptor_t rd_desc;
 
 	read_lock(&sk->sk_callback_lock);
+	conn = sk->sk_user_data;
+	if (!conn) {
+		read_unlock(&sk->sk_callback_lock);
+		return;
+	}
+	tcp_conn = conn->dd_data;
 
 	/*
 	 * Use rd_desc to pass 'conn' to iscsi_tcp_recv.
@@ -118,11 +124,10 @@ static void iscsi_sw_tcp_data_ready(struct sock *sk, int flag)
 	rd_desc.count = 1;
 	tcp_read_sock(sk, &rd_desc, iscsi_sw_tcp_recv);
 
-	read_unlock(&sk->sk_callback_lock);
-
 	/* If we had to (atomically) map a highmem page,
 	 * unmap it now. */
 	iscsi_tcp_segment_unmap(&tcp_conn->in.segment);
+	read_unlock(&sk->sk_callback_lock);
 }
 
 static void iscsi_sw_tcp_state_change(struct sock *sk)
@@ -134,8 +139,11 @@ static void iscsi_sw_tcp_state_change(struct sock *sk)
 	void (*old_state_change)(struct sock *);
 
 	read_lock(&sk->sk_callback_lock);
-
-	conn = (struct iscsi_conn*)sk->sk_user_data;
+	conn = sk->sk_user_data;
+	if (!conn) {
+		read_unlock(&sk->sk_callback_lock);
+		return;
+	}
 	session = conn->session;
 
 	if ((sk->sk_state == TCP_CLOSE_WAIT ||
@@ -161,11 +169,25 @@ static void iscsi_sw_tcp_state_change(struct sock *sk)
  **/
 static void iscsi_sw_tcp_write_space(struct sock *sk)
 {
-	struct iscsi_conn *conn = (struct iscsi_conn*)sk->sk_user_data;
-	struct iscsi_tcp_conn *tcp_conn = conn->dd_data;
-	struct iscsi_sw_tcp_conn *tcp_sw_conn = tcp_conn->dd_data;
+	struct iscsi_conn *conn;
+	struct iscsi_tcp_conn *tcp_conn;
+	struct iscsi_sw_tcp_conn *tcp_sw_conn;
+	void (*old_write_space)(struct sock *);
 
-	tcp_sw_conn->old_write_space(sk);
+	read_lock_bh(&sk->sk_callback_lock);
+	conn = sk->sk_user_data;
+	if (!conn) {
+		read_unlock_bh(&sk->sk_callback_lock);
+		return;
+	}
+
+	tcp_conn = conn->dd_data;
+	tcp_sw_conn = tcp_conn->dd_data;
+	old_write_space = tcp_sw_conn->old_write_space;
+	read_unlock_bh(&sk->sk_callback_lock);
+
+	old_write_space(sk);
+
 	ISCSI_SW_TCP_DBG(conn, "iscsi_write_space\n");
 	iscsi_conn_queue_work(conn);
 }
@@ -570,22 +592,19 @@ static void iscsi_sw_tcp_conn_stop(struct iscsi_cls_conn *cls_conn, int flag)
 	/* userspace may have goofed up and not bound us */
 	if (!sock)
 		return;
-	/*
-	 * Make sure our recv side is stopped.
-	 * Older tools called conn stop before ep_disconnect
-	 * so IO could still be coming in.
-	 */
-	write_lock_bh(&tcp_sw_conn->sock->sk->sk_callback_lock);
-	set_bit(ISCSI_SUSPEND_BIT, &conn->suspend_rx);
-	write_unlock_bh(&tcp_sw_conn->sock->sk->sk_callback_lock);
 
 	if (sock->sk->sk_sleep) {
 		sock->sk->sk_err = EIO;
 		wake_up_interruptible(sock->sk->sk_sleep);
 	}
 
-	iscsi2_conn_stop(cls_conn, flag);
+	/* stop xmit side */
+	iscsi2_suspend_tx(conn);
+
+	/* stop recv side and release socket */
 	iscsi_sw_tcp_release_conn(conn);
+
+	iscsi2_conn_stop(cls_conn, flag);
 }
 
 static int iscsi_sw_tcp_get_addr(struct iscsi_conn *conn, struct socket *sock,
