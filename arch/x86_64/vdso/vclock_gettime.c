@@ -105,7 +105,7 @@ static noinline int do_monotonic(struct timespec *ts)
 
 int __vdso_clock_gettime(clockid_t clock, struct timespec *ts)
 {
-	if (likely(sysctl_vsyscall && (vdso_vxtime->mode != VXTIME_KVM)))
+	if (likely(vdso_sysctl_vsyscall && (vdso_vxtime->mode != VXTIME_KVM)))
 		switch (clock) {
 		case CLOCK_REALTIME:
 			return do_realtime(ts);
@@ -121,7 +121,7 @@ int __vdso_gettimeofday(struct timeval *tv, struct timezone *tz)
 {
 	long ret;
 
-	if (likely(sysctl_vsyscall && (vdso_vxtime->mode != VXTIME_KVM))) {
+	if (likely(vdso_sysctl_vsyscall && (vdso_vxtime->mode != VXTIME_KVM))) {
 		BUILD_BUG_ON(offsetof(struct timeval, tv_usec) !=
 			     offsetof(struct timespec, tv_nsec) ||
 			     sizeof(*tv) != sizeof(struct timespec));

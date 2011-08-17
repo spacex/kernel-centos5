@@ -89,6 +89,7 @@ struct unix_sock {
 #ifndef __GENKSYMS__
 	unsigned int		gc_candidate : 1;
 	unsigned int		gc_maybe_cycle : 1;
+	unsigned char		recursion_level;
 	struct list_head	link;
 #endif
 };

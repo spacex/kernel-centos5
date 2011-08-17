@@ -97,7 +97,7 @@ static DECLARE_WAIT_QUEUE_HEAD(unix_gc_wait);
 atomic_t unix_tot_inflight;
 
 
-static struct sock *unix_get_socket(struct file *filp)
+struct sock *unix_get_socket(struct file *filp)
 {
 	struct sock *u_sock = NULL;
 	struct inode *inode = filp->f_dentry->d_inode;
@@ -270,11 +270,19 @@ static void inc_inflight_move_tail(struct unix_sock *u)
 
 static bool gc_in_progress = false;
 
+#define UNIX_INFLIGHT_TRIGGER_GC 16000
 void wait_for_unix_gc(void)
 {
 	int error;
 
 	do {
+		/*
+		 * If number of inflight sockets is insane,
+		 * force a garbage collect right now.
+		 */
+		if (atomic_read(&unix_tot_inflight) > UNIX_INFLIGHT_TRIGGER_GC &&
+		    !gc_in_progress)
+			unix_gc();
 		error = wait_event_interruptible(unix_gc_wait,
 						 gc_in_progress == false);
 	} while(error);

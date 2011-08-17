@@ -1083,13 +1083,24 @@ static int udp_queue_rcv_skb(struct sock * sk, struct sk_buff *skb)
 		skb->ip_summed = CHECKSUM_UNNECESSARY;
 	}
 
+
+	if (sk_rcvqueues_full(sk, skb)) {
+		UDP_INC_STATS_BH(UDP_MIB_INERRORS);
+		kfree_skb(skb);
+		return -1;
+	}
+
 	rc = 0;
 
 	bh_lock_sock(sk);
 	if (!sock_owned_by_user(sk))
 		rc = __udp_queue_rcv_skb(sk, skb);
-	else
-		sk_add_backlog(sk, skb);
+	else if (sk_add_backlog(sk, skb)) {
+		bh_unlock_sock(sk);
+		UDP_INC_STATS_BH(UDP_MIB_INERRORS);
+		kfree_skb(skb);
+		return -1;
+	}
 	bh_unlock_sock(sk);
 
 	return rc;

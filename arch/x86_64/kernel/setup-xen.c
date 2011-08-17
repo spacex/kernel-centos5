@@ -1198,9 +1198,6 @@ static void __init init_amd(struct cpuinfo_x86 *c)
 
 	/* Fix cpuid4 emulation for more */
 	num_cache_leaves = 3;
-
-	if (c->x86 >= 0x10)
-		amd_enable_pci_ext_cfg(c);
 }
 
 static void __cpuinit detect_ht(struct cpuinfo_x86 *c)

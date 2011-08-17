@@ -1441,7 +1441,7 @@ static void handle_control_message(struct ports_device *portdev,
 			 * symlinks can be created based on udev
 			 * rules.
 			 */
-			kobject_uevent(&port->dev->kobj, KOBJ_CHANGE);
+			kobject_uevent(&port->dev->kobj, KOBJ_ADD);
 		}
 		break;
 	}
@@ -1474,6 +1474,17 @@ static void control_work_handler(void *p)
 		}
 	}
 	spin_unlock(&portdev->cvq_lock);
+}
+
+static void out_intr(struct virtqueue *vq)
+{
+	struct port *port;
+
+	port = find_port_by_vq(vq->vdev->priv, vq);
+	if (!port)
+		return;
+
+	wake_up_interruptible(&port->waitqueue);
 }
 
 static void in_intr(struct virtqueue *vq)
@@ -1599,7 +1610,7 @@ static int init_vqs(struct ports_device *portdev)
 	 */
 	j = 0;
 	io_callbacks[j] = in_intr;
-	io_callbacks[j + 1] = NULL;
+	io_callbacks[j + 1] = out_intr;
 	io_names[j] = "input";
 	io_names[j + 1] = "output";
 	j += 2;
@@ -1613,7 +1624,7 @@ static int init_vqs(struct ports_device *portdev)
 		for (i = 1; i < nr_ports; i++) {
 			j += 2;
 			io_callbacks[j] = in_intr;
-			io_callbacks[j + 1] = NULL;
+			io_callbacks[j + 1] = out_intr;
 			io_names[j] = "input";
 			io_names[j + 1] = "output";
 		}

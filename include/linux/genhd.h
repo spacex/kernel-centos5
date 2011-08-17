@@ -161,6 +161,12 @@ struct disk_attribute {
  * The __ variants should only be called in critical sections. The full
  * variants disable/enable preemption.
  */
+static inline int sector_in_part(struct hd_struct *part, sector_t sector)
+{
+	return part->start_sect <= sector
+		&& sector < part->start_sect + part->nr_sects;
+}
+
 static inline struct hd_struct *get_part(struct gendisk *gendiskp,
 					 sector_t sector)
 {
@@ -168,11 +174,34 @@ static inline struct hd_struct *get_part(struct gendisk *gendiskp,
 	int i;
 	for (i = 0; i < gendiskp->minors - 1; i++) {
 		part = gendiskp->part[i];
-		if (part && part->start_sect <= sector
-		    && sector < part->start_sect + part->nr_sects)
+		if (part && sector_in_part(part, sector))
 			return part;
 	}
 	return NULL;
+}
+
+static inline int is_same_part(struct gendisk *gendiskp, sector_t sector1,
+			       sector_t sector2, struct hd_struct **part1,
+			       struct hd_struct **part2)
+{
+	struct hd_struct *part;
+	int i;
+
+	*part1 = *part2 = NULL;
+	for (i = 0; i < gendiskp->minors - 1; i++) {
+		part = gendiskp->part[i];
+		if (!part)
+			continue;
+		if (sector_in_part(part, sector1))
+			*part1 = part;
+		if (sector_in_part(part, sector2))
+			*part2 = part;
+		if (*part1 && *part2)
+			/* we found both partitions */
+			return *part1 == *part2;
+	}
+	/* we did not found at least one partition */
+	return *part1 == *part2;
 }
 
 #define disk_stats_index(field) (offsetof(struct disk_stats, field))

@@ -184,5 +184,7 @@ static inline int ipv6_unicast_destination(struct sk_buff *skb)
 	return rt->rt6i_flags & RTF_LOCAL;
 }
 
+int ip6_fragment(struct sk_buff *skb, int (*output)(struct sk_buff *));
+
 #endif
 #endif

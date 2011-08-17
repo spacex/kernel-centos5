@@ -57,7 +57,7 @@
 #include <net/xfrm.h>
 #include <net/checksum.h>
 
-static int ip6_fragment(struct sk_buff *skb, int (*output)(struct sk_buff *));
+int ip6_fragment(struct sk_buff *skb, int (*output)(struct sk_buff *));
 
 static __inline__ void ipv6_select_ident(struct sk_buff *skb, struct frag_hdr *fhdr)
 {
@@ -517,7 +517,7 @@ int ip6_find_1stfragopt(struct sk_buff *skb, u8 **nexthdr)
 }
 EXPORT_SYMBOL_GPL(ip6_find_1stfragopt);
 
-static int ip6_fragment(struct sk_buff *skb, int (*output)(struct sk_buff *))
+int ip6_fragment(struct sk_buff *skb, int (*output)(struct sk_buff *))
 {
 	struct net_device *dev;
 	struct sk_buff *frag;

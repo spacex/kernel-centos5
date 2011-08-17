@@ -534,6 +534,8 @@ static int be_xmit(struct sk_buff *skb,
 
 		be_txq_notify(adapter, txq->id, wrb_cnt);
 
+		netdev->trans_start = jiffies;
+
 		be_tx_stats_update(adapter, wrb_cnt, copied,
 				skb_shinfo(skb)->gso_segs, stopped);
 	} else {

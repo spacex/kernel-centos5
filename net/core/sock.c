@@ -314,6 +314,9 @@ int sk_receive_skb(struct sock *sk, struct sk_buff *skb)
 
 	skb->dev = NULL;
 
+	if (sk_rcvqueues_full(sk, skb))
+		goto discard_and_relse;
+
 	bh_lock_sock(sk);
 	if (!sock_owned_by_user(sk)) {
 		/*
@@ -324,8 +327,11 @@ int sk_receive_skb(struct sock *sk, struct sk_buff *skb)
 		rc = sk->sk_backlog_rcv(sk, skb);
 
 		mutex_release(&sk->sk_lock.dep_map, 1, _RET_IP_);
-	} else
-		sk_add_backlog(sk, skb);
+	} else if (sk_add_backlog(sk, skb)) {
+		bh_unlock_sock(sk);
+		goto discard_and_relse;
+	}
+
 	bh_unlock_sock(sk);
 out:
 	sock_put(sk);
@@ -958,6 +964,7 @@ struct sock *sk_clone(struct sock *sk, const gfp_t priority)
 		newsk->sk_forward_alloc = 0;
 		newsk->sk_send_head	= NULL;
 		newsk->sk_backlog.head	= newsk->sk_backlog.tail = NULL;
+		sk_extended(newsk)->sk_backlog.len = 0;
 		newsk->sk_userlocks	= sk->sk_userlocks & ~SOCK_BINDPORT_LOCK;
 
 		sock_reset_flag(newsk, SOCK_DONE);
@@ -1297,6 +1304,12 @@ static void __release_sock(struct sock *sk)
 
 		bh_lock_sock(sk);
 	} while((skb = sk->sk_backlog.head) != NULL);
+
+	/*
+	 * Doing the zeroing here guarantee we can not loop forever
+	 * while a wild producer attempts to flood us.
+	 */
+	sk_extended(sk)->sk_backlog.len = 0;
 }
 
 /**
@@ -1829,6 +1842,9 @@ int proto_register(struct proto *prot, int alloc_slab)
 	char *request_sock_slab_name = NULL;
 	char *timewait_sock_slab_name;
 	int rc = -ENOBUFS;
+
+	/* Adjust obj_size first */
+	prot->obj_size = sk_alloc_size(prot->obj_size);
 
 	if (alloc_slab) {
 		prot->slab = kmem_cache_create(prot->name, prot->obj_size, 0,

@@ -53,6 +53,7 @@ extern volatile unsigned long __jiffies;
 extern unsigned long __wall_jiffies;
 extern struct timezone __sys_tz;
 extern seqlock_t __xtime_lock;
+extern int __sysctl_vsyscall;
 
 /* kernel space (writeable) */
 extern struct vxtime_data vxtime;

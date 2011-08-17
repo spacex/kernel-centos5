@@ -15,6 +15,7 @@
 #include <linux/icmpv6.h>
 #include <linux/netfilter_ipv6.h>
 #include <net/ipv6.h>
+#include <net/ip6_route.h>
 #include <net/xfrm.h>
 
 static int xfrm6_tunnel_check_size(struct sk_buff *skb)
@@ -159,8 +160,21 @@ static int xfrm6_output_finish(struct sk_buff *skb)
 	return 0;
 }
 
+static int __xfrm6_output(struct sk_buff *skb)
+{
+	struct dst_entry *dst = skb->dst;
+	struct xfrm_state *x = dst->xfrm;
+
+	if ((x && x->props.mode == XFRM_MODE_TUNNEL) &&
+	    ((skb->len > dst_mtu(skb->dst) && !skb_is_gso(skb)) ||
+		dst_allfrag(skb->dst))) {
+			return ip6_fragment(skb, xfrm6_output_finish);
+	}
+	return xfrm6_output_finish(skb);
+}
+
 int xfrm6_output(struct sk_buff *skb)
 {
 	return NF_HOOK(PF_INET6, NF_IP6_POST_ROUTING, skb, NULL, skb->dst->dev,
-		       xfrm6_output_finish);
+		       __xfrm6_output);
 }

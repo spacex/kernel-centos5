@@ -4501,10 +4501,12 @@ static inline void complete_fs_buffers(struct bio *bio, int status)
  **/
 static unsigned int blk_rq_bytes(struct request *rq)
 {
-	int nr_sectors = bio_sectors(rq->bio);
+	int nr_sectors;
 
-	if (blk_fs_request(rq))
+	if (blk_fs_request(rq)) {
+		nr_sectors = bio_sectors(rq->bio);
 		return nr_sectors << 9;
+	}
 
 	return rq->data_len;
 }

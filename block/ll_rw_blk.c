@@ -2987,6 +2987,27 @@ static void init_request_from_bio(struct request *req, struct bio *bio)
 	req->start_time = jiffies;
 }
 
+static void blk_account_io_front_merge(struct request *req, sector_t newsector)
+{
+	if (blk_do_io_stat(req)) {
+		struct hd_struct *oldpart, *newpart;
+
+		rcu_read_lock();
+		if (!is_same_part(req->rq_disk, req->sector, newsector,
+				  &oldpart, &newpart)) {
+			if (oldpart) {
+				part_round_stats(oldpart);
+				get_partstats(oldpart)->in_flight--;
+			}
+			if (newpart) {
+				part_round_stats(newpart);
+				get_partstats(newpart)->in_flight++;
+			}
+		}
+		rcu_read_unlock();
+	}
+}
+
 static int __make_request(request_queue_t *q, struct bio *bio)
 {
 	struct request *req;
@@ -3061,6 +3082,12 @@ static int __make_request(request_queue_t *q, struct bio *bio)
 			req->buffer = bio_data(bio);
 			req->current_nr_sectors = cur_nr_sectors;
 			req->hard_cur_sectors = cur_nr_sectors;
+			
+			/*
+			 * The merge may happen accross partitions
+			 * We must update in_flight value accordingly
+			 */
+			blk_account_io_front_merge(req, sector);
 			req->sector = req->hard_sector = sector;
 			req->nr_sectors = req->hard_nr_sectors += nr_sectors;
 			req->ioprio = ioprio_best(req->ioprio, prio);

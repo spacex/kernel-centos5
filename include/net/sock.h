@@ -264,6 +264,30 @@ struct sock {
 };
 
 /*
+ * To prevent KABI-breakage, struct sock_extended is added here to extend
+ * the original struct sock. Also two helpers are added:
+ * sk_alloc_size
+ *	- is used to adjust prot->obj_size
+ * sk_extended
+ *	- should be used to access items in struct sock_extended
+ */
+
+struct sock_extended {
+	struct {
+		int len;
+	} sk_backlog;
+};
+
+#define SOCK_EXTENDED_SIZE ALIGN(sizeof(struct sock_extended), sizeof(long))
+
+static inline unsigned int sk_alloc_size(unsigned int prot_sock_size)
+{
+	return ALIGN(prot_sock_size, sizeof(long)) + SOCK_EXTENDED_SIZE;
+}
+
+static inline struct sock_extended *sk_extended(const struct sock *sk);
+
+/*
  * Hashed lists helper routines
  */
 static inline struct sock *__sk_head(const struct hlist_head *head)
@@ -453,8 +477,8 @@ static inline int sk_stream_memory_free(struct sock *sk)
 
 extern void sk_stream_rfree(struct sk_buff *skb);
 
-/* The per-socket spinlock must be held here. */
-static inline void sk_add_backlog(struct sock *sk, struct sk_buff *skb)
+/* OOB backlog add */
+static inline void __sk_add_backlog(struct sock *sk, struct sk_buff *skb)
 {
 	if (!sk->sk_backlog.tail) {
 		sk->sk_backlog.head = sk->sk_backlog.tail = skb;
@@ -463,6 +487,28 @@ static inline void sk_add_backlog(struct sock *sk, struct sk_buff *skb)
 		sk->sk_backlog.tail = skb;
 	}
 	skb->next = NULL;
+}
+
+/*
+ * Take into account size of receive queue and backlog queue
+ */
+static inline bool sk_rcvqueues_full(const struct sock *sk, const struct sk_buff *skb)
+{
+	unsigned int qsize = sk_extended(sk)->sk_backlog.len +
+			     atomic_read(&sk->sk_rmem_alloc);
+
+	return qsize + skb->truesize > sk->sk_rcvbuf;
+}
+
+/* The per-socket spinlock must be held here. */
+static inline __must_check int sk_add_backlog(struct sock *sk, struct sk_buff *skb)
+{
+	if (sk_rcvqueues_full(sk, skb))
+		return -ENOBUFS;
+
+	__sk_add_backlog(sk, skb);
+	sk_extended(sk)->sk_backlog.len += skb->truesize;
+	return 0;
 }
 
 #define sk_wait_event(__sk, __timeo, __condition)		\
@@ -581,6 +627,14 @@ struct proto {
 
 extern int proto_register(struct proto *prot, int alloc_slab);
 extern void proto_unregister(struct proto *prot);
+
+static inline struct sock_extended *sk_extended(const struct sock *sk)
+{
+	unsigned int obj_size = sk->sk_prot_creator->obj_size;
+	unsigned int extended_offset = obj_size - SOCK_EXTENDED_SIZE;
+
+	return (struct sock_extended *) (((char *) sk) + extended_offset);
+}
 
 #ifdef SOCK_REFCNT_DEBUG
 static inline void sk_refcnt_debug_inc(struct sock *sk)
