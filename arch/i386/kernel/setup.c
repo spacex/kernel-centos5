@@ -158,6 +158,7 @@ extern void early_cpu_init(void);
 extern void generic_apic_probe(char *);
 extern int root_mountflags;
 extern int avoid_smi;
+extern int bootmem_debug;
 
 unsigned long saved_videomode;
 
@@ -828,6 +829,9 @@ static void __init parse_cmdline_early (char ** cmdline_p)
 					limit_regions(mem_size);
 			}
 		}
+
+		else if (!memcmp(from, "bootmem_debug", 13))
+			bootmem_debug = 1;
 
 		else if (!memcmp(from, "noexec=", 7))
 			noexec_setup(from + 7);

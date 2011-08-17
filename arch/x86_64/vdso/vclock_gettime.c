@@ -96,8 +96,8 @@ static noinline int do_monotonic(struct timespec *ts)
 		seq = read_seqbegin(vdso_xtime_lock);
 		secs = vdso_xtime->tv_sec;
 		ns = vdso_xtime->tv_nsec + vgetns();
-		secs += wall_to_monotonic.tv_sec;
-		ns += wall_to_monotonic.tv_nsec;
+		secs += vdso_wall_to_monotonic->tv_sec;
+		ns += vdso_wall_to_monotonic->tv_nsec;
 	} while (unlikely(read_seqretry(vdso_xtime_lock, seq)));
 	vset_normalized_timespec(ts, secs, ns);
 	return 0;

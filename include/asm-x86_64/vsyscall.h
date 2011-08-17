@@ -21,6 +21,7 @@ enum vsyscall_num {
 #define __section_jiffies __attribute__ ((unused, __section__ (".jiffies"), aligned(16)))
 #define __section_sys_tz __attribute__ ((unused, __section__ (".sys_tz"), aligned(16)))
 #define __section_sysctl_vsyscall __attribute__ ((unused, __section__ (".sysctl_vsyscall"), aligned(16)))
+#define __section_wall_to_monotonic __attribute__ ((unused, __section__ (".wall_to_monotonic"), aligned(16)))
 #define __section_xtime __attribute__ ((unused, __section__ (".xtime"), aligned(16)))
 #define __section_xtime_lock __attribute__ ((unused, __section__ (".xtime_lock"), aligned(16)))
 
@@ -49,6 +50,7 @@ struct vxtime_data {
 extern struct vxtime_data __vxtime;
 extern int __vgetcpu_mode;
 extern struct timespec __xtime;
+extern struct timespec __wall_to_monotonic;
 extern volatile unsigned long __jiffies;
 extern unsigned long __wall_jiffies;
 extern struct timezone __sys_tz;

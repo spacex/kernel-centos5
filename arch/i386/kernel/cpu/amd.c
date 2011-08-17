@@ -45,10 +45,24 @@ static void __cpuinit amd_fixup_dcm(struct cpuinfo_x86 *c)
 	if (cpu_has(c, X86_FEATURE_AMD_DCM))
 		return;
 
-	/* proceed only if there is a valid AMD northbridge
-	 * (not in virtualized environments!)
+	/* RHEL5: Check for a valid AMD northbridge device, which does
+	 * not exist in virtualized environments.
+	 *
+	 * The check is needed for running as guest system on top of a
+	 * 5.4.z Xen hypervisor. The 5.4.z Xen hypervisor does not mask
+	 * the NodeID MSR from the guest. Without this check the guest
+	 * system would perform the multi-node fixup routines, eventually
+	 * resulting in a panic of the guest system.
+	 *
+	 * This check does not need to be extended for future CPU families
+	 * and models. CPU family 16, model 9 is the only affected model
+	 * which is supported by 5.4.z. From 5.5 onwards, the NodeID MSR
+	 * is properly masked from the guest system.
+	 *
+	 * Bugzilla references: 547518, 560013, 667234
 	 */
-	if (!early_is_k8_nb(read_pci_config(0, 24, 3, 0x00)))
+	if ((c->x86 == 0x10) && (c->x86_model == 9) &&
+	    !early_is_k8_nb(read_pci_config(0, 24, 3, 0x00)))
 		return;
 
 	rdmsrl(0xc001100c, value);

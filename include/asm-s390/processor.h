@@ -188,11 +188,6 @@ extern int kernel_thread(int (*fn)(void *), void * arg, unsigned long flags);
  */
 extern unsigned long thread_saved_pc(struct task_struct *t);
 
-/*
- * Print register of task into buffer. Used in fs/proc/array.c.
- */
-extern char *task_show_regs(struct task_struct *task, char *buffer);
-
 extern void show_registers(struct pt_regs *regs);
 extern void show_trace(struct task_struct *task, unsigned long *sp);
 

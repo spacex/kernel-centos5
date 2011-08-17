@@ -99,6 +99,7 @@ struct vxtime_data __vxtime __section_vxtime;	/* for vsyscalls */
 volatile unsigned long __jiffies __section_jiffies = INITIAL_JIFFIES;
 unsigned long __wall_jiffies __section_wall_jiffies = INITIAL_JIFFIES;
 struct timespec __xtime __section_xtime;
+struct timespec __wall_to_monotonic __section_wall_to_monotonic;
 struct timezone __sys_tz __section_sys_tz;
 
 /* -1=>disabled, 0=>autoconfigure, 1=>enabled */

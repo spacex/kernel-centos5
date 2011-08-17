@@ -942,7 +942,7 @@ do_rest:
 	 */
 	CMOS_WRITE(0, 0xf);
 
-	*((volatile long *) phys_to_virt(0x467)) = 0;
+	*((volatile u32 *) phys_to_virt(0x467)) = 0;
 
 	return 0;
 }

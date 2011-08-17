@@ -121,6 +121,10 @@ SECTIONS
   .xtime : AT(VLOAD(.xtime)) { *(.xtime) }
   xtime = VVIRT(.xtime);
 
+  .wall_to_monotonic : AT(VLOAD(.wall_to_monotonic)) { *(.wall_to_monotonic) }
+  wall_to_monotonic = VVIRT(.wall_to_monotonic);
+
+
   . = ALIGN(CONFIG_X86_L1_CACHE_BYTES);
   .jiffies : AT(VLOAD(.jiffies)) { *(.jiffies) }
   jiffies = VVIRT(.jiffies);

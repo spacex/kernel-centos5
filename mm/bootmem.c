@@ -41,6 +41,22 @@ static LIST_HEAD(bdata_list);
 unsigned long saved_max_pfn;
 #endif
 
+int bootmem_debug = 0;
+
+static int __init bootmem_debug_setup(char *buf)
+{
+	bootmem_debug = 1;
+	return 0;
+}
+early_param("bootmem_debug", bootmem_debug_setup);
+
+#define bdebug(fmt, args...) ({				\
+	if (unlikely(bootmem_debug))			\
+		printk(KERN_INFO			\
+			"bootmem::%s " fmt,		\
+			__func__, ## args);		\
+})
+
 /* return the number of _pages_ that will be allocated for the boot bitmap */
 unsigned long __init bootmem_bootmap_pages (unsigned long pages)
 {
@@ -95,6 +111,9 @@ static unsigned long __init init_bootmem_core (pg_data_t *pgdat,
 	 */
 	memset(bdata->node_bootmem_map, 0xff, mapsize);
 
+	bdebug("nid=%d start=%lx map=%lx end=%lx mapsize=%lx\n",
+		pgdat->node_id, start, mapstart, end, mapsize);
+
 	return mapsize;
 }
 
@@ -113,8 +132,10 @@ static int __init can_reserve_bootmem_core(bootmem_data_t *bdata,
 
 	/* out of range, don't hold other */
 	if (addr + size < bdata->node_boot_start ||
-		PFN_DOWN(addr) > bdata->node_low_pfn)
+		PFN_DOWN(addr) > bdata->node_low_pfn) {
+		bdebug("out of range: addr=%lx size=%lx flags=%x\n", addr, size, flags);
 		return 0;
+	}
 
 	/*
 	 * Round up to index to the range.
@@ -132,6 +153,8 @@ static int __init can_reserve_bootmem_core(bootmem_data_t *bdata,
 		if (test_bit(i, bdata->node_bootmem_map)) {
 			if (flags & BOOTMEM_EXCLUSIVE)
 				return -EBUSY;
+			bdebug("silent double reserve of PFN %lx\n",
+				i + bdata->node_boot_start);
 		}
 	}
 
@@ -165,9 +188,7 @@ static int __init reserve_bootmem_core(bootmem_data_t *bdata,
 
 	for (i = sidx; i < eidx; i++) {
 		if (test_and_set_bit(i, bdata->node_bootmem_map)) {
-#ifdef CONFIG_DEBUG_BOOTMEM
-			printk("hm, page %08lx reserved twice.\n", i*PAGE_SIZE);
-#endif
+			bdebug("hm, page %08lx reserved twice.\n", i*PAGE_SIZE);
 		}
 	}
 	return 0;
@@ -223,6 +244,9 @@ __alloc_bootmem_core(struct bootmem_data *bdata, unsigned long size,
 	unsigned long offset, remaining_size, areasize, preferred;
 	unsigned long i, start = 0, incr, eidx, end_pfn = bdata->node_low_pfn;
 	void *ret;
+
+	bdebug("size=%lx [%lu pages] align=%lx goal=%lx limit=%lx\n",
+		size, PAGE_ALIGN(size) >> PAGE_SHIFT, align, goal, limit);
 
 	if(!size) {
 		printk("__alloc_bootmem_core(): zero-sized request\n");
@@ -352,6 +376,10 @@ static unsigned long __init free_all_bootmem_core(pg_data_t *pgdat)
 	pfn = bdata->node_boot_start >> PAGE_SHIFT;
 	idx = bdata->node_low_pfn - (bdata->node_boot_start >> PAGE_SHIFT);
 	map = bdata->node_bootmem_map;
+
+	bdebug("nid=%d start_pfn=%lx map=%lx low_fn=%lx\n",
+		pgdat->node_id, pfn, virt_to_phys(map), bdata->node_low_pfn);
+
 	/* Check physaddr is O(LOG2(BITS_PER_LONG)) page aligned */
 	if (bdata->node_boot_start == 0 ||
 	    ffs(bdata->node_boot_start) - PAGE_SHIFT > ffs(BITS_PER_LONG))
@@ -398,6 +426,8 @@ static unsigned long __init free_all_bootmem_core(pg_data_t *pgdat)
 	total += count;
 	bdata->node_bootmem_map = NULL;
 
+	bdebug("nid=%d released=%lx\n", pgdat->node_id, total);
+
 	return total;
 }
 
@@ -411,6 +441,7 @@ int __init reserve_bootmem_node (pg_data_t *pgdat, unsigned long physaddr,
 {
 	int ret;
 
+	bdebug("nid=%d\n addr=%lx size=%lx flags=%lx\n", pgdat->node_id, physaddr, size, flags);
 	ret = can_reserve_bootmem_core(pgdat->bdata, physaddr, size, flags);
 	if (ret < 0)
 		return ret;
@@ -442,6 +473,7 @@ int __init reserve_bootmem (unsigned long addr, unsigned long size,
 	bootmem_data_t *bdata;
 	int ret;
 
+	bdebug("addr=%lx size=%lx flags=%lx\n", addr, size, flags);
 	list_for_each_entry(bdata, &bdata_list, list) {
 		ret = can_reserve_bootmem_core(bdata, addr, size, flags);
 		if (ret < 0)
@@ -493,6 +525,7 @@ void * __init __alloc_bootmem_node(pg_data_t *pgdat, unsigned long size, unsigne
 {
 	void *ptr;
 
+	bdebug("nid=%d\n", pgdat->node_id);
 	ptr = __alloc_bootmem_core(pgdat->bdata, size, align, goal, 0);
 	if (ptr)
 		return (ptr);

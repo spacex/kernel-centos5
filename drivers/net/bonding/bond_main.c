@@ -160,7 +160,7 @@ MODULE_PARM_DESC(debug, "Print debug messages; 0 for off (default), 1 for on");
 /*----------------------------- Global variables ----------------------------*/
 
 #ifdef CONFIG_NET_POLL_CONTROLLER
-cpumask_t netpoll_block_tx = CPU_MASK_NONE;
+atomic_t netpoll_block_tx = ATOMIC_INIT(0);
 #endif
 
 static const char * const version =
@@ -5501,6 +5501,12 @@ static void __exit bonding_exit(void)
 	rtnl_lock();
 	bond_free_all();
 	rtnl_unlock();
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	/*
+	 * Make sure we don't have an imbalance on our netpoll blocking
+	 */
+	WARN_ON(atomic_read(&netpoll_block_tx));
+#endif
 }
 
 module_init(bonding_init);

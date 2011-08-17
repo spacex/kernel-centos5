@@ -720,7 +720,7 @@ static ssize_t nfs_direct_write(struct kiocb *iocb, unsigned long user_addr, siz
 		goto out;
 	nfs_alloc_commit_data(dreq);
 
-	if (dreq->commit_data == NULL || count < wsize)
+	if (dreq->commit_data == NULL || count <= wsize)
 		sync = FLUSH_STABLE;
 
 	dreq->inode = inode;

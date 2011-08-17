@@ -102,6 +102,7 @@ int vmware_platform(void)
 }
 
 extern int timekeeping_use_tsc;
+extern int apic_calibration_diff;
 
 unsigned long vmware_get_tsc_khz(void)
 {
@@ -143,6 +144,9 @@ unsigned long vmware_get_tsc_khz(void)
 		do_div(lpj, HZ);
 		preset_lpj = lpj;
 	}
+
+	if (!apic_calibration_diff)
+		apic_calibration_diff = 10000;
 
 	return vm_tsc_khz;
 }

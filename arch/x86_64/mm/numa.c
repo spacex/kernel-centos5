@@ -18,10 +18,6 @@
 #include <asm/numa.h>
 #include <asm/acpi.h>
 
-#ifndef Dprintk
-#define Dprintk(x...)
-#endif
-
 struct pglist_data *node_data[MAX_NUMNODES] __read_mostly;
 bootmem_data_t plat_node_bdata[MAX_NUMNODES];
 
@@ -134,8 +130,10 @@ void __init setup_node_bootmem(int nodeid, unsigned long start, unsigned long en
 	end_pfn = end >> PAGE_SHIFT;
 
 	node_data[nodeid] = early_node_mem(nodeid, start, end, pgdat_size);
-	if (node_data[nodeid] == NULL)
+	if (node_data[nodeid] == NULL) {
+		printk(KERN_DEBUG "setup_node_bootmem: fails to allocate memory for node_data\n");
 		return;
+	}
 	nodedata_phys = __pa(node_data[nodeid]);
 
 	memset(NODE_DATA(nodeid), 0, sizeof(pg_data_t));
@@ -152,10 +150,11 @@ void __init setup_node_bootmem(int nodeid, unsigned long start, unsigned long en
 		if (nodedata_phys < start || nodedata_phys >= end)
 			free_bootmem((unsigned long)node_data[nodeid],pgdat_size);
 		node_data[nodeid] = NULL;
+		printk(KERN_DEBUG "setup_node_bootmem: fails to allocate memory for bootmap\n");
 		return;
 	}
 	bootmap_start = __pa(bootmap);
-	Dprintk("bootmap start %lu pages %lu\n", bootmap_start, bootmap_pages); 
+	printk(KERN_DEBUG "bootmap start %lx pages %lu\n", bootmap_start, bootmap_pages);
 	
 	bootmap_size = init_bootmem_node(NODE_DATA(nodeid),
 					 bootmap_start >> PAGE_SHIFT, 
@@ -181,8 +180,8 @@ void __init setup_node_zones(int nodeid)
  	start_pfn = node_start_pfn(nodeid);
  	end_pfn = node_end_pfn(nodeid);
 
-	Dprintk(KERN_INFO "Setting up node %d %lx-%lx\n",
-		nodeid, start_pfn, end_pfn);
+	printk(KERN_DEBUG "Setting up node %d %lx-%lx\n",
+	       nodeid, start_pfn, end_pfn);
 
 	/* Try to allocate mem_map at end to not fill up precious <4GB
 	   memory. */

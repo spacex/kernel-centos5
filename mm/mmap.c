@@ -2317,10 +2317,14 @@ int install_special_mapping(struct mm_struct *mm,
 	vma->vm_ops = &special_mapping_vmops;
 	vma->vm_private_data = pages;
 
-	if (unlikely(insert_vm_struct(mm, vma))) {
-		kmem_cache_free(vm_area_cachep, vma);
-		return -ENOMEM;
-	}
+	err = security_file_mmap_addr(NULL, 0, 0, 0, vma->vm_start, 1);
+	if (err)
+		goto out;
+
+	err = insert_vm_struct(mm, vma);
+	if (err)
+		goto out;
+ 
 	mm->total_vm += len >> PAGE_SHIFT;
 
 	if (!vdso_populate)
@@ -2338,6 +2342,10 @@ int install_special_mapping(struct mm_struct *mm,
 		addr += PAGE_SIZE;
 	}
 
+	return err;
+
+out:
+	kmem_cache_free(vm_area_cachep, vma);
 	return err;
 }
 

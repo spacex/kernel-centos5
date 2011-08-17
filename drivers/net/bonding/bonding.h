@@ -126,26 +126,22 @@ extern int debug;
 
 
 #ifdef CONFIG_NET_POLL_CONTROLLER
-extern cpumask_t netpoll_block_tx;
+extern atomic_t netpoll_block_tx;
 
 static inline void block_netpoll_tx(void)
 {
-	preempt_disable();
-	BUG_ON(cpu_test_and_set(smp_processor_id(),
-					netpoll_block_tx));
+	atomic_inc(&netpoll_block_tx);
 }
 
 static inline void unblock_netpoll_tx(void)
 {
-	cpu_clear(smp_processor_id(),
-		  netpoll_block_tx);
-	preempt_enable();
+	atomic_dec(&netpoll_block_tx);
 }
 
 static inline int is_netpoll_tx_blocked(struct net_device *dev)
 {
 	if (unlikely(dev->priv_flags & IFF_IN_NETPOLL))
-		return cpu_isset(smp_processor_id(), netpoll_block_tx);
+		return atomic_read(&netpoll_block_tx);
 	return 0;
 }
 #else
