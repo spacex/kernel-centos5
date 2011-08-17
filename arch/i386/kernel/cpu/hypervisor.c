@@ -52,7 +52,10 @@ unsigned long get_hypervisor_tsc_freq(void)
 
 cycles_t get_hypervisor_cycles_per_tick(void)
 {
-	return (cpu_khz * 1000) / REAL_HZ;
+	/* Same thing for VMware or baremetal, in case we force it */
+	cycles_t cycles_per_tick = cpu_khz * 1000ULL;
+	do_div(cycles_per_tick, REAL_HZ);
+	return cycles_per_tick;
 }
 
 static inline void __cpuinit

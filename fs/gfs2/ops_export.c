@@ -198,15 +198,17 @@ static struct dentry *gfs2_get_dentry(struct super_block *sb, void *inum_obj)
 			iput(inode);
 			return ERR_PTR(-ESTALE);
 		}
-		goto out_inode;
+	} else {
+		inode = gfs2_lookup_by_inum(sdp, inum->no_addr,
+					    &inum->no_formal_ino,
+					    GFS2_BLKST_DINODE);
+		if (inode == ERR_PTR(-ENOENT))
+			inode = gfs2_ilookup(sb, inum->no_addr);
 	}
 
-	inode = gfs2_lookup_by_inum(sdp, inum->no_addr, &inum->no_formal_ino,
-				    GFS2_BLKST_DINODE);
 	if (IS_ERR(inode))
 		return ERR_CAST(inode);
 
-out_inode:
 	dentry = d_alloc_anon(inode);
 	if (!dentry) {
 		iput(inode);

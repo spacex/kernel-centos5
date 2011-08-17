@@ -186,10 +186,15 @@ static void flush_tlb_others(cpumask_t cpumask, struct mm_struct *mm,
 	cpus_or(f->flush_cpumask, cpumask, f->flush_cpumask);
 
 	/*
+	 * Make the above memory operations globally visible before
+	 * sending the IPI.
+	 */
+	smp_mb();
+	/*
 	 * We have to send the IPI only to
 	 * CPUs affected.
 	 */
-	send_IPI_mask(cpumask, INVALIDATE_TLB_VECTOR_START + sender);
+	send_IPI_mask(f->flush_cpumask, INVALIDATE_TLB_VECTOR_START + sender);
 
 	while (!cpus_empty(f->flush_cpumask))
 		cpu_relax();
@@ -310,7 +315,16 @@ struct call_data_struct {
 	int wait;
 };
 
-static struct call_data_struct * call_data;
+static void nop_fn(void *unused)
+{
+}
+
+static struct call_data_struct nop_call_data = {
+	.func = nop_fn,
+	.info = NULL,
+};
+
+static struct call_data_struct *call_data = &nop_call_data;
 
 void lock_ipi_call_lock(void)
 {

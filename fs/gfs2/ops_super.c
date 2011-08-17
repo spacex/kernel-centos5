@@ -539,7 +539,8 @@ static void gfs2_delete_inode(struct inode *inode)
 	if (!test_bit(GIF_USER, &ip->i_flags))
 		goto out;
 
-	error = gfs2_glock_nq_init(ip->i_gl, LM_ST_EXCLUSIVE, 0, &gh);
+	/* Must not read inode block until block type has been verified */
+	error = gfs2_glock_nq_init(ip->i_gl, LM_ST_EXCLUSIVE, GL_SKIP, &gh);
 	if (unlikely(error)) {
 		gfs2_glock_dq_uninit(&ip->i_iopen_gh);
 		goto out;
@@ -548,6 +549,12 @@ static void gfs2_delete_inode(struct inode *inode)
 	error = gfs2_check_blk_type(sdp, ip->i_no_addr, GFS2_BLKST_UNLINKED);
 	if (error)
 		goto out_truncate;
+
+	if (test_bit(GIF_INVALID, &ip->i_flags)) {
+		error = gfs2_inode_refresh(ip);
+		if (error)
+			goto out_truncate;
+	}
 
 	ip->i_iopen_gh.gh_flags |= GL_NOCACHE;
 	gfs2_glock_dq_wait(&ip->i_iopen_gh);

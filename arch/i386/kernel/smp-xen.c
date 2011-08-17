@@ -357,11 +357,17 @@ static void flush_tlb_others(cpumask_t cpumask, struct mm_struct *mm,
 			atomic_set_mask(cpu_mask[k], &flush_mask[k]);
 	}
 #endif
+
+	/*
+	 * Make the above memory operations globally visible before
+	 * sending the IPI.
+	 */
+	smp_mb();
 	/*
 	 * We have to send the IPI only to
 	 * CPUs affected.
 	 */
-	send_IPI_mask(cpumask, INVALIDATE_TLB_VECTOR);
+	send_IPI_mask(flush_cpumask, INVALIDATE_TLB_VECTOR);
 
 	while (!cpus_empty(flush_cpumask))
 		/* nothing. lockup detection does not belong here */

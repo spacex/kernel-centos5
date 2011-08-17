@@ -175,7 +175,7 @@
 
 #define	MAX_NUM_CARDS		4
 
-#define MAX_BUFFERS_PER_CMD	32
+#define NETXEN_MAX_FRAGS_PER_TX	14
 #define TX_STOP_THRESH		((MAX_SKB_FRAGS >> 2) + 4)
 #define NX_MAX_TX_TIMEOUTS	2
 
@@ -551,7 +551,7 @@ struct netxen_recv_crb {
  */
 struct netxen_cmd_buffer {
 	struct sk_buff *skb;
-	struct netxen_skb_frag frag_array[MAX_BUFFERS_PER_CMD + 1];
+	struct netxen_skb_frag frag_array[MAX_SKB_FRAGS + 1];
 	u32 frag_count;
 };
 

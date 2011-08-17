@@ -173,6 +173,12 @@ struct dev_pm_info {
 	unsigned		can_wakeup:1;
 #ifdef	CONFIG_PM
 	unsigned		should_wakeup:1;
+#endif
+#ifndef __GENKSYMS__
+	/* avoid kabi breakage, put bit here instead of struct device */
+	unsigned		is_registered:1;
+#endif
+#ifdef	CONFIG_PM
 	pm_message_t		prev_state;
 	void			* saved_state;
 	struct device		* pm_parent;

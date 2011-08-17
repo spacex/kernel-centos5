@@ -942,6 +942,8 @@ static int do_replace(void __user *user, unsigned int len)
 	if (tmp.num_counters >= INT_MAX / sizeof(struct ebt_counter))
 		return -ENOMEM;
 
+	tmp.name[sizeof(tmp.name) - 1] = 0;
+
 	countersize = COUNTER_OFFSET(tmp.nentries) * 
 					(highest_possible_processor_id()+1);
 	newinfo = vmalloc(sizeof(*newinfo) + countersize);

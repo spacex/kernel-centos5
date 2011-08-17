@@ -69,7 +69,7 @@ dasd_gendisk_alloc(struct dasd_device *device)
 
 	if (device->features & DASD_FEATURE_READONLY)
 		set_disk_ro(gdp, 1);
-	gdp->private_data = device;
+	dasd_add_link_to_gendisk(gdp, device);
 	gdp->queue = device->request_queue;
 	device->gdp = gdp;
 	set_capacity(device->gdp, 0);

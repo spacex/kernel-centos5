@@ -622,13 +622,6 @@ qla2x00_wait_for_passthru_completion(struct scsi_qla_host *ha)
 	    timeout)) {
 		DEBUG2(qla_printk(KERN_WARNING, ha,
 		    "Passthru request timed out.\n"));
-		if (IS_QLA82XX(ha)) {
-			set_bit(FCOE_CTX_RESET_NEEDED, &ha->dpc_flags);
-		} else {
-			ha->isp_ops->fw_dump(ha, 0);
-			set_bit(ISP_ABORT_NEEDED, &ha->dpc_flags);
-		}
-		qla2xxx_wake_dpc(ha);
 		ha->pass_thru_cmd_result = 0;
 		ha->pass_thru_cmd_in_process = 0;
 	}

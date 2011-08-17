@@ -3216,6 +3216,8 @@ rtl8169_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	device_set_wakeup_enable(&pdev->dev, tp->features & RTL_FEATURE_WOL);
 
+	netif_carrier_off(dev);
+
 out:
 	return rc;
 

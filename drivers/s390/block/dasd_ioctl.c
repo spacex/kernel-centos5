@@ -38,16 +38,19 @@ dasd_ioctl_api_version(void __user *argp)
 static int
 dasd_ioctl_enable(struct block_device *bdev)
 {
-	struct dasd_device *device = bdev->bd_disk->private_data;
+	struct dasd_device *device;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EACCES;
-
+	device = dasd_device_from_gendisk(bdev->bd_disk);
+	if (!device)
+		return -ENODEV;
 	dasd_enable_device(device);
 	/* Formatting the dasd device can change the capacity. */
 	mutex_lock(&bdev->bd_mutex);
 	i_size_write(bdev->bd_inode, (loff_t)get_capacity(device->gdp) << 9);
 	mutex_unlock(&bdev->bd_mutex);
+	dasd_put_device(device);
 	return 0;
 }
 
@@ -58,11 +61,13 @@ dasd_ioctl_enable(struct block_device *bdev)
 static int
 dasd_ioctl_disable(struct block_device *bdev)
 {
-	struct dasd_device *device = bdev->bd_disk->private_data;
+	struct dasd_device *device;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EACCES;
-
+	device = dasd_device_from_gendisk(bdev->bd_disk);
+	if (!device)
+		return -ENODEV;
 	/*
 	 * Man this is sick. We don't do a real disable but only downgrade
 	 * the device to DASD_STATE_BASIC. The reason is that dasdfmt uses
@@ -79,6 +84,7 @@ dasd_ioctl_disable(struct block_device *bdev)
 	mutex_lock(&bdev->bd_mutex);
 	i_size_write(bdev->bd_inode, 0);
 	mutex_unlock(&bdev->bd_mutex);
+	dasd_put_device(device);
 	return 0;
 }
 
@@ -186,24 +192,36 @@ dasd_format(struct dasd_device * device, struct format_data_t * fdata)
 static int
 dasd_ioctl_format(struct block_device *bdev, void __user *argp)
 {
-	struct dasd_device *device = bdev->bd_disk->private_data;
+	struct dasd_device *device;
 	struct format_data_t fdata;
+	int rc;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EACCES;
 	if (!argp)
 		return -EINVAL;
 
-	if (device->features & DASD_FEATURE_READONLY)
+	device = dasd_device_from_gendisk(bdev->bd_disk);
+	if (!device)
+		return -ENODEV;
+
+	if (device->features & DASD_FEATURE_READONLY) {
+		dasd_put_device(device);
 		return -EROFS;
-	if (copy_from_user(&fdata, argp, sizeof(struct format_data_t)))
+	}
+	if (copy_from_user(&fdata, argp, sizeof(struct format_data_t))) {
+		dasd_put_device(device);
 		return -EFAULT;
+	}
 	if (bdev != bdev->bd_contains) {
 		DEV_MESSAGE(KERN_WARNING, device, "%s",
 			    "Cannot low-level format a partition");
+		dasd_put_device(device);
 		return -EINVAL;
 	}
-	return dasd_format(device, &fdata);
+	rc = dasd_format(device, &fdata);
+	dasd_put_device(device);
+	return rc;
 }
 
 #ifdef CONFIG_DASD_PROFILE
@@ -337,8 +355,8 @@ dasd_ioctl_information(struct dasd_device *device,
 static int
 dasd_ioctl_set_ro(struct block_device *bdev, void __user *argp)
 {
-	struct dasd_device *device =  bdev->bd_disk->private_data;
-	int intval;
+	struct dasd_device *device;
+	int intval, rc;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EACCES;
@@ -347,9 +365,13 @@ dasd_ioctl_set_ro(struct block_device *bdev, void __user *argp)
 		return -EINVAL;
 	if (get_user(intval, (int __user *)argp))
 		return -EFAULT;
-
+	device = dasd_device_from_gendisk(bdev->bd_disk);
+	if (!device)
+		return -ENODEV;
 	set_disk_ro(bdev->bd_disk, intval);
-	return dasd_set_feature(device->cdev, DASD_FEATURE_READONLY, intval);
+	rc = dasd_set_feature(device->cdev, DASD_FEATURE_READONLY, intval);
+	dasd_put_device(device);
+	return rc;
 }
 
 static int
@@ -372,56 +394,72 @@ dasd_ioctl(struct inode *inode, struct file *file,
 	   unsigned int cmd, unsigned long arg)
 {
 	struct block_device *bdev = inode->i_bdev;
-	struct dasd_device *device = bdev->bd_disk->private_data;
+	struct dasd_device *device;
 	void __user *argp = (void __user *)arg;
-
-	if (!device)
-                return -ENODEV;
+	int rc;
 
 	if ((_IOC_DIR(cmd) != _IOC_NONE) && !arg) {
 		PRINT_DEBUG("empty data ptr");
 		return -EINVAL;
 	}
+	device = dasd_device_from_gendisk(bdev->bd_disk);
+	if (!device)
+		return -ENODEV;
 
 	switch (cmd) {
 	case BIODASDDISABLE:
-		return dasd_ioctl_disable(bdev);
+		rc = dasd_ioctl_disable(bdev);
+		break;
 	case BIODASDENABLE:
-		return dasd_ioctl_enable(bdev);
+		rc = dasd_ioctl_enable(bdev);
+		break;
 	case BIODASDQUIESCE:
-		return dasd_ioctl_quiesce(device);
+		rc = dasd_ioctl_quiesce(device);
+		break;
 	case BIODASDRESUME:
-		return dasd_ioctl_resume(device);
+		rc = dasd_ioctl_resume(device);
+		break;
 	case BIODASDFMT:
-		return dasd_ioctl_format(bdev, argp);
+		rc = dasd_ioctl_format(bdev, argp);
+		break;
 	case BIODASDINFO:
-		return dasd_ioctl_information(device, cmd, argp);
+		rc = dasd_ioctl_information(device, cmd, argp);
+		break;
 	case BIODASDINFO2:
-		return dasd_ioctl_information(device, cmd, argp);
+		rc = dasd_ioctl_information(device, cmd, argp);
+		break;
 	case BIODASDPRRD:
-		return dasd_ioctl_read_profile(device, argp);
+		rc = dasd_ioctl_read_profile(device, argp);
+		break;
 	case BIODASDPRRST:
-		return dasd_ioctl_reset_profile(device);
+		rc = dasd_ioctl_reset_profile(device);
+		break;
 	case BLKROSET:
-		return dasd_ioctl_set_ro(bdev, argp);
+		rc = dasd_ioctl_set_ro(bdev, argp);
+		break;
 	case DASDAPIVER:
-		return dasd_ioctl_api_version(argp);
+		rc = dasd_ioctl_api_version(argp);
+		break;
 	case BIODASDCMFENABLE:
-		return enable_cmf(device->cdev);
+		rc = enable_cmf(device->cdev);
+		break;
 	case BIODASDCMFDISABLE:
-		return disable_cmf(device->cdev);
+		rc = disable_cmf(device->cdev);
+		break;
 	case BIODASDREADALLCMB:
-		return dasd_ioctl_readall_cmb(device, cmd, arg);
+		rc = dasd_ioctl_readall_cmb(device, cmd, arg);
+		break;
 	default:
 		/* if the discipline has an ioctl method try it. */
 		if (device->discipline->ioctl) {
-			int rval = device->discipline->ioctl(device, cmd, argp);
-			if (rval != -ENOIOCTLCMD)
-				return rval;
-		}
-
-		return -EINVAL;
+			rc = device->discipline->ioctl(device, cmd, argp);
+			if (rc == -ENOIOCTLCMD)
+				rc = -EINVAL;
+		} else
+			rc = -EINVAL;
 	}
+	dasd_put_device(device);
+	return rc;
 }
 
 long

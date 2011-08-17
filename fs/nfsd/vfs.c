@@ -258,6 +258,16 @@ out:
 	return err;
 }
 
+static int nfsd_break_lease(struct inode *inode)
+{
+	int err;
+
+	err = break_lease(inode, FMODE_WRITE | O_NONBLOCK);
+	if (err == -EWOULDBLOCK)
+		err = -ETIMEDOUT;
+	return err;
+}
+
 /*
  * Set various file attributes.
  * N.B. After this call fhp needs an fh_put
@@ -332,16 +342,6 @@ nfsd_setattr(struct svc_rqst *rqstp, struct svc_fh *fhp, struct iattr *iap,
 				goto out;
 		}
 
-		/*
-		 * If we are changing the size of the file, then
-		 * we need to break all leases.
-		 */
-		err = break_lease(inode, FMODE_WRITE | O_NONBLOCK);
-		if (err == -EWOULDBLOCK)
-			err = -ETIMEDOUT;
-		if (err) /* ENOMEM or EWOULDBLOCK */
-			goto out_nfserr;
-
 		err = get_write_access(inode);
 		if (err)
 			goto out_nfserr;
@@ -382,6 +382,10 @@ nfsd_setattr(struct svc_rqst *rqstp, struct svc_fh *fhp, struct iattr *iap,
 
 	err = nfserr_notsync;
 	if (!check_guard || guardtime == inode->i_ctime.tv_sec) {
+		err = nfsd_break_lease(inode);
+		if (err) /* ENOMEM or EWOULDBLOCK */
+			goto out_nfserr;
+
 		fh_lock(fhp);
 		err = notify_change(dentry, iap);
 		err = nfserrno(err);
@@ -1560,6 +1564,14 @@ nfsd_link(struct svc_rqst *rqstp, struct svc_fh *ffhp,
 	dold = tfhp->fh_dentry;
 	dest = dold->d_inode;
 
+	err = nfserr_noent;
+	if (!dold->d_inode)
+		goto out_dput;
+	err = nfsd_break_lease(dold->d_inode);
+	if (err) {
+		err = nfserrno(err);
+		goto out_dput;
+	}
 	err = vfs_link(dold, dirp, dnew);
 	if (!err) {
 		if (EX_ISSYNC(ffhp->fh_export)) {
@@ -1573,6 +1585,7 @@ nfsd_link(struct svc_rqst *rqstp, struct svc_fh *ffhp,
 			err = nfserrno(err);
 	}
 
+out_dput:
 	dput(dnew);
 out_unlock:
 	fh_unlock(ffhp);
@@ -1644,6 +1657,9 @@ nfsd_rename(struct svc_rqst *rqstp, struct svc_fh *ffhp, char *fname, int flen,
 	if (ndentry == trap)
 		goto out_dput_new;
 
+	err = nfsd_break_lease(odentry->d_inode);
+	if (err)
+		goto out_dput_new;
 #ifdef MSNFS
 	if ((ffhp->fh_export->ex_flags & NFSEXP_MSNFS) &&
 		((atomic_read(&odentry->d_count) > 1)
@@ -1716,6 +1732,9 @@ nfsd_unlink(struct svc_rqst *rqstp, struct svc_fh *fhp, int type,
 	if (!type)
 		type = rdentry->d_inode->i_mode & S_IFMT;
 
+	err = nfsd_break_lease(rdentry->d_inode);
+	if (err)
+		goto out_put;
 	if (type != S_IFDIR) { /* It's UNLINK */
 #ifdef MSNFS
 		if ((fhp->fh_export->ex_flags & NFSEXP_MSNFS) &&
@@ -1728,6 +1747,7 @@ nfsd_unlink(struct svc_rqst *rqstp, struct svc_fh *fhp, int type,
 		err = vfs_rmdir(dirp, rdentry);
 	}
 
+out_put:
 	dput(rdentry);
 
 	if (err == 0 &&

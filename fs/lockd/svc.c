@@ -154,7 +154,7 @@ lockd(struct svc_rqst *rqstp)
 	 * NFS mount or NFS daemon has gone away, and we've been sent a
 	 * signal, or else another process has taken over our job.
 	 */
-	while ((nlmsvc_users || !signalled()) && nlmsvc_pid == current->pid) {
+	while (nlmsvc_users) {
 		long timeout = MAX_SCHEDULE_TIMEOUT;
 
 		/* update sv_maxconn if it has changed */
@@ -204,19 +204,11 @@ lockd(struct svc_rqst *rqstp)
 
 	del_timer(&nlm_grace_period_timer);
 
-	/*
-	 * Check whether there's a new lockd process before
-	 * shutting down the hosts and clearing the slot.
-	 */
-	if (!nlmsvc_pid || current->pid == nlmsvc_pid) {
-		if (nlmsvc_ops)
-			nlmsvc_invalidate_all();
-		nlm_shutdown_hosts();
-		nlmsvc_pid = 0;
-		nlmsvc_serv = NULL;
-	} else
-		printk(KERN_DEBUG
-			"lockd: new process, skipping host shutdown\n");
+	if (nlmsvc_ops)
+		nlmsvc_invalidate_all();
+	nlm_shutdown_hosts();
+	nlmsvc_pid = 0;
+	nlmsvc_serv = NULL;
 	wake_up(&lockd_exit);
 
 	/* Exit the RPC thread */
@@ -365,17 +357,8 @@ lockd_down(void)
 	warned = 0;
 
 	kill_proc(nlmsvc_pid, SIGKILL, 1);
-	/*
-	 * Wait for the lockd process to exit, but since we're holding
-	 * the lockd semaphore, we can't wait around forever ...
-	 */
 	clear_thread_flag(TIF_SIGPENDING);
-	wait_event_timeout(lockd_exit, nlmsvc_pid == 0, HZ);
-	if (nlmsvc_pid) {
-		printk(KERN_WARNING 
-			"lockd_down: lockd failed to exit, clearing pid\n");
-		nlmsvc_pid = 0;
-	}
+	wait_event(lockd_exit, nlmsvc_pid == 0);
 	spin_lock_irq(&current->sighand->siglock);
 	recalc_sigpending();
 	spin_unlock_irq(&current->sighand->siglock);

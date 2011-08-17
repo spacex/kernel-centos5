@@ -1829,8 +1829,12 @@ static int
 dasd_open(struct inode *inp, struct file *filp)
 {
 	struct gendisk *disk = inp->i_bdev->bd_disk;
-	struct dasd_device *device = disk->private_data;
+	struct dasd_device *device;
 	int rc;
+
+	device = dasd_device_from_gendisk(disk);
+	if (!device)
+		return -ENODEV;
 
         atomic_inc(&device->open_count);
 	if (test_bit(DASD_FLAG_OFFLINE, &device->flags)) {
@@ -1857,12 +1861,14 @@ dasd_open(struct inode *inp, struct file *filp)
 		goto out;
 	}
 
+	dasd_put_device(device);
 	return 0;
 
 out:
 	module_put(device->discipline->owner);
 unlock:
 	atomic_dec(&device->open_count);
+	dasd_put_device(device);
 	return rc;
 }
 
@@ -1870,10 +1876,14 @@ static int
 dasd_release(struct inode *inp, struct file *filp)
 {
 	struct gendisk *disk = inp->i_bdev->bd_disk;
-	struct dasd_device *device = disk->private_data;
+	struct dasd_device *device;
 
+	device = dasd_device_from_gendisk(disk);
+	if (!device)
+		return -ENODEV;
 	atomic_dec(&device->open_count);
 	module_put(device->discipline->owner);
+	dasd_put_device(device);
 	return 0;
 }
 
@@ -1885,16 +1895,17 @@ dasd_getgeo(struct block_device *bdev, struct hd_geometry *geo)
 {
 	struct dasd_device *device;
 
-	device = bdev->bd_disk->private_data;
+	device = dasd_device_from_gendisk(bdev->bd_disk);
 	if (!device)
 		return -ENODEV;
-
 	if (!device->discipline ||
-	    !device->discipline->fill_geometry)
+	    !device->discipline->fill_geometry) {
+		dasd_put_device(device);
 		return -EINVAL;
-
+	}
 	device->discipline->fill_geometry(device, geo);
 	geo->start = get_start_sect(bdev) >> device->s2b_shift;
+	dasd_put_device(device);
 	return 0;
 }
 
