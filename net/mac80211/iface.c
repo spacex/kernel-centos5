@@ -410,11 +410,7 @@ static int ieee80211_stop(struct net_device *dev)
 	ieee80211_configure_filter(local);
 
 	del_timer_sync(&local->dynamic_ps_timer);
-#if 0 /* Not in RHEL5... */
 	cancel_work_sync(&local->dynamic_ps_enable_work);
-#else
-	ieee80211_cancel_work(&local->hw, &local->dynamic_ps_enable_work);
-#endif
 
 	/* APs need special treatment */
 	if (sdata->vif.type == NL80211_IFTYPE_AP) {
@@ -477,15 +473,10 @@ static int ieee80211_stop(struct net_device *dev)
 		 * whether the interface is running, which, at this point,
 		 * it no longer is.
 		 */
-#if 0 /* Not in RHEL5... */
 		cancel_work_sync(&sdata->u.mgd.work);
 		cancel_work_sync(&sdata->u.mgd.chswitch_work);
 		cancel_work_sync(&sdata->u.mgd.monitor_work);
 		cancel_work_sync(&sdata->u.mgd.beacon_loss_work);
-#else
-		/* could call ieee80211_cancel_work multiple times instead... */
-		flush_workqueue(local->workqueue);
-#endif
 
 		/*
 		 * When we get here, the interface is marked down.
@@ -499,11 +490,7 @@ static int ieee80211_stop(struct net_device *dev)
 	case NL80211_IFTYPE_ADHOC:
 		if (sdata->vif.type == NL80211_IFTYPE_ADHOC) {
 			del_timer_sync(&sdata->u.ibss.timer);
-#if 0 /* Not in RHEL5... */
 			cancel_work_sync(&sdata->u.ibss.work);
-#else
-			ieee80211_cancel_work(&local->hw, &sdata->u.ibss.work);
-#endif
 			synchronize_rcu();
 			skb_queue_purge(&sdata->u.ibss.skb_queue);
 		}

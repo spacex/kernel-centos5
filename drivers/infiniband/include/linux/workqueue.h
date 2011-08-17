@@ -3,10 +3,6 @@
 
 #include_next <linux/workqueue.h>
 
-struct delayed_work {
-	struct work_struct work;
-};
-
 static inline void
 backport_INIT_WORK(struct work_struct *work, void *func)
 {
@@ -46,6 +42,7 @@ int backport_schedule_delayed_work(struct delayed_work *work, unsigned long dela
 
 #undef INIT_WORK
 #define INIT_WORK(_work, _func) backport_INIT_WORK(_work, _func)
+#undef INIT_DELAYED_WORK
 #define INIT_DELAYED_WORK(_work, _func) INIT_WORK(&(_work)->work, _func)
 #define INIT_DELAYED_WORK_DEFERRABLE(_work, _func) INIT_DELAYED_WORK(_work, _func)
 

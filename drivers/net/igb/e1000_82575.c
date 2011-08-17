@@ -94,6 +94,7 @@ static s32 igb_get_invariants_82575(struct e1000_hw *hw)
 	case E1000_DEV_ID_82576_FIBER:
 	case E1000_DEV_ID_82576_SERDES:
 	case E1000_DEV_ID_82576_QUAD_COPPER:
+	case E1000_DEV_ID_82576_QUAD_COPPER_ET2:
 	case E1000_DEV_ID_82576_SERDES_QUAD:
 		mac->type = e1000_82576;
 		break;
@@ -103,6 +104,12 @@ static s32 igb_get_invariants_82575(struct e1000_hw *hw)
 	case E1000_DEV_ID_82580_SGMII:
 	case E1000_DEV_ID_82580_COPPER_DUAL:
 		mac->type = e1000_82580;
+		break;
+	case E1000_DEV_ID_I350_COPPER:
+	case E1000_DEV_ID_I350_FIBER:
+	case E1000_DEV_ID_I350_SERDES:
+	case E1000_DEV_ID_I350_SGMII:
+		mac->type = e1000_i350;
 		break;
 	default:
 		return -E1000_ERR_MAC_INIT;
@@ -153,8 +160,10 @@ static s32 igb_get_invariants_82575(struct e1000_hw *hw)
 		mac->rar_entry_count = E1000_RAR_ENTRIES_82576;
 	if (mac->type == e1000_82580)
 		mac->rar_entry_count = E1000_RAR_ENTRIES_82580;
+	if (mac->type == e1000_i350)
+		mac->rar_entry_count = E1000_RAR_ENTRIES_I350;
 	/* reset */
-	if (mac->type == e1000_82580)
+	if (mac->type >= e1000_82580)
 		mac->ops.reset_hw = igb_reset_hw_82580;
 	else
 		mac->ops.reset_hw = igb_reset_hw_82575;
@@ -225,7 +234,7 @@ static s32 igb_get_invariants_82575(struct e1000_hw *hw)
 		phy->ops.reset              = igb_phy_hw_reset_sgmii_82575;
 		phy->ops.read_reg           = igb_read_phy_reg_sgmii_82575;
 		phy->ops.write_reg          = igb_write_phy_reg_sgmii_82575;
-	} else if (hw->mac.type == e1000_82580) {
+	} else if (hw->mac.type >= e1000_82580) {
 		phy->ops.reset              = igb_phy_hw_reset;
 		phy->ops.read_reg           = igb_read_phy_reg_82580;
 		phy->ops.write_reg          = igb_write_phy_reg_82580;
@@ -261,6 +270,7 @@ static s32 igb_get_invariants_82575(struct e1000_hw *hw)
 		phy->ops.set_d3_lplu_state  = igb_set_d3_lplu_state;
 		break;
 	case I82580_I_PHY_ID:
+	case I350_I_PHY_ID:
 		phy->type                   = e1000_phy_82580;
 		phy->ops.force_speed_duplex = igb_phy_force_speed_duplex_82580;
 		phy->ops.get_cable_length   = igb_get_cable_length_82580;
@@ -924,6 +934,11 @@ static s32 igb_init_hw_82575(struct e1000_hw *hw)
 	hw_dbg("Zeroing the MTA\n");
 	for (i = 0; i < mac->mta_reg_count; i++)
 		array_wr32(E1000_MTA, i, 0);
+
+	/* Zero out the Unicast HASH table */
+	hw_dbg("Zeroing the UTA\n");
+	for (i = 0; i < mac->uta_reg_count; i++)
+		array_wr32(E1000_UTA, i, 0);
 
 	/* Setup link and flow control */
 	ret_val = igb_setup_link(hw);

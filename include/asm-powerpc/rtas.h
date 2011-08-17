@@ -2,7 +2,9 @@
 #define _POWERPC_RTAS_H
 #ifdef __KERNEL__
 
+#include <linux/completion.h>
 #include <linux/spinlock.h>
+#include <asm/atomic.h>
 #include <asm/page.h>
 
 /*
@@ -151,6 +153,14 @@ struct rtas_error_log {
 	unsigned char buffer[1];
 };
 
+struct rtas_suspend_me_data {
+	int joined;
+	atomic_t working;
+	struct rtas_args *args;
+	struct completion done;
+	int error;
+};
+
 /*
  * This can be set by the rtas_flash module so that it can get called
  * as the absolutely last thing before the kernel terminates.
@@ -161,6 +171,7 @@ extern struct rtas_t rtas;
 
 extern void enter_rtas(unsigned long);
 extern int rtas_token(const char *service);
+extern int rtas_service_present(const char *service);
 extern int rtas_call(int token, int, int, int *, ...);
 extern void rtas_restart(char *cmd);
 extern void rtas_power_off(void);
@@ -173,6 +184,10 @@ extern int rtas_set_indicator(int indicator, int index, int new_value);
 extern int rtas_set_indicator_fast(int indicator, int index, int new_value);
 extern void rtas_progress(char *s, unsigned short hex);
 extern void rtas_initialize(void);
+extern void rtas_suspend_me_data_init(struct rtas_suspend_me_data *rsmd,
+				      struct rtas_args *args);
+extern void rtas_suspend_cpu(struct rtas_suspend_me_data *data);
+extern int rtas_suspend_last_cpu(struct rtas_suspend_me_data *data);
 
 struct rtc_time;
 extern unsigned long rtas_get_boot_time(void);

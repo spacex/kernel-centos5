@@ -446,13 +446,18 @@ static unsigned int br_nf_pre_routing(unsigned int hook, struct sk_buff **pskb,
 	__u32 len;
 	struct sk_buff *skb = *pskb;
 
+	if ((skb = skb_share_check(skb, GFP_ATOMIC)) == NULL)
+		return NF_STOLEN;
+
+	if (skb->protocol == htons(ETH_P_8021Q) &&
+	    unlikely(!pskb_may_pull(skb, VLAN_HLEN)))
+		goto out;
+
 	if (skb->protocol == htons(ETH_P_IPV6) || IS_VLAN_IPV6(skb)) {
 #ifdef CONFIG_SYSCTL
 		if (!brnf_call_ip6tables)
 			return NF_ACCEPT;
 #endif
-		if ((skb = skb_share_check(*pskb, GFP_ATOMIC)) == NULL)
-			goto out;
 
 		if (skb->protocol == htons(ETH_P_8021Q)) {
 			skb_pull_rcsum(skb, VLAN_HLEN);
@@ -467,9 +472,6 @@ static unsigned int br_nf_pre_routing(unsigned int hook, struct sk_buff **pskb,
 
 	if (skb->protocol != htons(ETH_P_IP) && !IS_VLAN_IP(skb))
 		return NF_ACCEPT;
-
-	if ((skb = skb_share_check(*pskb, GFP_ATOMIC)) == NULL)
-		goto out;
 
 	if (skb->protocol == htons(ETH_P_8021Q)) {
 		skb_pull_rcsum(skb, VLAN_HLEN);

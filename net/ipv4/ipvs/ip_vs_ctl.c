@@ -1754,14 +1754,18 @@ static int ip_vs_info_seq_show(struct seq_file *seq, void *v)
 		const struct ip_vs_dest *dest;
 
 		if (iter->table == ip_vs_svc_table)
-			seq_printf(seq, "%s  %08X:%04X %s ",
+			seq_printf(seq, "%s  %08X:%04X %s%s ",
 				   ip_vs_proto_name(svc->protocol),
 				   ntohl(svc->addr),
 				   ntohs(svc->port),
-				   svc->scheduler->name);
+				   svc->scheduler->name,
+				   (svc->flags & IP_VS_SVC_F_ONEPACKET)?
+				   " ops":"");
 		else
-			seq_printf(seq, "FWM  %08X %s ",
-				   svc->fwmark, svc->scheduler->name);
+			seq_printf(seq, "FWM  %08X %s%s ",
+				   svc->fwmark, svc->scheduler->name,
+				   (svc->flags & IP_VS_SVC_F_ONEPACKET)?
+				   " ops":"");
 
 		if (svc->flags & IP_VS_SVC_F_PERSISTENT)
 			seq_printf(seq, "persistent %d %08X\n",

@@ -734,11 +734,7 @@ void sta_info_stop(struct ieee80211_local *local)
 	 * whether it ran or not since we're going to flush all STAs
 	 * anyway.
 	 */
-#if 0 /* Not in RHEL5... */
 	cancel_work_sync(&local->sta_debugfs_add);
-#else
-	flush_scheduled_work();
-#endif
 #endif
 
 	sta_info_flush(local, NULL);

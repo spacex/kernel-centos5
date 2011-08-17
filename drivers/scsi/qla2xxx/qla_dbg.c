@@ -247,6 +247,24 @@ qla2xxx_read_window(struct device_reg_2xxx __iomem *reg, uint32_t count,
 		*buf++ = htons(RD_REG_WORD(dmp_reg++));
 }
 
+static void
+qla2xxx_dump_post_process(scsi_qla_host_t *vha, int rval)
+{
+
+	if (rval != QLA_SUCCESS) {
+		qla_printk(KERN_WARNING, vha,
+		    "Failed to dump firmware (%x)!!!\n", rval);
+		vha->fw_dumped = 0;
+	} else {
+		qla_printk(KERN_INFO, vha,
+		    "Firmware dump saved to temp buffer (%ld/%p).\n",
+		    vha->host_no, vha->fw_dump);
+		vha->fw_dumped = 1;
+		qla2x00_post_uevent_work(vha, QLA_UEVENT_CODE_FW_DUMP);
+	}
+}
+
+
 /**
  * qla2300_fw_dump() - Dumps binary data from the 2300 firmware.
  * @ha: HA context
@@ -566,17 +584,7 @@ qla2300_fw_dump(scsi_qla_host_t *ha, int hardware_locked)
 	if (rval == QLA_SUCCESS)
 		qla2xxx_copy_queues(ha, &fw->data_ram[cnt]);
 
-	if (rval != QLA_SUCCESS) {
-		qla_printk(KERN_WARNING, ha,
-		    "Failed to dump firmware (%x)!!!\n", rval);
-		ha->fw_dumped = 0;
-
-	} else {
-		qla_printk(KERN_INFO, ha,
-		    "Firmware dump saved to temp buffer (%ld/%p).\n",
-		    ha->host_no, ha->fw_dump);
-		ha->fw_dumped = 1;
-	}
+	qla2xxx_dump_post_process(ha, rval);
 
 qla2300_fw_dump_failed:
 	if (!hardware_locked)
@@ -771,17 +779,7 @@ qla2100_fw_dump(scsi_qla_host_t *ha, int hardware_locked)
 	if (rval == QLA_SUCCESS)
 		qla2xxx_copy_queues(ha, &fw->risc_ram[cnt]);
 
-	if (rval != QLA_SUCCESS) {
-		qla_printk(KERN_WARNING, ha,
-		    "Failed to dump firmware (%x)!!!\n", rval);
-		ha->fw_dumped = 0;
-
-	} else {
-		qla_printk(KERN_INFO, ha,
-		    "Firmware dump saved to temp buffer (%ld/%p).\n",
-		    ha->host_no, ha->fw_dump);
-		ha->fw_dumped = 1;
-	}
+	qla2xxx_dump_post_process(ha, rval);
 
 qla2100_fw_dump_failed:
 	if (!hardware_locked)
@@ -803,6 +801,9 @@ qla24xx_fw_dump(scsi_qla_host_t *ha, int hardware_locked)
 	struct qla24xx_fw_dump *fw;
 	uint32_t	ext_mem_cnt;
 	void		*nxt;
+
+	if (IS_QLA82XX(ha))
+		return;
 
 	risc_address = ext_mem_cnt = 0;
 	flags = 0;
@@ -1017,17 +1018,8 @@ qla24xx_fw_dump(scsi_qla_host_t *ha, int hardware_locked)
 		memcpy(nxt, ha->eft, ntohl(ha->fw_dump->eft_size));
 
 qla24xx_fw_dump_failed_0:
-	if (rval != QLA_SUCCESS) {
-		qla_printk(KERN_WARNING, ha,
-		    "Failed to dump firmware (%x)!!!\n", rval);
-		ha->fw_dumped = 0;
 
-	} else {
-		qla_printk(KERN_INFO, ha,
-		    "Firmware dump saved to temp buffer (%ld/%p).\n",
-		    ha->host_no, ha->fw_dump);
-		ha->fw_dumped = 1;
-	}
+	qla2xxx_dump_post_process(ha, rval);
 
 qla24xx_fw_dump_failed:
 	if (!hardware_locked)
@@ -1324,17 +1316,7 @@ qla25xx_fw_dump(scsi_qla_host_t *ha, int hardware_locked)
 		memcpy(nxt, ha->eft, ntohl(ha->fw_dump->eft_size));
 
 qla25xx_fw_dump_failed_0:
-	if (rval != QLA_SUCCESS) {
-		qla_printk(KERN_WARNING, ha,
-		    "Failed to dump firmware (%x)!!!\n", rval);
-		ha->fw_dumped = 0;
-
-	} else {
-		qla_printk(KERN_INFO, ha,
-		    "Firmware dump saved to temp buffer (%ld/%p).\n",
-		    ha->host_no, ha->fw_dump);
-		ha->fw_dumped = 1;
-	}
+	qla2xxx_dump_post_process(ha, rval);
 
 qla25xx_fw_dump_failed:
 	if (!hardware_locked)
@@ -1635,17 +1617,7 @@ qla81xx_fw_dump(scsi_qla_host_t *ha, int hardware_locked)
 		memcpy(nxt, ha->eft, ntohl(ha->fw_dump->eft_size));
 
 qla81xx_fw_dump_failed_0:
-	if (rval != QLA_SUCCESS) {
-		qla_printk(KERN_WARNING, ha,
-		    "Failed to dump firmware (%x)!!!\n", rval);
-		ha->fw_dumped = 0;
-
-	} else {
-		qla_printk(KERN_INFO, ha,
-		    "Firmware dump saved to temp buffer (%ld/%p).\n",
-		    ha->host_no, ha->fw_dump);
-		ha->fw_dumped = 1;
-	}
+	qla2xxx_dump_post_process(ha, rval);
 
 qla81xx_fw_dump_failed:
 	if (!hardware_locked)

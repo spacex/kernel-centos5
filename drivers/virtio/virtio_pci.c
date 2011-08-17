@@ -208,7 +208,8 @@ static irqreturn_t vp_interrupt(int irq, void *opaque, struct pt_regs *regs)
 
 /* the config->find_vq() implementation */
 static struct virtqueue *vp_find_vq(struct virtio_device *vdev, unsigned index,
-				    void (*callback)(struct virtqueue *vq))
+				    void (*callback)(struct virtqueue *vq),
+				    const char *name)
 {
 	struct virtio_pci_device *vp_dev = to_vp_device(vdev);
 	struct virtio_pci_vq_info *info;
@@ -246,7 +247,7 @@ static struct virtqueue *vp_find_vq(struct virtio_device *vdev, unsigned index,
 
 	/* create the vring */
 	vq = vring_new_virtqueue(info->num, vdev, info->queue,
-				 vp_notify, callback);
+				 vp_notify, callback, name);
 	if (!vq) {
 		err = -ENOMEM;
 		goto out_activate_queue;
@@ -290,14 +291,41 @@ static void vp_del_vq(struct virtqueue *vq)
 	kfree(info);
 }
 
+static void vp_del_vqs(struct virtio_device *vdev)
+{
+	struct virtqueue *vq, *n;
+
+	list_for_each_entry_safe(vq, n, &vdev->vqs, list)
+		vp_del_vq(vq);
+}
+
+static int vp_find_vqs(struct virtio_device *vdev, unsigned nvqs,
+		       struct virtqueue *vqs[],
+		       vq_callback_t *callbacks[],
+		       const char *names[])
+{
+	int i;
+
+	for (i = 0; i < nvqs; ++i) {
+		vqs[i] = vp_find_vq(vdev, i, callbacks[i], names[i]);
+		if (IS_ERR(vqs[i]))
+			goto error;
+	}
+	return 0;
+
+error:
+	vp_del_vqs(vdev);
+	return PTR_ERR(vqs[i]);
+}
+
 static struct virtio_config_ops virtio_pci_config_ops = {
 	.get		= vp_get,
 	.set		= vp_set,
 	.get_status	= vp_get_status,
 	.set_status	= vp_set_status,
 	.reset		= vp_reset,
-	.find_vq	= vp_find_vq,
-	.del_vq		= vp_del_vq,
+	.find_vqs	= vp_find_vqs,
+	.del_vqs	= vp_del_vqs,
 	.get_features	= vp_get_features,
 	.finalize_features = vp_finalize_features,
 };

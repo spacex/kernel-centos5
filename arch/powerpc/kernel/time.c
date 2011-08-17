@@ -51,6 +51,7 @@
 #include <linux/rtc.h>
 #include <linux/jiffies.h>
 #include <linux/posix-timers.h>
+#include <linux/delay.h>
 
 #include <asm/io.h>
 #include <asm/processor.h>
@@ -64,6 +65,8 @@
 #include <asm/div64.h>
 #include <asm/smp.h>
 #include <asm/vdso_datapage.h>
+#include <asm/system.h>
+#include <asm/rtas.h>
 #ifdef CONFIG_PPC64
 #include <asm/firmware.h>
 #endif
@@ -690,6 +693,136 @@ void timer_interrupt(struct pt_regs * regs)
 
 	irq_exit();
 }
+
+#ifdef CONFIG_PPC_PSERIES
+static struct timespec sleep_start;
+
+static void timer_get_wall_clock(struct timespec *time)
+{
+	int ret[8];
+	int error;
+	unsigned int wait_time;
+	u64 max_wait_tb;
+
+	max_wait_tb = get_tb() + tb_ticks_per_usec * 1000 * 5000;
+	do {
+		error = rtas_call(rtas_token("get-time-of-day"), 0, 8, ret);
+
+		wait_time = rtas_busy_delay_time(error);
+		if (wait_time)
+			msleep(wait_time);
+	} while (wait_time && (get_tb() < max_wait_tb));
+
+	if (error != 0 && printk_ratelimit()) {
+		printk(KERN_WARNING "error: reading the clock failed (%d)\n",
+		       error);
+		return;
+	}
+
+	time->tv_sec = mktime(ret[0], ret[1], ret[2], ret[3], ret[4], ret[5]);
+	time->tv_nsec = ret[6];
+}
+
+static int timer_resume(struct sys_device *dev)
+{
+	int next_dec;
+	int cpu = smp_processor_id();
+	unsigned long ticks, rticks, sleep_length;
+	u64 tb_next_jiffy, new_stamp_xsec;
+	struct timespec res, delta;
+
+	calculate_steal_time();
+	timer_get_wall_clock(&res);
+	ticks = tb_ticks_since(per_cpu(last_jiffy, cpu));
+	sleep_length = ticks / tb_ticks_per_jiffy;
+	rticks = sleep_length * tb_ticks_per_jiffy;
+	per_cpu(last_jiffy, cpu) += rticks;
+	delta = timespec_sub(res, sleep_start);
+	res = ns_to_timespec(mulhdu(ticks % tb_ticks_per_jiffy,
+				    tb_to_ns_scale) << tb_to_ns_shift);
+	delta = timespec_sub(delta, res);
+
+	write_seqlock(&xtime_lock);
+	xtime.tv_sec += delta.tv_sec;
+	timespec_add_ns(&xtime, delta.tv_nsec);
+	wall_to_monotonic.tv_sec += delta.tv_sec;
+	timespec_add_ns(&wall_to_monotonic, delta.tv_nsec);
+	last_rtc_update = xtime.tv_sec - 658;
+	tb_next_jiffy = tb_last_jiffy + rticks;
+	if (per_cpu(last_jiffy, cpu) >= tb_next_jiffy) {
+		tb_last_jiffy = tb_next_jiffy;
+		jiffies_64 += sleep_length;
+		wall_jiffies += sleep_length;
+		++vdso_data->tb_update_count;
+		smp_wmb();
+		new_stamp_xsec = (u64) xtime.tv_nsec * XSEC_PER_SEC;
+		if (new_stamp_xsec != 0)
+			do_div(new_stamp_xsec, 1000000000);
+		new_stamp_xsec += (u64) xtime.tv_sec * XSEC_PER_SEC;
+		update_gtod(tb_last_jiffy, new_stamp_xsec, do_gtod.varp->tb_to_xs);
+	}
+
+	ntp_clear();
+	write_sequnlock(&xtime_lock);
+
+	leap_second_message();
+
+	touch_softlockup_watchdog();
+	account_process_vtime(current);
+	run_local_timers(NULL);
+	if (rcu_pending(cpu))
+		rcu_check_callbacks(cpu, 0);
+	scheduler_tick();
+	run_posix_cpu_timers(current);
+
+	next_dec = tb_ticks_per_jiffy - (ticks % tb_ticks_per_jiffy);
+	set_dec(next_dec);
+
+	/* collect purr register values often, for accurate calculations */
+	if (firmware_has_feature(FW_FEATURE_SPLPAR)) {
+		struct cpu_usage *cu = &__get_cpu_var(cpu_usage_array);
+		cu->current_tb = mfspr(SPRN_PURR);
+	}
+
+	clock_was_set();
+	touch_softlockup_watchdog();
+	return 0;
+}
+
+static int timer_suspend(struct sys_device *dev, pm_message_t state)
+{
+	timer_get_wall_clock(&sleep_start);
+	return 0;
+}
+
+static struct sysdev_class timer_sysclass = {
+	.resume = timer_resume,
+	.suspend = timer_suspend,
+	set_kset_name("timer"),
+};
+
+
+static struct sys_device device_timer = {
+	.id	= 0,
+	.cls	= &timer_sysclass,
+};
+
+static int time_init_device(void)
+{
+	int error;
+
+	if (!machine_is(pseries) || !firmware_has_feature(FW_FEATURE_LPAR))
+		return 0;
+
+	error = sysdev_class_register(&timer_sysclass);
+	if (!error)
+		error = sysdev_register(&device_timer);
+
+	return error;
+}
+
+device_initcall(time_init_device);
+#endif
 
 void wakeup_decrementer(void)
 {

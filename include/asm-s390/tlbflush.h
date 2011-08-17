@@ -87,8 +87,14 @@ static inline void __tlb_flush_mm(struct mm_struct * mm)
 
 static inline void __tlb_flush_mm_cond(struct mm_struct * mm)
 {
-	if (atomic_read(&mm->mm_users) <= 1 && mm == current->active_mm)
+	__mm_context_t *mmc = (__mm_context_t *) &mm->context;
+
+	spin_lock(&mm->page_table_lock);
+	if (mmc->flush_mm) {
 		__tlb_flush_mm(mm);
+		mmc->flush_mm = 0;
+	}
+	spin_unlock(&mm->page_table_lock);
 }
 
 static inline void flush_tlb_pgtables(struct mm_struct *mm,

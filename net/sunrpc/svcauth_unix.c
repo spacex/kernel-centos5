@@ -447,7 +447,7 @@ svcauth_null_accept(struct svc_rqst *rqstp, u32 *authp)
 	svc_putu32(resv, RPC_AUTH_NULL);
 	svc_putu32(resv, 0);
 
-	rqstp->rq_flavor = RPC_AUTH_UNIX;
+	rqstp->rq_flavor = RPC_AUTH_NULL;
 	return SVC_OK;
 }
 
@@ -518,7 +518,7 @@ svcauth_unix_accept(struct svc_rqst *rqstp, u32 *authp)
 	svc_putu32(resv, RPC_AUTH_NULL);
 	svc_putu32(resv, 0);
 
-	rqstp->rq_flavor = RPC_AUTH_NULL;
+	rqstp->rq_flavor = RPC_AUTH_UNIX;
 	return SVC_OK;
 
 badcred:

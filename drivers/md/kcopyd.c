@@ -274,6 +274,16 @@ static inline void push(struct list_head *jobs, struct kcopyd_job *job)
 	spin_unlock_irqrestore(&kc->job_lock, flags);
 }
 
+static inline void push_head(struct list_head *jobs, struct kcopyd_job *job)
+{
+	unsigned long flags;
+	struct kcopyd_client *kc = job->kc;
+
+	spin_lock_irqsave(&kc->job_lock, flags);
+	list_add(&job->list, jobs);
+	spin_unlock_irqrestore(&kc->job_lock, flags);
+}
+
 /*
  * These three functions process 1 item from the corresponding
  * job list.
@@ -405,7 +415,7 @@ static int process_jobs(struct list_head *jobs, struct kcopyd_client *kc,
 			 * We couldn't service this job ATM, so
 			 * push this job back onto the list.
 			 */
-			push(jobs, job);
+			push_head(jobs, job);
 			break;
 		}
 

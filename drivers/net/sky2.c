@@ -43,8 +43,6 @@
 
 #include <asm/irq.h>
 
-#include "sky2_compat.h"
-
 #if defined(CONFIG_VLAN_8021Q) || defined(CONFIG_VLAN_8021Q_MODULE)
 #define SKY2_VLAN_TAG_USED 1
 #endif
@@ -998,19 +996,6 @@ static inline struct sky2_tx_le *get_tx_le(struct sky2_port *sky2)
 	sky2->tx_prod = RING_NEXT(sky2->tx_prod, TX_RING_SIZE);
 	le->ctrl = 0;
 	return le;
-}
-
-static void tx_init(struct sky2_port *sky2)
-{
-	struct sky2_tx_le *le;
-
-	sky2->tx_prod = sky2->tx_cons = 0;
-	sky2->tx_tcpsum = 0;
-	sky2->tx_last_mss = 0;
-
-	le = get_tx_le(sky2);
-	le->addr = 0;
-	le->opcode = OP_ADDR64 | HW_OWNER;
 }
 
 static inline struct tx_ring_info *tx_le_re(struct sky2_port *sky2,

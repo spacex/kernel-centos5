@@ -485,6 +485,8 @@ static inline void __mwait(unsigned long eax, unsigned long ecx)
 		: :"a" (eax), "c" (ecx));
 }
 
+extern void mwait_idle_with_hints(unsigned long eax, unsigned long ecx);
+
 #define stack_current() \
 ({								\
 	struct thread_info *ti;					\
@@ -499,5 +501,8 @@ extern unsigned long boot_option_idle_override;
 extern int bootloader_type;
 
 #define HAVE_ARCH_PICK_MMAP_LAYOUT 1
+
+/* Hardware provides CRC32C accelerated instruction */
+#define ARCH_HAS_CRC32C_HW	1
 
 #endif /* __ASM_X86_64_PROCESSOR_H */

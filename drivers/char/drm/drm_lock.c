@@ -108,14 +108,16 @@ int drm_lock(struct inode *inode, struct file *filp,
 	if (ret)
 		return ret;
 
-	sigemptyset(&dev->sigmask);
-	sigaddset(&dev->sigmask, SIGSTOP);
-	sigaddset(&dev->sigmask, SIGTSTP);
-	sigaddset(&dev->sigmask, SIGTTIN);
-	sigaddset(&dev->sigmask, SIGTTOU);
-	dev->sigdata.context = lock.context;
-	dev->sigdata.lock = dev->lock.hw_lock;
-	block_all_signals(drm_notifier, &dev->sigdata, &dev->sigmask);
+	if (!priv->master) {
+		sigemptyset(&dev->sigmask);
+		sigaddset(&dev->sigmask, SIGSTOP);
+		sigaddset(&dev->sigmask, SIGTSTP);
+		sigaddset(&dev->sigmask, SIGTTIN);
+		sigaddset(&dev->sigmask, SIGTTOU);
+		dev->sigdata.context = lock.context;
+		dev->sigdata.lock = dev->lock.hw_lock;
+		block_all_signals(drm_notifier, &dev->sigdata, &dev->sigmask);
+	}
 
 	if (dev->driver->dma_ready && (lock.flags & _DRM_LOCK_READY))
 		dev->driver->dma_ready(dev);

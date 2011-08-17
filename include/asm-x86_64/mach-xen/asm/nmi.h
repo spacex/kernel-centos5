@@ -70,6 +70,7 @@ static inline unsigned char get_nmi_reason(void)
 
 extern int panic_on_timeout;
 extern int unknown_nmi_panic;
+extern int nmi_watchdog_enabled;
 
 void lapic_watchdog_stop(void);
 int lapic_watchdog_probe(void);

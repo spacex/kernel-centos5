@@ -23,6 +23,7 @@
 #include <linux/compiler.h>
 #include <linux/module.h>
 #include <linux/kprobes.h>
+#include <trace/mm.h>
 
 #include <asm/system.h>
 #include <asm/uaccess.h>
@@ -386,18 +387,13 @@ static int spurious_fault(struct pt_regs *regs,
 	return 1;
 }
 
-/*
- * This routine handles page faults.  It determines the address,
- * and the problem, and then passes it off to one of the appropriate
- * routines.
- */
-asmlinkage void __kprobes do_page_fault(struct pt_regs *regs,
+static inline void __do_page_fault(struct pt_regs *regs,
+					unsigned long address,
 					unsigned long error_code)
 {
 	struct task_struct *tsk;
 	struct mm_struct *mm;
 	struct vm_area_struct * vma;
-	unsigned long address;
 	const struct exception_table_entry *fixup;
 	int write;
 	unsigned long flags;
@@ -409,10 +405,6 @@ asmlinkage void __kprobes do_page_fault(struct pt_regs *regs,
 	tsk = current;
 	mm = tsk->mm;
 	prefetchw(&mm->mmap_sem);
-
-	/* get the address */
-	address = HYPERVISOR_shared_info->vcpu_info[
-		smp_processor_id()].arch.cr2;
 
 	info.si_code = SEGV_MAPERR;
 
@@ -621,7 +613,6 @@ no_context:
  * Oops. The kernel tried to access some bad page. We'll have to
  * terminate things with extreme prejudice.
  */
-
 	flags = oops_begin();
 
 	if (address < PAGE_SIZE)
@@ -673,6 +664,26 @@ do_sigbus:
 	return;
 }
 
+/*
+ * This routine handles page faults.  It determines the address,
+ * and the problem, and then passes it off to one of the appropriate
+ * routines.
+ */
+asmlinkage void __kprobes do_page_fault(struct pt_regs *regs,
+					unsigned long error_code)
+{
+	unsigned long address;
+
+	/* get the address */
+	address = HYPERVISOR_shared_info->vcpu_info[
+		smp_processor_id()].arch.cr2;
+
+	__do_page_fault(regs, address, error_code);
+
+	if (!user_mode_vm(regs))
+		trace_mm_kernel_pagefault(current, address, regs->rip);
+}
+	
 DEFINE_SPINLOCK(pgd_lock);
 struct page *pgd_list;
 

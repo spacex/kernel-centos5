@@ -177,6 +177,9 @@ typedef __u64 __bitwise __le64;
 typedef __u64 __bitwise __be64;
 #endif
 
+typedef __u16 __bitwise __sum16;
+typedef __u32 __bitwise __wsum;
+
 #ifdef __KERNEL__
 typedef unsigned __bitwise__ gfp_t;
 typedef unsigned __bitwise__ fmode_t;

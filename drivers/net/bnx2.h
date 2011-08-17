@@ -349,12 +349,7 @@ struct l2_fhdr {
 #define BNX2_L2CTX_BD_PRE_READ				0x00000000
 #define BNX2_L2CTX_CTX_SIZE				0x00000000
 #define BNX2_L2CTX_CTX_TYPE				0x00000000
-#define BNX2_L2CTX_LO_WATER_MARK_DEFAULT		 32
-#define BNX2_L2CTX_LO_WATER_MARK_SCALE			 4
-#define BNX2_L2CTX_LO_WATER_MARK_DIS			 0
-#define BNX2_L2CTX_HI_WATER_MARK_SHIFT			 4
-#define BNX2_L2CTX_HI_WATER_MARK_SCALE			 16
-#define BNX2_L2CTX_WATER_MARKS_MSK			 0x000000ff
+#define BNX2_L2CTX_FLOW_CTRL_ENABLE			 0x000000ff
 #define BNX2_L2CTX_CTX_TYPE_SIZE_L2			 ((0x20/20)<<16)
 #define BNX2_L2CTX_CTX_TYPE_CTX_BD_CHN_TYPE		 (0xf<<28)
 #define BNX2_L2CTX_CTX_TYPE_CTX_BD_CHN_TYPE_UNDEFINED	 (0<<28)
@@ -4182,6 +4177,15 @@ struct l2_fhdr {
 #define BNX2_RLUP_RSS_CONFIG_IPV6_RSS_TYPE_IP_ONLY_XI	 (2L<<2)
 #define BNX2_RLUP_RSS_CONFIG_IPV6_RSS_TYPE_RES_XI	 (3L<<2)
 
+#define BNX2_RLUP_RSS_COMMAND				0x00002048
+#define BNX2_RLUP_RSS_COMMAND_RSS_IND_TABLE_ADDR	 (0xfUL<<0)
+#define BNX2_RLUP_RSS_COMMAND_RSS_WRITE_MASK		 (0xffUL<<4)
+#define BNX2_RLUP_RSS_COMMAND_WRITE			 (1UL<<12)
+#define BNX2_RLUP_RSS_COMMAND_READ			 (1UL<<13)
+#define BNX2_RLUP_RSS_COMMAND_HASH_MASK			 (0x7UL<<14)
+
+#define BNX2_RLUP_RSS_DATA				0x0000204c
+
 
 /*
  *  rbuf_reg definition
@@ -6074,6 +6078,7 @@ struct l2_fhdr {
 
 #define BNX2_COM_SCRATCH				0x00120000
 
+#define BNX2_FW_RX_LOW_LATENCY				 0x00120058
 #define BNX2_FW_RX_DROP_COUNT				 0x00120084
 
 
@@ -6345,6 +6350,8 @@ struct l2_fhdr {
 
 #define BNX2_MCP_ROM					0x00150000
 #define BNX2_MCP_SCRATCH				0x00160000
+#define BNX2_MCP_STATE_P1				 0x0016f9c8
+#define BNX2_MCP_STATE_P0				 0x0016fdc8
 
 #define BNX2_SHM_HDR_SIGNATURE				BNX2_MCP_SCRATCH
 #define BNX2_SHM_HDR_SIGNATURE_SIG_MASK			 0xffff0000
@@ -6841,6 +6848,7 @@ struct bnx2 {
 	dma_addr_t		status_blk_mapping;
 
 	struct statistics_block	*stats_blk;
+	struct statistics_block	*temp_stats_blk;
 	dma_addr_t		stats_blk_mapping;
 
 	int			ctx_pages;

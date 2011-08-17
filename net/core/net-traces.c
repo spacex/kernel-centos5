@@ -39,3 +39,12 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(net_dev_xmit);
 DEFINE_TRACE(net_dev_receive);
 EXPORT_TRACEPOINT_SYMBOL_GPL(net_dev_receive);
 
+DEFINE_TRACE(net_dev_queue);
+EXPORT_TRACEPOINT_SYMBOL_GPL(net_dev_queue);
+
+DEFINE_TRACE(netif_rx);
+EXPORT_TRACEPOINT_SYMBOL_GPL(netif_rx);
+
+DEFINE_TRACE(consume_skb);
+EXPORT_TRACEPOINT_SYMBOL_GPL(consume_skb);
+

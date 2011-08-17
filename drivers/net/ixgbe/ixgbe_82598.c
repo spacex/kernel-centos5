@@ -42,9 +42,9 @@ static s32 ixgbe_get_copper_link_capabilities_82598(struct ixgbe_hw *hw,
                                              ixgbe_link_speed *speed,
                                              bool *autoneg);
 static s32 ixgbe_setup_copper_link_82598(struct ixgbe_hw *hw,
-                                               ixgbe_link_speed speed,
-                                               bool autoneg,
-                                               bool autoneg_wait_to_complete);
+                                         ixgbe_link_speed speed,
+                                         bool autoneg,
+                                         bool autoneg_wait_to_complete);
 static s32 ixgbe_read_i2c_eeprom_82598(struct ixgbe_hw *hw, u8 byte_offset,
                                        u8 *eeprom_data);
 
@@ -291,14 +291,13 @@ static s32 ixgbe_get_copper_link_capabilities_82598(struct ixgbe_hw *hw,
 	*speed = 0;
 	*autoneg = true;
 
-	status = hw->phy.ops.read_reg(hw, IXGBE_MDIO_PHY_SPEED_ABILITY,
-	                              IXGBE_MDIO_PMA_PMD_DEV_TYPE,
+	status = hw->phy.ops.read_reg(hw, MDIO_SPEED, MDIO_MMD_PMAPMD,
 	                              &speed_ability);
 
 	if (status == 0) {
-		if (speed_ability & IXGBE_MDIO_PHY_SPEED_10G)
+		if (speed_ability & MDIO_SPEED_10G)
 		    *speed |= IXGBE_LINK_SPEED_10GB_FULL;
-		if (speed_ability & IXGBE_MDIO_PHY_SPEED_1G)
+		if (speed_ability & MDIO_PMA_SPEED_1000)
 		    *speed |= IXGBE_LINK_SPEED_1GB_FULL;
 	}
 
@@ -358,12 +357,34 @@ static s32 ixgbe_fc_enable_82598(struct ixgbe_hw *hw, s32 packetbuf_num)
 	u32 fctrl_reg;
 	u32 rmcs_reg;
 	u32 reg;
+	u32 link_speed = 0;
+	bool link_up;
 
 #ifdef CONFIG_DCB
 	if (hw->fc.requested_mode == ixgbe_fc_pfc)
 		goto out;
 
 #endif /* CONFIG_DCB */
+	/*
+	 * On 82598 having Rx FC on causes resets while doing 1G
+	 * so if it's on turn it off once we know link_speed. For
+	 * more details see 82598 Specification update.
+	 */
+	hw->mac.ops.check_link(hw, &link_speed, &link_up, false);
+	if (link_up && link_speed == IXGBE_LINK_SPEED_1GB_FULL) {
+		switch (hw->fc.requested_mode) {
+		case ixgbe_fc_full:
+			hw->fc.requested_mode = ixgbe_fc_tx_pause;
+			break;
+		case ixgbe_fc_rx_pause:
+			hw->fc.requested_mode = ixgbe_fc_none;
+			break;
+		default:
+			/* no change */
+			break;
+		}
+	}
+
 	/* Negotiate the fc mode to use */
 	ret_val = ixgbe_fc_autoneg(hw);
 	if (ret_val)
@@ -568,9 +589,9 @@ static s32 ixgbe_check_mac_link_82598(struct ixgbe_hw *hw,
 	 * clear indicates active; set indicates inactive.
 	 */
 	if (hw->phy.type == ixgbe_phy_nl) {
-		hw->phy.ops.read_reg(hw, 0xC79F, IXGBE_TWINAX_DEV, &link_reg);
-		hw->phy.ops.read_reg(hw, 0xC79F, IXGBE_TWINAX_DEV, &link_reg);
-		hw->phy.ops.read_reg(hw, 0xC00C, IXGBE_TWINAX_DEV,
+		hw->phy.ops.read_reg(hw, 0xC79F, MDIO_MMD_PMAPMD, &link_reg);
+		hw->phy.ops.read_reg(hw, 0xC79F, MDIO_MMD_PMAPMD, &link_reg);
+		hw->phy.ops.read_reg(hw, 0xC00C, MDIO_MMD_PMAPMD,
 		                     &adapt_comp_reg);
 		if (link_up_wait_to_complete) {
 			for (i = 0; i < IXGBE_LINK_UP_TIME; i++) {
@@ -583,10 +604,10 @@ static s32 ixgbe_check_mac_link_82598(struct ixgbe_hw *hw,
 				}
 				msleep(100);
 				hw->phy.ops.read_reg(hw, 0xC79F,
-				                     IXGBE_TWINAX_DEV,
+				                     MDIO_MMD_PMAPMD,
 				                     &link_reg);
 				hw->phy.ops.read_reg(hw, 0xC00C,
-				                     IXGBE_TWINAX_DEV,
+				                     MDIO_MMD_PMAPMD,
 				                     &adapt_comp_reg);
 			}
 		} else {
@@ -957,6 +978,7 @@ static s32 ixgbe_clear_vfta_82598(struct ixgbe_hw *hw)
 		for (offset = 0; offset < hw->mac.vft_size; offset++)
 			IXGBE_WRITE_REG(hw, IXGBE_VFTAVIND(vlanbyte, offset),
 			                0);
+
 	return 0;
 }
 
@@ -1030,14 +1052,14 @@ static s32 ixgbe_read_i2c_eeprom_82598(struct ixgbe_hw *hw, u8 byte_offset,
 		sfp_addr = (sfp_addr | IXGBE_I2C_EEPROM_READ_MASK);
 		hw->phy.ops.write_reg(hw,
 		                      IXGBE_MDIO_PMA_PMD_SDA_SCL_ADDR,
-		                      IXGBE_MDIO_PMA_PMD_DEV_TYPE,
+		                      MDIO_MMD_PMAPMD,
 		                      sfp_addr);
 
 		/* Poll status */
 		for (i = 0; i < 100; i++) {
 			hw->phy.ops.read_reg(hw,
 			                     IXGBE_MDIO_PMA_PMD_SDA_SCL_STAT,
-			                     IXGBE_MDIO_PMA_PMD_DEV_TYPE,
+			                     MDIO_MMD_PMAPMD,
 			                     &sfp_stat);
 			sfp_stat = sfp_stat & IXGBE_I2C_EEPROM_STATUS_MASK;
 			if (sfp_stat != IXGBE_I2C_EEPROM_STATUS_IN_PROGRESS)
@@ -1053,7 +1075,7 @@ static s32 ixgbe_read_i2c_eeprom_82598(struct ixgbe_hw *hw, u8 byte_offset,
 
 		/* Read data */
 		hw->phy.ops.read_reg(hw, IXGBE_MDIO_PMA_PMD_SDA_SCL_DATA,
-		                     IXGBE_MDIO_PMA_PMD_DEV_TYPE, &sfp_data);
+		                     MDIO_MMD_PMAPMD, &sfp_data);
 
 		*eeprom_data = (u8)(sfp_data >> 8);
 	} else {
@@ -1085,13 +1107,13 @@ static u32 ixgbe_get_supported_physical_layer_82598(struct ixgbe_hw *hw)
 	 * physical layer because 10GBase-T PHYs use LMS = KX4/KX */
 	if (hw->phy.type == ixgbe_phy_tn ||
 	    hw->phy.type == ixgbe_phy_cu_unknown) {
-		hw->phy.ops.read_reg(hw, IXGBE_MDIO_PHY_EXT_ABILITY,
-		IXGBE_MDIO_PMA_PMD_DEV_TYPE, &ext_ability);
-		if (ext_ability & IXGBE_MDIO_PHY_10GBASET_ABILITY)
+		hw->phy.ops.read_reg(hw, MDIO_PMA_EXTABLE, MDIO_MMD_PMAPMD,
+				     &ext_ability);
+		if (ext_ability & MDIO_PMA_EXTABLE_10GBT)
 			physical_layer |= IXGBE_PHYSICAL_LAYER_10GBASE_T;
-		if (ext_ability & IXGBE_MDIO_PHY_1000BASET_ABILITY)
+		if (ext_ability & MDIO_PMA_EXTABLE_1000BT)
 			physical_layer |= IXGBE_PHYSICAL_LAYER_1000BASE_T;
-		if (ext_ability & IXGBE_MDIO_PHY_100BASETX_ABILITY)
+		if (ext_ability & MDIO_PMA_EXTABLE_100BTX)
 			physical_layer |= IXGBE_PHYSICAL_LAYER_100BASE_TX;
 		goto out;
 	}
@@ -1201,7 +1223,7 @@ static struct ixgbe_mac_operations mac_ops_82598 = {
 
 static struct ixgbe_eeprom_operations eeprom_ops_82598 = {
 	.init_params		= &ixgbe_init_eeprom_params_generic,
-	.read			= &ixgbe_read_eeprom_generic,
+	.read			= &ixgbe_read_eerd_generic,
 	.validate_checksum	= &ixgbe_validate_eeprom_checksum_generic,
 	.update_checksum	= &ixgbe_update_eeprom_checksum_generic,
 };
@@ -1216,6 +1238,7 @@ static struct ixgbe_phy_operations phy_ops_82598 = {
 	.setup_link		= &ixgbe_setup_phy_link_generic,
 	.setup_link_speed	= &ixgbe_setup_phy_link_speed_generic,
 	.read_i2c_eeprom	= &ixgbe_read_i2c_eeprom_82598,
+	.check_overtemp   = &ixgbe_tn_check_overtemp,
 };
 
 struct ixgbe_info ixgbe_82598_info = {

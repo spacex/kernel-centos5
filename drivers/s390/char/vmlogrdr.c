@@ -247,9 +247,7 @@ static int vmlogrdr_recording(struct vmlogrdr_priv_t * logptr,
 	char cp_command[80];
 	char cp_response[160];
 	char *onoff, *qid_string;
-
-	memset(cp_command, 0x00, sizeof(cp_command));
-	memset(cp_response, 0x00, sizeof(cp_response));
+	int rc;
 
         onoff = ((action == 1) ? "ON" : "OFF");
 	qid_string = ((recording_class_AB == 1) ? " QID * " : "");
@@ -261,8 +259,9 @@ static int vmlogrdr_recording(struct vmlogrdr_priv_t * logptr,
 	 * can't be switched on as long as records are on the queue.
 	 * Doing both at the same time doesn't work.
 	 */
-
-	if (purge) {
+	if (purge && (action == 1)) {
+		memset(cp_command, 0x00, sizeof(cp_command));
+		memset(cp_response, 0x00, sizeof(cp_response));
 		snprintf(cp_command, sizeof(cp_command),
 			 "RECORDING %s PURGE %s",
 			 logptr->recording_name,
@@ -281,7 +280,6 @@ static int vmlogrdr_recording(struct vmlogrdr_priv_t * logptr,
 		logptr->recording_name,
 		onoff,
 		qid_string);
-
 	printk (KERN_DEBUG "vmlogrdr: recording command: %s\n", cp_command);
 	cpcmd(cp_command, cp_response, sizeof(cp_response), NULL);
 	printk (KERN_DEBUG "vmlogrdr: recording response: %s",
@@ -293,10 +291,29 @@ static int vmlogrdr_recording(struct vmlogrdr_priv_t * logptr,
          * 'Command complete'. So I use strstr rather then the strncmp.
 	 */
 	if (strstr(cp_response,"Command complete"))
-		return 0;
+		rc = 0;
 	else
-		return -EIO;
+		rc = -EIO;
+	/*
+	 * If we turn recording off, we have to purge any remaining records
+	 * afterwards, as a large number of queued records may impact z/VM
+	 * performance.
+	 */
+	if (purge && (action == 0)) {
+		memset(cp_command, 0x00, sizeof(cp_command));
+		memset(cp_response, 0x00, sizeof(cp_response));
+		snprintf(cp_command, sizeof(cp_command),
+			 "RECORDING %s PURGE %s",
+			 logptr->recording_name,
+			 qid_string);
+		printk (KERN_DEBUG "vmlogrdr: recording command: %s\n",
+			cp_command);
+		cpcmd(cp_command, cp_response, sizeof(cp_response), NULL);
+		printk (KERN_DEBUG "vmlogrdr: recording response: %s",
+			cp_response);
+	}
 
+	return rc;
 }
 
 

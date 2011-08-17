@@ -147,7 +147,7 @@ struct nfs_inode {
 	unsigned long		attrtimeo_timestamp;
 	__u64			change_attr;		/* v4 only */
 
-	unsigned long		last_updated;
+	int			attr_gencount;
 	/* "Generation counter" for the attribute cache. This is
 	 * bumped whenever we update the metadata on the
 	 * server.
@@ -342,15 +342,11 @@ extern struct vfsmount *nfs_do_submount(const struct vfsmount *mnt_parent,
 					struct nfs_fh *fh,
 					struct nfs_fattr *fattr);
 extern u64 nfs_compat_user_ino64(u64 fileid);
+extern void nfs_fattr_init(struct nfs_fattr *fattr);
 
 /* linux/net/ipv4/ipconfig.c: trims ip addr off front of name, too. */
 extern u32 root_nfs_parse_addr(char *name); /*__init*/
-
-static inline void nfs_fattr_init(struct nfs_fattr *fattr)
-{
-	fattr->valid = 0;
-	fattr->time_start = jiffies;
-}
+extern int nfs_inc_attr_generation_counter(void);
 
 /*
  * linux/fs/nfs/file.c

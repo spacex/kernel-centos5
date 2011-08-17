@@ -206,6 +206,8 @@ static void __cpuinit init_intel(struct cpuinfo_x86 *c)
                 set_bit(X86_FEATURE_CONSTANT_TSC,c->x86_capability);
                 set_bit(X86_FEATURE_NONSTOP_TSC,c->x86_capability);
         }
+	if ((c->x86 == 6) && (c->x86_model >= 29) && cpu_has_clflush)
+		set_bit(X86_FEATURE_CLFLUSH_MONITOR, c->x86_capability);
 }
 
 

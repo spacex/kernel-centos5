@@ -22,7 +22,7 @@ static DEFINE_PER_CPU(unsigned long, print_timestamp);
 static DEFINE_PER_CPU(struct task_struct *, watchdog_task);
 
 static int did_panic = 0;
-unsigned long softlockup_thresh = 10;
+unsigned long softlockup_thresh = 60;
 
 /*
  * Should we panic (and reboot, if panic_timeout= is set) when a

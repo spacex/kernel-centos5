@@ -284,6 +284,8 @@ extern int class_device_create_bin_file(struct class_device *,
 					struct bin_attribute *);
 extern void class_device_remove_bin_file(struct class_device *,
 					 struct bin_attribute *);
+extern int device_schedule_callback(struct device *dev,
+				    void (*func)(struct device *));
 
 struct class_interface {
 	struct list_head	node;
@@ -401,6 +403,11 @@ struct device {
 
 	void	(*release)(struct device * dev);
 };
+
+static inline const char *dev_name(const struct device *dev)
+{
+	return kobject_name(&dev->kobj);
+}
 
 static inline void *
 dev_get_drvdata (struct device *dev)

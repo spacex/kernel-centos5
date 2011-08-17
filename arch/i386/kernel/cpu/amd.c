@@ -296,22 +296,20 @@ static void __cpuinit init_amd(struct cpuinfo_x86 *c)
 		/* use socket ID also for last level cache */
 		cpu_llc_id[cpu] = c->phys_proc_id;
 		/* fixup topology information on multi-node processors */
-		if ((c->x86 == 0x10) && (c->x86_model == 9))
-			amd_fixup_dcm(c);
+		amd_fixup_dcm(c);
 		printk(KERN_INFO "CPU %d(%d) -> Core %d\n",
 		       cpu, c->x86_max_cores, c->cpu_core_id);
 	}
 #endif
 
 	if (cpuid_eax(0x80000000) >= 0x80000006) {
-		if ((c->x86 == 0x10) && (cpuid_edx(0x80000006) &
-0xf000))
+		if ((c->x86 >= 0xf) && (cpuid_edx(0x80000006) & 0xf000))
 			num_cache_leaves = 4;
 		else
 			num_cache_leaves = 3;
 	}
 
-	if ((c->x86 == 0x10 || c->x86 == 0x11) && !force_mwait)
+	if ((c->x86 >= 0x10) && !force_mwait)
 		clear_bit(X86_FEATURE_MWAIT, &c->x86_capability);
 
 	if (c->x86 >= 0x10)

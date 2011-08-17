@@ -37,6 +37,9 @@ EXPORT_SYMBOL(inet_csk_timer_bug_msg);
 int sysctl_local_port_range[2] = { 32768, 61000 };
 DEFINE_SEQLOCK(sysctl_port_range_lock);
 
+unsigned long *sysctl_local_reserved_ports;
+EXPORT_SYMBOL(sysctl_local_reserved_ports);
+
 void inet_get_local_port_range(int *low, int *high)
 {
 	unsigned seq;
@@ -99,6 +102,8 @@ int inet_csk_get_port(struct inet_hashinfo *hashinfo,
 		rover = net_random() % remaining + low;
 
 		do {
+			if (inet_is_reserved_local_port(rover))
+				goto next_nolock;
 			head = &hashinfo->bhash[inet_bhashfn(rover, hashinfo->bhash_size)];
 			spin_lock(&head->lock);
 			inet_bind_bucket_for_each(tb, node, &head->chain)
@@ -107,6 +112,7 @@ int inet_csk_get_port(struct inet_hashinfo *hashinfo,
 			break;
 		next:
 			spin_unlock(&head->lock);
+		next_nolock:
 			if (++rover > high)
 				rover = low;
 		} while (--remaining > 0);

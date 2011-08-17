@@ -453,6 +453,15 @@ error_kill:
 
 }
 
+#ifndef ELF_BASE_PLATFORM
+/*
+ * AT_BASE_PLATFORM indicates the "real" hardware/microarchitecture.
+ * If the arch defines ELF_BASE_PLATFORM (in asm/elf.h), the value
+ * will be copied to the user stack in the same manner as AT_PLATFORM.
+ */     
+#define ELF_BASE_PLATFORM NULL
+#endif  
+
 /*****************************************************************************/
 /*
  * present useful information to the program
@@ -466,7 +475,7 @@ static int create_elf_fdpic_tables(struct linux_binprm *bprm,
 	elf_caddr_t __user *argv, *envp;
 	size_t platform_len = 0, len;
 	char *k_platform;
-	char __user *u_platform, *p;
+	char __user *u_platform, *u_base_platform, *p;
 	long hwcap;
 	int loop;
 
@@ -496,6 +505,21 @@ static int create_elf_fdpic_tables(struct linux_binprm *bprm,
 		if (__copy_to_user(u_platform, k_platform, platform_len) != 0)
 			return -EFAULT;
 	}
+
+        /*      
+         * If this architecture has a "base" platform capability
+         * string, copy it to userspace.
+         */     
+        k_base_platform = ELF_BASE_PLATFORM;
+        u_base_platform = NULL;
+        
+        if (k_base_platform) {
+               platform_len = strlen(k_base_platform) + 1;
+               sp -= platform_len;
+               u_base_platform = (char __user *) sp;
+               if (__copy_to_user(u_base_platform, k_base_platform, platform_len) != 0)
+                        return -EFAULT;
+        }
 
 #if defined(__i386__) && defined(CONFIG_SMP)
 	/* in some cases (e.g. Hyper-Threading), we want to avoid L1 evictions
@@ -572,6 +596,13 @@ static int create_elf_fdpic_tables(struct linux_binprm *bprm,
 		NEW_AUX_ENT(0, AT_PLATFORM,
 			    (elf_addr_t) (unsigned long) u_platform);
 	}
+
+	if (k_base_platform) {
+                nr = 0;
+                csp -= 2 * sizeof(unsigned long);
+                NEW_AUX_ENT(AT_BASE_PLATFORM,
+			(elf_addr_t) (unsigned long) u_base_platform);
+        }
 
 	csp -= DLINFO_ITEMS * 2 * sizeof(unsigned long);
 	NEW_AUX_ENT( 0, AT_HWCAP,	hwcap);

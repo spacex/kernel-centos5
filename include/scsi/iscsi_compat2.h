@@ -121,6 +121,7 @@ static inline void INIT_WORK_compat(struct work_struct *work, void *func)
 
 #undef INIT_WORK
 #define INIT_WORK(_work, _func) INIT_WORK_compat(_work, _func)
+#undef INIT_DELAYED_WORK
 #define INIT_DELAYED_WORK(_work,_func) INIT_WORK_compat(_work, _func)
 
 #endif

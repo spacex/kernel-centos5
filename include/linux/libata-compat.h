@@ -8,8 +8,6 @@
 #define for_each_sg(sgl, sg, n_elem, i) \
 	for ((sg) = (sgl), (i) = 0; (i) < (n_elem); (i)++, (sg)++)
 
-typedef void (*work_func_t)(void *);
-
 static inline void sg_init_table(struct scatterlist *sg, unsigned int count)
 {
 }

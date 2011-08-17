@@ -22,6 +22,9 @@ struct netpoll {
 	u32 local_ip, remote_ip;
 	u16 local_port, remote_port;
 	unsigned char local_mac[6], remote_mac[6];
+#ifndef __GENKSYMS__
+	struct net_device *real_dev;
+#endif
 };
 
 struct netpoll_info {
@@ -32,8 +35,12 @@ struct netpoll_info {
 	spinlock_t rx_lock;
 	struct netpoll *rx_np; /* netpoll that registered an rx_hook */
 	struct sk_buff_head arp_tx; /* list of arp requests to reply to */
+#ifndef __GENKSYMS__
+	struct netpoll *netpoll;
+#endif
 };
 
+void netpoll_poll_dev (struct net_device *dev);
 void netpoll_poll(struct netpoll *np);
 void netpoll_send_udp(struct netpoll *np, const char *msg, int len);
 int netpoll_parse_options(struct netpoll *np, char *opt);
@@ -43,6 +50,9 @@ void netpoll_set_trap(int trap);
 void netpoll_cleanup(struct netpoll *np);
 int __netpoll_rx(struct sk_buff *skb);
 void netpoll_queue(struct sk_buff *skb);
+void netpoll_send_skb(struct netpoll *np, struct sk_buff *skb);
+void netpoll_send_skb_on_dev(struct netpoll *np, struct sk_buff *skb,
+			     struct net_device *dev);
 
 #ifdef CONFIG_NETPOLL
 static inline int netpoll_rx(struct sk_buff *skb)

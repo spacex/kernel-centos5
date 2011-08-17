@@ -897,11 +897,7 @@ void rt2x00lib_remove_dev(struct rt2x00_dev *rt2x00dev)
 	/*
 	 * Stop all work.
 	 */
-#if 0 /* Not in RHEL5... */
 	cancel_work_sync(&rt2x00dev->intf_work);
-#else
-	ieee80211_cancel_work(rt2x00dev->hw, &rt2x00dev->intf_work);
-#endif
 
 	/*
 	 * Uninitialize device.

@@ -482,15 +482,7 @@ ia32_sys_call_table:
 	.quad quiet_ni_syscall			/* old lock syscall holder */
 	.quad compat_sys_ioctl
 	.quad compat_sys_fcntl64		/* 55 */
-#ifdef CONFIG_TUX
-	.quad __sys_tux
-#else
-# ifdef CONFIG_TUX_MODULE
-	.quad sys_tux
-# else
-	.quad quiet_ni_syscall
-# endif
-#endif
+	.quad quiet_ni_syscall			/* old mpx syscall holder */
 	.quad sys_setpgid
 	.quad quiet_ni_syscall			/* old ulimit syscall holder */
 	.quad sys32_olduname
@@ -660,7 +652,15 @@ ia32_sys_call_table:
 	.quad sys_madvise
 	.quad compat_sys_getdents64	/* 220 getdents64 */
 	.quad compat_sys_fcntl64	
-	.quad quiet_ni_syscall		/* tux */
+#ifdef CONFIG_TUX
+	.quad __sys_tux
+#else
+# ifdef CONFIG_TUX_MODULE
+	.quad sys_tux
+# else
+	.quad quiet_ni_syscall
+# endif
+#endif
 	.quad quiet_ni_syscall    	/* security */
 	.quad sys_gettid	
 	.quad sys32_readahead	/* 225 */
@@ -753,7 +753,14 @@ ia32_sys_call_table:
 	.quad compat_sys_get_robust_list
 	.quad sys_splice
 	.quad sys32_sync_file_range
-	.quad sys_tee
+	.quad sys_tee			/* 315 */
 	.quad compat_sys_vmsplice
 	.quad compat_sys_move_pages
+	.quad sys_getcpu
+	.quad quiet_ni_syscall		/* sys_epoll_pwait */
+	.quad quiet_ni_syscall		/* 320 */ /* compat_sys_utimensat */
+	.quad quiet_ni_syscall		/* compat_sys_signalfd */
+	.quad quiet_ni_syscall		/* sys_timerfd_create */
+	.quad sys_eventfd		/* sys_eventd */
+	.quad sys32_fallocate
 ia32_syscall_end:		

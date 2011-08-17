@@ -29,6 +29,7 @@
 #include <asm/intel_arch_perfmon.h>
 
 int unknown_nmi_panic;
+int nmi_watchdog_enabled;
 int panic_on_unrecovered_nmi;
 static atomic_t lapic_nmi_reserved = ATOMIC_INIT(0);
 
@@ -85,6 +86,27 @@ static __init void nmi_cpu_busy(void *data)
 }
 #endif
 
+/* quick and dirty check to see if we are on a virt guest */
+static int on_a_virt_guest(void)
+{
+	unsigned int eax, ebx, ecx, edx;
+	char signature[13];
+
+	cpuid(0x40000000, &eax, &ebx, &ecx, &edx);
+	memcpy(signature + 0, &ebx, 4);
+	memcpy(signature + 4, &ecx, 4);
+	memcpy(signature + 8, &edx, 4);
+	signature[12] = 0;
+
+	if (strcmp(signature, "KVMKVMKVM") == 0)
+		return 1;
+
+	if (strcmp(signature, "XenVMMXenVMM") == 0)
+		return 1;
+
+	return 0;
+}
+
 int __init check_nmi_watchdog (void)
 {
 	int *counts;
@@ -96,8 +118,6 @@ int __init check_nmi_watchdog (void)
 	counts = kmalloc(NR_CPUS * sizeof(int), GFP_KERNEL);
 	if (!counts)
 		return -1;
-
-	printk(KERN_INFO "testing NMI watchdog ... ");
 
 #ifdef CONFIG_SMP
 	if (nmi_watchdog == NMI_LOCAL_APIC)
@@ -113,18 +133,39 @@ int __init check_nmi_watchdog (void)
 		if (!per_cpu(wd_enabled, cpu))
 			continue;
 
-		if (cpu_pda(cpu)->__nmi_count - counts[cpu] <= 5) {
+		if (cpu_pda(cpu)->__nmi_count - counts[cpu] == 0) {
 			endflag = 1;
-			printk(KERN_WARNING "WARNING: CPU#%d: NMI "
-			       "appears to be stuck (%d->%d)!\n",
-			       cpu,
-			       counts[cpu],
-			       cpu_pda(cpu)->__nmi_count);
+			/* most hypervisors do not emulate nmi watchdog
+			 * ticks correctly.  do not print anything if we
+			 * detect we are on a hypervisor.  the intent
+			 * is later when emulation works, nmi watchdog
+			 * will magically work without changing the code.
+			 * for now, do not confuse customers with bogus
+			 * warning messages.
+			 */
+			if (on_a_virt_guest()) {
+				printk(KERN_INFO " skipping (on a virtual guest)\n");
+			} else {
+				printk(KERN_WARNING "WARNING: CPU#%d: NMI "
+					"appears to be stuck (%d->%d)!\n",
+					cpu,
+					counts[cpu],
+					cpu_pda(cpu)->__nmi_count);
+			}
 			if (atomic_dec_and_test(&nmi_watchdog_active))
 				nmi_active = 0;
 			per_cpu(wd_enabled, cpu) = 0;
+			if (nmi_watchdog == NMI_LOCAL_APIC)
+				lapic_watchdog_stop();
+			else
+				apic_write(APIC_LVT0, APIC_DM_NMI | APIC_LVT_MASKED);
 			kfree(counts);
 			return -1;
+		} else {
+			printk(KERN_DEBUG "CPU#%d: NMI watchdog performance "
+					 "counter calibration - %d->%d\n",
+					 cpu, counts[cpu],
+					 cpu_pda(cpu)->__nmi_count);
 		}
 	}
 	if (!atomic_read(&nmi_watchdog_active)) {
@@ -134,7 +175,7 @@ int __init check_nmi_watchdog (void)
 	}
 
 	endflag = 1;
-	printk("OK.\n");
+	printk("NMI watchdog testing PASSED.\n");
 
 	/* now that we know it works we can reduce NMI frequency to
 	   something more reasonable; makes a difference in some configs */
@@ -502,6 +543,35 @@ int proc_unknown_nmi_panic(struct ctl_table *table, int write, struct file *file
 		else if (nmi_watchdog == NMI_IO_APIC)
 			acpi_nmi_enable();
  	}
+
+	return 0;
+}
+
+/*
+ * proc handler for /proc/sys/kernel/nmi_enabled
+ */
+int proc_nmi_enabled(struct ctl_table *table, int write, struct file *file,
+			void __user *buffer, size_t *length, loff_t *ppos)
+{
+	int old_state;
+
+	nmi_watchdog_enabled = (atomic_read(&nmi_watchdog_active) > 0) ? 1 : 0;
+	old_state = nmi_watchdog_enabled;
+	proc_dointvec(table, write, file, buffer, length, ppos);
+	if (!!old_state == !!nmi_watchdog_enabled)
+		return 0;
+
+	if (nmi_watchdog_enabled) {
+		if (nmi_watchdog == NMI_LOCAL_APIC)
+			enable_lapic_nmi_watchdog();
+		else if (nmi_watchdog == NMI_IO_APIC)
+			acpi_nmi_enable();
+	} else {
+		if (nmi_watchdog == NMI_LOCAL_APIC)
+			disable_lapic_nmi_watchdog();
+		else if (nmi_watchdog == NMI_IO_APIC)
+			acpi_nmi_disable();
+	}
 
 	return 0;
 }

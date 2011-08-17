@@ -1,3 +1,14 @@
+
+/* cnic.c: Broadcom CNIC core network driver.
+ *
+ * Copyright (c) 2006-2010 Broadcom Corporation
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation.
+ *
+ */
+
 #ifndef CNIC_DEFS_H
 #define CNIC_DEFS_H
 /* KWQ (kernel work queue) request op codes */

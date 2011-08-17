@@ -20,6 +20,9 @@ typedef struct {
 	unsigned has_foreign_mappings:1;
 	struct list_head unpinned;
 #endif
+#ifndef __GENKSYMS__
+	void *vdso;
+#endif
 } mm_context_t;
 
 #ifdef CONFIG_XEN

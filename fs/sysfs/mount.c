@@ -21,14 +21,17 @@ kmem_cache_t *sysfs_dir_cachep;
 static struct super_operations sysfs_ops = {
 	.statfs		= simple_statfs,
 	.drop_inode	= generic_delete_inode,
+	.delete_inode	= sysfs_evict_inode,
 };
 
 static struct sysfs_dirent sysfs_root = {
 	.s_sibling	= LIST_HEAD_INIT(sysfs_root.s_sibling),
 	.s_children	= LIST_HEAD_INIT(sysfs_root.s_children),
+	.s_count	= ATOMIC_INIT(1),
 	.s_element	= NULL,
 	.s_type		= SYSFS_ROOT,
 	.s_iattr	= NULL,
+	.s_mode		= S_IFDIR | S_IRWXU | S_IRUGO | S_IXUGO,
 	.s_ino		= 1,
 };
 

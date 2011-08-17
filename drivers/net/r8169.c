@@ -8,7 +8,6 @@
  * See MAINTAINERS file for support contact information.
  */
 
-#include "r8169_compat.h"
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/pci.h>
@@ -29,7 +28,7 @@
 #include <asm/io.h>
 #include <asm/irq.h>
 
-#define RTL8169_VERSION "2.3LK-NAPI"
+#define RTL8169_VERSION "2.3LK-1-NAPI"
 #define MODULENAME "r8169"
 #define PFX MODULENAME ": "
 
@@ -513,9 +512,6 @@ struct rtl8169_private {
 	struct rtl8169_counters counters;
 };
 
-/* Include second part of compat layer */
-#include "r8169_compat.h"
-
 MODULE_AUTHOR("Realtek and the Linux r8169 crew <netdev@vger.kernel.org>");
 MODULE_DESCRIPTION("RealTek RTL-8169 Gigabit Ethernet driver");
 module_param(rx_copybreak, int, 0);
@@ -528,9 +524,9 @@ MODULE_LICENSE("GPL");
 MODULE_VERSION(RTL8169_VERSION);
 
 static int rtl8169_open(struct net_device *dev);
-static netdev_tx_t rtl8169_start_xmit(struct sk_buff *skb,
-				      struct net_device *dev);
-static irqreturn_t rtl8169_interrupt(int irq, void *dev_instance);
+static int rtl8169_start_xmit(struct sk_buff *skb, struct net_device *dev);
+static irqreturn_t rtl8169_interrupt(int irq, void *dev_instance,
+				     struct pt_regs *pt_regs);
 static int rtl8169_init_ring(struct net_device *dev);
 static void rtl_hw_start(struct net_device *dev);
 static int rtl8169_close(struct net_device *dev);
@@ -542,7 +538,7 @@ static int rtl8169_rx_interrupt(struct net_device *, struct rtl8169_private *,
 static int rtl8169_change_mtu(struct net_device *dev, int new_mtu);
 static void rtl8169_down(struct net_device *dev);
 static void rtl8169_rx_clear(struct rtl8169_private *tp);
-static int rtl8169_poll(struct napi_struct *napi, int budget);
+static int rtl8169_poll_compat(struct net_device *netdev, int *budget);
 
 static const unsigned int rtl8169_rx_config =
 	(RX_FIFO_THRESH << RxCfgFIFOShift) | (RX_DMA_BURST << RxCfgDMAShift);
@@ -1247,7 +1243,7 @@ static void rtl8169_get_strings(struct net_device *dev, u32 stringset, u8 *data)
 	}
 }
 
-static const struct ethtool_ops rtl8169_ethtool_ops = {
+static struct ethtool_ops rtl8169_ethtool_ops = {
 	.get_drvinfo		= rtl8169_get_drvinfo,
 	.get_regs_len		= rtl8169_get_regs_len,
 	.get_link		= ethtool_op_get_link,
@@ -2759,7 +2755,7 @@ static void rtl8169_netpoll(struct net_device *dev)
 	struct pci_dev *pdev = tp->pci_dev;
 
 	disable_irq(pdev->irq);
-	rtl8169_interrupt(pdev->irq, dev);
+	rtl8169_interrupt(pdev->irq, dev, NULL);
 	enable_irq(pdev->irq);
 }
 #endif
@@ -2836,8 +2832,13 @@ static void rtl_rar_set(struct rtl8169_private *tp, u8 *addr)
 	spin_lock_irq(&tp->lock);
 
 	RTL_W8(Cfg9346, Cfg9346_Unlock);
-	RTL_W32(MAC0, low);
+
 	RTL_W32(MAC4, high);
+	RTL_R32(MAC4);
+
+	RTL_W32(MAC0, low);
+	RTL_R32(MAC0);
+
 	RTL_W8(Cfg9346, Cfg9346_Lock);
 
 	spin_unlock_irq(&tp->lock);
@@ -2958,26 +2959,6 @@ static void rtl_disable_msi(struct pci_dev *pdev, struct rtl8169_private *tp)
 	}
 }
 
-static const struct net_device_ops rtl8169_netdev_ops = {
-	.ndo_open		= rtl8169_open,
-	.ndo_stop		= rtl8169_close,
-	.ndo_get_stats		= rtl8169_get_stats,
-	.ndo_start_xmit		= rtl8169_start_xmit,
-	.ndo_tx_timeout		= rtl8169_tx_timeout,
-	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_change_mtu		= rtl8169_change_mtu,
-	.ndo_set_mac_address	= rtl_set_mac_address,
-	.ndo_do_ioctl		= rtl8169_ioctl,
-	.ndo_set_multicast_list	= rtl_set_rx_mode,
-#ifdef CONFIG_R8169_VLAN
-	.ndo_vlan_rx_register	= rtl8169_vlan_rx_register,
-#endif
-#ifdef CONFIG_NET_POLL_CONTROLLER
-	.ndo_poll_controller	= rtl8169_netpoll,
-#endif
-
-};
-
 static int __devinit
 rtl8169_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
@@ -3004,8 +2985,21 @@ rtl8169_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	}
 
 	SET_NETDEV_DEV(dev, &pdev->dev);
-	/* dev->netdev_ops = &rtl8169_netdev_ops; */
-	dev_netdev_ops(dev, &rtl8169_netdev_ops);
+	dev->open = rtl8169_open;
+	dev->stop = rtl8169_close;
+	dev->hard_start_xmit = rtl8169_start_xmit;
+	dev->set_mac_address = rtl_set_mac_address;
+	dev->get_stats = rtl8169_get_stats;
+	dev->set_multicast_list = rtl_set_rx_mode;
+	dev->change_mtu = rtl8169_change_mtu;
+#ifdef CONFIG_R8169_VLAN
+	dev->vlan_rx_register = rtl8169_vlan_rx_register;
+#endif
+	dev->tx_timeout = rtl8169_tx_timeout;
+	dev->do_ioctl = rtl8169_ioctl;
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	dev->poll_controller = rtl8169_netpoll;
+#endif
 	tp = netdev_priv(dev);
 	tp->dev = dev;
 	tp->pci_dev = pdev;
@@ -3173,7 +3167,9 @@ rtl8169_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	dev->irq = pdev->irq;
 	dev->base_addr = (unsigned long) ioaddr;
 
-	netif_napi_add(dev, &tp->napi, rtl8169_poll, R8169_NAPI_WEIGHT);
+	dev->weight = R8169_NAPI_WEIGHT;
+	dev->poll = rtl8169_poll_compat;
+	tp->napi.dev = dev;
 
 #ifdef CONFIG_R8169_VLAN
 	dev->features |= NETIF_F_HW_VLAN_TX | NETIF_F_HW_VLAN_RX;
@@ -3313,7 +3309,7 @@ static int rtl8169_open(struct net_device *dev)
 	if (retval < 0)
 		goto err_release_ring_2;
 
-	napi_enable(&tp->napi);
+	netif_poll_enable(dev);
 
 	rtl_hw_start(dev);
 
@@ -3942,7 +3938,7 @@ static int rtl8169_change_mtu(struct net_device *dev, int new_mtu)
 	if (ret < 0)
 		goto out;
 
-	napi_enable(&tp->napi);
+	netif_poll_enable(dev);
 
 	rtl_hw_start(dev);
 
@@ -4122,8 +4118,8 @@ static void rtl8169_schedule_work(struct net_device *dev, work_func_t task)
 {
 	struct rtl8169_private *tp = netdev_priv(dev);
 
-	PREPARE_DELAYED_WORK(&tp->task, task);
-	schedule_delayed_work(&tp->task, 4);
+	PREPARE_WORK(&tp->task.work, task, &tp->task.work);
+	schedule_delayed_work(&tp->task.work, 4);
 }
 
 static void rtl8169_wait_for_quiescence(struct net_device *dev)
@@ -4134,17 +4130,18 @@ static void rtl8169_wait_for_quiescence(struct net_device *dev)
 	synchronize_irq(dev->irq);
 
 	/* Wait for any pending NAPI task to complete */
-	napi_disable(&tp->napi);
+	netif_poll_disable(dev);
 
 	rtl8169_irq_mask_and_ack(ioaddr);
 
 	tp->intr_mask = 0xffff;
 	RTL_W16(IntrMask, tp->intr_event);
-	napi_enable(&tp->napi);
+	netif_poll_enable(dev);
 }
 
-static void rtl8169_reinit_task(struct work_struct *work)
+static void rtl8169_reinit_task(void *data)
 {
+	struct work_struct *work = data;
 	struct rtl8169_private *tp =
 		container_of(work, struct rtl8169_private, task.work);
 	struct net_device *dev = tp->dev;
@@ -4171,8 +4168,9 @@ out_unlock:
 	rtnl_unlock();
 }
 
-static void rtl8169_reset_task(struct work_struct *work)
+static void rtl8169_reset_task(void *data)
 {
+	struct work_struct *work = data;
 	struct rtl8169_private *tp =
 		container_of(work, struct rtl8169_private, task.work);
 	struct net_device *dev = tp->dev;
@@ -4272,8 +4270,7 @@ static inline u32 rtl8169_tso_csum(struct sk_buff *skb, struct net_device *dev)
 	return 0;
 }
 
-static netdev_tx_t rtl8169_start_xmit(struct sk_buff *skb,
-				      struct net_device *dev)
+static int rtl8169_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct rtl8169_private *tp = netdev_priv(dev);
 	unsigned int frags, entry = tp->cur_tx % NUM_TX_DESC;
@@ -4555,6 +4552,7 @@ static int rtl8169_rx_interrupt(struct net_device *dev,
 			}
 
 			skb_put(skb, pkt_size);
+			skb->dev = dev;
 			skb->protocol = eth_type_trans(skb, dev);
 
 			if (rtl8169_rx_vlan_skb(tp, desc, skb) < 0)
@@ -4594,7 +4592,8 @@ static int rtl8169_rx_interrupt(struct net_device *dev,
 	return count;
 }
 
-static irqreturn_t rtl8169_interrupt(int irq, void *dev_instance)
+static irqreturn_t rtl8169_interrupt(int irq, void *dev_instance,
+				     struct pt_regs *pt_regs)
 {
 	struct net_device *dev = dev_instance;
 	struct rtl8169_private *tp = netdev_priv(dev);
@@ -4642,8 +4641,8 @@ static irqreturn_t rtl8169_interrupt(int irq, void *dev_instance)
 			RTL_W16(IntrMask, tp->intr_event & ~tp->napi_event);
 			tp->intr_mask = ~tp->napi_event;
 
-			if (likely(napi_schedule_prep(&tp->napi)))
-				__napi_schedule(&tp->napi);
+			if (likely(netif_rx_schedule_prep(dev)))
+				__netif_rx_schedule(dev);
 			else if (netif_msg_intr(tp)) {
 				printk(KERN_INFO "%s: interrupt %04x in poll\n",
 				dev->name, status);
@@ -4674,7 +4673,7 @@ static int rtl8169_poll(struct napi_struct *napi, int budget)
 	rtl8169_tx_interrupt(dev, tp, ioaddr);
 
 	if (work_done < budget) {
-		napi_complete(napi);
+		netif_rx_complete(dev);
 
 		/* We need for force the visibility of tp->intr_mask
 		 * for other CPUs, as we can loose an MSI interrupt
@@ -4689,6 +4688,20 @@ static int rtl8169_poll(struct napi_struct *napi, int budget)
 	}
 
 	return work_done;
+}
+
+static int rtl8169_poll_compat(struct net_device *netdev, int *budget)
+{
+	struct rtl8169_private *tp = netdev_priv(netdev);
+	u32 work_done, can_do;
+
+	can_do = min(*budget, netdev->quota);
+	work_done = rtl8169_poll(&tp->napi, can_do);
+
+	*budget -= work_done;
+	netdev->quota -= work_done;
+
+	return (work_done < can_do) ? 0 : 1;
 }
 
 static void rtl8169_rx_missed(struct net_device *dev, void __iomem *ioaddr)
@@ -4712,7 +4725,7 @@ static void rtl8169_down(struct net_device *dev)
 
 	netif_stop_queue(dev);
 
-	napi_disable(&tp->napi);
+	netif_poll_disable(dev);
 
 core_down:
 	spin_lock_irq(&tp->lock);
@@ -4822,8 +4835,8 @@ static void rtl_set_rx_mode(struct net_device *dev)
 		mc_filter[1] = swab32(data);
 	}
 
-	RTL_W32(MAR0 + 0, mc_filter[0]);
 	RTL_W32(MAR0 + 4, mc_filter[1]);
+	RTL_W32(MAR0 + 0, mc_filter[0]);
 
 	RTL_W32(RxConfig, tmp);
 

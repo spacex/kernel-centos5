@@ -283,25 +283,15 @@ EXPORT_SYMBOL(blk_queue_make_request);
 
 static inline void rq_init(request_queue_t *q, struct request *rq)
 {
+	memset(rq, 0, sizeof(*rq));
+
 	INIT_LIST_HEAD(&rq->queuelist);
 	INIT_LIST_HEAD(&rq->donelist);
-
-	rq->errors = 0;
+	rq->sector = rq->hard_sector = (sector_t) -1;
 	rq->rq_status = RQ_ACTIVE;
-	rq->bio = rq->biotail = NULL;
-	rq->ioprio = 0;
-	rq->buffer = NULL;
+	rq->tag = -1;
 	rq->ref_count = 1;
 	rq->q = q;
-	rq->waiting = NULL;
-	rq->special = NULL;
-	rq->data_len = 0;
-	rq->data = NULL;
-	rq->nr_phys_segments = 0;
-	rq->sense = NULL;
-	rq->end_io = NULL;
-	rq->end_io_data = NULL;
-	rq->completion_data = NULL;
 }
 
 /**
@@ -452,9 +442,7 @@ static void queue_flush(request_queue_t *q, unsigned which)
 
 	rq_init(q, rq);
 	rq->flags = REQ_HARDBARRIER;
-	rq->elevator_private = NULL;
 	rq->rq_disk = q->bar_rq.rq_disk;
-	rq->rl = NULL;
 	rq->end_io = end_io;
 	q->prepare_flush_fn(q, rq);
 
@@ -478,8 +466,6 @@ static inline struct request *start_ordered(request_queue_t *q,
 	rq_init(q, rq);
 	rq->flags = bio_data_dir(q->orig_bar_rq->bio);
 	rq->flags |= q->ordered & QUEUE_ORDERED_FUA ? REQ_FUA : 0;
-	rq->elevator_private = NULL;
-	rq->rl = NULL;
 	init_request_from_bio(rq, q->orig_bar_rq->bio);
 	rq->end_io = bar_end_io;
 
@@ -2081,6 +2067,7 @@ blk_alloc_request(request_queue_t *q, int flags, struct bio *bio,
 	if (!rq)
 		return NULL;
 
+	rq_init(q, rq);
 	/*
 	 * first three bits are identical in rq->flags and bio->bi_rw,
 	 * see bio.h and blkdev.h
@@ -2264,8 +2251,7 @@ rq_starved:
 	 */
 	if (ioc_batching(q, ioc))
 		ioc->nr_batch_requests--;
-	
-	rq_init(q, rq);
+
 	rq->rl = rl;
 
 	trace_block_getrq(q, bio, rw);

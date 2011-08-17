@@ -1,5 +1,5 @@
 /*
- *   (c) 2003-2006 Advanced Micro Devices, Inc.
+ *   (c) 2003-2010 Advanced Micro Devices, Inc.
  *  Your use of this code is subject to the terms and conditions of the
  *  GNU general public license version 2. See "COPYING" or
  *  http://www.gnu.org/licenses/gpl.html
@@ -50,6 +50,7 @@
 #define BFX PFX "BIOS error: "
 #define VERSION "version 2.20.00"
 #include "powernow-k8.h"
+#include "mperf.h"
 
 /* serialize freq changes  */
 static DEFINE_MUTEX(fidvid_mutex);
@@ -66,6 +67,11 @@ static int tscsync = 0;
 static int preregister_acpi_perf = 1;
 
 static int cpu_family = CPU_OPTERON;
+
+/* core performance boost */
+static bool cpb_capable, cpb_enabled;
+
+static struct cpufreq_driver cpufreq_amd64_driver;
 
 #ifndef CONFIG_SMP
 static cpumask_t cpu_core_map[1];
@@ -780,7 +786,6 @@ static void powernow_k8_acpi_pst_values(struct powernow_k8_data *data, unsigned 
 }
 
 static struct acpi_processor_performance *acpi_perf_data[NR_CPUS];
-static int preregister_valid = 0;
 
 static int powernow_k8_cpu_preinit_acpi(void)
 {
@@ -803,8 +808,6 @@ static int powernow_k8_cpu_preinit_acpi(void)
 	if (preregister_acpi_perf != 0) {
 		if (acpi_processor_preregister_performance(acpi_perf_data))
 			return -ENODEV;
-		else
-			preregister_valid = 1;
 	} else {
 		printk(KERN_INFO "powernow-k8: Disabling ACPI "
 		       "pre-initialization.\n");
@@ -865,20 +868,11 @@ static int powernow_k8_cpu_init_acpi(struct powernow_k8_data *data)
 	/* notify BIOS that we exist */
 	acpi_processor_notify_smm(THIS_MODULE);
 
-	/* determine affinity, from ACPI if available */
-	if (preregister_valid) {
-		if ((data->acpi_data->shared_type == CPUFREQ_SHARED_TYPE_ALL) ||
-		    (data->acpi_data->shared_type == CPUFREQ_SHARED_TYPE_ANY))
-			data->starting_core_affinity = data->acpi_data->shared_cpu_map;
-		else
-			data->starting_core_affinity = cpumask_of_cpu(data->cpu);
-	} else {
-		/* best guess from family if not */
-		if (cpu_family == CPU_HW_PSTATE)
-			data->starting_core_affinity = cpumask_of_cpu(data->cpu);
-		else
-			data->starting_core_affinity = cpu_core_map[data->cpu];
-	}
+	/* determine affinity */
+	if (cpu_family == CPU_HW_PSTATE)
+		data->starting_core_affinity = cpumask_of_cpu(data->cpu);
+	else
+		data->starting_core_affinity = cpu_core_map[data->cpu];
 
 	return 0;
 
@@ -1253,6 +1247,7 @@ static int __cpuinit powernowk8_cpu_init(struct cpufreq_policy *pol)
 {
 	struct powernow_k8_data *data;
 	struct init_on_cpu init_on_cpu;
+	struct cpuinfo_x86 *c = &cpu_data[pol->cpu];
 	int rc;
 
 	if (!cpu_online(pol->cpu))
@@ -1323,6 +1318,14 @@ static int __cpuinit powernowk8_cpu_init(struct cpufreq_policy *pol)
 		kfree(data->powernow_table);
 		kfree(data);
 		return -EINVAL;
+	}
+
+	/* Check for APERF/MPERF support in hardware */
+	if (c->x86_vendor == X86_VENDOR_AMD && c->cpuid_level >= 6) {
+		unsigned int ecx;
+		ecx = cpuid_ecx(6);
+		if (ecx & CPUID_6_ECX_APERFMPERF_CAPABILITY)
+			cpufreq_amd64_driver.getavg = cpufreq_get_measured_perf;
 	}
 
 	cpufreq_frequency_table_get_attr(data->powernow_table, pol->cpu);
@@ -1403,8 +1406,82 @@ out:
 	return khz;
 }
 
+static void _cpb_toggle_msrs(bool t)
+{
+	int cpu;
+	u32 l, h;
+	cpumask_t saved_mask;
+
+	lock_cpu_hotplug();
+
+	saved_mask = current->cpus_allowed;
+
+	for_each_online_cpu(cpu) {
+		set_cpus_allowed(current, cpumask_of_cpu(cpu));
+		rdmsr(MSR_K7_HWCR, l, h);
+
+		if (t)
+			l &= ~(1<<25);
+		else
+			l |= (1<<25);
+		wrmsr(MSR_K7_HWCR, l, h);
+		set_cpus_allowed(current, saved_mask);
+	}
+
+	unlock_cpu_hotplug();
+}
+
+/*
+ * Switch on/off core performance boosting.
+ *
+ * 0=disable
+ * 1=enable.
+ */
+static void cpb_toggle(bool t)
+{
+	if (!cpb_capable)
+		return;
+
+	if (t && !cpb_enabled) {
+		cpb_enabled = true;
+		_cpb_toggle_msrs(t);
+		printk(KERN_INFO PFX "Core Boosting enabled.\n");
+	} else if (!t && cpb_enabled) {
+		cpb_enabled = false;
+		_cpb_toggle_msrs(t);
+		printk(KERN_INFO PFX "Core Boosting disabled.\n");
+	}
+}
+
+static ssize_t store_cpb(struct cpufreq_policy *policy, const char *buf,
+			 size_t count)
+{
+	int ret = -EINVAL;
+	unsigned long val = 0;
+
+	ret = strict_strtoul(buf, 10, &val);
+	if (!ret && (val == 0 || val == 1) && cpb_capable)
+		cpb_toggle(val);
+	else
+		return -EINVAL;
+
+	return count;
+}
+
+static ssize_t show_cpb(struct cpufreq_policy *policy, char *buf)
+{
+	       return sprintf(buf, "%u\n", cpb_enabled);
+}
+
+#define define_one_rw(_name) \
+static struct freq_attr _name = \
+	__ATTR(_name, 0644, show_##_name, store_##_name)
+
+define_one_rw(cpb);
+
 static struct freq_attr* powernow_k8_attr[] = {
 	&cpufreq_freq_attr_scaling_available_freqs,
+	&cpb,
 	NULL,
 };
 
@@ -1419,10 +1496,53 @@ static struct cpufreq_driver cpufreq_amd64_driver = {
 	.attr = powernow_k8_attr,
 };
 
+/*
+ * Clear the boost-disable flag on the CPU_DOWN path so that this cpu
+ * cannot block the remaining ones from boosting. On the CPU_UP path we
+ * simply keep the boost-disable flag in sync with the current global
+ * state.
+ */
+static int __cpuinit cpb_notify(struct notifier_block *nb, unsigned long action,
+				void *hcpu)
+{
+	unsigned cpu = (long)hcpu;
+	u32 lo, hi;
+	cpumask_t saved_mask;
+
+	saved_mask = current->cpus_allowed;
+	set_cpus_allowed(current, cpumask_of_cpu(cpu));
+
+	switch (action) {
+	case CPU_UP_PREPARE:
+		if (!cpb_enabled) {
+			rdmsr(MSR_K7_HWCR, lo, hi);
+			lo |= (1<<25);
+			wrmsr(MSR_K7_HWCR, lo, hi);
+		}
+		break;
+
+	case CPU_DOWN_PREPARE:
+		rdmsr(MSR_K7_HWCR, lo, hi);
+		lo &= ~(1<<25);
+		wrmsr(MSR_K7_HWCR, lo, hi);
+		break;
+
+	default:
+		break;
+	}
+
+	set_cpus_allowed(current, saved_mask);
+	return NOTIFY_OK;
+}
+
+static struct notifier_block __cpuinitdata cpb_nb = {
+	.notifier_call		= cpb_notify,
+};
+
 /* driver entry point for init */
 static int __cpuinit powernowk8_init(void)
 {
-	unsigned int i, supported_cpus = 0;
+	unsigned int i, supported_cpus = 0, cpu;
 
 #ifdef CONFIG_XEN
 	if (!is_initial_xendomain()) {
@@ -1494,6 +1614,25 @@ static int __cpuinit powernowk8_init(void)
 	printk(KERN_INFO PFX "Found %d virtualized processors\n",
 		supported_cpus);
 #endif
+	if (boot_cpu_has(X86_FEATURE_CPB)) {
+		u32 l, h;
+		cpumask_t saved_mask;
+		cpb_capable = true;
+
+		register_cpu_notifier(&cpb_nb);
+
+		saved_mask = current->cpus_allowed;
+
+		for_each_online_cpu(cpu) {
+			set_cpus_allowed(current, cpumask_of_cpu(cpu));
+			rdmsr(MSR_K7_HWCR, l, h);
+			cpb_enabled |= !(!!(l & (1<<25)));
+			set_cpus_allowed(current, saved_mask);
+		}
+		printk(KERN_INFO PFX "Core Performance Boosting: %s.\n",
+		       (cpb_enabled ? "on" : "off"));
+	}
+
 	return cpufreq_register_driver(&cpufreq_amd64_driver);
 }
 
@@ -1504,6 +1643,9 @@ static void __exit powernowk8_exit(void)
 
 	if (tscsync)
 		kfree(req_state);
+
+	if (boot_cpu_has(X86_FEATURE_CPB))
+		unregister_cpu_notifier(&cpb_nb);
 
 	cpufreq_unregister_driver(&cpufreq_amd64_driver);
 }

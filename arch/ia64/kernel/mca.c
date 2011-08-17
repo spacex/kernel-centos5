@@ -864,11 +864,19 @@ ia64_mca_modify_comm(const struct task_struct *previous_current)
 	memcpy(current->comm, comm, sizeof(current->comm));
 }
 
+struct i_resources {
+	unsigned long	iip;
+	unsigned long	ipsr;
+	unsigned long	ifs;
+};
+static DEFINE_PER_CPU(struct i_resources, i_resources) = { 0 };
+
 static void
 finish_pt_regs(struct pt_regs *regs, const pal_min_state_area_t *ms,
 		unsigned long *nat)
 {
 	const u64 *bank;
+	struct i_resources *res;
 
 	/* If ipsr.ic then use pmsa_{iip,ipsr,ifs}, else use
 	 * pmsa_{xip,xpsr,xfs}
@@ -881,6 +889,11 @@ finish_pt_regs(struct pt_regs *regs, const pal_min_state_area_t *ms,
 		regs->cr_iip = ms->pmsa_xip;
 		regs->cr_ipsr = ms->pmsa_xpsr;
 		regs->cr_ifs = ms->pmsa_xfs;
+
+		res = &get_cpu_var(i_resources);
+		res->iip = ms->pmsa_iip;
+		res->ipsr = ms->pmsa_ipsr;
+		res->ifs = ms->pmsa_ifs;
 	}
 	regs->pr = ms->pmsa_pr;
 	regs->b0 = ms->pmsa_br0;
@@ -1266,7 +1279,7 @@ ia64_mca_handler(struct pt_regs *regs, struct switch_stack *sw,
 		/* Dump buffered message to console */
 		ia64_mlogbuf_finish(1);
 #ifdef CONFIG_KEXEC
-		atomic_set(&kdump_in_progress, 1);
+		atomic_inc(&kdump_in_progress);
 		/* In the case of (!recover), notify_die(DIE_MCA_MONARCH_LEAVE)
 		   will not return. A dump kernel will be booted. Need to set
 		   nonarch_cpu here to get slave cpus out of looping in OS.
@@ -1641,16 +1654,27 @@ ia64_init_handler(struct pt_regs *regs, struct switch_stack *sw,
 
 	if (!sos->monarch) {
 		ia64_mc_info.imi_rendez_checkin[cpu] = IA64_MCA_RENDEZ_CHECKIN_INIT;
+
+#ifdef CONFIG_KEXEC
+		while (monarch_cpu == -1 && !atomic_read(&kdump_in_progress))
+			udelay(1000);
+#else
 		while (monarch_cpu == -1)
 		       cpu_relax();	/* spin until monarch enters */
+#endif
 		if (notify_die(DIE_INIT_SLAVE_ENTER, "INIT", regs, (long)&nd, 0, 0)
 				== NOTIFY_STOP)
 			ia64_mca_spin(__FUNCTION__);
 		if (notify_die(DIE_INIT_SLAVE_PROCESS, "INIT", regs, (long)&nd, 0, 0)
 				== NOTIFY_STOP)
 			ia64_mca_spin(__FUNCTION__);
+#ifdef CONFIG_KEXEC
+		while (monarch_cpu != -1 && !atomic_read(&kdump_in_progress))
+			udelay(1000);
+#else
 		while (monarch_cpu != -1)
 		       cpu_relax();	/* spin until monarch leaves */
+#endif
 		if (notify_die(DIE_INIT_SLAVE_LEAVE, "INIT", regs, (long)&nd, 0, 0)
 				== NOTIFY_STOP)
 			ia64_mca_spin(__FUNCTION__);

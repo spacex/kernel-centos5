@@ -1,6 +1,6 @@
 /* cnic_if.h: Broadcom CNIC core network driver.
  *
- * Copyright (c) 2006 Broadcom Corporation
+ * Copyright (c) 2006-2010 Broadcom Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,8 +15,8 @@
 #include <linux/in.h>
 #include <linux/in6.h>
 
-#define CNIC_MODULE_VERSION	"2.1.0"
-#define CNIC_MODULE_RELDATE	"Oct 10, 2009"
+#define CNIC_MODULE_VERSION	"2.1.2"
+#define CNIC_MODULE_RELDATE	"May 26, 2010"
 
 #define CNIC_ULP_RDMA		0
 #define CNIC_ULP_ISCSI		1

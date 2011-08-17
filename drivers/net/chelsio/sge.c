@@ -1241,11 +1241,7 @@ static irqreturn_t t1_interrupt_napi(int irq, void *data, struct pt_regs *regs)
 		if (e->GenerationBit == q->genbit) {
 			if (e->DataValid ||
 			    process_pure_responses(adapter, e)) {
-				if (likely(napi_schedule_prep(sge->netdev)))
-					__netif_rx_schedule(sge->netdev);
-				else
-					printk(KERN_CRIT
-					       "NAPI schedule failure!\n");
+				netif_rx_schedule(sge->netdev);
 			} else
 			writel(q->cidx, adapter->regs + A_SG_SLEEPING);
 			handled = 1;

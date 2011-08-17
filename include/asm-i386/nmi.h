@@ -63,5 +63,6 @@ extern unsigned int nmi_watchdog;
 #define NMI_INVALID	3
 
 extern int unknown_nmi_panic;
+extern int nmi_watchdog_enabled;
 
 #endif /* ASM_NMI_H */

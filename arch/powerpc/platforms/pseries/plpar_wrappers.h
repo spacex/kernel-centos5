@@ -15,10 +15,32 @@ static inline long prod_processor(void)
 	return 0;
 }
 
+static inline u8 get_cede_latency_hint(void)
+{
+	return get_lppaca()->saved_gpr5 >> 56;
+}
+
+static inline void set_cede_latency_hint(u8 latency_hint)
+{
+	get_lppaca()->saved_gpr5 |= (((u64)latency_hint) << 56);
+}
+
 static inline long cede_processor(void)
 {
 	plpar_hcall_norets(H_CEDE);
 	return 0;
+}
+
+static inline long extended_cede_processor(unsigned long latency_hint)
+{
+	long rc;
+	u8 old_latency_hint = get_cede_latency_hint();
+
+	set_cede_latency_hint(latency_hint);
+	rc = cede_processor();
+	set_cede_latency_hint(old_latency_hint);
+
+	return rc;
 }
 
 static inline long vpa_call(unsigned long flags, unsigned long cpu,
@@ -116,5 +138,11 @@ static inline long plpar_put_term_char(unsigned long termno, unsigned long len,
 	return plpar_hcall_norets(H_PUT_TERM_CHAR, termno, len, lbuf[0],
 			lbuf[1]);
 }
+
+#ifdef CONFIG_PM
+void pseries_suspend_cpu(void);
+#else
+static inline pseries_suspend_cpu(void) { }
+#endif
 
 #endif /* _PSERIES_PLPAR_WRAPPERS_H */

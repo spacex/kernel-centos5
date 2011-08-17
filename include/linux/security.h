@@ -1174,6 +1174,41 @@ extern int mmap_min_addr_handler(struct ctl_table *table, int write, struct file
  *	@secdata contains the security context.
  *	@seclen contains the length of the security context.
  *
+ * @inode_notifysecctx:
+ *	Notify the security module of what the security context of an inode
+ *	should be.  Initializes the incore security context managed by the
+ *	security module for this inode.  Example usage:  NFS client invokes
+ *	this hook to initialize the security context in its incore inode to the
+ *	value provided by the server for the file when the server returned the
+ *	file's attributes to the client.
+ *
+ * 	Must be called with inode->i_mutex locked.
+ *
+ * 	@inode we wish to set the security context of.
+ * 	@ctx contains the string which we wish to set in the inode.
+ * 	@ctxlen contains the length of @ctx.
+ *
+ * @inode_setsecctx:
+ * 	Change the security context of an inode.  Updates the
+ * 	incore security context managed by the security module and invokes the
+ * 	fs code as needed (via __vfs_setxattr_noperm) to update any backing
+ * 	xattrs that represent the context.  Example usage:  NFS server invokes
+ * 	this hook to change the security context in its incore inode and on the
+ * 	backing filesystem to a value provided by the client on a SETATTR
+ * 	operation.
+ *
+ * 	Must be called with inode->i_mutex locked.
+ *
+ * 	@dentry contains the inode we wish to set the security context of.
+ * 	@ctx contains the string which we wish to set in the inode.
+ * 	@ctxlen contains the length of @ctx.
+ *
+ * @inode_getsecctx:
+ * 	Returns a string containing all relavent security context information
+ *
+ * 	@inode we wish to set the security context of.
+ *	@ctx is a pointer in which to place the allocated security context.
+ *	@ctxlen points to the place to put the length of @ctx.
  * This is the main security structure.
  */
 struct security_operations {
@@ -1430,7 +1465,11 @@ struct security_operations {
 				unsigned long prot, unsigned long flags,
 				unsigned long addr, unsigned long addr_only);
 	int (*vm_enough_memory_mm) (struct mm_struct *mm, long pages);
+	int (*inode_notifysecctx)(struct inode *inode, void *ctx, u32 ctxlen);
+	int (*inode_setsecctx)(struct dentry *dentry, void *ctx, u32 ctxlen);
+	int (*inode_getsecctx)(struct inode *inode, void **ctx, u32 *ctxlen);
 #endif
+
 };
 
 /* global variables */
@@ -1776,7 +1815,7 @@ static inline int security_inode_setxattr (struct dentry *dentry, char *name,
 }
 
 static inline void security_inode_post_setxattr (struct dentry *dentry, char *name,
-						void *value, size_t size, int flags)
+						 void *value, size_t size, int flags)
 {
 	if (unlikely (IS_PRIVATE (dentry->d_inode)))
 		return;
@@ -2170,6 +2209,21 @@ static inline int security_secid_to_secctx(u32 secid, char **secdata, u32 *secle
 static inline void security_release_secctx(char *secdata, u32 seclen)
 {
 	return security_ops->release_secctx(secdata, seclen);
+}
+
+static inline int security_inode_notifysecctx(struct inode *inode, void *ctx, u32 ctxlen)
+{
+	return security_ops->inode_notifysecctx(inode, ctx, ctxlen);
+}
+
+static inline int security_inode_setsecctx(struct dentry *dentry, void *ctx, u32 ctxlen)
+{
+	return security_ops->inode_setsecctx(dentry, ctx, ctxlen);
+}
+
+static inline int security_inode_getsecctx(struct inode *inode, void **ctx, u32 *ctxlen)
+{
+	return security_ops->inode_getsecctx(inode, ctx, ctxlen);
 }
 
 /* prototypes */
@@ -2783,6 +2837,19 @@ static inline int security_shm_shmat (struct shmid_kernel * shp,
 				      char __user *shmaddr, int shmflg)
 {
 	return 0;
+}
+
+static inline int security_inode_notifysecctx(struct inode *inode, void *ctx, u32 ctxlen)
+{
+	return -EOPNOTSUPP;
+}
+static inline int security_inode_setsecctx(struct dentry *dentry, void *ctx, u32 ctxlen)
+{
+	return -EOPNOTSUPP;
+}
+static inline int security_inode_getsecctx(struct inode *inode, void **ctx, u32 *ctxlen)
+{
+	return -EOPNOTSUPP;
 }
 
 static inline int security_sem_alloc (struct sem_array *sma)

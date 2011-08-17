@@ -27,6 +27,7 @@
 #include <linux/gfp.h>
 #include <linux/err.h>
 #include <linux/mempool.h>
+#include <linux/workqueue.h>
 
 #include <scsi/fc/fc_fc2.h>
 
@@ -358,7 +359,7 @@ static int fc_exch_done_locked(struct fc_exch *ep)
 
 	if (!(ep->esb_stat & ESB_ST_REC_QUAL)) {
 		ep->state |= FC_EX_DONE;
-		if (cancel_delayed_work(&ep->timeout_work))
+		if (cancel_delayed_work(&ep->timeout_work.work))
 			atomic_dec(&ep->ex_refcnt); /* drop hold for timer */
 		rc = 0;
 	}
@@ -1621,7 +1622,7 @@ static void fc_exch_reset(struct fc_exch *ep)
 
 	spin_lock_bh(&ep->ex_lock);
 	ep->state |= FC_EX_RST_CLEANUP;
-	if (cancel_delayed_work(&ep->timeout_work))
+	if (cancel_delayed_work(&ep->timeout_work.work))
 		atomic_dec(&ep->ex_refcnt);	/* drop hold for timer */
 	resp = ep->resp;
 	ep->resp = NULL;
@@ -2013,7 +2014,7 @@ static void fc_exch_els_rrq(struct fc_seq *sp, struct fc_frame *fp)
 		atomic_dec(&ep->ex_refcnt);	/* drop hold for rec qual */
 	}
 	if (ep->esb_stat & ESB_ST_COMPLETE) {
-		if (cancel_delayed_work(&ep->timeout_work))
+		if (cancel_delayed_work(&ep->timeout_work.work))
 			atomic_dec(&ep->ex_refcnt);	/* drop timer hold */
 	}
 

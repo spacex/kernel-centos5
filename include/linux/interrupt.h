@@ -15,6 +15,9 @@
 #include <asm/ptrace.h>
 #include <asm/system.h>
 
+struct tasklet_struct;
+#include <trace/irq.h>
+
 /*
  * These correspond to the IORESOURCE_IRQ_* defines in
  * linux/ioport.h to select the interrupt line behaviour.  When
@@ -249,7 +252,10 @@ struct softirq_action
 asmlinkage void do_softirq(void);
 extern void open_softirq(int nr, void (*action)(struct softirq_action*), void *data);
 extern void softirq_init(void);
-#define __raise_softirq_irqoff(nr) do { or_softirq_pending(1UL << (nr)); } while (0)
+#define __raise_softirq_irqoff(nr) do { \
+	trace_softirq_raise(nr, NULL);\
+	or_softirq_pending(1UL << (nr));\
+} while (0)
 extern void FASTCALL(raise_softirq_irqoff(unsigned int nr));
 extern void FASTCALL(raise_softirq(unsigned int nr));
 

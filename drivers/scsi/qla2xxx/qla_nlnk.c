@@ -6,6 +6,9 @@
  */
 
 #include "qla_def.h"
+
+#include <linux/vmalloc.h>
+#include <linux/delay.h>
 #include <net/sock.h>
 #include <net/netlink.h>
 
@@ -285,12 +288,103 @@ ql_fc_get_aen(scsi_qla_host_t *ha)
 	spin_unlock_irqrestore(&ha->hardware_lock, flags);
 }
 
+/* Set the port configuration to enable the
+ * internal loopback on ISP81XX
+ */
+static inline int
+qla81xx_set_internal_loopback(scsi_qla_host_t *ha, uint16_t *config,
+    uint16_t *new_config)
+{
+	int ret = 0;
+	int rval = 0;
+
+	if (!IS_QLA81XX(ha))
+		return 0;
+	new_config[0] = config[0] | (ENABLE_INTERNAL_LOOPBACK << 1);
+	memcpy(&new_config[1], &config[1], sizeof(uint16_t) * 3);
+
+	ha->notify_dcbx_comp = 1;
+	ret = qla81xx_set_port_config(ha, new_config);
+	if (ret != QLA_SUCCESS) {
+		DEBUG2(printk(KERN_ERR
+		    "%s(%lu): Set port config failed\n",
+		    __func__, ha->host_no));
+		ha->notify_dcbx_comp = 0;
+		rval = -EINVAL;
+		goto done_set_internal;
+	}
+
+	/* Wait for DCBX complete event */
+	if (!wait_for_completion_timeout(&ha->dcbx_comp,
+	    (20 * HZ))) {
+		DEBUG2(qla_printk(KERN_WARNING, ha,
+		    "State change notificaition not received.\n"));
+	} else
+		DEBUG2(qla_printk(KERN_INFO, ha,
+		    "State change RECEIVED\n"));
+	ha->notify_dcbx_comp = 0;
+
+done_set_internal:
+	return rval;
+}
+
+/* Set the port configuration to disable the
+ * internal loopback on ISP81XX
+ */
+static inline int
+qla81xx_reset_internal_loopback(scsi_qla_host_t *ha, uint16_t *config,
+    int wait)
+{
+	int ret = 0;
+	int rval = 0;
+	uint16_t new_config[4];
+
+	if (!IS_QLA81XX(ha))
+		goto done_reset_internal;
+
+	memset(new_config, 0, sizeof(new_config));
+	if ((config[0] & INTERNAL_LOOPBACK_MASK) >> 1 ==
+	    ENABLE_INTERNAL_LOOPBACK) {
+		new_config[0] = config[0] & ~INTERNAL_LOOPBACK_MASK;
+		memcpy(&new_config[1], &config[1], sizeof(uint16_t) * 3);
+
+		ha->notify_dcbx_comp = wait;
+		ret = qla81xx_set_port_config(ha, new_config);
+		if (ret != QLA_SUCCESS) {
+			DEBUG2(printk(KERN_ERR
+			    "%s(%lu): Set port config failed\n",
+			    __func__, ha->host_no));
+			ha->notify_dcbx_comp = 0;
+			rval =  -EINVAL;
+			goto done_reset_internal;
+		}
+
+		/* Wait for DCBX complete event */
+		if (wait && !wait_for_completion_timeout(&ha->dcbx_comp,
+		    (20 * HZ))) {
+			DEBUG2(qla_printk(KERN_WARNING, ha,
+			    "State change notificaition not received.\n"));
+			ha->notify_dcbx_comp = 0;
+			rval =  -EINVAL;
+			goto done_reset_internal;
+		} else {
+			DEBUG2(qla_printk(KERN_INFO, ha,
+			    "State change RECEIVED\n"));
+		}
+
+		ha->notify_dcbx_comp = 0;
+	}
+done_reset_internal:
+	return rval;
+}
+
 static int ql_fc_loopback(struct scsi_qla_host *ha, struct sk_buff *skb,
     struct nlmsghdr *nlh, struct qla_fc_msg *ql_cmd, int rcvlen)
 {
 	struct qla_loopback *qlloopback = NULL;
 	struct msg_loopback *loopback = NULL;
 	uint16_t ret_mb[MAILBOX_REGISTER_COUNT];
+	uint16_t config[4], new_config[4];
 	int ret = 0;
 	int rsp_hdr_len = offsetof(struct qla_fc_msg, u) +
 	    offsetof(struct msg_loopback, bytes);
@@ -365,7 +459,11 @@ static int ql_fc_loopback(struct scsi_qla_host *ha, struct sk_buff *skb,
 		    ql_cmd, rsp_hdr_len, NULL, 0);
 	}
 
-	if (ha->current_topology == ISP_CFG_F) {
+	if ((ha->current_topology == ISP_CFG_F ||
+	    (IS_QLA81XX(ha) &&
+	    le32_to_cpu(*(uint32_t *)qlloopback->loopback_buf) ==
+	    ELS_OPCODE_BYTE && qlloopback->len == MAX_ELS_FRAME_PAYLOAD)) &&
+	    loopback->options == EXTERNAL_LOOPBACK) {
 		if (IS_QLA2100(ha) || IS_QLA2200(ha)) {
 			ql_cmd->error = -EINVAL;
 			goto cleanup;
@@ -374,16 +472,68 @@ static int ql_fc_loopback(struct scsi_qla_host *ha, struct sk_buff *skb,
 		ret = qla2x00_echo_test(ha, loopback, ret_mb);
 		loopback->cmd_sent = INT_DEF_LB_ECHO_CMD;
 	} else {
+		if (IS_QLA81XX(ha)) {
+			memset(config, 0 , sizeof(config));
+			memset(new_config, 0 , sizeof(new_config));
+			ret = qla81xx_get_port_config(ha, config);
+			if (ret != QLA_SUCCESS) {
+				(printk(KERN_ERR
+				    "%s(%lu): Get port config failed\n",
+				    __func__, ha->host_no));
+				ql_cmd->error = -EINVAL;
+				goto cleanup;
+			}
+		}
+
+		if (loopback->options != EXTERNAL_LOOPBACK && IS_QLA81XX(ha)) {
+			DEBUG2(qla_printk(KERN_INFO, ha,
+			    "Internal: current port config = %x\n", config[0]));
+			ret = qla81xx_set_internal_loopback(ha, config,
+			    new_config);
+			if (ret) {
+				ql_cmd->error = -EINVAL;
+				goto cleanup;
+			}
+		} else {
+			/* For external loopback to work
+			 * ensure internal loopback is disabled
+			 */
+			ret = qla81xx_reset_internal_loopback(ha, config, 1);
+			if (ret) {
+				ql_cmd->error = -EINVAL;
+				goto cleanup;
+			}
+		}
+
 		ret = qla2x00_loopback_test(ha, loopback, ret_mb);
 		loopback->cmd_sent = INT_DEF_LB_LOOPBACK_CMD;
 
-		 if (IS_QLA81XX(ha)) {
+		if (IS_QLA81XX(ha)) {
+			if (new_config[0] != 0) {
+				/* Revert back to original port config
+				 * Also clear internal loopback
+				 */
+				qla81xx_reset_internal_loopback(ha,
+				    new_config, 0);
+			}
 			if (ret_mb[0] == MBS_COMMAND_ERROR &&
 			    ret_mb[1] == QLA_RESET_FC_LB_FAILED) {
 				DEBUG2(printk(KERN_ERR "%s(%ld): ABORTing "
 				    "ISP\n", __func__, ha->host_no));
+
 				set_bit(ISP_ABORT_NEEDED, &ha->dpc_flags);
 				qla2xxx_wake_dpc(ha);
+				qla2x00_wait_for_chip_reset(ha);
+				/* Also reset the MPI */
+				if (qla81xx_restart_mpi_firmware(ha) !=
+				    QLA_SUCCESS) {
+					qla_printk(KERN_INFO, ha,
+					    "MPI reset failed for host%ld.\n",
+					    ha->host_no);
+				}
+
+				ql_cmd->error = -EINVAL;
+				goto cleanup;
 			}
 		}
 	}
@@ -495,6 +645,14 @@ static int ql_fc_iidma(struct scsi_qla_host *ha, struct sk_buff *skb,
 		goto cleanup;
 	}
 
+	if (fcport->loop_id == FC_NO_LOOP_ID) {
+		DEBUG16(printk(KERN_ERR "%s(%ld): Invalid port loop id, "
+		    "loop_id = 0x%x\n",
+		    __func__, ha->host_no, fcport->loop_id));
+		ql_cmd->error = -EINVAL;
+		goto cleanup;
+	}
+
 	if (port_param->mode)
 		ret = qla2x00_set_idma_speed(ha, fcport->loop_id,
 		    port_param->speed, mb);
@@ -518,6 +676,147 @@ static int ql_fc_iidma(struct scsi_qla_host *ha, struct sk_buff *skb,
 cleanup:
 	return ql_fc_nl_rsp(NETLINK_CREDS(skb)->pid, nlh->nlmsg_seq,
 	    (uint32_t)nlh->nlmsg_type, ql_cmd, rsp_hdr_len, NULL, 0);
+}
+
+int
+qla24xx_fcp_prio_cfg_valid(struct qla_fcp_prio_cfg *pri_cfg, uint8_t flag)
+{
+	int i, ret, num_valid;
+	uint8_t *bcode;
+	struct qla_fcp_prio_entry *pri_entry;
+
+	ret = 1;
+	num_valid = 0;
+	bcode = (uint8_t *)pri_cfg;
+
+	if (bcode[0x0] != 'H' || bcode[0x1] != 'Q' || bcode[0x2] != 'O' ||
+	    bcode[0x3] != 'S')
+		return 0;
+
+	if (flag != 1)
+		return ret;
+
+	pri_entry = &pri_cfg->entry[0];
+	for (i = 0; i < pri_cfg->num_entries; i++) {
+		if (pri_entry->flags & (FCP_PRIO_ENTRY_VALID |
+					FCP_PRIO_ENTRY_TAG_VALID))
+			num_valid++;
+		pri_entry++;
+	}
+
+	if (pri_cfg->num_entries && num_valid == 0)
+		ret = 0;
+
+	return ret;
+}
+
+static int
+qla24xx_proc_fcp_prio_cfg_cmd(scsi_qla_host_t *ha, struct sk_buff *skb,
+    struct nlmsghdr *nlh, struct qla_fc_msg *ql_cmd, int rcvlen)
+{
+	int ret = 0;
+	uint32_t len;
+	struct qla_fcp_prio_param *param;
+	int rsp_hdr_len = offsetof(struct qla_fc_msg, u) +
+	    offsetof(struct qla_fcp_prio_param, fcp_prio_cfg);
+	uint8_t *payload = NULL;
+
+	if (test_bit(ISP_ABORT_NEEDED, &ha->dpc_flags) ||
+	    test_bit(ABORT_ISP_ACTIVE, &ha->dpc_flags) ||
+	    test_bit(ISP_ABORT_RETRY, &ha->dpc_flags)) {
+		ql_cmd->error = -EBUSY;
+		len = 0;
+		goto exit_fcp_prio_cfg;
+	}
+
+	param = &ql_cmd->u.fcp_prio_param;
+	len = param->fcp_prio_cfg_size;
+
+	/* Only set config is allowed if config memory is not allocated */
+	if (!ha->fcp_prio_cfg && (param->oper != QLFC_FCP_PRIO_SET_CONFIG)) {
+		ret = -EINVAL;
+		goto exit_fcp_prio_cfg;
+	}
+
+	switch (param->oper) {
+	case QLFC_FCP_PRIO_DISABLE:
+		if (ha->flags.fcp_prio_enabled) {
+			ha->flags.fcp_prio_enabled = 0;
+			ha->fcp_prio_cfg->attributes &=
+			    ~FCP_PRIO_ATTR_ENABLE;
+			qla24xx_update_all_fcp_prio(ha);
+		}
+		break;
+
+	case QLFC_FCP_PRIO_ENABLE:
+		if (!ha->flags.fcp_prio_enabled) {
+			if (ha->fcp_prio_cfg) {
+				ha->flags.fcp_prio_enabled = 1;
+				ha->fcp_prio_cfg->attributes |=
+				    FCP_PRIO_ATTR_ENABLE;
+				qla24xx_update_all_fcp_prio(ha);
+			} else {
+				ret = -EINVAL;
+				goto exit_fcp_prio_cfg;
+			}
+		}
+		break;
+
+	case QLFC_FCP_PRIO_GET_CONFIG:
+		if (!len || len > FCP_PRIO_CFG_SIZE) {
+			ret = -EINVAL;
+			goto exit_fcp_prio_cfg;
+		}
+
+		payload = (uint8_t *)ha->fcp_prio_cfg;
+		break;
+
+	case QLFC_FCP_PRIO_SET_CONFIG:
+		if (!len || len > FCP_PRIO_CFG_SIZE) {
+			ret = -EINVAL;
+			len = 0;
+			goto exit_fcp_prio_cfg;
+		}
+
+		/* validate fcp priority data */
+		if (!qla24xx_fcp_prio_cfg_valid(
+		    (struct qla_fcp_prio_cfg *)param->fcp_prio_cfg, 1)) {
+			ret = -EINVAL;
+			len = 0;
+			goto exit_fcp_prio_cfg;
+		}
+
+		if (!ha->fcp_prio_cfg) {
+			ha->fcp_prio_cfg = vmalloc(FCP_PRIO_CFG_SIZE);
+			if (!ha->fcp_prio_cfg) {
+				qla_printk(KERN_WARNING, ha,
+				    "Unable to allocate memory for fcp prio "
+				    "config data (%x).\n", FCP_PRIO_CFG_SIZE);
+				ret = -ENOMEM;
+				len = 0;
+				goto exit_fcp_prio_cfg;
+			}
+		}
+
+		memset(ha->fcp_prio_cfg, 0, FCP_PRIO_CFG_SIZE);
+		memcpy(ha->fcp_prio_cfg, param->fcp_prio_cfg, len);
+
+		ha->flags.fcp_prio_enabled = 0;
+		if (ha->fcp_prio_cfg->attributes & FCP_PRIO_ATTR_ENABLE)
+			ha->flags.fcp_prio_enabled = 1;
+		qla24xx_update_all_fcp_prio(ha);
+		len = 0;
+		break;
+
+	default:
+		ret = -EINVAL;
+		len = 0;
+	}
+
+exit_fcp_prio_cfg:
+	ql_cmd->error = ret;
+	return ql_fc_nl_rsp(NETLINK_CREDS(skb)->pid, nlh->nlmsg_seq,
+	    (uint32_t)nlh->nlmsg_type, ql_cmd, rsp_hdr_len, payload, len);
 }
 
 /*
@@ -640,13 +939,18 @@ ql_fc_proc_nl_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh, int rcvlen)
 	case QLFC_IIDMA:
 		err = ql_fc_iidma(ha, skb, nlh, ql_cmd, rcvlen);
 		goto exit_proc_nl_rcv_msg;
+
+	case QLFC_FCP_PRIO_CFG_CMD:
+		err = qla24xx_proc_fcp_prio_cfg_cmd(ha, skb, nlh, ql_cmd,
+		    rcvlen);
+		goto exit_proc_nl_rcv_msg;
 	}
 
 	/* Use existing 84xx interface to get MPI XGMAC statistics for
 	 * 81xx via FC interface
 	 */
-	if ((!IS_QLA81XX(ha) && !IS_QLA84XX(ha)) ||
-	    (IS_QLA81XX(ha) && (ql_cmd->cmd != QLA84_MGMT_CMD))) {
+	if ((!IS_QLA8XXX_TYPE(ha) && !IS_QLA84XX(ha)) ||
+	    (IS_QLA8XXX_TYPE(ha) && (ql_cmd->cmd != QLA84_MGMT_CMD))) {
 		DEBUG16(printk(KERN_ERR "%s: invalid host ha = %p"
 		    "dtype = 0x%x\n", __func__, ha, (ha ? DT_MASK(ha): ~0)));
 		err = -ENODEV;
@@ -681,7 +985,7 @@ ql_fc_proc_nl_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh, int rcvlen)
 				(rcvlen - sizeof(struct scsi_nl_hdr)),
 				NETLINK_CREDS(skb)->pid, nlh->nlmsg_seq,
 				(uint32_t)nlh->nlmsg_type);
-		else if (IS_QLA81XX(ha))
+		else if (IS_QLA8XXX_TYPE(ha))
 			err = qla81xx_mgmt_cmd(ha, ql_cmd,
 				(rcvlen - sizeof(struct scsi_nl_hdr)),
 				NETLINK_CREDS(skb)->pid, nlh->nlmsg_seq,

@@ -52,6 +52,14 @@ static inline sector_t scsi_get_lba(struct scsi_cmnd *scmd)
 }
 
 
+static inline struct scatterlist *sg_next(struct scatterlist *sg)
+{       
+        if (!sg)
+                return NULL;
+        return sg + 1;
+}
+
+
 #ifndef USHORT_MAX
 #define USHORT_MAX	((u16)(~0U))
 #endif

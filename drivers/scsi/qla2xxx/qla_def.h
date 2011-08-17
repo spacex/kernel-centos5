@@ -33,6 +33,8 @@
 #include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_transport_fc.h>
 
+#include "qla_nx.h"
+
 #define QLA2XXX_DRIVER_NAME  "qla2xxx"
 
 /*
@@ -264,6 +266,22 @@ typedef struct {
 #define REQUEST_ENTRY_CNT_24XX		4096	/* Number of request entries. */
 #define RESPONSE_ENTRY_CNT_2100		64	/* Number of response entries.*/
 #define RESPONSE_ENTRY_CNT_2300		512	/* Number of response entries.*/
+#define REQUEST_ENTRY_CNT_82XX		128	/* Number of request entries. */
+
+struct fcp_cmnd {
+	struct scsi_lun lun;
+	uint8_t crn;
+	uint8_t task_attribute;
+	uint8_t task_managment;
+	uint8_t additional_cdb_len;
+	uint8_t cdb[260]; /* 256 for CDB len and 4 for FCP_DL */
+};
+
+struct dsd_dma {
+	struct list_head list;
+	dma_addr_t dsd_list_dma;
+	void *dsd_addr;
+};
 
 /*
  * SCSI Request Block
@@ -281,6 +299,7 @@ typedef struct srb {
 
 	uint32_t request_sense_length;
 	uint8_t *request_sense_ptr;
+	void *ctx;
 } srb_t;
 
 /*
@@ -300,6 +319,19 @@ typedef struct srb {
 #define SRB_FO_CANCEL		BIT_9	/* Command don't need to do failover */
 #define SRB_IOCTL		BIT_10	/* IOCTL command. */
 #define SRB_TAPE		BIT_11	/* FCP2 (Tape) command. */
+#define SRB_FCP_CMND_DMA_VALID	BIT_12	/* FCP command in IOCB */
+
+
+#define QLA_DSDS_PER_IOCB	37
+#define QLA_DSD_SIZE		12
+struct ct6_dsd {
+	uint16_t fcp_cmnd_len;
+	dma_addr_t fcp_cmnd_dma;
+	struct fcp_cmnd *fcp_cmnd;
+	int dsd_use_cnt;
+	struct list_head dsd_list;
+};
+
 
 /*
  * ISP I/O Register Set structure definitions.
@@ -459,6 +491,7 @@ struct device_reg_2xxx {
 typedef union {
 		struct device_reg_2xxx isp;
 		struct device_reg_24xx isp24;
+		struct device_reg_82xx isp82;
 } device_reg_t;
 
 #define ISP_REQ_Q_IN(ha, reg) \
@@ -710,8 +743,13 @@ typedef struct {
 #define MBC_GET_LINK_PRIV_STATS		0x6d	/* Get link & private data. */
 #define MBC_SET_VENDOR_ID		0x76	/* Set Vendor ID. */
 #define MBC_IDC_ACK			0x101   /* Ack IDC */
+#define MBC_SET_PORT_CONFIG             0x122   /* Set port configuration */
+#define MBC_GET_PORT_CONFIG             0x123   /* Get port configuration */
 #define MBC_RESTART_MPI_FW      	0x03d	/* Reset MPI */
 #define MBC_FLASH_ACCESS_CTRL		0x3e    /* Control flash access. */
+
+#define MBC_TOGGLE_INTERRUPT		0x10	/* 82XX specific enable/disable
+						 *  interrupts */
 
 /* Flash access control option field bit definitions */
 #define FAC_OPT_FORCE_SEMAPHORE         BIT_15
@@ -1642,6 +1680,8 @@ typedef struct fc_port {
 	uint16_t loop_id;
 	uint16_t old_loop_id;
 
+	uint8_t fcp_prio;
+
 	uint8_t fabric_port_name[WWN_SIZE];
 	uint16_t fp_speed;
 
@@ -2203,6 +2243,9 @@ struct isp_operations {
 		uint32_t);
 
 	int (*get_flash_version) (struct scsi_qla_host *, void *);
+	int (*abort_isp) (struct scsi_qla_host *);
+	int (*alloc_sp_pool) (struct scsi_qla_host *);
+	void (*free_sp_pool) (struct scsi_qla_host *);
 };
 
 /* MSI-X Support *************************************************************/
@@ -2268,7 +2311,8 @@ struct qla_loopback {
 
 /* Work events.  */
 enum qla_work_type {
-       QLA_EVT_IDC_ACK,
+	QLA_EVT_IDC_ACK,
+	QLA_EVT_UEVENT,
 };
 
 struct qla_work_evt {
@@ -2282,6 +2326,10 @@ struct qla_work_evt {
 #define QLA_IDC_ACK_REGS        7
                        uint16_t mb[QLA_IDC_ACK_REGS];
                } idc_ack;
+	       struct {
+		       u32 code;
+#define QLA_UEVENT_CODE_FW_DUMP        0
+	       } uevent;
        } u;
 };
 
@@ -2328,6 +2376,9 @@ typedef struct scsi_qla_host {
 		uint32_t        running_gold_fw		:1;
 		uint32_t        fac_supported		:1;
 		uint32_t        eeh_busy		:1;
+		uint32_t        fcp_prio_enabled	:1;
+		uint32_t	fw_hung			:1;
+		/* 28 bits */
 	} flags;
 
 	atomic_t	loop_state;
@@ -2339,37 +2390,25 @@ typedef struct scsi_qla_host {
 #define LOOP_DEAD	6
 
 	unsigned long   dpc_flags;
-#define	RESET_MARKER_NEEDED	0	/* Send marker to ISP. */
-#define	RESET_ACTIVE		1
-#define	ISP_ABORT_NEEDED	2	/* Initiate ISP abort. */
-#define	ABORT_ISP_ACTIVE	3	/* ISP abort in progress. */
-#define	LOOP_RESYNC_NEEDED	4	/* Device Resync needed. */
-#define	LOOP_RESYNC_ACTIVE	5
-#define LOCAL_LOOP_UPDATE       6	/* Perform a local loop update. */
-#define RSCN_UPDATE             7	/* Perform an RSCN update. */
-#define MAILBOX_RETRY           8
-#define ISP_RESET_NEEDED        9	/* Initiate a ISP reset. */
-#define FAILOVER_EVENT_NEEDED   10
-#define FAILOVER_EVENT		11
-#define FAILOVER_NEEDED   	12
-#define SCSI_RESTART_NEEDED	13	/* Processes SCSI retry queue. */
-#define PORT_RESTART_NEEDED	14	/* Processes Retry queue. */
-#define RESTART_QUEUES_NEEDED	15	/* Restarts the Lun queue. */
-#define ABORT_QUEUES_NEEDED	16
-#define RELOGIN_NEEDED	        17
-#define LOGIN_RETRY_NEEDED	18	/* Initiate required fabric logins. */
-#define REGISTER_FC4_NEEDED	19	/* SNS FC4 registration required. */
-#define ISP_ABORT_RETRY         20      /* ISP aborted. */
-#define FCPORT_RESCAN_NEEDED	21      /* IO descriptor processing needed */
-#define IODESC_PROCESS_NEEDED	22      /* IO descriptor processing needed */
-#define IOCTL_ERROR_RECOVERY	23
-#define LOOP_RESET_NEEDED	24
-#define BEACON_BLINK_NEEDED	25
-#define REGISTER_FDMI_NEEDED	26
-#define FCPORT_UPDATE_NEEDED	27
-#define VP_DPC_NEEDED		28	/* wake up for VP dpc handling */
-#define UNLOADING		29
-#define NPIV_CONFIG_NEEDED	30
+#define RESET_MARKER_NEEDED	0	/* Send marker to ISP. */
+#define RESET_ACTIVE		1
+#define ISP_ABORT_NEEDED	2	/* Initiate ISP abort. */
+#define ABORT_ISP_ACTIVE	3	/* ISP abort in progress. */
+#define LOOP_RESYNC_NEEDED	4	/* Device Resync needed. */
+#define LOOP_RESYNC_ACTIVE	5
+#define LOCAL_LOOP_UPDATE	6	/* Perform a local loop update. */
+#define RSCN_UPDATE		7	/* Perform an RSCN update. */
+#define RELOGIN_NEEDED		8
+#define REGISTER_FC4_NEEDED	9	/* SNS FC4 registration required. */
+#define ISP_ABORT_RETRY		10	/* ISP aborted. */
+#define BEACON_BLINK_NEEDED	11
+#define REGISTER_FDMI_NEEDED	12
+#define FCPORT_UPDATE_NEEDED	13
+#define VP_DPC_NEEDED		14	/* wake up for VP dpc handling */
+#define UNLOADING		15
+#define NPIV_CONFIG_NEEDED	16
+#define ISP_UNRECOVERABLE	17
+#define FCOE_CTX_RESET_NEEDED	18	/* Initiate FCoE context reset */
 
 	uint32_t	device_flags;
 #define DFLG_LOCAL_DEVICES		BIT_0
@@ -2377,10 +2416,12 @@ typedef struct scsi_qla_host {
 #define DFLG_FABRIC_DEVICES		BIT_2
 #define	SWITCH_FOUND			BIT_3
 #define	DFLG_NO_CABLE			BIT_4
+#define	DFLG_DEV_FAILED			BIT_5
 
 #define PCI_DEVICE_ID_QLOGIC_ISP2532	0x2532
 #define PCI_DEVICE_ID_QLOGIC_ISP8432	0x8432
 #define PCI_DEVICE_ID_QLOGIC_ISP8001	0x8001
+#define PCI_DEVICE_ID_QLOGIC_ISP8021	0x8021
 	uint32_t	device_type;
 #define DT_ISP2100			BIT_0
 #define DT_ISP2200			BIT_1
@@ -2396,7 +2437,8 @@ typedef struct scsi_qla_host {
 #define DT_ISP2532			BIT_11
 #define DT_ISP8432			BIT_12
 #define DT_ISP8001			BIT_13
-#define DT_ISP_LAST			(DT_ISP8001 << 1)
+#define DT_ISP8021                     	BIT_14
+#define DT_ISP_LAST                    (DT_ISP8021 << 1)
 
 #define DT_IIDMA			BIT_26
 #define DT_FWI2				BIT_27
@@ -2420,6 +2462,7 @@ typedef struct scsi_qla_host {
 #define IS_QLA2532(ha)	(DT_MASK(ha) & DT_ISP2532)
 #define IS_QLA8432(ha)	(DT_MASK(ha) & DT_ISP8432)
 #define IS_QLA8001(ha)	(DT_MASK(ha) & DT_ISP8001)
+#define IS_QLA82XX(ha) 	(DT_MASK(ha) & DT_ISP8021)
 
 #define IS_QLA23XX(ha)	(IS_QLA2300(ha) || IS_QLA2312(ha) || IS_QLA2322(ha) || \
     			 IS_QLA6312(ha) || IS_QLA6322(ha))
@@ -2430,6 +2473,10 @@ typedef struct scsi_qla_host {
 #define IS_QLA24XX_TYPE(ha)    (IS_QLA24XX(ha) || IS_QLA54XX(ha) || \
 				IS_QLA84XX(ha))
 #define IS_QLA81XX(ha)	(IS_QLA8001(ha))
+#define IS_QLA8XXX_TYPE(ha)	(IS_QLA81XX(ha) || IS_QLA82XX(ha))
+#define IS_QLA2XXX_MIDTYPE(ha)  (IS_QLA24XX(ha) || IS_QLA84XX(ha) || \
+				IS_QLA25XX(ha) || IS_QLA8XXX_TYPE(ha))
+
 #define IS_NOCACHE_VPD_TYPE(ha)	(IS_QLA81XX(ha))
 #define IS_FAC_REQUIRED(ha)     (IS_QLA81XX(ha))
 
@@ -2594,6 +2641,14 @@ typedef struct scsi_qla_host {
 #define DMA_POOL_SIZE	256
 	struct dma_pool *s_dma_pool;
 
+#define DSD_LIST_DMA_POOL_SIZE	512
+	struct dma_pool *dl_dma_pool;
+
+#define FCP_CMND_DMA_POOL_SIZE	512
+	struct dma_pool *fcp_cmnd_dma_pool;
+
+	mempool_t	*ctx_mempool;
+
 	dma_addr_t	init_cb_dma;
 	init_cb_t	*init_cb;
 	int		init_cb_size;
@@ -2614,6 +2669,9 @@ typedef struct scsi_qla_host {
 	struct completion mbx_intr_comp; /* Used for completion notification */
 
 	struct completion pass_thru_intr_comp;  /* For pass thru notification */
+	struct completion dcbx_comp;  /* For set port config notification */
+	int notify_dcbx_comp;
+
 
 	uint32_t	mbx_flags;
 #define  MBX_IN_PROGRESS	BIT_0
@@ -2716,6 +2774,8 @@ typedef struct scsi_qla_host {
 	uint32_t        flt_region_nvram;
 	uint32_t	flt_region_npiv_conf;
 	uint32_t	flt_region_gold_fw;
+	uint32_t	flt_region_bootload;
+	uint32_t	flt_region_fcp_prio;
 
 	/* Needed for BEACON */
 	uint16_t	beacon_blink_led;
@@ -2777,11 +2837,38 @@ typedef struct scsi_qla_host {
 	int	pass_thru_cmd_result;
 	int	pass_thru_cmd_in_process;
 
+	/* FCP_CMND priority support */
+	struct qla_fcp_prio_cfg *fcp_prio_cfg;
+
 	struct qla_chip_state_84xx *cs84xx;
 	struct qlfc_aen_log aen_log;
 	struct qla_statistics qla_stats;
 	struct qlfc_fw fw_buf;
 	struct qla_loopback loopback_buf;
+
+	unsigned long nx_pcibase;		/* Base I/O address */
+	uint8_t *nxdb_rd_ptr;		   	/* Doorbell read pointer */
+	unsigned long nxdb_wr_ptr;           	/* Door bell write pointer */
+
+	uint32_t crb_win;
+	uint32_t curr_window;
+	uint32_t ddr_mn_window;
+	unsigned long mn_win_crb;
+	unsigned long ms_win_crb;
+	int	qdr_sn_window;
+	uint32_t	nx_dev_init_timeout;
+	uint32_t	nx_reset_timeout;
+	rwlock_t hw_lock;
+	uint16_t portnum; /* port number */
+	int link_width;
+	int fw_heartbeat_counter;
+	int seconds_since_last_heartbeat;
+	struct fw_blob *hablob;
+	struct qla82xx_legacy_intr_set nx_legacy_intr;
+#define	NUM_DSD_CHAIN	4096
+	uint16_t gbl_dsd_inuse;
+	uint16_t gbl_dsd_avail;
+	struct list_head gbl_dsd_list;
 } scsi_qla_host_t;
 
 
@@ -2837,6 +2924,7 @@ typedef struct scsi_qla_host {
 #define OPTROM_SIZE_24XX	0x100000
 #define OPTROM_SIZE_25XX	0x200000
 #define OPTROM_SIZE_81XX	0x400000
+#define OPTROM_SIZE_82XX	0x800000
 
 #include "qla_gbl.h"
 #include "qla_dbg.h"

@@ -2108,6 +2108,8 @@ END(dispatch_to_ia32_handler)
 #ifdef CONFIG_XEN
 	.section .text,"ax"
 GLOBAL_ENTRY(xen_event_callback)
+	.prologue
+	.body
 	mov r31=pr		// prepare to save predicates
 	;;
 	SAVE_MIN_WITH_COVER	// uses r31; defines r2 and r3
@@ -2121,6 +2123,7 @@ GLOBAL_ENTRY(xen_event_callback)
 	srlz.i			// ensure everybody knows psr.ic is back on
 	;;
 	SAVE_REST
+	PT_REGS_UNWIND_INFO(0)
 	;;
 1:
 	alloc r14=ar.pfs,0,0,1,0 // must be first in an insn group

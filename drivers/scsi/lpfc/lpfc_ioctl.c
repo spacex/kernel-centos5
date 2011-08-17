@@ -513,9 +513,11 @@ lpfc_ioctl_send_els(struct lpfc_hba * phba,
 		if (copy_to_user((void __user *)cip->lpfc_arg3,
 				 (uint8_t *)&rspsize, sizeof(uint32_t)))
 			rc = EIO;
-	} else {
+
+	} else if (rc == IOCB_BUSY)
+		rc = EAGAIN;
+	else
 		rc = EIO;
-	}
 
 	if (pbuflist) {
 		dfc_cmd_data_free(phba, pcmdext);
@@ -631,7 +633,7 @@ lpfc_ioctl_send_mgmt_cmd(struct lpfc_hba * phba,
 			rc = EIO;
 			goto send_mgmt_cmd_exit;
 		}
-		pndl = lpfc_findnode_wwpn(phba->pport, &findwwn);
+		pndl = lpfc_find_active_node_wwpn(phba->pport, &findwwn);
 		/* Do additional get to pndl found so that at the end of the
 		 * function we can do unditional lpfc_nlp_put on it.
 		 */
@@ -824,6 +826,11 @@ lpfc_ioctl_send_mgmt_cmd(struct lpfc_hba * phba,
 		cmdiocbq->iocb_cmpl = lpfc_ioctl_timeout_iocb_cmpl;
 		rc = EACCES;
 		goto send_mgmt_cmd_free_pndl_exit;
+	}
+
+	if (rc == IOCB_BUSY) {
+		rc = EAGAIN;
+		goto send_mgmt_cmd_free_outdmp;
 	}
 
 	if (rc != IOCB_SUCCESS) {

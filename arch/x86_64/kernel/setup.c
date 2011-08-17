@@ -866,8 +866,8 @@ static void __init amd_detect_cmp(struct cpuinfo_x86 *c)
 {
 #ifdef CONFIG_SMP
 	unsigned bits;
-#ifdef CONFIG_NUMA
 	int cpu = smp_processor_id();
+#ifdef CONFIG_NUMA
 	int node = 0;
 	unsigned apicid = hard_smp_processor_id();
 #endif
@@ -893,8 +893,7 @@ static void __init amd_detect_cmp(struct cpuinfo_x86 *c)
 	cpu_llc_id[cpu] = c->phys_proc_id;
 
 	/* fixup topology information on multi-node processors */
-	if ((c->x86 == 0x10) && (c->x86_model == 9))
-		amd_fixup_dcm(c);
+	amd_fixup_dcm(c);
 
 #ifdef CONFIG_NUMA
 	node = cpu_llc_id[cpu];
@@ -987,8 +986,8 @@ static void __init init_amd(struct cpuinfo_x86 *c)
 	else
 		num_cache_leaves = 3;
 
-	/* Family 10 doesn't support C states in MWAIT so don't use it */
-	if (c->x86 == 0x10 && !force_mwait)
+	/* No support for C states in MWAIT so don't use it */
+	if (c->x86 >= 0x10 && !force_mwait)
 		clear_bit(X86_FEATURE_MWAIT, &c->x86_capability);
 	set_bit(X86_FEATURE_MFENCE_RDTSC, &c->x86_capability);
 
@@ -1119,6 +1118,9 @@ static void __cpuinit init_intel(struct cpuinfo_x86 *c)
 		set_bit(X86_FEATURE_CONSTANT_TSC, &c->x86_capability);
 		set_bit(X86_FEATURE_NONSTOP_TSC, &c->x86_capability);
 	}
+	if ((c->x86 == 6) && (c->x86_model >= 29) 
+		&& cpu_has_clflush)
+		set_bit(X86_FEATURE_CLFLUSH_MONITOR, c->x86_capability);
 
 	set_bit(X86_FEATURE_LFENCE_RDTSC, &c->x86_capability);
  	c->x86_max_cores = intel_num_cpu_cores(c);
@@ -1171,6 +1173,20 @@ void __cpuinit early_identify_cpu(struct cpuinfo_x86 *c)
 		
 	get_cpu_vendor(c);
 
+	/* Unmask CPUID levels if masked: */
+	if ((c->x86_vendor == X86_VENDOR_INTEL) &&
+	    (c->x86 > 6 || (c->x86 == 6 && c->x86_model >= 0xd))) {
+		u64 misc_enable;
+
+		rdmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
+
+		if (misc_enable & MSR_IA32_MISC_ENABLE_LIMIT_CPUID) {
+			misc_enable &= ~MSR_IA32_MISC_ENABLE_LIMIT_CPUID;
+			wrmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
+			c->cpuid_level = cpuid_eax(0);
+		}
+	}
+
 	/* Initialize the standard set of capabilities */
 	/* Note that the vendor-specific code below might override */
 
@@ -1203,6 +1219,7 @@ void __cpuinit early_identify_cpu(struct cpuinfo_x86 *c)
 	    (c->extended_cpuid_level >= 0x80000007) &&
 	    (cpuid_edx(0x80000007) & (1<<8)))
 		set_bit(X86_FEATURE_CONSTANT_TSC, &c->x86_capability);
+	init_scattered_cpuid_features(c);
 }
 
 /*

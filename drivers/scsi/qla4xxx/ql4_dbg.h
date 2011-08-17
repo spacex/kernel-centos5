@@ -1,6 +1,6 @@
 /*
  * QLogic iSCSI HBA Driver
- * Copyright (c)  2003-2006 QLogic Corporation
+ * Copyright (c)  2003-2010 QLogic Corporation
  *
  * See LICENSE.qla4xxx for copyright and licensing details.
  */
@@ -22,14 +22,14 @@
 #endif
 
 #if defined(QL_DEBUG_LEVEL_2)
-#define DEBUG2(x)      do {if(extended_error_logging == 2) x;} while (0);
+#define DEBUG2(x)      do {if(ql4xextended_error_logging == 2) x;} while (0);
 #define DEBUG2_3(x)   do {x;} while (0);
 #else				/*  */
 #define DEBUG2(x)	do {} while (0);
 #endif				/*  */
 
 #if defined(QL_DEBUG_LEVEL_3)
-#define DEBUG3(x)      do {if(extended_error_logging == 3) x;} while (0);
+#define DEBUG3(x)      do {if(ql4xextended_error_logging == 3) x;} while (0);
 #else				/*  */
 #define DEBUG3(x)	do {} while (0);
 #if !defined(QL_DEBUG_LEVEL_2)

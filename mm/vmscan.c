@@ -1221,7 +1221,13 @@ scan:
 			temp_priority[i] = priority;
 			sc.nr_scanned = 0;
 			note_zone_scanning_priority(zone, priority);
-			shrink_zone(priority, zone, &sc);
+			/*
+			 * We put equal pressure on every zone, unless one
+			 * zone has way too many pages free already.
+			 */
+			if (!zone_watermark_ok(zone, order,
+					8*zone->pages_high, end_zone, 0))
+				shrink_zone(priority, zone, &sc);
 			reclaim_state->reclaimed_slab = 0;
 			nr_slab = shrink_slab(sc.nr_scanned, GFP_KERNEL,
 						lru_pages);
@@ -1272,6 +1278,24 @@ out:
 	}
 	if (!all_zones_ok) {
 		cond_resched();
+
+		/*
+		 * Fragmentation may mean that the system cannot be
+		 * rebalanced for high-order allocations in all zones.
+		 * At this point, if nr_reclaimed < SWAP_CLUSTER_MAX,
+		 * it means the zones have been fully scanned and are still
+		 * not balanced. For high-order allocations, there is
+		 * little point trying all over again as kswapd may
+		 * infinite loop.
+ 		 *
+		 * Instead, recheck all watermarks at order-0 as they
+		 * are the most important. If watermarks are ok, kswapd will go
+		 * back to sleep. High-order users can still perform direct
+		 * reclaim if they wish.
+		 */
+		if (sc.nr_reclaimed < SWAP_CLUSTER_MAX)
+			order =	0;
+
 		goto loop_again;
 	}
 

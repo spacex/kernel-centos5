@@ -104,7 +104,10 @@ static __inline__ void qla2x00_poll(scsi_qla_host_t *);
 static inline void
 qla2x00_poll(scsi_qla_host_t *ha)
 {
-	ha->isp_ops->intr_handler(0, ha, NULL);
+	if (IS_QLA82XX(ha))
+		qla82xx_poll(0, ha, NULL);
+	else
+		ha->isp_ops->intr_handler(0, ha, NULL);
 }
 
 static __inline__ void qla2x00_check_fabric_devices(scsi_qla_host_t *);

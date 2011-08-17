@@ -1,3 +1,77 @@
+
+1 Release Date    : Tues.  June. 15, 2010 09:12:45 PST 2010 -
+			(emaild-id:megaraidlinux@lsi.com)
+			Bo Yang
+
+2 Current Version : 00.00.04.31
+3 Older Version   : 00.00.04.27
+
+1.	Add the three times online controller reset if driver detects the fw in failure state.
+	also do online controller reset (OCR) before driver kill adapter to have the last chance
+	to bringup FW. 
+
+2.	Add input parameter of max_sectors to 1MB.  Customer can change the max_sectors size upto
+	1MB.
+
+3.	Fix the issue of during the system reboot test, FW raises the interrupt as FW state change and
+	system hang.
+
+4.	Fix the issue of fw report the enclure as system PDs.
+
+
+1 Release Date    : Thur.  Feb. 18, 2010 09:12:45 PST 2009 -
+			(emaild-id:megaraidlinux@lsi.com)
+			Bo Yang
+
+2 Current Version : 00.00.04.27
+3 Older Version   : 00.00.04.17.1
+
+1.	Add the CTIO support to the driver.
+
+2.	Add the ontime controller reset to the driver.
+
+3.	megaraid application will look at the device support flag to decide if application will
+	do the ontime device add/delete.
+
+4.	Fixed some issiues: OS hang during MSM create device.
+
+1 Release Date    : Thur.  Oct 29, 2009 09:12:45 PST 2009 -
+			(emaild-id:megaraidlinux@lsi.com)
+			Bo Yang
+
+2 Current Version : 00.00.04.17.1
+3 Older Version   : 00.00.04.12
+
+1.	Add the pad_0 in mfi frame structure to 0 to fix the
+	context value larger than 32bit value issue.
+
+2.	Add the logic drive list to the driver.  Driver will
+	keep the logic drive list internal after driver load.
+
+3.	driver fixed the device update issue after get the AEN
+	PD delete/ADD, LD add/delete from FW.
+
+1 Release Date    : Tues.  July 28, 2009 10:12:45 PST 2009 -
+			(emaild-id:megaraidlinux@lsi.com)
+			Bo Yang
+
+2 Current Version : 00.00.04.12
+3 Older Version   : 00.00.04.10
+
+1.	Change the AEN sys PD update from scsi_scan to
+	scsi_add_device and scsi_remove_device.
+2.	Takeoff the debug print-out in aen_polling routine.
+
+1 Release Date    : Thur.  July 02, 2009 10:12:45 PST 2009 -
+			(emaild-id:megaraidlinux@lsi.com)
+			Bo Yang
+
+2 Current Version : 00.00.04.10
+3 Older Version   : 00.00.04.08
+
+1.	Add the 3 mins timeout during the controller initialize.
+2.	Add the fix for 64bit sense date errors.
+
 1 Release Date    : Tues. May 05, 2009 10:12:45 PST 2009 -
                         (emaild-id:megaraidlinux@lsi.com)
                         Bo Yang

@@ -171,9 +171,9 @@ int ehca_destroy_eq(struct ehca_shca *shca, struct ehca_eq *eq)
 
 	ibmebus_free_irq(NULL, eq->ist, (void *)shca);
 
-	spin_lock_irqsave(&eq->spinlock, flags);
+	spin_lock_irqsave(&shca_list_lock, flags);
 	eq->is_initialized = 0;
-	spin_unlock_irqrestore(&eq->spinlock, flags);
+	spin_unlock_irqrestore(&shca_list_lock, flags);
 	
 	tasklet_kill(&eq->interrupt_task);
 

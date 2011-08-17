@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005 - 2009 ServerEngines
+ * Copyright (C) 2005 - 2010 ServerEngines
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or
@@ -321,15 +321,17 @@ static int be_get_stats_count(struct net_device *netdev)
 static int be_get_settings(struct net_device *netdev, struct ethtool_cmd *ecmd)
 {
 	struct be_adapter *adapter = netdev_priv(netdev);
-
-	int status;
-	u8 mac_speed = 0, connector = 0;
+	struct be_dma_mem phy_cmd;
+	struct be_cmd_resp_get_phy_info *resp;
+	u8 mac_speed = 0;
 	u16 link_speed = 0;
 	bool link_up = false;
+	int status;
+	u16 intf_type;
 
 	if (adapter->link_speed < 0) {
-		status = be_cmd_link_status_query(adapter, &link_up, &mac_speed,
-						&link_speed);
+		status = be_cmd_link_status_query(adapter, &link_up,
+						&mac_speed, &link_speed);
 
 		/* link_speed is in units of 10 Mbps */
 		if (link_speed) {
@@ -345,39 +347,57 @@ static int be_get_settings(struct net_device *netdev, struct ethtool_cmd *ecmd)
 			}
 		}
 
-		status = be_cmd_read_port_type(adapter, adapter->port_num,
-						&connector);
+		phy_cmd.size = sizeof(struct be_cmd_req_get_phy_info);
+		phy_cmd.va = pci_alloc_consistent(adapter->pdev, phy_cmd.size,
+					&phy_cmd.dma);
+		if (!phy_cmd.va) {
+			dev_err(&adapter->pdev->dev, "Memory alloc failure\n");
+			return -ENOMEM;
+		}
+		status = be_cmd_get_phy_info(adapter, &phy_cmd);
 		if (!status) {
-			switch (connector) {
-			case 7:
+			resp = (struct be_cmd_resp_get_phy_info *) phy_cmd.va;
+			intf_type = le16_to_cpu(resp->interface_type);
+
+			switch (intf_type) {
+			case PHY_TYPE_XFP_10GB:
+			case PHY_TYPE_SFP_1GB:
+			case PHY_TYPE_SFP_PLUS_10GB:
 				ecmd->port = PORT_FIBRE;
-				ecmd->transceiver = XCVR_EXTERNAL;
-				break;
-			case 0:
-				ecmd->port = PORT_TP;
-				ecmd->transceiver = XCVR_EXTERNAL;
 				break;
 			default:
 				ecmd->port = PORT_TP;
-				ecmd->transceiver = XCVR_INTERNAL;
 				break;
 			}
-		} else {
-			ecmd->port = PORT_AUI;
+
+			switch (intf_type) {
+			case PHY_TYPE_KR_10GB:
+			case PHY_TYPE_KX4_10GB:
+				ecmd->autoneg = AUTONEG_ENABLE;
 			ecmd->transceiver = XCVR_INTERNAL;
+				break;
+			default:
+				ecmd->autoneg = AUTONEG_DISABLE;
+				ecmd->transceiver = XCVR_EXTERNAL;
+				break;
+			}
 		}
 
+		/* Save for future use */
 		adapter->link_speed = ecmd->speed;
 		adapter->port_type = ecmd->port;
 		adapter->transceiver = ecmd->transceiver;
+		adapter->autoneg = ecmd->autoneg;
+		pci_free_consistent(adapter->pdev, phy_cmd.size,
+					phy_cmd.va, phy_cmd.dma);
 	} else {
 		ecmd->speed = adapter->link_speed;
 		ecmd->port = adapter->port_type;
 		ecmd->transceiver = adapter->transceiver;
+		ecmd->autoneg = adapter->autoneg;
 	}
 
 	ecmd->duplex = DUPLEX_FULL;
-	ecmd->autoneg = AUTONEG_DISABLE;
 	ecmd->phy_address = adapter->port_num;
 	switch (ecmd->port) {
 	case PORT_FIBRE:
@@ -389,6 +409,13 @@ static int be_get_settings(struct net_device *netdev, struct ethtool_cmd *ecmd)
 	case PORT_AUI:
 		ecmd->supported = (SUPPORTED_10000baseT_Full | SUPPORTED_AUI);
 		break;
+	}
+
+	if (ecmd->autoneg) {
+		ecmd->supported |= SUPPORTED_1000baseT_Full;
+		ecmd->supported |= SUPPORTED_Autoneg;
+		ecmd->advertising |= (ADVERTISED_10000baseT_Full |
+				ADVERTISED_1000baseT_Full);
 	}
 
 	return 0;
@@ -457,7 +484,6 @@ be_phys_id(struct net_device *netdev, u32 data)
 	status = be_cmd_set_beacon_state(adapter, adapter->port_num, 0, 0,
 			BEACON_STATE_DISABLED);
 
-
 	return status;
 }
 
@@ -500,15 +526,15 @@ be_test_ddr_dma(struct be_adapter *adapter)
 
 	ddrdma_cmd.size = sizeof(struct be_cmd_req_ddrdma_test);
 	ddrdma_cmd.va = pci_alloc_consistent(adapter->pdev, ddrdma_cmd.size,
-			&ddrdma_cmd.dma);
+					&ddrdma_cmd.dma);
 	if (!ddrdma_cmd.va) {
-		dev_err(&adapter->pdev->dev, "Memory allocation failure \n");
+		dev_err(&adapter->pdev->dev, "Memory allocation failure\n");
 		return -ENOMEM;
 	}
 
 	for (i = 0; i < 2; i++) {
 		ret = be_cmd_ddr_dma_test(adapter, pattern[i],
-						4096, &ddrdma_cmd);
+					4096, &ddrdma_cmd);
 		if (ret != 0)
 			goto err;
 	}
@@ -567,8 +593,8 @@ be_self_test(struct net_device *netdev, struct ethtool_test *test, u64 *data)
 		test->flags |= ETH_TEST_FL_FAILED;
 	}
 
-	if (be_cmd_link_status_query(adapter, &link_up,
-				&mac_speed, &qos_link_speed) != 0) {
+	if (be_cmd_link_status_query(adapter, &link_up, &mac_speed,
+				&qos_link_speed) != 0) {
 		test->flags |= ETH_TEST_FL_FAILED;
 		data[4] = -1;
 	} else if (mac_speed) {

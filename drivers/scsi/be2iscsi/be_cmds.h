@@ -47,8 +47,8 @@ struct be_mcc_wrb {
 
 #define CQE_FLAGS_VALID_MASK (1 << 31)
 #define CQE_FLAGS_ASYNC_MASK (1 << 30)
-#define CQE_FLAGS_COMPLETED_MASK 	(1 << 28)
-#define CQE_FLAGS_CONSUMED_MASK 	(1 << 27)
+#define CQE_FLAGS_COMPLETED_MASK	(1 << 28)
+#define CQE_FLAGS_CONSUMED_MASK		(1 << 27)
 
 /* Completion Status */
 #define MCC_STATUS_SUCCESS 0x0
@@ -56,7 +56,7 @@ struct be_mcc_wrb {
 #define CQE_STATUS_COMPL_MASK 0xFFFF
 #define CQE_STATUS_COMPL_SHIFT 0	/* bits 0 - 15 */
 #define CQE_STATUS_EXTD_MASK 0xFFFF
-#define CQE_STATUS_EXTD_SHIFT 0		/* bits 0 - 15 */
+#define CQE_STATUS_EXTD_SHIFT 16		/* bits 0 - 15 */
 
 struct be_mcc_compl {
 	u32 status;		/* dword 0 */
@@ -143,14 +143,14 @@ struct be_mcc_mailbox {
  */
 #define OPCODE_COMMON_CQ_CREATE				12
 #define OPCODE_COMMON_EQ_CREATE				13
-#define OPCODE_COMMON_MCC_CREATE        		21
-#define OPCODE_COMMON_GET_CNTL_ATTRIBUTES               32
+#define OPCODE_COMMON_MCC_CREATE			21
+#define OPCODE_COMMON_GET_CNTL_ATTRIBUTES		32
 #define OPCODE_COMMON_GET_FW_VERSION			35
 #define OPCODE_COMMON_MODIFY_EQ_DELAY			41
 #define OPCODE_COMMON_FIRMWARE_CONFIG			42
-#define OPCODE_COMMON_MCC_DESTROY        		53
-#define OPCODE_COMMON_CQ_DESTROY        		54
-#define OPCODE_COMMON_EQ_DESTROY        		55
+#define OPCODE_COMMON_MCC_DESTROY			53
+#define OPCODE_COMMON_CQ_DESTROY			54
+#define OPCODE_COMMON_EQ_DESTROY			55
 #define OPCODE_COMMON_QUERY_FIRMWARE_CONFIG		58
 #define OPCODE_COMMON_FUNCTION_RESET			61
 
@@ -164,9 +164,9 @@ struct be_mcc_mailbox {
 #define OPCODE_COMMON_ISCSI_NTWK_GET_NIC_CONFIG		7
 #define OPCODE_COMMON_ISCSI_SET_FRAGNUM_BITS_FOR_SGL_CRA 61
 #define OPCODE_COMMON_ISCSI_DEFQ_CREATE                 64
-#define OPCODE_COMMON_ISCSI_DEFQ_DESTROY 		65
+#define OPCODE_COMMON_ISCSI_DEFQ_DESTROY		65
 #define OPCODE_COMMON_ISCSI_WRBQ_CREATE			66
-#define OPCODE_COMMON_ISCSI_WRBQ_DESTROY 		67
+#define OPCODE_COMMON_ISCSI_WRBQ_DESTROY		67
 
 struct be_cmd_req_hdr {
 	u8 opcode;		/* dword 0 */
@@ -237,10 +237,20 @@ struct be_cmd_resp_eq_create {
 	u16 rsvd0;		/* sword */
 } __packed;
 
+struct ip_address_format {
+	u16 size_of_structure;
+	u8 reserved;
+	u8 ip_type;
+	u8 ip_address[16];
+	u32 rsvd0;
+} __packed;
+
+
 struct mac_addr {
 	u16 size_of_struct;
 	u8 addr[ETH_ALEN];
 } __packed;
+
 
 struct be_cmd_req_mac_query {
 	struct be_cmd_req_hdr hdr;
@@ -423,9 +433,11 @@ int beiscsi_cmd_mccq_create(struct beiscsi_hba *phba,
 			struct be_queue_info *cq);
 
 int be_poll_mcc(struct be_ctrl_info *ctrl);
-unsigned char mgmt_check_supported_fw(struct be_ctrl_info *ctrl,
+int mgmt_check_supported_fw(struct be_ctrl_info *ctrl,
 				      struct beiscsi_hba *phba);
 unsigned int be_cmd_get_mac_addr(struct beiscsi_hba *phba);
+unsigned int beiscsi_get_boot_target(struct beiscsi_hba *phba);
+
 void free_mcc_tag(struct be_ctrl_info *ctrl, unsigned int tag);
 /*ISCSI Functuions */
 int be_cmd_fw_initialize(struct be_ctrl_info *ctrl);
@@ -601,14 +613,6 @@ struct be_eq_delay_params_in {
 	struct eq_delay delay[8];
 } __packed;
 
-struct ip_address_format {
-	u16 size_of_structure;
-	u8 reserved;
-	u8 ip_type;
-	u8 ip_address[16];
-	u32 rsvd0;
-} __packed;
-
 struct tcp_connect_and_offload_in {
 	struct be_cmd_req_hdr hdr;
 	struct ip_address_format ip_address;
@@ -688,18 +692,18 @@ struct be_fw_cfg {
 	u32 function_caps;
 } __packed;
 
-#define CMD_ISCSI_COMMAND_INVALIDATE  1
-#define ISCSI_OPCODE_SCSI_DATA_OUT      5
+#define ISCSI_OPCODE_SCSI_DATA_OUT		5
+#define OPCODE_COMMON_MODIFY_EQ_DELAY		41
+#define OPCODE_COMMON_ISCSI_CLEANUP		59
+#define	OPCODE_COMMON_TCP_UPLOAD		56
 #define OPCODE_COMMON_ISCSI_TCP_CONNECT_AND_OFFLOAD 70
-#define OPCODE_ISCSI_INI_DRIVER_OFFLOAD_SESSION 41
-#define OPCODE_COMMON_MODIFY_EQ_DELAY	41
-#define OPCODE_COMMON_ISCSI_CLEANUP	59
-#define	OPCODE_COMMON_TCP_UPLOAD	56
 #define OPCODE_COMMON_ISCSI_ERROR_RECOVERY_INVALIDATE_COMMANDS 1
-/* --- CMD_ISCSI_INVALIDATE_CONNECTION_TYPE --- */
-#define CMD_ISCSI_CONNECTION_INVALIDATE 0x8001
-#define CMD_ISCSI_CONNECTION_ISSUE_TCP_RST 0x8002
 #define OPCODE_ISCSI_INI_DRIVER_INVALIDATE_CONNECTION 42
+
+/* --- CMD_ISCSI_INVALIDATE_CONNECTION_TYPE --- */
+#define CMD_ISCSI_COMMAND_INVALIDATE		1
+#define CMD_ISCSI_CONNECTION_INVALIDATE		0x8001
+#define CMD_ISCSI_CONNECTION_ISSUE_TCP_RST	0x8002
 
 #define INI_WR_CMD			1	/* Initiator write command */
 #define INI_TMF_CMD			2	/* Initiator TMF command */
@@ -875,7 +879,7 @@ struct be_fw_cfg {
 						 */
 #define UNSOL_HDR_NOTIFY		28	/* Unsolicited header notify.*/
 #define UNSOL_DATA_NOTIFY		29	/* Unsolicited data notify.*/
-#define UNSOL_DATA_DIGEST_ERROR_NOTIFY 	30	/* Unsolicited data digest
+#define UNSOL_DATA_DIGEST_ERROR_NOTIFY	30	/* Unsolicited data digest
 						 * error notify.
 						 */
 #define DRIVERMSG_NOTIFY		31	/* TCP acknowledge based
@@ -900,6 +904,9 @@ struct be_fw_cfg {
 						 * that has immediate data on
 						 * the cxn
 						 */
+
+int beiscsi_pci_soft_reset(struct beiscsi_hba *phba);
+int be_chk_reset_complete(struct beiscsi_hba *phba);
 
 void be_wrb_hdr_prepare(struct be_mcc_wrb *wrb, int payload_len,
 			bool embedded, u8 sge_cnt);

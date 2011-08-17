@@ -18,6 +18,7 @@
 #include <linux/security.h>
 #include <linux/cpu.h>
 #include <linux/acct.h>
+#include <linux/tsacct_kern.h>
 #include <linux/file.h>
 #include <linux/binfmts.h>
 #include <linux/tracehook.h>
@@ -843,6 +844,15 @@ fastcall NORET_TYPE void do_exit(long code)
 	if (unlikely(tsk == child_reaper))
 		panic("Attempted to kill init!");
 
+	/*
+	 * If do_exit is called because this processes oopsed, it's possible
+	 * that get_fs() was left as KERNEL_DS, so reset it to USER_DS before
+	 * continuing. Amongst other possible reasons, this is to prevent
+	 * mm_release()->clear_child_tid() from writing to a user-controlled
+	 * kernel address.
+	 */
+	set_fs(USER_DS);
+
 	tracehook_report_exit(&code);
 
 	/*
@@ -894,6 +904,9 @@ fastcall NORET_TYPE void do_exit(long code)
 	if (group_dead) {
 		hrtimer_cancel(&tsk->signal->real_timer);
 		exit_itimers(tsk->signal);
+		if (tsk->mm)
+			setmax_mm_hiwater_rss(&signal_aux(tsk->signal)->maxrss,
+						tsk->mm);
 	}
 
 	if (current->tux_info) {
@@ -1154,6 +1167,7 @@ static int wait_task_zombie(struct task_struct *p, int noreap,
 	if (likely(p->signal)) {
 		struct signal_struct *psig;
 		struct signal_struct *sig;
+		unsigned long maxrss;
 
 		/*
 		 * The resource counters for the group leader are in its
@@ -1199,6 +1213,9 @@ static int wait_task_zombie(struct task_struct *p, int noreap,
 			paux->wchar += p->wchar + aux->wchar;
 			paux->syscr += p->syscr + aux->syscr;
 			paux->syscw += p->syscw + aux->syscw;
+			maxrss = max(aux->maxrss, aux->cmaxrss);
+			if (paux->cmaxrss < maxrss)
+				paux->cmaxrss = maxrss;
 #ifdef CONFIG_TASK_IO_ACCOUNTING
 			paux->ioac.read_bytes +=
 				task_aux(p)->ioac.read_bytes +

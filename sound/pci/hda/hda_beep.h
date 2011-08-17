@@ -24,10 +24,15 @@
 
 #include "hda_codec.h"
 
+#define HDA_BEEP_MODE_OFF	0
+#define HDA_BEEP_MODE_ON	1
+#define HDA_BEEP_MODE_SWREG	2
+
 /* beep information */
 struct hda_beep {
 	struct input_dev *dev;
 	struct hda_codec *codec;
+	unsigned int mode;
 	char phys[32];
 	int tone;
 	hda_nid_t nid;
@@ -35,7 +40,7 @@ struct hda_beep {
 	unsigned int request_enable:1;
 	unsigned int linear_tone:1;	/* linear tone for IDT/STAC codec */
 	struct work_struct register_work; /* registration work */
-	struct work_struct unregister_work; /* unregistration work */
+	struct delayed_work unregister_work; /* unregistration work */
 	struct work_struct beep_work; /* scheduled task for beep event */
 	struct mutex mutex;
 };

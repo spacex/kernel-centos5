@@ -82,7 +82,7 @@ static void cifs_set_ops(struct inode *inode, const bool is_dfs_referral)
 }
 
 static void cifs_unix_info_to_inode(struct inode *inode,
-		FILE_UNIX_BASIC_INFO *info, int force_uid_gid)
+				    FILE_UNIX_BASIC_INFO *info)
 {
 	struct cifs_sb_info *cifs_sb = CIFS_SB(inode->i_sb);
 	struct cifsInodeInfo *cifsInfo = CIFS_I(inode);
@@ -133,14 +133,12 @@ static void cifs_unix_info_to_inode(struct inode *inode,
 		break;
 	}
 
-	if ((cifs_sb->mnt_cifs_flags & CIFS_MOUNT_OVERR_UID) &&
-	    !force_uid_gid)
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_OVERR_UID)
 		inode->i_uid = cifs_sb->mnt_uid;
 	else
 		inode->i_uid = le64_to_cpu(info->Uid);
 
-	if ((cifs_sb->mnt_cifs_flags & CIFS_MOUNT_OVERR_GID) &&
-	    !force_uid_gid)
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_OVERR_GID)
 		inode->i_gid = cifs_sb->mnt_gid;
 	else
 		inode->i_gid = le64_to_cpu(info->Gid);
@@ -298,7 +296,7 @@ int cifs_get_inode_info_unix(struct inode **pinode,
 	/* this is ok to set on every inode revalidate */
 	atomic_set(&cifsInfo->inUse, 1);
 
-	cifs_unix_info_to_inode(inode, &find_data, 0);
+	cifs_unix_info_to_inode(inode, &find_data);
 
 	if (num_of_bytes < end_of_file)
 		cFYI(1, ("allocation size less than end of file"));
@@ -394,9 +392,10 @@ static int get_sfu_mode(struct inode *inode,
 	char ea_value[4];
 	__u32 mode;
 
-	rc = CIFSSMBQueryEA(xid, cifs_sb->tcon, path, "SETFILEBITS",
-			ea_value, 4 /* size of buf */, cifs_sb->local_nls,
-		cifs_sb->mnt_cifs_flags & CIFS_MOUNT_MAP_SPECIAL_CHR);
+	rc = CIFSSMBQAllEAs(xid, cifs_sb->tcon, path, "SETFILEBITS",
+			    ea_value, 4 /* size of buf */, cifs_sb->local_nls,
+			    cifs_sb->mnt_cifs_flags &
+				CIFS_MOUNT_MAP_SPECIAL_CHR);
 	if (rc < 0)
 		return (int)rc;
 	else if (rc > 3) {
@@ -1078,7 +1077,7 @@ void posix_fill_in_inode(struct inode *tmp_inode,
 	local_mtime = tmp_inode->i_mtime;
 	local_size  = tmp_inode->i_size;
 
-	cifs_unix_info_to_inode(tmp_inode, pData, 1);
+	cifs_unix_info_to_inode(tmp_inode, pData);
 	cifs_set_ops(tmp_inode, false);
 
 	if (!S_ISREG(tmp_inode->i_mode))
@@ -1356,6 +1355,10 @@ cifs_do_rename(int xid, struct dentry *from_dentry, const char *fromPath,
 	 * rename by filehandle to various Windows servers.
 	 */
 	if (rc == 0 || rc != -ETXTBSY)
+		return rc;
+
+	/* open-file renames don't work across directories */
+	if (to_dentry->d_parent != from_dentry->d_parent)
 		return rc;
 
 	/* open the file to be renamed -- we need DELETE perms */

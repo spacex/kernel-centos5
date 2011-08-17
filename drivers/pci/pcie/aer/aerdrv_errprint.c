@@ -57,11 +57,6 @@
 	(e & AER_DATA_LINK_LAYER_ERROR_MASK(t)) ? AER_DATA_LINK_LAYER_ERROR : \
 	AER_TRANSACTION_LAYER_ERROR)
 
-static inline const char *dev_name(const struct device *dev)
-{
-	return kobject_name(&dev->kobj);
-}
-
 #define AER_PR(info, pdev, fmt, args...)				\
 	printk("%s%s %s: " fmt, (info->severity == AER_CORRECTABLE) ?	\
 		KERN_WARNING : KERN_ERR, dev_driver_string(&pdev->dev),	\

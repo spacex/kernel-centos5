@@ -50,13 +50,9 @@ unsigned long get_hypervisor_tsc_freq(void)
 	return 0;
 }
 
-unsigned long get_hypervisor_cycles_per_tick(void)
+cycles_t get_hypervisor_cycles_per_tick(void)
 {
-
-	if (boot_cpu_data.x86_hyper_vendor == X86_HYPER_VENDOR_KVM)
-		return 1000000000 / REAL_HZ;
-	else /* Same thing for VMware or baremetal, in case we force it */
-		return (cpu_khz * 1000) / REAL_HZ;
+	return (cpu_khz * 1000) / REAL_HZ;
 }
 
 static inline void __cpuinit
@@ -65,6 +61,32 @@ hypervisor_set_feature_bits(struct cpuinfo_x86 *c)
 	if (boot_cpu_data.x86_hyper_vendor == X86_HYPER_VENDOR_VMWARE) {
 		vmware_set_feature_bits(c);
 		return;
+	}
+}
+
+extern cycles_t cycles_per_tick, cycles_accounted_limit, last_tsc_accounted;
+extern int timekeeping_use_tsc;
+
+void init_tsc_timer(void)
+{
+	if (timekeeping_use_tsc > 0) {
+#ifdef __i386__
+		extern int enable_tsc_timer;
+		enable_tsc_timer = 1;
+		rdtscll(last_tsc_accounted);
+#else
+		tick_nsec = NSEC_PER_SEC / HZ;
+#endif
+		if (use_kvm_time) /* KVM time is already in nanoseconds units */
+			cycles_per_tick = 1000000000 / REAL_HZ;
+		else
+			cycles_per_tick = get_hypervisor_cycles_per_tick();
+		/*
+		 * The maximum cycles we will account per
+		 * timer interrupt is 1 minute.
+		 */
+		cycles_accounted_limit = cycles_per_tick * REAL_HZ * 60;
+		printk(KERN_INFO "Using TSC for driving interrupts\n");
 	}
 }
 

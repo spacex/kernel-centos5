@@ -168,27 +168,6 @@ static struct list_head ptype_base[16];	/* 16 way hashed list */
 static struct list_head ptype_all;		/* Taps */
 static struct list_head gro_ptype_base[16];
 
-#ifdef CONFIG_NET_DMA
-struct net_dma {
-	struct dma_client client;
-	spinlock_t lock;
-	cpumask_t channel_mask;
-	struct dma_chan *channels[NR_CPUS];
-};
-
-static enum dma_state_client
-  netdev_dma_event(struct dma_client *client, struct dma_chan *chan,
-	enum dma_state state);
-
-static struct net_dma net_dma = {
-	.client = {
-		.event_callback_v3 = netdev_dma_event,
-	},
-};
-
-
-#endif
-
 /*
  * The @dev_base list is protected by @dev_base_lock and the rtnl
  * semaphore.
@@ -952,6 +931,11 @@ int dev_open(struct net_device *dev)
 		dev->flags |= IFF_UP;
 
 		/*
+		 *	Enable NET_DMA
+		 */
+		net_dmaengine_get();
+
+		/*
 		 *	Initialize multicasting status
 		 */
 		dev_mc_upload(dev);
@@ -1025,6 +1009,11 @@ int dev_close(struct net_device *dev)
 	 * Tell people we are down
 	 */
 	raw_notifier_call_chain(&netdev_chain, NETDEV_DOWN, dev);
+
+	/*
+	 *	Shutdown NET_DMA
+	 */
+	net_dmaengine_put();
 
 	return 0;
 }
@@ -1604,6 +1593,7 @@ gso:
 #ifdef CONFIG_NET_CLS_ACT
 	skb->tc_verd = SET_TC_AT(skb->tc_verd,AT_EGRESS);
 #endif
+	trace_net_dev_queue(skb);
 	if (q->enqueue) {
 		/* Grab device queue */
 		spin_lock(&dev->queue_lock);
@@ -1710,6 +1700,8 @@ int netif_rx(struct sk_buff *skb)
 
 	if (!skb->tstamp.off_sec)
 		net_timestamp(skb);
+
+	trace_netif_rx(skb);
 
 	/*
 	 * The code is rearranged so that the path is the most
@@ -2252,7 +2244,7 @@ int napi_frags_finish(struct napi_struct *napi, struct sk_buff *skb, int ret)
 	switch (ret) {
 	case GRO_NORMAL:
 	case GRO_HELD:
-		skb->protocol = eth_type_trans(skb, napi->dev);
+		skb->protocol = eth_type_trans(skb, skb->dev);
 
 		if (ret == GRO_NORMAL)
 			return netif_receive_skb(skb);
@@ -2427,14 +2419,7 @@ out:
 	 * There may not be any more sk_buffs coming right now, so push
 	 * any pending DMA copies to hardware
 	 */
-	if (!cpus_empty(net_dma.channel_mask)) {
-		int chan_idx;
-		for_each_cpu_mask(chan_idx, net_dma.channel_mask) {
-			struct dma_chan *chan = net_dma.channels[chan_idx];
-			if (chan)
-				dma_async_memcpy_issue_pending_v3(chan);
-		}
-	}
+	dma_issue_pending_all();
 #endif
 	local_irq_enable();
 	return;
@@ -4024,114 +4009,6 @@ static int dev_cpu_callback(struct notifier_block *nfb,
 }
 #endif /* CONFIG_HOTPLUG_CPU */
 
-#ifdef CONFIG_NET_DMA
-/**
- * net_dma_rebalance -
- * This is called when the number of channels allocated to the net_dma_client
- * changes.  The net_dma_client tries to have one DMA channel per CPU.
- */
-static void net_dma_rebalance(struct net_dma *net_dma)
-{
-	unsigned int cpu, i, n, chan_idx;
-	struct dma_chan *chan;
-
-	if (cpus_empty(net_dma->channel_mask)) {
-		for_each_online_cpu(cpu)
-			rcu_assign_pointer(per_cpu(softnet_data, cpu).net_dma, NULL);
-		return;
-	}
-
-	i = 0;
-	cpu = first_cpu(cpu_online_map);
-
-	for_each_cpu_mask(chan_idx, net_dma->channel_mask) {
-		chan = net_dma->channels[chan_idx];
-
-		n = ((num_online_cpus() / cpus_weight(net_dma->channel_mask))
-		      + (i < (num_online_cpus() %
-		      cpus_weight(net_dma->channel_mask)) ? 1 : 0));
-
-		while(n) {
-			per_cpu(softnet_data, cpu).net_dma = chan;
-			cpu = next_cpu(cpu, cpu_online_map);
-			n--;
-		}
-		i++;
-	}
-}
-
-/**
- * netdev_dma_event - event callback for the net_dma_client
- * @client: should always be net_dma_client
- * @chan: DMA channel for the event
- * @event: event type
- */
-static enum dma_state_client
-    netdev_dma_event(struct dma_client *client, struct dma_chan *chan,
-	enum dma_state state)
-{
-	int i, found = 0, pos = -1;
-	struct net_dma *net_dma =
-		container_of(client, struct net_dma, client);
-	enum dma_state_client ack = DMA_DUP; /* default: take no action */
-
-	spin_lock(&net_dma->lock);
-	switch (state) {
-	case DMA_STATE_RESOURCE_AVAILABLE:
-		for (i = 0; i < NR_CPUS; i++)
-			if (net_dma->channels[i] == chan) {
-				found = 1;
-				break;
-			} else if (net_dma->channels[i] == NULL && pos < 0)
-				pos = i;
-
-			if (!found && pos >= 0) {
-				ack = DMA_ACK;
-				net_dma->channels[pos] = chan;
-				cpu_set(pos, net_dma->channel_mask);
-				net_dma_rebalance(net_dma);
-			}
-
-		break;
-	case DMA_STATE_RESOURCE_REMOVED:
-		for (i = 0; i < NR_CPUS; i++)
-		if (net_dma->channels[i] == chan) {
-			found = 1;
-			pos = i;
-			break;
-		}
-
-		if (found) {
-			ack = DMA_ACK;
-			cpu_clear(pos, net_dma->channel_mask);
-			net_dma->channels[i] = NULL;
-			net_dma_rebalance(net_dma);
-		}
-		break;
-	default:
-		break;
-	}
-	spin_unlock(&net_dma->lock);
-
-	return(ack);
-}
-
-/**
- * netdev_dma_regiser - register the networking subsystem as a DMA client
- */
-static int __init netdev_dma_register(void)
-{
-	spin_lock_init(&net_dma.lock);
-	dma_cap_set(DMA_MEMCPY, net_dma.client.cap_mask);
-	dma_async_client_register_v3(&net_dma.client);
-	dma_async_client_chan_request_v3(&net_dma.client);
-	return 0;
-}
-
-#else
-static int __init netdev_dma_register(void) { return -ENODEV; }
-#endif /* CONFIG_NET_DMA */
-
 /*
  *	Initialize the DEV module. At boot time this walks the device list and
  *	unhooks any devices that fail to initialise (normally hardware not
@@ -4190,8 +4067,6 @@ static int __init net_dev_init(void)
 
 	BUG_ON(!dev_boot_phase);
 
-	net_random_init();
-
 	if (dev_proc_init())
 		goto out;
 
@@ -4226,8 +4101,6 @@ static int __init net_dev_init(void)
 		queue->backlog_dev.poll = process_backlog;
 		atomic_set(&queue->backlog_dev.refcnt, 1);
 	}
-
-	netdev_dma_register();
 
 	dev_boot_phase = 0;
 

@@ -289,8 +289,8 @@
 #define E1000_SCTL_DISABLE_SERDES_LOOPBACK 0x0400
 
 /* Receive Checksum Control */
+#define E1000_RXCSUM_IPOFL     0x00000100   /* IPv4 checksum offload */
 #define E1000_RXCSUM_TUOFL     0x00000200   /* TCP / UDP checksum offload */
-#define E1000_RXCSUM_IPPCSE    0x00001000   /* IP payload checksum enable */
 #define E1000_RXCSUM_PCSD      0x00002000   /* packet checksum disabled */
 
 /* Header split receive */
@@ -599,6 +599,7 @@
 #define M88E1111_I_PHY_ID    0x01410CC0
 #define IGP03E1000_E_PHY_ID  0x02A80390
 #define I82580_I_PHY_ID      0x015403A0
+#define I350_I_PHY_ID        0x015403B0
 #define M88_VENDOR           0x0141
 
 /* M88E1000 Specific Registers */

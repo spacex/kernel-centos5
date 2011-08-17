@@ -341,6 +341,8 @@ static int inline rt6_check_neigh(struct rt6_info *rt)
 		read_lock_bh(&neigh->lock);
 		if (neigh->nud_state & NUD_VALID)
 			m = 2;
+		else if (!(neigh->nud_state & NUD_FAILED))
+			m = 1;
 		read_unlock_bh(&neigh->lock);
 	}
 	return m;
@@ -2477,7 +2479,7 @@ ctl_table ipv6_route_table[] = {
 
 #endif
 
-void __init ip6_route_init(void)
+int __init ip6_route_init(void)
 {
 	struct proc_dir_entry *p;
 
@@ -2486,11 +2488,15 @@ void __init ip6_route_init(void)
 						     0, SLAB_HWCACHE_ALIGN,
 						     NULL, NULL);
 	if (!ip6_dst_ops.kmem_cachep)
-		panic("cannot create ip6_dst_cache");
+		return -ENOMEM;
 
 	ip6_dst_blackhole_ops.kmem_cachep = ip6_dst_ops.kmem_cachep;
 
-	fib6_init();
+	if (fib6_init()) {
+		kmem_cache_destroy(ip6_dst_ops.kmem_cachep);
+		return -ENOMEM;
+	}
+
 #ifdef 	CONFIG_PROC_FS
 	p = proc_net_create("ipv6_route", 0, rt6_proc_info);
 	if (p)
@@ -2504,6 +2510,7 @@ void __init ip6_route_init(void)
 #ifdef CONFIG_IPV6_MULTIPLE_TABLES
 	fib6_rules_init();
 #endif
+	return 0;
 }
 
 void ip6_route_cleanup(void)

@@ -167,6 +167,7 @@ static int sriov_enable(struct pci_dev *dev, int nr_virtfn)
 {
 	int rc;
 	int i, j;
+	int nres;
 	u16 offset, stride, initial;
 	struct resource *res;
 	struct pci_dev *pdev;
@@ -193,15 +194,15 @@ static int sriov_enable(struct pci_dev *dev, int nr_virtfn)
 	if (!offset || (nr_virtfn > 1 && !stride))
 		return -EIO;
 
+	nres = 0;
 	for (i = 0; i < PCI_SRIOV_NUM_BARS; i++) {
 		res = iov->res + i;
-		if (!res->flags)
-			continue;
-		rc = pci_assign_resource(dev, i + PCI_IOV_RESOURCES);
-		if (rc) {
-			dev_err(&dev->dev, "not enough MMIO resources for SR-IOV\n");
-			goto failed1;
-		}
+		if (res->parent)
+			nres++;
+	}
+	if (nres != iov->nres) {
+		dev_err(&dev->dev, "not enough MMIO resources for SR-IOV\n");
+		return -ENOMEM;
 	}
 
 	iov->offset = offset;
@@ -262,20 +263,12 @@ failed2:
 	if (iov->link != dev->devfn)
 		sysfs_remove_link(&dev->dev.kobj, "dep_link");
 
-failed1:
-	for (i = 0; i < PCI_SRIOV_NUM_BARS; i++) {
-		res = iov->res + i;
-		if (res->parent)
-			release_resource(res);
-	}
-
 	return rc;
 }
 
 static void sriov_disable(struct pci_dev *dev)
 {
 	int i;
-	struct resource *res;
 	struct pci_sriov *iov = dev->sriov;
 
 	if (!iov->nr_virtfn)
@@ -293,12 +286,6 @@ static void sriov_disable(struct pci_dev *dev)
 	if (iov->link != dev->devfn)
 		sysfs_remove_link(&dev->dev.kobj, "dep_link");
 
-	for (i = 0; i < PCI_SRIOV_NUM_BARS; i++) {
-		res = iov->res + i;
-		if (res->parent)
-			release_resource(res);
-	}
-
 	iov->nr_virtfn = 0;
 }
 
@@ -306,6 +293,7 @@ static int sriov_init(struct pci_dev *dev, int pos)
 {
 	int i;
 	int rc;
+	int nres;
 	u32 pgsz;
 	u16 ctrl, total, offset, stride;
 	struct pci_sriov *iov;
@@ -356,6 +344,7 @@ found:
 	if (!iov)
 		return -ENOMEM;
 
+	nres = 0;
 	for (i = 0; i < PCI_SRIOV_NUM_BARS; i++) {
 		res = iov->res + i;
 		i += __pci_read_base(dev, pci_bar_unknown, res,
@@ -367,9 +356,11 @@ found:
 			goto failed;
 		}
 		res->end = res->start + (res->end - res->start + 1) * total - 1;
+		nres++;
 	}
 
 	iov->pos = pos;
+	iov->nres = nres;
 	iov->ctrl = ctrl;
 	iov->total = total;
 	iov->offset = offset;
@@ -486,6 +477,29 @@ int pci_iov_resource_bar(struct pci_dev *dev, int resno,
 
 	return dev->sriov->pos + PCI_SRIOV_BAR +
 		4 * (resno - PCI_IOV_RESOURCES);
+}
+
+/**
+ * pci_sriov_resource_alignment - get resource alignment for VF BAR
+ * @dev: the PCI device
+ * @resno: the resource number
+ *
+ * Returns the alignment of the VF BAR found in the SR-IOV capability.
+ * This is not the same as the resource size which is defined as
+ * the VF BAR size multiplied by the number of VFs.  The alignment
+ * is just the VF BAR size.
+ */
+int pci_sriov_resource_alignment(struct pci_dev *dev, int resno)
+{
+	struct resource tmp;
+	enum pci_bar_type type;
+	int reg = pci_iov_resource_bar(dev, resno, &type);
+
+	if (!reg)
+		return 0;
+
+	 __pci_read_base(dev, type, &tmp, reg);
+	return resource_alignment(&tmp);
 }
 
 /**

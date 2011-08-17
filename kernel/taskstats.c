@@ -18,7 +18,9 @@
 
 #include <linux/kernel.h>
 #include <linux/taskstats_kern.h>
+#include <linux/tsacct_kern.h>
 #include <linux/delayacct.h>
+#include <linux/tsacct_kern.h>
 #include <linux/cpumask.h>
 #include <linux/percpu.h>
 #include <net/genetlink.h>
@@ -206,6 +208,53 @@ static int fill_pid(pid_t pid, struct task_struct *pidtsk,
 
 }
 
+static int fill_pid_v4(pid_t pid, struct taskstats_v4 *stats_v4)
+{
+	int rc = 0;
+	struct task_struct *tsk;
+	struct taskstats stats;
+
+	read_lock(&tasklist_lock);
+	tsk = find_task_by_pid(pid);
+	if (!tsk) {
+		read_unlock(&tasklist_lock);
+		return -ESRCH;
+	}
+	get_task_struct(tsk);
+	read_unlock(&tasklist_lock);
+
+	/*
+	 * Each accounting subsystem adds calls to its functions to
+	 * fill in relevant parts of struct taskstsats as follows
+	 *
+	 *	per-task-foo(stats, tsk);
+	 */
+
+	delayacct_add_tsk(&stats, tsk);
+
+	/* copy v1 delayed statistics to the v4 struct */
+	stats_v4->cpu_count             = stats.cpu_count;
+	stats_v4->cpu_delay_total       = stats.cpu_delay_total;
+	stats_v4->blkio_count           = stats.blkio_count;
+	stats_v4->blkio_delay_total     = stats.blkio_delay_total;
+	stats_v4->swapin_count          = stats.swapin_count;
+	stats_v4->swapin_delay_total    = stats.swapin_delay_total;
+	stats_v4->cpu_run_real_total    = stats.cpu_run_real_total;
+	stats_v4->cpu_run_virtual_total = stats.cpu_run_virtual_total;
+
+	/* fill in basic acct fields */
+	stats_v4->version = TASKSTATS_VERSION_V4;
+	bacct_add_tsk(stats_v4, tsk);
+
+	/* fill in extended acct fields */
+	xacct_add_tsk(stats_v4, tsk);
+
+	/* Define err: label here if needed */
+	put_task_struct(tsk);
+	return rc;
+
+}
+
 static int fill_tgid(pid_t tgid, struct task_struct *tgidtsk,
 		struct taskstats *stats)
 {
@@ -376,10 +425,14 @@ static int taskstats_user_cmd(struct sk_buff *skb, struct genl_info *info)
 	/*
 	 * Size includes space for nested attributes
 	 */
-	size = nla_total_size(sizeof(u32)) +
-		nla_total_size(sizeof(struct taskstats)) + nla_total_size(0);
+	size = nla_total_size(sizeof(struct taskstats));
+	if (info->attrs[TASKSTATS_CMD_ATTR_PID_V4]) {
+		size = nla_total_size(sizeof(struct taskstats_v4));
+	} else
+		memset(&stats, 0, sizeof(stats));
 
-	memset(&stats, 0, sizeof(stats));
+	size += nla_total_size(sizeof(u32)) + nla_total_size(0);
+
 	rc = prepare_reply(info, TASKSTATS_CMD_NEW, &rep_skb, &reply, size);
 	if (rc < 0)
 		return rc;
@@ -394,6 +447,19 @@ static int taskstats_user_cmd(struct sk_buff *skb, struct genl_info *info)
 		NLA_PUT_U32(rep_skb, TASKSTATS_TYPE_PID, pid);
 		NLA_PUT_TYPE(rep_skb, struct taskstats, TASKSTATS_TYPE_STATS,
 				stats);
+	} else if (info->attrs[TASKSTATS_CMD_ATTR_PID_V4]) {
+		struct taskstats_v4 stats_v4;
+
+		memset(&stats_v4, 0, sizeof(stats_v4));
+		u32 pid = nla_get_u32(info->attrs[TASKSTATS_CMD_ATTR_PID_V4]);
+		rc = fill_pid_v4(pid, &stats_v4);
+		if (rc < 0)
+			goto err;
+
+		na = nla_nest_start(rep_skb, TASKSTATS_TYPE_AGGR_PID);
+		NLA_PUT_U32(rep_skb, TASKSTATS_TYPE_PID, pid);
+		NLA_PUT_TYPE(rep_skb, struct taskstats_v4, TASKSTATS_TYPE_STATS_V4,
+				stats_v4);
 	} else if (info->attrs[TASKSTATS_CMD_ATTR_TGID]) {
 		u32 tgid = nla_get_u32(info->attrs[TASKSTATS_CMD_ATTR_TGID]);
 		rc = fill_tgid(tgid, NULL, &stats);

@@ -35,6 +35,10 @@
 #include <linux/module.h>
 #include <asm/byteorder.h>
 
+#ifdef ARCH_HAS_CRC32C_HW
+#include <asm/crc32c-hw.h>
+#endif
+
 MODULE_AUTHOR("Clay Haapala <chaapala@cisco.com>");
 MODULE_DESCRIPTION("CRC32c (Castagnoli) calculations");
 MODULE_LICENSE("GPL");
@@ -67,7 +71,7 @@ EXPORT_SYMBOL(crc32c_le);
  * of space and maintainability in keeping the two modules separate.
  */
 u32 __attribute_pure__
-crc32c_le(u32 crc, unsigned char const *p, size_t len)
+crc32c_le_sw(u32 crc, unsigned char const *p, size_t len)
 {
 	int i;
 	while (len--) {
@@ -161,7 +165,7 @@ static const u32 crc32c_table[256] = {
  */
 
 u32 __attribute_pure__
-crc32c_le(u32 seed, unsigned char const *data, size_t length)
+crc32c_le_sw(u32 seed, unsigned char const *data, size_t length)
 {
 	u32 crc = __cpu_to_le32(seed);
 	
@@ -173,6 +177,18 @@ crc32c_le(u32 seed, unsigned char const *data, size_t length)
 }
 
 #endif	/* CRC_LE_BITS == 8 */
+
+u32 __attribute_pure__
+crc32c_le(u32 crc, unsigned char const *p, size_t len)
+{
+#ifdef ARCH_HAS_CRC32C_HW
+	if (cpu_has_xmm4_2)
+		return crc32c_intel_le_hw(crc, p, len);
+#endif
+
+	return crc32c_le_sw(crc, p, len);
+}
+
 
 EXPORT_SYMBOL(crc32c_be);
 

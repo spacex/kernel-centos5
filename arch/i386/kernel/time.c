@@ -145,6 +145,43 @@ unsigned long profile_pc(struct pt_regs *regs)
 EXPORT_SYMBOL(profile_pc);
 #endif
 
+int enable_tsc_timer, timekeeping_use_tsc;
+cycles_t cycles_per_tick, cycles_accounted_limit, last_tsc_accounted;
+
+void do_timer_tsc_timekeeping(struct pt_regs *regs)
+{
+	cycles_t tsc, tsc_not_accounted, tsc_accounted, tsc_wd;
+
+	rdtscll(tsc);
+	tsc_accounted = last_tsc_accounted;
+
+	if (unlikely(tsc < tsc_accounted))
+		return;
+
+	tsc_not_accounted = tsc - tsc_accounted;
+
+	if (tsc_not_accounted > cycles_accounted_limit) {
+		/* Be extra safe and limit the loop below. */
+		tsc_accounted = tsc_not_accounted - cycles_accounted_limit;
+		tsc_not_accounted = cycles_accounted_limit;
+	}
+
+	tsc_wd = 0;
+	while (tsc_not_accounted >= cycles_per_tick) {
+		do_timer_jiffy(regs);
+		if (tsc_wd > cycles_per_tick) {
+			touch_all_softlockup_watchdogs();
+			tsc_wd = 0;
+		}
+		tsc_not_accounted -= cycles_per_tick;
+		tsc_accounted += cycles_per_tick;
+		tsc_wd += cycles_per_tick;
+	}
+
+	last_tsc_accounted = tsc_accounted;
+
+}
+
 /*
  * This is the same as the above, except we _also_ save the current
  * Time Stamp Counter value at the time of the timer interrupt, so that
@@ -309,6 +346,7 @@ static int timer_resume(struct sys_device *dev)
 	wall_jiffies += sleep_length;
 	write_sequnlock_irqrestore(&xtime_lock, flags);
 	touch_softlockup_watchdog();
+	rdtscll(last_tsc_accounted);
 	return 0;
 }
 

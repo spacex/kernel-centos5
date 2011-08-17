@@ -18,7 +18,8 @@ int ip6_route_me_harder(struct sk_buff *skb)
 		.nl_u =
 		{ .ip6_u =
 		  { .daddr = iph->daddr,
-		    .saddr = iph->saddr, } },
+		    .saddr = iph->saddr,
+		    .fwmark = skb->nfmark, } },
 	};
 
 	dst = ip6_route_output(skb->sk, &fl);

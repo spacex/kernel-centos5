@@ -1452,16 +1452,18 @@ void fib6_run_gc(unsigned long dummy)
 	spin_unlock_bh(&fib6_gc_lock);
 }
 
-void __init fib6_init(void)
+int __init fib6_init(void)
 {
 	fib6_node_kmem = kmem_cache_create("fib6_nodes",
 					   sizeof(struct fib6_node),
 					   0, SLAB_HWCACHE_ALIGN,
 					   NULL, NULL);
 	if (!fib6_node_kmem)
-		panic("cannot create fib6_nodes cache");
+		return -ENOMEM;
 
 	fib6_tables_init();
+
+	return 0;
 }
 
 void fib6_gc_cleanup(void)

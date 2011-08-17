@@ -82,6 +82,8 @@
 #define X86_FEATURE_ARAT	(3*32+25) /* Always Running APIC Timer */
 #define X86_FEATURE_EXTD_APICID	(3*32+26) /* has extended APICID (8 bits) */
 #define X86_FEATURE_AMD_DCM	(3*32+27) /* multi-node processor */
+#define X86_FEATURE_CLFLUSH_MONITOR (3*32+28) /* clflush reqd with monitor */
+#define X86_FEATURE_CPB		(3*32+29) /* AMD Core Performance Boost  */
 
 /* Intel-defined CPU features, CPUID level 0x00000001 (ecx), word 4 */
 #define X86_FEATURE_XMM3	(4*32+ 0) /* Streaming SIMD Extensions-3 */
@@ -164,6 +166,7 @@
 #define cpu_has_xmm4_1		boot_cpu_has(X86_FEATURE_XMM4_1)
 #define cpu_has_xmm4_2		boot_cpu_has(X86_FEATURE_XMM4_2)
 #define cpu_has_pci_ext_cfg	boot_cpu_has(X86_FEATURE_PCI_EXT_CFG)
+#define cpu_has_clflush	       boot_cpu_has(X86_FEATURE_CLFLSH)
 
 #endif /* __ASM_I386_CPUFEATURE_H */
 

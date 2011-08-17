@@ -261,6 +261,7 @@ static inline void wrmsr_on_cpu(unsigned int cpu, u32 msr_no, u32 l, u32 h)
 #define MSR_K7_EVNTSEL2            0xC0010002
 #define MSR_K7_PERFCTR2            0xC0010006
 #define MSR_K7_EVNTSEL3            0xC0010003
+#define MSR_K7_HWCR		   0xC0010015
 #define MSR_K7_PERFCTR3            0xC0010007
 #define MSR_K8_TOP_MEM1		   0xC001001A
 #define MSR_K8_TOP_MEM2		   0xC001001D
@@ -335,6 +336,10 @@ static inline void wrmsr_on_cpu(unsigned int cpu, u32 msr_no, u32 l, u32 h)
 #define MSR_IA32_THERM_INTERRUPT	0x19b
 #define MSR_IA32_THERM_STATUS		0x19c
 #define MSR_IA32_MISC_ENABLE		0x1a0
+
+#define MSR_IA32_MISC_ENABLE_LIMIT_CPUID (1ULL << 22)
+
+#define MSR_IA32_TEMPERATURE_TARGET	0x1a2
 
 #define MSR_IA32_DEBUGCTLMSR		0x1d9
 #define MSR_IA32_LASTBRANCHFROMIP	0x1db

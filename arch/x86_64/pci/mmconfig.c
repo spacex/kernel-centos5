@@ -137,9 +137,12 @@ static struct pci_raw_ops pci_mmcfg = {
 #ifdef CONFIG_XEN
 /* 
  * 1=default for xen kernel,
- * 0=force use of MMCONFIG_APER_MAX
+ * 0=force use of MMCONFIG_APER_MAX (default for non-Xen kernels)
  */
 static int use_acpi_mcfg_max_pci_bus_num = 1;
+#else
+static int use_acpi_mcfg_max_pci_bus_num = 0;
+#endif
 
 /*
  * on  == use acpi table value
@@ -158,38 +161,49 @@ int __init acpi_mcfg_max_pci_bus_num_setup(char *str)
 }
 
 __setup("acpi_mcfg_max_pci_bus_num=", acpi_mcfg_max_pci_bus_num_setup);
-#endif
 
 /* 
  * RHEL5 doesn't trust acpi for max pci bus num in acpi table;
  * but could map past/over valid PCI mmconf space if blindly
  * use MMCONFIG_APER_MAX; e.g., xen dom0's may fail.
  * so check if system requires acpi table value,
+ * or sysadmin forced use of acpi table value,
  * or sysadmin has forced use of MMCONFIG_APER_MAX on kernel cmd line
  */
 static unsigned long get_mmcfg_aper(struct acpi_table_mcfg_config *cfg)
 {
-	unsigned long mmcfg_aper = MMCONFIG_APER_MAX;
+	unsigned long mmcfg_aper = MMCONFIG_APER_MAX, tmp_mmcfg_aper;
+
+	tmp_mmcfg_aper = cfg->end_bus_number - cfg->start_bus_number + 1;
+	/* 32 slots, 8 fcns/slot, 4096 pci-cfg bytes/fcn */
+	tmp_mmcfg_aper *= 32 * 8 * 4096;
 
 /* xen kernel && pci pass-through only */
 #ifdef CONFIG_XEN
 	extern int pci_pt_e820_access_enabled;
 
 	if (use_acpi_mcfg_max_pci_bus_num && pci_pt_e820_access_enabled) {
+#else
+	if (use_acpi_mcfg_max_pci_bus_num) {
+#endif
 		/* trust acpi values for end & start bus number */
-		mmcfg_aper = 
-			cfg->end_bus_number - cfg->start_bus_number + 1;
 		printk(KERN_INFO
 		       "PCI: Using acpi max pci bus value of 0x%lx \n",
-			mmcfg_aper);
-		/* 32 slots, 8 fcns/slot, 4096 pci-cfg bytes/fcn */
-		mmcfg_aper *= 32 * 8 * 4096;
+		       cfg->end_bus_number - cfg->start_bus_number + 1);
+		mmcfg_aper = tmp_mmcfg_aper;
 		if (mmcfg_aper < MMCONFIG_APER_MIN) 
 			mmcfg_aper = MMCONFIG_APER_MIN;
 		if (mmcfg_aper > MMCONFIG_APER_MAX)
 			mmcfg_aper = MMCONFIG_APER_MAX;
+	} else {
+		if (tmp_mmcfg_aper < MMCONFIG_APER_MAX) {
+			printk(KERN_ERR "Warning: pci_mmcfg_init marking %dMB "
+			       "space uncacheable.\nMCFG table requires %dMB "
+			       "uncacheable only. Try booting with "
+			       "acpi_mcfg_max_pci_bus_num=on\n",
+			       MMCONFIG_APER_MAX >> 20, tmp_mmcfg_aper >> 20);
+		}
 	}
-#endif
 
 	return mmcfg_aper;
 }

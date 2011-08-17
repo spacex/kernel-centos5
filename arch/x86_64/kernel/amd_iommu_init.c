@@ -27,6 +27,7 @@
 #include <asm/pci-direct.h>
 #include <asm/amd_iommu_types.h>
 #include <asm/amd_iommu.h>
+#include <asm/dma.h>
 
 /*
  * definitions for the ACPI scanning code
@@ -122,6 +123,9 @@ LIST_HEAD(amd_iommu_unity_map);		/* a list of required unity mappings
 unsigned amd_iommu_aperture_order = 26; /* size of aperture in power of 2 */
 bool amd_iommu_isolate = true;		/* if true, device isolation is
 					   enabled */
+static bool amd_iommu_force_nopt;	/* force isolation (no-pt) mode
+					   of iommu */
+
 bool amd_iommu_unmap_flush;		/* if true, flush on every unmap */
 
 LIST_HEAD(amd_iommu_list);		/* list of all AMD IOMMUs in the
@@ -1110,11 +1114,22 @@ int __init amd_iommu_init(void)
 	if (ret)
 		goto free;
 
-	ret = amd_iommu_init_dma_ops();
+	if (iommu_pass_through)
+		ret = amd_iommu_init_passthrough();
+	else
+		ret = amd_iommu_init_dma_ops();
+
 	if (ret)
 		goto free;
 
+	amd_iommu_init_api();
+
+	amd_iommu_init_notifier();
+
 	enable_iommus();
+
+	if (iommu_pass_through)
+		goto out;
 
 	printk(KERN_INFO "AMD IOMMU: aperture size is %d MB\n",
 			(1 << (amd_iommu_aperture_order-20)));
@@ -1183,6 +1198,17 @@ void __init amd_iommu_detect(void)
 #endif
 		/* Make sure ACS will be enabled */
 		pci_request_acs();
+	
+		/*
+		 * The AMD IOMMU driver forces the passthrough mode by default
+		 * for performance reasons. Since we need a way to switch back
+		 * to the isolation mode we reuse amd_iommu={isolate|share} for
+		 * that.
+		 */
+		iommu_pass_through = amd_iommu_force_nopt ? 0 : 1;
+	
+		if (iommu_pass_through && end_pfn > MAX_DMA32_PFN)
+			swiotlb = 1;
 	}
 }
 
@@ -1196,10 +1222,14 @@ void __init amd_iommu_detect(void)
 static int __init parse_amd_iommu_options(char *str)
 {
 	for (; *str; ++str) {
-		if (strncmp(str, "isolate", 7) == 0)
+		if (strncmp(str, "isolate", 7) == 0) {
 			amd_iommu_isolate = true;
-		if (strncmp(str, "share", 5) == 0)
+			amd_iommu_force_nopt = true;
+		}
+		if (strncmp(str, "share", 5) == 0) {
 			amd_iommu_isolate = false;
+			amd_iommu_force_nopt = true;
+		}
 		if (strncmp(str, "fullflush", 9) == 0)
 			amd_iommu_unmap_flush = true;
 	}

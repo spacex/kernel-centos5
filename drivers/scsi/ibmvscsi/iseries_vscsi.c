@@ -156,3 +156,13 @@ int ibmvscsi_send_crq(struct ibmvscsi_host_data *hostdata, u64 word1, u64 word2)
 					     VIOVERSION << 16, word1, word2, 0,
 					     0);
 }
+
+/**
+ * ibmvscsi_host_resume: - resume after suspend
+ * @hostdata:	ibmvscsi_host_data of host
+ *
+ */
+int ibmvscsi_host_resume(struct ibmvscsi_host_data *hostdata)
+{
+	return 0;
+}

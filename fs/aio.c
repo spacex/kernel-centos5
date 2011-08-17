@@ -500,7 +500,7 @@ void fastcall exit_aio(struct mm_struct *mm)
  *	Called when the last user of an aio context has gone away,
  *	and the struct needs to be freed.
  */
-void fastcall __put_ioctx(struct kioctx *ctx)
+void __put_ioctx_wq(struct kioctx *ctx, int wq_context)
 {
 	unsigned nr_events = ctx->max_reqs;
 
@@ -508,7 +508,8 @@ void fastcall __put_ioctx(struct kioctx *ctx)
 		BUG();
 
 	cancel_delayed_work(&ctx->wq);
-	flush_workqueue(aio_wq);
+	if (!wq_context)
+		flush_workqueue(aio_wq);
 	aio_free_ring(ctx);
 	mmdrop(ctx->mm);
 	ctx->mm = NULL;
@@ -521,6 +522,11 @@ void fastcall __put_ioctx(struct kioctx *ctx)
 		aio_nr -= nr_events;
 		spin_unlock(&aio_nr_lock);
 	}
+}
+
+void fastcall __put_ioctx(struct kioctx *ctx)
+{
+	__put_ioctx_wq(ctx, 0);
 }
 
 /* aio_get_req
@@ -623,7 +629,7 @@ static void aio_fput_routine(void *data)
 		really_put_req(ctx, req);
 		spin_unlock_irq(&ctx->ctx_lock);
 
-		put_ioctx(ctx);
+		put_ioctx_from_wq(ctx);
 		spin_lock_irq(&fput_lock);
 	}
 	spin_unlock_irq(&fput_lock);
@@ -1670,7 +1676,20 @@ static void aio_batch_add(struct address_space *mapping,
 	}
 
 	abe = mempool_alloc(abe_pool, GFP_KERNEL);
-	BUG_ON(!igrab(mapping->host));
+
+	/*
+	 * we should be using igrab here, but
+	 * we don't want to hammer on the global
+	 * inode spinlock just to take an extra
+	 * reference on a file that we must already
+	 * have a reference to.
+	 *
+	 * When we're called, we always have a reference
+	 * on the file, so we must always have a reference
+	 * on the inode, so igrab must always just
+	 * bump the count and move on.
+	 */
+	atomic_inc(&mapping->host->i_count);
 	abe->mapping = mapping;
 	hlist_add_head(&abe->list, &batch_hash[bucket]);
 	return;

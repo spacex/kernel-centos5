@@ -89,3 +89,7 @@
 /* Belkin "F5U257" Serial Adapter */
 #define BELKIN_VENDOR_ID	0x050d
 #define BELKIN_PRODUCT_ID	0x0257
+
+/* Hewlett-Packard LD220-HP POS Pole Display */
+#define HP_VENDOR_ID		0x03f0
+#define HP_LD220_PRODUCT_ID	0x3524

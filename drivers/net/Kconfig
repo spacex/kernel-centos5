@@ -2613,6 +2613,13 @@ config MLX4_EN
 	  This driver supports Mellanox Technologies ConnectX Ethernet
 	  devices.
 
+config QLCNIC
+	tristate "QLOGIC QLCNIC 1/10Gb Converged Ethernet NIC Support"
+	depends on PCI
+	help
+	  This driver supports QLogic QLE8240 and QLE8242 Converged Ethernet
+	  devices.
+
 config QLGE
        tristate "QLogic QLGE 10Gb Ethernet Driver Support"
        depends on PCI

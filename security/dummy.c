@@ -392,6 +392,21 @@ static int dummy_inode_setsecurity(struct inode *inode, const char *name, const 
 	return -EOPNOTSUPP;
 }
 
+static int dummy_inode_notifysecctx(struct inode *inode, void *ctx, u32 ctxlen)
+{
+	return 0;
+}
+
+static int dummy_inode_setsecctx(struct dentry *dentry, void *ctx, u32 ctxlen)
+{
+	return 0;
+}
+
+static int dummy_inode_getsecctx(struct inode *inode, void **ctx, u32 *ctxlen)
+{
+	return 0;
+}
+
 static int dummy_inode_listsecurity(struct inode *inode, char *buffer, size_t buffer_size)
 {
 	return 0;
@@ -1040,6 +1055,9 @@ void security_fixup_ops (struct security_operations *ops)
 	set_to_dummy_if_null(ops, inode_getsecurity);
 	set_to_dummy_if_null(ops, inode_setsecurity);
 	set_to_dummy_if_null(ops, inode_listsecurity);
+	set_to_dummy_if_null(ops, inode_notifysecctx);
+	set_to_dummy_if_null(ops, inode_setsecctx);
+	set_to_dummy_if_null(ops, inode_getsecctx);
 	set_to_dummy_if_null(ops, file_permission);
 	set_to_dummy_if_null(ops, file_alloc_security);
 	set_to_dummy_if_null(ops, file_free_security);

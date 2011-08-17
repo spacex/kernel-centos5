@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2004-2008 Emulex.  All rights reserved.           *
+ * Copyright (C) 2004-2009 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -886,6 +886,47 @@ typedef struct  _RPS_RSP {	/* Structure is in Big Endian format */
 	uint32_t crcCnt;
 } RPS_RSP;
 
+struct RLS {			/* Structure is in Big Endian format */
+	uint32_t rls;
+#define rls_rsvd_SHIFT		24
+#define rls_rsvd_MASK		0x000000ff
+#define rls_rsvd_WORD		rls
+#define rls_did_SHIFT		0
+#define rls_did_MASK		0x00ffffff
+#define rls_did_WORD		rls
+};
+
+struct  RLS_RSP {		/* Structure is in Big Endian format */
+	uint32_t linkFailureCnt;
+	uint32_t lossSyncCnt;
+	uint32_t lossSignalCnt;
+	uint32_t primSeqErrCnt;
+	uint32_t invalidXmitWord;
+	uint32_t crcCnt;
+};
+
+struct RTV_RSP {		/* Structure is in Big Endian format */
+	uint32_t ratov;
+	uint32_t edtov;
+	uint32_t qtov;
+#define qtov_rsvd0_SHIFT	28
+#define qtov_rsvd0_MASK		0x0000000f
+#define qtov_rsvd0_WORD		qtov		/* reserved */
+#define qtov_edtovres_SHIFT	27
+#define qtov_edtovres_MASK	0x00000001
+#define qtov_edtovres_WORD	qtov		/* E_D_TOV Resolution */
+#define qtov__rsvd1_SHIFT	19
+#define qtov_rsvd1_MASK		0x0000003f
+#define qtov_rsvd1_WORD		qtov		/* reserved */
+#define qtov_rttov_SHIFT	18
+#define qtov_rttov_MASK		0x00000001
+#define qtov_rttov_WORD		qtov		/* R_T_TOV value */
+#define qtov_rsvd2_SHIFT	0
+#define qtov_rsvd2_MASK		0x0003ffff
+#define qtov_rsvd2_WORD		qtov		/* reserved */
+};
+
+
 typedef struct  _RPL {		/* Structure is in Big Endian format */
 	uint32_t maxsize;
 	uint32_t index;
@@ -1194,6 +1235,8 @@ typedef struct {
 #define PCI_VENDOR_ID_SERVERENGINE  0x19a2
 #define PCI_DEVICE_ID_TIGERSHARK    0x0704
 #define PCI_DEVICE_ID_TOMCAT        0x0714
+#define PCI_DEVICE_ID_FALCON        0xf180
+#define PCI_DEVICE_ID_BALIUS        0xe131
 
 #define JEDEC_ID_ADDRESS            0x0080001c
 #define FIREFLY_JEDEC_ID            0x1ACC
@@ -1403,6 +1446,9 @@ typedef struct {		/* FireFly BIU registers */
 #define MBX_INIT_VFI        0xA3
 #define MBX_INIT_VPI        0xA4
 
+#define MBX_AUTH_PORT       0xF8
+#define MBX_SECURITY_MGMT   0xF9
+
 /* IOCB Commands */
 
 #define CMD_RCV_SEQUENCE_CX     0x01
@@ -1492,7 +1538,13 @@ typedef struct {		/* FireFly BIU registers */
 #define CMD_IOCB_LOGENTRY_CN		0x94
 #define CMD_IOCB_LOGENTRY_ASYNC_CN	0x96
 
-#define CMD_MAX_IOCB_CMD        0xE6
+/* Data Security SLI Commands */
+#define DSSCMD_IWRITE64_CR		0xF8
+#define DSSCMD_IWRITE64_CX		0xF9
+#define DSSCMD_IREAD64_CR		0xFA
+#define DSSCMD_IREAD64_CX		0xFB
+
+#define CMD_MAX_IOCB_CMD        0xFB
 #define CMD_IOCB_MASK           0xff
 
 #define MAX_MSG_DATA            28	/* max msg data in CMD_ADAPTER_MSG
@@ -1520,7 +1572,8 @@ typedef struct {		/* FireFly BIU registers */
 #define MBXERR_ERROR                16
 #define MBXERR_UNKNOWN_CMD          18
 #define MBXERR_LINK_DOWN            0x33
-#define MBX_NOT_FINISHED           255
+#define MBXERR_SEC_NO_PERMISSION    0xF02
+#define MBX_NOT_FINISHED            255
 
 #define MBX_BUSY                   0xffffff /* Attempted cmd to busy Mailbox */
 #define MBX_TIMEOUT                0xfffffe /* time-out expired waiting for */
@@ -2216,7 +2269,8 @@ typedef struct {
 typedef struct {
 #ifdef __BIG_ENDIAN_BITFIELD
 	uint32_t rsvd1;
-	uint32_t rsvd2:8;
+	uint32_t rsvd2:7;
+	uint32_t upd:1;
 	uint32_t sid:24;
 	uint32_t wwn[2];
 	uint32_t rsvd5;
@@ -2225,7 +2279,8 @@ typedef struct {
 #else	/*  __LITTLE_ENDIAN */
 	uint32_t rsvd1;
 	uint32_t sid:24;
-	uint32_t rsvd2:8;
+	uint32_t upd:1;
+	uint32_t rsvd2:7;
 	uint32_t wwn[2];
 	uint32_t rsvd5;
 	uint16_t vpi;
@@ -2667,8 +2722,11 @@ typedef struct {
 #endif
 
 #ifdef __BIG_ENDIAN_BITFIELD
-	uint32_t rsvd1     : 24;  /* Reserved                             */
-	uint32_t cmv	   :  1;  /* Configure Max VPIs                   */
+	uint32_t rsvd1     : 19;  /* Reserved                             */
+	uint32_t cdss      :  1;  /* Configure Data Security SLI          */
+	uint32_t rsvd2     :  3;  /* Reserved                             */
+	uint32_t cbg       :  1;  /* Configure BlockGuard                 */
+	uint32_t cmv       :  1;  /* Configure Max VPIs                   */
 	uint32_t ccrp      :  1;  /* Config Command Ring Polling          */
 	uint32_t csah      :  1;  /* Configure Synchronous Abort Handling */
 	uint32_t chbs      :  1;  /* Cofigure Host Backing store          */
@@ -2685,10 +2743,16 @@ typedef struct {
 	uint32_t csah      :  1;  /* Configure Synchronous Abort Handling */
 	uint32_t ccrp      :  1;  /* Config Command Ring Polling          */
 	uint32_t cmv	   :  1;  /* Configure Max VPIs                   */
-	uint32_t rsvd1     : 24;  /* Reserved                             */
+	uint32_t cbg       :  1;  /* Configure BlockGuard                 */
+	uint32_t rsvd2     :  3;  /* Reserved                             */
+	uint32_t cdss      :  1;  /* Configure Data Security SLI          */
+	uint32_t rsvd1     : 19;  /* Reserved                             */
 #endif
 #ifdef __BIG_ENDIAN_BITFIELD
-	uint32_t rsvd2     : 24;  /* Reserved                             */
+	uint32_t rsvd3     : 19;  /* Reserved                             */
+	uint32_t gdss      :  1;  /* Configure Data Security SLI          */
+	uint32_t rsvd4     :  3;  /* Reserved                             */
+	uint32_t gbg       :  1;  /* Grant BlockGuard                     */
 	uint32_t gmv	   :  1;  /* Grant Max VPIs                       */
 	uint32_t gcrp	   :  1;  /* Grant Command Ring Polling           */
 	uint32_t gsah	   :  1;  /* Grant Synchronous Abort Handling     */
@@ -2706,7 +2770,10 @@ typedef struct {
 	uint32_t gsah	   :  1;  /* Grant Synchronous Abort Handling     */
 	uint32_t gcrp	   :  1;  /* Grant Command Ring Polling           */
 	uint32_t gmv	   :  1;  /* Grant Max VPIs                       */
-	uint32_t rsvd2     : 24;  /* Reserved                             */
+	uint32_t gbg       :  1;  /* Grant BlockGuard                     */
+	uint32_t rsvd4     :  3;  /* Reserved                             */
+	uint32_t gdss      :  1;  /* Configure Data Security SLI          */
+	uint32_t rsvd3     : 19;  /* Reserved                             */
 #endif
 
 #ifdef __BIG_ENDIAN_BITFIELD
@@ -2719,20 +2786,24 @@ typedef struct {
 
 #ifdef __BIG_ENDIAN_BITFIELD
 	uint32_t max_hbq   : 16;  /* Max HBQs Host expect to configure    */
-	uint32_t rsvd3     : 16;  /* Max HBQs Host expect to configure    */
+	uint32_t rsvd5     : 16;  /* Max HBQs Host expect to configure    */
 #else	/*  __LITTLE_ENDIAN */
-	uint32_t rsvd3     : 16;  /* Max HBQs Host expect to configure    */
+	uint32_t rsvd5     : 16;  /* Max HBQs Host expect to configure    */
 	uint32_t max_hbq   : 16;  /* Max HBQs Host expect to configure    */
 #endif
 
-	uint32_t rsvd4;           /* Reserved                             */
+	uint32_t rsvd6;           /* Reserved                             */
 
 #ifdef __BIG_ENDIAN_BITFIELD
-	uint32_t rsvd5      : 16;  /* Reserved                             */
+	uint32_t fips_rev   : 3;   /* FIPS Spec Revision                   */
+	uint32_t fips_level : 4;   /* FIPS Level                           */
+	uint32_t sec_err    : 9;   /* security crypto error                */
 	uint32_t max_vpi    : 16;  /* Max number of virt N-Ports           */
 #else	/*  __LITTLE_ENDIAN */
 	uint32_t max_vpi    : 16;  /* Max number of virt N-Ports           */
-	uint32_t rsvd5      : 16;  /* Reserved                             */
+	uint32_t sec_err    : 9;   /* security crypto error                */
+	uint32_t fips_level : 4;   /* FIPS Level                           */
+	uint32_t fips_rev   : 3;   /* FIPS Spec Revision                   */
 #endif
 
 } CONFIG_PORT_VAR;
@@ -3045,6 +3116,14 @@ typedef struct {
 #define IOERR_BUFFER_SHORTAGE         0x28
 #define IOERR_DEFAULT                 0x29
 #define IOERR_CNT                     0x2A
+#define IOERR_SLER_FAILURE            0x46
+#define IOERR_SLER_CMD_RCV_FAILURE    0x47
+#define IOERR_SLER_REC_RJT_ERR        0x48
+#define IOERR_SLER_REC_SRR_RETRY_ERR  0x49
+#define IOERR_SLER_SRR_RJT_ERR        0x4A
+#define IOERR_SLER_RRQ_RJT_ERR        0x4C
+#define IOERR_SLER_RRQ_RETRY_ERR      0x4D
+#define IOERR_SLER_ABTS_ERR           0x4E
 
 #define IOERR_DRVR_MASK               0x100
 #define IOERR_SLI_DOWN                0x101  /* ulpStatus  - Driver defined */

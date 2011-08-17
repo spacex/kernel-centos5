@@ -416,6 +416,20 @@ struct mm_struct {
 	struct kioctx		*ioctx_list;
 };
 
+static inline unsigned long get_mm_hiwater_rss(struct mm_struct *mm)
+{
+	return max(mm->hiwater_rss, get_mm_rss(mm));
+}
+
+static inline void setmax_mm_hiwater_rss(unsigned long *maxrss,
+					struct mm_struct *mm)
+{
+	unsigned long hiwater_rss = get_mm_hiwater_rss(mm);
+
+	if (*maxrss < hiwater_rss)
+		*maxrss = hiwater_rss;
+}
+
 struct sighand_struct {
 	atomic_t		count;
 	struct k_sigaction	action[_NSIG];
@@ -538,7 +552,10 @@ struct signal_struct {
 
 struct signal_struct_aux {
 	u64 rchar, wchar, syscr, syscw;
+	unsigned long maxrss, cmaxrss;
 	struct task_io_accounting ioac;
+	u32 it_prof_error, it_prof_incr_error;
+	u32 it_virt_error, it_virt_incr_error;
 };
 
 static inline void init_signal_aux(struct signal_struct_aux *aux)
@@ -1078,7 +1095,7 @@ struct task_struct {
 	wait_queue_t *io_wait;
 /* i/o counters(bytes read/written, #syscalls */
 	u64 rchar, wchar, syscr, syscw;
-#if defined(CONFIG_BSD_PROCESS_ACCT)
+#if defined(CONFIG_TASK_XACCT)
 	u64 acct_rss_mem1;	/* accumulated rss usage */
 	u64 acct_vm_mem1;	/* accumulated virtual memory usage */
 	clock_t acct_stimexpd;	/* clock_t-converted stime since last update */
@@ -1479,6 +1496,11 @@ extern void wait_task_inactive(struct task_struct * p);
 static inline int has_group_leader_pid(struct task_struct *p)
 {
 	return p->pid == p->tgid;
+}
+
+static inline struct pid *task_pid(struct task_struct *task)
+{
+        return task->pids[PIDTYPE_PID].pid;
 }
 
 static inline struct task_struct *next_thread(const struct task_struct *p)

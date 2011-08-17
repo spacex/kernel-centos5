@@ -882,13 +882,36 @@ static void tcp_cwnd_validate(struct sock *sk, struct tcp_sock *tp)
 	}
 }
 
-static unsigned int tcp_window_allows(struct tcp_sock *tp, struct sk_buff *skb, unsigned int mss_now, unsigned int cwnd)
+/* Returns the portion of skb which can be sent right away without
+ * introducing MSS oddities to segment boundaries. In rare cases where
+ * mss_now != mss_cache, we will request caller to create a small skb
+ * per input skb which could be mostly avoided here (if desired).
+ *
+ * We explicitly want to create a request for splitting write queue tail
+ * to a small skb for Nagle purposes while avoiding unnecessary modulos,
+ * thus all the complexity (cwnd_len is always MSS multiple which we
+ * return whenever allowed by the other factors). Basically we need the
+ * modulo only when the receiver window alone is the limiting factor or
+ * when we would be allowed to send the split-due-to-Nagle skb fully.
+ */
+static unsigned int tcp_mss_split_point(struct sock *sk, struct sk_buff *skb,
+					unsigned int mss_now, unsigned int cwnd)
 {
-	u32 window, cwnd_len;
+	struct tcp_sock *tp = tcp_sk(sk);
+	u32 needed, window, cwnd_len;
 
-	window = (tp->snd_una + tp->snd_wnd - TCP_SKB_CB(skb)->seq);
+	window = tp->snd_una + tp->snd_wnd - TCP_SKB_CB(skb)->seq;
 	cwnd_len = mss_now * cwnd;
-	return min(window, cwnd_len);
+
+	if (likely(cwnd_len <= window && skb != skb_peek_tail(&sk->sk_write_queue)))
+		return cwnd_len;
+
+	needed = min(skb->len, window);
+
+	if (cwnd_len <= needed)
+		return cwnd_len;
+
+	return needed - needed % mss_now;
 }
 
 /* Can at least one segment of SKB be sent right now, according to the
@@ -1330,17 +1353,9 @@ static int tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle)
 		}
 
 		limit = mss_now;
-		if (tso_segs > 1 && !tp->urg_mode) {
-			limit = tcp_window_allows(tp, skb,
-						  mss_now, cwnd_quota);
-
-			if (skb->len < limit) {
-				unsigned int trim = skb->len % mss_now;
-
-				if (trim)
-					limit = skb->len - trim;
-			}
-		}
+		if (tso_segs > 1 && !tp->urg_mode)
+			limit = tcp_mss_split_point(sk, skb, mss_now,
+						    cwnd_quota);
 
 		if (skb->len > limit &&
 		    unlikely(tso_fragment(sk, skb, limit, mss_now)))
@@ -1403,17 +1418,9 @@ void tcp_push_one(struct sock *sk, unsigned int mss_now)
 		BUG_ON(!tso_segs);
 
 		limit = mss_now;
-		if (tso_segs > 1 && !tp->urg_mode) {
-			limit = tcp_window_allows(tp, skb,
-						  mss_now, cwnd_quota);
-
-			if (skb->len < limit) {
-				unsigned int trim = skb->len % mss_now;
-
-				if (trim)
-					limit = skb->len - trim;
-			}
-		}
+		if (tso_segs > 1 && !tp->urg_mode)
+			limit = tcp_mss_split_point(sk, skb, mss_now,
+						    cwnd_quota);
 
 		if (skb->len > limit &&
 		    unlikely(tso_fragment(sk, skb, limit, mss_now)))

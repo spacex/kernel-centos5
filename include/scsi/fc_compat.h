@@ -30,31 +30,6 @@ static inline struct page *sg_page(struct scatterlist *sg)
 
 #define BIT(nr) (1UL << (nr))
 
-#define MAC_FMT "%02x:%02x:%02x:%02x:%02x:%02x"
-#define MAC_BUF_SIZE 18
-#define DECLARE_MAC_BUF(var) char var[MAC_BUF_SIZE]
-
-static size_t _format_mac_addr(char *buf, int buflen,
-                                const unsigned char *addr, int len)
-{
-	int i;
-	char *cp = buf;
-
-	for (i = 0; i < len; i++) {
-		cp += scnprintf(cp, buflen - (cp - buf), "%02x", addr[i]);
-		if (i == len - 1)
-			break;
-		cp += strlcpy(cp, ":", buflen - (cp - buf));
-	}
-	return cp - buf;
-}
-
-static inline char *print_mac(char *buf, const unsigned char *addr)
-{
-	_format_mac_addr(buf, MAC_BUF_SIZE, addr, ETH_ALEN);
-	return buf;
-}
-
 #define dev_get_by_name(_inet, _name)  dev_get_by_name(_name)
 
 #define vlan_dev_real_dev(_ndev) VLAN_DEV_INFO(_ndev)->real_dev
@@ -72,22 +47,6 @@ static inline char *print_mac(char *buf, const unsigned char *addr)
 	kmem_cache_create(_name, _size, _align, _flags, _ctor, NULL)
 
 #define flush_work(_wk) flush_scheduled_work()
-
-struct delayed_work {
-        struct work_struct work;
-};
-
-static inline int cancel_delayed_work_sync(struct delayed_work *dwork)
-{
-	int ret;
-
-	ret = cancel_delayed_work(&dwork->work);
-	if (!ret)
-		flush_scheduled_work();
-	return ret;
-}
-
-#define cancel_delayed_work(_dwork) cancel_delayed_work(&(_dwork)->work)
 
 static inline int schedule_delayed_work_compat(struct delayed_work *work,
 					       unsigned long delay)
@@ -112,6 +71,7 @@ static inline int queue_delayed_work_compat(struct workqueue_struct *wq,
 
 #undef INIT_WORK
 #define INIT_WORK(_work, _func) INIT_WORK_compat(_work, _func)
+#undef INIT_DELAYED_WORK
 #define INIT_DELAYED_WORK(_work,_func) INIT_WORK(&(_work)->work, _func)
 
 #define queue_delayed_work queue_delayed_work_compat

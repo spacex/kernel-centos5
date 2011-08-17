@@ -1969,15 +1969,13 @@ zfcp_fsf_exchange_config_evaluate(struct zfcp_fsf_req *fsf_req, int xchg_ok)
 			"WWPN 0x%016Lx, "
 			"S_ID 0x%08x,\n"
 			"adapter version 0x%x, "
-			"LIC version 0x%x, "
-			"FC link speed %d Gb/s\n",
+			"LIC version 0x%x\n",
 			zfcp_get_busid_by_adapter(adapter),
 			(wwn_t) fc_host_node_name(shost),
 			(wwn_t) fc_host_port_name(shost),
 			fc_host_port_id(shost),
 			adapter->hydra_version,
-			adapter->fsf_lic_version,
-			fc_host_speed(shost));
+			adapter->fsf_lic_version);
 	if (ZFCP_QTCB_VERSION < bottom->low_qtcb_version) {
 		ZFCP_LOG_NORMAL("error: the adapter %s "
 				"only supports newer control block "

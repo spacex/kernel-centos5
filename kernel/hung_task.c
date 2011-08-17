@@ -148,6 +148,10 @@ static void check_hung_uninterruptible_tasks(unsigned long timeout)
 		if (!--batch_count) {
 			batch_count = HUNG_TASK_BATCHING;
 			rcu_lock_break(g, t);
+			/* Exit if t or g was unhashed during refresh. */
+			if (t->flags & PF_DEAD || g->flags & PF_DEAD)
+				goto unlock;
+
 		}
 		/* use "==" to skip the TASK_KILLABLE tasks waiting on NFS */
 		if (t->state == TASK_UNINTERRUPTIBLE)

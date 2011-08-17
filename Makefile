@@ -3,7 +3,7 @@ PATCHLEVEL = 6
 SUBLEVEL = 18
 EXTRAVERSION = -prep
 RHEL_MAJOR = 5
-RHEL_MINOR = 5
+RHEL_MINOR = 6
 NAME=Avast! A bilge rat!
 
 # *DOCUMENTATION*
@@ -14,6 +14,12 @@ NAME=Avast! A bilge rat!
 
 # Do not print "Entering directory ..."
 MAKEFLAGS += --no-print-directory
+
+# Avoid funny character set dependencies
+unexport LC_ALL
+LC_COLLATE=C
+LC_NUMERIC=C
+export LC_COLLATE LC_NUMERIC
 
 # We are using a recursive build, so we need to do a little thinking
 # to get the ordering right.

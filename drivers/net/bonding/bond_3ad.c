@@ -2350,6 +2350,13 @@ int bond_3ad_xmit_xor(struct sk_buff *skb, struct net_device *dev)
 	struct ad_info ad_info;
 	int res = 1;
 
+	/*
+	 * If we risk deadlock from transmitting this in the
+	 * netpoll path, tell netpoll to queue the frame for later tx
+	 */
+	if (is_netpoll_tx_blocked(dev))
+		return NETDEV_TX_BUSY;
+
 	/* make sure that the slaves list will
 	 * not change during tx
 	 */

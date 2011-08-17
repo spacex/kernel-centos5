@@ -586,7 +586,8 @@ static void dl_seq_stop(struct seq_file *s, void *v)
 	struct ipt_hashlimit_htable *htable = pde->data;
 	unsigned int *bucket = (unsigned int *)v;
 
-	kfree(bucket);
+	if (!IS_ERR(bucket))
+		kfree(bucket);
 
 	spin_unlock_bh(&htable->lock);
 }

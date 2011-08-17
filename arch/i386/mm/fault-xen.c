@@ -22,6 +22,7 @@
 #include <linux/highmem.h>
 #include <linux/module.h>
 #include <linux/kprobes.h>
+#include <trace/mm.h>
 
 #include <asm/system.h>
 #include <asm/uaccess.h>
@@ -424,29 +425,14 @@ static inline int vmalloc_fault(unsigned long address)
 	return 0;
 }
 
-/*
- * This routine handles page faults.  It determines the address,
- * and the problem, and then passes it off to one of the appropriate
- * routines.
- *
- * error_code:
- *	bit 0 == 0 means no page found, 1 means protection fault
- *	bit 1 == 0 means read, 1 means write
- *	bit 2 == 0 means kernel, 1 means user-mode
- *	bit 3 == 1 means use of reserved bit detected
- *	bit 4 == 1 means fault was an instruction fetch
- */
-fastcall void __kprobes do_page_fault(struct pt_regs *regs,
+static inline void __do_page_fault(struct pt_regs *regs,
+				      unsigned long address,
 				      unsigned long error_code)
 {
 	struct task_struct *tsk;
 	struct mm_struct *mm;
 	struct vm_area_struct * vma;
-	unsigned long address;
 	int write, si_code;
-
-	/* get the address */
-        address = read_cr2();
 
 	/* Set the "privileged fault" bit to something sane. */
 	error_code &= ~4;
@@ -667,7 +653,6 @@ no_context:
  * Oops. The kernel tried to access some bad page. We'll have to
  * terminate things with extreme prejudice.
  */
-
 	bust_spinlocks(1);
 
 	if (oops_may_print()) {
@@ -730,6 +715,32 @@ do_sigbus:
 	tsk->thread.error_code = error_code;
 	tsk->thread.trap_no = 14;
 	force_sig_info_fault(SIGBUS, BUS_ADRERR, address, tsk);
+}
+
+/*
+ * This routine handles page faults.  It determines the address,
+ * and the problem, and then passes it off to one of the appropriate
+ * routines.
+ *
+ * error_code:
+ *	bit 0 == 0 means no page found, 1 means protection fault
+ *	bit 1 == 0 means read, 1 means write
+ *	bit 2 == 0 means kernel, 1 means user-mode
+ *	bit 3 == 1 means use of reserved bit detected
+ *	bit 4 == 1 means fault was an instruction fetch
+ */
+fastcall void __kprobes do_page_fault(struct pt_regs *regs,
+				      unsigned long error_code)
+{
+	unsigned long address;
+
+	/* get the address */
+	address = read_cr2();
+
+	__do_page_fault(regs, address, error_code);
+
+	if (!user_mode_vm(regs))
+		trace_mm_kernel_pagefault(current, address, regs->eip);
 }
 
 #ifndef CONFIG_X86_PAE

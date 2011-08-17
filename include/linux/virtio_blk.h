@@ -14,6 +14,7 @@
 #define VIRTIO_BLK_F_GEOMETRY	4	/* Legacy geometry available  */
 #define VIRTIO_BLK_F_RO		5	/* Disk is read-only */
 #define VIRTIO_BLK_F_BLK_SIZE	6	/* Block size of disk is available*/
+#define VIRTIO_BLK_F_FLUSH	9	/* Cache flush command support */
 
 struct virtio_blk_config
 {
@@ -39,6 +40,9 @@ struct virtio_blk_config
 
 /* This bit says it's a scsi command, not an actual read or write. */
 #define VIRTIO_BLK_T_SCSI_CMD	2
+
+/* Cache flush command */
+#define VIRTIO_BLK_T_FLUSH	4
 
 /* Barrier before this op. */
 #define VIRTIO_BLK_T_BARRIER	0x80000000

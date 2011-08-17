@@ -47,7 +47,9 @@
 #include <linux/security.h>
 #include <linux/syscalls.h>
 #include <linux/rmap.h>
-#include <linux/acct.h>
+#ifndef __GENKSYMS__
+#include <linux/tsacct_kern.h>
+#endif
 #include <linux/cn_proc.h>
 #include <linux/audit.h>
 #include <trace/signal.h>
@@ -177,6 +179,21 @@ exit:
 
 #ifdef CONFIG_MMU
 
+void acct_arg_size(struct linux_binprm *bprm, unsigned long pages)
+{
+	struct mm_struct *mm = current->mm;
+	long diff = (long)(pages - bprm->vma_pages);
+
+	if (!mm || !diff)
+		return;
+
+	bprm->vma_pages = pages;
+
+	down_write(&mm->mmap_sem);
+	mm->total_vm += diff;
+	up_write(&mm->mmap_sem);
+}
+
 struct page *get_arg_page(struct linux_binprm *bprm, unsigned long pos,
 		int write)
 {
@@ -198,6 +215,8 @@ struct page *get_arg_page(struct linux_binprm *bprm, unsigned long pos,
 	if (write) {
 		struct rlimit *rlim = current->signal->rlim;
 		unsigned long size = bprm->vma->vm_end - bprm->vma->vm_start;
+
+		acct_arg_size(bprm, size / PAGE_SIZE);
 
 		/*
 		 * Limit to 1/4-th the stack size for the argv+env strings.
@@ -286,6 +305,10 @@ static bool valid_arg_len(struct linux_binprm *bprm, long len)
 }
 
 #else
+
+void acct_arg_size(struct linux_binprm *bprm, unsigned long pages)
+{
+}
 
 struct page *get_arg_page(struct linux_binprm *bprm, unsigned long pos,
 		int write)
@@ -937,6 +960,9 @@ static int de_thread(struct task_struct *tsk)
 	sig->flags = 0;
 
 no_thread_group:
+	if (current->mm)
+		setmax_mm_hiwater_rss(&signal_aux(sig)->maxrss, current->mm);
+
 	exit_itimers(sig);
 	if (leader)
 		release_task(leader);
@@ -1052,6 +1078,7 @@ int flush_old_exec(struct linux_binprm * bprm)
 	/*
 	 * Release all of the old mmap stuff
 	 */
+	acct_arg_size(bprm, 0);
 	retval = exec_mmap(bprm->mm);
 	if (retval)
 		goto mmap_failed;
@@ -1363,7 +1390,6 @@ int do_execve(char * filename,
 {
 	struct linux_binprm *bprm;
 	struct file *file;
-	unsigned long env_p;
 	int retval;
 
 	retval = -ENOMEM;
@@ -1411,11 +1437,9 @@ int do_execve(char * filename,
 	if (retval < 0)
 		goto out;
 
-	env_p = bprm->p;
 	retval = copy_strings(bprm->argc, argv, bprm);
 	if (retval < 0)
 		goto out;
-	bprm->argv_len = env_p - bprm->p;
 
 	retval = search_binary_handler(bprm,regs);
 	if (retval >= 0) {
@@ -1433,8 +1457,10 @@ out:
 		security_bprm_free(bprm);
 
 out_mm:
-	if (bprm->mm)
-		mmput (bprm->mm);
+	if (bprm->mm) {
+		acct_arg_size(bprm, 0);
+		mmput(bprm->mm);
+	}
 
 out_file:
 	if (bprm->file) {

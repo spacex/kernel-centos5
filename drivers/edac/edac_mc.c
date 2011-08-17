@@ -82,6 +82,8 @@ static const char *mem_types[] = {
 	[MEM_FB_DDR2] = "Fully-Buffered-DDR2",
 	[MEM_RDDR2] = "Registered-DDR2",
 	[MEM_XDR] = "XDR",
+	[MEM_DDR3] = "Unbuffered-DDR3",
+	[MEM_RDDR3] = "Registered-DDR3",
 };
 
 static const char *dev_types[] = {
@@ -1319,7 +1321,7 @@ void edac_mc_free(struct mem_ctl_info *mci)
 }
 EXPORT_SYMBOL_GPL(edac_mc_free);
 
-static struct mem_ctl_info *find_mci_by_dev(struct device *dev)
+struct mem_ctl_info *find_mci_by_dev(struct device *dev)
 {
 	struct mem_ctl_info *mci;
 	struct list_head *item;
@@ -1335,6 +1337,7 @@ static struct mem_ctl_info *find_mci_by_dev(struct device *dev)
 
 	return NULL;
 }
+EXPORT_SYMBOL_GPL(find_mci_by_dev);
 
 /* Return 0 on success, 1 on failure.
  * Before calling this function, caller must

@@ -87,7 +87,6 @@ fastcall unsigned int do_IRQ(struct pt_regs *regs)
 		BUG();
 	}
 
-	irq_enter();
 #ifdef CONFIG_DEBUG_STACKOVERFLOW
 	/* Debugging check for stack overflow: is there less than 1KB free? */
 	{
@@ -138,8 +137,6 @@ fastcall unsigned int do_IRQ(struct pt_regs *regs)
 			stack_overflow();
 		__do_IRQ(irq, regs);
 	}
-
-	irq_exit();
 
 	return 1;
 }

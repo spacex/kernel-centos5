@@ -168,6 +168,12 @@ struct msg_update_fw {
 	uint8_t fw_bytes[0];
 };
 
+#define EXTERNAL_LOOPBACK		0xF2
+#define ENABLE_INTERNAL_LOOPBACK	0x02
+#define INTERNAL_LOOPBACK_MASK		0x000E
+#define MAX_ELS_FRAME_PAYLOAD		252
+#define ELS_OPCODE_BYTE			0x10
+
 struct msg_loopback {
 	uint16_t options;
 	uint32_t tx_cnt;
@@ -224,6 +230,18 @@ struct qla_port_param {
 	uint16_t speed;
 } __attribute__ ((packed));
 
+struct qla_fcp_prio_param {
+	uint8_t  version;
+	uint8_t  oper;
+#define QLFC_FCP_PRIO_DISABLE		0x0
+#define QLFC_FCP_PRIO_ENABLE		0x1
+#define QLFC_FCP_PRIO_GET_CONFIG	0x2
+#define QLFC_FCP_PRIO_SET_CONFIG	0x3
+	uint8_t  reserved[2];
+	uint32_t fcp_prio_cfg_size;
+	uint8_t fcp_prio_cfg[0];
+} __attribute__ ((packed));
+
 struct qla_fc_msg {
 
 	uint64_t magic;
@@ -239,6 +257,7 @@ struct qla_fc_msg {
 #define QLFC_LOOPBACK_CMD	0x05
 #define QLFC_LOOPBACK_DATA	0x06
 #define QLFC_IIDMA		0x07
+#define QLFC_FCP_PRIO_CFG_CMD	0x08
 
 	uint32_t error; /* interface or resource error holder*/
 
@@ -264,6 +283,8 @@ struct qla_fc_msg {
 		} ktou;
 
 		struct qla_port_param port_param;
+
+		struct qla_fcp_prio_param fcp_prio_param;
 	} u;
 } __attribute__ ((aligned (sizeof(uint64_t))));
 	

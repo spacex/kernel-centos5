@@ -354,7 +354,7 @@ pxa2xx_ep_free_request (struct usb_ep *_ep, struct usb_request *_req)
 	struct pxa2xx_request	*req;
 
 	req = container_of (_req, struct pxa2xx_request, req);
-	WARN_ON (!list_empty (&req->queue));
+	WARN_ON(!list_empty (&req->queue));
 	kfree(req);
 }
 
@@ -1869,7 +1869,7 @@ config_change:
 					 * tell us about config change events,
 					 * so later ones may fail...
 					 */
-					WARN("config change %02x fail %d?\n",
+					WARNING("config change %02x fail %d?\n",
 						u.r.bRequest, i);
 					return;
 					/* TODO experiment:  if has_cfr,
@@ -2613,7 +2613,7 @@ static int pxa2xx_udc_suspend(struct platform_device *dev, pm_message_t state)
 	struct pxa2xx_udc	*udc = platform_get_drvdata(dev);
 
 	if (!udc->mach->udc_command)
-		WARN("USB host won't detect disconnect!\n");
+		WARNING("USB host won't detect disconnect!\n");
 	pullup(udc, 0);
 
 	return 0;

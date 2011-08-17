@@ -1890,7 +1890,8 @@ static struct file_system_type xfs_fs_type = {
 	.get_sb			= xfs_fs_get_sb,
 	.kill_sb		= kill_block_super,
 	.fs_flags		= FS_REQUIRES_DEV|FS_HAS_FALLOCATE|
-					FS_HAS_FIEMAP|FS_HAS_FREEZE,
+					FS_HAS_FIEMAP|FS_HAS_FREEZE|
+					FS_HAS_IODONE2,
 };
 
 STATIC int __init

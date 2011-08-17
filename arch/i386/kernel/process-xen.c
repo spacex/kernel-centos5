@@ -198,6 +198,8 @@ EXPORT_SYMBOL_GPL(cpu_idle_wait);
 /* Always use xen_idle() instead. */
 void __devinit select_idle_routine(const struct cpuinfo_x86 *c) {}
 
+void mwait_idle_with_hints(unsigned long eax, unsigned long ecx) {}
+
 void show_regs(struct pt_regs * regs)
 {
 	unsigned long cr0 = 0L, cr2 = 0L, cr3 = 0L, cr4 = 0L;

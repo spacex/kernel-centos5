@@ -19,9 +19,17 @@ struct work_struct {
 	void *wq_data;
 	struct timer_list timer;
 };
+typedef void (*work_func_t)(void *data);
 
 struct execute_work {
 	struct work_struct work;
+};
+
+struct delayed_work {
+	struct work_struct work;
+#if 0 /* not used in RHEL5 */
+	struct timer_list timer;
+#endif
 };
 
 #define __WORK_INITIALIZER(n, f, d) {				\
@@ -53,6 +61,9 @@ struct execute_work {
 		PREPARE_WORK((_work), (_func), (_data));	\
 		init_timer(&(_work)->timer);			\
 	} while (0)
+
+#define INIT_DELAYED_WORK(_work, _func) \
+	INIT_WORK(&(_work)->work, _func, &(_work)->work) /* for RHEL5 */
 
 extern struct workqueue_struct *__create_workqueue(const char *name,
 						    int singlethread);
@@ -103,4 +114,15 @@ static inline int delayed_work_pending(struct work_struct *work)
 	return test_bit(0, &work->pending);
 }
 
+extern int cancel_work_sync(struct work_struct *work);
+
+/**
+ * cancel_delayed_work_sync - reliably kill off a delayed work.
+ * @dwork: the delayed work struct
+ */
+
+static inline int cancel_delayed_work_sync(struct delayed_work *dwork)
+{
+	return cancel_work_sync(&dwork->work);
+}
 #endif

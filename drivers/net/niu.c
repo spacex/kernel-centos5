@@ -30,7 +30,6 @@
 #endif
 
 #include "niu.h"
-#include "niu_compat.h"
 
 #define DRV_MODULE_NAME		"niu"
 #define PFX DRV_MODULE_NAME	": "
@@ -47,19 +46,6 @@ MODULE_VERSION(DRV_MODULE_VERSION);
 
 #ifndef DMA_44BIT_MASK
 #define DMA_44BIT_MASK	0x00000fffffffffffULL
-#endif
-
-#ifndef readq
-static u64 readq(void __iomem *reg)
-{
-	return ((u64) readl(reg)) | (((u64) readl(reg + 4UL)) << 32);
-}
-
-static void writeq(u64 val, void __iomem *reg)
-{
-	writel(val & 0xffffffff, reg);
-	writel(val >> 32, reg + 0x4UL);
-}
 #endif
 
 static struct pci_device_id niu_pci_tbl[] = {

@@ -221,6 +221,8 @@ asmlinkage void evtchn_do_upcall(struct pt_regs *regs)
 	shared_info_t      *s = HYPERVISOR_shared_info;
 	vcpu_info_t        *vcpu_info = &s->vcpu_info[cpu];
 
+	exit_idle();
+	irq_enter();
 
 	do {
 		/* Avoid a callback storm when we reenable delivery. */
@@ -228,7 +230,7 @@ asmlinkage void evtchn_do_upcall(struct pt_regs *regs)
 
 		/* Nested invocations bail immediately. */
 		if (unlikely(per_cpu(upcall_count, cpu)++))
-			return;
+			break;
 
 #ifndef CONFIG_X86 /* No need for a barrier -- XCHG is a barrier on x86. */
 		/* Clear master flag /before/ clearing selector flag. */
@@ -268,10 +270,8 @@ asmlinkage void evtchn_do_upcall(struct pt_regs *regs)
 				port = (l1i * BITS_PER_LONG) + l2i;
 				if ((irq = evtchn_to_irq[port]) != -1)
 					do_IRQ(irq, regs);
-				else {
-					exit_idle();
+				else
 					evtchn_device_upcall(port);
-				}
 
 				/* if this is the final port processed, we'll pick up here+1 next time */
 				per_cpu(last_processed_l1i, cpu) = l1i;
@@ -289,6 +289,8 @@ asmlinkage void evtchn_do_upcall(struct pt_regs *regs)
 		count = per_cpu(upcall_count, cpu);
 		per_cpu(upcall_count, cpu) = 0;
 	} while (unlikely(count != 1));
+
+	irq_exit();
 }
 
 static int find_unbound_irq(void)

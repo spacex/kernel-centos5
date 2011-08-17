@@ -455,11 +455,7 @@ void ieee80211_mesh_quiesce(struct ieee80211_sub_if_data *sdata)
 	struct ieee80211_if_mesh *ifmsh = &sdata->u.mesh;
 
 	/* might restart the timer but that doesn't matter */
-#if 0 /* Not in RHEL5... */
 	cancel_work_sync(&ifmsh->work);
-#else
-	ieee80211_cancel_work(&local->hw, &ifmsh->work);
-#endif
 
 	/* use atomic bitops in case both timers fire at the same time */
 
@@ -505,11 +501,7 @@ void ieee80211_stop_mesh(struct ieee80211_sub_if_data *sdata)
 	 * whether the interface is running, which, at this point,
 	 * it no longer is.
 	 */
-#if 0 /* Not in RHEL5... */
 	cancel_work_sync(&sdata->u.mesh.work);
-#else
-	ieee80211_cancel_work(&local->hw, &sdata->u.mesh.work);
-#endif
 
 	/*
 	 * When we get here, the interface is marked down.

@@ -451,6 +451,7 @@ static int rtasd(void *unused)
 	}
 
 	printk(KERN_DEBUG "RTAS daemon started\n");
+	current->flags |= PF_NOFREEZE;
 
 	DEBUG("will sleep for %d milliseconds\n", (30000/rtas_event_scan_rate));
 

@@ -319,6 +319,27 @@ static int unregister_vlan_device(const char *vlan_IF_name)
 	return ret;
 }
 
+static int vlan_ethtool_set_tso(struct net_device *dev, u32 data)
+{
+	if (data) {
+		const struct vlan_dev_info *vlan = VLAN_DEV_INFO(dev);
+		struct net_device *real_dev = vlan->real_dev;
+
+		/* Underlying device must support TSO for VLAN-tagged packets
+		 * and must have TSO enabled now.
+		 */
+		if (!(real_dev->features & NETIF_F_VLAN_TSO))
+			return -EOPNOTSUPP;
+		if (!(real_dev->features & NETIF_F_TSO))
+			return -EINVAL;
+		dev->features |= NETIF_F_TSO;
+	} else {
+		dev->features &= ~NETIF_F_TSO;
+	}
+	return 0;
+}
+
+
 static u32 vlan_ethtool_get_rx_csum(struct net_device *dev)
 {
 	const struct vlan_dev_info *vlan = VLAN_DEV_INFO(dev);
@@ -330,9 +351,11 @@ static u32 vlan_ethtool_get_rx_csum(struct net_device *dev)
 	return real_dev->ethtool_ops->get_rx_csum(real_dev);
 }
 
-static const struct ethtool_ops vlan_ethtool_ops = {
+static struct ethtool_ops vlan_ethtool_ops = {
 	.get_link		= ethtool_op_get_link,
 	.get_rx_csum		= vlan_ethtool_get_rx_csum,
+	.set_tso		= vlan_ethtool_set_tso,
+	.get_tso		= ethtool_op_get_tso,
 };
 
 static void vlan_setup(struct net_device *new_dev)

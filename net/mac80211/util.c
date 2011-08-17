@@ -1036,11 +1036,7 @@ void ieee80211_stop_device(struct ieee80211_local *local)
 {
 	ieee80211_led_radio(local, false);
 
-#if 0 /* Not in RHEL5... */
 	cancel_work_sync(&local->reconfig_filter);
-#else
-	ieee80211_cancel_work(&local->hw, &local->reconfig_filter);
-#endif
 	drv_stop(local);
 
 	flush_workqueue(local->workqueue);
@@ -1156,6 +1152,14 @@ int ieee80211_reconfig(struct ieee80211_local *local)
 			break;
 		}
 	}
+
+	rcu_read_lock();
+	if (hw->flags & IEEE80211_HW_AMPDU_AGGREGATION) {
+		list_for_each_entry_rcu(sta, &local->sta_list, list) {
+			ieee80211_sta_tear_down_BA_sessions(sta);
+		}
+	}
+	rcu_read_unlock();
 
 	/* add back keys */
 	list_for_each_entry(sdata, &local->interfaces, list)

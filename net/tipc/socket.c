@@ -364,6 +364,7 @@ static int get_name(struct socket *sock, struct sockaddr *uaddr,
 	struct sockaddr_tipc *addr = (struct sockaddr_tipc *)uaddr;
 	u32 res;
 
+	memset(addr, 0, sizeof(*addr));
 	if (down_interruptible(&tsock->sem))
 		return -ERESTARTSYS;
 

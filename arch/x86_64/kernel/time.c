@@ -107,8 +107,6 @@ int timekeeping_use_tsc;
 /* 0=>disabled, 1=>enabled (default) */
 static unsigned int pmtimer_fine_grained = 1;
 
-static cycles_t cycles_per_tick, cycles_accounted_limit;
-
 /*
  * do_gettimeoffset() returns nanoseconds since last timer interrupt was
  * triggered by hardware. A memory read of HPET is slower than a register read
@@ -518,10 +516,13 @@ static void do_timer_account_lost_ticks(struct pt_regs *regs)
 /*
  * Measure time based on the TSC, rather than counting interrupts.
  */
+
+int enable_tsc_timer = 0;
+cycles_t cycles_per_tick = 0, cycles_accounted_limit = 0, last_tsc_accounted;
 static void do_timer_tsc_timekeeping(struct pt_regs *regs)
 {
 	int i;
-	cycles_t tsc, tsc_accounted, tsc_not_accounted;
+	cycles_t tsc, tsc_accounted, tsc_not_accounted, tsc_wd;
 	unsigned long *last = NULL;
 
 
@@ -540,17 +541,17 @@ static void do_timer_tsc_timekeeping(struct pt_regs *regs)
 
 	tsc_not_accounted = tsc - tsc_accounted;
 
-	if (tsc_not_accounted > cycles_accounted_limit) {
-		/* Be extra safe and limit the loop below. */
-		tsc_accounted += tsc_not_accounted - cycles_accounted_limit;
-		tsc_not_accounted = cycles_accounted_limit;
-	}
-
+	tsc_wd = 0;
 	while (tsc_not_accounted >= cycles_per_tick) {
+		if (tsc_wd > cycles_per_tick) {
+			touch_all_softlockup_watchdogs();
+			tsc_wd = 0;
+		}
 		for (i = 0; i < tick_divider; i++)
 			do_timer_jiffy(regs);
 		tsc_not_accounted -= cycles_per_tick;
 		tsc_accounted += cycles_per_tick;
+		tsc_wd += cycles_per_tick;
 	}
 
 	if (use_kvm_time) {
@@ -1495,17 +1496,7 @@ void __init time_init(void)
 	lpj_fine = ((unsigned long)tsc_khz * 1000)/HZ;
 
 	/* Keep time based on the TSC rather than by counting interrupts. */
-	if (timekeeping_use_tsc > 0) {
-		cycles_per_tick = get_hypervisor_cycles_per_tick();
-		/*
-		 * The maximum cycles we will account per
-		 * timer interrupt is 10 minutes.
-		 */
-		cycles_accounted_limit = cycles_per_tick * REAL_HZ * 60 * 10;
-		tick_nsec = NSEC_PER_SEC / HZ;
-		printk(KERN_INFO
-			"time.c: Using tsc for timekeeping HZ %d\n", HZ);
-	}
+	init_tsc_timer();
 
 	vxtime.mode = VXTIME_TSC;
 	vxtime.quot = (NSEC_PER_SEC << NS_SCALE) / vxtime_hz;

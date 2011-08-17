@@ -109,6 +109,7 @@ void __init paging_init(void)
         static const int ssm_mask = 0x04000000L;
 	unsigned long ro_start_pfn, ro_end_pfn;
 	unsigned long zones_size[MAX_NR_ZONES];
+	__mm_context_t *mmc;
 
 	ro_start_pfn = PFN_DOWN((unsigned long)&__start_rodata);
 	ro_end_pfn = PFN_UP((unsigned long)&__end_rodata);
@@ -162,6 +163,9 @@ void __init paging_init(void)
                              "    SSM   %1" 
 			     : : "m" (pgdir_k), "m" (ssm_mask));
 
+	mmc = (__mm_context_t *) &init_mm.context;
+	atomic_set(&mmc->attach_count, 1);
+
         local_flush_tlb();
         return;
 }
@@ -182,6 +186,7 @@ void __init paging_init(void)
 	unsigned long zones_size[MAX_NR_ZONES];
 	unsigned long dma_pfn, high_pfn;
 	unsigned long ro_start_pfn, ro_end_pfn;
+	__mm_context_t *mmc;
 
 	memset(zones_size, 0, sizeof(zones_size));
 	dma_pfn = MAX_DMA_ADDRESS >> PAGE_SHIFT;
@@ -257,6 +262,9 @@ void __init paging_init(void)
                              "lctlg 13,13,%0\n\t"
                              "ssm   %1"
 			     : :"m" (pgdir_k), "m" (ssm_mask));
+
+	mmc = (__mm_context_t *) &init_mm.context;
+	atomic_set(&mmc->attach_count, 1);
 
         local_flush_tlb();
 

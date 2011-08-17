@@ -769,6 +769,14 @@ struct vxge_hw_device_hw_info {
 #define VXGE_HW_FUNCTION_MODE_SINGLE_FUNCTION			1
 #define VXGE_HW_FUNCTION_MODE_SRIOV				2
 #define VXGE_HW_FUNCTION_MODE_MRIOV				3
+#define VXGE_HW_FUNCTION_MODE_MRIOV_8				4
+#define VXGE_HW_FUNCTION_MODE_MULTI_FUNCTION_17			5
+#define VXGE_HW_FUNCTION_MODE_SRIOV_8				6
+#define VXGE_HW_FUNCTION_MODE_SRIOV_4				7
+#define VXGE_HW_FUNCTION_MODE_MULTI_FUNCTION_2			8
+#define VXGE_HW_FUNCTION_MODE_MULTI_FUNCTION_4			9
+#define VXGE_HW_FUNCTION_MODE_MRIOV_4				10
+
 	u32		func_id;
 	u64		vpath_mask;
 	struct vxge_hw_device_version fw_version;
@@ -1915,20 +1923,32 @@ static inline void *vxge_os_dma_malloc(struct pci_dev *pdev,
 	gfp_t flags;
 	void *vaddr;
 	unsigned long misaligned = 0;
+	int realloc_flag = 0;
 	*p_dma_acch = *p_dmah = NULL;
 
 	if (in_interrupt())
 		flags = GFP_ATOMIC | GFP_DMA;
 	else
 		flags = GFP_KERNEL | GFP_DMA;
-
-	size += VXGE_CACHE_LINE_SIZE;
-
+realloc:
 	vaddr = kmalloc((size), flags);
 	if (vaddr == NULL)
 		return vaddr;
-	misaligned = (unsigned long)VXGE_ALIGN(*((u64 *)&vaddr),
+	misaligned = (unsigned long)VXGE_ALIGN((unsigned long)vaddr,
 				VXGE_CACHE_LINE_SIZE);
+	if (realloc_flag)
+		goto out;
+
+	if (misaligned) {
+		/* misaligned, free current one and try allocating
+		 * size + VXGE_CACHE_LINE_SIZE memory
+		 */
+		kfree((void *) vaddr);
+		size += VXGE_CACHE_LINE_SIZE;
+		realloc_flag = 1;
+		goto realloc;
+	}
+out:
 	*(unsigned long *)p_dma_acch = misaligned;
 	vaddr = (void *)((u8 *)vaddr + misaligned);
 	return vaddr;
@@ -2118,26 +2138,6 @@ __vxge_hw_device_register_poll(
 	void __iomem	*reg,
 	u64 mask, u32 max_millis);
 
-#ifndef readq
-static inline u64 readq(void __iomem *addr)
-{
-	u64 ret = 0;
-	ret = readl(addr + 4);
-	ret <<= 32;
-	ret |= readl(addr);
-
-	return ret;
-}
-#endif
-
-#ifndef writeq
-static inline void writeq(u64 val, void __iomem *addr)
-{
-	writel((u32) (val), addr);
-	writel((u32) (val >> 32), (addr + 4));
-}
-#endif
-
 static inline void __vxge_hw_pio_mem_write32_upper(u32 val, void __iomem *addr)
 {
 	writel(val, addr + 4);
@@ -2254,4 +2254,6 @@ enum vxge_hw_status vxge_hw_vpath_rts_rth_set(
 	struct vxge_hw_rth_hash_types *hash_type,
 	u16 bucket_size);
 
+enum vxge_hw_status
+__vxge_hw_device_is_privilaged(u32 host_type, u32 func_id);
 #endif

@@ -175,7 +175,7 @@ struct at91_request {
 #endif
 
 #define ERR(stuff...)		printk(KERN_ERR "udc: " stuff)
-#define WARN(stuff...)		printk(KERN_WARNING "udc: " stuff)
+#define WARNING(stuff...)	printk(KERN_WARNING "udc: " stuff)
 #define INFO(stuff...)		printk(KERN_INFO "udc: " stuff)
 
 #endif

@@ -34,11 +34,17 @@ struct kprobe;
 
 typedef u8 kprobe_opcode_t;
 #define BREAKPOINT_INSTRUCTION	0xcc
-#define RELATIVEJUMP_INSTRUCTION 0xe9
+#define RELATIVEJUMP_OPCODE 0xe9
+#define RELATIVEJUMP_SIZE 5
+#define RELATIVECALL_OPCODE 0xe8
+#define RELATIVE_ADDR_SIZE 4
 /* Use the last byte of insn slot as a flag for preserving kABI compatibility */
 #define __MAX_INSN_SIZE 15
 #define MAX_INSN_SIZE (__MAX_INSN_SIZE + 1)
 #define BOOSTABLE_FLAG (MAX_INSN_SIZE - 1)
+#define BOOSTABLE_MASK 3
+#define OPTIMIZED_MASK 4
+
 #define MAX_STACK_SIZE 64
 #define MIN_STACK_SIZE(ADDR) (((MAX_STACK_SIZE) < \
 	(((unsigned long)current_thread_info()) + THREAD_SIZE - (ADDR))) \
@@ -50,6 +56,17 @@ typedef u8 kprobe_opcode_t;
 extern const int kretprobe_blacklist_size;
 #define  ARCH_INACTIVE_KPROBE_COUNT 1
 
+/* optinsn template addresses */
+extern kprobe_opcode_t optprobe_template_entry;
+extern kprobe_opcode_t optprobe_template_val;
+extern kprobe_opcode_t optprobe_template_call;
+extern kprobe_opcode_t optprobe_template_end;
+#define MAX_OPTIMIZED_LENGTH (MAX_INSN_SIZE + RELATIVE_ADDR_SIZE)
+#define MAX_OPTINSN_SIZE 				\
+	(((unsigned long)&optprobe_template_end -	\
+	  (unsigned long)&optprobe_template_entry) +	\
+	 MAX_OPTIMIZED_LENGTH + RELATIVEJUMP_SIZE)
+
 void kretprobe_trampoline(void);
 extern void arch_remove_kprobe(struct kprobe *p);
 #define flush_insn_slot(p)	do { } while (0)
@@ -59,6 +76,21 @@ struct arch_specific_insn {
 	/* copy of the original instruction */
 	kprobe_opcode_t *insn;
 };
+
+struct arch_optimized_insn {
+	/* copy of the original instructions */
+	kprobe_opcode_t copied_insn[RELATIVE_ADDR_SIZE];
+	/* detour code buffer */
+	kprobe_opcode_t *insn;
+	/* the size of instructions copied to detour code buffer */
+	size_t size;
+};
+
+/* Return true (!0) if optinsn is prepared for optimization. */
+static inline int arch_prepared_optinsn(struct arch_optimized_insn *optinsn)
+{
+	return optinsn->size;
+}
 
 struct prev_kprobe {
 	struct kprobe *kp;

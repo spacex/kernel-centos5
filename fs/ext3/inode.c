@@ -1732,8 +1732,9 @@ static ssize_t ext3_direct_IO(int rw, struct kiocb *iocb,
 		handle = ext3_journal_start(inode, 2);
 		if (IS_ERR(handle)) {
 			/* This is really bad luck. We've written the data
-			 * but cannot extend i_size. Bail out and pretend
-			 * the write failed... */
+			 * but cannot extend i_size. Truncate allocated blocks
+			 * and pretend the write failed... */
+			ext3_truncate(inode);
 			ret = PTR_ERR(handle);
 			goto out;
 		}
@@ -2325,11 +2326,11 @@ void ext3_truncate(struct inode *inode)
 
 	if (!(S_ISREG(inode->i_mode) || S_ISDIR(inode->i_mode) ||
 	    S_ISLNK(inode->i_mode)))
-		return;
+		goto out_notrans;
 	if (ext3_inode_is_fast_symlink(inode))
-		return;
+		goto out_notrans;
 	if (IS_APPEND(inode) || IS_IMMUTABLE(inode))
-		return;
+		goto out_notrans;
 
 	/*
 	 * We have to lock the EOF page here, because lock_page() nests
@@ -2342,7 +2343,7 @@ void ext3_truncate(struct inode *inode)
 		page = grab_cache_page(mapping,
 				inode->i_size >> PAGE_CACHE_SHIFT);
 		if (!page)
-			return;
+			goto out_notrans;
 	}
 
 	handle = start_transaction(inode);
@@ -2353,7 +2354,7 @@ void ext3_truncate(struct inode *inode)
 			unlock_page(page);
 			page_cache_release(page);
 		}
-		return;		/* AKPM: return what? */
+		goto out_notrans;
 	}
 
 	last_block = (inode->i_size + blocksize-1)
@@ -2477,6 +2478,14 @@ out_stop:
 		ext3_orphan_del(handle, inode);
 
 	ext3_journal_stop(handle);
+	return;
+out_notrans:
+	/*
+	 * Delete the inode from orphan list so that it doesn't stay there
+	 * forever and trigger assertion on umount.
+	 */
+	if (inode->i_nlink)
+		ext3_orphan_del(NULL, inode);
 }
 
 static ext3_fsblk_t ext3_get_inode_block(struct super_block *sb,
@@ -3050,12 +3059,6 @@ int ext3_setattr(struct dentry *dentry, struct iattr *attr)
 	}
 
 	rc = inode_setattr(inode, attr);
-
-	/* If inode_setattr's call to ext3_truncate failed to get a
-	 * transaction handle at all, we need to clean up the in-core
-	 * orphan list manually. */
-	if (inode->i_nlink)
-		ext3_orphan_del(NULL, inode);
 
 	if (!rc && (ia_valid & ATTR_MODE))
 		rc = ext3_acl_chmod(inode);

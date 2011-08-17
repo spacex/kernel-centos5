@@ -1031,6 +1031,7 @@ io_subchannel_shutdown(struct subchannel *sch)
 	if (cdev->handler)
 		cdev->handler(cdev, cdev->private->intparm,
 			      ERR_PTR(-EIO));
+	cdev->private->iretry = 255;
 	ret = ccw_device_cancel_halt_clear(cdev);
 	if (ret == -EBUSY) {
 		ccw_device_set_timeout(cdev, HZ/10);

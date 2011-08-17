@@ -306,7 +306,7 @@ static void backend_changed(struct xenbus_watch *watch,
 		be->minor = minor;
 
 		err = vbd_create(be->blkif, handle, major, minor,
-				 (NULL == strchr(be->mode, 'w')),dev);
+				 (NULL == strchr(be->mode, 'w')));
 		if (err) {
 			be->major = be->minor = 0;
 			xenbus_dev_fatal(dev, err, "creating vbd structure");

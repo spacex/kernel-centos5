@@ -40,6 +40,12 @@ qla2x00_sysfs_write_fw_dump(struct kobject *kobj, char *buf, loff_t off,
 	    struct device, kobj)));
 	int reading;
 
+	if (IS_QLA82XX(ha)) {
+		DEBUG2(qla_printk(KERN_INFO, ha,
+		    "Firmware dump not supported for ISP82xx\n"));
+		return count;
+	}
+
 	if (off != 0)
 		return (0);
 
@@ -87,6 +93,7 @@ static struct bin_attribute sysfs_fw_dump_attr = {
 
 #define        RESET_FC_FW                     0x2025c
 #define        RESET_MPI                       0x2025d
+#define        RESET_FCOE_CTX                  0x2025e
 
 static ssize_t
 qla2x00_sysfs_write_reset(struct kobject *kobj, char *buf, loff_t off,
@@ -135,7 +142,22 @@ qla2x00_sysfs_write_reset(struct kobject *kobj, char *buf, loff_t off,
 		}		
 		 scsi_unblock_requests(ha->host);
 		break;
+	case RESET_FCOE_CTX:
+		if (!IS_QLA82XX(ha) || ha != pha) {
+			qla_printk(KERN_INFO, ha,
+			    "FCoE ctx reset not supported for host%ld.\n",
+			    ha->host_no);
+			return count;
+		}
+
+		qla_printk(KERN_INFO, ha,
+		    "Issuing FCoE CTX reset on host%ld.\n", ha->host_no);
+		set_bit(FCOE_CTX_RESET_NEEDED, &ha->dpc_flags);
+		qla2xxx_wake_dpc(ha);
+		qla2x00_wait_for_fcoe_ctx_reset(ha);
+		break;
 	}
+
 	return (count);
 }
 
@@ -341,6 +363,12 @@ qla2x00_sysfs_write_optrom_ctl(struct kobject *kobj, char *buf, loff_t off,
 			return count;
 		}
 
+		if (qla2x00_wait_for_hba_online(ha) != QLA_SUCCESS) {
+			DEBUG2(qla_printk(KERN_INFO, ha,
+			    "HBA not online, failing OptROM read.\n"));
+			return -EINVAL;
+		}
+
 		DEBUG9(qla_printk(KERN_INFO, ha,
 		    "Reading flash region -- 0x%x/0x%x.\n",
 		    ha->optrom_region_start, ha->optrom_region_size));
@@ -374,8 +402,9 @@ qla2x00_sysfs_write_optrom_ctl(struct kobject *kobj, char *buf, loff_t off,
 		else if (start == (ha->flt_region_boot * 4) ||
 		    start == (ha->flt_region_fw * 4))
 			valid = 1;
-		else if ((IS_QLA25XX(ha) || IS_QLA81XX(ha)))
-		    valid = 1;
+		else if (IS_QLA24XX_TYPE(ha) || IS_QLA25XX(ha) ||
+		    IS_QLA8XXX_TYPE(ha))
+			valid = 1;
 		if (!valid) {
 			qla_printk(KERN_WARNING, ha,
 			    "Invalid start region 0x%x/0x%x.\n", start, size);
@@ -593,8 +622,12 @@ qla2x00_wait_for_passthru_completion(struct scsi_qla_host *ha)
 	    timeout)) {
 		DEBUG2(qla_printk(KERN_WARNING, ha,
 		    "Passthru request timed out.\n"));
-		ha->isp_ops->fw_dump(ha, 0);
-		set_bit(ISP_ABORT_NEEDED, &ha->dpc_flags);
+		if (IS_QLA82XX(ha)) {
+			set_bit(FCOE_CTX_RESET_NEEDED, &ha->dpc_flags);
+		} else {
+			ha->isp_ops->fw_dump(ha, 0);
+			set_bit(ISP_ABORT_NEEDED, &ha->dpc_flags);
+		}
 		qla2xxx_wake_dpc(ha);
 		ha->pass_thru_cmd_result = 0;
 		ha->pass_thru_cmd_in_process = 0;
@@ -642,6 +675,15 @@ qla2x00_sysfs_write_els(struct kobject *kobj, char *buf, loff_t off,
 	if (!IS_FWI2_CAPABLE(ha) ||
 	    atomic_read(&ha->loop_state) != LOOP_READY)
 		goto els_error0;
+
+	if (test_bit(ISP_ABORT_NEEDED, &ha->dpc_flags) ||
+	    test_bit(ABORT_ISP_ACTIVE, &ha->dpc_flags) ||
+	    test_bit(ISP_ABORT_RETRY, &ha->dpc_flags)) {
+		DEBUG2_3_11(qla_printk(KERN_INFO, ha,
+		    "%s(%ld): isp reset in progress.\n",
+		    __func__, ha->host_no));
+		goto els_error0;
+	}
 
 	if (count < sizeof(request->ct_iu)) {
 		DEBUG2(qla_printk(KERN_WARNING, ha,
@@ -697,7 +739,7 @@ qla2x00_sysfs_write_els(struct kobject *kobj, char *buf, loff_t off,
 	els_iocb->vp_index = ha->vp_idx;
 	els_iocb->sof_type = EST_SOFI3;
 	els_iocb->rx_dsd_count = __constant_cpu_to_le16(1);
-	els_iocb->opcode = 0;
+	els_iocb->opcode = ha->pass_thru[0];
 	els_iocb->port_id[0] = fcport->d_id.b.al_pa;
 	els_iocb->port_id[1] = fcport->d_id.b.area;
 	els_iocb->port_id[2] = fcport->d_id.b.domain;
@@ -770,6 +812,15 @@ qla2x00_sysfs_write_ct(struct kobject *kobj, char *buf, loff_t off,
 	struct ct_entry_24xx *ct_iocb = NULL;
 	ms_iocb_entry_t *ct_iocb_2G = NULL;
 	unsigned long flags;
+
+	if (test_bit(ISP_ABORT_NEEDED, &ha->dpc_flags) ||
+	    test_bit(ABORT_ISP_ACTIVE, &ha->dpc_flags) ||
+	    test_bit(ISP_ABORT_RETRY, &ha->dpc_flags)) {
+		DEBUG2_3_11(qla_printk(KERN_INFO, ha,
+		    "%s(%ld): isp reset in progress.\n",
+		    __func__, ha->host_no));
+		goto ct_error0;
+	}
 
 	if (atomic_read(&ha->loop_state) != LOOP_READY)
 		goto ct_error0;
@@ -1112,7 +1163,7 @@ qla2x00_alloc_sysfs_attr(scsi_qla_host_t *ha)
 			continue;
 		if (iter->is4GBp_only == 2 && !IS_QLA25XX(ha))
 			continue;
-		if (iter->is4GBp_only == 3 && !IS_QLA81XX(ha))
+		if (iter->is4GBp_only == 3 && !(IS_QLA8XXX_TYPE(ha)))
 			continue;
 
 		ret = sysfs_create_bin_file(&host->shost_gendev.kobj,
@@ -1135,7 +1186,7 @@ qla2x00_free_sysfs_attr(scsi_qla_host_t *ha)
 			continue;
 		if (iter->is4GBp_only == 2 && !IS_QLA25XX(ha))
 			continue;
-		if (iter->is4GBp_only == 3 && !IS_QLA81XX(ha))
+		if (iter->is4GBp_only == 3 && !(IS_QLA8XXX_TYPE(ha)))
 			continue;
 
 		sysfs_remove_bin_file(&host->shost_gendev.kobj,
@@ -1226,7 +1277,8 @@ qla2x00_state_show(struct class_device *cdev, char *buf)
 	int len = 0;
 
 	if (atomic_read(&ha->loop_state) == LOOP_DOWN ||
-	    atomic_read(&ha->loop_state) == LOOP_DEAD)
+	    atomic_read(&ha->loop_state) == LOOP_DEAD ||
+	    ha->device_flags & DFLG_NO_CABLE)
 		len = snprintf(buf, PAGE_SIZE, "Link Down\n");
 	else if (atomic_read(&ha->loop_state) != LOOP_READY ||
 	    test_bit(ABORT_ISP_ACTIVE, &ha->dpc_flags) ||
@@ -1830,10 +1882,10 @@ qla2x00_vlan_id_show(struct class_device *cdev, char *buf)
 {
 	scsi_qla_host_t *ha = to_qla_host(class_to_shost(cdev));
 
-        if (!IS_QLA81XX(ha))
-                return snprintf(buf, PAGE_SIZE, "\n");
+	if (!IS_QLA8XXX_TYPE(ha))
+		return snprintf(buf, PAGE_SIZE, "\n");
 
-        return snprintf(buf, PAGE_SIZE, "%d\n", ha->fcoe_vlan_id);
+	return snprintf(buf, PAGE_SIZE, "%d\n", ha->fcoe_vlan_id);
 }
 
 static ssize_t
@@ -1841,13 +1893,14 @@ qla2x00_vn_port_mac_address_show(struct class_device *cdev, char *buf)
 {
 	scsi_qla_host_t *ha = to_qla_host(class_to_shost(cdev));
 
-        if (!IS_QLA81XX(ha))
+	if (!IS_QLA8XXX_TYPE(ha))
                 return snprintf(buf, PAGE_SIZE, "\n");
 
-        return snprintf(buf, PAGE_SIZE, "%02x:%02x:%02x:%02x:%02x:%02x\n",
-            ha->fcoe_vn_port_mac[5], ha->fcoe_vn_port_mac[4],
-            ha->fcoe_vn_port_mac[3], ha->fcoe_vn_port_mac[2],
-            ha->fcoe_vn_port_mac[1], ha->fcoe_vn_port_mac[0]);
+	return snprintf(buf, PAGE_SIZE,
+	    "%02x:%02x:%02x:%02x:%02x:%02x\n",
+	    ha->fcoe_vn_port_mac[5], ha->fcoe_vn_port_mac[4],
+	    ha->fcoe_vn_port_mac[3], ha->fcoe_vn_port_mac[2],
+	    ha->fcoe_vn_port_mac[1], ha->fcoe_vn_port_mac[0]);
 }
 
 static ssize_t
@@ -1865,7 +1918,13 @@ qla2x00_fw_state_show(struct class_device *cdev, char *buf)
 	uint16_t state[5];
 	scsi_qla_host_t *ha = to_qla_host(class_to_shost(cdev));
 	scsi_qla_host_t *pha = to_qla_parent(ha);
-	if (!ha->flags.eeh_busy)
+
+	if (test_bit(ABORT_ISP_ACTIVE, &pha->dpc_flags) ||
+		test_bit(ISP_ABORT_NEEDED, &pha->dpc_flags))
+		DEBUG2_3_11(qla_printk(KERN_INFO, ha,
+		    "%s(%ld): isp reset in progress.\n",
+		    __func__, ha->host_no));
+	else if (!ha->flags.eeh_busy)
 		rval = qla2x00_get_firmware_state(pha, state);
 
 	if (rval != QLA_SUCCESS)
@@ -2401,7 +2460,7 @@ qla2x00_init_host_attr(scsi_qla_host_t *ha)
 	fc_host_port_name(ha->host) = wwn_to_u64(ha->port_name);
 	fc_host_supported_classes(ha->host) = FC_COS_CLASS3;
 
-	if (IS_QLA81XX(ha))
+	if (IS_QLA8XXX_TYPE(ha))
 		speed = FC_PORTSPEED_10GBIT;
 	else if (IS_QLA25XX(ha))
 		speed = FC_PORTSPEED_8GBIT | FC_PORTSPEED_4GBIT |

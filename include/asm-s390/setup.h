@@ -17,8 +17,6 @@
 #include <asm/types.h>
 
 #define PARMAREA		0x10400
-#define RAMDISK_ORIGIN		0x800000
-#define RAMDISK_SIZE		0x800000
 #define MEMORY_CHUNKS		16	/* max 0x7fff */
 
 #ifndef __ASSEMBLY__

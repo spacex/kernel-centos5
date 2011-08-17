@@ -185,17 +185,6 @@ nfs_release_request(struct nfs_page *req)
 	nfs_page_free(req);
 }
 
-static int nfs_wait_bit_interruptible(void *word)
-{
-	int ret = 0;
-
-	if (signal_pending(current))
-		ret = -ERESTARTSYS;
-	else
-		schedule();
-	return ret;
-}
-
 static int nfs_wait_bit_uninterruptible(void *word)
 {
 	io_schedule();

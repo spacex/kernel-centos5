@@ -185,6 +185,48 @@ static inline void i2c_set_clientdata (struct i2c_client *dev, void *data)
 	dev_set_drvdata (&dev->dev, data);
 }
 
+/**
+ * struct i2c_board_info - template for device creation
+ * @type: chip type, to initialize i2c_client.name
+ * @flags: to initialize i2c_client.flags
+ * @addr: stored in i2c_client.addr
+ * @platform_data: stored in i2c_client.dev.platform_data
+ * @archdata: copied into i2c_client.dev.archdata
+ * @irq: stored in i2c_client.irq
+ *
+ * I2C doesn't actually support hardware probing, although controllers and
+ * devices may be able to use I2C_SMBUS_QUICK to tell whether or not there's
+ * a device at a given address.  Drivers commonly need more information than
+ * that, such as chip type, configuration, associated IRQ, and so on.
+ *
+ * i2c_board_info is used to build tables of information listing I2C devices
+ * that are present.  This information is used to grow the driver model tree.
+ * For mainboards this is done statically using i2c_register_board_info();
+ * bus numbers identify adapters that aren't yet available.  For add-on boards,
+ * i2c_new_device() does this dynamically with the adapter already known.
+ */
+struct i2c_board_info {
+	char		type[I2C_NAME_SIZE];
+	unsigned short	flags;
+	unsigned short	addr;
+	void		*platform_data;
+	struct dev_archdata	*archdata;
+	int		irq;
+};
+
+/**
+ * I2C_BOARD_INFO - macro used to list an i2c device and its address
+ * @dev_type: identifies the device type
+ * @dev_addr: the device's address on the bus.
+ *
+ * This macro initializes essential fields of a struct i2c_board_info,
+ * declaring what has been provided on a particular board.  Optional
+ * fields (such as associated irq, or device-specific platform_data)
+ * are provided using conventional syntax.
+ */
+#define I2C_BOARD_INFO(dev_type, dev_addr) \
+	.type = dev_type, .addr = (dev_addr)
+
 /*
  * The following structs are for those who like to implement new bus drivers:
  * i2c_algorithm is the interface to a class of hardware solutions which can
@@ -651,5 +693,10 @@ static unsigned short *forces[] = { force, force_##chip1,		\
 				    force_##chip6, force_##chip7,	\
 				    force_##chip8, NULL };		\
 I2C_CLIENT_INSMOD_COMMON
+
+#ifndef __GENKSYMS__
+struct i2c_client * i2c_new_dummy(struct i2c_adapter *adap, u16 address);
+void i2c_unregister_device(struct i2c_client *c);
+#endif
 #endif /* __KERNEL__ */
 #endif /* _LINUX_I2C_H */

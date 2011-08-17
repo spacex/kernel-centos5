@@ -25,7 +25,7 @@
 #include <linux/ioport.h>
 #include <linux/cache.h>
 #include <linux/slab.h>
-
+#include "pci.h"
 
 #define DEBUG_CONFIG 1
 #if DEBUG_CONFIG
@@ -49,7 +49,7 @@ pbus_assign_resources_sorted(struct pci_bus *bus)
 	struct pci_dev *dev;
 	struct resource *res;
 	struct resource_list head, *list, *tmp;
-	int idx;
+	unsigned long idx;
 
 	head.next = NULL;
 	list_for_each_entry(dev, &bus->devices, bus_list) {
@@ -74,6 +74,10 @@ pbus_assign_resources_sorted(struct pci_bus *bus)
 	for (list = head.next; list;) {
 		res = list->res;
 		idx = res - &list->dev->resource[0];
+		if (idx > PCI_NUM_RESOURCES) {
+			idx = res - &list->dev->sriov->res[0];
+			idx += PCI_IOV_RESOURCES;
+		}
 		if (pci_assign_resource(list->dev, idx)) {
 			res->start = 0;
 			res->end = 0;
@@ -336,6 +340,7 @@ pbus_size_io(struct pci_bus *bus)
 	/* Alignment of the IO window is always 4K */
 	b_res->start = 4096;
 	b_res->end = b_res->start + size - 1;
+	b_res->flags |= IORESOURCE_STARTALIGN;
 }
 
 /* Calculate the size of the bus and minimal alignment which
@@ -367,12 +372,13 @@ pbus_size_mem(struct pci_bus *bus, unsigned long mask, unsigned long type)
 				continue;
 			r_size = r->end - r->start + 1;
 			/* For bridges size != alignment */
-			align = (i < PCI_BRIDGE_RESOURCES) ? r_size : r->start;
+			align = pci_resource_alignment(dev, r);
 			order = __ffs(align) - 20;
 			if (order > 11) {
 				printk(KERN_WARNING "PCI: region %s/%d "
-				       "too large: %016llx-%016llx\n",
+				       "bad alignment %llx: %016llx-%016llx\n",
 					pci_name(dev), i,
+				       (unsigned long long)align,
 				       (unsigned long long)r->start,
 				       (unsigned long long)r->end);
 				r->flags = 0;
@@ -411,6 +417,7 @@ pbus_size_mem(struct pci_bus *bus, unsigned long mask, unsigned long type)
 	}
 	b_res->start = min_align;
 	b_res->end = size + min_align - 1;
+	b_res->flags |= IORESOURCE_STARTALIGN;
 	return 1;
 }
 
@@ -425,13 +432,13 @@ pci_bus_size_cardbus(struct pci_bus *bus)
 	 * Reserve some resources for CardBus.  We reserve
 	 * a fixed amount of bus space for CardBus bridges.
 	 */
-	b_res[0].start = CARDBUS_IO_SIZE;
-	b_res[0].end = b_res[0].start + CARDBUS_IO_SIZE - 1;
-	b_res[0].flags |= IORESOURCE_IO;
+	b_res[0].start = 0;
+	b_res[0].end = CARDBUS_IO_SIZE - 1;
+	b_res[0].flags |= IORESOURCE_IO | IORESOURCE_SIZEALIGN;
 
-	b_res[1].start = CARDBUS_IO_SIZE;
-	b_res[1].end = b_res[1].start + CARDBUS_IO_SIZE - 1;
-	b_res[1].flags |= IORESOURCE_IO;
+	b_res[1].start = 0;
+	b_res[1].end = CARDBUS_IO_SIZE - 1;
+	b_res[1].flags |= IORESOURCE_IO | IORESOURCE_SIZEALIGN;
 
 	/*
 	 * Check whether prefetchable memory is supported
@@ -450,17 +457,17 @@ pci_bus_size_cardbus(struct pci_bus *bus)
 	 * twice the size.
 	 */
 	if (ctrl & PCI_CB_BRIDGE_CTL_PREFETCH_MEM0) {
-		b_res[2].start = CARDBUS_MEM_SIZE;
-		b_res[2].end = b_res[2].start + CARDBUS_MEM_SIZE - 1;
-		b_res[2].flags |= IORESOURCE_MEM | IORESOURCE_PREFETCH;
+		b_res[2].start = 0;
+		b_res[2].end = CARDBUS_MEM_SIZE - 1;
+		b_res[2].flags |= IORESOURCE_MEM | IORESOURCE_PREFETCH  | IORESOURCE_SIZEALIGN;
 
-		b_res[3].start = CARDBUS_MEM_SIZE;
-		b_res[3].end = b_res[3].start + CARDBUS_MEM_SIZE - 1;
-		b_res[3].flags |= IORESOURCE_MEM;
+		b_res[3].start = 0;
+		b_res[3].end = CARDBUS_MEM_SIZE - 1;
+		b_res[3].flags |= IORESOURCE_MEM  | IORESOURCE_SIZEALIGN;
 	} else {
-		b_res[3].start = CARDBUS_MEM_SIZE * 2;
-		b_res[3].end = b_res[3].start + CARDBUS_MEM_SIZE * 2 - 1;
-		b_res[3].flags |= IORESOURCE_MEM;
+		b_res[3].start = 0;
+		b_res[3].end = CARDBUS_MEM_SIZE * 2 - 1;
+		b_res[3].flags |= IORESOURCE_MEM  | IORESOURCE_SIZEALIGN;
 	}
 }
 

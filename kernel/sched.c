@@ -49,7 +49,7 @@
 #include <linux/seq_file.h>
 #include <linux/syscalls.h>
 #include <linux/times.h>
-#include <linux/acct.h>
+#include <linux/tsacct_kern.h>
 #include <linux/kprobes.h>
 #include <linux/delayacct.h>
 #include <linux/hash.h>
@@ -6533,6 +6533,8 @@ static void set_domain_attribute(struct sched_domain *sd, int level, int *attr)
 	}
 }
 
+#define NZ(x) (x?x:1)
+
 /*
  * Build sched domains for a given set of cpus and attach the sched domains
  * to the individual cpus
@@ -6787,7 +6789,7 @@ static int __build_sched_domains(const cpumask_t *cpu_map, int *attr)
 		struct sched_domain *sd;
 		sd = &per_cpu(core_domains, i);
 		if (sched_smt_power_savings)
-			power = SCHED_LOAD_SCALE * cpus_weight(sd->groups->cpumask);
+			power = SCHED_LOAD_SCALE * NZ(cpus_weight(sd->groups->cpumask));
 		else
 			power = SCHED_LOAD_SCALE + (cpus_weight(sd->groups->cpumask)-1)
 					    * SCHED_LOAD_SCALE / 10;
@@ -6837,7 +6839,7 @@ static int __build_sched_domains(const cpumask_t *cpu_map, int *attr)
 		int power;
 		sd = &per_cpu(phys_domains, i);
 		if (sched_smt_power_savings)
-			power = SCHED_LOAD_SCALE * cpus_weight(sd->groups->cpumask);
+			power = SCHED_LOAD_SCALE * NZ(cpus_weight(sd->groups->cpumask));
 		else
 			power = SCHED_LOAD_SCALE;
 		sd->groups->cpu_power = power;

@@ -45,15 +45,7 @@ struct rtas_t rtas = {
 };
 EXPORT_SYMBOL(rtas);
 
-struct rtas_suspend_me_data {
-	int joined;
-	atomic_t working;
-	struct rtas_args *args;
-	struct completion done;
-	int error;
-};
-
-static void rtas_suspend_me_data_init(struct rtas_suspend_me_data *rsmd,
+void rtas_suspend_me_data_init(struct rtas_suspend_me_data *rsmd,
 				      struct rtas_args *args)
 {
 	rsmd->joined = 0;
@@ -318,6 +310,12 @@ int rtas_token(const char *service)
 	return tokp ? *tokp : RTAS_UNKNOWN_SERVICE;
 }
 EXPORT_SYMBOL(rtas_token);
+
+int rtas_service_present(const char *service)
+{
+	return rtas_token(service) != RTAS_UNKNOWN_SERVICE;
+}
+EXPORT_SYMBOL(rtas_service_present);
 
 #ifdef CONFIG_RTAS_ERROR_LOGGING
 /*
@@ -664,13 +662,59 @@ void rtas_os_term(char *str)
 
 static int ibm_suspend_me_token = RTAS_UNKNOWN_SERVICE;
 #ifdef CONFIG_PPC_PSERIES
-static void rtas_percpu_suspend_me(void *info)
+int rtas_suspend_last_cpu(struct rtas_suspend_me_data *data)
+{
+	int rc = H_MULTI_THREADS_ACTIVE;
+	long flags;
+	u16 slb_size = mmu_slb_size;
+
+	/*
+	 * We use data->joined to indicate our state.  As long
+	 * as it is false, we are still trying to all join up.
+	 * If it is true, we have successfully joined up and
+	 * one thread got H_CONTINUE.
+	 */
+	local_irq_save(flags);
+	atomic_inc(&data->working);
+	slb_set_size(SLB_MIN_SIZE);
+	printk("Linux suspends from hypervisor at %lld "
+	       "(cpu %u (hwid%u)).\n", sched_clock(),
+	       smp_processor_id(), hard_smp_processor_id());
+
+	smp_rmb();
+	while (rc == H_MULTI_THREADS_ACTIVE && !data->joined && !data->error) {
+		rc = rtas_call(ibm_suspend_me_token, 0, 1, NULL);
+		smp_rmb();
+	}
+
+	if (rc || data->error) {
+		printk(KERN_DEBUG "ibm,suspend-me returned %d\n", rc);
+		slb_set_size(slb_size);
+	}
+
+	/* this cpu does the join */
+	data->args->args[data->args->nargs] = rc;
+	data->joined = 1;
+
+	printk("Linux reconnects with hypervisor at %lld "
+	       "(cpu %u (hwid%u)).\n", sched_clock(),
+	       smp_processor_id(), hard_smp_processor_id());
+
+	/* this cpu updated data->joined or data->error */
+	smp_wmb();
+
+out:
+	if (atomic_dec_return(&data->working) == 0)
+		complete(&data->done);
+	local_irq_restore(flags);
+	return rc;
+}
+
+void rtas_suspend_cpu(struct rtas_suspend_me_data *data)
 {
 	int i;
 	long rc;
 	long flags;
-	struct rtas_suspend_me_data *data =
-		(struct rtas_suspend_me_data *)info;
 
 	/*
 	 * We use data->joined to indicate our state.  As long
@@ -721,7 +765,11 @@ out:
 	if (atomic_dec_return(&data->working) == 0)
 		complete(&data->done);
 	local_irq_restore(flags);
-	return;
+}
+
+static void rtas_percpu_suspend_me(void *info)
+{
+	rtas_suspend_cpu((struct rtas_suspend_me_data *)info);
 }
 
 static DEFINE_MUTEX(rsm_lock); /* protects rsm_data */

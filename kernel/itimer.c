@@ -199,12 +199,24 @@ static void check_itimerval(struct itimerval *value) {
 		fixup_timeval(&value->it_interval, 1);
 }
 
+static inline u32 cputime_sub_ns(cputime_t ct, s64 real_ns)
+{
+	struct timespec ts;
+	s64 cpu_ns;
+
+	cputime_to_timespec(ct, &ts);
+	cpu_ns = timespec_to_ns(&ts);
+
+	return (cpu_ns <= real_ns) ? 0 : cpu_ns - real_ns;
+}
+
 int do_setitimer(int which, struct itimerval *value, struct itimerval *ovalue)
 {
 	struct task_struct *tsk = current;
 	struct hrtimer *timer;
 	ktime_t expires;
 	cputime_t cval, cinterval, nval, ninterval;
+	s64 ns_ninterval, ns_nval;
 
 	/*
 	 * Validate the timevals in value.
@@ -243,9 +255,15 @@ again:
 		break;
 	case ITIMER_VIRTUAL:
 		nval = timeval_to_cputime(&value->it_value);
+		ns_nval = timeval_to_ns(&value->it_value);
 		ninterval = timeval_to_cputime(&value->it_interval);
+		ns_ninterval = timeval_to_ns(&value->it_interval);
 		read_lock(&tasklist_lock);
 		spin_lock_irq(&tsk->sighand->siglock);
+		signal_aux(tsk->signal)->it_virt_incr_error =
+				cputime_sub_ns(ninterval, ns_ninterval);
+		signal_aux(tsk->signal)->it_virt_error =
+				cputime_sub_ns(nval, ns_nval);
 		cval = tsk->signal->it_virt_expires;
 		cinterval = tsk->signal->it_virt_incr;
 		if (!cputime_eq(cval, cputime_zero) ||
@@ -268,9 +286,15 @@ again:
 		break;
 	case ITIMER_PROF:
 		nval = timeval_to_cputime(&value->it_value);
+		ns_nval = timeval_to_ns(&value->it_value);
 		ninterval = timeval_to_cputime(&value->it_interval);
+		ns_ninterval = timeval_to_ns(&value->it_interval);
 		read_lock(&tasklist_lock);
 		spin_lock_irq(&tsk->sighand->siglock);
+		signal_aux(tsk->signal)->it_prof_incr_error =
+				cputime_sub_ns(ninterval, ns_ninterval);
+		signal_aux(tsk->signal)->it_prof_error =
+				cputime_sub_ns(nval, ns_nval);
 		cval = tsk->signal->it_prof_expires;
 		cinterval = tsk->signal->it_prof_incr;
 		if (!cputime_eq(cval, cputime_zero) ||

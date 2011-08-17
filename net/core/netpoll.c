@@ -160,18 +160,6 @@ static int poll_one_napi(struct netpoll_info *npinfo,
 	return budget;
 }
 
-static void poll_napi(struct netpoll *np)
-{
-	struct netpoll_info *npinfo = np->dev->npinfo;
-	int budget = 16;
-
-	if (npinfo->poll_owner != smp_processor_id() &&
-	    spin_trylock(&npinfo->poll_lock)) {
-		budget = poll_one_napi(npinfo, np->dev, budget);
-		spin_unlock(&npinfo->poll_lock);
-	}
-}
-
 static void service_arp_queue(struct netpoll_info *npi)
 {
 	struct sk_buff *skb;
@@ -188,19 +176,33 @@ static void service_arp_queue(struct netpoll_info *npi)
 	return;
 }
 
-void netpoll_poll(struct netpoll *np)
+void netpoll_poll_dev(struct net_device *dev)
 {
-	if(!np->dev || !netif_running(np->dev) || !np->dev->poll_controller)
+
+	if (!dev || !netif_running(dev))
 		return;
 
-	/* Process pending work on NIC */
-	np->dev->poll_controller(np->dev);
-	if (np->dev->poll)
-		poll_napi(np);
+	if (dev->poll_controller)
+		return;
 
-	service_arp_queue(np->dev->npinfo);
+	dev->poll_controller(dev);
+
+	if (dev->poll) {
+		if (dev->npinfo->poll_owner != smp_processor_id() &&
+		    spin_trylock(&dev->npinfo->poll_lock)) {
+			poll_one_napi(dev->npinfo, dev, 16);
+			spin_unlock(&dev->npinfo->poll_lock);
+		}
+	}
+
+	service_arp_queue(dev->npinfo);
 
 	zap_completion_queue();
+}
+
+void netpoll_poll(struct netpoll *np)
+{
+	netpoll_poll_dev(np->dev);
 }
 
 static void refill_skbs(void)
@@ -286,17 +288,18 @@ repeat:
 	return skb;
 }
 
-static void netpoll_send_skb(struct netpoll *np, struct sk_buff *skb)
+void netpoll_send_skb_on_dev(struct netpoll *np, struct sk_buff *skb,
+			     struct net_device *dev)
 {
 	int status;
 	struct netpoll_info *npinfo;
 
-	if (!np || !np->dev || !netif_running(np->dev)) {
+	if (!np || !dev || !netif_running(dev)) {
 		__kfree_skb(skb);
 		return;
 	}
 
-	npinfo = np->dev->npinfo;
+	npinfo = dev->npinfo;
 
 	/* avoid recursion */
 	if (npinfo->poll_owner == smp_processor_id() ||
@@ -310,17 +313,20 @@ static void netpoll_send_skb(struct netpoll *np, struct sk_buff *skb)
 
 	do {
 		npinfo->tries--;
-		netif_tx_lock(np->dev);
+		netif_tx_lock(dev);
 
 		/*
 		 * network drivers do not expect to be called if the queue is
 		 * stopped.
 		 */
 		status = NETDEV_TX_BUSY;
-		if (!netif_queue_stopped(np->dev))
-			status = np->dev->hard_start_xmit(skb, np->dev);
+		if (!netif_queue_stopped(dev)) {
+			dev->priv_flags |= IFF_IN_NETPOLL;
+			status = dev->hard_start_xmit(skb, dev);
+			dev->priv_flags &= ~IFF_IN_NETPOLL;
+		}
 
-		netif_tx_unlock(np->dev);
+		netif_tx_unlock(dev);
 
 		/* success */
 		if(!status) {
@@ -329,9 +335,14 @@ static void netpoll_send_skb(struct netpoll *np, struct sk_buff *skb)
 		}
 
 		/* transmit busy */
-		netpoll_poll(np);
+		netpoll_poll_dev(dev);
 		udelay(50);
 	} while (npinfo->tries > 0);
+}
+
+void netpoll_send_skb(struct netpoll *np, struct sk_buff *skb)
+{
+	netpoll_send_skb_on_dev(np, skb, np->dev);
 }
 
 void netpoll_send_udp(struct netpoll *np, const char *msg, int len)
@@ -387,6 +398,8 @@ void netpoll_send_udp(struct netpoll *np, const char *msg, int len)
 	memcpy(eth->h_dest, np->remote_mac, 6);
 
 	skb->dev = np->dev;
+
+	skb_set_network_header(skb, ETH_HLEN);
 
 	netpoll_send_skb(np, skb);
 }
@@ -693,6 +706,7 @@ int netpoll_setup(struct netpoll *np)
 		npinfo->tries = MAX_RETRIES;
 		spin_lock_init(&npinfo->rx_lock);
 		skb_queue_head_init(&npinfo->arp_tx);
+		npinfo->netpoll = np;
 	} else
 		npinfo = ndev->npinfo;
 
@@ -799,6 +813,7 @@ void netpoll_cleanup(struct netpoll *np)
 			spin_lock_irqsave(&npinfo->rx_lock, flags);
 			npinfo->rx_np = NULL;
 			npinfo->rx_flags &= ~NETPOLL_RX_ENABLED;
+			npinfo->netpoll = NULL;
 			spin_unlock_irqrestore(&npinfo->rx_lock, flags);
 		}
 		dev_put(np->dev);
@@ -820,11 +835,14 @@ void netpoll_set_trap(int trap)
 		atomic_dec(&trapped);
 }
 
+EXPORT_SYMBOL(netpoll_send_skb_on_dev);
+EXPORT_SYMBOL(netpoll_send_skb);
 EXPORT_SYMBOL(netpoll_set_trap);
 EXPORT_SYMBOL(netpoll_trap);
 EXPORT_SYMBOL(netpoll_parse_options);
 EXPORT_SYMBOL(netpoll_setup);
 EXPORT_SYMBOL(netpoll_cleanup);
 EXPORT_SYMBOL(netpoll_send_udp);
+EXPORT_SYMBOL(netpoll_poll_dev);
 EXPORT_SYMBOL(netpoll_poll);
 EXPORT_SYMBOL(netpoll_queue);

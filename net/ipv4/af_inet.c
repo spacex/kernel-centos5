@@ -308,6 +308,8 @@ lookup_protocol:
 	inet = inet_sk(sk);
 	inet->is_icsk = (INET_PROTOSW_ICSK & answer_flags) == INET_PROTOSW_ICSK;
 
+	inet->nodefrag = 0;
+
 	if (SOCK_RAW == sock->type) {
 		inet->num = protocol;
 		if (IPPROTO_RAW == protocol)
@@ -1380,9 +1382,13 @@ static int __init inet_init(void)
 		goto out;
 	}
 
+	sysctl_local_reserved_ports = kzalloc(65536 / 8, GFP_KERNEL);
+	if (!sysctl_local_reserved_ports)
+		goto out;
+
 	rc = proto_register(&tcp_prot, 1);
 	if (rc)
-		goto out;
+		goto out_free_reserved_ports;
 
 	rc = proto_register(&udp_prot, 1);
 	if (rc)
@@ -1475,6 +1481,8 @@ out_unregister_tcp_proto:
 	proto_unregister(&tcp_prot);
 out_unregister_udp_proto:
 	proto_unregister(&udp_prot);
+out_free_reserved_ports:
+	kfree(sysctl_local_reserved_ports);
 	goto out;
 }
 

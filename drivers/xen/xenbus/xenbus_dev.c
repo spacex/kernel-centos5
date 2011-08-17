@@ -89,6 +89,10 @@ static ssize_t xenbus_dev_read(struct file *filp,
 	struct xenbus_dev_data *u = filp->private_data;
 	int i;
 
+	if (u->read_prod == u->read_cons &&
+	    (filp->f_flags & O_NONBLOCK))
+		return -EAGAIN;
+
 	if (wait_event_interruptible(u->read_waitq,
 				     u->read_prod != u->read_cons))
 		return -EINTR;

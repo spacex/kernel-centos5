@@ -103,10 +103,12 @@ void arch_release_hugepage(struct page *page);
 #define set_huge_pte_at(mm, addr, ptep, pte)	set_pte_at(mm, addr, ptep, pte)
 #define huge_ptep_get_and_clear(mm, addr, ptep) ptep_get_and_clear(mm, addr, ptep)
 #else
+#ifndef ARCH_HAS_SETCLEAR_HUGE_PTE_NO_PROTO
 void set_huge_pte_at(struct mm_struct *mm, unsigned long addr,
 		     pte_t *ptep, pte_t pte);
 pte_t huge_ptep_get_and_clear(struct mm_struct *mm, unsigned long addr,
 			      pte_t *ptep);
+#endif
 #endif
 
 #ifndef ARCH_HAS_HUGETLB_PREFAULT_HOOK

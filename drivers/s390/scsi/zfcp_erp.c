@@ -438,21 +438,19 @@ zfcp_erp_adisc_handler(unsigned long data)
  *
  * Test status of a link to a remote port using the ELS command ADISC.
  */
-int
+void
 zfcp_test_link(struct zfcp_port *port)
 {
 	int retval;
 
 	zfcp_port_get(port);
 	retval = zfcp_erp_adisc(port);
-	if (retval != 0 && retval != -EBUSY) {
-		zfcp_port_put(port);
-		retval = zfcp_erp_port_forced_reopen(port, 0, 65, 0);
-		if (retval != 0)
-			retval = -EPERM;
-	}
+	if (retval == 0)
+		return;
 
-	return retval;
+	zfcp_port_put(port);
+	if (retval != -EBUSY)
+		zfcp_erp_port_forced_reopen(port, 0, 65, NULL);
 }
 
 
@@ -1074,6 +1072,11 @@ zfcp_erp_strategy(struct zfcp_erp_action *erp_action)
 		goto unlock;
 	}
 
+	if (erp_action->status & ZFCP_STATUS_ERP_TIMEDOUT) {
+		retval = ZFCP_ERP_FAILED;
+		goto check_target;
+	}
+
 	/*
 	 * move action to 'running' queue before processing it
 	 * (to avoid a race condition regarding moving the
@@ -1140,6 +1143,7 @@ zfcp_erp_strategy(struct zfcp_erp_action *erp_action)
 	}
 	/* ok, finished action (whatever its result is) */
 
+check_target:
 	/* check for unrecoverable targets */
 	retval = zfcp_erp_strategy_check_target(erp_action, retval);
 
@@ -2763,6 +2767,9 @@ static int zfcp_erp_action_enqueue(int want, struct zfcp_adapter *adapter,
 		/* fall through !!! */
 
 	case ZFCP_ERP_ACTION_REOPEN_PORT_FORCED:
+		if (!atomic_test_mask(ZFCP_STATUS_COMMON_OPEN, &port->status))
+			need = ZFCP_ERP_ACTION_REOPEN_PORT;
+
 		if (atomic_test_mask(ZFCP_STATUS_COMMON_ERP_INUSE,
 				     &port->status)) {
 			if (port->erp_action.action !=
@@ -2928,7 +2935,6 @@ zfcp_erp_action_cleanup(int action, struct zfcp_adapter *adapter,
 		}
 		zfcp_unit_put(unit);
 		break;
-	case ZFCP_ERP_ACTION_REOPEN_PORT_FORCED:
 	case ZFCP_ERP_ACTION_REOPEN_PORT:
 		if (atomic_test_mask(ZFCP_STATUS_PORT_NO_WWPN,
 				     &port->status)) {
@@ -2961,6 +2967,8 @@ zfcp_erp_action_cleanup(int action, struct zfcp_adapter *adapter,
 			fc_remote_port_delete(port->rport);
 			port->rport = NULL;
 		}
+		/* fall through */
+	case ZFCP_ERP_ACTION_REOPEN_PORT_FORCED:
 		zfcp_port_put(port);
 		break;
 	case ZFCP_ERP_ACTION_REOPEN_ADAPTER:

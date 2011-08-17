@@ -247,6 +247,8 @@ xfs_end_bio_unwritten(
 		}
 		xfs_setfilesize(ioend);
 	}
+	if (ioend->io_iocb)
+		aio_complete(ioend->io_iocb, ioend->io_result, 0);
 	xfs_destroy_ioend(ioend);
 }
 
@@ -292,6 +294,8 @@ xfs_alloc_ioend(
 	atomic_inc(&XFS_I(ioend->io_inode)->i_iocount);
 	ioend->io_offset = 0;
 	ioend->io_size = 0;
+	ioend->io_iocb = NULL;
+	ioend->io_result = 0;
 
 	if (type == IOMAP_UNWRITTEN)
 		INIT_WORK(&ioend->io_work, xfs_end_bio_unwritten, ioend);
@@ -1433,9 +1437,12 @@ xfs_end_io_direct(
 	struct kiocb	*iocb,
 	loff_t		offset,
 	ssize_t		size,
-	void		*private)
+	void		*private,
+	int		ret,
+	bool		is_async)
 {
 	xfs_ioend_t	*ioend = iocb->private;
+	bool		complete_aio = is_async;
 
 	/*
 	 * Non-NULL private data means we need to issue a transaction to
@@ -1461,7 +1468,14 @@ xfs_end_io_direct(
 	if (ioend->io_type == IOMAP_READ) {
 		xfs_finish_ioend(ioend, 0);
 	} else if (private && size > 0) {
-		xfs_finish_ioend(ioend, is_sync_kiocb(iocb));
+		if (is_async) {
+			ioend->io_iocb = iocb;
+			ioend->io_result = ret;
+			complete_aio = false;
+			xfs_finish_ioend(ioend, 0);
+		} else {
+			xfs_finish_ioend(ioend, 1);
+		}
 	} else {
 		/*
 		 * A direct I/O write ioend starts it's life in unwritten
@@ -1479,6 +1493,9 @@ xfs_end_io_direct(
 	 * against double-freeing.
 	 */
 	iocb->private = NULL;
+
+	if (complete_aio)
+		aio_complete(iocb, ret, 0);
 }
 
 STATIC ssize_t
@@ -1501,13 +1518,13 @@ xfs_vm_direct_IO(
 		ret = blockdev_direct_IO_own_locking(rw, iocb, inode,
 			bdev, iov, offset, nr_segs,
 			xfs_get_blocks_direct,
-			xfs_end_io_direct);
+			(dio_iodone_t *)xfs_end_io_direct);
 	} else {
 		iocb->private = xfs_alloc_ioend(inode, IOMAP_READ);
 		ret = blockdev_direct_IO_no_locking(rw, iocb, inode,
 			bdev, iov, offset, nr_segs,
 			xfs_get_blocks_direct,
-			xfs_end_io_direct);
+			(dio_iodone_t *)xfs_end_io_direct);
 	}
 
 	if (unlikely(ret != -EIOCBQUEUED && iocb->private))

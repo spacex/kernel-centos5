@@ -106,5 +106,5 @@ config PM_STD_PARTITION
 
 config SUSPEND_SMP
 	bool
-	depends on HOTPLUG_CPU && X86 && PM
+	depends on HOTPLUG_CPU && (X86 || PPC_PSERIES) && PM
 	default y

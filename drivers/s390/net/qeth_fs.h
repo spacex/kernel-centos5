@@ -100,6 +100,10 @@ qeth_get_cardname(struct qeth_card *card)
 			return " Guest LAN QDIO";
  		case QETH_CARD_TYPE_IQD:
 			return " Guest LAN Hiper";
+		case QETH_CARD_TYPE_OSM:
+			return " Guest LAN QDIO - OSM";
+		case QETH_CARD_TYPE_OSX:
+			return " Guest LAN QDIO - OSX";
 		default:
 			return " unknown";
  		}
@@ -111,6 +115,10 @@ qeth_get_cardname(struct qeth_card *card)
 			return " HiperSockets";
 		case QETH_CARD_TYPE_OSN:
 			return " OSN QDIO";
+		case QETH_CARD_TYPE_OSM:
+			return " OSM QDIO";
+		case QETH_CARD_TYPE_OSX:
+			return " OSX QDIO";
 		default:
 			return " unknown";
 		}
@@ -128,6 +136,10 @@ qeth_get_cardname_short(struct qeth_card *card)
 			return "GuestLAN QDIO";
 		case QETH_CARD_TYPE_IQD:
 			return "GuestLAN Hiper";
+		case QETH_CARD_TYPE_OSM:
+			return "GuestLAN OSM";
+		case QETH_CARD_TYPE_OSX:
+			return "GuestLAN OSX";
 		default:
 			return "unknown";
 		}
@@ -158,6 +170,10 @@ qeth_get_cardname_short(struct qeth_card *card)
 			return "HiperSockets";
 		case QETH_CARD_TYPE_OSN:
 			return "OSN";
+		case QETH_CARD_TYPE_OSM:
+			return "OSM_1000";
+		case QETH_CARD_TYPE_OSX:
+			return "OSX_10GIG";
 		default:
 			return "unknown";
 		}

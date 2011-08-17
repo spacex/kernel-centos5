@@ -1144,7 +1144,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		if ((available < target) &&
 		    (len > sysctl_tcp_dma_copybreak) && !(flags & MSG_PEEK) &&
 		    !sysctl_tcp_low_latency && 
-		    __get_cpu_var(softnet_data).net_dma) {
+		    dma_find_channel(DMA_MEMCPY)) {
 			preempt_enable_no_resched();
 			tp->ucopy.pinned_list = 
 					dma_pin_iovec_pages_v3(msg->msg_iov,
@@ -1356,7 +1356,7 @@ do_prequeue:
 		if (!(flags & MSG_TRUNC)) {
 #ifdef CONFIG_NET_DMA
 			if (!tp->ucopy.dma_chan && tp->ucopy.pinned_list)
-				tp->ucopy.dma_chan = get_softnet_dma();
+				tp->ucopy.dma_chan = dma_find_channel(DMA_MEMCPY);
 
 			if (tp->ucopy.dma_chan) {
 				tp->ucopy.dma_cookie = dma_skb_copy_datagram_iovec(
@@ -1461,7 +1461,6 @@ skip_copy:
 
 		/* Safe to free early-copied skbs now */
 		__skb_queue_purge(&sk->sk_async_wait_queue);
-		dma_chan_put(tp->ucopy.dma_chan);
 		tp->ucopy.dma_chan = NULL;
 	}
 	if (tp->ucopy.pinned_list) {
@@ -1578,6 +1577,10 @@ void tcp_close(struct sock *sk, long timeout)
 	}
 
 	sk_mem_reclaim(sk);
+
+	/* If socket has been already reset (e.g. in tcp_reset()) - kill it. */
+	if (sk->sk_state == TCP_CLOSE)
+		goto adjudge_to_death;
 
 	/* As outlined in draft-ietf-tcpimpl-prob-03.txt, section
 	 * 3.10, we send a RST here because data was lost.  To
@@ -1768,8 +1771,7 @@ int tcp_disconnect(struct sock *sk, int flags)
 	tcp_clear_retrans(tp);
 	inet_csk_delack_init(sk);
 	sk->sk_send_head = NULL;
-	tp->rx_opt.saw_tstamp = 0;
-	tcp_sack_reset(&tp->rx_opt);
+	memset(&tp->rx_opt, 0, sizeof(tp->rx_opt));
 	__sk_dst_reset(sk);
 
 	BUG_TRAP(!inet->num || icsk->icsk_bind_hash);
@@ -1875,7 +1877,7 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 			if (sock_flag(sk, SOCK_KEEPOPEN) &&
 			    !((1 << sk->sk_state) &
 			      (TCPF_CLOSE | TCPF_LISTEN))) {
-				__u32 elapsed = tcp_time_stamp - tp->rcv_tstamp;
+				u32 elapsed = keepalive_time_elapsed(tp);
 				if (tp->keepalive_time > elapsed)
 					elapsed = tp->keepalive_time - elapsed;
 				else

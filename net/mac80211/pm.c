@@ -38,11 +38,7 @@ int __ieee80211_suspend(struct ieee80211_hw *hw)
 	 * restarted at resume.
 	 */
 	del_timer_sync(&local->dynamic_ps_timer);
-#if 0 /* Not in RHEL5... */
 	cancel_work_sync(&local->dynamic_ps_enable_work);
-#else
-	ieee80211_cancel_work(&local->hw, &local->dynamic_ps_enable_work);
-#endif
 
 	/* disable keys */
 	list_for_each_entry(sdata, &local->interfaces, list)

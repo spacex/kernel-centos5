@@ -287,7 +287,8 @@ asm(
 	"	lm	6,15,24(15)\n"
 #endif
 	"	br	14\n"
-	"	.size	savesys_ipl_nss, .-savesys_ipl_nss\n");
+	"	.size	savesys_ipl_nss, .-savesys_ipl_nss\n"
+	"	.previous\n");
 
 static __init void create_kernel_nss(void)
 {
@@ -416,6 +417,23 @@ static __init void detect_machine_type(void)
 		machine_flags |= 4;
 }
 
+static __init void rescue_initrd(void)
+{
+#ifdef CONFIG_BLK_DEV_INITRD
+	/*
+	 * Move the initrd right behind the bss section in case it starts
+	 * within the bss section. So we don't overwrite it when the bss
+	 * section gets cleared.
+	 */
+	if (!INITRD_START || !INITRD_SIZE)
+		return;
+	if (INITRD_START >= (unsigned long) __bss_stop)
+		return;
+	memmove(__bss_stop, (void *) INITRD_START, INITRD_SIZE);
+	INITRD_START = (unsigned long) __bss_stop;
+#endif
+}
+
 /*
  * Save ipl parameters, clear bss memory, initialize storage keys
  * and create a kernel NSS at startup if the SAVESYS= parm is defined
@@ -423,6 +441,7 @@ static __init void detect_machine_type(void)
 void __init startup_init(void)
 {
 	ipl_save_parameters();
+	rescue_initrd();
 	clear_bss_section();
 	init_kernel_storage_key();
 	detect_machine_type();
@@ -685,6 +704,39 @@ setup_memory(void)
 	start_pfn = (__pa(&_end) + PAGE_SIZE - 1) >> PAGE_SHIFT;
 	end_pfn = max_pfn = memory_end >> PAGE_SHIFT;
 
+#ifdef CONFIG_BLK_DEV_INITRD
+	/*
+	 * Move the initrd in case the bitmap of the bootmem allocater
+	 * would overwrite it.
+	 */
+
+	if (INITRD_START && INITRD_SIZE) {
+		unsigned long bmap_size;
+		unsigned long start;
+
+		bmap_size = bootmem_bootmap_pages(end_pfn - start_pfn + 1);
+		bmap_size = PFN_PHYS(bmap_size);
+
+		if (PFN_PHYS(start_pfn) + bmap_size > INITRD_START) {
+			start = PFN_PHYS(start_pfn) + bmap_size + PAGE_SIZE;
+			if (start + INITRD_SIZE > memory_end) {
+				printk("initrd extends beyond end of memory "
+				       "(0x%08lx > 0x%08lx)\n"
+				       "disabling initrd\n",
+				       start + INITRD_SIZE, memory_end);
+				INITRD_START = INITRD_SIZE = 0;
+			} else {
+				printk("Moving initrd (0x%08lx -> 0x%08lx, "
+				       "size: %ld)\n",
+				       INITRD_START, start, INITRD_SIZE);
+				memmove((void *) start, (void *) INITRD_START,
+					INITRD_SIZE);
+				INITRD_START = start;
+			}
+		}
+	}
+#endif
+
 	/*
 	 * Initialize the boot-time allocator (with low memory only):
 	 */
@@ -737,7 +789,7 @@ setup_memory(void)
 	reserve_bootmem(start_pfn << PAGE_SHIFT, bootmap_size, BOOTMEM_DEFAULT);
 
 #ifdef CONFIG_BLK_DEV_INITRD
-	if (INITRD_START) {
+	if (INITRD_START && INITRD_SIZE) {
 		if (INITRD_START + INITRD_SIZE <= memory_end) {
 			reserve_bootmem(INITRD_START, INITRD_SIZE,
 					BOOTMEM_DEFAULT);

@@ -117,6 +117,11 @@ static inline void sched_cacheflush(void)
 
 #endif	/* __KERNEL__ */
 
+static inline void clflush(volatile void *__p)
+{
+	asm volatile("clflush %0" : "+m" (*(volatile char __force *)__p));
+}
+
 #define nop() __asm__ __volatile__ ("nop")
 
 #define xchg(ptr,v) ((__typeof__(*(ptr)))__xchg((unsigned long)(v),(ptr),sizeof(*(ptr))))

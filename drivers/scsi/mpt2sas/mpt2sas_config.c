@@ -2,7 +2,7 @@
  * This module provides common API for accessing firmware configuration pages
  *
  * This code is based on drivers/scsi/mpt2sas/mpt2_base.c
- * Copyright (C) 2007-2008  LSI Corporation
+ * Copyright (C) 2007-2010  LSI Corporation
  *  (mailto:DL-MPTFusionLinux@lsi.com)
  *
  * This program is free software; you can redistribute it and/or
@@ -227,23 +227,25 @@ _config_free_config_dma_memory(struct MPT2SAS_ADAPTER *ioc,
  * mpt2sas_config_done - config page completion routine
  * @ioc: per adapter object
  * @smid: system request message index
- * @VF_ID: virtual function id
+ * @msix_index: MSIX table index supplied by the OS
  * @reply: reply message frame(lower 32bit addr)
  * Context: none.
  *
  * The callback handler when using _config_request.
  *
- * Return nothing.
+ * Return 1 meaning mf should be freed from _base_interrupt
+ *        0 means the mf is freed from this function.
  */
-void
-mpt2sas_config_done(struct MPT2SAS_ADAPTER *ioc, u16 smid, u8 VF_ID, u32 reply)
+u8
+mpt2sas_config_done(struct MPT2SAS_ADAPTER *ioc, u16 smid, u8 msix_index,
+    u32 reply)
 {
 	MPI2DefaultReply_t *mpi_reply;
 
 	if (ioc->config_cmds.status == MPT2_CMD_NOT_USED)
-		return;
+		return 1;
 	if (ioc->config_cmds.smid != smid)
-		return;
+		return 1;
 	ioc->config_cmds.status |= MPT2_CMD_COMPLETE;
 	mpi_reply =  mpt2sas_base_get_reply_virt_addr(ioc, reply);
 	if (mpi_reply) {
@@ -257,6 +259,7 @@ mpt2sas_config_done(struct MPT2SAS_ADAPTER *ioc, u16 smid, u8 VF_ID, u32 reply)
 #endif
 	ioc->config_cmds.smid = USHORT_MAX;
 	complete(&ioc->config_cmds.done);
+	return 1;
 }
 
 /**
@@ -303,6 +306,9 @@ _config_request(struct MPT2SAS_ADAPTER *ioc, Mpi2ConfigRequest_t
 	retry_count = 0;
 	memset(&mem, 0, sizeof(struct config_request));
 
+	mpi_request->VF_ID = 0; /* TODO */
+	mpi_request->VP_ID = 0;
+
 	if (config_page) {
 		mpi_request->Header.PageVersion = mpi_reply->Header.PageVersion;
 		mpi_request->Header.PageNumber = mpi_reply->Header.PageNumber;
@@ -318,7 +324,9 @@ _config_request(struct MPT2SAS_ADAPTER *ioc, Mpi2ConfigRequest_t
 		if (r != 0)
 			goto out;
 		if (mpi_request->Action ==
-		    MPI2_CONFIG_ACTION_PAGE_WRITE_CURRENT) {
+		    MPI2_CONFIG_ACTION_PAGE_WRITE_CURRENT ||
+		    mpi_request->Action ==
+		    MPI2_CONFIG_ACTION_PAGE_WRITE_NVRAM) {
 			ioc->base_add_sg_single(&mpi_request->PageBufferSGE,
 			    MPT2_CONFIG_COMMON_WRITE_SGLFLAGS | mem.sz,
 			    mem.page_dma);
@@ -380,7 +388,7 @@ _config_request(struct MPT2SAS_ADAPTER *ioc, Mpi2ConfigRequest_t
 	_config_display_some_debug(ioc, smid, "config_request", NULL);
 #endif
 	init_completion(&ioc->config_cmds.done);
-	mpt2sas_base_put_smid_default(ioc, smid, config_request->VF_ID);
+	mpt2sas_base_put_smid_default(ioc, smid);
 	timeleft = wait_for_completion_timeout(&ioc->config_cmds.done,
 	    timeout*HZ);
 	if (!(ioc->config_cmds.status & MPT2_CMD_COMPLETE)) {
@@ -392,7 +400,7 @@ _config_request(struct MPT2SAS_ADAPTER *ioc, Mpi2ConfigRequest_t
 		if (ioc->config_cmds.smid == smid)
 			mpt2sas_base_free_smid(ioc, smid);
 		if ((ioc->shost_recovery) || (ioc->config_cmds.status &
-		    MPT2_CMD_RESET))
+		    MPT2_CMD_RESET) || ioc->pci_error_recovery)
 			goto retry_config;
 		issue_host_reset = 1;
 		r = -EFAULT;
@@ -876,7 +884,7 @@ mpt2sas_config_get_sas_iounit_pg0(struct MPT2SAS_ADAPTER *ioc, Mpi2ConfigReply_t
 }
 
 /**
- * mpt2sas_config_get_sas_iounit_pg1 - obtain sas iounit page 0
+ * mpt2sas_config_get_sas_iounit_pg1 - obtain sas iounit page 1
  * @ioc: per adapter object
  * @mpi_reply: reply mf payload returned from firmware
  * @config_page: contents of the config page
@@ -901,7 +909,7 @@ mpt2sas_config_get_sas_iounit_pg1(struct MPT2SAS_ADAPTER *ioc, Mpi2ConfigReply_t
 	mpi_request.Header.PageType = MPI2_CONFIG_PAGETYPE_EXTENDED;
 	mpi_request.ExtPageType = MPI2_CONFIG_EXTPAGETYPE_SAS_IO_UNIT;
 	mpi_request.Header.PageNumber = 1;
-	mpi_request.Header.PageVersion = MPI2_SASIOUNITPAGE0_PAGEVERSION;
+	mpi_request.Header.PageVersion = MPI2_SASIOUNITPAGE1_PAGEVERSION;
 	mpt2sas_base_build_zero_len_sge(ioc, &mpi_request.PageBufferSGE);
 	r = _config_request(ioc, &mpi_request, mpi_reply,
 	    MPT2_CONFIG_PAGE_DEFAULT_TIMEOUT, NULL, 0);
@@ -909,6 +917,49 @@ mpt2sas_config_get_sas_iounit_pg1(struct MPT2SAS_ADAPTER *ioc, Mpi2ConfigReply_t
 		goto out;
 
 	mpi_request.Action = MPI2_CONFIG_ACTION_PAGE_READ_CURRENT;
+	r = _config_request(ioc, &mpi_request, mpi_reply,
+	    MPT2_CONFIG_PAGE_DEFAULT_TIMEOUT, config_page, sz);
+ out:
+	return r;
+}
+
+/**
+ * mpt2sas_config_set_sas_iounit_pg1 - send sas iounit page 1
+ * @ioc: per adapter object
+ * @mpi_reply: reply mf payload returned from firmware
+ * @config_page: contents of the config page
+ * @sz: size of buffer passed in config_page
+ * Context: sleep.
+ *
+ * Calling function should call config_get_number_hba_phys prior to
+ * this function, so enough memory is allocated for config_page.
+ *
+ * Returns 0 for success, non-zero for failure.
+ */
+int
+mpt2sas_config_set_sas_iounit_pg1(struct MPT2SAS_ADAPTER *ioc, Mpi2ConfigReply_t
+    *mpi_reply, Mpi2SasIOUnitPage1_t *config_page, u16 sz)
+{
+	Mpi2ConfigRequest_t mpi_request;
+	int r;
+
+	memset(&mpi_request, 0, sizeof(Mpi2ConfigRequest_t));
+	mpi_request.Function = MPI2_FUNCTION_CONFIG;
+	mpi_request.Action = MPI2_CONFIG_ACTION_PAGE_HEADER;
+	mpi_request.Header.PageType = MPI2_CONFIG_PAGETYPE_EXTENDED;
+	mpi_request.ExtPageType = MPI2_CONFIG_EXTPAGETYPE_SAS_IO_UNIT;
+	mpi_request.Header.PageNumber = 1;
+	mpi_request.Header.PageVersion = MPI2_SASIOUNITPAGE1_PAGEVERSION;
+	mpt2sas_base_build_zero_len_sge(ioc, &mpi_request.PageBufferSGE);
+	r = _config_request(ioc, &mpi_request, mpi_reply,
+	    MPT2_CONFIG_PAGE_DEFAULT_TIMEOUT, NULL, 0);
+	if (r)
+		goto out;
+
+	mpi_request.Action = MPI2_CONFIG_ACTION_PAGE_WRITE_CURRENT;
+	_config_request(ioc, &mpi_request, mpi_reply,
+	    MPT2_CONFIG_PAGE_DEFAULT_TIMEOUT, config_page, sz);
+	mpi_request.Action = MPI2_CONFIG_ACTION_PAGE_WRITE_NVRAM;
 	r = _config_request(ioc, &mpi_request, mpi_reply,
 	    MPT2_CONFIG_PAGE_DEFAULT_TIMEOUT, config_page, sz);
  out:
@@ -1338,12 +1389,12 @@ mpt2sas_config_get_volume_handle(struct MPT2SAS_ADAPTER *ioc, u16 pd_handle,
 	if (ioc_status != MPI2_IOCSTATUS_SUCCESS)
 		goto out;
 	for (i = 0; i < config_page->NumElements; i++) {
-		if ((config_page->ConfigElement[i].ElementFlags &
+		if ((le16_to_cpu(config_page->ConfigElement[i].ElementFlags) &
 		    MPI2_RAIDCONFIG0_EFLAGS_MASK_ELEMENT_TYPE) !=
 		    MPI2_RAIDCONFIG0_EFLAGS_VOL_PHYS_DISK_ELEMENT)
 			continue;
-		if (config_page->ConfigElement[i].PhysDiskDevHandle ==
-		    pd_handle) {
+		if (le16_to_cpu(config_page->ConfigElement[i].
+		    PhysDiskDevHandle) == pd_handle) {
 			*volume_handle = le16_to_cpu(config_page->
 			    ConfigElement[i].VolDevHandle);
 			r = 0;

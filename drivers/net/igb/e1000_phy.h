@@ -28,8 +28,6 @@
 #ifndef _E1000_PHY_H_
 #define _E1000_PHY_H_
 
-#include "igb_compat.h"
-
 enum e1000_ms_type {
 	e1000_ms_hw_default = 0,
 	e1000_ms_force_master,

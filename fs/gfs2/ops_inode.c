@@ -607,7 +607,7 @@ static int gfs2_rename(struct inode *odir, struct dentry *odentry,
 	struct gfs2_inode *ip = GFS2_I(odentry->d_inode);
 	struct gfs2_inode *nip = NULL;
 	struct gfs2_sbd *sdp = GFS2_SB(odir);
-	struct gfs2_holder ghs[5], r_gh;
+	struct gfs2_holder ghs[5], r_gh, ri_gh;
 	struct gfs2_rgrpd *nrgd;
 	unsigned int num_gh;
 	int dir_rename = 0;
@@ -621,7 +621,11 @@ static int gfs2_rename(struct inode *odir, struct dentry *odentry,
 			return 0;
 	}
 
-	/* Make sure we aren't trying to move a dirctory into it's subdir */
+	error = gfs2_rindex_hold(sdp, &ri_gh);
+	if (error)
+		return error;
+
+	/* Make sure we aren't trying to move a directory into its subdir */
 
 	if (S_ISDIR(ip->i_inode.i_mode) && odip != ndip) {
 		dir_rename = 1;
@@ -749,7 +753,7 @@ static int gfs2_rename(struct inode *odir, struct dentry *odentry,
 
 		al->al_requested = sdp->sd_max_dirres;
 
-		error = gfs2_inplace_reserve(ndip);
+		error = gfs2_inplace_reserve_ri(ndip);
 		if (error)
 			goto out_gunlock_q;
 
@@ -834,6 +838,7 @@ out_gunlock_r:
 	if (dir_rename)
 		gfs2_glock_dq_uninit(&r_gh);
 out:
+	gfs2_glock_dq_uninit(&ri_gh);
 	return error;
 }
 

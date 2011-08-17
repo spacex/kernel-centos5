@@ -1,8 +1,11 @@
 #include <linux/module.h>
 #include <linux/spinlock.h>
 #include <linux/list.h>
+#include <linux/stop_machine.h>
+#include <linux/kprobes.h>
 #include <asm/alternative.h>
 #include <asm/sections.h>
+#include <asm/cacheflush.h>
 
 #ifdef CONFIG_X86_64_XEN
 static int no_replacement    = 1;
@@ -348,6 +351,29 @@ void alternatives_smp_switch(int smp)
 	spin_unlock_irqrestore(&smp_alt, flags);
 }
 
+/* Return 1 if the address range is reserved for smp-alternatives */
+int alternatives_text_reserved(void *start, void *end)
+{
+	struct alt_instr *a;
+	struct smp_alt_module *mod;
+	u8 **ptr;
+	u8 *text_start = start;
+	u8 *text_end = end;
+
+	for (a = __smp_alt_instructions; a < __smp_alt_instructions_end; a++)
+		if (start <= a->instr && end >= a->instr + a->instrlen)
+			return 1;
+
+	list_for_each_entry(mod, &smp_alt_modules, next) {
+		if (mod->text > text_end || mod->text_end < text_start)
+			continue;
+		for (ptr = mod->locks; ptr < mod->locks_end; ptr++)
+			if (text_start <= *ptr && text_end >= *ptr)
+				return 1;
+	}
+
+	return 0;
+}
 #endif
 
 void __init alternative_instructions(void)
@@ -399,3 +425,62 @@ void __init alternative_instructions(void)
 #endif
 	local_irq_restore(flags);
 }
+
+/*
+ * Cross-modifying kernel text with stop_machine().
+ * This code originally comes from immediate value.
+ */
+static atomic_t stop_machine_first;
+static int wrote_text;
+
+struct text_poke_params {
+	void *addr;
+	const void *opcode;
+	size_t len;
+};
+
+static int __kprobes stop_machine_text_poke(void *data)
+{
+	struct text_poke_params *tpp = data;
+
+	if (atomic_dec_and_test(&stop_machine_first)) {
+		memcpy(tpp->addr, tpp->opcode, tpp->len);
+		smp_wmb();	/* Make sure other cpus see that this has run */
+		wrote_text = 1;
+	} else {
+		while (!wrote_text)
+			cpu_relax();
+		smp_mb();	/* Load wrote_text before following execution */
+	}
+
+	flush_icache_range((unsigned long)tpp->addr,
+			   (unsigned long)tpp->addr + tpp->len);
+	return 0;
+}
+
+/**
+ * text_poke_smp - Update instructions on a live kernel on SMP
+ * @addr: address to modify
+ * @opcode: source of the copy
+ * @len: length to copy
+ *
+ * Modify multi-byte instruction by using stop_machine() on SMP. This allows
+ * user to poke/set multi-byte text on SMP. Only non-NMI/MCE code modifying
+ * should be allowed, since stop_machine() does _not_ protect code against
+ * NMI and MCE.
+ *
+ * Note: Must be called under get_online_cpus() and text_mutex.
+ */
+void *__kprobes text_poke_smp(void *addr, const void *opcode, size_t len)
+{
+	struct text_poke_params tpp;
+
+	tpp.addr = addr;
+	tpp.opcode = opcode;
+	tpp.len = len;
+	atomic_set(&stop_machine_first, 1);
+	wrote_text = 0;
+	stop_machine_run(stop_machine_text_poke, (void *)&tpp, NR_CPUS);
+	return addr;
+}
+

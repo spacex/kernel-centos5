@@ -1,3 +1,18 @@
+#include <linux/ctype.h>
+
+#undef CONFIG_SND_HDA_INPUT_BEEP_MODE
+#define CONFIG_SND_HDA_INPUT_BEEP_MODE 2
+
+#define WARN_ONCE(condition, format...) ({			\
+        static bool __warned;					\
+        int __ret_warn_once = !!(condition);			\
+        if (unlikely(__ret_warn_once)) {			\
+                printk(KERN_WARNING format);			\
+                __warned = true;				\
+        }   							\
+        unlikely(__ret_warn_once);				\
+})        
+
 #define BIT_MASK(w) BIT(w)
 
 static inline u64 get_unaligned_le64(const unsigned char *addr)
@@ -34,6 +49,13 @@ static inline char *kstrndup(const char *s, size_t max, gfp_t gfp)
         return buf;
 }
 
+static inline char *skip_spaces(const char *str)
+{
+        while (isspace(*str))
+                ++str;
+        return (char *)str;
+}
+
 static inline
 int snd_pcm_sgbuf_get_chunk_size(struct snd_pcm_substream *substream,
                                  unsigned long ofs, unsigned long size)
@@ -44,10 +66,8 @@ int snd_pcm_sgbuf_get_chunk_size(struct snd_pcm_substream *substream,
         return res;
 }
 
-static inline
-void cancel_work_sync(struct work_struct *work)
-{
-}
+#define input_get_drvdata(dev) ((dev)->private)
+#define input_set_drvdata(dev, data) (dev)->private = (data)
 
 /* Realtek codecs */
 extern struct hda_codec_preset_list realtek_list[];
@@ -83,6 +103,7 @@ static struct hda_codec_preset_list *hda_preset_table[] = {
         si3054_list,
         atihdmi_list,
         intel_list,
+        nvhdmi_list,
         conexant_list,
         via_list,
         ca0110_list,

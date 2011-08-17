@@ -64,6 +64,9 @@ struct in_device
 #define IN_DEV_MFORWARD(in_dev)		(ipv4_devconf.mc_forwarding && (in_dev)->cnf.mc_forwarding)
 #define IN_DEV_RPFILTER(in_dev)		(ipv4_devconf.rp_filter && (in_dev)->cnf.rp_filter)
 #define IN_DEV_SOURCE_ROUTE(in_dev)	(ipv4_devconf.accept_source_route && (in_dev)->cnf.accept_source_route)
+#define IN_DEV_ACCEPT_LOCAL(in_dev)	(ipv4_devconf_ext.accept_local || \
+					 dev_extended(in_dev->dev) ? \
+					 dev_extended(in_dev->dev)->ipv4_devconf_ext.accept_local : 0)
 #define IN_DEV_BOOTP_RELAY(in_dev)	(ipv4_devconf.bootp_relay && (in_dev)->cnf.bootp_relay)
 
 #define IN_DEV_LOG_MARTIANS(in_dev)	(ipv4_devconf.log_martians || (in_dev)->cnf.log_martians)

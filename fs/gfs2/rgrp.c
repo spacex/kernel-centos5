@@ -1210,7 +1210,8 @@ out:
  * Returns: errno
  */
 
-int gfs2_inplace_reserve_i(struct gfs2_inode *ip, char *file, unsigned int line)
+int gfs2_inplace_reserve_i(struct gfs2_inode *ip, int hold_rindex,
+			   char *file, unsigned int line)
 {
 	struct gfs2_sbd *sdp = GFS2_SB(&ip->i_inode);
 	struct gfs2_alloc *al = ip->i_alloc;
@@ -1221,14 +1222,17 @@ int gfs2_inplace_reserve_i(struct gfs2_inode *ip, char *file, unsigned int line)
 	if (gfs2_assert_warn(sdp, al->al_requested))
 		return -EINVAL;
 
-	/* We need to hold the rindex unless the inode we're using is
-	   the rindex itself, in which case it's already held. */
-	if (ip != GFS2_I(sdp->sd_rindex))
-		error = gfs2_rindex_hold(sdp, &al->al_ri_gh);
-	else if (!sdp->sd_rgrps) /* We may not have the rindex read in, so: */
-		error = gfs2_ri_update_special(ip);
-	if (error)
-		return error;
+	if (hold_rindex) {
+		/* We need to hold the rindex unless the inode we're using is
+		   the rindex itself, in which case it's already held. */
+		if (ip != GFS2_I(sdp->sd_rindex))
+			error = gfs2_rindex_hold(sdp, &al->al_ri_gh);
+		else if (!sdp->sd_rgrps) /* We may not have the rindex read
+					    in, so: */
+			error = gfs2_ri_update_special(ip);
+		if (error)
+			return error;
+	}
 
 	do {
 		error = get_local_rgrp(ip, &last_unlinked);
@@ -1238,7 +1242,7 @@ int gfs2_inplace_reserve_i(struct gfs2_inode *ip, char *file, unsigned int line)
 	} while (error && tries++ < 3);
 
 	if (error) {
-		if (ip != GFS2_I(sdp->sd_rindex))
+		if (hold_rindex && ip != GFS2_I(sdp->sd_rindex))
 			gfs2_glock_dq_uninit(&al->al_ri_gh);
 		return error;
 	}
@@ -1271,7 +1275,7 @@ void gfs2_inplace_release(struct gfs2_inode *ip)
 	al->al_rgd = NULL;
 	if (al->al_rgd_gh.gh_gl)
 		gfs2_glock_dq_uninit(&al->al_rgd_gh);
-	if (ip != GFS2_I(sdp->sd_rindex))
+	if (ip != GFS2_I(sdp->sd_rindex) && al->al_ri_gh.gh_gl)
 		gfs2_glock_dq_uninit(&al->al_ri_gh);
 }
 

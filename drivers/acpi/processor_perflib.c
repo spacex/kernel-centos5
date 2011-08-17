@@ -77,6 +77,8 @@ MODULE_PARM_DESC(ignore_ppc, "If the frequency of your machine gets wrongly" \
 
 static int acpi_processor_ppc_status;
 
+static int acpi_processor_get_platform_limit(struct acpi_processor *pr);
+
 static int acpi_processor_ppc_notifier(struct notifier_block *nb,
 				       unsigned long event, void *data)
 {
@@ -84,8 +86,12 @@ static int acpi_processor_ppc_notifier(struct notifier_block *nb,
 	struct acpi_processor *pr;
 	unsigned int ppc = 0;
 
-	if (event == CPUFREQ_START && ignore_ppc < 0) {
+	pr = processors[policy->cpu];
+
+	if (event == CPUFREQ_START && ignore_ppc < 1) {
 		ignore_ppc = 0;
+		if (pr)
+			acpi_processor_get_platform_limit(pr);
 		return 0;
 	}
 	
@@ -97,7 +103,6 @@ static int acpi_processor_ppc_notifier(struct notifier_block *nb,
 	if (event != CPUFREQ_INCOMPATIBLE)
 		goto out;
 
-	pr = processors[policy->cpu];
 	if (!pr || !pr->performance)
 		goto out;
 

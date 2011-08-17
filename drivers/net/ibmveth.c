@@ -105,7 +105,7 @@ static struct proc_dir_entry *ibmveth_proc_dir;
 
 static const char ibmveth_driver_name[] = "ibmveth";
 static const char ibmveth_driver_string[] = "IBM i/pSeries Virtual Ethernet Driver";
-#define ibmveth_driver_version "1.03"
+#define ibmveth_driver_version "1.03-1"
 
 MODULE_AUTHOR("Santiago Leon <santil@us.ibm.com>");
 MODULE_DESCRIPTION("IBM i/pSeries Virtual Ethernet Driver");
@@ -621,7 +621,7 @@ static int ibmveth_close(struct net_device *netdev)
 	if (!adapter->pool_config)
 		netif_stop_queue(netdev);
 
-	free_irq(netdev->irq, netdev);
+	h_vio_signal(adapter->vdev->unit_address, VIO_IRQ_DISABLE);
 
 	do {
 		lpar_rc = h_free_logical_lan(adapter->vdev->unit_address);
@@ -632,6 +632,8 @@ static int ibmveth_close(struct net_device *netdev)
 		ibmveth_error_printk("h_free_logical_lan failed with %lx, continuing with close\n",
 				     lpar_rc);
 	}
+
+	free_irq(netdev->irq, netdev);
 
 	adapter->rx_no_buffer = *(u64*)(((char*)adapter->buffer_list_addr) + 4096 - 8);
 
@@ -1529,6 +1531,12 @@ static struct kobj_type ktype_veth_pool = {
 	.default_attrs  = veth_pool_attrs,
 };
 
+static int ibmveth_resume(struct device *dev)
+{
+	struct net_device *netdev = dev_get_drvdata(dev);
+	ibmveth_interrupt(netdev->irq, netdev, NULL);
+	return 0;
+}
 
 static struct vio_device_id ibmveth_device_table[] __devinitdata= {
 	{ "network", "IBM,l-lan"},
@@ -1543,6 +1551,7 @@ static struct vio_driver ibmveth_driver = {
 	.driver		= {
 		.name	= ibmveth_driver_name,
 		.owner	= THIS_MODULE,
+		.resume	= ibmveth_resume,
 	}
 };
 

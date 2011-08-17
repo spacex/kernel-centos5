@@ -98,6 +98,9 @@ int laptop_mode;
 
 EXPORT_SYMBOL(laptop_mode);
 
+int vm_dirty_bytes = 0;
+int dirty_background_bytes = 0;
+
 /* End of sysctl-exported parameters */
 
 
@@ -146,21 +149,30 @@ get_dirty_limits(long *pbackground, long *pdirty,
 				global_page_state(NR_ANON_PAGES)) * 100) /
 					total_pages;
 
-	dirty_ratio = vm_dirty_ratio;
+	if (vm_dirty_bytes)
+		dirty = DIV_ROUND_UP(vm_dirty_bytes, PAGE_SIZE);
+	else {
+		dirty_ratio = vm_dirty_ratio;
 
-	/* if vm_dirty_ratio is 100 dont limit to 1/2 unmapped_ratio */
-	if ((dirty_ratio > unmapped_ratio / 2) && (dirty_ratio != 100))
-		dirty_ratio = unmapped_ratio / 2;
+		/* if vm_dirty_ratio is 100 dont limit to 1/2 unmapped_ratio */
+		if ((dirty_ratio > unmapped_ratio / 2) && (dirty_ratio != 100))
+			dirty_ratio = unmapped_ratio / 2;
 
-	if (dirty_ratio < 5)
-		dirty_ratio = 5;
+		if (dirty_ratio < 5)
+			dirty_ratio = 5;
 
-	background_ratio = dirty_background_ratio;
-	if (background_ratio >= dirty_ratio)
-		background_ratio = dirty_ratio / 2;
+		dirty = (dirty_ratio * available_memory) / 100;
+	}
 
-	background = (background_ratio * available_memory) / 100;
-	dirty = (dirty_ratio * available_memory) / 100;
+	if (dirty_background_bytes)
+		background = DIV_ROUND_UP(dirty_background_bytes, PAGE_SIZE);
+	else {
+		background_ratio = dirty_background_ratio;
+		if (background_ratio >= dirty_ratio)
+			background_ratio = dirty_ratio / 2;
+
+		background = (background_ratio * available_memory) / 100;
+	}
 	tsk = current;
 	if (tsk->flags & PF_LESS_THROTTLE || rt_task(tsk)) {
 		background += background / 4;

@@ -1119,12 +1119,7 @@ static void ath_init_leds(struct ath_softc *sc)
 	return;
 
 fail:
-#if 0 /* Not in RHEL5... */
 	cancel_delayed_work_sync(&sc->ath_led_blink_work);
-#else
-	if (delayed_work_pending(&sc->ath_led_blink_work))
-		cancel_rearming_delayed_work(&sc->ath_led_blink_work);
-#endif
 	ath_deinit_leds(sc);
 }
 
@@ -1542,13 +1537,18 @@ bad_no_ah:
 
 void ath_set_hw_capab(struct ath_softc *sc, struct ieee80211_hw *hw)
 {
+	struct ath_hw *ah = sc->sc_ah;
+
 	hw->flags = IEEE80211_HW_RX_INCLUDES_FCS |
 		IEEE80211_HW_HOST_BROADCAST_PS_BUFFERING |
 		IEEE80211_HW_SIGNAL_DBM |
-		IEEE80211_HW_AMPDU_AGGREGATION |
 		IEEE80211_HW_SUPPORTS_PS |
 		IEEE80211_HW_PS_NULLFUNC_STACK |
+		IEEE80211_HW_REPORTS_TX_ACK_STATUS |
 		IEEE80211_HW_SPECTRUM_MGMT;
+
+	if (sc->sc_ah->caps.hw_caps & ATH9K_HW_CAP_HT)
+		 hw->flags |= IEEE80211_HW_AMPDU_AGGREGATION;
 
 	if (AR_SREV_9160_10_OR_LATER(sc->sc_ah) || modparam_nohwcrypt)
 		hw->flags |= IEEE80211_HW_MFP_CAPABLE;
@@ -1559,7 +1559,10 @@ void ath_set_hw_capab(struct ath_softc *sc, struct ieee80211_hw *hw)
 		BIT(NL80211_IFTYPE_ADHOC) |
 		BIT(NL80211_IFTYPE_MESH_POINT);
 
-	hw->wiphy->ps_default = false;
+	if (AR_SREV_5416(ah))
+		hw->wiphy->ps_default = false;
+	else
+		hw->wiphy->ps_default = true;
 
 	hw->queues = 4;
 	hw->max_rates = 4;
@@ -2132,25 +2135,12 @@ static void ath9k_stop(struct ieee80211_hw *hw)
 
 	aphy->state = ATH_WIPHY_INACTIVE;
 
-#if 0 /* Not in RHEL5... */
 	cancel_delayed_work_sync(&sc->ath_led_blink_work);
 	cancel_delayed_work_sync(&sc->tx_complete_work);
-#else
-	if (delayed_work_pending(&sc->ath_led_blink_work))
-		cancel_rearming_delayed_work(&sc->ath_led_blink_work);
-	if (delayed_work_pending(&sc->tx_complete_work))
-		cancel_rearming_delayed_work(&sc->tx_complete_work);
-#endif
 
 	if (!sc->num_sec_wiphy) {
-#if 0 /* Not in RHEL5... */
 		cancel_delayed_work_sync(&sc->wiphy_work);
 		cancel_work_sync(&sc->chan_work);
-#else
-		if (delayed_work_pending(&sc->wiphy_work))
-			cancel_rearming_delayed_work(&sc->wiphy_work);
-		ieee80211_cancel_work(hw, &sc->chan_work);
-#endif
 	}
 
 	if (sc->sc_flags & SC_OP_INVALID) {
@@ -2302,10 +2292,10 @@ static void ath9k_remove_interface(struct ieee80211_hw *hw,
 	    (sc->sc_ah->opmode == NL80211_IFTYPE_MESH_POINT)) {
 		ath9k_ps_wakeup(sc);
 		ath9k_hw_stoptxdma(sc->sc_ah, sc->beacon.beaconq);
-		ath_beacon_return(sc, avp);
 		ath9k_ps_restore(sc);
 	}
 
+	ath_beacon_return(sc, avp);
 	sc->sc_flags &= ~SC_OP_BEACONS;
 
 	for (i = 0; i < ARRAY_SIZE(sc->beacon.bslot); i++) {
@@ -2320,6 +2310,19 @@ static void ath9k_remove_interface(struct ieee80211_hw *hw,
 	sc->nvifs--;
 
 	mutex_unlock(&sc->mutex);
+}
+
+void ath9k_enable_ps(struct ath_softc *sc)
+{
+	sc->ps_enabled = true;
+	if (!(sc->sc_ah->caps.hw_caps & ATH9K_HW_CAP_AUTOSLEEP)) {
+		if ((sc->imask & ATH9K_INT_TIM_TIMER) == 0) {
+			sc->imask |= ATH9K_INT_TIM_TIMER;
+			ath9k_hw_set_interrupts(sc->sc_ah,
+					sc->imask);
+		}
+	}
+	ath9k_hw_setrxabort(sc->sc_ah, 1);
 }
 
 static int ath9k_config(struct ieee80211_hw *hw, u32 changed)
@@ -2353,19 +2356,9 @@ static int ath9k_config(struct ieee80211_hw *hw, u32 changed)
 	if (changed & IEEE80211_CONF_CHANGE_PS) {
 		if (conf->flags & IEEE80211_CONF_PS) {
 			sc->sc_flags |= SC_OP_PS_ENABLED;
-			if (!(ah->caps.hw_caps &
-			      ATH9K_HW_CAP_AUTOSLEEP)) {
-				if ((sc->imask & ATH9K_INT_TIM_TIMER) == 0) {
-					sc->imask |= ATH9K_INT_TIM_TIMER;
-					ath9k_hw_set_interrupts(sc->sc_ah,
-							sc->imask);
-				}
-			}
-			sc->ps_enabled = true;
 			if ((sc->sc_flags & SC_OP_NULLFUNC_COMPLETED)) {
 				sc->sc_flags &= ~SC_OP_NULLFUNC_COMPLETED;
-				sc->ps_enabled = true;
-				ath9k_hw_setrxabort(sc->sc_ah, 1);
+				ath9k_enable_ps(sc);
 			}
 		} else {
 			sc->ps_enabled = false;

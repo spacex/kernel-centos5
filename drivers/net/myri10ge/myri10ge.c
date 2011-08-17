@@ -69,7 +69,6 @@
 #include <asm/mtrr.h>
 #endif
 
-#include "myri10ge_compat.h"
 #include "myri10ge_mcp.h"
 #include "myri10ge_mcp_gen_header.h"
 

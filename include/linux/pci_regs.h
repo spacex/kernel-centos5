@@ -328,6 +328,7 @@
 #define PCI_X_CMD		2	/* Modes & Features */
 #define  PCI_X_CMD_DPERR_E	0x0001	/* Data Parity Error Recovery Enable */
 #define  PCI_X_CMD_ERO		0x0002	/* Enable Relaxed Ordering */
+#define PCI_X_CMD_READ_2K	0x0008  /* 2Kbyte maximum read byte count */
 #define  PCI_X_CMD_MAX_READ	0x000c	/* Max Memory Read Byte Count */
 #define  PCI_X_CMD_MAX_SPLIT	0x0070	/* Max Outstanding Split Transactions */
 #define  PCI_X_CMD_VERSION(x) 	(((x) >> 12) & 3) /* Version */
@@ -397,7 +398,10 @@
 #define  PCI_EXP_LNKCTL_CLKREQ_EN 0x100	/* Enable clkreq */
 #define PCI_EXP_LNKSTA		18	/* Link Status */
 #define  PCI_EXP_LNKSTA_CLS	0x000f	/* Current Link Speed */
+#define  PCI_EXP_LNKSTA_CLS_2_5GB 0x01	/* Current Link Speed 2.5GT/s */
+#define  PCI_EXP_LNKSTA_CLS_5_0GB 0x02	/* Current Link Speed 5.0GT/s */
 #define  PCI_EXP_LNKSTA_NLW	0x03f0	/* Nogotiated Link Width */
+#define  PCI_EXP_LNKSTA_NLW_SHIFT 4	/* start of NLW mask in link status */
 #define  PCI_EXP_LNKSTA_LT	0x0800	/* Link Training */
 #define  PCI_EXP_LNKSTA_SLC	0x1000	/* Slot Clock Configuration */
 #define  PCI_EXP_LNKSTA_DLLLA	0x2000	/* Data Link Layer Link Active */

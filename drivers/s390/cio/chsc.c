@@ -685,6 +685,8 @@ static void __s390_subchannel_vary_chpid(struct subchannel *sch,
 	old_lpm = sch->lpm;
 	for (chp = 0; chp < 8; chp++) {
 		mask = 0x80 >> chp;
+		if (!(sch->schib.pmcw.pim & mask))
+			continue;
 		if (sch->ssd_info.chpid[chp] != chpid.id)
 			continue;
 

@@ -93,6 +93,9 @@ static unsigned long frame_list[PAGE_SIZE / sizeof(unsigned long)];
 /* VM /proc information for memory */
 extern unsigned long totalram_pages;
 
+/* We check if hypervisor supports memory reservation change; safe default */
+static int mem_change_supported = 0;
+
 #ifndef MODULE
 extern unsigned long totalhigh_pages;
 #define inc_totalhigh_pages() (totalhigh_pages++)
@@ -101,9 +104,6 @@ extern unsigned long totalhigh_pages;
 #define inc_totalhigh_pages() ((void)0)
 #define dec_totalhigh_pages() ((void)0)
 #endif
-
-/* We may hit the hard limit in Xen. If we do then we remember it. */
-static unsigned long hard_limit;
 
 /*
  * Drivers may alter the memory reservation independently, but they must
@@ -196,7 +196,7 @@ static void balloon_alarm(unsigned long unused)
 
 static unsigned long current_target(void)
 {
-	unsigned long target = min(target_pages, hard_limit);
+	unsigned long target = target_pages;
 	if (target > (current_pages + balloon_low + balloon_high))
 		target = current_pages + balloon_low + balloon_high;
 	return target;
@@ -226,25 +226,12 @@ static int increase_reservation(unsigned long nr_pages)
 	}
 
 	set_xen_guest_handle(reservation.extent_start, frame_list);
-	reservation.nr_extents   = nr_pages;
-	rc = HYPERVISOR_memory_op(
-		XENMEM_populate_physmap, &reservation);
-	if (rc < nr_pages) {
-		if (rc > 0) {
-			int ret;
-
-			/* We hit the Xen hard limit: reprobe. */
-			reservation.nr_extents = rc;
-			ret = HYPERVISOR_memory_op(XENMEM_decrease_reservation,
-					&reservation);
-			BUG_ON(ret != rc);
-		}
-		if (rc >= 0)
-			hard_limit = current_pages + rc - driver_pages;
+	reservation.nr_extents = nr_pages;
+	rc = HYPERVISOR_memory_op(XENMEM_populate_physmap, &reservation);
+	if (rc < 0)
 		goto out;
-	}
 
-	for (i = 0; i < nr_pages; i++) {
+	for (i = 0; i < rc; i++) {
 		page = balloon_retrieve();
 		BUG_ON(page == NULL);
 
@@ -274,13 +261,13 @@ static int increase_reservation(unsigned long nr_pages)
 		__free_page(page);
 	}
 
-	current_pages += nr_pages;
+	current_pages += rc;
 	totalram_pages = current_pages;
 
  out:
 	balloon_unlock(flags);
 
-	return 0;
+	return rc < 0 ? rc : rc != nr_pages;
 }
 
 static int decrease_reservation(unsigned long nr_pages)
@@ -366,6 +353,9 @@ static void balloon_process(void *unused)
 	int need_sleep = 0;
 	long credit;
 
+	if (!mem_change_supported)
+		return;
+
 	down(&balloon_mutex);
 
 	do {
@@ -388,11 +378,29 @@ static void balloon_process(void *unused)
 	up(&balloon_mutex);
 }
 
+static int hypervisor_mem_decrease_reservation_supported(void) {
+	int ret;
+	struct xen_memory_reservation reservation = {
+		.nr_extents   = 0,
+		.extent_order = 0,
+		.domid        = DOMID_SELF
+	};
+
+	ret = HYPERVISOR_memory_op(XENMEM_decrease_reservation, &reservation);
+	switch (ret) {
+	case 0:
+		return 1;
+	case -ENOSYS:
+	default:
+		WPRINTK("ballooning: changing reservation is not supported\n");
+		return 0;
+	}
+}
+
 /* Resets the Xen limit, sets new target, and kicks off processing. */
 static void set_new_target(unsigned long target)
 {
 	/* No need for lock. Not read-modify-write updates. */
-	hard_limit   = ~0UL;
 	target_pages = target;
 	schedule_work(&balloon_worker);
 }
@@ -444,6 +452,9 @@ static int balloon_write(struct file *file, const char __user *buffer,
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
+	if (!mem_change_supported)
+		return -ENOSYS;
+
 	if (count <= 1)
 		return -EBADMSG; /* runt */
 	if (count > sizeof(memstring))
@@ -471,15 +482,10 @@ static int balloon_read(char *page, char **start, off_t off,
 		"Low-mem balloon:    %8lu kB\n"
 		"High-mem balloon:   %8lu kB\n"
 		"Driver pages:       %8lu kB\n"
-		"Xen hard limit:     ",
+		"Xen hard limit:          ??? kB\n",
 		PAGES2KB(current_pages), PAGES2KB(target_pages), 
 		PAGES2KB(balloon_low), PAGES2KB(balloon_high),
 		PAGES2KB(driver_pages));
-
-	if (hard_limit != ~0UL)
-		len += sprintf(page + len, "%8lu kB\n", PAGES2KB(hard_limit));
-	else
-		len += sprintf(page + len, "     ??? kB\n");
 
 	*eof = 1;
 	return len;
@@ -510,7 +516,6 @@ static int __init balloon_init(void)
 	balloon_low   = 0;
 	balloon_high  = 0;
 	driver_pages  = 0UL;
-	hard_limit    = ~0UL;
 
 	init_timer(&balloon_timer);
 	balloon_timer.data = 0;
@@ -539,7 +544,9 @@ static int __init balloon_init(void)
 	xenstore_notifier.notifier_call = balloon_init_watcher;
 
 	register_xenstore_notifier(&xenstore_notifier);
-    
+
+	mem_change_supported = hypervisor_mem_decrease_reservation_supported();
+
 	return 0;
 }
 

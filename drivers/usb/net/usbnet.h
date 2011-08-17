@@ -190,5 +190,11 @@ extern void usbnet_get_drvinfo (struct net_device *, struct ethtool_drvinfo *);
 #define devinfo(usbnet, fmt, arg...) \
 	printk(KERN_INFO "%s: " fmt "\n" , (usbnet)->net->name , ## arg); \
 
-
+#include <asm/unaligned.h>
+#define get_unaligned_le16(x)     le16_to_cpu(get_unaligned(x))
+#define get_unaligned_le32(x)     le32_to_cpu(get_unaligned(x))
+#define get_unaligned_be32(p)     be32_to_cpu(get_unaligned((__be32 *)(p)))
+#define put_unaligned_le16(val,p) put_unaligned(cpu_to_le16(val), (__le16 *)p)
+#define put_unaligned_le32(val,p) put_unaligned(cpu_to_le32(val), (__le32 *)p)
+#define BIT(nr)                  (1UL << (nr))
 #endif	/* __USBNET_H */

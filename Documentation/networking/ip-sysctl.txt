@@ -452,6 +452,37 @@ ip_local_port_range - 2 INTEGERS
 	(i.e. by default) range 1024-4999 is enough to issue up to
 	2000 connections per second to systems supporting timestamps.
 
+ip_local_reserved_ports - list of comma separated ranges
+	Specify the ports which are reserved for known third-party
+	applications. These ports will not be used by automatic port
+	assignments (e.g. when calling connect() or bind() with port
+	number 0). Explicit port allocation behavior is unchanged.
+
+	The format used for both input and output is a comma separated
+	list of ranges (e.g. "1,2-4,10-10" for ports 1, 2, 3, 4 and
+	10). Writing to the file will clear all previously reserved
+	ports and update the current list with the one given in the
+	input.
+
+	Note that ip_local_port_range and ip_local_reserved_ports
+	settings are independent and both are considered by the kernel
+	when determining which ports are available for automatic port
+	assignments.
+
+	You can reserve ports which are not in the current
+	ip_local_port_range, e.g.:
+
+	$ cat /proc/sys/net/ipv4/ip_local_port_range
+	32000	61000
+	$ cat /proc/sys/net/ipv4/ip_local_reserved_ports
+	8080,9148
+
+	although this is redundant. However such a setting is useful
+	if later the port range is changed to a value that will
+	include the reserved ports.
+
+	Default: Empty
+
 ip_nonlocal_bind - BOOLEAN
 	If set, allows processes to bind() to non-local IP addresses,
 	which can be quite useful - but may break some applications.
@@ -617,6 +648,12 @@ accept_source_route - BOOLEAN
 	with SRR option on the interface
 	default TRUE (router)
 		FALSE (host)
+
+accept_local - BOOLEAN
+	Accept packets with local source addresses. In combination with
+	suitable routing, this can be used to direct packets between two
+	local interfaces over the wire and have them accepted properly.
+	default FALSE
 
 rp_filter - BOOLEAN
 	1 - do source validation by reversed path, as specified in RFC1812
@@ -801,6 +838,12 @@ conf/interface/*:
 accept_ra - BOOLEAN
 	Accept Router Advertisements; autoconfigure using them.
 	
+	Possible values are:
+		0 Do not accept Router Advertisements.
+		1 Accept Router Advertisements if forwarding is disabled.
+		2 Overrule forwarding behaviour. Accept Router Advertisements
+		  even if forwarding is enabled.
+
 	Functional default: enabled if local forwarding is disabled.
 			    disabled if local forwarding is enabled.
 
@@ -854,7 +897,12 @@ forwarding - BOOLEAN
 	Note: It is recommended to have the same setting on all 
 	interfaces; mixed router/host scenarios are rather uncommon.
 
-	FALSE:
+	Possible values are:
+		0 Forwarding disabled
+		1 Forwarding enabled
+		2 Forwarding enabled (Hybrid Mode)
+
+	FALSE (0):
 
 	By default, Host behaviour is assumed.  This means:
 
@@ -864,18 +912,25 @@ forwarding - BOOLEAN
 	   Advertisements (and do autoconfiguration).
 	4. If accept_redirects is TRUE (default), accept Redirects.
 
-	TRUE:
+	TRUE (1):
 
 	If local forwarding is enabled, Router behaviour is assumed. 
 	This means exactly the reverse from the above:
 
 	1. IsRouter flag is set in Neighbour Advertisements.
 	2. Router Solicitations are not sent.
-	3. Router Advertisements are ignored.
+	3. Router Advertisements are ignored unless accept_ra is 2.
 	4. Redirects are ignored.
 
-	Default: FALSE if global forwarding is disabled (default),
-		 otherwise TRUE.
+	TRUE (2):
+
+	Hybrid mode. Same behaviour as TRUE, except for:
+
+	2. Router Solicitations are being sent when necessary.
+
+	Default: 0 (disabled) if global forwarding is disabled (default),
+		 otherwise 1 (enabled).
+
 
 hop_limit - INTEGER
 	Default Hop Limit to set.

@@ -24,15 +24,30 @@
 
 #ifdef DEBUG
 /* For development, we want to crash whenever the ring is screwed. */
-#define BAD_RING(vq, fmt...)			\
-	do { dev_err(&vq->vq.vdev->dev, fmt); BUG(); } while(0)
-#define START_USE(vq) \
-	do { if ((vq)->in_use) panic("in_use = %i\n", (vq)->in_use); (vq)->in_use = __LINE__; mb(); } while(0)
-#define END_USE(vq) \
-	do { BUG_ON(!(vq)->in_use); (vq)->in_use = 0; mb(); } while(0)
+#define BAD_RING(_vq, fmt, args...)				\
+	do {							\
+		dev_err(&(_vq)->vq.vdev->dev,			\
+			"%s:"fmt, (_vq)->vq.name, ##args);	\
+		BUG();						\
+	} while (0)
+/* Caller is supposed to guarantee no reentry. */
+#define START_USE(_vq)						\
+	do {							\
+		if ((_vq)->in_use)				\
+			panic("%s:in_use = %i\n",		\
+			      (_vq)->vq.name, (_vq)->in_use);	\
+		(_vq)->in_use = __LINE__;			\
+		mb();						\
+	} while (0)
+#define END_USE(_vq) \
+	do { BUG_ON(!(_vq)->in_use); (_vq)->in_use = 0; mb(); } while(0)
 #else
-#define BAD_RING(vq, fmt...)			\
-	do { dev_err(&vq->vq.vdev->dev, fmt); (vq)->broken = true; } while(0)
+#define BAD_RING(_vq, fmt, args...)				\
+	do {							\
+		dev_err(&_vq->vq.vdev->dev,			\
+			"%s:"fmt, (_vq)->vq.name, ##args);	\
+		(_vq)->broken = true;				\
+	} while (0)
 #define START_USE(vq)
 #define END_USE(vq)
 #endif
@@ -132,7 +147,8 @@ static int vring_add_buf(struct virtqueue *_vq,
 
 	pr_debug("Added buffer head %i to %p\n", head, vq);
 	END_USE(vq);
-	return 0;
+
+	return vq->num_free;
 }
 
 static void vring_kick(struct virtqueue *_vq)
@@ -246,6 +262,30 @@ static bool vring_enable_cb(struct virtqueue *_vq)
 	return true;
 }
 
+static void *vring_detach_unused_buf(struct virtqueue *_vq)
+{
+	struct vring_virtqueue *vq = to_vvq(_vq);
+	unsigned int i;
+	void *buf;
+
+	START_USE(vq);
+
+	for (i = 0; i < vq->vring.num; i++) {
+		if (!vq->data[i])
+			continue;
+		/* detach_buf clears data, so grab it now. */
+		buf = vq->data[i];
+		detach_buf(vq, i);
+		END_USE(vq);
+		return buf;
+	}
+	/* That should have freed everything. */
+	BUG_ON(vq->num_free != vq->vring.num);
+
+	END_USE(vq);
+	return NULL;
+}
+
 irqreturn_t vring_interrupt(int irq, void *_vq)
 {
 	struct vring_virtqueue *vq = to_vvq(_vq);
@@ -272,13 +312,15 @@ static struct virtqueue_ops vring_vq_ops = {
 	.kick = vring_kick,
 	.disable_cb = vring_disable_cb,
 	.enable_cb = vring_enable_cb,
+	.detach_unused_buf = vring_detach_unused_buf,
 };
 
 struct virtqueue *vring_new_virtqueue(unsigned int num,
 				      struct virtio_device *vdev,
 				      void *pages,
 				      void (*notify)(struct virtqueue *),
-				      void (*callback)(struct virtqueue *))
+				      void (*callback)(struct virtqueue *),
+				      const char *name)
 {
 	struct vring_virtqueue *vq;
 	unsigned int i;
@@ -297,10 +339,12 @@ struct virtqueue *vring_new_virtqueue(unsigned int num,
 	vq->vq.callback = callback;
 	vq->vq.vdev = vdev;
 	vq->vq.vq_ops = &vring_vq_ops;
+	vq->vq.name = name;
 	vq->notify = notify;
 	vq->broken = false;
 	vq->last_used_idx = 0;
 	vq->num_added = 0;
+	list_add_tail(&vq->vq.list, &vdev->vqs);
 #ifdef DEBUG
 	vq->in_use = false;
 #endif
@@ -312,8 +356,11 @@ struct virtqueue *vring_new_virtqueue(unsigned int num,
 	/* Put everything in free lists. */
 	vq->num_free = num;
 	vq->free_head = 0;
-	for (i = 0; i < num-1; i++)
+	for (i = 0; i < num-1; i++) {
 		vq->vring.desc[i].next = i+1;
+		vq->data[i] = NULL;
+	}
+	vq->data[i] = NULL;
 
 	return &vq->vq;
 }
@@ -321,6 +368,7 @@ EXPORT_SYMBOL_GPL(vring_new_virtqueue);
 
 void vring_del_virtqueue(struct virtqueue *vq)
 {
+	list_del(&vq->list);
 	kfree(to_vvq(vq));
 }
 EXPORT_SYMBOL_GPL(vring_del_virtqueue);

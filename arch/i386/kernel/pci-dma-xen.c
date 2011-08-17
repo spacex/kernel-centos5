@@ -50,6 +50,8 @@ int force_iommu __read_mostly= 0;
 /* Set this to 1 if there is a HW IOMMU in the system */
 int iommu_detected __read_mostly = 0;
 
+int iommu_pass_through __read_mostly = 0;
+
 void __init pci_iommu_alloc(void)
 {
 	/*

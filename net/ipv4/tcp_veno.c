@@ -69,10 +69,13 @@ static void tcp_veno_init(struct sock *sk)
 }
 
 /* Do rtt sampling needed for Veno. */
-static void tcp_veno_rtt_calc(struct sock *sk, u32 usrtt)
+static void tcp_veno_rtt_calc(struct sock *sk, s32 usrtt)
 {
 	struct veno *veno = inet_csk_ca(sk);
-	u32 vrtt = usrtt + 1;	/* Never allow zero rtt or basertt */
+	s32 vrtt = usrtt + 1;	/* Never allow zero rtt or basertt */
+
+	if (vrtt <= 0)
+		return;
 
 	/* Filter to find propagation delay: */
 	if (vrtt < veno->basertt)
@@ -128,7 +131,8 @@ static void tcp_veno_cong_avoid(struct sock *sk, u32 ack,
 		 */
 		tcp_reno_cong_avoid(sk, ack, seq_rtt, in_flight, flag);
 	} else {
-		u32 rtt, target_cwnd;
+		u64 target_cwnd;
+		u32 rtt;
 
 		/* We have enough rtt samples, so, using the Veno
 		 * algorithm, we determine the state of the network.
@@ -136,8 +140,9 @@ static void tcp_veno_cong_avoid(struct sock *sk, u32 ack,
 
 		rtt = veno->minrtt;
 
-		target_cwnd = ((tp->snd_cwnd * veno->basertt)
-			       << V_PARAM_SHIFT) / rtt;
+		target_cwnd = (tp->snd_cwnd * veno->basertt);
+		target_cwnd <<= V_PARAM_SHIFT;
+		do_div(target_cwnd, rtt);
 
 		veno->diff = (tp->snd_cwnd << V_PARAM_SHIFT) - target_cwnd;
 

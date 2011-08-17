@@ -238,7 +238,7 @@ static int ql_idc_req_aen(struct ql_adapter *qdev)
 		 * when we leave mpi_worker.
 		 */
 		ql_write32(qdev, INTR_MASK, (INTR_MASK_PI << 16));
-		queue_delayed_work(qdev->workqueue, &qdev->mpi_idc_work, 0);
+		queue_delayed_work(qdev->workqueue, &qdev->mpi_idc_work.work, 0);
 	}
 	return status;
 }
@@ -309,7 +309,7 @@ static void ql_link_up(struct ql_adapter *qdev, struct mbox_params *mbcp)
 		 */
 		ql_write32(qdev, INTR_MASK, (INTR_MASK_PI << 16));
 		queue_delayed_work(qdev->workqueue,
-				&qdev->mpi_port_cfg_work, 0);
+				&qdev->mpi_port_cfg_work.work, 0);
 	}
 
 	ql_link_on(qdev);
@@ -666,23 +666,6 @@ end:
 	for (i = 0; i < mbcp->out_count; i++)
 		QPRINTK_DBG(qdev, DRV, DEBUG, "mbox_out[%d] = 0x%.08x.\n",
 				i, mbcp->mbox_out[i]);
-	return status;
-}
-
-int ql_mb_sys_err(struct ql_adapter *qdev)
-{
-	struct mbox_params mbc;
-	struct mbox_params *mbcp = &mbc;
-	int status;
-
-	memset(mbcp, 0, sizeof(struct mbox_params));
-
-	mbcp->in_count = 1;
-	mbcp->out_count = 0;
-
-	mbcp->mbox_in[0] = MB_CMD_MAKE_SYS_ERR;
-
-	status = ql_mailbox_command(qdev, mbcp);
 	return status;
 }
 
@@ -1058,8 +1041,8 @@ int ql_mb_set_mgmnt_traffic_ctl(struct ql_adapter *qdev, u32 control)
 		return status;
 
 	if (mbcp->mbox_out[0] == MB_CMD_STS_INVLD_CMD) {
-		QPRINTK_DBG(qdev, DRV, ERR,
-			"Command not supported by firmware.\n");
+		QPRINTK_DBG(qdev, DRV, DEBUG,
+			"Command not supported by firmware version.\n");
 		status = -EINVAL;
 	} else if (mbcp->mbox_out[0] == MB_CMD_STS_ERR) {
 		/* This indicates that the firmware is
@@ -1097,8 +1080,8 @@ static int ql_mb_get_mgmnt_traffic_ctl(struct ql_adapter *qdev, u32 *control)
 	}
 
 	if (mbcp->mbox_out[0] == MB_CMD_STS_INVLD_CMD) {
-		QPRINTK_DBG(qdev, DRV, ERR,
-			"Command not supported by firmware.\n");
+		QPRINTK_DBG(qdev, DRV, DEBUG,
+			"Command not supported by firmware version.\n");
 		status = -EINVAL;
 	} else if (mbcp->mbox_out[0] == MB_CMD_STS_ERR) {
 		QPRINTK(qdev, DRV, ERR,
@@ -1146,10 +1129,11 @@ static int ql_set_port_cfg(struct ql_adapter *qdev)
  * from the firmware and, if necessary, changes them to match
  * the MTU setting.
  */
-void ql_mpi_port_cfg_work(struct work_struct *work)
+void ql_mpi_port_cfg_work(void *data)
 {
+	struct work_struct *work = data;
 	struct ql_adapter *qdev =
-		container_of(work, struct ql_adapter, mpi_port_cfg_work);
+		container_of(work, struct ql_adapter, mpi_port_cfg_work.work);
 	int status;
 
 	status = ql_mb_get_port_cfg(qdev);
@@ -1185,10 +1169,11 @@ err:
  * has been made and then send a mailbox command ACKing
  * the change request.
  */
-void ql_mpi_idc_work(struct work_struct *work)
+void ql_mpi_idc_work(void *data)
 {
+	struct work_struct *work = data;
 	struct ql_adapter *qdev =
-		container_of(work, struct ql_adapter, mpi_idc_work);
+		container_of(work, struct ql_adapter, mpi_idc_work.work);
 	int status;
 	struct mbox_params *mbcp = &qdev->idc_mbc;
 	u32 aen;
@@ -1254,10 +1239,11 @@ void ql_mpi_idc_work(struct work_struct *work)
 	}
 }
 
-void ql_mpi_work(struct work_struct *work)
+void ql_mpi_work(void *data)
 {
+	struct work_struct *work = data;
 	struct ql_adapter *qdev =
-		container_of(work, struct ql_adapter, mpi_work);
+		container_of(work, struct ql_adapter, mpi_work.work);
 	struct mbox_params mbc;
 	struct mbox_params *mbcp = &mbc;
 	int err = 0;
@@ -1275,10 +1261,11 @@ void ql_mpi_work(struct work_struct *work)
 	ql_enable_completion_interrupt(qdev, 0);
 }
 
-void ql_mpi_reset_work(struct work_struct *work)
+void ql_mpi_reset_work(void *data)
 {
+	struct work_struct *work = data;
 	struct ql_adapter *qdev =
-		container_of(work, struct ql_adapter, mpi_reset_work);
+		container_of(work, struct ql_adapter, mpi_reset_work.work);
 	cancel_delayed_work_sync(&qdev->mpi_work);
 	cancel_delayed_work_sync(&qdev->mpi_port_cfg_work);
 	cancel_delayed_work_sync(&qdev->mpi_core_to_log);
@@ -1303,7 +1290,7 @@ void ql_mpi_reset_work(struct work_struct *work)
 		qdev->core_is_dumped = 1;
 		if (test_bit(QL_SPOOL_LOG, &qdev->flags))
 			queue_delayed_work(qdev->workqueue,
-				&qdev->mpi_core_to_log, 5 * HZ); 
+				&qdev->mpi_core_to_log.work, 5 * HZ);
 	}
 	ql_soft_reset_mpi_risc(qdev);
 	clear_bit(QL_IN_FW_RST, &qdev->flags);

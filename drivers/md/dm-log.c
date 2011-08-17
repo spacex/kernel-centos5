@@ -611,11 +611,6 @@ static void fail_log_device(struct log_c *lc)
 		dm_table_event(lc->ti->table);
 }
 
-static void restore_log_device(struct log_c *lc)
-{
-	lc->log_dev_failed = 0;
-}
-
 static int disk_resume(struct dm_dirty_log *log)
 {
 	int r;
@@ -662,8 +657,7 @@ static int disk_resume(struct dm_dirty_log *log)
 		DMWARN("Failed to write header on dirty region log device, %s",
 		       lc->log_dev->name);
 		fail_log_device(lc);
-	} else
-		restore_log_device(lc);
+	}
 
 	return r;
 }
@@ -716,10 +710,9 @@ static int disk_flush(struct dm_dirty_log *log)
 	r = write_header(lc);
 	if (r)
 		fail_log_device(lc);
-        else {
+        else
 		lc->touched = 0;
-		restore_log_device(lc);
-	}
+
 	return r;
 }
 

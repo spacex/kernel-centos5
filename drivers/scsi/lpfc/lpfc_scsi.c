@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2004-2008 Emulex.  All rights reserved.           *
+ * Copyright (C) 2004-2009 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  * Portions Copyright (C) 2004-2005 Christoph Hellwig              *
@@ -20,6 +20,7 @@
  *******************************************************************/
 
 #include <linux/pci.h>
+#include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
 
@@ -546,22 +547,43 @@ lpfc_sli4_fcp_xri_aborted(struct lpfc_hba *phba,
 	uint16_t xri = bf_get(lpfc_wcqe_xa_xri, axri);
 	struct lpfc_scsi_buf *psb, *next_psb;
 	unsigned long iflag = 0;
+	struct lpfc_iocbq *iocbq;
+	int i;
+	struct lpfc_sli_ring *pring = &phba->sli.ring[LPFC_ELS_RING];
 
-	spin_lock_irqsave(&phba->sli4_hba.abts_scsi_buf_list_lock, iflag);
+	spin_lock_irqsave(&phba->hbalock, iflag);
+	spin_lock(&phba->sli4_hba.abts_scsi_buf_list_lock);
 	list_for_each_entry_safe(psb, next_psb,
 		&phba->sli4_hba.lpfc_abts_scsi_buf_list, list) {
 		if (psb->cur_iocbq.sli4_xritag == xri) {
 			list_del(&psb->list);
+			psb->exch_busy = 0;
 			psb->status = IOSTAT_SUCCESS;
-			spin_unlock_irqrestore(
-				&phba->sli4_hba.abts_scsi_buf_list_lock,
-				iflag);
+			spin_unlock(
+				&phba->sli4_hba.abts_scsi_buf_list_lock);
+			spin_unlock_irqrestore(&phba->hbalock, iflag);
 			lpfc_release_scsi_buf_s4(phba, psb);
 			return;
 		}
 	}
-	spin_unlock_irqrestore(&phba->sli4_hba.abts_scsi_buf_list_lock,
-				iflag);
+	spin_unlock(&phba->sli4_hba.abts_scsi_buf_list_lock);
+	for (i = 1; i <= phba->sli.last_iotag; i++) {
+		iocbq = phba->sli.iocbq_lookup[i];
+
+		if (!(iocbq->iocb_flag &  LPFC_IO_FCP) ||
+			(iocbq->iocb_flag & LPFC_IO_LIBDFC))
+			continue;
+		if (iocbq->sli4_xritag != xri)
+			continue;
+		psb = container_of(iocbq, struct lpfc_scsi_buf, cur_iocbq);
+		psb->exch_busy = 0;
+		spin_unlock_irqrestore(&phba->hbalock, iflag);
+		if (pring->txq_cnt)
+			lpfc_worker_wake_up(phba);
+		return;
+
+	}
+	spin_unlock_irqrestore(&phba->hbalock, iflag);
 }
 
 /**
@@ -614,11 +636,12 @@ lpfc_sli4_repost_scsi_sgl_list(struct lpfc_hba *phba)
 					 list);
 			if (status) {
 				/* Put this back on the abort scsi list */
-				psb->status = IOSTAT_LOCAL_REJECT;
-				psb->result = IOERR_ABORT_REQUESTED;
+				psb->exch_busy = 1;
 				rc++;
-			} else
+			} else {
+				psb->exch_busy = 0;
 				psb->status = IOSTAT_SUCCESS;
+			}
 			/* Put it back into the SCSI buffer list */
 			lpfc_release_scsi_buf_s4(phba, psb);
 		}
@@ -653,7 +676,6 @@ lpfc_new_scsi_buf_s4(struct lpfc_vport *vport, int num_to_alloc)
 	int status = 0, index;
 	int bcnt;
 	int non_sequential_xri = 0;
-	int rc = 0;
 	LIST_HEAD(sblist);
 
 	for (bcnt = 0; bcnt < num_to_alloc; bcnt++) {
@@ -680,6 +702,8 @@ lpfc_new_scsi_buf_s4(struct lpfc_vport *vport, int num_to_alloc)
 		/* Allocate iotag for psb->cur_iocbq. */
 		iotag = lpfc_sli_next_iotag(phba, &psb->cur_iocbq);
 		if (iotag == 0) {
+			pci_pool_free(phba->lpfc_scsi_dma_buf_pool,
+				psb->data, psb->dma_handle);
 			kfree(psb);
 			break;
 		}
@@ -764,11 +788,11 @@ lpfc_new_scsi_buf_s4(struct lpfc_vport *vport, int num_to_alloc)
 						psb->cur_iocbq.sli4_xritag);
 			if (status) {
 				/* Put this back on the abort scsi list */
-				psb->status = IOSTAT_LOCAL_REJECT;
-				psb->result = IOERR_ABORT_REQUESTED;
-				rc++;
-			} else
+				psb->exch_busy = 1;
+			} else {
+				psb->exch_busy = 0;
 				psb->status = IOSTAT_SUCCESS;
+			}
 			/* Put it back into the SCSI buffer list */
 			lpfc_release_scsi_buf_s4(phba, psb);
 			break;
@@ -782,17 +806,17 @@ lpfc_new_scsi_buf_s4(struct lpfc_vport *vport, int num_to_alloc)
 				 list);
 			if (status) {
 				/* Put this back on the abort scsi list */
-				psb->status = IOSTAT_LOCAL_REJECT;
-				psb->result = IOERR_ABORT_REQUESTED;
-				rc++;
-			} else
+				psb->exch_busy = 1;
+			} else {
+				psb->exch_busy = 0;
 				psb->status = IOSTAT_SUCCESS;
+			}
 			/* Put it back into the SCSI buffer list */
 			lpfc_release_scsi_buf_s4(phba, psb);
 		}
 	}
 
-	return bcnt + non_sequential_xri - rc;
+	return bcnt + non_sequential_xri;
 }
 
 /**
@@ -875,8 +899,7 @@ lpfc_release_scsi_buf_s4(struct lpfc_hba *phba, struct lpfc_scsi_buf *psb)
 {
 	unsigned long iflag = 0;
 
-	if (psb->status == IOSTAT_LOCAL_REJECT
-		&& psb->result == IOERR_ABORT_REQUESTED) {
+	if (psb->exch_busy) {
 		spin_lock_irqsave(&phba->sli4_hba.abts_scsi_buf_list_lock,
 					iflag);
 		psb->pCmd = NULL;
@@ -1057,6 +1080,8 @@ lpfc_scsi_prep_dma_buf_s4(struct lpfc_hba *phba, struct lpfc_scsi_buf *lpfc_cmd)
 	uint32_t num_bde = 0;
 	uint32_t dma_len;
 	uint32_t dma_offset = 0;
+	uint32_t seg_offset;
+	uint32_t seg_index;
 	int dma_error, nseg, datadir = scsi_cmnd->sc_data_direction;
 
 	/*
@@ -1086,15 +1111,6 @@ lpfc_scsi_prep_dma_buf_s4(struct lpfc_hba *phba, struct lpfc_scsi_buf *lpfc_cmd)
 		sgl += 1;
 
 		lpfc_cmd->seg_cnt = nseg;
-		if (lpfc_cmd->seg_cnt > phba->cfg_sg_seg_cnt) {
-			printk(KERN_ERR "%s: Too many sg segments from "
-			       "dma_map_sg.  Config %d, seg_cnt %d\n",
-			       __func__, phba->cfg_sg_seg_cnt,
-			       lpfc_cmd->seg_cnt);
-				dma_unmap_sg(&phba->pcidev->dev, sgel,
-						lpfc_cmd->seg_cnt, datadir);
-			return 1;
-		}
 
 		/*
 		 * The driver established a maximum scatter-gather segment count
@@ -1106,23 +1122,42 @@ lpfc_scsi_prep_dma_buf_s4(struct lpfc_hba *phba, struct lpfc_scsi_buf *lpfc_cmd)
 		 * does for SLI-2 mode.
 		 */
 		sgel = (struct scatterlist *)scsi_cmnd->request_buffer;
-		for (num_bde = 0; num_bde < nseg;) {
-			physaddr = sg_dma_address(sgel);
-			dma_len = sg_dma_len(sgel);
+		for (num_bde = 0, seg_index = 0, seg_offset = 0;
+		     (seg_index < nseg) && (num_bde <= phba->cfg_sg_seg_cnt);
+		     num_bde++) {
+			physaddr = sg_dma_address(sgel) + seg_offset;
+			dma_len = sg_dma_len(sgel) - seg_offset;
 			sgl->addr_lo = cpu_to_le32(putPaddrLow(physaddr));
 			sgl->addr_hi = cpu_to_le32(putPaddrHigh(physaddr));
-			if ((num_bde + 1) == nseg)
+			if ((seg_index + 1) == nseg &&
+			    dma_len <= LPFC_SLI4_FL1_MAX_SEGMENT_SIZE)
 				bf_set(lpfc_sli4_sge_last, sgl, 1);
 			else
 				bf_set(lpfc_sli4_sge_last, sgl, 0);
 			bf_set(lpfc_sli4_sge_offset, sgl, dma_offset);
 			sgl->word2 = cpu_to_le32(sgl->word2);
+			if (dma_len > LPFC_SLI4_FL1_MAX_SEGMENT_SIZE) {
+				dma_len = LPFC_SLI4_FL1_MAX_SEGMENT_SIZE;
+				seg_offset += dma_len;
+			} else {
+				sgel++;
+				seg_index++;
+				seg_offset = 0;
+			}
 			sgl->sge_len = cpu_to_le32(dma_len);
 			dma_offset += dma_len;
 			sgl++;
-			sgel++;
-			num_bde++;
 		}
+		if (num_bde > phba->cfg_sg_seg_cnt) {
+			printk(KERN_ERR "%s: Too many sg segments from "
+			       "dma_map_sg.  Config %d, seg_cnt %d\n",
+			       __func__, phba->cfg_sg_seg_cnt,
+			       lpfc_cmd->seg_cnt);
+				dma_unmap_sg(&phba->pcidev->dev, sgel,
+						lpfc_cmd->seg_cnt, datadir);
+			return 1;
+		}
+
 	} else if (scsi_cmnd->request_buffer && scsi_cmnd->request_bufflen) {
 		physaddr = dma_map_single(&phba->pcidev->dev,
 					  scsi_cmnd->request_buffer,
@@ -1355,14 +1390,24 @@ lpfc_handle_fcp_err(struct lpfc_hba *phba, struct lpfc_vport *vport,
 
 	if (resp_info & RSP_LEN_VALID) {
 		rsplen = be32_to_cpu(fcprsp->rspRspLen);
-		if ((rsplen != 0 && rsplen != 4 && rsplen != 8) ||
-		    (fcprsp->rspInfo3 != RSP_NO_FAILURE)) {
+		if (rsplen != 0 && rsplen != 4 && rsplen != 8) {
 			lpfc_printf_vlog(vport, KERN_ERR, LOG_FCP,
 				 "2719 Invalid response length: "
 				 "tgt x%x lun x%x cmnd x%x rsplen x%x\n",
 				 cmnd->device->id,
 				 cmnd->device->lun, cmnd->cmnd[0],
 				 rsplen);
+			host_status = DID_ERROR;
+			goto out;
+		}
+		if (fcprsp->rspInfo3 != RSP_NO_FAILURE) {
+			lpfc_printf_vlog(vport, KERN_ERR, LOG_FCP,
+				 "2757 Protocol failure detected during "
+				 "processing of FCP I/O op: "
+				 "tgt x%x lun x%x cmnd x%x rspInfo3 x%x\n",
+				 cmnd->device->id,
+				 cmnd->device->lun, cmnd->cmnd[0],
+				 fcprsp->rspInfo3);
 			host_status = DID_ERROR;
 			goto out;
 		}
@@ -1454,17 +1499,24 @@ lpfc_handle_fcp_err(struct lpfc_hba *phba, struct lpfc_vport *vport,
 	 * Check SLI validation that all the transfer was actually done
 	 * (fcpi_parm should be zero). Apply check only to reads.
 	 */
-	} else if ((scsi_status == SAM_STAT_GOOD) && fcpi_parm &&
-			(cmnd->sc_data_direction == DMA_FROM_DEVICE)) {
-		lpfc_printf_log(phba, KERN_WARNING,
-				LOG_FCP | LOG_FCP_ERROR,
-				"(%d):0734 FCP Read Check Error Data: "
-				"x%x x%x x%x x%x\n",
-				(vport ? vport->vpi : 0),
-				be32_to_cpu(fcpcmd->fcpDl),
-				be32_to_cpu(fcprsp->rspResId),
-				fcpi_parm, cmnd->cmnd[0]);
-		host_status = DID_ERROR;
+	} else if (fcpi_parm && (cmnd->sc_data_direction == DMA_FROM_DEVICE)) {
+		lpfc_printf_vlog(vport, KERN_WARNING, LOG_FCP | LOG_FCP_ERROR,
+				 "9029 FCP Read Check Error Data: "
+				 "x%x x%x x%x x%x x%x\n",
+				 be32_to_cpu(fcpcmd->fcpDl),
+				 be32_to_cpu(fcprsp->rspResId),
+				 fcpi_parm, cmnd->cmnd[0], scsi_status);
+		switch (scsi_status) {
+		case SAM_STAT_GOOD:
+		case SAM_STAT_CHECK_CONDITION:
+			/* Fabric dropped a data frame. Fail any successful 
+			 * command in which we detected dropped frames. 
+			 * A status of good or some check conditions could
+			 * be considered a successful command.
+			 */
+			host_status = DID_ERROR;
+			break;
+		}
 		cmnd->resid = cmnd->request_bufflen;
 	}
 
@@ -1509,6 +1561,9 @@ lpfc_scsi_cmd_iocb_cmpl(struct lpfc_hba *phba, struct lpfc_iocbq *pIocbIn,
 
 	lpfc_cmd->result = pIocbOut->iocb.un.ulpWord[4];
 	lpfc_cmd->status = pIocbOut->iocb.ulpStatus;
+	/* pick up SLI4 exhange busy status from HBA */
+	lpfc_cmd->exch_busy = pIocbOut->iocb_flag & LPFC_EXCHANGE_BUSY;
+
 	if (pnode && NLP_CHK_NODE_ACT(pnode))
 		atomic_dec(&pnode->cmd_pending);
 
@@ -1563,9 +1618,10 @@ lpfc_scsi_cmd_iocb_cmpl(struct lpfc_hba *phba, struct lpfc_iocbq *pIocbIn,
 			lpfc_worker_wake_up(phba);
 			break;
 		case IOSTAT_LOCAL_REJECT:
-			if (lpfc_cmd->result == RJT_UNAVAIL_PERM ||
+			if (lpfc_cmd->result == IOERR_INVALID_RPI ||
 			    lpfc_cmd->result == IOERR_NO_RESOURCES ||
-			    lpfc_cmd->result == RJT_LOGIN_REQUIRED) {
+			    lpfc_cmd->result == IOERR_ABORT_REQUESTED ||
+			    lpfc_cmd->result == IOERR_SLER_CMD_RCV_FAILURE) {
 				cmd->result = ScsiResult(DID_REQUEUE, 0);
 				break;
 			} /* else: fall through */
@@ -1613,14 +1669,16 @@ lpfc_scsi_cmd_iocb_cmpl(struct lpfc_hba *phba, struct lpfc_iocbq *pIocbIn,
 		}
 		spin_unlock_irqrestore(shost->host_lock, flags);
 	} else if (pnode && NLP_CHK_NODE_ACT(pnode)) {
-		if ((pnode->cmd_qdepth < LPFC_MAX_TGT_QDEPTH) &&
+		if ((pnode->cmd_qdepth < vport->cfg_tgt_queue_depth) &&
 		   time_after(jiffies, pnode->last_change_time +
 			      msecs_to_jiffies(LPFC_TGTQ_INTERVAL))) {
 			spin_lock_irqsave(shost->host_lock, flags);
-			pnode->cmd_qdepth += pnode->cmd_qdepth *
-				LPFC_TGTQ_RAMPUP_PCENT / 100;
-			if (pnode->cmd_qdepth > LPFC_MAX_TGT_QDEPTH)
-				pnode->cmd_qdepth = LPFC_MAX_TGT_QDEPTH;
+			depth = pnode->cmd_qdepth * LPFC_TGTQ_RAMPUP_PCENT
+				/ 100;
+			depth = depth ? depth : 1;
+			pnode->cmd_qdepth += depth;
+			if (pnode->cmd_qdepth > vport->cfg_tgt_queue_depth)
+				pnode->cmd_qdepth = vport->cfg_tgt_queue_depth;
 			pnode->last_change_time = jiffies;
 			spin_unlock_irqrestore(shost->host_lock, flags);
 		}
@@ -1931,6 +1989,7 @@ lpfc_scsi_api_table_setup(struct lpfc_hba *phba, uint8_t dev_grp)
 	}
 	phba->lpfc_get_scsi_buf = lpfc_get_scsi_buf;
 	phba->lpfc_rampdown_queue_depth = lpfc_rampdown_queue_depth;
+	phba->lpfc_scsi_cmd_iocb_cmpl = lpfc_scsi_cmd_iocb_cmpl;
 	return 0;
 }
 
@@ -1988,6 +2047,13 @@ lpfc_info(struct Scsi_Host *host)
 				 384-len,
 				 " port %s",
 				 phba->Port);
+		}
+		len = strlen(lpfcinfobuf);
+		if (phba->sli4_hba.link_state.logical_speed) {
+			snprintf(lpfcinfobuf + len,
+				 384-len,
+				 " Logical Link Speed: %d Mbps",
+				 phba->sli4_hba.link_state.logical_speed * 10);
 		}
 	}
 	return lpfcinfobuf;
@@ -2103,8 +2169,7 @@ lpfc_queuecommand(struct scsi_cmnd *cmnd, void (*done) (struct scsi_cmnd *))
 		cmnd->result = ScsiResult(DID_TRANSPORT_DISRUPTED, 0);
 		goto out_fail_command;
 	}
-	if (vport->cfg_max_scsicmpl_time &&
-		(atomic_read(&ndlp->cmd_pending) >= ndlp->cmd_qdepth))
+	if (atomic_read(&ndlp->cmd_pending) >= ndlp->cmd_qdepth)
 		goto out_host_busy;
 
 	lpfc_cmd = lpfc_get_scsi_buf(phba);
@@ -2263,6 +2328,7 @@ lpfc_abort_handler(struct scsi_cmnd *cmnd)
 
 	/* ABTS WQE must go to the same WQ as the WQE to be aborted */
 	abtsiocb->fcp_wqidx = iocb->fcp_wqidx;
+	abtsiocb->iocb_flag |= LPFC_USE_FCPWQIDX;
 
 	if (lpfc_is_link_up(phba))
 		icmd->ulpCommand = CMD_ABORT_XRI_CN;
@@ -2404,7 +2470,9 @@ lpfc_send_taskmgmt(struct lpfc_vport *vport, struct lpfc_rport_data *rdata,
 			 lpfc_taskmgmt_name(task_mgmt_cmd),
 			 tgt_id, lun_id, iocbqrsp->iocb.ulpStatus,
 			 iocbqrsp->iocb.un.ulpWord[4]);
-	} else
+	} else if (status == IOCB_BUSY)
+		ret = FAILED;
+	else
 		ret = SUCCESS;
 
 	lpfc_sli_release_iocbq(phba, iocbqrsp);
@@ -2675,11 +2743,13 @@ lpfc_slave_alloc(struct scsi_device *sdev)
 	uint32_t total = 0;
 	uint32_t num_to_alloc = 0;
 	int num_allocated = 0;
+	uint32_t sdev_cnt;
 
 	if (!rport || fc_remote_port_chkready(rport))
 		return -ENXIO;
 
 	sdev->hostdata = rport->dd_data;
+	sdev_cnt = atomic_inc_return(&phba->sdev_cnt);
 
 	/*
 	 * Populate the cmds_per_lun count scsi_bufs into this host's globally
@@ -2690,6 +2760,10 @@ lpfc_slave_alloc(struct scsi_device *sdev)
 	 */
 	total = phba->total_scsi_bufs;
 	num_to_alloc = vport->cfg_lun_queue_depth + 2;
+
+	/* If allocated buffers are enough do nothing */
+	if ((sdev_cnt * (vport->cfg_lun_queue_depth + 2)) < total)
+		return 0;
 
 	/* Allow some exchanges to be available always to complete discovery */
 	if (total >= phba->cfg_hba_queue_depth - LPFC_DISC_IOCB_BUFF_COUNT ) {
@@ -2772,6 +2846,9 @@ lpfc_slave_configure(struct scsi_device *sdev)
 static void
 lpfc_slave_destroy(struct scsi_device *sdev)
 {
+	struct lpfc_vport *vport = (struct lpfc_vport *) sdev->host->hostdata;
+	struct lpfc_hba   *phba = vport->phba;
+	atomic_dec(&phba->sdev_cnt);
 	sdev->hostdata = NULL;
 	return;
 }

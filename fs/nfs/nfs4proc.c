@@ -2928,6 +2928,14 @@ int nfs4_handle_exception(const struct nfs_server *server, int errorcode, struct
 			if (ret == 0)
 				exception->retry = 1;
 			break;
+		case -NFS4ERR_FILE_OPEN:
+			if (exception->timeout > HZ) {
+				/* We have retried a decent amount, time to
+				 * fail
+				 */
+				ret = -EBUSY;
+				break;
+			}
 		case -NFS4ERR_GRACE:
 		case -NFS4ERR_DELAY:
 			ret = nfs4_delay(server->client, &exception->timeout);

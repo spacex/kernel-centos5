@@ -79,4 +79,9 @@ struct pcie_port_service_driver {
 extern int pcie_port_service_register(struct pcie_port_service_driver *new);
 extern void pcie_port_service_unregister(struct pcie_port_service_driver *new);
 
+/* upstream this is defined in include/linux/pci-aspm.h */
+#define PCIE_LINK_STATE_L0S	1
+#define PCIE_LINK_STATE_L1	2
+#define PCIE_LINK_STATE_CLKPM	4
+
 #endif /* _PCIEPORT_IF_H_ */

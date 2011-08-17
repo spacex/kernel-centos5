@@ -790,6 +790,10 @@ menu "Instrumentation Support"
 
 source "arch/x86_64/oprofile/Kconfig"
 
+config HAVE_OPTPROBES
+	bool
+	default y
+
 config KPROBES
 	bool "Kprobes (EXPERIMENTAL)"
 	depends on KALLSYMS && EXPERIMENTAL && MODULES
@@ -799,6 +803,18 @@ config KPROBES
 	  a probepoint and specifies the callback.  Kprobes is useful
 	  for kernel debugging, non-intrusive instrumentation and testing.
 	  If in doubt, say "N".
+
+config OPTPROBES
+	bool "Kprobes jump optimization support (EXPERIMENTAL)"
+	default y
+	depends on KPROBES
+	depends on !PREEMPT
+	depends on HAVE_OPTPROBES
+	select KALLSYMS_ALL
+	help
+	  This option will allow kprobes to optimize breakpoint to
+	  a jump for reducing its overhead.
+
 endmenu
 
 source "arch/x86_64/Kconfig.debug"

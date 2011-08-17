@@ -270,6 +270,8 @@ qeth_is_ipa_enabled(struct qeth_ipa_info *ipa, enum qeth_ipa_funcs func)
 #define QETH_IDX_FUNC_LEVEL_OSAE_DIS_IPAT 0x0101
 #define QETH_IDX_FUNC_LEVEL_IQD_ENA_IPAT 0x4108
 #define QETH_IDX_FUNC_LEVEL_IQD_DIS_IPAT 0x5108
+#define QETH_IDX_FUNC_LEVEL_OSM		 0x4131
+#define QETH_IDX_FUNC_LEVEL_OSX		 0x4130
 
 #define QETH_MODELLIST_ARRAY \
 	{{0x1731,0x01,0x1732,0x01,QETH_CARD_TYPE_OSAE,1, \
@@ -283,6 +285,14 @@ qeth_is_ipa_enabled(struct qeth_ipa_info *ipa, enum qeth_ipa_funcs func)
 	{0x1731,0x06,0x1732,0x06,QETH_CARD_TYPE_OSN,0, \
 	QETH_IDX_FUNC_LEVEL_OSAE_ENA_IPAT, \
 	QETH_IDX_FUNC_LEVEL_OSAE_DIS_IPAT, \
+	QETH_MAX_QUEUES,0}, \
+	{0x1731,0x02,0x1732,0x03,QETH_CARD_TYPE_OSM,1, \
+	QETH_IDX_FUNC_LEVEL_OSM, \
+	QETH_IDX_FUNC_LEVEL_OSM, \
+	QETH_MAX_QUEUES,0}, \
+	{0x1731,0x02,0x1732,0x02,QETH_CARD_TYPE_OSX,1, \
+	QETH_IDX_FUNC_LEVEL_OSX, \
+	QETH_IDX_FUNC_LEVEL_OSX, \
 	QETH_MAX_QUEUES,0}, \
 	{0,0,0,0,0,0,0,0,0}}
 
@@ -842,6 +852,7 @@ struct qeth_card {
 	struct qeth_osn_info osn_info;
 	atomic_t force_alloc_skb;
 	struct service_level qeth_service_level;
+	int read_or_write_problem;
 };
 
 struct qeth_card_list_struct {
@@ -982,6 +993,9 @@ qeth_get_initial_mtu_for_card(struct qeth_card * card)
 		default:
 			return 1492;
 		}
+	case QETH_CARD_TYPE_OSM:
+	case QETH_CARD_TYPE_OSX:
+		return 1492;
 	default:
 		return 1500;
 	}
@@ -995,6 +1009,8 @@ qeth_get_max_mtu_for_card(int cardtype)
 	case QETH_CARD_TYPE_UNKNOWN:
 	case QETH_CARD_TYPE_OSAE:
 	case QETH_CARD_TYPE_OSN:
+	case QETH_CARD_TYPE_OSM:
+	case QETH_CARD_TYPE_OSX:
 		return 61440;
 	case QETH_CARD_TYPE_IQD:
 		return 57344;
@@ -1036,6 +1052,8 @@ qeth_mtu_is_valid(struct qeth_card * card, int mtu)
 {
 	switch (card->info.type) {
 	case QETH_CARD_TYPE_OSAE:
+	case QETH_CARD_TYPE_OSM:
+	case QETH_CARD_TYPE_OSX:
 		return ((mtu >= 576) && (mtu <= 61440));
 	case QETH_CARD_TYPE_IQD:
 		return ((mtu >= 576) &&

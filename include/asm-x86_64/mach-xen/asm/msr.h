@@ -66,6 +66,9 @@
 #define rdtscl(low) \
      __asm__ __volatile__ ("rdtsc" : "=a" (low) : : "edx")
 
+#define rdtscp(low,high,aux) \
+        asm volatile (".byte 0x0f,0x01,0xf9" : "=a" (low), "=d" (high), "=c" (aux))
+
 #define rdtscll(val) do { \
      unsigned int __a,__d; \
      asm volatile("rdtsc" : "=a" (__a), "=d" (__d)); \
@@ -238,6 +241,7 @@ static inline unsigned int cpuid_edx(unsigned int op)
 #define MSR_K8_TOP_MEM1		   0xC001001A
 #define MSR_K8_TOP_MEM2		   0xC001001D
 #define MSR_K8_SYSCFG		   0xC0010010
+#define MSR_K7_HWCR		   0xC0010015
 #define MSR_K8_HWCR		   0xC0010015
 
 /* K6 MSRs */
@@ -307,6 +311,8 @@ static inline unsigned int cpuid_edx(unsigned int op)
 #define MSR_IA32_THERM_INTERRUPT	0x19b
 #define MSR_IA32_THERM_STATUS		0x19c
 #define MSR_IA32_MISC_ENABLE		0x1a0
+
+#define MSR_IA32_TEMPERATURE_TARGET	0x1a2
 
 #define MSR_IA32_DEBUGCTLMSR		0x1d9
 #define MSR_IA32_LASTBRANCHFROMIP	0x1db

@@ -31,6 +31,7 @@
 #define ASSERT_READ_LOCK(x)
 #define ASSERT_WRITE_LOCK(x)
 
+#include <linux/netfilter_bridge.h>
 #include <linux/netfilter_ipv4/ip_conntrack.h>
 #include <linux/netfilter_ipv4/ip_conntrack_protocol.h>
 #include <linux/netfilter_ipv4/ip_conntrack_core.h>
@@ -430,25 +431,43 @@ static unsigned int ip_conntrack_help(unsigned int hooknum,
 	return NF_ACCEPT;
 }
 
+static enum ip_defrag_users ip_ct_defrag_user(unsigned int hooknum,
+					      struct sk_buff *skb)
+{
+#ifdef CONFIG_BRIDGE_NETFILTER
+	if (skb->nf_bridge &&
+	    skb->nf_bridge->mask & BRNF_NF_BRIDGE_PREROUTING)
+		return IP_DEFRAG_CONNTRACK_BRIDGE_IN;
+#endif
+	if (hooknum == NF_IP_PRE_ROUTING)
+		return IP_DEFRAG_CONNTRACK_IN;
+	else
+		return IP_DEFRAG_CONNTRACK_OUT;
+}
+
 static unsigned int ip_conntrack_defrag(unsigned int hooknum,
 				        struct sk_buff **pskb,
 				        const struct net_device *in,
 				        const struct net_device *out,
 				        int (*okfn)(struct sk_buff *))
 {
+	struct sock *sk = (*pskb)->sk;
+	struct inet_sock *inet = inet_sk((*pskb)->sk);
+
+	if (sk && (sk->sk_family == PF_INET) &&
+	    inet->nodefrag)
+		return NF_ACCEPT;
+
 #if !defined(CONFIG_IP_NF_NAT) && !defined(CONFIG_IP_NF_NAT_MODULE)
 	/* Previously seen (loopback)?  Ignore.  Do this before
            fragment check. */
 	if ((*pskb)->nfct)
 		return NF_ACCEPT;
 #endif
-
 	/* Gather fragments. */
 	if ((*pskb)->nh.iph->frag_off & htons(IP_MF|IP_OFFSET)) {
-		*pskb = ip_ct_gather_frags(*pskb,
-		                           hooknum == NF_IP_PRE_ROUTING ? 
-					   IP_DEFRAG_CONNTRACK_IN :
-					   IP_DEFRAG_CONNTRACK_OUT);
+		enum ip_defrag_users user = ip_ct_defrag_user(hooknum, *pskb);
+		*pskb = ip_ct_gather_frags(*pskb, user);
 		if (!*pskb)
 			return NF_STOLEN;
 	}

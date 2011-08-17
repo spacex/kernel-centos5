@@ -1,3 +1,25 @@
+#ifndef __GENKSYMS__
+#include <linux/fs.h>
+#endif
+
+struct sysfs_inode_attrs {
+	struct iattr	ia_iattr;
+	void		*ia_secdata;
+	u32		ia_secdata_len;
+};
+
+struct sysfs_dirent {
+	atomic_t		s_count;
+	struct list_head	s_sibling;
+	struct list_head	s_children;
+	void			* s_element;
+	int			s_type;
+	umode_t			s_mode;
+	ino_t			s_ino;
+	struct dentry		* s_dentry;
+	struct sysfs_inode_attrs * s_iattr;
+	atomic_t		s_event;
+};
 
 extern struct vfsmount * sysfs_mount;
 extern kmem_cache_t *sysfs_dir_cachep;
@@ -18,7 +40,12 @@ extern void sysfs_remove_subdir(struct dentry *);
 
 extern const unsigned char * sysfs_get_name(struct sysfs_dirent *sd);
 extern void sysfs_drop_dentry(struct sysfs_dirent *sd, struct dentry *parent);
-extern int sysfs_setattr(struct dentry *dentry, struct iattr *iattr);
+void sysfs_evict_inode(struct inode *inode);
+int sysfs_permission(struct inode *inode, int mask, struct nameidata *nd);
+int sysfs_setattr(struct dentry *dentry, struct iattr *iattr);
+int sysfs_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat);
+int sysfs_setxattr(struct dentry *dentry, const char *name, const void *value,
+		   size_t size, int flags);
 
 extern spinlock_t sysfs_lock;
 extern struct rw_semaphore sysfs_rename_sem;

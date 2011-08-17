@@ -1811,7 +1811,7 @@ static void goku_remove(struct pci_dev *pdev)
 	/* start with the driver above us */
 	if (dev->driver) {
 		/* should have been done already by driver model core */
-		WARN(dev, "pci remove, driver '%s' is still registered\n",
+		WARNING(dev, "pci remove, driver '%s' is still registered\n",
 				dev->driver->driver.name);
 		usb_gadget_unregister_driver(dev->driver);
 	}
@@ -1854,7 +1854,7 @@ static int goku_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	 * usb_gadget_driver_{register,unregister}() must change.
 	 */
 	if (the_controller) {
-		WARN(dev, "ignoring %s\n", pci_name(pdev));
+		WARNING(dev, "ignoring %s\n", pci_name(pdev));
 		return -EBUSY;
 	}
 	if (!pdev->irq) {

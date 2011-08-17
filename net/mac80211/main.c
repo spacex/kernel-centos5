@@ -449,6 +449,7 @@ void ieee80211_tx_status(struct ieee80211_hw *hw, struct sk_buff *skb)
 	rcu_read_lock();
 
 	sband = local->hw.wiphy->bands[info->band];
+	fc = hdr->frame_control;
 
 	sta = sta_info_get(local, hdr->addr1);
 
@@ -528,6 +529,20 @@ void ieee80211_tx_status(struct ieee80211_hw *hw, struct sk_buff *skb)
 	} else {
 		if (frag == 0)
 			local->dot11FailedCount++;
+	}
+
+	if (ieee80211_is_nullfunc(fc) && ieee80211_has_pm(fc) &&
+	    (local->hw.flags & IEEE80211_HW_REPORTS_TX_ACK_STATUS) &&
+	    !(info->flags & IEEE80211_TX_CTL_INJECTED) &&
+	    local->ps_sdata && !(local->scanning)) {
+		if (info->flags & IEEE80211_TX_STAT_ACK) {
+			local->ps_sdata->u.mgd.flags |=
+				IEEE80211_STA_NULLFUNC_ACKED;
+			ieee80211_queue_work(&local->hw,
+					     &local->dynamic_ps_enable_work);
+		} else
+			mod_timer(&local->dynamic_ps_timer, jiffies +
+				  msecs_to_jiffies(10));
 	}
 
 	/* this was a transmitted frame, but now we want to reuse it */
@@ -965,11 +980,7 @@ void ieee80211_unregister_hw(struct ieee80211_hw *hw)
 
 	rtnl_unlock();
 
-#if 0 /* Not in RHEL5... */
 	cancel_work_sync(&local->reconfig_filter);
-#else
-	ieee80211_cancel_work(&local->hw, &local->reconfig_filter);
-#endif
 
 	ieee80211_clear_tx_pending(local);
 	sta_info_stop(local);

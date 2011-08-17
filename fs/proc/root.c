@@ -118,6 +118,17 @@ static int proc_root_readdir(struct file * filp,
 	return ret;
 }
 
+static loff_t proc_root_llseek(struct file *file, loff_t offset, int origin)
+{
+	loff_t ret;
+
+	mutex_lock(&file->f_dentry->d_inode->i_mutex);
+	ret = default_llseek(file, offset, origin);
+	mutex_unlock(&file->f_dentry->d_inode->i_mutex);
+
+	return ret;
+}
+
 /*
  * The root /proc directory is special, as it has the
  * <pid> directories. Thus we don't use the generic
@@ -126,6 +137,7 @@ static int proc_root_readdir(struct file * filp,
 static struct file_operations proc_root_operations = {
 	.read		 = generic_read_dir,
 	.readdir	 = proc_root_readdir,
+	.llseek		 = proc_root_llseek,
 };
 
 /*

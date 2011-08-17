@@ -73,7 +73,7 @@ static const char driver_name[] = "catc";
 #define TX_TIMEOUT		(5*HZ)	/* Max time the queue can be stopped */
 #define PKT_SZ			1536	/* Max Ethernet packet size */
 #define RX_MAX_BURST		15	/* Max packets per rx buffer (> 0, < 16) */
-#define TX_MAX_BURST		15	/* Max full sized packets per tx buffer (> 0) */
+#define TX_MAX_BURST		13	/* Max full sized packets per tx buffer (> 0) */
 #define CTRL_QUEUE		16	/* Max control requests in flight (power of two) */
 #define RX_PKT_SZ		1600	/* Max size of receive packet for F5U011 */
 

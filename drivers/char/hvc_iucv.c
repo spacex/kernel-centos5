@@ -24,12 +24,6 @@
 
 #include "hvc_console_s390.h"
 
-#ifndef pr_err
-#	define		pr_err(fmt,arg...) \
-				printk(KERN_ERR fmt,##arg)
-#endif
-
-
 /* General device driver settings */
 #define HVC_IUCV_MAGIC		0xc9e4c3e5
 #define MAX_HVC_IUCV_LINES	HVC_ALLOC_TTY_ADAPTERS

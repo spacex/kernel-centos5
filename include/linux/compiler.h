@@ -166,4 +166,7 @@ extern void __chk_io_ptr(void __iomem *);
 # define uninitialized_var(x) x = x
 #endif
 
+#ifndef __maybe_unused
+# define __maybe_unused		/* unimplemented */
+#endif
 #endif /* __LINUX_COMPILER_H */

@@ -59,7 +59,11 @@ struct vlan_hdr {
    __be16               h_vlan_encapsulated_proto; /* packet type ID field (or len) */
 };
 
-#define VLAN_VID_MASK	0xfff
+#define VLAN_PRIO_MASK		0xe000 /* Priority Code Point */
+#define VLAN_PRIO_SHIFT		13
+#define VLAN_CFI_MASK		0x1000 /* Canonical Format Indicator */
+#define VLAN_TAG_PRESENT	VLAN_CFI_MASK
+#define VLAN_VID_MASK		0x0fff /* VLAN Identifier */
 
 /* found in socket.c */
 extern void vlan_ioctl_set(int (*hook)(void __user *));
@@ -142,6 +146,20 @@ struct vlan_skb_tx_cookie {
 	u32	magic;
 	u32	vlan_tag;
 };
+
+static inline struct net_device *vlan_group_get_device(struct vlan_group *vg,
+						       int vlan_id)
+{
+	return vg->vlan_devices[vlan_id];
+}
+
+static inline void vlan_group_set_device(struct vlan_group *vg,
+					 u16 vid,
+					 struct net_device *dev)
+{
+	if (vg)
+		vg->vlan_devices[vid] = dev;
+}
 
 #define VLAN_TX_COOKIE_MAGIC	0x564c414e	/* "VLAN" in ascii. */
 #define VLAN_TX_SKB_CB(__skb)	((struct vlan_skb_tx_cookie *)&((__skb)->cb[0]))

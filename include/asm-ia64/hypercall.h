@@ -225,11 +225,7 @@ HYPERVISOR_physdev_op(int cmd, void *arg)
 
 extern fastcall unsigned int __do_IRQ(unsigned int irq, struct pt_regs *regs);
 static inline void exit_idle(void) {}
-#define do_IRQ(irq, regs) ({			\
-	irq_enter();				\
-	__do_IRQ((irq), (regs));		\
-	irq_exit();				\
-})
+#define do_IRQ(irq, regs) __do_IRQ((irq), (regs))
 
 #include <linux/err.h>
 #ifdef CONFIG_XEN

@@ -8,6 +8,7 @@
 
 #include <linux/delay.h>
 #include <linux/vmalloc.h>
+#include <linux/version.h>
 
 #include "qla_devtbl.h"
 
@@ -141,6 +142,16 @@ qla2x00_initialize_adapter(scsi_qla_host_t *ha)
 	rval = qla2x00_init_rings(ha);
 	ha->flags.chip_reset_done = 1;
 
+	rval = qla2x00_get_fw_version(ha,
+	    &ha->fw_major_version,
+	    &ha->fw_minor_version,
+	    &ha->fw_subminor_version,
+	    &ha->fw_attributes, &ha->fw_memory_size,
+	    ha->mpi_version, &ha->mpi_capabilities,
+	    ha->phy_version);
+	if (rval != QLA_SUCCESS)
+		return QLA_FUNCTION_FAILED;
+
 	if (rval == QLA_SUCCESS && IS_QLA84XX(ha)) {
 		/* Issue verify 84xx FW IOCB to complete 84xx initialization */
 		rval = qla84xx_init_chip(ha);
@@ -149,6 +160,12 @@ qla2x00_initialize_adapter(scsi_qla_host_t *ha)
 				"Unable to initialize ISP84XX.\n");
 			qla84xx_put_chip(ha);
 		}
+	}
+
+	if (IS_QLA24XX_TYPE(ha) || IS_QLA25XX(ha)) {
+		if (qla24xx_read_fcp_prio_cfg(ha))
+			qla_printk(KERN_ERR, ha,
+			    "Unable to read FCP priority data.\n");
 	}
 
 	return (rval);
@@ -783,16 +800,21 @@ qla24xx_chip_diag(scsi_qla_host_t *ha)
 
 	ha->fw_transfer_size = REQUEST_ENTRY_SIZE * 1024;
 
-	rval = qla2x00_mbx_reg_test(ha);
-	if (rval) {
-		DEBUG(printk("scsi(%ld): Failed mailbox send register test\n",
-		    ha->host_no));
-		qla_printk(KERN_WARNING, ha,
-		    "Failed mailbox send register test\n");
-	} else {
-		/* Flag a successful rval */
+	/* Avoid for ISP82XX - until firmware intializes */
+	if (!IS_QLA82XX(ha)) {
+		rval = qla2x00_mbx_reg_test(ha);
+		if (rval) {
+			DEBUG(printk(KERN_WARNING
+			    "scsi(%ld): Failed mailbox send register"
+			    "test\n", ha->host_no));
+			qla_printk(KERN_WARNING, ha,
+			    "Failed mailbox send register test\n");
+		} else {
+			/* Flag a successful rval */
+			rval = QLA_SUCCESS;
+		}
+	} else
 		rval = QLA_SUCCESS;
-	}
 
 	return rval;
 }
@@ -921,6 +943,8 @@ qla2x00_resize_request_q(scsi_qla_host_t *ha)
 	if (IS_QLA2100(ha) || IS_QLA2200(ha))
 		return;
 
+	if (IS_QLA82XX(ha))
+		request_q_length = REQUEST_ENTRY_CNT_82XX;
 	/* Retrieve IOCB counts available to the firmware. */
 	rval = qla2x00_get_resource_cnts(ha, NULL, &ha->fw_xcb_count, NULL,
 	    &fw_iocb_cnt, &ha->max_npiv_vports);
@@ -1044,21 +1068,29 @@ qla2x00_setup_chip(scsi_qla_host_t *ha)
 
 	/* Load firmware sequences */
 	rval = ha->isp_ops->load_risc(ha, &srisc_address);
+	if (IS_QLA82XX(ha)) {
+		if (rval == QLA_SUCCESS)
+			qla2x00_stop_firmware(ha);
+		goto enable_82xx_npiv;
+	}
+
 	if (rval == QLA_SUCCESS) {
 		DEBUG(printk("scsi(%ld): Verifying Checksum of loaded RISC "
 		    "code.\n", ha->host_no));
 
 		rval = qla2x00_verify_checksum(ha, srisc_address);
+
 		if (rval == QLA_SUCCESS) {
 			/* Start firmware execution. */
 			DEBUG(printk("scsi(%ld): Checksum OK, start "
 			    "firmware.\n", ha->host_no));
 
 			rval = qla2x00_execute_fw(ha, srisc_address);
+enable_82xx_npiv:
 			/* Retrieve firmware information. */
 			if (rval == QLA_SUCCESS) {
 				fw_major_version = ha->fw_major_version;
-			
+
 				rval = qla2x00_get_fw_version(ha,
 				    &ha->fw_major_version,
 				    &ha->fw_minor_version,
@@ -1071,7 +1103,7 @@ qla2x00_setup_chip(scsi_qla_host_t *ha)
 
 				ha->flags.npiv_supported = 0;
 				if ((IS_QLA24XX_TYPE(ha) || IS_QLA25XX(ha) ||
-				    IS_QLA84XX(ha) || IS_QLA81XX(ha)) &&
+				    IS_QLA84XX(ha) || IS_QLA8XXX_TYPE(ha)) &&
 				    (ha->fw_attributes & BIT_2)) {
 					ha->flags.npiv_supported = 1;
 					if ((!ha->max_npiv_vports) ||
@@ -1083,8 +1115,8 @@ qla2x00_setup_chip(scsi_qla_host_t *ha)
 
 				if (fw_major_version == 0) {
 					qla2x00_resize_request_q(ha);
-
-					if (ql2xallocfwdump)
+					/* TODO: FW Dump support for 82XX */
+					if (!IS_QLA82XX(ha) && ql2xallocfwdump)
 						qla2x00_alloc_fw_dump(ha);
 				}
 			}
@@ -1227,6 +1259,9 @@ qla24xx_update_fw_options(scsi_qla_host_t *ha)
 {
 	int rval;
 
+	if (IS_QLA82XX(ha))
+		return;
+
 	/* Update Serial Link options. */
 	if ((le16_to_cpu(ha->fw_seriallink_options24[0]) & BIT_0) == 0)
 		return;
@@ -1357,7 +1392,7 @@ qla2x00_init_rings(scsi_qla_host_t *ha)
 		    ha->host_no));
 	}
 
-	return (rval);
+	return rval;
 }
 
 /**
@@ -1457,7 +1492,8 @@ qla2x00_fw_ready(scsi_qla_host_t *ha)
 			}
 		} else {
 			/* Mailbox cmd failed. Timeout on min_wait. */
-			if (time_after_eq(jiffies, mtime))
+			if (time_after_eq(jiffies, mtime) ||
+			    (IS_QLA82XX(ha) && ha->flags.fw_hung))
 				break;
 		}
 
@@ -1599,13 +1635,13 @@ qla2x00_configure_hba(scsi_qla_host_t *ha)
 	return(rval);
 }
 
-static inline void
+inline void
 qla2x00_set_model_info(scsi_qla_host_t *ha, uint8_t *model, size_t len, char *def)
 {
 	char *st, *en;
 	uint16_t index;
 	int use_tbl = !IS_QLA24XX_TYPE(ha) && !IS_QLA25XX(ha) &&
-	    !IS_QLA81XX(ha);
+	    !IS_QLA8XXX_TYPE(ha);
 
 	if (memcmp(model, BINZERO, len) != 0) {
 		strncpy(ha->model_number, model, len);
@@ -2251,20 +2287,6 @@ cleanup_allocation:
 }
 
 static void
-qla2x00_probe_for_all_luns(scsi_qla_host_t *ha)
-{
-	fc_port_t	*fcport;
-
-	qla2x00_mark_all_devices_lost(ha, 0);
- 	list_for_each_entry(fcport, &ha->fcports, list) {
-		if (fcport->port_type != FCT_TARGET)
-			continue;
-
-		qla2x00_update_fcport(ha, fcport);
-	}
-}
-
-static void
 qla2x00_iidma_fcport(scsi_qla_host_t *ha, fc_port_t *fcport)
 {
 #define LS_UNKNOWN      2
@@ -2339,7 +2361,167 @@ qla2x00_reg_remote_port(scsi_qla_host_t *ha, fc_port_t *fcport)
 	if (fcport->port_type == FCT_TARGET)
 		rport_ids.roles |= FC_RPORT_ROLE_FCP_TARGET;
 	fc_remote_port_rolechg(rport, rport_ids.roles);
+}
 
+/*
+ * qla24xx_get_fcp_prio
+ *	Gets the fcp cmd priority value for the logged in port.
+ *	Looks for a match of the port descriptors within
+ *	each of the fcp prio config entries. If a match is found,
+ *	the tag (priority) value is returned.
+ *
+ * Input:
+ *      ha = adapter block pointer.
+ *      fcport = port structure pointer.
+ *
+ * Return:
+ * 	non-zero (if found)
+ *	0 (if not found)
+ *
+ * Context:
+ *      Kernel context.
+ */
+uint8_t
+qla24xx_get_fcp_prio(scsi_qla_host_t *ha, fc_port_t *fcport)
+{
+	int i, entries;
+	uint8_t pid_match, wwn_match;
+	uint8_t priority;
+	uint32_t pid1, pid2;
+	uint64_t wwn1, wwn2;
+	struct qla_fcp_prio_entry *pri_entry;
+
+	if (!ha->fcp_prio_cfg || !ha->flags.fcp_prio_enabled)
+		return 0;
+
+	priority = 0;
+	entries = ha->fcp_prio_cfg->num_entries;
+	pri_entry = &ha->fcp_prio_cfg->entry[0];
+
+	for (i = 0; i < entries; i++) {
+		pid_match = wwn_match = 0;
+
+		if (!(pri_entry->flags & FCP_PRIO_ENTRY_VALID)) {
+			pri_entry++;
+			continue;
+		}
+
+		/* check source pid for a match */
+		if (pri_entry->flags & FCP_PRIO_ENTRY_SPID_VALID) {
+			pid1 = pri_entry->src_pid & INVALID_PORT_ID;
+			pid2 = ha->d_id.b24 & INVALID_PORT_ID;
+			if (pid1 == INVALID_PORT_ID)
+				pid_match++;
+			else if (pid1 == pid2)
+				pid_match++;
+		}
+
+		/* check destination pid for a match */
+		if (pri_entry->flags & FCP_PRIO_ENTRY_DPID_VALID) {
+			pid1 = pri_entry->dst_pid & INVALID_PORT_ID;
+			pid2 = fcport->d_id.b24 & INVALID_PORT_ID;
+			if (pid1 == INVALID_PORT_ID)
+				pid_match++;
+			else if (pid1 == pid2)
+				pid_match++;
+		}
+
+		/* check source WWN for a match */
+		if (pri_entry->flags & FCP_PRIO_ENTRY_SWWN_VALID) {
+			wwn1 = wwn_to_u64(ha->port_name);
+			wwn2 = wwn_to_u64(pri_entry->src_wwpn);
+			if (wwn2 == (uint64_t)-1)
+				wwn_match++;
+			else if (wwn1 == wwn2)
+				wwn_match++;
+		}
+
+		/* check destination WWN for a match */
+		if (pri_entry->flags & FCP_PRIO_ENTRY_DWWN_VALID) {
+			wwn1 = wwn_to_u64(fcport->port_name);
+			wwn2 = wwn_to_u64(pri_entry->dst_wwpn);
+			if (wwn2 == (uint64_t)-1)
+				wwn_match++;
+			else if (wwn1 == wwn2)
+				wwn_match++;
+		}
+
+		if (pid_match == 2 || wwn_match == 2) {
+			/* Found a matching entry */
+			if (pri_entry->flags & FCP_PRIO_ENTRY_TAG_VALID)
+				priority = pri_entry->tag;
+			break;
+		}
+
+		pri_entry++;
+	}
+
+	return priority;
+}
+
+/*
+ * qla24xx_update_fcport_fcp_prio
+ *      Activates fcp priority for the logged in fc port
+ *
+ * Input:
+ *      ha = adapter block pointer.
+ *      fcp = port structure pointer.
+ *
+ * Return:
+ *      QLA_SUCCESS or QLA_FUNCTION_FAILED
+ *
+ * Context:
+ *      Kernel context.
+ */
+int
+qla24xx_update_fcport_fcp_prio(scsi_qla_host_t *ha, fc_port_t *fcport)
+{
+	int ret;
+	uint8_t priority;
+	uint16_t mb[5];
+
+	if (atomic_read(&fcport->state) == FCS_UNCONFIGURED ||
+	    fcport->port_type != FCT_TARGET ||
+	    fcport->loop_id == FC_NO_LOOP_ID)
+		return QLA_FUNCTION_FAILED;
+
+	priority = qla24xx_get_fcp_prio(ha, fcport);
+	ret = qla24xx_set_fcp_prio(ha, fcport->loop_id, priority, mb);
+	if (ret == QLA_SUCCESS)
+		fcport->fcp_prio = priority;
+	else
+		DEBUG2(printk(
+		    "scsi(%ld): Unable to activate fcp priority, ret=0x%x\n",
+		    ha->host_no, ret));
+
+	return  ret;
+}
+
+/*
+ * qla24xx_update_all_fcp_prio
+ *      Activates fcp priority for all the logged in ports
+ *
+ * Input:
+ *      ha = adapter block pointer.
+ *
+ * Return:
+ *	QLA_SUCCESS or QLA_FUNCTION_FAILED
+ *
+ * Context:
+ *      Kernel context.
+ */
+int
+qla24xx_update_all_fcp_prio(scsi_qla_host_t *ha)
+{
+	int ret;
+	fc_port_t *fcport;
+
+	ret = QLA_FUNCTION_FAILED;
+	/* We need to set priority for all logged in ports */
+	list_for_each_entry(fcport, &ha->fcports, list)
+		ret = qla24xx_update_fcport_fcp_prio(ha, fcport);
+
+	return ret;
 }
 
 /*
@@ -2373,6 +2555,8 @@ qla2x00_update_fcport(scsi_qla_host_t *ha, fc_port_t *fcport)
 	qla2x00_iidma_fcport(ha, fcport);
 
 	atomic_set(&fcport->state, FCS_ONLINE);
+
+	qla24xx_update_fcport_fcp_prio(ha, fcport);
 
 	qla2x00_reg_remote_port(ha, fcport);
 }
@@ -3279,25 +3463,6 @@ qla2x00_loop_resync(scsi_qla_host_t *ha)
 }
 
 void
-qla2x00_rescan_fcports(scsi_qla_host_t *ha)
-{
-	int rescan_done;
-	fc_port_t *fcport;
-
-	rescan_done = 0;
-	list_for_each_entry(fcport, &ha->fcports, list) {
-		if ((fcport->flags & FCF_RESCAN_NEEDED) == 0)
-			continue;
-
-		qla2x00_update_fcport(ha, fcport);
-		fcport->flags &= ~FCF_RESCAN_NEEDED;
-
-		rescan_done = 1;
-	}
-	qla2x00_probe_for_all_luns(ha);
-}
-
-void
 qla2x00_update_fcports(scsi_qla_host_t *ha)
 {
 	fc_port_t *fcport;
@@ -3307,6 +3472,51 @@ qla2x00_update_fcports(scsi_qla_host_t *ha)
 		if (fcport->drport)
 			qla2x00_rport_del(fcport);
 }
+
+void
+qla2x00_abort_isp_cleanup(scsi_qla_host_t *ha)
+{
+
+	scsi_qla_host_t *vha, *tmp_vha;
+	ha->flags.online = 0;
+	ha->flags.chip_reset_done = 0;
+	clear_bit(ISP_ABORT_NEEDED, &ha->dpc_flags);
+	ha->qla_stats.total_isp_aborts++;
+
+	qla_printk(KERN_INFO, ha,
+	    "Performing ISP error recovery - ha= %p.\n", ha);
+	/* For ISP82XX reset_chip is not applicable */
+	if (!IS_QLA82XX(ha))
+		ha->isp_ops->reset_chip(ha);
+
+	atomic_set(&ha->loop_down_timer, LOOP_DOWN_TIME);
+	if (atomic_read(&ha->loop_state) != LOOP_DOWN) {
+		atomic_set(&ha->loop_state, LOOP_DOWN);
+		qla2x00_mark_all_devices_lost(ha, 0);
+		list_for_each_entry_safe(vha, tmp_vha, &ha->vp_list, vp_list)
+			qla2x00_mark_all_devices_lost(vha, 0);
+
+	} else {
+		if (!atomic_read(&ha->loop_down_timer))
+			atomic_set(&ha->loop_down_timer,
+			    LOOP_DOWN_TIME);
+	}
+
+	if (!ha->flags.eeh_busy) {
+		/* Make sure for ISP 82XX IO DMA is complete */
+		if (IS_QLA82XX(ha)) {
+			DEBUG2(qla_printk(KERN_INFO, ha,
+			    "Waiting for pending commands\n"));
+			qla2x00_eh_wait_for_pending_commands(ha);
+			DEBUG2(qla_printk(KERN_INFO, ha,
+			    "Done wait for pending commands\n"));
+		}
+
+		/* Requeue all commands in outstanding command list. */
+		qla2x00_abort_all_cmds(ha, DID_RESET << 16);
+	}
+}
+
 
 /*
 *  qla2x00_abort_isp
@@ -3326,27 +3536,7 @@ qla2x00_abort_isp(scsi_qla_host_t *ha)
 	scsi_qla_host_t *vha;
 
 	if (ha->flags.online) {
-		ha->flags.online = 0;
-		ha->flags.chip_reset_done = 0;
-		clear_bit(ISP_ABORT_NEEDED, &ha->dpc_flags);
-		ha->qla_stats.total_isp_aborts++;
-
-		qla_printk(KERN_INFO, ha,
-		    "Performing ISP error recovery - ha= %p.\n", ha);
-		ha->isp_ops->reset_chip(ha);
-
-		atomic_set(&ha->loop_down_timer, LOOP_DOWN_TIME);
-		if (atomic_read(&ha->loop_state) != LOOP_DOWN) {
-			atomic_set(&ha->loop_state, LOOP_DOWN);
-			qla2x00_mark_all_devices_lost(ha, 0);
-		} else {
-			if (!atomic_read(&ha->loop_down_timer))
-				atomic_set(&ha->loop_down_timer,
-				    LOOP_DOWN_TIME);
-		}
-
-		/* Requeue all commands in outstanding command list. */
-		qla2x00_abort_all_cmds(ha, DID_RESET << 16);
+		qla2x00_abort_isp_cleanup(ha);
 
 		if (pci_channel_offline(ha->pdev) &&
 		    ha->flags.pci_channel_io_perm_failure) {
@@ -3801,7 +3991,6 @@ qla24xx_load_risc_flash(scsi_qla_host_t *ha, uint32_t *srisc_addr,
 	uint32_t risc_addr;
 	uint32_t risc_size;
 	uint32_t i;
-
 	rval = QLA_SUCCESS;
 
 	segments = FA_RISC_CODE_SEGMENTS;
@@ -4090,10 +4279,13 @@ qla24xx_load_risc(scsi_qla_host_t *ha, uint32_t *srisc_addr)
          * 1) Firmware via request-firmware interface (.bin file with driver).
          * 2) Firmware residing in flash.
          */
+	if (ql2xfwloadbin == 1)
+		goto load_from_flash;
+
         rval = qla24xx_load_risc_blob(ha, srisc_addr);
         if (rval == QLA_SUCCESS)
                 return rval;
-
+load_from_flash:
         return qla24xx_load_risc_flash(ha, srisc_addr, ha->flt_region_fw);
 }
 
@@ -4274,11 +4466,17 @@ qla81xx_nvram_config(scsi_qla_host_t *ha)
 	/* Determine NVRAM starting address. */
 	ha->nvram_size = sizeof(struct nvram_81xx);
 	ha->vpd_size = FA_NVRAM_VPD_SIZE;
+	if (IS_QLA82XX(ha))
+		ha->vpd_size = FA_VPD_SIZE_82xx;
 
 	/* Get VPD data into cache */
 	ha->vpd = ha->nvram + VPD_OFFSET;
 	ha->isp_ops->read_optrom(ha, (uint8_t *)ha->vpd,
 	    ha->flt_region_vpd << 2, ha->vpd_size);
+
+	DEBUG5(qla_printk(KERN_INFO, ha,
+	    "scsi(%ld): Contents of VPD\n", ha->host_no));
+	DEBUG5(qla2x00_dump_buffer((uint8_t *)ha->vpd, ha->vpd_size));
 
 	/* Get NVRAM data into cache and calculate checksum. */
 	ha->isp_ops->read_optrom(ha, ha->nvram, ha->flt_region_nvram << 2,
@@ -4339,7 +4537,7 @@ qla81xx_nvram_config(scsi_qla_host_t *ha)
 	 * Setup driver NVRAM options.
 	 */
 	qla2x00_set_model_info(ha, nv->model_name, sizeof(nv->model_name),
-	    "QLE81XX");
+	    "QLE8XXX");
 
 	/* Use alternate WWN? */
 	if (nv->host_p & __constant_cpu_to_le32(BIT_15)) {
@@ -4465,4 +4663,140 @@ qla81xx_nvram_config(scsi_qla_host_t *ha)
 void
 qla81xx_update_fw_options(scsi_qla_host_t *ha)
 {
+
+	if (!ql2xetsenable)
+		return;
+
+	/* Enable ETS Burst. */
+	memset(ha->fw_options, 0, sizeof(ha->fw_options));
+	ha->fw_options[2] |= BIT_9;
+	qla2x00_set_fw_options(ha, ha->fw_options);
+}
+
+/*
+*  qla82xx_fcoe_ctx_reset
+*      Perform a quick reset and aborts all outstanding commands.
+*      This will only perform an FCoE context reset and avoids a full blown
+*      chip reset.
+*
+* Input:
+*      ha = adapter block pointer.
+*
+* Returns:
+*      0 = success
+*/
+int qla82xx_fcoe_ctx_reset(scsi_qla_host_t *ha)
+{
+	int rval = QLA_FUNCTION_FAILED;
+
+	if (ha->flags.online) {
+		/* Abort all outstanding commands, so as to be requeued later */
+		qla2x00_abort_isp_cleanup(ha);
+	}
+
+	/* Stop currently executing firmware.
+	 * This will destroy existing FCoE context at the F/W end.
+	 */
+	qla2x00_try_to_stop_firmware(ha);
+
+	/* Restart. Creates a new FCoE context on INIT_FIRMWARE. */
+	rval = qla82xx_restart_isp(ha);
+
+	return rval;
+}
+
+int
+qla82xx_restart_isp(scsi_qla_host_t *ha)
+{
+	int status, rval;
+	uint32_t wait_time;
+	scsi_qla_host_t *vha;
+
+	status = qla2x00_init_rings(ha);
+	if (!status) {
+		clear_bit(RESET_MARKER_NEEDED, &ha->dpc_flags);
+		ha->flags.chip_reset_done = 1;
+		status = qla2x00_fw_ready(ha);
+		if (!status) {
+			DEBUG(qla_printk(KERN_INFO, ha,
+			    "%s(): Start configure loop, "
+			    "status = %d\n", __func__, status));
+
+			/* Issue a marker after FW becomes ready. */
+			qla2x00_marker(ha, 0, 0, MK_SYNC_ALL);
+
+			ha->flags.online = 1;
+			/* Wait at most MAX_TARGET RSCNs for a stable link. */
+			wait_time = 256;
+			do {
+				clear_bit(LOOP_RESYNC_NEEDED, &ha->dpc_flags);
+				qla2x00_configure_loop(ha);
+				wait_time--;
+			} while (!atomic_read(&ha->loop_down_timer) &&
+			    !(test_bit(ISP_ABORT_NEEDED, &ha->dpc_flags)) &&
+			    wait_time &&
+			    (test_bit(LOOP_RESYNC_NEEDED, &ha->dpc_flags)));
+		}
+
+		/* if no cable then assume it's good */
+		if ((ha->device_flags & DFLG_NO_CABLE))
+			status = 0;
+
+		DEBUG(qla_printk(KERN_INFO, ha,
+		    "%s(): Configure loop done, status = 0x%x\n",
+		    __func__, status));
+	}
+
+	if (!status) {
+		clear_bit(RESET_MARKER_NEEDED, &ha->dpc_flags);
+
+		if (!atomic_read(&ha->loop_down_timer)) {
+			/*
+			 * Issue marker command only when we are going
+			 * to start the I/O .
+			 */
+			ha->marker_needed = 1;
+		}
+
+		ha->flags.online = 1;
+
+		ha->isp_ops->enable_intrs(ha);
+
+		ha->isp_abort_cnt = 0;
+		clear_bit(ISP_ABORT_RETRY, &ha->dpc_flags);
+
+		/* Update the FW versions */
+		qla2x00_get_fw_version(ha,
+		    &ha->fw_major_version,
+		    &ha->fw_minor_version,
+		    &ha->fw_subminor_version,
+		    &ha->fw_attributes, &ha->fw_memory_size,
+		    ha->mpi_version, &ha->mpi_capabilities,
+		    ha->phy_version);
+
+		if (ha->eft) {
+			memset(ha->eft, 0, EFT_SIZE);
+			rval = qla2x00_trace_control(ha, TC_ENABLE,
+			    ha->eft_dma, EFT_NUM_BUFFERS);
+			if (rval) {
+				qla_printk(KERN_WARNING, ha,
+				    "Unable to reinitialize EFT "
+				    "(%d).\n", rval);
+			}
+		}
+	}
+
+	if (!status) {
+		DEBUG(printk(KERN_INFO
+		    "qla82xx_restart_isp(%ld): succeeded.\n", ha->host_no));
+		list_for_each_entry(vha, &ha->vp_list, vp_list) {
+			if (vha->vp_idx)
+				qla2x00_vp_abort_isp(vha);
+		}
+	} else {
+		qla_printk(KERN_INFO, ha,
+		    "qla82xx_restart_isp: **** FAILED ****\n");
+	}
+
+	return status;
 }

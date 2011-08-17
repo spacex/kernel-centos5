@@ -40,6 +40,14 @@ extern int		eth_header_cache(struct neighbour *neigh,
 					 struct hh_cache *hh);
 
 extern struct net_device *alloc_etherdev(int sizeof_priv);
+
+static inline struct net_device *alloc_etherdev_mq(int sizeof_priv,
+				     unsigned int queue_count)
+{
+	BUG_ON(queue_count != 1);
+	return alloc_etherdev(sizeof_priv);
+}
+
 static inline void eth_copy_and_sum (struct sk_buff *dest, 
 				     const unsigned char *src, 
 				     int len, int base)

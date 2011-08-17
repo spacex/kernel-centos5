@@ -646,8 +646,8 @@ static void rt_check_expire(unsigned long dummy)
 {
 	static unsigned int rover;
 	unsigned int i = rover, goal;
-	struct rtable *rth, **rthp;
-	unsigned long length = 0, samples = 0;
+	struct rtable *rth, *aux, **rthp;
+	unsigned long samples = 0;
 	unsigned long sum = 0, sum2 = 0;
 	unsigned long now = jiffies;
 	u64 mult;
@@ -659,6 +659,7 @@ static void rt_check_expire(unsigned long dummy)
 	if (goal > rt_hash_mask) goal = rt_hash_mask + 1;
 	for (; goal > 0; goal--) {
 		unsigned long tmo = ip_rt_gc_timeout;
+		unsigned long length;
 
 		i = (i + 1) & rt_hash_mask;
 		rthp = &rt_hash_table[i].chain;
@@ -667,39 +668,37 @@ static void rt_check_expire(unsigned long dummy)
 
 		if (*rthp == 0)
 			continue;
+		length = 0;
 		spin_lock(rt_hash_lock_addr(i));
 		while ((rth = *rthp) != NULL) {
+			prefetch(rth->u.rt_next);
 			if (rth->u.dst.expires) {
 				/* Entry is expired even if it is in use */
 				if (time_before_eq(now, rth->u.dst.expires)) {
+nofree:
 					tmo >>= 1;
 					rthp = &rth->u.rt_next;
 					/*
-					 * Only bump our length if the hash
-					 * inputs on entries n and n+1 are not
-					 * the same, we only count entries on
+					 * We only count entries on
 					 * a chain with equal hash inputs once
 					 * so that entries for different QOS
 					 * levels, and other non-hash input
 					 * attributes don't unfairly skew
 					 * the length computation
 					 */
-					if ((*rthp == NULL) ||
-					    !compare_hash_inputs(&(*rthp)->fl,
-								 &rth->fl))
-						length += ONE;
-
+					for (aux = rt_hash_table[i].chain;;) {
+						if (aux == rth) {
+							length += ONE;
+							break;
+						}
+						if (compare_hash_inputs(&aux->fl, &rth->fl))
+							break;
+						aux = aux->u.rt_next;
+					}
 					continue;
 				}
-			} else if (!rt_may_expire(rth, tmo, ip_rt_gc_timeout)) {
-				tmo >>= 1;
-				rthp = &rth->u.rt_next;
-				if ((*rthp == NULL) || 
-				   !compare_hash_inputs(&(*rthp)->fl,
-							&rth->fl))
-					length += ONE;
-				continue;
-			}
+			} else if (!rt_may_expire(rth, tmo, ip_rt_gc_timeout))
+				goto nofree;
 
 			/* Cleanup aged off entries. */
 #ifdef CONFIG_IP_ROUTE_MULTIPATH_CACHED
@@ -822,11 +821,9 @@ static void rt_secret_rebuild(unsigned long dummy)
 static void rt_secret_rebuild_oneshot(void)
 {
 	del_timer_sync(&rt_secret_timer);
-       rt_cache_flush(0);
-       if (ip_rt_secret_interval) {
-               rt_secret_timer.expires += ip_rt_secret_interval;
-               add_timer(&rt_secret_timer);
-       }
+	rt_cache_flush(0);
+	if (ip_rt_secret_interval)
+		mod_timer(&rt_secret_timer, jiffies + ip_rt_secret_interval);
 }
 
 static void rt_emergency_hash_rebuild(void)
@@ -997,7 +994,6 @@ out:	return 0;
 static int rt_intern_hash(unsigned hash, struct rtable *rt, struct rtable **rp)
 {
 	struct rtable	*rth, **rthp;
-	struct rtable   *rthi;
 	unsigned long	now;
 	struct rtable *cand, **candp;
 	u32 		min_score;
@@ -1045,7 +1041,6 @@ restart:
 	}
 
 	rthp = &rt_hash_table[hash].chain;
-	rthi = NULL;
 
 	spin_lock_bh(rt_hash_lock_addr(hash));
 	while ((rth = *rthp) != NULL) {
@@ -1093,17 +1088,6 @@ restart:
 		chain_length++;
 
 		rthp = &rth->u.rt_next;
-
-		/*
-		 * check to see if the next entry in the chain
-		 * contains the same hash input values as rt.  If it does
-		 * This is where we will insert into the list, instead of
-		 * at the head.  This groups entries that differ by aspects not
-		 * relvant to the hash function together, which we use to adjust
-		 * our chain length
-		 */
-		if (*rthp && compare_hash_inputs(&(*rthp)->fl, &rt->fl))
-			rthi = rth;
 	}
 
 	if (cand) {
@@ -1170,10 +1154,7 @@ restart:
 		}
 	}
 
-	if (rthi)
-		rt->u.rt_next = rthi->u.rt_next;
-	else
-		rt->u.rt_next = rt_hash_table[hash].chain;
+	rt->u.rt_next = rt_hash_table[hash].chain;
 
 #if RT_CACHE_DEBUG >= 2
 	if (rt->u.rt_next) {
@@ -1185,10 +1166,7 @@ restart:
 		printk("\n");
 	}
 #endif
-	if (rthi)
-		rthi->u.rt_next = rt;
-	else
-		rt_hash_table[hash].chain = rt;
+	rcu_assign_pointer(rt_hash_table[hash].chain, rt);
 
 	spin_unlock_bh(rt_hash_lock_addr(hash));
 skip_hashing:
@@ -3134,6 +3112,7 @@ static void rt_secret_reschedule(int old)
 	int new = ip_rt_secret_interval;
 	int diff = new - old;
 	int deleted;
+	long time;
 
 	if (!diff)
 		return;
@@ -3145,17 +3124,14 @@ static void rt_secret_reschedule(int old)
 		goto unlock;
 
 	if (deleted) {
-		long time = rt_secret_timer.expires - jiffies;
+		time = rt_secret_timer.expires - jiffies;
 
 		if (time <= 0 || (time += diff) <= 0)
 			time = 0;
-
-		rt_secret_timer.expires = time;
 	} else
-		rt_secret_timer.expires = new;
+		time = new;
 
-	rt_secret_timer.expires += jiffies;
-	add_timer(&rt_secret_timer);
+	mod_timer(&rt_secret_timer, jiffies + time);
 unlock:
 	rtnl_unlock();
 }

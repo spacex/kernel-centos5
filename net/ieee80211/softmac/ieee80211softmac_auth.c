@@ -68,6 +68,9 @@ ieee80211softmac_auth_req(struct ieee80211softmac_device *mac,
 	return 0;
 }
 
+static void
+ieee80211softmac_deauth_from_net(struct ieee80211softmac_device *mac,
+	struct ieee80211softmac_network *net);
 
 /* Sends an auth request to the desired AP and handles timeouts */
 static void
@@ -91,6 +94,9 @@ ieee80211softmac_auth_queue(void *data)
 		if (unlikely(!mac->running)) {
 			/* Prevent reschedule on workqueue flush */
 			spin_unlock_irqrestore(&mac->lock, flags);
+			if (net->authenticated || net->authenticating)
+				ieee80211softmac_deauth_from_net(mac, net);
+
 			return;
 		}
 		net->authenticated = 0;
@@ -347,8 +353,6 @@ int
 ieee80211softmac_deauth_req(struct ieee80211softmac_device *mac,
 	struct ieee80211softmac_network *net, int reason)
 {
-	int ret;
-
 	/* Make sure the network is authenticated */
 	if (!net->authenticated)
 	{
@@ -358,8 +362,7 @@ ieee80211softmac_deauth_req(struct ieee80211softmac_device *mac,
 	}
 
 	/* Send the de-auth packet */
-	if((ret = ieee80211softmac_send_mgt_frame(mac, net, IEEE80211_STYPE_DEAUTH, reason)))
-		return ret;
+	ieee80211softmac_send_mgt_frame(mac, net, IEEE80211_STYPE_DEAUTH, reason);
 
 	ieee80211softmac_deauth_from_net(mac, net);
 	return 0;

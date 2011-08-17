@@ -67,6 +67,8 @@
 #include "scsi_priv.h"
 #include "scsi_logging.h"
 
+#include <trace/scsi.h>
+
 static void scsi_done(struct scsi_cmnd *cmd);
 
 /*
@@ -554,10 +556,12 @@ int scsi_dispatch_cmd(struct scsi_cmnd *cmd)
 		cmd->result = (DID_NO_CONNECT << 16);
 		scsi_done(cmd);
 	} else {
+		trace_scsi_dispatch_cmd_start(cmd);
 		rtn = host->hostt->queuecommand(cmd, scsi_done);
 	}
 	spin_unlock_irqrestore(host->host_lock, flags);
 	if (rtn) {
+		trace_scsi_dispatch_cmd_error(cmd, rtn);
 		if (scsi_delete_timer(cmd)) {
 			atomic_inc(&cmd->device->iodone_cnt);
 			scsi_attempt_requeue_command(cmd,
@@ -641,6 +645,8 @@ void __scsi_done(struct scsi_cmnd *cmd)
 		atomic_inc(&cmd->device->ioerr_cnt);
 
 	BUG_ON(!rq);
+
+	trace_scsi_dispatch_cmd_done(cmd);
 
 	/*
 	 * The uptodate/nbytes values don't matter, as we allow partial
@@ -806,7 +812,96 @@ int scsi_track_queue_full(struct scsi_device *sdev, int depth)
 EXPORT_SYMBOL(scsi_track_queue_full);
 
 /**
- * scsi_device_get  -  get an addition reference to a scsi_device
+ * scsi_vpd_inquiry - Request a device provide us with a VPD page
+ * @sdev: The device to ask
+ * @buffer: Where to put the result
+ * @page: Which Vital Product Data to return
+ * @len: The length of the buffer
+ *
+ * This is an internal helper function.  You probably want to use
+ * scsi_get_vpd_page instead.
+ *
+ * Returns 0 on success or a negative error number.
+ */
+static int scsi_vpd_inquiry(struct scsi_device *sdev, unsigned char *buffer,
+							u8 page, unsigned len)
+{
+	int result;
+	unsigned char cmd[16];
+
+	cmd[0] = INQUIRY;
+	cmd[1] = 1;		/* EVPD */
+	cmd[2] = page;
+	cmd[3] = len >> 8;
+	cmd[4] = len & 0xff;
+	cmd[5] = 0;		/* Control byte */
+
+	/*
+	 * I'm not convinced we need to try quite this hard to get VPD, but
+	 * all the existing users tried this hard.
+	 */
+	result = scsi_execute_req(sdev, cmd, DMA_FROM_DEVICE, buffer,
+				  len, NULL, 30 * HZ, 3);
+	if (result)
+		return result;
+
+	/* Sanity check that we got the page back that we asked for */
+	if (buffer[1] != page)
+		return -EIO;
+
+	return 0;
+}
+
+/**
+ * scsi_get_vpd_page - Get Vital Product Data from a SCSI device
+ * @sdev: The device to ask
+ * @page: Which Vital Product Data to return
+ *
+ * SCSI devices may optionally supply Vital Product Data.  Each 'page'
+ * of VPD is defined in the appropriate SCSI document (eg SPC, SBC).
+ * If the device supports this VPD page, this routine returns a pointer
+ * to a buffer containing the data from that page.  The caller is
+ * responsible for calling kfree() on this pointer when it is no longer
+ * needed.  If we cannot retrieve the VPD page this routine returns %NULL.
+ */
+int scsi_get_vpd_page(struct scsi_device *sdev, u8 page, unsigned char *buf,
+		      int buf_len)
+{
+	int i, result;
+
+	/* Ask for all the pages supported by this device */
+	result = scsi_vpd_inquiry(sdev, buf, 0, buf_len);
+	if (result)
+		goto fail;
+
+	/* If the user actually wanted this page, we can skip the rest */
+	if (page == 0)
+		return -EINVAL;
+
+	for (i = 0; i < min((int)buf[3], buf_len - 4); i++)
+		if (buf[i + 4] == page)
+			goto found;
+
+	if (i < buf[3] && i > buf_len)
+		/* ran off the end of the buffer, give us benefit of doubt */
+		goto found;
+	/* The device claims it doesn't support the requested page */
+	goto fail;
+
+ found:
+	result = scsi_vpd_inquiry(sdev, buf, page, buf_len);
+	if (result)
+		goto fail;
+
+	return 0;
+
+ fail:
+	return -EINVAL;
+}
+EXPORT_SYMBOL_GPL(scsi_get_vpd_page);
+
+/**
+ * scsi_device_get  -  get an additional reference to a scsi_device
  * @sdev:	device to get a reference to
  *
  * Gets a reference to the scsi_device and increments the use count

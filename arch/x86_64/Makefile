@@ -67,6 +67,9 @@ libs-y 					+= arch/x86_64/lib/
 core-y					+= arch/x86_64/kernel/ \
 					   arch/x86_64/mm/ \
 					   arch/x86_64/crypto/
+
+core-y					+= arch/x86_64/vdso/
+
 core-$(CONFIG_IA32_EMULATION)		+= arch/x86_64/ia32/
 drivers-$(CONFIG_PCI)			+= arch/x86_64/pci/
 drivers-$(CONFIG_OPROFILE)		+= arch/x86_64/oprofile/
@@ -98,6 +101,9 @@ BOOTIMAGE                     := arch/x86_64/boot/bzImage
 KBUILD_IMAGE                  := $(BOOTIMAGE)
 
 bzImage: vmlinux
+ifeq ($(CONFIG_X86_DECODER_SELFTEST),y)
+	$(Q)$(MAKE) $(build)=arch/x86_64/tools posttest
+endif
 	$(Q)$(MAKE) $(build)=$(boot) $(BOOTIMAGE)
 
 bzlilo: vmlinux

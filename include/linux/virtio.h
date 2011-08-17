@@ -10,14 +10,17 @@
 
 /**
  * virtqueue - a queue to register buffers for sending or receiving.
+ * @list: the chain of virtqueues for this device
  * @callback: the function to call when buffers are consumed (can be NULL).
+ * @name: the name of this virtqueue (mainly for debugging)
  * @vdev: the virtio device this queue was created for.
  * @vq_ops: the operations for this virtqueue (see below).
  * @priv: a pointer for the virtqueue implementation to use.
  */
-struct virtqueue
-{
+struct virtqueue {
+	struct list_head list;
 	void (*callback)(struct virtqueue *vq);
+	const char *name;
 	struct virtio_device *vdev;
 	struct virtqueue_ops *vq_ops;
 	void *priv;
@@ -31,7 +34,7 @@ struct virtqueue
  *	out_num: the number of sg readable by other side
  *	in_num: the number of sg which are writable (after readable ones)
  *	data: the token identifying the buffer.
- *      Returns 0 or an error.
+ *      Returns remaining capacity of queue (sg segments) or a negative error.
  * @kick: update after add_buf
  *	vq: the struct virtqueue
  *	After one or more add_buf calls, invoke this to kick the other side.
@@ -48,6 +51,9 @@ struct virtqueue
  *	This re-enables callbacks; it returns "false" if there are pending
  *	buffers in the queue, to detect a possible race between the driver
  *	checking for more work, and enabling callbacks.
+ * @detach_unused_buf: detach first unused buffer
+ * 	vq: the struct virtqueue we're talking about.
+ * 	Returns NULL or the "data" token handed to add_buf
  *
  * Locking rules are straightforward: the driver is responsible for
  * locking.  No two operations may be invoked simultaneously, with the exception
@@ -68,6 +74,7 @@ struct virtqueue_ops {
 
 	void (*disable_cb)(struct virtqueue *vq);
 	bool (*enable_cb)(struct virtqueue *vq);
+	void *(*detach_unused_buf)(struct virtqueue *vq);
 };
 
 struct virtio_device_id {
@@ -77,21 +84,56 @@ struct virtio_device_id {
 
 #define VIRTIO_DEV_ANY_ID 0xffffffff
 
+static inline int virtqueue_add_buf(struct virtqueue *vq,
+				    struct scatterlist sg[],
+				    unsigned int out_num,
+				    unsigned int in_num,
+				    void *data)
+{
+	return vq->vq_ops->add_buf(vq, sg, out_num, in_num, data);
+}
+
+static inline void virtqueue_kick(struct virtqueue *vq)
+{
+	return vq->vq_ops->kick(vq);
+}
+
+static inline void *virtqueue_get_buf(struct virtqueue *vq, unsigned int *len)
+{
+	return vq->vq_ops->get_buf(vq, len);
+}
+
+static inline void virtqueue_disable_cb(struct virtqueue *vq)
+{
+	vq->vq_ops->disable_cb(vq);
+}
+
+static inline bool virtqueue_enable_cb(struct virtqueue *vq)
+{
+	return vq->vq_ops->enable_cb(vq);
+}
+
+static inline void *virtqueue_detach_unused_buf(struct virtqueue *vq)
+{
+	return vq->vq_ops->detach_unused_buf(vq);
+}
+
 /**
  * virtio_device - representation of a device using virtio
  * @index: unique position on the virtio bus
  * @dev: underlying device.
  * @id: the device type identification (used to match it with a driver).
  * @config: the configuration ops for this device.
+ * @vqs: the list of virtqueues for this device.
  * @features: the features supported by both driver and device.
  * @priv: private pointer for the driver's use.
  */
-struct virtio_device
-{
+struct virtio_device {
 	int index;
 	struct device dev;
 	struct virtio_device_id id;
 	struct virtio_config_ops *config;
+	struct list_head vqs;
 	/* Note that this is a Linux set_bit-style bitmap. */
 	unsigned long features[1];
 	void *priv;

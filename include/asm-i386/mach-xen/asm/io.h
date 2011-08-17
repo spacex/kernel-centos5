@@ -184,12 +184,23 @@ static inline unsigned int readl(const volatile void __iomem *addr)
 {
 	return *(volatile unsigned int __force *) addr;
 }
+static inline __u64 readq(const volatile void __iomem *addr)
+{
+	const volatile u32 __iomem *p = addr;
+	u32 low, high;
+
+	low = readl(p);
+	high = readl(p + 1);
+
+	return low + ((u64)high << 32);
+}
 #define readb_relaxed(addr) readb(addr)
 #define readw_relaxed(addr) readw(addr)
 #define readl_relaxed(addr) readl(addr)
 #define __raw_readb readb
 #define __raw_readw readw
 #define __raw_readl readl
+#define readq readq
 
 static inline void writeb(unsigned char b, volatile void __iomem *addr)
 {
@@ -203,9 +214,15 @@ static inline void writel(unsigned int b, volatile void __iomem *addr)
 {
 	*(volatile unsigned int __force *) addr = b;
 }
+static inline void writeq(__u64 val, volatile void __iomem *addr)
+{
+	writel(val, addr);
+	writel(val >> 32, addr+4);
+}
 #define __raw_writeb writeb
 #define __raw_writew writew
 #define __raw_writel writel
+#define writeq writeq
 
 #define mmiowb()
 

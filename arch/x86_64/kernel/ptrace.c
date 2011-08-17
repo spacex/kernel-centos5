@@ -178,6 +178,7 @@ static int is_at_popf(struct task_struct *child, struct pt_regs *regs)
 void tracehook_enable_single_step(struct task_struct *child)
 {
 	struct pt_regs *regs = task_pt_regs(child);
+	unsigned long oflags;
 
 	/*
 	 * Always set TIF_SINGLESTEP - this guarantees that
@@ -186,11 +187,7 @@ void tracehook_enable_single_step(struct task_struct *child)
 	 */
 	set_tsk_thread_flag(child, TIF_SINGLESTEP);
 
-	/*
-	 * If TF was already set, don't do anything else
-	 */
-	if (regs->eflags & TRAP_FLAG)
-		return;
+	oflags = regs->eflags;
 
 	/* Set TF on the kernel stack.. */
 	regs->eflags |= TRAP_FLAG;
@@ -201,11 +198,22 @@ void tracehook_enable_single_step(struct task_struct *child)
 	 * won't clear it by hand later.
 	 *
 	 * AK: this is not enough, LAHF and IRET can change TF in user space too.
+	 *
+	 * Note that if we don't actually execute the popf because
+	 * of a signal arriving right now or suchlike, we will lose
+	 * track of the fact that it really was "us" that set it.
 	 */
-	if (is_at_popf(child, regs))
+	if (is_at_popf(child, regs)) {
+		clear_tsk_thread_flag(child, TIF_FORCED_TF);
 		return;
+	}
 
-	set_tsk_thread_flag(child, TIF_FORCED_TF);
+	/*
+	 * If TF was already set, check whether it was us who set it.
+	 * If not, we should never attempt a block step.
+	 */
+	if (!(oflags & X86_EFLAGS_TF))
+		set_tsk_thread_flag(child, TIF_FORCED_TF);
 }
 
 void tracehook_disable_single_step(struct task_struct *child)

@@ -444,6 +444,22 @@ static int vio_hotplug(struct device *dev, char **envp, int num_envp,
 	return 0;
 }
 
+static int vio_bus_suspend(struct device *dev, pm_message_t state)
+{
+	if (dev->driver && dev->driver->suspend)
+		return dev->driver->suspend(dev, state);
+
+	return 0;
+}
+
+static int vio_bus_resume(struct device *dev)
+{
+	if (dev->driver && dev->driver->resume)
+		return dev->driver->resume(dev);
+
+	return 0;
+}
+
 struct bus_type vio_bus_type = {
 	.name = "vio",
 	.dev_attrs = vio_dev_attrs,
@@ -452,6 +468,8 @@ struct bus_type vio_bus_type = {
 	.probe = vio_bus_probe,
 	.remove = vio_bus_remove,
 	.shutdown = vio_bus_shutdown,
+	.suspend = vio_bus_suspend,
+	.resume = vio_bus_resume,
 };
 
 /**

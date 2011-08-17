@@ -1,6 +1,7 @@
 config CFG80211
 	tristate "Improved wireless configuration API"
 	depends on RFKILL || !RFKILL
+	select WIRELESS_COMPAT
 
 config CFG80211_REG_DEBUG
 	bool "cfg80211 regulatory debugging"

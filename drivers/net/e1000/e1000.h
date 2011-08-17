@@ -79,7 +79,6 @@
 
 struct e1000_adapter;
 
-#include "e1000_compat.h"
 #include "e1000_hw.h"
 
 #ifdef DBG

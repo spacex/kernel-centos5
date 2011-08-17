@@ -57,6 +57,7 @@ struct nfs_fattr {
 	__u64			change_attr;	/* NFSv4 change attribute */
 	__u64			pre_change_attr;/* pre-op NFSv4 change attribute */
 	unsigned long		time_start;
+	int			gencount;
 };
 
 #define NFS_ATTR_WCC		0x0001		/* pre-op WCC data    */

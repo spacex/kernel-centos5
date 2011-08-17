@@ -37,6 +37,7 @@
 #include <linux/rtnetlink.h>
 
 #include <scsi/fc/fc_encaps.h>
+#include <scsi/fc/fc_fcoe.h>
 #include <scsi/fc/fc_fip.h>
 
 #include <scsi/libfc.h>

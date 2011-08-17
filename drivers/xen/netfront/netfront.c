@@ -2157,7 +2157,7 @@ static int __init netif_init(void)
 	}
 
 	if (!MODPARM_rx_flip && !MODPARM_rx_copy)
-		MODPARM_rx_flip = 1; /* Default is to flip. */
+		MODPARM_rx_copy = 1; /* Default is to copy. */
 #endif
 
 	if (is_initial_xendomain())

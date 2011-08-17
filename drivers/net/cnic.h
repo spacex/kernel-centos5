@@ -1,6 +1,6 @@
 /* cnic.h: Broadcom CNIC core network driver.
  *
- * Copyright (c) 2006 Broadcom Corporation
+ * Copyright (c) 2006-2010 Broadcom Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -102,7 +102,7 @@ struct cnic_redirect_entry {
 #define BNX2X_KWQ_DATA(cp, x)						\
 	&(cp)->kwq_16_data[BNX2X_KWQ_DATA_PG(cp, x)][BNX2X_KWQ_DATA_IDX(cp, x)]
 
-#define DEF_IPID_COUNT		0xc001
+#define DEF_IPID_START		0x8000
 
 #define DEF_KA_TIMEOUT		10000
 #define DEF_KA_INTERVAL		300000
@@ -170,6 +170,23 @@ struct cnic_context {
 	} proto;
 };
 
+struct cnic_uio_dev {
+	struct uio_info		cnic_uinfo;
+	u32			uio_dev;
+
+	int			l2_ring_size;
+	void			*l2_ring;
+	dma_addr_t		l2_ring_map;
+
+	int			l2_buf_size;
+	void			*l2_buf;
+	dma_addr_t		l2_buf_map;
+
+	struct cnic_dev		*dev;
+	struct pci_dev		*pdev;
+	struct list_head	list;
+};
+
 struct cnic_local {
 
 	spinlock_t cnic_ulp_lock;
@@ -180,22 +197,18 @@ struct cnic_local {
 #define ULP_F_CALL_PENDING	2
 	struct cnic_ulp_ops *ulp_ops[MAX_CNIC_ULP_TYPE];
 
-	/* protected by ulp_lock */
-	u32 cnic_local_flags;
-#define	CNIC_LCL_FL_KWQ_INIT	0x00000001
+	unsigned long cnic_local_flags;
+#define	CNIC_LCL_FL_KWQ_INIT		0x0
+#define	CNIC_LCL_FL_L2_WAIT		0x1
+#define	CNIC_LCL_FL_RINGS_INITED	0x2
 
 	struct cnic_dev *dev;
 
 	struct cnic_eth_dev *ethdev;
 
-	void		*l2_ring;
-	dma_addr_t	l2_ring_map;
-	int		l2_ring_size;
-	int		l2_rx_ring_size;
+	struct cnic_uio_dev *udev;
 
-	void		*l2_buf;
-	dma_addr_t	l2_buf_map;
-	int		l2_buf_size;
+	int		l2_rx_ring_size;
 	int		l2_single_buf_size;
 
 	u16		*rx_cons_ptr;
@@ -225,9 +238,12 @@ struct cnic_local {
 	u16		kcq_prod_idx;
 	u32		kcq_io_addr;
 
-	void				*status_blk;
-	struct status_block_msix	*bnx2_status_blk;
-	struct host_status_block	*bnx2x_status_blk;
+	union {
+		void				*gen;
+		struct status_block_msix	*bnx2;
+		struct host_status_block	*bnx2x;
+	} status_blk;
+
 	struct host_def_status_block	*bnx2x_def_status_blk;
 
 	u32				status_blk_num;
@@ -266,9 +282,6 @@ struct cnic_local {
 	u32			chip_id;
 	int			func;
 	u32			shmem_base;
-
-	u32			uio_dev;
-	struct uio_info		*cnic_uinfo;
 
 	struct cnic_ops		*cnic_ops;
 	int			(*start_hw)(struct cnic_dev *);
@@ -346,6 +359,10 @@ struct bnx2x_bd_chain_next {
 #define BNX2X_MAX_RX_DESC_CNT		(BNX2X_RX_DESC_CNT - 2)
 #define BNX2X_RCQ_DESC_CNT		(BCM_PAGE_SIZE / sizeof(union eth_rx_cqe))
 #define BNX2X_MAX_RCQ_DESC_CNT		(BNX2X_RCQ_DESC_CNT - 1)
+
+#define BNX2X_NEXT_RCQE(x) (((x) & BNX2X_MAX_RCQ_DESC_CNT) ==		\
+		(BNX2X_MAX_RCQ_DESC_CNT - 1)) ?				\
+		((x) + 2) : ((x) + 1)
 
 #define BNX2X_DEF_SB_ID			16
 

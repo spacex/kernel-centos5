@@ -12,6 +12,7 @@
 #define USB_CDC_SUBCLASS_DMM			0x09
 #define USB_CDC_SUBCLASS_MDLM			0x0a
 #define USB_CDC_SUBCLASS_OBEX			0x0b
+#define USB_CDC_SUBCLASS_EEM			0x0c
 
 #define USB_CDC_PROTO_NONE			0
 
@@ -22,6 +23,8 @@
 #define USB_CDC_ACM_PROTO_AT_3G			5
 #define USB_CDC_ACM_PROTO_AT_CDMA		6
 #define USB_CDC_ACM_PROTO_VENDOR		0xff
+
+#define USB_CDC_PROTO_EEM			7
 
 /*-------------------------------------------------------------------------*/
 

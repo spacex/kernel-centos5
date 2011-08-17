@@ -177,7 +177,7 @@ static int nfs_callback_authenticate(struct svc_rqst *rqstp)
 	struct nfs_client *clp;
 
 	/* Don't talk to strangers */
-	clp = nfs_find_client(addr, 4);
+	clp = nfs_find_client(addr, IPPROTO_TCP, 4);
 	if (clp == NULL)
 		return SVC_DROP;
 	dprintk("%s: %u.%u.%u.%u NFSv4 callback!\n", __FUNCTION__, NIPQUAD(addr->sin_addr));

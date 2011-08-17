@@ -28,6 +28,7 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/kthread.h>
+#include <linux/sched.h>
 #include <linux/stringify.h>
 #include <asm/firmware.h>
 #include <asm/irq.h>
@@ -519,12 +520,23 @@ static void ibmvfc_set_host_action(struct ibmvfc_host *vhost,
 		if (vhost->action == IBMVFC_HOST_ACTION_ALLOC_TGTS)
 			vhost->action = action;
 		break;
-	case IBMVFC_HOST_ACTION_LOGO:
 	case IBMVFC_HOST_ACTION_INIT:
 	case IBMVFC_HOST_ACTION_TGT_DEL:
+		switch (vhost->action) {
+		case IBMVFC_HOST_ACTION_RESET:
+		case IBMVFC_HOST_ACTION_REENABLE:
+			break;
+		default:
+			vhost->action = action;
+			break;
+		};
+		break;
+	case IBMVFC_HOST_ACTION_LOGO:
 	case IBMVFC_HOST_ACTION_QUERY_TGTS:
 	case IBMVFC_HOST_ACTION_TGT_DEL_FAILED:
 	case IBMVFC_HOST_ACTION_NONE:
+	case IBMVFC_HOST_ACTION_RESET:
+	case IBMVFC_HOST_ACTION_REENABLE:
 	default:
 		vhost->action = action;
 		break;
@@ -659,7 +671,7 @@ static int ibmvfc_send_crq_init_complete(struct ibmvfc_host *vhost)
  **/
 static void ibmvfc_release_crq_queue(struct ibmvfc_host *vhost)
 {
-	long rc;
+	long rc = 0;
 	struct vio_dev *vdev = to_vio_dev(vhost->dev);
 	struct ibmvfc_crq_queue *crq = &vhost->crq;
 
@@ -667,6 +679,8 @@ static void ibmvfc_release_crq_queue(struct ibmvfc_host *vhost)
 	free_irq(vdev->irq, vhost);
 	tasklet_kill(&vhost->tasklet);
 	do {
+		if (rc)
+			msleep(100);
 		rc = plpar_hcall_norets(H_FREE_CRQ, vdev->unit_address);
 	} while (rc == H_BUSY || H_IS_LONG_BUSY(rc));
 
@@ -685,11 +699,13 @@ static void ibmvfc_release_crq_queue(struct ibmvfc_host *vhost)
  **/
 static int ibmvfc_reenable_crq_queue(struct ibmvfc_host *vhost)
 {
-	int rc;
+	int rc = 0;
 	struct vio_dev *vdev = to_vio_dev(vhost->dev);
 
 	/* Re-enable the CRQ */
 	do {
+		if (rc)
+			msleep(100);
 		rc = plpar_hcall_norets(H_ENABLE_CRQ, vdev->unit_address);
 	} while (rc == H_IN_PROGRESS || rc == H_BUSY || H_IS_LONG_BUSY(rc));
 
@@ -708,15 +724,19 @@ static int ibmvfc_reenable_crq_queue(struct ibmvfc_host *vhost)
  **/
 static int ibmvfc_reset_crq(struct ibmvfc_host *vhost)
 {
-	int rc;
+	int rc = 0;
+	unsigned long flags;
 	struct vio_dev *vdev = to_vio_dev(vhost->dev);
 	struct ibmvfc_crq_queue *crq = &vhost->crq;
 
 	/* Close the CRQ */
 	do {
+		if (rc)
+			msleep(100);
 		rc = plpar_hcall_norets(H_FREE_CRQ, vdev->unit_address);
 	} while (rc == H_BUSY || H_IS_LONG_BUSY(rc));
 
+	spin_lock_irqsave(vhost->host->host_lock, flags);
 	vhost->state = IBMVFC_NO_CRQ;
 	vhost->logged_in = 0;
 	ibmvfc_set_host_action(vhost, IBMVFC_HOST_ACTION_NONE);
@@ -734,6 +754,7 @@ static int ibmvfc_reset_crq(struct ibmvfc_host *vhost)
 		dev_warn(vhost->dev, "Partner adapter not ready\n");
 	else if (rc != 0)
 		dev_warn(vhost->dev, "Couldn't register crq (rc=%d)\n", rc);
+	spin_unlock_irqrestore(vhost->host->host_lock, flags);
 
 	return rc;
 }
@@ -863,17 +884,9 @@ static void ibmvfc_purge_requests(struct ibmvfc_host *vhost, int error_code)
  **/
 static void ibmvfc_hard_reset_host(struct ibmvfc_host *vhost)
 {
-	int rc;
-
-	scsi_block_requests(vhost->host);
 	ibmvfc_purge_requests(vhost, DID_ERROR);
-	if ((rc = ibmvfc_reset_crq(vhost)) ||
-	    (rc = ibmvfc_send_crq_init(vhost)) ||
-	    (rc = vio_enable_interrupts(to_vio_dev(vhost->dev)))) {
-		dev_err(vhost->dev, "Error after reset rc=%d\n", rc);
-		ibmvfc_link_down(vhost, IBMVFC_LINK_DEAD);
-	} else
-		ibmvfc_link_down(vhost, IBMVFC_LINK_DOWN);
+	ibmvfc_link_down(vhost, IBMVFC_LINK_DOWN);
+	ibmvfc_set_host_action(vhost, IBMVFC_HOST_ACTION_RESET);
 }
 
 /**
@@ -1811,95 +1824,6 @@ static int ibmvfc_reset_device(struct scsi_device *sdev, int type, char *desc)
 }
 
 /**
- * ibmvfc_abort_task_set - Abort outstanding commands to the device
- * @sdev:	scsi device to abort commands
- *
- * This sends an Abort Task Set to the VIOS for the specified device. This does
- * NOT send any cancel to the VIOS. That must be done separately.
- *
- * Returns:
- *	0 on success / other on failure
- **/
-static int ibmvfc_abort_task_set(struct scsi_device *sdev)
-{
-	struct ibmvfc_host *vhost = shost_priv(sdev->host);
-	struct fc_rport *rport = starget_to_rport(scsi_target(sdev));
-	struct ibmvfc_cmd *tmf;
-	struct ibmvfc_event *evt, *found_evt;
-	union ibmvfc_iu rsp_iu;
-	struct ibmvfc_fcp_rsp *fc_rsp = &rsp_iu.cmd.rsp;
-	int rsp_rc = -EBUSY;
-	unsigned long flags;
-	int rsp_code = 0;
-
-	spin_lock_irqsave(vhost->host->host_lock, flags);
-	found_evt = NULL;
-	list_for_each_entry(evt, &vhost->sent, queue) {
-		if (evt->cmnd && evt->cmnd->device == sdev) {
-			found_evt = evt;
-			break;
-		}
-	}
-
-	if (!found_evt) {
-		if (vhost->log_level > IBMVFC_DEFAULT_LOG_LEVEL)
-			sdev_printk(KERN_INFO, sdev, "No events found to abort\n");
-		spin_unlock_irqrestore(vhost->host->host_lock, flags);
-		return 0;
-	}
-
-	if (vhost->state == IBMVFC_ACTIVE) {
-		evt = ibmvfc_get_event(vhost);
-		ibmvfc_init_event(evt, ibmvfc_sync_completion, IBMVFC_CMD_FORMAT);
-
-		tmf = &evt->iu.cmd;
-		memset(tmf, 0, sizeof(*tmf));
-		tmf->resp.va = (u64)evt->crq.ioba + offsetof(struct ibmvfc_cmd, rsp);
-		tmf->resp.len = sizeof(tmf->rsp);
-		tmf->frame_type = IBMVFC_SCSI_FCP_TYPE;
-		tmf->payload_len = sizeof(tmf->iu);
-		tmf->resp_len = sizeof(tmf->rsp);
-		tmf->cancel_key = (unsigned long)sdev->hostdata;
-		tmf->tgt_scsi_id = rport->port_id;
-		int_to_scsilun(sdev->lun, &tmf->iu.lun);
-		tmf->flags = (IBMVFC_NO_MEM_DESC | IBMVFC_TMF);
-		tmf->iu.tmf_flags = IBMVFC_ABORT_TASK_SET;
-		evt->sync_iu = &rsp_iu;
-
-		init_completion(&evt->comp);
-		rsp_rc = ibmvfc_send_event(evt, vhost, default_timeout);
-	}
-
-	spin_unlock_irqrestore(vhost->host->host_lock, flags);
-
-	if (rsp_rc != 0) {
-		sdev_printk(KERN_ERR, sdev, "Failed to send abort. rc=%d\n", rsp_rc);
-		return -EIO;
-	}
-
-	sdev_printk(KERN_INFO, sdev, "Aborting outstanding commands\n");
-	wait_for_completion(&evt->comp);
-
-	if (rsp_iu.cmd.status) {
-		if (fc_rsp->flags & FCP_RSP_LEN_VALID)
-			rsp_code = fc_rsp->data.info.rsp_code;
-
-		sdev_printk(KERN_ERR, sdev, "Abort failed: %s (%x:%x) "
-			    "flags: %x fcp_rsp: %x, scsi_status: %x\n",
-			    ibmvfc_get_cmd_error(rsp_iu.cmd.status, rsp_iu.cmd.error),
-			    rsp_iu.cmd.status, rsp_iu.cmd.error, fc_rsp->flags, rsp_code,
-			    fc_rsp->scsi_status);
-		rsp_rc = -EIO;
-	} else
-		sdev_printk(KERN_INFO, sdev, "Abort successful\n");
-
-	spin_lock_irqsave(vhost->host->host_lock, flags);
-	ibmvfc_free_event(evt);
-	spin_unlock_irqrestore(vhost->host->host_lock, flags);
-	return rsp_rc;
-}
-
-/**
  * ibmvfc_cancel_all - Cancel all outstanding commands to the device
  * @sdev:	scsi device to cancel commands
  * @type:	type of error recovery being performed
@@ -1980,6 +1904,44 @@ static int ibmvfc_cancel_all(struct scsi_device *sdev, int type)
 	}
 
 	sdev_printk(KERN_INFO, sdev, "Successfully cancelled outstanding commands\n");
+	return 0;
+}
+
+/**
+ * ibmvfc_match_rport - Match function for specified remote port
+ * @evt:	ibmvfc event struct
+ * @device:	device to match (rport)
+ *
+ * Returns:
+ *	1 if event matches rport / 0 if event does not match rport
+ **/
+static int ibmvfc_match_rport(struct ibmvfc_event *evt, void *rport)
+{
+	struct fc_rport *cmd_rport;
+
+	if (evt->cmnd) {
+		cmd_rport = starget_to_rport(scsi_target(evt->cmnd->device));
+		if (cmd_rport == rport)
+			return 1;
+	}
+	return 0;
+}
+
+/**
+ * ibmvfc_match_key - Match function for specified cancel key
+ * @evt:	ibmvfc event struct
+ * @key:	cancel key to match
+ *
+ * Returns:
+ *	1 if event matches key / 0 if event does not match key
+ **/
+static int ibmvfc_match_key(struct ibmvfc_event *evt, void *key)
+{
+	unsigned long cancel_key = (unsigned long)key;
+
+	if (evt->crq.format == IBMVFC_CMD_FORMAT &&
+	    evt->iu.cmd.cancel_key == cancel_key)
+		return 1;
 	return 0;
 }
 
@@ -2069,6 +2031,112 @@ static int ibmvfc_wait_for_ops(struct ibmvfc_host *vhost, void *device,
 }
 
 /**
+ * ibmvfc_abort_task_set - Abort outstanding commands to the device
+ * @sdev:	scsi device to abort commands
+ *
+ * This sends an Abort Task Set to the VIOS for the specified device. This does
+ * NOT send any cancel to the VIOS. That must be done separately.
+ *
+ * Returns:
+ *	0 on success / other on failure
+ **/
+static int ibmvfc_abort_task_set(struct scsi_device *sdev)
+{
+	struct ibmvfc_host *vhost = shost_priv(sdev->host);
+	struct fc_rport *rport = starget_to_rport(scsi_target(sdev));
+	struct ibmvfc_cmd *tmf;
+	struct ibmvfc_event *evt, *found_evt;
+	union ibmvfc_iu rsp_iu;
+	struct ibmvfc_fcp_rsp *fc_rsp = &rsp_iu.cmd.rsp;
+	int rc, rsp_rc = -EBUSY;
+	unsigned long flags, timeout = IBMVFC_ABORT_TIMEOUT;
+	int rsp_code = 0;
+
+	spin_lock_irqsave(vhost->host->host_lock, flags);
+	found_evt = NULL;
+	list_for_each_entry(evt, &vhost->sent, queue) {
+		if (evt->cmnd && evt->cmnd->device == sdev) {
+			found_evt = evt;
+			break;
+		}
+	}
+
+	if (!found_evt) {
+		if (vhost->log_level > IBMVFC_DEFAULT_LOG_LEVEL)
+			sdev_printk(KERN_INFO, sdev, "No events found to abort\n");
+		spin_unlock_irqrestore(vhost->host->host_lock, flags);
+		return 0;
+	}
+
+	if (vhost->state == IBMVFC_ACTIVE) {
+		evt = ibmvfc_get_event(vhost);
+		ibmvfc_init_event(evt, ibmvfc_sync_completion, IBMVFC_CMD_FORMAT);
+
+		tmf = &evt->iu.cmd;
+		memset(tmf, 0, sizeof(*tmf));
+		tmf->resp.va = (u64)evt->crq.ioba + offsetof(struct ibmvfc_cmd, rsp);
+		tmf->resp.len = sizeof(tmf->rsp);
+		tmf->frame_type = IBMVFC_SCSI_FCP_TYPE;
+		tmf->payload_len = sizeof(tmf->iu);
+		tmf->resp_len = sizeof(tmf->rsp);
+		tmf->cancel_key = (unsigned long)sdev->hostdata;
+		tmf->tgt_scsi_id = rport->port_id;
+		int_to_scsilun(sdev->lun, &tmf->iu.lun);
+		tmf->flags = (IBMVFC_NO_MEM_DESC | IBMVFC_TMF);
+		tmf->iu.tmf_flags = IBMVFC_ABORT_TASK_SET;
+		evt->sync_iu = &rsp_iu;
+
+		init_completion(&evt->comp);
+		rsp_rc = ibmvfc_send_event(evt, vhost, default_timeout);
+	}
+
+	spin_unlock_irqrestore(vhost->host->host_lock, flags);
+
+	if (rsp_rc != 0) {
+		sdev_printk(KERN_ERR, sdev, "Failed to send abort. rc=%d\n", rsp_rc);
+		return -EIO;
+	}
+
+	sdev_printk(KERN_INFO, sdev, "Aborting outstanding commands\n");
+	timeout = wait_for_completion_timeout(&evt->comp, timeout);
+
+	if (!timeout) {
+		rc = ibmvfc_cancel_all(sdev, IBMVFC_TMF_ABORT_TASK_SET);
+		if (!rc) {
+			rc = ibmvfc_wait_for_ops(vhost, sdev->hostdata, ibmvfc_match_key);
+			if (rc == SUCCESS)
+				rc = 0;
+		}
+
+		if (rc) {
+			sdev_printk(KERN_INFO, sdev, "Cancel failed, resetting host\n");
+			ibmvfc_reset_host(vhost);
+			rsp_rc = 0;
+			goto out;
+		}
+	}
+
+	if (rsp_iu.cmd.status) {
+		if (fc_rsp->flags & FCP_RSP_LEN_VALID)
+			rsp_code = fc_rsp->data.info.rsp_code;
+
+		sdev_printk(KERN_ERR, sdev, "Abort failed: %s (%x:%x) "
+			    "flags: %x fcp_rsp: %x, scsi_status: %x\n",
+			    ibmvfc_get_cmd_error(rsp_iu.cmd.status, rsp_iu.cmd.error),
+			    rsp_iu.cmd.status, rsp_iu.cmd.error, fc_rsp->flags, rsp_code,
+			    fc_rsp->scsi_status);
+		rsp_rc = -EIO;
+	} else
+		sdev_printk(KERN_INFO, sdev, "Abort successful\n");
+
+out:
+	spin_lock_irqsave(vhost->host->host_lock, flags);
+	ibmvfc_free_event(evt);
+	spin_unlock_irqrestore(vhost->host->host_lock, flags);
+	return rsp_rc;
+}
+
+/**
  * ibmvfc_eh_abort_handler - Abort a command
  * @cmd:	scsi command to abort
  *
@@ -2132,18 +2200,6 @@ static void ibmvfc_dev_cancel_all(struct scsi_device *sdev, void *data)
 }
 
 /**
- * ibmvfc_dev_abort_all - Device iterated abort task set function
- * @sdev:	scsi device struct
- * @data:	return code
- *
- **/
-static void ibmvfc_dev_abort_all(struct scsi_device *sdev, void *data)
-{
-	unsigned long *rc = data;
-	*rc |= ibmvfc_abort_task_set(sdev);
-}
-
-/**
  * ibmvfc_eh_target_reset_handler - Reset the target
  * @cmd:	scsi command struct
  *
@@ -2198,19 +2254,22 @@ static int ibmvfc_eh_host_reset_handler(struct scsi_cmnd *cmd)
  **/
 static void ibmvfc_terminate_rport_io(struct fc_rport *rport)
 {
-	struct scsi_target *starget = to_scsi_target(&rport->dev);
-	struct Scsi_Host *shost = dev_to_shost(starget->dev.parent);
+	struct Scsi_Host *shost = rport_to_shost(rport);
 	struct ibmvfc_host *vhost = shost_priv(shost);
-	unsigned long cancel_rc = 0;
-	unsigned long abort_rc = 0;
-	int rc = FAILED;
+	struct fc_rport *dev_rport;
+	struct scsi_device *sdev;
+	unsigned long rc;
 
 	ENTER();
-	starget_for_each_device(starget, &cancel_rc, ibmvfc_dev_cancel_all);
-	starget_for_each_device(starget, &abort_rc, ibmvfc_dev_abort_all);
+	shost_for_each_device(sdev, shost) {
+		dev_rport = starget_to_rport(scsi_target(sdev));
+		if (dev_rport != rport)
+			continue;
+		ibmvfc_cancel_all(sdev, IBMVFC_TMF_ABORT_TASK_SET);
+		ibmvfc_abort_task_set(sdev);
+	}
 
-	if (!cancel_rc && !abort_rc)
-		rc = ibmvfc_wait_for_ops(vhost, starget, ibmvfc_match_target);
+	rc = ibmvfc_wait_for_ops(vhost, rport, ibmvfc_match_rport);
 
 	if (rc == FAILED)
 		ibmvfc_issue_fc_host_lip(shost);
@@ -2382,22 +2441,13 @@ static void ibmvfc_handle_crq(struct ibmvfc_crq *crq, struct ibmvfc_host *vhost)
 			dev_info(vhost->dev, "Re-enabling adapter\n");
 			vhost->client_migrated = 1;
 			ibmvfc_purge_requests(vhost, DID_REQUEUE);
-			if ((rc = ibmvfc_reenable_crq_queue(vhost)) ||
-			    (rc = ibmvfc_send_crq_init(vhost))) {
-				ibmvfc_link_down(vhost, IBMVFC_LINK_DEAD);
-				dev_err(vhost->dev, "Error after enable (rc=%ld)\n", rc);
-			} else
-				ibmvfc_link_down(vhost, IBMVFC_LINK_DOWN);
+			ibmvfc_link_down(vhost, IBMVFC_LINK_DOWN);
+			ibmvfc_set_host_action(vhost, IBMVFC_HOST_ACTION_REENABLE);
 		} else {
 			dev_err(vhost->dev, "Virtual adapter failed (rc=%d)\n", crq->format);
-
 			ibmvfc_purge_requests(vhost, DID_ERROR);
-			if ((rc = ibmvfc_reset_crq(vhost)) ||
-			    (rc = ibmvfc_send_crq_init(vhost))) {
-				ibmvfc_link_down(vhost, IBMVFC_LINK_DEAD);
-				dev_err(vhost->dev, "Error after reset (rc=%ld)\n", rc);
-			} else
-				ibmvfc_link_down(vhost, IBMVFC_LINK_DOWN);
+			ibmvfc_link_down(vhost, IBMVFC_LINK_DOWN);
+			ibmvfc_set_host_action(vhost, IBMVFC_HOST_ACTION_RESET);
 		}
 		return;
 	case IBMVFC_CRQ_CMD_RSP:
@@ -3939,6 +3989,8 @@ static int __ibmvfc_work_to_do(struct ibmvfc_host *vhost)
 	case IBMVFC_HOST_ACTION_TGT_DEL:
 	case IBMVFC_HOST_ACTION_TGT_DEL_FAILED:
 	case IBMVFC_HOST_ACTION_QUERY:
+	case IBMVFC_HOST_ACTION_RESET:
+	case IBMVFC_HOST_ACTION_REENABLE:
 	default:
 		break;
 	};
@@ -4031,6 +4083,7 @@ static void ibmvfc_tgt_add_rport(struct ibmvfc_target *tgt)
  **/
 static void ibmvfc_do_work(struct ibmvfc_host *vhost)
 {
+	int rc;
 	struct ibmvfc_target *tgt;
 	unsigned long flags;
 	struct fc_rport *rport;
@@ -4042,6 +4095,27 @@ static void ibmvfc_do_work(struct ibmvfc_host *vhost)
 	case IBMVFC_HOST_ACTION_NONE:
 	case IBMVFC_HOST_ACTION_LOGO_WAIT:
 	case IBMVFC_HOST_ACTION_INIT_WAIT:
+		break;
+	case IBMVFC_HOST_ACTION_RESET:
+		vhost->action = IBMVFC_HOST_ACTION_TGT_DEL;
+		spin_unlock_irqrestore(vhost->host->host_lock, flags);
+		rc = ibmvfc_reset_crq(vhost);
+		spin_lock_irqsave(vhost->host->host_lock, flags);
+		if (rc || (rc = ibmvfc_send_crq_init(vhost)) ||
+		    (rc = vio_enable_interrupts(to_vio_dev(vhost->dev)))) {
+			ibmvfc_link_down(vhost, IBMVFC_LINK_DEAD);
+			dev_err(vhost->dev, "Error after reset (rc=%ld)\n", rc);
+		}
+		break;
+	case IBMVFC_HOST_ACTION_REENABLE:
+		vhost->action = IBMVFC_HOST_ACTION_TGT_DEL;
+		spin_unlock_irqrestore(vhost->host->host_lock, flags);
+		rc = ibmvfc_reenable_crq_queue(vhost);
+		spin_lock_irqsave(vhost->host->host_lock, flags);
+		if (rc || (rc = ibmvfc_send_crq_init(vhost))) {
+			ibmvfc_link_down(vhost, IBMVFC_LINK_DEAD);
+			dev_err(vhost->dev, "Error after enable (rc=%ld)\n", rc);
+		}
 		break;
 	case IBMVFC_HOST_ACTION_LOGO:
 		vhost->job_step(vhost);
@@ -4156,6 +4230,7 @@ static int ibmvfc_work(void *data)
 	int rc;
 
 	set_user_nice(current, -20);
+	current->flags |= PF_NOFREEZE;
 
 	while (1) {
 		rc = wait_event_interruptible(vhost->work_wait_q,
@@ -4556,6 +4631,26 @@ static int ibmvfc_remove(struct vio_dev *vdev)
 	return 0;
 }
 
+/**
+ * ibmvfc_resume - Resume from suspend
+ * @dev:	device struct
+ *
+ * We may have lost an interrupt across suspend/resume, so kick the
+ * interrupt handler
+ *
+ */
+static int ibmvfc_resume(struct device *dev)
+{
+	unsigned long flags;
+	struct ibmvfc_host *vhost = dev_get_drvdata(dev);
+
+	spin_lock_irqsave(vhost->host->host_lock, flags);
+	vio_disable_interrupts(to_vio_dev(dev));
+	tasklet_schedule(&vhost->tasklet);
+	spin_unlock_irqrestore(vhost->host->host_lock, flags);
+	return 0;
+}
+
 static struct vio_device_id ibmvfc_device_table[] __devinitdata = {
 	{"fcp", "IBM,vfc-client"},
 	{ "", "" }
@@ -4569,6 +4664,7 @@ static struct vio_driver ibmvfc_driver = {
 	.driver = {
 		.name = IBMVFC_NAME,
 		.owner = THIS_MODULE,
+		.resume = ibmvfc_resume,
 	}
 };
 

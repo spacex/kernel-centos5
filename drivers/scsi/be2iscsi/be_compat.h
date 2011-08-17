@@ -18,9 +18,6 @@
 #ifndef BE_COMPAT_H
 #define BE_COMPAT_H
 
-#define PTR_ALIGN(p, a)         	((typeof(p))			\
-					ALIGN((unsigned long)(p), (a)))
-
 #define DEFINE_PCI_DEVICE_TABLE(_table) struct pci_device_id _table[] 	\
 						__devinitdata
 

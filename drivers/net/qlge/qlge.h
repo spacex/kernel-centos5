@@ -8,18 +8,36 @@
 #ifndef _QLGE_H_
 #define _QLGE_H_
 
+#include <linux/version.h>
+#include <linux/init.h>
+#include <linux/types.h>
+#include <linux/errno.h>
+#include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/netdevice.h>
-#include "kcompat.h"
+#include <linux/etherdevice.h>
+#include <linux/skbuff.h>
+#include <linux/ioport.h>
+#include <linux/slab.h>
+#include <linux/list.h>
+#include <linux/delay.h>
+#include <linux/sched.h>
+#include <linux/in.h>
+#include <linux/ip.h>
+#include <linux/udp.h>
+#include <linux/mii.h>
+#include <asm/io.h>
+#include <linux/pci.h>
+#include <linux/netdevice.h>
 
 /*
  * General definitions...
  */
 #define DRV_NAME	"qlge"
 #define DRV_STRING	"QLogic 10 Gigabit PCI-E Ethernet Driver "
-#define DRV_VERSION	"1.00.00.23"
-#define DIS_VERSION	"2.6.16-2.6.18-p23"
-#define REL_DATE	"091109"
+#define DRV_VERSION	"1.00.00.25"
+#define DIS_VERSION	"2.6.16-2.6.18-p25"
+#define REL_DATE	"100706"
 
 #define PFX "qlge: "
 #define QPRINTK(qdev, nlevel, klevel, fmt, args...) \
@@ -1292,7 +1310,6 @@ struct tx_ring {
 	struct tx_ring_desc *q;	/* descriptor list for the queue */
 	spinlock_t lock;
 	atomic_t tx_count;	/* counts down for every outstanding IO */
-	atomic_t queue_stopped;	/* Turns queue off when full. */
 	struct work_struct tx_work;
 	struct ql_adapter *qdev;
 	struct timer_list txq_clean_timer;
@@ -1998,13 +2015,13 @@ struct ql_adapter {
 
 	struct net_device_stats stats;
 	struct workqueue_struct *workqueue;
-	struct work_struct asic_reset_work;
-	struct work_struct mpi_reset_work;
-	struct work_struct mpi_work;
-	struct work_struct mpi_port_cfg_work;
-	struct work_struct mpi_idc_work;
-	struct work_struct mpi_core_to_log;
-	struct work_struct link_work;
+	struct delayed_work asic_reset_work;
+	struct delayed_work mpi_reset_work;
+	struct delayed_work mpi_work;
+	struct delayed_work mpi_port_cfg_work;
+	struct delayed_work mpi_idc_work;
+	struct delayed_work mpi_core_to_log;
+	struct delayed_work link_work;
 	struct completion ide_completion;
 	struct nic_operations *nic_ops;
 	u16 device_id;
@@ -2012,6 +2029,8 @@ struct ql_adapter {
 	uint32_t *config_space;
 	/* Saving mac addr */
 	char current_mac_addr[6];
+	spinlock_t tx_lock;
+	u32 queue_stopped;	/* Bitfield of queues that are full. */
 };
 
 /*
@@ -2077,11 +2096,11 @@ extern int ql_get_routing_reg(struct ql_adapter *qdev, u32 index, u32 *value);
 extern int ql_write_cfg(struct ql_adapter *qdev, void *ptr, int size, u32 bit,
 			u16 q_id);
 void ql_queue_fw_error(struct ql_adapter *qdev);
-void ql_mpi_work(struct work_struct *work);
-void ql_mpi_reset_work(struct work_struct *work);
-void ql_mpi_idc_work(struct work_struct *work);
-void ql_mpi_core_to_log(struct work_struct *work);
-void ql_mpi_port_cfg_work(struct work_struct *work);
+void ql_mpi_work(void *data);
+void ql_mpi_reset_work(void *data);
+void ql_mpi_idc_work(void *data);
+void ql_mpi_core_to_log(void *data);
+void ql_mpi_port_cfg_work(void *data);
 int ql_wait_reg_rdy(struct ql_adapter *qdev, u32 reg, u32 bit, u32 ebit);
 void ql_queue_asic_error(struct ql_adapter *qdev);
 u32 ql_enable_completion_interrupt(struct ql_adapter *qdev, u32 intr);
@@ -2101,7 +2120,6 @@ int ql_dump_risc_ram_area(struct ql_adapter *qdev, void *buf,
 int ql_core_dump(struct ql_adapter *qdev,
 		struct ql_mpi_coredump *mpi_coredump);
 void ql_get_dump(struct ql_adapter *qdev, void *buff);
-int ql_mb_sys_err(struct ql_adapter *qdev);
 int ql_mb_about_fw(struct ql_adapter *qdev);
 int ql_wol(struct ql_adapter *qdev);
 int ql_mb_wol_set_magic(struct ql_adapter *qdev, u32 enable_wol);
@@ -2115,6 +2133,7 @@ void ql_check_receive_frame(struct sk_buff *skb);
 int ql_own_firmware(struct ql_adapter *qdev);
 int ql_wait_fifo_empty(struct ql_adapter *);
 int ql_mb_set_mgmnt_traffic_ctl(struct ql_adapter *, u32);
+void qlge_set_multicast_list(struct net_device *ndev);
 
 #if 1
 #define QL_ALL_DUMP

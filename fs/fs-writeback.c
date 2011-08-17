@@ -493,6 +493,7 @@ void sync_inodes_sb(struct super_block *sb, int wait)
 	sync_sb_inodes(sb, &wbc);
 	spin_unlock(&inode_lock);
 }
+EXPORT_SYMBOL_GPL(sync_inodes_sb);
 
 /*
  * Rather lame livelock avoidance.
@@ -700,6 +701,7 @@ int writeback_in_progress(struct backing_dev_info *bdi)
 {
 	return test_bit(BDI_pdflush, &bdi->state);
 }
+EXPORT_SYMBOL_GPL(writeback_in_progress);
 
 /**
  * writeback_release: relinquish exclusive writeback access against a device.

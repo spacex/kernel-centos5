@@ -86,7 +86,6 @@
 /* local include */
 #include "s2io.h"
 #include "s2io-regs.h"
-#include "s2io-compat.h"
 
 #define DRV_VERSION "2.0.26.25"
 
@@ -542,7 +541,7 @@ static inline void s2io_stop_all_tx_queue(struct s2io_nic *sp)
 		for (i = 0; i < sp->config.tx_fifo_num; i++)
 			sp->mac_control.fifos[i].queue_state = FIFO_QUEUE_STOP;
 	}
-	netif_tx_stop_all_queues(sp->dev);
+	netif_stop_queue(sp->dev);
 }
 
 static inline void s2io_stop_tx_queue(struct s2io_nic *sp, int fifo_no)
@@ -551,7 +550,7 @@ static inline void s2io_stop_tx_queue(struct s2io_nic *sp, int fifo_no)
 		sp->mac_control.fifos[fifo_no].queue_state =
 			FIFO_QUEUE_STOP;
 
-	netif_tx_stop_all_queues(sp->dev);
+	netif_stop_queue(sp->dev);
 }
 
 static inline void s2io_start_all_tx_queue(struct s2io_nic *sp)
@@ -562,7 +561,7 @@ static inline void s2io_start_all_tx_queue(struct s2io_nic *sp)
 		for (i = 0; i < sp->config.tx_fifo_num; i++)
 			sp->mac_control.fifos[i].queue_state = FIFO_QUEUE_START;
 	}
-	netif_tx_start_all_queues(sp->dev);
+	netif_start_queue(sp->dev);
 }
 
 static inline void s2io_start_tx_queue(struct s2io_nic *sp, int fifo_no)
@@ -571,7 +570,7 @@ static inline void s2io_start_tx_queue(struct s2io_nic *sp, int fifo_no)
 		sp->mac_control.fifos[fifo_no].queue_state =
 			FIFO_QUEUE_START;
 
-	netif_tx_start_all_queues(sp->dev);
+	netif_start_queue(sp->dev);
 }
 
 static inline void s2io_wake_all_tx_queue(struct s2io_nic *sp)
@@ -582,7 +581,7 @@ static inline void s2io_wake_all_tx_queue(struct s2io_nic *sp)
 		for (i = 0; i < sp->config.tx_fifo_num; i++)
 			sp->mac_control.fifos[i].queue_state = FIFO_QUEUE_START;
 	}
-	netif_tx_wake_all_queues(sp->dev);
+	netif_wake_queue(sp->dev);
 }
 
 static inline void s2io_wake_tx_queue(
@@ -590,8 +589,8 @@ static inline void s2io_wake_tx_queue(
 {
 
 	if (multiq) {
-		if (cnt && __netif_subqueue_stopped(fifo->dev, fifo->fifo_no))
-			netif_wake_subqueue(fifo->dev, fifo->fifo_no);
+		if (cnt && netif_queue_stopped(fifo->dev))
+			netif_wake_queue(fifo->dev);
 	} else if (cnt && (fifo->queue_state == FIFO_QUEUE_STOP)) {
 		if (netif_queue_stopped(fifo->dev)) {
 			fifo->queue_state = FIFO_QUEUE_START;
@@ -2585,8 +2584,7 @@ static int fill_rx_buffers(struct s2io_nic *nic, struct ring_info *ring,
 				pci_map_single(ring->pdev, skb->data,
 					       size - NET_IP_ALIGN,
 					       PCI_DMA_FROMDEVICE);
-			if (pci_dma_mapping_error(nic->pdev,
-						  rxdp1->Buffer0_ptr))
+			if (pci_dma_mapping_error(rxdp1->Buffer0_ptr))
 				goto pci_map_failed;
 
 			rxdp->Control_2 =
@@ -2621,8 +2619,7 @@ static int fill_rx_buffers(struct s2io_nic *nic, struct ring_info *ring,
 					pci_map_single(ring->pdev, ba->ba_0,
 						       BUF0_LEN,
 						       PCI_DMA_FROMDEVICE);
-				if (pci_dma_mapping_error(nic->pdev,
-							  rxdp3->Buffer0_ptr))
+				if (pci_dma_mapping_error(rxdp3->Buffer0_ptr))
 					goto pci_map_failed;
 			} else
 				pci_dma_sync_single_for_device(ring->pdev,
@@ -2643,8 +2640,7 @@ static int fill_rx_buffers(struct s2io_nic *nic, struct ring_info *ring,
 								    ring->mtu + 4,
 								    PCI_DMA_FROMDEVICE);
 
-				if (pci_dma_mapping_error(nic->pdev,
-							  rxdp3->Buffer2_ptr))
+				if (pci_dma_mapping_error(rxdp3->Buffer2_ptr))
 					goto pci_map_failed;
 
 				if (from_card_up) {
@@ -2654,8 +2650,7 @@ static int fill_rx_buffers(struct s2io_nic *nic, struct ring_info *ring,
 							       BUF1_LEN,
 							       PCI_DMA_FROMDEVICE);
 
-					if (pci_dma_mapping_error(nic->pdev,
-								  rxdp3->Buffer1_ptr)) {
+					if (pci_dma_mapping_error(rxdp3->Buffer1_ptr)) {
 						pci_unmap_single(ring->pdev,
 								 (dma_addr_t)(unsigned long)
 								 skb->data,
@@ -2872,6 +2867,20 @@ static int s2io_poll_inta(struct napi_struct *napi, int budget)
 		readl(&bar0->rx_traffic_mask);
 	}
 	return pkts_processed;
+}
+
+static inline int rhel_napi_poll_wrapper(int (*poll)(struct napi_struct*, int),
+	struct napi_struct *napi, struct net_device *dummy_dev, int *budget)
+{
+	int to_do = min(*budget, dummy_dev->quota);
+	int pkts_processed;
+
+	pkts_processed = poll(napi, to_do);
+
+	*budget -= pkts_processed;
+	dummy_dev->quota -= pkts_processed;
+
+	return (pkts_processed >= to_do);
 }
 
 static int rhel_s2io_poll_msix(struct net_device *dummy_dev, int *budget)
@@ -4072,7 +4081,7 @@ static int s2io_close(struct net_device *dev)
  *  0 on success & 1 on failure.
  */
 
-static netdev_tx_t s2io_xmit(struct sk_buff *skb, struct net_device *dev)
+static int s2io_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct s2io_nic *sp = netdev_priv(dev);
 	u16 frg_cnt, frg_len, i, queue, queue_len, put_off, get_off;
@@ -4153,7 +4162,7 @@ static netdev_tx_t s2io_xmit(struct sk_buff *skb, struct net_device *dev)
 	}
 
 	if (sp->config.multiq) {
-		if (__netif_subqueue_stopped(dev, fifo->fifo_no)) {
+		if (netif_queue_stopped(dev)) {
 			spin_unlock_irqrestore(&fifo->tx_lock, flags);
 			return NETDEV_TX_BUSY;
 		}
@@ -4222,14 +4231,14 @@ static netdev_tx_t s2io_xmit(struct sk_buff *skb, struct net_device *dev)
 						      fifo->ufo_in_band_v,
 						      sizeof(u64),
 						      PCI_DMA_TODEVICE);
-		if (pci_dma_mapping_error(sp->pdev, txdp->Buffer_Pointer))
+		if (pci_dma_mapping_error(txdp->Buffer_Pointer))
 			goto pci_map_failed;
 		txdp++;
 	}
 
 	txdp->Buffer_Pointer = pci_map_single(sp->pdev, skb->data,
 					      frg_len, PCI_DMA_TODEVICE);
-	if (pci_dma_mapping_error(sp->pdev, txdp->Buffer_Pointer))
+	if (pci_dma_mapping_error(txdp->Buffer_Pointer))
 		goto pci_map_failed;
 
 	txdp->Host_Control = (unsigned long)skb;
@@ -4331,7 +4340,7 @@ static irqreturn_t s2io_msix_ring_handle(int irq, void *dev_id,
 		val8 = (ring->ring_no == 0) ? 0x7f : 0xff;
 		writeb(val8, addr);
 		val8 = readb(addr);
-		napi_schedule(&ring->napi);
+		netif_rx_schedule(ring->napi.dev);
 	} else {
 		rx_intr_handler(ring, 0);
 		s2io_chk_rx_buffers(sp, ring);
@@ -4811,7 +4820,7 @@ static irqreturn_t s2io_isr(int irq, void *dev_id, struct pt_regs *regs)
 
 		if (config->napi) {
 			if (reason & GEN_INTR_RXTRAFFIC) {
-				napi_schedule(&sp->napi);
+				netif_rx_schedule(sp->napi.dev);
 				writeq(S2IO_MINUS_ONE, &bar0->rx_traffic_mask);
 				writeq(S2IO_MINUS_ONE, &bar0->rx_traffic_int);
 				readl(&bar0->rx_traffic_int);
@@ -6809,8 +6818,9 @@ static int s2io_change_mtu(struct net_device *dev, int new_mtu)
  * Description: Sets the link status for the adapter
  */
 
-static void s2io_set_link(struct work_struct *work)
+static void s2io_set_link(void *data)
 {
+	struct work_struct *work = data;
 	struct s2io_nic *nic = container_of(work, struct s2io_nic,
 					    set_link_task);
 	struct net_device *dev = nic->dev;
@@ -6923,7 +6933,7 @@ static int set_rxd_buffer_pointer(struct s2io_nic *sp, struct RxD_t *rxdp,
 				pci_map_single(sp->pdev, (*skb)->data,
 					       size - NET_IP_ALIGN,
 					       PCI_DMA_FROMDEVICE);
-			if (pci_dma_mapping_error(sp->pdev, rxdp1->Buffer0_ptr))
+			if (pci_dma_mapping_error(rxdp1->Buffer0_ptr))
 				goto memalloc_failed;
 			rxdp->Host_Control = (unsigned long) (*skb);
 		}
@@ -6949,13 +6959,12 @@ static int set_rxd_buffer_pointer(struct s2io_nic *sp, struct RxD_t *rxdp,
 				pci_map_single(sp->pdev, (*skb)->data,
 					       dev->mtu + 4,
 					       PCI_DMA_FROMDEVICE);
-			if (pci_dma_mapping_error(sp->pdev, rxdp3->Buffer2_ptr))
+			if (pci_dma_mapping_error(rxdp3->Buffer2_ptr))
 				goto memalloc_failed;
 			rxdp3->Buffer0_ptr = *temp0 =
 				pci_map_single(sp->pdev, ba->ba_0, BUF0_LEN,
 					       PCI_DMA_FROMDEVICE);
-			if (pci_dma_mapping_error(sp->pdev,
-						  rxdp3->Buffer0_ptr)) {
+			if (pci_dma_mapping_error(rxdp3->Buffer0_ptr)) {
 				pci_unmap_single(sp->pdev,
 						 (dma_addr_t)rxdp3->Buffer2_ptr,
 						 dev->mtu + 4,
@@ -6968,8 +6977,7 @@ static int set_rxd_buffer_pointer(struct s2io_nic *sp, struct RxD_t *rxdp,
 			rxdp3->Buffer1_ptr = *temp1 =
 				pci_map_single(sp->pdev, ba->ba_1, BUF1_LEN,
 					       PCI_DMA_FROMDEVICE);
-			if (pci_dma_mapping_error(sp->pdev,
-						  rxdp3->Buffer1_ptr)) {
+			if (pci_dma_mapping_error(rxdp3->Buffer1_ptr)) {
 				pci_unmap_single(sp->pdev,
 						 (dma_addr_t)rxdp3->Buffer0_ptr,
 						 BUF0_LEN, PCI_DMA_FROMDEVICE);
@@ -7174,10 +7182,10 @@ static void do_s2io_card_down(struct s2io_nic *sp, int do_io)
 		int off = 0;
 		if (config->intr_type ==  MSI_X) {
 			for (; off < sp->config.rx_ring_num; off++)
-				napi_disable(&sp->mac_control.rings[off].napi);
+				netif_poll_disable(sp->mac_control.rings[off].napi.dev);
 		}
 		else
-			napi_disable(&sp->napi);
+			netif_poll_disable(sp->napi.dev);
 	}
 
 	/* disable Tx and Rx traffic on the NIC */
@@ -7277,9 +7285,9 @@ static int s2io_card_up(struct s2io_nic *sp)
 	if (config->napi) {
 		if (config->intr_type ==  MSI_X) {
 			for (i = 0; i < sp->config.rx_ring_num; i++)
-				napi_enable(&sp->mac_control.rings[i].napi);
+				netif_poll_enable(sp->mac_control.rings[i].napi.dev);
 		} else {
-			napi_enable(&sp->napi);
+			netif_poll_enable(sp->napi.dev);
 		}
 	}
 
@@ -7347,8 +7355,9 @@ static int s2io_card_up(struct s2io_nic *sp)
  * spin lock.
  */
 
-static void s2io_restart_nic(struct work_struct *work)
+static void s2io_restart_nic(void *data)
 {
+	struct work_struct *work = data;
 	struct s2io_nic *sp = container_of(work, struct s2io_nic, rst_timer_task);
 	struct net_device *dev = sp->dev;
 
@@ -7578,7 +7587,6 @@ static int rx_osm_handler(struct ring_info *ring_data, struct RxD_t * rxdp)
 
 	swstats->mem_freed += skb->truesize;
 send_up:
-	skb_record_rx_queue(skb, ring_no);
 	queue_rx_frame(skb, RXD_GET_VLAN_TAG(rxdp->Control_2));
 	dev->last_rx = jiffies;
 aggregate:
@@ -7753,23 +7761,6 @@ static int rts_ds_steer(struct s2io_nic *nic, u8 ds_codepoint, u8 ring)
 				     S2IO_BIT_RESET);
 }
 
-static const struct net_device_ops s2io_netdev_ops = {
-	.ndo_open	        = s2io_open,
-	.ndo_stop	        = s2io_close,
-	.ndo_get_stats	        = s2io_get_stats,
-	.ndo_start_xmit    	= s2io_xmit,
-	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_set_multicast_list = s2io_set_multicast,
-	.ndo_do_ioctl	   	= s2io_ioctl,
-	.ndo_set_mac_address    = s2io_set_mac_addr,
-	.ndo_change_mtu	   	= s2io_change_mtu,
-	.ndo_vlan_rx_register   = s2io_vlan_rx_register,
-	.ndo_tx_timeout	   	= s2io_tx_watchdog,
-#ifdef CONFIG_NET_POLL_CONTROLLER
-	.ndo_poll_controller    = s2io_netpoll,
-#endif
-};
-
 static void s2io_napi_del_all_rings(struct s2io_nic *sp)
 {
 	struct ring_info *ring;
@@ -7779,7 +7770,8 @@ static void s2io_napi_del_all_rings(struct s2io_nic *sp)
 		ring = &sp->mac_control.rings[i];
 		if (!ring->napi.dev)
 			break;
-		netif_napi_del(&ring->napi);
+		free_netdev(ring->napi.dev);
+		ring->napi.dev = NULL;
 	}
 }
 
@@ -7810,9 +7802,11 @@ s2io_init_nic(struct pci_dev *pdev, const struct pci_device_id *pre)
 	u16 subid;
 	struct config_param *config;
 	struct mac_info *mac_control;
+	struct ring_info *rings;
 	int mode;
 	u8 dev_intr_type = intr_type;
 	u8 dev_multiq = 0;
+	struct net_device *napi_nd;
 	DECLARE_MAC_BUF(mac);
 
 	ret = s2io_verify_parm(pdev, &dev_intr_type, &dev_multiq);
@@ -7853,11 +7847,13 @@ s2io_init_nic(struct pci_dev *pdev, const struct pci_device_id *pre)
 		dev = alloc_etherdev_mq(sizeof(struct s2io_nic), tx_fifo_num);
 	else
 		dev = alloc_etherdev(sizeof(struct s2io_nic));
-	if (dev == NULL) {
+
+	rings = kzalloc(sizeof (struct ring_info) * MAX_RX_RINGS, GFP_KERNEL);
+
+	if (dev == NULL || rings == NULL) {
 		DBG_PRINT(ERR_DBG, "Device allocation failed\n");
-		pci_disable_device(pdev);
-		pci_release_regions(pdev);
-		return -ENODEV;
+		ret = -ENODEV;
+		goto nodev;
 	}
 
 	pci_set_master(pdev);
@@ -7898,6 +7894,7 @@ s2io_init_nic(struct pci_dev *pdev, const struct pci_device_id *pre)
 	 */
 	config = &sp->config;
 	mac_control = &sp->mac_control;
+	mac_control->rings = rings;
 
 	config->napi = napi;
 	config->tx_steering_type = tx_steering_type;
@@ -8017,7 +8014,20 @@ s2io_init_nic(struct pci_dev *pdev, const struct pci_device_id *pre)
 	}
 
 	/*  Driver entry points */
-	s2io_set_netdev_ops(dev, &s2io_netdev_ops);
+	dev->open = s2io_open;
+	dev->stop = s2io_close;
+	dev->hard_start_xmit = s2io_xmit;
+	dev->set_mac_address = s2io_set_mac_addr;
+	dev->get_stats = s2io_get_stats;
+	dev->set_multicast_list = s2io_set_multicast;
+	dev->change_mtu = s2io_change_mtu;
+	dev->vlan_rx_register = s2io_vlan_rx_register;
+	dev->tx_timeout = s2io_tx_watchdog;
+	dev->do_ioctl = s2io_ioctl;
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	dev->poll_controller = s2io_netpoll;
+#endif
+
 	SET_ETHTOOL_OPS(dev, &netdev_ethtool_ops);
 	dev->features |= NETIF_F_HW_VLAN_TX | NETIF_F_HW_VLAN_RX;
 
@@ -8031,8 +8041,8 @@ s2io_init_nic(struct pci_dev *pdev, const struct pci_device_id *pre)
 		dev->features |= NETIF_F_HW_CSUM;
 	}
 	dev->watchdog_timeo = WATCH_DOG_TIMEOUT;
-	INIT_WORK(&sp->rst_timer_task, s2io_restart_nic);
-	INIT_WORK(&sp->set_link_task, s2io_set_link);
+	INIT_WORK(&sp->rst_timer_task, s2io_restart_nic, &sp->rst_timer_task);
+	INIT_WORK(&sp->set_link_task, s2io_set_link, &sp->set_link_task);
 
 	pci_save_state(sp->pdev);
 
@@ -8076,18 +8086,29 @@ s2io_init_nic(struct pci_dev *pdev, const struct pci_device_id *pre)
 		for (i = 0; i < config->rx_ring_num ; i++) {
 			struct ring_info *ring = &mac_control->rings[i];
 
-			ret = rhel_netif_napi_add(ring, &ring->napi,
-						  rhel_s2io_poll_msix, 64);
-			if (ret) {
+			napi_nd = alloc_netdev(0, "", ether_setup);
+			if (!napi_nd) {
 				s2io_napi_del_all_rings(sp);
 				goto napi_add_failed;
 			}
+
+			napi_nd->priv = ring;
+			napi_nd->weight = 64;
+			napi_nd->poll = rhel_s2io_poll_msix;
+			set_bit(__LINK_STATE_START, &napi_nd->state);
+			ring->napi.dev = napi_nd;
+
 		}
 	} else {
-		ret = rhel_netif_napi_add(sp, &sp->napi,
-					  rhel_s2io_poll_inta, 64);
-		if (ret)
+		napi_nd = alloc_netdev(0, "", ether_setup);
+		if (!napi_nd)
 			goto napi_add_failed;
+
+		napi_nd->priv = sp;
+		napi_nd->weight = 64;
+		napi_nd->poll = rhel_s2io_poll_inta;
+		set_bit(__LINK_STATE_START, &napi_nd->state);
+		sp->napi.dev = napi_nd;
 	}
 
 	/* Not needed for Herc */
@@ -8292,8 +8313,10 @@ register_failed:
 set_swap_failed:
 	if (config->intr_type == MSI_X)
 		s2io_napi_del_all_rings(sp);
-	else
-		netif_napi_del(&sp->napi);
+	else {
+		free_netdev(sp->napi.dev);
+		sp->napi.dev = NULL;
+	}
 napi_add_failed:
 	iounmap(sp->bar1);
 bar1_remap_failed:
@@ -8301,10 +8324,13 @@ bar1_remap_failed:
 bar0_remap_failed:
 mem_alloc_failed:
 	free_shared_mem(sp);
+nodev:
 	pci_disable_device(pdev);
 	pci_release_regions(pdev);
 	pci_set_drvdata(pdev, NULL);
-	free_netdev(dev);
+	if (dev)
+		free_netdev(dev);
+	kfree(rings);
 
 	return ret;
 }
@@ -8335,14 +8361,17 @@ static void __devexit s2io_rem_nic(struct pci_dev *pdev)
 	unregister_netdev(dev);
 	if (sp->config.intr_type == MSI_X)
 		s2io_napi_del_all_rings(sp);
-	else
-		netif_napi_del(&sp->napi);
+	else {
+		free_netdev(sp->napi.dev);
+		sp->napi.dev = NULL;
+	}
 
 	free_shared_mem(sp);
 	iounmap(sp->bar0);
 	iounmap(sp->bar1);
 	pci_release_regions(pdev);
 	pci_set_drvdata(pdev, NULL);
+	kfree(sp->mac_control.rings);
 	free_netdev(dev);
 	pci_disable_device(pdev);
 }
@@ -8789,5 +8818,5 @@ static void s2io_io_resume(struct pci_dev *pdev)
 	}
 
 	netif_device_attach(netdev);
-	netif_tx_wake_all_queues(netdev);
+	netif_wake_queue(netdev);
 }

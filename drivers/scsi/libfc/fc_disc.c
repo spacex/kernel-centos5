@@ -34,6 +34,7 @@
 
 #include <linux/timer.h>
 #include <linux/err.h>
+#include <linux/workqueue.h>
 #include <asm/unaligned.h>
 
 #include <scsi/fc/fc_gs.h>

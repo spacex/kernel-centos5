@@ -275,12 +275,6 @@ static void ieee80211_send_assoc(struct ieee80211_sub_if_data *sdata,
 	if (wk->bss->wmm_used)
 		wmm = 1;
 
-	/* get all rates supported by the device and the AP as
-	 * some APs don't like getting a superset of their rates
-	 * in the association request (e.g. D-Link DAP 1353 in
-	 * b-only mode) */
-	rates_len = ieee80211_compatible_rates(wk->bss, sband, &rates);
-
 	if ((wk->bss->cbss.capability & WLAN_CAPABILITY_SPECTRUM_MGMT) &&
 	    (local->hw.flags & IEEE80211_HW_SPECTRUM_MGMT))
 		capab |= WLAN_CAPABILITY_SPECTRUM_MGMT;
@@ -314,6 +308,17 @@ static void ieee80211_send_assoc(struct ieee80211_sub_if_data *sdata,
 	*pos++ = WLAN_EID_SSID;
 	*pos++ = wk->ssid_len;
 	memcpy(pos, wk->ssid, wk->ssid_len);
+
+	if (wk->bss->supp_rates_len) {
+		/* get all rates supported by the device and the AP as
+		 * some APs don't like getting a superset of their rates
+		 * in the association request (e.g. D-Link DAP 1353 in
+		 * b-only mode) */
+		rates_len = ieee80211_compatible_rates(wk->bss, sband, &rates);
+	} else {
+		rates = ~0;
+		rates_len = sband->n_bitrates;
+	}
 
 	/* add all rates which were marked to be used above */
 	supp_rates_len = rates_len;
@@ -655,8 +660,11 @@ static void ieee80211_enable_ps(struct ieee80211_local *local,
 	} else {
 		if (local->hw.flags & IEEE80211_HW_PS_NULLFUNC_STACK)
 			ieee80211_send_nullfunc(local, sdata, 1);
-		conf->flags |= IEEE80211_CONF_PS;
-		ieee80211_hw_config(local, IEEE80211_CONF_CHANGE_PS);
+
+		if (!(local->hw.flags & IEEE80211_HW_REPORTS_TX_ACK_STATUS)) {
+			conf->flags |= IEEE80211_CONF_PS;
+			ieee80211_hw_config(local, IEEE80211_CONF_CHANGE_PS);
+		}
 	}
 }
 
@@ -670,12 +678,7 @@ static void ieee80211_change_ps(struct ieee80211_local *local)
 		conf->flags &= ~IEEE80211_CONF_PS;
 		ieee80211_hw_config(local, IEEE80211_CONF_CHANGE_PS);
 		del_timer_sync(&local->dynamic_ps_timer);
-#if 0 /* Not in RHEL5... */
 		cancel_work_sync(&local->dynamic_ps_enable_work);
-#else
-		ieee80211_cancel_work(&local->hw,
-					&local->dynamic_ps_enable_work);
-#endif
 	}
 }
 
@@ -750,6 +753,7 @@ void ieee80211_dynamic_ps_enable_work(void *l)
 {
 	struct ieee80211_local *local = l;
 	struct ieee80211_sub_if_data *sdata = local->ps_sdata;
+	struct ieee80211_if_managed *ifmgd = &sdata->u.mgd;
 
 	/* can only happen when PS was just disabled anyway */
 	if (!sdata)
@@ -758,11 +762,16 @@ void ieee80211_dynamic_ps_enable_work(void *l)
 	if (local->hw.conf.flags & IEEE80211_CONF_PS)
 		return;
 
-	if (local->hw.flags & IEEE80211_HW_PS_NULLFUNC_STACK)
+	if ((local->hw.flags & IEEE80211_HW_PS_NULLFUNC_STACK) &&
+	    (!(ifmgd->flags & IEEE80211_STA_NULLFUNC_ACKED)))
 		ieee80211_send_nullfunc(local, sdata, 1);
 
-	local->hw.conf.flags |= IEEE80211_CONF_PS;
-	ieee80211_hw_config(local, IEEE80211_CONF_CHANGE_PS);
+	if (!(local->hw.flags & IEEE80211_HW_REPORTS_TX_ACK_STATUS) ||
+	    (ifmgd->flags & IEEE80211_STA_NULLFUNC_ACKED)) {
+		ifmgd->flags &= ~IEEE80211_STA_NULLFUNC_ACKED;
+		local->hw.conf.flags |= IEEE80211_CONF_PS;
+		ieee80211_hw_config(local, IEEE80211_CONF_CHANGE_PS);
+	}
 }
 
 void ieee80211_dynamic_ps_timer(unsigned long data)
@@ -1099,11 +1108,7 @@ static void ieee80211_set_disassoc(struct ieee80211_sub_if_data *sdata,
 	local->power_constr_level = 0;
 
 	del_timer_sync(&local->dynamic_ps_timer);
-#if 0 /* Not in RHEL5... */
 	cancel_work_sync(&local->dynamic_ps_enable_work);
-#else
-	ieee80211_cancel_work(&local->hw, &local->dynamic_ps_enable_work);
-#endif
 
 	if (local->hw.conf.flags & IEEE80211_CONF_PS) {
 		local->hw.conf.flags &= ~IEEE80211_CONF_PS;
@@ -2298,7 +2303,6 @@ static void ieee80211_restart_sta_timer(struct ieee80211_sub_if_data *sdata)
 #ifdef CONFIG_PM
 void ieee80211_sta_quiesce(struct ieee80211_sub_if_data *sdata)
 {
-	struct ieee80211_local *local = sdata->local;
 	struct ieee80211_if_managed *ifmgd = &sdata->u.mgd;
 
 	/*
@@ -2307,28 +2311,17 @@ void ieee80211_sta_quiesce(struct ieee80211_sub_if_data *sdata)
 	 * time -- the code here is properly synchronised.
 	 */
 
-#if 0 /* Not in RHEL5... */
 	cancel_work_sync(&ifmgd->work);
 	cancel_work_sync(&ifmgd->beacon_loss_work);
-#else
-	flush_workqueue(local->workqueue);
-#endif
 	if (del_timer_sync(&ifmgd->timer))
 		set_bit(TMR_RUNNING_TIMER, &ifmgd->timers_running);
 
-#if 0 /* Not in RHEL5... */
 	cancel_work_sync(&ifmgd->chswitch_work);
-#else
-	ieee80211_cancel_work(&local->hw, &ifmgd->chswitch_work);
-#endif
 	if (del_timer_sync(&ifmgd->chswitch_timer))
 		set_bit(TMR_RUNNING_CHANSW, &ifmgd->timers_running);
 
-#if 0 /* Not in RHEL5... */
 	cancel_work_sync(&ifmgd->monitor_work);
-#else
-	ieee80211_cancel_work(&local->hw, &ifmgd->monitor_work);
-#endif
+
 	/* these will just be re-established on connection */
 	del_timer_sync(&ifmgd->conn_mon_timer);
 	del_timer_sync(&ifmgd->bcn_mon_timer);
@@ -2502,6 +2495,7 @@ int ieee80211_mgd_assoc(struct ieee80211_sub_if_data *sdata,
 	list_add(&wk->list, &ifmgd->work_list);
 
 	ifmgd->flags &= ~IEEE80211_STA_DISABLE_11N;
+	ifmgd->flags &= ~IEEE80211_STA_NULLFUNC_ACKED;
 
 	for (i = 0; i < req->crypto.n_ciphers_pairwise; i++)
 		if (req->crypto.ciphers_pairwise[i] == WLAN_CIPHER_SUITE_WEP40 ||

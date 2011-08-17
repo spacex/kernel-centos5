@@ -38,6 +38,7 @@
 #include <linux/dmi.h>
 #include <linux/moduleparam.h>
 #include <linux/sched.h>	/* need_resched() */
+#include <linux/ktime.h>
 
 #include <asm/io.h>
 #include <asm/uaccess.h>
@@ -155,16 +156,6 @@ static struct dmi_system_id __cpuinitdata processor_power_dmi_table[] = {
 	{},
 };
 
-static inline u32 ticks_elapsed(u32 t1, u32 t2)
-{
-	if (t2 >= t1)
-		return (t2 - t1);
-	else if (!acpi_fadt.tmr_val_ext)
-		return (((0x00FFFFFF - t1) + t2) & 0x00FFFFFF);
-	else
-		return ((0xFFFFFFFF - t1) + t2);
-}
-
 static void
 acpi_processor_power_activate(struct acpi_processor *pr,
 			      struct acpi_processor_cx *new)
@@ -218,6 +209,22 @@ static void acpi_safe_halt(void)
 
 static atomic_t c3_cpu_count;
 
+/* Common C-state entry for C2, C3, .. */
+static void acpi_cstate_enter(struct acpi_processor_cx *cstate)
+{
+	if (cstate->space_id == ACPI_CSTATE_FFH) {
+		/* Call into architectural FFH based C-state */
+		acpi_processor_ffh_cstate_enter(cstate);
+	} else {
+		int unused;
+		/* IO port based C-state */
+		inb(cstate->address);
+		/* Dummy wait op - must do something useless after P_LVL2 read
+		   because chipsets cannot guarantee that STPCLK# signal
+		   gets asserted in time to freeze execution properly. */
+		unused = inl(acpi_fadt.xpm_tmr_blk.address);
+	}
+}
 
 static void acpi_processor_idle_simple(void)
 {
@@ -225,7 +232,8 @@ static void acpi_processor_idle_simple(void)
 	struct acpi_processor_cx *cx = NULL;
 	struct acpi_processor_cx *next_state = NULL;
 	int sleep_ticks = 0;
-	u32 t1, t2 = 0;
+	ktime_t  kt1, kt2;
+	s64 idle_time;
 
 	pr = processors[smp_processor_id()];
 	if (!pr)
@@ -296,15 +304,12 @@ static void acpi_processor_idle_simple(void)
 
 	case ACPI_STATE_C2:
 		/* Get start time (ticks) */
-		t1 = inl(acpi_fadt.xpm_tmr_blk.address);
+		kt1 = ktime_get_real();
 		/* Invoke C2 */
-		inb(cx->address);
-		/* Dummy wait op - must do something useless after P_LVL2 read
-		   because chipsets cannot guarantee that STPCLK# signal
-		   gets asserted in time to freeze execution properly. */
-		t2 = inl(acpi_fadt.xpm_tmr_blk.address);
+		acpi_cstate_enter(cx);
 		/* Get end time (ticks) */
-		t2 = inl(acpi_fadt.xpm_tmr_blk.address);
+		kt2 = ktime_get_real();
+		idle_time =  ktime_to_us(ktime_sub(kt2, kt1));
 
 #ifdef CONFIG_GENERIC_TIME
 		/* TSC halts in C2, so notify users */
@@ -315,19 +320,17 @@ static void acpi_processor_idle_simple(void)
 		local_irq_enable();
 		current_thread_info()->status |= TS_POLLING;
 		/* Compute time (ticks) that we were actually asleep */
-		sleep_ticks =
-		    ticks_elapsed(t1, t2) - cx->latency_ticks - C2_OVERHEAD;
+		sleep_ticks = idle_time - cx->latency_ticks - C2_OVERHEAD;
 		break;
 
 	case ACPI_STATE_C3:
 		/* Get start time (ticks) */
-		t1 = inl(acpi_fadt.xpm_tmr_blk.address);
+		kt1 = ktime_get_real();
 		/* Invoke C3 */
-		inb(cx->address);
-		/* Dummy wait op (see above) */
-		t2 = inl(acpi_fadt.xpm_tmr_blk.address);
+		acpi_cstate_enter(cx);
 		/* Get end time (ticks) */
-		t2 = inl(acpi_fadt.xpm_tmr_blk.address);
+		kt2 = ktime_get_real();
+		idle_time =  ktime_to_us(ktime_sub(kt2, kt1));
 		if (pr->flags.bm_check && pr->flags.bm_control) {
 			/* Enable bus master arbitration */
 			atomic_dec(&c3_cpu_count);
@@ -344,8 +347,7 @@ static void acpi_processor_idle_simple(void)
 		local_irq_enable();
 		current_thread_info()->status |= TS_POLLING;
 		/* Compute time (ticks) that we were actually asleep */
-		sleep_ticks =
-		    ticks_elapsed(t1, t2) - cx->latency_ticks - C3_OVERHEAD;
+		sleep_ticks = idle_time - cx->latency_ticks - C3_OVERHEAD;
 		break;
 
 	default:
@@ -449,7 +451,8 @@ static void acpi_processor_idle_bm(void)
 	struct acpi_processor_cx *cx = NULL;
 	struct acpi_processor_cx *next_state = NULL;
 	int sleep_ticks = 0;
-	u32 t1, t2 = 0;
+	ktime_t  kt1, kt2;
+	s64 idle_time;
 
 	pr = processors[smp_processor_id()];
 	if (!pr)
@@ -575,15 +578,12 @@ static void acpi_processor_idle_bm(void)
 
 	case ACPI_STATE_C2:
 		/* Get start time (ticks) */
-		t1 = inl(acpi_fadt.xpm_tmr_blk.address);
+		kt1 = ktime_get_real();
 		/* Invoke C2 */
-		inb(cx->address);
-		/* Dummy wait op - must do something useless after P_LVL2 read
-		   because chipsets cannot guarantee that STPCLK# signal
-		   gets asserted in time to freeze execution properly. */
-		t2 = inl(acpi_fadt.xpm_tmr_blk.address);
+		acpi_cstate_enter(cx);
 		/* Get end time (ticks) */
-		t2 = inl(acpi_fadt.xpm_tmr_blk.address);
+		kt2 = ktime_get_real();
+		idle_time =  ktime_to_us(ktime_sub(kt2, kt1));
 
 #ifdef CONFIG_GENERIC_TIME
 		/* TSC halts in C2, so notify users */
@@ -594,8 +594,7 @@ static void acpi_processor_idle_bm(void)
 		local_irq_enable();
 		current_thread_info()->status |= TS_POLLING;
 		/* Compute time (ticks) that we were actually asleep */
-		sleep_ticks =
-		    ticks_elapsed(t1, t2) - cx->latency_ticks - C2_OVERHEAD;
+		sleep_ticks = idle_time - cx->latency_ticks - C2_OVERHEAD;
 		break;
 
 	case ACPI_STATE_C3:
@@ -626,13 +625,12 @@ static void acpi_processor_idle_bm(void)
 		}
 
 		/* Get start time (ticks) */
-		t1 = inl(acpi_fadt.xpm_tmr_blk.address);
+		kt1 = ktime_get_real();
 		/* Invoke C3 */
-		inb(cx->address);
-		/* Dummy wait op (see above) */
-		t2 = inl(acpi_fadt.xpm_tmr_blk.address);
+		acpi_cstate_enter(cx);
 		/* Get end time (ticks) */
-		t2 = inl(acpi_fadt.xpm_tmr_blk.address);
+		kt2 = ktime_get_real();
+		idle_time =  ktime_to_us(ktime_sub(kt2, kt1));
 		if (pr->flags.bm_check && pr->flags.bm_control) {
 			/* Enable bus master arbitration */
 			atomic_dec(&c3_cpu_count);
@@ -649,8 +647,7 @@ static void acpi_processor_idle_bm(void)
 		local_irq_enable();
 		current_thread_info()->status |= TS_POLLING;
 		/* Compute time (ticks) that we were actually asleep */
-		sleep_ticks =
-		    ticks_elapsed(t1, t2) - cx->latency_ticks - C3_OVERHEAD;
+		sleep_ticks = idle_time - cx->latency_ticks - C3_OVERHEAD;
 		break;
 
 	default:
@@ -863,20 +860,16 @@ static int acpi_processor_get_power_info_fadt(struct acpi_processor *pr)
 	return 0;
 }
 
-static int acpi_processor_get_power_info_default_c1(struct acpi_processor *pr)
+static int acpi_processor_get_power_info_default(struct acpi_processor *pr)
 {
-
-	/* Zero initialize all the C-states info. */
-	memset(pr->power.states, 0, sizeof(pr->power.states));
-
-	/* set the first C-State to C1 */
-	pr->power.states[ACPI_STATE_C1].type = ACPI_STATE_C1;
-
-	/* the C0 state only exists as a filler in our array,
-	 * and all processors need to support C1 */
+	if (!pr->power.states[ACPI_STATE_C1].valid) {
+		/* set the first C-State to C1 */
+		/* all processors need to support C1 */
+		pr->power.states[ACPI_STATE_C1].type = ACPI_STATE_C1;
+		pr->power.states[ACPI_STATE_C1].valid = 1;
+	}
+	/* the C0 state only exists as a filler in our array */
 	pr->power.states[ACPI_STATE_C0].valid = 1;
-	pr->power.states[ACPI_STATE_C1].valid = 1;
-
 	return 0;
 }
 
@@ -893,12 +886,7 @@ static int acpi_processor_get_power_info_cst(struct acpi_processor *pr)
 	if (nocst)
 		return -ENODEV;
 
-	current_count = 1;
-
-	/* Zero initialize C2 onwards and prepare for fresh CST lookup */
-	for (i = 2; i < ACPI_PROCESSOR_MAX_POWER; i++)
-		memset(&(pr->power.states[i]), 0, 
-				sizeof(struct acpi_processor_cx));
+	current_count = 0;
 
 	status = acpi_evaluate_object(pr->handle, "_CST", NULL, &buffer);
 	if (ACPI_FAILURE(status)) {
@@ -953,9 +941,6 @@ static int acpi_processor_get_power_info_cst(struct acpi_processor *pr)
 		    (reg->space_id != ACPI_ADR_SPACE_FIXED_HARDWARE))
 			continue;
 
-		cx.address = (reg->space_id == ACPI_ADR_SPACE_FIXED_HARDWARE) ?
-		    0 : reg->address;
-
 		/* There should be an easy way to extract an integer... */
 		obj = (union acpi_object *)&(element->package.elements[1]);
 		if (obj->type != ACPI_TYPE_INTEGER)
@@ -963,12 +948,33 @@ static int acpi_processor_get_power_info_cst(struct acpi_processor *pr)
 
 		cx.type = obj->integer.value;
 
-		if ((cx.type != ACPI_STATE_C1) &&
-		    (reg->space_id != ACPI_ADR_SPACE_SYSTEM_IO))
-			continue;
+		/*
+		 * Some buggy BIOSes won't list C1 in _CST -
+		 * Let acpi_processor_get_power_info_default() handle them later
+		 */
+		if (i == 1 && cx.type != ACPI_STATE_C1)
+			current_count++;
 
-		if ((cx.type < ACPI_STATE_C2) || (cx.type > ACPI_STATE_C3))
-			continue;
+		cx.address = reg->address;
+		cx.index = current_count + 1;
+
+		cx.space_id = ACPI_CSTATE_SYSTEMIO;
+		if (reg->space_id == ACPI_ADR_SPACE_FIXED_HARDWARE) {
+			if (acpi_processor_ffh_cstate_probe
+					(pr->id, &cx, reg) == 0) {
+				cx.space_id = ACPI_CSTATE_FFH;
+			} else if (cx.type != ACPI_STATE_C1) {
+				/*
+				 * C1 is a special case where FIXED_HARDWARE
+				 * can be handled in non-MWAIT way as well.
+				 * In that case, save this _CST entry info.
+				 * That is, we retain space_id of SYSTEM_IO for
+				 * halt based C1.
+				 * Otherwise, ignore this info and continue.
+				 */
+				continue;
+			}
+		}
 
 		obj = (union acpi_object *)&(element->package.elements[2]);
 		if (obj->type != ACPI_TYPE_INTEGER)
@@ -1033,7 +1039,7 @@ static void acpi_processor_power_verify_c2(struct acpi_processor_cx *cx)
 	 * Normalize the C2 latency to expidite policy
 	 */
 	cx->valid = 1;
-	cx->latency_ticks = US_TO_PM_TIMER_TICKS(cx->latency);
+	cx->latency_ticks = cx->latency;
 
 	return;
 }
@@ -1117,7 +1123,7 @@ static void acpi_processor_power_verify_c3(struct acpi_processor *pr,
 	 * use this in our C3 policy
 	 */
 	cx->valid = 1;
-	cx->latency_ticks = US_TO_PM_TIMER_TICKS(cx->latency);
+	cx->latency_ticks = cx->latency;
 
 	return;
 }
@@ -1182,11 +1188,17 @@ static int acpi_processor_get_power_info(struct acpi_processor *pr)
 	/* NOTE: the idle thread may not be running while calling
 	 * this function */
 
-	/* Adding C1 state */
-	acpi_processor_get_power_info_default_c1(pr);
+	/* Zero initialize all the C-states info. */
+	memset(pr->power.states, 0, sizeof(pr->power.states));
+
 	result = acpi_processor_get_power_info_cst(pr);
 	if (result == -ENODEV)
 		acpi_processor_get_power_info_fadt(pr);
+
+	if (result)
+		return result;
+
+	acpi_processor_get_power_info_default(pr);
 
 	pr->power.count = acpi_processor_power_verify(pr);
 

@@ -667,11 +667,7 @@ static int __init zcore_reipl_init(void)
 		rc = memcpy_hsa_kernel(ipl_block, ipib_info.ipib, PAGE_SIZE);
 	else
 		rc = memcpy_real(ipl_block, ipib_info.ipib, PAGE_SIZE);
-	if (rc) {
-		free_page((unsigned long) ipl_block);
-		return rc;
-	}
-	if (cksm(ipl_block, ipl_block->hdr.len) != ipib_info.checksum) {
+	if (rc || cksm(ipl_block, ipl_block->hdr.len) != ipib_info.checksum) {
 		TRACE("Checksum does not match\n");
 		free_page((unsigned long) ipl_block);
 		ipl_block = NULL;

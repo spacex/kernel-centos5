@@ -38,6 +38,8 @@
 #include "scsi_priv.h"
 #include "scsi_logging.h"
 
+#include <trace/scsi.h>
+
 #define SENSE_TIMEOUT		(10*HZ)
 
 /*
@@ -51,6 +53,7 @@
 void scsi_eh_wakeup(struct Scsi_Host *shost)
 {
 	if (shost->host_busy == shost->host_failed) {
+		trace_scsi_eh_wakeup(shost);
 		wake_up_process(shost->ehandler);
 		SCSI_LOG_ERROR_RECOVERY(5,
 				printk("Waking error handler thread\n"));
@@ -186,6 +189,7 @@ void scsi_times_out(struct scsi_cmnd *scmd)
 {
 	enum scsi_eh_timer_return (* eh_timed_out)(struct scsi_cmnd *);
 
+	trace_scsi_dispatch_cmd_timeout(scmd);
 	scsi_log_completion(scmd, TIMEOUT_ERROR);
 
 	if (scmd->device->host->transportt->eh_timed_out)
@@ -374,6 +378,20 @@ static int scsi_check_sense(struct scsi_cmnd *scmd)
 		if (scmd->device->allow_restart &&
 		    (sshdr.asc == 0x04) && (sshdr.ascq == 0x02))
 			return SCSI_MLQUEUE_DIS_FAIL;
+
+		if (sshdr.asc == 0x3f && sshdr.ascq == 0x0e)
+			scmd_printk(KERN_WARNING, scmd,
+				    "Warning! Received an indication that the "
+				    "LUN assignments on this target have "
+				    "changed. The Linux SCSI layer does not "
+				    "automatically remap LUN assignments.\n");
+		else if (sshdr.asc == 0x3f)
+			scmd_printk(KERN_WARNING, scmd,
+				    "Warning! Received an indication that the "
+				    "operating parameters on this target have "
+				    "changed. The Linux SCSI layer does not "
+				    "automatically adjust these parameters.\n");
+
 		return SCSI_MLQUEUE_DIS_FINISH;
 
 		/* these three are not supported */
@@ -1448,7 +1466,7 @@ void scsi_eh_flush_done_q(struct list_head *done_q)
 		SCSI_LOG_ERROR_RECOVERY(3, printk("%s: flush"
 						  "attempt retry cmd: %p\n",
 						  current->comm, scmd));
-		scsi_attempt_requeue_command(scmd, SCSI_MLQUEUE_DIS_RETRY);
+		scsi_attempt_requeue_command(scmd, SCSI_MLQUEUE_EH_RETRY2);
 	}
 }
 EXPORT_SYMBOL(scsi_eh_flush_done_q);

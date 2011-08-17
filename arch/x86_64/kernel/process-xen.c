@@ -205,6 +205,8 @@ EXPORT_SYMBOL_GPL(cpu_idle_wait);
 /* Always use xen_idle() instead. */
 void __cpuinit select_idle_routine(const struct cpuinfo_x86 *c) {}
 
+void mwait_idle_with_hints(unsigned long eax, unsigned long ecx) {}
+
 /* Prints also some state that isn't saved in the pt_regs */ 
 void __show_regs(struct pt_regs * regs)
 {

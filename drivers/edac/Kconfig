@@ -55,6 +55,8 @@ config EDAC_MM_EDAC
 	  occurred so that a particular failing memory module can be
 	  replaced.  If unsure, select 'Y'.
 
+config EDAC_MCE
+	bool
 
 config EDAC_AMD76X
 	tristate "AMD 76x (760, 762, 768)"
@@ -112,6 +114,16 @@ config EDAC_I5400
 	  Support for error detection and correction the Intel
 	  i5400 MCH chipset (Seaburg).
 
+config EDAC_I7CORE
+	tristate "Intel i7 Core (Nehalem) processors"
+	depends on EDAC_MM_EDAC && PCI && X86 && X86_MCE_INTEL
+	select EDAC_MCE
+	help
+	  Support for error detection and correction the Intel
+	  i7 Core (Nehalem) Integrated Memory Controller that exists on
+	  newer processors like i7 Core, i7 Core Extreme, Xeon 35xx
+	  and Xeon 55xx processors.
+
 config EDAC_I82860
 	tristate "Intel 82860"
 	depends on EDAC_MM_EDAC && PCI && X86_32
@@ -160,5 +172,12 @@ config EDAC_POLL
 	  Poll the chipset periodically to detect errors.
 
 endchoice
+
+config EDAC_I7300
+	tristate "Intel Clarksboro MCH"
+	depends on EDAC_MM_EDAC && X86 && PCI
+	help
+	  Support for error detection and correction the Intel
+	  Clarksboro MCH (Intel 7300 chipset).
 
 endmenu

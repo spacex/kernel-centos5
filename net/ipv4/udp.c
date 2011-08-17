@@ -148,7 +148,8 @@ static int udp_v4_get_port(struct sock *sk, unsigned short snum)
 		best_size_so_far = UINT_MAX;
 		best = rover = net_random() % remaining + low;
 
-		if (!udp_lport_inuse(rover))
+		if (!udp_lport_inuse(rover) &&
+		    !inet_is_reserved_local_port(rover))
 			goto gotit;
 
 		/* 1st pass: look for empty (or shortest) hash chain */
@@ -157,7 +158,8 @@ static int udp_v4_get_port(struct sock *sk, unsigned short snum)
 			int size = 0;
 
 			list = &udp_hash[rover & (UDP_HTABLE_SIZE - 1)];
-			if (hlist_empty(list))
+			if (hlist_empty(list) &&
+			    !inet_is_reserved_local_port(rover))
 				goto gotit;
 
 			sk_for_each(sk2, node, list)
@@ -174,7 +176,8 @@ static int udp_v4_get_port(struct sock *sk, unsigned short snum)
 		/* 2nd pass: find hole in shortest hash chain */
 		rover = best;
 		for (i = 0; i < (1 << 16) / UDP_HTABLE_SIZE; i++) {
-			if (!udp_lport_inuse(rover))
+			if (!udp_lport_inuse(rover) &&
+			    !inet_is_reserved_local_port(rover))
 				goto gotit;
 			rover += UDP_HTABLE_SIZE;
 			if (rover > high)
@@ -1015,18 +1018,12 @@ static int __udp_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
 	int rc;
 
 	if ((rc = sock_queue_rcv_skb_nolock(sk, skb)) < 0) {
-		/* Note that an ENOMEM error is charged twice */
-		if (rc == -ENOMEM)
-			UDP_INC_STATS_BH(UDP_MIB_INERRORS);
-		goto drop;
+		UDP_INC_STATS_BH(UDP_MIB_INERRORS);
+		kfree_skb(skb);
+		return -1;
 	}
 
 	return 0;
-
-drop:
-	UDP_INC_STATS_BH(UDP_MIB_INERRORS);
-	kfree_skb(skb);
-	return -1;
 }
 
 /* returns:

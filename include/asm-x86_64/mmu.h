@@ -14,7 +14,10 @@ typedef struct {
 	void *ldt;
 	rwlock_t ldtlock; 
 	int size;
-	struct semaphore sem; 
+	struct semaphore sem;
+#ifndef __GENKSYMS__
+	void *vdso;
+#endif
 } mm_context_t;
 
 #endif

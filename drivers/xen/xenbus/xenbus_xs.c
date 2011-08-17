@@ -628,6 +628,8 @@ void unregister_xenbus_watch(struct xenbus_watch *watch)
 	char token[sizeof(watch) * 2 + 1];
 	int err;
 
+	BUG_ON(watch->flags & XBWF_new_thread);
+
 	sprintf(token, "%lX", (long)watch);
 
 	down_read(&xs_state.suspend_mutex);
@@ -742,16 +744,29 @@ static int xenwatch_thread(void *unused)
 			list_del(ent);
 		spin_unlock(&watch_events_lock);
 
-		if (ent != &watch_events) {
-			msg = list_entry(ent, struct xs_stored_msg, list);
-			if (msg->u.watch.handle->flags & XBWF_new_thread)
-				kthread_run(xenwatch_handle_callback,
-					    msg, "xenwatch_cb");
-			else
-				xenwatch_handle_callback(msg);
+		if (ent == &watch_events) {
+			mutex_unlock(&xenwatch_mutex);
+			continue;
 		}
 
-		mutex_unlock(&xenwatch_mutex);
+		msg = list_entry(ent, struct xs_stored_msg, list);
+
+		/*
+		 * Unlock the mutex before running an XBWF_new_thread
+		 * handler. kthread_run can block which can deadlock
+		 * against unregister_xenbus_watch() if we need to
+		 * unregister other watches in order to make
+		 * progress. This can occur on resume before the swap
+		 * device is attached.
+		 */
+		if (msg->u.watch.handle->flags & XBWF_new_thread) {
+			mutex_unlock(&xenwatch_mutex);
+			kthread_run(xenwatch_handle_callback,
+				    msg, "xenwatch_cb");
+		} else {
+			xenwatch_handle_callback(msg);
+			mutex_unlock(&xenwatch_mutex);
+		}
 	}
 
 	return 0;

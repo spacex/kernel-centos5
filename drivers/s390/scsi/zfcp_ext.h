@@ -159,7 +159,7 @@ extern int  zfcp_erp_thread_kill(struct zfcp_adapter *);
 extern int  zfcp_erp_wait(struct zfcp_adapter *);
 extern void zfcp_erp_async_handler(struct zfcp_erp_action *, unsigned long);
 
-extern int  zfcp_test_link(struct zfcp_port *);
+extern void zfcp_test_link(struct zfcp_port *);
 
 extern void zfcp_erp_port_boxed(struct zfcp_port *, u8 id, void *ref);
 extern void zfcp_erp_unit_boxed(struct zfcp_unit *, u8 id, void *ref);

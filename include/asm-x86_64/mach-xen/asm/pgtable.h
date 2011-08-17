@@ -99,7 +99,7 @@ extern unsigned long empty_zero_page[PAGE_SIZE/sizeof(unsigned long)];
 #define pgd_none(x)	(!pgd_val(x))
 #define pud_none(x)	(!pud_val(x))
 
-extern inline int pud_present(pud_t pud)	{ return !pud_none(pud); }
+static inline int pud_present(pud_t pud)	{ return !pud_none(pud); }
 
 static inline void set_pte(pte_t *dst, pte_t val)
 {

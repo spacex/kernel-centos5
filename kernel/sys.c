@@ -800,10 +800,10 @@ void ctrl_alt_del(void)
  */
 asmlinkage long sys_setregid(gid_t rgid, gid_t egid)
 {
-	int old_rgid = current->gid;
-	int old_egid = current->egid;
-	int new_rgid = old_rgid;
-	int new_egid = old_egid;
+	gid_t old_rgid = current->gid;
+	gid_t old_egid = current->egid;
+	gid_t new_rgid = old_rgid;
+	gid_t new_egid = old_egid;
 	int retval;
 
 	retval = security_task_setgid(rgid, egid, (gid_t)-1, LSM_SETID_RE);
@@ -851,7 +851,7 @@ asmlinkage long sys_setregid(gid_t rgid, gid_t egid)
  */
 asmlinkage long sys_setgid(gid_t gid)
 {
-	int old_egid = current->egid;
+	gid_t old_egid = current->egid;
 	int retval;
 
 	retval = security_task_setgid(gid, (gid_t)-1, (gid_t)-1, LSM_SETID_ID);
@@ -927,7 +927,7 @@ static int set_user(uid_t new_ruid, int dumpclear)
  */
 asmlinkage long sys_setreuid(uid_t ruid, uid_t euid)
 {
-	int old_ruid, old_euid, old_suid, new_ruid, new_euid;
+	uid_t old_ruid, old_euid, old_suid, new_ruid, new_euid;
 	int retval;
 
 	retval = security_task_setuid(ruid, euid, (uid_t)-1, LSM_SETID_RE);
@@ -990,8 +990,8 @@ asmlinkage long sys_setreuid(uid_t ruid, uid_t euid)
  */
 asmlinkage long sys_setuid(uid_t uid)
 {
-	int old_euid = current->euid;
-	int old_ruid, old_suid, new_ruid, new_suid;
+	uid_t old_euid = current->euid;
+	uid_t old_ruid, old_suid, new_ruid, new_suid;
 	int retval;
 
 	retval = security_task_setuid(uid, (uid_t)-1, (uid_t)-1, LSM_SETID_ID);
@@ -1030,9 +1030,9 @@ asmlinkage long sys_setuid(uid_t uid)
  */
 asmlinkage long sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)
 {
-	int old_ruid = current->uid;
-	int old_euid = current->euid;
-	int old_suid = current->suid;
+	uid_t old_ruid = current->uid;
+	uid_t old_euid = current->euid;
+	uid_t old_suid = current->suid;
 	int retval;
 
 	retval = security_task_setuid(ruid, euid, suid, LSM_SETID_RES);
@@ -1175,7 +1175,7 @@ asmlinkage long sys_setfsuid(uid_t uid)
  */
 asmlinkage long sys_setfsgid(gid_t gid)
 {
-	int old_fsgid;
+	gid_t old_fsgid;
 
 	old_fsgid = current->fsgid;
 	if (security_task_setgid(gid, (gid_t)-1, (gid_t)-1, LSM_SETID_FS))
@@ -1548,10 +1548,9 @@ int groups_search(struct group_info *group_info, gid_t grp)
 	right = group_info->ngroups;
 	while (left < right) {
 		unsigned int mid = (left+right)/2;
-		int cmp = grp - GROUP_AT(group_info, mid);
-		if (cmp > 0)
+		if (grp > GROUP_AT(group_info, mid))
 			left = mid + 1;
-		else if (cmp < 0)
+		else if (grp < GROUP_AT(group_info, mid))
 			right = mid;
 		else
 			return 1;
@@ -1899,12 +1898,14 @@ static void k_getrusage(struct task_struct *p, int who, struct rusage *r)
 	struct task_struct *t;
 	unsigned long flags;
 	cputime_t utime, stime;
+	unsigned long maxrss = 0;
 
 	memset((char *) r, 0, sizeof *r);
 	utime = stime = cputime_zero;
 
 	if (who == RUSAGE_THREAD) {
 		accumulate_thread_rusage(p, r, &utime, &stime);
+		maxrss = signal_aux(p->signal)->maxrss;
 		goto out;
 	}
 
@@ -1923,6 +1924,7 @@ static void k_getrusage(struct task_struct *p, int who, struct rusage *r)
 			r->ru_nivcsw = p->signal->cnivcsw;
 			r->ru_minflt = p->signal->cmin_flt;
 			r->ru_majflt = p->signal->cmaj_flt;
+			maxrss = signal_aux(p->signal)->cmaxrss;
 
 			if (who == RUSAGE_CHILDREN)
 				break;
@@ -1934,6 +1936,8 @@ static void k_getrusage(struct task_struct *p, int who, struct rusage *r)
 			r->ru_nivcsw += p->signal->nivcsw;
 			r->ru_minflt += p->signal->min_flt;
 			r->ru_majflt += p->signal->maj_flt;
+			if (maxrss < signal_aux(p->signal)->maxrss)
+				maxrss = signal_aux(p->signal)->maxrss;
 			t = p;
 			do {
 				accumulate_thread_rusage(t, r, &utime, &stime);
@@ -1951,6 +1955,15 @@ static void k_getrusage(struct task_struct *p, int who, struct rusage *r)
 out:
 	cputime_to_timeval(utime, &r->ru_utime);
 	cputime_to_timeval(stime, &r->ru_stime);
+
+	if (who != RUSAGE_CHILDREN) {
+		struct mm_struct *mm = get_task_mm(p);
+		if (mm) {
+			setmax_mm_hiwater_rss(&maxrss, mm);
+			mmput(mm);
+		}
+	}
+	r->ru_maxrss = maxrss * (PAGE_SIZE / 1024); /* convert pages to KBs */
 }
 
 int getrusage(struct task_struct *p, int who, struct rusage __user *ru)

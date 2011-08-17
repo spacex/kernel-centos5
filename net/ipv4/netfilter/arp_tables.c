@@ -168,13 +168,9 @@ static inline int arp_packet_match(const struct arphdr *arphdr,
 		return 0;
 	}
 
-	for (i = 0, ret = 0; i < IFNAMSIZ/sizeof(unsigned long); i++) {
-		unsigned long odev;
-		memcpy(&odev, outdev + i*sizeof(unsigned long),
-		       sizeof(unsigned long));
-		ret |= (odev
-			^ ((const unsigned long *)arpinfo->outiface)[i])
-			& ((const unsigned long *)arpinfo->outiface_mask)[i];
+	for (i = 0, ret = 0; i < IFNAMSIZ; i++) {
+		ret |= (outdev[i] ^ arpinfo->outiface[i])
+			& arpinfo->outiface_mask[i];
 	}
 
 	if (FWINV(ret != 0, ARPT_INV_VIA_OUT)) {
@@ -471,7 +467,13 @@ static inline int check_entry(struct arpt_entry *e, const char *name, unsigned i
 		return -EINVAL;
 	}
 
+	if (e->target_offset + sizeof(struct arpt_entry_target) > e->next_offset)
+		return -EINVAL;
+
 	t = arpt_get_target(e);
+	if (e->target_offset + t->u.target_size > e->next_offset)
+		return -EINVAL;
+
 	target = try_then_request_module(xt_find_target(NF_ARP, t->u.user.name,
 							t->u.user.revision),
 					 "arpt_%s", t->u.user.name);
@@ -629,20 +631,18 @@ static int translate_table(const char *name,
 		}
 	}
 
-	if (!mark_source_chains(newinfo, valid_hooks, entry0)) {
-		duprintf("Looping hook\n");
-		return -ELOOP;
-	}
-
 	/* Finally, each sanity check must pass */
 	i = 0;
 	ret = ARPT_ENTRY_ITERATE(entry0, newinfo->size,
 				 check_entry, name, size, &i);
 
-	if (ret != 0) {
-		ARPT_ENTRY_ITERATE(entry0, newinfo->size,
-				   cleanup_entry, &i);
-		return ret;
+	if (ret != 0)
+		goto cleanup;
+
+	ret = -ELOOP;
+	if (!mark_source_chains(newinfo, valid_hooks, entry0)) {
+		duprintf("Looping hook\n");
+		goto cleanup;
 	}
 
 	/* And one copy for every other CPU */
@@ -651,6 +651,9 @@ static int translate_table(const char *name,
 			memcpy(newinfo->entries[i], entry0, newinfo->size);
 	}
 
+	return 0;
+cleanup:
+	ARPT_ENTRY_ITERATE(entry0, newinfo->size, cleanup_entry, &i);
 	return ret;
 }
 
@@ -815,9 +818,6 @@ static int do_replace(void __user *user, unsigned int len)
 		return -ENOPROTOOPT;
 
 	/* overflow check */
-	if (tmp.size >= (INT_MAX - sizeof(struct xt_table_info)) / NR_CPUS -
-			SMP_CACHE_BYTES)
-		return -ENOMEM;
 	if (tmp.num_counters >= INT_MAX / sizeof(struct xt_counters))
 		return -ENOMEM;
 

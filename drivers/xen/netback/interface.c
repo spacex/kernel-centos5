@@ -49,7 +49,7 @@
  * run a timer (tx_queue_timeout) to drain the queue when the interface is
  * blocked.
  */
-static unsigned long netbk_queue_length = 32;
+static unsigned long netbk_queue_length = 500;
 module_param_named(queue_length, netbk_queue_length, ulong, 0);
 
 static void __netif_up(netif_t *netif)

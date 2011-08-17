@@ -84,7 +84,12 @@ static bool do_req(struct request_queue *q, struct virtio_blk *vblk,
 		return false;
 
 	vbr->req = req;
-	if (blk_fs_request(vbr->req)) {
+	if (vbr->req->flags & REQ_DRIVE_TASK) {
+		BUG_ON(vbr->req->cmd[0] != VIRTIO_BLK_T_FLUSH);
+		vbr->out_hdr.type = vbr->req->cmd[0];
+		vbr->out_hdr.sector = 0;
+		vbr->out_hdr.ioprio = vbr->req->ioprio;
+	} else if (blk_fs_request(vbr->req)) {
 		vbr->out_hdr.type = 0;
 		vbr->out_hdr.sector = vbr->req->sector;
 		vbr->out_hdr.ioprio = vbr->req->ioprio;
@@ -115,7 +120,7 @@ static bool do_req(struct request_queue *q, struct virtio_blk *vblk,
 		in = 1 + num;
 	}
 
-	if (vblk->vq->vq_ops->add_buf(vblk->vq, vblk->sg, out, in, vbr)) {
+	if (vblk->vq->vq_ops->add_buf(vblk->vq, vblk->sg, out, in, vbr) < 0) {
 		mempool_free(vbr, vblk->pool);
 		return false;
 	}
@@ -146,6 +151,17 @@ static void do_virtblk_request(struct request_queue *q)
 
 	if (issued)
 		vblk->vq->vq_ops->kick(vblk->vq);
+}
+
+static void virtblk_prepare_flush(struct request_queue *q, struct request *req)
+{
+	/*
+	 * XXX: abuse the special IDE-internal commands as we don't have the
+	 * generic LINUX_BLOCK commands used for this in mainline available
+	 * on this old kernel.
+	 */
+	req->flags |= REQ_DRIVE_TASK;
+	req->cmd[0] = VIRTIO_BLK_T_FLUSH;
 }
 
 static int virtblk_ioctl(struct inode *inode, struct file *filp,
@@ -214,7 +230,7 @@ static int virtblk_probe(struct virtio_device *vdev)
 	vblk->vdev = vdev;
 
 	/* We expect one virtqueue, for output. */
-	vblk->vq = vdev->config->find_vq(vdev, 0, blk_done);
+	vblk->vq = virtio_find_single_vq(vdev, blk_done, "requests");
 	if (IS_ERR(vblk->vq)) {
 		err = PTR_ERR(vblk->vq);
 		goto out_free_vblk;
@@ -260,7 +276,11 @@ static int virtblk_probe(struct virtio_device *vdev)
 	index++;
 
 	/* If barriers are supported, tell block layer that queue is ordered */
-	if (virtio_has_feature(vdev, VIRTIO_BLK_F_BARRIER))
+	/* If barriers are supported, tell block layer that queue is ordered */
+	if (virtio_has_feature(vdev, VIRTIO_BLK_F_FLUSH))
+		blk_queue_ordered(vblk->disk->queue, QUEUE_ORDERED_DRAIN_FLUSH,
+				  virtblk_prepare_flush);
+	else if (virtio_has_feature(vdev, VIRTIO_BLK_F_BARRIER))
 		blk_queue_ordered(vblk->disk->queue, QUEUE_ORDERED_TAG, NULL);
 
 	/* If disk is read-only in the host, the guest should obey */
@@ -308,7 +328,7 @@ out_put_disk:
 out_mempool:
 	mempool_destroy(vblk->pool);
 out_free_vq:
-	vdev->config->del_vq(vblk->vq);
+	vdev->config->del_vqs(vdev);
 out_free_vblk:
 	kfree(vblk);
 out:
@@ -329,7 +349,7 @@ static void virtblk_remove(struct virtio_device *vdev)
 	blk_cleanup_queue(vblk->disk->queue);
 	put_disk(vblk->disk);
 	mempool_destroy(vblk->pool);
-	vdev->config->del_vq(vblk->vq);
+	vdev->config->del_vqs(vdev);
 	kfree(vblk);
 }
 
@@ -341,6 +361,7 @@ static struct virtio_device_id id_table[] = {
 static unsigned int features[] = {
 	VIRTIO_BLK_F_BARRIER, VIRTIO_BLK_F_SEG_MAX, VIRTIO_BLK_F_SIZE_MAX,
 	VIRTIO_BLK_F_GEOMETRY, VIRTIO_BLK_F_RO, VIRTIO_BLK_F_BLK_SIZE,
+	VIRTIO_BLK_F_FLUSH
 };
 
 static struct virtio_driver virtio_blk = {

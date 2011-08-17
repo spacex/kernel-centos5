@@ -24,6 +24,7 @@
 #define HUGETLB_PAGE_ORDER	(HPAGE_SHIFT - PAGE_SHIFT)
 
 #define ARCH_HAS_SETCLEAR_HUGE_PTE
+#define ARCH_HAS_SETCLEAR_HUGE_PTE_NO_PROTO
 #define ARCH_HAS_HUGE_PTE_TYPE
 #define ARCH_HAS_PREPARE_HUGEPAGE
 #define ARCH_HAS_HUGEPAGE_CLEAR_FLUSH
@@ -194,6 +195,7 @@ page_get_storage_key(unsigned long addr)
 #define PAGE_ALIGN(addr)        (((addr)+PAGE_SIZE-1)&PAGE_MASK)
 #define PFN_UP(x)		(((x) + PAGE_SIZE-1) >> PAGE_SHIFT)
 #define PFN_DOWN(x)		((x) >> PAGE_SHIFT)
+#define PFN_PHYS(x)		((x) << PAGE_SHIFT)
 
 #define __PAGE_OFFSET           0x0UL
 #define PAGE_OFFSET             0x0UL

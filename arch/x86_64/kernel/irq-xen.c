@@ -124,15 +124,10 @@ asmlinkage unsigned int do_IRQ(struct pt_regs *regs)
 		BUG();
 	}
 
-	exit_idle();
-	irq_enter();
-
 #ifdef CONFIG_DEBUG_STACKOVERFLOW
 	stack_overflow_check(regs);
 #endif
 	__do_IRQ(irq, regs);
-	irq_exit();
-
 	return 1;
 }
 

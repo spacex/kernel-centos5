@@ -25,12 +25,10 @@
 
 #include <linux/device.h>
 #include <linux/uio.h>
-#include <linux/kref.h>
-#include <linux/completion.h>
-#include <linux/rcupdate.h>
 #ifndef __GENKSYMS__
 #include <linux/dma-mapping.h>
 #endif
+
 
 /**
  * enum dma_event - resource PNP/power managment events
@@ -96,6 +94,9 @@ struct dma_chan_percpu {
  * @local: per-cpu pointer to a struct dma_chan_percpu
  * @device_v3: pointer to dma_device version 3 structure
  * @client_count: how many clients are using this channel
+ * @table_count: number of appearances in the mem-to-mem allocation table
+ * @dev: class device for sysfs
+ * @private: private data for certain client-channel associations
  */
 struct dma_chan {
 	struct dma_client *client;
@@ -117,31 +118,28 @@ struct dma_chan {
 #ifndef __GENKSYMS__
 	struct dma_device_v3 *device_v3;
 	int client_count;
+	int table_count;
+	struct dma_chan_dev *dev;
+	void *private;
 #endif
+};
+
+/**
+ * struct dma_chan_dev - relate sysfs device node to backing channel device
+ * @chan - driver channel device
+ * @device - sysfs device
+ * @dev_id - parent dma_device dev_id
+ * @idr_ref - reference count to gate release of dma_device dev_id
+ */
+struct dma_chan_dev {
+	struct dma_chan *chan;
+	struct class_device class_dev;
+	int dev_id;
+	atomic_t *idr_ref;
 };
 
 void dma_chan_cleanup_v3(struct kref *kref);
 void dma_chan_cleanup(struct kref *kref);
-
-static inline void dma_chan_get(struct dma_chan *chan)
-{
-	if (unlikely(chan->slow_ref))
-		kref_get(&chan->refcount);
-	else {
-		local_inc(&(per_cpu_ptr(chan->local, get_cpu())->refcount));
-		put_cpu();
-	}
-}
-
-static inline void dma_chan_put(struct dma_chan *chan)
-{
-	if (unlikely(chan->slow_ref))
-		kref_put(&chan->refcount, dma_chan_cleanup_v3);
-	else {
-		local_dec(&(per_cpu_ptr(chan->local, get_cpu())->refcount));
-		put_cpu();
-	}
-}
 
 /*
  * typedef dma_event_callback - function pointer to a DMA event callback
@@ -197,6 +195,18 @@ struct dma_device {
 
 struct dma_client *dma_async_client_register(dma_event_callback event_callback);
 void dma_async_client_unregister(struct dma_client *client);
+#ifdef CONFIG_DMA_ENGINE_V3
+void dmaengine_get(void);
+void dmaengine_put(void);
+#else
+static inline void dmaengine_get(void)
+{
+}
+static inline void dmaengine_put(void)
+{
+}
+#endif
+
 void dma_async_client_chan_request(struct dma_client *client,
 		unsigned int number);
 
@@ -365,32 +375,6 @@ dma_cookie_t dma_memcpy_pg_to_iovec_v3(struct dma_chan *chan, struct iovec *iov,
 	struct dma_pinned_list *pinned_list, struct page *page,
 	unsigned int offset, size_t len);
 
-/**
- * enum dma_state - resource PNP/power management state
- * @DMA_STATE_RESOURCE_SUSPEND: DMA device going into low power state
- * @DMA_STATE_RESOURCE_RESUME: DMA device returning to full power
- * @DMA_STATE_RESOURCE_AVAILABLE: DMA device available to the system
- * @DMA_STATE_RESOURCE_REMOVED: DMA device removed from the system
- */
-enum dma_state {
-	DMA_STATE_RESOURCE_SUSPEND,
-	DMA_STATE_RESOURCE_RESUME,
-	DMA_STATE_RESOURCE_AVAILABLE,
-	DMA_STATE_RESOURCE_REMOVED,
-};
-
-/**
- * enum dma_state_client - state of the channel in the client
- * @DMA_ACK: client would like to use, or was using this channel
- * @DMA_DUP: client has already seen this channel, or is not using this channel
- * @DMA_NAK: client does not want to see any more channels
- */
-enum dma_state_client {
-	DMA_ACK,
-	DMA_DUP,
-	DMA_NAK,
-};
-
 #define dma_submit_error(cookie) ((cookie) < 0 ? 1 : 0)
 
 /**
@@ -407,23 +391,12 @@ enum dma_transaction_type {
 	DMA_MEMSET,
 	DMA_MEMCPY_CRC32C,
 	DMA_INTERRUPT,
+	DMA_PRIVATE,
 	DMA_SLAVE,
 };
 
 /* last transaction type for creation of the capabilities mask */
 #define DMA_TX_TYPE_END (DMA_SLAVE + 1)
-
-/**
- * enum dma_slave_width - DMA slave register access width.
- * @DMA_SLAVE_WIDTH_8BIT: Do 8-bit slave register accesses
- * @DMA_SLAVE_WIDTH_16BIT: Do 16-bit slave register accesses
- * @DMA_SLAVE_WIDTH_32BIT: Do 32-bit slave register accesses
- */
-enum dma_slave_width {
-	DMA_SLAVE_WIDTH_8BIT,
-	DMA_SLAVE_WIDTH_16BIT,
-	DMA_SLAVE_WIDTH_32BIT,
-};
 
 /**
  * enum dma_ctrl_flags - DMA flags to augment operation preparation,
@@ -435,12 +408,18 @@ enum dma_slave_width {
  *      dependency chains
  * @DMA_COMPL_SKIP_SRC_UNMAP - set to disable dma-unmapping the source buffer(s)
  * @DMA_COMPL_SKIP_DEST_UNMAP - set to disable dma-unmapping the destination(s)
+ * @DMA_COMPL_SRC_UNMAP_SINGLE - set to do the source dma-unmapping as single
+ * 	(if not set, do the source dma-unmapping as page)
+ * @DMA_COMPL_DEST_UNMAP_SINGLE - set to do the destination dma-unmapping as single
+ * 	(if not set, do the destination dma-unmapping as page)
  */
 enum dma_ctrl_flags {
 	DMA_PREP_INTERRUPT = (1 << 0),
 	DMA_CTRL_ACK = (1 << 1),
 	DMA_COMPL_SKIP_SRC_UNMAP = (1 << 2),
 	DMA_COMPL_SKIP_DEST_UNMAP = (1 << 3),
+	DMA_COMPL_SRC_UNMAP_SINGLE = (1 << 4),
+	DMA_COMPL_DEST_UNMAP_SINGLE = (1 << 5),
 };
 
 /**
@@ -449,34 +428,8 @@ enum dma_ctrl_flags {
  */
 typedef struct { DECLARE_BITMAP(bits, DMA_TX_TYPE_END); } dma_cap_mask_t;
 
-/**
- * struct dma_slave - Information about a DMA slave
- * @dev: device acting as DMA slave
- * @dma_dev: required DMA master device. If non-NULL, the client can not be
- *      bound to other masters than this.
- * @tx_reg: physical address of data register used for
- *      memory-to-peripheral transfers
- * @rx_reg: physical address of data register used for
- *      peripheral-to-memory transfers
- * @reg_width: peripheral register width
- *
- * If dma_dev is non-NULL, the client can not be bound to other DMA
- * masters than the one corresponding to this device. The DMA master
- * driver may use this to determine if there is controller-specific
- * data wrapped around this struct. Drivers of platform code that sets
- * the dma_dev field must therefore make sure to use an appropriate
- * controller-specific dma slave structure wrapping this struct.
- */
-struct dma_slave {
-	struct device		*dev;
-	struct device		*dma_dev;
-	dma_addr_t		tx_reg;
-	dma_addr_t		rx_reg;
-	enum dma_slave_width	reg_width;
-};
-
 /*
- * typedef dma_event_callback_v3 - function pointer to a DMA event callback
+ * typedef dma_event_callback - function pointer to a DMA event callback
  * For each channel added to the system this routine is called for each client.
  * If the client would like to use the channel it returns '1' to signal (ack)
  * the dmaengine core to take out a reference on the channel and its
@@ -488,10 +441,6 @@ struct dma_slave {
  * @chan - channel to be acted upon
  * @state - available or removed
  */
-typedef enum dma_state_client (*dma_event_callback_v3)
-			       (struct dma_client *client,
-			       struct dma_chan *chan, enum dma_state state);
-
 typedef void (*dma_async_tx_callback)(void *dma_async_param);
 
 /**
@@ -527,9 +476,24 @@ struct dma_async_tx_descriptor {
 	spinlock_t lock;
 };
 
+#ifdef CONFIG_DMA_ENGINE_V3
+enum dma_status dma_wait_for_async_tx(struct dma_async_tx_descriptor *tx);
+void dma_issue_pending_all(void);
+#else
+static inline enum dma_status dma_wait_for_async_tx(struct dma_async_tx_descriptor *tx)
+{
+	return DMA_SUCCESS;
+}
+static inline void dma_issue_pending_all(void)
+{
+	do { } while (0);
+}
+#endif
+
 /**
  * struct dma_device_v3 - info on the entity supplying DMA services
  * @chancnt: how many DMA channels are supported
+ * @privatecnt: how many DMA channels are requested by dma_request_channel
  * @channels: the list of struct dma_chan
  * @global_node: list_head for global dma_device_list
  * @cap_mask: one or more dma_capability flags
@@ -548,23 +512,21 @@ struct dma_async_tx_descriptor {
  * @device_prep_dma_interrupt: prepares an end of chain interrupt operation
  * @device_prep_slave_sg: prepares a slave dma operation
  * @device_terminate_all: terminate all pending operations
+ * @device_is_tx_complete: poll for transaction completion
  * @device_issue_pending: push pending transactions to hardware
  */
 struct dma_device_v3 {
 	unsigned int chancnt;
+	unsigned int privatecnt;
 	struct list_head channels;
 	struct list_head global_node;
 	dma_cap_mask_t  cap_mask;
 	int max_xor;
 
-	struct kref refcount;
-	struct completion done;
-
 	int dev_id;
 	struct device *dev;
 
-	int (*device_alloc_chan_resources)(struct dma_chan *chan,
-		struct dma_client *client);
+	int (*device_alloc_chan_resources)(struct dma_chan *chan);
 	void (*device_free_chan_resources)(struct dma_chan *chan);
 
 	struct dma_async_tx_descriptor *(*device_prep_dma_memcpy)(
@@ -596,9 +558,6 @@ struct dma_device_v3 {
 
 /* --- public DMA engine API --- */
 
-void dma_async_client_register_v3(struct dma_client *client);
-void dma_async_client_unregister_v3(struct dma_client *client);
-void dma_async_client_chan_request_v3(struct dma_client *client);
 dma_cookie_t dma_async_memcpy_buf_to_buf_v3(struct dma_chan *chan,
 	void *dest, void *src, size_t len);
 dma_cookie_t dma_async_memcpy_buf_to_pg_v3(struct dma_chan *chan,
@@ -612,6 +571,11 @@ void dma_async_tx_descriptor_init_v3(struct dma_async_tx_descriptor *tx,
 static inline void async_tx_ack(struct dma_async_tx_descriptor *tx)
 {
 	tx->flags |= DMA_CTRL_ACK;
+}
+
+static inline void async_tx_clear_ack(struct dma_async_tx_descriptor *tx)
+{
+	tx->flags &= ~DMA_CTRL_ACK;
 }
 
 static inline bool async_tx_test_ack(struct dma_async_tx_descriptor *tx)
@@ -638,6 +602,19 @@ static inline void
 __dma_cap_set(enum dma_transaction_type tx_type, dma_cap_mask_t *dstp)
 {
 	set_bit(tx_type, dstp->bits);
+}
+
+#define dma_cap_clear(tx, mask) __dma_cap_clear((tx), &(mask))
+static inline void
+__dma_cap_clear(enum dma_transaction_type tx_type, dma_cap_mask_t *dstp)
+{
+	clear_bit(tx_type, dstp->bits);
+}
+
+#define dma_cap_zero(mask) __dma_cap_zero(&(mask))
+static inline void __dma_cap_zero(dma_cap_mask_t *dstp)
+{
+	bitmap_zero(dstp->bits, DMA_TX_TYPE_END);
 }
 
 #define dma_has_cap(tx, mask) __dma_has_cap((tx), &(mask))
@@ -690,6 +667,25 @@ static inline enum dma_status dma_async_is_tx_complete(struct dma_chan *chan,
 
 int dma_async_device_register_v3(struct dma_device_v3 *device);
 void dma_async_device_unregister_v3(struct dma_device_v3 *device);
+void dma_run_dependencies(struct dma_async_tx_descriptor *tx);
+struct dma_chan *dma_find_channel(enum dma_transaction_type tx_type);
+#define dma_request_channel(mask, x, y) __dma_request_channel(&(mask), x, y)
+void dma_release_channel(struct dma_chan *chan);
+
+/**
+ * typedef dma_filter_fn - callback filter for dma_request_channel
+ * @chan: channel to be reviewed
+ * @filter_param: opaque parameter passed through dma_request_channel
+ *
+ * When this optional parameter is specified in a call to dma_request_channel a
+ * suitable channel is passed to this routine for further dispositioning before
+ * being returned.  Where 'suitable' indicates a non-busy channel that
+ * satisfies the given capability mask.  It returns 'true' to indicate that the
+ * channel is suitable.
+ */
+typedef bool (*dma_filter_fn)(struct dma_chan *chan, void *filter_param);
+
+struct dma_chan *__dma_request_channel(dma_cap_mask_t *mask, dma_filter_fn fn, void *fn_param);
 
 /**
  * struct dma_client - info on the entity making use of DMA services
@@ -699,11 +695,6 @@ void dma_async_device_unregister_v3(struct dma_device_v3 *device);
  * @lock: protects access to the channels list
  * @channels: the list of DMA channels allocated
  * @global_node: list_head for global dma_client_list
- * @event_callback_v3: func ptr to call when something happens
- * @cap_mask: only return channels that satisfy the requested capabilities
- *  a value of zero corresponds to any capability
- * @slave: data for preparing slave transfer. Must be non-NULL iff the
- *  DMA_SLAVE capability is requested.
  */
 struct dma_client {
 	dma_event_callback	event_callback;
@@ -713,12 +704,19 @@ struct dma_client {
 	spinlock_t		lock;
 	struct list_head	channels;
 	struct list_head	global_node;
-#ifndef __GENKSYMS__
-	dma_event_callback_v3	event_callback_v3;
-	dma_cap_mask_t		cap_mask;
-	struct dma_slave	*slave;
-#endif
 };
 
 #endif /* CONFIG_DMA_ENGINE */
+
+#ifdef CONFIG_NET_DMA
+#define net_dmaengine_get()	dmaengine_get()
+#define net_dmaengine_put()	dmaengine_put()
+#else
+static inline void net_dmaengine_get(void)
+{
+}
+static inline void net_dmaengine_put(void)
+{
+}
+#endif
 #endif /* DMAENGINE_H */

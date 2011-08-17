@@ -972,6 +972,7 @@ static void xprt_destroy(struct kref *kref)
 	dprintk("RPC:      destroying transport %p\n", xprt);
 	xprt->shutdown = 1;
 	del_timer_sync(&xprt->timer);
+	cancel_work_sync(&xprt->task_cleanup);
 	xprt->ops->destroy(xprt);
 	kfree(xprt);
 }

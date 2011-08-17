@@ -1008,6 +1008,8 @@ static void check_thread_timers(struct task_struct *tsk,
 	}
 }
 
+static u32 onecputick;
+
 /*
  * Check for any per-thread CPU timers that have fired and move them
  * off the tsk->*_timers list onto the firing list.  Per-thread timers
@@ -1099,11 +1101,21 @@ static void check_process_timers(struct task_struct *tsk,
 	if (!cputime_eq(sig->it_prof_expires, cputime_zero)) {
 		if (cputime_ge(ptime, sig->it_prof_expires)) {
 			/* ITIMER_PROF fires and reloads.  */
-			sig->it_prof_expires = sig->it_prof_incr;
-			if (!cputime_eq(sig->it_prof_expires, cputime_zero)) {
-				sig->it_prof_expires = cputime_add(
-					sig->it_prof_expires, ptime);
-			}
+			if (!cputime_eq(sig->it_prof_incr, cputime_zero)) {
+				sig->it_prof_expires =
+					cputime_add(sig->it_prof_expires,
+						    sig->it_prof_incr);
+				signal_aux(sig)->it_prof_error +=
+					signal_aux(sig)->it_prof_incr_error;
+				if (signal_aux(sig)->it_prof_error >= onecputick) {
+					sig->it_prof_expires = cputime_sub(
+						sig->it_prof_expires,
+						jiffies_to_cputime(1));
+					signal_aux(sig)->it_prof_error -= onecputick;
+				}
+			} else
+				sig->it_prof_expires = cputime_zero;
+
 			__group_send_sig_info(SIGPROF, SEND_SIG_PRIV, tsk);
 		}
 		if (!cputime_eq(sig->it_prof_expires, cputime_zero) &&
@@ -1115,11 +1127,21 @@ static void check_process_timers(struct task_struct *tsk,
 	if (!cputime_eq(sig->it_virt_expires, cputime_zero)) {
 		if (cputime_ge(utime, sig->it_virt_expires)) {
 			/* ITIMER_VIRTUAL fires and reloads.  */
-			sig->it_virt_expires = sig->it_virt_incr;
-			if (!cputime_eq(sig->it_virt_expires, cputime_zero)) {
-				sig->it_virt_expires = cputime_add(
-					sig->it_virt_expires, utime);
-			}
+			if (!cputime_eq(sig->it_virt_incr, cputime_zero)) {
+				sig->it_virt_expires =
+					cputime_add(sig->it_virt_expires,
+						    sig->it_virt_incr);
+				signal_aux(sig)->it_virt_error +=
+					signal_aux(sig)->it_virt_incr_error;
+				if (signal_aux(sig)->it_virt_error >= onecputick) {
+					sig->it_virt_expires = cputime_sub(
+						sig->it_virt_expires,
+						jiffies_to_cputime(1));
+					signal_aux(sig)->it_virt_error -= onecputick;
+				}
+			} else
+				sig->it_virt_expires = cputime_zero;
+
 			__group_send_sig_info(SIGVTALRM, SEND_SIG_PRIV, tsk);
 		}
 		if (!cputime_eq(sig->it_virt_expires, cputime_zero) &&
@@ -1576,6 +1598,11 @@ static __init int init_posix_cpu_timers(void)
 		.timer_create = thread_cpu_timer_create,
 		.nsleep = thread_cpu_nsleep,
 	};
+	struct timespec ts;
+
+	cputime_to_timespec(jiffies_to_cputime(1), &ts);
+	onecputick = ts.tv_nsec;
+	WARN_ON(ts.tv_sec != 0);
 
 	register_posix_clock(CLOCK_PROCESS_CPUTIME_ID, &process);
 	register_posix_clock(CLOCK_THREAD_CPUTIME_ID, &thread);

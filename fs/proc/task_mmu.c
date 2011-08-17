@@ -182,8 +182,14 @@ static int show_map_internal(struct seq_file *m, void *v, struct mem_size_stats 
 
 	/* We don't show the stack guard page in /proc/maps */
 	start = vma->vm_start;
-	if (vma->vm_flags & VM_GROWSDOWN)
-		start += PAGE_SIZE;
+	if (vma->vm_flags & VM_GROWSDOWN) {
+		struct vm_area_struct *prev;
+
+		/* Is the vma a continuation of the stack vma above it? */
+		find_vma_prev(vma->vm_mm, start, &prev);
+		if (!(prev && prev->vm_end == start && prev->vm_flags & VM_GROWSDOWN))
+			start += PAGE_SIZE;
+	}
 
 	seq_printf(m, "%08lx-%08lx %c%c%c%c %08lx %02x:%02x %lu %n",
 			start,

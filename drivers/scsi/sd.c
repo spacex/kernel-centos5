@@ -101,6 +101,7 @@ MODULE_ALIAS_BLOCKDEV_MAJOR(SCSI_DISK15_MAJOR);
  */
 #define SD_TIMEOUT		(30 * HZ)
 #define SD_MOD_TIMEOUT		(75 * HZ)
+#define SD_FLUSH_TIMEOUT	(60 * HZ)
 
 /*
  * Number of allowed retries
@@ -843,7 +844,7 @@ static int sd_sync_cache(struct scsi_device *sdp)
 		 * flush everything.
 		 */
 		res = scsi_execute_req(sdp, cmd, DMA_NONE, NULL, 0, &sshdr,
-				       SD_TIMEOUT, SD_MAX_RETRIES);
+				       SD_FLUSH_TIMEOUT, SD_MAX_RETRIES);
 		if (res == 0)
 			break;
 	}
@@ -878,7 +879,7 @@ static void sd_prepare_flush(request_queue_t *q, struct request *rq)
 {
 	memset(rq->cmd, 0, sizeof(rq->cmd));
 	rq->flags |= REQ_BLOCK_PC;
-	rq->timeout = SD_TIMEOUT;
+	rq->timeout = SD_FLUSH_TIMEOUT;
 	rq->cmd[0] = SYNCHRONIZE_CACHE;
 	rq->cmd_len = 10;
 }
@@ -1254,7 +1255,7 @@ repeat:
 		/* Either no media are present but the drive didn't tell us,
 		   or they are present but the read capacity command fails */
 		/* sdkp->media_present = 0; -- not always correct */
-		sdkp->capacity = 0x200000; /* 1 GB - random */
+		sdkp->capacity = 0; /* unknown mapped to zero - as usual */
 
 		return;
 	} else if (the_result && longrc) {

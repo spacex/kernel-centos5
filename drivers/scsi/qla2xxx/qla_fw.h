@@ -803,6 +803,8 @@ struct device_reg_24xx {
 #define FA_HW_EVENT1_ADDR	0x54400
 #define FA_NPIV_CONF0_ADDR	0x5C000
 #define FA_NPIV_CONF1_ADDR	0x5D000
+#define FA_FCP_PRIO0_ADDR  	0x10000
+#define FA_FCP_PRIO1_ADDR  	0x12000
 
 	uint32_t flash_data;		/* Flash/NVRAM BIOS data. */
 
@@ -958,6 +960,29 @@ struct device_reg_24xx {
 	uint32_t iobase_sdata;
 };
 
+/*
+ * ISP 8021 I/O Register Set structure definitions.
+ */
+struct device_reg_82xx {
+	uint32_t req_q_out[64];		/* Request Queue out-Pointer (64 * 4) */
+	uint32_t rsp_q_in[64];		/* Response Queue In-Pointer. */
+	uint32_t rsp_q_out[64];		/* Response Queue Out-Pointer. */
+
+	uint16_t mailbox_in[32];	/* Mail box In registers */
+	uint16_t unused_1[32];
+	uint32_t hint;			/* Host interrupt register */
+#define	HINT_MBX_INT_PENDING	BIT_0
+	uint16_t unused_2[62];
+	uint16_t mailbox_out[32];	/* Mail box Out registers */
+	uint32_t unused_3[48];
+
+	uint32_t host_status;		/* host status */
+#define HSRX_RISC_INT		BIT_15  /* RISC to Host interrupt. */
+#define HSRX_RISC_PAUSED	BIT_8   /* RISC Paused. */
+	uint32_t host_int;		/* Interrupt status. */
+#define ISRX_82XX_RISC_INT	BIT_0	/* RISC interrupt. */
+};
+
 /* MID Support ***************************************************************/
 
 #define MIN_MULTI_ID_FABRIC	64	/* Must be power-of-2. */
@@ -1066,9 +1091,9 @@ struct vp_config_entry_24xx {
 	uint32_t handle;		/* System handle. */
 
 	uint16_t flags;
-#define CS_VF_BIND_VPORTS_TO_VF		BIT_0
-#define CS_VF_SET_QOS_OF_VPORTS		BIT_1
-#define CS_VF_SET_HOPS_OF_VPORTS	BIT_2
+#define CS_VF_BIND_VPORTS_TO_VF         BIT_0
+#define CS_VF_SET_QOS_OF_VPORTS         BIT_1
+#define CS_VF_SET_HOPS_OF_VPORTS        BIT_2
 
 	uint16_t comp_status;		/* Completion status. */
 #define CS_VCT_STS_ERROR	0x01	/* Specified VPs were not disabled. */
@@ -1215,6 +1240,17 @@ struct qla_flt_header {
 #define FLT_REG_NPIV_CONF_0	0x29
 #define FLT_REG_NPIV_CONF_1	0x2a
 #define FLT_REG_GOLD_FW		0x2f
+#define FLT_REG_FCP_PRIO_0	0x87
+#define FLT_REG_FCP_PRIO_1	0x88
+
+/* 82XX */
+#define FLT_REG_BOOTLOAD_82xx	0x72
+#define FLT_REG_BOOT_CODE_82xx	0x78
+#define FLT_REG_FW_82xx		0x74
+#define FLT_REG_GOLD_FW_82xx	0x75
+#define FLT_REG_VPD_82xx	0x81
+
+#define	FA_VPD_SIZE_82xx	0x400
 
 struct qla_flt_region {
 	uint32_t code;
@@ -1222,6 +1258,54 @@ struct qla_flt_region {
 	uint32_t start;
 	uint32_t end;
 };
+
+/* FCP priority config defines *************************************/
+struct qla_fcp_prio_entry {
+	uint16_t flags;		/* Describes parameter(s) in FCP	*/
+				/* priority entry that are valid	*/
+#define FCP_PRIO_ENTRY_VALID		0x1
+#define FCP_PRIO_ENTRY_TAG_VALID	0x2
+#define FCP_PRIO_ENTRY_SPID_VALID	0x4
+#define FCP_PRIO_ENTRY_DPID_VALID	0x8
+#define FCP_PRIO_ENTRY_LUNB_VALID	0x10
+#define FCP_PRIO_ENTRY_LUNE_VALID	0x20
+#define FCP_PRIO_ENTRY_SWWN_VALID	0x40
+#define FCP_PRIO_ENTRY_DWWN_VALID	0x80
+	uint8_t  tag;		/* Priority value		    */
+	uint8_t  reserved;	/* Reserved for future use	    */
+	uint32_t src_pid;	/* Src port id. high order byte	    */
+				/* unused; -1 (wild card)	    */
+	uint32_t dst_pid;      	/* Src port id. high order byte     */
+				/* unused; -1 (wild card)           */
+	uint16_t lun_beg;	/* 1st lun num of lun range.        */
+				/* -1 (wild card)                   */
+	uint16_t lun_end;	/* 2nd lun num of lun range.        */
+				/* -1 (wild card)                   */
+	uint8_t  src_wwpn[8];	/* Source WWPN: -1 (wild card)      */
+	uint8_t  dst_wwpn[8];	/* Destination WWPN: -1 (wild card) */
+};
+
+struct qla_fcp_prio_cfg {
+	uint8_t  signature[4];	/* "HQOS" signature of config data  */
+	uint16_t version;	/* 1: Initial version               */
+	uint16_t length;	/* config data size in num bytes    */
+	uint16_t checksum;	/* config data bytes checksum       */
+	uint16_t num_entries;	/* Number of entries                */
+	uint16_t size_of_entry;	/* Size of each entry in num bytes  */
+	uint8_t  attributes;	/* enable/disable, persistence      */
+#define FCP_PRIO_ATTR_DISABLE	0x0
+#define FCP_PRIO_ATTR_ENABLE	0x1
+#define FCP_PRIO_ATTR_PERSIST	0x2
+	uint8_t  reserved;	/* Reserved for future use          */
+#define FCP_PRIO_CFG_HDR_SIZE	0x10
+	struct qla_fcp_prio_entry entry[1];	/* fcp priority entries	 */
+#define FCP_PRIO_CFG_ENTRY_SIZE	0x20
+};
+
+#define FCP_PRIO_CFG_SIZE	(32*1024) /* fcp prio data per port*/
+/* 25XX Support ****************************************************/
+#define FA_FCP_PRIO0_ADDR_25  0x3C000
+#define FA_FCP_PRIO1_ADDR_25  0x3E000
 
 /* 84XX Support ****************************************************/
 
@@ -1513,10 +1597,22 @@ struct nvram_81xx {
 
 	/* Offset 384. */
 	uint8_t reserved_21[16];
-	uint16_t reserved_22[8];
+	uint16_t reserved_22[3];
+
+	/*
+	 * BIT 0 = Extended BB credits for LR
+	 * BIT 1 = Virtual Fabric Enable
+	 * BIT 2 = Enhanced Features Unused
+	 * BIT 3-7 = Enhanced Features Reserved
+	 */
+	/* Enhanced Features */
+	uint8_t enhanced_features;
+
+	uint8_t reserved_23;
+	uint16_t reserved_24[4];
 
 	/* Offset 416. */
-	uint16_t reserved_23[32];
+	uint16_t reserved_25[32];
 
 	/* Offset 480. */
 	uint8_t model_name[16];
@@ -1524,7 +1620,7 @@ struct nvram_81xx {
 	/* Offset 496. */
 	uint16_t feature_mask_l;
 	uint16_t feature_mask_h;
-	uint16_t reserved_24[2];
+	uint16_t reserved_26[2];
 
 	uint16_t subsystem_vendor_id;
 	uint16_t subsystem_device_id;
@@ -1677,5 +1773,8 @@ struct ex_init_cb_81xx {
 #define FA_NPIV_CONF1_ADDR_81	0xD2000
 
 /* 81XX Support end **********************************************************/
+
+#define FA_FLASH_LAYOUT_ADDR_82	0xFC400
+
 
 #endif

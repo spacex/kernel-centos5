@@ -169,6 +169,13 @@ DECLARE_SNMP_STAT(struct linux_mib, net_statistics);
 
 extern void inet_get_local_port_range(int *low, int *high);
 extern int sysctl_local_port_range[2];
+
+extern unsigned long *sysctl_local_reserved_ports;
+static inline int inet_is_reserved_local_port(int port)
+{
+	return test_bit(port, sysctl_local_reserved_ports);
+}
+
 extern int sysctl_ip_default_ttl;
 extern int sysctl_ip_nonlocal_bind;
 
@@ -322,6 +329,7 @@ enum ip_defrag_users
 	IP_DEFRAG_CALL_RA_CHAIN,
 	IP_DEFRAG_CONNTRACK_IN,
 	IP_DEFRAG_CONNTRACK_OUT,
+	IP_DEFRAG_CONNTRACK_BRIDGE_IN,
 	IP_DEFRAG_VS_IN,
 	IP_DEFRAG_VS_OUT,
 	IP_DEFRAG_VS_FWD

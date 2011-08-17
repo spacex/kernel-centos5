@@ -131,6 +131,60 @@ is_enabled_store(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
+#ifdef CONFIG_HOTPLUG
+static DEFINE_MUTEX(pci_remove_rescan_mutex);
+static ssize_t bus_rescan_store(struct bus_type *bus, const char *buf,
+				size_t count)
+{
+	unsigned long val;
+	struct pci_bus *b = NULL;
+
+	if (strict_strtoul(buf, 0, &val) < 0)
+		return -EINVAL;
+
+	if (val) {
+		mutex_lock(&pci_remove_rescan_mutex);
+		while ((b = pci_find_next_bus(b)) != NULL)
+			pci_rescan_bus(b);
+		mutex_unlock(&pci_remove_rescan_mutex);
+	}
+	return count;
+}
+
+struct bus_attribute pci_bus_attrs[] = {
+	__ATTR(rescan, (S_IWUSR|S_IWGRP), NULL, bus_rescan_store),
+	__ATTR_NULL
+};
+#endif
+
+static void remove_callback(struct device *dev)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+
+	mutex_lock(&pci_remove_rescan_mutex);
+	pci_remove_bus_device(pdev);
+	mutex_unlock(&pci_remove_rescan_mutex);
+}
+
+static ssize_t
+remove_store(struct device *dev, struct device_attribute *dummy,
+	     const char *buf, size_t count)
+{
+	int ret = 0;
+	unsigned long val;
+
+	if (strict_strtoul(buf, 0, &val) < 0)
+		return -EINVAL;
+
+	/* An attribute cannot be unregistered by one of its own methods,
+	 * so we have to use this roundabout approach.
+	 */
+	if (val)
+		ret = device_schedule_callback(dev, remove_callback);
+	if (ret)
+		count = ret;
+	return count;
+}
 
 struct device_attribute pci_dev_attrs[] = {
 	__ATTR_RO(resource),
@@ -145,6 +199,9 @@ struct device_attribute pci_dev_attrs[] = {
 	__ATTR(enable, 0600, is_enabled_show, is_enabled_store),
 	__ATTR(broken_parity_status,(S_IRUGO|S_IWUSR),
 		broken_parity_status_show,broken_parity_status_store),
+#ifdef CONFIG_HOTPLUG
+	__ATTR(remove, (S_IWUSR|S_IWGRP), NULL, remove_store),
+#endif
 	__ATTR_NULL,
 };
 

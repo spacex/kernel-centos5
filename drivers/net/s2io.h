@@ -65,7 +65,7 @@ static int debug_level = ERR_DBG;
 
 /* DEBUG message print. */
 #define DBG_PRINT(dbg_level, fmt, args...) do {			\
-	if (dbg_level >= debug_level)				\
+	if (dbg_level <= debug_level)				\
 		pr_info(fmt, ##args);				\
 	} while (0)
 
@@ -808,7 +808,7 @@ struct mac_info {
 
 /* rx side stuff */
 	/* Ring specific structure */
-	struct ring_info rings[MAX_RX_RINGS];
+	struct ring_info *rings;
 
 	u16 rmac_pause_time;
 	u16 mc_pause_threshold_q0q3;
@@ -998,27 +998,6 @@ struct s2io_nic {
 #define RESET_ERROR 1;
 #define CMD_ERROR   2;
 
-/*  OS related system calls */
-#ifndef readq
-static inline u64 readq(void __iomem *addr)
-{
-	u64 ret = 0;
-	ret = readl(addr + 4);
-	ret <<= 32;
-	ret |= readl(addr);
-
-	return ret;
-}
-#endif
-
-#ifndef writeq
-static inline void writeq(u64 val, void __iomem *addr)
-{
-	writel((u32) (val), addr);
-	writel((u32) (val >> 32), (addr + 4));
-}
-#endif
-
 /*
  * Some registers have to be written in a particular order to
  * expect correct hardware operation. The macro SPECIAL_REG_WRITE
@@ -1135,7 +1114,7 @@ s2io_msix_fifo_handle(int irq, void *dev_id, struct pt_regs *regs);
 static irqreturn_t s2io_isr(int irq, void *dev_id, struct pt_regs *regs);
 static int verify_xena_quiescence(struct s2io_nic *sp);
 static struct ethtool_ops netdev_ethtool_ops;
-static void s2io_set_link(struct work_struct *work);
+static void s2io_set_link(void *data);
 static int s2io_set_swapper(struct s2io_nic * sp);
 static void s2io_card_down(struct s2io_nic *nic);
 static int s2io_card_up(struct s2io_nic *nic);

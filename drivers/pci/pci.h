@@ -78,6 +78,12 @@ extern int pcie_mch_quirk;
 extern struct device_attribute pci_dev_attrs[];
 extern struct class_device_attribute class_device_attr_cpuaffinity;
 
+#ifdef CONFIG_HOTPLUG
+extern struct bus_attribute pci_bus_attrs[];
+#else
+#define pci_bus_attrs  NULL
+#endif
+
 /**
  * pci_match_one_device - Tell if a PCI device structure has a matching
  *                        PCI device id structure
@@ -125,6 +131,7 @@ static inline int pci_ari_enabled(struct pci_bus *bus)
 /* Single Root I/O Virtualization */
 struct pci_sriov {
 	int pos;		/* capability position */
+	int nres;		/* number of resources */
 	u32 cap;		/* SR-IOV Capabilities */
 	u16 ctrl;		/* SR-IOV Control */
 	u16 total;		/* total VFs associated with the PF */
@@ -154,6 +161,7 @@ extern int pci_iov_init(struct pci_dev *dev);
 extern void pci_iov_release(struct pci_dev *dev);
 extern int pci_iov_resource_bar(struct pci_dev *dev, int resno,
 				enum pci_bar_type *type);
+extern int pci_sriov_resource_alignment(struct pci_dev *dev, int resno);
 extern void pci_restore_iov_state(struct pci_dev *dev);
 extern int pci_iov_bus_range(struct pci_bus *bus);
 
@@ -211,6 +219,21 @@ static inline int pci_ats_enabled(struct pci_dev *dev)
 struct pci_dev *pci_find_upstream_pcie_bridge(struct pci_dev *pdev);
 
 extern void pci_enable_acs(struct pci_dev *dev);
+static inline int pci_resource_alignment(struct pci_dev *dev,
+					 struct resource *res)
+{
+#ifdef CONFIG_PCI_IOV
+	unsigned long resno = res - dev->resource;
+
+	if (resno > PCI_NUM_RESOURCES) {
+		WARN_ON(!dev->sriov);
+		resno = (res - dev->sriov->res) + PCI_IOV_RESOURCES;
+		return pci_sriov_resource_alignment(dev, resno);
+	}
+#endif
+	return resource_alignment(res);
+}
+
 
 struct pci_dev_reset_methods {
 	u16 vendor;

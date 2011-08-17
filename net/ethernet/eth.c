@@ -300,3 +300,25 @@ struct net_device *alloc_etherdev(int sizeof_priv)
 	return alloc_netdev(sizeof_priv, "eth%d", ether_setup);
 }
 EXPORT_SYMBOL(alloc_etherdev);
+
+static size_t _format_mac_addr(char *buf, int buflen,
+                                const unsigned char *addr, int len)
+{
+	int i;
+	char *cp = buf;
+
+	for (i = 0; i < len; i++) {
+		cp += scnprintf(cp, buflen - (cp - buf), "%02x", addr[i]);
+		if (i == len - 1)
+			break;
+		cp += strlcpy(cp, ":", buflen - (cp - buf));
+	}
+	return cp - buf;
+}
+
+char *print_mac(char *buf, const unsigned char *addr)
+{
+	_format_mac_addr(buf, MAC_BUF_SIZE, addr, ETH_ALEN);
+	return buf;
+}
+EXPORT_SYMBOL(print_mac);

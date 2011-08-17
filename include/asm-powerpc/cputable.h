@@ -23,8 +23,13 @@
 #define PPC_FEATURE_SMT			0x00004000
 #define PPC_FEATURE_ICACHE_SNOOP	0x00002000
 #define PPC_FEATURE_ARCH_2_05		0x00001000
+#define PPC_FEATURE_PA6T                0x00000800
 #define PPC_FEATURE_HAS_DFP		0x00000400
 #define PPC_FEATURE_POWER6_EXT		0x00000200
+#define PPC_FEATURE_ARCH_2_06           0x00000100
+#define PPC_FEATURE_HAS_VSX             0x00000080
+#define PPC_FEATURE_PSERIES_PERFMON_COMPAT \
+                                        0x00000040
 
 #define PPC_FEATURE_TRUE_LE		0x00000002
 #define PPC_FEATURE_PPC_LE		0x00000001
@@ -96,6 +101,8 @@ extern unsigned int __start___ftr_fixup, __stop___ftr_fixup;
 extern struct cpu_spec *identify_cpu(unsigned long offset, unsigned int pvr);
 extern void do_feature_fixups(unsigned long value, void *fixup_start,
 			      void *fixup_end);
+
+extern const char *powerpc_base_platform;
 
 #endif /* __ASSEMBLY__ */
 

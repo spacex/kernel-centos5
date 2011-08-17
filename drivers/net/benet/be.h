@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005 - 2009 ServerEngines
+ * Copyright (C) 2005 - 2010 ServerEngines
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or
@@ -30,11 +30,11 @@
 #include <linux/interrupt.h>
 #include <linux/firmware.h>
 #include <linux/ethtool.h>
-#include "be_compat.h"
+#include <linux/jhash.h>
 
 #include "be_hw.h"
 
-#define DRV_VER			"2.102.115r"
+#define DRV_VER			"2.102.518r"
 #define DRV_NAME		"be2net"
 #define BE_NAME			"ServerEngines BladeEngine2 10Gbps NIC"
 #define BE3_NAME		"ServerEngines BladeEngine3 10Gbps NIC"
@@ -84,6 +84,8 @@ static inline char *nic_name(struct pci_dev *pdev)
 #define RX_FRAGS_REFILL_WM	(RX_Q_LEN - MAX_RX_POST)
 
 #define FW_VER_LEN		32
+
+#define BE_MAX_VF		32
 
 struct be_dma_mem {
 	void *va;
@@ -170,6 +172,7 @@ struct be_drvr_stats {
 	ulong be_tx_jiffies;
 	u64 be_tx_bytes;
 	u64 be_tx_bytes_prev;
+	u64 be_tx_pkts;
 	u32 be_tx_rate;
 
 	u32 cache_barrier[16];
@@ -223,7 +226,14 @@ struct be_rx_obj {
 	struct be_rx_page_info page_info_tbl[RX_Q_LEN];
 };
 
+struct be_vf_cfg {
+	unsigned char vf_mac_addr[ETH_ALEN];
+	u32 vf_if_handle;
+	u32 vf_pmac_id;
+};
+
 #define BE_NUM_MSIX_VECTORS		2	/* 1 each for Tx and Rx */
+#define BE_INVALID_PMAC_ID		0xffffffff
 struct be_adapter {
 	struct pci_dev *pdev;
 	struct net_device *netdev;
@@ -259,7 +269,8 @@ struct be_adapter {
 	bool rx_post_starved;	/* Zero rx frags have been posted to BE */
 
 	struct vlan_group *vlan_grp;
-	u16 num_vlans;
+	u16 vlans_added;
+	u16 max_vlans;	/* Number of vlans supported */
 	u8 vlan_tag[VLAN_GROUP_ARRAY_LEN];
 	struct be_dma_mem mc_cmd_mem;
 
@@ -273,6 +284,7 @@ struct be_adapter {
 	u32 if_handle;		/* Used to configure filtering */
 	u32 pmac_id;		/* MAC addr handle used by BE card */
 
+	bool eeh_err;
 	bool link_up;
 	u32 port_num;
 	bool promiscuous;
@@ -283,8 +295,27 @@ struct be_adapter {
 	int link_speed;
 	u8 port_type;
 	u8 transceiver;
+	u8 autoneg;
 	u8 generation;		/* BladeEngine ASIC generation */
+	u32 flash_status;
+	struct completion flash_compl;
+
+	bool sriov_enabled;
+	struct be_vf_cfg vf_cfg[BE_MAX_VF];
+	u8 base_eq_id;
+	u8 is_virtfn;
 };
+
+static inline void be_check_sriov_fn_type(struct be_adapter *adapter)
+{
+	u8 data;
+
+	pci_write_config_byte(adapter->pdev, 0xFE, 0xAA);
+	pci_read_config_byte(adapter->pdev, 0xFE, &data);
+	adapter->is_virtfn = (data != 0xAA);
+}
+
+#define be_physfn(adapter) (!adapter->is_virtfn)
 
 /* BladeEngine Generation numbers */
 #define BE_GEN2 2
@@ -294,13 +325,6 @@ struct be_adapter {
 extern struct ethtool_ops be_ethtool_ops;
 
 #define drvr_stats(adapter)		(&adapter->stats.drvr_stats)
-
-#define BE_SET_NETDEV_OPS(netdev, ops)	be_netdev_ops_init(netdev, ops)
-
-static inline unsigned int be_pci_func(struct be_adapter *adapter)
-{
-	return PCI_FUNC(adapter->pdev->devfn);
-}
 
 #define PAGE_SHIFT_4K		12
 #define PAGE_SIZE_4K		(1 << PAGE_SHIFT_4K)
@@ -388,6 +412,20 @@ static inline u8 is_udp_pkt(struct sk_buff *skb)
 		val = (ipv6_hdr(skb)->nexthdr == NEXTHDR_UDP);
 
 	return val;
+}
+
+static inline void be_vf_eth_addr_generate(struct be_adapter *adapter, u8 *mac)
+{
+	u32 addr;
+
+	addr = jhash(adapter->netdev->dev_addr, ETH_ALEN, 0);
+
+	mac[5] = (u8)(addr & 0xFF);
+	mac[4] = (u8)((addr >> 8) & 0xFF);
+	mac[3] = (u8)((addr >> 16) & 0xFF);
+	mac[2] = 0xC9;
+	mac[1] = 0x00;
+	mac[0] = 0x00;
 }
 
 extern void be_cq_notify(struct be_adapter *adapter, u16 qid, bool arm,

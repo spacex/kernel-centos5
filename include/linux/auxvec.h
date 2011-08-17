@@ -25,6 +25,8 @@
 #define AT_CLKTCK 17	/* frequency at which times() increments */
 
 #define AT_SECURE 23   /* secure mode boolean */
+#define AT_BASE_PLATFORM 24     /* string identifying real platform, may
+                                  * differ from AT_PLATFORM. */
 
 #define AT_VECTOR_SIZE  44 /* Size of auxiliary table.  */
 

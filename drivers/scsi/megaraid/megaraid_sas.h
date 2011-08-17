@@ -18,7 +18,7 @@
 /*
  * MegaRAID SAS Driver meta data
  */
-#define MEGASAS_VERSION				"00.00.04.17-4.31.z-RH1"
+#define MEGASAS_VERSION				"00.00.04.31-RH1"
 #define MEGASAS_RELDATE				"June. 15, 2010"
 #define MEGASAS_EXT_VERSION			"Tues. June. 15 14:13:02 EST 2010"
 
@@ -427,16 +427,21 @@ struct megasas_ctrl_prop {
 	u8 restore_hotspare_on_insertion;
 	u8 expose_encl_devices;
         u8      maintainPdFailHistory;
-    	u8      disallowHostRequestReordering;
-    	u8      abortCCOnError;                 
-    	u8      loadBalanceMode;                
-    	u8      disableAutoDetectBackplane;    
-    	u8      snapVDSpace;                    
+    u8      disallowHostRequestReordering;
+    u8      abortCCOnError;                 // set TRUE to abort CC on detecting an inconsistency
+    u8      loadBalanceMode;                // load balance mode (MR_LOAD_BALANCE_MODE)
+    u8      disableAutoDetectBackplane;     // 0 - use auto detect logic of backplanes like SGPIO, i2c SEP using h/w mechansim like GPIO pins
+                                            // 1 - disable auto detect SGPIO,
+                                            // 2 - disable i2c SEP auto detect
+                                            // 3 - disable both auto detect
+    u8      snapVDSpace;                    // % of source LD to be reserved for a VDs snapshot in snapshot repository, for metadata and user data
+                                            // 1=5%, 2=10%, 3=15% and so on
+
     /*
      * Add properties that can be controlled by a bit in the following structure.
      */
     struct {
-        u32     copyBackDisabled            : 1;
+        u32     copyBackDisabled            : 1;     // set TRUE to disable copyBack (0=copback enabled)
         u32     SMARTerEnabled              : 1;
         u32     prCorrectUnconfiguredAreas  : 1;
         u32     useFdeOnly                  : 1;
@@ -452,11 +457,12 @@ struct megasas_ctrl_prop {
         u32     enableJBOD                  : 1;
         u32     reserved                    :18;
     } OnOffProperties;
-    u8      autoSnapVDSpace;                
-                                            
-    u8      viewSpace;                      
-                                            
-    u16     spinDownTime;                 
+    u8      autoSnapVDSpace;                // % of source LD to be reserved for auto snapshot in snapshot repository, for metadata and user data
+                                            // 1=5%, 2=10%, 3=15% and so on
+    u8      viewSpace;                      // snapshot writeable VIEWs capacity as a % of source LD capacity. 0=READ only
+                                            // 1=5%, 2=10%, 3=15% and so on
+        
+    u16     spinDownTime;                   // # of idle minutes before device is spun down (0=use FW defaults)
 
     u8      reserved[24];
 

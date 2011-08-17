@@ -36,9 +36,10 @@ extern void igb_rx_fifo_flush_82575(struct e1000_hw *hw);
                                      (ID_LED_DEF1_DEF2 <<  4) | \
                                      (ID_LED_OFF1_ON2))
 
-#define E1000_RAR_ENTRIES_82575   16
-#define E1000_RAR_ENTRIES_82576   24
-#define E1000_RAR_ENTRIES_82580   24
+#define E1000_RAR_ENTRIES_82575        16
+#define E1000_RAR_ENTRIES_82576        24
+#define E1000_RAR_ENTRIES_82580        24
+#define E1000_RAR_ENTRIES_I350         32
 
 #define E1000_SW_SYNCH_MB              0x00000100
 #define E1000_STAT_DEV_RST_SET         0x00100000
@@ -206,6 +207,15 @@ struct e1000_adv_tx_context_desc {
 
 #define E1000_IOVCTL 0x05BBC
 #define E1000_IOVCTL_REUSE_VFQ 0x00000001
+
+#define E1000_RPLOLR_STRVLAN   0x40000000
+#define E1000_RPLOLR_STRCRC    0x80000000
+
+#define E1000_DTXCTL_8023LL     0x0004
+#define E1000_DTXCTL_VLAN_ADDED 0x0008
+#define E1000_DTXCTL_OOS_ENABLE 0x0010
+#define E1000_DTXCTL_MDP_EN     0x0020
+#define E1000_DTXCTL_SPOOF_INT  0x0040
 
 #define ALL_QUEUES   0xFFFF
 

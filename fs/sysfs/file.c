@@ -8,6 +8,7 @@
 #include <linux/namei.h>
 #include <linux/poll.h>
 #include <linux/limits.h>
+#include <linux/workqueue.h>
 #include <asm/uaccess.h>
 #include <asm/semaphore.h>
 
@@ -559,3 +560,55 @@ void sysfs_remove_file(struct kobject * kobj, const struct attribute * attr)
 EXPORT_SYMBOL_GPL(sysfs_create_file);
 EXPORT_SYMBOL_GPL(sysfs_remove_file);
 EXPORT_SYMBOL_GPL(sysfs_update_file);
+
+struct sysfs_schedule_callback_struct {
+	struct kobject          *kobj;
+	void                    (*func)(void *);
+	void                    *data;
+	struct work_struct      work;
+};
+
+void sysfs_schedule_callback_work(void *data)
+{
+	struct sysfs_schedule_callback_struct *ss = data;
+	(ss->func)(ss->data);
+	kobject_put(ss->kobj);
+	kfree(ss);
+}
+
+/**
+ * sysfs_schedule_callback - helper to schedule a callback for a kobject
+ * @kobj: object we're acting for.
+ * @func: callback function to invoke later.
+ * @data: argument to pass to @func.
+ *
+ * sysfs attribute methods must not unregister themselves or their parent
+ * kobject (which would amount to the same thing).  Attempts to do so will
+ * deadlock, since unregistration is mutually exclusive with driver
+ * callbacks.
+ *
+ * Instead methods can call this routine, which will attempt to allocate
+ * and schedule a workqueue request to call back @func with @data as its
+ * argument in the workqueue's process context.  @kobj will be pinned
+ * until @func returns.
+ *
+ * Returns 0 if the request was submitted, -ENOMEM if storage could not
+ * be allocated.
+ */
+int sysfs_schedule_callback(struct kobject *kobj, void (*func)(void *),
+               void *data)
+{
+	struct sysfs_schedule_callback_struct *ss;
+
+	ss = kmalloc(sizeof(*ss), GFP_KERNEL);
+	if (!ss)
+		return -ENOMEM;
+	kobject_get(kobj);
+	ss->kobj = kobj;
+	ss->func = func;
+	ss->data = data;
+	INIT_WORK(&ss->work, sysfs_schedule_callback_work, ss);
+	schedule_work(&ss->work);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(sysfs_schedule_callback);

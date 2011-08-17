@@ -193,11 +193,9 @@ int zd_mac_open(struct net_device *netdev)
 	struct zd_usb *usb = &chip->usb;
 	int r;
 
-	if (!usb->initialized) {
-		r = zd_usb_init_hw(usb);
-		if (r)
-			goto out;
-	}
+	r = zd_usb_init_hw(usb);
+	if (r)
+		goto out;
 
 	tasklet_enable(&mac->rx_tasklet);
 
@@ -236,6 +234,7 @@ int zd_mac_open(struct net_device *netdev)
 
 	housekeeping_enable(mac);
 	ieee80211softmac_start(netdev);
+	netif_start_queue(netdev);
 	return 0;
 disable_rx:
 	zd_chip_disable_rx(chip);
@@ -268,7 +267,7 @@ int zd_mac_stop(struct net_device *netdev)
 
 	zd_chip_disable_hwint(chip);
 	zd_chip_switch_radio_off(chip);
-	zd_chip_disable_int(chip);
+	/* Keep usb interrupts enabled to allow to set channel */
 
 	return 0;
 }
@@ -390,10 +389,6 @@ static void set_channel(struct net_device *netdev, u8 channel)
 int zd_mac_request_channel(struct zd_mac *mac, u8 channel)
 {
 	unsigned long lock_flags;
-	struct ieee80211_device *ieee = zd_mac_to_ieee80211(mac);
-
-	if (ieee->iw_mode == IW_MODE_INFRA)
-		return -EPERM;
 
 	spin_lock_irqsave(&mac->lock, lock_flags);
 	if (!zd_regdomain_supports_channel(mac->regdomain, channel)) {

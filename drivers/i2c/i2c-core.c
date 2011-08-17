@@ -1157,6 +1157,36 @@ s32 i2c_smbus_xfer(struct i2c_adapter * adapter, u16 addr, unsigned short flags,
 	return res;
 }
 
+/*
+ * These functions do not really (/un)register the i2c device.
+ * Only create a minimal i2c_client, so i2c_smbus_read_byte_data and
+ * i2c_smbus_write_byte_data can work in the drivers/net/sfc network
+ * driver.
+ *
+ * If some other backport eventually requires the full i2c_new_dummy
+ * functionality, we can backport it then. So ....
+ *
+ * 	DO NOT ADD THESE FUNCTIONS TO KABI.
+ */
+
+struct i2c_client * i2c_new_dummy(struct i2c_adapter *adap, u16 address)
+{
+	struct i2c_client *client;
+
+	client = kzalloc(sizeof(struct i2c_client), GFP_KERNEL);
+	if (client) {
+		client->addr = address;
+		client->adapter = adap;
+	}
+	return client;
+}
+
+void i2c_unregister_device(struct i2c_client *c)
+{
+	kfree(c);
+}
+EXPORT_SYMBOL_GPL(i2c_new_dummy);
+EXPORT_SYMBOL_GPL(i2c_unregister_device);
 
 /* Next four are needed by i2c-isa */
 EXPORT_SYMBOL_GPL(i2c_adapter_dev_release);

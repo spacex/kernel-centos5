@@ -25,10 +25,13 @@
 #ifdef CONFIG_AMD_IOMMU
 extern int amd_iommu_init(void);
 extern int amd_iommu_init_dma_ops(void);
+extern int amd_iommu_init_passthrough(void);
 extern void amd_iommu_detect(void);
 extern irqreturn_t amd_iommu_int_handler(int irq, void *data,
 					 struct pt_regs *regs);
 extern void amd_iommu_apply_erratum_63(u16 devid);
+extern void amd_iommu_init_api(void);
+extern void amd_iommu_init_notifier(void);
 #else
 static inline int amd_iommu_init(void) { return -ENODEV; }
 static inline void amd_iommu_detect(void) { }

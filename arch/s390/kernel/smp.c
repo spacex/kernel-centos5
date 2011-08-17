@@ -580,6 +580,7 @@ __cpu_up(unsigned int cpu)
 	struct task_struct *idle;
         struct _lowcore    *cpu_lowcore;
 	struct stack_frame *sf;
+	__mm_context_t *mmc;
         sigp_ccode          ccode;
 	int                 curr_cpu;
 
@@ -612,6 +613,8 @@ __cpu_up(unsigned int cpu)
 	sf->gprs[9] = (unsigned long) sf;
 	cpu_lowcore->save_area[15] = (unsigned long) sf;
 	__ctl_store(cpu_lowcore->cregs_save_area[0], 0, 15);
+	mmc = (__mm_context_t *) &init_mm.context;
+	atomic_inc(&mmc->attach_count);
 	__asm__ __volatile__("stam  0,15,0(%0)"
 			     : : "a" (&cpu_lowcore->access_regs_save_area)
 			     : "memory");
@@ -719,9 +722,13 @@ __cpu_disable(void)
 void
 __cpu_die(unsigned int cpu)
 {
+	__mm_context_t *mmc;
+
 	/* Wait until target cpu is down */
 	while (!smp_cpu_not_running(cpu))
 		cpu_relax();
+	mmc = (__mm_context_t *) &init_mm.context;
+	atomic_dec(&mmc->attach_count);
 	printk("Processor %d spun down\n", cpu);
 }
 

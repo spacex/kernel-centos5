@@ -134,6 +134,10 @@ static inline void wrmsrl (unsigned long msr, unsigned long long val)
 #define MSR_IA32_THERM_STATUS		0x19c
 #define MSR_IA32_MISC_ENABLE		0x1a0
 
+#define MSR_IA32_MISC_ENABLE_LIMIT_CPUID (1ULL << 22)
+
+#define MSR_IA32_TEMPERATURE_TARGET	0x1a2
+
 #define MSR_IA32_DEBUGCTLMSR		0x1d9
 #define MSR_IA32_LASTBRANCHFROMIP	0x1db
 #define MSR_IA32_LASTBRANCHTOIP		0x1dc

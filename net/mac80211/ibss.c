@@ -643,7 +643,7 @@ static void ieee80211_rx_mgmt_probe_req(struct ieee80211_sub_if_data *sdata,
 	}
 	if (pos[1] != 0 &&
 	    (pos[1] != ifibss->ssid_len ||
-	     !memcmp(pos + 2, ifibss->ssid, ifibss->ssid_len))) {
+	     memcmp(pos + 2, ifibss->ssid, ifibss->ssid_len))) {
 		/* Ignore ProbeReq for foreign SSID */
 		return;
 	}
@@ -790,14 +790,9 @@ static void ieee80211_ibss_timer(unsigned long data)
 #ifdef CONFIG_PM
 void ieee80211_ibss_quiesce(struct ieee80211_sub_if_data *sdata)
 {
-	struct ieee80211_local *local = sdata->local;
 	struct ieee80211_if_ibss *ifibss = &sdata->u.ibss;
 
-#if 0 /* Not in RHEL5... */
 	cancel_work_sync(&ifibss->work);
-#else
-	ieee80211_cancel_work(&local->hw, &ifibss->work);
-#endif
 	if (del_timer_sync(&ifibss->timer))
 		ifibss->timer_running = true;
 }
@@ -927,16 +922,11 @@ int ieee80211_ibss_join(struct ieee80211_sub_if_data *sdata,
 
 int ieee80211_ibss_leave(struct ieee80211_sub_if_data *sdata)
 {
-	struct ieee80211_local *local = sdata->local;
 	struct sk_buff *skb;
 
 	del_timer_sync(&sdata->u.ibss.timer);
 	clear_bit(IEEE80211_IBSS_REQ_RUN, &sdata->u.ibss.request);
-#if 0 /* Not in RHEL5... */
 	cancel_work_sync(&sdata->u.ibss.work);
-#else
-	ieee80211_cancel_work(&local->hw, &sdata->u.ibss.work);
-#endif
 	clear_bit(IEEE80211_IBSS_REQ_RUN, &sdata->u.ibss.request);
 
 	sta_info_flush(sdata->local, sdata);

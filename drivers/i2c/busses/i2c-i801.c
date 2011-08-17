@@ -21,29 +21,39 @@
 */
 
 /*
-    SUPPORTED DEVICES	PCI ID
-    82801AA		2413           
-    82801AB		2423           
-    82801BA		2443           
-    82801CA/CAM		2483           
-    82801DB		24C3   (HW PEC supported, 32 byte buffer not supported)
-    82801EB		24D3   (HW PEC supported, 32 byte buffer not supported)
-    6300ESB		25A4
-    ICH6		266A
-    ICH7		27DA
-    ESB2		269B
-    ICH8		283E
-    ICH9		2930
-    Tolapai		5032
-    ICH10		3A30
-    ICH10		3A60
-    PCH                 3B30
+  Supports the following Intel I/O Controller Hubs (ICH):
 
-    This driver supports several versions of Intel's I/O Controller Hubs (ICH).
-    For SMBus support, they are similar to the PIIX4 and are part
-    of Intel's '810' and other chipsets.
-    See the file Documentation/i2c/busses/i2c-i801 for details.
-    I2C Block Read and Process Call are not supported.
+                                  I/O                     Block   I2C
+                                  region  SMBus   Block   proc.   block
+  Chip name             PCI ID    size    PEC     buffer  call    read
+  ----------------------------------------------------------------------
+  82801AA  (ICH)        0x2413     16      no      no      no      no
+  82801AB  (ICH0)       0x2423     16      no      no      no      no
+  82801BA  (ICH2)       0x2443     16      no      no      no      no
+  82801CA  (ICH3)       0x2483     32     soft     no      no      no
+  82801DB  (ICH4)       0x24c3     32     hard     yes     no      no
+  82801E   (ICH5)       0x24d3     32     hard     yes     yes     yes
+  6300ESB               0x25a4     32     hard     yes     yes     yes
+  82801F   (ICH6)       0x266a     32     hard     yes     yes     yes
+  6310ESB/6320ESB       0x269b     32     hard     yes     yes     yes
+  82801G   (ICH7)       0x27da     32     hard     yes     yes     yes
+  82801H   (ICH8)       0x283e     32     hard     yes     yes     yes
+  82801I   (ICH9)       0x2930     32     hard     yes     yes     yes
+  Tolapai               0x5032     32     hard     yes     ?       ?
+  ICH10                 0x3a30     32     hard     yes     yes     yes
+  ICH10                 0x3a60     32     hard     yes     yes     yes
+  3400/5 Series (PCH)   0x3b30     32     hard     yes     yes     yes
+  Cougar Point (PCH)    0x1c22     32     hard     yes     yes     yes
+  Patsburg (PCH)        0x1d22     32     hard     yes     yes     yes
+
+  Features supported by this driver:
+  Software PEC                     no
+  Hardware PEC                     yes
+  Block buffer                     yes
+  Block process call transaction   no
+  I2C block read transaction       no
+
+  See the file Documentation/i2c/busses/i2c-i801 for details.
 */
 
 /* Note: we assume there can only be one I801, with one SMBus interface */
@@ -67,9 +77,9 @@
 #define SMBHSTDAT0	(5 + i801_smba)
 #define SMBHSTDAT1	(6 + i801_smba)
 #define SMBBLKDAT	(7 + i801_smba)
-#define SMBPEC		(8 + i801_smba)	/* ICH4 only */
-#define SMBAUXSTS	(12 + i801_smba)	/* ICH4 only */
-#define SMBAUXCTL	(13 + i801_smba)	/* ICH4 only */
+#define SMBPEC		(8 + i801_smba)		/* ICH3 and later */
+#define SMBAUXSTS	(12 + i801_smba)	/* ICH4 and later */
+#define SMBAUXCTL	(13 + i801_smba)	/* ICH4 and later */
 
 /* PCI Address Constants */
 #define SMBBAR		4
@@ -89,13 +99,13 @@
 #define I801_BYTE		0x04
 #define I801_BYTE_DATA		0x08
 #define I801_WORD_DATA		0x0C
-#define I801_PROC_CALL		0x10	/* later chips only, unimplemented */
+#define I801_PROC_CALL		0x10	/* unimplemented */
 #define I801_BLOCK_DATA		0x14
 #define I801_I2C_BLOCK_DATA	0x18	/* unimplemented */
 #define I801_BLOCK_LAST		0x34
 #define I801_I2C_BLOCK_LAST	0x38	/* unimplemented */
 #define I801_START		0x40
-#define I801_PEC_EN		0x80	/* ICH4 only */
+#define I801_PEC_EN		0x80	/* ICH3 and later */
 
 
 static int i801_transaction(void);
@@ -468,6 +478,8 @@ static struct pci_device_id i801_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_ICH10_4) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_ICH10_5) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_PCH_SMBUS) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_CPT_SMBUS) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_PATSBURG_SMBUS) },
 	{ 0, }
 };
 
@@ -479,13 +491,17 @@ static int __devinit i801_probe(struct pci_dev *dev, const struct pci_device_id 
 	int err;
 
 	I801_dev = dev;
-	if ((dev->device == PCI_DEVICE_ID_INTEL_82801DB_3) ||
-	    (dev->device == PCI_DEVICE_ID_INTEL_82801EB_3) ||
-	    (dev->device == PCI_DEVICE_ID_INTEL_ESB_4)     ||
-	    (dev->device == PCI_DEVICE_ID_INTEL_TOLAPAI_1))
+	switch (dev->device) {
+	default:
 		isich4 = 1;
-	else
+		break;
+	case PCI_DEVICE_ID_INTEL_82801CA_3:
+	case PCI_DEVICE_ID_INTEL_82801BA_2:
+	case PCI_DEVICE_ID_INTEL_82801AB_3:
+	case PCI_DEVICE_ID_INTEL_82801AA_3:
 		isich4 = 0;
+		break;
+	}
 
 	err = pci_enable_device(dev);
 	if (err) {

@@ -379,8 +379,11 @@ static int convert_type86(struct zcrypt_device *zdev,
 			zdev->max_mod_size = PCICC_MAX_MOD_SIZE_OLD;
 			return -EAGAIN;
 		}
-		if (service_rc == 8 && service_rs == 72)
+		if (service_rc == 8 && service_rs == 72) {
+			PRINTKW("Invalid size rc/rs = %d/%d\n", service_rc,
+				service_rs);
 			return -EINVAL;
+		}
 		PRINTK("Unknown service rc/rs (PCICC): %d/%d\n",
 		       service_rc, service_rs);
 		zdev->online = 0;

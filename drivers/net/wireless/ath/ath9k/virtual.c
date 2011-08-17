@@ -654,12 +654,7 @@ try_again:
 
 void ath9k_wiphy_set_scheduler(struct ath_softc *sc, unsigned int msec_int)
 {
-#if 0 /* Not in RHEL5... */
 	cancel_delayed_work_sync(&sc->wiphy_work);
-#else
-	if (delayed_work_pending(&sc->wiphy_work))
-		cancel_rearming_delayed_work(&sc->wiphy_work);
-#endif
 	sc->wiphy_scheduler_int = msecs_to_jiffies(msec_int);
 	if (sc->wiphy_scheduler_int)
 		ieee80211_queue_delayed_work(sc->hw, &sc->wiphy_work,

@@ -1,7 +1,7 @@
 /*******************************************************************************
 
   Intel PRO/1000 Linux driver
-  Copyright(c) 1999 - 2008 Intel Corporation.
+  Copyright(c) 1999 - 2010 Intel Corporation.
 
   This program is free software; you can redistribute it and/or modify it
   under the terms and conditions of the GNU General Public License,
@@ -26,6 +26,8 @@
 
 *******************************************************************************/
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/init.h>
@@ -48,7 +50,9 @@
 
 #include "e1000.h"
 
-#define DRV_VERSION "1.0.2-k3.1"
+#define DRV_EXTRAVERSION "-k2"
+
+#define DRV_VERSION "1.2.7" DRV_EXTRAVERSION
 char e1000e_driver_name[] = "e1000e";
 const char e1000e_driver_version[] = DRV_VERSION;
 
@@ -63,18 +67,367 @@ static const struct e1000_info *e1000_info_tbl[] = {
 	[board_ich9lan]		= &e1000_ich9_info,
 	[board_ich10lan]	= &e1000_ich10_info,
 	[board_pchlan]		= &e1000_pch_info,
+	[board_pch2lan]		= &e1000_pch2_info,
 };
 
-#ifdef DEBUG
-/**
- * e1000_get_hw_dev_name - return device name string
- * used by hardware layer to print debugging information
- **/
-char *e1000e_get_hw_dev_name(struct e1000_hw *hw)
+struct e1000_reg_info {
+	u32 ofs;
+	char *name;
+};
+
+#define E1000_RDFH	0x02410 /* Rx Data FIFO Head - RW */
+#define E1000_RDFT	0x02418 /* Rx Data FIFO Tail - RW */
+#define E1000_RDFHS	0x02420 /* Rx Data FIFO Head Saved - RW */
+#define E1000_RDFTS	0x02428 /* Rx Data FIFO Tail Saved - RW */
+#define E1000_RDFPC	0x02430 /* Rx Data FIFO Packet Count - RW */
+
+#define E1000_TDFH	0x03410 /* Tx Data FIFO Head - RW */
+#define E1000_TDFT	0x03418 /* Tx Data FIFO Tail - RW */
+#define E1000_TDFHS	0x03420 /* Tx Data FIFO Head Saved - RW */
+#define E1000_TDFTS	0x03428 /* Tx Data FIFO Tail Saved - RW */
+#define E1000_TDFPC	0x03430 /* Tx Data FIFO Packet Count - RW */
+
+static const struct e1000_reg_info e1000_reg_info_tbl[] = {
+
+	/* General Registers */
+	{E1000_CTRL, "CTRL"},
+	{E1000_STATUS, "STATUS"},
+	{E1000_CTRL_EXT, "CTRL_EXT"},
+
+	/* Interrupt Registers */
+	{E1000_ICR, "ICR"},
+
+	/* RX Registers */
+	{E1000_RCTL, "RCTL"},
+	{E1000_RDLEN, "RDLEN"},
+	{E1000_RDH, "RDH"},
+	{E1000_RDT, "RDT"},
+	{E1000_RDTR, "RDTR"},
+	{E1000_RXDCTL(0), "RXDCTL"},
+	{E1000_ERT, "ERT"},
+	{E1000_RDBAL, "RDBAL"},
+	{E1000_RDBAH, "RDBAH"},
+	{E1000_RDFH, "RDFH"},
+	{E1000_RDFT, "RDFT"},
+	{E1000_RDFHS, "RDFHS"},
+	{E1000_RDFTS, "RDFTS"},
+	{E1000_RDFPC, "RDFPC"},
+
+	/* TX Registers */
+	{E1000_TCTL, "TCTL"},
+	{E1000_TDBAL, "TDBAL"},
+	{E1000_TDBAH, "TDBAH"},
+	{E1000_TDLEN, "TDLEN"},
+	{E1000_TDH, "TDH"},
+	{E1000_TDT, "TDT"},
+	{E1000_TIDV, "TIDV"},
+	{E1000_TXDCTL(0), "TXDCTL"},
+	{E1000_TADV, "TADV"},
+	{E1000_TARC(0), "TARC"},
+	{E1000_TDFH, "TDFH"},
+	{E1000_TDFT, "TDFT"},
+	{E1000_TDFHS, "TDFHS"},
+	{E1000_TDFTS, "TDFTS"},
+	{E1000_TDFPC, "TDFPC"},
+
+	/* List Terminator */
+	{}
+};
+
+/*
+ * e1000_regdump - register printout routine
+ */
+static void e1000_regdump(struct e1000_hw *hw, struct e1000_reg_info *reginfo)
 {
-	return hw->adapter->netdev->name;
+	int n = 0;
+	char rname[16];
+	u32 regs[8];
+
+	switch (reginfo->ofs) {
+	case E1000_RXDCTL(0):
+		for (n = 0; n < 2; n++)
+			regs[n] = __er32(hw, E1000_RXDCTL(n));
+		break;
+	case E1000_TXDCTL(0):
+		for (n = 0; n < 2; n++)
+			regs[n] = __er32(hw, E1000_TXDCTL(n));
+		break;
+	case E1000_TARC(0):
+		for (n = 0; n < 2; n++)
+			regs[n] = __er32(hw, E1000_TARC(n));
+		break;
+	default:
+		printk(KERN_INFO "%-15s %08x\n",
+			reginfo->name, __er32(hw, reginfo->ofs));
+		return;
+	}
+
+	snprintf(rname, 16, "%s%s", reginfo->name, "[0-1]");
+	printk(KERN_INFO "%-15s ", rname);
+	for (n = 0; n < 2; n++)
+		printk(KERN_CONT "%08x ", regs[n]);
+	printk(KERN_CONT "\n");
 }
-#endif
+
+
+/*
+ * e1000e_dump - Print registers, tx-ring and rx-ring
+ */
+static void e1000e_dump(struct e1000_adapter *adapter)
+{
+	struct net_device *netdev = adapter->netdev;
+	struct e1000_hw *hw = &adapter->hw;
+	struct e1000_reg_info *reginfo;
+	struct e1000_ring *tx_ring = adapter->tx_ring;
+	struct e1000_tx_desc *tx_desc;
+	struct my_u0 { u64 a; u64 b; } *u0;
+	struct e1000_buffer *buffer_info;
+	struct e1000_ring *rx_ring = adapter->rx_ring;
+	union e1000_rx_desc_packet_split *rx_desc_ps;
+	struct e1000_rx_desc *rx_desc;
+	struct my_u1 { u64 a; u64 b; u64 c; u64 d; } *u1;
+	u32 staterr;
+	int i = 0;
+
+	if (!netif_msg_hw(adapter))
+		return;
+
+	/* Print netdevice Info */
+	if (netdev) {
+		dev_info(&adapter->pdev->dev, "Net device Info\n");
+		printk(KERN_INFO "Device Name     state            "
+			"trans_start      last_rx\n");
+		printk(KERN_INFO "%-15s %016lX %016lX %016lX\n",
+			netdev->name,
+			netdev->state,
+			netdev->trans_start,
+			netdev->last_rx);
+	}
+
+	/* Print Registers */
+	dev_info(&adapter->pdev->dev, "Register Dump\n");
+	printk(KERN_INFO " Register Name   Value\n");
+	for (reginfo = (struct e1000_reg_info *)e1000_reg_info_tbl;
+	     reginfo->name; reginfo++) {
+		e1000_regdump(hw, reginfo);
+	}
+
+	/* Print TX Ring Summary */
+	if (!netdev || !netif_running(netdev))
+		goto exit;
+
+	dev_info(&adapter->pdev->dev, "TX Rings Summary\n");
+	printk(KERN_INFO "Queue [NTU] [NTC] [bi(ntc)->dma  ]"
+		" leng ntw timestamp\n");
+	buffer_info = &tx_ring->buffer_info[tx_ring->next_to_clean];
+	printk(KERN_INFO " %5d %5X %5X %016llX %04X %3X %016llX\n",
+		0, tx_ring->next_to_use, tx_ring->next_to_clean,
+		(unsigned long long)buffer_info->dma,
+		buffer_info->length,
+		buffer_info->next_to_watch,
+		(unsigned long long)buffer_info->time_stamp);
+
+	/* Print TX Rings */
+	if (!netif_msg_tx_done(adapter))
+		goto rx_ring_summary;
+
+	dev_info(&adapter->pdev->dev, "TX Rings Dump\n");
+
+	/* Transmit Descriptor Formats - DEXT[29] is 0 (Legacy) or 1 (Extended)
+	 *
+	 * Legacy Transmit Descriptor
+	 *   +--------------------------------------------------------------+
+	 * 0 |         Buffer Address [63:0] (Reserved on Write Back)       |
+	 *   +--------------------------------------------------------------+
+	 * 8 | Special  |    CSS     | Status |  CMD    |  CSO   |  Length  |
+	 *   +--------------------------------------------------------------+
+	 *   63       48 47        36 35    32 31     24 23    16 15        0
+	 *
+	 * Extended Context Descriptor (DTYP=0x0) for TSO or checksum offload
+	 *   63      48 47    40 39       32 31             16 15    8 7      0
+	 *   +----------------------------------------------------------------+
+	 * 0 |  TUCSE  | TUCS0  |   TUCSS   |     IPCSE       | IPCS0 | IPCSS |
+	 *   +----------------------------------------------------------------+
+	 * 8 |   MSS   | HDRLEN | RSV | STA | TUCMD | DTYP |      PAYLEN      |
+	 *   +----------------------------------------------------------------+
+	 *   63      48 47    40 39 36 35 32 31   24 23  20 19                0
+	 *
+	 * Extended Data Descriptor (DTYP=0x1)
+	 *   +----------------------------------------------------------------+
+	 * 0 |                     Buffer Address [63:0]                      |
+	 *   +----------------------------------------------------------------+
+	 * 8 | VLAN tag |  POPTS  | Rsvd | Status | Command | DTYP |  DTALEN  |
+	 *   +----------------------------------------------------------------+
+	 *   63       48 47     40 39  36 35    32 31     24 23  20 19        0
+	 */
+	printk(KERN_INFO "Tl[desc]     [address 63:0  ] [SpeCssSCmCsLen]"
+		" [bi->dma       ] leng  ntw timestamp        bi->skb "
+		"<-- Legacy format\n");
+	printk(KERN_INFO "Tc[desc]     [Ce CoCsIpceCoS] [MssHlRSCm0Plen]"
+		" [bi->dma       ] leng  ntw timestamp        bi->skb "
+		"<-- Ext Context format\n");
+	printk(KERN_INFO "Td[desc]     [address 63:0  ] [VlaPoRSCm1Dlen]"
+		" [bi->dma       ] leng  ntw timestamp        bi->skb "
+		"<-- Ext Data format\n");
+	for (i = 0; tx_ring->desc && (i < tx_ring->count); i++) {
+		tx_desc = E1000_TX_DESC(*tx_ring, i);
+		buffer_info = &tx_ring->buffer_info[i];
+		u0 = (struct my_u0 *)tx_desc;
+		printk(KERN_INFO "T%c[0x%03X]    %016llX %016llX %016llX "
+			"%04X  %3X %016llX %p",
+		       (!(le64_to_cpu(u0->b) & (1<<29)) ? 'l' :
+			((le64_to_cpu(u0->b) & (1<<20)) ? 'd' : 'c')), i,
+		       (unsigned long long)le64_to_cpu(u0->a),
+		       (unsigned long long)le64_to_cpu(u0->b),
+		       (unsigned long long)buffer_info->dma,
+		       buffer_info->length, buffer_info->next_to_watch,
+		       (unsigned long long)buffer_info->time_stamp,
+		       buffer_info->skb);
+		if (i == tx_ring->next_to_use && i == tx_ring->next_to_clean)
+			printk(KERN_CONT " NTC/U\n");
+		else if (i == tx_ring->next_to_use)
+			printk(KERN_CONT " NTU\n");
+		else if (i == tx_ring->next_to_clean)
+			printk(KERN_CONT " NTC\n");
+		else
+			printk(KERN_CONT "\n");
+
+		if (netif_msg_pktdata(adapter) && buffer_info->dma != 0)
+			print_hex_dump(KERN_INFO, "", DUMP_PREFIX_ADDRESS,
+					16, 1, phys_to_virt(buffer_info->dma),
+					buffer_info->length, true);
+	}
+
+	/* Print RX Rings Summary */
+rx_ring_summary:
+	dev_info(&adapter->pdev->dev, "RX Rings Summary\n");
+	printk(KERN_INFO "Queue [NTU] [NTC]\n");
+	printk(KERN_INFO " %5d %5X %5X\n", 0,
+		rx_ring->next_to_use, rx_ring->next_to_clean);
+
+	/* Print RX Rings */
+	if (!netif_msg_rx_status(adapter))
+		goto exit;
+
+	dev_info(&adapter->pdev->dev, "RX Rings Dump\n");
+	switch (adapter->rx_ps_pages) {
+	case 1:
+	case 2:
+	case 3:
+		/* [Extended] Packet Split Receive Descriptor Format
+		 *
+		 *    +-----------------------------------------------------+
+		 *  0 |                Buffer Address 0 [63:0]              |
+		 *    +-----------------------------------------------------+
+		 *  8 |                Buffer Address 1 [63:0]              |
+		 *    +-----------------------------------------------------+
+		 * 16 |                Buffer Address 2 [63:0]              |
+		 *    +-----------------------------------------------------+
+		 * 24 |                Buffer Address 3 [63:0]              |
+		 *    +-----------------------------------------------------+
+		 */
+		printk(KERN_INFO "R  [desc]      [buffer 0 63:0 ] "
+			"[buffer 1 63:0 ] "
+		       "[buffer 2 63:0 ] [buffer 3 63:0 ] [bi->dma       ] "
+		       "[bi->skb] <-- Ext Pkt Split format\n");
+		/* [Extended] Receive Descriptor (Write-Back) Format
+		 *
+		 *   63       48 47    32 31     13 12    8 7    4 3        0
+		 *   +------------------------------------------------------+
+		 * 0 | Packet   | IP     |  Rsvd   | MRQ   | Rsvd | MRQ RSS |
+		 *   | Checksum | Ident  |         | Queue |      |  Type   |
+		 *   +------------------------------------------------------+
+		 * 8 | VLAN Tag | Length | Extended Error | Extended Status |
+		 *   +------------------------------------------------------+
+		 *   63       48 47    32 31            20 19               0
+		 */
+		printk(KERN_INFO "RWB[desc]      [ck ipid mrqhsh] "
+			"[vl   l0 ee  es] "
+		       "[ l3  l2  l1 hs] [reserved      ] ---------------- "
+		       "[bi->skb] <-- Ext Rx Write-Back format\n");
+		for (i = 0; i < rx_ring->count; i++) {
+			buffer_info = &rx_ring->buffer_info[i];
+			rx_desc_ps = E1000_RX_DESC_PS(*rx_ring, i);
+			u1 = (struct my_u1 *)rx_desc_ps;
+			staterr =
+				le32_to_cpu(rx_desc_ps->wb.middle.status_error);
+			if (staterr & E1000_RXD_STAT_DD) {
+				/* Descriptor Done */
+				printk(KERN_INFO "RWB[0x%03X]     %016llX "
+					"%016llX %016llX %016llX "
+					"---------------- %p", i,
+					(unsigned long long)le64_to_cpu(u1->a),
+					(unsigned long long)le64_to_cpu(u1->b),
+					(unsigned long long)le64_to_cpu(u1->c),
+					(unsigned long long)le64_to_cpu(u1->d),
+					buffer_info->skb);
+			} else {
+				printk(KERN_INFO "R  [0x%03X]     %016llX "
+					"%016llX %016llX %016llX %016llX %p", i,
+					(unsigned long long)le64_to_cpu(u1->a),
+					(unsigned long long)le64_to_cpu(u1->b),
+					(unsigned long long)le64_to_cpu(u1->c),
+					(unsigned long long)le64_to_cpu(u1->d),
+					(unsigned long long)buffer_info->dma,
+					buffer_info->skb);
+
+				if (netif_msg_pktdata(adapter))
+					print_hex_dump(KERN_INFO, "",
+						DUMP_PREFIX_ADDRESS, 16, 1,
+						phys_to_virt(buffer_info->dma),
+						adapter->rx_ps_bsize0, true);
+			}
+
+			if (i == rx_ring->next_to_use)
+				printk(KERN_CONT " NTU\n");
+			else if (i == rx_ring->next_to_clean)
+				printk(KERN_CONT " NTC\n");
+			else
+				printk(KERN_CONT "\n");
+		}
+		break;
+	default:
+	case 0:
+		/* Legacy Receive Descriptor Format
+		 *
+		 * +-----------------------------------------------------+
+		 * |                Buffer Address [63:0]                |
+		 * +-----------------------------------------------------+
+		 * | VLAN Tag | Errors | Status 0 | Packet csum | Length |
+		 * +-----------------------------------------------------+
+		 * 63       48 47    40 39      32 31         16 15      0
+		 */
+		printk(KERN_INFO "Rl[desc]     [address 63:0  ] "
+			"[vl er S cks ln] [bi->dma       ] [bi->skb] "
+			"<-- Legacy format\n");
+		for (i = 0; rx_ring->desc && (i < rx_ring->count); i++) {
+			rx_desc = E1000_RX_DESC(*rx_ring, i);
+			buffer_info = &rx_ring->buffer_info[i];
+			u0 = (struct my_u0 *)rx_desc;
+			printk(KERN_INFO "Rl[0x%03X]    %016llX %016llX "
+				"%016llX %p", i,
+				(unsigned long long)le64_to_cpu(u0->a),
+				(unsigned long long)le64_to_cpu(u0->b),
+				(unsigned long long)buffer_info->dma,
+				buffer_info->skb);
+			if (i == rx_ring->next_to_use)
+				printk(KERN_CONT " NTU\n");
+			else if (i == rx_ring->next_to_clean)
+				printk(KERN_CONT " NTC\n");
+			else
+				printk(KERN_CONT "\n");
+
+			if (netif_msg_pktdata(adapter))
+				print_hex_dump(KERN_INFO, "",
+					DUMP_PREFIX_ADDRESS,
+					16, 1, phys_to_virt(buffer_info->dma),
+					adapter->rx_buffer_len, true);
+		}
+	}
+
+exit:
+	return;
+}
 
 /**
  * e1000_desc_unused - calculate if we have unused descriptors
@@ -197,10 +550,10 @@ static void e1000_alloc_rx_buffers(struct e1000_adapter *adapter,
 
 		buffer_info->skb = skb;
 map_skb:
-		buffer_info->dma = pci_map_single(pdev, skb->data,
+		buffer_info->dma = dma_map_single(&pdev->dev, skb->data,
 						  adapter->rx_buffer_len,
-						  PCI_DMA_FROMDEVICE);
-		if (pci_dma_mapping_error(buffer_info->dma)) {
+						  DMA_FROM_DEVICE);
+		if (dma_mapping_error(buffer_info->dma)) {
 			dev_err(&pdev->dev, "RX DMA map failed\n");
 			adapter->rx_dma_failed++;
 			break;
@@ -209,26 +562,23 @@ map_skb:
 		rx_desc = E1000_RX_DESC(*rx_ring, i);
 		rx_desc->buffer_addr = cpu_to_le64(buffer_info->dma);
 
+		if (unlikely(!(i & (E1000_RX_BUFFER_WRITE - 1)))) {
+			/*
+			 * Force memory writes to complete before letting h/w
+			 * know there are new descriptors to fetch.  (Only
+			 * applicable for weak-ordered memory model archs,
+			 * such as IA-64).
+			 */
+			wmb();
+			writel(i, adapter->hw.hw_addr + rx_ring->tail);
+		}
 		i++;
 		if (i == rx_ring->count)
 			i = 0;
 		buffer_info = &rx_ring->buffer_info[i];
 	}
 
-	if (rx_ring->next_to_use != i) {
-		rx_ring->next_to_use = i;
-		if (i-- == 0)
-			i = (rx_ring->count - 1);
-
-		/*
-		 * Force memory writes to complete before letting h/w
-		 * know there are new descriptors to fetch.  (Only
-		 * applicable for weak-ordered memory model archs,
-		 * such as IA-64).
-		 */
-		wmb();
-		writel(i, adapter->hw.hw_addr + rx_ring->tail);
-	}
+	rx_ring->next_to_use = i;
 }
 
 /**
@@ -266,11 +616,11 @@ static void e1000_alloc_rx_buffers_ps(struct e1000_adapter *adapter,
 					adapter->alloc_rx_buff_failed++;
 					goto no_buffers;
 				}
-				ps_page->dma = pci_map_page(pdev,
-						   ps_page->page,
-						   0, PAGE_SIZE,
-						   PCI_DMA_FROMDEVICE);
-				if (pci_dma_mapping_error(ps_page->dma)) {
+				ps_page->dma = dma_map_page(&pdev->dev,
+							    ps_page->page,
+							    0, PAGE_SIZE,
+							    DMA_FROM_DEVICE);
+				if (dma_mapping_error(ps_page->dma)) {
 					dev_err(&adapter->pdev->dev,
 					  "RX DMA page map failed\n");
 					adapter->rx_dma_failed++;
@@ -302,10 +652,10 @@ static void e1000_alloc_rx_buffers_ps(struct e1000_adapter *adapter,
 		skb_reserve(skb, NET_IP_ALIGN);
 
 		buffer_info->skb = skb;
-		buffer_info->dma = pci_map_single(pdev, skb->data,
+		buffer_info->dma = dma_map_single(&pdev->dev, skb->data,
 						  adapter->rx_ps_bsize0,
-						  PCI_DMA_FROMDEVICE);
-		if (pci_dma_mapping_error(buffer_info->dma)) {
+						  DMA_FROM_DEVICE);
+		if (dma_mapping_error(buffer_info->dma)) {
 			dev_err(&pdev->dev, "RX DMA map failed\n");
 			adapter->rx_dma_failed++;
 			/* cleanup skb */
@@ -316,6 +666,17 @@ static void e1000_alloc_rx_buffers_ps(struct e1000_adapter *adapter,
 
 		rx_desc->read.buffer_addr[0] = cpu_to_le64(buffer_info->dma);
 
+		if (unlikely(!(i & (E1000_RX_BUFFER_WRITE - 1)))) {
+			/*
+			 * Force memory writes to complete before letting h/w
+			 * know there are new descriptors to fetch.  (Only
+			 * applicable for weak-ordered memory model archs,
+			 * such as IA-64).
+			 */
+			wmb();
+			writel(i<<1, adapter->hw.hw_addr + rx_ring->tail);
+		}
+
 		i++;
 		if (i == rx_ring->count)
 			i = 0;
@@ -323,26 +684,7 @@ static void e1000_alloc_rx_buffers_ps(struct e1000_adapter *adapter,
 	}
 
 no_buffers:
-	if (rx_ring->next_to_use != i) {
-		rx_ring->next_to_use = i;
-
-		if (!(i--))
-			i = (rx_ring->count - 1);
-
-		/*
-		 * Force memory writes to complete before letting h/w
-		 * know there are new descriptors to fetch.  (Only
-		 * applicable for weak-ordered memory model archs,
-		 * such as IA-64).
-		 */
-		wmb();
-		/*
-		 * Hardware increments by 16 bytes, but packet split
-		 * descriptors are 32 bytes...so we increment tail
-		 * twice as much.
-		 */
-		writel(i<<1, adapter->hw.hw_addr + rx_ring->tail);
-	}
+	rx_ring->next_to_use = i;
 }
 
 /**
@@ -400,10 +742,10 @@ check_page:
 		}
 
 		if (!buffer_info->dma)
-			buffer_info->dma = pci_map_page(pdev,
+			buffer_info->dma = dma_map_page(&pdev->dev,
 			                                buffer_info->page, 0,
 			                                PAGE_SIZE,
-			                                PCI_DMA_FROMDEVICE);
+							DMA_FROM_DEVICE);
 
 		rx_desc = E1000_RX_DESC(*rx_ring, i);
 		rx_desc->buffer_addr = cpu_to_le64(buffer_info->dma);
@@ -439,6 +781,7 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 {
 	struct net_device *netdev = adapter->netdev;
 	struct pci_dev *pdev = adapter->pdev;
+	struct e1000_hw *hw = &adapter->hw;
 	struct e1000_ring *rx_ring = adapter->rx_ring;
 	struct e1000_rx_desc *rx_desc, *next_rxd;
 	struct e1000_buffer *buffer_info, *next_buffer;
@@ -459,6 +802,7 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 		if (*work_done >= work_to_do)
 			break;
 		(*work_done)++;
+		rmb();	/* read descriptor and rx_buffer_info after status DD */
 
 		status = rx_desc->status;
 		skb = buffer_info->skb;
@@ -476,10 +820,10 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 
 		cleaned = 1;
 		cleaned_count++;
-		pci_unmap_single(pdev,
+		dma_unmap_single(&pdev->dev,
 				 buffer_info->dma,
 				 adapter->rx_buffer_len,
-				 PCI_DMA_FROMDEVICE);
+				 DMA_FROM_DEVICE);
 		buffer_info->dma = 0;
 
 		length = le16_to_cpu(rx_desc->length);
@@ -496,8 +840,7 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 
 		if (adapter->flags2 & FLAG2_IS_DISCARDING) {
 			/* All receives must fit into a single buffer */
-			e_dbg("%s: Receive packet consumed multiple buffers\n",
-			      netdev->name);
+			e_dbg("Receive packet consumed multiple buffers\n");
 			/* recycle */
 			buffer_info->skb = skb;
 			if (status & E1000_RXD_STAT_EOP)
@@ -581,8 +924,12 @@ static void e1000_put_txbuf(struct e1000_adapter *adapter,
 			     struct e1000_buffer *buffer_info)
 {
 	if (buffer_info->dma) {
-		pci_unmap_page(adapter->pdev, buffer_info->dma,
-			       buffer_info->length, PCI_DMA_TODEVICE);
+		if (buffer_info->mapped_as_page)
+			dma_unmap_page(&adapter->pdev->dev, buffer_info->dma,
+				       buffer_info->length, DMA_TO_DEVICE);
+		else
+			dma_unmap_single(&adapter->pdev->dev, buffer_info->dma,
+					 buffer_info->length, DMA_TO_DEVICE);
 		buffer_info->dma = 0;
 	}
 	if (buffer_info->skb) {
@@ -592,15 +939,24 @@ static void e1000_put_txbuf(struct e1000_adapter *adapter,
 	buffer_info->time_stamp = 0;
 }
 
-static void e1000_print_tx_hang(struct e1000_adapter *adapter)
+static void e1000_print_hw_hang(struct e1000_adapter *adapter)
 {
 	struct e1000_ring *tx_ring = adapter->tx_ring;
 	unsigned int i = tx_ring->next_to_clean;
 	unsigned int eop = tx_ring->buffer_info[i].next_to_watch;
 	struct e1000_tx_desc *eop_desc = E1000_TX_DESC(*tx_ring, eop);
+	struct e1000_hw *hw = &adapter->hw;
+	u16 phy_status, phy_1000t_status, phy_ext_status;
+	u16 pci_status;
 
-	/* detected Tx unit hang */
-	e_err("Detected Tx Unit Hang:\n"
+	e1e_rphy(hw, PHY_STATUS, &phy_status);
+	e1e_rphy(hw, PHY_1000T_STATUS, &phy_1000t_status);
+	e1e_rphy(hw, PHY_EXT_STATUS, &phy_ext_status);
+
+	pci_read_config_word(adapter->pdev, PCI_STATUS, &pci_status);
+
+	/* detected Hardware unit hang */
+	e_err("Detected Hardware Unit Hang:\n"
 	      "  TDH                  <%x>\n"
 	      "  TDT                  <%x>\n"
 	      "  next_to_use          <%x>\n"
@@ -609,7 +965,12 @@ static void e1000_print_tx_hang(struct e1000_adapter *adapter)
 	      "  time_stamp           <%lx>\n"
 	      "  next_to_watch        <%x>\n"
 	      "  jiffies              <%lx>\n"
-	      "  next_to_watch.status <%x>\n",
+	      "  next_to_watch.status <%x>\n"
+	      "MAC Status             <%x>\n"
+	      "PHY Status             <%x>\n"
+	      "PHY 1000BASE-T Status  <%x>\n"
+	      "PHY Extended Status    <%x>\n"
+	      "PCI Status             <%x>\n",
 	      readl(adapter->hw.hw_addr + tx_ring->head),
 	      readl(adapter->hw.hw_addr + tx_ring->tail),
 	      tx_ring->next_to_use,
@@ -617,7 +978,12 @@ static void e1000_print_tx_hang(struct e1000_adapter *adapter)
 	      tx_ring->buffer_info[eop].time_stamp,
 	      eop,
 	      jiffies,
-	      eop_desc->upper.fields.status);
+	      eop_desc->upper.fields.status,
+	      er32(STATUS),
+	      phy_status,
+	      phy_1000t_status,
+	      phy_ext_status,
+	      pci_status);
 }
 
 /**
@@ -645,20 +1011,15 @@ static bool e1000_clean_tx_irq(struct e1000_adapter *adapter)
 	while ((eop_desc->upper.data & cpu_to_le32(E1000_TXD_STAT_DD)) &&
 	       (count < tx_ring->count)) {
 		bool cleaned = false;
+		rmb(); /* read buffer_info after eop_desc */
 		for (; !cleaned; count++) {
 			tx_desc = E1000_TX_DESC(*tx_ring, i);
 			buffer_info = &tx_ring->buffer_info[i];
 			cleaned = (i == eop);
 
 			if (cleaned) {
-				struct sk_buff *skb = buffer_info->skb;
-				unsigned int segs, bytecount;
-				segs = skb_shinfo(skb)->gso_segs ?: 1;
-				/* multiply data chunks by size of headers */
-				bytecount = ((segs - 1) * skb_headlen(skb)) +
-					    skb->len;
-				total_tx_packets += segs;
-				total_tx_bytes += bytecount;
+				total_tx_packets += buffer_info->segs;
+				total_tx_bytes += buffer_info->bytecount;
 			}
 
 			e1000_put_txbuf(adapter, buffer_info);
@@ -669,6 +1030,8 @@ static bool e1000_clean_tx_irq(struct e1000_adapter *adapter)
 				i = 0;
 		}
 
+		if (i == tx_ring->next_to_use)
+			break;
 		eop = tx_ring->buffer_info[i].next_to_watch;
 		eop_desc = E1000_TX_DESC(*tx_ring, eop);
 	}
@@ -691,14 +1054,16 @@ static bool e1000_clean_tx_irq(struct e1000_adapter *adapter)
 	}
 
 	if (adapter->detect_tx_hung) {
-		/* Detect a transmit hang in hardware, this serializes the
-		 * check with the clearing of time_stamp and movement of i */
+		/*
+		 * Detect a transmit hang in hardware, this serializes the
+		 * check with the clearing of time_stamp and movement of i
+		 */
 		adapter->detect_tx_hung = 0;
 		if (tx_ring->buffer_info[i].time_stamp &&
 		    time_after(jiffies, tx_ring->buffer_info[i].time_stamp
-			       + (adapter->tx_timeout_factor * HZ))
-		    && !(er32(STATUS) & E1000_STATUS_TXOFF)) {
-			e1000_print_tx_hang(adapter);
+			       + (adapter->tx_timeout_factor * HZ)) &&
+		    !(er32(STATUS) & E1000_STATUS_TXOFF)) {
+			schedule_work(&adapter->print_hang_task);
 			netif_stop_queue(netdev);
 		}
 	}
@@ -719,6 +1084,7 @@ static bool e1000_clean_tx_irq(struct e1000_adapter *adapter)
 static bool e1000_clean_rx_irq_ps(struct e1000_adapter *adapter,
 				  int *work_done, int work_to_do)
 {
+	struct e1000_hw *hw = &adapter->hw;
 	union e1000_rx_desc_packet_split *rx_desc, *next_rxd;
 	struct net_device *netdev = adapter->netdev;
 	struct pci_dev *pdev = adapter->pdev;
@@ -742,6 +1108,7 @@ static bool e1000_clean_rx_irq_ps(struct e1000_adapter *adapter,
 			break;
 		(*work_done)++;
 		skb = buffer_info->skb;
+		rmb();	/* read descriptor and rx_buffer_info after status DD */
 
 		/* in the packet split case this is header only */
 		prefetch(skb->data - NET_IP_ALIGN);
@@ -756,9 +1123,9 @@ static bool e1000_clean_rx_irq_ps(struct e1000_adapter *adapter,
 
 		cleaned = 1;
 		cleaned_count++;
-		pci_unmap_single(pdev, buffer_info->dma,
+		dma_unmap_single(&pdev->dev, buffer_info->dma,
 				 adapter->rx_ps_bsize0,
-				 PCI_DMA_FROMDEVICE);
+				 DMA_FROM_DEVICE);
 		buffer_info->dma = 0;
 
 		/* see !EOP comment in other rx routine */
@@ -766,8 +1133,8 @@ static bool e1000_clean_rx_irq_ps(struct e1000_adapter *adapter,
 			adapter->flags2 |= FLAG2_IS_DISCARDING;
 
 		if (adapter->flags2 & FLAG2_IS_DISCARDING) {
-			e_dbg("%s: Packet Split buffers didn't pick up the "
-			      "full packet\n", netdev->name);
+			e_dbg("Packet Split buffers didn't pick up the full "
+			      "packet\n");
 			dev_kfree_skb_irq(skb);
 			if (staterr & E1000_RXD_STAT_EOP)
 				adapter->flags2 &= ~FLAG2_IS_DISCARDING;
@@ -782,8 +1149,8 @@ static bool e1000_clean_rx_irq_ps(struct e1000_adapter *adapter,
 		length = le16_to_cpu(rx_desc->wb.middle.length0);
 
 		if (!length) {
-			e_dbg("%s: Last part of the packet spanning multiple "
-			      "descriptors\n", netdev->name);
+			e_dbg("Last part of the packet spanning multiple "
+			      "descriptors\n");
 			dev_kfree_skb_irq(skb);
 			goto next_desc;
 		}
@@ -814,13 +1181,13 @@ static bool e1000_clean_rx_irq_ps(struct e1000_adapter *adapter,
 			 * kmap_atomic, so we can't hold the mapping
 			 * very long
 			 */
-			pci_dma_sync_single_for_cpu(pdev, ps_page->dma,
-				PAGE_SIZE, PCI_DMA_FROMDEVICE);
+			dma_sync_single_for_cpu(&pdev->dev, ps_page->dma,
+						PAGE_SIZE, DMA_FROM_DEVICE);
 			vaddr = kmap_atomic(ps_page->page, KM_SKB_DATA_SOFTIRQ);
 			memcpy(skb_tail_pointer(skb), vaddr, l1);
 			kunmap_atomic(vaddr, KM_SKB_DATA_SOFTIRQ);
-			pci_dma_sync_single_for_device(pdev, ps_page->dma,
-				PAGE_SIZE, PCI_DMA_FROMDEVICE);
+			dma_sync_single_for_device(&pdev->dev, ps_page->dma,
+						   PAGE_SIZE, DMA_FROM_DEVICE);
 
 			/* remove the CRC */
 			if (!(adapter->flags2 & FLAG2_CRC_STRIPPING))
@@ -837,8 +1204,8 @@ static bool e1000_clean_rx_irq_ps(struct e1000_adapter *adapter,
 				break;
 
 			ps_page = &buffer_info->ps_pages[j];
-			pci_unmap_page(pdev, ps_page->dma, PAGE_SIZE,
-				       PCI_DMA_FROMDEVICE);
+			dma_unmap_page(&pdev->dev, ps_page->dma, PAGE_SIZE,
+				       DMA_FROM_DEVICE);
 			ps_page->dma = 0;
 			skb_fill_page_desc(skb, j, ps_page->page, 0, length);
 			ps_page->page = NULL;
@@ -941,6 +1308,7 @@ static bool e1000_clean_jumbo_rx_irq(struct e1000_adapter *adapter,
 		if (*work_done >= work_to_do)
 			break;
 		(*work_done)++;
+		rmb();	/* read descriptor and rx_buffer_info after status DD */
 
 		status = rx_desc->status;
 		skb = buffer_info->skb;
@@ -956,8 +1324,8 @@ static bool e1000_clean_jumbo_rx_irq(struct e1000_adapter *adapter,
 
 		cleaned = true;
 		cleaned_count++;
-		pci_unmap_page(pdev, buffer_info->dma, PAGE_SIZE,
-		               PCI_DMA_FROMDEVICE);
+		dma_unmap_page(&pdev->dev, buffer_info->dma, PAGE_SIZE,
+			       DMA_FROM_DEVICE);
 		buffer_info->dma = 0;
 
 		length = le16_to_cpu(rx_desc->length);
@@ -1093,17 +1461,17 @@ static void e1000_clean_rx_ring(struct e1000_adapter *adapter)
 		buffer_info = &rx_ring->buffer_info[i];
 		if (buffer_info->dma) {
 			if (adapter->clean_rx == e1000_clean_rx_irq)
-				pci_unmap_single(pdev, buffer_info->dma,
+				dma_unmap_single(&pdev->dev, buffer_info->dma,
 						 adapter->rx_buffer_len,
-						 PCI_DMA_FROMDEVICE);
+						 DMA_FROM_DEVICE);
 			else if (adapter->clean_rx == e1000_clean_jumbo_rx_irq)
-				pci_unmap_page(pdev, buffer_info->dma,
+				dma_unmap_page(&pdev->dev, buffer_info->dma,
 				               PAGE_SIZE,
-				               PCI_DMA_FROMDEVICE);
+					       DMA_FROM_DEVICE);
 			else if (adapter->clean_rx == e1000_clean_rx_irq_ps)
-				pci_unmap_single(pdev, buffer_info->dma,
+				dma_unmap_single(&pdev->dev, buffer_info->dma,
 						 adapter->rx_ps_bsize0,
-						 PCI_DMA_FROMDEVICE);
+						 DMA_FROM_DEVICE);
 			buffer_info->dma = 0;
 		}
 
@@ -1121,8 +1489,8 @@ static void e1000_clean_rx_ring(struct e1000_adapter *adapter)
 			ps_page = &buffer_info->ps_pages[j];
 			if (!ps_page->page)
 				break;
-			pci_unmap_page(pdev, ps_page->dma, PAGE_SIZE,
-				       PCI_DMA_FROMDEVICE);
+			dma_unmap_page(&pdev->dev, ps_page->dma, PAGE_SIZE,
+				       DMA_FROM_DEVICE);
 			ps_page->dma = 0;
 			put_page(ps_page->page);
 			ps_page->page = NULL;
@@ -1217,7 +1585,7 @@ static irqreturn_t e1000_intr(int irq, void *data, struct pt_regs *regs)
 	struct e1000_hw *hw = &adapter->hw;
 	u32 rctl, icr = er32(ICR);
 
-	if (!icr)
+	if (!icr || test_bit(__E1000_DOWN, &adapter->state))
 		return IRQ_NONE;  /* Not our interrupt */
 
 	/*
@@ -1426,8 +1794,6 @@ void e1000e_reset_interrupt_capability(struct e1000_adapter *adapter)
 		pci_disable_msi(adapter->pdev);
 		adapter->flags &= ~FLAG_MSI_ENABLED;
 	}
-
-	return;
 }
 
 /**
@@ -1439,25 +1805,25 @@ void e1000e_reset_interrupt_capability(struct e1000_adapter *adapter)
 void e1000e_set_interrupt_capability(struct e1000_adapter *adapter)
 {
 	int err;
-	int numvecs, i;
-
+	int i;
 
 	switch (adapter->int_mode) {
 	case E1000E_INT_MODE_MSIX:
 		if (adapter->flags & FLAG_HAS_MSIX) {
-			numvecs = 3; /* RxQ0, TxQ0 and other */
-			adapter->msix_entries = kcalloc(numvecs,
+			adapter->num_vectors = 3; /* RxQ0, TxQ0 and other */
+			adapter->msix_entries = kcalloc(adapter->num_vectors,
 						      sizeof(struct msix_entry),
 						      GFP_KERNEL);
 			if (adapter->msix_entries) {
-				for (i = 0; i < numvecs; i++)
+				for (i = 0; i < adapter->num_vectors; i++)
 					adapter->msix_entries[i].entry = i;
 
 				err = pci_enable_msix(adapter->pdev,
 						      adapter->msix_entries,
-						      numvecs);
-				if (err == 0)
+						      adapter->num_vectors);
+				if (err == 0) {
 					return;
+				}
 			}
 			/* MSI-X failed, so fall through and try MSI */
 			e_err("Failed to initialize MSI-X interrupts.  "
@@ -1480,7 +1846,8 @@ void e1000e_set_interrupt_capability(struct e1000_adapter *adapter)
 		break;
 	}
 
-	return;
+	/* store the number of vectors being used */
+	adapter->num_vectors = 1;
 }
 
 /**
@@ -1603,7 +1970,14 @@ static void e1000_irq_disable(struct e1000_adapter *adapter)
 	if (adapter->msix_entries)
 		ew32(EIAC_82574, 0);
 	e1e_flush();
-	synchronize_irq(adapter->pdev->irq);
+
+	if (adapter->msix_entries) {
+		int i;
+		for (i = 0; i < adapter->num_vectors; i++)
+			synchronize_irq(adapter->msix_entries[i].vector);
+	} else {
+		synchronize_irq(adapter->pdev->irq);
+	}
 }
 
 /**
@@ -2066,11 +2440,14 @@ static void e1000_vlan_rx_add_vid(struct net_device *netdev, u16 vid)
 	     E1000_MNG_DHCP_COOKIE_STATUS_VLAN) &&
 	    (vid == adapter->mng_vlan_id))
 		return;
+
 	/* add VID to filter table */
-	index = (vid >> 5) & 0x7F;
-	vfta = E1000_READ_REG_ARRAY(hw, E1000_VFTA, index);
-	vfta |= (1 << (vid & 0x1F));
-	e1000e_write_vfta(hw, index, vfta);
+	if (adapter->flags & FLAG_HAS_HW_VLAN_FILTER) {
+		index = (vid >> 5) & 0x7F;
+		vfta = E1000_READ_REG_ARRAY(hw, E1000_VFTA, index);
+		vfta |= (1 << (vid & 0x1F));
+		hw->mac.ops.write_vfta(hw, index, vfta);
+	}
 }
 
 static void e1000_vlan_rx_kill_vid(struct net_device *netdev, u16 vid)
@@ -2095,10 +2472,12 @@ static void e1000_vlan_rx_kill_vid(struct net_device *netdev, u16 vid)
 	}
 
 	/* remove VID from filter table */
-	index = (vid >> 5) & 0x7F;
-	vfta = E1000_READ_REG_ARRAY(hw, E1000_VFTA, index);
-	vfta &= ~(1 << (vid & 0x1F));
-	e1000e_write_vfta(hw, index, vfta);
+	if (adapter->flags & FLAG_HAS_HW_VLAN_FILTER) {
+		index = (vid >> 5) & 0x7F;
+		vfta = E1000_READ_REG_ARRAY(hw, E1000_VFTA, index);
+		vfta &= ~(1 << (vid & 0x1F));
+		hw->mac.ops.write_vfta(hw, index, vfta);
+	}
 }
 
 static void e1000_update_mng_vlan(struct e1000_adapter *adapter)
@@ -2188,10 +2567,10 @@ static void e1000_restore_vlan(struct e1000_adapter *adapter)
 	}
 }
 
-static void e1000_init_manageability(struct e1000_adapter *adapter)
+static void e1000_init_manageability_pt(struct e1000_adapter *adapter)
 {
 	struct e1000_hw *hw = &adapter->hw;
-	u32 manc, manc2h;
+	u32 manc, manc2h, mdef, i, j;
 
 	if (!(adapter->flags & FLAG_MNG_PT_ENABLED))
 		return;
@@ -2205,10 +2584,49 @@ static void e1000_init_manageability(struct e1000_adapter *adapter)
 	 */
 	manc |= E1000_MANC_EN_MNG2HOST;
 	manc2h = er32(MANC2H);
-#define E1000_MNG2HOST_PORT_623 (1 << 5)
-#define E1000_MNG2HOST_PORT_664 (1 << 6)
-	manc2h |= E1000_MNG2HOST_PORT_623;
-	manc2h |= E1000_MNG2HOST_PORT_664;
+
+	switch (hw->mac.type) {
+	default:
+		manc2h |= (E1000_MANC2H_PORT_623 | E1000_MANC2H_PORT_664);
+		break;
+	case e1000_82574:
+	case e1000_82583:
+		/*
+		 * Check if IPMI pass-through decision filter already exists;
+		 * if so, enable it.
+		 */
+		for (i = 0, j = 0; i < 8; i++) {
+			mdef = er32(MDEF(i));
+
+			/* Ignore filters with anything other than IPMI ports */
+			if (mdef & ~(E1000_MDEF_PORT_623 | E1000_MDEF_PORT_664))
+				continue;
+
+			/* Enable this decision filter in MANC2H */
+			if (mdef)
+				manc2h |= (1 << i);
+
+			j |= mdef;
+		}
+
+		if (j == (E1000_MDEF_PORT_623 | E1000_MDEF_PORT_664))
+			break;
+
+		/* Create new decision filter in an empty filter */
+		for (i = 0, j = 0; i < 8; i++)
+			if (er32(MDEF(i)) == 0) {
+				ew32(MDEF(i), (E1000_MDEF_PORT_623 |
+					       E1000_MDEF_PORT_664));
+				manc2h |= (1 << 1);
+				j++;
+				break;
+			}
+
+		if (!j)
+			e_warn("Unable to create IPMI pass-through filter\n");
+		break;
+	}
+
 	ew32(MANC2H, manc2h);
 	ew32(MANC, manc);
 }
@@ -2295,8 +2713,6 @@ static void e1000_configure_tx(struct e1000_adapter *adapter)
 	ew32(TCTL, tctl);
 
 	e1000e_config_collision_dist(hw);
-
-	adapter->tx_queue_len = adapter->netdev->tx_queue_len;
 }
 
 /**
@@ -2352,22 +2768,20 @@ static void e1000_setup_rctl(struct e1000_adapter *adapter)
 		e1e_wphy(hw, 22, phy_data);
 	}
 
+	/* Workaround Si errata on 82579 - configure jumbo frame flow */
+	if (hw->mac.type == e1000_pch2lan) {
+		s32 ret_val;
+
+		if (rctl & E1000_RCTL_LPE)
+			ret_val = e1000_lv_jumbo_workaround_ich8lan(hw, true);
+		else
+			ret_val = e1000_lv_jumbo_workaround_ich8lan(hw, false);
+	}
+
 	/* Setup buffer sizes */
 	rctl &= ~E1000_RCTL_SZ_4096;
 	rctl |= E1000_RCTL_BSEX;
 	switch (adapter->rx_buffer_len) {
-	case 256:
-		rctl |= E1000_RCTL_SZ_256;
-		rctl &= ~E1000_RCTL_BSEX;
-		break;
-	case 512:
-		rctl |= E1000_RCTL_SZ_512;
-		rctl &= ~E1000_RCTL_BSEX;
-		break;
-	case 1024:
-		rctl |= E1000_RCTL_SZ_1024;
-		rctl &= ~E1000_RCTL_BSEX;
-		break;
 	case 2048:
 	default:
 		rctl |= E1000_RCTL_SZ_2048;
@@ -2400,7 +2814,7 @@ static void e1000_setup_rctl(struct e1000_adapter *adapter)
 	 * per packet.
 	 */
 	pages = PAGE_USE_COUNT(adapter->netdev->mtu);
-	if (!(adapter->flags & FLAG_IS_ICH) && (pages <= 3) &&
+	if (!(adapter->flags & FLAG_HAS_ERT) && (pages <= 3) &&
 	    (PAGE_SIZE <= 16384) && (rctl & E1000_RCTL_LPE))
 		adapter->rx_ps_pages = pages;
 	else
@@ -2421,7 +2835,7 @@ static void e1000_setup_rctl(struct e1000_adapter *adapter)
 
 		/* Enable Packet split descriptors */
 		rctl |= E1000_RCTL_DTYP_PS;
-		
+
 		psrctl |= adapter->rx_ps_bsize0 >>
 			E1000_PSRCTL_BSIZE0_SHIFT;
 
@@ -2439,18 +2853,6 @@ static void e1000_setup_rctl(struct e1000_adapter *adapter)
 		}
 
 		ew32(PSRCTL, psrctl);
-	}
-
-	/*
-	 * Disable hardware filtering/packet split for NFS write request
-	 * headers and NFS read reply headers on ICH platforms due to
-	 * possible skb_shared_info corruption with some MTUs.
-	 */
-	if (adapter->flags & FLAG_IS_ICH) {
-		rfctl = er32(RFCTL);
-		rfctl |= (E1000_RFCTL_NFSW_DIS |
-			  E1000_RFCTL_NFSR_DIS);
-		ew32(RFCTL, rfctl);
 	}
 
 	ew32(RCTL, rctl);
@@ -2502,8 +2904,6 @@ static void e1000_configure_rx(struct e1000_adapter *adapter)
 		ew32(ITR, 1000000000 / (adapter->itr * 256));
 
 	ctrl_ext = er32(CTRL_EXT);
-	/* Reset delay timers after every interrupt */
-	ctrl_ext |= E1000_CTRL_EXT_INT_TIMER_CLR;
 	/* Auto-Mask interrupts upon ICR access */
 	ctrl_ext |= E1000_CTRL_EXT_IAME;
 	ew32(IAM, 0xffffffff);
@@ -2575,22 +2975,14 @@ static void e1000_configure_rx(struct e1000_adapter *adapter)
  *  @hw: pointer to the HW structure
  *  @mc_addr_list: array of multicast addresses to program
  *  @mc_addr_count: number of multicast addresses to program
- *  @rar_used_count: the first RAR register free to program
- *  @rar_count: total number of supported Receive Address Registers
  *
- *  Updates the Receive Address Registers and Multicast Table Array.
+ *  Updates the Multicast Table Array.
  *  The caller must have a packed mc_addr_list of multicast addresses.
- *  The parameter rar_count will usually be hw->mac.rar_entry_count
- *  unless there are workarounds that change this.  Currently no func pointer
- *  exists and all implementations are handled in the generic version of this
- *  function.
  **/
 static void e1000_update_mc_addr_list(struct e1000_hw *hw, u8 *mc_addr_list,
-				      u32 mc_addr_count, u32 rar_used_count,
-				      u32 rar_count)
+				      u32 mc_addr_count)
 {
-	hw->mac.ops.update_mc_addr_list(hw, mc_addr_list, mc_addr_count,
-				        rar_used_count, rar_count);
+	hw->mac.ops.update_mc_addr_list(hw, mc_addr_list, mc_addr_count);
 }
 
 /**
@@ -2606,7 +2998,6 @@ static void e1000_set_multi(struct net_device *netdev)
 {
 	struct e1000_adapter *adapter = netdev_priv(netdev);
 	struct e1000_hw *hw = &adapter->hw;
-	struct e1000_mac_info *mac = &hw->mac;
 	struct dev_mc_list *mc_ptr;
 	u8  *mta_list;
 	u32 rctl;
@@ -2648,15 +3039,14 @@ static void e1000_set_multi(struct net_device *netdev)
 			mc_ptr = mc_ptr->next;
 		}
 
-		e1000_update_mc_addr_list(hw, mta_list, i, 1,
-					  mac->rar_entry_count);
+		e1000_update_mc_addr_list(hw, mta_list, i);
 		kfree(mta_list);
 	} else {
 		/*
 		 * if we're called from probe, we might not have
 		 * anything to do here, so clear out the list
 		 */
-		e1000_update_mc_addr_list(hw, NULL, 0, 1, mac->rar_entry_count);
+		e1000_update_mc_addr_list(hw, NULL, 0);
 	}
 }
 
@@ -2669,7 +3059,7 @@ static void e1000_configure(struct e1000_adapter *adapter)
 	e1000_set_multi(adapter->netdev);
 
 	e1000_restore_vlan(adapter);
-	e1000_init_manageability(adapter);
+	e1000_init_manageability_pt(adapter);
 
 	e1000_configure_tx(adapter);
 	e1000_setup_rctl(adapter);
@@ -2687,18 +3077,8 @@ static void e1000_configure(struct e1000_adapter *adapter)
  **/
 void e1000e_power_up_phy(struct e1000_adapter *adapter)
 {
-	u16 mii_reg = 0;
-
-	/* Just clear the power down bit to wake the phy back up */
-	if (adapter->hw.phy.media_type == e1000_media_type_copper) {
-		/*
-		 * According to the manual, the phy will retain its
-		 * settings across a power-down/up cycle
-		 */
-		e1e_rphy(&adapter->hw, PHY_CONTROL, &mii_reg);
-		mii_reg &= ~MII_CR_POWER_DOWN;
-		e1e_wphy(&adapter->hw, PHY_CONTROL, mii_reg);
-	}
+	if (adapter->hw.phy.ops.power_up)
+		adapter->hw.phy.ops.power_up(&adapter->hw);
 
 	adapter->hw.mac.ops.setup_link(&adapter->hw);
 }
@@ -2706,35 +3086,17 @@ void e1000e_power_up_phy(struct e1000_adapter *adapter)
 /**
  * e1000_power_down_phy - Power down the PHY
  *
- * Power down the PHY so no link is implied when interface is down
- * The PHY cannot be powered down is management or WoL is active
+ * Power down the PHY so no link is implied when interface is down.
+ * The PHY cannot be powered down if management or WoL is active.
  */
 static void e1000_power_down_phy(struct e1000_adapter *adapter)
 {
-	struct e1000_hw *hw = &adapter->hw;
-	u16 mii_reg;
-
 	/* WoL is enabled */
 	if (adapter->wol)
 		return;
 
-	/* non-copper PHY? */
-	if (adapter->hw.phy.media_type != e1000_media_type_copper)
-		return;
-
-	/* reset is blocked because of a SoL/IDER session */
-	if (e1000e_check_mng_mode(hw) || e1000_check_reset_block(hw))
-		return;
-
-	/* manageability (AMT) is enabled */
-	if (er32(MANC) & E1000_MANC_SMBUS_EN)
-		return;
-
-	/* power down the PHY */
-	e1e_rphy(hw, PHY_CONTROL, &mii_reg);
-	mii_reg |= MII_CR_POWER_DOWN;
-	e1e_wphy(hw, PHY_CONTROL, mii_reg);
-	mdelay(1);
+	if (adapter->hw.phy.ops.power_down)
+		adapter->hw.phy.ops.power_down(&adapter->hw);
 }
 
 /**
@@ -2819,7 +3181,27 @@ void e1000e_reset(struct e1000_adapter *adapter)
 	 *   with ERT support assuming ERT set to E1000_ERT_2048), or
 	 * - the full Rx FIFO size minus one full frame
 	 */
-	if (hw->mac.type == e1000_pchlan) {
+	if (adapter->flags & FLAG_DISABLE_FC_PAUSE_TIME)
+		fc->pause_time = 0xFFFF;
+	else
+		fc->pause_time = E1000_FC_PAUSE_TIME;
+	fc->send_xon = 1;
+	fc->current_mode = fc->requested_mode;
+
+	switch (hw->mac.type) {
+	default:
+		if ((adapter->flags & FLAG_HAS_ERT) &&
+		    (adapter->netdev->mtu > ETH_DATA_LEN))
+			hwm = min(((pba << 10) * 9 / 10),
+				  ((pba << 10) - (E1000_ERT_2048 << 3)));
+		else
+			hwm = min(((pba << 10) * 9 / 10),
+				  ((pba << 10) - adapter->max_frame_size));
+
+		fc->high_water = hwm & E1000_FCRTH_RTH; /* 8-byte granularity */
+		fc->low_water = fc->high_water - 8;
+		break;
+	case e1000_pchlan:
 		/*
 		 * Workaround PCH LOM adapter hangs with certain network
 		 * loads.  If hangs persist, try disabling Tx flow control.
@@ -2831,25 +3213,15 @@ void e1000e_reset(struct e1000_adapter *adapter)
 			fc->high_water = 0x5000;
 			fc->low_water  = 0x3000;
 		}
-	} else {
-		if ((adapter->flags & FLAG_HAS_ERT) &&
-		    (adapter->netdev->mtu > ETH_DATA_LEN))
-			hwm = min(((pba << 10) * 9 / 10),
-				  ((pba << 10) - (E1000_ERT_2048 << 3)));
-		else
-			hwm = min(((pba << 10) * 9 / 10),
-				  ((pba << 10) - adapter->max_frame_size));
-
-		fc->high_water = hwm & E1000_FCRTH_RTH; /* 8-byte granularity */
-		fc->low_water = fc->high_water - 8;
+		fc->refresh_time = 0x1000;
+		break;
+	case e1000_pch2lan:
+		fc->high_water = 0x05C20;
+		fc->low_water = 0x05048;
+		fc->pause_time = 0x0650;
+		fc->refresh_time = 0x0400;
+		break;
 	}
-
-	if (adapter->flags & FLAG_DISABLE_FC_PAUSE_TIME)
-		fc->pause_time = 0xFFFF;
-	else
-		fc->pause_time = E1000_FC_PAUSE_TIME;
-	fc->send_xon = 1;
-	fc->current_mode = fc->requested_mode;
 
 	/* Allow time for pending master requests to run */
 	mac->ops.reset_hw(hw);
@@ -2862,15 +3234,9 @@ void e1000e_reset(struct e1000_adapter *adapter)
 		e1000_get_hw_control(adapter);
 
 	ew32(WUC, 0);
-	if (adapter->flags2 & FLAG2_HAS_PHY_WAKEUP)
-		e1e_wphy(&adapter->hw, BM_WUC, 0);
 
 	if (mac->ops.init_hw(hw))
 		e_err("Hardware Error\n");
-
-	/* additional part of the flow-control workaround above */
-	if (hw->mac.type == e1000_pchlan)
-		ew32(FCRTV_PCH, 0x1000);
 
 	e1000_update_mng_vlan(adapter);
 
@@ -2911,7 +3277,11 @@ int e1000e_up(struct e1000_adapter *adapter)
 	netif_wake_queue(adapter->netdev);
 
 	/* fire a link change interrupt to start the watchdog */
-	ew32(ICS, E1000_ICS_LSC);
+	if (adapter->msix_entries)
+		ew32(ICS, E1000_ICS_LSC | E1000_ICR_OTHER);
+	else
+		ew32(ICS, E1000_ICS_LSC);
+
 	return 0;
 }
 
@@ -2949,7 +3319,6 @@ void e1000e_down(struct e1000_adapter *adapter)
 	del_timer_sync(&adapter->watchdog_timer);
 	del_timer_sync(&adapter->phy_info_timer);
 
-	netdev->tx_queue_len = adapter->tx_queue_len;
 	netif_carrier_off(netdev);
 	adapter->link_speed = 0;
 	adapter->link_duplex = 0;
@@ -3016,7 +3385,7 @@ static irqreturn_t e1000_intr_msi_test(int irq, void *data, struct pt_regs *regs
 	struct e1000_hw *hw = &adapter->hw;
 	u32 icr = er32(ICR);
 
-	e_dbg("%s: icr is %08X\n", netdev->name, icr);
+	e_dbg("icr is %08X\n", icr);
 	if (icr & E1000_ICR_RXSEQ) {
 		adapter->flags &= ~FLAG_MSI_TEST_FAILED;
 		wmb();
@@ -3086,7 +3455,7 @@ static int e1000_test_msi_interrupt(struct e1000_adapter *adapter)
 		goto msi_test_failed;
 
 	/* okay so the test worked, restore settings */
-	e_dbg("%s: MSI interrupt test succeeded!\n", netdev->name);
+	e_dbg("MSI interrupt test succeeded!\n");
 msi_test_failed:
 	e1000e_set_interrupt_capability(adapter);
 	e1000_request_irq(adapter);
@@ -3109,13 +3478,18 @@ static int e1000_test_msi(struct e1000_adapter *adapter)
 
 	/* disable SERR in case the MSI write causes a master abort */
 	pci_read_config_word(adapter->pdev, PCI_COMMAND, &pci_cmd);
-	pci_write_config_word(adapter->pdev, PCI_COMMAND,
-			      pci_cmd & ~PCI_COMMAND_SERR);
+	if (pci_cmd & PCI_COMMAND_SERR)
+		pci_write_config_word(adapter->pdev, PCI_COMMAND,
+				      pci_cmd & ~PCI_COMMAND_SERR);
 
 	err = e1000_test_msi_interrupt(adapter);
 
-	/* restore previous setting of command word */
-	pci_write_config_word(adapter->pdev, PCI_COMMAND, pci_cmd);
+	/* re-enable SERR */
+	if (pci_cmd & PCI_COMMAND_SERR) {
+		pci_read_config_word(adapter->pdev, PCI_COMMAND, &pci_cmd);
+		pci_cmd |= PCI_COMMAND_SERR;
+		pci_write_config_word(adapter->pdev, PCI_COMMAND, pci_cmd);
+	}
 
 	/* success ! */
 	if (!err)
@@ -3169,19 +3543,21 @@ static int e1000_open(struct net_device *netdev)
 	if (err)
 		goto err_setup_rx;
 
+	/*
+	 * If AMT is enabled, let the firmware know that the network
+	 * interface is now open and reset the part to a known state.
+	 */
+	if (adapter->flags & FLAG_HAS_AMT) {
+		e1000_get_hw_control(adapter);
+		e1000e_reset(adapter);
+	}
+
 	e1000e_power_up_phy(adapter);
 
 	adapter->mng_vlan_id = E1000_MNG_VLAN_NONE;
 	if ((adapter->hw.mng_cookie.status &
 	     E1000_MNG_DHCP_COOKIE_STATUS_VLAN))
 		e1000_update_mng_vlan(adapter);
-
-	/*
-	 * If AMT is enabled, let the firmware know that the network
-	 * interface is now open
-	 */
-	if (adapter->flags & FLAG_HAS_AMT)
-		e1000_get_hw_control(adapter);
 
 	/*
 	 * before we allocate an interrupt, we must be ready to handle it.
@@ -3217,7 +3593,10 @@ static int e1000_open(struct net_device *netdev)
 
 	netif_start_queue(netdev);
 	/* fire a link status change interrupt to start the watchdog */
-	ew32(ICS, E1000_ICS_LSC);
+	if (adapter->msix_entries)
+		ew32(ICS, E1000_ICS_LSC | E1000_ICR_OTHER);
+	else
+		ew32(ICS, E1000_ICS_LSC);
 
 	return 0;
 
@@ -3339,6 +3718,110 @@ static void e1000_update_phy_info(unsigned long data)
 }
 
 /**
+ * e1000e_update_phy_stats - Update the PHY statistics counters
+ * @adapter: board private structure
+ **/
+static void e1000e_update_phy_stats(struct e1000_adapter *adapter)
+{
+	struct e1000_hw *hw = &adapter->hw;
+	s32 ret_val;
+	u16 phy_data;
+
+	ret_val = hw->phy.ops.acquire(hw);
+	if (ret_val)
+		return;
+
+	hw->phy.addr = 1;
+
+#define HV_PHY_STATS_PAGE	778
+	/*
+	 * A page set is expensive so check if already on desired page.
+	 * If not, set to the page with the PHY status registers.
+	 */
+	ret_val = e1000e_read_phy_reg_mdic(hw, IGP01E1000_PHY_PAGE_SELECT,
+					   &phy_data);
+	if (ret_val)
+		goto release;
+	if (phy_data != (HV_PHY_STATS_PAGE << IGP_PAGE_SHIFT)) {
+		ret_val = e1000e_write_phy_reg_mdic(hw,
+						    IGP01E1000_PHY_PAGE_SELECT,
+						    (HV_PHY_STATS_PAGE <<
+						     IGP_PAGE_SHIFT));
+		if (ret_val)
+			goto release;
+	}
+
+	/* Read/clear the upper 16-bit registers and read/accumulate lower */
+
+	/* Single Collision Count */
+	e1000e_read_phy_reg_mdic(hw, HV_SCC_UPPER & MAX_PHY_REG_ADDRESS,
+				 &phy_data);
+	ret_val = e1000e_read_phy_reg_mdic(hw,
+					   HV_SCC_LOWER & MAX_PHY_REG_ADDRESS,
+					   &phy_data);
+	if (!ret_val)
+		adapter->stats.scc += phy_data;
+
+	/* Excessive Collision Count */
+	e1000e_read_phy_reg_mdic(hw, HV_ECOL_UPPER & MAX_PHY_REG_ADDRESS,
+				 &phy_data);
+	ret_val = e1000e_read_phy_reg_mdic(hw,
+					   HV_ECOL_LOWER & MAX_PHY_REG_ADDRESS,
+					   &phy_data);
+	if (!ret_val)
+		adapter->stats.ecol += phy_data;
+
+	/* Multiple Collision Count */
+	e1000e_read_phy_reg_mdic(hw, HV_MCC_UPPER & MAX_PHY_REG_ADDRESS,
+				 &phy_data);
+	ret_val = e1000e_read_phy_reg_mdic(hw,
+					   HV_MCC_LOWER & MAX_PHY_REG_ADDRESS,
+					   &phy_data);
+	if (!ret_val)
+		adapter->stats.mcc += phy_data;
+
+	/* Late Collision Count */
+	e1000e_read_phy_reg_mdic(hw, HV_LATECOL_UPPER & MAX_PHY_REG_ADDRESS,
+				 &phy_data);
+	ret_val = e1000e_read_phy_reg_mdic(hw,
+					   HV_LATECOL_LOWER &
+					   MAX_PHY_REG_ADDRESS,
+					   &phy_data);
+	if (!ret_val)
+		adapter->stats.latecol += phy_data;
+
+	/* Collision Count - also used for adaptive IFS */
+	e1000e_read_phy_reg_mdic(hw, HV_COLC_UPPER & MAX_PHY_REG_ADDRESS,
+				 &phy_data);
+	ret_val = e1000e_read_phy_reg_mdic(hw,
+					   HV_COLC_LOWER & MAX_PHY_REG_ADDRESS,
+					   &phy_data);
+	if (!ret_val)
+		hw->mac.collision_delta = phy_data;
+
+	/* Defer Count */
+	e1000e_read_phy_reg_mdic(hw, HV_DC_UPPER & MAX_PHY_REG_ADDRESS,
+				 &phy_data);
+	ret_val = e1000e_read_phy_reg_mdic(hw,
+					   HV_DC_LOWER & MAX_PHY_REG_ADDRESS,
+					   &phy_data);
+	if (!ret_val)
+		adapter->stats.dc += phy_data;
+
+	/* Transmit with no CRS */
+	e1000e_read_phy_reg_mdic(hw, HV_TNCRS_UPPER & MAX_PHY_REG_ADDRESS,
+				 &phy_data);
+	ret_val = e1000e_read_phy_reg_mdic(hw,
+					   HV_TNCRS_LOWER & MAX_PHY_REG_ADDRESS,
+					   &phy_data);
+	if (!ret_val)
+		adapter->stats.tncrs += phy_data;
+
+release:
+	hw->phy.ops.release(hw);
+}
+
+/**
  * e1000e_update_stats - Update the board statistics counters
  * @adapter: board private structure
  **/
@@ -3346,7 +3829,6 @@ void e1000e_update_stats(struct e1000_adapter *adapter)
 {
 	struct e1000_hw *hw = &adapter->hw;
 	struct pci_dev *pdev = adapter->pdev;
-	u16 phy_data;
 
 	/*
 	 * Prevent stats update while adapter is being reset, or if the pci
@@ -3366,34 +3848,27 @@ void e1000e_update_stats(struct e1000_adapter *adapter)
 	adapter->stats.roc += er32(ROC);
 
 	adapter->stats.mpc += er32(MPC);
-	if ((hw->phy.type == e1000_phy_82578) ||
-	    (hw->phy.type == e1000_phy_82577)) {
-		e1e_rphy(hw, HV_SCC_UPPER, &phy_data);
-		e1e_rphy(hw, HV_SCC_LOWER, &phy_data);
-		adapter->stats.scc += phy_data;
 
-		e1e_rphy(hw, HV_ECOL_UPPER, &phy_data);
-		e1e_rphy(hw, HV_ECOL_LOWER, &phy_data);
-		adapter->stats.ecol += phy_data;
+	/* Half-duplex statistics */
+	if (adapter->link_duplex == HALF_DUPLEX) {
+		if (adapter->flags2 & FLAG2_HAS_PHY_STATS) {
+			e1000e_update_phy_stats(adapter);
+		} else {
+			adapter->stats.scc += er32(SCC);
+			adapter->stats.ecol += er32(ECOL);
+			adapter->stats.mcc += er32(MCC);
+			adapter->stats.latecol += er32(LATECOL);
+			adapter->stats.dc += er32(DC);
 
-		e1e_rphy(hw, HV_MCC_UPPER, &phy_data);
-		e1e_rphy(hw, HV_MCC_LOWER, &phy_data);
-		adapter->stats.mcc += phy_data;
+			hw->mac.collision_delta = er32(COLC);
 
-		e1e_rphy(hw, HV_LATECOL_UPPER, &phy_data);
-		e1e_rphy(hw, HV_LATECOL_LOWER, &phy_data);
-		adapter->stats.latecol += phy_data;
-
-		e1e_rphy(hw, HV_DC_UPPER, &phy_data);
-		e1e_rphy(hw, HV_DC_LOWER, &phy_data);
-		adapter->stats.dc += phy_data;
-	} else {
-		adapter->stats.scc += er32(SCC);
-		adapter->stats.ecol += er32(ECOL);
-		adapter->stats.mcc += er32(MCC);
-		adapter->stats.latecol += er32(LATECOL);
-		adapter->stats.dc += er32(DC);
+			if ((hw->mac.type != e1000_82574) &&
+			    (hw->mac.type != e1000_82583))
+				adapter->stats.tncrs += er32(TNCRS);
+		}
+		adapter->stats.colc += hw->mac.collision_delta;
 	}
+
 	adapter->stats.xonrxc += er32(XONRXC);
 	adapter->stats.xontxc += er32(XONTXC);
 	adapter->stats.xoffrxc += er32(XOFFRXC);
@@ -3411,28 +3886,9 @@ void e1000e_update_stats(struct e1000_adapter *adapter)
 
 	hw->mac.tx_packet_delta = er32(TPT);
 	adapter->stats.tpt += hw->mac.tx_packet_delta;
-	if ((hw->phy.type == e1000_phy_82578) ||
-	    (hw->phy.type == e1000_phy_82577)) {
-		e1e_rphy(hw, HV_COLC_UPPER, &phy_data);
-		e1e_rphy(hw, HV_COLC_LOWER, &phy_data);
-		hw->mac.collision_delta = phy_data;
-	} else {
-		hw->mac.collision_delta = er32(COLC);
-	}
-	adapter->stats.colc += hw->mac.collision_delta;
 
 	adapter->stats.algnerrc += er32(ALGNERRC);
 	adapter->stats.rxerrc += er32(RXERRC);
-	if ((hw->phy.type == e1000_phy_82578) ||
-	    (hw->phy.type == e1000_phy_82577)) {
-		e1e_rphy(hw, HV_TNCRS_UPPER, &phy_data);
-		e1e_rphy(hw, HV_TNCRS_LOWER, &phy_data);
-		adapter->stats.tncrs += phy_data;
-	} else {
-		if ((hw->mac.type != e1000_82574) &&
-		    (hw->mac.type != e1000_82583))
-			adapter->stats.tncrs += er32(TNCRS);
-	}
 	adapter->stats.cexterr += er32(CEXTERR);
 	adapter->stats.tsctc += er32(TSCTC);
 	adapter->stats.tsctfc += er32(TSCTFC);
@@ -3531,7 +3987,7 @@ static void e1000_print_link_info(struct e1000_adapter *adapter)
 	       ((ctrl & E1000_CTRL_TFCE) ? "TX" : "None" )));
 }
 
-bool e1000_has_link(struct e1000_adapter *adapter)
+static bool e1000e_has_link(struct e1000_adapter *adapter)
 {
 	struct e1000_hw *hw = &adapter->hw;
 	bool link_active = 0;
@@ -3610,7 +4066,7 @@ static void e1000_watchdog_task(struct net_device *netdev)
 	u32 link, tctl;
 	int tx_pending = 0;
 
-	link = e1000_has_link(adapter);
+	link = e1000e_has_link(adapter);
 	if ((netif_carrier_ok(netdev)) && link) {
 		e1000e_enable_receives(adapter);
 		goto link_up;
@@ -3650,22 +4106,16 @@ static void e1000_watchdog_task(struct net_device *netdev)
 					       "link gets many collisions.\n");
 			}
 
-			/*
-			 * tweak tx_queue_len according to speed/duplex
-			 * and adjust the timeout factor
-			 */
-			netdev->tx_queue_len = adapter->tx_queue_len;
+			/* adjust timeout factor according to speed/duplex */
 			adapter->tx_timeout_factor = 1;
 			switch (adapter->link_speed) {
 			case SPEED_10:
 				txb2b = 0;
-				netdev->tx_queue_len = 10;
 				adapter->tx_timeout_factor = 16;
 				break;
 			case SPEED_100:
 				txb2b = 0;
-				netdev->tx_queue_len = 100;
-				/* maybe add some timeout factor ? */
+				adapter->tx_timeout_factor = 10;
 				break;
 			}
 
@@ -3831,68 +4281,64 @@ static int e1000_tso(struct e1000_adapter *adapter,
 	u8 ipcss, ipcso, tucss, tucso, hdr_len;
 	int err;
 
-	if (skb_is_gso(skb)) {
-		if (skb_header_cloned(skb)) {
-			err = pskb_expand_head(skb, 0, 0, GFP_ATOMIC);
-			if (err)
-				return err;
-		}
+	if (!skb_is_gso(skb))
+		return 0;
 
-		hdr_len = skb_transport_offset(skb) + tcp_hdrlen(skb);
-		mss = skb_shinfo(skb)->gso_size;
-		if (skb->protocol == htons(ETH_P_IP)) {
-			struct iphdr *iph = ip_hdr(skb);
-			iph->tot_len = 0;
-			iph->check = 0;
-			tcp_hdr(skb)->check = ~csum_tcpudp_magic(iph->saddr,
-								 iph->daddr, 0,
-								 IPPROTO_TCP,
-								 0);
-			cmd_length = E1000_TXD_CMD_IP;
-			ipcse = skb_transport_offset(skb) - 1;
-		} else if (skb_shinfo(skb)->gso_type == SKB_GSO_TCPV6) {
-			ipv6_hdr(skb)->payload_len = 0;
-			tcp_hdr(skb)->check =
-				~csum_ipv6_magic(&ipv6_hdr(skb)->saddr,
-						 &ipv6_hdr(skb)->daddr,
-						 0, IPPROTO_TCP, 0);
-			ipcse = 0;
-		}
-		ipcss = skb_network_offset(skb);
-		ipcso = (void *)&(ip_hdr(skb)->check) - (void *)skb->data;
-		tucss = skb_transport_offset(skb);
-		tucso = (void *)&(tcp_hdr(skb)->check) - (void *)skb->data;
-		tucse = 0;
-
-		cmd_length |= (E1000_TXD_CMD_DEXT | E1000_TXD_CMD_TSE |
-			       E1000_TXD_CMD_TCP | (skb->len - (hdr_len)));
-
-		i = tx_ring->next_to_use;
-		context_desc = E1000_CONTEXT_DESC(*tx_ring, i);
-		buffer_info = &tx_ring->buffer_info[i];
-
-		context_desc->lower_setup.ip_fields.ipcss  = ipcss;
-		context_desc->lower_setup.ip_fields.ipcso  = ipcso;
-		context_desc->lower_setup.ip_fields.ipcse  = cpu_to_le16(ipcse);
-		context_desc->upper_setup.tcp_fields.tucss = tucss;
-		context_desc->upper_setup.tcp_fields.tucso = tucso;
-		context_desc->upper_setup.tcp_fields.tucse = cpu_to_le16(tucse);
-		context_desc->tcp_seg_setup.fields.mss     = cpu_to_le16(mss);
-		context_desc->tcp_seg_setup.fields.hdr_len = hdr_len;
-		context_desc->cmd_and_length = cpu_to_le32(cmd_length);
-
-		buffer_info->time_stamp = jiffies;
-		buffer_info->next_to_watch = i;
-
-		i++;
-		if (i == tx_ring->count)
-			i = 0;
-		tx_ring->next_to_use = i;
-
-		return 1;
+	if (skb_header_cloned(skb)) {
+		err = pskb_expand_head(skb, 0, 0, GFP_ATOMIC);
+		if (err)
+			return err;
 	}
 
-	return 0;
+	hdr_len = skb_transport_offset(skb) + tcp_hdrlen(skb);
+	mss = skb_shinfo(skb)->gso_size;
+	if (skb->protocol == htons(ETH_P_IP)) {
+		struct iphdr *iph = ip_hdr(skb);
+		iph->tot_len = 0;
+		iph->check = 0;
+		tcp_hdr(skb)->check = ~csum_tcpudp_magic(iph->saddr, iph->daddr,
+		                                         0, IPPROTO_TCP, 0);
+		cmd_length = E1000_TXD_CMD_IP;
+		ipcse = skb_transport_offset(skb) - 1;
+	} else if (skb_is_gso_v6(skb)) {
+		ipv6_hdr(skb)->payload_len = 0;
+		tcp_hdr(skb)->check = ~csum_ipv6_magic(&ipv6_hdr(skb)->saddr,
+		                                       &ipv6_hdr(skb)->daddr,
+		                                       0, IPPROTO_TCP, 0);
+		ipcse = 0;
+	}
+	ipcss = skb_network_offset(skb);
+	ipcso = (void *)&(ip_hdr(skb)->check) - (void *)skb->data;
+	tucss = skb_transport_offset(skb);
+	tucso = (void *)&(tcp_hdr(skb)->check) - (void *)skb->data;
+	tucse = 0;
+
+	cmd_length |= (E1000_TXD_CMD_DEXT | E1000_TXD_CMD_TSE |
+	               E1000_TXD_CMD_TCP | (skb->len - (hdr_len)));
+
+	i = tx_ring->next_to_use;
+	context_desc = E1000_CONTEXT_DESC(*tx_ring, i);
+	buffer_info = &tx_ring->buffer_info[i];
+
+	context_desc->lower_setup.ip_fields.ipcss  = ipcss;
+	context_desc->lower_setup.ip_fields.ipcso  = ipcso;
+	context_desc->lower_setup.ip_fields.ipcse  = cpu_to_le16(ipcse);
+	context_desc->upper_setup.tcp_fields.tucss = tucss;
+	context_desc->upper_setup.tcp_fields.tucso = tucso;
+	context_desc->upper_setup.tcp_fields.tucse = cpu_to_le16(tucse);
+	context_desc->tcp_seg_setup.fields.mss     = cpu_to_le16(mss);
+	context_desc->tcp_seg_setup.fields.hdr_len = hdr_len;
+	context_desc->cmd_and_length = cpu_to_le32(cmd_length);
+
+	buffer_info->time_stamp = jiffies;
+	buffer_info->next_to_watch = i;
+
+	i++;
+	if (i == tx_ring->count)
+		i = 0;
+	tx_ring->next_to_use = i;
+
+	return 1;
 }
 
 static bool e1000_tx_csum(struct e1000_adapter *adapter, struct sk_buff *skb)
@@ -3964,10 +4410,11 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 			unsigned int mss)
 {
 	struct e1000_ring *tx_ring = adapter->tx_ring;
+	struct pci_dev *pdev = adapter->pdev;
 	struct e1000_buffer *buffer_info;
-	unsigned int len = skb->len - skb->data_len;
+	unsigned int len = skb_headlen(skb);
 	unsigned int offset = 0, size, count = 0, i;
-	unsigned int f;
+	unsigned int f, bytecount, segs;
 
 	i = tx_ring->next_to_use;
 
@@ -3978,20 +4425,16 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 		buffer_info->length = size;
 		buffer_info->time_stamp = jiffies;
 		buffer_info->next_to_watch = i;
-		buffer_info->dma =
-			pci_map_single(adapter->pdev,
-				skb->data + offset,
-				size,
-				PCI_DMA_TODEVICE);
-		if (pci_dma_mapping_error(buffer_info->dma)) {
-			dev_err(&adapter->pdev->dev, "TX DMA map[0] failed\n");
-			adapter->tx_dma_failed++;
-			return -1;
-		}
-		count++;
+		buffer_info->dma = dma_map_single(&pdev->dev,
+						  skb->data + offset,
+						  size,	DMA_TO_DEVICE);
+		buffer_info->mapped_as_page = false;
+		if (dma_mapping_error(buffer_info->dma))
+			goto dma_error;
 
 		len -= size;
 		offset += size;
+		count++;
 
 		if (len) {
 			i++;
@@ -4017,20 +4460,13 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 
 			buffer_info->length = size;
 			buffer_info->time_stamp = jiffies;
-			buffer_info->dma =
-				pci_map_page(adapter->pdev,
-					frag->page,
-					offset,
-					size,
-					PCI_DMA_TODEVICE);
-			if (pci_dma_mapping_error(buffer_info->dma)) {
-				dev_err(&adapter->pdev->dev,
-					"TX DMA page map failed\n");
-				adapter->tx_dma_failed++;
-				return -1;
-			}
-
 			buffer_info->next_to_watch = i;
+			buffer_info->dma = dma_map_page(&pdev->dev, frag->page,
+							offset, size,
+							DMA_TO_DEVICE);
+			buffer_info->mapped_as_page = true;
+			if (dma_mapping_error(buffer_info->dma))
+				goto dma_error;
 
 			len -= size;
 			offset += size;
@@ -4038,11 +4474,32 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 		}
 	}
 
+	segs = skb_shinfo(skb)->gso_segs ?: 1;
+	/* multiply data chunks by size of headers */
+	bytecount = ((segs - 1) * skb_headlen(skb)) + skb->len;
+
 	tx_ring->buffer_info[i].skb = skb;
+	tx_ring->buffer_info[i].segs = segs;
+	tx_ring->buffer_info[i].bytecount = bytecount;
 	tx_ring->buffer_info[first].next_to_watch = i;
-	smp_wmb();
 
 	return count;
+
+dma_error:
+	dev_err(&pdev->dev, "TX DMA map failed\n");
+	buffer_info->dma = 0;
+	if (count)
+		count--;
+
+	while (count--) {
+		if (i==0)
+			i += tx_ring->count;
+		i--;
+		buffer_info = &tx_ring->buffer_info[i];
+		e1000_put_txbuf(adapter, buffer_info);;
+	}
+
+	return 0;
 }
 
 static void e1000_tx_queue(struct e1000_adapter *adapter,
@@ -4115,8 +4572,8 @@ static int e1000_transfer_dhcp_info(struct e1000_adapter *adapter,
 	u16 length, offset;
 
 	if (vlan_tx_tag_present(skb)) {
-		if (!((vlan_tx_tag_get(skb) == adapter->hw.mng_cookie.vlan_id)
-		    && (adapter->hw.mng_cookie.status &
+		if (!((vlan_tx_tag_get(skb) == adapter->hw.mng_cookie.vlan_id) &&
+		    (adapter->hw.mng_cookie.status &
 			E1000_MNG_DHCP_COOKIE_STATUS_VLAN)))
 			return 0;
 	}
@@ -4189,7 +4646,7 @@ static int e1000_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 	unsigned int max_per_txd = E1000_MAX_PER_TXD;
 	unsigned int max_txd_pwr = E1000_MAX_TXD_PWR;
 	unsigned int tx_flags = 0;
-	unsigned int len = skb->len - skb->data_len;
+	unsigned int len = skb_headlen(skb);
 	unsigned int nr_frags;
 	unsigned int mss;
 	int count = 0;
@@ -4239,7 +4696,7 @@ static int e1000_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 				dev_kfree_skb_any(skb);
 				return NETDEV_TX_OK;
 			}
-			len = skb->len - skb->data_len;
+			len = skb_headlen(skb);
 		}
 	}
 
@@ -4325,6 +4782,8 @@ static void e1000_reset_task(struct net_device *netdev)
 {
 	struct e1000_adapter *adapter = netdev_priv(netdev);
 
+	e1000e_dump(adapter);
+	e_err("Reset adapter\n");
 	e1000e_reinit_locked(adapter);
 }
 
@@ -4369,6 +4828,14 @@ static int e1000_change_mtu(struct net_device *netdev, int new_mtu)
 		return -EINVAL;
 	}
 
+	/* 82573 Errata 17 */
+	if (((adapter->hw.mac.type == e1000_82573) ||
+	     (adapter->hw.mac.type == e1000_82574)) &&
+	    (max_frame > ETH_FRAME_LEN + ETH_FCS_LEN)) {
+		adapter->flags2 |= FLAG2_DISABLE_ASPM_L1;
+		e1000e_disable_aspm(adapter->pdev, PCIE_LINK_STATE_L1);
+	}
+
 	while (test_and_set_bit(__E1000_RESETTING, &adapter->state))
 		msleep(1);
 	/* e1000e_down -> e1000e_reset dependent on max_frame_size & mtu */
@@ -4387,13 +4854,7 @@ static int e1000_change_mtu(struct net_device *netdev, int new_mtu)
 	 * fragmented skbs
 	 */
 
-	if (max_frame <= 256)
-		adapter->rx_buffer_len = 256;
-	else if (max_frame <= 512)
-		adapter->rx_buffer_len = 512;
-	else if (max_frame <= 1024)
-		adapter->rx_buffer_len = 1024;
-	else if (max_frame <= 2048)
+	if (max_frame <= 2048)
 		adapter->rx_buffer_len = 2048;
 	else
 		adapter->rx_buffer_len = 4096;
@@ -4428,6 +4889,8 @@ static int e1000_mii_ioctl(struct net_device *netdev, struct ifreq *ifr,
 		data->phy_id = adapter->hw.phy.addr;
 		break;
 	case SIOCGMIIREG:
+		e1000_phy_read_status(adapter);
+
 		switch (data->reg_num & 0x1F) {
 		case MII_BMCR:
 			data->val_out = adapter->phy_regs.bmcr;
@@ -4490,14 +4953,7 @@ static int e1000_init_phy_wakeup(struct e1000_adapter *adapter, u32 wufc)
 	int retval = 0;
 
 	/* copy MAC RARs to PHY RARs */
-	for (i = 0; i < adapter->hw.mac.rar_entry_count; i++) {
-		mac_reg = er32(RAL(i));
-		e1e_wphy(hw, BM_RAR_L(i), (u16)(mac_reg & 0xFFFF));
-		e1e_wphy(hw, BM_RAR_M(i), (u16)((mac_reg >> 16) & 0xFFFF));
-		mac_reg = er32(RAH(i));
-		e1e_wphy(hw, BM_RAR_H(i), (u16)(mac_reg & 0xFFFF));
-		e1e_wphy(hw, BM_RAR_CTRL(i), (u16)((mac_reg >> 16) & 0xFFFF));
-	}
+	e1000_copy_rx_addrs_to_phy_ich8lan(hw);
 
 	/* copy MAC MTA to PHY MTA */
 	for (i = 0; i < adapter->hw.mac.mta_reg_count; i++) {
@@ -4535,7 +4991,7 @@ static int e1000_init_phy_wakeup(struct e1000_adapter *adapter, u32 wufc)
 	e1e_wphy(&adapter->hw, BM_WUC, E1000_WUC_PME_EN);
 
 	/* activate PHY wakeup */
-	retval = hw->phy.ops.acquire_phy(hw);
+	retval = hw->phy.ops.acquire(hw);
 	if (retval) {
 		e_err("Could not acquire PHY\n");
 		return retval;
@@ -4552,7 +5008,7 @@ static int e1000_init_phy_wakeup(struct e1000_adapter *adapter, u32 wufc)
 	if (retval)
 		e_err("Could not set PHY Host Wakeup bit\n");
 out:
-	hw->phy.ops.release_phy(hw);
+	hw->phy.ops.release(hw);
 
 	return retval;
 }
@@ -4609,7 +5065,7 @@ static int e1000_suspend(struct pci_dev *pdev, pm_message_t state)
 		    e1000_media_type_internal_serdes) {
 			/* keep the laser running in D3 */
 			ctrl_ext = er32(CTRL_EXT);
-			ctrl_ext |= E1000_CTRL_EXT_SDP7_DATA;
+			ctrl_ext |= E1000_CTRL_EXT_SDP3_DATA;
 			ew32(CTRL_EXT, ctrl_ext);
 		}
 
@@ -4679,29 +5135,42 @@ static int e1000_suspend(struct pci_dev *pdev, pm_message_t state)
 	return 0;
 }
 
-static void e1000e_disable_l1aspm(struct pci_dev *pdev)
+#ifdef CONFIG_PCIEASPM
+static void __e1000e_disable_aspm(struct pci_dev *pdev, u16 state)
+{
+	pci_disable_link_state(pdev, state);
+}
+#else
+static void __e1000e_disable_aspm(struct pci_dev *pdev, u16 state)
 {
 	int pos;
-	u16 val;
+	u16 reg16;
 
 	/*
-	 * 82573 workaround - disable L1 ASPM on mobile chipsets
-	 *
-	 * L1 ASPM on various mobile (ich7) chipsets do not behave properly
-	 * resulting in lost data or garbage information on the pci-e link
-	 * level. This could result in (false) bad EEPROM checksum errors,
-	 * long ping times (up to 2s) or even a system freeze/hang.
-	 *
-	 * Unfortunately this feature saves about 1W power consumption when
-	 * active.
+	 * Both device and parent should have the same ASPM setting.
+	 * Disable ASPM in downstream component first and then upstream.
 	 */
 	pos = pci_find_capability(pdev, PCI_CAP_ID_EXP);
-	pci_read_config_word(pdev, pos + PCI_EXP_LNKCTL, &val);
-	if (val & 0x2) {
-		dev_warn(&pdev->dev, "Disabling L1 ASPM\n");
-		val &= ~0x2;
-		pci_write_config_word(pdev, pos + PCI_EXP_LNKCTL, val);
-	}
+	pci_read_config_word(pdev, pos + PCI_EXP_LNKCTL, &reg16);
+	reg16 &= ~state;
+	pci_write_config_word(pdev, pos + PCI_EXP_LNKCTL, reg16);
+
+	if (!pdev->bus->self)
+		return;
+
+	pos = pci_find_capability(pdev->bus->self, PCI_CAP_ID_EXP);
+	pci_read_config_word(pdev->bus->self, pos + PCI_EXP_LNKCTL, &reg16);
+	reg16 &= ~state;
+	pci_write_config_word(pdev->bus->self, pos + PCI_EXP_LNKCTL, reg16);
+}
+#endif
+void e1000e_disable_aspm(struct pci_dev *pdev, u16 state)
+{
+	dev_info(&pdev->dev, "Disabling ASPM %s %s\n",
+		 (state & PCIE_LINK_STATE_L0S) ? "L0s" : "",
+		 (state & PCIE_LINK_STATE_L1) ? "L1" : "");
+
+	__e1000e_disable_aspm(pdev, state);
 }
 
 #ifdef CONFIG_PM
@@ -4714,7 +5183,9 @@ static int e1000_resume(struct pci_dev *pdev)
 
 	pci_set_power_state(pdev, PCI_D0);
 	pci_restore_state(pdev);
-	e1000e_disable_l1aspm(pdev);
+	pci_save_state(pdev);
+	if (adapter->flags2 & FLAG2_DISABLE_ASPM_L1)
+		e1000e_disable_aspm(pdev, PCIE_LINK_STATE_L1);
 
 	err = pci_enable_device_mem(pdev);
 	if (err) {
@@ -4769,7 +5240,7 @@ static int e1000_resume(struct pci_dev *pdev)
 
 	e1000e_reset(adapter);
 
-	e1000_init_manageability(adapter);
+	e1000_init_manageability_pt(adapter);
 
 	if (netif_running(netdev))
 		e1000e_up(adapter);
@@ -4852,7 +5323,8 @@ static pci_ers_result_t e1000_io_slot_reset(struct pci_dev *pdev)
 	int err;
 	pci_ers_result_t result;
 
-	e1000e_disable_l1aspm(pdev);
+	if (adapter->flags2 & FLAG2_DISABLE_ASPM_L1)
+		e1000e_disable_aspm(pdev, PCIE_LINK_STATE_L1);
 	err = pci_enable_device_mem(pdev);
 	if (err) {
 		dev_err(&pdev->dev,
@@ -4861,6 +5333,7 @@ static pci_ers_result_t e1000_io_slot_reset(struct pci_dev *pdev)
 	} else {
 		pci_set_master(pdev);
 		pci_restore_state(pdev);
+		pci_save_state(pdev);
 
 		pci_enable_wake(pdev, PCI_D3hot, 0);
 		pci_enable_wake(pdev, PCI_D3cold, 0);
@@ -4888,7 +5361,7 @@ static void e1000_io_resume(struct pci_dev *pdev)
 	struct net_device *netdev = pci_get_drvdata(pdev);
 	struct e1000_adapter *adapter = netdev_priv(netdev);
 
-	e1000_init_manageability(adapter);
+	e1000_init_manageability_pt(adapter);
 
 	if (netif_running(netdev)) {
 		if (e1000e_up(adapter)) {
@@ -4947,13 +5420,6 @@ static void e1000_eeprom_checks(struct e1000_adapter *adapter)
 		dev_warn(&adapter->pdev->dev,
 			 "Warning: detected DSPD enabled in EEPROM\n");
 	}
-
-	ret_val = e1000_read_nvm(hw, NVM_INIT_3GIO_3, 1, &buf);
-	if (!ret_val && (le16_to_cpu(buf) & (3 << 2))) {
-		/* ASPM enable */
-		dev_warn(&adapter->pdev->dev,
-			 "Warning: detected ASPM enabled in EEPROM\n");
-	}
 }
 
 /**
@@ -4982,7 +5448,8 @@ static int __devinit e1000_probe(struct pci_dev *pdev,
 	u16 eeprom_data = 0;
 	u16 eeprom_apme_mask = E1000_EEPROM_APME;
 
-	e1000e_disable_l1aspm(pdev);
+	if (ei->flags2 & FLAG2_DISABLE_ASPM_L1)
+		e1000e_disable_aspm(pdev, PCIE_LINK_STATE_L1);
 
 	err = pci_enable_device_mem(pdev);
 	if (err)
@@ -5026,6 +5493,8 @@ static int __devinit e1000_probe(struct pci_dev *pdev,
 
 	SET_MODULE_OWNER(netdev);
 	SET_NETDEV_DEV(netdev, &pdev->dev);
+
+	netdev->irq = pdev->irq;
 
 	pci_set_drvdata(pdev, netdev);
 	adapter = netdev_priv(netdev);
@@ -5092,8 +5561,6 @@ static int __devinit e1000_probe(struct pci_dev *pdev,
 	if (err)
 		goto err_sw_init;
 
-	err = -EIO;
-
 	memcpy(&hw->mac.ops, ei->mac_ops, sizeof(hw->mac.ops));
 	memcpy(&hw->nvm.ops, ei->nvm_ops, sizeof(hw->nvm.ops));
 	memcpy(&hw->phy.ops, ei->phy_ops, sizeof(hw->phy.ops));
@@ -5131,6 +5598,9 @@ static int __devinit e1000_probe(struct pci_dev *pdev,
 	netdev->features |= NETIF_F_TSO;
 	netdev->features |= NETIF_F_TSO6;
 
+	netdev->features |= NETIF_F_VLAN_TSO;
+	netdev->features |= NETIF_F_VLAN_CSUM;
+
 	if (pci_using_dac)
 		netdev->features |= NETIF_F_HIGHDMA;
 
@@ -5159,7 +5629,7 @@ static int __devinit e1000_probe(struct pci_dev *pdev,
 
 	e1000_eeprom_checks(adapter);
 
-	/* copy the MAC address out of the NVM */
+	/* copy the MAC address */
 	if (e1000e_read_mac_addr(&adapter->hw))
 		e_err("NVM Read Error while reading MAC address\n");
 
@@ -5191,6 +5661,8 @@ static int __devinit e1000_probe(struct pci_dev *pdev,
 		 (void (*)(void *))e1000e_downshift_workaround, adapter);
 	INIT_WORK(&adapter->update_phy_task,
 		(void (*)(void *))e1000e_update_phy_task, adapter);
+	INIT_WORK(&adapter->print_hang_task,
+		(void (*)(void *))e1000_print_hw_hang, adapter);
 
 	/* Initialize link parameters. User can change them with ethtool */
 	adapter->hw.mac.autoneg = 1;
@@ -5237,7 +5709,7 @@ static int __devinit e1000_probe(struct pci_dev *pdev,
 
 	/* initialize the wol settings based on the eeprom settings */
 	adapter->wol = adapter->eeprom_wol;
-	device_init_wakeup(&adapter->pdev->dev, adapter->wol);
+	device_init_wakeup(&adapter->pdev->dev, true);
 	device_set_wakeup_enable(&adapter->pdev->dev, adapter->wol);
 
 	/* save off EEPROM version number */
@@ -5315,18 +5787,25 @@ static void __devexit e1000_remove(struct pci_dev *pdev)
 	del_timer_sync(&adapter->watchdog_timer);
 	del_timer_sync(&adapter->phy_info_timer);
 
+#if 0 /* not in RHEL */
+	cancel_work_sync(&adapter->reset_task);
+	cancel_work_sync(&adapter->watchdog_task);
+	cancel_work_sync(&adapter->downshift_task);
+	cancel_work_sync(&adapter->update_phy_task);
+	cancel_work_sync(&adapter->print_hang_task);
+#endif
 	flush_scheduled_work();
+
+	if (!(netdev->flags & IFF_UP))
+		e1000_power_down_phy(adapter);
+
+	unregister_netdev(netdev);
 
 	/*
 	 * Release control of h/w to f/w.  If f/w is AMT enabled, this
 	 * would have already happened in close and is redundant.
 	 */
 	e1000_release_hw_control(adapter);
-
-	unregister_netdev(netdev);
-
-	if (!e1000_check_reset_block(&adapter->hw))
-		e1000_phy_hw_reset(&adapter->hw);
 
 	e1000e_reset_interrupt_capability(adapter);
 	kfree(adapter->tx_ring);
@@ -5411,11 +5890,15 @@ static struct pci_device_id e1000_pci_tbl[] = {
 
 	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_ICH10_D_BM_LM), board_ich10lan },
 	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_ICH10_D_BM_LF), board_ich10lan },
+	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_ICH10_D_BM_V), board_ich10lan },
 
 	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_PCH_M_HV_LM), board_pchlan },
 	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_PCH_M_HV_LC), board_pchlan },
 	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_PCH_D_HV_DM), board_pchlan },
 	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_PCH_D_HV_DC), board_pchlan },
+
+	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_PCH2_LV_LM), board_pch2lan },
+	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_PCH2_LV_V), board_pch2lan },
 
 	{ }	/* terminate list */
 };
@@ -5445,10 +5928,9 @@ static struct pci_driver e1000_driver = {
 static int __init e1000_init_module(void)
 {
 	int ret;
-	printk(KERN_INFO "%s: Intel(R) PRO/1000 Network Driver - %s\n",
-	       e1000e_driver_name, e1000e_driver_version);
-	printk(KERN_INFO "%s: Copyright (c) 1999-2008 Intel Corporation.\n",
-	       e1000e_driver_name);
+	pr_info("Intel(R) PRO/1000 Network Driver - %s\n",
+		e1000e_driver_version);
+	pr_info("Copyright (c) 1999 - 2010 Intel Corporation.\n");
 	ret = pci_register_driver(&e1000_driver);
 #if 0 /* not in RHEL */
 	pm_qos_add_requirement(PM_QOS_CPU_DMA_LATENCY, e1000e_driver_name,

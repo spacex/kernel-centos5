@@ -1232,6 +1232,9 @@ static void xs_tcp_connect_worker(void *args)
 			case -ECONNRESET:
 				/* retry with existing socket, after a delay */
 				break;
+			case -ENETUNREACH:
+				status = -ENOTCONN;
+				break;
 			default:
 				/* get rid of existing socket, and retry */
 				xs_close(xprt);

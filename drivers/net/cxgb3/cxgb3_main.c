@@ -441,7 +441,7 @@ static void free_irq_resources(struct adapter *adapter)
 static int await_mgmt_replies(struct adapter *adap, unsigned long init_cnt,
 			      unsigned long n)
 {
-	int attempts = 5;
+	int attempts = 10;
 
 	while (adap->sge.qs[0].rspq.offload_pkts < init_cnt + n) {
 		if (!--attempts)
@@ -2191,6 +2191,8 @@ static int cxgb_extension_ioctl(struct net_device *dev, void __user *useraddr)
 	}
 	case CHELSIO_GET_QSET_NUM:{
 		struct ch_reg edata;
+
+		memset(&edata, 0, sizeof(struct ch_reg));
 
 		edata.cmd = CHELSIO_GET_QSET_NUM;
 		edata.val = pi->nqsets;

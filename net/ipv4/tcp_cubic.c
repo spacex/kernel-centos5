@@ -1,12 +1,13 @@
 /*
- * TCP CUBIC: Binary Increase Congestion control for TCP v2.0
- *
+ * TCP CUBIC: Binary Increase Congestion control for TCP v2.2
+ * Home page:
+ *      http://netsrv.csc.ncsu.edu/twiki/bin/view/Main/BIC
  * This is from the implementation of CUBIC TCP in
  * Injong Rhee, Lisong Xu.
  *  "CUBIC: A New TCP-Friendly High-Speed TCP Variant
  *  in PFLDnet 2005
  * Available from:
- *  http://www.csc.ncsu.edu/faculty/rhee/export/bitcp/cubic-paper.pdf
+ *  http://netsrv.csc.ncsu.edu/export/cubic-paper.pdf
  *
  * Unless CUBIC is enabled and congestion window is large
  * this behaves the same as the original Reno.
@@ -20,16 +21,11 @@
 #define BICTCP_BETA_SCALE    1024	/* Scale factor beta calculation
 					 * max_cwnd = snd_cwnd * beta
 					 */
-#define BICTCP_B		4	 /*
-					  * In binary search,
-					  * go to point (max+min)/N
-					  */
 #define	BICTCP_HZ		10	/* BIC HZ 2^10 = 1024 */
 
 static int fast_convergence = 1;
-static int max_increment = 16;
-static int beta = 819;		/* = 819/1024 (BICTCP_BETA_SCALE) */
-static int initial_ssthresh = 100;
+static int beta __read_mostly = 717;	/* = 717/1024 (BICTCP_BETA_SCALE) */
+static int initial_ssthresh;
 static int bic_scale = 41;
 static int tcp_friendliness = 1;
 
@@ -40,9 +36,7 @@ static u64 cube_factor;
 /* Note parameters that are used for precomputing scale factors are read-only */
 module_param(fast_convergence, int, 0644);
 MODULE_PARM_DESC(fast_convergence, "turn on/off fast convergence");
-module_param(max_increment, int, 0644);
-MODULE_PARM_DESC(max_increment, "Limit on increment allowed during binary search");
-module_param(beta, int, 0444);
+module_param(beta, int, 0644);
 MODULE_PARM_DESC(beta, "beta for multiplicative increase");
 module_param(initial_ssthresh, int, 0644);
 MODULE_PARM_DESC(initial_ssthresh, "initial value of slow start threshold");
@@ -114,30 +108,53 @@ static inline u_int64_t div64_64(u_int64_t dividend, u_int64_t divisor)
 	return dividend;
 }
 
-/*
- * calculate the cubic root of x using Newton-Raphson
+/* calculate the cubic root of x using a table lookup followed by one
+ * Newton-Raphson iteration.
+ * Avg err ~= 0.195%
  */
 static u32 cubic_root(u64 a)
 {
-	u32 x, x1;
-
-	/* Initial estimate is based on:
-	 * cbrt(x) = exp(log(x) / 3)
-	 */
-	x = 1u << (fls64(a)/3);
+	u32 x, b, shift;
 
 	/*
-	 * Iteration based on:
+	 * cbrt(x) MSB values for x MSB values in [0..63].
+	 * Precomputed then refined by hand - Willy Tarreau
+	 *
+	 * For x in [0..63],
+	 *   v = cbrt(x << 18) - 1
+	 *   cbrt(x) = (v[x] + 10) >> 6
+	 */
+	static const u8 v[] = {
+		/* 0x00 */    0,   54,   54,   54,  118,  118,  118,  118,
+		/* 0x08 */  123,  129,  134,  138,  143,  147,  151,  156,
+		/* 0x10 */  157,  161,  164,  168,  170,  173,  176,  179,
+		/* 0x18 */  181,  185,  187,  190,  192,  194,  197,  199,
+		/* 0x20 */  200,  202,  204,  206,  209,  211,  213,  215,
+		/* 0x28 */  217,  219,  221,  222,  224,  225,  227,  229,
+		/* 0x30 */  231,  232,  234,  236,  237,  239,  240,  242,
+		/* 0x38 */  244,  245,  246,  248,  250,  251,  252,  254,
+	};
+
+	b = fls64(a);
+	if (b < 7) {
+		/* a in [0..63] */
+		return ((u32)v[(u32)a] + 35) >> 6;
+	}
+
+	b = ((b * 84) >> 8) - 1;
+	shift = (a >> (b * 3));
+
+	x = ((u32)(((u32)v[shift] + 10) << b)) >> 6;
+
+	/*
+	 * Newton-Raphson iteration
 	 *                         2
 	 * x    = ( 2 * x  +  a / x  ) / 3
 	 *  k+1          k         k
 	 */
-	do {
-		x1 = x;
-		x = (2 * x + (uint32_t) div64_64(a, x*x)) / 3;
-	} while (abs(x1 - x) > 1);
-
-	return x;
+	x = (2 * x + (u32)div64_64(a, (u64)x * (u64)(x - 1)));
+	x = ((x * 341) >> 10);
+        return x;
 }
 
 /*
@@ -146,7 +163,7 @@ static u32 cubic_root(u64 a)
 static inline void bictcp_update(struct bictcp *ca, u32 cwnd)
 {
 	u64 offs;
-	u32 delta, t, bic_target, min_cnt, max_cnt;
+	u32 delta, t, bic_target, max_cnt;
 
 	ca->ack_cnt++;	/* count the number of ACKs */
 
@@ -211,17 +228,6 @@ static inline void bictcp_update(struct bictcp *ca, u32 cwnd)
         } else {
                 ca->cnt = 100 * cwnd;              /* very small increment*/
         }
-
-	if (ca->delay_min > 0) {
-		/* max increment = Smax * rtt / 0.1  */
-		min_cnt = (cwnd * HZ * 8)/(10 * max_increment * ca->delay_min);
-		if (ca->cnt < min_cnt)
-			ca->cnt = min_cnt;
-	}
-
-        /* slow start and low utilization  */
-	if (ca->loss_cwnd == 0)		/* could be aggressive in slow start */
-		ca->cnt = 50;
 
 	/* TCP Friendly */
 	if (tcp_friendliness) {
@@ -401,4 +407,4 @@ module_exit(cubictcp_unregister);
 MODULE_AUTHOR("Sangtae Ha, Stephen Hemminger");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("CUBIC TCP");
-MODULE_VERSION("2.0");
+MODULE_VERSION("2.2");

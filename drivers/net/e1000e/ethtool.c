@@ -1,7 +1,7 @@
 /*******************************************************************************
 
   Intel PRO/1000 Linux driver
-  Copyright(c) 1999 - 2008 Intel Corporation.
+  Copyright(c) 1999 - 2010 Intel Corporation.
 
   This program is free software; you can redistribute it and/or modify it
   under the terms and conditions of the GNU General Public License,
@@ -109,7 +109,6 @@ static int e1000_get_settings(struct net_device *netdev,
 {
 	struct e1000_adapter *adapter = netdev_priv(netdev);
 	struct e1000_hw *hw = &adapter->hw;
-	u32 status;
 
 	if (hw->phy.media_type == e1000_media_type_copper) {
 
@@ -147,34 +146,57 @@ static int e1000_get_settings(struct net_device *netdev,
 		ecmd->transceiver = XCVR_EXTERNAL;
 	}
 
-	status = er32(STATUS);
-	if (status & E1000_STATUS_LU) {
-		if (status & E1000_STATUS_SPEED_1000)
-			ecmd->speed = 1000;
-		else if (status & E1000_STATUS_SPEED_100)
-			ecmd->speed = 100;
-		else
-			ecmd->speed = 10;
+	ecmd->speed = -1;
+	ecmd->duplex = -1;
 
-		if (status & E1000_STATUS_FD)
-			ecmd->duplex = DUPLEX_FULL;
-		else
-			ecmd->duplex = DUPLEX_HALF;
+	if (netif_running(netdev)) {
+		if (netif_carrier_ok(netdev)) {
+			ecmd->speed = adapter->link_speed;
+			ecmd->duplex = adapter->link_duplex - 1;
+		}
 	} else {
-		ecmd->speed = -1;
-		ecmd->duplex = -1;
+		u32 status = er32(STATUS);
+		if (status & E1000_STATUS_LU) {
+			if (status & E1000_STATUS_SPEED_1000)
+				ecmd->speed = 1000;
+			else if (status & E1000_STATUS_SPEED_100)
+				ecmd->speed = 100;
+			else
+				ecmd->speed = 10;
+
+			if (status & E1000_STATUS_FD)
+				ecmd->duplex = DUPLEX_FULL;
+			else
+				ecmd->duplex = DUPLEX_HALF;
+		}
 	}
 
 	ecmd->autoneg = ((hw->phy.media_type == e1000_media_type_fiber) ||
 			 hw->mac.autoneg) ? AUTONEG_ENABLE : AUTONEG_DISABLE;
+#if 0 /* no eth_tp_mdix in RHEL5 */
+	/* MDI-X => 2; MDI =>1; Invalid =>0 */
+	if ((hw->phy.media_type == e1000_media_type_copper) &&
+	    netif_carrier_ok(netdev))
+		ecmd->eth_tp_mdix = hw->phy.is_mdix ? ETH_TP_MDI_X :
+		                                      ETH_TP_MDI;
+	else
+		ecmd->eth_tp_mdix = ETH_TP_MDI_INVALID;
+#endif
 	return 0;
 }
 
 static u32 e1000_get_link(struct net_device *netdev)
 {
 	struct e1000_adapter *adapter = netdev_priv(netdev);
+	struct e1000_hw *hw = &adapter->hw;
 
-	return e1000_has_link(adapter);
+	/*
+	 * Avoid touching hardware registers when possible, otherwise
+	 * link negotiation can get messed up when user-level scripts
+	 * are rapidly polling the driver to see if link is up.
+	 */
+	return netif_running(netdev) ? netif_carrier_ok(netdev) :
+	    !!(er32(STATUS) & E1000_STATUS_LU);
 }
 
 static int e1000_set_spd_dplx(struct e1000_adapter *adapter, u16 spddplx)
@@ -384,7 +406,6 @@ static int e1000_set_tso(struct net_device *netdev, u32 data)
 		netdev->features &= ~NETIF_F_TSO6;
 	}
 
-	e_info("TSO is %s\n", data ? "Enabled" : "Disabled");
 	adapter->flags |= FLAG_TSO_FORCE;
 	return 0;
 }
@@ -508,7 +529,8 @@ static int e1000_get_eeprom(struct net_device *netdev,
 
 	if (ret_val) {
 		/* a read error occurred, throw away the result */
-		memset(eeprom_buff, 0xff, sizeof(eeprom_buff));
+		memset(eeprom_buff, 0xff, sizeof(u16) *
+		       (last_word - first_word + 1));
 	} else {
 		/* Device's eeprom is always little-endian, word addressable */
 		for (i = 0; i < last_word - first_word + 1; i++)
@@ -588,7 +610,9 @@ static int e1000_set_eeprom(struct net_device *netdev,
 	 * and flush shadow RAM for applicable controllers
 	 */
 	if ((first_word <= NVM_CHECKSUM_REG) ||
-	    (hw->mac.type == e1000_82574) || (hw->mac.type == e1000_82573))
+	    (hw->mac.type == e1000_82583) ||
+	    (hw->mac.type == e1000_82574) ||
+	    (hw->mac.type == e1000_82573))
 		ret_val = e1000e_update_nvm_checksum(hw);
 
 out:
@@ -850,6 +874,7 @@ static int e1000_reg_test(struct e1000_adapter *adapter, u64 *data)
 	switch (mac->type) {
 	case e1000_ich10lan:
 	case e1000_pchlan:
+	case e1000_pch2lan:
 		mask |= (1 << 18);
 		break;
 	default:
@@ -1038,10 +1063,10 @@ static void e1000_free_desc_rings(struct e1000_adapter *adapter)
 	if (tx_ring->desc && tx_ring->buffer_info) {
 		for (i = 0; i < tx_ring->count; i++) {
 			if (tx_ring->buffer_info[i].dma)
-				pci_unmap_single(pdev,
+				dma_unmap_single(&pdev->dev,
 					tx_ring->buffer_info[i].dma,
 					tx_ring->buffer_info[i].length,
-					PCI_DMA_TODEVICE);
+					DMA_TO_DEVICE);
 			if (tx_ring->buffer_info[i].skb)
 				dev_kfree_skb(tx_ring->buffer_info[i].skb);
 		}
@@ -1050,9 +1075,9 @@ static void e1000_free_desc_rings(struct e1000_adapter *adapter)
 	if (rx_ring->desc && rx_ring->buffer_info) {
 		for (i = 0; i < rx_ring->count; i++) {
 			if (rx_ring->buffer_info[i].dma)
-				pci_unmap_single(pdev,
+				dma_unmap_single(&pdev->dev,
 					rx_ring->buffer_info[i].dma,
-					2048, PCI_DMA_FROMDEVICE);
+					2048, DMA_FROM_DEVICE);
 			if (rx_ring->buffer_info[i].skb)
 				dev_kfree_skb(rx_ring->buffer_info[i].skb);
 		}
@@ -1132,9 +1157,9 @@ static int e1000_setup_desc_rings(struct e1000_adapter *adapter)
 		tx_ring->buffer_info[i].skb = skb;
 		tx_ring->buffer_info[i].length = skb->len;
 		tx_ring->buffer_info[i].dma =
-			pci_map_single(pdev, skb->data, skb->len,
-				       PCI_DMA_TODEVICE);
-		if (pci_dma_mapping_error(tx_ring->buffer_info[i].dma)) {
+			dma_map_single(&pdev->dev, skb->data, skb->len,
+				       DMA_TO_DEVICE);
+		if (dma_mapping_error(tx_ring->buffer_info[i].dma)) {
 			ret_val = 4;
 			goto err_nomem;
 		}
@@ -1195,9 +1220,9 @@ static int e1000_setup_desc_rings(struct e1000_adapter *adapter)
 		skb_reserve(skb, NET_IP_ALIGN);
 		rx_ring->buffer_info[i].skb = skb;
 		rx_ring->buffer_info[i].dma =
-			pci_map_single(pdev, skb->data, 2048,
-				       PCI_DMA_FROMDEVICE);
-		if (pci_dma_mapping_error(rx_ring->buffer_info[i].dma)) {
+			dma_map_single(&pdev->dev, skb->data, 2048,
+				       DMA_FROM_DEVICE);
+		if (dma_mapping_error(rx_ring->buffer_info[i].dma)) {
 			ret_val = 8;
 			goto err_nomem;
 		}
@@ -1231,29 +1256,36 @@ static int e1000_integrated_phy_loopback(struct e1000_adapter *adapter)
 
 	hw->mac.autoneg = 0;
 
-	if (hw->phy.type == e1000_phy_m88) {
+	if (hw->phy.type == e1000_phy_ife) {
+		/* force 100, set loopback */
+		e1e_wphy(hw, PHY_CONTROL, 0x6100);
+
+		/* Now set up the MAC to the same speed/duplex as the PHY. */
+		ctrl_reg = er32(CTRL);
+		ctrl_reg &= ~E1000_CTRL_SPD_SEL; /* Clear the speed sel bits */
+		ctrl_reg |= (E1000_CTRL_FRCSPD | /* Set the Force Speed Bit */
+			     E1000_CTRL_FRCDPX | /* Set the Force Duplex Bit */
+			     E1000_CTRL_SPD_100 |/* Force Speed to 100 */
+			     E1000_CTRL_FD);	 /* Force Duplex to FULL */
+
+		ew32(CTRL, ctrl_reg);
+		udelay(500);
+
+		return 0;
+	}
+
+	/* Specific PHY configuration for loopback */
+	switch (hw->phy.type) {
+	case e1000_phy_m88:
 		/* Auto-MDI/MDIX Off */
 		e1e_wphy(hw, M88E1000_PHY_SPEC_CTRL, 0x0808);
 		/* reset to update Auto-MDI/MDIX */
 		e1e_wphy(hw, PHY_CONTROL, 0x9140);
 		/* autoneg off */
 		e1e_wphy(hw, PHY_CONTROL, 0x8140);
-	} else if (hw->phy.type == e1000_phy_gg82563)
+		break;
+	case e1000_phy_gg82563:
 		e1e_wphy(hw, GG82563_PHY_KMRN_MODE_CTRL, 0x1CC);
-
-	ctrl_reg = er32(CTRL);
-
-	switch (hw->phy.type) {
-	case e1000_phy_ife:
-		/* force 100, set loopback */
-		e1e_wphy(hw, PHY_CONTROL, 0x6100);
-
-		/* Now set up the MAC to the same speed/duplex as the PHY. */
-		ctrl_reg &= ~E1000_CTRL_SPD_SEL; /* Clear the speed sel bits */
-		ctrl_reg |= (E1000_CTRL_FRCSPD | /* Set the Force Speed Bit */
-			     E1000_CTRL_FRCDPX | /* Set the Force Duplex Bit */
-			     E1000_CTRL_SPD_100 |/* Force Speed to 100 */
-			     E1000_CTRL_FD);	 /* Force Duplex to FULL */
 		break;
 	case e1000_phy_bm:
 		/* Set Default MAC Interface speed to 1GB */
@@ -1276,23 +1308,41 @@ static int e1000_integrated_phy_loopback(struct e1000_adapter *adapter)
 		/* Set Early Link Enable */
 		e1e_rphy(hw, PHY_REG(769, 20), &phy_reg);
 		e1e_wphy(hw, PHY_REG(769, 20), phy_reg | 0x0400);
-		/* fall through */
+		break;
+	case e1000_phy_82577:
+	case e1000_phy_82578:
+		/* Workaround: K1 must be disabled for stable 1Gbps operation */
+		e1000_configure_k1_ich8lan(hw, false);
+		break;
+	case e1000_phy_82579:
+		/* Disable PHY energy detect power down */
+		e1e_rphy(hw, PHY_REG(0, 21), &phy_reg);
+		e1e_wphy(hw, PHY_REG(0, 21), phy_reg & ~(1 << 3));
+		/* Disable full chip energy detect */
+		e1e_rphy(hw, PHY_REG(776, 18), &phy_reg);
+		e1e_wphy(hw, PHY_REG(776, 18), phy_reg | 1);
+		/* Enable loopback on the PHY */
+#define I82577_PHY_LBK_CTRL          19
+		e1e_wphy(hw, I82577_PHY_LBK_CTRL, 0x8001);
+		break;
 	default:
-		/* force 1000, set loopback */
-		e1e_wphy(hw, PHY_CONTROL, 0x4140);
-		mdelay(250);
-
-		/* Now set up the MAC to the same speed/duplex as the PHY. */
-		ctrl_reg = er32(CTRL);
-		ctrl_reg &= ~E1000_CTRL_SPD_SEL; /* Clear the speed sel bits */
-		ctrl_reg |= (E1000_CTRL_FRCSPD | /* Set the Force Speed Bit */
-			     E1000_CTRL_FRCDPX | /* Set the Force Duplex Bit */
-			     E1000_CTRL_SPD_1000 |/* Force Speed to 1000 */
-			     E1000_CTRL_FD);	 /* Force Duplex to FULL */
-
-		if (adapter->flags & FLAG_IS_ICH)
-			ctrl_reg |= E1000_CTRL_SLU;	/* Set Link Up */
+		break;
 	}
+
+	/* force 1000, set loopback */
+	e1e_wphy(hw, PHY_CONTROL, 0x4140);
+	mdelay(250);
+
+	/* Now set up the MAC to the same speed/duplex as the PHY. */
+	ctrl_reg = er32(CTRL);
+	ctrl_reg &= ~E1000_CTRL_SPD_SEL; /* Clear the speed sel bits */
+	ctrl_reg |= (E1000_CTRL_FRCSPD | /* Set the Force Speed Bit */
+		     E1000_CTRL_FRCDPX | /* Set the Force Duplex Bit */
+		     E1000_CTRL_SPD_1000 |/* Force Speed to 1000 */
+		     E1000_CTRL_FD);	 /* Force Duplex to FULL */
+
+	if (adapter->flags & FLAG_IS_ICH)
+		ctrl_reg |= E1000_CTRL_SLU;	/* Set Link Up */
 
 	if (hw->phy.media_type == e1000_media_type_copper &&
 	    hw->phy.type == e1000_phy_m88) {
@@ -1521,10 +1571,10 @@ static int e1000_run_loopback_test(struct e1000_adapter *adapter)
 		for (i = 0; i < 64; i++) { /* send the packets */
 			e1000_create_lbtest_frame(tx_ring->buffer_info[k].skb,
 						  1024);
-			pci_dma_sync_single_for_device(pdev,
+			dma_sync_single_for_device(&pdev->dev,
 					tx_ring->buffer_info[k].dma,
 					tx_ring->buffer_info[k].length,
-					PCI_DMA_TODEVICE);
+					DMA_TO_DEVICE);
 			k++;
 			if (k == tx_ring->count)
 				k = 0;
@@ -1534,9 +1584,9 @@ static int e1000_run_loopback_test(struct e1000_adapter *adapter)
 		time = jiffies; /* set the start time for the receive */
 		good_cnt = 0;
 		do { /* receive the sent packets */
-			pci_dma_sync_single_for_cpu(pdev,
+			dma_sync_single_for_cpu(&pdev->dev,
 					rx_ring->buffer_info[l].dma, 2048,
-					PCI_DMA_FROMDEVICE);
+					DMA_FROM_DEVICE);
 
 			ret_val = e1000_check_lbtest_frame(
 					rx_ring->buffer_info[l].skb, 1024);
@@ -1694,6 +1744,12 @@ static void e1000_diag_test(struct net_device *netdev,
 		if (if_running)
 			dev_open(netdev);
 	} else {
+		if (!if_running && (adapter->flags & FLAG_HAS_AMT)) {
+			clear_bit(__E1000_TESTING, &adapter->state);
+			dev_open(netdev);
+			set_bit(__E1000_TESTING, &adapter->state);
+		}
+
 		e_info("online testing starting\n");
 		/* Online tests */
 		if (e1000_link_test(adapter, &data[4]))
@@ -1704,6 +1760,9 @@ static void e1000_diag_test(struct net_device *netdev,
 		data[1] = 0;
 		data[2] = 0;
 		data[3] = 0;
+
+		if (!if_running && (adapter->flags & FLAG_HAS_AMT))
+			dev_close(netdev);
 
 		clear_bit(__E1000_TESTING, &adapter->state);
 	}
@@ -1754,12 +1813,11 @@ static int e1000_set_wol(struct net_device *netdev,
 {
 	struct e1000_adapter *adapter = netdev_priv(netdev);
 
-	if (wol->wolopts & WAKE_MAGICSECURE)
-		return -EOPNOTSUPP;
-
 	if (!(adapter->flags & FLAG_HAS_WOL) ||
-	    !device_can_wakeup(&adapter->pdev->dev))
-		return wol->wolopts ? -EOPNOTSUPP : 0;
+	    !device_can_wakeup(&adapter->pdev->dev) ||
+	    (wol->wolopts & ~(WAKE_UCAST | WAKE_MCAST | WAKE_BCAST |
+	                      WAKE_MAGIC | WAKE_PHY | WAKE_ARP)))
+		return -EOPNOTSUPP;
 
 	/* these settings will always override what we currently have */
 	adapter->wol = 0;
@@ -1814,6 +1872,8 @@ static int e1000_phys_id(struct net_device *netdev, u32 data)
 
 	if ((hw->phy.type == e1000_phy_ife) ||
 	    (hw->mac.type == e1000_pchlan) ||
+	    (hw->mac.type == e1000_pch2lan) ||
+	    (hw->mac.type == e1000_82583) ||
 	    (hw->mac.type == e1000_82574)) {
 		INIT_WORK(&adapter->led_blink_task, (void (*)(void *))e1000e_led_blink_task, adapter);
 		if (!adapter->blink_timer.function) {

@@ -159,7 +159,7 @@
 
 #define DRV_NAME		"e100"
 #define DRV_EXT		"-NAPI"
-#define DRV_VERSION		"3.5.10-k3"DRV_EXT
+#define DRV_VERSION		"3.5.10-k3-1"DRV_EXT
 #define DRV_DESCRIPTION		"Intel(R) PRO/100 Network Driver"
 #define DRV_COPYRIGHT		"Copyright(c) 1999-2005 Intel Corporation"
 #define PFX			DRV_NAME ": "
@@ -1693,6 +1693,7 @@ static int e100_tx_clean(struct nic *nic)
 	for(cb = nic->cb_to_clean;
 	    cb->status & cpu_to_le16(cb_complete);
 	    cb = nic->cb_to_clean = cb->next) {
+		rmb(); /* read skb after status */
 		if(likely(cb->skb != NULL)) {
 			nic->net_stats.tx_packets++;
 			nic->net_stats.tx_bytes += cb->skb->len;
@@ -1840,6 +1841,7 @@ static int e100_rx_indicate(struct nic *nic, struct rx *rx,
 	rfd_status = le16_to_cpu(rfd->status);
 
 	DPRINTK(RX_STATUS, DEBUG, "status=0x%04X\n", rfd_status);
+	rmb(); /* read size after status bit */
 
 	/* If data isn't ready, nothing to indicate */
 	if(unlikely(!(rfd_status & cb_complete)))

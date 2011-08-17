@@ -45,6 +45,9 @@ struct cpu_workqueue_struct {
 
 	long remove_sequence;	/* Least-recently added (next to run) */
 	long insert_sequence;	/* Next to add */
+#ifndef __GENKSYMS__
+	struct work_struct *current_work;
+#endif
 
 	struct list_head worklist;
 	wait_queue_head_t more_work;
@@ -79,6 +82,28 @@ static inline int is_single_threaded(struct workqueue_struct *wq)
 	return list_empty(&wq->list);
 }
 
+/*
+ * INIT_WORK() doesn't initialize work->wq_data, and we can't change
+ * this helper due to kabi problems. That is why we use bit 1 to mark
+ * this work as having the valid ->wq_data == cwq.
+ */
+static void set_wq_data(struct work_struct *work,
+				struct cpu_workqueue_struct *cwq)
+{
+	work->wq_data = cwq;
+	if (!test_bit(1, &work->pending)) {
+		smp_wmb();	/* get_wq_data()->rmb() */
+		set_bit(1, &work->pending);
+	}
+}
+static struct cpu_workqueue_struct *get_wq_data(struct work_struct *work)
+{
+	if (!test_bit(1, &work->pending))
+		return NULL;
+	smp_rmb();		/* set_wq_data()->wmb() */
+	return work->wq_data;
+}
+
 /* Preempt must be disabled. */
 static void __queue_work(struct cpu_workqueue_struct *cwq,
 			 struct work_struct *work)
@@ -86,7 +111,12 @@ static void __queue_work(struct cpu_workqueue_struct *cwq,
 	unsigned long flags;
 
 	spin_lock_irqsave(&cwq->lock, flags);
-	work->wq_data = cwq;
+	set_wq_data(work, cwq);
+	/*
+	 * Ensure that we get the right work->wq_data if we see the
+	 * result of list_add() below, see try_to_grab_pending().
+	 */
+	smp_wmb();
 	list_add_tail(&work->entry, &cwq->worklist);
 	cwq->insert_sequence++;
 	wake_up(&cwq->more_work);
@@ -122,13 +152,24 @@ EXPORT_SYMBOL_GPL(queue_work);
 static void delayed_work_timer_fn(unsigned long __data)
 {
 	struct work_struct *work = (struct work_struct *)__data;
-	struct workqueue_struct *wq = work->wq_data;
+	struct cpu_workqueue_struct *cwq = work->wq_data;
+	struct workqueue_struct *wq = cwq->wq;
+
 	int cpu = smp_processor_id();
 
 	if (unlikely(is_single_threaded(wq)))
 		cpu = singlethread_cpu;
 
 	__queue_work(per_cpu_ptr(wq->cpu_wq, cpu), work);
+}
+
+/* This stores cwq for the moment, for the timer_fn */
+static void set_delayed_wq_data(struct work_struct *work,
+					struct workqueue_struct *wq)
+{
+	int cpu = is_single_threaded(wq) ?
+			singlethread_cpu : raw_smp_processor_id();
+	set_wq_data(work, per_cpu_ptr(wq->cpu_wq, cpu));
 }
 
 /**
@@ -149,8 +190,7 @@ int fastcall queue_delayed_work(struct workqueue_struct *wq,
 		BUG_ON(timer_pending(timer));
 		BUG_ON(!list_empty(&work->entry));
 
-		/* This stores wq for the moment, for the timer_fn */
-		work->wq_data = wq;
+		set_delayed_wq_data(work, wq);
 		timer->expires = jiffies + delay;
 		timer->data = (unsigned long)work;
 		timer->function = delayed_work_timer_fn;
@@ -180,8 +220,7 @@ int queue_delayed_work_on(int cpu, struct workqueue_struct *wq,
 		BUG_ON(timer_pending(timer));
 		BUG_ON(!list_empty(&work->entry));
 
-		/* This stores wq for the moment, for the timer_fn */
-		work->wq_data = wq;
+		set_delayed_wq_data(work, wq);
 		timer->expires = jiffies + delay;
 		timer->data = (unsigned long)work;
 		timer->function = delayed_work_timer_fn;
@@ -214,6 +253,7 @@ static void run_workqueue(struct cpu_workqueue_struct *cwq)
 		void (*f) (void *) = work->func;
 		void *data = work->data;
 
+		cwq->current_work = work;
 		list_del_init(cwq->worklist.next);
 		spin_unlock_irqrestore(&cwq->lock, flags);
 
@@ -223,6 +263,7 @@ static void run_workqueue(struct cpu_workqueue_struct *cwq)
 
 		spin_lock_irqsave(&cwq->lock, flags);
 		cwq->remove_sequence++;
+		cwq->current_work = NULL;
 		wake_up(&cwq->work_done);
 	}
 	cwq->run_depth--;
@@ -283,7 +324,20 @@ static void flush_cpu_workqueue(struct cpu_workqueue_struct *cwq)
 		spin_lock_irq(&cwq->lock);
 		sequence_needed = cwq->insert_sequence;
 
-		while (sequence_needed - cwq->remove_sequence > 0) {
+		/*
+		 * The second insert_sequence != remove_sequence is only
+		 * needed if insert_sequence goes back. This can happen
+		 * if try_to_grab_pending() removes a work from list.
+		 *
+		 * If the new works are queued after that we can wait a
+		 * bit longer until remove_sequence grows enough (see
+		 * the first check) - this is tolerable.
+		 *
+		 * But we must never hang otherwise, when cwq->worklist
+		 * becomes empty, that is why we have the second check.
+		 */
+		while ((sequence_needed - cwq->remove_sequence > 0) &&
+		       (cwq->insert_sequence != cwq->remove_sequence)) {
 			prepare_to_wait(&cwq->work_done, &wait,
 					TASK_UNINTERRUPTIBLE);
 			spin_unlock_irq(&cwq->lock);
@@ -328,13 +382,117 @@ void fastcall flush_workqueue(struct workqueue_struct *wq)
 }
 EXPORT_SYMBOL_GPL(flush_workqueue);
 
+/*
+ * Upon a successful return (>= 0), the caller "owns" bit 0,
+ * so this work can't be re-armed in any way.
+ */
+static int try_to_grab_pending(struct work_struct *work)
+{
+	struct cpu_workqueue_struct *cwq;
+	int ret = -1;
+
+	if (!test_and_set_bit(0, &work->pending))
+		return 0;
+
+	/*
+	 * The queueing is in progress, or it is already queued. Try to
+	 * steal it from ->worklist without clearing the "pending" bit.
+	 */
+
+	cwq = get_wq_data(work);
+	if (!cwq)
+		return ret;
+
+	spin_lock_irq(&cwq->lock);
+	if (!list_empty(&work->entry)) {
+		/*
+		 * This work is queued, but perhaps we locked the wrong cwq.
+		 * In that case we must see the new value after rmb(), see
+		 * __queue_work()->wmb().
+		 */
+		smp_rmb();
+		if (cwq == get_wq_data(work)) {
+			list_del_init(&work->entry);
+			/* for flush_cpu_workqueue() */
+			cwq->insert_sequence--;
+			wake_up(&cwq->work_done);
+			ret = 1;
+		}
+	}
+	spin_unlock_irq(&cwq->lock);
+
+	return ret;
+}
+
+static void wait_on_cpu_work(struct cpu_workqueue_struct *cwq,
+				struct work_struct *work)
+{
+	DEFINE_WAIT(wait);
+
+	spin_lock_irq(&cwq->lock);
+	while (unlikely(cwq->current_work == work)) {
+		prepare_to_wait(&cwq->work_done, &wait, TASK_UNINTERRUPTIBLE);
+		spin_unlock_irq(&cwq->lock);
+		schedule();
+		spin_lock_irq(&cwq->lock);
+	}
+	finish_wait(&cwq->work_done, &wait);
+	spin_unlock_irq(&cwq->lock);
+}
+
+static void wait_on_work(struct work_struct *work)
+{
+	struct cpu_workqueue_struct *cwq;
+	struct workqueue_struct *wq;
+	int cpu;
+
+	might_sleep();
+
+	cwq = get_wq_data(work);
+	if (!cwq)
+		return;
+
+	wq = cwq->wq;
+
+	if (is_single_threaded(wq)) {
+		wait_on_cpu_work(per_cpu_ptr(wq->cpu_wq, singlethread_cpu),
+					work);
+	} else {
+		for_each_possible_cpu(cpu)
+			wait_on_cpu_work(per_cpu_ptr(wq->cpu_wq, cpu), work);
+	}
+}
+
+int cancel_work_sync(struct work_struct *work)
+{
+	int ret;
+
+	do {
+		ret = del_timer(&work->timer);
+		if (!ret)
+			ret = try_to_grab_pending(work);
+		wait_on_work(work);
+	} while (unlikely(ret < 0));
+
+	work->pending = 0; /* clears both "pending" and "valid" bits */
+	return ret;
+}
+EXPORT_SYMBOL_GPL(cancel_work_sync);
+
+static inline void cwq_basic_init(struct workqueue_struct *wq, int cpu)
+{
+	struct cpu_workqueue_struct *cwq = per_cpu_ptr(wq->cpu_wq, cpu);
+
+	spin_lock_init(&cwq->lock);
+	cwq->current_work = NULL;
+}
+
 static struct task_struct *create_workqueue_thread(struct workqueue_struct *wq,
 						   int cpu)
 {
 	struct cpu_workqueue_struct *cwq = per_cpu_ptr(wq->cpu_wq, cpu);
 	struct task_struct *p;
 
-	spin_lock_init(&cwq->lock);
 	cwq->wq = wq;
 	cwq->thread = NULL;
 	cwq->insert_sequence = 0;
@@ -369,6 +527,9 @@ struct workqueue_struct *__create_workqueue(const char *name,
 		kfree(wq);
 		return NULL;
 	}
+
+	for_each_possible_cpu(cpu)
+		cwq_basic_init(wq, cpu);
 
 	wq->name = name;
 	mutex_lock(&workqueue_mutex);

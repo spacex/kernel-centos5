@@ -4466,6 +4466,8 @@ static int nfs4_xdr_dec_delegreturn(struct rpc_rqst *rqstp, uint32_t *p, struct 
 	if (status != 0)
 		goto out;
 	status = decode_delegreturn(&xdr);
+	if (status != 0)
+		goto out;
 	decode_getfattr(&xdr, res->fattr, res->server);
 out:
 	return status;

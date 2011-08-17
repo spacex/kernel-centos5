@@ -38,6 +38,7 @@
 #include <asm/timer.h>
 #include <asm/i8259.h>
 #include <asm/nmi.h>
+#include <asm/vmware.h>
 
 #include <mach_apic.h>
 
@@ -1874,6 +1875,9 @@ static int __init timer_irq_works(void)
 {
 	unsigned long t1 = jiffies;
 	unsigned long flags;
+
+	if (vmware_platform())
+		return 1;
 
 	local_save_flags(flags);
 	local_irq_enable();

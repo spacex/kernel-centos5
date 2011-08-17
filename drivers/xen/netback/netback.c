@@ -249,8 +249,11 @@ int netif_be_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	/*
 	 * Copy the packet here if it's destined for a flipping interface
 	 * but isn't flippable (e.g. extra references to data).
+	 * XXX For now we also copy skbuffs whose head crosses a page
+	 * boundary, because netbk_gop_skb can't handle them.
 	 */
-	if (!netif->copying_receiver) {
+	if (!netif->copying_receiver ||
+	    ((skb_headlen(skb) + offset_in_page(skb->data)) >= PAGE_SIZE)) {
 		struct sk_buff *nskb = netbk_copy_skb(skb);
 		if ( unlikely(nskb == NULL) )
 			goto drop;
@@ -550,6 +553,7 @@ static void net_rx_action(unsigned long unused)
 		*(int *)skb->cb = nr_frags;
 
 		if (!xen_feature(XENFEAT_auto_translated_physmap) &&
+		    !((netif_t *)netdev_priv(skb->dev))->copying_receiver &&
 		    check_mfn(nr_frags + 1)) {
 			/* Memory squeeze? Back off for an arbitrary while. */
 			if ( net_ratelimit() )

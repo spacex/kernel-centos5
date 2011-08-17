@@ -1407,10 +1407,11 @@ static void ql_gen_reg_dump(struct ql_adapter *qdev,
 }
 
 /* Coredump to messages log file using separate worker thread */
-void ql_mpi_core_to_log(struct work_struct *work)
+void ql_mpi_core_to_log(void *data)
 {
+	struct work_struct *work = data;
 	struct ql_adapter *qdev =
-		container_of(work, struct ql_adapter, mpi_core_to_log);
+		container_of(work, struct ql_adapter, mpi_core_to_log.work);
 	u32 *tmp, count;
 	int i;
 	
@@ -1448,11 +1449,9 @@ static int ql_get_core_dump(struct ql_adapter *qdev)
 			"that is up.\n");
 		return -EINVAL;
 	}
-	if(ql_mb_sys_err(qdev)) {
-		QPRINTK(qdev, IFUP, ERR,
-			"Fail force coredump with ql_mb_sys_err().\n");
-		return -EINVAL;
-	}
+
+	/* Start the firmware dump and reset. */
+	queue_delayed_work(qdev->workqueue, &qdev->mpi_reset_work.work, 0);
 
 	/* Wait for core dump to complete. */
 	do {

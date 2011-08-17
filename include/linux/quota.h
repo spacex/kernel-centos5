@@ -157,6 +157,9 @@ struct mem_dqblk {
 	__u32 dqb_curinodes;	/* current # allocated inodes */
 	time_t dqb_btime;	/* time limit for excessive disk use */
 	time_t dqb_itime;	/* time limit for excessive inode use */
+#ifndef __GENKSYMS__
+	qsize_t dqb_rsvspace;	/* current reserved space for delalloc*/
+#endif
 };
 
 /*
@@ -256,6 +259,17 @@ struct dquot_operations {
 	int (*release_dquot) (struct dquot *);		/* Quota is going to be deleted from disk */
 	int (*mark_dirty) (struct dquot *);		/* Dquot is marked dirty */
 	int (*write_info) (struct super_block *, int);	/* Write of quota "superblock" */
+#ifndef __GENKSYMS__
+	/* reserve quota for delayed block allocation */
+	int (*reserve_space) (struct inode *, qsize_t, int);
+	/* claim reserved quota for delayed alloc */
+	int (*claim_space) (struct inode *, qsize_t);
+	/* release rsved quota for delayed alloc */
+	void (*release_rsv) (struct inode *, qsize_t);
+	/* get reserved quota for delayed alloc, value returned is managed by
+	 * quota code only */
+	qsize_t *(*get_reserved_space) (struct inode *);
+#endif
 };
 
 /* Operations handling requests from userspace */

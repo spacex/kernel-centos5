@@ -2045,7 +2045,9 @@ static void selinux_bprm_post_apply_creds(struct linux_binprm *bprm)
 
 	/* Wake up the parent if it is waiting so that it can
 	   recheck wait permission to the new task SID. */
+	read_lock(&tasklist_lock);
 	wake_up_interruptible(&current->parent->signal->wait_chldexit);
+	read_unlock(&tasklist_lock);
 }
 
 /* superblock security operations */
@@ -2557,6 +2559,7 @@ static int selinux_inode_setsecurity(struct inode *inode, const char *name,
 		return rc;
 
 	isec->sid = newsid;
+	isec->initialized = 1;
 	return 0;
 }
 
@@ -4717,6 +4720,35 @@ static void selinux_release_secctx(char *secdata, u32 seclen)
 		kfree(secdata);
 }
 
+/*
+ *	called with inode->i_mutex locked
+ */
+static int selinux_inode_notifysecctx(struct inode *inode, void *ctx, u32 ctxlen)
+{
+	return selinux_inode_setsecurity(inode, XATTR_SELINUX_SUFFIX, ctx, ctxlen, 0);
+}
+
+/*
+ *	called with inode->i_mutex locked
+ */
+static int selinux_inode_setsecctx(struct dentry *dentry, void *ctx, u32 ctxlen)
+{
+	return __vfs_setxattr_noperm(dentry, XATTR_NAME_SELINUX, ctx, ctxlen, 0);
+}
+
+static int selinux_inode_getsecctx(struct inode *inode, void **ctx, u32 *ctxlen)
+{
+	int len = 0;
+	len = selinux_inode_getsecurity(inode, XATTR_SELINUX_SUFFIX,
+						NULL, 0, true);
+	if (len < 0)
+		return len;
+	*ctx = kmalloc(len, GFP_NOFS);
+	len = selinux_inode_getsecurity(inode, XATTR_SELINUX_SUFFIX,
+					*ctx, len, true);
+	*ctxlen = len;
+	return 0;
+}
 #ifdef CONFIG_KEYS
 
 static int selinux_key_alloc(struct key *k, struct task_struct *tsk,
@@ -4900,6 +4932,9 @@ static struct security_operations selinux_ops = {
 
 	.secid_to_secctx =		selinux_secid_to_secctx,
 	.release_secctx =		selinux_release_secctx,
+	.inode_notifysecctx =		selinux_inode_notifysecctx,
+	.inode_setsecctx =		selinux_inode_setsecctx,
+	.inode_getsecctx =		selinux_inode_getsecctx,
 
         .unix_stream_connect =		selinux_socket_unix_stream_connect,
 	.unix_may_send =		selinux_socket_unix_may_send,

@@ -750,7 +750,6 @@ static int cfg80211_netdev_notifier_call(struct notifier_block * nb,
 #endif
 		break;
 	case NETDEV_UP:
-#if 0 /* Not in RHEL5... */
 		/*
 		 * If we have a really quick DOWN/UP succession we may
 		 * have this work still pending ... cancel it and see
@@ -763,15 +762,6 @@ static int cfg80211_netdev_notifier_call(struct notifier_block * nb,
 			mutex_unlock(&rdev->devlist_mtx);
 			dev_put(dev);
 		}
-#else
-		/*
-		 * Due to lack of infrastructure in RHEL5, simply insist
-		 * that cleanup_work (now on it's own workqueue) has
-		 * finished before we proceed.
-		 */
-		if (test_bit(0, &wdev->cleanup_work.pending))
-			flush_workqueue(workqueue);
-#endif
 #ifdef CONFIG_WIRELESS_EXT
 		cfg80211_lock_rdev(rdev);
 		mutex_lock(&rdev->devlist_mtx);

@@ -154,7 +154,6 @@ asmlinkage long sys_remap_file_pages(unsigned long start, unsigned long size,
 {
 	struct mm_struct *mm = current->mm;
 	struct address_space *mapping;
-	unsigned long end = start + size;
 	struct vm_area_struct *vma;
 	int err = -EINVAL;
 	int has_write_lock = 0;
@@ -169,6 +168,10 @@ asmlinkage long sys_remap_file_pages(unsigned long start, unsigned long size,
 
 	/* Does the address range wrap, or is the span zero-sized? */
 	if (start + size <= start)
+		return err;
+
+	/* Does pgoff wrap */
+	if (pgoff + (size >> PAGE_SHIFT) < pgoff)
 		return err;
 
 	/* Can we represent this offset inside this architecture's pte's? */
@@ -191,8 +194,8 @@ asmlinkage long sys_remap_file_pages(unsigned long start, unsigned long size,
 	if (vma && (vma->vm_flags & VM_SHARED) &&
 		(!vma->vm_private_data || (vma->vm_flags & VM_NONLINEAR)) &&
 		vma->vm_ops && vma->vm_ops->populate &&
-			end > start && start >= vma->vm_start &&
-				end <= vma->vm_end) {
+			start + size > start && start >= vma->vm_start &&
+				start + size <= vma->vm_end) {
 
 		/* Must set VM_NONLINEAR before any pages are populated. */
 		if (pgoff != linear_page_index(vma, start) &&

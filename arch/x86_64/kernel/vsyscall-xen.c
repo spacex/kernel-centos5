@@ -38,6 +38,7 @@
 
 int __sysctl_vsyscall __section_sysctl_vsyscall = 1;
 seqlock_t __xtime_lock __section_xtime_lock = SEQLOCK_UNLOCKED;
+int __vgetcpu_mode __section_vgetcpu_mode;
 
 #include <asm/unistd.h>
 

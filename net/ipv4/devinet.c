@@ -79,6 +79,14 @@ static struct ipv4_devconf ipv4_devconf_dflt = {
 	.accept_source_route = 1,
 };
 
+struct ipv4_devconf_extensions ipv4_devconf_ext = {
+	.accept_local = 0,
+};
+
+static struct ipv4_devconf_extensions ipv4_devconf_dflt_ext = {
+	.accept_local = 0,
+};
+
 static void rtmsg_ifa(int event, struct in_ifaddr *);
 
 static BLOCKING_NOTIFIER_HEAD(inetaddr_chain);
@@ -137,6 +145,7 @@ void in_dev_finish_destroy(struct in_device *idev)
 struct in_device *inetdev_init(struct net_device *dev)
 {
 	struct in_device *in_dev;
+	struct net_device_extended *ext = dev ? dev_extended(dev) : NULL;
 
 	ASSERT_RTNL();
 
@@ -145,6 +154,10 @@ struct in_device *inetdev_init(struct net_device *dev)
 		goto out;
 	INIT_RCU_HEAD(&in_dev->rcu_head);
 	memcpy(&in_dev->cnf, &ipv4_devconf_dflt, sizeof(in_dev->cnf));
+	if (ext)
+		memcpy(&ext->ipv4_devconf_ext, &ipv4_devconf_dflt_ext,
+		       sizeof(ipv4_devconf_dflt_ext));
+
 	in_dev->cnf.sysctl = NULL;
 	in_dev->dev = dev;
 	if ((in_dev->arp_parms = neigh_parms_alloc(dev, &arp_tbl)) == NULL)
@@ -1412,6 +1425,14 @@ static struct devinet_sysctl_table {
 			.proc_handler	= &proc_dointvec,
 		},
 		{
+			.ctl_name	= NET_IPV4_CONF_ACCEPT_LOCAL,
+			.procname	= "accept_local",
+			.data		= &ipv4_devconf_ext.accept_local,
+			.maxlen		= sizeof(int),
+			.mode		= 0644,
+			.proc_handler	= &proc_dointvec,
+		},
+		{
 			.ctl_name	= NET_IPV4_CONF_NOXFRM,
 			.procname	= "disable_xfrm",
 			.data		= &ipv4_devconf.no_xfrm,
@@ -1482,6 +1503,39 @@ static struct devinet_sysctl_table {
 	},
 };
 
+/*
+ * Check for conf attribute inside the net_device_extended struct,
+ * and prepares their the value storage.
+ *
+ * Returns 1 if the attribute was extented, 0 otherwise.
+ */
+static int check_ext_conf(ctl_table *t, struct in_device *in_dev, int dflt)
+{
+	struct net_device *dev = in_dev ? in_dev->dev : NULL;
+	struct net_device_extended *ext = dev ? dev_extended(dev) : NULL;
+
+	if (t->ctl_name != NET_IPV4_CONF_ACCEPT_LOCAL)
+		return 0;
+
+	if (ext)
+		t->data += (char*) &ext->ipv4_devconf_ext -
+			   (char*) &ipv4_devconf_ext;
+	else if (dflt)
+		t->data = &ipv4_devconf_dflt_ext.accept_local;
+	else {
+		/*
+		 * We're registering an interface here that
+		 * doesn't have an extended segment, so we
+		 * register the extra sysctls, but we give them
+		 * no permissions so that we can't write to them
+		 */
+		t->mode = 0444;
+	}
+
+	t->de = NULL;
+	return 1;
+}
+
 static void devinet_sysctl_register(struct in_device *in_dev,
 				    struct ipv4_devconf *p)
 {
@@ -1494,7 +1548,13 @@ static void devinet_sysctl_register(struct in_device *in_dev,
 		return;
 	memcpy(t, &devinet_sysctl, sizeof(*t));
 	for (i = 0; i < ARRAY_SIZE(t->devinet_vars) - 1; i++) {
+
+		if (check_ext_conf(&t->devinet_vars[i], in_dev,
+				   p == &ipv4_devconf_dflt))
+			continue;
+
 		t->devinet_vars[i].data += (char *)p - (char *)&ipv4_devconf;
+		t->devinet_vars[i].extra1 = p;
 		t->devinet_vars[i].de = NULL;
 	}
 

@@ -101,21 +101,6 @@ static struct hpets *hpets;
 #define	read_counter(MC)	readl(MC)
 #endif
 
-#ifndef readq
-static inline unsigned long long readq(void __iomem *addr)
-{
-	return readl(addr) | (((unsigned long long)readl(addr + 4)) << 32LL);
-}
-#endif
-
-#ifndef writeq
-static inline void writeq(unsigned long long v, void __iomem *addr)
-{
-	writel(v & 0xffffffff, addr);
-	writel(v >> 32, addr + 4);
-}
-#endif
-
 static irqreturn_t hpet_interrupt(int irq, void *data, struct pt_regs *regs)
 {
 	struct hpet_dev *devp;

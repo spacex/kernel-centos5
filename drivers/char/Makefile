@@ -50,6 +50,8 @@ else
 obj-$(CONFIG_HVC_DRIVER)	+= hvc_console.o
 endif
 obj-$(CONFIG_HVC_IUCV)    += hvc_iucv.o
+obj-$(CONFIG_VIRTIO_CONSOLE)	+= virtio_console.o
+
 obj-$(CONFIG_RAW_DRIVER)	+= raw.o
 obj-$(CONFIG_SGI_SNSC)		+= snsc.o snsc_event.o
 obj-$(CONFIG_MMTIMER)		+= mmtimer.o

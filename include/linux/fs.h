@@ -96,6 +96,8 @@ extern int dir_notify_enable;
 #define FS_HAS_FIEMAP  8      /* Safe to check for ->fiemap */
 #define FS_HAS_FREEZE 16      /* Safe to check for ->freeze_fs etc */
 #define FS_HAS_TRYTOFREE 32   /* Safe to check for ->bdev_try_to_free... */
+#define FS_HAS_GETRESV 64     /* Safe to check for ->get_reserved_space */
+#define FS_HAS_IODONE2 128    /* dio->io_done is type dio_iodone2_t */
 #define FS_REVAL_DOT	16384	/* Check the paths ".", ".." for staleness */
 #define FS_RENAME_DOES_D_MOVE	32768	/* FS will handle d_move()
 					 * during rename() internally.
@@ -323,6 +325,9 @@ typedef int (get_block_t)(struct inode *inode, sector_t iblock,
 			struct buffer_head *bh_result, int create);
 typedef void (dio_iodone_t)(struct kiocb *iocb, loff_t offset,
 			ssize_t bytes, void *private);
+typedef void (dio_iodone2_t)(struct kiocb *iocb, loff_t offset,
+			ssize_t bytes, void *private, int ret,
+			bool is_async);
 
 /*
  * Attribute flags.  These should be or-ed together to figure out what
@@ -2011,6 +2016,7 @@ extern struct inode_operations page_symlink_inode_operations;
 extern int generic_readlink(struct dentry *, char __user *, int);
 extern void generic_fillattr(struct inode *, struct kstat *);
 extern int vfs_getattr(struct vfsmount *, struct dentry *, struct kstat *);
+void __inode_add_bytes(struct inode *inode, loff_t bytes);
 void inode_add_bytes(struct inode *inode, loff_t bytes);
 void inode_sub_bytes(struct inode *inode, loff_t bytes);
 loff_t inode_get_bytes(struct inode *inode);
@@ -2073,6 +2079,8 @@ extern void simple_release_fs(struct vfsmount **mount, int *count);
 
 extern ssize_t simple_read_from_buffer(void __user *, size_t, loff_t *, const void *, size_t);
 
+extern int simple_fsync(struct file *, struct dentry *, int);
+
 #ifdef CONFIG_MIGRATION
 extern int buffer_migrate_page(struct address_space *,
 				struct page *, struct page *);
@@ -2081,6 +2089,7 @@ extern int buffer_migrate_page(struct address_space *,
 #endif
 
 extern int inode_change_ok(struct inode *, struct iattr *);
+extern int inode_newsize_ok(const struct inode *, loff_t offset);
 extern int __must_check inode_setattr(struct inode *, struct iattr *);
 
 extern void file_update_time(struct file *file);

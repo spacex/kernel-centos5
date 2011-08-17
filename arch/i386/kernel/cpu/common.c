@@ -280,6 +280,22 @@ void __cpuinit generic_identify(struct cpuinfo_x86 * c)
 		      (int *)&c->x86_vendor_id[4]);
 		
 		get_cpu_vendor(c, 0);
+
+		/* Unmask CPUID levels if masked: */
+		if ((c->x86_vendor == X86_VENDOR_INTEL) &&
+		    (c->x86 > 6 || (c->x86 == 6 && c->x86_model >= 0xd))) {
+			u64 misc_enable;
+
+			rdmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
+
+			if (misc_enable & MSR_IA32_MISC_ENABLE_LIMIT_CPUID) {
+				misc_enable &=
+					      ~MSR_IA32_MISC_ENABLE_LIMIT_CPUID;
+				wrmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
+				c->cpuid_level = cpuid_eax(0);
+			}
+		}
+
 		/* Initialize the standard set of capabilities */
 		/* Note that the vendor-specific code below might override */
 	

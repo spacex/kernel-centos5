@@ -70,7 +70,6 @@ struct gfs2_quota_host {
 	u64 qu_limit;
 	u64 qu_warn;
 	s64 qu_value;
-	u32 qu_ll_next;
 };
 
 struct gfs2_quota_change_host {
@@ -581,7 +580,6 @@ static void gfs2_quota_in(struct gfs2_quota_host *qu, const void *buf)
 	qu->qu_limit = be64_to_cpu(str->qu_limit);
 	qu->qu_warn = be64_to_cpu(str->qu_warn);
 	qu->qu_value = be64_to_cpu(str->qu_value);
-	qu->qu_ll_next = be32_to_cpu(str->qu_ll_next);
 }
 
 /**

@@ -979,6 +979,27 @@ int pci_enable_wake(struct pci_dev *dev, pci_power_t state, int enable)
 }
 
 /**
+ * pci_wake_from_d3 - enable/disable device to wake up from D3_hot or D3_cold
+ * @dev: PCI device to prepare
+ * @enable: True to enable wake-up event generation; false to disable
+ *
+ * Many drivers want the device to wake up the system from D3_hot or D3_cold
+ * and this function allows them to set that up cleanly - pci_enable_wake()
+ * should not be called twice in a row to enable wake-up due to PCI PM vs ACPI
+ * ordering constraints.
+ *
+ * This function only returns error code if the device is not capable of
+ * generating PME# from both D3_hot and D3_cold, and the platform is unable to
+ * enable wake-up power for it.
+ */
+int pci_wake_from_d3(struct pci_dev *dev, bool enable)
+{
+	if (pci_enable_wake(dev, PCI_D3cold, enable))
+		return pci_enable_wake(dev, PCI_D3hot, enable);
+	return 0;
+}
+
+/**
  * pci_enable_ari - enable ARI forwarding if hardware support it
  * @dev: the PCI device
  */
@@ -1620,20 +1641,17 @@ EXPORT_SYMBOL_GPL(pci_reset_function);
 int
 pcix_get_max_mmrbc(struct pci_dev *dev)
 {
-	int ret, err, cap;
+	int cap;
 	u32 stat;
-	
+
 	cap = pci_find_capability(dev, PCI_CAP_ID_PCIX);
 	if (!cap)
 		return -EINVAL;
 
-	err = pci_read_config_dword(dev, cap + PCI_X_STATUS, &stat);
-	if (err)
+	if (pci_read_config_dword(dev, cap + PCI_X_STATUS, &stat))
 		return -EINVAL;
 
-	ret = (stat & PCI_X_STATUS_MAX_READ) >> 12;
-
-	return ret;
+	return 512 << ((stat & PCI_X_STATUS_MAX_READ) >> 21);
 }
 EXPORT_SYMBOL(pcix_get_max_mmrbc);
 
@@ -1647,18 +1665,17 @@ EXPORT_SYMBOL(pcix_get_max_mmrbc);
 int
 pcix_get_mmrbc(struct pci_dev *dev)
 {
-	int ret, cap;
-	u32 cmd;
-	
+	int cap;
+	u16 cmd;
+
 	cap = pci_find_capability(dev, PCI_CAP_ID_PCIX);
 	if (!cap)
 		return -EINVAL;
-	
-	ret = pci_read_config_dword(dev, cap + PCI_X_CMD, &cmd);
-	if (!ret)
-		ret = 512 << ((cmd & PCI_X_CMD_MAX_READ) >> 2);
-	
-	return ret;
+
+	if (pci_read_config_word(dev, cap + PCI_X_CMD, &cmd))
+		return -EINVAL;
+
+	return 512 << ((cmd & PCI_X_CMD_MAX_READ) >> 2);
 }
 EXPORT_SYMBOL(pcix_get_mmrbc);
 
@@ -1674,41 +1691,40 @@ EXPORT_SYMBOL(pcix_get_mmrbc);
 int
 pcix_set_mmrbc(struct pci_dev *dev, int mmrbc)
 {
-	int cap, err = -EINVAL;
-	u32 stat, cmd, v, o;
-		
+	int cap;
+	u32 stat, v, o;
+	u16 cmd;
+
 	if (mmrbc < 512 || mmrbc > 4096 || (mmrbc & (mmrbc-1)))
-		goto out;
-	
+		return -EINVAL;
+
 	v = ffs(mmrbc) - 10;
-	
+
 	cap = pci_find_capability(dev, PCI_CAP_ID_PCIX);
 	if (!cap)
-		goto out;
-	
-	err = pci_read_config_dword(dev, cap + PCI_X_STATUS, &stat);
-	if (err)
-		goto out;
-	
+		return -EINVAL;
+
+	if (pci_read_config_dword(dev, cap + PCI_X_STATUS, &stat))
+		return -EINVAL;
+
 	if (v > (stat & PCI_X_STATUS_MAX_READ) >> 21)
 		return -E2BIG;
-	
-	err = pci_read_config_dword(dev, cap + PCI_X_CMD, &cmd);
-	if (err)
-		goto out;
-	
+
+	if (pci_read_config_word(dev, cap + PCI_X_CMD, &cmd))
+		return -EINVAL;
+
 	o = (cmd & PCI_X_CMD_MAX_READ) >> 2;
 	if (o != v) {
-		if (v > o && dev->bus && 
+		if (v > o && dev->bus &&
 		   (dev->bus->bus_flags & PCI_BUS_FLAGS_NO_MMRBC))
 			return -EIO;
-		
+
 		cmd &= ~PCI_X_CMD_MAX_READ;
 		cmd |= v << 2;
-		err = pci_write_config_dword(dev, cap + PCI_X_CMD, cmd);
+		if (pci_write_config_word(dev, cap + PCI_X_CMD, cmd))
+			return -EIO;
 	}
-out:
-	return err;
+	return 0;
 }
 EXPORT_SYMBOL(pcix_set_mmrbc);
 
@@ -1749,12 +1765,12 @@ pcie_set_readrq(struct pci_dev *dev, int rq)
 {
 	int cap, err = -EINVAL;
 	u16 ctl, v;
-	
+
 	if (rq < 128 || rq > 4096 || (rq & (rq-1)))
 		goto out;
-	
+
 	v = (ffs(rq) - 8) << 12;
-	
+
 	cap = pci_find_capability(dev, PCI_CAP_ID_EXP);
 	if (!cap)
 		goto out;
@@ -1762,13 +1778,13 @@ pcie_set_readrq(struct pci_dev *dev, int rq)
 	err = pci_read_config_word(dev, cap + PCI_EXP_DEVCTL, &ctl);
 	if (err)
 		goto out;
-	
+
 	if ((ctl & PCI_EXP_DEVCTL_READRQ) != v) {
 		ctl &= ~PCI_EXP_DEVCTL_READRQ;
 		ctl |= v;
 		err = pci_write_config_dword(dev, cap + PCI_EXP_DEVCTL, ctl);
 	}
-	
+
 out:
 	return err;
 }
@@ -1905,6 +1921,7 @@ EXPORT_SYMBOL(pci_set_power_state);
 EXPORT_SYMBOL(pci_save_state);
 EXPORT_SYMBOL(pci_restore_state);
 EXPORT_SYMBOL(pci_enable_wake);
+EXPORT_SYMBOL(pci_wake_from_d3);
 EXPORT_SYMBOL_GPL(pci_set_pcie_reset_state);
 
 /* Quirk info */

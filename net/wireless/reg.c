@@ -367,7 +367,7 @@ struct reg_regdb_search_request {
 };
 
 static LIST_HEAD(reg_regdb_search_list);
-static DEFINE_SPINLOCK(reg_regdb_search_lock);
+static DEFINE_MUTEX(reg_regdb_search_mutex);
 
 static void reg_regdb_search(void *unused)
 {
@@ -375,7 +375,7 @@ static void reg_regdb_search(void *unused)
 	const struct ieee80211_regdomain *curdom, *regdom;
 	int i, r;
 
-	spin_lock(&reg_regdb_search_lock);
+	mutex_lock(&reg_regdb_search_mutex);
 	while (!list_empty(&reg_regdb_search_list)) {
 		request = list_first_entry(&reg_regdb_search_list,
 					   struct reg_regdb_search_request,
@@ -389,18 +389,16 @@ static void reg_regdb_search(void *unused)
 				r = reg_copy_regd(&regdom, curdom);
 				if (r)
 					break;
-				spin_unlock(&reg_regdb_search_lock);
 				mutex_lock(&cfg80211_mutex);
 				set_regdom(regdom);
 				mutex_unlock(&cfg80211_mutex);
-				spin_lock(&reg_regdb_search_lock);
 				break;
 			}
 		}
 
 		kfree(request);
 	}
-	spin_unlock(&reg_regdb_search_lock);
+	mutex_unlock(&reg_regdb_search_mutex);
 }
 
 static DECLARE_WORK(reg_regdb_work, reg_regdb_search, NULL);
@@ -418,9 +416,9 @@ static void reg_regdb_query(const char *alpha2)
 
 	memcpy(request->alpha2, alpha2, 2);
 
-	spin_lock(&reg_regdb_search_lock);
+	mutex_lock(&reg_regdb_search_mutex);
 	list_add_tail(&request->list, &reg_regdb_search_list);
-	spin_unlock(&reg_regdb_search_lock);
+	mutex_unlock(&reg_regdb_search_mutex);
 
 	schedule_work(&reg_regdb_work);
 }
@@ -2365,11 +2363,7 @@ void regulatory_exit(void)
 	struct regulatory_request *reg_request, *tmp;
 	struct reg_beacon *reg_beacon, *btmp;
 
-#if 0 /* Not in RHEL5... */
 	cancel_work_sync(&reg_work);
-#else
-	flush_scheduled_work();
-#endif
 
 	mutex_lock(&cfg80211_mutex);
 	mutex_lock(&reg_mutex);

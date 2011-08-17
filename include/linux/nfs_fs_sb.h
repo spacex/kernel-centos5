@@ -30,6 +30,7 @@ struct nfs_client {
 	struct list_head	cl_superblocks;	/* List of nfs_server structs */
 
 	struct rpc_clnt *	cl_rpcclient;
+	int			cl_proto;	/* transport protocol */
 	const struct nfs_rpc_ops *rpc_ops;	/* NFS protocol vector */
 	unsigned long		retrans_timeo;	/* retransmit timeout */
 	unsigned int		retrans_count;	/* number of retransmit tries */

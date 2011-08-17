@@ -205,6 +205,12 @@ static void boot_delay_msec(int millisecs)
 
 #endif
 
+#ifdef CONFIG_SECURITY_DMESG_RESTRICT
+int dmesg_restrict = 1;
+#else
+int dmesg_restrict;
+#endif
+
 /*
  * Commands to do_syslog:
  *

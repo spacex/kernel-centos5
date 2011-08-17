@@ -552,12 +552,18 @@ check_entry(struct ipt_entry *e, const char *name, unsigned int size,
 		return -EINVAL;
 	}
 
+	if (e->target_offset + sizeof(struct ipt_entry_target) > e->next_offset)
+		return -EINVAL;
+
 	j = 0;
 	ret = IPT_MATCH_ITERATE(e, check_match, name, &e->ip, e->comefrom, &j);
 	if (ret != 0)
 		goto cleanup_matches;
 
 	t = ipt_get_target(e);
+	ret = -EINVAL;
+	if (e->target_offset + t->u.target_size > e->next_offset)
+		goto cleanup_matches;
 	target = try_then_request_module(xt_find_target(AF_INET,
 						     t->u.user.name,
 						     t->u.user.revision),
@@ -720,19 +726,17 @@ translate_table(const char *name,
 		}
 	}
 
-	if (!mark_source_chains(newinfo, valid_hooks, entry0))
-		return -ELOOP;
-
 	/* Finally, each sanity check must pass */
 	i = 0;
 	ret = IPT_ENTRY_ITERATE(entry0, newinfo->size,
 				check_entry, name, size, &i);
 
-	if (ret != 0) {
-		IPT_ENTRY_ITERATE(entry0, newinfo->size,
-				  cleanup_entry, &i);
-		return ret;
-	}
+	if (ret != 0)
+		goto cleanup;
+
+	ret = -ELOOP;
+	if (!mark_source_chains(newinfo, valid_hooks, entry0))
+		goto cleanup;
 
 	/* And one copy for every other CPU */
 	for_each_possible_cpu(i) {
@@ -740,6 +744,9 @@ translate_table(const char *name,
 			memcpy(newinfo->entries[i], entry0, newinfo->size);
 	}
 
+	return 0;
+cleanup:
+	IPT_ENTRY_ITERATE(entry0, newinfo->size, cleanup_entry, &i);
 	return ret;
 }
 
@@ -1260,9 +1267,6 @@ do_replace(void __user *user, unsigned int len)
 		return -ENOPROTOOPT;
 
 	/* overflow check */
-	if (tmp.size >= (INT_MAX - sizeof(struct xt_table_info)) / NR_CPUS -
-			SMP_CACHE_BYTES)
-		return -ENOMEM;
 	if (tmp.num_counters >= INT_MAX / sizeof(struct xt_counters))
 		return -ENOMEM;
 
@@ -1531,6 +1535,10 @@ check_compat_entry_size_and_hooks(struct ipt_entry *e,
 		return -EINVAL;
 	}
 
+	if (e->target_offset + sizeof(struct compat_xt_entry_target) >
+								e->next_offset)
+		return -EINVAL;
+
 	off = 0;
 	entry_offset = (void *)e - (void *)base;
 	j = 0;
@@ -1540,6 +1548,9 @@ check_compat_entry_size_and_hooks(struct ipt_entry *e,
 		goto out;
 
 	t = ipt_get_target(e);
+	ret = -EINVAL;
+	if (e->target_offset + t->u.target_size > e->next_offset)
+		goto out;
 	target = try_then_request_module(xt_find_target(AF_INET,
 						     t->u.user.name,
 						     t->u.user.revision),

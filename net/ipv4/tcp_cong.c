@@ -77,18 +77,19 @@ void tcp_init_congestion_control(struct sock *sk)
 	struct inet_connection_sock *icsk = inet_csk(sk);
 	struct tcp_congestion_ops *ca;
 
-	if (icsk->icsk_ca_ops != &tcp_init_congestion_ops)
-		return;
+	/* if no choice made yet assign the current value set as default */
+	if (icsk->icsk_ca_ops == &tcp_init_congestion_ops) {
+		rcu_read_lock();
+		list_for_each_entry_rcu(ca, &tcp_cong_list, list) {
+			if (try_module_get(ca->owner)) {
+				icsk->icsk_ca_ops = ca;
+				break;
+			}
 
-	rcu_read_lock();
-	list_for_each_entry_rcu(ca, &tcp_cong_list, list) {
-		if (try_module_get(ca->owner)) {
-			icsk->icsk_ca_ops = ca;
-			break;
+			/* fallback to next available */
 		}
-
+		rcu_read_unlock();
 	}
-	rcu_read_unlock();
 
 	if (icsk->icsk_ca_ops->init)
 		icsk->icsk_ca_ops->init(sk);
@@ -165,7 +166,7 @@ int tcp_set_congestion_control(struct sock *sk, const char *name)
 	else {
 		tcp_cleanup_congestion_control(sk);
 		icsk->icsk_ca_ops = ca;
-		if (icsk->icsk_ca_ops->init)
+		if (sk->sk_state != TCP_CLOSE && icsk->icsk_ca_ops->init)
 			icsk->icsk_ca_ops->init(sk);
 	}
  out:
@@ -173,6 +174,27 @@ int tcp_set_congestion_control(struct sock *sk, const char *name)
 	return err;
 }
 
+/* RFC2861 Check whether we are limited by application or congestion window
+ * This is the inverse of cwnd check in tcp_tso_should_defer
+ */
+int tcp_is_cwnd_limited(const struct sock *sk, u32 in_flight)
+{
+	const struct tcp_sock *tp = tcp_sk(sk);
+	u32 left;
+
+	if (in_flight >= tp->snd_cwnd)
+		return 1;
+
+	if (!sk_can_gso(sk))
+		return 0;
+
+	left = tp->snd_cwnd - in_flight;
+	if (sysctl_tcp_tso_win_divisor)
+		return left * sysctl_tcp_tso_win_divisor < tp->snd_cwnd;
+	else
+		return left <= tcp_max_burst(tp);
+}
+EXPORT_SYMBOL_GPL(tcp_is_cwnd_limited);
 
 /*
  * Linear increase during slow start

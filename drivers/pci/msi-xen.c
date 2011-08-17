@@ -574,6 +574,10 @@ int pci_enable_msi(struct pci_dev* dev)
 	int pos, temp, status = -EINVAL;
 	struct msi_dev_list *msi_dev_entry = get_msi_dev_pirq_list(dev);
 
+#ifdef CONFIG_IA64
+	return -EINVAL;
+#endif
+
 	if (!pci_msi_enable || !dev)
 		return status;
 
@@ -685,6 +689,10 @@ int pci_enable_msix(struct pci_dev* dev, struct msix_entry *entries, int nvec)
 	int i, j, temp;
 	u16 control;
 	struct msi_dev_list *msi_dev_entry = get_msi_dev_pirq_list(dev);
+
+#ifdef CONFIG_IA64
+	return -EINVAL;
+#endif
 
 	if (!pci_msi_enable || !dev || !entries)
 		return -EINVAL;

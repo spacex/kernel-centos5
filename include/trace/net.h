@@ -10,4 +10,12 @@ DEFINE_TRACE(net_dev_xmit,
 DEFINE_TRACE(net_dev_receive,
 	TPPROTO(struct sk_buff *skb),
 	TPARGS(skb));
+
+DEFINE_TRACE(net_dev_queue,
+	TPPROTO(struct sk_buff *skb),
+	TPARGS(skb));
+
+DEFINE_TRACE(netif_rx,
+	TPPROTO(struct sk_buff *skb),
+	TPARGS(skb));
 #endif

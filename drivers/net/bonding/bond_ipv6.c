@@ -27,12 +27,6 @@
 #include <net/addrconf.h>
 #include "bonding.h"
 
-static inline struct net_device *vlan_group_get_device(struct vlan_group *vg,
-						       int vlan_id)
-{
-	return vg->vlan_devices[vlan_id];
-}
-
 /*
  * Assign bond->master_ipv6 to the next IPv6 address in the list, or
  * zero it out if there are none.

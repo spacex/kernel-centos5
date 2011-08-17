@@ -639,7 +639,9 @@ static inline void ptep_invalidate(unsigned long address, pte_t *ptep)
 #define ptep_get_and_clear(__mm, __address, __ptep)			\
 ({									\
 	pte_t __pte = *(__ptep);					\
-	if (atomic_read(&(__mm)->mm_users) > 1 ||			\
+	__mm_context_t *__mmc = (__mm_context_t *) &(__mm)->context;	\
+	__mmc->flush_mm = 1;						\
+	if (atomic_read(&__mmc->attach_count) > 1 ||			\
 	    (__mm) != current->active_mm)				\
 		ptep_invalidate(__address, __ptep);			\
 	else								\
@@ -688,8 +690,10 @@ ptep_establish(struct vm_area_struct *vma,
 #define ptep_set_wrprotect(__mm, __addr, __ptep)			\
 ({									\
 	pte_t __pte = *(__ptep);					\
+	__mm_context_t *__mmc = (__mm_context_t *) &(__mm)->context;	\
 	if (pte_write(__pte)) {						\
-		if (atomic_read(&(__mm)->mm_users) > 1 ||		\
+		__mmc->flush_mm = 1;					\
+		if (atomic_read(&__mmc->attach_count) > 1 ||		\
 		    (__mm) != current->active_mm)			\
 			ptep_invalidate(__addr, __ptep);		\
 		set_pte_at(__mm, __addr, __ptep, pte_wrprotect(__pte));	\
@@ -865,14 +869,16 @@ static inline pte_t huge_ptep_get(pte_t *ptep)
 	return pte;
 }
 
-static inline pte_t huge_ptep_get_and_clear(struct mm_struct *mm,
-					    unsigned long addr, pte_t *ptep)
-{
-	pte_t pte = huge_ptep_get(ptep);
-
-	pmd_clear((pmd_t *) ptep);
-	return pte;
-}
+#define huge_ptep_get_and_clear(__mm, __addr, __ptep)			\
+({									\
+	pte_t __pte = huge_ptep_get(__ptep);				\
+	__mm_context_t *__mmc = (__mm_context_t *) &(__mm)->context;	\
+	__mmc->flush_mm = 1;					\
+	pmd_clear((pmd_t *) __ptep);					\
+	__pte;								\
+})
+void set_huge_pte_at(struct mm_struct *mm, unsigned long addr,
+		     pte_t *pteptr, pte_t pteval);
 
 static inline void __pmd_csp(pmd_t *pmdp)
 {

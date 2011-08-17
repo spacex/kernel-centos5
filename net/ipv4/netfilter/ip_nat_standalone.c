@@ -268,13 +268,17 @@ ip_nat_local_fn(unsigned int hooknum,
 		enum ip_conntrack_dir dir = CTINFO2DIR(ctinfo);
 
 		if (ct->tuplehash[dir].tuple.dst.ip !=
-		    ct->tuplehash[!dir].tuple.src.ip
+		    ct->tuplehash[!dir].tuple.src.ip) {
+			if (ip_route_me_harder(pskb))
+				ret = NF_DROP;
+		}
 #ifdef CONFIG_XFRM
-		    || ct->tuplehash[dir].tuple.dst.u.all !=
-		       ct->tuplehash[!dir].tuple.src.u.all
+		else if (ct->tuplehash[dir].tuple.dst.u.all !=
+			 ct->tuplehash[!dir].tuple.src.u.all)
+			if (ip_xfrm_me_harder(pskb))
+				ret = NF_DROP;
 #endif
-		    )
-			return ip_route_me_harder(pskb) == 0 ? ret : NF_DROP;
+
 	}
 	return ret;
 }

@@ -566,6 +566,10 @@ qla2xxx_find_flt_start(scsi_qla_host_t *ha, uint32_t *start)
 		*start = FA_FLASH_LAYOUT_ADDR;
 	else if (IS_QLA81XX(ha))
 		*start = FA_FLASH_LAYOUT_ADDR_81;
+	else if (IS_QLA82XX(ha)) {
+		*start = FA_FLASH_LAYOUT_ADDR_82;
+		goto end;
+	}
 
 	/* Begin with first PCI expansion ROM header. */
 	buf = (uint8_t *)ha->request_ring;
@@ -650,6 +654,10 @@ qla2xxx_get_flt_info(scsi_qla_host_t *ha, uint32_t flt_addr)
 	const uint32_t def_npiv_conf1[] =
 		{ FA_NPIV_CONF1_ADDR_24, FA_NPIV_CONF1_ADDR,
 			FA_NPIV_CONF1_ADDR_81 };
+	const uint32_t fcp_prio_cfg0[] =
+		{ FA_FCP_PRIO0_ADDR, FA_FCP_PRIO0_ADDR_25, 0 };
+	const uint32_t fcp_prio_cfg1[] =
+		{ FA_FCP_PRIO1_ADDR, FA_FCP_PRIO1_ADDR_25, 0 };
 	uint32_t def;
 	uint16_t *wptr;
 	uint16_t cnt, chksum;
@@ -703,10 +711,14 @@ qla2xxx_get_flt_info(scsi_qla_host_t *ha, uint32_t flt_addr)
 			break;
 		case FLT_REG_VPD_0:
 			ha->flt_region_vpd_nvram = start;
+			if (IS_QLA82XX(ha))
+				break;
                         if (!(PCI_FUNC(ha->pdev->devfn) & 1))
                                 ha->flt_region_vpd = start;
                         break;
                 case FLT_REG_VPD_1:
+			if (IS_QLA82XX(ha))
+				break;
 			if (PCI_FUNC(ha->pdev->devfn) & 1)
 				ha->flt_region_vpd = start;
 			break;
@@ -732,6 +744,29 @@ qla2xxx_get_flt_info(scsi_qla_host_t *ha, uint32_t flt_addr)
 		case FLT_REG_GOLD_FW:
 			ha->flt_region_gold_fw = start;
 			break;
+		case FLT_REG_BOOT_CODE_82xx:
+			ha->flt_region_boot = start;
+			break;
+		case FLT_REG_FW_82xx:
+			ha->flt_region_fw = start;
+			break;
+		case FLT_REG_GOLD_FW_82xx:
+			ha->flt_region_gold_fw = start;
+			break;
+		case FLT_REG_BOOTLOAD_82xx:
+			ha->flt_region_bootload = start;
+			break;
+		case FLT_REG_VPD_82xx:
+			ha->flt_region_vpd = start;
+			break;
+		case FLT_REG_FCP_PRIO_0:
+			if (!(PCI_FUNC(ha->pdev->devfn) & 1))
+				ha->flt_region_fcp_prio = start;
+			break;
+		case FLT_REG_FCP_PRIO_1:
+			if (PCI_FUNC(ha->pdev->devfn) & 1)
+				ha->flt_region_fcp_prio = start;
+			break;
 		}
 	}
 	goto done;
@@ -750,18 +785,21 @@ no_flash_data:
 	ha->flt_region_boot = def_boot[def];
 	ha->flt_region_vpd_nvram = def_vpd_nvram[def];
 	ha->flt_region_vpd = !(PCI_FUNC(ha->pdev->devfn) & 1) ?
-	    def_vpd0[def]: def_vpd1[def];
+	    def_vpd0[def] : def_vpd1[def];
 	ha->flt_region_nvram = !(PCI_FUNC(ha->pdev->devfn) & 1) ?
-	    def_nvram0[def]: def_nvram1[def];
+	    def_nvram0[def] : def_nvram1[def];
 	ha->flt_region_fdt = def_fdt[def];
 	ha->flt_region_npiv_conf = !(PCI_FUNC(ha->pdev->devfn) & 1) ?
-	    def_npiv_conf0[def]: def_npiv_conf1[def];
+	    def_npiv_conf0[def] : def_npiv_conf1[def];
+	ha->flt_region_fcp_prio = !(PCI_FUNC(ha->pdev->devfn) & 1) ?
+	    fcp_prio_cfg0[def] : fcp_prio_cfg1[def];
 done:
         DEBUG2(qla_printk(KERN_DEBUG, ha, "FLT[%s]: boot=0x%x fw=0x%x "
-	    "vpd_nvram=0x%x vpd=0x%x nvram=0x%x fdt=0x%x flt=0x%x "
-	    "npiv=0x%x.\n", loc, ha->flt_region_boot, ha->flt_region_fw,
-	    ha->flt_region_vpd_nvram, ha->flt_region_vpd, ha->flt_region_nvram,
-	    ha->flt_region_fdt, ha->flt_region_flt, ha->flt_region_npiv_conf));
+	    "vpd_nvram=0x%x vpd=0x%x nvram=0x%x fdt=0x%x flt=0x%x"
+	    "npiv=0x%x fcp_prio=0x%x.\n", loc, ha->flt_region_boot,
+	    ha->flt_region_fw, ha->flt_region_vpd_nvram, ha->flt_region_vpd,
+	    ha->flt_region_nvram, ha->flt_region_fdt, ha->flt_region_flt,
+	    ha->flt_region_npiv_conf, ha->flt_region_fcp_prio));
 }
 
 static void
@@ -775,9 +813,9 @@ qla2xxx_get_fdt_info(scsi_qla_host_t *ha)
 	uint16_t *wptr;
 	struct qla_fdt_layout *fdt;
 	uint8_t	man_id, flash_id;
-	uint16_t mid, fid;
+	uint16_t mid = 0, fid = 0;
 
-	if (!IS_QLA24XX_TYPE(ha) && !IS_QLA25XX(ha) && !IS_QLA81XX(ha))
+	if (!IS_QLA24XX_TYPE(ha) && !IS_QLA25XX(ha) && !IS_QLA8XXX_TYPE(ha))
 		return;
 
 	wptr = (uint16_t *)ha->request_ring;
@@ -818,6 +856,10 @@ qla2xxx_get_fdt_info(scsi_qla_host_t *ha)
 
 no_flash_data:
 	loc = locations[0];
+	if (IS_QLA82XX(ha)) {
+		ha->fdt_block_size = FLASH_BLK_SIZE_64K;
+		goto done;
+	}
 	qla24xx_get_flash_manufacturer(ha, &man_id, &flash_id);
 	ha->fdt_wrt_disable = 0x9c;
 	mid = man_id;
@@ -855,13 +897,40 @@ done:
 	    ha->fdt_block_size));
 }
 
+static void
+qla2xxx_get_idc_param(scsi_qla_host_t *ha)
+{
+#define QLA82XX_IDC_PARAM_ADDR	0x003e885c
+	uint32_t *wptr;
+
+	if (!IS_QLA82XX(ha))
+		return;
+	wptr = (uint32_t *)ha->request_ring;
+	ha->isp_ops->read_optrom(ha, (uint8_t *)ha->request_ring,
+	    QLA82XX_IDC_PARAM_ADDR , 8);
+
+	if (*wptr == __constant_cpu_to_le32(0xffffffff)) {
+		ha->nx_dev_init_timeout = ROM_DEV_INIT_TIMEOUT;
+		ha->nx_reset_timeout = ROM_DRV_RESET_ACK_TIMEOUT;
+	} else {
+		ha->nx_dev_init_timeout = le32_to_cpu(*wptr++);
+		ha->nx_reset_timeout = le32_to_cpu(*wptr);
+	}
+
+	DEBUG2(qla_printk(KERN_DEBUG, ha,
+	    "ha->nx_dev_init_timeout = %d\n", ha->nx_dev_init_timeout));
+	DEBUG2(qla_printk(KERN_DEBUG, ha,
+	    "ha->nx_reset_timeout = %d\n", ha->nx_reset_timeout));
+	return;
+}
+
 int
 qla2xxx_get_flash_info(scsi_qla_host_t *ha)
 {
 	int ret;
 	uint32_t flt_addr;
 
-	if (!IS_QLA24XX_TYPE(ha) && !IS_QLA25XX(ha) && !IS_QLA81XX(ha))
+	if (!IS_QLA24XX_TYPE(ha) && !IS_QLA25XX(ha) && !IS_QLA8XXX_TYPE(ha))
 		return QLA_SUCCESS;
 
 	ret = qla2xxx_find_flt_start(ha, &flt_addr);
@@ -870,6 +939,7 @@ qla2xxx_get_flash_info(scsi_qla_host_t *ha)
 
 	qla2xxx_get_flt_info(ha, flt_addr);
 	qla2xxx_get_fdt_info(ha);
+	qla2xxx_get_idc_param(ha);
 
 	return QLA_SUCCESS;
 }
@@ -884,7 +954,7 @@ qla2xxx_flash_npiv_conf(scsi_qla_host_t *ha)
 	struct qla_npiv_header hdr;
 	struct qla_npiv_entry *entry;
 
-	if (!IS_QLA24XX_TYPE(ha) && !IS_QLA25XX(ha) && !IS_QLA81XX(ha))
+	if (!IS_QLA24XX_TYPE(ha) && !IS_QLA25XX(ha) && !IS_QLA8XXX_TYPE(ha))
 		return;
 
 	ha->isp_ops->read_optrom(ha, (uint8_t *)&hdr,
@@ -1112,7 +1182,7 @@ qla24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
 
 		/* Do sector protect. */
 		if (ha->fdt_unprotect_sec_cmd &&
-		    ((faddr & rest_addr) == rest_addr))
+			((faddr & rest_addr) == rest_addr))
 			qla24xx_write_flash_dword(ha,
 			    ha->fdt_protect_sec_cmd,
 			    (fdata & 0xff00) | ((fdata << 16) &
@@ -1470,6 +1540,9 @@ qla24xx_beacon_blink(struct scsi_qla_host *ha)
 	unsigned long flags;
 	struct device_reg_24xx __iomem *reg = &ha->iobase->isp24;
 
+	if (IS_QLA82XX(ha))
+		return;
+
 	/* Save the Original GPIOD. */
 	spin_lock_irqsave(&ha->hardware_lock, flags);
 	gpio_data = RD_REG_DWORD(&reg->gpiod);
@@ -1501,6 +1574,9 @@ qla24xx_beacon_on(struct scsi_qla_host *ha)
 	uint32_t gpio_data;
 	unsigned long flags;
 	struct device_reg_24xx __iomem *reg = &ha->iobase->isp24;
+
+	if (IS_QLA82XX(ha))
+		return QLA_SUCCESS;
 
 	if (ha->beacon_blink_led == 0) {
 		/* Enable firmware for update */
@@ -1542,6 +1618,9 @@ qla24xx_beacon_off(struct scsi_qla_host *ha)
 	uint32_t gpio_data;
 	unsigned long flags;
 	struct device_reg_24xx __iomem *reg = &ha->iobase->isp24;
+
+	if (IS_QLA82XX(ha))
+		return QLA_SUCCESS;
 
 	ha->beacon_blink_led = 0;
 	ha->beacon_color_state = QLA_LED_ALL_ON;
@@ -2318,6 +2397,167 @@ slow_read:
     return qla24xx_read_optrom_data(ha, buf, offset, length);
 }
 
+uint32_t *
+qla82xx_read_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
+    uint32_t length)
+{
+	uint32_t i;
+	uint32_t val;
+
+	/* Dword reads to flash. */
+	for (i = 0; i < length/4; i++, faddr += 4) {
+		if (qla82xx_rom_fast_read(ha, faddr, &val)) {
+			qla_printk(KERN_WARNING, ha,
+			    "Do ROM fast read failed\n");
+			goto done_read;
+		}
+		dwptr[i] = __constant_cpu_to_le32(val);
+	}
+
+done_read:
+	return dwptr;
+}
+
+/*
+Address and length are byte address
+*/
+uint8_t *
+qla82xx_read_optrom_data(struct scsi_qla_host *ha, uint8_t *buf,
+    uint32_t offset, uint32_t length)
+{
+	scsi_block_requests(ha->host);
+
+	qla82xx_read_flash_data(ha, (uint32_t *)buf, offset, length);
+
+	scsi_unblock_requests(ha->host);
+
+	return buf;
+}
+
+static int
+qla82xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
+    uint32_t dwords)
+{
+	int ret;
+	uint32_t liter;
+	uint32_t sec_mask, rest_addr;
+	dma_addr_t optrom_dma;
+	void *optrom = NULL;
+	int page_mode = 0;
+
+	ret = -1;
+
+	/* Prepare burst-capable write on supported ISPs. */
+	if (page_mode && !(faddr & 0xfff) &&
+	    dwords > OPTROM_BURST_DWORDS) {
+		optrom = dma_alloc_coherent(&ha->pdev->dev, OPTROM_BURST_SIZE,
+		    &optrom_dma, GFP_KERNEL);
+		if (!optrom) {
+			qla_printk(KERN_DEBUG, ha,
+			    "Unable to allocate memory for optrom burst write "
+			    "(%x KB).\n", OPTROM_BURST_SIZE / 1024);
+		}
+	}
+
+	rest_addr = ha->fdt_block_size - 1;
+	sec_mask = ~rest_addr;
+
+	ret = qla82xx_unprotect_flash(ha);
+	if (ret) {
+		qla_printk(KERN_WARNING, ha,
+		    "Unable to unprotect flash for update.\n");
+		goto write_done;
+	}
+
+	for (liter = 0; liter < dwords; liter++, faddr += 4, dwptr++) {
+		/* Are we at the beginning of a sector? */
+		if ((faddr & rest_addr) == 0) {
+
+			ret = qla82xx_erase_sector(ha, faddr);
+			if (ret) {
+				DEBUG9(qla_printk(KERN_ERR, ha,
+				    "Unable to erase sector: "
+				    "address=%x.\n", faddr));
+				break;
+			}
+		}
+
+		/* Go with burst-write. */
+		if (optrom && (liter + OPTROM_BURST_DWORDS) <= dwords) {
+			/* Copy data to DMA'ble buffer. */
+			memcpy(optrom, dwptr, OPTROM_BURST_SIZE);
+
+			ret = qla2x00_load_ram(ha, optrom_dma,
+			    flash_data_to_access_addr(ha, faddr),
+			    OPTROM_BURST_DWORDS);
+			if (ret != QLA_SUCCESS) {
+				qla_printk(KERN_WARNING, ha,
+				    "Unable to burst-write optrom segment "
+				    "(%x/%x/%llx).\n", ret,
+				    flash_data_to_access_addr(ha, faddr),
+				    (unsigned long long)optrom_dma);
+				qla_printk(KERN_WARNING, ha,
+				    "Reverting to slow-write.\n");
+
+				dma_free_coherent(&ha->pdev->dev,
+				    OPTROM_BURST_SIZE, optrom, optrom_dma);
+				optrom = NULL;
+			} else {
+				liter += OPTROM_BURST_DWORDS - 1;
+				faddr += OPTROM_BURST_DWORDS - 1;
+				dwptr += OPTROM_BURST_DWORDS - 1;
+				continue;
+			}
+		}
+
+		ret = qla82xx_write_flash_dword(ha, faddr,
+		    cpu_to_le32(*dwptr));
+		if (ret) {
+			DEBUG9(printk(KERN_DEBUG "%s(%ld) Unable to program"
+			    "flash address=%x data=%x.\n", __func__,
+			    ha->host_no, faddr, *dwptr));
+			break;
+		}
+
+	}
+
+	ret = qla82xx_protect_flash(ha);
+	if (ret)
+		qla_printk(KERN_WARNING, ha,
+		    "Unable to protect flash after update.\n");
+write_done:
+	if (optrom)
+		dma_free_coherent(&ha->pdev->dev,
+		    OPTROM_BURST_SIZE, optrom, optrom_dma);
+
+	return ret;
+}
+
+
+int
+qla82xx_write_optrom_data(struct scsi_qla_host *ha, uint8_t *buf,
+    uint32_t offset, uint32_t length)
+{
+	int rval;
+
+	/* Suspend HBA. */
+	scsi_block_requests(ha->host);
+
+	/* Go with write. */
+	rval = qla82xx_write_flash_data(ha, (uint32_t *)buf, offset,
+	    length >> 2);
+
+	scsi_unblock_requests(ha->host);
+
+	/* Convert return ISP82xx to generic */
+	if (rval)
+		rval = QLA_FUNCTION_FAILED;
+	else
+		rval = QLA_SUCCESS;
+
+	return rval;
+}
+
 /**
  * qla2x00_get_fcode_version() - Determine an FCODE image's version.
  * @ha: HA context
@@ -2687,3 +2927,48 @@ qla2xxx_get_vpd_field(scsi_qla_host_t *ha, char *key, char *str, size_t size)
         return 0;
 }
 
+int
+qla24xx_read_fcp_prio_cfg(scsi_qla_host_t *ha)
+{
+	int len, max_len;
+	uint32_t fcp_prio_addr;
+
+	if (!ha->fcp_prio_cfg) {
+		ha->fcp_prio_cfg = vmalloc(FCP_PRIO_CFG_SIZE);
+		if (!ha->fcp_prio_cfg) {
+			qla_printk(KERN_WARNING, ha,
+			    "Unable to allocate memory for fcp priority data "
+			    "(%x).\n", FCP_PRIO_CFG_SIZE);
+			return QLA_FUNCTION_FAILED;
+		}
+	}
+	memset(ha->fcp_prio_cfg, 0, FCP_PRIO_CFG_SIZE);
+
+	fcp_prio_addr = ha->flt_region_fcp_prio;
+
+	/* first read the fcp priority data header from flash */
+	ha->isp_ops->read_optrom(ha, (uint8_t *)ha->fcp_prio_cfg,
+	    fcp_prio_addr << 2, FCP_PRIO_CFG_HDR_SIZE);
+
+	if (!qla24xx_fcp_prio_cfg_valid(ha->fcp_prio_cfg, 0))
+		goto fail;
+
+	/* read remaining FCP CMD config data from flash */
+	fcp_prio_addr += (FCP_PRIO_CFG_HDR_SIZE >> 2);
+	len = ha->fcp_prio_cfg->num_entries * FCP_PRIO_CFG_ENTRY_SIZE;
+	max_len = FCP_PRIO_CFG_SIZE - FCP_PRIO_CFG_HDR_SIZE;
+
+	ha->isp_ops->read_optrom(ha, (uint8_t *)&ha->fcp_prio_cfg->entry[0],
+	    fcp_prio_addr << 2, (len < max_len ? len : max_len));
+
+	/* revalidate the entire FCP priority config data, including entries */
+	if (!qla24xx_fcp_prio_cfg_valid(ha->fcp_prio_cfg, 1))
+		goto fail;
+
+	ha->flags.fcp_prio_enabled = 1;
+	return QLA_SUCCESS;
+fail:
+	vfree(ha->fcp_prio_cfg);
+	ha->fcp_prio_cfg = NULL;
+	return QLA_FUNCTION_FAILED;
+}

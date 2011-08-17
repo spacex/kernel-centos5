@@ -11,6 +11,7 @@
 
 #define IO_OK		0
 #define IO_ERROR	1
+#define IO_NEEDS_RETRY	3
 
 #define VENDOR_LEN	8
 #define MODEL_LEN	16
@@ -28,7 +29,8 @@ struct access_method {
 };
 typedef struct _drive_info_struct
 {
- 	__u32   LunID;	
+ 	unsigned char LunID[8];	
+#define CTLR_LUNID "\0\0\0\0\0\0\0\0"
 	int 	usage_count;
 	struct request_queue *queue;
 	sector_t nr_blocks;
@@ -39,18 +41,7 @@ typedef struct _drive_info_struct
 	int	raid_level;	/* set to -1 to indicate that
 			 	 * the drive is not in use/configured
 				 */
-	/*
-	 * Warning: We should be using struct device dev here instead
-	 * of a pointer.  This struct is 616 bytes on an x86 system
-	 * and ctrl_info.dev uses CISS_MAX_LUN (512) drive_info_struct
-	 * elements or 308K each.  Kmalloc cannot allocate that much
-	 * memory so we use a pointer here instead (we really should
-	 * be using pointers to drive_info_structs in
-	 * ctrl_info.dev). Using a pointer here means that we cannot
-	 * use the container_of macro which creates problems with
-	 * sysfs (Noted later in the code).
-	 */
-	struct device *dev;
+	struct device dev;
 	int	busy_configuring;	/* This is set when the drive is being
 				    	 * removed to prevent it from being
 					 * opened or it's queue from being
@@ -62,16 +53,9 @@ typedef struct _drive_info_struct
 	BYTE	uid[16];	/* from inquiry page 0x83
 				 * not neccesarily NULL terminated
 				 */
+	char device_initialized;     /* indicates whether dev is initialized */
 } drive_info_struct;
 
-#ifdef CONFIG_CISS_SCSI_TAPE
-
-struct sendcmd_reject_list {
-	int ncompletions;
-	unsigned long *complete; /* array of NR_CMDS tags */
-};
-
-#endif
 struct ctlr_info 
 {
 	int	ctlr;
@@ -92,6 +76,16 @@ struct ctlr_info
 	int	num_luns;
 	int 	highest_lun;
 	int	usage_count;  /* number of opens all all minor devices */
+	/* Need space for temp sg list
+	 * number of scatter/gathers supported
+	 * number of scatter/gathers in chained block
+	 */
+	struct	scatterlist **scatter_list;
+	int	maxsgentries;
+	int	chainsize;
+	int	max_cmd_sgentries;
+	SGDescriptor_struct **cmd_sg_list;
+
 #	define DOORBELL_INT	0
 #	define PERF_MODE_INT	1
 #	define SIMPLE_MODE_INT	2
@@ -101,10 +95,10 @@ struct ctlr_info
 	unsigned int msi_vector;
 	BYTE	cciss_read;
 	BYTE	cciss_write;
-	int	cciss_sector_size;	
+	int	cciss_max_sectors;	
 
 	// information about each logical volume
-	drive_info_struct drv[CISS_MAX_LUN];
+	drive_info_struct *drv[CISS_MAX_LUN];
 
 	struct access_method access;
 
@@ -135,14 +129,9 @@ struct ctlr_info
 	// Disk structures we need to pass back
 	struct gendisk   *gendisk[CISS_MAX_LUN];
 #ifdef CONFIG_CISS_SCSI_TAPE
-	void *scsi_ctlr; /* ptr to structure containing scsi related stuff */
-	/* list of block side commands the scsi error handling sucked up */
-	/* and saved for later processing */
-	struct sendcmd_reject_list scsi_rejects;
+	struct cciss_scsi_adapter_data_t *scsi_ctlr;
 #endif
 	unsigned char alive;
-	struct completion *rescan_wait;
-	struct task_struct *cciss_scan_thread;
 	struct device dev;
 };
 

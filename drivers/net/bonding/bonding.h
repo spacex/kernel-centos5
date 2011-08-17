@@ -19,11 +19,12 @@
 #include <linux/proc_fs.h>
 #include <linux/if_bonding.h>
 #include <linux/kobject.h>
+#include <linux/cpumask.h>
 #include <linux/in6.h>
 #include "bond_3ad.h"
 #include "bond_alb.h"
 
-#define DRV_VERSION	"3.4.0"
+#define DRV_VERSION	"3.4.0-1"
 #define DRV_RELDATE	"October 7, 2008"
 #define DRV_NAME	"bonding"
 #define DRV_DESCRIPTION	"Ethernet Channel Bonding Driver"
@@ -67,6 +68,8 @@ extern int debug;
 		(((mode) == BOND_MODE_ACTIVEBACKUP) ||	\
 		 ((mode) == BOND_MODE_TLB)          ||	\
 		 ((mode) == BOND_MODE_ALB))
+
+#define TX_QUEUE_OVERRIDE(bond) (bond->mark_steering == true) 
 
 /*
  * Less bad way to call ioctl from within the kernel; this needs to be
@@ -121,6 +124,35 @@ extern int debug;
 #define bond_for_each_slave(bond, pos, cnt)	\
 		bond_for_each_slave_from(bond, pos, cnt, (bond)->first_slave)
 
+
+#ifdef CONFIG_NET_POLL_CONTROLLER
+extern cpumask_t netpoll_block_tx;
+
+static inline void block_netpoll_tx(void)
+{
+	preempt_disable();
+	BUG_ON(cpu_test_and_set(smp_processor_id(),
+					netpoll_block_tx));
+}
+
+static inline void unblock_netpoll_tx(void)
+{
+	cpu_clear(smp_processor_id(),
+		  netpoll_block_tx);
+	preempt_enable();
+}
+
+static inline int is_netpoll_tx_blocked(struct net_device *dev)
+{
+	if (unlikely(dev->priv_flags & IFF_IN_NETPOLL))
+		return cpu_isset(smp_processor_id(), netpoll_block_tx);
+	return 0;
+}
+#else
+#define block_netpoll_tx()
+#define unblock_netpoll_tx()
+#define is_netpoll_tx_blocked(dev)
+#endif
 
 struct bond_params {
 	int mode;
@@ -203,6 +235,7 @@ struct bonding {
 	struct   slave *current_arp_slave;
 	struct   slave *primary_slave;
 	bool     force_primary;
+	bool     mark_steering;
 	s32      slave_cnt; /* never change this value outside the attach/detach wrappers */
 	rwlock_t lock;
 	rwlock_t curr_slave_lock;

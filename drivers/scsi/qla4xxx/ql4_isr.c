@@ -1,6 +1,6 @@
 /*
  * QLogic iSCSI HBA Driver
- * Copyright (c)  2003-2006 QLogic Corporation
+ * Copyright (c)  2003-2010 QLogic Corporation
  *
  * See LICENSE.qla4xxx for copyright and licensing details.
  */
@@ -10,14 +10,15 @@
 #include "ql4_glbl.h"
 #include "ql4_dbg.h"
 #include "ql4_inline.h"
+#include <scsi/iscsi_proto.h>
 
 /**
- * qla4xxx_copy_sense - copy sense data	into cmd sense buffer
+ * qla4xxx_check_and_copy_sense - copy sense data into cmd sense buffer
  * @ha: Pointer to host adapter structure.
  * @sts_entry: Pointer to status entry structure.
  * @srb: Pointer to srb structure.
  **/
-static void qla4xxx_copy_sense(struct scsi_qla_host *ha,
+static void qla4xxx_check_and_copy_sense(struct scsi_qla_host *ha,
                                struct status_entry *sts_entry,
                                struct srb *srb)
 {
@@ -59,6 +60,34 @@ static void qla4xxx_copy_sense(struct scsi_qla_host *ha,
 	else
 		ha->status_srb = NULL;
 
+	if ((srb->flags & SRB_SCSI_PASSTHRU))
+		return;
+
+	/* check for vaild sense data */
+	if ((sts_entry->senseData[0] & 0x70) != 0x70)
+		return;
+
+	switch (sts_entry->senseData[2] & 0x0f) {
+	case UNIT_ATTENTION:
+		if (sts_entry->senseData[12] == 0x3F &&
+			sts_entry->senseData[13] == 0x0E) {
+			struct ddb_entry *ddb_entry;
+
+			ddb_entry = qla4xxx_lookup_ddb_by_os_index(ha,
+				cmd->device->id);
+			if (ddb_entry) {
+				dev_info(&ha->pdev->dev, "%s: ddb[%d] os[%d] "
+					"schedule dynamic lun scan\n",
+					__func__, ddb_entry->fw_ddb_index,
+					ddb_entry->os_target_id);
+
+				set_bit(DF_DYNAMIC_LUN_SCAN_NEEDED,
+					&ddb_entry->flags);
+				set_bit(DPC_DYNAMIC_LUN_SCAN, &ha->dpc_flags);
+			}
+		}
+		break;
+	}
 }
 
 /**
@@ -97,7 +126,7 @@ qla4xxx_status_cont_entry(struct scsi_qla_host *ha,
 
 	/* Place command on done queue. */
 	if (srb->req_sense_len == 0) {
-		qla4xxx_srb_compl(ha, srb);
+		kref_put(&srb->srb_ref, qla4xxx_srb_compl);
 		ha->status_srb = NULL;
 	}
 }
@@ -163,7 +192,7 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 			break;
 
 		/* Copy Sense Data into sense buffer. */
-		qla4xxx_copy_sense(ha, sts_entry, srb);
+		qla4xxx_check_and_copy_sense(ha, sts_entry, srb);
 		break;
 
 	case SCS_INCOMPLETE:
@@ -189,9 +218,11 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 		break;
 
 	case SCS_TIMEOUT:
-		DEBUG2(printk(KERN_INFO "scsi%ld:%d:%d:%d: Timeout\n",
+		DEBUG2(printk(KERN_INFO "scsi%ld:%d:%d:%d: Timeout, "
+				"sts_handle=0x%x\n",
 			      ha->host_no, cmd->device->channel,
-			      cmd->device->id, cmd->device->lun));
+			      cmd->device->id, cmd->device->lun,
+				  sts_entry->handle));
 
 		cmd->result = DID_BUS_BUSY << 16;
 
@@ -230,7 +261,7 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 				break;
 
 			/* Copy Sense Data into sense buffer. */
-			qla4xxx_copy_sense(ha, sts_entry, srb);
+			qla4xxx_check_and_copy_sense(ha, sts_entry, srb);
 
 			DEBUG2(printk("scsi%ld:%d:%d:%d: %s: sense key = %x, "
 				      "ASC/ASCQ = %02x/%02x\n", ha->host_no,
@@ -287,9 +318,10 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 		 * state change AEN soon.
 		 */
 		DEBUG2(printk(KERN_INFO "scsi%ld:%d:%d:%d: DEVICE_UNAVAILABLE "
-			      "or DEVICE_LOGGED_OUT\n",
+			      "or DEVICE_LOGGED_OUT, sts_handle=0x%x\n",
 			      ha->host_no, cmd->device->channel,
-			      cmd->device->id, cmd->device->lun));
+			      cmd->device->id, cmd->device->lun,
+				  sts_entry->handle));
 
 		if (atomic_read(&ddb_entry->state) == DDB_STATE_ONLINE)
 			qla4xxx_mark_device_missing(ha, ddb_entry);
@@ -322,7 +354,7 @@ status_entry_exit:
 	/* complete the request, if not waiting for status_continuation pkt */
 	srb->cc_stat = sts_entry->completionStatus;
 	if (ha->status_srb == NULL)
-		qla4xxx_srb_compl(ha, srb);
+		kref_put(&srb->srb_ref, qla4xxx_srb_compl);
 }
 
 /**
@@ -332,16 +364,17 @@ status_entry_exit:
  * This routine process response queue completions in interrupt context.
  * Hardware_lock locked upon entry
  **/
-static void qla4xxx_process_response_queue(struct scsi_qla_host * ha)
+void qla4xxx_process_response_queue(struct scsi_qla_host *ha)
 {
 	uint32_t count = 0;
 	struct srb *srb = NULL;
 	struct status_entry *sts_entry;
+	struct async_pdu_iocb *apdu;
+	struct iscsi_hdr *pdu_hdr;
+	struct async_msg_pdu_iocb *apdu_iocb;
 
 	/* Process all responses from response queue */
-	while ((ha->response_in =
-		(uint16_t)le32_to_cpu(ha->shadow_regs->rsp_q_in)) !=
-	       ha->response_out) {
+	while ((ha->response_ptr->signature != RESPONSE_PROCESSED)) {
 		sts_entry = (struct status_entry *) ha->response_ptr;
 		count++;
 
@@ -362,6 +395,34 @@ static void qla4xxx_process_response_queue(struct scsi_qla_host * ha)
 
 		case ET_PASSTHRU_STATUS:
 			break;
+
+		case ET_ASYNC_PDU:
+			apdu = (struct async_pdu_iocb *)sts_entry;
+			if (apdu->status != ASYNC_PDU_IOCB_STS_OK)
+				break;
+
+			pdu_hdr = (struct iscsi_hdr *)apdu->iscsi_pdu_hdr;
+			if (pdu_hdr->hlength || pdu_hdr->dlength[0] ||
+				pdu_hdr->dlength[1] || pdu_hdr->dlength[2]){
+				apdu_iocb = kmalloc(sizeof(struct async_msg_pdu_iocb),
+							GFP_ATOMIC);
+				if (apdu_iocb) {
+					memcpy(apdu_iocb->iocb, apdu,
+						sizeof(struct async_pdu_iocb));
+					list_add_tail(&apdu_iocb->list,
+							&ha->async_iocb_list);
+					DEBUG2(printk("scsi%ld:"
+						"%s: schedule async msg pdu\n",
+						ha->host_no, __func__));
+					set_bit(DPC_ASYNC_MSG_PDU,
+							&ha->dpc_flags);
+				} else {
+					DEBUG2(printk("scsi%ld:"
+							"%s: unable to alloc ASYNC PDU\n",
+							ha->host_no, __func__));
+				}
+			}
+		break;
 
 		case ET_STATUS_CONTINUATION:
 			qla4xxx_status_cont_entry(ha,
@@ -385,7 +446,7 @@ static void qla4xxx_process_response_queue(struct scsi_qla_host * ha)
 			/* ETRY normally by sending it back with
 			 * DID_BUS_BUSY */
 			srb->cmd->result = DID_BUS_BUSY << 16;
-			qla4xxx_srb_compl(ha, srb);
+			kref_put(&srb->srb_ref, qla4xxx_srb_compl);
 			break;
 
 		case ET_CONTINUE:
@@ -405,14 +466,15 @@ static void qla4xxx_process_response_queue(struct scsi_qla_host * ha)
 				      sts_entry->hdr.entryType));
 			goto exit_prq_error;
 		}
+
+		((struct response_q *)sts_entry)->signature = RESPONSE_PROCESSED;
+		wmb();
 	}
 
 	/*
-	 * Done with responses, update the ISP For QLA4010, this also clears
-	 * the interrupt.
+	 * Tell ISP we're done with response(s). This also clears the interrupt.
 	 */
-	writel(ha->response_out, &ha->reg->rsp_q_out);
-	readl(&ha->reg->rsp_q_out);
+	ha->isp_ops->complete_iocb(ha);
 
 	return;
 
@@ -422,9 +484,7 @@ exit_prq_invalid_handle:
 		      sts_entry->completionStatus));
 
 exit_prq_error:
-	writel(ha->response_out, &ha->reg->rsp_q_out);
-	readl(&ha->reg->rsp_q_out);
-
+	ha->isp_ops->complete_iocb(ha);
 	set_bit(DPC_RESET_HA, &ha->dpc_flags);
 }
 
@@ -436,11 +496,11 @@ exit_prq_error:
  * This routine decodes the mailbox status during the ISR.
  * Hardware_lock locked upon entry. runs in interrupt context.
  **/
-static void qla4xxx_isr_decode_mailbox(struct scsi_qla_host * ha,
+void qla4xxx_isr_decode_mailbox(struct scsi_qla_host *ha,
 				       uint32_t mbox_status)
 {
 	int i;
-	uint32_t mbox_stat2, mbox_stat3;
+	uint32_t mbox_sts[MBOX_AEN_REG_COUNT];
 
 	if ((mbox_status == MBOX_STS_BUSY) ||
 	    (mbox_status == MBOX_STS_INTERMEDIATE_COMPLETION) ||
@@ -452,24 +512,35 @@ static void qla4xxx_isr_decode_mailbox(struct scsi_qla_host * ha,
 			 * Copy all mailbox registers to a temporary
 			 * location and set mailbox command done flag
 			 */
-			for (i = 1; i < ha->mbox_status_count; i++)
-				ha->mbox_status[i] =
-					readl(&ha->reg->mailbox[i]);
+			for (i = 0; i < ha->mbox_status_count; i++)
+				ha->mbox_status[i] = is_qla8022(ha)
+					? readl(&ha->qla4_8xxx_reg->mailbox_out[i])
+					: readl(&ha->reg->mailbox[i]);
 
 			set_bit(AF_MBOX_COMMAND_DONE, &ha->flags);
+
+			if (test_bit(AF_MBOX_COMMAND_NOPOLL, &ha->flags))
+				complete(&ha->mbx_intr_comp);
 		}
 	} else if (mbox_status >> 12 == MBOX_ASYNC_EVENT_STATUS) {
+		for (i = 0; i < MBOX_AEN_REG_COUNT; i++)
+			mbox_sts[i] = is_qla8022(ha)
+				? readl(&ha->qla4_8xxx_reg->mailbox_out[i])
+				: readl(&ha->reg->mailbox[i]);
 		/* Immediately process the AENs that don't require much work.
 		 * Only queue the database_changed AENs */
 		if (ha->aen_log.count < MAX_AEN_ENTRIES) {
 			for (i = 0; i < MBOX_AEN_REG_COUNT; i++)
 				ha->aen_log.entry[ha->aen_log.count].mbox_sts[i] =
-					readl(&ha->reg->mailbox[i]);
+					mbox_sts[i];
 			ha->aen_log.count++;
 		}
 		switch (mbox_status) {
 		case MBOX_ASTS_SYSTEM_ERROR:
 			/* Log Mailbox registers */
+			printk(KERN_INFO "%s: System Err\n", __func__);
+			qla4xxx_dump_registers(ha);
+
 			if (ql4xdontresethba) {
 				DEBUG2(printk("%s:Dont Reset HBA\n",
 					      __func__));
@@ -490,15 +561,19 @@ static void qla4xxx_isr_decode_mailbox(struct scsi_qla_host * ha,
 			break;
 
 		case MBOX_ASTS_LINK_UP:
-			DEBUG2(printk("scsi%ld: AEN %04x Adapter LINK UP\n",
-				      ha->host_no, mbox_status));
 			set_bit(AF_LINK_UP, &ha->flags);
+			if (test_bit(AF_INIT_DONE, &ha->flags))
+				set_bit(DPC_LINK_CHANGED, &ha->dpc_flags);
+			DEBUG2(printk("scsi%ld: AEN %04x Adapter LINK UP\n",
+					ha->host_no, mbox_status));
 			break;
 
 		case MBOX_ASTS_LINK_DOWN:
-			DEBUG2(printk("scsi%ld: AEN %04x Adapter LINK DOWN\n",
-				      ha->host_no, mbox_status));
 			clear_bit(AF_LINK_UP, &ha->flags);
+			if (test_bit(AF_INIT_DONE, &ha->flags))
+				set_bit(DPC_LINK_CHANGED, &ha->dpc_flags);
+			DEBUG2(printk("scsi%ld: AEN %04x Adapter LINK DOWN\n",
+					ha->host_no, mbox_status));
 			break;
 
 		case MBOX_ASTS_HEARTBEAT:
@@ -524,34 +599,35 @@ static void qla4xxx_isr_decode_mailbox(struct scsi_qla_host * ha,
 			break;
 
 		case MBOX_ASTS_IP_ADDR_STATE_CHANGED:
-			mbox_stat2 = readl(&ha->reg->mailbox[2]);
-			mbox_stat3 = readl(&ha->reg->mailbox[3]);
+			printk("scsi%ld: AEN %04x, mbox_sts[2]=%04x, mbox_sts[3]=%04x\n",
+					ha->host_no, mbox_sts[0], mbox_sts[2], mbox_sts[3]);
 
-			if ((mbox_stat3 == 5) && (mbox_stat2 == 3))
+			/* mbox_sts[2] = Old ACB state
+			 * mbox_sts[3] = new ACB state */
+			if ((mbox_sts[3] == ACB_STATE_VALID) &&
+			    ((mbox_sts[2] == ACB_STATE_TENTATIVE) ||
+			    (mbox_sts[2] == ACB_STATE_ACQUIRING)))
 				set_bit(DPC_GET_DHCP_IP_ADDR, &ha->dpc_flags);
-			else if ((mbox_stat3 == 2) && (mbox_stat2 == 5))
+			else if ((mbox_sts[3] == 2) && (mbox_sts[2] == 5))
 				set_bit(DPC_RESET_HA, &ha->dpc_flags);
 			break;
 
-		case MBOX_ASTS_MAC_ADDRESS_CHANGED:
 		case MBOX_ASTS_DNS:
 			/* No action */
 			DEBUG2(printk(KERN_INFO "scsi%ld: AEN %04x, "
 				      "mbox_sts[1]=%04x, mbox_sts[2]=%04x\n",
-				      ha->host_no, mbox_status,
-				      readl(&ha->reg->mailbox[1]),
-				      readl(&ha->reg->mailbox[2])));
+				      ha->host_no, mbox_sts[0],
+				      mbox_sts[1], mbox_sts[2]));
 			break;
 
+		case MBOX_ASTS_MAC_ADDRESS_CHANGED:
 		case MBOX_ASTS_SELF_TEST_FAILED:
 		case MBOX_ASTS_LOGIN_FAILED:
 			/* No action */
 			DEBUG2(printk("scsi%ld: AEN %04x, mbox_sts[1]=%04x, "
 				      "mbox_sts[2]=%04x, mbox_sts[3]=%04x\n",
-				      ha->host_no, mbox_status,
-				      readl(&ha->reg->mailbox[1]),
-				      readl(&ha->reg->mailbox[2]),
-				      readl(&ha->reg->mailbox[3])));
+				      ha->host_no, mbox_sts[0],
+				      mbox_sts[1], mbox_sts[2], mbox_sts[3]));
 			break;
 
 		case MBOX_ASTS_DATABASE_CHANGED:
@@ -562,21 +638,16 @@ static void qla4xxx_isr_decode_mailbox(struct scsi_qla_host * ha,
 				/* decrement available counter */
 				ha->aen_q_count--;
 
-				for (i = 1; i < MBOX_AEN_REG_COUNT; i++)
+				for (i = 0; i < MBOX_AEN_REG_COUNT; i++)
 					ha->aen_q[ha->aen_in].mbox_sts[i] =
-						readl(&ha->reg->mailbox[i]);
-
-				ha->aen_q[ha->aen_in].mbox_sts[0] = mbox_status;
+							mbox_sts[i];
 
 				/* print debug message */
 				DEBUG2(printk("scsi%ld: AEN[%d] %04x queued"
 					      " mb1:0x%x mb2:0x%x mb3:0x%x mb4:0x%x\n",
-					      ha->host_no, ha->aen_in,
-					      mbox_status,
-					      ha->aen_q[ha->aen_in].mbox_sts[1],
-					      ha->aen_q[ha->aen_in].mbox_sts[2],
-					      ha->aen_q[ha->aen_in].mbox_sts[3],
-					      ha->aen_q[ha->aen_in].  mbox_sts[4]));
+							ha->host_no, ha->aen_in, mbox_sts[0],
+							mbox_sts[1], mbox_sts[2], mbox_sts[3],
+							mbox_sts[4]));
 				/* advance pointer */
 				ha->aen_in++;
 				if (ha->aen_in == MAX_AEN_ENTRIES)
@@ -588,34 +659,69 @@ static void qla4xxx_isr_decode_mailbox(struct scsi_qla_host * ha,
 				DEBUG2(printk("scsi%ld: %s: aen %04x, queue "
 					      "overflowed!  AEN LOST!!\n",
 					      ha->host_no, __func__,
-					      mbox_status));
+					      mbox_sts[0]));
 
 				DEBUG2(printk("scsi%ld: DUMP AEN QUEUE\n",
 					      ha->host_no));
 
 				for (i = 0; i < MAX_AEN_ENTRIES; i++) {
 					DEBUG2(printk("AEN[%d] %04x %04x %04x "
-						      "%04x\n", i,
-						      ha->aen_q[i].mbox_sts[0],
-						      ha->aen_q[i].mbox_sts[1],
-						      ha->aen_q[i].mbox_sts[2],
-						      ha->aen_q[i].mbox_sts[3]));
+							"%04x\n", i, mbox_sts[0],
+							mbox_sts[1], mbox_sts[2],
+							mbox_sts[3]));
 				}
 			}
+			break;
+
+		case MBOX_ASTS_TXSCVR_INSERTED:
+			DEBUG2(printk(KERN_WARNING
+				"scsi%ld: AEN %04x Transceiver"
+				" inserted\n", ha->host_no, mbox_sts[0]));
+			break;
+
+		case MBOX_ASTS_TXSCVR_REMOVED:
+			DEBUG2(printk(KERN_WARNING
+				"scsi%ld: AEN %04x Transceiver"
+				" removed\n", ha->host_no, mbox_sts[0]));
 			break;
 
 		default:
 			DEBUG2(printk(KERN_WARNING
 				      "scsi%ld: AEN %04x UNKNOWN\n",
-				      ha->host_no, mbox_status));
+				      ha->host_no, mbox_sts[0]));
 			break;
 		}
 	} else {
 		DEBUG2(printk("scsi%ld: Unknown mailbox status %08X\n",
 			      ha->host_no, mbox_status));
 
-		ha->mbox_status[0] = mbox_status;
+		ha->mbox_status[0] = mbox_sts[0];
 	}
+}
+
+/**
+ * qla4_8xxx_interrupt_service_routine - isr
+ * @ha: pointer to host adapter structure.
+ *
+ * This is the main interrupt service routine.
+ * hardware_lock locked upon entry. runs in interrupt context.
+ **/
+void qla4_8xxx_interrupt_service_routine(struct scsi_qla_host *ha,
+					uint32_t intr_status)
+{
+	/* Process response queue interrupt. */
+	if (intr_status & HSRX_RISC_IOCB_INT)  {
+		qla4xxx_process_response_queue(ha);
+	}
+
+	/* Process mailbox/asynch event interrupt.*/
+	if (intr_status & HSRX_RISC_MB_INT) {
+		qla4xxx_isr_decode_mailbox(ha, readl(&ha->qla4_8xxx_reg->mailbox_out[0]));
+	}
+
+	/* clear the interrupt */
+	writel(0, &ha->qla4_8xxx_reg->host_int);
+	readl(&ha->qla4_8xxx_reg->host_int);
 }
 
 /**
@@ -632,16 +738,38 @@ void qla4xxx_interrupt_service_routine(struct scsi_qla_host * ha,
 	if (intr_status & CSR_SCSI_COMPLETION_INTR)
 		qla4xxx_process_response_queue(ha);
 
-	/* Process mailbox/asynch event	 interrupt.*/
+	/* Process mailbox/asynch event interrupt.*/
 	if (intr_status & CSR_SCSI_PROCESSOR_INTR) {
 		qla4xxx_isr_decode_mailbox(ha,
-					   readl(&ha->reg->mailbox[0]));
+			readl(&ha->reg->mailbox[0]));
 
 		/* Clear Mailbox Interrupt */
 		writel(set_rmask(CSR_SCSI_PROCESSOR_INTR),
 		       &ha->reg->ctrl_status);
 		readl(&ha->reg->ctrl_status);
 	}
+}
+
+/**
+ * qla4_8xxx_spurious_interrupt - processes spurious interrupt
+ * @ha: pointer to host adapter structure.
+ * @reqs_count: .
+ *
+ **/
+static void qla4_8xxx_spurious_interrupt(struct scsi_qla_host *ha,
+				       uint8_t reqs_count)
+{
+	if (reqs_count)
+		return;
+
+	DEBUG2(printk(KERN_INFO"Spurious Interrupt\n"));
+	if (is_qla8022(ha)) {
+		writel(0, &ha->qla4_8xxx_reg->host_int);
+		if (test_bit(AF_INTx_ENABLED, &ha->flags))
+			qla4_8xxx_wr_32(ha, ha->nx_legacy_intr.tgt_mask_reg, 0xfbff);
+	}
+	ha->spurious_int_count++;
+
 }
 
 /**
@@ -675,7 +803,7 @@ irqreturn_t qla4xxx_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 		/*
 		 * Read interrupt status
 		 */
-		if (le32_to_cpu(ha->shadow_regs->rsp_q_in) !=
+		if (ha->isp_ops->rd_shdw_rsp_q_in(ha) !=
 		    ha->response_out)
 			intr_status = CSR_SCSI_COMPLETION_INTR;
 		else
@@ -725,22 +853,182 @@ irqreturn_t qla4xxx_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 			       &ha->reg->ctrl_status);
 			readl(&ha->reg->ctrl_status);
 
-			if (!ql4_mod_unload)
+			if (!test_bit(AF_HBA_GOING_AWAY, &ha->flags))
 				set_bit(DPC_RESET_HA_INTR, &ha->dpc_flags);
 
 			break;
 		} else if (intr_status & INTR_PENDING) {
-			qla4xxx_interrupt_service_routine(ha, intr_status);
+			ha->isp_ops->interrupt_service_routine(ha, intr_status);
 			ha->total_io_count++;
 			if (++reqs_count == MAX_REQS_SERVICED_PER_INTR)
 				break;
-
-			intr_status = 0;
 		}
 	}
 
 	spin_unlock_irqrestore(&ha->hardware_lock, flags);
+	return IRQ_HANDLED;
+}
 
+/**
+ * qla4_8xxx_intr_handler - hardware interrupt handler.
+ * @irq: Unused
+ * @dev_id: Pointer to host adapter structure
+ **/
+irqreturn_t qla4_8xxx_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
+{
+	struct scsi_qla_host *ha;
+	uint32_t intr_status = 0;
+	uint32_t status;
+	unsigned long flags = 0;
+	uint8_t reqs_count = 0;
+
+	ha = (struct scsi_qla_host *) dev_id;
+	if (!ha) {
+		DEBUG2(printk(KERN_INFO
+			"qla82xx: Interrupt with NULL host ptr\n"));
+		return IRQ_NONE;
+	}
+
+	if (unlikely(pci_channel_offline(ha->pdev)))
+		return IRQ_HANDLED;
+
+	ha->isr_count++;
+	status = qla4_8xxx_rd_32(ha, ISR_INT_VECTOR);
+	if (!(status & ha->nx_legacy_intr.int_vec_bit)) {
+		DEBUG2(printk(KERN_INFO"%s legacy Int Vec bit set\n", __func__));
+		return IRQ_NONE;
+	}
+
+	status = qla4_8xxx_rd_32(ha, ISR_INT_STATE_REG);
+	if (!ISR_IS_LEGACY_INTR_TRIGGERED(status)) {
+		DEBUG2(printk("%s legacy Int not triggered\n", __func__));
+		return IRQ_NONE;
+	}
+
+	/* clear the interrupt */
+	qla4_8xxx_wr_32(ha, ha->nx_legacy_intr.tgt_status_reg, 0xffffffff);
+
+	/* read twice to ensure write is flushed */
+	qla4_8xxx_rd_32(ha, ISR_INT_VECTOR);
+	qla4_8xxx_rd_32(ha, ISR_INT_VECTOR);
+
+	spin_lock_irqsave(&ha->hardware_lock, flags);
+	while (1) {
+		if (!(readl(&ha->qla4_8xxx_reg->host_int) & ISRX_82XX_RISC_INT))  {
+			qla4_8xxx_spurious_interrupt(ha, reqs_count);
+			break;
+		}
+		intr_status =  readl(&ha->qla4_8xxx_reg->host_status);
+		if  ((intr_status & (HSRX_RISC_MB_INT | HSRX_RISC_IOCB_INT)) == 0)  {
+			qla4_8xxx_spurious_interrupt(ha, reqs_count);
+			break;
+		}
+
+		ha->isp_ops->interrupt_service_routine(ha, intr_status);
+
+		/* Enable Interrupt */
+		qla4_8xxx_wr_32(ha, ha->nx_legacy_intr.tgt_mask_reg, 0xfbff);
+
+		if (++reqs_count == MAX_REQS_SERVICED_PER_INTR)
+				break;
+	}
+
+	spin_unlock_irqrestore(&ha->hardware_lock, flags);
+
+#ifdef QL_DEBUG_LEVEL_17
+	if (!irq && (test_bit(AF_EEH_BUSY, &ha->flags))) {
+		DEBUG2(printk(KERN_INFO "%s: status %x, intr_status %x\n",
+			__func__, status, intr_status));
+	}
+#endif
+
+	return IRQ_HANDLED;
+}
+
+irqreturn_t
+qla4_8xxx_msi_handler(int irq, void *dev_id, struct pt_regs *regs)
+{
+	struct scsi_qla_host *ha;
+
+	ha = (struct scsi_qla_host *) dev_id;
+	if (!ha) {
+		DEBUG2(printk(KERN_INFO
+			"qla4xxx: MSIX: Interrupt with NULL host ptr\n"));
+		return IRQ_NONE;
+	}
+
+	ha->isr_count++;
+	/* clear the interrupt */
+	qla4_8xxx_wr_32(ha, ha->nx_legacy_intr.tgt_status_reg, 0xffffffff);
+
+	/* read twice to ensure write is flushed */
+	qla4_8xxx_rd_32(ha, ISR_INT_VECTOR);
+	qla4_8xxx_rd_32(ha, ISR_INT_VECTOR);
+
+	return qla4_8xxx_default_intr_handler(irq, dev_id, (struct pt_regs *)ha);
+}
+
+/**
+ * qla4_8xxx_default_intr_handler - hardware interrupt handler.
+ * @irq: Unused
+ * @dev_id: Pointer to host adapter structure
+ *
+ * This interrupt handler is called directly for MSI-X, and
+ * called indirectly for MSI.
+ **/
+irqreturn_t
+qla4_8xxx_default_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
+{
+	struct scsi_qla_host *ha = dev_id;
+	unsigned long	flags;
+	uint32_t intr_status = 0;
+	uint8_t reqs_count = 0;
+
+	spin_lock_irqsave(&ha->hardware_lock, flags);
+	while (1) {
+		if (!(readl(&ha->qla4_8xxx_reg->host_int) & ISRX_82XX_RISC_INT)) {
+			qla4_8xxx_spurious_interrupt(ha, reqs_count);
+			break;
+		}
+
+		intr_status =  readl(&ha->qla4_8xxx_reg->host_status);
+		if  ((intr_status &
+		      (HSRX_RISC_MB_INT | HSRX_RISC_IOCB_INT)) == 0) {
+			qla4_8xxx_spurious_interrupt(ha, reqs_count);
+			break;
+		}
+
+		ha->isp_ops->interrupt_service_routine(ha, intr_status);
+
+		if (++reqs_count == MAX_REQS_SERVICED_PER_INTR)
+			break;
+	}
+
+	ha->isr_count++;
+	spin_unlock_irqrestore(&ha->hardware_lock, flags);
+
+#ifdef QL_DEBUG_LEVEL_17
+	if (!irq && (test_bit(AF_EEH_BUSY, &ha->flags))) {
+		DEBUG2(printk(KERN_INFO "%s: intr_status %x\n",
+			__func__, intr_status));
+	}
+#endif
+
+	return IRQ_HANDLED;
+}
+
+irqreturn_t
+qla4_8xxx_msix_rsp_q(int irq, void *dev_id)
+{
+	struct scsi_qla_host *ha = dev_id;
+	unsigned long flags;
+
+	spin_lock_irqsave(&ha->hardware_lock, flags);
+	qla4xxx_process_response_queue(ha);
+	writel(0, &ha->qla4_8xxx_reg->host_int);
+	spin_unlock_irqrestore(&ha->hardware_lock, flags);
+
+	ha->isr_count++;
 	return IRQ_HANDLED;
 }
 
@@ -755,12 +1043,15 @@ irqreturn_t qla4xxx_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
  *	FLUSH_DDB_CHANGED_AENS	 1
  *	RELOGIN_DDB_CHANGED_AENS 2
  **/
-void qla4xxx_process_aen(struct scsi_qla_host * ha, uint8_t process_aen)
+void qla4xxx_process_aen(struct scsi_qla_host *ha, uint8_t process_aen)
 {
 	uint32_t mbox_sts[MBOX_AEN_REG_COUNT];
 	struct aen *aen;
 	int i;
 	unsigned long flags;
+
+	DEBUG2(dev_info(&ha->pdev->dev, "%s proc_aen 0x%x\n",
+		__func__, process_aen));
 
 	spin_lock_irqsave(&ha->hardware_lock, flags);
 	while (ha->aen_out != ha->aen_in) {
@@ -811,7 +1102,7 @@ void qla4xxx_process_aen(struct scsi_qla_host * ha, uint8_t process_aen)
 					((ddb_entry->default_time2wait +
 					  4) * HZ);
 
-				DEBUG2(printk("scsi%ld: ddb index [%d] initate"
+				DEBUG2(printk("scsi%ld: ddb [%d] initate"
 					      " RELOGIN after %d seconds\n",
 					      ha->host_no,
 					      ddb_entry->fw_ddb_index,
@@ -824,7 +1115,8 @@ void qla4xxx_process_aen(struct scsi_qla_host * ha, uint8_t process_aen)
 				qla4xxx_reinitialize_ddb_list(ha);
 			} else if (mbox_sts[1] == 1) {	/* Specific device. */
 				qla4xxx_process_ddb_changed(ha, mbox_sts[2],
-							    mbox_sts[3]);
+								mbox_sts[3],
+								mbox_sts[4]);
 			}
 			break;
 		}
@@ -833,3 +1125,78 @@ void qla4xxx_process_aen(struct scsi_qla_host * ha, uint8_t process_aen)
 	spin_unlock_irqrestore(&ha->hardware_lock, flags);
 }
 
+int qla4xxx_request_irqs(struct scsi_qla_host *ha)
+{
+	int ret;
+
+	if (!is_qla8022(ha))
+		goto try_intx;
+
+	if (ql4xenablemsix == 2)
+		goto try_msi;
+
+	if (ql4xenablemsix == 0 || ql4xenablemsix != 1)
+		goto try_intx;
+
+	/* Trying MSI-X */
+	ret = qla4_8xxx_enable_msix(ha);
+	if (!ret) {
+		DEBUG2(printk("MSI-X: Enabled (0x%X).\n", ha->revision_id));
+		goto irq_attached;
+	}
+
+	printk(KERN_WARNING"MSI-X: Falling back-to MSI mode -- %d.\n", ret);
+
+try_msi:
+	/* Trying MSI */
+	ret = pci_enable_msi(ha->pdev);
+	if (!ret) {
+		ret = request_irq(ha->pdev->irq, qla4_8xxx_msi_handler,
+		    IRQF_DISABLED, DRIVER_NAME, ha);
+		if (!ret) {
+			DEBUG2(printk(KERN_INFO"MSI: Enabled.\n"));
+			set_bit(AF_MSI_ENABLED, &ha->flags);
+			goto irq_attached;
+		} else {
+			printk(KERN_WARNING"Failed to reserve interrupt %d "
+				"already in use.\n", ha->pdev->irq);
+			pci_disable_msi(ha->pdev);
+		}
+	}
+	printk(KERN_WARNING"MSI: Falling back-to INTx mode -- %d.\n", ret);
+
+try_intx:
+	/* Trying INTx */
+	ret = request_irq(ha->pdev->irq, ha->isp_ops->intr_handler,
+	    IRQF_DISABLED|IRQF_SHARED, DRIVER_NAME, ha);
+	if (!ret) {
+		DEBUG2(printk(KERN_INFO "INTx: Enabled.\n"));
+		set_bit(AF_INTx_ENABLED, &ha->flags);
+		goto irq_attached;
+	} else {
+		printk(KERN_WARNING
+		    "Failed to reserve interrupt %d already in use.\n",
+		    ha->pdev->irq);
+		return ret;
+	}
+
+irq_attached:
+	set_bit(AF_IRQ_ATTACHED, &ha->flags);
+	ha->host->irq = ha->pdev->irq;
+	dev_info(&ha->pdev->dev, "%s: irq %d attached\n",
+	    __func__, ha->pdev->irq);
+	return ret;
+}
+
+void
+qla4xxx_free_irqs(struct scsi_qla_host *ha)
+{
+	if (test_bit(AF_MSIX_ENABLED, &ha->flags))
+			qla4_8xxx_disable_msix(ha);
+	else if (test_and_clear_bit(AF_MSI_ENABLED, &ha->flags)) {
+			free_irq(ha->pdev->irq, ha);
+			pci_disable_msi(ha->pdev);
+	} else if (test_and_clear_bit(AF_INTx_ENABLED, &ha->flags)) {
+			free_irq(ha->pdev->irq, ha);
+	}
+}

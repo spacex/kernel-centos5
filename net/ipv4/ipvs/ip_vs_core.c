@@ -216,6 +216,7 @@ ip_vs_sched_persist(struct ip_vs_service *svc,
 	struct ip_vs_dest *dest;
 	struct ip_vs_conn *ct;
 	__u16  dport;	 /* destination port to forward */
+	__u16 flags;
 	__u32  snet;	 /* source network of the client, after masking */
 
 	/* Mask saddr with the netmask to adjust template granularity */
@@ -346,6 +347,9 @@ ip_vs_sched_persist(struct ip_vs_service *svc,
 		dport = ports[1];
 	}
 
+	flags = (svc->flags & IP_VS_SVC_F_ONEPACKET
+		 && iph->protocol == IPPROTO_UDP)?
+		IP_VS_CONN_F_ONE_PACKET : 0;
 	/*
 	 *    Create a new connection according to the template
 	 */
@@ -353,7 +357,7 @@ ip_vs_sched_persist(struct ip_vs_service *svc,
 			    iph->saddr, ports[0],
 			    iph->daddr, ports[1],
 			    dest->addr, dport,
-			    0,
+			    flags,
 			    dest);
 	if (cp == NULL) {
 		ip_vs_conn_put(ct);
@@ -384,6 +388,7 @@ ip_vs_schedule(struct ip_vs_service *svc, const struct sk_buff *skb)
 	struct iphdr *iph = skb->nh.iph;
 	struct ip_vs_dest *dest;
 	__u16 _ports[2], *pptr;
+	__u16 flags;
 
 	pptr = skb_header_pointer(skb, iph->ihl*4,
 				  sizeof(_ports), _ports);
@@ -413,6 +418,9 @@ ip_vs_schedule(struct ip_vs_service *svc, const struct sk_buff *skb)
 		return NULL;
 	}
 
+	flags = (svc->flags & IP_VS_SVC_F_ONEPACKET
+		 && iph->protocol == IPPROTO_UDP)?
+		IP_VS_CONN_F_ONE_PACKET : 0;
 	/*
 	 *    Create a connection entry.
 	 */
@@ -420,7 +428,7 @@ ip_vs_schedule(struct ip_vs_service *svc, const struct sk_buff *skb)
 			    iph->saddr, pptr[0],
 			    iph->daddr, pptr[1],
 			    dest->addr, dest->port?dest->port:pptr[1],
-			    0,
+			    flags,
 			    dest);
 	if (cp == NULL)
 		return NULL;
@@ -463,6 +471,9 @@ int ip_vs_leave(struct ip_vs_service *svc, struct sk_buff *skb,
 	    && (inet_addr_type(iph->daddr) == RTN_UNICAST)) {
 		int ret, cs;
 		struct ip_vs_conn *cp;
+		__u16 flags = (svc->flags & IP_VS_SVC_F_ONEPACKET &&
+				iph->protocol == IPPROTO_UDP)?
+				IP_VS_CONN_F_ONE_PACKET : 0;
 
 		ip_vs_service_put(svc);
 
@@ -472,7 +483,7 @@ int ip_vs_leave(struct ip_vs_service *svc, struct sk_buff *skb,
 				    iph->saddr, pptr[0],
 				    iph->daddr, pptr[1],
 				    0, 0,
-				    IP_VS_CONN_F_BYPASS,
+				    IP_VS_CONN_F_BYPASS | flags,
 				    NULL);
 		if (cp == NULL)
 			return NF_DROP;

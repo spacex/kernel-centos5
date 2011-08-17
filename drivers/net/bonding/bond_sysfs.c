@@ -1136,6 +1136,7 @@ static ssize_t bonding_store_primary(struct class_device *cd, const char *buf, s
 out:
 	write_unlock_bh(&bond->curr_slave_lock);
 	read_unlock(&bond->lock);
+	unblock_netpoll_tx();
 	rtnl_unlock();
 
 	return count;
@@ -1179,11 +1180,13 @@ static ssize_t bonding_store_primary_reselect(struct class_device *cd,
 	       bond->dev->name, pri_reselect_tbl[new_value].modename,
 	       new_value);
 
+	block_netpoll_tx();
 	read_lock(&bond->lock);
 	write_lock_bh(&bond->curr_slave_lock);
 	bond_select_active_slave(bond);
 	write_unlock_bh(&bond->curr_slave_lock);
 	read_unlock(&bond->lock);
+	unblock_netpoll_tx();
 out:
 	rtnl_unlock();
 	return ret;
@@ -1315,6 +1318,8 @@ static ssize_t bonding_store_active_slave(struct class_device *cd, const char *b
 out:
 	write_unlock_bh(&bond->curr_slave_lock);
 	read_unlock(&bond->lock);
+	unblock_netpoll_tx();
+
 	rtnl_unlock();
 
 	return count;
@@ -1437,6 +1442,34 @@ static ssize_t bonding_show_ad_partner_mac(struct class_device *cd, char *buf)
 }
 static CLASS_DEVICE_ATTR(ad_partner_mac, S_IRUGO, bonding_show_ad_partner_mac, NULL);
 
+static ssize_t bonding_store_mark_steering(struct class_device *cd,
+					   const char *buf, size_t count)
+{
+	int val;
+	int rc;
+	struct bonding *bond = to_bond(cd);
+
+	rc = sscanf(buf, "%d", &val);
+	if (rc != 1)
+		return -EINVAL;
+
+	bond->mark_steering = (val) ? true:false;
+	
+	return count;
+}
+
+static ssize_t bonding_show_mark_steering(struct class_device *cd, char *buf)
+{
+	struct bonding *bond = to_bond(cd);
+	int count = 0;
+
+	count = sprintf(buf, "%d\n", (bond->mark_steering == true) ? 1:0);
+
+	return count;
+}
+
+static CLASS_DEVICE_ATTR(mark_steering, S_IWUSR | S_IRUGO, bonding_show_mark_steering,
+			 bonding_store_mark_steering);
 
 
 /*
@@ -1456,22 +1489,20 @@ static ssize_t bonding_store_resend_igmp(struct class_device *d,
 	struct bonding *bond = to_bond(d);
 
 	if (sscanf(buf, "%d", &new_value) != 1) {
-		printk(KERN_INFO DRV_NAME
-		       ": %s: no resend_igmp value specified.\n",
+		pr_err("%s: no resend_igmp value specified.\n",
 		       bond->dev->name);
 		ret = -EINVAL;
 		goto out;
 	}
 
 	if (new_value < 0) {
-		printk(KERN_INFO DRV_NAME
-		       ": %s: Invalid resend_igmp value %d not in range 0-255; rejected.\n",
+		pr_err("%s: Invalid resend_igmp value %d not in range 0-255; rejected.\n",
 		       bond->dev->name, new_value);
 		ret = -EINVAL;
 		goto out;
 	}
 
-	printk(KERN_INFO DRV_NAME ": %s: Setting resend_igmp to %d.\n",
+	pr_info("%s: Setting resend_igmp to %d.\n",
 		bond->dev->name, new_value);
 	bond->params.resend_igmp = new_value;
 out:
@@ -1505,6 +1536,7 @@ static struct attribute *per_bond_attrs[] = {
 	&class_device_attr_ad_actor_key.attr,
 	&class_device_attr_ad_partner_key.attr,
 	&class_device_attr_ad_partner_mac.attr,
+	&class_device_attr_mark_steering.attr,
 	&class_device_attr_resend_igmp.attr,
 	NULL,
 };

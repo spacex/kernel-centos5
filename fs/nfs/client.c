@@ -100,6 +100,7 @@ struct rpc_program		nfsacl_program = {
  */
 static struct nfs_client *nfs_alloc_client(const char *hostname,
 					   const struct sockaddr_in *addr,
+					   int proto,
 					   int nfsversion)
 {
 	struct nfs_client *clp;
@@ -127,6 +128,7 @@ static struct nfs_client *nfs_alloc_client(const char *hostname,
 
 	clp->cl_nfsversion = nfsversion;
 	memcpy(&clp->cl_addr, addr, sizeof(clp->cl_addr));
+	clp->cl_proto = proto;
 
 	if (hostname) {
 		clp->cl_hostname = kstrdup(hostname, GFP_KERNEL);
@@ -226,7 +228,8 @@ void nfs_put_client(struct nfs_client *clp)
  * Find a client by address
  * - caller must hold nfs_client_lock
  */
-static struct nfs_client *__nfs_find_client(const struct sockaddr_in *addr, int nfsversion, int match_port)
+static struct nfs_client *__nfs_find_client(const struct sockaddr_in *addr,
+				int proto, int nfsversion, int match_port)
 {
 	struct nfs_client *clp;
 
@@ -241,6 +244,9 @@ static struct nfs_client *__nfs_find_client(const struct sockaddr_in *addr, int 
 
 		if (memcmp(&clp->cl_addr.sin_addr, &addr->sin_addr,
 			   sizeof(clp->cl_addr.sin_addr)) != 0)
+			continue;
+
+		if (clp->cl_proto != proto)
 			continue;
 
 		if (!match_port || clp->cl_addr.sin_port == addr->sin_port)
@@ -258,12 +264,13 @@ found:
  * Find a client by IP address and protocol version
  * - returns NULL if no such client
  */
-struct nfs_client *nfs_find_client(const struct sockaddr_in *addr, int nfsversion)
+struct nfs_client *nfs_find_client(const struct sockaddr_in *addr,
+				int proto, int nfsversion)
 {
 	struct nfs_client *clp;
 
 	spin_lock(&nfs_client_lock);
-	clp = __nfs_find_client(addr, nfsversion, 0);
+	clp = __nfs_find_client(addr, proto, nfsversion, 0);
 	spin_unlock(&nfs_client_lock);
 	if (clp != NULL && clp->cl_cons_state != NFS_CS_READY) {
 		nfs_put_client(clp);
@@ -279,6 +286,7 @@ struct nfs_client *nfs_find_client(const struct sockaddr_in *addr, int nfsversio
  */
 static struct nfs_client *nfs_get_client(const char *hostname,
 					 const struct sockaddr_in *addr,
+					 int proto,
 					 int nfsversion)
 {
 	struct nfs_client *clp, *new = NULL;
@@ -292,7 +300,7 @@ static struct nfs_client *nfs_get_client(const char *hostname,
 	do {
 		spin_lock(&nfs_client_lock);
 
-		clp = __nfs_find_client(addr, nfsversion, 1);
+		clp = __nfs_find_client(addr, proto, nfsversion, 1);
 		if (clp)
 			goto found_client;
 		if (new)
@@ -300,7 +308,7 @@ static struct nfs_client *nfs_get_client(const char *hostname,
 
 		spin_unlock(&nfs_client_lock);
 
-		new = nfs_alloc_client(hostname, addr, nfsversion);
+		new = nfs_alloc_client(hostname, addr, proto, nfsversion);
 	} while (new);
 
 	return ERR_PTR(-ENOMEM);
@@ -432,9 +440,6 @@ static int nfs_create_rpc_client(struct nfs_client *clp, int proto,
  */
 static void nfs_destroy_server(struct nfs_server *server)
 {
-	if (!IS_ERR(server->client_acl))
-		rpc_shutdown_client(server->client_acl);
-
 	if (!(server->flags & NFS_MOUNT_NONLM))
 		lockd_down();	/* release rpc.lockd */
 }
@@ -567,6 +572,7 @@ static int nfs_init_server(struct nfs_server *server, const struct nfs_mount_dat
 {
 	struct nfs_client *clp;
 	int error, nfsvers = 2;
+	int proto = data->flags & NFS_MOUNT_TCP ? IPPROTO_TCP : IPPROTO_UDP;
 
 	dprintk("--> nfs_init_server()\n");
 
@@ -576,7 +582,7 @@ static int nfs_init_server(struct nfs_server *server, const struct nfs_mount_dat
 #endif
 
 	/* Allocate or find a client reference we can use */
-	clp = nfs_get_client(data->hostname, &data->addr, nfsvers);
+	clp = nfs_get_client(data->hostname, &data->addr, proto, nfsvers);
 	if (IS_ERR(clp)) {
 		dprintk("<-- nfs_init_server() = error %ld\n", PTR_ERR(clp));
 		return PTR_ERR(clp);
@@ -773,6 +779,9 @@ void nfs_free_server(struct nfs_server *server)
 
 	if (server->destroy != NULL)
 		server->destroy(server);
+
+	if (!IS_ERR(server->client_acl))
+		rpc_shutdown_client(server->client_acl);
 	if (!IS_ERR(server->client))
 		rpc_shutdown_client(server->client);
 
@@ -907,7 +916,7 @@ static int nfs4_set_client(struct nfs_server *server,
 	dprintk("--> nfs4_set_client()\n");
 
 	/* Allocate or find a client reference we can use */
-	clp = nfs_get_client(hostname, addr, 4);
+	clp = nfs_get_client(hostname, addr, proto, 4);
 	if (IS_ERR(clp)) {
 		error = PTR_ERR(clp);
 		goto error;
@@ -1060,6 +1069,9 @@ struct nfs_server *nfs4_create_referral_server(struct nfs_clone_mount *data,
 			parent_server->client->cl_xprt->prot,
 			parent_client->retrans_timeo,
 			parent_client->retrans_count);
+
+	if (error < 0)
+		goto error;
 
 	/* Initialise the client representation from the parent server */
 	nfs_server_copy_userdata(server, parent_server);

@@ -426,6 +426,16 @@ struct pci_driver {
 #define	to_pci_driver(drv) container_of(drv,struct pci_driver, driver)
 
 /**
+ * DEFINE_PCI_DEVICE_TABLE - macro used to describe a pci device table
+ * @_table: device table name
+ *
+ * This macro is used to create a struct pci_device_id array (a device table)
+ * in a generic manner.
+ */
+#define DEFINE_PCI_DEVICE_TABLE(_table) \
+	const struct pci_device_id _table[] __devinitdata
+
+/**
  * PCI_DEVICE - macro used to describe a specific pci device
  * @vend: the 16 bit PCI Vendor ID
  * @dev: the 16 bit PCI Device ID
@@ -496,6 +506,7 @@ void pcibios_update_irq(struct pci_dev *, int irq);
 
 /* Generic PCI functions used internally */
 
+void pcibios_scan_specific_bus(int busn);
 extern struct pci_bus *pci_find_bus(int domain, int busnr);
 void pci_bus_add_devices(struct pci_bus *bus);
 struct pci_bus *pci_scan_bus_parented(struct device *parent, int bus, struct pci_ops *ops, void *sysdata);
@@ -536,6 +547,10 @@ int pci_find_ext_capability (struct pci_dev *dev, int cap);
 int pci_find_ht_capability (struct pci_dev *dev, int ht_cap);
 int pci_find_next_ht_capability (struct pci_dev *dev, int pos, int ht_cap);
 struct pci_bus * pci_find_next_bus(const struct pci_bus *from);
+
+#ifdef CONFIG_HOTPLUG
+unsigned int pci_rescan_bus(struct pci_bus *bus);
+#endif
 
 struct pci_dev *pci_get_device (unsigned int vendor, unsigned int device, struct pci_dev *from);
 struct pci_dev *pci_get_subsys (unsigned int vendor, unsigned int device,
@@ -632,6 +647,7 @@ int pci_restore_state(struct pci_dev *dev);
 int pci_set_power_state(struct pci_dev *dev, pci_power_t state);
 pci_power_t pci_choose_state(struct pci_dev *dev, pm_message_t state);
 int pci_enable_wake(struct pci_dev *dev, pci_power_t state, int enable);
+int pci_wake_from_d3(struct pci_dev *dev, bool enable);
 
 /* Helper functions for low-level code (drivers/pci/setup-[bus,res].c) */
 void pci_bus_assign_resources(struct pci_bus *bus);

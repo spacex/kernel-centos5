@@ -833,13 +833,9 @@ void iwl_tt_exit(struct iwl_priv *priv)
 
 	/* stop ct_kill_exit_tm timer if activated */
 	del_timer_sync(&priv->thermal_throttle.ct_kill_exit_tm);
-#if 0 /* Not in RHEL5... */
 	cancel_work_sync(&priv->tt_work);
 	cancel_work_sync(&priv->ct_enter);
 	cancel_work_sync(&priv->ct_exit);
-#else
-	flush_workqueue(priv->workqueue);
-#endif
 
 	if (priv->thermal_throttle.advanced_tt) {
 		/* free advance thermal throttling memory */

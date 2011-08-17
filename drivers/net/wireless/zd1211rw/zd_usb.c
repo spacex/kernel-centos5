@@ -959,6 +959,8 @@ int zd_usb_init_hw(struct zd_usb *usb)
 
 	dev_dbg_f(zd_usb_dev(usb), "\n");
 
+	usb_reset_device(zd_usb_to_usbdev(usb));
+
 	r = upload_firmware(usb);
 	if (r) {
 		dev_err(zd_usb_dev(usb),

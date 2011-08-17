@@ -36,7 +36,7 @@ static char ixgb_driver_string[] = "Intel(R) PRO/10GbE Network Driver";
 #else
 #define DRIVERNAPI "-NAPI"
 #endif
-#define DRV_VERSION		"1.0.126-k4"DRIVERNAPI
+#define DRV_VERSION		"1.0.126-k4-1"DRIVERNAPI
 const char ixgb_driver_version[] = DRV_VERSION;
 static const char ixgb_copyright[] = "Copyright (c) 1999-2006 Intel Corporation.";
 
@@ -1830,6 +1830,7 @@ ixgb_clean_tx_irq(struct ixgb_adapter *adapter)
 
 	while(eop_desc->status & IXGB_TX_DESC_STATUS_DD) {
 
+		rmb(); /* read buffer_info after eop_desc */
 		for(cleaned = FALSE; !cleaned; ) {
 			tx_desc = IXGB_TX_DESC(*tx_ring, i);
 			buffer_info = &tx_ring->buffer_info[i];
@@ -1964,6 +1965,7 @@ ixgb_clean_rx_irq(struct ixgb_adapter *adapter)
 
 		(*work_done)++;
 #endif
+		rmb();	/* read descriptor and rx_buffer_info after status DD */
 		status = rx_desc->status;
 		skb = buffer_info->skb;
 		buffer_info->skb = NULL;

@@ -281,6 +281,15 @@ config UID16
 	help
 	  This enables the legacy 16-bit UID syscall wrappers.
 
+config TASK_XACCT
+	bool "Enable extended accounting over taskstats (EXPERIMENTAL)"
+	depends on TASKSTATS
+	help
+	  Collect extended task accounting data and send the data
+	  to userland for processing over the taskstats interface.
+
+	  Say N if unsure.
+
 config SYSCTL
 	bool "Sysctl support" if EMBEDDED
 	default y

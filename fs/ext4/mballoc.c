@@ -2542,7 +2542,7 @@ int ext4_mb_add_groupinfo(struct super_block *sb, ext4_group_t group,
 
 	INIT_LIST_HEAD(&meta_group_info[i]->bb_prealloc_list);
 	init_rwsem(&meta_group_info[i]->alloc_sem);
-	meta_group_info[i]->bb_free_root.rb_node = NULL;
+	meta_group_info[i]->bb_free_root = RB_ROOT;
 
 #ifdef DOUBLE_CHECK
 	{
@@ -2981,8 +2981,7 @@ ext4_mb_mark_diskspace_used(struct ext4_allocation_context *ac,
 
 	len = ac->ac_b_ex.fe_len;
 	if (!ext4_data_block_valid(sbi, block, len)) {
-		ext4_error(sb, __func__,
-			   "Allocating blocks %llu-%llu which overlap "
+		ext4_error(sb, "Allocating blocks %llu-%llu which overlap "
 			   "fs metadata\n", block, block+len);
 		/* File system mounted not to panic on error
 		 * Fix the bitmap and repeat the block allocation
@@ -3027,9 +3026,6 @@ ext4_mb_mark_diskspace_used(struct ext4_allocation_context *ac,
 	if (!(ac->ac_flags & EXT4_MB_DELALLOC_RESERVED))
 		/* release all the reserved blocks if non delalloc */
 		percpu_counter_sub(&sbi->s_dirtyblocks_counter, reserv_blks);
-	else
-		percpu_counter_sub(&sbi->s_dirtyblocks_counter,
-						ac->ac_b_ex.fe_len);
 
 	if (sbi->s_log_groups_per_flex) {
 		ext4_group_t flex_group = ext4_flex_group(sbi,
@@ -3274,6 +3270,24 @@ static void ext4_mb_collect_stats(struct ext4_allocation_context *ac)
 	}
 
 	ext4_mb_store_history(ac);
+}
+
+/*
+ * Called on failure; free up any blocks from the inode PA for this
+ * context.  We don't need this for MB_GROUP_PA because we only change
+ * pa_free in ext4_mb_release_context(), but on failure, we've already
+ * zeroed out ac->ac_b_ex.fe_len, so group_pa->pa_free is not changed.
+ */
+static void ext4_discard_allocated_blocks(struct ext4_allocation_context *ac)
+{
+	struct ext4_prealloc_space *pa = ac->ac_pa;
+	int len;
+
+	if (pa && pa->pa_type == MB_INODE_PA) {
+		len = ac->ac_b_ex.fe_len;
+		pa->pa_free += len;
+	}
+
 }
 
 /*
@@ -3888,15 +3902,13 @@ ext4_mb_discard_group_preallocations(struct super_block *sb,
 
 	bitmap_bh = ext4_read_block_bitmap(sb, group);
 	if (bitmap_bh == NULL) {
-		ext4_error(sb, __func__, "Error in reading block "
-				"bitmap for %u", group);
+		ext4_error(sb, "Error reading block bitmap for %u", group);
 		return 0;
 	}
 
 	err = ext4_mb_load_buddy(sb, group, &e4b);
 	if (err) {
-		ext4_error(sb, __func__, "Error in loading buddy "
-				"information for %u", group);
+		ext4_error(sb, "Error loading buddy information for %u", group);
 		put_bh(bitmap_bh);
 		return 0;
 	}
@@ -4064,15 +4076,15 @@ repeat:
 
 		err = ext4_mb_load_buddy(sb, group, &e4b);
 		if (err) {
-			ext4_error(sb, __func__, "Error in loading buddy "
-					"information for %u", group);
+			ext4_error(sb, "Error loading buddy information for %u",
+					group);
 			continue;
 		}
 
 		bitmap_bh = ext4_read_block_bitmap(sb, group);
 		if (bitmap_bh == NULL) {
-			ext4_error(sb, __func__, "Error in reading block "
-					"bitmap for %u", group);
+			ext4_error(sb, "Error reading block bitmap for %u",
+					group);
 			ext4_mb_release_desc(&e4b);
 			continue;
 		}
@@ -4198,7 +4210,7 @@ static void ext4_mb_group_or_file(struct ext4_allocation_context *ac)
 
 	/* don't use group allocation for large files */
 	size = max(size, isize);
-	if (size >= sbi->s_mb_stream_request) {
+	if (size > sbi->s_mb_stream_request) {
 		ac->ac_flags |= EXT4_MB_STREAM_ALLOC;
 		return;
 	}
@@ -4335,8 +4347,8 @@ ext4_mb_discard_lg_preallocations(struct super_block *sb,
 
 		ext4_get_group_no_and_offset(sb, pa->pa_pstart, &group, NULL);
 		if (ext4_mb_load_buddy(sb, group, &e4b)) {
-			ext4_error(sb, __func__, "Error in loading buddy "
-					"information for %u", group);
+			ext4_error(sb, "Error loading buddy information for %u",
+					group);
 			continue;
 		}
 		ext4_lock_group(sb, group);
@@ -4483,7 +4495,7 @@ ext4_fsblk_t ext4_mb_new_blocks(handle_t *handle,
 	struct ext4_sb_info *sbi;
 	struct super_block *sb;
 	ext4_fsblk_t block = 0;
-	unsigned int inquota;
+	unsigned int inquota = 0;
 	unsigned int reserv_blks = 0;
 
 	sb = ar->inode->i_sb;
@@ -4501,9 +4513,17 @@ ext4_fsblk_t ext4_mb_new_blocks(handle_t *handle,
 		   (unsigned long long) ar->pleft,
 		   (unsigned long long) ar->pright);
 
-	if (!EXT4_I(ar->inode)->i_delalloc_reserved_flag) {
-		/*
-		 * With delalloc we already reserved the blocks
+	/*
+	 * For delayed allocation, we could skip the ENOSPC and
+	 * EDQUOT check, as blocks and quotas have been already
+	 * reserved when data being copied into pagecache.
+	 */
+	if (EXT4_I(ar->inode)->i_delalloc_reserved_flag)
+		ar->flags |= EXT4_MB_DELALLOC_RESERVED;
+	else {
+		/* Without delayed allocation we need to verify
+		 * there is enough free blocks to do block allocation
+		 * and verify allocation doesn't exceed the quota limits.
 		 */
 		while (ar->len && ext4_claim_free_blocks(sbi, ar->len)) {
 			/* let others to free the space */
@@ -4515,19 +4535,16 @@ ext4_fsblk_t ext4_mb_new_blocks(handle_t *handle,
 			return 0;
 		}
 		reserv_blks = ar->len;
+		while (ar->len && DQUOT_ALLOC_BLOCK(ar->inode, ar->len)) {
+			ar->flags |= EXT4_MB_HINT_NOPREALLOC;
+			ar->len--;
+		}
+		inquota = ar->len;
+		if (ar->len == 0) {
+			*errp = -EDQUOT;
+			goto out3;
+		}
 	}
-	while (ar->len && DQUOT_ALLOC_BLOCK(ar->inode, ar->len)) {
-		ar->flags |= EXT4_MB_HINT_NOPREALLOC;
-		ar->len--;
-	}
-	if (ar->len == 0) {
-		*errp = -EDQUOT;
-		goto out3;
-	}
-	inquota = ar->len;
-
-	if (EXT4_I(ar->inode)->i_delalloc_reserved_flag)
-		ar->flags |= EXT4_MB_DELALLOC_RESERVED;
 
 	ac = kmem_cache_alloc(ext4_ac_cachep, GFP_NOFS);
 	if (!ac) {
@@ -4571,6 +4588,7 @@ repeat:
 			ac->ac_status = AC_STATUS_CONTINUE;
 			goto repeat;
 		} else if (*errp) {
+			ext4_discard_allocated_blocks(ac);
 			ac->ac_b_ex.fe_len = 0;
 			ar->len = 0;
 			ext4_mb_show_ac(ac);
@@ -4593,7 +4611,7 @@ repeat:
 out2:
 	kmem_cache_free(ext4_ac_cachep, ac);
 out1:
-	if (ar->len < inquota)
+	if (inquota && ar->len < inquota)
 		DQUOT_FREE_BLOCK(ar->inode, inquota - ar->len);
 out3:
 	if (!ar->len) {
@@ -4742,8 +4760,7 @@ void ext4_mb_free_blocks(handle_t *handle, struct inode *inode,
 	if (block < le32_to_cpu(es->s_first_data_block) ||
 	    block + count < block ||
 	    block + count > ext4_blocks_count(es)) {
-		ext4_error(sb, __func__,
-			    "Freeing blocks not in datazone - "
+		ext4_error(sb, "Freeing blocks not in datazone - "
 			    "block = %llu, count = %lu", block, count);
 		goto error_return;
 	}
@@ -4791,8 +4808,7 @@ do_more:
 	    in_range(block + count - 1, ext4_inode_table(sb, gdp),
 		      EXT4_SB(sb)->s_itb_per_group)) {
 
-		ext4_error(sb, __func__,
-			   "Freeing blocks in system zone - "
+		ext4_error(sb, "Freeing blocks in system zone - "
 			   "Block = %llu, count = %lu", block, count);
 		/* err = 0. ext4_std_error should be a no op */
 		goto error_return;

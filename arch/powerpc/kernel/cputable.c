@@ -22,6 +22,8 @@
 
 struct cpu_spec* cur_cpu_spec = NULL;
 EXPORT_SYMBOL(cur_cpu_spec);
+/* The platform string corresponding to the real PVR */
+const char *powerpc_base_platform;
 
 /* NOTE:
  * Unlike ppc32, ppc64 will only call this once for the boot CPU, it's
@@ -56,6 +58,10 @@ extern void __setup_cpu_ppc970(unsigned long offset, struct cpu_spec* spec);
 #define COMMON_USER_POWER6	(COMMON_USER_PPC64 | PPC_FEATURE_ARCH_2_05 |\
 				 PPC_FEATURE_SMT | PPC_FEATURE_ICACHE_SNOOP | \
 				 PPC_FEATURE_TRUE_LE)
+#define COMMON_USER_POWER7      (COMMON_USER_PPC64 | PPC_FEATURE_ARCH_2_06 |\
+                                 PPC_FEATURE_SMT | PPC_FEATURE_ICACHE_SNOOP | \
+                                 PPC_FEATURE_TRUE_LE | \
+                                 PPC_FEATURE_PSERIES_PERFMON_COMPAT)
 #define COMMON_USER_BOOKE	(PPC_FEATURE_32 | PPC_FEATURE_HAS_MMU | \
 				 PPC_FEATURE_BOOKE)
 
@@ -323,6 +329,23 @@ static struct cpu_spec cpu_specs[] = {
 		.oprofile_cpu_type      = "ppc64/ibm-compat-v1",
 		.oprofile_type		= PPC_OPROFILE_POWER4,
 		.platform		= "power6",
+	},
+	{	/* Power7 */
+		.pvr_mask		= 0xffff0000,
+		.pvr_value		= 0x003f0000,
+		.cpu_name		= "POWER7",
+		.cpu_features		= CPU_FTRS_POWER6,
+		.cpu_user_features	= COMMON_USER_POWER7,
+		.icache_bsize		= 128,
+		.dcache_bsize		= 128,
+		.num_pmcs		= 6,
+		.oprofile_cpu_type	= "ppc64/power7",
+		.oprofile_type		= PPC_OPROFILE_POWER4,
+		.oprofile_mmcra_sihv	= POWER6_MMCRA_SIHV,
+		.oprofile_mmcra_sipr	= POWER6_MMCRA_SIPR,
+		.oprofile_mmcra_clear	= POWER6_MMCRA_THRM |
+			POWER6_MMCRA_OTHER,
+		.platform		= "power7",
 	},
 	{	/* Cell Broadband Engine */
 		.pvr_mask		= 0xffff0000,
@@ -1229,6 +1252,14 @@ struct cpu_spec *identify_cpu(unsigned long offset, unsigned int pvr)
 			} else
 				*t = *s;
 			*PTRRELOC(&cur_cpu_spec) = &the_cpu_spec;
+
+			/*
+			 * Set the base platform string once; assumes
+			 * we're called with real pvr first.
+			 */
+			if (*PTRRELOC(&powerpc_base_platform) == NULL)
+				*PTRRELOC(&powerpc_base_platform) = t->platform;
+
 #ifdef CONFIG_PPC64
 			/* ppc64 expects identify_cpu to also call setup_cpu
 			 * for that processor. I will consolidate that at a

@@ -149,7 +149,11 @@ static void hybla_cong_avoid(struct sock *sk, u32 ack, u32 rtt,
 		ca->snd_cwnd_cents -= 128;
 		tp->snd_cwnd_cnt = 0;
 	}
-
+	/* check when cwnd has not been incremented for a while */
+	if (increment == 0 && odd == 0 && tp->snd_cwnd_cnt >= tp->snd_cwnd) {
+		tp->snd_cwnd++;
+		tp->snd_cwnd_cnt = 0;
+	}
 	/* clamp down slowstart cwnd to ssthresh value. */
 	if (is_slowstart)
 		tp->snd_cwnd = min(tp->snd_cwnd, tp->snd_ssthresh);

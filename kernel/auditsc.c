@@ -198,6 +198,9 @@ struct audit_context {
 	int		    dummy;	/* must be the first element */
 	int		    in_syscall;	/* 1 if task is in a syscall */
 	enum audit_state    state;
+#ifndef __GENKSYMS__
+	enum audit_state    current_state;
+#endif
 	unsigned int	    serial;     /* serial number for record */
 	struct timespec	    ctime;      /* time of syscall entry */
 	uid_t		    loginuid;   /* login uid (identity) */
@@ -205,7 +208,11 @@ struct audit_context {
 	unsigned long	    argv[4];    /* syscall arguments */
 	int		    return_valid; /* return code is valid */
 	long		    return_code;/* syscall return code */
+	/* auditable is no longer used, but removal causes kabi break */
 	int		    auditable;  /* 1 if record should be written */
+#ifndef __GENKSYMS__
+	u64		    prio;
+#endif
 	int		    name_count;
 	struct audit_names  names[AUDIT_NAMES];
 	char *		    filterkey;	/* key for rule that triggered record */
@@ -622,8 +629,16 @@ static int audit_filter_rules(struct task_struct *tsk,
 		if (!result)
 			return 0;
 	}
-	if (rule->filterkey && ctx)
-		ctx->filterkey = kstrdup(rule->filterkey, GFP_ATOMIC);
+
+	if (ctx) {
+		if (rule->prio <= ctx->prio)
+			return 0;
+		if (rule->filterkey) {
+			kfree(ctx->filterkey);
+			ctx->filterkey = kstrdup(rule->filterkey, GFP_ATOMIC);
+		}
+		ctx->prio = rule->prio;
+	}
 	switch (rule->action) {
 	case AUDIT_NEVER:    *state = AUDIT_DISABLED;	    break;
 	case AUDIT_ALWAYS:   *state = AUDIT_RECORD_CONTEXT; break;
@@ -635,7 +650,7 @@ static int audit_filter_rules(struct task_struct *tsk,
  * completely disabled for this task.  Since we only have the task
  * structure at this point, we can only check uid and gid.
  */
-static enum audit_state audit_filter_task(struct task_struct *tsk)
+static enum audit_state audit_filter_task(struct task_struct *tsk, char **key)
 {
 	struct audit_entry *e;
 	enum audit_state   state;
@@ -643,6 +658,8 @@ static enum audit_state audit_filter_task(struct task_struct *tsk)
 	rcu_read_lock();
 	list_for_each_entry_rcu(e, &audit_filter_list[AUDIT_FILTER_TASK], list) {
 		if (audit_filter_rules(tsk, &e->rule, NULL, NULL, &state)) {
+			if (state == AUDIT_RECORD_CONTEXT)
+				*key = kstrdup(e->rule.filterkey, GFP_ATOMIC);
 			rcu_read_unlock();
 			return state;
 		}
@@ -676,6 +693,7 @@ static enum audit_state audit_filter_syscall(struct task_struct *tsk,
 			    audit_filter_rules(tsk, &e->rule, ctx, NULL,
 					       &state)) {
 				rcu_read_unlock();
+				ctx->current_state = state;
 				return state;
 			}
 		}
@@ -689,15 +707,14 @@ static enum audit_state audit_filter_syscall(struct task_struct *tsk,
  * buckets applicable to the inode numbers in audit_names[].
  * Regarding audit_state, same rules apply as for audit_filter_syscall().
  */
-enum audit_state audit_filter_inodes(struct task_struct *tsk,
-				     struct audit_context *ctx)
+void audit_filter_inodes(struct task_struct *tsk, struct audit_context *ctx)
 {
 	int i;
 	struct audit_entry *e;
 	enum audit_state state;
 
 	if (audit_pid && tsk->tgid == audit_pid)
-		return AUDIT_DISABLED;
+		return;
 
 	rcu_read_lock();
 	for (i = 0; i < ctx->name_count; i++) {
@@ -714,17 +731,20 @@ enum audit_state audit_filter_inodes(struct task_struct *tsk,
 			if ((e->rule.mask[word] & bit) == bit &&
 			    audit_filter_rules(tsk, &e->rule, ctx, n, &state)) {
 				rcu_read_unlock();
-				return state;
+				ctx->current_state = state;
+				return;
 			}
 		}
 	}
 	rcu_read_unlock();
-	return AUDIT_BUILD_CONTEXT;
 }
 
-void audit_set_auditable(struct audit_context *ctx)
+static void audit_set_auditable(struct audit_context *ctx)
 {
-	ctx->auditable = 1;
+	if (!ctx->prio) {
+		ctx->prio = 1;
+		ctx->current_state = AUDIT_RECORD_CONTEXT;
+	}
 }
 
 static inline struct audit_context *audit_get_context(struct task_struct *tsk,
@@ -745,22 +765,10 @@ static inline struct audit_context *audit_get_context(struct task_struct *tsk,
 	else
 		context->return_code  = return_code;
 
-	if (context->in_syscall && !context->dummy && !context->auditable) {
-		enum audit_state state;
-
-		state = audit_filter_syscall(tsk, context, &audit_filter_list[AUDIT_FILTER_EXIT]);
-		if (state == AUDIT_RECORD_CONTEXT) {
-			context->auditable = 1;
-			goto get_context;
-		}
-
-		state = audit_filter_inodes(tsk, context);
-		if (state == AUDIT_RECORD_CONTEXT)
-			context->auditable = 1;
-
+	if (context->in_syscall && !context->dummy) {
+		audit_filter_syscall(tsk, context, &audit_filter_list[AUDIT_FILTER_EXIT]);
+		audit_filter_inodes(tsk, context);
 	}
-
-get_context:
 
 	return context;
 }
@@ -770,8 +778,7 @@ static inline void audit_free_names(struct audit_context *context)
 	int i;
 
 #if AUDIT_DEBUG == 2
-	if (context->auditable
-	    ||context->put_count + context->ino_count != context->name_count) {
+	if (context->put_count + context->ino_count != context->name_count) {
 		printk(KERN_ERR "%s:%d(:%d): major=%d in_syscall=%d"
 		       " name_count=%d put_count=%d"
 		       " ino_count=%d [NOT freeing]\n",
@@ -830,6 +837,7 @@ static inline void audit_zero_context(struct audit_context *context,
 	context->state      = state;
 	context->loginuid   = loginuid;
 	context->sessionid  = sessionid;
+	context->prio = state == AUDIT_RECORD_CONTEXT ? ~0ULL : 0;
 }
 
 static inline struct audit_context *audit_alloc_context(enum audit_state state)
@@ -856,18 +864,21 @@ int audit_alloc(struct task_struct *tsk)
 {
 	struct audit_context *context;
 	enum audit_state     state;
+	char *key = NULL;
 
 	if (likely(!audit_ever_enabled))
 		return 0; /* Return if not auditing. */
 
-	state = audit_filter_task(tsk);
+	state = audit_filter_task(tsk, &key);
 	if (likely(state == AUDIT_DISABLED))
 		return 0;
 
 	if (!(context = audit_alloc_context(state))) {
+		kfree(key);
 		audit_log_lost("out of memory in audit_alloc");
 		return -ENOMEM;
 	}
+	context->filterkey = key;
 
 				/* Preserve login uid */
 	context->loginuid = -1;
@@ -1464,7 +1475,7 @@ void audit_free(struct task_struct *tsk)
 	 * We use GFP_ATOMIC here because we might be doing this 
 	 * in the context of the idle thread */
 	/* that can happen only if we are called from do_exit() */
-	if (context->in_syscall && context->auditable)
+	if (context->in_syscall && context->current_state == AUDIT_RECORD_CONTEXT)
 		audit_log_exit(context, tsk);
 	if (!list_empty(&context->killed_trees))
 		audit_kill_trees(&context->killed_trees);
@@ -1550,15 +1561,17 @@ void audit_syscall_entry(int arch, int major,
 
 	state = context->state;
 	context->dummy = !audit_n_rules;
-	if (!context->dummy && (state == AUDIT_SETUP_CONTEXT || state == AUDIT_BUILD_CONTEXT))
+	if (!context->dummy && state == AUDIT_BUILD_CONTEXT) {
+		context->prio = 0;
 		state = audit_filter_syscall(tsk, context, &audit_filter_list[AUDIT_FILTER_ENTRY]);
+	}
 	if (likely(state == AUDIT_DISABLED))
 		return;
 
 	context->serial     = 0;
 	context->ctime      = CURRENT_TIME;
 	context->in_syscall = 1;
-	context->auditable  = !!(state == AUDIT_RECORD_CONTEXT);
+	context->current_state  = state;
 	context->ppid       = 0;
 }
 
@@ -1566,17 +1579,20 @@ void audit_finish_fork(struct task_struct *child)
 {
 	struct audit_context *ctx = current->audit_context;
 	struct audit_context *p = child->audit_context;
-	if (!p || !ctx || !ctx->auditable)
+	if (!p || !ctx)
+		return;
+	if (!ctx->in_syscall || ctx->current_state != AUDIT_RECORD_CONTEXT)
 		return;
 	p->arch = ctx->arch;
 	p->major = ctx->major;
 	memcpy(p->argv, ctx->argv, sizeof(ctx->argv));
 	p->ctime = ctx->ctime;
 	p->dummy = ctx->dummy;
-	p->auditable = ctx->auditable;
 	p->in_syscall = ctx->in_syscall;
 	p->filterkey = kstrdup(ctx->filterkey, GFP_KERNEL);
 	p->ppid = current->pid;
+	p->prio = ctx->prio;
+	p->current_state = ctx->current_state;
 }
 
 /**
@@ -1601,11 +1617,11 @@ void audit_syscall_exit(int valid, long return_code)
 	if (likely(!context))
 		return;
 
-	if (context->in_syscall && context->auditable)
+	if (context->in_syscall && context->current_state == AUDIT_RECORD_CONTEXT)
 		audit_log_exit(context, tsk);
 
 	context->in_syscall = 0;
-	context->auditable  = 0;
+	context->prio = context->state == AUDIT_RECORD_CONTEXT ? ~0ULL : 0;
 
 	if (!list_empty(&context->killed_trees))
 		audit_kill_trees(&context->killed_trees);
@@ -1623,8 +1639,10 @@ void audit_syscall_exit(int valid, long return_code)
 		context->aux_pids = NULL;
 		context->target_pid = 0;
 		context->target_sid = 0;
-		kfree(context->filterkey);
-		context->filterkey = NULL;
+		if (context->state != AUDIT_RECORD_CONTEXT) {
+			kfree(context->filterkey);
+			context->filterkey = NULL;
+		}
 		tsk->audit_context = context;
 	}
 }
@@ -1980,7 +1998,10 @@ void auditsc_get_stamp(struct audit_context *ctx,
 	t->tv_sec  = ctx->ctime.tv_sec;
 	t->tv_nsec = ctx->ctime.tv_nsec;
 	*serial    = ctx->serial;
-	ctx->auditable = 1;
+	if (!ctx->prio) {
+		ctx->prio = 1;
+		ctx->current_state = AUDIT_RECORD_CONTEXT;
+	}
 }
 
 /* global counter which is incremented every time something logs in */

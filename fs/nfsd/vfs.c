@@ -61,6 +61,8 @@
 #define NFSDDBG_FACILITY		NFSDDBG_FILEOP
 #define NFSD_PARANOIA
 
+/* private NFSD access flag */
+#define NFSD_MAY_NOT_BREAK_LEASE	512
 
 /* We must ignore files (but only files) which might have mandatory
  * locks on them because there is no way to know if the accesser has
@@ -663,6 +665,9 @@ nfsd_open(struct svc_rqst *rqstp, struct svc_fh *fhp, int type,
 	struct dentry	*dentry;
 	struct inode	*inode;
 	int		flags = O_RDONLY|O_LARGEFILE, err;
+	bool		do_break_lease = !(access & NFSD_MAY_NOT_BREAK_LEASE);
+
+	access &= ~NFSD_MAY_NOT_BREAK_LEASE;
 
 	/*
 	 * If we get here, then the client has already done an "open",
@@ -692,11 +697,14 @@ nfsd_open(struct svc_rqst *rqstp, struct svc_fh *fhp, int type,
 	 * Check to see if there are any leases on this file.
 	 * This may block while leases are broken.
 	 */
-	err = break_lease(inode, O_NONBLOCK | ((access & MAY_WRITE) ? FMODE_WRITE : 0));
-	if (err == -EWOULDBLOCK)
-		err = -ETIMEDOUT;
-	if (err) /* NOMEM or WOULDBLOCK */
-		goto out_nfserr;
+	err = 0;
+	if (do_break_lease) {
+		err = break_lease(inode, O_NONBLOCK | ((access & MAY_WRITE) ? FMODE_WRITE : 0));
+		if (err == -EWOULDBLOCK)
+			err = -ETIMEDOUT;
+		if (err) /* NOMEM or WOULDBLOCK */
+			goto out_nfserr;
+	}
 
 	if (access & MAY_WRITE) {
 		if (access & MAY_READ)
@@ -1092,7 +1100,7 @@ nfsd_commit(struct svc_rqst *rqstp, struct svc_fh *fhp,
 	if ((u64)count > ~(u64)offset)
 		return nfserr_inval;
 
-	if ((err = nfsd_open(rqstp, fhp, S_IFREG, MAY_WRITE, &file)) != 0)
+	if ((err = nfsd_open(rqstp, fhp, S_IFREG, MAY_WRITE|NFSD_MAY_NOT_BREAK_LEASE, &file)) != 0)
 		return err;
 	if (EX_ISSYNC(fhp->fh_export)) {
 		if (file->f_op && file->f_op->fsync) {
@@ -1106,6 +1114,21 @@ nfsd_commit(struct svc_rqst *rqstp, struct svc_fh *fhp,
 	return err;
 }
 #endif /* CONFIG_NFSD_V3 */
+
+/* HPUX client sometimes creates a file in mode 000, and sets size to 0.
+ * setting size to 0 may fail for some specific file systems by the permission
+ * checking which requires WRITE permission but the mode is 000.
+ * we ignore the resizing(to 0) on the just new created file, since the size is
+ * 0 after file created.
+ *
+ * call this only after vfs_create() is called.
+ * */
+static void
+nfsd_check_ignore_resizing(struct iattr *iap)
+{
+	if ((iap->ia_valid & ATTR_SIZE) && (iap->ia_size == 0))
+		iap->ia_valid &= ~ATTR_SIZE;
+}
 
 /*
  * Create a file (regular, directory, device, fifo); UNIX sockets 
@@ -1189,6 +1212,8 @@ nfsd_create(struct svc_rqst *rqstp, struct svc_fh *fhp,
 	switch (type) {
 	case S_IFREG:
 		err = vfs_create(dirp, dchild, iap->ia_mode, NULL);
+		if (!err)
+			nfsd_check_ignore_resizing(iap);
 		break;
 	case S_IFDIR:
 		err = vfs_mkdir(dirp, dchild, iap->ia_mode);
@@ -1341,6 +1366,8 @@ nfsd_create_v3(struct svc_rqst *rqstp, struct svc_fh *fhp,
 		err = nfserrno(nfsd_sync_dir(dentry));
 		/* setattr will sync the child (or not) */
 	}
+
+	nfsd_check_ignore_resizing(iap);
 
 	if (createmode == NFS3_CREATE_EXCLUSIVE) {
 		/* Cram the verifier into atime/mtime */

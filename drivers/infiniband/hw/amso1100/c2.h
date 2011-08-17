@@ -405,25 +405,6 @@ struct c2_port {
  */
 #define C2_ADAPTER_PCI_REGS_OFFSET 0x10000
 
-#ifndef readq
-static inline u64 readq(const void __iomem * addr)
-{
-	u64 ret = readl(addr + 4);
-	ret <<= 32;
-	ret |= readl(addr);
-
-	return ret;
-}
-#endif
-
-#ifndef writeq
-static inline void __raw_writeq(u64 val, void __iomem * addr)
-{
-	__raw_writel((u32) (val), addr);
-	__raw_writel((u32) (val >> 32), (addr + 4));
-}
-#endif
-
 #define C2_SET_CUR_RX(c2dev, cur_rx) \
 	__raw_writel(cpu_to_be32(cur_rx), c2dev->mmio_txp_ring + 4092)
 

@@ -65,19 +65,6 @@ struct sysfs_ops {
 	ssize_t	(*store)(struct kobject *,struct attribute *,const char *, size_t);
 };
 
-struct sysfs_dirent {
-	atomic_t		s_count;
-	struct list_head	s_sibling;
-	struct list_head	s_children;
-	void 			* s_element;
-	int			s_type;
-	umode_t			s_mode;
-	ino_t			s_ino;
-	struct dentry		* s_dentry;
-	struct iattr		* s_iattr;
-	atomic_t		s_event;
-};
-
 #define SYSFS_ROOT		0x0001
 #define SYSFS_DIR		0x0002
 #define SYSFS_KOBJ_ATTR 	0x0004
@@ -86,6 +73,9 @@ struct sysfs_dirent {
 #define SYSFS_NOT_PINNED	(SYSFS_KOBJ_ATTR | SYSFS_KOBJ_BIN_ATTR | SYSFS_KOBJ_LINK)
 
 #ifdef CONFIG_SYSFS
+
+extern int sysfs_schedule_callback(struct kobject *kobj,
+				   void (*func)(void *), void *data);
 
 extern int
 sysfs_create_dir(struct kobject *);
@@ -122,6 +112,12 @@ void sysfs_remove_group(struct kobject *, const struct attribute_group *);
 void sysfs_notify(struct kobject * k, char *dir, char *attr);
 
 #else /* CONFIG_SYSFS */
+
+static inline int sysfs_schedule_callback(struct kobject *kobj,
+		void (*func)(void *), void *data)
+{
+	return -ENOSYS;
+}
 
 static inline int sysfs_create_dir(struct kobject * k)
 {

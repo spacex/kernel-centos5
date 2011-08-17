@@ -213,6 +213,13 @@ SECTIONS
      from .altinstructions and .eh_frame */
   .exit.text : AT(ADDR(.exit.text) - LOAD_OFFSET) { *(.exit.text) }
   .exit.data : AT(ADDR(.exit.data) - LOAD_OFFSET) { *(.exit.data) }
+
+/* vdso blob that is mapped into user space */
+   vdso_start = . ;
+   .vdso  : AT(ADDR(.vdso) - LOAD_OFFSET) { *(.vdso) }
+   . = ALIGN(4096);
+   vdso_end = .;
+
   . = ALIGN(4096);
   __initramfs_start = .;
   .init.ramfs : AT(ADDR(.init.ramfs) - LOAD_OFFSET) { *(.init.ramfs) }

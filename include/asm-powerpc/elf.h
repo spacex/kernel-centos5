@@ -226,6 +226,13 @@ extern int dump_task_fpu(struct task_struct *, elf_fpregset_t *);
    intent than poking at uname or /proc/cpuinfo.  */
 
 #define ELF_PLATFORM	(cur_cpu_spec->platform)
+/* While ELF_PLATFORM indicates the ISA supported by the platform, it
+ * may not accurately reflect the underlying behavior of the hardware
+ * (as in the case of running in Power5+ compatibility mode on a
+ * Power6 machine).  ELF_BASE_PLATFORM allows ld.so to load libraries
+ * that are tuned for the real hardware.
+ */              
+#define ELF_BASE_PLATFORM (powerpc_base_platform)
 
 #ifdef __powerpc64__
 # define ELF_PLAT_INIT(_r, load_addr)	do {	\

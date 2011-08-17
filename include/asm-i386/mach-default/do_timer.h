@@ -2,19 +2,9 @@
 
 #include <asm/apic.h>
 #include <asm/i8259.h>
+#include <asm/timer.h>
 
-/**
- * do_timer_interrupt_hook - hook into timer tick
- * @regs:	standard registers from interrupt
- *
- * Description:
- *	This hook is called immediately after the timer interrupt is ack'd.
- *	It's primary purpose is to allow architectures that don't possess
- *	individual per CPU clocks (like the CPU APICs supply) to broadcast the
- *	timer interrupt as a means of triggering reschedules etc.
- **/
-
-static inline void do_timer_interrupt_hook(struct pt_regs *regs)
+static void do_timer_jiffy(struct pt_regs *regs)
 {
 	int i;
 	for (i = 0; i < tick_divider; i++) {
@@ -35,6 +25,26 @@ static inline void do_timer_interrupt_hook(struct pt_regs *regs)
 	if (!using_apic_timer)
 		smp_local_timer_interrupt(regs);
 #endif
+
+}
+
+/**
+ * do_timer_interrupt_hook - hook into timer tick
+ * @regs:	standard registers from interrupt
+ *
+ * Description:
+ *	This hook is called immediately after the timer interrupt is ack'd.
+ *	It's primary purpose is to allow architectures that don't possess
+ *	individual per CPU clocks (like the CPU APICs supply) to broadcast the
+ *	timer interrupt as a means of triggering reschedules etc.
+ **/
+
+static inline void do_timer_interrupt_hook(struct pt_regs *regs)
+{
+	if (enable_tsc_timer)
+		do_timer_tsc_timekeeping(regs);
+	else
+		do_timer_jiffy(regs);
 }
 
 

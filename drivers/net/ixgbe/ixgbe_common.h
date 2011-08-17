@@ -30,6 +30,7 @@
 
 #include "ixgbe_type.h"
 
+u32 ixgbe_get_pcie_msix_count_generic(struct ixgbe_hw *hw);
 s32 ixgbe_init_ops_generic(struct ixgbe_hw *hw);
 s32 ixgbe_init_hw_generic(struct ixgbe_hw *hw);
 s32 ixgbe_start_hw_generic(struct ixgbe_hw *hw);
@@ -45,12 +46,13 @@ s32 ixgbe_led_off_generic(struct ixgbe_hw *hw, u32 index);
 
 s32 ixgbe_init_eeprom_params_generic(struct ixgbe_hw *hw);
 s32 ixgbe_write_eeprom_generic(struct ixgbe_hw *hw, u16 offset, u16 data);
-s32 ixgbe_read_eeprom_generic(struct ixgbe_hw *hw, u16 offset, u16 *data);
+s32 ixgbe_read_eerd_generic(struct ixgbe_hw *hw, u16 offset, u16 *data);
 s32 ixgbe_read_eeprom_bit_bang_generic(struct ixgbe_hw *hw, u16 offset,
                                        u16 *data);
 s32 ixgbe_validate_eeprom_checksum_generic(struct ixgbe_hw *hw,
                                            u16 *checksum_val);
 s32 ixgbe_update_eeprom_checksum_generic(struct ixgbe_hw *hw);
+s32 ixgbe_poll_eerd_eewr_done(struct ixgbe_hw *hw, u32 ee_reg);
 
 s32 ixgbe_set_rar_generic(struct ixgbe_hw *hw, u32 index, u8 *addr, u32 vmdq,
                           u32 enable_addr);
@@ -75,9 +77,16 @@ s32 ixgbe_validate_mac_addr(u8 *mac_addr);
 s32 ixgbe_acquire_swfw_sync(struct ixgbe_hw *hw, u16 mask);
 void ixgbe_release_swfw_sync(struct ixgbe_hw *hw, u16 mask);
 s32 ixgbe_disable_pcie_master(struct ixgbe_hw *hw);
-
-s32 ixgbe_read_analog_reg8_generic(struct ixgbe_hw *hw, u32 reg, u8 *val);
-s32 ixgbe_write_analog_reg8_generic(struct ixgbe_hw *hw, u32 reg, u8 val);
+s32 ixgbe_get_san_mac_addr_generic(struct ixgbe_hw *hw, u8 *san_mac_addr);
+s32 ixgbe_set_vmdq_generic(struct ixgbe_hw *hw, u32 rar, u32 vmdq);
+s32 ixgbe_clear_vmdq_generic(struct ixgbe_hw *hw, u32 rar, u32 vmdq);
+s32 ixgbe_init_uta_tables_generic(struct ixgbe_hw *hw);
+s32 ixgbe_set_vfta_generic(struct ixgbe_hw *hw, u32 vlan,
+                           u32 vind, bool vlan_on);
+s32 ixgbe_clear_vfta_generic(struct ixgbe_hw *hw);
+s32 ixgbe_check_mac_link_generic(struct ixgbe_hw *hw,
+                                 ixgbe_link_speed *speed,
+                                 bool *link_up, bool link_up_wait_to_complete);
 
 s32 ixgbe_blink_led_start_generic(struct ixgbe_hw *hw, u32 index);
 s32 ixgbe_blink_led_stop_generic(struct ixgbe_hw *hw, u32 index);
@@ -102,11 +111,35 @@ s32 ixgbe_blink_led_stop_generic(struct ixgbe_hw *hw, u32 index);
 #define IXGBE_WRITE_FLUSH(a) IXGBE_READ_REG(a, IXGBE_STATUS)
 
 #ifdef DEBUG
-extern char *ixgbe_get_hw_dev_name(struct ixgbe_hw *hw);
+extern struct net_device *ixgbe_get_hw_dev(struct ixgbe_hw *hw);
 #define hw_dbg(hw, format, arg...) \
-	printk(KERN_DEBUG "%s: " format, ixgbe_get_hw_dev_name(hw), ##arg)
+	printk(KERN_DEBUG pr_fmt("%s: %s: " format), \
+	       ixgbe_get_hw_dev(hw)->name, __FUNCTION__ , ##arg)
 #else
-#define hw_dbg(hw, format, arg...) do {} while (0)
+#define hw_dbg(hw, format, arg...)
 #endif
-
+#define e_dev_info(format, arg...) \
+	printk(KERN_INFO pr_fmt("%s: %s: " format), \
+	       adapter->netdev->name, __FUNCTION__ , ##arg)
+#define e_dev_warn(format, arg...) \
+	printk(KERN_WARNING pr_fmt("%s: %s: " format), \
+	       adapter->netdev->name, __FUNCTION__ , ##arg)
+#define e_dev_err(format, arg...) \
+	printk(KERN_ERR pr_fmt("%s: %s: " format), \
+	       adapter->netdev->name, __FUNCTION__ , ##arg)
+#define e_dev_notice(format, arg...) \
+	printk(KERN_NOTICE pr_fmt("%s: %s: " format), \
+	       adapter->netdev->name, __FUNCTION__ , ##arg)
+#define e_err(msglvl, format, arg...) \
+	printk(KERN_ERR pr_fmt("%s: %s: " format), \
+	       adapter->netdev->name, __FUNCTION__ , ##arg)
+#define e_info(msglvl, format, arg...) \
+	printk(KERN_DEBUG pr_fmt("%s: %s: " format), \
+	       adapter->netdev->name, __FUNCTION__ , ##arg)
+#define e_warn(msglvl, format, arg...) \
+	printk(KERN_WARNING pr_fmt("%s: %s: " format), \
+	       adapter->netdev->name, __FUNCTION__ , ##arg)
+#define e_crit(msglvl, format, arg...) \
+	printk(KERN_CRIT pr_fmt("%s: %s: " format), \
+	       adapter->netdev->name, __FUNCTION__ , ##arg)
 #endif /* IXGBE_COMMON */

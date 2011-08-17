@@ -19,7 +19,6 @@
 
 #include "vxge-traffic.h"
 #include "vxge-config.h"
-#include "vxge-compat.h"
 
 /*
  * __vxge_hw_channel_allocate - Allocate memory for channel
@@ -184,8 +183,6 @@ __vxge_hw_device_pci_e_init(struct __vxge_hw_device *hldev)
 	pci_write_config_word(hldev->pdev, PCI_COMMAND, cmd);
 
 	pci_save_state(hldev->pdev);
-
-	return;
 }
 
 /*
@@ -343,8 +340,6 @@ void __vxge_hw_device_id_get(struct __vxge_hw_device *hldev)
 
 	hldev->minor_revision =
 		(u8)VXGE_HW_TITAN_ASIC_ID_GET_INITIAL_MINOR_REVISION(val64);
-
-	return;
 }
 
 /*
@@ -358,8 +353,10 @@ __vxge_hw_device_access_rights_get(u32 host_type, u32 func_id)
 
 	switch (host_type) {
 	case VXGE_HW_NO_MR_NO_SR_NORMAL_FUNCTION:
-		access_rights |= VXGE_HW_DEVICE_ACCESS_RIGHT_MRPCIM |
-				VXGE_HW_DEVICE_ACCESS_RIGHT_SRPCIM;
+		if (func_id == 0) {
+			access_rights |= VXGE_HW_DEVICE_ACCESS_RIGHT_MRPCIM |
+					VXGE_HW_DEVICE_ACCESS_RIGHT_SRPCIM;
+		}
 		break;
 	case VXGE_HW_MR_NO_SR_VH0_BASE_FUNCTION:
 		access_rights |= VXGE_HW_DEVICE_ACCESS_RIGHT_MRPCIM |
@@ -427,8 +424,6 @@ void __vxge_hw_device_host_info_get(struct __vxge_hw_device *hldev)
 		hldev->first_vp_id = i;
 		break;
 	}
-
-	return;
 }
 
 /*
@@ -634,8 +629,10 @@ vxge_hw_device_initialize(
 	__vxge_hw_device_pci_e_init(hldev);
 
 	status = __vxge_hw_device_reg_addr_get(hldev);
-	if (status != VXGE_HW_OK)
+	if (status != VXGE_HW_OK) {
+		vfree(hldev);
 		goto exit;
+	}
 	__vxge_hw_device_id_get(hldev);
 
 	__vxge_hw_device_host_info_get(hldev);
@@ -1214,19 +1211,16 @@ __vxge_hw_ring_mempool_item_alloc(struct vxge_hw_mempool *mempoolh,
 		/* link this RxD block with previous one */
 		__vxge_hw_ring_rxdblock_link(mempoolh, ring, index - 1, index);
 	}
-
-	return;
 }
 
 /*
- * __vxge_hw_ring_initial_replenish - Initial replenish of RxDs
+ * __vxge_hw_ring_replenish - Initial replenish of RxDs
  * This function replenishes the RxDs from reserve array to work array
  */
 enum vxge_hw_status
-vxge_hw_ring_replenish(struct __vxge_hw_ring *ring, u16 min_flag)
+vxge_hw_ring_replenish(struct __vxge_hw_ring *ring)
 {
 	void *rxd;
-	int i = 0;
 	struct __vxge_hw_channel *channel;
 	enum vxge_hw_status status = VXGE_HW_OK;
 
@@ -1247,11 +1241,6 @@ vxge_hw_ring_replenish(struct __vxge_hw_ring *ring, u16 min_flag)
 		}
 
 		vxge_hw_ring_rxd_post(ring, rxd);
-		if (min_flag) {
-			i++;
-			if (i == VXGE_HW_RING_MIN_BUFF_ALLOCATION)
-				break;
-		}
 	}
 	status = VXGE_HW_OK;
 exit:
@@ -1356,7 +1345,7 @@ __vxge_hw_ring_create(struct __vxge_hw_vpath_handle *vp,
 	 * Currently we don't have a case when the 1) is done without the 2).
 	 */
 	if (ring->rxd_init) {
-		status = vxge_hw_ring_replenish(ring, 1);
+		status = vxge_hw_ring_replenish(ring);
 		if (status != VXGE_HW_OK) {
 			__vxge_hw_ring_delete(vp);
 			goto exit;
@@ -1418,7 +1407,7 @@ enum vxge_hw_status __vxge_hw_ring_reset(struct __vxge_hw_ring *ring)
 		goto exit;
 
 	if (ring->rxd_init) {
-		status = vxge_hw_ring_replenish(ring, 1);
+		status = vxge_hw_ring_replenish(ring);
 		if (status != VXGE_HW_OK)
 			goto exit;
 	}
@@ -2321,8 +2310,6 @@ __vxge_hw_fifo_mempool_item_alloc(
 	txdl_priv->first_txdp = txdp;
 	txdl_priv->next_txdl_priv = NULL;
 	txdl_priv->alloc_frags = 0;
-
-	return;
 }
 
 /*
@@ -2579,7 +2566,6 @@ __vxge_hw_read_rts_ds(struct vxge_hw_vpath_reg __iomem *vpath_reg,
 	writeq(dta_struct_sel, &vpath_reg->rts_access_steer_data0);
 	writeq(0, &vpath_reg->rts_access_steer_data1);
 	wmb();
-	return;
 }
 
 
@@ -3487,7 +3473,6 @@ __vxge_hw_vpath_prc_configure(struct __vxge_hw_device *hldev, u32 vp_id)
 		val64 &= ~VXGE_HW_PRC_CFG4_RTH_DISABLE;
 
 	writeq(val64, &vp_reg->prc_cfg4);
-	return;
 }
 
 /*
@@ -3906,7 +3891,6 @@ vxge_hw_vpath_tti_ci_set(struct __vxge_hw_device *hldev, u32 vp_id)
 			&vp_reg->tim_cfg1_int_num[VXGE_HW_VPATH_INTR_TX]);
 		}
 	}
-	return;
 }
 /*
  * __vxge_hw_vpath_initialize
@@ -4719,9 +4703,7 @@ __vxge_hw_blockpool_create(struct __vxge_hw_device *hldev,
 		dma_addr = pci_map_single(hldev->pdev, memblock,
 				VXGE_HW_BLOCK_SIZE, PCI_DMA_BIDIRECTIONAL);
 
-		if (unlikely(pci_dma_mapping_error(hldev->pdev,
-				dma_addr))) {
-
+		if (unlikely(pci_dma_mapping_error(dma_addr))) {
 			vxge_os_dma_free(hldev->pdev, memblock, &acc_handle);
 			__vxge_hw_blockpool_destroy(blockpool);
 			status = VXGE_HW_ERR_OUT_OF_MEMORY;
@@ -4885,8 +4867,7 @@ void vxge_hw_blockpool_block_add(
 	dma_addr = pci_map_single(devh->pdev, block_addr, length,
 				PCI_DMA_BIDIRECTIONAL);
 
-	if (unlikely(pci_dma_mapping_error(devh->pdev, dma_addr))) {
-
+	if (unlikely(pci_dma_mapping_error(dma_addr))) {
 		vxge_os_dma_free(devh->pdev, block_addr, &acc_handle);
 		blockpool->req_out--;
 		status = VXGE_HW_FAIL;
@@ -4955,8 +4936,7 @@ __vxge_hw_blockpool_malloc(struct __vxge_hw_device *devh, u32 size,
 		dma_object->addr = pci_map_single(devh->pdev, memblock, size,
 					PCI_DMA_BIDIRECTIONAL);
 
-		if (unlikely(pci_dma_mapping_error(devh->pdev,
-				dma_object->addr))) {
+		if (unlikely(pci_dma_mapping_error(dma_object->addr))) {
 			vxge_os_dma_free(devh->pdev, memblock,
 				&dma_object->acc_handle);
 			status = VXGE_HW_ERR_OUT_OF_MEMORY;
@@ -5040,8 +5020,6 @@ __vxge_hw_blockpool_free(struct __vxge_hw_device *devh,
 		if (status == VXGE_HW_OK)
 			__vxge_hw_blockpool_blocks_remove(blockpool);
 	}
-
-	return;
 }
 
 /*
@@ -5097,6 +5075,4 @@ __vxge_hw_blockpool_block_free(struct __vxge_hw_device *devh,
 	}
 
 	__vxge_hw_blockpool_blocks_remove(blockpool);
-
-	return;
 }

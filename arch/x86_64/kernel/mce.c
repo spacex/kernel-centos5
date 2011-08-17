@@ -19,6 +19,7 @@
 #include <linux/cpu.h>
 #include <linux/percpu.h>
 #include <linux/ctype.h>
+#include <linux/edac_mce.h>
 #include <asm/processor.h> 
 #include <asm/msr.h>
 #include <asm/mce.h>
@@ -65,6 +66,13 @@ void mce_log(struct mce *mce)
 		    iteration */
 		rmb();
 		for (;;) {
+			/* If edac_mce is enabled, it will check the error type
+			   and will process it, if it is a known error.
+			   Otherwise, the error will be sent through mcelog
+			   interface */
+			if (edac_mce_parse(mce))
+				return;
+
 			/* When the buffer fills up discard new entries. Assume
 			   that the earlier errors are the more interesting. */
 			if (entry >= MCE_LOG_LEN) {
@@ -94,6 +102,8 @@ void mce_log(struct mce *mce)
 
 static void print_mce(struct mce *m)
 {
+	edac_mce_parse(m);
+
 	printk(KERN_EMERG "\n"
 	       KERN_EMERG "HARDWARE ERROR\n"
 	       KERN_EMERG
@@ -490,15 +500,17 @@ static ssize_t mce_read(struct file *filp, char __user *ubuf, size_t usize, loff
 	for (i = 0; i < next; i++) {		
 		unsigned long start = jiffies;
 		while (!mcelog.entry[i].finished) {
-			if (!time_before(jiffies, start + 2)) {
+			if (time_after_eq(jiffies, start + 2)) {
 				memset(mcelog.entry + i,0, sizeof(struct mce));
-				continue;
+				goto timeout;
 			}
 			cpu_relax();
 		}
 		smp_rmb();
 		err |= copy_to_user(buf, mcelog.entry + i, sizeof(struct mce));
 		buf += sizeof(struct mce); 
+ timeout:
+		;
 	} 
 
 	memset(mcelog.entry, 0, next * sizeof(struct mce));

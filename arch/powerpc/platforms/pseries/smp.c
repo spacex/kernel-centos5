@@ -48,6 +48,7 @@
 #include <asm/vdso_datapage.h>
 
 #include "plpar_wrappers.h"
+#include "offline_states.h"
 
 #ifdef DEBUG
 #include <asm/udbg.h>
@@ -111,14 +112,26 @@ static int pSeries_cpu_disable(void)
 static void pSeries_cpu_die(unsigned int cpu)
 {
 	int tries;
-	int cpu_status;
+	int cpu_status = 1;
 	unsigned int pcpu = get_hard_smp_processor_id(cpu);
 
-	for (tries = 0; tries < 25; tries++) {
-		cpu_status = query_cpu_stopped(pcpu);
-		if (cpu_status == 0 || cpu_status == -1)
-			break;
-		msleep(200);
+	if (get_preferred_offline_state(cpu) == CPU_STATE_INACTIVE) {
+		cpu_status = 1;
+		for (tries = 0; tries < 1000; tries++) {
+			if (get_cpu_current_state(cpu) == CPU_STATE_INACTIVE) {
+				cpu_status = 0;
+				break;
+			}
+			cpu_relax();
+		}
+	} else if (get_preferred_offline_state(cpu) == CPU_STATE_OFFLINE) {
+
+		for (tries = 0; tries < 25; tries++) {
+			cpu_status = query_cpu_stopped(pcpu);
+			if (cpu_status == 0 || cpu_status == -1)
+				break;
+			msleep(200);
+		}
 	}
 	if (cpu_status != 0) {
 		printk("Querying DEAD? cpu %i (%i) shows %i\n",
@@ -283,6 +296,9 @@ static inline int __devinit smp_startup_cpu(unsigned int lcpu)
 	/* Fixup atomic count: it exited inside IRQ handler. */
 	task_thread_info(paca[lcpu].__current)->preempt_count	= 0;
 
+	if (get_cpu_current_state(lcpu) == CPU_STATE_INACTIVE)
+		goto out;
+
 	/* 
 	 * If the RTAS start-cpu token does not exist then presume the
 	 * cpu is already spinning.
@@ -297,6 +313,7 @@ static inline int __devinit smp_startup_cpu(unsigned int lcpu)
 		return 0;
 	}
 
+out:
 	return 1;
 }
 
@@ -340,6 +357,8 @@ static void __devinit smp_xics_setup_cpu(int cpu)
 		vpa_init(cpu);
 
 	cpu_clear(cpu, of_spin_map);
+	set_cpu_current_state(cpu, CPU_STATE_ONLINE);
+	set_default_offline_state(cpu);
 
 }
 #endif /* CONFIG_XICS */
@@ -371,6 +390,8 @@ static void __devinit pSeries_take_timebase(void)
 
 static void __devinit smp_pSeries_kick_cpu(int nr)
 {
+	long rc;
+	unsigned long hcpuid;
 	BUG_ON(nr < 0 || nr >= NR_CPUS);
 
 	if (!smp_startup_cpu(nr))
@@ -382,6 +403,15 @@ static void __devinit smp_pSeries_kick_cpu(int nr)
 	 * the processor will continue on to secondary_start
 	 */
 	paca[nr].cpu_start = 1;
+	set_preferred_offline_state(nr, CPU_STATE_ONLINE);
+
+	if (get_cpu_current_state(nr) == CPU_STATE_INACTIVE) {
+		hcpuid = get_hard_smp_processor_id(nr);
+		rc = plpar_hcall_norets(H_PROD, hcpuid);
+		if (rc != H_SUCCESS)
+			printk(KERN_ERR "Error: Prod to wake up processor %d "
+			       "Ret= %ld\n", nr, rc);
+	}
 }
 
 static int smp_pSeries_cpu_bootable(unsigned int nr)

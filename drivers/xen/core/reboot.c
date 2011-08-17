@@ -183,9 +183,9 @@ static int __do_suspend(void *ignore)
 	if (err)
 		return err;
 
-	xenbus_suspend();
-
 	preempt_disable();
+
+	xenbus_suspend();
 
 	mm_pin_all();
 	local_irq_disable();

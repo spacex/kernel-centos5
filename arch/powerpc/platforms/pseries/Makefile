@@ -12,3 +12,7 @@ obj-$(CONFIG_EEH)	+= eeh.o eeh_cache.o eeh_driver.o eeh_event.o
 
 obj-$(CONFIG_HVC_CONSOLE)	+= hvconsole.o
 obj-$(CONFIG_HVCS)		+= hvcserver.o
+
+ifeq ($(CONFIG_PPC_PSERIES),y)
+obj-$(CONFIG_PM)		+= suspend.o
+endif

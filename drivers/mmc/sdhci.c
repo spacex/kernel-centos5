@@ -1046,6 +1046,7 @@ out:
 static int sdhci_suspend (struct pci_dev *pdev, pm_message_t state)
 {
 	struct sdhci_chip *chip;
+	u32 intmask;
 	int i, ret;
 
 	chip = pci_get_drvdata(pdev);
@@ -1057,12 +1058,23 @@ static int sdhci_suspend (struct pci_dev *pdev, pm_message_t state)
 	for (i = 0;i < chip->num_slots;i++) {
 		if (!chip->hosts[i])
 			continue;
+	
+		intmask = readl(chip->hosts[i]->ioaddr + 
+				SDHCI_INT_STATUS);
+		intmask &= ~(SDHCI_INT_CARD_INSERT | 
+			     SDHCI_INT_CARD_REMOVE);
+		writel(intmask, chip->hosts[i]->ioaddr + 
+			SDHCI_INT_ENABLE);
+		writel(intmask, chip->hosts[i]->ioaddr + 
+			SDHCI_SIGNAL_ENABLE);
+
 		ret = mmc_suspend_host(chip->hosts[i]->mmc, state);
 		if (ret) {
 			for (i--;i >= 0;i--)
 				mmc_resume_host(chip->hosts[i]->mmc);
 			return ret;
 		}
+		free_irq(chip->hosts[i]->irq, chip->hosts[i]);
 	}
 
 	pci_save_state(pdev);
@@ -1093,6 +1105,14 @@ static int sdhci_resume (struct pci_dev *pdev)
 			continue;
 		if (chip->hosts[i]->flags & SDHCI_USE_DMA)
 			pci_set_master(pdev);
+	
+		ret = request_irq(chip->hosts[i]->irq, sdhci_irq, 
+				IRQF_SHARED, 
+				chip->hosts[i]->slot_descr, 
+				chip->hosts[i]);
+		if (ret)
+			return ret;
+
 		sdhci_init(chip->hosts[i]);
 		ret = mmc_resume_host(chip->hosts[i]->mmc);
 		if (ret)

@@ -108,7 +108,7 @@ config I2C_HYDRA
 	  will be called i2c-hydra.
 
 config I2C_I801
-	tristate "Intel 82801 (ICH)"
+	tristate "Intel 82801 (ICH/PCH)"
 	depends on I2C && PCI
 	help
 	  If you say yes to this option, support will be included for the Intel
@@ -128,7 +128,9 @@ config I2C_I801
 	    ICH9
 	    Tolapai
 	    ICH10
-	    PCH
+	    3400/5 Series (PCH)
+	    Cougar Point (PCH)
+	    Patsburg (PCH)
 
 	  This driver can also be built as a module.  If so, the module
 	  will be called i2c-i801.

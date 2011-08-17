@@ -369,12 +369,7 @@ void rt2x00link_start_tuner(struct rt2x00_dev *rt2x00dev)
 
 void rt2x00link_stop_tuner(struct rt2x00_dev *rt2x00dev)
 {
-#if 0 /* Not in RHEL5... */
 	cancel_delayed_work_sync(&rt2x00dev->link.work);
-#else
-	if (delayed_work_pending(&rt2x00dev->link.work))
-		cancel_rearming_delayed_work(&rt2x00dev->link.work);
-#endif
 }
 
 void rt2x00link_reset_tuner(struct rt2x00_dev *rt2x00dev, bool antenna)
@@ -422,15 +417,10 @@ static void rt2x00link_tuner(void *r)
 
 	/*
 	 * When the radio is shutting down we should
-	 * immediately cease all link tuning ...
+	 * immediately cease all link tuning.
 	 */
-	if (!test_bit(DEVICE_STATE_ENABLED_RADIO, &rt2x00dev->flags)) {
-		/* ... but in RHEL5 we have no working cancel_work_sync,
-		   so we are rescheduling here to avoid infinite loop
-		   in cancel_rearming_delayed_work() */
-		ieee80211_queue_delayed_work(rt2x00dev->hw, &link->work, LINK_TUNE_INTERVAL);
+	if (!test_bit(DEVICE_STATE_ENABLED_RADIO, &rt2x00dev->flags))
 		return;
-	}
 
 	/*
 	 * Update statistics.
@@ -480,16 +470,9 @@ static void rt2x00link_tuner(void *r)
 	 */
 	link->count++;
 
-#if 0 /* Not in RHEL5... */
 	if (test_bit(DEVICE_STATE_PRESENT, &rt2x00dev->flags))
 		ieee80211_queue_delayed_work(rt2x00dev->hw,
 					     &link->work, LINK_TUNE_INTERVAL);
-#else
-	/* Queue delayed work no matter what, otherwise
-	   cancel_rearming_delayed_work() may hang and live lock the system */
-		ieee80211_queue_delayed_work(rt2x00dev->hw,
-					     &link->work, LINK_TUNE_INTERVAL);
-#endif
 }
 
 void rt2x00link_register(struct rt2x00_dev *rt2x00dev)

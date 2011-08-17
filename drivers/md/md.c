@@ -5191,7 +5191,11 @@ void md_do_sync(mddev_t *mddev)
 					 * time 'round when curr_resync == 2
 					 */
 					continue;
-				prepare_to_wait(&resync_wait, &wq, TASK_UNINTERRUPTIBLE);
+				/* We need to wait 'interruptible' so as not to
+				 * contribute to the load average, and not to
+				 * be caught by 'softlockup'
+				 */
+				prepare_to_wait(&resync_wait, &wq, TASK_INTERRUPTIBLE);
 				if (!kthread_should_stop() &&
 				    mddev2->curr_resync >= mddev->curr_resync) {
 					printk(KERN_INFO "md: delaying resync of %s"
@@ -5199,6 +5203,8 @@ void md_do_sync(mddev_t *mddev)
 					       " share one or more physical units)\n",
 					       mdname(mddev), mdname(mddev2));
 					mddev_put(mddev2);
+					if (signal_pending(current))
+						flush_signals(current);
 					schedule();
 					finish_wait(&resync_wait, &wq);
 					goto try_again;

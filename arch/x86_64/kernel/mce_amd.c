@@ -498,7 +498,7 @@ static __cpuinit int threshold_create_bank(unsigned int cpu, unsigned int bank)
 #ifndef CONFIG_SMP
 	b->cpus = CPU_MASK_ALL;
 #else
-	b->cpus = c->llc_shared_map;
+	cpu_set(cpu, b->cpus);
 #endif
 	err = kobject_register(&b->kobj);
 	if (err)

@@ -76,6 +76,8 @@
 #define X86_FEATURE_NONSTOP_TSC (3*32+24) /* TSC does not stop in C states */
 #define X86_FEATURE_ARAT	(3*32+25) /* Always Running APIC Timer */
 #define X86_FEATURE_AMD_DCM	(3*32+27) /* multi-node processor */
+#define X86_FEATURE_CLFLUSH_MONITOR (3*32+28) /* clflush reqd with monitor */
+#define X86_FEATURE_CPB		(3*32+29) /* AMD Core Performance Boost */
 
 /* Intel-defined CPU features, CPUID level 0x00000001 (ecx), word 4 */
 #define X86_FEATURE_XMM3	(4*32+ 0) /* Streaming SIMD Extensions-3 */

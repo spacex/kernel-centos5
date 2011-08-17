@@ -1,6 +1,6 @@
 /*
  * Intel I/OAT DMA Linux driver
- * Copyright(c) 2004 - 2007 Intel Corporation.
+ * Copyright(c) 2004 - 2009 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -188,11 +188,13 @@ static int ioat_dma_enumerate_channels(struct ioatdma_device *device)
 		ioat_chan->desccount = 0;
 		INIT_WORK(&ioat_chan->work, (void*)ioat_dma_chan_reset_part2,
 			  &ioat_chan->work);
-		if (ioat_chan->device->version != IOAT_VER_1_2) {
-			writel(IOAT_DCACTRL_CMPL_WRITE_ENABLE
-					| IOAT_DMA_DCA_ANY_CPU,
-				ioat_chan->reg_base + IOAT_DCACTRL_OFFSET);
-		}
+		if (ioat_chan->device->version == IOAT_VER_2_0)
+			writel(IOAT_DCACTRL_CMPL_WRITE_ENABLE |
+			       IOAT_DMA_DCA_ANY_CPU,
+			       ioat_chan->reg_base + IOAT_DCACTRL_OFFSET);
+		else if (ioat_chan->device->version == IOAT_VER_3_0)
+			writel(IOAT_DMA_DCA_ANY_CPU,
+			       ioat_chan->reg_base + IOAT_DCACTRL_OFFSET);
 		spin_lock_init(&ioat_chan->cleanup_lock);
 		spin_lock_init(&ioat_chan->desc_lock);
 		INIT_LIST_HEAD(&ioat_chan->free_desc);
@@ -524,7 +526,7 @@ static dma_cookie_t ioat1_tx_submit(struct dma_async_tx_descriptor *tx)
 	}
 
 	hw->ctl = IOAT_DMA_DESCRIPTOR_CTL_CP_STS;
-	if (new->async_tx.callback) {
+	if (first->async_tx.callback) {
 		hw->ctl |= IOAT_DMA_DESCRIPTOR_CTL_INT_GN;
 		if (first != new) {
 			/* move callback into to last desc */
@@ -616,7 +618,7 @@ static dma_cookie_t ioat2_tx_submit(struct dma_async_tx_descriptor *tx)
 	}
 
 	hw->ctl |= IOAT_DMA_DESCRIPTOR_CTL_CP_STS;
-	if (new->async_tx.callback) {
+	if (first->async_tx.callback) {
 		hw->ctl |= IOAT_DMA_DESCRIPTOR_CTL_INT_GN;
 		if (first != new) {
 			/* move callback into to last desc */
@@ -690,7 +692,6 @@ static struct ioat_desc_sw *ioat_dma_alloc_descriptor(
 		desc_sw->async_tx.tx_submit = ioat2_tx_submit;
 		break;
 	}
-	INIT_LIST_HEAD(&desc_sw->async_tx.tx_list);
 
 	desc_sw->hw = desc;
 	desc_sw->async_tx.phys = phys;
@@ -733,8 +734,7 @@ static void ioat2_dma_massage_chan_desc(struct ioat_dma_chan *ioat_chan)
  * ioat_dma_alloc_chan_resources - returns the number of allocated descriptors
  * @chan: the channel to be filled out
  */
-static int ioat_dma_alloc_chan_resources(struct dma_chan *chan,
-					 struct dma_client *client)
+static int ioat_dma_alloc_chan_resources(struct dma_chan *chan)
 {
 	struct ioat_dma_chan *ioat_chan = to_ioat_chan(chan);
 	struct ioat_desc_sw *desc;
@@ -807,6 +807,12 @@ static void ioat_dma_free_chan_resources(struct dma_chan *chan)
 	struct ioat_desc_sw *desc, *_desc;
 	int in_use_descs = 0;
 
+	/* Before freeing channel resources first check
+	 * if they have been previously allocated for this channel.
+	 */
+	if (ioat_chan->desccount == 0)
+		return;
+
 	tasklet_disable(&ioat_chan->cleanup_task);
 	ioat_dma_memcpy_cleanup(ioat_chan);
 
@@ -870,6 +876,7 @@ static void ioat_dma_free_chan_resources(struct dma_chan *chan)
 	ioat_chan->pending = 0;
 	ioat_chan->dmacount = 0;
 	ioat_chan->watchdog_completion = 0;
+	ioat_chan->desccount = 0;
 	ioat_chan->last_compl_desc_addr_hw = 0;
 	ioat_chan->watchdog_tcp_cookie =
 		ioat_chan->watchdog_last_tcp_cookie = 0;
@@ -977,11 +984,9 @@ static struct ioat_desc_sw *ioat_dma_get_next_descriptor(
 	switch (ioat_chan->device->version) {
 	case IOAT_VER_1_2:
 		return ioat1_dma_get_next_descriptor(ioat_chan);
-		break;
 	case IOAT_VER_2_0:
 	case IOAT_VER_3_0:
 		return ioat2_dma_get_next_descriptor(ioat_chan);
-		break;
 	}
 	return NULL;
 }
@@ -1058,22 +1063,31 @@ static void ioat_dma_cleanup_tasklet(unsigned long data)
 static void
 ioat_dma_unmap(struct ioat_dma_chan *ioat_chan, struct ioat_desc_sw *desc)
 {
-	/*
-	 * yes we are unmapping both _page and _single
-	 * alloc'd regions with unmap_page. Is this
-	 * *really* that bad?
-	 */
-	if (!(desc->async_tx.flags & DMA_COMPL_SKIP_DEST_UNMAP))
-		pci_unmap_page(ioat_chan->device->pdev,
-				pci_unmap_addr(desc, dst),
-				pci_unmap_len(desc, len),
-				PCI_DMA_FROMDEVICE);
+	if (!(desc->async_tx.flags & DMA_COMPL_SKIP_DEST_UNMAP)) {
+		if (desc->async_tx.flags & DMA_COMPL_DEST_UNMAP_SINGLE)
+			pci_unmap_single(ioat_chan->device->pdev,
+					 pci_unmap_addr(desc, dst),
+					 pci_unmap_len(desc, len),
+					 PCI_DMA_FROMDEVICE);
+		else
+			pci_unmap_page(ioat_chan->device->pdev,
+				       pci_unmap_addr(desc, dst),
+				       pci_unmap_len(desc, len),
+				       PCI_DMA_FROMDEVICE);
+	}
 
-	if (!(desc->async_tx.flags & DMA_COMPL_SKIP_SRC_UNMAP))
-		pci_unmap_page(ioat_chan->device->pdev,
-				pci_unmap_addr(desc, src),
-				pci_unmap_len(desc, len),
-				PCI_DMA_TODEVICE);
+	if (!(desc->async_tx.flags & DMA_COMPL_SKIP_SRC_UNMAP)) {
+		if (desc->async_tx.flags & DMA_COMPL_SRC_UNMAP_SINGLE)
+			pci_unmap_single(ioat_chan->device->pdev,
+					 pci_unmap_addr(desc, src),
+					 pci_unmap_len(desc, len),
+					 PCI_DMA_TODEVICE);
+		else
+			pci_unmap_page(ioat_chan->device->pdev,
+				       pci_unmap_addr(desc, src),
+				       pci_unmap_len(desc, len),
+				       PCI_DMA_TODEVICE);
+	}
 }
 
 /**
@@ -1165,9 +1179,8 @@ static void ioat_dma_memcpy_cleanup(struct ioat_dma_chan *ioat_chan)
 				 if the client is done with the descriptor
 				 */
 				if (async_tx_test_ack(&desc->async_tx)) {
-					list_del(&desc->node);
-					list_add_tail(&desc->node,
-						      &ioat_chan->free_desc);
+					list_move_tail(&desc->node,
+						       &ioat_chan->free_desc);
 				} else
 					desc->async_tx.cookie = 0;
 			} else {
@@ -1357,6 +1370,8 @@ static int ioat_dma_self_test(struct ioatdma_device *device)
 	dma_cookie_t cookie;
 	int err = 0;
 	struct completion cmp;
+	unsigned long tmo;
+	unsigned long flags;
 
 	src = kzalloc(sizeof(u8) * IOAT_TEST_SIZE, GFP_KERNEL);
 	if (!src)
@@ -1375,7 +1390,7 @@ static int ioat_dma_self_test(struct ioatdma_device *device)
 	dma_chan = container_of(device->common.channels.next,
 				struct dma_chan,
 				device_node);
-	if (device->common.device_alloc_chan_resources(dma_chan, NULL) < 1) {
+	if (device->common.device_alloc_chan_resources(dma_chan) < 1) {
 		dev_err(&device->pdev->dev,
 			"selftest cannot allocate chan resource\n");
 		err = -ENODEV;
@@ -1386,8 +1401,9 @@ static int ioat_dma_self_test(struct ioatdma_device *device)
 				 DMA_TO_DEVICE);
 	dma_dest = dma_map_single(dma_chan->device_v3->dev,dest, IOAT_TEST_SIZE,
 				  DMA_FROM_DEVICE);
+	flags = DMA_COMPL_SRC_UNMAP_SINGLE | DMA_COMPL_DEST_UNMAP_SINGLE;
 	tx = device->common.device_prep_dma_memcpy(dma_chan, dma_dest, dma_src,
-						   IOAT_TEST_SIZE, 0);
+						   IOAT_TEST_SIZE, flags);
 	if (!tx) {
 		dev_err(&device->pdev->dev,
 			"Self-test prep failed, disabling\n");
@@ -1408,9 +1424,10 @@ static int ioat_dma_self_test(struct ioatdma_device *device)
 	}
 	device->common.device_issue_pending(dma_chan);
 
-	wait_for_completion_timeout(&cmp, msecs_to_jiffies(3000));
+	tmo = wait_for_completion_timeout(&cmp, msecs_to_jiffies(3000));
 
-	if (device->common.device_is_tx_complete(dma_chan, cookie, NULL, NULL)
+	if (tmo == 0 ||
+	    device->common.device_is_tx_complete(dma_chan, cookie, NULL, NULL)
 					!= DMA_SUCCESS) {
 		dev_err(&device->pdev->dev,
 			"Self-test copy timed out, disabling\n");
@@ -1652,6 +1669,13 @@ struct ioatdma_device *ioat_dma_probe(struct pci_dev *pdev,
 		" %d channels, device version 0x%02x, driver version %s\n",
 		device->common.chancnt, device->version, IOAT_DMA_VERSION);
 
+	if (!device->common.chancnt) {
+		dev_err(&device->pdev->dev,
+			"Intel(R) I/OAT DMA Engine problem found: "
+			"zero channels detected\n");
+		goto err_setup_interrupts;
+	}
+
 	err = ioat_dma_setup_interrupts(device);
 	if (err)
 		goto err_setup_interrupts;
@@ -1692,6 +1716,9 @@ void ioat_dma_remove(struct ioatdma_device *device)
 	struct dma_chan *chan, *_chan;
 	struct ioat_dma_chan *ioat_chan;
 
+	if (device->version != IOAT_VER_3_0)
+		cancel_delayed_work(&device->work);
+
 	ioat_dma_remove_interrupts(device);
 
 	dma_async_device_unregister_v3(&device->common);
@@ -1702,10 +1729,6 @@ void ioat_dma_remove(struct ioatdma_device *device)
 	iounmap(device->reg_base);
 	pci_release_regions(device->pdev);
 	pci_disable_device(device->pdev);
-
-	if (device->version != IOAT_VER_3_0) {
-		cancel_delayed_work(&device->work);
-	}
 
 	list_for_each_entry_safe(chan, _chan,
 				 &device->common.channels, device_node) {

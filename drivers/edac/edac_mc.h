@@ -36,8 +36,10 @@
 
 #if PAGE_SHIFT < 20
 #define PAGES_TO_MiB( pages )	( ( pages ) >> ( 20 - PAGE_SHIFT ) )
+#define MiB_TO_PAGES(mb)	((mb) >> (20 - PAGE_SHIFT))
 #else				/* PAGE_SHIFT > 20 */
 #define PAGES_TO_MiB( pages )	( ( pages ) << ( PAGE_SHIFT - 20 ) )
+#define MiB_TO_PAGES(mb)	((mb) >> (PAGE_SHIFT - 20))
 #endif
 
 #define edac_printk(level, prefix, fmt, arg...) \
@@ -147,6 +149,8 @@ enum mem_type {
 #define MEM_FLAG_FB_DDR2	BIT(MEM_FB_DDR2)
 #define MEM_FLAG_RDDR2		BIT(MEM_RDDR2)
 #define MEM_FLAG_XDR            BIT(MEM_XDR)
+#define MEM_FLAG_DDR3		BIT(MEM_DDR3)
+#define MEM_FLAG_RDDR3		BIT(MEM_RDDR3)
 
 /* chipset Error Detection and Correction capabilities and mode */
 enum edac_type {
@@ -424,6 +428,7 @@ void edac_mc_dump_mci(struct mem_ctl_info *mci);
 void edac_mc_dump_csrow(struct csrow_info *csrow);
 #endif  /* CONFIG_EDAC_DEBUG */
 
+struct mem_ctl_info *find_mci_by_dev(struct device *dev);
 extern struct mem_ctl_info * edac_mc_find(int idx);
 extern int edac_mc_add_mc(struct mem_ctl_info *mci,int mc_idx);
 extern struct mem_ctl_info * edac_mc_del_mc(struct device *dev);

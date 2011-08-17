@@ -1788,5 +1788,15 @@ static inline int skb_is_gso(const struct sk_buff *skb)
 	return skb_shinfo(skb)->gso_size;
 }
 
+/*
+ * These are only used with TX_MULTIQ_STEERING,
+ * and so should never be called in RHEL5.
+ */
+
+static inline u16 skb_get_queue_mapping(const struct sk_buff *skb)
+{
+	WARN_ON(1);
+	return 0;
+}
 #endif	/* __KERNEL__ */
 #endif	/* _LINUX_SKBUFF_H */

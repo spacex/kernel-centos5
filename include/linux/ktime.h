@@ -255,6 +255,12 @@ static inline u64 ktime_to_ns(const ktime_t kt)
 
 #endif
 
+static inline s64 ktime_to_us(const ktime_t kt)
+{
+	struct timeval tv = ktime_to_timeval(kt);
+	return (s64) tv.tv_sec * USEC_PER_SEC + tv.tv_usec;
+}
+
 /*
  * The resolution of the clocks. The resolution value is returned in
  * the clock_getres() system call to give application programmers an
@@ -270,5 +276,6 @@ extern ktime_t ktime_add_safe(const ktime_t lhs, const ktime_t rhs);
 
 /* Get the real (wall-) time in timespec format: */
 #define ktime_get_real_ts(ts)	getnstimeofday(ts)
+extern ktime_t ktime_get_real(void);
 
 #endif

@@ -141,20 +141,11 @@ static void __init pirq_peer_trick(void)
 		busmap[e->bus] = 1;
 	}
 	for(i = 1; i < 256; i++) {
-		struct pci_sysdata *sd;
 		if (!busmap[i] || pci_find_bus(0, i))
 			continue;
-		/* Continuation of the gross hack.
-		   sysdata cannot be NULL here because of PCI_DOMAIN support.
-		   Let's assume we're part of the same domain and node */
-		sd = kzalloc(sizeof(*sd), GFP_KERNEL);
-		if (!sd)
-			panic("Cannot allocate PCI domain sysdata");
-		if (pci_scan_bus(i, &pci_root_ops, sd))
-			printk(KERN_INFO "PCI: Discovered primary peer bus %02x [IRQ]\n", i);
-		else
-			kfree(sd);
-
+		if (pci_scan_bus_with_sysdata(i))
+			printk(KERN_INFO "PCI: Discovered primary peer "
+			       "bus %02x [IRQ]\n", i);
 	}
 	pcibios_last_bus = -1;
 }

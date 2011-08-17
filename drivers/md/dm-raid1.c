@@ -1280,7 +1280,7 @@ static void do_writes(struct mirror_set *ms, struct bio_list *writes)
 	/*
 	 * Dispatch io.
 	 */
-	if (unlikely(ms->log_failure)) {
+	if (unlikely(ms->log_failure) && log->type->get_failure_response(log) == DMLOG_IOERR_BLOCK) {
 		spin_lock_irq(&ms->lock);
 		bio_list_merge(&ms->failures, &sync);
 		spin_unlock_irq(&ms->lock);

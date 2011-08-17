@@ -451,6 +451,14 @@ ctl_table ipv4_table[] = {
 		.strategy	= &ipv4_sysctl_local_port_range,
 	},
 	{
+		.ctl_name	= NET_IPV4_LOCAL_RESERVED_PORTS,
+		.procname	= "ip_local_reserved_ports",
+		.data		= NULL, /* initialized in sysctl_ipv4_init */
+		.maxlen		= 65536,
+		.mode		= 0644,
+		.proc_handler	= &proc_do_large_bitmap,
+	},
+	{
 		.ctl_name	= NET_IPV4_ICMP_ECHO_IGNORE_ALL,
 		.procname	= "icmp_echo_ignore_all",
 		.data		= &sysctl_icmp_echo_ignore_all,
@@ -842,3 +850,21 @@ ctl_table ipv4_table[] = {
 #endif /* CONFIG_SYSCTL */
 
 EXPORT_SYMBOL(ipv4_config);
+
+static __init int sysctl_ipv4_init(void)
+{
+	struct ctl_table *i;
+
+	for (i = ipv4_table; i->procname; i++) {
+		if (strcmp(i->procname, "ip_local_reserved_ports") == 0) {
+			i->data = sysctl_local_reserved_ports;
+			break;
+		}
+	}
+	if (!i->procname)
+		return -EINVAL;
+
+	return 0;
+}
+
+__initcall(sysctl_ipv4_init);

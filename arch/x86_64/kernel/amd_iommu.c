@@ -40,6 +40,12 @@ static DEFINE_RWLOCK(amd_iommu_devtable_lock);
 static LIST_HEAD(iommu_pd_list);
 static DEFINE_SPINLOCK(iommu_pd_list_lock);
 
+/*
+ * Domain for untranslated devices - only allocated
+ * if iommu=pt passed on kernel cmd line.
+ */
+static struct protection_domain *pt_domain;
+
 #ifdef CONFIG_IOMMU_API
 static struct iommu_ops amd_iommu_ops;
 #endif
@@ -922,25 +928,41 @@ static struct protection_domain *domain_for_device(u16 devid)
  * If a device is not yet associated with a domain, this function does
  * assigns it visible for the hardware
  */
+static void __attach_device(struct amd_iommu *iommu,
+			    struct protection_domain *domain,
+			    u16 devid)
+{
+	u64 pte_root;
+
+	/* lock domain */
+	spin_lock(&domain->lock);
+
+	pte_root = virt_to_phys(domain->pt_root);
+
+	pte_root |= (domain->mode & DEV_ENTRY_MODE_MASK)
+		<< DEV_ENTRY_MODE_SHIFT;
+	pte_root |= IOMMU_PTE_IR | IOMMU_PTE_IW | IOMMU_PTE_P | IOMMU_PTE_TV;
+
+	amd_iommu_dev_table[devid].data[2] = domain->id;
+	amd_iommu_dev_table[devid].data[1] = upper_32_bits(pte_root);
+	amd_iommu_dev_table[devid].data[0] = lower_32_bits(pte_root);
+
+	amd_iommu_pd_table[devid] = domain;
+
+	domain->dev_cnt += 1;
+
+	/* ready */
+	spin_unlock(&domain->lock);
+}
+
 static void attach_device(struct amd_iommu *iommu,
 			  struct protection_domain *domain,
 			  u16 devid)
 {
 	unsigned long flags;
-	u64 pte_root = virt_to_phys(domain->pt_root);
-
-	domain->dev_cnt += 1;
-
-	pte_root |= (domain->mode & DEV_ENTRY_MODE_MASK)
-		    << DEV_ENTRY_MODE_SHIFT;
-	pte_root |= IOMMU_PTE_IR | IOMMU_PTE_IW | IOMMU_PTE_P | IOMMU_PTE_TV;
 
 	write_lock_irqsave(&amd_iommu_devtable_lock, flags);
-	amd_iommu_dev_table[devid].data[0] = lower_32_bits(pte_root);
-	amd_iommu_dev_table[devid].data[1] = upper_32_bits(pte_root);
-	amd_iommu_dev_table[devid].data[2] = domain->id;
-
-	amd_iommu_pd_table[devid] = domain;
+	__attach_device(iommu, domain, devid);
 	write_unlock_irqrestore(&amd_iommu_devtable_lock, flags);
 
 	/*
@@ -957,6 +979,7 @@ static void attach_device(struct amd_iommu *iommu,
  */
 static void __detach_device(struct protection_domain *domain, u16 devid)
 {
+	struct amd_iommu *iommu = amd_iommu_rlookup_table[devid];
 
 	/* lock domain */
 	spin_lock(&domain->lock);
@@ -976,6 +999,19 @@ static void __detach_device(struct protection_domain *domain, u16 devid)
 
 	/* ready */
 	spin_unlock(&domain->lock);
+
+	/*
+	 * If we run in passthrough mode the device must be assigned to the
+	 * passthrough domain if it is detached from any other domain.
+	 * Make sure we can deassign from the pt_domain itself.
+	 */
+	if (iommu_pass_through && domain != pt_domain)
+		__attach_device(iommu, pt_domain, devid);
+
+	iommu_queue_inv_dev_entry(iommu, devid);
+	if (domain->dev_cnt == 0)
+		iommu_flush_tlb_pde(iommu, domain->id);
+	iommu_completion_wait(iommu);
 }
 
 /*
@@ -1014,10 +1050,6 @@ static int device_change_notifier(struct notifier_block *nb,
 
 	domain = domain_for_device(devid);
 
-	if (domain && !dma_ops_domain(domain))
-		printk(KERN_ERR "AMD IOMMU WARNING: device already bound "
-		       "to a non-dma-ops domain\n");
-
 	switch (action) {
 	case BUS_NOTIFY_BOUND_DRIVER:
 		if (domain)
@@ -1033,6 +1065,8 @@ static int device_change_notifier(struct notifier_block *nb,
 	case BUS_NOTIFY_UNBIND_DRIVER:
 		if (!domain)
 			goto out;
+		if (iommu_pass_through)
+			break;
 		detach_device(domain, devid);
 		break;
 	case BUS_NOTIFY_ADD_DEVICE:
@@ -1064,6 +1098,11 @@ out:
 struct notifier_block device_nb = {
 	.notifier_call = device_change_notifier,
 };
+
+void amd_iommu_init_notifier(void)
+{
+	bus_register_notifier(&pci_bus_type, &device_nb);
+}
 
 /*****************************************************************************
  *
@@ -1288,6 +1327,7 @@ static void __unmap_single(struct amd_iommu *iommu,
 {
 	dma_addr_t i, start;
 	unsigned int pages;
+	dma_addr_t flush_addr = dma_addr;
 
 	if ((dma_addr == bad_dma_address) ||
 	    (dma_addr + size > dma_dom->aperture_size))
@@ -1307,7 +1347,7 @@ static void __unmap_single(struct amd_iommu *iommu,
 	dma_ops_free_addresses(dma_dom, dma_addr, pages);
 
 	if (amd_iommu_unmap_flush || dma_dom->need_flush) {
-		iommu_flush_pages(iommu, dma_dom->domain.id, dma_addr, size);
+		iommu_flush_pages(iommu, dma_dom->domain.id, flush_addr, size);
 		dma_dom->need_flush = false;
 	}
 }
@@ -1703,6 +1743,11 @@ static struct dma_mapping_ops amd_iommu_dma_ops = {
 	.dma_supported = amd_iommu_dma_supported,
 };
 
+void __init amd_iommu_init_api(void)
+{
+	register_iommu(&amd_iommu_ops);
+}
+
 /*
  * The function which clues the AMD IOMMU driver into dma_ops.
  */
@@ -1748,10 +1793,6 @@ int __init amd_iommu_init_dma_ops(void)
 	/* Make the driver finally visible to the drivers */
 	dma_ops = &amd_iommu_dma_ops;
 
-	register_iommu(&amd_iommu_ops);
-
-	bus_register_notifier(&pci_bus_type, &device_nb);
-
 	amd_iommu_stats_init();
 
 	return 0;
@@ -1790,19 +1831,47 @@ static void cleanup_domain(struct protection_domain *domain)
 	write_unlock_irqrestore(&amd_iommu_devtable_lock, flags);
 }
 
-static int amd_iommu_domain_init(struct iommu_domain *dom)
+static void protection_domain_free(struct protection_domain *domain)
+{
+	if (!domain)
+		return;
+
+	if (domain->id)
+		domain_id_free(domain->id);
+
+	kfree(domain);
+}
+
+static struct protection_domain *protection_domain_alloc(void)
 {
 	struct protection_domain *domain;
 
 	domain = kzalloc(sizeof(*domain), GFP_KERNEL);
 	if (!domain)
-		return -ENOMEM;
+		return NULL;
 
 	spin_lock_init(&domain->lock);
-	domain->mode = PAGE_MODE_3_LEVEL;
 	domain->id = domain_id_alloc();
 	if (!domain->id)
+		goto out_err;
+
+	return domain;
+
+out_err:
+	kfree(domain);
+
+	return NULL;
+}
+
+static int amd_iommu_domain_init(struct iommu_domain *dom)
+{
+	struct protection_domain *domain;
+
+	domain = protection_domain_alloc();
+	if (!domain)
 		goto out_free;
+
+	domain->mode    = PAGE_MODE_3_LEVEL;
 	domain->pt_root = (void *)get_zeroed_page(GFP_KERNEL);
 	if (!domain->pt_root)
 		goto out_free;
@@ -1812,7 +1881,7 @@ static int amd_iommu_domain_init(struct iommu_domain *dom)
 	return 0;
 
 out_free:
-	kfree(domain);
+	protection_domain_free(domain);
 
 	return -ENOMEM;
 }
@@ -1986,3 +2055,48 @@ static struct iommu_ops amd_iommu_ops = {
 	.unmap = amd_iommu_unmap_range,
 	.iova_to_phys = amd_iommu_iova_to_phys,
 };
+
+/*****************************************************************************
+ *
+ * The next functions do a basic initialization of IOMMU for pass through
+ * mode
+ *
+ * In passthrough mode the IOMMU is initialized and enabled but not used for
+ * DMA-API translation.
+ *
+ *****************************************************************************/
+
+int __init amd_iommu_init_passthrough(void)
+{
+	struct pci_dev *dev = NULL;
+	u16 devid, devid2;
+
+	/* allocate passthroug domain */
+	pt_domain = protection_domain_alloc();
+	if (!pt_domain)
+		return -ENOMEM;
+
+	pt_domain->mode |= PAGE_MODE_NONE;
+
+	while ((dev = pci_get_device(PCI_ANY_ID, PCI_ANY_ID, dev)) != NULL) {
+		struct amd_iommu *iommu;
+
+		devid = calc_devid(dev->bus->number, dev->devfn);
+		if (devid > amd_iommu_last_bdf)
+			continue;
+
+		devid2 = amd_iommu_alias_table[devid];
+
+		iommu = amd_iommu_rlookup_table[devid2];
+		if (!iommu)
+			continue;
+
+		__attach_device(iommu, pt_domain, devid);
+		__attach_device(iommu, pt_domain, devid2);
+	}
+
+	pr_info("AMD-Vi: Initialized for Passthrough Mode\n");
+
+	return 0;
+}
+

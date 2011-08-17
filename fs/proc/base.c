@@ -93,7 +93,16 @@
  * about magical ranges too.
  */
 
-#define fake_ino(pid,ino) (((pid)<<16)|(ino))
+#define PROC_TID_DIR_MIN 0x00010000
+#define PROC_TID_DIR_PID_MAX 0x7FFF
+#define PROC_TID_DIR_INO_MAX 0xFFFF
+inline unsigned long fake_ino(pid_t pid, unsigned long ino)
+{
+	unsigned long res;
+	/* we want inode numbers in 0x0001000-0x7FFFFFFF*/
+	res = pid > PROC_TID_DIR_PID_MAX ? PROC_TID_DIR_MIN : pid << 16;
+	return res | (ino & PROC_TID_DIR_INO_MAX);
+}
 
 enum pid_directory_inos {
 	PROC_TGID_INO = 2,
@@ -192,6 +201,9 @@ enum pid_directory_inos {
 	PROC_TGID_IO,
 	PROC_TID_IO,
 #endif
+	PROC_TGID_FDINFO,
+	PROC_TID_FDINFO,
+
 	/* Add new entries before this */
 	PROC_TID_FD_DIR = 0x8000,	/* 0x8000-0xffff */
 };
@@ -211,6 +223,7 @@ struct pid_entry {
 static struct pid_entry tgid_base_stuff[] = {
 	E(PROC_TGID_TASK,      "task",    S_IFDIR|S_IRUGO|S_IXUGO),
 	E(PROC_TGID_FD,        "fd",      S_IFDIR|S_IRUSR|S_IXUSR),
+	E(PROC_TGID_FDINFO,    "fdinfo",  S_IFDIR|S_IRUSR|S_IXUSR),
 	E(PROC_TGID_ENVIRON,   "environ", S_IFREG|S_IRUSR),
 	E(PROC_TGID_AUXV,      "auxv",	  S_IFREG|S_IRUSR),
 	E(PROC_TGID_STATUS,    "status",  S_IFREG|S_IRUGO),
@@ -250,7 +263,7 @@ static struct pid_entry tgid_base_stuff[] = {
 #ifdef CONFIG_AUDITSYSCALL
 	E(PROC_TGID_LOGINUID, "loginuid", S_IFREG|S_IWUSR|S_IRUGO),
 #endif
-	E(PROC_TGID_LIMITS, "limits", S_IFREG|S_IRUSR),
+	E(PROC_TGID_LIMITS, "limits", S_IFREG|S_IRUGO),
 #if defined(USE_ELF_CORE_DUMP) && defined(CONFIG_ELF_CORE)
 	E(PROC_TGID_COREDUMP_FILTER, "coredump_filter",
 	  S_IFREG|S_IRUGO|S_IWUSR),
@@ -263,6 +276,7 @@ static struct pid_entry tgid_base_stuff[] = {
 };
 static struct pid_entry tid_base_stuff[] = {
 	E(PROC_TID_FD,         "fd",      S_IFDIR|S_IRUSR|S_IXUSR),
+	E(PROC_TID_FDINFO,     "fdinfo",  S_IFDIR|S_IRUSR|S_IXUSR),
 	E(PROC_TID_ENVIRON,    "environ", S_IFREG|S_IRUSR),
 	E(PROC_TID_AUXV,       "auxv",	  S_IFREG|S_IRUSR),
 	E(PROC_TID_STATUS,     "status",  S_IFREG|S_IRUGO),
@@ -301,7 +315,7 @@ static struct pid_entry tid_base_stuff[] = {
 #ifdef CONFIG_AUDITSYSCALL
 	E(PROC_TID_LOGINUID, "loginuid", S_IFREG|S_IWUSR|S_IRUGO),
 #endif
-	E(PROC_TID_LIMITS, "limits", S_IFREG|S_IRUSR),
+	E(PROC_TID_LIMITS, "limits", S_IFREG|S_IRUGO),
 #ifdef CONFIG_TASK_IO_ACCOUNTING
 	E(PROC_TID_IO,         "io",      S_IFREG|S_IRUGO),
 #endif
@@ -332,7 +346,10 @@ static struct pid_entry tid_attr_stuff[] = {
 
 #undef E
 
-static int proc_fd_link(struct inode *inode, struct dentry **dentry, struct vfsmount **mnt)
+#define PROC_FDINFO_MAX 64
+
+static int proc_fd_info(struct inode *inode, struct dentry **dentry,
+			struct vfsmount **mnt, char *info)
 {
 	struct task_struct *task = get_proc_task(inode);
 	struct files_struct *files = NULL;
@@ -351,8 +368,16 @@ static int proc_fd_link(struct inode *inode, struct dentry **dentry, struct vfsm
 		spin_lock(&files->file_lock);
 		file = fcheck_files(files, fd);
 		if (file) {
-			*mnt = mntget(file->f_vfsmnt);
-			*dentry = dget(file->f_dentry);
+			if (mnt)
+				*mnt = mntget(file->f_vfsmnt);
+			if (dentry)
+				*dentry = dget(file->f_dentry);
+			if (info)
+				snprintf(info, PROC_FDINFO_MAX,
+					 "pos:\t%lli\n"
+					 "flags:\t0%o\n",
+					 (long long) file->f_pos,
+					 file->f_flags);
 			spin_unlock(&files->file_lock);
 			put_files_struct(files);
 			return 0;
@@ -362,6 +387,27 @@ static int proc_fd_link(struct inode *inode, struct dentry **dentry, struct vfsm
 	}
 	return -ENOENT;
 }
+
+static int proc_fd_link(struct inode *inode, struct dentry **dentry,
+			struct vfsmount **mnt)
+{
+	return proc_fd_info(inode, dentry, mnt, NULL);
+}
+
+static ssize_t proc_fdinfo_read(struct file *file, char __user *buf,
+				      size_t len, loff_t *ppos)
+{
+	char tmp[PROC_FDINFO_MAX];
+	int err = proc_fd_info(file->f_dentry->d_inode, NULL, NULL, tmp);
+	if (!err)
+		err = simple_read_from_buffer(buf, len, ppos, tmp, strlen(tmp));
+	return err;
+}
+
+static const struct file_operations proc_fdinfo_file_operations = {
+	.open		= nonseekable_open,
+	.read		= proc_fdinfo_read,
+};
 
 static struct fs_struct *get_fs_struct(struct task_struct *task)
 {
@@ -1422,7 +1468,8 @@ static struct inode_operations proc_pid_link_inode_operations = {
 	.setattr	= proc_setattr,
 };
 
-static int proc_readfd(struct file * filp, void * dirent, filldir_t filldir)
+static int proc_readfd_common(struct file *filp, void *dirent,
+			      filldir_t filldir, unsigned int d_type)
 {
 	struct dentry *dentry = filp->f_dentry;
 	struct inode *inode = dentry->d_inode;
@@ -1474,7 +1521,8 @@ static int proc_readfd(struct file * filp, void * dirent, filldir_t filldir)
 				} while (i);
 
 				ino = fake_ino(tid, PROC_TID_FD_DIR + fd);
-				if (filldir(dirent, buf+j, PROC_NUMBUF-j, fd+2, ino, DT_LNK) < 0) {
+				if (filldir(dirent, buf+j, PROC_NUMBUF-j,
+					    fd+2, ino, d_type) < 0) {
 					rcu_read_lock();
 					break;
 				}
@@ -1487,6 +1535,16 @@ out:
 	put_task_struct(p);
 out_no_task:
 	return retval;
+}
+
+static int proc_readfd(struct file *filp, void *dirent, filldir_t filldir)
+{
+	return proc_readfd_common(filp, dirent, filldir, DT_LNK);
+}
+
+static int proc_readfdinfo(struct file *filp, void *dirent, filldir_t filldir)
+{
+	return proc_readfd_common(filp, dirent, filldir, DT_REG);
 }
 
 static int proc_pident_readdir(struct file *filp,
@@ -1759,7 +1817,9 @@ out:
 }
 
 /* SMP-safe */
-static struct dentry *proc_lookupfd(struct inode * dir, struct dentry * dentry, struct nameidata *nd)
+static struct dentry *proc_lookupfd_common(struct inode *dir,
+					   struct dentry *dentry,
+					   struct nameidata *nd, int type)
 {
 	struct task_struct *task = get_proc_task(dir);
 	unsigned fd = name_to_int(dentry);
@@ -1779,33 +1839,46 @@ static struct dentry *proc_lookupfd(struct inode * dir, struct dentry * dentry, 
 		goto out;
 	ei = PROC_I(inode);
 	ei->fd = fd;
-	files = get_files_struct(task);
-	if (!files)
-		goto out_unlock;
-	inode->i_mode = S_IFLNK;
+	switch (type) {
+	case PROC_TID_FDINFO:
+		inode->i_mode = S_IFREG | S_IRUSR;
+		inode->i_fop = &proc_fdinfo_file_operations;
+		dentry->d_op = &tid_fd_dentry_operations;
+		break;
+	case PROC_TID_FD:
+		files = get_files_struct(task);
+		if (!files)
+			goto out_unlock;
+		inode->i_mode = S_IFLNK;
 
-	/*
-	 * We are not taking a ref to the file structure, so we must
-	 * hold ->file_lock.
-	 */
-	spin_lock(&files->file_lock);
-	file = fcheck_files(files, fd);
-	if (!file)
-		goto out_unlock2;
-	if (file->f_mode & 1)
-		inode->i_mode |= S_IRUSR | S_IXUSR;
-	if (file->f_mode & 2)
-		inode->i_mode |= S_IWUSR | S_IXUSR;
-	spin_unlock(&files->file_lock);
-	put_files_struct(files);
-	inode->i_op = &proc_pid_link_inode_operations;
-	inode->i_size = 64;
-	ei->op.proc_get_link = proc_fd_link;
-	dentry->d_op = &tid_fd_dentry_operations;
+		/*
+		 * We are not taking a ref to the file structure, so we must
+		 * hold ->file_lock.
+		 */
+		spin_lock(&files->file_lock);
+		file = fcheck_files(files, fd);
+		if (!file)
+			goto out_unlock2;
+		if (file->f_mode & 1)
+			inode->i_mode |= S_IRUSR | S_IXUSR;
+		if (file->f_mode & 2)
+			inode->i_mode |= S_IWUSR | S_IXUSR;
+		spin_unlock(&files->file_lock);
+		put_files_struct(files);
+		inode->i_op = &proc_pid_link_inode_operations;
+		inode->i_size = 64;
+		ei->op.proc_get_link = proc_fd_link;
+		dentry->d_op = &tid_fd_dentry_operations;
+		break;
+	default:
+		BUG();
+	}
+
 	d_add(dentry, inode);
 	/* Close the race of the process dying before we return the dentry */
 	if (tid_fd_revalidate(dentry, NULL))
 		result = NULL;
+
 out:
 	put_task_struct(task);
 out_no_task:
@@ -1819,9 +1892,35 @@ out_unlock:
 	goto out;
 }
 
+static struct dentry *proc_lookupfd(struct inode *dir, struct dentry *dentry,
+				    struct nameidata *nd)
+{
+	return proc_lookupfd_common(dir, dentry, nd, PROC_TID_FD);
+}
+
+static struct dentry *proc_lookupfdinfo(struct inode *dir,
+					struct dentry *dentry,
+					struct nameidata *nd)
+{
+	return proc_lookupfd_common(dir, dentry, nd, PROC_TID_FDINFO);
+}
+
 static int proc_task_readdir(struct file * filp, void * dirent, filldir_t filldir);
 static struct dentry *proc_task_lookup(struct inode *dir, struct dentry * dentry, struct nameidata *nd);
 static int proc_task_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat);
+
+static const struct file_operations proc_fdinfo_operations = {
+	.read		= generic_read_dir,
+	.readdir	= proc_readfdinfo,
+};
+
+/*
+ * proc directories can do almost nothing..
+ */
+static struct inode_operations proc_fdinfo_inode_operations = {
+	.lookup		= proc_lookupfdinfo,
+	.setattr	= proc_setattr,
+};
 
 static struct file_operations proc_fd_operations = {
 	.read		= generic_read_dir,
@@ -1834,10 +1933,28 @@ static struct file_operations proc_task_operations = {
 };
 
 /*
+ * /proc/pid/fd needs a special permission handler so that a process can still
+ * access /proc/self/fd after it has executed a setuid().
+ */
+static int proc_fd_permission(struct inode *inode, int mask,
+			       struct nameidata *nd)
+{
+	int rv;
+
+	rv = generic_permission(inode, mask, NULL);
+	if (rv == 0)
+		return 0;
+	if (task_pid(current) == proc_pid(inode))
+		rv = 0;
+	return rv;
+}
+
+/*
  * proc directories can do almost nothing..
  */
 static struct inode_operations proc_fd_inode_operations = {
 	.lookup		= proc_lookupfd,
+	.permission	= proc_fd_permission,
 	.setattr	= proc_setattr,
 };
 
@@ -1975,6 +2092,12 @@ static struct dentry *proc_pident_lookup(struct inode *dir,
 			inode->i_nlink = 2;
 			inode->i_op = &proc_fd_inode_operations;
 			inode->i_fop = &proc_fd_operations;
+			break;
+		case PROC_TID_FDINFO:
+		case PROC_TGID_FDINFO:
+			inode->i_nlink = 2;
+			inode->i_op = &proc_fdinfo_inode_operations;
+			inode->i_fop = &proc_fdinfo_operations;
 			break;
 		case PROC_TID_EXE:
 		case PROC_TGID_EXE:
@@ -2370,9 +2493,9 @@ struct dentry *proc_pid_lookup(struct inode *dir, struct dentry * dentry, struct
 	inode->i_fop = &proc_tgid_base_operations;
 	inode->i_flags|=S_IMMUTABLE;
 #ifdef CONFIG_SECURITY
-	inode->i_nlink = 5;
+	inode->i_nlink = 6;
 #else
-	inode->i_nlink = 4;
+	inode->i_nlink = 5;
 #endif
 
 	dentry->d_op = &pid_dentry_operations;
@@ -2424,9 +2547,9 @@ static struct dentry *proc_task_lookup(struct inode *dir, struct dentry * dentry
 	inode->i_fop = &proc_tid_base_operations;
 	inode->i_flags|=S_IMMUTABLE;
 #ifdef CONFIG_SECURITY
-	inode->i_nlink = 4;
+	inode->i_nlink = 5;
 #else
-	inode->i_nlink = 3;
+	inode->i_nlink = 4;
 #endif
 
 	dentry->d_op = &pid_dentry_operations;

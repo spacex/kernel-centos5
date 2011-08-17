@@ -711,8 +711,11 @@ qeth_dev_layer2_store(struct device *dev, struct device_attribute *attr, const c
 	if (!card)
 		return -EINVAL;
 
-	if (((card->state != CARD_STATE_DOWN) &&
-	     (card->state != CARD_STATE_RECOVER)))
+	if (card->info.type == QETH_CARD_TYPE_OSN ||
+	    card->info.type == QETH_CARD_TYPE_OSM)
+		return -EPERM;
+
+	if (card->state != CARD_STATE_DOWN)
 		return -EPERM;
 
 	i = simple_strtoul(buf, &tmp, 16);

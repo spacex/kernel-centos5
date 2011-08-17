@@ -823,6 +823,9 @@ static int __init init_tsc_clocksource(void)
 			clocksource_tsc.rating = 50;
 
 		init_timer(&verify_tsc_freq_timer);
+#ifndef CONFIG_XEN
+		init_tsc_timer();
+#endif
 		verify_tsc_freq_timer.function = verify_tsc_freq;
 		verify_tsc_freq_timer.expires =
 			jiffies + msecs_to_jiffies(TSC_FREQ_CHECK_INTERVAL);

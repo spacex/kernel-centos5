@@ -526,7 +526,7 @@ qdio_stop_polling(struct qdio_q *q)
                qdio_do_eqbs(q, &state, &gsf, &count);
        } else
                state = q->slsb.acc.val[gsf];
-       if (state != SLSB_P_INPUT_PRIMED)
+       if (state != SLSB_P_INPUT_PRIMED && state != SLSB_P_INPUT_ERROR)
 		return 1;
 	/* 
 	 * set our summary bit again, as otherwise there is a
@@ -1238,7 +1238,7 @@ tiqdio_is_inbound_q_done(struct qdio_q *q)
 		qdio_do_eqbs(q, &state, &start_buf, &count);
 	} else
 		state = q->slsb.acc.val[q->first_to_check];
-	if (state != SLSB_P_INPUT_PRIMED)
+	if (state != SLSB_P_INPUT_PRIMED && state != SLSB_P_INPUT_ERROR)
 		/* 
 		 * nothing more to do, if next buffer is not PRIMED.
 		 * note that we did a SYNC_MEMORY before, that there
@@ -1293,7 +1293,7 @@ qdio_is_inbound_q_done(struct qdio_q *q)
 		qdio_do_eqbs(q, &state, &start_buf, &count);
 	} else
 		state = q->slsb.acc.val[q->first_to_check];
-	if (state == SLSB_P_INPUT_PRIMED) {
+	if (state == SLSB_P_INPUT_PRIMED || state == SLSB_P_INPUT_ERROR) {
 		/* we got something to do */
 		QDIO_DBF_TEXT4(0,trace,"inqisntA");
 		QDIO_DBF_HEX4(0,trace,&q,sizeof(void*));

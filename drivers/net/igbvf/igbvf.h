@@ -37,7 +37,6 @@
 
 
 #include "vf.h"
-#include "igbvf_compat.h"
 
 /* Forward declarations */
 struct igbvf_info;
@@ -46,7 +45,7 @@ struct igbvf_adapter;
 /* Interrupt defines */
 #define IGBVF_START_ITR                 648 /* ~6000 ints/sec */
 
-/* Interrupt modes, as used by the IntMode paramter */
+/* Interrupt modes, as used by the IntMode parameter */
 #define IGBVF_INT_MODE_LEGACY           0
 #define IGBVF_INT_MODE_MSI              1
 #define IGBVF_INT_MODE_MSIX             2
@@ -118,6 +117,7 @@ struct igbvf_buffer {
 			unsigned long time_stamp;
 			u16 length;
 			u16 next_to_watch;
+			u16 mapped_as_page;
 		};
 		/* Rx */
 		struct {
@@ -275,6 +275,7 @@ struct igbvf_adapter {
 	unsigned long led_status;
 
 	unsigned int flags;
+	unsigned long last_reset;
 };
 
 struct igbvf_info {

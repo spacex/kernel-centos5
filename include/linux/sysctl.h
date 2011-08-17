@@ -47,6 +47,7 @@ struct __sysctl_args {
 /* For internal pattern-matching use only: */
 #ifdef __KERNEL__
 #define CTL_ANY		-1	/* Matches any name */
+#define CTL_UNNUMBERED	-2
 #define CTL_NONE	0
 #endif
 
@@ -165,6 +166,7 @@ enum
 	KERN_HUNG_TASK_CHECK_COUNT=83,
 	KERN_HUNG_TASK_TIMEOUT_SECS=84,
 	KERN_HUNG_TASK_WARNINGS=85,
+	KERN_NMI_WATCHDOG=86,
 };
 
 
@@ -215,6 +217,8 @@ enum
 	VM_TOPDOWN_ALLOCATE_FAST=42, /* optimize speed over fragmentation in topdown alloc */
 	VM_MAX_RECLAIMS=43,     /* max reclaims allowed */
 	VM_DEVZERO_OPTIMIZED=44, /* pagetables initialized with ZERO_PAGE at mmmap time */
+	VM_DIRTY_BYTES=45, 	/* specific number of dirty bytes allowed */
+	VM_DIRTY_BACKGND_BYTES=46, /* specific number of dirty background bytes allowed */
 };
 
 
@@ -452,6 +456,7 @@ enum
 	NET_UDP_MEM=122,
 	NET_UDP_RMEM_MIN=123,
 	NET_UDP_WMEM_MIN=124,
+	NET_IPV4_LOCAL_RESERVED_PORTS=125,
 };
 
 enum {
@@ -507,6 +512,7 @@ enum
 	NET_IPV4_CONF_ARP_IGNORE=19,
 	NET_IPV4_CONF_PROMOTE_SECONDARIES=20,
 	NET_IPV4_CONF_ARP_ACCEPT=21,
+	NET_IPV4_CONF_ACCEPT_LOCAL=22,
 	__NET_IPV4_CONF_MAX
 };
 
@@ -907,6 +913,9 @@ enum {
 };
 
 /* CTL_DEBUG names: */
+enum {
+	DEBUG_KPROBES_OPTIMIZE = 1,
+};
 
 /* CTL_DEV names: */
 enum {
@@ -1031,6 +1040,8 @@ extern int proc_doulongvec_minmax(ctl_table *, int, struct file *,
 				  void __user *, size_t *, loff_t *);
 extern int proc_doulongvec_ms_jiffies_minmax(ctl_table *table, int,
 				      struct file *, void __user *, size_t *, loff_t *);
+extern int proc_do_large_bitmap(struct ctl_table *, int, struct file *,
+				void __user *, size_t *, loff_t *);
 
 extern int do_sysctl (int __user *name, int nlen,
 		      void __user *oldval, size_t __user *oldlenp,

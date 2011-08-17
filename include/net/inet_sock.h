@@ -129,7 +129,12 @@ struct inet_sock {
 				is_icsk:1,
 				freebind:1,
 				hdrincl:1,
+#ifdef __GENKSYMS__
 				mc_loop:1;
+#else
+				mc_loop:1,
+				nodefrag:1;
+#endif
 	int			mc_index;
 	__u32			mc_addr;
 	struct ip_mc_socklist	*mc_list;

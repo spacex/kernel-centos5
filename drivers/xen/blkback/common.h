@@ -42,7 +42,6 @@
 #include <xen/blkif.h>
 #include <xen/gnttab.h>
 #include <xen/driver_util.h>
-#include <xen/xenbus.h>
 
 #define DPRINTK(_f, _a...)			\
 	pr_debug("(file=%s, line=%d) " _f,	\
@@ -110,7 +109,7 @@ int blkif_map(blkif_t *blkif, unsigned long shared_page, unsigned int evtchn);
 
 /* Create a vbd. */
 int vbd_create(blkif_t *blkif, blkif_vdev_t vdevice, unsigned major,
-	       unsigned minor, int readonly, struct xenbus_device *dev);
+	       unsigned minor, int readonly);
 void vbd_free(struct vbd *vbd);
 
 unsigned long long vbd_size(struct vbd *vbd);

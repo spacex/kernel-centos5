@@ -206,6 +206,7 @@ extern int FASTCALL(aio_put_req(struct kiocb *iocb));
 extern void FASTCALL(kick_iocb(struct kiocb *iocb));
 extern int FASTCALL(aio_complete(struct kiocb *iocb, long res, long res2));
 extern void FASTCALL(__put_ioctx(struct kioctx *ctx));
+extern void __put_ioctx_wq(struct kioctx *ctx, int wq_context);
 struct mm_struct;
 extern void FASTCALL(exit_aio(struct mm_struct *mm));
 extern struct kioctx *lookup_ioctx(unsigned long ctx_id);
@@ -226,6 +227,11 @@ int FASTCALL(io_submit_one(struct kioctx *ctx, struct iocb __user *user_iocb,
 	BUG_ON(unlikely(atomic_read(&(kioctx)->users) <= 0));		\
 	if (unlikely(atomic_dec_and_test(&(kioctx)->users))) 		\
 		__put_ioctx(kioctx);					\
+} while (0)
+#define put_ioctx_from_wq(kioctx) do {					\
+	BUG_ON(unlikely(atomic_read(&(kioctx)->users) <= 0));		\
+	if (unlikely(atomic_dec_and_test(&(kioctx)->users))) 		\
+		__put_ioctx_wq(kioctx, 1);				\
 } while (0)
 
 #define in_aio() !is_sync_wait(current->io_wait)

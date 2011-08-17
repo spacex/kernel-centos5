@@ -26,8 +26,8 @@ startup:basr	%r13,0			# get base
 #
 	.org	PARMAREA
 	.long	0,0			# IPL_DEVICE
-	.long	0,RAMDISK_ORIGIN	# INITRD_START
-	.long	0,RAMDISK_SIZE		# INITRD_SIZE
+	.long	0,0			# INITRD_START
+	.long	0,0			# INITRD_SIZE
 
 	.org	COMMAND_LINE
 	.byte	"root=/dev/ram0 ro"
@@ -295,7 +295,7 @@ ipl_schib:
 s390_readinfo_sccb:
 .Lsccb:
 	.hword	0x1000			# length, one page
-	.byte	0x00,0x00,0x00
+	.byte	0x80,0x00,0x00
 	.byte	0x80			# variable response bit set
 .Lsccbr:
 	.hword	0x00			# response code

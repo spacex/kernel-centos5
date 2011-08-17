@@ -1838,6 +1838,7 @@ static int hid_alloc_buffers(struct usb_device *dev, struct hid_device *hid)
 		return -1;
 	if (!(hid->ctrlbuf = usb_buffer_alloc(dev, hid->bufsize, SLAB_ATOMIC, &hid->ctrlbuf_dma)))
 		return -1;
+	memset(hid->ctrlbuf, 0, hid->bufsize);
 
 	return 0;
 }

@@ -99,13 +99,6 @@ struct i3200_priv {
 	void __iomem *window;
 };
 
-#ifndef readq
-static inline u64 readq(const volatile void __iomem *addr)
-{
-	 return *(volatile u64 __force *) addr;
-}
-#endif
-
 static int nr_channels;
 
 static int how_many_channels(struct pci_dev *pdev)

@@ -1060,11 +1060,7 @@ static void rtl8187_stop(struct ieee80211_hw *dev)
 	mutex_unlock(&priv->conf_mutex);
 
 	if (!priv->is_rtl8187b)
-#if 0 /* Not in RHEL5... */
 		cancel_delayed_work_sync(&priv->work);
-#else
-		ieee80211_cancel_work(dev, &priv->work);
-#endif
 }
 
 static int rtl8187_add_interface(struct ieee80211_hw *dev,

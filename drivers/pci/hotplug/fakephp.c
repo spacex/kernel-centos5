@@ -220,7 +220,7 @@ static void pci_rescan_slot(struct pci_dev *temp)
  *
  * @param bus
  */
-static void pci_rescan_bus(const struct pci_bus *bus)
+static void pci_rescan_bus_local(const struct pci_bus *bus)
 {
 	unsigned int devfn;
 	struct pci_dev *dev;
@@ -243,7 +243,7 @@ static void pci_rescan_buses(const struct list_head *list)
 	const struct list_head *l;
 	list_for_each(l,list) {
 		const struct pci_bus *b = pci_bus_b(l);
-		pci_rescan_bus(b);
+		pci_rescan_bus_local(b);
 		pci_rescan_buses(&b->children);
 	}
 }

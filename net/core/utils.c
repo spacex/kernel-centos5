@@ -30,129 +30,27 @@
 #include <asm/uaccess.h>
 
 /*
-  This is a maximally equidistributed combined Tausworthe generator
-  based on code from GNU Scientific Library 1.5 (30 Jun 2004)
-
-   x_n = (s1_n ^ s2_n ^ s3_n) 
-
-   s1_{n+1} = (((s1_n & 4294967294) <<12) ^ (((s1_n <<13) ^ s1_n) >>19))
-   s2_{n+1} = (((s2_n & 4294967288) << 4) ^ (((s2_n << 2) ^ s2_n) >>25))
-   s3_{n+1} = (((s3_n & 4294967280) <<17) ^ (((s3_n << 3) ^ s3_n) >>11))
-
-   The period of this generator is about 2^88.
-
-   From: P. L'Ecuyer, "Maximally Equidistributed Combined Tausworthe
-   Generators", Mathematics of Computation, 65, 213 (1996), 203--213.
-
-   This is available on the net from L'Ecuyer's home page,
-
-   http://www.iro.umontreal.ca/~lecuyer/myftp/papers/tausme.ps
-   ftp://ftp.iro.umontreal.ca/pub/simulation/lecuyer/papers/tausme.ps 
-
-   There is an erratum in the paper "Tables of Maximally
-   Equidistributed Combined LFSR Generators", Mathematics of
-   Computation, 68, 225 (1999), 261--269:
-   http://www.iro.umontreal.ca/~lecuyer/myftp/papers/tausme2.ps
-
-        ... the k_j most significant bits of z_j must be non-
-        zero, for each j. (Note: this restriction also applies to the 
-        computer code given in [4], but was mistakenly not mentioned in
-        that paper.)
-   
-   This affects the seeding procedure by imposing the requirement
-   s1 > 1, s2 > 7, s3 > 15.
-
-*/
-struct nrnd_state {
-	u32 s1, s2, s3;
-};
-
-static DEFINE_PER_CPU(struct nrnd_state, net_rand_state);
-
-static u32 __net_random(struct nrnd_state *state)
-{
-#define TAUSWORTHE(s,a,b,c,d) ((s&c)<<d) ^ (((s <<a) ^ s)>>b)
-
-	state->s1 = TAUSWORTHE(state->s1, 13, 19, 4294967294UL, 12);
-	state->s2 = TAUSWORTHE(state->s2, 2, 25, 4294967288UL, 4);
-	state->s3 = TAUSWORTHE(state->s3, 3, 11, 4294967280UL, 17);
-
-	return (state->s1 ^ state->s2 ^ state->s3);
-}
-
-/*
- * Handle minimum values for seeds
+ * RHEL5's net_{s}random are on the kabi whitelist, so while we've backported
+ * the move of net_random to lib/random32.c and random32(), we can't use the
+ * same #define net_random random32 upstream does, if we want to preserve kabi
+ * in a way that our kabi tools can deal with. This works though.
  */
-static inline u32 __seed(u32 x, u32 m)
-{
-	return (x < m) ? x + m : x;
-}
-
-
 unsigned long net_random(void)
 {
 	unsigned long r;
-	struct nrnd_state *state = &get_cpu_var(net_rand_state);
-	r = __net_random(state);
-	put_cpu_var(state);
+
+	r = (unsigned long)random32();
+
 	return r;
 }
-
+EXPORT_SYMBOL(net_random);
 
 void net_srandom(unsigned long entropy)
 {
-	int i;
-	/*
-	 * No locking on the CPUs, but then somewhat random results are, well,
-	 * expected.
-	 */
-	for_each_possible_cpu (i) {
-		struct nrnd_state *state = &per_cpu(net_rand_state, i);
-		state->s1 = __seed(state->s1 ^ entropy, 1);
-	}
+	srandom32((__force u32)entropy);
 }
+EXPORT_SYMBOL(net_srandom);
 
-void __init net_random_init(void)
-{
-	int i;
-
-	for_each_possible_cpu(i) {
-		struct nrnd_state *state = &per_cpu(net_rand_state,i);
-
-#define LCG(x) ((x) * 69069)   /* super-duper LCG */
-		state->s1 = __seed(LCG(i + jiffies), 1);
-		state->s2 = __seed(LCG(state->s1), 7);
-		state->s3 = __seed(LCG(state->s2), 15);
-
-		/* "warm it up" */
-		__net_random(state);
-		__net_random(state);
-		__net_random(state);
-		__net_random(state);
-		__net_random(state);
-		__net_random(state);
-	}
-}
-
-static int net_random_reseed(void)
-{
-	int i;
-
-	for_each_possible_cpu(i) {
-		struct nrnd_state *state = &per_cpu(net_rand_state,i);
-		u32 seeds[3];
-
-		get_random_bytes(&seeds, sizeof(seeds));
-		state->s1 = __seed(seeds[0], 1);
-		state->s2 = __seed(seeds[1], 7);
-		state->s3 = __seed(seeds[2], 15);
-
-		/* mix it in */
-		__net_random(state);
-	}
-	return 0;
-}
-late_initcall(net_random_reseed);
 
 int net_msg_cost = 5*HZ;
 int net_msg_burst = 10;
@@ -165,9 +63,7 @@ int net_ratelimit(void)
 	return __printk_ratelimit(net_msg_cost, net_msg_burst);
 }
 
-EXPORT_SYMBOL(net_random);
 EXPORT_SYMBOL(net_ratelimit);
-EXPORT_SYMBOL(net_srandom);
 
 /*
  * Convert an ASCII string to binary IP.

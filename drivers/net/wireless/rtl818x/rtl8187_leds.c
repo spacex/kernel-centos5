@@ -198,13 +198,8 @@ void rtl8187_leds_init(struct ieee80211_hw *dev, u16 custid)
 	rtl8187_unregister_led(&priv->led_tx);
 error:
 	/* If registration of either failed, cancel delayed work */
-#if 0 /* Not in RHEL5... */
 	cancel_delayed_work_sync(&priv->led_off);
 	cancel_delayed_work_sync(&priv->led_on);
-#else
-	cancel_delayed_work(&priv->led_off);
-	cancel_delayed_work(&priv->led_on);
-#endif
 }
 
 void rtl8187_leds_exit(struct ieee80211_hw *dev)
@@ -215,13 +210,8 @@ void rtl8187_leds_exit(struct ieee80211_hw *dev)
 	ieee80211_queue_delayed_work(dev, &priv->led_off, 0);
 	rtl8187_unregister_led(&priv->led_rx);
 	rtl8187_unregister_led(&priv->led_tx);
-#if 0 /* Not in RHEL5... */
 	cancel_delayed_work_sync(&priv->led_off);
 	cancel_delayed_work_sync(&priv->led_on);
-#else
-	cancel_delayed_work(&priv->led_off);
-	cancel_delayed_work(&priv->led_on);
-#endif
 }
 #endif /* def CONFIG_RTL8187_LED */
 

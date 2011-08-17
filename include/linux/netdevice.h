@@ -185,6 +185,9 @@ struct dev_mc_list
 	int			dmi_gusers;
 };
 
+#define netdev_for_each_mc_addr(mcl, dev) \
+	for (mcl = (dev)->mc_list; mcl; mcl = mcl->next)
+
 struct hh_cache
 {
 	struct hh_cache *hh_next;	/* Next entry			     */
@@ -347,6 +350,7 @@ struct net_device
 #define NETIF_F_GSO		2048	/* Enable software GSO. */
 #define NETIF_F_LLTX		4096	/* LockLess TX */
 #define NETIF_F_GRO		16384	/* Generic receive offload */
+#define NETIF_F_LRO		32768	/* large receive offload */
 
 /* Go to the end of the bit field and count backwards when adding new entries
  * so we don't cause the calculated fields below to shift.  Also don't forget
@@ -603,9 +607,17 @@ struct ipv6_devconf_extensions {
 	s32 accept_dad;
 };
 
+struct ipv4_devconf_extensions {
+	int accept_local;
+};
+
 struct net_device_extended {
+	struct ipv4_devconf_extensions ipv4_devconf_ext;
 	struct ipv6_devconf_extensions ipv6_devconf_ext;
 };
+
+extern struct ipv4_devconf_extensions ipv4_devconf_ext;
+
 
 #define	NETDEV_ALIGN		32
 #define	NETDEV_ALIGN_CONST	(NETDEV_ALIGN - 1)
@@ -842,7 +854,6 @@ static inline int netif_running(const struct net_device *dev)
 {
 	return test_bit(__LINK_STATE_START, &dev->state);
 }
-
 
 /* Use this variant when it is known for sure that it
  * is executing from interrupt context.
@@ -1284,6 +1295,123 @@ static inline int skb_bond_should_drop(struct sk_buff *skb)
 	}
 	return 0;
 }
+
+#define to_net_dev(class) container_of(class, struct net_device, class_dev)
+
+/* Logging, debugging and troubleshooting/diagnostic helpers. */
+
+/* netdev_printk helpers, similar to dev_printk */
+
+static inline const char *netdev_name(const struct net_device *dev)
+{
+	if (dev->reg_state != NETREG_REGISTERED)
+		return "(unregistered net_device)";
+	return dev->name;
+}
+
+#define netdev_printk(level, netdev, format, args...)		\
+	dev_printk(level, (netdev)->class_dev.dev,		\
+		   "%s: " format,				\
+		   netdev_name(netdev), ##args)
+
+#define netdev_emerg(dev, format, args...)			\
+	netdev_printk(KERN_EMERG, dev, format, ##args)
+#define netdev_alert(dev, format, args...)			\
+	netdev_printk(KERN_ALERT, dev, format, ##args)
+#define netdev_crit(dev, format, args...)			\
+	netdev_printk(KERN_CRIT, dev, format, ##args)
+#define netdev_err(dev, format, args...)			\
+	netdev_printk(KERN_ERR, dev, format, ##args)
+#define netdev_warn(dev, format, args...)			\
+	netdev_printk(KERN_WARNING, dev, format, ##args)
+#define netdev_notice(dev, format, args...)			\
+	netdev_printk(KERN_NOTICE, dev, format, ##args)
+#define netdev_info(dev, format, args...)			\
+	netdev_printk(KERN_INFO, dev, format, ##args)
+
+#if defined(DEBUG)
+#define netdev_dbg(__dev, format, args...)			\
+	netdev_printk(KERN_DEBUG, __dev, format, ##args)
+#else
+#define netdev_dbg(__dev, format, args...)			\
+({								\
+	if (0)							\
+		netdev_printk(KERN_DEBUG, __dev, format, ##args); \
+	0;							\
+})
+#endif
+
+#if defined(VERBOSE_DEBUG)
+#define netdev_vdbg	netdev_dbg
+#else
+
+#define netdev_vdbg(dev, format, args...)			\
+({								\
+	if (0)							\
+		netdev_printk(KERN_DEBUG, dev, format, ##args);	\
+	0;							\
+})
+#endif
+
+/*
+ * netdev_WARN() acts like dev_printk(), but with the key difference
+ * of using a WARN/WARN_ON to get the message out, including the
+ * file/line information and a backtrace.
+ */
+#define netdev_WARN(dev, format, args...)			\
+	WARN(1, "netdevice: %s\n" format, netdev_name(dev), ##args);
+
+/* netif printk helpers, similar to netdev_printk */
+
+#define netif_printk(priv, type, level, dev, fmt, args...)	\
+do {					  			\
+	if (netif_msg_##type(priv))				\
+		netdev_printk(level, (dev), fmt, ##args);	\
+} while (0)
+
+#define netif_level(level, priv, type, dev, fmt, args...)	\
+do {								\
+	if (netif_msg_##type(priv))				\
+		netdev_##level(dev, fmt, ##args);		\
+} while (0)
+
+#define netif_emerg(priv, type, dev, fmt, args...)		\
+	netif_level(emerg, priv, type, dev, fmt, ##args)
+#define netif_alert(priv, type, dev, fmt, args...)		\
+	netif_level(alert, priv, type, dev, fmt, ##args)
+#define netif_crit(priv, type, dev, fmt, args...)		\
+	netif_level(crit, priv, type, dev, fmt, ##args)
+#define netif_err(priv, type, dev, fmt, args...)		\
+	netif_level(err, priv, type, dev, fmt, ##args)
+#define netif_warn(priv, type, dev, fmt, args...)		\
+	netif_level(warn, priv, type, dev, fmt, ##args)
+#define netif_notice(priv, type, dev, fmt, args...)		\
+	netif_level(notice, priv, type, dev, fmt, ##args)
+#define netif_info(priv, type, dev, fmt, args...)		\
+	netif_level(info, priv, type, dev, fmt, ##args)
+
+#if defined(DEBUG)
+#define netif_dbg(priv, type, dev, format, args...)		\
+	netif_printk(priv, type, KERN_DEBUG, dev, format, ##args)
+#else
+#define netif_dbg(priv, type, dev, format, args...)			\
+({									\
+	if (0)								\
+		netif_printk(priv, type, KERN_DEBUG, dev, format, ##args); \
+	0;								\
+})
+#endif
+
+#if defined(VERBOSE_DEBUG)
+#define netif_vdbg	netif_dbg
+#else
+#define netif_vdbg(priv, type, dev, format, args...)		\
+({								\
+	if (0)							\
+		netif_printk(priv, type, KERN_DEBUG, dev, format, ##args); \
+	0;							\
+})
+#endif
 
 #endif /* __KERNEL__ */
 

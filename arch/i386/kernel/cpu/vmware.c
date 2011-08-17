@@ -23,10 +23,13 @@
 
 #include <linux/dmi.h>
 #include <linux/init.h>
+#include <linux/jiffies.h>
 #include <asm/div64.h>
 #include <asm/vmware.h>
+#include <asm/timer.h>
 
 extern int __initdata nosoftlockup;
+extern unsigned long preset_lpj;
 
 #define CPUID_VMWARE_INFO_LEAF	0x40000000
 #define VMWARE_HYPERVISOR_MAGIC	0x564D5868
@@ -98,9 +101,12 @@ int vmware_platform(void)
 	return 0;
 }
 
+extern int timekeeping_use_tsc;
+
 unsigned long vmware_get_tsc_khz(void)
 {
 	unsigned long vm_tsc_khz;
+	uint64_t lpj;
 
 	BUG_ON(!vmware_platform());
 
@@ -112,9 +118,6 @@ unsigned long vmware_get_tsc_khz(void)
 	 */
 	vm_tsc_khz = __vmware_get_tsc_khz();
 
-#ifdef CONFIG_X86_64
-	{
-	extern int timekeeping_use_tsc;
 
 	if (vm_tsc_khz && timekeeping_use_tsc >= 0) {
 		if (vmware_enable_lazy_timer_emulation()) {
@@ -134,16 +137,12 @@ unsigned long vmware_get_tsc_khz(void)
 			timekeeping_use_tsc = 0;
 		}
 	}
+
+	if (!preset_lpj) {
+		lpj = ((u64)vm_tsc_khz * 1000);
+		do_div(lpj, HZ);
+		preset_lpj = lpj;
 	}
-#else
-	if (vm_tsc_khz) {
-		if (!vmware_enable_lazy_timer_emulation())
-			printk(KERN_WARNING
-			       "time.c: failed to enable lazy timer "
-			       "emulation. Disabling tsc based "
-			       "timekeeping\n");
-	}
-#endif
 
 	return vm_tsc_khz;
 }

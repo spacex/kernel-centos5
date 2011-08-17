@@ -1304,6 +1304,14 @@ int bond_alb_xmit(struct sk_buff *skb, struct net_device *bond_dev)
 	int res = 1;
 	struct ipv6hdr *ip6hdr;
 
+	/*
+	 * If we risk deadlock from transmitting this in the
+	 * netpoll path, tell netpoll to queue the frame for later
+	 *tx
+	 */
+	if (is_netpoll_tx_blocked(bond_dev))
+		return NETDEV_TX_BUSY;
+
 	ip_bcast = htonl(0xffffffff);
 	skb_reset_mac_header(skb);
 	eth_data = eth_hdr(skb);

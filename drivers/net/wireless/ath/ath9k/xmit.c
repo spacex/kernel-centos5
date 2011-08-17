@@ -427,6 +427,14 @@ static void ath_tx_complete_aggr(struct ath_softc *sc, struct ath_txq *txq,
 		bf = bf_next;
 	}
 
+	/* prepend un-acked frames to the beginning of the pending frame queue */
+	if (!list_empty(&bf_pending)) {
+		spin_lock_bh(&txq->axq_lock);
+		list_splice(&bf_pending, &tid->buf_q);
+		ath_tx_queue_tid(txq, tid);
+		spin_unlock_bh(&txq->axq_lock);
+	}
+
 	if (tid->state & AGGR_CLEANUP) {
 		if (tid->baw_head == tid->baw_tail) {
 			tid->state &= ~AGGR_ADDBA_COMPLETE;
@@ -437,14 +445,6 @@ static void ath_tx_complete_aggr(struct ath_softc *sc, struct ath_txq *txq,
 		}
 		rcu_read_unlock();
 		return;
-	}
-
-	/* prepend un-acked frames to the beginning of the pending frame queue */
-	if (!list_empty(&bf_pending)) {
-		spin_lock_bh(&txq->axq_lock);
-		list_splice(&bf_pending, &tid->buf_q);
-		ath_tx_queue_tid(txq, tid);
-		spin_unlock_bh(&txq->axq_lock);
 	}
 
 	rcu_read_unlock();
@@ -1332,25 +1332,6 @@ static enum ath9k_pkt_type get_hw_packet_type(struct sk_buff *skb)
 	return htype;
 }
 
-static bool is_pae(struct sk_buff *skb)
-{
-	struct ieee80211_hdr *hdr;
-	__le16 fc;
-
-	hdr = (struct ieee80211_hdr *)skb->data;
-	fc = hdr->frame_control;
-
-	if (ieee80211_is_data(fc)) {
-		if (ieee80211_is_nullfunc(fc) ||
-		    /* Port Access Entity (IEEE 802.1X) */
-		    (skb->protocol == cpu_to_be16(ETH_P_PAE))) {
-			return true;
-		}
-	}
-
-	return false;
-}
-
 static int get_hw_crypto_keytype(struct sk_buff *skb)
 {
 	struct ieee80211_tx_info *tx_info = IEEE80211_SKB_CB(skb);
@@ -1575,7 +1556,7 @@ static int ath_tx_setup_buffer(struct ieee80211_hw *hw, struct ath_buf *bf,
 
 	bf->bf_frmlen = skb->len + FCS_LEN - (hdrlen & 3);
 
-	if (conf_is_ht(&sc->hw->conf) && !is_pae(skb))
+	if (conf_is_ht(&sc->hw->conf))
 		bf->bf_state.bf_type |= BUF_HT;
 
 	bf->bf_flags = setup_tx_flags(sc, skb, txctl->txq);
@@ -2018,10 +1999,9 @@ static void ath_tx_processq(struct ath_softc *sc, struct ath_txq *txq)
 
 		if (bf->bf_isnullfunc &&
 		    (ds->ds_txstat.ts_status & ATH9K_TX_ACKED)) {
-			if ((sc->sc_flags & SC_OP_PS_ENABLED)) {
-				sc->ps_enabled = true;
-				ath9k_hw_setrxabort(sc->sc_ah, 1);
-			} else
+			if ((sc->sc_flags & SC_OP_PS_ENABLED))
+				ath9k_enable_ps(sc);
+			else
 				sc->sc_flags |= SC_OP_NULLFUNC_COMPLETED;
 		}
 

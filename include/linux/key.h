@@ -19,6 +19,9 @@
 #include <linux/list.h>
 #include <linux/rbtree.h>
 #include <linux/rcupdate.h>
+#ifndef __GENKSYMS__
+#include <linux/sysctl.h>
+#endif
 #include <asm/atomic.h>
 
 #ifdef __KERNEL__
@@ -334,6 +337,12 @@ extern struct key *key_lookup(key_serial_t id);
 extern void keyring_replace_payload(struct key *key, void *replacement);
 
 #define key_serial(key) ((key) ? (key)->serial : 0)
+
+#ifdef CONFIG_SYSCTL
+#ifndef __GENKSYMS__
+extern ctl_table key_sysctls[];
+#endif
+#endif
 
 /*
  * the userspace interface

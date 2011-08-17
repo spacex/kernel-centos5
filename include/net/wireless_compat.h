@@ -3,11 +3,6 @@
 
 #define BIT(nr)			(1UL << (nr))
 
-static inline const char *dev_name(const struct device *dev)
-{
-	return kobject_name(&dev->kobj);
-}
-
 extern int dev_set_name(struct device *dev, const char *fmt, ...);
 
 /*

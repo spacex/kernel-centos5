@@ -47,7 +47,6 @@
 #include "iwch_provider.h"
 #include "iwch_cm.h"
 
-#ifdef DEBUG
 static char *states[] = {
 	"idle",
 	"listen",
@@ -63,7 +62,6 @@ static char *states[] = {
 	"dead",
 	NULL,
 };
-#endif
 
 int peer2peer = 0;
 module_param(peer2peer, int, 0644);

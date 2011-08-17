@@ -4,6 +4,9 @@
 #include <linux/tracepoint.h>
 #include <linux/interrupt.h>
 
+struct irqaction;
+struct softirq_action;
+
 DEFINE_TRACE(irq_entry,
 	TPPROTO(unsigned int id, struct pt_regs *regs),
 	TPARGS(id, regs));
@@ -28,5 +31,7 @@ DEFINE_TRACE(irq_tasklet_high_entry,
 DEFINE_TRACE(irq_tasklet_high_exit,
 	TPPROTO(struct tasklet_struct *t),
 	TPARGS(t));
-
+DEFINE_TRACE(softirq_raise,
+	TPPROTO(unsigned int h, struct softirq_action *vec),
+	TPARGS(h, vec));
 #endif

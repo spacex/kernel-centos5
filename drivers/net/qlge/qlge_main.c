@@ -40,6 +40,7 @@
 #include <linux/mm.h>
 #include <linux/vmalloc.h>
 #include <net/ip6_checksum.h>
+#include <linux/workqueue.h>
 
 #include "qlge.h"
 
@@ -601,6 +602,22 @@ static int ql_set_routing_reg(struct ql_adapter *qdev, u32 index, u32 mask,
 				RT_IDX_IDX_SHIFT); /* index */
 			break;
 		}
+	case RT_IDX_IP_CSUM_ERR: /* Pass up IP CSUM error frames. */
+		{
+			value = RT_IDX_DST_DFLT_Q | /* dest */
+				RT_IDX_TYPE_NICQ | /* type */
+				(RT_IDX_IP_CSUM_ERR_SLOT <<
+				RT_IDX_IDX_SHIFT); /* index */
+			break;
+		}
+	case RT_IDX_TU_CSUM_ERR: /* Pass up TCP/UDP CSUM error frames. */
+		{
+			value = RT_IDX_DST_DFLT_Q | /* dest */
+				RT_IDX_TYPE_NICQ | /* type */
+				(RT_IDX_TCP_UDP_CSUM_ERR_SLOT <<
+				RT_IDX_IDX_SHIFT); /* index */
+			break;
+		}	
 	case RT_IDX_BCAST:	/* Pass up Broadcast frames to default Q. */
 		{
 			value = RT_IDX_DST_DFLT_Q | /* dest */
@@ -741,10 +758,11 @@ static void ql_enable_all_completion_interrupts(struct ql_adapter *qdev)
 /* link state work function. Delaying link up by 2 second because
  * of bonding mode (tlb/alb) modifies the mac addresses. 
  */
-static void ql_link_work(struct work_struct *work)
+static void ql_link_work(void *data)
 {
+	struct work_struct *work = data;
 	struct ql_adapter *qdev = 
-			container_of(work, struct ql_adapter, link_work);
+			container_of(work, struct ql_adapter, link_work.work);
 	
 	if ((ql_read32(qdev, STS) & qdev->port_init) &&
 			(ql_read32(qdev, STS) & qdev->port_link_up))
@@ -988,7 +1006,7 @@ static int ql_8000_port_initialize(struct ql_adapter *qdev)
 	if (status)
 		goto exit;
 	/* Wake up a worker to get/set the TX/RX frame sizes. */
-	queue_delayed_work(qdev->workqueue, &qdev->mpi_port_cfg_work, 0);
+	queue_delayed_work(qdev->workqueue, &qdev->mpi_port_cfg_work.work, 0);
 exit:
 	return status;
 }
@@ -1593,11 +1611,10 @@ static void ql_process_mac_rx_page(struct ql_adapter *qdev,
 				(ib_mac_rsp->flags3 & IB_MAC_IOCB_RSP_V4)) {
 			/* Unfragmented ipv4 UDP frame. */
 			struct iphdr *iph = (struct iphdr *) skb->data;
-			if (!(iph->frag_off &
-				cpu_to_be16(IP_MF|IP_OFFSET))) {
+			if (!(iph->frag_off & htons(IP_MF|IP_OFFSET))) {
 				skb->ip_summed = CHECKSUM_UNNECESSARY;
 				QPRINTK_DBG(qdev, RX_STATUS, DEBUG,
-						"TCP checksum done!\n");
+						"UDP checksum done!\n");
 			}
 		}
 	}
@@ -1702,11 +1719,10 @@ static void ql_process_mac_rx_skb(struct ql_adapter *qdev,
 				(ib_mac_rsp->flags3 & IB_MAC_IOCB_RSP_V4)) {
 			/* Unfragmented ipv4 UDP frame. */
 			struct iphdr *iph = (struct iphdr *) skb->data;
-			if (!(iph->frag_off &
-				cpu_to_be16(IP_MF|IP_OFFSET))) {
+			if (!(iph->frag_off & htons(IP_MF|IP_OFFSET))) {
 				skb->ip_summed = CHECKSUM_UNNECESSARY;
 				QPRINTK_DBG(qdev, RX_STATUS, DEBUG,
-						"TCP checksum done!\n");
+						"UDP checksum done!\n");
 			}
 		}
 	}
@@ -1828,7 +1844,7 @@ void ql_queue_fw_error(struct ql_adapter *qdev)
 	set_bit(QL_IN_FW_RST, &qdev->flags);
 
 	ql_link_off(qdev);
-	queue_delayed_work(qdev->workqueue, &qdev->mpi_reset_work, 0);
+	queue_delayed_work(qdev->workqueue, &qdev->mpi_reset_work.work, 0);
 }
 
 void ql_queue_asic_error(struct ql_adapter *qdev)
@@ -1840,7 +1856,7 @@ void ql_queue_asic_error(struct ql_adapter *qdev)
 	 * thread
 	 */
 	clear_bit(QL_ADAPTER_UP, &qdev->flags);
-	queue_delayed_work(qdev->workqueue, &qdev->asic_reset_work, 0);
+	queue_delayed_work(qdev->workqueue, &qdev->asic_reset_work.work, 0);
 }
 
 static void ql_process_chip_ae_intr(struct ql_adapter *qdev,
@@ -1918,17 +1934,6 @@ static int ql_clean_outbound_rx_ring(struct rx_ring *rx_ring)
 		return count;
 
 	ql_write_cq_idx(rx_ring);
-	if (netif_queue_stopped(qdev->ndev) && net_rsp != NULL) {
-		struct tx_ring *tx_ring = &qdev->tx_ring[net_rsp->txq_idx];
-		if (atomic_read(&tx_ring->queue_stopped) &&
-			(atomic_read(&tx_ring->tx_count) >
-					(tx_ring->wq_len / 4)))
-			/*
-			 * The queue got stopped because the tx_ring was full.
-			 * Wake it up, because it's now at least 25% empty.
-			 */
-			netif_wake_queue(qdev->ndev);
-	}
 	rx_ring->bytes += bytes;
 	rx_ring->packets += (unsigned long) count;
 	return count;
@@ -1945,6 +1950,17 @@ static void ql_txq_clean_timer(unsigned long data)
 	ql_clean_outbound_rx_ring(rx_ring);
 
 	spin_unlock(&tx_ring->lock);
+	if (netif_queue_stopped(qdev->ndev)) {
+		spin_lock(&qdev->tx_lock);
+		if (qdev->queue_stopped & (1 << tx_ring->wq_id)) {
+			if (atomic_read(&tx_ring->tx_count) > 64) {
+				qdev->queue_stopped &= ~(1 << tx_ring->wq_id);
+				if (!qdev->queue_stopped)
+					netif_wake_queue(qdev->ndev);
+			}
+		}
+		spin_unlock(&qdev->tx_lock);
+	}
 exit:
 	mod_timer(&tx_ring->txq_clean_timer, jiffies + TXQ_CLEAN_TIME);
 
@@ -2055,6 +2071,20 @@ static void ql_vlan_rx_kill_vid(struct net_device *ndev, u16 vid)
 
 }
 
+static void ql_restore_vlan(struct ql_adapter *qdev)
+{
+	ql_vlan_rx_register(qdev->ndev, qdev->vlgrp);
+
+	if (qdev->vlgrp) {
+		u16 vid;
+			for (vid = 0; vid < VLAN_GROUP_ARRAY_LEN; vid++) {
+				if (!vlan_group_get_device(qdev->vlgrp, vid))
+					continue;
+				ql_vlan_rx_add_vid(qdev->ndev, vid);
+			}
+	}
+}
+
 /* MSI-X Multiple Vector Interrupt Handler for inbound completions. */
 static irqreturn_t qlge_msix_rx_isr(int irq, void *dev_id,
 					struct pt_regs *ptregs)
@@ -2106,7 +2136,7 @@ static irqreturn_t qlge_msix_dflt_rx_isr(int irq, void *dev_id,
 		 */
 		QPRINTK(qdev, INTR, ERR, "Got MPI processor interrupt.\n");
 		queue_delayed_work(qdev->workqueue,
-			&qdev->mpi_work, 0);
+			&qdev->mpi_work.work, 0);
 	}
 
 	return IRQ_HANDLED;
@@ -2160,7 +2190,7 @@ static irqreturn_t qlge_isr(int irq, void *dev_id, struct pt_regs *ptregs)
 		QPRINTK(qdev, INTR, ERR, "Got MPI processor interrupt.\n");
 		ql_disable_completion_interrupt(qdev, intr_context->intr);
 		queue_delayed_work(qdev->workqueue,
-					&qdev->mpi_work, 0);
+					&qdev->mpi_work.work, 0);
 		work_done++;
 	}
 
@@ -2277,11 +2307,16 @@ int qlge_send(struct sk_buff *skb, struct net_device *ndev)
 		ql_clean_outbound_rx_ring(&qdev->rx_ring[tx_ring->cq_id]);
 	if (unlikely(atomic_read(&tx_ring->tx_count) < 2)) {
 		spin_unlock(&tx_ring->lock);
+		del_timer_sync(&tx_ring->txq_clean_timer);
 		QPRINTK_DBG(qdev, TX_QUEUED, INFO,
-			"shutting down tx queue %d du to lack of resources.\n",
+			"shutting down tx queue %d due to lack of resources.\n",
 			tx_ring_idx);
-		netif_stop_queue(ndev);
-		atomic_inc(&tx_ring->queue_stopped);
+		spin_lock(&qdev->tx_lock);
+		if (!qdev->queue_stopped)
+			netif_stop_queue(ndev);
+		qdev->queue_stopped |= (1 << tx_ring->wq_id);
+		spin_unlock(&qdev->tx_lock);
+		mod_timer(&tx_ring->txq_clean_timer, jiffies);
 		return NETDEV_TX_BUSY;
 	}
 	tx_ring_desc = &tx_ring->q[tx_ring->prod_idx];
@@ -2408,7 +2443,6 @@ static void ql_init_tx_ring(struct ql_adapter *qdev, struct tx_ring *tx_ring)
 		tx_ring_desc++;
 	}
 	atomic_set(&tx_ring->tx_count, tx_ring->wq_len);
-	atomic_set(&tx_ring->queue_stopped, 0);
 }
 
 static void ql_free_tx_resources(struct ql_adapter *qdev,
@@ -3313,10 +3347,18 @@ static int ql_route_initialize(struct ql_adapter *qdev)
 	if (status)
 		return status;
 
-	status = ql_set_routing_reg(qdev, RT_IDX_ALL_ERR_SLOT, RT_IDX_ERR, 1);
+	status = ql_set_routing_reg(qdev, RT_IDX_IP_CSUM_ERR_SLOT,
+						RT_IDX_IP_CSUM_ERR, 1);
 	if (status) {
-		QPRINTK(qdev, IFUP, ERR,
-			"Failed to init routing register for error packets.\n");
+		QPRINTK(qdev, IFUP, ERR, "Failed to init routing register "
+			"for IP CSUM error packets.\n");
+		goto exit;
+	}
+	status = ql_set_routing_reg(qdev, RT_IDX_TCP_UDP_CSUM_ERR_SLOT,
+						RT_IDX_TU_CSUM_ERR, 1);
+	if (status) {
+		QPRINTK(qdev, IFUP, ERR, "Failed to init routing register "
+			"for TCP/UDP CSUM error packets.\n");
 		goto exit;
 	}
 	status = ql_set_routing_reg(qdev, RT_IDX_BCAST_SLOT, RT_IDX_BCAST, 1);
@@ -3619,12 +3661,8 @@ static void ql_enable_napi(struct ql_adapter *qdev)
 		netif_poll_enable(qdev->rx_ring[i].dummy_netdev);
 }
 
-static int ql_adapter_down(struct ql_adapter *qdev)
+static void ql_cancel_all_work_sync(struct ql_adapter *qdev)
 {
-	int i, status = 0;
-
-	ql_link_off(qdev);
-
 	/* Don't kill the reset worker thread if we
 	 * are in the process of recovery.
 	 */
@@ -3636,6 +3674,15 @@ static int ql_adapter_down(struct ql_adapter *qdev)
 	cancel_delayed_work_sync(&qdev->mpi_core_to_log);
 	cancel_delayed_work_sync(&qdev->mpi_port_cfg_work);
 	cancel_delayed_work_sync(&qdev->link_work);
+}
+
+static int ql_adapter_down(struct ql_adapter *qdev)
+{
+	int i, status = 0;
+
+	ql_link_off(qdev);
+	
+	ql_cancel_all_work_sync(qdev);
 
 	for (i = 0; i < qdev->tx_ring_count; i++)
 		del_timer_sync(&qdev->tx_ring[i].txq_clean_timer);
@@ -3646,11 +3693,11 @@ static int ql_adapter_down(struct ql_adapter *qdev)
 	ql_disable_interrupts(qdev);
 
 	ql_tx_ring_clean(qdev);
-	ql_free_rx_buffers(qdev);
 	status = ql_adapter_reset(qdev);
 	if (status)
 		QPRINTK(qdev, IFDOWN, ERR, "reset(func #%d) FAILED!\n",
 			qdev->func);
+	ql_free_rx_buffers(qdev);
 	return status;
 }
 
@@ -3666,11 +3713,20 @@ static int ql_adapter_up(struct ql_adapter *qdev)
 	set_bit(QL_ADAPTER_UP, &qdev->flags);
 	ql_enable_napi(qdev);
 	ql_alloc_rx_buffers(qdev);
+	qdev->queue_stopped = 0;
 	ql_enable_all_completion_interrupts(qdev);
 	
 	/* trigger link work function*/
-	queue_delayed_work(qdev->workqueue, &qdev->link_work,
+	queue_delayed_work(qdev->workqueue, &qdev->link_work.work,
 					msecs_to_jiffies(2000));
+	/* Restore rx mode. */
+	clear_bit(QL_ALLMULTI, &qdev->flags);
+	clear_bit(QL_PROMISCUOUS, &qdev->flags);
+	qlge_set_multicast_list(qdev->ndev);
+
+	/* Restore vlan setting. */
+	ql_restore_vlan(qdev);
+
 	ql_enable_interrupts(qdev);
 	return 0;
 err_init:
@@ -3891,10 +3947,8 @@ static int ql_change_rx_buffers(struct ql_adapter *qdev)
 error:
 	QPRINTK(qdev, IFUP, ALERT,
 		"Driver up/down cycle failed, closing device.\n");
-	rtnl_lock();
 	set_bit(QL_ADAPTER_UP, &qdev->flags);
 	dev_close(qdev->ndev);
-	rtnl_unlock();
 	return status;
 }
 
@@ -3953,7 +4007,7 @@ static struct net_device_stats *qlge_get_stats(struct net_device
 	return &qdev->stats;
 }
 
-static void qlge_set_multicast_list(struct net_device *ndev)
+void qlge_set_multicast_list(struct net_device *ndev)
 {
 	struct ql_adapter *qdev = (struct ql_adapter *)netdev_priv(ndev);
 	struct dev_mc_list *mc_ptr;
@@ -4093,10 +4147,11 @@ static void qlge_tx_timeout(struct net_device *ndev)
 	ql_queue_asic_error(qdev);
 }
 
-static void ql_asic_reset_work(struct work_struct *work)
+static void ql_asic_reset_work(void *data)
 {
+	struct work_struct *work = data;
 	struct ql_adapter *qdev =
-		container_of(work, struct ql_adapter, asic_reset_work);
+		container_of(work, struct ql_adapter, asic_reset_work.work);
 	int status;
 
 	status = ql_adapter_down(qdev);
@@ -4303,6 +4358,7 @@ static int __devinit ql_init_device(struct pci_dev *pdev,
 	qdev->msg_enable = netif_msg_init(debug, default_msg);
 	spin_lock_init(&qdev->hw_lock);
 	spin_lock_init(&qdev->stats_lock);
+	spin_lock_init(&qdev->tx_lock);
 
 	qdev->mpi_coredump = vmalloc(sizeof(struct ql_mpi_coredump));
 	if ((qdev->mpi_coredump == NULL) && qlge_mpi_coredump) {
@@ -4370,7 +4426,7 @@ static int ql_poll(struct net_device *ndev, int *budget)
 	struct rx_ring *rx_ring = ndev->priv;
 	struct ql_adapter *qdev = rx_ring->qdev;
 	int work_to_do = min(*budget, ndev->quota);
-	int work_done;
+	int work_done = 0;
 
 	QPRINTK_DBG(qdev, RX_STATUS, DEBUG,
 			"NAPI poll, netdev = %p, rx_ring = %p, cq_id = %d, "
@@ -4378,6 +4434,7 @@ static int ql_poll(struct net_device *ndev, int *budget)
 			work_to_do);
 
 	work_done = ql_clean_inbound_rx_ring(rx_ring, work_to_do);
+	if (work_done) ndev->last_rx = jiffies;
 	*budget -= work_done;
 	ndev->quota -= work_done;
 #ifdef NETIF_F_GRO
@@ -4572,6 +4629,7 @@ static void __devexit qlge_remove(struct pci_dev *pdev)
 	struct ql_adapter *qdev = netdev_priv(ndev);
 
 	del_timer_sync(&qdev->eeh_timer);
+	ql_cancel_all_work_sync(qdev);
 	unregister_netdev(ndev);
 	ql_deinit_napi(qdev);
 	ql_release_all(pdev);
@@ -4589,14 +4647,10 @@ static void ql_eeh_close(struct net_device *ndev)
 		netif_stop_queue(ndev);
 	}
 
-	if (test_bit(QL_ADAPTER_UP, &qdev->flags))
-		cancel_delayed_work_sync(&qdev->asic_reset_work);
-	cancel_delayed_work_sync(&qdev->mpi_reset_work);
-	cancel_delayed_work_sync(&qdev->mpi_work);
-	cancel_delayed_work_sync(&qdev->mpi_idc_work);
-	cancel_delayed_work_sync(&qdev->mpi_core_to_log);
-	cancel_delayed_work_sync(&qdev->mpi_port_cfg_work);
-	cancel_delayed_work_sync(&qdev->link_work);
+	/* Disabling the timer */
+	del_timer_sync(&qdev->eeh_timer);
+
+	ql_cancel_all_work_sync(qdev);
 
 	for (i = 0; i < qdev->tx_ring_count; i++)
 		del_timer_sync(&qdev->tx_ring[i].txq_clean_timer);

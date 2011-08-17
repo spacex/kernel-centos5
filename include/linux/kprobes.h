@@ -174,6 +174,43 @@ extern kprobe_opcode_t *get_insn_slot(void);
 extern void free_insn_slot(kprobe_opcode_t *slot);
 extern void kprobes_inc_nmissed_count(struct kprobe *p);
 
+#ifdef CONFIG_OPTPROBES
+/*
+ * Internal structure for direct jump optimized probe
+ */
+struct optimized_kprobe {
+	struct kprobe kp;
+	struct list_head list;	/* list for optimizing queue */
+	struct arch_optimized_insn optinsn;
+};
+/* Is this kprobe really running optimized path ? */
+extern int kprobe_get_optimized(struct kprobe *p);
+extern void kprobe_set_optimized(struct kprobe *p, int optimized);
+
+/* Architecture dependent functions for direct jump optimization */
+extern int arch_prepared_optinsn(struct arch_optimized_insn *optinsn);
+extern int arch_check_optimized_kprobe(struct optimized_kprobe *op);
+extern int arch_prepare_optimized_kprobe(struct optimized_kprobe *op);
+extern void arch_remove_optimized_kprobe(struct optimized_kprobe *op);
+extern int  arch_optimize_kprobe(struct optimized_kprobe *op);
+extern void arch_unoptimize_kprobe(struct optimized_kprobe *op);
+extern kprobe_opcode_t *get_optinsn_slot(void);
+extern void free_optinsn_slot(kprobe_opcode_t *slot, int dirty);
+extern int arch_within_optimized_kprobe(struct optimized_kprobe *op,
+					unsigned long addr);
+
+extern void opt_pre_handler(struct kprobe *p, struct pt_regs *regs);
+
+#ifdef CONFIG_SYSCTL
+extern int sysctl_kprobes_optimization;
+extern int proc_kprobes_optimization_handler(struct ctl_table *table,
+					     int write, struct file *filp,
+					     void __user *buffer,
+					     size_t *length, loff_t *ppos);
+#endif
+
+#endif /* CONFIG_OPTPROBES */
+
 /* Get the kprobe at this addr (if any) - called with preemption disabled */
 struct kprobe *get_kprobe(void *addr);
 struct hlist_head * kretprobe_inst_table_head(struct task_struct *tsk);
@@ -216,6 +253,9 @@ struct kretprobe_instance *get_free_rp_inst(struct kretprobe *rp);
 void add_rp_inst(struct kretprobe_instance *ri);
 void kprobe_flush_task(struct task_struct *tk);
 void recycle_rp_inst(struct kretprobe_instance *ri, struct hlist_head *head);
+
+void dump_kprobe(struct kprobe *kp);
+
 #else /* CONFIG_KPROBES */
 
 #define __kprobes	/**/

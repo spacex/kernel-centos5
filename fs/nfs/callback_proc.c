@@ -23,7 +23,7 @@ unsigned nfs4_callback_getattr(struct cb_getattrargs *args, struct cb_getattrres
 	
 	res->bitmap[0] = res->bitmap[1] = 0;
 	res->status = htonl(NFS4ERR_BADHANDLE);
-	clp = nfs_find_client(args->addr, 4);
+	clp = nfs_find_client(args->addr, IPPROTO_TCP, 4);
 	if (clp == NULL)
 		goto out;
 	inode = nfs_delegation_find_inode(clp, &args->fh);
@@ -62,7 +62,7 @@ unsigned nfs4_callback_recall(struct cb_recallargs *args, void *dummy)
 	unsigned res;
 	
 	res = htonl(NFS4ERR_BADHANDLE);
-	clp = nfs_find_client(args->addr, 4);
+	clp = nfs_find_client(args->addr, IPPROTO_TCP, 4);
 	if (clp == NULL)
 		goto out;
 	inode = nfs_delegation_find_inode(clp, &args->fh);

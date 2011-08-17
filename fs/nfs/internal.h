@@ -60,7 +60,7 @@ struct nfs_clone_mount {
 extern struct rpc_program nfs_program;
 
 extern void nfs_put_client(struct nfs_client *);
-extern struct nfs_client *nfs_find_client(const struct sockaddr_in *, int);
+extern struct nfs_client *nfs_find_client(const struct sockaddr_in *, int, int);
 extern struct nfs_server *nfs_create_server(const struct nfs_mount_data *,
 					    struct nfs_fh *);
 extern struct nfs_server *nfs4_create_server(const struct nfs4_mount_data *,

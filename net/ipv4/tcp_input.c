@@ -2249,7 +2249,7 @@ static int tcp_tso_acked(struct sock *sk, struct sk_buff *skb,
 	return acked;
 }
 
-static u32 tcp_usrtt(struct timeval *tv)
+static s32 tcp_usrtt(struct timeval *tv)
 {
 	struct timeval now;
 
@@ -2525,6 +2525,8 @@ static int tcp_ack(struct sock *sk, struct sk_buff *skb, int flag)
 			tp->bytes_acked += min(ack - prior_snd_una, tp->mss_cache);
 	}
 
+	prior_in_flight = tcp_packets_in_flight(tp);
+
 	if (!(flag&FLAG_SLOWPATH) && after(ack, prior_snd_una)) {
 		/* Window is constant, pure forward advance.
 		 * No more checks are required.
@@ -2563,8 +2565,6 @@ static int tcp_ack(struct sock *sk, struct sk_buff *skb, int flag)
 	prior_packets = tp->packets_out;
 	if (!prior_packets)
 		goto no_queue;
-
-	prior_in_flight = tcp_packets_in_flight(tp);
 
 	/* See if we can take anything off of the retransmit queue. */
 	flag |= tcp_clean_rtx_queue(sk, &seq_rtt);
@@ -3824,7 +3824,7 @@ static int tcp_dma_try_early_copy(struct sock *sk, struct sk_buff *skb, int hlen
           	return 0;
 
 	if (!tp->ucopy.dma_chan && tp->ucopy.pinned_list)
-		tp->ucopy.dma_chan = get_softnet_dma();
+		tp->ucopy.dma_chan = dma_find_channel(DMA_MEMCPY);
 
 	if (tp->ucopy.dma_chan && skb->ip_summed == CHECKSUM_UNNECESSARY) {
 

@@ -373,8 +373,10 @@ no_kprobe:
 	asm volatile ( ".global kretprobe_trampoline\n"
  			"kretprobe_trampoline: \n"
 			"	pushf\n"
-			/* skip cs, eip, orig_eax, es, ds */
-			"	subl $20, %esp\n"
+			/* skip cs, eip, orig_eax */
+			"	subl $12, %esp\n"
+			"	pushl %es\n"
+			"	pushl %ds\n"
 			"	pushl %eax\n"
 			"	pushl %ebp\n"
 			"	pushl %edi\n"
@@ -416,6 +418,10 @@ fastcall void *__kprobes trampoline_handler(struct pt_regs *regs)
 	INIT_HLIST_HEAD(&empty_rp);
 	spin_lock_irqsave(&kretprobe_lock, flags);
         head = kretprobe_inst_table_head(current);
+	/* fixup registers */
+	regs->xcs = __KERNEL_CS;
+	regs->eip = trampoline_address;
+	regs->orig_eax = 0xffffffff;
 
 	/*
 	 * It is possible to have multiple instances associated with a given
@@ -437,6 +443,7 @@ fastcall void *__kprobes trampoline_handler(struct pt_regs *regs)
 
 		if (ri->rp && ri->rp->handler){
 			__get_cpu_var(current_kprobe) = &ri->rp->kp;
+			get_kprobe_ctlblk()->kprobe_status = KPROBE_HIT_ACTIVE;
 			ri->rp->handler(ri, regs);
 			__get_cpu_var(current_kprobe) = NULL;
 		}

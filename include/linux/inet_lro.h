@@ -32,12 +32,6 @@
 #include <net/tcp.h>
 
 /*
- * backport csum_unfold and datatypes from 2.6.25
- */
-typedef __u16 __bitwise __sum16;
-typedef __u32 __bitwise __wsum;
-
-/*
  * LRO statistics
  */
 

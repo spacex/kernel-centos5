@@ -487,12 +487,13 @@ static int check_kill_permission(int sig, struct siginfo *info,
 		if (error)
 			return error;
 		error = -EPERM;
-		if (((sig != SIGCONT) ||
+		if ((current->tgid != t->tgid)
+		    && ((sig != SIGCONT) ||
 			(current->signal->session != t->signal->session))
 		    && (current->euid ^ t->suid) && (current->euid ^ t->uid)
 		    && (current->uid ^ t->suid) && (current->uid ^ t->uid)
 		    && !capable(CAP_KILL))
-		return error;
+			return error;
 	}
 
 	return security_task_kill(t, info, sig, 0);
