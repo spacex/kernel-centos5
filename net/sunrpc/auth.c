@@ -414,3 +414,20 @@ rpcauth_uptodatecred(struct rpc_task *task)
 	return !(task->tk_msg.rpc_cred) ||
 		(task->tk_msg.rpc_cred->cr_flags & RPCAUTH_CRED_UPTODATE);
 }
+
+static int (*rpc_is_gss_cred_cb)(const struct rpc_cred *);
+
+void
+rpcauth_set_gsscred_cb(int (*cb)(const struct rpc_cred *))
+{
+	rpc_is_gss_cred_cb = cb;
+}
+EXPORT_SYMBOL(rpcauth_set_gsscred_cb);
+
+int
+rpcauth_is_gss_cred(const struct rpc_cred *cred)
+{
+	return (rpc_is_gss_cred_cb) ? rpc_is_gss_cred_cb(cred) : 0;
+}
+EXPORT_SYMBOL(rpcauth_is_gss_cred);
+

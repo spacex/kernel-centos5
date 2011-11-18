@@ -273,6 +273,9 @@ nlmclnt_call(struct rpc_cred *cred, struct nlm_rqst *req, u32 proc)
 	dprintk("lockd: call procedure %d on %s\n",
 			(int)proc, host->h_name);
 
+	if (rpcauth_is_gss_cred(cred))
+		msg.rpc_cred = NULL;
+
 	do {
 		if (host->h_reclaiming && !argp->reclaim)
 			goto in_grace_period;
@@ -420,6 +423,9 @@ static int nlmclnt_async_call(struct rpc_cred *cred, struct nlm_rqst *req, u32 p
 	};
 	struct rpc_task *task;
 	int err;
+
+	if (rpcauth_is_gss_cred(cred))
+		msg.rpc_cred = NULL;
 
 	task = __nlm_async_call(req, proc, &msg, tk_ops);
 	if (IS_ERR(task))
@@ -733,7 +739,13 @@ static void nlmclnt_unlock_callback(struct rpc_task *task, void *data)
 
 	if (task->tk_status < 0) {
 		dprintk("lockd: unlock failed (err = %d)\n", -task->tk_status);
-		goto retry_rebind;
+		switch (task->tk_status) {
+		case -EACCES:
+		case -EIO:
+			goto die;
+		default:
+			goto retry_rebind;
+		}
 	}
 	if (status == NLM_LCK_DENIED_GRACE_PERIOD) {
 		rpc_delay(task, NLMCLNT_GRACE_WAIT);

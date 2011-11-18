@@ -97,6 +97,9 @@ struct rpc_task {
 #ifdef RPC_DEBUG
 	unsigned short		tk_pid;		/* debugging aid */
 #endif
+#ifndef __GENKSYMS__
+	unsigned char		tk_rebind_retry : 2;
+#endif /* ! __GENKSYMS__ */
 };
 #define tk_auth			tk_client->cl_auth
 #define tk_xprt			tk_client->cl_xprt

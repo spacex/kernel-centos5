@@ -1271,6 +1271,12 @@ static struct rpc_pipe_ops gss_upcall_ops = {
 	.release_pipe	= gss_pipe_release,
 };
 
+static int
+authgss_is_gss_cred(const struct rpc_cred *cred)
+{
+	return (cred->cr_ops == &gss_credops);
+}
+
 /*
  * Initialize RPCSEC_GSS module
  */
@@ -1284,6 +1290,7 @@ static int __init init_rpcsec_gss(void)
 	err = gss_svc_init();
 	if (err)
 		goto out_unregister;
+	rpcauth_set_gsscred_cb(authgss_is_gss_cred);
 	return 0;
 out_unregister:
 	rpcauth_unregister(&authgss_ops);
@@ -1295,6 +1302,7 @@ static void __exit exit_rpcsec_gss(void)
 {
 	gss_svc_shutdown();
 	rpcauth_unregister(&authgss_ops);
+	rpcauth_set_gsscred_cb(NULL);
 }
 
 MODULE_LICENSE("GPL");
