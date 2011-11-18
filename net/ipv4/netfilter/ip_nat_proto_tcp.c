@@ -13,6 +13,7 @@
 #include <linux/ip.h>
 #include <linux/tcp.h>
 #include <linux/if.h>
+#include <net/secure_seq.h>
 #include <linux/netfilter/nfnetlink_conntrack.h>
 #include <linux/netfilter_ipv4/ip_nat.h>
 #include <linux/netfilter_ipv4/ip_nat_rule.h>

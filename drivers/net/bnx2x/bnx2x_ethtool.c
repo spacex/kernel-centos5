@@ -596,8 +596,7 @@ static void bnx2x_get_regs(struct net_device *dev,
 	}
 	/* Re-enable parity attentions */
 	bnx2x_clear_blocks_parity(bp);
-	if (CHIP_PARITY_ENABLED(bp))
-		bnx2x_enable_blocks_parity(bp);
+	bnx2x_enable_blocks_parity(bp);
 }
 
 #define PHY_FW_VER_LEN			20

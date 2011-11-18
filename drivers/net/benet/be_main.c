@@ -254,6 +254,18 @@ netdev_addr:
 	return status;
 }
 
+static void accumulate_16bit_val(u32 *acc, u16 val)
+{
+#define lo(x)                  (x & 0xFFFF)
+#define hi(x)                  (x & 0xFFFF0000)
+	bool wrapped = val < lo(*acc);
+	u32 newacc = hi(*acc) + val;
+
+	if (wrapped)
+		newacc += 65536;
+	ACCESS_ONCE(*acc) = newacc;
+}
+
 void netdev_stats_update(struct be_adapter *adapter)
 {
 	struct be_hw_stats *hw_stats = hw_stats_from_cmd(adapter->stats_cmd.va);
@@ -261,19 +273,29 @@ void netdev_stats_update(struct be_adapter *adapter)
 	struct be_port_rxf_stats *port_stats =
 			&rxf_stats->port[adapter->port_num];
 	struct net_device_stats *dev_stats = &adapter->net_stats;
-	struct be_erx_stats *erx_stats = &hw_stats->erx;
+	struct be_erx_stats *erx = &hw_stats->erx;
 	struct be_rx_obj *rxo;
+	unsigned long pkts = 0, bytes = 0, mcast = 0, drops = 0;
 	int i;
 
-	memset(dev_stats, 0, sizeof(*dev_stats));
 	for_all_rx_queues(adapter, rxo, i) {
-		dev_stats->rx_packets += rx_stats(rxo)->rx_pkts;
-		dev_stats->rx_bytes += rx_stats(rxo)->rx_bytes;
-		dev_stats->multicast += rx_stats(rxo)->rx_mcast_pkts;
-		/*  no space in linux buffers: best possible approximation */
-		dev_stats->rx_dropped +=
-			erx_stats->rx_drops_no_fragments[rxo->q.id];
+		pkts += rx_stats(rxo)->rx_pkts;
+		bytes += rx_stats(rxo)->rx_bytes;
+		mcast += rx_stats(rxo)->rx_mcast_pkts;
+		drops += rx_stats(rxo)->rx_dropped;
+
+		/*  below erx HW counter can actually wrap around after
+		 * 65535. Driver accumulates a 32-bit value
+		 */
+		accumulate_16bit_val(&rx_stats(rxo)->rx_drops_no_frags,
+			     (u16)erx->rx_drops_no_fragments[rxo->q.id]);
+
+		drops += rx_stats(rxo)->rx_drops_no_frags;
 	}
+	dev_stats->rx_packets = pkts;
+	dev_stats->rx_bytes = bytes;
+	dev_stats->multicast = mcast;
+	dev_stats->rx_dropped = drops;
 
 	dev_stats->tx_packets = tx_stats(adapter)->be_tx_pkts;
 	dev_stats->tx_bytes = tx_stats(adapter)->be_tx_bytes;
@@ -660,6 +682,10 @@ static int be_vid_config(struct be_adapter *adapter)
 	u16 ntags = 0, i;
 	int status = 0;
 
+	/* No need to further configure vids if in promiscuous mode */
+	if (adapter->promiscuous)
+		return 0;
+
 	if (adapter->vlans_added <= adapter->max_vlans)  {
 		/* Construct VLAN Table to give to HW */
 		for (i = 0; i < VLAN_GROUP_ARRAY_LEN; i++) {
@@ -716,7 +742,7 @@ static void be_set_multicast_list(struct net_device *netdev)
 	struct be_adapter *adapter = netdev_priv(netdev);
 
 	if (netdev->flags & IFF_PROMISC) {
-		be_cmd_promiscuous_config(adapter, adapter->port_num, 1);
+		be_cmd_promiscuous_config(adapter, true);
 		adapter->promiscuous = true;
 		goto done;
 	}
@@ -724,7 +750,10 @@ static void be_set_multicast_list(struct net_device *netdev)
 	/* BE was previously in promiscous mode; disable it */
 	if (adapter->promiscuous) {
 		adapter->promiscuous = false;
-		be_cmd_promiscuous_config(adapter, adapter->port_num, 0);
+		be_cmd_promiscuous_config(adapter, false);
+
+		if (adapter->vlans_added)
+			be_vid_config(adapter);
 	}
 
 	/* Enable multicast promisc if num configured exceeds what we support */
@@ -909,8 +938,7 @@ static void be_rx_compl_process(struct be_adapter *adapter,
 
 	skb = netdev_alloc_skb(adapter->netdev, BE_HDR_LEN + NET_IP_ALIGN);
 	if (unlikely(!skb)) {
-		if (net_ratelimit())
-			dev_warn(&adapter->pdev->dev, "skb alloc failed\n");
+		rxo->stats.rx_dropped++;
 		be_rx_compl_discard(adapter, rxo, rxcp);
 		return;
 	}
@@ -927,15 +955,13 @@ static void be_rx_compl_process(struct be_adapter *adapter,
 	skb->protocol = eth_type_trans(skb, adapter->netdev);
 	skb->dev = adapter->netdev;
 
-	if (unlikely(rxcp->vlanf)) {
-		if (!adapter->vlan_grp || adapter->vlans_added == 0) {
-			kfree_skb(skb);
-			return;
-		}
+	if (rxcp->vlanf && !adapter->vlan_grp)
+		__vlan_put_tag(skb, rxcp->vid);
+
+	if (rxcp->vlanf && adapter->vlan_grp)
 		vlan_hwaccel_receive_skb(skb, adapter->vlan_grp, rxcp->vid);
-	} else {
+	else
 		netif_receive_skb(skb);
-	}
 
 	adapter->netdev->last_rx = jiffies;
 }
@@ -989,10 +1015,15 @@ static void be_rx_compl_process_gro(struct be_adapter *adapter,
 	skb->truesize += rxcp->pkt_size;
 	skb->ip_summed = CHECKSUM_UNNECESSARY;
 
-	if (likely(!rxcp->vlanf))
-		napi_gro_frags(&eq_obj->napi);
-	else
+	if (rxcp->vlanf && !adapter->vlan_grp)
+		__vlan_put_tag(skb, rxcp->vid);
+
+	if (rxcp->vlanf && adapter->vlan_grp)
 		vlan_gro_frags(&eq_obj->napi, adapter->vlan_grp, rxcp->vid);
+	else
+		napi_gro_frags(&eq_obj->napi);
+
+	adapter->netdev->last_rx = jiffies;
 }
 
 static void be_parse_rx_compl_v1(struct be_adapter *adapter,
@@ -1216,8 +1247,8 @@ static inline struct be_eq_entry *event_get(struct be_eq_obj *eq_obj)
 	return eqe;
 }
 
-static int event_handle(struct be_adapter *adapter,
-			struct be_eq_obj *eq_obj)
+static int event_handle(struct be_adapter *adapter, struct be_eq_obj *eq_obj,
+			bool rearm)
 {
 	struct be_eq_entry *eqe;
 	u16 num = 0;
@@ -1230,7 +1261,10 @@ static int event_handle(struct be_adapter *adapter,
 	/* Deal with any spurious interrupts that come
 	 * without events
 	 */
-	be_eq_notify(adapter, eq_obj->q.id, true, true, num);
+	if (!num)
+		rearm = true;
+
+	be_eq_notify(adapter, eq_obj->q.id, rearm, true, num);
 	if (num)
 		netif_rx_schedule(eq_obj->napi_dev);
 
@@ -1567,10 +1601,10 @@ static irqreturn_t be_intx(int irq, void *dev, struct pt_regs *pt_regs)
 
 	if (lancer_chip(adapter)) {
 		if (event_peek(&adapter->tx_eq))
-			tx = event_handle(adapter, &adapter->tx_eq);
+			tx = event_handle(adapter, &adapter->tx_eq, false);
 		for_all_rx_queues(adapter, rxo, i) {
 			if (event_peek(&rxo->rx_eq))
-				rx |= event_handle(adapter, &rxo->rx_eq);
+				rx |= event_handle(adapter, &rxo->rx_eq, true);
 		}
 
 		if (!(tx || rx))
@@ -1583,11 +1617,11 @@ static irqreturn_t be_intx(int irq, void *dev, struct pt_regs *pt_regs)
 			return IRQ_NONE;
 
 		if ((1 << adapter->tx_eq.eq_idx & isr))
-			event_handle(adapter, &adapter->tx_eq);
+			event_handle(adapter, &adapter->tx_eq, false);
 
 		for_all_rx_queues(adapter, rxo, i) {
 			if ((1 << rxo->rx_eq.eq_idx & isr))
-				event_handle(adapter, &rxo->rx_eq);
+				event_handle(adapter, &rxo->rx_eq, true);
 		}
 	}
 
@@ -1599,7 +1633,7 @@ static irqreturn_t be_msix_rx(int irq, void *dev, struct pt_regs *regs)
 	struct be_rx_obj *rxo = dev;
 	struct be_adapter *adapter = rxo->adapter;
 
-	event_handle(adapter, &rxo->rx_eq);
+	event_handle(adapter, &rxo->rx_eq, true);
 
 	return IRQ_HANDLED;
 }
@@ -1608,7 +1642,7 @@ static irqreturn_t be_msix_tx_mcc(int irq, void *dev, struct pt_regs *regs)
 {
 	struct be_adapter *adapter = dev;
 
-	event_handle(adapter, &adapter->tx_eq);
+	event_handle(adapter, &adapter->tx_eq, false);
 
 	return IRQ_HANDLED;
 }
@@ -1694,16 +1728,6 @@ static int be_poll_tx_mcc(struct napi_struct *napi, int budget)
 		tx_compl++;
 	}
 
-	mcc_compl = be_process_mcc(adapter, &status);
-
-	napi_gro_flush(napi);
-	netif_rx_complete(tx_eq->napi_dev);
-
-	if (mcc_compl) {
-		struct be_mcc_obj *mcc_obj = &adapter->mcc_obj;
-		be_cq_notify(adapter, mcc_obj->cq.id, true, mcc_compl);
-	}
-
 	if (tx_compl) {
 		be_cq_notify(adapter, adapter->tx_obj.cq.id, true, tx_compl);
 
@@ -1718,6 +1742,18 @@ static int be_poll_tx_mcc(struct napi_struct *napi, int budget)
 		tx_stats(adapter)->be_tx_events++;
 		tx_stats(adapter)->be_tx_compl += tx_compl;
 	}
+
+	mcc_compl = be_process_mcc(adapter, &status);
+
+	if (mcc_compl) {
+		struct be_mcc_obj *mcc_obj = &adapter->mcc_obj;
+		be_cq_notify(adapter, mcc_obj->cq.id, true, mcc_compl);
+	}
+
+	napi_gro_flush(napi);
+	netif_rx_complete(tx_eq->napi_dev);
+
+	be_eq_notify(adapter, tx_eq->q.id, true, false, 0);
 
 	return 1;
 }
@@ -2314,8 +2350,9 @@ static void be_netpoll(struct net_device *netdev)
 	struct be_rx_obj *rxo;
 	int i;
 
+	event_handle(adapter, &adapter->tx_eq, false);
 	for_all_rx_queues(adapter, rxo, i)
-		event_handle(adapter, &rxo->rx_eq);
+		event_handle(adapter, &rxo->rx_eq, true);
 }
 #endif
 

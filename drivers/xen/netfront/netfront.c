@@ -96,9 +96,11 @@ static const int MODPARM_rx_flip = 0;
 #define HAVE_TSO			1 /* TSO is a subset of GSO */
 static inline void dev_disable_gso_features(struct net_device *dev)
 {
-	/* Turn off all GSO bits except ROBUST. */
-	dev->features &= ~NETIF_F_GSO_MASK;
-	dev->features |= NETIF_F_GSO_ROBUST;
+	/* Set ROBUST, turn off all other GSO bits except TSO. */
+	dev->features =
+		(dev->features & NETIF_F_TSO) |
+		(dev->features & ~NETIF_F_GSO_MASK) |
+		NETIF_F_GSO_ROBUST;
 }
 #elif defined(NETIF_F_TSO)
 #define HAVE_TSO                       1
@@ -106,8 +108,7 @@ static inline void dev_disable_gso_features(struct net_device *dev)
 #define gso_segs tso_segs
 static inline void dev_disable_gso_features(struct net_device *dev)
 {
-       /* Turn off all TSO bits. */
-       dev->features &= ~NETIF_F_TSO;
+	/* TSO is handled separately, do not disable it here.  */
 }
 static inline int skb_is_gso(const struct sk_buff *skb)
 {
@@ -1654,36 +1655,43 @@ static int xennet_change_mtu(struct net_device *dev, int mtu)
 
 static int xennet_set_sg(struct net_device *dev, u32 data)
 {
+	int val, rc;
+
 	if (data) {
 		struct netfront_info *np = get_netfront_info(dev);
-		int val;
-
 		if (xenbus_scanf(XBT_NIL, np->xbdev->otherend, "feature-sg",
 				 "%d", &val) < 0)
 			val = 0;
-		if (!val)
-			return -ENOSYS;
-	} else if (dev->mtu > ETH_DATA_LEN)
-		dev->mtu = ETH_DATA_LEN;
+	} else
+		val = 0;
 
-	return ethtool_op_set_sg(dev, data);
+	rc = ethtool_op_set_sg(dev, val);
+	if (rc == 0 && !val) {
+		if (dev->mtu > ETH_DATA_LEN)
+			dev->mtu = ETH_DATA_LEN;
+		if (data)
+			rc = -ENOSYS;
+	}
+	return rc;
 }
 
 static int xennet_set_tso(struct net_device *dev, u32 data)
 {
 #ifdef HAVE_TSO
+	int val, rc;
+
 	if (data) {
 		struct netfront_info *np = get_netfront_info(dev);
-		int val;
-
 		if (xenbus_scanf(XBT_NIL, np->xbdev->otherend,
 				 "feature-gso-tcpv4", "%d", &val) < 0)
 			val = 0;
-		if (!val)
-			return -ENOSYS;
-	}
+	} else
+		val = 0;
 
-	return ethtool_op_set_tso(dev, data);
+	rc = ethtool_op_set_tso(dev, val);
+	if (rc == 0 && !val && data)
+		rc = -ENOSYS;
+	return rc;
 #else
 	return -ENOSYS;
 #endif
@@ -1692,14 +1700,19 @@ static int xennet_set_tso(struct net_device *dev, u32 data)
 static void xennet_set_features(struct net_device *dev)
 {
 	dev_disable_gso_features(dev);
-	xennet_set_sg(dev, 0);
 
-	/* We need checksum offload to enable scatter/gather and TSO. */
-	if (!(dev->features & NETIF_F_IP_CSUM))
-		return;
-
-	if (!xennet_set_sg(dev, 1))
-		xennet_set_tso(dev, 1);
+	/*
+	 * We need checksum offload to enable scatter/gather, and
+	 * scatter/gather to enable TSO.  Calling xennet_set_sg and
+	 * xennet_set_tso ensures that Xenstore is probed for feature
+	 * support in the backend.
+	 */
+	xennet_set_sg(dev, ((dev->features & (NETIF_F_IP_CSUM | NETIF_F_SG)) ==
+			    (NETIF_F_IP_CSUM | NETIF_F_SG)));
+#ifdef HAVE_TSO
+	xennet_set_tso(dev, ((dev->features & (NETIF_F_SG | NETIF_F_TSO)) ==
+			     (NETIF_F_SG | NETIF_F_TSO)));
+#endif
 }
 
 static int network_connect(struct net_device *dev)
@@ -2041,7 +2054,9 @@ static struct net_device * __devinit create_netdev(struct xenbus_device *dev)
 	netdev->uninit          = netif_uninit;
 	netdev->change_mtu	= xennet_change_mtu;
 	netdev->weight          = 64;
-	netdev->features        = NETIF_F_IP_CSUM;
+
+	/* Assume all features and let xennet_set_features fix up.  */
+	netdev->features        = NETIF_F_IP_CSUM | NETIF_F_SG | NETIF_F_TSO;
 
 	SET_ETHTOOL_OPS(netdev, &network_ethtool_ops);
 	SET_MODULE_OWNER(netdev);

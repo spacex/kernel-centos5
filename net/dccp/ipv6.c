@@ -28,6 +28,7 @@
 #include <net/transp_v6.h>
 #include <net/ip6_checksum.h>
 #include <net/xfrm.h>
+#include <net/secure_seq.h>
 
 #include "dccp.h"
 #include "ipv6.h"
@@ -73,7 +74,7 @@ static inline u16 dccp_v6_check(struct dccp_hdr *dh, int len,
 	return csum_ipv6_magic(saddr, daddr, len, IPPROTO_DCCP, base);
 }
 
-static __u32 dccp_v6_init_sequence(struct sock *sk, struct sk_buff *skb)
+static __u64 dccp_v6_init_sequence(struct sock *sk, struct sk_buff *skb)
 {
 	const struct dccp_hdr *dh = dccp_hdr(skb);
 

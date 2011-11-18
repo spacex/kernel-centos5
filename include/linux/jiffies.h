@@ -1,12 +1,13 @@
 #ifndef _LINUX_JIFFIES_H
 #define _LINUX_JIFFIES_H
 
-#include <linux/calc64.h>
+#include <linux/math64.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/time.h>
 #include <linux/timex.h>
 #include <asm/param.h>			/* for HZ */
+#include <asm/div64.h>
 
 /*
  * The following defines establish the engineering parameters of the PLL
@@ -371,8 +372,10 @@ jiffies_to_timespec(const unsigned long jiffies, struct timespec *value)
 	 * Convert jiffies to nanoseconds and separate with
 	 * one divide.
 	 */
-	u64 nsec = (u64)jiffies * TICK_NSEC;
-	value->tv_sec = div_long_long_rem(nsec, NSEC_PER_SEC, &value->tv_nsec);
+	u32 rem;
+	value->tv_sec = div_u64_rem((u64)jiffies * TICK_NSEC,
+				    NSEC_PER_SEC, &rem);
+	value->tv_nsec = rem;
 }
 
 /* Same for "timeval"
@@ -409,12 +412,11 @@ jiffies_to_timeval(const unsigned long jiffies, struct timeval *value)
 	 * Convert jiffies to nanoseconds and separate with
 	 * one divide.
 	 */
-	u64 nsec = (u64)jiffies * TICK_NSEC;
-	long tv_usec;
+	u32 rem;
 
-	value->tv_sec = div_long_long_rem(nsec, NSEC_PER_SEC, &tv_usec);
-	tv_usec /= NSEC_PER_USEC;
-	value->tv_usec = tv_usec;
+	value->tv_sec = div_u64_rem((u64)jiffies * TICK_NSEC,
+				    NSEC_PER_SEC, &rem);
+	value->tv_usec = rem / NSEC_PER_USEC;
 }
 
 /*

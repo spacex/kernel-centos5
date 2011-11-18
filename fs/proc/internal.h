@@ -67,3 +67,19 @@ static inline int proc_fd(struct inode *inode)
 {
 	return PROC_I(inode)->fd;
 }
+
+/*
+ * RHEL internal wrapper to extend struct proc_dir_entry
+ */
+struct proc_dir_entry_aux {
+	struct proc_dir_entry pde;
+	int pde_users;  /* number of callers into module in progress */
+	spinlock_t pde_unload_lock; /* proc_fops checks and pde_users bumps */
+	struct completion *pde_unload_completion;
+	char name[]; /* PDE name */
+};
+
+static inline struct proc_dir_entry_aux *to_pde_aux(struct proc_dir_entry *d)
+{
+	return container_of(d, struct proc_dir_entry_aux, pde);
+}

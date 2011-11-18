@@ -73,13 +73,6 @@ extern int timekeeping_use_tsc;
 void init_tsc_timer(void)
 {
 	if (timekeeping_use_tsc > 0) {
-#ifdef __i386__
-		extern int enable_tsc_timer;
-		enable_tsc_timer = 1;
-		rdtscll(last_tsc_accounted);
-#else
-		tick_nsec = NSEC_PER_SEC / HZ;
-#endif
 		if (use_kvm_time) /* KVM time is already in nanoseconds units */
 			cycles_per_tick = 1000000000 / REAL_HZ;
 		else
@@ -89,6 +82,14 @@ void init_tsc_timer(void)
 		 * timer interrupt is 1 minute.
 		 */
 		cycles_accounted_limit = cycles_per_tick * REAL_HZ * 60;
+#ifdef __i386__
+		extern int enable_tsc_timer;
+		rdtscll(last_tsc_accounted);
+		enable_tsc_timer = 1;
+#else
+		tick_nsec = NSEC_PER_SEC / HZ;
+#endif
+
 		printk(KERN_INFO "Using TSC for driving interrupts\n");
 	}
 }

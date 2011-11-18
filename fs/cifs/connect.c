@@ -1644,17 +1644,19 @@ out_err:
 }
 
 static struct cifsSesInfo *
-cifs_find_smb_ses(struct TCP_Server_Info *server, char *username)
+cifs_find_smb_ses(struct TCP_Server_Info *server, struct smb_vol *vol)
 {
-	struct list_head *tmp;
 	struct cifsSesInfo *ses;
 
 	write_lock(&cifs_tcp_ses_lock);
-	list_for_each(tmp, &server->smb_ses_list) {
-		ses = list_entry(tmp, struct cifsSesInfo, smb_ses_list);
-		if (strncmp(ses->userName, username, MAX_USERNAME_SIZE))
+	list_for_each_entry(ses, &server->smb_ses_list, smb_ses_list) {
+		if (strncmp(ses->userName, vol->username, MAX_USERNAME_SIZE))
 			continue;
-
+		if (server->secType != Kerberos &&
+		    strlen(vol->username) != 0 && ses->password != NULL &&
+		    strncmp(ses->password, vol->password ? vol->password : "",
+			    MAX_PASSWORD_SIZE))
+			continue;
 		++ses->ses_count;
 		write_unlock(&cifs_tcp_ses_lock);
 		return ses;
@@ -2420,7 +2422,7 @@ try_mount_again:
 		goto out;
 	}
 
-	pSesInfo = cifs_find_smb_ses(srvTcp, volume_info->username);
+	pSesInfo = cifs_find_smb_ses(srvTcp, volume_info);
 	if (pSesInfo) {
 		cFYI(1, ("Existing smb sess found (status=%d)",
 			pSesInfo->status));

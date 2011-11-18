@@ -481,6 +481,11 @@ qla2x00_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 		goto qc_fail_command;
 	}
 
+	if (!fcport) {
+		cmd->result = DID_NO_CONNECT << 16;
+		goto qc_fail_command;
+	}
+
 	if (fcport->drport) {
 		cmd->result = DID_IMM_RETRY << 16;
 		goto qc_fail_command;
@@ -545,6 +550,11 @@ qla24xx_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 	rval = fc_remote_port_chkready(rport);
 	if (rval) {
 		cmd->result = rval;
+		goto qc24_fail_command;
+	}
+
+	if (!fcport) {
+		cmd->result = DID_NO_CONNECT << 16;
 		goto qc24_fail_command;
 	}
 

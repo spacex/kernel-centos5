@@ -53,13 +53,36 @@ static DEFINE_PER_CPU(short, wd_enabled);
 unsigned int nmi_watchdog = NMI_DEFAULT;
 static unsigned int nmi_hz = HZ;
 
+/* quick and dirty check to see if we are on a virt guest */
+static int on_a_virt_guest(void)
+{
+	unsigned int eax, ebx, ecx, edx;
+	char signature[13];
+
+	cpuid(0x40000000, &eax, &ebx, &ecx, &edx);
+	memcpy(signature + 0, &ebx, 4);
+	memcpy(signature + 4, &ecx, 4);
+	memcpy(signature + 8, &edx, 4);
+	signature[12] = 0;
+
+	if (strcmp(signature, "KVMKVMKVM") == 0)
+		return 1;
+
+	if (strcmp(signature, "XenVMMXenVMM") == 0)
+		return 1;
+
+	return 0;
+}
+
 /* Run after command line and cpu_init init, but before all other checks */
 void __cpuinit nmi_watchdog_default(void)
 {
 	if (nmi_watchdog != NMI_DEFAULT)
 		return;
 	/* if not specified, probe it */
-	if (!lapic_watchdog_probe())
+	if (on_a_virt_guest())
+		nmi_watchdog = NMI_NONE;
+	else if (!lapic_watchdog_probe())
 		nmi_watchdog = NMI_LOCAL_APIC;
 	else
 		nmi_watchdog = NMI_IO_APIC;
@@ -85,27 +108,6 @@ static __init void nmi_cpu_busy(void *data)
 		mb();
 }
 #endif
-
-/* quick and dirty check to see if we are on a virt guest */
-static int on_a_virt_guest(void)
-{
-	unsigned int eax, ebx, ecx, edx;
-	char signature[13];
-
-	cpuid(0x40000000, &eax, &ebx, &ecx, &edx);
-	memcpy(signature + 0, &ebx, 4);
-	memcpy(signature + 4, &ecx, 4);
-	memcpy(signature + 8, &edx, 4);
-	signature[12] = 0;
-
-	if (strcmp(signature, "KVMKVMKVM") == 0)
-		return 1;
-
-	if (strcmp(signature, "XenVMMXenVMM") == 0)
-		return 1;
-
-	return 0;
-}
 
 int __init check_nmi_watchdog (void)
 {
@@ -135,23 +137,11 @@ int __init check_nmi_watchdog (void)
 
 		if (cpu_pda(cpu)->__nmi_count - counts[cpu] == 0) {
 			endflag = 1;
-			/* most hypervisors do not emulate nmi watchdog
-			 * ticks correctly.  do not print anything if we
-			 * detect we are on a hypervisor.  the intent
-			 * is later when emulation works, nmi watchdog
-			 * will magically work without changing the code.
-			 * for now, do not confuse customers with bogus
-			 * warning messages.
-			 */
-			if (on_a_virt_guest()) {
-				printk(KERN_INFO " skipping (on a virtual guest)\n");
-			} else {
-				printk(KERN_WARNING "WARNING: CPU#%d: NMI "
-					"appears to be stuck (%d->%d)!\n",
-					cpu,
-					counts[cpu],
-					cpu_pda(cpu)->__nmi_count);
-			}
+			printk(KERN_WARNING "WARNING: CPU#%d: NMI "
+			       "appears to be stuck (%d->%d)!\n",
+			       cpu,
+			       counts[cpu],
+			       cpu_pda(cpu)->__nmi_count);
 			if (atomic_dec_and_test(&nmi_watchdog_active))
 				nmi_active = 0;
 			per_cpu(wd_enabled, cpu) = 0;

@@ -631,9 +631,8 @@ extern void proto_unregister(struct proto *prot);
 static inline struct sock_extended *sk_extended(const struct sock *sk)
 {
 	unsigned int obj_size = sk->sk_prot_creator->obj_size;
-	unsigned int extended_offset = obj_size - SOCK_EXTENDED_SIZE;
 
-	return (struct sock_extended *) (((char *) sk) + extended_offset);
+	return (struct sock_extended *) (((char *) sk) + obj_size);
 }
 
 #ifdef SOCK_REFCNT_DEBUG
@@ -1114,7 +1113,7 @@ static inline void sock_copy(struct sock *nsk, const struct sock *osk)
 	void *sptr = nsk->sk_security;
 #endif
 
-	memcpy(nsk, osk, osk->sk_prot->obj_size);
+	memcpy(nsk, osk, sk_alloc_size(osk->sk_prot->obj_size));
 #ifdef CONFIG_SECURITY_NETWORK
 	nsk->sk_security = sptr;
 	security_sk_clone(osk, nsk);

@@ -90,8 +90,8 @@ void writeback_congestion_end(void);
 /* These are exported to sysctl. */
 extern int dirty_background_ratio;
 extern int vm_dirty_ratio;
-extern int dirty_writeback_interval;
-extern int dirty_expire_interval;
+extern unsigned int dirty_writeback_interval;
+extern unsigned int dirty_expire_interval;
 extern int block_dump;
 extern int laptop_mode;
 

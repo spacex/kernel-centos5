@@ -20,6 +20,7 @@
 #include <linux/namei.h>
 #include <linux/bitops.h>
 #include <linux/spinlock.h>
+#include <linux/completion.h>
 #include <asm/uaccess.h>
 
 #include "internal.h"
@@ -550,6 +551,7 @@ static struct proc_dir_entry *__proc_create(struct proc_dir_entry **parent,
 					  mode_t mode,
 					  nlink_t nlink)
 {
+	struct proc_dir_entry_aux *aux = NULL;
 	struct proc_dir_entry *ent = NULL;
 	const char *fn = name;
 	int len;
@@ -566,15 +568,22 @@ static struct proc_dir_entry *__proc_create(struct proc_dir_entry **parent,
 
 	len = strlen(fn);
 
-	ent = kmalloc(sizeof(struct proc_dir_entry) + len + 1, GFP_KERNEL);
-	if (!ent) goto out;
+	aux = kzalloc(sizeof(struct proc_dir_entry_aux) + len + 1, GFP_KERNEL);
+	if (!aux)
+		goto out;
 
-	memset(ent, 0, sizeof(struct proc_dir_entry));
-	memcpy(((char *) ent) + sizeof(struct proc_dir_entry), fn, len + 1);
-	ent->name = ((char *) ent) + sizeof(*ent);
+	ent = &aux->pde;
+
+	/* WM: Check this, it may be wrong */
+	ent->name = aux->name;
+	memcpy(aux->name, fn, len + 1);
 	ent->namelen = len;
 	ent->mode = mode;
 	ent->nlink = nlink;
+
+        aux->pde_users = 0;
+	spin_lock_init(&aux->pde_unload_lock);
+	aux->pde_unload_completion = NULL;
  out:
 	return ent;
 }
@@ -583,21 +592,23 @@ struct proc_dir_entry *proc_symlink(const char *name,
 		struct proc_dir_entry *parent, const char *dest)
 {
 	struct proc_dir_entry *ent;
+	struct proc_dir_entry_aux *pdeaux;
 
 	ent = __proc_create(&parent, name,
 			  (S_IFLNK | S_IRUGO | S_IWUGO | S_IXUGO),1);
 
 	if (ent) {
+		pdeaux = to_pde_aux(ent);
 		ent->data = kmalloc((ent->size=strlen(dest))+1, GFP_KERNEL);
 		if (ent->data) {
 			strcpy((char*)ent->data,dest);
 			if (proc_register(parent, ent) < 0) {
 				kfree(ent->data);
-				kfree(ent);
+			        kfree(pdeaux);
 				ent = NULL;
 			}
 		} else {
-			kfree(ent);
+			kfree(pdeaux);
 			ent = NULL;
 		}
 	}
@@ -608,6 +619,7 @@ struct proc_dir_entry *proc_mkdir_mode(const char *name, mode_t mode,
 		struct proc_dir_entry *parent)
 {
 	struct proc_dir_entry *ent;
+	struct proc_dir_entry_aux *pdeaux;
 
 	ent = __proc_create(&parent, name, S_IFDIR | mode, 2);
 	if (ent) {
@@ -615,7 +627,8 @@ struct proc_dir_entry *proc_mkdir_mode(const char *name, mode_t mode,
 		ent->proc_iops = &proc_dir_inode_operations;
 
 		if (proc_register(parent, ent) < 0) {
-			kfree(ent);
+			pdeaux = to_pde_aux(ent);
+		        kfree(pdeaux);
 			ent = NULL;
 		}
 	}
@@ -632,6 +645,8 @@ struct proc_dir_entry *create_proc_entry(const char *name, mode_t mode,
 					 struct proc_dir_entry *parent)
 {
 	struct proc_dir_entry *ent;
+	struct proc_dir_entry_aux *pdeaux;
+
 	nlink_t nlink;
 
 	if (S_ISDIR(mode)) {
@@ -653,7 +668,8 @@ struct proc_dir_entry *create_proc_entry(const char *name, mode_t mode,
 			ent->proc_iops = &proc_dir_inode_operations;
 		}
 		if (proc_register(parent, ent) < 0) {
-			kfree(ent);
+			pdeaux = to_pde_aux(ent);
+		        kfree(pdeaux);
 			ent = NULL;
 		}
 	}
@@ -665,6 +681,7 @@ struct proc_dir_entry *proc_create(const char *name, mode_t mode,
 				   const struct file_operations *proc_fops)
 {
 	struct proc_dir_entry *pde;
+	struct proc_dir_entry_aux *pdeaux;
 	nlink_t nlink;
 
 	if (S_ISDIR(mode)) {
@@ -687,7 +704,8 @@ struct proc_dir_entry *proc_create(const char *name, mode_t mode,
 		goto out_free;
 	return pde;
 out_free:
-	kfree(pde);
+	pdeaux = to_pde_aux(pde);
+        kfree(pdeaux);
 out:
 	return NULL;
 }
@@ -695,6 +713,7 @@ out:
 void free_proc_entry(struct proc_dir_entry *de)
 {
 	unsigned int ino = de->low_ino;
+	struct proc_dir_entry_aux *pdeaux;
 
 	if (ino < PROC_DYNAMIC_FIRST)
 		return;
@@ -703,7 +722,10 @@ void free_proc_entry(struct proc_dir_entry *de)
 
 	if (S_ISLNK(de->mode) && de->data)
 		kfree(de->data);
-	kfree(de);
+
+	pdeaux = to_pde_aux(de);
+	kfree(pdeaux);
+
 }
 
 /*
@@ -714,6 +736,7 @@ void remove_proc_entry(const char *name, struct proc_dir_entry *parent)
 {
 	struct proc_dir_entry **p;
 	struct proc_dir_entry *de;
+	struct proc_dir_entry_aux *pdeaux;
 	const char *fn = name;
 	int len;
 
@@ -728,6 +751,31 @@ void remove_proc_entry(const char *name, struct proc_dir_entry *parent)
 		de = *p;
 		*p = de->next;
 		de->next = NULL;
+		pdeaux = to_pde_aux(de);
+		spin_lock(&pdeaux->pde_unload_lock);
+		/*
+		 * Stop accepting new callers into module. If you're
+		 * dynamically allocating ->proc_fops, save a pointer somewhere.
+		 */
+		de->proc_fops = NULL;
+		/* Wait until all existing callers into module are done. */
+		if (pdeaux->pde_users > 0) {
+			DECLARE_COMPLETION_ONSTACK(c);
+			pdeaux = to_pde_aux(de);
+			if (!pdeaux->pde_unload_completion)
+				pdeaux->pde_unload_completion = &c;
+
+			spin_unlock(&pdeaux->pde_unload_lock);
+			spin_unlock(&proc_subdir_lock);
+
+			wait_for_completion(pdeaux->pde_unload_completion);
+
+			spin_lock(&proc_subdir_lock);
+			goto continue_removing;
+		}
+		spin_unlock(&pdeaux->pde_unload_lock);
+
+continue_removing:
 		if (S_ISDIR(de->mode))
 			parent->nlink--;
 		de->nlink = 0;

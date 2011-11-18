@@ -872,11 +872,11 @@ struct sock *sk_alloc(int family, gfp_t priority,
 	if (slab != NULL)
 		sk = kmem_cache_alloc(slab, priority);
 	else
-		sk = kmalloc(prot->obj_size, priority);
+		sk = kmalloc(sk_alloc_size(prot->obj_size), priority);
 
 	if (sk) {
 		if (zero_it) {
-			memset(sk, 0, prot->obj_size);
+			memset(sk, 0, sk_alloc_size(prot->obj_size));
 			sk->sk_family = family;
 			/*
 			 * See comment in struct sock definition to understand
@@ -1843,11 +1843,9 @@ int proto_register(struct proto *prot, int alloc_slab)
 	char *timewait_sock_slab_name;
 	int rc = -ENOBUFS;
 
-	/* Adjust obj_size first */
-	prot->obj_size = sk_alloc_size(prot->obj_size);
-
 	if (alloc_slab) {
-		prot->slab = kmem_cache_create(prot->name, prot->obj_size, 0,
+		prot->slab = kmem_cache_create(prot->name,
+					       sk_alloc_size(prot->obj_size), 0,
 					       SLAB_HWCACHE_ALIGN, NULL, NULL);
 
 		if (prot->slab == NULL) {
@@ -1865,7 +1863,7 @@ int proto_register(struct proto *prot, int alloc_slab)
 
 			sprintf(request_sock_slab_name, mask, prot->name);
 			prot->rsk_prot->slab = kmem_cache_create(request_sock_slab_name,
-								 prot->rsk_prot->obj_size, 0,
+								 sk_alloc_size(prot->rsk_prot->obj_size), 0,
 								 SLAB_HWCACHE_ALIGN, NULL, NULL);
 
 			if (prot->rsk_prot->slab == NULL) {
@@ -1886,7 +1884,7 @@ int proto_register(struct proto *prot, int alloc_slab)
 			sprintf(timewait_sock_slab_name, mask, prot->name);
 			prot->twsk_prot->twsk_slab =
 				kmem_cache_create(timewait_sock_slab_name,
-						  prot->twsk_prot->twsk_obj_size,
+						  sk_alloc_size(prot->twsk_prot->twsk_obj_size),
 						  0, SLAB_HWCACHE_ALIGN,
 						  NULL, NULL);
 			if (prot->twsk_prot->twsk_slab == NULL)

@@ -73,27 +73,6 @@ static __init void nmi_cpu_busy(void *data)
 }
 #endif
 
-/* quick and dirty check to see if we are on a virt guest */
-static int on_a_virt_guest(void)
-{
-	unsigned int eax, ebx, ecx, edx;
-	char signature[13];
-
-	cpuid(0x40000000, &eax, &ebx, &ecx, &edx);
-	memcpy(signature + 0, &ebx, 4);
-	memcpy(signature + 4, &ecx, 4);
-	memcpy(signature + 8, &edx, 4);
-	signature[12] = 0;
-
-	if (strcmp(signature, "KVMKVMKVM") == 0)
-		return 1;
-
-	if (strcmp(signature, "XenVMMXenVMM") == 0)
-		return 1;
-
-	return 0;
-}
-
 static int __init check_nmi_watchdog(void)
 {
 	unsigned int *prev_nmi_count;
@@ -129,23 +108,11 @@ static int __init check_nmi_watchdog(void)
 #endif
 		if (nmi_count(cpu) - prev_nmi_count[cpu] == 0) {
 			endflag = 1;
-			/* most hypervisors do not emulate nmi watchdog
-			 * ticks correctly.  do not print anything if we
-			 * detect we are on a hypervisor.  the intent
-			 * is later when emulation works, nmi watchdog
-			 * will magically work without changing the code.
-			 * for now, do not confuse customers with bogus
-			 * warning messages.
-			 */
-			if (on_a_virt_guest()) {
-				printk(KERN_INFO " skipping (on a virtual guest)\n");
-			} else {
-				printk(KERN_WARNING "WARNING: CPU#%d: NMI "
-					"appears to be stuck (%d->%d)!\n",
-					cpu,
-					prev_nmi_count[cpu],
-					nmi_count(cpu));
-			}
+			printk(KERN_WARNING "WARNING: CPU#%d: NMI "
+			       "appears to be stuck (%d->%d)!\n",
+				cpu,
+				prev_nmi_count[cpu],
+				nmi_count(cpu));
 			if (atomic_dec_and_test(&nmi_watchdog_active))
 				nmi_active = 0;
 			per_cpu(wd_enabled, cpu) = 0;

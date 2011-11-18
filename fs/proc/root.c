@@ -151,16 +151,22 @@ static struct inode_operations proc_root_inode_operations = {
 /*
  * This is the root "inode" in the /proc tree..
  */
-struct proc_dir_entry proc_root = {
-	.low_ino	= PROC_ROOT_INO, 
-	.namelen	= 5, 
-	.name		= "/proc",
-	.mode		= S_IFDIR | S_IRUGO | S_IXUGO, 
-	.nlink		= 2, 
-	.proc_iops	= &proc_root_inode_operations, 
-	.proc_fops	= &proc_root_operations,
-	.parent		= &proc_root,
+struct proc_dir_entry_aux proc_root_aux = {
+	.pde = {
+		.low_ino	= PROC_ROOT_INO,
+		.namelen	= 5,
+		.name		= proc_root_aux.name,
+		.mode		= S_IFDIR | S_IRUGO | S_IXUGO,
+		.nlink		= 2,
+		.proc_iops	= &proc_root_inode_operations,
+		.proc_fops	= &proc_root_operations,
+		.parent		= &proc_root,
+	},
+	.pde_unload_lock	= SPIN_LOCK_UNLOCKED,
+	.name			= "/proc",
 };
+
+asm(".globl proc_root; proc_root = proc_root_aux");
 
 EXPORT_SYMBOL(proc_symlink);
 EXPORT_SYMBOL(proc_mkdir);

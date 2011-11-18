@@ -144,7 +144,13 @@ void note_interrupt(unsigned int irq, struct irq_desc *desc,
 			report_bad_irq(irq, desc, action_ret);
 	}
 
-	if (unlikely(irqfixup)) {
+	/*
+	 * RHEL5: Due to the change in __do_IRQ() for the kexec kernel, we
+	 * now have to test the validity of desc->action before we call
+	 * misrouted_irq().  misrouted_irq() expects that desc->action is
+	 * !NULL for this irq.
+	 */
+	if (unlikely(irqfixup && desc->action)) {
 		/* Don't punish working computers */
 		if ((irqfixup == 2 && irq == 0) || action_ret == IRQ_NONE) {
 			int ok = misrouted_irq(irq, regs);

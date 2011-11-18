@@ -1049,7 +1049,7 @@ static void nfs_execute_write(struct nfs_write_data *data)
  * Generate multiple small requests to write out a single
  * contiguous dirty area on one page.
  */
-static int nfs_flush_multi(struct inode *inode, struct list_head *head, int how)
+static int nfs_flush_multi(struct inode *inode, struct list_head *head, struct list_head *tasks, int how)
 {
 	struct nfs_page *req = nfs_list_entry(head->next);
 	struct page *page = req->wb_page;
@@ -1095,9 +1095,7 @@ static int nfs_flush_multi(struct inode *inode, struct list_head *head, int how)
 			nbytes = 0;
 		}
 		nfs_execute_write(data);
-		if (how & FLUSH_SYNC)
-			rpc_wait_for_completion_task(&data->task);
-		rpc_put_task(&data->task);
+		list_add(&data->task.tk_private_list, tasks);
 	} while (nbytes != 0);
 
 	return 0;
@@ -1121,7 +1119,7 @@ out_bad:
  * This is the case if nfs_updatepage detects a conflicting request
  * that has been written but not committed.
  */
-static int nfs_flush_one(struct inode *inode, struct list_head *head, int how)
+static int nfs_flush_one(struct inode *inode, struct list_head *head, struct list_head *tasks, int how)
 {
 	struct nfs_page		*req;
 	struct page		**pages;
@@ -1149,9 +1147,7 @@ static int nfs_flush_one(struct inode *inode, struct list_head *head, int how)
 	nfs_write_rpcsetup(req, data, &nfs_write_full_ops, count, 0, how);
 
 	nfs_execute_write(data);
-	if (how & FLUSH_SYNC)
-		rpc_wait_for_completion_task(&data->task);
-	rpc_put_task(&data->task);
+	list_add(&data->task.tk_private_list, tasks);
 	return 0;
  out_bad:
 	while (!list_empty(head)) {
@@ -1166,8 +1162,10 @@ static int nfs_flush_one(struct inode *inode, struct list_head *head, int how)
 static int nfs_flush_list(struct inode *inode, struct list_head *head, int npages, int how)
 {
 	LIST_HEAD(one_request);
-	int (*flush_one)(struct inode *, struct list_head *, int);
+	LIST_HEAD(tasks);
+	int (*flush_one)(struct inode *, struct list_head *, struct list_head *, int);
 	struct nfs_page	*req;
+	struct rpc_task *task, *tmp;
 	int wpages = NFS_SERVER(inode)->wpages;
 	int wsize = NFS_SERVER(inode)->wsize;
 	int error;
@@ -1179,12 +1177,22 @@ static int nfs_flush_list(struct inode *inode, struct list_head *head, int npage
 	do {
 		nfs_coalesce_requests(head, &one_request, wpages);
 		req = nfs_list_entry(one_request.next);
-		error = flush_one(inode, &one_request, how);
+		error = flush_one(inode, &one_request, &tasks, how);
 		if (error < 0)
 			goto out_err;
 	} while (!list_empty(head));
+
+	/* wait on each task and put it */
+	list_for_each_entry_safe(task, tmp, &tasks, tk_private_list) {
+		if (how & FLUSH_SYNC)
+			rpc_wait_for_completion_task(task);
+		rpc_put_task(task);
+	}
 	return 0;
 out_err:
+	list_for_each_entry_safe(task, tmp, &tasks, tk_private_list)
+		rpc_put_task(task);
+
 	while (!list_empty(head)) {
 		req = nfs_list_entry(head->next);
 		nfs_list_remove_request(req);

@@ -60,6 +60,7 @@
 #include <net/snmp.h>
 #include <net/dsfield.h>
 #include <net/timewait_sock.h>
+#include <net/secure_seq.h>
 
 #include <asm/uaccess.h>
 

@@ -220,6 +220,16 @@ fastcall unsigned int __do_IRQ(unsigned int irq, struct pt_regs *regs)
 	 * will take care of it.
 	 */
 	if (unlikely(!action)) {
+		/*
+		 * RHEL5: This catches a situation unique to kexec, in which
+		 * an irq line is asserted in the main kernel and a panic
+		 * occurs before the irq's handler can run and clear the
+		 * line.  In the boot of the kexec kernel, we enable interrupts
+		 * to query the console/serial interrupt.  The previously
+		 * mentioned irq line is still asserted and done so
+		 * without a handler (ie, an action) and the line stays
+		 * asserted because no one handles the interrupt.
+		 */
 		if ((!noirqdebug) && reset_devices && (num_online_cpus() == 1))
 			note_interrupt(irq, desc, 0, regs);
 		goto out;
