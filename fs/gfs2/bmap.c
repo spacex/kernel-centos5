@@ -629,7 +629,7 @@ static int do_strip(struct gfs2_inode *ip, struct buffer_head *dibh,
 	int metadata;
 	unsigned int revokes = 0;
 	int x;
-	int error;
+	int error = 0;
 
 	if (!*top)
 		sm->sm_first = 0;
@@ -646,7 +646,10 @@ static int do_strip(struct gfs2_inode *ip, struct buffer_head *dibh,
 	if (metadata)
 		revokes = (height) ? sdp->sd_inptrs : sdp->sd_diptrs;
 
-	error = gfs2_rindex_hold(sdp, &ip->i_alloc->al_ri_gh);
+	if (ip != GFS2_I(sdp->sd_rindex))
+		error = gfs2_rindex_hold(sdp, &ip->i_alloc->al_ri_gh);
+	else if (!sdp->sd_rgrps)
+		error = gfs2_ri_update(ip);
 	if (error)
 		return error;
 
@@ -745,7 +748,8 @@ out_rg_gunlock:
 out_rlist:
 	gfs2_rlist_free(&rlist);
 out:
-	gfs2_glock_dq_uninit(&ip->i_alloc->al_ri_gh);
+	if (ip != GFS2_I(sdp->sd_rindex))
+		gfs2_glock_dq_uninit(&ip->i_alloc->al_ri_gh);
 	return error;
 }
 
@@ -783,7 +787,7 @@ static int do_grow(struct gfs2_inode *ip, u64 size)
 		goto out_gunlock_q;
 
 	error = gfs2_trans_begin(sdp,
-			sdp->sd_max_height + al->al_rgd->rd_length +
+			sdp->sd_max_height + gfs2_rg_blocks(al) +
 			RES_JDATA + RES_DINODE + RES_STATFS + RES_QUOTA, 0);
 	if (error)
 		goto out_ipres;

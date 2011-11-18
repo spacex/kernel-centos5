@@ -17,7 +17,6 @@
 #include <linux/nfs_page.h>
 #include <linux/nfs_fs.h>
 #include <linux/nfs_mount.h>
-#include "internal.h"
 
 #define NFS_PARANOIA 1
 
@@ -81,7 +80,7 @@ nfs_create_request(struct nfs_open_context *ctx, struct inode *inode,
 	atomic_set(&req->wb_complete, 0);
 	req->wb_index	= page->index;
 	page_cache_get(page);
-	BUG_ON(PageNfsWriting(page));
+	BUG_ON(PagePrivate(page));
 	BUG_ON(!PageLocked(page));
 	BUG_ON(page->mapping->host != inode);
 	req->wb_offset  = offset;
@@ -185,7 +184,7 @@ nfs_release_request(struct nfs_page *req)
 	nfs_page_free(req);
 }
 
-static int nfs_wait_bit_uninterruptible(void *word)
+int nfs_wait_bit_uninterruptible(void *word)
 {
 	io_schedule();
 	return 0;

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005 - 2010 ServerEngines
+ * Copyright (C) 2005 - 2011 Emulex
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or
@@ -8,11 +8,11 @@
  * Public License is included in this distribution in the file called COPYING.
  *
  * Contact Information:
- * linux-drivers@serverengines.com
+ * linux-drivers@emulex.com
  *
- * ServerEngines
- * 209 N. Fair Oaks Ave
- * Sunnyvale, CA 94085
+ * Emulex
+ * 3333 Susan Street
+ * Costa Mesa, CA 92626
  */
 
 #include "be.h"
@@ -26,14 +26,17 @@ struct be_ethtool_stat {
 	int offset;
 };
 
-enum {NETSTAT, PORTSTAT, MISCSTAT, DRVSTAT, ERXSTAT};
+enum {NETSTAT, PORTSTAT, MISCSTAT, DRVSTAT_TX, DRVSTAT_RX, ERXSTAT,
+			PMEMSTAT, DRVSTAT};
 #define FIELDINFO(_struct, field) FIELD_SIZEOF(_struct, field), \
 					offsetof(_struct, field)
 #define NETSTAT_INFO(field) 	#field, NETSTAT,\
 					FIELDINFO(struct net_device_stats,\
 						field)
-#define DRVSTAT_INFO(field) 	#field, DRVSTAT,\
-					FIELDINFO(struct be_drvr_stats, field)
+#define DRVSTAT_TX_INFO(field)	#field, DRVSTAT_TX,\
+					FIELDINFO(struct be_tx_stats, field)
+#define DRVSTAT_RX_INFO(field)	#field, DRVSTAT_RX,\
+					FIELDINFO(struct be_rx_stats, field)
 #define MISCSTAT_INFO(field) 	#field, MISCSTAT,\
 					FIELDINFO(struct be_rxf_stats, field)
 #define PORTSTAT_INFO(field) 	#field, PORTSTAT,\
@@ -41,6 +44,11 @@ enum {NETSTAT, PORTSTAT, MISCSTAT, DRVSTAT, ERXSTAT};
 						field)
 #define ERXSTAT_INFO(field) 	#field, ERXSTAT,\
 					FIELDINFO(struct be_erx_stats, field)
+#define PMEMSTAT_INFO(field) 	#field, PMEMSTAT,\
+					FIELDINFO(struct be_pmem_stats, field)
+#define	DRVSTAT_INFO(field)	#field, DRVSTAT,\
+					FIELDINFO(struct be_drv_stats, \
+						field)
 
 static const struct be_ethtool_stat et_stats[] = {
 	{NETSTAT_INFO(rx_packets)},
@@ -51,20 +59,12 @@ static const struct be_ethtool_stat et_stats[] = {
 	{NETSTAT_INFO(tx_errors)},
 	{NETSTAT_INFO(rx_dropped)},
 	{NETSTAT_INFO(tx_dropped)},
-	{DRVSTAT_INFO(be_tx_reqs)},
-	{DRVSTAT_INFO(be_tx_stops)},
-	{DRVSTAT_INFO(be_fwd_reqs)},
-	{DRVSTAT_INFO(be_tx_wrbs)},
-	{DRVSTAT_INFO(be_rx_polls)},
-	{DRVSTAT_INFO(be_tx_events)},
-	{DRVSTAT_INFO(be_rx_events)},
-	{DRVSTAT_INFO(be_tx_compl)},
-	{DRVSTAT_INFO(be_rx_compl)},
-	{DRVSTAT_INFO(be_ethrx_post_fail)},
-	{DRVSTAT_INFO(be_802_3_dropped_frames)},
-	{DRVSTAT_INFO(be_802_3_malformed_frames)},
-	{DRVSTAT_INFO(be_tx_rate)},
-	{DRVSTAT_INFO(be_rx_rate)},
+	{DRVSTAT_TX_INFO(be_tx_rate)},
+	{DRVSTAT_TX_INFO(be_tx_reqs)},
+	{DRVSTAT_TX_INFO(be_tx_wrbs)},
+	{DRVSTAT_TX_INFO(be_tx_stops)},
+	{DRVSTAT_TX_INFO(be_tx_events)},
+	{DRVSTAT_TX_INFO(be_tx_compl)},
 	{PORTSTAT_INFO(rx_unicast_frames)},
 	{PORTSTAT_INFO(rx_multicast_frames)},
 	{PORTSTAT_INFO(rx_broadcast_frames)},
@@ -90,6 +90,9 @@ static const struct be_ethtool_stat et_stats[] = {
 	{PORTSTAT_INFO(rx_non_rss_packets)},
 	{PORTSTAT_INFO(rx_ipv4_packets)},
 	{PORTSTAT_INFO(rx_ipv6_packets)},
+	{PORTSTAT_INFO(rx_switched_unicast_packets)},
+	{PORTSTAT_INFO(rx_switched_multicast_packets)},
+	{PORTSTAT_INFO(rx_switched_broadcast_packets)},
 	{PORTSTAT_INFO(tx_unicastframes)},
 	{PORTSTAT_INFO(tx_multicastframes)},
 	{PORTSTAT_INFO(tx_broadcastframes)},
@@ -103,9 +106,26 @@ static const struct be_ethtool_stat et_stats[] = {
 	{MISCSTAT_INFO(rx_drops_invalid_ring)},
 	{MISCSTAT_INFO(forwarded_packets)},
 	{MISCSTAT_INFO(rx_drops_mtu)},
-	{ERXSTAT_INFO(rx_drops_no_fragments)},
+	{MISCSTAT_INFO(port0_jabber_events)},
+	{MISCSTAT_INFO(port1_jabber_events)},
+	{PMEMSTAT_INFO(eth_red_drops)},
+	{DRVSTAT_INFO(be_on_die_temperature)}
 };
 #define ETHTOOL_STATS_NUM ARRAY_SIZE(et_stats)
+
+/* Stats related to multi RX queues */
+static const struct be_ethtool_stat et_rx_stats[] = {
+	{DRVSTAT_RX_INFO(rx_bytes)},
+	{DRVSTAT_RX_INFO(rx_pkts)},
+	{DRVSTAT_RX_INFO(rx_rate)},
+	{DRVSTAT_RX_INFO(rx_polls)},
+	{DRVSTAT_RX_INFO(rx_events)},
+	{DRVSTAT_RX_INFO(rx_compl)},
+	{DRVSTAT_RX_INFO(rx_mcast_pkts)},
+	{DRVSTAT_RX_INFO(rx_post_fail)},
+	{ERXSTAT_INFO(rx_drops_no_fragments)}
+};
+#define ETHTOOL_RXSTATS_NUM (ARRAY_SIZE(et_rx_stats))
 
 static const char et_self_tests[][ETH_GSTRING_LEN] = {
 	"MAC Loopback test",
@@ -114,7 +134,11 @@ static const char et_self_tests[][ETH_GSTRING_LEN] = {
 	"DDR DMA test",
 	"Link test"
 };
-#define BE_NUM_TESTS ARRAY_SIZE(et_self_tests)
+#define ETHTOOL_TESTS_NUM ARRAY_SIZE(et_self_tests)
+#define BE_MAC_LOOPBACK 0x0
+#define BE_PHY_LOOPBACK 0x1
+#define BE_ONE_PORT_EXT_LOOPBACK 0x2
+#define BE_NO_LOOPBACK 0xff
 
 static void
 be_get_drvinfo(struct net_device *netdev, struct ethtool_drvinfo *drvinfo)
@@ -134,19 +158,19 @@ static int
 be_get_coalesce(struct net_device *netdev, struct ethtool_coalesce *coalesce)
 {
 	struct be_adapter *adapter = netdev_priv(netdev);
-	struct be_eq_obj *be_eq = &adapter->be_eq;
+	struct be_eq_obj *rx_eq = &adapter->rx_obj[0].rx_eq;
+	struct be_eq_obj *tx_eq = &adapter->tx_eq;
 
+	coalesce->rx_coalesce_usecs = rx_eq->cur_eqd;
+	coalesce->rx_coalesce_usecs_high = rx_eq->max_eqd;
+	coalesce->rx_coalesce_usecs_low = rx_eq->min_eqd;
 
-	coalesce->rx_coalesce_usecs = be_eq->cur_eqd;
-	coalesce->rx_coalesce_usecs_high = be_eq->max_eqd;
-	coalesce->rx_coalesce_usecs_low = be_eq->min_eqd;
+	coalesce->tx_coalesce_usecs = tx_eq->cur_eqd;
+	coalesce->tx_coalesce_usecs_high = tx_eq->max_eqd;
+	coalesce->tx_coalesce_usecs_low = tx_eq->min_eqd;
 
-	coalesce->tx_coalesce_usecs = be_eq->cur_eqd;
-	coalesce->tx_coalesce_usecs_high = be_eq->max_eqd;
-	coalesce->tx_coalesce_usecs_low = be_eq->min_eqd;
-
-	coalesce->use_adaptive_rx_coalesce = be_eq->enable_aic;
-	coalesce->use_adaptive_tx_coalesce = be_eq->enable_aic;
+	coalesce->use_adaptive_rx_coalesce = rx_eq->enable_aic;
+	coalesce->use_adaptive_tx_coalesce = tx_eq->enable_aic;
 
 	return 0;
 }
@@ -158,76 +182,62 @@ static int
 be_set_coalesce(struct net_device *netdev, struct ethtool_coalesce *coalesce)
 {
 	struct be_adapter *adapter = netdev_priv(netdev);
-	struct be_eq_obj *be_eq = &adapter->be_eq;
-	u32 max = 0, min = 0, cur = 0, rx, tx;
-	int status = 0;
+	struct be_rx_obj *rxo;
+	struct be_eq_obj *rx_eq;
+	struct be_eq_obj *tx_eq = &adapter->tx_eq;
+	u32 tx_max, tx_min, tx_cur;
+	u32 rx_max, rx_min, rx_cur;
+	int status = 0, i;
 
-	/* if AIC is being turned on now, start with an EQD of 0 */
-	if (be_eq->enable_aic == 0 &&
-		((coalesce->use_adaptive_rx_coalesce == 1) || 
-		(coalesce->use_adaptive_tx_coalesce == 1))) {
-		be_eq->cur_eqd = 0;
-	}
+	if (coalesce->use_adaptive_tx_coalesce == 1)
+		return -EINVAL;
 
-	/* We have a single EQ. Rx settings will override Tx settings */
-	tx = (be_eq->enable_aic != coalesce->use_adaptive_tx_coalesce);
-	rx = (be_eq->enable_aic != coalesce->use_adaptive_rx_coalesce);
+	for_all_rx_queues(adapter, rxo, i) {
+		rx_eq = &rxo->rx_eq;
 
-	if (tx)
-		be_eq->enable_aic = coalesce->use_adaptive_tx_coalesce;
-	if (rx)
-		be_eq->enable_aic = coalesce->use_adaptive_rx_coalesce;
+		if (!rx_eq->enable_aic && coalesce->use_adaptive_rx_coalesce)
+			rx_eq->cur_eqd = 0;
+		rx_eq->enable_aic = coalesce->use_adaptive_rx_coalesce;
 
-	tx = (be_eq->max_eqd != coalesce->tx_coalesce_usecs_high);
-	rx = (be_eq->max_eqd != coalesce->rx_coalesce_usecs_high);
+		rx_max = coalesce->rx_coalesce_usecs_high;
+		rx_min = coalesce->rx_coalesce_usecs_low;
+		rx_cur = coalesce->rx_coalesce_usecs;
 
-	if (tx)
-		max = coalesce->tx_coalesce_usecs_high;
-	else if (rx)
-		max = coalesce->rx_coalesce_usecs_high;
-	else
-		max = be_eq->max_eqd;
-
-	tx = (be_eq->min_eqd != coalesce->tx_coalesce_usecs_low);
-	rx = (be_eq->min_eqd != coalesce->rx_coalesce_usecs_low);
-
-	if (tx)
-		min = coalesce->tx_coalesce_usecs_low;
-	else if (rx)
-		min = coalesce->rx_coalesce_usecs_low;
-	else
-		min = be_eq->min_eqd;
-
-	tx = (be_eq->cur_eqd != coalesce->tx_coalesce_usecs);
-	rx = (be_eq->cur_eqd != coalesce->rx_coalesce_usecs);
-
-	if (tx)
-		cur = coalesce->tx_coalesce_usecs;
-	else if (rx)
-		cur = coalesce->rx_coalesce_usecs;
-	else
-		cur = be_eq->cur_eqd;
-
-	if (be_eq->enable_aic) {
-		if (max > BE_MAX_EQD)
-			max = BE_MAX_EQD;
-		if (min > max)
-			min = max;
-		be_eq->max_eqd = max;
-		be_eq->min_eqd = min;
-		if (be_eq->cur_eqd > max)
-			be_eq->cur_eqd = max;
-		if (be_eq->cur_eqd < min)
-			be_eq->cur_eqd = min;
-	} else {
-		if (cur > BE_MAX_EQD)
-			cur = BE_MAX_EQD;
-		if (be_eq->cur_eqd != cur) {
-			status = be_cmd_modify_eqd(adapter, be_eq->q.id, cur);
-			if (!status)
-				be_eq->cur_eqd = cur;
+		if (rx_eq->enable_aic) {
+			if (rx_max > BE_MAX_EQD)
+				rx_max = BE_MAX_EQD;
+			if (rx_min > rx_max)
+				rx_min = rx_max;
+			rx_eq->max_eqd = rx_max;
+			rx_eq->min_eqd = rx_min;
+			if (rx_eq->cur_eqd > rx_max)
+				rx_eq->cur_eqd = rx_max;
+			if (rx_eq->cur_eqd < rx_min)
+				rx_eq->cur_eqd = rx_min;
+		} else {
+			if (rx_cur > BE_MAX_EQD)
+				rx_cur = BE_MAX_EQD;
+			if (rx_eq->cur_eqd != rx_cur) {
+				status = be_cmd_modify_eqd(adapter, rx_eq->q.id,
+						rx_cur);
+				if (!status)
+					rx_eq->cur_eqd = rx_cur;
+			}
 		}
 	}
+
+	tx_max = coalesce->tx_coalesce_usecs_high;
+	tx_min = coalesce->tx_coalesce_usecs_low;
+	tx_cur = coalesce->tx_coalesce_usecs;
+
+	if (tx_cur > BE_MAX_EQD)
+		tx_cur = BE_MAX_EQD;
+	if (tx_eq->cur_eqd != tx_cur) {
+		status = be_cmd_modify_eqd(adapter, tx_eq->q.id, tx_cur);
+		if (!status)
+			tx_eq->cur_eqd = tx_cur;
+	}
+
 	return 0;
 }
 
@@ -255,32 +265,31 @@ be_get_ethtool_stats(struct net_device *netdev,
 		struct ethtool_stats *stats, uint64_t *data)
 {
 	struct be_adapter *adapter = netdev_priv(netdev);
-	struct be_drvr_stats *drvr_stats = &adapter->stats.drvr_stats;
-	struct be_hw_stats *hw_stats = hw_stats_from_cmd(adapter->stats.cmd.va);
-	struct be_rxf_stats *rxf_stats = &hw_stats->rxf;
-	struct be_port_rxf_stats *port_stats =
-			&rxf_stats->port[adapter->port_num];
-	struct net_device_stats *net_stats = &adapter->stats.net_stats;
+	struct be_hw_stats *hw_stats = hw_stats_from_cmd(adapter->stats_cmd.va);
 	struct be_erx_stats *erx_stats = &hw_stats->erx;
+	struct be_rx_obj *rxo;
 	void *p = NULL;
-	int i;
+	int i, j;
 
 	for (i = 0; i < ETHTOOL_STATS_NUM; i++) {
 		switch (et_stats[i].type) {
 		case NETSTAT:
-			p = net_stats;
+			p = &adapter->net_stats;
 			break;
-		case DRVSTAT:
-			p = drvr_stats;
+		case DRVSTAT_TX:
+			p = &adapter->tx_stats;
 			break;
 		case PORTSTAT:
-			p = port_stats;
+			p = &hw_stats->rxf.port[adapter->port_num];
 			break;
 		case MISCSTAT:
-			p = rxf_stats;
+			p = &hw_stats->rxf;
 			break;
-		case ERXSTAT: /* Currently only one ERX stat is provided */
-			p = (u32 *)erx_stats + adapter->rx_obj.q.id;
+		case PMEMSTAT:
+			p = &hw_stats->pmem;
+			break;
+		case DRVSTAT:
+			p = &adapter->drv_stats;
 			break;
 		}
 
@@ -289,23 +298,46 @@ be_get_ethtool_stats(struct net_device *netdev,
 				*(u64 *)p: *(u32 *)p;
 	}
 
-	return;
+	for_all_rx_queues(adapter, rxo, j) {
+		for (i = 0; i < ETHTOOL_RXSTATS_NUM; i++) {
+			switch (et_rx_stats[i].type) {
+			case DRVSTAT_RX:
+				p = (u8 *)&rxo->stats + et_rx_stats[i].offset;
+				break;
+			case ERXSTAT:
+				p = (u32 *)erx_stats + rxo->q.id;
+				break;
+			}
+			data[ETHTOOL_STATS_NUM + j * ETHTOOL_RXSTATS_NUM + i] =
+				(et_rx_stats[i].size == sizeof(u64)) ?
+					*(u64 *)p: *(u32 *)p;
+		}
+	}
 }
 
 static void
 be_get_stat_strings(struct net_device *netdev, uint32_t stringset,
 		uint8_t *data)
 {
-	int i;
+	struct be_adapter *adapter = netdev_priv(netdev);
+	int i, j;
+
 	switch (stringset) {
 	case ETH_SS_STATS:
 		for (i = 0; i < ETHTOOL_STATS_NUM; i++) {
 			memcpy(data, et_stats[i].desc, ETH_GSTRING_LEN);
 			data += ETH_GSTRING_LEN;
 		}
+		for (i = 0; i < adapter->num_rx_qs; i++) {
+			for (j = 0; j < ETHTOOL_RXSTATS_NUM; j++) {
+				sprintf(data, "rxq%d: %s", i,
+					et_rx_stats[j].desc);
+				data += ETH_GSTRING_LEN;
+			}
+		}
 		break;
 	case ETH_SS_TEST:
-		for (i = 0; i < BE_NUM_TESTS; i++) {
+		for (i = 0; i < ETHTOOL_TESTS_NUM; i++) {
 			memcpy(data, et_self_tests[i], ETH_GSTRING_LEN);
 			data += ETH_GSTRING_LEN;
 		}
@@ -315,7 +347,9 @@ be_get_stat_strings(struct net_device *netdev, uint32_t stringset,
 
 static int be_get_stats_count(struct net_device *netdev)
 {
-	return ETHTOOL_STATS_NUM;
+	struct be_adapter *adapter = netdev_priv(netdev);
+
+	return ETHTOOL_STATS_NUM + adapter->num_rx_qs * ETHTOOL_RXSTATS_NUM;
 }
 
 static int be_get_settings(struct net_device *netdev, struct ethtool_cmd *ecmd)
@@ -329,10 +363,11 @@ static int be_get_settings(struct net_device *netdev, struct ethtool_cmd *ecmd)
 	int status;
 	u16 intf_type;
 
-	if (adapter->link_speed < 0) {
+	if ((adapter->link_speed < 0) || (!(netdev->flags & IFF_UP))) {
 		status = be_cmd_link_status_query(adapter, &link_up,
 						&mac_speed, &link_speed);
 
+		be_link_status_update(adapter, link_up);
 		/* link_speed is in units of 10 Mbps */
 		if (link_speed) {
 			ecmd->speed = link_speed*10;
@@ -348,8 +383,9 @@ static int be_get_settings(struct net_device *netdev, struct ethtool_cmd *ecmd)
 		}
 
 		phy_cmd.size = sizeof(struct be_cmd_req_get_phy_info);
-		phy_cmd.va = pci_alloc_consistent(adapter->pdev, phy_cmd.size,
-					&phy_cmd.dma);
+		phy_cmd.va = dma_alloc_coherent(&adapter->pdev->dev,
+						phy_cmd.size, &phy_cmd.dma,
+						GFP_KERNEL);
 		if (!phy_cmd.va) {
 			dev_err(&adapter->pdev->dev, "Memory alloc failure\n");
 			return -ENOMEM;
@@ -388,8 +424,8 @@ static int be_get_settings(struct net_device *netdev, struct ethtool_cmd *ecmd)
 		adapter->port_type = ecmd->port;
 		adapter->transceiver = ecmd->transceiver;
 		adapter->autoneg = ecmd->autoneg;
-		pci_free_consistent(adapter->pdev, phy_cmd.size,
-					phy_cmd.va, phy_cmd.dma);
+		dma_free_coherent(&adapter->pdev->dev, phy_cmd.size, phy_cmd.va,
+				  phy_cmd.dma);
 	} else {
 		ecmd->speed = adapter->link_speed;
 		ecmd->port = adapter->port_type;
@@ -426,10 +462,10 @@ be_get_ringparam(struct net_device *netdev, struct ethtool_ringparam *ring)
 {
 	struct be_adapter *adapter = netdev_priv(netdev);
 
-	ring->rx_max_pending = adapter->rx_obj.q.len;
+	ring->rx_max_pending = adapter->rx_obj[0].q.len;
 	ring->tx_max_pending = adapter->tx_obj.q.len;
 
-	ring->rx_pending = atomic_read(&adapter->rx_obj.q.used);
+	ring->rx_pending = atomic_read(&adapter->rx_obj[0].q.used);
 	ring->tx_pending = atomic_read(&adapter->tx_obj.q.used);
 }
 
@@ -468,7 +504,7 @@ be_phys_id(struct net_device *netdev, u32 data)
 	int status;
 	u32 cur;
 
-	be_cmd_get_beacon_state(adapter, adapter->port_num, &cur);
+	be_cmd_get_beacon_state(adapter, adapter->hba_port_num, &cur);
 
 	if (cur == BEACON_STATE_ENABLED)
 		return 0;
@@ -476,15 +512,24 @@ be_phys_id(struct net_device *netdev, u32 data)
 	if (data < 2)
 		data = 2;
 
-	status = be_cmd_set_beacon_state(adapter, adapter->port_num, 0, 0,
+	status = be_cmd_set_beacon_state(adapter, adapter->hba_port_num, 0, 0,
 			BEACON_STATE_ENABLED);
 	set_current_state(TASK_INTERRUPTIBLE);
 	schedule_timeout(data*HZ);
 
-	status = be_cmd_set_beacon_state(adapter, adapter->port_num, 0, 0,
+	status = be_cmd_set_beacon_state(adapter, adapter->hba_port_num, 0, 0,
 			BEACON_STATE_DISABLED);
 
 	return status;
+}
+
+static bool
+be_is_wol_supported(struct be_adapter *adapter)
+{
+	if (!be_physfn(adapter))
+		return false;
+	else
+		return true;
 }
 
 static void
@@ -492,13 +537,14 @@ be_get_wol(struct net_device *netdev, struct ethtool_wolinfo *wol)
 {
 	struct be_adapter *adapter = netdev_priv(netdev);
 
-	wol->supported = WAKE_MAGIC;
+	if (be_is_wol_supported(adapter))
+		wol->supported = WAKE_MAGIC;
+
 	if (adapter->wol)
 		wol->wolopts = WAKE_MAGIC;
 	else
 		wol->wolopts = 0;
 	memset(&wol->sopass, 0, sizeof(wol->sopass));
-	return;
 }
 
 static int
@@ -509,7 +555,7 @@ be_set_wol(struct net_device *netdev, struct ethtool_wolinfo *wol)
 	if (wol->wolopts & ~WAKE_MAGIC)
 		return -EINVAL;
 
-	if (wol->wolopts & WAKE_MAGIC)
+	if ((wol->wolopts & WAKE_MAGIC) && be_is_wol_supported(adapter))
 		adapter->wol = true;
 	else
 		adapter->wol = false;
@@ -522,11 +568,13 @@ be_test_ddr_dma(struct be_adapter *adapter)
 {
 	int ret, i;
 	struct be_dma_mem ddrdma_cmd;
-	u64 pattern[2] = {0x5a5a5a5a5a5a5a5aLLU, 0xa5a5a5a5a5a5a5a5LLU};
+	static const u64 pattern[2] = {
+		0x5a5a5a5a5a5a5a5aULL, 0xa5a5a5a5a5a5a5a5ULL
+	};
 
 	ddrdma_cmd.size = sizeof(struct be_cmd_req_ddrdma_test);
-	ddrdma_cmd.va = pci_alloc_consistent(adapter->pdev, ddrdma_cmd.size,
-					&ddrdma_cmd.dma);
+	ddrdma_cmd.va = dma_alloc_coherent(&adapter->pdev->dev, ddrdma_cmd.size,
+					   &ddrdma_cmd.dma, GFP_KERNEL);
 	if (!ddrdma_cmd.va) {
 		dev_err(&adapter->pdev->dev, "Memory allocation failure\n");
 		return -ENOMEM;
@@ -540,20 +588,20 @@ be_test_ddr_dma(struct be_adapter *adapter)
 	}
 
 err:
-	pci_free_consistent(adapter->pdev, ddrdma_cmd.size,
-			ddrdma_cmd.va, ddrdma_cmd.dma);
+	dma_free_coherent(&adapter->pdev->dev, ddrdma_cmd.size, ddrdma_cmd.va,
+			  ddrdma_cmd.dma);
 	return ret;
 }
 
 static u64 be_loopback_test(struct be_adapter *adapter, u8 loopback_type,
 				u64 *status)
 {
-	be_cmd_set_loopback(adapter, adapter->port_num,
+	be_cmd_set_loopback(adapter, adapter->hba_port_num,
 				loopback_type, 1);
-	*status = be_cmd_loopback_test(adapter, adapter->port_num,
+	*status = be_cmd_loopback_test(adapter, adapter->hba_port_num,
 				loopback_type, 1500,
 				2, 0xabc);
-	be_cmd_set_loopback(adapter, adapter->port_num,
+	be_cmd_set_loopback(adapter, adapter->hba_port_num,
 				BE_NO_LOOPBACK, 1);
 	return *status;
 }
@@ -561,7 +609,7 @@ static u64 be_loopback_test(struct be_adapter *adapter, u8 loopback_type,
 static int
 be_self_test_count(struct net_device *dev)
 {
-	return BE_NUM_TESTS;
+	return ETHTOOL_TESTS_NUM;
 }
 
 static void
@@ -572,7 +620,8 @@ be_self_test(struct net_device *netdev, struct ethtool_test *test, u64 *data)
 	u8 mac_speed = 0;
 	u16 qos_link_speed = 0;
 
-	memset(data, 0, sizeof(u64) * BE_NUM_TESTS);
+	memset(data, 0, sizeof(u64) * ETHTOOL_TESTS_NUM);
+
 	if (test->flags & ETH_TEST_FL_OFFLINE) {
 		if (be_loopback_test(adapter, BE_MAC_LOOPBACK,
 						&data[0]) != 0) {
@@ -597,7 +646,8 @@ be_self_test(struct net_device *netdev, struct ethtool_test *test, u64 *data)
 				&qos_link_speed) != 0) {
 		test->flags |= ETH_TEST_FL_FAILED;
 		data[4] = -1;
-	} else if (mac_speed) {
+	} else if (!mac_speed) {
+		test->flags |= ETH_TEST_FL_FAILED;
 		data[4] = 1;
 	}
 
@@ -625,8 +675,8 @@ be_read_eeprom(struct net_device *netdev, struct ethtool_eeprom *eeprom,
 
 	memset(&eeprom_cmd, 0, sizeof(struct be_dma_mem));
 	eeprom_cmd.size = sizeof(struct be_cmd_req_seeprom_read);
-	eeprom_cmd.va = pci_alloc_consistent(adapter->pdev, eeprom_cmd.size,
-				&eeprom_cmd.dma);
+	eeprom_cmd.va = dma_alloc_coherent(&adapter->pdev->dev, eeprom_cmd.size,
+					   &eeprom_cmd.dma, GFP_KERNEL);
 
 	if (!eeprom_cmd.va) {
 		dev_err(&adapter->pdev->dev,
@@ -640,8 +690,8 @@ be_read_eeprom(struct net_device *netdev, struct ethtool_eeprom *eeprom,
 		resp = (struct be_cmd_resp_seeprom_read *) eeprom_cmd.va;
 		memcpy(data, resp->seeprom_data + eeprom->offset, eeprom->len);
 	}
-	pci_free_consistent(adapter->pdev, eeprom_cmd.size, eeprom_cmd.va,
-			eeprom_cmd.dma);
+	dma_free_coherent(&adapter->pdev->dev, eeprom_cmd.size, eeprom_cmd.va,
+			  eeprom_cmd.dma);
 
 	return status;
 }

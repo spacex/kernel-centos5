@@ -219,8 +219,11 @@ fastcall unsigned int __do_IRQ(unsigned int irq, struct pt_regs *regs)
 	 * a different instance of this same irq, the other processor
 	 * will take care of it.
 	 */
-	if (unlikely(!action))
+	if (unlikely(!action)) {
+		if ((!noirqdebug) && reset_devices && (num_online_cpus() == 1))
+			note_interrupt(irq, desc, 0, regs);
 		goto out;
+	}
 
 	/*
 	 * Edge triggered interrupts need to remember

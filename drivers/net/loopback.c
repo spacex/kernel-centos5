@@ -196,41 +196,47 @@ static struct ethtool_ops loopback_ethtool_ops = {
 	.set_tso		= ethtool_op_set_tso,
 };
 
-struct net_device loopback_dev = {
-	.name	 		= "lo",
-	.mtu			= (16 * 1024) + 20 + 20 + 12,
-	.hard_start_xmit	= loopback_xmit,
-	.hard_header		= eth_header,
-	.hard_header_cache	= eth_header_cache,
-	.header_cache_update	= eth_header_cache_update,
-	.hard_header_len	= ETH_HLEN,	/* 14	*/
-	.addr_len		= ETH_ALEN,	/* 6	*/
-	.tx_queue_len		= 0,
-	.type			= ARPHRD_LOOPBACK,	/* 0x0001*/
-	.rebuild_header		= eth_rebuild_header,
-	.flags			= IFF_LOOPBACK,
-	.features 		= NETIF_F_SG | NETIF_F_FRAGLIST
-#ifdef LOOPBACK_TSO
-				  | NETIF_F_TSO
-#endif
-				  | NETIF_F_NO_CSUM | NETIF_F_HIGHDMA
-				  | NETIF_F_LLTX,
-	.ethtool_ops		= &loopback_ethtool_ops,
+struct net_device_loopback {
+	struct net_device ld;
+	struct net_device_stats stats;
+	struct net_device_extended ext;
+	char pad[NETDEV_ALIGN*3];
 };
+
+struct net_device_loopback loopback_ext = {
+	{
+		.name	 		= "lo",
+		.mtu			= (16 * 1024) + 20 + 20 + 12,
+		.hard_start_xmit	= loopback_xmit,
+		.hard_header		= eth_header,
+		.hard_header_cache	= eth_header_cache,
+		.header_cache_update	= eth_header_cache_update,
+		.hard_header_len	= ETH_HLEN,	/* 14	*/
+		.addr_len		= ETH_ALEN,	/* 6	*/
+		.tx_queue_len		= 0,
+		.type			= ARPHRD_LOOPBACK,	/* 0x0001*/
+		.rebuild_header		= eth_rebuild_header,
+		.flags			= IFF_LOOPBACK,
+		.priv_flags		= IFF_EXTENDED,
+		.priv_len		= sizeof(struct net_device_stats),
+		.features 		= NETIF_F_SG | NETIF_F_FRAGLIST
+#ifdef LOOPBACK_TSO
+					  | NETIF_F_TSO
+#endif
+					  | NETIF_F_NO_CSUM | NETIF_F_HIGHDMA
+					  | NETIF_F_LLTX,
+		.ethtool_ops		= &loopback_ethtool_ops,
+		.get_stats		= &get_stats,
+	},
+};
+
+extern struct net_device loopback_dev __attribute__((alias ("loopback_ext")));
 
 /* Setup and register the loopback device. */
 int __init loopback_init(void)
 {
-	struct net_device_stats *stats;
+	loopback_dev.priv = netdev_priv(&loopback_dev);
 
-	/* Can survive without statistics */
-	stats = kmalloc(sizeof(struct net_device_stats), GFP_KERNEL);
-	if (stats) {
-		memset(stats, 0, sizeof(struct net_device_stats));
-		loopback_dev.priv = stats;
-		loopback_dev.get_stats = &get_stats;
-	}
-	
 	return register_netdev(&loopback_dev);
 };
 

@@ -111,7 +111,11 @@
 #define NR_PIRQS		256
 
 #define DYNIRQ_BASE		(PIRQ_BASE + NR_PIRQS)
+#ifdef __GENKSYMS__
 #define NR_DYNIRQS		256
+#else /* __GENKSYMS__ */
+#define NR_DYNIRQS		(256 + 1024)	/* 1024 is for event channels */
+#endif /* __GENKSYMS__ */
 
 #define NR_IRQS			(NR_PIRQS + NR_DYNIRQS)
 #define NR_IRQ_VECTORS		NR_IRQS

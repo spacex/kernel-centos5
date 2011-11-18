@@ -29,8 +29,8 @@
 #include "viosrp.h"
 
 #define IBMVFC_NAME	"ibmvfc"
-#define IBMVFC_DRIVER_VERSION		"1.0.6"
-#define IBMVFC_DRIVER_DATE		"(May 28, 2009)"
+#define IBMVFC_DRIVER_VERSION		"1.0.9"
+#define IBMVFC_DRIVER_DATE		"(August 5, 2010)"
 
 #define IBMVFC_DEFAULT_TIMEOUT	60
 #define IBMVFC_ADISC_CANCEL_TIMEOUT	45
@@ -536,6 +536,12 @@ enum ibmvfc_async_event {
 	IBMVFC_AE_ADAPTER_FAILED	= 0x1000,
 };
 
+struct ibmvfc_async_desc {
+	enum ibmvfc_async_event ae;
+	const char *desc;
+	int log_level;
+};
+
 struct ibmvfc_crq {
 	volatile u8 valid;
 	volatile u8 format;
@@ -593,6 +599,7 @@ enum ibmvfc_target_action {
 	IBMVFC_TGT_ACTION_INIT,
 	IBMVFC_TGT_ACTION_INIT_WAIT,
 	IBMVFC_TGT_ACTION_DEL_RPORT,
+	IBMVFC_TGT_ACTION_DELETED_RPORT,
 };
 
 struct ibmvfc_target {

@@ -1134,7 +1134,7 @@ out:
  * We need to preserve the port number so the reply cache on the server can
  * find our cached RPC replies when we get around to reconnecting.
  */
-static void xs_tcp_reuse_connection(struct rpc_xprt *xprt)
+static void xs_abort_connection(struct rpc_xprt *xprt)
 {
 	int result;
 	struct socket *sock = xprt->sock;
@@ -1152,6 +1152,17 @@ static void xs_tcp_reuse_connection(struct rpc_xprt *xprt)
 	if (result)
 		dprintk("RPC:      AF_UNSPEC connect return code %d\n",
 				result);
+}
+
+static void xs_tcp_reuse_connection(struct rpc_xprt *xprt)
+{
+	unsigned int state = xprt->inet->sk_state;
+
+	if (state == TCP_CLOSE && xprt->sock->state == SS_UNCONNECTED)
+		return;
+	if ((1 << state) & (TCPF_ESTABLISHED|TCPF_SYN_SENT))
+		return;
+	xs_abort_connection(xprt);
 }
 
 /**
@@ -1436,3 +1447,55 @@ int xs_setup_tcp(struct rpc_xprt *xprt, struct rpc_timeout *to)
 
 	return 0;
 }
+
+static int param_set_uint_minmax(const char *val, struct kernel_param *kp,
+		unsigned int min, unsigned int max)
+{
+	unsigned long num;
+	int ret;
+
+	if (!val)
+		return -EINVAL;
+	ret = strict_strtoul(val, 0, &num);
+	if (ret == -EINVAL || num < min || num > max)
+		return -EINVAL;
+	*((unsigned int *)kp->arg) = num;
+	return 0;
+}
+
+static int param_set_portnr(const char *val, struct kernel_param *kp)
+{
+	return param_set_uint_minmax(val, kp,
+			RPC_MIN_RESVPORT,
+			RPC_MAX_RESVPORT);
+}
+
+static int param_get_portnr(char *buffer, struct kernel_param *kp)
+{
+	return param_get_uint(buffer, kp);
+}
+#define param_check_portnr(name, p) \
+	__param_check(name, p, unsigned int);
+
+module_param_named(min_resvport, xprt_min_resvport, portnr, 0644);
+module_param_named(max_resvport, xprt_max_resvport, portnr, 0644);
+
+static int param_set_slot_table_size(const char *val, struct kernel_param *kp)
+{
+	return param_set_uint_minmax(val, kp,
+			RPC_MIN_SLOT_TABLE,
+			RPC_MAX_SLOT_TABLE);
+}
+
+static int param_get_slot_table_size(char *buffer, struct kernel_param *kp)
+{
+	return param_get_uint(buffer, kp);
+}
+#define param_check_slot_table_size(name, p) \
+	__param_check(name, p, unsigned int);
+
+module_param_named(tcp_slot_table_entries, xprt_tcp_slot_table_entries,
+		   slot_table_size, 0644);
+module_param_named(udp_slot_table_entries, xprt_udp_slot_table_entries,
+		   slot_table_size, 0644);
+

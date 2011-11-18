@@ -14,7 +14,6 @@
 #include <linux/nfs_fs.h>
 
 #include "callback.h"
-#include "internal.h"
 
 static const int nfs_set_port_min = 0;
 static const int nfs_set_port_max = 65535;
@@ -56,48 +55,14 @@ static ctl_table nfs_cb_sysctls[] = {
 		.proc_handler	= &proc_dointvec_jiffies,
 		.strategy	= &sysctl_jiffies,
 	},
-#ifdef CONFIG_NFS_FSCACHE
 	{
-		.ctl_name = CTL_UNNUMBERED,
-		.procname = "fscache_from_error",
-		.data = &nfs_fscache_from_error,
-		.maxlen = sizeof(int),
-		.mode = 0644,
-		.proc_handler = &proc_dointvec,
+		.ctl_name	= CTL_UNNUMBERED,
+		.procname	= "nfs_congestion_kb",
+		.data		= &nfs_congestion_kb,
+		.maxlen		= sizeof(nfs_congestion_kb),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
 	},
-	{
-		.ctl_name = CTL_UNNUMBERED,
-		.procname = "fscache_to_error",
-		.data = &nfs_fscache_to_error,
-		.maxlen = sizeof(int),
-		.mode = 0644,
-		.proc_handler = &proc_dointvec,
-	},
-	{
-		.ctl_name = CTL_UNNUMBERED,
-		.procname = "fscache_uncache_page",
-		.data = &nfs_fscache_uncache_page,
-		.maxlen = sizeof(int),
-		.mode = 0644,
-		.proc_handler = &proc_dointvec,
-	},
-	{
-		.ctl_name = CTL_UNNUMBERED,
-		.procname = "fscache_to_pages",
-		.data = &nfs_fscache_to_pages,
-		.maxlen = sizeof(int),
-		.mode = 0644,
-		.proc_handler = &proc_dointvec_minmax,
-	},
-	{
-		.ctl_name = CTL_UNNUMBERED,
-		.procname = "fscache_from_pages",
-		.data = &nfs_fscache_from_pages,
-		.maxlen = sizeof(int),
-		.mode = 0644,
-		.proc_handler = &proc_dointvec,
-	},
-#endif
 	{ .ctl_name = 0 }
 };
 

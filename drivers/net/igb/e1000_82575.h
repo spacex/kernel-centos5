@@ -29,6 +29,8 @@
 #define _E1000_82575_H_
 
 extern void igb_shutdown_serdes_link_82575(struct e1000_hw *hw);
+extern void igb_power_up_serdes_link_82575(struct e1000_hw *hw);
+extern void igb_power_down_phy_copper_82575(struct e1000_hw *hw);
 extern void igb_rx_fifo_flush_82575(struct e1000_hw *hw);
 
 #define ID_LED_DEFAULT_82575_SERDES ((ID_LED_DEF1_DEF2 << 12) | \
@@ -175,6 +177,10 @@ struct e1000_adv_tx_context_desc {
 
 #define MAX_NUM_VFS                   8
 
+#define E1000_DTXSWC_MAC_SPOOF_MASK   0x000000FF /* Per VF MAC spoof control */
+#define E1000_DTXSWC_VLAN_SPOOF_MASK  0x0000FF00 /* Per VF VLAN spoof control */
+#define E1000_DTXSWC_LLE_MASK         0x00FF0000 /* Per VF Local LB enables */
+#define E1000_DTXSWC_VLAN_SPOOF_SHIFT 8
 #define E1000_DTXSWC_VMDQ_LOOPBACK_EN (1 << 31)  /* global VF LB enable */
 
 /* Easy defines for setting default pool, would normally be left a zero */
@@ -205,6 +211,9 @@ struct e1000_adv_tx_context_desc {
 #define E1000_VLVF_LVLAN          0x00100000
 #define E1000_VLVF_VLANID_ENABLE  0x80000000
 
+#define E1000_VMVIR_VLANA_DEFAULT      0x40000000 /* Always use default VLAN */
+#define E1000_VMVIR_VLANA_NEVER        0x80000000 /* Never insert VLAN tag */
+
 #define E1000_IOVCTL 0x05BBC
 #define E1000_IOVCTL_REUSE_VFQ 0x00000001
 
@@ -221,8 +230,10 @@ struct e1000_adv_tx_context_desc {
 
 /* RX packet buffer size defines */
 #define E1000_RXPBS_SIZE_MASK_82576  0x0000007F
+void igb_vmdq_set_anti_spoofing_pf(struct e1000_hw *, bool, int);
 void igb_vmdq_set_loopback_pf(struct e1000_hw *, bool);
 void igb_vmdq_set_replication_pf(struct e1000_hw *, bool);
 u16 igb_rxpbs_adjust_82580(u32 data);
+s32 igb_set_eee_i350(struct e1000_hw *);
 
 #endif

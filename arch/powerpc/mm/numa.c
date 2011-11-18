@@ -16,11 +16,16 @@
 #include <linux/module.h>
 #include <linux/nodemask.h>
 #include <linux/cpu.h>
+#include <linux/cpuset.h>
+#include <linux/node.h>
 #include <linux/notifier.h>
 #include <asm/sparsemem.h>
 #include <asm/lmb.h>
 #include <asm/system.h>
 #include <asm/smp.h>
+#include <asm/firmware.h>
+#include <asm/paca.h>
+#include <asm/hvcall.h>
 
 static int numa_enabled = 1;
 
@@ -129,7 +134,7 @@ void __init get_region(unsigned int nid, unsigned long *start_pfn,
 		*start_pfn = 0;
 }
 
-static void __cpuinit map_cpu_to_node(int cpu, int node)
+static void map_cpu_to_node(int cpu, int node)
 {
 	numa_cpu_lookup_table[cpu] = node;
 
@@ -139,7 +144,7 @@ static void __cpuinit map_cpu_to_node(int cpu, int node)
 		cpu_set(cpu, numa_cpumask_lookup_table[node]);
 }
 
-#ifdef CONFIG_HOTPLUG_CPU
+#if defined(CONFIG_HOTPLUG_CPU) || defined(CONFIG_PPC_SPLPAR)
 static void unmap_cpu_from_node(unsigned long cpu)
 {
 	int node = numa_cpu_lookup_table[cpu];
@@ -153,7 +158,7 @@ static void unmap_cpu_from_node(unsigned long cpu)
 		       cpu, node);
 	}
 }
-#endif /* CONFIG_HOTPLUG_CPU */
+#endif /* CONFIG_HOTPLUG_CPU || CONFIG_PPC_SPLPAR */
 
 static struct device_node * __cpuinit find_cpu_node(unsigned int cpu)
 {
@@ -194,25 +199,34 @@ static int *of_get_associativity(struct device_node *dev)
 /* Returns nid in the range [0..MAX_NUMNODES-1], or -1 if no useful numa
  * info is found.
  */
-static int of_node_to_nid_single(struct device_node *device)
+static int associativity_to_nid(const unsigned int *associativity)
 {
 	int nid = -1;
-	unsigned int *tmp;
 
 	if (min_common_depth == -1)
 		goto out;
 
-	tmp = of_get_associativity(device);
-	if (!tmp)
-		goto out;
-
-	if (tmp[0] >= min_common_depth)
-		nid = tmp[min_common_depth];
+	if (associativity[0] >= min_common_depth)
+		nid = associativity[min_common_depth];
 
 	/* POWER4 LPAR uses 0xffff as invalid node */
 	if (nid == 0xffff || nid >= MAX_NUMNODES)
 		nid = -1;
 out:
+	return nid;
+}
+
+/* Returns the nid associated with the given device tree node,
+ * or -1 if not found.
+ */
+static int of_node_to_nid_single(struct device_node *device)
+{
+	int nid = -1;
+	unsigned int *tmp;
+
+	tmp = of_get_associativity(device);
+	if (tmp)
+		nid = associativity_to_nid(tmp);
 	return nid;
 }
 
@@ -826,3 +840,243 @@ got_nid:
 	return nid;
 }
 #endif /* CONFIG_MEMORY_HOTPLUG */
+
+/* Virtual Processor Home Node (VPHN) support */
+#ifdef CONFIG_PPC_SPLPAR
+#define VPHN_NR_CHANGE_CTRS (8)
+static u8 vphn_cpu_change_counts[NR_CPUS][VPHN_NR_CHANGE_CTRS];
+static cpumask_t cpu_associativity_changes_mask;
+static int vphn_enabled;
+static void set_topology_timer(void);
+
+/*
+ * Store the current values of the associativity change counters in the
+ * hypervisor.
+ */
+static void setup_cpu_associativity_change_counters(void)
+{
+	int cpu;
+
+	for_each_possible_cpu(cpu) {
+		int i;
+		u8 *counts = vphn_cpu_change_counts[cpu];
+		volatile u8 *hypervisor_counts = lppaca[cpu].vphn_assoc_counts;
+
+		for (i = 0; i < VPHN_NR_CHANGE_CTRS; i++)
+			counts[i] = hypervisor_counts[i];
+	}
+}
+
+/*
+ * The hypervisor maintains a set of 8 associativity change counters in
+ * the VPA of each cpu that correspond to the associativity levels in the
+ * ibm,associativity-reference-points property. When an associativity
+ * level changes, the corresponding counter is incremented.
+ *
+ * Set a bit in cpu_associativity_changes_mask for each cpu whose home
+ * node associativity levels have changed.
+ *
+ * Returns the number of cpus with unhandled associativity changes.
+ */
+static int update_cpu_associativity_changes_mask(void)
+{
+	int cpu, nr_cpus = 0;
+	cpumask_t *changes = &cpu_associativity_changes_mask;
+
+	cpus_clear(*changes);
+
+	for_each_possible_cpu(cpu) {
+		int i, changed = 0;
+		u8 *counts = vphn_cpu_change_counts[cpu];
+		volatile u8 *hypervisor_counts = lppaca[cpu].vphn_assoc_counts;
+
+		for (i = 0; i < VPHN_NR_CHANGE_CTRS; i++) {
+			if (hypervisor_counts[i] > counts[i]) {
+				counts[i] = hypervisor_counts[i];
+				changed = 1;
+			}
+		}
+		if (changed) {
+			cpu_set(cpu, *changes);
+			nr_cpus++;
+		}
+	}
+
+	return nr_cpus;
+}
+
+static void topology_work_fn(struct work_struct *work)
+{
+	arch_update_cpu_topology();
+	arch_reinit_sched_domains();
+}
+static DECLARE_WORK(topology_work, topology_work_fn, NULL);
+
+void topology_schedule_update(void)
+{
+	schedule_work(&topology_work);
+}
+
+static void topology_timer_fn(unsigned long ignored)
+{
+	if (!vphn_enabled)
+		return;
+	if (update_cpu_associativity_changes_mask() > 0)
+		topology_schedule_update();
+	set_topology_timer();
+}
+static struct timer_list topology_timer =
+	TIMER_INITIALIZER(topology_timer_fn, 0, 0);
+
+static void set_topology_timer(void)
+{
+	topology_timer.data = 0;
+	topology_timer.expires = jiffies + 60 * HZ;
+	add_timer(&topology_timer);
+}
+
+/*
+ * Start polling for VPHN associativity changes.
+ */
+int start_topology_update(void)
+{
+	int rc = 0;
+
+	/* Disabled until races with load balancing are fixed */
+	if (0 && firmware_has_feature(FW_FEATURE_VPHN)) {
+		vphn_enabled = 1;
+		setup_cpu_associativity_change_counters();
+		init_timer(&topology_timer);
+		set_topology_timer();
+		rc = 1;
+	}
+
+	return rc;
+}
+__initcall(start_topology_update);
+
+/*
+ * Disable polling for VPHN associativity changes.
+ */
+int stop_topology_update(void)
+{
+	vphn_enabled = 0;
+	return del_timer_sync(&topology_timer);
+}
+
+/* 6 64-bit registers unpacked into 12 32-bit associativity values */
+#define VPHN_ASSOC_BUFSIZE (6*sizeof(u64)/sizeof(u32))
+
+/*
+ * Convert the associativity domain numbers returned from the hypervisor
+ * to the sequence they would appear in the ibm,associativity property.
+ */
+static int vphn_unpack_associativity(const long *packed, unsigned int *unpacked)
+{
+	int i, nr_assoc_doms = 0;
+	const u16 *field = (const u16*) packed;
+
+#define VPHN_FIELD_UNUSED	(0xffff)
+#define VPHN_FIELD_MSB		(0x8000)
+#define VPHN_FIELD_MASK		(~VPHN_FIELD_MSB)
+
+	for (i = 0; i < VPHN_ASSOC_BUFSIZE; i++) {
+		if (*field == VPHN_FIELD_UNUSED) {
+			/* All significant fields processed, and remaining
+			 * fields contain the reserved value of all 1's.
+			 * Just store them.
+			 */
+			unpacked[i] = *((u32*)field);
+			field += 2;
+		} else if (*field & VPHN_FIELD_MSB) {
+			/* Data is in the lower 15 bits of this field */
+			unpacked[i] = *field & VPHN_FIELD_MASK;
+			field++;
+			nr_assoc_doms++;
+		} else {
+			/* Data is in the lower 15 bits of this field
+			 * concatenated with the next 16 bit field
+			 */
+			unpacked[i] = *((u32*)field);
+			field += 2;
+			nr_assoc_doms++;
+		}
+	}
+
+	return nr_assoc_doms;
+}
+
+/*
+ * Retrieve the new associativity information for a virtual processor's
+ * home node.
+ */
+static long hcall_vphn(unsigned long cpu, unsigned int *associativity)
+{
+	long rc;
+	long retbuf[PLPAR_HCALL9_BUFSIZE] = {0};
+	u64 flags = 1;
+	int hwcpu = get_hard_smp_processor_id(cpu);
+
+	rc = plpar_hcall9(H_HOME_NODE_ASSOCIATIVITY, retbuf, flags, hwcpu,
+				0, 0, 0, 0, 0, 0, 0);
+	vphn_unpack_associativity(retbuf, associativity);
+
+	return rc;
+}
+
+static long vphn_get_associativity(unsigned long cpu,
+					unsigned int *associativity)
+{
+	long rc = hcall_vphn(cpu, associativity);
+
+	switch (rc) {
+	case H_FUNCTION:
+		printk(KERN_INFO
+			"VPHN is not supported. Disabling polling...\n");
+		stop_topology_update();
+		break;
+	case H_HARDWARE:
+		printk(KERN_ERR
+			"hcall_vphn() experienced a hardware fault "
+			"preventing VPHN. Disabling polling...\n");
+		stop_topology_update();
+	}
+
+	return rc;
+}
+
+/*
+ * Update the node maps and sysfs entries for each cpu whose home node
+ * has changed.
+ */
+void arch_update_cpu_topology(void)
+{
+	int cpu, nid, old_nid;
+	unsigned int associativity[VPHN_ASSOC_BUFSIZE] = {0};
+	struct sys_device *sysdev;
+
+	for_each_cpu_mask(cpu, cpu_associativity_changes_mask) {
+		vphn_get_associativity(cpu, associativity);
+		nid = associativity_to_nid(associativity);
+
+		if (nid < 0 || !node_online(nid))
+			nid = first_online_node;
+
+		old_nid = numa_cpu_lookup_table[cpu];
+
+		/* Disable hotplug while we update the cpu
+		 * masks and sysfs.
+		 */
+		lock_cpu_hotplug();
+		unregister_cpu_under_node(cpu, old_nid);
+		unmap_cpu_from_node(cpu);
+		map_cpu_to_node(cpu, nid);
+		register_cpu_under_node(cpu, nid);
+		unlock_cpu_hotplug();
+
+		sysdev = get_cpu_sysdev(cpu);
+		if (sysdev)
+			kobject_uevent(&sysdev->kobj, KOBJ_CHANGE);
+	}
+}
+#endif /* CONFIG_PPC_SPLPAR */

@@ -51,23 +51,11 @@ static void tape_34xx_delete_sbid_from(struct tape_device *, int);
  * Medium sense for 34xx tapes. There is no 'real' medium sense call.
  * So we just do a normal sense.
  */
-static int
-tape_34xx_medium_sense(struct tape_device *device)
+static void __tape_34xx_medium_sense(struct tape_request *request)
 {
-	struct tape_request *request;
-	unsigned char       *sense;
-	int                  rc;
+	struct tape_device *device = request->device;
+	unsigned char *sense;
 
-	request = tape_alloc_request(1, 32);
-	if (IS_ERR(request)) {
-		DBF_EXCEPTION(6, "MSEN fail\n");
-		return PTR_ERR(request);
-	}
-
-	request->op = TO_MSEN;
-	tape_ccw_end(request->cpaddr, SENSE, 32, request->cpdata);
-
-	rc = tape_do_io_interruptible(device, request);
 	if (request->rc == 0) {
 		sense = request->cpdata;
 
@@ -86,13 +74,45 @@ tape_34xx_medium_sense(struct tape_device *device)
 			device->tape_generic_status |= GMT_WR_PROT(~0);
 		else
 			device->tape_generic_status &= ~GMT_WR_PROT(~0);
-	} else {
+	} else
 		DBF_EVENT(4, "tape_34xx: medium sense failed with rc=%d\n",
 			request->rc);
-	}
 	tape_free_request(request);
+}
 
+static int tape_34xx_medium_sense(struct tape_device *device)
+{
+	struct tape_request *request;
+	int rc;
+
+	request = tape_alloc_request(1, 32);
+	if (IS_ERR(request)) {
+		DBF_EXCEPTION(6, "MSEN fail\n");
+		return PTR_ERR(request);
+	}
+
+	request->op = TO_MSEN;
+	tape_ccw_end(request->cpaddr, SENSE, 32, request->cpdata);
+	rc = tape_do_io_interruptible(device, request);
+	__tape_34xx_medium_sense(request);
 	return rc;
+}
+
+static void tape_34xx_medium_sense_async(struct tape_device *device)
+{
+	struct tape_request *request;
+
+	request = tape_alloc_request(1, 32);
+	if (IS_ERR(request)) {
+		DBF_EXCEPTION(6, "MSEN fail\n");
+		return;
+	}
+
+	request->op = TO_MSEN;
+	tape_ccw_end(request->cpaddr, SENSE, 32, request->cpdata);
+	request->callback = (void *) __tape_34xx_medium_sense;
+	request->callback_data = NULL;
+	tape_do_io_async(device, request);
 }
 
 /*
@@ -101,6 +121,9 @@ tape_34xx_medium_sense(struct tape_device *device)
  * is inserted but cannot call tape_do_io* from an interrupt context.
  * Maybe that's useful for other actions we want to start from the
  * interrupt handler.
+ * Note: the work handler is called by the system work queue. The tape
+ * commands started by the handler need to be asynchrounous, otherwise
+ * a deadlock can occur e.g. in case of a deferred cc=1 (see __tape_do_irq).
  */
 static void
 tape_34xx_work_handler(void *data)
@@ -113,7 +136,7 @@ tape_34xx_work_handler(void *data)
 
 	switch(p->op) {
 		case TO_MSEN:
-			tape_34xx_medium_sense(p->device);
+			tape_34xx_medium_sense_async(p->device);
 			break;
 		default:
 			DBF_EVENT(3, "T34XX: internal error: unknown work\n");
@@ -1136,21 +1159,18 @@ tape_34xx_bread(struct tape_device *device, struct request *req)
 {
 	struct tape_request *request;
 	struct ccw1 *ccw;
-	int count = 0, i;
+	int count = 0;
 	unsigned off;
 	char *dst;
 	struct bio_vec *bv;
-	struct bio *bio;
+	struct req_iterator iter;
 	struct tape_34xx_block_id *	start_block;
 
 	DBF_EVENT(6, "xBREDid:");
 
 	/* Count the number of blocks for the request. */
-	rq_for_each_bio(bio, req) {
-		bio_for_each_segment(bv, bio, i) {
-			count += bv->bv_len >> (TAPEBLOCK_HSEC_S2B + 9);
-		}
-	}
+	rq_for_each_segment(bv, req, iter)
+		count += bv->bv_len >> (TAPEBLOCK_HSEC_S2B + 9);
 
 	/* Allocate the ccw request. */
 	request = tape_alloc_request(3+count+1, 8);
@@ -1177,8 +1197,7 @@ tape_34xx_bread(struct tape_device *device, struct request *req)
 	ccw = tape_ccw_cc(ccw, NOP, 0, NULL);
 	ccw = tape_ccw_cc(ccw, NOP, 0, NULL);
 
-	rq_for_each_bio(bio, req) {
-		bio_for_each_segment(bv, bio, i) {
+	rq_for_each_segment(bv, req, iter) {
 			dst = kmap(bv->bv_page) + bv->bv_offset;
 			for (off = 0; off < bv->bv_len;
 			     off += TAPEBLOCK_HSEC_SIZE) {
@@ -1189,7 +1208,6 @@ tape_34xx_bread(struct tape_device *device, struct request *req)
 				ccw++;
 				dst += TAPEBLOCK_HSEC_SIZE;
 			}
-		}
 	}
 
 	ccw = tape_ccw_end(ccw, NOP, 0, NULL);

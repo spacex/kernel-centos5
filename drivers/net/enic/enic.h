@@ -32,13 +32,13 @@
 
 #define DRV_NAME		"enic"
 #define DRV_DESCRIPTION		"Cisco VIC Ethernet NIC Driver"
-#define DRV_VERSION		"1.4.1.2"
-#define DRV_COPYRIGHT		"Copyright 2008-2010 Cisco Systems, Inc"
+#define DRV_VERSION		"2.1.1.9"
+#define DRV_COPYRIGHT		"Copyright 2008-2011 Cisco Systems, Inc"
 
 #define ENIC_BARS_MAX		6
 
-#define ENIC_WQ_MAX		8
-#define ENIC_RQ_MAX		8
+#define ENIC_WQ_MAX		1
+#define ENIC_RQ_MAX		1
 #define ENIC_CQ_MAX		(ENIC_WQ_MAX + ENIC_RQ_MAX)
 #define ENIC_INTR_MAX		(ENIC_CQ_MAX + 2)
 
@@ -78,8 +78,8 @@ struct enic {
 	struct net_device_stats net_stats;
 	struct timer_list notify_timer;
 	struct work_struct reset;
-	struct msix_entry msix_entry[ENIC_MSIX_MAX];
-	struct enic_msix_entry msix[ENIC_MSIX_MAX];
+	struct msix_entry msix_entry[ENIC_INTR_MAX];
+	struct enic_msix_entry msix[ENIC_INTR_MAX];
 	u32 msg_enable;
 	spinlock_t devcmd_lock;
 	u8 mac_addr[ETH_ALEN];
@@ -102,7 +102,6 @@ struct enic {
 	/* receive queue cache line section */
 	____cacheline_aligned struct vnic_rq rq[ENIC_RQ_MAX];
 	unsigned int rq_count;
-	int (*rq_alloc_buf)(struct vnic_rq *rq);
 	u64 rq_truncated_pkts;
 	u64 rq_bad_fcs;
 	struct napi_struct napi;

@@ -32,7 +32,6 @@ static inline struct page *sg_page(struct scatterlist *sg)
 
 #define dev_get_by_name(_inet, _name)  dev_get_by_name(_name)
 
-#define vlan_dev_real_dev(_ndev) VLAN_DEV_INFO(_ndev)->real_dev
 #define vlan_dev_vlan_id(_ndev) VLAN_DEV_INFO(_ndev)->vlan_id
 
 #define dev_unicast_add(_netdev, _addr) \

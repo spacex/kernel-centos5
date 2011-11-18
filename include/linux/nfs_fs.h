@@ -52,7 +52,6 @@
 
 #include <linux/rwsem.h>
 #include <linux/mempool.h>
-#include <linux/fscache.h>
 
 /*
  * These are the default flags for swap requests
@@ -202,9 +201,6 @@ struct nfs_inode {
 	int			 delegation_state;
 	struct rw_semaphore	rwsem;
 #endif /* CONFIG_NFS_V4*/
-#ifdef CONFIG_NFS_FSCACHE
-	struct fscache_cookie	*fscache;
-#endif
 	struct inode		vfs_inode;
 };
 
@@ -227,6 +223,7 @@ struct nfs_inode {
 #define NFS_INO_ACL_LRU_SET	(3)		/* Inode is on the LRU list */
 #define NFS_INO_FSCACHE	(4)		/* inode can be cached by FS-Cache */
 #define NFS_INO_MOUNTPOINT	(5)		/* inode is remote mountpoint */
+#define NFS_INO_COMMIT		(6)		/* inode is committing unstable writes */
 
 static inline struct nfs_inode *NFS_I(struct inode *inode)
 {
@@ -435,14 +432,15 @@ extern void nfs_release_automount_timer(void);
 /*
  * linux/fs/nfs/unlink.c
  */
-extern int  nfs_async_unlink(struct inode *dir, struct dentry *dentry);
 extern void nfs_complete_unlink(struct dentry *dentry, struct inode *);
 extern void nfs_block_sillyrename(struct dentry *dentry);
 extern void nfs_unblock_sillyrename(struct dentry *dentry);
+extern int  nfs_sillyrename(struct inode *dir, struct dentry *dentry);
 
 /*
  * linux/fs/nfs/write.c
  */
+extern int  nfs_congestion_kb;
 extern int  nfs_writepage(struct page *page, struct writeback_control *wbc);
 extern int  nfs_writepages(struct address_space *, struct writeback_control *);
 extern int  nfs_flush_incompatible(struct file *file, struct page *page);
@@ -457,9 +455,9 @@ extern void nfs_writedata_release(void *);
 extern int  nfs_sync_inode_wait(struct inode *, unsigned long, unsigned int, int);
 #if defined(CONFIG_NFS_V3) || defined(CONFIG_NFS_V4)
 extern int  nfs_commit_inode(struct inode *, int);
-extern struct nfs_write_data *nfs_commit_alloc(void);
+extern struct nfs_write_data *nfs_commitdata_alloc(void);
 extern void nfs_commit_free(struct nfs_write_data *wdata);
-extern void nfs_commit_release(void *wdata);
+extern void nfs_commitdata_release(void *wdata);
 #else
 static inline int
 nfs_commit_inode(struct inode *inode, int how)
@@ -478,6 +476,17 @@ static inline int
 nfs_wb_all(struct inode *inode)
 {
 	int error = nfs_sync_inode_wait(inode, 0, 0, 0);
+	return (error < 0) ? error : 0;
+}
+
+/*
+ * Just like nfs_wb_all, but make sure we wait for WRITEs and COMMIT to
+ * complete. To be called from fsync codepaths.
+ */
+static inline int
+nfs_wb_all_sync(struct inode *inode)
+{
+	int error = nfs_sync_inode_wait(inode, 0, 0, FLUSH_SYNC);
 	return (error < 0) ? error : 0;
 }
 
@@ -592,7 +601,6 @@ extern void * nfs_root_data(void);
 #define NFSDBG_ROOT		0x0080
 #define NFSDBG_CALLBACK		0x0100
 #define NFSDBG_CLIENT		0x0200
-#define NFSDBG_FSCACHE		0x0400
 #define NFSDBG_ALL		0xFFFF
 
 #ifdef __KERNEL__

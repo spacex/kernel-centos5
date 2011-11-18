@@ -4,30 +4,6 @@
 
 #include <linux/mount.h>
 
-#define NFS_PAGE_WRITING	0
-#define NFS_PAGE_CACHED		1
-
-#define PageNfsBit(bit, page)		test_bit(bit, &(page)->private)
-
-#define SetPageNfsBit(bit, page)		\
-do {						\
-	SetPagePrivate((page));			\
-	set_bit(bit, &(page)->private);		\
-} while(0)
-
-#define ClearPageNfsBit(bit, page)		\
-do {						\
-	clear_bit(bit, &(page)->private);	\
-} while(0)
-
-#define PageNfsWriting(page)		PageNfsBit(NFS_PAGE_WRITING, (page))
-#define SetPageNfsWriting(page)		SetPageNfsBit(NFS_PAGE_WRITING, (page))
-#define ClearPageNfsWriting(page)	ClearPageNfsBit(NFS_PAGE_WRITING, (page))
-
-#define PageNfsCached(page)		PageNfsBit(NFS_PAGE_CACHED, (page))
-#define SetPageNfsCached(page)		SetPageNfsBit(NFS_PAGE_CACHED, (page))
-#define ClearPageNfsCached(page)	ClearPageNfsBit(NFS_PAGE_CACHED, (page))
-
 struct nfs_string;
 struct nfs_mount_data;
 struct nfs4_mount_data;
@@ -50,11 +26,6 @@ struct nfs_clone_mount {
 	struct sockaddr_in *addr;
 	rpc_authflavor_t authflavor;
 };
-
-/*
- * include filesystem caching stuff here
- */
-#include "fscache.h"
 
 /* client.c */
 extern struct rpc_program nfs_program;
@@ -104,6 +75,7 @@ struct vfsmount *nfs_do_refmount(const struct vfsmount *mnt_parent, struct dentr
 extern struct svc_version nfs4_callback_version1;
 
 /* pagelist.c */
+extern int nfs_wait_bit_uninterruptible(void *word);
 extern int __init nfs_init_nfspagecache(void);
 extern void nfs_destroy_nfspagecache(void);
 extern int __init nfs_init_readpagecache(void);
@@ -141,6 +113,9 @@ extern int nfs4_proc_fs_locations(struct inode *dir, struct dentry *dentry,
 				  struct nfs4_fs_locations *fs_locations,
 				  struct page *page);
 #endif
+
+/* proc.c */
+void nfs_close_context(struct nfs_open_context *ctx, int is_sync);
 
 /* dir.c */
 extern int nfs_access_cache_shrinker(int nr_to_scan, gfp_t gfp_mask);
@@ -186,7 +161,6 @@ extern int nfs4_path_walk(struct nfs_server *server,
 #endif
 
 /* read.c */
-extern int nfs_readpage_async(struct nfs_open_context *, struct inode *, struct page *);
 unsigned int nfs_page_length(struct inode *, struct page *);
 
 /*

@@ -4,7 +4,6 @@
 #include <linux/list.h>
 #include <linux/backing-dev.h>
 #include <linux/wait.h>
-#include <linux/fscache.h>
 
 #include <asm/atomic.h>
 
@@ -70,10 +69,6 @@ struct nfs_client {
 	char			cl_ipaddr[16];
 	unsigned char		cl_id_uniquifier;
 #endif
-
-#ifdef CONFIG_NFS_FSCACHE
-	struct fscache_cookie	*fscache;	/* client index cache cookie */
-#endif
 };
 
 /*
@@ -89,6 +84,7 @@ struct nfs_server {
 	struct rpc_clnt *	client_acl;	/* ACL RPC client handle */
 	struct nfs_iostats *	io_stats;	/* I/O statistics */
 	struct backing_dev_info	backing_dev_info;
+	atomic_t		writeback;	/* number of writeback pages */
 	int			flags;		/* various flags */
 	unsigned int		caps;		/* server capabilities */
 	unsigned int		rsize;		/* read size */

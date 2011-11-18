@@ -620,9 +620,25 @@ static inline void blk_queue_bounce(request_queue_t *q, struct bio **bio)
 }
 #endif /* CONFIG_MMU */
 
+struct req_iterator {
+	int i;
+	struct bio *bio;
+};
+
+/* This is deprecated in favor of rq_for_each_segment. */
+#define for_each_bio(_bio)		\
+	for (; _bio; _bio = _bio->bi_next)
 #define rq_for_each_bio(_bio, rq)	\
 	if ((rq->bio))			\
 		for (_bio = (rq)->bio; _bio; _bio = _bio->bi_next)
+
+#define rq_for_each_segment(bvl, _rq, _iter)			\
+	rq_for_each_bio(_iter.bio, _rq)			\
+		bio_for_each_segment(bvl, _iter.bio, _iter.i)
+
+#define rq_iter_last(rq, _iter)					\
+		(_iter.bio->bi_next == NULL && _iter.i == _iter.bio->bi_vcnt-1)
+
 
 struct sec_size {
 	unsigned block_size;
@@ -787,6 +803,7 @@ extern void blk_queue_invalidate_tags(request_queue_t *);
 extern long blk_congestion_wait(int rw, long timeout);
 extern struct blk_queue_tag *blk_init_tags(int);
 extern void blk_free_tags(struct blk_queue_tag *);
+extern void blk_congestion_end(int rw);
 
 extern void blk_rq_bio_prep(request_queue_t *, struct request *, struct bio *);
 extern int blkdev_issue_flush(struct block_device *, sector_t *);

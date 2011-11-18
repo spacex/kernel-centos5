@@ -126,6 +126,31 @@ void recalc_sigpending(void)
 
 }
 
+int fork_recalc_sigpending(void)
+{
+	struct task_struct *tsk = current;
+	int pending;
+
+	recalc_sigpending();
+	if (likely(!signal_pending(tsk)))
+		return 0;
+
+	pending = 1;
+	/*
+	 * HACK. If SIGPROF is the sole reason for TIF_SIGPENDING
+	 * we assume it was sent by ITIMER_PROF and return false,
+	 * otherwise fork() can never succeed if it takes more than
+	 * it_prof_incr. bz645528.
+	 */
+	if (!sigismember(&tsk->blocked, SIGPROF)) {
+		sigaddset(&tsk->blocked, SIGPROF);
+		pending = recalc_sigpending_tsk(tsk);
+		sigdelset(&tsk->blocked, SIGPROF);
+	}
+
+	return pending;
+}
+
 /* Given the mask, find the first available signal that should be serviced. */
 
 static int

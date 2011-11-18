@@ -80,7 +80,8 @@ static int udp_v6_get_port(struct sock *sk, unsigned short snum)
 		best_size_so_far = UINT_MAX;
 		best = rover = net_random() % remaining + low;
 
-		if (!udp_lport_inuse(rover))
+		if (!udp_lport_inuse(rover) &&
+		    !inet_is_reserved_local_port(rover))
 			goto gotit;
 
 		/* 1st pass: look for empty (or shortest) hash chain */
@@ -89,7 +90,8 @@ static int udp_v6_get_port(struct sock *sk, unsigned short snum)
 			struct hlist_head *list;
 
 			list = &udp_hash[rover & (UDP_HTABLE_SIZE - 1)];
-			if (hlist_empty(list))
+			if (hlist_empty(list) &&
+			    !inet_is_reserved_local_port(rover))
 				goto gotit;
 
 			sk_for_each(sk2, node, list)
@@ -106,7 +108,8 @@ static int udp_v6_get_port(struct sock *sk, unsigned short snum)
 		/* 2nd pass: find hole in shortest hash chain */
 		rover = best;
 		for (i = 0; i < (1 << 16) / UDP_HTABLE_SIZE; i++) {
-			if (!udp_lport_inuse(rover))
+			if (!udp_lport_inuse(rover) &&
+			    !inet_is_reserved_local_port(rover))
 				goto gotit;
 			rover += UDP_HTABLE_SIZE;
 			if (rover > high)

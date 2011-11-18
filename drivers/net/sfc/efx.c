@@ -2266,7 +2266,8 @@ static int __devinit efx_pci_probe(struct pci_dev *pci_dev,
 	if (type->offload_features & NETIF_F_V6_CSUM)
 		net_dev->features |= NETIF_F_TSO6;
 	/* Mask for features that also apply to VLAN devices */
-	net_dev->features |= (NETIF_F_VLAN_CSUM | NETIF_F_VLAN_TSO);
+	net_dev->features |= (NETIF_F_VLAN_CSUM | NETIF_F_VLAN_SG |
+			      NETIF_F_VLAN_TSO);
 	efx = netdev_priv(net_dev);
 	pci_set_drvdata(pci_dev, efx);
 	SET_NETDEV_DEV(net_dev, &pci_dev->dev);

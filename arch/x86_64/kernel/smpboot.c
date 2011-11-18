@@ -467,6 +467,19 @@ cpumask_t cpu_coregroup_map(int cpu)
 /* representing cpus for which sibling maps can be computed */
 static cpumask_t cpu_sibling_setup_map;
 
+static void __cpuinit link_thread_siblings(int cpu1, int cpu2)
+{
+	struct cpuinfo_x86 *c1 = &cpu_data[cpu1];
+	struct cpuinfo_x86 *c2 = &cpu_data[cpu2];
+
+	cpu_set(cpu1, cpu_sibling_map[cpu2]);
+	cpu_set(cpu2, cpu_sibling_map[cpu1]);
+	cpu_set(cpu1, cpu_core_map[cpu2]);
+	cpu_set(cpu2, cpu_core_map[cpu1]);
+	cpu_set(cpu1, c2->llc_shared_map);
+	cpu_set(cpu2, c1->llc_shared_map);
+}
+
 static inline void set_cpu_sibling_map(int cpu)
 {
 	int i;
@@ -476,14 +489,14 @@ static inline void set_cpu_sibling_map(int cpu)
 
 	if (smp_num_siblings > 1) {
 		for_each_cpu_mask(i, cpu_sibling_setup_map) {
-			if (c[cpu].phys_proc_id == c[i].phys_proc_id &&
-			    c[cpu].cpu_core_id == c[i].cpu_core_id) {
-				cpu_set(i, cpu_sibling_map[cpu]);
-				cpu_set(cpu, cpu_sibling_map[i]);
-				cpu_set(i, cpu_core_map[cpu]);
-				cpu_set(cpu, cpu_core_map[i]);
-				cpu_set(i, c[cpu].llc_shared_map);
-				cpu_set(cpu, c[i].llc_shared_map);
+			if (cpu_has(&c[cpu], X86_FEATURE_TOPOEXT)) {
+				if (c[cpu].phys_proc_id == c[i].phys_proc_id &&
+				    c[cpu].compute_unit_id ==
+				    c[i].compute_unit_id)
+					link_thread_siblings(cpu, i);
+			} else if (c[cpu].phys_proc_id == c[i].phys_proc_id &&
+			           c[cpu].cpu_core_id == c[i].cpu_core_id) {
+				link_thread_siblings(cpu, i);
 			}
 		}
 	} else {

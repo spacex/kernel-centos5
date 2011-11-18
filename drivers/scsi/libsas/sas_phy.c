@@ -37,7 +37,7 @@ static void sas_phye_loss_of_signal(void *data)
 	sas_begin_event(PHYE_LOSS_OF_SIGNAL, &phy->ha->event_lock,
 			&phy->phy_events_pending);
 	phy->error = 0;
-	sas_deform_port(phy);
+	sas_deform_port(phy, 1);
 }
 
 static void sas_phye_oob_done(void *data)
@@ -60,7 +60,7 @@ static void sas_phye_oob_error(void *data)
 	sas_begin_event(PHYE_OOB_ERROR, &phy->ha->event_lock,
 			&phy->phy_events_pending);
 
-	sas_deform_port(phy);
+	sas_deform_port(phy, 1);
 
 	if (!port && phy->enabled && i->dft->lldd_control_phy) {
 		phy->error++;

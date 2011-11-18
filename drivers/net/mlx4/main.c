@@ -1698,6 +1698,9 @@ static struct pci_device_id mlx4_pci_table[] = {
 	{ MLX4_VDEVICE(MELLANOX, 0x676f, MLX4_VF) }, /* MT26478 ConnectX EN 40GigE PCIe 2.0 5GT/s VF*/
 	{ MLX4_VDEVICE(MELLANOX, 0x6778, 0) }, /* MT26488 ConnectX VPI PCIe 2.0 5GT/s - IB DDR / 10GigE Virt+ */
 	{ MLX4_VDEVICE(MELLANOX, 0x6779, MLX4_VF) }, /* MT26488 ConnectX VPI PCIe 2.0 5GT/s - IB DDR / 10GigE Virt+ VF*/
+	{ MLX4_VDEVICE(MELLANOX, 0x1002, MLX4_VF) }, /* MT25400 Family [ConnectX-2 Virtual Function] */
+	{ MLX4_VDEVICE(MELLANOX, 0x1003, 0) }, /* MT27500 Family [ConnectX-3] */
+	{ MLX4_VDEVICE(MELLANOX, 0x1004,MLX4_VF) }, /* MT27500 Family [ConnectX-3 Virtual Function] */
 	{ 0, }
 };
 

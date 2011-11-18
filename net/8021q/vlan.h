@@ -34,7 +34,7 @@ extern unsigned short vlan_name_type;
 #define VLAN_GRP_HASH_SIZE	(1 << VLAN_GRP_HASH_SHIFT)
 #define VLAN_GRP_HASH_MASK	(VLAN_GRP_HASH_SIZE - 1)
 
-#define VLAN_TSO_FEATURES	(NETIF_F_TSO | NETIF_F_TSO6 | NETIF_F_SG)
+#define VLAN_TSO_FEATURES	(NETIF_F_TSO | NETIF_F_TSO6)
 
 /*  Find a VLAN device by the MAC address of its Ethernet device, and
  *  it's VLAN ID.  The default configuration is to have VLAN's scope

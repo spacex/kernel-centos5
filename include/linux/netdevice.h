@@ -185,6 +185,8 @@ struct dev_mc_list
 	int			dmi_gusers;
 };
 
+#define netdev_mc_count(dev) ((dev)->mc_count)
+#define netdev_mc_empty(dev) (netdev_mc_count(dev) == 0)
 #define netdev_for_each_mc_addr(mcl, dev) \
 	for (mcl = (dev)->mc_list; mcl; mcl = mcl->next)
 
@@ -353,14 +355,17 @@ struct net_device
 #define NETIF_F_LRO		32768	/* large receive offload */
 
 /* Go to the end of the bit field and count backwards when adding new entries
- * so we don't cause the calculated fields below to shift.  Also don't forget
- * to update GSO_MASK below to exclude added bits */
-#define NETIF_F_VLAN_TSO	1 << 31	/* Supports TSO for VLANs */
-#define NETIF_F_VLAN_CSUM	1 << 30	/* Supports TX checksumming for VLANs */
+ * so as to minimize collision with upstream's usage of these upper bits. The
+ * GSO_MASK reserves bits 16 through 23. And bits 0 through 15 are defined
+ * above. */
+#define NETIF_F_VLAN_TSO	(1 << 31) /* Supports TSO for VLANs */
+#define NETIF_F_VLAN_CSUM	(1 << 30) /* Supports TX checksumming for VLANs */
+#define NETIF_F_VLAN_HIGHDMA	(1 << 29) /* Supports DMA to high memory */
+#define NETIF_F_VLAN_SG		(1 << 28) /* Supports scatter/gather for VLANs */
 
 	/* Segmentation offload features */
 #define NETIF_F_GSO_SHIFT	16
-#define NETIF_F_GSO_MASK	0x3fff0000
+#define NETIF_F_GSO_MASK	0x00ff0000
 #define NETIF_F_TSO		(SKB_GSO_TCPV4 << NETIF_F_GSO_SHIFT)
 #define NETIF_F_UFO		(SKB_GSO_UDP << NETIF_F_GSO_SHIFT)
 #define NETIF_F_GSO_ROBUST	(SKB_GSO_DODGY << NETIF_F_GSO_SHIFT)

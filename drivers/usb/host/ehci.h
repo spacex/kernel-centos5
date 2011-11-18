@@ -57,6 +57,7 @@ struct ehci_hcd {			/* one per controller */
 
 	/* async schedule support */
 	struct ehci_qh		*async;
+	struct ehci_qh		*dummy;		/* For AMD quirk use */
 	struct ehci_qh		*reclaim;
 	unsigned		scanning : 1;
 
@@ -92,6 +93,7 @@ struct ehci_hcd {			/* one per controller */
 	unsigned		is_tdi_rh_tt:1;	/* TDI roothub with TT */
 	unsigned		no_selective_suspend:1;
 	unsigned		has_fsl_port_bug:1; /* FreeScale */
+	unsigned                use_dummy_qh:1; /* AMD Frame List table quirk */
 
 	u8			sbrn;		/* packed release number */
 

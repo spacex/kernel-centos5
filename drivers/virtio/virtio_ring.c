@@ -276,6 +276,7 @@ static void *vring_detach_unused_buf(struct virtqueue *_vq)
 		/* detach_buf clears data, so grab it now. */
 		buf = vq->data[i];
 		detach_buf(vq, i);
+		vq->vring.avail->idx--;
 		END_USE(vq);
 		return buf;
 	}

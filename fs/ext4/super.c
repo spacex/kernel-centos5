@@ -185,6 +185,7 @@ void ext4_itable_unused_set(struct super_block *sb,
 		bg->bg_itable_unused_hi = cpu_to_le16(count >> 16);
 }
 
+wait_queue_head_t aio_wq[WQ_HASH_SZ];
 
 /* Just increment the non-pointer handle value */
 static handle_t *ext4_get_nojournal(void)
@@ -753,6 +754,7 @@ static struct inode *ext4_alloc_inode(struct super_block *sb)
 	ei->cur_aio_dio = NULL;
 	ei->i_sync_tid = 0;
 	ei->i_datasync_tid = 0;
+	atomic_set(&ei->i_aiodio_unwritten, 0);
 
 	return &ei->vfs_inode;
 }
@@ -780,6 +782,7 @@ static void init_once(void * foo, struct kmem_cache * cachep, unsigned long flag
 	init_rwsem(&ei->xattr_sem);
 #endif
 	init_rwsem(&ei->i_data_sem);
+	mutex_init(&ei->i_aio_mutex);
 	inode_init_once(&ei->vfs_inode);
 }
 
@@ -1032,6 +1035,8 @@ static int bdev_try_to_free_page(struct super_block *sb, struct page *page, gfp_
 #define QTYPE2NAME(t) ((t) == USRQUOTA ? "user" : "group")
 #define QTYPE2MOPT(on, t) ((t) == USRQUOTA?((on)##USRJQUOTA):((on)##GRPJQUOTA))
 
+static int ext4_dquot_initialize(struct inode *inode, int type);
+static int ext4_dquot_drop(struct inode *inode);
 static int ext4_write_dquot(struct dquot *dquot);
 static int ext4_acquire_dquot(struct dquot *dquot);
 static int ext4_release_dquot(struct dquot *dquot);
@@ -1046,8 +1051,8 @@ static ssize_t ext4_quota_write(struct super_block *sb, int type,
 				const char *data, size_t len, loff_t off);
 
 static struct dquot_operations ext4_quota_operations = {
-	.initialize	= dquot_initialize,
-	.drop		= dquot_drop,
+	.initialize	= ext4_dquot_initialize,
+	.drop		= ext4_dquot_drop,
 	.alloc_space	= dquot_alloc_space,
 	.reserve_space	= dquot_reserve_space,
 	.claim_space	= dquot_claim_space,
@@ -3773,6 +3778,44 @@ static inline struct inode *dquot_to_inode(struct dquot *dquot)
 	return sb_dqopt(dquot->dq_sb)->files[dquot->dq_type];
 }
 
+static int ext4_dquot_initialize(struct inode *inode, int type)
+{
+	handle_t *handle;
+	int ret, err;
+
+	/* We may create quota structure so we need to reserve enough blocks */
+	handle = ext4_journal_start(inode, 2*EXT4_QUOTA_INIT_BLOCKS(inode->i_sb));
+	if (IS_ERR(handle))
+		return PTR_ERR(handle);
+	ret = dquot_initialize(inode, type);
+	err = ext4_journal_stop(handle);
+	if (!ret)
+		ret = err;
+	return ret;
+}
+
+static int ext4_dquot_drop(struct inode *inode)
+{
+	handle_t *handle;
+	int ret, err;
+
+	/* We may delete quota structure so we need to reserve enough blocks */
+	handle = ext4_journal_start(inode, 2*EXT4_QUOTA_DEL_BLOCKS(inode->i_sb));
+	if (IS_ERR(handle)) {
+		/*
+		 * We call dquot_drop() anyway to at least release references
+		 * to quota structures so that umount does not hang.
+		 */
+		dquot_drop(inode);
+		return PTR_ERR(handle);
+	}
+	ret = dquot_drop(inode);
+	err = ext4_journal_stop(handle);
+	if (!ret)
+		ret = err;
+	return ret;
+}
+
 static int ext4_write_dquot(struct dquot *dquot)
 {
 	int ret, err;
@@ -4062,11 +4105,15 @@ MODULE_ALIAS("ext4dev");
 static int __init init_ext4_fs(void)
 {
 	int err;
+	int i;
 
 	ext4_zero_page = alloc_page(GFP_USER);
 	if (!ext4_zero_page)
 		return -ENOMEM;
 	zero_user(ext4_zero_page, 0, PAGE_CACHE_SIZE);
+
+	for (i = 0; i < WQ_HASH_SZ; i++)
+		init_waitqueue_head(&aio_wq[i]);
 
 	err = init_ext4_system_zone();
 	if (err)

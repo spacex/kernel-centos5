@@ -153,52 +153,6 @@ xfs_errortag_clearall(xfs_mount_t *mp, int loud)
 }
 #endif /* DEBUG */
 
-static void
-xfs_fs_vcmn_err(int level, xfs_mount_t *mp, char *fmt, va_list ap)
-{
-	if (mp != NULL) {
-		char	*newfmt;
-		int	len = 16 + mp->m_fsname_len + strlen(fmt);
-
-		newfmt = kmem_alloc(len, KM_SLEEP);
-		sprintf(newfmt, "Filesystem \"%s\": %s", mp->m_fsname, fmt);
-		icmn_err(level, newfmt, ap);
-		kmem_free(newfmt);
-	} else {
-		icmn_err(level, fmt, ap);
-	}
-}
-
-void
-xfs_fs_cmn_err(int level, xfs_mount_t *mp, char *fmt, ...)
-{
-	va_list ap;
-
-	va_start(ap, fmt);
-	xfs_fs_vcmn_err(level, mp, fmt, ap);
-	va_end(ap);
-}
-
-void
-xfs_cmn_err(int panic_tag, int level, xfs_mount_t *mp, char *fmt, ...)
-{
-	va_list ap;
-
-#ifdef DEBUG
-	xfs_panic_mask |= XFS_PTAG_SHUTDOWN_CORRUPT;
-#endif
-
-	if (xfs_panic_mask && (xfs_panic_mask & panic_tag)
-	    && (level & CE_ALERT)) {
-		level &= ~CE_ALERT;
-		level |= CE_PANIC;
-		cmn_err(CE_ALERT, "XFS: Transforming an alert into a BUG.");
-	}
-	va_start(ap, fmt);
-	xfs_fs_vcmn_err(level, mp, fmt, ap);
-	va_end(ap);
-}
-
 void
 xfs_error_report(
 	char		*tag,

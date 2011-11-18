@@ -121,12 +121,13 @@ int gfs2_lm_withdraw(struct gfs2_sbd *sdp, char *fmt, ...)
 }
 
 int gfs2_lm_get_lock(struct gfs2_sbd *sdp, struct lm_lockname *name,
-		     void **lockp)
+		     struct gdlm_lock **lockp)
 {
 	int error = -EIO;
 	if (likely(!test_bit(SDF_SHUTDOWN, &sdp->sd_flags)))
 		error = sdp->sd_lockstruct.ls_ops->lm_get_lock(
-				sdp->sd_lockstruct.ls_lockspace, name, lockp);
+				sdp->sd_lockstruct.ls_lockspace, name,
+				(void **)lockp);
 	return error;
 }
 

@@ -161,6 +161,13 @@ static inline void vlan_group_set_device(struct vlan_group *vg,
 		vg->vlan_devices[vid] = dev;
 }
 
+static inline int is_vlan_dev(struct net_device *dev)
+{
+	return dev->priv_flags & IFF_802_1Q_VLAN;
+}
+
+#define vlan_dev_real_dev(netdev) (VLAN_DEV_INFO(netdev)->real_dev)
+
 #define VLAN_TX_COOKIE_MAGIC	0x564c414e	/* "VLAN" in ascii. */
 #define VLAN_TX_SKB_CB(__skb)	((struct vlan_skb_tx_cookie *)&((__skb)->cb[0]))
 #define vlan_tx_tag_present(__skb) \
@@ -173,6 +180,8 @@ static inline int __vlan_hwaccel_rx(struct sk_buff *skb,
 				    unsigned short vlan_tag, int polling)
 {
 	struct net_device_stats *stats;
+	struct net_device *vlan_dev;
+	u16 vlan_id;
 
 	if (skb_bond_should_drop(skb)) {
 		dev_kfree_skb_any(skb);
@@ -180,41 +189,48 @@ static inline int __vlan_hwaccel_rx(struct sk_buff *skb,
 	}
 
 	skb->input_dev = skb->dev;
-	skb->dev = grp->vlan_devices[vlan_tag & VLAN_VID_MASK];
-	if (skb->dev == NULL) {
-		dev_kfree_skb_any(skb);
+	vlan_id = vlan_tag & VLAN_VID_MASK;
+	vlan_dev = grp->vlan_devices[vlan_id];
 
-		/* Not NET_RX_DROP, this is not being dropped
-		 * due to congestion.
-		 */
-		return 0;
+	if (!vlan_dev) {
+		if (vlan_id) {
+			dev_kfree_skb_any(skb);
+
+			/* Not NET_RX_DROP, this is not being dropped
+			 * due to congestion.
+			 */
+			return 0;
+		}
+	} else {
+		skb->dev = vlan_dev;
+
+		stats = vlan_dev_get_stats(skb->dev);
+		stats->rx_packets++;
+		stats->rx_bytes += skb->len;
+
+		skb->priority = vlan_get_ingress_priority(skb->dev, vlan_tag);
+		switch (skb->pkt_type) {
+		case PACKET_BROADCAST:
+			break;
+
+		case PACKET_MULTICAST:
+			stats->multicast++;
+			break;
+
+		case PACKET_OTHERHOST:
+			/* Our lower layer thinks this is not local, let's make
+			 * sure.
+			 * This allows the VLAN to have a different MAC than
+			 * the underlying device, and still route correctly.
+			 */
+			if (!compare_ether_addr(eth_hdr(skb)->h_dest,
+						skb->dev->dev_addr))
+				skb->pkt_type = PACKET_HOST;
+			break;
+		};
 	}
 
 	skb->dev->last_rx = jiffies;
-
-	stats = vlan_dev_get_stats(skb->dev);
-	stats->rx_packets++;
-	stats->rx_bytes += skb->len;
-
-	skb->priority = vlan_get_ingress_priority(skb->dev, vlan_tag);
-	switch (skb->pkt_type) {
-	case PACKET_BROADCAST:
-		break;
-
-	case PACKET_MULTICAST:
-		stats->multicast++;
-		break;
-
-	case PACKET_OTHERHOST:
-		/* Our lower layer thinks this is not local, let's make sure.
-		 * This allows the VLAN to have a different MAC than the underlying
-		 * device, and still route correctly.
-		 */
-		if (!compare_ether_addr(eth_hdr(skb)->h_dest,
-				       	skb->dev->dev_addr))
-			skb->pkt_type = PACKET_HOST;
-		break;
-	};
 
 	return (polling ? netif_receive_skb(skb) : netif_rx(skb));
 }
@@ -398,6 +414,31 @@ static inline int vlan_get_tag(struct sk_buff *skb, unsigned short *tag)
 	}
 }
 
+/**
+ * vlan_get_protocol - get protocol EtherType.
+ * @skb: skbuff to query
+ *
+ * Returns the EtherType of the packet, regardless of whether it is
+ * vlan encapsulated (normal or hardware accelerated) or not.
+ */
+static inline __be16 vlan_get_protocol(const struct sk_buff *skb)
+{
+	__be16 protocol = 0;
+
+	if (vlan_tx_tag_present(skb) ||
+	     skb->protocol != cpu_to_be16(ETH_P_8021Q))
+		protocol = skb->protocol;
+	else {
+		__be16 proto, *protop;
+		protop = skb_header_pointer(skb, offsetof(struct vlan_ethhdr,
+						h_vlan_encapsulated_proto),
+						sizeof(proto), &proto);
+		if (likely(protop))
+			protocol = *protop;
+	}
+
+	return protocol;
+}
 #endif /* __KERNEL__ */
 
 /* VLAN IOCTLs are found in sockios.h */

@@ -11,13 +11,20 @@
 #ifdef CONFIG_BUG
 #define HAVE_ARCH_BUG
 #ifdef CONFIG_DEBUG_BUGVERBOSE
-#define BUG()				\
- __asm__ __volatile__(	"ud2\n"		\
-			"\t.word %c0\n"	\
-			"\t.long %c1\n"	\
-			 : : "i" (__LINE__), "i" (__FILE__))
+#define BUG()								\
+do {									\
+	__asm__ __volatile__("ud2\n"					\
+			     "\t.word %c0\n"				\
+			     "\t.long %c1\n"				\
+			      : : "i" (__LINE__), "i" (__FILE__));	\
+	unreachable();							\
+} while (0)
 #else
-#define BUG() __asm__ __volatile__("ud2\n")
+#define BUG()								\
+do {									\
+	__asm__ __volatile__("ud2\n");					\
+	unreachable();							\
+} while (0)
 #endif
 #endif
 

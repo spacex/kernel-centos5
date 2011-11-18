@@ -26,7 +26,6 @@
 #include <linux/sunrpc/clnt.h>
 #include <linux/nfs_fs.h>
 #include <linux/nfs_page.h>
-#include <linux/nfs_mount.h>
 #include <linux/smp_lock.h>
 
 #include <asm/system.h>
@@ -224,7 +223,6 @@ static int nfs_readpage_sync(struct nfs_open_context *ctx, struct inode *inode,
 	}
 	result = 0;
 
-	nfs_readpage_to_fscache(inode, page, 1);
 io_error:
 	nfs_put_lock_context(rdata->args.lock_context);
 	nfs_readdata_release(rdata);
@@ -233,7 +231,7 @@ out_unlock:
 	return result;
 }
 
-int nfs_readpage_async(struct nfs_open_context *ctx, struct inode *inode,
+static int nfs_readpage_async(struct nfs_open_context *ctx, struct inode *inode,
 		struct page *page)
 {
 	LIST_HEAD(one_request);
@@ -258,11 +256,6 @@ int nfs_readpage_async(struct nfs_open_context *ctx, struct inode *inode,
 
 static void nfs_readpage_release(struct nfs_page *req)
 {
-	struct inode *d_inode = req->wb_context->path.dentry->d_inode;
-
-	if (PageUptodate(req->wb_page))
-		nfs_readpage_to_fscache(d_inode, req->wb_page, 0);
-
 	unlock_page(req->wb_page);
 
 	dprintk("NFS: read done (%s/%Ld %d@%Ld)\n",
@@ -648,10 +641,6 @@ int nfs_readpage(struct file *file, struct page *page)
 		ctx = get_nfs_open_context((struct nfs_open_context *)
 				file->private_data);
 	if (!IS_SYNC(inode)) {
-		error = nfs_readpage_from_fscache(ctx, inode, page);
-		if (error == 0)
-			goto out;
-
 		error = nfs_readpage_async(ctx, inode, page);
 		goto out;
 	}
@@ -682,7 +671,6 @@ readpage_async_filler(void *data, struct page *page)
 	unsigned int len;
 
 	nfs_wb_page(inode, page);
-
 	len = nfs_page_length(inode, page);
 	if (len == 0)
 		return nfs_return_empty_page(page);
@@ -722,17 +710,6 @@ int nfs_readpages(struct file *filp, struct address_space *mapping,
 	} else
 		desc.ctx = get_nfs_open_context((struct nfs_open_context *)
 				filp->private_data);
-
-	/* attempt to read as many of the pages as possible from the cache
-	 * - this returns -ENOBUFS immediately if the cookie is negative
-	 */
-	ret = nfs_readpages_from_fscache(desc.ctx, inode, mapping,
-					 pages, &nr_pages);
-	if (ret == 0) {
-		put_nfs_open_context(desc.ctx);
-		return ret; /* all read */
-	}
-
 	ret = read_cache_pages(mapping, pages, readpage_async_filler, &desc);
 	if (!list_empty(&head)) {
 		int err = nfs_pagein_list(&head, server->rpages);

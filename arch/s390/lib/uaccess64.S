@@ -98,9 +98,9 @@ __copy_to_user_asm:
         .globl __copy_in_user_asm
 	# %r2 = from, %r3 = n, %r4 = to
 __copy_in_user_asm:
+	sacf	256
 	aghi	%r3,-1
 	jo	6f
-	sacf	256
 	bras	%r1,4f
 0:	aghi	%r3,257
 1:	mvc	0(1,%r4),0(%r2)
@@ -109,6 +109,7 @@ __copy_in_user_asm:
 	aghi	%r3,-1
 	jnz	1b
 2:	lgr	%r2,%r3
+	sacf	0
 	br	%r14
 3:	mvc	0(256,%r4),0(%r2)
 	la	%r2,256(%r2)
@@ -116,8 +117,8 @@ __copy_in_user_asm:
 4:	aghi	%r3,-256
 	jnm	3b
 5:	ex	%r3,4(%r1)
-	sacf	0
 6:	slgr	%r2,%r2
+	sacf	0
 	br	14
         .section __ex_table,"a"
 	.quad	1b,2b

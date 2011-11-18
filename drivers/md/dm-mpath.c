@@ -102,8 +102,6 @@ struct multipath {
 	mempool_t *mpio_pool;
 
 	struct mutex work_mutex;
-
-	unsigned suspended;	/* Don't create new I/O internally when set. */
 };
 
 /*
@@ -564,6 +562,12 @@ static int parse_path_selector(struct arg_set *as, struct priority_group *pg,
 		return -EINVAL;
 	}
 
+	if (ps_argc > as->argc) {
+		dm_put_path_selector(pst);
+		ti->error = "not enough arguments for path selector";
+		return -EINVAL;
+	}
+
 	r = pst->create(&pg->ps, ps_argc, as->argv);
 	if (r) {
 		dm_put_path_selector(pst);
@@ -735,6 +739,11 @@ static int parse_hw_handler(struct arg_set *as, struct multipath *m,
 
 	if (!hw_argc)
 		return 0;
+
+	if (hw_argc > as->argc) {
+		ti->error = "not enough arguments for hardware handler";
+		return -EINVAL;
+	}
 
 	m->hw_handler_name = kstrdup(shift(as), GFP_KERNEL);
 	request_module("scsi_dh_%s", m->hw_handler_name);
@@ -1405,7 +1414,6 @@ static void multipath_postsuspend(struct dm_target *ti)
 	struct multipath *m = ti->private;
 
 	mutex_lock(&m->work_mutex);
-	m->suspended = 1;
 	flush_multipath_work(m);
 	mutex_unlock(&m->work_mutex);
 }
@@ -1417,10 +1425,6 @@ static void multipath_resume(struct dm_target *ti)
 {
 	struct multipath *m = (struct multipath *) ti->private;
 	unsigned long flags;
-
-	mutex_lock(&m->work_mutex);
-	m->suspended = 0;
-	mutex_unlock(&m->work_mutex);
 
 	spin_lock_irqsave(&m->lock, flags);
 	m->queue_if_no_path = m->saved_queue_if_no_path;
@@ -1566,7 +1570,7 @@ static int multipath_message(struct dm_target *ti, unsigned argc, char **argv)
 
 	mutex_lock(&m->work_mutex);
 
-	if (m->suspended) {
+	if (dm_suspended(ti)) {
 		r = -EBUSY;
 		goto out;
 	}

@@ -76,6 +76,9 @@ struct cpuinfo_x86 {
 	__u8	booted_cores;	/* number of cores as seen by OS */
 	__u8	phys_proc_id;	/* Physical Processor id. */
 	__u8	cpu_core_id;	/* Core id. */
+#ifndef __GENKSYMS__
+	__u8	compute_unit_id;	/* Compute unit id */
+#endif /* __GENKSYMS__ */
 #endif
 } ____cacheline_aligned;
 

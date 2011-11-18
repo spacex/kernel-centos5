@@ -1097,6 +1097,7 @@ static ssize_t bonding_store_primary(struct class_device *cd, const char *buf, s
 	struct bonding *bond = to_bond(cd);
 
 	rtnl_lock();
+	block_netpoll_tx();
 	read_lock(&bond->lock);
 	write_lock_bh(&bond->curr_slave_lock);
 
@@ -1258,6 +1259,7 @@ static ssize_t bonding_store_active_slave(struct class_device *cd, const char *b
 	struct bonding *bond = to_bond(cd);
 
 	rtnl_lock();
+	block_netpoll_tx();
 	read_lock(&bond->lock);
 	write_lock_bh(&bond->curr_slave_lock);
 

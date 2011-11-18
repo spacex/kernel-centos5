@@ -368,7 +368,6 @@ static void trans_go_xmote_th(struct gfs2_glock *gl)
 
 	if (gl->gl_state != LM_ST_UNLOCKED &&
 	    test_bit(SDF_JOURNAL_LIVE, &sdp->sd_flags)) {
-		flush_workqueue(gfs2_delete_workqueue);
 		gfs2_meta_syncfs(sdp);
 		gfs2_log_shutdown(sdp);
 	}
@@ -427,6 +426,10 @@ static int trans_go_demote_ok(const struct gfs2_glock *gl)
 static void iopen_go_callback(struct gfs2_glock *gl)
 {
 	struct gfs2_inode *ip = (struct gfs2_inode *)gl->gl_object;
+	struct gfs2_sbd *sdp = gl->gl_sbd;
+
+	if (sdp->sd_vfs->s_flags & MS_RDONLY)
+		return;
 
 	if (gl->gl_demote_state == LM_ST_UNLOCKED &&
 	    gl->gl_state == LM_ST_SHARED &&
@@ -461,7 +464,6 @@ const struct gfs2_glock_operations gfs2_inode_glops = {
 	.go_lock = inode_go_lock,
 	.go_dump = inode_go_dump,
 	.go_type = LM_TYPE_INODE,
-	.go_min_hold_time = HZ / 5,
 };
 
 const struct gfs2_glock_operations gfs2_rgrp_glops = {
@@ -472,7 +474,6 @@ const struct gfs2_glock_operations gfs2_rgrp_glops = {
 	.go_unlock = rgrp_go_unlock,
 	.go_dump = rgrp_go_dump,
 	.go_type = LM_TYPE_RGRP,
-	.go_min_hold_time = HZ / 5,
 };
 
 const struct gfs2_glock_operations gfs2_trans_glops = {

@@ -726,15 +726,28 @@ static int __on_net_schedule_list(netif_t *netif)
 	return netif->list.next != NULL;
 }
 
+/* Must be called with net_schedule_list_lock held. */
 static void remove_from_net_schedule_list(netif_t *netif)
 {
-	spin_lock_irq(&net_schedule_list_lock);
 	if (likely(__on_net_schedule_list(netif))) {
 		list_del(&netif->list);
 		netif->list.next = NULL;
 		netif_put(netif);
 	}
+}
+
+static netif_t *poll_net_schedule_list(void)
+{
+	netif_t *netif = NULL;
+
+	spin_lock_irq(&net_schedule_list_lock);
+	if (!list_empty(&net_schedule_list)) {
+		netif = list_first_entry(&net_schedule_list, netif_t, list);
+		netif_get(netif);
+		remove_from_net_schedule_list(netif);
+	}
 	spin_unlock_irq(&net_schedule_list_lock);
+	return netif;
 }
 
 static void add_to_net_schedule_list_tail(netif_t *netif)
@@ -777,7 +790,9 @@ void netif_schedule_work(netif_t *netif)
 
 void netif_deschedule_work(netif_t *netif)
 {
+	spin_lock_irq(&net_schedule_list_lock);
 	remove_from_net_schedule_list(netif);
+	spin_unlock_irq(&net_schedule_list_lock);
 }
 
 
@@ -1084,7 +1099,6 @@ static int netbk_set_skb_gso(struct sk_buff *skb, struct netif_extra_info *gso)
 /* Called after netfront has transmitted */
 static void net_tx_action(unsigned long unused)
 {
-	struct list_head *ent;
 	struct sk_buff *skb;
 	netif_t *netif;
 	netif_tx_request_t txreq;
@@ -1103,10 +1117,9 @@ static void net_tx_action(unsigned long unused)
 	while (((NR_PENDING_REQS + MAX_SKB_FRAGS) < MAX_PENDING_REQS) &&
 		!list_empty(&net_schedule_list)) {
 		/* Get a netif from the list with work to do. */
-		ent = net_schedule_list.next;
-		netif = list_entry(ent, netif_t, list);
-		netif_get(netif);
-		remove_from_net_schedule_list(netif);
+		netif = poll_net_schedule_list();
+		if (!netif)
+			continue;
 
 		RING_FINAL_CHECK_FOR_REQUESTS(&netif->tx, work_to_do);
 		if (!work_to_do) {

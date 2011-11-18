@@ -43,6 +43,8 @@ struct inode;
 #define SYS_GETSOCKOPT	15		/* sys_getsockopt(2)		*/
 #define SYS_SENDMSG	16		/* sys_sendmsg(2)		*/
 #define SYS_RECVMSG	17		/* sys_recvmsg(2)		*/
+#define SYS_ACCEPT4	18		/* sys_accept4(2)   *unused*	*/
+#define SYS_RECVMMSG	19		/* sys_recvmmsg(2)		*/
 
 typedef enum {
 	SS_FREE = 0,			/* not allocated		*/

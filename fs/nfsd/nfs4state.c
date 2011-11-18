@@ -657,7 +657,8 @@ parse_ipv4(unsigned int addr_len, char *addr_val, unsigned int *cbaddrp, unsigne
 }
 
 static void
-gen_callback(struct nfs4_client *clp, struct nfsd4_setclientid *se)
+gen_callback(struct nfs4_client *clp, struct nfsd4_setclientid *se, 
+							struct svc_rqst *rqstp)
 {
 	struct nfs4_callback *cb = &clp->cl_callback;
 
@@ -670,6 +671,7 @@ gen_callback(struct nfs4_client *clp, struct nfsd4_setclientid *se)
 		goto out_err;
 	cb->cb_prog = se->se_callback_prog;
 	cb->cb_ident = se->se_callback_ident;
+	cb->cb_saddr = rqstp->rq_daddr; 
 	return;
 out_err:
 	dprintk(KERN_INFO "NFSD: this client (clientid %08x/%08x) "
@@ -774,7 +776,7 @@ nfsd4_setclientid(struct svc_rqst *rqstp, struct nfsd4_setclientid *setclid)
 		copy_cred(&new->cl_cred,&rqstp->rq_cred);
 		gen_clid(new);
 		gen_confirm(new);
-		gen_callback(new, setclid);
+		gen_callback(new, setclid, rqstp);
 		add_to_unconfirmed(new, strhashval);
 	} else if (cmp_verf(&conf->cl_verifier, &clverifier)) {
 		/*
@@ -806,7 +808,7 @@ nfsd4_setclientid(struct svc_rqst *rqstp, struct nfsd4_setclientid *setclid)
 		copy_cred(&new->cl_cred,&rqstp->rq_cred);
 		copy_clid(new, conf);
 		gen_confirm(new);
-		gen_callback(new, setclid);
+		gen_callback(new, setclid, rqstp);
 		add_to_unconfirmed(new,strhashval);
 	} else if (!unconf) {
 		/*
@@ -825,7 +827,7 @@ nfsd4_setclientid(struct svc_rqst *rqstp, struct nfsd4_setclientid *setclid)
 		copy_cred(&new->cl_cred,&rqstp->rq_cred);
 		gen_clid(new);
 		gen_confirm(new);
-		gen_callback(new, setclid);
+		gen_callback(new, setclid, rqstp);
 		add_to_unconfirmed(new, strhashval);
 	} else if (!cmp_verf(&conf->cl_confirm, &unconf->cl_confirm)) {
 		/*	
@@ -852,7 +854,7 @@ nfsd4_setclientid(struct svc_rqst *rqstp, struct nfsd4_setclientid *setclid)
 		copy_cred(&new->cl_cred,&rqstp->rq_cred);
 		gen_clid(new);
 		gen_confirm(new);
-		gen_callback(new, setclid);
+		gen_callback(new, setclid, rqstp);
 		add_to_unconfirmed(new, strhashval);
 	} else {
 		/* No cases hit !!! */
@@ -2201,8 +2203,10 @@ nfs4_preprocess_seqid_op(struct svc_fh *current_fh, u32 seqid, stateid_t *statei
 		goto check_replay;
 	}
 
+	*stpp = stp;
+	*sopp = sop = stp->st_stateowner;
+
 	if (lock) {
-		struct nfs4_stateowner *sop = stp->st_stateowner;
 		clientid_t *lockclid = &lock->v.new.clientid;
 		struct nfs4_client *clp = sop->so_client;
 		int lkflg = 0;
@@ -2232,9 +2236,6 @@ nfs4_preprocess_seqid_op(struct svc_fh *current_fh, u32 seqid, stateid_t *statei
 		printk("NFSD: preprocess_seqid_op: fh-stateid mismatch!\n");
 		return nfserr_bad_stateid;
 	}
-
-	*stpp = stp;
-	*sopp = sop = stp->st_stateowner;
 
 	/*
 	*  We now validate the seqid and stateid generation numbers.

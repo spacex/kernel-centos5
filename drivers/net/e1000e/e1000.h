@@ -1,7 +1,7 @@
 /*******************************************************************************
 
   Intel PRO/1000 Linux driver
-  Copyright(c) 1999 - 2010 Intel Corporation.
+  Copyright(c) 1999 - 2011 Intel Corporation.
 
   This program is free software; you can redistribute it and/or modify it
   under the terms and conditions of the GNU General Public License,
@@ -40,30 +40,22 @@
 #include <linux/delay.h>
 #include <linux/pcieport_if.h>
 #include <linux/ethtool.h>
+#include <linux/crc32.h>
 
 #include "hw.h"
 
 struct e1000_info;
 
-#define e_printk(level, adapter, format, arg...) \
-	printk(level "%s: " format, \
-	       adapter->netdev->name, ## arg)
-
-#ifdef DEBUG
 #define e_dbg(format, arg...) \
-	e_printk(KERN_DEBUG , hw->adapter, format, ## arg)
-#else
-#define e_dbg(format, arg...) do { (void)(hw); } while (0)
-#endif
-
+	netdev_dbg(hw->adapter->netdev, format, ## arg)
 #define e_err(format, arg...) \
-	e_printk(KERN_ERR, adapter, format, ## arg)
+	netdev_err(adapter->netdev, format, ## arg)
 #define e_info(format, arg...) \
-	e_printk(KERN_INFO, adapter, format, ## arg)
+	netdev_info(adapter->netdev, format, ## arg)
 #define e_warn(format, arg...) \
-	e_printk(KERN_WARNING, adapter, format, ## arg)
+	netdev_warn(adapter->netdev, format, ## arg)
 #define e_notice(format, arg...) \
-	e_printk(KERN_NOTICE, adapter, format, ## arg)
+	netdev_notice(adapter->netdev, format, ## arg)
 
 
 /* Interrupt modes, as used by the IntMode parameter */
@@ -160,6 +152,33 @@ struct e1000_info;
 #define HV_M_STATUS_SPEED_MASK            0x0300
 #define HV_M_STATUS_SPEED_1000            0x0200
 #define HV_M_STATUS_LINK_UP               0x0040
+
+#define DEFAULT_RDTR			0
+#define DEFAULT_RADV			8
+#define BURST_RDTR			0x20
+#define BURST_RADV			0x20
+
+/*
+ * in the case of WTHRESH, it appears at least the 82571/2 hardware
+ * writes back 4 descriptors when WTHRESH=5, and 3 descriptors when
+ * WTHRESH=4, and since we want 64 bytes at a time written back, set
+ * it to 5
+ */
+#define E1000_TXDCTL_DMA_BURST_ENABLE                          \
+	(E1000_TXDCTL_GRAN | /* set descriptor granularity */  \
+	 E1000_TXDCTL_COUNT_DESC |                             \
+	 (5 << 16) | /* wthresh must be +1 more than desired */\
+	 (1 << 8)  | /* hthresh */                             \
+	 0x1f)       /* pthresh */
+
+#define E1000_RXDCTL_DMA_BURST_ENABLE                          \
+	(0x01000000 | /* set descriptor granularity */         \
+	 (4 << 16)  | /* set writeback threshold    */         \
+	 (4 << 8)   | /* set prefetch threshold     */         \
+	 0x20)        /* set hthresh                */
+
+#define E1000_TIDV_FPD (1 << 31)
+#define E1000_RDTR_FPD (1 << 31)
 
 enum e1000_boards {
 	board_82571,
@@ -376,6 +395,7 @@ struct e1000_adapter {
 	struct work_struct update_phy_task;
 	struct work_struct led_blink_task;
 	struct work_struct print_hang_task;
+	int phy_hang_count;
 };
 
 struct e1000_info {
@@ -430,6 +450,9 @@ struct e1000_info {
 #define FLAG2_IS_DISCARDING               (1 << 2)
 #define FLAG2_DISABLE_ASPM_L1             (1 << 3)
 #define FLAG2_HAS_PHY_STATS               (1 << 4)
+#define FLAG2_DMA_BURST                   (1 << 6)
+#define FLAG2_DISABLE_AIM                 (1 << 8)
+#define FLAG2_CHECK_PHY_HANG              (1 << 9)
 
 #define E1000_RX_DESC_PS(R, i)	    \
 	(&(((union e1000_rx_desc_packet_split *)((R).desc))[i]))
@@ -456,6 +479,7 @@ extern const char e1000e_driver_version[];
 
 extern void e1000e_check_options(struct e1000_adapter *adapter);
 extern void e1000e_set_ethtool_ops(struct net_device *netdev);
+extern void e1000e_led_blink_task(struct e1000_adapter *adapter);
 
 extern int e1000e_up(struct e1000_adapter *adapter);
 extern void e1000e_down(struct e1000_adapter *adapter);
@@ -469,6 +493,8 @@ extern void e1000e_free_tx_resources(struct e1000_adapter *adapter);
 extern void e1000e_update_stats(struct e1000_adapter *adapter);
 extern void e1000e_set_interrupt_capability(struct e1000_adapter *adapter);
 extern void e1000e_reset_interrupt_capability(struct e1000_adapter *adapter);
+extern void e1000e_get_hw_control(struct e1000_adapter *adapter);
+extern void e1000e_release_hw_control(struct e1000_adapter *adapter);
 extern void e1000e_disable_aspm(struct pci_dev *pdev, u16 state);
 
 extern unsigned int copybreak;
@@ -487,7 +513,8 @@ extern struct e1000_info e1000_pch_info;
 extern struct e1000_info e1000_pch2_info;
 extern struct e1000_info e1000_es2_info;
 
-extern s32 e1000e_read_pba_num(struct e1000_hw *hw, u32 *pba_num);
+extern s32 e1000_read_pba_string_generic(struct e1000_hw *hw, u8 *pba_num,
+					 u32 pba_num_size);
 
 extern s32  e1000e_commit_phy(struct e1000_hw *hw);
 
@@ -607,6 +634,7 @@ extern s32 e1000_get_phy_info_ife(struct e1000_hw *hw);
 extern s32 e1000_check_polarity_ife(struct e1000_hw *hw);
 extern s32 e1000_phy_force_speed_duplex_ife(struct e1000_hw *hw);
 extern s32 e1000_check_polarity_igp(struct e1000_hw *hw);
+extern bool e1000_check_phy_82574(struct e1000_hw *hw);
 
 static inline s32 e1000_phy_hw_reset(struct e1000_hw *hw)
 {

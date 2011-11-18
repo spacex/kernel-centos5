@@ -661,15 +661,19 @@ int sctp_inetaddr_event(struct notifier_block *this, unsigned long ev,
 static int sctp_ctl_sock_init(void)
 {
 	int err;
-	sa_family_t family;
+	sa_family_t family = PF_INET;
 
 	if (sctp_get_pf_specific(PF_INET6))
 		family = PF_INET6;
-	else
-		family = PF_INET;
 
 	err = sock_create_kern(family, SOCK_SEQPACKET, IPPROTO_SCTP,
 			       &sctp_ctl_socket);
+
+	/* If IPv6 socket could not be created, try the IPv4 socket */
+	if (err < 0 && family == PF_INET6)
+		err = sock_create_kern(AF_INET, SOCK_SEQPACKET,
+				       IPPROTO_SCTP, &sctp_ctl_socket);
+
 	if (err < 0) {
 		printk(KERN_ERR
 		       "SCTP: Failed to create the SCTP control socket.\n");
@@ -985,6 +989,58 @@ static void cleanup_sctp_mibs(void)
 	free_percpu(sctp_statistics[1]);
 }
 
+static void sctp_v4_pf_init(void)
+{
+	/* Initialize the SCTP specific PF functions. */
+	sctp_register_pf(&sctp_pf_inet, PF_INET);
+	sctp_register_af(&sctp_ipv4_specific);
+}
+
+static void sctp_v4_pf_exit(void)
+{
+	list_del(&sctp_ipv4_specific.list);
+}
+
+static int sctp_v4_protosw_init(void)
+{
+	int rc;
+
+	rc = proto_register(&sctp_prot, 1);
+	if (rc)
+		return rc;
+
+	/* Register SCTP(UDP and TCP style) with socket layer.  */
+	inet_register_protosw(&sctp_seqpacket_protosw);
+	inet_register_protosw(&sctp_stream_protosw);
+
+	return 0;
+}
+
+static void sctp_v4_protosw_exit(void)
+{
+	inet_unregister_protosw(&sctp_stream_protosw);
+	inet_unregister_protosw(&sctp_seqpacket_protosw);
+	proto_unregister(&sctp_prot);
+}
+
+static int sctp_v4_add_protocol(void)
+{
+	/* Register notifier for inet address additions/deletions. */
+	register_inetaddr_notifier(&sctp_inetaddr_notifier);
+
+	/* Register SCTP with inet layer.  */
+	if (inet_add_protocol(&sctp_protocol, IPPROTO_SCTP) < 0)
+		return -EAGAIN;
+
+	return 0;
+}
+
+static void sctp_v4_del_protocol(void)
+{
+	inet_del_protocol(&sctp_protocol, IPPROTO_SCTP);
+	unregister_inetaddr_notifier(&sctp_inetaddr_notifier);
+}
+
 /* Initialize the universe into something sensible.  */
 SCTP_STATIC __init int sctp_init(void)
 {
@@ -1028,8 +1084,6 @@ SCTP_STATIC __init int sctp_init(void)
 	/* Initialize object count debugging.  */
 	sctp_dbg_objcnt_init();
 
-	/* Initialize the SCTP specific PF functions. */
-	sctp_register_pf(&sctp_pf_inet, PF_INET);
 	/*
 	 * 14. Suggested SCTP Protocol Parameter Values
 	 */
@@ -1183,19 +1237,21 @@ SCTP_STATIC __init int sctp_init(void)
 	sctp_sysctl_register();
 
 	INIT_LIST_HEAD(&sctp_address_families);
-	sctp_register_af(&sctp_ipv4_specific);
+	sctp_v4_pf_init();
+	sctp_v6_pf_init();
 
-	status = proto_register(&sctp_prot, 1);
+	/* Initialize the local address list. */
+	INIT_LIST_HEAD(&sctp_local_addr_list);
+	spin_lock_init(&sctp_local_addr_lock);
+	sctp_get_local_addr_list();
+
+	status = sctp_v4_protosw_init();
 	if (status)
-		goto err_proto_register;
+		goto err_protosw_init;
 
-	/* Register SCTP(UDP and TCP style) with socket layer.  */
-	inet_register_protosw(&sctp_seqpacket_protosw);
-	inet_register_protosw(&sctp_stream_protosw);
-
-	status = sctp_v6_init();
+	status = sctp_v6_protosw_init();
 	if (status)
-		goto err_v6_init;
+		goto err_v6_protosw_init;
 
 	/* Initialize the control inode/socket for handling OOTB packets.  */
 	if ((status = sctp_ctl_sock_init())) {
@@ -1204,19 +1260,10 @@ SCTP_STATIC __init int sctp_init(void)
 		goto err_ctl_sock_init;
 	}
 
-	/* Initialize the local address list. */
-	INIT_LIST_HEAD(&sctp_local_addr_list);
-	spin_lock_init(&sctp_local_addr_lock);
+	status = sctp_v4_add_protocol();
+	if (status)
+		goto err_add_protocol; 
 
-	/* Register notifier for inet address additions/deletions. */
-	register_inetaddr_notifier(&sctp_inetaddr_notifier);
-
-	/* Register SCTP with inet layer.  */
-	if (inet_add_protocol(&sctp_protocol, IPPROTO_SCTP) < 0) {
-		status = -EAGAIN;
-		goto err_add_protocol;
-	}
- 
 	/* Register SCTP with inet6 layer.  */
 	status = sctp_v6_add_protocol();
 	if (status)
@@ -1230,18 +1277,18 @@ SCTP_STATIC __init int sctp_init(void)
 out:
 	return status;
 err_v6_add_protocol:
-	inet_del_protocol(&sctp_protocol, IPPROTO_SCTP);
-	unregister_inetaddr_notifier(&sctp_inetaddr_notifier);
+	sctp_v6_del_protocol();
 err_add_protocol:
-	sctp_free_local_addr_list();
+	sctp_v4_del_protocol();
 	sock_release(sctp_ctl_socket);
 err_ctl_sock_init:
-	sctp_v6_exit();
-err_v6_init:
-	inet_unregister_protosw(&sctp_stream_protosw);
-	inet_unregister_protosw(&sctp_seqpacket_protosw);
-	proto_unregister(&sctp_prot);
-err_proto_register:
+	sctp_v6_protosw_exit();
+err_v6_protosw_init:
+	sctp_v4_protosw_exit();
+err_protosw_init:
+	sctp_free_local_addr_list();
+	sctp_v4_pf_exit();
+	sctp_v6_pf_exit();
 	sctp_sysctl_unregister();
 	list_del(&sctp_ipv4_specific.list);
 	free_pages((unsigned long)sctp_port_hashtable,
@@ -1274,20 +1321,22 @@ SCTP_STATIC __exit void sctp_exit(void)
 
 	/* Unregister with inet6/inet layers. */
 	sctp_v6_del_protocol();
-	inet_del_protocol(&sctp_protocol, IPPROTO_SCTP);
 
-	/* Free the local address list.  */
-	sctp_free_local_addr_list();
+	sctp_v4_del_protocol();
 
 	/* Free the control endpoint.  */
 	sock_release(sctp_ctl_socket);
 
-	/* Cleanup v6 initializations. */
-	sctp_v6_exit();
+	/* Free protosw registrations */
+	sctp_v6_protosw_exit();
+	sctp_v4_protosw_exit();
+
+	/* Free the local address list.  */
+	sctp_free_local_addr_list();
 
 	/* Unregister with socket layer. */
-	inet_unregister_protosw(&sctp_stream_protosw);
-	inet_unregister_protosw(&sctp_seqpacket_protosw);
+	sctp_v6_pf_exit();
+	sctp_v4_pf_exit();
 
 	/* Unregister notifier for inet address additions/deletions. */
 	unregister_inetaddr_notifier(&sctp_inetaddr_notifier);
@@ -1309,8 +1358,6 @@ SCTP_STATIC __exit void sctp_exit(void)
 
 	kmem_cache_destroy(sctp_chunk_cachep);
 	kmem_cache_destroy(sctp_bucket_cachep);
-
-	proto_unregister(&sctp_prot);
 }
 
 module_init(sctp_init);

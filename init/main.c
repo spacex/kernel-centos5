@@ -120,6 +120,7 @@ extern void softirq_init(void);
 
 /* Untouched command line (eg. for /proc) saved by arch-specific code. */
 char saved_command_line[COMMAND_LINE_SIZE];
+EXPORT_SYMBOL_GPL(saved_command_line);
 
 static char *execute_command;
 static char *ramdisk_execute_command;

@@ -43,6 +43,7 @@ struct bug_entry *find_bug(unsigned long bugaddr);
 		"\t"PPC_LONG"	1b,%0,%1,%2\n"				 \
 		".previous"						 \
 		: : "i" (__LINE__), "i" (__FILE__), "i" (__FUNCTION__)); \
+	unreachable();							 \
 } while (0)
 
 #define BUG_ON(x) do {						\

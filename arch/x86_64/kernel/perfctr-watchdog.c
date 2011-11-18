@@ -364,8 +364,8 @@ static const struct wd_ops k7_wd_ops = {
 	.setup = setup_k7_watchdog,
 	.rearm = single_msr_rearm,
 	.stop = single_msr_stop_watchdog,
-	.perfctr = MSR_K7_PERFCTR0,
-	.evntsel = MSR_K7_EVNTSEL0,
+	.perfctr = MSR_K7_PERFCTR1,
+	.evntsel = MSR_K7_EVNTSEL1,
 	.checkbit = 1ULL<<47,
 };
 
@@ -429,8 +429,8 @@ static const struct wd_ops p6_wd_ops = {
 	.setup = setup_p6_watchdog,
 	.rearm = p6_rearm,
 	.stop = single_msr_stop_watchdog,
-	.perfctr = MSR_P6_PERFCTR0,
-	.evntsel = MSR_P6_EVNTSEL0,
+	.perfctr = MSR_P6_PERFCTR1,
+	.evntsel = MSR_P6_EVNTSEL1,
 	.checkbit = 1ULL<<39,
 };
 
@@ -608,8 +608,8 @@ static const struct wd_ops p4_wd_ops = {
 	.rearm = p4_rearm,
 	.stop = stop_p4_watchdog,
 	/* RED-PEN this is wrong for the other sibling */
-	.perfctr = MSR_P4_BPU_PERFCTR0,
-	.evntsel = MSR_P4_BSU_ESCR0,
+	.perfctr = MSR_P4_BPU_PERFCTR1,
+	.evntsel = MSR_P4_BSU_ESCR1,
 	.checkbit = 1ULL<<39,
 };
 
@@ -680,11 +680,10 @@ static void probe_nmi_watchdog(void)
 {
 	switch (boot_cpu_data.x86_vendor) {
 	case X86_VENDOR_AMD:
-		if (boot_cpu_data.x86 != 6 && boot_cpu_data.x86 != 15 &&
-		    boot_cpu_data.x86 != 16)
-			return;
-		wd_ops = &k7_wd_ops;
-		break;
+		if (boot_cpu_data.x86 == 6 ||
+		    (boot_cpu_data.x86 >= 15 && boot_cpu_data.x86 <= 21))
+			wd_ops = &k7_wd_ops;
+		return;
 	case X86_VENDOR_INTEL:
 		/* Work around where perfctr1 doesn't have a working enable
 		 * bit as described in the following errata:

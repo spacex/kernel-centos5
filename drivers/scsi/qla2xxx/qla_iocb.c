@@ -1,6 +1,6 @@
 /*
  * QLogic Fibre Channel HBA Driver
- * Copyright (c)  2003-2005 QLogic Corporation
+ * Copyright (c)  2003-2011 QLogic Corporation
  *
  * See LICENSE.qla2xxx for copyright and licensing details.
  */
@@ -305,6 +305,7 @@ qla2x00_start_scsi(srb_t *sp)
 	uint16_t	req_cnt;
 	uint16_t	tot_dsds;
 	struct device_reg_2xxx __iomem *reg;
+	char		tag[2];
 
 	/* Setup device pointers. */
 	ret = 0;
@@ -388,7 +389,22 @@ qla2x00_start_scsi(srb_t *sp)
 	cmd_pkt->lun = cpu_to_le16(sp->cmd->device->lun);
 
 	/* Update tagged queuing modifier */
-	cmd_pkt->control_flags = __constant_cpu_to_le16(CF_SIMPLE_TAG);
+	if (scsi_populate_tag_msg(cmd, tag)) {
+		switch (tag[0]) {
+		case HEAD_OF_QUEUE_TAG:
+			cmd_pkt->control_flags =
+			    __constant_cpu_to_le16(CF_HEAD_TAG);
+			break;
+		case ORDERED_QUEUE_TAG:
+			cmd_pkt->control_flags =
+			    __constant_cpu_to_le16(CF_ORDERED_TAG);
+			break;
+		default:
+			cmd_pkt->control_flags =
+			    __constant_cpu_to_le16(CF_SIMPLE_TAG);
+			break;
+		}
+	}
 
 	/* Load SCSI command packet. */
 	memcpy(cmd_pkt->scsi_cdb, cmd->cmnd, cmd->cmd_len);
@@ -756,6 +772,7 @@ qla24xx_start_scsi(srb_t *sp)
 	uint16_t	req_cnt;
 	uint16_t	tot_dsds;
 	struct device_reg_24xx __iomem *reg;
+	char		tag[2];
 
 	/* Setup device pointers. */
 	ret = 0;
@@ -844,6 +861,18 @@ qla24xx_start_scsi(srb_t *sp)
 
 	int_to_scsilun(sp->cmd->device->lun, &cmd_pkt->lun);
 	host_to_fcp_swap((uint8_t *)&cmd_pkt->lun, sizeof(cmd_pkt->lun));
+
+	/* Update tagged queuing modifier -- default is TSK_SIMPLE (0). */
+	if (scsi_populate_tag_msg(cmd, tag)) {
+		switch (tag[0]) {
+		case HEAD_OF_QUEUE_TAG:
+			cmd_pkt->task = TSK_HEAD_OF_QUEUE;
+			break;
+		case ORDERED_QUEUE_TAG:
+			cmd_pkt->task = TSK_ORDERED;
+			break;
+		}
+	}
 
 	/* Load SCSI command packet. */
 	memcpy(cmd_pkt->fcp_cdb, cmd->cmnd, cmd->cmd_len);
@@ -957,11 +986,11 @@ qla2xx_build_scsi_type_6_iocbs(srb_t *sp, struct cmd_type_6 *cmd_pkt,
 			dsd_seg = (uint32_t *)&cmd_pkt->fcp_data_dseg_address;
 			*dsd_seg++ = cpu_to_le32(LSD(dsd_ptr->dsd_list_dma));
 			*dsd_seg++ = cpu_to_le32(MSD(dsd_ptr->dsd_list_dma));
-			*dsd_seg++ = dsd_list_len;
+			*dsd_seg++ = cpu_to_le32(dsd_list_len);
 		} else {
 			*cur_dsd++ = cpu_to_le32(LSD(dsd_ptr->dsd_list_dma));
 			*cur_dsd++ = cpu_to_le32(MSD(dsd_ptr->dsd_list_dma));
-			*cur_dsd++ = dsd_list_len;
+			*cur_dsd++ = cpu_to_le32(dsd_list_len);
 		}
 		cur_dsd = (uint32_t *)next_dsd;
 		while (avail_dsds) {
@@ -1029,6 +1058,7 @@ qla82xx_start_scsi(srb_t *sp)
 	uint32_t *fcp_dl;
 	uint8_t additional_cdb_len;
 	struct ct6_dsd *ctx;
+	char		tag[2];
 
 	/* Setup device pointers. */
 	ret = 0;
@@ -1187,6 +1217,22 @@ sufficient_dsds:
 		else if (cmd->sc_data_direction == DMA_FROM_DEVICE)
 			ctx->fcp_cmnd->additional_cdb_len |= 2;
 
+		/*
+		 * Update tagged queuing modifier -- default is TSK_SIMPLE (0).
+		 */
+		if (scsi_populate_tag_msg(cmd, tag)) {
+			switch (tag[0]) {
+			case HEAD_OF_QUEUE_TAG:
+				ctx->fcp_cmnd->task_attribute =
+				    TSK_HEAD_OF_QUEUE;
+				break;
+			case ORDERED_QUEUE_TAG:
+				ctx->fcp_cmnd->task_attribute =
+				    TSK_ORDERED;
+				break;
+			}
+		}
+
 		memcpy(ctx->fcp_cmnd->cdb, cmd->cmnd, cmd->cmd_len);
 
 		fcp_dl = (uint32_t *)(ctx->fcp_cmnd->cdb + 16 +
@@ -1250,6 +1296,20 @@ sufficient_dsds:
 		int_to_scsilun(sp->cmd->device->lun, &cmd_pkt->lun);
 		host_to_fcp_swap((uint8_t *)&cmd_pkt->lun,
 		    sizeof(cmd_pkt->lun));
+
+		/*
+		 * Update tagged queuing modifier -- default is TSK_SIMPLE (0).
+		 */
+		if (scsi_populate_tag_msg(cmd, tag)) {
+			switch (tag[0]) {
+			case HEAD_OF_QUEUE_TAG:
+				cmd_pkt->task = TSK_HEAD_OF_QUEUE;
+				break;
+			case ORDERED_QUEUE_TAG:
+				cmd_pkt->task = TSK_ORDERED;
+				break;
+			}
+		}
 
 		/* Load SCSI command packet. */
 		memcpy(cmd_pkt->fcp_cdb, cmd->cmnd, cmd->cmd_len);

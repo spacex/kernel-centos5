@@ -142,7 +142,7 @@ static u8 speed_template_8[] = {8, 0};
 static u8 speed_template_24[] = {24, 0};
 static u8 speed_template_8_32[] = {8, 32, 0};
 static u8 speed_template_16_24_32[] = {16, 24, 32, 0};
-
+static u8 speed_template_32_48_64[] = {32, 48, 64, 0};
 /*
  * Digest speed tests
  */

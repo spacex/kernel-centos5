@@ -443,6 +443,7 @@ struct lpfc_vport {
 #define FC_VPORT_CVL_RCVD	0x400000 /* VLink failed due to CVL	 */
 #define FC_VFI_REGISTERED	0x800000 /* VFI is registered */
 #define FC_FDISC_COMPLETED	0x1000000/* FDISC completed */
+#define FC_DISC_DELAYED		0x2000000/* Delay NPort discovery */
 
 	uint32_t ct_flags;
 #define FC_CT_RFF_ID		0x1	 /* RFF_ID accepted by switch */
@@ -466,6 +467,8 @@ struct lpfc_vport {
 
 	uint32_t fc_myDID;	/* fibre channel S_ID */
 	uint32_t fc_prevDID;	/* previous fibre channel S_ID */
+	struct lpfc_name fabric_portname;
+	struct lpfc_name fabric_nodename;
 
 	int32_t stopped;   /* HBA has not been restarted since last ERATT */
 	uint8_t fc_linkspeed;	/* Link speed after last READ_LA */
@@ -490,6 +493,7 @@ struct lpfc_vport {
 #define WORKER_DISC_TMO                0x1	/* vport: Discovery timeout */
 #define WORKER_ELS_TMO                 0x2	/* vport: ELS timeout */
 #define WORKER_FDMI_TMO                0x4	/* vport: FDMI timeout */
+#define WORKER_DELAYED_DISC_TMO        0x8	/* vport: delayed discovery */
 
 #define WORKER_MBOX_TMO                0x100	/* hba: MBOX timeout */
 #define WORKER_HB_TMO                  0x200	/* hba: Heart beat timeout */
@@ -500,6 +504,7 @@ struct lpfc_vport {
 
 	struct timer_list fc_fdmitmo;
 	struct timer_list els_tmofunc;
+	struct timer_list delayed_disc_tmo;
 
 	int unreg_vpi_cmpl;
 
@@ -583,12 +588,29 @@ enum intr_type_t {
 	MSIX,
 };
 
+#define LPFC_USER_LINK_SPEED_AUTO	0	/* auto select (default)*/
+#define LPFC_USER_LINK_SPEED_1G		1	/* 1 Gigabaud */
+#define LPFC_USER_LINK_SPEED_2G		2	/* 2 Gigabaud */
+#define LPFC_USER_LINK_SPEED_4G		4	/* 4 Gigabaud */
+#define LPFC_USER_LINK_SPEED_8G		8	/* 8 Gigabaud */
+#define LPFC_USER_LINK_SPEED_10G	10	/* 10 Gigabaud */
+#define LPFC_USER_LINK_SPEED_16G	16	/* 16 Gigabaud */
+#define LPFC_USER_LINK_SPEED_MAX	LPFC_USER_LINK_SPEED_16G
+#define LPFC_USER_LINK_SPEED_BITMAP ((1 << LPFC_USER_LINK_SPEED_16G) | \
+				     (1 << LPFC_USER_LINK_SPEED_10G) | \
+				     (1 << LPFC_USER_LINK_SPEED_8G) | \
+				     (1 << LPFC_USER_LINK_SPEED_4G) | \
+				     (1 << LPFC_USER_LINK_SPEED_2G) | \
+				     (1 << LPFC_USER_LINK_SPEED_1G) | \
+				     (1 << LPFC_USER_LINK_SPEED_AUTO))
+#define LPFC_LINK_SPEED_STRING "0, 1, 2, 4, 8, 10, 16"
+
 struct lpfc_hba {
 	/* SCSI interface function jump table entries */
 	int (*lpfc_new_scsi_buf)
 		(struct lpfc_vport *, int);
 	struct lpfc_scsi_buf * (*lpfc_get_scsi_buf)
-		(struct lpfc_hba *);
+		(struct lpfc_hba *, struct lpfc_nodelist *);
 	int (*lpfc_scsi_prep_dma_buf)
 		(struct lpfc_hba *, struct lpfc_scsi_buf *);
 	void (*lpfc_scsi_unprep_dma_buf)
@@ -665,7 +687,7 @@ struct lpfc_hba {
 	uint32_t hba_flag;	/* hba generic flags */
 #define HBA_ERATT_HANDLED	0x1 /* This flag is set when eratt handled */
 #define DEFER_ERATT		0x2 /* Deferred error attention in progress */
-#define HBA_FCOE_SUPPORT	0x4 /* HBA function supports FCOE */
+#define HBA_FCOE_MODE		0x4 /* HBA function in FCoE Mode */
 #define HBA_SP_QUEUE_EVT	0x8 /* Slow-path qevt posted to worker thread*/
 #define HBA_POST_RECEIVE_BUFFER 0x10 /* Rcv buffers need to be posted */
 #define FCP_XRI_ABORT_EVENT	0x20
@@ -677,6 +699,7 @@ struct lpfc_hba {
 #define HBA_FIP_SUPPORT		0x800 /* FIP support in HBA */
 #define HBA_AER_ENABLED		0x1000 /* AER enabled with HBA */
 #define HBA_DEVLOSS_TMO         0x2000 /* HBA in devloss timeout */
+#define HBA_RRQ_ACTIVE		0x4000 /* process the rrq active list */
 	dma_addr_t slim2p_mapping;
 	uint32_t fcp_ring_in_use; /* When polling test if intr-hndlr active*/
 
@@ -723,6 +746,7 @@ struct lpfc_hba {
 	/* HBA Config Parameters */
 	uint32_t cfg_ack0;
 	uint32_t cfg_enable_npiv;
+	uint32_t cfg_enable_rrq;
 	uint32_t cfg_topology;
 	uint32_t cfg_link_speed;
 	uint32_t cfg_cr_delay;
@@ -831,6 +855,7 @@ struct lpfc_hba {
 	uint32_t total_scsi_bufs;
 	struct list_head lpfc_iocb_list;
 	uint32_t total_iocbq_bufs;
+	struct list_head active_rrq_list;
 	spinlock_t hbalock;
 
 	/* pci_mem_pools */
@@ -843,6 +868,7 @@ struct lpfc_hba {
 
 	mempool_t *mbox_mem_pool;
 	mempool_t *nlp_mem_pool;
+	mempool_t *rrq_pool;
 
 	struct fc_host_statistics link_stats;
 	enum intr_type_t intr_type;
@@ -899,6 +925,7 @@ struct lpfc_hba {
 	unsigned long skipped_hb;
 	struct timer_list hb_tmofunc;
 	uint8_t hb_outstanding;
+	struct timer_list rrq_tmr;
 	enum hba_temp_state over_temp_state;
 	/* ndlp reference management */
 	spinlock_t ndlp_lock;

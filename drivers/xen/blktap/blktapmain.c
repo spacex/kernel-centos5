@@ -51,8 +51,7 @@
 #include <linux/delay.h>
 #include <asm/tlbflush.h>
 
-#define MAX_TAP_DEV 100     /*the maximum number of tapdisk ring devices    */
-#define MAX_DEV_NAME 100    /*the max tapdisk ring device name e.g. blktap0 */
+#define MAX_TAP_DEV 256     /*the maximum number of tapdisk ring devices    */
 
 
 struct class *xen_class;

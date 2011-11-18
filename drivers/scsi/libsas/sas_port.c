@@ -47,7 +47,7 @@ static void sas_form_port(struct asd_sas_phy *phy)
 	if (port) {
 		if (memcmp(port->attached_sas_addr, phy->attached_sas_addr,
 			   SAS_ADDR_SIZE) != 0)
-			sas_deform_port(phy);
+		  sas_deform_port(phy, 0);
 		else {
 			SAS_DPRINTK("%s: phy%d belongs to port%d already(%d)!\n",
 				    __FUNCTION__, phy->id, phy->port->id,
@@ -56,7 +56,7 @@ static void sas_form_port(struct asd_sas_phy *phy)
 		}
 	}
 
-	/* find a port */
+	/* see if the phy should be part of a wide port */
 	spin_lock_irqsave(&sas_ha->phy_port_lock, flags);
 	for (i = 0; i < sas_ha->num_phys; i++) {
 		port = sas_ha->sas_port[i];
@@ -69,11 +69,22 @@ static void sas_form_port(struct asd_sas_phy *phy)
 			SAS_DPRINTK("phy%d matched wide port%d\n", phy->id,
 				    port->id);
 			break;
-		} else if (*(u64 *) port->sas_addr == 0 && port->num_phys==0) {
-			memcpy(port->sas_addr, phy->sas_addr, SAS_ADDR_SIZE);
-			break;
 		}
 		spin_unlock(&port->phy_list_lock);
+	}
+	/* The phy does not match any existing port, create a new one */
+	if (i == sas_ha->num_phys) {
+		for (i = 0; i < sas_ha->num_phys; i++) {
+			port = sas_ha->sas_port[i];
+			spin_lock(&port->phy_list_lock);
+			if (*(u64 *)port->sas_addr == 0
+				&& port->num_phys == 0) {
+				memcpy(port->sas_addr, phy->sas_addr,
+					SAS_ADDR_SIZE);
+				break;
+			}
+			spin_unlock(&port->phy_list_lock);
+		}
 	}
 
 	if (i >= sas_ha->num_phys) {
@@ -134,27 +145,30 @@ static void sas_form_port(struct asd_sas_phy *phy)
  * This is called when the physical link to the other phy has been
  * lost (on this phy), in Event thread context. We cannot delay here.
  */
-void sas_deform_port(struct asd_sas_phy *phy)
+void sas_deform_port(struct asd_sas_phy *phy, int gone)
 {
 	struct sas_ha_struct *sas_ha = phy->ha;
 	struct asd_sas_port *port = phy->port;
 	struct sas_internal *si =
 		to_sas_internal(sas_ha->core.shost->transportt);
+	struct domain_device *dev;
 	unsigned long flags;
 
 	if (!port)
 		return;		  /* done by a phy event */
 
-	if (port->port_dev)
-		port->port_dev->pathways--;
+	dev = port->port_dev;
+	if (dev)
+		dev->pathways--;
 
 	if (port->num_phys == 1) {
+		if (dev && gone)
+			sas_device_gone(dev);
 		sas_unregister_domain_devices(port);
 		sas_port_delete(port->port);
 		port->port = NULL;
 	} else
 		sas_port_delete_phy(port->port, phy->phy);
-
 
 	if (si->dft->lldd_port_deformed)
 		si->dft->lldd_port_deformed(phy);
@@ -219,7 +233,7 @@ void sas_porte_link_reset_err(void *data)
 	sas_begin_event(PORTE_LINK_RESET_ERR, &phy->ha->event_lock,
 			&phy->port_events_pending);
 
-	sas_deform_port(phy);
+	sas_deform_port(phy, 1);
 }
 
 void sas_porte_timer_event(void *data)
@@ -229,7 +243,7 @@ void sas_porte_timer_event(void *data)
 	sas_begin_event(PORTE_TIMER_EVENT, &phy->ha->event_lock,
 			&phy->port_events_pending);
 
-	sas_deform_port(phy);
+	sas_deform_port(phy, 1);
 }
 
 void sas_porte_hard_reset(void *data)
@@ -239,7 +253,7 @@ void sas_porte_hard_reset(void *data)
 	sas_begin_event(PORTE_HARD_RESET, &phy->ha->event_lock,
 			&phy->port_events_pending);
 
-	sas_deform_port(phy);
+	sas_deform_port(phy, 1);
 }
 
 /* ---------- SAS port registration ---------- */
@@ -277,6 +291,6 @@ void sas_unregister_ports(struct sas_ha_struct *sas_ha)
 
 	for (i = 0; i < sas_ha->num_phys; i++)
 		if (sas_ha->sas_phy[i]->port)
-			sas_deform_port(sas_ha->sas_phy[i]);
+			sas_deform_port(sas_ha->sas_phy[i], 0);
 
 }

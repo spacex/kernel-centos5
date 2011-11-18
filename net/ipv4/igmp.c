@@ -857,6 +857,18 @@ static void igmp_heard_query(struct in_device *in_dev, struct sk_buff *skb,
 		igmpv3_clear_delrec(in_dev);
 	} else if (len < 12) {
 		return;	/* ignore bogus packet; freed by caller */
+	} else if (IGMP_V1_SEEN(in_dev)) {
+		/* This is a v3 query with v1 queriers present */
+		max_delay = IGMP_Query_Response_Interval;
+		group = 0;
+	} else if (IGMP_V2_SEEN(in_dev)) {
+		/* this is a v3 query with v2 queriers present;
+		 * Interpretation of the max_delay code is problematic here.
+		 * A real v2 host would use ih_code directly, while v3 has a
+		 * different encoding. We use the v3 encoding as more likely
+		 * to be intended in a v3 query.
+		 */
+		max_delay = IGMPV3_MRC(ih3->code)*(HZ/IGMP_TIMER_SCALE);
 	} else { /* v3 */
 		if (!pskb_may_pull(skb, sizeof(struct igmpv3_query)))
 			return;
@@ -1140,20 +1152,18 @@ static void igmp_group_dropped(struct ip_mc_list *im)
 
 	if (!in_dev->dead) {
 		if (IGMP_V1_SEEN(in_dev))
-			goto done;
+			return;
 		if (IGMP_V2_SEEN(in_dev)) {
 			if (reporter)
 				igmp_send_report(in_dev, im, IGMP_HOST_LEAVE_MESSAGE);
-			goto done;
+			return;
 		}
 		/* IGMPv3 */
 		igmpv3_add_delrec(in_dev, im);
 
 		igmp_ifc_event(in_dev);
 	}
-done:
 #endif
-	ip_mc_clear_src(im);
 }
 
 static void igmp_group_added(struct ip_mc_list *im)
@@ -1289,6 +1299,7 @@ void ip_mc_dec_group(struct in_device *in_dev, u32 addr)
 				*ip = i->next;
 				write_unlock_bh(&in_dev->mc_list_lock);
 				igmp_group_dropped(i);
+				ip_mc_clear_src(i);
 
 				if (!in_dev->dead)
 					ip_rt_multicast_event(in_dev);
@@ -1378,7 +1389,8 @@ void ip_mc_destroy_dev(struct in_device *in_dev)
 		in_dev->mc_list = i->next;
 		write_unlock_bh(&in_dev->mc_list_lock);
 
-		igmp_group_dropped(i);
+		/* We've dropped the groups in ip_mc_down already */
+		ip_mc_clear_src(i);
 		ip_ma_put(i);
 
 		write_lock_bh(&in_dev->mc_list_lock);

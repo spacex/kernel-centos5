@@ -1,6 +1,6 @@
 /*
  * QLogic Fibre Channel HBA Driver
- * Copyright (c)  2003-2005 QLogic Corporation
+ * Copyright (c)  2003-2011 QLogic Corporation
  *
  * See LICENSE.qla2xxx for copyright and licensing details.
  */
@@ -70,6 +70,7 @@ qla2x00_initialize_adapter(scsi_qla_host_t *ha)
 	ha->flags.reset_active = 0;
 	ha->flags.pci_channel_io_perm_failure = 0;
 	ha->flags.eeh_busy = 0;
+	ha->flags.thermal_supported = 1;
 	atomic_set(&ha->loop_down_timer, LOOP_DOWN_TIME);
 	atomic_set(&ha->loop_state, LOOP_DOWN);
 	ha->device_flags = DFLG_NO_CABLE;
@@ -162,11 +163,8 @@ qla2x00_initialize_adapter(scsi_qla_host_t *ha)
 		}
 	}
 
-	if (IS_QLA24XX_TYPE(ha) || IS_QLA25XX(ha)) {
-		if (qla24xx_read_fcp_prio_cfg(ha))
-			qla_printk(KERN_ERR, ha,
-			    "Unable to read FCP priority data.\n");
-	}
+	if (IS_QLA24XX_TYPE(ha) || IS_QLA25XX(ha))
+		qla24xx_read_fcp_prio_cfg(ha);
 
 	return (rval);
 }
@@ -1493,7 +1491,7 @@ qla2x00_fw_ready(scsi_qla_host_t *ha)
 		} else {
 			/* Mailbox cmd failed. Timeout on min_wait. */
 			if (time_after_eq(jiffies, mtime) ||
-			    (IS_QLA82XX(ha) && ha->flags.fw_hung))
+			    (ha->flags.isp82xx_fw_hung))
 				break;
 		}
 
@@ -1549,6 +1547,7 @@ qla2x00_configure_hba(scsi_qla_host_t *ha)
 	    &loop_id, &al_pa, &area, &domain, &topo, &sw_cap);
 	if (rval != QLA_SUCCESS) {
 		if (LOOP_TRANSITION(ha) || atomic_read(&ha->loop_down_timer) ||
+		    IS_QLA8XXX_TYPE(ha) ||
 		    (rval == QLA_COMMAND_ERROR && loop_id == 0x7)) {
 			DEBUG2(printk("%s(%ld) Loop is in a transition state\n",
 			    __func__, ha->host_no));
@@ -2376,25 +2375,25 @@ qla2x00_reg_remote_port(scsi_qla_host_t *ha, fc_port_t *fcport)
  *
  * Return:
  * 	non-zero (if found)
- *	0 (if not found)
+ *	-1 (if not found)
  *
  * Context:
  *      Kernel context.
  */
-uint8_t
+static int
 qla24xx_get_fcp_prio(scsi_qla_host_t *ha, fc_port_t *fcport)
 {
 	int i, entries;
 	uint8_t pid_match, wwn_match;
-	uint8_t priority;
+	int priority;
 	uint32_t pid1, pid2;
 	uint64_t wwn1, wwn2;
 	struct qla_fcp_prio_entry *pri_entry;
 
 	if (!ha->fcp_prio_cfg || !ha->flags.fcp_prio_enabled)
-		return 0;
+		return -1;
 
-	priority = 0;
+	priority = -1;
 	entries = ha->fcp_prio_cfg->num_entries;
 	pri_entry = &ha->fcp_prio_cfg->entry[0];
 
@@ -2477,15 +2476,17 @@ int
 qla24xx_update_fcport_fcp_prio(scsi_qla_host_t *ha, fc_port_t *fcport)
 {
 	int ret;
-	uint8_t priority;
+	int priority;
 	uint16_t mb[5];
 
-	if (atomic_read(&fcport->state) == FCS_UNCONFIGURED ||
-	    fcport->port_type != FCT_TARGET ||
+	if (fcport->port_type != FCT_TARGET ||
 	    fcport->loop_id == FC_NO_LOOP_ID)
 		return QLA_FUNCTION_FAILED;
 
 	priority = qla24xx_get_fcp_prio(ha, fcport);
+	if (priority < 0)
+		return QLA_FUNCTION_FAILED;
+
 	ret = qla24xx_set_fcp_prio(ha, fcport->loop_id, priority, mb);
 	if (ret == QLA_SUCCESS)
 		fcport->fcp_prio = priority;
@@ -2553,12 +2554,9 @@ qla2x00_update_fcport(scsi_qla_host_t *ha, fc_port_t *fcport)
 	fcport->flags &= ~FCF_LOGIN_NEEDED;
 
 	qla2x00_iidma_fcport(ha, fcport);
-
-	atomic_set(&fcport->state, FCS_ONLINE);
-
 	qla24xx_update_fcport_fcp_prio(ha, fcport);
-
 	qla2x00_reg_remote_port(ha, fcport);
+	atomic_set(&fcport->state, FCS_ONLINE);
 }
 
 /*
@@ -3462,6 +3460,37 @@ qla2x00_loop_resync(scsi_qla_host_t *ha)
 	return (rval);
 }
 
+	/*
+	 * qla2x00_perform_loop_resync
+	 * Description: This function will set the appropriate flags and call
+	 *              qla2x00_loop_resync. If successful loop will be resynced
+	 * Arguments : scsi_qla_host_t pointer
+	 * returm    : Success or Failure
+	 */
+
+int qla2x00_perform_loop_resync(scsi_qla_host_t *ha)
+{
+	int32_t rval = 0;
+
+	if (!test_and_set_bit(LOOP_RESYNC_ACTIVE, &ha->dpc_flags)) {
+		/*Configure the flags so that resync happens properly*/
+		atomic_set(&ha->loop_down_timer, 0);
+		if (!(ha->device_flags & DFLG_NO_CABLE)) {
+			atomic_set(&ha->loop_state, LOOP_UP);
+			set_bit(LOCAL_LOOP_UPDATE, &ha->dpc_flags);
+			set_bit(REGISTER_FC4_NEEDED, &ha->dpc_flags);
+			set_bit(LOOP_RESYNC_NEEDED, &ha->dpc_flags);
+
+			rval = qla2x00_loop_resync(ha);
+		} else
+			atomic_set(&ha->loop_state, LOOP_DEAD);
+
+		clear_bit(LOOP_RESYNC_ACTIVE, &ha->dpc_flags);
+	}
+
+	return rval;
+}
+
 void
 qla2x00_update_fcports(scsi_qla_host_t *ha)
 {
@@ -3473,19 +3502,58 @@ qla2x00_update_fcports(scsi_qla_host_t *ha)
 			qla2x00_rport_del(fcport);
 }
 
+	/*
+	 * qla82xx_quiescent_state_cleanup
+	 * Description: This function will block the new I/Os
+	 *              Its not aborting any I/Os as context
+	 *              is not destroyed during quiescence
+	 * Arguments: scsi_qla_host_t
+	 * return   : void
+	 */
+
+void
+qla82xx_quiescent_state_cleanup(scsi_qla_host_t *ha)
+{
+	scsi_qla_host_t *vha, *tmp_vha;
+
+	qla_printk(KERN_INFO, ha,
+			"Performing ISP error recovery - ha= %p.\n", ha);
+
+	atomic_set(&ha->loop_down_timer, LOOP_DOWN_TIME);
+	if (atomic_read(&ha->loop_state) != LOOP_DOWN) {
+		atomic_set(&ha->loop_state, LOOP_DOWN);
+		qla2x00_mark_all_devices_lost(ha, 0);
+		list_for_each_entry_safe(vha, tmp_vha, &ha->vp_list, vp_list)
+			qla2x00_mark_all_devices_lost(vha, 0);
+	} else {
+		if (!atomic_read(&ha->loop_down_timer))
+			atomic_set(&ha->loop_down_timer,
+					LOOP_DOWN_TIME);
+	}
+	/* Wait for pending cmds to complete */
+	qla2x00_eh_wait_for_pending_commands(ha);
+}
+
 void
 qla2x00_abort_isp_cleanup(scsi_qla_host_t *ha)
 {
 
 	scsi_qla_host_t *vha, *tmp_vha;
-	ha->flags.online = 0;
+	/* For ISP82XX driver waits for completion of the commands
+	 * online flag should be set.
+	 */
+	if (!IS_QLA82XX(ha))
+		ha->flags.online = 0;
 	ha->flags.chip_reset_done = 0;
 	clear_bit(ISP_ABORT_NEEDED, &ha->dpc_flags);
 	ha->qla_stats.total_isp_aborts++;
 
 	qla_printk(KERN_INFO, ha,
 	    "Performing ISP error recovery - ha= %p.\n", ha);
-	/* For ISP82XX reset_chip is not applicable */
+	/* For ISP82XX reset_chip is just disabling an interrupts
+	 * Driver waits for the completion of the commands,
+	 * the interrupts needs to be enabled.
+	 */
 	if (!IS_QLA82XX(ha))
 		ha->isp_ops->reset_chip(ha);
 
@@ -3505,11 +3573,11 @@ qla2x00_abort_isp_cleanup(scsi_qla_host_t *ha)
 	if (!ha->flags.eeh_busy) {
 		/* Make sure for ISP 82XX IO DMA is complete */
 		if (IS_QLA82XX(ha)) {
-			DEBUG2(qla_printk(KERN_INFO, ha,
-			    "Waiting for pending commands\n"));
-			qla2x00_eh_wait_for_pending_commands(ha);
-			DEBUG2(qla_printk(KERN_INFO, ha,
-			    "Done wait for pending commands\n"));
+			qla82xx_chip_reset_cleanup(ha);
+			/* Done waiting for pending commands
+			 * reset the online flag
+			 */
+			ha->flags.online = 0;
 		}
 
 		/* Requeue all commands in outstanding command list. */

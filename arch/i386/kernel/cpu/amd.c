@@ -1,7 +1,6 @@
 #include <linux/init.h>
 #include <linux/bitops.h>
 #include <linux/mm.h>
-#include <linux/setup.h>
 #include <asm/io.h>
 #include <asm/processor.h>
 #include <asm/pci-direct.h>
@@ -28,22 +27,17 @@ __asm__(".align 4\nvide: ret");
 int force_mwait __cpuinitdata;
 
 /*
- * Fixup core topology information for AMD multi-node processors.
- * Assumption: Number of cores in each internal node is the same.
+ * Fixup core topology information for
+ * (1) AMD multi-node processors
+ *     Assumption: Number of cores in each internal node is the same.
+ * (2) AMD processors supporting compute units
  */
 #ifdef CONFIG_X86_HT
-static void __cpuinit amd_fixup_dcm(struct cpuinfo_x86 *c)
+static void __cpuinit amd_get_topology(struct cpuinfo_x86 *c)
 {
-	unsigned long long value;
-	u32 nodes, cores_per_node;
+	u32 nodes;
+	u8 node_id;
 	int cpu = smp_processor_id();
-
-	if (!cpu_has(c, X86_FEATURE_NODEID_MSR))
-		return;
-
-	/* fixup topology information only once for a core */
-	if (cpu_has(c, X86_FEATURE_AMD_DCM))
-		return;
 
 	/* RHEL5: Check for a valid AMD northbridge device, which does
 	 * not exist in virtualized environments.
@@ -65,22 +59,53 @@ static void __cpuinit amd_fixup_dcm(struct cpuinfo_x86 *c)
 	    !early_is_k8_nb(read_pci_config(0, 24, 3, 0x00)))
 		return;
 
-	rdmsrl(0xc001100c, value);
+	/* get information required for multi-node processors */
+	if (cpu_has(c, X86_FEATURE_TOPOEXT)) {
+		u32 eax, ebx, ecx, edx;
 
-	nodes = ((value >> 3) & 7) + 1;
-	if (nodes == 1)
+		cpuid(0x8000001e, &eax, &ebx, &ecx, &edx);
+		nodes = ((ecx >> 8) & 7) + 1;
+		node_id = ecx & 7;
+
+		/* get compute unit information */
+		smp_num_siblings = ((ebx >> 8) & 3) + 1;
+		c->compute_unit_id = ebx & 0xff;
+	} else if (cpu_has(c, X86_FEATURE_NODEID_MSR)) {
+		u64 value;
+
+		rdmsrl(0xc001100c, value);
+		nodes = ((value >> 3) & 7) + 1;
+		node_id = value & 7;
+	} else
 		return;
 
-	set_bit(X86_FEATURE_AMD_DCM, c->x86_capability);
-	cores_per_node = c->x86_max_cores / nodes;
+	/* fixup multi-node processor information */
+	if (nodes > 1) {
+		u32 cores_per_node;
 
-	/* store NodeID, use llc_shared_map to store sibling info */
-	cpu_llc_id[cpu] = value & 7;
+		set_bit(X86_FEATURE_AMD_DCM, c->x86_capability);
+		cores_per_node = c->x86_max_cores / nodes;
 
-	/* fixup core id to be in range from 0 to (cores_per_node - 1) */
-	c->cpu_core_id = c->cpu_core_id % cores_per_node;
+		/* store NodeID, use llc_shared_map to store sibling info */
+		cpu_llc_id[cpu] = node_id;
+
+		/* core id to be in range from 0 to (cores_per_node - 1) */
+		c->cpu_core_id = c->cpu_core_id % cores_per_node;
+	}
 }
 #endif
+
+static void __cpuinit amd_enable_pci_ext_cfg(struct cpuinfo_x86 *c)
+{
+	u64 reg;
+
+	rdmsrl(MSR_K8_NB_CFG, reg);
+	if (!(reg & ENABLE_CF8_EXT_CFG)) {
+		reg |= ENABLE_CF8_EXT_CFG;
+		wrmsrl(MSR_K8_NB_CFG, reg);
+	}
+	set_bit(X86_FEATURE_PCI_EXT_CFG, c->x86_capability);
+}
 
 static void __cpuinit init_amd(struct cpuinfo_x86 *c)
 {
@@ -268,14 +293,12 @@ static void __cpuinit init_amd(struct cpuinfo_x86 *c)
 			break;
 	}
 
-	switch (c->x86) {
-	case 15:
+	if (c->x86 == 6)
+		set_bit(X86_FEATURE_K7, c->x86_capability);
+
+	if (c->x86 >= 15)
 		set_bit(X86_FEATURE_K8, c->x86_capability);
-		break;
-	case 6:
-		set_bit(X86_FEATURE_K7, c->x86_capability); 
-		break;
-	}
+
 	if (c->x86 >= 6)
 		set_bit(X86_FEATURE_FXSAVE_LEAK, c->x86_capability);
 
@@ -309,8 +332,7 @@ static void __cpuinit init_amd(struct cpuinfo_x86 *c)
 		c->phys_proc_id >>= bits;
 		/* use socket ID also for last level cache */
 		cpu_llc_id[cpu] = c->phys_proc_id;
-		/* fixup topology information on multi-node processors */
-		amd_fixup_dcm(c);
+		amd_get_topology(c);
 		printk(KERN_INFO "CPU %d(%d) -> Core %d\n",
 		       cpu, c->x86_max_cores, c->cpu_core_id);
 	}
@@ -324,7 +346,7 @@ static void __cpuinit init_amd(struct cpuinfo_x86 *c)
 	}
 
 	if ((c->x86 >= 0x10) && !force_mwait)
-		clear_bit(X86_FEATURE_MWAIT, &c->x86_capability);
+		clear_bit(X86_FEATURE_MWAIT, c->x86_capability);
 
 	if (c->x86 >= 0x10)
 		amd_enable_pci_ext_cfg(c);

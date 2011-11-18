@@ -1811,9 +1811,9 @@ out:
  * N.B. After this call fhp needs an fh_put
  */
 int
-nfsd_statfs(struct svc_rqst *rqstp, struct svc_fh *fhp, struct kstatfs *stat)
+nfsd_statfs(struct svc_rqst *rqstp, struct svc_fh *fhp, struct kstatfs *stat, int access)
 {
-	int err = fh_verify(rqstp, fhp, 0, MAY_NOP);
+	int err = fh_verify(rqstp, fhp, 0, MAY_NOP | access);
 	if (!err && vfs_statfs(fhp->fh_dentry,stat))
 		err = nfserr_io;
 	return err;

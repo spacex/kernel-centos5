@@ -261,13 +261,13 @@ static int pirq_via_set(struct pci_dev *router, struct pci_dev *dev, int pirq, i
  */
 static int pirq_via586_get(struct pci_dev *router, struct pci_dev *dev, int pirq)
 {
-	static const unsigned int pirqmap[4] = { 3, 2, 5, 1 };
+	static const unsigned int pirqmap[5] = { 3, 2, 5, 1, 1 };
 	return read_config_nybble(router, 0x55, pirqmap[pirq-1]);
 }
 
 static int pirq_via586_set(struct pci_dev *router, struct pci_dev *dev, int pirq, int irq)
 {
-	static const unsigned int pirqmap[4] = { 3, 2, 5, 1 };
+	static const unsigned int pirqmap[5] = { 3, 2, 5, 1, 1 };
 	write_config_nybble(router, 0x55, pirqmap[pirq-1], irq);
 	return 1;
 }
@@ -549,6 +549,19 @@ static __init int intel_router_probe(struct irq_router *r, struct pci_dev *route
 		case PCI_DEVICE_ID_INTEL_ICH8_2:
 		case PCI_DEVICE_ID_INTEL_ICH8_3:
 		case PCI_DEVICE_ID_INTEL_ICH8_4:
+		case PCI_DEVICE_ID_INTEL_ICH9_0:
+		case PCI_DEVICE_ID_INTEL_ICH9_1:
+		case PCI_DEVICE_ID_INTEL_ICH9_2:
+		case PCI_DEVICE_ID_INTEL_ICH9_3:
+		case PCI_DEVICE_ID_INTEL_ICH9_4:
+		case PCI_DEVICE_ID_INTEL_ICH9_5:
+		case PCI_DEVICE_ID_INTEL_TOLAPAI_0:
+		case PCI_DEVICE_ID_INTEL_ICH10_0:
+		case PCI_DEVICE_ID_INTEL_ICH10_1:
+		case PCI_DEVICE_ID_INTEL_ICH10_2:
+		case PCI_DEVICE_ID_INTEL_ICH10_3:
+		case PCI_DEVICE_ID_INTEL_PATSBURG_LPC_0:
+		case PCI_DEVICE_ID_INTEL_PATSBURG_LPC_1:
 			r->name = "PIIX/ICH";
 			r->get = pirq_piix_get;
 			r->set = pirq_piix_set;
@@ -563,6 +576,13 @@ static __init int intel_router_probe(struct irq_router *r, struct pci_dev *route
 		return 1;
 	}
 
+	if ((device >= PCI_DEVICE_ID_INTEL_CPT_LPC_MIN) && 
+		(device <= PCI_DEVICE_ID_INTEL_CPT_LPC_MAX)) {
+		r->name = "PIIX/ICH";
+		r->get = pirq_piix_get;
+		r->set = pirq_piix_set;
+		return 1;
+	}
 	return 0;
 }
 
@@ -1183,34 +1203,4 @@ static int pirq_enable_irq(struct pci_dev *dev)
 		       'A' + pin, pci_name(dev), msg);
 	}
 	return 0;
-}
-
-int pci_vector_resources(int last, int nr_released)
-{
-	int count = nr_released;
-
-	int next = last;
-	int offset = (last % 8);
-
-	while (next < FIRST_SYSTEM_VECTOR) {
-		next += 8;
-#ifdef CONFIG_X86_64
-		if (next == IA32_SYSCALL_VECTOR)
-			continue;
-#else
-		if (next == SYSCALL_VECTOR)
-			continue;
-#endif
-		count++;
-		if (next >= FIRST_SYSTEM_VECTOR) {
-			if (offset%8) {
-				next = FIRST_DEVICE_VECTOR + offset;
-				offset++;
-				continue;
-			}
-			count--;
-		}
-	}
-
-	return count;
 }

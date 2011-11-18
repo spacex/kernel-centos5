@@ -1,6 +1,6 @@
 /* cnic_if.h: Broadcom CNIC core network driver.
  *
- * Copyright (c) 2006-2010 Broadcom Corporation
+ * Copyright (c) 2006-2011 Broadcom Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,22 +15,31 @@
 #include <linux/in.h>
 #include <linux/in6.h>
 
-#define CNIC_MODULE_VERSION	"2.1.2"
-#define CNIC_MODULE_RELDATE	"May 26, 2010"
+#define CNIC_MODULE_VERSION	"2.2.13"
+#define CNIC_MODULE_RELDATE	"Jan 31, 2011"
 
 #define CNIC_ULP_RDMA		0
 #define CNIC_ULP_ISCSI		1
-#define CNIC_ULP_L4		2
-#define MAX_CNIC_ULP_TYPE_EXT	2
-#define MAX_CNIC_ULP_TYPE	3
+#define CNIC_ULP_FCOE		2
+#define CNIC_ULP_L4		3
+#define MAX_CNIC_ULP_TYPE_EXT	3
+#define MAX_CNIC_ULP_TYPE	4
 
 struct kwqe {
 	u32 kwqe_op_flag;
 
+#define KWQE_QID_SHIFT		8
 #define KWQE_OPCODE_MASK	0x00ff0000
 #define KWQE_OPCODE_SHIFT	16
-#define KWQE_FLAGS_LAYER_SHIFT	28
 #define KWQE_OPCODE(x)		((x & KWQE_OPCODE_MASK) >> KWQE_OPCODE_SHIFT)
+#define KWQE_LAYER_MASK			0x70000000
+#define KWQE_LAYER_SHIFT		28
+#define KWQE_FLAGS_LAYER_MASK_L2	(2<<28)
+#define KWQE_FLAGS_LAYER_MASK_L3	(3<<28)
+#define KWQE_FLAGS_LAYER_MASK_L4	(4<<28)
+#define KWQE_FLAGS_LAYER_MASK_L5_RDMA	(5<<28)
+#define KWQE_FLAGS_LAYER_MASK_L5_ISCSI	(6<<28)
+#define KWQE_FLAGS_LAYER_MASK_L5_FCOE	(7<<28)
 
 	u32 kwqe_info0;
 	u32 kwqe_info1;
@@ -65,6 +74,7 @@ struct kcqe {
 		#define KCQE_FLAGS_LAYER_MASK_L4	(4<<28)
 		#define KCQE_FLAGS_LAYER_MASK_L5_RDMA	(5<<28)
 		#define KCQE_FLAGS_LAYER_MASK_L5_ISCSI	(6<<28)
+		#define KCQE_FLAGS_LAYER_MASK_L5_FCOE	(7<<28)
 		#define KCQE_FLAGS_NEXT 		(1<<31)
 		#define KCQE_FLAGS_OPCODE_MASK		(0xff<<16)
 		#define KCQE_FLAGS_OPCODE_SHIFT		(16)
@@ -83,16 +93,13 @@ struct kcqe {
 #define DRV_CTL_IO_RD_CMD		0x102
 #define DRV_CTL_CTX_WR_CMD		0x103
 #define DRV_CTL_CTXTBL_WR_CMD		0x104
-#define DRV_CTL_COMPLETION_CMD		0x105
+#define DRV_CTL_RET_L5_SPQ_CREDIT_CMD	0x105
 #define DRV_CTL_START_L2_CMD		0x106
 #define DRV_CTL_STOP_L2_CMD		0x107
+#define DRV_CTL_RET_L2_SPQ_CREDIT_CMD	0x10c
 
 struct cnic_ctl_completion {
 	u32	cid;
-};
-
-struct drv_ctl_completion {
-	u32	comp_count;
 };
 
 struct cnic_ctl_info {
@@ -101,6 +108,10 @@ struct cnic_ctl_info {
 		struct cnic_ctl_completion comp;
 		char bytes[MAX_CNIC_CTL_DATA];
 	} data;
+};
+
+struct drv_ctl_spq_credit {
+	u32	credit_count;
 };
 
 struct drv_ctl_io {
@@ -118,7 +129,7 @@ struct drv_ctl_l2_ring {
 struct drv_ctl_info {
 	int	cmd;
 	union {
-		struct drv_ctl_completion comp;
+		struct drv_ctl_spq_credit credit;
 		struct drv_ctl_io io;
 		struct drv_ctl_l2_ring ring;
 		char bytes[MAX_DRV_CTL_DATA];
@@ -141,6 +152,7 @@ struct cnic_irq {
 	unsigned int	vector;
 	void		*status_blk;
 	u32		status_blk_num;
+	u32		status_blk_num2;
 	u32		irq_flags;
 #define CNIC_IRQ_FL_MSIX		0x00000001
 };
@@ -150,11 +162,15 @@ struct cnic_eth_dev {
 	u32		drv_state;
 #define CNIC_DRV_STATE_REGD		0x00000001
 #define CNIC_DRV_STATE_USING_MSIX	0x00000002
+#define CNIC_DRV_STATE_NO_ISCSI_OOO	0x00000004
+#define CNIC_DRV_STATE_NO_ISCSI		0x00000008
+#define CNIC_DRV_STATE_NO_FCOE		0x00000010
 	u32		chip_id;
 	u32		max_kwqe_pending;
 	struct pci_dev	*pdev;
 	void __iomem	*io_base;
 	void __iomem	*io_base2;
+	void		*iro_arr;
 
 	u32		ctx_tbl_offset;
 	u32		ctx_tbl_len;
@@ -163,7 +179,10 @@ struct cnic_eth_dev {
 	u32		max_iscsi_conn;
 	u32		max_fcoe_conn;
 	u32		max_rdma_conn;
-	u32		reserved0[2];
+	u32		fcoe_init_cid;
+	u16		iscsi_l2_client_id;
+	u16		iscsi_l2_cid;
+	u8		iscsi_mac[ETH_ALEN];
 
 	int		num_irq;
 	struct cnic_irq	irq_arr[MAX_CNIC_VEC];
@@ -299,7 +318,7 @@ struct cnic_ulp_ops {
 	void (*cm_abort_complete)(struct cnic_sock *);
 	void (*cm_remote_close)(struct cnic_sock *);
 	void (*cm_remote_abort)(struct cnic_sock *);
-	void (*iscsi_nl_send_msg)(struct cnic_dev *dev, u32 msg_type,
+	int (*iscsi_nl_send_msg)(void *ulp_ctx, u32 msg_type,
 				  char *data, u16 data_size);
 	struct module *owner;
 	atomic_t ref_count;
@@ -310,5 +329,6 @@ extern int cnic_register_driver(int ulp_type, struct cnic_ulp_ops *ulp_ops);
 extern int cnic_unregister_driver(int ulp_type);
 
 extern struct cnic_eth_dev *bnx2_cnic_probe(struct net_device *dev);
+extern struct cnic_eth_dev *bnx2x_cnic_probe(struct net_device *dev);
 
 #endif

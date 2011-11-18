@@ -287,23 +287,40 @@ static void rpc_set_active(struct rpc_task *task)
 
 /*
  * Mark an RPC call as having completed by clearing the 'active' bit
+ * and then waking up all tasks that were sleeping.
  */
-static void rpc_mark_complete_task(struct rpc_task *task)
+static int rpc_complete_task(struct rpc_task *task)
 {
-	smp_mb__before_clear_bit();
+	void *m = &task->tk_runstate;
+	wait_queue_head_t *wq = bit_waitqueue(m, RPC_TASK_ACTIVE);
+	struct wait_bit_key k = __WAIT_BIT_KEY_INITIALIZER(m, RPC_TASK_ACTIVE);
+	unsigned long flags;
+	int ret;
+
+	spin_lock_irqsave(&wq->lock, flags);
 	clear_bit(RPC_TASK_ACTIVE, &task->tk_runstate);
-	smp_mb__after_clear_bit();
-	wake_up_bit(&task->tk_runstate, RPC_TASK_ACTIVE);
+	ret = atomic_dec_and_test(&task->tk_count);
+	if (waitqueue_active(wq))
+		__wake_up_locked_key(wq,
+				TASK_INTERRUPTIBLE | TASK_UNINTERRUPTIBLE, &k);
+	spin_unlock_irqrestore(&wq->lock, flags);
+	return ret;
 }
 
 /*
  * Allow callers to wait for completion of an RPC call
+ *
+ * Note the use of out_of_line_wait_on_bit() rather than wait_on_bit()
+ * to enforce taking of the wq->lock and hence avoid races with
+ * rpc_complete_task().
  */
 int __rpc_wait_for_completion_task(struct rpc_task *task, int (*action)(void *))
 {
+	BUG_ON(!RPC_IS_ASYNC(task));
+
 	if (action == NULL)
 		action = rpc_wait_bit_interruptible;
-	return wait_on_bit(&task->tk_runstate, RPC_TASK_ACTIVE,
+	return out_of_line_wait_on_bit(&task->tk_runstate, RPC_TASK_ACTIVE,
 			action, TASK_INTERRUPTIBLE);
 }
 EXPORT_SYMBOL(__rpc_wait_for_completion_task);
@@ -926,26 +943,47 @@ static void rpc_async_release(void *task)
 	rpc_free_task((struct rpc_task *) task);
 }
 
-void rpc_put_task(struct rpc_task *task)
+static void rpc_release_resources_task(struct rpc_task *task)
 {
-	if (!atomic_dec_and_test(&task->tk_count))
-		return;
-	/* Release resources */
 	if (task->tk_rqstp)
 		xprt_release(task);
 	if (task->tk_msg.rpc_cred)
 		rpcauth_unbindcred(task);
+}
+
+static void rpc_final_put_task(struct rpc_task *task,
+		struct workqueue_struct *q)
+{
 	if (task->tk_client) {
 		rpc_release_client(task->tk_client);
 		task->tk_client = NULL;
 	}
-	if (task->tk_workqueue != NULL) {
+	if (q != NULL) {
 		INIT_WORK(&task->u.tk_work, rpc_async_release, (void *) task);
-		queue_work(task->tk_workqueue, &task->u.tk_work);
+		queue_work(q, &task->u.tk_work);
 	} else
 		rpc_free_task(task);
 }
+
+static void rpc_do_put_task(struct rpc_task *task, struct workqueue_struct *q)
+{
+	if (atomic_dec_and_test(&task->tk_count)) {
+		rpc_release_resources_task(task);
+		rpc_final_put_task(task, q);
+	}
+}
+
+void rpc_put_task(struct rpc_task *task)
+{
+	rpc_do_put_task(task, NULL);
+}
 EXPORT_SYMBOL(rpc_put_task);
+
+void rpc_put_task_async(struct rpc_task *task)
+{
+	rpc_do_put_task(task, task->tk_workqueue);
+}
+EXPORT_SYMBOL_GPL(rpc_put_task_async);
 
 static void rpc_release_task(struct rpc_task *task)
 {
@@ -967,10 +1005,13 @@ static void rpc_release_task(struct rpc_task *task)
 #ifdef RPC_DEBUG
 	task->tk_magic = 0;
 #endif
-	/* Wake up anyone who is waiting for task completion */
-	rpc_mark_complete_task(task);
-
-	rpc_put_task(task);
+	if (RPC_IS_ASYNC(task)) {
+		rpc_release_resources_task(task);
+		/* Wake up anyone who may be waiting for task completion */
+		if (atomic_read(&task->tk_count) == 1 || rpc_complete_task(task))
+			rpc_final_put_task(task, task->tk_workqueue);
+	} else
+		rpc_put_task(task);
 }
 
 /**

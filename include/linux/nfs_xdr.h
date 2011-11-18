@@ -142,6 +142,7 @@ struct nfs_openres {
 	__u32                   rflags;
 	struct nfs_fattr *      f_attr;
 	struct nfs_fattr *      dir_attr;
+	struct nfs_seqid *      seqid;
 	const struct nfs_server *server;
 	int			delegation_type;
 	nfs4_stateid		delegation;
@@ -161,6 +162,7 @@ struct nfs_open_confirmargs {
 
 struct nfs_open_confirmres {
 	nfs4_stateid            stateid;
+	struct nfs_seqid *      seqid;
 };
 
 /*
@@ -177,6 +179,7 @@ struct nfs_closeargs {
 struct nfs_closeres {
 	nfs4_stateid            stateid;
 	struct nfs_fattr *	fattr;
+	struct nfs_seqid *      seqid;
 	const struct nfs_server *server;
 };
 /*
@@ -201,7 +204,9 @@ struct nfs_lock_args {
 };
 
 struct nfs_lock_res {
-	nfs4_stateid			stateid;
+	nfs4_stateid		stateid;
+	struct nfs_seqid *      lock_seqid;
+	struct nfs_seqid *      open_seqid;
 };
 
 struct nfs_locku_args {
@@ -212,7 +217,8 @@ struct nfs_locku_args {
 };
 
 struct nfs_locku_res {
-	nfs4_stateid			stateid;
+	nfs4_stateid		stateid;
+	struct nfs_seqid *      seqid;
 };
 
 struct nfs_lockt_args {
@@ -302,6 +308,25 @@ struct nfs_removeres {
 };
 
 /*
+ * Common arguments to the rename call
+ */
+struct nfs_renameargs {
+	const struct nfs_fh		*old_dir;
+	const struct nfs_fh		*new_dir;
+	const struct qstr		*old_name;
+	const struct qstr		*new_name;
+	const u32			*bitmask;
+};
+
+struct nfs_renameres {
+	const struct nfs_server		*server;
+	struct nfs4_change_info		old_cinfo;
+	struct nfs_fattr		*old_fattr;
+	struct nfs4_change_info		new_cinfo;
+	struct nfs_fattr		*new_fattr;
+};
+
+/*
  * Argument struct for decode_entry function
  */
 struct nfs_entry {
@@ -334,15 +359,6 @@ struct nfs_createargs {
 	const char *		name;
 	unsigned int		len;
 	struct iattr *		sattr;
-};
-
-struct nfs_renameargs {
-	struct nfs_fh *		fromfh;
-	const char *		fromname;
-	unsigned int		fromlen;
-	struct nfs_fh *		tofh;
-	const char *		toname;
-	unsigned int		tolen;
 };
 
 struct nfs_setattrargs {
@@ -475,15 +491,6 @@ struct nfs3_mknodargs {
 	dev_t			rdev;
 };
 
-struct nfs3_renameargs {
-	struct nfs_fh *		fromfh;
-	const char *		fromname;
-	unsigned int		fromlen;
-	struct nfs_fh *		tofh;
-	const char *		toname;
-	unsigned int		tolen;
-};
-
 struct nfs3_linkargs {
 	struct nfs_fh *		fromfh;
 	struct nfs_fh *		tofh;
@@ -516,11 +523,6 @@ struct nfs3_readlinkargs {
 	unsigned int		pgbase;
 	unsigned int		pglen;
 	struct page **		pages;
-};
-
-struct nfs3_renameres {
-	struct nfs_fattr *	fromattr;
-	struct nfs_fattr *	toattr;
 };
 
 struct nfs3_linkres {
@@ -655,22 +657,6 @@ struct nfs4_readlink {
 	unsigned int			pgbase;
 	unsigned int			pglen;   /* zero-copy data */
 	struct page **			pages;   /* zero-copy data */
-};
-
-struct nfs4_rename_arg {
-	const struct nfs_fh *		old_dir;
-	const struct nfs_fh *		new_dir;
-	const struct qstr *		old_name;
-	const struct qstr *		new_name;
-	const u32 *			bitmask;
-};
-
-struct nfs4_rename_res {
-	const struct nfs_server *	server;
-	struct nfs4_change_info		old_cinfo;
-	struct nfs_fattr *		old_fattr;
-	struct nfs4_change_info		new_cinfo;
-	struct nfs_fattr *		new_fattr;
 };
 
 struct nfs4_setclientid {
@@ -809,6 +795,8 @@ struct nfs_rpc_ops {
 	int	(*unlink_done) (struct rpc_task *, struct inode *);
 	int	(*rename)  (struct inode *, struct qstr *,
 			    struct inode *, struct qstr *);
+	void	(*rename_setup)  (struct rpc_message *msg, struct inode *dir);
+	int	(*rename_done) (struct rpc_task *task, struct inode *old_dir, struct inode *new_dir);
 	int	(*link)    (struct inode *, struct inode *, struct qstr *);
 	int	(*symlink) (struct inode *, struct dentry *, struct page *,
 			    unsigned int, struct iattr *);
@@ -836,6 +824,7 @@ struct nfs_rpc_ops {
 	int	(*file_release) (struct inode *, struct file *);
 	int	(*lock)(struct file *, int, struct file_lock *);
 	void	(*clear_acl_cache)(struct inode *);
+	void	(*close_context)(struct nfs_open_context *ctx, int);
 };
 
 /*

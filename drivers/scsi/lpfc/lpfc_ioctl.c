@@ -790,7 +790,7 @@ lpfc_ioctl_send_mgmt_cmd(struct lpfc_hba * phba,
 	cmd->ulpContext = pndl->nlp_rpi;
 	cmd->ulpOwner = OWN_CHIP;
 	cmdiocbq->vport = phba->pport;
-	cmdiocbq->context1 = NULL;
+	cmdiocbq->context1 = pndl;
 	cmdiocbq->context2 = NULL;
 	cmdiocbq->context3 = bmp;
 	cmdiocbq->iocb_flag |= LPFC_IO_LIBDFC;
@@ -1878,6 +1878,7 @@ lpfc_issue_ct_rsp(struct lpfc_hba * phba, uint32_t tag,
 	ctiocb->iocb_flag |= LPFC_IO_LIBDFC;
 	ctiocb->vport = phba->pport;
 	ctiocb->context3 = bmp;
+	ctiocb->context1 = ndlp;
 	rc = lpfc_sli_issue_iocb_wait(phba, LPFC_ELS_RING, ctiocb, NULL,
 				     phba->fc_ratov * 2 + LPFC_DRVR_TIMEOUT);
 

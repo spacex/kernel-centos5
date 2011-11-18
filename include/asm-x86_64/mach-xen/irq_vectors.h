@@ -112,7 +112,11 @@
 #ifdef __GENKSYMS__
 #define NR_DYNIRQS		256
 #else /* __GENKSYMS__ */
-#define NR_DYNIRQS		1024
+/*
+ * The limit on event channels is 4096.  Unfortunately, HARDIRQ_BITS is
+ * 12 so NR_IRQS must also be less than 4096.
+ */
+#define NR_DYNIRQS		(4096 - NR_PIRQS)
 #endif /* __GENKSYMS__ */
 
 #define NR_IRQS			(NR_PIRQS + NR_DYNIRQS)

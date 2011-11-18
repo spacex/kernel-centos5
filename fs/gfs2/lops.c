@@ -170,6 +170,7 @@ static void glock_lo_after_commit(struct gfs2_sbd *sdp, struct gfs2_ail *ai)
 static void buf_lo_add(struct gfs2_sbd *sdp, struct gfs2_log_element *le)
 {
 	struct gfs2_bufdata *bd = container_of(le, struct gfs2_bufdata, bd_le);
+	struct gfs2_meta_header *mh;
 	struct gfs2_trans *tr;
 
 	lock_buffer(bd->bd_bh);
@@ -185,6 +186,9 @@ static void buf_lo_add(struct gfs2_sbd *sdp, struct gfs2_log_element *le)
 	__glock_lo_add(sdp, &bd->bd_gl->gl_le);
 	gfs2_meta_check(sdp, bd->bd_bh);
 	gfs2_pin(sdp, bd->bd_bh);
+	mh = (struct gfs2_meta_header *)bd->bd_bh->b_data;
+	mh->__pad0 = cpu_to_be64(0);
+	mh->mh_jid = cpu_to_be32(sdp->sd_jdesc->jd_jid);
 	sdp->sd_log_num_buf++;
 	list_add(&le->le_list, &sdp->sd_log_le_buf);
 	tr->tr_num_buf_new++;

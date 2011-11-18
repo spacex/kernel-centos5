@@ -201,6 +201,8 @@ static inline int __attribute_pure__ long_log2(unsigned long x)
 
 extern int printk_ratelimit(void);
 extern int __printk_ratelimit(int ratelimit_jiffies, int ratelimit_burst);
+extern bool printk_timed_ratelimit(unsigned long *caller_jiffies,
+				unsigned int interval_msec);
 
 static inline void console_silent(void)
 {
@@ -239,6 +241,32 @@ extern enum system_states {
 #define TAINT_MACHINE_CHECK		(1<<4)
 #define TAINT_BAD_PAGE			(1<<5)
 #define TAINT_UNSIGNED_MODULE		(1<<6)
+#define TAINT_7 			(1<<7)
+#define TAINT_8 			(1<<8)
+#define TAINT_9 			(1<<9)
+#define TAINT_10			(1<<10)
+#define TAINT_11			(1<<11)
+#define TAINT_12			(1<<12)
+#define TAINT_13			(1<<13)
+#define TAINT_14			(1<<14)
+#define TAINT_15			(1<<15)
+#define TAINT_16			(1<<16)
+#define TAINT_17			(1<<17)
+#define TAINT_18			(1<<18)
+#define TAINT_19			(1<<19)
+#define TAINT_20			(1<<20)
+#define TAINT_21			(1<<21)
+#define TAINT_22			(1<<22)
+#define TAINT_23			(1<<23)
+#define TAINT_24			(1<<24)
+#define TAINT_25			(1<<25)
+#define TAINT_26			(1<<26)
+#define TAINT_27			(1<<27)
+/* Reserving bits for vendor specific uses */
+#define TAINT_RESERVED28		(1<<28)
+#define TAINT_TECH_PREVIEW		(1<<29)
+#define TAINT_RESERVED30		(1<<30)
+#define TAINT_RESERVED31		(1<<31)
 
 extern void dump_stack(void);
 
@@ -472,4 +500,7 @@ struct sysinfo {
 /* Trap pasters of __FUNCTION__ at compile-time */
 #define __FUNCTION__ (__func__)
 
+struct module;
+
+void mark_tech_preview(const char *msg, struct module *mod);
 #endif

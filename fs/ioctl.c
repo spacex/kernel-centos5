@@ -198,14 +198,23 @@ static int ioctl_fiemap(struct file *filp, unsigned long arg)
 	return error;
 }
 
-#define blk_to_logical(inode, blk) (blk << (inode)->i_blkbits)
-#define logical_to_blk(inode, offset) (offset >> (inode)->i_blkbits);
+static inline sector_t logical_to_blk(struct inode *inode, loff_t offset)
+{
+	return (offset >> inode->i_blkbits);
+}
+
+static inline loff_t blk_to_logical(struct inode *inode, sector_t blk)
+{
+	return (blk << inode->i_blkbits);
+}
 
 /**
  * __generic_block_fiemap - FIEMAP for block based inodes (no locking)
- * @inode - the inode to map
- * @arg - the pointer to userspace where we copy everything to
- * @get_block - the fs's get_block function
+ * @inode: the inode to map
+ * @fieinfo: the fiemap info struct that will be passed back to userspace
+ * @start: where to start mapping in the inode
+ * @len: how much space to map
+ * @get_block: the fs's get_block function
  *
  * This does FIEMAP for block based inodes.  Basically it will just loop
  * through get_block until we hit the number of extents we want to map, or we
@@ -220,59 +229,114 @@ static int ioctl_fiemap(struct file *filp, unsigned long arg)
  */
 
 int __generic_block_fiemap(struct inode *inode,
-			   struct fiemap_extent_info *fieinfo, u64 start,
-			   u64 len, get_block_t *get_block)
+			   struct fiemap_extent_info *fieinfo, loff_t start,
+			   loff_t len, get_block_t *get_block)
 {
-	struct buffer_head tmp;
-	unsigned int start_blk;
-	long long length = 0, map_len = 0;
+	struct buffer_head map_bh;
+	sector_t start_blk, last_blk;
+	loff_t isize = i_size_read(inode);
 	u64 logical = 0, phys = 0, size = 0;
 	u32 flags = FIEMAP_EXTENT_MERGED;
+	bool past_eof = false, whole_file = false;
 	int ret = 0;
 
-	if ((ret = fiemap_check_flags(fieinfo, FIEMAP_FLAG_SYNC)))
+	ret = fiemap_check_flags(fieinfo, FIEMAP_FLAG_SYNC);
+	if (ret)
 		return ret;
 
-	start_blk = logical_to_blk(inode, start);
+	/*
+	 * Either the i_mutex or other appropriate locking needs to be held
+	 * since we expect isize to not change at all through the duration of
+	 * this call.
+	 */
+	if (len >= isize) {
+		whole_file = true;
+		len = isize;
+	}
 
-	length = (long long)min_t(u64, len, i_size_read(inode));
-	map_len = length;
+	/*
+	 * Some filesystems can't deal with being asked to map less than
+	 * blocksize, so make sure our len is at least block length.
+	 */
+	if (logical_to_blk(inode, len) == 0)
+		len = blk_to_logical(inode, 1);
+
+	start_blk = logical_to_blk(inode, start);
+	last_blk = logical_to_blk(inode, start + len - 1);
 
 	do {
 		/*
 		 * we set b_size to the total size we want so it will map as
 		 * many contiguous blocks as possible at once
 		 */
-		memset(&tmp, 0, sizeof(struct buffer_head));
-		tmp.b_size = map_len;
+		memset(&map_bh, 0, sizeof(struct buffer_head));
+		map_bh.b_size = len;
 
-		ret = get_block(inode, start_blk, &tmp, 0);
+		ret = get_block(inode, start_blk, &map_bh, 0);
 		if (ret)
 			break;
 
 		/* HOLE */
-		if (!buffer_mapped(&tmp)) {
+		if (!buffer_mapped(&map_bh)) {
+			start_blk++;
+
 			/*
-			 * first hole after going past the EOF, this is our
+			 * We want to handle the case where there is an
+			 * allocated block at the front of the file, and then
+			 * nothing but holes up to the end of the file properly,
+			 * to make sure that extent at the front gets properly
+			 * marked with FIEMAP_EXTENT_LAST
+			 */
+			if (!past_eof &&
+			    blk_to_logical(inode, start_blk) >= isize)
+				past_eof = 1;
+
+			/*
+			 * First hole after going past the EOF, this is our
 			 * last extent
 			 */
-			if (length <= 0) {
+			if (past_eof && size) {
 				flags = FIEMAP_EXTENT_MERGED|FIEMAP_EXTENT_LAST;
+				ret = fiemap_fill_next_extent(fieinfo, logical,
+							      phys, size,
+							      flags);
+			} else if (size) {
+				ret = fiemap_fill_next_extent(fieinfo, logical,
+							      phys, size, flags);
+				size = 0;
+			}
+
+			/* if we have holes up to/past EOF then we're done */
+			if (start_blk > last_blk || past_eof || ret)
+				break;
+		} else {
+			/*
+			 * We have gone over the length of what we wanted to
+			 * map, and it wasn't the entire file, so add the extent
+			 * we got last time and exit.
+			 *
+			 * This is for the case where say we want to map all the
+			 * way up to the second to the last block in a file, but
+			 * the last block is a hole, making the second to last
+			 * block FIEMAP_EXTENT_LAST.  In this case we want to
+			 * see if there is a hole after the second to last block
+			 * so we can mark it properly.  If we found data after
+			 * we exceeded the length we were requesting, then we
+			 * are good to go, just add the extent to the fieinfo
+			 * and break
+			 */
+			if (start_blk > last_blk && !whole_file) {
 				ret = fiemap_fill_next_extent(fieinfo, logical,
 							      phys, size,
 							      flags);
 				break;
 			}
 
-			length -= blk_to_logical(inode, 1);
-
-			/* if we have holes up to/past EOF then we're done */
-			if (length <= 0)
-				break;
-
-			start_blk++;
-		} else {
-			if (length <= 0 && size) {
+			/*
+			 * if size != 0 then we know we already have an extent
+			 * to add, so add it.
+			 */
+			if (size) {
 				ret = fiemap_fill_next_extent(fieinfo, logical,
 							      phys, size,
 							      flags);
@@ -281,32 +345,24 @@ int __generic_block_fiemap(struct inode *inode,
 			}
 
 			logical = blk_to_logical(inode, start_blk);
-			phys = blk_to_logical(inode, tmp.b_blocknr);
-			size = tmp.b_size;
+			phys = blk_to_logical(inode, map_bh.b_blocknr);
+			size = map_bh.b_size;
 			flags = FIEMAP_EXTENT_MERGED;
 
-			length -= tmp.b_size;
 			start_blk += logical_to_blk(inode, size);
 
 			/*
-			 * if we are past the EOF we need to loop again to see
-			 * if there is a hole so we can mark this extent as the
-			 * last one, and if not keep mapping things until we
-			 * find a hole, or we run out of slots in the extent
-			 * array
+			 * If we are past the EOF, then we need to make sure as
+			 * soon as we find a hole that the last extent we found
+			 * is marked with FIEMAP_EXTENT_LAST
 			 */
-			if (length <= 0)
-				continue;
-
-			ret = fiemap_fill_next_extent(fieinfo, logical, phys,
-						      size, flags);
-			if (ret)
-				break;
+			if (!past_eof && logical + size >= isize)
+				past_eof = true;
 		}
 		cond_resched();
 	} while (1);
 
-	/* if ret is 1 then we just hit the end of the extent array */
+	/* If ret is 1 then we just hit the end of the extent array */
 	if (ret == 1)
 		ret = 0;
 

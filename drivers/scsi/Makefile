@@ -77,6 +77,7 @@ obj-$(CONFIG_SCSI_AIC79XX)	+= aic7xxx/
 obj-$(CONFIG_SCSI_AACRAID)	+= aacraid/
 obj-$(CONFIG_SCSI_AIC7XXX_OLD)	+= aic7xxx_old.o
 obj-$(CONFIG_SCSI_AIC94XX)	+= aic94xx/
+obj-$(CONFIG_SCSI_ISCI)		+= isci/
 obj-$(CONFIG_SCSI_MVSAS)	+= mvsas.o
 obj-$(CONFIG_SCSI_IPS)		+= ips.o
 obj-$(CONFIG_SCSI_FD_MCS)	+= fd_mcs.o
@@ -142,7 +143,8 @@ obj-$(CONFIG_SCSI_IBMVSCSI)	+= ibmvscsi/
 obj-$(CONFIG_SCSI_IBMVFC)	+= ibmvscsi/
 obj-$(CONFIG_SCSI_HPTIOP)	+= hptiop.o
 obj-$(CONFIG_SCSI_STEX)		+= stex.o
-obj-$(CONFIG_SCSI_CXGB3_ISCSI)	+= libiscsi2.o libiscsi_tcp.o cxgb3i/
+obj-$(CONFIG_SCSI_CXGB3_ISCSI)	+= libiscsi2.o libiscsi_tcp.o cxgbi/
+obj-$(CONFIG_SCSI_CXGB4_ISCSI)	+= libiscsi2.o libiscsi_tcp.o cxgbi/
 obj-$(CONFIG_SCSI_PMCRAID)      += pmcraid.o
 
 obj-$(CONFIG_ARM)		+= arm/
@@ -153,6 +155,7 @@ obj-$(CONFIG_BLK_DEV_SD)	+= sd_mod.o
 obj-$(CONFIG_BLK_DEV_SR)	+= sr_mod.o
 obj-$(CONFIG_CHR_DEV_SG)	+= sg.o
 obj-$(CONFIG_CHR_DEV_SCH)	+= ch.o
+obj-$(CONFIG_SCSI_ENCLOSURE)	+= ses.o
 
 # This goes last, so that "real" scsi devices probe earlier
 obj-$(CONFIG_SCSI_DEBUG)	+= scsi_debug.o

@@ -46,6 +46,7 @@ int gfs2_inplace_reserve_i(struct gfs2_inode *ip, int hold_rindex,
 
 void gfs2_inplace_release(struct gfs2_inode *ip);
 
+int gfs2_ri_update(struct gfs2_inode *ip);
 u64 gfs2_alloc_data(struct gfs2_inode *ip);
 u64 gfs2_alloc_meta(struct gfs2_inode *ip);
 u64 gfs2_alloc_di(struct gfs2_inode *ip, u64 *generation);

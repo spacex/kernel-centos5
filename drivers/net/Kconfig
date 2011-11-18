@@ -1984,6 +1984,17 @@ config E1000E
 	  <file:Documentation/networking/net-modules.txt>.  The module
 	  will be called e1000e.
 
+config ATL1E
+	tristate "Atheros L1E Gigabit Ethernet support (EXPERIMENTAL)"
+	depends on PCI && EXPERIMENTAL
+	select CRC32
+	select MII
+	help
+	  This driver supports the Atheros L1E gigabit ethernet adapter.
+
+	  To compile this driver as a module, choose M here.  The module
+	  will be called atl1e.
+
 config IGB
 	tristate "Intel(R) 82575 Gigabit Ethernet support"
 	depends on PCI
@@ -2414,6 +2425,31 @@ config CHELSIO_T3
           To compile this driver as a module, choose M here: the module
           will be called cxgb3.
 
+config CHELSIO_T4_DEPENDS
+	tristate
+	depends on PCI && INET
+	default y
+
+config CHELSIO_T4
+	tristate "Chelsio Communications T4 Ethernet support"
+	depends on CHELSIO_T4_DEPENDS
+	select FW_LOADER
+	select MDIO
+	help
+	  This driver supports Chelsio T4-based gigabit and 10Gb Ethernet
+	  adapters.
+
+	  For general information about Chelsio and our products, visit
+	  our website at <http://www.chelsio.com>.
+
+	  For customer support, please visit our customer support page at
+	  <http://www.chelsio.com/support.htm>.
+
+	  Please send feedback to <linux-bugs@chelsio.com>.
+
+	  To compile this driver as a module choose M here; the module
+	  will be called cxgb4.
+
 config EHEA
 	tristate "eHEA Ethernet support"
 	depends on IBMEBUS
@@ -2564,6 +2600,7 @@ config MYRI10GE
 	depends on PCI
 	select FW_LOADER
 	select CRC32
+	select INET_LRO
 	---help---
 	  This driver supports Myricom Myri-10G Dual Protocol interface in
 	  Ethernet mode. If the eeprom on your board is not recent enough,
@@ -2582,6 +2619,11 @@ config ENIC
 	select INET_LRO
 	help
 	  This enables the support for Cisco 10G Ethernet card.
+
+config MYRI10GE_DCA
+	bool
+	default y
+	depends on MYRI10GE && DCA && !(MYRI10GE=y && DCA=m)
 
 config NETXEN_NIC
 	tristate "NetXen Multi port (1/10) Gigabit Ethernet NIC"
@@ -2646,6 +2688,20 @@ config MLX4_DEBUG
 	  the driver is loaded through sysfs).
 
 source "drivers/net/benet/Kconfig"
+
+config BNA
+        tristate "Brocade 1010/1020 10Gb Ethernet Driver support"
+        depends on PCI
+        ---help---
+          This driver supports Brocade 1010/1020 10Gb CEE capable Ethernet
+          cards.
+          To compile this driver as a module, choose M here: the module
+          will be called bna.
+
+          For general information and support, go to the Brocade support
+          website at:
+
+          <http://support.brocade.com>
 
 source "drivers/net/sfc/Kconfig"
 

@@ -25,10 +25,15 @@ static void qla4xxx_check_and_copy_sense(struct scsi_qla_host *ha,
 	struct scsi_cmnd *cmd = srb->cmd;
 	uint16_t sense_len;
 
-	memset(cmd->sense_buffer, 0, SCSI_SENSE_BUFFERSIZE);
+	memset(cmd->sense_buffer, 0, sizeof(cmd->sense_buffer));
 	sense_len = le16_to_cpu(sts_entry->senseDataByteCnt);
-	if (sense_len == 0)
+	if (sense_len == 0) {
+		DEBUG2(printk(KERN_INFO "scsi%ld:%d:%d:%d: %s: sense len 0\n",
+			ha->host_no, cmd->device->channel, cmd->device->id,
+			cmd->device->lun, __func__));
+		ha->status_srb = NULL;
 		return;
+	}
 
 	/* Save total available sense length,
 	 * not to exceed cmd's sense buffer size */
@@ -224,7 +229,7 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 			      cmd->device->id, cmd->device->lun,
 				  sts_entry->handle));
 
-		cmd->result = DID_BUS_BUSY << 16;
+		cmd->result = DID_TRANSPORT_DISRUPTED << 16;
 
 		/*
 		 * Mark device missing so that we won't continue to send
@@ -326,7 +331,7 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 		if (atomic_read(&ddb_entry->state) == DDB_STATE_ONLINE)
 			qla4xxx_mark_device_missing(ha, ddb_entry);
 
-		cmd->result = DID_BUS_BUSY << 16;
+		cmd->result = DID_TRANSPORT_DISRUPTED << 16;
 		break;
 
 	case SCS_QUEUE_FULL:
@@ -608,7 +613,8 @@ void qla4xxx_isr_decode_mailbox(struct scsi_qla_host *ha,
 			    ((mbox_sts[2] == ACB_STATE_TENTATIVE) ||
 			    (mbox_sts[2] == ACB_STATE_ACQUIRING)))
 				set_bit(DPC_GET_DHCP_IP_ADDR, &ha->dpc_flags);
-			else if ((mbox_sts[3] == 2) && (mbox_sts[2] == 5))
+			else if ((mbox_sts[3] == ACB_STATE_ACQUIRING) &&
+				(mbox_sts[2] == ACB_STATE_VALID))
 				set_bit(DPC_RESET_HA, &ha->dpc_flags);
 			break;
 
@@ -853,7 +859,7 @@ irqreturn_t qla4xxx_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 			       &ha->reg->ctrl_status);
 			readl(&ha->reg->ctrl_status);
 
-			if (!test_bit(AF_HBA_GOING_AWAY, &ha->flags))
+			if (!test_bit(AF_HA_REMOVAL, &ha->flags))
 				set_bit(DPC_RESET_HA_INTR, &ha->dpc_flags);
 
 			break;

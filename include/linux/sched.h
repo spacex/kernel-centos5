@@ -1658,6 +1658,7 @@ static inline int lock_need_resched(spinlock_t *lock)
  */
 extern void recalc_sigpending_and_wake(struct task_struct *t);
 extern void recalc_sigpending(void);
+extern int  fork_recalc_sigpending(void);
 
 extern void signal_wake_up(struct task_struct *t, int resume_stopped);
 

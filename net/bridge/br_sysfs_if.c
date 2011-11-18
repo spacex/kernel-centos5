@@ -137,6 +137,21 @@ static ssize_t show_hold_timer(struct net_bridge_port *p,
 }
 static BRPORT_ATTR(hold_timer, S_IRUGO, show_hold_timer, NULL);
 
+#ifdef CONFIG_BRIDGE_IGMP_SNOOPING
+static ssize_t show_multicast_router(struct net_bridge_port *p, char *buf)
+{
+	return sprintf(buf, "%d\n", p->multicast_router);
+}
+
+static ssize_t store_multicast_router(struct net_bridge_port *p,
+				      unsigned long v)
+{
+	return br_multicast_set_port_router(p, v);
+}
+static BRPORT_ATTR(multicast_router, S_IRUGO | S_IWUSR, show_multicast_router,
+		   store_multicast_router);
+#endif
+
 static struct brport_attribute *brport_attrs[] = {
 	&brport_attr_path_cost,
 	&brport_attr_priority,
@@ -152,6 +167,9 @@ static struct brport_attribute *brport_attrs[] = {
 	&brport_attr_message_age_timer,
 	&brport_attr_forward_delay_timer,
 	&brport_attr_hold_timer,
+#ifdef CONFIG_BRIDGE_IGMP_SNOOPING
+	&brport_attr_multicast_router,
+#endif
 	NULL
 };
 

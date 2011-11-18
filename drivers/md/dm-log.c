@@ -490,6 +490,7 @@ static int create_log_context(struct dm_dirty_log *log, struct dm_target *ti,
 		lc->disk_header = vmalloc(buf_size);
 		if (!lc->disk_header) {
 			DMWARN("couldn't allocate disk log buffer");
+			dm_io_client_destroy(lc->io_req.client);
 			kfree(lc);
 			return -ENOMEM;
 		}
@@ -505,6 +506,8 @@ static int create_log_context(struct dm_dirty_log *log, struct dm_target *ti,
 		DMWARN("couldn't allocate sync bitset");
 		if (!dev)
 			vfree(lc->clean_bits);
+		else
+			dm_io_client_destroy(lc->io_req.client);
 		vfree(lc->disk_header);
 		kfree(lc);
 		return -ENOMEM;
@@ -518,6 +521,8 @@ static int create_log_context(struct dm_dirty_log *log, struct dm_target *ti,
 		vfree(lc->sync_bits);
 		if (!dev)
 			vfree(lc->clean_bits);
+		else
+			dm_io_client_destroy(lc->io_req.client);
 		vfree(lc->disk_header);
 		kfree(lc);
 		return -ENOMEM;

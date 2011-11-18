@@ -251,6 +251,72 @@ struct dentry *debugfs_create_dir(const char *name, struct dentry *parent)
 EXPORT_SYMBOL_GPL(debugfs_create_dir);
 
 /**
+ * debugfs_create_symlink- create a symbolic link in the debugfs filesystem
+ * @name: a pointer to a string containing the name of the symbolic link to
+ *        create.
+ * @parent: a pointer to the parent dentry for this symbolic link.  This
+ *          should be a directory dentry if set.  If this paramater is NULL,
+ *          then the symbolic link will be created in the root of the debugfs
+ *          filesystem.
+ * @target: a pointer to a string containing the path to the target of the
+ *          symbolic link.
+ *
+ * This function creates a symbolic link with the given name in debugfs that
+ * links to the given target path.
+ *
+ * This function will return a pointer to a dentry if it succeeds.  This
+ * pointer must be passed to the debugfs_remove() function when the symbolic
+ * link is to be removed (no automatic cleanup happens if your module is
+ * unloaded, you are responsible here.)  If an error occurs, %NULL will be
+ * returned.
+ *
+ * If debugfs is not enabled in the kernel, the value -%ENODEV will be
+ * returned.
+ */
+struct dentry *debugfs_create_symlink(const char *name, struct dentry *parent,
+				      const char *target)
+{
+	struct dentry *result;
+	char *link;
+
+	link = kstrdup(target, GFP_KERNEL);
+	if (!link)
+		return NULL;
+
+	result = debugfs_create_file(name, S_IFLNK | S_IRWXUGO, parent, link,
+				     NULL);
+	if (!result)
+		kfree(link);
+	return result;
+}
+EXPORT_SYMBOL_GPL(debugfs_create_symlink);
+
+static void __debugfs_remove(struct dentry *dentry, struct dentry *parent)
+{
+	int ret = 0;
+
+	if (debugfs_positive(dentry)) {
+		if (dentry->d_inode) {
+			dget(dentry);
+			switch (dentry->d_inode->i_mode & S_IFMT) {
+			case S_IFDIR:
+				ret = simple_rmdir(parent->d_inode, dentry);
+				break;
+			case S_IFLNK:
+				kfree(dentry->d_inode->i_private);
+				/* fall through */
+			default:
+				simple_unlink(parent->d_inode, dentry);
+				break;
+			}
+			if (!ret)
+				d_delete(dentry);
+			dput(dentry);
+		}
+	}
+}
+
+/**
  * debugfs_remove - removes a file or directory from the debugfs filesystem
  *
  * @dentry: a pointer to a the dentry of the file or directory to be
@@ -267,8 +333,7 @@ EXPORT_SYMBOL_GPL(debugfs_create_dir);
 void debugfs_remove(struct dentry *dentry)
 {
 	struct dentry *parent;
-	int ret = 0;
-
+	
 	if (!dentry)
 		return;
 
@@ -277,22 +342,83 @@ void debugfs_remove(struct dentry *dentry)
 		return;
 
 	mutex_lock(&parent->d_inode->i_mutex);
-	if (debugfs_positive(dentry)) {
-		if (dentry->d_inode) {
-			dget(dentry);
-			if (S_ISDIR(dentry->d_inode->i_mode))
-				ret = simple_rmdir(parent->d_inode, dentry);
-			else
-				simple_unlink(parent->d_inode, dentry);
-			if (!ret)
-				d_delete(dentry);
-			dput(dentry);
-		}
-	}
+	__debugfs_remove(dentry, parent);
 	mutex_unlock(&parent->d_inode->i_mutex);
 	simple_release_fs(&debugfs_mount, &debugfs_mount_count);
 }
 EXPORT_SYMBOL_GPL(debugfs_remove);
+
+/**
+ * debugfs_remove_recursive - recursively removes a directory
+ * @dentry: a pointer to a the dentry of the directory to be removed.
+ *
+ * This function recursively removes a directory tree in debugfs that
+ * was previously created with a call to another debugfs function
+ * (like debugfs_create_file() or variants thereof.)
+ *
+ * This function is required to be called in order for the file to be
+ * removed, no automatic cleanup of files will happen when a module is
+ * removed, you are responsible here.
+ */
+void debugfs_remove_recursive(struct dentry *dentry)
+{
+	struct dentry *child;
+	struct dentry *parent;
+
+	if (!dentry)
+		return;
+
+	parent = dentry->d_parent;
+	if (!parent || !parent->d_inode)
+		return;
+
+	parent = dentry;
+	mutex_lock(&parent->d_inode->i_mutex);
+
+	while (1) {
+		/*
+		 * When all dentries under "parent" has been removed,
+		 * walk up the tree until we reach our starting point.
+		 */
+		if (list_empty(&parent->d_subdirs)) {
+			mutex_unlock(&parent->d_inode->i_mutex);
+			if (parent == dentry)
+				break;
+			parent = parent->d_parent;
+			mutex_lock(&parent->d_inode->i_mutex);
+		}
+		child = list_entry(parent->d_subdirs.next, struct dentry,
+				d_u.d_child);
+
+		/*
+		 * If "child" isn't empty, walk down the tree and
+		 * remove all its descendants first.
+		 */
+		if (!list_empty(&child->d_subdirs)) {
+			mutex_unlock(&parent->d_inode->i_mutex);
+			parent = child;
+			mutex_lock(&parent->d_inode->i_mutex);
+			continue;
+		}
+		__debugfs_remove(child, parent);
+		if (parent->d_subdirs.next == &child->d_u.d_child) {
+			/*
+			 * Avoid infinite loop if we fail to remove
+			 * one dentry.
+			 */
+			mutex_unlock(&parent->d_inode->i_mutex);
+			break;
+		}
+		simple_release_fs(&debugfs_mount, &debugfs_mount_count);
+	}
+
+	parent = dentry->d_parent;
+	mutex_lock(&parent->d_inode->i_mutex);
+	__debugfs_remove(dentry, parent);
+	mutex_unlock(&parent->d_inode->i_mutex);
+	simple_release_fs(&debugfs_mount, &debugfs_mount_count);
+}
+EXPORT_SYMBOL_GPL(debugfs_remove_recursive);
 
 static decl_subsys(debug, NULL, NULL);
 

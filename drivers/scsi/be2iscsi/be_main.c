@@ -672,16 +672,23 @@ static int beiscsi_init_irqs(struct beiscsi_hba *phba)
 	struct hwi_controller *phwi_ctrlr;
 	struct hwi_context_memory *phwi_context;
 	int ret, msix_vec, i, j;
-	char desc[32];
 
 	phwi_ctrlr = phba->phwi_ctrlr;
 	phwi_context = phwi_ctrlr->phwi_ctxt;
 
+	for (i = 0; i < phba->num_cpus; i++) {
+		phba->msi_name[i] = kzalloc(BEISCSI_MSI_NAME, GFP_KERNEL);
+		if (!phba->msi_name[i]) {
+			ret = -ENOMEM;
+			goto free_msix_names;
+		}
+	}
 	if (phba->msix_enabled) {
 		for (i = 0; i < phba->num_cpus; i++) {
-			sprintf(desc, "beiscsi_msix_%04x", i);
+			sprintf(phba->msi_name[i], "beiscsi_msix_%04x", i);
 			msix_vec = phba->msix_entries[i].vector;
-			ret = request_irq(msix_vec, be_isr_msix, 0, desc,
+			ret = request_irq(msix_vec, be_isr_msix, 0,
+					  phba->msi_name[i],
 					  &phwi_context->be_eq[i]);
 			if (ret) {
 				shost_printk(KERN_ERR, phba->shost,
@@ -713,8 +720,11 @@ static int beiscsi_init_irqs(struct beiscsi_hba *phba)
 	}
 	return 0;
 free_msix_irqs:
-	for (j = i - 1; j == 0; j++)
+	for (j = i - 1; j >= 0; j--)
 		free_irq(msix_vec, &phwi_context->be_eq[j]);
+free_msix_names:
+	for (i = 0; i < phba->num_cpus; i++)
+		kfree(phba->msi_name[i]);
 	return ret;
 }
 
@@ -3500,7 +3510,7 @@ static int beiscsi_alloc_pdu(struct iscsi_task *task, uint8_t opcode)
 	dma_addr_t paddr;
 
 	io_task->cmd_bhs = pci_pool_alloc(beiscsi_sess->bhs_pool,
-					  GFP_KERNEL, &paddr);
+					  GFP_ATOMIC, &paddr);
 	if (!io_task->cmd_bhs)
 		return -ENOMEM;
 	io_task->bhs_pa.u.a64.address = paddr;
@@ -3629,7 +3639,8 @@ static void beiscsi_cleanup_task(struct iscsi_task *task)
 			io_task->psgl_handle = NULL;
 		}
 	} else {
-		if ((task->hdr->opcode & ISCSI_OPCODE_MASK) == ISCSI_OP_LOGIN)
+		if (task->hdr &&
+		   ((task->hdr->opcode & ISCSI_OPCODE_MASK) == ISCSI_OP_LOGIN))
 			return;
 		if (io_task->psgl_handle) {
 			spin_lock(&phba->mgmt_sgl_lock);
@@ -3831,6 +3842,7 @@ static void beiscsi_remove(struct pci_dev *pcidev)
 		for (i = 0; i <= phba->num_cpus; i++) {
 			msix_vec = phba->msix_entries[i].vector;
 			free_irq(msix_vec, &phwi_context->be_eq[i]);
+			kfree(phba->msi_name[i]);
 		}
 	} else
 		if (phba->pcidev->irq)

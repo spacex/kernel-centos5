@@ -1404,7 +1404,7 @@ out:
 /*
  * Encode RENAME request
  */
-static int nfs4_xdr_enc_rename(struct rpc_rqst *req, uint32_t *p, const struct nfs4_rename_arg *args)
+static int nfs4_xdr_enc_rename(struct rpc_rqst *req, uint32_t *p, const struct nfs_renameargs *args)
 {
 	struct xdr_stream xdr;
 	struct compound_hdr hdr = {
@@ -2923,6 +2923,8 @@ static int decode_close(struct xdr_stream *xdr, struct nfs_closeres *res)
 	int status;
 
 	status = decode_op_hdr(xdr, OP_CLOSE);
+	if (status != -EIO)
+		nfs_increment_open_seqid(status, res->seqid);
 	if (status)
 		return status;
 	READ_BUF(sizeof(res->stateid.data));
@@ -3213,11 +3215,17 @@ static int decode_lock(struct xdr_stream *xdr, struct nfs_lock_res *res)
 	int status;
 
 	status = decode_op_hdr(xdr, OP_LOCK);
+	if (status == -EIO)
+		goto out;
 	if (status == 0) {
 		READ_BUF(sizeof(res->stateid.data));
 		COPYMEM(res->stateid.data, sizeof(res->stateid.data));
 	} else if (status == -NFS4ERR_DENIED)
-		return decode_lock_denied(xdr, NULL);
+		status = decode_lock_denied(xdr, NULL);
+	if (res->open_seqid != NULL)
+		nfs_increment_open_seqid(status, res->open_seqid);
+	nfs_increment_lock_seqid(status, res->lock_seqid);
+out:
 	return status;
 }
 
@@ -3236,6 +3244,8 @@ static int decode_locku(struct xdr_stream *xdr, struct nfs_locku_res *res)
 	int status;
 
 	status = decode_op_hdr(xdr, OP_LOCKU);
+	if (status != -EIO)
+		nfs_increment_lock_seqid(status, res->seqid);
 	if (status == 0) {
 		READ_BUF(sizeof(res->stateid.data));
 		COPYMEM(res->stateid.data, sizeof(res->stateid.data));
@@ -3306,6 +3316,8 @@ static int decode_open(struct xdr_stream *xdr, struct nfs_openres *res)
         int status;
 
         status = decode_op_hdr(xdr, OP_OPEN);
+	if (status != -EIO)
+		nfs_increment_open_seqid(status, res->seqid);
         if (status)
                 return status;
         READ_BUF(sizeof(res->stateid.data));
@@ -3338,6 +3350,8 @@ static int decode_open_confirm(struct xdr_stream *xdr, struct nfs_open_confirmre
 	int status;
 
         status = decode_op_hdr(xdr, OP_OPEN_CONFIRM);
+	if (status != -EIO)
+		nfs_increment_open_seqid(status, res->seqid);
         if (status)
                 return status;
         READ_BUF(sizeof(res->stateid.data));
@@ -3351,6 +3365,8 @@ static int decode_open_downgrade(struct xdr_stream *xdr, struct nfs_closeres *re
 	int status;
 
 	status = decode_op_hdr(xdr, OP_OPEN_DOWNGRADE);
+	if (status != -EIO)
+		nfs_increment_open_seqid(status, res->seqid);
 	if (status)
 		return status;
 	READ_BUF(sizeof(res->stateid.data));
@@ -3806,7 +3822,7 @@ out:
 /*
  * Decode RENAME response
  */
-static int nfs4_xdr_dec_rename(struct rpc_rqst *rqstp, uint32_t *p, struct nfs4_rename_res *res)
+static int nfs4_xdr_dec_rename(struct rpc_rqst *rqstp, uint32_t *p, struct nfs_renameres *res)
 {
 	struct xdr_stream xdr;
 	struct compound_hdr hdr;

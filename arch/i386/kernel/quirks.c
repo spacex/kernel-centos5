@@ -71,7 +71,11 @@ struct pci_dev *mcp55_rewrite = NULL;
 static void __devinit check_mcp55_legacy_irq_routing(struct pci_dev *dev)
 {
 	u32 cfg;
-	printk(KERN_CRIT "FOUND MCP55 CHIP\n");
+
+	if (!pci_find_capability(dev, PCI_CAP_ID_HT))
+		return;
+
+	printk(KERN_INFO "FOUND MCP55 CHIP\n");
 	/*
 	 *Some MCP55 chips have a legacy irq routing config register, and most BIOS
 	 *engineers have set it so that legacy interrupts are only routed to the BSP.
@@ -83,7 +87,7 @@ static void __devinit check_mcp55_legacy_irq_routing(struct pci_dev *dev)
 	 *if we find that we need to broadcast legacy interrupts
 	 */
 	pci_read_config_dword(dev, 0x74, &cfg);
-	printk(KERN_CRIT "cfg value is %x\n",cfg);	
+	printk(KERN_INFO "cfg value is %x\n",cfg);
 	/*
 	 * We expect legacy interrupts to be routed to INTIN0 on the lapics of all processors
 	 * (not just the BSP).  To ensure this, bit 2 must be clear, and bit 15 must be clear
@@ -94,7 +98,7 @@ static void __devinit check_mcp55_legacy_irq_routing(struct pci_dev *dev)
 		 * Either bit 2 or 15 wasn't clear, so we need to rewrite this cfg register 
 		 * when starting kexec
 		 */
-		printk(KERN_CRIT "DETECTED RESTRICTED ROUTING ON MCP55!  FLAGGING\n");
+		printk(KERN_WARNING "DETECTED RESTRICTED ROUTING ON MCP55!  FLAGGING\n");
 		mcp55_rewrite = dev;
 	}
 }

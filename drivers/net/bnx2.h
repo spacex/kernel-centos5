@@ -458,6 +458,8 @@ struct l2_fhdr {
 #define BNX2_PCICFG_MAILBOX_QUEUE_ADDR			0x00000090
 #define BNX2_PCICFG_MAILBOX_QUEUE_DATA			0x00000094
 
+#define BNX2_PCICFG_DEVICE_CONTROL			0x000000b4
+#define BNX2_PCICFG_DEVICE_STATUS_NO_PEND		 ((1L<<5)<<16)
 
 /*
  *  pci_reg definition
@@ -6202,6 +6204,8 @@ struct l2_fhdr {
 
 #define BNX2_CP_SCRATCH					0x001a0000
 
+#define BNX2_FW_MAX_ISCSI_CONN				 0x001a0080
+
 
 /*
  *  mcp_reg definition
@@ -6352,6 +6356,8 @@ struct l2_fhdr {
 #define BNX2_MCP_SCRATCH				0x00160000
 #define BNX2_MCP_STATE_P1				 0x0016f9c8
 #define BNX2_MCP_STATE_P0				 0x0016fdc8
+#define BNX2_MCP_STATE_P1_5708				 0x001699c8
+#define BNX2_MCP_STATE_P0_5708				 0x00169dc8
 
 #define BNX2_SHM_HDR_SIGNATURE				BNX2_MCP_SCRATCH
 #define BNX2_SHM_HDR_SIGNATURE_SIG_MASK			 0xffff0000
@@ -6554,6 +6560,7 @@ struct sw_bd {
 	DECLARE_PCI_UNMAP_ADDR(mapping)
 	unsigned short		is_gso;
 	unsigned short		nr_frags;
+	struct l2_fhdr		*desc;
 };
 
 struct sw_pg {
@@ -6626,9 +6633,12 @@ struct flash_spec {
 
 #define BNX2_MAX_MSIX_HW_VEC	9
 #define BNX2_MAX_MSIX_VEC	9
-#define BNX2_BASE_VEC		0
-#define BNX2_TX_VEC		1
-#define BNX2_TX_INT_NUM	(BNX2_TX_VEC << BNX2_PCICFG_INT_ACK_CMD_INT_NUM_SHIFT)
+#ifdef BCM_CNIC
+#define BNX2_MIN_MSIX_VEC	2
+#else
+#define BNX2_MIN_MSIX_VEC	1
+#endif
+
 
 struct bnx2_irq {
 	irq_handler_t	handler;
@@ -6721,6 +6731,7 @@ struct bnx2 {
 #define BNX2_FLAG_JUMBO_BROKEN		0x00000800
 #define BNX2_FLAG_CAN_KEEP_VLAN		0x00001000
 #define BNX2_FLAG_BROKEN_STATS		0x00002000
+#define BNX2_FLAG_AER_ENABLED		0x00004000
 
 	struct bnx2_napi	bnx2_napi[BNX2_MAX_MSIX_VEC];
 

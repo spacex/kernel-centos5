@@ -30,8 +30,7 @@
  * Shared functions for accessing and configuring the MAC
  */
 
-
-#include "e1000_hw.h"
+#include "e1000.h"
 
 static s32 e1000_swfw_sync_acquire(struct e1000_hw *hw, u16 mask);
 static void e1000_swfw_sync_release(struct e1000_hw *hw, u16 mask);
@@ -189,16 +188,22 @@ static s32 e1000_set_phy_type(struct e1000_hw *hw)
     case M88E1000_I_PHY_ID:
     case M88E1011_I_PHY_ID:
     case M88E1111_I_PHY_ID:
+    case M88E1118_E_PHY_ID:
         hw->phy_type = e1000_phy_m88;
         break;
     case IGP01E1000_I_PHY_ID:
         if (hw->mac_type == e1000_82541 ||
             hw->mac_type == e1000_82541_rev_2 ||
             hw->mac_type == e1000_82547 ||
-            hw->mac_type == e1000_82547_rev_2) {
+            hw->mac_type == e1000_82547_rev_2)
             hw->phy_type = e1000_phy_igp;
-            break;
-        }
+		break;
+    case RTL8211B_PHY_ID:
+        hw->phy_type = e1000_phy_8211;
+        break;
+    case RTL8201N_PHY_ID:
+        hw->phy_type = e1000_phy_8201;
+        break;
     case IGP03E1000_E_PHY_ID:
         hw->phy_type = e1000_phy_igp_3;
         break;
@@ -397,6 +402,9 @@ s32 e1000_set_mac_type(struct e1000_hw *hw)
 	case E1000_DEV_ID_82547GI:
 		hw->mac_type = e1000_82547_rev_2;
 		break;
+	case E1000_DEV_ID_INTEL_CE4100_GBE:
+		hw->mac_type = e1000_ce4100;
+		break;
 	case E1000_DEV_ID_82571EB_COPPER:
 	case E1000_DEV_ID_82571EB_FIBER:
 	case E1000_DEV_ID_82571EB_SERDES:
@@ -515,6 +523,9 @@ void e1000_set_media_type(struct e1000_hw *hw)
         case e1000_82542_rev2_0:
         case e1000_82542_rev2_1:
             hw->media_type = e1000_media_type_fiber;
+            break;
+        case e1000_ce4100:
+            hw->media_type = e1000_media_type_copper;
             break;
         case e1000_ich8lan:
         case e1000_82573:
@@ -665,6 +676,7 @@ s32 e1000_reset_hw(struct e1000_hw *hw)
             ew32(CTRL, (ctrl | E1000_CTRL_RST));
             msleep(5);
             break;
+        case e1000_ce4100:
         default:
             ew32(CTRL, (ctrl | E1000_CTRL_RST));
             break;
@@ -1391,6 +1403,67 @@ static s32 e1000_setup_fiber_serdes_link(struct e1000_hw *hw)
 }
 
 /******************************************************************************
+ * e1000_copper_link_rtl_setup - Copper link setup for e1000_phy_rtl series.
+ * @hw: Struct containing variables accessed by shared code
+ *
+ * Commits changes to PHY configuration by calling e1000_phy_reset().
+ */
+static s32 e1000_copper_link_rtl_setup(struct e1000_hw *hw)
+{
+	s32 ret_val;
+
+	/* SW reset the PHY so all changes take effect */
+	ret_val = e1000_phy_reset(hw);
+	if (ret_val) {
+		DEBUGOUT("Error Resetting the PHY\n");
+		return ret_val;
+	}
+
+	return E1000_SUCCESS;
+}
+
+static s32 gbe_dhg_phy_setup(struct e1000_hw *hw)
+{
+	s32 ret_val;
+	u32 ctrl_aux;
+
+	switch (hw->phy_type) {
+	case e1000_phy_8211:
+		ret_val = e1000_copper_link_rtl_setup(hw);
+		if (ret_val) {
+			DEBUGOUT("e1000_copper_link_rtl_setup failed!\n");
+			return ret_val;
+		}
+		break;
+	case e1000_phy_8201:
+		/* Set RMII mode */
+		ctrl_aux = er32(CTL_AUX);
+		ctrl_aux |= E1000_CTL_AUX_RMII;
+		ew32(CTL_AUX, ctrl_aux);
+		E1000_WRITE_FLUSH();
+
+		/* Disable the J/K bits required for receive */
+		ctrl_aux = er32(CTL_AUX);
+		ctrl_aux |= 0x4;
+		ctrl_aux &= ~0x2;
+		ew32(CTL_AUX, ctrl_aux);
+		E1000_WRITE_FLUSH();
+		ret_val = e1000_copper_link_rtl_setup(hw);
+
+		if (ret_val) {
+			DEBUGOUT("e1000_copper_link_rtl_setup failed!\n");
+			return ret_val;
+		}
+		break;
+	default:
+		DEBUGOUT("Error Resetting the PHY\n");
+		return E1000_ERR_PHY_TYPE;
+	}
+
+	return E1000_SUCCESS;
+}
+
+/**
 * Make sure we have a valid PHY and change PHY mode before link setup.
 *
 * hw - Struct containing variables accessed by shared code
@@ -1868,8 +1941,8 @@ static s32 e1000_copper_link_autoneg(struct e1000_hw *hw)
     if (hw->autoneg_advertised == 0)
         hw->autoneg_advertised = AUTONEG_ADVERTISE_SPEED_DEFAULT;
 
-    /* IFE phy only supports 10/100 */
-    if (hw->phy_type == e1000_phy_ife)
+    /* IFE/RTL8201N PHY only supports 10/100 */
+    if (hw->phy_type == e1000_phy_ife || hw->phy_type == e1000_phy_8201)
         hw->autoneg_advertised &= AUTONEG_ADVERTISE_10_100_ALL;
 
     DEBUGOUT("Reconfiguring auto-neg advertisement params\n");
@@ -1925,7 +1998,7 @@ static s32 e1000_copper_link_postconfig(struct e1000_hw *hw)
     s32 ret_val;
     DEBUGFUNC("e1000_copper_link_postconfig");
 
-    if (hw->mac_type >= e1000_82544) {
+    if ((hw->mac_type >= e1000_82544) && (hw->mac_type != e1000_ce4100)) {
         e1000_config_collision_dist(hw);
     } else {
         ret_val = e1000_config_mac_to_phy(hw);
@@ -2019,6 +2092,12 @@ static s32 e1000_setup_copper_link(struct e1000_hw *hw)
         ret_val = e1000_copper_link_ggp_setup(hw);
         if (ret_val)
             return ret_val;
+    } else {
+        ret_val = gbe_dhg_phy_setup(hw);
+        if (ret_val) {
+            DEBUGOUT("gbe_dhg_phy_setup failed!\n");
+            return ret_val;
+        }
     }
 
     if (hw->autoneg) {
@@ -2159,6 +2238,8 @@ s32 e1000_phy_setup_autoneg(struct e1000_hw *hw)
         ret_val = e1000_read_phy_reg(hw, PHY_1000T_CTRL, &mii_1000t_ctrl_reg);
         if (ret_val)
             return ret_val;
+        else if (hw->phy_type == e1000_phy_8201)
+            mii_1000t_ctrl_reg &= ~REG9_SPEED_MASK;
     } else
         mii_1000t_ctrl_reg=0;
 
@@ -2275,7 +2356,9 @@ s32 e1000_phy_setup_autoneg(struct e1000_hw *hw)
 
     DEBUGOUT1("Auto-Neg Advertising %x\n", mii_autoneg_adv_reg);
 
-    if (hw->phy_type != e1000_phy_ife) {
+    if (hw->phy_type == e1000_phy_8201) {
+       mii_1000t_ctrl_reg = 0;
+    } else if (hw->phy_type != e1000_phy_ife) {
         ret_val = e1000_write_phy_reg(hw, PHY_1000T_CTRL, mii_1000t_ctrl_reg);
         if (ret_val)
             return ret_val;
@@ -2578,7 +2661,7 @@ static s32 e1000_config_mac_to_phy(struct e1000_hw *hw)
 
     /* 82544 or newer MAC, Auto Speed Detection takes care of
     * MAC speed/duplex configuration.*/
-    if (hw->mac_type >= e1000_82544)
+    if ((hw->mac_type >= e1000_82544) && (hw->mac_type != e1000_ce4100))
         return E1000_SUCCESS;
 
     /* Read the Device Control Register and set the bits to Force Speed
@@ -2588,27 +2671,49 @@ static s32 e1000_config_mac_to_phy(struct e1000_hw *hw)
     ctrl |= (E1000_CTRL_FRCSPD | E1000_CTRL_FRCDPX);
     ctrl &= ~(E1000_CTRL_SPD_SEL | E1000_CTRL_ILOS);
 
-    /* Set up duplex in the Device Control and Transmit Control
-     * registers depending on negotiated values.
-     */
-    ret_val = e1000_read_phy_reg(hw, M88E1000_PHY_SPEC_STATUS, &phy_data);
-    if (ret_val)
-        return ret_val;
+    switch (hw->phy_type) {
+    case e1000_phy_8201:
+        ret_val = e1000_read_phy_reg(hw, PHY_CTRL, &phy_data);
+        if (ret_val)
+            return ret_val;
 
-    if (phy_data & M88E1000_PSSR_DPLX)
-        ctrl |= E1000_CTRL_FD;
-    else
-        ctrl &= ~E1000_CTRL_FD;
+        if (phy_data & RTL_PHY_CTRL_FD)
+            ctrl |= E1000_CTRL_FD;
+        else
+            ctrl &= ~E1000_CTRL_FD;
 
-    e1000_config_collision_dist(hw);
+        if (phy_data & RTL_PHY_CTRL_SPD_100)
+            ctrl |= E1000_CTRL_SPD_100;
+        else
+            ctrl |= E1000_CTRL_SPD_10;
 
-    /* Set up speed in the Device Control register depending on
-     * negotiated values.
-     */
-    if ((phy_data & M88E1000_PSSR_SPEED) == M88E1000_PSSR_1000MBS)
-        ctrl |= E1000_CTRL_SPD_1000;
-    else if ((phy_data & M88E1000_PSSR_SPEED) == M88E1000_PSSR_100MBS)
-        ctrl |= E1000_CTRL_SPD_100;
+        e1000_config_collision_dist(hw);
+        break;
+    default:
+        /* Set up duplex in the Device Control and Transmit Control
+         * registers depending on negotiated values.
+         */
+        ret_val = e1000_read_phy_reg(hw, M88E1000_PHY_SPEC_STATUS,
+                                     &phy_data);
+        if (ret_val)
+            return ret_val;
+
+        if (phy_data & M88E1000_PSSR_DPLX)
+            ctrl |= E1000_CTRL_FD;
+        else
+            ctrl &= ~E1000_CTRL_FD;
+
+        e1000_config_collision_dist(hw);
+
+        /* Set up speed in the Device Control register depending on
+         * negotiated values.
+         */
+        if ((phy_data & M88E1000_PSSR_SPEED) == M88E1000_PSSR_1000MBS)
+            ctrl |= E1000_CTRL_SPD_1000;
+        else if ((phy_data & M88E1000_PSSR_SPEED) ==
+                 M88E1000_PSSR_100MBS)
+            ctrl |= E1000_CTRL_SPD_100;
+    }
 
     /* Write the configured values back to the Device Control Reg. */
     ew32(CTRL, ctrl);
@@ -3103,7 +3208,8 @@ s32 e1000_check_for_link(struct e1000_hw *hw)
          * speed/duplex on the MAC to the current PHY speed/duplex
          * settings.
          */
-        if (hw->mac_type >= e1000_82544)
+        if ((hw->mac_type >= e1000_82544) &&
+            (hw->mac_type != e1000_ce4100))
             e1000_config_collision_dist(hw);
         else {
             ret_val = e1000_config_mac_to_phy(hw);
@@ -3557,7 +3663,7 @@ static s32 e1000_read_phy_reg_ex(struct e1000_hw *hw, u32 reg_addr,
 {
     u32 i;
     u32 mdic = 0;
-    const u32 phy_addr = 1;
+    const u32 phy_addr = (hw->mac_type == e1000_ce4100) ? hw->phy_addr : 1;
 
     DEBUGFUNC("e1000_read_phy_reg_ex");
 
@@ -3571,27 +3677,61 @@ static s32 e1000_read_phy_reg_ex(struct e1000_hw *hw, u32 reg_addr,
          * Control register.  The MAC will take care of interfacing with the
          * PHY to retrieve the desired data.
          */
-        mdic = ((reg_addr << E1000_MDIC_REG_SHIFT) |
-                (phy_addr << E1000_MDIC_PHY_SHIFT) |
-                (E1000_MDIC_OP_READ));
+        if (hw->mac_type == e1000_ce4100) {
+            mdic = ((reg_addr << E1000_MDIC_REG_SHIFT) |
+                    (phy_addr << E1000_MDIC_PHY_SHIFT) |
+                    (INTEL_CE_GBE_MDIC_OP_READ) |
+                    (INTEL_CE_GBE_MDIC_GO));
 
-        ew32(MDIC, mdic);
+            writel(mdic, E1000_MDIO_CMD);
 
-        /* Poll the ready bit to see if the MDI read completed */
-        for (i = 0; i < 64; i++) {
-            udelay(50);
-            mdic = er32(MDIC);
-            if (mdic & E1000_MDIC_READY) break;
+            /* Poll the ready bit to see if the MDI read
+             * completed
+             */
+            for (i = 0; i < 64; i++) {
+                udelay(50);
+                mdic = readl(E1000_MDIO_CMD);
+                if (!(mdic & INTEL_CE_GBE_MDIC_GO))
+                    break;
+            }
+
+            if (mdic & INTEL_CE_GBE_MDIC_GO) {
+                DEBUGOUT("MDI Read did not complete\n");
+                return -E1000_ERR_PHY;
+            }
+
+            mdic = readl(E1000_MDIO_STS);
+            if (mdic & INTEL_CE_GBE_MDIC_READ_ERROR) {
+                DEBUGOUT("MDI Read Error\n");
+                return -E1000_ERR_PHY;
+            }
+            *phy_data = (u16) mdic;
+        } else {
+            mdic = ((reg_addr << E1000_MDIC_REG_SHIFT) |
+                    (phy_addr << E1000_MDIC_PHY_SHIFT) |
+                    (E1000_MDIC_OP_READ));
+
+            ew32(MDIC, mdic);
+
+            /* Poll the ready bit to see if the MDI read
+             * completed
+             */
+            for (i = 0; i < 64; i++) {
+                udelay(50);
+                mdic = er32(MDIC);
+                if (mdic & E1000_MDIC_READY)
+                    break;
+            }
+            if (!(mdic & E1000_MDIC_READY)) {
+                DEBUGOUT("MDI Read did not complete\n");
+                return -E1000_ERR_PHY;
+            }
+            if (mdic & E1000_MDIC_ERROR) {
+                DEBUGOUT("MDI Error\n");
+                return -E1000_ERR_PHY;
+            }
+            *phy_data = (u16) mdic;
         }
-        if (!(mdic & E1000_MDIC_READY)) {
-            DEBUGOUT("MDI Read did not complete\n");
-            return -E1000_ERR_PHY;
-        }
-        if (mdic & E1000_MDIC_ERROR) {
-            DEBUGOUT("MDI Error\n");
-            return -E1000_ERR_PHY;
-        }
-        *phy_data = (u16)mdic;
     } else {
         /* We must first send a preamble through the MDIO pin to signal the
          * beginning of an MII instruction.  This is done by sending 32
@@ -3692,7 +3832,7 @@ static s32 e1000_write_phy_reg_ex(struct e1000_hw *hw, u32 reg_addr,
 {
     u32 i;
     u32 mdic = 0;
-    const u32 phy_addr = 1;
+    const u32 phy_addr = (hw->mac_type == e1000_ce4100) ? hw->phy_addr : 1;
 
     DEBUGFUNC("e1000_write_phy_reg_ex");
 
@@ -3702,26 +3842,54 @@ static s32 e1000_write_phy_reg_ex(struct e1000_hw *hw, u32 reg_addr,
     }
 
     if (hw->mac_type > e1000_82543) {
-        /* Set up Op-code, Phy Address, register address, and data intended
-         * for the PHY register in the MDI Control register.  The MAC will take
-         * care of interfacing with the PHY to send the desired data.
+        /* Set up Op-code, Phy Address, register address, and data
+         * intended for the PHY register in the MDI Control register.
+         * The MAC will take care of interfacing with the PHY to send
+         * the desired data.
          */
-        mdic = (((u32)phy_data) |
-                (reg_addr << E1000_MDIC_REG_SHIFT) |
-                (phy_addr << E1000_MDIC_PHY_SHIFT) |
-                (E1000_MDIC_OP_WRITE));
+        if (hw->mac_type == e1000_ce4100) {
+            mdic = (((u32) phy_data) |
+                    (reg_addr << E1000_MDIC_REG_SHIFT) |
+                    (phy_addr << E1000_MDIC_PHY_SHIFT) |
+                    (INTEL_CE_GBE_MDIC_OP_WRITE) |
+                    (INTEL_CE_GBE_MDIC_GO));
 
-        ew32(MDIC, mdic);
+            writel(mdic, E1000_MDIO_CMD);
 
-        /* Poll the ready bit to see if the MDI read completed */
-        for (i = 0; i < 641; i++) {
-            udelay(5);
-            mdic = er32(MDIC);
-            if (mdic & E1000_MDIC_READY) break;
-        }
-        if (!(mdic & E1000_MDIC_READY)) {
-            DEBUGOUT("MDI Write did not complete\n");
-            return -E1000_ERR_PHY;
+            /* Poll the ready bit to see if the MDI read
+             * completed
+             */
+            for (i = 0; i < 640; i++) {
+                udelay(5);
+                mdic = readl(E1000_MDIO_CMD);
+                if (!(mdic & INTEL_CE_GBE_MDIC_GO))
+                    break;
+            }
+            if (mdic & INTEL_CE_GBE_MDIC_GO) {
+                DEBUGOUT("MDI Write did not complete\n");
+                return -E1000_ERR_PHY;
+            }
+        } else {
+            mdic = (((u32) phy_data) |
+                    (reg_addr << E1000_MDIC_REG_SHIFT) |
+                    (phy_addr << E1000_MDIC_PHY_SHIFT) |
+                    (E1000_MDIC_OP_WRITE));
+
+            ew32(MDIC, mdic);
+
+            /* Poll the ready bit to see if the MDI read
+             * completed
+             */
+            for (i = 0; i < 641; i++) {
+                udelay(5);
+                mdic = er32(MDIC);
+                if (mdic & E1000_MDIC_READY)
+                    break;
+            }
+            if (!(mdic & E1000_MDIC_READY)) {
+                DEBUGOUT("MDI Write did not complete\n");
+                return -E1000_ERR_PHY;
+            }
         }
     } else {
         /* We'll need to use the SW defined pins to shift the write command
@@ -4113,6 +4281,12 @@ static s32 e1000_detect_gig_phy(struct e1000_hw *hw)
     case e1000_82546_rev_3:
         if (hw->phy_id == M88E1011_I_PHY_ID) match = true;
         break;
+    case e1000_ce4100:
+        if ((hw->phy_id == RTL8211B_PHY_ID) ||
+            (hw->phy_id == RTL8201N_PHY_ID) ||
+            (hw->phy_id == M88E1118_E_PHY_ID))
+            match = true;
+        break;
     case e1000_82541:
     case e1000_82541_rev_2:
     case e1000_82547:
@@ -4417,6 +4591,9 @@ s32 e1000_phy_get_info(struct e1000_hw *hw, struct e1000_phy_info *phy_info)
         hw->phy_type == e1000_phy_igp_3 ||
         hw->phy_type == e1000_phy_igp_2)
         return e1000_phy_igp_get_info(hw, phy_info);
+    else if ((hw->phy_type == e1000_phy_8211) ||
+             (hw->phy_type == e1000_phy_8201))
+        return E1000_SUCCESS;
     else if (hw->phy_type == e1000_phy_ife)
         return e1000_phy_ife_get_info(hw, phy_info);
     else
@@ -4976,6 +5153,12 @@ static s32 e1000_do_read_eeprom(struct e1000_hw *hw, u16 offset, u16 words, u16 
 
     DEBUGFUNC("e1000_read_eeprom");
 
+    if (hw->mac_type == e1000_ce4100) {
+        GBE_CONFIG_FLASH_READ(GBE_CONFIG_BASE_VIRT, offset, words,
+                              data);
+        return E1000_SUCCESS;
+    }
+
     /* If eeprom is not yet detected, do so now */
     if (eeprom->word_size == 0)
         e1000_init_eeprom_params(hw);
@@ -5317,6 +5500,12 @@ static s32 e1000_do_write_eeprom(struct e1000_hw *hw, u16 offset, u16 words, u16
     s32 status = 0;
 
     DEBUGFUNC("e1000_write_eeprom");
+
+    if (hw->mac_type == e1000_ce4100) {
+        GBE_CONFIG_FLASH_WRITE(GBE_CONFIG_BASE_VIRT, offset, words,
+                               data);
+        return E1000_SUCCESS;
+    }
 
     /* If eeprom is not yet detected, do so now */
     if (eeprom->word_size == 0)

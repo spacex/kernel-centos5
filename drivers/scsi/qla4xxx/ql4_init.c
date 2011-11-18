@@ -901,7 +901,7 @@ static int qla4xxx_devices_ready(struct scsi_qla_host *ha)
 		qla4xxx_get_firmware_state(ha);
 		if (test_and_clear_bit(DPC_AEN, &ha->dpc_flags)) {
 			/* Set time-between-relogin timer */
-			qla4xxx_process_aen(ha, RELOGIN_DDB_CHANGED_AENS);
+			qla4xxx_process_aen(ha, PROCESS_ALL_AENS);
 		}
 
 		/* if no relogins active or needed, halt discvery wait */
@@ -1278,6 +1278,9 @@ int qla4xxx_start_firmware(struct scsi_qla_host *ha)
 			writel(set_rmask(CSR_SCSI_PROCESSOR_INTR),
 			       &ha->reg->ctrl_status);
 			readl(&ha->reg->ctrl_status);
+			writel(set_rmask(CSR_SCSI_COMPLETION_INTR),
+			       &ha->reg->ctrl_status);
+			readl(&ha->reg->ctrl_status);
 			spin_unlock_irqrestore(&ha->hardware_lock, flags);
 			if (qla4xxx_get_firmware_state(ha) == QLA_SUCCESS) {
 				DEBUG2(printk("scsi%ld: %s: Get firmware "
@@ -1557,7 +1560,8 @@ int qla4xxx_process_ddb_changed(struct scsi_qla_host *ha, uint32_t fw_ddb_index,
 		atomic_set(&ddb_entry->relogin_timer, 0);
 		clear_bit(DF_RELOGIN, &ddb_entry->flags);
 		clear_bit(DF_NO_RELOGIN, &ddb_entry->flags);
-		qla4xxx_conn_start(ddb_entry->conn);
+		if (ddb_entry->conn)
+			qla4xxx_conn_start(ddb_entry->conn);
 		/*
 		 * Change the lun state to READY in case the lun TIMEOUT before
 		 * the device came back.

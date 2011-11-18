@@ -3,6 +3,7 @@
 #undef CONFIG_SND_HDA_INPUT_BEEP_MODE
 #define CONFIG_SND_HDA_INPUT_BEEP_MODE 2
 
+#if 0
 #define WARN_ONCE(condition, format...) ({			\
         static bool __warned;					\
         int __ret_warn_once = !!(condition);			\
@@ -12,6 +13,7 @@
         }   							\
         unlikely(__ret_warn_once);				\
 })        
+#endif
 
 #define BIT_MASK(w) BIT(w)
 
@@ -79,12 +81,8 @@ extern struct hda_codec_preset_list analog_list[];
 extern struct hda_codec_preset_list sigmatel_list[];
 /* SiLabs 3054/3055 modem codecs */
 extern struct hda_codec_preset_list si3054_list[];
-/* ATI HDMI codecs */
-extern struct hda_codec_preset_list atihdmi_list[];
 /* INTEL HDMI codecs */
 extern struct hda_codec_preset_list intel_list[];
-/* NVIDIA HDMI codecs */
-extern struct hda_codec_preset_list nvhdmi_list[];
 /* Conexant audio codec */
 extern struct hda_codec_preset_list conexant_list[];
 /* VIA codecs */
@@ -101,9 +99,7 @@ static struct hda_codec_preset_list *hda_preset_table[] = {
         analog_list,
         sigmatel_list,
         si3054_list,
-        atihdmi_list,
         intel_list,
-        nvhdmi_list,
         conexant_list,
         via_list,
         ca0110_list,

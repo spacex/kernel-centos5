@@ -115,6 +115,8 @@ extern int do_select(int n, fd_set_bits *fds, s64 *timeout);
 extern int do_sys_poll(struct pollfd __user * ufds, unsigned int nfds,
 		       s64 *timeout);
 
+extern int poll_select_set_timeout(struct timespec *to, long sec, long nsec);
+
 #endif /* KERNEL */
 
 #endif /* _LINUX_POLL_H */

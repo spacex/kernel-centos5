@@ -34,7 +34,7 @@
 #endif
 
 struct tun_struct {
-	struct list_head        list;
+	struct tun_file		*tfile;
 	unsigned long 		flags;
 	int			attached;
 	uid_t			owner;

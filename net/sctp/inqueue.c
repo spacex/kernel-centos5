@@ -90,6 +90,10 @@ void sctp_inq_free(struct sctp_inq *queue)
 void sctp_inq_push(struct sctp_inq *q, struct sctp_chunk *packet)
 {
 	/* Directly call the packet handling routine. */
+	if (packet->rcvr->dead) {
+		sctp_chunk_free(packet);
+		return;
+	}
 
 	/* We are now calling this either from the soft interrupt
 	 * or from the backlog processing.

@@ -1,6 +1,6 @@
 /*
  * QLogic Fibre Channel HBA Driver
- * Copyright (c)  2003-2005 QLogic Corporation
+ * Copyright (c)  2003-2011 QLogic Corporation
  *
  * See LICENSE.qla2xxx for copyright and licensing details.
  */
@@ -545,14 +545,10 @@ static int ql_fc_loopback(struct scsi_qla_host *ha, struct sk_buff *skb,
 	}
 
 	loopback->comp_stat = ret_mb[0];
-
-	if ((loopback->comp_stat == MBS_COMMAND_COMPLETE) ||
-	    (loopback->comp_stat == MBS_DIAG_ECHO_TEST_ERROR)) {
-		loopback->crc_err_cnt = ret_mb[1];
-		loopback->disparity_err_cnt = ret_mb[2];
-		loopback->frame_len_err_cnt = ret_mb[3];
-		loopback->iter_cnt_last_err = (ret_mb[19] << 16) | ret_mb[18];
-	}
+	loopback->crc_err_cnt = ret_mb[1];
+	loopback->disparity_err_cnt = ret_mb[2];
+	loopback->frame_len_err_cnt = ret_mb[3];
+	loopback->iter_cnt_last_err = (ret_mb[19] << 16) | ret_mb[18];
 
 	return ql_fc_nl_rsp(NETLINK_CREDS(skb)->pid, nlh->nlmsg_seq,
 	    (uint32_t)nlh->nlmsg_type, ql_cmd, rsp_hdr_len, NULL, 0);
@@ -684,14 +680,30 @@ qla24xx_fcp_prio_cfg_valid(struct qla_fcp_prio_cfg *pri_cfg, uint8_t flag)
 	int i, ret, num_valid;
 	uint8_t *bcode;
 	struct qla_fcp_prio_entry *pri_entry;
+	uint32_t *bcode_val_ptr, bcode_val;
 
 	ret = 1;
 	num_valid = 0;
 	bcode = (uint8_t *)pri_cfg;
+	bcode_val_ptr = (uint32_t *)pri_cfg;
+	bcode_val = (uint32_t)(*bcode_val_ptr);
+
+	if (bcode_val == 0xFFFFFFFF) {
+		/* No FCP Priority config data in flash */
+		DEBUG2(printk(KERN_INFO
+			"%s: No FCP Priority config data.\n",
+			__func__));
+		return 0;
+	}
 
 	if (bcode[0x0] != 'H' || bcode[0x1] != 'Q' || bcode[0x2] != 'O' ||
-	    bcode[0x3] != 'S')
+	    bcode[0x3] != 'S') {
+		/* Invalid FCP Priority data header */
+		DEBUG2(printk(KERN_INFO
+			"%s: Invalid FCP Priority data header. bcode=0x%x\n",
+			__func__, bcode_val));
 		return 0;
+	}
 
 	if (flag != 1)
 		return ret;
@@ -704,8 +716,18 @@ qla24xx_fcp_prio_cfg_valid(struct qla_fcp_prio_cfg *pri_cfg, uint8_t flag)
 		pri_entry++;
 	}
 
-	if (pri_cfg->num_entries && num_valid == 0)
+	if (pri_cfg->num_entries && num_valid == 0) {
+		/* No valid FCP priority data entries */
+		DEBUG2(printk(KERN_INFO
+			"%s: No valid FCP Priority data entries.\n",
+			__func__));
 		ret = 0;
+	} else {
+		/* Valid FCP Priority data entries */
+		DEBUG2(printk(KERN_INFO
+			"%s: Valid FCP Priority data. num entries=%d\n",
+			__func__, num_valid));
+	}
 
 	return ret;
 }
@@ -720,6 +742,12 @@ qla24xx_proc_fcp_prio_cfg_cmd(scsi_qla_host_t *ha, struct sk_buff *skb,
 	int rsp_hdr_len = offsetof(struct qla_fc_msg, u) +
 	    offsetof(struct qla_fcp_prio_param, fcp_prio_cfg);
 	uint8_t *payload = NULL;
+
+	if (!(IS_QLA24XX_TYPE(ha) || IS_QLA25XX(ha))) {
+		ql_cmd->error = -EINVAL;
+		len = 0;
+		goto exit_fcp_prio_cfg;
+	}
 
 	if (test_bit(ISP_ABORT_NEEDED, &ha->dpc_flags) ||
 	    test_bit(ABORT_ISP_ACTIVE, &ha->dpc_flags) ||
@@ -817,6 +845,95 @@ exit_fcp_prio_cfg:
 	ql_cmd->error = ret;
 	return ql_fc_nl_rsp(NETLINK_CREDS(skb)->pid, nlh->nlmsg_seq,
 	    (uint32_t)nlh->nlmsg_type, ql_cmd, rsp_hdr_len, payload, len);
+}
+
+static int
+qla82xx_diag_mode_cmd(scsi_qla_host_t *ha, struct sk_buff *skb,
+    struct nlmsghdr *nlh, struct qla_fc_msg *ql_cmd, int rcvlen)
+{
+	int ret = 0;
+	uint32_t len;
+	uint32_t new_state;
+	uint32_t drv_state;
+	unsigned long reset_timeout;
+	uint32_t diag_mode_cmd;
+
+	int rsp_hdr_len = offsetof(struct qla_fc_msg, u);
+
+	if (test_bit(ISP_ABORT_NEEDED, &ha->dpc_flags) ||
+	    test_bit(ABORT_ISP_ACTIVE, &ha->dpc_flags) ||
+	    test_bit(ISP_ABORT_RETRY, &ha->dpc_flags)) {
+		ql_cmd->error = -EBUSY;
+		len = 0;
+		goto exit_diag_mode;
+	}
+
+	diag_mode_cmd = ql_cmd->u.diag_mode;
+
+	switch (diag_mode_cmd) {
+	case QLFC_SET_DIAG_MODE:
+		DEBUG(qla_printk(KERN_INFO, ha,
+				"Set QUISCENT mode\n"));
+		qla82xx_idc_lock(ha);
+		ha->flags.quiesce_owner = 1;
+		qla82xx_wr_32(ha, QLA82XX_CRB_DEV_STATE,
+				 QLA82XX_DEV_NEED_QUIESCENT);
+		qla82xx_idc_unlock(ha);
+		new_state = qla82xx_wait_for_state_change(ha,
+				QLA82XX_DEV_NEED_QUIESCENT);
+		if (new_state == QLA82XX_DEV_READY)
+			ret = -1;
+			break;
+
+	case QLFC_RESET_DIAG_MODE:
+		DEBUG(qla_printk(KERN_INFO, ha,
+				"Reset QUISCENT mode\n"));
+		qla82xx_idc_lock(ha);
+		qla82xx_wr_32(ha, QLA82XX_CRB_DEV_STATE,
+				QLA82XX_DEV_READY);
+		qla82xx_idc_unlock(ha);
+
+		qla2x00_perform_loop_resync(ha);
+
+		/* Wait for 30 seconds for quiescent reset from other
+		 * functions*/
+		reset_timeout = jiffies + (30 * HZ);
+		do {
+			msleep(1000);
+			qla82xx_idc_lock(ha);
+			drv_state = qla82xx_rd_32(ha,
+					QLA82XX_CRB_DRV_STATE);
+			drv_state &= ~(QLA82XX_DRVST_QSNT_RDY << \
+						(ha->portnum * 4));
+			qla82xx_idc_unlock(ha);
+
+			if (time_after_eq(jiffies, reset_timeout)) {
+				qla_printk(KERN_INFO, ha,
+					"TIMEOUT at reset quiescent\n");
+				qla_printk(KERN_INFO, ha,
+					"DRV_STATE: %d\n", drv_state);
+				break;
+			}
+		} while (drv_state);
+
+		qla82xx_idc_lock(ha);
+		qla82xx_clear_qsnt_ready(ha);
+		ha->flags.quiesce_owner = 0;
+		qla82xx_idc_unlock(ha);
+		break;
+
+	default:
+		DEBUG(printk(KERN_INFO"%s(%ld): inst=%ld \
+				Invalid sub command.\n",
+				__func__, ha->host_no, ha->instance));
+		ret = -1;
+		break;
+	}
+
+exit_diag_mode:
+	ql_cmd->error = ret;
+	return ql_fc_nl_rsp(NETLINK_CREDS(skb)->pid, nlh->nlmsg_seq,
+	    (uint32_t)nlh->nlmsg_type, ql_cmd, rsp_hdr_len, NULL, 0);
 }
 
 /*
@@ -943,6 +1060,10 @@ ql_fc_proc_nl_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh, int rcvlen)
 	case QLFC_FCP_PRIO_CFG_CMD:
 		err = qla24xx_proc_fcp_prio_cfg_cmd(ha, skb, nlh, ql_cmd,
 		    rcvlen);
+		goto exit_proc_nl_rcv_msg;
+
+	case QLFC_DIAG_MODE:
+		err = qla82xx_diag_mode_cmd(ha, skb, nlh, ql_cmd, rcvlen);
 		goto exit_proc_nl_rcv_msg;
 	}
 

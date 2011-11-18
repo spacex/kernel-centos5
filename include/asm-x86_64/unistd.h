@@ -639,10 +639,38 @@ __SYSCALL(__NR_timerfd_create, sys_ni_syscall)
 __SYSCALL(__NR_eventfd, sys_eventfd)
 #define __NR_fallocate		285
 __SYSCALL(__NR_fallocate, sys_fallocate)
+#define __NR_timerfd_settime	286
+__SYSCALL(__NR_timerfd_settime, sys_ni_syscall)
+#define __NR_timerfd_gettime	287
+__SYSCALL(__NR_timerfd_gettime, sys_ni_syscall)
+#define __NR_accept4		288
+__SYSCALL(__NR_accept4, sys_ni_syscall)
+#define __NR_signalfd4		289
+__SYSCALL(__NR_signalfd4, sys_ni_syscall)
+#define __NR_eventfd2		290
+__SYSCALL(__NR_eventfd2, sys_ni_syscall)
+#define __NR_epoll_create1	291
+__SYSCALL(__NR_epoll_create1, sys_ni_syscall)
+#define __NR_dup3		292
+__SYSCALL(__NR_dup3, sys_ni_syscall)
+#define __NR_pipe2		293
+__SYSCALL(__NR_pipe2, sys_ni_syscall)
+#define __NR_inotify_init1	294
+__SYSCALL(__NR_inotify_init1, sys_ni_syscall)
+#define __NR_preadv		295
+__SYSCALL(__NR_preadv, sys_ni_syscall)
+#define __NR_pwritev		296
+__SYSCALL(__NR_pwritev, sys_ni_syscall)
+#define __NR_rt_tgsigqueueinfo	297
+__SYSCALL(__NR_rt_tgsigqueueinfo, sys_ni_syscall)
+#define __NR_perf_event_open	298
+__SYSCALL(__NR_perf_event_open, sys_ni_syscall)
+#define __NR_recvmmsg		299
+__SYSCALL(__NR_recvmmsg, sys_recvmmsg)
 
 #ifdef __KERNEL__
 
-#define __NR_syscall_max __NR_fallocate
+#define __NR_syscall_max __NR_recvmmsg
 
 #ifndef __NO_STUBS
 

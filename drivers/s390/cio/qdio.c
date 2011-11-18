@@ -296,14 +296,24 @@ static inline int
 qdio_siga_sync(struct qdio_q *q, unsigned int gpr2,
 	       unsigned int gpr3)
 {
+	struct qdio_irq *irq;
 	int cc;
+	unsigned int fc = QDIO_SIGA_SYNC;
+	unsigned long schid;
 
 	QDIO_DBF_TEXT4(0,trace,"sigasync");
 	QDIO_DBF_HEX4(0,trace,&q,sizeof(void*));
 
 	qdio_perf_stat_inc(&perf_stats.siga_syncs);
 
-	cc = do_siga_sync(q->schid, gpr2, gpr3);
+	irq = (struct qdio_irq *) q->irq_ptr;
+	if (!irq->is_qebsm)
+		schid = *((u32 *)&q->schid);
+	else {
+		schid = irq->sch_token;
+		fc |= QDIO_SIGA_QEBSM_FLAG;
+	}
+	cc = do_siga_sync(schid, gpr2, gpr3, fc);
 	if (cc)
 		QDIO_DBF_HEX3(0,trace,&cc,sizeof(int*));
 
@@ -322,7 +332,7 @@ static int
 __do_siga_output(struct qdio_q *q, unsigned int *busy_bit)
 {
        struct qdio_irq *irq;
-       unsigned int fc = 0;
+       unsigned int fc = QDIO_SIGA_WRITE;
        unsigned long schid;
 
        irq = (struct qdio_irq *) q->irq_ptr;
@@ -330,7 +340,7 @@ __do_siga_output(struct qdio_q *q, unsigned int *busy_bit)
 	       schid = *((u32 *)&q->schid);
        else {
 	       schid = irq->sch_token;
-	       fc |= 0x80;
+	       fc |= QDIO_SIGA_QEBSM_FLAG;
        }
        return do_siga_output(schid, q->mask, busy_bit, fc);
 }
@@ -375,14 +385,24 @@ qdio_siga_output(struct qdio_q *q)
 static inline int 
 qdio_siga_input(struct qdio_q *q)
 {
+	struct qdio_irq *irq;
 	int cc;
+	unsigned int fc = QDIO_SIGA_READ;
+	unsigned long schid;
 
 	QDIO_DBF_TEXT4(0,trace,"sigain");
 	QDIO_DBF_HEX4(0,trace,&q,sizeof(void*));
 
 	qdio_perf_stat_inc(&perf_stats.siga_ins);
 
-	cc = do_siga_input(q->schid, q->mask);
+	irq = (struct qdio_irq *) q->irq_ptr;
+	if (!irq->is_qebsm)
+		schid = *((u32 *)&q->schid);
+	else {
+		schid = irq->sch_token;
+		fc |= QDIO_SIGA_QEBSM_FLAG;
+	}
+	cc = do_siga_input(schid, q->mask, fc);
 	
 	if (cc)
 		QDIO_DBF_HEX3(0,trace,&cc,sizeof(int*));
@@ -1395,6 +1415,7 @@ __tiqdio_inbound_processing(struct qdio_q *q, int spare_ind_was_set)
 		 * as we might just be about to stop polling, we make
 		 * sure that we check again at least once more 
 		 */
+		tiqdio_set_summary_bit((__u32*)q->dev_st_chg_ind);
 		tiqdio_sched_tl();
 		return;
 	}
@@ -2228,13 +2249,13 @@ qdio_synchronize(struct ccw_device *cdev, unsigned int flags,
 		if (!q)
 			return -EINVAL;
 		if (!(irq_ptr->is_qebsm))
-			cc = do_siga_sync(q->schid, 0, q->mask);
+			cc = qdio_siga_sync(q, 0, q->mask);
 	} else if (flags&QDIO_FLAG_SYNC_OUTPUT) {
 		q=irq_ptr->output_qs[queue_number];
 		if (!q)
 			return -EINVAL;
 		if (!(irq_ptr->is_qebsm))
-			cc = do_siga_sync(q->schid, q->mask, 0);
+			cc = qdio_siga_sync(q, q->mask, 0);
 	} else 
 		return -EINVAL;
 

@@ -1,15 +1,30 @@
 /*
+ *  Linux MegaRAID driver for SAS based RAID controllers
  *
- *		Linux MegaRAID driver for SAS based RAID controllers
+ *  Copyright (c) 2009-2011  LSI Corporation.
  *
- * Copyright (c) 2003-2005  LSI Logic Corporation.
+ *  This program is free software; you can redistribute it and/or
+ *  modify it under the terms of the GNU General Public License
+ *  as published by the Free Software Foundation; either version 2
+ *  of the License, or (at your option) any later version.
  *
- *		This program is free software; you can redistribute it and/or
- *		modify it under the terms of the GNU General Public License
- *		as published by the Free Software Foundation; either version
- *		2 of the License, or (at your option) any later version.
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
  *
- * FILE		: megaraid_sas.h
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program; if not, write to the Free Software
+ *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ *
+ *  FILE: megaraid_sas.h
+ *
+ *  Authors: LSI Corporation
+ *
+ *  Send feedback to: <megaraidlinux@lsi.com>
+ *
+ *  Mail to: LSI Corporation, 1621 Barber Lane, Milpitas, CA 95035
+ *     ATTN: Linuxraid
  */
 
 #ifndef LSI_MEGARAID_SAS_H
@@ -18,9 +33,9 @@
 /*
  * MegaRAID SAS Driver meta data
  */
-#define MEGASAS_VERSION				"00.00.04.31-RH1"
-#define MEGASAS_RELDATE				"June. 15, 2010"
-#define MEGASAS_EXT_VERSION			"Tues. June. 15 14:13:02 EST 2010"
+#define MEGASAS_VERSION				"00.00.05.38-rh1"
+#define MEGASAS_RELDATE				"May. 3, 2011"
+#define MEGASAS_EXT_VERSION			"Tue. May. 3 17:00:00 PDT 2011"
 
 /*
  * Device IDs
@@ -32,6 +47,7 @@
 #define	PCI_DEVICE_ID_LSI_SAS0079GEN2		0x0079
 #define	PCI_DEVICE_ID_LSI_SAS0073SKINNY		0x0073
 #define	PCI_DEVICE_ID_LSI_SAS0071SKINNY		0x0071
+#define	PCI_DEVICE_ID_LSI_FUSION		0x005b
 
 /*
  * =====================================
@@ -60,8 +76,8 @@
 #define MFI_STATE_READY				0xB0000000
 #define MFI_STATE_OPERATIONAL			0xC0000000
 #define MFI_STATE_FAULT				0xF0000000
-#define  MFI_RESET_REQUIRED			0x00000001
-
+#define MFI_RESET_REQUIRED			0x00000001
+#define MFI_RESET_ADAPTER			0x00000002
 #define MEGAMFI_FRAME_SIZE			64
 
 /*
@@ -155,8 +171,8 @@
 #define MR_EVT_FOREIGN_CFG_IMPORTED		0x00db
 #define MR_EVT_LD_OFFLINE			0x00fc
 #define MR_EVT_CTRL_HOST_BUS_SCAN_REQUESTED	0x0152
-#define MAX_LOGICAL_DRIVES                      64
 
+#define MAX_LOGICAL_DRIVES                      64
 
 /*
  * MFI command completion codes
@@ -293,7 +309,6 @@ enum MR_EVT_ARGS {
 	MR_EVT_ARGS_PD_PATHINFO,
 	MR_EVT_ARGS_PD_POWER_STATE,
 	MR_EVT_ARGS_GENERIC,
-
 };
 
 /*
@@ -317,6 +332,7 @@ enum MR_PD_QUERY_TYPE {
 #define MR_EVT_FOREIGN_CFG_IMPORTED			0x00db
 #define MR_EVT_LD_OFFLINE				0x00fc
 #define MR_EVT_CTRL_HOST_BUS_SCAN_REQUESTED		0x0152
+#define MAX_LOGICAL_DRIVES				64
 
 enum MR_PD_STATE {                 
     MR_PD_STATE_UNCONFIGURED_GOOD   = 0x00,
@@ -330,6 +346,7 @@ enum MR_PD_STATE {
     MR_PD_STATE_SYSTEM              = 0x40,
 };
  
+
  /*
  * defines the physical drive address structure
  */
@@ -339,7 +356,6 @@ struct MR_PD_ADDRESS {
                          
     union {
         struct {         
-                         
             u8  enclIndex;
             u8  slotNumber;
         } mrPdAddress;
@@ -352,7 +368,6 @@ struct MR_PD_ADDRESS {
     union {
         u8      connectedPortBitmap;
         u8      connectedPortNumbers;
-                    
     };
     u64     sasAddr[2];
 } __attribute__ ((packed));
@@ -366,12 +381,12 @@ struct MR_PD_LIST {
     struct MR_PD_ADDRESS   addr[1];
 } __attribute__ ((packed));
 
-
 struct megasas_pd_list {
     u16             tid;
     u8             driveType;
     u8             driveState;
 } __attribute__ ((packed));
+
 
  /*
  * defines the logical drive reference structure
@@ -730,10 +745,13 @@ struct megasas_ctrl_info {
 #define MEGASAS_MAX_LD_IDS			(MEGASAS_MAX_LD_CHANNELS * \
 							MEGASAS_MAX_DEV_PER_CHANNEL)
 
-
+#define MEGASAS_MAX_NAME			32
 #define MEGASAS_MAX_SECTORS                    (2*1024)
+#define MEGASAS_MAX_SECTORS_IEEE               (2*128)
 #define MEGASAS_DBG_LVL				1
+
 #define MEGASAS_FW_BUSY				1
+
 /* Frame Type */
 #define IO_FRAME				0
 #define PTHRU_FRAME				1
@@ -748,9 +766,7 @@ struct megasas_ctrl_info {
 #define MEGASAS_RESET_WAIT_TIME			180
 #define MEGASAS_INTERNAL_CMD_WAIT_TIME		180
 #define	MEGASAS_RESET_NOTICE_INTERVAL		5
-
 #define MEGASAS_IOCTL_CMD			0
-
 #define MEGASAS_DEFAULT_CMD_TIMEOUT		90
 
 /*
@@ -795,7 +811,10 @@ struct megasas_ctrl_info {
 */
  
 struct megasas_register_set {
-	u32 	reserved_0[4];			/*0000h*/
+	u32	doorbell;			/*0000h*/
+	u32	fusion_seq_offset;		/*0004h*/
+	u32	fusion_host_diag;		/*0008h*/
+	u32	reserved_01;			/*000Ch*/
 
 	u32 	inbound_msg_0;			/*0010h*/
 	u32 	inbound_msg_1;			/*0014h*/
@@ -815,15 +834,18 @@ struct megasas_register_set {
 	u32 	inbound_queue_port;		/*0040h*/
 	u32 	outbound_queue_port;		/*0044h*/
 
-	u32 	reserved_2[22];			/*0048h*/
+	u32 	reserved_2[9];			/*0048h*/
+	u32 	reply_post_host_index;  /*006Ch*/
+	u32 	reserved_2_2[12];		/*0070h*/
 
 	u32 	outbound_doorbell_clear;	/*00A0h*/
 
 	u32 	reserved_3[3];			/*00A4h*/
 
 	u32 	outbound_scratch_pad ;		/*00B0h*/
+	u32     outbound_scratch_pad_2;         /*00B4h*/
 
-	u32 	reserved_4[3];			/*00B4h*/
+	u32 	reserved_4[2];			/*00B8h*/
 
 	u32 	inbound_low_queue_port ;	/*00C0h*/
 
@@ -852,11 +874,9 @@ struct megasas_sge64 {
 } __attribute__ ((packed));
  
 struct megasas_sge_skinny {
-
 	u64 phys_addr;
 	u32 length;
 	u32 flag;
-
 } __attribute__ ((packed));
 
 union megasas_sgl {
@@ -915,8 +935,9 @@ struct megasas_init_frame {
 	u32 queue_info_new_phys_addr_hi;	/*1Ch */
 	u32 queue_info_old_phys_addr_lo;	/*20h */
 	u32 queue_info_old_phys_addr_hi;	/*24h */
-
-	u32 reserved_4[6];	/*28h */
+	u32 driver_ver_lo;	/*28h */
+	u32 driver_ver_hi;	/*2Ch */
+	u32 reserved_4[4];	/*30h */
 
 } __attribute__ ((packed));
 
@@ -1288,6 +1309,8 @@ struct megasas_instance {
 	dma_addr_t producer_h;
 	u32 *consumer;
 	dma_addr_t consumer_h;
+	u32 *verbuf;
+	dma_addr_t verbuf_h;
 
 	u32 *reply_queue;
 	dma_addr_t reply_queue_h;
@@ -1302,6 +1325,8 @@ struct megasas_instance {
 
 	u16 max_num_sge;
 	u16 max_fw_cmds;
+	// For Fusion its num IOCTL cmds, for others MFI based its max_fw_cmds	
+	u16 max_mfi_cmds;
 	u32 max_sectors_per_req;
 	struct megasas_aen_event *ev;
 	u32 cmd_per_lun;
@@ -1310,6 +1335,7 @@ struct megasas_instance {
 	struct list_head cmd_pool;
 	spinlock_t cmd_pool_lock;
 	spinlock_t hba_lock;
+	spinlock_t fp_lock;
 	spinlock_t completion_lock;
 
 	struct dma_pool *frame_dma_pool;
@@ -1333,7 +1359,6 @@ struct megasas_instance {
 	atomic_t fw_outstanding;
 	atomic_t fw_reset_no_pci_access;
 
-	
 	struct megasas_instance_template *instancet;
 	struct tasklet_struct isr_tasklet;
 	struct work_struct work_init;
@@ -1350,6 +1375,17 @@ struct megasas_instance {
 
 	struct timer_list io_completion_timer;
 	struct list_head internal_reset_pending_q;
+
+	/* Ptr to hba specfic information */
+	void *ctrl_context;
+	u8 msi_flag;
+	struct msix_entry msixentry;
+	u64 map_id;
+	struct megasas_cmd *map_update_cmd;
+	unsigned long bar;
+	long reset_flags;
+	u32 CurLdCount;
+	struct semaphore reset_mutex;
 };
 
 enum {
@@ -1363,7 +1399,8 @@ enum {
 
 
  struct megasas_instance_template {
-	void (*fire_cmd)(struct megasas_instance *, dma_addr_t ,u32 ,struct megasas_register_set __iomem *);
+	void (*fire_cmd)(struct megasas_instance *, dma_addr_t, \
+		u32, struct megasas_register_set __iomem *);
 
 	void (*enable_intr)(struct megasas_register_set __iomem *) ;
 	void (*disable_intr)(struct megasas_register_set __iomem *);
@@ -1373,6 +1410,13 @@ enum {
 	u32 (*read_fw_status_reg)(struct megasas_register_set __iomem *);
 	int (*adp_reset)(struct megasas_instance *, struct megasas_register_set __iomem *);
 	int (*check_reset)(struct megasas_instance *, struct megasas_register_set __iomem *);
+
+	irqreturn_t (*service_isr )(int irq, void *devp, struct pt_regs *regs);
+	void (*tasklet)(unsigned long);
+	u32 (*init_adapter)(struct megasas_instance *);
+	u32 (*build_and_issue_cmd) (struct megasas_instance *, struct scsi_cmnd *);
+	void (*issue_dcmd) (struct megasas_instance *instance,
+				struct megasas_cmd *cmd);
  };
 
 #define MEGASAS_IS_LOGICAL(scp)						\
@@ -1395,11 +1439,16 @@ struct megasas_cmd {
 	u8 abort_aen;
         u8 retry_for_fw_reset;
 
-
 	struct list_head list;
 	struct scsi_cmnd *scmd;
 	struct megasas_instance *instance;
+	union {
+		struct {
+			u16 smid;
+			u16 resvd;
+		} context;
 	u32 frame_count;
+};
 };
 
 #define MAX_MGMT_ADAPTERS		1024
@@ -1456,5 +1505,8 @@ struct megasas_mgmt_info {
 	struct megasas_instance *instance[MAX_MGMT_ADAPTERS];
 	int max_index;
 };
+
+#define msi_control_reg(base) (base + PCI_MSI_FLAGS)
+#define PCI_MSIX_FLAGS_ENABLE (1 << 15)
 
 #endif				/*LSI_MEGARAID_SAS_H */

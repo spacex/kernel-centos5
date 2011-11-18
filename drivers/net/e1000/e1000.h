@@ -103,7 +103,7 @@ do {									\
 /* TX/RX descriptor defines */
 #define E1000_DEFAULT_TXD                  256
 #define E1000_MAX_TXD                      256
-#define E1000_MIN_TXD                       80
+#define E1000_MIN_TXD                       48
 #define E1000_MAX_82544_TXD               4096
 
 #define E1000_DEFAULT_TXD_PWR               12
@@ -113,7 +113,7 @@ do {									\
 
 #define E1000_DEFAULT_RXD                  256
 #define E1000_MAX_RXD                      256
-#define E1000_MIN_RXD                       80
+#define E1000_MIN_RXD                       48
 #define E1000_MAX_82544_RXD               4096
 
 #define E1000_MIN_ITR_USECS		10 /* 100000 irq/sec */
@@ -286,7 +286,6 @@ struct e1000_adapter {
 	/* TX */
 	struct e1000_tx_ring *tx_ring;      /* One per active queue */
 	unsigned int restart_queue;
-	unsigned long tx_queue_len;
 	u32 txd_cmd;
 	u32 tx_int_delay;
 	u32 tx_abs_int_delay;

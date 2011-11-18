@@ -15,6 +15,8 @@
 #include <linux/mm.h>
 
 extern struct file gfs2_internal_file_sentinel;
+extern void gfs2_page_add_databufs(struct gfs2_inode *ip, struct page *page,
+				   unsigned int from, unsigned int to);
 extern int gfs2_internal_read(struct gfs2_inode *ip,
                               struct file_ra_state *ra_state,
                               char *buf, loff_t *pos, unsigned size);

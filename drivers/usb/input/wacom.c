@@ -97,6 +97,7 @@ enum {
 	GRAPHIRE,
 	WACOM_G4,
 	PL,
+	DTU,
 	INTUOS,
 	INTUOS3S,
 	INTUOS3,
@@ -249,6 +250,45 @@ static void wacom_pl_irq(struct urb *urb, struct pt_regs *regs)
 	input_sync(dev);
 
  exit:
+	retval = usb_submit_urb (urb, GFP_ATOMIC);
+	if (retval)
+		err ("%s - usb_submit_urb failed with result %d",
+		     __FUNCTION__, retval);
+}
+
+static void wacom_dtu_irq(struct urb *urb, struct pt_regs *regs)
+{
+	struct wacom *wacom = urb->context;
+	char *data = wacom->data;
+	struct input_dev *dev = wacom->dev;
+	int prox = data[1] & 0x20, pressure, retval;
+
+	dbg("wacom_dtu_irq: received report #%d", data[0]);
+
+	if (prox) {
+		/* Going into proximity select tool */
+		wacom->tool[0] = (data[1] & 0x0c) ? BTN_TOOL_RUBBER : BTN_TOOL_PEN;
+		if (wacom->tool[0] == BTN_TOOL_PEN)
+			wacom->id[0] = STYLUS_DEVICE_ID;
+		else
+			wacom->id[0] = ERASER_DEVICE_ID;
+	}
+	input_report_key(dev, BTN_STYLUS, data[1] & 0x02);
+	input_report_key(dev, BTN_STYLUS2, data[1] & 0x10);
+	input_report_abs(dev, ABS_X, le16_to_cpup((__le16 *)&data[2]));
+	input_report_abs(dev, ABS_Y, le16_to_cpup((__le16 *)&data[4]));
+	pressure = ((data[7] & 0x01) << 8) | data[6];
+	if (pressure < 0)
+		pressure = wacom->features->pressure_max + pressure + 1;
+	input_report_abs(dev, ABS_PRESSURE, pressure);
+	input_report_key(dev, BTN_TOUCH, data[1] & 0x05);
+	if (!prox) /* out-prox */
+		wacom->id[0] = 0;
+	input_report_key(dev, wacom->tool[0], prox);
+	input_report_abs(dev, ABS_MISC, wacom->id[0]);
+
+	input_sync(dev);
+
 	retval = usb_submit_urb (urb, GFP_ATOMIC);
 	if (retval)
 		err ("%s - usb_submit_urb failed with result %d",
@@ -608,7 +648,7 @@ static void wacom_intuos_general(struct urb *urb)
 	/* general pen packet */
 	if ((data[1] & 0xb8) == 0xa0) {
 		t = (data[6] << 2) | ((data[7] >> 6) & 3);
-		if (wacom->features->type >= INTUOS4S && wacom->features->type <= INTUOS4L ||
+		if ((wacom->features->type >= INTUOS4S && wacom->features->type <= INTUOS4L) ||
 		    wacom->features->type == WACOM_21UX2)
 			t = (t << 1) | (data[1] & 1);
 		input_report_abs(dev, ABS_PRESSURE, t);
@@ -903,8 +943,16 @@ static struct wacom_features wacom_features[] = {
 	{ "Wacom Intuos3 4x6",   10, 31496, 19685, 1023, 63, INTUOS3S,   wacom_intuos_irq },
 	{ "Wacom Cintiq 20WSX",  10, 86680, 54180, 1023, 63, BEE,	 wacom_intuos_irq },
 	{ "Wacom Cintiq 21UX2",  10, 87200, 65600, 2047, 63, WACOM_21UX2,wacom_intuos_irq },
+	{ "Wacom DTU2231",       8,  47864, 27011,  511,  0, DTU,        wacom_dtu_irq },
 	{ }
 };
+
+/* DTU-2231 has two interfaces, we just use one of them */
+#define USB_INTERFACE_SUBCLASS_BOOT	1
+#define USB_INTERFACE_PROTOCOL_MOUSE	2
+#define USB_DEVICE_DETAILED(prod, class, sub, proto) \
+		USB_DEVICE_AND_INTERFACE_INFO(USB_VENDOR_ID_WACOM, \
+					      prod, class, sub, proto)
 
 static struct usb_device_id wacom_ids[] = {
 	{ USB_DEVICE(USB_VENDOR_ID_WACOM, 0x00) },	/* Penpartner */
@@ -957,6 +1005,9 @@ static struct usb_device_id wacom_ids[] = {
 	{ USB_DEVICE(USB_VENDOR_ID_WACOM, 0xB7) },	/* Intuos3 4x6 */
 	{ USB_DEVICE(USB_VENDOR_ID_WACOM, 0xC5) },	/* Cintiq 20WSX */
 	{ USB_DEVICE(USB_VENDOR_ID_WACOM, 0xCC) },	/* Cintiq 21UX2 */
+	{ USB_DEVICE_DETAILED(0xCE, USB_CLASS_HID,
+			      USB_INTERFACE_SUBCLASS_BOOT,
+			      USB_INTERFACE_PROTOCOL_MOUSE) },	/* DTU-2231 */
 	{ }
 };
 
@@ -1103,6 +1154,7 @@ static int wacom_probe(struct usb_interface *intf, const struct usb_device_id *i
 			input_set_abs_params(input_dev, ABS_THROTTLE, -1023, 1023, 0, 0);
 			break;
 		case PL:
+		case DTU:
 			input_dev->keybit[LONG(BTN_DIGI)] |= BIT(BTN_STYLUS2) | BIT(BTN_TOOL_RUBBER);
 			break;
 	}

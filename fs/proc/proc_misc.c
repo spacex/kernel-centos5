@@ -65,7 +65,6 @@ extern int get_stram_list(char *);
 extern int get_filesystem_list(char *);
 extern int get_exec_domain_list(char *);
 extern int get_dma_list(char *);
-extern int get_locks_status (char *, char **, off_t, int);
 
 static int proc_calc_metrics(char *page, char **start, off_t off,
 				 int count, int *eof, int len)
@@ -603,15 +602,17 @@ static int cmdline_read_proc(char *page, char **start, off_t off,
 	return proc_calc_metrics(page, start, off, count, eof, len);
 }
 
-static int locks_read_proc(char *page, char **start, off_t off,
-				 int count, int *eof, void *data)
+static int locks_open(struct inode *inode, struct file *filp)
 {
-	int len = get_locks_status(page, start, off, count);
-
-	if (len < count)
-		*eof = 1;
-	return len;
+	return seq_open_private(filp, &locks_seq_operations, sizeof(loff_t));
 }
+
+static const struct file_operations proc_locks_operations = {
+	.open		= locks_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= seq_release_private,
+};
 
 static int execdomains_read_proc(char *page, char **start, off_t off,
 				 int count, int *eof, void *data)
@@ -683,7 +684,6 @@ void __init proc_misc_init(void)
 #endif
 		{"filesystems",	filesystems_read_proc},
 		{"cmdline",	cmdline_read_proc},
-		{"locks",	locks_read_proc},
 		{"execdomains",	execdomains_read_proc},
 #ifdef CONFIG_IA64
 		{"ptcache",	ptcache_read_proc},
@@ -699,6 +699,7 @@ void __init proc_misc_init(void)
 	entry = create_proc_entry("kmsg", S_IRUSR, &proc_root);
 	if (entry)
 		entry->proc_fops = &proc_kmsg_operations;
+	create_seq_entry("locks", 0, &proc_locks_operations);
 	create_seq_entry("devices", 0, &proc_devinfo_operations);
 	create_seq_entry("cpuinfo", 0, &proc_cpuinfo_operations);
 	create_seq_entry("partitions", 0, &proc_partitions_operations);

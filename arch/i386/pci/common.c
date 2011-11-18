@@ -21,6 +21,7 @@ unsigned int pci_probe = PCI_PROBE_BIOS | PCI_PROBE_CONF1 | PCI_PROBE_CONF2 |
 				PCI_PROBE_MMCONF;
 
 int pci_bf_sort;
+static int smbios_type_b1_flag;
 int pci_routeirq;
 int pcibios_last_bus = -1;
 unsigned long pirq_table_addr;
@@ -172,6 +173,46 @@ static int __devinit set_bf_sort(struct dmi_system_id *d)
        }
        return 0;
 }
+static void __devinit read_dmi_type_b1(const struct dmi_header *dm,
+				       void *private_data)
+{
+	u8 *d = (u8 *)dm + 4;
+
+	if (dm->type != 0xB1)
+		return;
+	/*
+	 * Vendor(Dell) specific 0xB1 SMBIOS type field.
+	 * Bits 9-10  PCI Enumeration Method
+	 * 10:9 = 00  Unknown
+	 * 10:9 = 01  Breadth First
+	 * 10:9 = 10  Depth First
+	 * 10:9 = 11  Reserved
+	 */
+	switch (((*(u32 *)d) >> 9) & 0x03) {
+	case 0x00:
+		printk(KERN_INFO "dmi type 0xB1 record - unknown flag\n");
+		break;
+	case 0x01: /* set pci=bfsort */
+		smbios_type_b1_flag = 1;
+		break;
+	case 0x02: /* do not set pci=bfsort */
+		smbios_type_b1_flag = 2;
+		break;
+	default:
+		break;
+	}
+}
+
+static int __devinit find_sort_method(const struct dmi_system_id *d)
+{
+	dmi_walk(read_dmi_type_b1);
+
+	if (smbios_type_b1_flag == 1) {
+		set_bf_sort(d);
+		return 0;
+	}
+	return -1;
+}
 
 /*
  * Enable renumbering of PCI bus# ranges to reach all PCI busses (Cardbus)
@@ -238,6 +279,13 @@ static struct dmi_system_id __devinitdata pciprobe_dmi_table[] = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Dell"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "PowerEdge R900"),
+		},
+	},
+	{
+		.callback = find_sort_method,
+		.ident = "Dell System",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc"),
 		},
 	},
 	{
@@ -367,6 +415,14 @@ static struct dmi_system_id __devinitdata pciprobe_dmi_table[] = {
 			DMI_MATCH(DMI_SYS_VENDOR, "HP"),
 			DMI_MATCH(DMI_PRODUCT_NAME,
 				  "ProLiant xw460c Blade Workstation"),
+		},
+	},
+	{
+		.callback = set_bf_sort,
+		.ident = "HP ProLiant BL620c G7",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "HP"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "ProLiant BL620c G7"),
 		},
 	},
 	{}

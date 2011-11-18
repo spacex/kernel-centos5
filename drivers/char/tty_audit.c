@@ -79,8 +79,10 @@ static void tty_audit_buf_push(struct task_struct *tsk, uid_t loginuid,
 
 	if (buf->valid == 0)
 		return;
-	if (audit_enabled == 0)
+	if (audit_enabled == 0) {
+		buf->valid = 0;
 		return;
+	}
 	ab = audit_log_start(NULL, GFP_KERNEL, AUDIT_TTY);
 	if (ab) {
 		char name[sizeof(tsk->comm)];

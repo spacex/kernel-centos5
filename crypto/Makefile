@@ -62,6 +62,8 @@ obj-$(CONFIG_CRYPTO_RNG) += rng.o
 obj-$(CONFIG_CRYPTO_RNG) += krng.o
 obj-$(CONFIG_CRYPTO_ANSI_CPRNG) += ansi_cprng.o
 obj-$(CONFIG_CRYPTO_TEST) += tcrypt.o
+obj-$(CONFIG_CRYPTO_GF128MUL) += gf128mul.o
+obj-$(CONFIG_CRYPTO_XTS) += xts.o
 
 obj-$(CONFIG_CRYPTO_SIGNATURE) += signature/
 obj-$(CONFIG_CRYPTO_MPILIB) += mpi/

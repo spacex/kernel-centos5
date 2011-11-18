@@ -110,7 +110,8 @@ typedef struct netif_st {
 
 void netif_disconnect(netif_t *netif);
 
-netif_t *netif_alloc(domid_t domid, unsigned int handle);
+netif_t *netif_alloc(struct device *parent, domid_t domid,
+		     unsigned int handle);
 int netif_map(netif_t *netif, unsigned long tx_ring_ref,
 	      unsigned long rx_ring_ref, unsigned int evtchn);
 

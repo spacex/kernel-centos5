@@ -1,6 +1,6 @@
 /*
  * QLogic Fibre Channel HBA Driver
- * Copyright (c)  2003-2005 QLogic Corporation
+ * Copyright (c)  2003-2011 QLogic Corporation
  *
  * See LICENSE.qla2xxx for copyright and licensing details.
  */
@@ -78,7 +78,7 @@ qla2x00_mailbox_command(scsi_qla_host_t *pvha, mbx_cmd_t *mcp)
 		return QLA_FUNCTION_TIMEOUT;
 	}
 
-	if (IS_QLA82XX(ha) && ha->flags.fw_hung) {
+	if (ha->flags.isp82xx_fw_hung) {
 		/* Setting Link-Down error */
 		mcp->mb[0] = MBS_LINK_DOWN_ERROR;
 		rval = QLA_FUNCTION_FAILED;
@@ -218,7 +218,7 @@ qla2x00_mailbox_command(scsi_qla_host_t *pvha, mbx_cmd_t *mcp)
 		ha->flags.mbox_int = 0;
 		clear_bit(MBX_INTERRUPT, &ha->mbx_cmd_flags);
 
-		if (IS_QLA82XX(ha) && ha->flags.fw_hung) {
+		if (ha->flags.isp82xx_fw_hung) {
 			ha->flags.mbox_busy = 0;
 			/* Setting Link-Down error */
 			mcp->mb[0] = MBS_LINK_DOWN_ERROR;
@@ -1821,7 +1821,8 @@ qla24xx_fabric_logout(scsi_qla_host_t *ha, uint16_t loop_id, uint8_t domain,
 	lg->entry_count = 1;
 	lg->nport_handle = cpu_to_le16(loop_id);
 	lg->control_flags =
-	    __constant_cpu_to_le16(LCF_COMMAND_LOGO|LCF_IMPL_LOGO);
+	    __constant_cpu_to_le16(LCF_COMMAND_LOGO|LCF_IMPL_LOGO|
+		LCF_FREE_NPORT);
 	lg->port_id[0] = al_pa;
 	lg->port_id[1] = area;
 	lg->port_id[2] = domain;
@@ -2337,6 +2338,7 @@ qla24xx_abort_target(fc_port_t *fcport)
 {
 	int		rval;
 	struct tsk_mgmt_cmd *tsk;
+	struct sts_entry_24xx *sts;
 	dma_addr_t	tsk_dma;
 	scsi_qla_host_t *ha, *pha;
 
@@ -2364,24 +2366,40 @@ qla24xx_abort_target(fc_port_t *fcport)
 	tsk->p.tsk.port_id[1] = fcport->d_id.b.area;
 	tsk->p.tsk.port_id[2] = fcport->d_id.b.domain;
 	tsk->p.tsk.vp_index = fcport->vp_idx;
+
+	sts = &tsk->p.sts;
 	rval = qla2x00_issue_iocb(ha, tsk, tsk_dma, 0);
 	if (rval != QLA_SUCCESS) {
 		DEBUG2_3_11(printk("%s(%ld): failed to issue Target Reset IOCB "
 		    "(%x).\n", __func__, ha->host_no, rval));
 		goto atarget_done;
-	} else if (tsk->p.sts.entry_status != 0) {
+	} else if (sts->entry_status != 0) {
 		DEBUG2_3_11(printk("%s(%ld): failed to complete IOCB "
 		    "-- error status (%x).\n", __func__, ha->host_no,
-		    tsk->p.sts.entry_status));
+		    sts->entry_status));
 		rval = QLA_FUNCTION_FAILED;
 		goto atarget_done;
-	} else if (tsk->p.sts.comp_status !=
+	} else if (sts->comp_status !=
 	    __constant_cpu_to_le16(CS_COMPLETE)) {
 		DEBUG2_3_11(printk("%s(%ld): failed to complete IOCB "
 		    "-- completion status (%x).\n", __func__,
-		    ha->host_no, le16_to_cpu(tsk->p.sts.comp_status)));
+		    ha->host_no, le16_to_cpu(sts->comp_status)));
 		rval = QLA_FUNCTION_FAILED;
 		goto atarget_done;
+	} else if (le16_to_cpu(sts->scsi_status) &
+	   SS_RESPONSE_INFO_LEN_VALID) {
+		if (le32_to_cpu(sts->rsp_data_len) < 4) {
+			DEBUG2_3_11(printk("%s(%ld): ignoring inconsistent "
+			   "data length -- not enough response info (%d).\n",
+			   __func__, ha->host_no,
+			   le32_to_cpu(sts->rsp_data_len)));
+		} else if (sts->data[3]) {
+			DEBUG2_3_11(printk("%s(%ld): failed to complete IOCB "
+			   "-- response (%x).\n", __func__,
+			   ha->host_no, sts->data[3]));
+			rval = QLA_FUNCTION_FAILED;
+			goto atarget_done;
+		}
 	}
 
 	/* Issue marker IOCB. */
@@ -3809,3 +3827,68 @@ qla81xx_set_port_config(scsi_qla_host_t *ha, uint16_t *mb)
 
 	return rval;
 }
+
+int
+qla2x00_get_thermal_temp(scsi_qla_host_t *ha, uint16_t *temp, uint16_t *frac)
+{
+	int rval;
+	mbx_cmd_t mc;
+	mbx_cmd_t *mcp = &mc;
+
+	DEBUG11(printk(KERN_INFO "%s(%ld): entered.\n", __func__, ha->host_no));
+
+	/* High bits. */
+	mcp->mb[0] = MBC_READ_SFP;
+	mcp->mb[1] = 0x98;
+	mcp->mb[2] = 0;
+	mcp->mb[3] = 0;
+	mcp->mb[6] = 0;
+	mcp->mb[7] = 0;
+	mcp->mb[8] = 1;
+	mcp->mb[9] = 0x01;
+	mcp->mb[10] = BIT_13|BIT_0;
+	mcp->out_mb = MBX_10|MBX_9|MBX_8|MBX_7|MBX_6|MBX_3|MBX_2|MBX_1|MBX_0;
+	mcp->in_mb = MBX_1|MBX_0;
+	mcp->tov = MBX_TOV_SECONDS;
+	mcp->flags = 0;
+	rval = qla2x00_mailbox_command(ha, mcp);
+	if (rval != QLA_SUCCESS) {
+		DEBUG2_3_11(printk(KERN_WARNING
+					"%s(%ld): failed=%x (%x).\n", __func__,
+					ha->host_no, rval, mcp->mb[0]));
+		ha->flags.thermal_supported = 0;
+		goto fail;
+	}
+	*temp = mcp->mb[1] & 0xFF;
+
+	/* Low bits. */
+	mcp->mb[0] = MBC_READ_SFP;
+	mcp->mb[1] = 0x98;
+	mcp->mb[2] = 0;
+	mcp->mb[3] = 0;
+	mcp->mb[6] = 0;
+	mcp->mb[7] = 0;
+	mcp->mb[8] = 1;
+	mcp->mb[9] = 0x10;
+	mcp->mb[10] = BIT_13|BIT_0;
+	mcp->out_mb = MBX_10|MBX_9|MBX_8|MBX_7|MBX_6|MBX_3|MBX_2|MBX_1|MBX_0;
+	mcp->in_mb = MBX_1|MBX_0;
+	mcp->tov = MBX_TOV_SECONDS;
+	mcp->flags = 0;
+	rval = qla2x00_mailbox_command(ha, mcp);
+	if (rval != QLA_SUCCESS) {
+		DEBUG2_3_11(printk(KERN_WARNING
+					"%s(%ld): failed=%x (%x).\n", __func__,
+					ha->host_no, rval, mcp->mb[0]));
+		ha->flags.thermal_supported = 0;
+		goto fail;
+	}
+	*frac = ((mcp->mb[1] & 0xFF) >> 6) * 25;
+
+	if (rval == QLA_SUCCESS)
+		DEBUG11(printk(KERN_INFO
+				"%s(%ld): done.\n", __func__, ha->host_no));
+fail:
+	return rval;
+}
+

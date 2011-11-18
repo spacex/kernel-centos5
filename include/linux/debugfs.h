@@ -34,6 +34,7 @@ struct dentry *debugfs_create_file(const char *name, mode_t mode,
 struct dentry *debugfs_create_dir(const char *name, struct dentry *parent);
 
 void debugfs_remove(struct dentry *dentry);
+void debugfs_remove_recursive(struct dentry *dentry);
 
 struct dentry *debugfs_create_u8(const char *name, mode_t mode,
 				 struct dentry *parent, u8 *value);
@@ -72,6 +73,15 @@ static inline struct dentry *debugfs_create_dir(const char *name,
 
 static inline void debugfs_remove(struct dentry *dentry)
 { }
+
+static inline void debugfs_remove_recursive(struct dentry *dentry)
+{ }
+
+static inline struct dentry *debugfs_rename(struct dentry *old_dir, struct dentry *old_dentry,
+                struct dentry *new_dir, char *new_name)
+{
+	return ERR_PTR(-ENODEV);
+}
 
 static inline struct dentry *debugfs_create_u8(const char *name, mode_t mode,
 					       struct dentry *parent,

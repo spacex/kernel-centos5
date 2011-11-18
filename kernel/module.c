@@ -775,6 +775,9 @@ static void wait_for_zero_refcount(struct module *mod)
 	mutex_lock(&module_mutex);
 }
 
+/* Block module loading/unloading? */
+int modules_disabled = 0;
+
 asmlinkage long
 sys_delete_module(const char __user *name_user, unsigned int flags)
 {
@@ -782,7 +785,7 @@ sys_delete_module(const char __user *name_user, unsigned int flags)
 	char name[MODULE_NAME_LEN];
 	int ret, forced = 0;
 
-	if (!capable(CAP_SYS_MODULE))
+	if (!capable(CAP_SYS_MODULE) || modules_disabled)
 		return -EPERM;
 
 	if (strncpy_from_user(name, name_user, MODULE_NAME_LEN-1) < 0)
@@ -2097,7 +2100,7 @@ sys_init_module(void __user *umod,
 	int ret = 0;
 
 	/* Must have permission */
-	if (!capable(CAP_SYS_MODULE))
+	if (!capable(CAP_SYS_MODULE) || modules_disabled)
 		return -EPERM;
 
 	/* Only one module load at a time, please */
@@ -2334,6 +2337,8 @@ static char *taint_flags(unsigned int taints, char *buf)
 		if (taints & TAINT_UNSIGNED_MODULE)
 			buf[bx++] = 'U';
 #endif
+		if (taints & TAINT_TECH_PREVIEW)
+			buf[bx++] = 'T';
 		/*
 		 * TAINT_FORCED_RMMOD: could be added.
 		 * TAINT_UNSAFE_SMP, TAINT_MACHINE_CHECK, TAINT_BAD_PAGE don't

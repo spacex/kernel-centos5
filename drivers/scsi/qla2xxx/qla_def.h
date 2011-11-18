@@ -1,6 +1,6 @@
 /*
  * QLogic Fibre Channel HBA Driver
- * Copyright (c)  2003-2005 QLogic Corporation
+ * Copyright (c)  2003-2011 QLogic Corporation
  *
  * See LICENSE.qla2xxx for copyright and licensing details.
  */
@@ -287,6 +287,7 @@ struct dsd_dma {
  * SCSI Request Block
  */
 typedef struct srb {
+	atomic_t ref_count;
 	struct scsi_qla_host *ha;	/* HA the SP is queued on */
 	struct fc_port *fcport;
 
@@ -2377,8 +2378,11 @@ typedef struct scsi_qla_host {
 		uint32_t        fac_supported		:1;
 		uint32_t        eeh_busy		:1;
 		uint32_t        fcp_prio_enabled	:1;
-		uint32_t	fw_hung			:1;
-		/* 28 bits */
+		uint32_t	isp82xx_fw_hung		:1;
+		uint32_t	quiesce_owner   	:1;
+		uint32_t	thermal_supported	:1;
+		uint32_t	isp82xx_reset_hdlr_active :1;
+		/* 31 bits */
 	} flags;
 
 	atomic_t	loop_state;
@@ -2409,6 +2413,7 @@ typedef struct scsi_qla_host {
 #define NPIV_CONFIG_NEEDED	16
 #define ISP_UNRECOVERABLE	17
 #define FCOE_CTX_RESET_NEEDED	18	/* Initiate FCoE context reset */
+#define ISP_QUIESCE_NEEDED 	19	/* Driver need some quiescence */
 
 	uint32_t	device_flags;
 #define DFLG_LOCAL_DEVICES		BIT_0

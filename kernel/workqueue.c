@@ -183,21 +183,10 @@ static void set_delayed_wq_data(struct work_struct *work,
 int fastcall queue_delayed_work(struct workqueue_struct *wq,
 			struct work_struct *work, unsigned long delay)
 {
-	int ret = 0;
-	struct timer_list *timer = &work->timer;
+	if (delay == 0)
+		return queue_work(wq, work);
 
-	if (!test_and_set_bit(0, &work->pending)) {
-		BUG_ON(timer_pending(timer));
-		BUG_ON(!list_empty(&work->entry));
-
-		set_delayed_wq_data(work, wq);
-		timer->expires = jiffies + delay;
-		timer->data = (unsigned long)work;
-		timer->function = delayed_work_timer_fn;
-		add_timer(timer);
-		ret = 1;
-	}
-	return ret;
+	return queue_delayed_work_on(-1, wq, work, delay);
 }
 EXPORT_SYMBOL_GPL(queue_delayed_work);
 
@@ -224,7 +213,10 @@ int queue_delayed_work_on(int cpu, struct workqueue_struct *wq,
 		timer->expires = jiffies + delay;
 		timer->data = (unsigned long)work;
 		timer->function = delayed_work_timer_fn;
-		add_timer_on(timer, cpu);
+		if (unlikely(cpu >= 0))
+			add_timer_on(timer, cpu);
+		else
+			add_timer(timer);
 		ret = 1;
 	}
 	return ret;

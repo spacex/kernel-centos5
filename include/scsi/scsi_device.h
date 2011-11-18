@@ -196,6 +196,8 @@ struct scsi_device_handler {
 
 struct scsi_dh_data {
 	struct scsi_device_handler *scsi_dh;
+	struct scsi_device *sdev;
+	struct kref kref;
 	char buf[0];
 };
 
@@ -430,5 +432,9 @@ static inline int scsi_device_qas(struct scsi_device *sdev)
 	if (sdev->inquiry_len < 57)
 		return 0;
 	return sdev->inquiry[56] & 0x02;
+}
+static inline int scsi_device_enclosure(struct scsi_device *sdev)
+{
+	return sdev->inquiry[6] & (1<<6);
 }
 #endif /* _SCSI_SCSI_DEVICE_H */

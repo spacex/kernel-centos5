@@ -167,6 +167,10 @@ struct mem_dqblk {
  */
 struct quota_format_type;
 
+/* limits are stored as unsigned 32-bit data */
+#define DQI_MAXBLIMIT (0xffffffff)
+#define DQI_MAXILIMIT (0xffffffff)
+
 struct mem_dqinfo {
 	struct quota_format_type *dqi_format;
 	struct list_head dqi_dirty_list;	/* List of dirty dquots */

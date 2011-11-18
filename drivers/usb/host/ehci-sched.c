@@ -80,7 +80,11 @@ static void periodic_unlink (struct ehci_hcd *ehci, unsigned frame, void *ptr)
 	 * from ptr may still be in use, the caller updates them.
 	 */
 	*prev_p = *periodic_next_shadow (&here, Q_NEXT_TYPE (*hw_p));
-	*hw_p = *here.hw_next;
+
+	if (!ehci->use_dummy_qh || *here.hw_next != EHCI_LIST_END)
+		*hw_p = *here.hw_next;
+	else
+		*hw_p = ehci->dummy->qh_dma;
 }
 
 /* how many of the uframe's 125 usecs are allocated? */
@@ -2166,7 +2170,11 @@ restart:
 				 * pointer for much longer, if at all.
 				 */
 				*q_p = q.itd->itd_next;
-				*hw_p = q.itd->hw_next;
+				if (!ehci->use_dummy_qh ||
+				    q.itd->hw_next != EHCI_LIST_END)
+					*hw_p = q.itd->hw_next;
+				else
+					*hw_p = ehci->dummy->qh_dma;
 				type = Q_NEXT_TYPE (q.itd->hw_next);
 				wmb();
 				modified = itd_complete (ehci, q.itd, regs);
@@ -2182,7 +2190,11 @@ restart:
 					break;
 				}
 				*q_p = q.sitd->sitd_next;
-				*hw_p = q.sitd->hw_next;
+				if (!ehci->use_dummy_qh ||
+				    q.sitd->hw_next != EHCI_LIST_END)
+					*hw_p = q.sitd->hw_next;
+				else
+					*hw_p = ehci->dummy->qh_dma;
 				type = Q_NEXT_TYPE (q.sitd->hw_next);
 				wmb();
 				modified = sitd_complete (ehci, q.sitd, regs);

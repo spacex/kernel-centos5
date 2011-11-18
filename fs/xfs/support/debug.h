@@ -20,17 +20,35 @@
 
 #include <stdarg.h>
 
-#define CE_DEBUG        7               /* debug        */
-#define CE_CONT         6               /* continuation */
-#define CE_NOTE         5               /* notice       */
-#define CE_WARN         4               /* warning      */
-#define CE_ALERT        1               /* alert        */
-#define CE_PANIC        0               /* panic        */
+#define CE_DEBUG        KERN_DEBUG
+#define CE_CONT         KERN_INFO
+#define CE_NOTE         KERN_NOTICE
+#define CE_WARN         KERN_WARNING
+#define CE_ALERT        KERN_ALERT
+#define CE_PANIC        KERN_EMERG
 
-extern void icmn_err(int, char *, va_list)
-	__attribute__ ((format (printf, 2, 0)));
-extern void cmn_err(int, char *, ...)
-	__attribute__ ((format (printf, 2, 3)));
+#define cmn_err(lvl, fmt, args...)	\
+	do { \
+		printk(lvl fmt "\n", ## args); \
+		BUG_ON(strncmp(lvl, KERN_EMERG, strlen(KERN_EMERG)) == 0); \
+	} while (0)
+
+#define xfs_fs_cmn_err(lvl, mp, fmt, args...)	\
+	do { \
+		printk(lvl "Filesystem %s: " fmt "\n", (mp)->m_fsname, ## args); \
+		BUG_ON(strncmp(lvl, KERN_EMERG, strlen(KERN_EMERG)) == 0); \
+	} while (0)
+
+/* All callers to xfs_cmn_err use CE_ALERT, so don't bother testing lvl */
+#define xfs_cmn_err(panic_tag, lvl, mp, fmt, args...)	\
+	do { \
+		printk(KERN_ALERT "Filesystem %s: " fmt "\n", (mp)->m_fsname, ## args); \
+		if (xfs_panic_mask & panic_tag) { \
+			printk(KERN_ALERT "XFS: Transforming an alert into a BUG."); \
+			BUG(); \
+		} \
+	} while (0)
+
 extern void assfail(char *expr, char *f, int l);
 
 #define ASSERT_ALWAYS(expr)	\

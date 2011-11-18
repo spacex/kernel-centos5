@@ -231,9 +231,11 @@ static int unregister_vlan_dev(struct net_device *real_dev,
 
 			/* Take it out of our own structures, but be sure to
 			 * interlock with HW accelerating devices or SW vlan
-			 * input packet processing.
+			 * input packet processing if VLAN is not 0 (leave it
+			 * there for 802.1p).
 			 */
-			if (real_dev->features & NETIF_F_HW_VLAN_FILTER)
+			if (vlan_id &&
+			    (real_dev->features & NETIF_F_HW_VLAN_FILTER))
 				real_dev->vlan_rx_kill_vid(real_dev, vlan_id);
 
 			grp->vlan_devices[vlan_id] = NULL;
@@ -319,6 +321,26 @@ static int unregister_vlan_device(const char *vlan_IF_name)
 	return ret;
 }
 
+static int vlan_ethtool_set_sg(struct net_device *dev, u32 data)
+{
+	if (data) {
+		const struct vlan_dev_info *vlan = VLAN_DEV_INFO(dev);
+		struct net_device *real_dev = vlan->real_dev;
+
+		/* Underlying device must support SG for VLAN-tagged packets
+		 * and must have SG enabled now.
+		 */
+		if (!(real_dev->features & NETIF_F_VLAN_SG))
+			return -EOPNOTSUPP;
+		if (!(real_dev->features & NETIF_F_SG))
+			return -EINVAL;
+		dev->features |= NETIF_F_SG;
+	} else {
+		dev->features &= ~NETIF_F_SG;
+	}
+	return 0;
+}
+
 static int vlan_ethtool_set_tso(struct net_device *dev, u32 data)
 {
 	if (data) {
@@ -356,6 +378,8 @@ static struct ethtool_ops vlan_ethtool_ops = {
 	.get_rx_csum		= vlan_ethtool_get_rx_csum,
 	.set_tso		= vlan_ethtool_set_tso,
 	.get_tso		= ethtool_op_get_tso,
+	.set_sg			= vlan_ethtool_set_sg,
+	.get_sg			= ethtool_op_get_sg,
 };
 
 static void vlan_setup(struct net_device *new_dev)
@@ -524,10 +548,14 @@ static struct net_device *register_vlan_device(const char *eth_IF_name,
 					     (1<<__LINK_STATE_DORMANT))) |
 			 (1<<__LINK_STATE_PRESENT); 
 
+	if (real_dev->features & NETIF_F_VLAN_SG)
+		new_dev->features |= real_dev->features & NETIF_F_SG;
 	if (real_dev->features & NETIF_F_VLAN_TSO)
 		new_dev->features |= real_dev->features & VLAN_TSO_FEATURES;
 	if (real_dev->features & NETIF_F_VLAN_CSUM)
 		new_dev->features |= real_dev->features & NETIF_F_ALL_CSUM;
+	if (real_dev->features & NETIF_F_VLAN_HIGHDMA)
+		new_dev->features |= real_dev->features & NETIF_F_HIGHDMA;
 
 	/* need 4 bytes for extra VLAN header info,
 	 * hope the underlying device can handle it.
@@ -662,6 +690,14 @@ static int vlan_device_event(struct notifier_block *unused, unsigned long event,
 	struct vlan_group *grp = __vlan_find_group(dev->ifindex);
 	int i, flgs;
 	struct net_device *vlandev;
+
+	if ((event == NETDEV_UP) &&
+	    (dev->features & NETIF_F_HW_VLAN_FILTER) &&
+	    dev->vlan_rx_add_vid) {
+		pr_info("8021q: adding VLAN 0 to HW filter on device %s\n",
+			dev->name);
+		dev->vlan_rx_add_vid(dev, 0);
+	}
 
 	if (!grp)
 		goto out;

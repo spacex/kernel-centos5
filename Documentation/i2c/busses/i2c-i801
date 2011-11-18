@@ -5,8 +5,8 @@ Supported adapters:
     '810' and '810E' chipsets)
   * Intel 82801BA (ICH2 - part of the '815E' chipset)
   * Intel 82801CA/CAM (ICH3)
-  * Intel 82801DB (ICH4) (HW PEC supported, 32 byte buffer not supported)
-  * Intel 82801EB/ER (ICH5) (HW PEC supported, 32 byte buffer not supported)
+  * Intel 82801DB (ICH4) (HW PEC supported)
+  * Intel 82801EB/ER (ICH5) (HW PEC supported)
   * Intel 6300ESB
   * Intel 82801FB/FR/FW/FRW (ICH6)
   * Intel 82801G (ICH7)
@@ -19,10 +19,12 @@ Supported adapters:
   * Intel Patsburg (PCH)
    Datasheets: Publicly available at the Intel website
 
+On Intel Patsburg and later chipsets, both the normal host SMBus controller
+and the additional 'Integrated Device Function' controllers are supported.
+
 Authors: 
-	Frodo Looijaard <frodol@dds.nl>, 
-	Philip Edelbrock <phil@netroedge.com>, 
 	Mark Studebaker <mdsxyz123@yahoo.com>
+	Jean Delvare <khali@linux-fr.org>
 
 
 Module Parameters
@@ -70,7 +72,7 @@ Not supported.
 I2C Block Read Support
 ----------------------
 
-Not supported at the moment.
+I2C block read is supported on the 82801EB (ICH5) and later chips.
 
 
 SMBus 2.0 Support

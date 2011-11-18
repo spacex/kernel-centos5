@@ -285,9 +285,7 @@ static void htable_gc(unsigned long htlong)
 
 static void htable_destroy(struct ipt_hashlimit_htable *hinfo)
 {
-	/* remove timer, if it is pending */
-	if (timer_pending(&hinfo->timer))
-		del_timer(&hinfo->timer);
+	del_timer_sync(&hinfo->timer);
 
 	/* remove proc entry */
 	remove_proc_entry(hinfo->pde->name, hashlimit_procdir);
