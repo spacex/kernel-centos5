@@ -686,6 +686,8 @@ static int nfs_compare_super(struct super_block *sb, void *data)
 		return 0;
 	if (memcmp(&old->fsid, &server->fsid, sizeof(old->fsid)) != 0)
 		return 0;
+	if (old->flags & NFS_MOUNT_UNSHARED)
+		return 0;
 
 	return nfs_compare_mount_options(sb, server, mntflags);
 }
@@ -717,6 +719,9 @@ static int nfs_get_sb(struct file_system_type *fs_type,
 		goto out_err_noserver;
 	}
 	sb_mntdata.server = server;
+
+	if (server->flags & NFS_MOUNT_UNSHARED)
+		compare_super = NULL;
 
 	/* Get a superblock - note that we may end up sharing one that already exists */
 	s = sget(fs_type, compare_super, nfs_set_super, &sb_mntdata);
@@ -797,6 +802,9 @@ static int nfs_xdev_get_sb(struct file_system_type *fs_type, int flags,
 		goto out_err_noserver;
 	}
 	sb_mntdata.server = server;
+
+	if (server->flags & NFS_MOUNT_UNSHARED)
+		compare_super = NULL;
 
 	/* Get a superblock - note that we may end up sharing one that already exists */
 	s = sget(&nfs_fs_type, compare_super, nfs_set_super, &sb_mntdata);
@@ -985,6 +993,9 @@ static int nfs4_get_sb(struct file_system_type *fs_type,
 	}
 	sb_mntdata.server = server;
 
+	if (server->flags & NFS4_MOUNT_UNSHARED)
+		compare_super = NULL;
+
 	/* Get a superblock - note that we may end up sharing one that already exists */
 	s = sget(fs_type, compare_super, nfs_set_super, &sb_mntdata);
 	if (IS_ERR(s)) {
@@ -1074,6 +1085,9 @@ static int nfs4_xdev_get_sb(struct file_system_type *fs_type, int flags,
 	}
 	sb_mntdata.server = server;
 
+	if (server->flags & NFS4_MOUNT_UNSHARED)
+		compare_super = NULL;
+
 	/* Get a superblock - note that we may end up sharing one that already exists */
 	s = sget(&nfs_fs_type, compare_super, nfs_set_super, &sb_mntdata);
 	if (IS_ERR(s)) {
@@ -1153,6 +1167,9 @@ static int nfs4_referral_get_sb(struct file_system_type *fs_type, int flags,
 		goto out_err_noserver;
 	}
 	sb_mntdata.server = server;
+
+	if (server->flags & NFS4_MOUNT_UNSHARED)
+		compare_super = NULL;
 
 	/* Get a superblock - note that we may end up sharing one that already exists */
 	s = sget(&nfs_fs_type, compare_super, nfs_set_super, &sb_mntdata);

@@ -99,6 +99,7 @@ struct rpc_task {
 #endif
 #ifndef __GENKSYMS__
 	unsigned char		tk_rebind_retry : 2;
+	struct list_head	tk_private_list;
 #endif /* ! __GENKSYMS__ */
 };
 #define tk_auth			tk_client->cl_auth

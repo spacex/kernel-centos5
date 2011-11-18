@@ -47,6 +47,14 @@ typedef	int (write_proc_t)(struct file *file, const char __user *buffer,
 			   unsigned long count, void *data);
 typedef int (get_info_t)(char *, char **, off_t, int);
 
+
+/*
+ * procfs node definition.
+ *
+ * procfs should never see a pde that was not allocated by __proc_create().
+ * This is not a public function, so proc_mkdir(), proc_mkdir_mode(),
+ * proc_create(), proc_symlink() or create_proc_entry() should be used.
+ */
 struct proc_dir_entry {
 	unsigned int low_ino;
 	unsigned short namelen;
@@ -57,6 +65,14 @@ struct proc_dir_entry {
 	gid_t gid;
 	loff_t size;
 	struct inode_operations * proc_iops;
+	/*
+	 * NULL ->proc_fops means "PDE is going away RSN" or
+	 * "PDE is just created". In either case, e.g. ->read_proc won't be
+	 * called because it's too late or too early, respectively.
+	 *
+	 * If you're allocating ->proc_fops dynamically, save a pointer
+	 * somewhere.
+	 */
 	const struct file_operations * proc_fops;
 	get_info_t *get_info;
 	struct module *owner;

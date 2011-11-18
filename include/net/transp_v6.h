@@ -15,6 +15,8 @@ extern struct proto tcpv6_prot;
 
 struct flowi;
 
+extern void initialize_hashidentrnd(void);
+
 /* extention headers */
 extern void				ipv6_rthdr_init(void);
 extern void				ipv6_frag_init(void);

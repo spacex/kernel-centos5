@@ -79,11 +79,14 @@ static void __br_deliver(const struct net_bridge_port *to, struct sk_buff *skb)
 {
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	struct net_bridge *br = to->br;
+	struct net_device *to_dev = to->dev;
+	struct net_device *old_dev = NULL;
 	if (unlikely(irqs_disabled())) {
 		struct netpoll *np;
 		if (skb->dev->npinfo) {
 			to->dev->npinfo = skb->dev->npinfo;
 			np = skb->dev->npinfo->netpoll;
+			old_dev = np->dev;
 			np->real_dev = np->dev = to->dev;
 			to->dev->priv_flags |= IFF_IN_NETPOLL;
 		} else {
@@ -95,9 +98,9 @@ static void __br_deliver(const struct net_bridge_port *to, struct sk_buff *skb)
 	NF_HOOK(PF_BRIDGE, NF_BR_LOCAL_OUT, skb, NULL, skb->dev,
 			br_forward_finish);
 #ifdef CONFIG_NET_POLL_CONTROLLER
-	if (skb->dev->npinfo) {
-		skb->dev->npinfo->netpoll->dev = br->dev;
-		skb->dev->npinfo = NULL;
+	if (to_dev->npinfo) {
+		to_dev->npinfo->netpoll->dev = old_dev;
+		to_dev->npinfo = NULL;
 	}
 #endif
 }

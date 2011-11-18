@@ -26,8 +26,7 @@ struct be_ethtool_stat {
 	int offset;
 };
 
-enum {NETSTAT, PORTSTAT, MISCSTAT, DRVSTAT_TX, DRVSTAT_RX, ERXSTAT,
-			PMEMSTAT, DRVSTAT};
+enum {NETSTAT, PORTSTAT, MISCSTAT, DRVSTAT_TX, DRVSTAT_RX, PMEMSTAT, DRVSTAT};
 #define FIELDINFO(_struct, field) FIELD_SIZEOF(_struct, field), \
 					offsetof(_struct, field)
 #define NETSTAT_INFO(field) 	#field, NETSTAT,\
@@ -42,8 +41,6 @@ enum {NETSTAT, PORTSTAT, MISCSTAT, DRVSTAT_TX, DRVSTAT_RX, ERXSTAT,
 #define PORTSTAT_INFO(field) 	#field, PORTSTAT,\
 					FIELDINFO(struct be_port_rxf_stats, \
 						field)
-#define ERXSTAT_INFO(field) 	#field, ERXSTAT,\
-					FIELDINFO(struct be_erx_stats, field)
 #define PMEMSTAT_INFO(field) 	#field, PMEMSTAT,\
 					FIELDINFO(struct be_pmem_stats, field)
 #define	DRVSTAT_INFO(field)	#field, DRVSTAT,\
@@ -123,7 +120,8 @@ static const struct be_ethtool_stat et_rx_stats[] = {
 	{DRVSTAT_RX_INFO(rx_compl)},
 	{DRVSTAT_RX_INFO(rx_mcast_pkts)},
 	{DRVSTAT_RX_INFO(rx_post_fail)},
-	{ERXSTAT_INFO(rx_drops_no_fragments)}
+	{DRVSTAT_RX_INFO(rx_dropped)},
+	{DRVSTAT_RX_INFO(rx_drops_no_frags)}
 };
 #define ETHTOOL_RXSTATS_NUM (ARRAY_SIZE(et_rx_stats))
 
@@ -266,7 +264,6 @@ be_get_ethtool_stats(struct net_device *netdev,
 {
 	struct be_adapter *adapter = netdev_priv(netdev);
 	struct be_hw_stats *hw_stats = hw_stats_from_cmd(adapter->stats_cmd.va);
-	struct be_erx_stats *erx_stats = &hw_stats->erx;
 	struct be_rx_obj *rxo;
 	void *p = NULL;
 	int i, j;
@@ -300,14 +297,7 @@ be_get_ethtool_stats(struct net_device *netdev,
 
 	for_all_rx_queues(adapter, rxo, j) {
 		for (i = 0; i < ETHTOOL_RXSTATS_NUM; i++) {
-			switch (et_rx_stats[i].type) {
-			case DRVSTAT_RX:
-				p = (u8 *)&rxo->stats + et_rx_stats[i].offset;
-				break;
-			case ERXSTAT:
-				p = (u32 *)erx_stats + rxo->q.id;
-				break;
-			}
+			p = (u8 *)&rxo->stats + et_rx_stats[i].offset;
 			data[ETHTOOL_STATS_NUM + j * ETHTOOL_RXSTATS_NUM + i] =
 				(et_rx_stats[i].size == sizeof(u64)) ?
 					*(u64 *)p: *(u32 *)p;

@@ -40,6 +40,8 @@
 #include <linux/route.h>
 #include <linux/module.h>
 #include <linux/if_addr.h>
+#include <linux/random.h>
+#include <linux/jhash.h>
 
 #include <linux/netfilter.h>
 #include <linux/netfilter_ipv6.h>
@@ -58,18 +60,6 @@
 #include <net/checksum.h>
 
 int ip6_fragment(struct sk_buff *skb, int (*output)(struct sk_buff *));
-
-static __inline__ void ipv6_select_ident(struct sk_buff *skb, struct frag_hdr *fhdr)
-{
-	static u32 ipv6_fragmentation_id = 1;
-	static DEFINE_SPINLOCK(ip6_id_lock);
-
-	spin_lock_bh(&ip6_id_lock);
-	fhdr->identification = htonl(ipv6_fragmentation_id);
-	if (++ipv6_fragmentation_id == 0)
-		ipv6_fragmentation_id = 1;
-	spin_unlock_bh(&ip6_id_lock);
-}
 
 static inline int ip6_output_finish(struct sk_buff *skb)
 {
@@ -517,6 +507,35 @@ int ip6_find_1stfragopt(struct sk_buff *skb, u8 **nexthdr)
 }
 EXPORT_SYMBOL_GPL(ip6_find_1stfragopt);
 
+static u32 hashidentrnd __read_mostly;
+#define FID_HASH_SZ 16
+static u32 ipv6_fragmentation_id[FID_HASH_SZ];
+
+void __init initialize_hashidentrnd(void)
+{
+	get_random_bytes(&hashidentrnd, sizeof(hashidentrnd));
+}
+
+static u32 __ipv6_select_ident(const struct in6_addr *addr)
+{
+	u32 newid, oldid, hash = jhash2((u32 *)addr, 4, hashidentrnd);
+	u32 *pid = &ipv6_fragmentation_id[hash % FID_HASH_SZ];
+
+	do {
+		oldid = *pid;
+		newid = oldid + 1;
+		if (!(hash + newid))
+			newid++;
+	} while (cmpxchg(pid, oldid, newid) != oldid);
+
+	return hash + newid;
+}
+
+void ipv6_select_ident(struct frag_hdr *fhdr, struct rt6_info *rt)
+{
+	fhdr->identification = htonl(__ipv6_select_ident(&rt->rt6i_dst.addr));
+}
+
 int ip6_fragment(struct sk_buff *skb, int (*output)(struct sk_buff *))
 {
 	struct net_device *dev;
@@ -588,7 +607,7 @@ int ip6_fragment(struct sk_buff *skb, int (*output)(struct sk_buff *))
 		skb->nh.raw = __skb_push(skb, hlen);
 		memcpy(skb->nh.raw, tmp_hdr, hlen);
 
-		ipv6_select_ident(skb, fh);
+		ipv6_select_ident(fh, rt);
 		fh->nexthdr = nexthdr;
 		fh->reserved = 0;
 		fh->frag_off = htons(IP6_MF);
@@ -716,7 +735,7 @@ slow_path:
 		fh->nexthdr = nexthdr;
 		fh->reserved = 0;
 		if (!frag_id) {
-			ipv6_select_ident(skb, fh);
+			ipv6_select_ident(fh, rt);
 			frag_id = fh->identification;
 		} else
 			fh->identification = frag_id;
@@ -913,7 +932,8 @@ static inline int ip6_ufo_append_data(struct sock *sk,
 			int getfrag(void *from, char *to, int offset, int len,
 			int odd, struct sk_buff *skb),
 			void *from, int length, int hh_len, int fragheaderlen,
-			int transhdrlen, int mtu,unsigned int flags)
+			int transhdrlen, int mtu,unsigned int flags,
+			struct rt6_info *rt)
 
 {
 	struct sk_buff *skb;
@@ -956,7 +976,7 @@ static inline int ip6_ufo_append_data(struct sock *sk,
 		skb_shinfo(skb)->gso_size = mtu - fragheaderlen - 
 					    sizeof(struct frag_hdr);
 		skb_shinfo(skb)->gso_type = SKB_GSO_UDP;
-		ipv6_select_ident(skb, &fhdr);
+		ipv6_select_ident(&fhdr, rt);
 		skb_shinfo(skb)->ip6_frag_id = fhdr.identification;
 		__skb_queue_tail(&sk->sk_write_queue, skb);
 
@@ -1071,7 +1091,7 @@ int ip6_append_data(struct sock *sk, int getfrag(void *from, char *to,
 
 		err = ip6_ufo_append_data(sk, getfrag, from, length, hh_len,
 					  fragheaderlen, transhdrlen, mtu,
-					  flags);
+					  flags, rt);
 		if (err)
 			goto error;
 		return 0;

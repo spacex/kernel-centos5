@@ -30,6 +30,23 @@ extern int num_queues;
  */
 
 /**
+ * bnx2x_send_unload_req - request unload mode from the MCP.
+ *
+ * @bp:			driver handle
+ * @unload_mode:	requested function's unload mode
+ *
+ * Return unload mode returned by the MCP: COMMON, PORT or FUNC.
+ */
+u32 bnx2x_send_unload_req(struct bnx2x *bp, int unload_mode);
+
+/**
+ * bnx2x_send_unload_done - send UNLOAD_DONE command to the MCP.
+ *
+ * @bp:		driver handle
+ */
+void bnx2x_send_unload_done(struct bnx2x *bp);
+
+/**
  * Initialize link parameters structure variables.
  *
  * @param bp
@@ -55,6 +72,9 @@ void bnx2x_link_set(struct bnx2x *bp);
  * @return 0 - link is UP
  */
 u8 bnx2x_link_test(struct bnx2x *bp, u8 is_serdes);
+
+/* Disable transactions from chip to host */
+void bnx2x_pf_disable(struct bnx2x *bp);
 
 /**
  * Handles link status change
@@ -234,6 +254,13 @@ int bnx2x_acquire_hw_lock(struct bnx2x *bp, u32 resource);
 int bnx2x_release_hw_lock(struct bnx2x *bp, u32 resource);
 
 /**
+ * bnx2x_release_leader_lock - release recovery leader lock
+ *
+ * @bp:		driver handle
+ */
+int bnx2x_release_leader_lock(struct bnx2x *bp);
+
+/**
  * Configure eth MAC address in the HW according to the value in
  * netdev->dev_addr.
  *
@@ -285,8 +312,10 @@ void bnx2x_set_storm_rx_mode(struct bnx2x *bp);
 /* Parity errors related */
 void bnx2x_inc_load_cnt(struct bnx2x *bp);
 u32 bnx2x_dec_load_cnt(struct bnx2x *bp);
-bool bnx2x_chk_parity_attn(struct bnx2x *bp);
-bool bnx2x_reset_is_done(struct bnx2x *bp);
+bool bnx2x_chk_parity_attn(struct bnx2x *bp, bool *global, bool print);
+bool bnx2x_reset_is_done(struct bnx2x *bp, int engine);
+void bnx2x_set_reset_in_progress(struct bnx2x *bp);
+void bnx2x_set_reset_global(struct bnx2x *bp);
 void bnx2x_disable_close_the_gate(struct bnx2x *bp);
 
 /**
@@ -1070,8 +1099,8 @@ static inline u16 bnx2x_extract_max_cfg(struct bnx2x *bp, u32 mf_cfg)
 	u16 max_cfg = (mf_cfg & FUNC_MF_CFG_MAX_BW_MASK) >>
 			      FUNC_MF_CFG_MAX_BW_SHIFT;
 	if (!max_cfg) {
-		BNX2X_ERR("Illegal configuration detected for Max BW - "
-			  "using 100 instead\n");
+		DP(NETIF_MSG_LINK,
+		   "Max BW configured to 0 - using 100 instead\n");
 		max_cfg = 100;
 	}
 	return max_cfg;

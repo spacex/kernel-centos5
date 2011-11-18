@@ -22,6 +22,7 @@
 #include <linux/net.h>
 #include <net/ip.h>
 #include <net/inetpeer.h>
+#include <net/secure_seq.h>
 
 /*
  *  Theory of operations.

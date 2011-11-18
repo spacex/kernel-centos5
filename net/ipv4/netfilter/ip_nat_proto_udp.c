@@ -13,6 +13,7 @@
 #include <linux/ip.h>
 #include <linux/udp.h>
 #include <linux/if.h>
+#include <net/secure_seq.h>
 
 #include <linux/netfilter_ipv4/ip_nat.h>
 #include <linux/netfilter_ipv4/ip_nat_core.h>

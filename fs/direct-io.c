@@ -250,9 +250,12 @@ static int dio_complete(struct dio *dio, loff_t offset, int ret, bool is_async)
 
 			end_io(dio->iocb, offset, transferred,
 				    dio->map_bh.b_private, ret, is_async);
-		} else
+		} else {
 			dio->end_io(dio->iocb, offset, transferred,
 				    dio->map_bh.b_private);
+			if (is_async)
+				aio_complete(dio->iocb, ret, 0);
+		}
 	} else if (is_async) {
 		aio_complete(dio->iocb, ret, 0);
 	}
