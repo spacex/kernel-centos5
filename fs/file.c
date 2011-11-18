@@ -52,6 +52,11 @@ struct file ** alloc_fd_array(int num)
 	return new_fds;
 }
 
+static void free_fdmem(void *ptr)
+{
+	is_vmalloc_addr(ptr) ? vfree(ptr) : kfree(ptr);
+}
+
 void free_fd_array(struct file **array, int num)
 {
 	if (!array) {
@@ -61,10 +66,7 @@ void free_fd_array(struct file **array, int num)
 
 	if (num <= NR_OPEN_DEFAULT) /* Don't free the embedded fd array! */
 		return;
-	if (!is_vmalloc_addr(array))
-		kfree(array);
-	else
-		vfree(array);
+	free_fdmem(array);
 }
 
 static void __free_fdtable(struct fdtable *fdt)
@@ -224,10 +226,7 @@ void free_fdset(fd_set *array, int num)
 {
 	if (num <= EMBEDDED_FD_SET_SIZE) /* Don't free an embedded fdset */
 		return;
-	else if (num <= 8 * PAGE_SIZE)
-		kfree(array);
-	else
-		vfree(array);
+	free_fdmem(array);
 }
 
 static struct fdtable *alloc_fdtable(int nr)

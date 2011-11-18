@@ -269,7 +269,7 @@ static struct pid_entry tgid_base_stuff[] = {
 	  S_IFREG|S_IRUGO|S_IWUSR),
 #endif
 #ifdef CONFIG_TASK_IO_ACCOUNTING
-	E(PROC_TGID_IO,             "io",  S_IFREG|S_IRUGO),
+	E(PROC_TGID_IO,             "io",  S_IFREG|S_IRUSR),
 #endif
 
 	{0,0,NULL,0}
@@ -317,7 +317,7 @@ static struct pid_entry tid_base_stuff[] = {
 #endif
 	E(PROC_TID_LIMITS, "limits", S_IFREG|S_IRUGO),
 #ifdef CONFIG_TASK_IO_ACCOUNTING
-	E(PROC_TID_IO,         "io",      S_IFREG|S_IRUGO),
+	E(PROC_TID_IO,         "io",      S_IFREG|S_IRUSR),
 #endif
 
 	{0,0,NULL,0}
@@ -647,6 +647,9 @@ static int do_io_accounting(struct task_struct *task, char *buffer, int whole)
 {
 	u64 rchar, wchar, syscr, syscw;
 	struct task_io_accounting ioac;
+
+	if (!ptrace_may_attach(task))
+		return -EACCES;
 
 	rchar = task->rchar;
 	wchar = task->wchar;

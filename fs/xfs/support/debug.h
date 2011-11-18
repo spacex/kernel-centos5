@@ -35,14 +35,20 @@
 
 #define xfs_fs_cmn_err(lvl, mp, fmt, args...)	\
 	do { \
-		printk(lvl "Filesystem %s: " fmt "\n", (mp)->m_fsname, ## args); \
+		if (mp) \
+			printk(lvl "Filesystem %s: " fmt "\n", (mp)->m_fsname, ## args); \
+		else \
+			printk(lvl fmt "\n", ## args); \
 		BUG_ON(strncmp(lvl, KERN_EMERG, strlen(KERN_EMERG)) == 0); \
 	} while (0)
 
 /* All callers to xfs_cmn_err use CE_ALERT, so don't bother testing lvl */
 #define xfs_cmn_err(panic_tag, lvl, mp, fmt, args...)	\
 	do { \
-		printk(KERN_ALERT "Filesystem %s: " fmt "\n", (mp)->m_fsname, ## args); \
+		if (mp) \
+			printk(KERN_ALERT "Filesystem %s: " fmt "\n", (mp)->m_fsname, ## args); \
+		else \
+			printk(KERN_ALERT fmt "\n", ## args); \
 		if (xfs_panic_mask & panic_tag) { \
 			printk(KERN_ALERT "XFS: Transforming an alert into a BUG."); \
 			BUG(); \

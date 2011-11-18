@@ -5770,6 +5770,16 @@ static void sctp_sock_migrate(struct sock *oldsk, struct sock *newsk,
 
 	}
 
+	sctp_skb_for_each(skb, &assoc->ulpq.reasm, tmp) {
+		sctp_sock_rfree_frag(skb);
+		sctp_skb_set_owner_r_frag(skb, newsk);
+	}
+
+	sctp_skb_for_each(skb, &assoc->ulpq.lobby, tmp) {
+		sctp_sock_rfree_frag(skb);
+		sctp_skb_set_owner_r_frag(skb, newsk);
+	}
+
 	/* Set the type of socket to indicate that it is peeled off from the
 	 * original UDP-style socket or created with the accept() call on a
 	 * TCP-style socket..

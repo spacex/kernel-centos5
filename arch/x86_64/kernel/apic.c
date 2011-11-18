@@ -27,8 +27,6 @@
 #include <linux/sysdev.h>
 #include <linux/module.h>
 
-#include <acpi/acpi_bus.h> /* for acpi_fadt */
-
 #include <asm/atomic.h>
 #include <asm/smp.h>
 #include <asm/mtrr.h>
@@ -1111,46 +1109,10 @@ static void __cpuinit dmi_check_multi(void)
  * Thus far, the major user of this is IBM's Summit2 series:
  * Clustered boxes may have unsynced TSC problems if they are
  * multi-chassis.
- *
- * Use ACPI & DMI to check the apic mapping.
+ * Use DMI to check them
  */
 int apic_is_clustered_box(void)
 {
-#ifdef CONFIG_ACPI
-	/*
-	 * Some x86_64 machines use physical or clustered APIC mode regardless
-	 * of how many procs/clusters are present.
-	 */
-	if (acpi_fadt.revision >= FADT2_REVISION_ID) {
-		/*
-		 * Default to physical flat if both clustered and physical
-		 * flat are set.
-		 */
-		if ((acpi_fadt.force_apic_cluster_model) &&
-		    (acpi_fadt.force_apic_physical_destination_mode)) {
-			printk(KERN_WARNING "Firmware Bug: ACPI has set apic "
-			       " mode to both clustered and physical flat."
-			       "  Please contact your firmware vendor for an"
-			       " update.");
-			/*
-			 * In this case assume physical flat as only a
-			 * very limited number of systems use cluster
-			 */
-			printk(KERN_DEBUG "system APIC: using physical flat\n");
-			return 0;
-		}
-		if (acpi_fadt.force_apic_cluster_model) {
-			printk(KERN_DEBUG "system APIC: can only use cluster\n");
-			return 1;
-		}
-		if (acpi_fadt.force_apic_physical_destination_mode) {
-			printk(KERN_DEBUG "system APIC: can only use "
-			       "physical\n");
-			return 0;
-		}
-	}
-#endif
-
 	dmi_check_multi();
 	if (multi)
 		return 1;

@@ -148,5 +148,8 @@ struct rpc_cred *	get_rpccred(struct rpc_cred *cred)
 	return cred;
 }
 
+int rpcauth_is_gss_cred(const struct rpc_cred *);
+void rpcauth_set_gsscred_cb(int (*cb)(const struct rpc_cred *));
+
 #endif /* __KERNEL__ */
 #endif /* _LINUX_SUNRPC_AUTH_H */

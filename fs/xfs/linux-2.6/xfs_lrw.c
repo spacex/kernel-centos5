@@ -673,6 +673,8 @@ start:
 
 		if ((pos & target->bt_smask) || (count & target->bt_smask)) {
 			xfs_iunlock(xip, XFS_ILOCK_EXCL|iolock);
+			if (need_i_mutex)
+				mutex_unlock(&inode->i_mutex);
 			return XFS_ERROR(-EINVAL);
 		}
 
