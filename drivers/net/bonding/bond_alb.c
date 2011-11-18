@@ -190,8 +190,6 @@ static int tlb_initialize(struct bonding *bond)
 	struct tlb_client_info *new_hashtbl;
 	int i;
 
-	spin_lock_init(&(bond_info->tx_hashtbl_lock));
-
 	new_hashtbl = kzalloc(size, GFP_KERNEL);
 	if (!new_hashtbl) {
 		printk(KERN_ERR DRV_NAME
@@ -360,6 +358,10 @@ static int rlb_arp_recv(struct sk_buff *skb, struct net_device *bond_dev, struct
 		dprintk("Packet has no ARP data\n");
 		goto out;
 	}
+
+	skb = skb_share_check(skb, GFP_ATOMIC);
+	if (!skb)
+		goto out;
 
 	if (!pskb_may_pull(skb, sizeof(struct arphdr) +
 				2 * (skb->dev->addr_len + 4)))
@@ -687,7 +689,7 @@ static struct slave *rlb_choose_channel(struct sk_buff *skb, struct bonding *bon
 			client_info->ntt = 0;
 		}
 
-		if (!list_empty(&bond->vlan_list)) {
+		if (bond->vlgrp) {
 			unsigned short vlan_id;
 			int res = vlan_get_tag(skb, &vlan_id);
 			if (!res) {
@@ -802,8 +804,6 @@ static int rlb_initialize(struct bonding *bond)
 	int size = RLB_HASH_TABLE_SIZE * sizeof(struct rlb_client_info);
 	int i;
 
-	spin_lock_init(&(bond_info->rx_hashtbl_lock));
-
 	new_hashtbl = kmalloc(size, GFP_KERNEL);
 	if (!new_hashtbl) {
 		printk(KERN_ERR DRV_NAME
@@ -914,7 +914,7 @@ static void alb_send_learning_packets(struct slave *slave, u8 mac_addr[])
 		skb->priority = TC_PRIO_CONTROL;
 		skb->dev = slave->dev;
 
-		if (!list_empty(&bond->vlan_list)) {
+		if (bond->vlgrp) {
 			struct vlan_entry *vlan;
 
 			vlan = bond_next_vlan(bond,

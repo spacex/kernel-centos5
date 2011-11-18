@@ -3138,7 +3138,6 @@ static void tx_intr_handler(struct fifo_info *fifo_data)
 		pkt_cnt++;
 
 		/* Updating the statistics block */
-		nic->dev_stats.tx_bytes += skb->len;
 		swstats->mem_freed += skb->truesize;
 		dev_kfree_skb_irq(skb);
 
@@ -3538,7 +3537,7 @@ static void s2io_reset(struct s2io_nic *sp)
 	}
 
 	/* Reset device statistics */
-	memset(&sp->stats_buffer, 0, sizeof(struct s2io_stats_buffer));
+	memset(&sp->stats, 0, sizeof(struct net_device_stats));
 
 	stats = sp->mac_control.stats_info;
 	swstats = &stats->sw_stat;
@@ -4917,57 +4916,78 @@ static void s2io_updt_stats(struct s2io_nic *sp)
 static struct net_device_stats *s2io_get_stats(struct net_device *dev)
 {
 	struct s2io_nic *sp = netdev_priv(dev);
-	struct config_param *config = &sp->config;
 	struct mac_info *mac_control = &sp->mac_control;
 	struct stat_block *stats = mac_control->stats_info;
-	int i;
+	u64 delta;
 
 	/* Configure Stats for immediate updt */
 	s2io_updt_stats(sp);
 
-	/* Calculate the changes in the device statistics since the last call,
-	 * and add them to the statistics maintained by the OS.
-	 *
-	 * The amount of changes to be added equals to the distance between the
-	 * s2io statistics buffer (which holds the device statistics when
-	 * this function was previously called) towards the current values of the
-	 * device statistics.
-	 *
-	 * Normally the current device statistics are always greater or equal to
-	 * the old statistics stored in the buffer, unless the 32bit device
-	 * registers cycle back to zero due to overflow. This fact is taken into
-	 * account for calculating the correct amount of increment to be added to
-	 * the OS statistics.
+	/* A device reset will cause the on-adapter statistics to be zero'ed.
+	 * This can be done while running by changing the MTU.  To prevent the
+	 * system from having the stats zero'ed, the driver keeps a copy of the
+	 * last update to the system (which is also zero'ed on reset).  This
+	 * enables the driver to accurately know the delta between the last
+	 * update and the current update.
 	 */
+	delta = ((u64) le32_to_cpu(stats->rmac_vld_frms_oflow) << 32 |
+		le32_to_cpu(stats->rmac_vld_frms)) - sp->stats.rx_packets;
+	sp->stats.rx_packets += delta;
+	sp->dev_stats.rx_packets += delta;
 
-#define UPDATE_STATS(FIELD, DEVFIELD) \
-{ \
-	u32 dev_stat = le32_to_cpu(stats->DEVFIELD); \
-	if (dev_stat >= sp->stats_buffer.FIELD) \
-		sp->dev_stats.FIELD += \
-			dev_stat - sp->stats_buffer.FIELD; \
-	else \
-		sp->dev_stats.FIELD += \
-			((u32) -1) - sp->stats_buffer.FIELD + dev_stat; \
-	sp->stats_buffer.FIELD = dev_stat; \
-}
+	delta = ((u64) le32_to_cpu(stats->tmac_frms_oflow) << 32 |
+		le32_to_cpu(stats->tmac_frms)) - sp->stats.tx_packets;
+	sp->stats.tx_packets += delta;
+	sp->dev_stats.tx_packets += delta;
 
-	UPDATE_STATS(tx_packets, tmac_frms);
-	UPDATE_STATS(tx_errors, tmac_any_err_frms);
-	UPDATE_STATS(rx_errors, rmac_drop_frms);
-	UPDATE_STATS(multicast, rmac_vld_mcst_frms);
-	UPDATE_STATS(rx_length_errors, rmac_long_frms);
+	delta = ((u64) le32_to_cpu(stats->rmac_data_octets_oflow) << 32 |
+		le32_to_cpu(stats->rmac_data_octets)) - sp->stats.rx_bytes;
+	sp->stats.rx_bytes += delta;
+	sp->dev_stats.rx_bytes += delta;
 
-#undef UPDATE_STATS
+	delta = ((u64) le32_to_cpu(stats->tmac_data_octets_oflow) << 32 |
+		le32_to_cpu(stats->tmac_data_octets)) - sp->stats.tx_bytes;
+	sp->stats.tx_bytes += delta;
+	sp->dev_stats.tx_bytes += delta;
 
-	/* collect per-ring rx_packets and rx_bytes */
-	sp->dev_stats.rx_packets = sp->dev_stats.rx_bytes = 0;
-	for (i = 0; i < config->rx_ring_num; i++) {
-		struct ring_info *ring = &mac_control->rings[i];
+	delta = le64_to_cpu(stats->rmac_drop_frms) - sp->stats.rx_errors;
+	sp->stats.rx_errors += delta;
+	sp->dev_stats.rx_errors += delta;
 
-		sp->dev_stats.rx_packets += ring->rx_packets;
-		sp->dev_stats.rx_bytes += ring->rx_bytes;
-	}
+	delta = ((u64) le32_to_cpu(stats->tmac_any_err_frms_oflow) << 32 |
+		le32_to_cpu(stats->tmac_any_err_frms)) - sp->stats.tx_errors;
+	sp->stats.tx_errors += delta;
+	sp->dev_stats.tx_errors += delta;
+
+	delta = le64_to_cpu(stats->rmac_drop_frms) - sp->stats.rx_dropped;
+	sp->stats.rx_dropped += delta;
+	sp->dev_stats.rx_dropped += delta;
+
+	delta = le64_to_cpu(stats->tmac_drop_frms) - sp->stats.tx_dropped;
+	sp->stats.tx_dropped += delta;
+	sp->dev_stats.tx_dropped += delta;
+
+	/* The adapter MAC interprets pause frames as multicast packets, but
+	 * does not pass them up.  This erroneously increases the multicast
+	 * packet count and needs to be deducted when the multicast frame count
+	 * is queried.
+	 */
+	delta = (u64) le32_to_cpu(stats->rmac_vld_mcst_frms_oflow) << 32 |
+		le32_to_cpu(stats->rmac_vld_mcst_frms);
+	delta -= le64_to_cpu(stats->rmac_pause_ctrl_frms);
+	delta -= sp->stats.multicast;
+	sp->stats.multicast += delta;
+	sp->dev_stats.multicast += delta;
+
+	delta = ((u64) le32_to_cpu(stats->rmac_usized_frms_oflow) << 32 |
+		le32_to_cpu(stats->rmac_usized_frms)) +
+		le64_to_cpu(stats->rmac_long_frms) - sp->stats.rx_length_errors;
+	sp->stats.rx_length_errors += delta;
+	sp->dev_stats.rx_length_errors += delta;
+
+	delta = le64_to_cpu(stats->rmac_fcs_err_frms) - sp->stats.rx_crc_errors;
+	sp->stats.rx_crc_errors += delta;
+	sp->dev_stats.rx_crc_errors += delta;
 
 	return &sp->dev_stats;
 }
@@ -5567,30 +5587,27 @@ static void s2io_ethtool_gringparam(struct net_device *dev,
 	struct s2io_nic *sp = netdev_priv(dev);
 	int i, tx_desc_count = 0, rx_desc_count = 0;
 
-	if (sp->rxd_mode == RXD_MODE_1)
+	if (sp->rxd_mode == RXD_MODE_1) {
 		ering->rx_max_pending = MAX_RX_DESC_1;
-	else if (sp->rxd_mode == RXD_MODE_3B)
+		ering->rx_jumbo_max_pending = MAX_RX_DESC_1;
+	} else {
 		ering->rx_max_pending = MAX_RX_DESC_2;
-
-	ering->tx_max_pending = MAX_TX_DESC;
-	for (i = 0 ; i < sp->config.tx_fifo_num ; i++)
-		tx_desc_count += sp->config.tx_cfg[i].fifo_len;
-
-	DBG_PRINT(INFO_DBG, "max txds: %d\n", sp->config.max_txds);
-	ering->tx_pending = tx_desc_count;
-	rx_desc_count = 0;
-	for (i = 0 ; i < sp->config.rx_ring_num ; i++)
-		rx_desc_count += sp->config.rx_cfg[i].num_rxd;
-
-	ering->rx_pending = rx_desc_count;
+		ering->rx_jumbo_max_pending = MAX_RX_DESC_2;
+	}
 
 	ering->rx_mini_max_pending = 0;
-	ering->rx_mini_pending = 0;
-	if (sp->rxd_mode == RXD_MODE_1)
-		ering->rx_jumbo_max_pending = MAX_RX_DESC_1;
-	else if (sp->rxd_mode == RXD_MODE_3B)
-		ering->rx_jumbo_max_pending = MAX_RX_DESC_2;
+	ering->tx_max_pending = MAX_TX_DESC;
+
+	for (i = 0; i < sp->config.rx_ring_num; i++)
+		rx_desc_count += sp->config.rx_cfg[i].num_rxd;
+	ering->rx_pending = rx_desc_count;
 	ering->rx_jumbo_pending = rx_desc_count;
+	ering->rx_mini_pending = 0;
+
+	for (i = 0; i < sp->config.tx_fifo_num; i++)
+		tx_desc_count += sp->config.tx_cfg[i].fifo_len;
+	ering->tx_pending = tx_desc_count;
+	DBG_PRINT(INFO_DBG, "max txds: %d\n", sp->config.max_txds);
 }
 
 /**
@@ -7496,15 +7513,11 @@ static int rx_osm_handler(struct ring_info *ring_data, struct RxD_t * rxdp)
 		}
 	}
 
-	/* Updating statistics */
-	ring_data->rx_packets++;
 	rxdp->Host_Control = 0;
 	if (sp->rxd_mode == RXD_MODE_1) {
 		int len = RXD_GET_BUFFER0_SIZE_1(rxdp->Control_2);
 
-		ring_data->rx_bytes += len;
 		skb_put(skb, len);
-
 	} else if (sp->rxd_mode == RXD_MODE_3B) {
 		int get_block = ring_data->rx_curr_get_info.block_index;
 		int get_off = ring_data->rx_curr_get_info.offset;
@@ -7513,7 +7526,6 @@ static int rx_osm_handler(struct ring_info *ring_data, struct RxD_t * rxdp)
 		unsigned char *buff = skb_push(skb, buf0_len);
 
 		struct buffAdd *ba = &ring_data->ba[get_block][get_off];
-		ring_data->rx_bytes += buf0_len + buf2_len;
 		memcpy(buff, ba->ba_0, buf0_len);
 		skb_put(skb, buf2_len);
 	}
@@ -7669,6 +7681,8 @@ static void s2io_init_pci(struct s2io_nic *sp)
 static int s2io_verify_parm(struct pci_dev *pdev, u8 *dev_intr_type,
 			    u8 *dev_multiq)
 {
+	int i;
+
 	if ((tx_fifo_num > MAX_TX_FIFOS) || (tx_fifo_num < 1)) {
 		DBG_PRINT(ERR_DBG, "Requested number of tx fifos "
 			  "(%d) not supported\n", tx_fifo_num);
@@ -7727,6 +7741,15 @@ static int s2io_verify_parm(struct pci_dev *pdev, u8 *dev_intr_type,
 		DBG_PRINT(ERR_DBG, "Defaulting to 1-buffer mode\n");
 		rx_ring_mode = 1;
 	}
+
+	for (i = 0; i < MAX_RX_RINGS; i++)
+		if (rx_ring_sz[i] > MAX_RX_BLOCKS_PER_RING) {
+			DBG_PRINT(ERR_DBG, "Requested rx ring size not "
+				  "supported\nDefaulting to %d\n",
+				  MAX_RX_BLOCKS_PER_RING);
+			rx_ring_sz[i] = MAX_RX_BLOCKS_PER_RING;
+		}
+
 	return SUCCESS;
 }
 

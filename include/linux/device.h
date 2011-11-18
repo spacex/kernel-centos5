@@ -423,7 +423,7 @@ dev_set_drvdata (struct device *dev, void *data)
 
 static inline int device_is_registered(struct device *dev)
 {
-	return dev->power.is_registered;
+	return klist_node_attached(&dev->knode_bus);
 }
 
 /*

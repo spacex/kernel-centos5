@@ -1566,6 +1566,21 @@ static const struct alg_test_desc alg_test_descs[] = {
 				.count = XCBC_AES_TEST_VECTORS
 			}
 		}
+	}, {
+		.alg = "xts(aes)",
+		.test = alg_test_skcipher,
+		.suite = {
+			.cipher = {
+				.enc = {
+					.vecs = aes_xts_enc_tv_template,
+					.count = AES_XTS_ENC_TEST_VECTORS
+				},
+				.dec = {
+					.vecs = aes_xts_dec_tv_template,
+					.count = AES_XTS_DEC_TEST_VECTORS
+				}
+			}
+		}
 	}
 };
 

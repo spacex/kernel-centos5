@@ -3990,8 +3990,11 @@ static int sctp_copy_laddrs_to_user(struct sock *sk, __u16 port,
 		sctp_get_pf_specific(sk->sk_family)->addr_v4map(sctp_sk(sk),
 								&temp);
 		addrlen = sctp_get_af_specific(temp.sa.sa_family)->sockaddr_len;
-		if(space_left<addrlen)
+		if(space_left<addrlen) {
+			sctp_spin_unlock_irqrestore(&sctp_local_addr_lock,
+							flags);
 			return -ENOMEM;
+		}
 		temp.v4.sin_port = htons(port);
 		if (copy_to_user(*to, &temp, addrlen)) {
 			sctp_spin_unlock_irqrestore(&sctp_local_addr_lock,

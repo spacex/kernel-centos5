@@ -3067,6 +3067,7 @@ int iwl_pci_resume(struct pci_dev *pdev)
 	int ret;
 
 	pci_set_power_state(pdev, PCI_D0);
+	pci_enable_msi(pdev);
 	ret = pci_enable_device(pdev);
 	if (ret)
 		return ret;

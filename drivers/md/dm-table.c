@@ -251,7 +251,7 @@ int dm_create_error_table(struct dm_table **result, struct mapped_device *md)
 	 * Find current size of device.
 	 * Default to 1 sector if inactive.
 	 */
-	t = dm_get_table(md);
+	t = dm_get_live_table(md);
 	if (t) {
 		dev_size = dm_table_get_size(t);
 		dm_table_put(t);
@@ -440,27 +440,29 @@ static int check_device_area(struct dm_dev *dd, sector_t start, sector_t len)
 }
 
 /*
- * This upgrades the mode on an already open dm_dev.  Being
+ * This upgrades the mode on an already open dm_dev, being
  * careful to leave things as they were if we fail to reopen the
- * device.
+ * device and not to touch the existing bdev field in case
+ * it is accessed concurrently inside dm_table_any_congested().
  */
 static int upgrade_mode(struct dm_dev *dd, int new_mode, struct mapped_device *md)
 {
 	int r;
-	struct dm_dev dd_copy;
-	dev_t dev = dd->bdev->bd_dev;
+	struct dm_dev dd_new, dd_old;
 
-	dd_copy = *dd;
+	dd_new = dd_old = *dd;
+
+	dd_new.mode |= new_mode;
+	dd_new.bdev = NULL;
+
+	r = open_dev(&dd_new, dd->bdev->bd_dev, md);
+	if (r)
+		return r;
 
 	dd->mode |= new_mode;
-	dd->bdev = NULL;
-	r = open_dev(dd, dev, md);
-	if (!r)
-		close_dev(&dd_copy, md);
-	else
-		*dd = dd_copy;
+	close_dev(&dd_old, md);
 
-	return r;
+	return 0;
 }
 
 /*

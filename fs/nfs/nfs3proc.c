@@ -457,22 +457,41 @@ nfs3_proc_unlink_done(struct rpc_task *task, struct inode *dir)
 	return 1;
 }
 
+static void
+nfs3_proc_rename_setup(struct rpc_message *msg, struct inode *dir)
+{
+	msg->rpc_proc = &nfs3_procedures[NFS3PROC_RENAME];
+}
+
+static int
+nfs3_proc_rename_done(struct rpc_task *task, struct inode *old_dir,
+		      struct inode *new_dir)
+{
+	struct nfs_renameres *res;
+
+	if (nfs3_async_handle_jukebox(task, old_dir))
+		return 0;
+	res = task->tk_msg.rpc_resp;
+
+	nfs_post_op_update_inode(old_dir, res->old_fattr);
+	nfs_post_op_update_inode(new_dir, res->new_fattr);
+	return 1;
+}
+
 static int
 nfs3_proc_rename(struct inode *old_dir, struct qstr *old_name,
 		 struct inode *new_dir, struct qstr *new_name)
 {
 	struct nfs_fattr	old_dir_attr, new_dir_attr;
-	struct nfs3_renameargs	arg = {
-		.fromfh		= NFS_FH(old_dir),
-		.fromname	= old_name->name,
-		.fromlen	= old_name->len,
-		.tofh		= NFS_FH(new_dir),
-		.toname		= new_name->name,
-		.tolen		= new_name->len
+	struct nfs_renameargs	arg = {
+		.old_dir	= NFS_FH(old_dir),
+		.old_name	= old_name,
+		.new_dir	= NFS_FH(new_dir),
+		.new_name	= new_name,
 	};
-	struct nfs3_renameres	res = {
-		.fromattr	= &old_dir_attr,
-		.toattr		= &new_dir_attr
+	struct nfs_renameres	res = {
+		.old_fattr	= &old_dir_attr,
+		.new_fattr	= &new_dir_attr
 	};
 	struct rpc_message msg = {
 		.rpc_proc	= &nfs3_procedures[NFS3PROC_RENAME],
@@ -484,6 +503,7 @@ nfs3_proc_rename(struct inode *old_dir, struct qstr *old_name,
 	dprintk("NFS call  rename %s -> %s\n", old_name->name, new_name->name);
 	nfs_fattr_init(&old_dir_attr);
 	nfs_fattr_init(&new_dir_attr);
+
 	status = rpc_call_sync(NFS_CLIENT(old_dir), &msg, 0);
 	nfs_post_op_update_inode(old_dir, &old_dir_attr);
 	nfs_post_op_update_inode(new_dir, &new_dir_attr);
@@ -892,6 +912,8 @@ const struct nfs_rpc_ops nfs_v3_clientops = {
 	.unlink_setup	= nfs3_proc_unlink_setup,
 	.unlink_done	= nfs3_proc_unlink_done,
 	.rename		= nfs3_proc_rename,
+	.rename_setup	= nfs3_proc_rename_setup,
+	.rename_done	= nfs3_proc_rename_done,
 	.link		= nfs3_proc_link,
 	.symlink	= nfs3_proc_symlink,
 	.mkdir		= nfs3_proc_mkdir,
@@ -912,4 +934,5 @@ const struct nfs_rpc_ops nfs_v3_clientops = {
 	.file_release	= nfs_release,
 	.lock		= nfs3_proc_lock,
 	.clear_acl_cache = nfs3_forget_cached_acls,
+	.close_context	= nfs_close_context,
 };

@@ -15,8 +15,10 @@
 
 #include <linux/kernel.h>
 #include <linux/netdevice.h>
+#include <linux/netpoll.h>
 #include <linux/etherdevice.h>
 #include <linux/ethtool.h>
+#include <linux/list.h>
 
 #include <asm/uaccess.h>
 #include "br_private.h"
@@ -33,6 +35,9 @@ int br_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct net_bridge *br = netdev_priv(dev);
 	const unsigned char *dest = skb->data;
 	struct net_bridge_fdb_entry *dst;
+	struct net_bridge_mdb_entry *mdst;
+
+	BR_INPUT_SKB_CB(skb)->brdev = dev;
 
 	br->statistics.tx_packets++;
 	br->statistics.tx_bytes += skb->len;
@@ -40,13 +45,23 @@ int br_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	skb->mac.raw = skb->data;
 	skb_pull(skb, ETH_HLEN);
 
-	if (dest[0] & 1) 
-		br_flood_deliver(br, skb, 0);
-	else if ((dst = __br_fdb_get(br, dest)) != NULL)
+	if (is_multicast_ether_addr(dest)) {
+		if (br_multicast_rcv(br, NULL, skb)) {
+			kfree_skb(skb);
+			goto out;
+		}
+
+		mdst = br_mdb_get(br, skb);
+		if (mdst || BR_INPUT_SKB_CB(skb)->mrouters_only)
+			br_multicast_deliver(mdst, skb);
+		else
+			br_flood_deliver(br, skb);
+	} else if ((dst = __br_fdb_get(br, dest)) != NULL)
 		br_deliver(dst->dst, skb);
 	else
-		br_flood_deliver(br, skb, 0);
+		br_flood_deliver(br, skb);
 
+out:
 	return 0;
 }
 
@@ -57,6 +72,7 @@ static int br_dev_open(struct net_device *dev)
 	br_features_recompute(br);
 	netif_start_queue(dev);
 	br_stp_enable_bridge(br);
+	br_multicast_open(br);
 
 	return 0;
 }
@@ -67,7 +83,10 @@ static void br_dev_set_multicast_list(struct net_device *dev)
 
 static int br_dev_stop(struct net_device *dev)
 {
-	br_stp_disable_bridge(netdev_priv(dev));
+	struct net_bridge *br = netdev_priv(dev);
+
+	br_stp_disable_bridge(br);
+	br_multicast_stop(br);
 
 	netif_stop_queue(dev);
 
@@ -83,27 +102,23 @@ static int br_change_mtu(struct net_device *dev, int new_mtu)
 	return 0;
 }
 
-/* Allow setting mac address of pseudo-bridge to be same as
- * any of the bound interfaces
- */
+/* Allow setting mac address to any valid ethernet address. */
 static int br_set_mac_address(struct net_device *dev, void *p)
 {
 	struct net_bridge *br = netdev_priv(dev);
 	struct sockaddr *addr = p;
 	struct net_bridge_port *port;
-	int err = -EADDRNOTAVAIL;
+
+	if (!is_valid_ether_addr(addr->sa_data))
+		return -EINVAL;
 
 	spin_lock_bh(&br->lock);
-	list_for_each_entry(port, &br->port_list, list) {
-		if (!compare_ether_addr(port->dev->dev_addr, addr->sa_data)) {
-			br_stp_change_bridge_id(br, addr->sa_data);
-			err = 0;
-			break;
-		}
-	}
+	memcpy(dev->dev_addr, addr->sa_data, ETH_ALEN);
+	br_stp_change_bridge_id(br, addr->sa_data);
+	br->flags |= BR_SET_MAC_ADDR;
 	spin_unlock_bh(&br->lock);
 
-	return err;
+	return 0;
 }
 
 static void br_getinfo(struct net_device *dev, struct ethtool_drvinfo *info)
@@ -152,6 +167,57 @@ static int br_set_tx_csum(struct net_device *dev, u32 data)
 	br_features_recompute(br);
 	return 0;
 }
+
+#ifdef CONFIG_NET_POLL_CONTROLLER
+bool br_devices_support_netpoll(struct net_bridge *br)
+{
+	struct net_bridge_port *p;
+	bool ret = true;
+	int count = 0;
+	unsigned long flags;
+
+	spin_lock_irqsave(&br->lock, flags);
+	list_for_each_entry(p, &br->port_list, list) {
+		count++;
+		if ((p->dev->priv_flags & IFF_DISABLE_NETPOLL) ||
+		    !p->dev->poll_controller)
+			ret = false;
+	}
+	spin_unlock_irqrestore(&br->lock, flags);
+	return count != 0 && ret;
+}
+
+void br_poll_controller(struct net_device *br_dev)
+{
+	struct netpoll *np = br_dev->npinfo->netpoll;
+
+	if (np->real_dev != br_dev)
+		netpoll_poll_dev(np->real_dev);
+}
+
+void br_netpoll_cleanup(struct net_device *br_dev)
+{
+	struct net_bridge *br = netdev_priv(br_dev);
+	struct net_bridge_port *p, *n;
+
+	br->dev->npinfo = NULL;
+	list_for_each_entry_safe(p, n, &br->port_list, list) {
+		if (p->dev)
+			p->dev->npinfo = NULL;
+	}
+}
+
+#else
+
+void br_poll_controller(struct net_device *br_dev)
+{
+}
+
+void br_netpoll_cleanup(struct net_device *br_dev)
+{
+}
+
+#endif
 
 static struct ethtool_ops br_ethtool_ops = {
 	.get_drvinfo = br_getinfo,

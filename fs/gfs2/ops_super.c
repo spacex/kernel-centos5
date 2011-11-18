@@ -531,12 +531,13 @@ static int gfs2_show_options(struct seq_file *s, struct vfsmount *mnt)
  */
 static void gfs2_delete_inode(struct inode *inode)
 {
-	struct gfs2_sbd *sdp = inode->i_sb->s_fs_info;
+	struct super_block *sb = inode->i_sb;
+	struct gfs2_sbd *sdp = sb->s_fs_info;
 	struct gfs2_inode *ip = GFS2_I(inode);
 	struct gfs2_holder gh;
 	int error;
 
-	if (!test_bit(GIF_USER, &ip->i_flags))
+	if (!test_bit(GIF_USER, &ip->i_flags) || (sb->s_flags & MS_RDONLY))
 		goto out;
 
 	/* Must not read inode block until block type has been verified */

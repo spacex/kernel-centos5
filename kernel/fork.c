@@ -219,6 +219,17 @@ static struct task_struct *dup_task_struct(struct task_struct *orig)
 	return tsk;
 }
 
+static unsigned long default_dump_filter = MMF_DUMP_FILTER_DEFAULT;
+
+static int __init coredump_filter_setup(char *s)
+{
+	default_dump_filter =
+		simple_strtoul(s, NULL, 0) & MMF_DUMP_FILTER_MASK;
+	return 1;
+}
+
+__setup("coredump_filter=", coredump_filter_setup);
+
 /* Must be called with the mm_flags_lock held.  */
 static struct mm_flags *__find_mm_flags(struct mm_struct *addr)
 {
@@ -237,7 +248,7 @@ static struct mm_flags *__find_mm_flags(struct mm_struct *addr)
 unsigned long get_mm_flags(struct mm_struct *mm)
 {
 	struct mm_flags *p;
-	unsigned long flags = MMF_DUMP_FILTER_DEFAULT;
+	unsigned long flags = default_dump_filter;
 
 	spin_lock(&mm_flags_lock);
 	p = __find_mm_flags(mm);
@@ -266,7 +277,7 @@ int set_mm_flags(struct mm_struct *mm, unsigned long flags, int check_dup)
 		spin_unlock(&mm_flags_lock);
 
 		/* Do nothing if the `flags' is equal to the default.  */
-		if (flags == MMF_DUMP_FILTER_DEFAULT)
+		if (flags == default_dump_filter)
 			return 0;
 	}
 
@@ -456,7 +467,7 @@ static struct mm_struct * mm_init(struct mm_struct * mm)
 	mm->cached_hole_size = ~0UL;
 
 	mm_flags = get_mm_flags(current->mm);
-	if (mm_flags != MMF_DUMP_FILTER_DEFAULT) {
+	if (mm_flags != default_dump_filter) {
 		if (unlikely(set_mm_flags(mm, mm_flags, 0) < 0))
 			goto fail_nomem;
 	}
@@ -467,7 +478,7 @@ static struct mm_struct * mm_init(struct mm_struct * mm)
 		return mm;
 	}
 
-	if (mm_flags != MMF_DUMP_FILTER_DEFAULT)
+	if (mm_flags != default_dump_filter)
 		free_mm_flags(mm);
 fail_nomem:
 	free_mm(mm);
@@ -1326,8 +1337,7 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 	 * A fatal signal pending means that current will exit, so the new
 	 * thread can't slip out of an OOM kill (or normal SIGKILL).
  	 */
- 	recalc_sigpending();
-	if (signal_pending(current)) {
+	if (fork_recalc_sigpending()) {
 		spin_unlock(&current->sighand->siglock);
 		write_unlock_irq(&tasklist_lock);
 		retval = -ERESTARTNOINTR;

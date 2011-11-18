@@ -192,6 +192,7 @@ get_dirty_limits(long *pbackground, long *pdirty,
 static void balance_dirty_pages(struct address_space *mapping)
 {
 	long nr_reclaimable;
+	long nr_writeback;
 	long background_thresh;
 	long dirty_thresh;
 	unsigned long pages_written = 0;
@@ -211,9 +212,15 @@ static void balance_dirty_pages(struct address_space *mapping)
 		get_dirty_limits(&background_thresh, &dirty_thresh, mapping);
 		nr_reclaimable = global_page_state(NR_FILE_DIRTY) +
 					global_page_state(NR_UNSTABLE_NFS);
-		if (nr_reclaimable + global_page_state(NR_WRITEBACK) <=
-			dirty_thresh)
-				break;
+		nr_writeback = global_page_state(NR_WRITEBACK);
+		if (nr_reclaimable + nr_writeback <= dirty_thresh) {
+			if (bdi_cap_throttle_dirty(bdi) &&
+			    bdi_write_congested(bdi) &&
+			    nr_reclaimable + nr_writeback >=
+					(background_thresh + dirty_thresh) / 2)
+				blk_congestion_wait(WRITE, HZ/10);
+			break;
+		}
 
 		if (!dirty_exceeded)
 			dirty_exceeded = 1;
@@ -874,6 +881,15 @@ int test_set_page_writeback(struct page *page)
 
 }
 EXPORT_SYMBOL(test_set_page_writeback);
+
+/*
+ * Wakes up tasks that are being throttled due to writeback congestion
+ */
+void writeback_congestion_end(void)
+{
+	blk_congestion_end(WRITE);
+}
+EXPORT_SYMBOL(writeback_congestion_end);
 
 /*
  * Return true if any of the pages in the mapping are marged with the

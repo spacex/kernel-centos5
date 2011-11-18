@@ -684,20 +684,29 @@ int netpoll_setup(struct netpoll *np)
 	struct in_device *in_dev;
 	struct netpoll_info *npinfo;
 	unsigned long flags;
+	int err;
 
 	if (np->dev_name)
 		ndev = dev_get_by_name(np->dev_name);
 	if (!ndev) {
 		printk(KERN_ERR "%s: %s doesn't exist, aborting.\n",
 		       np->name, np->dev_name);
-		return -1;
+		return -ENODEV;
+	}
+
+	if ((ndev->priv_flags & IFF_BRIDGE_PORT) || (ndev->flags & IFF_SLAVE)) {
+		printk(KERN_ERR "%s: %s is a slave device, aborting.\n",
+		       np->name, np->dev_name);
+		return -EBUSY;
 	}
 
 	np->dev = ndev;
 	if (!ndev->npinfo) {
 		npinfo = kmalloc(sizeof(*npinfo), GFP_KERNEL);
-		if (!npinfo)
+		if (!npinfo) {
+			err = -ENOMEM;
 			goto release;
+		}
 
 		npinfo->rx_flags = 0;
 		npinfo->rx_np = NULL;
@@ -713,6 +722,7 @@ int netpoll_setup(struct netpoll *np)
 	if (!ndev->poll_controller) {
 		printk(KERN_ERR "%s: %s doesn't support polling, aborting.\n",
 		       np->name, np->dev_name);
+		err = -ENOTSUPP;
 		goto release;
 	}
 
@@ -723,13 +733,14 @@ int netpoll_setup(struct netpoll *np)
 		       np->name, np->dev_name);
 
 		rtnl_lock();
-		if (dev_change_flags(ndev, ndev->flags | IFF_UP) < 0) {
+		err = dev_open(ndev);
+		rtnl_unlock();
+
+		if (err) {
 			printk(KERN_ERR "%s: failed to open %s\n",
-			       np->name, np->dev_name);
-			rtnl_unlock();
+			       np->name, ndev->name);
 			goto release;
 		}
-		rtnl_unlock();
 
 		atleast = jiffies + HZ/10;
  		atmost = jiffies + 4*HZ;
@@ -767,6 +778,7 @@ int netpoll_setup(struct netpoll *np)
 			rcu_read_unlock();
 			printk(KERN_ERR "%s: no IP address for %s, aborting\n",
 			       np->name, np->dev_name);
+			err = -EDESTADDRREQ;
 			goto release;
 		}
 
@@ -799,7 +811,7 @@ int netpoll_setup(struct netpoll *np)
 		kfree(npinfo);
 	np->dev = NULL;
 	dev_put(ndev);
-	return -1;
+	return err;
 }
 
 void netpoll_cleanup(struct netpoll *np)
@@ -815,6 +827,8 @@ void netpoll_cleanup(struct netpoll *np)
 			npinfo->rx_flags &= ~NETPOLL_RX_ENABLED;
 			npinfo->netpoll = NULL;
 			spin_unlock_irqrestore(&npinfo->rx_lock, flags);
+			np->dev->npinfo = NULL;
+			kfree(npinfo);
 		}
 		dev_put(np->dev);
 	}

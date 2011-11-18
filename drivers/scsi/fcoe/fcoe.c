@@ -2185,6 +2185,8 @@ static int __init fcoe_init(void)
 	unsigned int cpu;
 	int rc = 0;
 
+	mark_tech_preview(NULL, THIS_MODULE);
+
 	mutex_lock(&fcoe_config_mutex);
 
 	for_each_possible_cpu(cpu) {

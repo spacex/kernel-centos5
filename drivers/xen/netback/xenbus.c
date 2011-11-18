@@ -39,21 +39,24 @@ struct backend_info {
 static int connect_rings(struct backend_info *);
 static void connect(struct backend_info *);
 static void backend_create_netif(struct backend_info *be);
-static void netback_disconnect(struct backend_info *);
+static void netback_disconnect(struct device *);
 
 static int netback_remove(struct xenbus_device *dev)
 {
 	struct backend_info *be = dev->dev.driver_data;
 
-	netback_disconnect(be);
+	netback_disconnect(&dev->dev);
 	kfree(be);
 	dev->dev.driver_data = NULL;
 	return 0;
 }
 
-static void netback_disconnect(struct backend_info *be)
+static void netback_disconnect(struct device *xbdev_dev)
 {
+	struct backend_info *be = xbdev_dev->driver_data;
+
 	if (be->netif) {
+		kobject_uevent(&xbdev_dev->kobj, KOBJ_OFFLINE);
 		netif_disconnect(be->netif);
 		be->netif = NULL;
 	}
@@ -185,7 +188,7 @@ static void backend_create_netif(struct backend_info *be)
 		return;
 	}
 
-	be->netif = netif_alloc(dev->otherend_id, handle);
+	be->netif = netif_alloc(&dev->dev, dev->otherend_id, handle);
 	if (IS_ERR(be->netif)) {
 		err = PTR_ERR(be->netif);
 		be->netif = NULL;
@@ -230,7 +233,7 @@ static void frontend_changed(struct xenbus_device *dev,
 		break;
 
 	case XenbusStateClosing:
-		netback_disconnect(be);
+		netback_disconnect(&dev->dev);
 		xenbus_switch_state(dev, XenbusStateClosing);
 		break;
 
@@ -240,9 +243,6 @@ static void frontend_changed(struct xenbus_device *dev,
 			break;
 		/* fall through if not online */
 	case XenbusStateUnknown:
-		if (be->netif != NULL)
-			kobject_uevent(&dev->dev.kobj, KOBJ_OFFLINE);
-
 		/* implies netback_disconnect() via netback_remove() */
 		device_unregister(&dev->dev);
 		break;

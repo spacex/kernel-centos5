@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005-2009 Brocade Communications Systems, Inc.
+ * Copyright (c) 2005-2010 Brocade Communications Systems, Inc.
  * All rights reserved
  * www.brocade.com
  *
@@ -14,54 +14,40 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  */
-/*
- *      Copyright (c) 2007-2009 Brocade Communications Systems, Inc.
- *      All rights reserved.
- *
- *      @file bfa_port.c Port module source file.
- */
 
-#include <defs/bfa_defs_port.h>
-#include <cs/bfa_trc.h>
-#include <cs/bfa_log.h>
-#include <cs/bfa_debug.h>
-#include <port/bfa_port.h>
-#include <bfi/bfi.h>
-#include <bfi/bfi_port.h>
-#include <bfa_ioc.h>
-#include <cna/bfa_cna_trcmod.h>
+#include "bfad_drv.h"
+#include "bfa_defs_svc.h"
+#include "bfa_port.h"
+#include "bfi.h"
+#include "bfa_ioc.h"
+
 
 BFA_TRC_FILE(CNA, PORT);
 
 #define bfa_ioc_portid(__ioc) ((__ioc)->port_id)
-#define bfa_lpuid(__arg) bfa_ioc_portid(&(__arg)->ioc)
 
 static void
-bfa_port_stats_swap(struct bfa_port_s *port, union bfa_pport_stats_u *stats)
+bfa_port_stats_swap(struct bfa_port_s *port, union bfa_port_stats_u *stats)
 {
 	u32    *dip = (u32 *) stats;
-	u32    t0, t1;
-	int         i;
+	__be32    t0, t1;
+	int	    i;
 
-	for (i = 0; i < sizeof(union bfa_pport_stats_u)/sizeof(u32); i += 2) {
+	for (i = 0; i < sizeof(union bfa_port_stats_u)/sizeof(u32);
+		i += 2) {
 		t0 = dip[i];
 		t1 = dip[i + 1];
-#ifdef __BIGENDIAN
-		dip[i] = bfa_os_ntohl(t0);
-		dip[i + 1] = bfa_os_ntohl(t1);
+#ifdef __BIG_ENDIAN
+		dip[i] = be32_to_cpu(t0);
+		dip[i + 1] = be32_to_cpu(t1);
 #else
-		dip[i] = bfa_os_ntohl(t1);
-		dip[i + 1] = bfa_os_ntohl(t0);
+		dip[i] = be32_to_cpu(t1);
+		dip[i + 1] = be32_to_cpu(t0);
 #endif
-    }
-
-    /** @todo
-     * QoS stats r also swapped as 64bit; that structure also
-     * has to use 64 bit counters
-     */
+	}
 }
 
-/**
+/*
  * bfa_port_enable_isr()
  *
  *
@@ -73,10 +59,12 @@ bfa_port_stats_swap(struct bfa_port_s *port, union bfa_pport_stats_u *stats)
 static void
 bfa_port_enable_isr(struct bfa_port_s *port, bfa_status_t status)
 {
-	bfa_assert(0);
+	bfa_trc(port, status);
+	port->endis_pending = BFA_FALSE;
+	port->endis_cbfn(port->endis_cbarg, status);
 }
 
-/**
+/*
  * bfa_port_disable_isr()
  *
  *
@@ -88,10 +76,12 @@ bfa_port_enable_isr(struct bfa_port_s *port, bfa_status_t status)
 static void
 bfa_port_disable_isr(struct bfa_port_s *port, bfa_status_t status)
 {
-	bfa_assert(0);
+	bfa_trc(port, status);
+	port->endis_pending = BFA_FALSE;
+	port->endis_cbfn(port->endis_cbarg, status);
 }
 
-/**
+/*
  * bfa_port_get_stats_isr()
  *
  *
@@ -107,9 +97,14 @@ bfa_port_get_stats_isr(struct bfa_port_s *port, bfa_status_t status)
 	port->stats_busy = BFA_FALSE;
 
 	if (status == BFA_STATUS_OK) {
+		struct timeval tv;
+
 		memcpy(port->stats, port->stats_dma.kva,
-				sizeof(union bfa_pport_stats_u));
+		       sizeof(union bfa_port_stats_u));
 		bfa_port_stats_swap(port, port->stats);
+
+		do_gettimeofday(&tv);
+		port->stats->fc.secs_reset = tv.tv_sec - port->stats_reset_time;
 	}
 
 	if (port->stats_cbfn) {
@@ -118,7 +113,7 @@ bfa_port_get_stats_isr(struct bfa_port_s *port, bfa_status_t status)
 	}
 }
 
-/**
+/*
  * bfa_port_clear_stats_isr()
  *
  *
@@ -130,8 +125,16 @@ bfa_port_get_stats_isr(struct bfa_port_s *port, bfa_status_t status)
 static void
 bfa_port_clear_stats_isr(struct bfa_port_s *port, bfa_status_t status)
 {
+	struct timeval tv;
+
 	port->stats_status = status;
 	port->stats_busy   = BFA_FALSE;
+
+	/*
+	* re-initialize time stamp for stats reset
+	*/
+	do_gettimeofday(&tv);
+	port->stats_reset_time = tv.tv_sec;
 
 	if (port->stats_cbfn) {
 		port->stats_cbfn(port->stats_cbarg, status);
@@ -139,7 +142,7 @@ bfa_port_clear_stats_isr(struct bfa_port_s *port, bfa_status_t status)
 	}
 }
 
-/**
+/*
  * bfa_port_isr()
  *
  *
@@ -183,11 +186,11 @@ bfa_port_isr(void *cbarg, struct bfi_mbmsg_s *m)
 		break;
 
 	default:
-		bfa_assert(0);
+		WARN_ON(1);
 	}
 }
 
-/**
+/*
  * bfa_port_meminfo()
  *
  *
@@ -198,10 +201,10 @@ bfa_port_isr(void *cbarg, struct bfi_mbmsg_s *m)
 u32
 bfa_port_meminfo(void)
 {
-	return BFA_ROUNDUP(sizeof(union bfa_pport_stats_u), BFA_DMA_ALIGN_SZ);
+	return BFA_ROUNDUP(sizeof(union bfa_port_stats_u), BFA_DMA_ALIGN_SZ);
 }
 
-/**
+/*
  * bfa_port_mem_claim()
  *
  *
@@ -218,7 +221,7 @@ bfa_port_mem_claim(struct bfa_port_s *port, u8 *dma_kva, u64 dma_pa)
 	port->stats_dma.pa  = dma_pa;
 }
 
-/**
+/*
  * bfa_port_enable()
  *
  *   Send the Port enable request to the f/w
@@ -233,8 +236,10 @@ bfa_port_enable(struct bfa_port_s *port, bfa_port_endis_cbfn_t cbfn,
 {
 	struct bfi_port_generic_req_s *m;
 
-	/** @todo Not implemented */
-	bfa_assert(0);
+	if (bfa_ioc_is_disabled(port->ioc)) {
+		bfa_trc(port, BFA_STATUS_IOC_DISABLED);
+		return BFA_STATUS_IOC_DISABLED;
+	}
 
 	if (!bfa_ioc_is_operational(port->ioc)) {
 		bfa_trc(port, BFA_STATUS_IOC_FAILURE);
@@ -243,7 +248,7 @@ bfa_port_enable(struct bfa_port_s *port, bfa_port_endis_cbfn_t cbfn,
 
 	if (port->endis_pending) {
 		bfa_trc(port, BFA_STATUS_DEVBUSY);
-		return 	BFA_STATUS_DEVBUSY;
+		return BFA_STATUS_DEVBUSY;
 	}
 
 	m = (struct bfi_port_generic_req_s *) port->endis_mb.msg;
@@ -260,7 +265,7 @@ bfa_port_enable(struct bfa_port_s *port, bfa_port_endis_cbfn_t cbfn,
 	return BFA_STATUS_OK;
 }
 
-/**
+/*
  * bfa_port_disable()
  *
  *   Send the Port disable request to the f/w
@@ -275,8 +280,10 @@ bfa_port_disable(struct bfa_port_s *port, bfa_port_endis_cbfn_t cbfn,
 {
 	struct bfi_port_generic_req_s *m;
 
-	/** @todo Not implemented */
-	bfa_assert(0);
+	if (bfa_ioc_is_disabled(port->ioc)) {
+		bfa_trc(port, BFA_STATUS_IOC_DISABLED);
+		return BFA_STATUS_IOC_DISABLED;
+	}
 
 	if (!bfa_ioc_is_operational(port->ioc)) {
 		bfa_trc(port, BFA_STATUS_IOC_FAILURE);
@@ -285,7 +292,7 @@ bfa_port_disable(struct bfa_port_s *port, bfa_port_endis_cbfn_t cbfn,
 
 	if (port->endis_pending) {
 		bfa_trc(port, BFA_STATUS_DEVBUSY);
-		return 	BFA_STATUS_DEVBUSY;
+		return BFA_STATUS_DEVBUSY;
 	}
 
 	m = (struct bfi_port_generic_req_s *) port->endis_mb.msg;
@@ -302,7 +309,7 @@ bfa_port_disable(struct bfa_port_s *port, bfa_port_endis_cbfn_t cbfn,
 	return BFA_STATUS_OK;
 }
 
-/**
+/*
  * bfa_port_get_stats()
  *
  *   Send the request to the f/w to fetch Port statistics.
@@ -312,7 +319,7 @@ bfa_port_disable(struct bfa_port_s *port, bfa_port_endis_cbfn_t cbfn,
  * @return Status
  */
 bfa_status_t
-bfa_port_get_stats(struct bfa_port_s *port, union bfa_pport_stats_u *stats,
+bfa_port_get_stats(struct bfa_port_s *port, union bfa_port_stats_u *stats,
 		    bfa_port_stats_cbfn_t cbfn, void *cbarg)
 {
 	struct bfi_port_get_stats_req_s *m;
@@ -324,7 +331,7 @@ bfa_port_get_stats(struct bfa_port_s *port, union bfa_pport_stats_u *stats,
 
 	if (port->stats_busy) {
 		bfa_trc(port, BFA_STATUS_DEVBUSY);
-		return 	BFA_STATUS_DEVBUSY;
+		return BFA_STATUS_DEVBUSY;
 	}
 
 	m = (struct bfi_port_get_stats_req_s *) port->stats_mb.msg;
@@ -342,7 +349,7 @@ bfa_port_get_stats(struct bfa_port_s *port, union bfa_pport_stats_u *stats,
 	return BFA_STATUS_OK;
 }
 
-/**
+/*
  * bfa_port_clear_stats()
  *
  *
@@ -363,7 +370,7 @@ bfa_port_clear_stats(struct bfa_port_s *port, bfa_port_stats_cbfn_t cbfn,
 
 	if (port->stats_busy) {
 		bfa_trc(port, BFA_STATUS_DEVBUSY);
-		return 	BFA_STATUS_DEVBUSY;
+		return BFA_STATUS_DEVBUSY;
 	}
 
 	m = (struct bfi_port_generic_req_s *) port->stats_mb.msg;
@@ -379,7 +386,7 @@ bfa_port_clear_stats(struct bfa_port_s *port, bfa_port_stats_cbfn_t cbfn,
 	return BFA_STATUS_OK;
 }
 
-/**
+/*
  * bfa_port_hbfail()
  *
  *
@@ -395,7 +402,7 @@ bfa_port_hbfail(void *arg)
 	/* Fail any pending get_stats/clear_stats requests */
 	if (port->stats_busy) {
 		if (port->stats_cbfn)
-			port->stats_cbfn(port->dev, BFA_STATUS_FAILED);
+			port->stats_cbfn(port->stats_cbarg, BFA_STATUS_FAILED);
 		port->stats_cbfn = NULL;
 		port->stats_busy = BFA_FALSE;
 	}
@@ -403,13 +410,13 @@ bfa_port_hbfail(void *arg)
 	/* Clear any enable/disable is pending */
 	if (port->endis_pending) {
 		if (port->endis_cbfn)
-			port->endis_cbfn(port->dev, BFA_STATUS_FAILED);
+			port->endis_cbfn(port->endis_cbarg, BFA_STATUS_FAILED);
 		port->endis_cbfn = NULL;
 		port->endis_pending = BFA_FALSE;
 	}
 }
 
-/**
+/*
  * bfa_port_attach()
  *
  *
@@ -419,44 +426,35 @@ bfa_port_hbfail(void *arg)
  *                   The device driver specific mbox ISR functions have
  *                   this pointer as one of the parameters.
  *            trcmod -
- *            logmod -
  *
  * @return void
  */
 void
 bfa_port_attach(struct bfa_port_s *port, struct bfa_ioc_s *ioc,
-		 void *dev, struct bfa_trc_mod_s *trcmod,
-		 struct bfa_log_mod_s *logmod)
+		 void *dev, struct bfa_trc_mod_s *trcmod)
 {
-	bfa_assert(port);
+	struct timeval tv;
+
+	WARN_ON(!port);
 
 	port->dev    = dev;
 	port->ioc    = ioc;
 	port->trcmod = trcmod;
-	port->logmod = logmod;
 
-	port->stats_busy =
+	port->stats_busy = BFA_FALSE;
 	port->endis_pending = BFA_FALSE;
-	port->stats_cbfn =
+	port->stats_cbfn = NULL;
 	port->endis_cbfn = NULL;
 
 	bfa_ioc_mbox_regisr(port->ioc, BFI_MC_PORT, bfa_port_isr, port);
 	bfa_ioc_hbfail_init(&port->hbfail, bfa_port_hbfail, port);
-	bfa_ioc_hbfail_register(port->ioc, &port->hbfail);
+	list_add_tail(&port->hbfail.qe, &port->ioc->hb_notify_q);
 
-	bfa_trc(port, 0);
-}
+	/*
+	 * initialize time stamp for stats reset
+	 */
+	do_gettimeofday(&tv);
+	port->stats_reset_time = tv.tv_sec;
 
-/**
- * bfa_port_detach()
- *
- *
- * @param[in] port - Pointer to the Port module data structure
- *
- * @return void
- */
-void
-bfa_port_detach(struct bfa_port_s *port)
-{
 	bfa_trc(port, 0);
 }

@@ -131,7 +131,6 @@ struct gfs2_glock_operations {
 	int (*go_dump)(struct seq_file *seq, const struct gfs2_glock *gl);
 	void (*go_callback) (struct gfs2_glock *gl);
 	const int go_type;
-	const unsigned long go_min_hold_time;
 };
 
 enum {
@@ -174,16 +173,17 @@ struct gfs2_glock {
 
 	spinlock_t gl_spin;
 
-	unsigned int gl_state;
-	unsigned int gl_target;
+	unsigned int gl_state:2,
+		gl_target:2,
+		gl_demote_state:2,
+		gl_req:2;
 	unsigned int gl_reply;
 	unsigned int gl_hash;
-	unsigned int gl_demote_state; /* state requested by remote node */
 	unsigned long gl_demote_time; /* time of first demote request */
 	struct list_head gl_holders;
 
 	const struct gfs2_glock_operations *gl_ops;
-	void *gl_lock;
+	struct gdlm_lock *gl_lock;
 	char *gl_lvb;
 	atomic_t gl_lvb_count;
 
@@ -201,6 +201,7 @@ struct gfs2_glock {
 	atomic_t gl_ail_count;
 	struct work_struct gl_work;
 	struct work_struct gl_delete;
+	long gl_hold_time;
 };
 
 struct gfs2_alloc {
@@ -527,6 +528,7 @@ struct gfs2_sbd {
 	struct list_head sd_rindex_mru_list;
 	struct gfs2_rgrpd *sd_rindex_forward;
 	unsigned int sd_rgrps;
+	unsigned int sd_max_rg_data;
 
 	/* Journal index stuff */
 

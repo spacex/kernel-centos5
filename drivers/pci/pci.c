@@ -17,6 +17,7 @@
 #include <linux/spinlock.h>
 #include <linux/string.h>
 #include <linux/interrupt.h>
+#include <linux/dmi.h>
 #include <asm/dma.h>	/* isa_dma_bridge_buggy */
 #include "pci.h"
 
@@ -416,8 +417,7 @@ pci_set_power_state(struct pci_dev *dev, pci_power_t state)
 		printk(KERN_ERR "%s(): %s: state=%d, current state=%d\n",
 			__FUNCTION__, pci_name(dev), state, dev->current_state);
 		return -EINVAL;
-	} else if (dev->current_state == state)
-		return 0;        /* we're already there */
+	}
 
 	/*
 	 * If the device or the parent bridge can't support PCI PM, ignore
@@ -1593,6 +1593,22 @@ int pci_execute_reset_function(struct pci_dev *dev)
 EXPORT_SYMBOL_GPL(pci_execute_reset_function);
 
 /**
+ * pci_probe_reset_function - check whether the device can be safely reset
+ * @dev: PCI device to reset
+ *
+ * Some devices allow an individual function to be reset without affecting
+ * other functions in the same device.  The PCI device must be responsive
+ * to PCI config space in order to use this function.
+ *
+ * Returns 0 if the device function can be reset or negative if the
+ * device doesn't support resetting a single function.
+ */
+int pci_probe_reset_function(struct pci_dev *dev)
+{
+	return __pci_reset_function(dev, 1);
+}
+
+/**
  * pci_reset_function() - quiesce and reset a PCI device function
  * @dev: Device function to reset
  *
@@ -1848,9 +1864,39 @@ int __attribute__ ((weak)) pci_ext_cfg_avail(struct pci_dev *dev)
 	return 1;
 }
 
+void disable_portable_msi(const struct dmi_header *dh)
+{
+	u8 *p = (u8 *)dh + 5;
+	u8 type;
+
+	/* find the System Type or Chassis Enclosure structure */
+	if (dh->type != 0x3)
+		return;
+
+	/* Chassis Type is last 7 bits of byte 5 */
+	type = (*p & 0x7f);
+
+	switch (type) {
+		case 0x08: /* Portable */
+		case 0x09: /* LapTop */
+		case 0x0A: /* Notebook */
+		case 0x0B: /* Hand Held */
+		case 0x0E: /* Sub Notebook */
+			printk(KERN_INFO
+			       "PCI: Disabling MSI on Portable Device\n");
+			pci_no_msi();
+			break;
+		default:
+			break;
+	}
+}
+
 static int __devinit pci_init(void)
 {
 	struct pci_dev *dev = NULL;
+
+	/* RHEL5: Disable MSI on all portable devices */
+	dmi_walk(disable_portable_msi);
 
 	while ((dev = pci_get_device(PCI_ANY_ID, PCI_ANY_ID, dev)) != NULL) {
 		pci_fixup_device(pci_fixup_final, dev);

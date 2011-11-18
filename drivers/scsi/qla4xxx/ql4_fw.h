@@ -27,11 +27,7 @@ struct port_ctrl_stat_regs {
 	__le32 rsrvd1[32];	/* 0x60-0xdf */
 	__le32 gp_out;		/* 0xe0 */
 	__le32 gp_in;		/* 0xe4 */
-	__le32 probe_mux_addr;  /* 0xe8 */
-	__le32 probe_mux_data;  /* 0xec */
-	__le32 stats_index;     /* 0xf0 */
-	__le32 stats_read_data_inc;     /* 0xf4 */
-	__le32 stats_read_data_noinc;   /* 0xf8 */
+	__le32 rsrvd2[5];	/* 0xe8 - 0xfb*/
 	__le32 port_err_status; /* 0xfc */
 };
 
@@ -42,7 +38,7 @@ struct host_mem_cfg_regs {
 };
 
 /*
- * ISP 3031 I/O Register Set structure definitions.
+ * ISP 82xx I/O Register Set structure definitions.
  */
 struct device_reg_82xx {
 	__le32 req_q_out;         /* Offset 0x0000 (R) : Request Queue out-Pointer. (64 * 4) */
@@ -115,10 +111,7 @@ struct isp_reg {
 			__le32 gp_out; /* 0xe0 */
 			__le32 gp_in;
 
-			__le32 probe_mux_addr;
-			__le32 probe_mux_data;
-
-			__le32 reserved5[3];
+			__le32 reserved5[5];
 
 			__le32 port_err_status; /* 0xfc */
 		} __attribute__ ((packed)) isp4010;

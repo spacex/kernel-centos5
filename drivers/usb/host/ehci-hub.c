@@ -61,11 +61,12 @@ static int ehci_bus_suspend (struct usb_hcd *hcd)
 
 		if ((t1 & PORT_PE) && !(t1 & PORT_OWNER))
 			t2 |= PORT_SUSPEND;
-		if (device_may_wakeup(&hcd->self.root_hub->dev))
-			t2 |= PORT_WKOC_E|PORT_WKDISC_E|PORT_WKCONN_E;
-		else
+		if (device_may_wakeup(&hcd->self.root_hub->dev)) {
 			t2 &= ~(PORT_WKOC_E|PORT_WKDISC_E|PORT_WKCONN_E);
-
+			t2 |= PORT_WKOC_E;
+		} else {
+			t2 &= ~(PORT_WKOC_E|PORT_WKDISC_E|PORT_WKCONN_E);
+		}
 		if (t1 != t2) {
 			ehci_vdbg (ehci, "port %d, %08x -> %08x\n",
 				port + 1, t1, t2);

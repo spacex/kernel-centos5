@@ -46,7 +46,6 @@
 #include <linux/dma-mapping.h>
 #include <linux/ctype.h>
 #include <linux/efi.h>
-#include <linux/setup.h>
 
 #include <asm/mtrr.h>
 #include <asm/uaccess.h>
@@ -96,14 +95,14 @@ extern acpi_interrupt_flags	acpi_sci_flags;
 int __initdata acpi_force = 0;
 #endif
 
-int acpi_numa __initdata;
+int acpi_numa __cpuinitdata;
 
 /* Boot loader ID as an integer, for the benefit of proc_dointvec */
 int bootloader_type;
 
 unsigned long saved_video_mode;
 
-int force_mwait __initdata;
+int force_mwait __cpuinitdata;
 
 /* 
  * Early DMI memory
@@ -219,6 +218,107 @@ static struct resource video_ram_resource = {
 	.end = 0xbffff,
 	.flags = IORESOURCE_RAM,
 };
+
+/* does this oprom support the given pci device, or any of the devices
+ * that the driver supports?
+ */
+static bool match_id(struct pci_dev *pdev, unsigned short vendor, unsigned short device)
+{
+	struct pci_driver *drv = pdev->driver;
+	const struct pci_device_id *id;
+
+	if (pdev->vendor == vendor && pdev->device == device)
+		return true;
+
+	for (id = drv ? drv->id_table : NULL; id && id->vendor; id++)
+		if (id->vendor == vendor && id->device == device)
+			break;
+
+	return id && id->vendor;
+}
+
+static bool probe_list(struct pci_dev *pdev, unsigned short vendor,
+		       const unsigned char *rom_list)
+{
+	unsigned short device;
+
+	do {
+		if (probe_kernel_address(rom_list, device) != 0)
+			device = 0;
+
+		if (device && match_id(pdev, vendor, device))
+			break;
+
+		rom_list += 2;
+	} while (device);
+
+	return !!device;
+}
+
+static struct resource *find_oprom(struct pci_dev *pdev)
+{
+	struct resource *oprom = NULL;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(adapter_rom_resources); i++) {
+		struct resource *res = &adapter_rom_resources[i];
+		unsigned short offset, vendor, device, list, rev;
+		const unsigned char *rom;
+
+		if (res->end == 0)
+			break;
+
+		rom = isa_bus_to_virt(res->start);
+		if (probe_kernel_address(rom + 0x18, offset) != 0)
+			continue;
+
+		if (probe_kernel_address(rom + offset + 0x4, vendor) != 0)
+			continue;
+
+		if (probe_kernel_address(rom + offset + 0x6, device) != 0)
+			continue;
+
+		if (match_id(pdev, vendor, device)) {
+			oprom = res;
+			break;
+		}
+
+		if (probe_kernel_address(rom + offset + 0x8, list) == 0 &&
+		    probe_kernel_address(rom + offset + 0xc, rev) == 0 &&
+		    rev >= 3 && list &&
+		    probe_list(pdev, vendor, rom + offset + list)) {
+			oprom = res;
+			break;
+		}
+	}
+
+	return oprom;
+}
+
+void *pci_map_biosrom(struct pci_dev *pdev)
+{
+	struct resource *oprom = find_oprom(pdev);
+
+	if (!oprom)
+		return NULL;
+
+	return ioremap(oprom->start, oprom->end - oprom->start + 1);
+}
+EXPORT_SYMBOL(pci_map_biosrom);
+
+void pci_unmap_biosrom(void __iomem *image)
+{
+	iounmap(image);
+}
+EXPORT_SYMBOL(pci_unmap_biosrom);
+
+size_t pci_biosrom_size(struct pci_dev *pdev)
+{
+	struct resource *oprom = find_oprom(pdev);
+
+	return oprom ? oprom->end - oprom->start + 1 : 0;
+}
+EXPORT_SYMBOL(pci_biosrom_size);
 
 #define romsignature(x) (*(unsigned short *)(x) == 0xaa55)
 
@@ -504,7 +604,7 @@ static inline void copy_edd(void)
 unsigned __initdata ebda_addr;
 unsigned __initdata ebda_size;
 
-static void discover_ebda(void)
+static void __init discover_ebda(void)
 {
 	/*
 	 * there is a real-mode segmented pointer pointing to the 
@@ -804,7 +904,7 @@ static void __cpuinit display_cacheinfo(struct cpuinfo_x86 *c)
 }
 
 #ifdef CONFIG_NUMA
-static int nearby_node(int apicid)
+static int __cpuinit nearby_node(int apicid)
 {
 	int i;
 	for (i = apicid - 1; i >= 0; i--) {
@@ -822,22 +922,17 @@ static int nearby_node(int apicid)
 #endif
 
 /*
- * Fixup core topology information for AMD multi-node processors.
- * Assumption: Number of cores in each internal node is the same.
+ * Fixup core topology information for
+ * (1) AMD multi-node processors
+ *     Assumption: Number of cores in each internal node is the same.
+ * (2) AMD processors supporting compute units
  */
 #ifdef CONFIG_X86_HT
-static void __cpuinit amd_fixup_dcm(struct cpuinfo_x86 *c)
+static void __cpuinit amd_get_topology(struct cpuinfo_x86 *c)
 {
-	unsigned long long value;
-	u32 nodes, cores_per_node;
+	u32 nodes;
+	u8 node_id;
 	int cpu = smp_processor_id();
-
-	if (!cpu_has(c, X86_FEATURE_NODEID_MSR))
-		return;
-
-	/* fixup topology information only once for a core */
-	if (cpu_has(c, X86_FEATURE_AMD_DCM))
-		return;
 
 	/* RHEL5: Check for a valid AMD northbridge device, which does
 	 * not exist in virtualized environments.
@@ -859,20 +954,39 @@ static void __cpuinit amd_fixup_dcm(struct cpuinfo_x86 *c)
 	    !early_is_k8_nb(read_pci_config(0, 24, 3, 0x00)))
 		return;
 
-	rdmsrl(0xc001100c, value);
+	/* get information required for multi-node processors */
+	if (cpu_has(c, X86_FEATURE_TOPOEXT)) {
+		u32 eax, ebx, ecx, edx;
 
-	nodes = ((value >> 3) & 7) + 1;
-	if (nodes == 1)
+		cpuid(0x8000001e, &eax, &ebx, &ecx, &edx);
+		nodes = ((ecx >> 8) & 7) + 1;
+		node_id = ecx & 7;
+
+		/* get compute unit information */
+		smp_num_siblings = ((ebx >> 8) & 3) + 1;
+		c->compute_unit_id = ebx & 0xff;
+	} else if (cpu_has(c, X86_FEATURE_NODEID_MSR)) {
+		u64 value;
+
+		rdmsrl(0xc001100c, value);
+		nodes = ((value >> 3) & 7) + 1;
+		node_id = value & 7;
+	} else
 		return;
 
-	set_bit(X86_FEATURE_AMD_DCM, c->x86_capability);
-	cores_per_node = c->x86_max_cores / nodes;
+	/* fixup multi-node processor information */
+	if (nodes > 1) {
+		u32 cores_per_node;
 
-	/* store NodeID, use llc_shared_map to store sibling info */
-	cpu_llc_id[cpu] = value & 7;
+		set_bit(X86_FEATURE_AMD_DCM, c->x86_capability);
+		cores_per_node = c->x86_max_cores / nodes;
 
-	/* fixup core id to be in range from 0 to (cores_per_node - 1) */
-	c->cpu_core_id = c->cpu_core_id % cores_per_node;
+		/* store NodeID, use llc_shared_map to store sibling info */
+		cpu_llc_id[cpu] = node_id;
+
+		/* core id to be in range from 0 to (cores_per_node - 1) */
+		c->cpu_core_id = c->cpu_core_id % cores_per_node;
+	}
 }
 #endif
 
@@ -880,7 +994,7 @@ static void __cpuinit amd_fixup_dcm(struct cpuinfo_x86 *c)
  * On a AMD dual core setup the lower bits of the APIC id distingush the cores.
  * Assumes number of cores is a power of two.
  */
-static void __init amd_detect_cmp(struct cpuinfo_x86 *c)
+static void __cpuinit amd_detect_cmp(struct cpuinfo_x86 *c)
 {
 #ifdef CONFIG_SMP
 	unsigned bits;
@@ -906,12 +1020,9 @@ static void __init amd_detect_cmp(struct cpuinfo_x86 *c)
 	c->cpu_core_id = c->phys_proc_id & ((1 << bits)-1);
 	/* Convert the APIC ID into the socket ID */
 	c->phys_proc_id = phys_pkg_id(bits);
-
 	/* use socket ID also for last level cache */
 	cpu_llc_id[cpu] = c->phys_proc_id;
-
-	/* fixup topology information on multi-node processors */
-	amd_fixup_dcm(c);
+	amd_get_topology(c);
 
 #ifdef CONFIG_NUMA
 	node = cpu_llc_id[cpu];
@@ -942,7 +1053,19 @@ static void __init amd_detect_cmp(struct cpuinfo_x86 *c)
 #endif
 }
 
-static void __init init_amd(struct cpuinfo_x86 *c)
+static void __cpuinit amd_enable_pci_ext_cfg(struct cpuinfo_x86 *c)
+{
+	u64 reg;
+
+	rdmsrl(MSR_K8_NB_CFG, reg);
+	if (!(reg & ENABLE_CF8_EXT_CFG)) {
+		reg |= ENABLE_CF8_EXT_CFG;
+		wrmsrl(MSR_K8_NB_CFG, reg);
+	}
+	set_bit(X86_FEATURE_PCI_EXT_CFG, c->x86_capability);
+}
+
+static void __cpuinit init_amd(struct cpuinfo_x86 *c)
 {
 	unsigned level;
 
@@ -969,7 +1092,11 @@ static void __init init_amd(struct cpuinfo_x86 *c)
 	
 	/* On C+ stepping K8 rep microcode works well for copy/memset */
 	level = cpuid_eax(1);
-	if (c->x86 == 15 && ((level >= 0x0f48 && level < 0x0f50) || level >= 0x0f58))
+	if (c->x86 == 15 &&
+	    ((level >= 0x0f48 && level < 0x0f50) || level >= 0x0f58))
+		set_bit(X86_FEATURE_REP_GOOD, &c->x86_capability);
+
+	if (c->x86 >= 16)
 		set_bit(X86_FEATURE_REP_GOOD, &c->x86_capability);
 
 	/* Enable workaround for FXSAVE leak */
@@ -1078,7 +1205,7 @@ static int __cpuinit intel_num_cpu_cores(struct cpuinfo_x86 *c)
 		return 1;
 }
 
-static void srat_detect_node(void)
+static void __cpuinit srat_detect_node(void)
 {
 #ifdef CONFIG_NUMA
 	unsigned node;

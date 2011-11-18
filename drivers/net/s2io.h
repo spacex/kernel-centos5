@@ -355,9 +355,8 @@ struct stat_block {
 #define FIFO_OTHER_MAX_NUM			1
 
 
-#define MAX_RX_DESC_1  (MAX_RX_RINGS * MAX_RX_BLOCKS_PER_RING * 127 )
-#define MAX_RX_DESC_2  (MAX_RX_RINGS * MAX_RX_BLOCKS_PER_RING * 85 )
-#define MAX_RX_DESC_3  (MAX_RX_RINGS * MAX_RX_BLOCKS_PER_RING * 85 )
+#define MAX_RX_DESC_1  (MAX_RX_RINGS * MAX_RX_BLOCKS_PER_RING * 128)
+#define MAX_RX_DESC_2  (MAX_RX_RINGS * MAX_RX_BLOCKS_PER_RING * 86)
 #define MAX_TX_DESC    (MAX_AVAILABLE_TXDS)
 
 /* FIFO mappings for all possible number of fifos configured */
@@ -745,10 +744,6 @@ struct ring_info {
 
 	/* Buffer Address store. */
 	struct buffAdd **ba;
-
-	/* per-Ring statistics */
-	unsigned long rx_packets;
-	unsigned long rx_bytes;
 } ____cacheline_aligned;
 
 /* Fifo specific structure */
@@ -863,15 +858,6 @@ enum s2io_device_state_t
 	__S2IO_STATE_CARD_UP
 };
 
-/* Network private statistics. */
-struct s2io_stats_buffer {
-	unsigned long   tx_packets;           /* packets transmitted        */
-	unsigned long   rx_errors;            /* bad packets received       */
-	unsigned long   tx_errors;            /* packet transmit problems   */
-	unsigned long   multicast;            /* multicast packets received */
-	unsigned long   rx_length_errors;
-};
-
 /* Structure representing one instance of the NIC */
 struct s2io_nic {
 	int rxd_mode;
@@ -881,7 +867,6 @@ struct s2io_nic {
 	 */
 	int pkts_to_process;
 	struct net_device *dev;
-	struct net_device_stats dev_stats;
 	struct mac_info mac_control;
 	struct config_param config;
 	struct pci_dev *pdev;
@@ -892,7 +877,8 @@ struct s2io_nic {
 
 	struct mac_addr def_mac_addr[256];
 
-	struct s2io_stats_buffer stats_buffer;
+	struct net_device_stats dev_stats;
+	struct net_device_stats stats;
 	int high_dma_flag;
 	int device_enabled_once;
 

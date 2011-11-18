@@ -79,6 +79,16 @@ static inline int array_too_big(unsigned long fixed, unsigned long obj,
 int dm_split_args(int *argc, char ***argvp, char *input);
 
 /*
+ * Is this mapped_device being deleted?
+ */
+int dm_deleting_md(struct mapped_device *md);
+
+/*
+ * Is this mapped_device suspended?
+ */
+int dm_suspended_md(struct mapped_device *md);
+
+/*
  * The device-mapper can be driven through one of two interfaces;
  * ioctl or filesystem, depending which patch you have applied.
  */

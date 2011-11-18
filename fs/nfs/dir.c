@@ -30,6 +30,7 @@
 #include <linux/nfs_mount.h>
 #include <linux/pagemap.h>
 #include <linux/smp_lock.h>
+#include <linux/pagevec.h>
 #include <linux/namei.h>
 #include <linux/mount.h>
 
@@ -1314,81 +1315,6 @@ static int nfs_rmdir(struct inode *dir, struct dentry *dentry)
 	return error;
 }
 
-static int nfs_sillyrename(struct inode *dir, struct dentry *dentry)
-{
-	static unsigned int sillycounter;
-	const int      fileidsize  = sizeof(NFS_FILEID(dir))*2;
-	const int      countersize = sizeof(sillycounter)*2;
-	const int      slen        = sizeof(".nfs")+fileidsize+countersize-1;
-	char           silly[slen+1];
-	struct qstr    qsilly;
-	struct dentry *sdentry;
-	int            error = -EIO;
-
-	dfprintk(VFS, "NFS: silly-rename(%s/%s, ct=%d)\n",
-		dentry->d_parent->d_name.name, dentry->d_name.name, 
-		atomic_read(&dentry->d_count));
-	nfs_inc_stats(dir, NFSIOS_SILLYRENAME);
-
-#ifdef NFS_PARANOIA
-if (!dentry->d_inode)
-printk("NFS: silly-renaming %s/%s, negative dentry??\n",
-dentry->d_parent->d_name.name, dentry->d_name.name);
-#endif
-	/*
-	 * We don't allow a dentry to be silly-renamed twice.
-	 */
-	error = -EBUSY;
-	if (dentry->d_flags & DCACHE_NFSFS_RENAMED)
-		goto out;
-
-	sprintf(silly, ".nfs%*.*Lx",
-		fileidsize, fileidsize,
-		(unsigned long long)NFS_FILEID(dentry->d_inode));
-
-	/* Return delegation in anticipation of the rename */
-	nfs_inode_return_delegation(dentry->d_inode);
-
-	sdentry = NULL;
-	do {
-		char *suffix = silly + slen - countersize;
-
-		dput(sdentry);
-		sillycounter++;
-		sprintf(suffix, "%*.*x", countersize, countersize, sillycounter);
-
-		dfprintk(VFS, "NFS: trying to rename %s to %s\n",
-				dentry->d_name.name, silly);
-		
-		sdentry = lookup_one_len(silly, dentry->d_parent, slen);
-		/*
-		 * N.B. Better to return EBUSY here ... it could be
-		 * dangerous to delete the file while it's in use.
-		 */
-		if (IS_ERR(sdentry))
-			goto out;
-	} while(sdentry->d_inode != NULL); /* need negative lookup */
-
-	qsilly.name = silly;
-	qsilly.len  = strlen(silly);
-	if (dentry->d_inode) {
-		error = NFS_PROTO(dir)->rename(dir, &dentry->d_name,
-				dir, &qsilly);
-		nfs_mark_for_revalidate(dentry->d_inode);
-	} else
-		error = NFS_PROTO(dir)->rename(dir, &dentry->d_name,
-				dir, &qsilly);
-	if (!error) {
-		nfs_set_verifier(dentry, nfs_save_change_attribute(dir));
-		d_move(dentry, sdentry);
-		error = nfs_async_unlink(dir, dentry);
- 		/* If we return 0 we don't unlink */
-	}
-	dput(sdentry);
-out:
-	return error;
-}
-
 /*
  * Remove a file after making sure there are no pending writes,
  * and after checking that the file has only one user. 
@@ -1629,6 +1555,7 @@ static int nfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 		if (!dentry)
 			goto out;
 
+		dentry->d_op = new_dentry->d_op;
 		/* silly-rename the existing target ... */
 		err = nfs_sillyrename(new_dir, new_dentry);
 		if (!err) {

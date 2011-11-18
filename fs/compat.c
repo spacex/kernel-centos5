@@ -1790,7 +1790,7 @@ asmlinkage long compat_sys_select(int n, compat_ulong_t __user *inp,
 			timeout = -1;	/* infinite */
 		else {
 			timeout = ROUND_UP(tv.tv_usec, 1000000/HZ);
-			timeout += tv.tv_sec * HZ;
+			timeout += (s64)tv.tv_sec * HZ;
 		}
 	}
 
@@ -1858,7 +1858,7 @@ asmlinkage long compat_sys_pselect7(int n, compat_ulong_t __user *inp,
 		if (tsp) {
 			if ((unsigned long)ts.tv_sec < MAX_SELECT_SECONDS) {
 				timeout = ROUND_UP(ts.tv_nsec, 1000000000/HZ);
-				timeout += ts.tv_sec * (unsigned long)HZ;
+				timeout += (s64)ts.tv_sec * (unsigned long)HZ;
 				ts.tv_sec = 0;
 				ts.tv_nsec = 0;
 			} else {
@@ -1939,7 +1939,7 @@ asmlinkage long compat_sys_ppoll(struct pollfd __user *ufds,
 		   the number of seconds that can be expressed in
 		   an s64. Otherwise the compiler bitches at us */
 		timeout = ROUND_UP(ts.tv_nsec, 1000000000/HZ);
-		timeout += ts.tv_sec * HZ;
+		timeout += (s64)ts.tv_sec * HZ;
 	}
 
 	if (sigmask) {

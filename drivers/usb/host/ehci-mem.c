@@ -130,6 +130,10 @@ static void ehci_mem_cleanup (struct ehci_hcd *ehci)
 		qh_put (ehci->async);
 	ehci->async = NULL;
 
+	if (ehci->dummy)
+		qh_put (ehci->dummy);
+	ehci->dummy = NULL;
+
 	/* DMA consistent memory and pools */
 	if (ehci->qtd_pool)
 		dma_pool_destroy (ehci->qtd_pool);
@@ -216,8 +220,24 @@ static int ehci_mem_init (struct ehci_hcd *ehci, gfp_t flags)
 	if (ehci->periodic == NULL) {
 		goto fail;
 	}
-	for (i = 0; i < ehci->periodic_size; i++)
-		ehci->periodic [i] = EHCI_LIST_END;
+
+	if (ehci->use_dummy_qh) {
+		ehci->dummy = ehci_qh_alloc(ehci, flags);
+		if (!ehci->dummy) {
+			goto fail;
+		}
+
+		ehci->dummy->hw_next = EHCI_LIST_END;
+		ehci->dummy->hw_qtd_next = EHCI_LIST_END;
+		ehci->dummy->hw_alt_next = EHCI_LIST_END;
+		ehci->dummy->hw_token &= ~QTD_STS_ACTIVE;
+
+		for (i = 0; i < ehci->periodic_size; i++)
+			ehci->periodic[i] = ehci->dummy->qh_dma;
+	} else {
+		for (i = 0; i < ehci->periodic_size; i++)
+			ehci->periodic[i] = EHCI_LIST_END;
+	}
 
 	/* software shadow of hardware table */
 	ehci->pshadow = kcalloc(ehci->periodic_size, sizeof(void *), flags);

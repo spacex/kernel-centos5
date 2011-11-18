@@ -574,8 +574,13 @@ int cifs_get_inode_info(struct inode **pinode,
 	/* get default inode mode */
 	if (attr & ATTR_DIRECTORY)
 		default_mode = cifs_sb->mnt_dir_mode;
-	else
+	else {
 		default_mode = cifs_sb->mnt_file_mode;
+
+		/* clear write bits if ATTR_READONLY is set */
+		if (attr & ATTR_READONLY)
+			inode->i_mode &= ~S_IWUGO;
+	}
 
 	/* set permission bits */
 	if (atomic_read(&cifsInfo->inUse) == 0 ||
@@ -589,9 +594,6 @@ int cifs_get_inode_info(struct inode **pinode,
 
 		inode->i_mode &= ~S_IFMT;
 	}
-	/* clear write bits if ATTR_READONLY is set */
-	if (attr & ATTR_READONLY)
-		inode->i_mode &= ~S_IWUGO;
 
 	/* set inode type */
 	if ((attr & ATTR_SYSTEM) &&

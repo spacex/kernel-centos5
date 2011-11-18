@@ -709,14 +709,11 @@ size_zones(unsigned long *z, unsigned long *h,
 	   unsigned long start_pfn, unsigned long end_pfn)
 {
  	int i;
-#ifndef CONFIG_XEN
  	unsigned long w;
-#endif
 
  	for (i = 0; i < MAX_NR_ZONES; i++)
  		z[i] = 0;
 
-#ifndef CONFIG_XEN
  	if (start_pfn < MAX_DMA_PFN)
  		z[ZONE_DMA] = MAX_DMA_PFN - start_pfn;
  	if (start_pfn < MAX_DMA32_PFN) {
@@ -757,11 +754,6 @@ size_zones(unsigned long *z, unsigned long *h,
 			h[ZONE_DMA] = z[ZONE_DMA];
 		}
 	}
-#else
-	z[ZONE_DMA] = end_pfn;
- 	for (i = 0; i < MAX_NR_ZONES; i++)
- 		h[i] = 0;
-#endif
 }
 
 #ifndef CONFIG_NUMA

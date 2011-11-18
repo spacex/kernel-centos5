@@ -102,7 +102,7 @@ void qla4xxx_process_response_queue(struct scsi_qla_host *ha);
 void qla4xxx_isr_decode_mailbox(struct scsi_qla_host *ha, uint32_t mbox_status);
 void qla4xxx_wake_dpc(struct scsi_qla_host *ha);
 
-/* ISP 3031 related functions */
+/* 82xx related functions */
 extern void qla4_8xxx_pci_config(struct scsi_qla_host *);
 extern void qla4_8xxx_reset_chip(struct scsi_qla_host *);
 extern int qla4_8xxx_iospace_config(struct scsi_qla_host *ha);
@@ -121,8 +121,6 @@ extern void qla4_8xxx_crb_win_unlock(struct scsi_qla_host *);
 extern int qla4_8xxx_pci_get_crb_addr_2M(struct scsi_qla_host *, u64 *);
 extern void qla4_8xxx_wr_32(struct scsi_qla_host *, u64, u32);
 extern int qla4_8xxx_rd_32(struct scsi_qla_host *, u64);
-extern int QLA30XX_RDMEM(struct scsi_qla_host *, u64, void *, int);
-extern int QLA30XX_WRMEM(struct scsi_qla_host *, u64, void *, int);
 extern int check_for_bad_spd(struct scsi_qla_host *);
 extern void load_fw (struct scsi_qla_host *);
 extern int rom_lock(struct scsi_qla_host *);

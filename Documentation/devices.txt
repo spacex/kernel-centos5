@@ -106,17 +106,30 @@ Your cooperation is appreciated.
 		the initrd.
 
   2 char	Pseudo-TTY masters
-		  0 = /dev/ptyp0	First PTY master
-		  1 = /dev/ptyp1	Second PTY master
+		   0 = /dev/ptyp0	First PTY master
+		   1 = /dev/ptyp1	Second PTY master
 		    ...
-		255 = /dev/ptyef	256th PTY master
+		 255 = /dev/ptyef	256th PTY master
+		 256 = /dev/ptyp10	257th PTY master
+		 257 = /dev/ptyp11	258th PTY master
+		   ...
+		4095 = /dev/ptyeff	4095th PTY master
+		4096 = /dev/ptyp100	4096th PTY master
+		   ...
 
 		Pseudo-tty's are named as follows:
-		* Masters are "pty", slaves are "tty";
-		* the fourth letter is one of pqrstuvwxyzabcde indicating
-		  the 1st through 16th series of 16 pseudo-ttys each, and
-		* the fifth letter is one of 0123456789abcdef indicating
-		  the position within the series.
+		Masters are "pty", slaves are "tty";
+
+		The device index is broken into nibbles, each nibble
+		generating a letter, at the following order:
+		* The second nibble of the index is represented by one
+		  of pqrstuvwxyzabcde letters, indicating the 1st
+		  through 16th nibble value;
+		* The remaining nibbles are represented by one of
+		  0123456789abcdef letters, indicating the 1st through
+		  16th nibble value, starting from the most
+		  significative nibble to the least significative nibble,
+		  excluding the second nibble.
 
 		These are the old-style (BSD) PTY devices; Unix98
 		devices are on major 128 and above and use the PTY
@@ -181,10 +194,18 @@ Your cooperation is appreciated.
 		the drive type is insignificant for these devices.
 
   3 char	Pseudo-TTY slaves
-		  0 = /dev/ttyp0	First PTY slave
-		  1 = /dev/ttyp1	Second PTY slave
-		    ...
-		255 = /dev/ttyef	256th PTY slave
+		   0 = /dev/ttyp0	First PTY slave
+		   1 = /dev/ttyp1	Second PTY slave
+		  ...
+		 255 = /dev/ttyef	256th PTY slave
+		 256 = /dev/ttyp10	257th PTY slave
+		 257 = /dev/ttyp11	258th PTY slave
+		   ...
+		4095 = /dev/ttyeff	4095th PTY slave
+		4096 = /dev/ttyp100	4096th PTY slave
+		   ...
+
+		See char major number 2 for the used rules to name them.
 
 		These are the old-style (BSD) PTY devices; Unix98
 		devices are on major 136 and above.

@@ -80,6 +80,9 @@ struct cpuinfo_x86 {
 	unsigned char booted_cores;	/* number of cores as seen by OS */
 	__u8 phys_proc_id; 		/* Physical processor id. */
 	__u8 cpu_core_id;  		/* Core id */
+#ifndef __GENKSYMS__
+	__u8 compute_unit_id;		/* Compute unit id */
+#endif /* __GENKSYMS__ */
 #endif
 } __attribute__((__aligned__(SMP_CACHE_BYTES)));
 

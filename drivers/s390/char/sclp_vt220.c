@@ -380,11 +380,13 @@ sclp_vt220_timeout(unsigned long data)
  * otherwise the user has to explicitly call the flush function.
  * A non-zero CONVERTLF parameter indicates that 0x0a characters in the message
  * buffer should be converted to 0x0a 0x0d. After completion, return the number
- * of bytes written.
+ * of bytes written. If MAY_SCHEDULE is non-zero, this function will call
+ * wait_event if no more buffers are available. Otherwise sclp_sync_wait is
+ * called.
  */
 static int
 __sclp_vt220_write(const unsigned char *buf, int count, int do_schedule,
-		   int convertlf)
+		   int convertlf, int may_schedule)
 {
 	unsigned long flags;
 	void *page;
@@ -401,7 +403,7 @@ __sclp_vt220_write(const unsigned char *buf, int count, int do_schedule,
 			while (list_empty(&sclp_vt220_empty)) {
 				spin_unlock_irqrestore(&sclp_vt220_lock,
 						       flags);
-				if (in_interrupt())
+				if (in_interrupt() || !may_schedule)
 					sclp_sync_wait();
 				else
 					wait_event(sclp_vt220_waitq,
@@ -451,7 +453,7 @@ __sclp_vt220_write(const unsigned char *buf, int count, int do_schedule,
 static int
 sclp_vt220_write(struct tty_struct *tty, const unsigned char *buf, int count)
 {
-	return __sclp_vt220_write(buf, count, 1, 0);
+	return __sclp_vt220_write(buf, count, 1, 0, 1);
 }
 
 #define SCLP_VT220_SESSION_ENDED	0x01
@@ -530,7 +532,7 @@ sclp_vt220_close(struct tty_struct *tty, struct file *filp)
 static void
 sclp_vt220_put_char(struct tty_struct *tty, unsigned char ch)
 {
-	__sclp_vt220_write(&ch, 1, 0, 0);
+	__sclp_vt220_write(&ch, 1, 0, 0, 0);
 }
 
 /*
@@ -724,7 +726,7 @@ module_init(sclp_vt220_tty_init);
 static void
 sclp_vt220_con_write(struct console *con, const char *buf, unsigned int count)
 {
-	__sclp_vt220_write((const unsigned char *) buf, count, 1, 1);
+	__sclp_vt220_write((const unsigned char *) buf, count, 1, 1, 0);
 }
 
 static struct tty_driver *

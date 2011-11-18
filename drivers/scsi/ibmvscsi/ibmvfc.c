@@ -449,6 +449,9 @@ static void ibmvfc_set_tgt_action(struct ibmvfc_target *tgt,
 {
 	switch (tgt->action) {
 	case IBMVFC_TGT_ACTION_DEL_RPORT:
+		if (action == IBMVFC_TGT_ACTION_DELETED_RPORT)
+			tgt->action = action;
+	case IBMVFC_TGT_ACTION_DELETED_RPORT:
 		break;
 	default:
 		if (action == IBMVFC_TGT_ACTION_DEL_RPORT)
@@ -588,12 +591,11 @@ static void ibmvfc_link_down(struct ibmvfc_host *vhost,
 /**
  * ibmvfc_init_host - Start host initialization
  * @vhost:		ibmvfc host struct
- * @relogin:	is this a re-login?
  *
  * Return value:
  *	nothing
  **/
-static void ibmvfc_init_host(struct ibmvfc_host *vhost, int relogin)
+static void ibmvfc_init_host(struct ibmvfc_host *vhost)
 {
 	struct ibmvfc_target *tgt;
 
@@ -607,10 +609,8 @@ static void ibmvfc_init_host(struct ibmvfc_host *vhost, int relogin)
 	}
 
 	if (!ibmvfc_set_host_state(vhost, IBMVFC_INITIALIZING)) {
-		if (!relogin) {
-			memset(vhost->async_crq.msgs, 0, PAGE_SIZE);
-			vhost->async_crq.cur = 0;
-		}
+		memset(vhost->async_crq.msgs, 0, PAGE_SIZE);
+		vhost->async_crq.cur = 0;
 
 		list_for_each_entry(tgt, &vhost->targets, queue)
 			ibmvfc_set_tgt_action(tgt, IBMVFC_TGT_ACTION_DEL_RPORT);
@@ -1804,7 +1804,10 @@ static int ibmvfc_reset_device(struct scsi_device *sdev, int type, char *desc)
 	sdev_printk(KERN_INFO, sdev, "Resetting %s\n", desc);
 	wait_for_completion(&evt->comp);
 
-	if (rsp_iu.cmd.status) {
+	if (rsp_iu.cmd.status)
+		rsp_code = ibmvfc_get_err_result(&rsp_iu.cmd);
+
+	if (rsp_code) {
 		if (fc_rsp->flags & FCP_RSP_LEN_VALID)
 			rsp_code = fc_rsp->data.info.rsp_code;
 
@@ -2116,7 +2119,10 @@ static int ibmvfc_abort_task_set(struct scsi_device *sdev)
 		}
 	}
 
-	if (rsp_iu.cmd.status) {
+	if (rsp_iu.cmd.status)
+		rsp_code = ibmvfc_get_err_result(&rsp_iu.cmd);
+
+	if (rsp_code) {
 		if (fc_rsp->flags & FCP_RSP_LEN_VALID)
 			rsp_code = fc_rsp->data.info.rsp_code;
 
@@ -2278,41 +2284,66 @@ static void ibmvfc_terminate_rport_io(struct fc_rport *rport)
 	LEAVE();
 }
 
-static const struct {
-	enum ibmvfc_async_event ae;
-	const char *desc;
-} ae_desc [] = {
-	{ IBMVFC_AE_ELS_PLOGI,		"PLOGI" },
-	{ IBMVFC_AE_ELS_LOGO,		"LOGO" },
-	{ IBMVFC_AE_ELS_PRLO,		"PRLO" },
-	{ IBMVFC_AE_SCN_NPORT,		"N-Port SCN" },
-	{ IBMVFC_AE_SCN_GROUP,		"Group SCN" },
-	{ IBMVFC_AE_SCN_DOMAIN,		"Domain SCN" },
-	{ IBMVFC_AE_SCN_FABRIC,		"Fabric SCN" },
-	{ IBMVFC_AE_LINK_UP,		"Link Up" },
-	{ IBMVFC_AE_LINK_DOWN,		"Link Down" },
-	{ IBMVFC_AE_LINK_DEAD,		"Link Dead" },
-	{ IBMVFC_AE_HALT,			"Halt" },
-	{ IBMVFC_AE_RESUME,		"Resume" },
-	{ IBMVFC_AE_ADAPTER_FAILED,	"Adapter Failed" },
+static const struct ibmvfc_async_desc ae_desc [] = {
+	{ IBMVFC_AE_ELS_PLOGI,		"PLOGI",		IBMVFC_DEFAULT_LOG_LEVEL + 1 },
+	{ IBMVFC_AE_ELS_LOGO,		"LOGO",		IBMVFC_DEFAULT_LOG_LEVEL + 1 },
+	{ IBMVFC_AE_ELS_PRLO,		"PRLO",		IBMVFC_DEFAULT_LOG_LEVEL + 1 },
+	{ IBMVFC_AE_SCN_NPORT,		"N-Port SCN",	IBMVFC_DEFAULT_LOG_LEVEL + 1 },
+	{ IBMVFC_AE_SCN_GROUP,		"Group SCN",	IBMVFC_DEFAULT_LOG_LEVEL + 1 },
+	{ IBMVFC_AE_SCN_DOMAIN,		"Domain SCN",	IBMVFC_DEFAULT_LOG_LEVEL },
+	{ IBMVFC_AE_SCN_FABRIC,		"Fabric SCN",	IBMVFC_DEFAULT_LOG_LEVEL },
+	{ IBMVFC_AE_LINK_UP,		"Link Up",		IBMVFC_DEFAULT_LOG_LEVEL },
+	{ IBMVFC_AE_LINK_DOWN,		"Link Down",	IBMVFC_DEFAULT_LOG_LEVEL },
+	{ IBMVFC_AE_LINK_DEAD,		"Link Dead",	IBMVFC_DEFAULT_LOG_LEVEL },
+	{ IBMVFC_AE_HALT,			"Halt",		IBMVFC_DEFAULT_LOG_LEVEL },
+	{ IBMVFC_AE_RESUME,		"Resume",		IBMVFC_DEFAULT_LOG_LEVEL },
+	{ IBMVFC_AE_ADAPTER_FAILED,	"Adapter Failed",	IBMVFC_DEFAULT_LOG_LEVEL },
 };
 
-static const char *unknown_ae = "Unknown async";
+static const struct ibmvfc_async_desc unknown_ae = {
+	0, "Unknown async", IBMVFC_DEFAULT_LOG_LEVEL
+};
 
 /**
  * ibmvfc_get_ae_desc - Get text description for async event
  * @ae:	async event
  *
  **/
-static const char *ibmvfc_get_ae_desc(u64 ae)
+static const struct ibmvfc_async_desc *ibmvfc_get_ae_desc(u64 ae)
 {
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(ae_desc); i++)
 		if (ae_desc[i].ae == ae)
-			return ae_desc[i].desc;
+			return &ae_desc[i];
 
-	return unknown_ae;
+	return &unknown_ae;
+}
+
+static const struct {
+	enum ibmvfc_ae_link_state state;
+	const char *desc;
+} link_desc [] = {
+	{ IBMVFC_AE_LS_LINK_UP,		" link up" },
+	{ IBMVFC_AE_LS_LINK_BOUNCED,	" link bounced" },
+	{ IBMVFC_AE_LS_LINK_DOWN,	" link down" },
+	{ IBMVFC_AE_LS_LINK_DEAD,	" link dead" },
+};
+
+/**
+ * ibmvfc_get_link_state - Get text description for link state
+ * @state:	link state
+ *
+ **/
+static const char *ibmvfc_get_link_state(enum ibmvfc_ae_link_state state)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(link_desc); i++)
+		if (link_desc[i].state == state)
+			return link_desc[i].desc;
+
+	return "";
 }
 
 /**
@@ -2324,11 +2355,12 @@ static const char *ibmvfc_get_ae_desc(u64 ae)
 static void ibmvfc_handle_async(struct ibmvfc_async_crq *crq,
 				struct ibmvfc_host *vhost)
 {
-	const char *desc = ibmvfc_get_ae_desc(crq->event);
+	const struct ibmvfc_async_desc *desc = ibmvfc_get_ae_desc(crq->event);
 	struct ibmvfc_target *tgt;
 
-	ibmvfc_log(vhost, 3, "%s event received. scsi_id: %lx, wwpn: %lx,"
-		   " node_name: %lx\n", desc, crq->scsi_id, crq->wwpn, crq->node_name);
+	ibmvfc_log(vhost, desc->log_level, "%s event received. scsi_id: %lx, wwpn: %lx,"
+		   " node_name: %lx%s\n", desc->desc, crq->scsi_id, crq->wwpn, crq->node_name,
+		   ibmvfc_get_link_state(crq->link_state));
 
 	switch (crq->event) {
 	case IBMVFC_AE_RESUME:
@@ -2420,13 +2452,13 @@ static void ibmvfc_handle_crq(struct ibmvfc_crq *crq, struct ibmvfc_host *vhost)
 			/* Send back a response */
 			rc = ibmvfc_send_crq_init_complete(vhost);
 			if (rc == 0)
-				ibmvfc_init_host(vhost, 0);
+				ibmvfc_init_host(vhost);
 			else
 				dev_err(vhost->dev, "Unable to send init rsp. rc=%ld\n", rc);
 			break;
 		case IBMVFC_CRQ_INIT_COMPLETE:
 			dev_info(vhost->dev, "Partner initialization complete\n");
-			ibmvfc_init_host(vhost, 0);
+			ibmvfc_init_host(vhost);
 			break;
 		default:
 			dev_err(vhost->dev, "Unknown crq message type: %d\n", crq->format);
@@ -3891,7 +3923,7 @@ static void ibmvfc_npiv_logout_done(struct ibmvfc_event *evt)
 	case IBMVFC_MAD_SUCCESS:
 		if (list_empty(&vhost->sent) &&
 		    vhost->action == IBMVFC_HOST_ACTION_LOGO_WAIT) {
-			ibmvfc_init_host(vhost, 0);
+			ibmvfc_init_host(vhost);
 			return;
 		}
 		break;
@@ -4052,10 +4084,14 @@ static void ibmvfc_tgt_add_rport(struct ibmvfc_target *tgt)
 	if (rport && tgt->action == IBMVFC_TGT_ACTION_DEL_RPORT) {
 		tgt_dbg(tgt, "Deleting rport\n");
 		list_del(&tgt->queue);
+		ibmvfc_set_tgt_action(tgt, IBMVFC_TGT_ACTION_DELETED_RPORT);
 		spin_unlock_irqrestore(vhost->host->host_lock, flags);
 		fc_remote_port_delete(rport);
 		del_timer_sync(&tgt->timer);
 		kref_put(&tgt->kref, ibmvfc_release_tgt);
+		return;
+	} else if (rport && tgt->action == IBMVFC_TGT_ACTION_DELETED_RPORT) {
+		spin_unlock_irqrestore(vhost->host->host_lock, flags);
 		return;
 	}
 
@@ -4101,6 +4137,8 @@ static void ibmvfc_do_work(struct ibmvfc_host *vhost)
 		spin_unlock_irqrestore(vhost->host->host_lock, flags);
 		rc = ibmvfc_reset_crq(vhost);
 		spin_lock_irqsave(vhost->host->host_lock, flags);
+		if (rc == H_CLOSED)
+			vio_enable_interrupts(to_vio_dev(vhost->dev));
 		if (rc || (rc = ibmvfc_send_crq_init(vhost)) ||
 		    (rc = vio_enable_interrupts(to_vio_dev(vhost->dev)))) {
 			ibmvfc_link_down(vhost, IBMVFC_LINK_DEAD);
@@ -4154,6 +4192,7 @@ static void ibmvfc_do_work(struct ibmvfc_host *vhost)
 				rport = tgt->rport;
 				tgt->rport = NULL;
 				list_del(&tgt->queue);
+				ibmvfc_set_tgt_action(tgt, IBMVFC_TGT_ACTION_DELETED_RPORT);
 				spin_unlock_irqrestore(vhost->host->host_lock, flags);
 				if (rport)
 					fc_remote_port_delete(rport);
@@ -4610,7 +4649,11 @@ static int ibmvfc_remove(struct vio_dev *vdev)
 	ENTER();
 	ibmvfc_remove_trace_file(&vhost->host->shost_classdev.kobj,
 				 &ibmvfc_trace_attr);
+
+	spin_lock_irqsave(vhost->host->host_lock, flags);
 	ibmvfc_link_down(vhost, IBMVFC_HOST_OFFLINE);
+	spin_unlock_irqrestore(vhost->host->host_lock, flags);
+
 	ibmvfc_wait_while_resetting(vhost);
 	ibmvfc_release_crq_queue(vhost);
 	kthread_stop(vhost->work_thread);

@@ -1469,7 +1469,11 @@ static int set_hashsize(const char *val, struct kernel_param *kp)
 	get_random_bytes(&rnd, 4);
 
 	write_lock_bh(&ip_conntrack_lock);
-	for (i = 0; i < ip_conntrack_htable_size; i++) {
+
+	/* Don't need to empty the hash table if its not allocated yet */
+	i = (!ip_conntrack_hash) ? ip_conntrack_htable_size : 0;
+
+	for (; i < ip_conntrack_htable_size; i++) {
 		while (!list_empty(&ip_conntrack_hash[i])) {
 			h = list_entry(ip_conntrack_hash[i].next,
 				       struct ip_conntrack_tuple_hash, list);
@@ -1487,8 +1491,8 @@ static int set_hashsize(const char *val, struct kernel_param *kp)
 	ip_conntrack_hash = hash;
 	ip_conntrack_hash_rnd = rnd;
 	write_unlock_bh(&ip_conntrack_lock);
-
-	free_conntrack_hash(old_hash, old_vmalloced, old_size);
+	if (old_hash)
+		free_conntrack_hash(old_hash, old_vmalloced, old_size);
 	return 0;
 }
 

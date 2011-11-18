@@ -346,17 +346,17 @@ out:
 /*
  * Enable encryption
  */
-static int tape_3592_enable_crypt(struct tape_device *device)
+static struct tape_request *__tape_3592_enable_crypt(struct tape_device *device)
 {
 	struct tape_request *request;
 	char *data;
 
 	DBF_EVENT(6, "tape_3592_enable_crypt\n");
 	if (!crypt_supported(device))
-		return -ENOSYS;
+		return ERR_PTR(-ENOSYS);
 	request = tape_alloc_request(2, 72);
 	if (IS_ERR(request))
-		return PTR_ERR(request);
+		return request;
 	data = request->cpdata;
 	memset(data,0,72);
 
@@ -371,23 +371,42 @@ static int tape_3592_enable_crypt(struct tape_device *device)
 	request->op = TO_CRYPT_ON;
 	tape_ccw_cc(request->cpaddr, MODE_SET_CB, 36, data);
 	tape_ccw_end(request->cpaddr + 1, MODE_SET_CB, 36, data + 36);
+	return request;
+}
+
+static int tape_3592_enable_crypt(struct tape_device *device)
+{
+	struct tape_request *request;
+
+	request = __tape_3592_enable_crypt(device);
+	if (IS_ERR(request))
+		return PTR_ERR(request);
 	return tape_do_io_free(device, request);
+}
+
+static void tape_3592_enable_crypt_async(struct tape_device *device)
+{
+	struct tape_request *request;
+
+	request = __tape_3592_enable_crypt(device);
+	if (!IS_ERR(request))
+		tape_do_io_async_free(device, request);
 }
 
 /*
  * Disable encryption
  */
-static int tape_3592_disable_crypt(struct tape_device *device)
+static struct tape_request *__tape_3592_disable_crypt(struct tape_device *device)
 {
 	struct tape_request *request;
 	char *data;
 
 	DBF_EVENT(6, "tape_3592_disable_crypt\n");
 	if (!crypt_supported(device))
-		return -ENOSYS;
+		return ERR_PTR(-ENOSYS);
 	request = tape_alloc_request(2, 72);
 	if (IS_ERR(request))
-		return PTR_ERR(request);
+		return request;
 	data = request->cpdata;
 	memset(data,0,72);
 
@@ -400,7 +419,26 @@ static int tape_3592_disable_crypt(struct tape_device *device)
 	tape_ccw_cc(request->cpaddr, MODE_SET_CB, 36, data);
 	tape_ccw_end(request->cpaddr + 1, MODE_SET_CB, 36, data + 36);
 
+	return request;
+}
+
+static int tape_3592_disable_crypt(struct tape_device *device)
+{
+	struct tape_request *request;
+
+	request = __tape_3592_disable_crypt(device);
+	if (IS_ERR(request))
+		return PTR_ERR(request);
 	return tape_do_io_free(device, request);
+}
+
+static void tape_3592_disable_crypt_async(struct tape_device *device)
+{
+	struct tape_request *request;
+
+	request = __tape_3592_disable_crypt(device);
+	if (!IS_ERR(request))
+		tape_do_io_async_free(device, request);
 }
 
 /*
@@ -474,8 +512,7 @@ tape_3590_ioctl(struct tape_device *device, unsigned int cmd, unsigned long arg)
 /*
  * SENSE Medium: Get Sense data about medium state
  */
-static int
-tape_3590_sense_medium(struct tape_device *device)
+static int tape_3590_sense_medium(struct tape_device *device)
 {
 	struct tape_request *request;
 
@@ -485,6 +522,18 @@ tape_3590_sense_medium(struct tape_device *device)
 	request->op = TO_MSEN;
 	tape_ccw_end(request->cpaddr, MEDIUM_SENSE, 128, request->cpdata);
 	return tape_do_io_free(device, request);
+}
+
+static void tape_3590_sense_medium_async(struct tape_device *device)
+{
+	struct tape_request *request;
+
+	request = tape_alloc_request(1, 128);
+	if (IS_ERR(request))
+		return;
+	request->op = TO_MSEN;
+	tape_ccw_end(request->cpaddr, MEDIUM_SENSE, 128, request->cpdata);
+	tape_do_io_async_free(device, request);
 }
 
 /*
@@ -563,15 +612,14 @@ tape_3590_read_opposite(struct tape_device *device,
  * 2. The attention msg is written to the "read subsystem data" buffer.
  * In this case we probably should print it to the console.
  */
-static int
-tape_3590_read_attmsg(struct tape_device *device)
+static void tape_3590_read_attmsg_async(struct tape_device *device)
 {
 	struct tape_request *request;
 	char *buf;
 
 	request = tape_alloc_request(3, 4096);
 	if (IS_ERR(request))
-		return PTR_ERR(request);
+		return;
 	request->op = TO_READ_ATTMSG;
 	buf = request->cpdata;
 	buf[0] = PREP_RD_SS_DATA;
@@ -579,12 +627,15 @@ tape_3590_read_attmsg(struct tape_device *device)
 	tape_ccw_cc(request->cpaddr, PERFORM_SS_FUNC, 12, buf);
 	tape_ccw_cc(request->cpaddr + 1, READ_SS_DATA, 4096 - 12, buf + 12);
 	tape_ccw_end(request->cpaddr + 2, NOP, 0, NULL);
-	return tape_do_io_free(device, request);
+	tape_do_io_async_free(device, request);
 }
 
 /*
  * These functions are used to schedule follow-up actions from within an
  * interrupt context (like unsolicited interrupts).
+ * Note: the work handler is called by the system work queue. The tape
+ * commands started by the handler need to be asynchrounous, otherwise
+ * a deadlock can occur e.g. in case of a deferred cc=1 (see __tape_do_irq).
  */
 struct work_handler_data {
 	struct tape_device *device;
@@ -599,16 +650,16 @@ tape_3590_work_handler(void *data)
 
 	switch (p->op) {
 	case TO_MSEN:
-		tape_3590_sense_medium(p->device);
+		tape_3590_sense_medium_async(p->device);
 		break;
 	case TO_READ_ATTMSG:
-		tape_3590_read_attmsg(p->device);
+		tape_3590_read_attmsg_async(p->device);
 		break;
 	case TO_CRYPT_ON:
-		tape_3592_enable_crypt(p->device);
+		tape_3592_enable_crypt_async(p->device);
 		break;
 	case TO_CRYPT_OFF:
-		tape_3592_disable_crypt(p->device);
+		tape_3592_disable_crypt_async(p->device);
 		break;
 	default:
 		DBF_EVENT(3, "T3590: work handler undefined for "
@@ -644,21 +695,19 @@ tape_3590_bread(struct tape_device *device, struct request *req)
 {
 	struct tape_request *request;
 	struct ccw1 *ccw;
-	int count = 0, start_block, i;
+	int count = 0, start_block;
 	unsigned off;
 	char *dst;
 	struct bio_vec *bv;
-	struct bio *bio;
+	struct req_iterator iter;
 
 	DBF_EVENT(6, "xBREDid:");
 	start_block = req->sector >> TAPEBLOCK_HSEC_S2B;
 	DBF_EVENT(6, "start_block = %i\n", start_block);
 
-	rq_for_each_bio(bio, req) {
-		bio_for_each_segment(bv, bio, i) {
-			count += bv->bv_len >> (TAPEBLOCK_HSEC_S2B + 9);
-		}
-	}
+	rq_for_each_segment(bv, req, iter)
+		count += bv->bv_len >> (TAPEBLOCK_HSEC_S2B + 9);
+
 	request = tape_alloc_request(2 + count + 1, 4);
 	if (IS_ERR(request))
 		return request;
@@ -674,8 +723,7 @@ tape_3590_bread(struct tape_device *device, struct request *req)
 	 */
 	ccw = tape_ccw_cc(ccw, NOP, 0, NULL);
 
-	rq_for_each_bio(bio, req) {
-		bio_for_each_segment(bv, bio, i) {
+	rq_for_each_segment(bv, req, iter) {
 			dst = page_address(bv->bv_page) + bv->bv_offset;
 			for (off = 0; off < bv->bv_len;
 			     off += TAPEBLOCK_HSEC_SIZE) {
@@ -688,7 +736,6 @@ tape_3590_bread(struct tape_device *device, struct request *req)
 			}
 			if (off > bv->bv_len)
 				BUG();
-		}
 	}
 	ccw = tape_ccw_end(ccw, NOP, 0, NULL);
 	DBF_EVENT(6, "xBREDccwg\n");

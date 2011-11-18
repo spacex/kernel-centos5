@@ -99,6 +99,7 @@ enum {
 	LFL_HEADQUE		= 11,
 	LFL_UNLOCK_DELETE	= 12,
 	LFL_AST_WAIT		= 13,
+	LFL_CB_OWED             = 14, /* dlm owes us a callback */
 };
 
 struct gdlm_lock {

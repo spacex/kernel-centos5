@@ -313,7 +313,7 @@ static struct region *__rh_alloc(struct region_hash *rh, region_t region)
 	read_unlock(&rh->hash_lock);
 	nreg = mempool_alloc(rh->region_pool, GFP_ATOMIC);
 	if (unlikely(!nreg))
-		nreg = kmalloc(sizeof(struct region), GFP_NOIO);
+		nreg = kmalloc(sizeof(struct region), GFP_NOIO | __GFP_NOFAIL);
 	nreg->state = rh->log->type->in_sync(rh->log, region, 1) ?
 		RH_CLEAN : RH_NOSYNC;
 	nreg->rh = rh;
@@ -1431,6 +1431,7 @@ static struct mirror_set *alloc_context(unsigned int nr_mirrors,
 
 	if (rh_init(&ms->rh, ms, dl, region_size, ms->nr_regions)) {
 		ti->error = "Error creating dirty region hash";
+		dm_io_client_destroy(ms->io_client);
 		kfree(ms);
 		return NULL;
 	}

@@ -100,6 +100,26 @@ void mce_log(struct mce *mce)
 		notify_user = 1;
 }
 
+/*
+ * CPU/chipset specific EDAC code can register a notifier call here to print
+ * MCE errors in a human-readable form.
+ */
+ATOMIC_NOTIFIER_HEAD(x86_mce_decoder_chain);
+EXPORT_SYMBOL_GPL(x86_mce_decoder_chain);
+
+static int default_decode_mce(struct notifier_block *nb, unsigned long val,
+			       void *data)
+{
+	pr_emerg("No human readable MCE decoding support on this CPU type.\n");
+
+	return NOTIFY_STOP;
+}
+
+static struct notifier_block mce_dec_nb = {
+	.notifier_call = default_decode_mce,
+	.priority      = -1,
+};
+
 static void print_mce(struct mce *m)
 {
 	edac_mce_parse(m);
@@ -107,26 +127,32 @@ static void print_mce(struct mce *m)
 	printk(KERN_EMERG "\n"
 	       KERN_EMERG "HARDWARE ERROR\n"
 	       KERN_EMERG
-	       "CPU %d: Machine Check Exception: %16Lx Bank %d: %016Lx\n",
-	       m->cpu, m->mcgstatus, m->bank, m->status);
+		 "CPU %d: Machine Check Exception: %16Lx Bank %d: %016Lx\n",
+		 m->cpu, m->mcgstatus, m->bank, m->status);
+
 	if (m->rip) {
-		printk(KERN_EMERG 
-		       "RIP%s %02x:<%016Lx> ",
+		pr_emerg("RIP%s %02x:<%016Lx> ",
 		       !(m->mcgstatus & MCG_STATUS_EIPV) ? " !INEXACT!" : "",
 		       m->cs, m->rip);
 		if (m->cs == __KERNEL_CS)
 			print_symbol("{%s}", m->rip);
-		printk("\n");
+		pr_cont("\n");
 	}
-	printk(KERN_EMERG "TSC %Lx ", m->tsc); 
+
+	pr_emerg("TSC %Lx ", m->tsc);
 	if (m->addr)
-		printk("ADDR %Lx ", m->addr);
+		pr_cont("ADDR %Lx ", m->addr);
 	if (m->misc)
-		printk("MISC %Lx ", m->misc); 	
-	printk("\n");
-	printk(KERN_EMERG "This is not a software problem!\n");
-        printk(KERN_EMERG
-    "Run through mcelog --ascii to decode and contact your hardware vendor\n");
+		pr_cont("MISC %Lx ", m->misc);
+	pr_cont("\n");
+	pr_emerg("This is not a software problem!\n");
+	pr_emerg("Run through mcelog --ascii to decode and contact your hardware vendor\n");
+
+	/*
+	 * Print out human-readable details about the MCE error,
+	 * (if the CPU has an implementation for that)
+	 */
+	atomic_notifier_call_chain(&x86_mce_decoder_chain, 0, m);
 }
 
 static void print_mce_panic(char *msg)
@@ -416,6 +442,8 @@ static void mce_init(void *dummy)
 	}	
 }
 
+static int mce_quirk_printed;
+
 /* Add per CPU specific workarounds here */
 static void __cpuinit mce_cpu_quirks(struct cpuinfo_x86 *c)
 { 
@@ -429,6 +457,14 @@ static void __cpuinit mce_cpu_quirks(struct cpuinfo_x86 *c)
 		mce_bootlog = 0;
 	}
 
+	/* RHEL5: if the CPU is Intel Nehalem or newer, disable MCE */
+	if (c->x86_vendor == X86_VENDOR_INTEL)
+		if (!mce_quirk_printed && (c->x86 == 6 && c->x86_model >= 26)) {
+			mce_dont_init = 1;
+			printk(KERN_INFO "MCE: Machine Check Exception "
+			       "Reporting is disabled.\n");
+			mce_quirk_printed = 1;
+		}
 }			
 
 static void __cpuinit mce_cpu_features(struct cpuinfo_x86 *c)
@@ -462,6 +498,9 @@ void __cpuinit mcheck_init(struct cpuinfo_x86 *c)
 
 	mce_init(NULL);
 	mce_cpu_features(c);
+
+	if (raw_smp_processor_id() == 0)
+		atomic_notifier_chain_register(&x86_mce_decoder_chain, &mce_dec_nb);
 }
 
 /*

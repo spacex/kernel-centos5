@@ -1605,5 +1605,18 @@ sys_call_table:
 	data8 sys_ni_syscall
 	data8 sys_ni_syscall
 	data8 sys_eventfd
+	data8 sys_ni_syscall			// 1310
+	data8 sys_ni_syscall
+	data8 sys_ni_syscall
+	data8 sys_ni_syscall
+	data8 sys_ni_syscall
+	data8 sys_ni_syscall			// 1315
+	data8 sys_ni_syscall
+	data8 sys_ni_syscall
+	data8 sys_ni_syscall
+	data8 sys_ni_syscall
+	data8 sys_ni_syscall			// 1320
+	data8 sys_ni_syscall
+	data8 sys_recvmmsg
 
 	.org sys_call_table + 8*NR_syscalls	// guard against failures to increase NR_syscalls

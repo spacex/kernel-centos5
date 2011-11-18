@@ -1057,6 +1057,28 @@ static inline struct hlist_head *d_hash(struct dentry *parent,
 	return dentry_hashtable + (hash & D_HASHMASK);
 }
 
+static struct dentry * __d_find_any_alias(struct inode *inode)
+{
+	struct dentry *alias;
+
+	if (list_empty(&inode->i_dentry))
+		return NULL;
+	alias = list_first_entry(&inode->i_dentry, struct dentry, d_alias);
+	__dget_locked(alias);
+	return alias;
+}
+
+static struct dentry * d_find_any_alias(struct inode *inode)
+{
+	struct dentry *de;
+
+	spin_lock(&dcache_lock);
+	de = __d_find_any_alias(inode);
+	spin_unlock(&dcache_lock);
+	return de;
+}
+
+
 /**
  * d_alloc_anon - allocate an anonymous dentry
  * @inode: inode to allocate the dentry for
@@ -1141,19 +1163,50 @@ struct dentry * d_alloc_anon(struct inode *inode)
  */
 struct dentry *d_obtain_alias(struct inode *inode)
 {
-	struct dentry *dentry;
+	static const struct qstr anonstring = { .name = "" };
+	struct dentry *tmp;
+	struct dentry *res;
 
 	if (!inode)
 		return ERR_PTR(-ESTALE);
 	if (IS_ERR(inode))
 		return ERR_CAST(inode);
 
-	dentry = d_alloc_anon(inode);
-	if (!dentry) {
-		iput(inode);
-		dentry = ERR_PTR(-ENOMEM);
+	res = d_find_any_alias(inode);
+	if (res)
+		goto out_iput;
+
+	tmp = d_alloc(NULL, &anonstring);
+	if (!tmp) {
+		res = ERR_PTR(-ENOMEM);
+		goto out_iput;
 	}
-	return dentry;
+	tmp->d_parent = tmp; /* make sure dput doesn't croak */
+
+	spin_lock(&dcache_lock);
+	res = __d_find_any_alias(inode);
+	if (res) {
+		spin_unlock(&dcache_lock);
+		dput(tmp);
+		goto out_iput;
+	}
+
+	/* attach a disconnected dentry */
+	spin_lock(&tmp->d_lock);
+	tmp->d_sb = inode->i_sb;
+	tmp->d_inode = inode;
+	tmp->d_flags |= DCACHE_DISCONNECTED;
+	tmp->d_flags &= ~DCACHE_UNHASHED;
+	list_add(&tmp->d_alias, &inode->i_dentry);
+	hlist_add_head(&tmp->d_hash, &inode->i_sb->s_anon);
+	spin_unlock(&tmp->d_lock);
+
+	spin_unlock(&dcache_lock);
+	return tmp;
+
+out_iput:
+	iput(inode);
+	return res;
 }
 EXPORT_SYMBOL(d_obtain_alias);
 
@@ -1178,7 +1231,7 @@ struct dentry *d_splice_alias(struct inode *inode, struct dentry *dentry)
 {
 	struct dentry *new = NULL;
 
-	if (inode) {
+	if (inode && S_ISDIR(inode->i_mode)) {
 		spin_lock(&dcache_lock);
 		new = __d_find_alias(inode, 1);
 		if (new) {

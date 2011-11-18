@@ -780,6 +780,13 @@ dasd_start_IO(struct dasd_ccw_req * cqr)
 	if (rc)
 		return rc;
 	device = (struct dasd_device *) cqr->device;
+	if (test_bit(DASD_FLAG_LOCK_STOLEN, &device->flags) &&
+	    !test_bit(DASD_CQR_ALLOW_SLOCK, &cqr->flags)) {
+		DBF_DEV_EVENT(DBF_DEBUG, device, "start_IO: return request %p "
+			      "because of stolen lock", cqr);
+		cqr->status = DASD_CQR_ERROR;
+		return -EPERM;
+	}
 	if (cqr->retries < 0) {
 		DEV_MESSAGE(KERN_DEBUG, device,
 			    "start_IO: request %p (%02x/%i) - no retry left.",
@@ -968,21 +975,35 @@ dasd_int_handler(struct ccw_device *cdev, unsigned long intparm,
 		  cdev->dev.bus_id, ((irb->scsw.cstat<<8)|irb->scsw.dstat),
 		  (unsigned int) intparm);
 
-	/* first of all check for state change pending interrupt */
-	mask = DEV_STAT_ATTENTION | DEV_STAT_DEV_END | DEV_STAT_UNIT_EXCEP;
-	if ((irb->scsw.dstat & mask) == mask) {
+	cqr = (struct dasd_ccw_req *) intparm;
+	/* check for conditions that should be handled immediately */
+	if (!cqr ||
+	    !(irb->scsw.dstat == (DEV_STAT_CHN_END | DEV_STAT_DEV_END) &&
+	      irb->scsw.cstat == 0)) {
+		if (cqr)
+			memcpy(&cqr->irb, irb, sizeof(*irb));
 		device = dasd_device_from_cdev_locked(cdev);
-		if (!IS_ERR(device)) {
+		if (IS_ERR(device))
+			return;
+		/* ignore unsolicited interrupts for DIAG discipline */
+		if (device->discipline == dasd_diag_discipline_pointer) {
+			dasd_put_device(device);
+			return;
+		}
+		if (device->features & DASD_FEATURE_ERPLOG)
+			device->discipline->dump_sense(device, cqr, irb);
+		mask = DEV_STAT_ATTENTION | DEV_STAT_DEV_END | DEV_STAT_UNIT_EXCEP;
+		if ((irb->scsw.dstat & mask) == mask) {
 			dasd_handle_state_change_pending(device);
 			dasd_put_device(device);
+			return;
 		}
-		return;
+		if (device->discipline->check_for_device_change)
+			device->discipline->check_for_device_change(device,
+								    cqr, irb);
+		dasd_put_device(device);
 	}
-
-	cqr = (struct dasd_ccw_req *) intparm;
-
-	/* check for unsolicited interrupts */
-	if (cqr == NULL) {
+	if (!cqr) {
 		MESSAGE(KERN_DEBUG,
 			"unsolicited interrupt received: bus_id %s",
 			cdev->dev.bus_id);
@@ -1049,11 +1070,6 @@ dasd_int_handler(struct ccw_device *cdev, unsigned long intparm,
 			}
 		}
 	} else {		/* error */
-		memcpy(&cqr->irb, irb, sizeof (struct irb));
-		if (device->features & DASD_FEATURE_ERPLOG) {
-			/* dump sense data */
-			dasd_log_sense(cqr, irb);
-		}
 		switch (era) {
 		case dasd_era_fatal:
 			cqr->status = DASD_CQR_FAILED;
@@ -1314,6 +1330,12 @@ __dasd_start_head(struct dasd_device * device)
 	cqr = list_entry(device->ccw_queue.next, struct dasd_ccw_req, list);
 	if (cqr->status != DASD_CQR_QUEUED)
 		return;
+	if (test_bit(DASD_FLAG_LOCK_STOLEN, &device->flags) &&
+	    !test_bit(DASD_CQR_ALLOW_SLOCK, &cqr->flags)) {
+		cqr->status = DASD_CQR_FAILED;
+		dasd_schedule_bh(device);
+		return;
+	}
 	/* Non-temporary stop condition will trigger fail fast */
 	if (device->stopped & ~DASD_STOPPED_PENDING &&
 	    test_bit(DASD_CQR_FLAGS_FAILFAST, &cqr->flags) &&
@@ -1556,6 +1578,11 @@ dasd_sleep_on(struct dasd_ccw_req * cqr)
 	int rc;
 
 	device = cqr->device;
+	if (test_bit(DASD_FLAG_LOCK_STOLEN, &device->flags) &&
+	    !test_bit(DASD_CQR_ALLOW_SLOCK, &cqr->flags)) {
+		cqr->status = DASD_CQR_FAILED;
+		return -EIO;
+	}
 	spin_lock_irq(get_ccwdev_lock(device->cdev));
 
 	cqr->callback = dasd_wakeup_cb;
@@ -1586,6 +1613,11 @@ dasd_sleep_on_interruptible(struct dasd_ccw_req * cqr)
 	int rc, finished;
 
 	device = cqr->device;
+	if (test_bit(DASD_FLAG_LOCK_STOLEN, &device->flags) &&
+	    !test_bit(DASD_CQR_ALLOW_SLOCK, &cqr->flags)) {
+		cqr->status = DASD_CQR_FAILED;
+		return -EIO;
+	}
 	spin_lock_irq(get_ccwdev_lock(device->cdev));
 
 	cqr->callback = dasd_wakeup_cb;
@@ -1662,6 +1694,11 @@ dasd_sleep_on_immediatly(struct dasd_ccw_req * cqr)
 	int rc;
 
 	device = cqr->device;
+	if (test_bit(DASD_FLAG_LOCK_STOLEN, &device->flags) &&
+	    !test_bit(DASD_CQR_ALLOW_SLOCK, &cqr->flags)) {
+		cqr->status = DASD_CQR_FAILED;
+		return -EIO;
+	}
 	spin_lock_irq(get_ccwdev_lock(device->cdev));
 	rc = _dasd_term_running_cqr(device);
 	if (rc) {

@@ -316,6 +316,24 @@ failed:
 	return 0;
 }
 
+static int do_launder_page(struct address_space *mapping, struct page *page)
+{
+	struct address_space_operations_ext *axops;
+
+	if (!PageDirty(page))
+		return 0;
+	if (page->mapping != mapping)
+		return 0;
+	if (!IS_LAUNDERPAGE(mapping->host))
+		return 0;
+
+	axops = (struct address_space_operations_ext *)mapping->a_ops;
+	if (axops->launder_page == NULL)
+		return 0;
+
+	return axops->launder_page(page);
+}
+
 /**
  * invalidate_inode_pages2_range - remove range of pages from an address_space
  * @mapping: the address_space
@@ -382,7 +400,8 @@ int invalidate_inode_pages2_range(struct address_space *mapping,
 				}
 			}
 			was_dirty = test_clear_page_dirty(page);
-			if (!invalidate_complete_page2(mapping, page)) {
+			ret = do_launder_page(mapping, page);
+			if (ret == 0 && !invalidate_complete_page2(mapping, page)) {
 				if (was_dirty)
 					set_page_dirty(page);
 				ret = -EBUSY;
@@ -459,7 +478,8 @@ int invalidate_inode_pages3_range(struct address_space *mapping,
 				  (loff_t)page_index<<PAGE_CACHE_SHIFT,
 				  PAGE_CACHE_SIZE, 0);
 			}
-			if (!invalidate_complete_page2(mapping, page))
+			ret = do_launder_page(mapping, page);
+			if (ret == 0 && !invalidate_complete_page2(mapping, page))
 				ret = -EIO;
 			else {
 				/*

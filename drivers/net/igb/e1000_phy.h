@@ -45,9 +45,11 @@ s32  igb_check_downshift(struct e1000_hw *hw);
 s32  igb_check_reset_block(struct e1000_hw *hw);
 s32  igb_copper_link_setup_igp(struct e1000_hw *hw);
 s32  igb_copper_link_setup_m88(struct e1000_hw *hw);
+s32  igb_copper_link_setup_m88_gen2(struct e1000_hw *hw);
 s32  igb_phy_force_speed_duplex_igp(struct e1000_hw *hw);
 s32  igb_phy_force_speed_duplex_m88(struct e1000_hw *hw);
 s32  igb_get_cable_length_m88(struct e1000_hw *hw);
+s32  igb_get_cable_length_m88_gen2(struct e1000_hw *hw);
 s32  igb_get_cable_length_igp_2(struct e1000_hw *hw);
 s32  igb_get_phy_id(struct e1000_hw *hw);
 s32  igb_get_phy_info_igp(struct e1000_hw *hw);
@@ -60,6 +62,8 @@ s32  igb_setup_copper_link(struct e1000_hw *hw);
 s32  igb_write_phy_reg_igp(struct e1000_hw *hw, u32 offset, u16 data);
 s32  igb_phy_has_link(struct e1000_hw *hw, u32 iterations,
 				u32 usec_interval, bool *success);
+void igb_power_up_phy_copper(struct e1000_hw *hw);
+void igb_power_down_phy_copper(struct e1000_hw *hw);
 s32  igb_phy_init_script_igp3(struct e1000_hw *hw);
 s32  igb_read_phy_reg_mdic(struct e1000_hw *hw, u32 offset, u16 *data);
 s32  igb_write_phy_reg_mdic(struct e1000_hw *hw, u32 offset, u16 data);
@@ -115,7 +119,7 @@ s32  igb_get_cable_length_82580(struct e1000_hw *hw);
 #define IGP02E1000_PM_D3_LPLU             0x0004 /* For all other states */
 #define IGP01E1000_PLHR_SS_DOWNGRADE      0x8000
 #define IGP01E1000_PSSR_POLARITY_REVERSED 0x0002
-#define IGP01E1000_PSSR_MDIX              0x0008
+#define IGP01E1000_PSSR_MDIX              0x0800
 #define IGP01E1000_PSSR_SPEED_MASK        0xC000
 #define IGP01E1000_PSSR_SPEED_1000MBPS    0xC000
 #define IGP02E1000_PHY_CHANNEL_NUM        4

@@ -639,6 +639,7 @@ again:
 	}
 done:
 	vi->svq->vq_ops->kick(vi->svq);
+	vi->dev->trans_start = jiffies;
 	return NETDEV_TX_OK;
 
 stop_queue:
@@ -711,7 +712,16 @@ static int virtnet_set_tx_csum(struct net_device *dev, u32 data)
 	return ethtool_op_set_tx_hw_csum(dev, data);
 }
 
+static void virtnet_get_drvinfo(struct net_device *dev,
+				struct ethtool_drvinfo *info)
+{
+	strcpy(info->driver, "virtio_net");
+	strcpy(info->bus_info, dev->class_dev.dev->bus_id);
+}
+
 static struct ethtool_ops virtnet_ethtool_ops = {
+	.get_drvinfo = virtnet_get_drvinfo,
+
 	.set_tx_csum = virtnet_set_tx_csum,
 	.get_tx_csum = ethtool_op_get_tx_csum,
 	.set_sg = ethtool_op_set_sg,

@@ -152,10 +152,10 @@ int __init register_nfs_fs(void)
 	if (ret < 0)
 		goto error_0;
 
-#ifdef CONFIG_NFS_V4
 	ret = nfs_register_sysctl();
 	if (ret < 0)
 		goto error_1;
+#ifdef CONFIG_NFS_V4
 	ret = register_filesystem(&nfs4_fs_type);
 	if (ret < 0)
 		goto error_2;
@@ -166,9 +166,9 @@ int __init register_nfs_fs(void)
 #ifdef CONFIG_NFS_V4
 error_2:
 	nfs_unregister_sysctl();
+#endif
 error_1:
 	unregister_filesystem(&nfs_fs_type);
-#endif
 error_0:
 	return ret;
 }
@@ -315,7 +315,6 @@ static void nfs_show_mount_options(struct seq_file *m, struct nfs_server *nfss, 
 		{ NFS_MOUNT_NOACL, ",noacl", "" },
 		{ NFS_MOUNT_NORDIRPLUS, ",nordirplus", "" },
 		{ NFS_MOUNT_UNSHARED, ",nosharecache", "" },
-		{ NFS_MOUNT_FSCACHE, ",fsc", "" },
 		{ 0, NULL, NULL }
 	};
 	const struct proc_nfs_info *nfs_infop;
@@ -546,9 +545,6 @@ static int nfs_validate_mount_data(struct nfs_mount_data *data,
 		memset(mntfh->data + mntfh->size, 0,
 		       sizeof(mntfh->data) - mntfh->size);
 
-	/* Make sure FSC stays off */
-	data->flags &= ~NFS_MOUNT_FSCACHE;
-
 	return 0;
 }
 
@@ -561,7 +557,7 @@ static inline void nfs_initialise_sb(struct super_block *sb)
 
 	sb->s_magic = NFS_SUPER_MAGIC;
 
-	sb->s_flags |= (MS_NO_LEASES|MS_HAS_NEW_AOPS);
+	sb->s_flags |= MS_NO_LEASES|MS_HAS_NEW_AOPS|MS_HAS_LAUNDER_PAGE;
 
 	/* We probably want something more informative here */
 	snprintf(sb->s_id, sizeof(sb->s_id),
@@ -683,7 +679,6 @@ static int nfs_compare_super(struct super_block *sb, void *data)
 	struct nfs_sb_mountdata *sb_mntdata = data;
 	struct nfs_server *server = sb_mntdata->server, *old = NFS_SB(sb);
 	int mntflags = sb_mntdata->mntflags;
-	int cc, fsc;
 
 	if (memcmp(&old->nfs_client->cl_addr,
 				&server->nfs_client->cl_addr,
@@ -691,22 +686,8 @@ static int nfs_compare_super(struct super_block *sb, void *data)
 		return 0;
 	if (memcmp(&old->fsid, &server->fsid, sizeof(old->fsid)) != 0)
 		return 0;
-	/*
-	 * With FS-Cache super block sharing is a must with the 
-	 * same server and exported filesystem 
-	 */
-	fsc = ((server->flags & NFS_MOUNT_FSCACHE) &&
-		(old->flags & NFS_MOUNT_FSCACHE));
 
-	/* Note: NFS_MOUNT_UNSHARED == NFS4_MOUNT_UNSHARED */
-	if (old->flags & NFS_MOUNT_UNSHARED) {
-		sb_mntdata->err_on_noshare |= fsc;
-		return 0;
-	}
-	cc =  nfs_compare_mount_options(sb, server, mntflags);
-	if (!cc)
-		sb_mntdata->err_on_noshare |= fsc;
-	return cc;
+	return nfs_compare_mount_options(sb, server, mntflags);
 }
 
 static int nfs_get_sb(struct file_system_type *fs_type,
@@ -737,11 +718,6 @@ static int nfs_get_sb(struct file_system_type *fs_type,
 	}
 	sb_mntdata.server = server;
 
-	if (server->flags & NFS_MOUNT_UNSHARED) {
-		/* Always do the comapre with fsc mounts */
-		if (!(server->flags & NFS_MOUNT_FSCACHE))
-			compare_super = NULL;
-	}
 	/* Get a superblock - note that we may end up sharing one that already exists */
 	s = sget(fs_type, compare_super, nfs_set_super, &sb_mntdata);
 	if (IS_ERR(s)) {
@@ -822,11 +798,6 @@ static int nfs_xdev_get_sb(struct file_system_type *fs_type, int flags,
 	}
 	sb_mntdata.server = server;
 
-	if (server->flags & NFS_MOUNT_UNSHARED) {
-		/* Always do the comapre with fsc mounts */
-		if (!(server->flags & NFS_MOUNT_FSCACHE))
-			compare_super = NULL;
-	}
 	/* Get a superblock - note that we may end up sharing one that already exists */
 	s = sget(&nfs_fs_type, compare_super, nfs_set_super, &sb_mntdata);
 	if (IS_ERR(s)) {
@@ -1014,11 +985,6 @@ static int nfs4_get_sb(struct file_system_type *fs_type,
 	}
 	sb_mntdata.server = server;
 
-	if (server->flags & NFS_MOUNT_UNSHARED) {
-		/* Always do the comapre with fsc mounts */
-		if (!(server->flags & NFS_MOUNT_FSCACHE))
-			compare_super = NULL;
-	}
 	/* Get a superblock - note that we may end up sharing one that already exists */
 	s = sget(fs_type, compare_super, nfs_set_super, &sb_mntdata);
 	if (IS_ERR(s)) {
@@ -1108,11 +1074,6 @@ static int nfs4_xdev_get_sb(struct file_system_type *fs_type, int flags,
 	}
 	sb_mntdata.server = server;
 
-	if (server->flags & NFS4_MOUNT_UNSHARED) {
-		/* Always do the comapre with fsc mounts */
-		if (!(server->flags & NFS_MOUNT_FSCACHE))
-			compare_super = NULL;
-	}
 	/* Get a superblock - note that we may end up sharing one that already exists */
 	s = sget(&nfs_fs_type, compare_super, nfs_set_super, &sb_mntdata);
 	if (IS_ERR(s)) {
@@ -1193,11 +1154,6 @@ static int nfs4_referral_get_sb(struct file_system_type *fs_type, int flags,
 	}
 	sb_mntdata.server = server;
 
-	if (server->flags & NFS4_MOUNT_UNSHARED) {
-		/* Always do the comapre with fsc mounts */
-		if (!(server->flags & NFS_MOUNT_FSCACHE))
-			compare_super = NULL;
-	}
 	/* Get a superblock - note that we may end up sharing one that already exists */
 	s = sget(&nfs_fs_type, compare_super, nfs_set_super, &sb_mntdata);
 	if (IS_ERR(s)) {

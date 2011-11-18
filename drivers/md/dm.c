@@ -41,6 +41,9 @@ struct dm_io {
 	struct bio *bio;
 	atomic_t io_count;
 	unsigned long start_time;
+#ifndef __GENKSYMS__
+	spinlock_t endio_lock;
+#endif
 };
 
 /*
@@ -236,6 +239,11 @@ static void __exit dm_exit(void)
 /*
  * Block device functions
  */
+int dm_deleting_md(struct mapped_device *md)
+{
+	return test_bit(DMF_DELETING, &md->flags);
+}
+
 static int dm_blk_open(struct inode *inode, struct file *file)
 {
 	struct mapped_device *md;
@@ -247,7 +255,7 @@ static int dm_blk_open(struct inode *inode, struct file *file)
 		goto out;
 
 	if (test_bit(DMF_FREEING, &md->flags) ||
-	    test_bit(DMF_DELETING, &md->flags)) {
+	    dm_deleting_md(md)) {
 		md = NULL;
 		goto out;
 	}
@@ -315,7 +323,7 @@ static int dm_blk_ioctl(struct inode *inode, struct file *file,
 
 	md = inode->i_bdev->bd_disk->private_data;
 
-	map = dm_get_table(md);
+	map = dm_get_live_table(md);
 
 	if (!map || !dm_table_get_size(map))
 		goto out;
@@ -326,7 +334,7 @@ static int dm_blk_ioctl(struct inode *inode, struct file *file,
 
 	tgt = dm_table_get_target(map, 0);
 
-	if (dm_suspended(md)) {
+	if (dm_suspended_md(md)) {
 		r = -EAGAIN;
 		goto out;
 	}
@@ -414,7 +422,7 @@ static int queue_io(struct mapped_device *md, struct bio *bio)
  * function to access the md->map field, and make sure they call
  * dm_table_put() when finished.
  */
-struct dm_table *dm_get_table(struct mapped_device *md)
+struct dm_table *dm_get_live_table(struct mapped_device *md)
 {
 	struct dm_table *t;
 
@@ -480,8 +488,12 @@ static void dec_pending(struct dm_io *io, int error)
 	struct mapped_device *md = io->md;
 
 	/* Push-back supersedes any I/O errors */
-	if (error && !(io->error > 0 && __noflush_suspending(md)))
-		io->error = error;
+	if (unlikely(error)) {
+		spin_lock_irqsave(&io->endio_lock, flags);
+		if (!(io->error > 0 && __noflush_suspending(md)))
+			io->error = error;
+		spin_unlock_irqrestore(&io->endio_lock, flags);
+	}
 
 	if (atomic_dec_and_test(&io->io_count)) {
 		if (io->error == DM_ENDIO_REQUEUE) {
@@ -795,7 +807,7 @@ static void __split_bio(struct mapped_device *md, struct bio *bio)
 	struct clone_info ci;
 	int error = 0;
 
-	ci.map = dm_get_table(md);
+	ci.map = dm_get_live_table(md);
 	if (!ci.map) {
 		bio_io_error(bio, bio->bi_size);
 		return;
@@ -808,6 +820,7 @@ static void __split_bio(struct mapped_device *md, struct bio *bio)
 	atomic_set(&ci.io->io_count, 1);
 	ci.io->bio = bio;
 	ci.io->md = md;
+	spin_lock_init(&ci.io->endio_lock);
 	ci.sector = bio->bi_sector;
 	ci.sector_count = bio_sectors(bio);
 	ci.idx = bio->bi_idx;
@@ -884,7 +897,7 @@ static int dm_flush_all(request_queue_t *q, struct gendisk *disk,
 			sector_t *error_sector)
 {
 	struct mapped_device *md = q->queuedata;
-	struct dm_table *map = dm_get_table(md);
+	struct dm_table *map = dm_get_live_table(md);
 	int ret = -ENXIO;
 
 	if (map) {
@@ -898,7 +911,7 @@ static int dm_flush_all(request_queue_t *q, struct gendisk *disk,
 static void dm_unplug_all(request_queue_t *q)
 {
 	struct mapped_device *md = q->queuedata;
-	struct dm_table *map = dm_get_table(md);
+	struct dm_table *map = dm_get_live_table(md);
 
 	if (map) {
 		dm_table_unplug_all(map);
@@ -908,16 +921,24 @@ static void dm_unplug_all(request_queue_t *q)
 
 static int dm_any_congested(void *congested_data, int bdi_bits)
 {
-	int r;
-	struct mapped_device *md = (struct mapped_device *) congested_data;
-	struct dm_table *map = dm_get_table(md);
+	int r = bdi_bits;
+	struct mapped_device *md = congested_data;
+	struct dm_table *map;
 
-	if (!map || test_bit(DMF_BLOCK_IO, &md->flags))
-		r = bdi_bits;
-	else
-		r = dm_table_any_congested(map, bdi_bits);
+	atomic_inc(&md->pending);
 
-	dm_table_put(map);
+	if (!test_bit(DMF_BLOCK_IO, &md->flags)) {
+		map = dm_get_live_table(md);
+		if (map) {
+			r = dm_table_any_congested(map, bdi_bits);
+			dm_table_put(map);
+		}
+	}
+
+	if (!atomic_dec_return(&md->pending))
+		/* nudge anyone waiting on suspend queue */
+		wake_up(&md->wait);
+
 	return r;
 }
 
@@ -1275,11 +1296,11 @@ void dm_put(struct mapped_device *md)
 	BUG_ON(test_bit(DMF_FREEING, &md->flags));
 
 	if (atomic_dec_and_lock(&md->holders, &_minor_lock)) {
-		map = dm_get_table(md);
+		map = dm_get_live_table(md);
 		idr_replace(&_minor_idr, MINOR_ALLOCED, dm_disk(md)->first_minor);
 		set_bit(DMF_FREEING, &md->flags);
 		spin_unlock(&_minor_lock);
-		if (!dm_suspended(md)) {
+		if (!dm_suspended_md(md)) {
 			dm_table_presuspend_targets(map);
 			dm_table_postsuspend_targets(map);
 		}
@@ -1315,7 +1336,7 @@ int dm_swap_table(struct mapped_device *md, struct dm_table *table)
 	down(&md->suspend_lock);
 
 	/* device must be suspended */
-	if (!dm_suspended(md))
+	if (!dm_suspended_md(md))
 		goto out;
 
 	/* without bdev, the device size cannot be changed */
@@ -1385,10 +1406,10 @@ int dm_suspend(struct mapped_device *md, unsigned suspend_flags)
 
 	down(&md->suspend_lock);
 
-	if (dm_suspended(md))
+	if (dm_suspended_md(md))
 		goto out_unlock;
 
-	map = dm_get_table(md);
+	map = dm_get_live_table(md);
 
 	/*
 	 * DMF_NOFLUSH_SUSPENDING must be set before presuspend.
@@ -1470,9 +1491,9 @@ int dm_suspend(struct mapped_device *md, unsigned suspend_flags)
 	}
 	up_write(&md->io_lock);
 
-	dm_table_postsuspend_targets(map);
-
 	set_bit(DMF_SUSPENDED, &md->flags);
+
+	dm_table_postsuspend_targets(map);
 
 	r = 0;
 
@@ -1515,10 +1536,10 @@ int dm_resume(struct mapped_device *md)
 	struct dm_table *map = NULL;
 
 	down(&md->suspend_lock);
-	if (!dm_suspended(md))
+	if (!dm_suspended_md(md))
 		goto out;
 
-	map = dm_get_table(md);
+	map = dm_get_live_table(md);
 	if (!map || !dm_table_get_size(map))
 		goto out;
 
@@ -1593,10 +1614,21 @@ struct gendisk *dm_disk(struct mapped_device *md)
 }
 EXPORT_SYMBOL_GPL(dm_disk);
 
-int dm_suspended(struct mapped_device *md)
+int dm_suspended_md(struct mapped_device *md)
 {
 	return test_bit(DMF_SUSPENDED, &md->flags);
 }
+
+int dm_suspended(struct dm_target *ti)
+{
+	struct mapped_device *md = dm_table_get_md(ti->table);
+	int r = dm_suspended_md(md);
+
+	dm_put(md);
+
+	return r;
+}
+EXPORT_SYMBOL_GPL(dm_suspended);
 
 int dm_noflush_suspending(struct dm_target *ti)
 {

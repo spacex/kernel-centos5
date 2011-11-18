@@ -1,0 +1,6 @@
+config SCSI_CXGB3_ISCSI
+	tristate "Chelsio T3 iSCSI support"
+	select CHELSIO_T3
+	select SCSI_ISCSI2_ATTRS
+	---help---
+	  This driver supports iSCSI offload for the Chelsio T3 devices.

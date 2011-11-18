@@ -120,6 +120,7 @@ int vlan_skb_recv(struct sk_buff *skb, struct net_device *dev,
 	struct vlan_hdr *vhdr;
 	unsigned short vid;
 	struct net_device_stats *stats;
+	struct net_device *vlan_dev;
 	unsigned short vlan_TCI;
 	__be16 proto;
 
@@ -155,82 +156,102 @@ int vlan_skb_recv(struct sk_buff *skb, struct net_device *dev,
 	 */
 
 	rcu_read_lock();
-	skb->dev = __find_vlan_dev(dev, vid);
-	if (!skb->dev) {
-		rcu_read_unlock();
+	vlan_dev = __find_vlan_dev(dev, vid);
+	/* If the VLAN device is defined, we use it.
+	 * If not, and the VID is 0, it is a 802.1p packet (not
+	 * really a VLAN), so we will just netif_rx it later to the
+	 * original interface, but with the skb->proto set to the
+	 * wrapped proto: we do nothing here.
+	 */
+	if (!vlan_dev) {
+		if (vid) {
+			rcu_read_unlock();
 
 #ifdef VLAN_DEBUG
-		printk(VLAN_DBG "%s: ERROR: No net_device for VID: %i on dev: %s [%i]\n",
-			__FUNCTION__, (unsigned int)(vid), dev->name, dev->ifindex);
+			printk(VLAN_DBG "%s: ERROR: No net_device for VID: %i "
+					"on dev: %s [%i]\n",
+				__FUNCTION__, (unsigned int)(vid),
+				dev->name, dev->ifindex);
 #endif
-		kfree_skb(skb);
-		return -1;
+			kfree_skb(skb);
+			return -1;
+		}
+		stats = NULL;
+	}
+	else {
+		skb->dev = vlan_dev;
+
+		/* Bump the rx counters for the VLAN device. */
+		stats = vlan_dev_get_stats(skb->dev);
+		stats->rx_packets++;
+		stats->rx_bytes += skb->len;
+
+		/* Ok, lets check to make sure the device (dev) we
+		* came in on is what this VLAN is attached to.
+		*/
+
+		if (dev != VLAN_DEV_INFO(skb->dev)->real_dev) {
+			rcu_read_unlock();
+
+#ifdef VLAN_DEBUG
+			printk(VLAN_DBG "%s: dropping skb: %p because came in "
+					"on wrong device, dev: %s  real_dev: "
+					"%s, skb_dev: %s\n",
+				__FUNCTION__, skb, dev->name,
+				VLAN_DEV_INFO(skb->dev)->real_dev->name,
+				skb->dev->name);
+#endif
+			kfree_skb(skb);
+			stats->rx_errors++;
+			return -1;
+		}
+
+		/*
+		 * Deal with ingress priority mapping.
+		 */
+		skb->priority = vlan_get_ingress_priority(skb->dev,
+						ntohs(vhdr->h_vlan_TCI));
+
+#ifdef VLAN_DEBUG
+		printk(VLAN_DBG "%s: priority: %lu  for TCI: %hu (hbo)\n",
+			__FUNCTION__, (unsigned long)(skb->priority), 
+			ntohs(vhdr->h_vlan_TCI));
+#endif
+
+		/* The ethernet driver already did the pkt_type calculations
+		 * for us...
+		 */
+		switch (skb->pkt_type) {
+		case PACKET_BROADCAST:
+			/* Yeah, stats collect these together.. */
+			// stats->broadcast ++; // no such counter :-(
+			break;
+
+		case PACKET_MULTICAST:
+			stats->multicast++;
+			break;
+
+		case PACKET_OTHERHOST:
+			/* Our lower layer thinks this is not local, let's make
+			 * sure.
+			 * This allows the VLAN to have a different MAC than the
+			 * underlying device, and still route correctly.
+			 */
+			if (!compare_ether_addr(eth_hdr(skb)->h_dest,
+						skb->dev->dev_addr)) {
+				/* It is for our (changed) MAC-address! */
+				skb->pkt_type = PACKET_HOST;
+			}
+			break;
+		default:
+			break;
+		};
 	}
 
 	skb->dev->last_rx = jiffies;
 
-	/* Bump the rx counters for the VLAN device. */
-	stats = vlan_dev_get_stats(skb->dev);
-	stats->rx_packets++;
-	stats->rx_bytes += skb->len;
-
 	/* Take off the VLAN header (4 bytes currently) */
 	skb_pull_rcsum(skb, VLAN_HLEN);
-
-	/* Ok, lets check to make sure the device (dev) we
-	 * came in on is what this VLAN is attached to.
-	 */
-
-	if (dev != VLAN_DEV_INFO(skb->dev)->real_dev) {
-		rcu_read_unlock();
-
-#ifdef VLAN_DEBUG
-		printk(VLAN_DBG "%s: dropping skb: %p because came in on wrong device, dev: %s  real_dev: %s, skb_dev: %s\n",
-			__FUNCTION__, skb, dev->name, 
-			VLAN_DEV_INFO(skb->dev)->real_dev->name, 
-			skb->dev->name);
-#endif
-		kfree_skb(skb);
-		stats->rx_errors++;
-		return -1;
-	}
-
-	/*
-	 * Deal with ingress priority mapping.
-	 */
-	skb->priority = vlan_get_ingress_priority(skb->dev, ntohs(vhdr->h_vlan_TCI));
-
-#ifdef VLAN_DEBUG
-	printk(VLAN_DBG "%s: priority: %lu  for TCI: %hu (hbo)\n",
-		__FUNCTION__, (unsigned long)(skb->priority), 
-		ntohs(vhdr->h_vlan_TCI));
-#endif
-
-	/* The ethernet driver already did the pkt_type calculations
-	 * for us...
-	 */
-	switch (skb->pkt_type) {
-	case PACKET_BROADCAST: /* Yeah, stats collect these together.. */
-		// stats->broadcast ++; // no such counter :-(
-		break;
-
-	case PACKET_MULTICAST:
-		stats->multicast++;
-		break;
-
-	case PACKET_OTHERHOST: 
-		/* Our lower layer thinks this is not local, let's make sure.
-		 * This allows the VLAN to have a different MAC than the underlying
-		 * device, and still route correctly.
-		 */
-		if (!compare_ether_addr(eth_hdr(skb)->h_dest, skb->dev->dev_addr)) {
-			/* It is for our (changed) MAC-address! */
-			skb->pkt_type = PACKET_HOST;
-		}
-		break;
-	default:
-		break;
-	};
 
 	/*  Was a VLAN packet, grab the encapsulated protocol, which the layer
 	 * three protocols care about.
@@ -247,14 +268,18 @@ int vlan_skb_recv(struct sk_buff *skb, struct net_device *dev,
 		/* See if we are configured to re-write the VLAN header
 		 * to make it look like ethernet...
 		 */
-		skb = vlan_check_reorder_header(skb);
+		if (vlan_dev) {
+			skb = vlan_check_reorder_header(skb);
 
-		/* Can be null if skb-clone fails when re-ordering */
-		if (skb) {
-			netif_rx(skb);
+			/* Can be null if skb-clone fails when re-ordering */
+			if (skb) {
+				netif_rx(skb);
+			} else {
+				/* TODO:  Add a more specific counter here. */
+				stats->rx_errors++;
+			}
 		} else {
-			/* TODO:  Add a more specific counter here. */
-			stats->rx_errors++;
+			netif_rx(skb);
 		}
 		rcu_read_unlock();
 		return 0;
@@ -276,14 +301,18 @@ int vlan_skb_recv(struct sk_buff *skb, struct net_device *dev,
 		/* See if we are configured to re-write the VLAN header
 		 * to make it look like ethernet...
 		 */
-		skb = vlan_check_reorder_header(skb);
+		if (vlan_dev) {
+			skb = vlan_check_reorder_header(skb);
 
-		/* Can be null if skb-clone fails when re-ordering */
-		if (skb) {
-			netif_rx(skb);
+			/* Can be null if skb-clone fails when re-ordering */
+			if (skb) {
+				netif_rx(skb);
+			} else {
+				/* TODO:  Add a more specific counter here. */
+				stats->rx_errors++;
+			}
 		} else {
-			/* TODO:  Add a more specific counter here. */
-			stats->rx_errors++;
+			netif_rx(skb);
 		}
 		rcu_read_unlock();
 		return 0;
@@ -299,14 +328,18 @@ int vlan_skb_recv(struct sk_buff *skb, struct net_device *dev,
 	/* See if we are configured to re-write the VLAN header
 	 * to make it look like ethernet...
 	 */
-	skb = vlan_check_reorder_header(skb);
+	if (vlan_dev) {
+		skb = vlan_check_reorder_header(skb);
 
-	/* Can be null if skb-clone fails when re-ordering */
-	if (skb) {
-		netif_rx(skb);
+		/* Can be null if skb-clone fails when re-ordering */
+		if (skb) {
+			netif_rx(skb);
+		} else {
+			/* TODO:  Add a more specific counter here. */
+			stats->rx_errors++;
+		}
 	} else {
-		/* TODO:  Add a more specific counter here. */
-		stats->rx_errors++;
+		netif_rx(skb);
 	}
 	rcu_read_unlock();
 	return 0;
@@ -910,14 +943,20 @@ static int vlan_gro_common(struct napi_struct *napi, struct vlan_group *grp,
 			   unsigned int vlan_tci, struct sk_buff *skb)
 {
 	struct sk_buff *p;
+	struct net_device *vlan_dev;
+	struct net_device_stats *stats;
+	u16 vlan_id;
 
 	if (skb_bond_should_drop(skb))
 		goto drop;
 
 	skb->input_dev = skb->dev;
-	skb->dev = grp->vlan_devices[vlan_tci & VLAN_VID_MASK];
+	vlan_id = vlan_tci & VLAN_VID_MASK;
+	vlan_dev = grp->vlan_devices[vlan_id];
 
-	if (!skb->dev)
+	if (vlan_dev)
+		skb->dev = vlan_dev;
+	else if (vlan_id)
 		goto drop;
 
 	for (p = napi->gro_list; p; p = p->next) {
@@ -926,6 +965,10 @@ static int vlan_gro_common(struct napi_struct *napi, struct vlan_group *grp,
 				skb_mac_header(p), skb_gro_mac_header(skb));
 		NAPI_GRO_CB(p)->flush = 0;
 	}
+
+	stats = vlan_dev_get_stats(skb->dev);
+	stats->rx_packets++;
+	stats->rx_bytes += skb->len;
 
 	return dev_gro_receive(napi, skb);
 

@@ -1,6 +1,6 @@
 /*
  *    Disk Array driver for HP Smart Array Controllers, SCSI Tape Module
- *    (C) Copyright 2000, 2008 Hewlett-Packard Development Company, L.P.
+ *    (C) Copyright 2000, 2010 Hewlett-Packard Development Company, L.P.
  *
  *    This program is free software; you can redistribute it and/or modify
  *    it under the terms of the GNU General Public License as published by
@@ -20,32 +20,31 @@
  *
  *    Author: Stephen M. Cameron
  */
-
 #ifdef CONFIG_CISS_SCSI_TAPE
 #ifndef _CCISS_SCSI_H_
 #define _CCISS_SCSI_H_
 
 #include <scsi/scsicam.h> /* possibly irrelevant, since we don't show disks */
 
-		// the scsi id of the adapter...
+		/* the scsi id of the adapter... */
 #define SELF_SCSI_ID 15
-		// 15 is somewhat arbitrary, since the scsi-2 bus
-		// that's presented by the driver to the OS is
-		// fabricated.  The "real" scsi-3 bus the 
-		// hardware presents is fabricated too.
-		// The actual, honest-to-goodness physical
-		// bus that the devices are attached to is not 
-		// addressible natively, and may in fact turn
-		// out to be not scsi at all.
+		/* 15 is somewhat arbitrary, since the scsi-2 bus
+		   that's presented by the driver to the OS is
+		   fabricated.  The "real" scsi-3 bus the
+		   hardware presents is fabricated too.
+		   The actual, honest-to-goodness physical
+		   bus that the devices are attached to is not
+		   addressible natively, and may in fact turn
+		   out to be not scsi at all. */
 
-/* 
+/*
 
-If the upper scsi layer tries to track how many commands we have 
+If the upper scsi layer tries to track how many commands we have
 outstanding, it will be operating under the misapprehension that it is
 the only one sending us requests.  We also have the block interface,
 which is where most requests must surely come from, so the upper layer's
 notion of how many requests we have outstanding will be wrong most or
-all of the time. 
+all of the time.
 
 Note, the normal SCSI mid-layer error handling doesn't work well
 for this driver because 1) it takes the io_request_lock before

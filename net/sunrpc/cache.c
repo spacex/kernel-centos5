@@ -107,6 +107,7 @@ static int cache_fresh_locked(struct cache_head *head, time_t expiry)
 {
 	head->expiry_time = expiry;
 	head->last_refresh = get_seconds();
+	smp_wmb(); /* paired with smp_rmb() in cache_is_valid() */
 	return !test_and_set_bit(CACHE_VALID, &head->flags);
 }
 
@@ -176,6 +177,48 @@ struct cache_head *sunrpc_cache_update(struct cache_detail *detail,
 EXPORT_SYMBOL(sunrpc_cache_update);
 
 static int cache_make_upcall(struct cache_detail *detail, struct cache_head *h);
+
+static inline int cache_is_valid(struct cache_detail *detail, struct cache_head *h)
+{
+	if (!test_bit(CACHE_VALID, &h->flags) ||
+	    h->expiry_time < get_seconds())
+		return -EAGAIN;
+	else if (detail->flush_time > h->last_refresh)
+		return -EAGAIN;
+	else {
+		/* entry is valid */
+		if (test_bit(CACHE_NEGATIVE, &h->flags))
+			return -ENOENT;
+		else {
+			/*
+			 * In combination with write barrier in
+			 * sunrpc_cache_update, ensures that anyone
+			 * using the cache entry after this sees the
+			 * updated contents:
+			 */
+			smp_rmb();
+			return 0;
+		}
+	}
+}
+
+static int try_to_negate_entry(struct cache_detail *detail, struct cache_head *h)
+{
+	int rv, is_new;
+
+	write_lock(&detail->hash_lock);
+	rv = cache_is_valid(detail, h);
+	if (rv != -EAGAIN) {
+		write_unlock(&detail->hash_lock);
+		return rv;
+	}
+	set_bit(CACHE_NEGATIVE, &h->flags);
+	is_new = cache_fresh_locked(h, get_seconds()+CACHE_NEW_EXPIRY);
+	write_unlock(&detail->hash_lock);
+	cache_fresh_unlocked(h, detail, is_new);
+	return -ENOENT;
+}
+
 /*
  * This is the generic cache management routine for all
  * the authentication caches.
@@ -194,17 +237,7 @@ int cache_check(struct cache_detail *detail,
 	long refresh_age, age;
 
 	/* First decide return status as best we can */
-	if (!test_bit(CACHE_VALID, &h->flags) ||
-	    h->expiry_time < get_seconds())
-		rv = -EAGAIN;
-	else if (detail->flush_time > h->last_refresh)
-		rv = -EAGAIN;
-	else {
-		/* entry is valid */
-		if (test_bit(CACHE_NEGATIVE, &h->flags))
-			rv = -ENOENT;
-		else rv = 0;
-	}
+	rv = cache_is_valid(detail, h);
 
 	/* now see if we want to start an upcall */
 	refresh_age = (h->expiry_time - h->last_refresh);
@@ -219,14 +252,9 @@ int cache_check(struct cache_detail *detail,
 			switch (cache_make_upcall(detail, h)) {
 			case -EINVAL:
 				clear_bit(CACHE_PENDING, &h->flags);
-				if (rv == -EAGAIN) {
-					set_bit(CACHE_NEGATIVE, &h->flags);
-					cache_fresh_unlocked(h, detail,
-					     cache_fresh_locked(h, get_seconds()+CACHE_NEW_EXPIRY));
-					rv = -ENOENT;
-				}
+				cache_revisit_request(h);
+				rv = try_to_negate_entry(detail, h);
 				break;
-
 			case -EAGAIN:
 				clear_bit(CACHE_PENDING, &h->flags);
 				cache_revisit_request(h);

@@ -48,6 +48,8 @@ struct backing_dev_info {
 #define BDI_CAP_READ_MAP	0x00000010	/* Can be mapped for reading */
 #define BDI_CAP_WRITE_MAP	0x00000020	/* Can be mapped for writing */
 #define BDI_CAP_EXEC_MAP	0x00000040	/* Can be mapped for execution */
+/* private RHEL BDI flags */
+#define BDI_CAP_THROTTLE_DIRTY	0x00010000	/* throttle in balance_dirty_pages when BDI is congested */
 #define BDI_CAP_VMFLAGS \
 	(BDI_CAP_READ_MAP | BDI_CAP_WRITE_MAP | BDI_CAP_EXEC_MAP)
 
@@ -93,6 +95,9 @@ static inline int bdi_rw_congested(struct backing_dev_info *bdi)
 
 #define bdi_cap_account_dirty(bdi) \
 	(!((bdi)->capabilities & BDI_CAP_NO_ACCT_DIRTY))
+
+#define bdi_cap_throttle_dirty(bdi) \
+	((bdi)->capabilities & BDI_CAP_THROTTLE_DIRTY)
 
 #define mapping_cap_writeback_dirty(mapping) \
 	bdi_cap_writeback_dirty((mapping)->backing_dev_info)

@@ -738,6 +738,7 @@ int vc_allocate(unsigned int currcons)	/* return 0 on success */
 	    }
 	    vc->vc_kmalloced = 1;
 	    vc_init(vc, vc->vc_rows, vc->vc_cols, 1);
+	    vcs_make_sysfs(currcons);
 	}
 	return 0;
 }
@@ -894,6 +895,7 @@ void vc_deallocate(unsigned int currcons)
 
 	if (vc_cons_allocated(currcons)) {
 		struct vc_data *vc = vc_cons[currcons].d;
+		vcs_remove_sysfs(currcons);
 		vc->vc_sw->con_deinit(vc);
 		module_put(vc->vc_sw->owner);
 		if (vc->vc_kmalloced)
@@ -2514,7 +2516,6 @@ static int con_open(struct tty_struct *tty, struct file *filp)
 				tty->winsize.ws_col = vc_cons[currcons].d->vc_cols;
 			}
 			release_console_sem();
-			vcs_make_devfs(tty);
 			return ret;
 		}
 	}
@@ -2540,7 +2541,6 @@ static void con_shutdown(struct tty_struct *tty)
 	BUG_ON(vc == NULL);
 	acquire_console_sem();
 	vc->vc_tty = NULL;
-	vcs_remove_devfs(tty);
 	release_console_sem();
 	tty_shutdown(tty);
 }

@@ -46,12 +46,6 @@ int __vgetcpu_mode __section_vgetcpu_mode;
 
 #include <asm/unistd.h>
 
-#define __pa_vsymbol(x)			\
-	({unsigned long v;  		\
-	extern char __vsyscall_0; 	\
-	  asm("" : "=r" (v) : "0" (x)); \
-	  ((v - fix_to_virt(VSYSCALL_FIRST_PAGE)) + __pa_symbol(&__vsyscall_0)); })
-
 #define NS_SCALE	10 /* 2^10, carefully chosen */
 
 static __always_inline void timeval_normalize(struct timeval * tv)
@@ -106,7 +100,7 @@ static __always_inline void do_get_tz(struct timezone * tz)
 static __always_inline int gettimeofday(struct timeval *tv, struct timezone *tz)
 {
 	int ret;
-	asm volatile("vsysc2: syscall"
+	asm volatile("syscall"
 		: "=a" (ret)
 		: "0" (__NR_gettimeofday),"D" (tv),"S" (tz) : __syscall_clobber );
 	return ret;
@@ -115,7 +109,7 @@ static __always_inline int gettimeofday(struct timeval *tv, struct timezone *tz)
 static __always_inline long time_syscall(long *t)
 {
 	long secs;
-	asm volatile("vsysc1: syscall"
+	asm volatile("syscall"
 		: "=a" (secs)
 		: "0" (__NR_time),"D" (t) : __syscall_clobber);
 	return secs;
@@ -193,43 +187,6 @@ long __vsyscall(3) venosys_1(void)
 
 #ifdef CONFIG_SYSCTL
 
-#define SYSCALL 0x050f
-#define NOP2    0x9090
-
-/*
- * NOP out syscall in vsyscall page when not needed.
- */
-static int vsyscall_sysctl_change(ctl_table *ctl, int write, struct file * filp,
-                        void __user *buffer, size_t *lenp, loff_t *ppos)
-{
-	extern u16 vsysc1, vsysc2;
-	u16 *map1, *map2;
-	int ret = proc_dointvec(ctl, write, filp, buffer, lenp, ppos);
-	if (!write)
-		return ret;
-	/* gcc has some trouble with __va(__pa()), so just do it this
-	   way. */
-	map1 = ioremap(__pa_vsymbol(&vsysc1), 2);
-	if (!map1)
-		return -ENOMEM;
-	map2 = ioremap(__pa_vsymbol(&vsysc2), 2);
-	if (!map2) {
-		ret = -ENOMEM;
-		goto out;
-	}
-	if (!sysctl_vsyscall) {
-		*map1 = SYSCALL;
-		*map2 = SYSCALL;
-	} else {
-		*map1 = NOP2;
-		*map2 = NOP2;
-	}
-	iounmap(map2);
-out:
-	iounmap(map1);
-	return ret;
-}
-
 static int vsyscall_sysctl_nostrat(ctl_table *t, int __user *name, int nlen,
 				void __user *oldval, size_t __user *oldlenp,
 				void __user *newval, size_t newlen,
@@ -242,7 +199,7 @@ static ctl_table kernel_table2[] = {
 	{ .ctl_name = 99, .procname = "vsyscall64",
 	  .data = &sysctl_vsyscall, .maxlen = sizeof(int), .mode = 0644,
 	  .strategy = vsyscall_sysctl_nostrat,
-	  .proc_handler = vsyscall_sysctl_change },
+	  .proc_handler = proc_dointvec },
 	{ 0, }
 };
 

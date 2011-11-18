@@ -1,7 +1,7 @@
 /*******************************************************************************
 
   Intel(R) 82576 Virtual Function Linux driver
-  Copyright(c) 2009 Intel Corporation.
+  Copyright(c) 2009 - 2010 Intel Corporation.
 
   This program is free software; you can redistribute it and/or modify it
   under the terms and conditions of the GNU General Public License,
@@ -35,6 +35,7 @@
 #include <linux/netdevice.h>
 #include <linux/tcp.h>
 #include <linux/ipv6.h>
+#include <linux/slab.h>
 #include <net/checksum.h>
 #include <net/ip6_checksum.h>
 #include <linux/mii.h>
@@ -43,12 +44,13 @@
 
 #include "igbvf.h"
 
-#define DRV_VERSION "1.0.0-k0-1"
+#define DRV_VERSION "1.0.8-k0-1"
 char igbvf_driver_name[] = "igbvf";
 const char igbvf_driver_version[] = DRV_VERSION;
 static const char igbvf_driver_string[] =
 				"Intel(R) Virtual Function Network Driver";
-static const char igbvf_copyright[] = "Copyright (c) 2009 Intel Corporation.";
+static const char igbvf_copyright[] =
+				"Copyright (c) 2009 - 2010 Intel Corporation.";
 
 static int igbvf_poll(struct net_device *poll_dev, int *budget);
 static void igbvf_reset(struct igbvf_adapter *);
@@ -62,8 +64,16 @@ static struct igbvf_info igbvf_vf_info = {
 	.init_ops               = e1000_init_function_pointers_vf,
 };
 
+static struct igbvf_info igbvf_i350_vf_info = {
+	.mac			= e1000_vfadapt_i350,
+	.flags			= 0,
+	.pba			= 10,
+	.init_ops		= e1000_init_function_pointers_vf,
+};
+
 static const struct igbvf_info *igbvf_info_tbl[] = {
 	[board_vf]              = &igbvf_vf_info,
+	[board_i350_vf]		= &igbvf_i350_vf_info,
 };
 
 /**
@@ -294,7 +304,7 @@ static bool igbvf_clean_rx_irq(struct igbvf_adapter *adapter,
 			               PCI_DMA_FROMDEVICE);
 			buffer_info->page_dma = 0;
 
-			skb_fill_page_desc(skb, skb_shinfo(skb)->nr_frags++,
+			skb_fill_page_desc(skb, skb_shinfo(skb)->nr_frags,
 			                   buffer_info->page,
 			                   buffer_info->page_offset,
 			                   length);
@@ -391,35 +401,6 @@ static void igbvf_put_txbuf(struct igbvf_adapter *adapter,
 	}
 	buffer_info->time_stamp = 0;
 	buffer_info->next_to_watch = 0;
-}
-
-static void igbvf_print_tx_hang(struct igbvf_adapter *adapter)
-{
-	struct igbvf_ring *tx_ring = adapter->tx_ring;
-	unsigned int i = tx_ring->next_to_clean;
-	unsigned int eop = tx_ring->buffer_info[i].next_to_watch;
-	union e1000_adv_tx_desc *eop_desc = IGBVF_TX_DESC_ADV(*tx_ring, eop);
-
-	/* detected Tx unit hang */
-	dev_err(&adapter->pdev->dev,
-	        "Detected Tx Unit Hang:\n"
-	        "  TDH                  <%x>\n"
-	        "  TDT                  <%x>\n"
-	        "  next_to_use          <%x>\n"
-	        "  next_to_clean        <%x>\n"
-	        "buffer_info[next_to_clean]:\n"
-	        "  time_stamp           <%lx>\n"
-	        "  next_to_watch        <%x>\n"
-	        "  jiffies              <%lx>\n"
-	        "  next_to_watch.status <%x>\n",
-	        readl(adapter->hw.hw_addr + tx_ring->head),
-	        readl(adapter->hw.hw_addr + tx_ring->tail),
-	        tx_ring->next_to_use,
-	        tx_ring->next_to_clean,
-	        tx_ring->buffer_info[eop].time_stamp,
-	        eop,
-	        jiffies,
-	        eop_desc->wb.status);
 }
 
 /**
@@ -768,7 +749,6 @@ static void igbvf_set_itr(struct igbvf_adapter *adapter)
 static bool igbvf_clean_tx_irq(struct igbvf_ring *tx_ring)
 {
 	struct igbvf_adapter *adapter = tx_ring->adapter;
-	struct e1000_hw *hw = &adapter->hw;
 	struct net_device *netdev = adapter->netdev;
 	struct igbvf_buffer *buffer_info;
 	struct sk_buff *skb;
@@ -829,25 +809,9 @@ static bool igbvf_clean_tx_irq(struct igbvf_ring *tx_ring)
 		}
 	}
 
-	if (adapter->detect_tx_hung) {
-		/* Detect a transmit hang in hardware, this serializes the
-		 * check with the clearing of time_stamp and movement of i */
-		adapter->detect_tx_hung = false;
-		if (tx_ring->buffer_info[i].time_stamp &&
-		    time_after(jiffies, tx_ring->buffer_info[i].time_stamp +
-		               (adapter->tx_timeout_factor * HZ)) &&
-		    !(er32(STATUS) & E1000_STATUS_TXOFF)) {
-
-			tx_desc = IGBVF_TX_DESC_ADV(*tx_ring, i);
-			/* detected Tx unit hang */
-			igbvf_print_tx_hang(adapter);
-
-			netif_stop_queue(netdev);
-		}
-	}
 	adapter->net_stats.tx_bytes += total_bytes;
 	adapter->net_stats.tx_packets += total_packets;
-	return (count < tx_ring->count);
+	return count < tx_ring->count;
 }
 
 static irqreturn_t igbvf_msix_other(int irq, void *data, struct pt_regs *regs)
@@ -1317,8 +1281,6 @@ static void igbvf_configure_tx(struct igbvf_adapter *adapter)
 
 	/* enable Report Status bit */
 	adapter->txd_cmd |= E1000_ADVTXD_DCMD_RS;
-
-	adapter->tx_queue_len = adapter->netdev->tx_queue_len;
 }
 
 /**
@@ -1426,15 +1388,9 @@ static void igbvf_set_multi(struct net_device *netdev)
 	}
 
 	/* prepare a packed array of only addresses. */
-	mc_ptr = netdev->mc_list;
-
-	for (i = 0; i < netdev->mc_count; i++) {
-		if (!mc_ptr)
-			break;
-		memcpy(mta_list + (i*ETH_ALEN), mc_ptr->dmi_addr,
-		       ETH_ALEN);
-		mc_ptr = mc_ptr->next;
-	}
+	i = 0;
+	netdev_for_each_mc_addr(mc_ptr, netdev)
+		memcpy(mta_list + (i++ * ETH_ALEN), mc_ptr->dmi_addr, ETH_ALEN);
 
 	hw->mac.ops.update_mc_addr_list(hw, mta_list, i, 0, 0);
 	kfree(mta_list);
@@ -1543,7 +1499,6 @@ void igbvf_down(struct igbvf_adapter *adapter)
 
 	del_timer_sync(&adapter->watchdog_timer);
 
-	netdev->tx_queue_len = adapter->tx_queue_len;
 	netif_carrier_off(netdev);
 
 	/* record the stats before reset*/
@@ -1866,31 +1821,10 @@ static void igbvf_watchdog_task(struct igbvf_adapter *adapter)
 
 	if (link) {
 		if (!netif_carrier_ok(netdev)) {
-			bool txb2b = 1;
-
 			mac->ops.get_link_up_info(&adapter->hw,
 			                          &adapter->link_speed,
 			                          &adapter->link_duplex);
 			igbvf_print_link_info(adapter);
-
-			/*
-			 * tweak tx_queue_len according to speed/duplex
-			 * and adjust the timeout factor
-			 */
-			netdev->tx_queue_len = adapter->tx_queue_len;
-			adapter->tx_timeout_factor = 1;
-			switch (adapter->link_speed) {
-			case SPEED_10:
-				txb2b = 0;
-				netdev->tx_queue_len = 10;
-				adapter->tx_timeout_factor = 16;
-				break;
-			case SPEED_100:
-				txb2b = 0;
-				netdev->tx_queue_len = 100;
-				/* maybe add some timeout factor ? */
-				break;
-			}
 
 			netif_carrier_on(netdev);
 			netif_wake_queue(netdev);
@@ -1924,9 +1858,6 @@ static void igbvf_watchdog_task(struct igbvf_adapter *adapter)
 
 	/* Cause software interrupt to ensure Rx ring is cleaned */
 	ew32(EICS, adapter->rx_ring->eims_value);
-
-	/* Force detection of hung controller every watchdog period */
-	adapter->detect_tx_hung = 1;
 
 	/* Reset the timer */
 	if (!test_bit(__IGBVF_DOWN, &adapter->state))
@@ -2617,11 +2548,7 @@ static void igbvf_print_device_info(struct igbvf_adapter *adapter)
 	struct pci_dev *pdev = adapter->pdev;
 
 	dev_info(&pdev->dev, "Intel(R) 82576 Virtual Function\n");
-	dev_info(&pdev->dev, "Address: %02x:%02x:%02x:%02x:%02x:%02x\n",
-	         /* MAC address */
-	         netdev->dev_addr[0], netdev->dev_addr[1],
-	         netdev->dev_addr[2], netdev->dev_addr[3],
-	         netdev->dev_addr[4], netdev->dev_addr[5]);
+	dev_info(&pdev->dev, "Address: %pM\n", netdev->dev_addr);
 	dev_info(&pdev->dev, "MAC: %d\n", hw->mac.type);
 }
 
@@ -2755,6 +2682,7 @@ static int __devinit igbvf_probe(struct pci_dev *pdev,
 	netdev->features |= NETIF_F_TSO6;
 	netdev->features |= NETIF_F_VLAN_TSO;
 	netdev->features |= NETIF_F_VLAN_CSUM;
+	netdev->features |= NETIF_F_VLAN_SG;
 
 	if (pci_using_dac)
 		netdev->features |= NETIF_F_HIGHDMA;
@@ -2778,11 +2706,8 @@ static int __devinit igbvf_probe(struct pci_dev *pdev,
 	memcpy(netdev->perm_addr, adapter->hw.mac.addr, netdev->addr_len);
 
 	if (!is_valid_ether_addr(netdev->perm_addr)) {
-		dev_err(&pdev->dev, "Invalid MAC Address: "
-		        "%02x:%02x:%02x:%02x:%02x:%02x\n",
-		        netdev->dev_addr[0], netdev->dev_addr[1],
-		        netdev->dev_addr[2], netdev->dev_addr[3],
-		        netdev->dev_addr[4], netdev->dev_addr[5]);
+		dev_err(&pdev->dev, "Invalid MAC Address: %pM\n",
+		        netdev->dev_addr);
 		err = -EIO;
 		goto err_hw_init;
 	}
@@ -2802,14 +2727,14 @@ static int __devinit igbvf_probe(struct pci_dev *pdev,
 	/* reset the hardware with the new settings */
 	igbvf_reset(adapter);
 
-	/* tell the stack to leave us alone until igbvf_open() is called */
-	netif_carrier_off(netdev);
-	netif_stop_queue(netdev);
-
 	strcpy(netdev->name, "eth%d");
 	err = register_netdev(netdev);
 	if (err)
 		goto err_hw_init;
+
+	/* tell the stack to leave us alone until igbvf_open() is called */
+	netif_carrier_off(netdev);
+	netif_stop_queue(netdev);
 
 	igbvf_print_device_info(adapter);
 
@@ -2849,13 +2774,14 @@ static void __devexit igbvf_remove(struct pci_dev *pdev)
 	struct e1000_hw *hw = &adapter->hw;
 
 	/*
-	 * flush_scheduled work may reschedule our watchdog task, so
-	 * explicitly disable watchdog tasks from being rescheduled
+	 * The watchdog timer may be rescheduled, so explicitly
+	 * disable it from being rescheduled.
 	 */
 	set_bit(__IGBVF_DOWN, &adapter->state);
 	del_timer_sync(&adapter->watchdog_timer);
 
-	flush_scheduled_work();
+	cancel_work_sync(&adapter->reset_task);
+	cancel_work_sync(&adapter->watchdog_task);
 
 	unregister_netdev(netdev);
 
@@ -2881,8 +2807,9 @@ static struct pci_error_handlers igbvf_err_handler = {
 	.resume = igbvf_io_resume,
 };
 
-static struct pci_device_id igbvf_pci_tbl[] = {
+static DEFINE_PCI_DEVICE_TABLE(igbvf_pci_tbl) = {
 	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_82576_VF), board_vf },
+	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_I350_VF), board_i350_vf },
 	{ } /* terminate list */
 };
 MODULE_DEVICE_TABLE(pci, igbvf_pci_tbl);

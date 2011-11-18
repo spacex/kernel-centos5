@@ -20,7 +20,7 @@ void gfs2_lm_unmount(struct gfs2_sbd *sdp);
 int gfs2_lm_withdraw(struct gfs2_sbd *sdp, char *fmt, ...)
 				__attribute__ ((format(printf, 2, 3)));
 int gfs2_lm_get_lock(struct gfs2_sbd *sdp, struct lm_lockname *name,
-		     void **lockp);
+		     struct gdlm_lock **lockp);
 void gfs2_lm_put_lock(struct gfs2_sbd *sdp, void *lock);
 unsigned int gfs2_lm_unlock(struct gfs2_sbd *sdp, void *lock,
 			   unsigned int cur_state);

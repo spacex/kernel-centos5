@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001 - 2003 Sistina Software (UK) Limited.
- * Copyright (C) 2004 - 2005 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004 - 2011 Red Hat, Inc. All rights reserved.
  *
  * This file is released under the LGPL.
  */
@@ -289,8 +289,8 @@ typedef char ioctl_struct[308];
 
 #define DM_VERSION_MAJOR	4
 #define DM_VERSION_MINOR	11
-#define DM_VERSION_PATCHLEVEL	5
-#define DM_VERSION_EXTRA	"-ioctl (2007-12-12)"
+#define DM_VERSION_PATCHLEVEL	6
+#define DM_VERSION_EXTRA	"-ioctl (2011-02-18)"
 
 /* Status bits */
 #define DM_READONLY_FLAG	(1 << 0) /* In/Out */
@@ -330,5 +330,12 @@ typedef char ioctl_struct[308];
  * Set this to suspend without flushing queued ios.
  */
 #define DM_NOFLUSH_FLAG                (1 << 11) /* In */
+
+/*
+ * If set, any table information returned will relate to the inactive
+ * table instead of the live one.  Always check DM_INACTIVE_PRESENT_FLAG
+ * is set before using the data returned.
+ */
+#define DM_QUERY_INACTIVE_TABLE_FLAG	(1 << 12) /* In */
 
 #endif				/* _LINUX_DM_IOCTL_H */

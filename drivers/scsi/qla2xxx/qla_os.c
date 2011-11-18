@@ -1,6 +1,6 @@
 /*
  * QLogic Fibre Channel HBA Driver
- * Copyright (c)  2003-2005 QLogic Corporation
+ * Copyright (c)  2003-2011 QLogic Corporation
  *
  * See LICENSE.qla2xxx for copyright and licensing details.
  */
@@ -38,12 +38,12 @@ static kmem_cache_t *ctx_cachep;
 int num_hosts;
 
 int ql2xlogintimeout = 20;
-module_param(ql2xlogintimeout, int, S_IRUGO|S_IRUSR);
+module_param(ql2xlogintimeout, int, S_IRUGO);
 MODULE_PARM_DESC(ql2xlogintimeout,
 		"Login timeout value in seconds.");
 
 int qlport_down_retry;
-module_param(qlport_down_retry, int, S_IRUGO|S_IRUSR);
+module_param(qlport_down_retry, int, S_IRUGO);
 MODULE_PARM_DESC(qlport_down_retry,
 		"Maximum number of command retries to a port that returns "
 		"a PORT-DOWN status.");
@@ -56,25 +56,25 @@ MODULE_PARM_DESC(ql2xplogiabsentdevice,
 		"Default is 0 - no PLOGI. 1 - perfom PLOGI.");
 
 int ql2xloginretrycount = 0;
-module_param(ql2xloginretrycount, int, S_IRUGO|S_IRUSR);
+module_param(ql2xloginretrycount, int, S_IRUGO);
 MODULE_PARM_DESC(ql2xloginretrycount,
 		"Specify an alternate value for the NVRAM login retry count.");
 
 int ql2xallocfwdump = 1;
-module_param(ql2xallocfwdump, int, S_IRUGO|S_IRUSR);
+module_param(ql2xallocfwdump, int, S_IRUGO);
 MODULE_PARM_DESC(ql2xallocfwdump,
 		"Option to enable allocation of memory for a firmware dump "
 		"during HBA initialization.  Memory allocation requirements "
 		"vary by ISP type.  Default is 1 - allocate memory.");
 
 int ql2xextended_error_logging;
-module_param(ql2xextended_error_logging, int, S_IRUGO|S_IRUSR);
+module_param(ql2xextended_error_logging, int, S_IRUGO);
 MODULE_PARM_DESC(ql2xextended_error_logging,
 		"Option to enable extended error logging, "
 		"Default is 0 - no logging. 1 - log errors.");
 
 int ql2xdevdiscgoldfw = 0;
-module_param(ql2xdevdiscgoldfw, int, S_IRUGO|S_IRUSR);
+module_param(ql2xdevdiscgoldfw, int, S_IRUGO);
 MODULE_PARM_DESC(ql2xdevdiscgoldfw,
 		"Option to enable device discovery with golden firmware "
 		"Applicable to ISP81XX based CNA only. "
@@ -85,7 +85,7 @@ static void qla2x00_free_device(scsi_qla_host_t *);
 static void qla2x00_config_dma_addressing(scsi_qla_host_t *ha);
 
 int ql2xfdmienable;
-module_param(ql2xfdmienable, int, S_IRUGO|S_IRUSR);
+module_param(ql2xfdmienable, int, S_IRUGO);
 MODULE_PARM_DESC(ql2xfdmienable,
 		"Enables FDMI registratons "
 		"Default is 0 - no FDMI. 1 - perfom FDMI.");
@@ -112,7 +112,7 @@ MODULE_PARM_DESC(ql2xqfullrampup,
 		"detected.  Default is 120 seconds.");
 
 int ql2xenablemsix = 1;
-module_param(ql2xenablemsix, int, S_IRUGO|S_IRUSR);
+module_param(ql2xenablemsix, int, S_IRUGO);
 MODULE_PARM_DESC(ql2xenablemsix,
                 "Set to enable MSI or MSI-X interrupt mechanism."
                 " Default is 1, enable MSI-X interrupt mechanism."
@@ -121,33 +121,38 @@ MODULE_PARM_DESC(ql2xenablemsix,
                 " 2 = enable MSI interrupt mechanism.");
 
 int ql2xshiftctondsd = 6;
-module_param(ql2xshiftctondsd, int, S_IRUGO|S_IRUSR);
+module_param(ql2xshiftctondsd, int, S_IRUGO);
 MODULE_PARM_DESC(ql2xshiftctondsd,
 		"Set to control shifting of command type processing "
 		"based on total number of DSD.");
 
 
 int ql2xfwloadbin;
-module_param(ql2xfwloadbin, int, S_IRUGO|S_IRUSR);
+module_param(ql2xfwloadbin, int, S_IRUGO);
 MODULE_PARM_DESC(ql2xfwloadbin,
 		"Option to specify location from which to load ISP firmware:"
 		" 1 -- load firmware from flash."
 		" 0 -- use default semantics.");
 
 int ql2xdbwr = 1;
-module_param(ql2xdbwr, int, S_IRUGO|S_IRUSR);
+module_param(ql2xdbwr, int, S_IRUGO);
 MODULE_PARM_DESC(ql2xdbwr,
 		"Option to specify scheme for request queue posting"
 		" 0 -- Regular doorbell."
 		" 1 -- (Default) CAMRAM doorbell (faster).");
 
 int ql2xdontresethba;
-module_param(ql2xdontresethba, int, S_IRUGO|S_IRUSR);
+module_param(ql2xdontresethba, int, S_IRUGO);
 MODULE_PARM_DESC(ql2xdontresethba,
-		"1: Do not reset on failure, 0(Default): Reset on failure.");
+		"1: Do not reset on failure, 0(Default): Reset on failure. (Debug)");
+
+int ql2xsetdevstate;
+module_param(ql2xsetdevstate, int, S_IRUGO);
+MODULE_PARM_DESC(ql2xsetdevstate,
+		"1: Reset device state to COLD. (Debug)");
 
 int ql2xetsenable;
-module_param(ql2xetsenable, int, S_IRUGO|S_IRUSR);
+module_param(ql2xetsenable, int, S_IRUGO);
 MODULE_PARM_DESC(ql2xetsenable,
 		"Enables firmware ETS burst."
 		"Default is 0 - skip ETS enablement.");
@@ -155,7 +160,7 @@ MODULE_PARM_DESC(ql2xetsenable,
 
 
 int ql2xtargetreset = 1;
-module_param(ql2xtargetreset, int, S_IRUGO|S_IRUSR);
+module_param(ql2xtargetreset, int, S_IRUGO);
 MODULE_PARM_DESC(ql2xtargetreset,
 		 "Enable target reset."
 		 "Default is 1 - use hw defaults.");
@@ -441,6 +446,7 @@ qla2x00_get_new_sp(scsi_qla_host_t *ha, fc_port_t *fcport,
 	if (!sp)
 		return sp;
 
+	atomic_set(&sp->ref_count, 1);
 	sp->ha = ha;
 	sp->fcport = fcport;
 	sp->cmd = cmd;
@@ -459,7 +465,8 @@ qla2x00_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 	struct fc_rport *rport = starget_to_rport(scsi_target(cmd->device));
 	srb_t *sp;
 	int rval;
-
+	
+	spin_unlock_irq(ha->host->host_lock);
 	if (ha->flags.eeh_busy) {
 		if (ha->flags.pci_channel_io_perm_failure)
 			cmd->result = DID_NO_CONNECT << 16;
@@ -474,12 +481,6 @@ qla2x00_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 		goto qc_fail_command;
 	}
 
-	/* Close window on fcport/rport state-transitioning. */
-	if (!fcport) {
-		cmd->result = DID_NO_CONNECT << 16;
-		goto qc_fail_command;
-	}
-
 	if (fcport->drport) {
 		cmd->result = DID_IMM_RETRY << 16;
 		goto qc_fail_command;
@@ -487,18 +488,16 @@ qla2x00_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 
 	if (atomic_read(&fcport->state) != FCS_ONLINE) {
 		if (atomic_read(&fcport->state) == FCS_DEVICE_DEAD ||
-		    atomic_read(&ha->loop_state) == LOOP_DEAD) {
+		     atomic_read(&ha->loop_state) == LOOP_DEAD) {
 			cmd->result = DID_NO_CONNECT << 16;
 			goto qc_fail_command;
 		}
 		goto qc_host_busy;
 	}
 
-	spin_unlock_irq(ha->host->host_lock);
-
 	sp = qla2x00_get_new_sp(ha, fcport, cmd, done);
 	if (!sp)
-		goto qc_host_busy_lock;
+		goto qc_host_busy;
 
 	rval = qla2x00_start_scsi(sp);
 	if (rval != QLA_SUCCESS)
@@ -512,10 +511,8 @@ qc_host_busy_free_sp:
 	qla2x00_sp_free_dma(ha, sp);
 	mempool_free(sp, ha->srb_mempool);
 
-qc_host_busy_lock:
-	spin_lock_irq(ha->host->host_lock);
-
 qc_host_busy:
+	spin_lock_irq(ha->host->host_lock);
 	return SCSI_MLQUEUE_HOST_BUSY;
 
 qc_fail_command:
@@ -535,6 +532,7 @@ qla24xx_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 	srb_t *sp;
 	int rval;
 
+	spin_unlock_irq(ha->host->host_lock);
 	if (ha->flags.eeh_busy) {
 		if (ha->flags.pci_channel_io_perm_failure)
 			cmd->result = DID_NO_CONNECT << 16;
@@ -550,12 +548,6 @@ qla24xx_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 		goto qc24_fail_command;
 	}
 
-	/* Close window on fcport/rport state-transitioning. */
-	if (!fcport) {
-		cmd->result = DID_NO_CONNECT << 16;
-		goto qc24_fail_command;
-	}
-
 	if (fcport->drport) {
 		cmd->result = DID_IMM_RETRY << 16;
 		goto qc24_fail_command;
@@ -563,17 +555,16 @@ qla24xx_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 
 	if (atomic_read(&fcport->state) != FCS_ONLINE) {
 		if (atomic_read(&fcport->state) == FCS_DEVICE_DEAD ||
-		    atomic_read(&pha->loop_state) == LOOP_DEAD) {
+		     atomic_read(&pha->loop_state) == LOOP_DEAD) {
 			cmd->result = DID_NO_CONNECT << 16;
 			goto qc24_fail_command;
 		}
 		goto qc24_host_busy;
 	}
 
-	spin_unlock_irq(ha->host->host_lock);
 	sp = qla2x00_get_new_sp(pha, fcport, cmd, done);
 	if (!sp)
-		goto qc24_host_busy_lock;
+		goto qc24_host_busy;
 
 	if (IS_QLA82XX(ha))
 		rval = qla82xx_start_scsi(sp);
@@ -591,10 +582,8 @@ qc24_host_busy_free_sp:
 	qla2x00_sp_free_dma(pha, sp);
 	mempool_free(sp, pha->srb_mempool);
 
-qc24_host_busy_lock:
-	spin_lock_irq(ha->host->host_lock);
-
 qc24_host_busy:
+	spin_lock_irq(ha->host->host_lock);
 	return SCSI_MLQUEUE_HOST_BUSY;
 
 qc24_fail_command:
@@ -875,6 +864,12 @@ qla2x00_block_error_handler(struct scsi_cmnd *cmnd)
 	return;
 }
 
+static void
+sp_get(struct srb *sp)
+{
+	atomic_inc(&sp->ref_count);
+}
+
 /**************************************************************************
 * qla2xxx_eh_abort
 *
@@ -896,7 +891,7 @@ qla2xxx_eh_abort(struct scsi_cmnd *cmd)
 	scsi_qla_host_t *ha = to_qla_host(cmd->device->host);
 	scsi_qla_host_t *pha = to_qla_parent(ha);
 	srb_t *sp;
-	int ret, i;
+	int ret = SUCCESS;
 	unsigned int id, lun;
 	unsigned long serial;
 	unsigned long flags;
@@ -907,42 +902,36 @@ qla2xxx_eh_abort(struct scsi_cmnd *cmd)
 	if (!CMD_SP(cmd))
 		return SUCCESS;
 
-	ret = SUCCESS;
-
 	id = cmd->device->id;
 	lun = cmd->device->lun;
 	serial = cmd->serial_number;
 
 	/* Check active list for command command. */
 	spin_lock_irqsave(&pha->hardware_lock, flags);
-	for (i = 1; i < MAX_OUTSTANDING_COMMANDS; i++) {
-		sp = pha->outstanding_cmds[i];
-
-		if (sp == NULL)
-			continue;
-
-		if (sp->cmd != cmd)
-			continue;
-
-		DEBUG2(printk("%s(%ld): aborting sp %p from RISC. pid=%ld.\n",
-		    __func__, ha->host_no, sp, serial));
-		DEBUG3(qla2x00_print_scsi_cmd(cmd));
-
+	sp = (srb_t *) CMD_SP(cmd);
+	if (!sp) {
 		spin_unlock_irqrestore(&pha->hardware_lock, flags);
-		if (ha->isp_ops->abort_command(ha, sp)) {
-			DEBUG2(printk("%s(%ld): abort_command "
-			    "mbx failed.\n", __func__, ha->host_no));
-			ret = FAILED;
-		} else {
-			DEBUG3(printk("%s(%ld): abort_command "
-			    "mbx success.\n", __func__, ha->host_no));
-			wait = 1;
-		}
-		spin_lock_irqsave(&pha->hardware_lock, flags);
-
-		break;
+		return SUCCESS;
 	}
+
+	DEBUG2(printk("%s(%ld): aborting sp %p from RISC. pid=%ld.\n",
+	    __func__, ha->host_no, sp, serial));
+	DEBUG3(qla2x00_print_scsi_cmd(cmd));
+
+	/* Get the reference to the sp and drop the lock */
+	sp_get(sp);
+
 	spin_unlock_irqrestore(&pha->hardware_lock, flags);
+	if (ha->isp_ops->abort_command(ha, sp)) {
+		DEBUG2(printk("%s(%ld): abort_command "
+		    "mbx failed.\n", __func__, ha->host_no));
+		ret = FAILED;
+	} else {
+		DEBUG3(printk("%s(%ld): abort_command "
+		    "mbx success.\n", __func__, ha->host_no));
+		wait = 1;
+	}
+	qla2x00_sp_compl(ha, sp);
 
 	/* Wait for the command to be returned. */
 	if (wait) {
@@ -2446,6 +2435,7 @@ qla2x00_schedule_rport_del(struct scsi_qla_host *ha, fc_port_t *fcport,
 		set_bit(FCPORT_UPDATE_NEEDED, &ha->dpc_flags);
 		qla2xxx_wake_dpc(ha);
 	} else
+
 		fc_remote_port_delete(rport);
 }
 
@@ -2546,9 +2536,10 @@ qla2x00_mark_all_devices_lost(scsi_qla_host_t *ha, int defer)
 		 */
 		if (atomic_read(&fcport->state) == FCS_DEVICE_DEAD)
 			continue;
-		if (atomic_read(&fcport->state) == FCS_ONLINE)
+		if (atomic_read(&fcport->state) == FCS_ONLINE) {
+			atomic_set(&fcport->state, FCS_DEVICE_LOST);
 			qla2x00_schedule_rport_del(ha, fcport, defer);
-
+		}
 		atomic_set(&fcport->state, FCS_DEVICE_LOST);
 	}
 
@@ -3271,6 +3262,21 @@ qla2x00_do_dpc(void *data)
 			    ha->host_no));
 		}
 
+		if (test_bit(ISP_QUIESCE_NEEDED, &ha->dpc_flags)) {
+			DEBUG(printk(KERN_INFO"scsi(%ld): dpc: sched "
+				"qla2x00_quiesce_needed ha = %p\n",
+				ha->host_no, ha));
+			qla82xx_device_state_handler(ha);
+			clear_bit(ISP_QUIESCE_NEEDED, &ha->dpc_flags);
+			if (!ha->flags.quiesce_owner) {
+				qla2x00_perform_loop_resync(ha);
+
+				qla82xx_idc_lock(ha);
+				qla82xx_clear_qsnt_ready(ha);
+				qla82xx_idc_unlock(ha);
+			}
+		}
+
 		if (test_and_clear_bit(FCPORT_UPDATE_NEEDED, &ha->dpc_flags))
 			qla2x00_update_fcports(ha);
 
@@ -3442,7 +3448,7 @@ qla2x00_sp_free_dma(scsi_qla_host_t *ha, srb_t *sp)
 }
 
 void
-qla2x00_sp_compl(scsi_qla_host_t *ha, srb_t *sp)
+qla2x00_sp_final_compl(scsi_qla_host_t *ha, srb_t *sp)
 {
 	struct scsi_cmnd *cmd = sp->cmd;
 
@@ -3463,6 +3469,20 @@ qla2x00_sp_compl(scsi_qla_host_t *ha, srb_t *sp)
 
 	mempool_free(sp, ha->srb_mempool);
 	cmd->scsi_done(cmd);
+}
+
+void
+qla2x00_sp_compl(scsi_qla_host_t *ha, srb_t *sp)
+{
+	if (atomic_read(&sp->ref_count) == 0) {
+		DEBUG2(qla_printk(KERN_WARNING, ha,
+			"SP reference-count to ZERO -- sp=%p\n", sp));
+		DEBUG2(BUG());
+		return;
+	}
+	if (!atomic_dec_and_test(&sp->ref_count))
+		return;
+	qla2x00_sp_final_compl(ha, sp);
 }
 
 /**************************************************************************
@@ -3494,8 +3514,11 @@ qla2x00_timer(scsi_qla_host_t *ha)
 	if (!pci_channel_offline(pha->pdev))
 		pci_read_config_word(ha->pdev, PCI_VENDOR_ID, &w);
 
-	if (!ha->parent && IS_QLA82XX(ha))
+	if (!ha->parent && IS_QLA82XX(ha)) {
+		if (test_bit(ISP_QUIESCE_NEEDED, &ha->dpc_flags))
+			start_dpc++;
 		qla82xx_watchdog(ha);
+	}
 
 	/*
 	 * Ports - Port down timer.
@@ -3528,7 +3551,9 @@ qla2x00_timer(scsi_qla_host_t *ha)
 
 	/* Loop down handler. */
 	if (atomic_read(&ha->loop_down_timer) > 0 &&
-	    !(test_bit(ABORT_ISP_ACTIVE, &ha->dpc_flags)) && ha->flags.online) {
+	    !(test_bit(ABORT_ISP_ACTIVE, &ha->dpc_flags)) &&
+	    !(test_bit(FCOE_CTX_RESET_NEEDED, &ha->dpc_flags)) &&
+	    ha->flags.online) {
 
 		if (atomic_read(&ha->loop_down_timer) ==
 		    ha->loop_down_abort_time) {
@@ -3559,8 +3584,12 @@ qla2x00_timer(scsi_qla_host_t *ha)
 					if (!(sfcp->flags & FCF_FCP2_DEVICE))
 						continue;
 
-					set_bit(ISP_ABORT_NEEDED,
-					    &ha->dpc_flags);
+					if (IS_QLA82XX(ha))
+						set_bit(FCOE_CTX_RESET_NEEDED,
+							&ha->dpc_flags);
+					else
+						set_bit(ISP_ABORT_NEEDED,
+							&ha->dpc_flags);
 					break;
 				}
 				spin_unlock_irqrestore(&ha->hardware_lock,
@@ -3584,7 +3613,12 @@ qla2x00_timer(scsi_qla_host_t *ha)
 				qla_printk(KERN_WARNING, ha,
 				    "Loop down - aborting ISP.\n");
 
-				set_bit(ISP_ABORT_NEEDED, &ha->dpc_flags);
+				if (IS_QLA82XX(ha))
+					set_bit(FCOE_CTX_RESET_NEEDED,
+						&ha->dpc_flags);
+				else
+					set_bit(ISP_ABORT_NEEDED,
+						&ha->dpc_flags);
 			}
 		}
 		DEBUG3(printk("scsi(%ld): Loop Down - seconds remaining %d\n",
@@ -3592,8 +3626,8 @@ qla2x00_timer(scsi_qla_host_t *ha)
 		    atomic_read(&ha->loop_down_timer)));
 	}
 
-	/* Check if beacon LED needs to be blinked */
-	if (ha->beacon_blink_led == 1) {
+	/* Check if beacon LED needs to be blinked for physical ports only */
+	if (!ha->parent && (ha->beacon_blink_led == 1)) {
 		set_bit(BEACON_BLINK_NEEDED, &ha->dpc_flags);
 		start_dpc++;
 	}
@@ -3673,7 +3707,7 @@ qla2xxx_pci_error_detected(struct pci_dev *pdev, pci_channel_state_t state)
 		ha->flags.eeh_busy = 1;
 		/* For ISP82XX complete any pending mailbox cmd */
 		if (IS_QLA82XX(ha)) {
-			ha->flags.fw_hung = 1;
+			ha->flags.isp82xx_fw_hung = 1;
 			if (ha->flags.mbox_busy) {
 				ha->flags.mbox_int = 1;
 				DEBUG2(qla_printk(KERN_ERR, ha,
@@ -3811,7 +3845,7 @@ uint32_t qla82xx_error_recovery(scsi_qla_host_t *ha)
 			qla82xx_wr_32(ha, QLA82XX_CRB_DEV_STATE,
 			    QLA82XX_DEV_READY);
 			qla82xx_idc_unlock(ha);
-			ha->flags.fw_hung = 0;
+			ha->flags.isp82xx_fw_hung = 0;
 			rval = qla82xx_restart_isp(ha);
 			qla82xx_idc_lock(ha);
 			qla82xx_set_drv_active(ha);
@@ -3824,7 +3858,7 @@ uint32_t qla82xx_error_recovery(scsi_qla_host_t *ha)
 		    "This devfn is not reset owner = 0x%x\n", ha->pdev->devfn));
 		if ((qla82xx_rd_32(ha, QLA82XX_CRB_DEV_STATE) ==
 		    QLA82XX_DEV_READY)) {
-			ha->flags.fw_hung = 0;
+			ha->flags.isp82xx_fw_hung = 0;
 			rval = qla82xx_restart_isp(ha);
 			qla82xx_idc_lock(ha);
 			qla82xx_set_drv_active(ha);

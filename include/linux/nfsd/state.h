@@ -101,6 +101,7 @@ struct nfs4_callback {
 	struct rpc_program      cb_program;
 	struct rpc_stat         cb_stat;
 	struct rpc_clnt *       cb_client;
+	u32                     cb_saddr;
 };
 
 #define HEXDIR_LEN     33 /* hex version of 16 byte md5 of cl_name plus '\0' */

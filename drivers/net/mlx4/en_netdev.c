@@ -722,6 +722,9 @@ int mlx4_en_start_port(struct net_device *dev)
 				  0, MLX4_PROT_ETH))
 		mlx4_warn(mdev, "Failed Attaching Broadcast\n");
 
+	/* Must redo promiscuous mode setup. */
+	priv->flags &= ~MLX4_EN_FLAG_PROMISC;
+
 	/* Schedule multicast task to populate multicast list */
 	queue_work(mdev->workqueue, &priv->mcast_task);
 
@@ -1111,6 +1114,7 @@ int mlx4_en_init_netdev(struct mlx4_en_dev *mdev, int port,
 	dev->vlan_features |= NETIF_F_SG;
 	dev->vlan_features |= NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM;
 #else
+	dev->features |= NETIF_F_VLAN_SG;
 	dev->features |= NETIF_F_VLAN_CSUM;
 #endif
 	dev->features |= NETIF_F_HIGHDMA;

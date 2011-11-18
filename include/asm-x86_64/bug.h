@@ -22,9 +22,12 @@ struct bug_frame {
    for nice instruction selection.
    The magic numbers generate mov $64bitimm,%eax ; ret $offset. */
 #define BUG() 								\
+do {									\
 	asm volatile(							\
 	"ud2 ; pushq $%c1 ; ret $%c0" :: 				\
-		     "i"(__LINE__), "i" (__FILE__))
+		     "i"(__LINE__), "i" (__FILE__));			\
+	unreachable();							\
+} while (0)
 void out_of_line_bug(void);
 #else
 static inline void out_of_line_bug(void) { }

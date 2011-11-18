@@ -131,7 +131,7 @@ is_enabled_store(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
-#ifdef CONFIG_HOTPLUG
+#if defined(CONFIG_HOTPLUG) && defined(CONFIG_PPC64)
 static DEFINE_MUTEX(pci_remove_rescan_mutex);
 static ssize_t bus_rescan_store(struct bus_type *bus, const char *buf,
 				size_t count)
@@ -155,7 +155,6 @@ struct bus_attribute pci_bus_attrs[] = {
 	__ATTR(rescan, (S_IWUSR|S_IWGRP), NULL, bus_rescan_store),
 	__ATTR_NULL
 };
-#endif
 
 static void remove_callback(struct device *dev)
 {
@@ -185,6 +184,7 @@ remove_store(struct device *dev, struct device_attribute *dummy,
 		count = ret;
 	return count;
 }
+#endif
 
 struct device_attribute pci_dev_attrs[] = {
 	__ATTR_RO(resource),
@@ -199,7 +199,7 @@ struct device_attribute pci_dev_attrs[] = {
 	__ATTR(enable, 0600, is_enabled_show, is_enabled_store),
 	__ATTR(broken_parity_status,(S_IRUGO|S_IWUSR),
 		broken_parity_status_show,broken_parity_status_store),
-#ifdef CONFIG_HOTPLUG
+#if defined(CONFIG_HOTPLUG) && defined(CONFIG_PPC64)
 	__ATTR(remove, (S_IWUSR|S_IWGRP), NULL, remove_store),
 #endif
 	__ATTR_NULL,
@@ -586,6 +586,29 @@ static struct bin_attribute pcie_config_attr = {
 	.write = pci_write_config,
 };
 
+static ssize_t reset_store(struct device *dev,
+			   struct device_attribute *attr, const char *buf,
+			   size_t count)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	unsigned long val;
+	ssize_t result = strict_strtoul(buf, 0, &val);
+
+	if (result < 0)
+		return result;
+
+	if (val != 1)
+		return -EINVAL;
+
+	result = pci_reset_function(pdev);
+	if (result < 0)
+		return result;
+
+	return count;
+}
+
+static struct device_attribute reset_attr = __ATTR(reset, 0200, NULL, reset_store);
+
 int pci_create_sysfs_dev_files (struct pci_dev *pdev)
 {
 	if (!sysfs_initialized)
@@ -617,6 +640,11 @@ int pci_create_sysfs_dev_files (struct pci_dev *pdev)
 	/* add platform-specific attributes */
 	pcibios_add_platform_entries(pdev);
 	
+	if (!pci_probe_reset_function(pdev)) {
+		if (!device_create_file(&pdev->dev, &reset_attr)) 
+			pdev->reset_fn = 1;
+	}
+		
 	return 0;
 }
 
@@ -643,6 +671,11 @@ void pci_remove_sysfs_dev_files(struct pci_dev *pdev)
 			sysfs_remove_bin_file(&pdev->dev.kobj, pdev->rom_attr);
 			kfree(pdev->rom_attr);
 		}
+	}
+
+	if (pdev->reset_fn) {
+		device_remove_file(&pdev->dev, &reset_attr);
+		pdev->reset_fn = 0;
 	}
 }
 

@@ -1,6 +1,6 @@
 /*
  * QLogic Fibre Channel HBA Driver
- * Copyright (c)  2003-2005 QLogic Corporation
+ * Copyright (c)  2003-2011 QLogic Corporation
  *
  * See LICENSE.qla2xxx for copyright and licensing details.
  */
@@ -174,7 +174,7 @@ qla24xx_pause_risc(struct device_reg_24xx __iomem *reg)
 
 	WRT_REG_DWORD(&reg->hccr, HCCRX_SET_RISC_PAUSE);
 	for (cnt = 30000;
-	    (RD_REG_DWORD(&reg->host_status) & HCCRX_RISC_PAUSE) == 0 &&
+	    (RD_REG_DWORD(&reg->host_status) & HSRX_RISC_PAUSED) == 0 &&
 	    rval == QLA_SUCCESS; cnt--) {
 		if (cnt)
 			udelay(100);

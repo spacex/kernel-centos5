@@ -97,7 +97,7 @@ static const int MODPARM_rx_flip = 0;
 static inline void dev_disable_gso_features(struct net_device *dev)
 {
 	/* Turn off all GSO bits except ROBUST. */
-	dev->features &= (1 << NETIF_F_GSO_SHIFT) - 1;
+	dev->features &= ~NETIF_F_GSO_MASK;
 	dev->features |= NETIF_F_GSO_ROBUST;
 }
 #elif defined(NETIF_F_TSO)
@@ -1808,8 +1808,16 @@ static void netif_uninit(struct net_device *dev)
 	gnttab_free_grant_references(np->gref_rx_head);
 }
 
+static void get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *info)
+{
+	strcpy(info->driver, "netfront");
+	strcpy(info->bus_info, dev->class_dev.dev->bus_id);
+}
+
 static struct ethtool_ops network_ethtool_ops =
 {
+	.get_drvinfo = get_drvinfo,
+
 	.get_tx_csum = ethtool_op_get_tx_csum,
 	.set_tx_csum = ethtool_op_set_tx_csum,
 	.get_sg = ethtool_op_get_sg,

@@ -2751,7 +2751,7 @@ static int __devinit mvs_pci_init(struct pci_dev *pdev,
 		mvs_bytes_dmaed(mvi, i);
 	}
 
-	scsi_flush_work(mvi->shost);
+	sas_flush_discovery(mvi->shost);
 	mvs_print_info(mvi);
 
 	return 0;

@@ -70,19 +70,8 @@ extern int msi_register(struct msi_ops *ops);
 
 #include <asm/msi.h>
 
-/*
- * Assume the maximum number of hot plug slots supported by the system is about
- * ten. The worstcase is that each of these slots is hot-added with a device,
- * which has two MSI/MSI-X capable functions. To avoid any MSI-X driver, which
- * attempts to request all available vectors, NR_HP_RESERVED_VECTORS is defined
- * as below to ensure at least one message is assigned to each detected MSI/
- * MSI-X device function.
- */
-#define NR_HP_RESERVED_VECTORS 	20
-
 extern int vector_irq[NR_VECTORS];
 extern void (*interrupt[NR_IRQS])(void);
-extern int pci_vector_resources(int last, int nr_released);
 
 /*
  * MSI-X Address Register
@@ -124,33 +113,5 @@ extern int pci_vector_resources(int last, int nr_released);
 #define msix_unmask(address)	 	(address & ~PCI_MSIX_FLAGS_BITMASK)
 #define msix_mask(address)		(address | PCI_MSIX_FLAGS_BITMASK)
 #define msix_is_pending(address) 	(address & PCI_MSIX_FLAGS_PENDMASK)
-
-struct msi_desc {
-	struct {
-		__u8	type	: 5; 	/* {0: unused, 5h:MSI, 11h:MSI-X} */
-		__u8	maskbit	: 1; 	/* mask-pending bit supported ?   */
-		__u8	state	: 1; 	/* {0: free, 1: busy}		  */
-		__u8	reserved: 1; 	/* reserved			  */
-		__u8	entry_nr;    	/* specific enabled entry 	  */
-		__u8	default_vector; /* default pre-assigned vector    */
-		__u8	unused; 	/* formerly unused destination cpu*/
-	}msi_attrib;
-
-	struct {
-		__u16	head;
-		__u16	tail;
-	}link;
-
-	void __iomem *mask_base;
-	struct pci_dev *dev;
-
-#ifdef CONFIG_PM
-	/* PM save area for MSIX address/data */
-
-	u32	address_hi_save;
-	u32	address_lo_save;
-	u32	data_save;
-#endif
-};
 
 #endif /* MSI_H */

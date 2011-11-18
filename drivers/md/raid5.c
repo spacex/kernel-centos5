@@ -99,6 +99,40 @@
 const char raid6_empty_zero_page[PAGE_SIZE] __attribute__((aligned(256)));
 #endif
 
+/*
+ * We maintain a biased count of active stripes in the bottom 8 bits of
+ * bi_phys_segments, and a count of processed stripes in the upper 8 bits
+ */
+static inline int raid5_bi_phys_segments(struct bio *bio)
+{
+	return bio->bi_phys_segments & 0xff;
+}
+
+static inline int raid5_bi_hw_segments(struct bio *bio)
+{
+	return (bio->bi_phys_segments >> 8) & 0xff;
+}
+
+static inline int raid5_dec_bi_phys_segments(struct bio *bio)
+{
+	--bio->bi_phys_segments;
+	return raid5_bi_phys_segments(bio);
+}
+
+static inline int raid5_dec_bi_hw_segments(struct bio *bio)
+{
+	unsigned short val = raid5_bi_hw_segments(bio);
+
+	--val;
+	bio->bi_phys_segments = (val << 8) | raid5_bi_phys_segments(bio);
+	return val;
+}
+
+static inline void raid5_set_bi_hw_segments(struct bio *bio, unsigned int cnt)
+{
+	bio->bi_phys_segments = raid5_bi_phys_segments(bio) || (cnt << 8);
+}
+
 static inline int raid6_next_disk(int disk, int raid_disks)
 {
 	disk++;
@@ -1303,7 +1337,7 @@ static int add_stripe_bio(struct stripe_head *sh, struct bio *bi, int dd_idx, in
 	if (*bip)
 		bi->bi_next = *bip;
 	*bip = bi;
-	bi->bi_phys_segments ++;
+	bi->bi_phys_segments++;
 	spin_unlock_irq(&conf->device_lock);
 	spin_unlock(&sh->lock);
 
@@ -1428,7 +1462,7 @@ static void handle_stripe5(struct stripe_head *sh)
 				copy_data(0, rbi, dev->page, dev->sector);
 				rbi2 = r5_next_bio(rbi, dev->sector);
 				spin_lock_irq(&conf->device_lock);
-				if (--rbi->bi_phys_segments == 0) {
+				if (!raid5_dec_bi_phys_segments(rbi)) {
 					rbi->bi_next = return_bi;
 					return_bi = rbi;
 				}
@@ -1495,7 +1529,7 @@ static void handle_stripe5(struct stripe_head *sh)
 			while (bi && bi->bi_sector < sh->dev[i].sector + STRIPE_SECTORS){
 				struct bio *nextbi = r5_next_bio(bi, sh->dev[i].sector);
 				clear_bit(BIO_UPTODATE, &bi->bi_flags);
-				if (--bi->bi_phys_segments == 0) {
+				if (!raid5_dec_bi_phys_segments(bi)) {
 					md_write_end(conf->mddev);
 					bi->bi_next = return_bi;
 					return_bi = bi;
@@ -1509,7 +1543,7 @@ static void handle_stripe5(struct stripe_head *sh)
 			while (bi && bi->bi_sector < sh->dev[i].sector + STRIPE_SECTORS) {
 				struct bio *bi2 = r5_next_bio(bi, sh->dev[i].sector);
 				clear_bit(BIO_UPTODATE, &bi->bi_flags);
-				if (--bi->bi_phys_segments == 0) {
+				if (!raid5_dec_bi_phys_segments(bi)) {
 					md_write_end(conf->mddev);
 					bi->bi_next = return_bi;
 					return_bi = bi;
@@ -1528,7 +1562,7 @@ static void handle_stripe5(struct stripe_head *sh)
 				while (bi && bi->bi_sector < sh->dev[i].sector + STRIPE_SECTORS){
 					struct bio *nextbi = r5_next_bio(bi, sh->dev[i].sector);
 					clear_bit(BIO_UPTODATE, &bi->bi_flags);
-					if (--bi->bi_phys_segments == 0) {
+					if (!raid5_dec_bi_phys_segments(bi)) {
 						bi->bi_next = return_bi;
 						return_bi = bi;
 					}
@@ -1574,7 +1608,7 @@ static void handle_stripe5(struct stripe_head *sh)
 			    dev->written = NULL;
 			    while (wbi && wbi->bi_sector < dev->sector + STRIPE_SECTORS) {
 				    wbi2 = r5_next_bio(wbi, dev->sector);
-				    if (--wbi->bi_phys_segments == 0) {
+				    if (!raid5_dec_bi_phys_segments(wbi)) {
 					    md_write_end(conf->mddev);
 					    wbi->bi_next = return_bi;
 					    return_bi = wbi;
@@ -1981,7 +2015,7 @@ static void handle_stripe6(struct stripe_head *sh, struct page *tmp_page)
 				copy_data(0, rbi, dev->page, dev->sector);
 				rbi2 = r5_next_bio(rbi, dev->sector);
 				spin_lock_irq(&conf->device_lock);
-				if (--rbi->bi_phys_segments == 0) {
+				if (!raid5_dec_bi_phys_segments(rbi)) {
 					rbi->bi_next = return_bi;
 					return_bi = rbi;
 				}
@@ -2050,7 +2084,7 @@ static void handle_stripe6(struct stripe_head *sh, struct page *tmp_page)
 			while (bi && bi->bi_sector < sh->dev[i].sector + STRIPE_SECTORS){
 				struct bio *nextbi = r5_next_bio(bi, sh->dev[i].sector);
 				clear_bit(BIO_UPTODATE, &bi->bi_flags);
-				if (--bi->bi_phys_segments == 0) {
+				if (!raid5_dec_bi_phys_segments(bi)) {
 					md_write_end(conf->mddev);
 					bi->bi_next = return_bi;
 					return_bi = bi;
@@ -2064,7 +2098,7 @@ static void handle_stripe6(struct stripe_head *sh, struct page *tmp_page)
 			while (bi && bi->bi_sector < sh->dev[i].sector + STRIPE_SECTORS) {
 				struct bio *bi2 = r5_next_bio(bi, sh->dev[i].sector);
 				clear_bit(BIO_UPTODATE, &bi->bi_flags);
-				if (--bi->bi_phys_segments == 0) {
+				if (!raid5_dec_bi_phys_segments(bi)) {
 					md_write_end(conf->mddev);
 					bi->bi_next = return_bi;
 					return_bi = bi;
@@ -2083,7 +2117,7 @@ static void handle_stripe6(struct stripe_head *sh, struct page *tmp_page)
 				while (bi && bi->bi_sector < sh->dev[i].sector + STRIPE_SECTORS){
 					struct bio *nextbi = r5_next_bio(bi, sh->dev[i].sector);
 					clear_bit(BIO_UPTODATE, &bi->bi_flags);
-					if (--bi->bi_phys_segments == 0) {
+					if (!raid5_dec_bi_phys_segments(bi)) {
 						bi->bi_next = return_bi;
 						return_bi = bi;
 					}
@@ -2140,7 +2174,7 @@ static void handle_stripe6(struct stripe_head *sh, struct page *tmp_page)
 					dev->written = NULL;
 					while (wbi && wbi->bi_sector < dev->sector + STRIPE_SECTORS) {
 						wbi2 = r5_next_bio(wbi, dev->sector);
-						if (--wbi->bi_phys_segments == 0) {
+						if (!raid5_dec_bi_phys_segments(wbi)) {
 							md_write_end(conf->mddev);
 							wbi->bi_next = return_bi;
 							return_bi = wbi;
@@ -2720,7 +2754,7 @@ static int make_request(request_queue_t *q, struct bio * bi)
 			
 	}
 	spin_lock_irq(&conf->device_lock);
-	remaining = --bi->bi_phys_segments;
+	remaining = raid5_dec_bi_phys_segments(bi);
 	spin_unlock_irq(&conf->device_lock);
 	if (remaining == 0) {
 		int bytes = bi->bi_size;

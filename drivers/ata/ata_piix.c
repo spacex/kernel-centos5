@@ -1570,6 +1570,17 @@ static int __devinit piix_init_one(struct pci_dev *pdev,
 static int __init piix_init(void)
 {
 	int rc;
+	const char *line = saved_command_line;
+	const char *next;
+
+	while (line != NULL) {
+		if (!strncmp (line, "ide=disable", 11) &&
+		    (line[11] == '\0' || line[11] == ' '))
+			return -ENODEV;
+		line = strchr(line,' ');
+		if (line != NULL)
+			line++;
+	}
 
 	DPRINTK("pci_register_driver\n");
 	rc = pci_register_driver(&piix_pci_driver);

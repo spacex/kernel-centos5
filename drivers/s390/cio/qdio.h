@@ -80,6 +80,12 @@ enum qdio_irq_states {
 #define QDIO_DOING_ACTIVATE 2
 #define QDIO_DOING_CLEANUP 3
 
+/* SIGA flags */
+#define QDIO_SIGA_WRITE			0x00
+#define QDIO_SIGA_READ			0x01
+#define QDIO_SIGA_SYNC			0x02
+#define QDIO_SIGA_QEBSM_FLAG		0x80
+
 /************************* DEBUG FACILITY STUFF *********************/
 
 #define QDIO_DBF_HEX(ex,name,level,addr,len) \
@@ -316,7 +322,8 @@ do_eqbs(unsigned long sch, unsigned char *state, int queue,
 
 
 static inline int
-do_siga_sync(struct subchannel_id schid, unsigned int mask1, unsigned int mask2)
+do_siga_sync(unsigned long schid, unsigned int mask1, unsigned int mask2,
+	     unsigned int fc)
 {
 	int cc;
 
@@ -335,15 +342,15 @@ do_siga_sync(struct subchannel_id schid, unsigned int mask1, unsigned int mask2)
 		);
 #else /* CONFIG_64BIT */
 	asm volatile (
-		"lghi	0,2	\n\t"
-		"llgfr	1,%1	\n\t"
+		"llgfr	0,%4	\n\t"
+		"lgr	1,%1	\n\t"
 		"llgfr	2,%2	\n\t"
 		"llgfr	3,%3	\n\t"
 		"siga   0	\n\t"
 		"ipm	%0	\n\t"
 		"srl	%0,28	\n\t"
 		: "=d" (cc)
-		: "d" (schid), "d" (mask1), "d" (mask2)
+		: "d" (schid), "d" (mask1), "d" (mask2), "d" (fc)
 		: "cc", "0", "1", "2", "3"
 		);
 #endif /* CONFIG_64BIT */
@@ -351,7 +358,7 @@ do_siga_sync(struct subchannel_id schid, unsigned int mask1, unsigned int mask2)
 }
 
 static inline int
-do_siga_input(struct subchannel_id schid, unsigned int mask)
+do_siga_input(unsigned long schid, unsigned int mask, unsigned int fc)
 {
 	int cc;
 
@@ -369,14 +376,14 @@ do_siga_input(struct subchannel_id schid, unsigned int mask)
 		);
 #else /* CONFIG_64BIT */
 	asm volatile (
-		"lghi	0,1	\n\t"
-		"llgfr	1,%1	\n\t"
+		"llgfr	0,%3	\n\t"
+		"lgr	1,%1	\n\t"
 		"llgfr	2,%2	\n\t"
 		"siga   0	\n\t"
 		"ipm	%0	\n\t"
 		"srl	%0,28	\n\t"
 		: "=d" (cc)
-		: "d" (schid), "d" (mask)
+		: "d" (schid), "d" (mask), "d" (fc)
 		: "cc", "0", "1", "2", "memory"
 		);
 #endif /* CONFIG_64BIT */

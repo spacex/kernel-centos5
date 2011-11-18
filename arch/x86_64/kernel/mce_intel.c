@@ -32,11 +32,11 @@ asmlinkage void smp_thermal_interrupt(void)
 	rdtscll(m.tsc);
 	rdmsrl(MSR_IA32_THERM_STATUS, m.status);
 	if (m.status & 0x1) {
-		printk(KERN_EMERG
+		printk(KERN_CRIT
 			"CPU%d: Temperature above threshold, cpu clock throttled\n", m.cpu);
 		add_taint(TAINT_MACHINE_CHECK);
 	} else {
-		printk(KERN_EMERG "CPU%d: Temperature/speed normal\n", m.cpu);
+		printk(KERN_CRIT "CPU%d: Temperature/speed normal\n", m.cpu);
 	}
 
 	mce_log(&m);

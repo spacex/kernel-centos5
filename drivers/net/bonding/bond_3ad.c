@@ -1571,6 +1571,15 @@ static void ad_agg_selection_logic(struct aggregator *aggregator)
 			}
 		}
 	}
+
+
+	if (origin_aggregator->slave) {
+ 		struct bonding *bond;
+ 
+ 		bond = bond_get_bond_by_slave(origin_aggregator->slave);
+ 		if (bond)
+ 			bond_3ad_set_carrier(bond);
+ 	}
 }
 
 /**
@@ -2434,6 +2443,10 @@ int bond_3ad_lacpdu_recv(struct sk_buff *skb, struct net_device *dev, struct pac
 	int ret = NET_RX_DROP;
 
 	if (!(dev->flags & IFF_MASTER))
+		goto out;
+
+	skb = skb_share_check(skb, GFP_ATOMIC);
+	if (!skb)
 		goto out;
 
 	if (!pskb_may_pull(skb, sizeof(struct lacpdu)))

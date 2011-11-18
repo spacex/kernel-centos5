@@ -276,7 +276,7 @@ static struct request *get_rdac_req(struct scsi_device *sdev,
 	memset(rq->cmd, 0, BLK_MAX_CDB);
 
 	rq->flags |= REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT |
-			REQ_FAILFAST_DRIVER | REQ_NOMERGE | REQ_BLOCK_PC;
+			REQ_FAILFAST_DRIVER | REQ_BLOCK_PC;
 	rq->retries = RDAC_RETRIES;
 	rq->timeout = RDAC_TIMEOUT;
 
@@ -771,6 +771,8 @@ const struct scsi_dh_devlist rdac_dev_list[] = {
 	{"DELL", "MD3000i"},
 	{"DELL", "MD32xx"},
 	{"DELL", "MD32xxi"},
+	{"DELL", "MD36xxi"},
+	{"DELL", "MD36xxf"},
 	{"LSI", "INF-01-00"},
 	{"ENGENIO", "INF-01-00"},
 	{NULL, NULL},

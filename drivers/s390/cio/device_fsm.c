@@ -468,13 +468,21 @@ ccw_device_done(struct ccw_device *cdev, int state)
 	/* Reset device status. */
 	memset(&cdev->private->irb, 0, sizeof(struct irb));
 
-	cdev->private->state = state;
-
-
 	if (state == DEV_STATE_BOXED)
 		CIO_DEBUG(KERN_WARNING, 2,
 			  "Boxed device %04x on subchannel %04x\n",
 			  cdev->private->devno, sch->schid.sch_no);
+
+	if (cdev->private->state == DEV_STATE_VERIFY &&
+	    state == DEV_STATE_NOT_OPER) {
+		/* Online path verification ended with NOT_OPER. */
+		get_device(&cdev->dev);
+		PREPARE_WORK(&cdev->private->kick_work,
+			     ccw_device_call_sch_unregister, (void *) cdev);
+		queue_work(slow_path_wq, &cdev->private->kick_work);
+	}
+
+	cdev->private->state = state;
 
 	if (cdev->private->flags.donotify) {
 		cdev->private->flags.donotify = 0;

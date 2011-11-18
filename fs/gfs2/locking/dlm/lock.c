@@ -9,8 +9,24 @@
 
 #include "lock_dlm.h"
 
-static char junk_lvb[GDLM_LVB_SIZE];
+static const int __dlm_compat_matrix[8][8] = {
+      /* UN NL CR CW PR PW EX PD */
+        {1, 1, 1, 1, 1, 1, 1, 0},       /* UN */
+        {1, 1, 1, 1, 1, 1, 1, 0},       /* NL */
+        {1, 1, 1, 1, 1, 1, 0, 0},       /* CR */
+        {1, 1, 1, 1, 0, 0, 0, 0},       /* CW */
+        {1, 1, 1, 0, 1, 0, 0, 0},       /* PR */
+        {1, 1, 1, 0, 0, 0, 0, 0},       /* PW */
+        {1, 1, 0, 0, 0, 0, 0, 0},       /* EX */
+        {0, 0, 0, 0, 0, 0, 0, 0}        /* PD */
+};
 
+static int dlm_modes_compat(int mode1, int mode2)
+{
+	return __dlm_compat_matrix[mode1 + 1][mode2 + 1];
+}
+
+static char junk_lvb[GDLM_LVB_SIZE];
 
 /* convert dlm lock-mode to gfs lock-state */
 
@@ -277,6 +293,12 @@ static void gdlm_ast(void *astarg)
 {
 	struct gdlm_lock *lp = astarg;
 	clear_bit(LFL_ACTIVE, &lp->flags);
+	/* If the dlm requested mode is unlocked, we're not owed a callback,
+	   otherwise we are. */
+	if (lp->req == DLM_LOCK_NL || lp->req == DLM_LOCK_IV)
+		clear_bit(LFL_CB_OWED, &lp->flags);
+	else
+		set_bit(LFL_CB_OWED, &lp->flags);
 	process_complete(lp);
 }
 
@@ -284,6 +306,16 @@ static void process_blocking(struct gdlm_lock *lp, int bast_mode)
 {
 	struct gdlm_ls *ls = lp->ls;
 	unsigned int cb = 0;
+
+	if (dlm_modes_compat(bast_mode, lp->cur)) {
+		printk(KERN_WARNING "lock_dlm: dlm sent us a callback out of "
+		       "order: bast_mode=%d, lp->cur=%d\n",
+		       lp->cur, bast_mode);
+		printk(KERN_WARNING "lock_dlm: Lock was: %x,%llx flags %lx",
+		       lp->lockname.ln_type,
+		       (unsigned long long)lp->lockname.ln_number,
+		       lp->flags);
+	}
 
 	switch (gdlm_make_lmstate(bast_mode)) {
 	case LM_ST_EXCLUSIVE:
@@ -314,6 +346,7 @@ static void gdlm_bast(void *astarg, int mode)
 		return;
 	}
 
+	clear_bit(LFL_CB_OWED, &lp->flags);
 	process_blocking(lp, mode);
 }
 

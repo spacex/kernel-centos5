@@ -93,8 +93,6 @@ enum discover_event {
 
 /* ---------- Expander Devices ---------- */
 
-#define ETASK 0xFA
-
 #define to_dom_device(_obj) container_of(_obj, struct domain_device, dev_obj)
 #define to_dev_attr(_attr)  container_of(_attr, struct domain_dev_attribute,\
                                          attr)
@@ -211,6 +209,9 @@ struct domain_device {
         };
 
         void *lldd_dev;
+#ifndef __GENKSYMS__
+	int gone;
+#endif
 };
 
 struct sas_discovery {
@@ -402,6 +403,19 @@ static inline void sas_phy_disconnected(struct asd_sas_phy *phy)
 {
 	phy->oob_mode = OOB_NOT_CONNECTED;
 	phy->linkrate = linkrate_to_phy_linkrate(SAS_LINK_RATE_UNKNOWN);
+}
+
+/* Before returning from ->scan_finished() an LLDD calls this routine to
+ * ensure that all port notifications have been promoted to domain
+ * discovery events, and that initial domain discovery has completed
+ */
+static inline void sas_flush_discovery(struct Scsi_Host *shost)
+{
+	/* flush port events */
+	scsi_flush_work(shost);
+
+	/* flush domain discovery events queued by the port events */
+	scsi_flush_work(shost);
 }
 
 /* ---------- Tasks ---------- */
@@ -679,5 +693,7 @@ extern void sas_target_destroy(struct scsi_target *);
 extern int sas_slave_alloc(struct scsi_device *);
 extern int sas_ioctl(struct scsi_device *sdev, int cmd, void __user *arg);
 struct sas_phy *sas_find_local_phy(struct domain_device *dev);
+
+int sas_request_addr(struct Scsi_Host *shost, u8 *addr);
 
 #endif /* _SASLIB_H_ */

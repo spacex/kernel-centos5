@@ -77,6 +77,8 @@ struct mce_log {
 #define K8_MCE_THRESHOLD_BANK_5    (MCE_THRESHOLD_BASE + 5 * 9)
 #define K8_MCE_THRESHOLD_DRAM_ECC  (MCE_THRESHOLD_BANK_4 + 0)
 
+extern struct atomic_notifier_head x86_mce_decoder_chain;
+
 #ifdef __KERNEL__
 #include <asm/atomic.h>
 
@@ -100,6 +102,8 @@ static inline void mce_amd_feature_init(struct cpuinfo_x86 *c)
 #endif
 
 extern atomic_t mce_entry;
+
+extern void (*x86_mce_decode_callback)(struct mce *m);
 
 #endif
 

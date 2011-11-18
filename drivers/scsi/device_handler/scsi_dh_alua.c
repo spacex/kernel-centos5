@@ -113,7 +113,7 @@ static struct request *get_alua_req(struct scsi_device *sdev,
 
 	memset(rq->cmd, 0, BLK_MAX_CDB);
 	rq->flags |= REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT |
-			REQ_FAILFAST_DRIVER | REQ_NOMERGE | REQ_BLOCK_PC;
+			REQ_FAILFAST_DRIVER | REQ_BLOCK_PC;
 	rq->retries = ALUA_FAILOVER_RETRIES;
 	rq->timeout = ALUA_FAILOVER_TIMEOUT;
 
@@ -704,6 +704,7 @@ const struct scsi_dh_devlist alua_dev_list[] = {
 	{"DGC", "DISK"},
 	{"DGC", "VRAID"},
 	{"NETAPP", "LUN"},
+	{"NETAPP", "LUN C-Mode"},
 	{NULL, NULL}
 };
 

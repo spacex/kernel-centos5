@@ -330,9 +330,23 @@
 /* #define __NR_timerfd_create	322 */
 #define __NR_eventfd		323
 #define __NR_fallocate		324
+/* #define __NR_timerfd_settime	325 */
+/* #define __NR_timerfd_gettime	326 */
+/* #define __NR_signalfd4	327 */
+/* #define __NR_eventfd2	328 */
+/* #define __NR_epoll_create1	329 */
+/* #define __NR_dup3		330 */
+/* #define __NR_pipe2		331 */
+/* #define __NR_inotify_init1	332 */
+/* #define __NR_preadv		333 */
+/* #define __NR_pwritev		334 */
+/* #define __NR_rt_tgsigqueueinfo	335 */
+/* #define __NR_perf_event_open	336 */
+#define __NR_recvmmsg		337
+
 #ifdef __KERNEL__
 
-#define NR_syscalls 325
+#define NR_syscalls 338
 
 #ifndef __KERNEL_SYSCALLS_NO_ERRNO__
 /*

@@ -1033,6 +1033,10 @@ qla4_8xxx_pinit_from_rom(struct scsi_qla_host *ha, int verbose)
 		if (off == (ROMUSB_GLB + 0xbc))
 			continue;
 
+		/* skip core clock, so that firmware can increase the clock */
+		if (off == (ROMUSB_GLB + 0xc8))
+			continue;
+
 		/* skip the function enable register */
 		if (off == QLA82XX_PCIE_REG(PCIE_SETUP_FUNCTION)) {
 			continue;
@@ -1781,7 +1785,22 @@ exit:
 
 int qla4_8xxx_load_risc(struct scsi_qla_host *ha)
 {
-	return qla4_8xxx_device_state_handler(ha);
+	int retval;
+	retval = qla4_8xxx_device_state_handler(ha);
+
+	if (retval == QLA_SUCCESS &&
+		!test_bit(AF_INIT_DONE, &ha->flags)) {
+		retval = qla4xxx_request_irqs(ha);
+		if (retval != QLA_SUCCESS) {
+			dev_warn(&ha->pdev->dev, "Failed to reserve interrupt"
+				" %d already in use.\n", ha->pdev->irq);
+		} else {
+			ha->host->irq = ha->pdev->irq;
+			dev_info(&ha->pdev->dev, "irq %d attached\n",
+				ha->pdev->irq);
+		}
+	}
+	return retval;
 }
 
 
@@ -1935,7 +1954,12 @@ static uint8_t *
 qla4_8xxx_read_optrom_data(struct scsi_qla_host *ha, uint8_t *buf,
     uint32_t offset, uint32_t length)
 {
+	scsi_block_requests(ha->host);
+
 	qla4_8xxx_read_flash_data(ha, (uint32_t *)buf, offset, length);
+
+	scsi_unblock_requests(ha->host);
+
 	return buf;
 }
 

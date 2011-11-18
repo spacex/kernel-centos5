@@ -33,6 +33,7 @@ int qla4xxx_mailbox_command(struct scsi_qla_host *ha, uint8_t inCount,
 	u_long wait_count;
 	uint32_t intr_status;
 	unsigned long flags = 0;
+	uint8_t force_polling = 0;
 	uint32_t dev_state;
 
 	/* Make sure that pointers are valid */
@@ -89,21 +90,7 @@ int qla4xxx_mailbox_command(struct scsi_qla_host *ha, uint8_t inCount,
 		msleep(10);
 	}
 
-	/* To prevent overwriting mailbox registers for a command that has
-	 * not yet been serviced, check to see if an active command
-	 * (AEN, IOCB, etc.) is interrupting, then service it.
-	 * -----------------------------------------------------------------
-	 */
 	spin_lock_irqsave(&ha->hardware_lock, flags);
-
-	if (!is_qla8022(ha)) {
-		intr_status = readl(&ha->reg->ctrl_status);
-		if (intr_status & CSR_SCSI_PROCESSOR_INTR) {
-			/* Service existing interrupt */
-			ha->isp_ops->interrupt_service_routine(ha, intr_status);
-			clear_bit(AF_MBOX_COMMAND_DONE, &ha->flags);
-		}
-	}
 
 	/* Send the mailbox command to the firmware */
 	ha->mbox_status_count = outCount;
@@ -139,13 +126,22 @@ int qla4xxx_mailbox_command(struct scsi_qla_host *ha, uint8_t inCount,
 		goto mbox_exit;
 	}
 
+	/* Always poll for mailbox completion when calling the Disable
+	   Interrupts mailbox command, as the interrupts will be disabled
+	   upon completion */
+	if (is_qla8022(ha) &&
+	    (mbx_cmd[0] == MBOX_CMD_ENABLE_INTRS) &&
+	    (mbx_cmd[1] == INTR_DISABLE))
+		force_polling = 1;
+
 	/*
 	 * Wait for completion: Poll or completion queue
 	 */
 	if (test_bit(AF_IRQ_ATTACHED, &ha->flags) &&
 		test_bit(AF_INTERRUPTS_ON, &ha->flags) &&
 		test_bit(AF_ONLINE, &ha->flags) &&
-		!test_bit(AF_HBA_GOING_AWAY, &ha->flags)) {
+		!test_bit(AF_HA_REMOVAL, &ha->flags) &&
+		!force_polling) {
 		/* Do not poll for completion.  Use completion queue */
 		set_bit(AF_MBOX_COMMAND_NOPOLL, &ha->flags);
 		wait_for_completion_timeout(&ha->mbx_intr_comp, MBOX_TOV * HZ);
@@ -204,14 +200,15 @@ int qla4xxx_mailbox_command(struct scsi_qla_host *ha, uint8_t inCount,
 		 * checks for the AF_EEH_BUSY flag and returns w/o
 		 * doing a reset
 		 */
-		if (test_bit(AF_FW_RECOVERY, &ha->flags)) {
+		if (is_qla8022(ha) &&
+			test_bit(AF_FW_RECOVERY, &ha->flags)) {
 			DEBUG2(printk("scsi%ld: %s: Mailbox Cmd 0x%08X timed "
 				"out & fw_hung, exit  let AER do reset\n",
 				ha->host_no, __func__, mbx_cmd[0]));
-		} else {
-			mbx_sts[0] = (-1);
-			set_bit(DPC_RESET_HA, &ha->dpc_flags);
+			goto mbox_exit;
 		}
+		mbx_sts[0] = (-1);
+		set_bit(DPC_RESET_HA, &ha->dpc_flags);
 		goto mbox_exit;
 	}
 
@@ -413,6 +410,8 @@ qla4xxx_update_local_ip(struct scsi_qla_host *ha,
 				struct addr_ctrl_blk  *init_fw_cb)
 {
 	/* Save IPv4 Address Info */
+	ha->ipv4_options = le16_to_cpu(init_fw_cb->ipv4_ip_opts);
+	ha->ipv4_addr_state = le16_to_cpu(init_fw_cb->ipv4_addr_state);
 	memcpy(ha->ip_address, init_fw_cb->ipv4_addr,
 	       min(sizeof(ha->ip_address), sizeof(init_fw_cb->ipv4_addr)));
 	memcpy(ha->subnet_mask, init_fw_cb->ipv4_subnet,
@@ -512,9 +511,6 @@ int qla4xxx_initialize_fw_cb(struct scsi_qla_host * ha)
 
 	if (qla4xxx_get_ifcb(ha, &mbox_cmd[0], &mbox_sts[0], init_fw_cb_dma)
 		!= QLA_SUCCESS) {
-		dma_free_coherent(&ha->pdev->dev,
-				  sizeof(struct addr_ctrl_blk),
-				  init_fw_cb, init_fw_cb_dma);
 		goto exit_init_fw_cb;
 	}
 
@@ -986,6 +982,8 @@ int qla4xxx_abort_task(struct scsi_qla_host *ha, struct srb *srb)
 	uint32_t mbox_sts[MBOX_REG_COUNT];
 	struct scsi_cmnd *cmd = srb->cmd;
 	int status = QLA_SUCCESS;
+	unsigned long flags = 0;
+	uint32_t index;
 
 	DEBUG2(printk("scsi%ld:%d:%d:%d: abort task issued\n", ha->host_no,
 		      cmd->device->channel, cmd->device->id, cmd->device->lun));
@@ -997,9 +995,13 @@ int qla4xxx_abort_task(struct scsi_qla_host *ha, struct srb *srb)
 	memset(&mbox_cmd, 0, sizeof(mbox_cmd));
 	memset(&mbox_sts, 0, sizeof(mbox_sts));
 
+	spin_lock_irqsave(&ha->hardware_lock, flags);
+	index = (unsigned long)(unsigned char *)cmd->host_scribble;
+	spin_unlock_irqrestore(&ha->hardware_lock, flags);
+
 	mbox_cmd[0] = MBOX_CMD_ABORT_TASK;
 	mbox_cmd[1] = srb->fw_ddb_index;
-	mbox_cmd[2] = (unsigned long)(unsigned char *)cmd->host_scribble;
+	mbox_cmd[2] = index;
 	mbox_cmd[5] = 0x01;     /* Immediate Command Enable */
 
 	qla4xxx_mailbox_command(ha, MBOX_REG_COUNT, 5, &mbox_cmd[0], &mbox_sts[0]);
@@ -1208,28 +1210,10 @@ int qla4xxx_send_tgts(struct scsi_qla_host *ha, char *ip, uint16_t port)
 	fw_ddb_entry->options = (DDB_OPT_DISC_SESSION | DDB_OPT_TARGET);
 	fw_ddb_entry->port = port;
 
-	if (is_qla8022(ha) && ip == NULL) {
-		/* We manually configure the DDBs, if
-		 * iSCLI is not yet available
-		 */
-/*
-		fw_ddb_entry->ip_addr[0] = 192;
-		fw_ddb_entry->ip_addr[1] = 168;
-*/
-		fw_ddb_entry->ip_addr[0] = (ha->portnum == 4) ? 192 : 172;
-		fw_ddb_entry->ip_addr[1] = (ha->portnum == 4) ? 168 : 17;
-		fw_ddb_entry->ip_addr[2] = (ha->portnum == 4) ? 2 : 140;
-		#if 1  /* Cable Normal */
-		fw_ddb_entry->ip_addr[3] = (ha->portnum == 4) ? 101 : 76;
-		#else  /* Cable Reverse */
-		fw_ddb_entry->ip_addr[3] = (ha->portnum == 4) ? 5 : 4;
-		#endif
-	} else {
-		fw_ddb_entry->ip_addr[0] = *ip;
-		fw_ddb_entry->ip_addr[1] = *(ip + 1);
-		fw_ddb_entry->ip_addr[2] = *(ip + 2);
-		fw_ddb_entry->ip_addr[3] = *(ip + 3);
-	}
+	fw_ddb_entry->ip_addr[0] = *ip;
+	fw_ddb_entry->ip_addr[1] = *(ip + 1);
+	fw_ddb_entry->ip_addr[2] = *(ip + 2);
+	fw_ddb_entry->ip_addr[3] = *(ip + 3);
 
 	DEBUG2(printk("scsi%ld: %s: idx=0x%x, ip=%d.%d.%d.%d\n", ha->host_no, __func__, ddb_index,
 		fw_ddb_entry->ip_addr[0], fw_ddb_entry->ip_addr[1], fw_ddb_entry->ip_addr[2], fw_ddb_entry->ip_addr[3]));

@@ -760,7 +760,7 @@ out:
 		wake_up(&ccw_device_init_wq);
 }
 
-static void ccw_device_call_sch_unregister(void *data)
+void ccw_device_call_sch_unregister(void *data)
 {
 	struct ccw_device *cdev = data;
 	struct subchannel *sch;

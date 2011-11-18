@@ -150,8 +150,6 @@ static struct nfs_client *nfs_alloc_client(const char *hostname,
 	clp->cl_state = 1 << NFS4CLNT_LEASE_EXPIRED;
 #endif
 
-	nfs_fscache_get_client_cookie(clp);
-
 	return clp;
 
 error_3:
@@ -185,8 +183,6 @@ static void nfs_free_client(struct nfs_client *clp)
 	dprintk("--> nfs_free_client(%d)\n", clp->cl_nfsversion);
 
 	nfs4_shutdown_client(clp);
-
-	nfs_fscache_release_client_cookie(clp);
 
 	/* -EIO all pending I/O */
 	if (!IS_ERR(clp->cl_rpcclient))
@@ -756,6 +752,8 @@ static struct nfs_server *nfs_alloc_server(void)
 	init_waitqueue_head(&server->active_wq);
 	atomic_set(&server->active, 0);
 
+	server->backing_dev_info.capabilities |= BDI_CAP_THROTTLE_DIRTY;
+
 	server->io_stats = nfs_alloc_iostats();
 	if (!server->io_stats) {
 		kfree(server);
@@ -948,9 +946,6 @@ static int nfs4_init_server(struct nfs_server *server,
 
 	/* Initialise the client representation from the mount data */
 	server->flags = data->flags & NFS_MOUNT_FLAGMASK;
-	/* Make sure FSC stays off */
-	server->flags &= ~NFS4_MOUNT_FSCACHE;
-
 	server->caps |= NFS_CAP_ATOMIC_OPEN;
 
 	if (data->rsize)
@@ -1392,7 +1387,7 @@ static int nfs_volume_list_show(struct seq_file *m, void *v)
 
 	/* display header on line 1 */
 	if (v == SEQ_START_TOKEN) {
-		seq_puts(m, "NV SERVER   PORT DEV     FSID              FSC\n");
+		seq_puts(m, "NV SERVER   PORT DEV     FSID\n");
 		return 0;
 	}
 	/* display one transport per line on subsequent lines */
@@ -1405,13 +1400,12 @@ static int nfs_volume_list_show(struct seq_file *m, void *v)
 	snprintf(fsid, 17, "%llx:%llx",
 		 server->fsid.major, server->fsid.minor);
 
-	seq_printf(m, "v%d %02x%02x%02x%02x %4hx %-7s %-17s %s\n",
+	seq_printf(m, "v%d %02x%02x%02x%02x %4hx %-7s %-17s\n",
 		   clp->cl_nfsversion,
 		   NIPQUAD(clp->cl_addr.sin_addr),
 		   ntohs(clp->cl_addr.sin_port),
 		   dev,
-		   fsid,
-		   nfs_server_fscache_state(server));
+		   fsid);
 
 	return 0;
 }

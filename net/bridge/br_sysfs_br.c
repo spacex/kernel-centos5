@@ -290,6 +290,247 @@ static CLASS_DEVICE_ATTR(group_addr, S_IRUGO | S_IWUSR,
 			 show_group_addr, store_group_addr);
 
 
+#ifdef CONFIG_BRIDGE_IGMP_SNOOPING
+static ssize_t show_multicast_router(struct class_device *cd, char *buf)
+{
+	struct net_bridge *br = to_bridge(cd);
+	return sprintf(buf, "%d\n", br->multicast_router);
+}
+
+static ssize_t store_multicast_router(struct class_device *cd,
+				      const char *buf, size_t len)
+{
+	return store_bridge_parm(cd, buf, len, br_multicast_set_router);
+}
+static CLASS_DEVICE_ATTR(multicast_router, S_IRUGO | S_IWUSR,
+			 show_multicast_router, store_multicast_router);
+
+static ssize_t show_multicast_snooping(struct class_device *cd, char *buf)
+{
+	struct net_bridge *br = to_bridge(cd);
+	return sprintf(buf, "%d\n", !br->multicast_disabled);
+}
+
+static ssize_t store_multicast_snooping(struct class_device *cd,
+					const char *buf, size_t len)
+{
+	return store_bridge_parm(cd, buf, len, br_multicast_toggle);
+}
+static CLASS_DEVICE_ATTR(multicast_snooping, S_IRUGO | S_IWUSR,
+			 show_multicast_snooping, store_multicast_snooping);
+
+static ssize_t show_hash_elasticity(struct class_device *cd, char *buf)
+{
+	struct net_bridge *br = to_bridge(cd);
+	return sprintf(buf, "%u\n", br->hash_elasticity);
+}
+
+static void set_elasticity(struct net_bridge *br, unsigned long val)
+{
+	br->hash_elasticity = val;
+}
+
+static ssize_t store_hash_elasticity(struct class_device *cd,
+				     const char *buf, size_t len)
+{
+	return store_bridge_parm(cd, buf, len, set_elasticity);
+}
+static CLASS_DEVICE_ATTR(hash_elasticity, S_IRUGO | S_IWUSR,
+			 show_hash_elasticity, store_hash_elasticity);
+
+static ssize_t show_hash_max(struct class_device *cd,
+			     char *buf)
+{
+	struct net_bridge *br = to_bridge(cd);
+	return sprintf(buf, "%u\n", br->hash_max);
+}
+
+static ssize_t store_hash_max(struct class_device *cd,
+			      const char *buf, size_t len)
+{
+	return store_bridge_parm(cd, buf, len, br_multicast_set_hash_max);
+}
+static CLASS_DEVICE_ATTR(hash_max, S_IRUGO | S_IWUSR, show_hash_max,
+			 store_hash_max);
+
+static ssize_t show_multicast_last_member_count(struct class_device *cd,
+						char *buf)
+{
+	struct net_bridge *br = to_bridge(cd);
+	return sprintf(buf, "%u\n", br->multicast_last_member_count);
+}
+
+static void set_last_member_count(struct net_bridge *br, unsigned long val)
+{
+	br->multicast_last_member_count = val;
+}
+
+static ssize_t store_multicast_last_member_count(struct class_device *cd,
+						 const char *buf, size_t len)
+{
+	return store_bridge_parm(cd, buf, len, set_last_member_count);
+}
+static CLASS_DEVICE_ATTR(multicast_last_member_count, S_IRUGO | S_IWUSR,
+			 show_multicast_last_member_count,
+			 store_multicast_last_member_count);
+
+static ssize_t show_multicast_startup_query_count(
+	struct class_device *cd, char *buf)
+{
+	struct net_bridge *br = to_bridge(cd);
+	return sprintf(buf, "%u\n", br->multicast_startup_query_count);
+}
+
+static void set_startup_query_count(struct net_bridge *br, unsigned long val)
+{
+	br->multicast_startup_query_count = val;
+}
+
+static ssize_t store_multicast_startup_query_count(
+	struct class_device *cd, const char *buf, size_t len)
+{
+	return store_bridge_parm(cd, buf, len, set_startup_query_count);
+}
+static CLASS_DEVICE_ATTR(multicast_startup_query_count, S_IRUGO | S_IWUSR,
+			 show_multicast_startup_query_count,
+			 store_multicast_startup_query_count);
+
+static ssize_t show_multicast_last_member_interval(
+	struct class_device *cd, char *buf)
+{
+	struct net_bridge *br = to_bridge(cd);
+	return sprintf(buf, "%lu\n",
+		       jiffies_to_clock_t(br->multicast_last_member_interval));
+}
+
+static void set_last_member_interval(struct net_bridge *br, unsigned long val)
+{
+	br->multicast_last_member_interval = clock_t_to_jiffies(val);
+}
+
+static ssize_t store_multicast_last_member_interval(
+	struct class_device *cd, const char *buf, size_t len)
+{
+	return store_bridge_parm(cd, buf, len, set_last_member_interval);
+}
+static CLASS_DEVICE_ATTR(multicast_last_member_interval, S_IRUGO | S_IWUSR,
+			 show_multicast_last_member_interval,
+			 store_multicast_last_member_interval);
+
+static ssize_t show_multicast_membership_interval(
+	struct class_device *cd, char *buf)
+{
+	struct net_bridge *br = to_bridge(cd);
+	return sprintf(buf, "%lu\n",
+		       jiffies_to_clock_t(br->multicast_membership_interval));
+}
+
+static void set_membership_interval(struct net_bridge *br, unsigned long val)
+{
+	br->multicast_membership_interval = clock_t_to_jiffies(val);
+}
+
+static ssize_t store_multicast_membership_interval(
+	struct class_device *cd, const char *buf, size_t len)
+{
+	return store_bridge_parm(cd, buf, len, set_membership_interval);
+}
+static CLASS_DEVICE_ATTR(multicast_membership_interval, S_IRUGO | S_IWUSR,
+			 show_multicast_membership_interval,
+			 store_multicast_membership_interval);
+
+static ssize_t show_multicast_querier_interval(struct class_device *cd,
+					       char *buf)
+{
+	struct net_bridge *br = to_bridge(cd);
+	return sprintf(buf, "%lu\n",
+		       jiffies_to_clock_t(br->multicast_querier_interval));
+}
+
+static void set_querier_interval(struct net_bridge *br, unsigned long val)
+{
+	br->multicast_querier_interval = clock_t_to_jiffies(val);
+}
+
+static ssize_t store_multicast_querier_interval(struct class_device *cd,
+						const char *buf, size_t len)
+{
+	return store_bridge_parm(cd, buf, len, set_querier_interval);
+}
+static CLASS_DEVICE_ATTR(multicast_querier_interval, S_IRUGO | S_IWUSR,
+			 show_multicast_querier_interval,
+			 store_multicast_querier_interval);
+
+static ssize_t show_multicast_query_interval(struct class_device *cd,
+					     char *buf)
+{
+	struct net_bridge *br = to_bridge(cd);
+	return sprintf(buf, "%lu\n",
+		       jiffies_to_clock_t(br->multicast_query_interval));
+}
+
+static void set_query_interval(struct net_bridge *br, unsigned long val)
+{
+	br->multicast_query_interval = clock_t_to_jiffies(val);
+}
+
+static ssize_t store_multicast_query_interval(struct class_device *cd,
+					      const char *buf, size_t len)
+{
+	return store_bridge_parm(cd, buf, len, set_query_interval);
+}
+static CLASS_DEVICE_ATTR(multicast_query_interval, S_IRUGO | S_IWUSR,
+			 show_multicast_query_interval,
+			 store_multicast_query_interval);
+
+static ssize_t show_multicast_query_response_interval(
+	struct class_device *cd, char *buf)
+{
+	struct net_bridge *br = to_bridge(cd);
+	return sprintf(
+		buf, "%lu\n",
+		jiffies_to_clock_t(br->multicast_query_response_interval));
+}
+
+static void set_query_response_interval(struct net_bridge *br,
+					unsigned long val)
+{
+	br->multicast_query_response_interval = clock_t_to_jiffies(val);
+}
+
+static ssize_t store_multicast_query_response_interval(
+	struct class_device *cd, const char *buf, size_t len)
+{
+	return store_bridge_parm(cd, buf, len, set_query_response_interval);
+}
+static CLASS_DEVICE_ATTR(multicast_query_response_interval, S_IRUGO | S_IWUSR,
+			 show_multicast_query_response_interval,
+			 store_multicast_query_response_interval);
+
+static ssize_t show_multicast_startup_query_interval(
+	struct class_device *cd, char *buf)
+{
+	struct net_bridge *br = to_bridge(cd);
+	return sprintf(
+		buf, "%lu\n",
+		jiffies_to_clock_t(br->multicast_startup_query_interval));
+}
+
+static void set_startup_query_interval(struct net_bridge *br, unsigned long val)
+{
+	br->multicast_startup_query_interval = clock_t_to_jiffies(val);
+}
+
+static ssize_t store_multicast_startup_query_interval(
+	struct class_device *cd, const char *buf, size_t len)
+{
+	return store_bridge_parm(cd, buf, len, set_startup_query_interval);
+}
+static CLASS_DEVICE_ATTR(multicast_startup_query_interval, S_IRUGO | S_IWUSR,
+			 show_multicast_startup_query_interval,
+			 store_multicast_startup_query_interval);
+#endif
+
 static struct attribute *bridge_attrs[] = {
 	&class_device_attr_forward_delay.attr,
 	&class_device_attr_hello_time.attr,
@@ -308,6 +549,20 @@ static struct attribute *bridge_attrs[] = {
 	&class_device_attr_topology_change_timer.attr,
 	&class_device_attr_gc_timer.attr,
 	&class_device_attr_group_addr.attr,
+#ifdef CONFIG_BRIDGE_IGMP_SNOOPING
+	&class_device_attr_multicast_router.attr,
+	&class_device_attr_multicast_snooping.attr,
+	&class_device_attr_hash_elasticity.attr,
+	&class_device_attr_hash_max.attr,
+	&class_device_attr_multicast_last_member_count.attr,
+	&class_device_attr_multicast_startup_query_count.attr,
+	&class_device_attr_multicast_last_member_interval.attr,
+	&class_device_attr_multicast_membership_interval.attr,
+	&class_device_attr_multicast_querier_interval.attr,
+	&class_device_attr_multicast_query_interval.attr,
+	&class_device_attr_multicast_query_response_interval.attr,
+	&class_device_attr_multicast_startup_query_interval.attr,
+#endif
 	NULL
 };
 

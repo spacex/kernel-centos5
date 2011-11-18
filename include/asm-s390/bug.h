@@ -17,6 +17,7 @@ static inline __attribute__((noreturn)) void __do_illegal_op(void)
 #define BUG() do { \
 	printk("kernel BUG at %s:%d!\n", __FILE__, __LINE__); \
 	__do_illegal_op(); \
+	unreachable(); \
 } while (0)
 
 #define HAVE_ARCH_BUG

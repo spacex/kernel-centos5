@@ -39,6 +39,7 @@
 #include <asm/syscalls.h>
 #include <asm/atomic.h>
 #include <asm/mmu.h>
+#include <asm/topology.h>
 
 struct rtas_t rtas = {
 	.lock = SPIN_LOCK_UNLOCKED
@@ -677,6 +678,7 @@ int rtas_suspend_last_cpu(struct rtas_suspend_me_data *data)
 	local_irq_save(flags);
 	atomic_inc(&data->working);
 	slb_set_size(SLB_MIN_SIZE);
+	stop_topology_update();
 	printk("Linux suspends from hypervisor at %lld "
 	       "(cpu %u (hwid%u)).\n", sched_clock(),
 	       smp_processor_id(), hard_smp_processor_id());
@@ -703,6 +705,7 @@ int rtas_suspend_last_cpu(struct rtas_suspend_me_data *data)
 	/* this cpu updated data->joined or data->error */
 	smp_wmb();
 
+	start_topology_update();
 out:
 	if (atomic_dec_return(&data->working) == 0)
 		complete(&data->done);

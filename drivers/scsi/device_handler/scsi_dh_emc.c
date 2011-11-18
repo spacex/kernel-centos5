@@ -307,7 +307,8 @@ static struct request *get_req(struct scsi_device *sdev, int cmd,
 		break;
 	}
 
-	rq->flags |= REQ_FAILFAST | REQ_BLOCK_PC;
+	rq->flags |= REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT |
+			REQ_FAILFAST_DRIVER | REQ_BLOCK_PC;
 	rq->timeout = CLARIION_TIMEOUT;
 	rq->retries = CLARIION_RETRIES;
 

@@ -1822,8 +1822,6 @@ ssize_t redirected_tty_write(struct file * file, const char __user * buf, size_t
 	return tty_write(file, buf, count, ppos);
 }
 
-static char ptychar[] = "pqrstuvwxyzabcde";
-
 /**
  *	pty_line_name	-	generate name for a pty
  *	@driver: the tty driver in use
@@ -1837,11 +1835,23 @@ static char ptychar[] = "pqrstuvwxyzabcde";
  */
 static void pty_line_name(struct tty_driver *driver, int index, char *p)
 {
+	static char ptychar[] = "pqrstuvwxyzabcde";
+
 	int i = index + driver->name_base;
-	/* ->name is initialized to "ttyp", but "tty" is expected */
+	/*
+	 * On slave, driver->name is initialized to "ttyp",
+	 *	but "tty" is expected.
+	 * The index part of the name is broken into nibbles, following
+	 * this sequence:
+	 *   The second nibble encoded with ptychar;
+	 *   The first nibble, printed in hexadecimal;
+	 *   The other nibbles, printed in hexadecimal.
+	 * This is done to preserve backward compatibility with the older
+	 * naming conventions.
+	 */
 	sprintf(p, "%s%c%x",
-			driver->subtype == PTY_TYPE_SLAVE ? "tty" : driver->name,
-			ptychar[i >> 4 & 0xf], i & 0xf);
+		driver->subtype == PTY_TYPE_SLAVE ? "tty" : driver->name,
+		ptychar[(i >> 4) & 0xf], (i & 0xf) | ((i >> 4) & ~0xf));
 }
 
 /**

@@ -842,7 +842,6 @@ struct qeth_card {
 	/* QDIO buffer handling */
 	struct qeth_qdio_info qdio;
 	struct qeth_perf_stats perf_stats;
-	int use_hard_stop;
 	int (*orig_hard_header)(struct sk_buff *,struct net_device *,
 				unsigned short,void *,void *,unsigned);
 	int (*orig_rebuild_header)(struct sk_buff *);

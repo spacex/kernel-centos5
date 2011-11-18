@@ -1,6 +1,6 @@
 /*
  * QLogic Fibre Channel HBA Driver
- * Copyright (c)  2003-2005 QLogic Corporation
+ * Copyright (c)  2003-2011 QLogic Corporation
  *
  * See LICENSE.qla2xxx for copyright and licensing details.
  */
@@ -258,6 +258,7 @@ struct qla_fc_msg {
 #define QLFC_LOOPBACK_DATA	0x06
 #define QLFC_IIDMA		0x07
 #define QLFC_FCP_PRIO_CFG_CMD	0x08
+#define QLFC_DIAG_MODE          0x09
 
 	uint32_t error; /* interface or resource error holder*/
 
@@ -285,6 +286,9 @@ struct qla_fc_msg {
 		struct qla_port_param port_param;
 
 		struct qla_fcp_prio_param fcp_prio_param;
+		uint32_t diag_mode;
+#define 	QLFC_RESET_DIAG_MODE	0x0
+#define		QLFC_SET_DIAG_MODE	0x1
 	} u;
 } __attribute__ ((aligned (sizeof(uint64_t))));
 	

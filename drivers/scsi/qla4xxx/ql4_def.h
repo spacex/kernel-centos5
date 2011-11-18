@@ -133,6 +133,8 @@
 #define ISCSI_ALIAS_SIZE		32	/* ISCSI Alais name size */
 #define ISCSI_NAME_SIZE			0xE0	/* ISCSI Name size -
 						 * usually a string */
+#define QL4_SESS_RECOVERY_TMO		30	/* iSCSI session */
+						/* recovery timeout */
 
 #define MAX_LINKED_CMDS_PER_LUN		3
 #define MAX_REQS_SERVICED_PER_INTR	1
@@ -157,6 +159,7 @@
 #define LOGOUT_TOV			10
 #define IOCB_TOV_MARGIN			10
 #define RELOGIN_TOV			18
+#define HBA_ONLINE_TOV			30
 #define ISNS_DEREG_TOV			5
 
 #define MAX_RESET_HA_RETRIES		2
@@ -377,7 +380,7 @@ struct scsi_qla_host {
 #define AF_INTx_ENABLED			15 /* 0x000080000 */
 #define AF_MSI_ENABLED			16 /* 0x00010000 */
 #define AF_MSIX_ENABLED			17 /* 0x00020000 */
-#define AF_HBA_GOING_AWAY		18 /* 0x00040000 */
+#define AF_HA_REMOVAL			18 /* 0x00040000 */
 #define AF_MBOX_COMMAND_NOPOLL		19 /* 0x00080000 */
 #define AF_PROBE_DONE			20 /* 0x00100000 */
 #define AF_FW_RECOVERY			21 /* 0x00200000 */
@@ -587,7 +590,7 @@ struct scsi_qla_host {
 	 * Include structures now for IOCTL module compatibility */
 	uint16_t ifcb_size;
 
-	/* NetXen (NX3031) specific fields */
+	/* qla4_8xxx specific fields */
 	struct device_reg_82xx  __iomem *qla4_8xxx_reg; /* Base I/O address */
 	unsigned long nx_pcibase;       /* Base I/O address */
 	uint8_t *nx_db_rd_ptr;         /* Doorbell read pointer */
@@ -737,20 +740,6 @@ static inline void __iomem *isp_gp_out(struct scsi_qla_host *ha)
 	return is_qla4010(ha) ?
 		&ha->reg->u2.isp4010.gp_out :
 		&ha->reg->u2.isp4022.p0.gp_out;
-}
-
-static inline void __iomem *isp_probe_mux_addr(struct scsi_qla_host *ha)
-{
-	return is_qla4010(ha) ?
-		&ha->reg->u2.isp4010.probe_mux_addr :
-		&ha->reg->u2.isp4022.p0.probe_mux_addr;
-}
-
-static inline void __iomem *isp_probe_mux_data(struct scsi_qla_host *ha)
-{
-	return is_qla4010(ha) ?
-		&ha->reg->u2.isp4010.probe_mux_data :
-		&ha->reg->u2.isp4022.p0.probe_mux_data;
 }
 
 static inline int eeprom_ext_hw_conf_offset(struct scsi_qla_host *ha)

@@ -317,6 +317,7 @@ static ssize_t nfs_direct_read_schedule(struct nfs_direct_req *dreq, unsigned lo
 		data->args.pgbase = pgbase;
 		data->args.pages = data->pagevec;
 		data->args.count = bytes;
+		nfs_fattr_init(&data->fattr);
 		data->res.fattr = &data->fattr;
 		data->res.eof = 0;
 		data->res.count = bytes;
@@ -452,27 +453,34 @@ static void nfs_direct_write_reschedule(struct nfs_direct_req *dreq)
 static void nfs_direct_commit_result(struct rpc_task *task, void *calldata)
 {
 	struct nfs_write_data *data = calldata;
-	struct nfs_direct_req *dreq = (struct nfs_direct_req *) data->req;
 
 	/* Call the NFS version-specific code */
-	if (NFS_PROTO(data->inode)->commit_done(task, data) != 0)
-		return;
-	if (unlikely(task->tk_status < 0)) {
+	NFS_PROTO(data->inode)->commit_done(task, data);
+}
+
+static void nfs_direct_commit_release(void *calldata)
+{
+	struct nfs_write_data *data = calldata;
+	struct nfs_direct_req *dreq = (struct nfs_direct_req *) data->req;
+	int status = data->task.tk_status;
+
+	if (status < 0) {
 		dprintk("NFS: %5u commit failed with error %d.\n",
-				task->tk_pid, task->tk_status);
+				data->task.tk_pid, status);
 		dreq->flags = NFS_ODIRECT_RESCHED_WRITES;
 	} else if (memcmp(&dreq->verf, &data->verf, sizeof(data->verf))) {
-		dprintk("NFS: %5u commit verify failed\n", task->tk_pid);
+		dprintk("NFS: %5u commit verify failed\n", data->task.tk_pid);
 		dreq->flags = NFS_ODIRECT_RESCHED_WRITES;
 	}
 
-	dprintk("NFS: %5u commit returned %d\n", task->tk_pid, task->tk_status);
+	dprintk("NFS: %5u commit returned %d\n", data->task.tk_pid, status);
 	nfs_direct_write_complete(dreq, data->inode);
+	nfs_commitdata_release(calldata);
 }
 
 static const struct rpc_call_ops nfs_commit_direct_ops = {
 	.rpc_call_done = nfs_direct_commit_result,
-	.rpc_release = nfs_commit_release,
+	.rpc_release = nfs_direct_commit_release,
 };
 
 static void nfs_direct_commit_schedule(struct nfs_direct_req *dreq)
@@ -490,6 +498,7 @@ static void nfs_direct_commit_schedule(struct nfs_direct_req *dreq)
 	data->res.count = 0;
 	data->res.fattr = &data->fattr;
 	data->res.verf = &data->verf;
+	nfs_fattr_init(&data->fattr);
 
 	rpc_init_task_wq(&data->task, NFS_CLIENT(dreq->inode), RPC_TASK_ASYNC,
 				&nfs_commit_direct_ops, data, nfsiod_workqueue);
@@ -530,7 +539,7 @@ static void nfs_direct_write_complete(struct nfs_direct_req *dreq, struct inode 
 
 static void nfs_alloc_commit_data(struct nfs_direct_req *dreq)
 {
-	dreq->commit_data = nfs_commit_alloc();
+	dreq->commit_data = nfs_commitdata_alloc();
 	if (dreq->commit_data != NULL)
 		dreq->commit_data->req = (struct nfs_page *) dreq;
 }
@@ -551,19 +560,28 @@ static void nfs_direct_write_complete(struct nfs_direct_req *dreq, struct inode 
 static void nfs_direct_write_result(struct rpc_task *task, void *calldata)
 {
 	struct nfs_write_data *data = calldata;
-	struct nfs_direct_req *dreq = (struct nfs_direct_req *) data->req;
-	int status = task->tk_status;
 
 	if (nfs_writeback_done(task, data) != 0)
 		return;
+}
+
+/*
+ * NB: Return the value of the first error return code.  Subsequent
+ *     errors after the first one are ignored.
+ */
+static void nfs_direct_write_release(void *calldata)
+{
+	struct nfs_write_data *data = calldata;
+	struct nfs_direct_req *dreq = (struct nfs_direct_req *) data->req;
+	int status = data->task.tk_status;
 
 	spin_lock(&dreq->lock);
 
-	if (unlikely(status < 0) || unlikely(task->tk_status < 0)) {
+	if (unlikely(status < 0)) {
 		/* An error has occured, so we should not commit */
 		dreq->flags = 0;
 		/* Use the first error */
-		dreq->error = ((status < 0) ? status : task->tk_status);
+		dreq->error = status;
 	}
 	if (unlikely(dreq->error != 0))
 		goto out_unlock;
@@ -578,23 +596,13 @@ static void nfs_direct_write_result(struct rpc_task *task, void *calldata)
 				break;
 			case NFS_ODIRECT_DO_COMMIT:
 				if (memcmp(&dreq->verf, &data->verf, sizeof(dreq->verf))) {
-					dprintk("NFS: %5u write verify failed\n", task->tk_pid);
+					dprintk("NFS: %5u write verify failed\n", data->task.tk_pid);
 					dreq->flags = NFS_ODIRECT_RESCHED_WRITES;
 				}
 		}
 	}
 out_unlock:
 	spin_unlock(&dreq->lock);
-}
-
-/*
- * NB: Return the value of the first error return code.  Subsequent
- *     errors after the first one are ignored.
- */
-static void nfs_direct_write_release(void *calldata)
-{
-	struct nfs_write_data *data = calldata;
-	struct nfs_direct_req *dreq = (struct nfs_direct_req *) data->req;
 
 	if (put_dreq(dreq))
 		nfs_direct_write_complete(dreq, data->inode);
@@ -663,6 +671,7 @@ static ssize_t nfs_direct_write_schedule(struct nfs_direct_req *dreq, unsigned l
 		data->args.pgbase = pgbase;
 		data->args.pages = data->pagevec;
 		data->args.count = bytes;
+		nfs_fattr_init(&data->fattr);
 		data->res.fattr = &data->fattr;
 		data->res.count = bytes;
 		data->res.verf = &data->verf;

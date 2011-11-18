@@ -2,6 +2,7 @@
 #define _I386_PGTABLE_3LEVEL_H
 
 #include <asm-generic/pgtable-nopud.h>
+#include <linux/sched.h>
 
 /*
  * Intel Physical Address Extension (PAE) Mode - three-level page
@@ -114,9 +115,12 @@ static inline void pud_clear (pud_t * pud) { }
  */
 static inline void pte_clear(struct mm_struct *mm, unsigned long addr, pte_t *ptep)
 {
-	ptep->pte_low = 0;
-	smp_wmb();
-	ptep->pte_high = 0;
+	if ((mm != current->mm && mm != &init_mm)
+	    || HYPERVISOR_update_va_mapping(addr, __pte(0), 0)) {
+		ptep->pte_low = 0;
+		smp_wmb();
+		ptep->pte_high = 0;
+	}
 }
 
 #define pmd_clear(xp)	do { set_pmd(xp, __pmd(0)); } while (0)

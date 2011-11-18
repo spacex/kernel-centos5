@@ -33,7 +33,7 @@ void generic_fillattr(struct inode *inode, struct kstat *stat)
 	stat->ctime = inode->i_ctime;
 	stat->size = i_size_read(inode);
 	stat->blocks = inode->i_blocks;
-	stat->blksize = PAGE_CACHE_SIZE;
+	stat->blksize = (1 << inode->i_blkbits);
 }
 
 EXPORT_SYMBOL(generic_fillattr);

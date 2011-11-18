@@ -132,6 +132,34 @@ static void __pollwait(struct file *filp, wait_queue_head_t *wait_address,
 	add_wait_queue(wait_address,&entry->wait);
 }
 
+/**
+ * poll_select_set_timeout - helper function to setup the timeout value
+ * @to:                pointer to timespec variable for the final timeout
+ * @sec:       seconds (from user space)
+ * @nsec:      nanoseconds (from user space)
+ *
+ * Note, we do not use a timespec for the user space value here, That
+ * way we can use the function for timeval and compat interfaces as well.
+ *
+ * Returns -EINVAL if sec/nsec are not normalized. Otherwise 0.
+ */
+int poll_select_set_timeout(struct timespec *to, long sec, long nsec)
+{
+       struct timespec ts = {.tv_sec = sec, .tv_nsec = nsec};
+
+       if (!timespec_valid(&ts))
+               return -EINVAL;
+
+       /* Optimize for the zero timeout value here */
+       if (!sec && !nsec) {
+               to->tv_sec = to->tv_nsec = 0;
+       } else {
+               ktime_get_ts(to);
+               *to = timespec_add_safe(*to, ts);
+       }
+       return 0;
+}
+
 #define FDS_IN(fds, n)		(fds->in + n)
 #define FDS_OUT(fds, n)		(fds->out + n)
 #define FDS_EX(fds, n)		(fds->ex + n)
@@ -400,7 +428,7 @@ asmlinkage long sys_select(int n, fd_set __user *inp, fd_set __user *outp,
 			timeout = -1;	/* infinite */
 		else {
 			timeout = ROUND_UP(tv.tv_usec, USEC_PER_SEC/HZ);
-			timeout += tv.tv_sec * HZ;
+			timeout += (s64)tv.tv_sec * HZ;
 		}
 	}
 
@@ -455,7 +483,7 @@ asmlinkage long sys_pselect7(int n, fd_set __user *inp, fd_set __user *outp,
 			timeout = -1;	/* infinite */
 		else {
 			timeout = ROUND_UP(ts.tv_nsec, NSEC_PER_SEC/HZ);
-			timeout += ts.tv_sec * HZ;
+			timeout += (s64)ts.tv_sec * HZ;
 		}
 	}
 
@@ -777,7 +805,7 @@ asmlinkage long sys_ppoll(struct pollfd __user *ufds, unsigned int nfds,
 			timeout = -1;	/* infinite */
 		else {
 			timeout = ROUND_UP(ts.tv_nsec, NSEC_PER_SEC/HZ);
-			timeout += ts.tv_sec * HZ;
+			timeout += (s64)ts.tv_sec * HZ;
 		}
 	}
 

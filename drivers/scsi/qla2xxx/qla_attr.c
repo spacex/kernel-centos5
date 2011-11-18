@@ -1,6 +1,6 @@
 /*
  * QLogic Fibre Channel HBA Driver
- * Copyright (c)  2003-2005 QLogic Corporation
+ * Copyright (c)  2003-2011 QLogic Corporation
  *
  * See LICENSE.qla2xxx for copyright and licensing details.
  */
@@ -1925,6 +1925,33 @@ qla2x00_fw_state_show(struct class_device *cdev, char *buf)
 	return snprintf(buf, PAGE_SIZE, "0x%x 0x%x 0x%x 0x%x 0x%x\n", state[0],
 	    state[1], state[2], state[3], state[4]);
 }
+
+static ssize_t
+qla2x00_thermal_temp_show(struct class_device *cdev, char *buf)
+{
+	scsi_qla_host_t *ha = to_qla_host(class_to_shost(cdev));
+	scsi_qla_host_t *pha = to_qla_parent(ha);
+	int rval = QLA_FUNCTION_FAILED;
+	uint16_t temp, frac;
+
+	if (!pha->flags.thermal_supported)
+		return snprintf(buf, PAGE_SIZE, "\n");
+
+	temp = frac = 0;
+	if (test_bit(ABORT_ISP_ACTIVE, &pha->dpc_flags) ||
+			test_bit(ISP_ABORT_NEEDED, &pha->dpc_flags))
+		DEBUG2_3_11(printk(KERN_WARNING
+					"%s(%ld): isp reset in progress.\n",
+					__func__, ha->host_no));
+	else if (!ha->flags.eeh_busy)
+		rval = qla2x00_get_thermal_temp(pha, &temp, &frac);
+	if (rval != QLA_SUCCESS)
+		temp = frac = 0;
+
+	return snprintf(buf, PAGE_SIZE, "%d.%02d\n", temp, frac);
+}
+
+
 static CLASS_DEVICE_ATTR(driver_version, S_IRUGO, qla2x00_drvr_version_show,
 	NULL);
 static CLASS_DEVICE_ATTR(fw_version, S_IRUGO, qla2x00_fw_version_show, NULL);
@@ -1986,6 +2013,8 @@ static CLASS_DEVICE_ATTR(fabric_param, S_IRUGO,
                    qla2x00_fabric_param_show, NULL);
 static CLASS_DEVICE_ATTR(fw_state, S_IRUGO,
                    qla2x00_fw_state_show, NULL);
+static CLASS_DEVICE_ATTR(thermal_temp, S_IRUGO,
+			qla2x00_thermal_temp_show, NULL);
 
 
 struct class_device_attribute *qla2x00_host_attrs[] = {
@@ -2007,6 +2036,7 @@ struct class_device_attribute *qla2x00_host_attrs[] = {
 	&class_device_attr_optrom_fw_version,
 	&class_device_attr_total_isp_aborts,
 	&class_device_attr_fw_state,
+	&class_device_attr_thermal_temp,
 	NULL,
 };
 
@@ -2216,14 +2246,6 @@ qla2x00_dev_loss_tmo_callbk(struct fc_rport *rport)
 		return;
 
 	ha = to_qla_parent(fcport->ha);
-	if (test_bit(ABORT_ISP_ACTIVE, &ha->dpc_flags)) {
-		return ;
-	}
-
-	if (unlikely(pci_channel_offline(fcport->ha->pdev))) {
-		qla2x00_abort_all_cmds(fcport->ha, DID_NO_CONNECT << 16);
-		return;
-	}
 
 	/*
 	 * At this point all fcport's software-states are cleared.  Perform any
@@ -2242,9 +2264,18 @@ qla2x00_dev_loss_tmo_callbk(struct fc_rport *rport)
 	 * all local references.
 	 */
 	spin_lock_irq(host->host_lock);
-	fcport->rport = NULL;
+	fcport->rport = fcport->drport = NULL;
 	*((fc_port_t **)rport->dd_data) = NULL;
 	spin_unlock_irq(host->host_lock);
+
+	if (test_bit(ABORT_ISP_ACTIVE, &ha->dpc_flags)) {
+		return ;
+	}
+
+	if (unlikely(pci_channel_offline(fcport->ha->pdev))) {
+		qla2x00_abort_all_cmds(fcport->ha, DID_NO_CONNECT << 16);
+		return;
+	}
 }
 
 static void
@@ -2255,6 +2286,10 @@ qla2x00_terminate_rport_io(struct fc_rport *rport)
 
 	if (!fcport)
 		return;
+
+	/* Now that the rport has been deleted, set the fcport state to
+		FCS_DEVICE_DEAD */
+	atomic_set(&fcport->state, FCS_DEVICE_DEAD);
 
 	ha = to_qla_parent(fcport->ha);
 	if (test_bit(ABORT_ISP_ACTIVE, &ha->dpc_flags)) {

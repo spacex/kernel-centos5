@@ -120,6 +120,9 @@
 #include <linux/dmaengine.h>
 #include <linux/err.h>
 #include <linux/ctype.h>
+#ifndef __GENKSYMS__
+#include <linux/if_vlan.h>
+#endif
 #include <trace/napi.h>
 #include <trace/net.h>
 
@@ -1090,6 +1093,7 @@ int call_netdevice_notifiers(unsigned long val, void *v)
 {
 	return raw_notifier_call_chain(&netdev_chain, val, v);
 }
+EXPORT_SYMBOL(call_netdevice_notifiers);
 
 /* When > 0 there are consumers of rx skb time stamps */
 static atomic_t netstamp_needed = ATOMIC_INIT(0);
@@ -3362,6 +3366,9 @@ void dev_disable_lro(struct net_device *dev)
 	struct netdev_lro_entry *entry;
 	int rc;
 
+	if (is_vlan_dev(dev))
+		dev = vlan_dev_real_dev(dev);
+
 	entry = find_lro_entry(dev);
 	if (entry) {
 		rc = entry->func(dev);
@@ -3435,14 +3442,11 @@ EXPORT_SYMBOL(unregister_lro_netdev);
 static int dev_boot_phase = 1;
 
 /* Delayed registration/unregisteration */
-static DEFINE_SPINLOCK(net_todo_list_lock);
 static struct list_head net_todo_list = LIST_HEAD_INIT(net_todo_list);
 
 static inline void net_set_todo(struct net_device *dev)
 {
-	spin_lock(&net_todo_list_lock);
 	list_add_tail(&dev->todo_list, &net_todo_list);
-	spin_unlock(&net_todo_list_lock);
 }
 
 unsigned long netdev_fix_features(unsigned long features, const char *name)
@@ -3714,33 +3718,24 @@ static void netdev_wait_allrefs(struct net_device *dev)
  *	free_netdev(y1);
  *	free_netdev(y2);
  *
- * We are invoked by rtnl_unlock() after it drops the semaphore.
+ * We are invoked by rtnl_unlock().
  * This allows us to deal with problems:
  * 1) We can delete sysfs objects which invoke hotplug
  *    without deadlocking with linkwatch via keventd.
  * 2) Since we run with the RTNL semaphore not held, we can sleep
  *    safely in order to wait for the netdev refcnt to drop to zero.
+ *
+ * We must not return until all unregister events added during
+ * the interval the lock was held have been completed.
  */
-static DEFINE_MUTEX(net_todo_run_mutex);
 void netdev_run_todo(void)
 {
 	struct list_head list;
 
-	/* Need to guard against multiple cpu's getting out of order. */
-	mutex_lock(&net_todo_run_mutex);
-
-	/* Not safe to do outside the semaphore.  We must not return
-	 * until all unregister events invoked by the local processor
-	 * have been completed (either by this todo run, or one on
-	 * another cpu).
-	 */
-	if (list_empty(&net_todo_list))
-		goto out;
-
 	/* Snapshot list, allow later requests */
-	spin_lock(&net_todo_list_lock);
 	list_replace_init(&net_todo_list, &list);
-	spin_unlock(&net_todo_list_lock);
+
+	__rtnl_unlock();
 
 	while (!list_empty(&list)) {
 		struct net_device *dev
@@ -3770,9 +3765,6 @@ void netdev_run_todo(void)
 		/* Free network device */
 		class_device_put(&dev->class_dev);
 	}
-
-out:
-	mutex_unlock(&net_todo_run_mutex);
 }
 
 /**

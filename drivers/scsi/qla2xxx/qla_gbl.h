@@ -1,6 +1,6 @@
 /*
  * QLogic Fibre Channel HBA Driver
- * Copyright (c)  2003-2005 QLogic Corporation
+ * Copyright (c)  2003-2011 QLogic Corporation
  *
  * See LICENSE.qla2xxx for copyright and licensing details.
  */
@@ -36,6 +36,7 @@ extern int qla2x00_load_risc(struct scsi_qla_host *, uint32_t *);
 extern int qla24xx_load_risc(scsi_qla_host_t *, uint32_t *);
 extern int qla81xx_load_risc(scsi_qla_host_t *, uint32_t *);
 
+extern int qla2x00_perform_loop_resync(scsi_qla_host_t *);
 extern int qla2x00_loop_resync(scsi_qla_host_t *);
 
 extern int qla2x00_fabric_login(scsi_qla_host_t *, fc_port_t *, uint16_t *);
@@ -47,6 +48,7 @@ extern void qla2x00_update_fcports(scsi_qla_host_t *);
 
 extern int qla2x00_abort_isp(scsi_qla_host_t *);
 extern void qla2x00_abort_isp_cleanup(scsi_qla_host_t *);
+extern void qla82xx_quiescent_state_cleanup(scsi_qla_host_t *);
 
 extern int qla24xx_update_fcport_fcp_prio(scsi_qla_host_t *, fc_port_t *);
 extern int qla24xx_update_all_fcp_prio(scsi_qla_host_t *);
@@ -54,6 +56,8 @@ extern void qla2x00_update_fcport(scsi_qla_host_t *, fc_port_t *);
 
 extern void qla2x00_alloc_fw_dump(scsi_qla_host_t *);
 extern void qla2x00_try_to_stop_firmware(scsi_qla_host_t *);
+
+extern int qla2x00_get_thermal_temp(scsi_qla_host_t *, uint16_t *, uint16_t *);
 
 extern void qla84xx_put_chip(struct scsi_qla_host *);
 
@@ -84,6 +88,7 @@ extern int num_hosts;
 extern int ql2xshiftctondsd;
 extern int ql2xdbwr;
 extern int ql2xdontresethba;
+extern int ql2xsetdevstate;
 
 extern int qla2x00_loop_reset(scsi_qla_host_t *);
 extern void qla2x00_abort_all_cmds(scsi_qla_host_t *, int);
@@ -126,6 +131,7 @@ extern struct fw_blob *qla2x00_request_firmware(scsi_qla_host_t *);
 extern int qla2x00_wait_for_hba_online(scsi_qla_host_t *);
 extern int qla2x00_wait_for_chip_reset(scsi_qla_host_t *);
 extern int qla2x00_wait_for_fcoe_ctx_reset(scsi_qla_host_t *);
+extern void qla82xx_chip_reset_cleanup(scsi_qla_host_t *);
 
 extern void qla2xxx_wake_dpc(scsi_qla_host_t *);
 extern void qla2x00_alert_all_vps(scsi_qla_host_t *, uint16_t *);
@@ -495,9 +501,11 @@ extern int qla82xx_rom_fast_read(scsi_qla_host_t *, int , int*);
 
 /* ISP 8021 IDC */
 extern void qla82xx_clear_drv_active(scsi_qla_host_t *);
+extern uint32_t  qla82xx_wait_for_state_change(scsi_qla_host_t *, uint32_t);
 extern int qla82xx_idc_lock(scsi_qla_host_t *);
 extern void qla82xx_idc_unlock(scsi_qla_host_t *);
 extern int qla82xx_device_state_handler(scsi_qla_host_t *);
+extern void qla82xx_clear_qsnt_ready(scsi_qla_host_t *);
 
 extern void qla2x00_set_model_info(scsi_qla_host_t *, uint8_t *,
     size_t, char *);

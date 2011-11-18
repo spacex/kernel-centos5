@@ -4,6 +4,8 @@
 
 obj-$(CONFIG_BRIDGE_NF_EBTABLES) += ebtables.o
 
+ebtables-y	:= ebtables_export.o ebtables_private.o
+
 # tables
 obj-$(CONFIG_BRIDGE_EBT_BROUTE) += ebtable_broute.o
 obj-$(CONFIG_BRIDGE_EBT_T_FILTER) += ebtable_filter.o

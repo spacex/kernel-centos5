@@ -114,8 +114,16 @@ static int netbk_set_tso(struct net_device *dev, u32 data)
 	return ethtool_op_set_tso(dev, data);
 }
 
+static void get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *info)
+{
+	strcpy(info->driver, "netbk");
+	strcpy(info->bus_info, dev->class_dev.dev->bus_id);
+}
+
 static struct ethtool_ops network_ethtool_ops =
 {
+	.get_drvinfo = get_drvinfo,
+
 	.get_tx_csum = ethtool_op_get_tx_csum,
 	.set_tx_csum = ethtool_op_set_tx_csum,
 	.get_sg = ethtool_op_get_sg,
@@ -125,7 +133,7 @@ static struct ethtool_ops network_ethtool_ops =
 	.get_link = ethtool_op_get_link,
 };
 
-netif_t *netif_alloc(domid_t domid, unsigned int handle)
+netif_t *netif_alloc(struct device *parent, domid_t domid, unsigned int handle)
 {
 	int err = 0, i;
 	struct net_device *dev;
@@ -138,6 +146,8 @@ netif_t *netif_alloc(domid_t domid, unsigned int handle)
 		DPRINTK("Could not create netif: out of memory\n");
 		return ERR_PTR(-ENOMEM);
 	}
+
+	SET_NETDEV_DEV(dev, parent);
 
 	netif_carrier_off(dev);
 

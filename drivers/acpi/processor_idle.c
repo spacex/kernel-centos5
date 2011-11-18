@@ -277,8 +277,10 @@ static void acpi_processor_idle_simple(void)
 	 * Invoke the current Cx state to put the processor to sleep.
 	 */
 	if (cx->type == ACPI_STATE_C2 || cx->type == ACPI_STATE_C3) {
-		current_thread_info()->status &= ~TS_POLLING;
-		smp_mb__after_clear_bit();
+		if (cx->space_id != ACPI_CSTATE_FFH) {
+			current_thread_info()->status &= ~TS_POLLING;
+			smp_mb__after_clear_bit();
+		}
 		if (need_resched()) {
 			current_thread_info()->status |= TS_POLLING;
 			local_irq_enable();
@@ -551,8 +553,10 @@ static void acpi_processor_idle_bm(void)
 	 * Invoke the current Cx state to put the processor to sleep.
 	 */
 	if (cx->type == ACPI_STATE_C2 || cx->type == ACPI_STATE_C3) {
-		current_thread_info()->status &= ~TS_POLLING;
-		smp_mb__after_clear_bit();
+		if (cx->space_id != ACPI_CSTATE_FFH) {
+			current_thread_info()->status &= ~TS_POLLING;
+			smp_mb__after_clear_bit();
+		}
 		if (need_resched()) {
 			current_thread_info()->status |= TS_POLLING;
 			local_irq_enable();

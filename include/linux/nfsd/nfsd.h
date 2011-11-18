@@ -40,6 +40,8 @@
 #define MAY_LOCK		32
 #define MAY_OWNER_OVERRIDE	64
 #define	MAY_LOCAL_ACCESS	128 /* IRIX doing local access check on device special file*/
+#define MAY_BYPASS_GSS_ON_ROOT 256
+
 #if (MAY_SATTR | MAY_TRUNC | MAY_LOCK | MAY_OWNER_OVERRIDE | MAY_LOCAL_ACCESS) & (MAY_READ | MAY_WRITE | MAY_EXEC)
 # error "please use a different value for MAY_SATTR or MAY_TRUNC or MAY_LOCK or MAY_LOCAL_ACCESS or MAY_OWNER_OVERRIDE."
 #endif
@@ -122,7 +124,7 @@ int		nfsd_truncate(struct svc_rqst *, struct svc_fh *,
 int		nfsd_readdir(struct svc_rqst *, struct svc_fh *,
 			     loff_t *, struct readdir_cd *, encode_dent_fn);
 int		nfsd_statfs(struct svc_rqst *, struct svc_fh *,
-				struct kstatfs *);
+				struct kstatfs *, int access);
 
 int		nfsd_notify_change(struct inode *, struct iattr *);
 int		nfsd_permission(struct svc_rqst *, struct svc_export *,

@@ -35,8 +35,8 @@
 #include "util.h"
 #include "glops.h"
 
-static void gfs2_page_add_databufs(struct gfs2_inode *ip, struct page *page,
-				   unsigned int from, unsigned int to)
+void gfs2_page_add_databufs(struct gfs2_inode *ip, struct page *page,
+			    unsigned int from, unsigned int to)
 {
 	struct buffer_head *head = page_buffers(page);
 	unsigned int bsize = head->b_size;
@@ -584,7 +584,7 @@ static int gfs2_write_lock_start(struct gfs2_inode *ip, struct page *page,
 	struct gfs2_sbd *sdp = GFS2_SB(&ip->i_inode);
 	struct gfs2_inode *m_ip = GFS2_I(sdp->sd_statfs_inode);
 	unsigned int data_blocks, ind_blocks, rblocks;
-	struct gfs2_alloc *al;
+	struct gfs2_alloc *al = NULL;
 	int ret;
 
 	if (gfs2_glock_is_locked_by_me(ip->i_gl))
@@ -636,6 +636,8 @@ static int gfs2_write_lock_start(struct gfs2_inode *ip, struct page *page,
 		rblocks += RES_STATFS + RES_QUOTA;
 	if (&ip->i_inode == sdp->sd_rindex)
 		rblocks += 2 * RES_STATFS;
+	if (al)
+		rblocks += gfs2_rg_blocks(al);
 
 	ret = gfs2_trans_begin(sdp, rblocks, PAGE_CACHE_SIZE/sdp->sd_sb.sb_bsize);
 	if (ret)
@@ -687,7 +689,7 @@ int gfs2_write_begin(struct file *file, struct address_space *mapping,
 	unsigned int data_blocks, ind_blocks, rblocks;
 	int alloc_required;
 	int error = 0;
-	struct gfs2_alloc *al;
+	struct gfs2_alloc *al = NULL;
 	pgoff_t index = pos >> PAGE_CACHE_SHIFT;
 	unsigned from = pos & (PAGE_CACHE_SIZE - 1);
 	unsigned to = from + len;
@@ -739,6 +741,8 @@ int gfs2_write_begin(struct file *file, struct address_space *mapping,
 		rblocks += RES_STATFS + RES_QUOTA;
 	if (&ip->i_inode == sdp->sd_rindex)
 		rblocks += 2 * RES_STATFS;
+	if (al)
+		rblocks += gfs2_rg_blocks(al);
 
 	error = gfs2_trans_begin(sdp, rblocks,
 				 PAGE_CACHE_SIZE/sdp->sd_sb.sb_bsize);
@@ -770,6 +774,7 @@ out:
 	if (error == 0)
 		return 0;
 
+	unlock_page(page);
 	page_cache_release(page);
 	if (pos + len > ip->i_inode.i_size)
 		vmtruncate(&ip->i_inode, ip->i_inode.i_size);

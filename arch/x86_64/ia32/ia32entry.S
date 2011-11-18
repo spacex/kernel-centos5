@@ -738,4 +738,17 @@ ia32_sys_call_table:
 	.quad quiet_ni_syscall		/* sys_timerfd_create */
 	.quad sys_eventfd		/* sys_eventd */
 	.quad sys32_fallocate
+	.quad quiet_ni_syscall		/* 325 */
+	.quad quiet_ni_syscall
+	.quad quiet_ni_syscall
+	.quad quiet_ni_syscall
+	.quad quiet_ni_syscall
+	.quad quiet_ni_syscall		/* 330 */
+	.quad quiet_ni_syscall
+	.quad quiet_ni_syscall
+	.quad quiet_ni_syscall
+	.quad quiet_ni_syscall
+	.quad quiet_ni_syscall		/* 335 */
+	.quad quiet_ni_syscall
+	.quad compat_sys_recvmmsg
 ia32_syscall_end:		

@@ -43,28 +43,12 @@ char  empty_zero_page[PAGE_SIZE] __attribute__((__aligned__(PAGE_SIZE)));
 
 void diag10(unsigned long addr)
 {
-        if (addr >= 0x7ff00000)
-                return;
-#ifdef CONFIG_64BIT
-        asm volatile (
-		"   sam31\n"
-		"   diag %0,%0,0x10\n"
-		"0: sam64\n"
-		".section __ex_table,\"a\"\n"
-		"   .align 8\n"
-		"   .quad 0b, 0b\n"
-		".previous\n"
+	asm volatile(
+		"0:	diag	%0,%0,0x10\n"
+		"1:\n"
+		EX_TABLE(0b, 1b)
+		EX_TABLE(1b, 1b)
 		: : "a" (addr));
-#else
-        asm volatile (
-		"   diag %0,%0,0x10\n"
-		"0:\n"
-		".section __ex_table,\"a\"\n"
-		"   .align 4\n"
-		"   .long 0b, 0b\n"
-		".previous\n"
-		: : "a" (addr));
-#endif
 }
 
 void show_mem(void)

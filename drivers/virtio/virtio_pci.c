@@ -192,7 +192,7 @@ static irqreturn_t vp_interrupt(int irq, void *opaque, struct pt_regs *regs)
 		drv = container_of(vp_dev->vdev.dev.driver,
 				   struct virtio_driver, driver);
 
-		if (drv->config_changed)
+		if (drv && drv->config_changed)
 			drv->config_changed(&vp_dev->vdev);
 	}
 
@@ -332,15 +332,10 @@ static struct virtio_config_ops virtio_pci_config_ops = {
 
 static void virtio_pci_release_dev(struct device *_d)
 {
-	struct virtio_device *dev = container_of(_d, struct virtio_device, dev);
+	struct virtio_device *dev = container_of(_d, struct virtio_device,
+						 dev);
 	struct virtio_pci_device *vp_dev = to_vp_device(dev);
-	struct pci_dev *pci_dev = vp_dev->pci_dev;
 
-	free_irq(pci_dev->irq, vp_dev);
-	pci_set_drvdata(pci_dev, NULL);
-	pci_iounmap(pci_dev, vp_dev->ioaddr);
-	pci_release_regions(pci_dev);
-	pci_disable_device(pci_dev);
 	kfree(vp_dev);
 }
 
@@ -431,6 +426,12 @@ static void __devexit virtio_pci_remove(struct pci_dev *pci_dev)
 	struct virtio_pci_device *vp_dev = pci_get_drvdata(pci_dev);
 
 	unregister_virtio_device(&vp_dev->vdev);
+
+	free_irq(pci_dev->irq, vp_dev);
+	pci_set_drvdata(pci_dev, NULL);
+	pci_iounmap(pci_dev, vp_dev->ioaddr);
+	pci_release_regions(pci_dev);
+	pci_disable_device(pci_dev);
 }
 
 #ifdef CONFIG_PM

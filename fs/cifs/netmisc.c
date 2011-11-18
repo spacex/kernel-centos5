@@ -61,6 +61,7 @@ static const struct smb_to_posix_error mapping_table_ERRDOS[] = {
 	{ERRremcd, -EACCES},
 	{ERRdiffdevice, -EXDEV},
 	{ERRnofiles, -ENOENT},
+	{ERRwriteprot, -EROFS},
 	{ERRbadshare, -ETXTBSY},
 	{ERRlock, -EACCES},
 	{ERRunsup, -EINVAL},
@@ -898,14 +899,14 @@ unsigned int
 smbCalcSize(struct smb_hdr *ptr)
 {
 	return (sizeof(struct smb_hdr) + (2 * ptr->WordCount) +
-		2 /* size of the bcc field */ + BCC(ptr));
+		2 /* size of the bcc field */ + get_bcc(ptr));
 }
 
 unsigned int
 smbCalcSize_LE(struct smb_hdr *ptr)
 {
 	return (sizeof(struct smb_hdr) + (2 * ptr->WordCount) +
-		2 /* size of the bcc field */ + le16_to_cpu(BCC_LE(ptr)));
+		2 /* size of the bcc field */ + get_bcc_le(ptr));
 }
 
 /* The following are taken from fs/ntfs/util.c */

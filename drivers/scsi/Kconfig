@@ -170,6 +170,14 @@ config CHR_DEV_SCH
 	  <file:Documentation/scsi.txt>. The module will be called ch.o.
 	  If unsure, say N.
 	
+config SCSI_ENCLOSURE
+	tristate "SCSI Enclosure Support"
+	depends on SCSI && ENCLOSURE_SERVICES
+	help
+	  Enclosures are devices sitting on or in SCSI backplanes that
+	  manage devices.  If you have a disk cage, the chances are that
+	  it has an enclosure device.  Selecting this option will just allow
+	  certain enclosure conditions to be reported and is not required.
 
 comment "Some SCSI devices (e.g. CD jukebox) support multiple LUNs"
 	depends on SCSI
@@ -334,7 +342,7 @@ config ISCSI_TCP
 
 	 http://linux-iscsi.sf.net
 
-source "drivers/scsi/cxgb3i/Kconfig"
+source "drivers/scsi/cxgbi/Kconfig"
 
 source "drivers/scsi/bnx2i/Kconfig"
 source "drivers/scsi/be2iscsi/Kconfig"
@@ -747,6 +755,36 @@ config SCSI_GDTH
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called gdth.
+
+config SCSI_ISCI
+	tristate "Intel(R) C600 Series Chipset SAS Controller"
+	depends on PCI && SCSI
+	depends on X86
+	# (temporary): known alpha quality driver
+	depends on EXPERIMENTAL
+	select SCSI_SAS_LIBSAS
+	---help---
+	  This driver supports the 6Gb/s SAS capabilities of the storage
+	  control unit found in the Intel(R) C600 series chipset.
+
+	  The experimental tag will be removed after the driver exits alpha
+
+choice
+	prompt "Default Silicon Revision"
+	depends on SCSI_ISCI
+	default PBG_HBA_A2
+	# temporary A-step silicon is pre-production
+
+config PBG_HBA_BETA
+	bool "B0"
+
+config PBG_HBA_A2
+	bool "A2"
+
+config PBG_HBA_A0
+	bool "A0"
+
+endchoice
 
 config SCSI_GENERIC_NCR5380
 	tristate "Generic NCR5380/53c400 SCSI PIO support"

@@ -32,6 +32,7 @@ static inline int pci_proc_attach_device(struct pci_dev *dev) { return 0; }
 static inline int pci_proc_detach_device(struct pci_dev *dev) { return 0; }
 static inline int pci_proc_detach_bus(struct pci_bus *bus) { return 0; }
 #endif
+int pci_probe_reset_function(struct pci_dev *dev);
 
 /* Functions for PCI Hotplug drivers to use */
 extern unsigned int pci_do_scan_bus(struct pci_bus *bus);
@@ -78,7 +79,7 @@ extern int pcie_mch_quirk;
 extern struct device_attribute pci_dev_attrs[];
 extern struct class_device_attribute class_device_attr_cpuaffinity;
 
-#ifdef CONFIG_HOTPLUG
+#if defined(CONFIG_HOTPLUG) && defined(CONFIG_PPC64)
 extern struct bus_attribute pci_bus_attrs[];
 #else
 #define pci_bus_attrs  NULL

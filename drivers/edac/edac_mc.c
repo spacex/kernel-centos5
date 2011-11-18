@@ -1205,6 +1205,30 @@ EXPORT_SYMBOL_GPL(edac_mc_dump_mci);
 
 #endif  /* CONFIG_EDAC_DEBUG */
 
+/*
+ * keep those in sync with the enum mem_type
+ */
+const char *edac_mem_types[] = {
+	"Empty csrow",
+	"Reserved csrow type",
+	"Unknown csrow type",
+	"Fast page mode RAM",
+	"Extended data out RAM",
+	"Burst Extended data out RAM",
+	"Single data rate SDRAM",
+	"Registered single data rate SDRAM",
+	"Double data rate SDRAM",
+	"Registered Double data rate SDRAM",
+	"Rambus DRAM",
+	"Unbuffered DDR2 RAM",
+	"Fully buffered DDR2",
+	"Registered DDR2 RAM",
+	"Rambus XDR",
+	"Unbuffered DDR3 RAM",
+	"Registered DDR3 RAM",
+};
+EXPORT_SYMBOL_GPL(edac_mem_types);
+
 /* 'ptr' points to a possibly unaligned item X such that sizeof(X) is 'size'.
  * Adjust 'ptr' so that its alignment is at least as stringent as what the
  * compiler would provide for X and return the aligned result.

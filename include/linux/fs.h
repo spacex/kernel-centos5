@@ -131,6 +131,7 @@ extern int dir_notify_enable;
 #define MS_HAS_SETLEASE        (1<<22) /* fs supports setlease fop */
 #define MS_I_VERSION	(1<<23)	/* Update inode I_version field */
 #define MS_HAS_NEW_AOPS	(1<<24) /* fs supports new aops */
+#define MS_HAS_LAUNDER_PAGE	(1<<25) /* fs supports launder_page */
 #define MS_ACTIVE	(1<<30)
 #define MS_NOUSER	(1<<31)
 
@@ -182,6 +183,7 @@ extern int dir_notify_enable;
 #define IS_DIRSYNC(inode)	(__IS_FLG(inode, MS_SYNCHRONOUS|MS_DIRSYNC) || \
 					((inode)->i_flags & (S_SYNC|S_DIRSYNC)))
 #define IS_MANDLOCK(inode)	__IS_FLG(inode, MS_MANDLOCK)
+#define IS_NOATIME(inode)	__IS_FLG(inode, MS_RDONLY|MS_NOATIME)
 #define IS_I_VERSION(inode)	__IS_FLG(inode, MS_I_VERSION)
 
 #define IS_NOQUOTA(inode)	((inode)->i_flags & S_NOQUOTA)
@@ -196,6 +198,7 @@ extern int dir_notify_enable;
 #define IS_NO_LEASES(inode)	__IS_FLG(inode, MS_NO_LEASES)
 #define IS_SETLEASE(inode)	__IS_FLG(inode, MS_HAS_SETLEASE)
 #define IS_NEWAOPS(inode)	__IS_FLG(inode, MS_HAS_NEW_AOPS)
+#define IS_LAUNDERPAGE(inode)	__IS_FLG(inode, MS_HAS_LAUNDER_PAGE)
 
 /* the read-only stuff doesn't really belong here, but any other place is
    probably as bad and I don't want to create yet another include file. */
@@ -500,6 +503,7 @@ struct address_space_operations_ext {
 	int (*write_end)(struct file *, struct address_space *mapping,
 				loff_t pos, unsigned len, unsigned copied,
 				struct page *page, void *fsdata);
+	int (*launder_page) (struct page *);
 };
 
 /*
@@ -955,6 +959,7 @@ extern int setlease(struct file *, long, struct file_lock **);
 extern int lease_modify(struct file_lock **, int);
 extern int lock_may_read(struct inode *, loff_t start, unsigned long count);
 extern int lock_may_write(struct inode *, loff_t start, unsigned long count);
+extern struct seq_operations locks_seq_operations;
 
 struct fasync_struct {
 	int	magic;
@@ -2032,8 +2037,9 @@ extern int vfs_fstat(unsigned int, struct kstat *);
 
 extern int vfs_ioctl(struct file *, unsigned int, unsigned int, unsigned long);
 extern int __generic_block_fiemap(struct inode *inode,
-				  struct fiemap_extent_info *fieinfo, u64 start,
-				  u64 len, get_block_t *get_block);
+				  struct fiemap_extent_info *fieinfo,
+				  loff_t start, loff_t len,
+				  get_block_t *get_block);
 extern int generic_block_fiemap(struct inode *inode,
 				struct fiemap_extent_info *fieinfo, u64 start,
 				u64 len, get_block_t *get_block);

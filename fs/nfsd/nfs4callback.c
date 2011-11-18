@@ -373,7 +373,7 @@ nfsd4_lookupcred(struct nfs4_client *clp, int taskflags)
 void
 nfsd4_probe_callback(struct nfs4_client *clp)
 {
-	struct sockaddr_in	addr;
+	struct sockaddr_in	addr, saddr;
 	struct nfs4_callback    *cb = &clp->cl_callback;
 	struct rpc_timeout	timeparms;
 	struct rpc_xprt *	xprt;
@@ -432,6 +432,14 @@ nfsd4_probe_callback(struct nfs4_client *clp)
 	}
 	clnt->cl_intr = 0;
 	clnt->cl_softrtry = 1;
+
+	/* Set source address */
+	if (cb->cb_saddr){
+		memset(&saddr, 0, sizeof(saddr));
+		saddr.sin_family = AF_INET;
+		saddr.sin_addr.s_addr = cb->cb_saddr;
+		xprt->srcaddr = saddr;
+	}
 
 	/* Kick rpciod, put the call on the wire. */
 

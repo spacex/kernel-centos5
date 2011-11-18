@@ -832,7 +832,7 @@ struct dst_entry * ip6_route_output(struct sock *sk, struct flowi *fl)
 {
 	int flags = 0;
 
-	if (rt6_need_strict(&fl->fl6_dst))
+	if ((sk && sk->sk_bound_dev_if) || rt6_need_strict(&fl->fl6_dst))
 		flags |= RT6_LOOKUP_F_IFACE;
 
 	if (!ipv6_addr_any(&fl->fl6_src))

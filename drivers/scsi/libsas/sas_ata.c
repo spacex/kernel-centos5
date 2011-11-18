@@ -162,6 +162,10 @@ static unsigned int sas_ata_qc_issue(struct ata_queued_cmd *qc)
 	unsigned int num = 0;
 	unsigned int xfer = 0;
 
+	/* If the device fell off, no sense in issuing commands */
+	if (dev->gone)
+		return AC_ERR_SYSTEM;
+
 	task = sas_alloc_task(GFP_ATOMIC);
 	if (!task)
 		return AC_ERR_SYSTEM;
@@ -351,6 +355,7 @@ static struct ata_port_operations sas_sata_ops = {
 	.phy_reset		= sas_ata_phy_reset,
 	.post_internal_cmd	= sas_ata_post_internal,
 	.qc_prep		= ata_noop_qc_prep,
+	.qc_defer		= ata_std_qc_defer,
 	.qc_issue		= sas_ata_qc_issue,
 	.qc_fill_rtf            = sas_ata_qc_fill_rtf,
 	.port_start		= ata_sas_port_start,
@@ -495,7 +500,7 @@ static int sas_execute_task(struct sas_task *task, void *buffer, int size,
 			goto ex_err;
 		}
 		wait_for_completion(&task->completion);
-		res = -ETASK;
+		res = -ECOMM;
 		if (task->task_state_flags & SAS_TASK_STATE_ABORTED) {
 			int res2;
 			SAS_DPRINTK("task aborted, flags:0x%x\n",
@@ -695,7 +700,7 @@ static int sas_discover_sata_dev(struct domain_device *dev)
 		/* incomplete response */
 		SAS_DPRINTK("sending SET FEATURE/PUP_STBY_SPIN_UP to "
 			    "dev %llx\n", SAS_ADDR(dev->sas_addr));
-		if (!le16_to_cpu(identify_x[83] & (1<<6)))
+		if (!(identify_x[83] & cpu_to_le16(1<<6)))
 			goto cont1;
 		res = sas_issue_ata_cmd(dev, ATA_SET_FEATURES,
 					ATA_FEATURE_PUP_STBY_SPIN_UP,
